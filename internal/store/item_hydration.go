@@ -1,6 +1,9 @@
 package store
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // itemHydrationColumns is the canonical frontend-bound Item projection with
 // caller-supplied expressions for the logical thread id, the three payload
@@ -79,6 +82,21 @@ func importedStoredItemHydrationColumns(thread, rev string) string {
 	)
 }
 
+// buildSelectedTimelineBranches renders the branches that resolve the
+// `selected(id)` set of selectedIDsSQL to rows of one thread, each through the
+// physical source that owns the id:
+//
+//   - local rows probe items(thread_id,id) and payloads(thread_id,id);
+//   - imported rows probe the item ID index, check the owning chunk's thread
+//     membership, then resolve the chunk-scoped payload;
+//   - a local payload overlay wins over its immutable imported payload, which
+//     preserves timeline_payloads' copy-on-write shadowing contract;
+//   - a pointer fork's inherited rows repeat the first two branches against
+//     each lineage level's owner, under the same visibility rule as the
+//     timeline_items lineage arms. A payload resolves in the thread that owns
+//     the row, which is where the fork's copy-on-write put it. Only a fork
+//     renders these branches: on every other thread they would only make
+//     each read's statement several times as costly to prepare.
 func buildSelectedTimelineBranches(local, imported func(thread, rev string) string, localJoin, orderBy string, forked bool) string {
 	sql := `
 		SELECT ` + local("items.thread_id", "items.rev") + `
@@ -151,103 +169,122 @@ func resolvePrecomputedTimelineSQL(q sqlQueryer, threadID, noForkSQL, forkSQL st
 	return noForkSQL, []any{threadID, threadID}, nil
 }
 
-// buildSelectedTimelineBranches renders the branches that resolve a
-// MATERIALIZED `selected(id)` set to rows of one thread, each through the
-// physical source that owns the id:
+// idSelection is SQL that returns one `id` column, and its bind values.
+// perLevel marks a selection rendered with a pair of arms per lineage
+// level (renderTimelineArms), whose statement grows with the fork's depth.
+type idSelection struct {
+	sql      string
+	args     []any
+	perLevel bool
+}
+
+// fixedIDSelection is a selection whose text does not depend on the thread.
+func fixedIDSelection(sql string, args ...any) idSelection {
+	return idSelection{sql: sql, args: args}
+}
+
+// selectedIDsSQL is the `selected(id)` set of buildSelectedTimelineBranches'
+// branches as a list of ids bound as one JSON array.
+const selectedIDsSQL = `
+		WITH selected(id) AS MATERIALIZED (SELECT value FROM json_each(?))`
+
+// selectedSet renders the `selected(id)` set buildSelectedTimelineBranches'
+// branches read from sel, and its bind values; found is false when sel
+// selected nothing. The set is MATERIALIZED: every branch reads it.
 //
-//   - local rows probe items(thread_id,id) and payloads(thread_id,id);
-//   - imported rows probe the item ID index, check the owning chunk's thread
-//     membership, then resolve the chunk-scoped payload;
-//   - a local payload overlay wins over its immutable imported payload, which
-//     preserves timeline_payloads' copy-on-write shadowing contract;
-//   - a pointer fork's inherited rows repeat the first two branches against
-//     each lineage level's owner, under the same visibility rule as the
-//     timeline_items lineage arms. A payload resolves in the thread that owns
-//     the row, which is where the fork's copy-on-write put it. Only a fork
-//     renders these branches: on every other thread they would only make
-//     each read's statement several times as costly to prepare.
-//
-// queryHydratedTimelineItems selects logical item ids first, then resolves each
-// id through the physical branch that owns it. This shape is deliberately not
-// expressed as `timeline_items LEFT JOIN timeline_payloads`: SQLite materializes
-// that compound payload view, scans every payload in the database, and builds
-// an automatic index before returning even a one-row lookup.
-//
-// selectedSQL must return one `id` column. It runs once (MATERIALIZED matters
-// because every physical branch consumes it), then each id resolves through
-// the branch that owns it (resolvePrecomputedTimelineSQL).
+// sel is the set's body unless it is perLevel. SQLite copies a CTE's body
+// into the statement once for every reference, and from 3.54 refuses to
+// expand a CTE reference once the statement holds 1000 cursors; a
+// per-level selection grows with depth, so it runs as its own statement
+// and the set is the ids it returned.
+func selectedSet(q sqlQueryer, sel idSelection) (set string, args []any, found bool, err error) {
+	if !sel.perLevel {
+		return `
+		WITH selected(id) AS MATERIALIZED (
+			` + sel.sql + `
+		)`, sel.args, true, nil
+	}
+	ids, err := queryIDs(q, sel.sql, sel.args...)
+	if err != nil {
+		return "", nil, false, err
+	}
+	return selectedIDList(ids)
+}
+
+// selectedIDList renders ids as the `selected(id)` set.
+func selectedIDList(ids []string) (string, []any, bool, error) {
+	if len(ids) == 0 {
+		return "", nil, false, nil
+	}
+	list, err := jsonList(ids)
+	if err != nil {
+		return "", nil, false, err
+	}
+	return selectedIDsSQL, []any{list}, true, nil
+}
+
+// queryHydratedTimelineItems resolves each id sel selects through the
+// physical branch that owns it, in timeline order. This shape is
+// deliberately not expressed as `timeline_items LEFT JOIN
+// timeline_payloads`: SQLite materializes that compound payload view,
+// scans every payload in the database, and builds an automatic index
+// before returning even a one-row lookup.
 //
 // The caller chooses q, so SyncThreadWindow can keep selection, hydration,
 // decoration, and its history stamps in one WAL snapshot.
-func queryHydratedTimelineItems(
-	q sqlQueryer,
-	threadID string,
-	selectedSQL string,
-	selectedArgs ...any,
-) ([]Item, error) {
-	return queryTimelineItemsWithBranches(q, threadID, hydratedTimelineBranchesNoFork, hydratedTimelineBranchesFork, selectedSQL, selectedArgs...)
+func queryHydratedTimelineItems(q sqlQueryer, threadID string, sel idSelection) ([]Item, error) {
+	set, args, found, err := selectedSet(q, sel)
+	if err != nil {
+		return nil, fmt.Errorf("store: select hydrated timeline items for %s: %w", threadID, err)
+	}
+	return hydrateSelectedSetWithBranches(q, threadID, hydratedTimelineBranchesNoFork, hydratedTimelineBranchesFork, set, args, found)
 }
 
-func queryTimelineItemsWithBranches(
-	q sqlQueryer,
-	threadID string,
-	noForkSQL string,
-	forkSQL string,
-	selectedSQL string,
-	selectedArgs ...any,
-) ([]Item, error) {
+// hydrateTimelineIDs is queryHydratedTimelineItems for ids a caller holds.
+func hydrateTimelineIDs(q sqlQueryer, threadID string, ids []string) ([]Item, error) {
+	set, args, found, err := selectedIDList(ids)
+	if err != nil {
+		return nil, err
+	}
+	return hydrateSelectedSetWithBranches(q, threadID, hydratedTimelineBranchesNoFork, hydratedTimelineBranchesFork, set, args, found)
+}
+
+func hydrateSelectedSetWithBranches(q sqlQueryer, threadID, noForkSQL, forkSQL, set string, setArgs []any, found bool) ([]Item, error) {
+	if !found {
+		return []Item{}, nil
+	}
 	branches, branchArgs, err := resolvePrecomputedTimelineSQL(q, threadID, noForkSQL, forkSQL)
 	if err != nil {
 		return nil, fmt.Errorf("store: query hydrated timeline items for %s: %w", threadID, err)
 	}
-	args := make([]any, 0, len(selectedArgs)+len(branchArgs))
-	args = append(args, selectedArgs...)
+	args := make([]any, 0, len(setArgs)+len(branchArgs))
+	args = append(args, setArgs...)
 	args = append(args, branchArgs...)
-	rows, err := q.Query(`
-		WITH selected(id) AS MATERIALIZED (
-			`+selectedSQL+`
-		)`+branches,
-		args...,
-	)
+	rows, err := q.Query(set+branches, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: query hydrated timeline items for %s: %w", threadID, err)
 	}
-	defer rows.Close()
-
-	items, err := scanItemRows(rows, 0)
-	if err != nil {
+	items, scanErr := scanItemRows(rows, 0)
+	if err := errors.Join(scanErr, rows.Close()); err != nil {
 		return nil, fmt.Errorf("store: scan hydrated timeline item row for %s: %w", threadID, err)
 	}
 	return items, nil
 }
 
-func queryOneHydratedTimelineItem(
-	q sqlQueryer,
-	threadID string,
-	selectedSQL string,
-	selectedArgs ...any,
-) (Item, bool, error) {
-	return queryOneTimelineItemWithBranches(q, threadID, hydratedTimelineBranchesNoFork, hydratedTimelineBranchesFork, selectedSQL, selectedArgs...)
+func queryOneHydratedTimelineItem(q sqlQueryer, threadID string, sel idSelection) (Item, bool, error) {
+	return queryOneTimelineItemWithBranches(q, threadID, hydratedTimelineBranchesNoFork, hydratedTimelineBranchesFork, sel)
 }
 
-func queryOneStoredTimelineItem(
-	q sqlQueryer,
-	threadID string,
-	selectedSQL string,
-	selectedArgs ...any,
-) (Item, bool, error) {
-	return queryOneTimelineItemWithBranches(q, threadID, storedTimelineBranchesNoFork, storedTimelineBranchesFork, selectedSQL, selectedArgs...)
+func queryOneStoredTimelineItem(q sqlQueryer, threadID string, sel idSelection) (Item, bool, error) {
+	return queryOneTimelineItemWithBranches(q, threadID, storedTimelineBranchesNoFork, storedTimelineBranchesFork, sel)
 }
 
-func queryOneTimelineItemWithBranches(
-	q sqlQueryer,
-	threadID string,
-	noForkSQL string,
-	forkSQL string,
-	selectedSQL string,
-	selectedArgs ...any,
-) (Item, bool, error) {
-	items, err := queryTimelineItemsWithBranches(q, threadID, noForkSQL, forkSQL, selectedSQL, selectedArgs...)
+func queryOneTimelineItemWithBranches(q sqlQueryer, threadID, noForkSQL, forkSQL string, sel idSelection) (Item, bool, error) {
+	set, args, found, err := selectedSet(q, sel)
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: select hydrated timeline items for %s: %w", threadID, err)
+	}
+	items, err := hydrateSelectedSetWithBranches(q, threadID, noForkSQL, forkSQL, set, args, found)
 	if err != nil {
 		return Item{}, false, err
 	}

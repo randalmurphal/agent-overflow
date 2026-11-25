@@ -6,6 +6,7 @@
   const TOOL_LOADERS: Record<ToolPaneKind, CachedComponentLoader<any>> = {
     pulls: createCachedComponentLoader(() => import('../pulls/PullsPane.svelte')),
     workflows: createCachedComponentLoader(() => import('../workflows/WorkflowsPane.svelte')),
+    issues: createCachedComponentLoader(() => import('../issues/IssuesPane.svelte')),
   };
 </script>
 

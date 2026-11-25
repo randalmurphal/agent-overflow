@@ -83,6 +83,15 @@ type EventView struct {
 	To     string    `json:"to,omitempty"`
 }
 
+// TicketRowView is the ticket's issue on one board the mirror shows: its
+// estimate there, in the board's unit (none, points or time in seconds),
+// which SetTrackerEstimate changes on that board.
+type TicketRowView struct {
+	Board    string   `json:"board"`
+	Estimate *float64 `json:"estimate,omitempty"`
+	Unit     string   `json:"unit"`
+}
+
 // MoveView is a move the ticket's workflow allows now and the fields it
 // takes.
 type MoveView struct {
@@ -96,7 +105,9 @@ type MoveView struct {
 // (the one every view of the issue shows) with its body. Comments is the
 // first page, newest first; MoreComments is the token of the next page,
 // empty when there is none. History is complete from HistoryFrom (Unix
-// milliseconds, 0 for from creation). BodyBehind reports a body read for
+// milliseconds, 0 for from creation). Rows are the issue's rows on the
+// boards the mirror shows, by board ID, as the mirror holds them now.
+// BodyBehind reports a body read for
 // an older version of the issue than its card: a read of the card found a
 // change the body does not show yet, and the next read of the ticket
 // reads it.
@@ -113,6 +124,7 @@ type DetailView struct {
 	History      []EventView      `json:"history"`
 	HistoryFrom  int64            `json:"history_from,omitempty"`
 	Moves        []MoveView       `json:"moves"`
+	Rows         []TicketRowView  `json:"rows"`
 }
 
 // detailMaxAge is how long after its read began a stored detail is checked
@@ -236,8 +248,11 @@ func (s *Service) detailView(root int64, row store.TrackerConnection, doc ticket
 // one lookup (and the parents only the record names in a second), and
 // then the names of every document in one, a store lookup's bound at a
 // time; a document linking more than that bound shows the rest as it has
-// them. It returns each view with the other issues it shows (showsOf of
-// the card it rendered), the dependencies its pump watches.
+// them. Each view's rows on the boards are read with every document's in
+// one more statement (store.ListMirrorTicketRows), so docs holds at most
+// store.MirrorMaxBodies. It returns each view with the other issues it
+// shows (showsOf of the card it rendered), the dependencies its pump
+// watches.
 func (s *Service) detailViews(root int64, row store.TrackerConnection, docs []ticketDoc) ([]DetailView, [][]tracker.IssueID, error) {
 	wants := make([][]string, len(docs))
 	var all idSet
@@ -303,11 +318,40 @@ func (s *Service) detailViews(root int64, row store.TrackerConnection, docs []ti
 	if err != nil {
 		return nil, nil, err
 	}
+	rows, err := s.ticketRows(root, docs)
+	if err != nil {
+		return nil, nil, err
+	}
 	views := make([]DetailView, len(docs))
 	for i := range docs {
 		views[i] = shown[i].view(names, row)
+		views[i].Rows = rows[docs[i].d.Card.ID]
+		if views[i].Rows == nil {
+			views[i].Rows = []TicketRowView{}
+		}
 	}
 	return views, shows, nil
+}
+
+// ticketRows are the rows of docs' issues on the boards the mirror shows,
+// by issue, in board order.
+func (s *Service) ticketRows(root int64, docs []ticketDoc) (map[tracker.IssueID][]TicketRowView, error) {
+	ids := make([]string, len(docs))
+	for i, doc := range docs {
+		ids[i] = string(doc.d.Card.ID)
+	}
+	held, err := s.store.ListMirrorTicketRows(root, ids)
+	if err != nil {
+		return nil, fmt.Errorf("trackerapp: read the rows of %d tickets from the mirror: %w", len(docs), err)
+	}
+	out := make(map[tracker.IssueID][]TicketRowView, len(docs))
+	for _, r := range held {
+		id := tracker.IssueID(r.IssueID)
+		out[id] = append(out[id], TicketRowView{
+			Board: r.BoardID, Estimate: copyNumber(r.Estimate), Unit: nameOf(unitNames[:], tracker.EstimateUnit(r.EstimateUnit)),
+		})
+	}
+	return out, nil
 }
 
 // shownDetail is a document with what the mirror's cards show of it: its

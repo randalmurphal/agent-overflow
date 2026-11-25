@@ -386,6 +386,65 @@ problem on that record, which stays usable.
   cannot be proven unique within Jira's search window is an error), and
   the users who can be assigned to an issue or in a project.
 
+### Planning poker
+
+`jira/poker.go` reaches the Easy Agile TeamRhythm add-on the way its issue
+panel does, through two undocumented Atlassian endpoints, with the site's
+Basic credential and the shapes measured on 2026-11-24
+([measurements](../references/tracker-api-measurements.md#planning-poker-add-on)).
+It sends the measured GraphQL documents exactly.
+
+- **Whether the site has it.** `PokerInstalled` reads the cloud ID
+  (`GET /_edge/tenant_info`, kept while the credential holds) and the
+  site's issue panel listing (`Ext` on `/gateway/api/graphql`), and keeps
+  the listing 30 minutes, present or absent. A site whose listing names no
+  `planning-poker-forge-panel` fails every other poker call with
+  `ErrPokerAbsent` before any token or invoke.
+- **The context token.** A read or a write first reads the issue's ID,
+  key, type and project (`GetIssue`), then asks
+  `POST /rest/internal/2/forge/context/token` for that issue's token. The
+  token is kept per issue (16 at most) in memory, as a `secret.Bytes`
+  with the credential mark it was drawn under, until 60 seconds before
+  `expiresIn` ends, and dropped when the gateway refuses it. The invoke's
+  `contextIds` is the token's own claim, read from it as is.
+- **Calls.** `PokerVotes` reads `planningPoker/{issueId}`;
+  `CastPokerVote`, `RevealPokerVotes` and `ClearPokerVotes` are the three
+  writes, each one `Invoke` of `requestConnectBackend`. A write's body is
+  sent as the JSON value itself, at one place in `pokerInvoke`, the
+  encoding the add-on was
+  [measured](../references/tracker-api-measurements.md#planning-poker-add-on)
+  to take. `PokerInstalled` and
+  `PokerVotes` are walks (`trackerapi.Walk`), so a credential change part
+  way starts them again. `PokerVoter` is `User` for a voter: a 404 or 403
+  matches `ErrUserWithheld` and is kept 30 minutes, so the votes' poll
+  asks again only then, unless a lookup of any kind learns that user
+  first; `User` itself asks each time.
+- **Errors.** An answer the measured shapes do not cover is a
+  `*PokerError` naming its step (cloud ID, listing, token, gateway, poker
+  app) and what was wrong, never a ticket's error. A write is applied only
+  on the poker app's 2xx; its 4xx, and a gateway refusal with a 4xx
+  `statusCode`, refuse it; any other answer leaves it unknown. A gateway
+  message is cut to 200 bytes.
+- **Nothing the invoke returns holds the token.** Its errors carry no
+  text of the answer but the strings it decoded: an HTTP status the
+  gateway answers is a `*PokerError` that wraps no
+  `*trackerapi.StatusError`, a refused credential has no message, and an
+  answer that did not decode wraps no decode error. After the last decode
+  (the gateway's answer, and the poker app's body into the round), one
+  check looks at every decoded string; an answer that holds the token, in
+  any spelling its JSON escapes allow, is a `*PokerError` "answered with
+  the context token in its answer" of the same step and refusal, and none
+  of its text or votes is used.
+- **The fake.** `trackerfake` serves the same three routes
+  (`jira_poker.go`): it matches the two documents exactly, signs a token
+  with the measured claim names, refuses a missing, expired or
+  mismatched token, and keeps each issue's votes. The listing and a GET
+  invoke are reads (`readsWhen`), so a poll saves no copy of the site. Unverified: the three
+  writes' request encoding, and the answers it had to choose for a failed
+  invoke, an issue the token does not name, a vote out of range and the
+  round after a clear. A site's `Members` are other people who sign in to
+  it, so a test can vote as a teammate.
+
 ## Tempo
 
 One `tempo.Client` per site and region. Worklogs are read by author and

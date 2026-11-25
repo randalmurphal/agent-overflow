@@ -33,38 +33,56 @@ func (s *Service) Provider(ctx context.Context, id string) (tracker.Provider, er
 	if err != nil {
 		return nil, err
 	}
-	p, _, err := s.providerLocked(row)
+	p, _, _, err := s.providerLocked(row)
 	return p, err
 }
 
 // providerLocked is the provider of connection row, with the client of
-// the connection itself that its calls are stamped on (begin). The caller
-// holds opMu and read row under it.
-func (s *Service) providerLocked(row store.TrackerConnection) (tracker.Provider, *clients, error) {
-	if row.Kind == store.TrackerKindTempo {
-		return nil, nil, fmt.Errorf("%w: %s", ErrNoProvider, row.ID)
+// the connection itself that its calls are stamped on (begin) and the
+// kind of the tracker that answers for its time: store.TrackerKindTempo
+// while its Tempo connection is on, empty otherwise. The caller holds
+// opMu and read row under it, so row.TimeSourceGen is the time source
+// generation the provider was built for (every connection change holds
+// opMu).
+func (s *Service) providerLocked(row store.TrackerConnection) (tracker.Provider, *clients, string, error) {
+	if err := usable(row); err != nil {
+		return nil, nil, "", err
 	}
 	c, err := s.use(row)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	var timeClients *clients
+	timeBy := ""
 	if row.Kind == store.TrackerKindJira {
 		timeRow, ok, err := s.tempoOf(row.ID)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, "", err
 		}
 		if ok && timeRow.Enabled {
 			if timeClients, err = s.use(timeRow); err != nil {
-				return nil, nil, fmt.Errorf("trackerapp: the Tempo connection of %s: %w", row.ID, err)
+				return nil, nil, "", fmt.Errorf("trackerapp: the Tempo connection of %s: %w", row.ID, err)
 			}
+			timeBy = store.TrackerKindTempo
 		}
 	}
 	p, err := s.makeProvider(row, c, timeClients)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
-	return p, c, nil
+	return p, c, timeBy, nil
+}
+
+// usable refuses a connection no provider serves: a Tempo connection
+// (ErrNoProvider) and one turned off (ErrDisabled).
+func usable(row store.TrackerConnection) error {
+	switch {
+	case row.Kind == store.TrackerKindTempo:
+		return fmt.Errorf("%w: %s", ErrNoProvider, row.ID)
+	case !row.Enabled:
+		return fmt.Errorf("%w: %s", ErrDisabled, row.ID)
+	}
+	return nil
 }
 
 // buildProvider is the provider over c, the client of connection row, and

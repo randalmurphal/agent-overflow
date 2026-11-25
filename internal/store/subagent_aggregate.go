@@ -47,7 +47,7 @@ func forEachSubagentAggregateRow(q sqlQueryer, threadID string, rootIDs []string
 // ancestry wherever that agent's own row sits.
 func forEachCodexExecutionRow(q sqlQueryer, threadID, rootID, executionTurnID string, turnIndex, startIndex, endIndex int, visit func(subagentAggregateRow)) error {
 	return walkSubagentAggregateRows(q, threadID, []string{rootID}, codexExecutionAggregateColumns,
-		` AND items.turn_index = ? AND items.item_index > ? AND items.item_index <= ?
+		` AND items.turn_index = `+boundInt+` AND items.item_index > `+boundInt+` AND items.item_index <= `+boundInt+`
 		  AND (items.parent_id <> rel.root OR `+codexExecutionMemberSQL("items.")+`)`,
 		[]any{turnIndex, startIndex, endIndex, executionTurnID, executionTurnID},
 		func(rows *sql.Rows, row *subagentAggregateRow) error {

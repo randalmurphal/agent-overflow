@@ -121,7 +121,7 @@ func (s *Store) ListTurnEditDiffPayloads(threadID string, turnIndex int) ([]stri
 			  FROM items AS items
 			  JOIN payloads AS payloads
 			    ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
-			 WHERE items.thread_id = ? AND items.turn_index = ?
+			 WHERE items.thread_id = ? AND items.turn_index = `+boundInt+`
 			UNION ALL
 			SELECT items.payload_id, items.item_index,
 			       COALESCE(local_payloads.kind, imported_payloads.kind),
@@ -135,14 +135,14 @@ func (s *Store) ListTurnEditDiffPayloads(threadID string, turnIndex int) ([]stri
 			  LEFT JOIN thread_import_item_overrides AS overrides
 			    ON overrides.thread_id = refs.thread_id AND overrides.item_id = items.id
 			 WHERE refs.thread_id = ? AND `+importedTurnRange("?")+`
-			   AND items.turn_index = ? AND overrides.item_id IS NULL
+			   AND items.turn_index = `+boundInt+` AND overrides.item_id IS NULL
 			UNION ALL
 			SELECT items.payload_id, items.item_index, payloads.kind, length(payloads.data) AS data_length
 			  FROM thread_fork_lineage AS l
 			  CROSS JOIN items AS items ON items.thread_id = l.ancestor_id
 			  JOIN payloads AS payloads
 			    ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
-			 WHERE l.thread_id = ? AND l.cut_turn_index >= ? AND items.turn_index = ?
+			 WHERE l.thread_id = ? AND l.cut_turn_index >= `+boundInt+` AND items.turn_index = `+boundInt+`
 			   AND `+inheritedItemVisibleSQL+`
 			UNION ALL
 			SELECT items.payload_id, items.item_index,
@@ -157,8 +157,8 @@ func (s *Store) ListTurnEditDiffPayloads(threadID string, turnIndex int) ([]stri
 			    ON imported_payloads.chunk_id = items.chunk_id AND imported_payloads.id = items.payload_id
 			  LEFT JOIN thread_import_item_overrides AS overrides
 			    ON overrides.thread_id = refs.thread_id AND overrides.item_id = items.id
-			 WHERE l.thread_id = ? AND l.cut_turn_index >= ? AND `+importedTurnRange("?")+`
-			   AND items.turn_index = ? AND overrides.item_id IS NULL
+			 WHERE l.thread_id = ? AND l.cut_turn_index >= `+boundInt+` AND `+importedTurnRange("?")+`
+			   AND items.turn_index = `+boundInt+` AND overrides.item_id IS NULL
 			   AND `+inheritedItemVisibleSQL+`
 		)
 		SELECT payload_id

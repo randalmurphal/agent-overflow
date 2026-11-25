@@ -333,7 +333,7 @@ func windowDigestRowsTx(
 			return `items.id AS id, items.turn_index AS turn_index, items.item_index AS item_index`
 		},
 		RowIDs:   true,
-		Turn:     "?",
+		Turn:     boundInt,
 		TurnArgs: []any{oldest.TurnIndex},
 		FromTurn: true,
 		Where: filter + `

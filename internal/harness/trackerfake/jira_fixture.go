@@ -21,6 +21,13 @@ type JiraSite struct {
 	// Token is the API token that user's email signs in with (Basic).
 	Account string `json:"account"`
 	Token   string `json:"token,omitempty"`
+	// Members are the other people who sign in to the site, each with
+	// their own token, which Snapshot leaves out.
+	Members []JiraMember `json:"members,omitempty"`
+	// CloudID is the site's cloud ID; empty seeds a made-up one.
+	CloudID string `json:"cloudId,omitempty"`
+	// Poker is the planning poker add-on; nil when the site has none.
+	Poker *JiraPoker `json:"poker,omitempty"`
 
 	Users      []JiraUser     `json:"users,omitempty"`
 	Statuses   []JiraStatus   `json:"statuses,omitempty"`
@@ -56,6 +63,11 @@ type JiraUser struct {
 	// AccountType is atlassian (the default), app or customer.
 	AccountType string `json:"accountType,omitempty"`
 	TimeZone    string `json:"timeZone,omitempty"`
+	// HidesTimeZone is a profile whose privacy setting hides the time
+	// zone: Jira answers it as null (documented: "Depending on the user's
+	// privacy setting, this may be returned as null"). TimeZone still
+	// places the user's Tempo days.
+	HidesTimeZone bool `json:"hidesTimeZone,omitempty"`
 }
 
 // JiraStatus is a workflow status; Category is new, indeterminate or done.

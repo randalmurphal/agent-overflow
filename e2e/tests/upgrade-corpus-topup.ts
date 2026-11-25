@@ -6,6 +6,7 @@
 // per library scenario in topUpScenarios, driven through the mock provider
 // the way a user's turn runs, then the sidebar and workflow operations.
 import { execFileSync } from 'node:child_process';
+import { writeFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, randomUUID } from 'node:crypto';
 import * as path from 'node:path';
@@ -16,6 +17,7 @@ import type { CensusGrowth } from './upgrade-corpus-helpers.js';
 import { writePeerSpawns, writeReviewDrafts, writeThreadRequests } from './upgrade-corpus-topup-records.js';
 import { timed } from './upgrade-corpus-tools.js';
 import { compactBoundaryLine } from './agent-visibility-helpers.js';
+import { BOARD_ID, JIRA_ACCOUNT, JIRA_SITE, JIRA_TOKEN, SPRINT_ID, seedFakeJira, type TrackerConnection } from './tracker-helpers.js';
 import { awaitToolAnswer, awaitTurnCompleted, plainScenario, threadToolsScenario } from './thread-tools-helpers.js';
 import {
   doneResult,
@@ -357,6 +359,8 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     return archived.projectId;
   });
 
+  await step('trackers', () => connectTrackers(harness, projectId));
+
   threadIds.push(...await step('threadRequests', () => writeThreadRequests(harness, version, nonce)));
   threadIds.push(...(await step('peerSpawns', () => writePeerSpawns(harness, version, nonce))).threadIds);
 
@@ -368,6 +372,69 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     atLeast: { threads: threadIds.length - 1, archived: 1 },
   };
   return { projectId, growth, threadIds, scenarioThreads, workItemId, ms };
+}
+
+/**
+ * The fake Jira's connection, checked and with its token's expiry, the
+ * Tempo connection under it, a renamed Linear connection that is off, and
+ * the fake Jira's two boards listed on the version's project, the first
+ * opening first. One site and
+ * account holds one connection, so a run after an earlier one reuses the
+ * connections it made.
+ */
+async function connectTrackers(harness: HarnessApp, projectId: string): Promise<void> {
+  await seedFakeJira(harness, {
+    projects: [],
+    boards: [{ id: 2, name: 'WEB kanban', type: 'kanban', project: 'WEB', columns: [{ name: 'To Do', statuses: ['10000'] }] }],
+  });
+  const connections = await harness.rpc<TrackerConnection[]>('TrackerConnections');
+  // A connection's site is the https origin the app made of the one given.
+  const jira = connections.find((c) => c.kind === 'jira' && c.site === `https://${JIRA_SITE}` && c.account === JIRA_ACCOUNT)
+    ?? await harness.rpc<TrackerConnection>('AddTrackerConnection', { kind: 'jira', site: JIRA_SITE, account: JIRA_ACCOUNT });
+  // The token a person would paste into the key file the app named.
+  await writeFile(jira.keyFilePath, JIRA_TOKEN, { mode: 0o600 });
+  const verified = await harness.rpc<TrackerConnection>('VerifyTrackerConnection', jira.id);
+  if (verified.problem) throw new Error(`the fake Jira refused the connection: ${JSON.stringify(verified.problem)}`);
+  await harness.rpc('SetTrackerConnectionTokenExpiry', jira.id, Date.now() + 90 * 24 * 3600_000);
+  if (!connections.some((c) => c.parentId === jira.id)) {
+    await harness.rpc('AddTrackerConnection', { kind: 'tempo', site: '', parentId: jira.id });
+  }
+  if (!connections.some((c) => c.kind === 'linear')) {
+    const linear = await harness.rpc<TrackerConnection>('AddTrackerConnection', { kind: 'linear', site: 'example' });
+    await harness.rpc('RenameTrackerConnection', linear.id, 'Top-up Linear');
+    await harness.rpc('SetTrackerConnectionEnabled', linear.id, false);
+  }
+  // Built from the list the project holds: a run after an earlier one at
+  // this version reuses its project.
+  const listed = await harness.rpc<Array<{ connection: string; board: string; opens_first: boolean }>>('ProjectTrackerBoards', projectId);
+  const built = listed.map(({ connection, board, opens_first }) => ({ connection, board, opens_first }));
+  await harness.rpc('SetProjectTrackerBoards', projectId, built, [
+    { connection: jira.id, board: BOARD_ID, opens_first: true, name: 'WEB board', tracker_project: 'WEB' },
+    { connection: jira.id, board: '2', opens_first: false, name: 'WEB kanban', tracker_project: 'WEB' },
+  ]);
+
+  // The scrum board read into the mirror as a client opening it reads it
+  // (tracker-board-wire.spec.ts). A refresh returns once its read ran
+  // (structure, delta, reconcile and history), so the rows the corpus
+  // keeps are written by answers, never by a tick's timing. A refresh the
+  // tracker refused also returns, over the rows an earlier run left, so
+  // the board's sync state is what says this read ran and was answered.
+  const sprint = [{ kind: 'sprint', sprint: SPRINT_ID }];
+  const sub = await harness.rpc<{ id: string }>('SubscribeTrackerBoard', projectId, jira.id, BOARD_ID, sprint, true);
+  const asked = Date.now();
+  await harness.rpc('RefreshTrackerSubscription', sub.id);
+  type Rows = { rows: Array<{ card: { key: string } }> };
+  const view = await harness.rpc<{ name: string; sync: { read_at?: number; failure?: unknown }; sections: Rows[] }>('TrackerBoard', sub.id, sprint);
+  const keys = (page: Rows) => page.rows.map((r) => r.card.key).sort();
+  if (view.sync.failure !== undefined || (view.sync.read_at ?? 0) < asked) {
+    throw new Error(`the fake Jira's board was not read: its sync state is ${JSON.stringify(view.sync)}`);
+  }
+  if (view.name !== 'WEB board' || keys(view.sections[0]).join() !== 'WEB-1,WEB-2') {
+    throw new Error(`the fake Jira's board read as ${view.name} with sprint rows ${keys(view.sections[0]).join()}`);
+  }
+  const backlog = await harness.rpc<Rows>('TrackerSectionRows', sub.id, { kind: 'backlog' }, null);
+  if (keys(backlog).join() !== 'WEB-3') throw new Error(`the fake Jira's backlog read as ${keys(backlog).join()}`);
+  await harness.rpc('ReleaseTrackerSubscription', sub.id);
 }
 
 /** The chat-bar settings the top-up's draft threads carry, one thread each. */

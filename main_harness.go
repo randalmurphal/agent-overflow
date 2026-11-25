@@ -320,6 +320,7 @@ var harnessTimers = []harnessTimer{
 	{name: "usage-poll", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.UsagePollInterval }},
 	{name: "wake-retry", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.ThreadWakeRetryBase }, max: appservice.MaxThreadWakeRetryBase},
 	{name: "agent-settled-window", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.AgentSettledWindow }},
+	{name: "tracker-poll", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.TrackerPollInterval }},
 	// Page timers: how long a computer stays unreachable before the screen
 	// says so, and how long a settled Agents row stays.
 	{name: "unreachable-settle", max: pageTimerMax, unit: time.Millisecond},
@@ -420,6 +421,16 @@ func olderComputerSurface() (absent map[string]bool, reshape map[string]func(jso
 		"SaveGitBlobImage", "SendExternalThreadMessage", "SetAssistantProjects", "SetThreadPlacement",
 		"SpendProviderAccountReset", "StartNextAssistantThread", "StopThreadAgentIncoming", "StopThreadAgentRows",
 		"StopThreadAgentRow", "ThreadToolWatch", "WakeThreadWakeNow", "WorkflowPauseItemAndEndSessions",
+		"TrackerConnections", "AddTrackerConnection", "RenameTrackerConnection", "SetTrackerConnectionEnabled",
+		"SetTrackerConnectionTokenExpiry", "RemoveTrackerConnection", "VerifyTrackerConnection",
+		"EditTrackerKeyFile", "OpenTrackerTokenPage", "TrackerProjects", "TrackerBoards",
+		"ProjectTrackerBoards", "SetProjectTrackerBoards", "TrackerBoardChoices", "ProjectTrackerSetup", "SetProjectTrackerSetup",
+		"SubscribeTrackerBoard", "TrackerBoard", "TrackerSectionRows", "TrackerBoardPatch",
+		"SetTrackerSubscriptionVisible", "RefreshTrackerSubscription", "ReleaseTrackerSubscription",
+		"SubscribeTrackerTicket", "TrackerTicket", "TrackerComments", "TrackerAssignableUsers", "TrackerChoices",
+		"EditTrackerIssue", "MoveTrackerIssue", "SetTrackerEstimate", "AddTrackerComment", "EditTrackerComment",
+		"DeleteTrackerComment",
+		"EditTrackerSprint", "EditTrackerWorklog", "DeleteTrackerWorklog", "TrackerWorklogs", "RefreshTrackerWorklogs",
 	} {
 		absent[name] = true
 	}

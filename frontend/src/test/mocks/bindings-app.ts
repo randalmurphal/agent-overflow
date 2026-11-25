@@ -144,10 +144,20 @@ const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
   // about (app_provider_account_bindings.go GetProviderLoginState).
   GetProviderLoginState: async (provider: string) => ({ provider, phase: 'idle' }),
   ListProviderAccounts: async () => [],
+  // The Issues settings pages (stores/trackerConnections,
+  // stores/trackerProjectBoards). A computer with no connection and a
+  // project with no board answer empty lists (app_tracker.go
+  // TrackerConnections, app_tracker_boards.go ProjectTrackerBoards).
+  TrackerConnections: async () => [],
+  ProjectTrackerBoards: async () => [],
   // Custom notification sounds (stores/sounds).
   GetSoundFiles: async () => ({ dir: '/tmp/sounds', sounds: [], warnings: [] }),
   // Rate limit snapshots read on every hello (stores/eventsRateLimits).
   GetRateLimitsSnapshots: async () => [],
+  // The boards the Issues pane's picker lists, read when the pane mounts
+  // (stores/trackerBoardChoices): none for a computer whose projects list
+  // no board (store ListTrackerBoardChoices).
+  TrackerBoardChoices: async () => [],
   // A thread the pane opens, as the backend holds an idle thread with no
   // history: resuming it does nothing (app_session_bindings.go), and its
   // ticks, plans, turns, tray tasks, wakes and pending requests are empty
@@ -351,6 +361,9 @@ export const SetThreadGroup = dispatch('SetThreadGroup');
 export const SetThreadPlacement = dispatch('SetThreadPlacement');
 export const RenameThread = dispatch('RenameThread');
 export const RegenerateThreadTitle = dispatch('RegenerateThreadTitle');
+export const SetThreadTicket = dispatch('SetThreadTicket');
+export const ClearThreadTicket = dispatch('ClearThreadTicket');
+export const ThreadsForTicket = dispatch('ThreadsForTicket');
 export const SwitchThread = dispatch('SwitchThread');
 
 // Terminal operations (ThreadTerminalDrawer, TerminalBody, etc).
@@ -1109,7 +1122,10 @@ export const OpenTrackerTokenPage = dispatch('OpenTrackerTokenPage');
 export const TrackerProjects = dispatch('TrackerProjects');
 export const TrackerBoards = dispatch('TrackerBoards');
 export const ProjectTrackerBoards = dispatch('ProjectTrackerBoards');
+export const TrackerBoardChoices = dispatch('TrackerBoardChoices');
 export const SetProjectTrackerBoards = dispatch('SetProjectTrackerBoards');
+export const ProjectTrackerSetup = dispatch('ProjectTrackerSetup');
+export const SetProjectTrackerSetup = dispatch('SetProjectTrackerSetup');
 export const SubscribeTrackerBoard = dispatch('SubscribeTrackerBoard');
 export const TrackerBoard = dispatch('TrackerBoard');
 export const TrackerSectionRows = dispatch('TrackerSectionRows');
@@ -1146,3 +1162,14 @@ export const DeleteTrackerComment = dispatch('DeleteTrackerComment');
 export const LinkTrackerIssues = dispatch('LinkTrackerIssues');
 export const UnlinkTrackerIssues = dispatch('UnlinkTrackerIssues');
 export const AddTrackerWorklog = dispatch('AddTrackerWorklog');
+export const EditTrackerSprint = dispatch('EditTrackerSprint');
+export const EditTrackerWorklog = dispatch('EditTrackerWorklog');
+export const DeleteTrackerWorklog = dispatch('DeleteTrackerWorklog');
+export const TrackerWorklogs = dispatch('TrackerWorklogs');
+export const RefreshTrackerWorklogs = dispatch('RefreshTrackerWorklogs');
+export const TrackerPokerSupport = dispatch('TrackerPokerSupport');
+export const FollowTrackerPoker = dispatch('FollowTrackerPoker');
+export const TrackerPoker = dispatch('TrackerPoker');
+export const VoteTrackerPoker = dispatch('VoteTrackerPoker');
+export const RevealTrackerPoker = dispatch('RevealTrackerPoker');
+export const ClearTrackerPokerVotes = dispatch('ClearTrackerPokerVotes');

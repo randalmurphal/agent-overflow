@@ -15,6 +15,13 @@ import (
 // the fixture's connection.
 func (m *mirrorFixture) linkThread(threadID string, issue tracker.IssueID) {
 	m.t.Helper()
+	m.thread(threadID)
+	linkOldCard(m.t, m.st, m.conn.ID, threadID, issue)
+}
+
+// thread makes thread threadID in the fixture's project, with no link.
+func (m *mirrorFixture) thread(threadID string) {
+	m.t.Helper()
 	project := store.Project{ID: "project-1", Path: "/tmp/web", Name: "web", CreatedAt: 1, UpdatedAt: 1}
 	if _, err := m.st.GetProject(project.ID); err != nil {
 		if _, err := m.st.CreateProject(project); err != nil {
@@ -27,12 +34,44 @@ func (m *mirrorFixture) linkThread(threadID string, issue tracker.IssueID) {
 	}); err != nil {
 		m.t.Fatal(err)
 	}
-	row := m.row(m.conn.ID)
-	if _, err := m.st.SetThreadTicket(store.ThreadTicket{
-		ThreadID: threadID, Ticket: store.TicketRef{Kind: row.Kind, Site: row.Site, IssueID: string(issue)},
-		IssueKey: "WEB-9", Origin: store.TicketOriginManual, LinkedAt: 1,
-	}); err != nil {
-		m.t.Fatal(err)
+}
+
+// linkOldCard links threadID to issue of connection id as a link made
+// before the test: from the card the mirror holds of it, as LinkThread
+// links, or else from a read of the issue's card older than every card a
+// test's tracker answers with, which the mirror holds from then on.
+func linkOldCard(tb testing.TB, st *store.Store, id, threadID string, issue tracker.IssueID) {
+	tb.Helper()
+	root, _, err := st.GetOrCreateMirrorRoot(id)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	held, err := st.ListMirrorCards(root, []string{string(issue)})
+	if err != nil {
+		tb.Fatal(err)
+	}
+	if len(held) == 1 {
+		w := store.ThreadTicketWrite{ThreadID: threadID, Origin: store.TicketOriginManual, LinkedAt: 1, Root: root, IssueID: string(issue)}
+		if _, err := st.SetThreadTicket(w); err != nil {
+			tb.Fatal(err)
+		}
+		return
+	}
+	sync, _, err := st.GetMirrorSync(root, "", 1)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	read, err := st.BeginMirrorRead(root, 1)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	old, err := mirrorCard(card(string(issue), 1_700_000_000_000))
+	if err != nil {
+		tb.Fatal(err)
+	}
+	if _, err := st.SetThreadTicket(store.ThreadTicketWrite{ThreadID: threadID, Origin: store.TicketOriginManual, LinkedAt: 1,
+		Root: root, IssueID: string(issue), Card: old, Read: read, Sweep: sync.Sweep}); err != nil {
+		tb.Fatal(err)
 	}
 }
 

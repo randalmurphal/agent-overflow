@@ -45,9 +45,17 @@ func storedTicket(t *testing.T, s *Store, threadID string) (ThreadTicket, bool) 
 	return link, true
 }
 
-// A link write refuses a thread other thread mutations refuse, and the
-// write to every link of a ticket skips it; a cancelled move gives the
-// thread back to its writers.
+func threadIDs(rows []Thread) []string {
+	ids := make([]string, len(rows))
+	for i, r := range rows {
+		ids[i] = r.ID
+	}
+	return ids
+}
+
+// A link write refuses a thread other thread mutations refuse, and a card
+// write's copy to the links of its ticket skips it; a cancelled move gives
+// the thread back to its writers.
 func TestThreadTicketWritesFollowTheThreadLifecycle(t *testing.T) {
 	t.Parallel()
 	isTransfer := func(err error) bool {
@@ -68,30 +76,31 @@ func TestThreadTicketWritesFollowTheThreadLifecycle(t *testing.T) {
 	} {
 		t.Run(c.state.name, func(t *testing.T) {
 			t.Parallel()
-			s := newTestStore(t)
+			s, _, root := newMirror(t)
 			mustCreateThread(t, s, "a")
-			mustSetThreadTicket(t, s, webLink("a"), true)
+			mustSetThreadTicket(t, s, readLink(s, root, "a", titledCard("10001", 5, "Fix the login page")))
+			// Another thread keeps the card whatever state a is in.
+			linkIssue(t, s, "keeper", "10001")
+			linked := mustGetThreadTicket(t, s, "a")
 			c.state.enter(t, s, "a")
 
-			seen, seenErr := s.RecordTicketSeen(webTicket, "APP-3", "Moved")
-			other := ThreadTicket{ThreadID: "a", Ticket: TicketRef{Kind: TrackerKindLinear, Site: "workspace-a", IssueID: "issue-1"},
-				IssueKey: "ENG-1", Origin: TicketOriginManual, LinkedAt: 30}
-			_, setErr := s.SetThreadTicket(other)
-			cleared, clearErr := s.ClearThreadTicket("a")
-			if seenErr != nil {
-				t.Fatalf("seen: %v", seenErr)
+			moved, copyErr := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{titledCard("10001", 6, "Moved")}, MirrorCatalog{}, nextMirrorRead(s, root))
+			_, setErr := s.SetThreadTicket(readLink(s, root, "a", titledCard("10002", 5, "Another")))
+			_, cleared, clearErr := s.ClearThreadTicket("a")
+			if copyErr != nil {
+				t.Fatalf("card write: %v", copyErr)
 			}
 			if c.refused == nil {
-				if !slices.Equal(seen, []string{"a"}) || setErr != nil || clearErr != nil || !cleared {
-					t.Fatalf("seen %v, set %v, clear %v %v; want every write to land", seen, setErr, cleared, clearErr)
+				if !slices.Equal(moved.Threads, []string{"a", "keeper"}) || setErr != nil || clearErr != nil || !cleared {
+					t.Fatalf("copy %v, set %v, clear %v %v; want every write to land", moved.Threads, setErr, cleared, clearErr)
 				}
 				return
 			}
-			if len(seen) != 0 || !c.refused(setErr) || !c.refused(clearErr) || cleared {
-				t.Fatalf("seen %v, set %v, clear %v %v; want each refused", seen, setErr, cleared, clearErr)
+			if !slices.Equal(moved.Threads, []string{"keeper"}) || !c.refused(setErr) || !c.refused(clearErr) || cleared {
+				t.Fatalf("copy %v, set %v, clear %v %v; want each refused", moved.Threads, setErr, cleared, clearErr)
 			}
-			if link, ok := storedTicket(t, s, "a"); !ok || link != webLink("a") {
-				t.Fatalf("stored link = %+v, %v; want it untouched", link, ok)
+			if link, ok := storedTicket(t, s, "a"); !ok || link != linked {
+				t.Fatalf("stored link = %+v, %v; want it untouched %+v", link, ok, linked)
 			}
 		})
 	}
@@ -125,16 +134,18 @@ func TestThreadTicketReadsKeepOwnedThreads(t *testing.T) {
 			s := newTestStore(t)
 			mustCreateThread(t, s, "a")
 			mustCreateThread(t, s, "b")
-			mustSetThreadTicket(t, s, webLink("a"), true)
-			mustSetThreadTicket(t, s, webLink("b"), true)
+			mustExec(t, s.db, `UPDATE threads SET updated_at = 1 WHERE id = 'a'`)
+			mustExec(t, s.db, `UPDATE threads SET updated_at = 2 WHERE id = 'b'`)
+			seedThreadTicket(t, s, webLink("a"))
+			seedThreadTicket(t, s, webLink("b"))
 			c.state.enter(t, s, "a")
 
-			want := []ThreadTicket{webLink("b")}
+			want := []string{"b"}
 			if c.owned {
-				want = []ThreadTicket{webLink("a"), webLink("b")}
+				want = []string{"b", "a"}
 			}
-			if links, err := s.ListThreadsForTicket(webTicket); err != nil || !slices.Equal(links, want) {
-				t.Fatalf("threads of the ticket = %+v, %v; want %+v", links, err, want)
+			if rows, err := s.ListThreadsForTicket(webTicket); err != nil || !slices.Equal(threadIDs(rows), want) {
+				t.Fatalf("threads of the ticket = %v, %v; want %v", threadIDs(rows), err, want)
 			}
 			if _, ok, err := s.GetThreadTicket("a"); err != nil || ok != c.owned {
 				t.Fatalf("get = %v, %v; want %v", ok, err, c.owned)
@@ -151,25 +162,34 @@ func TestThreadTicketReadsKeepOwnedThreads(t *testing.T) {
 // it.
 func TestThreadTicketSkipsHolders(t *testing.T) {
 	t.Parallel()
-	s := newTestStore(t)
+	s, _, root := newMirror(t)
 	seedLinearSource(t, s, "S", 1)
 	mustPointerFork(t, s, "S", "F", ForkCut{})
 	if err := s.DeleteThread("S"); err != nil {
 		t.Fatal(err)
 	}
 	// A row no writer leaves on a holder, to prove every path skips one.
-	mustExec(t, s.db, `INSERT INTO thread_tickets(`+threadTicketColumns+`) VALUES ('S','jira','https://example.atlassian.net','10001','WEB-1','','manual',1)`)
+	seedThreadTicket(t, s, webLink("S"))
+	// A live thread keeps the card, so the card write reaches the links.
+	linkIssue(t, s, "live", "10001")
 
-	if seen, err := s.RecordTicketSeen(webTicket, "APP-3", "Moved"); err != nil || len(seen) != 0 {
-		t.Fatalf("seen = %v, %v; want the holder skipped", seen, err)
+	moved, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{titledCard("10001", 5, "Moved")}, MirrorCatalog{}, nextMirrorRead(s, root))
+	if err != nil || !slices.Equal(moved.Threads, []string{"live"}) {
+		t.Fatalf("card write reached %v, %v; want only the live thread", moved.Threads, err)
 	}
-	if links, err := s.ListThreadsForTicket(webTicket); err != nil || len(links) != 0 {
-		t.Fatalf("threads of the ticket = %+v, %v", links, err)
+	if got, _ := storedTicket(t, s, "S"); got != webLink("S") {
+		t.Fatalf("holder row = %+v; want it untouched", got)
+	}
+	if rows, err := s.ListThreadsForTicket(webTicket); err != nil || !slices.Equal(threadIDs(rows), []string{"live"}) {
+		t.Fatalf("threads of the ticket = %v, %v", threadIDs(rows), err)
 	}
 	if _, ok, err := s.GetThreadTicket("S"); err != nil || ok {
 		t.Fatalf("get = %v, %v", ok, err)
 	}
-	if _, err := s.SetThreadTicket(webLink("S")); !errors.Is(err, ErrInvalidThreadTicket) {
+	if got, err := s.ListThreadsLinkedToSite(TrackerKindJira, mirrorSite); err != nil || !slices.Equal(got, []string{"live"}) {
+		t.Fatalf("threads of the site = %v, %v", got, err)
+	}
+	if _, err := s.SetThreadTicket(readLink(s, root, "S", titledCard("10001", 5, "Moved"))); !errors.Is(err, ErrInvalidThreadTicket) {
 		t.Fatalf("set on a holder: %v; want ErrInvalidThreadTicket", err)
 	}
 }

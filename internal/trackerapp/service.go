@@ -28,9 +28,17 @@ type Store interface {
 	SetTrackerConnectionTokenExpiry(id string, expiresAt int64) (store.TrackerConnection, bool, error)
 	RecordTrackerConnectionVerification(id string, v store.TrackerVerification) (store.TrackerConnection, bool, error)
 	DeleteTrackerConnection(id string) ([]string, error)
-	ListProjectTrackerBoards(projectID string) ([]store.ProjectTrackerBoard, error)
-	ReplaceProjectTrackerBoards(projectID string, boards []store.ProjectTrackerBoard) (bool, store.TrackerBoardListing, error)
+	ProjectTrackerBoardListed(projectID, connectionID, boardID string) (string, bool, error)
+	GetProject(id string) (store.Project, error)
+	ListTrackerBoardChoices(projectID string) ([]store.TrackerBoardChoice, error)
+	ReplaceProjectTrackerBoards(projectID string, held []store.HeldTrackerBoard, boards []store.ProjectTrackerBoard) (bool, store.TrackerBoardListing, error)
 	ReadyTrackerBoards(ctx context.Context, boards []store.TrackerBoardRef) error
+
+	TicketConnection(ticket store.TicketRef) (string, string, error)
+	SetThreadTicket(w store.ThreadTicketWrite) (store.ThreadTicketSet, error)
+	ClearThreadTicket(threadID string) (store.TicketRef, bool, error)
+	ListThreadsLinkedToSite(kind, site string) ([]string, error)
+	ListUnkeptLinkedIssues(tickets []store.TicketRef) ([]store.MirrorIssueRef, error)
 }
 
 // Deps are the service's capabilities. Every field is required but
@@ -44,6 +52,12 @@ type Deps struct {
 	// CredentialsDir is the owner-only folder the key files live in
 	// (keyfile.DirName under the app's config folder).
 	CredentialsDir string
+	// ConfigDir is the app's config folder, whose project directories
+	// (project.ConfigDir) hold each project's tracker setup file.
+	ConfigDir string
+	// SetupChanged is told after every change of a project's tracker
+	// setup as it is stored (setup.go). It must not block.
+	SetupChanged func()
 	// Origin says where a connection's client connects.
 	Origin Origin
 	// Version is the app version the clients send in their User-Agent.
@@ -68,6 +82,11 @@ type Deps struct {
 	// cleanup, a linked-issues tick that failed outside the tracker),
 	// which the loop also logs and survives. It must not block.
 	LoopFailed func(error)
+	// LinksChanged is told the threads whose ticket link a write of the
+	// service moved, or whose link a connection's change moves (what it
+	// shows, or whether it is current), so their rows are sent again. It
+	// must not block.
+	LinksChanged func(threadIDs []string)
 	// Cadence is the sync intervals; its zero value is production's.
 	Cadence Cadence
 }
@@ -95,6 +114,8 @@ type Service struct {
 	store          Store
 	changed        func()
 	credentialsDir string
+	configDir      string
+	setupChanged   func()
 	origin         Origin
 	version        string
 	now            func() time.Time
@@ -113,9 +134,12 @@ type Service struct {
 	// with life alone: one that Stop meets answers what it did.
 	halting context.Context
 	endHalt context.CancelFunc
-	// digestKey keys the token digests the credential sources keep. It is
-	// random per service and never leaves it.
-	digestKey []byte
+
+	// setupMu guards setups, each used project's tracker setup by slug
+	// (setup.go). It is held across the setup file's read and write and
+	// never with another of the service's locks.
+	setupMu sync.Mutex
+	setups  map[string]*heldSetup
 
 	// opMu serializes every change to a connection, from its first store
 	// read to its last write. It is never held across a tracker call.
@@ -136,7 +160,7 @@ type Service struct {
 	clients map[string]*clients
 	// problems holds the last failure of each connection turned on; a
 	// connection that stops being used forgets its own.
-	problems map[string]Failure
+	problems map[string]Problem
 	stopped  bool
 	inflight sync.WaitGroup
 	// locks are the scope and history locks of the ticks in flight
@@ -150,6 +174,10 @@ type Service struct {
 	// beforePublish, set only by tests, runs in settle between its record
 	// and the publication, where Stop may overtake a settlement.
 	beforePublish func()
+	// afterIdentity, set only by tests, runs in Verify between its
+	// tracker call and its settlement, where other calls may change the
+	// token the client holds.
+	afterIdentity func()
 	// makeProvider builds the provider of a connection in use from its
 	// client; tests replace it with a scripted provider.
 	makeProvider func(row store.TrackerConnection, c *clients, tempo *clients) (tracker.Provider, error)
@@ -159,6 +187,7 @@ type Service struct {
 	settled         func(context.Context) error
 	clientConnected func() bool
 	loopFailed      func(error)
+	linksChanged    func([]string)
 	cadence         Cadence
 	// digestSeed keys the digests an open ticket keeps of the view it last
 	// published (ticketPump.digest).
@@ -195,31 +224,32 @@ func New(deps Deps) (*Service, error) {
 	switch {
 	case deps.Store == nil, deps.Changed == nil, deps.Origin == nil, deps.Now == nil, deps.Life == nil:
 		return nil, errors.New("trackerapp: Deps needs Store, Changed, Origin, Now and Life")
-	case deps.EmitBoard == nil, deps.EmitIssue == nil, deps.Settled == nil, deps.ClientConnected == nil, deps.LoopFailed == nil:
-		return nil, errors.New("trackerapp: Deps needs EmitBoard, EmitIssue, Settled, ClientConnected and LoopFailed")
-	case deps.CredentialsDir == "":
-		return nil, errors.New("trackerapp: Deps.CredentialsDir is required")
+	case deps.EmitBoard == nil, deps.EmitIssue == nil, deps.Settled == nil, deps.ClientConnected == nil, deps.LoopFailed == nil,
+		deps.LinksChanged == nil:
+		return nil, errors.New("trackerapp: Deps needs EmitBoard, EmitIssue, Settled, ClientConnected, LoopFailed and LinksChanged")
+	case deps.CredentialsDir == "", deps.ConfigDir == "":
+		return nil, errors.New("trackerapp: Deps needs CredentialsDir and ConfigDir")
+	case deps.SetupChanged == nil:
+		return nil, errors.New("trackerapp: Deps.SetupChanged is required")
 	case deps.Version == "":
 		return nil, errors.New("trackerapp: Deps.Version is required for the clients' User-Agent")
 	}
-	key := make([]byte, 32)
-	_, _ = rand.Read(key) // crypto/rand.Read never fails; it crashes instead
 	var session [8]byte
-	_, _ = rand.Read(session[:])
+	_, _ = rand.Read(session[:]) // crypto/rand.Read never fails; it crashes instead
 	// time.Since reads the monotonic clock of mono, which deps.Now's value
 	// may not carry.
 	mono, wall := time.Now(), deps.Now()
 	halting, endHalt := context.WithCancel(deps.Life)
 	s := &Service{
-		store: deps.Store, changed: deps.Changed, credentialsDir: deps.CredentialsDir,
+		store: deps.Store, changed: deps.Changed, credentialsDir: deps.CredentialsDir, configDir: deps.ConfigDir,
+		setupChanged: deps.SetupChanged, setups: map[string]*heldSetup{},
 		origin: deps.Origin, version: deps.Version, now: deps.Now, life: deps.Life, halting: halting, endHalt: endHalt,
 		steady: func() time.Time { return wall.Add(time.Since(mono)) }, steadyFrom: wall.UnixMilli(),
-		digestKey: key,
-		clients:   map[string]*clients{}, problems: map[string]Failure{},
+		clients: map[string]*clients{}, problems: map[string]Problem{},
 		locks: map[lockKey]*scopeLock{}, holds: map[string]*connHold{},
 		logf:      log.Printf,
 		emitBoard: deps.EmitBoard, emitIssue: deps.EmitIssue, settled: deps.Settled,
-		clientConnected: deps.ClientConnected, loopFailed: deps.LoopFailed, cadence: deps.Cadence.withDefaults(),
+		clientConnected: deps.ClientConnected, loopFailed: deps.LoopFailed, linksChanged: deps.LinksChanged, cadence: deps.Cadence.withDefaults(),
 		digestSeed: maphash.MakeSeed(), session: int64(binary.LittleEndian.Uint64(session[:]) >> 1),
 	}
 	s.makeProvider = func(row store.TrackerConnection, c, tempo *clients) (tracker.Provider, error) {
@@ -336,29 +366,48 @@ func (s *Service) get(id string) (store.TrackerConnection, error) {
 }
 
 // Connection is a connection as the service shows it: the row, where its
-// key file is and the file's state, and its last problem. Never the
-// token.
+// key file is and the file's state, whether the last verification checked
+// the token in the file now, and its last problem. Never the token.
 type Connection struct {
 	store.TrackerConnection
 	KeyFilePath string
 	KeyFile     keyfile.Status
+	// CheckedTokenInFile is true while the key file holds the token the
+	// row's verification checked.
+	CheckedTokenInFile bool
 	// Problem is the connection's last failure; nil when its last call
 	// succeeded, or none failed since it was last turned on.
-	Problem *Failure
+	Problem *Problem
 }
 
 // view is row as Connection, its key file inspected now.
 func (s *Service) view(row store.TrackerConnection) Connection {
-	token, err := readToken(s.keyFile(row), row.Kind)
-	token.Zero()
-	return s.viewWith(row, keyfile.StatusOf(err))
+	file, found := s.readKeyFile(row)
+	return s.viewWith(row, file, found)
 }
 
-// viewWith is row as Connection with its key file in state file.
-func (s *Service) viewWith(row store.TrackerConnection, file keyfile.Status) Connection {
-	v := Connection{TrackerConnection: row, KeyFilePath: s.keyFilePath(row.ID), KeyFile: file}
+// readKeyFile reads row's key file once: its state, and the digest of the
+// token it holds (zero when it holds none).
+func (s *Service) readKeyFile(row store.TrackerConnection) (keyfile.Status, store.TrackerTokenDigest) {
+	token, err := readToken(s.keyFile(row), row.Kind)
+	var found store.TrackerTokenDigest
+	if err == nil {
+		found = tokenDigest(row.ID, token.Reveal())
+	}
+	token.Zero()
+	return keyfile.StatusOf(err), found
+}
+
+// viewWith is row as Connection with its key file in state file, holding
+// the token found names (zero for none). Evidence counts for the token in
+// the file only while the file holds the token it is about: the
+// verification while found is the token it checked, the problem by its
+// evidence (Problem.Current).
+func (s *Service) viewWith(row store.TrackerConnection, file keyfile.Status, found store.TrackerTokenDigest) Connection {
+	v := Connection{TrackerConnection: row, KeyFilePath: s.keyFilePath(row.ID), KeyFile: file, CheckedTokenInFile: sameToken(row.VerifiedToken, found)}
 	s.mu.Lock()
 	if p, ok := s.problems[row.ID]; ok {
+		p.Current = p.about.currentFor(found)
 		v.Problem = &p
 	}
 	s.mu.Unlock()
@@ -369,15 +418,14 @@ func (s *Service) viewWith(row store.TrackerConnection, file keyfile.Status) Con
 // tells the connection's client, when it is in use, whether the token in
 // the file is still the one it was handed (clients.syncCredential).
 func (s *Service) look(row store.TrackerConnection) Connection {
-	token, err := readToken(s.keyFile(row), row.Kind)
+	file, found := s.readKeyFile(row)
 	s.mu.Lock()
 	c := s.clients[row.ID]
 	s.mu.Unlock()
 	if c != nil {
-		c.syncCredential(token.Reveal())
+		c.syncCredential(found)
 	}
-	token.Zero()
-	return s.viewWith(row, keyfile.StatusOf(err))
+	return s.viewWith(row, file, found)
 }
 
 // Connections lists every connection in the order they were made. A
@@ -401,27 +449,57 @@ func (s *Service) Connections() ([]Connection, error) {
 
 // stamp is when a call on a connection began: the client it was made with
 // and its place among the calls begun on that client, which orders the
-// call's outcome against theirs (settle). The zero stamp is a failure to
+// call's outcome against theirs (settle), and the client's count of token
+// changes then (keyFileSource.changes), against which settle tells a
+// token that changed during the call. The zero stamp is a failure to
 // start using the connection at all.
 type stamp struct {
-	c   *clients
-	gen uint64
+	c       *clients
+	gen     uint64
+	changes uint64
 }
 
 // begin stamps a call about to be made with c, the client of a
 // connection in use.
 func (s *Service) begin(c *clients) stamp {
+	changes := c.source.changeCount()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c.gen++
-	return stamp{c: c, gen: c.gen}
+	return stamp{c: c, gen: c.gen, changes: changes}
+}
+
+// evidenceOf is what the outcome of the call begun at at, with callErr,
+// is about. An outcome is about token T only when every request of its
+// call carried T: a key file that gave no token; no token, for a call
+// with no client or one whose client was handed none; a changed token,
+// when the token the client may send changed since at (either could have
+// answered, even on a client that held none at the start); otherwise the
+// one token the client was handed.
+func evidenceOf(at stamp, callErr error) evidence {
+	if _, ok := errors.AsType[*KeyFileError](callErr); ok {
+		return evidence{kind: aboutKeyFile}
+	}
+	if at.c == nil {
+		return evidence{kind: aboutNoToken}
+	}
+	held, kept := at.c.source.heldSince(at.changes)
+	switch {
+	case !kept:
+		return evidence{kind: aboutChangedToken}
+	case held.Known():
+		return evidence{kind: aboutToken, token: held}
+	}
+	return evidence{kind: aboutNoToken}
 }
 
 // settle is the one place a connection's problem is set or cleared: the
 // outcome of the call on connection id, of kind, that began at at.
 // callErr nil is a success, which clears the problem; record, when not
-// nil, runs first and its error stops the settlement (a verification's
-// row write). A failure becomes the problem as ClassifyFailure sorts it.
+// nil, runs first with the token the call used (zero when it is not
+// known, evidenceOf) and its error stops the settlement (a
+// verification's row write). A failure becomes the problem as
+// ClassifyFailure sorts it, bound to what it is about (evidenceOf).
 //
 // An outcome is applied unless its client is no longer the connection's
 // (the connection stopped being used, or Stop) or the outcome of a call
@@ -436,9 +514,10 @@ func (s *Service) begin(c *clients) stamp {
 //
 // changed reports that what a list of connections shows moved: the
 // problem started, changed or cleared, or record wrote. A success that
-// finds no problem, and a failure the same as the one held, change
+// finds no problem, and the same failure about the same token, change
 // nothing, so a poll that keeps succeeding tells no one.
-func (s *Service) settle(id, kind string, at stamp, callErr error, record func() error) (applied, changed bool, _ error) {
+func (s *Service) settle(id, kind string, at stamp, callErr error, record func(verified store.TrackerTokenDigest) error) (applied, changed bool, _ error) {
+	about := evidenceOf(at, callErr)
 	s.mu.Lock()
 	applies, err := s.appliesLocked(id, at)
 	s.mu.Unlock()
@@ -447,7 +526,11 @@ func (s *Service) settle(id, kind string, at stamp, callErr error, record func()
 	}
 	recorded := false
 	if callErr == nil && record != nil {
-		if err := record(); err != nil {
+		var verified store.TrackerTokenDigest
+		if about.kind == aboutToken {
+			verified = about.token
+		}
+		if err := record(verified); err != nil {
 			return false, false, err
 		}
 		recorded = true
@@ -467,9 +550,9 @@ func (s *Service) settle(id, kind string, at stamp, callErr error, record func()
 	}
 	held, had := s.problems[id]
 	if callErr != nil {
-		f := ClassifyFailure(kind, callErr)
-		s.problems[id] = f
-		return true, recorded || !had || held != f, nil
+		p := Problem{Failure: ClassifyFailure(kind, callErr), about: about}
+		s.problems[id] = p
+		return true, recorded || !had || held != p, nil
 	}
 	delete(s.problems, id)
 	return true, recorded || had, nil

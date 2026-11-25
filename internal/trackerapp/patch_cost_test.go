@@ -25,12 +25,12 @@ func TestOneRowChangeCost(t *testing.T) {
 	rows := realisticRows(0, readBatch, at)
 	m.tracks(rows)
 	sections := []Section{{Kind: SectionSprint, Sprint: "1"}, {Kind: SectionBacklog}, {Kind: SectionColumn}}
-	if _, err := m.svc.SubscribeBoard(m.project(), scope, sections, untied); err != nil {
+	if _, err := m.svc.SubscribeBoard(m.project(), scope, sections, true, untied); err != nil {
 		t.Fatal(err)
 	}
 	first := len(m.events.boardEvents(t, 1))
 	// The client holds the totals of the board it read.
-	v := must[BoardView](t)(m.svc.Board(scope, sections))
+	v := must[BoardView](t)(m.svc.Board(scope, StatusGroups{}, sections))
 	held := TotalsAt{Lifetime: v.Lifetime, Revision: v.TotalsRevision}
 
 	changed := slices.Clone(rows)
@@ -47,7 +47,7 @@ func TestOneRowChangeCost(t *testing.T) {
 	}
 
 	cs.take()
-	patch := must[BoardPatch](t)(m.svc.BoardPatch(scope, sections, ev.Changed, held))
+	patch := must[BoardPatch](t)(m.svc.BoardPatch(scope, StatusGroups{}, sections, ev.Changed, held))
 	if calls, want := cs.take(), map[string]int{"GetMirrorRoot": 1, "ReadMirrorBoardPatch": 1}; !maps.Equal(calls, want) {
 		t.Fatalf("a patch read made %s; pinned %s", describeCounts(calls), describeCounts(want))
 	}
@@ -58,7 +58,7 @@ func TestOneRowChangeCost(t *testing.T) {
 	if patch.Totals != nil {
 		t.Fatalf("a title change's patch has totals %+v", patch.Totals)
 	}
-	totals := must[BoardPatch](t)(m.svc.BoardPatch(scope, sections, ev.Changed, TotalsAt{}))
+	totals := must[BoardPatch](t)(m.svc.BoardPatch(scope, StatusGroups{}, sections, ev.Changed, TotalsAt{}))
 	sizes := map[string]int{"event": len(must[[]byte](t)(json.Marshal(ev))), "patch": len(must[[]byte](t)(json.Marshal(patch))),
 		"patch with totals": len(must[[]byte](t)(json.Marshal(totals)))}
 	t.Logf("one-row change bytes: %s", describeCounts(sizes))

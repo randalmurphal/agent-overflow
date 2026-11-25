@@ -302,6 +302,7 @@ func (s *Service) staleView(kind string, resources []ResourceView, err error) St
 	at := millis(s.now())
 	var c *callError
 	var fe *failureError
+	var refused *requestRefused
 	switch {
 	case errors.Is(err, context.Canceled):
 		// The write's caller went away, or the service stopped, before the
@@ -309,6 +310,8 @@ func (s *Service) staleView(kind string, resources []ResourceView, err error) St
 		return StaleView{Resources: resources, Failure: FailureView{Kind: string(FailureTransient), Message: refreshStopped, At: at}}
 	case errors.As(err, &fe):
 		return StaleView{Resources: resources, Failure: FailureView{Kind: string(fe.f.Kind), Message: fe.f.Message, At: at}}
+	case errors.As(err, &refused):
+		return StaleView{Resources: resources, Failure: FailureView{Kind: string(refused.f.Kind), Message: refused.f.Message, At: at}}
 	case errors.As(err, &c):
 		f := ClassifyFailure(kind, c.err)
 		return StaleView{Resources: resources, Failure: FailureView{Kind: string(f.Kind), Message: f.Message, At: at}}

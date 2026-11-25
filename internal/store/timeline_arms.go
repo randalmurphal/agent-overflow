@@ -118,8 +118,8 @@ type timelineSelection struct {
 	FilterCut bool
 
 	// Turn, when non-empty, pins the selection to one turn, or with
-	// FromTurn to that turn and every later one. It is an SQL
-	// expression, "?" or an outer query's column, and TurnArgs are its
+	// FromTurn to that turn and every later one. It is an SQL expression,
+	// boundInt, a numbered intParam or an outer query's column, and TurnArgs are its
 	// bind values, emitted at each place the expression is rendered. The
 	// imported arms read only the chunk references whose turn range can
 	// hold such a turn (importedTurnRange), so a turn past
@@ -136,10 +136,11 @@ type timelineSelection struct {
 	TurnArgs []any
 	FromTurn bool
 
-	// Thread, when non-empty, is an outer query's column that names the
-	// thread, for a selection correlated per outer row. It replaces the
-	// bound thread id; such a selection renders through
-	// correlatedTimelineArms.
+	// Thread, when non-empty, is the SQL expression that names the thread
+	// in place of a bound thread id: an outer query's column, for a
+	// selection correlated per outer row, which renders through
+	// correlatedTimelineArms, or a numbered parameter of a text that is
+	// the same for every thread (turnItemIndexSQL).
 	Thread string
 
 	// Where is the arm predicate, qualified with the `items.` alias and
@@ -176,9 +177,9 @@ type timelineSelection struct {
 	RowIDs bool
 }
 
-// everyLineageLevel renders a fork's lineage as one pair of arms that reads
-// every level. It is the correlated form: the outer row's thread, and so
-// its depth, is not known when the SQL is written.
+// everyLineageLevel is the depth of a correlated selection: the outer
+// row's thread, and so its depth, is not known when the SQL is written, and
+// one pair of arms reads every level.
 const everyLineageLevel = -1
 
 // timelineArms renders sel as the UNION ALL of every physical source of
@@ -200,18 +201,25 @@ const everyLineageLevel = -1
 // arms. The arms join the lineage rows themselves, so a depth read in an
 // earlier snapshot can only add a level that returns nothing.
 func timelineArms(q sqlQueryer, threadID string, sel timelineSelection) (string, []any, error) {
+	arms, err := timelineArmsSelection(q, threadID, sel)
+	return arms.sql, arms.args, err
+}
+
+// timelineArmsSelection is timelineArms with whether it rendered a pair of
+// arms per lineage level (idSelection.perLevel).
+func timelineArmsSelection(q sqlQueryer, threadID string, sel timelineSelection) (idSelection, error) {
 	if sel.Thread != "" {
-		return "", nil, fmt.Errorf("store: timeline selection correlated on %s renders through correlatedTimelineArms", sel.Thread)
+		return idSelection{}, fmt.Errorf("store: timeline selection correlated on %s renders through correlatedTimelineArms", sel.Thread)
 	}
 	if sel.Limit < 0 {
-		return "", nil, fmt.Errorf("store: timeline selection limit %d for %s is negative", sel.Limit, threadID)
+		return idSelection{}, fmt.Errorf("store: timeline selection limit %d for %s is negative", sel.Limit, threadID)
 	}
 	depth, err := forkLineageDepth(q, threadID)
 	if err != nil {
-		return "", nil, err
+		return idSelection{}, err
 	}
 	sql, args := renderTimelineArms(threadID, depth, sel)
-	return sql, args, nil
+	return idSelection{sql: sql, args: args, perLevel: perLevelLineage(depth, sel)}, nil
 }
 
 // correlatedTimelineArms renders a selection correlated on sel.Thread. Every
@@ -222,23 +230,42 @@ func correlatedTimelineArms(sel timelineSelection) (string, []any) {
 	return renderTimelineArms("", everyLineageLevel, sel)
 }
 
-// renderTimelineArms renders sel with levels lineage levels, or with
-// everyLineageLevel as one pair over all of them.
-func renderTimelineArms(threadID string, levels int, sel timelineSelection) (string, []any) {
+// renderTimelineArms renders sel for a thread whose lineage is depth levels
+// deep, or with everyLineageLevel for any depth.
+//
+// A thread that is not a fork renders its own arms. An ordered selection
+// (OrderBy or Limit) of a fork renders a pair of arms per level: a nearer
+// level can hold rows that replace inherited ones at the same positions,
+// so one arm per level stays ordered by its own index, the lineage probe
+// is a one-row primary key lookup, and the compound merges them instead of
+// sorting every inherited row. Any other selection of a fork renders one
+// pair over every level, whose rows are the same.
+//
+// The per-level statement grows with depth, about 25 cursors a level, and
+// SQLite 3.54 refuses a CTE reference expanded once a statement holds 1000
+// cursors (select.c withExpand). So a per-level selection holds no CTE
+// reference and runs as its own statement, never inside another
+// (idSelection.perLevel); every other statement keeps one text at every
+// depth (TestForkReadsKeepTheirShapeAtEveryDepth).
+func renderTimelineArms(threadID string, depth int, sel timelineSelection) (string, []any) {
 	r := newArmRenderer(threadID, sel)
 	r.ownArms()
-	if levels == everyLineageLevel {
+	switch {
+	case depth == 0:
+	case perLevelLineage(depth, sel):
+		for level := 1; level <= depth; level++ {
+			r.lineageArms("\n		   AND l.depth = " + strconv.Itoa(level))
+		}
+	default:
 		r.lineageArms("")
 	}
-	// With a literal depth each level is its own pair, because a nearer
-	// level can hold rows that replace inherited ones at the same
-	// positions: one arm per level stays ordered by its own index, the
-	// lineage probe is a one-row primary key lookup, and the compound
-	// merges them.
-	for level := 1; level <= levels; level++ {
-		r.lineageArms("\n		   AND l.depth = " + strconv.Itoa(level))
-	}
 	return r.finish()
+}
+
+// perLevelLineage reports whether renderTimelineArms renders sel for a
+// thread depth levels deep with a pair of arms per level.
+func perLevelLineage(depth int, sel timelineSelection) bool {
+	return depth > 0 && (sel.OrderBy != "" || sel.Limit > 0)
 }
 
 // inheritedTimelineArms renders only sel's lineage arms for threadID: the
@@ -281,7 +308,12 @@ type armRenderer struct {
 }
 
 func newArmRenderer(threadID string, sel timelineSelection) *armRenderer {
-	r := &armRenderer{sel: sel, thread: "?"}
+	// The thread id is bound where the planner cannot read it. A pair of
+	// arms per level binds it again per arm, and SQLite keeps one mark for
+	// every parameter from the 32nd on: a read one there would expire the
+	// statement whenever any integer from the 32nd on moves between 0 or 1
+	// and another value (sql_rebind_test.go).
+	r := &armRenderer{sel: sel, thread: boundText}
 	if sel.Thread != "" {
 		r.thread = sel.Thread
 	} else {
@@ -485,6 +517,9 @@ func importedTurnRange(turn string) string {
 	return "refs.max_turn_index >= " + turn + " AND refs.min_turn_index <= " + turn
 }
 
+// forkLineageDepthSQL reads how many ancestor levels a thread reads.
+const forkLineageDepthSQL = `SELECT COALESCE(MAX(depth), 0) FROM thread_fork_lineage WHERE thread_id = ?`
+
 // forkLineageDepth is the number of ancestor levels threadID reads
 // through: zero for every thread that is not a pointer fork.
 func forkLineageDepth(q sqlQueryer, threadID string) (int, error) {
@@ -494,9 +529,7 @@ func forkLineageDepth(q sqlQueryer, threadID string) (int, error) {
 		}
 	}
 	var depth int
-	if err := q.QueryRow(
-		`SELECT COALESCE(MAX(depth), 0) FROM thread_fork_lineage WHERE thread_id = ?`, threadID,
-	).Scan(&depth); err != nil {
+	if err := q.QueryRow(forkLineageDepthSQL, threadID).Scan(&depth); err != nil {
 		return 0, fmt.Errorf("store: read fork lineage depth for %s: %w", threadID, err)
 	}
 	if crt, ok := q.(*contextReadTx); ok {
@@ -518,18 +551,19 @@ func timelineIDColumns(string, string) string {
 
 // timelineIDSelection is the whole shape of an ordered, limited id page:
 // the compound wrapped so it presents one `id` column.
-func timelineIDSelection(q sqlQueryer, threadID string, sel timelineSelection) (string, []any, error) {
+func timelineIDSelection(q sqlQueryer, threadID string, sel timelineSelection) (idSelection, error) {
 	sel.Columns = timelineIDColumns
-	sql, args, err := timelineArms(q, threadID, sel)
+	arms, err := timelineArmsSelection(q, threadID, sel)
 	if err != nil {
-		return "", nil, err
+		return idSelection{}, err
 	}
-	return "SELECT id FROM (\n" + sql + "\n)", args, nil
+	arms.sql = "SELECT id FROM (\n" + arms.sql + "\n)"
+	return arms, nil
 }
 
 // turnIDSelection selects the ids of one turn's logical rows.
-func turnIDSelection(q sqlQueryer, threadID string, turnIndex int) (string, []any, error) {
-	return timelineIDSelection(q, threadID, timelineSelection{Turn: "?", TurnArgs: []any{turnIndex}})
+func turnIDSelection(q sqlQueryer, threadID string, turnIndex int) (idSelection, error) {
+	return timelineIDSelection(q, threadID, timelineSelection{Turn: boundInt, TurnArgs: []any{turnIndex}})
 }
 
 // timelineKeyedIDSelection selects the ids of the few rows a key pins,
@@ -537,7 +571,7 @@ func turnIDSelection(q sqlQueryer, threadID string, turnIndex int) (string, []an
 // which must be positive. The materialized key rows are ordered
 // afterwards: ordering the arms themselves would invite the local arm to
 // walk its ordering index and test the key per row instead.
-func timelineKeyedIDSelection(q sqlQueryer, threadID string, project, where string, whereArgs []any, orderBy string, limit int) (string, []any, error) {
+func timelineKeyedIDSelection(q sqlQueryer, threadID string, project, where string, whereArgs []any, orderBy string, limit int) (idSelection, error) {
 	return materializedIDSelection(q, threadID, timelineSelection{
 		Columns:   func(string, string) string { return "items.id AS id, " + project },
 		KeyFirst:  true,
@@ -552,36 +586,49 @@ func timelineKeyedIDSelection(q sqlQueryer, threadID string, project, where stri
 // the arm: ordering the arms would let the local arm walk its ordering
 // index and test the key per row. sel's projection names id and every
 // orderBy column; sel carries no ordering or limit of its own.
-func materializedIDSelection(q sqlQueryer, threadID string, sel timelineSelection, orderBy string, limit int) (string, []any, error) {
+func materializedIDSelection(q sqlQueryer, threadID string, sel timelineSelection, orderBy string, limit int) (idSelection, error) {
 	if limit <= 0 {
-		return "", nil, fmt.Errorf("store: materialized timeline selection limit %d for %s is not positive", limit, threadID)
+		return idSelection{}, fmt.Errorf("store: materialized timeline selection limit %d for %s is not positive", limit, threadID)
 	}
 	if sel.OrderBy != "" || sel.Limit != 0 {
-		return "", nil, fmt.Errorf("store: materialized timeline selection for %s orders its arms", threadID)
+		return idSelection{}, fmt.Errorf("store: materialized timeline selection for %s orders its arms", threadID)
 	}
 	sel.FilterCut = true
 	sql, args, err := timelineArms(q, threadID, sel)
 	if err != nil {
-		return "", nil, err
+		return idSelection{}, err
 	}
-	return "WITH keyed AS MATERIALIZED (\n" + sql + "\n) SELECT id FROM keyed ORDER BY " + orderBy + " LIMIT " + strconv.Itoa(limit), args, nil
+	return idSelection{sql: "WITH keyed AS MATERIALIZED (\n" + sql + "\n) SELECT id FROM keyed ORDER BY " + orderBy + " LIMIT " + strconv.Itoa(limit), args: args}, nil
 }
 
-// turnItemIndexQuery renders the MIN or MAX item_index of one turn's
-// logical rows; NULL when the turn has none. Each arm takes its own bound
-// and the compound the bound of those, so the local arm reads one entry
-// of its turn index instead of every row of the turn.
-func turnItemIndexQuery(q sqlQueryer, threadID string, turnIndex int, aggregate string) (string, []any, error) {
-	if aggregate != "MIN" && aggregate != "MAX" {
-		return "", nil, fmt.Errorf("store: turn item index aggregate %q for %s is not MIN or MAX", aggregate, threadID)
+// The MIN and MAX item_index of one turn's logical rows, NULL when the turn
+// has none, bound to the thread (?1) and the turn (?2). Read them with
+// turnItemIndexBound.
+var (
+	minTurnItemIndexSQL = turnItemIndexSQL("MIN")
+	maxTurnItemIndexSQL = turnItemIndexSQL("MAX")
+)
+
+// turnItemIndexSQL renders aggregate, MIN or MAX, of one turn's item_index
+// as one text for every thread and depth. Each arm takes its own bound, so
+// a local arm reads one entry of its turn index instead of every row of the
+// turn: the thread's own arms once, and the inherited arms once per lineage
+// level, correlated on the level so each reads one ancestor. A turn past a
+// level's cut reads nothing there.
+func turnItemIndexSQL(aggregate string) string {
+	sel := timelineSelection{
+		Columns: func(string, string) string { return aggregate + "(items.item_index) AS item_index" },
+		Thread:  textParam("?1"),
+		Turn:    intParam("?2"),
 	}
-	sql, args, err := timelineArms(q, threadID, timelineSelection{
-		Columns:  func(string, string) string { return aggregate + "(items.item_index) AS item_index" },
-		Turn:     "?",
-		TurnArgs: []any{turnIndex},
-	})
-	if err != nil {
-		return "", nil, err
-	}
-	return "SELECT " + aggregate + "(item_index) FROM (\n" + sql + "\n)", args, nil
+	own, _ := ownTimelineArms("", sel)
+	inherited, _ := inheritedTimelineArms("", "\n		   AND l.depth = lv.depth", sel)
+	return "SELECT " + aggregate + "(item_index) FROM (\n" + own + `
+		UNION ALL
+		SELECT (SELECT ` + aggregate + `(item_index) FROM (
+` + inherited + `
+		)) AS item_index
+		  FROM thread_fork_lineage lv
+		 WHERE lv.thread_id = ` + sel.Thread + `
+)`
 }

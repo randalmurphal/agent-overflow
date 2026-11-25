@@ -124,6 +124,15 @@ type IsolationConfig struct {
 	// settled request stays in an Agents listing. Zero keeps the product
 	// window.
 	AgentSettledWindow time.Duration
+	// TrackerPollInterval replaces a tracker connection's poll interval
+	// (trackerapp.JiraPollEvery, LinearPollEvery): a shown board's delta
+	// and the open tickets' round, the two cadences that interval sets, so
+	// a spec sees a change made in the fake tracker, or a hidden board's
+	// absence of reads, without waiting out ten seconds. Reconcile and
+	// structure ride the delta's tick at their own times, and the linked
+	// issues loop and the retry base are not the poll. Zero keeps the
+	// product interval.
+	TrackerPollInterval time.Duration
 	// OmitOwnerOps makes this computer answer agent_owner_op as a build
 	// before owner operations does, an unknown write call, so a paired
 	// spawner's archive or delete names it as running an older version.
@@ -157,6 +166,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 		a.trackerOriginOverride = refuseTrackerOrigin
 	}
 	a.prLookupRetryBase = config.PRLookupRetryBase
+	a.trackerCadence.Delta, a.trackerCadence.Ticket = config.TrackerPollInterval, config.TrackerPollInterval
 	a.preview.scanScope = isolatedScanScope(config.ScanScopePIDs)
 	a.downloadsIsolated = true
 	a.threadPollOverride = config.ThreadRequestPoll

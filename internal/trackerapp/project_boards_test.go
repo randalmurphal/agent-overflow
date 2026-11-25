@@ -22,6 +22,20 @@ func listedBoards(m *mirrorFixture, without tracker.BoardID) []ProjectBoard {
 	return out
 }
 
+// saveFromStored saves boards as a page that read the project's list just
+// before.
+func saveFromStored(m *mirrorFixture, boards []ProjectBoard) ([]BoardChoice, error) {
+	listed, err := m.svc.ProjectBoards(m.project())
+	if err != nil {
+		return nil, err
+	}
+	held := make([]BoardRef, len(listed))
+	for i, b := range listed {
+		held[i] = BoardRef{Connection: b.Connection, Board: b.Board, OpensFirst: b.OpensFirst}
+	}
+	return m.svc.SetProjectBoards(m.project(), held, boards)
+}
+
 // loadedOrEnded waits for the first event of scope past seq that says the
 // board was read (ReadAgain) or ended, and reports which.
 func loadedOrEnded(t *testing.T, m *mirrorFixture, seq uint64) (ended bool) {
@@ -50,10 +64,10 @@ func TestABoardListedAgainOpensAndReads(t *testing.T) {
 		t.Fatal("the board ended before it was ever unlisted")
 	}
 	m.svc.ReleaseSubscription(first.ID)
-	if _, err := m.svc.SetProjectBoards(m.project(), listedBoards(m, testBoard)); err != nil {
+	if _, err := saveFromStored(m, listedBoards(m, testBoard)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.svc.SetProjectBoards(m.project(), listedBoards(m, "")); err != nil {
+	if _, err := saveFromStored(m, listedBoards(m, "")); err != nil {
 		t.Fatal(err)
 	}
 	again := m.subscribe(t, testBoard)
@@ -73,7 +87,7 @@ func TestASaveThatUnlistsABoardEndsItsViews(t *testing.T) {
 			m := newMirrorFixture(t)
 			m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
 			ties := &tieLog{}
-			sub, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, ties.tie)
+			sub, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, true, ties.tie)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -85,14 +99,14 @@ func TestASaveThatUnlistsABoardEndsItsViews(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := m.svc.SetProjectBoards(m.project(), listedBoards(m, testBoard)); err != nil {
+			if _, err := saveFromStored(m, listedBoards(m, testBoard)); err != nil {
 				t.Fatal(err)
 			}
 			boards, _, _ := m.events.snapshot()
 			if !slices.ContainsFunc(boards, func(e BoardEvent) bool { return e.Scope == m.scope() && e.Ended }) {
 				t.Fatal("the save answered before the unlisted board's subscribers were told it ended")
 			}
-			if _, err := m.svc.SubscriptionBoard(sub.ID); !errors.Is(err, ErrUnknownSubscription) {
+			if _, _, err := m.svc.SubscriptionBoard(sub.ID); !errors.Is(err, ErrUnknownSubscription) {
 				t.Fatalf("the unlisted board's handle: %v", err)
 			}
 			if n := ties.untiedOf(sub.ID); n != 1 {
@@ -126,7 +140,7 @@ func TestASaveRunsNoCleanup(t *testing.T) {
 		{"a save that unlists", listedBoards(m, testBoard)},
 		{"a save that lists it again", listedBoards(m, "")},
 	} {
-		if _, err := m.svc.SetProjectBoards(m.project(), save.boards); err != nil {
+		if _, err := saveFromStored(m, save.boards); err != nil {
 			t.Fatalf("%s: %v", save.name, err)
 		}
 		if n := cleanups.calls.Load(); n != 0 {
@@ -155,14 +169,78 @@ func TestASaveSaysTheReadyingFailed(t *testing.T) {
 		t.Fatal("the board ended before it was unlisted")
 	}
 	m.svc.store = readyFails{m.st}
-	if _, err := m.svc.SetProjectBoards(m.project(), listedBoards(m, testBoard)); err != nil {
+	if _, err := saveFromStored(m, listedBoards(m, testBoard)); err != nil {
 		t.Fatalf("a save that unlists: %v", err)
 	}
-	_, err := m.svc.SetProjectBoards(m.project(), listedBoards(m, ""))
+	_, err := saveFromStored(m, listedBoards(m, ""))
 	if err == nil || !strings.Contains(err.Error(), "readying the boards it listed again failed") {
 		t.Fatalf("a save whose readying failed = %v", err)
 	}
 	if got, err := m.svc.ProjectBoards(m.project()); err != nil || len(got) != len(testBoards) {
 		t.Fatalf("the list after a failed readying = %+v, %v", got, err)
+	}
+}
+
+// A save answers the list as ProjectBoards reads it: each board named as
+// the picker showed it when it was added, until this computer reads the
+// board, with its connection; a read needs its project.
+func TestProjectBoardsAreNamedAsTheyWereChosen(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	// The fixture lists the board unnamed; it is added again as chosen.
+	if _, err := saveFromStored(m, nil); err != nil {
+		t.Fatal(err)
+	}
+	boards := []ProjectBoard{{Connection: m.conn.ID, Board: string(testBoard), OpensFirst: true, Name: "WEB board", TrackerProject: "WEB"}}
+	want := []BoardChoice{{
+		Project: m.project(), Connection: m.conn.ID, ConnectionKind: m.conn.Kind, ConnectionLabel: m.conn.Label, ConnectionEnabled: true,
+		VerifiedAccount: m.conn.VerifiedAccountID, Board: string(testBoard), Name: "WEB board", TrackerProject: "WEB", OpensFirst: true,
+	}}
+	if got, err := saveFromStored(m, boards); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("SetProjectBoards = %+v, %v; want %+v", got, err, want)
+	}
+	if got, err := m.svc.ProjectBoards(m.project()); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("ProjectBoards = %+v, %v; want %+v", got, err, want)
+	}
+	if got, err := m.svc.BoardChoices(); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("BoardChoices = %+v, %v; want %+v", got, err, want)
+	}
+	if got, err := m.svc.ProjectBoards(""); !errors.Is(err, ErrProjectNotFound) {
+		t.Fatalf("ProjectBoards of no project = %+v, %v; want ErrProjectNotFound", got, err)
+	}
+	// An archived project's boards say so, in both reads.
+	if _, _, err := m.st.ArchiveProject(m.project()); err != nil {
+		t.Fatal(err)
+	}
+	want[0].ProjectArchived = true
+	if got, err := m.svc.BoardChoices(); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("BoardChoices of an archived project = %+v, %v; want %+v", got, err, want)
+	}
+	if got, err := m.svc.ProjectBoards(m.project()); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("ProjectBoards of an archived project = %+v, %v; want %+v", got, err, want)
+	}
+}
+
+// A save built from a list that is no longer the stored one is refused as
+// a change, and the stored list stays.
+func TestASaveFromAnOldListIsRefused(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	before, err := m.svc.ProjectBoards(m.project())
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := make([]BoardRef, len(before))
+	for i, b := range before {
+		held[i] = BoardRef{Connection: b.Connection, Board: b.Board, OpensFirst: b.OpensFirst}
+	}
+	if _, err := m.svc.SetProjectBoards(m.project(), held, listedBoards(m, testBoard)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.svc.SetProjectBoards(m.project(), held, listedBoards(m, "")); !errors.Is(err, ErrBoardsChanged) {
+		t.Fatalf("a save from the list before another save = %v; want ErrBoardsChanged", err)
+	}
+	if got, err := m.svc.ProjectBoards(m.project()); err != nil || len(got) != len(testBoards)-1 {
+		t.Fatalf("the list after the refused save = %+v, %v", got, err)
 	}
 }

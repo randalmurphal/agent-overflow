@@ -98,7 +98,7 @@ func newCrossFixture(t *testing.T) *crossFixture {
 		}
 	})
 	answerCardsFromDetails(m.p)
-	f.sub = must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001", untied))
+	f.sub = must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001", true, untied))
 	m.events.issueEvents(t, 1)
 	m.settledTickets(t)
 	quiet(t, m.svc)

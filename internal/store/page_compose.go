@@ -79,25 +79,13 @@ func (s *Store) composePagedUnits(q sqlQueryer, threadID string, units []pageUni
 // hydratePageItems resolves the page's shipped ids to rendered rows:
 // the full Item projection plus the read-time decorations (proposed-plan
 // state, subagent anchor aggregates) every frontend-bound window carries.
+// The ids bind as one JSON array (selectedIDsSQL), so a page of any length
+// runs one statement text, which each connection keeps compiled
+// (stmt_cache.go), and a page can name a couple of thousand rows.
 func (s *Store) hydratePageItems(q sqlQueryer, threadID string, ids []string) ([]Item, error) {
-	if len(ids) == 0 {
-		return []Item{}, nil
-	}
-	selectedSQL, selectedArgs, err := idListSelection(ids)
+	items, err := hydrateTimelineIDs(q, threadID, ids)
 	if err != nil {
 		return nil, err
 	}
-	return s.querySelectedPagedItems(q, threadID, selectedSQL, selectedArgs...)
-}
-
-// idListSelection renders an explicit id list as the single-column
-// selection the hydrators consume. The ids bind as one JSON array, so a page
-// of any length runs one statement text, which each connection keeps
-// compiled (stmt_cache.go), and a page can name a couple of thousand rows.
-func idListSelection(ids []string) (string, []any, error) {
-	list, err := jsonList(ids)
-	if err != nil {
-		return "", nil, err
-	}
-	return "SELECT value FROM json_each(?)", []any{list}, nil
+	return s.decoratePagedItems(q, threadID, items)
 }

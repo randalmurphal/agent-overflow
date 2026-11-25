@@ -33,7 +33,7 @@ func TestAChangedCardReachesEveryBoardShowingIt(t *testing.T) {
 			return e.Scope == other && slices.Equal(e.Changed, ids("10001"))
 		})
 	})
-	patch := must[BoardPatch](t)(m.svc.BoardPatch(other, []Section{{Kind: SectionBacklog}}, ids("10001"), TotalsAt{}))
+	patch := must[BoardPatch](t)(m.svc.BoardPatch(other, StatusGroups{}, []Section{{Kind: SectionBacklog}}, ids("10001"), TotalsAt{}))
 	if rows := patch.Sections[0].Rows; len(rows) != 1 || rows[0].Card.Title != "Renamed" {
 		t.Fatalf("board 2's patch: %+v", patch.Sections[0])
 	}
@@ -114,7 +114,7 @@ func TestRedeliveredRowsTellNothing(t *testing.T) {
 	})
 	m.subscribe(t, testBoard)
 	m.events.boardEvents(t, 1)
-	if _, err := m.svc.SubscribeTicket(m.conn.ID, rows[0].Card.ID, untied); err != nil {
+	if _, err := m.svc.SubscribeTicket(m.conn.ID, rows[0].Card.ID, true, untied); err != nil {
 		t.Fatal(err)
 	}
 	m.events.issueEvents(t, 1)

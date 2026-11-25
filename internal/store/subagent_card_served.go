@@ -34,7 +34,7 @@ SELECT refs.thread_id || '/' || imported.id FROM import_history_items imported
 // row back: its meta is the stored meta, without the keys a read serves
 // from the subagent stamps.
 func (s *Store) GetThreadItemForWrite(threadID, id string) (Item, bool, error) {
-	item, found, err := queryOneStoredTimelineItem(s.reader(), threadID, `SELECT ? AS id`, id)
+	item, found, err := queryOneStoredTimelineItem(s.reader(), threadID, fixedIDSelection(`SELECT ? AS id`, id))
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: get item for write %s on thread %s: %w", id, threadID, err)
 	}

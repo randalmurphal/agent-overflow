@@ -240,7 +240,7 @@ func TestAFirstSyncLongerThanATickListsTheBoardOnce(t *testing.T) {
 	if !maps.Equal(calls, want) {
 		t.Errorf("a first sync of %d rows in %d ticks called %s; want %s", n, ticks, describeCounts(calls), describeCounts(want))
 	}
-	if v := must[BoardView](t)(svc.Board(scope, nil)); v.All.Rows != n || v.Sync.ReconciledAt == 0 {
+	if v := must[BoardView](t)(svc.Board(scope, StatusGroups{}, nil)); v.All.Rows != n || v.Sync.ReconciledAt == 0 {
 		t.Errorf("the board holds %d rows of %d, reconciled at %d", v.All.Rows, n, v.Sync.ReconciledAt)
 	}
 }

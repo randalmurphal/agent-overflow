@@ -674,6 +674,27 @@ const STATIC_FIELDS = [
     keywords: ['merge request', 'glab', 'self-hosted'],
   },
 
+  // --- Issues -------------------------------------------------------------
+  {
+    id: 'tracker-connections.add',
+    section: 'tracker-connections',
+    label: 'Add a connection',
+    keywords: ['jira', 'linear', 'tempo', 'atlassian', 'tracker', 'issues', 'tickets', 'api token', 'api key', 'key file', 'time logging', 'worklog'],
+  },
+  {
+    id: 'tracker-boards.project',
+    section: 'tracker-boards',
+    label: 'Project',
+    hint: 'Choose the project whose boards to list.',
+  },
+  {
+    id: 'tracker-boards.boards',
+    section: 'tracker-boards',
+    label: 'Boards',
+    keywords: ['jira', 'linear', 'board', 'issues', 'tickets', 'sprint', 'order', 'opens first'],
+    conditional: true,
+  },
+
   // --- Voice --------------------------------------------------------------
   {
     id: 'voice.dictation',

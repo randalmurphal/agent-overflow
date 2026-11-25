@@ -55,6 +55,13 @@ var ErrTrackerCacheUnlisted = errors.New("store: no project lists the tracker bo
 // content again.
 var ErrTrackerCacheSwept = errors.New("store: tracker mirror swept issues since the read began; read it again")
 
+// ErrTrackerCacheSourceChanged is returned by ReplaceMirrorWorklogs for
+// worklogs read from a time source the root's connection no longer uses:
+// its Tempo connection was added, turned on or off, or removed since the
+// read's provider was made (migration v168). Nothing is stored; the
+// caller reads the days again.
+var ErrTrackerCacheSourceChanged = errors.New("store: the connection's time tracking changed since the worklogs were read")
+
 // ErrTrackerCacheStale is returned by ListMirrorSection for a continuation
 // read at another revision of the board than the page it continues: the
 // caller reads the section again from its start.
@@ -215,7 +222,7 @@ func (b mirrorBoard) structureDueAt() int64 {
 // mirrorPendingAtSQL is the latest pending mark of board ?2 of root ?1,
 // zero for none: one probe of the end of the pending index.
 const mirrorPendingAtSQL = `coalesce((SELECT max(p.named_at) FROM tracker_cache_board_unexplained p
-	    WHERE p.root_id = ?1 AND p.board_id = ?2 AND p.named_at > 0), 0)`
+	    WHERE p.root_id = CAST(?1 AS INTEGER) AND p.board_id = ?2 AND p.named_at > 0), 0)`
 
 // mirrorBoardWriteSQL reads, in one statement, whether a root is live,
 // whether some project lists the board through its connection, and the
@@ -224,9 +231,9 @@ const mirrorBoardWriteSQL = `SELECT r.connection_id IS NOT NULL,
 	  EXISTS (SELECT 1 FROM project_tracker_boards p WHERE p.connection_id = r.connection_id AND p.board_id = ?2),
 	  coalesce(b.retired, 1), coalesce(b.read_at, 0), coalesce(b.rows_removed_at, 0), coalesce(b.listing_read_at, 0), coalesce(b.estimate_reset_at, 0),
 	  ` + mirrorPendingAtSQL + `,
-	  EXISTS (SELECT 1 FROM tracker_cache_board_unexplained u WHERE u.root_id = ?1 AND u.board_id = ?2)
-	FROM tracker_cache_roots r LEFT JOIN tracker_cache_boards b ON b.root_id = r.id AND b.board_id = ?2 AND b.lifetime = ?3
-	WHERE r.id = ?1`
+	  EXISTS (SELECT 1 FROM tracker_cache_board_unexplained u WHERE u.root_id = CAST(?1 AS INTEGER) AND u.board_id = ?2)
+	FROM tracker_cache_roots r LEFT JOIN tracker_cache_boards b ON b.root_id = r.id AND b.board_id = ?2 AND b.lifetime = CAST(?3 AS INTEGER)
+	WHERE r.id = CAST(?1 AS INTEGER)`
 
 // mirrorBoardWrite runs fn in one write transaction for a write naming
 // lifetime of boardID: the root must be live (ErrTrackerCacheGone), some
@@ -282,14 +289,17 @@ func mirrorBoardShown(root, board string) string {
 }
 
 // mirrorLinksSQL is the FROM and WHERE of the links that keep issues in a
-// root's mirror: a thread this computer owns whose ticket names the root's
-// live connection's kind and site. link_ticket.issue_id is the issue.
+// root's mirror: a thread this computer owns whose ticket names the kind
+// and site of the root's live connection, when that connection is the
+// site's link reader (ticketSiteReaderSQL); another account of the site
+// keeps and polls no issue only a link names. link_ticket.issue_id is the
+// issue.
 func mirrorLinksSQL(root string) string {
 	return `tracker_cache_roots link_root
 	  JOIN tracker_connections link_conn ON link_conn.id = link_root.connection_id
 	  JOIN thread_tickets link_ticket ON link_ticket.kind = link_conn.kind AND link_ticket.site = link_conn.site
 	  JOIN owned_threads link_thread ON link_thread.id = link_ticket.thread_id
-	 WHERE link_root.id = ` + root
+	 WHERE link_root.id = ` + root + ` AND link_conn.id = ` + ticketSiteReaderSQL("link_conn.kind", "link_conn.site")
 }
 
 // mirrorIssueKept is the rule for which issues a mirror keeps, in one

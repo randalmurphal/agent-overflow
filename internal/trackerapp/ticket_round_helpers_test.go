@@ -191,7 +191,7 @@ func newRoundFixtureThen(t *testing.T, n int, jira bool, beforeOpen func(*mirror
 	beforeOpen(m)
 	var subs []TicketSubscription
 	for i, id := range issues {
-		sub, err := m.svc.SubscribeTicket(m.conn.ID, id, untied)
+		sub, err := m.svc.SubscribeTicket(m.conn.ID, id, true, untied)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -269,7 +269,7 @@ type historyGate struct {
 	once             sync.Once
 }
 
-func (g *historyGate) ReplaceMirrorHistories(root, sweep int64, hs []store.MirrorHistory, catalog store.MirrorCatalog, read store.MirrorRead) ([]store.MirrorHistoryResult, bool, error) {
+func (g *historyGate) ReplaceMirrorHistories(root, sweep int64, hs []store.MirrorHistory, catalog store.MirrorCatalog, read store.MirrorRead) ([]store.MirrorHistoryResult, store.MirrorCatalogWrite, error) {
 	g.once.Do(func() {
 		close(g.arrived)
 		<-g.release

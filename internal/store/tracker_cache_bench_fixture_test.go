@@ -119,7 +119,7 @@ func fillBenchMirror(s *Store, size benchMirrorSize) error {
 	for board := range size.boards {
 		listing = append(listing, ProjectTrackerBoard{ConnectionID: jira.ID, BoardID: benchBoardID(board)})
 	}
-	if _, _, err := s.ReplaceProjectTrackerBoards(defaultTestProjectID, listing); err != nil {
+	if _, _, err := replaceFromStored(s, defaultTestProjectID, listing); err != nil {
 		return err
 	}
 	for board := range size.boards {
@@ -150,8 +150,8 @@ func fillBenchMirror(s *Store, size benchMirrorSize) error {
 		if err := s.CreateThread(makeThread("linked-"+id, "claude")); err != nil {
 			return err
 		}
-		if _, err := s.SetThreadTicket(ThreadTicket{ThreadID: "linked-" + id, Ticket: TicketRef{Kind: TrackerKindJira, Site: mirrorSite, IssueID: id},
-			IssueKey: "WEB-" + id, Origin: TicketOriginManual, LinkedAt: 10}); err != nil {
+		if _, err := s.db.Exec(`INSERT INTO thread_tickets(thread_id, kind, site, issue_id, issue_key, origin, linked_at) VALUES (?, ?, ?, ?, ?, ?, 10)`,
+			"linked-"+id, TrackerKindJira, mirrorSite, id, "WEB-"+id, TicketOriginManual); err != nil {
 			return err
 		}
 		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{benchCard(id, 1000, 0, i)}, MirrorCatalog{}, mirrorReadAt(1)); err != nil {
@@ -165,7 +165,7 @@ func fillBenchMirror(s *Store, size benchMirrorSize) error {
 			logs = append(logs, MirrorWorklog{ID: fmt.Sprintf("w%02d%03d", d, w), IssueID: benchIssueID(0, w), AuthorID: "acc-user1", Day: day,
 				SpentSeconds: 1800, Description: "Review and fix the login flow", UpdatedAt: 5})
 		}
-		if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", day, day, mirrorReadAt(1), logs); err != nil {
+		if _, err := s.ReplaceMirrorWorklogs(root, 0, "acc-user1", day, day, mirrorReadAt(1), logs); err != nil {
 			return err
 		}
 	}

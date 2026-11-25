@@ -255,7 +255,7 @@ func TestAWriteRefusedForItsCredentialSaysWhatToDo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r := v.Parts[0].Refusal; r == nil || r.Message != "Jira refused the token in the key file; put a valid token in it" {
+	if r := v.Parts[0].Refusal; r == nil || r.Message != "Jira refused the token in the key file; put a valid token in it. A token made with Create API token with scopes cannot reach the Jira site: make one with Create API token" {
 		t.Fatalf("a credential refused: %+v", r)
 	}
 	// A Jira connection's time goes to its linked Tempo connection: Jira

@@ -121,6 +121,12 @@ var methodServerBounds = map[string]time.Duration{
 	"LinkTrackerIssues":         transport.MethodBudget("LinkTrackerIssues"),
 	"UnlinkTrackerIssues":       transport.MethodBudget("UnlinkTrackerIssues"),
 	"AddTrackerWorklog":         transport.MethodBudget("AddTrackerWorklog"),
+	"EditTrackerSprint":         transport.MethodBudget("EditTrackerSprint"),
+	"EditTrackerWorklog":        transport.MethodBudget("EditTrackerWorklog"),
+	"DeleteTrackerWorklog":      transport.MethodBudget("DeleteTrackerWorklog"),
+	"VoteTrackerPoker":          transport.MethodBudget("VoteTrackerPoker"),
+	"RevealTrackerPoker":        transport.MethodBudget("RevealTrackerPoker"),
+	"ClearTrackerPokerVotes":    transport.MethodBudget("ClearTrackerPokerVotes"),
 }
 
 // hooked is one git or forge CLI command that runs a user's hook, stopped.

@@ -182,3 +182,31 @@ func (o oneCredentialTime) EditWorklog(ctx context.Context, in WorklogEdit) Resu
 func (o oneCredentialTime) DeleteWorklog(ctx context.Context, in WorklogDelete) Result {
 	return o.t.DeleteWorklog(ctx, in)
 }
+
+func (o oneCredential) Poker() Poker {
+	p := o.p.Poker()
+	if p == nil {
+		return nil
+	}
+	return oneCredentialPoker{p}
+}
+
+type oneCredentialPoker struct{ p Poker }
+
+func (o oneCredentialPoker) Support(ctx context.Context) (bool, error) {
+	return trackerapi.Walk(ctx, o.p.Support)
+}
+
+func (o oneCredentialPoker) Read(ctx context.Context, issue IssueID) (PokerRound, error) {
+	return trackerapi.Walk(ctx, func(ctx context.Context) (PokerRound, error) { return o.p.Read(ctx, issue) })
+}
+
+func (o oneCredentialPoker) Vote(ctx context.Context, in PokerVoteInput) Result {
+	return o.p.Vote(ctx, in)
+}
+func (o oneCredentialPoker) Reveal(ctx context.Context, issue IssueID) Result {
+	return o.p.Reveal(ctx, issue)
+}
+func (o oneCredentialPoker) Clear(ctx context.Context, issue IssueID) Result {
+	return o.p.Clear(ctx, issue)
+}

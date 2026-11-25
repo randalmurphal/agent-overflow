@@ -49,18 +49,27 @@ const (
 	// root's issues rather than keep an index by status that every card
 	// write would maintain.
 	mirrorStatusGroupRevisionSQL = `UPDATE tracker_cache_boards SET revision = revision + 1, totals_revision = totals_revision + 1
-		WHERE root_id = ?1 AND board_id IN (
+		WHERE root_id = CAST(?1 AS INTEGER) AND board_id IN (
 		SELECT b.board_id FROM tracker_cache_issues i
 		  CROSS JOIN tracker_cache_board_issues b ON b.root_id = i.root_id AND b.issue_id = i.issue_id
-		 WHERE i.root_id = ?1 AND i.status_id IN (SELECT value FROM json_each(?2)))`
+		 WHERE i.root_id = CAST(?1 AS INTEGER) AND i.status_id IN (SELECT value FROM json_each(?2)))`
 )
 
+// MirrorCatalogWrite is what a write of a catalog changed: whether any
+// user or status changed, and the threads whose row shows a status it
+// renamed or regrouped (mirrorStatusLinkCopySQL), sorted.
+type MirrorCatalogWrite struct {
+	Changed bool
+	Threads []string
+}
+
 // upsertMirrorCatalogTx upserts what a read that began at readAt names and
-// reports whether any content changed: one statement per kind it names
-// for each mirrorCatalogChunk of them, and one more when a status entered
-// or left the done groups, which advances the revision of the boards whose
-// rows have it.
-func upsertMirrorCatalogTx(tx *sql.Tx, rootID int64, c MirrorCatalog, readAt int64) (bool, error) {
+// reports what changed: one statement per kind it names for each
+// mirrorCatalogChunk of them, one more when a status entered or left the
+// done groups, which advances the revision of the boards whose rows have
+// it, and one more when a status changed its name or group, which copies
+// it to the links whose card has it (mirrorStatusLinkCopySQL).
+func upsertMirrorCatalogTx(tx *sql.Tx, rootID int64, c MirrorCatalog, readAt int64) (MirrorCatalogWrite, error) {
 	changed := false
 	for chunk := range slices.Chunk(c.Users, mirrorCatalogChunk) {
 		users := make([]mirrorUserRow, len(chunk))
@@ -69,7 +78,7 @@ func upsertMirrorCatalogTx(tx *sql.Tx, rootID int64, c MirrorCatalog, readAt int
 		}
 		encoded, err := encodeMirrorJSON(users)
 		if err != nil {
-			return false, err
+			return MirrorCatalogWrite{}, err
 		}
 		err = scanMirrorRows(tx, mirrorUsersUpsertSQL, []any{rootID, encoded, readAt}, func(r rowScanner) error {
 			var id string
@@ -79,10 +88,10 @@ func upsertMirrorCatalogTx(tx *sql.Tx, rootID int64, c MirrorCatalog, readAt int
 			return err
 		})
 		if err != nil {
-			return false, fmt.Errorf("upsert users: %w", err)
+			return MirrorCatalogWrite{}, fmt.Errorf("upsert users: %w", err)
 		}
 	}
-	var moved []string
+	var moved, renamed []string
 	for chunk := range slices.Chunk(c.Statuses, mirrorCatalogChunk) {
 		statuses := make([]mirrorStatusRow, len(chunk))
 		for i, st := range chunk {
@@ -90,31 +99,44 @@ func upsertMirrorCatalogTx(tx *sql.Tx, rootID int64, c MirrorCatalog, readAt int
 		}
 		encoded, err := encodeMirrorJSON(statuses)
 		if err != nil {
-			return false, err
+			return MirrorCatalogWrite{}, err
 		}
 		err = scanMirrorRows(tx, mirrorStatusesUpsertSQL, []any{rootID, encoded, readAt}, func(r rowScanner) error {
 			var id string
 			var statusChanged, doneChanged bool
 			err := r.Scan(&id, &statusChanged, &doneChanged)
 			changed = changed || statusChanged
+			if statusChanged {
+				renamed = append(renamed, id)
+			}
 			if doneChanged {
 				moved = append(moved, id)
 			}
 			return err
 		})
 		if err != nil {
-			return false, fmt.Errorf("upsert statuses: %w", err)
+			return MirrorCatalogWrite{}, fmt.Errorf("upsert statuses: %w", err)
 		}
 	}
-	if len(moved) == 0 {
-		return changed, nil
+	out := MirrorCatalogWrite{Changed: changed}
+	if len(moved) > 0 {
+		list, err := encodeMirrorIDs(moved)
+		if err != nil {
+			return MirrorCatalogWrite{}, err
+		}
+		if _, err := tx.Exec(mirrorStatusGroupRevisionSQL, rootID, list); err != nil {
+			return MirrorCatalogWrite{}, fmt.Errorf("advance the revision of boards with a regrouped status: %w", err)
+		}
 	}
-	list, err := encodeMirrorIDs(moved)
-	if err != nil {
-		return false, err
+	if len(renamed) > 0 {
+		list, err := encodeMirrorIDs(renamed)
+		if err != nil {
+			return MirrorCatalogWrite{}, err
+		}
+		if out.Threads, err = queryIDs(tx, mirrorStatusLinkCopySQL, rootID, list); err != nil {
+			return MirrorCatalogWrite{}, fmt.Errorf("copy the renamed statuses to their links: %w", err)
+		}
+		slices.Sort(out.Threads)
 	}
-	if _, err := tx.Exec(mirrorStatusGroupRevisionSQL, rootID, list); err != nil {
-		return false, fmt.Errorf("advance the revision of boards with a regrouped status: %w", err)
-	}
-	return changed, nil
+	return out, nil
 }

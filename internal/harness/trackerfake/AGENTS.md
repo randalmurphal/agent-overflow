@@ -58,7 +58,9 @@ client contract it answers is
   answer, a refusal (400 or more), a panic and a Linear document whose
   mutation fails with an error change nothing. A route that does not set
   `reads` is a write and saves its whole tenant first, so a read costs
-  more on a larger tenant unless it sets `reads`. A refused `Seed` puts
+  more on a larger tenant unless it sets `reads`, or `readsWhen` on a
+  route whose requests read or write by their body (the Atlassian
+  gateway). A refused `Seed` puts
   back the ID counter and the clock as well as the tenants.
 - A null Linear input member clears a field the schema lets be null and
   is refused for one the schema declares non-null (an issue's state,
@@ -89,7 +91,8 @@ client contract it answers is
 
 ## Tenants and faults
 
-- Jira tenants are sites, one origin each. Tempo and Linear are one
+- Jira tenants are sites, one origin each; a site's `Members` sign in
+  with their own tokens and act as themselves. Tempo and Linear are one
   origin each; the bearer token or API key selects the tenant, so seeding
   refuses two tenants sharing one. `SetToken` rotates a credential.
 - A fault matches by origin and route name (`Request.Route`: `"GET

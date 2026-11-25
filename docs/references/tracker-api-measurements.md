@@ -617,11 +617,14 @@ API v4.
   ([registry](https://registry.npmjs.org/layerchart/2.10.1)). The library
   choice is not ruled.
 - Read-only agent SQL needs the SQLite authorizer, which
-  `modernc.org/sqlite` exposes from v1.61.0, with query cancellation fixes
-  in v1.61.1
+  `modernc.org/sqlite` exposes from v1.61.0
   ([changelog](https://gitlab.com/cznic/sqlite/-/raw/master/CHANGELOG.md)).
-  `go.mod` pins v1.60.1. SQLite's guidance for untrusted SQL adds defensive
-  mode, lowered limits and an interrupt
+  `go.mod` pins v1.63.0 (SQLite 3.54.1), the newest tag. A canceled
+  context interrupts only a statement's first step: the driver watches the
+  context for the duration of `stmt.query`, and `rows.Next` steps without
+  an interrupt (see [Canceling agent SQL](#canceling-agent-sql)). SQLite's
+  guidance for untrusted SQL adds defensive mode, lowered limits and an
+  interrupt
   ([security](https://www.sqlite.org/security.html),
   [authorizer](https://www.sqlite.org/c3ref/set_authorizer.html)).
 - The widget vocabulary should cover what users build in the trackers: Jira's
@@ -629,6 +632,96 @@ API v4.
   and Linear's [Insights](https://linear.app/docs/insights). Jira's velocity
   chart measures in points, time, issue count or any numeric field
   ([velocity chart](https://support.atlassian.com/jira-software-cloud/docs/view-and-understand-the-velocity-chart/)).
+
+### Canceling agent SQL
+
+Measured on v1.63.0 and SQLite 3.54.1. A Go function counted its calls over
+a table of 12,000 rows and canceled the query's context from its first call;
+each statement ran 3 times.
+
+| Statement | Rows the function read after the cancel |
+|---|---|
+| `SELECT count(f(x)) FROM t`: the aggregate is the first row | 167, 221, 227 |
+| `SELECT 0 UNION ALL SELECT count(f(x)) FROM t`: a cheap row first | 12,000 every time |
+| the same, wrapped as below | 294, 113, 81 |
+| `SELECT f(x) FROM t`, read row by row | 208, 204, 98 |
+| the same, wrapped | 229, 124, 176 |
+
+The connection answered the next query after every interrupt. Read row by
+row, `database/sql` stops between rows. Work that one step does after the
+first row runs to its end: a later compound arm, or an aggregate fed by a
+per-row subquery.
+
+The driver installs its interrupt watcher and progress handler only inside
+`stmt.query`, which includes the first `sqlite3_step`, and exports no
+interrupt; it owns the connection's one progress-handler slot. So an
+evaluator makes SQLite produce the whole result in the first step: it
+prepares the agent's statement to learn its column count n, then runs
+
+```sql
+WITH r(c1, ..., cn) AS (<agent SQL>)
+SELECT json_group_array(json_array(c1, ..., cn)) FROM r
+```
+
+and decodes the one JSON value. The column list renames the columns, so
+duplicate names do not matter. A row cap goes inside the wrapper
+(`SELECT ... LIMIT n` as the CTE body); a `LIMIT` on the outer `SELECT`
+caps the one aggregate row, not the rows.
+
+`SQLITE_LIMIT_LENGTH` bounds single values, not the memory the wrapper
+uses. With the limit at 1 KiB, a stored value of 2,000 bytes failed the
+statement with `SQLITE_TOOBIG` before any row was read. The aggregate
+checks the limit only on its finished result and grows without it while it
+collects: over 160 values of 400 bytes it read all 160 rows, about 65 KB
+of JSON, before it failed.
+
+A cap on the encoded result's size counts, while the rows are collected,
+the bytes of each row's encoding as it enters the result, with the bracket
+or comma before it and the closing bracket, and evaluates each row once. A
+Go function in the wrapper's `WHERE`, such as
+`WHERE within_budget(octet_length(json_array(c1, ..., cn)))`, does neither:
+
+- `length()` counts characters. With `length()` in its place and a
+  2,048-byte budget, five rows of 400 emoji passed as an 8,026-byte result;
+  `octet_length()` failed the statement at the second row. Neither counts
+  the brackets and commas.
+- SQLite evaluated the agent's column once for the `WHERE` and again for
+  the aggregate. Over 20 rows of a function that
+  returned 1 and 1,000 bytes in turn, the function ran 40 times, the
+  `WHERE` was charged 100 bytes, and the result was 20,101 bytes.
+
+A Go aggregate in place of `json_group_array` does both:
+
+```sql
+WITH r(c1, ..., cn) AS (<agent SQL>)
+SELECT bounded_rows(c1, ..., cn) FROM r
+```
+
+Its step receives the row's SQL values once, encodes them as a JSON array,
+and fails once the result so far, the separator, the row and the closing
+bracket would pass the budget. With a 2,048-byte budget it returned one
+emoji row as a 1,606-byte result and failed at the second row. Over the
+alternating function it evaluated each row once and failed at the sixth
+row, the first that would pass the budget. It is still one aggregate row,
+produced in the first step: a cancel from inside the agent SQL stopped it
+after 387, 653 and 682 of 12,000 rows, against 460, 1,496 and 1,246 for
+`json_group_array` in the same run. With the process held to one CPU, the
+cancel stopped neither form in 5 of 6 runs.
+
+`json_array` takes a BLOB as SQLite JSONB when the bytes parse as JSONB,
+and fails the statement otherwise ("JSON cannot hold BLOB values"). So
+`x'00'` became `null`, `jsonb('[1,2]')` became the array `[1,2]`, and
+`x'00ff'` and `zeroblob(0)` failed. Text that holds JSON stays a string:
+`'[1,2]'` and `json('[1,2]')` both became `"[1,2]"`. An evaluator decides
+by SQL type, writing each column as
+`iif(typeof(ck) = 'blob', json_array(hex(ck)), ck)`. A BLOB then decodes as
+a one-element array of its hex digits, which no text, number or `NULL`
+decodes to. An evaluator that rejects BLOBs instead fails on the first
+such array it decodes.
+
+The aggregate receives a BLOB as Go `[]byte` whatever its bytes hold, so it
+encodes BLOBs by SQL type without the `iif`: it wrote `x'00ff'` as
+`["00FF"]` and `jsonb('[1,2]')` as `["4B13311332"]`.
 
 ## Planning poker add-on
 
@@ -646,21 +739,35 @@ browser session. Both Atlassian endpoints are undocumented, and Atlassian
 does not support undocumented APIs
 ([help and feedback](https://developer.atlassian.com/developer-guide/help-and-feedback/)).
 
+0. **Find the cloud ID.** `GET /_edge/tenant_info` answers `{cloudId}`, a
+   UUID string (measured 2026-11-24).
 1. **Find the extension.** `POST /gateway/api/graphql`, query
    `extensionContexts(contextIds: ["ari:cloud:jira::site/{cloudId}"])` with
    `extensionsByType(type: "jira:issuePanel")`. The poker panel is the entry
    whose `key` is `planning-poker-forge-panel`. Take its `id`, `appId`,
    `environmentId`, `installationId` and `appVersion` from the response.
-   Absence means the add-on is off for that site.
+   Absence means the add-on is off for that site. Measured 2026-11-24 with
+   the document `query Ext($contextIds:[ID!]!){ extensionContexts(contextIds:$contextIds){ id extensionsByType(type:"jira:issuePanel"){ id key type appId environmentId installationId appVersion } } }`
+   and operation name `Ext`: `data.extensionContexts` has one entry, its
+   `extensionsByType` a list of those seven members, all strings, and no
+   `errors` member. The poker panel's `id` has the form
+   `ari:cloud:ecosystem::extension/{uuid}/{uuid}/static/planning-poker-forge-panel`
+   and `appVersion` the form `N.N.N`.
 2. **Get a context token.** `POST /rest/internal/2/forge/context/token` with
    `{extension, extensionData, localId, useWorkspaceAri: true}`.
    `extension` is the listing entry (`id`, `type`, `key`, `appId`,
    `environmentId`, `installationId`, `appVersion`). `extensionData` is
    `{type: "jira:issuePanel", issue: {key, id, type, typeId}, project: {id,
    key, type}}`. `localId` is the extension `id`. The response is `{token,
-   expiresAt, expiresIn, extensionId}`; `expiresIn` was about 899,000, so
-   roughly 15 minutes if milliseconds (units not verified). The gateway's
-   own signer, `forgeApp_signForgeContextTokens`, refuses API tokens.
+   expiresAt, expiresIn, extensionId}`. Measured 2026-11-24: `expiresAt` is
+   Unix milliseconds, `expiresIn` is milliseconds (899,442, with the
+   token's `exp - iat` 900 seconds), and `extensionId` is the extension
+   `id`. The issue and project values sent were the issue's own; whether
+   made-up values are refused was not tested. The token is a JWT whose
+   top-level `contextIds` claim holds one workspace ARI,
+   `ari:cloud:jira:{uuid}:workspace/{uuid}`, and whose `context` claim
+   names the issue, so a token is per issue. The gateway's own signer,
+   `forgeApp_signForgeContextTokens`, refuses API tokens.
 3. **Invoke.** `POST /gateway/api/graphql`, mutation `invokeExtension` with
    input `{contextIds, extensionId, entryPoint: "resolver", payload}`.
    `contextIds` must equal the `contextIds` claim inside the token (a
@@ -669,16 +776,39 @@ does not support undocumented APIs
    {path, method, headers, body}}, context: {cloudId, localId, moduleKey,
    extension: extensionData}, contextToken}`. Without `contextToken` the
    call fails with "Missing Forge Context Token". The backend's HTTP status
-   and body come back in `response.body`.
+   and body come back in `response.body`. Measured 2026-11-24 with the
+   document `mutation Invoke($input: InvokeExtensionInput!){ invokeExtension(input:$input){ success errors { message extensions { errorType statusCode } } response { body } } }`,
+   operation name `Invoke`, `moduleKey` `planning-poker-forge-panel`, and
+   `localId` the extension `id`: on success `success` is true, `errors`
+   is null, and `response.body` is an object `{status, statusText,
+   headers, body}` whose `body` is the backend's JSON document as a
+   string.
 
 Routes, each under the path prefix `/forge/rest/eausm/latest/`:
 
 | Action | Method and path | Body | Result |
 |---|---|---|---|
-| Read | `GET planningPoker/{issueId}` | none | `{issueId, isRevealed, votes: [{id, issueId, userId, vote, createdAt}]}` |
-| Vote or change vote | `PUT planningPoker/vote` | `{issueId, vote}` | the vote record |
+| Read | `GET planningPoker/{issueId}` | none | `{issueId, isRevealed, votes: [{issueId, userId, vote, createdAt}]}` |
+| Vote or change vote | `PUT planningPoker/vote` | `{issueId, vote}` | the vote record, `{issueId, userId, vote, createdAt}` |
 | Reveal | `PUT planningPoker/reveal/{issueId}` | none | the read shape with `isRevealed: true` |
-| Clear all votes | `DELETE planningPoker/votes/{issueId}` | none | 204 |
+| Clear all votes | `DELETE planningPoker/votes/{issueId}` | none | 204, empty body |
+
+The read and the three writes were measured on 2026-11-25 on one issue
+with one voter, through the invoke above. Every call answered backend
+status 200 except the clear, which answered 204 with an empty string as
+its body.
+
+- The vote's `body` is sent as the JSON value, an object whose `issueId`
+  is a string, as `pokerInvoke` (`internal/tracker/jira/poker.go`) sends
+  it. A read after it holds one vote with the caller's `userId` and the
+  value sent.
+- A second `PUT planningPoker/vote` changes the caller's vote: the read
+  still holds one vote, with the new value.
+- The reveal answers the read shape, and reads after it have
+  `isRevealed: true`.
+- The clear removes every vote and resets `isRevealed` to false.
+- `issueId` is a string and `vote` a number in every answer. A vote has no
+  `id` member (the 2026-11-15 note listed one).
 
 `issueId` is the numeric Jira issue ID and `userId` is an Atlassian account
 ID. The calls add no changelog entry and no entity property to the issue. A
@@ -692,5 +822,6 @@ Not verified: whether the read hides other voters' values before reveal. The
 test had one voter. The client hides other voters' values until
 `isRevealed` is true, whatever the response contains.
 
-The agreed estimate is written by the client to the board's estimation
-field through the normal Jira API. The poker backend does not write it.
+The poker backend does not write the issue's estimate, and neither does
+the app from a vote: a person sets the agreed estimate as any other edit,
+through the normal Jira API.

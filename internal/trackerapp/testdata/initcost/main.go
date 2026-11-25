@@ -75,7 +75,8 @@ func reachTracker(arg string) {
 		tracker.TextValue(arg), tracker.RichTextValue(arg), tracker.NumberValue(1), tracker.DateValue(day),
 		tracker.DateTimeValue(time.Now()), tracker.UserValue(), tracker.OptionValue(), tracker.ReadOnlyValue(arg),
 		tracker.ClearField(), tracker.PickValues(arg), tracker.TypedValues(arg), tracker.MarkdownEdit(arg, arg),
-		tracker.OnIssue(tracker.IssueID(arg)), tracker.OnCreate(tracker.ProjectID(arg), tracker.IssueTypeID(arg)),
+		tracker.OnIssue(tracker.IssueID(arg)), tracker.OnMove(tracker.IssueID(arg), tracker.MoveID(arg)),
+		tracker.OnCreate(tracker.ProjectID(arg), tracker.IssueTypeID(arg)),
 		tracker.CardOf(tracker.IssueID(arg)), tracker.RowOf(tracker.BoardID(arg), tracker.IssueID(arg)),
 		tracker.DetailOf(tracker.IssueID(arg)), tracker.StructureOf(tracker.BoardID(arg)),
 		tracker.WorklogsOf(tracker.UserID(arg), day), tracker.KindText, tracker.SearchQuery{Text: arg},
@@ -190,6 +191,8 @@ func reachTrackerApp(arg string) {
 	svc, err := trackerapp.New(trackerapp.Deps{
 		Changed:         func() {},
 		CredentialsDir:  arg,
+		ConfigDir:       arg,
+		SetupChanged:    func() {},
 		Origin:          trackerapp.APIOrigin,
 		Version:         arg,
 		Now:             time.Now,
@@ -199,6 +202,7 @@ func reachTrackerApp(arg string) {
 		Settled:         func(context.Context) error { return nil },
 		ClientConnected: func() bool { return false },
 		LoopFailed:      func(error) {},
+		LinksChanged:    func([]string) {},
 	})
 	check(err)
 	defer svc.Stop()

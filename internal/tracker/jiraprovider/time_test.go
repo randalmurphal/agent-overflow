@@ -55,6 +55,55 @@ func worklogSite(t *testing.T) (*jiratest.Server, *Provider) {
 	return f, p
 }
 
+// TestJiraWorklogsSayWhichStepRefused proves a worklog read's error says
+// which request Jira refused: the person's lookup (tracker.ErrWorklogAuthor),
+// the search for the issues (tracker.ErrWorklogSearch), or neither for an
+// issue's own worklogs. The lookup's refusal wins over the search's, even
+// when the search is refused first.
+func TestJiraWorklogsSayWhichStepRefused(t *testing.T) {
+	q := tracker.WorklogQuery{Author: "acc-user1", From: day(t, 2026, 11, 10), To: day(t, 2026, 11, 10)}
+	refused := jiratest.Reply(400, `{"errorMessages":["refused"],"errors":{}}`)
+	t.Run("the lookup refused after the search", func(t *testing.T) {
+		f, p := newSite(t)
+		searched := make(chan struct{})
+		f.On("POST", searchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
+			refused(w, r, b)
+			close(searched)
+		})
+		f.On("GET", "/rest/api/3/user", func(w http.ResponseWriter, r *http.Request, b []byte) {
+			select {
+			case <-searched:
+			case <-r.Context().Done():
+				return
+			}
+			jiratest.Reply(404, `{"errorMessages":["Specified user does not exist"],"errors":{}}`)(w, r, b)
+		})
+		_, err := p.Time().Worklogs(t.Context(), q)
+		if status, ok := errors.AsType[*trackerapi.StatusError](err); !errors.Is(err, tracker.ErrWorklogAuthor) || !ok || status.Status != 404 {
+			t.Fatalf("a lookup refused after the search refused: %v", err)
+		}
+	})
+	t.Run("the search refused", func(t *testing.T) {
+		f, p := newSite(t)
+		f.On("GET", "/rest/api/3/user", jiratest.Reply(200, user1JSON))
+		f.On("POST", searchPath, refused)
+		if _, err := p.Time().Worklogs(t.Context(), q); !errors.Is(err, tracker.ErrWorklogSearch) || errors.Is(err, tracker.ErrWorklogAuthor) {
+			t.Fatalf("a search refused: %v", err)
+		}
+	})
+	t.Run("an issue's worklogs refused", func(t *testing.T) {
+		f, p := newSite(t)
+		f.On("GET", "/rest/api/3/user", jiratest.Reply(200, user1JSON))
+		f.On("POST", searchPath, jiratest.Reply(200, page("",
+			issue("10001", "WEB-1", updatedAt, map[string]any{"worklog": json.RawMessage(`{"startAt":0,"maxResults":20,"total":21,"worklogs":[]}`)}))))
+		f.On("GET", worklogsPath, refused)
+		_, err := p.Time().Worklogs(t.Context(), q)
+		if status, ok := errors.AsType[*trackerapi.StatusError](err); !ok || status.Status != 400 || errors.Is(err, tracker.ErrWorklogSearch) || errors.Is(err, tracker.ErrWorklogAuthor) {
+			t.Fatalf("an issue's worklogs refused: %v", err)
+		}
+	})
+}
+
 // TestJiraWorklogs proves a worklog's day is the day its start falls on
 // in its author's zone, and that only the author's are listed, the one
 // starting at the next day's midnight left out whether or not Jira's
@@ -126,7 +175,7 @@ func TestJiraWorklogWrites(t *testing.T) {
 		t.Errorf("add: %s %+v %v", states(res), res.Parts[0].Changed, res.Parts[0].Outcome.Err())
 	}
 
-	from := tracker.Worklog{ID: "300", Issue: "10001", Author: "acc-user1", Day: d, Spent: time.Hour, Description: adf.ToMarkdown(adf.Doc(para("Review")))}
+	from := tracker.Worklog{ID: "300", Issue: "10001", Author: "acc-user1", Day: d, Spent: time.Hour, Description: adf.ToMarkdown(adf.Doc(para("Review"))), Updated: jiraRevision}
 	next := day(t, 2026, 11, 11)
 	f.On("PUT", worklogsPath+"/300", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		v := bodyOf(t, b)
@@ -165,6 +214,14 @@ func TestJiraWorklogWrites(t *testing.T) {
 }
 
 // tempoWL is a Tempo worklog of issue in Tempo's wire shape.
+// jiraRevision and tempoRevision are the revisions jiraWorklog and tempoWL
+// answer (updatedAt, and Tempo's updatedAt below): a copy as read carries
+// them.
+var (
+	jiraRevision  = time.Date(2026, 11, 10, 10, 0, 0, 0, time.UTC)
+	tempoRevision = time.Date(2026, 11, 3, 9, 30, 0, 0, time.UTC)
+)
+
 func tempoWL(id, issue int64, date, start string, spent int64, desc string) string {
 	m := map[string]any{
 		"self": fmt.Sprintf("https://api.example.com/4/worklogs/%d", id), "tempoWorklogId": id,
@@ -251,7 +308,7 @@ func TestTempoWorklogWrites(t *testing.T) {
 	ts.On("PUT", "/4/worklogs/70", nil,
 		`{"authorAccountId":"acc-user1","issueId":10001,"startDate":"2026-11-11","startTime":"13:00:00","timeSpentSeconds":3600,"billableSeconds":3600,"description":"Planning","attributes":[]}`,
 		200, tempoWL(70, 10001, "2026-11-11", "13:00:00", 3600, "Planning"))
-	from := tracker.Worklog{ID: "70", Issue: "10001", Author: "acc-user1", Day: d, Spent: time.Hour, Description: "Planning"}
+	from := tracker.Worklog{ID: "70", Issue: "10001", Author: "acc-user1", Day: d, Spent: time.Hour, Description: "Planning", Updated: tempoRevision}
 	res = checked(t, tt.EditWorklog(t.Context(), tracker.WorklogEdit{From: from, Day: &next}))
 	if states(res) != "worklog:applied" || len(res.Parts[0].Changed) != 3 {
 		t.Errorf("edit: %s %v", states(res), res.Parts[0].Outcome.Err())

@@ -39,6 +39,7 @@ func TestTrackerBoardMethodsCarryTheirScopeAndRoute(t *testing.T) {
 		"TrackerProjects":               {read, transport.RouteHome, false},
 		"TrackerBoards":                 {read, transport.RouteHome, false},
 		"ProjectTrackerBoards":          {read, transport.RouteProject, false},
+		"TrackerBoardChoices":           {read, transport.RouteAll, false},
 		"SetProjectTrackerBoards":       {operate, transport.RouteProject, false},
 		"SubscribeTrackerBoard":         {read, transport.RouteProject, true},
 		"TrackerBoard":                  {read, transport.RouteHome, false},
@@ -275,21 +276,47 @@ func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoa
 		t.Fatal(err)
 	}
 	var listed []trackerapp.ProjectBoard
+	var want []trackerapp.BoardChoice
 	for _, b := range site.Boards {
 		if b.Project == "WEB" {
-			listed = append(listed, trackerapp.ProjectBoard{Connection: conn.ID, Board: fmt.Sprint(b.ID), OpensFirst: len(listed) == 0})
+			board := trackerapp.ProjectBoard{Connection: conn.ID, Board: fmt.Sprint(b.ID), OpensFirst: len(listed) == 0, Name: b.Name, TrackerProject: "WEB"}
+			listed = append(listed, board)
+			want = append(want, trackerapp.BoardChoice{
+				Project: project.ID, Connection: conn.ID, ConnectionKind: store.TrackerKindJira, ConnectionEnabled: true,
+				VerifiedAccount: conn.VerifiedAccountID, Board: board.Board, Name: b.Name, TrackerProject: "WEB", OpensFirst: board.OpensFirst,
+			})
 		}
 	}
-	if got, err := a.SetProjectTrackerBoards(ctx, project.ID, listed); err != nil || !slices.Equal(got, listed) {
-		t.Fatalf("SetProjectTrackerBoards = %+v, %v", got, err)
+	if got, err := a.SetProjectTrackerBoards(ctx, project.ID, nil, listed); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("SetProjectTrackerBoards = %+v, %v; want %+v", got, err, want)
+	}
+	if got, err := a.ProjectTrackerBoards(ctx, project.ID); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("ProjectTrackerBoards = %+v, %v; want %+v", got, err, want)
+	}
+	if got, err := a.TrackerBoardChoices(ctx); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("TrackerBoardChoices = %+v, %v; want %+v", got, err, want)
 	}
 	return &trackerBoardFixture{a: a, e: e, conn: conn, project: project.ID, events: events}
+}
+
+// held is the project's list as a page that read it holds it.
+func (f *trackerBoardFixture) held(t *testing.T, ctx context.Context) []trackerapp.BoardRef {
+	t.Helper()
+	listed, err := f.a.ProjectTrackerBoards(ctx, f.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make([]trackerapp.BoardRef, len(listed))
+	for i, b := range listed {
+		out[i] = trackerapp.BoardRef{Connection: b.Connection, Board: b.Board, OpensFirst: b.OpensFirst}
+	}
+	return out
 }
 
 // subscribe subscribes ctx's connection to the board with its sprint.
 func (f *trackerBoardFixture) subscribe(t *testing.T, ctx context.Context) trackerapp.BoardSubscription {
 	t.Helper()
-	sub, err := f.a.SubscribeTrackerBoard(ctx, f.project, f.conn.ID, "1", []trackerapp.Section{{Kind: trackerapp.SectionSprint, Sprint: "1"}})
+	sub, err := f.a.SubscribeTrackerBoard(ctx, f.project, f.conn.ID, "1", []trackerapp.Section{{Kind: trackerapp.SectionSprint, Sprint: "1"}}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +508,7 @@ func TestAHiddenTrackerBoardIsNotRead(t *testing.T) {
 	})
 	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
 	sub := f.subscribe(t, ctx)
-	if _, err := f.a.SubscribeTrackerBoard(ctx, f.project, f.conn.ID, "2", nil); err != nil {
+	if _, err := f.a.SubscribeTrackerBoard(ctx, f.project, f.conn.ID, "2", nil, true); err != nil {
 		t.Fatal(err)
 	}
 	clock := func(n int) {
@@ -569,7 +596,15 @@ func TestARefreshCutAtItsBudgetSaysWhetherItRan(t *testing.T) {
 	if !hasCode(err, "tracker_refresh_waiting") {
 		t.Fatalf("a refresh the pump took and is still reading = %v, want tracker_refresh_waiting", err)
 	}
+	// The pane keeps the sentence after the read ends, and a read that
+	// changes nothing sends no event, so it tells what happened, not what
+	// is happening.
+	if _, message, _ := errorsx.PublicDetails(err); message != refreshWaitingMessage {
+		t.Fatalf("the waiting refresh says %q, want %q", message, refreshWaitingMessage)
+	}
 }
+
+const refreshWaitingMessage = "this refresh was still reading from the tracker when its answer was due; what it finds shows as it lands, so refresh again if what you expect does not appear"
 
 func idStringsOf(ids []tracker.IssueID) []string {
 	out := make([]string, len(ids))
@@ -631,7 +666,7 @@ func TestTrackerBoardSubscriptionsFollowTheirClient(t *testing.T) {
 	if handles, pumps := f.boardHandles(); handles+pumps != 0 {
 		t.Fatalf("after the turn off: %d handles and %d pumps", handles, pumps)
 	}
-	if _, err := f.a.SubscribeTrackerBoard(ctx, f.project, f.conn.ID, "1", nil); !hasCode(err, "tracker_connection_off") {
+	if _, err := f.a.SubscribeTrackerBoard(ctx, f.project, f.conn.ID, "1", nil, true); !hasCode(err, "tracker_connection_off") {
 		t.Fatalf("a subscribe to a board of a connection turned off = %v", err)
 	}
 }
@@ -643,7 +678,7 @@ func trackerBoardConnectionTie(t *testing.T) connectionTie {
 	f := newTrackerBoardFixture(t)
 	return connectionTie{
 		open: func(ctx context.Context) (string, error) {
-			sub, err := f.a.SubscribeTrackerBoard(ctx, f.project, f.conn.ID, "1", nil)
+			sub, err := f.a.SubscribeTrackerBoard(ctx, f.project, f.conn.ID, "1", nil, true)
 			return sub.ID, err
 		},
 		// The handle and the pump it alone keeps.
@@ -665,7 +700,7 @@ func TestTrackerBoardRefusalsSayWhatToDo(t *testing.T) {
 	f := newTrackerBoardFixture(t)
 	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
 	subscribe := func(project, conn, board string) error {
-		return ignoreResult(f.a.SubscribeTrackerBoard(ctx, project, conn, board, nil))
+		return ignoreResult(f.a.SubscribeTrackerBoard(ctx, project, conn, board, nil, true))
 	}
 	tempo, err := f.a.AddTrackerConnection(ctx, NewTrackerConnection{Kind: store.TrackerKindTempo, Site: "https://api.tempo.io", ParentID: f.conn.ID})
 	if err != nil {
@@ -678,10 +713,13 @@ func TestTrackerBoardRefusalsSayWhatToDo(t *testing.T) {
 	}{
 		{"a board the project does not list", "tracker_board_not_listed", trackerapp.ErrNotListed, func() error { return subscribe(f.project, f.conn.ID, "2") }},
 		{"a project that does not exist", "tracker_project_missing", trackerapp.ErrProjectNotFound, func() error {
-			return ignoreResult(f.a.SetProjectTrackerBoards(ctx, "no-such-project", nil))
+			return ignoreResult(f.a.SetProjectTrackerBoards(ctx, "no-such-project", nil, nil))
 		}},
 		{"a board list naming a Tempo connection", "tracker_boards_refused", trackerapp.ErrInvalidBoards, func() error {
-			return ignoreResult(f.a.SetProjectTrackerBoards(ctx, f.project, []trackerapp.ProjectBoard{{Connection: tempo.ID, Board: "1"}}))
+			return ignoreResult(f.a.SetProjectTrackerBoards(ctx, f.project, f.held(t, ctx), []trackerapp.ProjectBoard{{Connection: tempo.ID, Board: "1"}}))
+		}},
+		{"a board list built from a list that is no longer stored", "tracker_boards_changed", trackerapp.ErrBoardsChanged, func() error {
+			return ignoreResult(f.a.SetProjectTrackerBoards(ctx, f.project, nil, nil))
 		}},
 		{"the projects of a Tempo connection", "tracker_connection_tempo", trackerapp.ErrNoProvider, func() error {
 			return ignoreResult(f.a.TrackerProjects(ctx, tempo.ID))
@@ -692,6 +730,24 @@ func TestTrackerBoardRefusalsSayWhatToDo(t *testing.T) {
 		{"an unknown subscription", "tracker_subscription_unknown", trackerapp.ErrUnknownSubscription, func() error {
 			return ignoreResult(f.a.TrackerSectionRows(ctx, "no-such-subscription", trackerapp.Section{Kind: trackerapp.SectionBacklog}, nil))
 		}},
+		{"a Jira site with a path", "tracker_connection_invalid", trackerapp.ErrInvalid, func() error {
+			return ignoreResult(f.a.AddTrackerConnection(ctx, NewTrackerConnection{Kind: store.TrackerKindJira, Site: "example.atlassian.net/jira", Account: "user1@example.com"}))
+		}},
+		{"a connection this computer has", "tracker_connection_exists", store.ErrTrackerConnectionExists, func() error {
+			return ignoreResult(f.a.AddTrackerConnection(ctx, NewTrackerConnection{Kind: store.TrackerKindJira, Site: "example.atlassian.net", Account: "user1@example.com"}))
+		}},
+		{"a rename of a removed connection", "tracker_connection_missing", trackerapp.ErrNotFound, func() error {
+			return ignoreResult(f.a.RenameTrackerConnection(ctx, "no-such-connection", "Work"))
+		}},
+		{"the key file of a removed connection", "tracker_connection_missing", trackerapp.ErrNotFound, func() error {
+			return ignoreResult(f.a.EditTrackerKeyFile(ctx, "no-such-connection"))
+		}},
+		{"the token page of a removed connection", "tracker_connection_missing", trackerapp.ErrNotFound, func() error {
+			return f.a.OpenTrackerTokenPage(ctx, "no-such-connection")
+		}},
+		{"the removal of a removed connection", "tracker_connection_missing", trackerapp.ErrNotFound, func() error {
+			return f.a.RemoveTrackerConnection(ctx, "no-such-connection")
+		}},
 	} {
 		err := tc.call()
 		code, message, ok := errorsx.PublicDetails(err)
@@ -699,12 +755,24 @@ func TestTrackerBoardRefusalsSayWhatToDo(t *testing.T) {
 			t.Errorf("%s = %v (code %q), want %s with cause %v", tc.name, err, code, tc.code, tc.cause)
 		}
 	}
+	// An input the service refuses is told in the service's own words.
+	_, message, _ := errorsx.PublicDetails(ignoreResult(f.a.AddTrackerConnection(ctx, NewTrackerConnection{Kind: store.TrackerKindJira, Site: "example.atlassian.net/jira", Account: "user1@example.com"})))
+	if want := "the Jira site must be an address such as https://example.atlassian.net: it has a path"; message != want {
+		t.Errorf("a Jira site with a path is told %q, want %q", message, want)
+	}
+	// True whichever screen changed the list, the one that saves included
+	// (a connection removed there deletes its listings).
+	_, message, _ = errorsx.PublicDetails(ignoreResult(f.a.SetProjectTrackerBoards(ctx, f.project, nil, nil)))
+	if want := "this change was not saved: the project's boards changed after this list was read"; message != want {
+		t.Errorf("a save from an old list is told %q, want %q", message, want)
+	}
 	// Every sentence differs: each names its own remedy.
 	sentences := map[string]string{}
 	for _, err := range []error{
 		trackerapp.ErrUnknownSubscription, trackerapp.ErrSubscriptionEnded, trackerapp.ErrTooManySubscriptions,
 		trackerapp.ErrDisabled, trackerapp.ErrNotFound, trackerapp.ErrNoProvider, trackerapp.ErrNotListed,
 		trackerapp.ErrNotMirrored, trackerapp.ErrStalePage, trackerapp.ErrProjectNotFound, trackerapp.ErrInvalidBoards,
+		store.ErrTrackerConnectionExists,
 	} {
 		code, message := trackerRefusal(err)
 		if code == "" {

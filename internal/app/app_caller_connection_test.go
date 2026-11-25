@@ -118,7 +118,7 @@ var callerConnectionRefusals = map[string]connectionRefusal{
 	},
 	"SubscribeTrackerBoard": {
 		call: func(a *App, ctx context.Context) error {
-			return ignoreResult(a.SubscribeTrackerBoard(ctx, "project", "connection", "1", nil))
+			return ignoreResult(a.SubscribeTrackerBoard(ctx, "project", "connection", "1", nil, true))
 		},
 		// The App has no tracker service: a step past the refusal fails
 		// with "tracker connections are not available before the app has
@@ -126,7 +126,7 @@ var callerConnectionRefusals = map[string]connectionRefusal{
 	},
 	"SubscribeTrackerTicket": {
 		call: func(a *App, ctx context.Context) error {
-			return ignoreResult(a.SubscribeTrackerTicket(ctx, "connection", "10101"))
+			return ignoreResult(a.SubscribeTrackerTicket(ctx, "connection", "10101", true))
 		},
 		// As SubscribeTrackerBoard's.
 	},

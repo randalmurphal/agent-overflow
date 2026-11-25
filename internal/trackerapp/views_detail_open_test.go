@@ -218,7 +218,7 @@ func (m *mirrorFixture) openLater(t *testing.T, first int, tickets bool) Changes
 	if err != nil {
 		t.Error(err)
 	}
-	return ticketChanges(read, written)
+	return ticketChanges(read, written).Changes
 }
 
 // publishRaw passes ch through the change funnel as the read that stored

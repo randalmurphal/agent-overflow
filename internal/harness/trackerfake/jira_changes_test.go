@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"mime/multipart"
+	"strings"
 	"testing"
 )
 
@@ -246,3 +247,83 @@ func TestSearchShapes(t *testing.T) {
 }
 
 func itoa(n int) string { return string(mustJSON(n)) }
+
+// TestTransitionScreenResolution proves a transition whose screen takes
+// the resolution lists the site's resolutions as its allowed values, sets
+// the one picked, and records one resolution item for it.
+func TestTransitionScreenResolution(t *testing.T) {
+	f := changeFixture()
+	s := &f.Jira[0]
+	s.Resolutions = []JiraNamed{{ID: "10000", Name: "Done"}, {ID: "10001", Name: "Fixed"}}
+	s.Projects[0].Transitions = []JiraTransition{
+		{ID: "11", Name: "To Do", To: "10000"},
+		{ID: "31", Name: "Resolve", To: "10002", Screen: []JiraScreenField{{Field: "resolution", Required: true}}},
+	}
+	w := newWorld(t)
+	if err := w.e.Seed(f); err != nil {
+		t.Fatal(err)
+	}
+	r := w.jira(t, "GET", "/rest/api/3/issue/WEB-1/transitions?expand=transitions.fields", "")
+	var got struct {
+		Transitions []struct {
+			ID     string
+			Fields map[string]struct {
+				Required      bool
+				Operations    []string
+				AllowedValues []struct{ ID, Name string }
+			}
+		}
+	}
+	if err := json.Unmarshal([]byte(r.body), &got); err != nil || len(got.Transitions) != 2 {
+		t.Fatalf("transitions %s %v", r.body, err)
+	}
+	res := got.Transitions[1].Fields["resolution"]
+	if !res.Required || len(res.Operations) != 1 || res.Operations[0] != "set" || len(res.AllowedValues) != 2 || res.AllowedValues[1].Name != "Fixed" {
+		t.Fatalf("Resolve's resolution %+v", res)
+	}
+	w.write(t, "POST", "/rest/api/3/issue/WEB-1/transitions", `{"transition":{"id":"31"},"fields":{"resolution":{"id":"10001"}}}`, 204)
+	wantItem(t, w.lastItem(t, "WEB-1", "resolution"), map[string]any{"from": nil, "to": "10001", "toString": "Fixed"})
+	if body := w.jira(t, "GET", "/rest/api/3/issue/WEB-1?fields=resolution", "").body; !strings.Contains(body, `"name":"Fixed"`) {
+		t.Fatalf("the issue after Resolve: %s", body)
+	}
+	var changes struct {
+		Values []struct{ Items []map[string]any }
+	}
+	if err := json.Unmarshal([]byte(w.jira(t, "GET", "/rest/api/3/issue/WEB-1/changelog", "").body), &changes); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, v := range changes.Values {
+		for _, it := range v.Items {
+			if it["fieldId"] == "resolution" {
+				n++
+			}
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d resolution items, want 1", n)
+	}
+	if r := w.write(t, "POST", "/rest/api/3/issue/WEB-1/transitions", `{"transition":{"id":"11"}}`, 204); r.status != 204 {
+		t.Fatalf("back to To Do: %d", r.status)
+	}
+	w.write(t, "POST", "/rest/api/3/issue/WEB-1/transitions", `{"transition":{"id":"31"},"fields":{"resolution":{"id":"99"}}}`, 400)
+}
+
+// TestCustomTextList proves a custom field holding a list of strings is
+// seeded, read back and offered on the edit screen.
+func TestCustomTextList(t *testing.T) {
+	f := changeFixture()
+	s := &f.Jira[0]
+	s.Fields = append(s.Fields, JiraField{ID: "customfield_10070", Name: "Tags", Schema: JiraSchema{Type: "array", Items: "string", Custom: "com.example.fake:texts", CustomID: 10070}})
+	s.Issues[0].Values["customfield_10070"] = json.RawMessage(`["A","B"]`)
+	w := newWorld(t)
+	if err := w.e.Seed(f); err != nil {
+		t.Fatal(err)
+	}
+	if body := w.jira(t, "GET", "/rest/api/3/issue/WEB-1?fields=customfield_10070", "").body; !strings.Contains(body, `"customfield_10070":["A","B"]`) {
+		t.Fatalf("the issue: %s", body)
+	}
+	if body := w.jira(t, "GET", "/rest/api/3/issue/WEB-1/editmeta", "").body; !strings.Contains(body, `"customfield_10070"`) {
+		t.Fatalf("the edit screen: %s", body)
+	}
+}

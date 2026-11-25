@@ -422,6 +422,13 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
     "defaultKey": "esc"
   },
   {
+    "key": "esc",
+    "command": "issues.escape",
+    "when": "issuesPaneFocused \u0026\u0026 toolDetailOpen",
+    "defaultId": "issues.escape",
+    "defaultKey": "esc"
+  },
+  {
     "key": "backspace",
     "command": "workflows.back",
     "when": "workflowsRunDetail",

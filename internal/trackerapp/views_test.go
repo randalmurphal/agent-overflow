@@ -41,11 +41,11 @@ func seededCard() tracker.Card {
 func TestBoardView(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
-	if _, err := m.svc.Board(m.scope(), nil); !errors.Is(err, ErrNotMirrored) {
+	if _, err := m.svc.Board(m.scope(), StatusGroups{}, nil); !errors.Is(err, ErrNotMirrored) {
 		t.Fatalf("board of a connection with no mirror: %v", err)
 	}
 	m.seedBoard(t)
-	v := must[BoardView](t)(m.svc.Board(m.scope(), []Section{{Kind: SectionSprint, Sprint: "1"}, {Kind: SectionBacklog}, {Kind: SectionColumn, Column: 2}}))
+	v := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, []Section{{Kind: SectionSprint, Sprint: "1"}, {Kind: SectionBacklog}, {Kind: SectionColumn, Column: 2}}))
 	if v.Name != "WEB board 1" || !v.PlansSprints || v.Estimate.Unit != "points" || v.All.Rows != 4 || v.Backlog.Rows != 2 || v.Sync.ReadAt == 0 {
 		t.Fatalf("board %+v", v)
 	}
@@ -77,16 +77,70 @@ func TestBoardView(t *testing.T) {
 	if got := rowIssues(v.Sections[2].Rows); !slices.Equal(got, []string{"10003"}) {
 		t.Fatalf("done column %v", got)
 	}
-	if _, err := m.svc.Board(Scope{Connection: m.conn.ID, Board: "9"}, nil); !errors.Is(err, ErrNotMirrored) {
+	if _, err := m.svc.Board(Scope{Connection: m.conn.ID, Board: "9"}, StatusGroups{}, nil); !errors.Is(err, ErrNotMirrored) {
 		t.Fatalf("a board not in the mirror: %v", err)
 	}
 	for _, bad := range []Section{{Kind: "sprint"}, {Kind: "backlog", Sprint: "1"}, {Kind: "column", Column: -1}, {Kind: "other"}} {
-		if _, err := m.svc.Board(m.scope(), []Section{bad}); !errors.Is(err, ErrInvalidRequest) {
+		if _, err := m.svc.Board(m.scope(), StatusGroups{}, []Section{bad}); !errors.Is(err, ErrInvalidRequest) {
 			t.Errorf("section %+v: %v", bad, err)
 		}
 	}
-	if _, err := m.svc.Board(m.scope(), slices.Repeat([]Section{{Kind: SectionBacklog}}, maxViewSections+1)); !errors.Is(err, ErrInvalidRequest) {
+	if _, err := m.svc.Board(m.scope(), StatusGroups{}, slices.Repeat([]Section{{Kind: SectionBacklog}}, maxViewSections+1)); !errors.Is(err, ErrInvalidRequest) {
 		t.Errorf("too many sections: %v", err)
+	}
+}
+
+// No sections asks for the Board screen's, chosen from the structure the
+// view reads: a sprint board's active sprints, a board of no sprints its
+// columns, with pages of the first maxViewSections of them and the rest
+// listed for the client to read by page.
+func TestBoardScreen(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.seedBoard(t)
+	v := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, nil))
+	if !slices.Equal(v.Screen, []Section{{Kind: SectionSprint, Sprint: "1"}}) || len(v.Sections) != 1 ||
+		v.Sections[0].Section != v.Screen[0] || !slices.Equal(rowIssues(v.Sections[0].Rows), []string{"10001"}) {
+		t.Fatalf("sprint board: screen %+v, sections %+v", v.Screen, v.Sections)
+	}
+	// Asked sections are read as asked, and the screen is listed beside them.
+	v = must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, []Section{{Kind: SectionBacklog}}))
+	if len(v.Sections) != 1 || v.Sections[0].Section.Kind != SectionBacklog || len(v.Screen) != 1 {
+		t.Fatalf("asked: screen %+v, sections %+v", v.Screen, v.Sections)
+	}
+
+	const columns = maxViewSections + 5
+	m.p.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) {
+		st := webStructure(b)
+		st.Board.Sprints, st.Sprints = false, nil
+		for i := len(st.Columns); i < columns; i++ {
+			st.Columns = append(st.Columns, tracker.Column{Name: fmt.Sprintf("Column %d", i)})
+		}
+		return st, nil
+	}
+	if out := must[Outcome](t)(m.svc.syncTick(t.Context(), m.scope(), BoardDue{Structure: true}, Background)); out.Failure != nil || out.Ended {
+		t.Fatalf("tick %+v", out)
+	}
+	v = must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, nil))
+	if len(v.Screen) != columns || len(v.Sections) != maxViewSections {
+		t.Fatalf("kanban board: %d screen sections, %d pages", len(v.Screen), len(v.Sections))
+	}
+	for i, sec := range v.Screen {
+		if sec != (Section{Kind: SectionColumn, Column: i}) || (i < maxViewSections && v.Sections[i].Section != sec) {
+			t.Fatalf("screen section %d: %+v, page %+v", i, sec, v.Sections[min(i, maxViewSections-1)].Section)
+		}
+	}
+	if got := rowIssues(v.Sections[0].Rows); !slices.Equal(got, []string{"10001", "10002", "10004"}) {
+		t.Fatalf("first column %v", got)
+	}
+	// A patch reads every section the screen holds, up to every section a
+	// board can have.
+	patch := must[BoardPatch](t)(m.svc.BoardPatch(m.scope(), StatusGroups{}, v.Screen, ids("10001"), TotalsAt{}))
+	if len(patch.Sections) != columns || !slices.Equal(rowIssues(patch.Sections[0].Rows), []string{"10001"}) {
+		t.Fatalf("patch of the screen: %+v", patch.Sections)
+	}
+	if _, err := m.svc.BoardPatch(m.scope(), StatusGroups{}, slices.Repeat([]Section{{Kind: SectionBacklog}}, store.MirrorMaxViewSections+1), nil, TotalsAt{}); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("a patch past every section a board can have: %v", err)
 	}
 }
 
@@ -104,7 +158,7 @@ func TestBoardOfNoProject(t *testing.T) {
 	if out := must[Outcome](t)(m.svc.syncTick(t.Context(), m.scope(), BoardDue{Structure: true, Delta: true}, Background)); out.Failure != nil || out.Ended {
 		t.Fatalf("tick %+v", out)
 	}
-	v := must[BoardView](t)(m.svc.Board(m.scope(), []Section{{Kind: SectionColumn}}))
+	v := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, []Section{{Kind: SectionColumn}}))
 	if v.Project != "" || v.All.Rows != 1 || len(v.Sections[0].Rows) != 1 {
 		t.Fatalf("board %+v", v)
 	}
@@ -128,7 +182,7 @@ func TestBoardViewShowsTheScopesFailure(t *testing.T) {
 		}
 	})
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
-	v := must[BoardView](t)(m.svc.Board(m.scope(), []Section{{Kind: SectionBacklog}}))
+	v := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, []Section{{Kind: SectionBacklog}}))
 	if v.Sync.Failure == nil || v.Sync.Failure.Kind != string(FailureTracker) || len(v.Sections[0].Rows) != 2 {
 		t.Fatalf("a failing board %+v", v)
 	}
@@ -147,15 +201,15 @@ func TestSectionPages(t *testing.T) {
 	}
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
 	backlog := Section{Kind: SectionBacklog}
-	first := must[SectionPage](t)(m.svc.SectionRows(m.scope(), backlog, nil))
+	first := must[SectionPage](t)(m.svc.SectionRows(m.scope(), StatusGroups{}, backlog, nil))
 	if len(first.Rows) != 100 || first.Next == nil || first.Next.Issue != "40099" {
 		t.Fatalf("first page: %d rows, next %+v", len(first.Rows), first.Next)
 	}
-	second := must[SectionPage](t)(m.svc.SectionRows(m.scope(), backlog, first.Next))
+	second := must[SectionPage](t)(m.svc.SectionRows(m.scope(), StatusGroups{}, backlog, first.Next))
 	if len(second.Rows) != 50 || second.Next != nil || second.Rows[0].Card.ID != "40100" {
 		t.Fatalf("second page: %d rows, next %+v", len(second.Rows), second.Next)
 	}
-	if _, err := m.svc.SectionRows(m.scope(), backlog, &SectionCursor{Order: "x"}); !errors.Is(err, ErrInvalidRequest) {
+	if _, err := m.svc.SectionRows(m.scope(), StatusGroups{}, backlog, &SectionCursor{Order: "x"}); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("a cursor with no issue: %v", err)
 	}
 	// A row that moves after the first page was read makes its cursor
@@ -168,10 +222,10 @@ func TestSectionPages(t *testing.T) {
 		}
 	})
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
-	if _, err := m.svc.SectionRows(m.scope(), backlog, first.Next); !errors.Is(err, ErrStalePage) || !errors.Is(err, store.ErrTrackerCacheStale) {
+	if _, err := m.svc.SectionRows(m.scope(), StatusGroups{}, backlog, first.Next); !errors.Is(err, ErrStalePage) || !errors.Is(err, store.ErrTrackerCacheStale) {
 		t.Fatalf("a page after a stale cursor: %v", err)
 	}
-	again := must[SectionPage](t)(m.svc.SectionRows(m.scope(), backlog, nil))
+	again := must[SectionPage](t)(m.svc.SectionRows(m.scope(), StatusGroups{}, backlog, nil))
 	if again.Next == nil || again.Next.Revision == first.Next.Revision {
 		t.Fatalf("the page read again: next %+v, first %+v", again.Next, first.Next)
 	}
@@ -184,7 +238,7 @@ func TestCardShowsWhenItsStatusBegan(t *testing.T) {
 	m := newMirrorFixture(t)
 	m.seedBoard(t)
 	sprint := []Section{{Kind: SectionSprint, Sprint: "1"}}
-	if c := must[BoardView](t)(m.svc.Board(m.scope(), sprint)).Sections[0].Rows[0].Card; c.StatusSince != 0 {
+	if c := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, sprint)).Sections[0].Rows[0].Card; c.StatusSince != 0 {
 		t.Fatalf("a card with no history shows its status since %d", c.StatusSince)
 	}
 	began := time.UnixMilli(1_798_500_000_000).UTC()
@@ -201,7 +255,7 @@ func TestCardShowsWhenItsStatusBegan(t *testing.T) {
 	}
 	must[Outcome](t)(m.svc.tickHistory(t.Context(), m.scope(), Background))
 	want := began.UnixMilli()
-	if c := must[BoardView](t)(m.svc.Board(m.scope(), sprint)).Sections[0].Rows[0].Card; c.StatusSince != want {
+	if c := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, sprint)).Sections[0].Rows[0].Card; c.StatusSince != want {
 		t.Fatalf("board card status since %d, want %d", c.StatusSince, want)
 	}
 	if v := must[IssueView](t)(m.svc.Issue(m.conn.ID, "10001")); v.Card.StatusSince != want {
@@ -258,7 +312,7 @@ func TestAnEditThatKeepsTheStatusKeepsWhenItBegan(t *testing.T) {
 		stored := must[store.MirrorRow](t)(mirrorRow(edited))
 		must[store.MirrorChanges](t)(m.st.WriteMirrorRows(m.root(), store.MirrorRowPage{BoardID: string(testBoard), Lifetime: m.sync(testBoard).Lifetime,
 			Rows: []store.MirrorRow{stored}, ReadAt: beginReadAt(t, m.st, m.root(), m.now().UnixMilli()+updated)}))
-		c := must[BoardView](t)(m.svc.Board(m.scope(), sprint)).Sections[0].Rows[0].Card
+		c := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, sprint)).Sections[0].Rows[0].Card
 		if c.Updated != updated || c.StatusSince != want {
 			t.Fatalf("%s: card updated %d shows its status since %d; want %d", what, c.Updated, c.StatusSince, want)
 		}
@@ -426,8 +480,8 @@ func TestAnEditOfAnOpenTicketShowsItsStatusTimeOnceAFinalReadDecidesIt(t *testin
 	}
 }
 
-// A card whose blob this version cannot read shows its columns and is
-// listed as stale.
+// A card whose blob this version cannot read shows its columns, its
+// title among them, and is listed as stale.
 func TestAStaleCardShowsItsColumns(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
@@ -435,8 +489,8 @@ func TestAStaleCardShowsItsColumns(t *testing.T) {
 	bad := must[store.MirrorRow](t)(mirrorRow(row("10002", 1_799_000_000_001, "b")))
 	bad.Card.Data = []byte(`{"v":0,"title":"old"}`)
 	must[store.MirrorChanges](t)(m.st.WriteMirrorRows(m.root(), store.MirrorRowPage{BoardID: string(testBoard), Lifetime: m.sync(testBoard).Lifetime, Rows: []store.MirrorRow{bad}, ReadAt: beginReadAt(t, m.st, m.root(), m.now().UnixMilli()+1)}))
-	page := must[SectionPage](t)(m.svc.SectionRows(m.scope(), Section{Kind: SectionBacklog}, nil))
-	if !slices.Equal(page.Stale, []string{"10002"}) || page.Rows[0].Card.Key != "WEB-2" || page.Rows[0].Card.Title != "" {
+	page := must[SectionPage](t)(m.svc.SectionRows(m.scope(), StatusGroups{}, Section{Kind: SectionBacklog}, nil))
+	if !slices.Equal(page.Stale, []string{"10002"}) || page.Rows[0].Card.Key != "WEB-2" || page.Rows[0].Card.Title != "Issue 10002" || page.Rows[0].Card.Labels != nil {
 		t.Fatalf("page %+v", page)
 	}
 	if v := must[IssueView](t)(m.svc.Issue(m.conn.ID, "10002")); !v.Stale || v.Card.Status.Name != "To Do" {

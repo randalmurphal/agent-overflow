@@ -49,8 +49,10 @@ func statusHistory(issue string, n int) MirrorHistory {
 func TestDeleteTrackerConnectionDetachesItsMirror(t *testing.T) {
 	t.Parallel()
 	s, jira, root := newMirror(t)
-	tempo := mustCreateTrackerConnection(t, s, NewTrackerConnection{Kind: TrackerKindTempo, Site: "https://api.eu.tempo.io", ParentID: jira.ID, CreatedAt: 11})
+	// The mirror is seeded first: its worklogs are read from Jira, which
+	// adding the Tempo connection makes stale (migration v168).
 	seedFullMirror(t, s, root)
+	tempo := mustCreateTrackerConnection(t, s, NewTrackerConnection{Kind: TrackerKindTempo, Site: "https://api.eu.tempo.io", ParentID: jira.ID, CreatedAt: 11})
 	before := countMirrorRows(t, s.db)
 	deleted, err := s.DeleteTrackerConnection(jira.ID)
 	if err != nil || !slices.Equal(deleted, []string{jira.ID, tempo.ID}) {
@@ -156,10 +158,10 @@ func TestUnlistedBoardIsRetiredThenDrained(t *testing.T) {
 	if _, ok, err := s.GetMirrorBoard(root, "10"); err != nil || ok {
 		t.Errorf("retired board reads: %v, %v", ok, err)
 	}
-	if page, err := s.ListMirrorSection(root, "10", MirrorSection{Kind: MirrorSectionBacklog}, MirrorRowKey{}); err != nil || len(page.Rows) != 0 {
+	if page, err := s.ListMirrorSection(root, "10", MirrorRegroup{}, MirrorSection{Kind: MirrorSectionBacklog}, MirrorRowKey{}); err != nil || len(page.Rows) != 0 {
 		t.Errorf("retired board's backlog = %d rows, %v", len(page.Rows), err)
 	}
-	if counts, err := s.CountMirrorSections(root, "10"); err != nil || counts.All.Rows != 0 {
+	if counts, err := s.CountMirrorSections(root, "10", MirrorRegroup{}); err != nil || counts.All.Rows != 0 {
 		t.Errorf("retired board's counts = %+v, %v", counts, err)
 	}
 	if _, ok, err := s.GetMirrorSync(root, "10", testNow); err != nil || ok {
@@ -264,9 +266,10 @@ func TestCleanupSweepsIssuesWhoseLinksGo(t *testing.T) {
 	linkIssue(t, s, "unlinked", "10001")
 	linkIssue(t, s, "deleted", "10002")
 	seedLinearSource(t, s, "retired", 1)
-	mustSetThreadTicket(t, s, ThreadTicket{ThreadID: "retired", Ticket: TicketRef{Kind: TrackerKindJira, Site: mirrorSite, IssueID: "10003"},
-		IssueKey: "WEB-3", Origin: TicketOriginManual, LinkedAt: 10}, true)
+	// Forked before the link, so the fork has none of its own.
 	mustPointerFork(t, s, "retired", "retired-fork", ForkCut{})
+	seedThreadTicket(t, s, ThreadTicket{ThreadID: "retired", Ticket: TicketRef{Kind: TrackerKindJira, Site: mirrorSite, IssueID: "10003"},
+		IssueKey: "WEB-3", Origin: TicketOriginManual, LinkedAt: 10})
 	linkIssue(t, s, "moved", "10004")
 	linkIssue(t, s, "kept", "10005")
 	mustWriteRowPage(t, s, root, webPage("10", webRow("10006", 5, "a")), nil)
@@ -278,7 +281,7 @@ func TestCleanupSweepsIssuesWhoseLinksGo(t *testing.T) {
 		t.Fatalf("linked issues = %v, %v, %v", linked, more, err)
 	}
 
-	if _, err := s.ClearThreadTicket("unlinked"); err != nil {
+	if _, _, err := s.ClearThreadTicket("unlinked"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeleteThread("deleted"); err != nil {
@@ -321,7 +324,7 @@ func TestCleanupSweepIsLeafFirstAndBounded(t *testing.T) {
 		if _, err := replaceHistory(s, root, h); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.ClearThreadTicket("link-" + id); err != nil {
+		if _, _, err := s.ClearThreadTicket("link-" + id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -439,7 +442,7 @@ func TestEveryMirrorDeleteIsBounded(t *testing.T) {
 		logs = append(logs, MirrorWorklog{ID: fmt.Sprintf("w%d", i), IssueID: "1", AuthorID: "acc-user1", Day: "2026-01-05", SpentSeconds: 60})
 	}
 	for i, l := range [][]MirrorWorklog{logs, nil} {
-		if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-05", mirrorReadAt(int64(i+1)), l); err != nil {
+		if _, err := s.ReplaceMirrorWorklogs(root, 0, "acc-user1", "2026-01-05", "2026-01-05", mirrorReadAt(int64(i+1)), l); err != nil {
 			t.Fatal(err)
 		}
 	}

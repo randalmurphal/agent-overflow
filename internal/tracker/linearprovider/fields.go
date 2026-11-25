@@ -81,6 +81,15 @@ func (p *Provider) CreateFields(_ context.Context, project tracker.ProjectID, is
 	return out, nil
 }
 
+// noMoveScope refuses a move's scope: a Linear move sets the state alone
+// and takes no fields (moves), so no form asks for their values.
+func noMoveScope(scope tracker.FieldScope) error {
+	if move, ok := scope.Move(); ok {
+		return fmt.Errorf("linearprovider: %w: move %s takes no fields", tracker.ErrInvalidInput, move)
+	}
+	return nil
+}
+
 // scopeTeam is the team of a field scope: the issue's, read, or the
 // create's project.
 func (p *Provider) scopeTeam(ctx context.Context, scope tracker.FieldScope) (string, error) {
@@ -143,6 +152,9 @@ func capped[T any](rows []T) ([]T, bool) {
 // out, whose name, display name or email starts with text, case
 // ignored; every one for empty text, up to pickLimit.
 func (p *Provider) AssignableUsers(ctx context.Context, scope tracker.FieldScope, text string) (tracker.UserList, error) {
+	if err := noMoveScope(scope); err != nil {
+		return tracker.UserList{}, err
+	}
 	members, err := scopeCatalog(ctx, scope, "members", p.c.IssueMembers, p.c.TeamMembers)
 	if err != nil {
 		return tracker.UserList{}, err
@@ -177,6 +189,9 @@ func people(members []linear.User) []linear.User {
 // users. Title, description, parent (typed as an identifier) and due
 // date offer none; any other field is unsupported.
 func (p *Provider) Choices(ctx context.Context, scope tracker.FieldScope, field tracker.FieldID, text string) (tracker.ChoiceList, error) {
+	if err := noMoveScope(scope); err != nil {
+		return tracker.ChoiceList{}, err
+	}
 	var out []tracker.Choice
 	keep := func(id, name string) {
 		if hasPrefixFold(name, text) {

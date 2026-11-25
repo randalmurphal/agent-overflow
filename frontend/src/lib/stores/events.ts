@@ -95,6 +95,7 @@ import {
 } from './systems.svelte';
 import { applyNewThreadDefaults, type NewThreadDefaultsChangedEvent } from './newThreadDefaults';
 import { applyProviderAccountsChanged } from './providerAccounts.svelte';
+import { applyTrackerConnectionsChanged } from './trackerConnections.svelte';
 import { resyncKeybindings } from './keybindings.svelte';
 import { resyncEditorPreference } from './editors.svelte';
 import {
@@ -188,6 +189,7 @@ import {
 } from './threadTitleGeneration.svelte';
 import { applyPRReviewCILog, applyPRReviewCIUpdated, applyPRReviewUpdated } from './eventsPRReview';
 import { applyPipelineUpdated, applyPullsUpdated } from './eventsPulls';
+import { applyTrackerBoardUpdated, applyTrackerIssueUpdated } from './eventsTracker';
 import { setupSessionImportEvents } from './eventsSessionImport';
 import {
   applyHighlightDiffSeed,
@@ -438,6 +440,11 @@ export function setupEventListeners(): () => void {
   // nothing that follows the set is dropped.
   const cancelProviderAccountListing = wailsEventOn('provider:account_listing', (_evt, origin) => {
     applyProviderAccountsChanged(backendKeyForOrigin(origin.backendId));
+  });
+  // tracker:connections_updated — a row of the computer's tracker
+  // connection list, or a problem it shows, changed; the list is read again.
+  const cancelTrackerConnectionsUpdated = wailsEventOn('tracker:connections_updated', (_evt, origin) => {
+    applyTrackerConnectionsChanged(backendKeyForOrigin(origin.backendId));
   });
   // review:comments-changed — one inline review comment SET moved: a plan's
   // (keyed by plan item) or a diff review's (keyed by scope + source key).
@@ -805,6 +812,11 @@ export function setupEventListeners(): () => void {
   // pumps' frames (a pipeline's logs ride pr:ci_log above).
   const cancelPullsUpdated = wailsEventOn('pulls:updated', applyPullsUpdated);
   const cancelPipelineUpdated = wailsEventOn('ci:pipeline_updated', applyPipelineUpdated);
+  // The Issues pane's tracker board: what a sync changed, read as a patch.
+  const cancelTrackerBoardUpdated = wailsEventOn('tracker:board_updated', applyTrackerBoardUpdated);
+  // An open ticket of the Issues pane: its view changed, its reads failed
+  // or recovered, or its subscription ended.
+  const cancelTrackerIssueUpdated = wailsEventOn('tracker:issue_updated', applyTrackerIssueUpdated);
   // workflow:* — the typed run-record channel. Item/phase transitions keep
   // the overlay's run cache live (and the sidebar's needs-attention badge
   // authoritative) without polling; engine-state carries the one global pause
@@ -876,6 +888,7 @@ export function setupEventListeners(): () => void {
     cancelNewThreadDefaults();
     cancelProviderAccountsChanged();
     cancelProviderAccountListing();
+    cancelTrackerConnectionsUpdated();
     cancelReviewComments();
     cancelSessionDied();
     cancelTodoUpdate();
@@ -921,6 +934,8 @@ export function setupEventListeners(): () => void {
     cancelPRCILog();
     cancelPullsUpdated();
     cancelPipelineUpdated();
+    cancelTrackerBoardUpdated();
+    cancelTrackerIssueUpdated();
     cancelWorkflowError();
     cancelWorkflowItemState();
     cancelWorkflowPhaseState();

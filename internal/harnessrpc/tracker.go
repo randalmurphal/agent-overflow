@@ -139,6 +139,44 @@ func (h *Harness) HarnessTrackerRequests(since int) (trackerfake.RequestLog, err
 	return h.config.Trackers.engine.Requests(since), nil
 }
 
+// HarnessTrackerFault arms a fault control on the fake trackers
+// (trackerfake.Fault), after every one armed: a hold keeps the requests it
+// matches unanswered until HarnessTrackerRelease, and the log shows each
+// as held meanwhile. HarnessReset disarms them.
+func (h *Harness) HarnessTrackerFault(raw json.RawMessage) error {
+	if h.config.Trackers == nil {
+		return errors.New("this harness boot has no fake trackers")
+	}
+	var fault trackerfake.Fault
+	if err := decodeStrictJSON("tracker fault", raw, &fault); err != nil {
+		return err
+	}
+	return h.config.Trackers.engine.AddFault(fault)
+}
+
+// TrackerRelease names the holds HarnessTrackerRelease ends: those armed
+// on exactly Origin and Route. Drop closes their requests' connections
+// with nothing applied instead of answering them.
+type TrackerRelease struct {
+	Origin trackerfake.Origin `json:"origin"`
+	Route  string             `json:"route"`
+	Drop   bool               `json:"drop,omitempty"`
+}
+
+// HarnessTrackerRelease ends the holds a release names: their faults stop
+// matching, and the requests they keep are answered as usual. A release
+// naming no armed hold is refused.
+func (h *Harness) HarnessTrackerRelease(raw json.RawMessage) error {
+	if h.config.Trackers == nil {
+		return errors.New("this harness boot has no fake trackers")
+	}
+	var release TrackerRelease
+	if err := decodeStrictJSON("tracker release", raw, &release); err != nil {
+		return err
+	}
+	return h.config.Trackers.engine.Release(release.Origin, release.Route, release.Drop)
+}
+
 // resetTrackers ends the App's tracker connections, then empties the fake
 // trackers: no connection, subscription or request of one test reaches
 // the next.

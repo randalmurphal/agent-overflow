@@ -24,18 +24,18 @@ var (
 	// the issue's generation, those the stored history lacks or holds
 	// otherwise.
 	mirrorHistoryProbeSQL = `SELECT c.key, s.root_id IS NOT NULL FROM json_each(?2) c
-		LEFT JOIN tracker_cache_changes s ON s.root_id = ?1 AND s.issue_id = c.value ->> 'i' AND s.gen = c.value ->> 'g'
+		LEFT JOIN tracker_cache_changes s ON s.root_id = CAST(?1 AS INTEGER) AND s.issue_id = c.value ->> 'i' AND s.gen = c.value ->> 'g'
 		  AND s.kind = c.value ->> 'k' AND s.seq = c.value ->> 'q'
 		WHERE s.root_id IS NULL OR s.at IS NOT c.value ->> 't' OR s.author_id IS NOT c.value ->> 'a'
 		   OR s.board_id IS NOT c.value ->> 'b' OR s.from_value IS NOT c.value ->> 'f' OR s.to_value IS NOT c.value ->> 'o'
 		   OR s.from_number IS NOT c.value ->> 'x' OR s.to_number IS NOT c.value ->> 'y'`
 	// mirrorHistoryPurgeSQL deletes a chunk of an issue's changes of the
 	// generations other than ?3, walking the key ranges below and above it.
-	mirrorHistoryPurgeSQL = `DELETE FROM tracker_cache_changes WHERE root_id = ?1 AND issue_id = ?2 AND (gen, kind, seq) IN (
+	mirrorHistoryPurgeSQL = `DELETE FROM tracker_cache_changes WHERE root_id = CAST(?1 AS INTEGER) AND issue_id = ?2 AND (gen, kind, seq) IN (
 		SELECT gen, kind, seq FROM (
-		  SELECT gen, kind, seq FROM tracker_cache_changes WHERE root_id = ?1 AND issue_id = ?2 AND gen < ?3
+		  SELECT gen, kind, seq FROM tracker_cache_changes WHERE root_id = CAST(?1 AS INTEGER) AND issue_id = ?2 AND gen < ?3
 		  UNION ALL
-		  SELECT gen, kind, seq FROM tracker_cache_changes WHERE root_id = ?1 AND issue_id = ?2 AND gen > ?3)
+		  SELECT gen, kind, seq FROM tracker_cache_changes WHERE root_id = CAST(?1 AS INTEGER) AND issue_id = ?2 AND gen > ?3)
 		LIMIT ` + fmt.Sprint(clearMirrorChunk) + `)`
 	// mirrorHistorySwitchSQL makes generation ?3, complete from ?4, read
 	// for update time ?5 and boards revision ?6, answered at ?7 with a wait
@@ -48,7 +48,7 @@ var (
 		return `UPDATE tracker_cache_issues SET history_gen = ?3, history_from = ?4, history_for = ?5, history_boards_rev = ?6,
 		history_answered_at = ?7, history_wait = ?8, history_receipt = ?9 + 1, status_since = ` + since + `, status_final_for = ` + finalFor + `,
 		status_read_at = ` + read + `
-		WHERE root_id = ?1 AND issue_id = ?2 AND history_receipt = ?9`
+		WHERE root_id = CAST(?1 AS INTEGER) AND issue_id = ?2 AND history_receipt = ?9`
 	}()
 )
 
@@ -96,7 +96,7 @@ func (s *Store) replaceStagedHistory(rootID, sweep int64, in mirrorHistoryInput,
 	// From here no batch write changes the issue's changes: it stages the
 	// issue instead, behind this one.
 	err = s.mirrorSweptWrite(rootID, sweep, action, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE tracker_cache_issues SET history_dirty = 1 WHERE root_id = ?1 AND issue_id = ?2`, rootID, in.h.IssueID)
+		_, err := tx.Exec(`UPDATE tracker_cache_issues SET history_dirty = 1 WHERE root_id = CAST(?1 AS INTEGER) AND issue_id = ?2`, rootID, in.h.IssueID)
 		return err
 	})
 	if err != nil {
@@ -222,7 +222,7 @@ func (s *Store) probeMirrorHistory(rootID int64, in mirrorHistoryInput, gen int6
 	}
 	var removes int
 	if err := s.reader().QueryRow(`SELECT `+mirrorRemovalsSQL+` FROM json_each(?2) h
-		CROSS JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = h.value ->> 'i'`, rootID, listed).Scan(&removes); err != nil {
+		CROSS JOIN tracker_cache_issues i ON i.root_id = CAST(?1 AS INTEGER) AND i.issue_id = h.value ->> 'i'`, rootID, listed).Scan(&removes); err != nil {
 		return probe, fmt.Errorf("count changes to remove: %w", err)
 	}
 	probe.extra = removes > 0
@@ -279,7 +279,7 @@ func (s *Store) finishMirrorHistoryInPlace(rootID int64, in mirrorHistoryInput, 
 	err = s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
 		now := st
 		if err := tx.QueryRow(`SELECT history_receipt, updated_at, status_since, status_final_for FROM tracker_cache_issues
-			WHERE root_id = ?1 AND issue_id = ?2`, rootID, in.h.IssueID).Scan(&now.receipt, &now.updatedAt, &now.since, &now.finalFor); err != nil {
+			WHERE root_id = CAST(?1 AS INTEGER) AND issue_id = ?2`, rootID, in.h.IssueID).Scan(&now.receipt, &now.updatedAt, &now.since, &now.finalFor); err != nil {
 			return fmt.Errorf("read the receipt: %w", err)
 		}
 		if now.receipt != st.receipt {
@@ -295,7 +295,7 @@ func (s *Store) finishMirrorHistoryInPlace(rootID int64, in mirrorHistoryInput, 
 			return fmt.Errorf("write history times: %w", err)
 		}
 		changed = len(missing) > 0 || len(shown) > 0
-		if _, err := tx.Exec(`UPDATE tracker_cache_issues SET history_dirty = 0 WHERE root_id = ?1 AND issue_id = ?2`, rootID, in.h.IssueID); err != nil {
+		if _, err := tx.Exec(`UPDATE tracker_cache_issues SET history_dirty = 0 WHERE root_id = CAST(?1 AS INTEGER) AND issue_id = ?2`, rootID, in.h.IssueID); err != nil {
 			return fmt.Errorf("clear the staging mark: %w", err)
 		}
 		return nil
@@ -371,7 +371,7 @@ func (s *Store) purgeMirrorHistoryGens(rootID int64, issueID string, keep int64,
 			}
 			if done = n < clearMirrorChunk; done {
 				if _, err := tx.Exec(`UPDATE tracker_cache_issues SET history_dirty = 0
-					WHERE root_id = ?1 AND issue_id = ?2 AND history_gen = ?3 AND history_dirty = 1`, rootID, issueID, keep); err != nil {
+					WHERE root_id = CAST(?1 AS INTEGER) AND issue_id = ?2 AND history_gen = ?3 AND history_dirty = 1`, rootID, issueID, keep); err != nil {
 					return fmt.Errorf("clear the staging mark: %w", err)
 				}
 			}

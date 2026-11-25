@@ -1,5 +1,5 @@
 // Lazy, cached loaders for each Settings section so opening Settings parses
-// only the active page instead of all 29 section components up front, while
+// only the active page instead of all section components up front, while
 // keeping warm tab revisits synchronous via `peek()`.
 //
 // `pages.ts` stays as the static test map for `fields.test.ts`, which mounts
@@ -39,6 +39,8 @@ export const SETTINGS_PAGE_LOADERS: Record<SettingsSection, CachedComponentLoade
   projects: createCachedComponentLoader(() => import('./ProjectsSettings.svelte')),
   git: createCachedComponentLoader(() => import('./GitSettings.svelte')),
   editor: createCachedComponentLoader(() => import('./EditorSection.svelte')),
+  'tracker-connections': createCachedComponentLoader(() => import('./TrackerConnectionsSettings.svelte')),
+  'tracker-boards': createCachedComponentLoader(() => import('./TrackerBoardsSettings.svelte')),
   remote: createCachedComponentLoader(() => import('./RemoteAccessSettings.svelte')),
   systems: createCachedComponentLoader(() => import('./SystemsSection.svelte')),
   'agent-access': createCachedComponentLoader(() => import('./AgentAccessSettings.svelte')),

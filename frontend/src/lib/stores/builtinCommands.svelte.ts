@@ -97,13 +97,14 @@ import { toggleReadAloud } from './readAloud.svelte';
 import { PICKER_TOGGLE_INPUT_EVENT, type GitDialogKind } from './eventNames';
 import { startPaneTitleRename } from './paneTitleRename';
 import { registerWorkflowCommands } from './workflowCommands.svelte';
+import { isIssuesPaneFocused, registerIssuesCommands } from './issuesCommands';
 import { isPullsPaneFocused, registerPullsCommands } from './pullsCommands.svelte';
 import { isBrowserPaneFocused, registerBrowserCommands } from './browserCommands.svelte';
 import {
   getWorkflowsOverlayTop,
   isWorkflowsPaneFocused,
 } from './workflowsOverlay.svelte';
-import { focusedToolDetailOpen, focusedToolKind } from './toolPanes.svelte';
+import { focusedToolDetailOpen, focusedToolKind, isToolAvailable } from './toolPanes.svelte';
 import {
   escapeSettingsOverlay,
   isSettingsOpen,
@@ -1165,6 +1166,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   // so this file doesn't grow another surface's worth of registrations.
   registerWorkflowCommands();
   registerPullsCommands();
+  registerIssuesCommands();
   registerBrowserCommands();
 }
 
@@ -1233,6 +1235,7 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     toolDetailOpen: focusedToolDetailOpen(),
     workflowsPaneFocused: isWorkflowsPaneFocused(),
     pullsPaneFocused: isPullsPaneFocused(),
+    issuesPaneFocused: isIssuesPaneFocused(),
     browserPaneFocused: isBrowserPaneFocused(),
     // The run detail's bare keys act on the pane, so an overlay above it
     // (settings, a dialog) leaves them to the overlay.
@@ -1260,6 +1263,7 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     threadsOperate: hasScope('threads:operate', selectedBackend()),
     terminalOperate: hasScope('terminal:operate', selectedBackend()),
     gitOperate: hasScope('git:operate', selectedBackend()),
+    trackerRead: isToolAvailable('issues'),
     ...extra,
   };
   return {

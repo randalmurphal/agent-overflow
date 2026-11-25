@@ -8,6 +8,7 @@ import (
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/pump"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/transport"
@@ -84,10 +85,11 @@ func trackerRunError(ctx context.Context, err error) error {
 }
 
 // ProjectTrackerBoards lists the boards a project's board picker shows, in
-// its order, and which opens first.
+// its order, and which opens first, each named and with its connection's
+// kind, label and state.
 //
 //ao:scope tracker:read
-func (a *App) ProjectTrackerBoards(ctx context.Context, projectID string) ([]trackerapp.ProjectBoard, error) {
+func (a *App) ProjectTrackerBoards(ctx context.Context, projectID string) ([]trackerapp.BoardChoice, error) {
 	svc, err := a.trackerService()
 	if err != nil {
 		return nil, err
@@ -96,31 +98,51 @@ func (a *App) ProjectTrackerBoards(ctx context.Context, projectID string) ([]tra
 	return out, trackerError(err)
 }
 
-// SetProjectTrackerBoards makes boards, in order, the boards a project's
-// picker shows, and answers the list stored. A board it leaves out that
-// no other project lists stops being kept on this computer, and its open
-// views end.
+// TrackerBoardChoices lists the boards every project of this computer
+// lists, as ProjectTrackerBoards names each: the Issues pane's board
+// picker, which asks every attached computer.
 //
-//ao:scope tracker:operate
-func (a *App) SetProjectTrackerBoards(ctx context.Context, projectID string, boards []trackerapp.ProjectBoard) ([]trackerapp.ProjectBoard, error) {
+//ao:scope tracker:read
+//ao:route all
+func (a *App) TrackerBoardChoices(ctx context.Context) ([]trackerapp.BoardChoice, error) {
 	svc, err := a.trackerService()
 	if err != nil {
 		return nil, err
 	}
-	out, err := svc.SetProjectBoards(projectID, boards)
+	out, err := svc.BoardChoices()
+	return out, trackerError(err)
+}
+
+// SetProjectTrackerBoards makes boards, in order, the boards a project's
+// picker shows, and answers the list stored as ProjectTrackerBoards reads
+// it. held is the list the picker showed and built boards from; a save
+// built from a list that is no longer the stored one is refused. A board
+// it adds is stored with the name and tracker project the picker showed.
+// A board it leaves out that no other project lists stops being kept on
+// this computer, and its open views end.
+//
+//ao:scope tracker:operate
+func (a *App) SetProjectTrackerBoards(ctx context.Context, projectID string, held []trackerapp.BoardRef, boards []trackerapp.ProjectBoard) ([]trackerapp.BoardChoice, error) {
+	svc, err := a.trackerService()
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.SetProjectBoards(projectID, held, boards)
 	return out, trackerError(err)
 }
 
 // SubscribeTrackerBoard subscribes the calling client to a board its
-// project lists, with the first page of each section asked for. The
+// project lists, with the first page of each section asked for, or of the
+// Board screen's sections when none is (trackerapp.Service.Board). The
 // answer comes from this computer's copy of the board; the board's reads
-// of the tracker follow it, and tracker:board_updated tells what they
-// change. The subscription is released by ReleaseTrackerSubscription or
-// when the client's connection ends.
+// of the tracker follow it once a subscription shows it (visible here, or
+// SetTrackerSubscriptionVisible later), and tracker:board_updated tells
+// what they change. The subscription is released by
+// ReleaseTrackerSubscription or when the client's connection ends.
 //
 //ao:scope tracker:read
 //ao:callerbound
-func (a *App) SubscribeTrackerBoard(ctx context.Context, projectID, connectionID, boardID string, sections []trackerapp.Section) (trackerapp.BoardSubscription, error) {
+func (a *App) SubscribeTrackerBoard(ctx context.Context, projectID, connectionID, boardID string, sections []trackerapp.Section, visible bool) (trackerapp.BoardSubscription, error) {
 	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		return trackerapp.BoardSubscription{}, err
@@ -130,7 +152,7 @@ func (a *App) SubscribeTrackerBoard(ctx context.Context, projectID, connectionID
 		return trackerapp.BoardSubscription{}, err
 	}
 	scope := trackerapp.Scope{Connection: connectionID, Board: tracker.BoardID(boardID)}
-	sub, err := svc.SubscribeBoard(projectID, scope, sections, trackerSubscriptionTie(conn, svc))
+	sub, err := svc.SubscribeBoard(projectID, scope, sections, visible, trackerSubscriptionTie(conn, svc))
 	return sub, trackerError(err)
 }
 
@@ -150,17 +172,18 @@ func trackerSubscriptionTie(conn *transport.ConnState, svc *trackerapp.Service) 
 func trackerSubscriptionCleanupKey(id string) string { return "tracker-subscription:" + id }
 
 // TrackerBoard reads a subscribed board whole again, with the first page
-// of each section asked for: after an event that says to read it again,
-// a reconnect, or a page that went stale.
+// of each section asked for, or of the Board screen's sections when none
+// is (trackerapp.Service.Board): after an event that says to read it
+// again, a reconnect, or a page that went stale.
 //
 //ao:scope tracker:read
 //ao:route home
 func (a *App) TrackerBoard(ctx context.Context, subscriptionID string, sections []trackerapp.Section) (trackerapp.BoardView, error) {
-	svc, scope, err := a.trackerSubscriptionBoard(subscriptionID)
+	svc, scope, groups, err := a.trackerSubscriptionBoard(subscriptionID)
 	if err != nil {
 		return trackerapp.BoardView{}, err
 	}
-	out, err := svc.Board(scope, sections)
+	out, err := svc.Board(scope, groups, sections)
 	return out, trackerError(err)
 }
 
@@ -170,11 +193,11 @@ func (a *App) TrackerBoard(ctx context.Context, subscriptionID string, sections 
 //ao:scope tracker:read
 //ao:route home
 func (a *App) TrackerSectionRows(ctx context.Context, subscriptionID string, section trackerapp.Section, after *trackerapp.SectionCursor) (trackerapp.SectionPage, error) {
-	svc, scope, err := a.trackerSubscriptionBoard(subscriptionID)
+	svc, scope, groups, err := a.trackerSubscriptionBoard(subscriptionID)
 	if err != nil {
 		return trackerapp.SectionPage{}, err
 	}
-	out, err := svc.SectionRows(scope, section, after)
+	out, err := svc.SectionRows(scope, groups, section, after)
 	return out, trackerError(err)
 }
 
@@ -185,7 +208,7 @@ func (a *App) TrackerSectionRows(ctx context.Context, subscriptionID string, sec
 //ao:scope tracker:read
 //ao:route home
 func (a *App) TrackerBoardPatch(ctx context.Context, subscriptionID string, sections []trackerapp.Section, issues []string, held trackerapp.TotalsAt) (trackerapp.BoardPatch, error) {
-	svc, scope, err := a.trackerSubscriptionBoard(subscriptionID)
+	svc, scope, groups, err := a.trackerSubscriptionBoard(subscriptionID)
 	if err != nil {
 		return trackerapp.BoardPatch{}, err
 	}
@@ -193,22 +216,22 @@ func (a *App) TrackerBoardPatch(ctx context.Context, subscriptionID string, sect
 	for i, id := range issues {
 		ids[i] = tracker.IssueID(id)
 	}
-	out, err := svc.BoardPatch(scope, sections, ids, held)
+	out, err := svc.BoardPatch(scope, groups, sections, ids, held)
 	return out, trackerError(err)
 }
 
-// trackerSubscriptionBoard is the service and the board a board
-// subscription's handle names.
-func (a *App) trackerSubscriptionBoard(subscriptionID string) (*trackerapp.Service, trackerapp.Scope, error) {
+// trackerSubscriptionBoard is the service, the board a board
+// subscription's handle names and the status groups its reads apply.
+func (a *App) trackerSubscriptionBoard(subscriptionID string) (*trackerapp.Service, trackerapp.Scope, trackerapp.StatusGroups, error) {
 	svc, err := a.trackerService()
 	if err != nil {
-		return nil, trackerapp.Scope{}, err
+		return nil, trackerapp.Scope{}, trackerapp.StatusGroups{}, err
 	}
-	scope, err := svc.SubscriptionBoard(subscriptionID)
+	scope, groups, err := svc.SubscriptionBoard(subscriptionID)
 	if err != nil {
-		return nil, trackerapp.Scope{}, trackerError(err)
+		return nil, trackerapp.Scope{}, trackerapp.StatusGroups{}, trackerError(err)
 	}
-	return svc, scope, nil
+	return svc, scope, groups, nil
 }
 
 // SetTrackerSubscriptionVisible records whether the client shows what it
@@ -247,7 +270,7 @@ func (a *App) RefreshTrackerSubscription(ctx context.Context, subscriptionID str
 	case errors.Is(err, pump.ErrNotTaken):
 		return errorsx.Public("tracker_refresh_not_run", "this view was busy with an earlier read from the tracker, so this refresh did not run; refresh again", err)
 	default:
-		return errorsx.Public("tracker_refresh_waiting", "this view is still reading from the tracker; it updates as each read finishes, so refresh again if what you expect does not appear", err)
+		return errorsx.Public("tracker_refresh_waiting", "this refresh was still reading from the tracker when its answer was due; what it finds shows as it lands, so refresh again if what you expect does not appear", err)
 	}
 	return trackerError(err)
 }
@@ -289,10 +312,18 @@ func trackerError(err error) error {
 // kind (tracker_failed_<kind>) with trackerapp's sentence for it, unless
 // it refused the input or the request before sending it.
 func trackerRefusal(err error) (code, message string) {
+	var invalid *trackerapp.InvalidError
+	var unreadable *trackerapp.SetupFileError
+	var refusedSetup *trackerapp.SetupError
+	var unsureWrite *trackerapp.SetupWriteError
 	failed, isCall := errors.AsType[*trackerapp.CallFailure](err)
 	switch {
 	case err == nil:
 		return "", ""
+	case errors.As(err, &invalid):
+		return "tracker_connection_invalid", invalid.Reason
+	case errors.Is(err, store.ErrTrackerConnectionExists):
+		return "tracker_connection_exists", "this computer already has that connection (the same Jira site and email, the same Linear workspace, or Tempo for that Jira connection); use the one listed"
 	case errors.Is(err, tracker.ErrUnsupported):
 		return "tracker_unsupported", "this tracker does not support that"
 	case errors.Is(err, trackerapp.ErrInvalidRequest), errors.Is(err, tracker.ErrInvalidInput):
@@ -316,11 +347,23 @@ func trackerRefusal(err error) (code, message string) {
 	case errors.Is(err, trackerapp.ErrNotMirrored):
 		return "tracker_board_not_read", "this computer has not read this board from the tracker yet; it shows once the first read finishes"
 	case errors.Is(err, trackerapp.ErrStalePage):
-		return "tracker_page_stale", "the board changed since this section was read; read the section again from its start"
+		return "tracker_page_stale", "the board, or the project's status groups, changed since this section was read; read the section again from its start"
 	case errors.Is(err, trackerapp.ErrProjectNotFound):
 		return "tracker_project_missing", "this project no longer exists on this computer"
+	case errors.Is(err, trackerapp.ErrBoardsChanged):
+		return "tracker_boards_changed", "this change was not saved: the project's boards changed after this list was read"
 	case errors.Is(err, trackerapp.ErrInvalidBoards):
 		return "tracker_boards_refused", "this board list cannot be saved; fix what the detail names and save again"
+	case errors.As(err, &unreadable):
+		return "tracker_setup_unreadable", "this project's tracker setup cannot be read from " + unreadable.Path + " on the computer that holds the project (" +
+			unreadable.Reason + "); fix the file or remove it, and it is read again at its next use"
+	case errors.As(err, &unsureWrite):
+		return "tracker_setup_unsure", "this change may or may not be stored: the computer that holds the project could not finish updating " +
+			unsureWrite.Path + " (" + unsureWrite.Err.Error() + "); read the project's tracker setup again before you change it again"
+	case errors.Is(err, trackerapp.ErrSetupNewer):
+		return "tracker_setup_newer", "this part of the setup was saved by a newer version of Agent Overflow; update this computer to change it"
+	case errors.As(err, &refusedSetup):
+		return "tracker_setup_refused", "this setup cannot be saved: " + refusedSetup.Reason
 	case errors.Is(err, trackerapp.ErrUnknownAttachment):
 		return "tracker_attachment_unknown", "this ticket no longer shows that attachment; look at the ticket again"
 	}

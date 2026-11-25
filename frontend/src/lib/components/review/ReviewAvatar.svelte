@@ -13,9 +13,12 @@
     size?: number;
     /** Replaces the initials drawn from the name (the reader's own "You"). */
     initials?: string;
+    /** Replaces the hover text, for a login that is no handle (a tracker
+     * account ID). */
+    title?: string;
   }
 
-  let { login, name, size = 28, initials }: Props = $props();
+  let { login, name, size = 28, initials, title }: Props = $props();
 
   const TONES = [
     'bg-accent/20 text-accent',
@@ -28,7 +31,7 @@
   ];
 
   const author = $derived({ authorLogin: login, authorName: name });
-  const label = $derived(name ? `${authorDisplayName(author)} (@${login})` : `@${login}`);
+  const label = $derived(title ?? (name ? `${authorDisplayName(author)} (@${login})` : `@${login}`));
 </script>
 
 <span

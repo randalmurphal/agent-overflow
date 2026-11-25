@@ -31,7 +31,7 @@ func listMirrorBoards(t *testing.T, s *Store, projectID, connectionID string, bo
 	for _, b := range boards {
 		list = append(list, ProjectTrackerBoard{ConnectionID: connectionID, BoardID: b})
 	}
-	if _, _, err := s.ReplaceProjectTrackerBoards(projectID, list); err != nil {
+	if _, _, err := replaceFromStored(s, projectID, list); err != nil {
 		t.Fatalf("list boards %v: %v", boards, err)
 	}
 }
@@ -331,11 +331,16 @@ func seedFullMirror(t *testing.T, s *Store, root int64) {
 	if _, err := storeTicket(t, s, root, currentSweep(s, root), "10001", 7, 7, []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-05", mirrorReadAt(1), []MirrorWorklog{
+	if _, err := s.ReplaceMirrorWorklogs(root, 0, "acc-user1", "2026-01-05", "2026-01-05", mirrorReadAt(1), []MirrorWorklog{
 		{ID: "w1", IssueID: "10001", AuthorID: "acc-user1", Day: "2026-01-05", SpentSeconds: 3600}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := s.KeepMirrorTicket(root, "10001", 1, 1, mirrorReadOf(root, 7)); err != nil {
+		t.Fatal(err)
+	}
+	// A linked issue a read missed, kept by its link.
+	linkIssue(t, s, "seed-absent", "10009")
+	if _, err := s.MarkMirrorIssuesMissing(root, mirrorReadOf(root, 8), []string{"10009"}); err != nil {
 		t.Fatal(err)
 	}
 	for table, n := range countMirrorRows(t, s.db) {

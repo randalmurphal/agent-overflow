@@ -50,7 +50,7 @@ func TestMirrorSweepFencesReadsOutsideABoard(t *testing.T) {
 		if _, err := s.UpsertMirrorCards(root, read, []MirrorCard{webCard("10001", 5)}, MirrorCatalog{}, mirrorReadAt(1)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.ClearThreadTicket("linked"); err != nil {
+		if _, _, err := s.ClearThreadTicket("linked"); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
@@ -98,7 +98,7 @@ func TestMirrorSweepThatDeletesNothingLeavesTheSweep(t *testing.T) {
 	if _, err := s.UpsertMirrorCards(root, read, []MirrorCard{webCard("10001", 5)}, MirrorCatalog{}, mirrorReadAt(1)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ClearThreadTicket("linked"); err != nil {
+	if _, _, err := s.ClearThreadTicket("linked"); err != nil {
 		t.Fatal(err)
 	}
 	pauses := 0

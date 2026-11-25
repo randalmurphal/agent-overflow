@@ -239,7 +239,7 @@ func TestStatusEvidence(t *testing.T) {
 }
 
 // Every blob that is not exactly the current version is a miss: its
-// record reads as its columns and nothing panics.
+// record reads as its columns, the title among them, and nothing panics.
 func TestBlobMisses(t *testing.T) {
 	t.Parallel()
 	c := card("10001", 1_799_000_000_000)
@@ -247,9 +247,9 @@ func TestBlobMisses(t *testing.T) {
 	m := must[store.MirrorCard](t)(mirrorCard(c))
 	good := string(m.Data)
 	misses := map[string]string{
-		"older version":  strings.Replace(good, `"v":1`, `"v":0`, 1),
-		"newer version":  strings.Replace(good, `"v":1`, `"v":2`, 1),
-		"unknown member": strings.Replace(good, `"v":1`, `"v":1,"x":true`, 1),
+		"older version":  strings.Replace(good, `"v":2`, `"v":1`, 1),
+		"newer version":  strings.Replace(good, `"v":2`, `"v":3`, 1),
+		"unknown member": strings.Replace(good, `"v":2`, `"v":2,"x":true`, 1),
 		"corrupt":        good[:len(good)/2],
 		"empty":          "",
 		"two values":     good + good,
@@ -258,7 +258,7 @@ func TestBlobMisses(t *testing.T) {
 	for name, data := range misses {
 		m.Data = []byte(data)
 		got, ok := cardOf(m)
-		if ok || got.Key != c.Key || got.Status != c.Status || got.Title != "" || got.Labels != nil {
+		if ok || got.Key != c.Key || got.Status != c.Status || got.Title != c.Title || got.Labels != nil {
 			t.Errorf("card blob %s: ok %v, %+v", name, ok, got)
 		}
 		u := userOf(store.MirrorUser{ID: "u1", Name: "User 1", Data: []byte(data)})

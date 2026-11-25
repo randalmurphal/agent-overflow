@@ -258,15 +258,28 @@ func TestNarrowTurnReadsPlans(t *testing.T) {
 					t.Fatal(readErr)
 				}
 				checked := 0
-				for _, stmt := range stmts {
-					plan := explainPlan(t, s, stmt.query, stmt.args...)
-					selection := planSubtree(plan, "MATERIALIZE selected")
-					if len(selection) == 0 {
-						continue
+				for i, stmt := range stmts {
+					var plan []planRow
+					if strings.HasPrefix(stmt.query, selectedIDsSQL) {
+						// A per-level selection ran first; the hydrator then
+						// read the lineage depth and resolved its ids.
+						at := i - 1
+						for at >= 0 && stmts[at].query == forkLineageDepthSQL {
+							at--
+						}
+						if at < 0 {
+							t.Fatalf("no selection ran before %s", stmt.query)
+						}
+						plan = explainPlan(t, s, stmts[at].query, stmts[at].args...)
+					} else {
+						plan = planSubtree(explainPlan(t, s, stmt.query, stmt.args...), "MATERIALIZE selected")
+						if len(plan) == 0 {
+							continue
+						}
 					}
 					checked++
 					local, imported := 0, 0
-					for _, r := range selection {
+					for _, r := range plan {
 						switch {
 						case strings.HasPrefix(r.detail, "SEARCH items USING COVERING INDEX idx_items_top_level "):
 							local++

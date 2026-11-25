@@ -125,7 +125,7 @@ type panicStore struct{ Store }
 func TestNewTouchesNothing(t *testing.T) {
 	t.Parallel()
 	s, err := New(testCallbacks(Deps{
-		Store: panicStore{}, Changed: func() {}, CredentialsDir: t.TempDir(), Origin: APIOrigin, Version: "1",
+		Store: panicStore{}, Changed: func() {}, CredentialsDir: t.TempDir(), ConfigDir: t.TempDir(), Origin: APIOrigin, Version: "1",
 		Now: time.Now, Life: t.Context(),
 	}, newEventLog()))
 	if err != nil {
@@ -200,7 +200,7 @@ func TestStopEndsACleanupInFlight(t *testing.T) {
 	}
 	m.p.cards = func([]tracker.IssueID) (tracker.Cards, error) { return tracker.Cards{Cards: []tracker.Card{many}}, nil }
 	must[Outcome](t)(m.svc.tickCards(t.Context(), m.conn.ID, Background))
-	if _, err := m.st.ClearThreadTicket("thread-1"); err != nil {
+	if _, _, err := m.st.ClearThreadTicket("thread-1"); err != nil {
 		t.Fatal(err)
 	}
 	ps := &pausingStore{Store: m.st, arrived: make(chan struct{})}
@@ -247,7 +247,7 @@ func TestCleanupRemovesIssuesNothingKeeps(t *testing.T) {
 	if cards := must[[]store.MirrorCard](t)(m.st.ListMirrorCards(m.root(), []string{"10001", "10005"})); len(cards) != 2 {
 		t.Fatalf("the cleanup removed a kept issue: %+v", cards)
 	}
-	if _, err := m.st.ClearThreadTicket("thread-1"); err != nil {
+	if _, _, err := m.st.ClearThreadTicket("thread-1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.svc.FinishMirrorCleanup(); err != nil {

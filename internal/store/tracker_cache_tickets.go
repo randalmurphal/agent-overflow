@@ -136,12 +136,12 @@ type mirrorCardState struct {
 // mirrorCardStatesSQL reads, for each card of the JSON list ?2 read from
 // ?3 by its place in the list, its issue's state (mirrorCardState), the
 // list driving the join.
-var mirrorCardStatesSQL = `SELECT c.key, ` + mirrorIssueKept("?1", "c.value ->> 'i'") + `, i.rowid IS NOT NULL,
+var mirrorCardStatesSQL = `SELECT c.key, ` + mirrorIssueKept(intParam("?1"), "c.value ->> 'i'") + `, i.rowid IS NOT NULL,
 	    coalesce(` + mirrorCardRefusedSQL("?3") + `, 0), coalesce(` + mirrorCardAdvancesSQL("?3") + `, 0), ` + mirrorCardSprintsMovedSQL + `,
 	    coalesce(i.updated_at, 0), coalesce(i.status_since, 0), coalesce(i.status_final_for, 0),
 	    coalesce(i.body_updated_at, 0), coalesce(i.body_read_at, 0), coalesce(i.body_wall, 0), coalesce(i.body_opened_at, 0),
 	    coalesce(i.body_digest, x'')
-	FROM json_each(?2) c LEFT JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = c.value ->> 'i'`
+	FROM json_each(?2) c LEFT JOIN tracker_cache_issues i ON i.root_id = CAST(?1 AS INTEGER) AND i.issue_id = c.value ->> 'i'`
 
 // readMirrorCardStatesTx reads the state of each of n encoded cards read
 // from readAt in one statement, in the cards' order: the one state read
@@ -229,7 +229,7 @@ func mirrorTicketMoveOf(full bool) string {
 	return `WITH h AS MATERIALIZED (SELECT value FROM json_each(?2))
 	UPDATE tracker_cache_issues SET ` + columns + ` = ` + after + `
 	FROM h
-	WHERE root_id = ?1 AND issue_id = h.value ->> 'i' AND ` + columns + ` IS NOT ` + after + `
+	WHERE root_id = CAST(?1 AS INTEGER) AND issue_id = h.value ->> 'i' AND ` + columns + ` IS NOT ` + after + `
 	RETURNING ` + mirrorRecordAfterColumns
 }
 
@@ -248,13 +248,13 @@ const mirrorBodyWriteSQL = `INSERT INTO tracker_cache_issue_bodies(root_id, issu
 var (
 	mirrorBodyEvictSQL = `UPDATE tracker_cache_issues SET body_updated_at = 0, body_read_at = 0, body_wall = 0, body_opened_at = 0,
 	    body_digest = x''
-	WHERE root_id = ?1 AND issue_id IN (
+	WHERE root_id = CAST(?1 AS INTEGER) AND issue_id IN (
 	  SELECT b.issue_id FROM tracker_cache_issues b INDEXED BY idx_tracker_cache_issues_body_opened
-	   WHERE b.root_id = ?1 AND b.body_updated_at > 0
-	   ORDER BY EXISTS (SELECT 1 FROM tracker_cache_open_tickets o WHERE o.root_id = ?1 AND o.issue_id = b.issue_id) DESC,
+	   WHERE b.root_id = CAST(?1 AS INTEGER) AND b.body_updated_at > 0
+	   ORDER BY EXISTS (SELECT 1 FROM tracker_cache_open_tickets o WHERE o.root_id = CAST(?1 AS INTEGER) AND o.issue_id = b.issue_id) DESC,
 	            b.body_opened_at DESC, b.issue_id DESC LIMIT -1 OFFSET ` + strconv.Itoa(mirrorBodyCap) + `)
 	RETURNING issue_id`
-	mirrorBodyDropSQL = `DELETE FROM tracker_cache_issue_bodies WHERE root_id = ?1 AND issue_id IN (SELECT value FROM json_each(?2))`
+	mirrorBodyDropSQL = `DELETE FROM tracker_cache_issue_bodies WHERE root_id = CAST(?1 AS INTEGER) AND issue_id IN (SELECT value FROM json_each(?2))`
 )
 
 // evictMirrorBodiesTx drops the bodies of rootID beyond the mirrorBodyCap
@@ -374,10 +374,11 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 	action := fmt.Sprintf("store: store tracker mirror %d tickets of %d issues", rootID, len(tickets))
 	err = s.mirrorSweptWrite(rootID, sweep, action, func(tx *sql.Tx) error {
 		out = MirrorTicketsWrite{Tickets: make([]MirrorTicketWrite, len(tickets))}
-		var err error
-		if out.Changes.Catalog, err = upsertMirrorCatalogTx(tx, rootID, catalog, readAt); err != nil {
+		catalogWrite, err := upsertMirrorCatalogTx(tx, rootID, catalog, readAt)
+		if err != nil {
 			return err
 		}
+		out.Changes.Catalog, out.Changes.Threads = catalogWrite.Changed, catalogWrite.Threads
 		states, err := readMirrorCardStatesTx(tx, rootID, encoded, len(rows), readAt)
 		if err != nil {
 			return err
@@ -388,7 +389,7 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 		// holds (mirrorTicketMoveSQL.full).
 		versions := false
 		var bodies []int
-		var moved []string
+		var moved, advancing []string
 		started := false
 		for i, t := range tickets {
 			st, w := states[i], &out.Tickets[i]
@@ -406,6 +407,9 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 			}
 			if st.refused {
 				out.Changes.Superseded = append(out.Changes.Superseded, id)
+			}
+			if st.advances {
+				advancing = append(advancing, id)
 			}
 			m := mirrorTicketMove{ID: id, Advance: st.advances, U: t.Card.UpdatedAt}
 			if a := admitted[i]; a.admitted {
@@ -468,11 +472,12 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 			return nil
 		}
 		slices.Sort(moved)
-		stored, err := storeMirrorCardsTx(tx, mirrorLinkedCards, rootID, rows, encoded, readAt, moved, move)
+		slices.Sort(advancing)
+		stored, err := storeMirrorCardsTx(tx, mirrorLinkedCards, rootID, rows, encoded, readAt, moved, advancing, move)
 		if err != nil {
 			return err
 		}
-		out.Changes.Cards = stored.changed
+		out.Changes.Cards, out.Changes.Threads = stored.changed, unionSorted(out.Changes.Threads, stored.threads)
 		for _, i := range bodies {
 			if _, err := tx.Exec(mirrorBodyWriteSQL, rootID, tickets[i].Card.IssueID, mirrorData(tickets[i].Body)); err != nil {
 				return fmt.Errorf("write the body of issue %s: %w", tickets[i].Card.IssueID, err)
@@ -538,7 +543,7 @@ const MirrorMaxBodies = 16
 // JSON list of IDs hold, each with its record's card, probing each by key.
 var mirrorBodiesSQL = `SELECT ` + mirrorCardColumns + `, i.body_updated_at, i.body_read_at, i.body_wall, i.body_opened_at, d.data
 	FROM json_each(?2) l
-	CROSS JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = l.value
+	CROSS JOIN tracker_cache_issues i ON i.root_id = CAST(?1 AS INTEGER) AND i.issue_id = l.value
 	JOIN tracker_cache_issue_bodies d ON d.root_id = i.root_id AND d.issue_id = i.issue_id
 	WHERE i.body_read_at > 0 AND ` + mirrorIssueKept("i.root_id", "i.issue_id")
 

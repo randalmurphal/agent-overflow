@@ -54,24 +54,27 @@ type MirrorStore interface {
 	UpsertMirrorCards(rootID, sweep int64, cards []store.MirrorCard, catalog store.MirrorCatalog, read store.MirrorRead) (store.MirrorChanges, error)
 	ReconcileMirrorBoard(rootID int64, boardID string, lifetime int64, listed []string, complete bool, read store.MirrorRead) (store.MirrorReconcile, error)
 	ReplaceMirrorStructure(rootID int64, st store.MirrorStructure) (store.MirrorStructureWrite, error)
-	ReplaceMirrorHistories(rootID, sweep int64, histories []store.MirrorHistory, catalog store.MirrorCatalog, read store.MirrorRead) ([]store.MirrorHistoryResult, bool, error)
+	ReplaceMirrorHistories(rootID, sweep int64, histories []store.MirrorHistory, catalog store.MirrorCatalog, read store.MirrorRead) ([]store.MirrorHistoryResult, store.MirrorCatalogWrite, error)
 	ListMirrorHistoryDue(rootID int64, now int64, first ...string) ([]store.MirrorHistoryDue, bool, error)
 	StoreMirrorTickets(rootID, sweep int64, tickets []store.MirrorTicket, catalog store.MirrorCatalog, opened, read store.MirrorRead) (store.MirrorTicketsWrite, error)
+	MarkMirrorIssuesMissing(rootID int64, read store.MirrorRead, issueIDs []string) ([]string, error)
 
 	ListMirrorBodies(rootID int64, issueIDs []string) ([]store.MirrorBody, error)
 	GetMirrorBoard(rootID int64, boardID string) (store.MirrorStructure, bool, error)
 	GetMirrorCatalog(rootID int64, users, statuses []string) (store.MirrorCatalog, error)
 	ListMirrorCards(rootID int64, issueIDs []string) ([]store.MirrorCard, error)
 	ListMirrorIssueRows(rootID int64, issueID, afterBoard string) ([]store.MirrorIssueRow, bool, error)
+	ListMirrorTicketRows(rootID int64, issueIDs []string) ([]store.MirrorTicketRow, error)
 	ListMirrorOffBoardLinkedIssues(rootID int64, after string, polled []string) ([]string, bool, error)
-	ListMirrorSection(rootID int64, boardID string, section store.MirrorSection, after store.MirrorRowKey) (store.MirrorSectionPage, error)
-	ReadMirrorBoardView(rootID int64, boardID string, sections []store.MirrorSection) (store.MirrorBoardView, bool, error)
-	ReadMirrorBoardPatch(rootID int64, boardID string, sections []store.MirrorSection, issueIDs []string, held store.MirrorTotalsAt) (store.MirrorBoardPatch, bool, error)
+	ListMirrorSection(rootID int64, boardID string, regroup store.MirrorRegroup, section store.MirrorSection, after store.MirrorRowKey) (store.MirrorSectionPage, error)
+	ReadMirrorBoardView(rootID int64, boardID string, regroup store.MirrorRegroup, pick func(store.MirrorStructure) []store.MirrorSection) (store.MirrorBoardView, bool, error)
+	ReadMirrorBoardPatch(rootID int64, boardID string, regroup store.MirrorRegroup, sections []store.MirrorSection, issueIDs []string,
+		held store.MirrorTotalsAt) (store.MirrorBoardPatch, bool, error)
 	ListMirrorIssueBoards(rootID int64, issueIDs, parentIDs []string) ([]store.MirrorIssueBoard, error)
 	ReadMirrorRefreshTargets(rootID int64, cardIDs, detailIDs, boardIDs []string) (store.MirrorRefreshTargets, error)
 
-	ReplaceMirrorWorklogs(rootID int64, authorID, fromDay, toDay string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error)
-	ListMirrorWorklogs(rootID int64, authorID, fromDay, toDay string) ([]store.MirrorWorklog, bool, error)
+	ReplaceMirrorWorklogs(rootID, sourceGen int64, authorID, fromDay, toDay string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error)
+	ReadMirrorWorklogDays(connectionID, authorID, fromDay, toDay string) (store.MirrorWorklogDays, error)
 }
 
 var (
@@ -230,7 +233,18 @@ type Changes struct {
 	Visibility []tracker.IssueID `json:"visibility,omitempty"`
 }
 
-// Empty reports changes that name nothing.
+// written is what one store write committed, as run.told takes it: the
+// changes the views of the mirror show, and links, the threads whose row's
+// ticket link the write moved (a card it stored, an absence it recorded or
+// cleared, a status it renamed: store MirrorChanges.Threads,
+// MirrorCatalogWrite.Threads, MarkMirrorIssuesMissing), which no view
+// shows and nothing gathers past the write.
+type written struct {
+	Changes
+	links []string
+}
+
+// Empty reports changes that name nothing a view of the mirror shows.
 func (c Changes) Empty() bool {
 	return len(c.Cards)+len(c.Rows)+len(c.Removed)+len(c.History)+len(c.Details)+len(c.Dropped)+len(c.Visibility) == 0 &&
 		!c.Catalog && !c.Structure
@@ -280,7 +294,7 @@ func (l *changeLog) changes() Changes {
 }
 
 // unite is the sorted union of a and b without repeats.
-func unite(a, b []tracker.IssueID) []tracker.IssueID {
+func unite[T ~string](a, b []T) []T {
 	if len(b) == 0 {
 		return a
 	}
@@ -288,16 +302,16 @@ func unite(a, b []tracker.IssueID) []tracker.IssueID {
 }
 
 // ordered is ids sorted without repeats, in place.
-func ordered(ids []tracker.IssueID) []tracker.IssueID {
+func ordered[T ~string](ids []T) []T {
 	slices.Sort(ids)
 	return slices.Compact(ids)
 }
 
-// changesOf is a store change set in neutral IDs.
-func changesOf(ch store.MirrorChanges) Changes {
-	return Changes{
+// changesOf is a store change set in neutral IDs, with the links it moved.
+func changesOf(ch store.MirrorChanges) written {
+	return written{Changes: Changes{
 		Cards: issueIDs(ch.Cards), Rows: issueIDs(ch.Rows), Added: issueIDs(ch.Added), Removed: issueIDs(ch.Removed), Catalog: ch.Catalog,
-	}
+	}, links: ch.Threads}
 }
 
 // issueIDs is ids as issue IDs, sorted without repeats; nil for none.

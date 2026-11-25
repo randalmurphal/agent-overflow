@@ -32,7 +32,7 @@ func mustReconcile(t *testing.T, s *Store, root int64, listed []string, complete
 
 func boardRowIDs(t *testing.T, s *Store, root int64) string {
 	t.Helper()
-	ids, err := queryIDs(s.db, `SELECT issue_id FROM tracker_cache_board_issues WHERE root_id = ? AND board_id = '10' ORDER BY issue_id`, root)
+	ids, err := queryIDs(s.db, `SELECT issue_id FROM tracker_cache_board_issues WHERE root_id = `+boundInt+` AND board_id = '10' ORDER BY issue_id`, root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +323,7 @@ func TestMirrorFenceStatements(t *testing.T) {
 	}
 	mustWriteRows(t, s, rowsPage(s, root, 60, nil, webRow("30001", 5, "u")), root)
 	statements, writes = count(write(rowsPage(s, root, 70, nil, webRow("30001", 5, "u")), nil))
-	if statements != 6 || !reflect.DeepEqual(writes, map[string]int{"tracker_cache_board_issues": 1, "tracker_cache_issues": 1}) {
-		t.Errorf("an unsettled row read by ID again: %d statements, wrote %v; want 6, its row's and its card's read", statements, writes)
+	if statements != 7 || !reflect.DeepEqual(writes, map[string]int{"tracker_cache_board_issues": 1, "tracker_cache_issues": 1}) {
+		t.Errorf("an unsettled row read by ID again: %d statements, wrote %v; want 7, its row's and its card's read", statements, writes)
 	}
 }

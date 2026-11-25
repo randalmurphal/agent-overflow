@@ -40,6 +40,7 @@ func (e *Engine) saveJira(s *jiraSite) (func(), error) {
 	}
 	private := *s
 	private.nextKey = maps.Clone(s.nextKey)
+	private.issued = maps.Clone(s.issued)
 	counters := e.saveCounters()
 	return func() {
 		private.JiraSite = JiraSite{}

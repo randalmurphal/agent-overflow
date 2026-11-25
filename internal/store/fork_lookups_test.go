@@ -167,7 +167,7 @@ func TestPointerForkLookupsProbeTheLineage(t *testing.T) {
 				t.Errorf("%s: %q enumerates a thread's chunks\n%s\n%s", lookup.name, node, stmt.query, planText(plan))
 			}
 		}
-		if !readLineage && lookup.name != forkChildRowWrite {
+		if !readLineage && lookup.name != forkChildRowWrite && lookup.name != ownPayloadsLookup {
 			t.Errorf("%s: no statement read the fork's lineage; the check proved nothing", lookup.name)
 		}
 	}

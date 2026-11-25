@@ -51,7 +51,8 @@ A link or image destination is decided once, by
 `https://host/x`, never the page origin, and an http(s) URL not written
 plainly becomes the URL the parser reads (`canonicalHref`), then the
 extensions' `destination` hooks run in list order and the first claim wins (a forge-relative link
-resolved, a forge attachment, a local path, a preview). The engine runs it
+resolved, a forge attachment, a local path, a preview, a tracker's `media:`
+file in ticket text). The engine runs it
 on every inline, reference and autolink token, an extension that builds a
 link or image from other syntax (an HTML `<a>` or `<img>`) calls
 `Tokenizer.destination`, and the sanitizer runs the same hooks

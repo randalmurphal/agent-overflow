@@ -44,7 +44,7 @@ func TestASameUpdateKeyRenameShowsOnTheBoardAndTheTicket(t *testing.T) {
 		t.Fatalf("the reopened ticket shows %s", v.Card.Key)
 	}
 	// The mirror holds the document, so the ticket opens loaded.
-	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001", untied))
+	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001", true, untied))
 	if !sub.Loaded || sub.Detail.Card.Key != "APP-1" {
 		t.Fatalf("the ticket opens %+v", sub.TicketView)
 	}
@@ -197,7 +197,7 @@ func TestATrashedLinearTicketSaysItIsGone(t *testing.T) {
 	s.listBoards(conn.ID, scope.Board)
 	s.syncBoard(t, scope)
 	issue := tracker.IssueID(lid(60))
-	sub := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, issue, untied))
+	sub := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, issue, true, untied))
 	settled(t, s.svc)
 	if v := must[TicketView](t)(s.svc.TicketDetail(sub.ID)); !v.Loaded || v.Failure != nil {
 		t.Fatalf("the ticket before the trash %+v", v)

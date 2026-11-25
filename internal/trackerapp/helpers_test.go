@@ -89,6 +89,8 @@ func testCallbacks(d Deps, log *eventLog) Deps {
 	d.Settled = log.waitSettled
 	d.ClientConnected = func() bool { return !log.disconnected.Load() }
 	d.LoopFailed = log.loopFailed
+	d.SetupChanged = func() { log.setups.Add(1) }
+	d.LinksChanged = log.linksChanged
 	return d
 }
 
@@ -109,6 +111,7 @@ func newFixtureWith(t *testing.T, cad Cadence) *fixture {
 		Store:          f.st,
 		Changed:        func() { f.changes.Add(1) },
 		CredentialsDir: f.creds,
+		ConfigDir:      t.TempDir(),
 		Origin: func(kind, site string) (string, error) {
 			if f.origin != nil {
 				return f.origin(kind, site)
@@ -182,7 +185,15 @@ func listBoards(tb testing.TB, st *store.Store, id string, boards ...tracker.Boa
 	for i, b := range boards {
 		list[i] = store.ProjectTrackerBoard{ConnectionID: id, BoardID: string(b)}
 	}
-	if _, _, err := st.ReplaceProjectTrackerBoards(project.ID, list); err != nil {
+	current, err := st.ListProjectTrackerBoards(project.ID)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	held := make([]store.HeldTrackerBoard, len(current))
+	for i, b := range current {
+		held[i] = store.HeldTrackerBoard{ConnectionID: b.ConnectionID, BoardID: b.BoardID, OpensFirst: b.OpensFirst}
+	}
+	if _, _, err := st.ReplaceProjectTrackerBoards(project.ID, held, list); err != nil {
 		tb.Fatalf("list boards %v: %v", boards, err)
 	}
 }

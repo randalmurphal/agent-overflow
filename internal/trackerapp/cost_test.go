@@ -220,7 +220,7 @@ func TestBlobSizes(t *testing.T) {
 	body := must[[]byte](t)(mirrorBody(realisticDetail()))
 	sizes := map[string]int{"card": len(card.Data), "linear card": len(linear.Data), "user": len(catalog.Users[0].Data), "board": len(board.Board.Data), "body": len(body)}
 	t.Logf("blob bytes: %s", describeCounts(sizes))
-	want := map[string]int{"card": 211, "linear card": 300, "user": 108, "board": 79, "body": 16468}
+	want := map[string]int{"card": 140, "linear card": 229, "user": 108, "board": 79, "body": 16468}
 	if !maps.Equal(sizes, want) {
 		t.Errorf("blob bytes %s, pinned %s", describeCounts(sizes), describeCounts(want))
 	}
@@ -283,8 +283,9 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 		}
 	}
 	// Every detail answer reads the names it shows and the mirror's cards
-	// of the issue, its parent and the issues it links, in one lookup.
-	view := map[string]int{"GetMirrorCatalog": 1, "ListMirrorCards": 1}
+	// of the issue, its parent and the issues it links, in one lookup, and
+	// the issue's rows on the boards in one more.
+	view := map[string]int{"GetMirrorCatalog": 1, "ListMirrorCards": 1, "ListMirrorTicketRows": 1}
 	costTable(t, m, cs, []struct {
 		name string
 		run  func(t *testing.T)
@@ -389,7 +390,7 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 			with(plus(view, map[string]int{"StoreMirrorTickets": 1})),
 		}},
 		{"board view, three sections", func(t *testing.T) {
-			must[BoardView](t)(m.svc.Board(scope, []Section{{Kind: SectionColumn}, {Kind: SectionColumn, Column: 1}, {Kind: SectionColumn, Column: 2}}))
+			must[BoardView](t)(m.svc.Board(scope, StatusGroups{}, []Section{{Kind: SectionColumn}, {Kind: SectionColumn, Column: 1}, {Kind: SectionColumn, Column: 2}}))
 		}, costOf{
 			map[string]int{},
 			// The structure, totals, pages, the names of the columns and
@@ -398,7 +399,7 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 			map[string]int{"GetMirrorRoot": 1, "ReadMirrorBoardView": 1, "GetMirrorSync": 1},
 		}},
 		{"section page", func(t *testing.T) {
-			must[SectionPage](t)(m.svc.SectionRows(scope, Section{Kind: SectionColumn, Column: 1}, nil))
+			must[SectionPage](t)(m.svc.SectionRows(scope, StatusGroups{}, Section{Kind: SectionColumn, Column: 1}, nil))
 		}, costOf{
 			map[string]int{},
 			// The page with its names and parents in one snapshot (4

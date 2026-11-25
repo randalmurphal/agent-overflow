@@ -18,10 +18,10 @@ detaches both on destroy. The Merge requests tab's filter, projects and
 sort (`PullsToolbar`) are per computer in
 `stores/pullsPageFilters.svelte.ts`; the tab and the list width are
 appStorage. The list column is a container (`@container/pulls`): under
-380px the toolbar's buttons keep their icons and drop their labels. `listWidth.svelte.ts` holds the width the reader asked for and
-the width rendered, clamped to leave the detail its minimum in the pane as
-measured; the pointer and keyboard paths of `PullsListResizer` set it
-through that one clamp.
+380px the toolbar's buttons keep their icons and drop their labels. The
+list width is the shared split owner (`shared/splitWidth.svelte.ts`, with
+its handle `shared/SplitResizer.svelte`) under the page's bounds
+(`PULLS_SPLIT` in `PullsPane.svelte`).
 
 mod+f acts on the list column or the detail, whichever was last focused
 or pressed (the one on screen under compact), as find regions
@@ -66,6 +66,6 @@ seed so the backend owns the whole checkout-record-draft sequence and its
 rollback.
 
 A failure renders through the shared error report controls with the
-error behind it: `PullsErrorNotice` for the refresh, `PullsProjectError`
+error behind it: `shared/ErrorNotice` for the refresh, `PullsProjectError`
 for a project (`causeCapture.ts` captures each distinct failure once,
 across snapshots and row remounts).

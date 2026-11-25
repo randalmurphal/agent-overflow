@@ -34,7 +34,7 @@ test('a tracker ticket reaches its client, takes a comment and a file, and saves
   const ofTicket = (e: IssueEvent) => e.connection === board.connectionId && e.issue === '10101';
   const ticket = () => harness.rpc<TicketView>('TrackerTicket', sub.id);
 
-  const sub = await harness.rpc<TicketSubscription>('SubscribeTrackerTicket', board.connectionId, '10101');
+  const sub = await harness.rpc<TicketSubscription>('SubscribeTrackerTicket', board.connectionId, '10101', true);
   await harness.waitForEvent<IssueEvent>('tracker:issue_updated', (e) => ofTicket(e) && e.changed === true && e.seq > sub.seq);
   expect((await ticket()).detail?.card.title).toBe('First story');
 
@@ -71,7 +71,7 @@ test('a client whose socket closes has its ticket subscription released', async 
   const board = await connectFakeJiraBoard(harness, 'tracker-ticket-close');
   const client = await WireClient.connect('127.0.0.1', harness.bootstrap.port, new URLSearchParams({ token: harness.bootstrap.token }).toString());
   const sub = answered(
-    await client.call('SubscribeTrackerTicket', board.connectionId, '10101'),
+    await client.call('SubscribeTrackerTicket', board.connectionId, '10101', true),
     'the second client subscribes to the ticket',
   ) as TicketSubscription;
   await harness.rpc('RefreshTrackerSubscription', sub.id);

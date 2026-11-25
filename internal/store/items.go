@@ -173,13 +173,19 @@ func applyItemDefaults(item *Item) {
 	}
 }
 
-func nextItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (int, error) {
-	var maxIndex sql.NullInt64
-	query, args, err := turnItemIndexQuery(tx, threadID, turnIndex, "MAX")
-	if err != nil {
-		return 0, fmt.Errorf("%s: %w", label, err)
+// turnItemIndexBound reads query, minTurnItemIndexSQL or
+// maxTurnItemIndexSQL, for one turn of threadID on q.
+func turnItemIndexBound(q sqlQueryer, query, threadID string, turnIndex int) (sql.NullInt64, error) {
+	var bound sql.NullInt64
+	if err := q.QueryRow(query, threadID, turnIndex).Scan(&bound); err != nil {
+		return bound, fmt.Errorf("read the item index bound of %s turn %d: %w", threadID, turnIndex, err)
 	}
-	if err := tx.QueryRow(query, args...).Scan(&maxIndex); err != nil {
+	return bound, nil
+}
+
+func nextItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (int, error) {
+	maxIndex, err := turnItemIndexBound(tx, maxTurnItemIndexSQL, threadID, turnIndex)
+	if err != nil {
 		return 0, fmt.Errorf("%s: %w", label, err)
 	}
 	if !maxIndex.Valid {
@@ -196,12 +202,8 @@ func nextItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (
 // anchor predicate (ItemIndex > 0) correctly treats a head-inserted
 // row as turn-initial.
 func headItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (int, error) {
-	var minIndex sql.NullInt64
-	query, args, err := turnItemIndexQuery(tx, threadID, turnIndex, "MIN")
+	minIndex, err := turnItemIndexBound(tx, minTurnItemIndexSQL, threadID, turnIndex)
 	if err != nil {
-		return 0, fmt.Errorf("%s: %w", label, err)
-	}
-	if err := tx.QueryRow(query, args...).Scan(&minIndex); err != nil {
 		return 0, fmt.Errorf("%s: %w", label, err)
 	}
 	if !minIndex.Valid {

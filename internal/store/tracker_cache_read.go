@@ -69,6 +69,7 @@ var mirrorReadTimeColumns = []struct {
 	{"tracker_cache_boards", []string{"read_at", "rows_removed_at", "listing_read_at", "estimate_reset_at"}},
 	{"tracker_cache_board_unexplained", []string{"named_at"}},
 	{"tracker_cache_issues", []string{"read_at", "body_read_at", "body_opened_at", "status_read_at"}},
+	{"tracker_cache_issue_missing", []string{"read_at"}},
 	{"tracker_cache_board_issues", []string{"read_at"}},
 	{"tracker_cache_open_tickets", []string{"opened_at"}},
 	{"tracker_cache_worklog_days", []string{"read_at"}},
@@ -101,10 +102,10 @@ var mirrorReadSeedSQL = func() string {
 		if len(maxima) > 1 {
 			highest = `max(` + strings.Join(maxima, `, `) + `)`
 		}
-		tables = append(tables, `(SELECT `+highest+` FROM `+t.table+` WHERE root_id = ?1)`)
+		tables = append(tables, `(SELECT `+highest+` FROM `+t.table+` WHERE root_id = CAST(?1 AS INTEGER))`)
 	}
 	return `SELECT max(0, ` + strings.Join(tables, `,
-	 `) + `) FROM tracker_cache_roots WHERE id = ?1 AND connection_id IS NOT NULL`
+	 `) + `) FROM tracker_cache_roots WHERE id = CAST(?1 AS INTEGER) AND connection_id IS NOT NULL`
 }()
 
 // mirrorReadClocks is each live root's read clock in this process: the

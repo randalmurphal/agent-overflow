@@ -42,11 +42,11 @@ func TestPollIntervalIsPerKind(t *testing.T) {
 				board, tick time.Duration
 			}{{m.conn.ID, c.jiraBoard, c.jiraTicket}, {linear.ID, c.other, c.linearTicket}} {
 				scope := Scope{Connection: sc.conn, Board: testBoard}
-				board, err := m.svc.SubscribeBoard("boards-"+sc.conn, scope, []Section{{Kind: SectionBacklog}}, untied)
+				board, err := m.svc.SubscribeBoard("boards-"+sc.conn, scope, []Section{{Kind: SectionBacklog}}, true, untied)
 				if err != nil {
 					t.Fatal(err)
 				}
-				ticket, err := m.svc.SubscribeTicket(sc.conn, "10001", untied)
+				ticket, err := m.svc.SubscribeTicket(sc.conn, "10001", true, untied)
 				if err != nil {
 					t.Fatal(err)
 				}

@@ -47,6 +47,7 @@ import { resendPRCILogFollowsForBackend } from './prReviewCIFollows.svelte';
 import { resyncPipelinesAfterGap, resyncPullsAfterGap } from './pullsStore.svelte';
 import { resyncMcpServersAfterGap } from './mcpServers.svelte';
 import { resyncProviderUpdatesAfterGap } from './providerUpdates.svelte';
+import { applyTrackerConnectionsChanged } from './trackerConnections.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { hasRememberedDraftSnapshot } from './composerDraftSnapshots';
 import { resyncSettings } from './settings.svelte';
@@ -61,6 +62,7 @@ import {
 import { threadItemCache } from './threadItemCache';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { holdBackendRecovery, isBackendRecovering } from './transportRecovery';
+import { trackerBoardsGap, trackerTicketsGap } from './trackerBoardEvents';
 import { reconcileTerminalSurfaces } from './eventsTerminal';
 import { threadMachine, getAttachedBackends } from './attachedBackends.svelte';
 import { applyBackendSetChange } from './systems.svelte';
@@ -366,6 +368,22 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       if (resync) holdBackendRecovery(backend, resync);
       return;
     }
+    // One frame per change of a board: a lost one is not restated, so each
+    // held board of the computer reads whole again under the recovery.
+    case 'tracker:board_updated': {
+      const backend = backendKeyForOrigin(origin?.backendId ?? '');
+      const resync = trackerBoardsGap(backend);
+      if (resync) holdBackendRecovery(backend, resync);
+      return;
+    }
+    // A lost frame is not restated either: each held ticket of the computer
+    // reads its view again under the recovery.
+    case 'tracker:issue_updated': {
+      const backend = backendKeyForOrigin(origin?.backendId ?? '');
+      const resync = trackerTicketsGap(backend);
+      if (resync) holdBackendRecovery(backend, resync);
+      return;
+    }
     case 'mcp:status':
       resyncMcpServersAfterGap(backendKeyForOrigin(origin?.backendId ?? ''));
       return;
@@ -469,6 +487,11 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       }
       return;
     }
+    case 'tracker:connections_updated':
+      // A lost nudge leaves a held list behind until the next one; the
+      // list is one read.
+      applyTrackerConnectionsChanged(backendKeyForOrigin(origin?.backendId ?? ''));
+      return;
     case 'agent-computers:changed':
       // Latest-only invalidation: the following retained event re-reads the
       // open settings page. Its mount/reconnect also reads the whole table.

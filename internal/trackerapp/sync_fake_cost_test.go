@@ -123,8 +123,8 @@ func (s *fakeScenario) costs(t *testing.T, conn Connection, scope Scope, edit fu
 			}
 		}},
 		{"board view and a section page", 0, func(t *testing.T) {
-			must[BoardView](t)(s.svc.Board(scope, []Section{{Kind: SectionColumn}, {Kind: SectionBacklog}}))
-			must[SectionPage](t)(s.svc.SectionRows(scope, Section{Kind: SectionColumn, Column: 1}, nil))
+			must[BoardView](t)(s.svc.Board(scope, StatusGroups{}, []Section{{Kind: SectionColumn}, {Kind: SectionBacklog}}))
+			must[SectionPage](t)(s.svc.SectionRows(scope, StatusGroups{}, Section{Kind: SectionColumn, Column: 1}, nil))
 		}},
 	})
 	// An issue leaves the board: the listing leaves it out, and the
@@ -267,10 +267,10 @@ func TestFakeJiraRequestCosts(t *testing.T) {
 	// mirror card already newer, the age bound and a refresh read the
 	// detail with no check.
 	s.detailCosts(t, conn, scope, "10102", "10000", "10002", "10000", map[string][2]int{
-		"detail, none stored": {2, 5}, "detail, verified unchanged": {1, 5},
-		"detail, the mirror's copy": {0, 3}, "detail, verified unchanged with 3 links": {1, 5},
-		"detail, after a comment": {3, 6}, "detail, the mirror already newer": {2, 5},
-		"detail, older than the age bound": {2, 5}, "detail, forced refresh": {2, 4},
+		"detail, none stored": {2, 6}, "detail, verified unchanged": {1, 6},
+		"detail, the mirror's copy": {0, 4}, "detail, verified unchanged with 3 links": {1, 6},
+		"detail, after a comment": {3, 7}, "detail, the mirror already newer": {2, 6},
+		"detail, older than the age bound": {2, 6}, "detail, forced refresh": {2, 5},
 	})
 }
 
@@ -293,10 +293,10 @@ func TestFakeLinearRequestCosts(t *testing.T) {
 	// Linear's update time does not move with a comment: every open reads
 	// the detail, in one request, and reads no stored detail first.
 	s.detailCosts(t, conn, scope, tracker.IssueID(lid(61)), tracker.ProjectID(lid(10)), "", "related", map[string][2]int{
-		"detail, none stored": {1, 4}, "detail, verified unchanged": {1, 4},
-		"detail, the mirror's copy": {0, 3}, "detail, verified unchanged with 3 links": {1, 4},
-		"detail, after a comment": {1, 4}, "detail, the mirror already newer": {1, 4},
-		"detail, older than the age bound": {1, 4}, "detail, forced refresh": {1, 4},
+		"detail, none stored": {1, 5}, "detail, verified unchanged": {1, 5},
+		"detail, the mirror's copy": {0, 4}, "detail, verified unchanged with 3 links": {1, 5},
+		"detail, after a comment": {1, 5}, "detail, the mirror already newer": {1, 5},
+		"detail, older than the age bound": {1, 5}, "detail, forced refresh": {1, 5},
 	})
 }
 
@@ -366,7 +366,7 @@ func (s *fakeScenario) largeCosts(t *testing.T, scope Scope, edit func(), pins m
 	// and cards (6+2+1 statements in the store), and the sync state. The
 	// fixtures' cards have no parents, so no parent read.
 	open := tc("board open", func(t *testing.T) {
-		v := must[BoardView](t)(s.svc.Board(scope, []Section{{Kind: SectionBacklog}, {Kind: SectionColumn, Column: 0}}))
+		v := must[BoardView](t)(s.svc.Board(scope, StatusGroups{}, []Section{{Kind: SectionBacklog}, {Kind: SectionColumn, Column: 0}}))
 		if v.All.Rows != largeIssues || len(v.Sections) != 2 {
 			t.Fatalf("the board holds %d rows, %d sections", v.All.Rows, len(v.Sections))
 		}

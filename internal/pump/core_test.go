@@ -153,6 +153,28 @@ func TestVotePausesOnlyWhenEveryHandleIsHidden(t *testing.T) {
 	}
 }
 
+// A handle reports its own last vote, whatever the other handles voted,
+// and shows nothing once released.
+func TestAHandleReportsItsOwnVisibility(t *testing.T) {
+	core := newTestCore(t, t.Context())
+	a, b := core.TakeLocked(), core.TakeLocked()
+	if !a.VisibleLocked() || !b.VisibleLocked() {
+		t.Fatal("a handle taken is not visible")
+	}
+	a.VoteLocked(false)
+	if a.VisibleLocked() || !b.VisibleLocked() {
+		t.Fatalf("after a hides: a %v, b %v", a.VisibleLocked(), b.VisibleLocked())
+	}
+	a.VoteLocked(true)
+	if !a.VisibleLocked() {
+		t.Fatal("a shown again is not visible")
+	}
+	b.ReleaseLocked()
+	if b.VisibleLocked() {
+		t.Fatal("a released handle is visible")
+	}
+}
+
 func TestARepeatedVoteChangesNothing(t *testing.T) {
 	core := newTestCore(t, t.Context())
 	a, b := core.TakeLocked(), core.TakeLocked()
@@ -413,6 +435,79 @@ func TestRequestRefusedOnceTheLifetimeEnded(t *testing.T) {
 		end()
 		if err := <-result; err != errEnded {
 			t.Fatalf("Request = %v, want the LifetimeEnded refusal", err)
+		}
+	})
+}
+
+// awaitShown runs AwaitShown on its own goroutine, as a pump's goroutine
+// does before its first poll.
+func awaitShown(core *Core[testRequest]) <-chan *Request[testRequest] {
+	out := make(chan *Request[testRequest], 1)
+	go func() {
+		req, _ := core.AwaitShown()
+		out <- req
+	}()
+	return out
+}
+
+func TestAwaitShownReturnsAtOnceWhileAHandleShowsThePump(t *testing.T) {
+	core := newTestCore(t, t.Context())
+	core.TakeLocked()
+	if req, stopped := core.AwaitShown(); req != nil || stopped {
+		t.Fatalf("AwaitShown = %v, %v; want the first poll at once", req, stopped)
+	}
+}
+
+func TestAwaitShownWaitsForTheFirstVisibleVote(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		core := newTestCore(t, t.Context())
+		h := core.TakeLocked()
+		h.VoteLocked(false)
+		done := awaitShown(core)
+		synctest.Wait()
+		select {
+		case <-done:
+			t.Fatal("a pump every handle hides ran its first poll")
+		default:
+		}
+		h.VoteLocked(true)
+		if req := <-done; req != nil {
+			t.Fatalf("AwaitShown served %+v; want the first poll", req)
+		}
+	})
+}
+
+func TestAwaitShownHandsOverARequestWhileHidden(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		core := newTestCore(t, t.Context())
+		core.TakeLocked().VoteLocked(false)
+		done := awaitShown(core)
+		answered := make(chan error, 1)
+		go func() { answered <- core.Request(t.Context(), testRequest{name: "refresh"}) }()
+		req := <-done
+		if req == nil || req.Body().name != "refresh" {
+			t.Fatalf("AwaitShown returned %+v; want the refresh", req)
+		}
+		req.Finish(nil)
+		if err := <-answered; err != nil {
+			t.Fatalf("Request = %v", err)
+		}
+	})
+}
+
+func TestAwaitShownEndsWithTheCore(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		core := newTestCore(t, t.Context())
+		core.TakeLocked().VoteLocked(false)
+		out := make(chan bool, 1)
+		go func() {
+			_, stopped := core.AwaitShown()
+			out <- stopped
+		}()
+		synctest.Wait()
+		core.StopLocked()
+		if !<-out {
+			t.Fatal("AwaitShown did not report the stop")
 		}
 	})
 }

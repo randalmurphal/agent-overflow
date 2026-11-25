@@ -15,6 +15,11 @@ type jiraSite struct {
 	JiraSite
 	token      string
 	tempoToken string
+	// members are the other people's tokens by account ID.
+	members map[string]string
+	// issued are the context tokens the site signed, by token
+	// (jira_poker.go).
+	issued map[string]issuedToken
 	// nextKey is each project's next issue number.
 	nextKey map[string]int
 }
@@ -53,7 +58,7 @@ var defaultIssueTypes = []JiraIssueType{
 
 // newJiraSite checks and completes a site's fixture. Callers hold mu.
 func (e *Engine) newJiraSite(in JiraSite) (*jiraSite, error) {
-	s := &jiraSite{JiraSite: in, token: in.Token, nextKey: map[string]int{}}
+	s := &jiraSite{JiraSite: in, token: in.Token, nextKey: map[string]int{}, issued: map[string]issuedToken{}}
 	s.Token = ""
 	fail := func(format string, args ...any) error {
 		return fmt.Errorf("trackerfake: Jira site %s: "+format, append([]any{in.Site}, args...)...)
@@ -77,6 +82,9 @@ func (e *Engine) newJiraSite(in JiraSite) (*jiraSite, error) {
 		return nil, fail("%v", err)
 	}
 	if err := s.seedIssues(e); err != nil {
+		return nil, fail("%v", err)
+	}
+	if err := s.seedPoker(); err != nil {
 		return nil, fail("%v", err)
 	}
 	if s.Tempo != nil {

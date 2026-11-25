@@ -84,7 +84,7 @@ func (d *depsModel) write(b tracker.BoardID, issues []tracker.IssueID, missing [
 	}
 	page := must[store.MirrorRowPage](d.t)(mirrorRows(b, rows, missing, d.catalog, beginReadAt(d.t, d.m.st, d.root, d.readAt)))
 	page.Lifetime = d.m.sync(b).Lifetime
-	ch := changesOf(must[store.MirrorChanges](d.t)(d.m.st.WriteMirrorRows(d.root, page)))
+	ch := changesOf(must[store.MirrorChanges](d.t)(d.m.st.WriteMirrorRows(d.root, page))).Changes
 	d.m.svc.publish(d.root, d.m.svc.gen(d.m.conn.ID), d.m.conn.ID, ch, ownOf(Scope{Connection: d.m.conn.ID, Board: b}, ch), nil)
 }
 
@@ -98,7 +98,7 @@ func (d *depsModel) restore(b tracker.BoardID, id tracker.IssueID) {
 	d.rows[b][id] = r
 	page := must[store.MirrorRowPage](d.t)(mirrorRows(b, []tracker.Row{r}, nil, d.catalog, beginReadAt(d.t, d.m.st, d.root, d.readAt)))
 	page.Lifetime = d.m.sync(b).Lifetime
-	ch := changesOf(must[store.MirrorChanges](d.t)(d.m.st.WriteMirrorRows(d.root, page)))
+	ch := changesOf(must[store.MirrorChanges](d.t)(d.m.st.WriteMirrorRows(d.root, page))).Changes
 	d.m.svc.publish(d.root, d.m.svc.gen(d.m.conn.ID), d.m.conn.ID, ch, ownOf(Scope{Connection: d.m.conn.ID, Board: b}, ch), nil)
 }
 
@@ -273,7 +273,7 @@ func TestPatchingFollowsEveryDependency(t *testing.T) {
 			sections := []Section{{Kind: SectionSprint, Sprint: "1"}, {Kind: SectionBacklog},
 				{Kind: SectionColumn}, {Kind: SectionColumn, Column: 1}, {Kind: SectionColumn, Column: 2}}
 			read := func(b tracker.BoardID) heldBoard {
-				return heldFromView(must[BoardView](t)(m.svc.Board(Scope{Connection: m.conn.ID, Board: b}, sections)), sections)
+				return heldFromView(must[BoardView](t)(m.svc.Board(Scope{Connection: m.conn.ID, Board: b}, StatusGroups{}, sections)), sections)
 			}
 			clients := map[tracker.BoardID]heldBoard{}
 			for _, b := range depsBoards {
@@ -291,7 +291,7 @@ func TestPatchingFollowsEveryDependency(t *testing.T) {
 					case e.ReadAgain:
 						clients[scope.Board] = read(scope.Board)
 					case len(ids) > 0:
-						patch := must[BoardPatch](t)(m.svc.BoardPatch(scope, sections, ids, clients[scope.Board].held()))
+						patch := must[BoardPatch](t)(m.svc.BoardPatch(scope, StatusGroups{}, sections, ids, clients[scope.Board].held()))
 						clients[scope.Board] = applyPatch(clients[scope.Board], ids, patch)
 					}
 				}

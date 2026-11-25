@@ -79,7 +79,9 @@ type BoardEvent struct {
 
 // IssueEvent tells an open ticket's subscribers, of Issue on Connection,
 // that its view changed (Changed; TicketDetail reads it), that its reads
-// failed or recovered, or that the subscription ended. Failure is the
+// failed or recovered, that the planning poker votes its followers see
+// changed (Poker; Service.Poker reads them), or that the subscription
+// ended. Failure is the
 // ticket's failure as of the event, nil while its reads succeed: an event
 // is sent when it starts, changes or clears. Ended is the last event: the
 // connection was turned off or removed, and every handle on the ticket
@@ -90,6 +92,7 @@ type IssueEvent struct {
 	Seq        uint64          `json:"seq"`
 	Changed    bool            `json:"changed,omitempty"`
 	Failure    *FailureView    `json:"failure,omitempty"`
+	Poker      bool            `json:"poker,omitempty"`
 	Ended      bool            `json:"ended,omitempty"`
 }
 
@@ -131,12 +134,16 @@ func (s *Service) genLocked(conn string) uint64 {
 // handle is one subscriber's reference on a pump. untie, when set, is
 // the release of the tie the subscribe made (Tie): every removal of the
 // handle runs it, so the client that held the handle keeps no release for
-// it.
+// it. Whether a ticket's handle follows its planning poker is its
+// ticket's record (pokerFollow.followers).
 type handle struct {
 	board  *boardPump
 	ticket *ticketPump
 	ref    *pump.Handle[readRequest]
 	untie  func()
+	// setup names the status groups a board handle's reads apply: its
+	// project's, for its connection's site.
+	setup setupKey
 }
 
 // Tie ties a subscription's handle to the client that holds it as the
@@ -212,26 +219,43 @@ func (s *Service) SetSubscriptionVisible(id string, visible bool) error {
 	}
 	h.ref.VoteLocked(visible)
 	if h.ticket != nil {
+		s.admitPokerLocked(h.ticket)
 		s.followRoundLocked(h.ticket.key.connection)
 	}
 	return nil
 }
 
-// SubscriptionBoard is the board handle id subscribes to, for the reads a
-// board subscription makes (Board, SectionRows, BoardPatch). A handle the
-// service does not hold fails with ErrUnknownSubscription, and a ticket's
-// with ErrInvalidRequest.
-func (s *Service) SubscriptionBoard(id string) (Scope, error) {
+// SubscriptionBoard is the board handle id subscribes to and the status
+// groups its project gives the board's site, for the reads a board
+// subscription makes (Board, SectionRows, BoardPatch). A handle the
+// service does not hold fails with ErrUnknownSubscription, a ticket's with
+// ErrInvalidRequest, and one whose project's setup file cannot be read
+// with ErrSetupUnreadable.
+func (s *Service) SubscriptionBoard(id string) (Scope, StatusGroups, error) {
+	scope, key, err := s.boardHandle(id)
+	if err != nil {
+		return Scope{}, StatusGroups{}, err
+	}
+	groups, err := s.boardStatusGroups(key)
+	if err != nil {
+		return Scope{}, StatusGroups{}, err
+	}
+	return scope, groups, nil
+}
+
+// boardHandle is board handle id's scope and the status groups it reads
+// with.
+func (s *Service) boardHandle(id string) (Scope, setupKey, error) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	h := s.subs.handles[id]
 	switch {
 	case h == nil:
-		return Scope{}, fmt.Errorf("%w: %s", ErrUnknownSubscription, id)
+		return Scope{}, setupKey{}, fmt.Errorf("%w: %s", ErrUnknownSubscription, id)
 	case h.board == nil:
-		return Scope{}, fmt.Errorf("%w: subscription %s is a ticket's, not a board's", ErrInvalidRequest, id)
+		return Scope{}, setupKey{}, fmt.Errorf("%w: subscription %s is a ticket's, not a board's", ErrInvalidRequest, id)
 	}
-	return h.board.scope, nil
+	return h.board.scope, h.setup, nil
 }
 
 // SubscriptionCountsForTesting reports the board and ticket handles the
@@ -253,6 +277,7 @@ func (s *Service) ReleaseSubscription(id string) {
 		return
 	}
 	s.forgetHandleLocked(id, h)
+	s.unfollowPokerLocked(h)
 	last := h.ref.ReleaseLocked()
 	switch {
 	case last && h.board != nil && s.subs.boards[h.board.scope] == h.board:
@@ -261,7 +286,9 @@ func (s *Service) ReleaseSubscription(id string) {
 		s.retireTicketLocked(h.ticket)
 	}
 	if h.ticket != nil {
-		// A released handle that showed the ticket may leave none shown.
+		// A released handle that showed the ticket may leave none shown,
+		// and one that followed its votes none that follows and shows it.
+		s.admitPokerLocked(h.ticket)
 		s.followRoundLocked(h.ticket.key.connection)
 	}
 }

@@ -18,18 +18,46 @@ func currentTotalsRevision(s *Store, root int64, board string) int64 {
 	return rev
 }
 
-// pagedTotals reads every page of section of board and totals its rows as
-// the counts do: a row with no estimate, and every row of a board with
-// no estimate unit, adds no estimate.
-func pagedTotals(t *testing.T, s *Store, root int64, board string, section MirrorSection, estimated bool) MirrorSectionTotal {
+// testRegroup is a regrouping the parity checks read every board with,
+// and the statuses it leaves out of the counts.
+type testRegroup struct {
+	name    string
+	regroup MirrorRegroup
+	leftOut []string
+}
+
+// testRegroups are no regrouping and one that moves every status of the
+// test catalog to another group, To Do to done, Done to in progress,
+// Won't do to to do, an unknown status to canceled, and In Progress and
+// a status the catalog lacks left out.
+func testRegroups(t *testing.T) []testRegroup {
+	t.Helper()
+	regroup, err := NewMirrorRegroup(map[string]int{
+		"1": MirrorGroupDone, "10001": MirrorGroupInProgress, "6": MirrorGroupToDo, "99": MirrorGroupCanceled,
+		"3": MirrorGroupLeftOut, "7": MirrorGroupLeftOut,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []testRegroup{{name: "no regrouping"}, {name: "regrouped", regroup: regroup, leftOut: []string{"3", "7"}}}
+}
+
+// pagedTotals reads every page of section of board with rg and totals its
+// rows as the counts do: a row of a status rg leaves out adds nothing,
+// and a row with no estimate, and every row of a board with no estimate
+// unit, adds no estimate.
+func pagedTotals(t *testing.T, s *Store, root int64, board string, rg testRegroup, section MirrorSection, estimated bool) MirrorSectionTotal {
 	t.Helper()
 	var total MirrorSectionTotal
 	for after := (MirrorRowKey{}); ; {
-		page, err := s.ListMirrorSection(root, board, section, after)
+		page, err := s.ListMirrorSection(root, board, rg.regroup, section, after)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, row := range page.Rows {
+			if slices.Contains(rg.leftOut, row.Card.StatusID) {
+				continue
+			}
 			total.Rows++
 			if estimated && row.Estimate != nil {
 				total.Estimate += *row.Estimate
@@ -42,13 +70,21 @@ func pagedTotals(t *testing.T, s *Store, root int64, board string, section Mirro
 	}
 }
 
-// requireCountsMatchPages fails unless every total of board equals what
-// the pages of its section show, sprint by sprint of the board, the
-// backlog and column by column, a section with no rows absent, and All
-// is every row of the board.
+// requireCountsMatchPages fails unless, read with each of testRegroups,
+// every total of board equals what the pages of its section show, sprint
+// by sprint of the board, the backlog and column by column, a section with
+// no rows absent, and All is every row of the board, the rows of a status
+// left out left out of each.
 func requireCountsMatchPages(t *testing.T, s *Store, root int64, board, step string) {
 	t.Helper()
-	counts, err := s.CountMirrorSections(root, board)
+	for _, rg := range testRegroups(t) {
+		requireCountsMatchPagesWith(t, s, root, board, rg, step+", "+rg.name)
+	}
+}
+
+func requireCountsMatchPagesWith(t *testing.T, s *Store, root int64, board string, rg testRegroup, step string) {
+	t.Helper()
+	counts, err := s.CountMirrorSections(root, board, rg.regroup)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,27 +95,31 @@ func requireCountsMatchPages(t *testing.T, s *Store, root int64, board, step str
 	estimated := st.Board.EstimateUnit != MirrorEstimateNone
 	want := MirrorSectionCounts{Revision: counts.Revision, TotalsRevision: currentTotalsRevision(s, root, board),
 		Sprints: map[string]MirrorSectionTotal{}, Columns: map[int]MirrorSectionTotal{}}
-	want.Backlog = pagedTotals(t, s, root, board, MirrorSection{Kind: MirrorSectionBacklog}, estimated)
+	want.Backlog = pagedTotals(t, s, root, board, rg, MirrorSection{Kind: MirrorSectionBacklog}, estimated)
 	for _, sp := range st.Sprints {
-		if total := pagedTotals(t, s, root, board, MirrorSection{Kind: MirrorSectionSprint, SprintID: sp.ID}, estimated); total.Rows > 0 {
+		if total := pagedTotals(t, s, root, board, rg, MirrorSection{Kind: MirrorSectionSprint, SprintID: sp.ID}, estimated); total.Rows > 0 {
 			want.Sprints[sp.ID] = total
 		}
 	}
 	for position := range st.Columns {
-		if total := pagedTotals(t, s, root, board, MirrorSection{Kind: MirrorSectionColumn, Column: position}, estimated); total.Rows > 0 {
+		if total := pagedTotals(t, s, root, board, rg, MirrorSection{Kind: MirrorSectionColumn, Column: position}, estimated); total.Rows > 0 {
 			want.Columns[position] = total
 		}
 	}
 	var estimates []float64
-	err = scanMirrorRows(s.db, `SELECT `+mirrorRowEstimate("?3")+` FROM tracker_cache_board_issues b WHERE b.root_id = ?1 AND b.board_id = ?2`,
+	err = scanMirrorRows(s.db, `SELECT `+mirrorRowEstimate("?3")+`, i.status_id FROM tracker_cache_board_issues b
+		JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id WHERE b.root_id = `+intParam("?1")+` AND b.board_id = ?2`,
 		[]any{root, board, currentEstimateReset(s, root, board)}, func(r rowScanner) error {
 			var e *float64
-			err := r.Scan(&e)
+			var status string
+			if err := r.Scan(&e, &status); err != nil || slices.Contains(rg.leftOut, status) {
+				return err
+			}
 			want.All.Rows++
 			if e != nil {
 				estimates = append(estimates, *e)
 			}
-			return err
+			return nil
 		})
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +181,7 @@ func TestMirrorCountsMatchThePages(t *testing.T) {
 		}
 	}
 	check("as written")
-	if counts, err := s.CountMirrorSections(root, "10"); err != nil || counts.Backlog.Rows != 5 || len(counts.Sprints) != 3 {
+	if counts, err := s.CountMirrorSections(root, "10", MirrorRegroup{}); err != nil || counts.Backlog.Rows != 5 || len(counts.Sprints) != 3 {
 		t.Fatalf("board 10's counts %+v, %v; want 5 rows in the backlog and 3 sprints", counts, err)
 	}
 
@@ -232,12 +272,12 @@ func TestMirrorTotalsRevisionMovesWithTheTotals(t *testing.T) {
 		{"an estimate unit", structure(func() { st.Board.EstimateUnit = MirrorEstimateTime }), true},
 		{"a row read again after the estimate reset", func() { page(rows[2])() }, true},
 	} {
-		before, err := s.CountMirrorSections(root, "10")
+		before, err := s.CountMirrorSections(root, "10", MirrorRegroup{})
 		if err != nil {
 			t.Fatal(err)
 		}
 		step.write()
-		after, err := s.CountMirrorSections(root, "10")
+		after, err := s.CountMirrorSections(root, "10", MirrorRegroup{})
 		if err != nil {
 			t.Fatal(err)
 		}

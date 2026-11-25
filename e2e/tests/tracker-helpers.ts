@@ -6,6 +6,7 @@
 
 import { writeFile } from 'node:fs/promises';
 
+import type { Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import type { SeedResult } from './fixtures.js';
 
@@ -20,6 +21,10 @@ export const SPRINT_ID = '1';
 /** What `TrackerConnections` and `AddTrackerConnection` answer. */
 export interface TrackerConnection {
   id: string;
+  kind: 'jira' | 'tempo' | 'linear';
+  site: string;
+  account: string;
+  parentId?: string;
   keyFilePath: string;
   problem?: { kind: string; message: string } | null;
 }
@@ -33,33 +38,46 @@ export interface ConnectedBoard {
 }
 
 /**
- * Seeds the fake Jira site: project WEB with one scrum board, its active
- * sprint holding WEB-1 and WEB-2, and WEB-3 in the backlog. Then seeds a
- * project, adds and verifies a Jira connection to the site, and lists the
- * board on the project.
+ * More for the fake Jira site, in its fixture shape: projects, boards and
+ * issues (trackerfake.JiraProject, JiraBoard and JiraIssue) beside the
+ * seed's own, where an issue's created and updated times are the seed's,
+ * and `poker: {}` for the planning poker add-on (trackerfake.JiraPoker).
  */
-export async function connectFakeJiraBoard(harness: HarnessApp, name: string): Promise<ConnectedBoard> {
-  const day = new Date(Date.now() - 48 * 3600_000).toISOString();
-  const sprintEnd = new Date(Date.now() + 12 * 24 * 3600_000).toISOString();
-  const origins = await harness.rpc<{ jira: Record<string, string> }>('HarnessTrackerSeed', {
-    jira: [{
-      site: JIRA_SITE, account: 'acc-user1', token: JIRA_TOKEN,
-      users: [{ accountId: 'acc-user1', displayName: 'User 1', email: JIRA_ACCOUNT, timeZone: 'UTC' }],
-      projects: [{ id: '10000', key: 'WEB', name: 'Web' }],
-      boards: [{ id: 1, name: 'WEB board', type: 'scrum', project: 'WEB', columns: [
-        { name: 'To Do', statuses: ['10000'] }, { name: 'In Progress', statuses: ['10001'] }, { name: 'Done', statuses: ['10002'] },
-      ] }],
-      sprints: [{ id: 1, board: 1, name: 'Sprint 1', state: 'active', start: day, end: sprintEnd }],
-      issues: [
-        { id: '10101', key: 'WEB-1', project: 'WEB', type: '10001', summary: 'First story', sprints: [1], status: '10001', created: day, updated: day },
-        { id: '10102', key: 'WEB-2', project: 'WEB', type: '10002', summary: 'Second task', sprints: [1], status: '10000', created: day, updated: day },
-        { id: '10103', key: 'WEB-3', project: 'WEB', type: '10002', summary: 'Backlog task', status: '10000', created: day, updated: day },
-      ],
-    }],
-  });
-  const jiraURL = origins.jira[JIRA_SITE];
-  if (!jiraURL) throw new Error(`HarnessTrackerSeed served no ${JIRA_SITE}: ${JSON.stringify(origins)}`);
+export interface ExtraJira {
+  projects: Array<{ id: string; key: string; name: string }>;
+  boards: Array<{ id: number; name: string; type: 'scrum' | 'kanban'; project: string; columns: Array<{ name: string; statuses: string[] }> }>;
+  issues?: Array<{
+    id: string; key: string; project: string; type: string; status: string; summary: string; sprints?: number[]; assignee?: string;
+    /** An Atlassian document. */
+    description?: unknown;
+    comments?: Array<{ id: string; author: string; body: unknown; created: string }>;
+    dueDate?: string;
+    /** Other fields' values by field ID (trackerfake.JiraIssue.Values). */
+    values?: Record<string, unknown>;
+    changelog?: Array<{ id: string; author?: string; created: string; items: Array<{ fieldId: string; field: string; fieldtype: string; from?: string | null; fromString?: string | null; to?: string | null; toString?: string | null }> }>;
+  }>;
+  /** The site's custom fields (trackerfake.JiraField). */
+  fields?: Array<{ id: string; name: string; schema: { type: string; items?: string; custom?: string; customId?: number }; options?: Array<{ id: string; value: string }> }>;
+  resolutions?: Array<{ id: string; name: string }>;
+  /** Links between issues (trackerfake.JiraLink): outward relates to inward by the type's outward name. */
+  links?: Array<{ id: string; type: string; outward: string; inward: string }>;
+  /** WEB's issue types with their edit screens (trackerfake.JiraIssueType) in place of the fake's. */
+  issueTypes?: Array<{ id: string; name: string; subtask?: boolean; hierarchyLevel?: number; screen: Array<{ field: string; required?: boolean }> }>;
+  /** WEB's workflow moves in place of one per status (trackerfake.JiraTransition). */
+  transitions?: Array<{ id: string; name: string; to: string; from?: string[]; screen?: Array<{ field: string; required?: boolean }> }>;
+  /** The field WEB's board estimates in. */
+  estimation?: string;
+  poker?: Record<string, never>;
+}
 
+/**
+ * Seeds the fake Jira site: project WEB with one scrum board, its active
+ * sprint holding WEB-1 and WEB-2, and WEB-3 in the backlog, and `extra`.
+ * Then seeds a project, adds and verifies a Jira connection to the site,
+ * and lists the board on the project.
+ */
+export async function connectFakeJiraBoard(harness: HarnessApp, name: string, extra?: ExtraJira): Promise<ConnectedBoard> {
+  const jiraURL = await seedFakeJira(harness, extra);
   const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name, repo: {} }] });
   const projectId = seed.projects[0].projectId;
   const added = await harness.rpc<TrackerConnection>('AddTrackerConnection', { kind: 'jira', site: JIRA_SITE, account: JIRA_ACCOUNT });
@@ -67,8 +85,47 @@ export async function connectFakeJiraBoard(harness: HarnessApp, name: string): P
   await writeFile(added.keyFilePath, JIRA_TOKEN, { mode: 0o600 });
   const verified = await harness.rpc<TrackerConnection>('VerifyTrackerConnection', added.id);
   if (verified.problem) throw new Error(`the fake Jira refused the connection: ${JSON.stringify(verified.problem)}`);
-  await harness.rpc('SetProjectTrackerBoards', projectId, [{ connection: added.id, board: BOARD_ID, opens_first: true }]);
+  // As the board picker sends it: built from the project's empty list,
+  // with the name and project it showed.
+  await harness.rpc('SetProjectTrackerBoards', projectId, [], [{ connection: added.id, board: BOARD_ID, opens_first: true, name: 'WEB board', tracker_project: 'WEB' }]);
   return { projectId, connectionId: added.id, jiraURL };
+}
+
+/**
+ * Seeds the fake Jira site alone (see connectFakeJiraBoard) and answers
+ * its base URL.
+ */
+export async function seedFakeJira(harness: HarnessApp, extra?: ExtraJira): Promise<string> {
+  const day = new Date(Date.now() - 48 * 3600_000).toISOString();
+  const sprintEnd = new Date(Date.now() + 12 * 24 * 3600_000).toISOString();
+  const origins = await harness.rpc<{ jira: Record<string, string> }>('HarnessTrackerSeed', {
+    jira: [{
+      site: JIRA_SITE, account: 'acc-user1', token: JIRA_TOKEN,
+      users: [{ accountId: 'acc-user1', displayName: 'User 1', email: JIRA_ACCOUNT, timeZone: 'UTC' }],
+      projects: [{
+        id: '10000', key: 'WEB', name: 'Web',
+        ...(extra?.issueTypes ? { issueTypes: extra.issueTypes } : {}),
+        ...(extra?.transitions ? { transitions: extra.transitions } : {}),
+      }, ...(extra?.projects ?? [])],
+      boards: [{ id: 1, name: 'WEB board', type: 'scrum', project: 'WEB', ...(extra?.estimation ? { estimation: extra.estimation } : {}), columns: [
+        { name: 'To Do', statuses: ['10000'] }, { name: 'In Progress', statuses: ['10001'] }, { name: 'Done', statuses: ['10002'] },
+      ] }, ...(extra?.boards ?? [])],
+      ...(extra?.fields ? { fields: extra.fields } : {}),
+      ...(extra?.resolutions ? { resolutions: extra.resolutions } : {}),
+      ...(extra?.links ? { links: extra.links } : {}),
+      sprints: [{ id: 1, board: 1, name: 'Sprint 1', state: 'active', start: day, end: sprintEnd }],
+      issues: [
+        { id: '10101', key: 'WEB-1', project: 'WEB', type: '10001', summary: 'First story', sprints: [1], status: '10001', created: day, updated: day },
+        { id: '10102', key: 'WEB-2', project: 'WEB', type: '10002', summary: 'Second task', sprints: [1], status: '10000', created: day, updated: day },
+        { id: '10103', key: 'WEB-3', project: 'WEB', type: '10002', summary: 'Backlog task', status: '10000', created: day, updated: day },
+        ...(extra?.issues ?? []).map((issue) => ({ ...issue, created: day, updated: day })),
+      ],
+      ...(extra?.poker ? { poker: extra.poker } : {}),
+    }],
+  });
+  const jiraURL = origins.jira[JIRA_SITE];
+  if (!jiraURL) throw new Error(`HarnessTrackerSeed served no ${JIRA_SITE}: ${JSON.stringify(origins)}`);
+  return jiraURL;
 }
 
 /** Renames an issue in the fake Jira, as a person editing it there would. */
@@ -82,4 +139,12 @@ export async function renameJiraIssue(board: ConnectedBoard, key: string, summar
     body: JSON.stringify({ fields: { summary } }),
   });
   if (resp.status !== 204) throw new Error(`the fake Jira refused the rename of ${key}: HTTP ${resp.status} ${await resp.text()}`);
+}
+
+/** Opens Settings > Issues > Connections or Boards on `page`. */
+export async function openIssuesPage(page: Page, name: 'Connections' | 'Boards'): Promise<void> {
+  if (!(await page.getByRole('tablist', { name: 'Settings Sections' }).isVisible())) {
+    await page.getByTestId('sidebar-settings-button').click();
+  }
+  await page.getByRole('tablist', { name: 'Settings Sections' }).getByRole('tab', { name, exact: true }).click();
 }

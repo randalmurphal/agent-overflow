@@ -14,7 +14,7 @@ import (
 func cutAsyncQuestionsTx(tx *sql.Tx, threadID string, fromTurn int, predicate string, args []any) error {
 	selection, cutArgs, err := timelineArms(tx, threadID, timelineSelection{
 		Columns:   func(string, string) string { return "items.id" },
-		Turn:      "?",
+		Turn:      boundInt,
 		TurnArgs:  []any{fromTurn},
 		FromTurn:  true,
 		Where:     "(" + predicate + ")",

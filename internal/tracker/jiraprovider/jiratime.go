@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/adf"
 	"agent-overflow/internal/tracker/jira"
@@ -24,11 +22,12 @@ type jiraTime struct {
 	jira *jira.Client
 }
 
-// zone is u's time zone; an account whose zone is hidden or unknown is an
-// error, since the days and times read for it would be wrong.
+// zone is u's time zone; an account whose zone is hidden (matching
+// tracker.ErrNoTimeZone) or unknown is an error, since the days and times
+// read for it would be wrong.
 func zone(u jira.User) (*time.Location, error) {
 	if u.TimeZone == "" {
-		return nil, fmt.Errorf("jiraprovider: Jira does not say which time zone %s is in", u.AccountID)
+		return nil, fmt.Errorf("jiraprovider: %s: %w", u.AccountID, tracker.ErrNoTimeZone)
 	}
 	loc, err := time.LoadLocation(u.TimeZone)
 	if err != nil {
@@ -62,25 +61,31 @@ func (t *jiraTime) Worklogs(ctx context.Context, q tracker.WorklogQuery) ([]trac
 		// Paged in an order that cannot change between pages: Jira returns
 		// an unordered search in no stable order (measured).
 		" ORDER BY id ASC"
+	// The lookup's failure wins over the search's: a person Jira will not
+	// look up is the answer whichever request Jira answers first, so the
+	// search's failure does not end the lookup, and the lookup's ends the
+	// search.
 	var (
-		author jira.User
-		res    jira.SearchResult
+		res       jira.SearchResult
+		searchErr error
 	)
-	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() (err error) {
-		if author, err = t.jira.User(gctx, string(q.Author)); err != nil {
-			return fmt.Errorf("jiraprovider: worklogs of %s: %w", q.Author, err)
-		}
-		return nil
-	})
-	g.Go(func() (err error) {
-		if res, err = t.jira.SearchAll(gctx, jira.SearchQuery{JQL: jql, Fields: []string{"worklog"}}, 0); err != nil {
-			return fmt.Errorf("jiraprovider: issues %s logged time on: %w", q.Author, err)
-		}
-		return nil
-	})
-	if err := g.Wait(); err != nil {
-		return nil, err
+	searchCtx, stopSearch := context.WithCancel(ctx)
+	searched := make(chan struct{})
+	go func() {
+		defer close(searched)
+		res, searchErr = t.jira.SearchAll(searchCtx, jira.SearchQuery{JQL: jql, Fields: []string{"worklog"}}, 0)
+	}()
+	author, err := t.jira.User(ctx, string(q.Author))
+	if err != nil {
+		stopSearch()
+	}
+	<-searched
+	stopSearch()
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("jiraprovider: worklogs of %s: %w: %w", q.Author, tracker.ErrWorklogAuthor, err)
+	case searchErr != nil:
+		return nil, fmt.Errorf("jiraprovider: issues %s logged time on: %w: %w", q.Author, tracker.ErrWorklogSearch, searchErr)
 	}
 	if !res.Complete {
 		return nil, fmt.Errorf("jiraprovider: issues %s logged time on: Jira warned that the search is incomplete", q.Author)
@@ -181,9 +186,10 @@ func (t *jiraTime) EditWorklog(ctx context.Context, in tracker.WorklogEdit) trac
 	return worklogResult(in.From.Issue, in.From.Author, outcome(err), days...)
 }
 
-// DeleteWorklog deletes a Jira worklog of the issue From names, giving its
-// time back to the issue's remaining estimate. The worklog is read first,
-// so the result names its author's worklogs of its day as Jira holds them.
+// DeleteWorklog deletes a Jira worklog that still holds what From says,
+// giving its time back to the issue's remaining estimate. The worklog is
+// read first, so the result names its author's worklogs of its day as
+// Jira holds them.
 func (t *jiraTime) DeleteWorklog(ctx context.Context, in tracker.WorklogDelete) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepWorklog, err, in.From.Issue)
@@ -192,11 +198,14 @@ func (t *jiraTime) DeleteWorklog(ctx context.Context, in tracker.WorklogDelete) 
 		return tracker.Invalid(tracker.StepWorklog, err, in.From.Issue)
 	}
 	_, cur, _, _, err := t.readWorklog(ctx, in.From)
+	if err == nil && !sameWorklog(cur, in.From) {
+		err = stale(string(in.From.Issue), "worklog "+string(in.From.ID))
+	}
 	if err != nil {
 		return worklogResult(in.From.Issue, in.From.Author, beforeSend(err), in.From.Day)
 	}
 	err = t.jira.DeleteWorklog(ctx, string(in.From.Issue), string(in.From.ID), jira.AdjustAuto())
-	return worklogResult(in.From.Issue, cur.Author, outcome(err), deleteDays(cur, in.From)...)
+	return worklogResult(in.From.Issue, in.From.Author, outcome(err), in.From.Day)
 }
 
 func checkWorklog(w tracker.Worklog) error {

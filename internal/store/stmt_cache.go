@@ -25,6 +25,19 @@ func textParam(param string) string {
 // boundText is the positional text parameter the planner cannot read.
 var boundText = textParam("?")
 
+// intParam is the integer parameter param ("?" or "?N") as an expression
+// the planner cannot read, for a comparison with a column. The planner
+// reads whether a bare integer parameter is 0 or 1, and a rebind across
+// that line, such as turn 1 to turn 2, compiles the statement again.
+// Constant SQL writes the same cast; a row value's parameters stay bare.
+// See docs/architecture/sqlite-store.md#connections.
+func intParam(param string) string {
+	return "CAST(" + param + " AS INTEGER)"
+}
+
+// boundInt is the positional integer parameter the planner cannot read.
+var boundInt = intParam("?")
+
 // sqlTextLiteral is value as an SQL string literal, for a code constant
 // the planner must read to choose a partial index.
 func sqlTextLiteral(value string) string {
@@ -80,9 +93,6 @@ type stmtCacheConn struct {
 	entries map[string]*list.Element
 	// order holds *cachedStmt, most recently used first.
 	order list.List
-	// beforeClose, when set, releases what the connector attached to the
-	// connection (the writer's commit hook) before it closes.
-	beforeClose func()
 	// writes, when set, counts the row writes the connection runs; see
 	// Store.WriteCount. Only the writer's connections set it.
 	writes *atomic.Uint64
@@ -255,9 +265,6 @@ func (c *stmtCacheConn) evictLocked(keep int) {
 // database/sql closes a connection only after every Rows on it has closed, so
 // no cached statement is running.
 func (c *stmtCacheConn) Close() error {
-	if c.beforeClose != nil {
-		c.beforeClose()
-	}
 	c.mu.Lock()
 	var errs []error
 	for el := c.order.Front(); el != nil; el = el.Next() {

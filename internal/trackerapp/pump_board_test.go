@@ -56,7 +56,7 @@ func (m *mirrorFixture) tracks(rows []tracker.Row) {
 // the backlog.
 func (m *mirrorFixture) subscribe(t *testing.T, b tracker.BoardID) BoardSubscription {
 	t.Helper()
-	sub, err := m.svc.SubscribeBoard(m.project(), Scope{Connection: m.conn.ID, Board: b}, []Section{{Kind: SectionBacklog}}, untied)
+	sub, err := m.svc.SubscribeBoard(m.project(), Scope{Connection: m.conn.ID, Board: b}, []Section{{Kind: SectionBacklog}}, true, untied)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,11 +107,38 @@ func TestBoardSubscribeAnswersFromTheMirror(t *testing.T) {
 	if got := len(m.p.callsInOrder()); got != len(calls) {
 		t.Fatalf("a second handle on the board made %d more calls", got-len(calls))
 	}
-	if _, err := m.svc.SubscribeBoard(m.project(), Scope{Connection: m.conn.ID, Board: "99"}, nil, untied); !errors.Is(err, ErrNotListed) {
+	if _, err := m.svc.SubscribeBoard(m.project(), Scope{Connection: m.conn.ID, Board: "99"}, nil, true, untied); !errors.Is(err, ErrNotListed) {
 		t.Fatalf("a board the project does not list: %v", err)
 	}
-	if _, err := m.svc.SubscribeBoard("other", m.scope(), nil, untied); !errors.Is(err, ErrNotListed) {
+	if _, err := m.svc.SubscribeBoard("other", m.scope(), nil, true, untied); !errors.Is(err, ErrNotListed) {
 		t.Fatalf("a project that lists nothing: %v", err)
+	}
+}
+
+// A board subscribed hidden reads nothing from the tracker until a handle
+// shows it or a person asks: a refresh while hidden is its first tick, and
+// the first visible vote runs the first tick of a board never refreshed.
+func TestABoardSubscribedHiddenReadsWhenShown(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
+	hidden := func(b tracker.BoardID) BoardSubscription {
+		return must[BoardSubscription](t)(m.svc.SubscribeBoard(m.project(), Scope{Connection: m.conn.ID, Board: b}, nil, false, untied))
+	}
+	sub := hidden(testBoard)
+	if err := m.svc.RefreshSubscription(t.Context(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.p.count("Structure"); got != 1 {
+		t.Fatalf("a refresh of a board subscribed hidden ran %d structure reads; want its own alone", got)
+	}
+
+	other := hidden("2")
+	if err := m.svc.SetSubscriptionVisible(other.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if e := m.events.boardEvents(t, 2)[1]; e.Scope.Board != "2" || !e.ReadAgain {
+		t.Fatalf("the first tick after the vote told %+v", e)
 	}
 }
 
@@ -198,7 +225,7 @@ func TestBoardHandlesShareOnePump(t *testing.T) {
 		for range maxBoardSubscriptions {
 			m.subscribe(t, testBoard)
 		}
-		if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, untied); !errors.Is(err, ErrTooManySubscriptions) {
+		if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, true, untied); !errors.Is(err, ErrTooManySubscriptions) {
 			t.Fatalf("one handle over the cap: %v", err)
 		}
 	})
@@ -423,11 +450,11 @@ func TestBoardHandlesAreUntiedByEveryRemoval(t *testing.T) {
 	kinds := map[string]kind{
 		"board": {
 			subscribe: func(m *mirrorFixture, tie Tie) (string, error) {
-				sub, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, tie)
+				sub, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, true, tie)
 				return sub.ID, err
 			},
 			held: func(m *mirrorFixture, id string) error {
-				scope, err := m.svc.SubscriptionBoard(id)
+				scope, _, err := m.svc.SubscriptionBoard(id)
 				if err == nil && scope != m.scope() {
 					return fmt.Errorf("the handle's board is %+v", scope)
 				}
@@ -436,7 +463,7 @@ func TestBoardHandlesAreUntiedByEveryRemoval(t *testing.T) {
 		},
 		"ticket": {
 			subscribe: func(m *mirrorFixture, tie Tie) (string, error) {
-				sub, err := m.svc.SubscribeTicket(m.conn.ID, "10001", tie)
+				sub, err := m.svc.SubscribeTicket(m.conn.ID, "10001", true, tie)
 				return sub.ID, err
 			},
 			held: func(m *mirrorFixture, id string) error {
@@ -503,11 +530,11 @@ func TestBoardHandlesAreUntiedByEveryRemoval(t *testing.T) {
 	t.Run("a ticket's handle", func(t *testing.T) {
 		t.Parallel()
 		m := newMirrorFixture(t)
-		sub, err := m.svc.SubscribeTicket(m.conn.ID, "10001", untied)
+		sub, err := m.svc.SubscribeTicket(m.conn.ID, "10001", true, untied)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := m.svc.SubscriptionBoard(sub.ID); !errors.Is(err, ErrInvalidRequest) {
+		if _, _, err := m.svc.SubscriptionBoard(sub.ID); !errors.Is(err, ErrInvalidRequest) {
 			t.Fatalf("a ticket handle's board: %v", err)
 		}
 	})

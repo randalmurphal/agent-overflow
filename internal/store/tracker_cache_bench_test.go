@@ -169,7 +169,7 @@ func BenchmarkMirrorSectionPage(b *testing.B) {
 		b.Run(name, func(b *testing.B) {
 			s, root := openBenchMirror(b)
 			measureMirror(b, func(int) error {
-				_, err := s.ListMirrorSection(root, benchBoardID(0), section, MirrorRowKey{})
+				_, err := s.ListMirrorSection(root, benchBoardID(0), MirrorRegroup{}, section, MirrorRowKey{})
 				return err
 			})
 		})
@@ -180,7 +180,7 @@ func BenchmarkMirrorSectionPage(b *testing.B) {
 func BenchmarkMirrorCountSections(b *testing.B) {
 	s, root := openBenchMirror(b)
 	measureMirror(b, func(int) error {
-		_, err := s.CountMirrorSections(root, benchBoardID(0))
+		_, err := s.CountMirrorSections(root, benchBoardID(0), MirrorRegroup{})
 		return err
 	})
 }
@@ -259,10 +259,10 @@ func BenchmarkMirrorBoardLifetime(b *testing.B) {
 		listing = append(listing, ProjectTrackerBoard{ConnectionID: jira, BoardID: benchBoardID(board)})
 	}
 	measureMirror(b, func(int) error {
-		if _, _, err := s.ReplaceProjectTrackerBoards(defaultTestProjectID, append(slices.Clone(listing), ProjectTrackerBoard{ConnectionID: jira, BoardID: "99"})); err != nil {
+		if _, _, err := replaceFromStored(s, defaultTestProjectID, append(slices.Clone(listing), ProjectTrackerBoard{ConnectionID: jira, BoardID: "99"})); err != nil {
 			return err
 		}
-		if _, _, err := s.ReplaceProjectTrackerBoards(defaultTestProjectID, listing); err != nil {
+		if _, _, err := replaceFromStored(s, defaultTestProjectID, listing); err != nil {
 			return err
 		}
 		return s.FinishMirrorCleanup(context.Background(), nil)

@@ -84,6 +84,8 @@ export interface CommandFlags {
   workflowsPaneFocused: boolean;
   /** True while the raw focused pane is the Pull requests pane. */
   pullsPaneFocused: boolean;
+  /** True while the raw focused pane is the Issues pane. */
+  issuesPaneFocused: boolean;
   /** True while the raw focused pane is a browser companion pane that compact does not hide. */
   browserPaneFocused: boolean;
   /** True while the focused workflows pane is showing a run detail level. */
@@ -150,6 +152,12 @@ export interface CommandFlags {
   terminalOperate: boolean;
   /** Whether this session holds `git:operate` (commit, push, pull, PR, ship). */
   gitOperate: boolean;
+  /**
+   * Whether an attached computer grants this window `tracker:read`, which
+   * the Issues pane needs: it reads every computer's boards, so no one
+   * computer's grant decides it (`toolPanes.svelte#isToolAvailable`).
+   */
+  trackerRead: boolean;
   /** Extra identifiers callers want to expose to `when` expressions. */
   [key: string]: boolean;
 }

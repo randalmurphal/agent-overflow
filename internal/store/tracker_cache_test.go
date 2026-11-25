@@ -120,7 +120,7 @@ func TestDetachMirrorThenCleanupDrainsInBatches(t *testing.T) {
 // board.
 func TestMirrorDrainCoversEveryTable(t *testing.T) {
 	t.Parallel()
-	db := migrateThrough(t, trackerMirrorMigrationVersion)
+	db := migrateThrough(t, threadTicketCopyMigrationVersion)
 	tables, err := queryIDs(db, `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'tracker\_cache\_%' ESCAPE '\'
 		AND name <> 'tracker_cache_roots' ORDER BY name`)
 	if err != nil {
@@ -205,7 +205,7 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			return err
 		},
 		"ReplaceMirrorWorklogs": func(root int64) error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-06", mirrorReadOf(root, 1), nil)
+			_, err := s.ReplaceMirrorWorklogs(root, 0, "acc-user1", "2026-01-05", "2026-01-06", mirrorReadOf(root, 1), nil)
 			return err
 		},
 		"RecordMirrorSyncAttempt": func(root int64) error {
@@ -225,6 +225,10 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			_, _, err := s.RecordMirrorSyncAttempt(root, "11", currentAttempt(s, root, "11", MirrorSyncAttempt{ReadAt: mirrorReadOf(root, 8), Failure: MirrorAttemptFailure{At: mirrorReadOf(root, 9), Kind: MirrorFailureTransient, Message: "timed out"}}))
 			return err
 		},
+		"MarkMirrorIssuesMissing": func(root int64) error {
+			_, err := s.MarkMirrorIssuesMissing(root, mirrorReadOf(root, 9), []string{"10001"})
+			return err
+		},
 		"KeepMirrorTicket": func(root int64) error {
 			_, _, err := s.KeepMirrorTicket(root, "10001", 2, 1, mirrorReadOf(root, 9))
 			return err
@@ -236,10 +240,10 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 // the cleanup and the reads.
 var mirrorNonWriters = []string{
 	"GetOrCreateMirrorRoot", "GetMirrorRoot", "DetachMirror", "FinishMirrorCleanup",
-	"GetMirrorSync", "ListMirrorHistoryDue", "ListMirrorBodies", "ListMirrorWorklogs", "ListMirrorIssueWorklogs",
-	"GetMirrorBoard", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorIssueRows", "ListMirrorSection", "CountMirrorSections",
+	"GetMirrorSync", "ListMirrorHistoryDue", "ListMirrorBodies", "ListMirrorIssueWorklogs",
+	"GetMirrorBoard", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorIssueRows", "ListMirrorTicketRows", "ListMirrorSection", "CountMirrorSections",
 	"ListMirrorOffBoardLinkedIssues", "ReadMirrorBoardView", "ReadMirrorBoardPatch", "ListMirrorIssueBoards",
-	"ReadMirrorRefreshTargets",
+	"ReadMirrorRefreshTargets", "ReadMirrorWorklogDays",
 	// An open ticket's row goes by its pump, whatever became of its root.
 	"DropMirrorTicket", "DropMirrorTicketsOfOtherSessions",
 	// A read's clock, which stores its lease only when a read passes it
@@ -410,8 +414,8 @@ func TestRestoreEmptiesTheMirror(t *testing.T) {
 	seedSnapshotFixture(t, st, "t1", "First")
 	jira := mustCreateTrackerConnection(t, st, jiraConnection(mirrorSite, "user1@example.com", 10))
 	listMirrorBoards(t, st, "p1", jira.ID, "10")
-	mustSetThreadTicket(t, st, ThreadTicket{ThreadID: "t1", Ticket: TicketRef{Kind: TrackerKindJira, Site: mirrorSite, IssueID: "10001"},
-		IssueKey: "WEB-1", Origin: TicketOriginManual, LinkedAt: 10}, true)
+	seedThreadTicket(t, st, ThreadTicket{ThreadID: "t1", Ticket: TicketRef{Kind: TrackerKindJira, Site: mirrorSite, IssueID: "10001"},
+		IssueKey: "WEB-1", Origin: TicketOriginManual, LinkedAt: 10})
 	root, _, err := st.GetOrCreateMirrorRoot(jira.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -436,7 +440,7 @@ func TestRestoreEmptiesTheMirror(t *testing.T) {
 		t.Fatalf("connection after restore = %+v, %v", got, err)
 	}
 	assertRows(t, st.db, `SELECT board_id FROM project_tracker_boards`, "10")
-	assertRows(t, st.db, `SELECT issue_id FROM thread_tickets`, "10001")
+	assertRows(t, st.db, `SELECT issue_id FROM thread_tickets ORDER BY issue_id`, "10001,10009")
 	if _, err := st.WriteMirrorRowPage(root, currentPage(st, root, webPage("10")), nil); !errors.Is(err, ErrTrackerCacheGone) {
 		t.Fatalf("write to the pre-restore root: %v", err)
 	}

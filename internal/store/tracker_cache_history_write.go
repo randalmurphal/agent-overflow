@@ -14,8 +14,8 @@ import (
 // an issue's history advances its receipt. It takes at most
 // mirrorHistoryBatch histories of distinct issues, of any length, and the
 // users and statuses the read names (catalog, stored as UpsertMirrorCards
-// stores one from a read that began at readAt), reporting whether the
-// catalog changed. The catalog and the histories that fit are written in
+// stores one from a read that began at readAt), reporting what the
+// catalog changed (MirrorCatalogWrite). The catalog and the histories that fit are written in
 // one transaction of four statements and one per kind the catalog names,
 // the histories in more when their changes pass mirrorMaxBatchChanges or
 // what they remove passes clearMirrorChunk; a history that alone passes
@@ -26,24 +26,24 @@ import (
 // reads (ErrTrackerCacheSwept). A call that fails after a transaction of
 // it committed returns, with the error, the outcomes so far: Changed for
 // every history a committed transaction changed, and for a staged history
-// whose write had begun, which may not have completed, and whether the
-// first transaction changed the catalog. The caller tells those changes
+// whose write had begun, which may not have completed, and what the first
+// transaction changed of the catalog. The caller tells those changes
 // whatever it does about the error; the other outcomes of a failed call
 // say nothing.
 func (s *Store) ReplaceMirrorHistories(rootID, sweep int64, histories []MirrorHistory, catalog MirrorCatalog,
-	read MirrorRead) (results []MirrorHistoryResult, catalogChanged bool, err error) {
+	read MirrorRead) (results []MirrorHistoryResult, catalogWrite MirrorCatalogWrite, err error) {
 	times, err := read.in(rootID)
 	if err != nil {
-		return nil, false, err
+		return nil, MirrorCatalogWrite{}, err
 	}
 	readAt := times.at
 	named := len(catalog.Users)+len(catalog.Statuses) > 0
 	if len(histories) > mirrorHistoryBatch || sweep <= 0 || readAt <= 0 {
-		return nil, false, fmt.Errorf("%w: %d histories, over %d, or no sweep or read time", ErrInvalidTrackerCache, len(histories),
+		return nil, MirrorCatalogWrite{}, fmt.Errorf("%w: %d histories, over %d, or no sweep or read time", ErrInvalidTrackerCache, len(histories),
 			mirrorHistoryBatch)
 	}
 	if err := catalog.check(); err != nil {
-		return nil, false, err
+		return nil, MirrorCatalogWrite{}, err
 	}
 	// A refusal below is of the input: nothing was written.
 	inputs := make([]mirrorHistoryInput, len(histories))
@@ -52,10 +52,10 @@ func (s *Store) ReplaceMirrorHistories(rootID, sweep int64, histories []MirrorHi
 	for i, h := range histories {
 		in, err := newMirrorHistoryInput(h, readAt)
 		if err != nil {
-			return nil, false, err
+			return nil, MirrorCatalogWrite{}, err
 		}
 		if _, ok := index[h.IssueID]; ok {
-			return nil, false, fmt.Errorf("%w: issue %s has two histories", ErrInvalidTrackerCache, h.IssueID)
+			return nil, MirrorCatalogWrite{}, fmt.Errorf("%w: issue %s has two histories", ErrInvalidTrackerCache, h.IssueID)
 		}
 		inputs[i], index[h.IssueID] = in, i
 		results[i] = MirrorHistoryResult{IssueID: h.IssueID, Unkept: true}
@@ -66,7 +66,7 @@ func (s *Store) ReplaceMirrorHistories(rootID, sweep int64, histories []MirrorHi
 		// What the transactions before this one committed: a transaction
 		// that fails rolls back, and its outcomes with it.
 		committed := slices.Clone(results)
-		var changed bool
+		var changed MirrorCatalogWrite
 		err = s.mirrorSweptWrite(rootID, sweep, action, func(tx *sql.Tx) error {
 			var err error
 			if first && named {
@@ -83,12 +83,13 @@ func (s *Store) ReplaceMirrorHistories(rootID, sweep int64, histories []MirrorHi
 			return err
 		})
 		if err != nil {
-			return committed, catalogChanged, err
+			return committed, catalogWrite, err
 		}
-		catalogChanged = catalogChanged || changed
+		catalogWrite.Changed = catalogWrite.Changed || changed.Changed
+		catalogWrite.Threads = unionSorted(catalogWrite.Threads, changed.Threads)
 	}
 	if len(staged) == 0 {
-		return results, catalogChanged, nil
+		return results, catalogWrite, nil
 	}
 	// A staged history runs with the cleanup's lock, so no cleanup deletes
 	// its staging and no other staging of the issue runs meanwhile.
@@ -96,10 +97,10 @@ func (s *Store) ReplaceMirrorHistories(rootID, sweep int64, histories []MirrorHi
 	defer s.mirrorCleanup.Unlock()
 	for _, in := range staged {
 		if err := s.replaceStagedHistory(rootID, sweep, in, &results[index[in.h.IssueID]]); err != nil {
-			return results, catalogChanged, err
+			return results, catalogWrite, err
 		}
 	}
-	return results, catalogChanged, nil
+	return results, catalogWrite, nil
 }
 
 // replaceMirrorHistoriesTx writes the admitted histories of pending that

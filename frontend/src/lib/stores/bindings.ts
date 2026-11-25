@@ -628,6 +628,27 @@ export {
   SetPipelineFollows,
   RefreshPipeline,
   UnsubscribePipeline,
+  // A tracker board's subscription (stores/trackerBoard.svelte.ts).
+  SubscribeTrackerBoard,
+  TrackerBoard,
+  TrackerSectionRows,
+  TrackerBoardPatch,
+  SetTrackerSubscriptionVisible,
+  RefreshTrackerSubscription,
+  ReleaseTrackerSubscription,
+  // A ticket's subscription, its writes and the reads its pickers make
+  // (stores/trackerTicket.svelte.ts, stores/trackerTicketWrites.svelte.ts).
+  SubscribeTrackerTicket,
+  TrackerTicket,
+  TrackerComments,
+  TrackerAssignableUsers,
+  TrackerChoices,
+  EditTrackerIssue,
+  MoveTrackerIssue,
+  SetTrackerEstimate,
+  AddTrackerComment,
+  EditTrackerComment,
+  DeleteTrackerComment,
   ListLiveBackgroundTasks,
   GetThreadWakeDetail,
   WakeThreadWakeNow,
@@ -1253,6 +1274,7 @@ import {
   AgentRosterSeeds as AgentRosterSeedsRaw,
   CheckAgentProfiles as CheckAgentProfilesRaw,
   GetStandingAgent as GetStandingAgentRaw,
+  TrackerBoardChoices as TrackerBoardChoicesRaw,
   ListThreadRecurringJobs as ListThreadRecurringJobsRaw,
   DeleteThreads as DeleteThreadsRaw,
   GetDeleteDependents as GetDeleteDependentsRaw,
@@ -1296,6 +1318,12 @@ import type { AgentProfile, Settings as SettingsSnapshot } from '../../../bindin
 import type { PastAgentRowsCursor, StandingAgent as StandingAgentRow, Thread as StoreThread } from '../../../bindings/agent-overflow/internal/store/models.js';
 import { methodId } from '../transport/methodId';
 import { orOlder, ThreadsPartlyDeleted, withNote } from './olderComputer';
+import {
+  TrackerConnections as TrackerConnectionsRaw,
+  ProjectTrackerBoards as ProjectTrackerBoardsRaw,
+} from '../../../bindings/agent-overflow/app.js';
+import type { TrackerConnection as TrackerConnectionRow } from '../../../bindings/agent-overflow/internal/app/models.js';
+import type { BoardChoice as TrackerBoardChoiceRow } from '../../../bindings/agent-overflow/internal/trackerapp/models.js';
 
 export { ArchiveThreadResult, DeleteDependents, DeleteThreadResult };
 
@@ -1403,6 +1431,11 @@ export function GetStandingAgent(threadID: string): Promise<StandingAgentRow | n
   return orOlder(() => GetStandingAgentRaw(threadID), () => null);
 }
 
+/** Empty on a computer without the Issues pane's board list. */
+export function TrackerBoardChoices(): Promise<TrackerBoardChoiceRow[]> {
+  return orOlder(() => TrackerBoardChoicesRaw(), () => []);
+}
+
 /** Empty on a computer without recurring jobs. */
 export function ListThreadRecurringJobs(threadID: string): Promise<ThreadRecurringJobRow[]> {
   return orOlder(() => ListThreadRecurringJobsRaw(threadID), () => []);
@@ -1471,4 +1504,36 @@ export function ResolveForgeFacts(
   fresh: boolean,
 ): Promise<ForgeFactsClass | null> {
   return orOlder(() => ResolveForgeFactsRaw(ws, pr, rev, keys, fresh), () => null);
+}
+
+// Issue tracker connections and a project's boards (Settings > Issues).
+// A call that names a connection reaches the computer whose answer named
+// it: every caller pins it (stores/trackerConnections.svelte.ts,
+// stores/trackerProjectBoards.svelte.ts). A computer whose release has no
+// tracker reads none.
+
+export {
+  AddTrackerConnection,
+  RenameTrackerConnection,
+  SetTrackerConnectionEnabled,
+  SetTrackerConnectionTokenExpiry,
+  RemoveTrackerConnection,
+  VerifyTrackerConnection,
+  EditTrackerKeyFile,
+  OpenTrackerTokenPage,
+  TrackerProjects,
+  TrackerBoards,
+  SetProjectTrackerBoards,
+} from '../../../bindings/agent-overflow/app.js';
+export type { TrackerConnection, NewTrackerConnection } from '../../../bindings/agent-overflow/internal/app/models.js';
+export type { BoardChoice as TrackerBoardChoice, BoardRef as TrackerBoardRef, ProjectBoard as TrackerProjectBoard, ProjectView as TrackerProjectView, BoardInfoView as TrackerBoardInfo } from '../../../bindings/agent-overflow/internal/trackerapp/models.js';
+
+/** This computer's tracker connections; null on a computer whose release has no trackers. */
+export function TrackerConnections(): Promise<TrackerConnectionRow[] | null> {
+  return orOlder(() => TrackerConnectionsRaw(), () => null);
+}
+
+/** The boards a project lists; none on a computer without trackers. */
+export function ProjectTrackerBoards(projectId: string): Promise<TrackerBoardChoiceRow[]> {
+  return orOlder(() => ProjectTrackerBoardsRaw(projectId), () => []);
 }

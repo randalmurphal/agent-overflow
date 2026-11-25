@@ -34,7 +34,9 @@ func init() {
 	checked := cachedStmtRan
 	cachedStmtRan = func(stmt driver.Stmt, query string) {
 		if strings.Contains(query, "tracker_cache_") {
-			if _, own := statementCallSite(); own {
+			// A migration's text is no accessor's statement, and one that
+			// creates a trigger cannot be planned again once it ran.
+			if site, own := statementCallSite(); own && !strings.Contains(site, "/migrate.go:") {
 				mirrorStatements.Store(query, true)
 			}
 			recordVMSteps(stmt, query)
@@ -121,6 +123,11 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		t.Fatal(err)
 	}
 	linkIssue(t, s, "linked", "10001")
+	// A link from a read, and one from the card the mirror then holds.
+	mustCreateThread(t, s, "link-read")
+	mustSetThreadTicket(t, s, readLink(s, root, "link-read", titledCard("10005", 5, "Read")))
+	mustCreateThread(t, s, "link-held")
+	mustSetThreadTicket(t, s, heldLink(root, "link-held", "10005"))
 	for name, write := range mirrorWriters(s) {
 		if err := write(root); err != nil {
 			t.Fatalf("%s: %v", name, err)
@@ -158,7 +165,7 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		func() error { _, _, err := s.ListMirrorHistoryDue(root, testNow); return err },
 		func() error { _, err := s.ListMirrorBodies(root, []string{"10001"}); return err },
 		func() error {
-			_, _, err := s.ListMirrorWorklogs(root, "acc-user1", "2026-01-01", "2026-01-31")
+			_, err := s.ReadMirrorWorklogDays(jira.ID, "acc-user1", "2026-01-01", "2026-01-31")
 			return err
 		},
 		func() error { _, _, err := s.ListMirrorIssueWorklogs(root, "10001"); return err },
@@ -166,10 +173,11 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		func() error { _, err := s.GetMirrorCatalog(root, []string{"acc-user1"}, []string{"1"}); return err },
 		func() error { _, err := s.ListMirrorCards(root, []string{"10001"}); return err },
 		func() error { _, _, err := s.ListMirrorIssueRows(root, "10001", ""); return err },
+		func() error { _, err := s.ListMirrorTicketRows(root, []string{"10001", "10002"}); return err },
 		func() error { _, _, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10"}); return err },
-		func() error { _, err := s.CountMirrorSections(root, "10"); return err },
+		func() error { _, err := s.CountMirrorSections(root, "10", MirrorRegroup{}); return err },
 		func() error {
-			_, _, err := s.ReadMirrorBoardPatch(root, "10", []MirrorSection{{Kind: MirrorSectionSprint, SprintID: "21"},
+			_, _, err := s.ReadMirrorBoardPatch(root, "10", MirrorRegroup{}, []MirrorSection{{Kind: MirrorSectionSprint, SprintID: "21"},
 				{Kind: MirrorSectionBacklog}, {Kind: MirrorSectionColumn}}, []string{"10001", "10002"}, MirrorTotalsAt{})
 			return err
 		},
@@ -182,12 +190,15 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 			return err
 		},
 		func() error {
-			_, _, err := s.ReadMirrorBoardView(root, "10", []MirrorSection{{Kind: MirrorSectionBacklog}})
+			_, _, err := s.ReadMirrorBoardView(root, "10", MirrorRegroup{}, theseSections([]MirrorSection{{Kind: MirrorSectionBacklog}}))
 			return err
 		},
 	}
 	for _, section := range []MirrorSection{{Kind: MirrorSectionSprint, SprintID: "21"}, {Kind: MirrorSectionBacklog}, {Kind: MirrorSectionColumn}} {
-		reads = append(reads, func() error { _, err := s.ListMirrorSection(root, "10", section, MirrorRowKey{}); return err })
+		reads = append(reads, func() error {
+			_, err := s.ListMirrorSection(root, "10", MirrorRegroup{}, section, MirrorRowKey{})
+			return err
+		})
 	}
 	for i, read := range reads {
 		if err := read(); err != nil {
@@ -273,9 +284,9 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 			"and the listed rows no listing marked: a listing's misses, not the board"},
 	{"ORDER BY position, sprint_id LIMIT", "USE TEMP B-TREE FOR ORDER BY", "one board's sprints, at most mirrorMaxSprints"},
 	{`DELETE FROM main."tracker_cache_`, "", "a restore empties each mirror table whole"},
-	{"SELECT max(0, (SELECT coalesce(max(read_at), 0) FROM tracker_cache_users WHERE root_id = ?1)", "",
+	{"SELECT max(0, (SELECT coalesce(max(read_at), 0) FROM tracker_cache_users WHERE root_id = CAST(?1 AS INTEGER))", "",
 		"the read clock's seed (mirrorReadSeedSQL) walks the root's rows of each table holding a read time, once per root per process, at its first read"},
-	{" LIMIT 500) AND EXISTS (SELECT 1 FROM tracker_cache_roots WHERE id = ?1 AND connection_id IS NULL)", "",
+	{" LIMIT 500) AND EXISTS (SELECT 1 FROM tracker_cache_roots WHERE id = CAST(?1 AS INTEGER) AND connection_id IS NULL)", "",
 		"a detached root's batch reads at most clearMirrorChunk rows of the root"},
 	{"ORDER BY EXISTS (SELECT 1 FROM tracker_cache_open_tickets o", "USE TEMP B-TREE FOR ORDER BY",
 		"a root's bodies, at most mirrorBodyCap and the bodies one write started, ordered by their keep"},
@@ -288,12 +299,28 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 		"the partial index holds only the issues whose history staging was cut short, the work itself"},
 	{"WHERE i.history_dirty = 1", "SCAN i USING INDEX idx_tracker_cache_issues_history_dirty",
 		"the partial index holds only the issues whose history staging was cut short, the work itself"},
-	{"EXISTS (SELECT 1 FROM tracker_cache_issues hd WHERE hd.root_id = ?1", "SEARCH hd USING INDEX idx_tracker_cache_issues_history_due (root_id=?)",
+	{"EXISTS (SELECT 1 FROM tracker_cache_issues hd WHERE hd.root_id = CAST(?1 AS INTEGER)", "SEARCH hd USING INDEX idx_tracker_cache_issues_history_due (root_id=?)",
 		"every entry of the partial index is due a history read, and the probe stops at the first one kept"},
-	{"FROM tracker_cache_issues i\n\t\t  WHERE i.root_id = ?1 AND (i.history_for < i.updated_at", "SEARCH i USING INDEX idx_tracker_cache_issues_history_due (root_id=?)",
+	{"FROM tracker_cache_issues i\n\t\t  WHERE i.root_id = CAST(?1 AS INTEGER) AND (i.history_for < i.updated_at", "SEARCH i USING INDEX idx_tracker_cache_issues_history_due (root_id=?)",
 		"every entry of the partial index is due a history read, and the listing stops at a page"},
 	{"WITH h AS MATERIALIZED (SELECT value FROM json_each(?2))", "SCAN h",
 		"a write's bound list (the ticket move's, the history times'), read once; it drives the issue lookups by primary key"},
+	{"WHERE st.root_id = CAST(?1 AS INTEGER) AND st.status_group IN (4, 5) AND st.status_id NOT IN (SELECT o.key FROM json_each(", "SEARCH st USING PRIMARY KEY (root_id=?)",
+		"the statuses that count as done (mirrorNotDone) are listed once a statement from the root's catalog, which holds the statuses " +
+			"the root's reads named, not its issues"},
+	{threadTicketLinkColumn, "", "a thread row read, which names the mirror only in its link column: the read's plan is its own, " +
+		"and the column's is TestThreadLinkColumnReadsByKey"},
+	{"FROM tracker_cache_issue_missing m\n\t  JOIN tracker_cache_roots r ON r.id = m.root_id AND r.connection_id IS NOT NULL", "SCAN m",
+		"the cleanup's walk of every absence, which are of linked issues a read missed, to find those no longer kept"},
+	{"WHERE EXISTS (SELECT 1 FROM tracker_cache_issue_missing g WHERE g.root_id = CAST(?1 AS INTEGER)))", "SEARCH g EXISTS USING PRIMARY KEY (root_id=?)",
+		"a card write's guard that the root has an absence, which stops at the first"},
+	{"WHERE EXISTS (SELECT 1 FROM tracker_cache_issue_missing g WHERE g.root_id = CAST(?1 AS INTEGER)))", "SCAN c",
+		"a card write's admitted issues, read once when the root has an absence; they drive the absence lookups by key"},
+	{threadTicketLinksSQL, "", "a thread list read, which names the mirror only in its links CTE: the read's plan is its own, " +
+		"and the CTE's is TestThreadLinkColumnReadsByKey"},
+	{"FROM json_each(CASE WHEN EXISTS (SELECT 1 FROM tracker_cache_roots gr", "SCAN c",
+		"a card write's bound cards, read once when the root's site has a link and the root is its link reader's, " +
+			"and an empty list otherwise (TestTheLinkWritersOfNoLinkParseNoList); they drive the link lookups by tracker, site and issue"},
 	{"i.status_id IN (SELECT value FROM json_each(?2))", "SEARCH i USING COVERING INDEX idx_tracker_cache_issues_status (root_id=?)",
 		"a status entering or leaving the done groups is rare; finding the boards whose rows have it walks the root's statuses once, " +
 			"in the index the counts read"},
@@ -367,7 +394,13 @@ func TestMirrorReadsUseTheirIndexes(t *testing.T) {
 		"ticket reads":  {mirrorTicketMoveSQL.reads, "SCAN h\nSEARCH tracker_cache_issues USING INDEX sqlite_autoindex_tracker_cache_issues_1 (root_id=? AND issue_id=?)"},
 		"history times": {mirrorHistoryTimesSQL, "SCAN h\nSEARCH tracker_cache_issues USING INDEX sqlite_autoindex_tracker_cache_issues_1 (root_id=? AND issue_id=?)"},
 		"issue rows":    {mirrorIssueRowsSQL, "PRIMARY KEY (root_id=? AND issue_id=? AND board_id>?)"},
-		"keep rule":     {`SELECT ` + mirrorIssueKept("?1", "?2"), "PRIMARY KEY (root_id=? AND issue_id=?)"},
+		"ticket rows": {mirrorTicketRowsSQL, "SEARCH b USING PRIMARY KEY (root_id=? AND issue_id=?)\nLIST SUBQUERY 1\n" +
+			"SCAN json_each VIRTUAL TABLE INDEX 1:\nCORRELATED SCALAR SUBQUERY 2\n" +
+			"SEARCH shown_board USING INDEX sqlite_autoindex_tracker_cache_boards_1 (root_id=? AND board_id=?)\n" +
+			"SEARCH shown_root USING INTEGER PRIMARY KEY (rowid=?)\n" +
+			"SEARCH shown_listing USING COVERING INDEX idx_project_tracker_boards_board (connection_id=? AND board_id=?)\n" +
+			"SEARCH r USING INDEX sqlite_autoindex_tracker_cache_boards_1 (root_id=? AND board_id=?)"},
+		"keep rule": {`SELECT ` + mirrorIssueKept("?1", "?2"), "PRIMARY KEY (root_id=? AND issue_id=?)"},
 		"backlog section": {mirrorSectionSQL[MirrorSectionBacklog],
 			"SEARCH m USING PRIMARY KEY (root_id=? AND issue_id=?)\nSEARCH sp USING PRIMARY KEY (root_id=? AND board_id=? AND sprint_id=?)"},
 		"sprint section": {mirrorSectionSQL[MirrorSectionSprint],
@@ -386,6 +419,24 @@ func TestMirrorReadsUseTheirIndexes(t *testing.T) {
 		plan := explainMirror(t, s, read.query)
 		if !strings.Contains(plan, read.index) || strings.Contains(plan, "TEMP B-TREE") {
 			t.Errorf("%s plan:\n%s\nwant %s and no sort", name, plan, read.index)
+		}
+	}
+	// A project's regrouping costs each statement one list of the statuses
+	// that count as done, from the root's catalog and the bound groups,
+	// read once (an uncorrelated list), never once a row; the left-out
+	// rows a sprint total skips are one bound list too.
+	doneOnce := "LIST SUBQUERY 5\nCOMPOUND QUERY\nLEFT-MOST SUBQUERY\nSEARCH st USING PRIMARY KEY (root_id=?)\nLIST SUBQUERY 3\nSCAN o VIRTUAL TABLE INDEX 1:"
+	for name, read := range map[string]struct{ query, plan string }{
+		"backlog section":    {mirrorRegroupedBacklogSectionSQL, doneOnce},
+		"backlog rows by ID": {mirrorRegroupedBacklogPatchSQL, doneOnce},
+		"row count":          {mirrorRegroupedCountRowsSQL, "LIST SUBQUERY 4\nCOMPOUND QUERY\nLEFT-MOST SUBQUERY\nSEARCH st USING PRIMARY KEY (root_id=?)\nLIST SUBQUERY 2\nSCAN o VIRTUAL TABLE INDEX 1:"},
+		"sprint totals, rows left out": {mirrorCountSprintsLeftOutSQL, "SEARCH sp USING PRIMARY KEY (root_id=? AND board_id=?)\n" +
+			"SEARCH m USING COVERING INDEX idx_tracker_cache_issue_sprints_sprint (root_id=? AND sprint_id=?)\n" +
+			"SEARCH b USING PRIMARY KEY (root_id=? AND issue_id=? AND board_id=?)\nLIST SUBQUERY 1\nSCAN json_each VIRTUAL TABLE INDEX 1:"},
+	} {
+		plan := explainMirror(t, s, read.query)
+		if !strings.Contains(plan, read.plan) || strings.Contains(plan, "CORRELATED LIST SUBQUERY") || strings.Contains(plan, "TEMP B-TREE") {
+			t.Errorf("%s plan:\n%s\nwant %s, no correlated list and no sort", name, plan, read.plan)
 		}
 	}
 	// The cap's eviction walks the bodies held alone, and sorts those

@@ -168,11 +168,13 @@ func (st MirrorStructure) check(read mirrorReadTimes) error {
 // walking the board's rows that captured another value starts its walk
 // over from the sync state. Catalog reports a changed user or status,
 // which the root's every board shows, as MirrorChanges.Catalog does; it
-// is part of Changed.
+// is part of Changed. Threads are the threads whose row shows a status
+// the catalog renamed or regrouped (MirrorCatalogWrite.Threads).
 type MirrorStructureWrite struct {
 	MirrorWrite
 	EstimateResetAt int64
 	Catalog         bool
+	Threads         []string
 }
 
 // ReplaceMirrorStructure stores one read of a board's structure under
@@ -209,7 +211,9 @@ func (s *Store) ReplaceMirrorStructure(rootID int64, st MirrorStructure) (result
 		}
 		var err error
 		var reset bool
-		result.Changed, result.Catalog, reset, err = replaceMirrorStructureTx(tx, rootID, st, read, board)
+		var catalog MirrorCatalogWrite
+		result.Changed, catalog, reset, err = replaceMirrorStructureTx(tx, rootID, st, read, board)
+		result.Catalog, result.Threads = catalog.Changed, catalog.Threads
 		if reset {
 			result.EstimateResetAt = read.at
 		}
@@ -253,7 +257,7 @@ const (
 		WHERE position IS NOT excluded.position OR rank IS NOT excluded.rank
 		RETURNING status_id`
 	mirrorColumnStatusesRemoveSQL = `DELETE FROM tracker_cache_board_column_statuses
-		WHERE root_id = ?1 AND board_id = ?2 AND status_id NOT IN (SELECT c.value ->> 's' FROM json_each(?3) c)
+		WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND status_id NOT IN (SELECT c.value ->> 's' FROM json_each(?3) c)
 		RETURNING status_id`
 	mirrorSprintsUpsertSQL = `INSERT INTO tracker_cache_sprints(root_id, board_id, sprint_id, position, origin_board_id,
 		        name, goal, state, start_at, end_at, completed_at)
@@ -267,19 +271,19 @@ const (
 		   OR start_at IS NOT excluded.start_at OR end_at IS NOT excluded.end_at OR completed_at IS NOT excluded.completed_at
 		RETURNING sprint_id`
 	mirrorSprintsRemoveSQL = `DELETE FROM tracker_cache_sprints
-		WHERE root_id = ?1 AND board_id = ?2 AND sprint_id NOT IN (SELECT c.value ->> 'i' FROM json_each(?3) c)
+		WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND sprint_id NOT IN (SELECT c.value ->> 'i' FROM json_each(?3) c)
 		RETURNING sprint_id`
 )
 
 // replaceMirrorStructureTx writes an admitted structure and reports
 // whether it changed, whether its catalog changed, and whether it reset
 // the board's estimate definition.
-func replaceMirrorStructureTx(tx *sql.Tx, rootID int64, st MirrorStructure, read mirrorReadTimes, board mirrorBoard) (changed, catalog, reset bool, err error) {
+func replaceMirrorStructureTx(tx *sql.Tx, rootID int64, st MirrorStructure, read mirrorReadTimes, board mirrorBoard) (changed bool, catalog MirrorCatalogWrite, reset bool, err error) {
 	b := st.Board
 	if catalog, err = upsertMirrorCatalogTx(tx, rootID, st.Catalog, read.at); err != nil {
-		return false, false, false, err
+		return false, MirrorCatalogWrite{}, false, err
 	}
-	changed = catalog
+	changed = catalog.Changed
 	names := make([]string, len(st.Columns))
 	places := []mirrorStatusPlace{}
 	for position, column := range st.Columns {
@@ -296,12 +300,12 @@ func replaceMirrorStructureTx(tx *sql.Tx, rootID int64, st MirrorStructure, read
 	lists := make([]string, 3)
 	for i, v := range []any{names, places, sprints} {
 		if lists[i], err = encodeMirrorJSON(v); err != nil {
-			return false, false, false, err
+			return false, MirrorCatalogWrite{}, false, err
 		}
 	}
 	boardChanged, reset, err := writeMirrorBoardTx(tx, rootID, st, read.at)
 	if err != nil {
-		return false, false, false, err
+		return false, MirrorCatalogWrite{}, false, err
 	}
 	changed = changed || boardChanged
 	steps := []struct {
@@ -311,7 +315,7 @@ func replaceMirrorStructureTx(tx *sql.Tx, rootID int64, st MirrorStructure, read
 		{"upsert columns", mirrorColumnsUpsertSQL, []any{rootID, b.ID, lists[0]}},
 		{"upsert column statuses", mirrorColumnStatusesUpsertSQL, []any{rootID, b.ID, lists[1]}},
 		{"remove column statuses", mirrorColumnStatusesRemoveSQL, []any{rootID, b.ID, lists[1]}},
-		{"remove columns", `DELETE FROM tracker_cache_board_columns WHERE root_id = ? AND board_id = ? AND position >= ?
+		{"remove columns", `DELETE FROM tracker_cache_board_columns WHERE root_id = CAST(? AS INTEGER) AND board_id = ? AND position >= ?
 			RETURNING position`, []any{rootID, b.ID, len(st.Columns)}},
 		{"upsert sprints", mirrorSprintsUpsertSQL, []any{rootID, b.ID, lists[2]}},
 		{"remove sprints", mirrorSprintsRemoveSQL, []any{rootID, b.ID, lists[2]}},
@@ -319,7 +323,7 @@ func replaceMirrorStructureTx(tx *sql.Tx, rootID int64, st MirrorStructure, read
 	for _, step := range steps {
 		stepChanged, err := execChangedTx(tx, step.query, step.args...)
 		if err != nil {
-			return false, false, false, fmt.Errorf("%s: %w", step.what, err)
+			return false, MirrorCatalogWrite{}, false, fmt.Errorf("%s: %w", step.what, err)
 		}
 		changed = changed || stepChanged
 	}
@@ -328,9 +332,9 @@ func replaceMirrorStructureTx(tx *sql.Tx, rootID int64, st MirrorStructure, read
 	// which no index or trigger reads, with the wall time the structure's
 	// interval is measured from (MirrorSync.StructureWall).
 	if read.at > board.readAt {
-		if _, err := tx.Exec(`UPDATE tracker_cache_boards SET read_at = ?3, structure_wall = ?4 WHERE root_id = ?1 AND board_id = ?2`,
+		if _, err := tx.Exec(`UPDATE tracker_cache_boards SET read_at = ?3, structure_wall = ?4 WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2`,
 			rootID, b.ID, read.at, read.wall); err != nil {
-			return false, false, false, fmt.Errorf("record the structure's read: %w", err)
+			return false, MirrorCatalogWrite{}, false, fmt.Errorf("record the structure's read: %w", err)
 		}
 	}
 	return changed, catalog, reset, nil
@@ -341,14 +345,14 @@ var (
 	// mirrorMarksSuppliedSQL removes the marks of the sprints ?3 (a JSON
 	// list of mirrorSprintRow) supplies, probing each by key.
 	mirrorMarksSuppliedSQL = `DELETE FROM tracker_cache_board_unexplained
-		WHERE root_id = ?1 AND board_id = ?2 AND kind = 3 AND ref_id IN (SELECT c.value ->> 'i' FROM json_each(?3) c)`
+		WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND kind = 3 AND ref_id IN (SELECT c.value ->> 'i' FROM json_each(?3) c)`
 	// mirrorMarksExplainSQL makes unexplained a chunk of the pending marks
 	// named by reads no later than the complete structure read ?3, in the
 	// pending index.
 	mirrorMarksExplainSQL = `UPDATE tracker_cache_board_unexplained SET named_at = 0
-		WHERE root_id = ?1 AND board_id = ?2 AND (kind, ref_id) IN (
+		WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND (kind, ref_id) IN (
 		  SELECT kind, ref_id FROM tracker_cache_board_unexplained
-		   WHERE root_id = ?1 AND board_id = ?2 AND named_at > 0 AND named_at <= ?3
+		   WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND named_at > 0 AND named_at <= ?3
 		   LIMIT ` + strconv.Itoa(clearMirrorChunk) + `)
 		RETURNING kind`
 )
@@ -410,7 +414,7 @@ const mirrorBoardWriteRowSQL = `UPDATE tracker_cache_boards SET project_id = ?3,
 	    estimate_field = ?9, data = ?7,
 	    estimate_reset_at = iif(read_at > 0 AND ` + mirrorEstimateChangedSQL + `, ?8, estimate_reset_at),
 	    totals_revision = totals_revision + ` + mirrorEstimateChangedSQL + `
-	WHERE root_id = ?1 AND board_id = ?2 AND (read_at = 0 OR project_id IS NOT ?3 OR name IS NOT ?4
+	WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND (read_at = 0 OR project_id IS NOT ?3 OR name IS NOT ?4
 	   OR plans_sprints IS NOT ?5 OR ` + mirrorEstimateChangedSQL + ` OR data IS NOT ?7)
 	RETURNING estimate_reset_at = ?8`
 
@@ -432,7 +436,7 @@ func writeMirrorBoardTx(tx *sql.Tx, rootID int64, st MirrorStructure, readAt int
 	case !reset:
 		return true, false, nil
 	}
-	if _, err := tx.Exec(`UPDATE tracker_cache_sync SET cursor = NULL WHERE root_id = ?1 AND board_id = ?2`, rootID, b.ID); err != nil {
+	if _, err := tx.Exec(`UPDATE tracker_cache_sync SET cursor = NULL WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2`, rootID, b.ID); err != nil {
 		return false, false, fmt.Errorf("forget the cursor: %w", err)
 	}
 	return true, true, nil

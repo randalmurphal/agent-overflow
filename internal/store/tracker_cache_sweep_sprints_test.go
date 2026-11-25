@@ -18,7 +18,7 @@ func unkeptIssueOfSprints(t *testing.T, s *Store, root int64, n int) MirrorCard 
 	if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{card}, MirrorCatalog{}, mirrorReadAt(1)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ClearThreadTicket("linked"); err != nil {
+	if _, _, err := s.ClearThreadTicket("linked"); err != nil {
 		t.Fatal(err)
 	}
 	return card

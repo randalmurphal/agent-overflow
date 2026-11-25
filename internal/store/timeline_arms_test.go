@@ -469,11 +469,11 @@ func mustTimelineArms(t *testing.T, s *Store, threadID string, sel timelineSelec
 // mustTimelineIDSelection renders timelineIDSelection for a test that holds s.
 func mustTimelineIDSelection(t *testing.T, s *Store, threadID string, sel timelineSelection) (string, []any) {
 	t.Helper()
-	query, args, err := timelineIDSelection(s.db, threadID, sel)
+	selection, err := timelineIDSelection(s.db, threadID, sel)
 	if err != nil {
 		t.Fatalf("render timeline id selection: %v", err)
 	}
-	return query, args
+	return selection.sql, selection.args
 }
 
 func planText(plan []planRow) string {
@@ -1024,7 +1024,9 @@ func rawStringLiterals(source string) []string {
 // for every thread in the sidebar. ListProjectsWithThreadCounts carries
 // the same probe once per project row. The tripwire is "no node scans a base
 // table of the view and no automatic index is built", checked on the
-// production statements.
+// production statements; the one automatic index the lists build is on
+// their links CTE (threadListSelect), whose plan
+// TestThreadLinkColumnReadsByKey pins.
 func TestTimelineItemsViewJoinPushesDown(t *testing.T) {
 	s := newTestStore(t)
 	seedTimelineParityThread(t, s)
@@ -1043,7 +1045,8 @@ func TestTimelineItemsViewJoinPushesDown(t *testing.T) {
 	for _, tc := range cases {
 		plan := explainPlan(t, s, tc.query, tc.args...)
 		for _, r := range plan {
-			if r.detail == "SCAN items" || r.detail == "SCAN imported" || strings.Contains(r.detail, "AUTOMATIC") {
+			linksProbe := r.detail == "SEARCH links USING AUTOMATIC COVERING INDEX (thread_id=?) LEFT-JOIN"
+			if r.detail == "SCAN items" || r.detail == "SCAN imported" || strings.Contains(r.detail, "AUTOMATIC") && !linksProbe {
 				t.Errorf("%s: timeline_items is materialized instead of searched (%q)\n%s", tc.name, r.detail, planText(plan))
 				break
 			}
@@ -1052,8 +1055,10 @@ func TestTimelineItemsViewJoinPushesDown(t *testing.T) {
 }
 
 // A turn's item index bound is taken per arm: every arm's bound, and so
-// the compound's, agrees with the view, and the local arm stops at the
-// first row of its turn index instead of reading the turn.
+// the compound's, agrees with the view, and each local arm stops at the
+// first row of its turn index instead of reading the turn: the thread's
+// own once, and the inherited one once per lineage level, which it finds by
+// the lineage's primary key.
 func TestTurnItemIndexQueryTakesEachArmsBound(t *testing.T) {
 	s := newTestStore(t)
 	seedKeyedLookupThread(t, s)
@@ -1063,34 +1068,53 @@ func TestTurnItemIndexQueryTakesEachArmsBound(t *testing.T) {
 	if _, err := appendCarded(s, Item{ID: "fork-appended", ThreadID: keyedForkID, TurnIndex: 4, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "late"}); err != nil {
 		t.Fatal(err)
 	}
+	aggregates := []struct {
+		name, query string
+	}{{"MIN", minTurnItemIndexSQL}, {"MAX", maxTurnItemIndexSQL}}
 	for _, threadID := range []string{keyedThreadID, keyedForkID} {
 		for turn := range 6 {
-			for _, aggregate := range []string{"MIN", "MAX"} {
-				query, args, err := turnItemIndexQuery(s.db, threadID, turn, aggregate)
+			for _, aggregate := range aggregates {
+				got, err := turnItemIndexBound(s.db, aggregate.query, threadID, turn)
 				if err != nil {
 					t.Fatal(err)
 				}
-				var got, want sql.NullInt64
-				if err := s.db.QueryRow(query, args...).Scan(&got); err != nil {
-					t.Fatal(err)
-				}
-				if err := s.db.QueryRow(`SELECT `+aggregate+`(item_index) FROM timeline_items WHERE thread_id = ? AND turn_index = ?`, threadID, turn).Scan(&want); err != nil {
+				var want sql.NullInt64
+				if err := s.db.QueryRow(`SELECT `+aggregate.name+`(item_index) FROM timeline_items WHERE thread_id = ? AND turn_index = ?`, threadID, turn).Scan(&want); err != nil {
 					t.Fatal(err)
 				}
 				if got != want {
-					t.Errorf("%s turn %d %s = %v, view says %v", threadID, turn, aggregate, got, want)
+					t.Errorf("%s turn %d %s = %v, view says %v", threadID, turn, aggregate.name, got, want)
 				}
 			}
 		}
 	}
-	if _, _, err := turnItemIndexQuery(s.db, keyedThreadID, 4, "COUNT"); err == nil {
-		t.Error("turnItemIndexQuery rendered COUNT")
-	}
 
-	query, args, err := turnItemIndexQuery(s.db, keyedThreadID, 4, "MAX")
-	if err != nil {
-		t.Fatal(err)
+	for _, aggregate := range aggregates {
+		// The thread's own local arm and the inherited local arm each step
+		// their aggregate once and leave the loop. An imported arm reads its
+		// turn across chunks, so its bound reads every row.
+		args := []any{keyedForkID, 4}
+		if got := aggregateEarlyOuts(t, s, aggregate.name, aggregate.query, args); got != 2 {
+			t.Errorf("%s: %d arms stop at their first row, want 2:\n%s", aggregate.name, got, aggregate.query)
+		}
+		plan := explainPlan(t, s, aggregate.query, args...)
+		levels := 0
+		for _, r := range plan {
+			if r.detail == "SEARCH l USING PRIMARY KEY (thread_id=? AND depth=?)" {
+				levels++
+			}
+		}
+		if levels != 2 {
+			t.Errorf("%s: %d inherited arms read one lineage level, want 2\n%s", aggregate.name, levels, planText(plan))
+		}
 	}
+}
+
+// aggregateEarlyOuts counts the loops of query's program whose MIN or MAX
+// step jumps out of the loop: an index read in order that stops at its
+// first row.
+func aggregateEarlyOuts(t *testing.T, s *Store, aggregate, query string, args []any) int {
+	t.Helper()
 	rows, err := s.db.Query("EXPLAIN "+query, args...)
 	if err != nil {
 		t.Fatal(err)
@@ -1114,12 +1138,13 @@ func TestTurnItemIndexQueryTakesEachArmsBound(t *testing.T) {
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		t.Fatal(err)
 	}
-	earlyOut := false
+	step := strings.ToLower(aggregate) + "("
+	earlyOuts := 0
 	for addr := 0; addr+1 < len(program); addr++ {
 		next := program[addr+1]
-		earlyOut = earlyOut || (program[addr].code == "AggStep" && strings.HasPrefix(program[addr].p4, "max(") && next.code == "Goto" && next.p2 > int64(addr+1))
+		if program[addr].code == "AggStep" && strings.HasPrefix(program[addr].p4, step) && next.code == "Goto" && next.p2 > int64(addr+1) {
+			earlyOuts++
+		}
 	}
-	if !earlyOut {
-		t.Errorf("no arm's MAX stops at its first row:\n%s", query)
-	}
+	return earlyOuts
 }

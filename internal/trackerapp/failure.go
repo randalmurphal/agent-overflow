@@ -70,6 +70,61 @@ type Failure struct {
 	Message string
 }
 
+// Problem is a connection's last failure and what it is about (settle).
+// Current says whether that is the token in the key file now, or no token
+// at all; the view that reads the file sets it (viewWith).
+type Problem struct {
+	Failure
+	Current bool
+	about   evidence
+}
+
+// Format prints the failure and whether it is current, never what it is
+// about: fmt reads an unexported field without its Format method, so the
+// token digest evidence holds would print as bytes.
+func (p Problem) Format(f fmt.State, _ rune) {
+	_, _ = fmt.Fprintf(f, "{Kind:%s Message:%q Current:%t}", p.Kind, p.Message, p.Current)
+}
+
+// evidence is what an outcome is about: the token its call used, a key
+// file that could not be read, no token, or a token that changed while
+// the call ran, which could be either.
+type evidence struct {
+	kind  evidenceKind
+	token store.TrackerTokenDigest
+}
+
+type evidenceKind uint8
+
+const (
+	// aboutNoToken is a call that used no token: no client could be
+	// built, or it failed before reading one. It is always current.
+	aboutNoToken evidenceKind = iota
+	// aboutToken is a call made with the token evidence.token names.
+	aboutToken
+	// aboutKeyFile is a key file that gave no token (KeyFileError). It is
+	// current while the file still holds none.
+	aboutKeyFile
+	// aboutChangedToken is a call during which the client's token
+	// changed. It is never current: a check settles it.
+	aboutChangedToken
+)
+
+// currentFor reports whether evidence is about the token in the key file
+// now, whose digest is found (zero when the file holds none).
+func (e evidence) currentFor(found store.TrackerTokenDigest) bool {
+	switch e.kind {
+	case aboutNoToken:
+		return true
+	case aboutToken:
+		return sameToken(e.token, found)
+	case aboutKeyFile:
+		return !found.Known()
+	case aboutChangedToken:
+	}
+	return false
+}
+
 // CallFailure is a tracker call of a form read, a download or a write's
 // start that failed, with the Failure a person reads. It unwraps to the
 // call's error.
@@ -129,9 +184,17 @@ func (e *ClientError) Unwrap() error { return e.Err }
 // token and a key for another workspace are setup; the transport's typed
 // errors choose the other kinds. The message is built from the error's
 // type and status alone, so neither the token nor tracker text reaches
-// it.
+// it. An answer names the tracker that gave it (a Jira connection's
+// linked Tempo connection answers for its time), any other failure the
+// connection's kind.
 func ClassifyFailure(kind string, err error) Failure {
 	name := trackerName(kind)
+	answered := func(responder string) string {
+		if responder == "" {
+			return name
+		}
+		return trackerName(responder)
+	}
 	var keyErr *KeyFileError
 	var wrong *linear.WrongWorkspaceError
 	var client *ClientError
@@ -144,6 +207,8 @@ func ClassifyFailure(kind string, err error) Failure {
 	var source *trackerapi.SourceError
 	var cut *trackerapi.CutError
 	switch {
+	case pokerOwn(err):
+		return pokerFailure(err)
 	case errors.As(err, &source):
 		return Failure{Kind: FailureUpload, Message: "the file stopped arriving before its end, so " + name + " stored none of it; attach it again"}
 	case errors.As(err, &cut):
@@ -155,21 +220,21 @@ func ClassifyFailure(kind string, err error) Failure {
 	case errors.As(err, &client):
 		return Failure{Kind: FailureSetup, Message: client.Error()}
 	case errors.As(err, &limited):
-		return Failure{Kind: FailureRateLimited, Message: fmt.Sprintf("%s is limiting requests until %s", name, limited.Until.UTC().Format(time.RFC3339))}
+		return Failure{Kind: FailureRateLimited, Message: fmt.Sprintf("%s is limiting requests until %s", answered(limited.Tracker), limited.Until.UTC().Format(time.RFC3339))}
 	case errors.As(err, &auth):
 		return Failure{Kind: FailureSetup, Message: refusedToken(kind, auth.Tracker)}
 	case errors.As(err, &status) && status.Status == http.StatusForbidden:
-		return Failure{Kind: FailureForbidden, Message: name + " refused access (HTTP 403): the token may not make this request"}
+		return Failure{Kind: FailureForbidden, Message: answered(status.Tracker) + " refused access (HTTP 403): the token may not make this request"}
 	case errors.As(err, &status) && errors.Is(err, tracker.ErrRuleRefused):
 		// The reconcile waits a reconcile interval for this refusal, from
 		// when it was stored, and longer while a delta walk defers it, so
 		// the sentence names no time.
 		return Failure{Kind: FailureTracker, Message: fmt.Sprintf("%s refused the query for this board's issues (HTTP %d). "+
-			"Refresh to try again now. Agent Overflow tries again by itself later while the board is open", name, status.Status)}
+			"Refresh to try again now. Agent Overflow tries again by itself later while the board is open", answered(status.Tracker), status.Status)}
 	case errors.As(err, &status):
-		return Failure{Kind: FailureTracker, Message: fmt.Sprintf("%s answered HTTP %d", name, status.Status)}
+		return Failure{Kind: FailureTracker, Message: fmt.Sprintf("%s answered HTTP %d", answered(status.Tracker), status.Status)}
 	case errors.As(err, &tooLarge):
-		return Failure{Kind: FailureTracker, Message: name + " sent an answer larger than Agent Overflow reads"}
+		return Failure{Kind: FailureTracker, Message: answered(tooLarge.Tracker) + " sent an answer larger than Agent Overflow reads"}
 	case errors.Is(err, trackerapi.ErrCredentialChanged):
 		// The token in the key file was replaced while the answer was
 		// read; asking again uses the new one.
@@ -178,7 +243,66 @@ func ClassifyFailure(kind string, err error) Failure {
 		errors.As(err, &notSent) && !errors.Is(err, trackerapi.ErrInvalidInput):
 		return Failure{Kind: FailureTransient, Message: name + " could not be reached; try again"}
 	}
-	return Failure{Kind: FailureTracker, Message: name + " answered in a way Agent Overflow could not use"}
+	responder := ""
+	if by, ok := errors.AsType[*answeredBy](err); ok {
+		responder = by.tracker
+	}
+	return Failure{Kind: FailureTracker, Message: answered(responder) + " answered in a way Agent Overflow could not use"}
+}
+
+// answeredBy is err, a call's failure that carries no tracker of its own
+// (no status, an answer that could not be read), with the tracker that
+// answered it, a store.TrackerKind*: a Jira connection's worklog read
+// answered by its Tempo connection.
+type answeredBy struct {
+	tracker string
+	err     error
+}
+
+func (e *answeredBy) Error() string { return e.err.Error() }
+func (e *answeredBy) Unwrap() error { return e.err }
+
+// worklogRefusal is the failure of a worklog read of author's days from
+// to to that the tracker refused for what it asked, and true; false for
+// any other outcome. Its sentence names the tracker that answered, what
+// it refused (the person, the days) and what to do, from the request and
+// the status alone. A Tempo that answers another person's worklogs with
+// none, rather than 403, is not told apart from no time logged.
+func worklogRefusal(author tracker.UserID, from, to tracker.Date, err error) (Failure, bool) {
+	if errors.Is(err, tracker.ErrNoTimeZone) {
+		// Jira answered the lookup; the person's profile hides the zone
+		// that places their time on days. Only a Jira profile has one.
+		return Failure{Kind: FailureTracker, Message: fmt.Sprintf(
+			"Jira does not show which time zone %s is in, so Agent Overflow cannot tell which day their time falls on; "+
+				"choose another person, or ask them to show their time zone in their Atlassian profile", author)}, true
+	}
+	status, ok := errors.AsType[*trackerapi.StatusError](err)
+	if !ok {
+		return Failure{}, false
+	}
+	name := trackerName(status.Tracker)
+	switch {
+	case errors.Is(err, tracker.ErrWorklogAuthor) && status.Status == http.StatusNotFound:
+		return Failure{Kind: FailureTracker, Message: fmt.Sprintf(
+			"%s has no person with account ID %s, or the token's user may not see them; choose another person", name, author)}, true
+	case errors.Is(err, tracker.ErrWorklogAuthor) && status.Status == http.StatusForbidden:
+		return Failure{Kind: FailureForbidden, Message: fmt.Sprintf(
+			"%s refused to look up the person %s (HTTP 403): the token's user needs the Browse users and groups permission to read another person's time",
+			name, author)}, true
+	case status.Tracker == store.TrackerKindTempo && status.Status == http.StatusForbidden:
+		return Failure{Kind: FailureForbidden, Message: fmt.Sprintf(
+			"Tempo refused the worklogs of %s (HTTP 403): the linked Tempo connection's token may not read that person's time", author)}, true
+	case status.Tracker == store.TrackerKindTempo && status.Status == http.StatusBadRequest:
+		return Failure{Kind: FailureTracker, Message: fmt.Sprintf(
+			"Tempo refused the worklogs of %s from %s to %s (HTTP 400); check the person and the days", author, from, to)}, true
+	case errors.Is(err, tracker.ErrWorklogAuthor) && status.Status == http.StatusBadRequest:
+		return Failure{Kind: FailureTracker, Message: fmt.Sprintf(
+			"%s refused the account ID %s (HTTP 400); choose another person", name, author)}, true
+	case errors.Is(err, tracker.ErrWorklogSearch) && status.Status == http.StatusBadRequest:
+		return Failure{Kind: FailureTracker, Message: fmt.Sprintf(
+			"Jira refused the search for %s's worklogs from %s to %s (HTTP 400); check the person and the days", author, from, to)}, true
+	}
+	return Failure{}, false
 }
 
 // refusedToken is the sentence of a token refused by refuser, the name of
@@ -194,6 +318,11 @@ func refusedToken(kind, refuser string) string {
 		file = "the key file of the linked " + trackerName(refuser) + " connection"
 	}
 	msg := trackerName(refuser) + " refused the token in " + file + "; put a valid token in it"
+	if refuser == store.TrackerKindJira {
+		// A scoped token answers only through Atlassian's gateway, and the
+		// client calls the site (tracker-api-measurements.md).
+		msg += ". A token made with Create API token with scopes cannot reach the Jira site: make one with Create API token"
+	}
 	if refuser == store.TrackerKindTempo {
 		msg += ", and check that the region is the one the site's Tempo data is in"
 	}
