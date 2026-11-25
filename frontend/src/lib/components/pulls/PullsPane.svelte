@@ -1,3 +1,11 @@
+<script module lang="ts">
+  import type { SplitSpec } from '../shared/splitWidth.svelte';
+
+  /** The list column's bounds: 280 to 720, 400 at first, leaving the
+   * detail 320. */
+  export const PULLS_SPLIT: SplitSpec = { listMin: 280, listMax: 720, detailMin: 320, initial: () => 400 };
+</script>
+
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
@@ -16,12 +24,12 @@
   import PipelinesList from './PipelinesList.svelte';
   import ErrorNotice from '../shared/ErrorNotice.svelte';
   import PullsList from './PullsList.svelte';
-  import PullsListResizer from './PullsListResizer.svelte';
+  import SplitResizer from '../shared/SplitResizer.svelte';
   import PullsToolbar from './PullsToolbar.svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
   import { paneFindRegion } from '../panes/paneFindRegion';
   import { attachPullsPaneFind, type PullsFindList } from './pullsPaneFind.svelte';
-  import { ListColumnWidth } from './listWidth.svelte';
+  import { SplitWidth } from '../shared/splitWidth.svelte';
   import { provideHostedBack } from '../panes/hostedBack';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
   import { copyToClipboard } from '../../utils/clipboard';
@@ -119,7 +127,7 @@
   const backend = untrack(() => selectedBackend());
   let tab: Tab = $state(appStorageGet(TAB_KEY) === 'pipelines' ? 'pipelines' : 'mrs');
   let compact = $derived(isCompactLayout());
-  const listColumn = new ListColumnWidth(LIST_WIDTH_KEY);
+  const listColumn = new SplitWidth(LIST_WIDTH_KEY, PULLS_SPLIT);
   provideHostedBack(() => compact);
 
   const selection = $derived(selectedPR(paneId));
@@ -376,7 +384,7 @@
         />
       {/if}
       {#if !compact}
-        <PullsListResizer column={listColumn} />
+        <SplitResizer column={listColumn} testId="pulls-list-resize" />
       {/if}
     </div>
 
