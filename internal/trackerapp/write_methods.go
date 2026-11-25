@@ -3,7 +3,10 @@ package trackerapp
 import (
 	"context"
 	"fmt"
+	"slices"
+	"time"
 
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 )
 
@@ -167,28 +170,79 @@ func (s *Service) DeleteWorklog(ctx context.Context, id string, in WorklogDelete
 
 // WorklogDays is an author's worklogs of a range of days, by day and ID,
 // as the mirror holds them; More reports that the range holds more than
-// one read returns. Failure is why a refresh could not read them from the
-// tracker: they are then as the mirror held them before.
+// one read returns. Unread are the days of the range, sorted, whose
+// worklogs of the author this computer has never read: a screen shows no
+// total for them, and every other day of the range was read, so one with
+// no worklogs is 0h. Failure is why a refresh could not read them from
+// the tracker: they are then as the mirror held them before.
 type WorklogDays struct {
 	Worklogs []WorklogView `json:"worklogs"`
 	More     bool          `json:"more,omitempty"`
+	Unread   []string      `json:"unread,omitempty"`
 	Failure  *FailureView  `json:"failure,omitempty"`
 }
 
+// worklogReadSpan is the most days one mirror read of worklogs covers: a
+// year, so its unread days stay a bounded list.
+const worklogReadSpan = 366
+
 // Worklogs is author's worklogs on connection id whose day is from to to
-// (YYYY-MM-DD, both included) as the mirror holds them, with no tracker
-// call. RefreshWorklogs reads them from the tracker first.
+// (YYYY-MM-DD, both included, at most worklogReadSpan days) as the mirror
+// holds them, with no tracker call, and which of those days it has read;
+// RefreshWorklogs reads them from the tracker first. The connection and
+// the mirror are read in one snapshot: one that is removed, turned off or
+// a Tempo connection is refused as a refresh refuses it (ErrNotFound,
+// ErrDisabled, ErrNoProvider), and one with no time tracking with an
+// error wrapping tracker.ErrUnsupported. A connection whose mirror holds
+// nothing yet answers every day unread.
 func (s *Service) Worklogs(id, author, from, to string) (WorklogDays, error) {
-	if _, _, err := worklogRange(author, from, to); err != nil {
-		return WorklogDays{}, err
-	}
-	root, err := s.readRoot(id)
+	first, last, err := worklogRange(author, from, to)
 	if err != nil {
 		return WorklogDays{}, err
 	}
+	n := daysBetween(first, last) + 1
+	if n > worklogReadSpan {
+		return WorklogDays{}, fmt.Errorf("%w: worklogs are read at most %d days at a time", ErrInvalidRequest, worklogReadSpan)
+	}
+	if err := s.enter(); err != nil {
+		return WorklogDays{}, err
+	}
 	defer s.leave()
-	return s.mirroredWorklogs(root, author, from, to)
+	snap, err := s.store.ReadMirrorWorklogDays(id, author, from, to)
+	switch {
+	case err != nil:
+		return WorklogDays{}, fmt.Errorf("trackerapp: read the worklogs of %s: %w", author, err)
+	case !snap.Found:
+		return WorklogDays{}, fmt.Errorf("%w %s", ErrNotFound, id)
+	}
+	if err := usable(snap.Connection); err != nil {
+		return WorklogDays{}, err
+	}
+	if !hasTimeTracking(snap.Connection.Kind) {
+		return WorklogDays{}, fmt.Errorf("trackerapp: connection %s has no time tracking: %w", id, tracker.ErrUnsupported)
+	}
+	out := WorklogDays{Worklogs: make([]WorklogView, 0, len(snap.Logs)), More: snap.More}
+	for _, m := range snap.Logs {
+		w, err := worklogOf(m)
+		if err != nil {
+			return WorklogDays{}, err
+		}
+		out.Worklogs = append(out.Worklogs, worklogView(w))
+	}
+	for i := range n {
+		d := dayTime(first).AddDate(0, 0, i).Format(time.DateOnly)
+		if _, read := slices.BinarySearch(snap.ReadDays, d); !read {
+			out.Unread = append(out.Unread, d)
+		}
+	}
+	return out, nil
 }
+
+// hasTimeTracking reports whether a connection of kind has a time
+// tracker, as its provider's Time answers: Jira's own worklogs or its
+// Tempo connection's, and none on Linear. The mirror read decides by kind
+// because it makes no provider, which would read the key file.
+func hasTimeTracking(kind string) bool { return kind == store.TrackerKindJira }
 
 // RefreshWorklogs reads author's worklogs on connection id whose day is
 // from to to, at most worklogSpan days, from the connection's time
@@ -232,23 +286,6 @@ func (s *Service) RefreshWorklogs(ctx context.Context, id, author, from, to stri
 		out.Failure = &f
 	}
 	return out, err
-}
-
-// mirroredWorklogs reads author's worklogs from to to from root.
-func (s *Service) mirroredWorklogs(root int64, author, from, to string) (WorklogDays, error) {
-	logs, more, err := s.store.ListMirrorWorklogs(root, author, from, to)
-	if err != nil {
-		return WorklogDays{}, fmt.Errorf("trackerapp: read the worklogs of %s: %w", author, err)
-	}
-	out := WorklogDays{Worklogs: make([]WorklogView, 0, len(logs)), More: more}
-	for _, m := range logs {
-		w, err := worklogOf(m)
-		if err != nil {
-			return WorklogDays{}, err
-		}
-		out.Worklogs = append(out.Worklogs, worklogView(w))
-	}
-	return out, nil
 }
 
 // worklogRange checks an author's days from to to.

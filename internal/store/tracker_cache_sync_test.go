@@ -13,29 +13,35 @@ func webWorklog(id, day string, spent int64) MirrorWorklog {
 
 func mustReplaceWorklogs(t *testing.T, s *Store, root int64, from, to string, readAt int64, logs []MirrorWorklog, want MirrorWorklogChanges) {
 	t.Helper()
-	got, err := s.ReplaceMirrorWorklogs(root, "acc-user1", from, to, mirrorReadAt(readAt), logs)
+	got, err := s.ReplaceMirrorWorklogs(root, "", "acc-user1", from, to, mirrorReadAt(readAt), logs)
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("replace %s to %s at %d = %+v, %v; want %+v", from, to, readAt, got, err, want)
 	}
+}
+
+// readWorklogs is user 1's worklogs from from to to on connectionID.
+func readWorklogs(s *Store, connectionID, from, to string) ([]MirrorWorklog, bool, error) {
+	got, err := s.ReadMirrorWorklogDays(connectionID, "acc-user1", from, to)
+	return got.Logs, got.More, err
 }
 
 // A replace owns one author's days: it upserts what it lists, removes the
 // rest of those days, and leaves other days and authors.
 func TestReplaceMirrorWorklogs(t *testing.T) {
 	t.Parallel()
-	s, _, root := newMirror(t)
+	s, c, root := newMirror(t)
 	week := []MirrorWorklog{webWorklog("w1", "2026-01-05", 3600), webWorklog("w2", "2026-01-06", 1800), webWorklog("w3", "2026-01-09", 600)}
 	mustReplaceWorklogs(t, s, root, "2026-01-05", "2026-01-09", 10, week, MirrorWorklogChanges{Changed: []string{"w1", "w2", "w3"}})
 	other := webWorklog("w9", "2026-01-06", 60)
 	other.AuthorID, other.IssueID = "acc-user2", "10002"
-	if _, err := s.ReplaceMirrorWorklogs(root, "acc-user2", "2026-01-06", "2026-01-06", mirrorReadAt(10), []MirrorWorklog{other}); err != nil {
+	if _, err := s.ReplaceMirrorWorklogs(root, "", "acc-user2", "2026-01-06", "2026-01-06", mirrorReadAt(10), []MirrorWorklog{other}); err != nil {
 		t.Fatal(err)
 	}
 	mustReplaceWorklogs(t, s, root, "2026-01-05", "2026-01-09", 10, week, MirrorWorklogChanges{})
 	edited := webWorklog("w2", "2026-01-06", 2700)
 	mustReplaceWorklogs(t, s, root, "2026-01-06", "2026-01-07", 11, []MirrorWorklog{edited}, MirrorWorklogChanges{Changed: []string{"w2"}})
 	mustReplaceWorklogs(t, s, root, "2026-01-05", "2026-01-06", 12, nil, MirrorWorklogChanges{Removed: []string{"w1", "w2"}})
-	logs, more, err := s.ListMirrorWorklogs(root, "acc-user1", "2026-01-01", "2026-01-31")
+	logs, more, err := readWorklogs(s, c.ID, "2026-01-01", "2026-01-31")
 	if err != nil || more || !reflect.DeepEqual(logs, []MirrorWorklog{week[2]}) {
 		t.Fatalf("author's month = %+v, %v, %v", logs, more, err)
 	}
@@ -50,35 +56,35 @@ func TestReplaceMirrorWorklogs(t *testing.T) {
 	}
 	for name, call := range map[string]func() error{
 		"bad day": func() error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-01x", "2026-01-09", mirrorReadAt(1), nil)
+			_, err := s.ReplaceMirrorWorklogs(root, "", "acc-user1", "2026-01-01x", "2026-01-09", mirrorReadAt(1), nil)
 			return err
 		},
 		"bad last day": func() error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-9", mirrorReadAt(1), nil)
+			_, err := s.ReplaceMirrorWorklogs(root, "", "acc-user1", "2026-01-05", "2026-01-9", mirrorReadAt(1), nil)
 			return err
 		},
 		"days backwards": func() error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-09", "2026-01-05", mirrorReadAt(1), nil)
+			_, err := s.ReplaceMirrorWorklogs(root, "", "acc-user1", "2026-01-09", "2026-01-05", mirrorReadAt(1), nil)
 			return err
 		},
 		"too many days": func() error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-01", "2026-02-01", mirrorReadAt(1), nil)
+			_, err := s.ReplaceMirrorWorklogs(root, "", "acc-user1", "2026-01-01", "2026-02-01", mirrorReadAt(1), nil)
 			return err
 		},
 		"too many logs": func() error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-02-01", "2026-02-01", mirrorReadAt(1), month)
+			_, err := s.ReplaceMirrorWorklogs(root, "", "acc-user1", "2026-02-01", "2026-02-01", mirrorReadAt(1), month)
 			return err
 		},
 		"no author": func() error {
-			_, err := s.ReplaceMirrorWorklogs(root, "", "2026-01-05", "2026-01-09", mirrorReadAt(1), nil)
+			_, err := s.ReplaceMirrorWorklogs(root, "", "", "2026-01-05", "2026-01-09", mirrorReadAt(1), nil)
 			return err
 		},
 		"no read time": func() error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-09", mirrorReadAt(0), nil)
+			_, err := s.ReplaceMirrorWorklogs(root, "", "acc-user1", "2026-01-05", "2026-01-09", mirrorReadAt(0), nil)
 			return err
 		},
 		"another author": func() error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-09", mirrorReadAt(1), []MirrorWorklog{other})
+			_, err := s.ReplaceMirrorWorklogs(root, "", "acc-user1", "2026-01-05", "2026-01-09", mirrorReadAt(1), []MirrorWorklog{other})
 			return err
 		},
 		"no issue":        func() error { w := week[0]; w.IssueID = ""; return replaceOne(s, root, w) },
@@ -87,11 +93,11 @@ func TestReplaceMirrorWorklogs(t *testing.T) {
 		"bad log day":     func() error { w := week[0]; w.Day = "2026-01-05T"; return replaceOne(s, root, w) },
 		"no time spent":   func() error { return replaceOne(s, root, webWorklog("w4", "2026-01-05", 0)) },
 		"outside the days": func() error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-06", "2026-01-09", mirrorReadAt(1), week[:1])
+			_, err := s.ReplaceMirrorWorklogs(root, "", "acc-user1", "2026-01-06", "2026-01-09", mirrorReadAt(1), week[:1])
 			return err
 		},
 		"repeated": func() error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-09", mirrorReadAt(1), []MirrorWorklog{week[0], week[0]})
+			_, err := s.ReplaceMirrorWorklogs(root, "", "acc-user1", "2026-01-05", "2026-01-09", mirrorReadAt(1), []MirrorWorklog{week[0], week[0]})
 			return err
 		},
 	} {
@@ -112,7 +118,7 @@ func TestMirrorWorklogsCoverTheLastDay(t *testing.T) {
 }
 
 func replaceOne(s *Store, root int64, w MirrorWorklog) error {
-	_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-09", mirrorReadAt(1), []MirrorWorklog{w})
+	_, err := s.ReplaceMirrorWorklogs(root, "", "acc-user1", "2026-01-05", "2026-01-09", mirrorReadAt(1), []MirrorWorklog{w})
 	return err
 }
 
@@ -123,7 +129,7 @@ func replaceOne(s *Store, root int64, w MirrorWorklog) error {
 // included, so a read that began between the two is superseded there.
 func TestMirrorWorklogDaysFollowTheirReadOrder(t *testing.T) {
 	t.Parallel()
-	s, _, root := newMirror(t)
+	s, c, root := newMirror(t)
 	week := []MirrorWorklog{webWorklog("w1", "2026-01-05", 3600), webWorklog("w2", "2026-01-06", 1800), webWorklog("w3", "2026-01-09", 600)}
 	mustReplaceWorklogs(t, s, root, "2026-01-05", "2026-01-09", 10, week, MirrorWorklogChanges{Changed: []string{"w1", "w2", "w3"}})
 	edited := webWorklog("w2", "2026-01-06", 2700)
@@ -134,7 +140,7 @@ func TestMirrorWorklogDaysFollowTheirReadOrder(t *testing.T) {
 		Changed: []string{"w1", "w3"}, SupersededDays: []string{"2026-01-06"}})
 	moved := webWorklog("w2", "2026-01-07", 2700)
 	mustReplaceWorklogs(t, s, root, "2026-01-07", "2026-01-07", 15, []MirrorWorklog{moved}, MirrorWorklogChanges{})
-	logs, _, err := s.ListMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-09")
+	logs, _, err := readWorklogs(s, c.ID, "2026-01-05", "2026-01-09")
 	if want := []MirrorWorklog{early[0], edited, early[1]}; err != nil || !reflect.DeepEqual(logs, want) {
 		t.Fatalf("worklogs = %+v, %v\nwant %+v", logs, err, want)
 	}
@@ -146,7 +152,7 @@ func TestMirrorWorklogDaysFollowTheirReadOrder(t *testing.T) {
 		SupersededDays: []string{"2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08", "2026-01-09"}})
 	mustReplaceWorklogs(t, s, root, "2026-01-08", "2026-01-08", 25, []MirrorWorklog{webWorklog("w5", "2026-01-08", 60)},
 		MirrorWorklogChanges{SupersededDays: []string{"2026-01-08"}})
-	if logs, _, err := s.ListMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-09"); err != nil || !reflect.DeepEqual(logs, kept) {
+	if logs, _, err := readWorklogs(s, c.ID, "2026-01-05", "2026-01-09"); err != nil || !reflect.DeepEqual(logs, kept) {
 		t.Fatalf("after the earlier reads: %+v, %v", logs, err)
 	}
 	assertRows(t, s.db, days, "2026-01-05@30,2026-01-06@30,2026-01-07@30,2026-01-08@30,2026-01-09@30")
@@ -157,22 +163,22 @@ func TestMirrorWorklogDaysFollowTheirReadOrder(t *testing.T) {
 // says so.
 func TestMirrorWorklogsAreBounded(t *testing.T) {
 	t.Parallel()
-	s, _, root := newMirror(t)
+	s, c, root := newMirror(t)
 	for d, n := range []int{400, 400, 201} {
 		day := fmt.Sprintf("2026-01-%02d", 5+d)
 		logs := make([]MirrorWorklog, 0, n)
 		for i := range n {
 			logs = append(logs, webWorklog(fmt.Sprintf("w%d-%04d", d, i), day, 60))
 		}
-		if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", day, day, mirrorReadAt(1), logs); err != nil {
+		if _, err := s.ReplaceMirrorWorklogs(root, "", "acc-user1", day, day, mirrorReadAt(1), logs); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-06", mirrorReadAt(2), nil); !errors.Is(err, ErrInvalidTrackerCache) {
+	if _, err := s.ReplaceMirrorWorklogs(root, "", "acc-user1", "2026-01-05", "2026-01-06", mirrorReadAt(2), nil); !errors.Is(err, ErrInvalidTrackerCache) {
 		t.Fatalf("a range holding 800 worklogs: %v", err)
 	}
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_worklogs`, "1001")
-	got, more, err := s.ListMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-07")
+	got, more, err := readWorklogs(s, c.ID, "2026-01-05", "2026-01-07")
 	if err != nil || !more || len(got) != mirrorWorklogLimit {
 		t.Fatalf("read = %d, %v, %v", len(got), more, err)
 	}

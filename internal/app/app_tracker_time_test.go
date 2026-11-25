@@ -32,7 +32,7 @@ func TestTrackerTimeReachesItsClient(t *testing.T) {
 	days := func(what string, read func() (trackerapp.WorklogDays, error)) []trackerapp.WorklogView {
 		t.Helper()
 		got, err := read()
-		if err != nil || got.Failure != nil || got.More {
+		if err != nil || got.Failure != nil || got.More || len(got.Unread) != 0 {
 			t.Fatalf("%s = %+v, %v", what, got, err)
 		}
 		return got.Worklogs
@@ -44,6 +44,10 @@ func TestTrackerTimeReachesItsClient(t *testing.T) {
 		})
 	}
 
+	before, err := f.a.TrackerWorklogs(ctx, f.conn.ID, "acc-user1", weekAgo, today)
+	if err != nil || len(before.Worklogs) != 0 || len(before.Unread) != 7 || before.Unread[0] != weekAgo || before.Unread[6] != today {
+		t.Fatalf("the mirror read before any refresh = %+v, %v; want no worklogs and all 7 days unread", before, err)
+	}
 	read := days("the refresh", func() (trackerapp.WorklogDays, error) {
 		return f.a.RefreshTrackerWorklogs(ctx, f.conn.ID, "acc-user1", weekAgo, today)
 	})
@@ -100,12 +104,12 @@ func TestTrackerTimeReachesItsClient(t *testing.T) {
 		{"a range that ends before it starts", "tracker_request_invalid", "nothing was sent: worklogs are read for an author, from a day to one no earlier", func() error {
 			return ignoreResult(f.a.TrackerWorklogs(ctx, f.conn.ID, "acc-user1", today, earlier))
 		}},
-		// Before anything of the connection runs: the refresh below makes
-		// its mirror.
-		{"a mirror read of a connection whose time was never read", "tracker_worklogs_not_read",
-			"this computer has not read any logged time of this connection yet; refresh it to read it from the tracker", func() error {
-				return ignoreResult(f.a.TrackerWorklogs(ctx, linear.ID, "user-1", today, today))
-			}},
+		{"a mirror read of 367 days", "tracker_request_invalid", "nothing was sent: worklogs are read at most 366 days at a time", func() error {
+			return ignoreResult(f.a.TrackerWorklogs(ctx, f.conn.ID, "acc-user1", now.AddDate(0, 0, -366).Format(time.DateOnly), today))
+		}},
+		{"a mirror read of a tracker with no time tracking", "tracker_unsupported", "this tracker has no time tracking", func() error {
+			return ignoreResult(f.a.TrackerWorklogs(ctx, linear.ID, "user-1", today, today))
+		}},
 		{"a refresh of a tracker with no time tracking", "tracker_unsupported", "this tracker has no time tracking", func() error {
 			return ignoreResult(f.a.RefreshTrackerWorklogs(ctx, linear.ID, "user-1", today, today))
 		}},
@@ -116,8 +120,8 @@ func TestTrackerTimeReachesItsClient(t *testing.T) {
 		}
 	}
 	// A 31-day refresh is read.
-	if _, err := f.a.RefreshTrackerWorklogs(ctx, f.conn.ID, "acc-user1", now.AddDate(0, 0, -30).Format(time.DateOnly), today); err != nil {
-		t.Errorf("a 31-day refresh: %v", err)
+	if got, err := f.a.RefreshTrackerWorklogs(ctx, f.conn.ID, "acc-user1", now.AddDate(0, 0, -30).Format(time.DateOnly), today); err != nil || got.Failure != nil || len(got.Unread) != 0 {
+		t.Errorf("a 31-day refresh = %+v, %v", got, err)
 	}
 	// A worklog write on a tracker with no time tracking is a refused part.
 	v, err = f.a.DeleteTrackerWorklog(ctx, linear.ID, trackerapp.WorklogDeleteRequest{From: added})

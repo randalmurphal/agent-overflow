@@ -34,7 +34,9 @@ func init() {
 	checked := cachedStmtRan
 	cachedStmtRan = func(stmt driver.Stmt, query string) {
 		if strings.Contains(query, "tracker_cache_") {
-			if _, own := statementCallSite(); own {
+			// A migration's text is no accessor's statement, and one that
+			// creates a trigger cannot be planned again once it ran.
+			if site, own := statementCallSite(); own && !strings.Contains(site, "/migrate.go:") {
 				mirrorStatements.Store(query, true)
 			}
 			recordVMSteps(stmt, query)
@@ -163,7 +165,7 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		func() error { _, _, err := s.ListMirrorHistoryDue(root, testNow); return err },
 		func() error { _, err := s.ListMirrorBodies(root, []string{"10001"}); return err },
 		func() error {
-			_, _, err := s.ListMirrorWorklogs(root, "acc-user1", "2026-01-01", "2026-01-31")
+			_, err := s.ReadMirrorWorklogDays(jira.ID, "acc-user1", "2026-01-01", "2026-01-31")
 			return err
 		},
 		func() error { _, _, err := s.ListMirrorIssueWorklogs(root, "10001"); return err },

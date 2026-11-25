@@ -71,8 +71,11 @@ func newFakeScenarioWith(t *testing.T, cad Cadence, seed func(at time.Time) trac
 	f := newFixtureWith(t, cad)
 	f.svc.now = time.Now
 	f.origin = func(kind, site string) (string, error) {
-		if kind == store.TrackerKindLinear {
+		switch kind {
+		case store.TrackerKindLinear:
 			return srv.LinearURL(), nil
+		case store.TrackerKindTempo:
+			return srv.TempoURL(), nil
 		}
 		return srv.JiraURL(strings.TrimPrefix(site, "https://")), nil
 	}

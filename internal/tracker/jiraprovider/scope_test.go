@@ -298,28 +298,53 @@ func TestUnlinkScope(t *testing.T) {
 	noWrites(t, f, "a link not between the issues")
 }
 
-// TestWorklogDeleteNamesWhatItRead proves a worklog delete's result names
-// the author's worklogs of the day the worklog holds now, and of the day
-// the caller read, from the worklog as read before the delete, when the
-// caller's copy names no author.
-func TestWorklogDeleteNamesWhatItRead(t *testing.T) {
+// TestWorklogDeleteNeedsTheWorklogAsRead proves a worklog delete is sent
+// only while the worklog is the copy the caller read, on Jira and on
+// Tempo: one changed since (here moved to another day, or read with no
+// author) is refused as stale with nothing sent, and the delete of the
+// copy as read names its issue's detail and its author's worklogs of its
+// day.
+func TestWorklogDeleteNeedsTheWorklogAsRead(t *testing.T) {
 	read, now := day(t, 2026, 11, 10), day(t, 2026, 11, 11)
-	want := []tracker.Resource{tracker.DetailOf("10001"), tracker.WorklogsOf("acc-user1", now), tracker.WorklogsOf("acc-user1", read)}
+	want := []tracker.Resource{tracker.DetailOf("10001"), tracker.WorklogsOf("acc-user1", read)}
 	t.Run("jira", func(t *testing.T) {
 		f, p := worklogSite(t)
 		f.On("GET", worklogsPath+"/300", jiratest.Reply(200, jiraWorklog("300", user1JSON, "2026-11-11T09:00:00.000-0500", 3600, "Review")))
+		from := tracker.Worklog{ID: "300", Issue: "10001", Author: "acc-user1", Day: read, Spent: time.Hour, Description: adf.ToMarkdown(adf.Doc(para("Review")))}
+		noAuthor := from
+		noAuthor.Author, noAuthor.Day = "", now
+		for name, in := range map[string]tracker.Worklog{"moved": from, "no author": noAuthor} {
+			if res := checked(t, p.Time().DeleteWorklog(t.Context(), tracker.WorklogDelete{From: in})); states(res) != "worklog:refused" || reason(res, 0) != tracker.ReasonStale {
+				t.Errorf("%s: %s %v", name, states(res), res.Parts[0].Outcome.Err())
+			}
+		}
+		noWrites(t, f, "a worklog changed since it was read")
+		f.On("GET", worklogsPath+"/300", jiratest.Reply(200, jiraWorklog("300", user1JSON, "2026-11-10T09:00:00.000-0500", 3600, "Review")))
 		f.On("DELETE", worklogsPath+"/300", func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(http.StatusNoContent) })
-		res := checked(t, p.Time().DeleteWorklog(t.Context(), tracker.WorklogDelete{From: tracker.Worklog{ID: "300", Issue: "10001", Day: read}}))
-		if states(res) != "worklog:applied" || !slices.Equal(res.Parts[0].Changed, want) {
+		res := checked(t, p.Time().DeleteWorklog(t.Context(), tracker.WorklogDelete{From: from}))
+		if states(res) != "worklog:applied" || !slices.Equal(res.Parts[0].Changed, want) || f.Count("DELETE", worklogsPath+"/300") != 1 {
 			t.Errorf("got %s %+v", states(res), res.Parts[0].Changed)
 		}
 	})
 	t.Run("tempo", func(t *testing.T) {
 		_, ts, p := tempoSite(t)
-		ts.On("GET", "/4/worklogs/70", nil, "", 200, tempoWL(70, 10001, "2026-11-11", "13:00:00", 3600, "Planning"))
+		ts.On("GET", "/4/worklogs/70", nil, "", 200, tempoWL(70, 10001, "2026-11-11", "13:00:00", 3600, "Planning")).Repeat = true
+		from := tracker.Worklog{ID: "70", Issue: "10001", Author: "acc-user1", Day: read, Spent: time.Hour, Description: "Planning"}
+		noAuthor := from
+		noAuthor.Author, noAuthor.Day = "", now
+		for name, in := range map[string]tracker.Worklog{"moved": from, "no author": noAuthor} {
+			if res := checked(t, p.Time().DeleteWorklog(t.Context(), tracker.WorklogDelete{From: in})); states(res) != "worklog:refused" || reason(res, 0) != tracker.ReasonStale {
+				t.Errorf("%s: %s %v", name, states(res), res.Parts[0].Outcome.Err())
+			}
+		}
+		if reqs := ts.Requests(); slices.Contains(reqs, "DELETE /4/worklogs/70") {
+			t.Fatalf("a stale copy's delete was sent: %v", reqs)
+		}
+		moved := from
+		moved.Day = now
 		ts.On("DELETE", "/4/worklogs/70", nil, "", 204, "")
-		res := checked(t, p.Time().DeleteWorklog(t.Context(), tracker.WorklogDelete{From: tracker.Worklog{ID: "70", Issue: "10001", Day: read}}))
-		if states(res) != "worklog:applied" || !slices.Equal(res.Parts[0].Changed, want) {
+		res := checked(t, p.Time().DeleteWorklog(t.Context(), tracker.WorklogDelete{From: moved}))
+		if want := []tracker.Resource{tracker.DetailOf("10001"), tracker.WorklogsOf("acc-user1", now)}; states(res) != "worklog:applied" || !slices.Equal(res.Parts[0].Changed, want) {
 			t.Errorf("got %s %+v", states(res), res.Parts[0].Changed)
 		}
 	})

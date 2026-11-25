@@ -4850,9 +4850,15 @@ export function RefreshTrackerSubscription(subscriptionID: string): $Cancellable
  * RefreshTrackerWorklogs reads an author's worklogs of at most 31 days
  * from the connection's time tracker, then answers them as
  * TrackerWorklogs does. A read that failed is the answer's failure, with
- * the worklogs as this computer held them before. A month's days are one
- * or two tracker requests (jiraprovider's TestRequestCost), so the call
- * runs at the default budget, as a form read does.
+ * the worklogs as this computer held them before. It runs at the default
+ * budget, as a form read does. Its requests grow with the time logged:
+ * Tempo answers in pages, and Jira looks the author up (unless its client
+ * has the user cached), pages the issues the author logged time on with the
+ * worklogs each embeds (up to 20), and reads the worklogs of an issue
+ * with more in pages of their own. On jiraprovider's cost fixture,
+ * a month of 20 worklogs on 20 issues, the read is 1 Tempo request of
+ * about 11.8 KB (TestRequestCost) or 2 Jira requests of about 28.0 KB
+ * (TestRequestCostJiraWorklogs).
  */
 export function RefreshTrackerWorklogs(connectionID: string, author: string, $from: string, to: string): $CancellablePromise<trackerapp$0.WorklogDays> {
     return $Call.ByID(2905282814, connectionID, author, $from, to).then(($result: any) => {
@@ -7039,8 +7045,9 @@ export function TrackerTicket(subscriptionID: string): $CancellablePromise<track
 
 /**
  * TrackerWorklogs is an author's worklogs on a connection whose day is
- * from to to (YYYY-MM-DD, both included) as this computer last read
- * them, with no tracker call.
+ * from to to (YYYY-MM-DD, both included, at most 366 days) as this
+ * computer last read them, with no tracker call, and the days of the
+ * range it has never read (unread).
  */
 export function TrackerWorklogs(connectionID: string, author: string, $from: string, to: string): $CancellablePromise<trackerapp$0.WorklogDays> {
     return $Call.ByID(1862710581, connectionID, author, $from, to).then(($result: any) => {

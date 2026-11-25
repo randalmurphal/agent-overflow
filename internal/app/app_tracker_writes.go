@@ -218,8 +218,9 @@ func (a *App) DeleteTrackerWorklog(ctx context.Context, connectionID string, in 
 }
 
 // TrackerWorklogs is an author's worklogs on a connection whose day is
-// from to to (YYYY-MM-DD, both included) as this computer last read
-// them, with no tracker call.
+// from to to (YYYY-MM-DD, both included, at most 366 days) as this
+// computer last read them, with no tracker call, and the days of the
+// range it has never read (unread).
 //
 //ao:scope tracker:read
 //ao:route home
@@ -235,9 +236,15 @@ func (a *App) TrackerWorklogs(ctx context.Context, connectionID, author, from, t
 // RefreshTrackerWorklogs reads an author's worklogs of at most 31 days
 // from the connection's time tracker, then answers them as
 // TrackerWorklogs does. A read that failed is the answer's failure, with
-// the worklogs as this computer held them before. A month's days are one
-// or two tracker requests (jiraprovider's TestRequestCost), so the call
-// runs at the default budget, as a form read does.
+// the worklogs as this computer held them before. It runs at the default
+// budget, as a form read does. Its requests grow with the time logged:
+// Tempo answers in pages, and Jira looks the author up (unless its client
+// has the user cached), pages the issues the author logged time on with the
+// worklogs each embeds (up to 20), and reads the worklogs of an issue
+// with more in pages of their own. On jiraprovider's cost fixture,
+// a month of 20 worklogs on 20 issues, the read is 1 Tempo request of
+// about 11.8 KB (TestRequestCost) or 2 Jira requests of about 28.0 KB
+// (TestRequestCostJiraWorklogs).
 //
 //ao:scope tracker:read
 //ao:route home
@@ -253,18 +260,13 @@ func (a *App) RefreshTrackerWorklogs(ctx context.Context, connectionID, author, 
 }
 
 // trackerTimeError is a worklog read's error with its sentence: the
-// budget's when ctx ended at it, a tracker with no time tracking, and a
-// connection whose time this computer has not read yet.
+// budget's when ctx ended at it, and a tracker with no time tracking.
 func trackerTimeError(ctx context.Context, err error) error {
 	if cut := budgetError(ctx, err); cut != err {
 		return cut
 	}
-	switch {
-	case errors.Is(err, tracker.ErrUnsupported):
+	if errors.Is(err, tracker.ErrUnsupported) {
 		return errorsx.Public("tracker_unsupported", "this tracker has no time tracking", err)
-	case errors.Is(err, trackerapp.ErrNotMirrored):
-		return errorsx.Public("tracker_worklogs_not_read",
-			"this computer has not read any logged time of this connection yet; refresh it to read it from the tracker", err)
 	}
 	return trackerError(err)
 }

@@ -331,7 +331,7 @@ func seedFullMirror(t *testing.T, s *Store, root int64) {
 	if _, err := storeTicket(t, s, root, currentSweep(s, root), "10001", 7, 7, []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-05", mirrorReadAt(1), []MirrorWorklog{
+	if _, err := s.ReplaceMirrorWorklogs(root, "", "acc-user1", "2026-01-05", "2026-01-05", mirrorReadAt(1), []MirrorWorklog{
 		{ID: "w1", IssueID: "10001", AuthorID: "acc-user1", Day: "2026-01-05", SpentSeconds: 3600}}); err != nil {
 		t.Fatal(err)
 	}

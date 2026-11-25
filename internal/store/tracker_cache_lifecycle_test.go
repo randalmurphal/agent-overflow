@@ -49,8 +49,10 @@ func statusHistory(issue string, n int) MirrorHistory {
 func TestDeleteTrackerConnectionDetachesItsMirror(t *testing.T) {
 	t.Parallel()
 	s, jira, root := newMirror(t)
-	tempo := mustCreateTrackerConnection(t, s, NewTrackerConnection{Kind: TrackerKindTempo, Site: "https://api.eu.tempo.io", ParentID: jira.ID, CreatedAt: 11})
+	// The mirror is seeded first: its worklogs are read from Jira, which
+	// adding the Tempo connection makes stale (migration v168).
 	seedFullMirror(t, s, root)
+	tempo := mustCreateTrackerConnection(t, s, NewTrackerConnection{Kind: TrackerKindTempo, Site: "https://api.eu.tempo.io", ParentID: jira.ID, CreatedAt: 11})
 	before := countMirrorRows(t, s.db)
 	deleted, err := s.DeleteTrackerConnection(jira.ID)
 	if err != nil || !slices.Equal(deleted, []string{jira.ID, tempo.ID}) {
@@ -440,7 +442,7 @@ func TestEveryMirrorDeleteIsBounded(t *testing.T) {
 		logs = append(logs, MirrorWorklog{ID: fmt.Sprintf("w%d", i), IssueID: "1", AuthorID: "acc-user1", Day: "2026-01-05", SpentSeconds: 60})
 	}
 	for i, l := range [][]MirrorWorklog{logs, nil} {
-		if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-05", mirrorReadAt(int64(i+1)), l); err != nil {
+		if _, err := s.ReplaceMirrorWorklogs(root, "", "acc-user1", "2026-01-05", "2026-01-05", mirrorReadAt(int64(i+1)), l); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -226,6 +226,11 @@ func (r *run) structure(board tracker.BoardID) (Changes, error) {
 	return ch, nil
 }
 
+// timeSourceChanged is the failure of worklogs read from a time source
+// the connection stopped using during the read (store
+// ErrTrackerCacheSourceChanged).
+const timeSourceChanged = "this connection's time tracking changed (its Tempo connection was added, turned on or off, or removed) while its worklogs were read; refresh to read them again"
+
 // worklogs reads author's worklogs whose day is from to to (at most
 // worklogSpan days) through the connection's time tracker, and makes them
 // the mirror's for those days. Worklogs name no issue the mirror must
@@ -241,6 +246,9 @@ func (r *run) worklogs(author tracker.UserID, from, to tracker.Date) error {
 	}
 	r.calls++
 	logs, err := tt.Worklogs(r.ctx, tracker.WorklogQuery{Author: author, From: from, To: to})
+	if f, refused := worklogRefusal(author, from, to, err); refused {
+		return &requestRefused{f: f, err: err}
+	}
 	if err != nil {
 		return fmt.Errorf("trackerapp: read the worklogs of %s from %s to %s: %w", author, from, to, call(err))
 	}
@@ -252,7 +260,16 @@ func (r *run) worklogs(author tracker.UserID, from, to tracker.Date) error {
 		}
 		stored[i] = mirrorWorklog(w)
 	}
-	if _, err := r.s.store.ReplaceMirrorWorklogs(r.root, string(author), from.String(), to.String(), read, stored); err != nil {
+	_, err = r.s.store.ReplaceMirrorWorklogs(r.root, r.timeSource, string(author), from.String(), to.String(), read, stored)
+	switch {
+	case errors.Is(err, store.ErrTrackerCacheSourceChanged):
+		return &failureError{f: Failure{Kind: FailureTransient, Message: timeSourceChanged}}
+	case errors.Is(err, store.ErrTooManyWorklogs):
+		return &requestRefused{err: err, f: Failure{Kind: FailureInternal, Message: fmt.Sprintf(
+			"%s has more than %d worklogs from %s to %s, which is more than one read can store; read fewer days at a time",
+			author, store.MaxReplacedWorklogs, from, to)}}
+	}
+	if err != nil {
 		return fmt.Errorf("trackerapp: store the worklogs of %s from %s to %s: %w", author, from, to, err)
 	}
 	return nil

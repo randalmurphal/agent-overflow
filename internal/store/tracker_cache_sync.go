@@ -17,7 +17,15 @@ const (
 	// and clearMirrorChunk the worklogs it carries and the stored ones it
 	// can remove.
 	mirrorMaxWorklogDays = 31
+	// MaxReplacedWorklogs is the most worklogs one replace carries or
+	// removes (clearMirrorChunk).
+	MaxReplacedWorklogs = clearMirrorChunk
 )
+
+// ErrTooManyWorklogs is matched by a worklog replace refused because its
+// range carries or holds more than MaxReplacedWorklogs worklogs: the
+// caller reads fewer days at a time.
+var ErrTooManyWorklogs = errors.New("store: more worklogs than one replace stores")
 
 // MirrorWorklog is time logged on an issue. Day is YYYY-MM-DD in the
 // author's own zone; SpentSeconds is positive.
@@ -66,8 +74,10 @@ func checkMirrorWorklogRange(authorID, fromDay, toDay string, readAt int64, logs
 	switch {
 	case authorID == "" || readAt <= 0 || days < 1:
 		return nil, fmt.Errorf("%w: worklogs need an author, a read time and days in order", ErrInvalidTrackerCache)
-	case days > mirrorMaxWorklogDays || len(logs) > clearMirrorChunk:
-		return nil, fmt.Errorf("%w: %d days and %d worklogs, over %d and %d", ErrInvalidTrackerCache, days, len(logs), mirrorMaxWorklogDays, clearMirrorChunk)
+	case days > mirrorMaxWorklogDays:
+		return nil, fmt.Errorf("%w: %d days, over %d", ErrInvalidTrackerCache, days, mirrorMaxWorklogDays)
+	case len(logs) > MaxReplacedWorklogs:
+		return nil, fmt.Errorf("%w: %w: %d worklogs", ErrInvalidTrackerCache, ErrTooManyWorklogs, len(logs))
 	}
 	seen := make(map[string]bool, len(logs))
 	for _, w := range logs {
@@ -130,6 +140,10 @@ var (
 	mirrorWorklogDaysSQL = `INSERT INTO tracker_cache_worklog_days(root_id, author_id, day, read_at)
 		SELECT ?1, ?2, value, ?3 FROM json_each(?4) WHERE true
 		ON CONFLICT(root_id, author_id, day) DO UPDATE SET read_at = excluded.read_at WHERE excluded.read_at > read_at`
+	// mirrorWorklogSourceSQL is root ?1's time source: its connection's
+	// enabled Tempo connection, or empty.
+	mirrorWorklogSourceSQL = `SELECT coalesce((SELECT t.id FROM tracker_cache_roots r
+		JOIN tracker_connections t ON t.parent_id = r.connection_id AND t.enabled = 1 WHERE r.id = ?1), '')`
 )
 
 // ReplaceMirrorWorklogs makes logs the whole of authorID's worklogs whose
@@ -142,7 +156,14 @@ var (
 // read that began earlier repopulates it. A day a read that began later
 // replaced is left as it was and reported in SupersededDays; a replace
 // from the same read as the stored one writes nothing.
-func (s *Store) ReplaceMirrorWorklogs(rootID int64, authorID, fromDay, toDay string, read MirrorRead, logs []MirrorWorklog) (changes MirrorWorklogChanges, err error) {
+//
+// source is the time source the logs were read from: the ID of the
+// root's connection's Tempo connection, or empty for Jira's own worklogs.
+// One the connection no longer uses (no enabled Tempo connection of that
+// ID, or one where empty says none) is refused with
+// ErrTrackerCacheSourceChanged in the write's transaction, since the
+// change of source deleted the root's worklogs (migration v168).
+func (s *Store) ReplaceMirrorWorklogs(rootID int64, source, authorID, fromDay, toDay string, read MirrorRead, logs []MirrorWorklog) (changes MirrorWorklogChanges, err error) {
 	times, err := read.in(rootID)
 	if err != nil {
 		return MirrorWorklogChanges{}, err
@@ -166,13 +187,20 @@ func (s *Store) ReplaceMirrorWorklogs(rootID int64, authorID, fromDay, toDay str
 	}
 	action := fmt.Sprintf("store: replace tracker mirror %d worklogs of %s", rootID, authorID)
 	err = s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
+		var current string
+		if err := tx.QueryRow(mirrorWorklogSourceSQL, rootID).Scan(&current); err != nil {
+			return fmt.Errorf("read the time source: %w", err)
+		}
+		if current != source {
+			return fmt.Errorf("read from %q, now %q: %w", source, current, ErrTrackerCacheSourceChanged)
+		}
 		args := []any{rootID, authorID, fromDay, toDay, readAt, encoded}
 		var stored int
 		if err := tx.QueryRow(mirrorWorklogCountSQL, args[:4]...).Scan(&stored); err != nil {
 			return fmt.Errorf("count stored worklogs: %w", err)
 		}
 		if stored > clearMirrorChunk {
-			return fmt.Errorf("%w: %s to %s holds over %d worklogs; replace shorter ranges", ErrInvalidTrackerCache, fromDay, toDay, clearMirrorChunk)
+			return fmt.Errorf("%w: %w: %s to %s holds over that many", ErrInvalidTrackerCache, ErrTooManyWorklogs, fromDay, toDay)
 		}
 		var err error
 		if changes.SupersededDays, err = queryIDs(tx, mirrorWorklogSupersededDaysSQL, args[:5]...); err != nil {
@@ -214,17 +242,60 @@ const mirrorWorklogColumns = `w.worklog_id, w.issue_id, w.author_id, w.day, w.sp
 // mirrorRootLiveSQL holds for a live root ?1.
 const mirrorRootLiveSQL = `EXISTS (SELECT 1 FROM tracker_cache_roots live_root WHERE live_root.id = ?1 AND live_root.connection_id IS NOT NULL)`
 
-// ListMirrorWorklogs reads authorID's worklogs whose day is fromDay to
-// toDay, by day and ID, at most mirrorWorklogLimit; more reports that the
-// range holds more.
-func (s *Store) ListMirrorWorklogs(rootID int64, authorID, fromDay, toDay string) (logs []MirrorWorklog, more bool, err error) {
-	logs, more, err = queryMirrorWorklogs(s.reader(), `SELECT `+mirrorWorklogColumns+` FROM tracker_cache_worklogs w
-		WHERE w.root_id = ?1 AND w.author_id = ?2 AND w.day BETWEEN ?3 AND ?4 AND `+mirrorRootLiveSQL+`
-		ORDER BY w.day, w.worklog_id LIMIT `+strconv.Itoa(mirrorWorklogLimit+1), rootID, authorID, fromDay, toDay)
-	if err != nil {
-		return nil, false, fmt.Errorf("store: list tracker mirror %d worklogs of %s: %w", rootID, authorID, err)
-	}
-	return logs, more, nil
+// mirrorAuthorWorklogsSQL reads root ?1's worklogs of author ?2 from day
+// ?3 to ?4, by day and ID, at most mirrorWorklogLimit and one more.
+var mirrorAuthorWorklogsSQL = `SELECT ` + mirrorWorklogColumns + ` FROM tracker_cache_worklogs w
+	WHERE w.root_id = ?1 AND w.author_id = ?2 AND w.day BETWEEN ?3 AND ?4 AND ` + mirrorRootLiveSQL + `
+	ORDER BY w.day, w.worklog_id LIMIT ` + strconv.Itoa(mirrorWorklogLimit+1)
+
+// MirrorWorklogDays is a connection's time of an author's days as one
+// snapshot holds it (ReadMirrorWorklogDays).
+type MirrorWorklogDays struct {
+	// Connection is the connection's row; Found is false when it has none.
+	Connection TrackerConnection
+	Found      bool
+	// Logs are the author's worklogs of the range by day and ID, at most
+	// mirrorWorklogLimit, and More reports that the range holds more;
+	// ReadDays are the days of the range a read replaced, sorted. A
+	// connection with no mirror root has neither.
+	Logs     []MirrorWorklog
+	More     bool
+	ReadDays []string
+}
+
+// ReadMirrorWorklogDays reads connectionID's row, and its mirror's
+// worklogs of authorID from fromDay to toDay with the days of that range
+// a read replaced, in one snapshot, so the rows and the days they cover
+// describe one state of the mirror and of the connection.
+func (s *Store) ReadMirrorWorklogDays(connectionID, authorID, fromDay, toDay string) (MirrorWorklogDays, error) {
+	label := fmt.Sprintf("read tracker connection %s worklogs of %s", connectionID, authorID)
+	return mirrorReadSnapshot(s, label, func(q sqlQueryer) (MirrorWorklogDays, error) {
+		var out MirrorWorklogDays
+		row, err := scanTrackerConnection(q.QueryRow(`SELECT `+trackerConnectionColumns+` FROM tracker_connections WHERE id = ?`, connectionID).Scan)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return out, nil
+		case err != nil:
+			return out, fmt.Errorf("read the connection: %w", err)
+		}
+		out.Connection, out.Found = row, true
+		var root int64
+		err = q.QueryRow(`SELECT id FROM tracker_cache_roots WHERE connection_id = ?`, connectionID).Scan(&root)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return out, nil
+		case err != nil:
+			return out, fmt.Errorf("read the mirror root: %w", err)
+		}
+		if out.ReadDays, err = queryIDs(q, `SELECT day FROM tracker_cache_worklog_days
+			WHERE root_id = ?1 AND author_id = ?2 AND day BETWEEN ?3 AND ?4 ORDER BY day`, root, authorID, fromDay, toDay); err != nil {
+			return out, fmt.Errorf("read the days read: %w", err)
+		}
+		if out.Logs, out.More, err = queryMirrorWorklogs(q, mirrorAuthorWorklogsSQL, root, authorID, fromDay, toDay); err != nil {
+			return out, fmt.Errorf("read the worklogs: %w", err)
+		}
+		return out, nil
+	})
 }
 
 // ListMirrorIssueWorklogs reads the worklogs of one issue, by day and ID,

@@ -2976,12 +2976,16 @@ export class UserView {
 /**
  * WorklogDays is an author's worklogs of a range of days, by day and ID,
  * as the mirror holds them; More reports that the range holds more than
- * one read returns. Failure is why a refresh could not read them from the
- * tracker: they are then as the mirror held them before.
+ * one read returns. Unread are the days of the range, sorted, whose
+ * worklogs of the author this computer has never read: a screen shows no
+ * total for them, and every other day of the range was read, so one with
+ * no worklogs is 0h. Failure is why a refresh could not read them from
+ * the tracker: they are then as the mirror held them before.
  */
 export class WorklogDays {
     "worklogs": WorklogView[];
     "more"?: boolean;
+    "unread"?: string[];
     "failure"?: FailureView | null;
 
     /** Creates a new WorklogDays instance. */
@@ -2998,13 +3002,17 @@ export class WorklogDays {
      */
     static createFrom($$source: any = {}): WorklogDays {
         const $$createField0_0 = $$createType78;
-        const $$createField2_0 = $$createType8;
+        const $$createField2_0 = $$createType33;
+        const $$createField3_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("worklogs" in $$parsedSource) {
             $$parsedSource["worklogs"] = $$createField0_0($$parsedSource["worklogs"]);
         }
+        if ("unread" in $$parsedSource) {
+            $$parsedSource["unread"] = $$createField2_0($$parsedSource["unread"]);
+        }
         if ("failure" in $$parsedSource) {
-            $$parsedSource["failure"] = $$createField2_0($$parsedSource["failure"]);
+            $$parsedSource["failure"] = $$createField3_0($$parsedSource["failure"]);
         }
         return new WorklogDays($$parsedSource as Partial<WorklogDays>);
     }

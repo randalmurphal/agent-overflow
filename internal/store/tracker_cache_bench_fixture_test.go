@@ -165,7 +165,7 @@ func fillBenchMirror(s *Store, size benchMirrorSize) error {
 			logs = append(logs, MirrorWorklog{ID: fmt.Sprintf("w%02d%03d", d, w), IssueID: benchIssueID(0, w), AuthorID: "acc-user1", Day: day,
 				SpentSeconds: 1800, Description: "Review and fix the login flow", UpdatedAt: 5})
 		}
-		if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", day, day, mirrorReadAt(1), logs); err != nil {
+		if _, err := s.ReplaceMirrorWorklogs(root, "", "acc-user1", day, day, mirrorReadAt(1), logs); err != nil {
 			return err
 		}
 	}

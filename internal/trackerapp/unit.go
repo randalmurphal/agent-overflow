@@ -17,13 +17,16 @@ import (
 // stamp its outcome is settled with, and the context its tracker calls
 // run under. A run is used by one goroutine.
 type run struct {
-	s    *Service
-	row  store.TrackerConnection
-	p    tracker.Provider
-	root int64
-	gen  uint64 // root's mirror generation (genLocked)
-	at   stamp
-	ctx  context.Context
+	s   *Service
+	row store.TrackerConnection
+	p   tracker.Provider
+	// timeSource is where p's worklogs come from (providerLocked), which
+	// every worklog replace names.
+	timeSource string
+	root       int64
+	gen        uint64 // root's mirror generation (genLocked)
+	at         stamp
+	ctx        context.Context
 	// startErr is a client that could not be built: the tick's failure,
 	// with no call made.
 	startErr error
@@ -95,7 +98,9 @@ type connHold struct {
 	root int64
 	gen  uint64
 	p    tracker.Provider
-	c    *clients
+	// timeSource is where p's worklogs come from (providerLocked).
+	timeSource string
+	c          *clients
 }
 
 // forgetHolds drops every connection's hold. The caller holds opMu.
@@ -170,19 +175,18 @@ func (s *Service) hold(id string) (*run, error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	if h := s.heldLocked(id); h != nil {
-		return &run{s: s, row: h.row, root: h.root, gen: h.gen, p: h.p, at: s.begin(h.c)}, nil
+		return &run{s: s, row: h.row, root: h.root, gen: h.gen, p: h.p, timeSource: h.timeSource, at: s.begin(h.c)}, nil
 	}
 	delete(s.holds, id)
 	row, err := s.get(id)
+	if err == nil {
+		err = usable(row)
+	}
 	switch {
-	case errors.Is(err, ErrNotFound):
+	case errors.Is(err, ErrNotFound), errors.Is(err, ErrDisabled):
 		return nil, fmt.Errorf("%w: %w", errEnded, err)
 	case err != nil:
 		return nil, err
-	case row.Kind == store.TrackerKindTempo:
-		return nil, fmt.Errorf("%w: %s", ErrNoProvider, id)
-	case !row.Enabled:
-		return nil, fmt.Errorf("%w: %w: %s", errEnded, ErrDisabled, id)
 	}
 	gen := s.gen(id)
 	root, err := s.mirrorRootLocked(id, gen)
@@ -193,7 +197,7 @@ func (s *Service) hold(id string) (*run, error) {
 		return nil, fmt.Errorf("trackerapp: the mirror of connection %s: %w", id, err)
 	}
 	r := &run{s: s, row: row, root: root, gen: gen}
-	p, c, err := s.providerLocked(row)
+	p, c, source, err := s.providerLocked(row)
 	if _, ok := errors.AsType[*ClientError](err); ok {
 		// No client means no call: the connection's problem is why.
 		r.startErr = call(err)
@@ -202,8 +206,8 @@ func (s *Service) hold(id string) (*run, error) {
 	if err != nil {
 		return nil, err
 	}
-	r.p, r.at = p, s.begin(c)
-	s.holds[id] = &connHold{row: row, root: root, gen: r.gen, p: p, c: c}
+	r.p, r.timeSource, r.at = p, source, s.begin(c)
+	s.holds[id] = &connHold{row: row, root: root, gen: r.gen, p: p, timeSource: source, c: c}
 	return r, nil
 }
 

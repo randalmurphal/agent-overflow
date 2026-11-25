@@ -141,7 +141,15 @@ this is its shape.
 - Time: a time tracker with worklogs by author and day and worklog add,
   edit and delete, or none for a tracker with no time tracking. A Jira
   connection's is Tempo while its Tempo connection is on, and Jira's own
-  worklogs otherwise, a Tempo connection turned off included.
+  worklogs otherwise, a Tempo connection turned off included. The mirror
+  keeps the worklogs of one source: adding, turning on or off, or removing
+  the Tempo connection empties the Jira connection's worklogs and their
+  read days in the same statement (store triggers, v168), and a replace
+  read from the earlier source is refused (`ReplaceMirrorWorklogs`
+  compares the source the run read from, in its transaction), so the
+  refresh answers that the time tracking changed and to refresh again.
+  An edit or a delete is sent only while the worklog is the copy the
+  caller read; one that changed since is refused as stale.
 - Planning poker: whether the site has the add-on, an issue's votes, and
   vote, reveal and clear (`tracker.Poker`), or none for a tracker that
   cannot have it (Linear). See [Planning poker](#planning-poker).
@@ -1238,15 +1246,37 @@ selected computer.
   problem says. A write's context is the server's, not the caller's.
 - **The worklog reads** take the author's account ID (a screen reads its
   own from the connection's `verifiedAccountId`). `TrackerWorklogs`
-  answers from the mirror with no tracker call; a connection whose time
-  this computer has never read answers `tracker_worklogs_not_read`,
-  saying to refresh. `RefreshTrackerWorklogs` reads at most 31 days (1
-  Tempo request or 2 Jira requests for a month, `jiraprovider`'s
-  `TestRequestCost`) at the default budget, as a form read does; a longer
-  range is `tracker_request_invalid` before anything is sent, a tracker
-  with no time tracking (Linear) is `tracker_unsupported` ("this tracker
-  has no time tracking"), and a read the tracker fails is the answer's
-  `failure`, beside the worklogs as the mirror held them.
+  answers at most 366 days from the mirror with no tracker call, with
+  `unread`, the days of the range no read replaced; the connection's row,
+  its root, the read days and the worklogs are read in one snapshot (four
+  statements, at most 366 day rows and 1,001 worklog rows). It refuses
+  what the refresh refuses: a Tempo connection, one turned off or
+  removed, and a tracker with no time tracking (Linear, decided by kind,
+  which `TestTheMirrorReadOfWorklogsRefusesWhatTheRefreshRefuses` holds
+  to the providers' answer). `RefreshTrackerWorklogs` reads at most 31
+  days at the default budget, as a form read does. Its requests grow with
+  the time logged: Tempo answers in pages; Jira looks the author up
+  unless its client has the user cached, pages the issues the author
+  logged time on with the worklogs each embeds (up to 20), and reads an
+  issue with more in pages of its own. On `jiraprovider`'s cost fixture, a
+  month of 20 worklogs on 20 issues, that is 1 Tempo request of about
+  11.8 KB or 2 Jira requests of about 28.0 KB (`TestRequestCost`,
+  `TestRequestCostJiraWorklogs`). A longer range is
+  `tracker_request_invalid` before anything is sent, a tracker with no
+  time tracking is `tracker_unsupported` ("this tracker has no time
+  tracking"), and a read the tracker fails is the answer's `failure`,
+  beside the worklogs as the mirror held them.
+- **A worklog read the tracker refused for what it asked** is the
+  answer's failure with a sentence that names the tracker, what it
+  refused and what to do: a person Jira does not have or will not show
+  (its 404 for the author's lookup), a lookup refused (403, the Browse
+  users and groups permission), Jira's 400 for the search, Tempo's 403
+  for another person's time and its 400, and more than 500 worklogs in
+  the range, more than one read stores. Such a refusal is never the
+  connection's problem, since the tracker answered (`failedRead`); a
+  refused token, a rate limit, the network and a 5xx still are. A Tempo
+  that answers another person's worklogs with an empty list rather than
+  403 cannot be told apart from no time logged.
 - **A ticket subscription** belongs to its client connection as a
   board's does: `SubscribeTrackerTicket` ties its handle inside the
   service's publication, and the board's visibility, refresh and release
@@ -1492,7 +1522,8 @@ and refuses a value its kind cannot hold. A worklog write on a tracker
 with no time tracking is a refused part.
 
 `Worklogs(connection, author, from, to)` answers an author's days from
-the mirror with no tracker call. `RefreshWorklogs` reads at most 31 days
+the mirror with no tracker call, and the days no read replaced
+(`Unread`). `RefreshWorklogs` reads at most 31 days
 from the time tracker through the worklogs resource first, on the write
 path with no write.
 

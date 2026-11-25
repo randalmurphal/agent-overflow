@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -15,9 +16,18 @@ type TimeTracker interface {
 	// included.
 	Worklogs(ctx context.Context, q WorklogQuery) ([]Worklog, error)
 	AddWorklog(ctx context.Context, in WorklogInput) Result
+	// EditWorklog and DeleteWorklog act on a worklog that still holds
+	// what From says (issue, author, day, time and description); one that
+	// changed since it was read is refused as stale, so a reference read
+	// from another time source never reaches a worklog of this one.
 	EditWorklog(ctx context.Context, in WorklogEdit) Result
 	DeleteWorklog(ctx context.Context, in WorklogDelete) Result
 }
+
+// ErrWorklogAuthor is matched by the error of a worklog read whose
+// author the tracker would not look up, beside the tracker's own error:
+// the read names the person, not the days.
+var ErrWorklogAuthor = errors.New("tracker: the tracker did not look up the worklogs' author")
 
 // Worklog is time logged on an issue. Day is the calendar day the work
 // started on in the author's own zone, which a timesheet groups by.

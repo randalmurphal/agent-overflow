@@ -69,7 +69,7 @@ func (t *jiraTime) Worklogs(ctx context.Context, q tracker.WorklogQuery) ([]trac
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() (err error) {
 		if author, err = t.jira.User(gctx, string(q.Author)); err != nil {
-			return fmt.Errorf("jiraprovider: worklogs of %s: %w", q.Author, err)
+			return fmt.Errorf("jiraprovider: worklogs of %s: %w: %w", q.Author, tracker.ErrWorklogAuthor, err)
 		}
 		return nil
 	})
@@ -181,9 +181,10 @@ func (t *jiraTime) EditWorklog(ctx context.Context, in tracker.WorklogEdit) trac
 	return worklogResult(in.From.Issue, in.From.Author, outcome(err), days...)
 }
 
-// DeleteWorklog deletes a Jira worklog of the issue From names, giving its
-// time back to the issue's remaining estimate. The worklog is read first,
-// so the result names its author's worklogs of its day as Jira holds them.
+// DeleteWorklog deletes a Jira worklog that still holds what From says,
+// giving its time back to the issue's remaining estimate. The worklog is
+// read first, so the result names its author's worklogs of its day as
+// Jira holds them.
 func (t *jiraTime) DeleteWorklog(ctx context.Context, in tracker.WorklogDelete) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepWorklog, err, in.From.Issue)
@@ -192,11 +193,14 @@ func (t *jiraTime) DeleteWorklog(ctx context.Context, in tracker.WorklogDelete) 
 		return tracker.Invalid(tracker.StepWorklog, err, in.From.Issue)
 	}
 	_, cur, _, _, err := t.readWorklog(ctx, in.From)
+	if err == nil && !sameWorklog(cur, in.From) {
+		err = stale(string(in.From.Issue), "worklog "+string(in.From.ID))
+	}
 	if err != nil {
 		return worklogResult(in.From.Issue, in.From.Author, beforeSend(err), in.From.Day)
 	}
 	err = t.jira.DeleteWorklog(ctx, string(in.From.Issue), string(in.From.ID), jira.AdjustAuto())
-	return worklogResult(in.From.Issue, cur.Author, outcome(err), deleteDays(cur, in.From)...)
+	return worklogResult(in.From.Issue, in.From.Author, outcome(err), in.From.Day)
 }
 
 func checkWorklog(w tracker.Worklog) error {
