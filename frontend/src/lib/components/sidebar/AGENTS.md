@@ -101,7 +101,9 @@ which adds the project's empty state and drop targets.
 - A row's worker count and needs-you badge read
   `stores/threadWorkerSummaries.svelte.ts`.
 - `threadRowActions.ts` and `threadGroupActions.ts` own mutations from this
-  directory. Reconcile rows from each RPC response.
+  directory, except a thread's ticket link, whose actions are
+  `stores/threadTicketLinks.svelte.ts`'s on every surface. Reconcile rows from
+  each RPC response.
 - Inline rename stays in the owning row. Context menus delegate through the
   row's handler and use the shared menu primitives.
 - Both project New Thread entry points use `openDraftThreadForProject` and must

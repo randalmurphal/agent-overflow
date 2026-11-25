@@ -102,14 +102,14 @@ func TestLinkThreadFromTheMirrorOrOneRead(t *testing.T) {
 	m.thread("a")
 	m.refuseCards(t)
 	_, before := m.events.linkedThreads()
-	if changed, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10005"), store.TicketOriginManual); err != nil || !changed {
-		t.Fatalf("a link from the mirror: %v, %v", changed, err)
+	if write, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10005"), store.TicketOriginManual); err != nil || !write.Changed {
+		t.Fatalf("a link from the mirror: %v, %v", write, err)
 	}
 	if link := m.rowLink("a"); link == nil || link.State != store.TicketLinkCurrent || link.Key != "WEB-5" || link.Title != "Issue 10005" {
 		t.Fatalf("a link from the mirror = %+v", link)
 	}
-	if changed, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10005"), store.TicketOriginManual); err != nil || changed {
-		t.Fatalf("the same link again: %v, %v; want no change", changed, err)
+	if write, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10005"), store.TicketOriginManual); err != nil || write.Changed {
+		t.Fatalf("the same link again: %v, %v; want no change", write, err)
 	}
 	if _, calls := m.events.linkedThreads(); calls != before {
 		t.Fatalf("links from the mirror told %d calls; want none", calls-before)
@@ -127,8 +127,8 @@ func TestLinkThreadFromTheMirrorOrOneRead(t *testing.T) {
 			return tracker.Cards{Cards: []tracker.Card{c}}, nil
 		}
 	})
-	if changed, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10007"), store.TicketOriginStartWork); err != nil || !changed {
-		t.Fatalf("a link from a read: %v, %v", changed, err)
+	if write, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10007"), store.TicketOriginStartWork); err != nil || !write.Changed {
+		t.Fatalf("a link from a read: %v, %v", write, err)
 	}
 	if !slices.EqualFunc(asked, [][]tracker.IssueID{ids("10007")}, slices.Equal) {
 		t.Fatalf("card reads = %v; want one of 10007", asked)
@@ -173,15 +173,15 @@ func TestEndedLinksTellTheBoardsOfTheirChildren(t *testing.T) {
 		run  func(m *mirrorFixture) error
 	}{
 		{"unlink", func(m *mirrorFixture) error {
-			had, err := m.svc.UnlinkThread("thread-1")
-			if err == nil && !had {
+			write, err := m.svc.UnlinkThread("thread-1")
+			if err == nil && !write.Changed {
 				err = errors.New("the unlink found no link")
 			}
 			return err
 		}},
 		{"replace", func(m *mirrorFixture) error {
-			changed, err := m.svc.LinkThread(m.t.Context(), "thread-1", m.ticket("10002"), store.TicketOriginManual)
-			if err == nil && !changed {
+			write, err := m.svc.LinkThread(m.t.Context(), "thread-1", m.ticket("10002"), store.TicketOriginManual)
+			if err == nil && !write.Changed {
 				err = errors.New("the replace changed nothing")
 			}
 			return err
@@ -270,8 +270,8 @@ func TestLinkThreadReadsAKnownMissingTicketAgain(t *testing.T) {
 		t.Fatalf("the refused link = %+v; want none", link)
 	}
 	missing, asked = false, 0
-	if changed, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10006"), store.TicketOriginManual); err != nil || !changed || asked != 1 {
-		t.Fatalf("a link to a ticket found again = %v, %v after %d reads; want linked after one", changed, err, asked)
+	if write, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10006"), store.TicketOriginManual); err != nil || !write.Changed || asked != 1 {
+		t.Fatalf("a link to a ticket found again = %v, %v after %d reads; want linked after one", write, err, asked)
 	}
 	for _, id := range []string{"a", "thread-1"} {
 		if link := m.rowLink(id); link == nil || link.State != store.TicketLinkCurrent {
@@ -296,8 +296,8 @@ func TestRelinkingARecoveredTicketReportsTheChange(t *testing.T) {
 			return tracker.Cards{Cards: []tracker.Card{card(string(q[0]), 1_799_000_000_000)}}, nil
 		}
 	})
-	if changed, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10006"), store.TicketOriginManual); err != nil || !changed {
-		t.Fatalf("the first link = %v, %v", changed, err)
+	if write, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10006"), store.TicketOriginManual); err != nil || !write.Changed {
+		t.Fatalf("the first link = %v, %v", write, err)
 	}
 	missing = true
 	m.pass(time.Second)
@@ -306,8 +306,8 @@ func TestRelinkingARecoveredTicketReportsTheChange(t *testing.T) {
 		t.Fatalf("the missing ticket's row = %+v; want not found", link)
 	}
 	missing = false
-	if changed, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10006"), store.TicketOriginManual); err != nil || !changed {
-		t.Fatalf("the same ticket found again = %v, %v; want changed", changed, err)
+	if write, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10006"), store.TicketOriginManual); err != nil || !write.Changed {
+		t.Fatalf("the same ticket found again = %v, %v; want changed", write, err)
 	}
 	if link := m.rowLink("a"); link == nil || link.State != store.TicketLinkCurrent {
 		t.Fatalf("the row after the ticket was found again = %+v; want current", link)
@@ -343,8 +343,8 @@ func TestLinkThreadTakesTheMirrorsLaterCard(t *testing.T) {
 			return tracker.Cards{Cards: []tracker.Card{card("10011", updated)}}, nil
 		}
 	})
-	if changed, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10011"), store.TicketOriginManual); err != nil || !changed {
-		t.Fatalf("a link read while a later read stored the card: %v, %v", changed, err)
+	if write, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10011"), store.TicketOriginManual); err != nil || !write.Changed {
+		t.Fatalf("a link read while a later read stored the card: %v, %v", write, err)
 	}
 	if link := m.rowLink("a"); link == nil || link.Key != "NEW-11" || link.State != store.TicketLinkCurrent || asked != 1 {
 		t.Fatalf("the link = %+v after %d reads; want NEW-11, current, one read", link, asked)

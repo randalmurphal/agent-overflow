@@ -7,7 +7,7 @@ import (
 // emptyDraftThreadSQL is true for a materialized chat/plan draft that has
 // not gained durable conversation state: nothing makes it real by the
 // sidebar's rule (threadRealClause, so the cleanup never deletes a thread
-// the sidebar lists or would list once unarchived, nor an assistant's
+// the sidebar lists or would list once unarchived, nor a linked one, nor an assistant's
 // current thread, whose delete goes through deleteAgentRecordTx, nor a
 // thread an agent spawned or one that spawned or owns others), no turn and
 // no queued message, an accepted send whose row would cascade with the

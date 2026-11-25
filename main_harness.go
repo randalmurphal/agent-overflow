@@ -431,6 +431,7 @@ func olderComputerSurface() (absent map[string]bool, reshape map[string]func(jso
 		"EditTrackerIssue", "MoveTrackerIssue", "SetTrackerEstimate", "AddTrackerComment", "EditTrackerComment",
 		"DeleteTrackerComment",
 		"EditTrackerSprint", "EditTrackerWorklog", "DeleteTrackerWorklog", "TrackerWorklogs", "RefreshTrackerWorklogs",
+		"SetThreadTicket", "ClearThreadTicket", "ThreadsForTicket",
 	} {
 		absent[name] = true
 	}

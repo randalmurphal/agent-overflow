@@ -1,7 +1,9 @@
 <script lang="ts">
-  // The line under a thread row naming its worktree and, on a page with
-  // several computers, the machine it is on. Nothing renders when the
-  // thread has neither.
+  // The line under a thread row naming its worktree, on a page with
+  // several computers the machine it is on, and the status mark and key of
+  // its linked ticket (docs/specs/issues.md, "Thread link"). The key is
+  // left out when the worktree's name already holds it. Nothing renders
+  // when the thread has none of the three.
   import type { Thread } from '../../types/models';
   import {
     attachedBackendEntry,
@@ -16,6 +18,8 @@
   import MonitorIcon from '@lucide/svelte/icons/monitor';
   import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
   import Icon from '../primitives/Icon.svelte';
+  import StatusMark from '../issues/StatusMark.svelte';
+  import { linkedTicketStateNote } from '../../stores/threadTicketLinks.svelte';
 
   interface Props {
     thread: Thread;
@@ -46,7 +50,12 @@
         ? `Computer: ${machineName}`
         : `Computer: ${machineName}. No browser on this computer.`,
   );
-  let show = $derived(Boolean(thread.worktreePath && worktreeName) || machineName !== '');
+  let link = $derived(thread.ticketLink ?? null);
+  // The mockup's rule: a worktree named after its ticket already shows the
+  // key.
+  let ticketShown = $derived(link !== null && !(worktreeName && worktreeName.toLowerCase().includes(link.key.toLowerCase())));
+  let ticketTitle = $derived(link ? [`${link.key} · ${link.title}`, linkedTicketStateNote(link)].filter(Boolean).join('\n') : '');
+  let show = $derived(Boolean(thread.worktreePath && worktreeName) || machineName !== '' || ticketShown);
   const rightPaddingPx = 52;
 </script>
 
@@ -54,8 +63,8 @@
   <div
     class="relative flex h-3.5 items-center text-[0.625rem] leading-none text-fg-hint"
     style="padding-left: {indentPx}px; padding-right: {rightPaddingPx}px"
-    title={worktreeName ? `Worktree: ${thread.worktreePath}` : machineTitle}
-    aria-label={worktreeName ? `Worktree ${worktreeName}` : `Computer ${machineName}`}
+    title={worktreeName ? `Worktree: ${thread.worktreePath}` : machineName ? machineTitle : ticketTitle}
+    aria-label={worktreeName ? `Worktree ${worktreeName}` : machineName ? `Computer ${machineName}` : `Ticket ${link?.key ?? ''}`}
     data-testid="thread-row-worktree"
   >
     {#if machineName}
@@ -82,6 +91,18 @@
         >
           {worktreeName}
         </span>
+      </span>
+    {/if}
+    {#if ticketShown && link}
+      {#if worktreeName || machineName}<span class="shrink-0 opacity-50" aria-hidden="true">·</span>{/if}
+      <span
+        class="inline-flex shrink-0 items-center gap-1 px-1 py-0 font-mono text-[0.625rem] text-fg-muted"
+        title={ticketTitle}
+        data-testid="thread-row-ticket"
+        data-link-state={link.state}
+      >
+        <span class={link.state === 'current' ? '' : 'opacity-50'}><StatusMark group={link.statusGroup} size={9} /></span>
+        {link.key}
       </span>
     {/if}
   </div>

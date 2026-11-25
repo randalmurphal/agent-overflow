@@ -77,6 +77,7 @@
     withDeleteNote,
   } from '../../stores/assistants.svelte';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
+  import { findThreadTicket, openLinkedTicket, removeThreadTicketLink, threadTicketLinkGrant } from '../../stores/threadTicketLinks.svelte';
 
   interface Props {
     thread: Thread;
@@ -210,6 +211,7 @@
   );
   let operateUngranted = $derived(operateGrant !== 'granted');
   let ungrantedTitle = $derived(grantBlockedTitle(operateGrant));
+  let linkGrant = $derived(threadTicketLinkGrant(thread));
   // StartNextAssistantThread and SetAssistantProjects ride threads:autonomy.
   let nextThreadGrant = $derived(threadScopeGrant('threads:autonomy', thread.id, thread.projectId));
   let nextThreadUngranted = $derived(nextThreadGrant !== 'granted');
@@ -526,6 +528,38 @@
             <MenuItem
               label="Loops and Watches"
               onSelect={() => void openLoopsAndWatches()}
+            />
+          {/if}
+          {#if thread.ticketLink}
+            <MenuItem
+              label="Open Ticket {thread.ticketLink.key}"
+              testId="thread-menu-ticket-open"
+              onSelect={() => {
+                onClose();
+                void openLinkedTicket(thread);
+              }}
+            />
+          {/if}
+          <MenuItem
+            label={thread.ticketLink ? 'Change Ticket…' : 'Link Ticket…'}
+            testId="thread-menu-ticket-find"
+            disabled={linkGrant !== 'granted'}
+            title={grantBlockedTitle(linkGrant)}
+            onSelect={() => {
+              onClose();
+              findThreadTicket(thread, anchor);
+            }}
+          />
+          {#if thread.ticketLink}
+            <MenuItem
+              label="Remove Ticket Link"
+              testId="thread-menu-ticket-remove"
+              disabled={operateUngranted}
+              title={ungrantedTitle}
+              onSelect={() => {
+                onClose();
+                void removeThreadTicketLink(thread);
+              }}
             />
           {/if}
           {#if canFork}

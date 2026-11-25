@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { threadGroupMatchesQuery, threadMatchesQuery } from './threadSearch';
 import type { Thread, ThreadGroup } from '../../types/models';
+import type { ThreadTicketLink } from '../../../../bindings/agent-overflow/internal/store/models';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -18,6 +19,14 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
   };
 }
 
+function ticketLink(): ThreadTicketLink {
+  return {
+    kind: 'jira', site: 'https://example.atlassian.net', issueId: '10001', key: 'WEB-1', title: 'Retry cursor returns no rows',
+    statusId: '3', statusName: 'In Progress', statusGroup: 'in_progress', origin: 'manual', linkedAt: 1,
+    state: 'current', connectionId: 'c1',
+  };
+}
+
 describe('threadMatchesQuery', () => {
   it.each([
     ['matches everything when the query is empty (no filter)', {}, '', true],
@@ -29,6 +38,9 @@ describe('threadMatchesQuery', () => {
       'zzz',
       false,
     ],
+    ['matches on the linked ticket\'s key', { ticketLink: ticketLink() }, 'web-1', true],
+    ['matches on the linked ticket\'s title', { ticketLink: ticketLink() }, 'retry cursor', true],
+    ['does not match a ticket the thread is not linked to', {}, 'web-1', false],
   ] as const)('%s', (_name, overrides, query, expected) => {
     expect(threadMatchesQuery(makeThread(overrides), query)).toBe(expected);
   });

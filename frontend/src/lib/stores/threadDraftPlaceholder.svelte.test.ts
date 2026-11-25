@@ -461,6 +461,29 @@ describe('threadDraftPlaceholder', () => {
       resetWorktreeIntent();
     }
   });
+
+  it('builds the placeholder an emptied draft returns to from its settings alone, with nothing its row held', async () => {
+    const settings = {
+      provider: 'claude', model: 'opus', mode: 'plan', reasoningEffort: 'high', fastMode: true, contextWindow: 1_000_000,
+      autoCompactStandardPercent: 70, autoCompactExtendedPercent: 80, runtimeMode: 'read-only', branch: 'main',
+      workspacePath: '/tmp/project', groupId: 'g-1',
+    } as const;
+    const pane = await buildPane(makeThread({
+      id: 'materialized-draft', projectId: 'p-1', projectPath: '/tmp/project', isDraft: true, ...settings,
+      title: 'A title', sessionRef: 'session-1', ownershipEpoch: 3, lastReadAt: 5, pinnedAt: 9, pinGroup: 1,
+      latestTurnCompletedAt: 7, hasFailedTurn: true, hasIncompleteTurn: true, hasActionableProposedPlan: true,
+      worktreeSetupState: 'failed', importSource: 'claude', forkedFromThreadId: 'parent',
+      attention: { kind: 'review', reason: 'Look', at: 4 },
+      ticketLink: { kind: 'jira', site: 'https://example.atlassian.net', issueId: '10101', key: 'WEB-1', title: 'First story', state: 'current' },
+    } as Partial<Thread>));
+    expect(pane.dematerializeEmptyDraftThread()).toBe(true);
+    const { id, createdAt, updatedAt, ...row } = pane.thread!;
+    expect(draftPlaceholderProjectId(id)).toBe('p-1');
+    expect(updatedAt).toBe(createdAt);
+    expect(Object.fromEntries(Object.entries(row).filter(([, value]) => value !== undefined))).toEqual({
+      ...settings, title: 'New Thread', projectId: 'p-1', projectPath: '/tmp/project', archived: false, isDraft: true,
+    });
+  });
 });
 
 // The sidebar lists a never-sent thread once it is real (draft content, a

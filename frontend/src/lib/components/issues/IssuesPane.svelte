@@ -46,7 +46,7 @@
   // hidden while a ticket covers it. Back, Escape and the phone's Back
   // step back through the tickets opened from one another, then close the
   // ticket.
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import ContextMenu from '../primitives/ContextMenu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import SplitResizer from '../shared/SplitResizer.svelte';
@@ -90,6 +90,8 @@
     savedOnlyMine,
     setCardFieldShown,
     setTicketPlacement,
+    takeTicketOpenRequest,
+    ticketOpenRequested,
   } from '../../stores/issuesPane.svelte';
   import { dismissTrackerRefreshNotice, refreshTrackerBoard } from '../../stores/trackerBoard.svelte';
   import {
@@ -132,6 +134,12 @@
   // The Time screen open now, for Refresh, and whether its refresh is out.
   let timeView: { refresh(): void } | undefined = $state();
   let timeRefreshing = $state(false);
+  // A ticket another surface asked for (a thread's link) opens here.
+  $effect(() => {
+    if (!ticketOpenRequested()) return;
+    const request = untrack(takeTicketOpenRequest);
+    if (request) selection.openRequested(request);
+  });
   const ticket = $derived(selection.ticket);
   // A ticket over the board covers the board's notices with it: what they
   // say is the board's, and the ticket says its own.

@@ -32,7 +32,11 @@ export interface TrackerConnection {
 /** A board the app is connected to, listed on a seeded project. */
 export interface ConnectedBoard {
   projectId: string;
+  /** The threads seeded on the project, in the order asked for. */
+  threadIds: string[];
   connectionId: string;
+  /** The site as the connection names it, which a thread link names. */
+  site: string;
   /** The fake Jira site's base URL, for writes a person makes in Jira. */
   jiraURL: string;
 }
@@ -74,12 +78,18 @@ export interface ExtraJira {
  * Seeds the fake Jira site: project WEB with one scrum board, its active
  * sprint holding WEB-1 and WEB-2, and WEB-3 in the backlog, and `extra`.
  * Then seeds a project, adds and verifies a Jira connection to the site,
- * and lists the board on the project.
+ * and lists the board on the project. `threads` are seeded on the
+ * project (HarnessSeed's thread shape).
  */
-export async function connectFakeJiraBoard(harness: HarnessApp, name: string, extra?: ExtraJira): Promise<ConnectedBoard> {
+export async function connectFakeJiraBoard(
+  harness: HarnessApp,
+  name: string,
+  extra?: ExtraJira,
+  threads: ReadonlyArray<Record<string, unknown>> = [],
+): Promise<ConnectedBoard> {
   const jiraURL = await seedFakeJira(harness, extra);
-  const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name, repo: {} }] });
-  const projectId = seed.projects[0].projectId;
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name, repo: {}, threads }] });
+  const { projectId, threadIds } = seed.projects[0];
   const added = await harness.rpc<TrackerConnection>('AddTrackerConnection', { kind: 'jira', site: JIRA_SITE, account: JIRA_ACCOUNT });
   // The token a person would paste into the key file the app named.
   await writeFile(added.keyFilePath, JIRA_TOKEN, { mode: 0o600 });
@@ -88,7 +98,7 @@ export async function connectFakeJiraBoard(harness: HarnessApp, name: string, ex
   // As the board picker sends it: built from the project's empty list,
   // with the name and project it showed.
   await harness.rpc('SetProjectTrackerBoards', projectId, [], [{ connection: added.id, board: BOARD_ID, opens_first: true, name: 'WEB board', tracker_project: 'WEB' }]);
-  return { projectId, connectionId: added.id, jiraURL };
+  return { projectId, threadIds, connectionId: added.id, site: verified.site, jiraURL };
 }
 
 /**

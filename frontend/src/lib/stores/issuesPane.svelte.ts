@@ -37,6 +37,7 @@ import {
   type ListedBoardChoice,
 } from './trackerBoardChoices.svelte';
 import { pageGrantsKnownTracked, scopeGrant } from '../transport/scopes';
+import type { CapturedError } from './errorReports.svelte';
 import type { BoardChoice, CardView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 
 /** A card field the Display menu turns on and off. Title always shows. */
@@ -286,6 +287,59 @@ export interface OpenTicket {
   readonly seed: TicketSeed;
 }
 
+/** A ticket a surface outside the pane asked it to open (a thread's
+ * link): its ticket, what to draw until it is read, and the project the
+ * ask came from, whose boards are tried first. `unplaced` runs when no
+ * board of the ticket's connection can be opened: with the failure when
+ * the computer's boards could not be read, else null (none lists one). */
+export interface TicketOpenRequest {
+  readonly ref: TrackerTicketRef;
+  readonly seed: TicketSeed;
+  readonly project: string | null;
+  readonly unplaced: (failure: CapturedError | null) => void;
+}
+
+// The one ticket asked for and not yet taken by a pane; a later ask
+// replaces it.
+let ticketOpenRequest = $state.raw<TicketOpenRequest | null>(null);
+
+/** Asks the Issues pane to open a ticket, which the pane takes when it
+ * mounts or at once when it is open. */
+export function requestTicketOpen(request: TicketOpenRequest): void {
+  ticketOpenRequest = request;
+}
+
+/** The ticket asked for, taken: the next call answers null. Reactive
+ * until taken. */
+export function takeTicketOpenRequest(): TicketOpenRequest | null {
+  const request = ticketOpenRequest;
+  if (request) ticketOpenRequest = null;
+  return request;
+}
+
+/** Whether a ticket is asked for and not yet taken; reactive. */
+export function ticketOpenRequested(): boolean {
+  return ticketOpenRequest !== null;
+}
+
+/**
+ * The board a ticket of `connection` on `backend` opens over, from that
+ * computer's boards: the first openable board of `project` listing it,
+ * else of a project that is not archived, else of any; null when no
+ * openable board of the connection is listed.
+ */
+export function boardForTicket(
+  rows: readonly BoardChoice[],
+  backend: string,
+  connection: string,
+  project: string | null,
+): TrackerBoardRef | null {
+  const open = rows.filter((c) => c.connection === connection && isBoardChoiceOpenable(c));
+  const ofProject = open.filter((c) => c.project === project);
+  const pick = ofProject.find((c) => c.opens_first) ?? ofProject[0] ?? open.find((c) => !c.project_archived) ?? open[0];
+  return pick ? choiceRef({ backend, choice: pick }) : null;
+}
+
 /** What the opening rule decided: a board, or none, and whether it still
  * waits on a computer's boards. */
 export interface OpeningDecision {
@@ -366,6 +420,13 @@ export interface BoardSelection {
   /** Opens issue `issue` of the board's connection: from the screen's
    * list, or from the ticket open now, which Back then returns to. */
   openTicket(issue: string, seed: TicketSeed, from: 'list' | 'ticket'): void;
+  /** Opens a ticket asked for from outside the pane, on the Board screen:
+   * over the board shown when it is of the ticket's computer and
+   * connection, else over the board `boardForTicket` picks once that
+   * computer's boards are read, which it shows without saving it as the
+   * person's pick. A pane on Time switches to the Board without saving
+   * that either. No such board runs the request's `unplaced`. */
+  openRequested(request: TicketOpenRequest): void;
   /** Back: the ticket this one was opened from, else closes it. */
   stepBack(): void;
   /** Close: the ticket goes, and the tickets it was opened from. */
@@ -428,6 +489,12 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
   let ticket = $state.raw<OpenTicket | null>(null);
   let trail = $state.raw<readonly OpenTicket[]>([]);
   let ticketAttachment = $state.raw<TrackerTicketAttachment | null>(null);
+  // A ticket asked for from outside the pane, while it waits on its
+  // computer's boards (openRequested).
+  let requested = $state.raw<TicketOpenRequest | null>(null);
+  // The asked-for ticket the board switched to for it opens, in place of
+  // the none a board change leaves.
+  let arriving: OpenTicket | null = null;
   let screen = $state<IssuesScreen>(savedScreen());
   const placement: TicketPlacement = $derived(opts.besideFits() ? ticketPlacement(screen) : 'over');
   // The one rule for whether a screen is seen: the pane on screen, showing
@@ -470,7 +537,8 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
     $effect.pre(() => {
       void boardOnComputer;
       untrack(() => {
-        ticket = null;
+        ticket = arriving;
+        arriving = null;
         trail = [];
       });
     });
@@ -530,6 +598,46 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
       untrack(() => renewEndedTrackerBoard(held.key));
     });
 
+    // A requested ticket opens on the Board screen, over the board shown
+    // when that board is of its computer and connection; otherwise, once
+    // that computer's boards are known, the board switches to
+    // boardForTicket's and the ticket opens with it (`arriving`, which the
+    // board change installs). The switch from Time is not saved: the next
+    // pane opens on the screen the person picked.
+    $effect(() => {
+      const request = requested;
+      if (!request) return;
+      const { ref } = request;
+      const open: OpenTicket = { ref, seed: request.seed };
+      const shown = board;
+      if (shown && shown.backend === ref.backend && shown.connection === ref.connection) {
+        untrack(() => {
+          requested = null;
+          screen = 'board';
+          trail = [];
+          const held = ticket?.ref;
+          if (held?.backend !== ref.backend || held.connection !== ref.connection || held.issue !== ref.issue) ticket = open;
+        });
+        return;
+      }
+      // A computer not connected opens the ticket when it connects, as a
+      // board picked last does.
+      const state = trackerBoardChoicesOf(ref.backend);
+      if (state?.kind === 'reading' || state?.kind === 'offline') return;
+      const next = boardForTicket(state?.rows ?? [], ref.backend, ref.connection, request.project);
+      untrack(() => {
+        requested = null;
+        if (!next) {
+          request.unplaced(state?.kind === 'failed' && !state.rows ? state.error : null);
+          return;
+        }
+        unconfirmed = false;
+        screen = 'board';
+        arriving = open;
+        board = next;
+      });
+    });
+
     $effect(() => {
       if (board) {
         choosing = false;
@@ -572,6 +680,9 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
       trail = from === 'ticket' && ticket ? [...trail, ticket].slice(-MAX_TICKET_TRAIL) : [];
       ticket = next;
     },
+    openRequested(request) {
+      requested = request;
+    },
     stepBack() {
       if (trail.length === 0) {
         ticket = null;
@@ -611,4 +722,5 @@ export function resetIssuesPaneForTest(): void {
   placements = {};
   sections = new Map();
   commentOrder = 'oldest';
+  ticketOpenRequest = null;
 }

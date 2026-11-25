@@ -56,6 +56,7 @@
   import { isAssistantDraftMoved } from '../../stores/assistants.svelte';
   import { isEmptyDraftCleanupPending, removedOrDeletionObserved, settleEmptyDraftCleanup, withEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
   import { keepDraftInNewThread } from '../../stores/deletedDraftThread';
+  import { ticketLinkPending } from '../../stores/threadTicketLinks.svelte';
   import { applyThreadDeleted } from '../../stores/eventsThreadRows';
   import {
     DeleteEmptyDraftThread,
@@ -391,6 +392,11 @@
       // thread-scoped move clears that intent, including across restarts.
       hasStagedWorktreeIntent(pane.thread) ||
       Boolean(pane.thread?.worktreePath) ||
+      // A ticket link keeps the thread too (store threadRealClause). Linking
+      // a New thread materializes it before the link lands; deleting it then
+      // fails the link.
+      Boolean(pane.thread?.ticketLink) ||
+      ticketLinkPending(pane.paneId) ||
       // Applying a staged branch/worktree intent materializes an item-less
       // draft row first; deleting it mid-RPC fails the apply on the backend.
       isWorktreeIntentApplying(pane.threadId) ||

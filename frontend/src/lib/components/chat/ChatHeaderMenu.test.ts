@@ -141,7 +141,7 @@ describe('<ChatHeaderMenu> on desktop', () => {
   it('lists the terminal rows, find, title regeneration and the editor, and none of the compact rows', async () => {
     addProject();
     await renderOpen(makeThread(), { find: true });
-    expect(rows()).toEqual(['Terminal', 'New terminal pane', 'Find in thread', 'Regenerate title', 'Open in editor']);
+    expect(rows()).toEqual(['Terminal', 'New terminal pane', 'Find in thread', 'Regenerate title', 'Link ticket…', 'Open in editor']);
   });
 
   it('Find in thread opens this pane\'s find bar, not the search across every thread', async () => {
@@ -251,6 +251,7 @@ describe('<ChatHeaderMenu> on desktop', () => {
       'Find in thread',
       'Search messages',
       'Regenerate title',
+      'Link ticket…',
     ]);
   });
 
@@ -533,7 +534,7 @@ describe('<ChatHeaderMenu> on desktop', () => {
     await seedEditors([ed('code', 'Visual Studio Code'), ed('cursor', 'Cursor'), ed('zed', 'Zed')], 'cursor');
     const open = setBindingMock('OpenInEditor', async () => undefined);
     await renderOpen();
-    expect(rows().slice(3)).toEqual(['Open in Cursor', 'Open in Visual Studio Code', 'Open in Zed']);
+    expect(rows().slice(4)).toEqual(['Open in Cursor', 'Open in Visual Studio Code', 'Open in Zed']);
     await fireEvent.click(row('Open in Zed'));
     await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(1));
     expect(open.mock.calls[0]).toEqual(['/tmp/proj', 0, 0, '', 'zed']);
