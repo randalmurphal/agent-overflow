@@ -149,7 +149,9 @@ this is its shape.
   compares the source the run read from, in its transaction), so the
   refresh answers that the time tracking changed and to refresh again.
   An edit or a delete is sent only while the worklog is the copy the
-  caller read; one that changed since is refused as stale.
+  caller read, at the tracker revision the copy carries (`updated`,
+  compared at the millisecond); one that changed since, in a field the
+  copy shows or not, is refused as stale with nothing sent.
 - Planning poker: whether the site has the add-on, an issue's votes, and
   vote, reveal and clear (`tracker.Poker`), or none for a tracker that
   cannot have it (Linear). See [Planning poker](#planning-poker).

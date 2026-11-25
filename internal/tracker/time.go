@@ -17,9 +17,10 @@ type TimeTracker interface {
 	Worklogs(ctx context.Context, q WorklogQuery) ([]Worklog, error)
 	AddWorklog(ctx context.Context, in WorklogInput) Result
 	// EditWorklog and DeleteWorklog act on a worklog that still holds
-	// what From says (issue, author, day, time and description); one that
-	// changed since it was read is refused as stale, so a reference read
-	// from another time source never reaches a worklog of this one.
+	// what From says (issue, author, day, time and description) at the
+	// tracker revision From carries (Updated); one that changed since it
+	// was read, in a field From shows or not, is refused as stale with
+	// nothing sent.
 	EditWorklog(ctx context.Context, in WorklogEdit) Result
 	DeleteWorklog(ctx context.Context, in WorklogDelete) Result
 }

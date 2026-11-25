@@ -129,10 +129,15 @@ func (t *tempoTime) readWorklog(ctx context.Context, id int64, from tracker.Work
 }
 
 // sameWorklog reports two reads of a worklog that hold the same issue,
-// author, day, time and description.
+// author, day, time and description at the same tracker revision. The
+// revision is compared at the millisecond, the precision a copy keeps
+// through the mirror and the wire (Jira answers milliseconds, Tempo
+// seconds), so a change the copy does not show (a start moved within its
+// day, Tempo's billable time) still makes it stale. A worklog read with
+// no revision has none in either copy.
 func sameWorklog(a, b tracker.Worklog) bool {
 	return a.ID == b.ID && a.Issue == b.Issue && a.Author == b.Author && a.Day == b.Day &&
-		a.Spent == b.Spent && a.Description == b.Description
+		a.Spent == b.Spent && a.Description == b.Description && a.Updated.UnixMilli() == b.Updated.UnixMilli()
 }
 
 // editDays are the days an edit may change the author's worklogs on:

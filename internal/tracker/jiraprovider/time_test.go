@@ -126,7 +126,7 @@ func TestJiraWorklogWrites(t *testing.T) {
 		t.Errorf("add: %s %+v %v", states(res), res.Parts[0].Changed, res.Parts[0].Outcome.Err())
 	}
 
-	from := tracker.Worklog{ID: "300", Issue: "10001", Author: "acc-user1", Day: d, Spent: time.Hour, Description: adf.ToMarkdown(adf.Doc(para("Review")))}
+	from := tracker.Worklog{ID: "300", Issue: "10001", Author: "acc-user1", Day: d, Spent: time.Hour, Description: adf.ToMarkdown(adf.Doc(para("Review"))), Updated: jiraRevision}
 	next := day(t, 2026, 11, 11)
 	f.On("PUT", worklogsPath+"/300", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		v := bodyOf(t, b)
@@ -165,6 +165,14 @@ func TestJiraWorklogWrites(t *testing.T) {
 }
 
 // tempoWL is a Tempo worklog of issue in Tempo's wire shape.
+// jiraRevision and tempoRevision are the revisions jiraWorklog and tempoWL
+// answer (updatedAt, and Tempo's updatedAt below): a copy as read carries
+// them.
+var (
+	jiraRevision  = time.Date(2026, 11, 10, 10, 0, 0, 0, time.UTC)
+	tempoRevision = time.Date(2026, 11, 3, 9, 30, 0, 0, time.UTC)
+)
+
 func tempoWL(id, issue int64, date, start string, spent int64, desc string) string {
 	m := map[string]any{
 		"self": fmt.Sprintf("https://api.example.com/4/worklogs/%d", id), "tempoWorklogId": id,
@@ -251,7 +259,7 @@ func TestTempoWorklogWrites(t *testing.T) {
 	ts.On("PUT", "/4/worklogs/70", nil,
 		`{"authorAccountId":"acc-user1","issueId":10001,"startDate":"2026-11-11","startTime":"13:00:00","timeSpentSeconds":3600,"billableSeconds":3600,"description":"Planning","attributes":[]}`,
 		200, tempoWL(70, 10001, "2026-11-11", "13:00:00", 3600, "Planning"))
-	from := tracker.Worklog{ID: "70", Issue: "10001", Author: "acc-user1", Day: d, Spent: time.Hour, Description: "Planning"}
+	from := tracker.Worklog{ID: "70", Issue: "10001", Author: "acc-user1", Day: d, Spent: time.Hour, Description: "Planning", Updated: tempoRevision}
 	res = checked(t, tt.EditWorklog(t.Context(), tracker.WorklogEdit{From: from, Day: &next}))
 	if states(res) != "worklog:applied" || len(res.Parts[0].Changed) != 3 {
 		t.Errorf("edit: %s %v", states(res), res.Parts[0].Outcome.Err())
