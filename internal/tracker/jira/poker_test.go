@@ -89,7 +89,8 @@ func TestPokerTokenIsKeptUntilNearItsExpiry(t *testing.T) {
 	if calls := pokerCalls(t, f); !sameCounts(calls, want) {
 		t.Fatalf("calls %v, want %v", calls, want)
 	}
-	f.clock.Advance(900*time.Second - pokerTokenMargin - time.Millisecond)
+	// The ruling: a token is dropped 60 seconds before it expires.
+	f.clock.Advance(900*time.Second - 60*time.Second - time.Millisecond)
 	got(f.c.PokerVotes(f.ctx, "10101")).must(t)
 	if n := pokerCalls(t, f)["POST rest/internal/2/forge/context/token"]; n != 1 {
 		t.Fatalf("a token in use was signed again: %d tokens", n)
