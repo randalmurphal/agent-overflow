@@ -12,6 +12,7 @@
   import { HOME_BACKEND } from '../../transport/backendKey';
   import { projectBackend } from '../../transport/entityIndex';
   import { getProjects, isLoaded } from '../../stores/projects.svelte';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { acquireTrackerConnections, refreshTrackerConnections, trackerConnectionsOf } from '../../stores/trackerConnections.svelte';
   import {
     acquireTrackerProjectBoards,
@@ -148,6 +149,7 @@
       label="Project"
       hint="Choose the project whose boards to list."
       htmlFor="settings-tracker-boards-project"
+      stacked={isCompactLayout()}
     >
       <select
         id="settings-tracker-boards-project"

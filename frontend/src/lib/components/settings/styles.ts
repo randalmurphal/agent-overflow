@@ -72,7 +72,16 @@ export const CHIP_EXCLUDED_CLASS =
 /** Prose shown in place of the chip row when there is nothing to render. */
 export const CHIP_EMPTY_PROSE_CLASS = 'text-[0.75rem] text-fg-muted';
 
-export const GHOST_BUTTON_CLASS =
-  'whitespace-nowrap rounded-[var(--radius-field)] px-2 py-1 compact:py-2 text-[0.71875rem] text-fg-hint ' +
+const GHOST_BUTTON_BASE =
+  'rounded-[var(--radius-field)] px-2 py-1 compact:py-2 text-[0.71875rem] text-fg-hint ' +
   'hover:text-fg-muted hover:bg-surface-2/40 cursor-pointer transition-colors ' +
   'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40';
+
+/** A short action, kept on one line. */
+export const GHOST_BUTTON_CLASS = `whitespace-nowrap ${GHOST_BUTTON_BASE}`;
+
+/**
+ * One choice of a list whose text comes from elsewhere (a tracker's
+ * project or board name): full width, and wrapping however long it is.
+ */
+export const GHOST_OPTION_CLASS = `${GHOST_BUTTON_BASE} w-full text-left text-fg wrap-anywhere`;

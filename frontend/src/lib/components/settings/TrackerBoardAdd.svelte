@@ -15,7 +15,7 @@
   import type { BackendKey } from '../../transport/backendKey';
   import { withBackendTarget } from '../../transport/backends';
   import { userFacingError } from '../../utils/userFacingError';
-  import { GHOST_BUTTON_CLASS, INPUT_CLASS, SECONDARY_BUTTON_CLASS, SELECT_CLASS } from './styles';
+  import { GHOST_BUTTON_CLASS, GHOST_OPTION_CLASS, INPUT_CLASS, SECONDARY_BUTTON_CLASS, SELECT_CLASS } from './styles';
   import { trackerConnectionName } from './trackerConnectionStatus';
 
   let {
@@ -185,7 +185,7 @@
               <li>
                 <button
                   type="button"
-                  class="{GHOST_BUTTON_CLASS} w-full text-left text-fg"
+                  class={GHOST_OPTION_CLASS}
                   onclick={() => chooseProject(p)}
                   data-testid="tracker-board-add-project"
                 >
@@ -221,7 +221,7 @@
                 <li>
                   <button
                     type="button"
-                    class="{GHOST_BUTTON_CLASS} w-full text-left text-fg disabled:cursor-not-allowed disabled:opacity-50"
+                    class="{GHOST_OPTION_CLASS} disabled:cursor-not-allowed disabled:opacity-50"
                     disabled={already || disabled}
                     title={already ? 'This project lists it already.' : disabledReason}
                     onclick={() => void add(board)}

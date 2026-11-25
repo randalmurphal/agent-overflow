@@ -33,13 +33,22 @@ export interface ConnectedBoard {
 }
 
 /**
- * Seeds the fake Jira site: project WEB with one scrum board, its active
- * sprint holding WEB-1 and WEB-2, and WEB-3 in the backlog. Then seeds a
- * project, adds and verifies a Jira connection to the site, and lists the
- * board on the project.
+ * More projects and boards for the fake Jira site, in its fixture shape
+ * (trackerfake.JiraProject and JiraBoard), beside the seed's own.
  */
-export async function connectFakeJiraBoard(harness: HarnessApp, name: string): Promise<ConnectedBoard> {
-  const jiraURL = await seedFakeJira(harness);
+export interface ExtraJira {
+  projects: Array<{ id: string; key: string; name: string }>;
+  boards: Array<{ id: number; name: string; type: 'scrum' | 'kanban'; project: string; columns: Array<{ name: string; statuses: string[] }> }>;
+}
+
+/**
+ * Seeds the fake Jira site: project WEB with one scrum board, its active
+ * sprint holding WEB-1 and WEB-2, and WEB-3 in the backlog, and `extra`.
+ * Then seeds a project, adds and verifies a Jira connection to the site,
+ * and lists the board on the project.
+ */
+export async function connectFakeJiraBoard(harness: HarnessApp, name: string, extra?: ExtraJira): Promise<ConnectedBoard> {
+  const jiraURL = await seedFakeJira(harness, extra);
   const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name, repo: {} }] });
   const projectId = seed.projects[0].projectId;
   const added = await harness.rpc<TrackerConnection>('AddTrackerConnection', { kind: 'jira', site: JIRA_SITE, account: JIRA_ACCOUNT });
@@ -56,17 +65,17 @@ export async function connectFakeJiraBoard(harness: HarnessApp, name: string): P
  * Seeds the fake Jira site alone (see connectFakeJiraBoard) and answers
  * its base URL.
  */
-export async function seedFakeJira(harness: HarnessApp): Promise<string> {
+export async function seedFakeJira(harness: HarnessApp, extra?: ExtraJira): Promise<string> {
   const day = new Date(Date.now() - 48 * 3600_000).toISOString();
   const sprintEnd = new Date(Date.now() + 12 * 24 * 3600_000).toISOString();
   const origins = await harness.rpc<{ jira: Record<string, string> }>('HarnessTrackerSeed', {
     jira: [{
       site: JIRA_SITE, account: 'acc-user1', token: JIRA_TOKEN,
       users: [{ accountId: 'acc-user1', displayName: 'User 1', email: JIRA_ACCOUNT, timeZone: 'UTC' }],
-      projects: [{ id: '10000', key: 'WEB', name: 'Web' }],
+      projects: [{ id: '10000', key: 'WEB', name: 'Web' }, ...(extra?.projects ?? [])],
       boards: [{ id: 1, name: 'WEB board', type: 'scrum', project: 'WEB', columns: [
         { name: 'To Do', statuses: ['10000'] }, { name: 'In Progress', statuses: ['10001'] }, { name: 'Done', statuses: ['10002'] },
-      ] }],
+      ] }, ...(extra?.boards ?? [])],
       sprints: [{ id: 1, board: 1, name: 'Sprint 1', state: 'active', start: day, end: sprintEnd }],
       issues: [
         { id: '10101', key: 'WEB-1', project: 'WEB', type: '10001', summary: 'First story', sprints: [1], status: '10001', created: day, updated: day },
