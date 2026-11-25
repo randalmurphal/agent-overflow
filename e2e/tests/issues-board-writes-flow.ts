@@ -12,7 +12,8 @@
 // same write pending and then its value; a carried card moves to another
 // column by the one move that reaches it, a column no move reaches says so
 // while the card is over it and refuses the drop, a column two moves reach
-// asks which, and a move that takes fields opens the ticket with its form;
+// asks which, and a move that takes fields opens the ticket with its form,
+// its long field starting from the ticket's text;
 // a drop within the card's own column ranks it in Jira. On compact: the
 // fields change from the menu, and the status mark opens Move to….
 
@@ -54,11 +55,14 @@ const BOARD: ExtraJira = {
     { id: '11', name: 'To Do', to: '10000' },
     { id: '21', name: 'In Progress', to: '10001' },
     { id: '31', name: 'Done', to: '10002', from: ['10001'] },
-    { id: '41', name: 'Resolve', to: '10002', from: ['10001'], screen: [{ field: 'resolution', required: true }] },
+    { id: '41', name: 'Resolve', to: '10002', from: ['10001'], screen: [{ field: 'resolution', required: true }, { field: 'description' }] },
   ],
   issues: [
     { id: '10105', key: 'WEB-5', project: 'WEB', type: '10002', status: '10000', summary: 'Changed from its card', sprints: [1], values: { customfield_10016: 3 } },
-    { id: '10106', key: 'WEB-6', project: 'WEB', type: '10002', status: '10001', summary: 'Resolved from the board', sprints: [1] },
+    {
+      id: '10106', key: 'WEB-6', project: 'WEB', type: '10002', status: '10001', summary: 'Resolved from the board', sprints: [1],
+      description: { type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Steps written before the move' }] }] },
+    },
     { id: '10107', key: 'WEB-7', project: 'WEB', type: '10002', status: '10001', summary: 'Refused a move', sprints: [1] },
   ],
 };
@@ -340,7 +344,11 @@ export function registerBoardWritesFlow({ compact }: BoardWritesSurface): void {
       await choice.getByTestId('issues-card-drop-move').filter({ hasText: 'Resolve' }).click();
       const ticket = pane.getByTestId('ticket-screen');
       await expect(ticket).toHaveAttribute('data-issue', '10106');
-      await expect(ticket.getByTestId('ticket-move-form')).toHaveAttribute('data-move', '41');
+      const form = ticket.getByTestId('ticket-move-form');
+      await expect(form).toHaveAttribute('data-move', '41');
+      // Its description starts from the text the ticket shows, read after
+      // the form opened.
+      await expect(form.getByTestId('ticket-move-text')).toHaveValue(/Steps written before the move/);
       expect(await trackerRequests(harness, MOVE_ROUTE, ['WEB-6', '10106'])).toEqual([]);
     });
   }
