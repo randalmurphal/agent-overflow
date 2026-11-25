@@ -7,9 +7,8 @@
 // derives and pushes; nothing here holds it. What is held here is the one
 // finder open, for the thread it links (`ThreadTicketFinderHost`).
 //
-// The Issues pane's stores load with the pane, so the request that tells
-// it which ticket to open is reached through one stable dynamic import
-// (architecture.test.ts, rule 4b).
+// The ticket opens through the one opener of a ticket from outside the
+// Issues pane (`ticketOpen.ts`).
 //
 // Every read and open of the thread's computer goes to the computer the
 // thread verifiably runs on (`verifiedThreadMachine`): its tracker
@@ -18,25 +17,22 @@
 
 import { ClearThreadTicket, SetThreadTicket } from './bindings';
 import { trackerKindName } from '../components/settings/trackerConnectionStatus';
-import { attachedBackendEntry, backendDisplayName, verifiedThreadMachine } from './attachedBackends.svelte';
+import { verifiedThreadMachine } from './attachedBackends.svelte';
 import { syncThreadReply } from './panes.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
 import { addErrorToast, addToast } from './toast.svelte';
-import { openTool } from './toolPanes.svelte';
+import { computerName as computerCalled, openTicketInIssues } from './ticketOpen';
 import { isEmptyDraftCleanupPending, settleEmptyDraftCleanup } from './emptyDraftCleanup';
 import { threadScopeGrant } from '../transport/entityScopes';
 import type { EntityScopeGrant } from '../transport/scopes';
 import { copyToClipboard } from '../utils/clipboard';
 import { userFacingError } from '../utils/userFacingError';
-import { retryingLoad } from '../utils/retryingLoad';
 import { SvelteMap } from 'svelte/reactivity';
 import { isDraftPlaceholderId } from './draftPlaceholderId';
 import type { BackendKey } from '../transport/backendKey';
 import type { ThreadPane } from './thread.svelte';
 import type { Thread } from '../types/models';
 import type { ThreadTicketLink } from '../../../bindings/agent-overflow/internal/store/models';
-
-const loadIssuesPane = retryingLoad(() => import('./issuesPane.svelte'));
 
 /** What a thread no computer verifiably holds says, after "so". */
 const UNOWNED = 'Agent Overflow cannot tell which computer holds this thread';
@@ -48,8 +44,7 @@ function siteName(site: string): string {
 }
 
 function computerName(backend: BackendKey | null): string {
-  const entry = backend === null ? undefined : attachedBackendEntry(backend);
-  return entry ? backendDisplayName(entry) : 'The thread\'s computer';
+  return computerCalled(backend, 'The thread\'s computer');
 }
 
 /** Why the thread's computer cannot open its linked ticket, as a sentence;
@@ -102,32 +97,9 @@ export async function openLinkedTicket(thread: Thread): Promise<void> {
     addToast('error', `${UNOWNED}, so ${link.key} cannot open.`);
     return;
   }
-  let requestTicketOpen: typeof import('./issuesPane.svelte').requestTicketOpen;
-  try {
-    ({ requestTicketOpen } = await loadIssuesPane());
-  } catch (err) {
-    addErrorToast(`${link.key} cannot open: the Issues pane did not load: ${userFacingError(err)}`, err);
-    return;
-  }
-  // The pane opens first, so a refused open leaves no request for the next
-  // Issues pane to take; a pane that mounts after this takes it then.
-  try {
-    openTool('issues', { newPane: true });
-  } catch (err) {
-    addErrorToast(`${link.key} cannot open: ${userFacingError(err)}`, err);
-    return;
-  }
-  requestTicketOpen({
-    ref: { backend, connection: link.connectionId, issue: link.issueId },
-    seed: { key: link.key, title: link.title, card: null },
-    project: thread.projectId ?? null,
-    unplaced: (failure) => {
-      if (failure) {
-        addToast('error', `${computerName(backend)} could not read its boards, so ${link.key} cannot open: ${failure.report.reason}`, undefined, undefined, failure);
-        return;
-      }
-      addToast('error', `${computerName(backend)} lists no board of ${siteName(link.site)} in any project, so ${link.key} cannot open. Add one in Settings > Issues > Boards.`);
-    },
+  await openTicketInIssues({
+    backend, connection: link.connectionId, issue: link.issueId, key: link.key, title: link.title,
+    project: thread.projectId ?? null, of: `of ${siteName(link.site)}`,
   });
 }
 

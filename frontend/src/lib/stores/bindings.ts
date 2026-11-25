@@ -652,6 +652,10 @@ export {
   // A thread's ticket link (stores/threadTicketLinks.svelte.ts).
   ClearThreadTicket,
   SetThreadTicket,
+  // A ticket's Work: its pull requests and branches, and the threads of
+  // its Ask and Start work (stores/ticketWork.svelte.ts).
+  GetTicketWork,
+  StartTicketThread,
   // A person's logged time and its writes (stores/trackerTime.svelte.ts,
   // stores/trackerTimeWrites.svelte.ts).
   TrackerWorklogs,
@@ -1539,6 +1543,7 @@ export {
   SetProjectTrackerBoards,
 } from '../../../bindings/agent-overflow/app.js';
 export type { TrackerConnection, NewTrackerConnection } from '../../../bindings/agent-overflow/internal/app/models.js';
+export type { TicketWork, TicketPullRequest, TicketBranch, TicketWorkProblem } from '../../../bindings/agent-overflow/internal/app/models.js';
 export type { BoardChoice as TrackerBoardChoice, BoardRef as TrackerBoardRef, ProjectBoard as TrackerProjectBoard, ProjectView as TrackerProjectView, BoardInfoView as TrackerBoardInfo } from '../../../bindings/agent-overflow/internal/trackerapp/models.js';
 
 /** This computer's tracker connections; null on a computer whose release has no trackers. */

@@ -71,7 +71,7 @@ func TestTicketWorkListsThePullRequestsAndBranchesThatNameItsKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if work.Key != "WEB-1" || len(work.Problems) != 0 {
+	if work.Key != "WEB-1" || work.Kind != store.TrackerKindJira || work.Site != "https://example.atlassian.net" || len(work.Problems) != 0 {
 		t.Fatalf("work = %+v; want WEB-1's, with no problem", work)
 	}
 	wantPRs := []TicketPullRequest{

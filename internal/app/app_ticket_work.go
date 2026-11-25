@@ -19,7 +19,11 @@ import (
 // client reads from its thread rows: the pull requests and branches whose
 // name or title names the ticket's key (trackerapp.TicketKeys).
 type TicketWork struct {
+	// Key is the ticket's key; Kind and Site name its tracker site as a
+	// thread's link names it, so the client finds the ticket's threads.
 	Key          string              `json:"key"`
+	Kind         string              `json:"kind"`
+	Site         string              `json:"site"`
 	PullRequests []TicketPullRequest `json:"pullRequests"`
 	Branches     []TicketBranch      `json:"branches"`
 	// Problems are the repositories whose branches could not be read,
@@ -95,7 +99,7 @@ func (a *App) GetTicketWork(ctx context.Context, connectionID, issueID string) (
 	if err != nil {
 		return TicketWork{}, err
 	}
-	work := TicketWork{Key: key, PullRequests: []TicketPullRequest{}, Branches: []TicketBranch{}, Problems: []TicketWorkProblem{}}
+	work := TicketWork{Key: key, Kind: conn.Kind, Site: conn.Site, PullRequests: []TicketPullRequest{}, Branches: []TicketBranch{}, Problems: []TicketWorkProblem{}}
 
 	open, err := a.storedTicketPullRequests(key)
 	if err != nil {
