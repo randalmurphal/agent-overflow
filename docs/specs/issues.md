@@ -379,6 +379,11 @@ sidebar and the thread header, on desktop and on a phone.
   request.
 - The sidebar row's menu opens the ticket and removes the link, and the
   Thread actions menu removes it.
+- Link ticket… (Change ticket… on a linked thread), in the sidebar row's
+  menu, the Thread actions menu and the header ticket's menu, finds a
+  ticket by key or by words of its title on the thread's computer's Jira
+  and Linear connections that are on, and links the thread to the one
+  picked. A computer with no such connection says so.
 - A link its computer has not read, cannot see now or reads through a
   connection that is off dims its mark and says which in its title. A
   ticket whose connection is off or gone does not open: a message says

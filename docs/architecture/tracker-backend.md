@@ -1939,8 +1939,9 @@ subscription's methods, `TrackerComments`, the issue and comment writes,
 `TrackerAssignableUsers` and `TrackerChoices`, and
 `tracker:issue_updated`'s TypeScript type (`components/issues/AGENTS.md`),
 and the thread link's screens: the header's ticket, its menus, the
-sidebar row's line and search, with the `ClearThreadTicket` wrapper
-(`stores/threadTicketLinks.ts`).
+sidebar row's line and search, and Link and Change ticket through the
+ticket finder, with the `SetThreadTicket` and `ClearThreadTicket`
+wrappers (`stores/threadTicketLinks.svelte.ts`).
 A failure of the linked-issues
 loop after boot reaches only the log (`Deps.LoopFailed`): its failures
 are outside the tracker (a store error, the cleanup), and a tracker
@@ -1955,12 +1956,10 @@ Not built, owed by the app layer:
 - The Time screen and a sprint edit on the Backlog screen: the
   `bindings.ts` wrappers of the worklog methods and `EditTrackerSprint`
   ship with them.
-- Linking a thread and changing its ticket from a screen, with the
-  `SetThreadTicket` wrapper, which ship with the ticket finder.
 - A link on a thread with nothing sent does not keep the thread: clearing
-  its composer deletes the thread and ends its link as a delete does. The
-  slice that first lets a person link such a thread decides whether a
-  link keeps it.
+  its composer deletes the thread and ends its link as a delete does.
+  Link ticket… is offered on such a thread; whether a link should keep it
+  is not decided.
 - The rest of the project's tracker setup, each a section of its file:
   card marks, Start work defaults, draft settings and what agents may do;
   and the `bindings.ts` wrappers of the setup methods, which ship with the
