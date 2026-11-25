@@ -184,9 +184,9 @@ describe('<TrackerConnectionsSettings>', () => {
     });
     render(TrackerConnectionsSettings);
     const row = await screen.findByTestId('tracker-connection-jira-1');
-    expect(within(row).getByTestId('tracker-connection-status').textContent).toBe('Token not checked');
+    expect(within(row).getByTestId('tracker-connection-status').textContent).toBe('Check needed');
     expect(within(row).getByTestId('tracker-connection-detail').textContent).toBe(
-      'It was last checked as User 1 (user1@example.com). The token in the key file now has not been checked; check the connection to see whose it is.',
+      'It was last checked as User 1 (user1@example.com). Check the connection to confirm the token in the key file.',
     );
     await fireEvent.click(within(row).getByTestId('tracker-connection-setup-check'));
     await waitFor(() => expect(verify).toHaveBeenCalledWith('jira-1'));
@@ -204,7 +204,7 @@ describe('<TrackerConnectionsSettings>', () => {
     rows = [trackerConnection({ checkedTokenInFile: false, problem: { ...refused, current: false } })];
     window.dispatchEvent(new Event('focus'));
     await waitFor(() => expect(within(row).getByTestId('tracker-connection-status').textContent).toBe('Key file changed since the last failure'));
-    expect(within(row).getByTestId('tracker-connection-detail').textContent).toMatch(/^The token in it now has not been checked\. Before the change: Jira refused/);
+    expect(within(row).getByTestId('tracker-connection-detail').textContent).toMatch(/^Check the connection to confirm the token in the key file\. Before the change: Jira refused/);
     const verify = setBindingMock('VerifyTrackerConnection', async () => {
       rows = [trackerConnection({ checkedTokenInFile: false, problem: refused })];
       return rows[0];

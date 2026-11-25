@@ -126,7 +126,7 @@ export function trackerConnectionStatus(connection: TrackerConnection): TrackerC
     return {
       tone: 'muted',
       label: 'Key file changed since the last failure',
-      detail: `The token in it now has not been checked. Before the change: ${sentence(problem.message)}${lastChecked}`,
+      detail: `Check the connection to confirm the token in the key file. Before the change: ${sentence(problem.message)}${lastChecked}`,
       needsSetup: true,
     };
   }
@@ -140,10 +140,10 @@ export function trackerConnectionStatus(connection: TrackerConnection): TrackerC
   }
   return {
     tone: 'muted',
-    label: 'Token not checked',
+    label: 'Check needed',
     detail: who
-      ? `It was last checked as ${who}. The token in the key file now has not been checked; check the connection to see whose it is.`
-      : 'The token in the key file now has not been checked; check the connection to test it.',
+      ? `It was last checked as ${who}. Check the connection to confirm the token in the key file.`
+      : 'Check the connection to confirm the token in the key file.',
     needsSetup: true,
   };
 }

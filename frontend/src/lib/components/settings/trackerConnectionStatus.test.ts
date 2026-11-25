@@ -52,14 +52,14 @@ describe('a connection row’s status', () => {
   it('says who it was last checked as while the token in the file is not the one checked', () => {
     expect(trackerConnectionStatus(trackerConnection({ checkedTokenInFile: false }))).toEqual({
       tone: 'muted',
-      label: 'Token not checked',
-      detail: 'It was last checked as User 1 (user1@example.com). The token in the key file now has not been checked; check the connection to see whose it is.',
+      label: 'Check needed',
+      detail: 'It was last checked as User 1 (user1@example.com). Check the connection to confirm the token in the key file.',
       needsSetup: true,
     });
     const tempo = trackerConnection({ kind: 'tempo', account: '', verifiedAccountId: '', verifiedName: '', checkedTokenInFile: false });
     expect(trackerConnectionStatus(tempo)).toMatchObject({
-      label: 'Token not checked',
-      detail: 'The token in the key file now has not been checked; check the connection to test it.',
+      label: 'Check needed',
+      detail: 'Check the connection to confirm the token in the key file.',
     });
   });
 
@@ -86,11 +86,11 @@ describe('a connection row’s status', () => {
       tone: 'muted',
       label: 'Key file changed since the last failure',
       detail:
-        'The token in it now has not been checked. Before the change: Jira refused the token in the key file; put a valid token in it. It was last checked as User 1 (user1@example.com).',
+        'Check the connection to confirm the token in the key file. Before the change: Jira refused the token in the key file; put a valid token in it. It was last checked as User 1 (user1@example.com).',
       needsSetup: true,
     });
     const empty = trackerConnection({ verifiedAt: 0, verifiedName: '', verifiedAccountId: '', checkedTokenInFile: false, problem: trackerProblem(FailureKind.FailureSetup, 'the Jira API token file is empty', false) });
-    expect(trackerConnectionStatus(empty).detail).toBe('The token in it now has not been checked. Before the change: the Jira API token file is empty.');
+    expect(trackerConnectionStatus(empty).detail).toBe('Check the connection to confirm the token in the key file. Before the change: the Jira API token file is empty.');
     // The checked token back in the file: signed in, whatever failed for another token.
     expect(trackerConnectionStatus({ ...edited, checkedTokenInFile: true }).label).toBe('Signed in as User 1 (user1@example.com)');
   });

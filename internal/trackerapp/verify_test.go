@@ -634,6 +634,7 @@ func TestACheckWhoseTokenChangedBeforeItSettledBindsNoToken(t *testing.T) {
 	})
 	var paused atomic.Bool
 	checkB := make(chan Connection, 1)
+	var early *Connection // B's check, when it returned without sending B
 	f.svc.afterIdentity = func() {
 		if paused.Swap(true) {
 			return // B's check
@@ -646,9 +647,16 @@ func TestACheckWhoseTokenChangedBeforeItSettledBindsNoToken(t *testing.T) {
 			}
 			checkB <- got
 		}()
-		<-arrivedB
+		select {
+		case <-arrivedB:
+		case got := <-checkB:
+			early = &got
+		}
 	}
 	gotA := f.verify(conn.ID)
+	if early != nil {
+		t.Fatalf("B's check returned before its request reached the tracker: %+v, checked token in file %v", early.TrackerConnection, early.CheckedTokenInFile)
+	}
 	if gotA.CheckedTokenInFile || gotA.VerifiedToken.Known() || gotA.VerifiedAccountID != "acc-user1" {
 		t.Fatalf("A's check, settled after B was handed = %+v, checked token in file %v", gotA.TrackerConnection, gotA.CheckedTokenInFile)
 	}

@@ -33,9 +33,9 @@ test('a token moved over the checked one, with an older time, is not signed in',
   await harness.open(page);
   await openIssuesPage(page, 'Connections');
   const row = page.locator('li[data-kind="jira"]');
-  await expect(row.getByTestId('tracker-connection-status')).toHaveText('Token not checked');
+  await expect(row.getByTestId('tracker-connection-status')).toHaveText('Check needed');
   await expect(row.getByTestId('tracker-connection-detail')).toHaveText(
-    'It was last checked as User 1 (user1@example.com). The token in the key file now has not been checked; check the connection to see whose it is.',
+    'It was last checked as User 1 (user1@example.com). Check the connection to confirm the token in the key file.',
   );
   await expect(row.getByTestId('tracker-connection-setup')).toBeVisible();
 });
@@ -51,7 +51,7 @@ test('a check of an empty key file is history once the file holds a token', asyn
   const row = page.locator('li[data-kind="jira"]');
   await expect(row.getByTestId('tracker-connection-status')).toHaveText('Key file changed since the last failure');
   await expect(row.getByTestId('tracker-connection-detail')).toHaveText(
-    'The token in it now has not been checked. Before the change: the Jira API token file is empty.',
+    'Check the connection to confirm the token in the key file. Before the change: the Jira API token file is empty.',
   );
   await row.getByTestId('tracker-connection-setup-check').click();
   await expect(row.getByTestId('tracker-connection-status')).toContainText('Signed in as User 1');
