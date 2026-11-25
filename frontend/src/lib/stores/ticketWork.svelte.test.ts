@@ -163,8 +163,13 @@ describe('Start work', () => {
     setBindingMock('GetTicketWork', async () => ({ key: 'WEB-1', pullRequests: [], branches: [], problems: [] }));
     await startWork(ctx, PLAN, read);
     await flush();
-    expect(order[0]).toBe('thread {"connectionId":"c1","issueId":"10101","origin":"start_work","branch":"WEB-1-retry-cursor"}');
-    expect(order.slice(1).sort()).toEqual(['edit [{"field":"assignee","value":{"kind":"user","choices":[{"id":"acc-1"}]}}]', 'move 21']);
+    // The move settles first: the assignment is decided from the ticket
+    // as the move left it.
+    expect(order).toEqual([
+      'thread {"connectionId":"c1","issueId":"10101","origin":"start_work","branch":"WEB-1-retry-cursor"}',
+      'move 21',
+      'edit [{"field":"assignee","value":{"kind":"user","choices":[{"id":"acc-1"}]}}]',
+    ]);
     expect(refresh).toHaveBeenCalledTimes(1);
     expect(startWorkRun(ticket.key)).toBeNull();
     expect(mounted('t-work')).toBe(true);
@@ -187,6 +192,81 @@ describe('Start work', () => {
     expect(move).not.toHaveBeenCalled();
     expect(edit).not.toHaveBeenCalled();
     expect(mounted('t-held')).toBe(true);
+    ticket.release();
+  });
+
+  it('assigns from the ticket as the move left it: a move that assigned it leaves nothing to send', async () => {
+    const { ticket, ctx, read } = await openTicket();
+    setBindingMock('StartTicketThread', async () => thread('t-order'));
+    // The tracker's transition assigns the ticket to the mover.
+    const move = setBindingMock('MoveTrackerIssue', async () => {
+      held = detail({ id: 's2', name: 'In Progress' }, 'acc-1');
+      seq += 1;
+      trackerIssueUpdated({ connection: 'c1', issue: '10101', seq, changed: true }, HOME_BACKEND);
+      return applied();
+    });
+    const edit = setBindingMock('EditTrackerIssue', async () => applied());
+    setBindingMock('GetTicketWork', async () => ({ key: 'WEB-1', pullRequests: [], branches: [], problems: [] }));
+    await startWork(ctx, PLAN, read);
+    expect(move).toHaveBeenCalledTimes(1);
+    expect(edit).not.toHaveBeenCalled();
+    expect(mounted('t-order')).toBe(true);
+    ticket.release();
+  });
+
+  it('sends nothing and says so when the read before the writes failed, even though Refresh answered', async () => {
+    const { ticket, ctx, read } = await openTicket();
+    // The form saw the ticket as already in progress and already this
+    // person's; someone else took it since, and the tracker's read fails.
+    held = detail({ id: 's2', name: 'In Progress' }, 'acc-1');
+    seq += 1;
+    trackerIssueUpdated({ connection: 'c1', issue: '10101', seq, changed: true }, HOME_BACKEND);
+    await flush();
+    held = detail({ id: 's1', name: 'To Do' }, 'acc-2');
+    setBindingMock('StartTicketThread', async () => thread('t-stale'));
+    setBindingMock('RefreshTrackerSubscription', async () => {
+      seq += 1;
+      trackerIssueUpdated({ connection: 'c1', issue: '10101', seq, changed: false, failure: { kind: 'rate_limited', message: 'The tracker is limiting requests.', at: 1 } }, HOME_BACKEND);
+    });
+    const move = setBindingMock('MoveTrackerIssue', async () => applied());
+    const edit = setBindingMock('EditTrackerIssue', async () => applied());
+    setBindingMock('GetTicketWork', async () => ({ key: 'WEB-1', pullRequests: [], branches: [], problems: [] }));
+    await startWork(ctx, PLAN, read);
+    expect(steps(ticket.key)).toEqual({ thread: 'applied', move: 'not_sent', assign: 'not_sent', defaults: 'skipped' });
+    expect(startWorkRun(ticket.key)?.steps.assign).toMatchObject({ text: expect.stringContaining('The tracker is limiting requests.') });
+    expect(move).not.toHaveBeenCalled();
+    expect(edit).not.toHaveBeenCalled();
+    expect(mounted('t-stale')).toBe(false);
+    ticket.release();
+  });
+
+  it('reads nothing again when neither a move nor an assignment is asked for', async () => {
+    const { ticket, ctx, refresh, read } = await openTicket();
+    setBindingMock('StartTicketThread', async () => thread('t-plain'));
+    setBindingMock('GetTicketWork', async () => ({ key: 'WEB-1', pullRequests: [], branches: [], problems: [] }));
+    await startWork(ctx, { ...PLAN, status: null, assign: false }, read);
+    expect(refresh).not.toHaveBeenCalled();
+    expect(mounted('t-plain')).toBe(true);
+    ticket.release();
+  });
+
+  it('does not say the thread was not made when its reply was lost, and Try again asks for it again', async () => {
+    const { ticket, ctx, read } = await openTicket();
+    const start = setBindingMock('StartTicketThread', async () => { throw new DisconnectedError('closed'); });
+    const move = setBindingMock('MoveTrackerIssue', async () => applied());
+    await startWork(ctx, PLAN, read);
+    const run = startWorkRun(ticket.key)!;
+    expect(run.steps.thread).toMatchObject({ kind: 'unknown', text: expect.stringContaining('may have been made') });
+    expect(JSON.stringify(run.steps)).not.toContain('was not made');
+    expect(move).not.toHaveBeenCalled();
+
+    // The computer made it: the same call answers that thread.
+    start.mockImplementation(async () => thread('t-lost'));
+    setBindingMock('EditTrackerIssue', async () => applied());
+    setBindingMock('GetTicketWork', async () => ({ key: 'WEB-1', pullRequests: [], branches: [], problems: [] }));
+    await retryStartWork(ctx, read);
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(mounted('t-lost')).toBe(true);
     ticket.release();
   });
 

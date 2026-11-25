@@ -10,11 +10,15 @@
 // A Start work run is its plan, the thread it made and each step's
 // outcome. The steps run in order: the thread (StartTicketThread, which
 // undoes what it made when it fails, so on its failure nothing else runs),
-// then the move and the assignment together, then saving the defaults.
-// Nothing is done twice: Try again runs the steps not applied and never
-// makes a second thread; each tracker step reads the ticket again before
-// it sends and sends nothing when the ticket already holds what it would
-// set; and the write store sends nothing for a target with a write out.
+// then the move, then the assignment, decided from the ticket as the move
+// left it, then saving the defaults. Nothing is done twice: Try again runs
+// the steps not applied, and its thread call answers the Start work thread
+// the computer already made for the ticket, project and branch, so a lost
+// reply never makes a second one; a tracker step is decided only from a
+// read of the ticket that succeeded after the run began, sends nothing
+// when the ticket already holds what it would set, and is not sent when
+// that read failed; and the write store sends nothing for a target with a
+// write out.
 // The move and the assignment are the write store's writes, so their
 // outcomes also show under the Status and Assignee fields, and one that
 // settles after the ticket closed is its toast.
@@ -30,7 +34,9 @@ import { addErrorToast } from './toast.svelte';
 import { onTrackerTicketClosed, refreshTrackerTicket, trackerTicketSettled, type TrackerTicketRef, type TrackerTicketState } from './trackerTicket.svelte';
 import { editTicketFields, fieldTarget, moveTicket, type TicketWriteContext } from './trackerTicketWrites.svelte';
 import { refusalSentence, type WriteOutcome } from './trackerWriteOutcome';
+import type { TrackerRefreshNotice } from './trackerBoard.svelte';
 import { hasScope } from '../transport/scopes';
+import { DisconnectedError } from '../transport/wsClient';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { withBackendTarget } from '../transport/backends';
 import type { Thread } from '../types/models';
@@ -290,6 +296,34 @@ async function defaultsStep(key: string, plan: StartWorkPlan): Promise<StepOutco
   }
 }
 
+/** Why the ticket as `state` holds it is not a read that succeeded since
+ * the Refresh that answered `notice` (null when nothing refreshed); null
+ * when it is. Refresh answers success for a read the tracker failed and
+ * tells that failure on the ticket, so the ticket's own state decides. */
+function unreadReason(notice: TrackerRefreshNotice | null, state: TrackerTicketState | null): string | null {
+  if (notice) return notice.kind === 'failed' ? userFacingError(notice.error) : notice.message;
+  if (!state?.detail) return 'its computer has not read it.';
+  if (state.failure) return state.failure.message;
+  if (state.readError) return userFacingError(state.readError);
+  return null;
+}
+
+/** The steps of a run whose thread call failed. A reply the connection
+ * lost leaves the thread unknown: the computer may have made it, and Try
+ * again asks for it again, which answers the thread it made. Any other
+ * failure is the computer's answer that it made nothing. */
+function threadFailed(err: unknown): StartWorkRun['steps'] {
+  if (err instanceof DisconnectedError) {
+    const waiting: StepOutcome = { kind: 'not_sent', text: 'Not run yet: the thread is not confirmed.' };
+    return {
+      thread: { kind: 'unknown', text: 'The connection dropped before the reply, so the thread may have been made; Try again finds it if it was.' },
+      move: waiting, assign: waiting, defaults: waiting,
+    };
+  }
+  const notRun: StepOutcome = { kind: 'not_sent', text: 'Not run: the thread was not made, so nothing on the ticket changed.' };
+  return { thread: { kind: 'failed', text: userFacingError(err), error: err }, move: notRun, assign: notRun, defaults: notRun };
+}
+
 /** Runs Start work for the ticket by `plan`: `read` is the ticket as its
  * surface holds it, read again before the tracker steps. */
 export function startWork(t: TicketWriteContext, plan: StartWorkPlan, read: () => TrackerTicketState | null): Promise<void> {
@@ -330,34 +364,40 @@ async function runSteps(t: TicketWriteContext, read: () => TrackerTicketState | 
       thread = prependThreadReply(made, mark);
     } catch (err) {
       if (!mine()) return;
-      const notRun: StepOutcome = { kind: 'not_sent', text: 'Not run: the thread was not made, so nothing on the ticket changed.' };
-      const run = runs.get(key)!;
-      setRun(key, { ...run, running: false, steps: { thread: { kind: 'failed', text: userFacingError(err), error: err }, move: notRun, assign: notRun, defaults: notRun } });
+      setRun(key, { ...runs.get(key)!, running: false, steps: threadFailed(err) });
       return;
     }
     if (!mine()) return;
     setRun(key, { ...runs.get(key)!, thread });
     setStep(key, 'thread', { kind: 'applied', note: null });
   }
-  if (owed('move') || owed('assign')) {
-    if (owed('move')) setStep(key, 'move', { kind: 'running' });
-    if (owed('assign')) setStep(key, 'assign', { kind: 'running' });
-    // What the ticket holds now decides "already", and an unknown outcome
-    // before this one is settled by it rather than by a second write.
+  // The move settles before the assignment is decided, and each decision
+  // rests on a read of the ticket that succeeded after this run began: the
+  // Refresh here, then the read the move's own write made.
+  const wantMove = owed('move') && plan.status !== null;
+  const wantAssign = owed('assign') && plan.assign && plan.me !== '';
+  let unread: string | null = null;
+  if (wantMove || wantAssign) {
+    if (wantMove) setStep(key, 'move', { kind: 'running' });
+    if (wantAssign) setStep(key, 'assign', { kind: 'running' });
     const notice = await refreshTrackerTicket(key);
     await trackerTicketSettled(key);
-    const state = read();
-    const unread = notice ? (notice.kind === 'failed' ? userFacingError(notice.error) : notice.message) : null;
-    const step = (run: () => Promise<StepOutcome>): Promise<StepOutcome> => (unread === null
-      ? run()
-      : Promise.resolve({ kind: 'not_sent', text: `${t.label} could not be read again, so this was not sent: ${unread}` }));
-    const [move, assign] = await Promise.all([
-      owed('move') ? step(() => moveStep(t, plan, state)) : null,
-      owed('assign') ? step(() => assignStep(t, plan, state)) : null,
-    ]);
+    unread = unreadReason(notice, read());
+  }
+  const unsent = (): StepOutcome => ({ kind: 'not_sent', text: `${t.label} could not be read again, so this was not sent: ${unread}` });
+  if (owed('move')) {
+    const move = wantMove && unread !== null ? unsent() : await moveStep(t, plan, read());
     if (!mine()) return;
-    if (move) setStep(key, 'move', move);
-    if (assign) setStep(key, 'assign', assign);
+    setStep(key, 'move', move);
+    if (move.kind === 'applied' || move.kind === 'unknown') {
+      await trackerTicketSettled(key);
+      unread = unreadReason(null, read());
+    }
+  }
+  if (owed('assign')) {
+    const assign = wantAssign && unread !== null ? unsent() : await assignStep(t, plan, read());
+    if (!mine()) return;
+    setStep(key, 'assign', assign);
   }
   if (owed('defaults')) {
     setStep(key, 'defaults', { kind: 'running' });
