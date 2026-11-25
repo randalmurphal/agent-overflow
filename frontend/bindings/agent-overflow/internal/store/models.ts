@@ -2058,6 +2058,14 @@ export class Thread {
     "hasFailedTurn": boolean;
 
     /**
+     * TicketLink is the tracker ticket the thread is linked to
+     * (thread_tickets), nil for none. Its State and ConnectionID are
+     * derived by the computer that reads the row; nothing stores them from
+     * a row, and a transfer's receiver derives its own.
+     */
+    "ticketLink"?: ThreadTicketLink | null;
+
+    /**
      * IsDraft is true when no items have been persisted for the thread.
      * Used by the sidebar to render a draft indicator and by the project
      * sort projection to exclude drafts from "last activity" so creating
@@ -2157,6 +2165,7 @@ export class Thread {
         const $$createField28_0 = $$createType28;
         const $$createField36_0 = $$createType29;
         const $$createField42_0 = $$createType5;
+        const $$createField51_0 = $$createType31;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attention" in $$parsedSource) {
             $$parsedSource["attention"] = $$createField28_0($$parsedSource["attention"]);
@@ -2166,6 +2175,9 @@ export class Thread {
         }
         if ("agentProjectIds" in $$parsedSource) {
             $$parsedSource["agentProjectIds"] = $$createField42_0($$parsedSource["agentProjectIds"]);
+        }
+        if ("ticketLink" in $$parsedSource) {
+            $$parsedSource["ticketLink"] = $$createField51_0($$parsedSource["ticketLink"]);
         }
         return new Thread($$parsedSource as Partial<Thread>);
     }
@@ -2265,7 +2277,7 @@ export class ThreadFindAnswer {
      * Creates a new ThreadFindAnswer instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadFindAnswer {
-        const $$createField0_0 = $$createType30;
+        const $$createField0_0 = $$createType32;
         const $$createField2_0 = $$createType1;
         const $$createField3_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
@@ -2367,7 +2379,7 @@ export class ThreadFindSince {
      * Creates a new ThreadFindSince instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadFindSince {
-        const $$createField2_0 = $$createType31;
+        const $$createField2_0 = $$createType33;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("selection" in $$parsedSource) {
             $$parsedSource["selection"] = $$createField2_0($$parsedSource["selection"]);
@@ -2532,6 +2544,78 @@ export class ThreadOrigin {
 }
 
 /**
+ * ThreadTicketLink is a thread's link as its row shows it: the ticket,
+ * its key, title and status as last seen, and how the link came to be.
+ * State and ConnectionID are derived when the row is read: State as the
+ * constants above say, ConnectionID the connection here that reads the
+ * ticket ("" when none is on).
+ */
+export class ThreadTicketLink {
+    "kind": string;
+    "site": string;
+    "issueId": string;
+    "key": string;
+    "title": string;
+    "statusId": string;
+    "statusName": string;
+    "statusGroup": number;
+    "origin": string;
+    "linkedAt": number;
+    "state": string;
+    "connectionId": string;
+
+    /** Creates a new ThreadTicketLink instance. */
+    constructor($$source: Partial<ThreadTicketLink> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("site" in $$source)) {
+            this["site"] = "";
+        }
+        if (!("issueId" in $$source)) {
+            this["issueId"] = "";
+        }
+        if (!("key" in $$source)) {
+            this["key"] = "";
+        }
+        if (!("title" in $$source)) {
+            this["title"] = "";
+        }
+        if (!("statusId" in $$source)) {
+            this["statusId"] = "";
+        }
+        if (!("statusName" in $$source)) {
+            this["statusName"] = "";
+        }
+        if (!("statusGroup" in $$source)) {
+            this["statusGroup"] = 0;
+        }
+        if (!("origin" in $$source)) {
+            this["origin"] = "";
+        }
+        if (!("linkedAt" in $$source)) {
+            this["linkedAt"] = 0;
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("connectionId" in $$source)) {
+            this["connectionId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadTicketLink instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ThreadTicketLink {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ThreadTicketLink($$parsedSource as Partial<ThreadTicketLink>);
+    }
+}
+
+/**
  * ThreadTransfer is the durable coordination record, not a copy of provider
  * runtime state. PrivateState is never serialized onto an ordinary status RPC:
  * it may hold a one-operation destination grant or the source activation secret.
@@ -2671,8 +2755,8 @@ export class TimelineDigestContext {
      * Creates a new TimelineDigestContext instance from a string or object.
      */
     static createFrom($$source: any = {}): TimelineDigestContext {
-        const $$createField0_0 = $$createType32;
-        const $$createField1_0 = $$createType32;
+        const $$createField0_0 = $$createType34;
+        const $$createField1_0 = $$createType34;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("after" in $$parsedSource) {
             $$parsedSource["after"] = $$createField0_0($$parsedSource["after"]);
@@ -2714,7 +2798,7 @@ export class TimelineScopeContext {
         const $$createField0_0 = $$createType0;
         const $$createField1_0 = $$createType0;
         const $$createField2_0 = $$createType17;
-        const $$createField3_0 = $$createType34;
+        const $$createField3_0 = $$createType36;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("root" in $$parsedSource) {
             $$parsedSource["root"] = $$createField0_0($$parsedSource["root"]);
@@ -3292,8 +3376,10 @@ const $$createType26 = Project.createFrom;
 const $$createType27 = ThreadAttention.createFrom;
 const $$createType28 = $Create.Nullable($$createType27);
 const $$createType29 = ThreadOrigin.createFrom;
-const $$createType30 = ThreadFindSince.createFrom;
-const $$createType31 = TimelineSelection.createFrom;
-const $$createType32 = $Create.Nullable($$createType21);
-const $$createType33 = TimelineDigestContext.createFrom;
-const $$createType34 = $Create.Nullable($$createType33);
+const $$createType30 = ThreadTicketLink.createFrom;
+const $$createType31 = $Create.Nullable($$createType30);
+const $$createType32 = ThreadFindSince.createFrom;
+const $$createType33 = TimelineSelection.createFrom;
+const $$createType34 = $Create.Nullable($$createType21);
+const $$createType35 = TimelineDigestContext.createFrom;
+const $$createType36 = $Create.Nullable($$createType35);

@@ -253,6 +253,7 @@ func (installer appTransferInstaller) Install(ctx context.Context, row store.Thr
 		if plan.DraftMCP != nil {
 			a.applyDraftMCPPreferences(row.ThreadID, *plan.DraftMCP)
 		}
+		a.adoptThreadLinks(row.ThreadID)
 		a.announceThread(triage.ThreadActionFull, row.ThreadID)
 	}
 	return err

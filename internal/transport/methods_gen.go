@@ -126,6 +126,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "CheckThreadImportUpdates", ID: 2932719708, Scope: "threads:operate", Route: "thread"},                                            // main.App.CheckThreadImportUpdates
 	{Name: "ClearBrowserSiteData", ID: 544013229, Scope: "terminal:operate", Route: "home"},                                                  // main.App.ClearBrowserSiteData
 	{Name: "ClearPushSenderCredential", ID: 1055713894, Scope: "access:admin", Route: "home", StepUp: true},                                  // main.App.ClearPushSenderCredential
+	{Name: "ClearThreadTicket", ID: 347935562, Scope: "threads:operate", Route: "thread"},                                                    // main.App.ClearThreadTicket
 	{Name: "CloseComputerPairing", ID: 2321581502, Scope: "access:admin", Route: "home"},                                                     // main.App.CloseComputerPairing
 	{Name: "CloseTerminal", ID: 2702963191, Scope: "terminal:operate", Route: "home"},                                                        // main.App.CloseTerminal
 	{Name: "CloseThreadTerminals", ID: 1705768020, Scope: "terminal:operate", Route: "thread"},                                               // main.App.CloseThreadTerminals
@@ -530,6 +531,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetThreadMcpServerEnabled", ID: 1041195811, Scope: "settings:write", Route: "thread", StepUp: true},                              // main.App.SetThreadMcpServerEnabled
 	{Name: "SetThreadPinGroup", ID: 3112222989, Scope: "threads:operate", Route: "thread"},                                                   // main.App.SetThreadPinGroup
 	{Name: "SetThreadPlacement", ID: 2294583674, Scope: "threads:operate", Route: "home"},                                                    // main.App.SetThreadPlacement
+	{Name: "SetThreadTicket", ID: 913920043, Scope: "threads:operate", Route: "thread"},                                                      // main.App.SetThreadTicket
 	{Name: "SetTrackerConnectionEnabled", ID: 3921109066, Scope: "tracker:operate", Route: "home"},                                           // main.App.SetTrackerConnectionEnabled
 	{Name: "SetTrackerConnectionTokenExpiry", ID: 2967721565, Scope: "tracker:operate", Route: "home"},                                       // main.App.SetTrackerConnectionTokenExpiry
 	{Name: "SetTrackerEstimate", ID: 2301582015, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                           // main.App.SetTrackerEstimate
@@ -575,6 +577,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ThreadToolRequestStatus", ID: 4150382574, Scope: "threads:read", Route: "selected"},                                              // main.App.ThreadToolRequestStatus
 	{Name: "ThreadToolResolve", ID: 1018082581, Scope: "threads:read", Route: "selected", CallerBound: true},                                 // main.App.ThreadToolResolve
 	{Name: "ThreadToolWatch", ID: 515024442, Scope: "threads:read", Route: "selected", CallerBound: true, Budget: 1 * time.Minute},           // main.App.ThreadToolWatch
+	{Name: "ThreadsForTicket", ID: 1230945765, Scope: "threads:read", Route: "selected"},                                                     // main.App.ThreadsForTicket
 	{Name: "TrackerAssignableUsers", ID: 3346989894, Scope: "tracker:read", Route: "home"},                                                   // main.App.TrackerAssignableUsers
 	{Name: "TrackerBoard", ID: 3524633257, Scope: "tracker:read", Route: "home"},                                                             // main.App.TrackerBoard
 	{Name: "TrackerBoardPatch", ID: 2847247437, Scope: "tracker:read", Route: "home"},                                                        // main.App.TrackerBoardPatch

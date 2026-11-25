@@ -31,6 +31,10 @@ type LinkRefusal struct {
 func (e *LinkRefusal) Error() string { return e.Message }
 func (e *LinkRefusal) Unwrap() error { return e.Err }
 
+// PublicDetails is the refusal as a caller of a bound method reads it
+// (errorsx.Detailed).
+func (e *LinkRefusal) PublicDetails() (code, message string) { return e.Code, e.Message }
+
 // The reasons of a LinkRefusal.
 const (
 	LinkNoConnection  = "thread_ticket_no_connection"
@@ -65,26 +69,27 @@ func connectionRefusal(ticket store.TicketRef, state string, err error) error {
 // keeps from then on. A link the store refuses for its thread (moving,
 // being deleted, a holder, missing) or its input fails with the store's
 // error, and one this computer cannot make fails with a *LinkRefusal; the
-// link stays as it was either way. The threads whose link moved, this one
-// and others of the ticket, are told (Deps.LinksChanged), and the ticket a
+// link stays as it was either way. It reports whether thread threadID's
+// link changed, which its caller announces. The other threads whose link
+// the card it stored moved are told (Deps.LinksChanged), and the ticket a
 // replaced link named is told as no longer kept when nothing else keeps it
 // (LinksEnded).
-func (s *Service) LinkThread(ctx context.Context, threadID string, ticket store.TicketRef, origin string) error {
+func (s *Service) LinkThread(ctx context.Context, threadID string, ticket store.TicketRef, origin string) (changed bool, _ error) {
 	id, state, err := s.store.TicketConnection(ticket)
 	if err != nil {
-		return fmt.Errorf("trackerapp: the connection of %s ticket %s: %w", ticket.Kind, ticket.IssueID, err)
+		return false, fmt.Errorf("trackerapp: the connection of %s ticket %s: %w", ticket.Kind, ticket.IssueID, err)
 	}
 	if id == "" {
-		return connectionRefusal(ticket, state, nil)
+		return false, connectionRefusal(ticket, state, nil)
 	}
 	r, err := s.interact(ctx, id)
 	switch {
 	case errors.Is(err, ErrDisabled):
-		return connectionRefusal(ticket, store.TicketLinkTurnedOff, err)
+		return false, connectionRefusal(ticket, store.TicketLinkTurnedOff, err)
 	case errors.Is(err, ErrNotFound):
-		return connectionRefusal(ticket, store.TicketLinkNoConnection, err)
+		return false, connectionRefusal(ticket, store.TicketLinkNoConnection, err)
 	case err != nil:
-		return err
+		return false, err
 	}
 	set, asked, err := r.linkThread(threadID, ticket, origin)
 	if asked {
@@ -92,12 +97,12 @@ func (s *Service) LinkThread(ctx context.Context, threadID string, ticket store.
 	}
 	r.finish()
 	if err != nil {
-		return err
+		return false, err
 	}
 	if set.Replaced != nil {
 		s.LinksEnded([]store.TicketRef{*set.Replaced})
 	}
-	return nil
+	return set.Changed, nil
 }
 
 // linkThread writes the link of LinkThread on the run's connection: from
@@ -133,7 +138,7 @@ func (r *run) linkThread(threadID string, ticket store.TicketRef, origin string)
 		if err != nil {
 			return set, false, err
 		}
-		r.toldLink(threadID, set)
+		r.told("", changesOf(set.Cards))
 		return set, false, nil
 	}
 	err = r.againIfSwept(func() error {
@@ -168,39 +173,27 @@ func (r *run) linkThread(threadID string, ticket store.TicketRef, origin string)
 		if set, err = r.s.store.SetThreadTicket(w); err != nil {
 			return err
 		}
-		r.toldLink(threadID, set)
+		r.told("", changesOf(set.Cards))
 		return nil
 	})
 	return set, true, err
 }
 
-// toldLink tells what a link write of threadID stored: the cards it
-// stored, to the subscriptions that show them, and the threads whose link
-// moved, this one when its link changed.
-func (r *run) toldLink(threadID string, set store.ThreadTicketSet) {
-	ch := changesOf(set.Cards)
-	if set.Changed {
-		ch.Threads = unite(ch.Threads, []string{threadID})
-	}
-	r.told("", ch)
-}
-
-// UnlinkThread removes thread threadID's ticket link. A thread the store
-// refuses a link write for fails with the store's error. A link removed is
-// told (Deps.LinksChanged), and its ticket as no longer kept when nothing
-// else keeps it (LinksEnded).
-func (s *Service) UnlinkThread(threadID string) error {
+// UnlinkThread removes thread threadID's ticket link and reports whether
+// it had one, which its caller announces. A thread the store refuses a
+// link write for fails with the store's error. A link removed tells its
+// ticket as no longer kept when nothing else keeps it (LinksEnded).
+func (s *Service) UnlinkThread(threadID string) (had bool, _ error) {
 	if err := s.enter(); err != nil {
-		return err
+		return false, err
 	}
 	defer s.leave()
 	ticket, had, err := s.store.ClearThreadTicket(threadID)
 	if err != nil || !had {
-		return err
+		return false, err
 	}
-	s.linksChanged([]string{threadID})
 	s.LinksEnded([]store.TicketRef{ticket})
-	return nil
+	return true, nil
 }
 
 // AdoptLinks takes, for the links of threadIDs, the card a mirror of

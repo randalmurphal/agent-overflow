@@ -93,21 +93,26 @@ func TestCardWritesTellTheLinksTheyMove(t *testing.T) {
 // A link from a ticket the mirror holds makes no request; one it does not
 // hold reads the card once and stores it with the link; a ticket the
 // tracker does not return, and a site with no connection on, are refused
-// with the link as it was. Each link told its thread.
+// with the link as it was. Each link reports its own change, which its
+// caller announces, and tells no thread whose link it did not move.
 func TestLinkThreadFromTheMirrorOrOneRead(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
 	m.linkThread("held", "10005")
 	m.thread("a")
 	m.refuseCards(t)
-	if err := m.svc.LinkThread(t.Context(), "a", m.ticket("10005"), store.TicketOriginManual); err != nil {
-		t.Fatal(err)
+	_, before := m.events.linkedThreads()
+	if changed, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10005"), store.TicketOriginManual); err != nil || !changed {
+		t.Fatalf("a link from the mirror: %v, %v", changed, err)
 	}
 	if link := m.rowLink("a"); link == nil || link.State != store.TicketLinkCurrent || link.Key != "WEB-5" || link.Title != "Issue 10005" {
 		t.Fatalf("a link from the mirror = %+v", link)
 	}
-	if got, _ := m.events.linkedThreads(); !slices.Contains(got, "a") {
-		t.Fatalf("told %v; want a", got)
+	if changed, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10005"), store.TicketOriginManual); err != nil || changed {
+		t.Fatalf("the same link again: %v, %v; want no change", changed, err)
+	}
+	if _, calls := m.events.linkedThreads(); calls != before {
+		t.Fatalf("links from the mirror told %d calls; want none", calls-before)
 	}
 
 	var asked [][]tracker.IssueID
@@ -122,8 +127,8 @@ func TestLinkThreadFromTheMirrorOrOneRead(t *testing.T) {
 			return tracker.Cards{Cards: []tracker.Card{c}}, nil
 		}
 	})
-	if err := m.svc.LinkThread(t.Context(), "a", m.ticket("10007"), store.TicketOriginStartWork); err != nil {
-		t.Fatal(err)
+	if changed, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10007"), store.TicketOriginStartWork); err != nil || !changed {
+		t.Fatalf("a link from a read: %v, %v", changed, err)
 	}
 	if !slices.EqualFunc(asked, [][]tracker.IssueID{ids("10007")}, slices.Equal) {
 		t.Fatalf("card reads = %v; want one of 10007", asked)
@@ -137,24 +142,24 @@ func TestLinkThreadFromTheMirrorOrOneRead(t *testing.T) {
 	}
 
 	var refusal *LinkRefusal
-	if err := m.svc.LinkThread(t.Context(), "a", m.ticket("10009"), store.TicketOriginManual); !errors.As(err, &refusal) || refusal.Code != LinkNotFound {
+	if _, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10009"), store.TicketOriginManual); !errors.As(err, &refusal) || refusal.Code != LinkNotFound {
 		t.Fatalf("a link to a ticket the tracker did not return: %v", err)
 	}
 	other := m.ticket("10001")
 	other.Site = "https://other.example.com"
-	if err := m.svc.LinkThread(t.Context(), "a", other, store.TicketOriginManual); !errors.As(err, &refusal) || refusal.Code != LinkNoConnection {
+	if _, err := m.svc.LinkThread(t.Context(), "a", other, store.TicketOriginManual); !errors.As(err, &refusal) || refusal.Code != LinkNoConnection {
 		t.Fatalf("a link to a site with no connection: %v", err)
 	}
 	if _, err := m.svc.SetEnabled(m.conn.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.svc.LinkThread(t.Context(), "a", m.ticket("10005"), store.TicketOriginManual); !errors.As(err, &refusal) || refusal.Code != LinkConnectionOff {
+	if _, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10005"), store.TicketOriginManual); !errors.As(err, &refusal) || refusal.Code != LinkConnectionOff {
 		t.Fatalf("a link through a connection turned off: %v", err)
 	}
 	if got := m.rowLink("a"); got == nil || got.IssueID != "10007" || got.Title != "Read from the tracker" {
 		t.Fatalf("the link after the refusals = %+v; want it as it was", got)
 	}
-	if err := m.svc.LinkThread(t.Context(), "missing", m.ticket("10005"), store.TicketOriginManual); err == nil {
+	if _, err := m.svc.LinkThread(t.Context(), "missing", m.ticket("10005"), store.TicketOriginManual); err == nil {
 		t.Fatal("a link of a missing thread was made")
 	}
 }
@@ -167,9 +172,19 @@ func TestEndedLinksTellTheBoardsOfTheirChildren(t *testing.T) {
 		name string
 		run  func(m *mirrorFixture) error
 	}{
-		{"unlink", func(m *mirrorFixture) error { return m.svc.UnlinkThread("thread-1") }},
+		{"unlink", func(m *mirrorFixture) error {
+			had, err := m.svc.UnlinkThread("thread-1")
+			if err == nil && !had {
+				err = errors.New("the unlink found no link")
+			}
+			return err
+		}},
 		{"replace", func(m *mirrorFixture) error {
-			return m.svc.LinkThread(m.t.Context(), "thread-1", m.ticket("10002"), store.TicketOriginManual)
+			changed, err := m.svc.LinkThread(m.t.Context(), "thread-1", m.ticket("10002"), store.TicketOriginManual)
+			if err == nil && !changed {
+				err = errors.New("the replace changed nothing")
+			}
+			return err
 		}},
 	} {
 		t.Run(end.name, func(t *testing.T) {
@@ -191,9 +206,6 @@ func TestEndedLinksTellTheBoardsOfTheirChildren(t *testing.T) {
 			m.events.waitFor(t, "the child's row", func(b []BoardEvent, _ []IssueEvent, _ []error) bool {
 				return slices.ContainsFunc(b[len(before):], func(e BoardEvent) bool { return slices.Contains(e.Changed, "10002") })
 			})
-			if got, _ := m.events.linkedThreads(); !slices.Contains(got, "thread-1") {
-				t.Fatalf("told %v; want thread-1", got)
-			}
 		})
 	}
 }
