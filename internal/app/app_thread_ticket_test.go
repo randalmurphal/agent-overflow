@@ -194,39 +194,29 @@ func TestSetThreadTicketNeedsTheTicketReadGrant(t *testing.T) {
 // empty-draft cleanup refuses a linked thread (TestALinkKeepsANeverSentThread).
 func TestDeletingALinkedThreadTellsTheBoardsOfItsTicket(t *testing.T) {
 	t.Parallel()
-	for name, remove := range map[string]func(*App) error{
-		"delete": func(a *App) error {
-			_, err := a.DeleteThread("t1")
-			return err
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			site := trackerBoardSite()
-			site.Projects = append(site.Projects, trackerfake.JiraProject{ID: "10001", Key: "OPS", Name: "Ops"})
-			day := site.Issues[0].Created
-			site.Issues = append(site.Issues, trackerfake.JiraIssue{ID: "20001", Key: "OPS-1", Project: "OPS", Type: "10000", Summary: "The epic",
-				Status: "10000", Created: day, Updated: day})
-			site.Issues[1].Parent = "20001"
-			f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: site})
-			ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
-			f.subscribe(t, ctx)
-			f.boardEvent(t, "for the first read", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10102") })
-			if err := f.a.store.CreateThread(store.Thread{ID: "t1", ProjectID: f.project, Title: "Thread", Provider: "claude", Model: "test-model",
-				WorkspacePath: "/tmp/web", CreatedAt: 1, UpdatedAt: 1}); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.a.SetThreadTicket(ctx, "t1", ThreadTicketRef{Kind: store.TrackerKindJira, Site: "https://example.atlassian.net", IssueID: "20001"}); err != nil {
-				t.Fatal(err)
-			}
-			f.boardEvent(t, "for the parent's card", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10102") })
-
-			if err := remove(f.a); err != nil {
-				t.Fatal(err)
-			}
-			f.boardEvent(t, "for the parent no longer kept", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10102") })
-		})
+	site := trackerBoardSite()
+	site.Projects = append(site.Projects, trackerfake.JiraProject{ID: "10001", Key: "OPS", Name: "Ops"})
+	day := site.Issues[0].Created
+	site.Issues = append(site.Issues, trackerfake.JiraIssue{ID: "20001", Key: "OPS-1", Project: "OPS", Type: "10000", Summary: "The epic",
+		Status: "10000", Created: day, Updated: day})
+	site.Issues[1].Parent = "20001"
+	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: site})
+	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
+	f.subscribe(t, ctx)
+	f.boardEvent(t, "for the first read", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10102") })
+	if err := f.a.store.CreateThread(store.Thread{ID: "t1", ProjectID: f.project, Title: "Thread", Provider: "claude", Model: "test-model",
+		WorkspacePath: "/tmp/web", CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatal(err)
 	}
+	if _, err := f.a.SetThreadTicket(ctx, "t1", parentTicket); err != nil {
+		t.Fatal(err)
+	}
+	f.boardEvent(t, "for the parent's card", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10102") })
+
+	if _, err := f.a.DeleteThread("t1"); err != nil {
+		t.Fatal(err)
+	}
+	f.boardEvent(t, "for the parent no longer kept", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10102") })
 }
 
 // withTrackers gives a, a transfer backend, the tracker service with a
