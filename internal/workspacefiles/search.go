@@ -80,8 +80,9 @@ type Searcher struct {
 	ttl        time.Duration
 	maxEntries int
 
-	mu      sync.Mutex
-	indices map[string]*workspaceIndex
+	mu       sync.Mutex
+	indices  map[string]*workspaceIndex
+	inFlight map[string]*indexBuild
 }
 
 // Config customises limits; zero values fall back to defaults.
@@ -107,10 +108,11 @@ func NewSearcher(cfg Config) *Searcher {
 	}
 }
 
-// Invalidate forgets any cached index for the given workspace.
+// Invalidate forgets any cached or in-flight index for the given workspace.
 func (s *Searcher) Invalidate(root string) {
 	s.mu.Lock()
 	delete(s.indices, root)
+	delete(s.inFlight, root)
 	s.mu.Unlock()
 }
 
@@ -140,6 +142,12 @@ func (s *Searcher) Search(root, query string, limit int) ([]WorkspaceFile, bool,
 	return files, truncated, nil
 }
 
+type indexBuild struct {
+	done chan struct{}
+	idx  *workspaceIndex
+	err  error
+}
+
 func (s *Searcher) getIndex(root string) (*workspaceIndex, error) {
 	s.mu.Lock()
 	idx := s.indices[root]
@@ -147,21 +155,43 @@ func (s *Searcher) getIndex(root string) (*workspaceIndex, error) {
 		s.mu.Unlock()
 		return idx, nil
 	}
+	if s.inFlight == nil {
+		s.inFlight = make(map[string]*indexBuild)
+	}
+	if flight := s.inFlight[root]; flight != nil {
+		s.mu.Unlock()
+		<-flight.done
+		return flight.idx, flight.err
+	}
+	flight := &indexBuild{done: make(chan struct{})}
+	s.inFlight[root] = flight
 	s.mu.Unlock()
 
 	built, err := buildIndex(root, s.maxEntries)
+
+	s.mu.Lock()
+	stillCurrent := s.inFlight[root] == flight
+	if stillCurrent {
+		delete(s.inFlight, root)
+		if err == nil {
+			s.indices[root] = built
+		}
+	}
+	flight.idx = built
+	flight.err = err
+	close(flight.done)
+	s.mu.Unlock()
+
 	if err != nil {
 		return nil, err
 	}
-
-	s.mu.Lock()
-	s.indices[root] = built
-	s.mu.Unlock()
-	// Release the index when it expires, so an idle workspace's index (up
-	// to maxEntries entries, several MB for a large repo) does not stay
-	// resident until some later search. An expired index is never served,
-	// so dropping it only releases memory.
-	time.AfterFunc(s.ttl, func() { s.releaseExpired(root) })
+	if stillCurrent {
+		// Release the index when it expires, so an idle workspace's index (up
+		// to maxEntries entries, several MB for a large repo) does not stay
+		// resident until some later search. An expired index is never served,
+		// so dropping it only releases memory.
+		time.AfterFunc(s.ttl, func() { s.releaseExpired(root) })
+	}
 	return built, nil
 }
 

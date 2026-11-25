@@ -1,11 +1,13 @@
-export type ContentGeometryListener = (scrollable: boolean) => void;
+import type { ScrollMetrics } from './overlayScrollbar';
+
+export type ContentGeometryListener = (scrollable: boolean, metrics?: ScrollMetrics) => void;
 
 export interface ContentGeometrySource {
   subscribe(listener: ContentGeometryListener): () => void;
 }
 
 export interface ContentGeometryNotifier extends ContentGeometrySource {
-  notify(scrollable: boolean): void;
+  notify(scrollable: boolean, metrics?: ScrollMetrics): void;
 }
 
 /**
@@ -39,7 +41,7 @@ export function createContentGeometryNotifier(): ContentGeometryNotifier {
         subscriptions.delete(subscription);
       };
     },
-    notify(scrollable) {
+    notify(scrollable, metrics) {
       // Geometry lands at streaming cadence, usually with one subscriber.
       // Iterate the Set without allocating a snapshot on every delivery.
       // Deleting the current Set entry is iteration-safe. The generation
@@ -51,7 +53,8 @@ export function createContentGeometryNotifier(): ContentGeometryNotifier {
         if (subscription.generation > deliveryGeneration) break;
         if (!subscription.active) continue;
         try {
-          subscription.listener(scrollable);
+          if (metrics === undefined) subscription.listener(scrollable);
+          else subscription.listener(scrollable, metrics);
         } catch (error) {
           (errors ??= []).push(error);
         }

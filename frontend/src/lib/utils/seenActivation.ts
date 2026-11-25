@@ -80,3 +80,86 @@ export function seenActivation<T>(read: () => T, run: (seen: T, click: MouseEven
     };
   };
 }
+
+/**
+ * Delegated variant of `seenActivation` for lists/blocks with many buttons:
+ * attaches one set of listeners on the container instead of 4 per button,
+ * resolving the control via `match(target)` and preserving identical press-to-
+ * click capture semantics.
+ */
+export function delegatedSeenActivation<T>(
+  match: (target: EventTarget | null) => HTMLElement | null,
+  read: (control: HTMLElement) => T | null,
+  run: (seen: T, click: MouseEvent) => void,
+): Attachment<HTMLElement> {
+  return (container) => {
+    let seenControl: HTMLElement | null = null;
+    let seenValue: T | null = null;
+    let hasSeen = false;
+    let activation = 0;
+
+    const retire = (): void => {
+      seenControl = null;
+      seenValue = null;
+      hasSeen = false;
+      activation += 1;
+      window.removeEventListener('pointerup', onRelease, true);
+      window.removeEventListener('pointercancel', retire, true);
+      window.removeEventListener('keyup', onKeyUp, true);
+    };
+    const onRelease = (): void => {
+      const ended = activation;
+      setTimeout(() => {
+        if (activation === ended) retire();
+      }, 0);
+    };
+    const onKeyUp = (event: KeyboardEvent): void => {
+      if (activates(event)) onRelease();
+    };
+    const start = (control: HTMLElement): void => {
+      retire();
+      const val = read(control);
+      if (val === null) return;
+      seenControl = control;
+      seenValue = val;
+      hasSeen = true;
+      window.addEventListener('pointerup', onRelease, true);
+      window.addEventListener('pointercancel', retire, true);
+      window.addEventListener('keyup', onKeyUp, true);
+    };
+    const onPointerDown = (event: PointerEvent): void => {
+      if (event.button !== 0) return;
+      const control = match(event.target);
+      if (control) start(control);
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (!activates(event)) return;
+      const control = match(event.target);
+      if (!control) return;
+      if (event.repeat && hasSeen && seenControl === control) return;
+      start(control);
+    };
+    const onFocusOut = (event: FocusEvent): void => {
+      if (hasSeen && seenControl && event.target === seenControl) retire();
+    };
+    const onClick = (event: MouseEvent): void => {
+      const control = match(event.target);
+      if (!control) return;
+      const value = hasSeen && seenControl === control ? seenValue : read(control);
+      retire();
+      if (value !== null) run(value, event);
+    };
+
+    container.addEventListener('pointerdown', onPointerDown);
+    container.addEventListener('keydown', onKeyDown);
+    container.addEventListener('focusout', onFocusOut);
+    container.addEventListener('click', onClick);
+    return () => {
+      retire();
+      container.removeEventListener('pointerdown', onPointerDown);
+      container.removeEventListener('keydown', onKeyDown);
+      container.removeEventListener('focusout', onFocusOut);
+      container.removeEventListener('click', onClick);
+    };
+  };
+}

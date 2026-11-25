@@ -33,7 +33,11 @@ let cacheChars = 0;
 export function parseJsonObject(raw: string | undefined | null): Record<string, unknown> | null {
   if (!raw) return null;
   const cached = cache.get(raw);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) {
+    cache.delete(raw);
+    cache.set(raw, cached);
+    return cached;
+  }
 
   let parsedResult: Record<string, unknown> | null = null;
   try {

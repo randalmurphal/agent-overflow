@@ -331,13 +331,41 @@ func (p *Process) closeStdout() {
 // indefinitely when the subprocess writes a partial line and then sleeps
 // without emitting a newline.
 func (p *Process) readBoundedLine() ([]byte, error) {
-	// ReadSlice moves whole buffered chunks per call instead of the former
-	// per-byte ReadByte loop — the ingest path is serialized per session,
-	// so a 32 MB aggregated-output line used to stall every subsequent
-	// event behind ~32M per-byte iterations. Chunks returned by ReadSlice
-	// alias bufio's internal buffer and MUST be copied into buf: callers
-	// retain the returned line past the next read.
-	buf := make([]byte, 0, 4096)
+	// ReadSlice moves whole buffered chunks per call instead of a per-byte
+	// loop. Fast-path the common case where the full line fits inside
+	// bufio's buffer so a ~120-byte streaming delta allocates an exact-size
+	// slice instead of a 4 KiB buffer. Chunks returned by ReadSlice alias
+	// bufio's internal buffer and MUST be copied before returning.
+	chunk, err := p.stdout.ReadSlice('\n')
+	switch err {
+	case nil:
+		n := len(chunk) - 1
+		if n > maxLineSize {
+			return nil, fmt.Errorf("%w (cap=%d bytes)", ErrLineTooLong, maxLineSize)
+		}
+		line := make([]byte, n)
+		copy(line, chunk[:n])
+		return line, nil
+	case io.EOF:
+		if len(chunk) == 0 {
+			return nil, err
+		}
+		if len(chunk) > maxLineSize {
+			return nil, fmt.Errorf("%w (cap=%d bytes)", ErrLineTooLong, maxLineSize)
+		}
+		line := make([]byte, len(chunk))
+		copy(line, chunk)
+		return line, nil
+	case bufio.ErrBufferFull:
+		if len(chunk) > maxLineSize {
+			return nil, fmt.Errorf("%w (cap=%d bytes)", ErrLineTooLong, maxLineSize)
+		}
+	default:
+		return nil, err
+	}
+
+	buf := make([]byte, len(chunk), max(4096, len(chunk)*2))
+	copy(buf, chunk)
 	for {
 		chunk, err := p.stdout.ReadSlice('\n')
 		switch err {

@@ -11,7 +11,7 @@
   import { getFocusedPaneOrNull, getPane, iterPanes, openThreadFromNavigation, resetPaneRegistry } from './lib/stores/panes.svelte';
   import { setupEventListeners } from './lib/stores/events';
   import { OPEN_GIT_DIALOG_EVENT, type OpenGitDialogDetail } from './lib/stores/eventNames';
-  import { getThreads } from './lib/stores/threads.svelte';
+  import { getThreadById } from './lib/stores/threads.svelte';
   import { loadSidebarCatalogs } from './lib/stores/sidebarCatalogs';
   import { refreshAgentWakes } from './lib/stores/threadWakes.svelte';
   import { markNotificationHydrated } from './lib/stores/eventsNotification';
@@ -54,9 +54,10 @@
   import { applyThemeClass } from './lib/utils/theme';
   import { getResolvedTheme } from './lib/stores/themeMode.svelte';
   import {
-    getAppearance,
+    getAppearanceCodeTheme,
     getAppearanceRevision,
     getAppearanceThemes,
+    getAppearanceUiTheme,
     installAppearanceEvents,
     isAppearanceLoaded,
     loadAppearance,
@@ -83,7 +84,6 @@
   import Toast from './lib/components/shared/Toast.svelte';
   import TransportStatusBanner from './lib/components/shared/TransportStatusBanner.svelte';
   import CommandPalette from './lib/components/palette/CommandPalette.svelte';
-  import KeybindingsCheatSheet from './lib/components/palette/KeybindingsCheatSheet.svelte';
   import MessageSearch from './lib/components/palette/MessageSearch.svelte';
   import UnifiedThreadPicker from './lib/components/palette/UnifiedThreadPicker.svelte';
   import ThreadActionConfirmationHost from './lib/components/palette/ThreadActionConfirmationHost.svelte';
@@ -104,6 +104,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
   import {
     dispatchKey,
     eventMatchesKeybindingCommand,
+    hasChordMatchForCommands,
     loadKeybindings,
   } from './lib/stores/keybindings.svelte';
   import { clearCommandRegistry, listCommands, type CommandContext } from './lib/stores/commandRegistry.svelte';
@@ -207,8 +208,12 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
   let paletteContext = $derived(
     isPaletteOpen() ? makeAppCommandContext(currentContextPane(), true) : null,
   );
-  let messageSearchPane = $derived(resolveContextPane(getMessageSearchTargetPaneId()));
-  let threadPickerPane = $derived(resolveContextPane(getThreadPickerTargetPaneId()));
+  let messageSearchPane = $derived(
+    isMessageSearchOpen() ? resolveContextPane(getMessageSearchTargetPaneId()) : null,
+  );
+  let threadPickerPane = $derived(
+    isThreadPickerOpen() ? resolveContextPane(getThreadPickerTargetPaneId()) : null,
+  );
   let lightbox = $derived(imageLightbox());
 
   function handleGlobalKeydown(ev: KeyboardEvent): void {
@@ -231,22 +236,23 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     // misfire from inside the terminal: most visibly `pane.close` (mod+w), which
     // is `editableReachable` and guarded only by `when: '!terminalFocus'`, would
     // close the pane instead of passing ctrl-w through as the shell's werase.
-    const ctx = makeAppCommandContext(currentContextPane());
-
     if (isSurfaceDismissalEvent(ev)) {
+      const ctx = makeAppCommandContext(currentContextPane());
       if (dispatchKey(ev, ctx)) ev.preventDefault();
       return;
     }
 
     // Editable target: a keybinding in EDITABLE_REACHABLE_COMMANDS wins
-    // ahead of the word-op fallback. This is what lets configured editable
-    // commands fire from inside the composer; for chords that DON'T match a
-    // reachable command (alt+backspace, ctrl+arrow, alt+arrow by default, etc.)
-    // the word-op fallback still runs.
+    // ahead of the word-op fallback. Pre-filter by chord before building
+    // the full command context so ordinary typing keystrokes pay zero
+    // context allocation or DOM traversal.
     if (editable) {
-      if (eventMatchesKeybindingCommand(ev, ctx, EDITABLE_REACHABLE_COMMANDS)) {
-        if (dispatchKey(ev, ctx)) ev.preventDefault();
-        return;
+      if (hasChordMatchForCommands(ev, EDITABLE_REACHABLE_COMMANDS)) {
+        const ctx = makeAppCommandContext(currentContextPane());
+        if (eventMatchesKeybindingCommand(ev, ctx, EDITABLE_REACHABLE_COMMANDS)) {
+          if (dispatchKey(ev, ctx)) ev.preventDefault();
+          return;
+        }
       }
       if (dispatchTextEditing(ev)) {
         ev.preventDefault();
@@ -254,6 +260,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       return;
     }
 
+    const ctx = makeAppCommandContext(currentContextPane());
     // Non-editable target: word-op fallback is a no-op (its own
     // editableTarget gate returns null), so go straight to dispatch.
     const handled = dispatchKey(ev, ctx);
@@ -272,7 +279,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     const ids = getSidebarJumpThreadIds();
     const targetId = ids[index - 1];
     if (!targetId) return;
-    const thread = getThreads().find((t) => t.id === targetId);
+    const thread = getThreadById(targetId);
     if (thread) void openThreadFromNavigation(thread);
   }
 
@@ -344,11 +351,10 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
   // who wrote a theme file. `isAppearanceLoaded()` is a `$state` read, so this
   // re-runs the moment the first answer lands (success, refusal or failure).
   $effect.pre(() => {
-    const appearance = getAppearance();
     applyTheme(
       {
         mode: getResolvedTheme(),
-        appearance: { uiTheme: appearance.uiTheme, codeTheme: appearance.codeTheme },
+        appearance: { uiTheme: getAppearanceUiTheme(), codeTheme: getAppearanceCodeTheme() },
         themes: getAppearanceThemes(),
         revision: getAppearanceRevision(),
       },
@@ -689,23 +695,23 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     {:else}
       <StartupScreen />
     {/if}
-    <!--
-      Settings (UI-SPEC §2.1) is a SIBLING of PaneHost, layered over it —
-      never a pane kind, never a surface that replaces the strip. The pane
-      tree stays mounted underneath, so opening and closing rebuild nothing.
-      It loads lazily so its chunk stays out of the eager startup graph.
-      Workflows is a tool pane inside the strip (toolPanes.svelte.ts).
-    -->
-    <LazyOverlay
-      load={() => import('./lib/components/settings/SettingsOverlay.svelte')}
-      active={isSettingsOpen()}
-      props={{
-        open: isSettingsOpen(),
-        initialSection: getSettingsSection(),
-        onClose: closeSettingsOverlay,
-      }}
-    />
   </div>
+  <!--
+    Settings (UI-SPEC §2.1) is a SIBLING of PaneHost, layered over it —
+    never a pane kind, never a surface that replaces the strip. The pane
+    tree stays mounted underneath, so opening and closing rebuild nothing.
+    It loads lazily so its chunk stays out of the eager startup graph.
+    Workflows is a tool pane inside the strip (toolPanes.svelte.ts).
+  -->
+  <LazyOverlay
+    load={() => import('./lib/components/settings/SettingsOverlay.svelte')}
+    active={isSettingsOpen()}
+    props={{
+      open: isSettingsOpen(),
+      initialSection: getSettingsSection(),
+      onClose: closeSettingsOverlay,
+    }}
+  />
 </main>
 <CommandPalette context={paletteContext} contextForPane={makeCommandContextForPaneId} />
 <ThreadActionConfirmationHost />
@@ -717,7 +723,11 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
 <UnsentMessageConfirmationHost />
 <BackgroundKillConfirmationHost />
 <ProviderUpdateNotesHost />
-<KeybindingsCheatSheet open={isCheatSheetOpen()} onClose={closeCheatSheet} />
+<LazyOverlay
+  load={() => import('./lib/components/palette/KeybindingsCheatSheet.svelte')}
+  active={isCheatSheetOpen()}
+  props={{ open: isCheatSheetOpen(), onClose: closeCheatSheet }}
+/>
 <MessageSearch open={isMessageSearchOpen()} pane={messageSearchPane} onClose={closeMessageSearch} />
 <UnifiedThreadPicker open={isThreadPickerOpen()} pane={threadPickerPane} onClose={closeThreadPicker} />
 <!--

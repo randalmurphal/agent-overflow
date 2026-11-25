@@ -21,14 +21,22 @@
   // showing the SUBAGENT's own spend instead of the thread chip.
 
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import MachinePicker from './workspace/MachinePicker.svelte';
-  import EnvPicker from './workspace/EnvPicker.svelte';
-  import BranchPicker from './workspace/BranchPicker.svelte';
-  import WorktreeNameInput from './workspace/WorktreeNameInput.svelte';
-  import UsageChip from './UsageChip.svelte';
+  import MonitorIcon from '@lucide/svelte/icons/monitor';
+  import Folder from '@lucide/svelte/icons/folder';
+  import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
+  import Icon from '../primitives/Icon.svelte';
+  import ComposerWorkspaceLiveStrip from './ComposerWorkspaceLiveStrip.svelte';
   import { composerTriggerClasses } from './triggerClasses';
-  import { createWorkspaceChangeLockState } from '../../stores/workspaceChangeLock.svelte';
-  import { hasMultipleBackends } from '../../stores/attachedBackends.svelte';
+  import {
+    attachedBackendEntry,
+    backendDisplayName,
+    hasMultipleBackends,
+    threadMachine,
+  } from '../../stores/attachedBackends.svelte';
+  import { HOME_BACKEND } from '../../transport/backendKey';
+  import { checkoutDisplay, checkoutIcon, paneCheckout } from '../../utils/checkout';
+  import { sameNormalizedPath } from '../../utils/path';
+  import { pathBasename } from '../../utils/pathDisplay';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
 
   interface Props {
@@ -44,49 +52,71 @@
   }
 
   let { pane, readonly = false, usageLabel = '' }: Props = $props();
-  let workspaceLock = createWorkspaceChangeLockState(() => pane);
   // An ask's copy (Thread.askCopy) is watched and stopped, never steered:
   // the pickers would move it or check out the workspace it shares, so only
   // its usage shows.
   let askCopy = $derived(Boolean(pane.thread?.askCopy));
+
+  // Static display derivations used only when `readonly` is true so AgentPane
+  // never mounts interactive pickers or subscribes to workspaceChangeLock /
+  // git branch events / composerPickerRegistry.
+  let readonlyMachineLabel = $derived.by(() => {
+    if (!readonly || !pane.thread || !hasMultipleBackends()) return '';
+    const key = threadMachine(pane.thread.id, pane.thread.projectId) ?? HOME_BACKEND;
+    const entry = attachedBackendEntry(key);
+    return entry ? backendDisplayName(entry) : 'Computer';
+  });
+  let readonlyCheckoutDisplay = $derived.by(() =>
+    readonly && pane.workspace ? checkoutDisplay(paneCheckout(pane)) : null,
+  );
+  let readonlyAtRoot = $derived(
+    readonly
+      ? sameNormalizedPath(pane.thread?.workspacePath ?? '', pane.thread?.projectPath ?? '')
+      : true,
+  );
+  let readonlyEnvLabel = $derived(
+    !readonly
+      ? ''
+      : readonlyAtRoot
+        ? 'Base'
+        : pathBasename(pane.thread?.workspacePath ?? '') || 'Worktree',
+  );
 </script>
 
 {#if pane.thread && !isCompactLayout()}
-  <div
-    class="flex min-w-0 items-center gap-2 border-t border-border-subtle px-3 py-1.5 text-[0.6875rem] text-fg-muted"
-    data-testid="composer-workspace-strip"
-    inert={readonly || undefined}
-  >
-    <div class="flex min-w-0 flex-1 items-center gap-2">
-      {#if hasMultipleBackends() && !askCopy}
-        <!--
-          Machine leads the cluster because it is the outermost "where":
-          machine, then branch, then the checkout. Absent on a
-          single-backend client (spec §10 ruling), so that app's strip is
-          exactly the one below.
-        -->
-        <MachinePicker {pane} />
-      {/if}
-      {#if pane.workspace && !askCopy}
-        <!-- A thread outside every project, such as an assistant's, has no
-             checkout: no branch or worktree to show or change. -->
-        <BranchPicker {pane} />
-        <EnvPicker {pane} {workspaceLock} />
-        {#if !readonly}
-          <WorktreeNameInput {pane} {workspaceLock} />
+  {#if readonly}
+    <div
+      class="flex min-w-0 items-center gap-2 border-t border-border-subtle px-3 py-1.5 text-[0.6875rem] text-fg-muted"
+      data-testid="composer-workspace-strip"
+      inert
+    >
+      <div class="flex min-w-0 flex-1 items-center gap-2">
+        {#if hasMultipleBackends() && !askCopy}
+          <span class="{composerTriggerClasses} min-w-0 max-w-full" data-testid="machine-picker-trigger">
+            <Icon icon={MonitorIcon} size={11} strokeWidth={2} class="shrink-0 opacity-85" />
+            <span class="truncate max-w-[140px]">{readonlyMachineLabel}</span>
+          </span>
         {/if}
-      {/if}
-    </div>
-    <div class="ml-auto shrink-0 whitespace-nowrap">
-      {#if readonly}
+        {#if pane.workspace && !askCopy && readonlyCheckoutDisplay}
+          <span class="{composerTriggerClasses} min-w-0 max-w-full" data-testid="branch-picker-trigger">
+            <Icon icon={checkoutIcon(readonlyCheckoutDisplay.kind)} size={11} strokeWidth={2} class="shrink-0 opacity-85" />
+            <span class="truncate max-w-[160px]">{readonlyCheckoutDisplay.label}</span>
+          </span>
+          <span class="{composerTriggerClasses} min-w-0 max-w-full" data-testid="env-picker-trigger">
+            <Icon icon={readonlyAtRoot ? Folder : FolderGit2} size={11} strokeWidth={2} class="shrink-0 opacity-85" />
+            <span class="truncate max-w-[140px]">{readonlyEnvLabel}</span>
+          </span>
+        {/if}
+      </div>
+      <div class="ml-auto shrink-0 whitespace-nowrap">
         {#if usageLabel}
           <span class="{composerTriggerClasses} tabular-nums" data-testid="workspace-strip-usage">
             {usageLabel}
           </span>
         {/if}
-      {:else}
-        <UsageChip {pane} />
-      {/if}
+      </div>
     </div>
-  </div>
+  {:else}
+    <ComposerWorkspaceLiveStrip {pane} {askCopy} />
+  {/if}
 {/if}

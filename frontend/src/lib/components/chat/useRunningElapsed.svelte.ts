@@ -120,10 +120,12 @@ export interface SharedNowClock {
 }
 
 export function createSharedNowClock(isTicking: () => boolean): SharedNowClock {
-  // Refresh the clock at creation so the first render doesn't compute
-  // against a sharedNow left over from whenever the last subscriber
-  // released (acquire refreshes too, but effects run after render).
-  sharedNow = Date.now();
+  // Refresh the clock at creation only when the shared interval is idle: if
+  // the 1Hz ticker is already running, sharedNow is already current and
+  // writing it on mount would wake every other subscriber across all panes.
+  if (sharedTicker === null) {
+    sharedNow = Date.now();
+  }
   // Same $derived cutoff as createRunningElapsed, same reason.
   const ticking = $derived.by(isTicking);
   $effect(() => {

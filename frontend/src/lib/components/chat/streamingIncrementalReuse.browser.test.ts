@@ -111,6 +111,35 @@ describe('streaming incremental token reuse (real timeline × Chromium)', () => 
         kind: 'assistant_text', role: 'assistant', status: 'streaming',
         summary: '', createdAt: turnIndex, updatedAt: turnIndex,
       }));
+      // Track identity and text through the drain from the moment the
+      // observation threshold is reached. Registering before the burst avoids
+      // racing the unthrottled MessageChannel reveal clock against the
+      // wall-clock wait(25) between wire chunks. The unit is sealed (well
+      // behind the live tail), so its element must be the SAME node with the
+      // SAME text after every reveal tick until the stream settles.
+      const row = (): HTMLElement | null =>
+        scrollEl.querySelector(`[data-item-id="${itemId}"]`);
+      const units = (): NodeListOf<Element> =>
+        row()?.querySelectorAll(testCase.unitSelector) ??
+        (document.createDocumentFragment().querySelectorAll('*') as NodeListOf<Element>);
+      const unitCount = (): number => units().length;
+      let observed: HTMLElement | null = null;
+      let observedText: string | null = null;
+      let samples = 0;
+      const changes: string[] = [];
+      reveal.onTick(() => {
+        if ((pane.getItemById(itemId)?.summary.length ?? 0) >= finalText.length) return;
+        if (observed === null) {
+          if (unitCount() < 20) return;
+          observed = units()[testCase.observeIndex] as HTMLElement;
+          observedText = observed.textContent;
+          return;
+        }
+        if (units()[testCase.observeIndex] !== observed) changes.push(`sealed unit replaced at sample ${samples}`);
+        else if (observed.textContent !== observedText) changes.push(`sealed unit text changed at sample ${samples}`);
+        samples += 1;
+      });
+
       // Fat burst: the wire completes quickly, the smoother drains for many ticks.
       for (let off = 0, b = 0; off < finalText.length; off += 900, b++) {
         pane.applyItemDelta({
@@ -129,36 +158,10 @@ describe('streaming incremental token reuse (real timeline × Chromium)', () => 
         tokenUsage: null, aborted: false, errorMessage: '',
       });
 
-      // Wait until enough has revealed to pick a sealed unit. Scoped to the
-      // streaming row — the seed transcript has list rows of its own, and a
-      // timeline-wide sweep would land on one of those.
-      const row = (): HTMLElement | null =>
-        scrollEl.querySelector(`[data-item-id="${itemId}"]`);
-      const units = (): NodeListOf<Element> =>
-        row()?.querySelectorAll(testCase.unitSelector) ??
-        (document.createDocumentFragment().querySelectorAll('*') as NodeListOf<Element>);
-      const unitCount = (): number => units().length;
       const deadline = performance.now() + 30_000;
-      while (unitCount() < 20 && performance.now() < deadline) await raf();
-      expect(unitCount(), 'reveal must reach the observation point').toBeGreaterThanOrEqual(20);
-
-      const observed = units()[testCase.observeIndex] as HTMLElement;
-      const observedText = observed.textContent;
-      expect(observedText).toContain(testCase.observeText);
-
-      // Track identity and text through the rest of the drain. The unit is
-      // sealed (well behind the live tail), so its element must be the SAME
-      // node with the SAME text after every reveal tick until the stream
-      // settles.
-      let samples = 0;
-      const changes: string[] = [];
-      reveal.onTick(() => {
-        if ((pane.getItemById(itemId)?.summary.length ?? 0) >= finalText.length) return;
-        if (units()[testCase.observeIndex] !== observed) changes.push(`sealed unit replaced at sample ${samples}`);
-        else if (observed.textContent !== observedText) changes.push(`sealed unit text changed at sample ${samples}`);
-        samples += 1;
-      });
       while (performance.now() < deadline && (pane.getItemById(itemId)?.summary.length ?? 0) < finalText.length) await raf();
+      expect(observed, 'reveal must reach the observation point').not.toBeNull();
+      expect(observedText).toContain(testCase.observeText);
       expect(changes.slice(0, 1)).toEqual([]);
       expect(
         pane.getItemById(itemId)?.summary.length,

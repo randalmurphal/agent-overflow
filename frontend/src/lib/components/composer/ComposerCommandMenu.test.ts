@@ -651,5 +651,38 @@ describe('composer command menu', () => {
 
       await waitFor(() => expect(pane.generalError).toMatch(/no active session/i));
     });
+
+    it('opens the /review target menu immediately after completing /rev with Enter', async () => {
+      setBindingMock('GitListBranches', async () => []);
+      setBindingMock('ListRecentCommits', async () => []);
+      const pane = await buildPane(makeThread({ provider: 'codex' }));
+      const { textarea, getAllByTestId } = await mountComposer(pane);
+
+      await typeInto(textarea, '/rev');
+      await waitFor(() => expect(optionNames(getAllByTestId)).toContain('review'));
+
+      await fireEvent.keyDown(textarea, { key: 'Enter' });
+      await fireEvent.keyUp(textarea, { key: 'Enter' });
+      await tick();
+
+      expect(textarea.value).toBe('/review ');
+      await waitFor(() => expect(optionNames(getAllByTestId)).toContain('uncommitted'));
+    });
+
+    it('opens the /review target menu after switching provider from claude to codex', async () => {
+      setBindingMock('GitListBranches', async () => []);
+      setBindingMock('ListRecentCommits', async () => []);
+      const pane = await buildPane(makeThread({ provider: 'claude' }));
+      const { textarea, getAllByTestId } = await mountComposer(pane);
+
+      await typeInto(textarea, '/review ');
+      await tick();
+
+      pane.replaceThread({ ...pane.thread!, provider: 'codex' });
+      await tick();
+      await fireEvent.click(textarea);
+
+      await waitFor(() => expect(optionNames(getAllByTestId)).toContain('uncommitted'));
+    });
   });
 });

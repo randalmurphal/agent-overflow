@@ -11,7 +11,7 @@ package store
 // idx_import_history_payloads_id and probe the chunk's membership in the
 // thread or the ancestor, where the view would probe every chunk the thread
 // references. The lineage arms read every level: a payload lookup is not
-// ordered. Only a fork renders them, as resolveSelectedTimelineSQL does its
+// ordered. Only a fork renders them, as resolvePrecomputedTimelineSQL does its
 // lineage branches; q reads the depth. columns is written against alias
 // `p` with the arm's thread id and data length expressions.
 func timelinePayloadArms(q sqlQueryer, threadID string, columns func(threadIDExpr, dataLengthExpr string) string, idWhere string, idArgs []any) (string, []any, error) {

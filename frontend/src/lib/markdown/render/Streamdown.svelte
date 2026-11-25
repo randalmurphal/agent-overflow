@@ -16,6 +16,7 @@
 		type IncrementalLexPath,
 		updateParseBlockStringMaterialization
 	} from '../parser/index';
+	import { acquireCachedHtmlFragment } from './htmlFragmentCache';
 	import { renderStaticTokenHtml } from './staticHtml';
 	import { reconcileParagraphGapsInRoot } from './paragraphSpacing';
 	import { onMount, untrack } from 'svelte';
@@ -174,6 +175,7 @@
 	const blocksCache = createParseBlocksCache();
 	const isolatedBlockValues = [''];
 	let isolatedBlockSource: string | null = null;
+	let isolatedBlockEndsWithNewline = false;
 	let isolatedBlockAppendSafe = false;
 	let documentParseCalls = 0;
 	let documentPublications = 0;
@@ -212,6 +214,7 @@
 	const blocksState = $derived.by(() => {
 		if (isStatic) {
 			isolatedBlockSource = null;
+			isolatedBlockEndsWithNewline = false;
 			isolatedBlockAppendSafe = false;
 			lastDocumentBlocksState = undefined;
 			lastEvaluationPath = 'static';
@@ -227,7 +230,7 @@
 			isolatedVolatileTail &&
 			isolatedBlockAppendSafe &&
 			appendMatchesIsolatedBlock &&
-			!/[\r\n]$/.test(isolatedBlockSource ?? '') &&
+			!isolatedBlockEndsWithNewline &&
 			!/[\r\n]/.test(contentAppend?.delta ?? '');
 		if (useIsolatedBlock) {
 			isolatedBlockValues[0] = content;
@@ -254,6 +257,12 @@
 		);
 		isolatedBlockAppendSafe = values.length === 1 && parseRecordAllowsSameLineBypass();
 		isolatedBlockSource = isolatedBlockAppendSafe ? content : null;
+		if (isolatedBlockAppendSafe && content.length > 0) {
+			const lastCode = content.charCodeAt(content.length - 1);
+			isolatedBlockEndsWithNewline = lastCode === 10 || lastCode === 13;
+		} else {
+			isolatedBlockEndsWithNewline = false;
+		}
 		lastEvaluationPath = blocksCache.lastPath;
 		if (blocksCache.lastPath === 'unchanged' && lastDocumentBlocksState?.values === values) {
 			return lastDocumentBlocksState;
@@ -437,6 +446,22 @@
 		}
 		prevPending = curr;
 	});
+	const staticCompactHtml = $derived(
+		isStatic && compactStaticHtml
+			? renderStaticTokenHtml(lex(content, streamdown.extensions), streamdown, '', alignStart)
+			: null
+	);
+	$effect.pre(() => {
+		const html = staticCompactHtml;
+		const root = element;
+		if (!root || html === null) return;
+		const fragment = acquireCachedHtmlFragment(root.ownerDocument, html);
+		const inserted = Array.from(fragment.childNodes);
+		root.append(fragment);
+		return () => {
+			for (let i = 0; i < inserted.length; i++) inserted[i].remove();
+		};
+	});
 </script>
 
 <div
@@ -445,12 +470,7 @@
 	data-streamdown-last-block={lastRenderedBlockType}
 >
 	{#if isStatic}
-		{@const compactHtml = compactStaticHtml
-			? renderStaticTokenHtml(lex(content, streamdown.extensions), streamdown, id, alignStart)
-			: null}
-		{#if compactHtml !== null}
-			{@html compactHtml}
-		{:else}
+		{#if staticCompactHtml === null}
 			<Block static={isStatic} block={content} align={alignStart} />
 		{/if}
 	{:else}
@@ -460,7 +480,6 @@
 				blocks={blocksState.values}
 				alignments={compactAlignments}
 				revision={blocksState}
-				{id}
 			/>
 		{:else}
 			{#each blocksState.values as block, index (`${id}-block-${index}`)}

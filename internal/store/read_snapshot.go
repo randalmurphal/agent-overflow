@@ -31,7 +31,7 @@ func readSnapshotContext[T any](ctx context.Context, db *sql.DB, label string, r
 			err = errors.Join(err, fmt.Errorf("store: close %s: %w", label, closeErr))
 		}
 	}()
-	return read(contextReadTx{Tx: tx, ctx: ctx})
+	return read(&contextReadTx{Tx: tx, ctx: ctx})
 }
 
 // historyReadSnapshot is readSnapshotContext on the read pool for a read

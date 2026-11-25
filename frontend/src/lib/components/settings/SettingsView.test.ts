@@ -18,6 +18,7 @@ import { grantBackendScopes } from '../../../test/helpers/scopes';
 import { SCOPES } from '../../transport/scopes';
 import { listenProviderUpdates } from '../../../test/helpers/providerUpdates';
 import { setSettingsComputer } from '../../stores/settingsOverlay.svelte';
+import { loadSettings as loadComputerSettings } from '../../stores/settings.svelte';
 
 const BASE_SETTINGS: Settings = makeSettings();
 
@@ -331,5 +332,40 @@ describe('settings rail: provider update dots', () => {
     expect(dot()).toBeNull();
     setSettingsComputer('laptop');
     await waitFor(() => expect(dot()?.dataset.provider).toBe('codex'));
+  });
+
+  it('records refreshed state for the computer that loaded, not the computer switched to while in flight', async () => {
+    stageBackend();
+    await grantBackendScopes('laptop', SCOPES);
+    await loadComputerSettings('laptop');
+
+    let resolveHome!: (value: Settings) => void;
+    let callCount = 0;
+    setBindingMock('GetSettings', () => {
+      callCount += 1;
+      if (callCount === 1) {
+        return new Promise<Settings>((resolve) => { resolveHome = resolve; });
+      }
+      return Promise.reject(new Error('offline'));
+    });
+
+    const { getByRole, findByText } = render(SettingsView, { onClose: vi.fn() });
+    await fireEvent.click(getByRole('tab', { name: 'Git' }));
+    await waitFor(() => expect(callCount).toBe(1));
+
+    // Switch to the remote computer while Home's GetSettings is still in flight.
+    setSettingsComputer('laptop');
+    await waitFor(() => expect(callCount).toBe(2));
+    expect(await findByText('Computer unavailable. Showing its last saved settings.')).toBeInTheDocument();
+
+    // Home's earlier request now finishes: it must mark Home, not 'laptop'.
+    resolveHome(BASE_SETTINGS);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Moving to another computer-scoped tab on 'laptop' must still attempt a fresh read.
+    await fireEvent.click(getByRole('tab', { name: 'Browser' }));
+    await waitFor(() => expect(callCount).toBe(3));
+    expect(await findByText('Computer unavailable. Showing its last saved settings.')).toBeInTheDocument();
   });
 });

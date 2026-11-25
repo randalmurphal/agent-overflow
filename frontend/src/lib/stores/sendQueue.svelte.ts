@@ -716,6 +716,15 @@ export function clearForThread(threadId: string): void {
   if (hadVisibleItems) bumpQueueRevision(threadId);
   queueByThread.drop(threadId);
   flushedByThread.drop(threadId);
+  answersWhileHeld.delete(threadId);
+}
+
+/** Drop all per-thread send-queue metadata when a thread is permanently
+ * removed or its owning computer detaches. */
+export function forgetQueueForThread(threadId: string): void {
+  if (!threadId) return;
+  queueRevisionByThread.delete(threadId);
+  answersWhileHeld.delete(threadId);
 }
 
 // ---- Wire conversion -------------------------------------------------

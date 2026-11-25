@@ -12,8 +12,8 @@ import (
 // appendStreamingItemSummaryAndPayload runs the summary append and, when
 // payloadID is non-empty, the flush window's payload chunk append in one
 // transaction, which may commit with other grouped writes (groupCommit).
-// The row is read back before the payload write so the chunk carries the
-// row's current joined payload meta.
+// When readBack is false, the caller discards the returned Item and only
+// the narrow (kind, parent_id) subagent-anchor guard is checked.
 func (s *Store) appendStreamingItemSummaryAndPayload(
 	threadID string,
 	id string,
@@ -23,6 +23,7 @@ func (s *Store) appendStreamingItemSummaryAndPayload(
 	payloadID string,
 	payloadDelta []byte,
 	payloadCreatedAt int64,
+	readBack bool,
 ) (Item, error) {
 	var updated Item
 	err := s.groupTx(threadID, operation, func(tx *sql.Tx) (func(), error) {
@@ -40,22 +41,37 @@ func (s *Store) appendStreamingItemSummaryAndPayload(
 			}
 		}
 
-		updated, err = readBackItemTx(tx, threadID, id)
-		if err != nil {
-			return nil, fmt.Errorf("store: %s %s/%s: %w", rereadOperation, threadID, id, err)
-		}
-		// A streaming append carries no card: it is for text a card does not
-		// preview (assistant text, thinking).
-		if row := subagentRowOf(updated); row.counts() && previewKind(row.kind) {
-			return nil, fmt.Errorf("%w: %s/%s under %s: a streaming append would change a previewed summary without its card",
-				ErrSubagentAnchor, threadID, id, row.parentID)
+		if readBack {
+			updated, err = readBackItemTx(tx, threadID, id)
+			if err != nil {
+				return nil, fmt.Errorf("store: %s %s/%s: %w", rereadOperation, threadID, id, err)
+			}
+			// A streaming append carries no card: it is for text a card does not
+			// preview (assistant text, thinking).
+			if row := subagentRowOf(updated); row.counts() && previewKind(row.kind) {
+				return nil, fmt.Errorf("%w: %s/%s under %s: a streaming append would change a previewed summary without its card",
+					ErrSubagentAnchor, threadID, id, row.parentID)
+			}
+		} else {
+			var kind string
+			var parentID sql.NullString
+			if err := tx.QueryRow(
+				`SELECT kind, parent_id FROM items WHERE thread_id = ? AND id = ?`,
+				threadID, id,
+			).Scan(&kind, &parentID); err != nil {
+				return nil, fmt.Errorf("store: %s %s/%s: %w", rereadOperation, threadID, id, err)
+			}
+			if parentID.String != "" && previewKind(kind) {
+				return nil, fmt.Errorf("%w: %s/%s under %s: a streaming append would change a previewed summary without its card",
+					ErrSubagentAnchor, threadID, id, parentID.String)
+			}
 		}
 		if payloadID != "" {
-			if err := appendPayloadDataTx(tx, threadID, payloadID, payloadDelta, updated.PayloadMeta, payloadCreatedAt); err != nil {
+			if err := appendPayloadDataTx(tx, threadID, payloadID, payloadDelta, "", false, payloadCreatedAt); err != nil {
 				return nil, err
 			}
 			// The row was read before its payload grew.
-			if updated.StreamEnd != nil && payloadID == updated.PayloadID {
+			if readBack && updated.StreamEnd != nil && payloadID == updated.PayloadID {
 				end := *updated.StreamEnd + int64(len(payloadDelta))
 				updated.StreamEnd = &end
 			}
@@ -214,8 +230,17 @@ func (s *Store) AppendItemSummaryAndPayloadData(threadID, id, delta, payloadID s
 		payloadID,
 		payloadDelta,
 		updatedAt,
+		true,
 	)
 }
+
+const appendItemSummaryTailSQL = `UPDATE items
+   SET summary = CASE
+           WHEN length(summary) + length(?1) <= ?2 THEN summary || ?1
+           ELSE substr(summary || ?1, length(summary) + length(?1) - ?2 + 1)
+       END,
+       updated_at = ?3
+ WHERE thread_id = ?4 AND id = ?5 AND status = 'streaming'`
 
 // AppendItemSummaryTail appends delta to a streaming item's summary while
 // keeping only the LAST maxRunes characters of the accumulated text. Use
@@ -242,22 +267,36 @@ func (s *Store) AppendItemSummaryTailAndPayloadData(threadID, id, delta string, 
 		"append item summary tail",
 		"re-read tail-appended item",
 		func(tx *sql.Tx) (sql.Result, error) {
-			return tx.Exec(
-				`UPDATE items
-				    SET summary = CASE
-				            WHEN length(summary || ?) <= ? THEN summary || ?
-				            ELSE substr(summary || ?, length(summary || ?) - ? + 1)
-				        END,
-				        updated_at = ?
-				  WHERE thread_id = ? AND id = ? AND status = 'streaming'`,
-				delta, maxRunes, delta, delta, delta, maxRunes,
-				updatedAt, threadID, id,
-			)
+			return tx.Exec(appendItemSummaryTailSQL, delta, maxRunes, updatedAt, threadID, id)
 		},
 		payloadID,
 		payloadDelta,
 		updatedAt,
+		true,
 	)
+}
+
+// AppendItemSummaryTailAndPayloadDataNoRead is AppendItemSummaryTailAndPayloadData
+// for streaming flush callers that do not need the full joined Item read back.
+func (s *Store) AppendItemSummaryTailAndPayloadDataNoRead(threadID, id, delta string, maxRunes int, payloadID string, payloadDelta []byte, updatedAt int64) error {
+	if maxRunes < 0 {
+		maxRunes = 0
+	}
+
+	_, err := s.appendStreamingItemSummaryAndPayload(
+		threadID,
+		id,
+		"append item summary tail",
+		"re-read tail-appended item",
+		func(tx *sql.Tx) (sql.Result, error) {
+			return tx.Exec(appendItemSummaryTailSQL, delta, maxRunes, updatedAt, threadID, id)
+		},
+		payloadID,
+		payloadDelta,
+		updatedAt,
+		false,
+	)
+	return err
 }
 
 // UpsertItem persists `item` (inserting or updating depending on whether a
@@ -551,7 +590,7 @@ func (s *Store) UpsertItemWithPayloadAppend(item Item, payloadID string, delta [
 	applyItemDefaults(&item)
 	var persisted Item
 	err := s.groupWriteItems(item.ThreadID, item.SubagentCard, "upsert item with payload append", func(tx *sql.Tx, w *cardWrite) error {
-		if err := appendPayloadDataTx(tx, item.ThreadID, payloadID, delta, payloadMeta, createdAt); err != nil {
+		if err := appendPayloadDataTx(tx, item.ThreadID, payloadID, delta, payloadMeta, true, createdAt); err != nil {
 			return err
 		}
 		var err error

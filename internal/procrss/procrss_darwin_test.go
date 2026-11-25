@@ -137,3 +137,62 @@ func TestDarwinNativeSamplerReadsCurrentProcess(t *testing.T) {
 		t.Fatalf("self = %#v", tree.Self)
 	}
 }
+
+func TestDarwinNativeMatchesReferenceSampler(t *testing.T) {
+	pid := os.Getpid()
+	nativeAll, err := SampleAll(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refAll, err := sampleDarwin(darwinProcessReader{}, pid, func(string) bool { return true }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nativeAll.Self.PID != refAll.Self.PID || nativeAll.Self.Name != refAll.Self.Name {
+		t.Fatalf("self mismatch: native=%#v ref=%#v", nativeAll.Self, refAll.Self)
+	}
+	if len(nativeAll.Children) != len(refAll.Children) {
+		t.Fatalf("children len mismatch: native=%d ref=%d", len(nativeAll.Children), len(refAll.Children))
+	}
+	for i := range nativeAll.Children {
+		if nativeAll.Children[i].PID != refAll.Children[i].PID || nativeAll.Children[i].Name != refAll.Children[i].Name {
+			t.Fatalf("child[%d] mismatch: native=%#v ref=%#v", i, nativeAll.Children[i], refAll.Children[i])
+		}
+	}
+
+	nativeWeb, err := Sample(pid, DefaultWebviewPrefixes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refWeb, err := sampleDarwin(darwinProcessReader{}, pid, func(name string) bool {
+		return matchesAnyPrefix(name, DefaultWebviewPrefixes)
+	}, DefaultWebviewPrefixes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nativeWeb.Children) != len(refWeb.Children) {
+		t.Fatalf("filtered children len mismatch: native=%d ref=%d", len(nativeWeb.Children), len(refWeb.Children))
+	}
+}
+
+func TestCouldMatchDarwinCommBytesParity(t *testing.T) {
+	cases := []struct {
+		comm     string
+		prefixes []string
+	}{
+		{"com.apple.WebKit", DefaultWebviewPrefixes},
+		{"com.apple.WebKit", []string{"com.apple.WebKit.WebContent"}},
+		{"WebKitWebProcess", DefaultWebviewPrefixes},
+		{"launchd", DefaultWebviewPrefixes},
+		{"com.apple.WebKi", []string{"com.apple.WebKit.WebContent"}}, // 15 bytes (< 16), cannot be truncated prefix
+		{"", DefaultWebviewPrefixes},
+		{"com.apple.WebKit", []string{""}},
+	}
+	for _, tc := range cases {
+		got := couldMatchDarwinCommBytes([]byte(tc.comm), tc.prefixes)
+		want := couldMatchDarwinComm(tc.comm, tc.prefixes)
+		if got != want {
+			t.Errorf("comm=%q prefixes=%v: bytes=%v string=%v", tc.comm, tc.prefixes, got, want)
+		}
+	}
+}

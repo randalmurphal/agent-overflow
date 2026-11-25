@@ -408,14 +408,18 @@
   // (isEnabled → `visible`): these effects must re-run on exactly their
   // named dependency, not on whatever a getter happens to touch.
   $effect(() => {
-    ticks;
+    if (!visible) {
+      untrack(() => sync.cancel());
+      return;
+    }
+    void ticks;
     untrack(() => sync.schedule());
   });
 
   // A column resize changes the window's clip math without a scroll
   // event to schedule the sync — re-sync on the RO-fed height.
   $effect(() => {
-    availableHeightPx;
+    void availableHeightPx;
     untrack(() => sync.schedule());
   });
 

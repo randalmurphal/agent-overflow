@@ -601,3 +601,28 @@ func TestCompletionContextProjectionAndBudget(t *testing.T) {
 		t.Fatal("page budget did not account for completion context")
 	}
 }
+
+func TestJSONStringEncodedLenMatchesMarshal(t *testing.T) {
+	samples := []string{
+		"",
+		"plain ascii 123",
+		`quotes " and \ backslashes`,
+		"controls:\x00\x01\x07\x08\t\n\x0b\x0c\r\x1f",
+		"html: <script>&</script>",
+		"separators:\u2028and\u2029end",
+		"unicode: café 日本語 🚀",
+		"invalid utf8: \xff\xfe\x80\xc0\xaf",
+	}
+	for b := 0; b < 128; b++ {
+		samples = append(samples, string([]byte{byte(b)}))
+	}
+	for _, s := range samples {
+		encoded, err := json.Marshal(s)
+		if err != nil {
+			t.Fatalf("marshal %q: %v", s, err)
+		}
+		if got := jsonStringEncodedLen(s); got != len(encoded) {
+			t.Errorf("jsonStringEncodedLen(%q) = %d, want %d (encoded=%s)", s, got, len(encoded), encoded)
+		}
+	}
+}

@@ -377,10 +377,16 @@ export function createAgentController(
     for (const row of past.rows) out.add(row.token);
     return out;
   });
+  const EMPTY_AGENT_ROWS: ThreadAgentRow[] = [];
   const keepRows = createAgentRowMemo();
-  const rows = $derived(
-    keepRows(visibleAgentRows(listed, settledSeen, leftOpen, getNow(), harnessInterval('agent-row-linger', AGENT_ROW_SETTLED_LINGER_MS))),
-  );
+  const rows = $derived.by(() => {
+    if (listed.length === 0) {
+      keepRows(EMPTY_AGENT_ROWS);
+      return EMPTY_AGENT_ROWS;
+    }
+    const now = settledSeen.size > 0 ? getNow() : 0;
+    return keepRows(visibleAgentRows(listed, settledSeen, leftOpen, now, harnessInterval('agent-row-linger', AGENT_ROW_SETTLED_LINGER_MS)));
+  });
   // Identity per queue item comes from the queue store, which replaces an
   // entry only when its snapshot does.
   const incoming = $derived.by<IncomingAgentMessage[]>(() => {

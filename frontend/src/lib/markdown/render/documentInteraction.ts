@@ -51,9 +51,11 @@ function eventNode(target: EventTarget | null): Node | null {
 function captureSelection(state: TrackerState): void {
 	const selection = state.document.getSelection();
 	const ranges: InteractionRange[] = [];
-	if (selection && !selection.isCollapsed) {
+	if (selection && selection.rangeCount > 0) {
 		for (let index = 0; index < selection.rangeCount; index++) {
-			const range = selection.getRangeAt(index).cloneRange();
+			const raw = selection.getRangeAt(index);
+			if (raw.collapsed) continue;
+			const range = raw.cloneRange();
 			ranges.push({
 				range,
 				endpointAncestors: nodeAncestors(range.startContainer, range.endContainer)

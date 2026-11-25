@@ -59,6 +59,9 @@ type SubagentProgressEvent struct {
 	UpdatedAt int64                         `json:"updatedAt"`
 }
 
+func (e SubagentProgressEvent) EventThreadID() string    { return e.ThreadID }
+func (e SubagentProgressEvent) EventScopeRootID() string { return e.ParentID }
+
 // handleSubagentProgress merges a tick into the launch's live entry and
 // fans the merged state out. Merge, not replace: every field is
 // cumulative and a provider that cannot report one leaves it zero, so

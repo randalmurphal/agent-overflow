@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,6 +9,14 @@ import (
 	"sync"
 	"time"
 )
+
+const maxRetainedReplayBufCap = 256 << 10
+
+var replayBufPool = sync.Pool{
+	New: func() any {
+		return bytes.NewBuffer(make([]byte, 0, 1024))
+	},
+}
 
 const (
 	// defaultMaxBytes is the threshold at which the current file is rotated.
@@ -95,11 +104,18 @@ func NewWriter(path string, cfg WriterConfig) (*Writer, error) {
 // file has grown past MaxBytes, the writer rotates; if the write count
 // reaches FsyncEvery, the writer calls Sync on the underlying file.
 func (w *Writer) Write(rec Record) error {
-	data, err := json.Marshal(rec)
-	if err != nil {
+	buf := replayBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer func() {
+		if buf.Cap() <= maxRetainedReplayBufCap {
+			replayBufPool.Put(buf)
+		}
+	}()
+	// json.Encoder appends '\n' and writes compact HTML-escaped JSON, matching
+	// append(json.Marshal(rec), '\n') without allocating a fresh slice per line.
+	if err := json.NewEncoder(buf).Encode(rec); err != nil {
 		return fmt.Errorf("replay: marshal record: %w", err)
 	}
-	data = append(data, '\n')
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -107,7 +123,7 @@ func (w *Writer) Write(rec Record) error {
 	if w.file == nil {
 		return fmt.Errorf("replay: writer is closed")
 	}
-	n, err := w.file.Write(data)
+	n, err := w.file.Write(buf.Bytes())
 	if err != nil {
 		return fmt.Errorf("replay: write: %w", err)
 	}

@@ -91,13 +91,13 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
 
   let threadId: string | null = $state(null);
   let content: string = $state('');
-  let attachments: Attachment[] = $state([]);
-  let terminalChips: TerminalChip[] = $state([]);
+  let attachments: Attachment[] = $state.raw([]);
+  let terminalChips: TerminalChip[] = $state.raw([]);
   // sourceProposedPlan links the draft back to a proposed-plan item when the
   // draft was seeded by "Implement plan in new thread". The send path reads
   // it so the original plan is marked Accepted on first send; cleared
   // afterwards so subsequent turns in this thread don't re-mark.
-  let sourceProposedPlan: SourceProposedPlan | null = $state(null);
+  let sourceProposedPlan: SourceProposedPlan | null = $state.raw(null);
   let hydrating: boolean = $state(false);
   let movingContext = $state<symbol | null>(null);
   let waitForUploads: (() => Promise<void>) | null = null;
@@ -192,13 +192,20 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
    * read means for them.
    */
   async function fetchPersistedSnapshot(id: string): Promise<ComposerDraftSnapshot> {
-    const [draft, records] = await Promise.all([
-      GetDraft(id) as Promise<Draft>,
-      ListAttachments(id).then((rows) => (rows as Attachment[] | null) ?? []),
-    ]);
+    const draft = (await GetDraft(id)) as Draft;
+    const attachmentIds = draft.attachmentIds ?? [];
+    if (attachmentIds.length === 0) {
+      return {
+        content: draft.content ?? '',
+        attachments: [],
+        terminalChips: draft.terminalChips ?? [],
+        sourceProposedPlan: draft.sourceProposedPlan ?? null,
+      };
+    }
+    const records = ((await ListAttachments(id)) as Attachment[] | null) ?? [];
     const byId = new Map(records.map((record) => [record.id, record]));
-    const attachments = (draft.attachmentIds ?? []).map((id) => {
-      const record = byId.get(id);
+    const attachments = attachmentIds.map((attachmentId) => {
+      const record = byId.get(attachmentId);
       if (!record) throw new Error('A saved draft attachment is unavailable.');
       return record;
     });
@@ -358,13 +365,12 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     clearDebounce();
     const id = threadId;
     const generation = ++pendingSaveGeneration;
-    const snapshot = buildSnapshot();
     hasPendingSave = true;
     debounceTimer = setTimeout(async () => {
       debounceTimer = null;
       if (threadId !== id || generation !== pendingSaveGeneration) return;
       try {
-        await saveSnapshot(id, snapshot);
+        await saveSnapshot(id, buildSnapshot());
       } catch (err) {
         // The unsaved snapshot is retained; surfacing is edge-triggered
         // so a failing backend doesn't toast on every debounce tick.

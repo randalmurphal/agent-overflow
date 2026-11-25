@@ -63,8 +63,10 @@ export function createTimelineJump(options: TimelineJumpOptions): TimelineJump {
   let flashAnchorOffset = 0;
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
   let flashWaitFrame: number | undefined;
+  let flashWaitGeneration = 0;
 
   function cancelFlashWait(): void {
+    flashWaitGeneration += 1;
     if (flashWaitFrame !== undefined) {
       cancelAnimationFrame(flashWaitFrame);
       flashWaitFrame = undefined;
@@ -93,6 +95,7 @@ export function createTimelineJump(options: TimelineJumpOptions): TimelineJump {
   // times.
   function flashLanding(id: string): void {
     cancelFlashWait();
+    const generation = flashWaitGeneration;
     // Item ids are thread-local and can recur across sibling/fork
     // threads, so the watch is pinned to the thread it was armed on.
     const threadId = options.getPane().threadId;
@@ -101,6 +104,7 @@ export function createTimelineJump(options: TimelineJumpOptions): TimelineJump {
     let framesLeft = JUMP_FLASH_MAX_WAIT_FRAMES;
     const step = (): void => {
       flashWaitFrame = undefined;
+      if (generation !== flashWaitGeneration) return;
       framesLeft -= 1;
       if (options.getPane().threadId !== threadId) return;
       const list = options.getListRef();

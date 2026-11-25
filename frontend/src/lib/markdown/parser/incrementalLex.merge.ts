@@ -121,17 +121,42 @@ const addReads = (cache: IncrementalLexCache, reads: Set<string> | null): void =
     for (const key of reads)
         cache.reads.add(key);
 };
+export type ListAppendInfo = NonNullable<IncrementalLexCache['listAppend']>;
+
 export const mergeTrailingList = (
     cachedList: ListToken,
     base: string,
+    appendDelta: string,
     extensions: Extension[],
     complete: ((markdown: string) => string) | null,
+    listAppend: ListAppendInfo | null,
     cache: IncrementalLexCache
-): ListToken | null => {
+): { token: ListToken; appendInfo: ListAppendInfo } | null => {
     const sealedLen = sealedLengthOf(cachedList);
     if (sealedLen <= 0 || sealedLen >= base.length)
         return null;
-    const tailSrc = base.slice(sealedLen);
+    let sealedPrefix: string;
+    let tailSrc: string;
+    if (
+        listAppend !== null &&
+        listAppend.sealedLen <= sealedLen &&
+        listAppend.sealedLen + listAppend.tailSrc.length === base.length - appendDelta.length
+    ) {
+        const advance = sealedLen - listAppend.sealedLen;
+        if (advance === 0) {
+            sealedPrefix = listAppend.sealedPrefix;
+            tailSrc = listAppend.tailSrc + appendDelta;
+        } else if (advance <= listAppend.tailSrc.length) {
+            sealedPrefix = listAppend.sealedPrefix + listAppend.tailSrc.slice(0, advance);
+            tailSrc = listAppend.tailSrc.slice(advance) + appendDelta;
+        } else {
+            sealedPrefix = base.slice(0, sealedLen);
+            tailSrc = base.slice(sealedLen);
+        }
+    } else {
+        sealedPrefix = base.slice(0, sealedLen);
+        tailSrc = base.slice(sealedLen);
+    }
     const completedTail = complete ? complete(tailSrc) : tailSrc;
     if (declaresDefs(completedTail, extensions))
         return null;
@@ -162,7 +187,7 @@ export const mergeTrailingList = (
         tail.tokens = reuseUnchangedTokens([priorTail], tail.tokens);
     const merged = {
         ...cachedList,
-        raw: base.slice(0, sealedLen) + tail.raw,
+        raw: sealedPrefix + tail.raw,
         loose: cachedList.loose,
         tokens: sealed.concat(tail.tokens)
     };
@@ -176,7 +201,10 @@ export const mergeTrailingList = (
             item.skipped = k > 0 && item.value !== null && item.value !== start + k - 1;
         }
     }
-    return merged;
+    return {
+        token: merged,
+        appendInfo: { sealedLen, sealedPrefix, tailSrc }
+    };
 };
 // The table analog: sealed rows are every body row before the last SOURCE
 // LINE of the cached document. Without rowspan a row's parse depends only

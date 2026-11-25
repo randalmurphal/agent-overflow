@@ -75,12 +75,13 @@ import {
     hasTrailingRowspanCaret,
     openFenceInfo,
     scanFenceBody,
+    sealedLengthOf,
     tableAppendInfo
 } from './geometry';
 import type { OpenFence, TableAppendInfo } from './geometry';
 import { commitLexSource, trimBlock } from './incrementalLex.cache';
 import type { IncrementalLexCache, IncrementalLexPath } from './incrementalLex.cache';
-import { mergeTrailingList, mergeTrailingTable, reuseUnchangedTokens } from './incrementalLex.merge';
+import { mergeTrailingList, mergeTrailingTable, reuseUnchangedTokens, type ListAppendInfo } from './incrementalLex.merge';
 import { parseIncompleteMarkdown as defaultIncompleteMarkdown } from './incompleteMarkdown';
 import type { ListToken } from './extensions/list';
 import type { TableToken } from './extensions/table';
@@ -235,6 +236,7 @@ export const incrementalLex = (
                     cache.tokens = [merged.token];
                     cache.codeFence = merged.fence;
                     cache.tableAppend = null;
+                    cache.listAppend = null;
                     cache.lastCodeTextAppend = merged.textAppend;
                     cache.lastPath = 'code-append';
                     cache.observeLex?.('code-append', appendDelta.length);
@@ -243,9 +245,20 @@ export const incrementalLex = (
             }
             let merged: ListToken | TableToken | null = null;
             let nextTableAppend: TableAppendInfo | null = null;
+            let nextListAppend: ListAppendInfo | null = null;
             let path: IncrementalLexPath = 'full';
             if (head.type === 'list') {
-                merged = mergeTrailingList(head, base, extensions, complete, cache);
+                const listMerge = mergeTrailingList(
+                    head,
+                    base,
+                    appendDelta,
+                    extensions,
+                    complete,
+                    cache.listAppend,
+                    cache
+                );
+                merged = listMerge?.token ?? null;
+                nextListAppend = listMerge?.appendInfo ?? null;
                 path = 'list-append';
             }
             else if (head.type === 'table') {
@@ -271,6 +284,7 @@ export const incrementalLex = (
                 cache.codeFence = null;
                 cache.tableTailUnstable = false;
                 cache.tableAppend = nextTableAppend;
+                cache.listAppend = nextListAppend;
                 cache.lastPath = path;
                 cache.observeLex?.(path, appendDelta.length);
                 return cache.tokens;
@@ -295,6 +309,14 @@ export const incrementalLex = (
         completedBase === base
         ? tableAppendInfo(result.tokens[0], base)
         : null;
+    if (result.tokens.length === 1 && result.tokens[0].type === 'list') {
+        const sealedLen = sealedLengthOf(result.tokens[0]);
+        cache.listAppend = sealedLen > 0 && sealedLen < base.length
+            ? { sealedLen, sealedPrefix: base.slice(0, sealedLen), tailSrc: base.slice(sealedLen) }
+            : null;
+    } else {
+        cache.listAppend = null;
+    }
     cache.links = null;
     for (const _ in result.links) {
         cache.links = result.links;

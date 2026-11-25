@@ -34,22 +34,11 @@ SELECT refs.thread_id || '/' || imported.id FROM import_history_items imported
 // row back: its meta is the stored meta, without the keys a read serves
 // from the subagent stamps.
 func (s *Store) GetThreadItemForWrite(threadID, id string) (Item, bool, error) {
-	type result struct {
-		item  Item
-		found bool
+	item, found, err := queryOneStoredTimelineItem(s.reader(), threadID, fixedIDSelection(`SELECT ? AS id`, id))
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: get item for write %s on thread %s: %w", id, threadID, err)
 	}
-	got, err := readSnapshot(s.reader(), "item for write", func(q sqlQueryer) (result, error) {
-		item, found, err := s.getThreadItem(q, threadID, id)
-		if err != nil || !found || item.Rev < 0 {
-			// An imported row serves its stored meta.
-			return result{item, found}, err
-		}
-		if err := q.QueryRow(`SELECT meta FROM items WHERE thread_id = ? AND id = ?`, threadID, id).Scan(&item.Meta); err != nil {
-			return result{}, fmt.Errorf("store: read stored meta of %s/%s: %w", threadID, id, err)
-		}
-		return result{item, true}, nil
-	})
-	return got.item, got.found, err
+	return item, found, nil
 }
 
 // RowsStoringServedSubagentKeys lists up to limit rows, as thread/id,

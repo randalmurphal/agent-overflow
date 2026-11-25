@@ -2,11 +2,14 @@ import type { Item, ProposedPlanComment } from '../types/models';
 import { comparePlanItemPosition, latestProposedPlanItem } from '../utils/proposedPlan';
 import { ListProposedPlanComments, ListThreadProposedPlans } from './bindings';
 import { onItemUpsert } from './eventsItemStream';
+import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
+import { onWatchedThreadsComposed } from './watchedThreads';
 import { itemsAreEqual } from './threadItems';
 
 const REFRESH_DEBOUNCE_MS = 100;
 const MAX_CACHED_THREADS = 64;
 const MAX_CACHED_PLAN_COMMENTS = 32;
+const MAX_CACHED_PLAN_MARKDOWN = 8;
 
 interface ProposedPlanCacheEntry {
   items: Item[];
@@ -34,6 +37,83 @@ const listenerThreadScopes = new Set<() => string | null | undefined>();
 
 const commentCache = $state<Record<string, ProposedPlanCommentCacheEntry>>({});
 const commentCacheAccess = new Map<string, number>();
+interface CachedPlanMarkdown {
+  readonly version: string;
+  readonly markdown: string;
+}
+const planMarkdownCache = new Map<string, CachedPlanMarkdown>();
+
+export function hasLoadedThreadProposedPlans(threadId: string | null | undefined): boolean {
+  if (!threadId) return false;
+  return cache[threadId]?.loaded === true;
+}
+
+/**
+ * Mark cached proposed-plan state as needing a fresh backend read on the next
+ * mount/open (e.g. after a turn revert, transport gap, or unwatch). Keeps any
+ * cached items visible until the refresh resolves.
+ */
+export function invalidateProposedPlansLoaded(threadId?: string | null): void {
+  if (threadId) {
+    const entry = cache[threadId];
+    if (entry) entry.loaded = false;
+    return;
+  }
+  for (const entry of Object.values(cache)) {
+    entry.loaded = false;
+  }
+}
+
+onWatchedThreadsComposed((watched) => {
+  for (const [threadId, entry] of Object.entries(cache)) {
+    if (!watched.has(threadId)) entry.loaded = false;
+  }
+});
+
+onThreadHistoryInvalidated((owns) => {
+  for (const [threadId, entry] of Object.entries(cache)) {
+    if (owns(threadId)) entry.loaded = false;
+  }
+  for (const key of planMarkdownCache.keys()) {
+    const sep = key.indexOf('\0');
+    const threadId = sep === -1 ? key : key.slice(0, sep);
+    if (owns(threadId)) planMarkdownCache.delete(key);
+  }
+});
+
+export function getCachedPlanMarkdown(
+  threadId: string | null | undefined,
+  payloadId: string | null | undefined,
+  version = '',
+): string | null {
+  if (!threadId || !payloadId) return null;
+  const key = `${threadId}\0${payloadId}`;
+  const hit = planMarkdownCache.get(key);
+  if (hit === undefined) return null;
+  if (hit.version !== version) {
+    planMarkdownCache.delete(key);
+    return null;
+  }
+  planMarkdownCache.delete(key);
+  planMarkdownCache.set(key, hit);
+  return hit.markdown;
+}
+
+export function setCachedPlanMarkdown(
+  threadId: string,
+  payloadId: string,
+  markdown: string,
+  version = '',
+): void {
+  const key = `${threadId}\0${payloadId}`;
+  planMarkdownCache.delete(key);
+  planMarkdownCache.set(key, { version, markdown });
+  while (planMarkdownCache.size > MAX_CACHED_PLAN_MARKDOWN) {
+    const oldest = planMarkdownCache.keys().next().value;
+    if (oldest === undefined) break;
+    planMarkdownCache.delete(oldest);
+  }
+}
 
 function entryForThread(threadId: string): ProposedPlanCacheEntry {
   cache[threadId] ??= {
@@ -123,7 +203,7 @@ export async function refreshThreadProposedPlans(threadId: string | null | undef
     if (!itemListsAreEqual(entry.items, nextItems)) {
       entry.items = nextItems;
     }
-    entry.loaded = true;
+    entry.loaded = listenerRefCount > 0;
     cacheAccess.set(threadId, Date.now());
     evictOldPlanCacheEntries();
   } catch (err) {
@@ -138,7 +218,6 @@ export async function refreshThreadProposedPlans(threadId: string | null | undef
     if (entry.items.length > 0) {
       entry.items = [];
     }
-    entry.loaded = true;
     cacheAccess.set(threadId, Date.now());
   }
 }
@@ -221,7 +300,6 @@ function upsertItemIntoCache(item: Item): boolean {
   if (existingIdx >= 0) {
     const existing = entry.items[existingIdx];
     if (existing && itemsAreEqual(existing, item)) {
-      entry.loaded = true;
       return false;
     }
     const replaced = entry.items.slice();
@@ -231,7 +309,6 @@ function upsertItemIntoCache(item: Item): boolean {
   } else {
     entry.items = [...entry.items, item].sort(comparePlanItemPosition);
   }
-  entry.loaded = true;
   entry.upsertSeq += 1;
   // Sync upserts can land for any thread the backend pushes events for,
   // including threads with no observer. Without this, the cache could grow
@@ -299,6 +376,9 @@ export function retainProposedPlanEventListener(threadIdScope?: () => string | n
     if (listenerRefCount > 0) return;
     cancelItemUpsert?.();
     cancelItemUpsert = null;
+    for (const entry of Object.values(cache)) {
+      entry.loaded = false;
+    }
   };
 }
 
@@ -346,6 +426,7 @@ export function resetProposedPlanCacheForTests(): void {
   }
   cacheAccess.clear();
   commentCacheAccess.clear();
+  planMarkdownCache.clear();
   cancelItemUpsert?.();
   cancelItemUpsert = null;
   listenerThreadScopes.clear();

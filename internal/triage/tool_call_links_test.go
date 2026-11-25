@@ -125,10 +125,10 @@ func TestSubagentToolEventReadsItsRowOnce(t *testing.T) {
 				}); err != nil {
 					t.Fatalf("complete %s: %v", id, err)
 				}
-				// The launch lookup, the thread's provider and the
-				// decoration probe.
-				if got := st.ReadCount() - before; got != 3 {
-					t.Errorf("%s complete: %d store reads, want 3", id, got)
+				// The launch lookup and the decoration probe (the thread's
+				// provider was cached on the first start read).
+				if got := st.ReadCount() - before; got != 2 {
+					t.Errorf("%s complete: %d store reads, want 2", id, got)
 				}
 				pushed = itemUpserts(emissions.snapshot())
 				if len(pushed) != 1 || pushed[0].ID != id || pushed[0].Status != statusCompleted {

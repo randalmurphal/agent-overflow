@@ -200,8 +200,17 @@ export const structuralPlugins: Plugin[] = [
         name: 'mdx',
         skipInBlockTypes: ['code', 'math'],
         preprocess: ({ text, state }) => {
+            if (!text.includes('<')) {
+                return {
+                    text,
+                    state: {
+                        mdxUnclosedTags: [],
+                        mdxLineStates: []
+                    }
+                };
+            }
             // Track MDX component states across the entire text
-            const lines = text.split('\n');
+            const lines = state.lines ?? text.split('\n');
             const openTags: NonNullable<ParseState['mdxUnclosedTags']> = [];
             const mdxLineStates: NonNullable<ParseState['mdxLineStates']> = [];
             for (let i = 0; i < lines.length; i++) {

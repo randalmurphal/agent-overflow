@@ -32,7 +32,7 @@ it.each([360, 1280])('separates outgoing connections from incoming access at %ip
   if (width < 600) await fireEvent.click(view.getByRole('button', { name: 'All settings' }));
   await fireEvent.click(view.getByRole('tab', { name: 'Allow device access' }));
   await waitFor(() => expect(view.getByRole('button', { name: 'Allow a device to connect' })).toBeTruthy());
-  expect(view.getByText('Advanced network settings').closest('details')?.open).toBe(false);
+  await waitFor(() => expect(view.getByText('Advanced network settings').closest('details')?.open).toBe(false));
   expect(host.scrollWidth).toBeLessThanOrEqual(width + 1);
 });
 

@@ -1,7 +1,8 @@
 package highlight
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 )
@@ -41,6 +42,7 @@ type injectionQuery struct {
 	contentIdx  uint // capture index of @injection.content
 	languageIdx int  // capture index of @injection.language, -1 when absent
 	patterns    []injectionPattern
+	hasCombined bool
 }
 
 type injectionPattern struct {
@@ -70,6 +72,7 @@ func compileInjections(lang *tree_sitter.Language, source string) (*injectionQue
 		languageIdx = int(idx)
 	}
 	patterns := make([]injectionPattern, query.PatternCount())
+	hasCombined := false
 	for i := range patterns {
 		for _, prop := range query.PropertySettings(uint(i)) {
 			switch prop.Key {
@@ -79,6 +82,7 @@ func compileInjections(lang *tree_sitter.Language, source string) (*injectionQue
 				}
 			case "injection.combined":
 				patterns[i].combined = true
+				hasCombined = true
 			case "injection.include-children":
 				patterns[i].inclusion = includeChildren
 			case "injection.include-unnamed-children":
@@ -91,6 +95,7 @@ func compileInjections(lang *tree_sitter.Language, source string) (*injectionQue
 		contentIdx:  contentIdx,
 		languageIdx: languageIdx,
 		patterns:    patterns,
+		hasCombined: hasCombined,
 	}, nil
 }
 
@@ -107,8 +112,42 @@ type injectionSite struct {
 // highlight captures). Combined patterns merge all their content
 // nodes into a single site so fragments parse as one document.
 func (iq *injectionQuery) collectInjections(root *tree_sitter.Node, src []byte) []injectionSite {
-	qc := tree_sitter.NewQueryCursor()
-	defer qc.Close()
+	return iq.collectInjectionsBounded(root, src, 0, len(src))
+}
+
+func (iq *injectionQuery) collectInjectionsInRanges(root *tree_sitter.Node, src []byte, targets []byteRange) []injectionSite {
+	minLo := len(src)
+	maxHi := 0
+	for _, r := range targets {
+		if r.hi <= r.lo {
+			continue
+		}
+		if r.lo < minLo {
+			minLo = r.lo
+		}
+		if r.hi > maxHi {
+			maxHi = r.hi
+		}
+	}
+	if maxHi <= minLo {
+		return nil
+	}
+	// Combined injections accumulate fragments across the whole file so
+	// earlier openings and later closings stay paired; keep [0, len(src)]
+	// when any pattern is combined, and narrow to [minLo, maxHi] otherwise.
+	lo, hi := minLo, maxHi
+	if iq.hasCombined {
+		lo, hi = 0, len(src)
+	}
+	return iq.collectInjectionsBounded(root, src, lo, hi)
+}
+
+func (iq *injectionQuery) collectInjectionsBounded(root *tree_sitter.Node, src []byte, lo, hi int) []injectionSite {
+	qc := acquireQueryCursor()
+	defer releaseQueryCursor(qc)
+	if lo > 0 || hi < len(src) {
+		qc.SetByteRange(uint(lo), uint(hi))
+	}
 	matches := qc.Matches(iq.query, root, src)
 
 	type entry struct {
@@ -157,8 +196,8 @@ func (iq *injectionQuery) collectInjections(root *tree_sitter.Node, src []byte) 
 	}
 	// Document order: SetIncludedRanges requires sorted, non-overlapping
 	// ranges, and combined sites must accumulate fragments in order.
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].ranges[0].StartByte < entries[j].ranges[0].StartByte
+	slices.SortFunc(entries, func(a, b entry) int {
+		return cmp.Compare(a.ranges[0].StartByte, b.ranges[0].StartByte)
 	})
 	// Combined patterns merge into one site per pattern.
 	var sites []injectionSite

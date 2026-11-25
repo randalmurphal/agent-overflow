@@ -65,7 +65,7 @@
     renderPlane?: HTMLDivElement;
     applyScrollTarget: (top: number) => void;
     onCompensation?: (compensation: EngineCompensation) => void;
-    trackReadingAnchor?: () => boolean;
+    trackReadingAnchor?: (offset?: number) => boolean;
     onscroll?: (offset: number) => void;
     onscrollend?: () => void;
     /** Test seam: smaller limits so a test list can pass them. */

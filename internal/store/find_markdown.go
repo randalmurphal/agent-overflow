@@ -74,7 +74,6 @@ const jsSpace = `\t\n\v\f\r \x{00a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{
 var (
 	// A text with none of these erases nothing: every erased span starts
 	// with one, and a reference label needs a definition.
-	findTagStart       = regexp.MustCompile(`<[A-Za-z/!?]`)
 	findDefinitionLine = regexp.MustCompile(`(?m)^[ \t>]*(?:[-*+][ \t]+|[0-9]+[.)][ \t]+)?\[[^\]\n]+\]:`)
 
 	// A line marked reads as a fence opener (engine/rules.ts `fences`): it
@@ -111,8 +110,27 @@ var (
 // text unsure.
 const findMarkupEdge = "`[]<"
 
+func hasFindTagStart(text string) bool {
+	for i := 0; i < len(text); {
+		rel := strings.IndexByte(text[i:], '<')
+		if rel < 0 {
+			return false
+		}
+		next := i + rel + 1
+		if next >= len(text) {
+			return false
+		}
+		c := text[next]
+		if ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || c == '/' || c == '!' || c == '?' {
+			return true
+		}
+		i = next
+	}
+	return false
+}
+
 func findMayErase(text string) bool {
-	return strings.Contains(text, "](") || findTagStart.MatchString(text) ||
+	return strings.Contains(text, "](") || hasFindTagStart(text) ||
 		(strings.Contains(text, "][") && findDefinitionLine.MatchString(text))
 }
 

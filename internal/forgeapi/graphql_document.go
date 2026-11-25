@@ -141,7 +141,7 @@ func GraphQLName(tok string) bool {
 // numbers. Strings, block strings, comments, commas and white space are
 // dropped.
 func GraphQLTokens(document string) ([]string, error) {
-	var toks []string
+	toks := make([]string, 0, len(document)/4)
 	s := document
 	for i := 0; i < len(s); {
 		c := s[i]
@@ -190,7 +190,7 @@ func GraphQLTokens(document string) ([]string, error) {
 			toks = append(toks, "...")
 			i += 3
 		case strings.IndexByte("!():=@[]{}|&", c) >= 0:
-			toks = append(toks, string(c))
+			toks = append(toks, s[i:i+1])
 			i++
 		case c == '$' || c == '_' || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z'):
 			j := i + 1

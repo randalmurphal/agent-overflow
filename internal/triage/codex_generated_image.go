@@ -135,7 +135,7 @@ func (r *Router) persistCodexGeneratedImage(evt provider.ProviderEvent) error {
 	if !isCodexImageGenerationItem(evt, meta.ToolName) {
 		return nil
 	}
-	providerName, _, err := r.store.GetThreadProviderWorkspace(evt.ThreadID)
+	providerName, err := r.providerFor(evt.ThreadID)
 	if err != nil {
 		return fmt.Errorf("lookup thread provider %s: %w", evt.ThreadID, err)
 	}

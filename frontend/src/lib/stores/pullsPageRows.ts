@@ -73,9 +73,6 @@ export function listedRows(snapshot: PRListSnapshot | null, backend: BackendKey)
   return out;
 }
 
-/** The filters a row passes: the toolbar's, and the find needle. */
-export type PullsRowFilters = Pick<MRFilters, 'filter' | 'projects'> & { needle: string };
-
 /** A merge request row matches `needle` on what the row shows or names:
  * its title, number (`#123`, GitLab's `!123`, `123`), source branch,
  * author (name, login, or "you"), project and state label. */
@@ -111,20 +108,8 @@ export function pipelineRowMatches(row: PipelineRowView, needle: string): boolea
   ]);
 }
 
-function admits(filters: PullsRowFilters, row: PullsListedRow): boolean {
-  if (filters.projects.length > 0 && !filters.projects.includes(row.project.projectId)) return false;
-  if (!pullRowMatches(row, filters.needle)) return false;
-  switch (filters.filter) {
-    case 'needs_you':
-      return row.item.group === 'needs_you';
-    case 'mine':
-      return row.item.viewerIsAuthor;
-    case 'reviewing':
-      return row.item.viewerIsReviewer;
-    default:
-      return true;
-  }
-}
+const COLLATOR_BASE = new Intl.Collator(undefined, { sensitivity: 'base' });
+const COLLATOR_DEFAULT = new Intl.Collator();
 
 function timeOf(value: string): number {
   const at = Date.parse(value);
@@ -141,81 +126,142 @@ function authorOf(item: PRListItem): string {
  * `reversed` turns it around. Ties fall to the newest update, then the
  * higher number, so the order is total and stable across snapshots.
  */
-export function compareRows(sort: PullsSort, a: PRListItem, b: PRListItem): number {
+function comparePreparedRows(
+  sort: PullsSort,
+  a: PRListItem,
+  b: PRListItem,
+  aCreated: number,
+  bCreated: number,
+  aUpdated: number,
+  bUpdated: number,
+): number {
   let order = 0;
   switch (sort.key) {
     case 'created':
-      order = timeOf(b.createdAt) - timeOf(a.createdAt);
+      order = bCreated - aCreated;
       break;
     case 'title':
-      order = a.title.localeCompare(b.title, undefined, { sensitivity: 'base' });
+      order = COLLATOR_BASE.compare(a.title, b.title);
       break;
     case 'author':
-      order = authorOf(a).localeCompare(authorOf(b), undefined, { sensitivity: 'base' });
+      order = COLLATOR_BASE.compare(authorOf(a), authorOf(b));
       break;
     case 'attention':
       order = pullStateRank(a.state) - pullStateRank(b.state);
       break;
     default:
-      order = timeOf(b.updatedAt) - timeOf(a.updatedAt);
+      order = bUpdated - aUpdated;
   }
   if (order !== 0) return sort.reversed ? -order : order;
-  const byUpdate = timeOf(b.updatedAt) - timeOf(a.updatedAt);
+  const byUpdate = bUpdated - aUpdated;
   if (byUpdate !== 0) return byUpdate;
   if (a.ref.Number !== b.ref.Number) return b.ref.Number - a.ref.Number;
   // Two repositories' same number: by the repository, so the order never
   // depends on which project lists first.
-  return repoOf(a).localeCompare(repoOf(b));
+  return COLLATOR_DEFAULT.compare(repoOf(a), repoOf(b));
 }
 
 function repoOf(item: PRListItem): string {
   return `${item.ref.Host}/${item.ref.Namespace}/${item.ref.Repo}`;
 }
 
-/** The rows the filter, project picker and find needle admit, each PR
- * once, unsorted. A project picked in the filter lists its rows even where
- * another project lists them too. */
-function admittedRows(snapshot: PRListSnapshot | null, backend: BackendKey, filters: PullsRowFilters): PullsListedRow[] {
+/**
+ * Every listed PR admitted by the project picker and find needle (before the
+ * needs-you/mine/reviewing filter), each PR once. Shared between `groupRows`
+ * and `needsYouCount` so neither scans or runs needle matching twice.
+ */
+export function admittedProjectRows(
+  snapshot: PRListSnapshot | null,
+  backend: BackendKey,
+  projects: readonly string[],
+  needle = '',
+): PullsListedRow[] {
   const admitted: PullsListedRow[] = [];
   const seen = new Set<string>();
+  const projectSet = projects.length > 0 ? new Set(projects) : null;
   for (const project of snapshot?.projects ?? []) {
-    if (filters.projects.length > 0 && !filters.projects.includes(project.projectId)) continue;
+    if (projectSet && !projectSet.has(project.projectId)) continue;
     for (const item of project.rows ?? []) {
       const pr = prRefFromWire(item.ref);
       if (!pr) continue;
-      const row = { key: pullRowKey(backend, pr), pr, item, project };
-      if (seen.has(row.key) || !admits(filters, row)) continue;
-      seen.add(row.key);
+      const key = pullRowKey(backend, pr);
+      if (seen.has(key)) continue;
+      const row: PullsListedRow = { key, pr, item, project };
+      if (!pullRowMatches(row, needle)) continue;
+      seen.add(key);
       admitted.push(row);
     }
   }
   return admitted;
 }
 
+function admitsFilter(filter: MRFilters['filter'], row: PullsListedRow): boolean {
+  switch (filter) {
+    case 'needs_you':
+      return row.item.group === 'needs_you';
+    case 'mine':
+      return row.item.viewerIsAuthor;
+    case 'reviewing':
+      return row.item.viewerIsReviewer;
+    default:
+      return true;
+  }
+}
+
+/** Count of needs-you rows inside an already project/needle-filtered list. */
+export function countNeedsYouInAdmitted(rows: readonly PullsListedRow[]): number {
+  let count = 0;
+  for (const row of rows) {
+    if (row.item.group === 'needs_you') count += 1;
+  }
+  return count;
+}
+
 /** The number of rows the Needs you filter lists for the picked
  * `projects` and the find needle, whichever filter and sort are shown. */
 export function needsYouCount(snapshot: PRListSnapshot | null, backend: BackendKey, projects: readonly string[], needle = ''): number {
-  return admittedRows(snapshot, backend, { filter: 'needs_you', projects, needle }).length;
+  return countNeedsYouInAdmitted(admittedProjectRows(snapshot, backend, projects, needle));
 }
 
-/** The rows the filters and the find needle admit, grouped needs-you
- * first, each group in the remembered sort across projects. */
-export function groupRows(snapshot: PRListSnapshot | null, backend: BackendKey, filters: MRFilters, needle = ''): PullsGroup[] {
-  const admitted = admittedRows(snapshot, backend, { filter: filters.filter, projects: filters.projects, needle });
-  admitted.sort((a, b) => {
-    const ga = a.item.group === 'needs_you';
-    const gb = b.item.group === 'needs_you';
+/** Group and sort an already project/needle-filtered row set. */
+export function groupAdmittedRows(
+  projectRows: readonly PullsListedRow[],
+  backend: BackendKey,
+  filters: Pick<MRFilters, 'filter' | 'sort'>,
+): PullsGroup[] {
+  const prepared: Array<{ row: PullsListedRow; created: number; updated: number }> = [];
+  for (const row of projectRows) {
+    if (!admitsFilter(filters.filter, row)) continue;
+    prepared.push({
+      row,
+      created: timeOf(row.item.createdAt),
+      updated: timeOf(row.item.updatedAt),
+    });
+  }
+  prepared.sort((a, b) => {
+    const ga = a.row.item.group === 'needs_you';
+    const gb = b.row.item.group === 'needs_you';
     if (ga !== gb) return ga ? -1 : 1;
-    return compareRows(filters.sort, a.item, b.item);
+    return comparePreparedRows(filters.sort, a.row.item, b.row.item, a.created, b.created, a.updated, b.updated);
   });
   const groups: PullsGroup[] = [];
-  for (const row of admitted) {
+  for (const { row } of prepared) {
     const view = projectPullRow(row, backend, filters.sort.key);
     const last = groups[groups.length - 1];
     if (last && last.group === row.item.group) last.rows.push(view);
     else groups.push({ group: row.item.group, rows: [view] });
   }
   return groups;
+}
+
+/** The rows the filters and the find needle admit, grouped needs-you
+ * first, each group in the remembered sort across projects. */
+export function groupRows(snapshot: PRListSnapshot | null, backend: BackendKey, filters: MRFilters, needle = ''): PullsGroup[] {
+  return groupAdmittedRows(
+    admittedProjectRows(snapshot, backend, filters.projects, needle),
+    backend,
+    filters,
+  );
 }
 
 /** `sortKey` picks the time the age shows: the one the list is sorted by. */

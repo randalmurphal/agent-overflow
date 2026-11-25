@@ -523,9 +523,20 @@ const forkLineageDepthSQL = `SELECT COALESCE(MAX(depth), 0) FROM thread_fork_lin
 // forkLineageDepth is the number of ancestor levels threadID reads
 // through: zero for every thread that is not a pointer fork.
 func forkLineageDepth(q sqlQueryer, threadID string) (int, error) {
+	if crt, ok := q.(*contextReadTx); ok {
+		if depth, cached := crt.lineageDepths[threadID]; cached {
+			return depth, nil
+		}
+	}
 	var depth int
 	if err := q.QueryRow(forkLineageDepthSQL, threadID).Scan(&depth); err != nil {
 		return 0, fmt.Errorf("store: read fork lineage depth for %s: %w", threadID, err)
+	}
+	if crt, ok := q.(*contextReadTx); ok {
+		if crt.lineageDepths == nil {
+			crt.lineageDepths = make(map[string]int, 2)
+		}
+		crt.lineageDepths[threadID] = depth
 	}
 	return depth, nil
 }

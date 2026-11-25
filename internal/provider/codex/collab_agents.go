@@ -861,21 +861,25 @@ func (s *Session) rememberAgentMetaForProviderThread(providerThreadID string, pa
 }
 
 func providerThreadIDFromParams(params json.RawMessage) string {
-	// One top-level decode serves all three key probes — this runs per
-	// notification on the read-loop goroutine, so the former three
-	// readTopLevelString calls paid three full map decodes each time the
-	// earlier keys were absent.
-	var m map[string]json.RawMessage
-	if json.Unmarshal(params, &m) != nil {
+	// Flat struct decode avoids allocating a map[string]json.RawMessage
+	// plus per-key RawMessage unmarshals on every notification.
+	var fields struct {
+		ThreadID       string `json:"threadId"`
+		ConversationID string `json:"conversationId"`
+		Thread         struct {
+			ID string `json:"id"`
+		} `json:"thread"`
+	}
+	if json.Unmarshal(params, &fields) != nil {
 		return ""
 	}
-	if id := readRawString(m, "threadId"); id != "" {
-		return id
+	if fields.ThreadID != "" {
+		return fields.ThreadID
 	}
-	if id := readRawString(m, "conversationId"); id != "" {
-		return id
+	if fields.ConversationID != "" {
+		return fields.ConversationID
 	}
-	return readRawString(readRawObject(m, "thread"), "id")
+	return fields.Thread.ID
 }
 
 func subagentThreadStartedAgentPath(params json.RawMessage) string {
@@ -957,14 +961,14 @@ func (s *Session) maybeRememberCollabReceiverThreads(method string, params json.
 }
 
 func (s *Session) maybeRewriteCollabControlItemID(evt *provider.ProviderEvent, params json.RawMessage) {
-	if evt == nil {
+	if evt == nil || evt.Kind != provider.EventSubagentStatus {
 		return
 	}
 	item := readNestedObject(params, "item")
 	if item == nil {
 		return
 	}
-	if readRawString(item, "type") != "subAgentActivity" || evt.Kind != provider.EventSubagentStatus {
+	if readRawString(item, "type") != "subAgentActivity" {
 		return
 	}
 	kind := readRawString(item, "kind")

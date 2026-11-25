@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import { get, set, state } from 'svelte/internal/client';
 import ThreadGroupContextMenu from './ThreadGroupContextMenu.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { addProjectLocal } from '../../stores/projects.svelte';
@@ -261,5 +262,82 @@ describe('<ThreadGroupContextMenu>', () => {
     await flush();
     await flush();
     expect(archived).toEqual(['t1', 't2']);
+  });
+
+  it('acts on all members even when onClose synchronously flips reactive open to false', async () => {
+    const group = mkGroup();
+    const renderReactive = () => {
+      const openState = state(true);
+      const anchor = document.createElement('div');
+      document.body.appendChild(anchor);
+      const props = {
+        group,
+        pane: createThreadPane(),
+        anchor,
+        get open() {
+          return get(openState);
+        },
+        onClose: () => {
+          set(openState, false);
+        },
+        onRename: () => {},
+      };
+      return { openState, ...render(ThreadGroupContextMenu, { props }) };
+    };
+
+    // 1. Mark All Read
+    replaceAllThreads([
+      mkThread('t1', { latestTurnCompletedAt: 20, lastReadAt: 10 }),
+      mkThread('t2', { latestTurnCompletedAt: 20, lastReadAt: 10 }),
+    ]);
+    const marked: string[][] = [];
+    setBindingMock('MarkThreadsRead', async (ids: string[]) => {
+      marked.push(ids);
+      return ids.map((id) => ({ ...mkThread(id), latestTurnCompletedAt: 20, lastReadAt: 30 }));
+    });
+    const m1 = renderReactive();
+    await fireEvent.click(m1.getByRole('menuitem', { name: 'Mark All Read' }));
+    await flush();
+    await flush();
+    expect(get(m1.openState)).toBe(false);
+    expect(marked).toEqual([['t1', 't2']]);
+    m1.unmount();
+
+    // 2. Ungroup All
+    const setGroup = setBindingMock('SetThreadGroup', vi.fn(async () => []));
+    const m2 = renderReactive();
+    await fireEvent.click(m2.getByRole('menuitem', { name: 'Ungroup All' }));
+    await flush();
+    expect(get(m2.openState)).toBe(false);
+    expect(setGroup).toHaveBeenCalledWith(['t1', 't2'], '');
+    m2.unmount();
+
+    // 3. Archive Threads (unconfirmed)
+    await primeSettings({ confirmArchive: false });
+    setBindingMock('StopSession', async () => {});
+    const archivedFast: string[] = [];
+    setBindingMock('ArchiveThread', async (id: string) => { archivedFast.push(id); return {}; });
+    const m3 = renderReactive();
+    await fireEvent.click(m3.getByRole('menuitem', { name: 'Archive Threads (2)' }));
+    await flush();
+    await flush();
+    expect(get(m3.openState)).toBe(false);
+    expect(archivedFast).toEqual(['t1', 't2']);
+    m3.unmount();
+
+    // 4. Archive Threads (confirmed)
+    replaceAllThreads([mkThread('t1'), mkThread('t2')]);
+    await primeSettings({ confirmArchive: true });
+    const archivedConfirmed: string[] = [];
+    setBindingMock('ArchiveThread', async (id: string) => { archivedConfirmed.push(id); return {}; });
+    const m4 = renderReactive();
+    await fireEvent.click(m4.getByRole('menuitem', { name: 'Archive Threads (2)' }));
+    await tick();
+    expect(get(m4.openState)).toBe(false);
+    await fireEvent.click(m4.getByRole('button', { name: 'Archive' }));
+    await flush();
+    await flush();
+    expect(archivedConfirmed).toEqual(['t1', 't2']);
+    m4.unmount();
   });
 });
