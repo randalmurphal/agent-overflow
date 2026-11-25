@@ -809,3 +809,64 @@ func TestWhatASaveWritesTheReaderAccepts(t *testing.T) {
 		})
 	}
 }
+
+// Start work's defaults are stored per site and tracker project, with the
+// site as its connection names it, an entry that sets nothing dropped, an
+// assign set to off kept apart from one not set, and read back from the
+// file as saved; an entry that names no key's prefix, a project twice, or
+// a branch token of no name is refused.
+func TestStartWorkDefaultsAreSavedPerTrackerProject(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	off := false
+	save := m.saveSetup(t, m.project(), Setup{StartWork: []StartWorkDefaults{
+		{Tracker: "jira", Site: jiraSiteIn, Project: "WEB", Status: "10001", Assign: &off, Branch: "{key}-{title}", Repository: "project-2"},
+		{Tracker: "jira", Site: m.conn.Site, Project: "APP"},
+		{Tracker: "jira", Site: m.conn.Site, Project: "OPS", Branch: "feature/{key}"},
+	}})
+	want := []StartWorkDefaults{
+		{Tracker: "jira", Site: m.conn.Site, Project: "OPS", Branch: "feature/{key}"},
+		{Tracker: "jira", Site: m.conn.Site, Project: "WEB", Status: "10001", Assign: &off, Branch: "{key}-{title}", Repository: "project-2"},
+	}
+	same := func(got []StartWorkDefaults) bool {
+		return slices.EqualFunc(got, want, func(a, b StartWorkDefaults) bool {
+			return a.Tracker == b.Tracker && a.Site == b.Site && a.Project == b.Project && a.Status == b.Status &&
+				(a.Assign == nil) == (b.Assign == nil) && (a.Assign == nil || *a.Assign == *b.Assign) && a.Branch == b.Branch && a.Repository == b.Repository
+		})
+	}
+	if !same(save.Stored.Setup.StartWork) {
+		t.Fatalf("start work as stored: %+v", save.Stored.Setup.StartWork)
+	}
+	data, err := os.ReadFile(m.setupPathOf(t, m.project()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"start_work": {`) || !strings.Contains(string(data), `"assign": false`) || strings.Contains(string(data), `"status": ""`) {
+		t.Fatalf("the file:\n%s", data)
+	}
+	held, err := readSetupFile(m.setupPathOf(t, m.project()))
+	if err != nil || !same(held.view.Setup.StartWork) {
+		t.Fatalf("start work as the file is read again: %+v, %v", held, err)
+	}
+
+	for name, c := range map[string]struct {
+		entry StartWorkDefaults
+		says  string
+	}{
+		"a lower-case project":  {StartWorkDefaults{Tracker: "jira", Site: m.conn.Site, Project: "web", Status: "1"}, "not a key's prefix"},
+		"a one-letter project":  {StartWorkDefaults{Tracker: "jira", Site: m.conn.Site, Project: "W", Status: "1"}, "not a key's prefix"},
+		"a token of no name":    {StartWorkDefaults{Tracker: "jira", Site: m.conn.Site, Project: "WEB", Branch: "{key}-{summary}"}, "only tokens are {key} and {title}"},
+		"a template over bound": {StartWorkDefaults{Tracker: "jira", Site: m.conn.Site, Project: "WEB", Branch: strings.Repeat("b", setupMaxBranchTemplate+1)}, "over 100 bytes"},
+	} {
+		_, err := m.svc.SetProjectSetup(m.project(), save.Stored.Revision, Setup{StartWork: []StartWorkDefaults{c.entry}})
+		if !errors.Is(err, ErrInvalidSetup) || !strings.Contains(err.Error(), c.says) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	twice := Setup{StartWork: []StartWorkDefaults{
+		{Tracker: "jira", Site: m.conn.Site, Project: "WEB", Status: "1"}, {Tracker: "jira", Site: jiraSiteIn, Project: "WEB", Status: "2"},
+	}}
+	if _, err := m.svc.SetProjectSetup(m.project(), save.Stored.Revision, twice); !errors.Is(err, ErrInvalidSetup) || !strings.Contains(err.Error(), "twice") {
+		t.Errorf("a project twice: %v", err)
+	}
+}
