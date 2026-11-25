@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -293,5 +295,77 @@ func TestPokerTokensAreNotLogged(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"contextToken":"\u003credacted\u003e"`) {
 		t.Fatalf("the invoke's token was not replaced: %s", raw)
+	}
+}
+
+// F6: the add-on's poll (a listing and a read of the votes) costs as much
+// on a site of 5,000 issues as on one of none, since a read saves no copy
+// of the site.
+func TestPokerPollCostDoesNotGrowWithTheSite(t *testing.T) {
+	const runs = 20
+	perPoll := func(issues int) uint64 {
+		g, _ := pokerRig(t, true)
+		f := testFixture()
+		site := &f.Jira[0]
+		site.Poker = &JiraPoker{}
+		for i := range issues {
+			n := strconv.Itoa(i + 2)
+			site.Issues = append(site.Issues, JiraIssue{Key: "WEB-" + n, Project: "WEB", Type: "10001", Summary: "Issue " + n})
+		}
+		if err := g.e.Seed(f); err != nil {
+			t.Fatal(err)
+		}
+		p := pokerClient{t: t, g: g}
+		token, claims := p.token()
+		p.round(token, claims["contextIds"])
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		for range runs {
+			p.round(token, claims["contextIds"])
+		}
+		runtime.ReadMemStats(&after)
+		return (after.TotalAlloc - before.TotalAlloc) / runs
+	}
+	empty, large := perPoll(0), perPoll(5000)
+	t.Logf("a poll: %d bytes with no issues, %d with 5,000", empty, large)
+	if large > empty+16<<10 {
+		t.Errorf("a poll allocates %d bytes on 5,000 issues, %d on none", large, empty)
+	}
+}
+
+// F6: the gateway's reads are the listing and an invoke of a poker app
+// GET, and they change nothing; every other request, one that does not
+// decode included, is a write.
+func TestGatewayReadsAreItsReadsOnly(t *testing.T) {
+	invoke := func(method string) string {
+		b, err := json.Marshal(map[string]any{"operationName": "Invoke", "query": pokerInvokeDocument, "variables": map[string]any{"input": map[string]any{
+			"payload": map[string]any{"call": map[string]any{"payload": map[string]any{"method": method, "path": pokerRoutesRoot + "planningPoker/10101"}}},
+		}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	for body, reads := range map[string]bool{
+		`{"operationName":"Ext","query":"q","variables":{}}`: true,
+		invoke("GET"):    true,
+		invoke("PUT"):    false,
+		invoke("DELETE"): false,
+		`{"operationName":"Other","query":"q","variables":{}}`:                       false,
+		`{"operationName":"Invoke","query":"q","variables":{"input":{"unknown":1}}}`: false,
+		`{"operationName":"Ext"`: false,
+	} {
+		if got := gatewayReads([]byte(body)); got != reads {
+			t.Errorf("%s reads %v, want %v", body, got, reads)
+		}
+	}
+
+	g, _ := pokerRig(t, true)
+	p := pokerClient{t: t, g: g}
+	token, claims := p.token()
+	before := g.state(t)
+	p.round(token, claims["contextIds"])
+	if after := g.state(t); after != before {
+		t.Fatalf("the listing and the read changed the site:\n got %+v\nwant %+v", after, before)
 	}
 }

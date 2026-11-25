@@ -202,6 +202,27 @@ func gateway(c *jiraCall) answer {
 	return unhandledf("gateway operation %q with a document other than the measured ones", req.OperationName)
 }
 
+// gatewayReads reports a gateway request that changes nothing: the
+// listing, and an invoke of a poker app GET (pokerBackend's one read).
+// Any other request, one that does not decode included, is a write, so
+// its run saves the site (txn.go).
+func gatewayReads(body []byte) bool {
+	var req gatewayRequest
+	if decodeStrict(body, &req, false) != nil {
+		return false
+	}
+	switch req.OperationName {
+	case gatewayListOperation:
+		return true
+	case gatewayInvoke:
+		var vars struct {
+			Input invokeInput `json:"input"`
+		}
+		return decodeStrict(req.Variables, &vars, false) == nil && vars.Input.Payload.Call.Payload.Method == http.MethodGet
+	}
+	return false
+}
+
 // listExtensions lists the site's issue panels (measured: one context
 // whose extensionsByType lists every issue panel, all members strings;
 // the poker panel only while the add-on is installed).

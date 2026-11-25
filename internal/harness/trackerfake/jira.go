@@ -107,7 +107,7 @@ func (j jiraService) route(e *Engine, x *exchange) match {
 		return match{unhandled: why}
 	}
 	c := &jiraCall{e: e, s: s, x: x, params: params, query: q, viewer: x.account}
-	return match{name: r.name(), reads: r.reads, run: func() answer { return forAccount(dated(r.handle(c), e.now()), c.viewer) }}
+	return match{name: r.name(), reads: r.readsFor(x), run: func() answer { return forAccount(dated(r.handle(c), e.now()), c.viewer) }}
 }
 
 // forAccount is a naming the account it was made for. Measured: every

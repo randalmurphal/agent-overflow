@@ -25,7 +25,7 @@ var jiraRoutes = []jiraRoute{
 
 	// Planning poker (jira_poker.go).
 	{method: "GET", pattern: "_edge/tenant_info", reads: true, handle: tenantInfo},
-	{method: "POST", pattern: "gateway/api/graphql", handle: gateway},
+	{method: "POST", pattern: "gateway/api/graphql", readsWhen: gatewayReads, handle: gateway},
 	{method: "POST", pattern: "rest/internal/2/forge/context/token", handle: contextToken},
 
 	{method: "GET", pattern: api + "user", query: []string{"accountId"}, reads: true, handle: getUser},
