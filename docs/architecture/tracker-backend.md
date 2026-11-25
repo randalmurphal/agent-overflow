@@ -337,14 +337,24 @@ no step runs at root creation, restore or start.
 - **A replace** names the revision it was built from, the SHA-256 of the
   file's bytes (empty for no file). When the file moved since, nothing is
   written and the answer carries the setup stored now. An empty setup
-  removes the file. The write is atomic (`atomicfile`, 0600).
+  removes the file. The write is atomic (`atomicfile`, 0600), and both a
+  write and a removal sync the directory. A write or a removal that fails
+  fails as `tracker_setup_unsure`, which says the change may or may not be
+  stored and names the file: a failed directory sync follows the rename
+  or the unlink, and `atomicfile` does not tell it from an earlier step's
+  failure.
 - **A file that cannot be read** or does not validate is refused with its
   path and why, never read as empty and never overwritten. It refuses
   that project's reads, saves and board subscribes, and no other
   project's; the next use reads it again.
 - **The service holds a project's setup** from its first use, by the
-  project's slug, under `setupMu`. A save replaces it; a file edited by
-  hand while the app runs is read by the next save or the next start.
+  project's slug, under `setupMu`: the file as the service last saw it. A
+  save holds what it saw: the file it read, refused or not, or the setup
+  it wrote. A save that cannot read the file, or whose write may or may
+  not have happened, holds nothing, so the next use reads the file; the
+  project's boards read again and the change is told, as for any change
+  of what is held (`setupMoved`). A file edited by hand while the app
+  runs is read by the next save or the next start.
 - **Status groups apply to a board read** as a bound argument
   (`store.MirrorRegroup`), resolved from the board handle's project and
   its connection's site, so two projects that list one board each read it
@@ -1415,7 +1425,9 @@ selected computer.
   with the stored one, in order with which board opens first, in the
   store's transaction), `tracker_setup_unreadable` (with the file's
   path and why), `tracker_setup_newer`, `tracker_setup_refused` (with the
-  reason), `tracker_attachment_unknown`,
+  reason), `tracker_setup_unsure` (a write or removal of the setup file
+  that may or may not have happened, with the file and why),
+  `tracker_attachment_unknown`,
   `tracker_write_unclear`, `tracker_unsupported` and
   `tracker_request_invalid` (whose sentence quotes what the request got
   wrong). A tracker call that failed is `tracker_failed_<kind>` with

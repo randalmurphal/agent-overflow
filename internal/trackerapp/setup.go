@@ -41,11 +41,13 @@ import (
 // the stored one differs. A file that cannot be read or does not validate
 // is refused as what it is, never read as empty and never overwritten.
 //
-// The service holds each used project's setup in memory, by slug, loaded
-// from the file on its first use and replaced by a save, both under
-// setupMu; a file edited by hand while the app runs is read again only by
-// the next save (whose comparison is with the file) or the next start. A
-// file that cannot be read is not held, so each use reads it again.
+// The service holds each used project's setup in memory, by slug, under
+// setupMu: the file as the service last saw it, loaded at its first use.
+// A save reads the file again and holds what it saw: what it read, or
+// what it wrote. A save that cannot read the file, or whose write or
+// removal failed, holds nothing, and neither does a first use that cannot
+// read it, so the next use reads the file again. A file edited by hand
+// while the app runs is read by the next save or the next start.
 
 const (
 	// setupFileName is the setup's file in the project's app directory.
@@ -74,6 +76,11 @@ var (
 	// ErrInvalidSetup is a setup a replace gives that does not validate;
 	// SetupError says why.
 	ErrInvalidSetup = errors.New("trackerapp: invalid tracker setup")
+	// ErrSetupWriteUnsure is a replace whose write or removal of the file
+	// failed, after which the file may hold the change or not: a failed
+	// directory sync follows the rename or the unlink. SetupWriteError
+	// says which file and why.
+	ErrSetupWriteUnsure = errors.New("trackerapp: the project's tracker setup file may or may not hold this change")
 )
 
 // SetupFileError is a setup file that cannot be read or does not
@@ -88,6 +95,22 @@ func (e *SetupFileError) Error() string {
 
 // Is matches ErrSetupUnreadable.
 func (e *SetupFileError) Is(target error) bool { return target == ErrSetupUnreadable }
+
+// SetupWriteError is a replace whose write or removal of the file at Path
+// failed, with why. The file holds the change or the setup before it.
+type SetupWriteError struct {
+	Path string
+	Err  error
+}
+
+func (e *SetupWriteError) Error() string {
+	return fmt.Sprintf("%s: %s: %v", ErrSetupWriteUnsure, e.Path, e.Err)
+}
+
+// Is matches ErrSetupWriteUnsure.
+func (e *SetupWriteError) Is(target error) bool { return target == ErrSetupWriteUnsure }
+
+func (e *SetupWriteError) Unwrap() error { return e.Err }
 
 // SetupError is a setup that does not validate, with why.
 type SetupError struct {
@@ -241,11 +264,12 @@ func (s *Service) ProjectSetup(projectID string) (SetupView, error) {
 // A setup that does not validate fails with ErrInvalidSetup, a stored
 // file that cannot be read with ErrSetupUnreadable (it is not
 // overwritten), and a change to a section a newer version saved with
-// ErrSetupNewer. An empty setup removes the file, unless it keeps a
-// section a newer version saved. A save that changed a site's status
-// groups has every board subscription of the project on that site read
-// again (ReadAgain), and every change of what is stored is told
-// (Deps.SetupChanged).
+// ErrSetupNewer, and a write or removal of the file that failed with
+// ErrSetupWriteUnsure (the file may hold the change or not). An empty
+// setup removes the file, unless it keeps a section a newer version
+// saved. What the save saw of the file is what the service holds after
+// it, refused or failed (replaceSetup), and who is told follows from that
+// (setupMoved).
 func (s *Service) SetProjectSetup(projectID, revision string, setup Setup) (SetupSave, error) {
 	if err := s.enter(); err != nil {
 		return SetupSave{}, err
@@ -260,83 +284,91 @@ func (s *Service) SetProjectSetup(projectID, revision string, setup Setup) (Setu
 		return SetupSave{}, err
 	}
 	save, before, after, err := s.replaceSetup(slug, revision, setup)
+	s.setupMoved(slug, before, after)
 	if err != nil {
 		return SetupSave{}, err
 	}
-	s.setupMoved(slug, before, after)
 	return save, nil
 }
 
 // replaceSetup does SetProjectSetup's work under setupMu, comparing the
 // revision with the file's bytes, and returns the held setup before and
-// after (before nil when none was held).
+// after, each nil when none is held. After is what the save last saw of
+// the file, which the service holds when it returns, whatever it returns:
+// the file it read, or the setup it wrote; nil when it could not read the
+// file, or its write may or may not have happened, so the next use reads
+// the file.
 func (s *Service) replaceSetup(slug, revision string, setup Setup) (save SetupSave, before, after *heldSetup, err error) {
 	s.setupMu.Lock()
 	defer s.setupMu.Unlock()
 	before = s.setups[slug]
+	defer func() {
+		if after == nil {
+			delete(s.setups, slug)
+		} else {
+			s.setups[slug] = after
+		}
+	}()
 	path := s.setupPath(slug)
-	stored, err := readSetupFile(path)
-	if err != nil {
-		return SetupSave{}, nil, nil, err
+	if after, err = readSetupFile(path); err != nil {
+		return SetupSave{}, before, nil, err
 	}
-	if stored.view.Revision != revision {
-		s.setups[slug] = stored
-		return SetupSave{Refused: setupChangedSentence, Stored: stored.view}, before, stored, nil
+	if after.view.Revision != revision {
+		return SetupSave{Refused: setupChangedSentence, Stored: after.view}, before, after, nil
 	}
-	for _, name := range stored.view.Newer {
+	for _, name := range after.view.Newer {
 		if (name == sectionStatusGroups && len(setup.StatusGroups) > 0) || (name == sectionTicketPins && len(setup.TicketPins) > 0) {
-			return SetupSave{}, nil, nil, fmt.Errorf("%w: section %s", ErrSetupNewer, name)
+			return SetupSave{}, before, after, fmt.Errorf("%w: section %s", ErrSetupNewer, name)
 		}
 	}
-	data, err := encodeSetup(setup, stored.raw)
+	data, err := encodeSetup(setup, after.raw)
 	if err != nil {
-		return SetupSave{}, nil, nil, err
+		return SetupSave{}, before, after, err
+	}
+	written, err := heldOf(setup, after.raw, after.view.Newer, setupRevision(data))
+	if err != nil {
+		return SetupSave{}, before, after, err
 	}
 	if data == nil {
-		if err := atomicfile.Remove(path); err != nil {
-			return SetupSave{}, nil, nil, fmt.Errorf("trackerapp: remove the tracker setup file %s: %w", path, err)
-		}
-	} else if err := atomicfile.Write(path, data); err != nil {
-		return SetupSave{}, nil, nil, fmt.Errorf("trackerapp: write the tracker setup file %s: %w", path, err)
+		err = atomicfile.Remove(path)
+	} else {
+		err = atomicfile.Write(path, data)
 	}
-	if after, err = heldOf(setup, stored.raw, stored.view.Newer, setupRevision(data)); err != nil {
-		return SetupSave{}, nil, nil, err
+	if err != nil {
+		return SetupSave{}, before, nil, &SetupWriteError{Path: path, Err: err}
 	}
-	s.setups[slug] = after
-	return SetupSave{Saved: true, Stored: after.view}, before, after, nil
+	return SetupSave{Saved: true, Stored: written.view}, before, written, nil
 }
 
 // setupMoved tells what a change of slug's held setup from before to
-// after moves: every board subscription of the project on a site whose
-// status groups changed reads again, and a change of what is stored is
-// told. A setup held for the first time (before nil) was read by no
-// board, so only the telling applies.
+// after moves, either nil when none is held: every board subscription of
+// the project on a site whose status groups changed reads again, and a
+// change of what is stored is told. A side that holds nothing is not
+// known to agree with the other on any site, so every site counts as
+// moved: a board of the project read with groups that may be stale, or
+// failed to read them, reads again.
 func (s *Service) setupMoved(slug string, before, after *heldSetup) {
-	if before != nil && before.view.Revision == after.view.Revision {
+	switch {
+	case before == nil && after == nil:
+		return
+	case before != nil && after != nil && before.view.Revision == after.view.Revision:
 		return
 	}
-	if before != nil {
-		moved := map[siteKey]bool{}
-		for site, g := range before.groups {
-			moved[site] = after.groups[site].version != g.version
-		}
-		for site, g := range after.groups {
-			moved[site] = moved[site] || before.groups[site].version != g.version
-		}
-		s.readBoardsAgain(slug, moved)
-	}
+	s.readBoardsAgain(slug, func(site siteKey) bool {
+		return before == nil || after == nil || before.groups[site].version != after.groups[site].version
+	})
 	s.setupChanged()
 }
 
 // readBoardsAgain has every board pump with a handle of project slug on a
-// site moved names send ReadAgain.
-func (s *Service) readBoardsAgain(slug string, moved map[siteKey]bool) {
+// site moved holds for send ReadAgain.
+func (s *Service) readBoardsAgain(slug string, moved func(siteKey) bool) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	told := map[*boardPump]bool{}
 	for _, h := range s.subs.handles {
 		p := h.board
-		if p == nil || told[p] || h.setup.slug != slug || !moved[h.setup.site] || p.over || p.core.DeadLocked() {
+		if p == nil || told[p] || h.setup.slug != slug || !moved(h.setup.site) || p.over || p.core.DeadLocked() {
 			continue
 		}
 		told[p] = true

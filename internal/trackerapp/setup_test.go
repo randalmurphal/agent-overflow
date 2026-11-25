@@ -574,3 +574,97 @@ func TestClearingTheSetupSyncsItsDirectory(t *testing.T) {
 		t.Fatalf("the clear left its file: %v", err)
 	}
 }
+
+// fileSetupJSON is a setup file that puts the fixture's site's status s1
+// in group.
+func (m *mirrorFixture) fileSetupJSON(group string) string {
+	return `{"status_groups": {"version": 1, "sites": [{"tracker": "jira", "site": "` + m.conn.Site + `", "statuses": {"s1": "` + group + `"}}]}}`
+}
+
+// A save that finds the file unreadable holds no setup, so every later use
+// reads the file again: an open board's read and the setup's read fail as
+// a first use does, and once the file is mended they take what it holds.
+// The project's boards read again and the change is told.
+func TestASaveThatFindsTheFileUnreadableHoldsNoSetup(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.tracks([]tracker.Row{row("10002", 1_799_000_000_000, "b")})
+	save := m.saveSetup(t, m.project(), m.regrouped(map[string]string{"s1": "done"}))
+	sub := m.subscribeShown(t, m.project())
+	held := m.viewOf(t, sub.ID).Groups
+	m.writeSetupFile(t, m.project(), "{not json")
+	n, told := m.boardEventCount(), m.events.setups.Load()
+	if _, err := m.svc.SetProjectSetup(m.project(), save.Stored.Revision, m.regrouped(map[string]string{"s1": "todo"})); !errors.Is(err, ErrSetupUnreadable) {
+		t.Fatalf("a save over an unreadable file = %v", err)
+	}
+	if !m.readAgainSince(n) || m.events.setups.Load() != told+1 {
+		t.Fatalf("the save that found the file unreadable: read again %v, told %d times", m.readAgainSince(n), m.events.setups.Load()-told)
+	}
+	if _, err := m.svc.ProjectSetup(m.project()); !errors.Is(err, ErrSetupUnreadable) {
+		t.Fatalf("the setup's read after = %v; want the file unreadable", err)
+	}
+	if _, _, err := m.svc.SubscriptionBoard(sub.ID); !errors.Is(err, ErrSetupUnreadable) {
+		t.Fatalf("the open board's read after = %v; want the file unreadable", err)
+	}
+
+	mended := m.fileSetupJSON("left_out")
+	m.writeSetupFile(t, m.project(), mended)
+	sum := sha256.Sum256([]byte(mended))
+	if got := must[SetupView](t)(m.svc.ProjectSetup(m.project())); got.Revision != hex.EncodeToString(sum[:]) {
+		t.Fatalf("the mended file's setup = %+v", got)
+	}
+	if v := m.viewOf(t, sub.ID); v.Groups == "" || v.Groups == held || !slices.Equal(v.LeftOut, []string{"s1"}) {
+		t.Fatalf("the open board after the file was mended: groups %q (held %q), left out %v", v.Groups, held, v.LeftOut)
+	}
+}
+
+// A save whose write may have happened (its directory sync failed after
+// the rename) fails saying so, and holds no setup: the next use reads the
+// file, which here holds the save's setup. The project's boards read
+// again and the change is told; a clear is the same.
+func TestASaveWhoseSyncFailedHoldsWhatTheFileHolds(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.tracks([]tracker.Row{row("10002", 1_799_000_000_000, "b")})
+	save := m.saveSetup(t, m.project(), m.regrouped(map[string]string{"s1": "done"}))
+	sub := m.subscribeShown(t, m.project())
+	held := m.viewOf(t, sub.ID).Groups
+	path := m.setupPathOf(t, m.project())
+	unsyncableDir(t, filepath.Dir(path))
+
+	n, told := m.boardEventCount(), m.events.setups.Load()
+	_, err := m.svc.SetProjectSetup(m.project(), save.Stored.Revision, m.regrouped(map[string]string{"s1": "left_out"}))
+	var unsure *SetupWriteError
+	if !errors.As(err, &unsure) || unsure.Path != path || !strings.Contains(err.Error(), "sync dir") {
+		t.Fatalf("a save whose sync failed = %v; want a SetupWriteError for %s", err, path)
+	}
+	if !m.readAgainSince(n) || m.events.setups.Load() != told+1 {
+		t.Fatalf("the save whose sync failed: read again %v, told %d times", m.readAgainSince(n), m.events.setups.Load()-told)
+	}
+	onDisk, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(onDisk)
+	got := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
+	if got.Revision != hex.EncodeToString(sum[:]) || got.Revision == save.Stored.Revision {
+		t.Fatalf("the setup after = %+v; want the file's, revision %x", got, sum)
+	}
+	if v := m.viewOf(t, sub.ID); v.Groups == held || !slices.Equal(v.LeftOut, []string{"s1"}) {
+		t.Fatalf("the open board after: groups %q (held %q), left out %v", v.Groups, held, v.LeftOut)
+	}
+
+	n, told = m.boardEventCount(), m.events.setups.Load()
+	if _, err := m.svc.SetProjectSetup(m.project(), got.Revision, Setup{}); !errors.As(err, &unsure) {
+		t.Fatalf("a clear whose sync failed = %v; want a SetupWriteError", err)
+	}
+	if !m.readAgainSince(n) || m.events.setups.Load() != told+1 {
+		t.Fatalf("the clear whose sync failed: read again %v, told %d times", m.readAgainSince(n), m.events.setups.Load()-told)
+	}
+	if got := must[SetupView](t)(m.svc.ProjectSetup(m.project())); got.Revision != "" {
+		t.Fatalf("the setup after the clear = %+v; want none, as the file is gone", got)
+	}
+	if v := m.viewOf(t, sub.ID); v.Groups != "" {
+		t.Fatalf("the open board after the clear reads with groups %q", v.Groups)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -156,6 +157,7 @@ func TestTrackerSetupRefusalsSayWhatToDo(t *testing.T) {
 	sentences := map[string]bool{}
 	for _, err := range []error{
 		&trackerapp.SetupFileError{Path: path, Reason: "x"}, trackerapp.ErrSetupNewer, &trackerapp.SetupError{Reason: "x"}, trackerapp.ErrStalePage,
+		&trackerapp.SetupWriteError{Path: path, Err: errors.New("x")},
 		trackerapp.ErrInvalidBoards, trackerapp.ErrBoardsChanged, trackerapp.ErrProjectNotFound,
 	} {
 		_, message := trackerRefusal(err)
@@ -163,5 +165,43 @@ func TestTrackerSetupRefusalsSayWhatToDo(t *testing.T) {
 			t.Errorf("%v shares the sentence %q", err, message)
 		}
 		sentences[message] = true
+	}
+}
+
+// A save whose write may or may not have happened says so, names the
+// file, and says that the setup shown is the file's: the setup's read
+// answers what the file holds.
+func TestATrackerSetupWriteThatMayHaveHappenedSaysSo(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("a directory is not synced on Windows")
+	}
+	f := newTrackerBoardFixture(t)
+	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
+	groups := func(group string) trackerapp.Setup {
+		return trackerapp.Setup{StatusGroups: []trackerapp.SiteStatusGroups{
+			{Tracker: store.TrackerKindJira, Site: f.conn.Site, Statuses: map[string]string{"10001": group}},
+		}}
+	}
+	save, err := f.a.SetProjectTrackerSetup(ctx, f.project, "", groups("done"))
+	if err != nil || !save.Saved {
+		t.Fatalf("the first save = %+v, %v", save, err)
+	}
+	path := f.setupPath(t)
+	// Write and search without read: the file is renamed into place, and
+	// the directory's sync, which opens it, fails.
+	if err := os.Chmod(filepath.Dir(path), 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Dir(path), 0o700) })
+	_, err = f.a.SetProjectTrackerSetup(ctx, f.project, save.Stored.Revision, groups("left_out"))
+	code, message, _ := errorsx.PublicDetails(err)
+	if code != "tracker_setup_unsure" || !errors.Is(err, trackerapp.ErrSetupWriteUnsure) || !strings.Contains(message, "may or may not be stored") ||
+		!strings.Contains(message, path) || !strings.Contains(message, "the setup shown is what that file holds now") {
+		t.Fatalf("a save whose sync failed = %v (code %q, %q)", err, code, message)
+	}
+	got, err := f.a.ProjectTrackerSetup(ctx, f.project)
+	if err != nil || len(got.StatusGroups) != 1 || got.StatusGroups[0].Statuses["10001"] != "left_out" {
+		t.Fatalf("the setup after = %+v, %v; want the file's, which holds the change", got, err)
 	}
 }
