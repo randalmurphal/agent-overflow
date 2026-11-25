@@ -194,6 +194,21 @@ describe('the Issues pane', () => {
     expect(within(view.getAllByTestId('issues-column')[1]).getByTestId('issues-column-empty')).toHaveTextContent('Nothing here');
   });
 
+  it('says a column its first read did not carry is loading, and not read yet when that read fails', async () => {
+    const view0 = kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] });
+    install({ view: { ...view0, sections: view0.sections.slice(0, 1) } as BoardView });
+    let fail: (err: unknown) => void = () => {};
+    setBindingMock('TrackerSectionRows', () => new Promise((_resolve, reject) => { fail = reject; }));
+    const view = mount();
+    const doing = () => within(view.getAllByTestId('issues-column')[1]);
+    await waitFor(() => expect(doing().getByTestId('issues-column-loading').textContent?.trim()).toBe('Loading…'));
+    fail(new TransportError('timeout', 'the computer did not answer in time'));
+    await waitFor(() => expect(doing().getByTestId('issues-column-unread')).toHaveTextContent('Not read yet'));
+    expect(doing().queryByTestId('issues-column-empty')).toBeNull();
+    expect(view.getByTestId('issues-read-error')).toBeInTheDocument();
+    view.unmount();
+  });
+
   it('hides the fields Display turns off, for this board', async () => {
     install({ view: kanban({ rows: [row('1', 'a', 's1', { labels: [{ id: 'l', name: 'backend' }] })] }, { rows: [] }) });
     const view = mount();

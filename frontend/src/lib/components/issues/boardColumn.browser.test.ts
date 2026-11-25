@@ -40,7 +40,7 @@ function card(i: number): RowView {
 }
 
 function column(rows: RowView[], more: boolean): ScreenColumn {
-  return { name: 'To Do', statusGroups: ['todo'], rows, moreFrom: more ? 0 : null, total: { rows: more ? rows.length + 500 : rows.length, estimate: 0 } };
+  return { name: 'To Do', statusGroups: ['todo'], rows, moreFrom: more ? 0 : null, total: { rows: more ? rows.length + 500 : rows.length, estimate: 0 }, unread: false };
 }
 
 function mountColumn(rows: RowView[], more: boolean) {

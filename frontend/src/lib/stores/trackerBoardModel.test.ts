@@ -122,15 +122,16 @@ function row(id: string, order: string, status: string, extra: Partial<CardView>
   return { order, estimate: 2, card: { id, key: `WEB-${id}`, title: `Issue ${id}`, status: { id: status }, created: 0, updated: 0, ...extra } } as RowView;
 }
 
-function sprintBoard(rowsBySprint: Record<string, RowView[]>, more: string[] = []): HeldBoard {
+function sprintBoard(rowsBySprint: Record<string, RowView[]>, more: string[] = [], unread: string[] = []): HeldBoard {
   const columns = [
     { name: 'To Do', statuses: [{ id: 's1', group: 'todo' }], total: { rows: 0, estimate: 0 } },
     { name: 'In Progress', statuses: [{ id: 's2', group: 'in_progress' }], total: { rows: 0, estimate: 0 } },
   ];
   const view = {
     id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: true, estimate: { unit: 'points' },
-    columns, sprints: Object.keys(rowsBySprint).map((id) => ({ id, name: id, state: 'active', total: { rows: 0, estimate: 0 } })),
+    columns, sprints: [...Object.keys(rowsBySprint), ...unread].map((id) => ({ id, name: id, state: 'active', total: { rows: 0, estimate: 0 } })),
     all: { rows: 0, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: {},
+    screen: [...Object.keys(rowsBySprint), ...unread].map((id) => ({ kind: 'sprint', sprint: id })),
     sections: Object.entries(rowsBySprint).map(([id, rows]) => ({
       section: { kind: 'sprint', sprint: id }, rows,
       next: more.includes(id) ? { order: 'z', issue: 'z', lifetime: 1, revision: 1 } : null,
@@ -162,6 +163,24 @@ describe('the Board screen', () => {
   it('has no column total while a sprint is still loading, and names the section to load', () => {
     const cols = screenColumns(sprintBoard({ '8': [row('1', 'a', 's1')] }, ['8']));
     expect(cols.map((c) => [c.total, c.moreFrom])).toEqual([[null, 0], [null, 0]]);
+  });
+
+  it('holds a screen section the view did not carry as unread until its first page, and keeps a patch off it', () => {
+    const held = sprintBoard({ '8': [row('1', 'a', 's1')] }, [], ['9']);
+    expect(held.sections.map((s) => [s.section, s.rows.length, s.unread ?? false])).toEqual([
+      [{ kind: 'sprint', sprint: '8' }, 1, false],
+      [{ kind: 'sprint', sprint: '9' }, 0, true],
+    ]);
+    expect(screenColumns(held).map((c) => [c.total, c.moreFrom, c.unread])).toEqual([[null, 1, false], [null, 1, false]]);
+    expect(screenColumns(sprintBoard({}, [], ['9'])).map((c) => c.unread)).toEqual([true, true]);
+
+    const patch = { lifetime: 1, revision: 2, sections: [{ rows: [] }, { rows: [row('2', 'b', 's1')] }] } as unknown as BoardPatch;
+    const patched = applyBoardPatch(held, ['2'], patch, (r) => r);
+    expect(patched.sections[1]).toBe(held.sections[1]);
+
+    const read = appendPage(patched, 1, { section: { kind: 'sprint', sprint: '9' }, rows: [row('2', 'b', 's1')], next: null } as SectionPage, (r) => r);
+    expect(read.sections[1]).toEqual({ section: { kind: 'sprint', sprint: '9' }, rows: [row('2', 'b', 's1')], next: null });
+    expect(screenColumns(read).map((c) => [c.rows.map((r) => r.card.id), c.moreFrom, c.unread])).toEqual([[['1', '2'], null, false], [[], null, false]]);
   });
 });
 

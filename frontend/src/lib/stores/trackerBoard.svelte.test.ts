@@ -276,6 +276,24 @@ describe('the board subscription', () => {
     board.release();
   });
 
+  it('leaves a page read that timed out for Refresh, so a column nearing its end does not ask again and again', async () => {
+    const mocks = install({ view: view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true }) });
+    mocks.page.mockImplementation(async () => {
+      throw new TransportError('timeout', 'the computer did not answer in time');
+    });
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    loadMoreOfSection(board.key, COLUMN);
+    await flush();
+    expect(board.current?.readError).toBeInstanceOf(TransportError);
+    expect(board.current?.paging.size).toBe(0);
+    // The column stopped loading and asks for its next page again.
+    loadMoreOfSection(board.key, COLUMN);
+    await flush();
+    expect(mocks.page).toHaveBeenCalledTimes(1);
+    board.release();
+  });
+
   it('reads whole on read again, past 100 IDs and after a gap, to the depth it held', async () => {
     const kanban = () => view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true });
     const mocks = install({ view: kanban() });
@@ -342,31 +360,84 @@ describe('the board subscription', () => {
     kanban.release();
   });
 
-  it('reads the first page of each screen section past the 20 an answer holds before it shows the board', async () => {
+  it('shows the 20 sections a wide board carries at once and reads the rest one by one, retrying one that timed out on Refresh', async () => {
     const mocks = install();
     const screen: Section[] = Array.from({ length: 23 }, (_, i) => ({ kind: 'column', column: i }));
     const answered = (rev: number) => view(screen.slice(0, 20).map((section, i) => ({ section, rows: [row(String(i), 'a')] })), { kanban: true, columns: 23, screen, revision: rev });
     mocks.subscribe.mockImplementationOnce(async () => ({ id: 'sub-1', seq: 10, loaded: true, view: answered(1), poll_every: 10_000 }));
     const pages = held<SectionPage>('TrackerSectionRows');
+    const page = (s: Section, base: number) => ({ section: s, rows: [row(String(base + (s.column ?? 0)), 'a')] }) as unknown as SectionPage;
     const board = attachTrackerBoard(REF, true);
     await flush();
-    // Nothing shows until the three pages land.
-    expect(board.current).toBeNull();
-    expect(pages.calls).toEqual(screen.slice(20).map((s) => ['sub-1', s, null]));
-    for (const s of screen.slice(20)) pages.answer({ section: s, rows: [row(String(100 + (s.column ?? 0)), 'a')] } as unknown as SectionPage);
-    await flush();
+    // The carried sections show before any other read lands.
     expect(board.current?.held?.sections.map((s) => s.section)).toEqual(screen);
-    expect(heldIds(board).slice(19)).toEqual([['19'], ['120'], ['121'], ['122']]);
+    expect(heldIds(board).slice(18)).toEqual([['18'], ['19'], [], [], []]);
+    expect(board.current?.held?.sections.slice(20).map((s) => s.unread)).toEqual([true, true, true]);
+    expect([...board.current!.paging]).toEqual(['column::20', 'column::21', 'column::22']);
+    // One read at a time, from the first page.
+    expect(pages.calls).toEqual([['sub-1', screen[20], null]]);
+    pages.answer(page(screen[20], 100));
+    await flush();
+    expect(heldIds(board)[20]).toEqual(['120']);
+    expect(pages.calls[1]).toEqual(['sub-1', screen[21], null]);
+    // A read that timed out with the connection up is shown, and nothing
+    // says the column is loading any more.
+    pages.fail(new TransportError('timeout', 'the computer did not answer in time'));
+    await flush();
+    expect(board.current?.readError).toBeInstanceOf(TransportError);
+    expect(board.current?.paging.size).toBe(0);
+    expect(board.current?.held?.sections[21].unread).toBe(true);
+    expect(pages.calls).toHaveLength(2);
+    // Refresh reads it again, and the one after it.
+    await refreshTrackerBoard(board.key);
+    await flush();
+    expect(pages.calls[2]).toEqual(['sub-1', screen[21], null]);
+    pages.answer(page(screen[21], 100));
+    await flush();
+    pages.answer(page(screen[22], 100));
+    await flush();
+    expect(heldIds(board).slice(20)).toEqual([['120'], ['121'], ['122']]);
+    expect(board.current?.readError).toBeNull();
+    board.release();
+  });
 
-    // A full read does the same.
-    mocks.board.mockImplementationOnce(async () => answered(2));
+  it('releases a wide board at once while its other sections are being read', async () => {
+    const mocks = install();
+    const screen: Section[] = Array.from({ length: 21 }, (_, i) => ({ kind: 'column', column: i }));
+    mocks.subscribe.mockImplementationOnce(async () => ({
+      id: 'sub-1', seq: 10, loaded: true, poll_every: 10_000,
+      view: view(screen.slice(0, 20).map((section) => ({ section, rows: [] })), { kanban: true, columns: 21, screen }),
+    }));
+    held<SectionPage>('TrackerSectionRows');
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    board.release();
+    await flush();
+    expect(mocks.release).toHaveBeenCalledWith('sub-1');
+  });
+
+  it('reads a section a full read did not carry back to the depth it held, before it replaces the board', async () => {
+    const mocks = install();
+    const screen: Section[] = Array.from({ length: 21 }, (_, i) => ({ kind: 'column', column: i }));
+    const answered = () => view(screen.slice(0, 20).map((section) => ({ section, rows: [row('1', 'a')] })), { kanban: true, columns: 21, screen });
+    mocks.subscribe.mockImplementationOnce(async () => ({ id: 'sub-1', seq: 10, loaded: true, view: answered(), poll_every: 10_000 }));
+    mocks.board.mockImplementation(async () => answered());
+    const cursor = (issue: string) => ({ order: `k${issue}`, issue, lifetime: 1, revision: 1 });
+    mocks.page.mockImplementation(async (_id: string, section: Section, after: { issue: string } | null) => (
+      after === null
+        ? { section, rows: rows(500, 100), next: cursor('599') }
+        : { section, rows: rows(600, 50), next: null }
+    ));
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    loadMoreOfSection(board.key, screen[20]);
+    await flush();
+    expect(heldIds(board)[20]).toHaveLength(150);
+    mocks.page.mockClear();
     applyTrackerBoardEvent(event(11, { read_again: true }), HOME_BACKEND);
     await flush();
-    expect(pages.calls.length).toBe(6);
-    for (const s of screen.slice(20)) pages.answer({ section: s, rows: [row(String(200 + (s.column ?? 0)), 'a')] } as unknown as SectionPage);
-    await flush();
-    expect(board.current?.held?.revision).toBe(2);
-    expect(heldIds(board).slice(20)).toEqual([['220'], ['221'], ['222']]);
+    expect(mocks.page.mock.calls.map((c) => c[2])).toEqual([null, cursor('599')]);
+    expect(heldIds(board)[20]).toHaveLength(150);
     board.release();
   });
 

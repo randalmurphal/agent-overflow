@@ -19,10 +19,15 @@
 //
 // The subscribe and every full read ask for no sections, which answers the
 // Board screen's (`BoardView.screen`, chosen by the board's computer from
-// the structure it read): the first page of up to 20 of them, and the store
-// reads the first page of the rest before it applies the answer. So a
+// the structure it read) with the first page of up to 20 of them. So a
 // sprint that starts or a column that is added arrives with the full read
-// its event asks for.
+// its event asks for. A screen section past those 20 is held unread: the
+// subscribe shows the board at once and the one read in flight reads each
+// unread section's first page in turn, as it reads a further page.
+//
+// A read that fails, a timeout with the connection up among them, is shown
+// (`readError`) and owed again: the next event or Refresh runs it. Only a
+// dropped connection is left to the reconnect, which subscribes again.
 //
 // A full read runs after an event that says to read again (a structure
 // change among them), after a gap on the channel, and when a patch would
@@ -56,6 +61,7 @@ import { createEntityStore } from './entityStore.svelte';
 import { createPumpVotes } from './pumpVotes';
 import { takeTrackerBoardChannel, type TrackerBoardEvent } from './trackerBoardEvents';
 import { isTransportClassError } from './transportStatus.svelte';
+import { DisconnectedError } from '../transport/wsClient';
 import {
   appendPage,
   applyBoardPatch,
@@ -219,17 +225,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
     }
   };
   if (signal.aborted) return cleanup;
-  let view = answer.view ?? null;
-  if (view) {
-    try {
-      view = await withScreenPages(ref.backend, id, view);
-    } catch (err) {
-      // The full read the drain runs reads the screen again, and shows
-      // what fails.
-      if (!isTransportClassError(err)) live.readAgain = true;
-    }
-    if (signal.aborted) return cleanup;
-  }
+  const view = answer.view ?? null;
   live.id = id;
   live.seq = answer.seq;
   const held = view ? heldFromView(view, live.intern) : null;
@@ -334,31 +330,24 @@ async function run(live: Live): Promise<void> {
       } else {
         const at = held ? pageWanted(live, held) : -1;
         if (at < 0) return;
+        // A failed read cleared what shows as loading.
+        if (live.state.paging === NO_SECTIONS) update(live, { paging: pagingOf(live, held!) });
         await readPage(live, held!, at);
       }
     } catch (err) {
       if (live.aborted) return;
-      if (isTransportClassError(err)) return;
+      // The reconnect subscribes again.
+      if (err instanceof DisconnectedError) return;
       if (err instanceof TransportError && (err.code === 'tracker_subscription_unknown' || err.code === 'tracker_subscription_ended')) {
         // The handle is gone on its computer: subscribe again.
         store.invalidate(live.key);
         return;
       }
-      update(live, { readError: err });
+      // Nothing is loading until the read runs again.
+      update(live, { readError: err, paging: NO_SECTIONS });
       return;
     }
   }
-}
-
-/** `view` with the first page of each Board screen section it holds no page
- * of (those past the 20 a view reads), in the screen's order, read through
- * handle `id`. */
-async function withScreenPages(backend: BackendKey, id: string, view: BoardView): Promise<BoardView> {
-  const read = new Set(view.sections.map((p) => sectionKey(p.section)));
-  const rest = view.screen.filter((s) => !read.has(sectionKey(s)));
-  if (rest.length === 0) return view;
-  const pages = await Promise.all(rest.map((s) => withBackendTarget(backend, () => TrackerSectionRows(id, s, null))));
-  return { ...view, sections: [...view.sections, ...pages] };
 }
 
 async function readWhole(live: Live): Promise<void> {
@@ -373,8 +362,6 @@ async function readWhole(live: Live): Promise<void> {
   let view: BoardView;
   try {
     view = await withBackendTarget(ref.backend, () => TrackerBoard(live.id, []));
-    if (live.aborted) return;
-    view = await withScreenPages(ref.backend, live.id, view);
   } catch (err) {
     if (err instanceof TransportError && err.code === 'tracker_board_not_read') {
       if (!live.aborted) update(live, { held: null, readError: null });
@@ -386,11 +373,13 @@ async function readWhole(live: Live): Promise<void> {
   if (live.aborted) return;
   const intern = createRowInterner();
   let held = heldFromView(view, intern);
-  // Read each section again to the depth the client held.
+  // Read each section again to the depth the client held, one the view
+  // did not carry from its first page; one not held before is read after.
   for (let i = 0; i < held.sections.length; i += 1) {
     const sec = held.sections[i];
     const had = before?.sections.find((s) => sectionKey(s.section) === sectionKey(sec.section))?.rows.length ?? 0;
-    while (held.sections[i].next && held.sections[i].rows.length < had) {
+    const owed = () => (held.sections[i].unread || held.sections[i].next) && held.sections[i].rows.length < had;
+    while (owed()) {
       const cursor = held.sections[i].next;
       try {
         const page = await withBackendTarget(ref.backend, () => TrackerSectionRows(live.id, sec.section, cursor));
@@ -400,6 +389,7 @@ async function readWhole(live: Live): Promise<void> {
         // A change landed since the read: its event patches what is held,
         // and scrolling reads on from there.
         if (err instanceof TransportError && err.code === 'tracker_page_stale') break;
+        live.readAgain = true;
         throw err;
       }
     }
@@ -436,7 +426,7 @@ function pageWanted(live: Live, held: HeldBoard): number {
   for (let i = 0; i < held.sections.length; i += 1) {
     const sec = held.sections[i];
     const k = sectionKey(sec.section);
-    if (!sec.next) {
+    if (!sec.next && !sec.unread) {
       live.wantPage.delete(k);
       continue;
     }
@@ -445,10 +435,11 @@ function pageWanted(live: Live, held: HeldBoard): number {
   return -1;
 }
 
-/** Whether a held section with more to read is owed its next page. */
+/** Whether a held section with more to read is owed its next page: an
+ * unread section is owed its first. */
 function owedPage(live: Live, sec: HeldBoard['sections'][number]): boolean {
   const k = sectionKey(sec.section);
-  return sec.section.kind === 'sprint' || live.wantPage.has(k) || filteredByKey.get(live.key) === true;
+  return sec.unread === true || sec.section.kind === 'sprint' || live.wantPage.has(k) || filteredByKey.get(live.key) === true;
 }
 
 async function readPage(live: Live, held: HeldBoard, at: number): Promise<void> {
@@ -475,16 +466,18 @@ async function readPage(live: Live, held: HeldBoard, at: number): Promise<void> 
 function pagingOf(live: Live, held: HeldBoard): ReadonlySet<string> {
   const out = new Set<string>();
   for (const sec of held.sections) {
-    if (sec.next && owedPage(live, sec)) out.add(sectionKey(sec.section));
+    if ((sec.next || sec.unread) && owedPage(live, sec)) out.add(sectionKey(sec.section));
   }
   return out.size === 0 ? NO_SECTIONS : out;
 }
 
-/** Reads the next page of a held section, once. */
+/** Reads the next page of a held section, once. After a read failed, the
+ * next event or Refresh reads it: a column nearing its end asks again as
+ * soon as it stops loading. */
 export function loadMoreOfSection(key: string, section: Section): void {
   const live = lives.get(key);
   const held = live?.state.held;
-  if (!live || !held) return;
+  if (!live || !held || live.state.readError) return;
   const k = sectionKey(section);
   const sec = held.sections.find((s) => sectionKey(s.section) === k);
   if (!sec?.next) return;

@@ -25,11 +25,14 @@ import type {
 } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 
 /** A section as the client holds it: the rows of the pages it loaded, in
- * board order, and where the next page starts (null: loaded whole). */
+ * board order, and where the next page starts (null: loaded whole).
+ * `unread` marks a Board screen section the view carried no page of (one
+ * past the 20 a view reads): it holds no row, and its first page is owed. */
 export interface HeldSection {
   readonly section: Section;
   readonly rows: readonly RowView[];
   readonly next: SectionCursor | null;
+  readonly unread?: true;
 }
 
 /** Every section's total at the board's totals revision. A sprint or
@@ -70,7 +73,9 @@ export function totalOf<K>(map: ReadonlyMap<K, SectionTotal>, key: K): SectionTo
   return map.get(key) ?? NO_ROWS;
 }
 
-/** The board a full read answered, its pages interned through `intern`. */
+/** The board a full read answered, its pages interned through `intern`,
+ * with each Board screen section it carried no page of held unread, in the
+ * screen's order after those it carried. */
 export function heldFromView(view: BoardView, intern: (row: RowView) => RowView): HeldBoard {
   const sprints = new Map<string, SectionTotal>();
   for (const sp of view.sprints) {
@@ -92,8 +97,16 @@ export function heldFromView(view: BoardView, intern: (row: RowView) => RowView)
     lifetime: view.lifetime,
     revision: view.revision,
     totals: { revision: view.totals_revision, all: view.all, backlog: view.backlog, sprints, columns },
-    sections: view.sections.map((page) => ({ section: page.section, rows: (page.rows ?? []).map(intern), next: page.next ?? null })),
+    sections: [
+      ...view.sections.map((page) => ({ section: page.section, rows: (page.rows ?? []).map(intern), next: page.next ?? null })),
+      ...unreadScreenSections(view),
+    ],
   };
+}
+
+function unreadScreenSections(view: BoardView): HeldSection[] {
+  const carried = new Set(view.sections.map((page) => sectionKey(page.section)));
+  return view.screen.filter((s) => !carried.has(sectionKey(s))).map((section) => ({ section, rows: [], next: null, unread: true }));
 }
 
 /** The totals the client holds, for a patch read. */
@@ -166,6 +179,9 @@ export function applyBoardPatch(held: HeldBoard, ids: readonly string[], patch: 
   }
   const named = new Set(ids);
   const sections = held.sections.map((sec, i): HeldSection => {
+    // A section not read holds nothing a patch could change; its first
+    // page reads the board as it is then.
+    if (sec.unread) return sec;
     const kept = sec.rows.some((r) => named.has(r.card.id)) ? sec.rows.filter((r) => !named.has(r.card.id)) : null;
     let rows: RowView[] | null = kept;
     for (const incoming of patch.sections[i].rows ?? []) {
@@ -185,7 +201,8 @@ export function applyBoardPatch(held: HeldBoard, ids: readonly string[], patch: 
   };
 }
 
-/** The board after a further page of the section at `index`. */
+/** The board after a further page of the section at `index`: its first,
+ * for a section not read. */
 export function appendPage(held: HeldBoard, index: number, page: SectionPage, intern: (row: RowView) => RowView): HeldBoard {
   const sections = held.sections.slice();
   const sec = sections[index];
@@ -210,6 +227,8 @@ export interface ScreenColumn {
   /** The column's total: the backend's for a column section, the held
    * rows' own for a sprint's rows loaded whole, null while not known. */
   readonly total: SectionTotal | null;
+  /** No page of the column has been read yet. */
+  readonly unread: boolean;
 }
 
 function sumOf(rows: readonly RowView[]): SectionTotal {
@@ -237,8 +256,9 @@ export function screenColumns(held: HeldBoard, previous: readonly ScreenColumn[]
         name: col.name,
         statusGroups: groups(col),
         rows: sec?.rows ?? [],
-        moreFrom: sec?.next ? at : null,
+        moreFrom: sec?.next || sec?.unread ? at : null,
         total: totalOf(held.totals.columns, i),
+        unread: sec?.unread === true,
       };
     });
   }
@@ -247,7 +267,8 @@ export function screenColumns(held: HeldBoard, previous: readonly ScreenColumn[]
     for (const st of col.statuses) columnOf.set(st.id, i);
   });
   const sprintSections = held.sections.filter((s) => s.section.kind === 'sprint');
-  const unfinished = held.sections.findIndex((s) => s.section.kind === 'sprint' && s.next !== null);
+  const unfinished = held.sections.findIndex((s) => s.section.kind === 'sprint' && (s.next !== null || s.unread === true));
+  const unread = sprintSections.length > 0 && sprintSections.every((s) => s.unread === true);
   const buckets: RowView[][] = columns.map(() => []);
   for (const sec of sprintSections) {
     for (const row of sec.rows) {
@@ -266,6 +287,7 @@ export function screenColumns(held: HeldBoard, previous: readonly ScreenColumn[]
       rows,
       moreFrom: unfinished >= 0 ? unfinished : null,
       total: unfinished >= 0 ? null : sumOf(rows),
+      unread,
     };
   });
 }
