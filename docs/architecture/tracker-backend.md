@@ -1548,10 +1548,13 @@ site and issue ID, so the link means the same ticket on every computer.
   absences of issues no link keeps.
 - **The row.** `threadColumns` carries the link as one JSON column
   (`threadTicketLinkColumn`), guarded by one `EXISTS` on
-  `thread_tickets` that runs once per statement. A list of threads
-  computes every link once in a materialized CTE
-  (`threadListSelect`), which each thread probes by key, so the sidebar
-  list waits on no per-thread projection (`BenchmarkListThreadsLinked`,
+  `thread_tickets` that runs once per statement, and each row probes
+  its link by thread. The whole-catalog lists (`ListThreads`,
+  `ListThreadsWithItems`, the sidebar's) compute every link once in a
+  materialized CTE (`threadListSelect`), which each thread probes by key
+  (`BenchmarkListThreadsLinked`); a list of part of the catalog (a
+  project's, the archive's) reads the column per row, so its link work is
+  its own rows' (`TestSelectiveThreadListsProjectTheirOwnLinks`,
   `TestThreadLinkColumnReadsByKey`).
 - **Writes.** `SetThreadTicket` (bound, `threads:operate`, and
   `tracker:read` since it reads the ticket) links through

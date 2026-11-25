@@ -62,7 +62,7 @@ func proposedPlanItemSQL() string {
 // and any other thread reads NULL there, so only an assistant's row pays
 // for them. AskCopy probes scratch_threads by key only for a scratch
 // thread. The last column is the thread's ticket link
-// (threadTicketLinkColumn); a read of many threads takes it from
+// (threadTicketLinkColumn); a read of the whole catalog takes it from
 // threadListSelect instead.
 var threadColumns = threadRowColumns + threadTicketLinkColumn
 
@@ -127,10 +127,12 @@ var threadRowColumns = `id, COALESCE(project_id, ''),
     `
 
 // threadListSelect is SELECT threadColumns FROM from (naming the thread
-// threads) for a read of every thread a list shows: the links CTE computes
-// each link once (threadTicketLinksSQL), not once per thread
-// (threadTicketLinkColumn), and each thread probes it by key. The CTE is
-// referenced once.
+// threads) for a read of the whole catalog (ListThreads,
+// ListThreadsWithItems): the links CTE computes each link on the computer
+// once (threadTicketLinksSQL), not once per thread
+// (threadTicketLinkColumn), and each thread probes it by key. A read of
+// part of the catalog takes threadColumns, whose link work is its rows'.
+// The CTE is referenced once.
 func threadListSelect(from string) string {
 	return `WITH links AS MATERIALIZED (` + threadTicketLinksSQL + `) SELECT ` + threadRowColumns + `links.link FROM ` + from +
 		` LEFT JOIN links ON links.thread_id = threads.id`
@@ -670,11 +672,8 @@ func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 // so the user can unarchive or permanently delete them; an archived owned
 // thread is its owner's to show.
 func (s *Store) ListArchivedThreads() ([]Thread, error) {
-	hiddenClause, hiddenArgs := catalogThreadClause("threads")
-	rows, err := s.reader().Query(
-		threadListSelect(`owned_threads AS threads`)+`
-		 WHERE archived = 1 AND `+hiddenClause+` ORDER BY updated_at DESC`, hiddenArgs...,
-	)
+	query, args := listArchivedThreadsQuery()
+	rows, err := s.reader().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list archived threads: %w", err)
 	}
@@ -695,14 +694,8 @@ func (s *Store) ListArchivedThreads() ([]Thread, error) {
 // project, newest-touched first. Used by the sidebar to render the threads
 // nested under a project row.
 func (s *Store) ListThreadsByProject(projectID string) ([]Thread, error) {
-	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
-	args := append([]any{projectID}, hiddenArgs...)
-	rows, err := s.reader().Query(
-		threadListSelect(`owned_threads AS threads`)+`
-		 WHERE project_id = ? AND archived = 0 AND `+hiddenClause+`
-		 ORDER BY updated_at DESC`,
-		args...,
-	)
+	query, args := listProjectThreadsQuery(projectID)
+	rows, err := s.reader().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list threads for project %s: %w", projectID, err)
 	}
@@ -2095,6 +2088,23 @@ func normalizeRuntimeMode(mode string) string {
 	default:
 		return "full-access"
 	}
+}
+
+// listArchivedThreadsQuery is the ListArchivedThreads statement and
+// listProjectThreadsQuery the ListThreadsByProject statement. Each returns
+// a part of the catalog, so each reads its rows' links per row
+// (threadColumns), not every link on the computer (threadListSelect).
+func listArchivedThreadsQuery() (string, []any) {
+	hiddenClause, hiddenArgs := catalogThreadClause("threads")
+	return `SELECT ` + threadColumns + ` FROM owned_threads AS threads
+		 WHERE archived = 1 AND ` + hiddenClause + ` ORDER BY updated_at DESC`, hiddenArgs
+}
+
+func listProjectThreadsQuery(projectID string) (string, []any) {
+	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
+	return `SELECT ` + threadColumns + ` FROM owned_threads AS threads
+		 WHERE project_id = ? AND archived = 0 AND ` + hiddenClause + `
+		 ORDER BY updated_at DESC`, append([]any{projectID}, hiddenArgs...)
 }
 
 // listThreadsQuery is the ListThreads statement. It is a package-level

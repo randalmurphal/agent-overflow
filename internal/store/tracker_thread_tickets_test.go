@@ -538,7 +538,8 @@ func TestRestoreFromAnotherDatabaseReadsNoOtherSitesRoot(t *testing.T) {
 // so it runs once per statement, and the link's row, its reader's root,
 // card, absence and status, and the site's connections are each one key
 // lookup per thread. A list computes every link once in its links CTE,
-// with the same lookups per link, and probes it once per thread.
+// with the same lookups per link, and probes it once per thread; a list of
+// part of the catalog reads the column per row.
 func TestThreadLinkColumnReadsByKey(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
@@ -582,7 +583,20 @@ func TestThreadLinkColumnReadsByKey(t *testing.T) {
 	if !slices.Equal(got, list) {
 		t.Fatalf("list links plan:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(list, "\n"))
 	}
-	if !strings.Contains(listThreadsQuery, `LEFT JOIN links ON links.thread_id = threads.id`) || strings.Count(listThreadsQuery, "links") != 4 {
-		t.Fatalf("the list statement names its links CTE other than once:\n%s", listThreadsQuery)
+	withItems, _ := listThreadsWithItemsQuery()
+	for _, query := range []string{listThreadsQuery, withItems} {
+		if !strings.Contains(query, `LEFT JOIN links ON links.thread_id = threads.id`) || strings.Count(query, "links") != 4 {
+			t.Fatalf("a whole-catalog list names its links CTE other than once:\n%s", query)
+		}
+	}
+	// A list of part of the catalog reads its rows' links per row: its plan
+	// holds the column's probe of the link by thread and no links CTE.
+	project, _ := listProjectThreadsQuery("p")
+	archive, _ := listArchivedThreadsQuery()
+	for name, query := range map[string]string{"the project list": project, "the archive list": archive} {
+		got := plan(query)
+		if slices.Contains(got, "MATERIALIZE links") || !slices.Contains(got, "SEARCH tt USING INDEX sqlite_autoindex_thread_tickets_1 (thread_id=?)") {
+			t.Fatalf("%s plan:\n%s\nwant the link probed by thread and no links CTE", name, strings.Join(got, "\n"))
+		}
 	}
 }

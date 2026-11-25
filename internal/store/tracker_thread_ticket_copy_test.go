@@ -496,3 +496,53 @@ func TestTheLinkWritersOfNoLinkParseNoList(t *testing.T) {
 	setConnectionEnabled(t, s, low.ID, true)
 	check("a root that is not the reader", false)
 }
+
+// A project's thread list and the archive list project the links of the
+// threads they return alone: with 500 other threads, one or all 500 of
+// them linked, a list of one linked project thread, and of one linked
+// archived thread, costs the same.
+func TestSelectiveThreadListsProjectTheirOwnLinks(t *testing.T) {
+	t.Parallel()
+	measure := func(linkedElsewhere int) (project, archive int) {
+		s, _, root := newMirror(t)
+		if _, err := s.CreateProject(Project{ID: "p", Path: "/tmp/p", Name: "p", CreatedAt: 1, UpdatedAt: 1}); err != nil {
+			t.Fatal(err)
+		}
+		one := makeThread("one", "claude")
+		one.ProjectID = "p"
+		if err := s.CreateThread(one); err != nil {
+			t.Fatal(err)
+		}
+		mustCreateThread(t, s, "archived")
+		if _, _, err := s.ArchiveThread("archived"); err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range []string{"one", "archived"} {
+			mustSetThreadTicket(t, s, readLink(s, root, id, titledCard("10001", 5, "Fix the login page")))
+		}
+		for i := range 500 {
+			id := fmt.Sprintf("other-%03d", i)
+			mustCreateThread(t, s, id)
+			if i < linkedElsewhere {
+				mustExec(t, s.db, `INSERT INTO thread_tickets(thread_id, kind, site, issue_id, issue_key, issue_title, origin, linked_at)
+					VALUES (?1, 'jira', ?2, '10001', 'WEB-1', 'Issue', 'manual', 1)`, id, mirrorSite)
+			}
+		}
+		projectQuery, projectArgs := listProjectThreadsQuery("p")
+		archiveQuery, archiveArgs := listArchivedThreadsQuery()
+		for _, list := range []func() ([]Thread, error){func() ([]Thread, error) { return s.ListThreadsByProject("p") }, s.ListArchivedThreads} {
+			threads, err := list()
+			if err != nil || len(threads) != 1 || threads[0].TicketLink == nil || threads[0].TicketLink.State != TicketLinkCurrent {
+				t.Fatalf("listed %+v, %v; want the one linked thread", threads, err)
+			}
+		}
+		return statementVMSteps(t, s, projectQuery, projectArgs...), statementVMSteps(t, s, archiveQuery, archiveArgs...)
+	}
+	fewProject, fewArchive := measure(1)
+	manyProject, manyArchive := measure(500)
+	t.Logf("VM steps with 1 and 500 links elsewhere: the project list %d, %d; the archive list %d, %d", fewProject, manyProject, fewArchive, manyArchive)
+	if manyProject != fewProject || manyArchive != fewArchive {
+		t.Errorf("500 links elsewhere cost the project list %d steps and the archive list %d, 1 link %d and %d; want the other threads' links to cost nothing",
+			manyProject, manyArchive, fewProject, fewArchive)
+	}
+}
