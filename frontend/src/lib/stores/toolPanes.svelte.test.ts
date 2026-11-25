@@ -54,6 +54,7 @@ import { openDraftThreadForProject } from './threadCreation.svelte';
 import { addProjectLocal, resetProjectsForTest } from './projects.svelte';
 import { openWorkflowThreadById } from './workflowThreads';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { openTicketPane, ticketPaneRecord } from './ticketPanes.svelte';
 import type { Project, Thread } from '../types/models';
 
 function threadItem(paneId: string, widthPx = 560): PaneLayoutItem {
@@ -389,6 +390,22 @@ describe('a thread opened while a tool pane is focused', () => {
     expect(getFocusedPaneId()).toBe(pane.paneId);
     expect(isToolOpen('workflows')).toBe(false);
     expect(closed).toHaveBeenCalledWith('workflows');
+    off();
+  });
+
+  it('takes a focused ticket pane\'s place the same way, and the ticket pane\'s record goes with it', async () => {
+    const closed = vi.fn();
+    const off = addToolPaneClosedObserver(closed);
+    threadLayout([threadItem('left'), threadItem('right')], 'left');
+    const ticketPane = openTicketPane({ ref: { backend: '', connection: 'c1', issue: '1' }, seed: { key: 'WEB-1', title: 'Issue 1', card: null } }, { board: '1', kind: 'jira' });
+    ticketPaneRecord(ticketPane)!.focus.end();
+    const width = getPaneLayoutItems()[1].widthPx;
+    const pane = await openThreadInPane(makeThread({ id: 't-new' }));
+    expect(layoutIds()).toEqual(['left', pane.paneId, 'right']);
+    expect(getPaneLayoutItems()[1].widthPx).toBe(width);
+    expect(getFocusedPaneId()).toBe(pane.paneId);
+    expect(ticketPaneRecord(ticketPane)).toBeNull();
+    expect(closed).not.toHaveBeenCalled();
     off();
   });
 
