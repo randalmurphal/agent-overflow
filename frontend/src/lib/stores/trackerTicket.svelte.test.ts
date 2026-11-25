@@ -261,6 +261,64 @@ describe('the ticket subscription', () => {
   });
 });
 
+describe('the earlier comment pages held', () => {
+  // A Jira-like ticket of `total` comments, comment n created at n: the
+  // first page is the newest 50, and token T reads the 50 before T.
+  const comment = (n: number) => ({ id: String(n), author: { id: 'u' }, body: `Comment ${n}`, created: n });
+  const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => comment(to - i));
+  const first = (total: number) => detail('x', { comments: range(total - 49, total), more_comments: String(total - 50) } as never);
+
+  it('reads them again from a moved boundary, one read per page held plus one at most, keeping every comment once', async () => {
+    let total = 120;
+    const mocks = install({ detail: first(total) });
+    mocks.read.mockImplementation(async () => ({ loaded: true, detail: first(total), read_at: 200 }) as TicketView);
+    let fail = false;
+    const pages = setBindingMock('TrackerComments', async (_c: string, _i: string, token: string) => {
+      if (fail) throw new TransportError('timeout', 'Jira did not answer in time');
+      const end = Number(token);
+      return { comments: range(Math.max(0, end - 50) + 1, end), next: end > 50 ? String(end - 50) : '' };
+    });
+    const ticket = attachTrackerTicket(REF, true);
+    await flush();
+    await loadEarlierTrackerComments(ticket.key);
+    await loadEarlierTrackerComments(ticket.key);
+    const shown = () => [...(ticket.current?.detail?.comments ?? []), ...(ticket.current?.earlier.pages ?? []).flatMap((p) => p.comments)].map((c) => Number(c.id));
+    expect(shown()).toEqual(range(1, 120).map((c) => c.created));
+    expect(pages.mock.calls.map((c) => c[2])).toEqual(['70', '20']);
+
+    // One comment added: the two pages are read again from the new boundary.
+    total = 121;
+    trackerIssueUpdated(event(11, { changed: true }), HOME_BACKEND);
+    await flush();
+    expect(pages.mock.calls.map((c) => c[2])).toEqual(['70', '20', '71', '21']);
+    expect(shown()).toEqual(range(1, 121).map((c) => c.created));
+    expect(ticket.current?.earlier.next).toBe('');
+
+    // A boundary 179 comments on: three reads, then the control reads on.
+    total = 300;
+    trackerIssueUpdated(event(12, { changed: true }), HOME_BACKEND);
+    await flush();
+    expect(pages.mock.calls.map((c) => c[2]).slice(4)).toEqual(['250', '200', '150']);
+    expect(shown()).toEqual(range(101, 300).map((c) => c.created));
+    expect(ticket.current?.earlier.next).toBe('100');
+
+    // A read that fails keeps the pages before it, and the control reads on from it.
+    total = 301;
+    fail = true;
+    trackerIssueUpdated(event(13, { changed: true }), HOME_BACKEND);
+    await flush();
+    expect(ticket.current?.earlier.pages).toEqual([]);
+    expect(ticket.current?.earlier.next).toBe('251');
+    expect(ticket.current?.earlier.loading).toBe(false);
+    expect(String(ticket.current?.earlier.error)).toContain('Jira did not answer in time');
+    fail = false;
+    await loadEarlierTrackerComments(ticket.key);
+    expect(pages.mock.calls.at(-1)?.[2]).toBe('251');
+    expect(shown()).toEqual(range(202, 301).map((c) => c.created));
+    ticket.release();
+  });
+});
+
 describe('a ticket write', () => {
   it('sends once when its target is pressed twice, and stops saying Saving once the view it published lands', async () => {
     install();
@@ -377,4 +435,3 @@ describe('a ticket write', () => {
     ticket.release();
   });
 });
-

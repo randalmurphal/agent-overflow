@@ -347,6 +347,13 @@ func TestListMirrorTicketRows(t *testing.T) {
 	if _, err := s.ListMirrorTicketRows(root, make([]string, MirrorMaxBodies+1)); !errors.Is(err, ErrInvalidTrackerCache) {
 		t.Fatalf("a read of more issues than a view build takes: %v", err)
 	}
+	// Reads of other roots run the statement compiled for the first: the
+	// package's tests fail on a cached statement compiled again.
+	for _, other := range []int64{root + 1, root, root + 2, root} {
+		if _, err := s.ListMirrorTicketRows(other, []string{"10001"}); err != nil {
+			t.Fatalf("rows of root %d: %v", other, err)
+		}
+	}
 }
 
 // The linked issues no polled shown board has a row of read a page at a

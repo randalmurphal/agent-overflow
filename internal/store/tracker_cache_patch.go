@@ -21,7 +21,7 @@ import (
 // sort in a temporary b-tree.
 var mirrorPatchRowsSQL = `SELECT ` + mirrorRowColumnsSQL + `
 	  FROM json_each(?3) l
-	  CROSS JOIN tracker_cache_board_issues b ON b.root_id = ?1 AND b.issue_id = l.value AND b.board_id = ?2
+	  CROSS JOIN tracker_cache_board_issues b ON b.root_id = CAST(?1 AS INTEGER) AND b.issue_id = l.value AND b.board_id = ?2
 	  JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
 	 WHERE `
 
@@ -153,10 +153,10 @@ type MirrorIssueBoard struct {
 // ?2, and those of the issues whose parent is in the JSON list ?3, each
 // probed by its key prefix.
 const mirrorIssueBoardsSQL = `SELECT b.issue_id, b.board_id FROM json_each(?2) l
-	CROSS JOIN tracker_cache_board_issues b ON b.root_id = ?1 AND b.issue_id = l.value
+	CROSS JOIN tracker_cache_board_issues b ON b.root_id = CAST(?1 AS INTEGER) AND b.issue_id = l.value
 	UNION ALL
 	SELECT b.issue_id, b.board_id FROM json_each(?3) l
-	CROSS JOIN tracker_cache_issues c ON c.root_id = ?1 AND c.parent_id = l.value AND c.parent_id <> ''
+	CROSS JOIN tracker_cache_issues c ON c.root_id = CAST(?1 AS INTEGER) AND c.parent_id = l.value AND c.parent_id <> ''
 	CROSS JOIN tracker_cache_board_issues b ON b.root_id = c.root_id AND b.issue_id = c.issue_id`
 
 // ListMirrorIssueBoards reads which boards hold a row of each of issueIDs,

@@ -69,6 +69,8 @@ export const migrationExceptions: MigrationException[] = [
   { version: 167, table: 'tracker_cache_users', rowsMayShrink: true, reason: 'v167 empties the tracker mirror, a cache every connection reads again' },
   { version: 167, table: 'tracker_cache_worklog_days', rowsMayShrink: true, reason: 'v167 empties the tracker mirror, a cache every connection reads again' },
   { version: 167, table: 'tracker_cache_worklogs', rowsMayShrink: true, reason: 'v167 empties the tracker mirror, a cache every connection reads again' },
+  { version: 168, table: 'tracker_cache_worklog_days', rowsMayShrink: true, reason: 'v168 deletes logged time read before it, since nothing records which time source read it; a refresh reads it again' },
+  { version: 168, table: 'tracker_cache_worklogs', rowsMayShrink: true, reason: 'v168 deletes logged time read before it, since nothing records which time source read it; a refresh reads it again' },
 ];
 
 /**

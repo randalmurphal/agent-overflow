@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 
 	"agent-overflow/internal/agentmeta"
@@ -194,26 +195,19 @@ func importedActivityScanColumns(_, rev string) string {
 // queryHydratedTimelineItems' narrow sibling and joins payloads exactly
 // as that does, local overlay included, so payload kind and the
 // file-change sources are the same values a hydrated row would carry.
-//
-// selectedSQL must return one `id` column.
-func queryActivityScanRows(
-	q sqlQueryer,
-	threadID string,
-	capacity int,
-	selectedSQL string,
-	selectedArgs ...any,
-) ([]activityScanRow, error) {
+func queryActivityScanRows(q sqlQueryer, threadID string, capacity int, sel idSelection) ([]activityScanRow, error) {
+	set, setArgs, found, err := selectedSet(q, sel)
+	if err != nil {
+		return nil, fmt.Errorf("store: select activity scan rows for %s: %w", threadID, err)
+	}
+	if !found {
+		return nil, nil
+	}
 	branches, branchArgs, err := resolveSelectedTimelineSQL(q, threadID, localActivityScanColumns, importedActivityScanColumns, "", "2, 3")
 	if err != nil {
 		return nil, fmt.Errorf("store: query activity scan rows for %s: %w", threadID, err)
 	}
-	args := append(append([]any{}, selectedArgs...), branchArgs...)
-	rows, err := q.Query(`
-		WITH selected(id) AS MATERIALIZED (
-			`+selectedSQL+`
-		)`+branches,
-		args...,
-	)
+	rows, err := q.Query(set+branches, append(slices.Clone(setArgs), branchArgs...)...)
 	if err != nil {
 		return nil, fmt.Errorf("store: query activity scan rows for %s: %w", threadID, err)
 	}
@@ -340,11 +334,11 @@ func (w *activityScanWalk) fill() error {
 	if w.newer {
 		sel.OrderBy = "turn_index ASC, item_index ASC"
 	}
-	selectedSQL, selectedArgs, err := timelineIDSelection(w.q, w.threadID, sel)
+	selectedSQL, err := timelineIDSelection(w.q, w.threadID, sel)
 	if err != nil {
 		return err
 	}
-	chunk, err := queryActivityScanRows(w.q, w.threadID, w.chunkRows, selectedSQL, selectedArgs...)
+	chunk, err := queryActivityScanRows(w.q, w.threadID, w.chunkRows, selectedSQL)
 	if err != nil {
 		return err
 	}

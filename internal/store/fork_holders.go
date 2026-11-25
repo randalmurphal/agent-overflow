@@ -265,7 +265,7 @@ func dropUnservedHolderStampsTx(tx *sql.Tx, holder string) error {
 func firstOwnRowTx(tx *sql.Tx, threadID string, sp forkSplit) (timelineRow, bool, error) {
 	sel := timelineSelection{
 		Columns: timelineIDColumns,
-		Turn:    "?", TurnArgs: []any{sp.fromTurn}, FromTurn: true,
+		Turn:    boundInt, TurnArgs: []any{sp.fromTurn}, FromTurn: true,
 		OrderBy: "turn_index, item_index",
 		Limit:   1,
 	}

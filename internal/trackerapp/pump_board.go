@@ -230,13 +230,11 @@ func (s *Service) subscribableLocked(id string) (store.TrackerConnection, error)
 		return h.row, nil
 	}
 	row, err := s.get(id)
-	switch {
-	case err != nil:
+	if err == nil {
+		err = usable(row)
+	}
+	if err != nil {
 		return store.TrackerConnection{}, err
-	case row.Kind == store.TrackerKindTempo:
-		return store.TrackerConnection{}, fmt.Errorf("%w: %s", ErrNoProvider, id)
-	case !row.Enabled:
-		return store.TrackerConnection{}, fmt.Errorf("%w: %s", ErrDisabled, id)
 	}
 	return row, nil
 }

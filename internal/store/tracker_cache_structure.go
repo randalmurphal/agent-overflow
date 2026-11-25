@@ -293,7 +293,7 @@ const (
 		WHERE position IS NOT excluded.position OR rank IS NOT excluded.rank
 		RETURNING status_id`
 	mirrorColumnStatusesRemoveSQL = `DELETE FROM tracker_cache_board_column_statuses
-		WHERE root_id = ?1 AND board_id = ?2 AND status_id NOT IN (SELECT c.value ->> 's' FROM json_each(?3) c)
+		WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND status_id NOT IN (SELECT c.value ->> 's' FROM json_each(?3) c)
 		RETURNING status_id`
 	mirrorSprintsUpsertSQL = `INSERT INTO tracker_cache_sprints(root_id, board_id, sprint_id, position, origin_board_id,
 		        name, goal, state, start_at, end_at, completed_at)
@@ -307,7 +307,7 @@ const (
 		   OR start_at IS NOT excluded.start_at OR end_at IS NOT excluded.end_at OR completed_at IS NOT excluded.completed_at
 		RETURNING sprint_id`
 	mirrorSprintsRemoveSQL = `DELETE FROM tracker_cache_sprints
-		WHERE root_id = ?1 AND board_id = ?2 AND sprint_id NOT IN (SELECT c.value ->> 'i' FROM json_each(?3) c)
+		WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND sprint_id NOT IN (SELECT c.value ->> 'i' FROM json_each(?3) c)
 		RETURNING sprint_id`
 )
 
@@ -351,7 +351,7 @@ func replaceMirrorStructureTx(tx *sql.Tx, rootID int64, st MirrorStructure, read
 		{"upsert columns", mirrorColumnsUpsertSQL, []any{rootID, b.ID, lists[0]}},
 		{"upsert column statuses", mirrorColumnStatusesUpsertSQL, []any{rootID, b.ID, lists[1]}},
 		{"remove column statuses", mirrorColumnStatusesRemoveSQL, []any{rootID, b.ID, lists[1]}},
-		{"remove columns", `DELETE FROM tracker_cache_board_columns WHERE root_id = ? AND board_id = ? AND position >= ?
+		{"remove columns", `DELETE FROM tracker_cache_board_columns WHERE root_id = CAST(? AS INTEGER) AND board_id = ? AND position >= ?
 			RETURNING position`, []any{rootID, b.ID, len(st.Columns)}},
 		{"upsert sprints", mirrorSprintsUpsertSQL, []any{rootID, b.ID, lists[2]}},
 		{"remove sprints", mirrorSprintsRemoveSQL, []any{rootID, b.ID, lists[2]}},
@@ -368,7 +368,7 @@ func replaceMirrorStructureTx(tx *sql.Tx, rootID int64, st MirrorStructure, read
 	// which no index or trigger reads, with the wall time the structure's
 	// interval is measured from (MirrorSync.StructureWall).
 	if read.at > board.readAt {
-		if _, err := tx.Exec(`UPDATE tracker_cache_boards SET read_at = ?3, structure_wall = ?4 WHERE root_id = ?1 AND board_id = ?2`,
+		if _, err := tx.Exec(`UPDATE tracker_cache_boards SET read_at = ?3, structure_wall = ?4 WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2`,
 			rootID, b.ID, read.at, read.wall); err != nil {
 			return false, MirrorCatalogWrite{}, false, fmt.Errorf("record the structure's read: %w", err)
 		}
@@ -381,14 +381,14 @@ var (
 	// mirrorMarksSuppliedSQL removes the marks of the sprints ?3 (a JSON
 	// list of mirrorSprintRow) supplies, probing each by key.
 	mirrorMarksSuppliedSQL = `DELETE FROM tracker_cache_board_unexplained
-		WHERE root_id = ?1 AND board_id = ?2 AND kind = 3 AND ref_id IN (SELECT c.value ->> 'i' FROM json_each(?3) c)`
+		WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND kind = 3 AND ref_id IN (SELECT c.value ->> 'i' FROM json_each(?3) c)`
 	// mirrorMarksExplainSQL makes unexplained a chunk of the pending marks
 	// named by reads no later than the complete structure read ?3, in the
 	// pending index.
 	mirrorMarksExplainSQL = `UPDATE tracker_cache_board_unexplained SET named_at = 0
-		WHERE root_id = ?1 AND board_id = ?2 AND (kind, ref_id) IN (
+		WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND (kind, ref_id) IN (
 		  SELECT kind, ref_id FROM tracker_cache_board_unexplained
-		   WHERE root_id = ?1 AND board_id = ?2 AND named_at > 0 AND named_at <= ?3
+		   WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND named_at > 0 AND named_at <= ?3
 		   LIMIT ` + strconv.Itoa(clearMirrorChunk) + `)
 		RETURNING kind`
 )
@@ -450,7 +450,7 @@ const mirrorBoardWriteRowSQL = `UPDATE tracker_cache_boards SET project_id = ?3,
 	    estimate_field = ?9, data = ?7,
 	    estimate_reset_at = iif(read_at > 0 AND ` + mirrorEstimateChangedSQL + `, ?8, estimate_reset_at),
 	    totals_revision = totals_revision + ` + mirrorEstimateChangedSQL + `
-	WHERE root_id = ?1 AND board_id = ?2 AND (read_at = 0 OR project_id IS NOT ?3 OR name IS NOT ?4
+	WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND (read_at = 0 OR project_id IS NOT ?3 OR name IS NOT ?4
 	   OR plans_sprints IS NOT ?5 OR ` + mirrorEstimateChangedSQL + ` OR data IS NOT ?7)
 	RETURNING estimate_reset_at = ?8`
 
@@ -472,7 +472,7 @@ func writeMirrorBoardTx(tx *sql.Tx, rootID int64, st MirrorStructure, readAt int
 	case !reset:
 		return true, false, nil
 	}
-	if _, err := tx.Exec(`UPDATE tracker_cache_sync SET cursor = NULL WHERE root_id = ?1 AND board_id = ?2`, rootID, b.ID); err != nil {
+	if _, err := tx.Exec(`UPDATE tracker_cache_sync SET cursor = NULL WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2`, rootID, b.ID); err != nil {
 		return false, false, fmt.Errorf("forget the cursor: %w", err)
 	}
 	return true, true, nil

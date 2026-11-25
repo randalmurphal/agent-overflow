@@ -182,12 +182,13 @@ func (f ThreadSearchFilter) threadRowConditions(alias string) ([]string, []any) 
 		args = append(args, f.Provider)
 	}
 	if f.Archived != nil {
-		archived := 0
+		// A literal: the planner reads whether a bound integer is 0 or 1,
+		// which a flag always is, and the literal tells it which.
+		archived := "0"
 		if *f.Archived {
-			archived = 1
+			archived = "1"
 		}
-		conditions = append(conditions, alias+"archived = ?")
-		args = append(args, archived)
+		conditions = append(conditions, alias+"archived = "+archived)
 	}
 	if f.SinceUnixMs > 0 {
 		conditions = append(conditions, threadLastActivityExpr(alias)+" >= ?")

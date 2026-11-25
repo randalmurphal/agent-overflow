@@ -325,8 +325,8 @@ func countRowsAtOrBefore(rows []activityScanRow, at TimelineCursor) int {
 // active panes. `selectedSQL` must return a single `id` column
 // containing the page's top-level row ids; the outer query hydrates and
 // orders them for rendering.
-func (s *Store) querySelectedPagedItems(q sqlQueryer, threadID, selectedSQL string, selectedArgs ...any) ([]Item, error) {
-	items, err := queryHydratedTimelineItems(q, threadID, selectedSQL, selectedArgs...)
+func (s *Store) querySelectedPagedItems(q sqlQueryer, threadID string, sel idSelection) ([]Item, error) {
+	items, err := queryHydratedTimelineItems(q, threadID, sel)
 	if err != nil {
 		return nil, fmt.Errorf("store: query selected paged items for %s: %w", threadID, err)
 	}
@@ -420,7 +420,7 @@ func cursorBound(cursor TimelineCursor, newer bool) timelineSelection {
 		WhereArgs: []any{cursor.TurnIndex, cursor.ItemIndex},
 	}
 	if newer {
-		sel.Turn, sel.TurnArgs, sel.FromTurn = "?", []any{cursor.TurnIndex}, true
+		sel.Turn, sel.TurnArgs, sel.FromTurn = boundInt, []any{cursor.TurnIndex}, true
 	}
 	return sel
 }

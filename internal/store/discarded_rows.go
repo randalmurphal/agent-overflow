@@ -99,11 +99,7 @@ func (s *Store) decorateDiscardedRows(q sqlQueryer, threadID string, items []Ite
 	if len(recordIDs) == 0 {
 		return items, nil
 	}
-	selection, args, err := idListSelection(recordIDs)
-	if err != nil {
-		return nil, fmt.Errorf("store: read abandonment records for %s: %w", threadID, err)
-	}
-	records, err := queryHydratedTimelineItems(q, threadID, selection, args...)
+	records, err := hydrateTimelineIDs(q, threadID, recordIDs)
 	if err != nil {
 		return nil, fmt.Errorf("store: read abandonment records for %s: %w", threadID, err)
 	}

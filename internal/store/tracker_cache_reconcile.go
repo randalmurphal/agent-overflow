@@ -27,17 +27,17 @@ const (
 	// listing that judges the rows, from one walk of the board's rows, the
 	// unlisted rows read no later than the listing (1).
 	mirrorReconcileFoundSQL = `SELECT 0, l.value, l.key FROM json_each(?4) l
-		LEFT JOIN tracker_cache_board_issues b ON b.root_id = ?1 AND b.issue_id = l.value AND b.board_id = ?2
+		LEFT JOIN tracker_cache_board_issues b ON b.root_id = CAST(?1 AS INTEGER) AND b.issue_id = l.value AND b.board_id = ?2
 		WHERE b.root_id IS NULL
 		UNION ALL
 		SELECT 1, b.issue_id, 0 FROM tracker_cache_board_issues b
-		 WHERE ?5 AND b.root_id = ?1 AND b.board_id = ?2 AND b.read_at <= ?3
+		 WHERE ?5 AND b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND b.read_at <= ?3
 		   AND b.issue_id NOT IN (SELECT value FROM json_each(?4))
 		ORDER BY 1, 3, 2`
 	// mirrorReconcileListedSQL records listing ?2 as the board's newest
 	// complete listing and its latest removal.
 	mirrorReconcileListedSQL = `UPDATE tracker_cache_boards SET listing_read_at = ?2, rows_removed_at = max(rows_removed_at, ?2)
-		WHERE root_id = ?1 AND board_id = ?3`
+		WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?3`
 )
 
 // ReconcileMirrorBoard compares a listing of the issues on a board, read

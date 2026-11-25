@@ -398,7 +398,7 @@ func (s *Store) ListWorkItemCallChildren(parentItemID, parentPhaseID string, par
 	return s.queryWorkItems(
 		`SELECT `+workItemColumns+` FROM work_items
 		 WHERE parent_item_id = ? AND parent_item_id <> ''
-		   AND parent_phase_id = ? AND parent_attempt = ? AND parent_unit_id = ''
+		   AND parent_phase_id = ? AND parent_attempt = `+boundInt+` AND parent_unit_id = ''
 		 ORDER BY created_at ASC, id ASC`,
 		"list work item call children", parentItemID, parentPhaseID, parentAttempt,
 	)
@@ -421,7 +421,7 @@ func (s *Store) ListWorkItemUnitCallChildren(parentItemID, parentPhaseID string,
 	return s.queryWorkItems(
 		`SELECT `+workItemColumns+` FROM work_items
 		 WHERE parent_item_id = ? AND parent_item_id <> ''
-		   AND parent_phase_id = ? AND parent_attempt = ? AND parent_unit_id = ?
+		   AND parent_phase_id = ? AND parent_attempt = `+boundInt+` AND parent_unit_id = ?
 		 ORDER BY created_at ASC, rowid ASC`,
 		"list work item unit call children", parentItemID, parentPhaseID, parentAttempt, parentUnitID,
 	)

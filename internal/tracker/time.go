@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -15,9 +16,30 @@ type TimeTracker interface {
 	// included.
 	Worklogs(ctx context.Context, q WorklogQuery) ([]Worklog, error)
 	AddWorklog(ctx context.Context, in WorklogInput) Result
+	// EditWorklog and DeleteWorklog act on a worklog that still holds
+	// what From says (issue, author, day, time and description) at the
+	// tracker revision From carries (Updated); one that changed since it
+	// was read, in a field From shows or not, is refused as stale with
+	// nothing sent.
 	EditWorklog(ctx context.Context, in WorklogEdit) Result
 	DeleteWorklog(ctx context.Context, in WorklogDelete) Result
 }
+
+// ErrWorklogAuthor is matched by the error of a worklog read whose
+// author the tracker would not look up, beside the tracker's own error:
+// the read names the person, not the days.
+var ErrWorklogAuthor = errors.New("tracker: the tracker did not look up the worklogs' author")
+
+// ErrWorklogSearch is matched by the error of a worklog read whose search
+// for the issues the author logged time on the tracker refused: the
+// search names the person and the days.
+var ErrWorklogSearch = errors.New("tracker: the tracker refused the search for the worklogs' issues")
+
+// ErrNoTimeZone is matched by the error of a worklog read or write whose
+// person's profile hides the time zone, which decides the day a worklog
+// falls on: the tracker answered, and the person's privacy setting, not
+// the connection, stops the read.
+var ErrNoTimeZone = errors.New("tracker: the tracker does not show the person's time zone")
 
 // Worklog is time logged on an issue. Day is the calendar day the work
 // started on in the author's own zone, which a timesheet groups by.

@@ -247,6 +247,12 @@ func mustFind[T any](t *testing.T, what string) func(T, bool, error) {
 	}
 }
 
+// ownPayloadsLookup selects off the thread's own payloads, where the
+// seeded thread holds no summary-only diff, so it resolves no row through
+// the imported or lineage arms. Every other hydrated lookup runs the one
+// resolving statement those arms are in (selectedIDsSQL).
+const ownPayloadsLookup = "ListTurnSummaryOnlyDiffItems"
+
 // keyedLookups runs each lookup on th: the seeded thread, or a pointer fork
 // of it (TestPointerForkLookupsProbeTheLineage).
 func keyedLookups(th string) []keyedLookup {
@@ -288,7 +294,7 @@ func keyedLookups(th string) []keyedLookup {
 		{name: "ListTurnItemsOfKind", turn: true, run: func(t *testing.T, s *Store) {
 			must[[]Item](t, "rows of kind")(s.ListTurnItemsOfKind(th, 1, "assistant_text"))
 		}},
-		{name: "ListTurnSummaryOnlyDiffItems", run: func(t *testing.T, s *Store) {
+		{name: ownPayloadsLookup, run: func(t *testing.T, s *Store) {
 			must[[]Item](t, "summary-only diffs")(s.ListTurnSummaryOnlyDiffItems(th, 1))
 		}},
 		{name: "ListTurnItems", turn: true, run: func(t *testing.T, s *Store) {
@@ -538,7 +544,7 @@ func TestImportedLookupsDoNotEnumerateChunks(t *testing.T) {
 				t.Errorf("%s: %q enumerates the thread's chunks\n%s\n%s", lookup.name, node, stmt.query, planText(plan))
 			}
 		}
-		if reads == 0 {
+		if reads == 0 && lookup.name != ownPayloadsLookup {
 			t.Errorf("%s: no statement read the imported arm; the check proved nothing", lookup.name)
 		}
 		if lookup.turn && !turnRanged {

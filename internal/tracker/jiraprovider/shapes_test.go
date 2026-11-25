@@ -178,7 +178,7 @@ func TestWorklogEditShapes(t *testing.T) {
 		}
 		jiratest.Reply(200, jiraWorklog("300", user1JSON, "2026-11-10T09:00:00.000-0500", 3600, "Reviewed"))(w, r, b)
 	})
-	from := tracker.Worklog{ID: "300", Issue: "10001", Author: "acc-user1", Day: d, Spent: time.Hour, Description: adf.ToMarkdown(adf.Doc(para("Review")))}
+	from := tracker.Worklog{ID: "300", Issue: "10001", Author: "acc-user1", Day: d, Spent: time.Hour, Description: adf.ToMarkdown(adf.Doc(para("Review"))), Updated: jiraRevision}
 	if res := checked(t, p.Time().EditWorklog(t.Context(), tracker.WorklogEdit{From: from, Description: ptr("Reviewed")})); states(res) != "worklog:applied" {
 		t.Errorf("a Jira description: %s %v", states(res), res.Parts[0].Outcome.Err())
 	}
@@ -195,7 +195,7 @@ func TestWorklogEditShapes(t *testing.T) {
 	ts.On("PUT", "/4/worklogs/70", nil,
 		`{"authorAccountId":"acc-user1","issueId":10001,"startDate":"2026-11-10","startTime":"13:00:00","timeSpentSeconds":3600,"billableSeconds":3600,"description":"Plans","attributes":[]}`,
 		200, tempoWL(70, 10001, "2026-11-10", "13:00:00", 3600, "Plans"))
-	tfrom := tracker.Worklog{ID: "70", Issue: "10001", Author: "acc-user1", Day: d, Spent: time.Hour, Description: "Planning"}
+	tfrom := tracker.Worklog{ID: "70", Issue: "10001", Author: "acc-user1", Day: d, Spent: time.Hour, Description: "Planning", Updated: tempoRevision}
 	for name, in := range map[string]tracker.WorklogEdit{
 		"Tempo time spent":  {From: tfrom, Spent: ptr(30 * time.Minute)},
 		"Tempo description": {From: tfrom, Description: ptr("Plans")},

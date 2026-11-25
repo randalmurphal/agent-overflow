@@ -171,7 +171,7 @@ var mirrorRemovalsSQL = func() string {
 	parts := make([]string, 4)
 	for k := range parts {
 		parts[k] = fmt.Sprintf(`(SELECT count(*) FROM (SELECT 1 FROM tracker_cache_changes c
-		    WHERE c.root_id = ?1 AND c.issue_id = i.issue_id AND c.gen = i.history_gen AND c.kind = %d
+		    WHERE c.root_id = CAST(?1 AS INTEGER) AND c.issue_id = i.issue_id AND c.gen = i.history_gen AND c.kind = %d
 		      AND c.seq >= h.value -> 'n' ->> %d LIMIT %d))`, k+1, k, clearMirrorChunk+1)
 	}
 	return strings.Join(parts, " + ")
@@ -188,7 +188,7 @@ var (
 		i.history_boards_rev, i.history_receipt, i.boards_rev, i.updated_at, i.history_gen, i.history_dirty, ` +
 		mirrorIssueKept("i.root_id", "i.issue_id") + `, ` + mirrorRemovalsSQL + `, i.status_id, i.created_at, i.status_since,
 		i.status_final_for
-		FROM json_each(?2) h CROSS JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = h.value ->> 'i'`
+		FROM json_each(?2) h CROSS JOIN tracker_cache_issues i ON i.root_id = CAST(?1 AS INTEGER) AND i.issue_id = h.value ->> 'i'`
 	mirrorChangesUpsertSQL = `INSERT INTO tracker_cache_changes(root_id, issue_id, gen, kind, seq, at, author_id, board_id,
 		        from_value, to_value, from_number, to_number)
 		SELECT ?1, c.value ->> 'i', c.value ->> 'g', c.value ->> 'k', c.value ->> 'q', c.value ->> 't', c.value ->> 'a',
@@ -200,9 +200,9 @@ var (
 		   OR from_value IS NOT excluded.from_value OR to_value IS NOT excluded.to_value
 		   OR from_number IS NOT excluded.from_number OR to_number IS NOT excluded.to_number
 		RETURNING issue_id`
-	mirrorChangesRemoveSQL = `DELETE FROM tracker_cache_changes WHERE root_id = ?1 AND (issue_id, gen, kind, seq) IN (
+	mirrorChangesRemoveSQL = `DELETE FROM tracker_cache_changes WHERE root_id = CAST(?1 AS INTEGER) AND (issue_id, gen, kind, seq) IN (
 		SELECT c.issue_id, c.gen, c.kind, c.seq FROM json_each(?2) h
-		  CROSS JOIN tracker_cache_changes c ON c.root_id = ?1 AND c.issue_id = h.value ->> 'i' AND c.gen = h.value ->> 'g'
+		  CROSS JOIN tracker_cache_changes c ON c.root_id = CAST(?1 AS INTEGER) AND c.issue_id = h.value ->> 'i' AND c.gen = h.value ->> 'g'
 		 WHERE c.seq >= h.value -> 'n' ->> (c.kind - 1))
 		RETURNING issue_id`
 	// mirrorHistoryTimesSQL writes each listed issue's times and the
@@ -218,7 +218,7 @@ var (
 		SET (history_from, history_for, history_answered_at, history_wait, history_boards_rev, status_since, status_final_for,
 		     status_read_at, history_receipt) = (` + mirrorHistoryTimesOf(", tracker_cache_issues.history_receipt + 1") + `)
 		FROM h
-		WHERE root_id = ?1 AND issue_id = h.value ->> 'i'
+		WHERE root_id = CAST(?1 AS INTEGER) AND issue_id = h.value ->> 'i'
 		  AND ((history_from, history_for, history_answered_at, history_wait, history_boards_rev, status_since, status_final_for,
 		        status_read_at) IS NOT (` + mirrorHistoryTimesOf("") + `)
 		    OR coalesce(h.value ->> 'c', 0))

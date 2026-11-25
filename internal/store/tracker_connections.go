@@ -58,6 +58,13 @@ type TrackerConnection struct {
 	VerifiedToken     TrackerTokenDigest
 	TokenExpiresAt    int64
 	CreatedAt         int64
+	// TimeSourceGen is a Jira connection's time source generation: its
+	// store triggers (migration v168) advance it each time the source of
+	// its worklogs changes (its Tempo connection added or removed while
+	// on, or turned on or off), and nothing else writes it. A worklog
+	// replace names the generation its read began under
+	// (ReplaceMirrorWorklogs).
+	TimeSourceGen int64
 }
 
 // NewTrackerConnection is what CreateTrackerConnection needs; the store
@@ -125,12 +132,12 @@ func (d *TrackerTokenDigest) Scan(src any) error {
 }
 
 const trackerConnectionColumns = `id, kind, site, account, COALESCE(parent_id, ''), label, enabled,
- verified_account_id, verified_name, verified_at, verified_token, token_expires_at, created_at`
+ verified_account_id, verified_name, verified_at, verified_token, token_expires_at, created_at, time_source_gen`
 
 func scanTrackerConnection(scan func(...any) error) (TrackerConnection, error) {
 	var c TrackerConnection
 	err := scan(&c.ID, &c.Kind, &c.Site, &c.Account, &c.ParentID, &c.Label, &c.Enabled,
-		&c.VerifiedAccountID, &c.VerifiedName, &c.VerifiedAt, &c.VerifiedToken, &c.TokenExpiresAt, &c.CreatedAt)
+		&c.VerifiedAccountID, &c.VerifiedName, &c.VerifiedAt, &c.VerifiedToken, &c.TokenExpiresAt, &c.CreatedAt, &c.TimeSourceGen)
 	return c, err
 }
 

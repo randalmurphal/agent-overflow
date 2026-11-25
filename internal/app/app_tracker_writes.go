@@ -17,7 +17,8 @@ import (
 // budget is four tracker requests at the 45 second bound the tracker
 // client gives each; what a write and its refresh send is counted in
 // docs/architecture/tracker-backend.md (Methods and events). A run cut
-// there answers each part as applied, unknown or not sent.
+// there answers each part as applied, unknown or not sent. The worklog
+// reads a Time screen makes beside its writes close the file.
 
 // trackerWriteBudget is every write's //ao:budget, which the attach's
 // bound also gives its refresh.
@@ -135,6 +136,15 @@ func (a *App) CompleteTrackerSprint(ctx context.Context, connectionID string, in
 	return trackerWrite(a, ctx, "CompleteTrackerSprint", tracker.StepSprint, connectionID, in, (*trackerapp.Service).CompleteSprint)
 }
 
+// EditTrackerSprint changes a sprint's name, goal or dates.
+//
+//ao:scope tracker:operate
+//ao:route home
+//ao:budget 3m
+func (a *App) EditTrackerSprint(ctx context.Context, connectionID string, in trackerapp.SprintEditRequest) (trackerapp.WriteView, error) {
+	return trackerWrite(a, ctx, "EditTrackerSprint", tracker.StepSprint, connectionID, in, (*trackerapp.Service).EditSprint)
+}
+
 // AddTrackerComment adds a comment to an issue.
 //
 //ao:scope tracker:operate
@@ -187,4 +197,76 @@ func (a *App) UnlinkTrackerIssues(ctx context.Context, connectionID string, in t
 //ao:budget 3m
 func (a *App) AddTrackerWorklog(ctx context.Context, connectionID string, in trackerapp.WorklogRequest) (trackerapp.WriteView, error) {
 	return trackerWrite(a, ctx, "AddTrackerWorklog", tracker.StepWorklog, connectionID, in, (*trackerapp.Service).AddWorklog)
+}
+
+// EditTrackerWorklog changes a worklog, as read, on its issue.
+//
+//ao:scope tracker:operate
+//ao:route home
+//ao:budget 3m
+func (a *App) EditTrackerWorklog(ctx context.Context, connectionID string, in trackerapp.WorklogEditRequest) (trackerapp.WriteView, error) {
+	return trackerWrite(a, ctx, "EditTrackerWorklog", tracker.StepWorklog, connectionID, in, (*trackerapp.Service).EditWorklog)
+}
+
+// DeleteTrackerWorklog deletes a worklog, as read.
+//
+//ao:scope tracker:operate
+//ao:route home
+//ao:budget 3m
+func (a *App) DeleteTrackerWorklog(ctx context.Context, connectionID string, in trackerapp.WorklogDeleteRequest) (trackerapp.WriteView, error) {
+	return trackerWrite(a, ctx, "DeleteTrackerWorklog", tracker.StepWorklog, connectionID, in, (*trackerapp.Service).DeleteWorklog)
+}
+
+// TrackerWorklogs is an author's worklogs on a connection whose day is
+// from to to (YYYY-MM-DD, both included, at most 366 days) as this
+// computer last read them, with no tracker call, and the days of the
+// range it has never read (unread).
+//
+//ao:scope tracker:read
+//ao:route home
+func (a *App) TrackerWorklogs(ctx context.Context, connectionID, author, from, to string) (trackerapp.WorklogDays, error) {
+	svc, err := a.trackerService()
+	if err != nil {
+		return trackerapp.WorklogDays{}, err
+	}
+	out, err := svc.Worklogs(connectionID, author, from, to)
+	return out, trackerTimeError(ctx, err)
+}
+
+// RefreshTrackerWorklogs reads an author's worklogs of at most 31 days
+// from the connection's time tracker, then answers them as
+// TrackerWorklogs does. A read that failed is the answer's failure, with
+// the worklogs as this computer held them before. It runs at the default
+// budget, as a form read does. Its requests grow with the time logged:
+// Tempo answers in pages, and Jira looks the author up (unless its client
+// has the user cached), pages the issues the author logged time on with the
+// worklogs each embeds (up to 20), and reads the worklogs of an issue
+// with more in pages of their own. On jiraprovider's cost fixture,
+// a month of 20 worklogs on 20 issues, the read is 1 Tempo request of
+// about 11.8 KB (TestRequestCost) or 2 Jira requests of about 28.0 KB
+// (TestRequestCostJiraWorklogs).
+//
+//ao:scope tracker:read
+//ao:route home
+func (a *App) RefreshTrackerWorklogs(ctx context.Context, connectionID, author, from, to string) (trackerapp.WorklogDays, error) {
+	svc, err := a.trackerService()
+	if err != nil {
+		return trackerapp.WorklogDays{}, err
+	}
+	ctx, cancel := a.trackerRun(ctx, "RefreshTrackerWorklogs", "Reading the logged time", trackerSlow)
+	defer cancel()
+	out, err := svc.RefreshWorklogs(ctx, connectionID, author, from, to)
+	return out, trackerTimeError(ctx, err)
+}
+
+// trackerTimeError is a worklog read's error with its sentence: the
+// budget's when ctx ended at it, and a tracker with no time tracking.
+func trackerTimeError(ctx context.Context, err error) error {
+	if cut := budgetError(ctx, err); cut != err {
+		return cut
+	}
+	if errors.Is(err, tracker.ErrUnsupported) {
+		return errorsx.Public("tracker_unsupported", "this tracker has no time tracking", err)
+	}
+	return trackerError(err)
 }

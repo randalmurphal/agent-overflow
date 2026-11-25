@@ -51,6 +51,9 @@ func TestTrackerConnectionsCreateReadAndList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Adding its Tempo connection, on, changed the Jira connection's time
+	// source (migration v168).
+	jira.TimeSourceGen = 1
 	first := []TrackerConnection{jira, linear}
 	slices.SortFunc(first, func(a, b TrackerConnection) int { return strings.Compare(a.ID, b.ID) })
 	if want := append(first, tempo); !slices.Equal(list, want) {

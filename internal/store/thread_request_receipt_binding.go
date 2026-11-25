@@ -96,7 +96,7 @@ func (s *Store) RebindThreadReceiptTurn(token, messageItemID, threadID string, f
 		`UPDATE thread_request_receipts
 		    SET message_item_id = ?, turn_id = ?, own_turn = ?, updated_at = ?
 		  WHERE token = ? AND state = 'running' AND turn_id = ?
-		    AND NOT EXISTS (SELECT 1 FROM timeline_items WHERE thread_id = ? AND turn_index = ?)`,
+		    AND NOT EXISTS (SELECT 1 FROM timeline_items WHERE thread_id = ? AND turn_index = `+boundInt+`)`,
 		messageItemID, toTurnID, ownTurn, nowMillis(), token, fromTurnID, threadID, fromIndex,
 	)
 	if err != nil {

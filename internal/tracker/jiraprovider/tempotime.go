@@ -88,9 +88,9 @@ func (t *tempoTime) EditWorklog(ctx context.Context, in tracker.WorklogEdit) tra
 	return worklogResult(in.From.Issue, in.From.Author, outcome(err), days...)
 }
 
-// DeleteWorklog deletes a Tempo worklog of the issue From names. The
-// worklog is read first, so the result names its author's worklogs of its
-// day as Tempo holds them.
+// DeleteWorklog deletes a Tempo worklog that still holds what From says.
+// The worklog is read first, so the result names its author's worklogs of
+// its day as Tempo holds them.
 func (t *tempoTime) DeleteWorklog(ctx context.Context, in tracker.WorklogDelete) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepWorklog, err, in.From.Issue)
@@ -100,11 +100,14 @@ func (t *tempoTime) DeleteWorklog(ctx context.Context, in tracker.WorklogDelete)
 		return tracker.Invalid(tracker.StepWorklog, err, in.From.Issue)
 	}
 	_, cur, err := t.readWorklog(ctx, id, in.From)
+	if err == nil && !sameWorklog(cur, in.From) {
+		err = stale(string(in.From.Issue), "worklog "+string(in.From.ID))
+	}
 	if err != nil {
 		return worklogResult(in.From.Issue, in.From.Author, beforeSend(err), in.From.Day)
 	}
 	err = t.tempo.Delete(ctx, id)
-	return worklogResult(in.From.Issue, cur.Author, outcome(err), deleteDays(cur, in.From)...)
+	return worklogResult(in.From.Issue, in.From.Author, outcome(err), in.From.Day)
 }
 
 // readWorklog reads Tempo worklog id, as Tempo holds it and as a neutral
@@ -125,22 +128,16 @@ func (t *tempoTime) readWorklog(ctx context.Context, id int64, from tracker.Work
 	return read, cur, nil
 }
 
-// deleteDays are the days a delete of the worklog read as cur may change
-// its author's worklogs on: its day, and the day the caller read it on
-// when that differs.
-func deleteDays(cur, from tracker.Worklog) []tracker.Date {
-	days := []tracker.Date{cur.Day}
-	if !from.Day.IsZero() && from.Day != cur.Day {
-		days = append(days, from.Day)
-	}
-	return days
-}
-
 // sameWorklog reports two reads of a worklog that hold the same issue,
-// author, day, time and description.
+// author, day, time and description at the same tracker revision. The
+// revision is compared at the millisecond, the precision a copy keeps
+// through the mirror and the wire (Jira answers milliseconds, Tempo
+// seconds), so a change the copy does not show (a start moved within its
+// day, Tempo's billable time) still makes it stale. A worklog read with
+// no revision has none in either copy.
 func sameWorklog(a, b tracker.Worklog) bool {
 	return a.ID == b.ID && a.Issue == b.Issue && a.Author == b.Author && a.Day == b.Day &&
-		a.Spent == b.Spent && a.Description == b.Description
+		a.Spent == b.Spent && a.Description == b.Description && a.Updated.UnixMilli() == b.Updated.UnixMilli()
 }
 
 // editDays are the days an edit may change the author's worklogs on:
