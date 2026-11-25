@@ -221,7 +221,6 @@
     text: row.estimate == null ? '' : String(row.unit === 'time' ? row.estimate / 3600 : row.estimate),
     onSave: (text: string) => {
       const n = text === '' ? null : Number(text);
-      if (n !== null && !Number.isFinite(n)) return;
       void setTicketPoints(ctx, row.board, n === null ? null : row.unit === 'time' ? Math.round(n * 3600) : n);
     },
   } : null);

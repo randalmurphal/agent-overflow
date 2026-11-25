@@ -937,6 +937,28 @@ describe('the ticket in the pane', () => {
     expect(within(priority).getByTestId('ticket-field-value')).toHaveTextContent('None');
   });
 
+  it('sets and clears the points typed in their field', async () => {
+    install();
+    installTicket();
+    const estimate = setBindingMock('SetTrackerEstimate', async (): Promise<WriteView> => ({ parts: [{ step: 'estimate', state: 'applied' }] }) as WriteView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const points = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'points')!;
+    const type = async (value: string) => {
+      await fireEvent.click(within(points).getByTestId('ticket-field-value'));
+      const input = within(points).getByTestId('ticket-field-input');
+      expect(input).toHaveValue(2);
+      await fireEvent.input(input, { target: { value } });
+      await fireEvent.keyDown(input, { key: 'Enter' });
+    };
+    await type('8');
+    await waitFor(() => expect(estimate).toHaveBeenCalledWith('c1', { board: '1', issue: '1', value: 8 }));
+    await waitFor(() => expect(within(points).getByTestId('ticket-field-value')).toBeEnabled());
+    await type('');
+    await waitFor(() => expect(estimate).toHaveBeenLastCalledWith('c1', { board: '1', issue: '1', value: undefined }));
+    expect(estimate).toHaveBeenCalledTimes(2);
+  });
+
   it('opens a card\'s ticket from the card\'s menu, and copies its key from it', async () => {
     install();
     installTicket();

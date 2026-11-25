@@ -27,6 +27,11 @@
   // place. A value is picked from its list or typed and saved with Enter
   // (Escape puts it back); while its write is out the control waits, so
   // nothing is sent twice. What the write answered shows under it.
+  //
+  // A typed value is the input's text. A number or date input whose text
+  // is not a number or not a whole date holds an empty value, as a
+  // cleared one does; Enter on it saves nothing and says what the field
+  // takes, so a typo never clears the field.
   import type { Snippet } from 'svelte';
   import TicketPicker from './TicketPicker.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
@@ -55,7 +60,13 @@
   let picking = $state(false);
   let typing = $state(false);
   let draft = $state('');
+  let invalid = $state('');
   let input: HTMLInputElement | undefined = $state();
+
+  const TAKES: Readonly<Record<'number' | 'date', string>> = {
+    number: 'Type a number, or clear the field.',
+    date: 'Pick a whole date, or clear the field.',
+  };
 
   /** Opens the field's editor, as its menu row does. */
   export function edit(): void {
@@ -67,6 +78,7 @@
   function startTyping(): void {
     if (editor?.kind !== 'type') return;
     draft = editor.text;
+    invalid = '';
     typing = true;
     queueMicrotask(() => input?.focus());
   }
@@ -75,8 +87,13 @@
     if (editor?.kind !== 'type' || isImeComposingEvent(event)) return;
     if (isLocalEnter(event)) {
       event.preventDefault();
+      if (editor.input !== 'text' && input?.validity.badInput) {
+        invalid = TAKES[editor.input];
+        return;
+      }
       typing = false;
-      if (draft.trim() !== editor.text) editor.onSave(draft.trim());
+      const text = draft.trim();
+      if (text !== editor.text) editor.onSave(text);
     } else if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
@@ -91,11 +108,13 @@
     {#if typing && editor?.kind === 'type'}
       <input
         bind:this={input}
-        bind:value={draft}
+        value={draft}
         type={editor.input}
         class="min-w-0 flex-1 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-1.5 py-0.5 text-sm text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
         aria-label={label}
         data-testid="ticket-field-input"
+        aria-invalid={invalid ? true : undefined}
+        oninput={(event) => { draft = event.currentTarget.value; invalid = ''; }}
         onkeydown={onKeydown}
         onblur={() => { typing = false; }}
       />
@@ -120,6 +139,9 @@
       </span>
     {/if}
   </div>
+  {#if typing && invalid}
+    <p class="pl-26 text-xs text-error" role="alert" data-testid="ticket-field-invalid">{invalid}</p>
+  {/if}
   <div class="pl-26"><TicketWriteNote {ticketKey} {target} {fieldName} /></div>
 </div>
 {#if editor?.kind === 'pick'}
