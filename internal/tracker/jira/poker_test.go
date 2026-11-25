@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -159,10 +160,12 @@ func itoa(n int) string { b, _ := json.Marshal(n); return string(b) }
 
 // pokerServer is a site answering each poker call with the given answers:
 // tenant the cloud ID, listing the extension listing, token the context
-// token's, and invoke each invoke (handed the request body).
+// token's, and invoke each invoke (handed the request body), answered
+// with invokeStatus, 200 when zero.
 type pokerAnswers struct {
 	tenant, listing, token string
 	invoke                 func(body []byte) string
+	invokeStatus           int
 }
 
 func pokerServer(t *testing.T, a pokerAnswers) (*Client, *jiratest.Server) {
@@ -172,11 +175,14 @@ func pokerServer(t *testing.T, a pokerAnswers) (*Client, *jiratest.Server) {
 	s.On("GET", "/rest/api/3/issue/10101", jiratest.Reply(200, pokerTestIssue))
 	s.On("POST", "/rest/internal/2/forge/context/token", jiratest.Reply(200, a.token))
 	s.On("POST", "/gateway/api/graphql", func(w http.ResponseWriter, r *http.Request, body []byte) {
-		answer := a.listing
+		answer, status := a.listing, 200
 		if strings.Contains(string(body), `"operationName":"Invoke"`) {
 			answer = a.invoke(body)
+			if a.invokeStatus != 0 {
+				status = a.invokeStatus
+			}
 		}
-		jiratest.Reply(200, answer)(w, r, body)
+		jiratest.Reply(status, answer)(w, r, body)
 	})
 	return newTestClient(t, s), s
 }
@@ -328,5 +334,89 @@ func TestPokerAbsentSiteIsKept(t *testing.T) {
 	}
 	if n := s.Count("POST", "/gateway/api/graphql"); n != 1 {
 		t.Fatalf("%d listings, want 1", n)
+	}
+}
+
+// F5: an answer the poker app accepted names no account by the token
+// either: the body the invoke returns has it replaced.
+func TestPokerAnswerBodyHoldsNoToken(t *testing.T) {
+	token := pokerJWT(pokerTestClaims)
+	a := measuredAnswers()
+	a.invoke = func([]byte) string {
+		return invokeBody(200, `{"isRevealed":false,"votes":[{"userId":"`+token+`","vote":5}]}`)
+	}
+	c, _ := pokerServer(t, a)
+	r := got(c.PokerVotes(t.Context(), "10101")).must(t)
+	if len(r.Votes) != 1 || r.Votes[0].Account != secret.Redacted {
+		t.Fatalf("read %+v", r)
+	}
+}
+
+// holdsToken reports a node of err's chain whose text or fields hold
+// token: its message, or a field as %#v prints it (a StatusError's Body,
+// Message and Fields, an AuthError's Message).
+func holdsToken(err error, token string) bool {
+	if err == nil {
+		return false
+	}
+	if strings.Contains(err.Error(), token) || strings.Contains(fmt.Sprintf("%#v", err), token) {
+		return true
+	}
+	switch u := err.(type) {
+	case interface{ Unwrap() error }:
+		return holdsToken(u.Unwrap(), token)
+	case interface{ Unwrap() []error }:
+		for _, e := range u.Unwrap() {
+			if holdsToken(e, token) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// F5: no error an invoke returns holds the context token, wherever the
+// answer repeats it: the outer HTTP refusal's body, the poker app's
+// status text on a refusal and on a failure, a gateway message, or the
+// message of a refused credential. Each still says what happened: refused
+// or not, or the credential refused.
+func TestPokerInvokeErrorsHoldNoToken(t *testing.T) {
+	token := pokerJWT(pokerTestClaims)
+	for name, c := range map[string]struct {
+		status  int
+		invoke  string
+		refused bool
+		auth    bool
+	}{
+		"outer HTTP 401 message": {status: 401, invoke: `{"errorMessages":["token ` + token + ` refused"]}`, auth: true},
+		"outer HTTP 400 body":    {400, `{"errors":[{"message":"token ` + token + ` refused"}],"token":"` + token + `"}`, true, false},
+		"outer HTTP 502 body":    {502, `{"message":"bad gateway for ` + token + `"}`, false, false},
+		"inner 400 status text": {200, `{"data":{"invokeExtension":{"success":true,"errors":null,"response":{"body":{"status":400,"statusText":"bad ` +
+			token + `","headers":{},"body":"{}"}}}}}`, true, false},
+		"inner 500 status text": {200, `{"data":{"invokeExtension":{"success":true,"errors":null,"response":{"body":{"status":500,"statusText":"broke ` +
+			token + `","headers":{},"body":"{}"}}}}}`, false, false},
+		"gateway extension": {200, `{"data":{"invokeExtension":{"success":false,"response":null,"errors":[{"message":"no","extensions":{"errorType":"` +
+			token + `","statusCode":403}}]}}}`, true, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a := measuredAnswers()
+			a.invoke = func([]byte) string { return c.invoke }
+			a.invokeStatus = c.status
+			client, _ := pokerServer(t, a)
+			err := client.CastPokerVote(t.Context(), "10101", 3)
+			if err == nil || holdsToken(err, token) {
+				t.Fatalf("the write's error holds the token: %#v", err)
+			}
+			if c.auth {
+				if ae, ok := errors.AsType[*trackerapi.AuthError](err); !ok || !strings.Contains(ae.Message, secret.Redacted) {
+					t.Fatalf("got %v, want the refused credential with its message redacted", err)
+				}
+			} else if pe, ok := errors.AsType[*PokerError](err); !ok || pe.Refused != c.refused {
+				t.Fatalf("got %v, want a PokerError refused %v", err, c.refused)
+			}
+			if _, err := client.PokerVotes(t.Context(), "10101"); err == nil || holdsToken(err, token) {
+				t.Fatalf("the read's error holds the token: %#v", err)
+			}
+		})
 	}
 }

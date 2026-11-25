@@ -83,7 +83,8 @@ var ErrPokerAbsent = errors.New("jira: planning poker is not installed on this s
 // with a 4xx: a write that was not applied. Any other PokerError of a
 // write leaves its outcome unknown, unless Err, the transport's error it
 // wraps, proves otherwise (trackerapi.WriteNotApplied). Detail holds no
-// credential and no token.
+// credential and no token, and a PokerError of the invoke wraps no part
+// of the invoke's answer (sealInvoke).
 type PokerError struct {
 	Step    string
 	Detail  string
@@ -181,15 +182,12 @@ type gqlError struct {
 }
 
 // gatewayMessage is errs' first message, cut to maxGatewayMessage bytes,
-// with token replaced (a gateway may repeat what it was sent).
+// with token replaced (redactToken).
 func gatewayMessage(errs []gqlError, token *secret.Bytes) string {
 	if len(errs) == 0 {
 		return ""
 	}
-	msg := errs[0].Message
-	if t := token.Reveal(); len(t) > 0 {
-		msg = strings.ReplaceAll(msg, string(t), secret.Redacted)
-	}
+	msg := redactToken(errs[0].Message, token)
 	if len(msg) > maxGatewayMessage {
 		cut := maxGatewayMessage
 		for cut > 0 && !utf8.RuneStart(msg[cut]) {
@@ -351,10 +349,34 @@ type pokerAnswer struct {
 	body       string
 }
 
-// pokerBody is a backend request body as the invoke carries it: the JSON
-// value itself. Measured for no write (2026-11-24): if the backend wants
-// the body as a string, this is the one place that changes.
-func pokerBody(v any) any { return v }
+// redactToken is text with token replaced by secret.Redacted: the
+// gateway and the poker app may repeat the token they were sent.
+func redactToken(text string, token *secret.Bytes) string {
+	if t := token.Reveal(); len(t) > 0 {
+		return strings.ReplaceAll(text, string(t), secret.Redacted)
+	}
+	return text
+}
+
+// sealInvoke is err, the invoke's failed request, as pokerInvoke returns
+// it, holding nothing of the invoke's answer, which may repeat the token:
+// a status the gateway answered is a PokerError that wraps no
+// *trackerapi.StatusError (its Body, Message and Fields are the answer's),
+// and a refused credential keeps its message with token replaced. Every
+// other failure (a rate limit, the network, an ended call, a request not
+// sent, an answer that did not decode) holds no text of the answer and is
+// pokerCallErr's.
+func sealInvoke(err error, token *secret.Bytes) error {
+	if se, ok := outcomeOf(err).(*trackerapi.StatusError); ok {
+		return &PokerError{Step: pokerStepGateway, Detail: fmt.Sprintf("answered HTTP %d", se.Status), Refused: clientStatus(se.Status)}
+	}
+	if ae, ok := err.(*trackerapi.AuthError); ok {
+		sealed := *ae
+		sealed.Message = redactToken(ae.Message, token)
+		err = &sealed
+	}
+	return pokerCallErr(pokerStepGateway, err)
+}
 
 // pokerInvoke sends the poker app method and path (under
 // pokerRoutesRoot) for issue, with body, read marking a call that changes
@@ -380,7 +402,10 @@ func (c *Client) pokerInvoke(ctx context.Context, issue, method, path string, bo
 		"entryPoint":  "resolver",
 		"payload": map[string]any{
 			"call": map[string]any{"functionKey": "requestConnectBackend", "payload": map[string]any{
-				"path": pokerRoutesRoot + path, "method": method, "headers": map[string]string{}, "body": pokerBody(body),
+				"path": pokerRoutesRoot + path, "method": method, "headers": map[string]string{},
+				// The JSON value itself. Measured for no write (2026-11-24):
+				// if the backend wants the body as a string, this changes.
+				"body": body,
 			}},
 			"context":      map[string]any{"cloudId": app.cloudID, "localId": app.ext.ID, "moduleKey": pokerPanelKey, "extension": tok.data},
 			"contextToken": string(tok.token.Reveal()),
@@ -405,7 +430,7 @@ func (c *Client) pokerInvoke(ctx context.Context, issue, method, path string, bo
 	req := trackerapi.Request{Method: http.MethodPost, Path: gatewayPath, ReadOnly: read,
 		Body: map[string]any{"operationName": "Invoke", "query": pokerInvokeDoc, "variables": map[string]any{"input": input}}}
 	if _, err := c.call(ctx, req, &out); err != nil {
-		return pokerAnswer{}, pokerCallErr(pokerStepGateway, err)
+		return pokerAnswer{}, sealInvoke(err, tok.token)
 	}
 	if out.Data == nil || out.Data.InvokeExtension == nil {
 		c.pokerTokens.drop(issue)
@@ -423,7 +448,8 @@ func (c *Client) pokerInvoke(ctx context.Context, issue, method, path string, bo
 	if inv.Response == nil || inv.Response.Body == nil || inv.Response.Body.Body == nil || inv.Response.Body.Status == 0 {
 		return pokerAnswer{}, unrecognized(pokerStepApp, nil)
 	}
-	a := pokerAnswer{status: inv.Response.Body.Status, statusText: inv.Response.Body.StatusText, body: *inv.Response.Body.Body}
+	a := pokerAnswer{status: inv.Response.Body.Status, statusText: redactToken(inv.Response.Body.StatusText, tok.token),
+		body: redactToken(*inv.Response.Body.Body, tok.token)}
 	switch {
 	case a.status >= 200 && a.status <= 299:
 		return a, nil
