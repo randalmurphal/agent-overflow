@@ -25,8 +25,9 @@
 // they were.
 //
 // What the board holds is bounded by each section's loaded part: the first
-// page, the pages a person scrolled to, and the rest of a section a filter
-// asked for. A sprint is read whole as soon as it is held, so the columns
+// page, the pages a person scrolled to, and, while a filter is on, the rest
+// of every section (`setTrackerBoardFiltered`); a filter cleared asks for
+// no further page. A sprint is read whole as soon as it is held, so the columns
 // its rows fill count and sum every card of it. A full read starts a fresh interner, so the shared parts of
 // rows go with the board.
 
@@ -130,9 +131,8 @@ interface Live {
   pending: Set<string>;
   /** A full read is owed. */
   readAgain: boolean;
-  /** Sections owed one more page, and sections owed every page. */
+  /** Sections owed one more page. */
   wantPage: Set<string>;
-  wantWhole: Set<string>;
   /** The revision a page read was refused at as stale: no page is read
    * again until a patch carries the board past it. */
   staleAt: number;
@@ -152,6 +152,8 @@ const lives = new Map<string, Live>();
 // Whether the pane shows each held board, before the window's own
 // visibility; kept across a re-subscribe.
 const shownByKey = new Map<string, boolean>();
+// Whether a filter is on over each held board; kept across a re-subscribe.
+const filteredByKey = new Map<string, boolean>();
 // The sections each board was last read with this session, so a
 // re-subscribe (a reconnect, a board picked again) asks for them at once.
 const lastSections = new Map<string, Section[]>();
@@ -179,6 +181,7 @@ const store = createEntityStore<TrackerBoardState, TrackerBoardRef>({
     if (live) live.aborted = true;
     lives.delete(key);
     shownByKey.delete(key);
+    filteredByKey.delete(key);
   },
 });
 
@@ -189,7 +192,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
   const live: Live = {
     key, ref, id: '', seq: 0, joining: [], apply, aborted: false,
     state: { held: null, failure: null, readAt: 0, ended: false, paging: NO_SECTIONS, refreshing: false, refreshNotice: null, readError: null },
-    pending: new Set(), readAgain: false, wantPage: new Set(), wantWhole: new Set(), staleAt: -1,
+    pending: new Set(), readAgain: false, wantPage: new Set(), staleAt: -1,
     intern: createRowInterner(), running: null, voted: null,
   };
   lives.set(key, live);
@@ -414,7 +417,6 @@ function pageWanted(live: Live, held: HeldBoard): number {
     const k = sectionKey(sec.section);
     if (!sec.next) {
       live.wantPage.delete(k);
-      live.wantWhole.delete(k);
       continue;
     }
     if (owedPage(live, sec)) return i;
@@ -425,7 +427,7 @@ function pageWanted(live: Live, held: HeldBoard): number {
 /** Whether a held section with more to read is owed its next page. */
 function owedPage(live: Live, sec: HeldBoard['sections'][number]): boolean {
   const k = sectionKey(sec.section);
-  return sec.section.kind === 'sprint' || live.wantPage.has(k) || live.wantWhole.has(k);
+  return sec.section.kind === 'sprint' || live.wantPage.has(k) || filteredByKey.get(live.key) === true;
 }
 
 async function readPage(live: Live, held: HeldBoard, at: number): Promise<void> {
@@ -457,26 +459,29 @@ function pagingOf(live: Live, held: HeldBoard): ReadonlySet<string> {
   return out.size === 0 ? NO_SECTIONS : out;
 }
 
-function want(key: string, section: Section, whole: boolean): void {
+/** Reads the next page of a held section, once. */
+export function loadMoreOfSection(key: string, section: Section): void {
   const live = lives.get(key);
   const held = live?.state.held;
   if (!live || !held) return;
   const k = sectionKey(section);
   const sec = held.sections.find((s) => sectionKey(s.section) === k);
   if (!sec?.next) return;
-  (whole ? live.wantWhole : live.wantPage).add(k);
+  live.wantPage.add(k);
   update(live, { paging: pagingOf(live, held) });
   void drain(live);
 }
 
-/** Reads the next page of a held section, once. */
-export function loadMoreOfSection(key: string, section: Section): void {
-  want(key, section, false);
-}
-
-/** Reads every page of a held section left to read (a filter over it). */
-export function loadSectionWhole(key: string, section: Section): void {
-  want(key, section, true);
+/** Whether a filter (Only mine, Search) is on over the board: while it is,
+ * every held section is read to its end, so the filter sees every card. */
+export function setTrackerBoardFiltered(key: string, filtered: boolean): void {
+  if ((filteredByKey.get(key) ?? false) === filtered) return;
+  filteredByKey.set(key, filtered);
+  const live = lives.get(key);
+  const held = live?.state.held;
+  if (!live || !held) return;
+  update(live, { paging: pagingOf(live, held) });
+  void drain(live);
 }
 
 /** Has the board's computer read it from the tracker now, as the
@@ -568,6 +573,7 @@ export function resetTrackerBoardsForTest(): void {
   for (const live of lives.values()) live.aborted = true;
   lives.clear();
   shownByKey.clear();
+  filteredByKey.clear();
   lastSections.clear();
   votes.resetForTest();
 }

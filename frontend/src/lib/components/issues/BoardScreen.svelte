@@ -12,7 +12,7 @@
   import { columnCount } from './boardFormat';
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
   import { compactColumn, setCompactColumn, type CardField } from '../../stores/issuesPane.svelte';
-  import { loadMoreOfSection, loadSectionWhole, type TrackerBoardRef } from '../../stores/trackerBoard.svelte';
+  import { loadMoreOfSection, setTrackerBoardFiltered, type TrackerBoardRef } from '../../stores/trackerBoard.svelte';
   import {
     cardMatches,
     filtering,
@@ -50,13 +50,10 @@
   const unit = $derived(held.shape.unit);
   const noSprint = $derived(held.shape.plansSprints && !held.shape.sprints.some((sp) => sp.state === 'active'));
 
-  // A filter reads the rest of every column it filters.
+  // A filter reads the rest of every column while it is on.
   $effect(() => {
-    if (!filtered) return;
-    const cols = columns;
-    untrack(() => {
-      for (const col of cols) if (col.moreFrom !== null) loadSectionWhole(boardKey, held.sections[col.moreFrom].section);
-    });
+    const on = filtered;
+    untrack(() => setTrackerBoardFiltered(boardKey, on));
   });
 
   function moreOf(col: ScreenColumn): () => void {

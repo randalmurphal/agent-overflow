@@ -217,6 +217,26 @@ describe('the Issues pane', () => {
     expect(columns(view)[0].cards).toEqual(['200']);
   });
 
+  it('stops reading a column whole once its filter is cleared', async () => {
+    const todo = Array.from({ length: 100 }, (_, i) => row(String(i + 10), `k${String(i).padStart(3, '0')}`, 's1'));
+    install({ view: kanban({ rows: todo, total: 300, next: true }, { rows: [row('2', 'b', 's2')] }) });
+    let answer: (page: SectionPage) => void = () => {};
+    const page = setBindingMock('TrackerSectionRows', () => new Promise<SectionPage>((resolve) => { answer = resolve; }));
+    const view = mount();
+    await waitFor(() => expect(columns(view)[0].cards.length).toBeGreaterThan(0));
+    openPaneFind(PANE);
+    setPaneFindQuery(PANE, 'export');
+    await waitFor(() => expect(page).toHaveBeenCalledTimes(1));
+    setPaneFindQuery(PANE, '');
+    await waitFor(() => expect(columns(view)[0].count).toBe('300 · 600 pts'));
+    const more = Array.from({ length: 100 }, (_, i) => row(String(i + 200), `m${String(i).padStart(3, '0')}`, 's1'));
+    answer({ section: { kind: 'column', column: 0 }, rows: more, next: { order: 'm099', issue: '299', lifetime: 1, revision: 1 } } as unknown as SectionPage);
+    await waitFor(() => expect(columns(view)[0].cards).toHaveLength(200));
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(page).toHaveBeenCalledTimes(1);
+  });
+
   it("states the board's failure with when it was last read, and keeps Refresh with its answers", async () => {
     install({ failure: { kind: 'auth', message: 'The tracker refused the key.', at: 1 } });
     const refresh = setBindingMock('RefreshTrackerSubscription', async () => {

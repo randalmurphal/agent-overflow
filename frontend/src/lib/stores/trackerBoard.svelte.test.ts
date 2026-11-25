@@ -17,9 +17,9 @@ import {
   attachTrackerBoard,
   dismissTrackerRefreshNotice,
   loadMoreOfSection,
-  loadSectionWhole,
   refreshTrackerBoard,
   resyncTrackerBoardsAfterGap,
+  setTrackerBoardFiltered,
   setTrackerBoardShown,
   type TrackerBoardAttachment,
   type TrackerBoardEvent,
@@ -338,7 +338,7 @@ describe('the board subscription', () => {
     board.release();
   });
 
-  it('reads every page of a section a filter asked for', async () => {
+  it('reads every page of a section while a filter is on', async () => {
     const mocks = install();
     mocks.board.mockImplementation(async () => view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true }));
     mocks.page.mockImplementation(async (_id: string, _s: Section, after: { issue: string }) => {
@@ -347,7 +347,7 @@ describe('the board subscription', () => {
     });
     const board = attachTrackerBoard(REF);
     await flush();
-    loadSectionWhole(board.key, COLUMN);
+    setTrackerBoardFiltered(board.key, true);
     await flush();
     expect(mocks.page).toHaveBeenCalledTimes(2);
     expect(heldIds(board)[0].length).toBe(300);
