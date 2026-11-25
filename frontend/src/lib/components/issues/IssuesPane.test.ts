@@ -1075,6 +1075,66 @@ describe('the ticket in the pane', () => {
     expect(choices).toHaveBeenCalledTimes(1);
   });
 
+  it('says a ticket that could not be read once, and nothing about reading it', async () => {
+    install();
+    setBindingMock('SubscribeTrackerTicket', async (): Promise<TicketSubscription> => ({
+      id: 'ticket-1-1', seq: 10, poll_every: 10_000, loaded: false, read_at: 0,
+      failure: { kind: 'auth', message: 'Jira refused the credential.', at: 1 },
+    }) as unknown as TicketSubscription);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await waitFor(() => expect(within(screen).getByTestId('ticket-content')).toHaveTextContent('Jira refused the credential.'));
+    expect(screen.textContent?.split('Jira refused the credential.').length).toBe(2);
+    expect(within(screen).queryByTestId('ticket-opening')).toBeNull();
+  });
+
+  it('says a ticket whose read of this computer\'s copy failed, and nothing about reading it', async () => {
+    install();
+    setBindingMock('SubscribeTrackerTicket', async (): Promise<TicketSubscription> => ({ id: 'ticket-1-1', seq: 10, poll_every: 10_000, loaded: false, read_at: 0 }) as unknown as TicketSubscription);
+    setBindingMock('TrackerTicket', async () => { throw new TransportError('internal', 'the copy could not be read'); });
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await waitFor(() => expect(within(screen).getByTestId('ticket-opening')).toBeInTheDocument());
+    trackerIssueUpdated({ connection: 'c1', issue: '1', seq: 11, changed: true }, HOME_BACKEND);
+    await waitFor(() => expect(within(screen).getByTestId('ticket-read-error')).toHaveTextContent('The copy could not be read.'));
+    expect(within(screen).queryByTestId('ticket-opening')).toBeNull();
+    expect(within(screen).queryByTestId('ticket-read-error-dismiss')).toBeNull();
+  });
+
+  it('says a ticket could not be opened, and nothing about opening it', async () => {
+    install();
+    setBindingMock('SubscribeTrackerTicket', async () => { throw new TransportError('internal', 'the computer could not open it'); });
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await waitFor(() => expect(within(screen).getByTestId('ticket-subscribe-error')).toHaveTextContent('Could not open this ticket'));
+    expect(within(screen).queryByTestId('ticket-opening')).toBeNull();
+  });
+
+  it('says once that a ticket\'s connection was turned off', async () => {
+    install();
+    setBindingMock('SubscribeTrackerTicket', async () => { throw new TransportError('tracker_connection_off', 'this tracker connection is turned off'); });
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await waitFor(() => expect(within(screen).getByTestId('ticket-ended-empty')).toBeInTheDocument());
+    expect(within(screen).queryByTestId('ticket-ended')).toBeNull();
+  });
+
+  it('says once that the computer is not connected while its ticket covers the board', async () => {
+    install();
+    installTicket();
+    const view = mount();
+    await openCard(view, '1');
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null });
+    await waitFor(() => expect(view.getByTestId('ticket-offline')).toBeInTheDocument());
+    expect(view.queryByTestId('issues-board-offline')).toBeNull();
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+    await waitFor(() => expect(view.queryByTestId('ticket-offline')).toBeNull());
+    await fireEvent.click(view.getByTestId('ticket-close'));
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null });
+    expect(await view.findByTestId('issues-board-offline')).toBeInTheDocument();
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+  });
+
   it('opens a card\'s ticket from the card\'s menu, and copies its key from it', async () => {
     install();
     installTicket();

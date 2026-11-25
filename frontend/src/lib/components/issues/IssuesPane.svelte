@@ -105,6 +105,9 @@
   const selection = createBoardSelection({ openedFromProject: openedFrom, shown: () => shown, besideFits: () => besideFits });
   onDestroy(() => selection.destroy());
   const ticket = $derived(selection.ticket);
+  // A ticket over the board covers the board's notices with it: what they
+  // say is the board's, and the ticket says its own.
+  const boardCovered = $derived(!!ticket && selection.placement === 'over');
 
   // The ticket view open now, for its own step back (the Details rail).
   let ticketView: { stepBack(): boolean } | undefined = $state();
@@ -315,6 +318,7 @@
       />
     {/if}
   {/each}
+  {#if !boardCovered}
   {#if attachment?.error}
     <p class="border-b border-error/30 bg-error/10 px-3 py-1.5 text-xs text-error" role="alert" data-testid="issues-subscribe-error">Could not open this board: {attachment.error}</p>
   {/if}
@@ -361,6 +365,7 @@
   {/if}
   {#if onlyMine && boardComputerAnswered && !me}
     <p class="border-b border-border-subtle px-3 py-1.5 text-xs text-fg-muted" data-testid="issues-only-mine-unknown">Only mine shows every card: the app does not know which account is yours on this board's connection.</p>
+  {/if}
   {/if}
 
   <div class="relative flex min-h-0 flex-1" bind:clientWidth={split.paneWidth}>

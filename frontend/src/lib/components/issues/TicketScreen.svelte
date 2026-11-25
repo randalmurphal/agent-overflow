@@ -14,8 +14,8 @@
   // What it draws is the ticket's subscription (`attachment`): until its
   // computer has read the ticket's body, the card it was opened from. A
   // computer not connected, a connection turned off, a ticket the tracker
-  // does not return, each says so in one sentence where the content would
-  // be. Every change goes through the write store, which keeps its outcome
+  // does not return or could not be read, each says so in one sentence
+  // where the content would be, and nothing else says it. Every change goes through the write store, which keeps its outcome
   // under the control that made it.
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
@@ -596,9 +596,9 @@
     {/if}
   </header>
 
-  {#if ticketState?.ended}
+  {#if detail && ticketState?.ended}
     <p class="border-b border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg-muted" data-testid="ticket-ended">This ticket is no longer followed: its connection was turned off or removed. What shows is as it was last read.</p>
-  {:else if ticketState?.failure && (detail || !notFound)}
+  {:else if detail && ticketState?.failure}
     <p class="border-b border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning" role="status" data-testid="ticket-failure">{ticketState.failure.message} {lastRead(ticketState.readAt)}</p>
   {/if}
   {#if attachment.error}
@@ -619,7 +619,7 @@
     <ErrorNotice message="Could not refresh the ticket: {refreshFailure.report.reason}" captured={refreshFailure} onDismiss={() => dismissTrackerTicketRefreshNotice(attachment.key)} testId="ticket-refresh-error" />
   {/if}
   {#if readFailure}
-    <ErrorNotice message="Could not read the ticket from this computer's copy: {readFailure.report.reason}" captured={readFailure} onDismiss={() => { readFailure = null; }} testId="ticket-read-error" />
+    <ErrorNotice message="Could not read the ticket from this computer's copy: {readFailure.report.reason}" captured={readFailure} onDismiss={detail ? () => { readFailure = null; } : undefined} testId="ticket-read-error" />
   {/if}
 
   <div class="relative flex min-h-0 flex-1">
@@ -632,7 +632,9 @@
             <p class="text-sm text-fg-muted" data-testid="ticket-ended-empty">This ticket cannot be shown: its connection was turned off or removed on {computerName}.</p>
           {:else if !detail && offline}
             <p class="text-sm text-fg-muted" role="status" data-testid="ticket-offline">{computerName} is not connected. The ticket shows when it connects.</p>
-          {:else if !detail}
+          {:else if !detail && ticketState?.failure}
+            <p class="text-sm text-fg-muted" role="status" data-testid="ticket-failure-empty">{ticketState.failure.message} {lastRead(ticketState.readAt)}</p>
+          {:else if !detail && !readFailure && !attachment.error}
             <p class="text-sm text-fg-muted" data-testid="ticket-opening">{ticketState ? 'Reading the ticket from the tracker…' : 'Opening the ticket…'}</p>
           {/if}
           {@render content()}
