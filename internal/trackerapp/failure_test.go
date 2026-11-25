@@ -35,7 +35,7 @@ func TestClassifyFailureSortsEveryKind(t *testing.T) {
 		"a refused key file": {"jira", &KeyFileError{Path: "/k", Err: &keyfile.RefusedError{Reason: "it is a symlink"}},
 			FailureSetup, "it is a symlink"},
 		"a refused token": {"jira", wrap(&trackerapi.AuthError{Tracker: "jira", Status: 401, Message: secret}),
-			FailureSetup, "Jira refused the token in the key file"},
+			FailureSetup, "Jira refused the token in the key file; put a valid token in it. A token made with Create API token with scopes cannot reach the Jira site: make one with Create API token"},
 		"a refused token whose file then went missing": {"jira", &trackerapi.AuthError{Tracker: "jira", Status: 401, Err: &KeyFileError{Err: label.ErrMissing()}},
 			FailureSetup, "there is no Jira API token file"},
 		"a refused Tempo token": {"tempo", &trackerapi.AuthError{Tracker: "tempo", Status: 401},

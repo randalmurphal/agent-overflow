@@ -39,7 +39,7 @@
   let makeToken = $derived.by(() => {
     switch (connection.kind) {
       case 'jira':
-        return `Create an Atlassian API token while signed in as ${connection.account}. Give it the longest life the page offers.`;
+        return `On the token page, choose Create API token, not Create API token with scopes: a token with scopes cannot reach the Jira site, so the check fails. Make it while signed in as ${connection.account}, and give it the longest life the page offers.`;
       case 'linear':
         return "Create a personal API key in Linear's security settings.";
       case 'tempo':
@@ -59,7 +59,7 @@
   {/if}
   <ol class="flex list-decimal flex-col gap-3 pl-5 text-[0.75rem] text-fg">
     <li class="flex flex-col gap-1.5">
-      <span>{makeToken}</span>
+      <span data-testid="tracker-connection-make-token">{makeToken}</span>
       {#if host}
         <div>
           <button type="button" class={SECONDARY_BUTTON_CLASS} onclick={onOpenTokenPage} data-testid="tracker-connection-open-token-page">

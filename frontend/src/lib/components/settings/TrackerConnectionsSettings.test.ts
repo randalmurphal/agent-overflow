@@ -48,6 +48,10 @@ describe('<TrackerConnectionsSettings>', () => {
     expect(within(row).getByTestId('tracker-connection-status').textContent).toContain('Needs a token');
     expect(within(row).getByTestId('tracker-connection-key-path').textContent).toBe(rows[0].keyFilePath);
     expect(within(row).getByTestId('tracker-connection-key-state').textContent).toBe('The key file is empty.');
+    // The token page offers two kinds; only the one without scopes reaches the site.
+    expect(within(row).getByTestId('tracker-connection-make-token').textContent).toBe(
+      'On the token page, choose Create API token, not Create API token with scopes: a token with scopes cannot reach the Jira site, so the check fails. Make it while signed in as user1@example.com, and give it the longest life the page offers.',
+    );
     expect(within(row).getByTestId('tracker-connection-open-token-page')).toBeTruthy();
     expect(within(row).getByTestId('tracker-connection-open-key-file')).toBeTruthy();
     await waitFor(() => expect(screen.queryByTestId('tracker-connection-add-form')).toBeNull());

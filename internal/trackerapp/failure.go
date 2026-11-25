@@ -131,6 +131,11 @@ func ClassifyFailure(kind string, err error) Failure {
 		return Failure{Kind: FailureRateLimited, Message: fmt.Sprintf("%s is limiting requests until %s", name, limited.Until.UTC().Format(time.RFC3339))}
 	case errors.As(err, &auth):
 		msg := name + " refused the token in the key file; put a valid token in it"
+		if kind == store.TrackerKindJira {
+			// A scoped token answers only through Atlassian's gateway, and the
+			// client calls the site (tracker-api-measurements.md).
+			msg += ". A token made with Create API token with scopes cannot reach the Jira site: make one with Create API token"
+		}
 		if kind == store.TrackerKindTempo {
 			msg += ", and check that the region is the one the site's Tempo data is in"
 		}
