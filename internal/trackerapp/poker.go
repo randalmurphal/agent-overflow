@@ -22,11 +22,12 @@ import (
 //     the client's listing kept 30 minutes (jira/poker.go), with no
 //     invoke. A screen asks it when a ticket of the connection opens.
 //   - An open ticket's handle follows the votes (FollowPoker) while its
-//     poker panel is open. The ticket's pump reads them every
-//     Cadence.Poker while at least one handle follows and a handle shows
-//     the ticket, on its own goroutine, and arms nothing otherwise; a
-//     change is told as IssueEvent.Poker and read with Poker. When the
-//     last follower goes, the pump drops the votes it held.
+//     poker panel is open. While a handle both follows and shows the
+//     ticket, one poker run reads them every Cadence.Poker on a goroutine
+//     of its own (runPoker), apart from the ticket's pump, so a slow
+//     add-on never holds a refresh or a view; otherwise no run exists and
+//     nothing is read. A change is told as IssueEvent.Poker and read with
+//     Poker. When the last follower goes, the votes held are dropped.
 //   - PokerVote, RevealPoker and ClearPoker write through Service.write,
 //     so they answer as every write does; the following pump of the issue
 //     reads the votes at once after one that may have happened.
@@ -70,24 +71,36 @@ type PokerSupport struct {
 }
 
 // PokerVoteRequest is a vote on an issue: a number from tracker's
-// MinPokerVote to MaxPokerVote.
+// MinPokerVote to MaxPokerVote. A request with no vote, or a null one,
+// is refused (PokerVote); zero is a vote.
 type PokerVoteRequest struct {
-	Issue string  `json:"issue"`
-	Vote  float64 `json:"vote"`
+	Issue string   `json:"issue"`
+	Vote  *float64 `json:"vote"`
 }
 
 // pokerFollow is an open ticket's poker while a handle follows it, under
-// subMu: how many handles follow, the view they were last told, when the
+// subMu: the handles that follow, the view they were last told, when the
 // next read is due, the retry schedule's step, whether the next read is
-// a person's (a follow's first, or after a write), and whether the next
-// event tells a change.
+// a person's (a follow's first, or after a write), whether the next event
+// tells a change, and the run that reads, nil while no handle both
+// follows and shows the ticket (admitPokerLocked).
 type pokerFollow struct {
-	followers int
+	followers map[*handle]struct{}
 	view      PokerView
 	due       time.Time
 	delay     time.Duration
 	asked     bool
 	changed   bool
+	run       *pokerRun
+}
+
+// pokerRun is one goroutine reading a ticket's votes (runPoker): its
+// context's cancel, a nudge to look at the read's due time again, and
+// done, closed once it returned.
+type pokerRun struct {
+	cancel context.CancelFunc
+	wake   chan struct{}
+	done   chan struct{}
 }
 
 // noPoker is the refusal of poker on a tracker that cannot have it.
@@ -136,10 +149,11 @@ func (s *Service) PokerSupport(ctx context.Context, id string) (PokerSupport, er
 }
 
 // FollowPoker makes handle id, a ticket's, follow its issue's votes or
-// stop following them, and answers the votes as last told. Following
-// reads them at once when no handle followed before. A handle that is not
-// a ticket's fails with ErrInvalidRequest, and a ticket of a tracker with
-// no planning poker with ErrUnsupported.
+// stop following them, and answers the votes as last told. The first
+// follower's read is due at once; it runs while a handle that follows
+// shows the ticket. A handle that is not a ticket's fails with
+// ErrInvalidRequest, and a ticket of a tracker with no planning poker
+// with ErrUnsupported.
 func (s *Service) FollowPoker(id string, follow bool) (PokerView, error) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
@@ -156,29 +170,33 @@ func (s *Service) FollowPoker(id string, follow bool) (PokerView, error) {
 	switch {
 	case follow && !h.poker:
 		h.poker = true
-		tp.poker.followers++
-		if tp.poker.followers == 1 {
+		if len(tp.poker.followers) == 0 {
+			tp.poker.followers = map[*handle]struct{}{}
 			tp.poker.due, tp.poker.asked = s.now(), true
-			nudge(tp.pokerWake)
 		}
+		tp.poker.followers[h] = struct{}{}
 	case !follow && h.poker:
 		s.unfollowPokerLocked(h)
 	}
+	s.admitPokerLocked(tp)
 	return tp.poker.viewCopy(), nil
 }
 
-// unfollowPokerLocked ends h's following; the last follower's end drops
-// the votes and the pump's poker timer. The caller holds subMu.
+// unfollowPokerLocked ends h's following; the last follower's end ends
+// the run and drops the votes. The caller holds subMu and then calls
+// admitPokerLocked.
 func (s *Service) unfollowPokerLocked(h *handle) {
 	if !h.poker {
 		return
 	}
 	h.poker = false
 	tp := h.ticket
-	tp.poker.followers--
-	if tp.poker.followers == 0 {
+	delete(tp.poker.followers, h)
+	if len(tp.poker.followers) == 0 {
+		if tp.poker.run != nil {
+			tp.poker.run.cancel()
+		}
 		tp.poker = pokerFollow{}
-		nudge(tp.pokerWake)
 	}
 }
 
@@ -200,34 +218,100 @@ func (p *pokerFollow) viewCopy() PokerView {
 	return v
 }
 
-// pokerDueLocked is when tp's next poker read is due; ok is false when
-// none is: no handle follows, or none shows the ticket. The caller holds
+// admitPokerLocked gives tp a poker run while it is admitted, and none
+// otherwise: admitted while tp is live, the service is not stopping, and
+// a handle that follows its votes also shows it (pump.Handle's
+// VisibleLocked, the one record of a handle's visibility). A run it ends
+// is cancelled, its request in flight with it, and nothing it reads
+// after is applied. Its callers are every change to what admits it:
+// FollowPoker (a follow or an unfollow), SetSubscriptionVisible (a ticket
+// handle shown or hidden), ReleaseSubscription (a handle released) and
+// retireTicketLocked (the ticket's end: its last release, its connection
+// turned off or removed, its generation ended, Stop). The caller holds
 // subMu.
-func (tp *ticketPump) pokerDueLocked() (time.Time, bool) {
-	return tp.poker.due, tp.poker.followers > 0 && tp.shownLocked()
-}
-
-// armPoker sets timer to tp's next poker read, or stops it.
-func (s *Service) armPoker(tp *ticketPump, timer *time.Timer) {
-	s.subMu.Lock()
-	at, ok := tp.pokerDueLocked()
-	s.subMu.Unlock()
-	if !ok {
-		timer.Stop()
-		return
+func (s *Service) admitPokerLocked(tp *ticketPump) {
+	admitted := !tp.over && !tp.core.DeadLocked() && !s.subs.halted
+	if admitted {
+		admitted = false
+		for h := range tp.poker.followers {
+			if h.ref.VisibleLocked() {
+				admitted = true
+				break
+			}
+		}
 	}
-	timer.Reset(max(at.Sub(s.now()), 0))
+	switch run := tp.poker.run; {
+	case admitted && run == nil:
+		ctx, cancel := context.WithCancel(tp.core.Context())
+		run = &pokerRun{cancel: cancel, wake: make(chan struct{}, 1), done: make(chan struct{})}
+		tp.poker.run = run
+		if tp.pokerRuns == nil {
+			tp.pokerRuns = map[*pokerRun]struct{}{}
+		}
+		tp.pokerRuns[run] = struct{}{}
+		s.workers.Add(1)
+		go s.runPoker(ctx, tp, run)
+	case !admitted && run != nil:
+		run.cancel()
+		tp.poker.run = nil
+	}
 }
 
-// readPoker reads tp's votes when a read is due and a handle that follows
-// shows the ticket, and tells the followers what changed. A read that
-// fails keeps the votes last read, tells its failure and is due again on
-// the retry schedule. A read a person asked for while this one was in
-// flight is due at once, and any read waits for a rate limit to lift.
-func (s *Service) readPoker(ctx context.Context, tp *ticketPump) {
+// runPoker is a poker run's goroutine: it reads tp's votes each time a
+// read is due until its context ends, at its admission's end or the
+// ticket's. The ticket's pump waits for it before it exits
+// (awaitPokerRuns), and Stop through s.workers.
+func (s *Service) runPoker(ctx context.Context, tp *ticketPump, run *pokerRun) {
+	defer s.workers.Done()
+	defer func() {
+		s.subMu.Lock()
+		delete(tp.pokerRuns, run)
+		s.subMu.Unlock()
+		close(run.done)
+	}()
+	defer run.cancel()
+	timer := time.NewTimer(time.Hour)
+	defer timer.Stop()
+	for {
+		s.subMu.Lock()
+		due := tp.poker.due
+		s.subMu.Unlock()
+		timer.Reset(max(due.Sub(s.now()), 0))
+		select {
+		case <-ctx.Done():
+			return
+		case <-run.wake:
+			continue
+		case <-timer.C:
+		}
+		s.readPoker(ctx, tp, run)
+	}
+}
+
+// awaitPokerRuns ends tp's poker runs and waits for each to return, the
+// last of a ticket's pump's exit, so a pump that exited leaves no run.
+func (s *Service) awaitPokerRuns(tp *ticketPump) {
 	s.subMu.Lock()
-	at, ok := tp.pokerDueLocked()
-	if !ok || at.After(s.now()) {
+	runs := make([]*pokerRun, 0, len(tp.pokerRuns))
+	for run := range tp.pokerRuns {
+		run.cancel()
+		runs = append(runs, run)
+	}
+	s.subMu.Unlock()
+	for _, run := range runs {
+		<-run.done
+	}
+}
+
+// readPoker reads tp's votes when the read is due and run is tp's run,
+// and tells the followers what changed. A read that fails keeps the
+// votes last read, tells its failure and is due again on the retry
+// schedule. A read a person asked for while this one was in flight is
+// due at once, and any read waits for a rate limit to lift. A read whose
+// run was ended meanwhile is dropped.
+func (s *Service) readPoker(ctx context.Context, tp *ticketPump, run *pokerRun) {
+	s.subMu.Lock()
+	if tp.poker.run != run || tp.poker.due.After(s.now()) {
 		s.subMu.Unlock()
 		return
 	}
@@ -246,7 +330,7 @@ func (s *Service) readPoker(ctx context.Context, tp *ticketPump) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	ps := &tp.poker
-	if ps.followers == 0 || tp.over {
+	if ps.run != run || tp.over {
 		return
 	}
 	next := ps.view
@@ -329,12 +413,17 @@ func samePoker(a, b PokerView) bool {
 		})
 }
 
-// PokerVote casts or changes the caller's vote on in.Issue. It writes no
-// estimate.
+// PokerVote casts or changes the caller's vote on in.Issue. A request
+// with no vote fails with ErrInvalidRequest before anything is sent, so
+// a form sent before a value was picked never replaces a vote. It writes
+// no estimate.
 func (s *Service) PokerVote(ctx context.Context, id string, in PokerVoteRequest) (WriteView, error) {
-	issue := tracker.IssueID(in.Issue)
+	if in.Vote == nil {
+		return WriteView{}, fmt.Errorf("%w: a vote needs its value, a number from %d to %d", ErrInvalidRequest, tracker.MinPokerVote, tracker.MaxPokerVote)
+	}
+	issue, value := tracker.IssueID(in.Issue), *in.Vote
 	return s.pokerWrite(ctx, id, issue, func(ctx context.Context, pk tracker.Poker) tracker.Result {
-		return pk.Vote(ctx, tracker.PokerVoteInput{Issue: issue, Value: in.Vote})
+		return pk.Vote(ctx, tracker.PokerVoteInput{Issue: issue, Value: value})
 	})
 }
 
@@ -377,11 +466,13 @@ func (s *Service) readPokerNow(id string, issue tracker.IssueID) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	tp := s.subs.tickets[ticketKey{connection: id, issue: issue}]
-	if tp == nil || tp.poker.followers == 0 {
+	if tp == nil || len(tp.poker.followers) == 0 {
 		return
 	}
 	tp.poker.due, tp.poker.asked = s.now(), true
-	nudge(tp.pokerWake)
+	if tp.poker.run != nil {
+		nudge(tp.poker.run.wake)
+	}
 }
 
 // pokerOwn reports an error that is planning poker's own: a site without

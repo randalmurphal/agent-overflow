@@ -217,6 +217,7 @@ func (s *Service) SetSubscriptionVisible(id string, visible bool) error {
 	}
 	h.ref.VoteLocked(visible)
 	if h.ticket != nil {
+		s.admitPokerLocked(h.ticket)
 		s.followRoundLocked(h.ticket.key.connection)
 	}
 	return nil
@@ -267,7 +268,9 @@ func (s *Service) ReleaseSubscription(id string) {
 		s.retireTicketLocked(h.ticket)
 	}
 	if h.ticket != nil {
-		// A released handle that showed the ticket may leave none shown.
+		// A released handle that showed the ticket may leave none shown,
+		// and one that followed its votes none that follows and shows it.
+		s.admitPokerLocked(h.ticket)
 		s.followRoundLocked(h.ticket.key.connection)
 	}
 }
