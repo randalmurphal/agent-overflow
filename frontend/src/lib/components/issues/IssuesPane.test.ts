@@ -870,7 +870,7 @@ describe('the ticket in the pane', () => {
     await import('./TicketScreen.svelte');
   });
 
-  it('opens a card\'s ticket over the board, votes the board hidden under it, and shown at once when it closes', async () => {
+  it('opens a card\'s ticket over the board, votes the board hidden under it, and shown again when it closes', async () => {
     const mocks = install();
     const ticket = installTicket();
     const view = mount();

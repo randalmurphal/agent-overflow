@@ -170,7 +170,8 @@ export function registerIssuesTicketFlow({ compact }: TicketSurface): void {
     await expect(outcome).toHaveCount(0);
     expect((await trackerRequests(harness, 'PUT rest/api/3/issue/{issue}')).map((r) => r.status)).toEqual([200]);
 
-    // Closing the ticket shows the board, which reads the move at once.
+    // Closing the ticket shows the board again: it votes shown and reads at
+    // its next poll, or at once when a poll came due while it was covered.
     await press(pane.getByTestId(compact ? 'issues-back' : 'ticket-close'), compact);
     await expect(ticket).toHaveCount(0);
     await expect(pane.getByTestId('issues-board-region')).not.toHaveAttribute('inert');
