@@ -3,12 +3,13 @@
 // and deleting an entry, a stale refusal, a refused read, and compact.
 
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
-import type { ComponentProps } from 'svelte';
+import { tick, type ComponentProps } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorklogView, WriteView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import TimeScreen from './TimeScreen.svelte';
 import { methodNotFound } from '../../../test/helpers/olderComputer';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
 
 const BASE: ComponentProps<typeof TimeScreen> = {
   backend: 'peer-1',
@@ -394,5 +395,23 @@ describe('this week', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(view.getByTestId('time-week').textContent).not.toBe(sunday);
     expect(getBindingMock('TrackerWorklogs')!.mock.calls.at(-1)).toEqual(['c1', 'acct-1', '2026-11-16', '2026-11-22']);
+  });
+});
+
+describe('a change of the computer\'s connections', () => {
+  it('keeps the week and an open form, and reads nothing', async () => {
+    answerWeek(WEEK);
+    const view = render(TimeScreen, BASE);
+    const form = await changeFirst(view);
+    await fireEvent.input(within(form).getByTestId('worklog-form-description'), { target: { value: 'Review, half done' } });
+    const reads = () => [getBindingMock('TrackerWorklogs')!.mock.calls.length, getBindingMock('RefreshTrackerWorklogs')!.mock.calls.length];
+    const before = reads();
+    applyTrackerConnectionsChanged('peer-1');
+    await tick();
+    await tick();
+    expect(view.getAllByTestId('time-entry')).toHaveLength(WEEK.length);
+    expect(view.queryByTestId('time-reading')).toBeNull();
+    expect(within(body().getByTestId('worklog-form')).getByTestId('worklog-form-description')).toHaveValue('Review, half done');
+    expect(reads()).toEqual(before);
   });
 });

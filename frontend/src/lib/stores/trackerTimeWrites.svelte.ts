@@ -39,6 +39,8 @@ const WORKLOG_SUBJECT: WriteSubject = {
   look: "the day's logged time",
   shows: 'The week',
   ended: 'the week no longer shows its time',
+  // A worklog write also reads its ticket again; the week shows its days.
+  reads: (resource) => resource.kind === 'worklogs',
 };
 
 /** The connection a write is made on, and whose time it is. */
@@ -194,10 +196,11 @@ async function write(
 ): Promise<WriteOutcome | null> {
   const k = writeKey(ctx, target);
   if (writes.get(k)?.pending) return null;
-  // The draft as it was sent: Save anyway is for it alone.
-  const sent = consent.sent(k);
+  // The draft as it is sent: Save anyway is for it alone.
+  consent.sending(k);
   writes.set(k, { kind, pending: true, outcome: null, reread: null, saveAnyway: null });
   const outcome = await sendWrite(ctx.backend, ctx.computer, WORKLOG_SUBJECT, () => send(acceptLoss));
+  const offer = consent.landed(k, outcome, acceptLoss);
   const stale = outcome.kind === 'refused' && outcome.refusal.reason === 'stale';
   let reread: Promise<WeekReread> | null = null;
   switch (outcome.kind) {
@@ -226,7 +229,6 @@ async function write(
     toastUnheld(label.toast, outcome);
     return outcome;
   }
-  const offer = consent.offers(k, sent, outcome, acceptLoss);
   const settled: TimeWrite = { kind, pending: false, outcome, reread: null, saveAnyway: offer ? () => write(ctx, target, kind, label, days, send, true) : null };
   writes.set(k, settled);
   if (reread) {

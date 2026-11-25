@@ -239,15 +239,15 @@ async function write(
 ): Promise<WriteOutcome | null> {
   const k = writeKey(t.key, target);
   if (writes.get(k)?.pending) return null;
-  // The draft as it was sent: Save anyway is for it alone.
-  const sent = consent.sent(k);
+  // The draft as it is sent: Save anyway is for it alone.
+  consent.sending(k);
   writes.set(k, { pending: true, outcome: null, saveAnyway: null });
   const outcome = await sendWrite(t.ref.backend, computerName(t.ref.backend), TICKET_SUBJECT, () => send(acceptLoss));
   if (outcome.kind === 'applied') await trackerTicketSettled(t.key, comment);
   // The ticket changed since it was read: read it again, so the person
   // sees what the tracker holds before trying again.
   if (outcome.kind === 'refused' && outcome.refusal.reason === 'stale') void refreshTrackerTicket(t.key);
-  const loss = consent.offers(k, sent, outcome, acceptLoss);
+  const loss = consent.landed(k, outcome, acceptLoss);
   if (outcome.kind === 'applied') drafts.delete(k);
   if (!isTrackerTicketHeld(t.key)) {
     writes.delete(k);

@@ -27,9 +27,8 @@
 // - a write that was made while its days could not be read after it is a
 //   receipt on each held week showing them, until a refresh that started
 //   after it answers with no failure;
-// - when the computer's connections change, what its weeks hold goes and
-//   every read out for them is fenced (`generation`); a week shown reads
-//   again from nothing.
+// - a queued read starts only if its week still shows; a week that stopped
+//   showing is due when it shows again.
 //
 // Nothing is read while the week is not shown (the pane hidden or covered,
 // the window hidden). When it shows (attached shown, or shown again), the
@@ -45,7 +44,6 @@ import { SvelteMap } from 'svelte/reactivity';
 import type { FailureView, WorklogDays } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import { RefreshTrackerWorklogs, TrackerWorklogs } from './bindings';
 import { onBackendStatusChange } from './transportStatus.svelte';
-import { takeTrackerConnectionsChanged } from './trackerBoardEvents';
 import { takeWorklogWrites, type WeekReread } from './trackerTimeWrites.svelte';
 import type { BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
@@ -119,9 +117,6 @@ interface Week {
   started: number;
   /** The number of the newest read applied, or passed by a refresh. */
   applied: number;
-  /** Bumped when the connections change: an answer of an earlier one is
-   * dropped. */
-  generation: number;
   refresh: Promise<WeekReread> | null;
   /** The number of the refresh last started. */
   refreshNumber: number;
@@ -159,15 +154,14 @@ function visibleOf(week: Week): boolean {
 function readStored(week: Week): void {
   const { backend, connection, author, monday } = week.ref;
   const n = ++week.started;
-  const generation = week.generation;
   withBackendTarget(backend, () => TrackerWorklogs(connection, author, monday, addDays(monday, 6))).then(
     (days) => {
-      if (week.generation !== generation || n <= week.applied) return;
+      if (n <= week.applied) return;
       week.applied = n;
       update(week, { days, readError: null });
     },
     (err: unknown) => {
-      if (week.generation !== generation || n <= week.applied) return;
+      if (n <= week.applied) return;
       // A dropped connection says nothing new: the screen says the
       // computer is not connected, and the reconnect refreshes.
       if (!isPassiveConnectionFailure(err)) update(week, { readError: err });
@@ -179,10 +173,8 @@ async function readRefresh(week: Week): Promise<WeekReread> {
   const { backend, connection, author, monday } = week.ref;
   const n = ++week.started;
   week.refreshNumber = n;
-  const generation = week.generation;
   try {
     const days = await withBackendTarget(backend, () => RefreshTrackerWorklogs(connection, author, monday, addDays(monday, 6)));
-    if (week.generation !== generation) return { kind: 'later' };
     week.applied = week.started;
     const failure = days.failure ?? null;
     update(week, { days, failure, readError: null });
@@ -190,7 +182,6 @@ async function readRefresh(week: Week): Promise<WeekReread> {
     if (week.receipts.some((r) => r.after < n)) setReceipts(week, week.receipts.filter((r) => r.after >= n));
     return { kind: 'read' };
   } catch (err) {
-    if (week.generation !== generation) return { kind: 'later' };
     if (!isPassiveConnectionFailure(err)) update(week, { readError: err });
     return { kind: 'failed', message: errString(err) };
   }
@@ -198,19 +189,22 @@ async function readRefresh(week: Week): Promise<WeekReread> {
 
 /** Starts a refresh, with none out. */
 function startRefresh(week: Week): Promise<WeekReread> {
-  const generation = week.generation;
   week.refreshedAt = Date.now();
   update(week, { refreshing: true });
   const run = readRefresh(week).then((ended) => {
-    if (week.generation !== generation) return ended;
     week.refresh = null;
     update(week, { refreshing: false });
     const again = week.again;
+    const reread = week.rereadAfter;
     week.again = null;
-    if (again) void startRefresh(week).then(again.settle);
-    if (week.rereadAfter) {
-      week.rereadAfter = false;
-      readStored(week);
+    week.rereadAfter = false;
+    if (week.visible) {
+      if (again) void startRefresh(week).then(again.settle);
+      if (reread) readStored(week);
+    } else if (again) {
+      // Hidden now: its showing reads the stored copy and, due, refreshes.
+      week.refreshedAt = 0;
+      again.settle({ kind: 'later' });
     }
     return ended;
   });
@@ -248,7 +242,7 @@ function settle(week: Week): void {
 function newWeek(ref: TrackerWeekRef): Week {
   return {
     ref, state: EMPTY, receipts: [], holders: 0, shown: false, visible: false, refreshedAt: 0,
-    started: 0, applied: 0, generation: 0, refresh: null, refreshNumber: 0, again: null, rereadAfter: false,
+    started: 0, applied: 0, refresh: null, refreshNumber: 0, again: null, rereadAfter: false,
   };
 }
 
@@ -382,29 +376,6 @@ onBackendStatusChange((backend, status) => {
     if (week.ref.backend !== backend) continue;
     if (week.visible) void refreshAfter(week);
     else week.refreshedAt = 0;
-  }
-});
-
-// The computer's connections changed: a connection may be another one
-// now, or gone, so what its weeks hold goes. Receipts stay: they are of
-// writes, and go with a refresh that reads them.
-takeTrackerConnectionsChanged((backend) => {
-  for (const [key, week] of weeks) {
-    if (week.ref.backend !== backend) continue;
-    week.generation += 1;
-    week.refresh = null;
-    week.again?.settle({ kind: 'later' });
-    week.again = null;
-    week.rereadAfter = false;
-    week.refreshedAt = 0;
-    if (week.holders === 0) {
-      weeks.delete(key);
-      states.delete(key);
-      continue;
-    }
-    update(week, { ...EMPTY, receipts: week.state.receipts });
-    week.visible = false;
-    settle(week);
   }
 });
 

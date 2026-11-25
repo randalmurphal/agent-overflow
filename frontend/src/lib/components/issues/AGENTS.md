@@ -67,12 +67,11 @@ board methods, events and the patch read in
   one per computer, connection, person and Monday, the five used last:
   the stored read and the refresh when a week shows, Refresh, the
   reconnect's refresh, the reads a write owes its days and their order,
-  the receipts of writes the week has not caught up with, and the drop of
-  a computer's weeks when its connections change. Its rules are written
-  at the top of the store. `stores/trackerTimeModel.ts` is the pure part:
-  the days of a week, what a day's total leaves out, and the By ticket
-  rows (`weekTickets`, derived only while By ticket or the form reads
-  them).
+  and the receipts of writes the week has not caught up with. Its rules
+  are written at the top of the store. `stores/trackerTimeModel.ts` is
+  the pure part: the days of a week, what a day's total leaves out, and
+  the By ticket rows (`weekTickets`, derived only while By ticket or the
+  form reads them).
 - `stores/trackerTimeWrites.svelte.ts` makes the Time screen's writes
   (log, change, delete), one pending write per entry or per ticket and
   day, and holds each outcome, with a toast for one that settles after
@@ -85,9 +84,8 @@ These stores load with the pane (`ToolPane.svelte` imports it on demand),
 `TimeScreen.svelte` on the first switch to Time.
 The always-loaded stores reach them only through
 `stores/trackerBoardEvents.ts`, where the board and ticket stores take
-`tracker:board_updated`, `tracker:issue_updated` and their gaps, the
-choices store hears that a computer's board lists may have changed and
-the weeks' store that its connections changed;
+`tracker:board_updated`, `tracker:issue_updated` and their gaps and the
+choices store hears that a computer's board lists may have changed;
 `lib/architecture.test.ts` fails when one of them enters the startup
 graph.
 

@@ -5,10 +5,10 @@ import { describe, expect, it } from 'vitest';
 import type { WriteView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import { getPinnedBackend } from '../transport/backends';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
-import { refusalSentence, sendWrite, TICKET_SUBJECT, writeOutcome, type WriteSubject } from './trackerWriteOutcome';
+import { LossConsent, refusalSentence, sendWrite, TICKET_SUBJECT, writeOutcome, type WriteOutcome, type WriteSubject } from './trackerWriteOutcome';
 
 const failure = (message: string) => ({ kind: 'transient', message, at: 1 });
-const WEEK: WriteSubject = { look: "the day's logged time", shows: 'The week', ended: 'the week no longer shows its time' };
+const WEEK: WriteSubject = { look: "the day's logged time", shows: 'The week', ended: 'the week no longer shows its time', reads: (r) => r.kind === 'worklogs' };
 
 describe('writeOutcome', () => {
   const cases: Array<{ name: string; view: Partial<WriteView>; want: unknown }> = [
@@ -58,10 +58,18 @@ describe('writeOutcome', () => {
   it('names what the screen shows the write in', () => {
     expect(writeOutcome({ parts: [{ step: 'worklog', state: 'unknown' }] } as WriteView, WEEK))
       .toEqual({ kind: 'unknown', message: "The tracker did not say what became of this change; look at the day's logged time before you try again." });
-    expect(writeOutcome({ parts: [{ step: 'worklog', state: 'applied' }], stale: [{ resources: [], failure: failure('Tempo did not answer in time') }] } as WriteView, WEEK))
+    expect(writeOutcome({ parts: [{ step: 'worklog', state: 'applied' }], stale: [{ resources: [{ kind: 'worklogs', author: 'a', day: '2026-11-10' }], failure: failure('Tempo did not answer in time') }] } as WriteView, WEEK))
       .toEqual({ kind: 'applied', note: 'Saved. The week shows it after its next read: Tempo did not answer in time' });
     expect(writeOutcome({ parts: [{ step: 'worklog', state: 'applied' }], ended: true } as WriteView, WEEK))
       .toEqual({ kind: 'applied', note: 'Saved. Its connection was turned off or removed while saving, so the week no longer shows its time.' });
+  });
+
+  it('says nothing of a read after the write of what the screen does not show', () => {
+    const detail = { resources: [{ kind: 'detail', issue: '1' }], failure: failure('Jira did not answer in time') };
+    const day = { resources: [{ kind: 'worklogs', author: 'a', day: '2026-11-10' }], failure: failure('Tempo did not answer in time') };
+    expect(writeOutcome({ parts: [{ step: 'worklog', state: 'applied' }], stale: [detail] } as WriteView, WEEK)).toEqual({ kind: 'applied', note: null });
+    expect(writeOutcome({ parts: [{ step: 'worklog', state: 'applied' }], stale: [detail, day] } as WriteView, WEEK))
+      .toEqual({ kind: 'applied', note: 'Saved. The week shows it after its next read: Tempo did not answer in time' });
   });
 
   it('words a refusal with each field by its name and what a rich text edit would lose', () => {
@@ -94,5 +102,23 @@ describe('sendWrite', () => {
   it('keeps any other failure as the call\'s error', async () => {
     const err = new TransportError('tracker_disabled', 'the connection is turned off');
     expect(await sendWrite('peer-1', 'Laptop', WEEK, async () => { throw err; })).toEqual({ kind: 'failed', error: err });
+  });
+});
+
+describe('LossConsent', () => {
+  const LOSS: WriteOutcome = { kind: 'refused', refusal: { reason: 'loss', message: 'This change would lose formatting.' } };
+
+  it('holds an entry for a target only while a send of it is out', () => {
+    const consent = new LossConsent(() => {});
+    consent.revise('a');
+    expect(consent.size).toBe(0);
+    consent.sending('a');
+    expect(consent.size).toBe(1);
+    expect(consent.landed('a', LOSS, false)).toBe(true);
+    expect(consent.size).toBe(0);
+    consent.sending('b');
+    consent.revise('b');
+    expect(consent.landed('b', LOSS, false)).toBe(false);
+    expect(consent.size).toBe(0);
   });
 });

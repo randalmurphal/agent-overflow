@@ -6,7 +6,7 @@
 // shows; the sentences differ only in what the person looks at to learn
 // what became of the write (`WriteSubject`).
 
-import type { RefusalView, WriteView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { RefusalView, ResourceView, WriteView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import { withBackendTarget } from '../transport/backends';
 import { DisconnectedError } from '../transport/wsClient';
 
@@ -33,17 +33,21 @@ export interface WriteSubject {
   /** What no longer follows the connection once it was turned off during
    * the write: "this ticket no longer follows it". */
   readonly ended: string;
+  /** Whether the screen shows `resource`: a read after the write that
+   * failed for only what it does not show says nothing there. */
+  readonly reads: (resource: ResourceView) => boolean;
 }
 
 export const TICKET_SUBJECT: WriteSubject = {
   look: 'the ticket',
   shows: 'The ticket',
   ended: 'this ticket no longer follows it',
+  reads: () => true,
 };
 
 /** A write's answer as its outcome: the first part that was not applied
  * decides; with every part applied, what the computer could not show yet
- * is its note. */
+ * of what the screen shows is its note. */
 export function writeOutcome(view: WriteView, subject: WriteSubject): WriteOutcome {
   for (const part of view.parts ?? []) {
     if (part.state === 'applied') continue;
@@ -52,7 +56,7 @@ export function writeOutcome(view: WriteView, subject: WriteSubject): WriteOutco
     return { kind, message: part.failure?.message ?? `The tracker did not say what became of this change; look at ${subject.look} before you try again.` };
   }
   if (view.ended) return { kind: 'applied', note: `Saved. Its connection was turned off or removed while saving, so ${subject.ended}.` };
-  const stale = view.stale?.[0];
+  const stale = view.stale?.find((s) => s.resources.some(subject.reads));
   if (stale) return { kind: 'applied', note: `Saved. ${subject.shows} shows it after its next read: ${stale.failure.message}` };
   return { kind: 'applied', note: null };
 }
@@ -83,16 +87,17 @@ export function refusalSentence(refusal: RefusalView, fieldName: (id: string) =>
  *   disabled while its target's write is pending, so what a write sends
  *   is what its editor shows.
  * A draft can still go while its write is out (its editor closed, which
- * keeps the write), and a new editor holds a new draft. So a store takes
- * the draft's revision when it sends (`sent`) and offers Save anyway only
- * when the target still holds that revision once the refusal lands
- * (`offers`); every change of a draft, Cancel and a closed editor among
- * them, is `revise`, which gives it a new revision and withdraws the
- * offer through `withdraw`, the store's.
+ * keeps the write), and a new editor holds a new draft. So a store marks
+ * each send (`sending`) and, once its outcome lands, offers Save anyway
+ * only when no change of the draft came while it was out (`landed`).
+ * Every change of a draft, Cancel and a closed editor among them, is
+ * `revise`, which withdraws an offer already made through `withdraw`, the
+ * store's. A target has an entry only while a send of it is out, so the
+ * consent holds nothing for drafts that went.
  */
 export class LossConsent {
-  readonly #revisions = new Map<string, number>();
-  #next = 1;
+  /** The targets with a send out, and whether their draft changed since. */
+  readonly #out = new Map<string, boolean>();
   readonly #withdraw: (key: string) => void;
 
   constructor(withdraw: (key: string) => void) {
@@ -101,23 +106,30 @@ export class LossConsent {
 
   /** The draft of `key` changed, was replaced, or went. */
   revise(key: string): void {
-    this.#revisions.set(key, this.#next++);
+    if (this.#out.has(key)) this.#out.set(key, true);
     this.#withdraw(key);
   }
 
-  /** The draft's revision as a write of it is sent. */
-  sent(key: string): number {
-    return this.#revisions.get(key) ?? 0;
+  /** A write of `key`'s draft is sent. */
+  sending(key: string): void {
+    this.#out.set(key, false);
   }
 
-  /** Whether `outcome` of a write of `key` sent at revision `sent`
-   * offers Save anyway. */
-  offers(key: string, sent: number, outcome: WriteOutcome, acceptedLoss: boolean): boolean {
-    return outcome.kind === 'refused' && outcome.refusal.reason === 'loss' && !acceptedLoss && this.sent(key) === sent;
+  /** The write of `key` landed with `outcome`: whether it offers Save
+   * anyway. */
+  landed(key: string, outcome: WriteOutcome, acceptedLoss: boolean): boolean {
+    const kept = this.#out.get(key) === false;
+    this.#out.delete(key);
+    return kept && outcome.kind === 'refused' && outcome.refusal.reason === 'loss' && !acceptedLoss;
+  }
+
+  /** The targets it holds an entry for. */
+  get size(): number {
+    return this.#out.size;
   }
 
   clear(): void {
-    this.#revisions.clear();
+    this.#out.clear();
   }
 }
 
