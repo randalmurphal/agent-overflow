@@ -30,6 +30,12 @@ type TimeTracker interface {
 // the read names the person, not the days.
 var ErrWorklogAuthor = errors.New("tracker: the tracker did not look up the worklogs' author")
 
+// ErrNoTimeZone is matched by the error of a worklog read or write whose
+// person's profile hides the time zone, which decides the day a worklog
+// falls on: the tracker answered, and the person's privacy setting, not
+// the connection, stops the read.
+var ErrNoTimeZone = errors.New("tracker: the tracker does not show the person's time zone")
+
 // Worklog is time logged on an issue. Day is the calendar day the work
 // started on in the author's own zone, which a timesheet groups by.
 // Description is Markdown; a tracker that stores plain text stores it as

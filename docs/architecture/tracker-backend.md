@@ -1272,7 +1272,9 @@ selected computer.
   answer's failure with a sentence that names the tracker, what it
   refused and what to do: a person Jira does not have or will not show
   (its 404 for the author's lookup), a lookup refused (403, the Browse
-  users and groups permission), Jira's 400 for the search, Tempo's 403
+  users and groups permission), a person whose profile hides the time
+  zone that places their time on days (`tracker.ErrNoTimeZone`, which Jira
+  answers with 200), Jira's 400 for the search, Tempo's 403
   for another person's time and its 400, and more than 500 worklogs in
   the range, more than one read stores. Such a refusal is never the
   connection's problem, since the tracker answered (`failedRead`); a

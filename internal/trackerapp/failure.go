@@ -253,6 +253,13 @@ func ClassifyFailure(kind string, err error) Failure {
 // the status alone. A Tempo that answers another person's worklogs with
 // none, rather than 403, is not told apart from no time logged.
 func worklogRefusal(author tracker.UserID, from, to tracker.Date, err error) (Failure, bool) {
+	if errors.Is(err, tracker.ErrNoTimeZone) {
+		// Jira answered the lookup; the person's profile hides the zone
+		// that places their time on days. Only a Jira profile has one.
+		return Failure{Kind: FailureTracker, Message: fmt.Sprintf(
+			"Jira does not show which time zone %s is in, so Agent Overflow cannot tell which day their time falls on; "+
+				"choose another person, or ask them to show their time zone in their Atlassian profile", author)}, true
+	}
 	status, ok := errors.AsType[*trackerapi.StatusError](err)
 	if !ok {
 		return Failure{}, false

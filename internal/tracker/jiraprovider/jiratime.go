@@ -24,11 +24,12 @@ type jiraTime struct {
 	jira *jira.Client
 }
 
-// zone is u's time zone; an account whose zone is hidden or unknown is an
-// error, since the days and times read for it would be wrong.
+// zone is u's time zone; an account whose zone is hidden (matching
+// tracker.ErrNoTimeZone) or unknown is an error, since the days and times
+// read for it would be wrong.
 func zone(u jira.User) (*time.Location, error) {
 	if u.TimeZone == "" {
-		return nil, fmt.Errorf("jiraprovider: Jira does not say which time zone %s is in", u.AccountID)
+		return nil, fmt.Errorf("jiraprovider: %s: %w", u.AccountID, tracker.ErrNoTimeZone)
 	}
 	loc, err := time.LoadLocation(u.TimeZone)
 	if err != nil {

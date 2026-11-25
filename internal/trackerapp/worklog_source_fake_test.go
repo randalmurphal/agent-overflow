@@ -54,6 +54,8 @@ func newTimeScenario(t *testing.T) *timeScenario {
 	var day time.Time
 	s := newFakeScenario(t, func(at time.Time) trackerfake.Fixture {
 		site := jiraSeed(at)
+		// User 3's profile hides the time zone.
+		site.Users = append(site.Users, trackerfake.JiraUser{AccountID: "acc-user3", DisplayName: "User 3", Email: "user3@example.com", HidesTimeZone: true})
 		day = at.AddDate(0, 0, -2).Truncate(24 * time.Hour)
 		site.Issues[0].Worklogs = []trackerfake.JiraWorklog{{ID: "20001", Author: "acc-user1", Started: day.Add(9 * time.Hour), TimeSpent: 3600}}
 		site.Tempo = &trackerfake.TempoAccount{Token: tempoTokenFake, Worklogs: []trackerfake.TempoWorklog{
