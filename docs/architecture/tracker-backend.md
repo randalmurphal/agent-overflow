@@ -1859,8 +1859,11 @@ site and issue ID, so the link means the same ticket on every computer.
   frame per thread.
 - **Keep.** A link keeps its issue in the mirror (`mirrorIssueKept`).
   When links end (an unlink, a link replaced, a thread's delete commit,
-  an empty draft's delete, a move away), `LinksEnded` tells the issues no longer kept as
-  `Changes.Visibility`, as an open ticket's drop does.
+  an empty draft's delete, a move away), `LinksEnded` tells the issues
+  no longer kept as `Changes.Visibility`, as an open ticket's drop does.
+- **A draft with nothing sent.** A link does not keep it: a draft with
+  nothing sent stays deletable, and clearing its composer deletes it and
+  ends its link as a delete does.
 - **Fork and transfer.** `CreatePointerFork` copies the link in its
   transaction. A transfer's manifest carries `store.Thread`, link
   included; `CommitIncomingThreadTransfer` replaces the receiver's link
@@ -1956,10 +1959,6 @@ Not built, owed by the app layer:
 - The Time screen and a sprint edit on the Backlog screen: the
   `bindings.ts` wrappers of the worklog methods and `EditTrackerSprint`
   ship with them.
-- A link on a thread with nothing sent does not keep the thread: clearing
-  its composer deletes the thread and ends its link as a delete does.
-  Link ticket… is offered on such a thread; whether a link should keep it
-  is not decided.
 - The rest of the project's tracker setup, each a section of its file:
   card marks, Start work defaults, draft settings and what agents may do;
   and the `bindings.ts` wrappers of the setup methods, which ship with the
