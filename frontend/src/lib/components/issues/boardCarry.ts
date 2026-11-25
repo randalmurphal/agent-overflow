@@ -82,7 +82,7 @@ export function startCarry(card: HTMLElement, sx: number, sy: number, x: number,
     position: 'fixed', left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, margin: '0', zIndex: '90',
     pointerEvents: 'none', transformOrigin: `${gx}px ${gy}px`, willChange: 'transform',
   });
-  copy.classList.add('shadow-lg');
+  copy.classList.add('shadow-sheet');
   document.body.appendChild(copy);
   document.body.classList.add('cursor-grabbing');
 

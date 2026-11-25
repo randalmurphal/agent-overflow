@@ -51,6 +51,7 @@ import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { TransportError } from '../../transport/wsClient';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getMinuteNow } from '../../stores/minuteClock.svelte';
 import { trackerTicketKey } from '../../stores/trackerTicket.svelte';
 import { ticketDraft } from '../../stores/trackerTicketWrites.svelte';
 import { localDay, mondayOf } from '../../stores/trackerTimeModel';
@@ -221,7 +222,8 @@ describe('the Issues pane', () => {
         rows: [row('1', 'a', 's1', {
           type: { id: 't', name: 'Bug', level: 0 }, priority: { id: 'p', name: 'High' },
           parent: { id: '9', key: 'WEB-9', title: 'Import reliability' }, labels: [{ id: 'l', name: 'backend' }],
-          assignee: { id: 'acc-user1', name: 'User 1' }, status_since: Date.now() - 3 * DAY - 1000,
+          // Against the clock the card reads, which ticks once a minute.
+          assignee: { id: 'acc-user1', name: 'User 1' }, status_since: getMinuteNow() - 3 * DAY - 1000,
         })],
       }, { rows: [] }),
     });
