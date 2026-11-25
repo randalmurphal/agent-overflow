@@ -118,9 +118,13 @@ var threadColumns = `id, COALESCE(project_id, ''),
     COALESCE(` + spawnerOfSQL("threads.id") + `, ''), ` + spawnedByComputerSQL("threads.id") + `,
     attention_kind, attention_reason, attention_at,
     spawn_instructions, spawn_level,
-    threads.mode = 'scratch' AND EXISTS (SELECT 1 FROM scratch_threads
-      WHERE scratch_threads.thread_id = threads.id AND scratch_threads.request_token IS NOT NULL),
+    ` + askCopySQL + `,
     ` + threadTicketLinkColumn
+
+// askCopySQL is true for the row of threads that is an ask's hidden copy
+// (Thread.AskCopy).
+const askCopySQL = `threads.mode = 'scratch' AND EXISTS (SELECT 1 FROM scratch_threads
+      WHERE scratch_threads.thread_id = threads.id AND scratch_threads.request_token IS NOT NULL)`
 
 // threadAgentColumn is the record column threadColumns reads for an
 // assistant's current thread.
