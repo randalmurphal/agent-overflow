@@ -27,7 +27,10 @@
     boardKey: string;
     boardRef: TrackerBoardRef;
     held: HeldBoard;
+    /** The section being read (`TrackerBoardState.paging`). */
     paging: ReadonlySet<string>;
+    /** The sections whose page read failed (`TrackerBoardState.sectionErrors`). */
+    sectionErrors: ReadonlyMap<string, unknown>;
     filter: CardFilter;
     hidden: ReadonlySet<CardField>;
     compact: boolean;
@@ -35,7 +38,7 @@
     shown: boolean;
   }
 
-  let { boardKey, boardRef, held, paging, filter, hidden, compact, shown }: Props = $props();
+  let { boardKey, boardRef, held, paging, sectionErrors, filter, hidden, compact, shown }: Props = $props();
 
   // The last columns, so a rebuild keeps the rows arrays nothing changed.
   let previous: ScreenColumn[] = [];
@@ -62,8 +65,20 @@
     };
   }
 
+  // The sections a column still reads from: its own on a kanban board,
+  // every sprint's on a sprint board.
+  function readingFrom(col: ScreenColumn): string[] {
+    if (col.moreFrom === null) return [];
+    if (held.shape.plansSprints) return held.sections.filter((s) => s.section.kind === 'sprint').map((s) => sectionKey(s.section));
+    return [sectionKey(held.sections[col.moreFrom].section)];
+  }
+
   function pagingOf(col: ScreenColumn): boolean {
-    return col.moreFrom !== null && paging.has(sectionKey(held.sections[col.moreFrom].section));
+    return readingFrom(col).some((k) => paging.has(k));
+  }
+
+  function failedOf(col: ScreenColumn): boolean {
+    return readingFrom(col).some((k) => sectionErrors.has(k));
   }
 
   const picked = $derived.by(() => {
@@ -107,6 +122,7 @@
           {hidden}
           {now}
           paging={pagingOf(columns[picked])}
+          failed={failedOf(columns[picked])}
           onNearEnd={moreOf(columns[picked])}
           {shown}
           wide
@@ -124,6 +140,7 @@
           {hidden}
           {now}
           paging={pagingOf(col)}
+          failed={failedOf(col)}
           onNearEnd={moreOf(col)}
           {shown}
         />

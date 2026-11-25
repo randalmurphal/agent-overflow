@@ -285,12 +285,104 @@ describe('the board subscription', () => {
     await flush();
     loadMoreOfSection(board.key, COLUMN);
     await flush();
-    expect(board.current?.readError).toBeInstanceOf(TransportError);
+    expect(board.current?.sectionErrors.get('column::0')).toBeInstanceOf(TransportError);
     expect(board.current?.paging.size).toBe(0);
     // The column stopped loading and asks for its next page again.
     loadMoreOfSection(board.key, COLUMN);
     await flush();
     expect(mocks.page).toHaveBeenCalledTimes(1);
+    board.release();
+  });
+
+  it("keeps reading the other columns after one column's page read timed out", async () => {
+    const OTHER: Section = { kind: 'column', column: 1 };
+    const mocks = install({
+      view: view([{ section: COLUMN, rows: rows(0, 100), next: true }, { section: OTHER, rows: rows(1000, 100), next: true }], { kanban: true, columns: 2 }),
+    });
+    mocks.page.mockImplementation(async (_id: string, section: Section) => {
+      if (section.column === 0) throw new TransportError('timeout', 'the computer did not answer in time');
+      return { section, rows: rows(1100, 50), next: null };
+    });
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    loadMoreOfSection(board.key, COLUMN);
+    await flush();
+    // The reader scrolls to the end of the other column.
+    loadMoreOfSection(board.key, OTHER);
+    await flush();
+    expect(heldIds(board)[1]).toHaveLength(150);
+    expect(board.current?.paging.size).toBe(0);
+    expect([...board.current!.sectionErrors.keys()]).toEqual(['column::0']);
+    expect(board.current?.readError).toBeNull();
+    board.release();
+  });
+
+  it("goes on to a wide board's other columns after an unread one's first page timed out", async () => {
+    const mocks = install();
+    const screen: Section[] = Array.from({ length: 21 }, (_, i) => ({ kind: 'column', column: i }));
+    mocks.subscribe.mockImplementationOnce(async () => ({
+      id: 'sub-1', seq: 10, loaded: true, poll_every: 10_000,
+      view: view(screen.slice(0, 20).map((section, i) => ({ section, rows: i === 0 ? rows(0, 100) : [], next: i === 0 })), { kanban: true, columns: 21, screen }),
+    }));
+    mocks.page.mockImplementation(async (_id: string, section: Section) => {
+      if (section.column === 20) throw new TransportError('timeout', 'the computer did not answer in time');
+      return { section, rows: rows(100, 50), next: null };
+    });
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    loadMoreOfSection(board.key, COLUMN);
+    await flush();
+    expect(heldIds(board)[0]).toHaveLength(150);
+    expect([...board.current!.sectionErrors.keys()]).toEqual(['column::20']);
+    board.release();
+  });
+
+  it('keeps the page a filter asked for when it times out, and reads it on Refresh after the filter is cleared', async () => {
+    const mocks = install({ view: view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true }) });
+    let fail = true;
+    mocks.page.mockImplementation(async (_id: string, section: Section) => {
+      if (fail) throw new TransportError('timeout', 'the computer did not answer in time');
+      return { section, rows: rows(100, 50), next: null };
+    });
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    setTrackerBoardFiltered(board.key, true);
+    await flush();
+    expect(mocks.page).toHaveBeenCalledTimes(1);
+    // Nothing is being read: nothing says the column is loading.
+    expect(board.current?.paging.size).toBe(0);
+    setTrackerBoardFiltered(board.key, false);
+    loadMoreOfSection(board.key, COLUMN);
+    await flush();
+    // The scroll alone does not read the failed page again.
+    expect(mocks.page).toHaveBeenCalledTimes(1);
+    fail = false;
+    await refreshTrackerBoard(board.key);
+    await flush();
+    expect(mocks.page).toHaveBeenCalledTimes(2);
+    expect(heldIds(board)[0]).toHaveLength(150);
+    expect(board.current?.sectionErrors.size).toBe(0);
+    board.release();
+  });
+
+  it("reads a column's failed page again with the next event from the tracker", async () => {
+    const mocks = install({ view: view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true }) });
+    mocks.patch.mockImplementation(async () => ({ lifetime: 1, revision: 2, sections: [{ section: COLUMN, rows: [] }] }));
+    mocks.page.mockImplementationOnce(async () => {
+      throw new TransportError('timeout', 'the computer did not answer in time');
+    });
+    mocks.page.mockImplementation(async (_id: string, section: Section) => ({ section, rows: rows(100, 50), next: null }));
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    loadMoreOfSection(board.key, COLUMN);
+    await flush();
+    expect(board.current?.sectionErrors.has('column::0')).toBe(true);
+    // A change to a card the board does not hold.
+    applyTrackerBoardEvent(event(11, { changed: ['900'] }), HOME_BACKEND);
+    await flush();
+    expect(mocks.page).toHaveBeenCalledTimes(2);
+    expect(heldIds(board)[0]).toHaveLength(150);
+    expect(board.current?.sectionErrors.size).toBe(0);
     board.release();
   });
 
@@ -404,28 +496,29 @@ describe('the board subscription', () => {
     expect(board.current?.held?.sections.map((s) => s.section)).toEqual(screen);
     expect(heldIds(board).slice(18)).toEqual([['18'], ['19'], [], [], []]);
     expect(board.current?.held?.sections.slice(20).map((s) => s.unread)).toEqual([true, true, true]);
-    expect([...board.current!.paging]).toEqual(['column::20', 'column::21', 'column::22']);
+    expect([...board.current!.paging]).toEqual(['column::20']);
     // One read at a time, from the first page.
     expect(pages.calls).toEqual([['sub-1', screen[20], null]]);
     pages.answer(page(screen[20], 100));
     await flush();
     expect(heldIds(board)[20]).toEqual(['120']);
     expect(pages.calls[1]).toEqual(['sub-1', screen[21], null]);
-    // A read that timed out with the connection up is shown, and nothing
-    // says the column is loading any more.
+    // A read that timed out with the connection up is shown on its section,
+    // and the read goes on to the next.
     pages.fail(new TransportError('timeout', 'the computer did not answer in time'));
     await flush();
-    expect(board.current?.readError).toBeInstanceOf(TransportError);
-    expect(board.current?.paging.size).toBe(0);
+    expect([...board.current!.sectionErrors.keys()]).toEqual(['column::21']);
     expect(board.current?.held?.sections[21].unread).toBe(true);
-    expect(pages.calls).toHaveLength(2);
-    // Refresh reads it again, and the one after it.
+    expect(pages.calls[2]).toEqual(['sub-1', screen[22], null]);
+    expect([...board.current!.paging]).toEqual(['column::22']);
+    pages.answer(page(screen[22], 100));
+    await flush();
+    expect(pages.calls).toHaveLength(3);
+    // Refresh reads the failed one again.
     await refreshTrackerBoard(board.key);
     await flush();
-    expect(pages.calls[2]).toEqual(['sub-1', screen[21], null]);
+    expect(pages.calls[3]).toEqual(['sub-1', screen[21], null]);
     pages.answer(page(screen[21], 100));
-    await flush();
-    pages.answer(page(screen[22], 100));
     await flush();
     expect(heldIds(board).slice(20)).toEqual([['120'], ['121'], ['122']]);
     expect(board.current?.readError).toBeNull();
@@ -484,7 +577,8 @@ describe('the board subscription', () => {
     loadMoreOfSection(board.key, COLUMN);
     await flush();
     expect(mocks.page).toHaveBeenCalledTimes(1);
-    expect(board.current?.paging.has('column::0')).toBe(true);
+    // Nothing is being read: the page waits for the patch.
+    expect(board.current?.paging.size).toBe(0);
     // Nothing reads it again until the board moves past that revision.
     loadMoreOfSection(board.key, COLUMN);
     await flush();

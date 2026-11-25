@@ -25,9 +25,14 @@
 // subscribe shows the board at once and the one read in flight reads each
 // unread section's first page in turn, as it reads a further page.
 //
-// A read that fails, a timeout with the connection up among them, is shown
-// (`readError`) and owed again: the next event or Refresh runs it. Only a
-// dropped connection is left to the reconnect, which subscribes again.
+// A full or patch read that fails, a timeout with the connection up among
+// them, is shown (`readError`) and owed again: the next event or Refresh
+// runs it. A page read that fails is its section's (`sectionErrors`): the
+// section keeps its demand, the read goes on to the other sections, and
+// only the next event, a gap or Refresh reads it again, never a scroll
+// alone. Only a dropped connection is left to the reconnect, which
+// subscribes again. `paging` is the section whose page is being read, and
+// nothing else, so a column says it is loading only while it is.
 //
 // A full read runs after an event that says to read again (a structure
 // change among them), after a gap on the channel, and when a patch would
@@ -105,11 +110,16 @@ export interface TrackerBoardState {
    * was turned off or removed, or no project lists the board any more.
    * `renewEndedTrackerBoard` subscribes again. */
   readonly ended: boolean;
-  /** The sections (sectionKey) with a page asked for and not yet held. */
+  /** The section (sectionKey) whose page is being read now; empty while
+   * none is. */
   readonly paging: ReadonlySet<string>;
+  /** Each section (sectionKey) whose last page read failed, with its
+   * error, until the next event, gap or Refresh reads it again. */
+  readonly sectionErrors: ReadonlyMap<string, unknown>;
   readonly refreshing: boolean;
   readonly refreshNotice: TrackerRefreshNotice | null;
-  /** A read of this computer's copy that failed, until one succeeds. */
+  /** A full or patch read of this computer's copy that failed, until one
+   * succeeds. */
   readonly readError: unknown;
 }
 
@@ -129,7 +139,8 @@ interface Live {
   pending: Set<string>;
   /** A full read is owed. */
   readAgain: boolean;
-  /** Sections owed one more page. */
+  /** Sections owed one more page: asked by a scroll, or whose page read
+   * failed. */
   wantPage: Set<string>;
   /** The revision a page read was refused at as stale: no page is read
    * again until a patch carries the board past it. */
@@ -145,14 +156,18 @@ interface Live {
 const MAX_PATCH_IDS = 100;
 
 const NO_SECTIONS: ReadonlySet<string> = new Set();
+const NO_SECTION_ERRORS: ReadonlyMap<string, unknown> = new Map();
 
 const FIRST_STATE: TrackerBoardState = {
-  held: null, failure: null, readAt: 0, ended: false, paging: NO_SECTIONS, refreshing: false, refreshNotice: null, readError: null,
+  held: null, failure: null, readAt: 0, ended: false, paging: NO_SECTIONS, sectionErrors: NO_SECTION_ERRORS,
+  refreshing: false, refreshNotice: null, readError: null,
 };
 
 // The subscribe refusals that hold until the board's lists change: the
 // entity store does not retry them (`renewEndedTrackerBoard` does).
 const ENDING_REFUSALS: ReadonlySet<string> = new Set(['tracker_connection_off', 'tracker_connection_missing', 'tracker_board_not_listed']);
+// The refusals of a call through a handle its computer no longer holds.
+const SUBSCRIPTION_GONE: ReadonlySet<string> = new Set(['tracker_subscription_unknown', 'tracker_subscription_ended']);
 
 const lives = new Map<string, Live>();
 // Whether the pane shows each held board, before the window's own
@@ -234,7 +249,6 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
     held,
     failure: answer.failure ?? null,
     readAt: view?.sync.read_at ?? 0,
-    paging: held ? pagingOf(live, held) : NO_SECTIONS,
   };
   const early = live.joining ?? [];
   live.joining = null;
@@ -270,6 +284,8 @@ function fold(live: Live, event: TrackerBoardEvent): void {
   }
   const ids = [...(event.changed ?? []), ...(event.removed ?? [])];
   if (event.read_again || event.truncated) live.readAgain = true;
+  // An event reads a failed section again.
+  next.sectionErrors = NO_SECTION_ERRORS;
   for (const id of ids) live.pending.add(id);
   if (live.pending.size > MAX_PATCH_IDS) {
     live.pending.clear();
@@ -302,6 +318,8 @@ function resyncTrackerBoardsAfterGap(backend: BackendKey): Promise<void> | undef
   for (const live of lives.values()) {
     if (live.ref.backend !== backend || !live.id || live.state.ended) continue;
     live.readAgain = true;
+    // A gap reads a failed section again.
+    update(live, { sectionErrors: NO_SECTION_ERRORS });
     runs.push(drain(live));
   }
   return runs.length === 0 ? undefined : Promise.all(runs).then(() => undefined);
@@ -330,21 +348,18 @@ async function run(live: Live): Promise<void> {
       } else {
         const at = held ? pageWanted(live, held) : -1;
         if (at < 0) return;
-        // A failed read cleared what shows as loading.
-        if (live.state.paging === NO_SECTIONS) update(live, { paging: pagingOf(live, held!) });
         await readPage(live, held!, at);
       }
     } catch (err) {
       if (live.aborted) return;
       // The reconnect subscribes again.
       if (err instanceof DisconnectedError) return;
-      if (err instanceof TransportError && (err.code === 'tracker_subscription_unknown' || err.code === 'tracker_subscription_ended')) {
+      if (err instanceof TransportError && SUBSCRIPTION_GONE.has(err.code)) {
         // The handle is gone on its computer: subscribe again.
         store.invalidate(live.key);
         return;
       }
-      // Nothing is loading until the read runs again.
-      update(live, { readError: err, paging: NO_SECTIONS });
+      update(live, { readError: err });
       return;
     }
   }
@@ -399,7 +414,7 @@ async function readWhole(live: Live): Promise<void> {
   const sync = live.seq === seq
     ? { failure: view.sync.failure ?? null, readAt: view.sync.read_at || live.state.readAt }
     : {};
-  update(live, { held, ...sync, readError: null, paging: pagingOf(live, held) });
+  update(live, { held, ...sync, readError: null });
 }
 
 async function readPatch(live: Live, held: HeldBoard): Promise<void> {
@@ -430,6 +445,8 @@ function pageWanted(live: Live, held: HeldBoard): number {
       live.wantPage.delete(k);
       continue;
     }
+    // A failed section waits for the next event, a gap or Refresh.
+    if (live.state.sectionErrors.has(k)) continue;
     if (owedPage(live, sec)) return i;
   }
   return -1;
@@ -445,44 +462,54 @@ function owedPage(live: Live, sec: HeldBoard['sections'][number]): boolean {
 async function readPage(live: Live, held: HeldBoard, at: number): Promise<void> {
   const sec = held.sections[at];
   const k = sectionKey(sec.section);
+  update(live, { paging: new Set([k]) });
   let page;
   try {
     page = await withBackendTarget(live.ref.backend, () => TrackerSectionRows(live.id, sec.section, sec.next));
   } catch (err) {
+    update(live, { paging: NO_SECTIONS });
     if (err instanceof TransportError && err.code === 'tracker_page_stale') {
       // The change that moved the board's revision is on its way as an
       // event; its patch carries the cursor on, and the page is read then.
       live.staleAt = held.revision;
       return;
     }
-    throw err;
+    // The connection and the handle are the whole board's.
+    if (err instanceof DisconnectedError || (err instanceof TransportError && SUBSCRIPTION_GONE.has(err.code))) throw err;
+    // The section keeps its demand, whatever first asked for the page.
+    live.wantPage.add(k);
+    update(live, { sectionErrors: new Map(live.state.sectionErrors).set(k, err) });
+    return;
   }
-  if (live.aborted || live.state.held !== held) return;
+  if (live.aborted) return;
+  if (live.state.held !== held) {
+    update(live, { paging: NO_SECTIONS });
+    return;
+  }
   live.wantPage.delete(k);
   const next = appendPage(held, at, page, live.intern);
-  update(live, { held: next, readError: null, paging: pagingOf(live, next) });
+  update(live, { held: next, paging: NO_SECTIONS, sectionErrors: withoutKey(live.state.sectionErrors, k) });
 }
 
-function pagingOf(live: Live, held: HeldBoard): ReadonlySet<string> {
-  const out = new Set<string>();
-  for (const sec of held.sections) {
-    if ((sec.next || sec.unread) && owedPage(live, sec)) out.add(sectionKey(sec.section));
-  }
-  return out.size === 0 ? NO_SECTIONS : out;
+function withoutKey(errors: ReadonlyMap<string, unknown>, k: string): ReadonlyMap<string, unknown> {
+  if (!errors.has(k)) return errors;
+  const out = new Map(errors);
+  out.delete(k);
+  return out.size === 0 ? NO_SECTION_ERRORS : out;
 }
 
-/** Reads the next page of a held section, once. After a read failed, the
- * next event or Refresh reads it: a column nearing its end asks again as
- * soon as it stops loading. */
+/** Reads the next page of a held section, once. A section whose page
+ * read failed keeps the request, and the next event, gap or Refresh reads
+ * it: a column nearing its end asks again as soon as it stops loading. */
 export function loadMoreOfSection(key: string, section: Section): void {
   const live = lives.get(key);
   const held = live?.state.held;
-  if (!live || !held || live.state.readError) return;
+  if (!live || !held) return;
   const k = sectionKey(section);
   const sec = held.sections.find((s) => sectionKey(s.section) === k);
-  if (!sec?.next) return;
+  if (!sec?.next && !sec?.unread) return;
   live.wantPage.add(k);
-  update(live, { paging: pagingOf(live, held) });
+  if (live.state.sectionErrors.has(k)) return;
   void drain(live);
 }
 
@@ -492,9 +519,7 @@ export function setTrackerBoardFiltered(key: string, filtered: boolean): void {
   if ((filteredByKey.get(key) ?? false) === filtered) return;
   filteredByKey.set(key, filtered);
   const live = lives.get(key);
-  const held = live?.state.held;
-  if (!live || !held) return;
-  update(live, { paging: pagingOf(live, held) });
+  if (!live?.state.held) return;
   void drain(live);
 }
 
@@ -519,7 +544,8 @@ export async function refreshTrackerBoard(key: string): Promise<void> {
     }
   }
   if (lives.get(key) !== live) return;
-  update(live, { refreshing: false, refreshNotice: notice });
+  // Refresh reads a failed section again.
+  update(live, { refreshing: false, refreshNotice: notice, sectionErrors: NO_SECTION_ERRORS });
   void drain(live);
 }
 

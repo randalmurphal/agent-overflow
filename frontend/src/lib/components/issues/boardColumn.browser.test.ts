@@ -56,6 +56,7 @@ function mountColumn(rows: RowView[], more: boolean) {
     hidden: new Set<CardField>() as ReadonlySet<CardField>,
     now: Date.now(),
     paging: false,
+    failed: false,
     onNearEnd: () => { asks.push(Date.now()); },
     shown: true,
   });

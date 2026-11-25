@@ -147,7 +147,8 @@
     refreshFailure = notice?.kind === 'failed' ? captureError(notice.error, { context: 'Could not refresh the board' }) : null;
   });
   $effect(() => {
-    const err = boardState?.readError ?? null;
+    // A full or patch read's failure, else the first column's that failed.
+    const err = boardState?.readError ?? boardState?.sectionErrors.values().next().value ?? null;
     if (err === readFailureOf) return;
     readFailureOf = err;
     readFailure = err ? captureError(err, { context: "Could not read the board from this computer's copy" }) : null;
@@ -318,7 +319,7 @@
           {/if}
         </div>
       {:else if held && attachment}
-        <BoardScreen boardKey={attachment.key} boardRef={board} {held} paging={boardState!.paging} {filter} {hidden} {compact} {shown} />
+        <BoardScreen boardKey={attachment.key} boardRef={board} {held} paging={boardState!.paging} sectionErrors={boardState!.sectionErrors} {filter} {hidden} {compact} {shown} />
       {:else if boardState && !boardState.ended}
         <p class="px-4 py-6 text-sm text-fg-muted" data-testid="issues-not-read">This computer has not read the board yet. It appears here once it has.</p>
       {:else if !boardState && !attachment?.error && !boardOffline}

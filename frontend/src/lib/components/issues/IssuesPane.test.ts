@@ -197,18 +197,52 @@ describe('the Issues pane', () => {
     expect(within(view.getAllByTestId('issues-column')[1]).getByTestId('issues-column-empty')).toHaveTextContent('Nothing here');
   });
 
-  it('says a column its first read did not carry is loading, and not read yet when that read fails', async () => {
+  it('says a column its first read did not carry is not read yet, loading while it is read, and that the read failed', async () => {
     const view0 = kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] });
+    const done = { kind: 'column', column: 2 } as Section;
+    install({
+      view: {
+        ...view0,
+        columns: [...view0.columns, { name: 'Done', statuses: [{ id: 's3', group: 'done' }], total: { rows: 0, estimate: 0 } }],
+        screen: [...view0.screen, done],
+        sections: view0.sections.slice(0, 1),
+      } as BoardView,
+    });
+    let fail: (err: unknown) => void = () => {};
+    setBindingMock('TrackerSectionRows', () => new Promise((_resolve, reject) => { fail = reject; }));
+    const view = mount();
+    const col = (i: number) => within(view.getAllByTestId('issues-column')[i]);
+    await waitFor(() => expect(col(1).getByTestId('issues-column-loading').textContent?.trim()).toBe('Loading…'));
+    expect(col(2).getByTestId('issues-column-unread')).toHaveTextContent('Not read yet');
+    fail(new TransportError('timeout', 'the computer did not answer in time'));
+    await waitFor(() => expect(col(1).getByTestId('issues-column-failed')).toHaveTextContent('Could not read this column.'));
+    expect(col(1).queryByTestId('issues-column-empty')).toBeNull();
+    expect(view.getByTestId('issues-read-error')).toBeInstanceOf(HTMLElement);
+    // The read goes on to the next column.
+    await waitFor(() => expect(col(2).getByTestId('issues-column-loading').textContent?.trim()).toBe('Loading…'));
+    view.unmount();
+  });
+
+  it('stops saying a filtered column is loading once its read failed', async () => {
+    const todo = Array.from({ length: 100 }, (_, i) => row(String(i + 10), `k${String(i).padStart(3, '0')}`, 's1'));
+    const view0 = kanban({ rows: todo, total: 150, next: true }, { rows: [] });
     install({ view: { ...view0, sections: view0.sections.slice(0, 1) } as BoardView });
     let fail: (err: unknown) => void = () => {};
     setBindingMock('TrackerSectionRows', () => new Promise((_resolve, reject) => { fail = reject; }));
     const view = mount();
-    const doing = () => within(view.getAllByTestId('issues-column')[1]);
-    await waitFor(() => expect(doing().getByTestId('issues-column-loading').textContent?.trim()).toBe('Loading…'));
+    const col = (i: number) => within(view.getAllByTestId('issues-column')[i]);
+    await waitFor(() => expect(col(1).queryByTestId('issues-column-loading')).not.toBeNull());
+    openPaneFind(PANE);
+    setPaneFindQuery(PANE, 'export');
+    await waitFor(() => expect(columns(view)[0].count).toBe('100 of 150 loaded'));
     fail(new TransportError('timeout', 'the computer did not answer in time'));
-    await waitFor(() => expect(doing().getByTestId('issues-column-unread')).toHaveTextContent('Not read yet'));
-    expect(doing().queryByTestId('issues-column-empty')).toBeNull();
-    expect(view.getByTestId('issues-read-error')).toBeInTheDocument();
+    // The To Do page the filter owes is read next; it times out too.
+    await waitFor(() => expect(col(0).queryByTestId('issues-column-loading')).not.toBeNull());
+    fail(new TransportError('timeout', 'the computer did not answer in time'));
+    await waitFor(() => expect(col(0).getByTestId('issues-column-failed')).toHaveTextContent('Could not read more of this column.'));
+    expect(col(0).queryByTestId('issues-column-loading')).toBeNull();
+    expect(col(1).queryByTestId('issues-column-loading')).toBeNull();
+    expect(col(1).getByTestId('issues-column-failed')).toHaveTextContent('Could not read this column.');
     view.unmount();
   });
 
@@ -257,7 +291,7 @@ describe('the Issues pane', () => {
     expect(columns(view)[0].count).toBe('150 · 300 pts');
     openPaneFind(PANE);
     setPaneFindQuery(PANE, 'export');
-    await waitFor(() => expect(columns(view)[0].count).toBe('Loading 100 of 150'));
+    await waitFor(() => expect(columns(view)[0].count).toBe('100 of 150 loaded'));
     expect(columns(view)[1].cards).toEqual(['2']);
     expect(page).toHaveBeenCalledTimes(1);
     answer({ section: { kind: 'column', column: 0 }, rows: [row('200', 'z', 's1', { title: 'Export the rest' })] } as unknown as SectionPage);

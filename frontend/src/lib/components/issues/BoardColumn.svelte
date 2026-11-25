@@ -4,8 +4,11 @@
   // A column the computer holds more of asks for its next page as the
   // reader nears the end of the rows held (`onNearEnd`); while Only mine or
   // Search filters it, the rest is read whole (the pane asks) and the
-  // header says how much is loaded. A column the board's first read did
-  // not carry (`column.unread`) says so until its first page is read.
+  // header says how much is loaded. It says it is loading only while one
+  // of its pages is being read (`paging`), and that a read failed until
+  // the next event or Refresh reads it again. A column the board's first
+  // read did not carry (`column.unread`) says so until its first page is
+  // read.
   import { untrack } from 'svelte';
   import LongListVirtualizer, { type LongListHandle } from '../virtual/LongListVirtualizer.svelte';
   import BoardCard from './BoardCard.svelte';
@@ -33,6 +36,9 @@
     now: number;
     /** A page of this column is being read. */
     paging: boolean;
+    /** A page read of this column failed, until the next event or Refresh
+     * reads it again. */
+    failed: boolean;
     onNearEnd: () => void;
     /** False while the column is not on screen. */
     shown: boolean;
@@ -40,7 +46,7 @@
     wide?: boolean;
   }
 
-  let { column, rows, filtered, unit, hidden, now, paging, onNearEnd, shown, wide = false }: Props = $props();
+  let { column, rows, filtered, unit, hidden, now, paging, failed, onNearEnd, shown, wide = false }: Props = $props();
 
   const estimate: RowEstimate = { at: () => CARD_ESTIMATE_PX, isExact: () => false };
   const getKey = (row: RowView) => row.card.id;
@@ -131,12 +137,14 @@
         {/snippet}
       </LongListVirtualizer>
     {/if}
-    {#if paging || (filtered && more)}
+    {#if paging}
       <p class="px-2 py-2 text-xs text-fg-muted" data-testid="issues-column-loading">{column.unread ? 'Loading…' : 'Loading more…'}</p>
+    {:else if failed}
+      <p class="px-2 py-2 text-xs text-fg-muted" data-testid="issues-column-failed">{column.unread ? 'Could not read this column.' : 'Could not read more of this column.'}</p>
     {:else if column.unread}
       <p class="px-2 py-2 text-xs text-fg-muted" data-testid="issues-column-unread">Not read yet</p>
     {:else if rows.length === 0}
-      <p class="px-2 py-2 text-xs text-fg-muted" data-testid="issues-column-empty">{filtered ? 'No matching cards' : 'Nothing here'}</p>
+      <p class="px-2 py-2 text-xs text-fg-muted" data-testid="issues-column-empty">{!filtered ? 'Nothing here' : more ? 'No matching cards among those loaded' : 'No matching cards'}</p>
     {/if}
   </div>
 </section>
