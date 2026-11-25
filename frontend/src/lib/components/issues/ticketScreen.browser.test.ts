@@ -35,10 +35,10 @@ function mountTicket(width: number) {
   document.body.appendChild(host);
   const state: TrackerTicketState = {
     detail: DETAIL, readAt: 1, failure: null, ended: false, refreshing: false, refreshNotice: null, readError: null,
-    earlier: { pages: [], next: null, loading: false, error: null },
+    earlier: { pages: [], next: null, loading: false, error: null }, poker: null,
   };
   const ref = { backend: HOME_BACKEND, connection: 'c1', issue: '1' };
-  const attachment: TrackerTicketAttachment = { key: 'ticket', ref, current: state, error: null, setShown: () => {}, release: () => {} };
+  const attachment: TrackerTicketAttachment = { key: 'ticket', ref, current: state, error: null, setShown: () => {}, setPokerShown: () => {}, release: () => {} };
   const app = mount(TicketScreen, {
     target: host,
     props: {
