@@ -1142,10 +1142,11 @@ named rows.
 A project's status groups ([Project setup](#project-setup)) add one
 list of the done statuses to the backlog, count and patch statements. No
 setup file, and a file with no entry for the board's site, run the plain
-statements, which probe a row's status by its key: a one-issue backlog
-patch runs 99 VM steps at 5 and at 1,000 catalog statuses, and the
-regrouped form 168 and 12,114 (`TestABoardWithNoRegroupingReadsNoCatalog`
-pins that the plain form does not grow with the catalog). At 20,000
+statements, which probe a row's status by its key: the backlog
+statement of a one-issue patch runs 99 VM steps at 5 and at 1,000
+catalog statuses, and its regrouped form 168 and 12,114, counted by the
+sqlite3 shell (`TestABoardWithNoRegroupingReadsNoCatalog` pins that the
+plain reads do not grow with the catalog). At 20,000
 issues, the fastest of three runs alternated with the branch's base,
 thirty regrouped statuses the board does not use took 46.4 ms for the
 board view and 39.5 ms for the counts, against 42.1 and 37.8 on the
