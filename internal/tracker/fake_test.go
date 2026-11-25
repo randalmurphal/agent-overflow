@@ -77,6 +77,7 @@ func (fakeProvider) Search(context.Context, SearchQuery) (SearchPage, error) {
 func (fakeProvider) Download(context.Context, DownloadInput) error { return nil }
 func (fakeProvider) Unlink(context.Context, UnlinkInput) Result    { return Result{} }
 func (fakeProvider) Time() TimeTracker                             { return fakeTime{} }
+func (fakeProvider) Poker() Poker                                  { return nil }
 
 type fakeTime struct{}
 

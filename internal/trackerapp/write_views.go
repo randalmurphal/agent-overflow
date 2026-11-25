@@ -1,7 +1,10 @@
 package trackerapp
 
 import (
+	"errors"
+
 	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/tracker/jira"
 )
 
 // WriteView is what became of a write, as the tracker answered it: every
@@ -94,6 +97,7 @@ var (
 		tracker.StepCreate: "create", tracker.StepUpload: "upload", tracker.StepEdit: "edit", tracker.StepMove: "move",
 		tracker.StepEstimate: "estimate", tracker.StepRank: "rank", tracker.StepSprintMove: "sprint_move",
 		tracker.StepSprint: "sprint", tracker.StepComment: "comment", tracker.StepLink: "link", tracker.StepWorklog: "worklog",
+		tracker.StepPoker: "poker",
 	}
 	stateNames = [...]string{
 		tracker.StateUnknown: "unknown", tracker.StateApplied: "applied", tracker.StateRefused: "refused", tracker.StateNotSent: "not_sent",
@@ -139,7 +143,12 @@ func partViews(kind string, res tracker.Result, at int64) []PartView {
 			if err != nil {
 				f = ClassifyFailure(kind, err)
 			}
-			v.Failure = &FailureView{Kind: string(f.Kind), Message: unknownOutcome(kind, p.Step), At: at}
+			msg := unknownOutcome(kind, p.Step)
+			if pe, ok := errors.AsType[*jira.PokerError](err); ok {
+				// The answer arrived and was not one that says: say which.
+				msg = pe.Step + " " + pe.Detail + ", so this change may or may not have been made; " + LostWriteCheck(p.Step)
+			}
+			v.Failure = &FailureView{Kind: string(f.Kind), Message: msg, At: at}
 		case err != nil && state != tracker.StateApplied:
 			f := ClassifyFailure(kind, err)
 			v.Failure = &FailureView{Kind: string(f.Kind), Message: f.Message, At: at}
@@ -175,6 +184,8 @@ func LostWriteCheck(step tracker.Step) string {
 		return "look at the time you logged that day before you try again"
 	case tracker.StepRank:
 		return "look at the issue's place on the board before you try again"
+	case tracker.StepPoker:
+		return "look at the ticket's poker votes before you try again"
 	case tracker.StepUpload, tracker.StepEdit, tracker.StepMove, tracker.StepEstimate,
 		tracker.StepSprintMove, tracker.StepComment, tracker.StepLink:
 	}

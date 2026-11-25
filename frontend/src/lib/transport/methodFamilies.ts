@@ -82,6 +82,8 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
   1393115131: 'subscription', // ReleaseTrackerSubscription
   105684651: 'subscription', // TrackerTicket
   3749273758: 'subscription', // MintTrackerAttachmentDownloadTicket
+  2943151489: 'subscription', // FollowTrackerPoker
+  3990595752: 'subscription', // TrackerPoker
 
   // Tracker connection ids: every call that names a connection belongs to
   // the computer that holds it.
@@ -120,6 +122,10 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
   4036611847: 'trackerConnection', // LinkTrackerIssues
   1599312374: 'trackerConnection', // UnlinkTrackerIssues
   2437411241: 'trackerConnection', // AddTrackerWorklog
+  4253452655: 'trackerConnection', // TrackerPokerSupport
+  141171752: 'trackerConnection', // VoteTrackerPoker
+  3151648721: 'trackerConnection', // RevealTrackerPoker
+  3142429700: 'trackerConnection', // ClearTrackerPokerVotes
 
   // A thread group is a sidebar row of ONE project on one backend; its id
   // is minted there and the group list is fanned out to every backend, so

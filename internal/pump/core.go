@@ -229,6 +229,11 @@ type noCopy struct{}
 func (*noCopy) Lock()   {}
 func (*noCopy) Unlock() {}
 
+// VisibleLocked reports whether the handle's caller shows the pump: its
+// last vote, visible from its take until it votes otherwise. A released
+// handle shows nothing.
+func (h *Handle[R]) VisibleLocked() bool { return h.visible && !h.released }
+
 // VoteLocked records whether the handle's caller shows the pump. The core
 // pauses while every handle is hidden, and a vote that resumes it wakes
 // its loop. A vote that repeats the handle's last one, or lands on a dead
