@@ -294,6 +294,37 @@ describe('the board subscription', () => {
     board.release();
   });
 
+  it('reads whole again on Refresh when a full read failed reading a section back to its depth', async () => {
+    const kanban = () => view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true });
+    const mocks = install({ view: kanban() });
+    mocks.board.mockImplementation(async () => kanban());
+    const page = async (_id: string, _s: Section, after: { issue: string }) => {
+      const from = Number(after.issue) + 1;
+      return { section: COLUMN, rows: rows(from, 100), next: { order: `k${String(from + 99).padStart(4, '0')}`, issue: String(from + 99), lifetime: 1, revision: 1 } };
+    };
+    mocks.page.mockImplementation(page);
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    loadMoreOfSection(board.key, COLUMN);
+    await flush();
+    expect(heldIds(board)[0].length).toBe(200);
+
+    mocks.page.mockImplementationOnce(async () => {
+      throw new TransportError('timeout', 'the computer did not answer in time');
+    });
+    applyTrackerBoardEvent(event(11, { read_again: true }), HOME_BACKEND);
+    await flush();
+    expect(mocks.board).toHaveBeenCalledTimes(1);
+    expect(board.current?.readError).toBeInstanceOf(TransportError);
+
+    await refreshTrackerBoard(board.key);
+    await flush();
+    expect(mocks.board).toHaveBeenCalledTimes(2);
+    expect(heldIds(board)[0].length).toBe(200);
+    expect(board.current?.readError).toBeNull();
+    board.release();
+  });
+
   it('reads whole on read again, past 100 IDs and after a gap, to the depth it held', async () => {
     const kanban = () => view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true });
     const mocks = install({ view: kanban() });
