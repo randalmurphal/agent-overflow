@@ -77,8 +77,10 @@ export function keyFileSentence(connection: TrackerConnection): string {
   }
 }
 
+/** Who the last check found the token belongs to; '' for a check that names nobody (Tempo's). */
 function signedInAs(connection: TrackerConnection): string {
   const name = connection.verifiedName || connection.verifiedAccountId;
+  if (!name) return '';
   if (connection.kind === 'jira' && connection.account && connection.account !== name) {
     return `${name} (${connection.account})`;
   }
@@ -97,7 +99,8 @@ export function trackerConnectionStatus(connection: TrackerConnection): TrackerC
   const problem = connection.problem;
   if (problem) {
     const known = PROBLEM_LABELS[problem.kind] ?? { label: 'Failed', tone: 'error' as const };
-    const before = connection.verifiedAt > 0 ? ` It was signed in as ${signedInAs(connection)}.` : '';
+    const who = connection.verifiedAt > 0 ? signedInAs(connection) : '';
+    const before = who ? ` It was signed in as ${who}.` : '';
     return {
       tone: known.tone,
       label: known.label,
@@ -116,7 +119,8 @@ export function trackerConnectionStatus(connection: TrackerConnection): TrackerC
       needsSetup: true,
     };
   }
-  return { tone: 'ok', label: `Signed in as ${signedInAs(connection)}`, detail: '', needsSetup: false };
+  const who = signedInAs(connection);
+  return { tone: 'ok', label: who ? `Signed in as ${who}` : 'Token checked', detail: '', needsSetup: false };
 }
 
 /** What the row says about the token's recorded expiry; null when none is recorded. */

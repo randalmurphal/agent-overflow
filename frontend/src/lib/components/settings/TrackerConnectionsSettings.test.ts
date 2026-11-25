@@ -193,6 +193,13 @@ describe('<TrackerConnectionsSettings>', () => {
     expect(screen.queryByTestId('tracker-connection-menu-add-tempo')).toBeNull();
   });
 
+  it('shows a checked Tempo connection as checked, naming nobody', async () => {
+    rows = [trackerConnection(), trackerConnection({ id: 'tempo-1', kind: 'tempo', site: 'https://api.tempo.io', account: '', parentId: 'jira-1', verifiedAccountId: '', verifiedName: '', verifiedAt: Date.now() - 5 * 60_000 })];
+    render(TrackerConnectionsSettings);
+    const tempo = await screen.findByTestId('tracker-connection-tempo-1');
+    expect(within(tempo).getByTestId('tracker-connection-status').textContent).toBe('Token checked · checked 5m ago');
+  });
+
   it('removes a connection only once the dialog naming what goes is confirmed', async () => {
     rows = [trackerConnection(), fresh({ id: 'tempo-1', kind: 'tempo', parentId: 'jira-1', account: '' })];
     const remove = setBindingMock('RemoveTrackerConnection', async () => {

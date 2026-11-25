@@ -24,6 +24,14 @@ describe('a connection row’s status', () => {
     expect(trackerConnectionStatus(linear).label).toBe('Signed in as User 1');
   });
 
+  it('says a check that names nobody (Tempo’s) checked the token, and never who it was signed in as', () => {
+    // What a successful Tempo check answers: a time and no account (trackerapp/verify.go).
+    const tempo = trackerConnection({ id: 'tempo-1', kind: 'tempo', site: 'https://api.tempo.io', account: '', parentId: 'jira-1', verifiedAccountId: '', verifiedName: '' });
+    expect(trackerConnectionStatus(tempo)).toEqual({ tone: 'ok', label: 'Token checked', detail: '', needsSetup: false });
+    const refused = { ...tempo, problem: { kind: FailureKind.FailureSetup, message: 'Tempo refused the token in the key file' } };
+    expect(trackerConnectionStatus(refused).detail).toBe('Tempo refused the token in the key file.');
+  });
+
   it('shows the setup steps until a token is in the key file and checked', () => {
     const fresh = trackerConnection({ verifiedAt: 0, verifiedName: '', verifiedAccountId: '', keyFileState: KeyFileState.StateEmpty });
     expect(trackerConnectionStatus(fresh)).toMatchObject({ tone: 'warning', label: 'Needs a token', detail: 'The key file is empty.', needsSetup: true });
