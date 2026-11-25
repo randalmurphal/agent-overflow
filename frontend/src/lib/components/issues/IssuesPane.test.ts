@@ -937,12 +937,19 @@ describe('the ticket in the pane', () => {
     expect(within(priority).getByTestId('ticket-field-value')).toHaveTextContent('None');
   });
 
-  it('opens a card\'s ticket from the card\'s menu', async () => {
+  it('opens a card\'s ticket from the card\'s menu, and copies its key from it', async () => {
     install();
     installTicket();
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined);
     const view = mount();
     await view.findAllByTestId('issues-card');
     const card = view.getAllByTestId('issues-card').find((c) => c.dataset.issue === '2')!;
+    await fireEvent.contextMenu(card);
+    await fireEvent.click(await within(document.body).findByTestId('issues-card-menu-copy-key'));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('WEB-2'));
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(within(document.body).queryByTestId('issues-card-menu-copy-key')).toBeNull();
+    writeText.mockRestore();
     await fireEvent.contextMenu(card);
     await fireEvent.click(await within(document.body).findByTestId('issues-card-menu-open'));
     await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('2'));
