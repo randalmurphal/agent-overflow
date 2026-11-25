@@ -2,7 +2,8 @@
 // by the desktop and compact projects, through the shipped UI, the real
 // backend and the fake Jira. Covered: a card opens its ticket over the
 // board (full width with Back on compact); a ticket with 30 comments
-// mounts the newest five and the reveal control mounts 20 more; a status
+// mounts the newest five and the reveal control mounts 20 more, an image
+// Jira holds showing as a chip naming the file; a status
 // picked from the ticket's moves reaches Jira and the ticket shows it; a
 // comment sent from the box reaches Jira and shows; a description edit
 // that would lose a column layout is refused with what it would lose, and
@@ -56,7 +57,10 @@ const TICKET: ExtraJira = {
     comments: Array.from({ length: COMMENTS }, (_, i) => ({
       id: String(30_001 + i),
       author: 'acc-user1',
-      body: doc(paragraph(`Seeded comment ${i + 1}`)),
+      // The newest carries an image Jira holds, which no URL here fetches.
+      body: i === COMMENTS - 1
+        ? doc(paragraph(`Seeded comment ${i + 1}`), { type: 'mediaSingle', content: [{ type: 'media', attrs: { type: 'file', id: 'media-1', collection: '', alt: 'diagram.png' } }] })
+        : doc(paragraph(`Seeded comment ${i + 1}`)),
       created: new Date(Date.now() - (COMMENTS - i) * 60_000 - 3600_000).toISOString(),
     })),
   }],
@@ -121,6 +125,9 @@ export function registerIssuesTicketFlow({ compact }: TicketSurface): void {
     const comments = ticket.getByTestId('ticket-comment');
     await expect(comments).toHaveCount(5, { timeout: 30_000 });
     await expect(comments.last()).toContainText(`Seeded comment ${COMMENTS}`);
+    // Its image is a chip naming the file: no image, no link.
+    await expect(comments.last().locator('[data-tracker-media]')).toHaveText('diagram.png');
+    await expect(comments.last().locator('img, a[href]')).toHaveCount(0);
     const earlier = ticket.getByTestId('ticket-comments-earlier');
     await expect(earlier).toHaveText('Show 20 earlier comments');
     await press(earlier, compact);

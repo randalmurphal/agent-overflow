@@ -12,7 +12,7 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
   import Segmented from '../primitives/Segmented.svelte';
-  import ChatMarkdown from '../chat/ChatMarkdown.svelte';
+  import TicketMarkdown from './TicketMarkdown.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
   import type { CommentView, DetailView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import { loadEarlierTrackerComments, type EarlierComments } from '../../stores/trackerTicket.svelte';
@@ -31,7 +31,6 @@
   import { relativeTime } from '../../utils/format';
   import { isEnterKey } from '../../utils/localEnter';
   import { isImeComposingEvent } from '../../utils/imeComposition';
-  import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
   import { isMacPlatform } from '../../utils/platform';
 
   interface Props {
@@ -216,7 +215,7 @@
           </div>
         {:else}
           <div class="min-w-0 text-sm" data-testid="ticket-comment-body">
-            <ChatMarkdown source={c.body} pathRefs={EMPTY_PATH_REFS} embeddedHtml class="review-prose" />
+            <TicketMarkdown source={c.body} />
           </div>
         {/if}
         {#if confirming === c.id}

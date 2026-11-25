@@ -9,7 +9,8 @@
   // the whole run is ONE html block token, so there is no token to claim:
   // the sanitizer marks the media it was told to claim
   // (`data-markdown-media-claim`) and this host swaps each marker for a real
-  // `ForgeAttachmentHost`, or a `RepositoryImageHost` for a repository file.
+  // `ForgeAttachmentHost`, a `RepositoryImageHost` for a repository file, or
+  // a `TrackerMediaChip` for a tracker's file in ticket text.
   //
   // The swap is imperative because the fragment is a string, not a token
   // tree. It is still bounded and owned: the query runs inside THIS host's
@@ -29,6 +30,8 @@
   // host renders no control inside it.
   import { mount, unmount, untrack } from 'svelte';
   import ForgeAttachmentHost from './ForgeAttachmentHost.svelte';
+  import TrackerMediaChip from './TrackerMediaChip.svelte';
+  import { isTrackerMediaHref } from '../../../utils/trackerMedia';
   import RepositoryImageHost from './RepositoryImageHost.svelte';
   import { REPOSITORY_IMAGE_HREF_PREFIX } from '../../../utils/repositoryImageHref';
   import { MEDIA_CLAIM_ATTR, type EmbeddedImageToken, type Tokens } from '../../../markdown';
@@ -85,9 +88,9 @@
       const anchor = marker.closest('a[href]');
       const inLink = tokenInLink || (anchor !== null && node.contains(anchor));
       marker.replaceWith(target);
-      // A repository file's image has its own host; every other claim is a
-      // forge attachment.
-      const Host = href.startsWith(REPOSITORY_IMAGE_HREF_PREFIX) ? RepositoryImageHost : ForgeAttachmentHost;
+      // A repository file's image and a tracker's file have their own
+      // hosts; every other claim is a forge attachment.
+      const Host = href.startsWith(REPOSITORY_IMAGE_HREF_PREFIX) ? RepositoryImageHost : isTrackerMediaHref(href) ? TrackerMediaChip : ForgeAttachmentHost;
       mounted.push(mount(Host, { target, props: { token: inLink ? { ...image, inLink } : image } }));
     }
     return mounted;

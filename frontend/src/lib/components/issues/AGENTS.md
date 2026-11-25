@@ -68,6 +68,11 @@ touch keep their objects, so their cards do not re-render; keep that when
 deriving rows (filter into new arrays, never copy rows). Marks are picked
 by name or level in `boardFormat.ts`; no tracker image is fetched.
 
+`TicketMarkdown.svelte` is the one renderer of a ticket's text, its long
+text fields and comments: ChatMarkdown with embedded HTML and
+`trackerMedia`, which shows a tracker's `media:` image or attachment as a
+chip naming the file (`utils/trackerMedia.ts`).
+
 A ticket mounts its newest five comments and 20 history changes; each
 press of the reveal control mounts 20 more, so the DOM grows only with
 what the person asked to see. The Issues browser specs assert the mounted

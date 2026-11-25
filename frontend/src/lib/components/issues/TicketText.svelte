@@ -11,9 +11,8 @@
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
-  import ChatMarkdown from '../chat/ChatMarkdown.svelte';
+  import TicketMarkdown from './TicketMarkdown.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
-  import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
   import { isEnterKey } from '../../utils/localEnter';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { ticketWrite } from '../../stores/trackerTicketWrites.svelte';
@@ -111,7 +110,7 @@
       </div>
     {:else if markdown.trim()}
       <div class="min-w-0 px-1 text-sm" data-testid="ticket-section-text">
-        <ChatMarkdown source={markdown} pathRefs={EMPTY_PATH_REFS} embeddedHtml class="review-prose" />
+        <TicketMarkdown source={markdown} />
       </div>
     {:else}
       <p class="px-1 text-sm text-fg-muted" data-testid="ticket-section-empty">Nothing written yet.</p>
