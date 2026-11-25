@@ -42,29 +42,47 @@
 //
 // The handle votes shown while any surface shows the ticket and the window
 // is visible, so a ticket nobody can see makes no tracker read.
+//
+// Planning poker (trackerapp/poker.go): the handle follows the votes while
+// one surface both shows the ticket and has its poker part on screen, and
+// the window is visible. The computer reads votes only for a handle that
+// follows and shows, and the handle is shared, so the AND is taken per
+// surface here: a hidden surface with poker open beside a shown one
+// without it follows nothing. A new subscription follows again. An event
+// with `poker` set asks for one `TrackerPoker` read, one in flight at a
+// time, and a gap reads every followed ticket's votes. The answers are
+// applied in the order they were asked. Whether a connection's site has
+// poker follows its own rules ("Poker support must keep true").
 
+import { SvelteMap } from 'svelte/reactivity';
 import type {
   CommentView,
   DetailView,
   FailureView,
+  PokerView,
   TicketSubscription,
   TicketView,
 } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import {
+  FollowTrackerPoker,
   ReleaseTrackerSubscription,
   SetTrackerSubscriptionVisible,
   SubscribeTrackerTicket,
   TrackerComments,
+  TrackerPoker,
+  TrackerPokerSupport,
   TrackerTicket,
 } from './bindings';
 import { createEntityStore } from './entityStore.svelte';
 import { createPumpVotes } from './pumpVotes';
 import { takeTrackerTicketChannel, type TrackerIssueEvent } from './trackerBoardEvents';
 import { isSubscriptionGone, requestTrackerRefresh, type TrackerRefreshNotice } from './trackerBoard.svelte';
-import { isTransportClassError } from './transportStatus.svelte';
+import { isTransportClassError, onBackendStatusChange } from './transportStatus.svelte';
 import type { BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
+import { errString } from '../utils/errors';
+import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { documentHidden } from '../utils/pageVisibility';
 import { composeWorkspaceKey, workspaceKeyBackend } from '../utils/workspaceKey';
 
@@ -117,6 +135,16 @@ export interface TrackerTicketState {
   /** A read of the view from memory that failed, until one succeeds. */
   readonly readError: unknown;
   readonly earlier: EarlierComments;
+  /** The votes while the handle follows them; null while it does not. */
+  readonly poker: TicketPoker | null;
+}
+
+/** A followed ticket's votes. */
+export interface TicketPoker {
+  /** The votes as last read; null until the follow answers. */
+  readonly view: PokerView | null;
+  /** The last follow or read that failed, until one succeeds. */
+  readonly error: unknown;
 }
 
 interface Live {
@@ -134,12 +162,25 @@ interface Live {
   retryHeld: boolean;
   running: Promise<void> | null;
   voted: boolean;
+  /** Whether the screens last asked to follow the votes, whether the
+   * computer was last sent that, and whether that send is out ("The
+   * poker follow must keep true"). */
+  following: boolean;
+  followSent: boolean;
+  followOut: boolean;
+  /** A read of the votes is owed. */
+  pokerDirty: boolean;
+  pokerRunning: Promise<void> | null;
+  /** The number of the last follow or read asked, and of the last
+   * applied: an answer older than the applied one is dropped. */
+  pokerAsked: number;
+  pokerApplied: number;
 }
 
 const NO_EARLIER: EarlierComments = { pages: [], next: null, loading: false, error: null };
 
 const FIRST_STATE: TrackerTicketState = {
-  detail: null, readAt: 0, failure: null, ended: false, refreshing: false, refreshNotice: null, readError: null, earlier: NO_EARLIER,
+  detail: null, readAt: 0, failure: null, ended: false, refreshing: false, refreshNotice: null, readError: null, earlier: NO_EARLIER, poker: null,
 };
 
 // The subscribe refusals that hold until the connection changes: the
@@ -147,8 +188,16 @@ const FIRST_STATE: TrackerTicketState = {
 const ENDING_REFUSALS: ReadonlySet<string> = new Set(['tracker_connection_off', 'tracker_connection_missing']);
 
 const lives = new Map<string, Live>();
-// Each ticket's surfaces and whether each shows it now, by surface.
-const surfaces = new Map<string, Map<number, boolean>>();
+
+/** One surface of a ticket: whether it shows the ticket now, and whether
+ * its poker part is on screen. */
+interface Surface {
+  shown: boolean;
+  poker: boolean;
+}
+
+// Each ticket's surfaces, by surface.
+const surfaces = new Map<string, Map<number, Surface>>();
 let nextSurface = 0;
 // The earlier comment pages each held ticket's surfaces loaded; kept
 // across a re-subscribe, dropped with the last surface.
@@ -185,6 +234,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
     key, ref, id: '', seq: 0, joining: [], apply, aborted: false,
     state: { ...FIRST_STATE, earlier: { ...NO_EARLIER, pages: held?.pages ?? [], next: held?.next ?? null } },
     dirty: false, retryHeld: false, running: null, voted: visibleOf(key),
+    following: false, followSent: false, followOut: false, pokerDirty: false, pokerRunning: null, pokerAsked: 0, pokerApplied: 0,
   };
   lives.set(key, live);
   signal.addEventListener('abort', () => {
@@ -221,6 +271,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
   for (const event of early) fold(live, event);
   apply(live.state);
   vote(live);
+  follow(live);
   if (pagesAdrift(key)) void onPages(key, () => reconcilePages(key));
   void drain(live);
   return cleanup;
@@ -250,6 +301,7 @@ function fold(live: Live, event: TrackerIssueEvent): void {
   }
   // Every event is a recovery trigger.
   live.retryHeld = false;
+  if (event.poker && live.following) live.pokerDirty = true;
   if (event.changed) {
     live.dirty = true;
     // The read a Refresh left running has landed.
@@ -269,6 +321,7 @@ function applyTrackerIssueEvent(event: TrackerIssueEvent, backend: BackendKey): 
     }
     fold(live, event);
     void drain(live);
+    void drainPoker(live);
   }
 }
 
@@ -282,6 +335,10 @@ function resyncTrackerTicketsAfterGap(backend: BackendKey): Promise<void> | unde
     live.dirty = true;
     live.retryHeld = false;
     runs.push(drain(live));
+    if (live.following) {
+      live.pokerDirty = true;
+      runs.push(drainPoker(live));
+    }
   }
   return runs.length === 0 ? undefined : Promise.all(runs).then(() => undefined);
 }
@@ -496,7 +553,7 @@ export function loadEarlierTrackerComments(key: string): Promise<void> {
  * window is visible. */
 function visibleOf(key: string): boolean {
   if (documentHidden()) return false;
-  for (const shown of surfaces.get(key)?.values() ?? []) if (shown) return true;
+  for (const s of surfaces.get(key)?.values() ?? []) if (s.shown) return true;
   return false;
 }
 
@@ -508,10 +565,173 @@ function vote(live: Live): void {
   votes.setActive(live.ref.backend, live.id, visible);
 }
 
+/** Whether the ticket's handle should follow its votes: one surface shows
+ * the ticket with its poker part on screen, and the window is visible. */
+function pokerWanted(key: string): boolean {
+  if (documentHidden()) return false;
+  for (const s of surfaces.get(key)?.values() ?? []) if (s.shown && s.poker) return true;
+  return false;
+}
+
+// The poker follow must keep true:
+// - `following` is what the screens last asked for, and the screen shows
+//   it at once: a stop drops the votes, a follow shows them unread.
+// - One FollowTrackerPoker per subscription is out at a time
+//   (`followOut`). When it returns and `following` differs from what was
+//   sent (`followSent`), the latest is sent, so the computer ends in the
+//   state last asked for whatever order the screen changed in.
+// - When it returns equal to what is wanted but a stop came between, the
+//   votes it answered were dropped: they are read once.
+// - A refused follow is not sent again until the screens ask again.
+
+/** Tells the computer to follow the votes, or to stop, when that changed
+ * (the rules above). */
+function follow(live: Live): void {
+  if (!live.id || live.state.ended) return;
+  const wanted = pokerWanted(live.key);
+  if (live.following === wanted) return;
+  live.following = wanted;
+  live.pokerDirty = false;
+  if (!wanted) {
+    live.pokerApplied = ++live.pokerAsked;
+    update(live, { poker: null });
+  } else if (!live.state.poker) {
+    update(live, { poker: { view: null, error: null } });
+  }
+  sendFollow(live);
+}
+
+function sendFollow(live: Live): void {
+  if (live.followOut || live.aborted || live.following === live.followSent) return;
+  const wanted = live.following;
+  const asked = ++live.pokerAsked;
+  const { id } = live;
+  live.followOut = true;
+  live.followSent = wanted;
+  void withBackendTarget(live.ref.backend, () => FollowTrackerPoker(id, wanted)).then(
+    (view) => {
+      live.followOut = false;
+      if (wanted) applyPoker(live, asked, { view, error: null });
+      if (live.following !== live.followSent) {
+        sendFollow(live);
+      } else if (live.following && !live.state.poker?.view && !live.state.poker?.error) {
+        live.pokerDirty = true;
+        void drainPoker(live);
+      }
+    },
+    (err: unknown) => {
+      live.followOut = false;
+      if (live.aborted || err instanceof DisconnectedError) return;
+      if (wanted) {
+        applyPoker(live, asked, { view: live.state.poker?.view ?? null, error: err });
+      } else {
+        // Nothing on screen shows the stop: the computer keeps reading the
+        // votes until the ticket is hidden or closed.
+        reportFrontendDiagnostic('Tracker ticket: stopping the poker follow failed', errString(err));
+      }
+      sendFollow(live);
+    },
+  );
+}
+
+function applyPoker(live: Live, asked: number, poker: TicketPoker): void {
+  if (live.aborted || !live.following || asked < live.pokerApplied) return;
+  live.pokerApplied = asked;
+  update(live, { poker });
+}
+
+function drainPoker(live: Live): Promise<void> {
+  if (live.pokerRunning) return live.pokerRunning;
+  if (!live.following || !live.pokerDirty) return Promise.resolve();
+  live.pokerRunning = runPoker(live).finally(() => {
+    live.pokerRunning = null;
+  });
+  return live.pokerRunning;
+}
+
+async function runPoker(live: Live): Promise<void> {
+  while (live.pokerDirty && live.following && !live.aborted) {
+    live.pokerDirty = false;
+    const asked = ++live.pokerAsked;
+    try {
+      const view = await withBackendTarget(live.ref.backend, () => TrackerPoker(live.id));
+      applyPoker(live, asked, { view, error: null });
+    } catch (err) {
+      if (live.aborted || err instanceof DisconnectedError) return;
+      applyPoker(live, asked, { view: live.state.poker?.view ?? null, error: err });
+      return;
+    }
+  }
+}
+
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
-    for (const live of lives.values()) vote(live);
+    for (const live of lives.values()) {
+      vote(live);
+      follow(live);
+    }
   });
+}
+
+// Poker support must keep true:
+// - "The site has no poker" ({available: false}) and "could not find out"
+//   ({failed}) are different states, and only an answer is held as one:
+//   the next ask after a failure (a ticket's opening, or the poker
+//   section's Retry) asks again.
+// - One ask per connection is out at a time, and only the ask that set
+//   the entry settles it, so an ask from before a reconnect settles
+//   nothing.
+// - A computer that connects again is asked again: its connections drop to
+//   `unasked`, and a ticket showing one then asks.
+
+/** Whether a connection's site has planning poker: not asked since its
+ * computer connected, being asked, as its computer answered, or why it
+ * could not say. */
+export type PokerSupportState =
+  | 'unasked'
+  | { readonly asking: true }
+  | { readonly available: boolean }
+  | { readonly failed: string };
+
+const pokerSupport = new SvelteMap<string, Exclude<PokerSupportState, 'unasked'>>();
+
+/** Whether the connection's site has planning poker, as last known;
+ * reactive. */
+export function trackerPokerSupport(backend: BackendKey, connection: string): PokerSupportState {
+  return pokerSupport.get(composeWorkspaceKey(backend, connection)) ?? 'unasked';
+}
+
+/** Asks whether the connection's site has planning poker, unless it is
+ * being asked or was answered since its computer last connected. */
+export function askTrackerPokerSupport(backend: BackendKey, connection: string): void {
+  const key = composeWorkspaceKey(backend, connection);
+  const held = pokerSupport.get(key);
+  if (held && ('asking' in held || 'available' in held)) return;
+  const asking = { asking: true } as const;
+  pokerSupport.set(key, asking);
+  void withBackendTarget(backend, () => TrackerPokerSupport(connection)).then(
+    (answer) => {
+      if (pokerSupport.get(key) !== asking) return;
+      pokerSupport.set(key, answer.failure ? { failed: answer.failure.message } : { available: answer.available });
+    },
+    (err: unknown) => {
+      if (pokerSupport.get(key) === asking) pokerSupport.set(key, { failed: errString(err) });
+    },
+  );
+}
+
+// A computer that connects again may run another release or hold another
+// site listing: its connections are asked again.
+onBackendStatusChange((backend, status) => {
+  if (status.status !== 'connected') return;
+  for (const key of pokerSupport.keys()) if (workspaceKeyBackend(key) === backend) pokerSupport.delete(key);
+});
+
+/** The ticket's subscription on its computer, for a call that names it
+ * (an attachment's download ticket or save); null before the subscribe
+ * answers or after the ticket closed. */
+export function trackerTicketSubscription(key: string): string | null {
+  return lives.get(key)?.id || null;
 }
 
 /** Whether any surface holds the ticket now. */
@@ -535,6 +755,8 @@ export interface TrackerTicketAttachment {
   readonly error: string | null;
   /** Whether this surface shows the ticket now. */
   setShown(shown: boolean): void;
+  /** Whether this surface's poker part is open and on screen. */
+  setPokerShown(onScreen: boolean): void;
   release(): void;
 }
 
@@ -549,11 +771,18 @@ export function attachTrackerTicket(ref: TrackerTicketRef, shown: boolean): Trac
     held = new Map();
     surfaces.set(key, held);
   }
-  held.set(surface, shown);
+  const mine: Surface = { shown, poker: false };
+  held.set(surface, mine);
   const handle = store.attach(key, ref);
   const live = lives.get(key);
   if (live) vote(live);
   let released = false;
+  const restate = (): void => {
+    const live = lives.get(key);
+    if (!live) return;
+    vote(live);
+    follow(live);
+  };
   return {
     key,
     ref,
@@ -564,25 +793,27 @@ export function attachTrackerTicket(ref: TrackerTicketRef, shown: boolean): Trac
       return handle.error;
     },
     setShown(next) {
-      const mine = surfaces.get(key);
-      if (released || !mine || mine.get(surface) === next) return;
-      mine.set(surface, next);
-      const live = lives.get(key);
-      if (live) vote(live);
+      if (released || mine.shown === next) return;
+      mine.shown = next;
+      restate();
+    },
+    setPokerShown(next) {
+      if (released || mine.poker === next) return;
+      mine.poker = next;
+      restate();
     },
     release() {
       if (released) return;
       released = true;
-      const mine = surfaces.get(key);
-      mine?.delete(surface);
-      const last = !!mine && mine.size === 0;
+      const all = surfaces.get(key);
+      all?.delete(surface);
+      const last = !!all && all.size === 0;
       if (last) {
         surfaces.delete(key);
         earlierByKey.delete(key);
         pageWork.delete(key);
       } else {
-        const live = lives.get(key);
-        if (live) vote(live);
+        restate();
       }
       handle.release();
       if (last) for (const listener of closedListeners) listener(key);
@@ -596,6 +827,7 @@ export function resetTrackerTicketsForTest(): void {
   lives.clear();
   surfaces.clear();
   earlierByKey.clear();
+  pokerSupport.clear();
   pageWork.clear();
   votes.resetForTest();
 }

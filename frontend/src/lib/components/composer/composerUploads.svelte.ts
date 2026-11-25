@@ -15,12 +15,11 @@ import { DeleteAttachment } from '../../stores/bindings';
 import { uploadAttachmentBytes } from '../../transport/attachmentTransfer';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { userFacingError } from '../../utils/userFacingError';
+import { clipboardFiles, hasFilePayload } from '../../utils/filePayload';
 import type { Attachment } from '../../types/attachment';
 import {
   DEFAULT_MAX_ATTACHMENT_COUNT,
   DEFAULT_MAX_ATTACHMENT_SIZE,
-  extractClipboardImages,
-  hasFilePayload,
   rejectionReason,
 } from './attachmentHelpers';
 import { compressImageToFit, shouldCompressImage } from './imageCompress';
@@ -249,7 +248,7 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
     },
 
     async handlePaste(event: ClipboardEvent, insertion: UploadInsertionPoint | null = null): Promise<void> {
-      const files = extractClipboardImages(event);
+      const files = clipboardFiles(event, true);
       if (files.length === 0) return;
       event.preventDefault();
       await uploadFiles(files, insertion);

@@ -4,30 +4,47 @@
 // earlier comments a person loaded, and each write's lifecycle: sent once
 // per target, kept past the ticket's close, cleared when the view lands
 // or the connection drops, and Save anyway as the person's second press.
+// Planning poker's follow per surface, its reads and the site's support;
+// files attached one at a time with what became of each; links added and
+// removed; the poker writes' one target; a connection's link types.
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { tick } from 'svelte';
 import type {
   CommentPageView,
   DetailView,
+  PokerView,
   TicketSubscription,
   TicketView,
   WriteView,
 } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import { trackerIssueUpdated, trackerTicketsGap, type TrackerIssueEvent } from './trackerBoardEvents';
 import {
+  askTrackerPokerSupport,
   attachTrackerTicket,
   loadEarlierTrackerComments,
   refreshTrackerTicket,
+  trackerPokerSupport,
   type TrackerTicketRef,
 } from './trackerTicket.svelte';
+import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 import {
   addTicketComment,
+  attachTicketFiles,
+  clearTicketPokerVotes,
   editTicketComment,
   editTicketFields,
   fieldTarget,
+  linkTicket,
+  loadTicketLinkTypes,
   moveTicket,
+  revealTicketPoker,
+  ticketAttachOutcomes,
+  ticketLinkTypes,
+  ticketUploads,
   ticketWrite,
+  unlinkTicket,
+  voteTicketPoker,
   type TicketWriteContext,
 } from './trackerTicketWrites.svelte';
 import { getToasts } from './toast.svelte';
@@ -37,6 +54,7 @@ import { takePinnedBackend } from '../transport/backends';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { stageBackend } from '../../test/helpers/backends';
+import { errString } from '../utils/errors';
 
 const REF: TrackerTicketRef = { backend: HOME_BACKEND, connection: 'c1', issue: '10101' };
 
@@ -261,6 +279,181 @@ describe('the ticket subscription', () => {
   });
 });
 
+describe('planning poker', () => {
+  installDiagnosticsCapture();
+  const votes = (value: number | null, readAt: number): PokerView => ({
+    loaded: true, revealed: value !== null, votes: [{ voter: { id: 'acc-user1', name: 'User 1' }, value, mine: true }], read_at: readAt,
+  } as PokerView);
+
+  it('follows only while one surface both shows the ticket and has its poker on screen', async () => {
+    install();
+    const follows = setBindingMock('FollowTrackerPoker', async () => votes(null, 1));
+    const over = attachTrackerTicket(REF, true);
+    const beside = attachTrackerTicket(REF, false);
+    await flush();
+    // Shown without poker, and poker on a surface that is hidden: the
+    // shared handle shows the ticket, and nobody looks at its votes.
+    beside.setPokerShown(true);
+    await flush();
+    expect(follows).not.toHaveBeenCalled();
+    expect(over.current?.poker).toBeNull();
+
+    beside.setShown(true);
+    await flush();
+    expect(follows.mock.calls).toEqual([['sub-1', true]]);
+    expect(beside.current?.poker).toEqual({ view: votes(null, 1), error: null });
+
+    beside.setShown(false);
+    await flush();
+    expect(follows.mock.calls.at(-1)).toEqual(['sub-1', false]);
+    expect(over.current?.poker).toBeNull();
+    over.release();
+    beside.release();
+  });
+
+  it('reads the votes once when a stop and a follow came while the first follow was out', async () => {
+    install();
+    let answer: ((view: PokerView) => void) | null = null;
+    const follows = setBindingMock('FollowTrackerPoker', () => new Promise<PokerView>((resolve) => { answer = resolve; }));
+    const reads = setBindingMock('TrackerPoker', async () => votes(5, 2));
+    const ticket = attachTrackerTicket(REF, true);
+    ticket.setPokerShown(true);
+    await flush();
+    ticket.setPokerShown(false);
+    ticket.setPokerShown(true);
+    answer!(votes(null, 1));
+    await flush();
+    expect(follows.mock.calls).toEqual([['sub-1', true]]);
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(ticket.current?.poker).toEqual({ view: votes(5, 2), error: null });
+    ticket.release();
+  });
+
+  it('sends a refused follow again only once the screens ask again', async () => {
+    install();
+    const follows = setBindingMock('FollowTrackerPoker', async () => {
+      throw new Error('poker is off');
+    });
+    const ticket = attachTrackerTicket(REF, true);
+    ticket.setPokerShown(true);
+    await flush();
+    await flush();
+    expect(follows).toHaveBeenCalledTimes(1);
+    expect(errString(ticket.current?.poker?.error)).toBe('poker is off');
+    ticket.setPokerShown(false);
+    ticket.setPokerShown(true);
+    await flush();
+    expect(follows.mock.calls).toEqual([['sub-1', true], ['sub-1', false], ['sub-1', true]]);
+    ticket.release();
+  });
+
+  it('stops following while the window is hidden, and follows again on its return', async () => {
+    install();
+    const follows = setBindingMock('FollowTrackerPoker', async () => votes(null, 1));
+    const ticket = attachTrackerTicket(REF, true);
+    ticket.setPokerShown(true);
+    await flush();
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await flush();
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await flush();
+    expect(follows.mock.calls).toEqual([['sub-1', true], ['sub-1', false], ['sub-1', true]]);
+    ticket.release();
+  });
+
+  it('reads the votes once per change told, and keeps a newer answer over an older one', async () => {
+    install();
+    const follows = held<PokerView>('FollowTrackerPoker');
+    const reads = held<PokerView>('TrackerPoker');
+    const ticket = attachTrackerTicket(REF, true);
+    ticket.setPokerShown(true);
+    await flush();
+    // A change told before the follow answered: its read answers first.
+    trackerIssueUpdated(event(11, { poker: true }), HOME_BACKEND);
+    trackerIssueUpdated(event(12, { poker: true }), HOME_BACKEND);
+    await flush();
+    expect(reads.calls).toEqual([['sub-1']]);
+    reads.answer(votes(5, 20));
+    await flush();
+    expect(ticket.current?.poker?.view?.read_at).toBe(20);
+    follows.answer(votes(null, 10));
+    await flush();
+    expect(ticket.current?.poker?.view?.read_at).toBe(20);
+    // The second change was told while the first read was out: one more.
+    expect(reads.calls.length).toBe(2);
+    reads.fail(new Error('the add-on did not answer'));
+    await flush();
+    expect(ticket.current?.poker).toEqual({ view: votes(5, 20), error: new Error('the add-on did not answer') });
+    // A change of the ticket alone reads no votes.
+    trackerIssueUpdated(event(13, { changed: true }), HOME_BACKEND);
+    await flush();
+    expect(reads.calls.length).toBe(2);
+    ticket.release();
+  });
+
+  it('follows again on a new subscription, and reads the votes again on a gap', async () => {
+    const mocks = install();
+    const follows = setBindingMock('FollowTrackerPoker', async () => votes(null, 1));
+    const reads = setBindingMock('TrackerPoker', async () => votes(3, 2));
+    const ticket = attachTrackerTicket(REF, true);
+    ticket.setPokerShown(true);
+    await flush();
+    await trackerTicketsGap(HOME_BACKEND);
+    expect(reads).toHaveBeenCalledWith('sub-1');
+    expect(ticket.current?.poker?.view?.read_at).toBe(2);
+    __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
+    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+    await flush();
+    expect(mocks.subscribe).toHaveBeenCalledTimes(2);
+    expect(follows.mock.calls).toEqual([['sub-1', true], ['sub-2', true]]);
+    ticket.release();
+  });
+
+  it('holds a connection\'s answer whether its site has poker until a reconnect, and a failure only until the next ask', async () => {
+    const support = setBindingMock('TrackerPokerSupport', async () => ({ available: false, failure: { kind: 'transient', message: 'Jira did not answer', at: 1 } }));
+    expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toBe('unasked');
+    askTrackerPokerSupport(HOME_BACKEND, 'c1');
+    askTrackerPokerSupport(HOME_BACKEND, 'c1');
+    expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toEqual({ asking: true });
+    await flush();
+    expect(support).toHaveBeenCalledTimes(1);
+    expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toEqual({ failed: 'Jira did not answer' });
+
+    support.mockResolvedValue({ available: false });
+    askTrackerPokerSupport(HOME_BACKEND, 'c1');
+    await flush();
+    expect(support).toHaveBeenCalledTimes(2);
+    expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toEqual({ available: false });
+    askTrackerPokerSupport(HOME_BACKEND, 'c1');
+    expect(support).toHaveBeenCalledTimes(2);
+
+    support.mockResolvedValue({ available: true });
+    __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
+    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+    expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toBe('unasked');
+    askTrackerPokerSupport(HOME_BACKEND, 'c1');
+    await flush();
+    expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toEqual({ available: true });
+  });
+
+  it('lets an ask from before a reconnect settle nothing', async () => {
+    const answers: Array<(available: boolean) => void> = [];
+    setBindingMock('TrackerPokerSupport', () => new Promise((resolve) => { answers.push((available) => resolve({ available })); }));
+    askTrackerPokerSupport(HOME_BACKEND, 'c1');
+    __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
+    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+    askTrackerPokerSupport(HOME_BACKEND, 'c1');
+    answers[0]!(false);
+    await flush();
+    expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toEqual({ asking: true });
+    answers[1]!(true);
+    await flush();
+    expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toEqual({ available: true });
+  });
+});
+
 describe('the earlier comment pages held', () => {
   // A Jira-like ticket of `total` comments, comment n created at n: the
   // first page is the newest 50, and token T reads the 50 before T.
@@ -433,5 +626,152 @@ describe('a ticket write', () => {
     await flush();
     expect(mocks.refresh).toHaveBeenCalledWith('sub-1');
     ticket.release();
+  });
+});
+
+describe('attaching files', () => {
+  let realFetch: typeof globalThis.fetch;
+  beforeEach(() => {
+    realFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  /** Each PUT waits for the test to answer it, in order. */
+  function heldPuts(): { names: string[]; answer: (response: Response) => void; fail: (err: unknown) => void } {
+    const waiting: Array<{ resolve: (r: Response) => void; reject: (e: unknown) => void }> = [];
+    const names: string[] = [];
+    globalThis.fetch = ((input: RequestInfo | URL) => {
+      names.push(new URL(String(input), 'http://page.test/').searchParams.get('ticket') ?? '');
+      return new Promise<Response>((resolve, reject) => waiting.push({ resolve, reject }));
+    }) as typeof globalThis.fetch;
+    return { names, answer: (r) => waiting.shift()!.resolve(r), fail: (e) => waiting.shift()!.reject(e) };
+  }
+
+  const file = (name: string, bytes: number) => new File([new Uint8Array(bytes)], name);
+  const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+
+  it('sends one file at a time in the order given, saying which and its place, and takes files given meanwhile', async () => {
+    install();
+    const mint = setBindingMock('MintTrackerAttachmentUploadTicket', async (_c: string, _i: string, name: string) => `/attachments/tracker/upload?ticket=${name}`);
+    const puts = heldPuts();
+    const ticket = attachTrackerTicket(REF, true);
+    await flush();
+    const ctx = ctxOf(ticket);
+    attachTicketFiles(ctx, [file('report.pdf', 4_100_000), file('notes.txt', 10)]);
+    await flush();
+    expect(ticketUploads(ticket.key)).toEqual({ name: 'report.pdf', size: 4_100_000, index: 1, total: 2 });
+    expect(puts.names).toEqual(['report.pdf']);
+    attachTicketFiles(ctx, [file('shot.png', 20)]);
+    expect(ticketUploads(ticket.key)).toEqual({ name: 'report.pdf', size: 4_100_000, index: 1, total: 3 });
+    puts.answer(json(applied()));
+    await flush();
+    expect(ticketUploads(ticket.key)).toEqual({ name: 'notes.txt', size: 10, index: 2, total: 3 });
+    expect(puts.names).toEqual(['report.pdf', 'notes.txt']);
+    puts.answer(json(applied()));
+    await flush();
+    puts.answer(json(applied()));
+    await flush();
+    expect(mint.mock.calls.map((c) => c[2])).toEqual(['report.pdf', 'notes.txt', 'shot.png']);
+    expect(ticketUploads(ticket.key)).toBeNull();
+    // Each was attached plainly: nothing is left to say.
+    expect(ticketAttachOutcomes(ticket.key)).toEqual([]);
+    ticket.release();
+  });
+
+  it('says what became of each file that was not attached plainly, and still sends the next', async () => {
+    install();
+    setBindingMock('MintTrackerAttachmentUploadTicket', async (_c: string, _i: string, name: string) => {
+      if (name === 'huge.zip') throw new TransportError('tracker_attachment_too_large', 'the tracker stores files up to 2.0 GB, and this one is 3.1 GB; share it another way and link to it');
+      return `/attachments/tracker/upload?ticket=${name}`;
+    });
+    const puts = heldPuts();
+    const ticket = attachTrackerTicket(REF, true);
+    await flush();
+    attachTicketFiles(ctxOf(ticket), [file('huge.zip', 1), file('changed.pdf', 1), file('cut.pdf', 1), file('later.pdf', 1)]);
+    await flush();
+    // The refused mint sent no byte; the next file went.
+    expect(puts.names).toEqual(['changed.pdf']);
+    puts.answer(json({ code: 'tracker_upload_size_changed', message: 'the file is now 5 bytes, not the 1 it was when its upload was prepared; select the file again and attach it' }, 400));
+    await flush();
+    puts.fail(new TypeError('Failed to fetch'));
+    await flush();
+    puts.answer(json({ parts: [{ step: 'attach', state: 'refused', refusal: { reason: 'tracker', message: 'Jira refused the file' } }] }));
+    await flush();
+    const outcomes = ticketAttachOutcomes(ticket.key).map((o) => ({ name: o.name, kind: o.outcome.kind, said: 'message' in o.outcome ? o.outcome.message : 'error' in o.outcome ? (o.outcome.error as Error).message : o.outcome.kind === 'refused' ? o.outcome.refusal.message : '' }));
+    expect(outcomes).toEqual([
+      { name: 'huge.zip', kind: 'failed', said: 'Not sent: the tracker stores files up to 2.0 GB, and this one is 3.1 GB; share it another way and link to it' },
+      { name: 'changed.pdf', kind: 'not_sent', said: 'the file is now 5 bytes, not the 1 it was when its upload was prepared; select the file again and attach it' },
+      { name: 'cut.pdf', kind: 'unknown', said: 'The file may or may not be attached; look at the ticket\'s attachments before attaching it again.' },
+      { name: 'later.pdf', kind: 'refused', said: 'Jira refused the file' },
+    ]);
+    ticket.release();
+  });
+});
+
+describe('links and poker writes', () => {
+  it('links the ticket on the side its phrase reads from, and removes a link by its other side', async () => {
+    install();
+    const link = setBindingMock('LinkTrackerIssues', async () => applied());
+    const unlink = setBindingMock('UnlinkTrackerIssues', async () => applied());
+    const ticket = attachTrackerTicket(REF, true);
+    await flush();
+    const ctx = ctxOf(ticket);
+    await linkTicket(ctx, { type: '10000', phrase: 'is blocked by', outward: false }, '10102');
+    await unlinkTicket(ctx, { id: '40001', type: '10000', relation: 'blocks', issue: { id: '10106', key: 'WEB-6', title: 'x', status: { id: 's', name: 'To Do' } } } as never);
+    expect(link.mock.calls).toEqual([['c1', { type: '10000', outward: '10102', inward: '10101' }]]);
+    expect(unlink.mock.calls).toEqual([['c1', { issue: '10101', link: '40001', other: '10106' }]]);
+    ticket.release();
+  });
+
+  it('never lets a vote, a reveal and a clear overlap', async () => {
+    install();
+    const votes = held<WriteView>('VoteTrackerPoker');
+    const reveal = setBindingMock('RevealTrackerPoker', async () => applied());
+    const clear = setBindingMock('ClearTrackerPokerVotes', async () => applied());
+    const ticket = attachTrackerTicket(REF, true);
+    await flush();
+    const ctx = ctxOf(ticket);
+    const voted = voteTicketPoker(ctx, 5);
+    expect(await revealTicketPoker(ctx)).toBeNull();
+    expect(await clearTicketPokerVotes(ctx)).toBeNull();
+    expect(votes.calls).toEqual([['c1', { issue: '10101', vote: 5 }]]);
+    votes.answer(applied());
+    expect(await voted).toEqual({ kind: 'applied', note: null });
+    await revealTicketPoker(ctx);
+    expect(reveal).toHaveBeenCalledWith('c1', '10101');
+    expect(clear).not.toHaveBeenCalled();
+    ticket.release();
+  });
+
+  it('reads a connection\'s link types once, and again after its computer connects again', async () => {
+    const types = setBindingMock('TrackerLinkTypes', async () => [{ id: '10000', name: 'Blocks', outward: 'blocks', inward: 'is blocked by' }]);
+    await Promise.all([loadTicketLinkTypes(HOME_BACKEND, 'c1'), loadTicketLinkTypes(HOME_BACKEND, 'c1')]);
+    await loadTicketLinkTypes(HOME_BACKEND, 'c1');
+    expect(types).toHaveBeenCalledTimes(1);
+    expect(ticketLinkTypes(HOME_BACKEND, 'c1')?.types?.map((t) => t.name)).toEqual(['Blocks']);
+    __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
+    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+    expect(ticketLinkTypes(HOME_BACKEND, 'c1')).toBeNull();
+    await loadTicketLinkTypes(HOME_BACKEND, 'c1');
+    expect(types).toHaveBeenCalledTimes(2);
+  });
+
+  it('lets only the newest read of a connection\'s link types settle them', async () => {
+    const answers: Array<(names: string[]) => void> = [];
+    setBindingMock('TrackerLinkTypes', () => new Promise((resolve) => {
+      answers.push((names) => resolve(names.map((name, i) => ({ id: String(i), name, outward: name, inward: name }))));
+    }));
+    const before = loadTicketLinkTypes(HOME_BACKEND, 'c1');
+    __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
+    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+    const after = loadTicketLinkTypes(HOME_BACKEND, 'c1');
+    answers[0]!(['Old']);
+    await before;
+    expect(ticketLinkTypes(HOME_BACKEND, 'c1')).toEqual({ types: null, loading: true, error: null });
+    answers[1]!(['New']);
+    await after;
+    expect(ticketLinkTypes(HOME_BACKEND, 'c1')?.types?.map((t) => t.name)).toEqual(['New']);
   });
 });
