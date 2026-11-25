@@ -21,7 +21,7 @@ func TestMirrorBoardLifetimeFencesItsReads(t *testing.T) {
 		t.Fatalf("captured lifetime = %+v, %v, %v; want %d", st, ok, err, old)
 	}
 	column := MirrorSection{Kind: MirrorSectionColumn}
-	first, err := s.ListMirrorSection(root, "12", column, MirrorRowKey{})
+	first, err := s.ListMirrorSection(root, "12", MirrorRegroup{}, column, MirrorRowKey{})
 	if err != nil || first.Next.Lifetime != old {
 		t.Fatalf("first page = %+v, %v", first.Next, err)
 	}
@@ -50,7 +50,7 @@ func TestMirrorBoardLifetimeFencesItsReads(t *testing.T) {
 				t.Errorf("%s %s: %v", stage, name, err)
 			}
 		}
-		if _, err := s.ListMirrorSection(root, "12", column, after); !errors.Is(err, ErrTrackerCacheStale) {
+		if _, err := s.ListMirrorSection(root, "12", MirrorRegroup{}, column, after); !errors.Is(err, ErrTrackerCacheStale) {
 			t.Errorf("%s continuation: %v", stage, err)
 		}
 	}

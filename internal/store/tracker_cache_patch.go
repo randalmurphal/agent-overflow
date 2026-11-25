@@ -14,8 +14,9 @@ import (
 
 // mirrorPatchRowsSQL reads the rows of board ?2 of root ?1 among the
 // issues of the JSON list ?3, each probed by key, with ?5 a section's
-// sprint or column and ?6 the board's estimate reset, projecting what a
-// section page shows of a row; a section's rule follows. The rows come in
+// sprint or column, ?6 the board's estimate reset and ?7 the regrouping
+// (MirrorSection.statement), projecting what a section page shows of a
+// row; a section's rule follows. The rows come in
 // list order; the caller sorts them, at most mirrorMaxLookup, rather than
 // sort in a temporary b-tree.
 var mirrorPatchRowsSQL = `SELECT ` + mirrorRowColumnsSQL + `
@@ -26,12 +27,16 @@ var mirrorPatchRowsSQL = `SELECT ` + mirrorRowColumnsSQL + `
 
 // mirrorPatchSQL reads, for each section kind, the named rows that are
 // members of a section, by the rule its pages read (mirrorSectionSQL),
-// each row probed.
-var mirrorPatchSQL = map[MirrorSectionKind]string{
-	MirrorSectionSprint:  mirrorPatchRowsSQL + mirrorInSprintProbeSQL,
-	MirrorSectionBacklog: mirrorPatchRowsSQL + mirrorBacklog(mirrorInOpenSprintProbeSQL),
-	MirrorSectionColumn:  mirrorPatchRowsSQL + mirrorColumnRuleSQL,
-}
+// each row probed; mirrorRegroupedBacklogPatchSQL reads the backlog's
+// under a regrouping.
+var (
+	mirrorPatchSQL = map[MirrorSectionKind]string{
+		MirrorSectionSprint:  mirrorPatchRowsSQL + mirrorInSprintProbeSQL,
+		MirrorSectionBacklog: mirrorPatchRowsSQL + mirrorBacklog(mirrorInOpenSprintProbeSQL, mirrorNotDoneSQL),
+		MirrorSectionColumn:  mirrorPatchRowsSQL + mirrorColumnRuleSQL,
+	}
+	mirrorRegroupedBacklogPatchSQL = mirrorPatchRowsSQL + mirrorBacklog(mirrorInOpenSprintProbeSQL, mirrorRegroupedNotDone("?7"))
+)
 
 // MirrorTotalsAt names the section totals a caller holds: those of a
 // board's Lifetime at its totals Revision (MirrorSectionCounts). The zero
@@ -60,7 +65,7 @@ type MirrorBoardPatch struct {
 // held names the board's lifetime and totals revision, the columns'
 // statuses and the two count statements of CountMirrorSections. ok is
 // false for a board the mirror does not show.
-func (s *Store) ReadMirrorBoardPatch(rootID int64, boardID string, sections []MirrorSection, issueIDs []string,
+func (s *Store) ReadMirrorBoardPatch(rootID int64, boardID string, regroup MirrorRegroup, sections []MirrorSection, issueIDs []string,
 	held MirrorTotalsAt) (patch MirrorBoardPatch, ok bool, err error) {
 	switch {
 	case len(sections) > MirrorMaxViewSections:
@@ -91,7 +96,7 @@ func (s *Store) ReadMirrorBoardPatch(rootID int64, boardID string, sections []Mi
 			if err != nil {
 				return MirrorBoardPatch{}, err
 			}
-			counts, err := countMirrorSectionsTx(tx, rootID, boardID, board, columns)
+			counts, err := countMirrorSectionsTx(tx, rootID, boardID, board, regroup, columns)
 			if err != nil {
 				return MirrorBoardPatch{}, err
 			}
@@ -102,7 +107,7 @@ func (s *Store) ReadMirrorBoardPatch(rootID int64, boardID string, sections []Mi
 			if len(issueIDs) == 0 {
 				continue
 			}
-			if p.Sections[i], err = readMirrorPatchSectionTx(tx, rootID, boardID, board, section, list); err != nil {
+			if p.Sections[i], err = readMirrorPatchSectionTx(tx, rootID, boardID, board, regroup, section, list); err != nil {
 				return MirrorBoardPatch{}, fmt.Errorf("section %d: %w", i, err)
 			}
 		}
@@ -117,10 +122,12 @@ func (s *Store) ReadMirrorBoardPatch(rootID int64, boardID string, sections []Mi
 
 // readMirrorPatchSectionTx reads the rows of the JSON list of issues that
 // are members of a valid section of a shown board, in board order.
-func readMirrorPatchSectionTx(tx sqlQueryer, rootID int64, boardID string, board mirrorShownBoard, section MirrorSection, list string) ([]MirrorRow, error) {
-	args := []any{rootID, boardID, list, nil, section.ruleArg(), board.estimateResetAt}
+func readMirrorPatchSectionTx(tx sqlQueryer, rootID int64, boardID string, board mirrorShownBoard, regroup MirrorRegroup, section MirrorSection,
+	list string) ([]MirrorRow, error) {
+	query, args := section.statement(regroup, mirrorPatchSQL, mirrorRegroupedBacklogPatchSQL,
+		rootID, boardID, list, nil, section.ruleArg(), board.estimateResetAt)
 	var rows []MirrorRow
-	err := scanMirrorRows(tx, mirrorPatchSQL[section.Kind], args, func(r rowScanner) error {
+	err := scanMirrorRows(tx, query, args, func(r rowScanner) error {
 		row, err := scanMirrorRow(r)
 		rows = append(rows, row)
 		return err

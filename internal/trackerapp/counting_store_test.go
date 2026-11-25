@@ -146,19 +146,19 @@ func (c *countingStore) ListMirrorOffBoardLinkedIssues(root int64, after string,
 	return c.Store.ListMirrorOffBoardLinkedIssues(root, after, polled)
 }
 
-func (c *countingStore) ListMirrorSection(root int64, board string, section store.MirrorSection, after store.MirrorRowKey) (store.MirrorSectionPage, error) {
+func (c *countingStore) ListMirrorSection(root int64, board string, regroup store.MirrorRegroup, section store.MirrorSection, after store.MirrorRowKey) (store.MirrorSectionPage, error) {
 	c.count("ListMirrorSection")
-	return c.Store.ListMirrorSection(root, board, section, after)
+	return c.Store.ListMirrorSection(root, board, regroup, section, after)
 }
 
-func (c *countingStore) ReadMirrorBoardView(root int64, board string, sections func(store.MirrorStructure) []store.MirrorSection) (store.MirrorBoardView, bool, error) {
+func (c *countingStore) ReadMirrorBoardView(root int64, board string, regroup store.MirrorRegroup, sections func(store.MirrorStructure) []store.MirrorSection) (store.MirrorBoardView, bool, error) {
 	c.count("ReadMirrorBoardView")
-	return c.Store.ReadMirrorBoardView(root, board, sections)
+	return c.Store.ReadMirrorBoardView(root, board, regroup, sections)
 }
 
-func (c *countingStore) ReadMirrorBoardPatch(root int64, board string, sections []store.MirrorSection, issues []string, held store.MirrorTotalsAt) (store.MirrorBoardPatch, bool, error) {
+func (c *countingStore) ReadMirrorBoardPatch(root int64, board string, regroup store.MirrorRegroup, sections []store.MirrorSection, issues []string, held store.MirrorTotalsAt) (store.MirrorBoardPatch, bool, error) {
 	c.count("ReadMirrorBoardPatch")
-	return c.Store.ReadMirrorBoardPatch(root, board, sections, issues, held)
+	return c.Store.ReadMirrorBoardPatch(root, board, regroup, sections, issues, held)
 }
 
 func (c *countingStore) ListMirrorIssueBoards(root int64, issues, parents []string) ([]store.MirrorIssueBoard, error) {
@@ -189,4 +189,19 @@ func (c *countingStore) KeepMirrorTicket(root int64, issue string, session, pump
 func (c *countingStore) DropMirrorTicket(session, pump int64) (bool, error) {
 	c.count("DropMirrorTicket")
 	return c.Store.DropMirrorTicket(session, pump)
+}
+
+func (c *countingStore) GetProject(id string) (store.Project, error) {
+	c.count("GetProject")
+	return c.Store.GetProject(id)
+}
+
+func (c *countingStore) ProjectTrackerBoardListed(projectID, connectionID, boardID string) (string, bool, error) {
+	c.count("ProjectTrackerBoardListed")
+	return c.Store.ProjectTrackerBoardListed(projectID, connectionID, boardID)
+}
+
+func (c *countingStore) ListProjectTrackerBoards(projectID string) ([]store.ProjectTrackerBoard, error) {
+	c.count("ListProjectTrackerBoards")
+	return c.Store.ListProjectTrackerBoards(projectID)
 }

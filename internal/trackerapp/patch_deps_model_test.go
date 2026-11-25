@@ -273,7 +273,7 @@ func TestPatchingFollowsEveryDependency(t *testing.T) {
 			sections := []Section{{Kind: SectionSprint, Sprint: "1"}, {Kind: SectionBacklog},
 				{Kind: SectionColumn}, {Kind: SectionColumn, Column: 1}, {Kind: SectionColumn, Column: 2}}
 			read := func(b tracker.BoardID) heldBoard {
-				return heldFromView(must[BoardView](t)(m.svc.Board(Scope{Connection: m.conn.ID, Board: b}, sections)), sections)
+				return heldFromView(must[BoardView](t)(m.svc.Board(Scope{Connection: m.conn.ID, Board: b}, StatusGroups{}, sections)), sections)
 			}
 			clients := map[tracker.BoardID]heldBoard{}
 			for _, b := range depsBoards {
@@ -291,7 +291,7 @@ func TestPatchingFollowsEveryDependency(t *testing.T) {
 					case e.ReadAgain:
 						clients[scope.Board] = read(scope.Board)
 					case len(ids) > 0:
-						patch := must[BoardPatch](t)(m.svc.BoardPatch(scope, sections, ids, clients[scope.Board].held()))
+						patch := must[BoardPatch](t)(m.svc.BoardPatch(scope, StatusGroups{}, sections, ids, clients[scope.Board].held()))
 						clients[scope.Board] = applyPatch(clients[scope.Board], ids, patch)
 					}
 				}

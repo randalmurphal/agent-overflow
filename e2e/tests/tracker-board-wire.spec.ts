@@ -5,6 +5,10 @@
 // as an event that names it and a patch that shows the new title, and a
 // release ends the subscription. A client whose socket closes has its
 // subscription released with it, so its board is no longer read for it.
+// A project's status groups saved over the wire are told on
+// tracker:setup_updated, read the open board again, and leave a left-out
+// status out of its totals; a patch of sections read before the save is
+// refused as stale.
 //
 // Who receives tracker:board_updated (a session holding tracker:read)
 // is the channel's policy row, proved by event_scope_test.go; the
@@ -13,7 +17,7 @@
 
 import { test, expect } from './fixtures.js';
 import { answered, WireClient } from './offhost-helpers.js';
-import { BOARD_ID, SPRINT_ID, connectFakeJiraBoard, renameJiraIssue } from './tracker-helpers.js';
+import { BOARD_ID, SPRINT_ID, connectFakeJiraBoard, renameJiraIssue, type TrackerConnection } from './tracker-helpers.js';
 
 interface BoardSubscription { id: string; seq: number; loaded: boolean }
 interface BoardEvent {
@@ -25,7 +29,13 @@ interface BoardEvent {
 }
 interface RowView { card: { id: string; key: string; title: string } }
 interface SectionPage { rows: RowView[] }
-interface BoardView { name: string; lifetime: number; totals_revision: number; sections: SectionPage[] }
+interface BoardView {
+  name: string; lifetime: number; totals_revision: number; groups?: string; left_out?: string[]; sections: SectionPage[];
+  sprints: Array<{ id: string; total: { rows: number } }>;
+}
+interface Setup { status_groups: { tracker: string; site: string; statuses: Record<string, string> }[]; ticket_pins: unknown[] }
+interface SetupView { revision: string; setup: Setup; newer?: string[] }
+interface SetupSave { saved: boolean; stored: SetupView }
 interface BoardPatch { sections: SectionPage[] }
 
 const sprint = [{ kind: 'sprint', sprint: SPRINT_ID }];
@@ -74,4 +84,40 @@ test('a client whose socket closes has its board subscription released', async (
     () => harness.rpc('RefreshTrackerSubscription', sub.id).then(() => 'live', (err: Error) => err.message),
     { message: 'the closed socket released its subscription' },
   ).toMatch(/^tracker_subscription_unknown: /);
+});
+
+test("a project's status groups reach its open board over the wire", async ({ harness }) => {
+  const board = await connectFakeJiraBoard(harness, 'tracker-setup-wire');
+  const ofBoard = (e: BoardEvent) => e.scope.connection === board.connectionId && e.scope.board === BOARD_ID;
+  const sub = await harness.rpc<BoardSubscription>('SubscribeTrackerBoard', board.projectId, board.connectionId, BOARD_ID, sprint, true);
+  const first = await harness.waitForEvent<BoardEvent>('tracker:board_updated', (e) => ofBoard(e) && e.read_again === true && e.seq > sub.seq);
+  const before = await harness.rpc<BoardView>('TrackerBoard', sub.id, sprint);
+  expect(before.sprints[0].total.rows).toBe(2);
+  expect(before.groups ?? '').toBe('');
+
+  const connections = await harness.rpc<TrackerConnection[]>('TrackerConnections');
+  const site = connections.find((c) => c.id === board.connectionId)!.site;
+  // WEB-1 is In Progress (10001), which the project leaves out of counts.
+  const save = await harness.rpc<SetupSave>('SetProjectTrackerSetup', board.projectId, '', {
+    status_groups: [{ tracker: 'jira', site, statuses: { '10001': 'left_out' } }], ticket_pins: [],
+  });
+  expect(save.saved).toBe(true);
+  await harness.waitForEvent('tracker:setup_updated');
+  await harness.waitForEvent<BoardEvent>('tracker:board_updated', (e) => ofBoard(e) && e.read_again === true && e.seq > first.seq);
+
+  const after = await harness.rpc<BoardView>('TrackerBoard', sub.id, sprint);
+  expect(after.sections[0].rows.map((r) => r.card.key).sort(), 'a left-out card still shows').toEqual(['WEB-1', 'WEB-2']);
+  expect(after.sprints[0].total.rows, 'and counts in no total').toBe(1);
+  expect(after.groups).toBeTruthy();
+  expect(after.left_out, 'the view names what the pane must leave out of what it adds up').toEqual(['10001']);
+  await expect(harness.rpc('TrackerBoardPatch', sub.id, sprint, ['10101'], {
+    lifetime: before.lifetime, revision: before.totals_revision, groups: before.groups ?? '',
+  })).rejects.toThrow(/^tracker_page_stale: /);
+  const stored = await harness.rpc<SetupView>('ProjectTrackerSetup', board.projectId);
+  expect(stored.revision).toBe(save.stored.revision);
+  // The setup a read answers is the value a save takes back.
+  const again = await harness.rpc<SetupSave>('SetProjectTrackerSetup', board.projectId, stored.revision, stored.setup);
+  expect(again.saved, 'the setup read is saved back as it is').toBe(true);
+  expect(again.stored.revision).toBe(stored.revision);
+  await harness.rpc('ReleaseTrackerSubscription', sub.id);
 });

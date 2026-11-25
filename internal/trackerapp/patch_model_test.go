@@ -151,7 +151,7 @@ func pageOn(t *testing.T, s *Service, scope Scope, h heldBoard) heldBoard {
 	for i := range h.sections {
 		sec := &h.sections[i]
 		for sec.next != nil {
-			page, err := s.SectionRows(scope, sec.section, sec.next)
+			page, err := s.SectionRows(scope, StatusGroups{}, sec.section, sec.next)
 			if err != nil {
 				t.Fatalf("page on %+v from %+v: %v", sec.section, sec.next, err)
 			}
@@ -427,9 +427,9 @@ func runPatchModel(t *testing.T, seed uint64, rounds int, rec *patchCases) {
 		{Kind: SectionColumn}, {Kind: SectionColumn, Column: 1}, {Kind: SectionColumn, Column: 2}}
 	scope := m.scope()
 	read := func() heldBoard {
-		return heldFromView(must[BoardView](t)(m.svc.Board(scope, sections)), sections)
+		return heldFromView(must[BoardView](t)(m.svc.Board(scope, StatusGroups{}, sections)), sections)
 	}
-	first := must[BoardView](t)(m.svc.Board(scope, sections))
+	first := must[BoardView](t)(m.svc.Board(scope, StatusGroups{}, sections))
 	client := heldFromView(first, sections)
 	if rec != nil {
 		rec.Sections, rec.View = sections, first
@@ -446,7 +446,7 @@ func runPatchModel(t *testing.T, seed uint64, rounds int, rec *patchCases) {
 			if len(ids) == 0 {
 				continue
 			}
-			patch := must[BoardPatch](t)(m.svc.BoardPatch(scope, sections, ids, client.held()))
+			patch := must[BoardPatch](t)(m.svc.BoardPatch(scope, StatusGroups{}, sections, ids, client.held()))
 			if patch.Totals != nil {
 				withTotals++
 			} else {
@@ -461,7 +461,7 @@ func runPatchModel(t *testing.T, seed uint64, rounds int, rec *patchCases) {
 			// Load one more page of a section, at the carried revision.
 			i := mt.rng.IntN(len(client.sections))
 			if sec := &client.sections[i]; sec.next != nil {
-				page := must[SectionPage](t)(m.svc.SectionRows(scope, sec.section, sec.next))
+				page := must[SectionPage](t)(m.svc.SectionRows(scope, StatusGroups{}, sec.section, sec.next))
 				sec.rows, sec.next = append(sec.rows, page.Rows...), page.Next
 				if rec != nil {
 					rec.Steps = append(rec.Steps, patchStep{Page: &i, Rows: &page, Expect: digest(heldCanon(client))})

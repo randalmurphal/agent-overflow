@@ -78,6 +78,9 @@ packages. Test-specific setup stays beside the test that owns it.
 - `logcapture.go` captures logs for assertions; `slowstep.go` parses and
   format-checks `logging.LogSlowStep` lines and lowers their threshold for
   one test, shared because four packages emit the line.
+- `syncdir.go` makes a directory whose sync fails while its files can still
+  be written, renamed and removed (`UnsyncableDir`), and skips where it
+  cannot: on Windows, and for a user that opens a directory it may not read.
 
 Keep behavior and assertions in the package under test. Helpers only stage
 fixtures and return their handles or paths. Do not add `*App` construction here;

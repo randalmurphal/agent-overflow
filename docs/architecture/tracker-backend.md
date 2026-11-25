@@ -319,6 +319,77 @@ to the computer and are rows in `tracker_connections`.
   after a turn off, or off and on, it ends, since its provider and its
   outcome are the earlier connection's.
 
+## Project setup
+
+A project's tracker setup is one file, `tracker.json` in the project's
+app directory (`project.ConfigDir`), which `trackerapp` reads and
+replaces whole (the comment at the top of `trackerapp/setup.go` is
+the contract). The file is the only copy: nothing of it is in SQLite, and
+no step runs at root creation, restore or start.
+
+- **Sections** are the keys of one JSON object, each with its own
+  `version`: `status_groups` (by tracker site, the group a status counts
+  in: one of the five tracker groups, or `left_out`) and `ticket_pins` (by
+  tracker site, the fields and the sections a ticket shows first; a
+  Linear site pins no fields). A section this build does not know, or one
+  at a newer version, is kept byte for byte by a replace and named in the
+  read's `newer`; a replace that sets it is refused.
+- **A site** is named as its connection names it, by the rules a
+  connection's site is read by (`jiraSite`, `linearSite`): a read and a
+  save store `https://example.atlassian.net` for `Example.atlassian.net/`
+  and `example` for `https://linear.app/example/`, so the entry is found
+  by the board handles of every connection to the site. A site that
+  neither rule accepts, or one an entry names twice in any spelling, is
+  refused, and a file holding one cannot be read. A file written by hand
+  in another spelling keeps the revision of its bytes; the next save
+  writes the site as its connection names it.
+- **A replace's setup argument** is read whole or refused (`Setup`'s
+  `UnmarshalJSON`): null, anything but an object, a section this build
+  does not read and a field it does not know are refused as an argument
+  the computer cannot read (`bad_params`, before the method runs), as the
+  file's reader refuses a field of a section it reads; `{}` is the empty
+  setup.
+- **A read** answers `{revision, setup, newer}` (`SetupView`, also a
+  replace's `stored`): `setup` is the value a replace takes, so a screen
+  saves the setup it read, changed, with the revision beside it; the
+  revision and the newer sections are not part of it, and a replace that
+  sends them is refused as an argument the computer cannot read.
+- **A replace** names the revision it was built from, the SHA-256 of the
+  file's bytes (empty for no file). When the file moved since, nothing is
+  written and the answer carries the setup stored now. An empty setup
+  removes the file. The write is atomic (`atomicfile`, 0600), and both a
+  write and a removal sync the directory. A write or a removal that fails
+  fails as `tracker_setup_unsure`, which says the change may or may not be
+  stored, names the file and why, and says to read the setup again before
+  changing it again: a failed directory sync follows the rename
+  or the unlink, and `atomicfile` does not tell it from an earlier step's
+  failure.
+- **A file that cannot be read** or does not validate is refused with its
+  path and why, never read as empty and never overwritten. It refuses
+  that project's reads, saves and board subscribes, and no other
+  project's; the next use reads it again.
+- **The service holds a project's setup** from its first use, by the
+  project's slug, under `setupMu`: the file as the service last saw it. A
+  save holds what it saw: the file it read, refused or not, or the setup
+  it wrote. A save that cannot read the file, or whose write may or may
+  not have happened, holds nothing, so the next use reads the file; the
+  project's boards read again and the change is told, as for any change
+  of what is held (`setupMoved`). A file edited by hand while the app
+  runs is read by the next save or the next start.
+- **Status groups apply to a board read** as a bound argument
+  (`store.MirrorRegroup`), resolved from the board handle's project and
+  its connection's site, so two projects that list one board each read it
+  with their own groups. A save that changes a site's groups sends
+  `ReadAgain` to the boards the project has open on that site; the event
+  is the board's, so every subscriber of such a board reads again. Each set of groups has a
+  version, which the board view, its section cursors and the totals a
+  patch names carry: a page or a patch read with another version is
+  refused as `ErrStalePage`, so no section mixes two versions. The board
+  view also names the statuses those groups leave out (`left_out`): a
+  total the client adds up from rows it holds, such as a sprint board's
+  columns (`screenColumns` in
+  `frontend/src/lib/stores/trackerBoardModel.ts`), skips the rows in them.
+
 ## Tables
 
 The tracker tables are created by migration v162, frozen, and v165,
@@ -663,8 +734,16 @@ estimate or assignee history.
 
 A board's backlog is its rows in no future or active sprint of that board
 whose status is not in the done or canceled group, by the group the mirror
-holds. A status the mirror does not know yet counts as not done. A board
-that plans no sprints shows every row that is not done.
+holds or the one the reading project's status groups give it. A status the
+mirror does not know yet counts as not done. A board that plans no sprints
+shows every row that is not done. A status the project leaves out of
+counts (`left_out`) is in no backlog and adds to no total; its rows still
+show in their columns and sprints. The rule is one set of SQL fragments
+in `tracker_cache_sections.go`: `mirrorNotDoneSQL` with no regrouping,
+which probes a row's status by its key, and `mirrorRegroupedNotDone` and
+`mirrorLeftOut` under one, which list the statuses that count as done
+once a statement, from the root's catalog and the bound groups
+(`MirrorSection.statement` picks the form).
 
 ## Sync
 
@@ -1091,6 +1170,22 @@ named rows.
 | Linear round, 100 tickets, 10 changed | 22 | 3.2 ms | 3.1 ms |
 | `New` | 0 | 11.2 ms | 10.6 ms |
 
+A project's status groups ([Project setup](#project-setup)) add one
+list of the done statuses to the backlog, count and patch statements. No
+setup file, and a file with no entry for the board's site, run the plain
+statements, which probe a row's status by its key: the backlog
+statement of a one-issue patch runs 99 VM steps at 5 and at 1,000
+catalog statuses, and its regrouped form 168 and 12,114, counted by the
+sqlite3 shell (`TestABoardWithNoRegroupingReadsNoCatalog` pins that the
+plain reads do not grow with the catalog). At 20,000
+issues, the fastest of three runs alternated with the branch's base,
+thirty regrouped statuses the board does not use took 46.4 ms for the
+board view and 39.5 ms for the counts, against 42.1 and 37.8 on the
+base. A regrouping that counts a fifth of
+the board's rows as done and leaves another fifth out of counts took
+56.5 ms, 49.3 ms, and 48.1 ms for a patch whose totals moved: the left-out
+rows' IDs reach the sprint totals as one bound list.
+
 A reconcile whose listing leaves out rows removes none itself: it reads
 them by ID, 100 a rows read and 1,000 a tick, and that read's write
 removes the rows the board no longer holds; its cost at these sizes has
@@ -1166,14 +1261,17 @@ added with the agent tools.
 
 The connection methods (`internal/app/app_tracker.go`), the board
 methods (`app_tracker_boards.go`), the ticket and form-read methods
-(`app_tracker_ticket.go`), the writes (`app_tracker_writes.go`) and the
-planning poker methods (`app_tracker_poker.go`) are
-bound: each takes a leading context and carries a scope, `tracker:read`
-at the observe tier or `tracker:operate` at the execute tier, and a
-route. Their events are `tracker:connections_updated`, sent when a
-connection or its problem changed, `tracker:board_updated`
-(`trackerapp.BoardEvent`) and `tracker:issue_updated`
-(`trackerapp.IssueEvent`), all at `tracker:read`. `EditSprint`,
+(`app_tracker_ticket.go`), the writes (`app_tracker_writes.go`), the
+planning poker methods (`app_tracker_poker.go`) and the project setup
+methods (`app_tracker_setup.go`) are bound: each takes a leading context
+and carries a scope, `tracker:read` at the observe tier or
+`tracker:operate` at the execute tier, and a route. Their events are
+`tracker:connections_updated`, sent when a connection or its problem
+changed, `tracker:board_updated` (`trackerapp.BoardEvent`),
+`tracker:issue_updated` (`trackerapp.IssueEvent`) and
+`tracker:setup_updated`, a latest-only nudge with no payload sent when a
+project's stored setup changed, after which a client reads again the
+setups it holds, all at `tracker:read`. `EditSprint`,
 `EditWorklog`, `DeleteWorklog`, `Worklogs` and `RefreshWorklogs` are
 `trackerapp.Service` methods that no bound method wraps yet (see
 [Build order](#build-order)).
@@ -1193,6 +1291,8 @@ selected computer.
 | `ProjectTrackerBoards(projectID)` | `ProjectBoards` | read | project |
 | `TrackerBoardChoices()` | `BoardChoices` | read | all |
 | `SetProjectTrackerBoards(projectID, held, boards)` | `SetProjectBoards` | operate | project |
+| `ProjectTrackerSetup(projectID)` | `ProjectSetup` | read | project |
+| `SetProjectTrackerSetup(projectID, revision, setup)` | `SetProjectSetup` | operate | project |
 | `SubscribeTrackerBoard(projectID, connectionID, boardID, sections, visible)` | `SubscribeBoard` | read | project, caller-bound |
 | `TrackerBoard(subscriptionID, sections)` | `Board` | read | home |
 | `TrackerSectionRows(subscriptionID, section, after)` | `SectionRows` | read | home |
@@ -1344,12 +1444,18 @@ selected computer.
   `tracker_boards_changed` (a board list built from one that is no
   longer stored: `held`, the list the save was built from, is compared
   with the stored one, in order with which board opens first, in the
-  store's transaction), `tracker_attachment_unknown`,
+  store's transaction), `tracker_setup_unreadable` (with the file's
+  path and why), `tracker_setup_newer`, `tracker_setup_refused` (with the
+  reason), `tracker_setup_unsure` (a write or removal of the setup file
+  that may or may not have happened, with the file and why),
+  `tracker_attachment_unknown`,
   `tracker_write_unclear`, `tracker_unsupported` and
   `tracker_request_invalid` (whose sentence quotes what the request got
   wrong). A tracker call that failed is `tracker_failed_<kind>` with
   `trackerapp`'s sentence for its kind (`CallFailure`). The byte routes
-  answer the same code and sentence as JSON with a 400.
+  answer the same code and sentence as JSON with a 400. A setup saved
+  over a revision that moved is not an error: `SetupSave` answers
+  `saved: false` with the sentence and the setup stored now.
 
 A board answer is bounded: the subscribe returns the board's structure,
 its sprints and the cards of the sections on screen, and a section's
@@ -1365,7 +1471,8 @@ to the client to read by page.
   the mirror alone, before any tracker call: a handle, a sequence number,
   the view of the sections or "not loaded", and the poll interval. It is
   refused for a board the project does not list, a connection turned off,
-  removed or Tempo, and past 64 board handles. The handle starts with
+  removed or Tempo, a project whose setup file cannot be read, and past
+  64 board handles. The handle starts with
   `visible` as its vote. A pump made with every handle hidden makes no
   tracker call until a handle shows it or a person refreshes it
   (`pump.Core.AwaitShown`). A ticket pump reads at once: its subscribe
@@ -1581,7 +1688,11 @@ rows that are members of it now, with their names. Membership comes from
 the same rule fragments that `ListMirrorSection` pages by. The totals are
 named by the board's lifetime and totals revision (the board view's
 `totals_revision`, a patch's `totals.revision`), which moves with every
-change that can change a total and not with a title or rank. The client's
+change that can change a total and not with a title or rank. The client
+sends the status groups version its sections were read with
+(`TotalsAt.Groups`); another version is refused as stale, and the
+client reads the board again (`readPatch` in
+`frontend/src/lib/stores/trackerBoard.svelte.ts`). The client's
 rule for applying a patch is the `BoardPatch` comment
 (`trackerapp/patch.go`), and its reference implementation is `applyPatch`
 in `trackerapp/patch_model_test.go`. A randomized test checks it against a
@@ -1742,9 +1853,11 @@ tracker tables and their accessors, `trackerfake`, and `trackerapp` with
 its sync, pumps, reads and writes; the connection, board, ticket, write,
 form-read and planning poker bound methods, the ticket file routes,
 `tracker:board_updated` and `tracker:issue_updated`, the app's calls at
-start, the harness's fake trackers (`HarnessTrackerSeed`), and the Issues
-settings screen (Settings > Issues: Connections and Boards), with the
-`bindings.ts` wrappers of the connection methods, the two picker lists,
+start, the harness's fake trackers (`HarnessTrackerSeed`), the project
+setup file with its status groups and ticket pins, its two bound methods
+and `tracker:setup_updated` ([Project setup](#project-setup)), and the
+Issues settings screen (Settings > Issues: Connections and Boards), with
+the `bindings.ts` wrappers of the connection methods, the two picker lists,
 `ProjectTrackerBoards` and `SetProjectTrackerBoards`, and their stores
 (`stores/trackerConnections.svelte.ts`,
 `stores/trackerProjectBoards.svelte.ts`), and the Issues pane's Board
@@ -1767,17 +1880,14 @@ Not built, owed by the app layer:
 - Sidebar search by a linked ticket's key and title: the frontend's
   `threadMatchesQuery` (`components/sidebar/threadSearch.ts`) adds
   `ticketLink.key` and `ticketLink.title` to what it matches.
-- A status renamed or moved to another group in the tracker reaches a
-  link's copy at the ticket's next card change, not at the catalog write
-  ([Thread links](#thread-links)).
 - A link on a thread with nothing sent does not keep the thread: clearing
   its composer deletes the thread, link included. The slice that first
   lets a person link such a thread decides it.
-- The project's tracker setup: one file in the project's app directory
-  (`project.ConfigDir`), beside its workflow profile, that `trackerapp`
-  reads and replaces whole, holding status-group overrides (a status's
-  group, or left out of counts), pinned fields and sections, card marks,
-  Start work defaults, draft settings and what agents may do. Anything a
-  query needs from it is copied into the mirror, never the other way.
+- The rest of the project's tracker setup, each a section of its file:
+  card marks, Start work defaults, draft settings and what agents may do;
+  and the `bindings.ts` wrappers of the setup methods, which ship with the
+  first screen that reads them. A query that needs part of the setup
+  takes it as a bound argument, as the status groups are; nothing of the
+  file is copied into the mirror.
 - The time-draft posting path (Agent tools).
 - Start work and the agent tools (`internal/trackertools`).
