@@ -8,6 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
 import { flushSync, mount, unmount } from 'svelte';
+import { SvelteMap } from 'svelte/reactivity';
 import '../../../app.css';
 import BoardScreen from './BoardScreen.svelte';
 import type { BoardView, RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
@@ -327,6 +328,144 @@ describe('carrying a Board card', () => {
     expect(reads).toBe(0);
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     await waitFor(() => document.querySelector('[data-testid="issues-card-carried"]') === null, 'the carry cancelled');
+  });
+});
+
+describe('a drop whose move is being looked up', () => {
+  // Two moves reach Done, so a drop there asks which.
+  const INTO_DONE = [{ id: '31', name: 'Done', to: { id: 's3', name: 'Done' } }, { id: '32', name: 'Close', to: { id: 's3', name: 'Done' } }];
+  const REF2 = { ...REF, board: '2' };
+
+  /** The moves reads, each answered by the test in turn. */
+  function heldLookups(): { asked: () => number; answer: (k: number) => void } {
+    const answers: ((moves: unknown[]) => void)[] = [];
+    setBindingMock('TrackerMoves', () => new Promise((resolve) => answers.push(resolve)));
+    return { asked: () => answers.length, answer: (k) => answers[k](INTO_DONE) };
+  }
+
+  /** The Board screen over the board store, showing board 1 or 2 as
+   * `show` says, as the pane does when another board is picked. */
+  async function mountBoards(): Promise<{ host: HTMLElement; show: (ref: typeof REF) => void; remount: () => Promise<HTMLElement> }> {
+    setBindingMock('SubscribeTrackerBoard', async (...args: unknown[]) => ({ id: `sub-${String(args[2])}`, seq: 10, loaded: true, view: board(), poll_every: 10_000 }));
+    setBindingMock('SetTrackerSubscriptionVisible', async () => {});
+    setBindingMock('ReleaseTrackerSubscription', async () => {});
+    const boards = [attachTrackerBoard(REF, true), attachTrackerBoard(REF2, true)];
+    for (const b of boards) releases.push(() => b.release());
+    await waitFor(() => boards.every((b) => b.current?.held != null), 'the boards held');
+    const showing = new SvelteMap([['board', 0]]);
+    const at = () => boards[showing.get('board')!];
+    const mountOne = (): HTMLElement => {
+      const host = document.createElement('div');
+      host.style.cssText = 'position: fixed; top: 0; left: 0; width: 1200px; height: 700px; display: flex; flex-direction: column;';
+      document.body.appendChild(host);
+      const app = mount(BoardScreen, {
+        target: host,
+        props: {
+          get boardKey() { return at().key; }, get boardRef() { return showing.get('board') === 0 ? REF : REF2; }, get held() { return at().current!.held!; },
+          paging: new Set<string>(), sectionErrors: new Map(), filter: { mine: null, words: [] }, hidden: new Set<CardField>() as ReadonlySet<CardField>,
+          compact: false, shown: true, openIssue: null, typed: true, onOpenCard: () => {}, onMoveWithFields: () => {},
+        },
+      });
+      mounted.push({ app, host });
+      return host;
+    };
+    const host = mountOne();
+    await waitFor(() => cardEl(host, '5003') !== null, 'the In Progress cards');
+    return {
+      host,
+      show: (ref) => {
+        showing.set('board', ref === REF ? 0 : 1);
+        flushSync();
+      },
+      // The screen left (Time, another pane) and shown again.
+      remount: async () => {
+        const { app, host: old } = mounted.pop()!;
+        unmount(app);
+        old.remove();
+        const host = mountOne();
+        await waitFor(() => cardEl(host, '5003') !== null, 'the In Progress cards again');
+        return host;
+      },
+    };
+  }
+
+  async function dropOn(host: HTMLElement, id: string, to: string): Promise<void> {
+    const start = cardEl(host, id).getBoundingClientRect();
+    pointer('pointerdown', cardEl(host, id).querySelector('[data-testid="issues-card-title"]')!, start.left + 20, start.top + 20);
+    pointer('pointermove', window, start.left + 40, start.top + 30);
+    await waitFor(() => cardEl(host, id).hasAttribute('data-carried'), `${id} carried`);
+    const r = column(host, to).querySelector('[data-testid="issues-column-cards"]')!.getBoundingClientRect();
+    pointer('pointermove', window, r.left + r.width / 2, r.top + 100);
+    await frames(2);
+    pointer('pointerup', window, r.left + r.width / 2, r.top + 100);
+  }
+
+  /** Whether a press and a pull pick the card up: a card held by a drop
+   * stays where it is. */
+  async function picksUp(host: HTMLElement, id: string): Promise<boolean> {
+    await waitFor(() => document.querySelector('[data-testid="issues-card-carried"]') === null, 'no copy on its way');
+    const start = cardEl(host, id).getBoundingClientRect();
+    pointer('pointerdown', cardEl(host, id).querySelector('[data-testid="issues-card-title"]')!, start.left + 20, start.top + 20);
+    pointer('pointermove', window, start.left + 40, start.top + 30);
+    await frames(4);
+    const carried = cardEl(host, id).hasAttribute('data-carried');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    pointer('pointerup', window, start.left + 40, start.top + 30);
+    await waitFor(() => !cardEl(host, id).hasAttribute('data-carried'), `${id} put back`);
+    return carried;
+  }
+
+  const choice = (key: string) => document.querySelector(`[role="menu"][aria-label="Move ${key} by"]`);
+  const dismiss = () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+  it('lets both cards move again when a second drop asks which move while the first does', async () => {
+    const lookups = heldLookups();
+    const move = setBindingMock('MoveTrackerIssue', async () => ({ parts: [{ step: 'move', state: 'applied' }] }));
+    const { host } = await mountBoards();
+    await dropOn(host, '5003', 'Done');
+    await dropOn(host, '5002', 'Done');
+    await waitFor(() => lookups.asked() === 2, 'both lookups out');
+    lookups.answer(0);
+    await waitFor(() => choice('WEB-5003') !== null, "the first card's choice");
+    lookups.answer(1);
+    await waitFor(() => choice('WEB-5002') !== null, "the second card's choice");
+    // One choice shows: the second, which took the first's place.
+    expect(choice('WEB-5003')).toBeNull();
+    dismiss();
+    await waitFor(() => choice('WEB-5002') === null, 'the choice dismissed');
+    expect(await picksUp(host, '5003')).toBe(true);
+    expect(await picksUp(host, '5002')).toBe(true);
+    expect(move).not.toHaveBeenCalled();
+  });
+
+  it('lets the card move again when its lookup answers after the Board screen was left', async () => {
+    const lookups = heldLookups();
+    const move = setBindingMock('MoveTrackerIssue', async () => ({ parts: [{ step: 'move', state: 'applied' }] }));
+    const boards = await mountBoards();
+    await dropOn(boards.host, '5003', 'Done');
+    await waitFor(() => lookups.asked() === 1, 'the lookup out');
+    const host = await boards.remount();
+    lookups.answer(0);
+    await frames(4);
+    expect(choice('WEB-5003')).toBeNull();
+    expect(await picksUp(host, '5003')).toBe(true);
+    expect(move).not.toHaveBeenCalled();
+  });
+
+  it('lets the card move again when its lookup answers after another board was shown', async () => {
+    const lookups = heldLookups();
+    const move = setBindingMock('MoveTrackerIssue', async () => ({ parts: [{ step: 'move', state: 'applied' }] }));
+    const { host, show } = await mountBoards();
+    await dropOn(host, '5003', 'Done');
+    await waitFor(() => lookups.asked() === 1, 'the lookup out');
+    show(REF2);
+    lookups.answer(0);
+    await frames(4);
+    expect(choice('WEB-5003')).toBeNull();
+    show(REF);
+    await waitFor(() => cardEl(host, '5003') !== null, 'board 1 again');
+    expect(await picksUp(host, '5003')).toBe(true);
+    expect(move).not.toHaveBeenCalled();
   });
 });
 

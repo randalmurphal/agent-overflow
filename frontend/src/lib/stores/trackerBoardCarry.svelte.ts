@@ -11,10 +11,10 @@
 //   (`trackerTicketWrites.svelte.ts`, `trackerBoardsSettled`), so the card
 //   does not jump back before its new place arrives;
 // - a card has one drop at a time: from a release over another column
-//   that was accepted (`startDrop`) until its move is sent or the drop
-//   ends with none, and then while its status or rank write is out, no
-//   other move or rank of it is made, from a carry or from its menu
-//   (`cardBusy`);
+//   that was accepted (`dropOwner`, its rules written beside it) until
+//   its move is sent or the drop ends with none, and then while its
+//   status or rank write is out, no other move or rank of it is made,
+//   from a carry or from its menu (`cardBusy`);
 // - the ranks of one column go one at a time: each is pending from its
 //   drop, waits for the rank before it in that column to settle, and then
 //   names the card it was dropped before and the card the board holds
@@ -70,31 +70,79 @@ export function cardBusy(board: string, ctx: TicketWriteContext): boolean {
   return drops.has(waitKey(board, ctx.ref.issue)) || movePending(ticketWrites(ctx.key));
 }
 
-/** A drop of a card under way: its move, which ends it, or its end with
- * none. */
+/** A drop of a card under way, holding the card from its release until
+ * it ends. */
 export interface CardDrop {
+  /** Whether it still holds the card: false once it ended, by any of the
+   * ways `dropOwner` lists. */
+  readonly holds: boolean;
+  /** Sends its move, which ends it; sends nothing once it ended. */
   move(column: number, move: MoveView): Promise<WriteOutcome | null>;
+  /** Ends it with no move. */
   end(): void;
 }
 
-/** Starts the one drop of the card, at a release over another column;
- * null when the card is busy (`cardBusy`). */
-export function startDrop(board: string, ctx: TicketWriteContext): CardDrop | null {
-  if (cardBusy(board, ctx)) return null;
-  const k = waitKey(board, ctx.ref.issue);
-  const mine = Symbol(k);
-  drops.set(k, mine);
-  const end = () => {
-    if (drops.get(k) === mine) drops.delete(k);
-  };
+/** The drops one Board screen accepted on one board. */
+export interface DropOwner {
+  /** Starts the one drop of the card, at a release over another column;
+   * null when the card is busy (`cardBusy`) or the owner closed. */
+  start(ctx: TicketWriteContext): CardDrop | null;
+  /** Ends every drop it started that has not ended, and starts none
+   * after. */
+  close(): void;
+}
+
+/**
+ * The owner of the drops a Board screen accepts on `board`, opened when
+ * the screen shows that board and closed when it goes or shows another.
+ * What a drop's hold keeps true:
+ * - it is taken at an accepted release and held by exactly one owner,
+ *   which holds no drop once it closed;
+ * - it ends exactly once, at the first of: its move is sent (`move`; the
+ *   move's pending write holds the card from then on); the screen decides
+ *   no move (the lookup failed, no move reaches the column, the move
+ *   takes fields and its form opens, its choice was dismissed or replaced
+ *   by another drop's); the owner closes;
+ * - a drop that ended sends nothing, so a lookup that answers after its
+ *   owner closed moves nothing and asks nothing.
+ * The screen ends a drop on each of its decisions; `close` ends the rest,
+ * so no hold outlives the screen that can decide it.
+ */
+export function dropOwner(board: string): DropOwner {
+  const open = new Set<() => void>();
+  let closed = false;
   return {
-    move(column, move) {
-      // Pending from here on, so the drop hands its hold to the write.
-      const sent = sendMove(board, ctx, column, move);
-      end();
-      return sent;
+    start(ctx) {
+      if (closed || cardBusy(board, ctx)) return null;
+      const k = waitKey(board, ctx.ref.issue);
+      const mine = Symbol(k);
+      drops.set(k, mine);
+      let holds = true;
+      const end = () => {
+        if (!holds) return;
+        holds = false;
+        open.delete(end);
+        if (drops.get(k) === mine) drops.delete(k);
+      };
+      open.add(end);
+      return {
+        get holds() {
+          return holds;
+        },
+        move(column, move) {
+          if (!holds) return Promise.resolve(null);
+          // Pending from here on, so the drop hands its hold to the write.
+          const sent = sendMove(board, ctx, column, move);
+          end();
+          return sent;
+        },
+        end,
+      };
     },
-    end,
+    close() {
+      closed = true;
+      for (const end of [...open]) end();
+    },
   };
 }
 

@@ -27,10 +27,11 @@ board methods, events and the patch read in
   were dropped while their move or rank is out, a picture that never
   changes what the board holds, and makes those writes (`moveCard`,
   `rankCard`) through the ticket's write store: one drop per card from
-  its release (`startDrop`, `cardBusy`), and the ranks of a column one at
-  a time, each naming the neighbors the board holds when it is sent. A card writes under its
-  ticket's key (`cardWriteContext`), so the card and the ticket screen
-  show one write.
+  its release, held by the Board screen that accepted it until the
+  screen decides it or goes (`dropOwner`, `cardBusy`), and the ranks of
+  a column one at a time, each naming the neighbors the board holds when
+  it is sent. A card writes under its ticket's key (`cardWriteContext`),
+  so the card and the ticket screen show one write.
 - `components/shared/ActionMenu.svelte` draws the card's menu
   (`BoardCardMenu.svelte`): the actions shown at once, the rest behind
   Show more, and pages such as Move to… (`CardMovePage.svelte`), with the

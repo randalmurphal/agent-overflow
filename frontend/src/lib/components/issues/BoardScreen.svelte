@@ -39,7 +39,7 @@
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
   import { compactColumn, setCompactColumn, type CardField } from '../../stores/issuesPane.svelte';
   import { loadMoreOfSection, setTrackerBoardFiltered, type TrackerBoardRef } from '../../stores/trackerBoard.svelte';
-  import { cardBusy, cardWriteContext, moveCard, rankCard, startDrop, waitingCards, type CardDrop } from '../../stores/trackerBoardCarry.svelte';
+  import { cardBusy, cardWriteContext, dropOwner, moveCard, rankCard, waitingCards, type CardDrop, type DropOwner } from '../../stores/trackerBoardCarry.svelte';
   import { moveTicketToSprint, ticketMoves, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import type { MoveView, RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
@@ -236,11 +236,30 @@
 
   // Several moves reach the column a card was dropped on: which. The drop
   // holds the card until a move is chosen or the choice is dismissed.
-  let dropChoice = $state.raw<{ x: number; y: number; row: RowView; column: number; moves: readonly MoveView[]; drop: CardDrop } | null>(null);
+  // One shows at a time: another drop's choice takes its place and ends
+  // its drop.
+  type DropChoice = { x: number; y: number; row: RowView; column: number; moves: readonly MoveView[]; drop: CardDrop };
+  let dropChoice = $state.raw<DropChoice | null>(null);
   function endChoice(): void {
     dropChoice?.drop.end();
     dropChoice = null;
   }
+  function askChoice(choice: DropChoice): void {
+    endChoice();
+    dropChoice = choice;
+  }
+
+  // The drops accepted on the board shown, which end when the screen goes
+  // or shows another board (`dropOwner`, whose rules they keep).
+  let drops: DropOwner;
+  $effect.pre(() => {
+    const owner = dropOwner(boardKey);
+    drops = owner;
+    return () => {
+      untrack(endChoice);
+      owner.close();
+    };
+  });
 
   // A press on a card, until it moves far enough to pick the card up or
   // ends as the click that opens the ticket.
@@ -391,7 +410,7 @@
       void rankCard(boardKey, ctx, boardRef.board, from, rest[k]?.card.id ?? null);
       return shownAt(row.card.id);
     }
-    const hold = startDrop(boardKey, ctx);
+    const hold = drops.start(ctx);
     if (!hold) return shownAt(row.card.id);
     let handed = false;
     try {
@@ -400,16 +419,18 @@
       try {
         moves = await (movesRead ?? readMoves());
       } catch (err) {
-        if (!known) addErrorToast(`Could not read where ${row.card.key} can move.`, err);
+        if (hold.holds && !known) addErrorToast(`Could not read where ${row.card.key} can move.`, err);
         return shownAt(row.card.id);
       }
+      // The screen went, or shows another board: the drop ended with it.
+      if (!hold.holds) return shownAt(row.card.id);
       const into = columnsReached(held.shape.columns, moves).get(column) ?? [];
       if (into.length === 0) {
         if (!known) addToast('info', `No move of ${row.card.key} reaches ${columns[column].name}.`);
         return shownAt(row.card.id);
       }
       if (into.length > 1) {
-        dropChoice = { x: at.x, y: at.y, row, column, moves: into, drop: hold };
+        askChoice({ x: at.x, y: at.y, row, column, moves: into, drop: hold });
         handed = true;
         return shownAt(row.card.id);
       }
@@ -446,7 +467,6 @@
     const p = press;
     endPress();
     p?.carry?.cancel();
-    untrack(endChoice);
   });
 
   const picked = $derived.by(() => {

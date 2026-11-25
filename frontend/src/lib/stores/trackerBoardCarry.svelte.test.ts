@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { tick } from 'svelte';
 import type { BoardView, MoveView, RowView, WriteView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-import { cardBusy, cardWriteContext, moveCard, rankCard, startDrop, waitingCards } from './trackerBoardCarry.svelte';
+import { cardBusy, cardWriteContext, dropOwner, moveCard, rankCard, waitingCards } from './trackerBoardCarry.svelte';
 import { attachTrackerBoard } from './trackerBoard.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -58,7 +58,7 @@ describe('a card waiting where it was dropped', () => {
     // A second drop while it is out sends nothing.
     expect(await moveCard('board', ctx, 0, MOVE)).toBeNull();
     expect(await rankCard('board', ctx, '1', 1, '2')).toBeNull();
-    expect(startDrop('board', ctx)).toBeNull();
+    expect(dropOwner('board').start(ctx)).toBeNull();
     expect(move).toHaveBeenCalledTimes(1);
     answer.resolve({ parts: [{ step: 'move', state: 'refused', refusal: { reason: 'tracker', message: 'No.' } }] } as WriteView);
     expect((await sent)?.kind).toBe('refused');
@@ -69,16 +69,20 @@ describe('a card waiting where it was dropped', () => {
   it('holds a card for its drop from the release until its move is sent, or the drop ends with none', async () => {
     const move = setBindingMock('MoveTrackerIssue', async () => applied('move'));
     const ctx = cardWriteContext(BOARD, ROW);
-    const drop = startDrop('board', ctx)!;
+    const owner = dropOwner('board');
+    const drop = owner.start(ctx)!;
     expect(cardBusy('board', ctx)).toBe(true);
-    expect(startDrop('board', ctx)).toBeNull();
+    expect(owner.start(ctx)).toBeNull();
+    expect(dropOwner('board').start(ctx)).toBeNull();
     expect(await moveCard('board', ctx, 1, MOVE)).toBeNull();
     // Another card, and the same card on another board, move meanwhile.
     expect(cardBusy('board', cardWriteContext(BOARD, row('2', 'b')))).toBe(false);
     expect(cardBusy('another board', ctx)).toBe(false);
     drop.end();
     expect(cardBusy('board', ctx)).toBe(false);
-    const again = startDrop('board', ctx)!;
+    // An ended drop sends nothing.
+    expect(await drop.move(1, MOVE)).toBeNull();
+    const again = owner.start(ctx)!;
     const sent = again.move(1, MOVE);
     // The move took the hold over: still busy until it settles.
     expect(cardBusy('board', ctx)).toBe(true);
@@ -86,6 +90,26 @@ describe('a card waiting where it was dropped', () => {
     expect((await sent)?.kind).toBe('applied');
     expect(cardBusy('board', ctx)).toBe(false);
     expect(move).toHaveBeenCalledTimes(1);
+  });
+
+  it("ends every drop its owner holds when the owner closes, starts none after, and leaves another owner's", async () => {
+    const move = setBindingMock('MoveTrackerIssue', async () => applied('move'));
+    const one = cardWriteContext(BOARD, ROW);
+    const two = cardWriteContext(BOARD, row('2', 'b'));
+    const owner = dropOwner('board');
+    const other = dropOwner('board');
+    const first = owner.start(one)!;
+    const second = other.start(two)!;
+    owner.close();
+    expect(first.holds).toBe(false);
+    expect(cardBusy('board', one)).toBe(false);
+    expect(await first.move(1, MOVE)).toBeNull();
+    expect(owner.start(one)).toBeNull();
+    expect(second.holds).toBe(true);
+    expect(cardBusy('board', two)).toBe(true);
+    other.close();
+    expect(cardBusy('board', two)).toBe(false);
+    expect(move).not.toHaveBeenCalled();
   });
 
   it('ranks one card of a column at a time, each before the card it was dropped above and after the one the board holds before it', async () => {

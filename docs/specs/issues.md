@@ -270,8 +270,9 @@ changing a card's type, priority, points and assignee from its marks
 writes, so the card and an open ticket show one write; carrying a card
 with a mouse or pen to another column, which moves it by the move that
 reaches that column (a column no move reaches says so and takes no drop,
-several moves ask which, a move that takes fields opens the ticket with
-its form), or within its column, which ranks it (a card let go anywhere
+several moves ask which, one card at a time, a move that takes fields
+opens the ticket with its form; leaving the board before its moves are
+known moves nothing and leaves the card free), or within its column, which ranks it (a card let go anywhere
 but over a column's cards goes home and changes nothing; several cards
 ranked one after another in a column are sent in turn); under compact, the
 status mark's Move to…; and the card's menu: Open, Open in the tracker,
