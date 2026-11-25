@@ -114,7 +114,7 @@
     if (isEnterKey(event) && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       if (!event.repeat) void saveEdit(id);
-    } else if (event.key === 'Escape') {
+    } else if (event.key === 'Escape' && !ticketWrite(ctx.key, commentTarget(id))?.pending) {
       event.preventDefault();
       event.stopPropagation();
       closeEdit(id);

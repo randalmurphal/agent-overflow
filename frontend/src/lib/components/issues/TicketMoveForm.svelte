@@ -8,7 +8,9 @@
   // several values takes each pick as one more, and a long text field is
   // written as Markdown from the text the ticket showed when the form
   // opened, its edit base. Move sends the move once with what the form
-  // holds; a refusal, under the status, leaves what was filled. A required
+  // holds; while it is out, every input takes no change and an open picker
+  // closes, so the move made is what the form shows. A refusal, under the
+  // status, leaves what was filled. A required
   // field the app cannot set makes the form say so, with the way to the
   // tracker, and offers no Move.
   import Button from '../primitives/Button.svelte';
@@ -99,7 +101,7 @@
         ></textarea>
       </label>
     {:else}
-      <TicketField label={f.required ? `${f.name} (required)` : f.name} field={f.id} value={shown(f)} {editor} ticketKey={ctx.key} target="move-form" {fieldName} />
+      <TicketField label={f.required ? `${f.name} (required)` : f.name} field={f.id} value={shown(f)} {editor} ticketKey={ctx.key} target="move-form" {fieldName} disabled={pending} />
     {/if}
   {/each}
   {#if unsettable.length > 0}

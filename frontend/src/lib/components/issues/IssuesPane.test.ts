@@ -1485,7 +1485,7 @@ describe('the ticket in the pane', () => {
     expect(offered()).toBeNull();
   });
 
-  it('offers no Save anyway for a move whose form changed while the move was out', async () => {
+  it('takes no change to a move\'s form while its move is out, so the move made is what the form shows', async () => {
     install();
     installTicket((issue) => ({
       ...ticketDetail(issue),
@@ -1499,28 +1499,39 @@ describe('the ticket in the pane', () => {
     }) as unknown as DetailView);
     setBindingMock('TrackerChoices', async () => ({ choices: [{ id: '1', name: 'Fixed' }, { id: '2', name: 'Won\'t do' }] }));
     let answer: ((view: WriteView) => void) | undefined;
-    setBindingMock('MoveTrackerIssue', () => new Promise<WriteView>((resolve) => { answer = resolve; }));
+    const move = setBindingMock('MoveTrackerIssue', () => new Promise<WriteView>((resolve) => { answer = resolve; }));
     const view = mount();
     const screen = await openCard(view, '1');
     const status = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'status')!;
     await fireEvent.click(within(status).getByTestId('ticket-field-value'));
     await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-item')));
     const form = await within(screen).findByTestId('ticket-move-form');
-    const pick = async (name: string) => {
-      const resolution = within(form).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'resolution')!;
-      await fireEvent.click(within(resolution).getByTestId('ticket-field-value'));
-      const items = await waitFor(() => within(menu()).getAllByTestId('ticket-picker-item'));
-      await fireEvent.click(items.find((i) => i.textContent?.includes(name))!);
-    };
-    await pick('Fixed');
+    const resolution = within(form).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'resolution')!;
+    const items = () => within(document.body).queryAllByTestId('ticket-picker-item');
+    await fireEvent.click(within(resolution).getByTestId('ticket-field-value'));
+    await fireEvent.click(await waitFor(() => items().find((i) => i.textContent?.includes('Fixed'))!));
     await fireEvent.input(within(form).getByTestId('ticket-move-text'), { target: { value: 'Draft A' } });
+    // The picker is open again when Move is pressed.
+    await fireEvent.click(within(resolution).getByTestId('ticket-field-value'));
+    await waitFor(() => expect(items()).toHaveLength(2));
     await fireEvent.click(within(form).getByTestId('ticket-move-submit'));
     await waitFor(() => expect(answer).toBeDefined());
-    // The person picks again while the move is out; the refusal was for the form before.
-    await pick('Won\'t do');
-    answer!({ parts: [{ step: 'move', state: 'refused', refusal: { reason: 'loss', message: 'This edit would lose formatting.', lost: ['a table'] } }] } as WriteView);
-    await waitFor(() => expect(within(status).getByTestId('ticket-write-outcome')).toHaveTextContent('This edit would lose formatting.'));
-    expect(within(status).queryByTestId('ticket-write-save-anyway')).toBeNull();
+    // While the move is out, neither the open picker nor the field takes a pick.
+    await waitFor(() => expect(items()).toHaveLength(0));
+    expect(within(resolution).getByTestId('ticket-field-value')).toBeDisabled();
+    await fireEvent.click(within(resolution).getByTestId('ticket-field-value'));
+    expect(items()).toHaveLength(0);
+    expect(within(form).getByTestId('ticket-move-text')).toBeDisabled();
+    expect(within(resolution).getByTestId('ticket-field-value')).toHaveTextContent('Fixed');
+    answer!({ parts: [{ step: 'move', state: 'applied' }] } as WriteView);
+    await waitFor(() => expect(within(screen).queryByTestId('ticket-move-form')).toBeNull());
+    expect(move).toHaveBeenCalledTimes(1);
+    expect(move).toHaveBeenCalledWith('c1', {
+      issue: '1', move: '31', accept_loss: false, fields: [
+        { field: 'resolution', value: { kind: 'option', choices: [{ id: '1' }] } },
+        { field: 'environment', markdown: { markdown: 'Draft A', from: '' } },
+      ],
+    });
   });
 
   it('starts a move\'s Description from the description the ticket shows, and keeps that as its edit base', async () => {

@@ -34,6 +34,10 @@
   //
   // `inline` is a field of the narrow ticket's one row: its value alone
   // (the label when empty), and its write's note left to the row.
+  //
+  // `disabled` is a field of a form whose write is out (a move's form):
+  // it takes no change, and an open picker or typed value closes, so what
+  // the form shows is what was sent.
   import type { Snippet } from 'svelte';
   import TicketPicker from './TicketPicker.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
@@ -54,18 +58,24 @@
     target: string;
     fieldName: (id: string) => string;
     inline?: boolean;
+    disabled?: boolean;
   }
 
-  let { label, field, value, mark, editor, ticketKey, target, fieldName, inline = false }: Props = $props();
+  let { label, field, value, mark, editor, ticketKey, target, fieldName, inline = false, disabled = false }: Props = $props();
   const empty = $derived(inline ? label : 'None');
 
-  const pending = $derived(ticketWrite(ticketKey, target)?.pending ?? false);
+  const pending = $derived(disabled || (ticketWrite(ticketKey, target)?.pending ?? false));
   let trigger: HTMLButtonElement | undefined = $state();
   let picking = $state(false);
   let typing = $state(false);
   let draft = $state('');
   let invalid = $state('');
   let input: HTMLInputElement | undefined = $state();
+  $effect(() => {
+    if (!disabled) return;
+    picking = false;
+    typing = false;
+  });
 
   const TAKES: Readonly<Record<'number' | 'date', string>> = {
     number: 'Type a number, or clear the field.',

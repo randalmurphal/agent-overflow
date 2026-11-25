@@ -581,7 +581,17 @@ export function registerIssuesTicketFlow({ compact }: TicketSurface): void {
     await press(form.getByTestId('ticket-move-submit'), compact);
     await expect(anyway).toBeVisible({ timeout: 15_000 });
     expect(await sent()).toEqual([]);
+    // While the move is out (held by the fake), the form takes no change.
+    const moveRoute = 'POST rest/api/3/issue/{issue}/transitions';
+    const jira = { tracker: 'jira', site: JIRA_SITE };
+    await harness.rpc('HarnessTrackerFault', { origin: jira, route: moveRoute, kind: 'hold', times: 1 });
     await press(anyway, compact);
+    await expect.poll(async () => (await sent()).some((r) => r.held)).toBe(true);
+    await expect(resolution.getByTestId('ticket-field-value')).toBeDisabled();
+    await expect(parts.getByTestId('ticket-field-value')).toBeDisabled();
+    await expect(longText('customfield_10095')).toBeDisabled();
+    await expect(resolution.getByTestId('ticket-field-value')).toHaveText('Fixed');
+    await harness.rpc('HarnessTrackerRelease', { origin: jira, route: moveRoute });
     await expect(form).toHaveCount(0, { timeout: 15_000 });
     await expect(anyway).toHaveCount(0);
     await expect(status.getByTestId('ticket-field-value')).toContainText('Done');
