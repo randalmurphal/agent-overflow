@@ -16,6 +16,7 @@
   import { acquireTrackerConnections, refreshTrackerConnections, trackerConnectionsOf, trackerReadGate } from '../../stores/trackerConnections.svelte';
   import {
     acquireTrackerProjectBoards,
+    isTrackerBoardsChangedRefusal,
     refreshTrackerProjectBoards,
     saveTrackerProjectBoards,
     trackerProjectBoardsOf,
@@ -253,10 +254,17 @@
         {/if}
         {#if saveError !== null}
           <p class="text-[0.75rem] text-error" role="alert" data-testid="settings-tracker-boards-save-error">{userFacingError(saveError)}</p>
-          <!-- A failed save reads the list again; a read that fails says so above. -->
+          <!-- A failed save reads the list again; a read that fails says so above.
+               Only the typed refusal proves nothing was saved: after any
+               other failure the change may be in the list, and making it
+               again would make it twice. -->
           {#if boards.error === null}
             <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-boards-reread">
-              {boards.current ? 'The list shown is the saved one; make the change again.' : 'Reading the saved list…'}
+              {!boards.current
+                ? 'Reading the saved list…'
+                : isTrackerBoardsChangedRefusal(saveError)
+                  ? 'The list shown is the saved one; make the change again.'
+                  : 'The list shown is the saved one; the change may already be in it.'}
             </p>
           {/if}
         {/if}

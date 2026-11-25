@@ -29,6 +29,7 @@ import {
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { attachedBackends, onBackendsChanged, withBackendTarget } from '../transport/backends';
 import { hasScope, pageGrantsResolved } from '../transport/scopes';
+import { TransportError } from '../transport/wsClient';
 import { onBackendStatusChange } from './transportStatus.svelte';
 
 class HeldBoards {
@@ -171,6 +172,15 @@ export function saveTrackerProjectBoards(backend: BackendKey, projectId: string,
   const entry = held.get(keyOf(backend, projectId));
   if (!entry) return Promise.reject(new Error('The board list is not open any more; open it again.'));
   return entry.save(edit);
+}
+
+/**
+ * Whether a save was refused because the list it was built from is no
+ * longer the stored one: the one save failure that proves nothing was
+ * saved. Any other failure may follow the store's commit.
+ */
+export function isTrackerBoardsChangedRefusal(err: unknown): err is TransportError {
+  return err instanceof TransportError && err.code === 'tracker_boards_changed';
 }
 
 /**

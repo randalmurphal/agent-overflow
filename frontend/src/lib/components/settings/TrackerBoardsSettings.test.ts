@@ -277,9 +277,14 @@ describe('<TrackerBoardsSettings>', () => {
     await screen.findByTestId('settings-tracker-boards-save-error');
     for (const button of screen.getAllByTestId('tracker-board-remove')) expect((button as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByTestId('tracker-board-add-open') as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId('settings-tracker-boards-reread').textContent).toBe('Reading the saved list…');
     answer(stored.p1);
     await waitFor(() => expect(names()).toEqual(['B']));
     expect((screen.getByTestId('tracker-board-remove') as HTMLButtonElement).disabled).toBe(false);
+    // The change may have been saved: making it again would make it twice.
+    expect(screen.getByTestId('settings-tracker-boards-reread').textContent).toBe(
+      'The list shown is the saved one; the change may already be in it.',
+    );
   });
 
   it('shows the project a deep link names, then each project’s own boards', async () => {
