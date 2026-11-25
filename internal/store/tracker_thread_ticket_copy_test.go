@@ -3,8 +3,11 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 )
 
 // linkState is the state threadID's row shows for its link.
@@ -370,4 +373,126 @@ func TestALinkCopiesOnlyTheCardTheMirrorKept(t *testing.T) {
 			t.Fatalf("%s: link %+v, row %+v; want NEW-1, current", id, link, row)
 		}
 	}
+}
+
+// A board page that stores 100 changed cards runs the absence clear and
+// the link copy once each, and what they cost does not grow with the links
+// a page does not name: with no link and with 500 links of another site
+// the copy stops at its guard at the same cost, and 500 links of this site
+// to issues off the page cost no more than one does (at most 11/10). The
+// clear stops at its guard while the root has no absence. 10 links to
+// the page's issues are copied and named. The page write's time in each
+// case is logged.
+func TestTheLinkCopyCostsThePagesLinks(t *testing.T) {
+	const page, onPage = 100, 10
+	type cost struct {
+		clear, copy, threads int
+		took                 time.Duration
+	}
+	measure := func(links int, site string, linkedOnPage int) cost {
+		s, _, root := newMirror(t)
+		mustReplaceStructure(t, s, root, webStructure(), true)
+		rows := mirrorRows(20001, page, "a")
+		write := func(updated int64) MirrorChanges {
+			for i := range rows {
+				rows[i].Card.UpdatedAt = updated
+			}
+			p := webPage("10", rows...)
+			p.ReadAt = nextMirrorRead(s, root)
+			return mustWriteRowPage(t, s, root, p, nil)
+		}
+		write(5)
+		for i := range links {
+			id := fmt.Sprintf("linked-%03d", i)
+			mustCreateThread(t, s, id)
+			issue := 30001 + i
+			if i < linkedOnPage {
+				issue = 20001 + i
+			}
+			mustExec(t, s.db, `INSERT INTO thread_tickets(thread_id, kind, site, issue_id, issue_key, issue_title, origin, linked_at)
+				VALUES (?1, 'jira', ?2, ?3, 'WEB-1', 'Issue', 'manual', 1)`, id, site, fmt.Sprint(issue))
+		}
+		var c cost
+		var changes MirrorChanges
+		c.clear, _ = countStatementRuns(t, mirrorAbsencesClearSQL, func() {
+			var copyRuns int
+			copyRuns, c.copy = countStatementRuns(t, mirrorLinkCopySQL, func() { changes = write(6) })
+			if copyRuns != 1 {
+				t.Fatalf("the link copy ran %d times; want once", copyRuns)
+			}
+		})
+		c.threads = len(changes.Threads)
+		var times []time.Duration
+		for updated := range int64(5) {
+			began := time.Now()
+			write(7 + updated)
+			times = append(times, time.Since(began))
+		}
+		slices.Sort(times)
+		c.took = times[len(times)/2]
+		return c
+	}
+	none := measure(0, mirrorSite, 0)
+	other := measure(500, "https://other.example.com", 0)
+	one := measure(1, mirrorSite, 0)
+	off := measure(500, mirrorSite, 0)
+	on := measure(500, mirrorSite, onPage)
+	t.Logf("copy VM steps, page write time: no link %d, %v; 500 of another site %d, %v; 1 of this site off the page %d, %v; 500 off the page %d, %v; 500 with %d on the page %d, %v",
+		none.copy, none.took, other.copy, other.took, one.copy, one.took, off.copy, off.took, onPage, on.copy, on.took)
+	for name, c := range map[string]cost{"no link": none, "another site": other, "one off the page": one, "500 off the page": off, "on the page": on} {
+		if c.clear != 1 {
+			t.Errorf("%s: the absence clear ran %d times; want once", name, c.clear)
+		}
+	}
+	if other.copy != none.copy {
+		t.Errorf("500 links of another site cost the copy %d steps, no link %d; want the guard to stop it alike", other.copy, none.copy)
+	}
+	if 10*off.copy > 11*one.copy {
+		t.Errorf("500 links off the page cost the copy %d steps, one link %d; want the links the page does not name to cost nothing", off.copy, one.copy)
+	}
+	if none.threads != 0 || other.threads != 0 || off.threads != 0 || on.threads != onPage {
+		t.Errorf("named threads: %d, %d, %d, %d; want 0, 0, 0, %d", none.threads, other.threads, off.threads, on.threads, onPage)
+	}
+}
+
+// The link copy and the missing mark's link read parse no bound list for
+// a write that can name no link: with no link, with links of another
+// site only, and on a root that is not its site's link reader, each costs
+// the same for 1 issue as for 1,000. For the reader with a link of its
+// site, the list is read.
+func TestTheLinkWritersOfNoLinkParseNoList(t *testing.T) {
+	t.Parallel()
+	list := func(n int) string {
+		ids := make([]string, n)
+		for i := range ids {
+			ids[i] = fmt.Sprintf("%q", fmt.Sprint(20001+i))
+		}
+		return "[" + strings.Join(ids, ",") + "]"
+	}
+	s, low, _, _, root := twoAccounts(t)
+	steps := func(query string, n int, args ...any) int {
+		return statementVMSteps(t, s, query, append([]any{root, list(n)}, args...)...)
+	}
+	check := func(name string, read bool) {
+		t.Helper()
+		for _, q := range []struct {
+			name  string
+			query string
+			args  []any
+		}{{"the link copy", mirrorLinkCopySQL, nil}, {"the missing links read", mirrorMissingLinksSQL, []any{int64(1)}}} {
+			one, many := steps(q.query, 1, q.args...), steps(q.query, 1000, q.args...)
+			if read != (many > one) {
+				t.Errorf("%s: %s costs %d steps for 1 issue and %d for 1,000; want the list read %v", name, q.name, one, many, read)
+			}
+		}
+	}
+	check("no link", false)
+	mustCreateThread(t, s, "a")
+	mustExec(t, s.db, `INSERT INTO thread_tickets(thread_id, kind, site, issue_id, issue_key, issue_title, origin, linked_at)
+		VALUES ('a', 'jira', 'https://other.example.com', '20001', 'WEB-1', 'Issue', 'manual', 1)`)
+	check("a link of another site", false)
+	mustExec(t, s.db, `UPDATE thread_tickets SET site = ?1`, mirrorSite)
+	check("the reader with a link of its site", true)
+	setConnectionEnabled(t, s, low.ID, true)
+	check("a root that is not the reader", false)
 }
