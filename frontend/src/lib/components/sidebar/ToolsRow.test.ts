@@ -113,6 +113,17 @@ describe('ToolsRow', () => {
     resetToLocalPage();
   });
 
+  it('labels Pull requests when the tool used last is Issues and the row does not list it', async () => {
+    await hydrate([]);
+    noteToolUsed('issues');
+    await pairWithScopes(['threads:read']);
+    const view = render(ToolsRow);
+    expect(view.queryByTestId('sidebar-tool-issues')).toBeNull();
+    expect(view.getByTestId('sidebar-tool-pulls')).toHaveTextContent('Pull requests');
+    expect(view.getAllByTestId('sidebar-tool-label')).toHaveLength(1);
+    resetToLocalPage();
+  });
+
   it('labels the tool used last, and follows a focused tool pane over it', async () => {
     await hydrate([]);
     noteToolUsed('workflows');

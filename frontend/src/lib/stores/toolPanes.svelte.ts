@@ -44,11 +44,29 @@ import {
   revealPane,
 } from './panes.svelte';
 import { appStorageGet, appStorageSet } from './appStorage';
+import { getAttachedBackends } from './attachedBackends.svelte';
+import { scopeGrant, type Scope } from '../transport/scopes';
 
 export type { ToolPaneKind } from './paneLayout.svelte';
 
 const LAST_TOOL_KEY = 'tools:last';
+// Listed whatever this window's grants, so the row always has a tool to
+// label.
 const DEFAULT_TOOL: ToolPaneKind = 'pulls';
+
+// The grant a tool needs on some attached computer; a tool missing here
+// needs none.
+const TOOL_SCOPES: Partial<Record<ToolPaneKind, Exclude<Scope, 'host'>>> = { issues: 'tracker:read' };
+
+/**
+ * Reactive: whether this window may use the tool, which the tools row, the
+ * palette and every open read. A tool that needs a scope is available
+ * while an attached computer grants it.
+ */
+export function isToolAvailable(kind: ToolPaneKind): boolean {
+  const scope = TOOL_SCOPES[kind];
+  return !scope || getAttachedBackends().some((entry) => scopeGrant(scope, entry.id) === 'granted');
+}
 
 function parseLastTool(raw: string | null): ToolPaneKind {
   return isToolKind(raw) ? raw : DEFAULT_TOOL;
@@ -87,7 +105,8 @@ export function lastToolKind(): ToolPaneKind {
 
 /** The sidebar's labelled tool: the focused tool pane, else the last used. */
 export function activeToolKind(): ToolPaneKind {
-  return focusedToolKind() ?? lastTool;
+  const kind = focusedToolKind() ?? lastTool;
+  return isToolAvailable(kind) ? kind : DEFAULT_TOOL;
 }
 
 /** Record use of a tool. ToolPane calls it whenever its pane takes focus. */
@@ -202,6 +221,9 @@ export function openTool(kind: ToolPaneKind, options: OpenToolOptions = {}): voi
   const { insertIndex: slot } = options;
   if (slot !== undefined && (!Number.isInteger(slot) || slot < 0)) {
     throw new RangeError(`openTool: insert index ${slot} is not a layout slot`);
+  }
+  if (!isToolAvailable(kind)) {
+    throw new Error(`openTool: no attached computer grants this window ${TOOL_SCOPES[kind]}, which the ${kind} tool needs`);
   }
   closeSettingsSurface();
   noteToolUsed(kind);
