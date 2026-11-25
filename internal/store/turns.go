@@ -330,7 +330,7 @@ func (s *Store) GetTurn(turnID string) (Turn, bool, error) {
 // when no row exists.
 func (s *Store) GetTurnByThreadIndex(threadID string, turnIndex int) (Turn, bool, error) {
 	row := s.reader().QueryRow(
-		`SELECT `+turnColumns+` FROM timeline_turns WHERE thread_id = ? AND turn_index = ?`,
+		`SELECT `+turnColumns+` FROM timeline_turns WHERE thread_id = ? AND turn_index = `+boundInt,
 		threadID, turnIndex,
 	)
 	turn, err := scanTurnRow(row)
@@ -422,7 +422,7 @@ func (s *Store) ListRecentTurns(threadID string, limit int) ([]Turn, error) {
 func (s *Store) FirstUserRowOfTurn(threadID string, turnIndex int) (int64, bool, error) {
 	var at sql.NullInt64
 	if err := s.reader().QueryRow(`SELECT MIN(created_at) FROM items
-		  WHERE thread_id = ? AND turn_index = ? AND kind = 'user_text' AND parent_id = ''`,
+		  WHERE thread_id = ? AND turn_index = `+boundInt+` AND kind = 'user_text' AND parent_id = ''`,
 		threadID, turnIndex).Scan(&at); err != nil {
 		return 0, false, fmt.Errorf("store: first user row of %s/%d: %w", threadID, turnIndex, err)
 	}

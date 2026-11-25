@@ -14,7 +14,7 @@ import (
 func (s *Store) CaptureUserPlacementBoundary(threadID string, turnIndex int, movingItemIDs []string) (string, error) {
 	sel := timelineSelection{
 		Columns: func(string, string) string { return "items.id AS id, items.item_index AS item_index" },
-		Turn:    "?", TurnArgs: []any{turnIndex},
+		Turn:    boundInt, TurnArgs: []any{turnIndex},
 		OrderBy: "item_index DESC, id DESC",
 		Limit:   1,
 	}
@@ -265,11 +265,11 @@ func userPlacementSuffixTx(tx *sql.Tx, threadID string, turnIndex int, boundaryI
 	// no suffix; delayed retries pay only for the rows they actually displace.
 	sel := timelineSelection{
 		Columns: func(string, string) string { return "items.id AS id, items.item_index AS item_index" },
-		Turn:    "?", TurnArgs: []any{turnIndex},
+		Turn:    boundInt, TurnArgs: []any{turnIndex},
 		OrderBy: "item_index, id",
 	}
 	if boundaryID != "" {
-		sel.Where, sel.WhereArgs = `items.item_index > ?`, []any{boundary}
+		sel.Where, sel.WhereArgs = `items.item_index > `+boundInt, []any{boundary}
 	}
 	suffixQuery, suffixArgs, err := timelineArms(tx, threadID, sel)
 	if err != nil {
@@ -326,7 +326,7 @@ func shiftUserPlacementSuffixTx(tx *sql.Tx, w *cardWrite, turnIndex int, suffix 
 	// do not change provider-order membership, but displaced content does.
 	metaQuery, metaArgs, err := timelineArms(tx, threadID, timelineSelection{
 		Columns: func(string, string) string { return "items.id, items.meta" },
-		Turn:    "?", TurnArgs: []any{turnIndex},
+		Turn:    boundInt, TurnArgs: []any{turnIndex},
 		Where: `items.meta LIKE '%"promoted_echo_boundary"%'`,
 	})
 	if err != nil {
@@ -387,7 +387,7 @@ func turnItemIndexTx(q sqlQueryer, threadID string, turnIndex int, id string) (i
 	query, args, err := timelineArms(q, threadID, timelineSelection{
 		Columns:   func(string, string) string { return "items.item_index" },
 		KeyFirst:  true,
-		Where:     "items.id = ? AND items.turn_index = ?",
+		Where:     "items.id = ? AND items.turn_index = " + boundInt,
 		WhereArgs: []any{id, turnIndex},
 	})
 	if err != nil {

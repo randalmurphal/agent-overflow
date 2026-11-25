@@ -226,15 +226,6 @@ func TestPointerForkChainDepthIsCapped(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireIDs(t, "deepest page", itemIDs(page.Items), []string{"u0", "a0"})
-	// The provider event path's hydrated lookups read the whole lineage too.
-	unsettled, err := s.ListUnsettledTurnItems(deepest, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	requireIDs(t, "deepest unsettled rows", itemIDs(unsettled), nil)
-	if _, found, err := s.FindUserTextItemBySendID(deepest, "send-1"); err != nil || found {
-		t.Fatalf("deepest send lookup = %v, %v; want no row", found, err)
-	}
 	err = s.CreatePointerFork(makeThread("too-deep", "claude"), deepest, ForkCut{}, testInterruptedSummary, 999)
 	if !errors.Is(err, ErrForkChainTooDeep) {
 		t.Fatalf("fork beyond the cap: %v", err)

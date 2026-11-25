@@ -23,7 +23,7 @@ func resolveForkCutTx(tx *sql.Tx, sourceID string, cut ForkCut) (forkCut, error)
 		if *cut.ThroughTurn < 0 {
 			return forkCut{empty: true}, nil
 		}
-		plan, err := lastRowCutTx(tx, sourceID, "items.turn_index <= ?", *cut.ThroughTurn)
+		plan, err := lastRowCutTx(tx, sourceID, "items.turn_index <= "+boundInt, *cut.ThroughTurn)
 		plan.turnsThrough = *cut.ThroughTurn
 		return plan, err
 	default:
@@ -67,7 +67,7 @@ func lastRowTx(tx *sql.Tx, threadID string, turn int, where string, args ...any)
 		Limit:     1,
 	}
 	if turn >= 0 {
-		sel.Turn, sel.TurnArgs = "?", []any{turn}
+		sel.Turn, sel.TurnArgs = boundInt, []any{turn}
 	}
 	query, binds, err := timelineArms(tx, threadID, sel)
 	if err != nil {
@@ -117,7 +117,7 @@ func lastRowThroughTurnTx(tx *sql.Tx, threadID string, maxTurn int, where string
 	if floor == 0 {
 		return timelineRow{}, false, nil
 	}
-	return lastRowTx(tx, threadID, -1, "items.turn_index < ? AND ("+where+")", append([]any{floor}, args...)...)
+	return lastRowTx(tx, threadID, -1, "items.turn_index < "+boundInt+" AND ("+where+")", append([]any{floor}, args...)...)
 }
 
 // resolveBeforeItemCutTx is the fork twin of DeleteConversationFromItem's
@@ -155,7 +155,7 @@ func resolveBeforeItemCutTx(tx *sql.Tx, sourceID, anchorID string) (forkCut, err
 			return `items.id AS id, items.turn_index AS turn_index, items.item_index AS item_index,
 			        items.role AS role, items.parent_id AS parent_id`
 		},
-		Where:     "items.turn_index = ? AND items.item_index > ?",
+		Where:     "items.turn_index = " + boundInt + " AND items.item_index > " + boundInt,
 		WhereArgs: []any{turnIndex, itemIndex},
 		OrderBy:   "turn_index, item_index",
 	})

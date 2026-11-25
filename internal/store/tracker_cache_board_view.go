@@ -28,7 +28,7 @@ type MirrorBoardView struct {
 // reads need.
 var mirrorBoardViewSQL = `SELECT b.board_id, b.project_id, b.name, b.plans_sprints, b.estimate_unit, b.estimate_field, b.data,
 	  b.lifetime, b.revision, b.totals_revision, b.estimate_reset_at FROM tracker_cache_boards b
-	WHERE b.root_id = ?1 AND b.board_id = ?2 AND ` + mirrorBoardShown("?1", "?2")
+	WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND ` + mirrorBoardShown(intParam("?1"), "?2")
 
 // ReadMirrorBoardView reads, in one snapshot (mirrorReadSnapshot), a
 // board's structure (as GetMirrorBoard), its section totals (as

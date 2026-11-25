@@ -259,21 +259,24 @@ func TestNarrowTurnReadsPlans(t *testing.T) {
 				}
 				checked := 0
 				for i, stmt := range stmts {
-					// The hydrator runs the selection, then reads the
-					// lineage depth and resolves the ids in a statement
-					// that opens with selectedIDsSQL.
-					if !strings.HasPrefix(stmt.query, selectedIDsSQL) {
-						continue
+					var plan []planRow
+					if strings.HasPrefix(stmt.query, selectedIDsSQL) {
+						// A per-level selection ran first; the hydrator then
+						// read the lineage depth and resolved its ids.
+						at := i - 1
+						for at >= 0 && stmts[at].query == forkLineageDepthSQL {
+							at--
+						}
+						if at < 0 {
+							t.Fatalf("no selection ran before %s", stmt.query)
+						}
+						plan = explainPlan(t, s, stmts[at].query, stmts[at].args...)
+					} else {
+						plan = planSubtree(explainPlan(t, s, stmt.query, stmt.args...), "MATERIALIZE selected")
+						if len(plan) == 0 {
+							continue
+						}
 					}
-					at := i - 1
-					for at >= 0 && stmts[at].query == forkLineageDepthSQL {
-						at--
-					}
-					if at < 0 {
-						t.Fatalf("no selection ran before %s", stmt.query)
-					}
-					selected := stmts[at]
-					plan := explainPlan(t, s, selected.query, selected.args...)
 					checked++
 					local, imported := 0, 0
 					for _, r := range plan {
@@ -299,6 +302,22 @@ func TestNarrowTurnReadsPlans(t *testing.T) {
 			})
 		}
 	}
+}
+
+// planSubtree returns the plan nodes below the node whose detail is root.
+func planSubtree(plan []planRow, root string) []planRow {
+	in := map[int]bool{}
+	var out []planRow
+	for _, r := range plan {
+		switch {
+		case r.detail == root:
+			in[r.id] = true
+		case in[r.parent]:
+			in[r.id] = true
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // The rows a turn diff can upgrade are the turn's own rows whose payload is

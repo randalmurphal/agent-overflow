@@ -56,7 +56,7 @@ type MirrorSectionPage struct {
 var mirrorSectionRowsSQL = `SELECT ` + mirrorRowColumnsSQL + `
 	  FROM tracker_cache_board_issues b
 	  JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
-	 WHERE b.root_id = ?1 AND b.board_id = ?2 AND (b.order_key, b.issue_id) > (?3, ?4) AND `
+	 WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND (b.order_key, b.issue_id) > (?3, ?4) AND `
 
 const mirrorSectionOrderSQL = ` ORDER BY b.order_key, b.issue_id LIMIT `
 
@@ -111,11 +111,11 @@ const (
 	 WHERE m.root_id = b.root_id AND m.issue_id = b.issue_id AND sp.state IN (1, 2))`
 	mirrorInOpenSprintMembersSQL = `b.issue_id IN (SELECT m.issue_id FROM tracker_cache_sprints sp
 	  CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = sp.root_id AND m.sprint_id = sp.sprint_id
-	 WHERE sp.root_id = ?1 AND sp.board_id = ?2 AND sp.state IN (1, 2))`
+	 WHERE sp.root_id = CAST(?1 AS INTEGER) AND sp.board_id = ?2 AND sp.state IN (1, 2))`
 	mirrorInSprintProbeSQL = `EXISTS (SELECT 1 FROM tracker_cache_issue_sprints m
 	  WHERE m.root_id = b.root_id AND m.issue_id = b.issue_id AND m.sprint_id = ?5)`
 	mirrorInSprintMembersSQL = `b.issue_id IN (SELECT m.issue_id FROM tracker_cache_issue_sprints m
-	  WHERE m.root_id = ?1 AND m.sprint_id = ?5)`
+	  WHERE m.root_id = CAST(?1 AS INTEGER) AND m.sprint_id = ?5)`
 )
 
 // mirrorNotDoneSQL holds for a row of b whose issue i has a status the
@@ -133,7 +133,7 @@ func mirrorBacklog(inOpenSprint string) string {
 // root ?1 in the column at position ?5. Every read of a section's rows, by
 // page or by ID, states its rule with it, mirrorBacklog or a sprint rule.
 const mirrorColumnRuleSQL = `i.status_id IN (SELECT c.status_id FROM tracker_cache_board_column_statuses c
-	  WHERE c.root_id = ?1 AND c.board_id = ?2 AND c.position = ?5)`
+	  WHERE c.root_id = CAST(?1 AS INTEGER) AND c.board_id = ?2 AND c.position = ?5)`
 
 var mirrorSectionSQL = map[MirrorSectionKind]string{
 	MirrorSectionSprint:  mirrorSectionRowsSQL + mirrorInSprintMembersSQL + mirrorSectionOrderSQL + strconv.Itoa(mirrorSectionPageSize+1),
@@ -144,7 +144,7 @@ var mirrorSectionSQL = map[MirrorSectionKind]string{
 // mirrorShownBoardSQL reads the lifetime, revisions, estimate unit and
 // estimate reset of a board the mirror shows.
 var mirrorShownBoardSQL = `SELECT b.lifetime, b.revision, b.totals_revision, b.estimate_unit, b.estimate_reset_at FROM tracker_cache_boards b
-	WHERE b.root_id = ?1 AND b.board_id = ?2 AND ` + mirrorBoardShown("?1", "?2")
+	WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND ` + mirrorBoardShown(intParam("?1"), "?2")
 
 // mirrorShownBoard is a shown board's state as a read of its rows needs it.
 type mirrorShownBoard struct {
@@ -252,13 +252,13 @@ var (
 	mirrorCountRowsSQL = `SELECT ` + mirrorBacklog(mirrorInOpenSprintMembersSQL) + `, i.status_id, ` + mirrorRowEstimate("?3") + `
 		FROM tracker_cache_board_issues b
 		CROSS JOIN tracker_cache_issues i INDEXED BY idx_tracker_cache_issues_status ON i.root_id = b.root_id AND i.issue_id = b.issue_id
-		WHERE b.root_id = ?1 AND b.board_id = ?2`
+		WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2`
 	mirrorCountSprintsSQL = `SELECT sp.sprint_id, count(*), total(` + mirrorRowEstimate("?3") + `) FROM tracker_cache_sprints sp
 		  CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = sp.root_id AND m.sprint_id = sp.sprint_id
 		  CROSS JOIN tracker_cache_board_issues b ON b.root_id = sp.root_id AND b.issue_id = m.issue_id AND b.board_id = sp.board_id
-		 WHERE sp.root_id = ?1 AND sp.board_id = ?2 GROUP BY sp.sprint_id`
+		 WHERE sp.root_id = CAST(?1 AS INTEGER) AND sp.board_id = ?2 GROUP BY sp.sprint_id`
 	mirrorCountColumnStatusesSQL = `SELECT status_id, position FROM tracker_cache_board_column_statuses
-		WHERE root_id = ?1 AND board_id = ?2 LIMIT ` + strconv.Itoa(mirrorMaxColumnStatuses)
+		WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 LIMIT ` + strconv.Itoa(mirrorMaxColumnStatuses)
 )
 
 // CountMirrorSections totals the rows of each section of a board the

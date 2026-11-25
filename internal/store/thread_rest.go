@@ -39,7 +39,7 @@ func (s *Store) ListThreadRestRequests(callerThreadID string, after ThreadRestCu
 		  WHERE caller_thread_id = ?
 		    AND ((lineage_only = 0 AND settled_at IS NULL)
 		      OR (kind = 'spawn' AND target_thread_id <> '' AND (target_computer_id <> '' OR superseded = 0)))
-		    AND (created_at > ? OR (created_at = ? AND token > ?))
+		    AND (created_at > `+boundInt+` OR (created_at = `+boundInt+` AND token > ?))
 		  ORDER BY created_at, token LIMIT `+strconv.Itoa(limit),
 		callerThreadID, afterAt, afterAt, after.Token)
 	if err != nil {

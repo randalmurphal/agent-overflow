@@ -284,7 +284,7 @@ func scanMirrorRecordsAfter(tx *sql.Tx, query string, after map[string]mirrorRec
 // same before and after it. Each join from a JSON list is a CROSS JOIN, so
 // the list drives it: without row counts the planner can otherwise walk
 // the root's rows and probe the list for each.
-var mirrorCardAdmittedSQL = ` CROSS JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = c.value ->> 'i'
+var mirrorCardAdmittedSQL = ` CROSS JOIN tracker_cache_issues i ON i.root_id = CAST(?1 AS INTEGER) AND i.issue_id = c.value ->> 'i'
 	AND NOT ` + mirrorCardSupersededSQL("i", "c.value ->> 'u'", "?3")
 
 // The sprint statements of replaceMirrorCardSprintsTx read ?1 root and ?2
@@ -295,9 +295,9 @@ var mirrorCardAdmittedSQL = ` CROSS JOIN tracker_cache_issues i ON i.root_id = ?
 // The leave and join statements take ?2 a list of [issue, sprint] pairs.
 var (
 	mirrorCardSprintsOfSQL = `SELECT m.issue_id, m.sprint_id FROM json_each(?2) s
-		CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = ?1 AND m.issue_id = s.value
+		CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = CAST(?1 AS INTEGER) AND m.issue_id = s.value
 		WHERE s.value >= ?3 AND (s.value > ?3 OR m.sprint_id > ?4) LIMIT ` + strconv.Itoa(clearMirrorChunk)
-	mirrorCardSprintsLeaveSQL = `DELETE FROM tracker_cache_issue_sprints WHERE root_id = ?1
+	mirrorCardSprintsLeaveSQL = `DELETE FROM tracker_cache_issue_sprints WHERE root_id = CAST(?1 AS INTEGER)
 		AND (issue_id, sprint_id) IN (SELECT p.value ->> 0, p.value ->> 1 FROM json_each(?2) p)`
 	mirrorCardSprintsJoinSQL = `INSERT INTO tracker_cache_issue_sprints(root_id, issue_id, sprint_id)
 		SELECT ?1, p.value ->> 0, p.value ->> 1 FROM json_each(?2) p`
@@ -394,12 +394,12 @@ func replaceMirrorCardSprintsTx(tx *sql.Tx, rootID int64, cards []mirrorCardRow,
 func mirrorCardMarkSQL(filter, boards string) string {
 	return `INSERT INTO tracker_cache_board_unexplained(root_id, board_id, kind, ref_id, named_at)
 	SELECT ?1, bd.board_id, c.value ->> 'k', c.value ->> 'r', ?3 FROM json_each(?2) c` + mirrorCardAdmittedSQL + `
-	  CROSS JOIN tracker_cache_boards bd ON bd.root_id = ?1 AND bd.retired = 0 AND bd.board_id IN (
-	    SELECT b.board_id FROM tracker_cache_board_issues b WHERE b.root_id = ?1 AND b.issue_id = i.issue_id` + boards + `)
+	  CROSS JOIN tracker_cache_boards bd ON bd.root_id = CAST(?1 AS INTEGER) AND bd.retired = 0 AND bd.board_id IN (
+	    SELECT b.board_id FROM tracker_cache_board_issues b WHERE b.root_id = CAST(?1 AS INTEGER) AND b.issue_id = i.issue_id` + boards + `)
 	 WHERE CASE c.value ->> 'k'
-	   WHEN 1 THEN NOT EXISTS (SELECT 1 FROM tracker_cache_statuses st WHERE st.root_id = ?1 AND st.status_id = c.value ->> 'r')
-	   WHEN 2 THEN NOT EXISTS (SELECT 1 FROM tracker_cache_users us WHERE us.root_id = ?1 AND us.user_id = c.value ->> 'r')
-	   ELSE NOT EXISTS (SELECT 1 FROM tracker_cache_sprints sp WHERE sp.root_id = ?1 AND sp.board_id = bd.board_id AND sp.sprint_id = c.value ->> 'r') END
+	   WHEN 1 THEN NOT EXISTS (SELECT 1 FROM tracker_cache_statuses st WHERE st.root_id = CAST(?1 AS INTEGER) AND st.status_id = c.value ->> 'r')
+	   WHEN 2 THEN NOT EXISTS (SELECT 1 FROM tracker_cache_users us WHERE us.root_id = CAST(?1 AS INTEGER) AND us.user_id = c.value ->> 'r')
+	   ELSE NOT EXISTS (SELECT 1 FROM tracker_cache_sprints sp WHERE sp.root_id = CAST(?1 AS INTEGER) AND sp.board_id = bd.board_id AND sp.sprint_id = c.value ->> 'r') END
 	   AND ` + filter + `
 	ON CONFLICT(root_id, board_id, kind, ref_id) DO UPDATE SET named_at = excluded.named_at
 	WHERE named_at > 0 AND excluded.named_at > named_at AND named_at < (SELECT bl.read_at FROM tracker_cache_boards bl
@@ -440,7 +440,7 @@ func mirrorCardRefsOf(cards []mirrorCardRow) []mirrorCardRef {
 // the card and its sprints are ordered as one by their latest read. It
 // writes read_at alone, which no index or trigger reads.
 const mirrorCardReadSQL = `UPDATE tracker_cache_issues SET read_at = ?3
-	WHERE root_id = ?1 AND issue_id IN (SELECT value FROM json_each(?2)) AND read_at < ?3`
+	WHERE root_id = CAST(?1 AS INTEGER) AND issue_id IN (SELECT value FROM json_each(?2)) AND read_at < ?3`
 
 // mirrorCardStatements are the statements that store cards, for one
 // filter of the cards they take: the card, and the marks of the
@@ -463,9 +463,9 @@ var (
 	// Its references are marked on the page's board too, where its row is
 	// written after it.
 	mirrorRowCards = newMirrorCardStatements(`(?5 OR EXISTS (SELECT 1 FROM tracker_cache_board_issues b
-		WHERE b.root_id = ?1 AND b.issue_id = c.value ->> 'i' AND b.board_id = ?4))`, ` UNION SELECT ?4`)
+		WHERE b.root_id = CAST(?1 AS INTEGER) AND b.issue_id = c.value ->> 'i' AND b.board_id = ?4))`, ` UNION SELECT ?4`)
 	// mirrorLinkedCards store cards of the issues the mirror keeps.
-	mirrorLinkedCards = newMirrorCardStatements(mirrorIssueKept("?1", "c.value ->> 'i'"), ``)
+	mirrorLinkedCards = newMirrorCardStatements(mirrorIssueKept(intParam("?1"), "c.value ->> 'i'"), ``)
 )
 
 // mirrorCardsStored is what storeMirrorCardsTx did: the issues whose card

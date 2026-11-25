@@ -71,7 +71,7 @@ func requireCountsMatchPages(t *testing.T, s *Store, root int64, board, step str
 		}
 	}
 	var estimates []float64
-	err = scanMirrorRows(s.db, `SELECT `+mirrorRowEstimate("?3")+` FROM tracker_cache_board_issues b WHERE b.root_id = ?1 AND b.board_id = ?2`,
+	err = scanMirrorRows(s.db, `SELECT `+mirrorRowEstimate("?3")+` FROM tracker_cache_board_issues b WHERE b.root_id = `+intParam("?1")+` AND b.board_id = ?2`,
 		[]any{root, board, currentEstimateReset(s, root, board)}, func(r rowScanner) error {
 			var e *float64
 			err := r.Scan(&e)

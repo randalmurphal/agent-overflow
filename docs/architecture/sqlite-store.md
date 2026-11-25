@@ -66,9 +66,21 @@ a bare `?` compared with a column that a partial index's WHERE pins to a
 literal, such as `items.kind` or `items.parent_id`, and the pattern of a
 `LIKE ?`, so such a parameter binds through `boundText` (`CAST(? AS TEXT)`),
 or `textParam` for a positional `?N`, and a code constant the planner must
-match is a literal (`sqlTextLiteral`). The package's tests check each cached
-statement after each run and fail on a statement of the package whose plan
-reads a bound value (`sql_rebind_test.go`). Statements that write `items`
+match is a literal (`sqlTextLiteral`). From SQLite 3.54 the planner also
+reads whether an integer bound to a column comparison is 0 or 1, and a rebind
+across that line expires the statement: a turn or item index, a tracker root
+id, an attempt or a cursor time all cross it in ordinary use. Such an integer
+binds through `boundInt` (`CAST(? AS INTEGER)`), or `intParam` for a
+positional `?N`; constant SQL writes the cast itself. A flag that is only ever
+0 or 1 is a literal. SQLite keeps one mark for every parameter from the 32nd
+on, so a statement with more parameters than that binds none of them where
+the planner reads it; the timeline arms bind the thread id through
+`boundText` for that reason. A cast inside a row value, `(turn_index,
+item_index) >= (?, ?)`, loses the index range on the pair, and the planner
+does not read a row value's parameters, so those stay bare. The package's
+tests check each cached statement after each run, rebinding each such
+integer to 0, 1, 2 and a larger value, and fail on a statement of the
+package whose plan reads a bound value (`sql_rebind_test.go`). Statements that write `items`
 or `subagent_aggregates` carry those tables' triggers: a compiled `items`
 write holds 200 to 245 KB and the other writes 80 to 175 KB. Thread row and
 timeline reads hold 40 to 100 KB; about half the statements hold under
@@ -291,9 +303,15 @@ hidden first (`trg_items_fork_position`).
 Each timeline view has lineage arms that apply the cut and hidden-id rules
 (`inheritedItemVisibleSQL`). Go-rendered reads (`timelineArms`, item
 hydration, payload arms) add lineage arms only for a thread with lineage rows,
-one pair per level, so a non-fork read's SQL is unchanged. A correlated read,
-whose thread is not known when the SQL is written, reads every level through
-one pair. Inherited rows read `rev = -1`. A fork reads an ancestor's turn row
+so a non-fork read's SQL is unchanged. An ordered read (`OrderBy` or `Limit`)
+renders one pair per level, so that each arm walks its own index in order and
+the compound merges them; every other read, and a correlated read whose
+thread is not known when the SQL is written, reads every level through one
+pair. A per-level statement grows about 25 cursors a level, and SQLite 3.54
+refuses a CTE reference it expands once a statement holds 1000 cursors, so a
+per-level selection runs as its own statement and never inside a CTE
+(`renderTimelineArms`, `idSelection.perLevel`;
+`TestForkReadsKeepTheirShapeAtEveryDepth`). Inherited rows read `rev = -1`. A fork reads an ancestor's turn row
 below that level's cut turn where neither the fork nor a nearer level whose
 cut turn is past the turn holds a row of that turn (`forkTurnVisibleSQL`): a
 nearer level's rows of a turn at or past its cut are not the fork's history.

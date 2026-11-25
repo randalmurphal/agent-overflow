@@ -101,10 +101,10 @@ var mirrorReadSeedSQL = func() string {
 		if len(maxima) > 1 {
 			highest = `max(` + strings.Join(maxima, `, `) + `)`
 		}
-		tables = append(tables, `(SELECT `+highest+` FROM `+t.table+` WHERE root_id = ?1)`)
+		tables = append(tables, `(SELECT `+highest+` FROM `+t.table+` WHERE root_id = CAST(?1 AS INTEGER))`)
 	}
 	return `SELECT max(0, ` + strings.Join(tables, `,
-	 `) + `) FROM tracker_cache_roots WHERE id = ?1 AND connection_id IS NOT NULL`
+	 `) + `) FROM tracker_cache_roots WHERE id = CAST(?1 AS INTEGER) AND connection_id IS NOT NULL`
 }()
 
 // mirrorReadClocks is each live root's read clock in this process: the

@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -469,11 +468,11 @@ func mustTimelineArms(t *testing.T, s *Store, threadID string, sel timelineSelec
 // mustTimelineIDSelection renders timelineIDSelection for a test that holds s.
 func mustTimelineIDSelection(t *testing.T, s *Store, threadID string, sel timelineSelection) (string, []any) {
 	t.Helper()
-	query, args, err := timelineIDSelection(s.db, threadID, sel)
+	selection, err := timelineIDSelection(s.db, threadID, sel)
 	if err != nil {
 		t.Fatalf("render timeline id selection: %v", err)
 	}
-	return query, args
+	return selection.sql, selection.args
 }
 
 func planText(plan []planRow) string {
@@ -1051,9 +1050,9 @@ func TestTimelineItemsViewJoinPushesDown(t *testing.T) {
 	}
 }
 
-// A turn's item index bound is taken per arm: every arm's bound, and so
-// the compound's, agrees with the view, and the local arm stops at the
-// first row of its turn index instead of reading the turn.
+// A turn's item index bound is the turn's first row in order: it agrees
+// with the view, and each local arm reads its turn index in order, so the
+// compound stops at its first row instead of sorting the turn.
 func TestTurnItemIndexQueryTakesEachArmsBound(t *testing.T) {
 	s := newTestStore(t)
 	seedKeyedLookupThread(t, s)
@@ -1087,39 +1086,35 @@ func TestTurnItemIndexQueryTakesEachArmsBound(t *testing.T) {
 		t.Error("turnItemIndexQuery rendered COUNT")
 	}
 
-	query, args, err := turnItemIndexQuery(s.db, keyedThreadID, 4, "MAX")
-	if err != nil {
-		t.Fatal(err)
-	}
-	rows, err := s.db.Query("EXPLAIN "+query, args...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	type op struct {
-		code string
-		p2   int64
-		p4   string
-	}
-	var program []op
-	for rows.Next() {
-		var addr, p1, p2, p3 int64
-		var code string
-		var p4, p5, comment sql.NullString
-		if err := rows.Scan(&addr, &code, &p1, &p2, &p3, &p4, &p5, &comment); err != nil {
-			t.Fatal(err)
+	for _, threadID := range []string{keyedThreadID, keyedForkID} {
+		for _, aggregate := range []string{"MIN", "MAX"} {
+			query, args, err := turnItemIndexQuery(s.db, threadID, 4, aggregate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan := explainPlan(t, s, query, args...)
+			local := map[int]bool{}
+			for _, r := range plan {
+				if strings.HasPrefix(r.detail, "SEARCH items USING COVERING INDEX idx_items_thread_turn_item_unique (thread_id=? AND turn_index=?)") ||
+					strings.HasPrefix(r.detail, "SEARCH items USING INDEX idx_items_thread_turn_item_unique (thread_id=? AND turn_index=?)") {
+					local[r.parent] = true
+				}
+			}
+			// The thread's own local arm, and on the fork the level's. An
+			// imported arm reads its turn across chunks and sorts it, as its
+			// MIN or MAX read every row of it.
+			want := 1
+			if threadID == keyedForkID {
+				want = 2
+			}
+			if len(local) != want {
+				t.Errorf("%s %s: %d local arms read the turn index, want %d\n%s", threadID, aggregate, len(local), want, planText(plan))
+			}
+			for _, r := range plan {
+				if local[r.parent] && strings.Contains(r.detail, "USE TEMP B-TREE") {
+					t.Errorf("%s %s sorts a local arm's rows instead of reading its index in order\n%s", threadID, aggregate, planText(plan))
+				}
+			}
 		}
-		program = append(program, op{code: code, p2: p2, p4: p4.String})
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		t.Fatal(err)
-	}
-	earlyOut := false
-	for addr := 0; addr+1 < len(program); addr++ {
-		next := program[addr+1]
-		earlyOut = earlyOut || (program[addr].code == "AggStep" && strings.HasPrefix(program[addr].p4, "max(") && next.code == "Goto" && next.p2 > int64(addr+1))
-	}
-	if !earlyOut {
-		t.Errorf("no arm's MAX stops at its first row:\n%s", query)
 	}
 }

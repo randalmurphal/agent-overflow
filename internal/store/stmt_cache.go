@@ -25,6 +25,19 @@ func textParam(param string) string {
 // boundText is the positional text parameter the planner cannot read.
 var boundText = textParam("?")
 
+// intParam is the integer parameter param ("?" or "?N") as an expression
+// the planner cannot read, for a comparison with a column. The planner
+// reads whether a bare integer parameter is 0 or 1, and a rebind across
+// that line, such as turn 1 to turn 2, compiles the statement again.
+// Constant SQL writes the same cast; a row value's parameters stay bare.
+// See docs/architecture/sqlite-store.md#connections.
+func intParam(param string) string {
+	return "CAST(" + param + " AS INTEGER)"
+}
+
+// boundInt is the positional integer parameter the planner cannot read.
+var boundInt = intParam("?")
+
 // sqlTextLiteral is value as an SQL string literal, for a code constant
 // the planner must read to choose a partial index.
 func sqlTextLiteral(value string) string {

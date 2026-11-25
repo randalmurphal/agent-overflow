@@ -32,7 +32,7 @@ func mustReconcile(t *testing.T, s *Store, root int64, listed []string, complete
 
 func boardRowIDs(t *testing.T, s *Store, root int64) string {
 	t.Helper()
-	ids, err := queryIDs(s.db, `SELECT issue_id FROM tracker_cache_board_issues WHERE root_id = ? AND board_id = '10' ORDER BY issue_id`, root)
+	ids, err := queryIDs(s.db, `SELECT issue_id FROM tracker_cache_board_issues WHERE root_id = `+boundInt+` AND board_id = '10' ORDER BY issue_id`, root)
 	if err != nil {
 		t.Fatal(err)
 	}

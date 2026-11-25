@@ -212,11 +212,11 @@ func (s *Store) SearchThreadItems(ctx context.Context, threadID, query string, s
 			}
 		}
 		sel := threadFindSelection(filter, filterArgs, limit)
-		ids, args, err := timelineIDSelection(q, threadID, sel)
+		ids, err := timelineIDSelection(q, threadID, sel)
 		if err != nil {
 			return answer, fmt.Errorf("store: search thread items: %w", err)
 		}
-		items, err := s.querySelectedPagedItems(q, threadID, ids, args...)
+		items, err := s.querySelectedPagedItems(q, threadID, ids)
 		if err != nil {
 			return answer, fmt.Errorf("store: search thread items: %w", err)
 		}
