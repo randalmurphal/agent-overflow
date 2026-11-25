@@ -1355,7 +1355,8 @@ to the client to read by page.
   removed or Tempo, and past 64 board handles. The handle starts with
   `visible` as its vote. A pump made with every handle hidden makes no
   tracker call until a handle shows it or a person refreshes it
-  (`pump.Core.AwaitShown`); the ticket pump follows the same rule.
+  (`pump.Core.AwaitShown`). A ticket pump reads at once: its subscribe
+  carries no vote yet.
 - `SubscribeTicket(connection, issue, tie)` answers the same way with
   the ticket's view built from the record, or the view its subscribers
   were last told when its pump runs already; at most 64 ticket handles.
