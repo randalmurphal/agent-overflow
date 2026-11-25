@@ -98,12 +98,13 @@
   const openedFrom = toolOpenedFromProject('issues');
 
   const shown = $derived(isPaneOnScreen(paneId));
-  let bodyWidth = $state(0);
-  const besideFits = $derived(!compact && bodyWidth >= BESIDE_MIN_PX);
+  // The body the board and a ticket beside it share, measured into the
+  // split, which also decides whether a ticket fits beside.
+  const split = new SplitWidth('issuesTicketSplit:board', TICKET_SPLIT);
+  const besideFits = $derived(!compact && split.paneWidth >= BESIDE_MIN_PX);
   const selection = createBoardSelection({ openedFromProject: openedFrom, shown: () => shown, besideFits: () => besideFits });
   onDestroy(() => selection.destroy());
   const ticket = $derived(selection.ticket);
-  const split = new SplitWidth('issuesTicketSplit:board', TICKET_SPLIT);
 
   // The ticket view open now, for its own step back (the Details rail).
   let ticketView: { stepBack(): boolean } | undefined = $state();
@@ -362,7 +363,7 @@
     <p class="border-b border-border-subtle px-3 py-1.5 text-xs text-fg-muted" data-testid="issues-only-mine-unknown">Only mine shows every card: the app does not know which account is yours on this board's connection.</p>
   {/if}
 
-  <div class="relative flex min-h-0 flex-1" bind:clientWidth={bodyWidth}>
+  <div class="relative flex min-h-0 flex-1" bind:clientWidth={split.paneWidth}>
   <div
     class="relative flex min-h-0 flex-col {ticket && selection.placement === 'beside' ? 'shrink-0 border-r border-border-subtle' : 'min-w-0 flex-1'}"
     style:width={ticket && selection.placement === 'beside' ? `${split.width}px` : undefined}

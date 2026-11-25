@@ -8,7 +8,9 @@
 // that would lose a column layout is refused with what it would lose, and
 // Save anyway sends it; closing the ticket shows the board, which reads at
 // once and holds the moved card; Escape (the phone's Back on compact)
-// closes a ticket too. A paired computer going off takes its open
+// closes a ticket too. On desktop a ticket placed beside the board leaves
+// the board in use, splits the pane at half within its bounds, and opens
+// beside again, over the board while the pane is too narrow. A paired computer going off takes its open
 // ticket's content with it, saying once where it was that the computer is
 // not connected, and the ticket reads again when the computer is back.
 
@@ -184,6 +186,53 @@ export function registerIssuesTicketFlow({ compact }: TicketSurface): void {
     await expect(card(pane, ISSUE_ID)).toBeVisible();
     if (compact) await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'thread');
   });
+
+  if (!compact) {
+    test('a ticket beside the board leaves the board in use, splits the pane at half, and is remembered', async ({ harness, page }) => {
+      test.setTimeout(120_000);
+      await page.setViewportSize({ width: 1600, height: 900 });
+      await connectFakeJiraBoard(harness, 'issues-ticket-beside', TICKET);
+      await harness.open(page);
+      const pane = await openPane(page, false);
+      await expect(card(pane, ISSUE_ID)).toBeVisible({ timeout: 30_000 });
+      let ticket = await openTicket(pane, ISSUE_ID, false);
+      const placed = pane.getByTestId('issues-ticket');
+      const region = pane.getByTestId('issues-board-region');
+      await ticket.getByRole('radio', { name: 'Beside' }).click();
+      await expect(placed).toHaveAttribute('data-placement', 'beside');
+      await expect(region).not.toHaveAttribute('inert');
+
+      // The split starts at half; the ticket keeps at least 380.
+      const widths = async () => ({ board: (await region.boundingBox())!.width, ticket: (await placed.boundingBox())!.width });
+      await expect.poll(async () => { const w = await widths(); return Math.abs(w.board - w.ticket) <= 2; }).toBe(true);
+      const half = (await widths()).board;
+      const resizer = pane.getByTestId('issues-ticket-resize');
+      await resizer.focus();
+      await page.keyboard.press('ArrowRight');
+      await expect.poll(async () => (await widths()).board).toBeCloseTo(half + 16, 0);
+      await page.keyboard.press('End');
+      await expect.poll(async () => Math.round((await widths()).ticket)).toBe(380);
+      await resizer.dblclick();
+      await expect.poll(async () => (await widths()).board).toBeCloseTo(half, 0);
+
+      // The board beside it opens another card's ticket.
+      await card(pane, '10101').getByTestId('issues-card-open').click();
+      await expect(ticket).toHaveAttribute('data-issue', '10101');
+
+      // Closed and opened again, it opens beside; a pane too narrow for both
+      // shows it over the board until it is wide enough again.
+      await ticket.getByTestId('ticket-close').click();
+      await expect(ticket).toHaveCount(0);
+      await card(pane, ISSUE_ID).getByTestId('issues-card-open').click();
+      ticket = pane.getByTestId('ticket-screen');
+      await expect(placed).toHaveAttribute('data-placement', 'beside');
+      await page.setViewportSize({ width: 1000, height: 900 });
+      await expect(placed).toHaveAttribute('data-placement', 'over');
+      await expect(ticket.getByRole('radio', { name: 'Beside' })).toHaveCount(0);
+      await page.setViewportSize({ width: 1600, height: 900 });
+      await expect(placed).toHaveAttribute('data-placement', 'beside');
+    });
+  }
 
   test('a ticket open on a paired computer that goes off says so where its content was, and shows again once it is back', async ({ page }) => {
     test.setTimeout(240_000);
