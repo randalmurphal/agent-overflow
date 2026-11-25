@@ -270,7 +270,7 @@ func TestAMovedThreadCarriesItsLink(t *testing.T) {
 	t.Cleanup(events.Close)
 	board := &trackerBoardFixture{a: source, e: e, conn: sourceConn, project: sourceProject.ID, events: events}
 	listed := []trackerapp.ProjectBoard{{Connection: sourceConn.ID, Board: "1", OpensFirst: true}}
-	if _, err := source.SetProjectTrackerBoards(ctx, sourceProject.ID, listed); err != nil {
+	if _, err := source.SetProjectTrackerBoards(ctx, sourceProject.ID, nil, listed); err != nil {
 		t.Fatal(err)
 	}
 	subCtx, _ := newTestConnection(t, transport.ConnPrincipal{})

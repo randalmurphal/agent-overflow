@@ -31,7 +31,7 @@ func listMirrorBoards(t *testing.T, s *Store, projectID, connectionID string, bo
 	for _, b := range boards {
 		list = append(list, ProjectTrackerBoard{ConnectionID: connectionID, BoardID: b})
 	}
-	if _, _, err := s.ReplaceProjectTrackerBoards(projectID, list); err != nil {
+	if _, _, err := replaceFromStored(s, projectID, list); err != nil {
 		t.Fatalf("list boards %v: %v", boards, err)
 	}
 }

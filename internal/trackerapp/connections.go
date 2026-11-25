@@ -75,7 +75,7 @@ func (s *Service) Rename(id, label string) (Connection, error) {
 // milliseconds, as the person read it from the tracker; 0 clears it.
 func (s *Service) SetTokenExpiry(id string, expiresAt int64) (Connection, error) {
 	if expiresAt < 0 {
-		return Connection{}, fmt.Errorf("%w: a token expiry is a time or 0", ErrInvalid)
+		return Connection{}, invalid("a token expiry is a time or 0")
 	}
 	return s.update(id, func() (store.TrackerConnection, bool, error) {
 		return s.store.SetTrackerConnectionTokenExpiry(id, expiresAt)

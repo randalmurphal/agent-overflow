@@ -4438,9 +4438,10 @@ export function ProjectDeletionPreview(projectID: string): $CancellablePromise<a
 
 /**
  * ProjectTrackerBoards lists the boards a project's board picker shows, in
- * its order, and which opens first.
+ * its order, and which opens first, each named and with its connection's
+ * kind, label and state.
  */
-export function ProjectTrackerBoards(projectID: string): $CancellablePromise<trackerapp$0.ProjectBoard[]> {
+export function ProjectTrackerBoards(projectID: string): $CancellablePromise<trackerapp$0.BoardChoice[]> {
     return $Call.ByID(1066511111, projectID).then(($result: any) => {
         return $$createType219($result);
     });
@@ -5986,12 +5987,15 @@ export function SetPipelineFollows(subscriptionID: string, jobIDs: string[]): $C
 
 /**
  * SetProjectTrackerBoards makes boards, in order, the boards a project's
- * picker shows, and answers the list stored. A board it leaves out that
- * no other project lists stops being kept on this computer, and its open
- * views end.
+ * picker shows, and answers the list stored as ProjectTrackerBoards reads
+ * it. held is the list the picker showed and built boards from; a save
+ * built from a list that is no longer the stored one is refused. A board
+ * it adds is stored with the name and tracker project the picker showed.
+ * A board it leaves out that no other project lists stops being kept on
+ * this computer, and its open views end.
  */
-export function SetProjectTrackerBoards(projectID: string, boards: trackerapp$0.ProjectBoard[]): $CancellablePromise<trackerapp$0.ProjectBoard[]> {
-    return $Call.ByID(1148228013, projectID, boards).then(($result: any) => {
+export function SetProjectTrackerBoards(projectID: string, held: trackerapp$0.BoardRef[], boards: trackerapp$0.ProjectBoard[]): $CancellablePromise<trackerapp$0.BoardChoice[]> {
+    return $Call.ByID(1148228013, projectID, held, boards).then(($result: any) => {
         return $$createType219($result);
     });
 }
@@ -7978,7 +7982,7 @@ const $$createType214 = app$0.TerminalHandle.createFrom;
 const $$createType215 = mdsuggest$0.Block.createFrom;
 const $$createType216 = $Create.Array($$createType215);
 const $$createType217 = app$0.ProjectDeletionPreview.createFrom;
-const $$createType218 = trackerapp$0.ProjectBoard.createFrom;
+const $$createType218 = trackerapp$0.BoardChoice.createFrom;
 const $$createType219 = $Create.Array($$createType218);
 const $$createType220 = app$0.ProviderTerminalHandle.createFrom;
 const $$createType221 = app$0.ReadAloudSourceStatus.createFrom;

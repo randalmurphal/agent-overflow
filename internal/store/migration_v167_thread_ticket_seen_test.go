@@ -4,11 +4,11 @@ import (
 	"testing"
 )
 
-// A link stored at v165 keeps its ticket, key, title, origin and time
-// through v166, with no status, no root and not missing, which reads as
+// A link stored at v166 keeps its ticket, key, title, origin and time
+// through v167, with no status, no root and not missing, which reads as
 // not checked; the new columns refuse values outside their ranges.
 func TestThreadTicketSeenMigration(t *testing.T) {
-	db := migrateThrough(t, trackerMirrorMigrationVersion)
+	db := migrateThrough(t, trackerBoardNamesMigrationVersion)
 	mustExec(t, db, `INSERT INTO projects(id, path, name, slug, created_at, updated_at) VALUES ('p', '/tmp/p', 'p', 'p', 1, 1)`)
 	mustExec(t, db, `INSERT INTO threads(id, project_id, provider, workspace_path, created_at, updated_at) VALUES ('t', 'p', 'claude', '/tmp/p', 1, 1)`)
 	mustExec(t, db, `INSERT INTO thread_tickets(thread_id, kind, site, issue_id, issue_key, issue_title, origin, linked_at)

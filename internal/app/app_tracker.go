@@ -50,6 +50,10 @@ type TrackerConnection struct {
 	KeyFileState keyfile.State `json:"keyFileState"`
 	// KeyFileProblem says why a refused key file is refused.
 	KeyFileProblem string `json:"keyFileProblem,omitempty"`
+	// CheckedTokenInFile is true while the key file holds the token the
+	// last verification checked; otherwise the verified identity is who
+	// the connection was last checked as.
+	CheckedTokenInFile bool `json:"checkedTokenInFile"`
 	// Problem is the connection's last failure, held in memory until a
 	// call succeeds or the connection is turned off.
 	Problem *TrackerProblem `json:"problem,omitempty"`
@@ -61,10 +65,15 @@ type TrackerConnection struct {
 type TrackerProblem struct {
 	Kind    trackerapp.FailureKind `json:"kind"`
 	Message string                 `json:"message"`
+	// Current is true while the failure is about the token in the key
+	// file now, or about no token; otherwise it is about a token, or a
+	// key file read, that the file has since replaced.
+	Current bool `json:"current"`
 }
 
 // NewTrackerConnection is what AddTrackerConnection takes. Site is the
-// Jira site (with or without https://), a Tempo API base URL, or the
+// Jira site (with or without https://), a Tempo API base URL (empty for
+// the one that serves every region), or the
 // Linear workspace's URL key or address; Account is the Jira account's
 // email; ParentID is the Jira connection a Tempo connection belongs to.
 type NewTrackerConnection struct {
@@ -82,9 +91,10 @@ func trackerConnectionDTO(c trackerapp.Connection) TrackerConnection {
 		VerifiedAccountID: c.VerifiedAccountID, VerifiedName: c.VerifiedName, VerifiedAt: c.VerifiedAt,
 		TokenExpiresAt: c.TokenExpiresAt, CreatedAt: c.CreatedAt,
 		KeyFilePath: c.KeyFilePath, KeyFileState: c.KeyFile.State, KeyFileProblem: c.KeyFile.Problem,
+		CheckedTokenInFile: c.CheckedTokenInFile,
 	}
 	if c.Problem != nil {
-		out.Problem = &TrackerProblem{Kind: c.Problem.Kind, Message: c.Problem.Message}
+		out.Problem = &TrackerProblem{Kind: c.Problem.Kind, Message: c.Problem.Message, Current: c.Problem.Current}
 	}
 	return out
 }
@@ -172,7 +182,8 @@ func (a *App) trackerService() (*trackerapp.Service, error) {
 	return a.trackers, nil
 }
 
-// trackerCall runs one service call that answers a connection.
+// trackerCall runs one service call that answers a connection, its
+// refusal worded by trackerError.
 func (a *App) trackerCall(call func(*trackerapp.Service) (trackerapp.Connection, error)) (TrackerConnection, error) {
 	svc, err := a.trackerService()
 	if err != nil {
@@ -180,7 +191,7 @@ func (a *App) trackerCall(call func(*trackerapp.Service) (trackerapp.Connection,
 	}
 	c, err := call(svc)
 	if err != nil {
-		return TrackerConnection{}, err
+		return TrackerConnection{}, trackerError(err)
 	}
 	return trackerConnectionDTO(c), nil
 }
@@ -198,7 +209,7 @@ func (a *App) TrackerConnections(ctx context.Context) ([]TrackerConnection, erro
 	}
 	list, err := svc.Connections()
 	if err != nil {
-		return nil, err
+		return nil, trackerError(err)
 	}
 	out := make([]TrackerConnection, len(list))
 	for i, c := range list {
@@ -263,7 +274,7 @@ func (a *App) RemoveTrackerConnection(ctx context.Context, connectionID string) 
 	if err != nil {
 		return err
 	}
-	return svc.Remove(connectionID)
+	return trackerError(svc.Remove(connectionID))
 }
 
 // VerifyTrackerConnection checks a connection's token with one identity
@@ -291,7 +302,7 @@ func (a *App) EditTrackerKeyFile(ctx context.Context, connectionID string) (Trac
 	}
 	c, err := svc.PrepareKeyFile(connectionID)
 	if err != nil {
-		return TrackerConnection{}, err
+		return TrackerConnection{}, trackerError(err)
 	}
 	if err := a.OpenInEditor(c.KeyFilePath, 0, 0, "", ""); err != nil {
 		return TrackerConnection{}, fmt.Errorf("open the key file of tracker connection %s: %w", connectionID, err)
@@ -311,7 +322,7 @@ func (a *App) OpenTrackerTokenPage(ctx context.Context, connectionID string) err
 	}
 	page, err := svc.TokenPage(connectionID)
 	if err != nil {
-		return err
+		return trackerError(err)
 	}
 	return a.openExternalURL(ctx, page)
 }

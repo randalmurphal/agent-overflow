@@ -37,7 +37,7 @@ type TicketRef struct {
 }
 
 // ThreadTicket is the one ticket a thread is linked to (migrations v162
-// and v166). IssueKey, IssueTitle and the status are as last seen;
+// and v167). IssueKey, IssueTitle and the status are as last seen;
 // SeenRoot is the mirror root whose card they equal, 0 for none, and
 // Missing says that root's last read of the issue did not return it.
 // LinkedAt is unix milliseconds.

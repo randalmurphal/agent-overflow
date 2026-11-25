@@ -1,7 +1,9 @@
 # Issues
 
-Status: product rulings and screen designs recorded 2026-11-15. Nothing is
-implemented, and the tool row has no Issues entry until it is.
+Status: product rulings and screen designs recorded 2026-11-15. Built:
+the connections and a project's board list, in Settings > Issues
+(Connections, Boards). The Issues pane is not, and the tool row has no
+Issues entry until it is.
 
 ## Goal
 
@@ -379,9 +381,12 @@ sidebar and the thread header, on desktop and on a phone.
 
 ### Setup
 
+- Setup is the Issues group of Settings, where the mockup draws it inside
+  the pane: one page per section, Connections and Boards first.
 - Connections belong to the computer. Each shows who it is signed in as
-  and how long its token has left, and warns before the token lapses.
-  Adding one walks the credential steps in the rulings.
+  and how long its token has left, and warns before the token lapses
+  (two weeks before the date entered). Adding one walks the credential
+  steps in the rulings. Tempo is added from its Jira connection.
 - The rest is per project: which boards the picker lists and which opens
   first; which group each status belongs to, including left out of counts;
   pinned fields, pinned sections and card marks; Start work defaults; the
