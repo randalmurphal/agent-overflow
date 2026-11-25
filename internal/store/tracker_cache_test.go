@@ -225,6 +225,10 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			_, _, err := s.RecordMirrorSyncAttempt(root, "11", currentAttempt(s, root, "11", MirrorSyncAttempt{ReadAt: mirrorReadOf(root, 8), Failure: MirrorAttemptFailure{At: mirrorReadOf(root, 9), Kind: MirrorFailureTransient, Message: "timed out"}}))
 			return err
 		},
+		"MarkMirrorLinksMissing": func(root int64) error {
+			_, err := s.MarkMirrorLinksMissing(root, mirrorReadOf(root, 9), []string{"10001"})
+			return err
+		},
 		"KeepMirrorTicket": func(root int64) error {
 			_, _, err := s.KeepMirrorTicket(root, "10001", 2, 1, mirrorReadOf(root, 9))
 			return err
@@ -410,8 +414,8 @@ func TestRestoreEmptiesTheMirror(t *testing.T) {
 	seedSnapshotFixture(t, st, "t1", "First")
 	jira := mustCreateTrackerConnection(t, st, jiraConnection(mirrorSite, "user1@example.com", 10))
 	listMirrorBoards(t, st, "p1", jira.ID, "10")
-	mustSetThreadTicket(t, st, ThreadTicket{ThreadID: "t1", Ticket: TicketRef{Kind: TrackerKindJira, Site: mirrorSite, IssueID: "10001"},
-		IssueKey: "WEB-1", Origin: TicketOriginManual, LinkedAt: 10}, true)
+	seedThreadTicket(t, st, ThreadTicket{ThreadID: "t1", Ticket: TicketRef{Kind: TrackerKindJira, Site: mirrorSite, IssueID: "10001"},
+		IssueKey: "WEB-1", Origin: TicketOriginManual, LinkedAt: 10})
 	root, _, err := st.GetOrCreateMirrorRoot(jira.ID)
 	if err != nil {
 		t.Fatal(err)

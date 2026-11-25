@@ -121,6 +121,11 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		t.Fatal(err)
 	}
 	linkIssue(t, s, "linked", "10001")
+	// A link from a read, and one from the card the mirror then holds.
+	mustCreateThread(t, s, "link-read")
+	mustSetThreadTicket(t, s, readLink(s, root, "link-read", titledCard("10005", 5, "Read")))
+	mustCreateThread(t, s, "link-held")
+	mustSetThreadTicket(t, s, heldLink(root, "link-held", heldCard(t, s, root, "10005")))
 	for name, write := range mirrorWriters(s) {
 		if err := write(root); err != nil {
 			t.Fatalf("%s: %v", name, err)
@@ -294,6 +299,12 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 		"every entry of the partial index is due a history read, and the listing stops at a page"},
 	{"WITH h AS MATERIALIZED (SELECT value FROM json_each(?2))", "SCAN h",
 		"a write's bound list (the ticket move's, the history times'), read once; it drives the issue lookups by primary key"},
+	{threadTicketLinkColumn, "", "a thread row read, which names the mirror only in its link column: the read's plan is its own, " +
+		"and the column's is TestThreadLinkColumnReadsByKey"},
+	{"FROM json_each(?2) WHERE EXISTS (SELECT 1 FROM thread_tickets))", "SCAN thread_tickets EXISTS USING COVERING INDEX sqlite_autoindex_thread_tickets_1",
+		"the guard that some thread has a link, run once and stopped at the first row"},
+	{"FROM json_each(?2) WHERE EXISTS (SELECT 1 FROM thread_tickets))", "SCAN c",
+		"a card write's bound cards, read once; they drive the link lookups by tracker, site and issue"},
 	{"i.status_id IN (SELECT value FROM json_each(?2))", "SEARCH i USING COVERING INDEX idx_tracker_cache_issues_status (root_id=?)",
 		"a status entering or leaving the done groups is rare; finding the boards whose rows have it walks the root's statuses once, " +
 			"in the index the counts read"},

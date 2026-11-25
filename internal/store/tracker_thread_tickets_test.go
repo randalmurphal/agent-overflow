@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -218,8 +219,9 @@ func TestSetThreadTicketRefusalsChangeNothing(t *testing.T) {
 			s, _, root := newMirror(t)
 			mustCreateThread(t, s, "a")
 			mustSetThreadTicket(t, s, readLink(s, root, "a", titledCard("10001", 5, "Fix the login page")))
-			before := mustGetThreadTicket(t, s, "a")
 			w := c.write(t, s, root)
+			before, _ := storedTicket(t, s, "a")
+			mirror := mirrorIssueRows(t, s)
 			if _, err := s.SetThreadTicket(w); !c.refused(err) {
 				t.Fatalf("set = %v; want refused", err)
 			}
@@ -229,9 +231,34 @@ func TestSetThreadTicketRefusalsChangeNothing(t *testing.T) {
 			if _, ok := storedTicket(t, s, w.ThreadID); w.ThreadID != "a" && ok {
 				t.Fatalf("thread %s was linked", w.ThreadID)
 			}
-			assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issues WHERE issue_id = '10009'`, "0")
+			if got := mirrorIssueRows(t, s); !slices.Equal(got, mirror) {
+				t.Fatalf("mirror cards = %v\nwant %v", got, mirror)
+			}
 		})
 	}
+}
+
+// mirrorIssueRows is every mirror card row, each as one string.
+func mirrorIssueRows(t *testing.T, s *Store) []string {
+	t.Helper()
+	rows, err := s.db.Query(`SELECT root_id || ':' || issue_id || ':' || issue_key || ':' || status_id || ':' || updated_at || ':' || read_at
+		FROM tracker_cache_issues ORDER BY root_id, issue_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var row string
+		if err := rows.Scan(&row); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 // mustConnectionOf is the connection root belongs to.
@@ -255,7 +282,7 @@ func TestThreadTicketReadsByTicketThreadsAndSite(t *testing.T) {
 		mustExec(t, s.db, `UPDATE threads SET updated_at = ? WHERE id = ?`, i+1, id)
 	}
 	mustExec(t, s.db, `UPDATE threads SET mode = 'scratch' WHERE id = 'ask'`)
-	mustExec(t, s.db, `INSERT INTO scratch_threads(thread_id, request_token) VALUES ('ask', 'token')`)
+	mustExec(t, s.db, `INSERT INTO scratch_threads(thread_id, source_thread_id, return_mode, created_at, request_token) VALUES ('ask', 'a', 'chat', 1, 'token')`)
 	seedThreadTicket(t, s, webLink("a"))
 	seedThreadTicket(t, s, webLink("b"))
 	seedThreadTicket(t, s, webLink("ask"))
@@ -413,5 +440,33 @@ func TestRestoreKeepsTheTrackerTables(t *testing.T) {
 	}
 	if row, err := st.GetThread("t1"); err != nil || row.TicketLink == nil || row.TicketLink.State != TicketLinkNotChecked {
 		t.Fatalf("link after restore = %+v, %v; want not checked", row.TicketLink, err)
+	}
+}
+
+// The link column of a thread row reads by key: its guard that some
+// thread has a link is a scalar subquery the row loop does not depend on,
+// so it runs once per statement, and the link's row, root and connections
+// are each one key lookup per thread.
+func TestThreadLinkColumnReadsByKey(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	var lines []string
+	for line := range strings.SplitSeq(strings.TrimSpace(explainMirror(t, s, `SELECT `+threadTicketLinkColumn+` FROM threads`)), "\n") {
+		lines = append(lines, strings.TrimSpace(line))
+	}
+	want := []string{
+		"SCAN threads USING COVERING INDEX sqlite_autoindex_threads_1",
+		"SCALAR SUBQUERY 1",
+		"SCAN thread_tickets USING COVERING INDEX sqlite_autoindex_thread_tickets_1",
+		"CORRELATED SCALAR SUBQUERY 4",
+		"SEARCH tt USING INDEX sqlite_autoindex_thread_tickets_1 (thread_id=?)",
+		"SEARCH seen USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+		"CORRELATED SCALAR SUBQUERY 2",
+		"SEARCH c USING INDEX idx_tracker_connections_site (kind=? AND site=?)",
+		"CORRELATED SCALAR SUBQUERY 3",
+		"SEARCH c USING INDEX idx_tracker_connections_site (kind=? AND site=?)",
+	}
+	if !slices.Equal(lines, want) {
+		t.Fatalf("link column plan:\n%s\nwant\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
 	}
 }
