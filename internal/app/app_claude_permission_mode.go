@@ -76,26 +76,45 @@ func (a *App) applyAgyPermissionMode(threadID, sessionToken string) {
 		return
 	}
 	opts := sess.LaunchOptions
-	opts.RuntimeMode = nextRT
-	opts.Mode = nextIM
-	a.sessionManager().updateLaunchOpts(threadID, sessionToken, opts)
 	if nextRT != prevRT {
+		opts.RuntimeMode = nextRT
+		a.sessionManager().updateLaunchOpts(threadID, sessionToken, opts)
 		changed, err := a.store.SwapRuntimeMode(threadID, string(prevRT), string(nextRT))
 		if err != nil {
 			log.Printf("thread %s: follow agy runtime mode %q: %v", threadID, nextRT, err)
+			a.emitErrorToThread(threadID, fmt.Sprintf(
+				"Antigravity now runs %s, but the thread's access could not be updated: %v", runtimeModeLabels[nextRT], err))
 		} else if changed {
 			a.emitRuntimeModeChanged(threadID, nextRT)
 		}
 	}
 	if nextIM != prevIM {
+		// Re-read the thread's stored mode under lock so a concurrent user mode
+		// selection is not overwritten by an asynchronous provider notification,
+		// and only update LaunchOptions.Mode after UpdateMode accepts the mode.
+		thread, getErr := a.store.GetThread(threadID)
+		if getErr != nil {
+			log.Printf("thread %s: follow agy interaction mode %q: read thread: %v", threadID, nextIM, getErr)
+			a.emitErrorToThread(threadID, fmt.Sprintf(
+				"Antigravity switched to %s mode, but the thread could not be updated: %v", nextIM, getErr))
+			return
+		}
+		if provider.NormalizeInteractionMode(thread.Mode) != prevIM {
+			log.Printf("thread %s: agy moved to %q on its own; thread mode changed meanwhile to %q and stays", threadID, nextIM, thread.Mode)
+			return
+		}
 		update, err := a.threadApplication().UpdateMode(threadID, string(nextIM))
 		if err != nil {
 			log.Printf("thread %s: follow agy interaction mode %q: %v", threadID, nextIM, err)
-		} else {
-			a.emitEvent(eventchan.ThreadModeChanged, ThreadModeChangedEvent{
-				ThreadID: threadID, Mode: update.Mode, NeedsReconnect: false,
-			})
+			a.emitErrorToThread(threadID, fmt.Sprintf(
+				"Antigravity switched to %s mode, but the thread mode could not be updated: %v", nextIM, err))
+			return
 		}
+		opts.Mode = nextIM
+		a.sessionManager().updateLaunchOpts(threadID, sessionToken, opts)
+		a.emitEvent(eventchan.ThreadModeChanged, ThreadModeChangedEvent{
+			ThreadID: threadID, Mode: update.Mode, NeedsReconnect: false,
+		})
 	}
 }
 

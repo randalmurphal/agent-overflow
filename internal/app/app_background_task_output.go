@@ -145,11 +145,22 @@ func (a *App) resolveBackgroundTaskOutputPath(path string) (string, error) {
 		return resolved, nil
 	} else if resolvedAgy, agyErr := a.resolveAgyTaskOutputPath(path); agyErr == nil {
 		return resolvedAgy, nil
-	} else if errors.Is(agyErr, os.ErrNotExist) {
+	} else if errors.Is(agyErr, os.ErrNotExist) || a.isUnderAgyAppDataDir(path) {
 		return "", agyErr
 	} else {
 		return "", err
 	}
+}
+
+func (a *App) isUnderAgyAppDataDir(path string) bool {
+	appDataDir := strings.TrimSpace(a.agyAppDataDir())
+	if appDataDir == "" || !filepath.IsAbs(path) {
+		return false
+	}
+	cleanApp := resolvePathViaDeepestExistingAncestor(appDataDir)
+	cleanPath := resolvePathViaDeepestExistingAncestor(path)
+	rel, err := filepath.Rel(cleanApp, cleanPath)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func (a *App) resolveAgyTaskOutputPath(path string) (string, error) {
@@ -167,7 +178,7 @@ func (a *App) resolveAgyTaskOutputPath(path string) (string, error) {
 	brainRoot := filepath.Join(appDataDir, "brain")
 	resolvedRoot, rootErr := filepath.EvalSymlinks(brainRoot)
 	if rootErr != nil {
-		resolvedRoot = filepath.Clean(brainRoot)
+		resolvedRoot = resolvePathViaDeepestExistingAncestor(brainRoot)
 	}
 	checkLayout := func(candidate string) error {
 		rel, relErr := filepath.Rel(resolvedRoot, candidate)

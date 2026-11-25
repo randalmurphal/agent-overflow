@@ -150,4 +150,14 @@ func TestComposerListsAreBounded(t *testing.T) {
 	if strings.Contains(block, "wf-31") || strings.Contains(block, "run-13") {
 		t.Fatalf("the block exceeded its bounds:\n%s", block)
 	}
+	if !strings.Contains(block, "A wait never runs past 900 seconds.") {
+		t.Fatalf("missing default 900s wait cap:\n%s", block)
+	}
+	agyBlock := RenderComposerContext(ComposerContext{
+		SharedDir:      "/config/workflows",
+		MaxWaitSeconds: 150,
+	})
+	if !strings.Contains(agyBlock, "A wait never runs past 150 seconds.") {
+		t.Fatalf("missing provider-capped 150s wait cap:\n%s", agyBlock)
+	}
 }

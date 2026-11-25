@@ -864,41 +864,6 @@ func (r *Router) RetireFailedPendingSendByProviderItemID(threadID, providerItemI
 	return nil
 }
 
-// ClearPendingSendByProviderItemID removes a single matching unconfirmed
-// pending send keyed by ExpectedProviderItemID without returning it to the
-// composer. Retained for unit tests and direct clears.
-func (r *Router) ClearPendingSendByProviderItemID(threadID, providerItemID string) {
-	if threadID == "" || providerItemID == "" {
-		return
-	}
-	anchor := r.flushAnchor(threadID)
-	anchor.Lock()
-	defer anchor.Unlock()
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	st := r.threadStateIfPresent(threadID)
-	if st == nil || len(st.pendingSends) == 0 {
-		return
-	}
-	queue := st.pendingSends
-	for i, entry := range queue {
-		if entry.ExpectedProviderItemID != providerItemID {
-			continue
-		}
-		nextLen := len(queue) - 1
-		if nextLen == 0 {
-			st.pendingSends = nil
-		} else {
-			next := make([]pendingSend, 0, nextLen)
-			next = append(next, queue[:i]...)
-			next = append(next, queue[i+1:]...)
-			st.pendingSends = next
-		}
-		r.noteSendsPendingLocked(threadID)
-		return
-	}
-}
-
 // ClearCancelledACPDirectSends clears unconfirmed direct sends and already-visible
 // non-steered sends (including TurnInput flush rows and post-interrupt resends)
 // after an ACP session/cancel settles before any provider update arrived.

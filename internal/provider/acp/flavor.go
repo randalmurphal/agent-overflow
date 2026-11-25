@@ -150,8 +150,9 @@ type Flavor interface {
 	CanTrackSubagent(sessionID string) bool
 	WatchSubagent(ctx context.Context, launch SubagentLaunchContext)
 	ResolveSubagentLaunch(ctx context.Context, sessionID, childConversationID string) (string, bool)
+	LookupSubagentParent(ctx context.Context, childConversationID string) (ownerConvID, launchToolCallID string, handled bool)
 	CanLookupBackgroundCommands(sessionID string) bool
-	LookupBackgroundCommands(ctx context.Context, sessionID string, toolCallIDs []string, includeCompleted bool) map[string]BackgroundCommandInfo
+	LookupBackgroundCommands(ctx context.Context, sessionID string, toolCallIDs []string, includeCompleted bool, minStepIdx int) map[string]BackgroundCommandInfo
 	InitCompactionCursor(ctx context.Context, sessionID string) int
 	DetectCompaction(ctx context.Context, sessionID string, afterIdx int) (nextIdx int, ev *CompactionEvent)
 }
@@ -305,7 +306,7 @@ func (DefaultFlavor) NormalizeToolComplete(u *ToolCallUpdate, started Normalized
 						Kind: "delete",
 						Diff: item.OldText,
 					})
-				} else if hunks := stripUnifiedDiffHeader(patch); hunks != "" {
+				} else if hunks := StripUnifiedDiffHeader(patch); hunks != "" {
 					out.DiffChanges = append(out.DiffChanges, FileDiffChange{
 						Path: item.Path,
 						Kind: "update",
@@ -648,11 +649,15 @@ func (DefaultFlavor) ResolveSubagentLaunch(context.Context, string, string) (str
 	return "", false
 }
 
+func (DefaultFlavor) LookupSubagentParent(context.Context, string) (string, string, bool) {
+	return "", "", false
+}
+
 func (DefaultFlavor) CanLookupBackgroundCommands(string) bool {
 	return false
 }
 
-func (DefaultFlavor) LookupBackgroundCommands(context.Context, string, []string, bool) map[string]BackgroundCommandInfo {
+func (DefaultFlavor) LookupBackgroundCommands(context.Context, string, []string, bool, int) map[string]BackgroundCommandInfo {
 	return nil
 }
 
@@ -749,9 +754,9 @@ func extractCommandLine(inputs ...json.RawMessage) string {
 	return ""
 }
 
-// stripUnifiedDiffHeader removes the leading `--- ...` and `+++ ...` lines from
+// StripUnifiedDiffHeader removes the leading `--- ...` and `+++ ...` lines from
 // a patch produced by BuildUnifiedDiff so callers do not compute the diff twice.
-func stripUnifiedDiffHeader(patch string) string {
+func StripUnifiedDiffHeader(patch string) string {
 	idx := strings.Index(patch, "@@")
 	if idx < 0 {
 		return ""

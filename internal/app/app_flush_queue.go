@@ -900,6 +900,14 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 				back = append(back, unattempted...)
 			}
 			if _, hasSession := a.sessionManager().get(threadID); !hasSession {
+				if errors.Is(err, ErrShuttingDown) || a.lifeCtx().Err() != nil ||
+					errors.Is(err, store.ErrThreadDeleting) || errors.Is(err, store.ErrThreadDeleteClaimed) {
+					// Preserve durable queue rows for next boot or let deletion
+					// clean them up without emitting a spurious error row.
+					a.finishFlushGroup(threadID, generation, back)
+					a.noteFlushDispatchGroupSettled(threadID, back)
+					return
+				}
 				// No live session remains (for example, pre-send account switch
 				// reconnect stopped the old session and failed to start the new
 				// one). Restore the batch to the composer with a visible error
@@ -911,8 +919,12 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 				for _, item := range back {
 					drained = append(drained, unconfirmedFromQueued(item))
 				}
+				if slices.ContainsFunc(drained, func(item triage.UnconfirmedFlushItem) bool {
+					return slices.ContainsFunc(unconfirmedMembersOf(item).ids, appWrittenSendID)
+				}) {
+					a.noteAgentNoticeStartFailed(threadID)
+				}
 				a.restoreFlushItemsToDraftLocked(threadID, drained, queueRestoredReasonSessionDied)
-				a.emitQueueStateChanged(threadID)
 				return
 			}
 			a.finishFlushGroup(threadID, generation, back)

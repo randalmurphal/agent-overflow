@@ -22,8 +22,33 @@ const (
 	maxSubagentMetaFileBytes        = 1 << 20 // 1 MiB cap per JSON metadata/message file
 	maxTranscriptReadChunkBytes     = 1 << 20 // 1 MiB per poll chunk
 	maxTranscriptLineBytes          = 2 << 20 // 2 MiB max single JSONL line
-	maxFinalTranscriptDrainChunks   = 8
+	maxFinalTranscriptDrainChunks   = 32
+	maxSubagentCacheEntries         = 256
 )
+
+type subagentParentSource struct {
+	ownerConvID      string
+	launchToolCallID string
+}
+
+// readRegularFileBounded reads at most maxBytes from a regular file (refusing
+// FIFOs, devices, and directories).
+func readRegularFileBounded(path string, maxBytes int64) ([]byte, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxBytes {
+		return nil, false
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil || int64(len(data)) > maxBytes {
+		return nil, false
+	}
+	return data, true
+}
 
 // isSafeConversationID ensures a conversation ID is a single safe path token
 // that cannot escape `<appDataDir>/brain/`.
@@ -148,19 +173,50 @@ func (f *Flavor) ResolveSubagentLaunch(_ context.Context, sessionID, childConver
 	return launchID, true
 }
 
+// LookupSubagentParent reads childConversationID's inbox ONCE to discover its
+// launching owner conversation ID and invoke_subagent toolCallId, avoiding an
+// O(total_subagents) disk scan when correlating nested or foreign child frames.
+// Always returns handled=true when AppDataDir is configured so acp.Session does
+// not fall back to O(N) owner probing.
+func (f *Flavor) LookupSubagentParent(ctx context.Context, childConversationID string) (ownerConvID, launchToolCallID string, handled bool) {
+	if strings.TrimSpace(f.AppDataDir) == "" || !isSafeConversationID(childConversationID) {
+		return "", "", false
+	}
+	f.subagentMu.Lock()
+	if src, ok := f.subagentParentByChild[childConversationID]; ok {
+		f.subagentMu.Unlock()
+		return src.ownerConvID, src.launchToolCallID, true
+	}
+	f.subagentMu.Unlock()
+
+	ownerID, launchID, ok := f.findLaunchSourceForChild(ctx, childConversationID)
+	if !ok || ownerID == "" || launchID == "" {
+		return "", "", true
+	}
+	f.rememberChildLaunch(ownerID, childConversationID, launchID)
+	return ownerID, launchID, true
+}
+
 func (f *Flavor) rememberChildLaunch(sessionID, childID, launchToolCallID string) {
 	if sessionID == "" || childID == "" || launchToolCallID == "" {
 		return
 	}
 	f.subagentMu.Lock()
-	if f.subagentLaunchByChild == nil {
+	if f.subagentLaunchByChild == nil || len(f.subagentLaunchByChild) >= maxSubagentCacheEntries {
 		f.subagentLaunchByChild = make(map[string]string)
 	}
-	if f.subagentChildByLaunch == nil {
+	if f.subagentChildByLaunch == nil || len(f.subagentChildByLaunch) >= maxSubagentCacheEntries {
 		f.subagentChildByLaunch = make(map[string]string)
+	}
+	if f.subagentParentByChild == nil || len(f.subagentParentByChild) >= maxSubagentCacheEntries {
+		f.subagentParentByChild = make(map[string]subagentParentSource)
 	}
 	f.subagentLaunchByChild[sessionID+":"+childID] = launchToolCallID
 	f.subagentChildByLaunch[sessionID+":"+launchToolCallID] = childID
+	f.subagentParentByChild[childID] = subagentParentSource{
+		ownerConvID:      sessionID,
+		launchToolCallID: launchToolCallID,
+	}
 	f.subagentMu.Unlock()
 }
 
@@ -200,8 +256,9 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
+	checkedChildren := make(map[string]struct{})
 	for childID == "" {
-		if id, ok := f.findChildIDForLaunch(launch.SessionID, matchCallID); ok {
+		if id, ok := f.findChildIDForLaunch(ctx, launch.SessionID, matchCallID, checkedChildren); ok {
 			childID = id
 			break
 		}
@@ -267,6 +324,9 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 	}
 
 	drainTranscriptOnce := func() bool {
+		if ctx.Err() != nil {
+			return false
+		}
 		if activeTranscriptPath == "" {
 			if st, err := os.Stat(fullPath); err == nil && st.Mode().IsRegular() && st.Size() > 0 {
 				activeTranscriptPath = fullPath
@@ -276,12 +336,16 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 				return false
 			}
 		}
+		isCompactTranscript := activeTranscriptPath == compactPath
 		lines := f.readNewJSONLLinesContained(brainDir, childID, activeTranscriptPath, &transcriptOffset, &transcriptRemainder)
 		if len(lines) == 0 {
 			return false
 		}
 		progressDirty := false
 		for _, line := range lines {
+			if ctx.Err() != nil {
+				return false
+			}
 			var step transcriptStep
 			if json.Unmarshal([]byte(line), &step) != nil {
 				continue
@@ -329,7 +393,7 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 					lastAssistantText = text
 				}
 				for idx, tc := range step.ToolCalls {
-					rawArgs := decodeTranscriptToolArgs(tc.Args)
+					rawArgs := decodeTranscriptToolArgs(tc.Args, isCompactTranscript)
 					tcID := fmt.Sprintf("agy-sub:%s:tool:%d:%d", childID, step.StepIndex, idx)
 					u := acp.ToolCallUpdate{
 						ToolCallID: tcID,
@@ -376,7 +440,11 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 			case "GENERIC":
 				if len(pendingTools) > 0 {
 					pt := pendingTools[0]
+					pendingTools[0] = pendingChildTool{}
 					pendingTools = pendingTools[1:]
+					if len(pendingTools) == 0 {
+						pendingTools = nil
+					}
 					if pt.suppressed {
 						continue
 					}
@@ -416,11 +484,17 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 	}
 
 	settle := func(status, report string) {
+		if ctx.Err() != nil {
+			return
+		}
 		// Drain any final lines appended concurrently with the parent inbox signal.
 		for i := 0; i < maxFinalTranscriptDrainChunks; i++ {
-			if !drainTranscriptOnce() {
+			if ctx.Err() != nil || !drainTranscriptOnce() {
 				break
 			}
+		}
+		if ctx.Err() != nil {
+			return
 		}
 		if !modelStamped && (fallbackModel != "" || fallbackEffort != "") {
 			f.emitSubagentIdentityMeta(launch, childID, fallbackModel, fallbackEffort)
@@ -462,15 +536,19 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 		f.emitSubagentSettlement(launch, childID, status, report, finalProgress)
 	}
 
+	seenInboxFiles := make(map[string]struct{})
 	idleTicks := 0
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		if drainTranscriptOnce() {
 			if idleTicks > 0 {
 				idleTicks = 0
 				ticker.Reset(pollInterval)
 			}
 		}
-		if status, report, ok := f.scanParentInbox(launch.SessionID, childID, launchTime); ok {
+		if status, report, ok := f.scanParentInbox(ctx, launch.SessionID, childID, launchTime, seenInboxFiles); ok {
 			settle(status, report)
 			return
 		}
@@ -546,7 +624,7 @@ func resolveSubagentModelAndEffort(rawInput json.RawMessage, parentModel, parent
 	return base, parsedEffort, isAgyModelTierAlias(requested)
 }
 
-func (f *Flavor) findChildIDForLaunch(parentSessionID, launchToolCallID string) (string, bool) {
+func (f *Flavor) findChildIDForLaunch(ctx context.Context, parentSessionID, launchToolCallID string, checkedChildren map[string]struct{}) (string, bool) {
 	f.subagentMu.Lock()
 	if cached, ok := f.subagentChildByLaunch[parentSessionID+":"+launchToolCallID]; ok && cached != "" {
 		f.subagentMu.Unlock()
@@ -561,6 +639,9 @@ func (f *Flavor) findChildIDForLaunch(parentSessionID, launchToolCallID string) 
 		return "", false
 	}
 	for _, entry := range entries {
+		if ctx != nil && ctx.Err() != nil {
+			return "", false
+		}
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".json") {
 			continue
@@ -569,14 +650,72 @@ func (f *Flavor) findChildIDForLaunch(parentSessionID, launchToolCallID string) 
 		if !isSafeConversationID(childID) {
 			continue
 		}
+		if checkedChildren != nil {
+			if _, seen := checkedChildren[childID]; seen {
+				continue
+			}
+		}
+		f.subagentMu.Lock()
+		cachedLaunch := f.subagentLaunchByChild[parentSessionID+":"+childID]
+		f.subagentMu.Unlock()
+		if cachedLaunch != "" {
+			if cachedLaunch == launchToolCallID {
+				return childID, true
+			}
+			if checkedChildren != nil {
+				checkedChildren[childID] = struct{}{}
+			}
+			continue
+		}
 		if foundLaunchID, ok := f.findLaunchToolCallIDForChild(parentSessionID, childID); ok {
 			f.rememberChildLaunch(parentSessionID, childID, foundLaunchID)
 			if foundLaunchID == launchToolCallID {
 				return childID, true
 			}
+			if checkedChildren != nil {
+				checkedChildren[childID] = struct{}{}
+			}
 		}
 	}
 	return "", false
+}
+
+func (f *Flavor) findLaunchSourceForChild(ctx context.Context, childID string) (ownerConvID, launchToolCallID string, ok bool) {
+	brainDir := filepath.Join(f.AppDataDir, "brain")
+	msgDir := filepath.Join(brainDir, childID, ".system_generated", "messages")
+	entries, err := os.ReadDir(msgDir)
+	if err != nil || len(entries) == 0 {
+		return "", "", false
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		if ctx != nil && ctx.Err() != nil {
+			return "", "", false
+		}
+		entry := entries[i]
+		name := entry.Name()
+		if entry.IsDir() || name == "read.json" || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		data, readOK := readContainedSmallFile(brainDir, childID, filepath.Join(msgDir, name))
+		if !readOK {
+			continue
+		}
+		var msg inboxMessageRecord
+		if json.Unmarshal(data, &msg) != nil {
+			continue
+		}
+		if msg.Sender == "" || msg.SourceMetadata == nil || msg.SourceMetadata.Tool == nil || msg.SourceMetadata.Tool.ToolCall == nil {
+			continue
+		}
+		tool := msg.SourceMetadata.Tool
+		if tool.ConversationID != "" && tool.ConversationID != msg.Sender {
+			continue
+		}
+		if tool.ToolCall.Name == "invoke_subagent" && strings.TrimSpace(tool.ToolCall.ID) != "" {
+			return msg.Sender, strings.TrimSpace(tool.ToolCall.ID), true
+		}
+	}
+	return "", "", false
 }
 
 func (f *Flavor) findLaunchToolCallIDForChild(parentSessionID, childID string) (string, bool) {
@@ -638,7 +777,7 @@ func (f *Flavor) readSubagentRecord(parentSessionID, childID string) (subagentRe
 //     childID going idle) -> "completed"
 //   - a post-launch broadcast stop notice (`sender == "system"`,
 //     "All your subagents and background tasks have been stopped") -> "killed"
-func (f *Flavor) scanParentInbox(parentSessionID, childID string, since time.Time) (status string, report string, found bool) {
+func (f *Flavor) scanParentInbox(ctx context.Context, parentSessionID, childID string, since time.Time, seenFiles map[string]struct{}) (status string, report string, found bool) {
 	brainDir := filepath.Join(f.AppDataDir, "brain")
 	msgDir := filepath.Join(brainDir, parentSessionID, ".system_generated", "messages")
 	entries, err := os.ReadDir(msgDir)
@@ -652,10 +791,18 @@ func (f *Flavor) scanParentInbox(parentSessionID, childID string, since time.Tim
 	var systemStopped bool
 	// Scan in reverse so newly written messages are inspected first in long sessions.
 	for i := len(entries) - 1; i >= 0; i-- {
+		if ctx != nil && ctx.Err() != nil {
+			return "", "", false
+		}
 		entry := entries[i]
 		name := entry.Name()
 		if entry.IsDir() || name == "read.json" || !strings.HasSuffix(name, ".json") {
 			continue
+		}
+		if seenFiles != nil {
+			if _, already := seenFiles[name]; already {
+				continue
+			}
 		}
 		data, ok := readContainedSmallFile(brainDir, parentSessionID, filepath.Join(msgDir, name))
 		if !ok {
@@ -683,6 +830,11 @@ func (f *Flavor) scanParentInbox(parentSessionID, childID string, since time.Tim
 					}
 				}
 			}
+		}
+		// Inbox message files are write-once; record non-matching files so long
+		// sessions never reopen historical inbox messages on every poll tick.
+		if seenFiles != nil && !systemStopped {
+			seenFiles[name] = struct{}{}
 		}
 	}
 	if systemStopped {
@@ -762,9 +914,10 @@ func (f *Flavor) emitSubagentSettlement(launch acp.SubagentLaunchContext, taskID
 
 // decodeTranscriptToolArgs decodes agy's transcript tool_calls[*].args map into
 // a standard JSON object. transcript_full.jsonl writes native JSON values
-// (numbers, booleans, strings, arrays, objects), whereas compact
-// transcript.jsonl string-encodes each value (e.g. `{"Path":"\"/a/b.go\"","StartLine":"1"}`).
-func decodeTranscriptToolArgs(args map[string]json.RawMessage) json.RawMessage {
+// (numbers, booleans, strings, arrays, objects) that are kept verbatim, whereas
+// compact transcript.jsonl string-encodes each value (e.g.
+// `{"Path":"\"/a/b.go\"","StartLine":"1"}`) and needs one JSON unwrap pass.
+func decodeTranscriptToolArgs(args map[string]json.RawMessage, unwrapStringValues bool) json.RawMessage {
 	if len(args) == 0 {
 		return nil
 	}
@@ -779,11 +932,13 @@ func decodeTranscriptToolArgs(args map[string]json.RawMessage) json.RawMessage {
 			out[k] = string(trimmed)
 			continue
 		}
-		if s, ok := parsed.(string); ok {
-			var unwrapped any
-			if json.Unmarshal([]byte(s), &unwrapped) == nil {
-				out[k] = unwrapped
-				continue
+		if unwrapStringValues {
+			if s, ok := parsed.(string); ok {
+				var unwrapped any
+				if json.Unmarshal([]byte(s), &unwrapped) == nil {
+					out[k] = unwrapped
+					continue
+				}
 			}
 		}
 		out[k] = parsed

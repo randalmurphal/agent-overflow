@@ -1886,3 +1886,46 @@ func TestEmitPromptConfirmationAttachesResolvedStepAnchor(t *testing.T) {
 		t.Fatalf("unexpected EventUserText meta: %+v", meta)
 	}
 }
+
+func TestFailedSteeredPromptIsNeverArmedOrConfirmed(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	s := newUnitSession(DefaultFlavor{Kind: provider.Agy}, &events, &mu)
+	s.sessionID = "sess-steer-err"
+	s.turnOpen = true
+	s.activeTurnID = "turn-1"
+	s.startedTools["fg-1"] = NormalizedToolStart{ToolName: "Bash", ItemType: "command_execution"}
+
+	p1 := &pendingPromptConfirm{uuid: "u-p1", content: "first"}
+	p1.confirmed.Store(true)
+	p2 := &pendingPromptConfirm{uuid: "u-p2", content: "bad steer"}
+	s.inFlightPrompts = 2
+	s.activeFinishers = 2
+	s.wireInFlightPrompts = 2
+	s.inFlightConfirms = []*pendingPromptConfirm{p1, p2}
+
+	settleP2 := s.makeWirePromptSettler(p2)
+	settleP2([]byte(`{"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"steer rejected"}}`))
+	s.finishPrompt(nil, errors.New("steer rejected"), nil, p2)
+
+	if len(s.armedConfirms) != 0 || len(s.stagedSteerConfirms) != 0 {
+		t.Fatalf("errored steered prompt remained armed=%v staged=%v, want empty", s.armedConfirms, s.stagedSteerConfirms)
+	}
+
+	// Completing P1 (with an orphaned foreground tool) must scrub fg-1 and never confirm P2.
+	settleP1 := s.makeWirePromptSettler(p1)
+	settleP1([]byte(`{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}`))
+	s.finishPrompt(json.RawMessage(`{"stopReason":"end_turn"}`), nil, nil, p1)
+
+	if s.hasForegroundStartedToolsLocked() {
+		t.Fatal("expected orphaned foreground tool fg-1 to be scrubbed on turn completion")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range events {
+		if ev.Kind == provider.EventUserText && strings.Contains(string(ev.Meta), "u-p2") {
+			t.Fatalf("errored steered prompt u-p2 was falsely confirmed as EventUserText: %+v", ev)
+		}
+	}
+}

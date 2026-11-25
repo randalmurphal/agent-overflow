@@ -76,7 +76,10 @@ func openConversationDBReadOnly(path string) (*sql.DB, error) {
 // readMaxStepIndex returns the highest `idx` in `steps` before a prompt starts.
 // When the conversation DB does not exist yet (brand-new session before Turn 1),
 // it returns (-1, true) so Turn 1 step_type=17 errors at idx >= 0 are still caught.
-func readMaxStepIndex(appDataDir, sessionID string) (int, bool) {
+func readMaxStepIndex(ctx context.Context, appDataDir, sessionID string) (int, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	dbPath, err := conversationDBPath(appDataDir, sessionID)
 	if err != nil {
 		return 0, false
@@ -91,7 +94,7 @@ func readMaxStepIndex(appDataDir, sessionID string) (int, bool) {
 	defer func() { _ = db.Close() }()
 
 	var maxIdx sql.NullInt64
-	if err := db.QueryRow(`SELECT MAX(idx) FROM steps`).Scan(&maxIdx); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT MAX(idx) FROM steps`).Scan(&maxIdx); err != nil {
 		return 0, false
 	}
 	if !maxIdx.Valid {
@@ -100,31 +103,36 @@ func readMaxStepIndex(appDataDir, sessionID string) (int, bool) {
 	return int(maxIdx.Int64), true
 }
 
-// readMaxCheckpointIndex returns the highest `idx` of a compaction checkpoint
-// (step_type = 23) in conversations/<sessionId>.db, or -1 if none exists yet.
-func readMaxCheckpointIndex(appDataDir, sessionID string) int {
-	dbPath, err := conversationDBPath(appDataDir, sessionID)
-	if err != nil {
+// readMaxCheckpointIndex returns the initial compaction scan cursor as the
+// current highest `idx` in `steps` (O(1) primary-key seek rather than a
+// full-table scan over `step_type`), or -1 if the DB does not exist yet.
+// Any compaction occurring after session open will land at `idx > cursor`.
+func readMaxCheckpointIndex(ctx context.Context, appDataDir, sessionID string) int {
+	maxIdx, ok := readMaxStepIndex(ctx, appDataDir, sessionID)
+	if !ok {
 		return -1
 	}
-	db, err := openConversationDBReadOnly(dbPath)
-	if err != nil {
-		return -1
-	}
-	defer func() { _ = db.Close() }()
-
-	var maxIdx sql.NullInt64
-	if err := db.QueryRow(`SELECT MAX(idx) FROM steps WHERE step_type = ?`, cortexStepTypeCheckpoint).Scan(&maxIdx); err != nil || !maxIdx.Valid {
-		return -1
-	}
-	return int(maxIdx.Int64)
+	return maxIdx
 }
 
 // detectNewCheckpoint checks whether agy wrote a compaction CHECKPOINT step
-// (step_type = 23) with idx > afterIdx.
-func detectNewCheckpoint(appDataDir, sessionID string, afterIdx int) (int, *acp.CompactionEvent) {
-	dbPath, err := conversationDBPath(appDataDir, sessionID)
+// (step_type = 23) with idx > afterIdx. It always advances nextIdx to the
+// current MAX(idx) (O(1) PK seek) so scanned non-checkpoint steps are never
+// rescanned on subsequent turns, and skips opening SQLite when the DB+WAL stat
+// signature has not changed since the last clean check.
+func (f *Flavor) detectNewCheckpoint(ctx context.Context, sessionID string, afterIdx int) (int, *acp.CompactionEvent) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	dbPath, err := conversationDBPath(f.AppDataDir, sessionID)
 	if err != nil {
+		return afterIdx, nil
+	}
+	sig, sigOK := statConversationDB(dbPath)
+	if !sigOK {
+		return afterIdx, nil
+	}
+	if f.compactionCheckCacheHit(sessionID, sig, afterIdx) {
 		return afterIdx, nil
 	}
 	db, err := openConversationDBReadOnly(dbPath)
@@ -133,22 +141,41 @@ func detectNewCheckpoint(appDataDir, sessionID string, afterIdx int) (int, *acp.
 	}
 	defer func() { _ = db.Close() }()
 
-	var idx sql.NullInt64
-	if err := db.QueryRow(
-		`SELECT MAX(idx) FROM steps WHERE step_type = ? AND idx > ?`,
-		cortexStepTypeCheckpoint, afterIdx,
-	).Scan(&idx); err != nil || !idx.Valid {
+	var maxAll sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT MAX(idx) FROM steps`).Scan(&maxAll); err != nil || !maxAll.Valid {
 		return afterIdx, nil
 	}
-	newIdx := int(idx.Int64)
-	return newIdx, &acp.CompactionEvent{
-		ItemID: fmt.Sprintf("agy-compact-%d", newIdx),
+	highIdx := int(maxAll.Int64)
+	if highIdx <= afterIdx {
+		f.recordCompactionCheckMiss(sessionID, sig, afterIdx)
+		return afterIdx, nil
+	}
+
+	var cpIdx sql.NullInt64
+	if err := db.QueryRowContext(ctx,
+		`SELECT MAX(idx) FROM steps WHERE step_type = ? AND idx > ?`,
+		cortexStepTypeCheckpoint, afterIdx,
+	).Scan(&cpIdx); err != nil || !cpIdx.Valid {
+		f.recordCompactionCheckMiss(sessionID, sig, highIdx)
+		return highIdx, nil
+	}
+	newCP := int(cpIdx.Int64)
+	nextCursor := highIdx
+	if newCP > nextCursor {
+		nextCursor = newCP
+	}
+	f.recordCompactionCheckMiss(sessionID, sig, nextCursor)
+	return nextCursor, &acp.CompactionEvent{
+		ItemID: fmt.Sprintf("agy-compact-%d", newCP),
 	}
 }
 
 // inspectTurnErrorStep checks whether agy wrote a CORTEX_STEP_TYPE_ERROR_MESSAGE
 // (step_type = 17) row with idx > sinceIdx during the prompt that just ended.
-func inspectTurnErrorStep(appDataDir, sessionID string, sinceIdx int) *acp.PromptOutcomeOverride {
+func inspectTurnErrorStep(ctx context.Context, appDataDir, sessionID string, sinceIdx int) *acp.PromptOutcomeOverride {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	dbPath, err := conversationDBPath(appDataDir, sessionID)
 	if err != nil {
 		return nil
@@ -159,27 +186,28 @@ func inspectTurnErrorStep(appDataDir, sessionID string, sinceIdx int) *acp.Promp
 	}
 	defer func() { _ = db.Close() }()
 
-	rows, err := db.Query(
+	rows, err := db.QueryContext(ctx,
 		`SELECT idx, step_type, COALESCE(error_details, X''), COALESCE(step_payload, X'') FROM steps WHERE idx > ? AND step_type = ? ORDER BY idx DESC LIMIT 1`,
 		sinceIdx, cortexStepTypeErrorMessage,
 	)
 	if err != nil {
 		return nil
 	}
-	defer func() { _ = rows.Close() }()
-
 	if !rows.Next() {
+		_ = rows.Close()
 		return nil
 	}
 	var idx, stepType int
 	var errDetails, stepPayload []byte
-	if err := rows.Scan(&idx, &stepType, &errDetails, &stepPayload); err != nil {
+	scanErr := rows.Scan(&idx, &stepType, &errDetails, &stepPayload)
+	_ = rows.Close()
+	if scanErr != nil {
 		return nil
 	}
 	// If agy retried and succeeded with a subsequent planner response after
 	// this error step, do not mark the whole turn failed.
 	var laterPlanner sql.NullInt64
-	if err := db.QueryRow(
+	if err := db.QueryRowContext(ctx,
 		`SELECT MAX(idx) FROM steps WHERE idx > ? AND step_type = ?`,
 		idx, cortexStepTypePlannerResponse,
 	).Scan(&laterPlanner); err == nil && laterPlanner.Valid {
@@ -337,6 +365,27 @@ func (f *Flavor) clearBgLookupCache(sessionID string) {
 	f.bgLookupMu.Unlock()
 }
 
+type compactionCheckSnapshot struct {
+	sig      dbFileSignature
+	afterIdx int
+}
+
+func (f *Flavor) compactionCheckCacheHit(sessionID string, sig dbFileSignature, afterIdx int) bool {
+	f.compactionMu.Lock()
+	defer f.compactionMu.Unlock()
+	snap, ok := f.compactionCache[sessionID]
+	return ok && snap.sig == sig && snap.afterIdx >= afterIdx
+}
+
+func (f *Flavor) recordCompactionCheckMiss(sessionID string, sig dbFileSignature, afterIdx int) {
+	f.compactionMu.Lock()
+	defer f.compactionMu.Unlock()
+	if f.compactionCache == nil || len(f.compactionCache) >= 64 {
+		f.compactionCache = make(map[string]compactionCheckSnapshot)
+	}
+	f.compactionCache[sessionID] = compactionCheckSnapshot{sig: sig, afterIdx: afterIdx}
+}
+
 // CanLookupBackgroundCommands reports whether this flavor can inspect agy's
 // conversation DB for run_command steps that transitioned to background tasks.
 func (f *Flavor) CanLookupBackgroundCommands(sessionID string) bool {
@@ -348,10 +397,14 @@ func (f *Flavor) CanLookupBackgroundCommands(sessionID string) bool {
 // run_command that exceeded WaitMsBeforeAsync or launched as a daemon).
 // agy 1.5.16's ACP server omits toolOutput on in_progress tool_call_updates, so
 // task_details is the authoritative signal for background promotion and log
-// file correlation.
-func (f *Flavor) LookupBackgroundCommands(_ context.Context, sessionID string, toolCallIDs []string, includeCompleted bool) map[string]acp.BackgroundCommandInfo {
+// file correlation. minStepIdx bounds the scan via steps' PRIMARY KEY (idx) so
+// multi-thousand-turn conversation DBs never suffer full-table scans.
+func (f *Flavor) LookupBackgroundCommands(ctx context.Context, sessionID string, toolCallIDs []string, includeCompleted bool, minStepIdx int) map[string]acp.BackgroundCommandInfo {
 	if !f.CanLookupBackgroundCommands(sessionID) || len(toolCallIDs) == 0 {
 		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	dbPath, err := conversationDBPath(f.AppDataDir, sessionID)
 	if err != nil {
@@ -373,16 +426,19 @@ func (f *Flavor) LookupBackgroundCommands(_ context.Context, sessionID string, t
 	}
 	defer func() { _ = db.Close() }()
 
+	if minStepIdx < -1 {
+		minStepIdx = -1
+	}
 	var rows *sql.Rows
 	if includeCompleted {
-		rows, err = db.Query(
-			`SELECT idx, COALESCE(metadata, X''), task_details FROM steps WHERE status IN (?, ?, ?, ?) AND task_details IS NOT NULL AND length(task_details) > 0 ORDER BY idx DESC`,
-			cortexStepStatusRunning, cortexStepStatusDone, cortexStepStatusCanceled, cortexStepStatusError,
+		rows, err = db.QueryContext(ctx,
+			`SELECT idx, COALESCE(metadata, X''), task_details FROM steps WHERE idx > ? AND status IN (?, ?, ?, ?) AND task_details IS NOT NULL AND length(task_details) > 0 ORDER BY idx DESC`,
+			minStepIdx, cortexStepStatusRunning, cortexStepStatusDone, cortexStepStatusCanceled, cortexStepStatusError,
 		)
 	} else {
-		rows, err = db.Query(
-			`SELECT idx, COALESCE(metadata, X''), task_details FROM steps WHERE status = ? AND task_details IS NOT NULL AND length(task_details) > 0 ORDER BY idx DESC`,
-			cortexStepStatusRunning,
+		rows, err = db.QueryContext(ctx,
+			`SELECT idx, COALESCE(metadata, X''), task_details FROM steps WHERE idx > ? AND status = ? AND task_details IS NOT NULL AND length(task_details) > 0 ORDER BY idx DESC`,
+			minStepIdx, cortexStepStatusRunning,
 		)
 	}
 	if err != nil {
@@ -427,7 +483,18 @@ func (f *Flavor) LookupBackgroundCommands(_ context.Context, sessionID string, t
 		}
 		return nil
 	}
-	f.clearBgLookupCache(sessionID)
+	// Only invalidate the negative cache if at least one found command still
+	// carries a new log path (or keep misses cached for unchanged DB+WAL).
+	hasOutputFile := false
+	for _, info := range found {
+		if info.OutputFile != "" {
+			hasOutputFile = true
+			break
+		}
+	}
+	if hasOutputFile {
+		f.clearBgLookupCache(sessionID)
+	}
 	return found
 }
 

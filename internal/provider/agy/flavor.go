@@ -30,6 +30,7 @@ type Flavor struct {
 	subagentMu            sync.Mutex
 	subagentLaunchByChild map[string]string
 	subagentChildByLaunch map[string]string
+	subagentParentByChild map[string]subagentParentSource
 
 	// mcpTrustMu guards session-registered AO server membership and whether
 	// any colliding third-party MCP server name exists (in session config or
@@ -45,6 +46,11 @@ type Flavor struct {
 	// avoid redundant SQLite opens.
 	bgLookupMu    sync.Mutex
 	bgLookupCache map[string]bgLookupSnapshot
+
+	// compactionMu guards stat-based caching of clean compaction checks so
+	// unchanged conversation DB/WAL files avoid opening SQLite on every tool.
+	compactionMu    sync.Mutex
+	compactionCache map[string]compactionCheckSnapshot
 
 	// stepAnchorMu guards per-session monotonic step indices resolved by
 	// ResolvePromptStepAnchor so back-to-back steered prompts sharing a
@@ -596,7 +602,7 @@ func (f *Flavor) NormalizeToolComplete(u *acp.ToolCallUpdate, started acp.Normal
 				// read the full updated artifact file from disk so ProposedPlan is
 				// never truncated to a single hunk or dropped on multi-chunk edits.
 				if body == "" && path != "" && filepath.IsAbs(path) {
-					if data, err := os.ReadFile(path); err == nil && len(data) > 0 && len(data) <= 512*1024 {
+					if data, ok := readRegularFileBounded(path, 512*1024); ok && len(data) > 0 {
 						body = string(data)
 					}
 				}
@@ -608,11 +614,12 @@ func (f *Flavor) NormalizeToolComplete(u *acp.ToolCallUpdate, started acp.Normal
 				}
 			}
 			// Fallback inline diff when an ACP update omitted content[{type:"diff"}].
+			const maxInlineFallbackDiffBytes = 256 * 1024
 			if len(norm.DiffChanges) == 0 && norm.ItemType == "file_change" {
 				if path != "" {
 					switch rawName {
 					case "write_file", "write_to_file", "write":
-						if content := firstNonEmpty(params.Content, params.CodeContent); content != "" {
+						if content := firstNonEmpty(params.Content, params.CodeContent); content != "" && len(content) <= maxInlineFallbackDiffBytes {
 							if patch := acp.BuildUnifiedDiff(path, "", content); patch != "" {
 								norm.DiffPatch = patch
 								norm.DiffFilePath = path
@@ -622,26 +629,31 @@ func (f *Flavor) NormalizeToolComplete(u *acp.ToolCallUpdate, started acp.Normal
 					case "edit_file", "replace_file_content", "edit":
 						oldStr := firstNonEmpty(params.Target, params.TargetContent)
 						newStr := firstNonEmpty(params.Replacement, params.ReplacementContent)
-						if oldStr != "" || newStr != "" {
+						if (oldStr != "" || newStr != "") && len(oldStr)+len(newStr) <= maxInlineFallbackDiffBytes {
 							if patch := acp.BuildUnifiedDiff(path, oldStr, newStr); patch != "" {
 								norm.DiffPatch = patch
 								norm.DiffFilePath = path
-								if hunks := acp.BuildUnifiedDiffHunks(oldStr, newStr); hunks != "" {
+								if hunks := acp.StripUnifiedDiffHeader(patch); hunks != "" {
 									norm.DiffChanges = []acp.FileDiffChange{{Path: path, Kind: "update", Diff: hunks}}
 								}
 							}
 						}
 					case "multi_replace_file_content":
 						var patchParts, hunkParts []string
+						totalBytes := 0
 						for _, ch := range params.ReplacementChunks {
 							if ch.TargetContent == "" && ch.ReplacementContent == "" {
 								continue
 							}
+							totalBytes += len(ch.TargetContent) + len(ch.ReplacementContent)
+							if totalBytes > maxInlineFallbackDiffBytes {
+								break
+							}
 							if p := acp.BuildUnifiedDiff(path, ch.TargetContent, ch.ReplacementContent); p != "" {
 								patchParts = append(patchParts, p)
-							}
-							if h := acp.BuildUnifiedDiffHunks(ch.TargetContent, ch.ReplacementContent); h != "" {
-								hunkParts = append(hunkParts, h)
+								if h := acp.StripUnifiedDiffHeader(p); h != "" {
+									hunkParts = append(hunkParts, h)
+								}
 							}
 						}
 						if len(patchParts) > 0 {
@@ -1029,11 +1041,11 @@ func (f *Flavor) ExtractPendingQuestion(u *acp.ToolCallUpdate) ([]provider.UserI
 	return questions, true
 }
 
-func (f *Flavor) BeforePrompt(_ context.Context, sessionID string) any {
+func (f *Flavor) BeforePrompt(ctx context.Context, sessionID string) any {
 	if f.AppDataDir == "" || sessionID == "" {
 		return nil
 	}
-	maxIdx, ok := readMaxStepIndex(f.AppDataDir, sessionID)
+	maxIdx, ok := readMaxStepIndex(ctx, f.AppDataDir, sessionID)
 	if !ok {
 		return nil
 	}
@@ -1069,7 +1081,7 @@ func (f *Flavor) ResolvePromptStepAnchor(_ context.Context, sessionID, content s
 	return anchor
 }
 
-func (f *Flavor) AfterPrompt(_ context.Context, sessionID string, stopReason string, beforeToken any) *acp.PromptOutcomeOverride {
+func (f *Flavor) AfterPrompt(ctx context.Context, sessionID string, stopReason string, beforeToken any) *acp.PromptOutcomeOverride {
 	if f.AppDataDir == "" || sessionID == "" || stopReason == "cancelled" {
 		return nil
 	}
@@ -1079,36 +1091,37 @@ func (f *Flavor) AfterPrompt(_ context.Context, sessionID string, stopReason str
 		// rather than risking misattributing an older turn's error step.
 		return nil
 	}
-	return inspectTurnErrorStep(f.AppDataDir, sessionID, sinceIdx)
+	return inspectTurnErrorStep(ctx, f.AppDataDir, sessionID, sinceIdx)
 }
 
-func (f *Flavor) InitCompactionCursor(_ context.Context, sessionID string) int {
+func (f *Flavor) InitCompactionCursor(ctx context.Context, sessionID string) int {
 	if f.AppDataDir == "" || sessionID == "" {
 		return -1
 	}
-	return readMaxCheckpointIndex(f.AppDataDir, sessionID)
+	return readMaxCheckpointIndex(ctx, f.AppDataDir, sessionID)
 }
 
-func (f *Flavor) DetectCompaction(_ context.Context, sessionID string, afterIdx int) (int, *acp.CompactionEvent) {
+func (f *Flavor) DetectCompaction(ctx context.Context, sessionID string, afterIdx int) (int, *acp.CompactionEvent) {
 	if f.AppDataDir == "" || sessionID == "" {
 		return afterIdx, nil
 	}
-	return detectNewCheckpoint(f.AppDataDir, sessionID, afterIdx)
+	return f.detectNewCheckpoint(ctx, sessionID, afterIdx)
 }
 
 // ShouldHoldSpontaneousWakeClose checks `<appDataDir>/brain/<sessionId>/.system_generated/messages/`
 // for unread MESSAGE_PRIORITY_HIGH wake messages queued behind the current wake.
-func (f *Flavor) ShouldHoldSpontaneousWakeClose(_ context.Context, sessionID string) bool {
+func (f *Flavor) ShouldHoldSpontaneousWakeClose(ctx context.Context, sessionID string) bool {
 	if f.AppDataDir == "" || validateConversationSessionID(sessionID) != nil {
 		return false
 	}
-	msgDir := filepath.Join(f.AppDataDir, "brain", sessionID, ".system_generated", "messages")
+	brainDir := filepath.Join(f.AppDataDir, "brain")
+	msgDir := filepath.Join(brainDir, sessionID, ".system_generated", "messages")
 	entries, err := os.ReadDir(msgDir)
 	if err != nil || len(entries) == 0 {
 		return false
 	}
 	readSet := map[string]bool{}
-	if raw, err := os.ReadFile(filepath.Join(msgDir, "read.json")); err == nil {
+	if raw, ok := readContainedSmallFile(brainDir, sessionID, filepath.Join(msgDir, "read.json")); ok {
 		var ids []string
 		if json.Unmarshal(raw, &ids) == nil {
 			for _, id := range ids {
@@ -1129,7 +1142,11 @@ func (f *Flavor) ShouldHoldSpontaneousWakeClose(_ context.Context, sessionID str
 			}
 		}
 	}
-	for _, entry := range entries {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if ctx != nil && ctx.Err() != nil {
+			return false
+		}
+		entry := entries[i]
 		name := entry.Name()
 		if entry.IsDir() || name == "read.json" || !strings.HasSuffix(name, ".json") {
 			continue
@@ -1138,8 +1155,8 @@ func (f *Flavor) ShouldHoldSpontaneousWakeClose(_ context.Context, sessionID str
 		if readSet[id] {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(msgDir, name))
-		if err != nil {
+		data, ok := readContainedSmallFile(brainDir, sessionID, filepath.Join(msgDir, name))
+		if !ok {
 			continue
 		}
 		var msg struct {

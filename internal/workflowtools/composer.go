@@ -49,8 +49,11 @@ type ComposerContext struct {
 	// SessionReady reports whether this thread's live session carries the
 	// workflow tools. It is false for a thread with no live session; saying so
 	// beats an agent discovering it by calling a tool it does not have.
-	SessionReady bool               `json:"sessionReady"`
-	Workflows    []ComposerWorkflow `json:"workflows"`
+	SessionReady bool `json:"sessionReady"`
+	// MaxWaitSeconds caps the wait_seconds ceiling reported in the rendered
+	// block (defaults to MaxWaitSeconds when <= 0).
+	MaxWaitSeconds int                `json:"maxWaitSeconds,omitempty"`
+	Workflows      []ComposerWorkflow `json:"workflows"`
 	// WorkflowOverflow and RunOverflow are how many entries were left out.
 	WorkflowOverflow int           `json:"workflowOverflow"`
 	Runs             []ComposerRun `json:"runs"`
@@ -133,7 +136,11 @@ func RenderComposerContext(context ComposerContext) string {
 
 	block.WriteString("Tools:\n")
 	writeComposerRows(&block, composerTools)
-	block.WriteString("A wait never runs past " + fmt.Sprint(MaxWaitSeconds) + " seconds. A run this thread started reports its rest here as a message unless a waiting call returned it, so a wait that ends early costs nothing.\n")
+	maxWait := context.MaxWaitSeconds
+	if maxWait <= 0 || maxWait > MaxWaitSeconds {
+		maxWait = MaxWaitSeconds
+	}
+	block.WriteString("A wait never runs past " + fmt.Sprint(maxWait) + " seconds. A run this thread started reports its rest here as a message unless a waiting call returned it, so a wait that ends early costs nothing.\n")
 
 	block.WriteString("When a run needs a human, the reason picks the fix:\n")
 	writeComposerRows(&block, composerRepair)

@@ -168,6 +168,15 @@ func TestResolvePromptStepAnchorMonotonicForRepeatedSteers(t *testing.T) {
 		t.Fatalf("image-only multi-steer ResolvePromptStepAnchor = %q, want agy-step:10:hash10", a5)
 	}
 
+	// Unrelated single step (e.g. an unanchored ask_question reply) whose text
+	// disagrees with a normal user prompt must NOT be mis-stamped onto it.
+	appendTestStepRows(t, dbPath, []testStepRow{
+		{idx: 12, stepType: cortexStepTypeUserInput, payload: encodeTestUserInputStep("User answered: Option A", "hash12", 7000, false, false)},
+	})
+	if got := f.ResolvePromptStepAnchor(context.Background(), sid, "completely unrelated next prompt", 10); got != "" {
+		t.Fatalf("ResolvePromptStepAnchor(unrelated single step) = %q, want empty", got)
+	}
+
 	// Nil beforeToken must never guess from step 0.
 	if got := f.ResolvePromptStepAnchor(context.Background(), sid, "first", nil); got != "" {
 		t.Fatalf("ResolvePromptStepAnchor(nil beforeToken) = %q, want empty", got)

@@ -464,7 +464,7 @@ func TestLookupBackgroundCommandsCorrelatesConcurrentCommands(t *testing.T) {
 	flavor := NewFlavor(appDataDir)
 	// Querying call_12 (prefix of call_123), call_123 (backgrounded), and call_1234 (inline):
 	// ONLY call_123 must match!
-	got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_12", "call_123", "call_1234"}, false)
+	got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_12", "call_123", "call_1234"}, false, -1)
 	if len(got) != 1 {
 		t.Fatalf("LookupBackgroundCommands = %+v, want only call_123", got)
 	}
@@ -510,7 +510,7 @@ func TestLookupBackgroundCommandsStatGateSkipsUnchangedDB(t *testing.T) {
 	flavor.bgLookupOpenHook = func() { opens++ }
 
 	// 1st live call: opens DB, finds nothing, caches negative result for current DB/WAL stat.
-	if got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg"}, false); len(got) != 0 {
+	if got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg"}, false, -1); len(got) != 0 {
 		t.Fatalf("1st lookup = %+v, want empty", got)
 	}
 	if opens != 1 {
@@ -518,7 +518,7 @@ func TestLookupBackgroundCommandsStatGateSkipsUnchangedDB(t *testing.T) {
 	}
 
 	// 2nd live call with unchanged DB/WAL and same IDs: skipped without opening SQLite.
-	if got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg"}, false); len(got) != 0 {
+	if got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg"}, false, -1); len(got) != 0 {
 		t.Fatalf("2nd lookup = %+v, want empty", got)
 	}
 	if opens != 1 {
@@ -526,7 +526,7 @@ func TestLookupBackgroundCommandsStatGateSkipsUnchangedDB(t *testing.T) {
 	}
 
 	// 3rd live call with an unchecked ID: must open SQLite.
-	if got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg", "call_new"}, false); len(got) != 0 {
+	if got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg", "call_new"}, false, -1); len(got) != 0 {
 		t.Fatalf("3rd lookup = %+v, want empty", got)
 	}
 	if opens != 2 {
@@ -534,7 +534,7 @@ func TestLookupBackgroundCommandsStatGateSkipsUnchangedDB(t *testing.T) {
 	}
 
 	// Completion-time check (includeCompleted=true) must always bypass the live cache.
-	if got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg"}, true); len(got) != 0 {
+	if got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg"}, true, -1); len(got) != 0 {
 		t.Fatalf("includeCompleted lookup = %+v, want empty", got)
 	}
 	if opens != 3 {
@@ -547,13 +547,95 @@ func TestLookupBackgroundCommandsStatGateSkipsUnchangedDB(t *testing.T) {
 	if _, err := db.Exec(`UPDATE steps SET task_details = ? WHERE idx = 1`, taskBlob); err != nil {
 		t.Fatal(err)
 	}
-	got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg"}, false)
-	if opens != 4 {
-		t.Fatalf("opens after DB write = %d, want 4", opens)
+	// minStepIdx == 1 excludes idx <= 1 via PRIMARY KEY range scan.
+	if got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg"}, true, 1); len(got) != 0 {
+		t.Fatalf("bounded lookup(minStepIdx=1) = %+v, want empty", got)
+	}
+	got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg"}, false, 0)
+	if opens != 5 {
+		t.Fatalf("opens after DB write + bounded check = %d, want 5", opens)
 	}
 	info, ok := got["call_bg"]
 	if !ok || info.TaskID != sessionID+"/task-1" || info.OutputFile != filepath.Clean(logPath) {
 		t.Fatalf("lookup after DB write = %+v, want call_bg with task-1", got)
+	}
+}
+
+func TestDecodeTranscriptToolArgsPreservesNativeStringsInFullTranscript(t *testing.T) {
+	t.Parallel()
+	args := map[string]json.RawMessage{
+		"Path":        json.RawMessage(`"/tmp/cfg.json"`),
+		"Content":     json.RawMessage(`"{\"enabled\":true}"`),
+		"Target":      json.RawMessage(`"42"`),
+		"Replacement": json.RawMessage(`"true"`),
+		"StartLine":   json.RawMessage(`10`),
+	}
+	// Full transcript must keep JSON/numeric/boolean string literals as strings.
+	fullRaw := decodeTranscriptToolArgs(args, false)
+	var full map[string]any
+	if err := json.Unmarshal(fullRaw, &full); err != nil {
+		t.Fatalf("unmarshal full args: %v", err)
+	}
+	if s, ok := full["Content"].(string); !ok || s != `{"enabled":true}` {
+		t.Fatalf("full Content = %#v, want string {\"enabled\":true}", full["Content"])
+	}
+	if s, ok := full["Target"].(string); !ok || s != "42" {
+		t.Fatalf("full Target = %#v, want string 42", full["Target"])
+	}
+	if s, ok := full["Replacement"].(string); !ok || s != "true" {
+		t.Fatalf("full Replacement = %#v, want string true", full["Replacement"])
+	}
+	if n, ok := full["StartLine"].(float64); !ok || n != 10 {
+		t.Fatalf("full StartLine = %#v, want number 10", full["StartLine"])
+	}
+
+	// Compact transcript unwraps string-encoded JSON values.
+	compactRaw := decodeTranscriptToolArgs(map[string]json.RawMessage{
+		"Path":      json.RawMessage(`"\"/tmp/cfg.json\""`),
+		"StartLine": json.RawMessage(`"10"`),
+	}, true)
+	var compact map[string]any
+	if err := json.Unmarshal(compactRaw, &compact); err != nil {
+		t.Fatalf("unmarshal compact args: %v", err)
+	}
+	if s, ok := compact["Path"].(string); !ok || s != "/tmp/cfg.json" {
+		t.Fatalf("compact Path = %#v, want /tmp/cfg.json", compact["Path"])
+	}
+	if n, ok := compact["StartLine"].(float64); !ok || n != 10 {
+		t.Fatalf("compact StartLine = %#v, want 10", compact["StartLine"])
+	}
+}
+
+func TestDetectCompactionAdvancesCursorWithoutCheckpoint(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	sid := "sess-compact-cursor"
+	dbPath := seedRichConversationDB(t, appDataDir, sid, []testStepRow{
+		{idx: 0, stepType: cortexStepTypeUserInput, payload: encodeTestUserInputStep("u0", "h0", 1000, false, false)},
+		{idx: 5, stepType: cortexStepTypePlannerResponse, payload: []byte("r0")},
+	})
+	f := NewFlavor(appDataDir)
+	cursor := f.InitCompactionCursor(context.Background(), sid)
+	if cursor != 5 {
+		t.Fatalf("InitCompactionCursor = %d, want 5 (O(1) MAX(idx))", cursor)
+	}
+	// Append non-checkpoint steps: DetectCompaction must advance nextIdx to 12.
+	appendTestStepRows(t, dbPath, []testStepRow{
+		{idx: 10, stepType: cortexStepTypeUserInput, payload: encodeTestUserInputStep("u1", "h1", 2000, false, false)},
+		{idx: 12, stepType: cortexStepTypePlannerResponse, payload: []byte("r1")},
+	})
+	nextIdx, ev := f.DetectCompaction(context.Background(), sid, cursor)
+	if ev != nil || nextIdx != 12 {
+		t.Fatalf("DetectCompaction(no checkpoint) = (%d, %+v), want (12, nil)", nextIdx, ev)
+	}
+	// Append a real checkpoint at idx 15: must detect and advance cursor.
+	appendTestStepRows(t, dbPath, []testStepRow{
+		{idx: 15, stepType: cortexStepTypeCheckpoint, payload: []byte("cp")},
+		{idx: 16, stepType: cortexStepTypePlannerResponse, payload: []byte("r2")},
+	})
+	nextIdx, ev = f.DetectCompaction(context.Background(), sid, nextIdx)
+	if ev == nil || ev.ItemID != "agy-compact-15" || nextIdx != 16 {
+		t.Fatalf("DetectCompaction(with checkpoint) = (%d, %+v), want (16, agy-compact-15)", nextIdx, ev)
 	}
 }
 

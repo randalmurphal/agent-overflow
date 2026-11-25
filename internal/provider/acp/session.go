@@ -119,12 +119,14 @@ type pendingBackgroundCommand struct {
 	rawToolCallID        string
 	parentToolUseID      string
 	turnID               string
+	minStepIdx           int
 	startedAt            time.Time
 	liveCheckDelay       time.Duration
 	completionCheckDelay time.Duration
 	completionCheckAfter time.Time
 	nextCheckAt          time.Time
 	retryCount           int
+	promoted             bool
 }
 
 // Session represents one ACP conversation multiplexed onto a *Conn.
@@ -214,6 +216,7 @@ type Session struct {
 
 	sessionCtx      context.Context
 	sessionCancel   context.CancelFunc
+	closed          bool
 	closing         atomic.Bool
 	teardownEmitted atomic.Bool
 	readDone        chan struct{}
@@ -762,7 +765,10 @@ func (s *Session) removeInFlightConfirmLocked(c *pendingPromptConfirm) {
 	}
 	for i, entry := range s.inFlightConfirms {
 		if entry == c {
-			s.inFlightConfirms = append(s.inFlightConfirms[:i], s.inFlightConfirms[i+1:]...)
+			last := len(s.inFlightConfirms) - 1
+			copy(s.inFlightConfirms[i:], s.inFlightConfirms[i+1:])
+			s.inFlightConfirms[last] = nil
+			s.inFlightConfirms = s.inFlightConfirms[:last]
 			return
 		}
 	}
@@ -783,6 +789,20 @@ func responseWasCancelled(rawLine []byte) bool {
 	return env.Result != nil && env.Result.StopReason == "cancelled"
 }
 
+func responseHasError(rawLine []byte) bool {
+	if len(rawLine) == 0 {
+		return false
+	}
+	var env struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(rawLine, &env) != nil {
+		return false
+	}
+	trimmed := strings.TrimSpace(string(env.Error))
+	return trimmed != "" && trimmed != "null"
+}
+
 func appendUniqueConfirmLocked(dst []*pendingPromptConfirm, c *pendingPromptConfirm) []*pendingPromptConfirm {
 	if c == nil || c.uuid == "" || c.confirmed.Load() {
 		return dst
@@ -798,7 +818,10 @@ func appendUniqueConfirmLocked(dst []*pendingPromptConfirm, c *pendingPromptConf
 func removeConfirmSliceLocked(dst []*pendingPromptConfirm, c *pendingPromptConfirm) []*pendingPromptConfirm {
 	for i, existing := range dst {
 		if existing == c {
-			return append(dst[:i], dst[i+1:]...)
+			last := len(dst) - 1
+			copy(dst[i:], dst[i+1:])
+			dst[last] = nil
+			return dst[:last]
 		}
 	}
 	return dst
@@ -872,13 +895,15 @@ func (s *Session) makeWirePromptSettler(confirm *pendingPromptConfirm) func(rawL
 			// Do not arm the next steered prompt on session/cancel (which cancels
 			// all in-flight prompts); DO rearm when the head prompt ends normally
 			// or fails with a per-prompt RPC error while a later prompt remains.
+			// Never keep or stage a prompt whose own response carried an RPC error.
+			hasError := responseHasError(rawLine)
 			armNext := len(rawLine) > 0 && !responseWasCancelled(rawLine)
 			s.mu.Lock()
 			wasHead := len(s.inFlightConfirms) > 0 && s.inFlightConfirms[0] == confirm
 			wasStaged := containsConfirmLocked(s.stagedSteerConfirms, confirm)
 			s.removeInFlightConfirmLocked(confirm)
 			s.armedConfirms = removeConfirmSliceLocked(s.armedConfirms, confirm)
-			keepStaged := armNext && wasHead && wasStaged && confirm != nil && !confirm.confirmed.Load()
+			keepStaged := armNext && !hasError && wasHead && wasStaged && confirm != nil && !confirm.confirmed.Load()
 			if !keepStaged {
 				s.stagedSteerConfirms = removeConfirmSliceLocked(s.stagedSteerConfirms, confirm)
 			}
@@ -887,7 +912,7 @@ func (s *Session) makeWirePromptSettler(confirm *pendingPromptConfirm) func(rawL
 			}
 			if wasHead {
 				s.rearmNextConfirmLocked(armNext)
-			} else if armNext && confirm != nil && confirm.uuid != "" && !confirm.confirmed.Load() && s.wireInFlightPrompts > 0 {
+			} else if armNext && !hasError && confirm != nil && confirm.uuid != "" && !confirm.confirmed.Load() && s.wireInFlightPrompts > 0 {
 				// Keep an early-returning steered prompt staged above the
 				// composer until the running foreground tool/block finishes
 				// and the model begins its next step reacting to it.
@@ -1111,7 +1136,23 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 		s.emitResolvedDetachedToolQuestions(detachedQuestions, detachTurnID, "answered", userContent)
 	}
 
+	s.mu.Lock()
+	if s.closed {
+		if s.inFlightPrompts > 0 {
+			s.inFlightPrompts--
+		}
+		if s.activeFinishers > 0 {
+			s.activeFinishers--
+		}
+		if s.inFlightPrompts == 0 && s.activeFinishers == 0 {
+			s.signalInFlightZeroLocked()
+		}
+		s.mu.Unlock()
+		settleWire(nil)
+		return errors.New("acp: session is closed")
+	}
 	s.promptWG.Add(1)
+	s.mu.Unlock()
 	go func() {
 		defer s.promptWG.Done()
 		rawResp, waitErr := wait(s.sessionCtx)
@@ -1197,6 +1238,9 @@ func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeTok
 		}
 		s.armedConfirms = nil
 		s.stagedSteerConfirms = nil
+	} else if waitErr != nil {
+		s.armedConfirms = removeConfirmSliceLocked(s.armedConfirms, confirm)
+		s.stagedSteerConfirms = removeConfirmSliceLocked(s.stagedSteerConfirms, confirm)
 	} else if !closing && waitErr == nil && res.StopReason == "cancelled" && !wasInterruptCancel {
 		s.armedConfirms = removeConfirmSliceLocked(s.armedConfirms, confirm)
 		s.stagedSteerConfirms = removeConfirmSliceLocked(s.stagedSteerConfirms, confirm)
@@ -1233,6 +1277,24 @@ func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeTok
 		s.preCompactUsedTokens = 0
 		s.turnOpen = false
 		s.spontaneousTurnOpen = false
+		// Scrub orphaned foreground tool entries whose terminal tool_call_update
+		// never arrived (cancel/error/crash) so they neither retain large raw
+		// inputs nor permanently poison hasForegroundStartedToolsLocked.
+		for id, st := range s.startedTools {
+			if !st.IsBackground {
+				if _, isPendingQ := s.pendingToolQuestions[id]; !isPendingQ {
+					delete(s.startedTools, id)
+					delete(s.pendingBgCommands, id)
+				}
+			}
+		}
+		for id, st := range s.childStartedTools {
+			if !st.IsBackground {
+				delete(s.childStartedTools, id)
+				delete(s.pendingBgCommands, id)
+			}
+		}
+		clear(s.suppressedTodoTools)
 	}
 	s.mu.Unlock()
 
@@ -1350,7 +1412,7 @@ func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeTok
 	}
 
 	// Check flavor out-of-band outcome override (e.g. agy silent step_type=17 errors).
-	if override := s.flavor.AfterPrompt(context.Background(), sessionID, stopReason, effectiveBeforeToken); override != nil && override.ErrorMessage != "" {
+	if override := s.flavor.AfterPrompt(s.sessionCtx, sessionID, stopReason, effectiveBeforeToken); override != nil && override.ErrorMessage != "" {
 		failure := override.Failure
 		if failure == nil {
 			failure = &provider.FailureMeta{
@@ -1738,11 +1800,15 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 			if s.activeFinishers > 0 {
 				s.activeFinishers--
 			}
-			if openedTurnID != "" && s.inFlightPrompts == 0 {
-				s.turnOpen = false
-			}
-			if s.inFlightPrompts == 0 && s.activeFinishers == 0 {
-				s.signalInFlightZeroLocked()
+			if s.inFlightPrompts == 0 {
+				s.turnBeforeToken = nil
+				s.turnBeforeSet = false
+				if openedTurnID != "" {
+					s.turnOpen = false
+				}
+				if s.activeFinishers == 0 {
+					s.signalInFlightZeroLocked()
+				}
 			}
 			if cur, ok := s.pendingToolQuestions[resp.RequestID]; ok {
 				cur.answering = false
@@ -1799,22 +1865,47 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 		})
 	}
 	if followUpWait != nil {
-		s.promptWG.Add(1)
-		go func() {
-			defer s.promptWG.Done()
-			rawResp, waitErr := followUpWait(s.sessionCtx)
-			if followUpSettle != nil {
-				followUpSettle(nil)
+		s.mu.Lock()
+		spawnFollowUp := !s.closed
+		if spawnFollowUp {
+			s.promptWG.Add(1)
+		} else {
+			if s.inFlightPrompts > 0 {
+				s.inFlightPrompts--
 			}
-			s.finishPrompt(rawResp, waitErr, followUpBefore, nil)
-		}()
+			if s.activeFinishers > 0 {
+				s.activeFinishers--
+			}
+			if s.inFlightPrompts == 0 && s.activeFinishers == 0 {
+				s.signalInFlightZeroLocked()
+			}
+		}
+		s.mu.Unlock()
+		if spawnFollowUp {
+			go func() {
+				defer s.promptWG.Done()
+				rawResp, waitErr := followUpWait(s.sessionCtx)
+				if followUpSettle != nil {
+					followUpSettle(nil)
+				}
+				s.finishPrompt(rawResp, waitErr, followUpBefore, nil)
+			}()
+		} else if followUpSettle != nil {
+			followUpSettle(nil)
+		}
 	}
 	return nil
 }
 
 // Close detaches this session from its Conn, sending session/close on it.
 func (s *Session) Close() error {
+	s.mu.Lock()
+	s.closed = true
 	s.closing.Store(true)
+	sessionID := s.sessionID
+	inFlight := s.inFlightPrompts > 0
+	s.mu.Unlock()
+
 	if s.sessionCancel != nil {
 		s.sessionCancel()
 	}
@@ -1822,10 +1913,6 @@ func (s *Session) Close() error {
 	s.drainPendingApprovals("lost", true)
 
 	var err error
-	s.mu.Lock()
-	sessionID := s.sessionID
-	inFlight := s.inFlightPrompts > 0
-	s.mu.Unlock()
 
 	connAlive := true
 	select {
@@ -2120,7 +2207,7 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 		s.compactionPendingCompact = false
 		s.mu.Unlock()
 		if sessionID != "" {
-			if cursor := s.flavor.InitCompactionCursor(context.Background(), sessionID); cursor > 0 {
+			if cursor := s.flavor.InitCompactionCursor(s.sessionCtx, sessionID); cursor > 0 {
 				s.mu.Lock()
 				if cursor > s.lastCompactionIdx {
 					s.lastCompactionIdx = cursor
@@ -2390,11 +2477,16 @@ func looksLikeUUID(s string) bool {
 	return true
 }
 
+const maxSessionChildLaunchEntries = 256
+
 func (s *Session) registerChildLaunch(childConvID, launchToolCallID string) {
 	if childConvID == "" || launchToolCallID == "" {
 		return
 	}
 	s.mu.Lock()
+	if s.childLaunchByConvID == nil || len(s.childLaunchByConvID) >= maxSessionChildLaunchEntries {
+		s.childLaunchByConvID = make(map[string]string)
+	}
 	s.childLaunchByConvID[childConvID] = launchToolCallID
 	s.mu.Unlock()
 }
@@ -2417,12 +2509,12 @@ func (s *Session) resolveChildParentToolUseID(toolCallID string) (parentID strin
 	s.mu.Lock()
 	sessionID := s.sessionID
 	cached := s.childLaunchByConvID[prefix]
-	var candidateOwners []string
+	var candidateOwners map[string]struct{}
 	if cached == "" && prefix != sessionID && len(s.childLaunchByConvID) > 0 {
-		candidateOwners = make([]string, 0, len(s.childLaunchByConvID))
+		candidateOwners = make(map[string]struct{}, len(s.childLaunchByConvID))
 		for convID := range s.childLaunchByConvID {
 			if convID != prefix && convID != sessionID {
-				candidateOwners = append(candidateOwners, convID)
+				candidateOwners[convID] = struct{}{}
 			}
 		}
 	}
@@ -2433,14 +2525,29 @@ func (s *Session) resolveChildParentToolUseID(toolCallID string) (parentID strin
 	if cached != "" {
 		return cached, true, false
 	}
+	// Fast O(1) parent lookup: reads the child's inbox once to extract its owner
+	// conversation ID and launch call ID rather than probing every historical
+	// subagent owner in O(N).
+	if ownerConvID, rawLaunchID, handled := s.flavor.LookupSubagentParent(s.sessionCtx, prefix); handled {
+		if ownerConvID == sessionID && rawLaunchID != "" {
+			s.registerChildLaunch(prefix, rawLaunchID)
+			return rawLaunchID, true, false
+		}
+		if ownerConvID != "" && rawLaunchID != "" {
+			if _, known := candidateOwners[ownerConvID]; known {
+				fullLaunchID := ownerConvID + ":" + rawLaunchID
+				s.registerChildLaunch(prefix, fullLaunchID)
+				return fullLaunchID, true, false
+			}
+		}
+		return "", true, true
+	}
 	if launchID, ok := s.flavor.ResolveSubagentLaunch(s.sessionCtx, sessionID, prefix); ok && launchID != "" {
 		s.registerChildLaunch(prefix, launchID)
 		return launchID, true, false
 	}
-	// Nested subagents (parent -> childA -> childB): childB's inbox launch
-	// record names childA as sender, and childB's launch row on the parent
-	// stream is keyed as "<childA>:<rawCallId>".
-	for _, ownerConvID := range candidateOwners {
+	// Fallback for flavors that only implement ResolveSubagentLaunch.
+	for ownerConvID := range candidateOwners {
 		if rawLaunchID, ok := s.flavor.ResolveSubagentLaunch(s.sessionCtx, ownerConvID, prefix); ok && rawLaunchID != "" {
 			fullLaunchID := ownerConvID + ":" + rawLaunchID
 			s.registerChildLaunch(prefix, fullLaunchID)
@@ -2527,11 +2634,18 @@ func (s *Session) handleToolCallStart(tc *ToolCallUpdate, parentToolUseID string
 		if s.pendingBgCommands == nil {
 			s.pendingBgCommands = make(map[string]pendingBackgroundCommand)
 		}
+		minStepIdx := -1
+		if ownerSessionID == s.sessionID {
+			if beforeIdx, ok := s.turnBeforeToken.(int); ok {
+				minStepIdx = beforeIdx
+			}
+		}
 		s.pendingBgCommands[tc.ToolCallID] = pendingBackgroundCommand{
 			ownerSessionID:       ownerSessionID,
 			rawToolCallID:        rawLaunchCallID,
 			parentToolUseID:      parentToolUseID,
 			turnID:               turnID,
+			minStepIdx:           minStepIdx,
 			startedAt:            now,
 			liveCheckDelay:       liveDelay,
 			completionCheckDelay: completionDelay,
@@ -2695,7 +2809,7 @@ func (s *Session) resetBgCommandAfterApprovalLocked(toolCallID string) {
 }
 
 func (s *Session) armBgCmdWatcherLocked() bool {
-	if s.closing.Load() {
+	if s.closed || s.closing.Load() {
 		return false
 	}
 	if !s.bgCmdWatcherRunning {
@@ -2837,23 +2951,41 @@ func (s *Session) runBgCmdWatcher() {
 			}
 			for ownerSID, group := range bySession {
 				rawIDs := make([]string, 0, len(group))
+				minIdx := group[0].pending.minStepIdx
 				for _, d := range group {
 					rawIDs = append(rawIDs, d.pending.rawToolCallID)
+					if d.pending.minStepIdx < minIdx {
+						minIdx = d.pending.minStepIdx
+					}
 				}
-				found := s.flavor.LookupBackgroundCommands(s.sessionCtx, ownerSID, rawIDs, false)
+				found := s.flavor.LookupBackgroundCommands(s.sessionCtx, ownerSID, rawIDs, false, minIdx)
 				for _, d := range group {
+					promotedNow := false
 					if info, ok := found[d.pending.rawToolCallID]; ok {
+						promotedNow = true
 						s.promoteBackgroundCommand(d.toolCallID, d.pending.parentToolUseID, d.pending.turnID, info)
 						if info.OutputFile != "" {
 							continue
 						}
 					}
-					// Back off next check while the command has not backgrounded yet.
+					// Back off next check while the command has not backgrounded
+					// yet, and stop re-polling a promoted task whose provider
+					// never exposes a log path after bounded retries.
 					s.mu.Lock()
 					if cur, stillPending := s.pendingBgCommands[d.toolCallID]; stillPending {
+						if promotedNow {
+							cur.promoted = true
+						}
 						cur.retryCount++
+						if cur.promoted && cur.retryCount >= 20 {
+							delete(s.pendingBgCommands, d.toolCallID)
+							s.mu.Unlock()
+							continue
+						}
 						delay := 250 * time.Millisecond
-						if cur.retryCount >= 6 {
+						if cur.retryCount >= 12 {
+							delay = 2 * time.Second
+						} else if cur.retryCount >= 6 {
 							delay = time.Second
 						} else if cur.retryCount >= 2 {
 							delay = 500 * time.Millisecond
@@ -3024,7 +3156,7 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate, parentToolUseID str
 	// instead of mutating the old launch row in place.
 	if hadPendingBg && started.ItemType == "command_execution" && !started.IsBackground && !norm.IsBackground && !s.closing.Load() {
 		if !time.Now().Before(pendingBg.completionCheckAfter) {
-			if found := s.flavor.LookupBackgroundCommands(s.sessionCtx, pendingBg.ownerSessionID, []string{pendingBg.rawToolCallID}, true); len(found) > 0 {
+			if found := s.flavor.LookupBackgroundCommands(s.sessionCtx, pendingBg.ownerSessionID, []string{pendingBg.rawToolCallID}, true, pendingBg.minStepIdx); len(found) > 0 {
 				if info, ok := found[pendingBg.rawToolCallID]; ok {
 					started.IsBackground = true
 					if started.ExtraMeta == nil {
@@ -3113,19 +3245,28 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate, parentToolUseID str
 		s.emitEvent(evt)
 	}
 	if watchSubagent {
-		s.subagentWG.Add(1)
-		go func() {
-			defer func() {
-				s.mu.Lock()
-				if s.activeSubagentWatchers > 0 {
-					s.activeSubagentWatchers--
-				}
-				delete(s.childToolUses, tc.ToolCallID)
-				s.mu.Unlock()
-				s.subagentWG.Done()
+		s.mu.Lock()
+		spawnSubagent := !s.closed
+		if spawnSubagent {
+			s.subagentWG.Add(1)
+		} else if s.activeSubagentWatchers > 0 {
+			s.activeSubagentWatchers--
+		}
+		s.mu.Unlock()
+		if spawnSubagent {
+			go func() {
+				defer func() {
+					s.mu.Lock()
+					if s.activeSubagentWatchers > 0 {
+						s.activeSubagentWatchers--
+					}
+					delete(s.childToolUses, tc.ToolCallID)
+					s.mu.Unlock()
+					s.subagentWG.Done()
+				}()
+				s.flavor.WatchSubagent(s.sessionCtx, trackedLaunch)
 			}()
-			s.flavor.WatchSubagent(s.sessionCtx, trackedLaunch)
-		}()
+		}
 	}
 }
 
@@ -3402,7 +3543,6 @@ func (s *Session) checkPendingCompaction() {
 	}
 	s.compactionCheckPending = false
 	wasCompact := s.compactionPendingCompact
-	s.compactionPendingCompact = false
 	sessionID := s.sessionID
 	turnID := s.activeTurnID
 	preTokens := s.preCompactUsedTokens
@@ -3427,8 +3567,15 @@ func (s *Session) maybeEmitCompaction(sessionID, turnID, defaultTrigger string, 
 	}
 	s.mu.Unlock()
 
-	nextIdx, ev := s.flavor.DetectCompaction(context.Background(), sessionID, afterIdx)
+	nextIdx, ev := s.flavor.DetectCompaction(s.sessionCtx, sessionID, afterIdx)
 	if ev == nil {
+		if nextIdx > afterIdx {
+			s.mu.Lock()
+			if nextIdx > s.lastCompactionIdx {
+				s.lastCompactionIdx = nextIdx
+			}
+			s.mu.Unlock()
+		}
 		return
 	}
 	s.mu.Lock()
@@ -3437,6 +3584,7 @@ func (s *Session) maybeEmitCompaction(sessionID, turnID, defaultTrigger string, 
 		return
 	}
 	s.lastCompactionIdx = nextIdx
+	s.compactionPendingCompact = false
 	s.mu.Unlock()
 
 	trigger := ev.Trigger
@@ -3531,7 +3679,7 @@ func (s *Session) handleUsageUpdate(used, size int) {
 	// Trailing usage_update closes a spontaneous post-prompt wake turn once no
 	// foreground parent tools, permissions, or questions remain open and the
 	// flavor reports no queued high-priority wake.
-	if spontaneous && !s.flavor.ShouldHoldSpontaneousWakeClose(context.Background(), sessionID) {
+	if spontaneous && !s.flavor.ShouldHoldSpontaneousWakeClose(s.sessionCtx, sessionID) {
 		s.mu.Lock()
 		if s.spontaneousTurnOpen && s.inFlightPrompts == 0 &&
 			!s.hasForegroundStartedToolsLocked() && len(s.pendingPerms) == 0 && len(s.pendingToolQuestions) == 0 {

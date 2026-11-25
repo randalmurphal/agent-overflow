@@ -196,10 +196,21 @@ func lookupUserPromptAnchor(appDataDir, sessionID, content string, minExclusiveI
 		}
 	}
 	if len(steps) == 1 {
-		// Single new user step since beforeToken: handles media-only prompts,
-		// expanded composer slash commands, and output-schema-wrapped prompts
-		// without guessing among multiple concurrent steps.
-		return steps[0].Idx, FormatStepAnchor(steps[0].Idx, steps[0].StepHash)
+		// Single new user step since beforeToken: allow fallback ONLY when the
+		// prompt text cannot be compared verbatim (media-only, image markers,
+		// expanded composer slash command, output-schema wrapper, or empty step
+		// text). Never blindly stamp an unrelated step (for example an
+		// unanchored ask_question reply) onto a normal text prompt whose text
+		// disagrees.
+		trimmed := strings.TrimSpace(content)
+		stepText := normalizePromptText(steps[0].Text)
+		if trimmed == "" ||
+			stepText == "" ||
+			reImageMarker.MatchString(trimmed) ||
+			strings.HasPrefix(trimmed, "/") ||
+			strings.Contains(stepText, normalizePromptText(trimmed)) {
+			return steps[0].Idx, FormatStepAnchor(steps[0].Idx, steps[0].StepHash)
+		}
 	}
 	return -1, ""
 }
@@ -209,41 +220,23 @@ func lookupUserPromptAnchor(appDataDir, sessionID, content string, minExclusiveI
 // after it are removed. Returns CutKeepAll when the target was already cut or
 // was never written at the tail of the conversation DB.
 func resolveUserPromptCutIdx(tx *sql.Tx, target UserPromptCutTarget) (int, error) {
-	userSteps, maxStepIdx, err := readNativeUserSteps(tx, -1)
-	if err != nil {
-		return 0, fmt.Errorf("agy fork: %w", err)
-	}
-
-	// 1. Authoritative stored native anchor ("agy-step:<idx>:<hash>").
+	// 1. Authoritative stored native anchor ("agy-step:<idx>:<hash>"):
+	// O(1) primary-key lookup without scanning the rest of the steps table.
 	if rawAnchor := strings.TrimSpace(target.Anchor); rawAnchor != "" {
 		anchorIdx, anchorHash, ok := ParseStepAnchor(rawAnchor)
 		if !ok {
 			return 0, fmt.Errorf("agy fork: malformed stored step anchor %q", rawAnchor)
 		}
-		for _, s := range userSteps {
-			if s.Idx != anchorIdx {
-				continue
-			}
-			if anchorHash != "" && s.StepHash != "" && s.StepHash != anchorHash {
-				return 0, fmt.Errorf("agy fork: stored step anchor %q hash mismatch (db step %d has hash %q); refusing to cut wrong message", rawAnchor, s.Idx, s.StepHash)
-			}
-			if s.Idx <= 0 {
-				return 0, errors.New("agy fork: cut before first step leaves no prefix")
-			}
-			return s.Idx - 1, nil
-		}
-		// Anchor step absent: if the DB already ends strictly before anchorIdx
-		// (retry after a prior rollback sliced the DB, or provider stopped
-		// before persisting this tail step), keep the existing prefix intact.
-		if maxStepIdx < anchorIdx {
-			return CutKeepAll, nil
-		}
-		return 0, fmt.Errorf("agy fork: stored step anchor %q not found in conversation DB (max step %d); refusing to guess cut position", rawAnchor, maxStepIdx)
+		return resolveAnchoredCutIdx(tx, rawAnchor, anchorIdx, anchorHash)
 	}
 
 	// 2. Fallback for pre-existing/imported messages without a stored anchor:
 	// match by exact content/media, disambiguating duplicates with neighbor
 	// context, creation timestamp proximity, and tail distance.
+	userSteps, _, err := readNativeUserSteps(tx, -1)
+	if err != nil {
+		return 0, fmt.Errorf("agy fork: %w", err)
+	}
 	candidates := matchUserStepCandidates(userSteps, target)
 	if len(candidates) == 0 {
 		if isUnwrittenTailPrompt(userSteps, target) {
@@ -261,6 +254,75 @@ func resolveUserPromptCutIdx(tx *sql.Tx, target UserPromptCutTarget) (int, error
 		return 0, errors.New("agy fork: cut before first step leaves no prefix")
 	}
 	return targetIdx - 1, nil
+}
+
+// resolveAnchoredCutIdx performs an O(1) primary-key lookup for a stored native
+// anchor, avoiding scanning any other steps or reading large step_payload blobs
+// when the metadata column already verifies the step hash.
+func resolveAnchoredCutIdx(tx *sql.Tx, rawAnchor string, anchorIdx int, anchorHash string) (int, error) {
+	hasMetaCol := stepsHasMetadataColumn(tx)
+	var stepType int
+	var metaBlob, payload []byte
+	var err error
+	if hasMetaCol {
+		err = tx.QueryRow(
+			`SELECT step_type, COALESCE(metadata, X'') FROM steps WHERE idx = ?`,
+			anchorIdx,
+		).Scan(&stepType, &metaBlob)
+	} else {
+		err = tx.QueryRow(
+			`SELECT step_type, COALESCE(step_payload, X'') FROM steps WHERE idx = ?`,
+			anchorIdx,
+		).Scan(&stepType, &payload)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		var maxIdxNull sql.NullInt64
+		if maxErr := tx.QueryRow(`SELECT MAX(idx) FROM steps`).Scan(&maxIdxNull); maxErr != nil {
+			return 0, fmt.Errorf("agy fork: query max step idx: %w", maxErr)
+		}
+		maxStepIdx := -1
+		if maxIdxNull.Valid {
+			maxStepIdx = int(maxIdxNull.Int64)
+		}
+		// DB already ends strictly before anchorIdx (retry after a prior
+		// rollback sliced the DB, or provider stopped before persisting this
+		// tail step): keep existing prefix intact.
+		if maxStepIdx < anchorIdx {
+			return CutKeepAll, nil
+		}
+		return 0, fmt.Errorf("agy fork: stored step anchor %q not found in conversation DB (max step %d); refusing to guess cut position", rawAnchor, maxStepIdx)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("agy fork: lookup anchored step %d: %w", anchorIdx, err)
+	}
+	if stepType != cortexStepTypeUserInput {
+		var maxIdxNull sql.NullInt64
+		_ = tx.QueryRow(`SELECT MAX(idx) FROM steps`).Scan(&maxIdxNull)
+		maxStepIdx := -1
+		if maxIdxNull.Valid {
+			maxStepIdx = int(maxIdxNull.Int64)
+		}
+		return 0, fmt.Errorf("agy fork: stored step anchor %q not found as user step in conversation DB (step %d has type %d, max step %d); refusing to guess cut position", rawAnchor, anchorIdx, stepType, maxStepIdx)
+	}
+	if anchorHash != "" {
+		_, stepHash := decodeStepMetadata(metaBlob)
+		if stepHash == "" {
+			if hasMetaCol {
+				if pErr := tx.QueryRow(`SELECT COALESCE(step_payload, X'') FROM steps WHERE idx = ?`, anchorIdx).Scan(&payload); pErr != nil {
+					return 0, fmt.Errorf("agy fork: read anchored step %d payload: %w", anchorIdx, pErr)
+				}
+			}
+			step := decodeUserInputStep(anchorIdx, payload, metaBlob)
+			stepHash = step.StepHash
+		}
+		if stepHash != "" && stepHash != anchorHash {
+			return 0, fmt.Errorf("agy fork: stored step anchor %q hash mismatch (db step %d has hash %q); refusing to cut wrong message", rawAnchor, anchorIdx, stepHash)
+		}
+	}
+	if anchorIdx <= 0 {
+		return 0, errors.New("agy fork: cut before first step leaves no prefix")
+	}
+	return anchorIdx - 1, nil
 }
 
 func matchUserStepCandidates(userSteps []nativeUserStep, target UserPromptCutTarget) []int {

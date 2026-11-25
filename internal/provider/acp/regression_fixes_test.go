@@ -847,7 +847,7 @@ func (f *lookupBgFlavor) NormalizeToolComplete(u *ToolCallUpdate, started Normal
 
 func (f *lookupBgFlavor) CanLookupBackgroundCommands(sessionID string) bool { return sessionID != "" }
 
-func (f *lookupBgFlavor) LookupBackgroundCommands(_ context.Context, _ string, toolCallIDs []string, includeCompleted bool) map[string]BackgroundCommandInfo {
+func (f *lookupBgFlavor) LookupBackgroundCommands(_ context.Context, _ string, toolCallIDs []string, includeCompleted bool, _ int) map[string]BackgroundCommandInfo {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if includeCompleted {

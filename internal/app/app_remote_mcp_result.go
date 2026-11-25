@@ -32,10 +32,6 @@ type remoteResultOptions struct {
 	WaitSeconds    *float64 `json:"wait_seconds"`
 }
 
-func (o remoteResultOptions) validate() error {
-	return o.validateWithMaxWait(maxRemoteWaitSeconds)
-}
-
 func (o remoteResultOptions) validateWithMaxWait(maxWait int) error {
 	if maxWait <= 0 || maxWait > maxRemoteWaitSeconds {
 		maxWait = maxRemoteWaitSeconds
