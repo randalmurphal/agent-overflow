@@ -40,6 +40,7 @@
   const MAX_VOTE = 1000;
 
   const view = $derived(poker?.view ?? null);
+  const readAt = $derived(view?.read_at ?? 0);
   const pending = $derived(ticketWrite(ctx.key, 'poker')?.pending ?? false);
   const mine = $derived(view?.votes?.find((v) => v.mine) ?? null);
   const result = $derived(view?.revealed ? pokerResult(view.votes ?? []) : []);
@@ -110,7 +111,7 @@
     </ul>
     <p class="text-xs text-fg-muted" data-testid="ticket-poker-state">
       {view.revealed ? 'Revealed.' : 'Not revealed.'}
-      {#if view.read_at}Read {relativeTime(view.read_at, 'locale', ctx.ref.backend)}.{/if}
+      {#if readAt}Read {relativeTime(readAt, 'locale', ctx.ref.backend)}.{/if}
     </p>
   {/if}
   <div class="flex flex-wrap items-center gap-1" role="group" aria-label="Your vote">
