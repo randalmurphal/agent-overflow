@@ -262,6 +262,13 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 			return Identity{}, fmt.Errorf("store: restore: copy sqlite_sequence: %w", err)
 		}
 	}
+	// A link's seen_root names a root of the database that wrote it, and
+	// the mirror was emptied above while its sequence stayed this
+	// database's: the restored links name no root, keeping their ticket and
+	// what they last showed of it.
+	if _, err := tx.Exec(`UPDATE main.thread_tickets SET seen_root = 0, missing = 0 WHERE seen_root <> 0 OR missing <> 0`); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: forget the mirror roots of the restored ticket links: %w", err)
+	}
 
 	// Re-install what the copy ran without, from the same var the latest
 	// trigger migration installs, so the two can never describe different

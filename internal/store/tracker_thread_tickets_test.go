@@ -449,8 +449,10 @@ func TestRestoreKeepsTheTrackerTables(t *testing.T) {
 	if got, err := st.ListProjectTrackerBoards("p1"); err != nil || !slices.Equal(got, boards) {
 		t.Fatalf("boards after restore = %+v, %v", got, err)
 	}
-	if got := mustGetThreadTicket(t, st, "t1"); got != link {
-		t.Fatalf("link after restore = %+v; want %+v", got, link)
+	restored := link
+	restored.SeenRoot = 0
+	if got := mustGetThreadTicket(t, st, "t1"); got != restored {
+		t.Fatalf("link after restore = %+v; want %+v", got, restored)
 	}
 	newRoot, _, err := st.GetOrCreateMirrorRoot(jira.ID)
 	if err != nil || newRoot == root {
@@ -458,6 +460,45 @@ func TestRestoreKeepsTheTrackerTables(t *testing.T) {
 	}
 	if row, err := st.GetThread("t1"); err != nil || row.TicketLink == nil || row.TicketLink.State != TicketLinkNotChecked {
 		t.Fatalf("link after restore = %+v, %v; want not checked", row.TicketLink, err)
+	}
+}
+
+// A root ID is this database's: restored into another database, whose
+// own roots count from its own sequence, a link forgets the root its copy
+// named, so a root the destination makes for another site is never read
+// as the one the link saw. The ticket and its last seen key, title and
+// status stay.
+func TestRestoreFromAnotherDatabaseForgetsTheLinksRoots(t *testing.T) {
+	src := snapshotTestStore(t)
+	seedSnapshotFixture(t, src, "t1", "linked")
+	siteA := mustCreateTrackerConnection(t, src, jiraConnection(mirrorSite, "user1@example.com", 1))
+	siteB := mustCreateTrackerConnection(t, src, jiraConnection("https://other.example.com", "user1@example.com", 2))
+	root, _, err := src.GetOrCreateMirrorRoot(siteA.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustSetThreadTicket(t, src, readLink(src, root, "t1", titledCard("10001", 5, "Fix the login page")))
+	seen := mustGetThreadTicket(t, src, "t1")
+	snap := filepath.Join(t.TempDir(), "snap.db")
+	if err := src.SnapshotTo(snap); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := snapshotTestStore(t)
+	if _, err := dst.RestoreFrom(snap); err != nil {
+		t.Fatal(err)
+	}
+	if other, _, err := dst.GetOrCreateMirrorRoot(siteB.ID); err != nil || other != root {
+		t.Fatalf("the destination's first root = %d, %v; this test needs it to be %d, the root the link saw", other, err, root)
+	}
+	row, err := dst.GetThread("t1")
+	if err != nil || row.TicketLink == nil || row.TicketLink.State != TicketLinkNotChecked || row.TicketLink.ConnectionID != siteA.ID {
+		t.Fatalf("restored link row = %+v, %v; want not checked through %s", row.TicketLink, err, siteA.ID)
+	}
+	want := seen
+	want.SeenRoot, want.Missing = 0, false
+	if got := mustGetThreadTicket(t, dst, "t1"); got != want {
+		t.Fatalf("restored link = %+v; want %+v", got, want)
 	}
 }
 

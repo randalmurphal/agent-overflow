@@ -1515,8 +1515,9 @@ site and issue ID, so the link means the same ticket on every computer.
   root, else from the site's connections, `not_checked` (one is on),
   `turned_off` (all are off) or `no_connection`. `connectionId` is the
   root's connection, else the lowest ID turned on (`TicketConnection`).
-  A turn off, a removal or a restore detaches or empties the root, and
-  no root ID returns, so no write resets a copy.
+  A turn off or a removal detaches the root, and no root ID returns, so
+  no write resets a copy. A restore, whose snapshot's root IDs are
+  another database's, sets every link's root to none in its transaction.
 - **The row.** `threadColumns` carries the link as one JSON column
   (`threadTicketLinkColumn`), guarded by one `EXISTS` on
   `thread_tickets` that runs once per statement: a full thread list read
