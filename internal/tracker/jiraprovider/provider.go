@@ -97,7 +97,13 @@ func siteOrigin(s string) (string, error) {
 // (tracker.Card.URL): its address follows its key, which a project's
 // rename changes without moving the issue's update time.
 func IssueURL(site, key string) string {
-	return strings.TrimSuffix(site, "/") + "/browse/" + url.PathEscape(key)
+	return IssueURLPrefix(site) + url.PathEscape(key)
+}
+
+// IssueURLPrefix is IssueURL less the key: the address of an issue on site
+// is it with the key escaped as a path segment.
+func IssueURLPrefix(site string) string {
+	return strings.TrimSuffix(site, "/") + "/browse/"
 }
 
 // Capabilities are Jira's: every capability the neutral model names.
