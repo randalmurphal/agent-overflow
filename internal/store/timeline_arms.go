@@ -590,24 +590,21 @@ func materializedIDSelection(q sqlQueryer, threadID string, sel timelineSelectio
 }
 
 // turnItemIndexQuery renders the MIN or MAX item_index of one turn's
-// logical rows; NULL when the turn has none. It is the turn's first row in
-// that order: each arm reads its turn index in order and the compound
-// merges them, so the local arm reads one entry of its index instead of
-// every row of the turn.
+// logical rows; NULL when the turn has none. Each arm takes its own bound
+// and the compound the bound of those, so the local arm reads one entry
+// of its turn index instead of every row of the turn. An arm's bound is one
+// index entry only while the arm reads one lineage level, so the compound
+// is ordered, which renders a pair of arms per level; it orders at most one
+// row per arm.
 func turnItemIndexQuery(q sqlQueryer, threadID string, turnIndex int, aggregate string) (string, []any, error) {
 	if aggregate != "MIN" && aggregate != "MAX" {
 		return "", nil, fmt.Errorf("store: turn item index aggregate %q for %s is not MIN or MAX", aggregate, threadID)
 	}
-	order := "item_index"
-	if aggregate == "MAX" {
-		order = "item_index DESC"
-	}
 	sql, args, err := timelineArms(q, threadID, timelineSelection{
-		Columns:  func(string, string) string { return "items.item_index AS item_index" },
+		Columns:  func(string, string) string { return aggregate + "(items.item_index) AS item_index" },
 		Turn:     boundInt,
 		TurnArgs: []any{turnIndex},
-		OrderBy:  order,
-		Limit:    1,
+		OrderBy:  "item_index",
 	})
 	if err != nil {
 		return "", nil, err

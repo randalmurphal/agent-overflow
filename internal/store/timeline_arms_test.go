@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1050,9 +1051,10 @@ func TestTimelineItemsViewJoinPushesDown(t *testing.T) {
 	}
 }
 
-// A turn's item index bound is the turn's first row in order: it agrees
-// with the view, and each local arm reads its turn index in order, so the
-// compound stops at its first row instead of sorting the turn.
+// A turn's item index bound is taken per arm: every arm's bound, and so
+// the compound's, agrees with the view, and each local arm, one per lineage
+// level, stops at the first row of its turn index instead of reading the
+// turn.
 func TestTurnItemIndexQueryTakesEachArmsBound(t *testing.T) {
 	s := newTestStore(t)
 	seedKeyedLookupThread(t, s)
@@ -1092,29 +1094,55 @@ func TestTurnItemIndexQueryTakesEachArmsBound(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			plan := explainPlan(t, s, query, args...)
-			local := map[int]bool{}
-			for _, r := range plan {
-				if strings.HasPrefix(r.detail, "SEARCH items USING COVERING INDEX idx_items_thread_turn_item_unique (thread_id=? AND turn_index=?)") ||
-					strings.HasPrefix(r.detail, "SEARCH items USING INDEX idx_items_thread_turn_item_unique (thread_id=? AND turn_index=?)") {
-					local[r.parent] = true
-				}
-			}
-			// The thread's own local arm, and on the fork the level's. An
-			// imported arm reads its turn across chunks and sorts it, as its
-			// MIN or MAX read every row of it.
+			// The thread's own local arm, and on the fork the level's too,
+			// steps its aggregate once and leaves the loop. An imported arm
+			// reads its turn across chunks, so its bound reads every row.
 			want := 1
 			if threadID == keyedForkID {
 				want = 2
 			}
-			if len(local) != want {
-				t.Errorf("%s %s: %d local arms read the turn index, want %d\n%s", threadID, aggregate, len(local), want, planText(plan))
-			}
-			for _, r := range plan {
-				if local[r.parent] && strings.Contains(r.detail, "USE TEMP B-TREE") {
-					t.Errorf("%s %s sorts a local arm's rows instead of reading its index in order\n%s", threadID, aggregate, planText(plan))
-				}
+			if got := aggregateEarlyOuts(t, s, aggregate, query, args); got != want {
+				t.Errorf("%s %s: %d arms stop at their first row, want %d:\n%s", threadID, aggregate, got, want, query)
 			}
 		}
 	}
+}
+
+// aggregateEarlyOuts counts the loops of query's program whose MIN or MAX
+// step jumps out of the loop: an index read in order that stops at its
+// first row.
+func aggregateEarlyOuts(t *testing.T, s *Store, aggregate, query string, args []any) int {
+	t.Helper()
+	rows, err := s.db.Query("EXPLAIN "+query, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	type op struct {
+		code string
+		p2   int64
+		p4   string
+	}
+	var program []op
+	for rows.Next() {
+		var addr, p1, p2, p3 int64
+		var code string
+		var p4, p5, comment sql.NullString
+		if err := rows.Scan(&addr, &code, &p1, &p2, &p3, &p4, &p5, &comment); err != nil {
+			t.Fatal(err)
+		}
+		program = append(program, op{code: code, p2: p2, p4: p4.String})
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	step := strings.ToLower(aggregate) + "("
+	earlyOuts := 0
+	for addr := 0; addr+1 < len(program); addr++ {
+		next := program[addr+1]
+		if program[addr].code == "AggStep" && strings.HasPrefix(program[addr].p4, step) && next.code == "Goto" && next.p2 > int64(addr+1) {
+			earlyOuts++
+		}
+	}
+	return earlyOuts
 }
