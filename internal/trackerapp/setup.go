@@ -293,7 +293,7 @@ func (s *Service) replaceSetup(slug, revision string, setup Setup) (save SetupSa
 		return SetupSave{}, nil, nil, err
 	}
 	if data == nil {
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := atomicfile.Remove(path); err != nil {
 			return SetupSave{}, nil, nil, fmt.Errorf("trackerapp: remove the tracker setup file %s: %w", path, err)
 		}
 	} else if err := atomicfile.Write(path, data); err != nil {

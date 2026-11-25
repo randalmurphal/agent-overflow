@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -535,5 +536,41 @@ func TestASubscribeReadsItsProjectOnce(t *testing.T) {
 		}
 		m.svc.ReleaseSubscription(sub.ID)
 		m.saveSetup(t, m.project(), m.regrouped(map[string]string{"1": "done"}))
+	}
+}
+
+// unsyncableDir makes dir refuse to be opened, so a sync of it fails,
+// while a file in it can still be made, renamed and removed (write and
+// search permission without read), until the test ends.
+func unsyncableDir(t *testing.T, dir string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("a directory is not synced on Windows")
+	}
+	if err := os.Chmod(dir, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if f, err := os.Open(dir); err == nil {
+		_ = f.Close()
+		t.Skip("this user opens a directory it may not read")
+	}
+}
+
+// Clearing the setup syncs the directory the file was removed from, as a
+// write does, so the removal survives a power loss: a sync that fails
+// fails the save.
+func TestClearingTheSetupSyncsItsDirectory(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	save := m.saveSetup(t, m.project(), m.regrouped(map[string]string{"s1": "done"}))
+	path := m.setupPathOf(t, m.project())
+	unsyncableDir(t, filepath.Dir(path))
+	cleared, err := m.svc.SetProjectSetup(m.project(), save.Stored.Revision, Setup{})
+	if err == nil || !strings.Contains(err.Error(), "sync dir") {
+		t.Fatalf("a clear whose directory sync failed = %+v, %v; want the sync's error", cleared, err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the clear left its file: %v", err)
 	}
 }
