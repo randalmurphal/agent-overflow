@@ -1534,6 +1534,37 @@ describe('the ticket in the pane', () => {
     });
   });
 
+  it('offers no Save anyway for a move whose form went with its ticket closed while the move was out', async () => {
+    install();
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      moves: [{
+        id: '31', name: 'Resolve', to: { id: 's3', name: 'Done', group: 'done' },
+        fields: [{ id: 'environment', name: 'Environment', kind: 'rich_text', editable: true, value: {} }],
+      }],
+    }) as unknown as DetailView);
+    let answer: ((view: WriteView) => void) | undefined;
+    const move = setBindingMock('MoveTrackerIssue', () => new Promise<WriteView>((resolve) => { answer = resolve; }));
+    const view = mount();
+    let screen = await openCard(view, '1');
+    const status = () => within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'status')!;
+    await fireEvent.click(within(status()).getByTestId('ticket-field-value'));
+    await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-item')));
+    const form = await within(screen).findByTestId('ticket-move-form');
+    await fireEvent.input(within(form).getByTestId('ticket-move-text'), { target: { value: 'Draft A' } });
+    await fireEvent.click(within(form).getByTestId('ticket-move-submit'));
+    await waitFor(() => expect(answer).toBeDefined());
+    // Closed while the move is out, the form goes; reopened before the refusal lands.
+    await fireEvent.click(view.getByTestId('ticket-close'));
+    await waitFor(() => expect(view.queryByTestId('ticket-screen')).toBeNull());
+    screen = await openCard(view, '1');
+    expect(within(screen).queryByTestId('ticket-move-form')).toBeNull();
+    answer!({ parts: [{ step: 'move', state: 'refused', refusal: { reason: 'loss', message: 'This edit would lose formatting.', lost: ['a table'] } }] } as WriteView);
+    await waitFor(() => expect(within(status()).getByTestId('ticket-write-outcome')).toHaveTextContent('This edit would lose formatting.'));
+    expect(within(status()).queryByTestId('ticket-write-save-anyway')).toBeNull();
+    expect(move).toHaveBeenCalledTimes(1);
+  });
+
   it('starts a move\'s Description from the description the ticket shows, and keeps that as its edit base', async () => {
     install();
     const detail = (issue: string, description: string) => ({
@@ -1706,6 +1737,29 @@ describe('the ticket in the pane', () => {
     expect(within(description).queryByTestId('ticket-write-save-anyway')).toBeNull();
     expect(within(description).queryByTestId('ticket-write-outcome')).toBeNull();
     expect(edit).toHaveBeenCalledTimes(2);
+  });
+
+  it('offers no Save anyway for a description edit that went with its ticket closed while it was saving', async () => {
+    install();
+    installTicket();
+    let answer: ((view: WriteView) => void) | undefined;
+    const edit = setBindingMock('EditTrackerIssue', () => new Promise<WriteView>((resolve) => { answer = resolve; }));
+    const view = mount();
+    let screen = await openCard(view, '1');
+    const description = () => within(screen).getAllByTestId('ticket-section').find((s) => s.dataset.field === 'description')!;
+    await fireEvent.click(within(description()).getByTestId('ticket-section-edit'));
+    await fireEvent.input(within(description()).getByTestId('ticket-section-editor'), { target: { value: 'Draft A' } });
+    await fireEvent.click(within(description()).getByTestId('ticket-section-save'));
+    await waitFor(() => expect(answer).toBeDefined());
+    // Closed while it saves, the edit goes; reopened before the refusal lands.
+    await fireEvent.click(view.getByTestId('ticket-close'));
+    await waitFor(() => expect(view.queryByTestId('ticket-screen')).toBeNull());
+    screen = await openCard(view, '1');
+    expect(within(description()).queryByTestId('ticket-section-editor')).toBeNull();
+    answer!({ parts: [{ step: 'edit', state: 'refused', refusal: { reason: 'loss', message: 'This edit would lose formatting.', lost: ['a table'] } }] } as WriteView);
+    await waitFor(() => expect(within(description()).getByTestId('ticket-write-outcome')).toHaveTextContent('This edit would lose formatting.'));
+    expect(within(description()).queryByTestId('ticket-write-save-anyway')).toBeNull();
+    expect(edit).toHaveBeenCalledTimes(1);
   });
 
   it('withdraws Save anyway once a comment\'s edit is changed or canceled', async () => {
