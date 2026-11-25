@@ -243,13 +243,16 @@ to the computer and are rows in `tracker_connections`.
   a token expires, so the
   expiry is the date the user enters from the token page. A status call returns
   the file's state, when a present file last changed (its modification
-  time), the last verification and the last failure, never the token.
+  time), the last verification and the last failure with the modification
+  time of the key file its call's token came from, never the token.
 - Settings > Issues > Connections runs that sequence as steps on the new
   row: open the token page, open the key file, the optional expiry date
   (the start of that day on the screen that entered it) and Check. The
-  steps show while the row has never verified, its key file holds no
-  token or changed after the last check (the identity that check found is
-  shown as history), or its problem is a setup one. The row warns from 14
+  steps show while the key file holds no token or one no check has
+  verified (the row never verified, or the file changed after the last
+  check), or the problem is a setup one. A check, or a failure, older
+  than the key file's last change reads as history: the identity that
+  check found, or the failure's sentence after "Before the change". The row warns from 14
   days before the expiry and shows a passed one as an error, each with
   Renew, which shows the steps again until a check verifies or Done. Away from the computer the two opens are absent
   and the row names the key file's path to copy.

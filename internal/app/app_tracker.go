@@ -65,6 +65,11 @@ type TrackerConnection struct {
 type TrackerProblem struct {
 	Kind    trackerapp.FailureKind `json:"kind"`
 	Message string                 `json:"message"`
+	// KeyFileModifiedAt is the key file's modification time (unix
+	// milliseconds) when the client read the token the failing call used,
+	// 0 for a call that used none. A present key file with another time
+	// changed since the failure.
+	KeyFileModifiedAt int64 `json:"keyFileModifiedAt"`
 }
 
 // NewTrackerConnection is what AddTrackerConnection takes. Site is the
@@ -90,7 +95,7 @@ func trackerConnectionDTO(c trackerapp.Connection) TrackerConnection {
 		KeyFileModifiedAt: c.KeyFile.ModifiedAt,
 	}
 	if c.Problem != nil {
-		out.Problem = &TrackerProblem{Kind: c.Problem.Kind, Message: c.Problem.Message}
+		out.Problem = &TrackerProblem{Kind: c.Problem.Kind, Message: c.Problem.Message, KeyFileModifiedAt: c.Problem.KeyFileModifiedAt}
 	}
 	return out
 }

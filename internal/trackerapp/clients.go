@@ -128,8 +128,20 @@ type keyFileSource struct {
 	// read ForgetCredential overtook) also leaves it holding nothing.
 	// Never the token, and never logged.
 	handed []byte
+	// handedModified is the key file's modification time (unix
+	// milliseconds) at the read that found the token last handed, 0 before
+	// the first read.
+	handedModified int64
 	// reads counts the file reads the client asked for, for tests.
 	reads atomic.Int64
+}
+
+// tokenFile is the key file's modification time when the source last
+// handed the client a token, 0 before it handed one.
+func (k *keyFileSource) tokenFile() int64 {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.handedModified
 }
 
 // digest is token's keyed digest. The caller holds mu.
@@ -144,12 +156,13 @@ func (k *keyFileSource) Credential(ctx context.Context) (*trackerapi.Credential,
 		return nil, err
 	}
 	k.reads.Add(1)
-	token, _, err := readToken(k.file, k.kind)
+	token, modified, err := readToken(k.file, k.kind)
 	if err != nil {
 		return nil, &KeyFileError{Path: k.file.Path(), Err: err}
 	}
 	k.mu.Lock()
 	k.handed = k.digest(token.Reveal())
+	k.handedModified = modified.UnixMilli()
 	k.mu.Unlock()
 	switch k.kind {
 	case store.TrackerKindJira:

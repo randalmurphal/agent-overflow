@@ -87,6 +87,15 @@ function signedInAs(connection: TrackerConnection): string {
   return name;
 }
 
+/**
+ * What a row says about its token, and whether it shows the setup steps.
+ * Evidence about a token is history once the key file changed after it:
+ * a check is older than the file when `keyFileModifiedAt > verifiedAt`, a
+ * failure when the file is not the one its call's token came from
+ * (`problem.keyFileModifiedAt`; 0 is a failure that read no token). The
+ * steps follow the token, not the failure: they show while the file holds
+ * no token, or one no check has verified, or the failure is a setup one.
+ */
 export function trackerConnectionStatus(connection: TrackerConnection): TrackerConnectionStatus {
   if (!connection.enabled) {
     return {
@@ -96,20 +105,25 @@ export function trackerConnectionStatus(connection: TrackerConnection): TrackerC
       needsSetup: false,
     };
   }
+  if (connection.keyFileState !== 'present') {
+    return { tone: 'warning', label: 'Needs a token', detail: keyFileSentence(connection), needsSetup: true };
+  }
+  const who = signedInAs(connection);
+  const unverified = connection.verifiedAt === 0 || connection.keyFileModifiedAt > connection.verifiedAt;
   const problem = connection.problem;
   if (problem) {
     const known = PROBLEM_LABELS[problem.kind] ?? { label: 'Failed', tone: 'error' as const };
-    const who = connection.verifiedAt > 0 ? signedInAs(connection) : '';
-    const before = who ? ` It was signed in as ${who}.` : '';
-    return {
-      tone: known.tone,
-      label: known.label,
-      detail: `${problem.message}${/[.!?]$/.test(problem.message) ? '' : '.'}${before}`,
-      needsSetup: problem.kind === 'setup',
-    };
-  }
-  if (connection.keyFileState !== 'present') {
-    return { tone: 'warning', label: 'Needs a token', detail: keyFileSentence(connection), needsSetup: true };
+    const before = connection.verifiedAt > 0 && who ? ` It was signed in as ${who}.` : '';
+    const sentence = `${problem.message}${/[.!?]$/.test(problem.message) ? '' : '.'}${before}`;
+    if (problem.keyFileModifiedAt > 0 && problem.keyFileModifiedAt !== connection.keyFileModifiedAt) {
+      return {
+        tone: 'muted',
+        label: 'Key file changed since the last failure',
+        detail: `The token in it now has not been checked. Before the change: ${sentence}`,
+        needsSetup: true,
+      };
+    }
+    return { tone: known.tone, label: known.label, detail: sentence, needsSetup: problem.kind === 'setup' || unverified };
   }
   if (connection.verifiedAt === 0) {
     return {
@@ -119,10 +133,7 @@ export function trackerConnectionStatus(connection: TrackerConnection): TrackerC
       needsSetup: true,
     };
   }
-  const who = signedInAs(connection);
-  // The check is history once the file changed after it read the file: an
-  // editor may have put another token in it, or saved the same one again.
-  if (connection.keyFileModifiedAt > connection.verifiedAt) {
+  if (unverified) {
     return {
       tone: 'muted',
       label: 'Key file changed after the last check',

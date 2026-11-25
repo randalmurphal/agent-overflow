@@ -137,7 +137,7 @@ type Service struct {
 	clients map[string]*clients
 	// problems holds the last failure of each connection turned on; a
 	// connection that stops being used forgets its own.
-	problems map[string]Failure
+	problems map[string]Problem
 	stopped  bool
 	inflight sync.WaitGroup
 	// locks are the scope and history locks of the ticks in flight
@@ -216,7 +216,7 @@ func New(deps Deps) (*Service, error) {
 		origin: deps.Origin, version: deps.Version, now: deps.Now, life: deps.Life, halting: halting, endHalt: endHalt,
 		steady: func() time.Time { return wall.Add(time.Since(mono)) }, steadyFrom: wall.UnixMilli(),
 		digestKey: key,
-		clients:   map[string]*clients{}, problems: map[string]Failure{},
+		clients:   map[string]*clients{}, problems: map[string]Problem{},
 		locks: map[lockKey]*scopeLock{}, holds: map[string]*connHold{},
 		logf:      log.Printf,
 		emitBoard: deps.EmitBoard, emitIssue: deps.EmitIssue, settled: deps.Settled,
@@ -345,7 +345,7 @@ type Connection struct {
 	KeyFile     keyfile.Status
 	// Problem is the connection's last failure; nil when its last call
 	// succeeded, or none failed since it was last turned on.
-	Problem *Failure
+	Problem *Problem
 }
 
 // view is row as Connection, its key file inspected now.
@@ -436,10 +436,17 @@ func (s *Service) begin(c *clients) stamp {
 // use during record.
 //
 // changed reports that what a list of connections shows moved: the
-// problem started, changed or cleared, or record wrote. A success that
-// finds no problem, and a failure the same as the one held, change
+// problem started, changed or cleared, or record wrote. A failure names
+// the key file its call's token came from (Problem). A success that finds
+// no problem, and the same failure of a token from the same file, change
 // nothing, so a poll that keeps succeeding tells no one.
 func (s *Service) settle(id, kind string, at stamp, callErr error, record func() error) (applied, changed bool, _ error) {
+	// The key file the call's token came from; a call with no client used
+	// none.
+	var tokenFile int64
+	if at.c != nil {
+		tokenFile = at.c.source.tokenFile()
+	}
 	s.mu.Lock()
 	applies, err := s.appliesLocked(id, at)
 	s.mu.Unlock()
@@ -468,9 +475,9 @@ func (s *Service) settle(id, kind string, at stamp, callErr error, record func()
 	}
 	held, had := s.problems[id]
 	if callErr != nil {
-		f := ClassifyFailure(kind, callErr)
-		s.problems[id] = f
-		return true, recorded || !had || held != f, nil
+		p := Problem{Failure: ClassifyFailure(kind, callErr), KeyFileModifiedAt: tokenFile}
+		s.problems[id] = p
+		return true, recorded || !had || held != p, nil
 	}
 	delete(s.problems, id)
 	return true, recorded || had, nil

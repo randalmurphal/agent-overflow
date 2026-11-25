@@ -10466,6 +10466,14 @@ export class TrackerProblem {
     "kind": trackerapp$0.FailureKind;
     "message": string;
 
+    /**
+     * KeyFileModifiedAt is the key file's modification time (unix
+     * milliseconds) when the client read the token the failing call used,
+     * 0 for a call that used none. A present key file with another time
+     * changed since the failure.
+     */
+    "keyFileModifiedAt": number;
+
     /** Creates a new TrackerProblem instance. */
     constructor($$source: Partial<TrackerProblem> = {}) {
         if (!("kind" in $$source)) {
@@ -10473,6 +10481,9 @@ export class TrackerProblem {
         }
         if (!("message" in $$source)) {
             this["message"] = "";
+        }
+        if (!("keyFileModifiedAt" in $$source)) {
+            this["keyFileModifiedAt"] = 0;
         }
 
         Object.assign(this, $$source);

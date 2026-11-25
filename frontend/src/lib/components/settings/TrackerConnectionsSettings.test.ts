@@ -4,7 +4,7 @@ import TrackerConnectionsSettings from './TrackerConnectionsSettings.svelte';
 import ComputerSettingsPage from './ComputerSettingsPage.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
-import { KeyFileState, trackerConnection } from '../../../test/helpers/trackerConnections';
+import { KeyFileState, trackerConnection, trackerProblem } from '../../../test/helpers/trackerConnections';
 import { SCOPES_AT_V0_0_19, answerAsV0019 } from '../../../test/helpers/olderComputer';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { DisconnectedError, TransportError } from '../../transport/wsClient';
@@ -151,7 +151,7 @@ describe('<TrackerConnectionsSettings>', () => {
   it('keeps the renewal steps open after a check that did not verify, from either Check, and closes them on one that did', async () => {
     const base = trackerConnection({ tokenExpiresAt: Date.now() + 3 * 24 * 60 * 60 * 1000 });
     rows = [base];
-    const failed = (): TrackerConnection => (rows = [{ ...base, problem: { kind: FailureKind.FailureTransient, message: 'The tracker did not answer in time' } }])[0];
+    const failed = (): TrackerConnection => (rows = [{ ...base, problem: trackerProblem(FailureKind.FailureTransient, 'The tracker did not answer in time') }])[0];
     const verified = (): TrackerConnection => (rows = [base])[0];
     const answers: (() => TrackerConnection)[] = [failed, failed, verified];
     const verify = setBindingMock('VerifyTrackerConnection', async () => answers.shift()!());
@@ -192,6 +192,28 @@ describe('<TrackerConnectionsSettings>', () => {
     await waitFor(() => expect(verify).toHaveBeenCalledWith('jira-1'));
     await waitFor(() => expect(within(row).getByTestId('tracker-connection-status').textContent).toMatch(/^Signed in as User 2 /));
     expect(within(row).queryByTestId('tracker-connection-setup')).toBeNull();
+  });
+
+  it('reads a refusal as history once a new token is saved, and shows the new token refused when a check refuses it', async () => {
+    const refused = trackerProblem(FailureKind.FailureSetup, 'Jira refused the token in the key file; put a valid token in it');
+    rows = [trackerConnection({ problem: refused })];
+    render(TrackerConnectionsSettings);
+    const row = await screen.findByTestId('tracker-connection-jira-1');
+    expect(within(row).getByTestId('tracker-connection-status').textContent).toBe('Needs setup');
+    // The person saves a new token in the editor and comes back.
+    rows = [trackerConnection({ keyFileModifiedAt: 1_700_000_005_000, problem: refused })];
+    window.dispatchEvent(new Event('focus'));
+    await waitFor(() => expect(within(row).getByTestId('tracker-connection-status').textContent).toBe('Key file changed since the last failure'));
+    expect(within(row).getByTestId('tracker-connection-detail').textContent).toMatch(/^The token in it now has not been checked\. Before the change: Jira refused/);
+    const verify = setBindingMock('VerifyTrackerConnection', async () => {
+      rows = [trackerConnection({ keyFileModifiedAt: 1_700_000_005_000, problem: { ...refused, keyFileModifiedAt: 1_700_000_005_000 } })];
+      return rows[0];
+    });
+    await fireEvent.click(within(row).getByTestId('tracker-connection-setup-check'));
+    await waitFor(() => expect(verify).toHaveBeenCalledWith('jira-1'));
+    await waitFor(() => expect(within(row).getByTestId('tracker-connection-status').textContent).toBe('Needs setup'));
+    expect(within(row).getByTestId('tracker-connection-detail').textContent).toMatch(/^Jira refused the token in the key file; put a valid token in it\./);
+    expect(within(row).getByTestId('tracker-connection-setup')).toBeTruthy();
   });
 
   it('closes the renewal steps when the connection is turned off, and does not reopen them when it is on again', async () => {

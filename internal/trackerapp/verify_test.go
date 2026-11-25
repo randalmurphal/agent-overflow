@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/keyfile"
 	"agent-overflow/internal/tracker"
@@ -499,5 +500,46 @@ func TestTheListShowsWhenTheKeyFileChanged(t *testing.T) {
 	}
 	if list, err := f.svc.Connections(); err != nil || list[0].KeyFile != (keyfile.Status{State: keyfile.StateMissing}) {
 		t.Fatalf("a removed key file lists as %+v (%v)", list, err)
+	}
+}
+
+// A problem names the key file its token came from (the file's
+// modification time when the client read the token): a file saved after
+// the failure is another file, a failure of the saved token names it and
+// tells the list, and the same failure of the same token tells no one.
+func TestAProblemNamesTheKeyFileItsTokenCameFrom(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	conn := f.addJira()
+	save := func(token string, ms int64) {
+		t.Helper()
+		f.writeToken(conn, token)
+		at := time.UnixMilli(ms)
+		if err := os.Chtimes(conn.KeyFilePath, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.jira.On("GET", myselfPath, echoing(http.StatusUnauthorized))
+	save(jiraToken, 1_700_000_000_000)
+	if got := f.verify(conn.ID); got.Problem == nil || got.Problem.KeyFileModifiedAt != 1_700_000_000_000 {
+		t.Fatalf("a refused token's problem = %+v", got.Problem)
+	}
+	before := f.changes.Load()
+	f.verify(conn.ID)
+	if f.changes.Load() != before {
+		t.Fatal("the same refusal of the same token told the list")
+	}
+
+	save(token("b"), 1_700_000_005_000)
+	list, err := f.svc.Connections()
+	if err != nil || list[0].Problem == nil || list[0].Problem.KeyFileModifiedAt != 1_700_000_000_000 || list[0].KeyFile.ModifiedAt != 1_700_000_005_000 {
+		t.Fatalf("a token saved after the refusal lists as %+v (%v)", list, err)
+	}
+	before = f.changes.Load()
+	if got := f.verify(conn.ID); got.Problem == nil || got.Problem.Kind != FailureSetup || got.Problem.KeyFileModifiedAt != 1_700_000_005_000 {
+		t.Fatalf("the saved token refused = problem %+v", got.Problem)
+	}
+	if f.changes.Load() != before+1 {
+		t.Fatal("the refusal of the saved token did not tell the list")
 	}
 }

@@ -70,6 +70,16 @@ type Failure struct {
 	Message string
 }
 
+// Problem is a connection's last failure and the key file the failing
+// call's token came from: the file's modification time (unix
+// milliseconds) when the client read that token, 0 for a call that used
+// none (no client could be built). A key file that changed since is
+// another file, so the failure says nothing about the token in it now.
+type Problem struct {
+	Failure
+	KeyFileModifiedAt int64
+}
+
 // CallFailure is a tracker call of a form read, a download or a write's
 // start that failed, with the Failure a person reads. It unwraps to the
 // call's error.
