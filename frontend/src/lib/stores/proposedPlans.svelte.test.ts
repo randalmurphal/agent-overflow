@@ -18,6 +18,8 @@ import {
   resetProposedPlanCacheForTests,
 } from './proposedPlans.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { stageBackend } from '../../test/helpers/backends';
+import { noteThread } from '../transport/entityIndex';
 import type { Item } from '../types/models';
 
 function planItem(overrides: Partial<Item> = {}): Item {
@@ -210,6 +212,21 @@ describe('proposed-plan refresh / sync upsert race', () => {
 
     invalidateProposedPlansLoaded();
     expect(hasLoadedThreadProposedPlans('thread-b')).toBe(false);
+
+    // History invalidation (e.g. thread ownership move) clears loaded state
+    // and evicts markdown cache for matching threads only.
+    stageBackend({ id: 'gpu' });
+    noteThread('thread-a', '', 0);
+    noteThread('thread-b', '', 0);
+    await refreshThreadProposedPlans('thread-a');
+    await refreshThreadProposedPlans('thread-b');
+    setCachedPlanMarkdown('thread-a', 'plan-1', '# A', '1\0{}');
+    setCachedPlanMarkdown('thread-b', 'plan-1', '# B', '1\0{}');
+    noteThread('thread-a', 'gpu', 1);
+    expect(hasLoadedThreadProposedPlans('thread-a')).toBe(false);
+    expect(hasLoadedThreadProposedPlans('thread-b')).toBe(true);
+    expect(getCachedPlanMarkdown('thread-a', 'plan-1', '1\0{}')).toBeNull();
+    expect(getCachedPlanMarkdown('thread-b', 'plan-1', '1\0{}')).toBe('# B');
     release2();
   });
 });

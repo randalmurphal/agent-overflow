@@ -35,6 +35,7 @@ import {
 } from '../utils/refreshScheduler';
 import { stashCompanions } from './companionStash';
 import { evictDiffSpansForThread } from '../utils/diffSpanCache.svelte';
+import { invalidateProposedPlansLoaded } from './proposedPlans.svelte';
 import { clearItemProjectionSourcesForThread } from '../utils/itemProjectionSource.svelte';
 import {
   MAX_CACHED_SNAPSHOT_ITEMS,
@@ -1614,6 +1615,11 @@ export function createThreadSwitchLoad(
     // A draft placeholder has no row: a refresh queued for the row it
     // replaced has nothing left to read.
     if (!currentThread || options.getDraftPlaceholder()) return REFRESH_SETTLED;
+    // Pull-recovery paths (attributed item-event gaps, Import Provider Updates,
+    // queue gaps, computer hydration) read SQLite directly without re-emitting
+    // `provider:item_event`; drop the proposed-plan loaded bit here so opening
+    // PlanSidebar always reflects newly pulled plans.
+    invalidateProposedPlansLoaded(currentThread.id);
     const gen = options.getSwitchGeneration();
     const backend = requireEntityBackend(threadBackend(currentThread.id));
     const refreshIsCurrent = (): boolean =>

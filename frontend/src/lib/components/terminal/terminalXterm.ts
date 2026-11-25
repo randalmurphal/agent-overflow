@@ -282,6 +282,17 @@ export function buildTerminal(
   }
 
   function detachMount(): void {
+    // Svelte 5 detaches the DOM before running `onDestroy`, so removing a
+    // focused terminal never dispatches a native `blur` on xterm's helper
+    // textarea. Explicitly blur while still alive so CursorBlinkStateManager
+    // stops its 600ms timer while parked and unfocused warm reattaches never
+    // render a phantom active cursor.
+    if (!disposed && terminal.textarea) {
+      terminal.blur();
+      if (terminal.element?.classList.contains('focus')) {
+        terminal.textarea.dispatchEvent(new FocusEvent('blur'));
+      }
+    }
     if (currentMount) {
       currentMount.removeEventListener('contextmenu', handleContextMenu);
       currentMount = null;

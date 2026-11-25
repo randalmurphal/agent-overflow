@@ -154,8 +154,9 @@
       updatedAt: 0,
       archived: false,
     });
+    const target = pane;
     onClose();
-    const targetPane = await openThreadFromNavigation(thread, pane);
+    const targetPane = await openThreadFromNavigation(thread, target);
     // Scroll the timeline to the hit: the pane holds the request until its
     // timeline can take it, then loads the item into the window and jumps
     // through the virtualizer's scrollToIndex (an escaped, controller-routed

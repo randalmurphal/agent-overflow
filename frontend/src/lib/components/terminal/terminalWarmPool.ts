@@ -27,14 +27,26 @@ const MAX_WARM_TERMINALS = 4;
 const IDLE_EVICT_MS = 120_000;
 
 const pool = new Map<string, StoredWarmTerminal>();
-let unsubscribeLayoutRemoved: (() => void) | null = null;
+// Panes removed during the current layout-teardown flush. `replaceLayoutItems`
+// notifies `onPaneLayoutItemsRemoved` synchronously before Svelte's microtask
+// unmounts `<TerminalBody>`, so `onDestroy` can call `parkWarmTerminal` after
+// `evictWarmTerminalsForPane` already ran. Rejecting parks for panes in this
+// set closes that teardown-order leak.
+const removingPanes = new Set<string>();
+let removingEpoch = 0;
 
-function ensureLayoutObserver(): void {
-  if (unsubscribeLayoutRemoved) return;
-  unsubscribeLayoutRemoved = onPaneLayoutItemsRemoved((paneIds) => {
-    for (const paneId of paneIds) evictWarmTerminalsForPane(paneId);
+onPaneLayoutItemsRemoved((paneIds) => {
+  for (const paneId of paneIds) {
+    removingPanes.add(paneId);
+    evictWarmTerminalsForPane(paneId);
+  }
+  const epoch = ++removingEpoch;
+  queueMicrotask(() => {
+    queueMicrotask(() => {
+      if (removingEpoch === epoch) removingPanes.clear();
+    });
   });
-}
+});
 
 function disposeEntry(entry: StoredWarmTerminal): void {
   if (entry.timer !== null) {
@@ -45,7 +57,10 @@ function disposeEntry(entry: StoredWarmTerminal): void {
 }
 
 export function parkWarmTerminal(entry: WarmTerminalEntry): void {
-  ensureLayoutObserver();
+  if (removingPanes.has(entry.paneId)) {
+    entry.built.dispose();
+    return;
+  }
   const existing = pool.get(entry.terminalID);
   if (existing) {
     pool.delete(entry.terminalID);
@@ -123,4 +138,6 @@ export function evictWarmTerminalsForBackend(backend: BackendKey): void {
 export function clearWarmTerminals(): void {
   for (const entry of pool.values()) disposeEntry(entry);
   pool.clear();
+  removingEpoch++;
+  removingPanes.clear();
 }

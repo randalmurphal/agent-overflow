@@ -2,6 +2,7 @@ import type { Item, ProposedPlanComment } from '../types/models';
 import { comparePlanItemPosition, latestProposedPlanItem } from '../utils/proposedPlan';
 import { ListProposedPlanComments, ListThreadProposedPlans } from './bindings';
 import { onItemUpsert } from './eventsItemStream';
+import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 import { onWatchedThreadsComposed } from './watchedThreads';
 import { itemsAreEqual } from './threadItems';
 
@@ -66,6 +67,17 @@ export function invalidateProposedPlansLoaded(threadId?: string | null): void {
 onWatchedThreadsComposed((watched) => {
   for (const [threadId, entry] of Object.entries(cache)) {
     if (!watched.has(threadId)) entry.loaded = false;
+  }
+});
+
+onThreadHistoryInvalidated((owns) => {
+  for (const [threadId, entry] of Object.entries(cache)) {
+    if (owns(threadId)) entry.loaded = false;
+  }
+  for (const key of planMarkdownCache.keys()) {
+    const sep = key.indexOf('\0');
+    const threadId = sep === -1 ? key : key.slice(0, sep);
+    if (owns(threadId)) planMarkdownCache.delete(key);
   }
 });
 

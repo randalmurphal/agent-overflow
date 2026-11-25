@@ -1959,16 +1959,16 @@ html.light .working-sprite {
    keeps Blink's style invalidator from walking hundreds of markdown and
    syntax-highlighted descendants on every pointerover during scrolling. */
 @media (hover: hover) {
-  .ao-assistant-msg:hover > [data-testid='assistant-message-meta'] > [data-testid='assistant-message-copy-slot'] > .ao-hover-reveal,
-  .ao-assistant-msg:hover > [data-testid='assistant-message-meta'] > .ao-hover-reveal,
-  .ao-user-msg:hover > .ao-user-msg-col > .ao-user-msg-meta > .ao-hover-reveal,
+  .ao-assistant-msg:hover > [data-testid='assistant-message-meta'] > [data-testid='assistant-message-copy-slot'] > .ao-hover-reveal:not(:disabled),
+  .ao-assistant-msg:hover > [data-testid='assistant-message-meta'] > .ao-hover-reveal:not(:disabled),
+  .ao-user-msg:hover > .ao-user-msg-col > .ao-user-msg-meta > .ao-hover-reveal:not(:disabled),
   .streamdown-code-host:hover > .ao-code-overlay,
-  .ao-tool-row:hover > .ao-tool-header > .ao-hover-reveal,
-  .ao-tool-row:hover > .ao-tool-header > .ao-tool-header-actions > .ao-hover-reveal,
-  .ao-tool-row:hover > .ao-tool-header > .ao-tool-header-actions > [data-tool-header-meta] > .ao-hover-reveal,
-  .ao-tool-row:hover > .ao-tool-header > [data-tool-header-meta] > .ao-hover-reveal,
-  .ao-tool-row:hover > .ao-tool-header-wrap > .ao-tool-header > .ao-hover-reveal,
-  .ao-tool-row:hover > .ao-tool-header-wrap > .ao-tool-header > [data-tool-header-meta] > .ao-hover-reveal,
+  .ao-tool-row:hover > .ao-tool-header > .ao-hover-reveal:not(:disabled),
+  .ao-tool-row:hover > .ao-tool-header > .ao-tool-header-actions > .ao-hover-reveal:not(:disabled),
+  .ao-tool-row:hover > .ao-tool-header > .ao-tool-header-actions > [data-tool-header-meta] > .ao-hover-reveal:not(:disabled),
+  .ao-tool-row:hover > .ao-tool-header > [data-tool-header-meta] > .ao-hover-reveal:not(:disabled),
+  .ao-tool-row:hover > .ao-tool-header-wrap > .ao-tool-header > .ao-hover-reveal:not(:disabled),
+  .ao-tool-row:hover > .ao-tool-header-wrap > .ao-tool-header > [data-tool-header-meta] > .ao-hover-reveal:not(:disabled),
   .ao-diff-line:hover > .ao-diff-action > .ao-diff-add-btn {
     opacity: 1;
   }
@@ -1981,7 +1981,7 @@ html.light .working-sprite {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background-color: color-mix(in srgb, var(--accent) 15%, transparent);
+  background-color: color-mix(in oklab, var(--accent) 15%, transparent);
 }
 @media (hover: hover) {
   .ao-diff-line:hover::before {
@@ -1989,28 +1989,8 @@ html.light .working-sprite {
     position: absolute;
     inset: 0;
     pointer-events: none;
-    background-color: color-mix(in srgb, var(--fg) 4%, transparent);
+    background-color: color-mix(in oklab, var(--text-primary) 4%, transparent);
   }
-}
-
-/* When an overlay/modal delegates its base blur to the cached app-shell layer,
-   suppress backdrop-filter on the full-viewport scrim so repaints inside the
-   overlay/modal never re-execute a full-screen backdrop-filter blur pass. */
-[data-backdrop-cutout='true'] {
-  --tw-backdrop-blur: initial;
-  backdrop-filter: none !important;
-}
-
-[data-shell-blur='sm'] {
-  background: var(--surface-0);
-  filter: blur(var(--blur-sm, 8px));
-  contain: strict;
-}
-
-[data-shell-blur='md'] {
-  background: var(--surface-0);
-  filter: blur(var(--blur-md, 12px));
-  contain: strict;
 }
 
 /*

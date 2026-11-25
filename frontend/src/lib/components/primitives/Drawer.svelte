@@ -85,8 +85,24 @@
     }
   }
 
+  function finishDrag(e?: PointerEvent): void {
+    if (!dragging) return;
+    dragging = false;
+    flushPendingSize();
+    if (e) {
+      const target = e.currentTarget as HTMLElement | null;
+      if (target?.hasPointerCapture?.(e.pointerId)) {
+        target.releasePointerCapture(e.pointerId);
+      }
+    }
+    releaseResizeLease?.();
+    releaseResizeLease = null;
+    onResize?.(size);
+  }
+
   function onPointerDown(e: PointerEvent): void {
     if (!resizable) return;
+    finishDrag();
     dragging = true;
     startPointer = position === 'bottom' ? e.clientY : e.clientX;
     startSize = size;
@@ -119,21 +135,13 @@
     });
   }
 
-  function onPointerUp(e: PointerEvent): void {
-    if (!dragging) return;
-    dragging = false;
-    flushPendingSize();
-    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-    releaseResizeLease?.();
-    releaseResizeLease = null;
-    onResize?.(size);
-  }
-
   onDestroy(() => {
     if (dragFrame) {
       cancelAnimationFrame(dragFrame);
       dragFrame = 0;
     }
+    pendingSize = null;
+    dragging = false;
     releaseResizeLease?.();
     releaseResizeLease = null;
   });
@@ -145,6 +153,12 @@
   // A filled drawer has nothing to resize against — it is already the whole
   // available box — so the handle would only be a dead grab target.
   const showHandle = $derived(resizable && !fill);
+
+  // If the handle unmounts mid-drag (e.g. crossing the compact breakpoint),
+  // settle any queued frame and release the scroll-pause lease immediately.
+  $effect(() => {
+    if (!showHandle) finishDrag();
+  });
 
   const chromeClass = $derived(
     position === 'bottom'
@@ -181,8 +195,9 @@
       ].join(' ')}
       onpointerdown={onPointerDown}
       onpointermove={onPointerMove}
-      onpointerup={onPointerUp}
-      onpointercancel={onPointerUp}
+      onpointerup={finishDrag}
+      onpointercancel={finishDrag}
+      onlostpointercapture={finishDrag}
     ></div>
   {/if}
   {@render children()}

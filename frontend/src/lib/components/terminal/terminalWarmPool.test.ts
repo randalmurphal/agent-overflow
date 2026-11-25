@@ -6,6 +6,8 @@ import {
   parkWarmTerminal,
   takeWarmTerminal,
 } from './terminalWarmPool';
+import { removePaneLayoutItem, setPaneLayoutItems } from '../../stores/paneLayout.svelte';
+import { getThreadTerminalState, releaseThreadTerminalState } from './terminalStore.svelte';
 
 function fakeBuilt(initialWebgl = true): {
   built: BuiltTerminal;
@@ -78,5 +80,34 @@ describe('terminalWarmPool', () => {
     expect(homeEntry.dispose).not.toHaveBeenCalled();
     expect(takeWarmTerminal(handleRemote, 'term-remote')).toBeNull();
     expect(takeWarmTerminal(handleHome, 'term-home')).toBe(homeEntry.built);
+  });
+
+  it('disposes instead of parking when the owning pane was removed in the same flush', async () => {
+    setPaneLayoutItems([{ id: 'pane-closing', paneId: 'pane-closing', kind: 'thread', widthPx: 500 }]);
+    const handle = {};
+    const entry = fakeBuilt(true);
+
+    // Mirrors destroyPane: layout removal fires synchronously BEFORE Svelte's
+    // unmount microtask calls TerminalBody.onDestroy -> parkWarmTerminal.
+    removePaneLayoutItem('pane-closing');
+    parkWarmTerminal({
+      terminalID: 'term-closing',
+      handle,
+      paneId: 'pane-closing',
+      backend: 'home',
+      built: entry.built,
+    });
+
+    expect(entry.dispose).toHaveBeenCalledOnce();
+    expect(takeWarmTerminal(handle, 'term-closing')).toBeNull();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  it('marks thread terminal handles released on releaseThreadTerminalState', () => {
+    const handle = getThreadTerminalState('thread-del');
+    expect(handle.isReleased()).toBe(false);
+    releaseThreadTerminalState('thread-del');
+    expect(handle.isReleased()).toBe(true);
   });
 });

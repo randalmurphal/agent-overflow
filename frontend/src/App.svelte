@@ -38,10 +38,6 @@
     isSettingsOpen,
     openSettingsOverlay,
   } from './lib/stores/settingsOverlay.svelte';
-  import {
-    getAppShellBlur,
-    registerAppShellBlurHost,
-  } from './lib/stores/backdropBlur.svelte';
   import { hydrateWorkflowAttention } from './lib/stores/workflowRuns.svelte';
   import { syncSidebarLayoutFromAppStorage } from './lib/stores/sidebarLayout.svelte';
   import { installLayoutMode } from './lib/stores/layoutMode.svelte';
@@ -404,8 +400,6 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     applyFontScale(getSettings().fontSize);
   });
 
-  $effect(() => registerAppShellBlurHost());
-
   $effect(() => {
     const el = appContentEl;
     if (!el) return;
@@ -688,23 +682,18 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
 </script>
 
 <main class="app-shell relative h-dvh w-screen overflow-hidden text-text-primary flex flex-col">
-  <div
-    class="relative flex flex-1 min-h-0 w-full flex-col"
-    data-shell-blur={getAppShellBlur() ?? undefined}
-  >
-    <TransportStatusBanner />
-    <div bind:this={appContentEl} class="relative flex flex-1 min-h-0 w-full">
-      <Sidebar
-        pane={sidebarPane}
-        onOpenSettings={() => openSettingsOverlay('theme')}
-        registerFocusSearch={(focus) => (searchFocuser = focus)}
-      />
-      {#if appReady}
-        <PaneHost />
-      {:else}
-        <StartupScreen />
-      {/if}
-    </div>
+  <TransportStatusBanner />
+  <div bind:this={appContentEl} class="relative flex flex-1 min-h-0 w-full">
+    <Sidebar
+      pane={sidebarPane}
+      onOpenSettings={() => openSettingsOverlay('theme')}
+      registerFocusSearch={(focus) => (searchFocuser = focus)}
+    />
+    {#if appReady}
+      <PaneHost />
+    {:else}
+      <StartupScreen />
+    {/if}
   </div>
   <!--
     Settings (UI-SPEC §2.1) is a SIBLING of PaneHost, layered over it —

@@ -273,8 +273,7 @@
     const el = scrollEl;
     if (!el) return;
     const syncInset = (): void => {
-      const next = el.offsetWidth - el.clientWidth;
-      if (next !== scrollbarInset) scrollbarInset = next;
+      scrollbarInset = el.offsetWidth - el.clientWidth;
     };
     syncInset();
     if (typeof ResizeObserver === 'undefined') return;

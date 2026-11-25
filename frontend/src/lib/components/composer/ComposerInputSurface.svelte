@@ -24,6 +24,7 @@
   import { createComposerUploads, type UploadInsertionPoint } from './composerUploads.svelte';
   import { slashCommandMatches } from './slashCommands';
   import { isShellInput } from '../../utils/shellInvocation';
+  import { isEnterKey } from '../../utils/localEnter';
   import {
     COMPOSER_TEXT_CLASSES,
     type ComposerInputSelection,
@@ -179,7 +180,7 @@
   }
 
   function handleKeydown(event: KeyboardEvent) {
-    if (event.key === 'Escape') invalidateTriggerSnapshot();
+    const hadPopover = mentions.mentionTrigger !== null || slash.slashOpen;
     dispatchComposerInputKeydown(event, {
       mentions,
       slash,
@@ -189,6 +190,26 @@
       submitEnter: onSubmitEnter,
       enterSends: !isCompactLayout(),
     });
+    // `insertCommand`/`insertMention` mutate the textarea (firing a synchronous
+    // `input` that caches the new value) and then clear `trigger = null`.
+    // Invalidate AFTER dispatch so the subsequent `keyup` (e.g. Codex `/review `
+    // second-level completion) or Escape re-evaluates against the cleared state.
+    if (
+      event.key === 'Escape'
+      || ((isEnterKey(event) || event.key === 'Tab') && hadPopover)
+    ) {
+      invalidateTriggerSnapshot();
+    }
+  }
+
+  function handleInsertMention(entry: Parameters<typeof mentions.insertMention>[0]): void {
+    mentions.insertMention(entry);
+    invalidateTriggerSnapshot();
+  }
+
+  function handleInsertCommand(entry: Parameters<typeof slash.insertCommand>[0]): void {
+    slash.insertCommand(entry);
+    invalidateTriggerSnapshot();
   }
 
   function handleInput(event: Event) {
@@ -203,12 +224,15 @@
   }
 
   // Deduplicate back-to-back refresh calls fired by `input` + `keyup`/`select`
-  // on the exact same (textarea, value, selection, shellPrefix) snapshot.
+  // on the exact same (textarea, value, selection, shellPrefix, provider,
+  // workspace) snapshot.
   let lastTriggerTextarea: HTMLTextAreaElement | undefined;
   let lastTriggerValue = '';
   let lastTriggerStart = -1;
   let lastTriggerEnd = -1;
   let lastTriggerShell = false;
+  let lastTriggerProvider = '';
+  let lastTriggerWorkspace = '';
 
   function invalidateTriggerSnapshot(): void {
     lastTriggerTextarea = undefined;
@@ -222,12 +246,16 @@
       const val = el.value;
       const start = el.selectionStart;
       const end = el.selectionEnd;
+      const provider = pane.thread?.provider ?? '';
+      const workspace = paneWorkspacePath(pane);
       if (
         el === lastTriggerTextarea
         && val === lastTriggerValue
         && start === lastTriggerStart
         && end === lastTriggerEnd
         && shellPrefix === lastTriggerShell
+        && provider === lastTriggerProvider
+        && workspace === lastTriggerWorkspace
       ) {
         return;
       }
@@ -236,6 +264,8 @@
       lastTriggerStart = start;
       lastTriggerEnd = end;
       lastTriggerShell = shellPrefix;
+      lastTriggerProvider = provider;
+      lastTriggerWorkspace = workspace;
     }
     mentions.refreshTriggers();
     slash.refreshTrigger();
@@ -493,7 +523,7 @@
       loading={mentions.mentionLoading}
       error={mentions.mentionError}
       workspacePath={paneWorkspacePath(pane)}
-      onSelect={mentions.insertMention}
+      onSelect={handleInsertMention}
       onClose={() => { invalidateTriggerSnapshot(); mentions.closeMention(); }}
       onHover={(idx) => mentions.setMentionActiveIndex(idx)}
     />
@@ -503,7 +533,7 @@
       open={slash.slashOpen}
       sections={slash.slashSections}
       activeIndex={slash.slashActiveIndex}
-      onSelect={slash.insertCommand}
+      onSelect={handleInsertCommand}
       onClose={() => { invalidateTriggerSnapshot(); slash.closeSlash(); }}
       onHover={(idx) => slash.setSlashActiveIndex(idx)}
     />

@@ -33,7 +33,7 @@
     normalizeTerminalReplay,
     type TerminalOutputEventPayload,
   } from '../../types/terminal';
-  import { getXtermTheme, sameXtermTheme } from '../terminal/terminalTheme';
+  import { getXtermTheme, sameXtermTheme, xtermPaletteIdentity } from '../terminal/terminalTheme';
   import { buildTerminal, type BuiltTerminal } from '../terminal/terminalXterm';
   import {
     createTerminalInputWriter,
@@ -258,18 +258,19 @@
   // Follow the app palette live — mode flips AND theme-file edits, since
   // `getXtermTheme` reads the palette identity. Resolved before the `term`
   // guard so the dependency is registered even on a tick with no terminal.
-  let lastThemeMode: ReturnType<typeof getResolvedTheme> = untrack(() => getResolvedTheme());
+  let lastPaletteIdentity = untrack(() => xtermPaletteIdentity(getResolvedTheme()));
   $effect(() => {
     const mode = getResolvedTheme();
+    const identity = xtermPaletteIdentity(mode);
     const theme = getXtermTheme(mode);
-    const modeChanged = mode !== lastThemeMode;
-    lastThemeMode = mode;
+    const identityChanged = identity !== lastPaletteIdentity;
+    lastPaletteIdentity = identity;
     if (!term) return;
     const paletteChanged = !sameXtermTheme(term.options.theme, theme);
     if (paletteChanged) {
       term.options.theme = theme;
     }
-    if (paletteChanged || modeChanged) {
+    if (paletteChanged || identityChanged) {
       untrack(() => find?.restyle());
     }
   });

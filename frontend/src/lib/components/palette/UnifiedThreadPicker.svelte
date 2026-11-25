@@ -121,8 +121,9 @@
   });
 
   async function openHit(thread: Thread): Promise<void> {
+    const target = pane;
     onClose();
-    await openThreadFromNavigation(thread, pane);
+    await openThreadFromNavigation(thread, target);
   }
 
   // Escape is handled by Modal. Enter / Arrow keys are caught at the

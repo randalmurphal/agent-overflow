@@ -101,6 +101,7 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
   let tabs: TerminalTabState[] = $state([]);
   let activeTerminalID: string | null = $state(null);
   let drawerHeight: number = $state(DEFAULT_DRAWER_HEIGHT);
+  let released = false;
   const pendingSequencesByTerminal = new Map<string, number[]>();
   const pendingBytesByTerminal = new Map<string, number>();
   const replayWatermarkByTerminal = new Map<string, number>();
@@ -328,10 +329,20 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
       xtermByTerminal.clear();
       outputSinkByTerminal.clear();
     },
+
+    isReleased(): boolean {
+      return released;
+    },
   };
+
+  releasedStateMark.set(handle, () => {
+    released = true;
+  });
 
   return handle;
 }
+
+const releasedStateMark = new WeakMap<ThreadTerminalStateHandle, () => void>();
 
 export interface ThreadTerminalStateHandle {
   readonly tabs: TerminalTabState[];
@@ -376,6 +387,10 @@ export interface ThreadTerminalStateHandle {
    */
   clearActive(): boolean;
   clear(): void;
+  /** True once `releaseThreadTerminalState` has retired this handle (thread
+   * deleted or backend detached), so an unmounting TerminalBody disposes its
+   * WebGL2 xterm instead of parking an unreachable zombie in the warm pool. */
+  isReleased(): boolean;
 }
 
 export const TERMINAL_DRAWER_LIMITS = {
@@ -491,7 +506,10 @@ export function migrateThreadTerminalState(
 export function releaseThreadTerminalState(threadID: string): void {
   const key = terminalStateKey(threadID);
   const existing = terminalStatesByThread.get(key);
-  if (existing) evictWarmTerminalsForHandle(existing);
+  if (existing) {
+    releasedStateMark.get(existing)?.();
+    evictWarmTerminalsForHandle(existing);
+  }
   terminalStatesByThread.delete(key);
 }
 

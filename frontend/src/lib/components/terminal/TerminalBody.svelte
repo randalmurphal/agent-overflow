@@ -11,7 +11,7 @@
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { getSettings } from '../../stores/settings.svelte';
   import { decodeTerminalOutput, encodeTerminalInput, normalizeTerminalReplay } from '../../types/terminal';
-  import { getXtermTheme, sameXtermTheme } from './terminalTheme';
+  import { getXtermTheme, sameXtermTheme, xtermPaletteIdentity } from './terminalTheme';
   import { registerTerminalFind, type TerminalFindRegistration } from './terminalFind.svelte';
   import {
     terminalFocusRegion,
@@ -24,6 +24,7 @@
   import { buildTerminal, type BuiltTerminal } from './terminalXterm';
   import { parkWarmTerminal, takeWarmTerminal } from './terminalWarmPool';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
+  import { terminalBackend } from '../../transport/entityIndex';
   import { applyStickyCtrl } from './terminalKeys';
   import TerminalKeyRow from './TerminalKeyRow.svelte';
   import {
@@ -342,18 +343,19 @@
   // is what reads the palette identity, so a tick that finds no terminal yet
   // must still register the dependency, or the pane that mounts next never
   // re-themes when a theme file changes under an unchanged mode.
-  let lastThemeMode: ReturnType<typeof getResolvedTheme> = untrack(() => getResolvedTheme());
+  let lastPaletteIdentity = untrack(() => xtermPaletteIdentity(getResolvedTheme()));
   $effect(() => {
     const mode = getResolvedTheme();
+    const identity = xtermPaletteIdentity(mode);
     const theme = getXtermTheme(mode);
-    const modeChanged = mode !== lastThemeMode;
-    lastThemeMode = mode;
+    const identityChanged = identity !== lastPaletteIdentity;
+    lastPaletteIdentity = identity;
     if (!term) return;
     const paletteChanged = !sameXtermTheme(term.options.theme, theme);
     if (paletteChanged) {
       term.options.theme = theme;
     }
-    if (paletteChanged || modeChanged) {
+    if (paletteChanged || identityChanged) {
       // Match grounds come from the same palette; repaint them with it.
       untrack(() => find?.restyle());
     }
@@ -398,9 +400,9 @@
     paste = null;
     readClipboard = null;
     if (activeBuilt) {
-      if (activeBuilt.hasWebgl && hydrated && handle.hasTab(terminalID)) {
+      if (activeBuilt.hasWebgl && hydrated && !handle.isReleased() && handle.hasTab(terminalID)) {
         const threadID = handle.tabs.find((t) => t.terminalID === terminalID)?.summary.threadID ?? '';
-        const backend = threadMachine(threadID, null);
+        const backend = terminalBackend(terminalID) ?? threadMachine(threadID, null);
         activeBuilt.term.clearSelection();
         activeBuilt.detachMount();
         parkWarmTerminal({ terminalID, handle, paneId, backend, built: activeBuilt });
