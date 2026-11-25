@@ -402,6 +402,8 @@ export function attachTrackerTicket(ref: TrackerTicketRef, shown: boolean): Trac
   }
   held.set(surface, shown);
   const handle = store.attach(key, ref);
+  const live = lives.get(key);
+  if (live) vote(live);
   let released = false;
   return {
     key,

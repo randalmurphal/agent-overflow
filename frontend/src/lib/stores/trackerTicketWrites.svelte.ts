@@ -102,7 +102,7 @@ onTrackerTicketClosed((ticket) => {
 
 function computerName(backend: string): string {
   const entry = attachedBackendEntry(backend);
-  return entry ? backendDisplayName(entry) : 'the computer';
+  return entry ? backendDisplayName(entry) : 'The ticket\'s computer';
 }
 
 async function write(

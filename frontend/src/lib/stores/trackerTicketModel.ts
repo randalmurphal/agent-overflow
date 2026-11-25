@@ -47,7 +47,7 @@ export function writeOutcome(view: WriteView): WriteOutcome {
 
 /** The sentence of a write whose answer a dropped connection lost. */
 export function lostWriteSentence(computer: string): string {
-  return `The connection to ${computer} dropped before the answer, so the change may or may not have been made; look at the ticket before you try again.`;
+  return `${computer}: the connection dropped before the answer, so the change may or may not have been made; look at the ticket before you try again.`;
 }
 
 /** A refusal as one sentence, with what the tracker said of each field,

@@ -1,15 +1,31 @@
 // The Issues pane over mocked bindings: the board it opens on, its columns
 // and cards, Display, Only mine and Search over the held cards (reading a
 // column whole when filtered), the notices of failure, refresh and end,
-// the empty pane, the compact strip, the picker and the hidden vote.
+// the empty pane, the compact strip, the picker and the hidden vote; and
+// the ticket a card opens over the board: the board's vote under it, a
+// write that moves a card under it, the trail Back steps through, an edit
+// in place and the comments it mounts.
 
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { describe, expect, it, vi } from 'vitest';
-import type { BoardChoice, BoardView, RowView, Section, SectionPage } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+import type {
+  BoardChoice,
+  BoardPatch,
+  BoardView,
+  CommentView,
+  DetailView,
+  RowView,
+  Section,
+  SectionPage,
+  TicketSubscription,
+  WriteView,
+} from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import type { TrackerBoardRef } from '../../stores/trackerBoard.svelte';
 import IssuesPane from './IssuesPane.svelte';
-import { trackerBoardUpdated as applyTrackerBoardEvent } from '../../stores/trackerBoardEvents';
+import { trackerBoardUpdated as applyTrackerBoardEvent, trackerIssueUpdated } from '../../stores/trackerBoardEvents';
+import { registerIssuesCommands } from '../../stores/issuesCommands';
+import { clearCommandRegistry, runCommand, type CommandContext } from '../../stores/commandRegistry.svelte';
 import { hiddenCardFields } from '../../stores/issuesPane.svelte';
 import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
 import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
@@ -800,5 +816,191 @@ describe('the selection against its computer, its listing and the sidebar', () =
     expect(view.queryByTestId('issues-empty-connections')).toBeNull();
     view.unmount();
     resetToLocalPage();
+  });
+});
+
+/** A ticket's view: issue `id` of the board's connection, its parent
+ * `parent`, and `comments` comments, the newest first. */
+function ticketDetail(id: string, opts: { parent?: string; comments?: number; more?: string; status?: string } = {}): DetailView {
+  const comments: CommentView[] = Array.from({ length: opts.comments ?? 0 }, (_, i) => ({
+    id: `c${opts.comments! - i}`, author: { id: 'u1', name: 'User 1' }, body: `Comment ${opts.comments! - i}`, created: 1_000 + opts.comments! - i,
+  }) as CommentView);
+  return {
+    card: {
+      id, key: `WEB-${id}`, title: `Issue ${id}`, status: { id: opts.status ?? 's1', name: opts.status === 's2' ? 'In Progress' : 'To Do', group: 'todo' },
+      created: 0, updated: 0, ...(opts.parent ? { parent: { id: opts.parent, key: `WEB-${opts.parent}`, title: `Issue ${opts.parent}` } } : {}),
+    },
+    url: `https://example.atlassian.net/browse/WEB-${id}`, description: 'The description', fields: [], comments, more_comments: opts.more,
+    links: [], attachments: [], history: [], rows: [{ board: '1', estimate: 2, unit: 'points' }],
+    moves: [{ id: '21', name: 'Start', to: { id: 's2', name: 'In Progress', group: 'in_progress' } }],
+  } as unknown as DetailView;
+}
+
+function installTicket(detailOf: (issue: string) => DetailView = (issue) => ticketDetail(issue)) {
+  let n = 0;
+  const subscribe = setBindingMock('SubscribeTrackerTicket', async (_c: string, issue: string): Promise<TicketSubscription> => {
+    n += 1;
+    return { id: `ticket-${issue}-${n}`, seq: 10, poll_every: 10_000, loaded: true, detail: detailOf(issue), read_at: Date.now() } as TicketSubscription;
+  });
+  const read = setBindingMock('TrackerTicket', async () => ({ loaded: true, detail: ticketDetail('1', { status: 's2' }) }));
+  return { subscribe, read };
+}
+
+/** The votes sent for the handles whose IDs start with `prefix`. */
+function votes(mock: ReturnType<typeof vi.fn>, prefix: string): boolean[] {
+  return mock.mock.calls.filter((c) => String(c[0]).startsWith(prefix)).map((c) => c[1] as boolean);
+}
+
+async function openCard(view: ReturnType<typeof mount>, issue: string): Promise<HTMLElement> {
+  await view.findAllByTestId('issues-card');
+  const card = view.getAllByTestId('issues-card').find((c) => c.dataset.issue === issue)!;
+  await fireEvent.click(within(card).getByTestId('issues-card-open'));
+  return waitFor(() => {
+    const screen = view.getByTestId('ticket-screen');
+    expect(screen.dataset.issue).toBe(issue);
+    return screen;
+  });
+}
+
+describe('the ticket in the pane', () => {
+  // The ticket's chunk loads on the first open; load it before the first
+  // test waits on it.
+  beforeAll(async () => {
+    await import('./TicketScreen.svelte');
+  });
+
+  it('opens a card\'s ticket over the board, votes the board hidden under it, and shown at once when it closes', async () => {
+    const mocks = install();
+    const ticket = installTicket();
+    const view = mount();
+    await openCard(view, '1');
+    expect(ticket.subscribe).toHaveBeenCalledWith('c1', '1', true);
+    expect(view.getByTestId('issues-ticket')).toHaveAttribute('data-placement', 'over');
+    await waitFor(() => expect(view.getByTestId('ticket-title')).toHaveTextContent('Issue 1'));
+    // The board stays mounted under the ticket, its card marked.
+    expect(view.getAllByTestId('issues-card').find((c) => c.dataset.issue === '1')).toHaveAttribute('data-open');
+    await waitFor(() => expect(votes(mocks.visible, 'sub-')).toEqual([false]));
+    await fireEvent.click(view.getByTestId('ticket-close'));
+    await waitFor(() => expect(votes(mocks.visible, 'sub-')).toEqual([false, true]));
+    expect(view.queryByTestId('ticket-screen')).toBeNull();
+    await waitFor(() => expect(mocks.release).toHaveBeenCalledWith('ticket-1-1'));
+  });
+
+  it('moves a card on the board under the ticket when a status change made in the ticket lands', async () => {
+    install();
+    installTicket();
+    const patched = setBindingMock('TrackerBoardPatch', async (): Promise<BoardPatch> => ({
+      lifetime: 1, revision: 2,
+      // The changed card, now in the second column.
+      sections: [{ section: { kind: 'column', column: 0 }, rows: [] }, { section: { kind: 'column', column: 1 }, rows: [row('1', 'a', 's2')] }],
+    } as unknown as BoardPatch));
+    const move = setBindingMock('MoveTrackerIssue', async (): Promise<WriteView> => {
+      // The write's refresh tells the board and the ticket before it answers.
+      applyTrackerBoardEvent({ scope: { connection: 'c1', board: '1' }, seq: 11, changed: ['1'] }, HOME_BACKEND);
+      trackerIssueUpdated({ connection: 'c1', issue: '1', seq: 11, changed: true }, HOME_BACKEND);
+      return { parts: [{ step: 'move', state: 'applied' }] } as WriteView;
+    });
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const status = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'status')!;
+    await fireEvent.click(within(status).getByTestId('ticket-field-value'));
+    const item = await waitFor(() => within(menu()).getByTestId('ticket-picker-item'));
+    expect(item).toHaveTextContent('In Progress');
+    await fireEvent.click(item);
+    await waitFor(() => expect(move).toHaveBeenCalledWith('c1', { issue: '1', move: '21', fields: undefined, accept_loss: false }));
+    await waitFor(() => expect(patched).toHaveBeenCalled());
+    await waitFor(() => expect(columns(view).map((c) => c.cards)).toEqual([[], ['1', '2']]));
+    await waitFor(() => expect(within(status).getByTestId('ticket-field-value')).toHaveTextContent('In Progress'));
+    expect(within(status).queryByTestId('ticket-write-pending')).toBeNull();
+  });
+
+  it('shows the tracker\'s reason under a change it refused, and keeps the value as it was', async () => {
+    install();
+    installTicket();
+    setBindingMock('TrackerChoices', async () => ({ choices: [{ id: '1', name: 'Highest' }, { id: '3', name: 'Low' }] }));
+    const edit = setBindingMock('EditTrackerIssue', async (): Promise<WriteView> => ({
+      parts: [{ step: 'edit', state: 'refused', refusal: { reason: 'tracker', message: 'Priority is not on the edit screen of this issue' } }],
+    } as WriteView));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const priority = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'priority')!;
+    await fireEvent.click(within(priority).getByTestId('ticket-field-value'));
+    const items = await waitFor(() => {
+      const found = within(menu()).getAllByTestId('ticket-picker-item');
+      expect(found).toHaveLength(2);
+      return found;
+    });
+    await fireEvent.click(items[1]);
+    await waitFor(() => expect(edit).toHaveBeenCalledWith('c1', { issue: '1', fields: [{ field: 'priority', value: { kind: 'option', choices: [{ id: '3' }] } }], accept_loss: false }));
+    await waitFor(() => expect(within(priority).getByTestId('ticket-write-outcome')).toHaveTextContent('Priority is not on the edit screen of this issue'));
+    expect(within(priority).getByTestId('ticket-write-outcome')).toHaveAttribute('data-kind', 'refused');
+    expect(within(priority).getByTestId('ticket-field-value')).toHaveTextContent('None');
+  });
+
+  it('steps back through the tickets opened from one another, at most 20, then closes; Close and a board pick leave at once', async () => {
+    install();
+    // Each ticket's parent is the next issue.
+    const ticket = installTicket((issue) => ticketDetail(issue, { parent: String(Number(issue) + 1) }));
+    clearCommandRegistry();
+    registerIssuesCommands();
+    const escape = () => runCommand('issues.escape', { pane: null, paneId: null, flags: { issuesPaneFocused: true, toolDetailOpen: true } } as unknown as CommandContext);
+    const view = mount();
+    await openCard(view, '1');
+    for (let i = 2; i <= 23; i += 1) {
+      await fireEvent.click(await view.findByTestId('ticket-parent'));
+      await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe(String(i)));
+    }
+    expect(ticket.subscribe).toHaveBeenCalledTimes(23);
+    // Back returns through the 20 tickets before this one: 22 to 3.
+    const back: string[] = [];
+    for (let i = 0; i < 20; i += 1) {
+      if (i % 2 === 0) await fireEvent.click(view.getByTestId('ticket-back'));
+      else escape();
+      await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe(String(22 - i)));
+      back.push(view.getByTestId('ticket-screen').dataset.issue!);
+    }
+    expect(back[0]).toBe('22');
+    expect(back.at(-1)).toBe('3');
+    // With none left to step back to, Back closes the ticket.
+    expect(view.queryByTestId('ticket-back')).toBeNull();
+    escape();
+    await waitFor(() => expect(view.queryByTestId('ticket-screen')).toBeNull());
+
+    // Close leaves at once, whatever the trail.
+    await openCard(view, '1');
+    await fireEvent.click(await view.findByTestId('ticket-parent'));
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('2'));
+    await fireEvent.click(view.getByTestId('ticket-close'));
+    await waitFor(() => expect(view.queryByTestId('ticket-screen')).toBeNull());
+
+    // A pick of another board drops the ticket and its trail.
+    await openCard(view, '1');
+    await fireEvent.click(view.getByTestId('issues-board-picker'));
+    await fireEvent.click(within(menu()).getAllByTestId('issues-board-choice')[1]);
+    await waitFor(() => expect(view.queryByTestId('ticket-screen')).toBeNull());
+    clearCommandRegistry();
+  });
+
+  it('mounts the newest five comments and the earlier ones 20 a press, reading the next page once the held ones run out', async () => {
+    install();
+    installTicket((issue) => ticketDetail(issue, { comments: 30, more: 'page-2' }));
+    const page = setBindingMock('TrackerComments', async () => ({
+      comments: Array.from({ length: 10 }, (_, i) => ({ id: `old${i}`, author: { id: 'u1', name: 'User 1' }, body: `Older ${i}`, created: 900 - i })),
+      next: '',
+    }));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const mounted = () => within(screen).queryAllByTestId('ticket-comment').map((c) => c.dataset.comment);
+    await waitFor(() => expect(mounted()).toEqual(['c26', 'c27', 'c28', 'c29', 'c30']));
+    expect(within(screen).getByTestId('ticket-comments-earlier')).toHaveTextContent('Show 20 earlier comments');
+    await fireEvent.click(within(screen).getByTestId('ticket-comments-earlier'));
+    await waitFor(() => expect(mounted()).toHaveLength(25));
+    expect(page).not.toHaveBeenCalled();
+    // Five held are left: the press reads the next page, then mounts 20.
+    await fireEvent.click(within(screen).getByTestId('ticket-comments-earlier'));
+    await waitFor(() => expect(mounted()).toHaveLength(40));
+    expect(page).toHaveBeenCalledWith('c1', '1', 'page-2');
+    expect(mounted()[0]).toBe('old9');
+    expect(within(screen).queryByTestId('ticket-comments-earlier')).toBeNull();
   });
 });
