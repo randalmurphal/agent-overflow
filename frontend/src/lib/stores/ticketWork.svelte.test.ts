@@ -125,7 +125,7 @@ describe('the Work read', () => {
     const fourth = loadTicketWork(ticket.key, REF);
     fails[3](new TransportError('ticket_not_read', 'this computer has not read the ticket yet: open it first'));
     await fourth;
-    expect((ticketWork(ticket.key)?.error as Error).message).toContain('has not read the ticket yet');
+    expect((ticketWork(ticket.key)!.error as Error).message).toContain('has not read the ticket yet');
     ticket.release();
     expect(ticketWork(ticket.key)).toBeNull();
   });

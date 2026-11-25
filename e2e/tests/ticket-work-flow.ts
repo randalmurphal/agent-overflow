@@ -6,7 +6,8 @@
 // pump stored, and the chip opens the ticket; the ticket's Work (in Details
 // on compact) lists the thread linked to it and that pull request; Ask
 // opens a thread linked to the ticket with its file attached to the
-// unsent draft and writes nothing to the tracker; Start work shows the
+// unsent draft and writes nothing to the tracker, in the project whose
+// board the ticket was opened from when two list it; Start work shows the
 // project's defaults, makes the thread in a worktree on the branch named
 // after the ticket, moves and assigns the ticket once each, saves the
 // defaults when asked and opens the thread; a move the tracker refuses
@@ -20,7 +21,7 @@ import { expect, test, type SeedResult } from './fixtures.js';
 import { publishPullRequest, type ForgeRepo } from './forge-helpers.js';
 import { launchPullsHarness, openPage, pickFilter, row as pullRow } from './pulls-page-flow.js';
 import { harnessGit } from './worktree-removal-helpers.js';
-import { JIRA_SITE, connectFakeJira, connectFakeJiraBoard, openIssuesPane, press, seedFakeJira, trackerRequests } from './tracker-helpers.js';
+import { BOARD_ID, JIRA_SITE, connectFakeJira, connectFakeJiraBoard, openIssuesPane, press, seedFakeJira, trackerRequests } from './tracker-helpers.js';
 
 export interface WorkSurface {
   compact: boolean;
@@ -35,6 +36,7 @@ const EDIT_ROUTE = 'PUT rest/api/3/issue/{issue}';
 
 interface ThreadRow {
   id: string;
+  projectId: string;
   title: string;
   worktreePath?: string;
   ticketLink?: { key: string; origin: string } | null;
@@ -157,6 +159,36 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
     expect(rows.map((r) => [r.title, r.ticketLink?.key, r.ticketLink?.origin])).toEqual([['WEB-1 First story', 'WEB-1', 'ask']]);
     expect(await trackerRequests(harness, MOVE_ROUTE)).toEqual([]);
     expect(await trackerRequests(harness, EDIT_ROUTE)).toEqual([]);
+    await expect(errorToasts(page)).toHaveCount(0);
+  });
+
+  test('Ask makes its thread in the project whose board the ticket was opened from, of two that list the board', async ({ harness, page }) => {
+    test.setTimeout(120_000);
+    await seedFakeJira(harness);
+    const surface = compact ? 'compact' : 'desktop';
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name: `alpha-${surface}`, repo: {} }, { name: `beta-${surface}`, repo: {} }] });
+    const [alpha, beta] = seed.projects.map((p) => p.projectId);
+    const { connectionId } = await connectFakeJira(harness, alpha);
+    await harness.rpc('SetProjectTrackerBoards', beta, [], [{ connection: connectionId, board: BOARD_ID, opens_first: true, name: 'WEB board', tracker_project: 'WEB' }]);
+    await harness.open(page);
+    const pane = await openIssuesPane(page, compact);
+    // The picker lists the board under each project, by project name:
+    // beta's is the second.
+    await press(pane.getByTestId('issues-board-picker'), compact);
+    const choices = page.getByTestId('issues-board-choice');
+    await expect(choices).toHaveCount(2);
+    await press(choices.nth(1), compact);
+    await expect(card(pane, WEB1)).toBeVisible({ timeout: 30_000 });
+    await press(card(pane, WEB1).getByTestId('issues-card-open'), compact);
+    const ticket = pane.getByTestId('ticket-screen');
+    await expect(ticket).toHaveAttribute('data-issue', WEB1);
+    const work = await workOf(ticket, compact);
+    await expect(work.getByTestId('ticket-work-project')).toHaveValue(beta);
+    await press(work.getByTestId('ticket-work-ask'), compact);
+
+    await expectThreadShown(page, 'WEB-1 First story', compact);
+    const rows = await threadRows(harness);
+    expect(rows.map((r) => [r.projectId, r.ticketLink?.origin])).toEqual([[beta, 'ask']]);
     await expect(errorToasts(page)).toHaveCount(0);
   });
 

@@ -167,7 +167,7 @@ describe('Work', () => {
   });
 
   it('opens a branch with no thread in the Start work form on that branch, and a branch\'s thread only of its own project', async () => {
-    setBindingMock('ProjectTrackerSetup', async () => ({ revision: 'r1', setup: { status_groups: [], ticket_pins: [] } } as SetupView));
+    setBindingMock('ProjectTrackerSetup', async () => ({ revision: 'r1', setup: { status_groups: [], ticket_pins: [], start_work: [] } } as SetupView));
     // A thread of another project whose worktree path is the same.
     listThread(makeThread({ id: 't-elsewhere', projectId: 'p9', title: 'Elsewhere', worktreePath: '/tmp/widgets-wt' }));
     const view = await mountWork({
