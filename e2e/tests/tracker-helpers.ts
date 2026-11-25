@@ -20,6 +20,10 @@ export const SPRINT_ID = '1';
 /** What `TrackerConnections` and `AddTrackerConnection` answer. */
 export interface TrackerConnection {
   id: string;
+  kind: 'jira' | 'tempo' | 'linear';
+  site: string;
+  account: string;
+  parentId?: string;
   keyFilePath: string;
   problem?: { kind: string; message: string } | null;
 }
