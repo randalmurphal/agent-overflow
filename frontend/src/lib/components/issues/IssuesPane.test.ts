@@ -999,6 +999,62 @@ describe('the ticket in the pane', () => {
     expect(within(comment).queryByTestId('ticket-write-outcome')).toBeNull();
   });
 
+  it('withdraws Save anyway once the description is changed or the edit canceled, and checks a revised text again', async () => {
+    install();
+    installTicket();
+    const loss = { parts: [{ step: 'edit', state: 'refused', refusal: { reason: 'loss', message: 'This edit would lose formatting.', lost: ['a table'] } }] } as WriteView;
+    const edit = setBindingMock('EditTrackerIssue', async (): Promise<WriteView> => loss);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const description = within(screen).getAllByTestId('ticket-section').find((s) => s.dataset.field === 'description')!;
+    const editor = async () => {
+      await fireEvent.click(within(description).getByTestId('ticket-section-edit'));
+      return within(description).getByTestId('ticket-section-editor');
+    };
+    await fireEvent.input(await editor(), { target: { value: 'Draft A' } });
+    await fireEvent.click(within(description).getByTestId('ticket-section-save'));
+    await waitFor(() => within(description).getByTestId('ticket-write-save-anyway'));
+    // The person revises the text: the consent was for Draft A.
+    await fireEvent.input(within(description).getByTestId('ticket-section-editor'), { target: { value: 'Draft B' } });
+    expect(within(description).queryByTestId('ticket-write-save-anyway')).toBeNull();
+    await fireEvent.click(within(description).getByTestId('ticket-section-save'));
+    await waitFor(() => expect(edit).toHaveBeenCalledTimes(2));
+    expect(edit).toHaveBeenLastCalledWith('c1', { issue: '1', fields: [{ field: 'description', markdown: { markdown: 'Draft B', from: 'The description' } }], accept_loss: false });
+    await waitFor(() => within(description).getByTestId('ticket-write-save-anyway'));
+    // Cancel withdraws it too, and the restored text offers nothing.
+    await fireEvent.click(within(description).getByTestId('ticket-section-cancel'));
+    expect(within(description).queryByTestId('ticket-write-save-anyway')).toBeNull();
+    expect(within(description).queryByTestId('ticket-write-outcome')).toBeNull();
+    expect(edit).toHaveBeenCalledTimes(2);
+  });
+
+  it('withdraws Save anyway once a comment\'s edit is changed or canceled', async () => {
+    install();
+    installTicket((issue) => ticketDetail(issue, { comments: 1 }));
+    const edit = setBindingMock('EditTrackerComment', async (): Promise<WriteView> => ({
+      parts: [{ step: 'comment', state: 'refused', refusal: { reason: 'loss', message: 'This edit would lose formatting.', lost: ['a table'] } }],
+    }) as WriteView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const comment = await waitFor(() => within(screen).getByTestId('ticket-comment'));
+    const startEdit = async () => {
+      await fireEvent.contextMenu(comment);
+      await fireEvent.click(await within(document.body).findByTestId('ticket-comment-menu-edit'));
+    };
+    await startEdit();
+    await fireEvent.input(within(comment).getByTestId('ticket-comment-editor'), { target: { value: 'Draft A' } });
+    await fireEvent.click(within(comment).getByTestId('ticket-comment-save'));
+    await waitFor(() => within(comment).getByTestId('ticket-write-save-anyway'));
+    await fireEvent.input(within(comment).getByTestId('ticket-comment-editor'), { target: { value: 'Draft B' } });
+    expect(within(comment).queryByTestId('ticket-write-save-anyway')).toBeNull();
+    await fireEvent.click(within(comment).getByTestId('ticket-comment-save'));
+    await waitFor(() => within(comment).getByTestId('ticket-write-save-anyway'));
+    expect(edit).toHaveBeenLastCalledWith('c1', { issue: '1', comment: 'c1', markdown: 'Draft B', from: 'Comment 1', accept_loss: false });
+    await fireEvent.click(within(comment).getByTestId('ticket-comment-cancel'));
+    expect(within(comment).queryByTestId('ticket-write-save-anyway')).toBeNull();
+    expect(edit).toHaveBeenCalledTimes(2);
+  });
+
   it('steps back through the tickets opened from one another, at most 20, then closes; Close and a board pick leave at once', async () => {
     install();
     // Each ticket's parent is the next issue.

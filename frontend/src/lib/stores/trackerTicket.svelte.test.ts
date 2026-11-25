@@ -355,15 +355,13 @@ describe('a ticket write', () => {
     expect(edits.calls).toEqual([['c1', { issue: '10101', comment: '7', markdown: 'new body', from: 'old body', accept_loss: false }]]);
     const again = ticketWrite(ticket.key, target)?.saveAnyway;
     expect(again).toBeTypeOf('function');
+    // A loss refusal of the write that accepted the loss offers no second
+    // Save anyway.
     const second = again!();
-    edits.answer(applied());
-    expect(await second).toEqual({ kind: 'applied', note: null });
+    edits.answer({ parts: [{ step: 'comment', state: 'refused', refusal: { reason: 'loss', message: 'This edit would lose formatting.', lost: ['a table'] } }] } as WriteView);
+    expect((await second)?.kind).toBe('refused');
     expect(edits.calls[1]).toEqual(['c1', { issue: '10101', comment: '7', markdown: 'new body', from: 'old body', accept_loss: true }]);
-    expect(ticketWrite(ticket.key, target)).toBeNull();
-    // A refusal after the loss was accepted offers no second Save anyway.
-    const third = editTicketComment(ctxOf(ticket), '7', 'other', 'old body');
-    edits.answer({ parts: [{ step: 'comment', state: 'refused', refusal: { reason: 'tracker', message: 'no' } }] } as WriteView);
-    await third;
+    expect(ticketWrite(ticket.key, target)?.outcome?.kind).toBe('refused');
     expect(ticketWrite(ticket.key, target)?.saveAnyway).toBeNull();
     ticket.release();
   });

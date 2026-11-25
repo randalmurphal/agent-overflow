@@ -4,7 +4,9 @@
 // (a field, the status, the points, a comment, the new comment), and a
 // second press of a pending target sends nothing. Nothing retries on its
 // own; a refusal for what a rich text edit would lose offers Save anyway,
-// the same write accepting the loss, as the person's second action.
+// the same write accepting the loss, as the person's second action. That
+// consent is for the one text refused: the editor withdraws it when the
+// person changes the text or cancels, so a revised text is checked again.
 //
 // A write's outcome is held here under its ticket and target, not in the
 // component, so a person who closed the ticket while it ran still learns
@@ -91,6 +93,13 @@ export function ticketWrite(ticket: string, target: string): TicketWrite | null 
 export function dismissTicketWrite(ticket: string, target: string): void {
   const k = writeKey(ticket, target);
   if (writes.get(k)?.pending === false) writes.delete(k);
+}
+
+/** Withdraws a Save anyway offer: the text it was for changed or its
+ * edit was canceled. Other outcomes stay, a lost answer among them. */
+export function withdrawTicketLossConsent(ticket: string, target: string): void {
+  const k = writeKey(ticket, target);
+  if (writes.get(k)?.saveAnyway) writes.delete(k);
 }
 
 // A ticket's outcomes go with its last surface; a write still pending

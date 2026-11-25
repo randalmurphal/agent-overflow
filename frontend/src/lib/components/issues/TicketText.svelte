@@ -6,7 +6,8 @@
   // the Markdown as the ticket holds it; Save sends it with the text it
   // was edited from, so the tracker refuses an edit that would lose a
   // change made since. Ctrl or Cmd+Enter saves and Escape cancels. A
-  // refusal keeps the editor and its text.
+  // refusal keeps the editor and its text; changing the text or canceling
+  // withdraws a Save anyway offered for it.
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Button from '../primitives/Button.svelte';
@@ -15,7 +16,7 @@
   import TicketWriteNote from './TicketWriteNote.svelte';
   import { isEnterKey } from '../../utils/localEnter';
   import { isImeComposingEvent } from '../../utils/imeComposition';
-  import { ticketWrite } from '../../stores/trackerTicketWrites.svelte';
+  import { ticketWrite, withdrawTicketLossConsent } from '../../stores/trackerTicketWrites.svelte';
   import type { WriteOutcome } from '../../stores/trackerTicketModel';
 
   interface Props {
@@ -51,6 +52,11 @@
     queueMicrotask(() => textarea?.focus({ preventScroll: true }));
   }
 
+  function cancel(): void {
+    editing = false;
+    withdrawTicketLossConsent(ticketKey, target);
+  }
+
   async function save(): Promise<void> {
     if (pending) return;
     if ((await onSave(draft, from))?.kind === 'applied') editing = false;
@@ -64,7 +70,7 @@
     } else if (event.key === 'Escape' && !pending) {
       event.preventDefault();
       event.stopPropagation();
-      editing = false;
+      cancel();
     }
   }
 </script>
@@ -97,6 +103,7 @@
         <textarea
           bind:this={textarea}
           bind:value={draft}
+          oninput={() => withdrawTicketLossConsent(ticketKey, target)}
           rows="8"
           class="min-h-24 w-full resize-y rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1.5 font-mono text-[0.8125rem] text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           aria-label="{title}, as Markdown"
@@ -105,7 +112,7 @@
         ></textarea>
         <div class="flex items-center gap-1.5">
           <Button size="sm" variant="primary" disabled={pending} testId="ticket-section-save" onclick={() => { void save(); }}>Save</Button>
-          <Button size="sm" variant="ghost" disabled={pending} testId="ticket-section-cancel" onclick={() => { editing = false; }}>Cancel</Button>
+          <Button size="sm" variant="ghost" disabled={pending} testId="ticket-section-cancel" onclick={cancel}>Cancel</Button>
         </div>
       </div>
     {:else if markdown.trim()}

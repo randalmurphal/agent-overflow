@@ -22,6 +22,7 @@
     deleteTicketComment,
     editTicketComment,
     ticketWrite,
+    withdrawTicketLossConsent,
     type TicketWriteContext,
   } from '../../stores/trackerTicketWrites.svelte';
   import { COMMENTS_FIRST, COMMENTS_STEP, commentWindow, heldComments, type CommentOrder } from '../../stores/trackerTicketModel';
@@ -84,8 +85,16 @@
   let editDraft = $state('');
   let confirming = $state<string | null>(null);
 
+  /** Closes the comment's editor; a Save anyway it was offered goes with
+   * it. */
+  function closeEdit(): void {
+    if (editing) withdrawTicketLossConsent(ctx.key, commentTarget(editing.id));
+    editing = null;
+  }
+
   function startEdit(c: CommentView): void {
     confirming = null;
+    closeEdit();
     editing = { id: c.id, from: c.body };
     editDraft = c.body;
   }
@@ -105,7 +114,7 @@
     } else if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
-      editing = null;
+      closeEdit();
     }
   }
 
@@ -207,10 +216,10 @@
           {@const pending = ticketWrite(ctx.key, commentTarget(c.id))?.pending ?? false}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="flex flex-col gap-1.5" onkeydown={onEditKeydown}>
-            <textarea bind:value={editDraft} rows="4" class="w-full resize-y rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1.5 text-sm text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" aria-label="Comment, as Markdown" data-testid="ticket-comment-editor" disabled={pending}></textarea>
+            <textarea bind:value={editDraft} oninput={() => withdrawTicketLossConsent(ctx.key, commentTarget(c.id))} rows="4" class="w-full resize-y rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1.5 text-sm text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" aria-label="Comment, as Markdown" data-testid="ticket-comment-editor" disabled={pending}></textarea>
             <div class="flex items-center gap-1.5">
               <Button size="sm" variant="primary" disabled={pending} testId="ticket-comment-save" onclick={() => { void saveEdit(); }}>Save</Button>
-              <Button size="sm" variant="ghost" disabled={pending} testId="ticket-comment-cancel" onclick={() => { editing = null; }}>Cancel</Button>
+              <Button size="sm" variant="ghost" disabled={pending} testId="ticket-comment-cancel" onclick={closeEdit}>Cancel</Button>
             </div>
           </div>
         {:else}
@@ -237,7 +246,7 @@
 {#if menu}
   <ContextMenu x={menu.x} y={menu.y} ariaLabel="Comment actions" onDismiss={() => { menu = null; }}>
     <MenuItem label="Edit" disabled={menuPending} testId="ticket-comment-menu-edit" onSelect={() => fromMenu(startEdit)} />
-    <MenuItem label="Delete" variant="danger" disabled={menuPending} testId="ticket-comment-menu-delete" onSelect={() => fromMenu((c) => { editing = null; confirming = c.id; })} />
+    <MenuItem label="Delete" variant="danger" disabled={menuPending} testId="ticket-comment-menu-delete" onSelect={() => fromMenu((c) => { closeEdit(); confirming = c.id; })} />
     <MenuDivider />
     <MenuItem label="Copy text" testId="ticket-comment-menu-copy" onSelect={() => fromMenu((c) => { void copy(c); })} />
   </ContextMenu>
