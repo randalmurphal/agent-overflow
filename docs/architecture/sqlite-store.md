@@ -314,8 +314,10 @@ per-level selection runs as its own statement and never inside a CTE
 `TestForkReadsKeepTheirShapeAtEveryDepth`). The MIN and MAX item index of a
 turn, which every append and head insert reads, is one text for every thread
 and depth: the thread's own arms, and the inherited arms evaluated once per
-lineage row on that row's depth, so each arm reads one index entry
-(`turnItemIndexSQL`). Inherited rows read `rev = -1`. A fork reads an ancestor's turn row
+lineage row on that row's depth (`turnItemIndexSQL`). A local arm, the
+thread's own and each level's, walks its turn index in order and stops at
+the first row it shows; an imported arm reads every row of the turn in the
+chunks whose turn range holds it. Inherited rows read `rev = -1`. A fork reads an ancestor's turn row
 below that level's cut turn where neither the fork nor a nearer level whose
 cut turn is past the turn holds a row of that turn (`forkTurnVisibleSQL`): a
 nearer level's rows of a turn at or past its cut are not the fork's history.
