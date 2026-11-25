@@ -41,7 +41,8 @@ const (
 func (j jiraService) tenant(e *Engine) *jiraSite { return e.jira[j.site] }
 
 // authenticate admits Basic with the account's email and the site's
-// token. Any other credential is anonymous: Jira answers an issue read
+// token, or a member's email and that member's token, and the request
+// acts as that account. Any other credential is anonymous: Jira answers an issue read
 // as not found for it, a search with no issues, and anything else 401
 // (measured with no credential; a wrong token is unverified and answered
 // the same).
@@ -53,8 +54,14 @@ func (j jiraService) authenticate(e *Engine, x *exchange) *answer {
 	user, token, presented := basicAuth(x.r.Header.Get("Authorization"))
 	me := s.user(s.Account)
 	if presented && strings.EqualFold(user, me.Email) && sameSecret(s.token, token) {
-		x.tenant = s.Site
+		x.tenant, x.account = s.Site, s.Account
 		return nil
+	}
+	for account, memberToken := range s.members {
+		if presented && strings.EqualFold(user, s.user(account).Email) && sameSecret(memberToken, token) {
+			x.tenant, x.account = s.Site, account
+			return nil
+		}
 	}
 	r, _, routed := findRoute(jiraRoutes, x)
 	switch {
@@ -99,7 +106,7 @@ func (j jiraService) route(e *Engine, x *exchange) match {
 	if why := r.checkQuery(q); why != "" {
 		return match{unhandled: why}
 	}
-	c := &jiraCall{e: e, s: s, x: x, params: params, query: q, viewer: s.Account}
+	c := &jiraCall{e: e, s: s, x: x, params: params, query: q, viewer: x.account}
 	return match{name: r.name(), reads: r.reads, run: func() answer { return forAccount(dated(r.handle(c), e.now()), c.viewer) }}
 }
 

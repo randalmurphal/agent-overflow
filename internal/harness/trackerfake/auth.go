@@ -154,6 +154,8 @@ func (e *Engine) secrets(x *exchange) []string {
 	out := slices.Clone(x.secrets)
 	for _, s := range e.jira {
 		out = append(out, s.token, s.tempoToken)
+		out = slices.AppendSeq(out, maps.Values(s.members))
+		out = slices.AppendSeq(out, maps.Keys(s.issued))
 	}
 	for _, w := range e.linear {
 		out = append(out, w.apiKey)

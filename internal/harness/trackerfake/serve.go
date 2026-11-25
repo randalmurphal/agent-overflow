@@ -45,8 +45,10 @@ type exchange struct {
 	origin Origin
 	r      *http.Request
 	body   []byte
-	// tenant is the Jira site or Linear workspace the credential names.
-	tenant string
+	// tenant is the Jira site or Linear workspace the credential names,
+	// and account the Jira account it signs in as.
+	tenant  string
+	account string
 	// secrets are every form of the credentials the request presented
 	// (presentedSecrets), scrubbed from what is logged.
 	secrets []string

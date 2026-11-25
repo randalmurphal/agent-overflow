@@ -22,6 +22,12 @@ func with(base []string, more ...string) []string {
 // read answers an anonymous request as not found, as Jira does.
 var jiraRoutes = []jiraRoute{
 	{method: "GET", pattern: api + "myself", reads: true, handle: myself},
+
+	// Planning poker (jira_poker.go).
+	{method: "GET", pattern: "_edge/tenant_info", reads: true, handle: tenantInfo},
+	{method: "POST", pattern: "gateway/api/graphql", handle: gateway},
+	{method: "POST", pattern: "rest/internal/2/forge/context/token", handle: contextToken},
+
 	{method: "GET", pattern: api + "user", query: []string{"accountId"}, reads: true, handle: getUser},
 	{method: "GET", pattern: api + "user/search", query: with(window, "query", "accountId"), reads: true, handle: searchUsers},
 	{method: "GET", pattern: api + "user/assignable/search", query: with(window, "query", "accountId", "issueKey", "issueId", "project"), reads: true, handle: assignableUsers},

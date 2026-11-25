@@ -163,6 +163,9 @@ const (
 	StepComment
 	StepLink
 	StepWorklog
+	// StepPoker casts, reveals or clears planning poker votes, which the
+	// add-on holds outside the tracker's own data (Poker).
+	StepPoker
 )
 
 func (s Step) String() string {
@@ -189,6 +192,8 @@ func (s Step) String() string {
 		return "link"
 	case StepWorklog:
 		return "worklog"
+	case StepPoker:
+		return "poker"
 	}
 	return fmt.Sprintf("Step(%d)", uint8(s))
 }
@@ -355,7 +360,7 @@ func (r Result) Check() error {
 }
 
 func (p Part) check() error {
-	if p.Step < StepCreate || p.Step > StepWorklog {
+	if p.Step < StepCreate || p.Step > StepPoker {
 		return errors.New("no step")
 	}
 	for _, res := range p.Changed {

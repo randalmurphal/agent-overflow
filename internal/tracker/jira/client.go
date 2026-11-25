@@ -4,8 +4,9 @@
 // fields and their metadata, values built from field names and Markdown,
 // create and edit planned then applied, transitions, comments, links,
 // attachments, watchers and people; boards, sprints, ranking and issue
-// lists (agile.go); changelogs (history.go) and Jira's own worklogs
-// (worklogs.go). The contract is docs/architecture/tracker-clients.md.
+// lists (agile.go); changelogs (history.go), Jira's own worklogs
+// (worklogs.go) and the planning poker add-on's calls on the site
+// (poker.go). The contract is docs/architecture/tracker-clients.md.
 //
 // A Client is built by its caller, one per site, and is safe for
 // concurrent use. It sends every request through its own
@@ -100,6 +101,12 @@ type Client struct {
 	sprintLists *cache[int64, SprintList]
 	// me is who the credential belongs to (Me).
 	me *cache[struct{}, User]
+	// cloudID, poker and pokerTokens are planning poker's (poker.go):
+	// the site's cloud ID, its add-on as the extension listing names it,
+	// and the context tokens by issue ID.
+	cloudID     *cache[struct{}, string]
+	poker       *cache[struct{}, pokerApp]
+	pokerTokens *cache[string, pokerToken]
 }
 
 // rateLimitHeaders are the rate limit headers Jira Cloud documents
@@ -144,6 +151,9 @@ func New(opts Options) (*Client, error) {
 		configs:     newCache[int64, BoardConfig](boardConfigCacheSize, 0, cloneBoardConfig, api.CredentialMark),
 		sprintLists: newCache[int64, SprintList](boardConfigCacheSize, 0, cloneSprintList, api.CredentialMark),
 		me:          newCache[struct{}, User](1, 0, nil, api.CredentialMark),
+		cloudID:     newCache[struct{}, string](1, 0, nil, api.CredentialMark),
+		poker:       newCache[struct{}, pokerApp](1, siteAge, nil, api.CredentialMark),
+		pokerTokens: newCache[string, pokerToken](pokerTokenCacheSize, 0, nil, api.CredentialMark),
 	}
 	if c.maxImages == 0 {
 		c.maxImages = defaultMaxImages

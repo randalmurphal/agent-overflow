@@ -21,6 +21,13 @@ type JiraSite struct {
 	// Token is the API token that user's email signs in with (Basic).
 	Account string `json:"account"`
 	Token   string `json:"token,omitempty"`
+	// Members are the other people who sign in to the site, each with
+	// their own token, which Snapshot leaves out.
+	Members []JiraMember `json:"members,omitempty"`
+	// CloudID is the site's cloud ID; empty seeds a made-up one.
+	CloudID string `json:"cloudId,omitempty"`
+	// Poker is the planning poker add-on; nil when the site has none.
+	Poker *JiraPoker `json:"poker,omitempty"`
 
 	Users      []JiraUser     `json:"users,omitempty"`
 	Statuses   []JiraStatus   `json:"statuses,omitempty"`
