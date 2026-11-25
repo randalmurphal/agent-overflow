@@ -122,9 +122,9 @@ type SubagentLaunchContext struct {
 	OnChildDiscovered   func(childConversationID string)
 }
 
-// BackgroundCommandInfo describes an in-flight command_execution step that the
-// provider transitioned into a detached background task (with its task id and
-// live log file path).
+// BackgroundCommandInfo describes an in-flight tool step (such as run_command,
+// schedule, or run_workflow) that the provider transitioned into a detached
+// background task (with its task id and live log file path).
 type BackgroundCommandInfo struct {
 	TaskID     string
 	OutputFile string
@@ -144,6 +144,7 @@ type Flavor interface {
 	ExtractPendingQuestion(u *ToolCallUpdate) ([]provider.UserInputQuestion, bool)
 	ExtractTodoUpdate(u *ToolCallUpdate) (entries []PlanEntry, isTodoTool bool)
 	BeforePrompt(ctx context.Context, sessionID string) any
+	CanVerifyPromptStep(sessionID string, beforeToken any) bool
 	ResolvePromptStepAnchor(ctx context.Context, sessionID, content string, beforeToken any) string
 	AfterPrompt(ctx context.Context, sessionID string, stopReason string, beforeToken any) *PromptOutcomeOverride
 	ShouldHoldSpontaneousWakeClose(ctx context.Context, sessionID string) bool
@@ -625,6 +626,10 @@ func (DefaultFlavor) ExtractPendingQuestion(*ToolCallUpdate) ([]provider.UserInp
 
 func (DefaultFlavor) BeforePrompt(context.Context, string) any {
 	return nil
+}
+
+func (DefaultFlavor) CanVerifyPromptStep(string, any) bool {
+	return false
 }
 
 func (DefaultFlavor) ResolvePromptStepAnchor(context.Context, string, string, any) string {

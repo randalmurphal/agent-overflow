@@ -1249,3 +1249,308 @@ func TestACPTodoToolSuppressedAndRoutedToEventTodoUpdate(t *testing.T) {
 		t.Fatalf("expected EventTodoUpdate in replayed events, got %+v", replayed)
 	}
 }
+
+type genericAsyncBgFlavor struct {
+	DefaultFlavor
+	mu        sync.Mutex
+	byID      map[string]BackgroundCommandInfo
+	liveCalls int
+	compCalls int
+}
+
+func (f *genericAsyncBgFlavor) NormalizeToolStart(u *ToolCallUpdate) NormalizedToolStart {
+	return NormalizedToolStart{
+		ToolName: u.Name,
+		ItemType: "tool_call",
+		Input:    u.EffectiveInput(),
+	}
+}
+
+func (f *genericAsyncBgFlavor) NormalizeToolComplete(u *ToolCallUpdate, started NormalizedToolStart) NormalizedToolComplete {
+	return NormalizedToolComplete{
+		ToolName:   started.ToolName,
+		ItemType:   started.ItemType,
+		ItemStatus: "completed",
+		Content:    "completed " + u.ToolCallID,
+	}
+}
+
+func (f *genericAsyncBgFlavor) CanLookupBackgroundCommands(sessionID string) bool {
+	return sessionID != ""
+}
+
+func (f *genericAsyncBgFlavor) LookupBackgroundCommands(_ context.Context, _ string, toolCallIDs []string, includeCompleted bool, _ int) map[string]BackgroundCommandInfo {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if includeCompleted {
+		f.compCalls++
+	} else {
+		f.liveCalls++
+	}
+	out := make(map[string]BackgroundCommandInfo)
+	for _, id := range toolCallIDs {
+		if info, ok := f.byID[id]; ok {
+			out[id] = info
+		}
+	}
+	return out
+}
+
+func TestACPNonCommandAsyncToolsPromoteToBackgroundAndCloseSpontaneousWake(t *testing.T) {
+	t.Parallel()
+
+	t.Run("schedule promotes on usage_update and closes spontaneous wake without hanging", func(t *testing.T) {
+		t.Parallel()
+		fl := &genericAsyncBgFlavor{
+			DefaultFlavor: DefaultFlavor{Kind: provider.Agy},
+			byID: map[string]BackgroundCommandInfo{
+				"sched-1": {
+					TaskID:     "sess-sched/task-1040",
+					OutputFile: "/tmp/task-1040.log",
+				},
+			},
+		}
+		var mu sync.Mutex
+		var events []provider.ProviderEvent
+		s := newUnitSession(fl, &events, &mu)
+		s.sessionID = "sess-sched"
+		s.pendingBgCommands = make(map[string]pendingBackgroundCommand)
+		s.bgCmdWakeCh = make(chan struct{}, 1)
+		defer func() {
+			s.closing.Store(true)
+			s.sessionCancel()
+			s.bgCmdWG.Wait()
+		}()
+
+		// Fast synchronous read_file finishes well under 250ms -> zero DB lookups, inline completion.
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "tool_call",
+			ToolCallID:    "read-fast",
+			Name:          "read_file",
+			Kind:          "read",
+			Status:        "in_progress",
+		})
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "tool_call_update",
+			ToolCallID:    "read-fast",
+			Status:        "completed",
+		})
+
+		fl.mu.Lock()
+		readsBeforeSched := fl.liveCalls + fl.compCalls
+		fl.mu.Unlock()
+		if readsBeforeSched != 0 {
+			t.Fatalf("fast synchronous read_file should not trigger DB lookups, got %d", readsBeforeSched)
+		}
+
+		// Spontaneous wake invokes schedule (non-command_execution tool), streams final
+		// text, and immediately emits usage_update before the 500ms watcher tick.
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "tool_call",
+			ToolCallID:    "sched-1",
+			Name:          "schedule",
+			Kind:          "other",
+			Status:        "in_progress",
+			RawInput:      json.RawMessage(`{"DurationSeconds":120,"Prompt":"Check CI"}`),
+		})
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "agent_message_chunk",
+			Content:       json.RawMessage(`{"type":"text","text":"Checking back in 2 minutes."}`),
+		})
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "usage_update",
+			Used:          540800,
+			Size:          1000000,
+		})
+
+		mu.Lock()
+		var sawPromote, sawTurnComplete bool
+		for _, ev := range events {
+			if ev.Kind == provider.EventToolStart && ev.ItemID == "sched-1" {
+				var m map[string]any
+				_ = json.Unmarshal(ev.Meta, &m)
+				if m["meta_update_only"] == true && m["is_background"] == true && m["task_id"] == "sess-sched/task-1040" {
+					sawPromote = true
+				}
+			}
+			if ev.Kind == provider.EventTurnComplete {
+				sawTurnComplete = true
+			}
+		}
+		mu.Unlock()
+		if !sawPromote {
+			t.Fatalf("schedule tool was not promoted to background on usage_update; events=%+v", events)
+		}
+		if !sawTurnComplete {
+			t.Fatalf("spontaneous wake turn hung open after schedule promoted to background; events=%+v", events)
+		}
+
+		// Later, when the timer fires and agy completes schedule, it must emit
+		// EventBackgroundTaskTerminal sibling instead of mutating the launch row.
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "tool_call_update",
+			ToolCallID:    "sched-1",
+			Status:        "completed",
+		})
+
+		mu.Lock()
+		defer mu.Unlock()
+		var sawFastComplete, sawSchedTerminal bool
+		for _, ev := range events {
+			if ev.ItemID == "read-fast" {
+				if ev.Kind == provider.EventBackgroundTaskTerminal {
+					t.Fatalf("fast read_file must not emit EventBackgroundTaskTerminal")
+				}
+				if ev.Kind == provider.EventToolComplete {
+					sawFastComplete = true
+				}
+			}
+			if ev.ItemID == "sched-1" {
+				if ev.Kind == provider.EventToolComplete {
+					t.Fatalf("backgrounded schedule must emit EventBackgroundTaskTerminal, not EventToolComplete")
+				}
+				if ev.Kind == provider.EventBackgroundTaskTerminal {
+					sawSchedTerminal = true
+				}
+			}
+		}
+		if !sawFastComplete || !sawSchedTerminal {
+			t.Fatalf("expected read-fast EventToolComplete (%v) and sched-1 EventBackgroundTaskTerminal (%v)", sawFastComplete, sawSchedTerminal)
+		}
+	})
+
+	t.Run("future unknown async tool promotes on watcher tick and closes held spontaneous wake", func(t *testing.T) {
+		t.Parallel()
+		fl := &genericAsyncBgFlavor{
+			DefaultFlavor: DefaultFlavor{Kind: provider.Agy},
+			byID:          map[string]BackgroundCommandInfo{},
+		}
+		var mu sync.Mutex
+		var events []provider.ProviderEvent
+		s := newUnitSession(fl, &events, &mu)
+		s.sessionID = "sess-future-async"
+		s.pendingBgCommands = make(map[string]pendingBackgroundCommand)
+		s.bgCmdWakeCh = make(chan struct{}, 1)
+		defer func() {
+			s.closing.Store(true)
+			s.sessionCancel()
+			s.bgCmdWG.Wait()
+		}()
+
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "tool_call",
+			ToolCallID:    "async-future-1",
+			Name:          "custom_future_async_tool",
+			Kind:          "other",
+			Status:        "in_progress",
+		})
+		// usage_update arrives before agy commits task_details -> must NOT close turn yet.
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "usage_update",
+			Used:          1000,
+			Size:          100000,
+		})
+		mu.Lock()
+		for _, ev := range events {
+			if ev.Kind == provider.EventTurnComplete {
+				mu.Unlock()
+				t.Fatalf("spontaneous wake closed prematurely while foreground tool was still unpromoted")
+			}
+		}
+		mu.Unlock()
+
+		// Now agy commits task_details; watcher promotes custom_future_async_tool and closes the wake turn.
+		fl.mu.Lock()
+		fl.byID["async-future-1"] = BackgroundCommandInfo{
+			TaskID:     "sess-future-async/task-99",
+			OutputFile: "/tmp/task-99.log",
+		}
+		fl.mu.Unlock()
+
+		deadline := time.Now().Add(2 * time.Second)
+		var sawPromote, sawTurnComplete bool
+		for time.Now().Before(deadline) {
+			mu.Lock()
+			for _, ev := range events {
+				if ev.Kind == provider.EventToolStart && ev.ItemID == "async-future-1" {
+					var m map[string]any
+					_ = json.Unmarshal(ev.Meta, &m)
+					if m["meta_update_only"] == true && m["is_background"] == true {
+						sawPromote = true
+					}
+				}
+				if ev.Kind == provider.EventTurnComplete {
+					sawTurnComplete = true
+				}
+			}
+			mu.Unlock()
+			if sawPromote && sawTurnComplete {
+				break
+			}
+			time.Sleep(15 * time.Millisecond)
+		}
+		if !sawPromote || !sawTurnComplete {
+			mu.Lock()
+			defer mu.Unlock()
+			t.Fatalf("expected watcher promotion (%v) and spontaneous turn close (%v); events=%+v", sawPromote, sawTurnComplete, events)
+		}
+	})
+
+	t.Run("mixed foreground completion after usage_update prevents premature spontaneous close", func(t *testing.T) {
+		t.Parallel()
+		fl := &genericAsyncBgFlavor{
+			DefaultFlavor: DefaultFlavor{Kind: provider.Agy},
+			byID:          map[string]BackgroundCommandInfo{},
+		}
+		var mu sync.Mutex
+		var events []provider.ProviderEvent
+		s := newUnitSession(fl, &events, &mu)
+		s.sessionID = "sess-mixed-wake"
+		s.pendingBgCommands = make(map[string]pendingBackgroundCommand)
+		s.bgCmdWakeCh = make(chan struct{}, 1)
+		defer func() {
+			s.closing.Store(true)
+			s.sessionCancel()
+			s.bgCmdWG.Wait()
+		}()
+
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "tool_call",
+			ToolCallID:    "fg-read",
+			Name:          "read_file",
+			Kind:          "read",
+			Status:        "in_progress",
+		})
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "tool_call",
+			ToolCallID:    "bg-sched",
+			Name:          "schedule",
+			Kind:          "other",
+			Status:        "in_progress",
+		})
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "usage_update",
+			Used:          2000,
+			Size:          100000,
+		})
+		// fg-read completes -> model still needs to respond to fg-read's result!
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "tool_call_update",
+			ToolCallID:    "fg-read",
+			Status:        "completed",
+		})
+		// bg-sched promotes -> must NOT close the turn because fg-read completed after usage_update.
+		s.promoteBackgroundCommand("bg-sched", "", s.activeTurnID, BackgroundCommandInfo{
+			TaskID:     "sess-mixed-wake/task-2",
+			OutputFile: "/tmp/task-2.log",
+		})
+
+		mu.Lock()
+		defer mu.Unlock()
+		for _, ev := range events {
+			if ev.Kind == provider.EventTurnComplete {
+				t.Fatalf("spontaneous wake closed prematurely after foreground tool completed; events=%+v", events)
+			}
+		}
+	})
+}

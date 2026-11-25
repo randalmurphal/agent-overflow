@@ -54,15 +54,25 @@ type Flavor struct {
 
 	// stepAnchorMu guards per-session monotonic step indices resolved by
 	// ResolvePromptStepAnchor so back-to-back steered prompts sharing a
-	// beforeToken never claim the same native USER_INPUT step.
+	// beforeToken never claim the same native USER_INPUT step, plus negative
+	// stat-based caching of misses while waiting for agy to persist a steered
+	// prompt's step_type=14 row.
 	stepAnchorMu            sync.Mutex
 	lastResolvedUserStepIdx map[string]int
+	promptStepMissCache     map[string]promptStepMissSnapshot
 
 	// Optional overrides for deterministic unit tests (zero uses defaults).
 	subagentPollInterval       time.Duration
 	subagentDiscoveryTimeout   time.Duration
 	bgLookupOpenHook           func()
+	promptStepOpenHook         func()
 	subagentTranscriptOpenHook func()
+}
+
+type promptStepMissSnapshot struct {
+	sig      dbFileSignature
+	sinceIdx int
+	content  string
 }
 
 // NewFlavor constructs an Antigravity ACP flavor bound to appDataDir.
@@ -1052,6 +1062,21 @@ func (f *Flavor) BeforePrompt(ctx context.Context, sessionID string) any {
 	return maxIdx
 }
 
+func (f *Flavor) CanVerifyPromptStep(sessionID string, beforeToken any) bool {
+	if _, ok := beforeToken.(int); !ok {
+		return false
+	}
+	if strings.TrimSpace(f.AppDataDir) == "" || validateConversationSessionID(sessionID) != nil {
+		return false
+	}
+	dbPath, err := conversationDBPath(f.AppDataDir, sessionID)
+	if err != nil {
+		return false
+	}
+	_, ok := statConversationDB(dbPath)
+	return ok
+}
+
 func (f *Flavor) ResolvePromptStepAnchor(_ context.Context, sessionID, content string, beforeToken any) string {
 	if f.AppDataDir == "" || sessionID == "" {
 		return ""
@@ -1060,14 +1085,42 @@ func (f *Flavor) ResolvePromptStepAnchor(_ context.Context, sessionID, content s
 	if !ok {
 		return ""
 	}
+	dbPath, err := conversationDBPath(f.AppDataDir, sessionID)
+	if err != nil {
+		return ""
+	}
+	sig, sigOK := statConversationDB(dbPath)
+	if !sigOK {
+		return ""
+	}
 	f.stepAnchorMu.Lock()
 	if last, hasLast := f.lastResolvedUserStepIdx[sessionID]; hasLast && last > sinceIdx {
 		sinceIdx = last
 	}
+	if miss, hasMiss := f.promptStepMissCache[sessionID]; hasMiss &&
+		miss.sig == sig &&
+		miss.sinceIdx <= sinceIdx &&
+		miss.content == content {
+		f.stepAnchorMu.Unlock()
+		return ""
+	}
 	f.stepAnchorMu.Unlock()
 
-	resolvedIdx, anchor := lookupUserPromptAnchor(f.AppDataDir, sessionID, content, sinceIdx)
+	if f.promptStepOpenHook != nil {
+		f.promptStepOpenHook()
+	}
+	resolvedIdx, anchor := lookupUserPromptAnchorAtPath(dbPath, content, sinceIdx)
 	if anchor == "" {
+		f.stepAnchorMu.Lock()
+		if f.promptStepMissCache == nil || len(f.promptStepMissCache) >= 64 {
+			f.promptStepMissCache = make(map[string]promptStepMissSnapshot)
+		}
+		f.promptStepMissCache[sessionID] = promptStepMissSnapshot{
+			sig:      sig,
+			sinceIdx: sinceIdx,
+			content:  content,
+		}
+		f.stepAnchorMu.Unlock()
 		return ""
 	}
 	f.stepAnchorMu.Lock()
@@ -1077,6 +1130,7 @@ func (f *Flavor) ResolvePromptStepAnchor(_ context.Context, sessionID, content s
 	if prev, hasPrev := f.lastResolvedUserStepIdx[sessionID]; !hasPrev || resolvedIdx > prev {
 		f.lastResolvedUserStepIdx[sessionID] = resolvedIdx
 	}
+	delete(f.promptStepMissCache, sessionID)
 	f.stepAnchorMu.Unlock()
 	return anchor
 }

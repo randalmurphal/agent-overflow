@@ -101,11 +101,12 @@ type pendingToolQuestion struct {
 }
 
 type pendingPromptConfirm struct {
-	uuid        string
-	content     string
-	isCompact   bool
-	beforeToken any
-	confirmed   atomic.Bool
+	uuid              string
+	content           string
+	isCompact         bool
+	beforeToken       any
+	requireStepAnchor bool
+	confirmed         atomic.Bool
 }
 
 type chunkBuffer struct {
@@ -189,6 +190,7 @@ type Session struct {
 	stagedSteerConfirms      []*pendingPromptConfirm
 	turnOpen                 bool
 	spontaneousTurnOpen      bool
+	spontaneousWakeUsageSeen bool
 	turnSeq                  int
 	activeTurnID             string
 	turnBeforeToken          any
@@ -734,6 +736,10 @@ func (s *Session) startPromptRequest(sessionID string, blocks []ContentBlock, on
 }
 
 func (s *Session) emitPromptConfirmation(c *pendingPromptConfirm) {
+	s.emitPromptConfirmationWithAnchor(c, "")
+}
+
+func (s *Session) emitPromptConfirmationWithAnchor(c *pendingPromptConfirm, resolvedAnchor string) {
 	if c == nil || c.uuid == "" || s.closing.Load() || !c.confirmed.CompareAndSwap(false, true) {
 		return
 	}
@@ -744,10 +750,12 @@ func (s *Session) emitPromptConfirmation(c *pendingPromptConfirm) {
 		"provider_item_id":                         c.uuid,
 		provider.MetaUserTextTranscriptRecordedKey: true,
 	}
-	if sessionID != "" {
-		if anchor := strings.TrimSpace(s.flavor.ResolvePromptStepAnchor(s.sessionCtx, sessionID, c.content, c.beforeToken)); anchor != "" {
-			metaFields["parent_uuid"] = anchor
-		}
+	anchor := strings.TrimSpace(resolvedAnchor)
+	if anchor == "" && sessionID != "" {
+		anchor = strings.TrimSpace(s.flavor.ResolvePromptStepAnchor(s.sessionCtx, sessionID, c.content, c.beforeToken))
+	}
+	if anchor != "" {
+		metaFields["parent_uuid"] = anchor
 	}
 	confirmMeta, _ := json.Marshal(metaFields)
 	s.emitEvent(provider.ProviderEvent{
@@ -865,7 +873,7 @@ func (s *Session) rearmNextConfirmLocked(armNext bool) {
 	if len(s.inFlightConfirms) > 0 {
 		head := s.inFlightConfirms[0]
 		if head != nil && !head.confirmed.Load() {
-			if s.shouldStageSteerLocked() {
+			if !head.requireStepAnchor && s.shouldStageSteerLocked() {
 				s.stagedSteerConfirms = appendUniqueConfirmLocked(s.stagedSteerConfirms, head)
 			} else {
 				s.armedConfirms = appendUniqueConfirmLocked(s.armedConfirms, head)
@@ -882,7 +890,8 @@ func (s *Session) makeWirePromptSettler(confirm *pendingPromptConfirm) func(rawL
 			s.mu.Lock()
 			isHead := len(s.inFlightConfirms) > 0 && s.inFlightConfirms[0] == confirm
 			hasPendingSteer := len(s.inFlightConfirms) > 1
-			deferBlockClose := hasPendingSteer && s.shouldStageSteerLocked()
+			nextRequiresAnchor := hasPendingSteer && s.inFlightConfirms[1] != nil && s.inFlightConfirms[1].requireStepAnchor
+			deferBlockClose := hasPendingSteer && (s.shouldStageSteerLocked() || nextRequiresAnchor)
 			s.mu.Unlock()
 			if len(rawLine) > 0 && isHead && !deferBlockClose {
 				// Synchronously flush and close the settling head prompt's
@@ -916,8 +925,10 @@ func (s *Session) makeWirePromptSettler(confirm *pendingPromptConfirm) func(rawL
 			} else if armNext && !hasError && confirm != nil && confirm.uuid != "" && !confirm.confirmed.Load() && s.wireInFlightPrompts > 0 {
 				// Keep an early-returning steered prompt staged above the
 				// composer until the running foreground tool/block finishes
-				// and the model begins its next step reacting to it.
-				if s.hasForegroundStartedToolsLocked() || s.activeBlockKind != "" {
+				// and the model begins its next step reacting to it. When
+				// requireStepAnchor is set, arm directly so confirmArmedPrompt
+				// checks the provider's native USER_INPUT step boundary.
+				if !confirm.requireStepAnchor && (s.hasForegroundStartedToolsLocked() || s.activeBlockKind != "") {
 					s.stagedSteerConfirms = appendUniqueConfirmLocked(s.stagedSteerConfirms, confirm)
 				} else {
 					s.armedConfirms = appendUniqueConfirmLocked(s.armedConfirms, confirm)
@@ -928,20 +939,80 @@ func (s *Session) makeWirePromptSettler(confirm *pendingPromptConfirm) func(rawL
 	}
 }
 
+type readyPromptConfirm struct {
+	confirm *pendingPromptConfirm
+	anchor  string
+}
+
 func (s *Session) confirmArmedPrompt() {
+	s.mu.Lock()
+	empty := len(s.armedConfirms) == 0
+	s.mu.Unlock()
+	if empty {
+		return
+	}
+
 	s.chunkEmitMu.Lock()
 	defer s.chunkEmitMu.Unlock()
+
 	s.mu.Lock()
 	if len(s.armedConfirms) == 0 {
 		s.mu.Unlock()
 		return
 	}
-	pending := s.armedConfirms
-	s.armedConfirms = nil
-	// Flush and close any still-open content block from a prior prompt before
-	// emitting EventUserText so the new user message lands after prior output.
-	flushKind, flushText, stopKind, turnID := s.drainAndCloseActiveBlockLocked()
+	pending := append([]*pendingPromptConfirm(nil), s.armedConfirms...)
+	sessionID := s.sessionID
 	s.mu.Unlock()
+
+	var ready []readyPromptConfirm
+	for _, c := range pending {
+		if c == nil || c.confirmed.Load() {
+			ready = append(ready, readyPromptConfirm{confirm: c})
+			continue
+		}
+		if c.requireStepAnchor {
+			anchor := ""
+			if sessionID != "" {
+				anchor = strings.TrimSpace(s.flavor.ResolvePromptStepAnchor(s.sessionCtx, sessionID, c.content, c.beforeToken))
+			}
+			if anchor == "" {
+				// The provider has not persisted this steered prompt's
+				// native USER_INPUT step yet, so the incoming stream frame
+				// still belongs to the pre-steer step. Preserve FIFO order
+				// by keeping this confirm and any later confirms armed.
+				break
+			}
+			ready = append(ready, readyPromptConfirm{confirm: c, anchor: anchor})
+			continue
+		}
+		ready = append(ready, readyPromptConfirm{confirm: c})
+	}
+	if len(ready) == 0 {
+		return
+	}
+
+	var toEmit []readyPromptConfirm
+	var flushKind, stopKind provider.EventKind
+	var flushText, turnID string
+	s.mu.Lock()
+	for _, r := range ready {
+		if !containsConfirmLocked(s.armedConfirms, r.confirm) {
+			continue
+		}
+		s.armedConfirms = removeConfirmSliceLocked(s.armedConfirms, r.confirm)
+		if r.confirm != nil && r.confirm.uuid != "" && !r.confirm.confirmed.Load() {
+			toEmit = append(toEmit, r)
+		}
+	}
+	if len(toEmit) > 0 {
+		// Flush and close any still-open content block from a prior prompt before
+		// emitting EventUserText so the new user message lands after prior output.
+		flushKind, flushText, stopKind, turnID = s.drainAndCloseActiveBlockLocked()
+	}
+	s.mu.Unlock()
+	if len(toEmit) == 0 {
+		return
+	}
 	if !s.closing.Load() {
 		if flushText != "" {
 			s.emitChunk(flushKind, turnID, flushText)
@@ -950,8 +1021,8 @@ func (s *Session) confirmArmedPrompt() {
 			s.emitContentBlockStop(stopKind, turnID)
 		}
 	}
-	for _, c := range pending {
-		s.emitPromptConfirmation(c)
+	for _, r := range toEmit {
+		s.emitPromptConfirmationWithAnchor(r.confirm, r.anchor)
 	}
 }
 
@@ -1004,6 +1075,7 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 	// arming armedConfirm so neither delayed updates nor the original
 	// prompt's waiter can race this I/O window.
 	beforeToken := s.flavor.BeforePrompt(ctx, sessionID)
+	canVerifyStep := s.flavor.CanVerifyPromptStep(sessionID, beforeToken)
 
 	isCompact := isCompactPromptText(userContent)
 	confirm := &pendingPromptConfirm{uuid: userMsgUUID, content: userContent, isCompact: isCompact, beforeToken: beforeToken}
@@ -1036,10 +1108,15 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 		}
 	}
 	priorWireInFlight := s.wireInFlightPrompts
+	isMidTurnSteer := priorWireInFlight > 0 || s.spontaneousTurnOpen
+	if isMidTurnSteer && canVerifyStep {
+		confirm.requireStepAnchor = true
+	}
 	s.inFlightPrompts++
 	s.activeFinishers++
 	s.wireInFlightPrompts++
 	s.cancelling = false
+	s.spontaneousWakeUsageSeen = false
 	s.compactionCheckPending = true
 	if isCompact {
 		s.compactionPendingCompact = true
@@ -1278,6 +1355,7 @@ func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeTok
 		s.preCompactUsedTokens = 0
 		s.turnOpen = false
 		s.spontaneousTurnOpen = false
+		s.spontaneousWakeUsageSeen = false
 		// Scrub orphaned foreground tool entries whose terminal tool_call_update
 		// never arrived (cancel/error/crash) so they neither retain large raw
 		// inputs nor permanently poison hasForegroundStartedToolsLocked.
@@ -1537,6 +1615,7 @@ func (s *Session) Interrupt(ctx context.Context) error {
 		s.promptUsageSeen = false
 		s.turnOpen = false
 		s.spontaneousTurnOpen = false
+		s.spontaneousWakeUsageSeen = false
 		s.turnHasOutputSchema = false
 		s.turnLastAssistantText.Reset()
 		s.turnBeforeToken = nil
@@ -2283,6 +2362,7 @@ func newSessionInstanceID() string {
 func (s *Session) ensureSpontaneousTurnOpen() {
 	var openTurnID string
 	s.mu.Lock()
+	s.spontaneousWakeUsageSeen = false
 	if !s.turnOpen && s.inFlightPrompts == 0 {
 		s.turnSeq++
 		s.activeTurnID = s.nextTurnID("wake")
@@ -2635,7 +2715,7 @@ func (s *Session) handleToolCallStart(tc *ToolCallUpdate, parentToolUseID string
 		childToolUses = s.childToolUses[parentToolUseID]
 	}
 	var startBgWatch bool
-	if norm.ItemType == "command_execution" && s.flavor.CanLookupBackgroundCommands(ownerSessionID) {
+	if !norm.SubagentLaunch && norm.ItemType != "AskUserQuestion" && s.flavor.CanLookupBackgroundCommands(ownerSessionID) {
 		now := time.Now()
 		liveDelay, completionDelay := computeBgCommandDelays(norm)
 		if s.pendingBgCommands == nil {
@@ -2770,6 +2850,13 @@ func computeBgCommandDelays(norm NormalizedToolStart) (liveDelay, completionDela
 	if norm.IsBackground {
 		return 100 * time.Millisecond, 0
 	}
+	if norm.ItemType != "command_execution" {
+		// Fast synchronous tools (read, edit, grep) complete well under 250ms
+		// and remove themselves before any DB lookup occurs, while detached
+		// async tools (schedule, run_workflow, or future background tools)
+		// remain open and promote promptly on the first watcher tick.
+		return 500 * time.Millisecond, 250 * time.Millisecond
+	}
 	wait := 500 * time.Millisecond
 	if len(norm.Input) > 0 {
 		var in struct {
@@ -2864,11 +2951,17 @@ func (s *Session) emitBackgroundPromotion(toolCallID, parentToolUseID, turnID st
 }
 
 func (s *Session) promoteBackgroundCommand(toolCallID, parentToolUseID, turnID string, info BackgroundCommandInfo) {
+	s.promoteBackgroundCommandWithClose(toolCallID, parentToolUseID, turnID, info, true)
+}
+
+func (s *Session) promoteBackgroundCommandWithClose(toolCallID, parentToolUseID, turnID string, info BackgroundCommandInfo, checkSpontaneousClose bool) {
 	s.bgCmdEmitMu.Lock()
-	defer s.bgCmdEmitMu.Unlock()
 
 	var emitBgMeta bool
+	var sessionID string
+	var shouldCheckSpontaneous bool
 	s.mu.Lock()
+	sessionID = s.sessionID
 	var cur NormalizedToolStart
 	var exists bool
 	if parentToolUseID == "" {
@@ -2893,6 +2986,11 @@ func (s *Session) promoteBackgroundCommand(toolCallID, parentToolUseID, turnID s
 			if parentToolUseID == "" {
 				s.startedTools[toolCallID] = cur
 				s.promoteStagedSteersLocked()
+				if checkSpontaneousClose && s.spontaneousTurnOpen && s.spontaneousWakeUsageSeen &&
+					s.inFlightPrompts == 0 && !s.hasForegroundStartedToolsLocked() &&
+					len(s.pendingPerms) == 0 && len(s.pendingToolQuestions) == 0 {
+					shouldCheckSpontaneous = true
+				}
 			} else {
 				s.childStartedTools[toolCallID] = cur
 			}
@@ -2908,6 +3006,11 @@ func (s *Session) promoteBackgroundCommand(toolCallID, parentToolUseID, turnID s
 
 	if emitBgMeta && !s.closing.Load() {
 		s.emitBackgroundPromotion(toolCallID, parentToolUseID, turnID, info)
+	}
+	s.bgCmdEmitMu.Unlock()
+
+	if shouldCheckSpontaneous && !s.closing.Load() {
+		s.tryCloseSpontaneousWake(sessionID)
 	}
 }
 
@@ -2939,6 +3042,9 @@ func (s *Session) runBgCmdWatcher() {
 		var nextWake time.Time
 		for id, p := range s.pendingBgCommands {
 			if s.hasPendingPermForToolLocked(id) {
+				continue
+			}
+			if _, isPendingQ := s.pendingToolQuestions[id]; isPendingQ {
 				continue
 			}
 			if !now.Before(p.nextCheckAt) {
@@ -3134,6 +3240,9 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate, parentToolUseID str
 	if parentToolUseID == "" {
 		started = s.startedTools[tc.ToolCallID]
 		delete(s.startedTools, tc.ToolCallID)
+		// A completed parent tool means the model may produce another response
+		// step before the spontaneous wake ends.
+		s.spontaneousWakeUsageSeen = false
 		// A parent tool completion can be followed by mid-turn compaction
 		// before the next planner response.
 		s.compactionCheckPending = true
@@ -3157,11 +3266,11 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate, parentToolUseID str
 	s.mu.Unlock()
 
 	norm := s.flavor.NormalizeToolComplete(tc, started)
-	// Fallback check for a backgrounded command that finished near or after
-	// WaitMsBeforeAsync before the watcher ticked: check the provider's step
+	// Fallback check for a backgrounded tool that finished near or after its
+	// async threshold before the watcher ticked: check the provider's step
 	// state once so it still gets promoted and emits its completion sibling
 	// instead of mutating the old launch row in place.
-	if hadPendingBg && started.ItemType == "command_execution" && !started.IsBackground && !norm.IsBackground && !s.closing.Load() {
+	if hadPendingBg && !started.SubagentLaunch && !started.IsBackground && !norm.IsBackground && !s.closing.Load() {
 		if !time.Now().Before(pendingBg.completionCheckAfter) {
 			if found := s.flavor.LookupBackgroundCommands(s.sessionCtx, pendingBg.ownerSessionID, []string{pendingBg.rawToolCallID}, true, pendingBg.minStepIdx); len(found) > 0 {
 				if info, ok := found[pendingBg.rawToolCallID]; ok {
@@ -3197,8 +3306,8 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate, parentToolUseID str
 		}
 	}
 	now := time.Now()
-	if started.IsBackground && started.ItemType == "command_execution" && !norm.IsBackground {
-		// Backgrounded commands follow the Claude sibling model: keep the
+	if started.IsBackground && !started.SubagentLaunch && !norm.IsBackground {
+		// Backgrounded tools follow the Claude sibling model: keep the
 		// spawn row immutable at its launch position and write a separate
 		// tool_completion sibling at the chronological point of completion.
 		taskID, _ := started.ExtraMeta["task_id"].(string)
@@ -3485,6 +3594,7 @@ func extractStructuredJSONObject(text string) json.RawMessage {
 
 func (s *Session) handlePlanUpdate(entries []PlanEntry) {
 	s.mu.Lock()
+	s.spontaneousWakeUsageSeen = false
 	turnID := s.activeTurnID
 	s.mu.Unlock()
 	s.emitTodoUpdate(turnID, "", entries)
@@ -3634,6 +3744,94 @@ func (s *Session) hasForegroundStartedToolsLocked() bool {
 	return false
 }
 
+func (s *Session) reconcilePendingBackgroundCommands(sessionID string) {
+	if sessionID == "" || s.closing.Load() || !s.flavor.CanLookupBackgroundCommands(sessionID) {
+		return
+	}
+	type candidate struct {
+		toolCallID string
+		pending    pendingBackgroundCommand
+	}
+	var candidates []candidate
+	minIdx := -1
+	s.mu.Lock()
+	for id, p := range s.pendingBgCommands {
+		if p.parentToolUseID != "" || p.ownerSessionID != sessionID {
+			continue
+		}
+		st, ok := s.startedTools[id]
+		if !ok || st.IsBackground {
+			continue
+		}
+		if s.hasPendingPermForToolLocked(id) {
+			continue
+		}
+		if _, isPendingQ := s.pendingToolQuestions[id]; isPendingQ {
+			continue
+		}
+		if len(candidates) == 0 || p.minStepIdx < minIdx {
+			minIdx = p.minStepIdx
+		}
+		candidates = append(candidates, candidate{toolCallID: id, pending: p})
+	}
+	s.mu.Unlock()
+	if len(candidates) == 0 {
+		return
+	}
+	rawIDs := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		rawIDs = append(rawIDs, c.pending.rawToolCallID)
+	}
+	found := s.flavor.LookupBackgroundCommands(s.sessionCtx, sessionID, rawIDs, false, minIdx)
+	for _, c := range candidates {
+		if info, ok := found[c.pending.rawToolCallID]; ok {
+			s.promoteBackgroundCommandWithClose(c.toolCallID, "", c.pending.turnID, info, false)
+		}
+	}
+}
+
+func (s *Session) tryCloseSpontaneousWake(sessionID string) {
+	if s.closing.Load() {
+		return
+	}
+	s.mu.Lock()
+	canClose := s.spontaneousTurnOpen && s.spontaneousWakeUsageSeen && s.inFlightPrompts == 0 &&
+		!s.hasForegroundStartedToolsLocked() && len(s.pendingPerms) == 0 && len(s.pendingToolQuestions) == 0
+	s.mu.Unlock()
+	if !canClose {
+		return
+	}
+	if s.flavor.ShouldHoldSpontaneousWakeClose(s.sessionCtx, sessionID) {
+		return
+	}
+	var turnID string
+	s.mu.Lock()
+	if s.spontaneousTurnOpen && s.spontaneousWakeUsageSeen && s.inFlightPrompts == 0 &&
+		!s.hasForegroundStartedToolsLocked() && len(s.pendingPerms) == 0 && len(s.pendingToolQuestions) == 0 {
+		s.spontaneousTurnOpen = false
+		s.spontaneousWakeUsageSeen = false
+		s.turnOpen = false
+		s.promptUsage = provider.TokenUsage{}
+		s.promptUsageSeen = false
+		turnID = s.activeTurnID
+	} else {
+		canClose = false
+	}
+	s.mu.Unlock()
+	if canClose && !s.closing.Load() {
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventTurnComplete,
+			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			Timestamp: time.Now(),
+			TurnComplete: &provider.WireTurnCompleteMeta{
+				UsageScope: s.usageScope(),
+				StopReason: "end_turn",
+			},
+		})
+	}
+}
+
 func (s *Session) handleUsageUpdate(used, size int) {
 	s.mu.Lock()
 	if size > 0 {
@@ -3645,10 +3843,22 @@ func (s *Session) handleUsageUpdate(used, size int) {
 	wasCompact := s.compactionPendingCompact
 	preTokens := s.preCompactUsedTokens
 	sessionID := s.sessionID
-	spontaneous := s.spontaneousTurnOpen && s.inFlightPrompts == 0 &&
-		!s.hasForegroundStartedToolsLocked() && len(s.pendingPerms) == 0 && len(s.pendingToolQuestions) == 0
+	checkPendingBg := s.spontaneousTurnOpen && s.inFlightPrompts == 0 &&
+		len(s.pendingPerms) == 0 && len(s.pendingToolQuestions) == 0 &&
+		s.hasForegroundStartedToolsLocked() && len(s.pendingBgCommands) > 0
+	if s.spontaneousTurnOpen && s.inFlightPrompts == 0 {
+		s.spontaneousWakeUsageSeen = true
+	}
 	turnID := s.activeTurnID
 	s.mu.Unlock()
+
+	// If a spontaneous wake launched an async tool (e.g. schedule or
+	// run_command) and emitted usage_update before the background watcher's
+	// first tick, promote any already-backgrounded tools now so the wake turn
+	// closes promptly instead of hanging open until the background task fires.
+	if checkPendingBg {
+		s.reconcilePendingBackgroundCommands(sessionID)
+	}
 
 	// Detect out-of-band compaction (e.g. agy CHECKPOINT step_type=23) when
 	// context occupancy drops, on the first usage_update after cold resume
@@ -3686,31 +3896,7 @@ func (s *Session) handleUsageUpdate(used, size int) {
 	// Trailing usage_update closes a spontaneous post-prompt wake turn once no
 	// foreground parent tools, permissions, or questions remain open and the
 	// flavor reports no queued high-priority wake.
-	if spontaneous && !s.flavor.ShouldHoldSpontaneousWakeClose(s.sessionCtx, sessionID) {
-		s.mu.Lock()
-		if s.spontaneousTurnOpen && s.inFlightPrompts == 0 &&
-			!s.hasForegroundStartedToolsLocked() && len(s.pendingPerms) == 0 && len(s.pendingToolQuestions) == 0 {
-			s.spontaneousTurnOpen = false
-			s.turnOpen = false
-			s.promptUsage = provider.TokenUsage{}
-			s.promptUsageSeen = false
-		} else {
-			spontaneous = false
-		}
-		s.mu.Unlock()
-		if spontaneous {
-			s.emitEvent(provider.ProviderEvent{
-				Kind:      provider.EventTurnComplete,
-				ThreadID:  s.threadID,
-				TurnID:    turnID,
-				Timestamp: time.Now(),
-				TurnComplete: &provider.WireTurnCompleteMeta{
-					UsageScope: s.usageScope(),
-					StopReason: "end_turn",
-				},
-			})
-		}
-	}
+	s.tryCloseSpontaneousWake(sessionID)
 }
 
 func (s *Session) handleAvailableCommands(commands []AvailableCommand) {

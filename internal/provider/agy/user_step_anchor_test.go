@@ -183,6 +183,58 @@ func TestResolvePromptStepAnchorMonotonicForRepeatedSteers(t *testing.T) {
 	}
 }
 
+func TestCanVerifyPromptStepAndStatNegativeCache(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	sid := "sess-anchor-cache-1"
+
+	f := NewFlavor(appDataDir)
+	if f.CanVerifyPromptStep(sid, 0) {
+		t.Fatal("CanVerifyPromptStep = true before DB exists, want false")
+	}
+	if f.CanVerifyPromptStep(sid, nil) {
+		t.Fatal("CanVerifyPromptStep(nil beforeToken) = true, want false")
+	}
+
+	dbPath := seedRichConversationDB(t, appDataDir, sid, []testStepRow{
+		{idx: 0, stepType: cortexStepTypeUserInput, payload: encodeTestUserInputStep("first", "hash0", 1000, false, false)},
+		{idx: 1, stepType: cortexStepTypePlannerResponse, payload: []byte("reply0")},
+	})
+	if !f.CanVerifyPromptStep(sid, 1) {
+		t.Fatal("CanVerifyPromptStep = false after DB exists with int beforeToken, want true")
+	}
+	if f.CanVerifyPromptStep(sid, nil) {
+		t.Fatal("CanVerifyPromptStep(nil beforeToken) = true with existing DB, want false")
+	}
+	if f.CanVerifyPromptStep("../escape", 1) {
+		t.Fatal("CanVerifyPromptStep(invalid sessionID) = true, want false")
+	}
+
+	opens := 0
+	f.promptStepOpenHook = func() { opens++ }
+
+	// Repeated misses while DB+WAL are unchanged must open SQLite only once.
+	for i := 0; i < 8; i++ {
+		if got := f.ResolvePromptStepAnchor(context.Background(), sid, "steered prompt", 1); got != "" {
+			t.Fatalf("iter %d: ResolvePromptStepAnchor = %q, want empty before step lands", i, got)
+		}
+	}
+	if opens != 1 {
+		t.Fatalf("expected 1 SQLite open across 8 unchanged-DB misses, got %d", opens)
+	}
+
+	// Once agy writes step_type=14, stat signature changes and anchor resolves immediately.
+	appendTestStepRows(t, dbPath, []testStepRow{
+		{idx: 2, stepType: cortexStepTypeUserInput, payload: encodeTestUserInputStep("steered prompt", "hash2", 2000, false, false)},
+	})
+	if got := f.ResolvePromptStepAnchor(context.Background(), sid, "steered prompt", 1); got != "agy-step:2:hash2" {
+		t.Fatalf("ResolvePromptStepAnchor after write = %q, want agy-step:2:hash2", got)
+	}
+	if opens != 2 {
+		t.Fatalf("expected 2 total SQLite opens after DB write, got %d", opens)
+	}
+}
+
 func TestForkConversationBeforeTargetStoredAnchorContracts(t *testing.T) {
 	t.Parallel()
 	appDataDir := t.TempDir()
