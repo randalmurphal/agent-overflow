@@ -469,7 +469,9 @@
       }
     };
     let rafId = 0;
+    let disposed = false;
     const trackAnchor = () => {
+      if (disposed) return;
       if (anchor && floatingEl) {
         if (!anchor.isConnected) {
           onClose('anchor-gone');
@@ -513,7 +515,9 @@
           followAnchor(r);
         }
       }
-      rafId = requestAnimationFrame(trackAnchor);
+      if (!disposed) {
+        rafId = requestAnimationFrame(trackAnchor);
+      }
     };
     refit();
     rafId = requestAnimationFrame(trackAnchor);
@@ -537,6 +541,7 @@
     floatObserver.observe(floatingEl);
 
     return () => {
+      disposed = true;
       cancelAnimationFrame(rafId);
       document.removeEventListener('pointerdown', handlePointerDown);
       document.removeEventListener('mousedown', handleMouseDown);
