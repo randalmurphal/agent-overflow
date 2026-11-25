@@ -54,8 +54,8 @@ func TestTicketsByKeySeeksTheKeyIndex(t *testing.T) {
 	s := newTestStore(t)
 	plan := explainMirror(t, s, ticketsByKeySQL)
 	for _, want := range []string{
-		"SEARCH i USING INDEX idx_tracker_cache_issues_key (root_id=? AND issue_key=?)",
-		"SEARCH p USING COVERING INDEX idx_tracker_cache_issues_key (root_id=? AND issue_key>? AND issue_key<?)",
+		"SEARCH i USING INDEX idx_tracker_cache_issues_key (issue_key=? AND root_id=?)",
+		"SEARCH p USING COVERING INDEX idx_tracker_cache_issues_key (issue_key>? AND issue_key<?)",
 	} {
 		if !strings.Contains(plan, want) {
 			t.Fatalf("plan:\n%s\nwant %q", plan, want)

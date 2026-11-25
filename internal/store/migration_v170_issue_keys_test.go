@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// v170 indexes the mirrored issues by root and key, over the issues stored
+// v170 indexes the mirrored issues by key and root, over the issues stored
 // before it too, so a key resolves to its issue with one seek.
 func TestIssueKeysMigration(t *testing.T) {
 	db := migrateThrough(t, worklogNamesMigrationVersion)
@@ -17,7 +17,7 @@ func TestIssueKeysMigration(t *testing.T) {
 	if err := applyMigration(db, m); err != nil {
 		t.Fatalf("apply v%d: %v", m.Version, err)
 	}
-	assertRows(t, db, `SELECT group_concat(name, ',') FROM pragma_index_info('idx_tracker_cache_issues_key')`, "root_id,issue_key")
+	assertRows(t, db, `SELECT group_concat(name, ',') FROM pragma_index_info('idx_tracker_cache_issues_key')`, "issue_key,root_id")
 	var plan strings.Builder
 	rows, err := db.Query(`EXPLAIN QUERY PLAN SELECT issue_id FROM tracker_cache_issues WHERE root_id = 7 AND issue_key = 'WEB-1'`)
 	if err != nil {

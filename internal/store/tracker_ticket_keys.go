@@ -21,7 +21,9 @@ type KeyedTicket struct {
 // mirror of every Jira and Linear site's link reader (ticketSiteReaderSQL):
 // a row per reader that holds the issue (mirrorIssueHeldSQL), or holds any
 // issue of the key's project, which is the text before the key's dash.
-// Each probe is one seek of idx_tracker_cache_issues_key; the issue rows
+// Each probe is one seek of idx_tracker_cache_issues_key, by key and root
+// for an issue and by the key range of a project (named, since the root's
+// primary key would otherwise walk the whole mirror); the issue rows
 // sort first, then by connection, so the first row of a key is its answer.
 var ticketsByKeySQL = `WITH k AS MATERIALIZED (SELECT DISTINCT value AS key,
 	    substr(value, 1, instr(value, '-')) AS low, substr(value, 1, instr(value, '-') - 1) || '.' AS high
@@ -33,8 +35,8 @@ var ticketsByKeySQL = `WITH k AS MATERIALIZED (SELECT DISTINCT value AS key,
 	FROM k CROSS JOIN readers rd
 	LEFT JOIN tracker_cache_issues i ON i.root_id = rd.root_id AND i.issue_key = k.key
 	LEFT JOIN tracker_cache_issue_missing m ON m.root_id = rd.root_id AND m.issue_id = i.issue_id
-	WHERE ` + mirrorIssueHeldSQL + ` OR EXISTS (SELECT 1 FROM tracker_cache_issues p
-	  WHERE p.root_id = rd.root_id AND p.issue_key >= k.low AND p.issue_key < k.high)
+	WHERE ` + mirrorIssueHeldSQL + ` OR EXISTS (SELECT 1 FROM tracker_cache_issues p INDEXED BY idx_tracker_cache_issues_key
+	  WHERE p.issue_key >= k.low AND p.issue_key < k.high AND p.root_id = rd.root_id)
 	ORDER BY k.key, NOT ` + mirrorIssueHeldSQL + `, rd.connection_id`
 
 // TicketsByKey answers, for each of keys (capitals, as
