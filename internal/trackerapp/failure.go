@@ -147,7 +147,7 @@ func ClassifyFailure(kind string, err error) Failure {
 	case errors.As(err, &source):
 		return Failure{Kind: FailureUpload, Message: "the file stopped arriving before its end, so " + name + " stored none of it; attach it again"}
 	case errors.As(err, &cut):
-		return Failure{Kind: FailureTransient, Message: "the connection to " + name + " broke while the file was being sent, so nothing was attached; attach it again"}
+		return Failure{Kind: FailureTransient, Message: "sending the file to " + name + " stopped before it finished, so nothing was attached; attach it again"}
 	case errors.As(err, &keyErr):
 		return Failure{Kind: FailureSetup, Message: keyErr.Error()}
 	case errors.As(err, &wrong):
