@@ -422,6 +422,52 @@ describe('the board subscription', () => {
     expect(board.current?.readError).toBeNull();
     board.release();
   });
+
+  it('reads the copy again on a Refresh after a read of it failed, with no event to run it', async () => {
+    const mocks = install();
+    const board = attachTrackerBoard(REF);
+    await flush();
+    mocks.patch.mockImplementationOnce(async () => {
+      throw new TransportError('internal', 'read a patch of board 1: database is locked');
+    });
+    applyTrackerBoardEvent(event(11, { changed: ['1'] }), HOME_BACKEND);
+    await flush();
+    expect(board.current?.readError).not.toBeNull();
+    // The tracker read finds nothing new, so no event follows it.
+    await refreshTrackerBoard(board.key);
+    await flush();
+    expect(mocks.board).toHaveBeenCalledTimes(2);
+    expect(board.current?.readError).toBeNull();
+    board.release();
+  });
+
+  it('takes the failure a gap read answers, unless an event told a newer one during the read', async () => {
+    const failure = { kind: 'auth', message: 'Jira refused the token', at: 50 };
+    const mocks = install({ failure, view: { ...view([]), sync: { read_at: 100, failure } } as unknown as BoardView });
+    let told: typeof failure | undefined = failure;
+    mocks.board.mockImplementation(async (_id: string, sections: Section[]) => (
+      { ...view(sections.map((section) => ({ section, rows: [row('1', 'a')] }))), sync: { read_at: 100, failure: told } }
+    ));
+    const board = attachTrackerBoard(REF);
+    await flush();
+    expect(board.current?.failure).toEqual(failure);
+    told = undefined;
+    // The recovery frame was lost in the gap; the read tells the board recovered.
+    await resyncTrackerBoardsAfterGap(HOME_BACKEND);
+    await flush();
+    expect(board.current?.failure).toBeNull();
+
+    const reads = held<BoardView>('TrackerBoard');
+    const running = resyncTrackerBoardsAfterGap(HOME_BACKEND);
+    await flush();
+    const later = { kind: 'network', message: 'Jira could not be reached', at: 300 };
+    applyTrackerBoardEvent(event(11, { sync: { read_at: 300, failure: later } }), HOME_BACKEND);
+    reads.answer({ ...view([{ section: SPRINT, rows: [row('1', 'a')] }]), sync: { read_at: 250 } } as unknown as BoardView);
+    await running;
+    await flush();
+    expect(board.current?.failure).toEqual(later);
+    board.release();
+  });
 });
 
 describe('visibility', () => {
@@ -472,7 +518,7 @@ describe('refresh', () => {
     dismissTrackerRefreshNotice(board.key);
     expect(board.current?.refreshNotice).toBeNull();
 
-    const waiting = 'the board is still reading from the tracker; it updates as each read finishes';
+    const waiting = 'this refresh was still reading from the tracker when its answer was due; what it finds shows as it lands';
     const third = refreshTrackerBoard(board.key);
     calls.fail(new TransportError('tracker_refresh_waiting', waiting));
     await third;

@@ -596,7 +596,15 @@ func TestARefreshCutAtItsBudgetSaysWhetherItRan(t *testing.T) {
 	if !hasCode(err, "tracker_refresh_waiting") {
 		t.Fatalf("a refresh the pump took and is still reading = %v, want tracker_refresh_waiting", err)
 	}
+	// The pane keeps the sentence after the read ends, and a read that
+	// changes nothing sends no event, so it tells what happened, not what
+	// is happening.
+	if _, message, _ := errorsx.PublicDetails(err); message != refreshWaitingMessage {
+		t.Fatalf("the waiting refresh says %q, want %q", message, refreshWaitingMessage)
+	}
 }
+
+const refreshWaitingMessage = "this refresh was still reading from the tracker when its answer was due; what it finds shows as it lands, so refresh again if what you expect does not appear"
 
 func idStringsOf(ids []tracker.IssueID) []string {
 	out := make([]string, len(ids))

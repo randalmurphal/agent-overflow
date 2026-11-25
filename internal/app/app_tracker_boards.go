@@ -267,7 +267,7 @@ func (a *App) RefreshTrackerSubscription(ctx context.Context, subscriptionID str
 	case errors.Is(err, pump.ErrNotTaken):
 		return errorsx.Public("tracker_refresh_not_run", "this view was busy with an earlier read from the tracker, so this refresh did not run; refresh again", err)
 	default:
-		return errorsx.Public("tracker_refresh_waiting", "this view is still reading from the tracker; it updates as each read finishes, so refresh again if what you expect does not appear", err)
+		return errorsx.Public("tracker_refresh_waiting", "this refresh was still reading from the tracker when its answer was due; what it finds shows as it lands, so refresh again if what you expect does not appear", err)
 	}
 	return trackerError(err)
 }

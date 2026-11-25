@@ -340,6 +340,9 @@ async function run(live: Live): Promise<void> {
 
 async function readWhole(live: Live, sections: Section[]): Promise<void> {
   const before = live.state.held;
+  // An event folded while the read is out is newer than the read's sync
+  // state, and keeps its failure and read time.
+  const seq = live.seq;
   // The read sees every change an event named before it began.
   live.readAgain = false;
   live.pending.clear();
@@ -379,7 +382,10 @@ async function readWhole(live: Live, sections: Section[]): Promise<void> {
   live.intern = intern;
   lastSections.set(trackerBoardOnComputer(ref), heldSections(held));
   live.staleAt = -1;
-  update(live, { held, readAt: view.sync.read_at || live.state.readAt, readError: null, paging: pagingOf(live, held) });
+  const sync = live.seq === seq
+    ? { failure: view.sync.failure ?? null, readAt: view.sync.read_at || live.state.readAt }
+    : {};
+  update(live, { held, ...sync, readError: null, paging: pagingOf(live, held) });
 }
 
 async function readPatch(live: Live, held: HeldBoard): Promise<void> {
@@ -474,7 +480,9 @@ export function loadSectionWhole(key: string, section: Section): void {
 }
 
 /** Has the board's computer read it from the tracker now, as the
- * person's action; what the read finds arrives as events. */
+ * person's action; what the read finds arrives as events. A read of this
+ * computer's copy that failed is run again with it, since a tracker read
+ * that finds nothing new sends no event to run it. */
 export async function refreshTrackerBoard(key: string): Promise<void> {
   const live = lives.get(key);
   if (!live?.id || live.state.refreshing) return;
@@ -491,7 +499,9 @@ export async function refreshTrackerBoard(key: string): Promise<void> {
       if (code === 'tracker_subscription_unknown' || code === 'tracker_subscription_ended') store.invalidate(live.key);
     }
   }
-  if (lives.get(key) === live) update(live, { refreshing: false, refreshNotice: notice });
+  if (lives.get(key) !== live) return;
+  update(live, { refreshing: false, refreshNotice: notice });
+  void drain(live);
 }
 
 /** Drops what a Refresh answered. */
