@@ -1,6 +1,9 @@
 package app
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,5 +145,53 @@ func TestDownloadsDirStaysInTheDataDirectoryForAnIsolatedBoot(t *testing.T) {
 	}
 	if want := filepath.Join(app.configDir, "downloads"); got != want {
 		t.Fatalf("downloadsDir = %q, want the isolated %q", got, want)
+	}
+}
+
+// TestASaveCutAfterItsFirstByteLeavesNoFile: bytes that stop arriving
+// after the first ones leave nothing in Downloads that looks like the
+// file, and its name stays free for the next save.
+func TestASaveCutAfterItsFirstByteLeavesNoFile(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial")
+		_ = buf.Flush()
+	}))
+	defer srv.Close()
+	app := &App{configDir: t.TempDir(), downloadsIsolated: true}
+
+	var wrote int64
+	_, err := app.saveDownloadFrom("notes.txt", "text/plain", func(w io.Writer) error {
+		resp, err := srv.Client().Get(srv.URL)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		wrote, err = io.Copy(w, resp.Body)
+		return err
+	})
+	if err == nil || wrote != int64(len("partial")) {
+		t.Fatalf("a save cut after %d bytes answered %v, want the cut's error", wrote, err)
+	}
+	entries, err := os.ReadDir(filepath.Join(app.configDir, "downloads"))
+	if err != nil {
+		t.Fatalf("read downloads: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("a cut save left %v in downloads", entries)
+	}
+
+	path, err := app.saveDownloadFrom("notes.txt", "text/plain", func(w io.Writer) error {
+		_, err := io.WriteString(w, "whole")
+		return err
+	})
+	if err != nil || filepath.Base(path) != "notes.txt" {
+		t.Fatalf("the next save: %q, %v; want notes.txt", path, err)
 	}
 }
