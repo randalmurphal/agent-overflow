@@ -190,9 +190,20 @@ describe('a held connection list', () => {
       window.dispatchEvent(new Event('focus'));
       await applyAndSettle();
       expect(read).toHaveBeenCalledTimes(1);
+      // The reconnect's first read fails: the refusal it held is gone, so
+      // the failure shows, with Try again, and the window's return asks.
+      read.mockImplementationOnce(async () => {
+        throw new DisconnectedError('the connection to the computer closed');
+      });
       __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null } as never);
       __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null } as never);
       await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(trackerReadGate(trackerConnectionsOf(HOME_BACKEND))).toBe('failed'));
+      expect(trackerConnectionsOf(HOME_BACKEND).error).toBeInstanceOf(DisconnectedError);
+      read.mockImplementationOnce(async () => [trackerConnection()]);
+      window.dispatchEvent(new Event('focus'));
+      await vi.waitFor(() => expect(trackerReadGate(trackerConnectionsOf(HOME_BACKEND))).toBe('open'));
+      expect(read).toHaveBeenCalledTimes(3);
     } finally {
       resetToLocalPage();
     }

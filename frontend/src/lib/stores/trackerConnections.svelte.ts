@@ -24,7 +24,8 @@
 // the wrapper answers null, and the answer is `older`. A typed
 // scope_required is `refused`. Either holds until the computer connects
 // again, its only way to another release or another grant, so neither an
-// event nor the window's return asks again. Any other failure is a
+// event nor the window's return asks again; the reconnect forgets it
+// before it asks. Any other failure is a
 // failure, never a refusal (trackerReadGate).
 
 import { SvelteMap } from 'svelte/reactivity';
@@ -104,6 +105,20 @@ class HeldConnections {
       // no list to keep and an empty one would read as "no connections".
       if (!this.loaded || !isPassiveConnectionFailure(err)) this.error = err;
     }
+  }
+
+  /**
+   * The computer connected again: a no it said is forgotten before the
+   * read, so a read that fails shows as a failure rather than the old no.
+   */
+  reconnected(): Promise<void> {
+    if (this.saidNo) {
+      this.list = [];
+      this.answer = 'none';
+      this.error = null;
+      this.loaded = false;
+    }
+    return this.read();
   }
 
   private settle(list: TrackerConnection[], answer: TrackerReadAnswer): void {
@@ -269,7 +284,7 @@ export function removeTrackerConnection(backend: BackendKey, id: string): Promis
 // Connecting again is the one way a computer that said no can answer
 // otherwise (another release, another session's grant).
 onBackendStatusChange((backend, status) => {
-  if (status.status === 'connected') void held.get(backend)?.read();
+  if (status.status === 'connected') void held.get(backend)?.reconnected();
 });
 
 // A computer detached: its list goes with it.
