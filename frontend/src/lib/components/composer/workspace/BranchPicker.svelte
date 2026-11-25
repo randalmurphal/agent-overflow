@@ -166,6 +166,7 @@
     open = !open;
     if (!open) {
       pickerTags.clear();
+      pickerBranches.clear();
       return;
     }
     refreshMru();
@@ -192,6 +193,7 @@
     open = false;
     query = '';
     pickerTags.clear();
+    pickerBranches.clear();
     restorePickerFocus(reason, { paneId: pane.paneId, triggerEl: anchor ?? triggerEl });
   }
 

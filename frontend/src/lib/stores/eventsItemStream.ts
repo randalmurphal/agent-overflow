@@ -2,6 +2,7 @@ import { applyTimelineMutation } from './timelineSurfaces';
 import { getTransportHelloFor } from './transportStatus.svelte';
 import { threadBackend, HOME_BACKEND } from '../transport/entityIndex';
 import type { UserMessageRevertedEvent } from '../types/messageRevert';
+import { addThreadRemovedObserver } from './threads.svelte';
 import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 // Item-stream event batching: the provider:item_event ordered mutation
 // queue (upsert/delta/meta/patch actions sharing one wire channel), its
@@ -20,8 +21,10 @@ import { isBoundedString, isFiniteNumber, isStreamOffset } from './eventsGuards'
 import { utf8Length } from '../utils/utf8Offsets';
 import { compositeKey } from '../utils/compositeKey';
 import { isPendingFlushRow } from '../utils/userMessageMeta';
+import { createAnimationFrameBatcher } from '../utils/animationFrameBatcher';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { itemEventQueued, itemEventsSettled, resetItemEventSettlement } from './itemEventSettlement';
+import { flushPendingHighlightLive } from './eventsHighlight';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
 // the ingest surface at the one acquisition point, so a new pane member
@@ -59,8 +62,17 @@ const cuts = new Map<string, { sequence: number; turnIndex: number; kept: Set<st
 onThreadHistoryInvalidated((owns) => {
   for (const id of cuts.keys()) if (owns(id)) cuts.delete(id);
 });
+let cutRemovalObserverInstalled = false;
+function ensureCutRemovalObserver(): void {
+  if (cutRemovalObserverInstalled) return;
+  cutRemovalObserverInstalled = true;
+  addThreadRemovedObserver((id) => {
+    cuts.delete(id);
+  });
+}
 
 export function fenceConversationSnapshot(threadId: string, sequence: number, turns?: { turnStartedSequence?: number; turnCompletedSequence?: number }): void {
+  ensureCutRemovalObserver();
   cuts.set(threadId, { sequence, turnIndex: -1, kept: new Set(), ...turns, launchId: getTransportHelloFor(threadBackend(threadId) ?? HOME_BACKEND)?.launchId });
 }
 
@@ -96,6 +108,7 @@ function survivesCut(entry: QueuedItemEvent): boolean {
 
 /** Fence queued and not-yet-delivered pre-cut frames without flushing other threads. */
 export function fenceRevertedItemEvents(cut: UserMessageRevertedEvent): void {
+  ensureCutRemovalObserver();
   if (typeof cut.itemEventSequence === 'number') {
     cuts.set(cut.threadId, {
       sequence: cut.itemEventSequence, turnIndex: cut.turnIndex,
@@ -128,41 +141,64 @@ function itemEventChars(evt: ItemStreamEvent): number {
 let itemEventQueueStart = 0;
 let itemEventFlushFrame: number | null = null;
 let itemEventFlushTimeout: number | null = null;
+// Standing deadline for the background-tab / stalled-rAF fallback timer. Keeping
+// one timer across consecutive 16ms streaming frames avoids a setTimeout+clearTimeout
+// pair on every rAF tick while preserving the exact 50ms fallback ceiling.
+let itemEventFallbackDueAt = 0;
+const itemEventFrameBatcher = createAnimationFrameBatcher('item-event-flush', 'dom-update');
 
 function requestFrame(callback: () => void): number {
   if (typeof requestAnimationFrame === 'function') {
-    return requestAnimationFrame(callback);
+    return itemEventFrameBatcher.request(() => callback());
   }
   return window.setTimeout(callback, 0);
 }
 
 function cancelFrame(handle: number): void {
   if (typeof cancelAnimationFrame === 'function') {
-    cancelAnimationFrame(handle);
+    itemEventFrameBatcher.cancel(handle);
   } else {
     window.clearTimeout(handle);
   }
 }
 
-function cancelItemEventFlushSchedule(): void {
+function onItemEventFallbackTimer(): void {
+  itemEventFlushTimeout = null;
+  if (itemEventFallbackDueAt === 0 || itemEventQueueStart >= itemEventQueue.length) {
+    itemEventFallbackDueAt = 0;
+    return;
+  }
+  const remaining = itemEventFallbackDueAt - Date.now();
+  if (remaining > 0) {
+    itemEventFlushTimeout = window.setTimeout(onItemEventFallbackTimer, remaining);
+    return;
+  }
+  flushItemEventQueue();
+}
+
+function cancelItemEventFlushSchedule(clearFallbackTimer = false): void {
   if (itemEventFlushFrame !== null) {
     cancelFrame(itemEventFlushFrame);
     itemEventFlushFrame = null;
   }
-  if (itemEventFlushTimeout !== null) {
+  itemEventFallbackDueAt = 0;
+  if (clearFallbackTimer && itemEventFlushTimeout !== null) {
     window.clearTimeout(itemEventFlushTimeout);
     itemEventFlushTimeout = null;
   }
 }
 
 function scheduleItemEventFlush(): void {
-  if (itemEventFlushFrame !== null || itemEventFlushTimeout !== null) return;
+  if (itemEventFlushFrame !== null) return;
   itemEventFlushFrame = requestFrame(flushItemEventQueue);
-  itemEventFlushTimeout = window.setTimeout(flushItemEventQueue, ITEM_EVENT_FLUSH_MAX_DELAY_MS);
+  itemEventFallbackDueAt = Date.now() + ITEM_EVENT_FLUSH_MAX_DELAY_MS;
+  if (itemEventFlushTimeout === null) {
+    itemEventFlushTimeout = window.setTimeout(onItemEventFallbackTimer, ITEM_EVENT_FLUSH_MAX_DELAY_MS);
+  }
 }
 
 export function resetItemEventQueue(): void {
-  cancelItemEventFlushSchedule();
+  cancelItemEventFlushSchedule(true);
   itemEventQueue = [];
   itemEventQueueStart = 0;
   itemEventQueueChars = 0;
@@ -508,6 +544,7 @@ function applyItemRowEvent(evt: ItemRowEvent): void {
 }
 
 export function flushItemEventQueue(): void {
+  flushPendingHighlightLive();
   cancelItemEventFlushSchedule();
   if (itemEventQueueStart >= itemEventQueue.length) {
     itemEventQueue = [];

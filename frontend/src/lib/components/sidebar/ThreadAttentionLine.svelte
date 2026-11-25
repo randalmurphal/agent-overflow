@@ -31,7 +31,7 @@
 </script>
 
 <div
-  class="relative flex h-3.5 items-center gap-1 pr-1 text-[0.625rem] leading-none {shown.textClass}"
+  class="thread-row-line relative flex h-3.5 items-center gap-1 pr-1 text-[0.625rem] leading-none {shown.textClass}"
   style="padding-left: {indentPx}px"
   title="{shown.label}: {attention.reason}"
   data-testid="thread-row-attention"

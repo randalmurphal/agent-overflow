@@ -108,7 +108,9 @@ export function createThreadPaneScroll(
 
   function cancelNudge(): void {
     structuralNudgeToken += 1;
-    if (nudgeFrame !== null) cancelAnimationFrame(nudgeFrame);
+    if (nudgeFrame !== null && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(nudgeFrame);
+    }
     if (nudgeTimer !== null) clearTimeout(nudgeTimer);
     nudgeFrame = null;
     nudgeTimer = null;

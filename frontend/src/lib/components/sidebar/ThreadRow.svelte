@@ -22,7 +22,7 @@
   } from '../../stores/attachedBackends.svelte';
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
   import {
-    findPaneShowingThread,
+    isThreadOpen,
     openThreadFromNavigation,
     openThreadInNewPane,
     openThreadInPane,
@@ -119,8 +119,14 @@
 
   // isActive: this thread is what the FOCUSED pane shows (the sidebar's
   // `pane` prop). isOpen: it is mounted in some pane, focused or not.
-  let isActive = $derived(pane?.threadId === thread.id);
-  let isOpen = $derived(findPaneShowingThread(thread.id) !== null);
+  // Both read per-thread keyed signals so switching threads or panes wakes
+  // only the rows whose state actually flipped.
+  let isActive = $derived(
+    pane
+      ? (typeof pane.isShowingThread === 'function' ? pane.isShowingThread(thread.id) : pane.threadId === thread.id)
+      : false,
+  );
+  let isOpen = $derived(isThreadOpen(thread.id));
   let isCursorTarget = $derived(getSidebarCursorThreadId() === thread.id);
   // Compact: no drag (a phone's long press is the menu, and Android starts a
   // drag on a held draggable), no text selection under a hold, taller rows.
@@ -188,6 +194,7 @@
   // Context menu anchor + state.
   let rowEl: HTMLDivElement | undefined = $state(undefined);
   let ctxOpen = $state(false);
+  let ctxMounted = $state(false);
 
   /**
    * The row's one activation, from a click or from Enter or Space: the
@@ -324,9 +331,9 @@
   // The row's activity stamp. getThreadLiveActivityAt folds in the
   // per-thread streaming box (row objects no longer churn per beat),
   // and getMinuteNow keeps an idle row's relative label creeping
-  // forward now that unrelated beats no longer re-render every row.
+  // forward when using relative ('locale') format.
   let timeLabel = $derived.by(() => {
-    getMinuteNow();
+    if (getSettings().timestampFormat === 'locale') getMinuteNow();
     // Read against the clock of the machine that minted the stamp
     // (transport/backendClock.ts); a row whose owner is not known yet
     // reads as home, which is what every row meant before a second
@@ -341,6 +348,7 @@
     if (editing) cancelRename();
     e.preventDefault();
     e.stopPropagation();
+    ctxMounted = true;
     ctxOpen = true;
   }
 
@@ -668,7 +676,7 @@
     <!-- The lines under the row: the first tucks under the row's own
          bottom padding, and each later one under the line above it, so
          any of them may be absent. -->
-    <div class="[&>*+*]:-mt-0.5 [&>*:first-child]:-mt-1.5" data-testid="thread-row-lines">
+    <div class="thread-row-lines" data-testid="thread-row-lines">
       {#if attention && !editing}
         <ThreadAttentionLine {attention} indentPx={worktreeIndentPx} />
       {/if}
@@ -678,7 +686,7 @@
         <AgentStateLine threadId={thread.id} indentPx={rowPaddingLeftPx} />
         {#if agentProjects != null}
           <div
-            class="relative flex h-3.5 items-center pr-1 text-[0.625rem] leading-none text-fg-hint"
+            class="thread-row-line relative flex h-3.5 items-center pr-1 text-[0.625rem] leading-none text-fg-hint"
             style="padding-left: {rowPaddingLeftPx}px"
             title={agentProjects}
             data-testid="thread-row-agent-projects"
@@ -693,34 +701,40 @@
   {/if}
 </div>
 
+{#if ctxMounted}
   <ThreadContextMenu
-  {thread}
-  {pane}
-  anchor={rowEl}
-  open={ctxOpen}
-  onClose={closeCtxMenu}
-  onRename={startRename}
-  {isActive}
-  {agentBound}
-/>
+    {thread}
+    {pane}
+    anchor={rowEl}
+    open={ctxOpen}
+    onClose={closeCtxMenu}
+    onRename={startRename}
+    {isActive}
+    {agentBound}
+  />
+{/if}
 
-<ConfirmDialog
-  open={showArchiveConfirm}
-  title="Archive Thread"
-  description="This will hide the thread from the sidebar. Open Settings → Storage to find it later."
-  confirmLabel="Archive"
-  onConfirm={() => { showArchiveConfirm = false; void archiveThreadAction(ctx()); }}
-  onCancel={() => { showArchiveConfirm = false; }}
-/>
+{#if showArchiveConfirm}
+  <ConfirmDialog
+    open={true}
+    title="Archive Thread"
+    description="This will hide the thread from the sidebar. Open Settings → Storage to find it later."
+    confirmLabel="Archive"
+    onConfirm={() => { showArchiveConfirm = false; void archiveThreadAction(ctx()); }}
+    onCancel={() => { showArchiveConfirm = false; }}
+  />
+{/if}
 
-<ConfirmDialog
-  open={showDeleteConfirm}
-  title="Delete Terminal"
-  description="This will remove the terminal from the sidebar and close its shell. This cannot be undone."
-  confirmLabel="Delete"
-  destructive={true}
-  onConfirm={() => { showDeleteConfirm = false; void deleteThreadAction(ctx()); }}
-  onCancel={() => { showDeleteConfirm = false; }}
-/>
+{#if showDeleteConfirm}
+  <ConfirmDialog
+    open={true}
+    title="Delete Terminal"
+    description="This will remove the terminal from the sidebar and close its shell. This cannot be undone."
+    confirmLabel="Delete"
+    destructive={true}
+    onConfirm={() => { showDeleteConfirm = false; void deleteThreadAction(ctx()); }}
+    onCancel={() => { showDeleteConfirm = false; }}
+  />
+{/if}
 
 {/if}

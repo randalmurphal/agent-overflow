@@ -204,7 +204,7 @@
 {/snippet}
 
 <div
-  class="group/tool overflow-hidden"
+  class="ao-tool-row overflow-hidden"
   data-testid="agent-message-row"
   data-agent-message-kind={message.kind}
 >

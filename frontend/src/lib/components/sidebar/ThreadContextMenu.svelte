@@ -362,7 +362,7 @@
   // Sorted by name so the submenu reads as a list the user curated, not as
   // backend insertion order.
   let projectGroups = $derived.by(() => {
-    if (!canMoveToGroup) return [];
+    if (!open || !canMoveToGroup) return [];
     return [...getThreadGroupsForProject(groupProjectId)]
       .sort((a, b) => a.name.localeCompare(b.name));
   });
@@ -698,74 +698,82 @@
   {/snippet}
 </Popover>
 
-<ConfirmDialog
-  open={showDeleteConfirm}
-  title={threadDeleteTitle(thread)}
-  description={withDeleteNote(
-    'This will permanently delete this thread and all its messages. This action cannot be undone.',
-    deleteNote.note,
-  )}
-  confirmLabel="Delete"
-  confirmDisabled={deleteNote.pending}
-  destructive={true}
-  onConfirm={() => {
-    showDeleteConfirm = false;
-    deleteNote.clear();
-    void deleteThreadAction(ctx());
-  }}
-  onCancel={() => {
-    showDeleteConfirm = false;
-    deleteNote.clear();
-  }}
-/>
+{#if showDeleteConfirm}
+  <ConfirmDialog
+    open={true}
+    title={threadDeleteTitle(thread)}
+    description={withDeleteNote(
+      'This will permanently delete this thread and all its messages. This action cannot be undone.',
+      deleteNote.note,
+    )}
+    confirmLabel="Delete"
+    confirmDisabled={deleteNote.pending}
+    destructive={true}
+    onConfirm={() => {
+      showDeleteConfirm = false;
+      deleteNote.clear();
+      void deleteThreadAction(ctx());
+    }}
+    onCancel={() => {
+      showDeleteConfirm = false;
+      deleteNote.clear();
+    }}
+  />
+{/if}
 
-<ConfirmDialog
-  open={showArchiveConfirm}
-  title="Archive Thread"
-  description="This will hide the thread from the sidebar. Open Settings → Storage to find it later."
-  confirmLabel="Archive"
-  onConfirm={() => {
-    showArchiveConfirm = false;
-    void archiveThreadAction(ctx());
-  }}
-  onCancel={() => {
-    showArchiveConfirm = false;
-  }}
-/>
+{#if showArchiveConfirm}
+  <ConfirmDialog
+    open={true}
+    title="Archive Thread"
+    description="This will hide the thread from the sidebar. Open Settings → Storage to find it later."
+    confirmLabel="Archive"
+    onConfirm={() => {
+      showArchiveConfirm = false;
+      void archiveThreadAction(ctx());
+    }}
+    onCancel={() => {
+      showArchiveConfirm = false;
+    }}
+  />
+{/if}
 
 <!-- Non-destructive, so Enter accepts: new history is appended, and a profile
      repair uses compare-and-swap so it cannot replace a newer user choice. -->
-<ConfirmDialog
-  open={pendingUpdate !== null}
-  title={profileOnlyUpdate ? 'Restore Model Settings' : 'Import Provider Updates'}
-  description={pendingUpdateDescription}
-  confirmLabel={profileOnlyUpdate ? 'Restore' : 'Import'}
-  onConfirm={() => {
-    pendingUpdate = null;
-    void applyThreadImportUpdatesAction(ctx());
-  }}
-  onCancel={() => {
-    pendingUpdate = null;
-  }}
-/>
+{#if pendingUpdate !== null}
+  <ConfirmDialog
+    open={true}
+    title={profileOnlyUpdate ? 'Restore Model Settings' : 'Import Provider Updates'}
+    description={pendingUpdateDescription}
+    confirmLabel={profileOnlyUpdate ? 'Restore' : 'Import'}
+    onConfirm={() => {
+      pendingUpdate = null;
+      void applyThreadImportUpdatesAction(ctx());
+    }}
+    onCancel={() => {
+      pendingUpdate = null;
+    }}
+  />
+{/if}
 
-<ConfirmDialog
-  open={showBulkDeleteConfirm}
-  title={`Delete ${selectedIds.size} Threads`}
-  description={withDeleteNote(
-    `This will permanently delete ${selectedIds.size} threads and all their messages. This action cannot be undone.`,
-    deleteNote.note,
-  )}
-  confirmLabel="Delete"
-  confirmDisabled={deleteNote.pending}
-  destructive={true}
-  onConfirm={() => {
-    showBulkDeleteConfirm = false;
-    deleteNote.clear();
-    void deleteSelected();
-  }}
-  onCancel={() => {
-    showBulkDeleteConfirm = false;
-    deleteNote.clear();
-  }}
-/>
+{#if showBulkDeleteConfirm}
+  <ConfirmDialog
+    open={true}
+    title={`Delete ${selectedIds.size} Threads`}
+    description={withDeleteNote(
+      `This will permanently delete ${selectedIds.size} threads and all their messages. This action cannot be undone.`,
+      deleteNote.note,
+    )}
+    confirmLabel="Delete"
+    confirmDisabled={deleteNote.pending}
+    destructive={true}
+    onConfirm={() => {
+      showBulkDeleteConfirm = false;
+      deleteNote.clear();
+      void deleteSelected();
+    }}
+    onCancel={() => {
+      showBulkDeleteConfirm = false;
+      deleteNote.clear();
+    }}
+  />
+{/if}

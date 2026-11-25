@@ -169,8 +169,18 @@ func (a *App) getThreadPayloadMeta(threadID string, payloadID string) (store.Pay
 	if payloadID == "" {
 		return store.PayloadMeta{}, fmt.Errorf("payload id is required")
 	}
-	if _, err := a.findThreadItemByPayloadID(threadID, payloadID); err != nil {
+	item, err := a.findThreadItemByPayloadID(threadID, payloadID)
+	if err != nil {
 		return store.PayloadMeta{}, err
+	}
+	// GetThreadItemByPayloadID already joins payloads for item.PayloadID,
+	// so primary payloads carry Kind and Meta without a second SQLite read.
+	if item.PayloadID == payloadID && item.PayloadKind != "" {
+		return store.PayloadMeta{
+			ID:   item.PayloadID,
+			Kind: item.PayloadKind,
+			Meta: item.PayloadMeta,
+		}, nil
 	}
 	meta, err := a.store.GetPayloadMeta(threadID, payloadID)
 	if err != nil {

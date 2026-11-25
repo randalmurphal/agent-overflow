@@ -15,9 +15,21 @@ import type { FenceInfo, LineContext, Plugin } from './incompleteMarkdown.plugin
 export const contextPlugins: Plugin[] = [
     {
         name: 'contextManager',
-        preprocess: ({ text }) => {
+        preprocess: ({ text, state }) => {
+            // Fast path: when no fence opener or display-math delimiter exists
+            // anywhere in the tail, no line sits inside a blocking context.
+            if (!text.includes('```') && !text.includes('~~~') && !text.includes('$$')) {
+                return {
+                    text,
+                    state: {
+                        blockingContexts: new Set<'code' | 'math'>(),
+                        lineContexts: [],
+                        fenceInfo: undefined
+                    }
+                };
+            }
             // Pre-scan the entire text to establish blocking contexts
-            const lines = text.split('\n');
+            const lines = state.lines ?? text.split('\n');
             let inCodeBlock = false;
             // The fence awaiting its closer: leading prefix (indentation
             // and/or blockquote markers), fence char, run length, and the

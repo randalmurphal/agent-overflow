@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -118,6 +119,11 @@ type Parser struct {
 	// timeline row. Two generations bound it: a task's binding outlives
 	// the next parserTaskMapCap tasks, whatever their kind.
 	taskToolUses recentMap[taskToolUseRef]
+	// orphanTasksByToolUse indexes taskIDs recorded in taskToolUses before
+	// toolUseParents learned their tool_use_id's parent, so rememberToolUseParent
+	// patches only affected entries in O(1) instead of scanning both recentMap
+	// generations.
+	orphanTasksByToolUse recentMap[[]string]
 	// toolUseNames records the tool name of every observed tool_use,
 	// forwarded on stdout or projected from the session mirror. Two
 	// readers need it. system/task_started's resume detection
@@ -518,6 +524,7 @@ func (p *Parser) Close() {
 	p.advisorMessages = nil
 	p.toolUseParents = nil
 	p.taskToolUses = recentMap[taskToolUseRef]{}
+	p.orphanTasksByToolUse = recentMap[[]string]{}
 	p.toolUseNames = recentMap[string]{}
 	p.unclassifiedTaskCalls = recentMap[agentTaskStart]{}
 	p.taskTranscriptRoots = recentMap[string]{}
@@ -584,6 +591,15 @@ func ParseLine(threadID string, line []byte) ([]provider.ProviderEvent, error) {
 // ParseLine on a Parser preserves state across calls so tool-use / tool-result
 // pairs can share metadata (e.g. the `is_background` flag).
 func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEvent, error) {
+	// Hot path: streaming partial messages account for >90% of Claude CLI
+	// stdout lines. Decode directly into typed structs without allocating
+	// top-level or inner map[string]json.RawMessage maps.
+	if bytes.Contains(line, []byte(`"stream_event"`)) {
+		if events, handled, err := p.tryParseStreamEventLine(threadID, line); handled {
+			return events, err
+		}
+	}
+
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
@@ -905,13 +921,18 @@ func (p *Parser) rememberToolUseParent(toolUseID, parentToolUseID string) {
 		p.toolUseParents = make(map[string]string)
 	}
 	p.toolUseParents[toolUseID] = parentToolUseID
-	for _, generation := range []map[string]taskToolUseRef{p.taskToolUses.current, p.taskToolUses.previous} {
-		for taskID, ref := range generation {
-			if ref.ToolUseID == toolUseID && ref.ParentToolUseID == "" {
+	if orphanTasks, ok := p.orphanTasksByToolUse.get(toolUseID); ok && len(orphanTasks) > 0 {
+		for _, taskID := range orphanTasks {
+			if ref, ok := p.taskToolUses.current[taskID]; ok && ref.ToolUseID == toolUseID && ref.ParentToolUseID == "" {
 				ref.ParentToolUseID = parentToolUseID
-				generation[taskID] = ref
+				p.taskToolUses.current[taskID] = ref
+			}
+			if ref, ok := p.taskToolUses.previous[taskID]; ok && ref.ToolUseID == toolUseID && ref.ParentToolUseID == "" {
+				ref.ParentToolUseID = parentToolUseID
+				p.taskToolUses.previous[taskID] = ref
 			}
 		}
+		p.orphanTasksByToolUse.delete(toolUseID)
 	}
 }
 
@@ -926,10 +947,15 @@ func (p *Parser) rememberTaskToolUse(taskID, toolUseID string) {
 	if p == nil || taskID == "" || toolUseID == "" {
 		return
 	}
+	parentID := p.toolUseParent(toolUseID)
 	p.taskToolUses.set(taskID, taskToolUseRef{
 		ToolUseID:       toolUseID,
-		ParentToolUseID: p.toolUseParent(toolUseID),
+		ParentToolUseID: parentID,
 	})
+	if parentID == "" {
+		existing, _ := p.orphanTasksByToolUse.get(toolUseID)
+		p.orphanTasksByToolUse.set(toolUseID, append(existing, taskID))
+	}
 }
 
 func (p *Parser) taskToolUseRef(taskID string) taskToolUseRef {
@@ -1289,20 +1315,6 @@ func (p *Parser) rememberStreamMessageID(parentToolUseID, id string) {
 		p.streamMessageIDs = make(map[string]string)
 	}
 	p.streamMessageIDs[parentToolUseID] = id
-}
-
-// streamAPIMessageID is the API id of the response a stream_event belongs
-// to: the envelope's `api_message_id` when the CLI stamped one, else the
-// id remembered from the scope's `message_start`. Empty when neither is
-// known (an older CLI mid-response, a plugin-rewritten event).
-func (p *Parser) streamAPIMessageID(raw map[string]json.RawMessage, parentToolUseID string) string {
-	if id := readRawString(raw["api_message_id"]); id != "" {
-		return id
-	}
-	if p == nil || p.streamMessageIDs == nil {
-		return ""
-	}
-	return p.streamMessageIDs[parentToolUseID]
 }
 
 // forgetStreamMessageID releases a scope's remembered response id at its

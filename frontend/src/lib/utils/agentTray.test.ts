@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   agentRowBlockedLabel, agentRowCallers, agentRowOpenTarget, agentRowRuntimeMs, agentRowShownState, agentRowStateLabel, agentWorkerCount,
-  isOpenAgentRow, visibleAgentRows,
+  isOpenAgentRow, sameAgentRow, visibleAgentRows,
 } from './agentTray';
 import type { ThreadAgentRow } from '../stores/bindings';
 
@@ -149,5 +149,18 @@ describe('agentRowRuntimeMs', () => {
 
   it("is a send's run as its row reports it", () => {
     expect(agentRowRuntimeMs(row('a', 0, 'running', { kind: 'send', runtimeMs: 4_000, turnOpen: true }), 11_000, 10_000)).toBe(5_000);
+  });
+});
+
+describe('sameAgentRow', () => {
+  it('treats explicit undefined and omitted keys equivalently while detecting distinct fields', () => {
+    const a = row('t1', 0, 'running', { worker: undefined });
+    const b = row('t1', 0, 'running', { lateReply: true });
+    expect(sameAgentRow(a, b)).toBe(false);
+    expect(sameAgentRow(b, a)).toBe(false);
+
+    const c = row('t1', 0, 'running');
+    expect(sameAgentRow(a, c)).toBe(true);
+    expect(sameAgentRow(c, a)).toBe(true);
   });
 });

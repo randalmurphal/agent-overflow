@@ -311,3 +311,53 @@ func TestCommandOutputTimerFlushDelivers(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// Orphan force-close on a clean turn-complete must flush any buffered
+// command output before dropping the buffer instead of discarding it.
+func TestCommandOutputOrphanForceCloseFlushesBufferedOutput(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	startMeta, _ := json.Marshal(map[string]any{"toolName": "Bash"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "cmd-orphan",
+		ItemType: "command_execution", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool start: %v", err)
+	}
+	if err := router.Handle(commandOutputDelta("cmd-orphan", "orphan output line\n")); err != nil {
+		t.Fatalf("delta: %v", err)
+	}
+	// Clean turn-complete arrives before EventToolComplete and before the
+	// 100ms command-output timer fires.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+
+	item, found, err := st.GetThreadItem("t1", "cmd-orphan")
+	if err != nil || !found {
+		t.Fatalf("get item: found=%v err=%v", found, err)
+	}
+	if item.Status != statusErrored {
+		t.Fatalf("status = %q, want %q", item.Status, statusErrored)
+	}
+	if item.PayloadID == "" {
+		t.Fatal("expected buffered command output to flush on orphan force-close")
+	}
+	data, err := st.GetPayloadData(item.ThreadID, item.PayloadID)
+	if err != nil {
+		t.Fatalf("payload data: %v", err)
+	}
+	if string(data) != "orphan output line\n" {
+		t.Fatalf("payload data = %q, want %q", string(data), "orphan output line\n")
+	}
+}

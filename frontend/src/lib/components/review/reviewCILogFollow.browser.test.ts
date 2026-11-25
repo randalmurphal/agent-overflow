@@ -298,11 +298,13 @@ describe('ReviewCILogView tail follow', () => {
 
   it.runIf(MAC)('lets go of the tail when Home is typed in an editor inside the log', async () => {
     const { scroll } = await typedAtTail('Home');
-    // Home scrolled the log to its top; the reader stays there.
+    // Home smoothly scrolls the log to its top; the reader stays there (never
+    // pulled back toward the tail) once the ease-out finishes settling to 0.
     await waitFor(() => scroll.scrollTop <= AT_BOTTOM_PX, 'the Home scroll at the top');
     const readingAt = scroll.scrollTop;
     for (let i = 0; i < 12; i += 1) await raf();
-    expect(scroll.scrollTop).toBe(readingAt);
+    expect(scroll.scrollTop).toBeLessThanOrEqual(readingAt);
+    expect(scroll.scrollTop).toBeLessThanOrEqual(AT_BOTTOM_PX);
   });
 
   it('stays put when a scroll with no input reaches the end after a wheel landed short of it', async () => {

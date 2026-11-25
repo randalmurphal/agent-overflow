@@ -45,7 +45,7 @@
   import { getEffectiveThreadStatus, getThreadWaitingOn } from '../../stores/threadStatuses.svelte';
   import { unreachableThreadMachineName } from '../../stores/attachedBackends.svelte';
   import { getThreadLiveActivityAt } from '../../stores/threads.svelte';
-  import { openThreadIds } from '../../stores/panes.svelte';
+  import { isThreadOpen } from '../../stores/panes.svelte';
   import { sidebarFlip, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
   import { buildSidebarThreadTree, type SidebarGroupTreeNode, type SidebarTreeNode } from '../../utils/sidebarTree';
   import {
@@ -53,9 +53,9 @@
     nextSidebarThreadRevealLimit,
     previewSidebarThreads,
     rollupDisplayStatus,
-    sameSidebarVisibleRows,
     sameThreadStatusPill,
     sidebarVisibleRowKey,
+    type SidebarTreeVisibleRow,
   } from '../../utils/sidebarTreeView';
   import { THREAD_REVEAL_INCREMENT } from '../../utils/sidebarThreadLimits';
   import { GROUP_RAIL_LEFT_PX } from '../../utils/sidebarRowMetrics';
@@ -98,9 +98,32 @@
     }),
   );
 
-  // Threads mounted in any pane never hide behind the cut. Re-minted only
-  // when a pane opens, closes, or swaps thread.
-  let openIds = $derived(openThreadIds());
+  // Threads in this list that are mounted in any pane never hide behind the
+  // cut. Keyed per thread id with identity cutoff so opening or switching a
+  // thread in another project does not re-derive this list's preview or rows.
+  const EMPTY_OPEN_IDS: ReadonlySet<string> = new Set();
+  let prevOpenIds: ReadonlySet<string> = EMPTY_OPEN_IDS;
+  let openIds = $derived.by<ReadonlySet<string>>(() => {
+    let next: Set<string> | null = null;
+    for (const thread of threads) {
+      if (!isThreadOpen(thread.id)) continue;
+      if (!next) next = new Set();
+      next.add(thread.id);
+    }
+    const candidate = next ?? EMPTY_OPEN_IDS;
+    if (candidate.size === prevOpenIds.size) {
+      let same = true;
+      for (const id of candidate) {
+        if (!prevOpenIds.has(id)) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return prevOpenIds;
+    }
+    prevOpenIds = candidate;
+    return candidate;
+  });
   let visibleLimit = $derived(list.kind === 'project'
     ? list.limit
     : getThreadListVisibleLimit(ASSISTANTS_LIST_KEY));
@@ -134,22 +157,89 @@
     return next;
   });
 
-  // Identity cutoff: return the PREVIOUS array when nothing the rows
-  // render has changed, so svelte's derived cutoff stops the animated
-  // each-block from reconciling. This is load-bearing for streaming
-  // performance: without it every item-event flush re-ran the FLIP
-  // measure pass (a forced synchronous layout per beat). See
-  // sameSidebarVisibleRows.
+  // Identity cutoff for the animated each-block: return the PREVIOUS array when
+  // nothing this template actually passes to rows has changed, so Svelte skips
+  // reconciling and never runs FLIP `getBoundingClientRect` passes for pure
+  // in-place status flips on thread rows (`ThreadRow` subscribes to live status
+  // directly; only `ThreadGroupRow` and `group-more` read rolled-up status here).
+  function sameRenderedSidebarRows(
+    a: readonly SidebarTreeVisibleRow[],
+    b: readonly SidebarTreeVisibleRow[],
+  ): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      const x = a[i];
+      const y = b[i];
+      if (x.kind === 'group-more' || y.kind === 'group-more') {
+        if (x.kind !== 'group-more' || y.kind !== 'group-more') return false;
+        if (x.groupId !== y.groupId || x.hiddenCount !== y.hiddenCount) return false;
+        if (x.canShowLess !== y.canShowLess) return false;
+        if (x.hiddenStatus !== y.hiddenStatus) {
+          if (
+            x.hiddenStatus === null
+            || y.hiddenStatus === null
+            || x.hiddenStatus.liveStatus !== y.hiddenStatus.liveStatus
+            || !sameThreadStatusPill(x.hiddenStatus.pill, y.hiddenStatus.pill)
+          ) return false;
+        }
+        continue;
+      }
+      if (x.kind !== y.kind) return false;
+      if (x.startsSection !== y.startsSection) return false;
+      if (x.ownerGroupId !== y.ownerGroupId) return false;
+      if (x.depth !== y.depth) return false;
+      if (x.kind === 'thread' && y.kind === 'thread') {
+        if (x.thread !== y.thread) return false;
+        continue;
+      }
+      if (x.kind === 'group' && y.kind === 'group') {
+        if (x.group !== y.group) return false;
+        if (x.children.length !== y.children.length) return false;
+        if (x.displayLiveStatus !== y.displayLiveStatus) return false;
+        if (!sameThreadStatusPill(x.displayStatus, y.displayStatus)) return false;
+        // Expanded/collapsed group rows also render memberThreadIds from children.
+        for (let j = 0; j < x.children.length; j++) {
+          if (x.children[j].thread.id !== y.children[j].thread.id) return false;
+        }
+      }
+    }
+    return true;
+  }
+
   let prevVisibleNodes: ReturnType<typeof flattenSidebarThreadTree> = [];
   let visibleNodes = $derived.by(() => {
+    const collapsedGroupIds = getCollapsedGroups();
+    // Only collapsed groups need `activeThreadId` (to inline-pin their
+    // active member beneath the group header). Skipping `pane?.threadId`
+    // when no group in this list is collapsed keeps thread switches in
+    // other lists from re-flattening this list at all.
+    let activeThreadId: string | null = null;
+    if (pane && collapsedGroupIds.size > 0) {
+      const hasShowingSignal = typeof pane.isShowingThread === 'function';
+      for (const node of preview.visibleNodes) {
+        if (node.kind !== 'group' || !collapsedGroupIds.has(node.group.id)) continue;
+        if (hasShowingSignal) {
+          for (const member of node.children) {
+            if (pane.isShowingThread(member.thread.id)) {
+              activeThreadId = member.thread.id;
+              break;
+            }
+          }
+          if (activeThreadId !== null) break;
+        } else {
+          activeThreadId = pane.threadId ?? null;
+          break;
+        }
+      }
+    }
     const next = flattenSidebarThreadTree({
       nodes: preview.visibleNodes,
-      collapsedGroupIds: getCollapsedGroups(),
-      activeThreadId: pane?.threadId ?? null,
+      collapsedGroupIds,
+      activeThreadId,
       openThreadIds: openIds,
       groupVisibleLimit: getThreadListVisibleLimit,
     });
-    if (sameSidebarVisibleRows(prevVisibleNodes, next)) return prevVisibleNodes;
+    if (sameRenderedSidebarRows(prevVisibleNodes, next)) return prevVisibleNodes;
     prevVisibleNodes = next;
     return next;
   });

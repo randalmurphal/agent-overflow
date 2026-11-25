@@ -474,3 +474,16 @@ func TestHeadOfLeavesOutACutOffCharacter(t *testing.T) {
 		}
 	}
 }
+
+// TestLiveEndAssistantTextRetainsTrailingFenceOpenerWithoutNewline: a message
+// that streams a languaged fence opener without a trailing newline and then
+// ends must not drop the Finish() steps before starting the worker.
+func TestLiveEndAssistantTextRetainsTrailingFenceOpenerWithoutNewline(t *testing.T) {
+	service, rec := newLiveService(t)
+	service.ObserveAssistantTextDelta("t", "i", "", "```go")
+	service.EndAssistantText("t", "i", "```go")
+	waitFor(t, func() bool { return service.LiveItemCount() == 0 })
+	if got := rec.fence("t", "i", 0); !got.final {
+		t.Fatalf("fence 0 ended %+v, want final push for trailing languaged fence opener", got)
+	}
+}

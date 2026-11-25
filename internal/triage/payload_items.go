@@ -127,8 +127,9 @@ func (r *Router) bufferCommandOutputDelta(evt provider.ProviderEvent, itemID str
 // once the buffer is discarded no later flush can append a stale tail
 // after the authoritative content.
 func (r *Router) replaceCommandOutput(evt provider.ProviderEvent, itemID string) error {
-	r.streamFlushMu.Lock()
-	defer r.streamFlushMu.Unlock()
+	id := r.identity(evt.ThreadID)
+	id.streamFlushMu.Lock()
+	defer id.streamFlushMu.Unlock()
 	r.mu.Lock()
 	r.discardCommandOutputBufferLocked(evt.ThreadID, itemID)
 	r.mu.Unlock()
@@ -158,7 +159,8 @@ func (r *Router) flushCommandOutputPersistence(flush pendingStreamFlush) error {
 	}
 	if !found {
 		// Row vanished between stage and flush (thread cleanup raced the
-		// timer). The window has nothing to attach to; drop it loudly.
+		// timer). Drop the retained buffer entry too so it cannot linger.
+		r.dropStreamPersistenceBuffer(flush.threadID, flush.itemID)
 		log.Printf("triage: command output flush dropped %s/%s: item gone", flush.threadID, flush.itemID)
 		return nil
 	}

@@ -127,15 +127,35 @@ var toolMetaRules = map[string]ToolMetaRule{
 // `now` stamps the payload's CreatedAt so it lines up with the
 // owning item's created_at (matches the existing payload_items.go
 // pattern of payload.CreatedAt == item.CreatedAt).
+type compiledToolMetaRule struct {
+	keepAll    bool
+	keepSet    map[string]struct{}
+	promoteSet map[string]struct{}
+}
+
+var compiledToolMetaRules = buildCompiledToolMetaRules(toolMetaRules)
+
+func buildCompiledToolMetaRules(rules map[string]ToolMetaRule) map[string]compiledToolMetaRule {
+	compiled := make(map[string]compiledToolMetaRule, len(rules))
+	for name, rule := range rules {
+		if len(rule.KeepInput) == 0 && len(rule.PromoteToPayload) == 0 {
+			continue
+		}
+		compiled[name] = compiledToolMetaRule{
+			keepAll:    rule.KeepInput == nil,
+			keepSet:    stringSet(rule.KeepInput),
+			promoteSet: stringSet(rule.PromoteToPayload),
+		}
+	}
+	return compiled
+}
+
 func applyToolMetaRule(toolName string, raw json.RawMessage, now int64) (json.RawMessage, *store.Payload, error) {
 	if len(raw) == 0 {
 		return raw, nil, nil
 	}
-	rule, ok := toolMetaRules[strings.TrimSpace(toolName)]
+	rule, ok := compiledToolMetaRules[strings.TrimSpace(toolName)]
 	if !ok {
-		return raw, nil, nil
-	}
-	if len(rule.KeepInput) == 0 && len(rule.PromoteToPayload) == 0 {
 		return raw, nil, nil
 	}
 
@@ -159,21 +179,21 @@ func applyToolMetaRule(toolName string, raw json.RawMessage, now int64) (json.Ra
 		return raw, nil, nil
 	}
 
-	keepSet := stringSet(rule.KeepInput)
-	promoteSet := stringSet(rule.PromoteToPayload)
-
-	promoted := make(map[string]json.RawMessage, len(promoteSet))
+	var promoted map[string]json.RawMessage
+	if len(rule.promoteSet) > 0 {
+		promoted = make(map[string]json.RawMessage, len(rule.promoteSet))
+	}
 	trimmed := make(map[string]json.RawMessage, len(input))
 	for key, value := range input {
-		if _, isPromoted := promoteSet[key]; isPromoted {
+		if _, isPromoted := rule.promoteSet[key]; isPromoted {
 			promoted[key] = value
 			continue
 		}
-		if rule.KeepInput == nil {
+		if rule.keepAll {
 			trimmed[key] = value
 			continue
 		}
-		if _, kept := keepSet[key]; kept {
+		if _, kept := rule.keepSet[key]; kept {
 			trimmed[key] = value
 		}
 	}

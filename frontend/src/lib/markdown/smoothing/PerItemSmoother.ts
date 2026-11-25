@@ -208,6 +208,13 @@ type PendingUnitPhase =
 
 export class PerItemSmoother {
   private receivedParts: string[];
+  // Parts before `compactedPartCount` are already coalesced batches so
+  // compaction copies each incoming delta at most once instead of O(n²).
+  private compactedPartCount: number;
+  private compactedLength: number;
+  // Monotonic read cursor into `receivedParts` for O(1) sequential slicing.
+  private readPartIndex = 0;
+  private readPartStart = 0;
   private receivedLength: number;
   private receivedCache: string | null;
   private revealedEnd: number;
@@ -249,6 +256,8 @@ export class PerItemSmoother {
   constructor(opts: PerItemSmootherOptions) {
     const initial = opts.initialReceived ?? '';
     this.receivedParts = initial.length > 0 ? [initial] : [];
+    this.compactedPartCount = initial.length > 0 ? 1 : 0;
+    this.compactedLength = initial.length;
     this.receivedLength = initial.length;
     this.receivedCache = initial;
     this.revealedEnd = initial.length;
@@ -270,8 +279,8 @@ export class PerItemSmoother {
     this.receivedLength += delta.length;
     this.receivedCache = null;
     this.appendPendingUnitEnds(delta, start);
-    if (this.receivedParts.length > MAX_RECEIVED_PARTS) {
-      this.compactReceivedParts();
+    if (this.receivedParts.length - this.compactedPartCount >= MAX_RECEIVED_PARTS) {
+      this.compactTailParts();
     }
     this.scheduleTick();
   }
@@ -446,6 +455,19 @@ export class PerItemSmoother {
     return end;
   }
 
+  private compactTailParts(): void {
+    const batchStart = this.compactedPartCount;
+    const batch = this.receivedParts.slice(batchStart).join('');
+    this.receivedParts[batchStart] = batch;
+    this.receivedParts.length = batchStart + 1;
+    if (this.readPartIndex >= batchStart) {
+      this.readPartIndex = batchStart;
+      this.readPartStart = this.compactedLength;
+    }
+    this.compactedPartCount = batchStart + 1;
+    this.compactedLength += batch.length;
+  }
+
   private compactReceivedParts(): string {
     const received = this.receivedParts.join('');
     if (received.length !== this.receivedLength) {
@@ -454,6 +476,10 @@ export class PerItemSmoother {
       );
     }
     this.receivedParts = received.length > 0 ? [received] : [];
+    this.compactedPartCount = received.length > 0 ? 1 : 0;
+    this.compactedLength = received.length;
+    this.readPartIndex = 0;
+    this.readPartStart = 0;
     this.receivedCache = received;
     return received;
   }
@@ -466,21 +492,30 @@ export class PerItemSmoother {
     }
     if (from === to) return '';
 
-    let absolute = 0;
+    const advanceCursor = from >= this.readPartStart;
+    let index = advanceCursor ? this.readPartIndex : 0;
+    let absolute = advanceCursor ? this.readPartStart : 0;
     let first = '';
     let pieces: string[] | null = null;
-    for (const part of this.receivedParts) {
+    const parts = this.receivedParts;
+    for (; index < parts.length; index++) {
+      const part = parts[index];
       const partEnd = absolute + part.length;
       if (partEnd <= from) {
         absolute = partEnd;
+        if (advanceCursor) {
+          this.readPartIndex = index + 1;
+          this.readPartStart = absolute;
+        }
         continue;
       }
       if (absolute >= to) break;
 
-      const piece = part.slice(
-        Math.max(0, from - absolute),
-        Math.min(part.length, to - absolute),
-      );
+      const sliceStart = from > absolute ? from - absolute : 0;
+      const sliceEnd = to < partEnd ? to - absolute : part.length;
+      const piece = sliceStart === 0 && sliceEnd === part.length
+        ? part
+        : part.slice(sliceStart, sliceEnd);
       if (piece.length > 0) {
         if (first.length === 0) {
           first = piece;

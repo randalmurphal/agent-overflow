@@ -7,11 +7,14 @@
   import X from '@lucide/svelte/icons/x';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import {
+    getCachedPlanMarkdown,
     getPlanComments,
     getThreadCurrentProposedPlan,
+    hasLoadedThreadProposedPlans,
     refreshPlanComments,
     refreshThreadProposedPlans,
     retainProposedPlanEventListener,
+    setCachedPlanMarkdown,
   } from '../../stores/proposedPlans.svelte';
   import {
     GetPayloadData,
@@ -67,6 +70,9 @@
   // blank the body.
   let planKey = $derived(currentPlan?.id ?? null);
   let planPayloadIdKey = $derived(currentPlan?.payloadId ?? null);
+  let planPayloadVersion = $derived(
+    currentPlan ? `${currentPlan.updatedAt ?? ''}\0${currentPlan.payloadMeta ?? ''}` : '',
+  );
 
   let planMarkdown = $state<string | null>(null);
   let planLoadError = $state<string | null>(null);
@@ -88,6 +94,10 @@
   const pathRefs = $derived(getPathRefsFromMeta(currentPlan?.meta) ?? EMPTY_PATH_REFS);
 
   const planExport = createPlanSaveDialog(ensurePlanMarkdown, () => ctx.workspace);
+  let saveDialogMounted = $state(false);
+  $effect(() => {
+    if (planExport.saveDialogOpen) saveDialogMounted = true;
+  });
 
   // Find over the rendered plan. ctx.paneId is the source pane; the find
   // belongs to this companion's own layout pane.
@@ -106,7 +116,9 @@
 
   $effect(() => {
     const id = threadId;
-    untrack(() => { void refreshThreadProposedPlans(id); });
+    untrack(() => {
+      if (!hasLoadedThreadProposedPlans(id)) void refreshThreadProposedPlans(id);
+    });
   });
 
   // Reset and reload markdown + comments whenever the current plan id or payload changes.
@@ -123,13 +135,17 @@
     const payloadId = planPayloadIdKey;
     const tid = threadId;
     untrack(() => {
-      planMarkdown = null;
       planLoadError = null;
       planMarkdownRequest = null;
       planMarkdownRequestKey = null;
       if (planId && payloadId && tid) {
-        void loadPlanMarkdown(tid, payloadId, planId);
+        const version = planPayloadVersion;
+        const cached = getCachedPlanMarkdown(tid, payloadId, version);
+        planMarkdown = cached;
+        if (cached === null) void loadPlanMarkdown(tid, payloadId, planId, version);
         void refreshPlanComments(tid, planId);
+      } else {
+        planMarkdown = null;
       }
     });
   });
@@ -160,7 +176,12 @@
     releasePlanEvents?.();
   });
 
-  async function loadPlanMarkdown(tid: string, payloadId: string, planId: string): Promise<string> {
+  async function loadPlanMarkdown(
+    tid: string,
+    payloadId: string,
+    planId: string,
+    version = planPayloadVersion,
+  ): Promise<string> {
     if (planMarkdownRequestKey === planId && planMarkdownRequest) {
       return planMarkdownRequest;
     }
@@ -168,6 +189,7 @@
     planMarkdownRequest = (async () => {
       try {
         const content = await GetPayloadData(tid, payloadId);
+        setCachedPlanMarkdown(tid, payloadId, content.data, version);
         if (planMarkdownRequestKey === planId) {
           planMarkdown = content.data;
           planLoadError = null;
@@ -338,12 +360,14 @@
 
   </section>
 
-<ProposedPlanSaveModal backend={threadMachine(threadId ?? '', null)}
-  open={planExport.saveDialogOpen}
-  workspacePath={ctx.workspacePath}
-  savePath={planExport.savePath}
-  saving={planExport.saving}
-  onPathChange={planExport.setSavePath}
-  onClose={planExport.closeSaveDialog}
-  onSave={planExport.handleSave}
-/>
+{#if saveDialogMounted}
+  <ProposedPlanSaveModal backend={threadMachine(threadId ?? '', null)}
+    open={planExport.saveDialogOpen}
+    workspacePath={ctx.workspacePath}
+    savePath={planExport.savePath}
+    saving={planExport.saving}
+    onPathChange={planExport.setSavePath}
+    onClose={planExport.closeSaveDialog}
+    onSave={planExport.handleSave}
+  />
+{/if}

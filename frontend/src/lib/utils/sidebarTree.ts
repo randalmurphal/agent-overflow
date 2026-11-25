@@ -170,7 +170,7 @@ function statusPriority(status: ThreadLiveStatus): number {
   return STATUS_PRIORITY[status] ?? 0;
 }
 
-function getStatusSortGroup(
+export function getStatusSortGroup(
   liveStatus: ThreadLiveStatus,
   status: ThreadStatusPill | null,
 ): ThreadStatusSortGroup {

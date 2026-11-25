@@ -46,6 +46,7 @@
   // `block`; full text flows to full height).
   import { tick, untrack } from 'svelte';
   import { motionReduced } from '../../utils/reducedMotion';
+  import { createAnimationFrameBatcher } from '../../utils/animationFrameBatcher';
   import { slideDecision, stepSlide, type SlideObservation } from './tailSlide';
   import {
     TAIL_CLAMP_LINES,
@@ -146,23 +147,36 @@
   let slideCut: { preCutH: number; overtakenPx: number } | null = null;
   let overtakenPx = 0;
 
+  const slideFrames = createAnimationFrameBatcher('tail-clamped-slide', 'dom-update');
+  let lastSlidePx = 0;
+  let lastSlideEl: HTMLElement | undefined;
+
   function applySlide(inner: HTMLElement): void {
+    const quantized = slideOffset > 0 ? Math.max(0.25, Math.round(slideOffset * 4) / 4) : 0;
+    if (inner === lastSlideEl && quantized === lastSlidePx) return;
+    lastSlideEl = inner;
+    lastSlidePx = quantized;
     inner.style.transform = slideOffset > 0 ? `translateY(${slideOffset}px)` : '';
   }
 
   function clearSlide(): void {
-    if (slideFrame !== 0) cancelAnimationFrame(slideFrame);
+    if (slideFrame !== 0) slideFrames.cancel(slideFrame);
     slideFrame = 0;
     slideOffset = 0;
     if (innerEl) applySlide(innerEl);
   }
 
-  function drainSlide(inner: HTMLElement, ts: number): void {
+  function onSlideFrame(ts: number): void {
     slideFrame = 0;
+    const inner = innerEl;
+    if (!inner || !inner.isConnected) {
+      slideOffset = 0;
+      return;
+    }
     slideOffset = stepSlide(slideOffset, ts - slideLastTs);
     slideLastTs = ts;
     applySlide(inner);
-    if (slideOffset > 0) slideFrame = requestAnimationFrame((next) => drainSlide(inner, next));
+    if (slideOffset > 0) slideFrame = slideFrames.request(onSlideFrame);
   }
 
   function startSlide(inner: HTMLElement, offsetPx: number): void {
@@ -170,7 +184,7 @@
     applySlide(inner);
     if (slideFrame === 0) {
       slideLastTs = performance.now();
-      slideFrame = requestAnimationFrame((ts) => drainSlide(inner, ts));
+      slideFrame = slideFrames.request(onSlideFrame);
     }
   }
 

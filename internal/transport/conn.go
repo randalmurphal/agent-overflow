@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -894,8 +895,15 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 	}
 	ctx = withServerLifetime(WithCallerProof(ctx, proof), h.lifetime)
 
-	result, fe := h.dispatcher.Invoke(ctx, method, frame.Params)
-	if fe != nil {
+	buf := rpcFrameBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer func() {
+		if buf.Cap() <= maxRetainedRPCBufCap {
+			rpcFrameBufPool.Put(buf)
+		}
+	}()
+
+	if fe := h.dispatcher.invokeToRPCFrame(ctx, method, frame.ID, frame.Params, buf); fe != nil {
 		h.replyError(ctx, frame.ID, fe)
 		// A method can refuse its own proof while the connection remains
 		// authorized. Only current session admission can end this socket.
@@ -907,11 +915,7 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 		return
 	}
 
-	h.writeReply(ctx, ServerFrame{
-		Type:   frameTypeRPC,
-		ID:     frame.ID,
-		Result: result,
-	})
+	h.writeReplyRaw(ctx, buf.Bytes())
 }
 
 // authorizeSession reads current admission and grants before each RPC.
@@ -1049,8 +1053,9 @@ func (h *connHandler) handleReplay(ctx context.Context, frame ClientFrame) {
 // `type:"event"` frame with at most one window of added latency.
 func (h *connHandler) pumpEvents(ctx context.Context) {
 	defer close(h.pumpDone)
+	var batchBuf []byte
 	buf := newCoalesceBuffer(DefaultCoalesceMaxEvents, h.coalesceWindow, func(batch []Event) {
-		h.writeBatchFrame(ctx, batch)
+		batchBuf = h.writeBatchFrameWithBuf(ctx, batch, batchBuf)
 	})
 	defer buf.stop()
 
@@ -1113,12 +1118,25 @@ type replyWrite struct {
 // (lease.go); a reply never depends on a streaming delta, and flushing the
 // window on every call would undo the lease. Events emitted after the reply
 // still coalesce as before.
+const maxRetainedRPCBufCap = 256 << 10
+
+var rpcFrameBufPool = sync.Pool{
+	New: func() any {
+		return bytes.NewBuffer(make([]byte, 0, 4096))
+	},
+}
+
 func (h *connHandler) writeReply(ctx context.Context, frame ServerFrame) {
 	buf, err := json.Marshal(frame)
 	if err != nil {
 		log.Printf("transport: marshal server frame: %v", err)
 		return
 	}
+	h.writeReplyRaw(ctx, buf)
+}
+
+func (h *connHandler) writeReplyRaw(ctx context.Context, buf []byte) {
+	var err error
 	if h.replies != nil {
 		req := replyWrite{ctx: ctx, frame: buf, done: make(chan struct{})}
 		select {
@@ -1234,23 +1252,33 @@ func (h *connHandler) sendWatermarks(buf *coalesceBuffer, deltas *deltaCoalescer
 // same pre-encoded envelopes instead of re-passing every payload
 // through the JSON encoder — exactly the windows that dominate during
 // streaming bursts.
+const maxRetainedBatchBufCap = 256 << 10
+
 func (h *connHandler) writeBatchFrame(ctx context.Context, events []Event) {
+	_ = h.writeBatchFrameWithBuf(ctx, events, nil)
+}
+
+func (h *connHandler) writeBatchFrameWithBuf(ctx context.Context, events []Event, scratch []byte) []byte {
 	if len(events) == 0 {
-		return
+		return scratch
 	}
 	if len(events) == 1 {
 		h.writeEventFrame(ctx, events[0])
-		return
+		return scratch
 	}
-	buf := spliceBatchFrame(events)
+	buf := spliceBatchFrameInto(scratch[:0], events)
 	if len(buf) == 0 {
-		return
+		return scratch
 	}
 	if err := h.writeRaw(ctx, buf); err != nil {
 		if !isClosedError(err) {
 			log.Printf("transport: ws write batch: %v", err)
 		}
 	}
+	if cap(buf) > maxRetainedBatchBufCap {
+		return nil
+	}
+	return buf[:0]
 }
 
 // spliceBatchFrame assembles {"type":"batch","events":[...]} by joining
@@ -1264,11 +1292,20 @@ func (h *connHandler) writeBatchFrame(ctx context.Context, events []Event) {
 // Replay pre-encodes its gap markers) but are envelope-encoded
 // defensively so a splice never emits a hole.
 func spliceBatchFrame(events []Event) []byte {
+	return spliceBatchFrameInto(nil, events)
+}
+
+func spliceBatchFrameInto(dst []byte, events []Event) []byte {
 	size := len(batchFramePrefix) + len(events) + 1 // separators + "]}"
 	for i := range events {
 		size += len(events[i].WireBytes)
 	}
-	buf := make([]byte, 0, size)
+	buf := dst
+	if cap(buf) < size {
+		buf = make([]byte, 0, size)
+	} else {
+		buf = buf[:0]
+	}
 	buf = append(buf, batchFramePrefix...)
 	written := 0
 	for i := range events {

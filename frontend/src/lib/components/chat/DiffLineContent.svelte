@@ -56,4 +56,4 @@
   );
 </script>
 
-{#if prefix}<span class={prefixTintClass(line.type)} data-find-skip>{prefix}</span>{/if}{#if segments}{#each segments as seg, si (si)}<span class="{seg.className} {seg.emph ? emphClass : ''}">{seg.text}</span>{/each}{:else if bodySegments}{#each bodySegments as seg, si (si)}<span class={seg.className}>{seg.text}</span>{/each}{:else}{plain}{/if}
+{#if prefix}<span class={prefixTintClass(line.type)} data-find-skip>{prefix}</span>{/if}{#if segments}{#each segments as seg, si (si)}{#if seg.className || seg.emph}<span class={seg.className && seg.emph ? `${seg.className} ${emphClass}` : (seg.className || emphClass)}>{seg.text}</span>{:else}{seg.text}{/if}{/each}{:else if bodySegments}{#each bodySegments as seg, si (si)}{#if seg.className}<span class={seg.className}>{seg.text}</span>{:else}{seg.text}{/if}{/each}{:else}{plain}{/if}

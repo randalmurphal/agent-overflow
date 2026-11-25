@@ -78,8 +78,10 @@ import { reviewSubjectForPane } from './reviewPane.svelte';
 import { createThreadPaneTurns } from './threadPaneTurns.svelte';
 import {
   normalizeContextWindowForThread,
+  sameContextWindow,
   seedContextWindow,
 } from './threadContextWindow';
+import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { threadActivityRunRule } from './activityRunRule';
 import {
   nowForLiveContent,
@@ -121,6 +123,8 @@ export type {
 export function createThreadPane(options: ThreadPaneOptions = {}) {
   const paneId = options.paneId ?? 'pane';
   let thread: Thread | null = $state(null);
+  const shownThreadRegistry = createKeyedSignalRegistry<boolean>(false);
+  let shownThreadKey: string | null = null;
   // THE one write to `thread`. Every path that puts a different thread (or
   // none) on this pane goes through here, and an identity change restates
   // the watched-thread set: that set is what admits the thread's
@@ -132,16 +136,24 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // (metadata patches) change nothing the set reads, and the transport dedups
   // the rest, so the recompute is keyed on identity alone. The same edge is
   // where the owner saves the pane layout, before any load the change starts.
+  function syncShownThreadKey(nextId: string | null): void {
+    if (nextId === shownThreadKey) return;
+    if (shownThreadKey !== null) shownThreadRegistry.set(shownThreadKey, false);
+    shownThreadKey = nextId;
+    if (nextId !== null) shownThreadRegistry.set(nextId, true);
+  }
   function assignThread(next: Thread | null): void {
     const before = thread?.id ?? null;
     thread = next;
-    if ((next?.id ?? null) === before) return;
+    const after = next?.id ?? null;
+    syncShownThreadKey(draftState.placeholder ? null : after);
+    if (after === before) return;
     // A thread is mounted in one pane, so `before` has none now.
     if (before) releaseFlushedLeftByPane(before);
     refreshWatchedThreads();
     options.onThreadChanged?.();
   }
-  let contextWindow: ContextWindow | null = $state(null);
+  let contextWindow: ContextWindow | null = $state.raw(null);
   let loading: boolean = $state(false);
   let showTerminal: boolean = $state(false);
   // sendInFlight is the stop-button gate. The composer flips it true the
@@ -371,11 +383,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // thread switches, turn completions, and metadata updates. The pane
   // only tracks which account its live provider session should select.
   let providerBanner: ProviderStatusEvent | null | undefined =
-    $state(undefined);
+    $state.raw(undefined);
   // Thread-owned banner rows, one per kind (stale binary, stale prompt), in
   // display order. Each is raised and withdrawn by name by the backend's
   // `provider:status` pushes and cleared wholesale when the session ends.
-  let sessionBanners: ProviderStatusEvent[] = $state([]);
+  let sessionBanners: ProviderStatusEvent[] = $state.raw([]);
   const SESSION_BANNER_ORDER: readonly SessionBannerKind[] = ['prompt_stale', 'binary_stale'];
   function setSessionBanner(kind: SessionBannerKind, status: ProviderStatusEvent | null): void {
     const rest = sessionBanners.filter((banner) => banner.kind !== kind);
@@ -391,7 +403,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     if (sessionBanners.length) sessionBanners = [];
   }
   let providerSessionAccount: ProviderSessionAccountEvent | null =
-    $state(null);
+    $state.raw(null);
   let providerSessionAccountRevision = 0;
   function updateProviderSessionAccount(
     account: ProviderSessionAccountEvent | null,
@@ -443,6 +455,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // four wire projections) lives in threadPaneTurns.svelte.ts.
   const paneTurns = createThreadPaneTurns({
     getThread: () => thread,
+    getThreadId: () => stableThreadId,
     settleRecentWindowPrune: () => timelineWindow.settleRecentWindowPrune(),
   });
   // Session-scoped model actually serving the thread after a provider
@@ -747,6 +760,13 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get threadId() {
       return stableThreadId;
     },
+    isShowingThread(id: string): boolean {
+      return shownThreadRegistry.get(id);
+    },
+    dropShownThreadSignal(id: string): void {
+      if (shownThreadKey === id) shownThreadKey = null;
+      shownThreadRegistry.drop(id);
+    },
     /**
      * The checkout this pane operates in, or null when the row names none
      * (a terminal-only thread has no project). Every workspace-scoped git
@@ -827,6 +847,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     watchSearchableEvents: itemWindow.watchSearchableEvents,
     get timelineRevision() {
       return itemWindow.timelineRevision;
+    },
+    get discardedItemIds() {
+      return itemWindow.discardedItemIds;
     },
     get rowUiRetentionRevision() {
       return itemWindow.rowUiRetentionRevision;
@@ -1595,7 +1618,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         updateEffectiveModel('');
       }
       assignThread(nextThread);
-      contextWindow = seedContextWindow(nextThread);
+      const nextCw = seedContextWindow(nextThread);
+      if (!sameContextWindow(contextWindow, nextCw)) {
+        contextWindow = nextCw;
+      }
     },
 
     setEffectiveModel(model: string): void {

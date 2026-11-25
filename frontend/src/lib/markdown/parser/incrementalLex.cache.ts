@@ -46,7 +46,7 @@ export const trimBlock = (
             return {
                 value: leading === 0 && trailing.length === 0
                     ? block
-                    : block.slice(leading, block.length - trailing.length),
+                    : append,
                 leading,
                 trailing,
                 append
@@ -66,7 +66,7 @@ export const trimBlock = (
         return {
             value: leading === 0 && trailing.length === 0
                 ? block
-                : block.slice(leading, block.length - trailing.length),
+                : cache.src + append,
             leading,
             trailing,
             append
@@ -105,6 +105,7 @@ export const createIncrementalLexCache = (observeLex?: IncrementalLexObserver): 
     codeFence: null,
     tableTailUnstable: false,
     tableAppend: null,
+    listAppend: null,
     leadingTrim: 0,
     trailingTrim: '',
     lastCodeTextAppend: undefined,
@@ -159,6 +160,12 @@ export type IncrementalLexCache = {
         lastRowStart: number;
         prefix: string;
         lastRow: string;
+    } | null;
+    /** cached list sealed prefix and volatile-tail source to avoid flattening ConsStrings */
+    listAppend: {
+        sealedLen: number;
+        sealedPrefix: string;
+        tailSrc: string;
     } | null;
     /** leading source units and trailing source text removed in completion mode */
     leadingTrim: number;

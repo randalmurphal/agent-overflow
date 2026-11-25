@@ -53,6 +53,7 @@ export function stageBackend(
       replayListeners.add(listener);
       return () => replayListeners.delete(listener);
     }),
+    setLease: vi.fn(),
     setWatchedThreads: vi.fn(),
     setPresence: vi.fn(),
     setDiagnosticsSink: vi.fn(),

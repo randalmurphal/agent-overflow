@@ -28,8 +28,79 @@ import { onClientLeaseChange } from '../transport/lease';
 import { onBackendRecovery } from './transportRecovery';
 import { onWatchedThreadsComposed } from './watchedThreads';
 import { wailsEventOn } from './wailsEvents';
+import { createAnimationFrameBatcher } from '../utils/animationFrameBatcher';
 
 export type { HighlightLiveCodeEvent };
+
+const HIGHLIGHT_LIVE_FLUSH_MAX_DELAY_MS = 50;
+const highlightLiveBatcher = createAnimationFrameBatcher('highlight-live-flush', 'dom-update');
+
+interface QueuedHighlightLive {
+  readonly evt: HighlightLiveCodeEvent;
+  readonly origin: EventOrigin | undefined;
+}
+
+let pendingHighlightLive: QueuedHighlightLive[] = [];
+let highlightLiveFrame: number | null = null;
+let highlightLiveTimer: ReturnType<typeof setTimeout> | null = null;
+let highlightLiveDueAt = 0;
+
+function onHighlightLiveFallbackTimer(): void {
+  highlightLiveTimer = null;
+  if (highlightLiveDueAt === 0 || pendingHighlightLive.length === 0) {
+    highlightLiveDueAt = 0;
+    return;
+  }
+  const remaining = highlightLiveDueAt - Date.now();
+  if (remaining > 0) {
+    highlightLiveTimer = setTimeout(onHighlightLiveFallbackTimer, remaining);
+    return;
+  }
+  flushPendingHighlightLive();
+}
+
+function cancelHighlightLiveSchedule(clearTimer = false): void {
+  if (highlightLiveFrame !== null) {
+    if (typeof cancelAnimationFrame === 'function') {
+      highlightLiveBatcher.cancel(highlightLiveFrame);
+    } else {
+      clearTimeout(highlightLiveFrame);
+    }
+    highlightLiveFrame = null;
+  }
+  highlightLiveDueAt = 0;
+  if (clearTimer && highlightLiveTimer !== null) {
+    clearTimeout(highlightLiveTimer);
+    highlightLiveTimer = null;
+  }
+}
+
+/**
+ * Drains queued wire `highlight:live` pushes. Called from the rAF batcher and
+ * ahead of `flushItemEventQueue` so a fence's first push still lands before its
+ * text delta without flushing Svelte mid-frame on WebSocket receipt.
+ */
+export function flushPendingHighlightLive(): void {
+  cancelHighlightLiveSchedule();
+  if (pendingHighlightLive.length === 0) return;
+  const batch = pendingHighlightLive;
+  pendingHighlightLive = [];
+  for (let i = 0; i < batch.length; i++) {
+    applyHighlightLive(batch[i].evt, batch[i].origin);
+  }
+}
+
+function enqueueHighlightLive(evt: HighlightLiveCodeEvent, origin?: EventOrigin): void {
+  pendingHighlightLive.push({ evt, origin });
+  if (highlightLiveFrame !== null) return;
+  highlightLiveFrame = typeof requestAnimationFrame === 'function'
+    ? highlightLiveBatcher.request(flushPendingHighlightLive)
+    : (setTimeout(flushPendingHighlightLive, 0) as unknown as number);
+  highlightLiveDueAt = Date.now() + HIGHLIGHT_LIVE_FLUSH_MAX_DELAY_MS;
+  if (highlightLiveTimer === null) {
+    highlightLiveTimer = setTimeout(onHighlightLiveFallbackTimer, HIGHLIGHT_LIVE_FLUSH_MAX_DELAY_MS);
+  }
+}
 
 /** Wire payload of `highlight:diff_seed` (Go: HighlightDiffSeedEvent):
  * patch-aligned spans for a just-persisted inline-diff tool result's
@@ -89,19 +160,33 @@ export function applyHighlightLive(evt: HighlightLiveCodeEvent, origin?: EventOr
  * for keyframes; a thread leaving the watched set takes its rows along.
  */
 export function setupHighlightLiveEvents(): () => void {
-  const offLive = wailsEventOn<HighlightLiveCodeEvent>('highlight:live', applyHighlightLive);
+  const offLive = wailsEventOn<HighlightLiveCodeEvent>('highlight:live', enqueueHighlightLive);
   const offRecovery = onBackendRecovery((backend, phase) => {
-    if (phase === 'complete') resyncLiveCodeRows(backend);
+    if (phase === 'complete') {
+      flushPendingHighlightLive();
+      resyncLiveCodeRows(backend);
+    }
   });
   const offLease = onClientLeaseChange((state) => {
-    if (state === 'active') resyncLiveCodeRows();
+    if (state === 'active') {
+      flushPendingHighlightLive();
+      resyncLiveCodeRows();
+    }
   });
-  const offWatched = onWatchedThreadsComposed(retainLiveCodeThreads);
+  const offWatched = onWatchedThreadsComposed((watched) => {
+    if (pendingHighlightLive.length > 0) {
+      pendingHighlightLive = pendingHighlightLive.filter((q) => watched.has(q.evt.threadId));
+      if (pendingHighlightLive.length === 0) cancelHighlightLiveSchedule();
+    }
+    retainLiveCodeThreads(watched);
+  });
   return () => {
     offLive();
     offRecovery();
     offLease();
     offWatched();
+    cancelHighlightLiveSchedule(true);
+    pendingHighlightLive = [];
   };
 }
 

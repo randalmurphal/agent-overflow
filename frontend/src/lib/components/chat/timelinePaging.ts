@@ -112,6 +112,27 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
   // A fill pass stood down because the window had not measured yet.
   let fillAwaitsMeasurement = false;
 
+  // Read-free scroll geometry on the 60Hz scroll path: the virtualizer tracks
+  // total content size and content-box viewport size whose difference matches
+  // `scrollHeight - clientHeight` (scroller padding cancels from both). Falls
+  // back to DOM reads before the first RO delivery or in unit-test stubs.
+  function scrollGeometry(
+    listRef: TimelineVirtualizerHandle,
+    viewport: HTMLDivElement,
+  ): { scrollHeight: number; clientHeight: number } {
+    if (
+      typeof listRef.getViewportSize === 'function'
+      && typeof listRef.getTotalSize === 'function'
+    ) {
+      const clientHeight = listRef.getViewportSize();
+      if (clientHeight > 0) {
+        const total = listRef.getTotalSize();
+        return { scrollHeight: Math.max(total, clientHeight), clientHeight };
+      }
+    }
+    return { scrollHeight: viewport.scrollHeight, clientHeight: viewport.clientHeight };
+  }
+
   // Auto-load-older trigger. Fires `pane.loadOlder()` when the user is
   // reading near the top of the loaded window, so older items page in
   // before they hit a wall. The "Load older messages" button at the top of
@@ -133,11 +154,12 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
     // for, and auto-firing on any offset there is what evicted a live
     // streaming tail (see autoLoadZonesDisjoint). Direction can: only an
     // upward move fires in that state.
-    if (
-      !movingUp
-      && !autoLoadZonesDisjoint(viewport.scrollHeight - viewport.clientHeight, AUTO_LOAD_ZONE)
-    )
-      return false;
+    if (!movingUp) {
+      const geom = scrollGeometry(listRef, viewport);
+      if (!autoLoadZonesDisjoint(geom.scrollHeight - geom.clientHeight, AUTO_LOAD_ZONE)) {
+        return false;
+      }
+    }
     if (
       !autoLoadOlderGate.shouldLoad({
         hasMore: pane.hasMoreHistory,
@@ -172,7 +194,8 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
     const viewport = options.getScrollEl();
     if (!listRef || !viewport || !pane.hasMoreNewer) return false;
     // Same degenerate-geometry stand-down as maybeAutoLoadOlder.
-    if (!autoLoadZonesDisjoint(viewport.scrollHeight - viewport.clientHeight, AUTO_LOAD_ZONE))
+    const geom = scrollGeometry(listRef, viewport);
+    if (!autoLoadZonesDisjoint(geom.scrollHeight - geom.clientHeight, AUTO_LOAD_ZONE))
       return false;
     if (
       !autoLoadNewerGate.shouldLoad({
@@ -185,7 +208,7 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
         // pane's scroll-state key (see timelineRestore).
         threadId: pane.scrollStateKey,
         inTriggerZone: () => {
-          const edge = bottomEdgeGeometry(viewport.scrollHeight, viewport.clientHeight, offset);
+          const edge = bottomEdgeGeometry(geom.scrollHeight, geom.clientHeight, offset);
           return isWithinBottomTriggerZone(
             edge.distanceFromBottom,
             options.getRevealedNodes().length,

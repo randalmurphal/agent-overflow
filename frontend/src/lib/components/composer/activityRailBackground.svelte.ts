@@ -210,10 +210,15 @@ export function createBackgroundController(
     refresh.request({ immediate: true });
   });
 
+  const EMPTY_TASKS: TrayTask[] = [];
   const keepRows = createTrayTaskMemo();
-  const tasks = $derived<TrayTask[]>(
-    keepRows(deriveTrayTasks(backgroundItems, getNow(), COMPLETION_RETENTION_MS)),
-  );
+  const tasks = $derived.by<TrayTask[]>(() => {
+    if (backgroundItems.length === 0) {
+      keepRows(EMPTY_TASKS);
+      return EMPTY_TASKS;
+    }
+    return keepRows(deriveTrayTasks(backgroundItems, getNow(), COMPLETION_RETENTION_MS));
+  });
   const count = $derived(tasks.length);
   // A parked agent (reported, waiting on its own background commands) is
   // live but not running: the pill's pulse and the body's running count

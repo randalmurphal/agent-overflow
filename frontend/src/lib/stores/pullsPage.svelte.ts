@@ -28,9 +28,10 @@ import { applyPipelineFrame, applyPipelineLogFrame, resyncPipelinesAfterGap } fr
 import { addToast } from './toast.svelte';
 import { ensurePullsFilters, mrFilters } from './pullsPageFilters.svelte';
 import {
-  groupRows,
+  admittedProjectRows,
+  countNeedsYouInAdmitted,
+  groupAdmittedRows,
   listedRows,
-  needsYouCount,
   projectChoices,
   projectErrors,
   type PullsGroup,
@@ -175,15 +176,15 @@ class PaneEntry {
   /** The list find's query (paneFind.svelte.ts); '' while find is closed. */
   query = $state('');
   readonly needle = $derived(findNeedle(this.query));
-  readonly groups: readonly PullsGroup[] = $derived.by(() => {
+  readonly admitted: readonly PullsListedRow[] = $derived.by(() => {
     const page = pages.get(this.backend);
-    return page ? groupRows(page.snapshot, this.backend, mrFilters(this.backend), this.needle) : [];
+    return page ? admittedProjectRows(page.snapshot, this.backend, mrFilters(this.backend).projects, this.needle) : [];
   });
+  readonly groups: readonly PullsGroup[] = $derived.by(() =>
+    groupAdmittedRows(this.admitted, this.backend, mrFilters(this.backend)),
+  );
   readonly listedCount = $derived(this.groups.reduce((sum, group) => sum + group.rows.length, 0));
-  readonly needsYou: number = $derived.by(() => {
-    const page = pages.get(this.backend);
-    return page ? needsYouCount(page.snapshot, this.backend, mrFilters(this.backend).projects, this.needle) : 0;
-  });
+  readonly needsYou: number = $derived(countNeedsYouInAdmitted(this.admitted));
   constructor(readonly backend: BackendKey, readonly attachment: number) {}
 }
 

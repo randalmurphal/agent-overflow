@@ -35,6 +35,7 @@ export function createUsageStats(getQuery: () => UsageQuery | null): UsageStats 
   let loading = $state(false);
   let error = $state<string | null>(null);
   let reportedError = $state<string | null>(null);
+  let subscribedThreadId = $state<string | undefined>(undefined);
   let previousKey = '';
   let query: UsageQuery | null = null;
   let targets: { key: BackendKey; name: string }[] = [];
@@ -86,6 +87,8 @@ export function createUsageStats(getQuery: () => UsageQuery | null): UsageStats 
     const key = JSON.stringify([requested, owner, online?.map((computer) => computer.key)]);
     untrack(() => {
       query = requested;
+      const nextThreadId = requested?.threadId || undefined;
+      if (subscribedThreadId !== nextThreadId) subscribedThreadId = nextThreadId;
       offline = missing;
       pending = starting;
       targets = [];
@@ -114,7 +117,7 @@ export function createUsageStats(getQuery: () => UsageQuery | null): UsageStats 
   });
 
   $effect(() => {
-    const threadId = getQuery()?.threadId;
+    const threadId = subscribedThreadId;
     if (threadId) return onThreadUsageRefresh(threadId, (message) => { reportedError = message ?? null; scheduler.request(); });
   });
 

@@ -76,6 +76,8 @@ interface ListedPipeline {
   repoId: string;
   summary: PipelineListResult['rows'][number];
   projectName: string;
+  createdAtMs: number;
+  baseView: Omit<PipelineRowView, 'stages' | 'stagesError'>;
 }
 
 /** A listed row's last stage read: its stages, or why they could not be read. */
@@ -231,26 +233,14 @@ class PipelinesPageBackend {
   }
 
   view(pipeline: ListedPipeline): PipelineRowView {
-    const { summary } = pipeline;
-    const at = Date.parse(summary.createdAt);
+    const stage = this.stages.get(pipeline.key);
     return {
-      key: pipeline.key,
-      id: summary.id,
-      status: summary.status,
-      name: summary.name ?? '',
-      ref: summary.ref,
-      refKind: summary.refKind,
-      mrNumber: summary.mrNumber ?? 0,
-      forge: pipeline.repo.forge,
-      sha: summary.sha,
-      shortSHA: shortSHA(summary.sha),
-      title: summary.title ?? '',
-      projectName: pipeline.projectName,
-      age: Number.isFinite(at) ? relativeTime(at, 'locale', this.backend) : '',
-      times: pipelineTimesText(summary.createdAt, summary.updatedAt),
-      url: summary.url,
-      stages: this.stages.get(pipeline.key)?.stages ?? null,
-      stagesError: this.stages.get(pipeline.key)?.error ?? null,
+      ...pipeline.baseView,
+      age: Number.isFinite(pipeline.createdAtMs)
+        ? relativeTime(pipeline.createdAtMs, 'locale', this.backend)
+        : '',
+      stages: stage?.stages ?? null,
+      stagesError: stage?.error ?? null,
     };
   }
 
@@ -331,12 +321,42 @@ class PipelinesPageBackend {
         const lister = clones[0]!;
         for (const summary of rows) {
           const key = ciKeyFor({ kind: 'pipeline', backend: this.backend, repo, pipelineId: summary.id });
-          listed.push({ key, projectId: lister.projectId, repo, repoId, summary, projectName: lister.name });
+          const createdAtMs = Date.parse(summary.createdAt);
+          listed.push({
+            key,
+            projectId: lister.projectId,
+            repo,
+            repoId,
+            summary,
+            projectName: lister.name,
+            createdAtMs,
+            baseView: {
+              key,
+              id: summary.id,
+              status: summary.status,
+              name: summary.name ?? '',
+              ref: summary.ref,
+              refKind: summary.refKind,
+              mrNumber: summary.mrNumber ?? 0,
+              forge: repo.forge,
+              sha: summary.sha,
+              shortSHA: shortSHA(summary.sha),
+              title: summary.title ?? '',
+              projectName: lister.name,
+              age: '',
+              times: pipelineTimesText(summary.createdAt, summary.updatedAt),
+              url: summary.url,
+            },
+          });
         }
       }
       const pickedIds = new Set(picked.map((project) => project.projectId));
       for (const projectId of this.errors.keys()) if (!pickedIds.has(projectId)) this.errors.delete(projectId);
-      listed.sort((a, b) => (Date.parse(b.summary.createdAt) || 0) - (Date.parse(a.summary.createdAt) || 0) || Number(b.summary.id) - Number(a.summary.id));
+      listed.sort((a, b) => {
+        const atA = Number.isFinite(a.createdAtMs) ? a.createdAtMs : 0;
+        const atB = Number.isFinite(b.createdAtMs) ? b.createdAtMs : 0;
+        return (atB - atA) || Number(b.summary.id) - Number(a.summary.id);
+      });
       this.listed = listed;
       this.readWith = filters;
       this.loaded = true;
@@ -372,11 +392,10 @@ class PipelinesPageBackend {
     const byRepo = new Map<string, { repo: RepoRef; keys: string[]; ids: string[] }>();
     for (const pipeline of this.listed) {
       if (!onScreen.has(pipeline.key)) continue;
-      const repoKey = JSON.stringify(repoReferenceWire(pipeline.repo));
-      let batch = byRepo.get(repoKey);
+      let batch = byRepo.get(pipeline.repoId);
       if (!batch) {
         batch = { repo: pipeline.repo, keys: [], ids: [] };
-        byRepo.set(repoKey, batch);
+        byRepo.set(pipeline.repoId, batch);
       }
       if (batch.ids.length >= PIPELINE_STAGE_READS_MAX) continue;
       batch.keys.push(pipeline.key);

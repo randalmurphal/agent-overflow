@@ -144,34 +144,41 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 	case "item/completed":
 		return classifyItemCompleted(threadID, params, now), true
 
-	// The streaming delta cases below decode params ONCE into a raw map
-	// and read fields from it — they fire per chunk on the read-loop
-	// goroutine, where the former per-field readTopLevelString calls each
-	// paid a full map decode plus a copy of the delta payload.
+	// The streaming delta cases below decode params ONCE into a flat typed
+	// struct — they fire per chunk on the read-loop goroutine, avoiding both
+	// map allocation and per-field RawMessage unmarshals.
 	case "item/agentMessage/delta":
-		fields := decodeTopLevel(params)
-		delta := readRawString(fields, "delta")
-		if delta == "" {
+		var fields struct {
+			TurnID string `json:"turnId"`
+			ItemID string `json:"itemId"`
+			Delta  string `json:"delta"`
+		}
+		if json.Unmarshal(params, &fields) != nil || fields.Delta == "" {
 			return nil, true
 		}
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventTextDelta,
 			ThreadID:  threadID,
-			TurnID:    readRawString(fields, "turnId"),
-			ItemID:    readRawString(fields, "itemId"),
-			Content:   delta,
+			TurnID:    fields.TurnID,
+			ItemID:    fields.ItemID,
+			Content:   fields.Delta,
 			Role:      "assistant",
 			Timestamp: now,
 		}}, true
 
 	case "item/commandExecution/outputDelta":
-		fields := decodeTopLevel(params)
+		var fields struct {
+			TurnID string `json:"turnId"`
+			ItemID string `json:"itemId"`
+			Delta  string `json:"delta"`
+		}
+		_ = json.Unmarshal(params, &fields)
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventCommandOutput,
 			ThreadID:  threadID,
-			TurnID:    readRawString(fields, "turnId"),
-			ItemID:    readRawString(fields, "itemId"),
-			Content:   readRawString(fields, "delta"),
+			TurnID:    fields.TurnID,
+			ItemID:    fields.ItemID,
+			Content:   fields.Delta,
 			Meta:      params,
 			Timestamp: now,
 		}}, true
@@ -204,13 +211,27 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 	// readable. That notification does read its `summaryIndex`; see the
 	// case for why.
 	case "item/reasoning/textDelta", "item/reasoning/summaryTextDelta":
-		fields := decodeTopLevel(params)
-		delta := readRawString(fields, "delta")
-		if delta == "" {
-			delta = readRawString(fields, "text")
+		var fields struct {
+			TurnID  string          `json:"turnId"`
+			ItemID  string          `json:"itemId"`
+			Delta   string          `json:"delta"`
+			Text    string          `json:"text"`
+			Content json.RawMessage `json:"content"`
 		}
+		if json.Unmarshal(params, &fields) != nil {
+			return nil, true
+		}
+		delta := fields.Delta
 		if delta == "" {
-			delta = readRawString(readRawObject(fields, "content"), "text")
+			delta = fields.Text
+		}
+		if delta == "" && len(fields.Content) > 0 && fields.Content[0] == '{' {
+			var content struct {
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(fields.Content, &content) == nil {
+				delta = content.Text
+			}
 		}
 		if delta == "" {
 			return nil, true
@@ -218,8 +239,8 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventThinking,
 			ThreadID:  threadID,
-			TurnID:    readRawString(fields, "turnId"),
-			ItemID:    readRawString(fields, "itemId"),
+			TurnID:    fields.TurnID,
+			ItemID:    fields.ItemID,
 			Content:   delta,
 			Timestamp: now,
 		}}, true

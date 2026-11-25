@@ -26,6 +26,7 @@ type Stream struct {
 	end        tree_sitter.Point
 	tree       *tree_sitter.Tree
 	lines      []EncodedLine
+	classBuf   []uint16
 	// stale is the first byte whose lines are behind the source, or -1
 	// when every line is current: nothing has been painted yet, or a failed
 	// parse left the lines from that byte behind.
@@ -134,10 +135,16 @@ func (s *Stream) Append(p []byte, keepTree bool) (from int, state StreamState) {
 
 	first := s.lineOf(start)
 	lo := s.lineStarts[first]
-	classes := make([]uint16, len(s.src)-lo)
-	s.eng.paintCaptures(tree, s.src, lo, len(s.src), classes)
+	spanLen := len(s.src) - lo
+	if cap(s.classBuf) < spanLen {
+		s.classBuf = make([]uint16, spanLen)
+	} else {
+		s.classBuf = s.classBuf[:spanLen]
+		clear(s.classBuf)
+	}
+	s.eng.paintCaptures(tree, s.src, lo, len(s.src), s.classBuf)
 	s.stale = -1
-	return s.replaceLines(first, encodeLines(s.src[lo:], classes)), StreamOK
+	return s.replaceLines(first, encodeLines(s.src[lo:], s.classBuf)), StreamOK
 }
 
 // repaintAll classifies the whole document, as Highlight does.

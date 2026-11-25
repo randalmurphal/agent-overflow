@@ -138,7 +138,7 @@
     TextLineChain,
     type LiveCodeCover,
   } from './liveCodeSpans.svelte';
-  import { CodeLines } from './codeLines.svelte';
+  import { CodeDomRenderer } from './codeDomRenderer';
 
   let {
     token,
@@ -165,12 +165,14 @@
   let spansForLang = $state('');
   let staleUsable = $state(false);
 
-  // CodeLines renders the lines and re-renders only the lines a step changes.
+  // CodeDomRenderer patches <code> directly without per-line/per-token Svelte
+  // reactions, updating only the lines whose text or spans change.
   const initialText = untrack(() => token.text);
   let renderedText = initialText;
   let renderedLang = untrack(() => highlightLang);
   let sourceIdentity = createCodeSourceIdentity(initialText);
-  const codeLines = new CodeLines(initialText);
+  const codeLines = new CodeDomRenderer(initialText);
+  let codeEl = $state<HTMLElement>();
   // The row this block streams in, and the line-hash chain of its text that
   // proves which pushed spans describe it.
   const liveRowRef = getLiveCodeRowContext();
@@ -615,18 +617,30 @@
     return spans[index] ?? null;
   }
 
-  $effect.pre(() => codeLines.paint(lineSpans));
+  $effect.pre(() => {
+    codeLines.mount(codeEl);
+  });
+
+  $effect.pre(() => {
+    // Re-run whenever live cover, adopted spans, text, or language changes;
+    // codeLines patches only the lines whose runs actually changed.
+    void token.text;
+    void highlightLang;
+    void live;
+    void spans;
+    void exact;
+    void staleUsable;
+    codeLines.paint(lineSpans);
+  });
 
 </script>
 
-<!-- Named Tailwind group (`group/codeblock`) so the hover scope is
-     this code block specifically. Unnamed `group-hover:` would also
-     match an outer `class="group"` (AssistantMessage.svelte has one
-     for its timestamp/copy-row chrome), revealing every code block's
-     copy button whenever any part of the message is hovered. -->
+<!-- Direct-child hover reveal (`.streamdown-code-host:hover > .ao-code-overlay`
+     in app.css) scopes hover to this code block without triggering Blink
+     descendant style invalidation across all syntax spans inside `<code>`. -->
 <div
   bind:this={codeRoot}
-  class="streamdown-code-host group/codeblock relative"
+  class="streamdown-code-host relative"
   data-code-source=""
   data-code-lang={token.lang ?? ''}
   data-code-unwrapped={unwrapped || token.firstLine ? '' : undefined}
@@ -645,16 +659,14 @@
       {#if token.firstLine}<span class="md-code-line-numbers" aria-hidden="true" data-find-skip
           >{codeLineNumbers(token.firstLine, token.text)}</span
         >{/if}
-      <pre class={streamdown.theme.code.pre}><code
-          >{#each codeLines.lines as line, lineIndex (lineIndex)}{#if lineIndex > 0}{'\n'}{/if}{#each line.segments as seg, segIndex (segIndex)}{#if seg.className}<span class={seg.className}>{seg.text}</span>{:else}{seg.text}{/if}{/each}{/each}</code
-        ></pre>
+      <pre class={streamdown.theme.code.pre}><code bind:this={codeEl}></code></pre>
     </div>
   </div>
 
   <!-- Keep in step with CODE_OVERLAY_CLASS in staticCodeBlock.ts: the settled
        block renders the same overlay as static HTML. -->
   <div
-    class="absolute top-1 right-1 z-10 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 ease-out group-hover/codeblock:opacity-100 focus-within:opacity-100 compact:opacity-100"
+    class="ao-code-overlay absolute top-1 right-1 z-10 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 ease-out focus-within:opacity-100 compact:opacity-100"
   >
     {#if runnable}
       <span class="{CODE_RUN_CLASS}">

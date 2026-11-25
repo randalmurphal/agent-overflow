@@ -8,6 +8,7 @@ import {
 } from '../utils/payloadExpansion.svelte';
 import type { AttachmentPreviewCache } from '../utils/attachmentPreview.svelte';
 import { createThreadMessageUiState } from './threadMessageUiState.svelte';
+import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { compositeKey } from '../utils/compositeKey';
 import { payloadRetentionKey } from '../utils/rowUiRetention';
 import { subagentGroupKeysFor } from '../utils/subagentGrouping';
@@ -284,7 +285,11 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   const itemExpansionKeysByState = new Map<string, Map<string, Set<string>>>();
   const payloadExpansionKeysByPayload = new Map<string, Set<string>>();
   let nextLeasedPrunedExpansionKey = 1;
-  let subagentGroupExpanded: Set<string> = $state(new Set());
+  // Keyed per-group and per-card signals keep toggling one group or diff card
+  // from waking every other group/diff card in the thread, while plain maps
+  // back iteration, pruning, signatures, and stats without reactive fan-out.
+  const subagentGroupExpandedKeys = new Set<string>();
+  const subagentGroupExpandedSignals = createKeyedSignalRegistry<boolean>(false);
   const messageUi = createThreadMessageUiState(options);
   // Per-card expand/collapse overrides for inline diff file blocks,
   // keyed itemId → filePath. An absent entry means "follow the
@@ -293,10 +298,10 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   // was written (setDiffCardExpanded clears instead of storing a value
   // that matches). Every read goes through `liveDiffOverride`, so an
   // entry the setting has since caught up with reads as absent without
-  // being erased. Reassigned copy-on-write like subagentGroupExpanded.
-  let diffCardExpandedOverrides: ReadonlyMap<string, ReadonlyMap<string, boolean>> = $state(
-    new Map(),
-  );
+  // being erased.
+  const diffCardOverridesByItem = new Map<string, Map<string, boolean>>();
+  const diffCardOverrideSignals = createKeyedSignalRegistry<boolean | undefined>(undefined);
+  const diffCardItemOverrideCount = createKeyedSignalRegistry<number>(0);
 
   function expansionStateFor(
     item: Item,
@@ -611,8 +616,6 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   function disposeItems(items: Iterable<Item>): void {
     const dropped = Array.isArray(items) ? items : [...items];
     messageUi.disposeItems(dropped);
-    let nextGroupExpanded: Set<string> | null = null;
-    let nextDiffOverrides: Map<string, ReadonlyMap<string, boolean>> | null = null;
     // One snapshot of the surviving rows' payload keys serves the whole
     // batch. Built lazily: the common case is a one-row drop, often with
     // no payload at all, and that must not walk the window. Nothing
@@ -638,17 +641,18 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
         disposePayloadExpansionStates(item.threadId, item.payloadId);
       }
       for (const groupKey of subagentGroupKeysFor(itemId)) {
-        if (!subagentGroupExpanded.has(groupKey)) continue;
-        if (!nextGroupExpanded) nextGroupExpanded = new Set(subagentGroupExpanded);
-        nextGroupExpanded.delete(groupKey);
+        if (!subagentGroupExpandedKeys.delete(groupKey)) continue;
+        subagentGroupExpandedSignals.drop(groupKey);
       }
-      if (diffCardExpandedOverrides.has(itemId)) {
-        if (!nextDiffOverrides) nextDiffOverrides = new Map(diffCardExpandedOverrides);
-        nextDiffOverrides.delete(itemId);
+      const files = diffCardOverridesByItem.get(itemId);
+      if (files) {
+        for (const filePath of files.keys()) {
+          diffCardOverrideSignals.drop(compositeKey(itemId, filePath));
+        }
+        diffCardOverridesByItem.delete(itemId);
+        diffCardItemOverrideCount.drop(itemId);
       }
     }
-    if (nextGroupExpanded) subagentGroupExpanded = nextGroupExpanded;
-    if (nextDiffOverrides) diffCardExpandedOverrides = nextDiffOverrides;
   }
 
   function pruneRowUiState(retention: RowUiStateRetention): void {
@@ -669,57 +673,60 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
 
     messageUi.prune(retainedItemIds);
 
-    let nextGroupExpanded: Set<string> | null = null;
-    for (const groupKey of subagentGroupExpanded) {
+    for (const groupKey of Array.from(subagentGroupExpandedKeys)) {
       if (retainedGroupKeys.has(groupKey)) continue;
-      if (!nextGroupExpanded) nextGroupExpanded = new Set(subagentGroupExpanded);
-      nextGroupExpanded.delete(groupKey);
+      subagentGroupExpandedKeys.delete(groupKey);
+      subagentGroupExpandedSignals.drop(groupKey);
     }
-    if (nextGroupExpanded) subagentGroupExpanded = nextGroupExpanded;
 
-    let nextDiffOverrides: Map<string, ReadonlyMap<string, boolean>> | null = null;
-    for (const itemId of diffCardExpandedOverrides.keys()) {
+    for (const [itemId, files] of Array.from(diffCardOverridesByItem)) {
       if (retainedItemIds.has(itemId)) continue;
-      if (!nextDiffOverrides) nextDiffOverrides = new Map(diffCardExpandedOverrides);
-      nextDiffOverrides.delete(itemId);
+      for (const filePath of files.keys()) {
+        diffCardOverrideSignals.drop(compositeKey(itemId, filePath));
+      }
+      diffCardOverridesByItem.delete(itemId);
+      diffCardItemOverrideCount.drop(itemId);
     }
-    if (nextDiffOverrides) diffCardExpandedOverrides = nextDiffOverrides;
   }
 
   function isSubagentGroupExpanded(groupKey: string): boolean {
-    return subagentGroupExpanded.has(groupKey);
+    return subagentGroupExpandedSignals.get(groupKey);
   }
 
   function toggleSubagentGroupExpanded(groupKey: string): boolean {
-    const next = new Set(subagentGroupExpanded);
-    const willExpand = !next.has(groupKey);
+    const willExpand = !subagentGroupExpandedKeys.has(groupKey);
     if (willExpand) {
-      next.add(groupKey);
+      subagentGroupExpandedKeys.add(groupKey);
     } else {
-      next.delete(groupKey);
+      subagentGroupExpandedKeys.delete(groupKey);
     }
-    subagentGroupExpanded = next;
+    subagentGroupExpandedSignals.set(groupKey, willExpand);
     return willExpand;
   }
 
   function diffCardExpandedOverride(itemId: string, filePath: string): boolean | undefined {
-    return liveDiffOverride(diffCardExpandedOverrides.get(itemId)?.get(filePath));
+    return liveDiffOverride(diffCardOverrideSignals.get(compositeKey(itemId, filePath)));
   }
 
   function setDiffCardExpanded(itemId: string, filePath: string, expanded: boolean): void {
-    const inner = new Map(diffCardExpandedOverrides.get(itemId) ?? []);
+    const sigKey = compositeKey(itemId, filePath);
+    let inner = diffCardOverridesByItem.get(itemId);
     if (expanded === defaultDiffCardExpanded()) {
-      inner.delete(filePath);
+      if (inner) {
+        inner.delete(filePath);
+        if (inner.size === 0) diffCardOverridesByItem.delete(itemId);
+      }
+      diffCardOverrideSignals.set(sigKey, undefined);
+      diffCardItemOverrideCount.set(itemId, inner?.size ?? 0);
     } else {
+      if (!inner) {
+        inner = new Map();
+        diffCardOverridesByItem.set(itemId, inner);
+      }
       inner.set(filePath, expanded);
+      diffCardOverrideSignals.set(sigKey, expanded);
+      diffCardItemOverrideCount.set(itemId, inner.size);
     }
-    const next = new Map(diffCardExpandedOverrides);
-    if (inner.size === 0) {
-      next.delete(itemId);
-    } else {
-      next.set(itemId, inner);
-    }
-    diffCardExpandedOverrides = next;
   }
 
   function clear(): void {
@@ -733,8 +740,11 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     leasedPrunedExpansionStates.clear();
     itemExpansionKeysByState.clear();
     payloadExpansionKeysByPayload.clear();
-    subagentGroupExpanded = new Set();
-    diffCardExpandedOverrides = new Map();
+    subagentGroupExpandedKeys.clear();
+    subagentGroupExpandedSignals.reset();
+    diffCardOverridesByItem.clear();
+    diffCardOverrideSignals.reset();
+    diffCardItemOverrideCount.reset();
     messageUi.clear();
   }
 
@@ -745,13 +755,13 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   // on settle, restore on mount), never inside a reactive scope.
   function expansionSignature(): string {
     const parts: string[] = [];
-    if (subagentGroupExpanded.size > 0) {
-      parts.push('g:' + [...subagentGroupExpanded].sort().join(','));
+    if (subagentGroupExpandedKeys.size > 0) {
+      parts.push('g:' + [...subagentGroupExpandedKeys].sort().join(','));
     }
     const messageSignature = messageUi.expansionSignature();
     if (messageSignature) parts.push(messageSignature);
     const diffs: string[] = [];
-    for (const [itemId, files] of diffCardExpandedOverrides) {
+    for (const [itemId, files] of diffCardOverridesByItem) {
       for (const [filePath, stored] of files) {
         const expanded = liveDiffOverride(stored);
         if (expanded === undefined) continue;
@@ -782,14 +792,18 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   function hasUserExpansionWithin(itemIds: Iterable<string>): boolean {
     for (const itemId of itemIds) {
       for (const groupKey of subagentGroupKeysFor(itemId)) {
-        if (subagentGroupExpanded.has(groupKey)) return true;
+        if (subagentGroupExpandedSignals.get(groupKey)) return true;
       }
       // An agent message inside a run: the reader opened its body.
       if (messageUi.isExpanded(itemId)) return true;
-      const files = diffCardExpandedOverrides.get(itemId);
-      if (files) {
-        for (const stored of files.values()) {
-          if (liveDiffOverride(stored) === true) return true;
+      if (diffCardItemOverrideCount.get(itemId) > 0) {
+        const files = diffCardOverridesByItem.get(itemId);
+        if (files) {
+          for (const filePath of files.keys()) {
+            if (liveDiffOverride(diffCardOverrideSignals.get(compositeKey(itemId, filePath))) === true) {
+              return true;
+            }
+          }
         }
       }
       const states = itemExpansionKeysByState.get(itemId);
@@ -865,9 +879,9 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
         expansionStates: expansionStates.size,
         itemExpansionStates,
         payloadExpansionStates,
-        subagentGroups: subagentGroupExpanded.size,
+        subagentGroups: subagentGroupExpandedKeys.size,
         ...messageUi.stats(),
-        diffCardOverrideItems: diffCardExpandedOverrides.size,
+        diffCardOverrideItems: diffCardOverridesByItem.size,
       };
     },
   };

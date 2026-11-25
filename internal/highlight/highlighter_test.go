@@ -425,10 +425,10 @@ func TestHighlightPatchTextPrimedMemoizesMatchingSplices(t *testing.T) {
 	if res.Incomplete {
 		t.Fatal("primed parse reported incomplete")
 	}
-	// 3 distinct old-side splices + 1 shared new-side splice. 6 means
-	// the memo stopped deduplicating the identical new-side documents.
-	if parses != 4 {
-		t.Fatalf("parses = %d, want 4 (3 old sides + 1 memoized new side)", parses)
+	// Reconstructing one whole old-side doc + one whole new-side doc parses
+	// the file twice regardless of hunk count (instead of H + 1 or 2*H).
+	if parses != 2 {
+		t.Fatalf("parses = %d, want 2 (1 reconstructed old doc + 1 reconstructed new doc)", parses)
 	}
 
 	// Parity: each hunk's span lines must byte-match the same hunk
@@ -444,5 +444,118 @@ func TestHighlightPatchTextPrimedMemoizesMatchingSplices(t *testing.T) {
 				t.Errorf("hunk %d line %d: memoized %v, baseline %v", k, j, got, want)
 			}
 		}
+	}
+}
+
+func TestHighlightPatchIncrementalParity(t *testing.T) {
+	cases := []struct {
+		name    string
+		lang    Lang
+		content string
+		patch   string
+	}{
+		{
+			name: "go multi-hunk with insert at line 1 and delete at eof",
+			lang: LangGo,
+			content: strings.Join([]string{
+				"// inserted header comment — UTF-8 ✓",
+				"package demo",
+				"",
+				"func alpha(x int) int {",
+				"\treturn x + 42",
+				"}",
+				"",
+				"func beta(s string) string {",
+				"\treturn \"hello \" + s",
+				"}",
+			}, "\n") + "\n",
+			patch: strings.Join([]string{
+				"diff --git a/demo.go b/demo.go",
+				"--- a/demo.go",
+				"+++ b/demo.go",
+				"@@ -0,0 +1,1 @@",
+				"+// inserted header comment — UTF-8 ✓",
+				"@@ -4,3 +5,3 @@",
+				" func alpha(x int) int {",
+				"-\treturn x + 1",
+				"+\treturn x + 42",
+				" }",
+				"@@ -9,3 +10,1 @@",
+				" }",
+				"-func removed() {}",
+				"-// trailing",
+			}, "\n") + "\n",
+		},
+		{
+			name: "svelte injection multi-hunk",
+			lang: LangSvelte,
+			content: strings.Join([]string{
+				"<script lang=\"ts\">",
+				"  const count: number = 2;",
+				"  const label = 'updated';",
+				"</script>",
+				"",
+				"<div class=\"box\">",
+				"  <span>{label}: {count}</span>",
+				"</div>",
+			}, "\n") + "\n",
+			patch: strings.Join([]string{
+				"diff --git a/App.svelte b/App.svelte",
+				"--- a/App.svelte",
+				"+++ b/App.svelte",
+				"@@ -1,4 +1,4 @@",
+				" <script lang=\"ts\">",
+				"-  const count: number = 1;",
+				"+  const count: number = 2;",
+				"   const label = 'updated';",
+				" </script>",
+				"@@ -6,3 +6,3 @@",
+				" <div class=\"box\">",
+				"-  <p>{count}</p>",
+				"+  <span>{label}: {count}</span>",
+				" </div>",
+			}, "\n") + "\n",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := HighlightPatchTextPrimed(tc.lang, tc.patch, tc.content)
+			if got.Incomplete {
+				t.Fatal("incremental parse reported incomplete")
+			}
+
+			// Reference: fresh non-incremental parse of reconstructed oldDoc and newDoc.
+			parsed := parsePatch(tc.patch)
+			eng := engineFor(tc.lang)
+			if eng == nil {
+				t.Fatalf("missing engine for %s", tc.lang)
+			}
+			needOld := make([]bool, len(parsed.hunks))
+			needNew := make([]bool, len(parsed.hunks))
+			for i, h := range parsed.hunks {
+				for _, ref := range h.lines {
+					if ref.side == sideOld {
+						needOld[i] = true
+					} else if ref.side == sideNew || ref.side == sideBoth {
+						needNew[i] = true
+					}
+				}
+			}
+			oldDoc, oldRanges, _, okOld := buildWholePrimedDoc(tc.content, parsed.hunks, true, needOld)
+			newDoc, newRanges, _, okNew := buildWholePrimedDoc(tc.content, parsed.hunks, false, needNew)
+			if !okOld || !okNew {
+				t.Fatalf("buildWholePrimedDoc failed: okOld=%v okNew=%v", okOld, okNew)
+			}
+			oldLines, _ := eng.highlightRanges(oldDoc, oldRanges)
+			newLines, _ := eng.highlightRanges(newDoc, newRanges)
+			want := plainLines(parsed.lineCount)
+			for i, h := range parsed.hunks {
+				applyHunkLines(want, h, oldLines[i], newLines[i])
+			}
+			if !reflect.DeepEqual(got.Lines, want) {
+				t.Fatalf("incremental spans differ from fresh parse:\ngot:  %#v\nwant: %#v", got.Lines, want)
+			}
+		})
 	}
 }

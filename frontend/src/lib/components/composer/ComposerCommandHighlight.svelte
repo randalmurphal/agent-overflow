@@ -46,11 +46,12 @@
   let { value, ranges, scrollTop, textarea }: Props = $props();
 
   const segments = $derived(ranges.length > 0 ? commandSegments(value, ranges) : []);
+  const active = $derived(segments.length > 0);
 
   let clientWidth = $state(0);
   $effect(() => {
     const node = textarea;
-    if (!node) {
+    if (!node || !active) {
       clientWidth = 0;
       return;
     }

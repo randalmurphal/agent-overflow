@@ -6,7 +6,7 @@
   //
   // Two levels plus a terminal one — home › run detail, and all-clear.
 
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import ToolPaneHeader from '../panes/ToolPaneHeader.svelte';
   import WorkflowsHome from './WorkflowsHome.svelte';
   import WorkflowRunDetail from './WorkflowRunDetail.svelte';
@@ -22,6 +22,7 @@
     getWorkflowLoadError,
     loadWorkflowsOverlayData,
     retainWorkflowDetails,
+    retainWorkflowOverlay,
   } from '../../stores/workflowRuns.svelte';
   import {
     getWorkflowsOverlayDialog,
@@ -45,6 +46,12 @@
   let runId = $derived(top.level === 'run' ? top.itemId : '');
   let run = $derived(runId ? getWorkflowRun(runId) : undefined);
   let dialog = $derived(getWorkflowsOverlayDialog());
+  let intakeMounted = $state(false);
+  let discardMounted = $state(false);
+  $effect(() => {
+    if (dialog === 'intake') intakeMounted = true;
+    else if (dialog === 'discard') discardMounted = true;
+  });
 
   let bodyEl = $state<HTMLElement | null>(null);
   let levelKey = $derived(`${top.level}:${runId}`);
@@ -113,12 +120,15 @@
     retainWorkflowDetails(runId || null);
   });
 
+  onMount(() => retainWorkflowOverlay());
+
   // Session receipts exist to hold a resolved run in the sweep long enough to
-  // read its receipt. Closing the pane ends that session — and cancels any
-  // pending auto-advance, so a step never lands on a surface nobody is on.
+  // read its receipt. Closing the pane ends that session, drops cached run
+  // detail payloads, and cancels any pending auto-advance.
   onDestroy(() => {
     clearWorkflowReceipts();
     cancelWorkflowAutoAdvance();
+    retainWorkflowDetails(null);
   });
 </script>
 
@@ -166,12 +176,16 @@
   </div>
 </div>
 
-<WorkflowIntakeDialog
-  open={dialog === 'intake'}
-  onClose={() => setWorkflowsOverlayDialog(null)}
-/>
-<WorkflowDiscardDialog
-  open={dialog === 'discard'}
-  itemId={runId}
-  onClose={() => setWorkflowsOverlayDialog(null)}
-/>
+{#if intakeMounted}
+  <WorkflowIntakeDialog
+    open={dialog === 'intake'}
+    onClose={() => setWorkflowsOverlayDialog(null)}
+  />
+{/if}
+{#if discardMounted}
+  <WorkflowDiscardDialog
+    open={dialog === 'discard'}
+    itemId={runId}
+    onClose={() => setWorkflowsOverlayDialog(null)}
+  />
+{/if}
