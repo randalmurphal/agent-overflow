@@ -1837,3 +1837,52 @@ func TestACPAgySteerHandoffPromotesWhenToolBackgroundsAndCancelsAllStaged(t *tes
 		t.Fatalf("expected CommandCancelled for both p1 and p2, got %v (events=%+v)", cancelled, events2)
 	}
 }
+
+type stepAnchorFlavor struct {
+	DefaultFlavor
+	gotSessionID string
+	gotContent   string
+	gotBefore    any
+	anchor       string
+}
+
+func (f *stepAnchorFlavor) ResolvePromptStepAnchor(_ context.Context, sessionID, content string, beforeToken any) string {
+	f.gotSessionID = sessionID
+	f.gotContent = content
+	f.gotBefore = beforeToken
+	return f.anchor
+}
+
+func TestEmitPromptConfirmationAttachesResolvedStepAnchor(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	fl := &stepAnchorFlavor{
+		DefaultFlavor: DefaultFlavor{Kind: provider.Agy},
+		anchor:        "agy-step:8428:8873ac7c582f494d9896cf0e640961ab",
+	}
+	s := newUnitSession(fl, &events, &mu)
+	s.sessionID = "sess-anchor"
+	c := &pendingPromptConfirm{
+		uuid:        "u-anchor-1",
+		content:     "Ok now go",
+		beforeToken: 8427,
+	}
+	s.emitPromptConfirmation(c)
+
+	if fl.gotSessionID != "sess-anchor" || fl.gotContent != "Ok now go" || fl.gotBefore != 8427 {
+		t.Fatalf("ResolvePromptStepAnchor args = (%q, %q, %v), want (sess-anchor, Ok now go, 8427)", fl.gotSessionID, fl.gotContent, fl.gotBefore)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 1 || events[0].Kind != provider.EventUserText {
+		t.Fatalf("expected 1 EventUserText, got %+v", events)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["provider_item_id"] != "u-anchor-1" || meta["parent_uuid"] != "agy-step:8428:8873ac7c582f494d9896cf0e640961ab" {
+		t.Fatalf("unexpected EventUserText meta: %+v", meta)
+	}
+}

@@ -117,16 +117,26 @@ func seedFakeConversationDB(t *testing.T, appDataDir, sessionID string) string {
 		`CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)`,
 		`CREATE TABLE executor_metadata (idx INTEGER PRIMARY KEY, data BLOB)`,
 		`INSERT INTO trajectory_meta (trajectory_id, cascade_id) VALUES ('orig-traj', '` + sessionID + `')`,
-		`INSERT INTO steps (idx, step_type, step_payload) VALUES (0, 14, 'turn 0 user')`,
-		`INSERT INTO steps (idx, step_type, step_payload) VALUES (1, 15, 'turn 0 reply')`,
-		`INSERT INTO steps (idx, step_type, step_payload) VALUES (2, 14, 'turn 1 user')`,
-		`INSERT INTO steps (idx, step_type, step_payload) VALUES (3, 15, 'turn 1 reply')`,
 		`INSERT INTO gen_metadata (idx, data) VALUES (1, 'g1'), (3, 'g3')`,
 		`INSERT INTO executor_metadata (idx, data) VALUES (1, 'e1'), (3, 'e3')`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
 			t.Fatalf("exec %s: %v", s, err)
+		}
+	}
+	for _, row := range []struct {
+		idx      int
+		stepType int
+		payload  []byte
+	}{
+		{0, 14, encodeTestUserInputStep("turn 0 user", "h0", 1000, false, false)},
+		{1, 15, []byte("turn 0 reply")},
+		{2, 14, encodeTestUserInputStep("turn 1 user", "h2", 2000, false, false)},
+		{3, 15, []byte("turn 1 reply")},
+	} {
+		if _, err := db.Exec(`INSERT INTO steps (idx, step_type, step_payload) VALUES (?, ?, ?)`, row.idx, row.stepType, row.payload); err != nil {
+			t.Fatalf("insert step %d: %v", row.idx, err)
 		}
 	}
 	return path
@@ -169,14 +179,14 @@ func TestForkConversationSlicesAndVerifiesSchema(t *testing.T) {
 	srcID := "sess-src-1"
 	seedFakeConversationDB(t, appDataDir, srcID)
 
-	cutIdx, hasPrefix, err := FindCutIndexBeforeUserTurn(appDataDir, srcID, 1)
-	if err != nil || !hasPrefix || cutIdx != 1 {
-		t.Fatalf("FindCutIndexBeforeUserTurn = (%d, %v, %v), want (1, true, nil)", cutIdx, hasPrefix, err)
-	}
-
-	dstID, cleanup, err := ForkConversation(appDataDir, srcID, cutIdx)
+	dstID, cleanup, err := ForkConversationBeforeTarget(appDataDir, srcID, UserPromptCutTarget{
+		Target:        UserPromptHint{Text: "turn 1 user", CreatedAtMs: 2000},
+		Prev:          &UserPromptHint{Text: "turn 0 user", CreatedAtMs: 1000},
+		PromptsBefore: 1,
+		PromptsAfter:  0,
+	})
 	if err != nil {
-		t.Fatalf("ForkConversation: %v", err)
+		t.Fatalf("ForkConversationBeforeTarget: %v", err)
 	}
 	defer func() { _ = cleanup() }()
 

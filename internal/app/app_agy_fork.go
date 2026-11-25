@@ -7,6 +7,7 @@ import (
 
 	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usermessage"
 )
 
 // isAgyNativePromptItem reports whether item corresponds to a native
@@ -31,13 +32,98 @@ func isAgyNativePromptItem(item store.Item) bool {
 	return false
 }
 
+// agyPromptHintFromItem builds the content/media/timestamp hint used to match
+// an AO prompt item against agy's steps table when a stored native step anchor
+// is absent.
+func agyPromptHintFromItem(item store.Item) agy.UserPromptHint {
+	if item.Kind == "tool_call" && strings.TrimSpace(item.ToolName) == "AskUserQuestion" {
+		return agy.UserPromptHint{
+			CreatedAtMs: item.CreatedAt,
+			IsQuestion:  true,
+		}
+	}
+	hint := agy.UserPromptHint{
+		Text:        item.Summary,
+		CreatedAtMs: item.CreatedAt,
+	}
+	if meta, err := usermessage.FromItem(item); err == nil {
+		if len(meta.Attachments) > 0 {
+			hint.HasMedia = true
+		}
+		if strings.TrimSpace(meta.Command) != "" {
+			hint.IsExpandedCommand = true
+		}
+	}
+	return hint
+}
+
+// agyStoredStepAnchor returns the native step anchor stamped onto userItem's
+// Meta (provider_parent_uuid) or its MessageAnchor copy. Any value carrying
+// the "agy-step:" prefix is returned verbatim (so malformed agy anchors fail
+// loudly inside ForkConversationBeforeTarget), while unrelated provider UUIDs
+// (for example Claude parent UUIDs on a thread switched to agy) are ignored.
+func agyStoredStepAnchor(anchor store.MessageAnchor, userItem store.Item) string {
+	if raw := strings.TrimSpace(usermessage.ReadProviderParentUUID(userItem.Meta)); strings.HasPrefix(raw, "agy-step:") {
+		return raw
+	}
+	if raw := strings.TrimSpace(anchor.ProviderParentUUID); strings.HasPrefix(raw, "agy-step:") {
+		return raw
+	}
+	return ""
+}
+
+// buildAgyCutTarget builds the native Antigravity cut target for targetItemID
+// within threadID's timeline items. It extracts any stored native step anchor
+// ("agy-step:<idx>:<hash>") plus immediate prev/next prompt context and counts.
+func (a *App) buildAgyCutTarget(threadID string, items []store.Item, anchor store.MessageAnchor, targetItemID string) (agy.UserPromptCutTarget, error) {
+	prompts := make([]store.Item, 0, len(items))
+	targetPos := -1
+	for _, item := range items {
+		if item.ID == targetItemID {
+			targetPos = len(prompts)
+			prompts = append(prompts, item)
+			continue
+		}
+		if !isAgyNativePromptItem(item) {
+			continue
+		}
+		prompts = append(prompts, item)
+	}
+	if targetPos < 0 {
+		return agy.UserPromptCutTarget{}, fmt.Errorf("target user message %s not found in thread %s", targetItemID, threadID)
+	}
+	targetItem := prompts[targetPos]
+	storedAnchor := agyStoredStepAnchor(anchor, targetItem)
+	if storedAnchor == "" && anchor.UserItemID == "" {
+		if dbAnchor, found, err := a.store.GetMessageAnchor(threadID, targetItem.ID); err == nil && found {
+			storedAnchor = agyStoredStepAnchor(dbAnchor, targetItem)
+		}
+	}
+	cut := agy.UserPromptCutTarget{
+		Anchor:        storedAnchor,
+		Target:        agyPromptHintFromItem(targetItem),
+		PromptsBefore: targetPos,
+		PromptsAfter:  len(prompts) - 1 - targetPos,
+	}
+	if targetPos > 0 {
+		prev := agyPromptHintFromItem(prompts[targetPos-1])
+		cut.Prev = &prev
+	}
+	if targetPos+1 < len(prompts) {
+		next := agyPromptHintFromItem(prompts[targetPos+1])
+		cut.Next = &next
+	}
+	return cut, nil
+}
+
 // forkAgyThread creates a native Antigravity conversation clone using SQLite
 // VACUUM INTO so the child thread starts with its own independent conversation
-// database. When atTurnIndex is set, steps from the first dropped user turn
-// onward are resolved and sliced inside the cloned snapshot; for a live tail
-// fork (atTurnIndex == nil), preCutMaxIdx (captured before CreatePointerFork)
-// pins the native step ceiling so output appended while committing the pointer
-// fork cannot leak into the cloned DB.
+// database. When atTurnIndex is set, steps from the first dropped user prompt
+// onward are resolved by native step anchor (or exact content/neighbor match)
+// and sliced inside the cloned snapshot; for a live tail fork
+// (atTurnIndex == nil), preCutMaxIdx (captured before CreatePointerFork) pins
+// the native step ceiling so output appended while committing the pointer fork
+// cannot leak into the cloned DB.
 func (a *App) forkAgyThread(source store.Thread, forkID string, atTurnIndex *int, preCutMaxIdx *int) (forkResumeState, error) {
 	if source.SessionRef == "" {
 		items, err := a.store.ListItems(source.ID)
@@ -57,23 +143,25 @@ func (a *App) forkAgyThread(source store.Thread, forkID string, atTurnIndex *int
 		if err != nil {
 			return forkResumeState{}, fmt.Errorf("fork agy thread: list items: %w", err)
 		}
-		userOrdinal := 0
-		foundDrop := false
-		for _, item := range items {
-			if !isAgyNativePromptItem(item) {
+		var dropItem *store.Item
+		for i := range items {
+			if !isAgyNativePromptItem(items[i]) {
 				continue
 			}
-			if item.TurnIndex > *atTurnIndex {
-				foundDrop = true
+			if items[i].TurnIndex > *atTurnIndex {
+				dropItem = &items[i]
 				break
 			}
-			userOrdinal++
 		}
-		if foundDrop {
-			if userOrdinal == 0 {
+		if dropItem != nil {
+			target, err := a.buildAgyCutTarget(source.ID, items, store.MessageAnchor{}, dropItem.ID)
+			if err != nil {
+				return forkResumeState{}, fmt.Errorf("fork agy thread: %w", err)
+			}
+			if target.PromptsBefore == 0 {
 				return forkResumeState{}, nil
 			}
-			newSessionID, cleanup, err := agy.ForkConversationAtUserTurn(appDataDir, source.SessionRef, userOrdinal)
+			newSessionID, cleanup, err := agy.ForkConversationBeforeTarget(appDataDir, source.SessionRef, target)
 			if err != nil {
 				return forkResumeState{}, fmt.Errorf("fork agy thread: %w", err)
 			}
@@ -109,29 +197,45 @@ func (a *App) forkAgyThread(source store.Thread, forkID string, atTurnIndex *int
 		}
 		cutIdx = *preCutMaxIdx
 	} else if strings.TrimSpace(forkID) != "" {
-		// Fallback when no pre-cut max step index was provided: resolve
-		// against the committed pointer fork's prompt count inside the snapshot.
+		// Fallback when no pre-cut max step index was provided: check whether
+		// the committed pointer fork has any native prompts and whether source
+		// grew past the fork's last prompt.
 		forkItems, err := a.store.ListItems(forkID)
 		if err != nil {
 			return forkResumeState{}, fmt.Errorf("fork agy thread: list committed fork items: %w", err)
 		}
-		committedPrompts := 0
+		keptPromptIDs := make(map[string]struct{}, len(forkItems))
 		for _, item := range forkItems {
 			if isAgyNativePromptItem(item) {
-				committedPrompts++
+				keptPromptIDs[item.ID] = struct{}{}
 			}
 		}
-		if committedPrompts == 0 {
+		if len(keptPromptIDs) == 0 {
 			return forkResumeState{}, nil
 		}
-		newSessionID, cleanup, err := agy.ForkConversationAtUserTurn(appDataDir, source.SessionRef, committedPrompts)
+		sourceItems, err := a.store.ListItems(source.ID)
 		if err != nil {
-			return forkResumeState{}, fmt.Errorf("fork agy thread: %w", err)
+			return forkResumeState{}, fmt.Errorf("fork agy thread: list source items: %w", err)
 		}
-		return forkResumeState{
-			SessionRef: newSessionID,
-			Cleanup:    cleanup,
-		}, nil
+		for i := range sourceItems {
+			if !isAgyNativePromptItem(sourceItems[i]) {
+				continue
+			}
+			if _, kept := keptPromptIDs[sourceItems[i].ID]; !kept {
+				target, targetErr := a.buildAgyCutTarget(source.ID, sourceItems, store.MessageAnchor{}, sourceItems[i].ID)
+				if targetErr != nil {
+					return forkResumeState{}, fmt.Errorf("fork agy thread: %w", targetErr)
+				}
+				newSessionID, cleanup, forkErr := agy.ForkConversationBeforeTarget(appDataDir, source.SessionRef, target)
+				if forkErr != nil {
+					return forkResumeState{}, fmt.Errorf("fork agy thread: %w", forkErr)
+				}
+				return forkResumeState{
+					SessionRef: newSessionID,
+					Cleanup:    cleanup,
+				}, nil
+			}
+		}
 	}
 	newSessionID, cleanup, err := agy.ForkConversation(appDataDir, source.SessionRef, cutIdx)
 	if err != nil {
@@ -145,20 +249,25 @@ func (a *App) forkAgyThread(source store.Thread, forkID string, atTurnIndex *int
 
 // forkAgyThreadBeforeMessage clones an Antigravity conversation cut strictly
 // before the anchored user message item (resolving the cut inside the cloned
-// snapshot in a single transaction).
-func (a *App) forkAgyThreadBeforeMessage(source store.Thread, _ store.MessageAnchor, anchorItem store.Item) (forkResumeState, error) {
-	userOrdinal, err := a.agyUserOrdinalBeforeItem(source.ID, anchorItem.ID)
+// snapshot in a single transaction by stored native step anchor or exact
+// content/neighbor matching).
+func (a *App) forkAgyThreadBeforeMessage(source store.Thread, anchor store.MessageAnchor, anchorItem store.Item) (forkResumeState, error) {
+	items, err := a.store.ListItems(source.ID)
+	if err != nil {
+		return forkResumeState{}, fmt.Errorf("fork agy thread from message: list items: %w", err)
+	}
+	target, err := a.buildAgyCutTarget(source.ID, items, anchor, anchorItem.ID)
 	if err != nil {
 		return forkResumeState{}, fmt.Errorf("fork agy thread from message: %w", err)
 	}
-	if userOrdinal == 0 {
+	if target.PromptsBefore == 0 {
 		return forkResumeState{}, nil
 	}
 	if source.SessionRef == "" {
 		return forkResumeState{}, fmt.Errorf("fork agy thread from message: source thread %q has prior history but no Antigravity session ref", source.ID)
 	}
 	appDataDir := a.agyAppDataDir()
-	newSessionID, cleanup, err := agy.ForkConversationAtUserTurn(appDataDir, source.SessionRef, userOrdinal)
+	newSessionID, cleanup, err := agy.ForkConversationBeforeTarget(appDataDir, source.SessionRef, target)
 	if err != nil {
 		return forkResumeState{}, fmt.Errorf("fork agy thread from message: %w", err)
 	}
@@ -170,25 +279,29 @@ func (a *App) forkAgyThreadBeforeMessage(source store.Thread, _ store.MessageAnc
 
 // rollbackAgyThreadToMessage cuts an Antigravity thread's conversation before
 // userItem by cloning and slicing the conversation DB and repointing SessionRef.
-func (a *App) rollbackAgyThreadToMessage(thread store.Thread, _ store.MessageAnchor, userItem store.Item) error {
+func (a *App) rollbackAgyThreadToMessage(thread store.Thread, anchor store.MessageAnchor, userItem store.Item) error {
 	a.dropFlushQueue(thread.ID)
 	latest, err := a.store.GetThread(thread.ID)
 	if err != nil {
 		return fmt.Errorf("agy rollback: reload thread %s: %w", thread.ID, err)
 	}
 	thread = latest
-	userOrdinal, err := a.agyUserOrdinalBeforeItem(thread.ID, userItem.ID)
+	items, err := a.store.ListItems(thread.ID)
+	if err != nil {
+		return fmt.Errorf("agy rollback: list items: %w", err)
+	}
+	target, err := a.buildAgyCutTarget(thread.ID, items, anchor, userItem.ID)
 	if err != nil {
 		return fmt.Errorf("agy rollback: %w", err)
 	}
-	if userOrdinal == 0 {
+	if target.PromptsBefore == 0 {
 		return a.writeSessionRef(thread.ID, "")
 	}
 	if thread.SessionRef == "" {
 		return fmt.Errorf("agy rollback: thread %s has prior history but no Antigravity session ref", thread.ID)
 	}
 	appDataDir := a.agyAppDataDir()
-	newSessionID, cleanup, err := agy.ForkConversationAtUserTurn(appDataDir, thread.SessionRef, userOrdinal)
+	newSessionID, cleanup, err := agy.ForkConversationBeforeTarget(appDataDir, thread.SessionRef, target)
 	if err != nil {
 		return fmt.Errorf("agy rollback: clone sliced conversation: %w", err)
 	}
@@ -197,22 +310,4 @@ func (a *App) rollbackAgyThreadToMessage(thread store.Thread, _ store.MessageAnc
 		return fmt.Errorf("agy rollback: persist rolled-back session ref: %w", err)
 	}
 	return nil
-}
-
-func (a *App) agyUserOrdinalBeforeItem(threadID, targetItemID string) (int, error) {
-	items, err := a.store.ListItems(threadID)
-	if err != nil {
-		return 0, err
-	}
-	ordinal := 0
-	for _, item := range items {
-		if item.ID == targetItemID {
-			return ordinal, nil
-		}
-		if !isAgyNativePromptItem(item) {
-			continue
-		}
-		ordinal++
-	}
-	return 0, fmt.Errorf("target user message %s not found in thread %s", targetItemID, threadID)
 }

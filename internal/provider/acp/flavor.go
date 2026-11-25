@@ -144,6 +144,7 @@ type Flavor interface {
 	ExtractPendingQuestion(u *ToolCallUpdate) ([]provider.UserInputQuestion, bool)
 	ExtractTodoUpdate(u *ToolCallUpdate) (entries []PlanEntry, isTodoTool bool)
 	BeforePrompt(ctx context.Context, sessionID string) any
+	ResolvePromptStepAnchor(ctx context.Context, sessionID, content string, beforeToken any) string
 	AfterPrompt(ctx context.Context, sessionID string, stopReason string, beforeToken any) *PromptOutcomeOverride
 	ShouldHoldSpontaneousWakeClose(ctx context.Context, sessionID string) bool
 	CanTrackSubagent(sessionID string) bool
@@ -623,6 +624,10 @@ func (DefaultFlavor) ExtractPendingQuestion(*ToolCallUpdate) ([]provider.UserInp
 
 func (DefaultFlavor) BeforePrompt(context.Context, string) any {
 	return nil
+}
+
+func (DefaultFlavor) ResolvePromptStepAnchor(context.Context, string, string, any) string {
+	return ""
 }
 
 func (DefaultFlavor) AfterPrompt(context.Context, string, string, any) *PromptOutcomeOverride {

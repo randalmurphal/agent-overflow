@@ -101,10 +101,11 @@ type pendingToolQuestion struct {
 }
 
 type pendingPromptConfirm struct {
-	uuid      string
-	content   string
-	isCompact bool
-	confirmed atomic.Bool
+	uuid        string
+	content     string
+	isCompact   bool
+	beforeToken any
+	confirmed   atomic.Bool
 }
 
 type chunkBuffer struct {
@@ -732,10 +733,19 @@ func (s *Session) emitPromptConfirmation(c *pendingPromptConfirm) {
 	if c == nil || c.uuid == "" || s.closing.Load() || !c.confirmed.CompareAndSwap(false, true) {
 		return
 	}
-	confirmMeta, _ := json.Marshal(map[string]any{
+	s.mu.Lock()
+	sessionID := s.sessionID
+	s.mu.Unlock()
+	metaFields := map[string]any{
 		"provider_item_id":                         c.uuid,
 		provider.MetaUserTextTranscriptRecordedKey: true,
-	})
+	}
+	if sessionID != "" {
+		if anchor := strings.TrimSpace(s.flavor.ResolvePromptStepAnchor(s.sessionCtx, sessionID, c.content, c.beforeToken)); anchor != "" {
+			metaFields["parent_uuid"] = anchor
+		}
+	}
+	confirmMeta, _ := json.Marshal(metaFields)
 	s.emitEvent(provider.ProviderEvent{
 		Kind:      provider.EventUserText,
 		ThreadID:  s.threadID,
@@ -970,7 +980,7 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 	beforeToken := s.flavor.BeforePrompt(ctx, sessionID)
 
 	isCompact := isCompactPromptText(userContent)
-	confirm := &pendingPromptConfirm{uuid: userMsgUUID, content: userContent, isCompact: isCompact}
+	confirm := &pendingPromptConfirm{uuid: userMsgUUID, content: userContent, isCompact: isCompact, beforeToken: beforeToken}
 
 	// Atomically detach pre-existing pending questions AND register in-flight
 	// state under the same s.mu lock BEFORE writing session/prompt so:

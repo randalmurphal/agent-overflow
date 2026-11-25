@@ -67,22 +67,21 @@ func ReadForkCheckpoint(appDataDir, sessionID string) (int, error) {
 // Returns the newly minted session UUID and a cleanup function that removes the
 // cloned DB file and brain directory if a later step in the caller fails.
 func ForkConversation(appDataDir, srcSessionID string, cutIdx int) (newSessionID string, cleanup func() error, err error) {
-	return forkConversation(appDataDir, srcSessionID, cutIdx, -1)
+	return forkConversation(appDataDir, srcSessionID, cutIdx, nil)
 }
 
-// ForkConversationAtUserTurn snapshots the source conversation DB FIRST via
-// VACUUM INTO and resolves the 0-indexed user-prompt cutoff INSIDE the cloned
-// snapshot in a single transaction, eliminating any race between cut lookup and
-// snapshot. If beforeUserTurnIndex exceeds the snapshot's recorded user prompt
-// count, an error is returned rather than silently keeping extra history.
-func ForkConversationAtUserTurn(appDataDir, srcSessionID string, beforeUserTurnIndex int) (newSessionID string, cleanup func() error, err error) {
-	if beforeUserTurnIndex <= 0 {
-		return "", nil, fmt.Errorf("agy fork: beforeUserTurnIndex must be positive, got %d", beforeUserTurnIndex)
-	}
-	return forkConversation(appDataDir, srcSessionID, CutKeepAll, beforeUserTurnIndex)
+// ForkConversationBeforeTarget snapshots the source conversation DB FIRST via
+// VACUUM INTO and resolves the target user-prompt cutoff INSIDE the cloned
+// snapshot in a single transaction, eliminating any race between cut lookup
+// and snapshot. It prefers the target's stored native step anchor
+// ("agy-step:<idx>:<hash>"), falling back to exact content, neighbor, and
+// timestamp matching for pre-existing threads, and refuses loudly if no
+// unambiguous match exists.
+func ForkConversationBeforeTarget(appDataDir, srcSessionID string, target UserPromptCutTarget) (newSessionID string, cleanup func() error, err error) {
+	return forkConversation(appDataDir, srcSessionID, CutKeepAll, &target)
 }
 
-func forkConversation(appDataDir, srcSessionID string, cutIdx int, cutBeforeUserTurn int) (newSessionID string, cleanup func() error, err error) {
+func forkConversation(appDataDir, srcSessionID string, cutIdx int, cutTarget *UserPromptCutTarget) (newSessionID string, cleanup func() error, err error) {
 	if strings.TrimSpace(appDataDir) == "" {
 		return "", nil, errors.New("agy fork: appDataDir is required")
 	}
@@ -137,7 +136,7 @@ func forkConversation(appDataDir, srcSessionID string, cutIdx int, cutBeforeUser
 		return errors.Join(errs...)
 	}
 
-	if err := rewriteClonedConversationDB(dstPath, newSessionID, cutIdx, cutBeforeUserTurn); err != nil {
+	if err := rewriteClonedConversationDB(dstPath, newSessionID, cutIdx, cutTarget); err != nil {
 		_ = removeDst()
 		return "", nil, err
 	}
@@ -150,7 +149,7 @@ func forkConversation(appDataDir, srcSessionID string, cutIdx int, cutBeforeUser
 	return newSessionID, removeDst, nil
 }
 
-func rewriteClonedConversationDB(dstPath, newSessionID string, cutIdx int, cutBeforeUserTurn int) error {
+func rewriteClonedConversationDB(dstPath, newSessionID string, cutIdx int, cutTarget *UserPromptCutTarget) error {
 	dstDB, err := sql.Open("sqlite", sqliteFileDSN(dstPath, "_pragma=busy_timeout(5000)"))
 	if err != nil {
 		return fmt.Errorf("agy fork: open cloned conversation: %w", err)
@@ -163,35 +162,12 @@ func rewriteClonedConversationDB(dstPath, newSessionID string, cutIdx int, cutBe
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if cutBeforeUserTurn > 0 {
-		rows, err := tx.Query(`SELECT idx FROM steps WHERE step_type = ? ORDER BY idx ASC`, cortexStepTypeUserInput)
+	if cutTarget != nil {
+		resolvedIdx, err := resolveUserPromptCutIdx(tx, *cutTarget)
 		if err != nil {
-			return fmt.Errorf("agy fork: query cloned user steps: %w", err)
+			return err
 		}
-		var userIdxs []int
-		for rows.Next() {
-			var idx int
-			if scanErr := rows.Scan(&idx); scanErr != nil {
-				_ = rows.Close()
-				return scanErr
-			}
-			userIdxs = append(userIdxs, idx)
-		}
-		rowsErr := rows.Err()
-		_ = rows.Close()
-		if rowsErr != nil {
-			return rowsErr
-		}
-		if cutBeforeUserTurn > len(userIdxs) {
-			return fmt.Errorf("agy fork: requested cut at user prompt %d exceeds %d recorded native prompts", cutBeforeUserTurn, len(userIdxs))
-		}
-		if cutBeforeUserTurn < len(userIdxs) {
-			targetIdx := userIdxs[cutBeforeUserTurn]
-			if targetIdx <= 0 {
-				return fmt.Errorf("agy fork: cut before first step leaves no prefix")
-			}
-			cutIdx = targetIdx - 1
-		}
+		cutIdx = resolvedIdx
 	}
 
 	if cutIdx != CutKeepAll {
@@ -294,65 +270,6 @@ func copyForkBrainArtifacts(appDataDir, srcSessionID, newSessionID string) error
 		copiedBytes += n
 		return nil
 	})
-}
-
-// FindCutIndexBeforeUserTurn returns the highest step `idx` strictly before the
-// 0-indexed user turn `beforeUserTurnIndex` in `<appDataDir>/conversations/<sessionID>.db`.
-// Returns (-1, false, nil) when beforeUserTurnIndex == 0 (no prefix to keep).
-func FindCutIndexBeforeUserTurn(appDataDir, sessionID string, beforeUserTurnIndex int) (cutIdx int, hasPrefix bool, err error) {
-	if beforeUserTurnIndex <= 0 {
-		return -1, false, nil
-	}
-	dbPath, err := conversationDBPath(appDataDir, sessionID)
-	if err != nil {
-		return -1, false, fmt.Errorf("agy fork: %w", err)
-	}
-	db, err := openConversationDBReadOnly(dbPath)
-	if err != nil {
-		return -1, false, fmt.Errorf("agy fork: open conversation %s: %w", sessionID, err)
-	}
-	defer func() { _ = db.Close() }()
-
-	if err := verifyConversationSchema(db); err != nil {
-		return -1, false, fmt.Errorf("agy fork: %w", err)
-	}
-
-	rows, err := db.Query(`SELECT idx FROM steps WHERE step_type = ? ORDER BY idx ASC`, cortexStepTypeUserInput)
-	if err != nil {
-		return -1, false, fmt.Errorf("agy fork: query user steps: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var userIdxs []int
-	for rows.Next() {
-		var idx int
-		if scanErr := rows.Scan(&idx); scanErr != nil {
-			return -1, false, scanErr
-		}
-		userIdxs = append(userIdxs, idx)
-	}
-	if err := rows.Err(); err != nil {
-		return -1, false, err
-	}
-	if beforeUserTurnIndex > len(userIdxs) {
-		return -1, false, fmt.Errorf("agy fork: user turn ordinal %d exceeds recorded user prompts (%d)", beforeUserTurnIndex, len(userIdxs))
-	}
-	if beforeUserTurnIndex == len(userIdxs) {
-		// Target is immediately past the last recorded user turn: keep everything.
-		var maxIdx sql.NullInt64
-		if err := db.QueryRow(`SELECT MAX(idx) FROM steps`).Scan(&maxIdx); err != nil {
-			return -1, false, err
-		}
-		if !maxIdx.Valid {
-			return -1, false, nil
-		}
-		return int(maxIdx.Int64), true, nil
-	}
-	targetIdx := userIdxs[beforeUserTurnIndex]
-	if targetIdx <= 0 {
-		return -1, false, nil
-	}
-	return targetIdx - 1, true, nil
 }
 
 // verifyConversationSchema refuses mutation when agy's on-disk schema no longer

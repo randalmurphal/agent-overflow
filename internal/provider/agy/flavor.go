@@ -46,6 +46,12 @@ type Flavor struct {
 	bgLookupMu    sync.Mutex
 	bgLookupCache map[string]bgLookupSnapshot
 
+	// stepAnchorMu guards per-session monotonic step indices resolved by
+	// ResolvePromptStepAnchor so back-to-back steered prompts sharing a
+	// beforeToken never claim the same native USER_INPUT step.
+	stepAnchorMu            sync.Mutex
+	lastResolvedUserStepIdx map[string]int
+
 	// Optional overrides for deterministic unit tests (zero uses defaults).
 	subagentPollInterval       time.Duration
 	subagentDiscoveryTimeout   time.Duration
@@ -1032,6 +1038,35 @@ func (f *Flavor) BeforePrompt(_ context.Context, sessionID string) any {
 		return nil
 	}
 	return maxIdx
+}
+
+func (f *Flavor) ResolvePromptStepAnchor(_ context.Context, sessionID, content string, beforeToken any) string {
+	if f.AppDataDir == "" || sessionID == "" {
+		return ""
+	}
+	sinceIdx, ok := beforeToken.(int)
+	if !ok {
+		return ""
+	}
+	f.stepAnchorMu.Lock()
+	if last, hasLast := f.lastResolvedUserStepIdx[sessionID]; hasLast && last > sinceIdx {
+		sinceIdx = last
+	}
+	f.stepAnchorMu.Unlock()
+
+	resolvedIdx, anchor := lookupUserPromptAnchor(f.AppDataDir, sessionID, content, sinceIdx)
+	if anchor == "" {
+		return ""
+	}
+	f.stepAnchorMu.Lock()
+	if f.lastResolvedUserStepIdx == nil || len(f.lastResolvedUserStepIdx) >= 64 {
+		f.lastResolvedUserStepIdx = make(map[string]int)
+	}
+	if prev, hasPrev := f.lastResolvedUserStepIdx[sessionID]; !hasPrev || resolvedIdx > prev {
+		f.lastResolvedUserStepIdx[sessionID] = resolvedIdx
+	}
+	f.stepAnchorMu.Unlock()
+	return anchor
 }
 
 func (f *Flavor) AfterPrompt(_ context.Context, sessionID string, stopReason string, beforeToken any) *acp.PromptOutcomeOverride {
