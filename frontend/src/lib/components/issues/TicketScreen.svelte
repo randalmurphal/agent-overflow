@@ -61,8 +61,8 @@
   import Segmented from '../primitives/Segmented.svelte';
   import ErrorNotice from '../shared/ErrorNotice.svelte';
   import RenderBoundary from '../shared/RenderBoundary.svelte';
-  import PaneCloseButton from '../panes/PaneCloseButton.svelte';
-  import PaneHeaderLine from '../panes/PaneHeaderLine.svelte';
+  import ToolPaneHeader from '../panes/ToolPaneHeader.svelte';
+  import TicketRefMenu from './TicketRefMenu.svelte';
   import PriorityIcon from './PriorityIcon.svelte';
   import StatusMark from './StatusMark.svelte';
   import TicketAttachments from './TicketAttachments.svelte';
@@ -129,9 +129,11 @@
   interface Props {
     attachment: TrackerTicketAttachment;
     seed: TicketSeed;
-    /** The board the ticket was opened from: its points are that row's. */
-    board: string;
-    /** The connection's tracker: jira or linear. */
+    /** The board the ticket was opened from: its points are that row's;
+     * null shows the first board's the ticket is on. */
+    board: string | null;
+    /** The connection's tracker: jira or linear; empty while the
+     * connection is not known, when neither tracker's own controls show. */
     kind: string;
     computerName: string;
     /** The person's account on the connection; null when it was never
@@ -178,7 +180,9 @@
   const ticketState = $derived(attachment.current);
   const detail = $derived(ticketState?.detail ?? null);
   const card: CardView | null = $derived(detail?.card ?? seed.card);
-  const linear = $derived(kind === 'linear');
+  // Jira's own controls (the type, the estimate, poker, attachments, Log
+  // time) show on a Jira ticket only, never while the tracker is not known.
+  const jira = $derived(kind === 'jira');
   const ctx: TicketWriteContext = $derived({ key: attachment.key, ref: attachment.ref, label: card?.key || seed.key });
   const section = (id: string) => ({ backend: attachment.ref.backend, connection: attachment.ref.connection, section: id });
 
@@ -191,6 +195,22 @@
   $effect(() => {
     if (!narrow) railOpen = false;
   });
+
+  // The parent's own menu, on a right-click or long press of its chip:
+  // what it opens is the parent, never this ticket.
+  // What it names outlives the menu's close, which runs before its row acts.
+  let parentMenu = $state<{ x: number; y: number; parent: NonNullable<CardView['parent']> } | null>(null);
+  let parentMenuOpen = $state(false);
+  function parentSeed(parent: NonNullable<CardView['parent']>): TicketSeed {
+    return { key: parent.key ?? '', title: parent.title ?? '', card: null };
+  }
+  function openParentMenu(event: MouseEvent, parent: NonNullable<CardView['parent']>): void {
+    event.preventDefault();
+    event.stopPropagation();
+    parentMenu = { x: event.clientX, y: event.clientY, parent };
+    parentMenuOpen = true;
+  }
+  const keyText = $derived(card?.key || seed.key || 'Ticket');
 
   /** One step back inside the ticket: the Details rail over a narrow
    * ticket closes. False when there is none, and the pane steps on. */
@@ -254,7 +274,7 @@
     },
   }, { clear: 'Unassigned' }) : null);
   const priorityEditor: FieldEditor | null = $derived(detail ? pickEditor('priority', 'option', targetOf('priority', choiceValue(card?.priority))) : null);
-  const typeEditor: FieldEditor | null = $derived(detail && !linear ? pickEditor('type', 'option', targetOf('type', choiceValue(card?.type))) : null);
+  const typeEditor: FieldEditor | null = $derived(detail && jira ? pickEditor('type', 'option', targetOf('type', choiceValue(card?.type))) : null);
   // The header's type mark opens the same picker as the rail's Type row.
   let typeMarkButton: HTMLButtonElement | undefined = $state();
   let typeMarkPicking = $state(false);
@@ -285,7 +305,7 @@
   setContext(TRACKER_MEDIA_CONTEXT, trackerMediaReader(() => (detail ? { ticket: mediaTicket, attachments: detail.attachments ?? [] } : null)));
 
   // A tracker that stores files takes them: a pick, a drop or a paste.
-  const canAttach = $derived(!linear && !!detail);
+  const canAttach = $derived(jira && !!detail);
   const attachmentsOpen = $derived(ticketSectionOpen(section('attachments'), true));
   let attachmentsSection: TicketAttachments | undefined = $state();
   function attach(files: readonly File[]): void {
@@ -324,12 +344,12 @@
   // a reconnect drops the body and the store's answer, so the body's return
   // asks again.
   const hasDetail = $derived(!!detail);
-  const pokerSupport = $derived(linear ? null : trackerPokerSupport(attachment.ref.backend, attachment.ref.connection));
+  const pokerSupport = $derived(!jira ? null : trackerPokerSupport(attachment.ref.backend, attachment.ref.connection));
   function askPokerSupport(): void {
     askTrackerPokerSupport(attachment.ref.backend, attachment.ref.connection);
   }
   $effect(() => {
-    if (linear || !hasDetail) return;
+    if (!jira || !hasDetail) return;
     untrack(askPokerSupport);
   });
   const pokerOffered = $derived(hasDetail && pokerSupport !== null && typeof pokerSupport === 'object' && 'available' in pokerSupport && pokerSupport.available);
@@ -480,7 +500,7 @@
 
 {#snippet railBody()}
   <div class="flex flex-col gap-0.5" data-testid="ticket-fields">
-    {#if !linear}
+    {#if jira}
       <TicketField bind:this={typeField} label="Type" field="type" value={card?.type?.name ?? ''} editor={typeEditor} ticketKey={ctx.key} target={fieldTarget('type')} {fieldName}>
         {#snippet mark()}<TypeIcon type={card?.type} testId="ticket-type-mark-rail" />{/snippet}
       </TicketField>
@@ -583,7 +603,7 @@
       </div>
     {/if}
     <TicketLinks bind:this={linksSection} {ctx} links={detail.links ?? []} {onOpenIssue} />
-    {#if !linear || (detail.attachments?.length ?? 0) > 0}
+    {#if jira || (detail.attachments?.length ?? 0) > 0}
       <TicketAttachments
         bind:this={attachmentsSection}
         {ctx}
@@ -669,18 +689,8 @@
       Drop the files to attach them to {ctx.label}
     </div>
   {/if}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <header class="relative flex flex-col gap-1 border-b border-border-subtle px-3 py-2" oncontextmenu={openMenu} data-testid="ticket-header">
-    {#if pane}
-      <PaneHeaderLine paneId={pane.id} />
-    {/if}
-    <div class="flex min-w-0 items-center gap-1.5">
-      {#if backShown}
-        <IconButton label="Back" size="sm" testId="ticket-back" onClick={onBack}>
-          {#snippet children()}<Icon icon={ArrowLeft} size={14} strokeWidth={2} />{/snippet}
-        </IconButton>
-      {/if}
-      {#if !linear}
+  {#snippet typeMark()}
+      {#if jira}
         <button
           bind:this={typeMarkButton}
           type="button"
@@ -706,19 +716,8 @@
           />
         {/if}
       {/if}
-      {#if pane}
-        <!-- The pane's drag handle, as a tool pane's title is. -->
-        <button
-          type="button"
-          draggable={pane?.onDragStart != null && !compact}
-          ondragstart={(event) => pane?.onDragStart?.(event)}
-          class="shrink-0 cursor-grab rounded-[var(--radius-control)] text-sm tabular-nums text-fg-muted hover:bg-surface-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 active:cursor-grabbing"
-          title="Drag to move the pane"
-          data-testid="ticket-key"
-        >{card?.key || seed.key}</button>
-      {:else}
-        <span class="shrink-0 text-sm tabular-nums text-fg-muted" data-testid="ticket-key">{card?.key || seed.key}</span>
-      {/if}
+  {/snippet}
+  {#snippet headerControls()}
       {#if card?.parent}
         {@const parent = card.parent}
         <button
@@ -726,7 +725,8 @@
           class="min-w-0 truncate rounded-sm bg-accent/10 px-1.5 text-[0.6875rem] text-accent hover:bg-accent/20 compact:min-h-9 compact:select-none"
           title="Open {parent.key || 'the parent'}"
           data-testid="ticket-parent"
-          onclick={(event) => onOpenIssue(parent.id, { key: parent.key ?? '', title: parent.title ?? '', card: null }, opensTicketPane(event))}
+          onclick={(event) => onOpenIssue(parent.id, parentSeed(parent), opensTicketPane(event))}
+          oncontextmenu={(event) => openParentMenu(event, parent)}
         >{parent.key ? `${parent.key} ${parent.title ?? ''}` : parent.title}</button>
       {/if}
       <span class="flex-1"></span>
@@ -739,7 +739,7 @@
           options={[{ value: 'over', label: 'Over' }, { value: 'beside', label: 'Beside' }]}
         />
       {/if}
-      {#if !linear && estimateRow}
+      {#if jira && estimateRow}
         <button
           type="button"
           class="inline-flex shrink-0 items-center gap-1 rounded-[var(--radius-control)] border border-border-subtle px-1.5 text-xs text-fg-muted hover:bg-surface-1 hover:text-fg disabled:opacity-60 compact:min-h-9 compact:select-none"
@@ -763,14 +763,44 @@
           {#snippet children()}<Icon icon={Ellipsis} size={14} strokeWidth={2} />{/snippet}
         </IconButton>
       </span>
-      {#if pane && !compact}
-        <PaneCloseButton paneId={pane.id} testId="ticket-close" />
-      {:else if !compact}
-        <IconButton label="Close the ticket" size="sm" testId="ticket-close" onClick={onClose}>
-          {#snippet children()}<Icon icon={X} size={14} strokeWidth={2} />{/snippet}
+  {/snippet}
+  {#if pane}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div oncontextmenu={openMenu}>
+      <ToolPaneHeader
+        paneId={pane.id}
+        title={keyText}
+        titleTestId="ticket-key"
+        onPaneDragStart={pane.onDragStart}
+        onBack={backShown ? onBack : undefined}
+        backTestId="ticket-back"
+      >
+        <div class="flex min-w-0 flex-1 items-center gap-1.5">
+          {@render typeMark()}
+          {@render headerControls()}
+        </div>
+      </ToolPaneHeader>
+    </div>
+  {/if}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <header class="relative flex flex-col gap-1 border-b border-border-subtle px-3 py-2" oncontextmenu={openMenu} data-testid="ticket-header">
+    {#if !pane}
+      <div class="flex min-w-0 items-center gap-1.5">
+      {#if backShown}
+        <IconButton label="Back" size="sm" testId="ticket-back" onClick={onBack}>
+          {#snippet children()}<Icon icon={ArrowLeft} size={14} strokeWidth={2} />{/snippet}
         </IconButton>
       {/if}
-    </div>
+        {@render typeMark()}
+        <span class="shrink-0 text-sm tabular-nums text-fg-muted" data-testid="ticket-key">{keyText}</span>
+        {@render headerControls()}
+        {#if !compact}
+          <IconButton label="Close the ticket" size="sm" testId="ticket-close" onClick={onClose}>
+            {#snippet children()}<Icon icon={X} size={14} strokeWidth={2} />{/snippet}
+          </IconButton>
+        {/if}
+      </div>
+    {/if}
     <h2 class="text-base font-medium leading-snug text-fg [overflow-wrap:anywhere]" data-testid="ticket-title">{card?.title || seed.title}</h2>
     {#if narrow && detail}
       <button type="button" class="inline-flex items-center gap-1 self-start rounded-[var(--radius-control)] px-1.5 text-xs text-fg-muted hover:bg-surface-1 hover:text-fg compact:min-h-9 compact:select-none" aria-expanded={railOpen} data-testid="ticket-details" onclick={() => { railOpen = !railOpen; }}>
@@ -806,7 +836,7 @@
   {/if}
 
   <div class="relative flex min-h-0 flex-1">
-    <div class="pane-scroll-surface min-h-0 min-w-0 flex-1 overflow-y-auto" data-pane-scroller data-testid="ticket-content">
+    <div class="pane-scroll-surface min-h-0 min-w-0 flex-1 overflow-y-auto focus:outline-none" tabindex="-1" data-pane-scroller data-testid="ticket-content">
       <RenderBoundary label="The ticket" testId="ticket-render-error">
         <div class="flex flex-col gap-4 px-3 py-3">
           {#if !detail && notFound}
@@ -843,6 +873,19 @@
   </div>
 </div>
 
+{#if parentMenuOpen && parentMenu}
+  {@const parent = parentMenu.parent}
+  <TicketRefMenu
+    x={parentMenu.x}
+    y={parentMenu.y}
+    ariaLabel="Actions for {parent.key || parent.title || 'the parent'}"
+    ticketKey={parent.key ?? ''}
+    testIdPrefix="ticket-parent-menu"
+    onOpen={(ownPane) => onOpenIssue(parent.id, parentSeed(parent), ownPane)}
+    onDismiss={() => { parentMenuOpen = false; }}
+  />
+{/if}
+
 {#if menu}
   <ContextMenu x={menu.x} y={menu.y} ariaLabel="Ticket actions" onDismiss={() => { menu = null; }}>
     {#if detail}
@@ -853,7 +896,7 @@
       {#if row && row.unit !== 'none'}
         <MenuItem label="{pointsLabel}…" testId="ticket-menu-points" onSelect={() => run(() => change('points'))} />
       {/if}
-      {#if !linear}
+      {#if jira}
         <MenuItem label="Type…" testId="ticket-menu-type" onSelect={() => run(() => change('type'))} />
       {/if}
       <MenuItem label="Description…" testId="ticket-menu-description" onSelect={() => run(() => descriptionText?.edit())} />
@@ -864,7 +907,7 @@
         <MenuItem label="Attachment…" testId="ticket-menu-attach" onSelect={() => run(() => attachmentsSection?.pick())} />
       {/if}
       <MenuItem label="Link…" testId="ticket-menu-link" onSelect={() => run(() => linksSection?.add())} />
-      {#if !linear}
+      {#if jira}
         <MenuItem
           label="Log time…"
           description={timeCtx ? undefined : 'The app does not know your account on this connection'}

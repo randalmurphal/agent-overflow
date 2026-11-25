@@ -306,16 +306,17 @@ describe('pane layout persistence', () => {
     expect(ticketPaneCarrier('ticket-a')).toEqual(saved);
   });
 
-  it('reads a ticket pane saved with its key, title, board and tracker, and saves it back with none of them', async () => {
+  it('reads a ticket pane saved with its key, title, board and tracker, and the next save writes none of them', async () => {
     await installUIStateMock(makeSavedLayout([
       { paneId: 'ticket-a', kind: 'ticket', widthPx: 640, ticket: { backend: HOME_BACKEND, connection: 'c1', issue: '10001', key: 'WEB-1', title: 'Issue 1', board: '1', kind: 'jira' } },
     ], 'ticket-a'));
     await loadPersistedPaneLayout([]);
-    expect(ticketPaneRecord('ticket-a')?.ticket).toEqual({ ref: { backend: HOME_BACKEND, connection: 'c1', issue: '10001' }, seed: { key: '', title: '', card: null } });
+    expect(ticketPaneRecord('ticket-a')).toMatchObject({ ticket: { ref: { backend: HOME_BACKEND, connection: 'c1', issue: '10001' }, seed: { key: '', title: '', card: null } }, board: null });
+    setPaneLayoutItemsForTest([{ id: 'ticket-a', paneId: 'ticket-a', kind: 'ticket', widthPx: 700 }]);
     persistPaneLayout();
     await waitForPaneLayoutPersistenceForTest();
     expect((persistedPaneLayout() as PaneLayoutPersistedSettings).panes).toEqual([
-      { paneId: 'ticket-a', kind: 'ticket', ticket: { backend: HOME_BACKEND, connection: 'c1', issue: '10001' }, widthPx: 640 },
+      { paneId: 'ticket-a', kind: 'ticket', ticket: { backend: HOME_BACKEND, connection: 'c1', issue: '10001' }, widthPx: 700 },
     ]);
   });
 

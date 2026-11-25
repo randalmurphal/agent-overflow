@@ -265,14 +265,22 @@ Widths are CSS pixels of the pane, not the window.
   own right of the focused pane, at the average pane width, and focuses
   it; a ticket that already has one is focused there instead. In its own
   pane in a ticket's menu moves the ticket into one, with what is being
-  written on it, and the Issues pane shows the list again. The pane's
-  header is the ticket's, with the pane's close, and its key moves the
-  pane. A linked ticket opened in it takes its place, with Back, as in
-  the Issues pane. Escape closes the Details rail, then steps back, and
-  never closes the pane. A thread opened while the pane is focused takes
-  its slot, as it does a tool pane's. After a reload the pane shows the
-  ticket it showed, without its Back trail; one whose ticket cannot be
-  read back says so until it is closed.
+  written on it, and the Issues pane shows the list again. The pane
+  wears a tool pane's header in every state, with maximize and close: its
+  title is the ticket's key (Ticket until the key is known), moves the
+  pane, and maximizes it on a double-click; the ticket's own controls sit
+  beside it. While the ticket's computer is not connected, the pane says
+  so and shows the ticket when it connects. A linked ticket opened in it
+  takes its place, with Back, as in the Issues pane. Escape closes the
+  Details rail, then steps back, and never closes the pane. A thread
+  opened while the pane is focused takes its slot, as it does a tool
+  pane's. A pane move by keyboard puts the keyboard in the ticket, so the
+  arrows and Page Down scroll it. The layout saves which ticket the pane
+  shows (its computer, connection and issue) and nothing the tracker
+  wrote: after a reload the pane shows that ticket without its Back trail,
+  titled Ticket with an empty title line until the ticket is read, and its
+  points are those of the first board the ticket is on. One whose ticket
+  cannot be read back says so until it is closed.
 
 ### Board
 
@@ -373,7 +381,10 @@ text, Work, and the thread an agent's comment came from.
   or pasting), linked tickets grouped by relation, and a control that opens
   it in the tracker. Jira tickets offer Estimate and Log time.
 - A Linear ticket has no type mark, a fixed field list, and no time or
-  poker controls.
+  poker controls. Until the app knows the ticket's connection, it offers
+  neither tracker's own controls.
+- The parent's chip opens the parent; its right-click or long-press menu
+  opens it here or in a pane of its own and copies its key.
 
 ### Tickets, pull requests and branches
 

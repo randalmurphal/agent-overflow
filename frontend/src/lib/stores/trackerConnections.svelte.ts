@@ -28,6 +28,7 @@
 // before it asks. Any other failure is a
 // failure, never a refusal (trackerReadGate).
 
+import { untrack } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import {
   AddTrackerConnection,
@@ -192,24 +193,27 @@ export function trackerReadGate(view: TrackerConnectionsView): 'older' | 'refuse
 
 /**
  * Hold `backend`'s connections while the caller shows them, reading them
- * now; the returned function releases the hold. Call it from an effect.
+ * now; the returned function releases the hold. Call it from an effect:
+ * the hold reads nothing the effect depends on.
  */
 export function acquireTrackerConnections(backend: BackendKey): () => void {
-  let entry = held.get(backend);
-  if (!entry) {
-    entry = new HeldConnections(backend);
-    held.set(backend, entry);
-    syncReturnListener();
-  }
-  entry.holders++;
-  if (entry.holders === 1) void entry.read();
-  const mine = entry;
+  const mine = untrack(() => {
+    let entry = held.get(backend);
+    if (!entry) {
+      entry = new HeldConnections(backend);
+      held.set(backend, entry);
+      syncReturnListener();
+    }
+    entry.holders++;
+    if (entry.holders === 1) void entry.read();
+    return entry;
+  });
   let released = false;
   return () => {
     if (released) return;
     released = true;
     mine.holders--;
-    if (mine.holders === 0 && held.get(backend) === mine) drop(backend, mine);
+    if (mine.holders === 0 && untrack(() => held.get(backend)) === mine) drop(backend, mine);
   };
 }
 

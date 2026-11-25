@@ -24,7 +24,7 @@ import {
   type TrackerBoardRef,
 } from './trackerBoard.svelte';
 import { attachTrackerTicket, trackerTicketKey, type TrackerTicketAttachment, type TrackerTicketRef } from './trackerTicket.svelte';
-import { setTicketPaneTicket, takeTicketPaneHandoff, ticketPaneRecord } from './ticketPanes.svelte';
+import { closeTicketPane, sameTicketRef, setTicketPaneTicket, takeTicketPaneHandoff, ticketPaneRecord } from './ticketPanes.svelte';
 import { createOpenFocusRequest, type OpenFocusRequest } from '../utils/openFocusRequest.svelte';
 import { holdTicketDrafts } from './trackerTicketWrites.svelte';
 import type { CommentOrder } from './trackerTicketModel';
@@ -461,7 +461,10 @@ export interface TicketTrailState {
   readonly ticket: OpenTicket | null;
   /** Reactive; oldest first. */
   readonly trail: readonly OpenTicket[];
-  set(ticket: OpenTicket | null, trail: readonly OpenTicket[]): void;
+  set(ticket: OpenTicket, trail: readonly OpenTicket[]): void;
+  /** No ticket shown here: the Issues pane shows its list, a ticket pane
+   * closes. */
+  close(): void;
   readonly focus: OpenFocusRequest<OpenTicket>;
   /** What held the ticket until this trail subscribed it, taken. */
   takeHandoff(): (() => void) | null;
@@ -499,13 +502,10 @@ export interface TicketTrail {
   /** A person's Back to the ticket this one was opened from, which asks
    * for the focus. False when the trail is empty. */
   stepBack(): boolean;
-  /** No ticket and no trail. */
+  /** No ticket and no trail, as its host closes a ticket
+   * (`TicketTrailState.close`). */
   close(): void;
   destroy(): void;
-}
-
-function sameTicketRef(a: TrackerTicketRef, b: TrackerTicketRef): boolean {
-  return a.backend === b.backend && a.connection === b.connection && a.issue === b.issue;
 }
 
 /** The Issues pane's own state for its trail. */
@@ -518,6 +518,10 @@ export function localTicketTrailState(): TicketTrailState {
     set(next, nextTrail) {
       ticket = next;
       trail = nextTrail;
+    },
+    close() {
+      ticket = null;
+      trail = [];
     },
     focus: createOpenFocusRequest<OpenTicket>(),
     takeHandoff: () => null,
@@ -533,8 +537,10 @@ export function ticketPaneTrailState(paneId: string): TicketTrailState {
     get ticket() { return ticketPaneRecord(paneId)?.ticket ?? null; },
     get trail() { return ticketPaneRecord(paneId)?.trail ?? []; },
     set(next, nextTrail) {
-      if (!next) throw new Error('A ticket pane always shows a ticket: close the pane instead');
       setTicketPaneTicket(paneId, next, nextTrail);
+    },
+    close() {
+      closeTicketPane(paneId);
     },
     focus,
     takeHandoff: () => takeTicketPaneHandoff(paneId),
@@ -602,7 +608,8 @@ export function createTicketTrail({ state, shown }: TicketTrailOptions): TicketT
     show(open) {
       state.focus.end();
       const current = state.ticket;
-      state.set(open && current && sameTicketRef(current.ref, open.ref) ? current : open, []);
+      if (!open) state.close();
+      else state.set(current && sameTicketRef(current.ref, open.ref) ? current : open, []);
     },
     stepBack() {
       const trail = state.trail;
@@ -614,7 +621,7 @@ export function createTicketTrail({ state, shown }: TicketTrailOptions): TicketT
     },
     close() {
       state.focus.end();
-      state.set(null, []);
+      state.close();
     },
     destroy() {
       stop();

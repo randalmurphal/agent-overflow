@@ -1,16 +1,22 @@
 // Ticket panes: a tracker ticket in a pane of its own (docs/specs/issues.md,
 // "A ticket in its own pane"). A ticket pane is a layout item of kind
 // `ticket` under a generated id, and a record here: the ticket it shows,
-// the tickets Back steps through, the board it was opened from (its points
-// are that board's row) and the connection's tracker kind. The trail is
-// not saved: a reload reopens the pane on the ticket it showed.
+// the tickets Back steps through, and the board it was opened from (its
+// points are that board's row; none after a reload, when they are the first
+// board's the ticket is on). The layout saves what names the ticket (its
+// computer, connection and issue) and nothing a tracker wrote: a restored
+// pane learns the ticket's key and title from its subscription, and its
+// connection's tracker and the person's account there are read from the
+// connection as the app knows it now (components/issues/TicketHost.svelte),
+// never kept here.
 //
 // Who owns what:
 // - Running: the layout item owns that the pane exists, its place and its
 //   width; the record owns which ticket it shows. Nothing else names the
 //   ticket.
 // - Saving: the layout's save reads the record of each ticket item
-//   (`ticketPaneCarrier`); an item with no record is saved with no ticket.
+//   (`ticketPaneCarrier`: computer, connection, issue); an item with no
+//   record is saved with no ticket.
 // - Restoring: the saved entry owns the ticket until the restore writes
 //   the record (`restoreTicketPane`), before the layout takes the item. An
 //   entry whose ticket does not read back comes back as an item with no
@@ -52,6 +58,7 @@ import {
   averagePaneWidthPx,
   notePaneLayoutMutation,
   onPaneLayoutItemsRemoved,
+  paneLayoutKindOf,
   requestPaneLayoutPersistence,
 } from './paneLayout.svelte';
 import { focusPane, removeSurfacePaneFromLayout, resolveNewPaneInsertIndex, revealPane } from './panes.svelte';
@@ -69,8 +76,8 @@ export interface TicketPaneRecord {
   readonly ticket: OpenTicket;
   /** The tickets Back steps through, oldest first. */
   readonly trail: readonly OpenTicket[];
-  readonly board: string;
-  readonly kind: string;
+  /** The board it was opened from; null after a reload. */
+  readonly board: string | null;
   /** The focus the pane's opens ask for. */
   readonly focus: OpenFocusRequest<OpenTicket>;
 }
@@ -86,7 +93,8 @@ function changed(): void {
   for (const listener of changeListeners) listener();
 }
 
-function sameTicket(a: TrackerTicketRef, b: TrackerTicketRef): boolean {
+/** The one rule for whether two refs name the same ticket. */
+export function sameTicketRef(a: TrackerTicketRef, b: TrackerTicketRef): boolean {
   return a.backend === b.backend && a.connection === b.connection && a.issue === b.issue;
 }
 
@@ -116,8 +124,9 @@ export function opensTicketPane(event: MouseEvent | KeyboardEvent): boolean {
 }
 
 export interface OpenTicketPaneOptions {
-  readonly board: string;
-  readonly kind: string;
+  /** The board it is opened from; null where none is known (a restored
+   * pane's link). */
+  readonly board: string | null;
   /** Releases what holds the ticket until the pane's body subscribes it. */
   readonly handoff?: () => void;
 }
@@ -131,7 +140,7 @@ export interface OpenTicketPaneOptions {
 export function openTicketPane(open: OpenTicket, options: OpenTicketPaneOptions): string {
   if (!ticketPanesOffered()) throw new Error('openTicketPane: a ticket does not open in a pane of its own under the compact layout');
   for (const [paneId, record] of records) {
-    if (!sameTicket(record.ticket.ref, open.ref)) continue;
+    if (!sameTicketRef(record.ticket.ref, open.ref)) continue;
     options.handoff?.();
     focusPane(paneId);
     revealPane(paneId);
@@ -140,7 +149,7 @@ export function openTicketPane(open: OpenTicket, options: OpenTicketPaneOptions)
   }
   const paneId = `ticket-${randomId()}`;
   const focus = createOpenFocusRequest<OpenTicket>();
-  records.set(paneId, { ticket: open, trail: [], board: options.board, kind: options.kind, focus });
+  records.set(paneId, { ticket: open, trail: [], board: options.board, focus });
   if (options.handoff) handoffs.set(paneId, options.handoff);
   notePaneLayoutMutation();
   addPaneLayoutItem({ id: paneId, paneId, kind: 'ticket', widthPx: averagePaneWidthPx() }, resolveNewPaneInsertIndex());
@@ -175,8 +184,10 @@ export function takeTicketPaneHandoff(paneId: string): (() => void) | null {
   return handoff;
 }
 
-/** Closes the pane. Focus moves to the adjacent pane. */
+/** Closes the ticket pane `paneId`; throws for any other pane. Focus
+ * moves to the adjacent pane. */
 export function closeTicketPane(paneId: string): void {
+  if (paneLayoutKindOf(paneId) !== 'ticket') throw new Error(`closeTicketPane: ${paneId} is not a ticket pane`);
   removeSurfacePaneFromLayout(paneId);
 }
 
@@ -200,21 +211,20 @@ export function onTicketPanesChanged(listener: () => void): () => void {
 /** The pane as the layout saves it; null for an id that is not a ticket
  * pane. */
 export function ticketPaneCarrier(paneId: string): TicketPaneCarrier | null {
-  const record = records.get(paneId);
-  if (!record) return null;
-  const { ref, seed } = record.ticket;
-  return { backend: ref.backend, connection: ref.connection, issue: ref.issue, key: seed.key, title: seed.title, board: record.board, kind: record.kind };
+  const ref = records.get(paneId)?.ticket.ref;
+  return ref ? { backend: ref.backend, connection: ref.connection, issue: ref.issue } : null;
 }
 
-/** A saved pane comes back on the ticket it showed, with no trail; it asks
- * for no focus. Call before its layout item is placed. */
+/** A saved pane comes back on the ticket it showed, with no trail and no
+ * text of it until its subscription answers; it asks for no focus. Call
+ * before its layout item is placed. */
 export function restoreTicketPane(paneId: string, carrier: TicketPaneCarrier): void {
   const ticket: OpenTicket = {
     ref: { backend: carrier.backend, connection: carrier.connection, issue: carrier.issue },
-    seed: { key: carrier.key, title: carrier.title, card: null },
+    seed: { key: '', title: '', card: null },
   };
   records.get(paneId)?.focus.end();
-  records.set(paneId, { ticket, trail: [], board: carrier.board, kind: carrier.kind, focus: createOpenFocusRequest<OpenTicket>() });
+  records.set(paneId, { ticket, trail: [], board: null, focus: createOpenFocusRequest<OpenTicket>() });
   changed();
 }
 

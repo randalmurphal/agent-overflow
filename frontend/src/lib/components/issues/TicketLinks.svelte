@@ -20,19 +20,17 @@
   import Link from '@lucide/svelte/icons/link';
   import X from '@lucide/svelte/icons/x';
   import type { LinkView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
-  import ContextMenu from '../primitives/ContextMenu.svelte';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import Popover from '../primitives/Popover.svelte';
   import StatusMark from './StatusMark.svelte';
+  import TicketRefMenu from './TicketRefMenu.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
   import type { TicketSeed } from '../../stores/issuesPane.svelte';
-  import { opensTicketPane, ticketPanesOffered } from '../../stores/ticketPanes.svelte';
-  import { addToast } from '../../stores/toast.svelte';
+  import { opensTicketPane } from '../../stores/ticketPanes.svelte';
   import { linkGroups } from '../../stores/trackerTicketModel';
   import { linkTarget, ticketWrite, unlinkTicket, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
-  import { copyToClipboard } from '../../utils/clipboard';
   import { errString } from '../../utils/errors';
 
   interface Props {
@@ -61,10 +59,6 @@
     void unlinkTicket(ctx, link);
   }
 
-  async function copyKey(key: string): Promise<void> {
-    if (!(await copyToClipboard(key))) addToast('error', 'Could not copy the key.');
-  }
-
   // The row the menu was last opened on stays after it closes, so nothing
   // the closing menu still reads finds it gone.
   let menu = $state<{ x: number; y: number; link: LinkView } | null>(null);
@@ -78,10 +72,6 @@
     const rect = button.getBoundingClientRect();
     menu = { x: rect.left, y: rect.bottom + 4, link };
     menuOpen = true;
-  }
-  function run(action: (link: LinkView) => void | Promise<void>): void {
-    menuOpen = false;
-    if (menu) void action(menu.link);
   }
 </script>
 
@@ -150,14 +140,17 @@
 {#if menuOpen && menu}
   {@const link = menu.link}
   {@const removing = ticketWrite(ctx.key, linkTarget(link.id))?.pending ?? false}
-  <ContextMenu x={menu.x} y={menu.y} ariaLabel="Actions for {link.issue.key || link.issue.title}" onDismiss={() => { menuOpen = false; }}>
-    <MenuItem label="Open" testId="ticket-link-menu-open" onSelect={() => run((of) => open(of))} />
-    {#if ticketPanesOffered()}
-      <MenuItem label="Open in its own pane" testId="ticket-link-menu-own-pane" onSelect={() => run((of) => open(of, true))} />
-    {/if}
-    <MenuItem label="Remove link" variant="danger" disabled={removing} testId="ticket-link-menu-remove" onSelect={() => run(remove)} />
-    {#if link.issue.key}
-      <MenuItem label="Copy key" testId="ticket-link-menu-copy-key" onSelect={() => run((of) => copyKey(of.issue.key))} />
-    {/if}
-  </ContextMenu>
+  <TicketRefMenu
+    x={menu.x}
+    y={menu.y}
+    ariaLabel="Actions for {link.issue.key || link.issue.title}"
+    ticketKey={link.issue.key}
+    testIdPrefix="ticket-link-menu"
+    onOpen={(ownPane) => open(link, ownPane)}
+    onDismiss={() => { menuOpen = false; }}
+  >
+    {#snippet children(run)}
+      <MenuItem label="Remove link" variant="danger" disabled={removing} testId="ticket-link-menu-remove" onSelect={() => run(() => remove(link))} />
+    {/snippet}
+  </TicketRefMenu>
 {/if}

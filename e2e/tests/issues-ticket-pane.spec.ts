@@ -97,7 +97,7 @@ test('a ticket opens in a pane of its own from a card and a link, steps back on 
   await expect(second).toBeFocused();
   await expect.poll(subscribes).toBe(subscribedBefore + 1);
   const releasedBefore = releases();
-  await second.getByTestId('ticket-close').click();
+  await second.getByTestId('pane-close').click();
   await expect(own).toHaveCount(1);
   await expect.poll(releases).toBe(releasedBefore + 1);
 
@@ -108,7 +108,7 @@ test('a ticket opens in a pane of its own from a card and a link, steps back on 
   await expect(own.getByTestId('ticket-screen')).toHaveAttribute('data-issue', '10106', { timeout: 30_000 });
   await expect(own.getByTestId('ticket-title')).toHaveText('Linked both ways');
   const releasedAfterReload = releases();
-  await own.getByTestId('ticket-close').click();
+  await own.getByTestId('pane-close').click();
   await expect(own).toHaveCount(0);
   await expect.poll(releases).toBe(releasedAfterReload + 1);
 });
@@ -227,7 +227,7 @@ test('a closed ticket pane gives back its subscription, its DOM and its heap', a
     await expect(own.getByTestId('ticket-comment-input')).toBeVisible();
     const open = await measure();
     const released = releases();
-    await own.getByTestId('ticket-close').click();
+    await own.getByTestId('pane-close').click();
     await expect(own).toHaveCount(0);
     await expect.poll(releases).toBe(released + 1);
     return open;

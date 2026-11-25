@@ -2300,8 +2300,9 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
   });
 
   it('takes no drop or paste of files on a Linear ticket, and offers it no Attach', async () => {
-    install({ choices: [choice('1', { opens_first: true, connection_kind: 'linear' })] });
+    install();
     installTicket();
+    setBindingMock('TrackerConnections', async () => [connection('c1', 'linear')]);
     const names = installUploads();
     try {
       const view = mount();
@@ -2616,8 +2617,9 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
   });
 
   it('offers no Log time while the app does not know whose time it logs', async () => {
-    install({ choices: [choice('1', { opens_first: true, verified_account: '' })] });
+    install();
     installTicket();
+    setBindingMock('TrackerConnections', async () => [{ ...connection('c1', 'jira'), verifiedAccountId: '' }]);
     const view = mount();
     const screen = await openCard(view, '1');
     await within(screen).findByTestId('ticket-comment-input');
@@ -2901,8 +2903,8 @@ describe('a ticket in a pane of its own', () => {
     await fireEvent.click((await within(document.body).findByTestId('ticket-link-menu-own-pane')));
     await fireEvent.click(within(screen).getByTestId('ticket-parent'), { ctrlKey: true });
     expect(ticketPaneIds().map((id) => ticketPaneRecord(id)!.ticket.ref.issue)).toEqual(['3', '4', '9']);
-    // Each keeps the board and tracker it was opened from.
-    expect(ticketPaneRecord(ticketPaneIds()[2])).toMatchObject({ board: '1', kind: 'jira' });
+    // Each keeps the board it was opened from.
+    expect(ticketPaneRecord(ticketPaneIds()[2])).toMatchObject({ board: '1' });
 
     await fireEvent.click(links()[0]);
     await waitFor(() => expect(issuesTicket(view)?.dataset.issue).toBe('3'));
@@ -2937,7 +2939,7 @@ describe('a ticket in a pane of its own', () => {
     expect(ticket.subscribe).toHaveBeenCalledTimes(1);
     expect(ticketReleases(mocks)).toEqual([]);
 
-    await fireEvent.click(within(moved).getByTestId('ticket-close'));
+    await fireEvent.click(within(pane.container).getByTestId('pane-close'));
     expect(ticketPaneIds()).toEqual([]);
     await waitFor(() => expect(ticketReleases(mocks)).toEqual(['ticket-1-1']));
     expect(ticketDraft(key, 'new-comment')).toBeNull();
@@ -3024,7 +3026,7 @@ describe('a ticket in a pane of its own', () => {
     placeIssuesPane();
     install();
     installTicket();
-    restoreTicketPane('ticket-r', { backend: HOME_BACKEND, connection: 'c1', issue: '5', key: 'WEB-5', title: 'Issue 5', board: '1', kind: 'jira' });
+    restoreTicketPane('ticket-r', { backend: HOME_BACKEND, connection: 'c1', issue: '5' });
     setPaneLayoutItemsForTest([
       { id: PANE, paneId: PANE, kind: 'issues', widthPx: 600 },
       { id: 'ticket-r', paneId: 'ticket-r', kind: 'ticket', widthPx: 600 },
@@ -3047,7 +3049,7 @@ describe('a ticket in a pane of its own', () => {
   it('says so when the connection it names is gone', async () => {
     install();
     setBindingMock('SubscribeTrackerTicket', async () => { throw new TransportError('tracker_connection_missing', 'The tracker connection c9 was removed.'); });
-    restoreTicketPane('ticket-c', { backend: HOME_BACKEND, connection: 'c9', issue: '5', key: 'WEB-5', title: 'Issue 5', board: '1', kind: 'jira' });
+    restoreTicketPane('ticket-c', { backend: HOME_BACKEND, connection: 'c9', issue: '5' });
     setPaneLayoutItemsForTest([{ id: 'ticket-c', paneId: 'ticket-c', kind: 'ticket', widthPx: 600 }]);
     const pane = mountTicketPane('ticket-c');
     expect(await within(pane.container).findByTestId('ticket-ended-empty')).toHaveTextContent('its connection was turned off or removed');
@@ -3056,7 +3058,7 @@ describe('a ticket in a pane of its own', () => {
   it('says in a sentence that a computer gone from the window, or too old to read trackers, cannot show it', async () => {
     install();
     const ticket = installTicket();
-    restoreTicketPane('ticket-g', { backend: 'remote-gone', connection: 'c1', issue: '5', key: 'WEB-5', title: 'Issue 5', board: '1', kind: 'jira' });
+    restoreTicketPane('ticket-g', { backend: 'remote-gone', connection: 'c1', issue: '5' });
     setPaneLayoutItemsForTest([{ id: 'ticket-g', paneId: 'ticket-g', kind: 'ticket', widthPx: 600 }]);
     const gone = mountTicketPane('ticket-g');
     expect(await within(gone.container).findByTestId('ticket-computer-gone')).toHaveTextContent('cannot be shown');
@@ -3064,7 +3066,7 @@ describe('a ticket in a pane of its own', () => {
 
     await pairWithScopes([...SCOPES_AT_V0_0_19]);
     try {
-      restoreTicketPane('ticket-o', { backend: HOME_BACKEND, connection: 'c1', issue: '5', key: 'WEB-5', title: 'Issue 5', board: '1', kind: 'jira' });
+      restoreTicketPane('ticket-o', { backend: HOME_BACKEND, connection: 'c1', issue: '5' });
       setPaneLayoutItemsForTest([{ id: 'ticket-o', paneId: 'ticket-o', kind: 'ticket', widthPx: 600 }]);
       const older = mountTicketPane('ticket-o');
       expect(await within(older.container).findByTestId('ticket-computer-gone')).toHaveTextContent('does not let it read issue trackers');

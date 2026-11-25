@@ -62,8 +62,6 @@ const MAX_THREAD_ID_LENGTH = 256;
 const MAX_ITEM_ID_LENGTH = 256;
 const MAX_BREADCRUMB_ENTRIES = 32;
 const MAX_BREADCRUMB_LABEL_LENGTH = 200;
-const MAX_TICKET_KEY_LENGTH = 64;
-const MAX_TICKET_TITLE_LENGTH = 500;
 // Cap for pre-v3 persisted flex ratios during migration.
 const MAX_LEGACY_PANE_RATIO = 100;
 const SAFE_PANE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
@@ -164,30 +162,20 @@ function boundedString(value: unknown, max: number): value is string {
 }
 
 /**
- * Validate a ticket pane's saved ticket. Anything but a ticket with its
- * computer, connection and issue answers null: the pane comes back with no
- * ticket and says so (components/panes/TicketPane.svelte).
+ * Validate a ticket pane's saved ticket: its computer, connection and
+ * issue. Anything else answers null: the pane comes back with no ticket
+ * and says so (components/panes/TicketPane.svelte). A layout saved with
+ * the ticket's key, title, board and tracker (before they stopped being
+ * saved) reads the same; those are not kept.
  */
 export function parsePersistedTicket(value: unknown): PaneLayoutPersistedTicket | null {
   if (!value || typeof value !== 'object') return null;
-  const record = value as Record<string, unknown>;
-  const { backend, connection, issue, key, title, board, kind } = record;
+  const { backend, connection, issue } = value as Record<string, unknown>;
   // The home computer's key is the empty string.
   if (!boundedString(backend, MAX_ITEM_ID_LENGTH)) return null;
-  for (const id of [connection, issue]) {
-    if (!boundedString(id, MAX_ITEM_ID_LENGTH) || id.length === 0) return null;
-  }
-  if (!boundedString(board, MAX_ITEM_ID_LENGTH) || !boundedString(kind, MAX_ITEM_ID_LENGTH)) return null;
-  if (!boundedString(key, MAX_TICKET_KEY_LENGTH) || typeof title !== 'string') return null;
-  return {
-    backend: backend as string,
-    connection: connection as string,
-    issue: issue as string,
-    key,
-    title: title.slice(0, MAX_TICKET_TITLE_LENGTH),
-    board,
-    kind,
-  };
+  if (!boundedString(connection, MAX_ITEM_ID_LENGTH) || connection.length === 0) return null;
+  if (!boundedString(issue, MAX_ITEM_ID_LENGTH) || issue.length === 0) return null;
+  return { backend, connection, issue };
 }
 
 function companionPaneIdFor(sourcePaneId: string, kind: PersistedCompanionKind): string {

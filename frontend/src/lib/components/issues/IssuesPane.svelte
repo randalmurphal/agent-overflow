@@ -168,7 +168,7 @@
       return;
     }
     if (!board) return;
-    openTicketPane({ ref: { backend: board.backend, connection: board.connection, issue: row.card.id }, seed }, { board: board.board, kind: boardKind });
+    openTicketPane({ ref: { backend: board.backend, connection: board.connection, issue: row.card.id }, seed }, { board: board.board });
   }
 
   // The ticket open here moves into a pane of its own, which takes the
@@ -181,7 +181,7 @@
     const open = selection.ticket;
     if (!open || !board) return;
     const bridge = attachTrackerTicket(open.ref, false);
-    openTicketPane(open, { board: board.board, kind: boardKind, handoff: () => bridge.release() });
+    openTicketPane(open, { board: board.board, handoff: () => bridge.release() });
     selection.tickets.close();
   }
 
@@ -213,7 +213,6 @@
   const boardOffline = $derived(!!board && isTransportOutage(getTransportStatusFor(board.backend).status));
 
   // The board's connection's tracker, for the tickets it opens.
-  const boardKind = $derived(board ? choices.find((c) => c.backend === board.backend && c.choice.connection === board.connection)?.choice.connection_kind ?? '' : '');
 
   const boardState = $derived(attachment?.current ?? null);
   const held = $derived(boardState?.held ?? null);
@@ -547,10 +546,8 @@
         bind:this={ticketView}
         trail={selection.tickets}
         board={openBoard.board}
-        kind={boardKind}
         {compact}
         placement={besideFits ? { value: selection.placement, set: (p) => setTicketPlacement(screen, p) } : undefined}
-        onClose={() => selection.tickets.close()}
         onOwnPane={moveToOwnPane}
       />
     </div>

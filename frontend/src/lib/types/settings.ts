@@ -93,12 +93,6 @@ export interface PaneLayoutPersistedTicket {
   backend: string;
   connection: string;
   issue: string;
-  key: string;
-  title: string;
-  /** The board it was opened from; its points are that board's row. */
-  board: string;
-  /** The connection's tracker: jira or linear. */
-  kind: string;
 }
 
 export interface PaneLayoutPersistedPane {
