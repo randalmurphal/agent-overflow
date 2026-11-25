@@ -136,8 +136,8 @@ type syncBetween struct {
 	between func()
 }
 
-func (s *syncBetween) ReadMirrorBoardView(rootID int64, boardID string, sections []store.MirrorSection) (store.MirrorBoardView, bool, error) {
-	v, ok, err := s.Store.ReadMirrorBoardView(rootID, boardID, sections)
+func (s *syncBetween) ReadMirrorBoardView(rootID int64, boardID string, regroup store.MirrorRegroup, sections []store.MirrorSection) (store.MirrorBoardView, bool, error) {
+	v, ok, err := s.Store.ReadMirrorBoardView(rootID, boardID, regroup, sections)
 	s.once.Do(s.between)
 	return v, ok, err
 }
@@ -148,9 +148,9 @@ func (s *syncBetween) GetMirrorBoard(rootID int64, boardID string) (store.Mirror
 	return st, ok, err
 }
 
-func (s *syncBetween) ListMirrorSection(rootID int64, boardID string, section store.MirrorSection, after store.MirrorRowKey) (store.MirrorSectionPage, error) {
+func (s *syncBetween) ListMirrorSection(rootID int64, boardID string, regroup store.MirrorRegroup, section store.MirrorSection, after store.MirrorRowKey) (store.MirrorSectionPage, error) {
 	s.once.Do(s.between)
-	return s.Store.ListMirrorSection(rootID, boardID, section, after)
+	return s.Store.ListMirrorSection(rootID, boardID, regroup, section, after)
 }
 
 // One board view's totals and rows describe one state of the mirror: a

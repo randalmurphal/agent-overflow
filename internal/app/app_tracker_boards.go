@@ -161,11 +161,11 @@ func trackerSubscriptionCleanupKey(id string) string { return "tracker-subscript
 //ao:scope tracker:read
 //ao:route home
 func (a *App) TrackerBoard(ctx context.Context, subscriptionID string, sections []trackerapp.Section) (trackerapp.BoardView, error) {
-	svc, scope, err := a.trackerSubscriptionBoard(subscriptionID)
+	svc, scope, groups, err := a.trackerSubscriptionBoard(subscriptionID)
 	if err != nil {
 		return trackerapp.BoardView{}, err
 	}
-	out, err := svc.Board(scope, sections)
+	out, err := svc.Board(scope, groups, sections)
 	return out, trackerError(err)
 }
 
@@ -175,11 +175,11 @@ func (a *App) TrackerBoard(ctx context.Context, subscriptionID string, sections 
 //ao:scope tracker:read
 //ao:route home
 func (a *App) TrackerSectionRows(ctx context.Context, subscriptionID string, section trackerapp.Section, after *trackerapp.SectionCursor) (trackerapp.SectionPage, error) {
-	svc, scope, err := a.trackerSubscriptionBoard(subscriptionID)
+	svc, scope, groups, err := a.trackerSubscriptionBoard(subscriptionID)
 	if err != nil {
 		return trackerapp.SectionPage{}, err
 	}
-	out, err := svc.SectionRows(scope, section, after)
+	out, err := svc.SectionRows(scope, groups, section, after)
 	return out, trackerError(err)
 }
 
@@ -190,7 +190,7 @@ func (a *App) TrackerSectionRows(ctx context.Context, subscriptionID string, sec
 //ao:scope tracker:read
 //ao:route home
 func (a *App) TrackerBoardPatch(ctx context.Context, subscriptionID string, sections []trackerapp.Section, issues []string, held trackerapp.TotalsAt) (trackerapp.BoardPatch, error) {
-	svc, scope, err := a.trackerSubscriptionBoard(subscriptionID)
+	svc, scope, groups, err := a.trackerSubscriptionBoard(subscriptionID)
 	if err != nil {
 		return trackerapp.BoardPatch{}, err
 	}
@@ -198,22 +198,22 @@ func (a *App) TrackerBoardPatch(ctx context.Context, subscriptionID string, sect
 	for i, id := range issues {
 		ids[i] = tracker.IssueID(id)
 	}
-	out, err := svc.BoardPatch(scope, sections, ids, held)
+	out, err := svc.BoardPatch(scope, groups, sections, ids, held)
 	return out, trackerError(err)
 }
 
-// trackerSubscriptionBoard is the service and the board a board
-// subscription's handle names.
-func (a *App) trackerSubscriptionBoard(subscriptionID string) (*trackerapp.Service, trackerapp.Scope, error) {
+// trackerSubscriptionBoard is the service, the board a board
+// subscription's handle names and the status groups its reads apply.
+func (a *App) trackerSubscriptionBoard(subscriptionID string) (*trackerapp.Service, trackerapp.Scope, trackerapp.StatusGroups, error) {
 	svc, err := a.trackerService()
 	if err != nil {
-		return nil, trackerapp.Scope{}, err
+		return nil, trackerapp.Scope{}, trackerapp.StatusGroups{}, err
 	}
-	scope, err := svc.SubscriptionBoard(subscriptionID)
+	scope, groups, err := svc.SubscriptionBoard(subscriptionID)
 	if err != nil {
-		return nil, trackerapp.Scope{}, trackerError(err)
+		return nil, trackerapp.Scope{}, trackerapp.StatusGroups{}, trackerError(err)
 	}
-	return svc, scope, nil
+	return svc, scope, groups, nil
 }
 
 // SetTrackerSubscriptionVisible records whether the client shows what it
@@ -295,6 +295,8 @@ func trackerError(err error) error {
 // it refused the input or the request before sending it.
 func trackerRefusal(err error) (code, message string) {
 	var invalid *trackerapp.InvalidError
+	var unreadable *trackerapp.SetupFileError
+	var refusedSetup *trackerapp.SetupError
 	failed, isCall := errors.AsType[*trackerapp.CallFailure](err)
 	switch {
 	case err == nil:
@@ -333,6 +335,13 @@ func trackerRefusal(err error) (code, message string) {
 		return "tracker_boards_changed", "this change was not saved: the project's boards changed after this list was read"
 	case errors.Is(err, trackerapp.ErrInvalidBoards):
 		return "tracker_boards_refused", "this board list cannot be saved; fix what the detail names and save again"
+	case errors.As(err, &unreadable):
+		return "tracker_setup_unreadable", "this project's tracker setup cannot be read from " + unreadable.Path + " on the computer that holds the project (" +
+			unreadable.Reason + "); fix the file or remove it, and it is read again at its next use"
+	case errors.Is(err, trackerapp.ErrSetupNewer):
+		return "tracker_setup_newer", "this part of the setup was saved by a newer version of Agent Overflow; update this computer to change it"
+	case errors.As(err, &refusedSetup):
+		return "tracker_setup_refused", "this setup cannot be saved: " + refusedSetup.Reason
 	case errors.Is(err, trackerapp.ErrUnknownAttachment):
 		return "tracker_attachment_unknown", "this ticket no longer shows that attachment; look at the ticket again"
 	}

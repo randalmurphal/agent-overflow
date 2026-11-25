@@ -29,6 +29,7 @@ type Store interface {
 	RecordTrackerConnectionVerification(id string, v store.TrackerVerification) (store.TrackerConnection, bool, error)
 	DeleteTrackerConnection(id string) ([]string, error)
 	ListProjectTrackerBoards(projectID string) ([]store.ProjectTrackerBoard, error)
+	GetProject(id string) (store.Project, error)
 	ListTrackerBoardChoices(projectID string) ([]store.TrackerBoardChoice, error)
 	ReplaceProjectTrackerBoards(projectID string, held []store.HeldTrackerBoard, boards []store.ProjectTrackerBoard) (bool, store.TrackerBoardListing, error)
 	ReadyTrackerBoards(ctx context.Context, boards []store.TrackerBoardRef) error
@@ -45,6 +46,12 @@ type Deps struct {
 	// CredentialsDir is the owner-only folder the key files live in
 	// (keyfile.DirName under the app's config folder).
 	CredentialsDir string
+	// ConfigDir is the app's config folder, whose project directories
+	// (project.ConfigDir) hold each project's tracker setup file.
+	ConfigDir string
+	// SetupChanged is told after every change of a project's tracker
+	// setup as it is stored (setup.go). It must not block.
+	SetupChanged func()
 	// Origin says where a connection's client connects.
 	Origin Origin
 	// Version is the app version the clients send in their User-Agent.
@@ -96,6 +103,8 @@ type Service struct {
 	store          Store
 	changed        func()
 	credentialsDir string
+	configDir      string
+	setupChanged   func()
 	origin         Origin
 	version        string
 	now            func() time.Time
@@ -114,6 +123,12 @@ type Service struct {
 	// with life alone: one that Stop meets answers what it did.
 	halting context.Context
 	endHalt context.CancelFunc
+
+	// setupMu guards setups, each used project's tracker setup by slug
+	// (setup.go). It is held across the setup file's read and write and
+	// never with another of the service's locks.
+	setupMu sync.Mutex
+	setups  map[string]*heldSetup
 
 	// opMu serializes every change to a connection, from its first store
 	// read to its last write. It is never held across a tracker call.
@@ -199,8 +214,10 @@ func New(deps Deps) (*Service, error) {
 		return nil, errors.New("trackerapp: Deps needs Store, Changed, Origin, Now and Life")
 	case deps.EmitBoard == nil, deps.EmitIssue == nil, deps.Settled == nil, deps.ClientConnected == nil, deps.LoopFailed == nil:
 		return nil, errors.New("trackerapp: Deps needs EmitBoard, EmitIssue, Settled, ClientConnected and LoopFailed")
-	case deps.CredentialsDir == "":
-		return nil, errors.New("trackerapp: Deps.CredentialsDir is required")
+	case deps.CredentialsDir == "", deps.ConfigDir == "":
+		return nil, errors.New("trackerapp: Deps needs CredentialsDir and ConfigDir")
+	case deps.SetupChanged == nil:
+		return nil, errors.New("trackerapp: Deps.SetupChanged is required")
 	case deps.Version == "":
 		return nil, errors.New("trackerapp: Deps.Version is required for the clients' User-Agent")
 	}
@@ -211,7 +228,8 @@ func New(deps Deps) (*Service, error) {
 	mono, wall := time.Now(), deps.Now()
 	halting, endHalt := context.WithCancel(deps.Life)
 	s := &Service{
-		store: deps.Store, changed: deps.Changed, credentialsDir: deps.CredentialsDir,
+		store: deps.Store, changed: deps.Changed, credentialsDir: deps.CredentialsDir, configDir: deps.ConfigDir,
+		setupChanged: deps.SetupChanged, setups: map[string]*heldSetup{},
 		origin: deps.Origin, version: deps.Version, now: deps.Now, life: deps.Life, halting: halting, endHalt: endHalt,
 		steady: func() time.Time { return wall.Add(time.Since(mono)) }, steadyFrom: wall.UnixMilli(),
 		clients: map[string]*clients{}, problems: map[string]Problem{},

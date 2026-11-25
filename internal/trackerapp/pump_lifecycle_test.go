@@ -418,9 +418,9 @@ type readHook struct {
 	before func()
 }
 
-func (h *readHook) ReadMirrorBoardView(root int64, board string, sections []store.MirrorSection) (store.MirrorBoardView, bool, error) {
+func (h *readHook) ReadMirrorBoardView(root int64, board string, regroup store.MirrorRegroup, sections []store.MirrorSection) (store.MirrorBoardView, bool, error) {
 	h.once.Do(h.before)
-	return h.Store.ReadMirrorBoardView(root, board, sections)
+	return h.Store.ReadMirrorBoardView(root, board, regroup, sections)
 }
 
 func hasRow(v *BoardView, id string) bool {

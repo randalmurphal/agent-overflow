@@ -204,14 +204,14 @@ type syncAfterRead struct {
 	between func()
 }
 
-func (s *syncAfterRead) ReadMirrorBoardView(rootID int64, boardID string, sections []store.MirrorSection) (store.MirrorBoardView, bool, error) {
-	v, ok, err := s.Store.ReadMirrorBoardView(rootID, boardID, sections)
+func (s *syncAfterRead) ReadMirrorBoardView(rootID int64, boardID string, regroup store.MirrorRegroup, sections []store.MirrorSection) (store.MirrorBoardView, bool, error) {
+	v, ok, err := s.Store.ReadMirrorBoardView(rootID, boardID, regroup, sections)
 	s.once.Do(s.between)
 	return v, ok, err
 }
 
-func (s *syncAfterRead) ListMirrorSection(rootID int64, boardID string, section store.MirrorSection, after store.MirrorRowKey) (store.MirrorSectionPage, error) {
-	page, err := s.Store.ListMirrorSection(rootID, boardID, section, after)
+func (s *syncAfterRead) ListMirrorSection(rootID int64, boardID string, regroup store.MirrorRegroup, section store.MirrorSection, after store.MirrorRowKey) (store.MirrorSectionPage, error) {
+	page, err := s.Store.ListMirrorSection(rootID, boardID, regroup, section, after)
 	s.once.Do(s.between)
 	return page, err
 }

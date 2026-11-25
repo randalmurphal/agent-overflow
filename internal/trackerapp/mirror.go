@@ -64,9 +64,10 @@ type MirrorStore interface {
 	ListMirrorCards(rootID int64, issueIDs []string) ([]store.MirrorCard, error)
 	ListMirrorIssueRows(rootID int64, issueID, afterBoard string) ([]store.MirrorIssueRow, bool, error)
 	ListMirrorOffBoardLinkedIssues(rootID int64, after string, polled []string) ([]string, bool, error)
-	ListMirrorSection(rootID int64, boardID string, section store.MirrorSection, after store.MirrorRowKey) (store.MirrorSectionPage, error)
-	ReadMirrorBoardView(rootID int64, boardID string, sections []store.MirrorSection) (store.MirrorBoardView, bool, error)
-	ReadMirrorBoardPatch(rootID int64, boardID string, sections []store.MirrorSection, issueIDs []string, held store.MirrorTotalsAt) (store.MirrorBoardPatch, bool, error)
+	ListMirrorSection(rootID int64, boardID string, regroup store.MirrorRegroup, section store.MirrorSection, after store.MirrorRowKey) (store.MirrorSectionPage, error)
+	ReadMirrorBoardView(rootID int64, boardID string, regroup store.MirrorRegroup, sections []store.MirrorSection) (store.MirrorBoardView, bool, error)
+	ReadMirrorBoardPatch(rootID int64, boardID string, regroup store.MirrorRegroup, sections []store.MirrorSection, issueIDs []string,
+		held store.MirrorTotalsAt) (store.MirrorBoardPatch, bool, error)
 	ListMirrorIssueBoards(rootID int64, issueIDs, parentIDs []string) ([]store.MirrorIssueBoard, error)
 	ReadMirrorRefreshTargets(rootID int64, cardIDs, detailIDs, boardIDs []string) (store.MirrorRefreshTargets, error)
 
