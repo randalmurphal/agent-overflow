@@ -1523,14 +1523,16 @@ site and issue ID, so the link means the same ticket on every computer.
   `thread_tickets` that runs once per statement: a full thread list read
   of 5,000 threads costs about 0.1% more with no link and a few percent
   more with 500 (`BenchmarkListThreadsLinked`).
-- **Writes.** `SetThreadTicket` (bound, `threads:operate`) links through
+- **Writes.** `SetThreadTicket` (bound, `threads:operate`, and
+  `tracker:read` since it reads the ticket) links through
   `trackerapp.Service.LinkThread`: the connection `TicketConnection`
   names, the card the mirror holds with no request, otherwise one card
   read stored with the link in one transaction (a card the mirror
   replaced meanwhile is read from the mirror once more). A refusal leaves
   the link and the mirror as they were. `ClearThreadTicket` unlinks;
   `ThreadsForTicket` (`threads:read`, route selected) lists a ticket's
-  threads by the issue index.
+  threads by the issue index, as search lists threads: an ask's copy and
+  a side chat before Keep, which carry their source's link, are left out.
 - **Frames.** A method announces its own thread's row. Every other
   thread whose link a write moved, and every thread linked to a site
   whose connection was added, turned on or off, or removed
@@ -1550,11 +1552,14 @@ site and issue ID, so the link means the same ticket on every computer.
   mirror here holds (`AdoptLinks`). A receiver too old to read the link
   drops it; a sender too old to carry one leaves the thread unlinked.
 
+A delete claims its family before it reads the family's links, and every
+link write checks the claim in its transaction, so a link set during a
+delete is refused and the links the delete read are the ones it ends.
+
 Sequences left as they are: a card write that commits between a link's
 mirror read and its commit leaves the copy of the earlier card until the
-ticket's next change; a link set between a delete's read of the family's
-links and its commit tells no Visibility, which the board's next read
-repairs; two connections to one site read through the lowest ID.
+ticket's next change; two connections to one site read through the lowest
+ID.
 
 ## Agent tools
 
@@ -1631,6 +1636,9 @@ Not built, owed by the app layer:
 - A status renamed or moved to another group in the tracker reaches a
   link's copy at the ticket's next card change, not at the catalog write
   ([Thread links](#thread-links)).
+- A link on a thread with nothing sent does not keep the thread: clearing
+  its composer deletes the thread, link included. The slice that first
+  lets a person link such a thread decides it.
 - The project's tracker setup: one file in the project's app directory
   (`project.ConfigDir`), beside its workflow profile, that `trackerapp`
   reads and replaces whole, holding status-group overrides (a status's
