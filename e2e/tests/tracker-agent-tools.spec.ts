@@ -27,8 +27,9 @@ for (const provider of PROVIDERS) {
     const read = JSON.parse(run.read.text) as Record<string, unknown>;
     expect(read).toMatchObject({
       key: 'WEB-12', title: 'Login fails on Safari', status: 'In Progress', assignee: 'User 1',
-      url: 'https://example.atlassian.net/browse/WEB-12', description: 'The page reloads and shows the form again.',
-      comments: [{ by: 'User 1', body: 'The staging proxy drops the cookie.' }],
+      // Bodies are the ADF converter's Markdown, which ends each with a newline.
+      url: 'https://example.atlassian.net/browse/WEB-12', description: 'The page reloads and shows the form again.\n',
+      comments: [{ by: 'User 1', body: 'The staging proxy drops the cookie.\n' }],
     });
     expect(read).not.toHaveProperty('more_comments');
     expect(run.unlinked).toEqual({ isError: true, text: '[tracker_no_ticket] This thread is not linked to a ticket; name one with key.' });
