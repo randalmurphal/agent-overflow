@@ -617,11 +617,14 @@ API v4.
   ([registry](https://registry.npmjs.org/layerchart/2.10.1)). The library
   choice is not ruled.
 - Read-only agent SQL needs the SQLite authorizer, which
-  `modernc.org/sqlite` exposes from v1.61.0, with query cancellation fixes
-  in v1.61.1
+  `modernc.org/sqlite` exposes from v1.61.0
   ([changelog](https://gitlab.com/cznic/sqlite/-/raw/master/CHANGELOG.md)).
-  `go.mod` pins v1.63.0 (SQLite 3.54.1). SQLite's guidance for untrusted SQL adds defensive
-  mode, lowered limits and an interrupt
+  `go.mod` pins v1.63.0 (SQLite 3.54.1), the newest tag. A canceled
+  context interrupts only a statement's first step: the driver watches the
+  context for the duration of `stmt.query`, and `rows.Next` steps without
+  an interrupt (see [Canceling agent SQL](#canceling-agent-sql)). SQLite's
+  guidance for untrusted SQL adds defensive mode, lowered limits and an
+  interrupt
   ([security](https://www.sqlite.org/security.html),
   [authorizer](https://www.sqlite.org/c3ref/set_authorizer.html)).
 - The widget vocabulary should cover what users build in the trackers: Jira's
@@ -629,6 +632,45 @@ API v4.
   and Linear's [Insights](https://linear.app/docs/insights). Jira's velocity
   chart measures in points, time, issue count or any numeric field
   ([velocity chart](https://support.atlassian.com/jira-software-cloud/docs/view-and-understand-the-velocity-chart/)).
+
+### Canceling agent SQL
+
+Measured on v1.63.0 and SQLite 3.54.1. A Go function counted its calls over
+a table of 12,000 rows and canceled the query's context from its first call;
+each statement ran 3 times.
+
+| Statement | Rows the function read after the cancel |
+|---|---|
+| `SELECT count(f(x)) FROM t`: the aggregate is the first row | 167, 221, 227 |
+| `SELECT 0 UNION ALL SELECT count(f(x)) FROM t`: a cheap row first | 12,000 every time |
+| the same, wrapped as below | 294, 113, 81 |
+| `SELECT f(x) FROM t`, read row by row | 208, 204, 98 |
+| the same, wrapped | 229, 124, 176 |
+
+The connection answered the next query after every interrupt. Read row by
+row, `database/sql` stops between rows. Work that one step does after the
+first row runs to its end: a later compound arm, or an aggregate fed by a
+per-row subquery.
+
+The driver installs its interrupt watcher and progress handler only inside
+`stmt.query`, which includes the first `sqlite3_step`, and exports no
+interrupt; it owns the connection's one progress-handler slot. So an
+evaluator makes SQLite produce the whole result in the first step: it
+prepares the agent's statement to learn its column count n, then runs
+
+```sql
+WITH r(c1, ..., cn) AS (<agent SQL>)
+SELECT json_group_array(json_array(c1, ..., cn)) FROM r
+```
+
+and decodes the one JSON value. The column list renames the columns, so
+duplicate names do not matter. `SQLITE_LIMIT_LENGTH` on the evaluator's
+connection bounds the result. Two limits:
+
+- A BLOB column fails the statement ("JSON cannot hold BLOB values"); the
+  agent's SQL must convert it, for example with `hex()`.
+- A row cap goes inside the wrapper (`SELECT ... LIMIT n` as the CTE body).
+  A `LIMIT` on the outer `SELECT` caps the one aggregate row, not the rows.
 
 ## Planning poker add-on
 
