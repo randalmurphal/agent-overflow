@@ -229,3 +229,30 @@ func TestWorklogsWithNoTimeTracking(t *testing.T) {
 		t.Fatalf("calls %v, problem %q", got, f.problem())
 	}
 }
+
+// A worklog read of a Jira connection whose time is in Tempo names the
+// tracker each request went to when it could not be reached: Tempo for
+// the worklogs, Jira for the read that names their issues.
+func TestAWorklogReadNamesTheTrackerItCouldNotReach(t *testing.T) {
+	t.Parallel()
+	f := newWriteFixture(t)
+	f.addTempo(f.conn.ID)
+	reset := &trackerapi.TransientError{Err: errors.New("reset")}
+	for _, tc := range []struct {
+		name    string
+		err     error
+		message string
+	}{
+		{"a Tempo reset", reset, "Tempo could not be reached; try again"},
+		{"a reset of the read that names the issues", fmt.Errorf("jiraprovider: the issues of the Tempo worklogs: %w: %w", tracker.ErrWorklogNames, reset),
+			"Jira could not be reached; try again"},
+	} {
+		f.w.time.mu.Lock()
+		f.w.time.fail = tc.err
+		f.w.time.mu.Unlock()
+		got := must[WorklogDays](t)(f.svc.RefreshWorklogs(t.Context(), f.conn.ID, "acc-user2", "2026-11-01", "2026-11-02"))
+		if got.Failure == nil || got.Failure.Message != tc.message {
+			t.Errorf("%s: the refresh answered %+v; want %q", tc.name, got.Failure, tc.message)
+		}
+	}
+}

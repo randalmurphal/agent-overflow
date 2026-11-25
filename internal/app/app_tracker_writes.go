@@ -237,14 +237,11 @@ func (a *App) TrackerWorklogs(ctx context.Context, connectionID, author, from, t
 // from the connection's time tracker, then answers them as
 // TrackerWorklogs does. A read that failed is the answer's failure, with
 // the worklogs as this computer held them before. It runs at the default
-// budget, as a form read does. Its requests grow with the time logged:
-// Tempo answers in pages, and Jira looks the author up (unless its client
-// has the user cached), pages the issues the author logged time on with the
-// worklogs each embeds (up to 20), and reads the worklogs of an issue
-// with more in pages of their own. On jiraprovider's cost fixture,
-// a month of 20 worklogs on 20 issues, the read is 1 Tempo request of
-// about 11.8 KB (TestRequestCost) or 2 Jira requests of about 28.0 KB
-// (TestRequestCostJiraWorklogs).
+// budget, as a form read does. Its requests grow with the time logged;
+// on jiraprovider's cost fixture, a month of 20 worklogs on 20 issues,
+// the read is 2 requests through Tempo (the Tempo page and the Jira read
+// that names its issues) or 2 Jira requests, as
+// docs/architecture/tracker-backend.md, "Methods and events", details.
 //
 //ao:scope tracker:read
 //ao:route home

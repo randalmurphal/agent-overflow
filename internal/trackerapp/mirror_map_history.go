@@ -105,7 +105,7 @@ func emptyHistory(issue tracker.IssueID, updatedAt int64) store.MirrorHistory {
 // mirrorWorklog is w as the store holds it.
 func mirrorWorklog(w tracker.Worklog) store.MirrorWorklog {
 	return store.MirrorWorklog{
-		ID: string(w.ID), IssueID: string(w.Issue), AuthorID: string(w.Author), Day: w.Day.String(),
+		ID: string(w.ID), IssueID: string(w.Issue), IssueKey: w.IssueKey, IssueTitle: w.IssueTitle, AuthorID: string(w.Author), Day: w.Day.String(),
 		SpentSeconds: int64(w.Spent / time.Second), Description: w.Description, UpdatedAt: millis(w.Updated),
 	}
 }
@@ -118,8 +118,8 @@ func worklogOf(m store.MirrorWorklog) (tracker.Worklog, error) {
 		return tracker.Worklog{}, fmt.Errorf("trackerapp: worklog %s: %w", m.ID, err)
 	}
 	return tracker.Worklog{
-		ID: tracker.WorklogID(m.ID), Issue: tracker.IssueID(m.IssueID), Author: tracker.UserID(m.AuthorID), Day: day,
-		Spent: time.Duration(m.SpentSeconds) * time.Second, Description: m.Description, Updated: timeOf(m.UpdatedAt),
+		ID: tracker.WorklogID(m.ID), Issue: tracker.IssueID(m.IssueID), IssueKey: m.IssueKey, IssueTitle: m.IssueTitle,
+		Author: tracker.UserID(m.AuthorID), Day: day, Spent: time.Duration(m.SpentSeconds) * time.Second, Description: m.Description, Updated: timeOf(m.UpdatedAt),
 	}, nil
 }
 
