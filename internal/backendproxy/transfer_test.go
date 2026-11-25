@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -108,7 +109,7 @@ func TestCarryTransfer_APageThatStopsSendingIsAnswered(t *testing.T) {
 	relay := relayOf(t, carrierFor(t, upstream, 2*time.Second, time.Minute))
 	conn := sendRaw(t, relay, "PUT /attachments/upload?ticket=t HTTP/1.1\r\nHost: relay\r\nContent-Length: 65536\r\n\r\n", make([]byte, 32768))
 	resp, body := readAnswer(t, conn, 8*time.Second, "a page that stopped sending")
-	if resp.StatusCode != http.StatusRequestTimeout || !strings.Contains(body, "the file stopped arriving at this computer for 2 seconds, so it was not sent on; send it again") {
+	if resp.StatusCode != http.StatusRequestTimeout || !strings.Contains(body, "the file stopped arriving at this computer for 2 seconds, so it was not sent on in full; send it again") {
 		t.Fatalf("a page that stopped sending: %d %q", resp.StatusCode, body)
 	}
 	select {
@@ -238,39 +239,189 @@ func TestCarryTransfer_AnUpstreamThatStopsTakingTheBody(t *testing.T) {
 		}
 	}()
 	resp, body := readAnswer(t, conn, 10*time.Second, "an upstream that stopped taking the body")
-	if resp.StatusCode != http.StatusGatewayTimeout || !strings.Contains(body, "the computer that holds it stopped taking the file for 2 seconds; send it again") {
+	if resp.StatusCode != http.StatusGatewayTimeout || !strings.Contains(body, "the computer that holds it stopped taking the file for 2 seconds, so it did not receive it in full; send it again") {
 		t.Fatalf("an upstream that stopped taking the body: %d %q", resp.StatusCode, body)
 	}
 }
 
-// TestCarryTransfer_AServerShuttingDownEndsAStalledUpload — the server's
-// own context ending (transport's BaseContext at shutdown) ends a read of
-// a page that stopped sending at once, so the shutdown's join does not
-// wait out the stall window.
-func TestCarryTransfer_AServerShuttingDownEndsAStalledUpload(t *testing.T) {
+// TestCarryTransfer_AnUploadSentWholeWhoseAnswerIsWithheld — an upstream
+// that took the whole file and never answers may have stored it, so the
+// page is told it may have arrived and to check before sending it again,
+// never to send it again outright.
+func TestCarryTransfer_AnUploadSentWholeWhoseAnswerIsWithheld(t *testing.T) {
+	received := make(chan int, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n, err := io.Copy(io.Discard, r.Body)
+		if err != nil {
+			return
+		}
+		received <- int(n)
+		<-r.Context().Done()
+	}))
+	t.Cleanup(upstream.Close)
+	relay := relayOf(t, carrierFor(t, upstream, time.Minute, 2*time.Second))
+	conn := sendRaw(t, relay, "PUT /attachments/tracker/upload?ticket=t HTTP/1.1\r\nHost: relay\r\nContent-Length: 5\r\n\r\n", []byte("hello"))
+	resp, body := readAnswer(t, conn, 8*time.Second, "an upload sent whole whose answer is withheld")
+	if n := <-received; n != 5 {
+		t.Fatalf("the upstream received %d bytes", n)
+	}
+	if resp.StatusCode != http.StatusGatewayTimeout ||
+		!strings.Contains(body, "the file was sent on in full, but the computer that holds it did not begin to answer within 2 seconds, so it may have been received; check before sending it again") {
+		t.Fatalf("an upload sent whole whose answer is withheld: %d %q", resp.StatusCode, body)
+	}
+}
+
+// TestCarryTransfer_AServerShuttingDownEndsAStalledUpload — the request's
+// context ending (transport's BaseContext at shutdown) while net/http's
+// transport is blocked reading a page that stopped sending ends that read
+// at once, so the shutdown's join does not wait out the stall window.
+// The cancel comes once the upstream has received bytes, so the transport
+// is reading the page when it does.
+func TestCarryTransfer_AServerShuttingDownEndsAStalledUpload(t *testing.T) {
+	got := make(chan struct{}, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.ReadFull(r.Body, make([]byte, 1)); err != nil {
+			return
+		}
+		got <- struct{}{}
 		_, _ = io.Copy(io.Discard, r.Body)
 	}))
 	t.Cleanup(upstream.Close)
 	c := carrierFor(t, upstream, time.Minute, time.Minute)
 	root, shutdown := context.WithCancel(context.Background())
 	defer shutdown()
-	reading, returned := make(chan struct{}), make(chan struct{})
+	returned := make(chan struct{})
 	relay := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer close(returned)
-		close(reading)
 		c.CarryTransfer(w, r)
 	}))
 	relay.Config.BaseContext = func(net.Listener) context.Context { return root }
 	relay.Start()
 	t.Cleanup(relay.Close)
 	sendRaw(t, relay, "PUT /attachments/upload?ticket=t HTTP/1.1\r\nHost: relay\r\nContent-Length: 65536\r\n\r\n", make([]byte, 1024))
-	<-reading
+	<-got
 	shutdown()
 	select {
 	case <-returned:
 	case <-time.After(5 * time.Second):
 		t.Fatal("a stalled upload outlived the server's context by 5s")
+	}
+}
+
+// gatedDeadlines is a writer whose read deadline, once set to end a read,
+// blocks until released, and records a deadline set after the handler
+// using it returned.
+type gatedDeadlines struct {
+	*httptest.ResponseRecorder
+	entered, release chan struct{}
+	once             sync.Once
+	returned, late   atomic.Bool
+}
+
+func (g *gatedDeadlines) SetReadDeadline(d time.Time) error {
+	if !d.IsZero() {
+		g.once.Do(func() { close(g.entered) })
+		<-g.release
+		if g.returned.Load() {
+			g.late.Store(true)
+		}
+	}
+	return nil
+}
+
+func (g *gatedDeadlines) SetWriteDeadline(time.Time) error { return nil }
+
+// TestCarryTransfer_ACarryReturnsAfterItsLeaveCallback — the request's
+// context ending begins a callback that ends the page's read; the carry
+// does not return while that callback runs, so nothing sets a deadline on
+// a connection the handler gave back.
+func TestCarryTransfer_ACarryReturnsAfterItsLeaveCallback(t *testing.T) {
+	asked := make(chan struct{}, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked <- struct{}{}
+		<-r.Context().Done()
+	}))
+	t.Cleanup(upstream.Close)
+	c := carrierFor(t, upstream, time.Minute, time.Minute)
+	g := &gatedDeadlines{ResponseRecorder: httptest.NewRecorder(), entered: make(chan struct{}), release: make(chan struct{})}
+	ctx, leave := context.WithCancel(context.Background())
+	defer leave()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.CarryTransfer(g, httptest.NewRequest(http.MethodGet, "/attachments/tracker/501?ticket=t", nil).WithContext(ctx))
+		g.returned.Store(true)
+	}()
+	<-asked
+	leave()
+	select {
+	case <-g.entered:
+	case <-time.After(5 * time.Second):
+		close(g.release)
+		t.Fatal("the request's end did not end the page's read")
+	}
+	// An absence: the carry must still be waiting on the callback. A
+	// carry that does not wait returns within this in every run.
+	select {
+	case <-done:
+		close(g.release)
+		t.Fatal("the carry returned while its leave callback was still setting the page's deadline")
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(g.release)
+	<-done
+	if g.late.Load() {
+		t.Fatal("a deadline was set on the page after the carry returned")
+	}
+}
+
+// TestCarryTransfer_PageBytesDoNotExtendAStalledAnswer — once the upstream's
+// headers arrived, only its own bytes restart the window: a full-duplex
+// upstream that answered and stopped sending while it still reads the
+// file has the page's answer cut, though the page keeps sending.
+func TestCarryTransfer_PageBytesDoNotExtendAStalledAnswer(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rc := http.NewResponseController(w)
+		if err := rc.EnableFullDuplex(); err != nil {
+			t.Errorf("full duplex: %v", err)
+			return
+		}
+		if _, err := io.ReadFull(r.Body, make([]byte, 1)); err != nil {
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte("x"))
+		_ = rc.Flush()
+		_, _ = io.Copy(io.Discard, r.Body)
+	}))
+	t.Cleanup(upstream.Close)
+	relay := relayOf(t, carrierFor(t, upstream, 2*time.Second, time.Minute))
+	conn := sendRaw(t, relay, "PUT /attachments/upload?ticket=t HTTP/1.1\r\nHost: relay\r\nContent-Length: 1048576\r\n\r\n", make([]byte, 64<<10))
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(250 * time.Millisecond):
+			}
+			if _, err := conn.Write(make([]byte, 1024)); err != nil {
+				return
+			}
+		}
+	}()
+	if err := conn.SetReadDeadline(time.Now().Add(8 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("no headers: %v", err)
+	}
+	got, err := io.ReadAll(resp.Body)
+	var timeout net.Error
+	if err == nil || errors.As(err, &timeout) && timeout.Timeout() {
+		t.Fatalf("an answer that stopped after %d bytes while the page kept sending: not cut within 8s (%v)", len(got), err)
 	}
 }
 
@@ -348,6 +499,34 @@ func TestCarriedTransferFireRacesAPhaseSwitch(t *testing.T) {
 				t.Fatalf("%s: phase %d, cause %v", sw.name, p, context.Cause(ctx))
 			}
 			tr.timer.Stop()
+		}
+	}
+}
+
+// Every sentence a fire answers with is true of what may have happened: a
+// body that did not go out whole says to send it again, one sent on whole
+// that it may have been received and to check first, and a request with
+// no body to try again.
+func TestTheRelaysSentencesAreTrue(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		phase                phase
+		body, whole, reading bool
+		status               int
+		want                 string
+	}{
+		{"a page that stopped sending", phaseBody, true, false, true, http.StatusRequestTimeout, "was not sent on in full; send it again"},
+		{"an upstream that stopped taking the body", phaseBody, true, false, false, http.StatusGatewayTimeout, "did not receive it in full; send it again"},
+		{"a download not answered", phaseAwaiting, false, false, false, http.StatusGatewayTimeout, "did not begin to answer within 60 seconds; try again"},
+		{"a download that stopped", phaseAnswering, false, false, false, http.StatusGatewayTimeout, "stopped sending for 60 seconds; try again"},
+		{"an early answer that stopped", phaseAnswering, true, false, false, http.StatusGatewayTimeout, "before the file was sent on in full; send it again"},
+		{"an upload sent whole not answered", phaseAwaiting, true, true, false, http.StatusGatewayTimeout, "did not begin to answer within 60 seconds, so it may have been received; check before sending it again"},
+		{"an upload sent whole whose answer stopped", phaseAnswering, true, true, false, http.StatusGatewayTimeout, "stopped answering for 60 seconds, so it may have been received; check before sending it again"},
+	} {
+		tr := &carriedTransfer{phase: tc.phase, body: tc.body, whole: tc.whole, window: time.Minute}
+		tr.reading.Store(tc.reading)
+		if got := tr.endedLocked(); got.status != tc.status || !strings.HasSuffix(got.message, tc.want) {
+			t.Errorf("%s: %d %q, want %d ending %q", tc.name, got.status, got.message, tc.status, tc.want)
 		}
 	}
 }

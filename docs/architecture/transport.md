@@ -323,19 +323,32 @@ once a second (`ProgressEvery`). Such a download that stops moving ends
 
 A relay (`backendproxy.CarryTransfer`) carries every byte route with one
 rule, owned by one timer per request (`internal/backendproxy/transfer.go`):
-the transfer ends when no byte moves for `TransferStallWindow`, in either
-direction, except that the upstream has `AnswerAllowance` (9 min: the slowest backend answer, a tracker
-upload's at 8 min, and a minute to cross the hops) from the
-request's last byte to its answer's headers. Nothing is sized from a
-declared length, and nothing relies on the backend's timers or on a
-dialer's keepalive, since the backend may be another computer on another
-version. A page that stops sending is answered 408, and an upstream that
-stops taking the body, does not begin its answer in time, or stops
-sending before its headers are written is answered 504, each with a
-plain-text reason the page quotes. An upstream that stops after its
-headers has the page's answer cut. An upstream that answers before the
-body's end has its answer carried at once: the relay ends its read of the
-page rather than wait for the rest of the body.
+the transfer ends when no byte moves for `TransferStallWindow` in the
+direction it waits on (the page's body while it goes up, the upstream's
+answer once its headers came), except that the upstream has
+`AnswerAllowance` (9 min: the slowest backend answer, a tracker upload's
+at 8 min, and a minute to cross the hops) from the request's last byte to
+its answer's headers. Nothing is sized from a declared length, and
+nothing relies on the backend's timers or on a dialer's keepalive, since
+the backend may be another computer on another version.
+
+What the page is told is true of what may have happened. A page that
+stops sending is answered 408, and an upstream that stops taking the body
+504; neither body went out whole, so both say to send it again. An
+upload sent on whole whose answer does not begin in time is answered 504
+saying the file may have been received and to check before sending it
+again. A download whose answer does not begin in time is answered 504
+saying to try again. Each reason is plain text the page quotes. An
+upstream that stops after its headers has the page's answer cut. An
+upstream that answers before the body's end has its answer carried at
+once: the relay ends its read of the page rather than wait for the rest
+of the body.
+
+The request's context ending (the page leaving, this server shutting
+down) ends a blocked read of the page at once, so a shutdown's join does
+not wait out the stall window behind a page that stopped sending; the
+carry returns only after that callback, and a fire of the timer, have
+finished with the page's connection.
 
 ## Method metadata and routing
 
