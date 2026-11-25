@@ -959,6 +959,33 @@ describe('the ticket in the pane', () => {
     expect(estimate).toHaveBeenCalledTimes(2);
   });
 
+  it('shows a field of several typed values without an editor, and edits a single typed value in place', async () => {
+    install();
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      fields: [
+        { id: 'tags', name: 'Tags', kind: 'text', list: true, editable: true, required: false, value: { kind: 'text', texts: ['A', 'B'] } },
+        { id: 'due', name: 'Due date', kind: 'date', list: false, editable: true, required: false, value: { kind: 'date', dates: ['2026-01-02'] } },
+      ],
+    } as unknown as DetailView));
+    const edit = setBindingMock('EditTrackerIssue', async (): Promise<WriteView> => ({ parts: [{ step: 'edit', state: 'applied' }] }) as WriteView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await fireEvent.click(within(screen).getByTestId('ticket-more-fields'));
+    const fieldOf = (id: string) => within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === id)!;
+    const tags = within(fieldOf('tags')).getByTestId('ticket-field-value');
+    expect(tags).toHaveTextContent('A, B');
+    expect(tags.tagName).toBe('SPAN');
+    await fireEvent.click(tags);
+    expect(within(fieldOf('tags')).queryByTestId('ticket-field-input')).toBeNull();
+    await fireEvent.click(within(fieldOf('due')).getByTestId('ticket-field-value'));
+    const due = within(fieldOf('due')).getByTestId('ticket-field-input');
+    await fireEvent.input(due, { target: { value: '2026-02-03' } });
+    await fireEvent.keyDown(due, { key: 'Enter' });
+    await waitFor(() => expect(edit).toHaveBeenCalledWith('c1', { issue: '1', fields: [{ field: 'due', typed: ['2026-02-03'] }], accept_loss: false }));
+    expect(edit).toHaveBeenCalledTimes(1);
+  });
+
   it('opens a card\'s ticket from the card\'s menu, and copies its key from it', async () => {
     install();
     installTicket();

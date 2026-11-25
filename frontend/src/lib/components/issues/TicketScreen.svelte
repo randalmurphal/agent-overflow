@@ -227,7 +227,9 @@
   const pointsText = $derived(row ? formatEstimate(row.estimate, row.unit) ?? '' : '');
 
   // A field of the ticket's own: changed in place when it takes values a
-  // person picks or types; a date and time or a read-only value is shown.
+  // person picks or types one at a time; a date and time, a read-only
+  // value or several typed values (which one line of text cannot hold
+  // apart) is shown.
   function editorOf(f: FieldView): FieldEditor | null {
     if (!f.editable) return null;
     switch (f.kind) {
@@ -237,6 +239,7 @@
       case 'text':
       case 'number':
       case 'date':
+        if (f.list) return null;
         return {
           kind: 'type',
           input: f.kind,

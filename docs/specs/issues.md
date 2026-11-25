@@ -305,8 +305,9 @@ avatar.
 Status: built: a ticket opened from a card over or beside the board, the
 choice remembered, with the split between them; the wide and narrow
 layouts with the rail and Details; status, assignee, priority, points and
-type changed in place, and the other fields with allowed values or typed
-values behind the control with its find box; each long text field as a
+type changed in place, and the other fields with allowed values or one
+typed value behind the control with its find box (a field of several
+typed values is shown, not edited); each long text field as a
 section that folds and is edited as Markdown, an image or attachment in
 its text shown as a chip naming the file; comments in either order
 with the control and the comment box, edited, deleted and copied from a
