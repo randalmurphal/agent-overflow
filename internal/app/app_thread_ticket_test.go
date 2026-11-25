@@ -115,6 +115,8 @@ func TestThreadTicketMethodsLinkListAndClear(t *testing.T) {
 		t.Fatalf("the linked row's link = %+v", link)
 	}
 	f.threadFrame(t, "t1", "for the link", func(r store.Thread) bool { return r.TicketLink != nil && *r.TicketLink == *link })
+	f.a.threadLinkAnnounces.Wait()
+	f.noThreadFrame(t, "t1", "the link's second announce")
 	if rows, err := f.a.ThreadsForTicket(ctx, ticket); err != nil || len(rows) != 1 || rows[0].ID != "t1" {
 		t.Fatalf("ThreadsForTicket = %+v, %v", rows, err)
 	}

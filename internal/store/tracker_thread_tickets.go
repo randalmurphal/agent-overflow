@@ -206,7 +206,8 @@ type ThreadTicketWrite struct {
 
 // ThreadTicketSet is what SetThreadTicket did: whether the link as a
 // thread row shows it changed, the ticket it replaced (nil when the
-// thread had none or had this one), and what storing a read card changed.
+// thread had none or had this one), and what storing a read card changed,
+// whose Threads are the other threads whose link the card moved.
 type ThreadTicketSet struct {
 	Changed  bool
 	Replaced *TicketRef
@@ -302,6 +303,8 @@ func (s *Store) SetThreadTicket(w ThreadTicketWrite) (set ThreadTicketSet, err e
 			if set.Cards, err = upsertMirrorCardsTx(tx, w.Root, rows, encoded, w.Catalog, times.at); err != nil {
 				return err
 			}
+			// The thread's own change is Changed, which its caller announces.
+			set.Cards.Threads = slices.DeleteFunc(set.Cards.Threads, func(id string) bool { return id == w.ThreadID })
 		}
 		if _, err := tx.Exec(`UPDATE thread_tickets SET
 			  status_name = COALESCE((SELECT name FROM tracker_cache_statuses WHERE root_id = ?2 AND status_id = thread_tickets.status_id), ''),

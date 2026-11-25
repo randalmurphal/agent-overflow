@@ -71,10 +71,11 @@ func TestSetThreadTicketLinksReplacesAndClears(t *testing.T) {
 	t.Parallel()
 	s, c, root := newMirror(t)
 	mustCreateThread(t, s, "a")
+	seedThreadTicket(t, s, ThreadTicket{ThreadID: mustThread(t, s, "other"), Ticket: webTicket, IssueKey: "WEB-1", Origin: TicketOriginManual, LinkedAt: 1})
 
 	set := mustSetThreadTicket(t, s, readLink(s, root, "a", titledCard("10001", 5, "Fix the login page")))
-	if !set.Changed || set.Replaced != nil || !slices.Equal(set.Cards.Cards, []string{"10001"}) {
-		t.Fatalf("first link = %+v", set)
+	if !set.Changed || set.Replaced != nil || !slices.Equal(set.Cards.Cards, []string{"10001"}) || !slices.Equal(set.Cards.Threads, []string{"other"}) {
+		t.Fatalf("first link = %+v; want a change and the other link of the ticket named", set)
 	}
 	want := ThreadTicket{ThreadID: "a", Ticket: webTicket, IssueKey: "WEB-10001", IssueTitle: "Fix the login page",
 		StatusID: "1", StatusName: "To Do", StatusGroup: MirrorGroupToDo, Origin: TicketOriginManual, LinkedAt: 10, SeenRoot: root}
@@ -236,6 +237,13 @@ func TestSetThreadTicketRefusalsChangeNothing(t *testing.T) {
 			}
 		})
 	}
+}
+
+// mustThread makes thread id and returns it.
+func mustThread(t *testing.T, s *Store, id string) string {
+	t.Helper()
+	mustCreateThread(t, s, id)
+	return id
 }
 
 // mirrorIssueRows is every mirror card row, each as one string.
