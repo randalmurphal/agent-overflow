@@ -331,6 +331,9 @@ var stepChanges = [...][]ResourceKind{
 	StepComment:    {ResourceDetail},
 	StepLink:       {ResourceDetail},
 	StepWorklog:    {ResourceWorklogs},
+	// The add-on's votes are no mirrored resource: an open ticket that
+	// follows them reads them again (trackerapp).
+	StepPoker: {},
 }
 
 // Check reports a result no provider may return: no parts; a part with

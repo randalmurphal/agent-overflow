@@ -19,6 +19,9 @@ import (
 
 const scenarioSite = "example.atlassian.net"
 
+// scenarioMemberToken is User 2's token on the scenario site.
+const scenarioMemberToken = "scenario-jira-2"
+
 // scenarioWindow is the mirror's history window (trackerapp.HistoryWindow),
 // the sprint window the scenarios read with.
 const scenarioWindow = 180 * 24 * time.Hour
@@ -48,6 +51,8 @@ func scenarioFixture(start time.Time) trackerfake.JiraSite {
 	day := start.Add(-48 * time.Hour)
 	return trackerfake.JiraSite{
 		Site: scenarioSite, Account: "acc-user1", Token: "scenario-jira-1",
+		Members: []trackerfake.JiraMember{{Account: "acc-user2", Token: scenarioMemberToken}},
+		Poker:   &trackerfake.JiraPoker{},
 		Users: []trackerfake.JiraUser{
 			{AccountID: "acc-user1", DisplayName: "User 1", Email: "user1@example.com", TimeZone: "UTC"},
 			{AccountID: "acc-user2", DisplayName: "User 2", Email: "user2@example.com", TimeZone: "UTC"},
@@ -88,6 +93,8 @@ type scenario struct {
 	p     *Provider
 	clock *scenarioClock
 	ctx   context.Context
+	// url is the fake site's base URL.
+	url string
 }
 
 func newScenario(t *testing.T, withTempo bool) *scenario {
@@ -143,7 +150,7 @@ func newObservedScenario(t *testing.T, withTempo bool, onRequest func(trackerfak
 			t.Errorf("unhandled request %s %s: %s", r.Method, r.Path, r.Detail)
 		}
 	})
-	return &scenario{e: e, p: p, clock: clock, ctx: context.Background()}
+	return &scenario{e: e, p: p, clock: clock, ctx: context.Background(), url: srv.JiraURL(scenarioSite)}
 }
 
 // allApplied fails the test unless every part of r was applied.
