@@ -13,12 +13,13 @@
   import type { Thread, ThreadGroup } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { reorderProjects } from '../../stores/projects.svelte';
-  import { buildSidebarEntries, sidebarBucketOf, sortSidebarEntries, type SidebarEntry } from './sidebarEntries';
+  import { buildSidebarEntries, rankOf, sidebarBucketOf, type SidebarEntry } from './sidebarEntries';
   import { revealProject, setEntryExpanded } from '../../stores/sidebarEntryContinuity.svelte';
   import {
     isSidebarSectionShown,
     getProjectSortMode,
     setSidebarSectionExpanded,
+    type ProjectSortMode,
   } from '../../stores/sidebar.svelte';
   import { getThreadFilterQuery } from '../../stores/threadFilter.svelte';
   import { getThreads } from '../../stores/threads.svelte';
@@ -205,7 +206,7 @@
       // is in it.
       return (groupsByProject.get(entry.rowKey)?.length ?? 0) > 0;
     });
-    const next = sortSidebarEntries(entries, mode);
+    const next = sortEntries(entries, mode);
     if (
       next.length === prevVisibleProjects.length
       && next.every((entry, i) => entry === prevVisibleProjects[i])
@@ -215,6 +216,22 @@
     prevVisibleProjects = next;
     return next;
   });
+
+  // The three orders. Last activity ranks each entry once per sort: a rank
+  // scans the members and reads their live activity, which the comparator
+  // would otherwise repeat for every pair it compares.
+  function sortEntries(entries: readonly SidebarEntry[], mode: ProjectSortMode): SidebarEntry[] {
+    switch (mode) {
+      case 'manual':
+        return [...entries].sort((a, b) => (a.position - b.position) || (a.createdAt - b.createdAt));
+      case 'createdAt':
+        return [...entries].sort((a, b) => b.createdAt - a.createdAt);
+      case 'lastActivity': {
+        const rank = new Map(entries.map((entry) => [entry, rankOf(entry)]));
+        return [...entries].sort((a, b) => (rank.get(b)! - rank.get(a)!) || a.name.localeCompare(b.name));
+      }
+    }
+  }
 
   // A search opens every row whose threads or groups matched, so its results
   // show without a chevron click. The opening is this section's view of the

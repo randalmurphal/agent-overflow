@@ -10,7 +10,7 @@
   // voted hidden while the window is hidden or the pane is not on screen
   // (`isPaneOnScreen`: another pane promoted, or a compact screen showing
   // something else).
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy } from 'svelte';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Search from '@lucide/svelte/icons/search';
   import UserRound from '@lucide/svelte/icons/user-round';
@@ -32,8 +32,6 @@
   import { openPaneFind, registerPaneFindProvider } from '../../stores/paneFind.svelte';
   import { getProject, getProjects } from '../../stores/projects.svelte';
   import { projectBackend } from '../../transport/entityIndex';
-  import { sidebarProjectOrder } from '../sidebar/sidebarEntries';
-  import { catalogTreeListed } from '../../stores/sidebarCatalogs';
   import { scopeGrant } from '../../transport/scopes';
   import { getTransportStatusFor } from '../../stores/transportStatus.svelte';
   import { isTransportOutage } from '../../transport/wsClient';
@@ -68,12 +66,7 @@
   const openedFrom = toolOpenedFromProject('issues');
 
   const shown = $derived(isPaneOnScreen(paneId));
-  const selection = createBoardSelection({
-    openedFromProject: openedFrom,
-    shown: () => shown,
-    projectOrder: sidebarProjectOrder,
-    projectsListed: catalogTreeListed,
-  });
+  const selection = createBoardSelection({ openedFromProject: openedFrom, shown: () => shown });
   onDestroy(() => selection.destroy());
 
   const choices = $derived(trackerBoardChoices());
@@ -158,7 +151,9 @@
   // Every computer answered: only then can the pane say what the boards are.
   const allAnswered = $derived(computers.every((c) => c.state.kind === 'answered'));
   const anyListed = $derived(choices.length > 0);
-  const offTarget = $derived(choices.find((c) => !isBoardChoiceOpenable(c.choice))?.backend ?? null);
+  // A computer whose boards are all off and that lets this window turn a
+  // connection on.
+  const offTarget = $derived(choices.find((c) => !isBoardChoiceOpenable(c.choice) && scopeGrant('tracker:operate', c.backend) === 'granted')?.backend ?? null);
   let dismissedChoiceFailures = $state.raw<readonly unknown[]>([]);
 
   // The way to Settings > Issues > Boards, for a project on a computer
@@ -168,16 +163,21 @@
     if (!projectId || backend === undefined || scopeGrant('tracker:operate', backend) !== 'granted') return null;
     return { projectId, backend };
   }
+  // The first project by name, then ID, of those whose Boards this window
+  // may change: the order a computer lists its boards in.
+  const firstProjectByName = $derived.by(() => {
+    let best: { id: string; name: string } | null = null;
+    for (const { project } of getProjects()) {
+      if (project.archived || !boardsSettingsFor(project.id, projectBackend(project.id))) continue;
+      if (!best || project.name < best.name || (project.name === best.name && project.id < best.id)) best = project;
+    }
+    return best?.id ?? null;
+  });
   // No project lists a board: the project the pane was opened from, else
-  // the first in sidebar order. It follows the projects there are; their
-  // order is read when that changes, so a thread's activity does not wake
-  // the pane.
-  const projectIds = $derived(getProjects().map((p) => p.project.id).join('\n'));
+  // the first by name.
   const emptyTarget = $derived.by(() => {
     if (board || pending || !allAnswered || anyListed) return null;
-    void projectIds;
-    const first = untrack(() => [...sidebarProjectOrder()].sort((x, y) => x[1] - y[1])[0]?.[0]);
-    const projectId = (openedFrom && getProject(openedFrom) ? openedFrom : first) ?? null;
+    const projectId = (openedFrom && getProject(openedFrom) ? openedFrom : firstProjectByName) ?? null;
     return boardsSettingsFor(projectId, projectId ? projectBackend(projectId) : undefined);
   });
   const endedTarget = $derived(boardState?.ended && board ? boardsSettingsFor(board.projectId, board.backend) : null);
@@ -309,10 +309,10 @@
                 {@const target = emptyTarget}
                 <button type="button" class="text-accent hover:underline" data-testid="issues-empty-settings" onclick={() => openTrackerBoardsSettings(target.projectId, target.backend)}>Choose boards in Settings</button>
               {/if}
-            {:else if anyListed && offTarget !== null}
-              {@const target = offTarget}
+            {:else if anyListed && choices.every((c) => !isBoardChoiceOpenable(c.choice))}
               <p data-testid="issues-empty-off">Every board listed here is on a connection that is turned off. Turn one on in Settings, then pick its board.</p>
-              {#if scopeGrant('tracker:operate', target) === 'granted'}
+              {#if offTarget !== null}
+                {@const target = offTarget}
                 <button type="button" class="text-accent hover:underline" data-testid="issues-empty-connections" onclick={() => openSettingsOverlay('tracker-connections', target)}>Open the tracker connections</button>
               {/if}
             {/if}

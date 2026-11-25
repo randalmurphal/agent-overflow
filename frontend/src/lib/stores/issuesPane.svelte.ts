@@ -147,20 +147,18 @@ export interface OpeningDecision {
 
 /**
  * The board a pane opens on when the person has picked none, from what the
- * computers answered (`computers`, in attach order): the board that opens
- * first of the project the pane was opened from, else that project's first
- * openable one, as soon as its computer answered; else, once every computer
- * has answered or could not be read and the sidebar lists the projects of
- * each computer with an openable board (`listed`), the same of the first
- * project in sidebar order (`order`, read only then) that lists an openable
- * board; else none. A board that cannot be opened (`isBoardChoiceOpenable`)
- * is never chosen.
+ * computers answered (`computers`, this computer first, then the others in
+ * the order the app lists them): the board that opens first of the project
+ * the pane was opened from, else that project's first openable one, as soon
+ * as its computer answered; else, once every computer has answered or
+ * could not be read, the same of the first project that lists an openable
+ * board, in the computers' order and each computer's own (by project name,
+ * then project ID, then the project's order of its boards); else none. A
+ * board that cannot be opened (`isBoardChoiceOpenable`) is never chosen.
  */
 export function openingBoard(
   computers: readonly { readonly backend: string; readonly state: ComputerChoices }[],
   openedFromProject: string | null,
-  listed: (backend: string) => boolean,
-  order: () => ReadonlyMap<string, number>,
 ): OpeningDecision {
   const choices: ListedBoardChoice[] = computers.flatMap(({ backend, state }) => (state.rows ?? []).map((choice) => ({ backend, choice })));
   const firstOf = (backend: string, project: string): TrackerBoardRef | null => {
@@ -175,19 +173,8 @@ export function openingBoard(
     if (board) return { board, waiting: false };
   }
   if (computers.some((c) => c.state.kind === 'reading')) return { board: null, waiting: true };
-  // Before the sidebar lists a computer's projects, their order is not
-  // the one the person sees.
-  const candidates = new Set(choices.filter((c) => isBoardChoiceOpenable(c.choice)).map((c) => c.backend));
-  if ([...candidates].some((backend) => !listed(backend))) return { board: null, waiting: true };
-  const positions = order();
-  const at = (project: string) => positions.get(project) ?? Number.POSITIVE_INFINITY;
-  let best: TrackerBoardRef | null = null;
-  for (const c of choices) {
-    if (!isBoardChoiceOpenable(c.choice)) continue;
-    if (best && at(c.choice.project) >= at(best.projectId)) continue;
-    best = firstOf(c.backend, c.choice.project);
-  }
-  return { board: best, waiting: false };
+  const first = choices.find((c) => isBoardChoiceOpenable(c.choice));
+  return { board: first ? firstOf(first.backend, first.choice.project) : null, waiting: false };
 }
 
 /** The board a pane shows, and the subscription that shows it. */
@@ -210,10 +197,6 @@ export interface BoardSelectionOptions {
   readonly openedFromProject: string | null;
   /** Whether the pane is on screen now; reactive. */
   readonly shown: () => boolean;
-  /** Each project's position in the sidebar as it shows now. */
-  readonly projectOrder: () => ReadonlyMap<string, number>;
-  /** Whether the sidebar lists a computer's projects; reactive. */
-  readonly projectsListed: (backend: string) => boolean;
 }
 
 /** Where a board's computer stands for the pane: `waiting` until the page
@@ -324,7 +307,7 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
         choosing = false;
         return;
       }
-      const decision = openingBoard(trackerBoardChoiceComputers(), opts.openedFromProject, opts.projectsListed, () => untrack(opts.projectOrder));
+      const decision = openingBoard(trackerBoardChoiceComputers(), opts.openedFromProject);
       choosing = decision.waiting;
       if (decision.board) board = decision.board;
     });
