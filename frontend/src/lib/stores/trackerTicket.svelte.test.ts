@@ -8,13 +8,16 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { tick } from 'svelte';
 import type {
+  BoardPatch,
+  BoardView,
   CommentPageView,
   DetailView,
   TicketSubscription,
   TicketView,
   WriteView,
 } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-import { trackerIssueUpdated, trackerTicketsGap, type TrackerIssueEvent } from './trackerBoardEvents';
+import { trackerBoardUpdated, trackerIssueUpdated, trackerTicketsGap, type TrackerIssueEvent } from './trackerBoardEvents';
+import { attachTrackerBoard } from './trackerBoard.svelte';
 import {
   attachTrackerTicket,
   loadEarlierTrackerComments,
@@ -23,13 +26,16 @@ import {
 } from './trackerTicket.svelte';
 import {
   addTicketComment,
+  dismissTicketWrite,
   editTicketComment,
   editTicketFields,
   fieldTarget,
   moveTicket,
+  rankTicket,
   ticketWrite,
   type TicketWriteContext,
 } from './trackerTicketWrites.svelte';
+import { trackerTicketKey } from './trackerTicket.svelte';
 import { getToasts } from './toast.svelte';
 import { __setTransportStatusForTest } from './transportStatus.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
@@ -433,5 +439,118 @@ describe('a ticket write', () => {
     await flush();
     expect(mocks.refresh).toHaveBeenCalledWith('sub-1');
     ticket.release();
+  });
+});
+
+describe('a write from a Board card', () => {
+  const BOARD = { backend: HOME_BACKEND, projectId: 'p1', connection: 'c1', board: '1' };
+  const CARD_CTX: TicketWriteContext = { key: trackerTicketKey(REF), ref: REF, label: 'WEB-1' };
+
+  /** A kanban board of one column that holds issue 10101's card. */
+  function boardView(title = 'First story'): BoardView {
+    return {
+      id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'points' },
+      columns: [{ name: 'To Do', statuses: [{ id: 's1', group: 'todo' }], total: { rows: 1, estimate: 0 } }], sprints: [],
+      all: { rows: 1, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: { read_at: 100 }, screen: [{ kind: 'column', column: 0 }],
+      sections: [{ section: { kind: 'column', column: 0 }, rows: [{ order: 'a', card: detail(title).card }], next: null }],
+    } as unknown as BoardView;
+  }
+
+  function installBoard() {
+    setBindingMock('SubscribeTrackerBoard', async () => ({ id: 'board-sub', seq: 10, loaded: true, view: boardView(), poll_every: 10_000 }));
+    setBindingMock('TrackerBoard', async () => boardView());
+    setBindingMock('SetTrackerSubscriptionVisible', async () => {});
+    setBindingMock('ReleaseTrackerSubscription', async () => {});
+  }
+
+  const refused = (message: string): WriteView => ({ parts: [{ step: 'edit', state: 'refused', refusal: { reason: 'tracker', message } }] }) as WriteView;
+  const priority = [{ field: 'priority', value: { kind: 'option', choices: [{ id: '2' }] } as never }];
+
+  it('keeps a card write saying Saving until the board shows it, and its refusal on the card with no ticket open', async () => {
+    installBoard();
+    const patches = held<BoardPatch>('TrackerBoardPatch');
+    setBindingMock('EditTrackerIssue', async () => {
+      // The write's refresh tells the board's event before the answer.
+      trackerBoardUpdated({ scope: { connection: 'c1', board: '1' }, seq: 11, changed: ['10101'] }, HOME_BACKEND);
+      return applied();
+    });
+    const board = attachTrackerBoard(BOARD, true);
+    await flush();
+    const target = fieldTarget('priority');
+    const made = editTicketFields(CARD_CTX, target, priority);
+    await flush();
+    expect(ticketWrite(CARD_CTX.key, target)?.pending).toBe(true);
+    patches.answer({ lifetime: 1, revision: 2, sections: [{ section: { kind: 'column', column: 0 }, rows: [{ order: 'a', card: detail('Saved').card }] }] } as unknown as BoardPatch);
+    expect(await made).toEqual({ kind: 'applied', note: null });
+    expect(board.current?.held?.sections[0].rows[0].card.title).toBe('Saved');
+    expect(ticketWrite(CARD_CTX.key, target)).toBeNull();
+
+    setBindingMock('EditTrackerIssue', async () => refused('Priority is not on the edit screen'));
+    const before = getToasts().length;
+    expect((await editTicketFields(CARD_CTX, target, priority))?.kind).toBe('refused');
+    expect(ticketWrite(CARD_CTX.key, target)?.outcome?.kind).toBe('refused');
+    expect(getToasts().length).toBe(before);
+    board.release();
+  });
+
+  it("keeps the card's outcomes when the ticket closes while the board still shows the card, and drops the others", async () => {
+    install();
+    installBoard();
+    setBindingMock('EditTrackerIssue', async () => refused('Not allowed'));
+    const board = attachTrackerBoard(BOARD, true);
+    const ticket = attachTrackerTicket(REF, true);
+    await flush();
+    await editTicketFields(ctxOf(ticket), fieldTarget('priority'), priority);
+    await editTicketFields(ctxOf(ticket), fieldTarget('description'), [{ field: 'description', markdown: { markdown: 'b', from: 'a' } }]);
+    ticket.release();
+    await flush();
+    expect(ticketWrite(ticket.key, fieldTarget('priority'))?.outcome?.kind).toBe('refused');
+    expect(ticketWrite(ticket.key, fieldTarget('description'))).toBeNull();
+    // Once the board is let go too, nothing draws the card: its outcome goes.
+    board.release();
+    await flush();
+    expect(ticketWrite(ticket.key, fieldTarget('priority'))).toBeNull();
+  });
+
+  it('settles into a toast when the board is released while the write is out, and drops a held outcome with the board', async () => {
+    installBoard();
+    const ranks = held<WriteView>('RankTrackerIssues');
+    let board = attachTrackerBoard(BOARD, true);
+    await flush();
+    const ranked = rankTicket(CARD_CTX, '1', '10102', '');
+    await flush();
+    expect(ranks.calls).toEqual([['c1', { board: '1', issues: ['10101'], prev: '10102', next: undefined }]]);
+    board.release();
+    await flush();
+    const before = getToasts().length;
+    ranks.answer({ parts: [{ step: 'rank', state: 'refused', refusal: { reason: 'tracker', message: 'The neighbor moved' } }] } as WriteView);
+    expect((await ranked)?.kind).toBe('refused');
+    expect(getToasts().slice(before).map((t) => t.message)).toEqual(['The tracker refused the change to WEB-1: The neighbor moved']);
+    expect(ticketWrite(CARD_CTX.key, 'rank')).toBeNull();
+
+    board = attachTrackerBoard(BOARD, true);
+    await flush();
+    const again = rankTicket(CARD_CTX, '1', '10102', '');
+    ranks.answer({ parts: [{ step: 'rank', state: 'refused', refusal: { reason: 'tracker', message: 'The neighbor moved' } }] } as WriteView);
+    await again;
+    expect(ticketWrite(CARD_CTX.key, 'rank')?.outcome?.kind).toBe('refused');
+    board.release();
+    await flush();
+    expect(ticketWrite(CARD_CTX.key, 'rank')).toBeNull();
+  });
+
+  it('shows a card outcome on the open ticket with no board, and drops it with the ticket as before', async () => {
+    install();
+    setBindingMock('EditTrackerIssue', async () => refused('Not allowed'));
+    const ticket = attachTrackerTicket(REF, true);
+    await flush();
+    await editTicketFields(ctxOf(ticket), fieldTarget('priority'), priority);
+    expect(ticketWrite(ticket.key, fieldTarget('priority'))?.outcome?.kind).toBe('refused');
+    dismissTicketWrite(ticket.key, fieldTarget('priority'));
+    expect(ticketWrite(ticket.key, fieldTarget('priority'))).toBeNull();
+    await editTicketFields(ctxOf(ticket), fieldTarget('priority'), priority);
+    ticket.release();
+    await flush();
+    expect(ticketWrite(ticket.key, fieldTarget('priority'))).toBeNull();
   });
 });

@@ -25,6 +25,8 @@ import {
   renewEndedTrackerBoard,
   setTrackerBoardFiltered,
   setTrackerBoardShown,
+  trackerBoardShowsIssue,
+  trackerBoardsSettled,
   type TrackerBoardAttachment,
   type TrackerBoardRef,
 } from './trackerBoard.svelte';
@@ -32,7 +34,7 @@ import { __setTransportStatusForTest } from './transportStatus.svelte';
 import { DEFAULT_RETRY } from './entityStore.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { takePinnedBackend } from '../transport/backends';
-import { TransportError } from '../transport/wsClient';
+import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { stageBackend } from '../../test/helpers/backends';
 
@@ -853,6 +855,104 @@ describe('the board subscription', () => {
     await flush();
     expect(board.current?.failure).toEqual(later);
     board.release();
+  });
+});
+
+describe('a write waiting on the board', () => {
+  /** Whether `p` has settled by now. */
+  async function settledBy(p: Promise<void>): Promise<boolean> {
+    let done = false;
+    void p.then(() => { done = true; });
+    await flush();
+    return done;
+  }
+
+  /** A board with the patch an event asked for out, and a wait on it. */
+  async function waitingOnPatch() {
+    install();
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    const patches = held<BoardPatch>('TrackerBoardPatch');
+    // The write's refresh tells its event before the write's answer.
+    applyTrackerBoardEvent(event(11, { changed: ['1'] }), HOME_BACKEND);
+    await flush();
+    expect(patches.calls.length).toBe(1);
+    return { board, patches, wait: trackerBoardsSettled(HOME_BACKEND, 'c1') };
+  }
+
+  it('waits for the patch an event asked for and ends when it lands', async () => {
+    const { board, patches, wait } = await waitingOnPatch();
+    expect(await settledBy(wait)).toBe(false);
+    // Another connection's board, and a board with nothing owed, add no wait.
+    expect(await settledBy(trackerBoardsSettled(HOME_BACKEND, 'c2'))).toBe(true);
+    patches.answer(patch([[row('1', 'a', 'saved')]], 2));
+    expect(await settledBy(wait)).toBe(true);
+    expect(board.current?.held?.sections[0].rows[0].card.title).toBe('saved');
+    expect(await settledBy(trackerBoardsSettled(HOME_BACKEND, 'c1'))).toBe(true);
+    board.release();
+  });
+
+  it('ends when the patch fails, leaving the board in its failure', async () => {
+    const { board, patches, wait } = await waitingOnPatch();
+    patches.fail(new TransportError('internal', 'the copy could not be read'));
+    expect(await settledBy(wait)).toBe(true);
+    expect(board.current?.readError).toBeTruthy();
+    // While the failed read is held for a recovery trigger, a new wait ends at once.
+    applyTrackerBoardEvent(event(12, { changed: ['1'] }), HOME_BACKEND);
+    await flush();
+    expect(await settledBy(trackerBoardsSettled(HOME_BACKEND, 'c1'))).toBe(true);
+    board.release();
+  });
+
+  it('ends when the board is released, or the connection drops, during the read', async () => {
+    const released = await waitingOnPatch();
+    released.board.release();
+    expect(await settledBy(released.wait)).toBe(true);
+
+    const dropped = await waitingOnPatch();
+    dropped.patches.fail(new DisconnectedError('client closed'));
+    expect(await settledBy(dropped.wait)).toBe(true);
+    dropped.board.release();
+  });
+
+  it('does not wait for a page read, and waits behind one for a patch owed meanwhile', async () => {
+    const kanban = () => view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true });
+    const mocks = install({ view: kanban() });
+    mocks.board.mockImplementation(async () => kanban());
+    const pages = held<SectionPage>('TrackerSectionRows');
+    const patches = held<BoardPatch>('TrackerBoardPatch');
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    // A filter reads every page of the column, one after another.
+    setTrackerBoardFiltered(board.key, true);
+    await flush();
+    expect(pages.calls.length).toBe(1);
+    expect(await settledBy(trackerBoardsSettled(HOME_BACKEND, 'c1'))).toBe(true);
+    applyTrackerBoardEvent(event(11, { changed: ['5'] }), HOME_BACKEND);
+    const wait = trackerBoardsSettled(HOME_BACKEND, 'c1');
+    expect(await settledBy(wait)).toBe(false);
+    const more = (from: number) => ({ order: `k${String(from + 9).padStart(4, '0')}`, issue: String(from + 9), lifetime: 1, revision: 2 });
+    pages.answer({ section: COLUMN, rows: rows(100, 10), next: more(100) } as unknown as SectionPage);
+    await flush();
+    expect(patches.calls.length).toBe(1);
+    expect(await settledBy(wait)).toBe(false);
+    patches.answer({ lifetime: 1, revision: 2, sections: [{ section: COLUMN, rows: [] }] } as unknown as BoardPatch);
+    // The next page is out, and the wait has ended.
+    expect(await settledBy(wait)).toBe(true);
+    expect(pages.calls.length).toBe(2);
+    board.release();
+  });
+
+  it('says whether a held board shows an issue, and stops once it is released', async () => {
+    install();
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    expect(trackerBoardShowsIssue(HOME_BACKEND, 'c1', '1')).toBe(true);
+    expect(trackerBoardShowsIssue(HOME_BACKEND, 'c1', '2')).toBe(false);
+    expect(trackerBoardShowsIssue(HOME_BACKEND, 'c2', '1')).toBe(false);
+    board.release();
+    await flush();
+    expect(trackerBoardShowsIssue(HOME_BACKEND, 'c1', '1')).toBe(false);
   });
 });
 

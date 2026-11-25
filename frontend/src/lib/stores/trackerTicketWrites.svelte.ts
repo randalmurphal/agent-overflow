@@ -1,5 +1,7 @@
-// Every write the ticket screen makes, and the reads its pickers make
-// (docs/architecture/tracker-backend.md, "Writes"). Each write goes through
+// Every write the ticket screen and a Board card make, and the reads
+// their pickers make (docs/architecture/tracker-backend.md, "Writes"). A
+// card writes under the same ticket key as the ticket screen, so one write
+// shows one state on both. Each write goes through
 // its bound method once: one write may be pending per ticket and target
 // (a field, the status, the points, a comment, the new comment), and a
 // second press of a pending target sends nothing. Nothing retries on its
@@ -24,13 +26,32 @@
 // included, are disabled while their target's write is pending.
 //
 // A write's outcome is held here under its ticket and target, not in the
-// component, so a person who closed the ticket while it ran still learns
-// how it ended: a refused or unknown outcome then becomes a toast. An
-// applied write stops saying "Saving" once the ticket's view holds what
-// its computer last told (`trackerTicketSettled`): the write's refresh
-// tells its event before the answer arrives, so the view it published is
-// read by then, or the read failed. The view changes only from the
-// tracker's answer; nothing is written over it before.
+// component. Where it shows. What must hold, for every write:
+// - a target is shown while a surface that draws its control holds the
+//   ticket (`targetShown`): the ticket screen draws every target, and a
+//   held board whose rows include the issue draws the card's targets
+//   (`BOARD_CARD_TARGETS`: the status, rank, sprint, type, priority,
+//   assignee and points);
+// - a write that settles while its target is shown keeps a refused,
+//   unknown or noted outcome under that control until the person
+//   dismisses it, and a plain success shows nothing;
+// - a write that settles while its target is not shown is dropped, and a
+//   refused or unknown one becomes a toast, so a person who closed the
+//   ticket and the board while it ran still learns how it ended;
+// - when the last surface drawing a target lets it go (the ticket's last
+//   surface closes, or a board is released), its settled outcomes go; a
+//   pending write stays and settles by the rule above.
+// So the ticket closing while a board still shows the card keeps the
+// card's outcomes, on the card, and drops the rest as before.
+//
+// An applied write stops saying "Saving" once the ticket's view and every
+// held board of its connection hold what their computer last told
+// (`trackerTicketSettled`, `trackerBoardsSettled`): the write's refresh
+// tells their events before the answer arrives, so what it published is
+// read by then, or the read failed. The views change only from the
+// tracker's answer; nothing is written over them before. A Board card
+// dropped in another place is drawn there while its write is out
+// (`trackerBoardCarry.svelte.ts`), which changes nothing the board holds.
 //
 // The send and what each outcome shows are `trackerWriteOutcome.ts`'s.
 
@@ -48,16 +69,21 @@ import {
   EditTrackerComment,
   EditTrackerIssue,
   MoveTrackerIssue,
+  MoveTrackerIssuesToSprint,
+  RankTrackerIssues,
   SetTrackerEstimate,
   TrackerAssignableUsers,
   TrackerChoices,
+  TrackerMoves,
 } from './bindings';
 import { attachedBackendEntry, backendDisplayName } from './attachedBackends.svelte';
+import { onTrackerBoardDropped, trackerBoardShowsIssue, trackerBoardsSettled } from './trackerBoard.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import {
   isTrackerTicketHeld,
   onTrackerTicketClosed,
   refreshTrackerTicket,
+  trackerTicketKey,
   trackerTicketSettled,
   type CommentChange,
   type TrackerTicketRef,
@@ -84,7 +110,14 @@ export interface TicketWrite {
   readonly saveAnyway: (() => Promise<WriteOutcome | null>) | null;
 }
 
-const writes = new SvelteMap<string, TicketWrite>();
+/** A target's write as held: its ticket and target, for the rule of
+ * where it shows. */
+interface HeldWrite extends TicketWrite {
+  readonly ref: TrackerTicketRef;
+  readonly target: string;
+}
+
+const writes = new SvelteMap<string, HeldWrite>();
 
 /** Text a person is writing, and the text it was edited from (empty for
  * a new comment). */
@@ -132,6 +165,22 @@ export function fieldTarget(field: string): string {
 
 export function commentTarget(comment: string): string {
   return `comment:${comment}`;
+}
+
+/** The targets a Board card draws a control of. */
+export const BOARD_CARD_TARGETS: readonly string[] = ['status', 'rank', 'sprint', fieldTarget('type'), fieldTarget('priority'), fieldTarget('assignee'), 'points'];
+
+/** Whether a surface that draws the target's control holds the ticket. */
+function targetShown(key: string, ref: TrackerTicketRef, target: string): boolean {
+  if (isTrackerTicketHeld(key)) return true;
+  return BOARD_CARD_TARGETS.includes(target) && trackerBoardShowsIssue(ref.backend, ref.connection, ref.issue);
+}
+
+/** Drops the settled outcomes `which` names that no surface shows now. */
+function pruneUnshown(which: (k: string, w: HeldWrite) => boolean): void {
+  for (const [k, w] of writes) {
+    if (!w.pending && which(k, w) && !targetShown(trackerTicketKey(w.ref), w.ref, w.target)) writes.delete(k);
+  }
 }
 
 /** The target's last write; reactive. */
@@ -218,11 +267,14 @@ export function holdTicketDrafts(): { set(tickets: readonly string[]): void; rel
   };
 }
 
-// A ticket's outcomes go with its last surface; a write still pending
-// settles into a toast.
+// A ticket's outcomes go with the last surface that draws them; a write
+// still pending settles by the rule at the top.
 onTrackerTicketClosed((ticket) => {
   const prefix = `${ticket}\n`;
-  for (const [k, w] of writes) if (k.startsWith(prefix) && !w.pending) writes.delete(k);
+  pruneUnshown((k) => k.startsWith(prefix));
+});
+onTrackerBoardDropped((board) => {
+  pruneUnshown((_, w) => w.ref.backend === board.backend && w.ref.connection === board.connection);
 });
 
 function computerName(backend: string): string {
@@ -241,22 +293,22 @@ async function write(
   if (writes.get(k)?.pending) return null;
   // The draft as it is sent: Save anyway is for it alone.
   consent.sending(k);
-  writes.set(k, { pending: true, outcome: null, saveAnyway: null });
+  writes.set(k, { ref: t.ref, target, pending: true, outcome: null, saveAnyway: null });
   const outcome = await sendWrite(t.ref.backend, computerName(t.ref.backend), TICKET_SUBJECT, () => send(acceptLoss));
-  if (outcome.kind === 'applied') await trackerTicketSettled(t.key, comment);
+  if (outcome.kind === 'applied') await Promise.all([trackerTicketSettled(t.key, comment), trackerBoardsSettled(t.ref.backend, t.ref.connection)]);
   // The ticket changed since it was read: read it again, so the person
   // sees what the tracker holds before trying again.
   if (outcome.kind === 'refused' && outcome.refusal.reason === 'stale') void refreshTrackerTicket(t.key);
   const loss = consent.landed(k, outcome, acceptLoss);
   if (outcome.kind === 'applied') drafts.delete(k);
-  if (!isTrackerTicketHeld(t.key)) {
+  if (!targetShown(t.key, t.ref, target)) {
     writes.delete(k);
     toastAfterClose(t, outcome);
     return outcome;
   }
   const plain = outcome.kind === 'applied' && outcome.note === null;
   if (plain) writes.delete(k);
-  else writes.set(k, { pending: false, outcome, saveAnyway: loss ? () => write(t, target, send, true, comment) : null });
+  else writes.set(k, { ref: t.ref, target, pending: false, outcome, saveAnyway: loss ? () => write(t, target, send, true, comment) : null });
   return outcome;
 }
 
@@ -295,6 +347,19 @@ export function setTicketPoints(t: TicketWriteContext, board: string, value: num
   return write(t, 'points', () => SetTrackerEstimate(t.ref.connection, { board, issue: t.ref.issue, value: value ?? undefined }), false);
 }
 
+/** Places the ticket on `board` between `prev` and `next`, the issues it
+ * goes just after and just before, either empty for an end
+ * (RankTrackerIssues). */
+export function rankTicket(t: TicketWriteContext, board: string, prev: string, next: string): Promise<WriteOutcome | null> {
+  return write(t, 'rank', () => RankTrackerIssues(t.ref.connection, { board, issues: [t.ref.issue], prev: prev || undefined, next: next || undefined }), false);
+}
+
+/** Moves the ticket into `sprint` of `board`, or to its backlog with
+ * none (MoveTrackerIssuesToSprint). */
+export function moveTicketToSprint(t: TicketWriteContext, board: string, sprint: string | null): Promise<WriteOutcome | null> {
+  return write(t, 'sprint', () => MoveTrackerIssuesToSprint(t.ref.connection, { board, sprint: sprint ?? undefined, issues: [t.ref.issue] }), false);
+}
+
 export function addTicketComment(t: TicketWriteContext, markdown: string): Promise<WriteOutcome | null> {
   return write(t, 'new-comment', () => AddTrackerComment(t.ref.connection, { issue: t.ref.issue, markdown }), false);
 }
@@ -320,6 +385,12 @@ export function assignableUsers(t: TicketWriteContext, text: string): Promise<Us
 export function fieldChoices(t: TicketWriteContext, field: string, text: string, move?: string): Promise<ChoiceListView> {
   const scope = move ? { issue: t.ref.issue, move } : { issue: t.ref.issue };
   return withBackendTarget(t.ref.backend, () => TrackerChoices(t.ref.connection, scope, field, text));
+}
+
+/** The moves the ticket's workflow allows now, read from the tracker
+ * (TrackerMoves): what a Board card's carry and Move to… offer. */
+export function ticketMoves(t: TicketWriteContext): Promise<MoveView[]> {
+  return withBackendTarget(t.ref.backend, () => TrackerMoves(t.ref.connection, t.ref.issue));
 }
 
 export function resetTicketWritesForTest(): void {
