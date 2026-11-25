@@ -394,6 +394,24 @@ func TestMirrorReadsUseTheirIndexes(t *testing.T) {
 			t.Errorf("%s plan:\n%s\nwant %s and no sort", name, plan, read.index)
 		}
 	}
+	// A project's regrouping costs each statement one list of the statuses
+	// that count as done, from the root's catalog and the bound groups,
+	// read once (an uncorrelated list), never once a row; the left-out
+	// rows a sprint total skips are one bound list too.
+	doneOnce := "LIST SUBQUERY 5\nCOMPOUND QUERY\nLEFT-MOST SUBQUERY\nSEARCH st USING PRIMARY KEY (root_id=?)\nLIST SUBQUERY 3\nSCAN o VIRTUAL TABLE INDEX 1:"
+	for name, read := range map[string]struct{ query, plan string }{
+		"backlog section":    {mirrorSectionSQL[MirrorSectionBacklog], doneOnce},
+		"backlog rows by ID": {mirrorPatchSQL[MirrorSectionBacklog], doneOnce},
+		"row count":          {mirrorCountRowsSQL, "LIST SUBQUERY 4\nCOMPOUND QUERY\nLEFT-MOST SUBQUERY\nSEARCH st USING PRIMARY KEY (root_id=?)\nLIST SUBQUERY 2\nSCAN o VIRTUAL TABLE INDEX 1:"},
+		"sprint totals, rows left out": {mirrorCountSprintsLeftOutSQL, "SEARCH sp USING PRIMARY KEY (root_id=? AND board_id=?)\n" +
+			"SEARCH m USING COVERING INDEX idx_tracker_cache_issue_sprints_sprint (root_id=? AND sprint_id=?)\n" +
+			"SEARCH b USING PRIMARY KEY (root_id=? AND issue_id=? AND board_id=?)\nLIST SUBQUERY 1\nSCAN json_each VIRTUAL TABLE INDEX 1:"},
+	} {
+		plan := explainMirror(t, s, read.query)
+		if !strings.Contains(plan, read.plan) || strings.Contains(plan, "CORRELATED LIST SUBQUERY") || strings.Contains(plan, "TEMP B-TREE") {
+			t.Errorf("%s plan:\n%s\nwant %s, no correlated list and no sort", name, plan, read.plan)
+		}
+	}
 	// The cap's eviction walks the bodies held alone, and sorts those
 	// (mirrorPlanAllowed), not the root's issues.
 	if plan := explainMirror(t, s, mirrorBodyEvictSQL); !strings.Contains(plan, "SEARCH b USING INDEX idx_tracker_cache_issues_body_opened (root_id=?)") {
