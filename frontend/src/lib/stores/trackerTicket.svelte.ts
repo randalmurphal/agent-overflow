@@ -52,8 +52,7 @@
 // with `poker` set asks for one `TrackerPoker` read, one in flight at a
 // time, and a gap reads every followed ticket's votes. The answers are
 // applied in the order they were asked. Whether a connection's site has
-// poker is asked once per computer and connection, and asked again after
-// that computer connects again.
+// poker follows its own rules ("Poker support must keep true").
 
 import { SvelteMap } from 'svelte/reactivity';
 import type {
@@ -163,8 +162,12 @@ interface Live {
   retryHeld: boolean;
   running: Promise<void> | null;
   voted: boolean;
-  /** Whether the computer was last told to follow the votes. */
+  /** Whether the screens last asked to follow the votes, whether the
+   * computer was last sent that, and whether that send is out ("The
+   * poker follow must keep true"). */
   following: boolean;
+  followSent: boolean;
+  followOut: boolean;
   /** A read of the votes is owed. */
   pokerDirty: boolean;
   pokerRunning: Promise<void> | null;
@@ -231,7 +234,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
     key, ref, id: '', seq: 0, joining: [], apply, aborted: false,
     state: { ...FIRST_STATE, earlier: { ...NO_EARLIER, pages: held?.pages ?? [], next: held?.next ?? null } },
     dirty: false, retryHeld: false, running: null, voted: visibleOf(key),
-    following: false, pokerDirty: false, pokerRunning: null, pokerAsked: 0, pokerApplied: 0,
+    following: false, followSent: false, followOut: false, pokerDirty: false, pokerRunning: null, pokerAsked: 0, pokerApplied: 0,
   };
   lives.set(key, live);
   signal.addEventListener('abort', () => {
@@ -570,36 +573,63 @@ function pokerWanted(key: string): boolean {
   return false;
 }
 
-/** Tells the computer to follow the votes, or to stop, when that changed.
- * A stop drops the votes at once; a follow's answer is the votes as last
- * told. */
+// The poker follow must keep true:
+// - `following` is what the screens last asked for, and the screen shows
+//   it at once: a stop drops the votes, a follow shows them unread.
+// - One FollowTrackerPoker per subscription is out at a time
+//   (`followOut`). When it returns and `following` differs from what was
+//   sent (`followSent`), the latest is sent, so the computer ends in the
+//   state last asked for whatever order the screen changed in.
+// - When it returns equal to what is wanted but a stop came between, the
+//   votes it answered were dropped: they are read once.
+// - A refused follow is not sent again until the screens ask again.
+
+/** Tells the computer to follow the votes, or to stop, when that changed
+ * (the rules above). */
 function follow(live: Live): void {
   if (!live.id || live.state.ended) return;
   const wanted = pokerWanted(live.key);
   if (live.following === wanted) return;
   live.following = wanted;
   live.pokerDirty = false;
-  const asked = ++live.pokerAsked;
   if (!wanted) {
-    live.pokerApplied = asked;
+    live.pokerApplied = ++live.pokerAsked;
     update(live, { poker: null });
   } else if (!live.state.poker) {
     update(live, { poker: { view: null, error: null } });
   }
+  sendFollow(live);
+}
+
+function sendFollow(live: Live): void {
+  if (live.followOut || live.aborted || live.following === live.followSent) return;
+  const wanted = live.following;
+  const asked = ++live.pokerAsked;
   const { id } = live;
+  live.followOut = true;
+  live.followSent = wanted;
   void withBackendTarget(live.ref.backend, () => FollowTrackerPoker(id, wanted)).then(
     (view) => {
+      live.followOut = false;
       if (wanted) applyPoker(live, asked, { view, error: null });
+      if (live.following !== live.followSent) {
+        sendFollow(live);
+      } else if (live.following && !live.state.poker?.view && !live.state.poker?.error) {
+        live.pokerDirty = true;
+        void drainPoker(live);
+      }
     },
     (err: unknown) => {
+      live.followOut = false;
       if (live.aborted || err instanceof DisconnectedError) return;
       if (wanted) {
         applyPoker(live, asked, { view: live.state.poker?.view ?? null, error: err });
-        return;
+      } else {
+        // Nothing on screen shows the stop: the computer keeps reading the
+        // votes until the ticket is hidden or closed.
+        reportFrontendDiagnostic('Tracker ticket: stopping the poker follow failed', errString(err));
       }
-      // Nothing on screen shows the stop: the computer keeps reading the
-      // votes until the ticket is hidden or closed.
-      reportFrontendDiagnostic('Tracker ticket: stopping the poker follow failed', errString(err));
+      sendFollow(live);
     },
   );
 }
@@ -643,36 +673,49 @@ if (typeof document !== 'undefined') {
   });
 }
 
-/** Whether a connection's site has planning poker, as its computer
- * answered: `asking` until it does. */
-export type PokerSupportAnswer = 'asking' | { readonly available: boolean };
+// Poker support must keep true:
+// - "The site has no poker" ({available: false}) and "could not find out"
+//   ({failed}) are different states, and only an answer is held as one:
+//   the next ask after a failure (a ticket's opening, or the poker
+//   section's Retry) asks again.
+// - One ask per connection is out at a time, and only the ask that set
+//   the entry settles it, so an ask from before a reconnect settles
+//   nothing.
+// - A computer that connects again is asked again: its connections drop to
+//   `unasked`, and a ticket showing one then asks.
 
-const pokerSupport = new SvelteMap<string, PokerSupportAnswer>();
+/** Whether a connection's site has planning poker: not asked since its
+ * computer connected, being asked, as its computer answered, or why it
+ * could not say. */
+export type PokerSupportState =
+  | 'unasked'
+  | { readonly asking: true }
+  | { readonly available: boolean }
+  | { readonly failed: string };
 
-/** Whether the connection's site has planning poker, as last answered;
- * reactive, and `asking` before `askTrackerPokerSupport` was answered. */
-export function trackerPokerSupport(backend: BackendKey, connection: string): PokerSupportAnswer {
-  return pokerSupport.get(composeWorkspaceKey(backend, connection)) ?? 'asking';
+const pokerSupport = new SvelteMap<string, Exclude<PokerSupportState, 'unasked'>>();
+
+/** Whether the connection's site has planning poker, as last known;
+ * reactive. */
+export function trackerPokerSupport(backend: BackendKey, connection: string): PokerSupportState {
+  return pokerSupport.get(composeWorkspaceKey(backend, connection)) ?? 'unasked';
 }
 
-/** Asks whether the connection's site has planning poker, unless it was
- * asked since its computer last connected. A failure is no poker,
- * reported once: the ticket offers no poker rather than an error. */
+/** Asks whether the connection's site has planning poker, unless it is
+ * being asked or was answered since its computer last connected. */
 export function askTrackerPokerSupport(backend: BackendKey, connection: string): void {
   const key = composeWorkspaceKey(backend, connection);
-  if (pokerSupport.has(key)) return;
-  pokerSupport.set(key, 'asking');
+  const held = pokerSupport.get(key);
+  if (held && ('asking' in held || 'available' in held)) return;
+  const asking = { asking: true } as const;
+  pokerSupport.set(key, asking);
   void withBackendTarget(backend, () => TrackerPokerSupport(connection)).then(
     (answer) => {
-      if (pokerSupport.get(key) !== 'asking') return;
-      if (answer.failure) reportFrontendDiagnostic('Tracker ticket: whether the site has planning poker could not be read', answer.failure.message);
-      pokerSupport.set(key, { available: answer.available });
+      if (pokerSupport.get(key) !== asking) return;
+      pokerSupport.set(key, answer.failure ? { failed: answer.failure.message } : { available: answer.available });
     },
     (err: unknown) => {
-      if (pokerSupport.get(key) !== 'asking') return;
-      // A dropped connection says nothing of the site; its reconnect asks again.
-      if (!isTransportClassError(err)) reportFrontendDiagnostic('Tracker ticket: whether the site has planning poker could not be asked', errString(err));
-      pokerSupport.set(key, { available: false });
+      if (pokerSupport.get(key) === asking) pokerSupport.set(key, { failed: errString(err) });
     },
   );
 }

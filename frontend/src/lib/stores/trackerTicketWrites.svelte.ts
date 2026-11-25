@@ -499,18 +499,31 @@ export function ticketLinkTypes(backend: BackendKey, connection: string): Ticket
   return linkTypes.get(composeWorkspaceKey(backend, connection)) ?? null;
 }
 
-/** Reads the connection's link types unless they are held or being read,
- * or read again after a failure. Held until the computer connects again. */
+// Link types must keep true:
+// - Only a person's act reads them: the link form opening, or its Retry.
+//   Nothing reads them again because a read settled, so a caller starts
+//   the read outside any reactive scope that reads `ticketLinkTypes`.
+// - A refusal stays held with its error, shown by the form, until the
+//   person retries or opens the form again.
+// - Types once read are held, and read again only after the computer
+//   connects again; one read per connection is out at a time.
+// - Only the read that set an entry settles it, so a read from before a
+//   reconnect settles nothing.
+
+/** Reads the connection's link types unless they are held or being read;
+ * after a refusal it reads them again. The caller is a person's act (see
+ * above). */
 export async function loadTicketLinkTypes(backend: BackendKey, connection: string): Promise<void> {
   const key = composeWorkspaceKey(backend, connection);
   const held = linkTypes.get(key);
   if (held && (held.loading || held.types)) return;
-  linkTypes.set(key, { types: null, loading: true, error: null });
+  const reading: TicketLinkTypes = { types: null, loading: true, error: null };
+  linkTypes.set(key, reading);
   try {
     const types = await withBackendTarget(backend, () => TrackerLinkTypes(connection));
-    if (linkTypes.get(key)?.loading) linkTypes.set(key, { types, loading: false, error: null });
+    if (linkTypes.get(key) === reading) linkTypes.set(key, { types, loading: false, error: null });
   } catch (err) {
-    if (linkTypes.get(key)?.loading) linkTypes.set(key, { types: null, loading: false, error: err });
+    if (linkTypes.get(key) === reading) linkTypes.set(key, { types: null, loading: false, error: err });
   }
 }
 

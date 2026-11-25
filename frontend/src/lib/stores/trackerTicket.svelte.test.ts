@@ -54,6 +54,7 @@ import { takePinnedBackend } from '../transport/backends';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { stageBackend } from '../../test/helpers/backends';
+import { errString } from '../utils/errors';
 
 const REF: TrackerTicketRef = { backend: HOME_BACKEND, connection: 'c1', issue: '10101' };
 
@@ -279,7 +280,7 @@ describe('the ticket subscription', () => {
 });
 
 describe('planning poker', () => {
-  const diagnostics = installDiagnosticsCapture();
+  installDiagnosticsCapture();
   const votes = (value: number | null, readAt: number): PokerView => ({
     loaded: true, revealed: value !== null, votes: [{ voter: { id: 'acc-user1', name: 'User 1' }, value, mine: true }], read_at: readAt,
   } as PokerView);
@@ -308,6 +309,42 @@ describe('planning poker', () => {
     expect(over.current?.poker).toBeNull();
     over.release();
     beside.release();
+  });
+
+  it('reads the votes once when a stop and a follow came while the first follow was out', async () => {
+    install();
+    let answer: ((view: PokerView) => void) | null = null;
+    const follows = setBindingMock('FollowTrackerPoker', () => new Promise<PokerView>((resolve) => { answer = resolve; }));
+    const reads = setBindingMock('TrackerPoker', async () => votes(5, 2));
+    const ticket = attachTrackerTicket(REF, true);
+    ticket.setPokerShown(true);
+    await flush();
+    ticket.setPokerShown(false);
+    ticket.setPokerShown(true);
+    answer!(votes(null, 1));
+    await flush();
+    expect(follows.mock.calls).toEqual([['sub-1', true]]);
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(ticket.current?.poker).toEqual({ view: votes(5, 2), error: null });
+    ticket.release();
+  });
+
+  it('sends a refused follow again only once the screens ask again', async () => {
+    install();
+    const follows = setBindingMock('FollowTrackerPoker', async () => {
+      throw new Error('poker is off');
+    });
+    const ticket = attachTrackerTicket(REF, true);
+    ticket.setPokerShown(true);
+    await flush();
+    await flush();
+    expect(follows).toHaveBeenCalledTimes(1);
+    expect(errString(ticket.current?.poker?.error)).toBe('poker is off');
+    ticket.setPokerShown(false);
+    ticket.setPokerShown(true);
+    await flush();
+    expect(follows.mock.calls).toEqual([['sub-1', true], ['sub-1', false], ['sub-1', true]]);
+    ticket.release();
   });
 
   it('stops following while the window is hidden, and follows again on its return', async () => {
@@ -374,23 +411,44 @@ describe('planning poker', () => {
     ticket.release();
   });
 
-  it('asks once per connection whether its site has poker, says a failure as none, and asks again after a reconnect', async () => {
+  it('holds a connection\'s answer whether its site has poker until a reconnect, and a failure only until the next ask', async () => {
     const support = setBindingMock('TrackerPokerSupport', async () => ({ available: false, failure: { kind: 'transient', message: 'Jira did not answer', at: 1 } }));
-    expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toBe('asking');
+    expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toBe('unasked');
     askTrackerPokerSupport(HOME_BACKEND, 'c1');
     askTrackerPokerSupport(HOME_BACKEND, 'c1');
+    expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toEqual({ asking: true });
     await flush();
     expect(support).toHaveBeenCalledTimes(1);
+    expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toEqual({ failed: 'Jira did not answer' });
+
+    support.mockResolvedValue({ available: false });
+    askTrackerPokerSupport(HOME_BACKEND, 'c1');
+    await flush();
+    expect(support).toHaveBeenCalledTimes(2);
     expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toEqual({ available: false });
-    expect(await diagnostics.all()).toEqual([expect.objectContaining({
-      message: 'Tracker ticket: whether the site has planning poker could not be read', detail: 'Jira did not answer',
-    })]);
+    askTrackerPokerSupport(HOME_BACKEND, 'c1');
+    expect(support).toHaveBeenCalledTimes(2);
 
     support.mockResolvedValue({ available: true });
     __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
     __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
-    expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toBe('asking');
+    expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toBe('unasked');
     askTrackerPokerSupport(HOME_BACKEND, 'c1');
+    await flush();
+    expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toEqual({ available: true });
+  });
+
+  it('lets an ask from before a reconnect settle nothing', async () => {
+    const answers: Array<(available: boolean) => void> = [];
+    setBindingMock('TrackerPokerSupport', () => new Promise((resolve) => { answers.push((available) => resolve({ available })); }));
+    askTrackerPokerSupport(HOME_BACKEND, 'c1');
+    __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
+    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+    askTrackerPokerSupport(HOME_BACKEND, 'c1');
+    answers[0]!(false);
+    await flush();
+    expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toEqual({ asking: true });
+    answers[1]!(true);
     await flush();
     expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toEqual({ available: true });
   });
@@ -698,6 +756,23 @@ describe('links and poker writes', () => {
     expect(ticketLinkTypes(HOME_BACKEND, 'c1')).toBeNull();
     await loadTicketLinkTypes(HOME_BACKEND, 'c1');
     expect(types).toHaveBeenCalledTimes(2);
+  });
+
+  it('lets only the newest read of a connection\'s link types settle them', async () => {
+    const answers: Array<(names: string[]) => void> = [];
+    setBindingMock('TrackerLinkTypes', () => new Promise((resolve) => {
+      answers.push((names) => resolve(names.map((name, i) => ({ id: String(i), name, outward: name, inward: name }))));
+    }));
+    const before = loadTicketLinkTypes(HOME_BACKEND, 'c1');
+    __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
+    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+    const after = loadTicketLinkTypes(HOME_BACKEND, 'c1');
+    answers[0]!(['Old']);
+    await before;
+    expect(ticketLinkTypes(HOME_BACKEND, 'c1')).toEqual({ types: null, loading: true, error: null });
+    answers[1]!(['New']);
+    await after;
+    expect(ticketLinkTypes(HOME_BACKEND, 'c1')?.types?.map((t) => t.name)).toEqual(['New']);
   });
 });
 

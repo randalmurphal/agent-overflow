@@ -117,8 +117,11 @@
   {#if failure}
     <p class="text-xs text-error" role="alert" data-testid="ticket-poker-failure">Planning poker: {failure}</p>
   {/if}
-  {#if !view}
-    <p class="text-xs text-fg-muted" data-testid="ticket-poker-reading">Reading the votes…</p>
+  {#if !view?.loaded}
+    <!-- Until a read answers, the round's votes and state are not known. -->
+    {#if !failure}
+      <p class="text-xs text-fg-muted" data-testid="ticket-poker-reading">Reading the votes…</p>
+    {/if}
   {:else}
     <ul class="flex flex-col gap-0.5" data-testid="ticket-poker-votes">
       {#each view.votes ?? [] as v (v.voter.id)}

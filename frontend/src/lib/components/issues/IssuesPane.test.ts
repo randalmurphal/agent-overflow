@@ -15,6 +15,7 @@ import type {
   BoardView,
   CommentView,
   DetailView,
+  PokerView,
   RowView,
   Section,
   SectionPage,
@@ -2238,6 +2239,94 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
     }
   });
 
+  it('sends one poker follow change at a time, ending on the state the section last asked for, and says nothing of votes before a read', async () => {
+    install();
+    installTicket();
+    setBindingMock('TrackerPokerSupport', async () => ({ available: true }));
+    const answers: Array<(view: PokerView) => void> = [];
+    const follow = setBindingMock('FollowTrackerPoker', () => new Promise<PokerView>((resolve) => { answers.push(resolve); }));
+    const reports: Array<(entries: Array<{ isIntersecting: boolean }>) => void> = [];
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(report: (entries: Array<{ isIntersecting: boolean }>) => void) {
+        reports.push(report);
+      }
+      observe(): void {}
+      disconnect(): void {}
+    });
+    const unread = { loaded: false, revealed: false, votes: [], read_at: 0 } as unknown as PokerView;
+    try {
+      const view = mount();
+      const screen = await openCard(view, '1');
+      await fireEvent.click(await within(screen).findByTestId('ticket-poker-fold'));
+      await waitFor(() => expect(reports).toHaveLength(1));
+      const onScreen = async (shown: boolean) => {
+        reports.at(-1)!([{ isIntersecting: shown }]);
+        await tick();
+      };
+      // Scrolled into view, out and in again, and out, while the first
+      // follow is out.
+      await onScreen(true);
+      await waitFor(() => expect(follow).toHaveBeenCalledTimes(1));
+      await onScreen(false);
+      await onScreen(true);
+      await onScreen(false);
+      expect(follow.mock.calls).toEqual([['ticket-1-1', true]]);
+      answers[0]!(unread);
+      await waitFor(() => expect(follow).toHaveBeenCalledTimes(2));
+      expect(follow.mock.calls[1]).toEqual(['ticket-1-1', false]);
+      answers[1]!(unread);
+      await tick();
+      expect(follow).toHaveBeenCalledTimes(2);
+
+      // On screen again: the round is not read yet, so the section says so.
+      await onScreen(true);
+      await waitFor(() => expect(follow).toHaveBeenCalledTimes(3));
+      answers[2]!(unread);
+      await tick();
+      expect(await within(screen).findByTestId('ticket-poker-reading')).toHaveTextContent('Reading the votes…');
+      expect(within(screen).getByTestId('ticket-poker').textContent).not.toMatch(/No votes yet|Not revealed/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('says in the poker section that the site could not be asked, asks again on Retry and on the next opening', async () => {
+    install();
+    installTicket();
+    const support = setBindingMock('TrackerPokerSupport', async () => ({ available: false, failure: { kind: 'transient', message: 'Jira did not answer', at: 1 } }));
+    const view = mount();
+    let screen = await openCard(view, '1');
+    const failed = await within(screen).findByTestId('ticket-poker-support-error');
+    expect(failed).toHaveTextContent('Could not find out whether this site has planning poker: Jira did not answer');
+    expect(within(screen).queryByTestId('ticket-poker-fold')).toBeNull();
+
+    await fireEvent.click(within(screen).getByTestId('ticket-poker-support-retry'));
+    await waitFor(() => expect(support).toHaveBeenCalledTimes(2));
+    await within(screen).findByTestId('ticket-poker-support-error');
+
+    // The next opening asks again, and an answer offers poker.
+    await fireEvent.click(view.getByTestId('ticket-close'));
+    support.mockResolvedValue({ available: true });
+    screen = await openCard(view, '1');
+    await within(screen).findByTestId('ticket-poker-fold');
+    expect(support).toHaveBeenCalledTimes(3);
+    expect(within(screen).queryByTestId('ticket-poker-support-error')).toBeNull();
+  });
+
+  it('asks again whether the site has poker for an open ticket once its computer connects again', async () => {
+    install();
+    installTicket();
+    const support = setBindingMock('TrackerPokerSupport', async () => ({ available: false }));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await waitFor(() => expect(support).toHaveBeenCalledTimes(1));
+    support.mockResolvedValue({ available: true });
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'disconnected', nextAttemptAt: null });
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+    await within(screen).findByTestId('ticket-poker-fold');
+    expect(support).toHaveBeenCalledTimes(2);
+  });
+
   it('offers no planning poker on a site without it', async () => {
     install();
     installTicket();
@@ -2275,6 +2364,38 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
     expect(within(form).getByTestId('ticket-link-form-save')).toBeDisabled();
     answer!(applied());
     await waitFor(() => expect(within(document.body).queryByTestId('ticket-link-form')).toBeNull());
+  });
+
+  it('reads the link types once per opening of the link form, keeping a refusal on screen until Retry', async () => {
+    install();
+    installTicket();
+    // A read past the third never answers, so a loop that reads again on
+    // each refusal stops there instead of running the worker out of memory.
+    const types = setBindingMock('TrackerLinkTypes', () =>
+      types.mock.calls.length > 3 ? new Promise<never>(() => {}) : Promise.reject(new Error('link types are hidden from you')),
+    );
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await fireEvent.click(await within(screen).findByTestId('ticket-link-add'));
+    const form = await within(document.body).findByTestId('ticket-link-form');
+    await waitFor(() => expect(types).toHaveBeenCalled());
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    await tick();
+    expect(types).toHaveBeenCalledTimes(1);
+    expect(within(form).getByTestId('ticket-link-form-types-error')).toHaveTextContent('link types are hidden from you');
+
+    await fireEvent.click(within(form).getByTestId('ticket-link-form-types-retry'));
+    await waitFor(() => expect(types).toHaveBeenCalledTimes(2));
+    expect(await within(form).findByTestId('ticket-link-form-types-error')).toBeInTheDocument();
+
+    // Closed and opened again, the form reads them again.
+    await fireEvent.click(within(form).getByTestId('ticket-link-form-cancel'));
+    await waitFor(() => expect(within(document.body).queryByTestId('ticket-link-form')).toBeNull());
+    types.mockImplementation(async () => [{ id: '10000', name: 'Blocks', outward: 'blocks', inward: 'is blocked by' }]);
+    await fireEvent.click(within(screen).getByTestId('ticket-link-add'));
+    const again = await within(document.body).findByTestId('ticket-link-form');
+    await within(again).findByTestId('ticket-link-form-relation');
+    expect(types).toHaveBeenCalledTimes(3);
   });
 
   it('removes a link at once from its row and says so until the ticket drops it', async () => {

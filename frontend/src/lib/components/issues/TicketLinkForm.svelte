@@ -8,6 +8,7 @@
   // is out, so what is linked is what the form shows. The form closes once
   // the link was made and says why when it was not. The caller wraps it in
   // a Popover.
+  import { untrack } from 'svelte';
   import Button from '../primitives/Button.svelte';
   import TicketFinder, { type FoundTicket } from './TicketFinder.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
@@ -29,8 +30,13 @@
 
   let { ctx, onDone }: Props = $props();
 
-  $effect(() => {
+  // Opening the form reads the types once; only Retry reads them again
+  // (the store's link types rules).
+  function readTypes(): void {
     void loadTicketLinkTypes(ctx.ref.backend, ctx.ref.connection);
+  }
+  $effect(() => {
+    untrack(readTypes);
   });
   const types = $derived(ticketLinkTypes(ctx.ref.backend, ctx.ref.connection));
   const relations = $derived(types?.types ? linkRelations(types.types) : []);
@@ -66,20 +72,23 @@
 
 <form class="flex w-[min(20rem,calc(100vw-2rem))] flex-col gap-2 p-3" data-testid="ticket-link-form" onsubmit={submit}>
   <h3 class="text-sm font-semibold text-fg">Link {ctx.label} to a ticket</h3>
-  <label class="flex flex-col gap-1 text-xs text-fg-muted">
-    {ctx.label}
-    {#if typesError}
+  {#if typesError}
+    <div class="flex flex-col items-start gap-1 text-xs">
       <span class="text-error" role="alert" data-testid="ticket-link-form-types-error">Could not read how tickets can relate: {typesError}</span>
-    {:else if !types?.types}
-      <span data-testid="ticket-link-form-types-loading">Reading how tickets can relate…</span>
-    {:else}
+      <button type="button" class="text-accent hover:underline" data-testid="ticket-link-form-types-retry" onclick={readTypes}>Retry</button>
+    </div>
+  {:else if !types?.types}
+    <span class="text-xs text-fg-muted" data-testid="ticket-link-form-types-loading">Reading how tickets can relate…</span>
+  {:else}
+    <label class="flex flex-col gap-1 text-xs text-fg-muted">
+      {ctx.label}
       <select class={inputClass} value={relationIndex} onchange={(event) => { relationIndex = event.currentTarget.selectedIndex; }} disabled={pending} data-testid="ticket-link-form-relation">
         {#each relations as r, i (`${r.type}:${r.outward}`)}
           <option value={i}>{r.phrase}</option>
         {/each}
       </select>
-    {/if}
-  </label>
+    </label>
+  {/if}
   <div class="flex min-w-0 items-baseline gap-1.5 text-sm" data-testid="ticket-link-form-other">
     {#if other}
       <span class="shrink-0 font-medium text-fg">{other.key || `ID ${other.issue}`}</span>

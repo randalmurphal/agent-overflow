@@ -31,6 +31,7 @@
   import X from '@lucide/svelte/icons/x';
   import { setContext, tick, untrack } from 'svelte';
   import { TRACKER_MEDIA_CONTEXT } from '../chat/markdown/trackerMediaContext';
+  import Button from '../primitives/Button.svelte';
   import ContextMenu from '../primitives/ContextMenu.svelte';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
@@ -271,16 +272,22 @@
     attach(files);
   }
 
-  // Planning poker, on a Jira site that has it: asked once per connection
-  // when its first ticket shows its body.
+  // Planning poker, on a Jira site that has it: the store's poker support
+  // rules decide when it is asked. The ticket asks when it shows its body,
+  // and again when its computer connected again (`unasked`).
   const hasDetail = $derived(!!detail);
+  const pokerSupport = $derived(linear ? null : trackerPokerSupport(attachment.ref.backend, attachment.ref.connection));
+  const pokerUnasked = $derived(pokerSupport === 'unasked');
+  function askPokerSupport(): void {
+    askTrackerPokerSupport(attachment.ref.backend, attachment.ref.connection);
+  }
   $effect(() => {
     if (linear || !hasDetail) return;
-    const { backend, connection } = attachment.ref;
-    untrack(() => askTrackerPokerSupport(backend, connection));
+    void pokerUnasked;
+    untrack(askPokerSupport);
   });
-  const pokerSupport = $derived(linear ? null : trackerPokerSupport(attachment.ref.backend, attachment.ref.connection));
-  const pokerOffered = $derived(hasDetail && pokerSupport !== null && pokerSupport !== 'asking' && pokerSupport.available);
+  const pokerOffered = $derived(hasDetail && pokerSupport !== null && typeof pokerSupport === 'object' && 'available' in pokerSupport && pokerSupport.available);
+  const pokerSupportFailure = $derived(hasDetail && pokerSupport !== null && typeof pokerSupport === 'object' && 'failed' in pokerSupport ? pokerSupport.failed : null);
   const pokerOpen = $derived(ticketSectionOpen(section('poker'), false));
   const pokerPending = $derived(ticketWrite(ctx.key, 'poker')?.pending ?? false);
   let pokerBody: TicketPoker | undefined = $state();
@@ -553,6 +560,12 @@
             hours={estimateRow?.unit === 'time'}
           />
         {/if}
+      </section>
+    {:else if pokerSupportFailure !== null}
+      <section class="flex flex-col items-start gap-1 text-sm" data-testid="ticket-poker-section">
+        <span class="px-1 font-medium text-fg">Planning poker</span>
+        <p class="px-1 text-xs text-error" role="alert" data-testid="ticket-poker-support-error">Could not find out whether this site has planning poker: {pokerSupportFailure}</p>
+        <Button size="sm" variant="ghost" testId="ticket-poker-support-retry" onclick={askPokerSupport}>Retry</Button>
       </section>
     {/if}
     <section class="flex flex-col gap-2" data-testid="ticket-activity">
