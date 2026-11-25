@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"agent-overflow/internal/errorsx"
@@ -117,12 +118,14 @@ func onSite(site string, err error) error {
 	return errorsx.Public(code, site+": "+message, err)
 }
 
-// siteList is sources' sites as a sentence names them: "a", "a or b",
-// "a, b, or c".
+// siteList is sources' sites as a sentence names them, each once though
+// two connections reach it: "a", "a or b", "a, b, or c".
 func siteList(sources []trackerapp.TicketSource) string {
-	names := make([]string, len(sources))
-	for i, src := range sources {
-		names[i] = src.Site
+	var names []string
+	for _, src := range sources {
+		if !slices.Contains(names, src.Site) {
+			names = append(names, src.Site)
+		}
 	}
 	return sayList(names, "or")
 }

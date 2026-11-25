@@ -128,3 +128,43 @@ func TestALongTicketsFirstAnswerFitsAndShowsEveryPart(t *testing.T) {
 		}
 	}
 }
+
+// A read cuts every name the trackers give, so a ticket whose names are
+// long fits the budget: the card's status, type, assignee and priority, a
+// comment's author, a link's relation and status, and a change's field and
+// author.
+func TestAReadCutsEveryName(t *testing.T) {
+	t.Parallel()
+	huge := strings.Repeat("Name ", 4000)
+	d := detail("WEB-12")
+	d.Card.Status.Name = huge
+	d.Card.Type = &trackerapp.IssueTypeView{Name: huge}
+	d.Card.Assignee = &trackerapp.UserView{Name: huge}
+	d.Card.Priority = &trackerapp.ChoiceView{Name: huge}
+	d.Comments = []trackerapp.CommentView{{ID: "c1", Author: trackerapp.UserView{Name: huge}, Body: "Seen."}}
+	d.Links = []trackerapp.LinkView{{Relation: huge, Issue: trackerapp.LinkedIssueView{Key: "WEB-1", Status: trackerapp.StatusView{Name: huge}}}}
+	d.History = []trackerapp.EventView{{At: 1, Field: huge, Author: &trackerapp.UserView{Name: huge}}}
+	read, err := call(t, longTicketTracker(d), "ticket_read", map[string]any{"key": "WEB-12", "history": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := decodeAs[readAnswer](t, read)
+	names := []string{a.Status, a.Type, a.Assignee, a.Priority}
+	for _, c := range a.Comments {
+		names = append(names, c.By)
+	}
+	for _, l := range a.Links {
+		names = append(names, l.Relation, l.Status)
+	}
+	for _, ch := range a.History {
+		names = append(names, ch.Field, ch.By)
+	}
+	if len(names) != 9 {
+		t.Fatalf("the read has %d names: %d comments, %d links, %d changes, more %v", len(names), len(a.Comments), len(a.Links), len(a.History), a.More)
+	}
+	for _, n := range names {
+		if len(n) > refCut || !strings.HasSuffix(n, cut) {
+			t.Fatalf("a name of %d bytes is not cut: %.40q", len(n), n)
+		}
+	}
+}

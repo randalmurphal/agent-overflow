@@ -1161,7 +1161,18 @@ export function trackerResultView(data: string): AoResultView | null {
   const key = str(reply, 'key');
   const title = str(reply, 'title');
   const leftOut = Object.keys(obj(reply.more) ?? {});
-  view.outcome = title ? join(`${key} ${title}`, str(reply, 'status')) : `${key} continued`;
+  const fields = Object.entries(obj(reply.fields) ?? {});
+  // A continuation says which of the parts the row shows no other way it
+  // holds: comments, the description and history show below.
+  const held = [
+    [fields.length, 'field'],
+    [Array.isArray(reply.links) ? reply.links.length : 0, 'link'],
+    [Array.isArray(reply.attachments) ? reply.attachments.length : 0, 'attachment'],
+    [Array.isArray(reply.labels) ? reply.labels.length : 0, 'label'],
+  ] as const;
+  view.outcome = title
+    ? join(`${key} ${title}`, str(reply, 'status'))
+    : join(`${key} continued`, ...held.map(([count, noun]) => (count ? plural(count, noun) : '')));
   view.note = leftOut.length ? `Left out: ${leftOut.join('; ')}` : '';
   fact(view.facts, 'assignee', str(reply, 'assignee'));
   fact(view.facts, 'estimate', str(reply, 'estimate'));
@@ -1171,6 +1182,10 @@ export function trackerResultView(data: string): AoResultView | null {
   if (history.length) fact(view.facts, 'history', plural(history.length, 'change'));
   const description = str(reply, 'description');
   view.preview = description ? { label: 'description', text: clipText(description, PREVIEW_MAX) } : null;
+  // The rest of one field is that field's text.
+  const only = fields.length === 1 && !title ? fields[0]! : null;
+  const fieldText = only ? (Array.isArray(only[1]) ? only[1].join(', ') : typeof only[1] === 'string' ? only[1] : '') : '';
+  if (!view.preview && fieldText) view.preview = { label: only![0], text: clipText(fieldText, PREVIEW_MAX) };
   view.lines = ticketCommentLines(comments);
   return view;
 }

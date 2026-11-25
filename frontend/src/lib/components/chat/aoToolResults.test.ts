@@ -543,6 +543,23 @@ describe('tracker tool results', () => {
     expect(view.note).toBe('');
     expect(view.lines.map((l) => l.title)).toEqual(['User 1']);
   });
+
+  it('says what a continuation of fields, links, attachments or labels holds', () => {
+    const lists = trackerResultView(json({
+      key: 'WEB-12',
+      fields: { Team: 'Web', Sprint: ['Sprint 4'] },
+      links: [{ relation: 'blocks', key: 'WEB-3' }],
+      attachments: ['a.png', 'b.png'],
+      labels: ['frontend'],
+      more: { '30 more links': 'eyJjIjoiYSJ9' },
+    }))!;
+    expect(lists.outcome).toBe('WEB-12 continued · 2 fields · 1 link · 2 attachments · 1 label');
+    expect(lists.note).toBe('Left out: 30 more links');
+    expect(lists.preview).toBeNull();
+    const field = trackerResultView(json({ key: 'WEB-12', fields: { Acceptance: '…the rest of it.' } }))!;
+    expect(field.outcome).toBe('WEB-12 continued · 1 field');
+    expect(field.preview).toEqual({ label: 'Acceptance', text: '…the rest of it.' });
+  });
 });
 
 describe('aoResultView', () => {

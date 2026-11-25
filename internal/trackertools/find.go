@@ -111,8 +111,7 @@ func (s *Server) find(ctx context.Context, raw json.RawMessage) (any, error) {
 		}
 		key := qualifier(sources, src.Site)
 		for _, card := range got.Cards {
-			row := foundTicket{Key: key(card.Key), Status: card.Status.Name}
-			row.Title, _ = textClip(card.Title, 0, refCut)
+			row := foundTicket{Key: key(card.Key), Title: card.Title, Status: card.Status.Name}
 			if card.Assignee != nil {
 				row.Assignee = card.Assignee.Name
 			}
@@ -132,5 +131,49 @@ func (s *Server) find(ctx context.Context, raw json.RawMessage) (any, error) {
 		// Every source this page asked failed: that is the answer.
 		return nil, failed
 	}
-	return out, nil
+	return fitFound(out)
+}
+
+// fitFound is out within answerBudget: each row's title, status and
+// assignee cut at refCut and each refusal at refusalCut, and within those
+// the texts share what the keys, the sites and next leave, as a read's
+// parts do. Every row and next stay whole.
+func fitFound(out findAnswer) (findAnswer, error) {
+	var texts []string
+	var demands []int
+	add := func(text string, most int) {
+		texts = append(texts, text)
+		demands = append(demands, min(most, jsonLen(text)+2))
+	}
+	for _, row := range out.Tickets {
+		add(row.Title, refCut)
+		add(row.Status, refCut)
+		add(row.Assignee, refCut)
+	}
+	for _, u := range out.Unsearched {
+		add(u.Error, refusalCut)
+	}
+	weights := make([]int, len(demands))
+	for i := range weights {
+		weights[i] = 1
+	}
+	build := func(pool int) (findAnswer, error) {
+		shares := allot(demands, weights, pool)
+		n := 0
+		clip := func() string {
+			shown, _ := textClip(texts[n], 0, shares[n])
+			n++
+			return shown
+		}
+		cut := findAnswer{Tickets: make([]foundTicket, len(out.Tickets)), Next: out.Next}
+		for i, row := range out.Tickets {
+			cut.Tickets[i] = foundTicket{Key: row.Key, Title: clip(), Status: clip(), Assignee: clip()}
+		}
+		for _, u := range out.Unsearched {
+			cut.Unsearched = append(cut.Unsearched, unsearched{Site: u.Site, Error: clip()})
+		}
+		return cut, nil
+	}
+	bare, _ := build(0)
+	return fit("a search", answerBudget-sizeOf(bare), build)
 }

@@ -1918,19 +1918,25 @@ gives reads that ticket whatever the other connections hold. A read with
 no key reads the ticket the thread is linked to
 (`trackerapp.LinkedTicket`); a key the link names, with or without its
 site, reads the link's issue with no request. `site/KEY` is looked up on
-that site's connection alone; a site no connection on reaches is refused
-naming the sites on. A key without a site is looked up on every
-connection on, one `Lookup` request each: one that finds it is read, and
-when several do the call is refused (`tracker_ambiguous`) naming each
-`site/KEY`. A key none finds is refused naming every site asked.
+each connection of that site in order, one `Lookup` request each, and read
+from the first that has it, so a key one account of a site found reads
+though another account on the site comes first; a site no connection on
+reaches is refused naming the sites on. A key without a site is looked up
+the same way on every site on: a site whose connection finds it is read,
+and when several sites do the call is refused (`tracker_ambiguous`)
+naming each `site/KEY`. A key none finds is refused naming every site
+asked, each once.
 
 **Answers.** Every answer is one JSON text block
 (`threadmcp.WriteToolJSON`) of at most 24 KiB (`answerBudget`), with no
 empty member and no internal ID. Codex keeps at most 64 KiB of a tool's
 serialized result, and serializing the answer into it at most doubles it.
 A search fills one page of 20 from the sources in order, one search
-request each at most, titles cut at 300 bytes, and names a source that
-refused in `unsearched`; `next` is present only when more exists.
+request each at most, and names a source that refused in `unsearched`;
+`next` is present only when more exists. Each row's title, status and
+assignee is cut at 300 bytes and each refusal at 1 KiB; within those the
+texts share what the keys, the sites and `next` leave of the budget, as a
+read's parts do, so every row and `next` stay whole.
 
 A read carries the card whole: key, title, status, type, assignee,
 priority, the estimate as the ticket screen shows it with no board in
@@ -1947,9 +1953,10 @@ answers the card, about 8 KiB of the description and a piece of each of
 the ten latest comments. Within its share, the 10 latest comments share
 equally; each field's value is cut at 2 KiB; links, attachments, labels
 and changes are listed whole while they fit. A text cut short ends with
-`…`, and its rest starts with one. A ticket title is cut at 1 KiB, and a
-linked ticket's title, an attachment's or a label's name at 300 bytes,
-with no rest. Each value of a change is cut at 1 KiB with no rest: a
+`…`, and its rest starts with one. A ticket title is cut at 1 KiB, and
+every other title or name (a linked ticket's title, a status, a type, a
+priority, a person, a link's relation, an attachment, a label, a changed
+field) at 300 bytes, with no rest. Each value of a change is cut at 1 KiB with no rest: a
 description change records the whole old and new text, and the
 description itself is read whole.
 
@@ -1961,16 +1968,26 @@ Acceptance (7 KB)`, `14 more fields`, `30 more links`), whose value passed
 as `more` answers that part alone, as much as fits, with its own `more`
 for what is still left. The rest of the description, of one comment or of
 one field, older comments and older changes are each reached without
-reading another part. Older comments are listed with each body cut at
-4 KiB; an answer of them goes on to the tracker's next page of comments
-while room is left, so each page is read once per answer. A continuation
-reads the ticket's detail again and is refused when the ticket's update
-time differs from its answer's. On Jira a comment added or deleted moves
-the update time, so comments read on never skip or repeat one. Linear's
-update time does not move with a comment (measured,
-[tracker API measurements](../references/tracker-api-measurements.md)),
-so on Linear a comment added or deleted between a read and its
-continuation can make older comments skip or repeat one.
+reading another part, and the rest of one text takes the whole answer.
+Older comments are listed with each body cut at 4 KiB; an answer of them
+goes on to the tracker's next page of comments while room is left, so
+each page is read once per answer.
+
+A continuation reads the ticket's detail again and checks its value
+against the ticket as it is now before it uses any of it (the contract is
+`moreCursor`): the connection is still on, the ticket's update time is
+the value's, a comment's rest names a comment with the value's edit time,
+and each position is inside what the part holds now, a text offset at a
+rune's start. A value that fails is refused saying the ticket changed
+since and to read it again. On Jira a comment, a link or an attachment
+added or deleted moves the update time, so lists read on never skip or
+repeat an item. Linear's update time does not move with a comment
+(measured,
+[tracker API measurements](../references/tracker-api-measurements.md)):
+an edited comment's rest is refused by the comment's own edit time, and a
+comment added or deleted between a read and its continuation can make
+older comments skip or repeat one. Whether Linear's update time moves
+with a link or an attachment is not measured.
 
 Each answer costs one detail read (`IssueDetail`), and an answer of older
 comments one `Comments` request per tracker page it reads. A cold detail

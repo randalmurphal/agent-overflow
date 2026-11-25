@@ -20,7 +20,9 @@ const cut = "…"
 // textClip is the part of a text from byte offset from that fits allow
 // bytes as a JSON string, cut at a rune and marked with cut where the
 // text goes on, and the offset the rest starts at (len(text) when none is
-// left). A text that has nothing to show within allow shows nothing.
+// left). A text that has nothing to show within allow shows nothing. from
+// is 0 or an offset the text honors (atText): a continuation checks every
+// offset a client sends before it gets here.
 func textClip(text string, from, allow int) (string, int) {
 	lead := ""
 	if from > 0 {
@@ -72,6 +74,26 @@ func runeJSONLen(r rune, size int) int {
 		return 6
 	}
 	return size
+}
+
+// fit is the answer build makes within answerBudget, for what (named in
+// the error when none fits): build shares pool bytes among the parts it
+// cuts, and gets less, by what its answer was over, while the answer is
+// over the budget.
+func fit[T any](what string, pool int, build func(pool int) (T, error)) (T, error) {
+	for range 8 {
+		out, err := build(pool)
+		if err != nil {
+			return out, err
+		}
+		over := sizeOf(out) - answerBudget
+		if over <= 0 {
+			return out, nil
+		}
+		pool -= over
+	}
+	var none T
+	return none, fmt.Errorf("trackertools: the answer for %s did not fit %d bytes", what, answerBudget)
 }
 
 // sizeOf is the bytes v takes as JSON.

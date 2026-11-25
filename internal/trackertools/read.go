@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/trackerapp"
@@ -41,7 +42,8 @@ const (
 	// commentsShown is the most comments a first answer holds, the latest.
 	commentsShown = 10
 	// fieldHead is the most of one field's value a first answer or an
-	// answer of more fields holds; the rest has its own continuation.
+	// answer of more fields holds; the rest has its own continuation, which
+	// takes a whole answer.
 	fieldHead = 2 << 10
 	// listedComment is the most of one comment's body an answer of older
 	// comments holds; the rest has its own continuation.
@@ -50,13 +52,17 @@ const (
 	// than this waits for its continuation.
 	minPiece = 256
 	// titleCut, refCut and changeCut cut, with no continuation, a ticket's
-	// title, another ticket's title or an attachment's or label's name,
-	// and each value of a change in its history. The title and names are
-	// shorter on both trackers; a change can hold a whole old description,
-	// which the description itself shows as it is now.
+	// title, another ticket's title (a search row's too) or any name (a
+	// status, a type, a priority, a person, an attachment, a label), and
+	// each value of a change in its history. Titles and names are shorter
+	// on both trackers; a change can hold a whole old description, which
+	// the description itself shows as it is now.
 	titleCut  = 1 << 10
 	refCut    = 300
 	changeCut = 1 << 10
+	// refusalCut cuts a source's refusal in a search's unsearched: the
+	// trackers' sentences are a line.
+	refusalCut = 1 << 10
 )
 
 // The parts an answer can leave for a continuation, as a cursor names them.
@@ -75,7 +81,28 @@ const (
 // moreCursor is one part an answer left out: the ticket by connection and
 // issue, its update time when the answer was made, the part, and where in
 // it the rest starts (a list index, an item of a field's value, a byte
-// offset into a text, the tracker's comment page and a comment's ID).
+// offset into a text, the tracker's comment page, and a comment's ID and
+// edit time).
+//
+// What a continuation keeps true. A value is a client's text: it may be
+// one an answer gave for a ticket that has changed since, or one nobody
+// gave. Nothing in it is used to read, index or slice until it has been
+// checked against the ticket as it is now:
+//
+//   - its connection is on (refused saying so otherwise);
+//   - the ticket's update time is the value's;
+//   - for a comment's rest, the comment is on its page with the value's
+//     edit time, since on Linear an edit leaves the ticket's update time;
+//   - each position is inside what the part holds now: a list index, a
+//     field's index or its value's item below their counts, an index into
+//     a page of comments below the page's count (0 always), and a text
+//     offset below the text's length and at the start of a rune.
+//
+// A value that fails a check is refused before any of it is used, with
+// changedSince, and the model reads the ticket again. A value no answer
+// could hold (malformed, an unknown part, a member missing or below zero)
+// is refused as not one these tools gave. A member a part does not use is
+// never read. continued makes the checks; textClip relies on them.
 type moreCursor struct {
 	Connection string `json:"c"`
 	Issue      string `json:"i"`
@@ -86,6 +113,22 @@ type moreCursor struct {
 	Offset     int    `json:"o,omitempty"`
 	Page       string `json:"g,omitempty"`
 	Comment    string `json:"x,omitempty"`
+	Edited     int64  `json:"e,omitempty"`
+}
+
+// changedSince is the refusal of a value the ticket as it is now cannot
+// honor, for the ticket's key.
+func changedSince(key string) error {
+	return invalidf("more is from an earlier version of %s, which has changed since; read it again.", key)
+}
+
+// notOurs is the refusal of a value no answer could hold.
+func notOurs() error { return invalidf("more is not one these tools gave; read the ticket again.") }
+
+// atText reports whether offset is where the rest of text can start: in
+// it and at a rune's start.
+func atText(text string, offset int) bool {
+	return offset >= 0 && offset < len(text) && utf8.RuneStart(text[offset])
 }
 
 type readComment struct {
@@ -187,7 +230,8 @@ func qualifier(sources []trackerapp.TicketSource, site string) func(string) stri
 // resolve is the ticket key names for thread threadID, and the sources on:
 // with no key, the ticket the thread is linked to; a key the link names,
 // the link's (no request); site/KEY, that site's ticket; any other key,
-// the one ticket source whose tracker finds it, refused when several do.
+// the ticket of the one site whose tracker finds it, refused when several
+// sites do.
 func (s *Server) resolve(ctx context.Context, threadID, key string) (ticket, []trackerapp.TicketSource, error) {
 	key = strings.TrimSpace(key)
 	if len([]rune(key)) > maxKeyRunes {
@@ -226,16 +270,20 @@ func (s *Server) resolve(ctx context.Context, threadID, key string) (ticket, []t
 	}
 	asked := sources
 	if qualified {
-		i := slices.IndexFunc(sources, func(src trackerapp.TicketSource) bool { return strings.EqualFold(src.Site, strings.TrimSpace(site)) })
-		if i < 0 {
+		asked = slices.DeleteFunc(slices.Clone(sources), func(src trackerapp.TicketSource) bool { return !strings.EqualFold(src.Site, strings.TrimSpace(site)) })
+		if len(asked) == 0 {
 			return ticket{}, nil, errorsx.Public(CodeNotFound, fmt.Sprintf(
 				"No connection on this computer reaches %s; the sites on are %s.", strings.TrimSpace(site), siteList(sources)), nil)
 		}
-		asked = sources[i : i+1]
 	}
+	// One hit a site: the first of the site's connections, in order, that
+	// has the key. Two accounts on one site reaching a key reach one ticket.
 	var hits []ticket
 	var failed error
 	for _, src := range asked {
+		if slices.ContainsFunc(hits, func(h ticket) bool { return h.site == src.Site }) {
+			continue
+		}
 		found, err := s.t.Lookup(ctx, src.ID, []string{bare})
 		if err != nil {
 			// As ticket_find: a refusal the model can read leaves the other
@@ -268,23 +316,23 @@ func (s *Server) resolve(ctx context.Context, threadID, key string) (ticket, []t
 	return ticket{}, nil, errorsx.Public(CodeNotFound, fmt.Sprintf("No ticket %s on %s.", bare, siteList(asked)), nil)
 }
 
-// readMore answers the part a value of an earlier answer's more names, if
-// the ticket has not changed since that answer.
+// readMore answers the part a value of an earlier answer's more names,
+// when the ticket as it is now honors it (moreCursor).
 func (s *Server) readMore(ctx context.Context, text string) (any, error) {
 	var c moreCursor
 	if err := decodeCursor("more", text, &c); err != nil {
 		return nil, err
 	}
 	if c.Connection == "" || c.Issue == "" || c.Part == "" || c.Index < 0 || c.Item < 0 || c.Offset < 0 {
-		return nil, invalidf("more is not one these tools gave; read the ticket again.")
+		return nil, notOurs()
 	}
 	sources, err := s.sources()
 	if err != nil {
 		return nil, err
 	}
-	site := ""
-	if i := slices.IndexFunc(sources, func(src trackerapp.TicketSource) bool { return src.ID == c.Connection }); i >= 0 {
-		site = sources[i].Site
+	i := slices.IndexFunc(sources, func(src trackerapp.TicketSource) bool { return src.ID == c.Connection })
+	if i < 0 {
+		return nil, invalidf("more is from a connection that is no longer on; read the ticket again.")
 	}
 	d, err := s.t.IssueDetail(ctx, c.Connection, c.Issue)
 	switch {
@@ -293,9 +341,9 @@ func (s *Server) readMore(ctx context.Context, text string) (any, error) {
 	case err != nil:
 		return nil, err
 	}
-	sh := newSheet(s, c.Connection, qualifier(sources, site), d)
+	sh := newSheet(s, c.Connection, qualifier(sources, sources[i].Site), d)
 	if d.Card.Updated != c.Updated {
-		return nil, invalidf("more is from an earlier version of %s, which has changed since; read it again.", sh.key(d.Card.Key))
+		return nil, changedSince(sh.key(d.Card.Key))
 	}
 	return sh.continued(ctx, c)
 }
@@ -346,13 +394,20 @@ func newSheet(s *Server, connection string, key func(string) string, d trackerap
 	for _, e := range changes {
 		from, _ := textClip(e.From, 0, changeCut)
 		to, _ := textClip(e.To, 0, changeCut)
-		ch := readChange{At: stamp(e.At), Field: e.Field, From: from, To: to}
+		ch := readChange{At: stamp(e.At), Field: name(e.Field), From: from, To: to}
 		if e.Author != nil {
-			ch.By = e.Author.Name
+			ch.By = name(e.Author.Name)
 		}
 		sh.history = append(sh.history, ch)
 	}
 	return sh
+}
+
+// name is a name or another ticket's title as answers show it, cut at
+// refCut.
+func name(text string) string {
+	shown, _ := textClip(text, 0, refCut)
+	return shown
 }
 
 // fieldValues is a field's value as texts and numbers.
@@ -391,18 +446,18 @@ type section struct {
 func (sh *sheet) first(history bool) (readAnswer, error) {
 	d, c := sh.d, sh.d.Card
 	sh.out = readAnswer{
-		Key: sh.key(c.Key), Status: c.Status.Name, URL: d.URL, Estimate: estimate(d.Rows),
+		Key: sh.key(c.Key), Status: name(c.Status.Name), URL: d.URL, Estimate: estimate(d.Rows),
 		Created: stampIf(c.Created), Updated: stampIf(c.Updated), Resolved: stampIf(c.Resolved),
 	}
 	sh.out.Title, _ = textClip(c.Title, 0, titleCut)
 	if c.Type != nil {
-		sh.out.Type = c.Type.Name
+		sh.out.Type = name(c.Type.Name)
 	}
 	if c.Assignee != nil {
-		sh.out.Assignee = c.Assignee.Name
+		sh.out.Assignee = name(c.Assignee.Name)
 	}
 	if c.Priority != nil {
-		sh.out.Priority = c.Priority.Name
+		sh.out.Priority = name(c.Priority.Name)
 	}
 	if c.Parent != nil {
 		sh.out.Parent, _ = textClip(strings.TrimSpace(sh.key(c.Parent.Key)+" "+c.Parent.Title), 0, refCut)
@@ -414,7 +469,7 @@ func (sh *sheet) first(history bool) (readAnswer, error) {
 	sections := []section{
 		{3, func(allow int) int { return sh.description(0, allow) }},
 		{4, func(allow int) int { return sh.latestComments(allow) }},
-		{2, func(allow int) int { return sh.fieldsFrom(0, 0, 0, allow, len(sh.fields)) }},
+		{2, func(allow int) int { return sh.fieldsFrom(0, 0, 0, allow, len(sh.fields), fieldHead) }},
 		{1, func(allow int) int { return sh.list(partLinks, 0, allow) }},
 		{1, func(allow int) int { return sh.list(partAttachments, 0, allow) }},
 		{1, func(allow int) int { return sh.list(partLabels, 0, allow) }},
@@ -436,12 +491,17 @@ func (sh *sheet) first(history bool) (readAnswer, error) {
 }
 
 // continued is the answer to a continuation: the part c names, from where
-// c says, as much as fits, and at least a piece of it.
+// c says, as much as fits, and at least a piece of it. It first checks c
+// against the ticket as it is now, as moreCursor says.
 func (sh *sheet) continued(ctx context.Context, c moreCursor) (readAnswer, error) {
 	head := readAnswer{Key: sh.key(sh.d.Card.Key)}
+	stale := changedSince(head.Key)
 	var fill func(allow int) error
 	switch c.Part {
 	case partDescription:
+		if !atText(sh.d.Description, c.Offset) {
+			return readAnswer{}, stale
+		}
 		fill = func(allow int) error { sh.description(c.Offset, allow); return nil }
 	case partComment:
 		page, err := sh.commentPage(ctx, c.Page)
@@ -449,46 +509,55 @@ func (sh *sheet) continued(ctx context.Context, c moreCursor) (readAnswer, error
 			return readAnswer{}, err
 		}
 		i := slices.IndexFunc(page.Comments, func(cm trackerapp.CommentView) bool { return cm.ID == c.Comment })
-		if i < 0 {
-			return readAnswer{}, errorsx.Public(CodeNotFound, "That comment is not on the ticket any more; read the ticket again.", nil)
+		if i < 0 || page.Comments[i].Updated != c.Edited || !atText(page.Comments[i].Body, c.Offset) {
+			return readAnswer{}, stale
 		}
 		fill = func(allow int) error { sh.comment(page.Comments[i], c.Page, c.Offset, allow-1); return nil }
 	case partComments:
+		page, err := sh.commentPage(ctx, c.Page)
+		if err != nil {
+			return readAnswer{}, err
+		}
+		if c.Index > 0 && c.Index >= len(page.Comments) {
+			return readAnswer{}, stale
+		}
 		fill = func(allow int) error { return sh.olderComments(ctx, c.Page, c.Index, allow) }
-	case partFields, partField:
-		if c.Index >= len(sh.fields) || c.Part == partField && c.Item >= len(sh.fields[c.Index].values) {
-			return readAnswer{}, invalidf("more is not one these tools gave; read the ticket again.")
+	case partFields:
+		if c.Index >= len(sh.fields) {
+			return readAnswer{}, stale
 		}
-		end := len(sh.fields)
-		if c.Part == partField {
-			end = c.Index + 1
+		fill = func(allow int) error { sh.fieldsFrom(c.Index, 0, 0, allow, len(sh.fields), fieldHead); return nil }
+	case partField:
+		if c.Index >= len(sh.fields) || c.Item >= len(sh.fields[c.Index].values) {
+			return readAnswer{}, stale
 		}
-		fill = func(allow int) error { sh.fieldsFrom(c.Index, c.Item, c.Offset, allow, end); return nil }
+		text, isText := sh.fields[c.Index].values[c.Item].(string)
+		if isText && !atText(text, c.Offset) || !isText && c.Offset != 0 {
+			return readAnswer{}, stale
+		}
+		// The rest of one field is the answer's one part: it takes all the
+		// answer holds.
+		fill = func(allow int) error { sh.fieldsFrom(c.Index, c.Item, c.Offset, allow, c.Index+1, allow); return nil }
 	case partLinks, partAttachments, partLabels, partHistory:
+		if items, _ := sh.items(c.Part); c.Index >= len(items) {
+			return readAnswer{}, stale
+		}
 		fill = func(allow int) error { sh.list(c.Part, c.Index, allow); return nil }
 	default:
-		return readAnswer{}, invalidf("more is not one these tools gave; read the ticket again.")
+		return readAnswer{}, notOurs()
 	}
 	return sh.fit(head, fill)
 }
 
 // fit fills an answer from head within answerBudget: fill gets the bytes
-// head leaves, and gets less while the answer it makes, continuations
+// head leaves, and less while the answer it makes, continuations
 // included, is over the budget.
 func (sh *sheet) fit(head readAnswer, fill func(pool int) error) (readAnswer, error) {
-	pool := answerBudget - sizeOf(head)
-	for range 8 {
+	return fit(head.Key, answerBudget-sizeOf(head), func(pool int) (readAnswer, error) {
 		sh.out = head
-		if err := fill(pool); err != nil {
-			return readAnswer{}, err
-		}
-		over := sizeOf(sh.out) - answerBudget
-		if over <= 0 {
-			return sh.out, nil
-		}
-		pool -= over
-	}
-	return readAnswer{}, fmt.Errorf("trackertools: the answer for %s did not fit %d bytes", head.Key, answerBudget)
+		err := fill(pool)
+		return sh.out, err
+	})
 }
 
 // rest records a part the answer leaves for a continuation.
@@ -572,7 +641,7 @@ func (sh *sheet) comment(c trackerapp.CommentView, token string, from, allow int
 			label = "the comment"
 		}
 		sh.rest(fmt.Sprintf("%s by %s at %s (%s)", label, cmp.Or(shown.By, "someone"), shown.At, sizeLabel(len(c.Body)-next)),
-			moreCursor{Part: partComment, Page: token, Comment: c.ID, Offset: next})
+			moreCursor{Part: partComment, Page: token, Comment: c.ID, Edited: c.Updated, Offset: next})
 	}
 	return sizeOf(shown)
 }
@@ -582,7 +651,7 @@ func (sh *sheet) comment(c trackerapp.CommentView, token string, from, allow int
 func commentHead(c trackerapp.CommentView) int { return sizeOf(readCommentOf(c, "")) }
 
 func readCommentOf(c trackerapp.CommentView, body string) readComment {
-	return readComment{By: c.Author.Name, At: stamp(c.Created), Body: body, Internal: c.Internal}
+	return readComment{By: name(c.Author.Name), At: stamp(c.Created), Body: body, Internal: c.Internal}
 }
 
 // commentPage is the page of the ticket's comments token names: the
@@ -646,9 +715,9 @@ func (sh *sheet) olderAt(page trackerapp.CommentPageView, token string, index in
 
 // fieldsFrom shows the fields from the index-th to the one before end,
 // that one from its item-th value and that value's byte from, each value
-// within fieldHead, while allow holds them, as one JSON object in the
+// within each bytes, while allow holds them, as one JSON object in the
 // tracker's order.
-func (sh *sheet) fieldsFrom(index, item, from, allow, end int) int {
+func (sh *sheet) fieldsFrom(index, item, from, allow, end, each int) int {
 	var b bytes.Buffer
 	left := allow - 1 // the braces, less the comma the first field has not
 	for i := index; i < end; i++ {
@@ -666,7 +735,7 @@ func (sh *sheet) fieldsFrom(index, item, from, allow, end int) int {
 		if i == index {
 			start, at = item, from
 		}
-		value, used := sh.fieldValue(i, start, at, min(left-head, fieldHead))
+		value, used := sh.fieldValue(i, start, at, min(left-head, each))
 		if b.Len() > 0 {
 			b.WriteByte(',')
 		}
@@ -773,21 +842,18 @@ func (sh *sheet) items(part string) ([]any, string) {
 	switch part {
 	case partLinks:
 		for _, l := range sh.d.Links {
-			title, _ := textClip(l.Issue.Title, 0, refCut)
-			out = append(out, readLink{Relation: l.Relation, Key: sh.key(l.Issue.Key), Title: title, Status: l.Issue.Status.Name})
+			out = append(out, readLink{Relation: name(l.Relation), Key: sh.key(l.Issue.Key), Title: name(l.Issue.Title), Status: name(l.Issue.Status.Name)})
 		}
 		return out, "more links"
 	case partAttachments:
 		for _, a := range sh.d.Attachments {
-			name, _ := textClip(a.Name, 0, refCut)
-			out = append(out, name)
+			out = append(out, name(a.Name))
 		}
 		return out, "more attachments"
 	case partLabels:
 		for _, l := range sh.d.Card.Labels {
 			if l.Name != "" {
-				name, _ := textClip(l.Name, 0, refCut)
-				out = append(out, name)
+				out = append(out, name(l.Name))
 			}
 		}
 		return out, "more labels"
