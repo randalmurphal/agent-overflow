@@ -168,11 +168,24 @@ type StatusGroups struct {
 	version string
 }
 
-// setupGroups are the groups a status may be put in, by name, as the
-// store numbers them.
-var setupGroups = map[string]int{
-	"backlog": store.MirrorGroupBacklog, "todo": store.MirrorGroupToDo, "in_progress": store.MirrorGroupInProgress,
-	"done": store.MirrorGroupDone, "canceled": store.MirrorGroupCanceled, "left_out": store.MirrorGroupLeftOut,
+// setupGroup is the store's number of the group named name, which a
+// status may be put in, and false for any other name.
+func setupGroup(name string) (int, bool) {
+	switch name {
+	case "backlog":
+		return store.MirrorGroupBacklog, true
+	case "todo":
+		return store.MirrorGroupToDo, true
+	case "in_progress":
+		return store.MirrorGroupInProgress, true
+	case "done":
+		return store.MirrorGroupDone, true
+	case "canceled":
+		return store.MirrorGroupCanceled, true
+	case "left_out":
+		return store.MirrorGroupLeftOut, true
+	}
+	return 0, false
 }
 
 // siteKey names a tracker site: its kind and site, as a connection
@@ -559,7 +572,7 @@ func heldOf(setup Setup, raw map[string]json.RawMessage, newer []string, revisio
 	for _, site := range setup.StatusGroups {
 		groups := make(map[string]int, len(site.Statuses))
 		for id, name := range site.Statuses {
-			groups[id] = setupGroups[name]
+			groups[id], _ = setupGroup(name)
 		}
 		regroup, err := store.NewMirrorRegroup(groups)
 		if err != nil {
@@ -594,7 +607,7 @@ func validateSetup(setup Setup) (Setup, error) {
 			if err := checkSetupID("status", id); err != nil {
 				return Setup{}, err
 			}
-			if _, ok := setupGroups[group]; !ok {
+			if _, ok := setupGroup(group); !ok {
 				return Setup{}, invalidSetup("status %s of %s %s is put in group %q, which is none of backlog, todo, in_progress, done, canceled or left_out",
 					id, key.tracker, key.site, group)
 			}
