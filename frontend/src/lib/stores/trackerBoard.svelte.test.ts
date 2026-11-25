@@ -269,10 +269,34 @@ describe('the board subscription', () => {
     expect(patches.calls.length).toBe(2);
     expect(patches.calls[1][2]).toEqual(['2', '3']);
     // The first patch carried no totals: the held ones are still current.
-    expect(patches.calls[1][3]).toEqual({ lifetime: 1, revision: 1 });
+    expect(patches.calls[1][3]).toEqual({ lifetime: 1, revision: 1, groups: '' });
     patches.answer(patch([[]], 3));
     await flush();
     expect(board.current?.held?.sections[0].rows.map((r) => r.card.title)).toEqual(['one']);
+    board.release();
+  });
+
+  it("sends the project's status groups the board was read with, and after a refused patch the new ones", async () => {
+    const mocks = install();
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    // A save of the project's status groups refuses the patch of sections
+    // read before it; the board is read again, under the new groups.
+    mocks.patch.mockImplementationOnce(async () => {
+      throw new TransportError('tracker_page_stale', "the board, or the project's status groups, changed since this section was read; read the section again from its start");
+    });
+    mocks.board.mockImplementation(async () => ({ ...view([{ section: SPRINT, rows: [row('1', 'a')] }]), groups: 'g2' }));
+    applyTrackerBoardEvent(event(11, { changed: ['1'] }), HOME_BACKEND);
+    await flush();
+    expect(mocks.patch.mock.calls[0][3]).toEqual({ lifetime: 1, revision: 1, groups: '' });
+    expect(mocks.board).toHaveBeenCalledTimes(1);
+    expect(board.current?.readError).toBeNull();
+    expect(board.current?.held?.groups).toBe('g2');
+    applyTrackerBoardEvent(event(12, { changed: ['1'] }), HOME_BACKEND);
+    await flush();
+    expect(mocks.patch.mock.calls[1][3]).toEqual({ lifetime: 1, revision: 1, groups: 'g2' });
+    // A patch it applies keeps them.
+    expect(board.current?.held?.groups).toBe('g2');
     board.release();
   });
 

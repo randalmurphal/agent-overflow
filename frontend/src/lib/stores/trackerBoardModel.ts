@@ -57,11 +57,13 @@ export interface BoardShape {
 }
 
 /** What the client holds of a board: its shape, lifetime and revision,
- * the totals, and the sections it reads. */
+ * the version of the project's status groups it was read with (empty for
+ * none), the totals, and the sections it reads. */
 export interface HeldBoard {
   readonly shape: BoardShape;
   readonly lifetime: number;
   readonly revision: number;
+  readonly groups: string;
   readonly totals: HeldTotals;
   readonly sections: readonly HeldSection[];
 }
@@ -96,6 +98,7 @@ export function heldFromView(view: BoardView, intern: (row: RowView) => RowView)
     },
     lifetime: view.lifetime,
     revision: view.revision,
+    groups: view.groups ?? '',
     totals: { revision: view.totals_revision, all: view.all, backlog: view.backlog, sprints, columns },
     sections: [
       ...view.sections.map((page) => ({ section: page.section, rows: (page.rows ?? []).map(intern), next: page.next ?? null })),
@@ -109,9 +112,11 @@ function unreadScreenSections(view: BoardView): HeldSection[] {
   return view.screen.filter((s) => !carried.has(sectionKey(s))).map((section) => ({ section, rows: [], next: null, unread: true }));
 }
 
-/** The totals the client holds, for a patch read. */
+/** The totals the client holds and the status groups its sections were
+ * read with, for a patch read: a patch under other groups is refused as
+ * stale, and the client reads the board again. */
 export function heldTotalsAt(held: HeldBoard): TotalsAt {
-  return { lifetime: held.lifetime, revision: held.totals.revision };
+  return { lifetime: held.lifetime, revision: held.totals.revision, groups: held.groups };
 }
 
 /** The sections the client holds, in order, for a patch read. */
@@ -196,6 +201,7 @@ export function applyBoardPatch(held: HeldBoard, ids: readonly string[], patch: 
     shape: held.shape,
     lifetime: patch.lifetime,
     revision: patch.revision,
+    groups: held.groups,
     totals: patch.totals ? totalsOf(patch.totals) : held.totals,
     sections,
   };

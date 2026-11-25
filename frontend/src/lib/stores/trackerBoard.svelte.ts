@@ -445,8 +445,11 @@ async function readPatch(live: Live, held: HeldBoard): Promise<void> {
     patch = await withBackendTarget(live.ref.backend, () => TrackerBoardPatch(live.id, sections, ids, heldTotalsAt(held)));
   } catch (err) {
     // The IDs it carried are lost with it: only a full read recovers them.
+    // A patch refused as stale held sections read under the project's
+    // status groups before a save changed them, and the full read is the
+    // answer, not a failure.
     live.readAgain = true;
-    if (err instanceof TransportError && err.code === 'tracker_board_not_read') return;
+    if (err instanceof TransportError && (err.code === 'tracker_board_not_read' || err.code === 'tracker_page_stale')) return;
     throw err;
   }
   if (live.aborted || live.state.held !== held) return;
