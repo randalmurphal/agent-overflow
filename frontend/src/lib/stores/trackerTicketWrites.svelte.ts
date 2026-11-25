@@ -449,7 +449,7 @@ export async function loadTicketLinkTypes(backend: BackendKey, connection: strin
 // A computer that connects again may hold other link types.
 onBackendStatusChange((backend, status) => {
   if (status.status !== 'connected') return;
-  for (const key of [...linkTypes.keys()]) if (workspaceKeyBackend(key) === backend) linkTypes.delete(key);
+  for (const key of linkTypes.keys()) if (workspaceKeyBackend(key) === backend) linkTypes.delete(key);
 });
 
 /** The people who may be assigned the ticket whose name starts with

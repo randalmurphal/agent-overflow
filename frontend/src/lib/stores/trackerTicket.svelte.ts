@@ -598,7 +598,7 @@ export function askTrackerPokerSupport(backend: BackendKey, connection: string):
 // site listing: its connections are asked again.
 onBackendStatusChange((backend, status) => {
   if (status.status !== 'connected') return;
-  for (const key of [...pokerSupport.keys()]) if (workspaceKeyBackend(key) === backend) pokerSupport.delete(key);
+  for (const key of pokerSupport.keys()) if (workspaceKeyBackend(key) === backend) pokerSupport.delete(key);
 });
 
 /** The ticket's subscription on its computer, for a call that names it
