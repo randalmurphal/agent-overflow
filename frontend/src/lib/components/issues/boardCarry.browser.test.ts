@@ -239,6 +239,27 @@ describe('carrying a Board card', () => {
     expect(move).not.toHaveBeenCalled();
     expect(rank).not.toHaveBeenCalled();
     expect(moves).not.toHaveBeenCalled();
+
+    // Over Done's cards, where a toast came up during the carry: on screen
+    // the release is over the toast, so nothing is sent either.
+    const start = cardEl(host, '5003').getBoundingClientRect();
+    pointer('pointerdown', cardEl(host, '5003').querySelector('[data-testid="issues-card-title"]')!, start.left + 20, start.top + 20);
+    pointer('pointermove', window, start.left + 40, start.top + 30);
+    await waitFor(() => cardEl(host, '5003').hasAttribute('data-carried'), 'the card carried');
+    const done = column(host, 'Done').querySelector('[data-testid="issues-column-cards"]')!.getBoundingClientRect();
+    const toast = document.createElement('div');
+    toast.style.cssText = `position: fixed; left: ${done.left}px; top: ${done.top + 50}px; width: ${done.width}px; height: 80px; z-index: 100;`;
+    document.body.appendChild(toast);
+    try {
+      pointer('pointermove', window, done.left + done.width / 2, done.top + 90);
+      await frames(3);
+      pointer('pointerup', window, done.left + done.width / 2, done.top + 90);
+      await waitFor(() => document.querySelector('[data-testid="issues-card-carried"]') === null, 'the copy home');
+      await frames(2);
+    } finally {
+      toast.remove();
+    }
+    expect(move).not.toHaveBeenCalled();
   });
 
   it('lets a card be picked up again only once its drop is decided, and sends the one move it decided', async () => {
