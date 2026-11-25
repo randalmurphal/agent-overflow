@@ -71,6 +71,8 @@ export interface ExtraJira {
   transitions?: Array<{ id: string; name: string; to: string; from?: string[]; screen?: Array<{ field: string; required?: boolean }> }>;
   /** The field WEB's board estimates in. */
   estimation?: string;
+  /** The accounts WEB's issues can be assigned (trackerfake.JiraProject.Assignable). */
+  assignable?: string[];
   poker?: Record<string, never>;
 }
 
@@ -116,6 +118,7 @@ export async function seedFakeJira(harness: HarnessApp, extra?: ExtraJira): Prom
         id: '10000', key: 'WEB', name: 'Web',
         ...(extra?.issueTypes ? { issueTypes: extra.issueTypes } : {}),
         ...(extra?.transitions ? { transitions: extra.transitions } : {}),
+        ...(extra?.assignable ? { assignable: extra.assignable } : {}),
       }, ...(extra?.projects ?? [])],
       boards: [{ id: 1, name: 'WEB board', type: 'scrum', project: 'WEB', ...(extra?.estimation ? { estimation: extra.estimation } : {}), columns: [
         { name: 'To Do', statuses: ['10000'] }, { name: 'In Progress', statuses: ['10001'] }, { name: 'Done', statuses: ['10002'] },

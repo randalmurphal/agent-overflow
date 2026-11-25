@@ -104,6 +104,8 @@
   // it and the drop slot in its own column, and what the moves read said.
   type MovesRead = { readonly state: 'reading' } | { readonly state: 'read'; readonly reached: Map<number, MoveView[]> } | { readonly state: 'failed'; readonly error: unknown };
   interface Carrying {
+    /** Which carry: a copy still gliding home ends its own carry only. */
+    readonly id: number;
     readonly row: RowView;
     readonly ctx: TicketWriteContext;
     readonly from: number;
@@ -112,6 +114,7 @@
     readonly moves: MovesRead | null;
   }
   let carrying = $state.raw<Carrying | null>(null);
+  let carries = 0;
   const carriedIssue = $derived(carrying?.row.card.id ?? null);
 
   /** Whether a carried card over `column`, another than its own, may be
@@ -237,10 +240,12 @@
   }
   let press: Press | null = null;
   let columnsEl: HTMLElement | undefined = $state();
-  const columnRefs: ({ carryColumn(): CarryColumn } | undefined)[] = [];
+  const columnRefs: ({ carryColumn(): CarryColumn } | undefined)[] = $state([]);
 
   function onPointerDown(event: PointerEvent): void {
     if (compact || press || event.button !== 0 || (event.pointerType !== 'mouse' && event.pointerType !== 'pen')) return;
+    // A press with Ctrl or Cmd held is a click with its own meaning.
+    if (event.ctrlKey || event.metaKey) return;
     const target = event.target instanceof Element ? event.target : null;
     if (!target || target.closest('[data-card-mark]')) return;
     const el = target.closest<HTMLElement>('[data-testid="issues-card"]');
@@ -300,24 +305,25 @@
     menu = null;
     movesRead = null;
     const ctx = cardWriteContext(boardRef, p.row);
-    carrying = { row: p.row, ctx, from: p.from, over: p.from, slot: null, moves: null };
+    const id = ++carries;
+    carrying = { id, row: p.row, ctx, from: p.from, over: p.from, slot: null, moves: null };
     const host: CarryHost = {
       columns: geometry as CarryColumn[],
       scroller,
       from: p.from,
       over(column) {
         const c = carrying;
-        if (!c) return;
+        if (c?.id !== id) return;
         carrying = { ...c, over: column };
         if (column !== null && column !== c.from) readMoves();
       },
       slot(index) {
         const c = carrying;
-        if (c && c.slot !== index) carrying = { ...c, slot: index };
+        if (c?.id === id && c.slot !== index) carrying = { ...c, slot: index };
       },
       drop: (column, slot, at) => drop(p.row, p.from, column, slot, at),
       end() {
-        carrying = null;
+        if (carrying?.id === id) carrying = null;
       },
     };
     p.carry = start(p.el, p.sx, p.sy, p.x, p.y, p.level, host);
@@ -544,7 +550,7 @@
         label={move.name}
         description={move.fields?.length ? 'Asks for fields' : undefined}
         testId="issues-card-drop-move"
-        onSelect={() => { dropChoice = null; moveTo(choice.row, choice.column, move); }}
+        onSelect={() => { moveTo(choice.row, choice.column, move); dropChoice = null; }}
       />
     {/each}
   </ContextMenu>

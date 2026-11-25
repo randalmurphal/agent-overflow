@@ -45,9 +45,12 @@
         invalid = TAKES[input];
         return;
       }
+      // Read before `onDone`, which may close the editor that gave them.
       const next = draft.trim();
+      const changed = next !== text;
+      const save = onSave;
       onDone();
-      if (next !== text) onSave(next);
+      if (changed) save(next);
     } else if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();

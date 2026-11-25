@@ -527,6 +527,42 @@ describe('the Issues pane', () => {
   });
 });
 
+describe('changing a card on the board', () => {
+  it('sets the points typed at the card\'s estimate, through the ticket\'s write', async () => {
+    install();
+    const estimate = setBindingMock('SetTrackerEstimate', async (): Promise<WriteView> => ({ parts: [{ step: 'estimate', state: 'applied' }] }) as WriteView);
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    const card = view.getAllByTestId('issues-card').find((c) => c.dataset.issue === '1')!;
+    await fireEvent.click(within(card).getByTestId('issues-card-estimate-edit'));
+    const input = await within(document.body).findByTestId('ticket-field-input');
+    await fireEvent.input(input, { target: { value: '5' } });
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(estimate).toHaveBeenCalledWith('c1', { board: '1', issue: '1', value: 5 }));
+    expect(within(document.body).queryByTestId('issues-card-typed')).toBeNull();
+    await waitFor(() => expect(within(card).queryByTestId('ticket-write-pending')).toBeNull());
+  });
+
+  it('moves a card from its menu\'s Move to…, which reads the moves when it opens', async () => {
+    install();
+    const moves = setBindingMock('TrackerMoves', async () => [{ id: '21', name: 'Start', to: { id: 's2', name: 'In Progress' } }]);
+    const move = setBindingMock('MoveTrackerIssue', async (): Promise<WriteView> => ({ parts: [{ step: 'move', state: 'applied' }] }) as WriteView);
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    const card = view.getAllByTestId('issues-card').find((c) => c.dataset.issue === '1')!;
+    await fireEvent.contextMenu(card);
+    expect(moves).not.toHaveBeenCalled();
+    await fireEvent.click(await within(document.body).findByTestId('issues-card-menu-move'));
+    const target = await within(document.body).findByTestId('issues-card-move-column');
+    expect(target).toHaveTextContent('In Progress');
+    expect(moves).toHaveBeenCalledTimes(1);
+    await fireEvent.click(target);
+    await waitFor(() => expect(move).toHaveBeenCalledWith('c1', { issue: '1', move: '21', fields: undefined, accept_loss: false }));
+    // It waits in In Progress while the move is out, and the headers count it there.
+    await waitFor(() => expect(within(document.body).queryByTestId('action-menu')).toBeNull());
+  });
+});
+
 describe("the project's status groups on the Board screen", () => {
   it('shows the cards of a status left out of counts and leaves them out of the column it adds up', async () => {
     install({ view: sprintBoard(fourOfThree(), ['s2']) });

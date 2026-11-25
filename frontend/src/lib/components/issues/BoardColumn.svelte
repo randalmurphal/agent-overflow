@@ -227,7 +227,7 @@
       </LongListVirtualizer>
     {/if}
     {#if slotY !== null}
-      <div class="pointer-events-none absolute left-1 right-1 top-0 h-0.5 rounded-full bg-accent" style:transform="translateY({slotY - 4}px)" data-testid="issues-column-slot"></div>
+      <div class="pointer-events-none absolute left-1 right-1 top-0 h-0.5 rounded-full bg-accent" style:transform="translateY({Math.max(0, slotY - 4)}px)" data-testid="issues-column-slot"></div>
     {/if}
     {#if paging}
       <p class="px-2 py-2 text-xs text-fg-muted" data-testid="issues-column-loading">{column.unread ? 'Loading…' : 'Loading more…'}</p>

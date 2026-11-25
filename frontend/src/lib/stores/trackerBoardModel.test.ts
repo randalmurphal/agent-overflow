@@ -18,6 +18,10 @@ import {
   appendPage,
   applyBoardPatch,
   cardMatches,
+  cardURL,
+  columnWith,
+  columnsReached,
+  withWaiting,
   createRowInterner,
   heldFromView,
   heldSections,
@@ -25,6 +29,7 @@ import {
   screenColumns,
   sectionKey,
   searchWords,
+  shownColumn,
   type HeldBoard,
 } from './trackerBoardModel';
 
@@ -212,5 +217,76 @@ describe('the row interner', () => {
     expect(b.card.parent).toBe(a.card.parent);
     expect(c.card.parent).not.toBe(a.card.parent);
     expect(c.card.parent?.title).toBe('Epic, renamed');
+  });
+});
+
+describe('a moved card on the Board screen', () => {
+  function kanban(leftOut: string[] = []): HeldBoard {
+    const columns = [
+      { name: 'To Do', statuses: [{ id: 's1', group: 'todo' }], total: { rows: 2, estimate: 4 } },
+      { name: 'In Progress', statuses: [{ id: 's2', group: 'in_progress' }, { id: 's9', group: 'in_progress' }], total: { rows: 1, estimate: 2 } },
+      { name: 'Done', statuses: [{ id: 's3', group: 'done' }], total: { rows: 0, estimate: 0 } },
+    ];
+    const view = {
+      id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'points' },
+      columns, sprints: [], all: { rows: 3, estimate: 6 }, backlog: { rows: 0, estimate: 0 }, sync: {}, left_out: leftOut,
+      screen: [0, 1, 2].map((column) => ({ kind: 'column', column })),
+      sections: [
+        { section: { kind: 'column', column: 0 }, rows: [row('1', 'a', 's1'), row('2', 'c', 's1')], next: null },
+        { section: { kind: 'column', column: 1 }, rows: [row('3', 'b', 's2')], next: null },
+        { section: { kind: 'column', column: 2 }, rows: [], next: null },
+      ],
+    } as unknown as BoardView;
+    return heldFromView(view, (r) => r);
+  }
+  const shownOf = (held: HeldBoard) => screenColumns(held).map((col) => shownColumn(held, col, { mine: null, words: [] }));
+  const ids = (col: { rows: readonly RowView[] }) => col.rows.map((r) => r.card.id);
+
+  it('answers the columns a ticket\'s moves reach, each with its moves', () => {
+    const held = kanban();
+    const move = (id: string, to: string) => ({ id, name: id, to: { id: to } }) as never;
+    const reached = columnsReached(held.shape.columns, [move('21', 's2'), move('22', 's9'), move('31', 's3')]);
+    expect([...reached.keys()]).toEqual([1, 2]);
+    expect(reached.get(1)!.map((m) => m.id)).toEqual(['21', '22']);
+    expect(columnsReached(held.shape.columns, []).size).toBe(0);
+  });
+
+  it('draws a waiting card where it waits, in its order or before the card named, and keeps the columns it does not touch', () => {
+    const held = kanban();
+    const shown = shownOf(held);
+    expect(withWaiting(shown, [])).toBe(shown);
+    const moved = withWaiting(shown, [{ row: held.sections[0].rows[0], column: 1 }]);
+    expect(moved.map(ids)).toEqual([['2'], ['1', '3'], []]);
+    expect(moved[2]).toBe(shown[2]);
+    // Counts stay the board's: the headers count a moved card by columnWith.
+    expect(moved.map((c) => c.counted)).toEqual([2, 1, 0]);
+    expect(withWaiting(shown, [{ row: held.sections[0].rows[1], column: 0, before: '1' }]).map(ids)).toEqual([['2', '1'], ['3'], []]);
+    expect(withWaiting(shown, [{ row: held.sections[0].rows[0], column: 0, before: null }]).map(ids)).toEqual([['2', '1'], ['3'], []]);
+    // A column the board no longer has: nothing drawn.
+    expect(withWaiting(shown, [{ row: held.sections[0].rows[0], column: 5 }])).toBe(shown);
+  });
+
+  it('counts a card into one column and out of another, unless its status is left out of counts', () => {
+    const held = kanban();
+    const cols = screenColumns(held);
+    const shown = shownOf(held);
+    const card = held.sections[0].rows[0];
+    const into = columnWith(held, cols[1], shown[1], card, 1);
+    expect(into.col.total).toEqual({ rows: 2, estimate: 4 });
+    expect([into.col.counted, into.shown.counted]).toEqual([2, 2]);
+    const out = columnWith(held, cols[0], shown[0], card, -1);
+    expect(out.col.total).toEqual({ rows: 1, estimate: 2 });
+    const leftOut = kanban(['s1']);
+    const doing = screenColumns(leftOut)[1];
+    expect(columnWith(leftOut, doing, shownOf(leftOut)[1], card, 1).col).toBe(doing);
+  });
+
+  it('answers a card\'s address: its own, else its board\'s with its key', () => {
+    const held = kanban();
+    const card = row('1', 'a', 's1').card;
+    expect(cardURL(held.shape, card)).toBe('');
+    expect(cardURL({ ...held.shape, issueURL: 'https://example.atlassian.net/browse/' }, card)).toBe('https://example.atlassian.net/browse/WEB-1');
+    expect(cardURL({ ...held.shape, issueURL: 'https://example.atlassian.net/browse/' }, { ...card, key: 'WEB 1/2' })).toBe('https://example.atlassian.net/browse/WEB%201%2F2');
+    expect(cardURL(held.shape, { ...card, url: 'https://linear.app/example/issue/WEB-1/title' })).toBe('https://linear.app/example/issue/WEB-1/title');
   });
 });
