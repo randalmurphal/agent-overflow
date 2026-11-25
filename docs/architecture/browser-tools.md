@@ -35,7 +35,7 @@ download.
 
 Browser pages start hidden: parked out of the window's layout rather than
 opened anywhere the user can see. An agent explicitly presents a page with
-`browser_visibility`; AO then opens an ephemeral browser companion beside that
+`browser_pane` (`action: "visibility"`); AO then opens an ephemeral browser companion beside that
 thread and the engine positions that exact page's real view over the pane's
 host rect. The user and agent share its URL, DOM, cookies, history, focus, and
 tab set; no separate browser window or duplicate browsing session is opened.
@@ -66,7 +66,7 @@ per-platform no-op.
   profile, discarded when its last page closes, a new identity each time).
   `internal/browser/jar.go` is the only mapping from a thread's choice to a
   jar; engines get a jar key and an ephemeral flag.
-  `browser_session` reports the jar. Agents have no tool to change it, since
+  `browser_pane` (`action: "session"`) reports the jar. Agents have no tool to change it, since
   a switch closes the user's tabs. Pages remain owned by the registering
   thread.
 - A jar shares site data and nothing else. Navigation and file permissions,
@@ -131,10 +131,10 @@ per-platform no-op.
   pixels, held within 320×240 and 1920×1200): the page fills the pane at 1:1
   and reflows when the pane resizes, like a tab in any browser. With no pane
   the last pane size stands; a thread that never mounted one lays out at
-  1280×720. `browser_viewport set` pins a size instead; the pane then draws
+  1280×720. `browser_pane` (`action: "viewport_set"`) pins a size instead; the pane then draws
   the page scaled down to fit (never up, centered with margins when the rect
-  is larger) and labels the size and scale in its address row. `reset`
-  returns to following the pane, and `get` reports the current size, whether
+  is larger) and labels the size and scale in its address row. `viewport_reset`
+  returns to following the pane, and `viewport_get` reports the current size, whether
   it is pinned, and the pane size. Screenshots, coordinates, and layout always
   mean the current viewport: a pane resize lays out the shown page at once,
   and every other page of the thread before it is shown or a tool acts on
@@ -216,7 +216,7 @@ per-platform no-op.
   newer epoch began answer success and act on nothing; a reopen keeps its
   closed tab. More than 256 waiting in one mount are refused with an error,
   and that number, sent again, is treated as never sent. An agent's
-  `browser_select_page` applies in arrival order and never waits. Closing a
+  `browser_page` (`action: "select"`) applies in arrival order and never waits. Closing a
   tab by its id reselects only when that tab was the active one.
 - Each page reports `loading` and a `favicon`. Every engine reports loading
   (CDP frame start and stop events, WebKitGTK `is-loading`, WKWebView
@@ -231,7 +231,7 @@ per-platform no-op.
   state leaves them. Every writer then publishes, which pushes when any of
   the thread's pages is marked, so a tool call or an engine report that
   leaves the state as it was pushes nothing and no write waits for a later
-  change. `browser_pages`' `selected` and `lastOpened` are per call and
+  change. `browser_page` (`action: "list"`) `selected` and `lastOpened` are per call and
   mark nothing.
 - A page's cached info has two kinds of writer, both through one commit.
   An engine report commits what the page now shows; each engine numbers its
@@ -261,7 +261,7 @@ per-platform no-op.
   body after load while nothing observed changes; a read asks the document
   and is right. A
   read (an
-  operation's, `browser_pages`', a selection's, the history refresh after a
+  operation's, `browser_page` (`action: "list"`), a selection's, the history refresh after a
   report) is stamped before it asks; the address and the back/forward state
   each keep the stamp of the write that set them, and a read's part is
   committed only if no write that began later set that field. An
@@ -304,7 +304,7 @@ per-platform no-op.
   profiles is stopped after a bounded idle delay.
 - When the session reaper ends an idle session, and only then, the thread's
   pages are suspended: each engine page is closed and the tab stays in the
-  companion and `browser_pages` (`suspended: true`) with its id, address,
+  companion and `browser_page` (`action: "list"`, `suspended: true`) with its id, address,
   title and label. The page a mounted pane is showing stays live, since
   unloading it would only make the pane reload it. App shutdown saves every
   open page the same way, so it returns after a restart as a suspended tab,
@@ -402,7 +402,7 @@ behave as a desktop browser's:
   rescans the dev servers, so neither rides the state push.
 - The recent addresses are the Manager's, per thread, in memory only
   (`internal/browser/recent.go`): the last 50 addresses an open loaded
-  (the address bar's navigation, `browser_open`, `browser_open_file`),
+  (the address bar's navigation, `browser_open` with `url` or `path`),
   newest first, one entry per address. A failed open, a page left on a
   blank or internal document, a link followed in the page, history moves
   and reloads add nothing. A private jar keeps none; a jar switch, Clear
@@ -588,7 +588,7 @@ owners and ends, and each engine's find are in
 
 ## Tool surface
 
-All results are bounded. `browser_open` and `browser_open_file` create a new
+All results are bounded. `browser_open` (`url` or `path`) creates a new
 background page when `page_id` is omitted; supplying one intentionally
 navigates that existing page. Other page-scoped tools may omit `page_id` only
 while the thread owns zero or one page. With multiple pages, AO returns a
@@ -598,25 +598,15 @@ it without relying on an optional skill.
 
 | Tool | Purpose |
 |---|---|
-| `browser_session` | Name the thread-owned automation session and its cookie jar. |
-| `browser_open` | Create a background HTTP(S) page, or intentionally navigate an existing `page_id`. |
-| `browser_new_page` | Create a blank background tab without navigating it. |
-| `browser_open_file` | Create a background page for an existing regular HTML, PDF, image, text, or other browser-renderable file, or navigate an existing `page_id`. |
-| `browser_pages` / `browser_select_page` | List only thread-owned tabs and explicitly pin one as the companion tab. Selection does not show the companion. AO never inspects another system browser. |
-| `browser_label_page` | Set/clear a short case-insensitively unique label for cross-agent coordination. |
-| `browser_close_page` | Close one caller-owned page. |
-| `browser_visibility` / `browser_viewport` | Explicitly present a `page_id`, hide the companion without closing pages, and get/set/reset the thread viewport: following the pane by default, or a pinned bounded size. Hidden companions present nothing and cost nothing. |
+| `browser_open` | Create a background page for an HTTP(S) `url` or an existing regular local `path` (HTML, PDF, image, text, or other browser-renderable file), or intentionally navigate an existing `page_id`. |
+| `browser_page` | Manage thread-owned tabs and history: `list`, `new`, `select` (pin as companion tab without showing), `label` (short case-insensitively unique coordination label), `close`, `back`, `forward`, `reload`, `stop`. AO never inspects another system browser. |
+| `browser_pane` | Session and companion pane controls: `session` (name session and report cookie jar), `visibility` (show a `page_id` or hide the companion without closing pages), `viewport_get` / `viewport_set` / `viewport_reset` (follow pane by default, or pin a bounded size). Hidden companions present nothing and cost nothing. |
 | `browser_snapshot` | Return URL/title, bounded visible text, and bounded interactive-element records with CSS selectors and reusable DOM node IDs. |
 | `browser_screenshot` | Return a JPEG of the viewport, a bounded clip, or a height-capped full page. |
 | `browser_locator` | Stateless Playwright-equivalent locators (CSS, role/name, label, placeholder, text, test ID, scopes, filters, union/intersection, indexes, and nested frames) with strict query/read/action/check/select/wait behavior and optional navigation/download expectations. |
-| `browser_click` | Dispatch a trusted CDP click to a CSS selector. |
-| `browser_type` | Focus, optionally clear with platform-native select-all, and dispatch trusted text input. |
-| `browser_press` | Dispatch a keyboard chord/key. |
+| `browser_dom` | Visible-DOM snapshot and click/double-click/type/keypress/scroll by snapshot `node_id` or CSS `selector`, plus page-level `keypress` and `scroll`. |
 | `browser_pointer` | Coordinate click/double-click/move/scroll and bounded-path drag. |
-| `browser_dom` | Visible-DOM snapshot and click/double-click/type/key/scroll by snapshot node ID. |
-| `browser_scroll` | Scroll the page or a selected element. |
-| `browser_wait` | Wait for duration, locator state, URL glob, commit, DOMContentLoaded, load, or 500 ms network idle. |
-| `browser_history` | Back, forward, reload, or stop. |
+| `browser_wait` | Wait for duration, CSS selector state, URL glob, commit, DOMContentLoaded, load, or 500 ms network idle (locator waits use `browser_locator` `action: "wait"`). |
 | `browser_evaluate_readonly` | Bounded inspection JavaScript in the `browser_evaluate` forms, run synchronously: it cannot `await`, and a promise result fails. A CDP-backed engine rejects a possible side effect in the engine itself, which includes some reads such as `getElementById`; an engine that cannot says so in the tool result rather than differing silently. |
 | `browser_evaluate` | Explicit mutation-capable JavaScript escape hatch; bounded and serialized. Takes an expression, or a function called with an optional JSON argument, as Playwright's evaluate does; other code runs as statements in an async function body and gives a value only through `return`. The engine reads the code: the Manager offers it as an expression, and as statements only when the engine reports that does not compile, so no code runs twice ([`evaluate.go`](../../internal/browser/evaluate.go)). Nothing uses the page's `eval`, so a page CSP without `'unsafe-eval'` allows it. The page encodes the result as `JSON.stringify` does, plus DOM nodes, collections, errors, `BigInt` and cycles, bounded in size and depth. |
 | `browser_clipboard` | Read/write a bounded tab-local MIME clipboard. Paste/copy chords bridge this clipboard without touching the OS clipboard. |
@@ -631,19 +621,19 @@ intentionally inspect or modify any page in that AO thread. Generic MCP does
 not carry a portable Claude/Codex child-agent identity, so AO does not pretend
 it can assign invisible per-subagent sessions. The page handle is the work
 handle: a parallel agent opens a page, retains its returned `page_id`, and
-passes it on later calls. A smarter agent may call `browser_pages`, locate an
+passes it on later calls. A smarter agent may call `browser_page` (`action: "list"`), locate an
 existing page by label, URL, or title, then deliberately reuse its ID.
 
 Ordinary activity updates recency but never changes the companion selection.
-Only `browser_select_page`, a user tab selection, or
-`browser_visibility {visible:true,page_id}` changes the presented page. Thus
+Only `browser_page` (`action: "select"`), a user tab selection, or
+`browser_pane` (`action: "visibility"`, `visible: true`, `page_id`) changes the presented page. Thus
 background subagents cannot make a visible companion flicker between tabs.
 
 ## Local-file boundary
 
 The browser never launches with `--allow-file-access-from-files`. Public page
 JavaScript therefore does not inherit the MCP caller's file authority.
-`browser_open_file` resolves symlinks and permits files inside the thread's
+`browser_open` (`path`) resolves symlinks and permits files inside the thread's
 workspace or project root, and the workspace's own finished downloads, which
 the pane's downloads list opens from: under headless Chromium its AO-owned
 directory of finished downloads, apart from where the engine writes running
@@ -755,7 +745,7 @@ machine that runs the page's engine puts it: that user's Downloads folder (`down
   of its name moves neither. A path AO hands out there, an asset
   bundle's or the download room Chromium is told, must still reach what
   AO holds (`nameReaches`), or the bundle or the launch is refused.
-  Under the artifact root, `browser_open_file`
+  Under the artifact root, `browser_open` (`path`)
   opens only a file AO moved into a workspace's `finished` directory
   (`authorizeFile`); any other file there never opens and goes with the
   seven-day prune.
@@ -802,7 +792,7 @@ CLI's normal configuration.
 
 A native Linux desktop drives the WebKitGTK views embedded in the app's own
 window: same tools, same authority, no second browser process, and site data
-under an AO-owned profile directory. `browser_visibility` presents that page's
+under an AO-owned profile directory. `browser_pane` (`action: "visibility"`) presents that page's
 real view behind the pane's host rect.
 
 A windowed macOS desktop drives WKWebView subviews of the app's own NSWindow

@@ -2,7 +2,6 @@ package threadtools
 
 import (
 	"fmt"
-	"strings"
 
 	"agent-overflow/internal/provider"
 )
@@ -89,17 +88,14 @@ func tool(name, description string, properties map[string]any, required ...strin
 
 // computerIDProperty is the one-computer selector. Absent in the
 // single-computer shape, where it could only ever name this computer.
-func computerIDProperty(shape Shape, properties map[string]any, what string) {
+func computerIDProperty(shape Shape, properties map[string]any, _ string) {
 	if !shape.Paired() {
 		return
 	}
-	properties["computer_id"] = map[string]any{
-		"type":        "string",
-		"description": "Computer id from thread_options or from a result row, when you already know which computer holds " + what + ". Omit to resolve the id across this computer and every paired one; naming it skips that fan-out and turns an unreachable computer into an immediate error instead of an incomplete answer.",
-	}
+	properties["computer_id"] = map[string]any{"type": "string"}
 }
 
-func waitProperties(properties map[string]any, defaultWait, maxWait int, what string) {
+func waitProperties(properties map[string]any, defaultWait, maxWait int, _ string) {
 	if maxWait <= 0 || maxWait > MaxWaitSeconds {
 		maxWait = MaxWaitSeconds
 	}
@@ -107,16 +103,15 @@ func waitProperties(properties map[string]any, defaultWait, maxWait int, what st
 		defaultWait = maxWait
 	}
 	properties["wait_seconds"] = map[string]any{
-		"type":        "integer",
-		"minimum":     0,
-		"maximum":     maxWait,
-		"default":     defaultWait,
-		"description": fmt.Sprintf("How long THIS CALL waits for %s, not how long the work may run. Zero returns as soon as the request is accepted. A wait that ends before the answer returns outcome backgrounded (still working) or blocked (the thread is waiting on the user for an approval or a question), arms notify, and the answer then arrives in this thread as a message at your next turn boundary. Maximum %d.", what, maxWait),
+		"type":    "integer",
+		"minimum": 0,
+		"maximum": maxWait,
+		"default": defaultWait,
 	}
 	properties["notify"] = map[string]any{
 		"type":        "boolean",
 		"default":     false,
-		"description": "Deliver the outcome as a message in this thread if this call did not carry it, including the other thread's last message when it ends without replying: a thread you spawned ends once nothing it started is still running. A thread_reply is delivered whether or not this is set. Any positive wait that ends unsettled turns this on by itself; set it with wait_seconds 0 for fire-and-forget work whose outcome you still want.",
+		"description": "Message final output.",
 	}
 }
 
@@ -124,161 +119,118 @@ func searchSchema(shape Shape) map[string]any {
 	properties := map[string]any{
 		"query": map[string]any{
 			"type":        "string",
-			"description": "Searches settled user text, assistant text, tool call summaries and thread titles: words are ANDed, \"quoted phrases\" match exactly, OR and NOT work, and a trailing * is a prefix match. Identifiers such as BLITZ-572, foo.go or src/app/main.go match as typed. Tool outputs, diffs and thinking are NOT indexed; find their thread here and read them with thread_show include or thread_item. Omit to list recent threads by last activity instead of searching.",
+			"description": "Full-text query (AND/OR/NOT/\"phrase\"/prefix*); omit to list recent.",
 		},
-		"thread_id": map[string]any{
-			"type":        "string",
-			"description": "Search inside one thread only. Full id, or an unambiguous prefix of at least 6 characters.",
-		},
-		"kind": map[string]any{
-			"type":        "string",
-			"enum":        []string{"user", "assistant", "tool", "title"},
-			"description": "Restrict a query to one row kind: user messages, assistant messages, tool call summaries, or thread titles.",
-		},
-		"project_id": map[string]any{"type": "string", "description": "Only threads of this project. Ids come from thread_options or from a result row."},
-		"provider":   map[string]any{"type": "string", "description": "Only threads running this provider, for example claude or codex."},
-		"state": map[string]any{
-			"type":        "string",
-			"enum":        AllStates,
-			"description": "Only threads in this state right now. running is a turn in flight; pending-approval and awaiting-input mean the thread is blocked on the user; plan-ready, error, interrupted and setup-failed are states the sidebar shows after a turn ended.",
-		},
-		"archived":      map[string]any{"type": "boolean", "description": "true lists only archived threads, false only unarchived ones. Omitted, a query searches both and a listing shows unarchived threads only, as the sidebar does."},
-		"spawned_by_me": map[string]any{"type": "boolean", "description": "Only threads this thread spawned, forks included. A thread it merely sent to or asked is not listed; thread_status lists those requests."},
-		"agents":        map[string]any{"type": "boolean", "description": "Only assistants' current threads. Each row's assistant gives the assistant's id, its name (suffixed -<computer> where two computers in the result have an assistant of that name) and its role line, and the row carries its current thread and computer."},
-		"group":         map[string]any{"type": "string", "description": "Only threads filed in this sidebar group, by its name (case-insensitive, every project's group of that name) or its id. A computer with no such group refuses the search rather than answering with no threads."},
-		"since":         map[string]any{"type": "string", "description": "RFC 3339 timestamp with an offset. Only threads active since then."},
+		"thread_id":     map[string]any{"type": "string"},
+		"kind":          map[string]any{"type": "string", "enum": []string{"user", "assistant", "tool", "title"}},
+		"project_id":    map[string]any{"type": "string"},
+		"provider":      map[string]any{"type": "string"},
+		"state":         map[string]any{"type": "string", "enum": AllStates},
+		"archived":      map[string]any{"type": "boolean", "description": "Omit: both for query, active for list."},
+		"spawned_by_me": map[string]any{"type": "boolean"},
+		"agents":        map[string]any{"type": "boolean", "description": "Assistants only."},
+		"group":         map[string]any{"type": "string"},
+		"since":         map[string]any{"type": "string", "description": "RFC 3339 cutoff."},
 		"limit": map[string]any{
-			"type":        "integer",
-			"minimum":     1,
-			"maximum":     MaxSearchLimit,
-			"description": fmt.Sprintf("Rows per computer. Default %d with a query, %d without.", DefaultSearchLimit, DefaultListLimit),
+			"type":    "integer",
+			"minimum": 1,
+			"maximum": MaxSearchLimit,
 		},
-		"cursor": map[string]any{"type": "string", "description": "Opaque cursor from a previous thread_search result, passed back unchanged to continue past limit. Omit to start over."},
+		"cursor": map[string]any{"type": "string"},
 	}
-	assistant := "assistant on an assistant's current thread (its id, name and role line), "
 	if shape.AssistantsOff {
 		delete(properties, "agents")
-		assistant = ""
 	}
-	description := "Find threads, or list them. With query it is a full-text search over settled message text, tool call summaries and titles; without one it lists recent threads by last activity. Either way each row carries the thread id, title, project, provider, model, current state, last activity, branch, group, pin tier, archived and unread flags, last_message (who spoke last in the latest turn, when, and the end of what they said, which shows whether a thread that is idle is waiting on an answer), " + assistant + "self on the calling thread's own row, and with a query the matched item id and a snippet. Open a hit with thread_show around its item id, or read what a thread concluded with thread_show window last_answer. Scratch threads are never listed; workflow threads are. Check indexing before treating an empty result as conclusive: a computer still building its index covers only what it has indexed so far."
+	description := "Search messages, tool summaries and titles (with query), or list recent threads (without query). Check indexing"
 	if shape.Paired() {
 		properties["computers"] = map[string]any{
 			"type":        "array",
 			"items":       map[string]any{"type": "string"},
 			"minItems":    1,
-			"description": "Computer ids to search. Omit for this computer plus every paired one. [\"local\"] means only this computer. Ids come from thread_options.",
+			"description": "[\"local\"] or computer ids; omit for all.",
 		}
-		description += " Rows are grouped per computer in that computer's own ranking, because relevance is not comparable across separate indexes, and limit applies per computer. A computer that is offline or too old contributes an errors row naming it and the reason; the other computers' rows still return, so check errors as well."
+		description += " and errors"
 	}
+	description += " on empty results."
 	return tool("thread_search", description+dataNotice, properties)
 }
 
 func showSchema(shape Shape) map[string]any {
 	properties := map[string]any{
-		"thread_id": map[string]any{
-			"type":        "string",
-			"description": "The thread to read. Full id, or an unambiguous prefix of at least 6 characters. Take it from a thread_search row; never guess one.",
-		},
+		"thread_id": map[string]any{"type": "string"},
 		"window": map[string]any{
-			"type":        "string",
-			"enum":        []string{WindowTail, WindowHead, WindowSince, WindowAround, WindowAll, WindowLastAnswer},
-			"default":     WindowTail,
-			"description": "Which part of the thread to read. tail is the last turns (the default) and head the first, both sized by turns; a tail page that runs out of budget keeps the newest rows and drops the oldest, and its cursor reads backwards. since reads everything after item_id, or after the since timestamp. around reads the turns surrounding item_id, sized by context, which is how a thread_search hit is opened. all starts at the beginning and pages to the end. last_answer is the thread's newest assistant message alone, whole: what a thread concluded, and the same text a request's final answer carries.",
+			"type":    "string",
+			"enum":    []string{WindowTail, WindowHead, WindowSince, WindowAround, WindowAll, WindowLastAnswer},
+			"default": WindowTail,
 		},
 		"turns": map[string]any{
-			"type":        "integer",
-			"minimum":     1,
-			"maximum":     MaxTurns,
-			"default":     DefaultTailTurns,
-			"description": "How many turns a tail or head window covers.",
+			"type":    "integer",
+			"minimum": 1,
+			"maximum": MaxTurns,
+			"default": DefaultTailTurns,
 		},
 		"context": map[string]any{
 			"type":        "integer",
 			"minimum":     0,
 			"maximum":     MaxTurns,
 			"default":     1,
-			"description": "How many turns on each side of item_id an around window covers.",
+			"description": "Turns each side for around.",
 		},
-		"item_id": map[string]any{
-			"type":        "string",
-			"description": "Anchor item for the since and around windows. Item ids are unique only inside their thread, so this is read together with thread_id. A thread_search hit carries both.",
-		},
-		"since": map[string]any{
-			"type":        "string",
-			"description": "RFC 3339 timestamp with an offset, an alternative anchor for the since window when you have no item id.",
-		},
+		"item_id": map[string]any{"type": "string", "description": "Anchor for since/around."},
+		"since":   map[string]any{"type": "string", "description": "RFC 3339 anchor for since."},
 		"include": map[string]any{
-			"type":        "array",
-			"items":       map[string]any{"type": "string", "enum": []string{IncludeToolCalls, IncludeThinking, IncludeToolOutputs, IncludeDiffs, IncludeSubagents, IncludeAll}},
-			"minItems":    1,
-			"description": "Extra content to render beside what people said. Default is user and assistant text, whole, with each run of tool calls and thinking folded into one parenthesized line that counts the calls by tool name and states the bytes left out. tool_calls lists each call on its own line with its item id, summary and size; tool_outputs adds each call's output, thinking the assistant's reasoning, diffs the diffs, subagents the subagent runs, and all everything stored for the thread.",
+			"type":     "array",
+			"items":    map[string]any{"type": "string", "enum": []string{IncludeToolCalls, IncludeThinking, IncludeToolOutputs, IncludeDiffs, IncludeSubagents, IncludeAll}},
+			"minItems": 1,
 		},
 		"max_bytes": map[string]any{
-			"type":        "integer",
-			"minimum":     MinShowBytes,
-			"maximum":     MaxShowBytes,
-			"default":     DefaultShowBytes,
-			"description": fmt.Sprintf("Inline transcript budget for this call. Default %d. A result that stops short is never a dead end: it returns done: false and an opaque cursor that remembers the window and where it stopped. Raise it only as far as the provider will still carry one tool result; past that use to_file.", DefaultShowBytes),
+			"type":    "integer",
+			"minimum": MinShowBytes,
+			"maximum": MaxShowBytes,
+			"default": DefaultShowBytes,
 		},
 		"to_file": map[string]any{
 			"type":        "boolean",
 			"default":     false,
-			"description": "Render the whole requested window to a file instead of inline, ignoring max_bytes, and return its path, size and digest for your own read and search tools. Included items are written whole, never clipped. This is how you read a whole large thread. A thread on another computer renders there and the file is copied across.",
+			"description": "Write full window to local file.",
 		},
-		"cursor": map[string]any{
-			"type":        "string",
-			"description": "Opaque cursor from a previous thread_show result, passed back unchanged to continue the same window from where it stopped. A head or around window keeps its bounds; all walks to the end; tail continues with the rows before the page it came from. The page is a snapshot of the items that existed when the cursor was minted, so a thread that keeps streaming never shifts a page under you. The cursor carries the window, its sizing and include: repeating them is harmless, a different value is refused, and max_bytes may change.",
-		},
+		"cursor": map[string]any{"type": "string"},
 	}
 	computerIDProperty(shape, properties, "the thread")
-	description := "Read one thread's transcript. Output is plain text, turn-delimited, each row prefixed with its role and item id. The default window is the last " + fmt.Sprintf("%d", DefaultTailTurns) + " turns of what people said; when they do not fit, the newest rows are kept. window last_answer returns only the newest assistant message. A single item too large for the transcript is shown clipped with its size and its item id: read the rest with thread_item. Any thread by id, hidden workflow threads included."
+	description := fmt.Sprintf("Read a thread transcript (default: last %d turns; window=last_answer for final reply). Use thread_item for clipped items.", DefaultTailTurns)
 	return tool("thread_show", description+dataNotice, properties, "thread_id")
 }
 
 func itemSchema(shape Shape) map[string]any {
 	properties := map[string]any{
-		"thread_id": map[string]any{"type": "string", "description": "The thread the item belongs to. Item ids are unique only inside a thread, so this is required beside item_id."},
-		"item_id":   map[string]any{"type": "string", "description": "The item to read, from a thread_show row or a thread_search hit."},
-		"offset": map[string]any{
-			"type":        "integer",
-			"description": fmt.Sprintf("Absolute byte offset to read from, with max_bytes. A negative offset reads from the end (-%d reads the last %d bytes) and clamps to the start when the item is shorter. A range that would split a UTF-8 character is widened to whole characters. An offset at or past the end is an empty read reporting the size, not an error.", DefaultItemBytes, DefaultItemBytes),
-		},
+		"thread_id": map[string]any{"type": "string"},
+		"item_id":   map[string]any{"type": "string"},
+		"offset":    map[string]any{"type": "integer", "description": "Byte offset (negative from end)."},
 		"max_bytes": map[string]any{
-			"type":        "integer",
-			"minimum":     1,
-			"maximum":     MaxItemBytes,
-			"default":     DefaultItemBytes,
-			"description": fmt.Sprintf("Bytes to return for an offset read. Default %d.", DefaultItemBytes),
+			"type":    "integer",
+			"minimum": 1,
+			"maximum": MaxItemBytes,
+			"default": DefaultItemBytes,
 		},
-		"lines": map[string]any{
-			"type":        "string",
-			"description": "A 1-based inclusive line range instead of a byte range, written \"first-last\" (for example \"120-180\"), \"first-\" to read to the end, or \"120\" for one line.",
-		},
-		"query": map[string]any{
-			"type":        "string",
-			"description": fmt.Sprintf("Literal, case-sensitive text to find inside the item. Returns up to %d matches with each match's byte offset and a little context, and a cursor for the rest. Find the part you want this way, then read exactly that range with offset.", MaxItemMatches),
-		},
-		"cursor": map[string]any{"type": "string", "description": "Opaque cursor from a previous thread_item result, passed back unchanged to continue the same query past its matches."},
+		"lines":  map[string]any{"type": "string", "description": "1-based line range (\"a-b\", \"a-\", \"n\")."},
+		"query":  map[string]any{"type": "string", "description": "Case-sensitive literal search."},
+		"cursor": map[string]any{"type": "string"},
 	}
 	computerIDProperty(shape, properties, "the thread")
-	description := "Read inside one item once you know which one: the whole payload of a tool output, a diff, a subagent run or a long message, in ranges. At most one selector per call: offset with max_bytes, or lines, or query; none reads from the start, max_bytes at a time. This is what makes a multi-megabyte tool call inspectable without ever pulling it whole; the item renders on the computer that holds it and only the requested bytes cross."
+	description := "Read ranges or search inside one clipped item (pass at most one of offset, lines, query)."
 	return tool("thread_item", description+dataNotice, properties, "thread_id", "item_id")
 }
 
 func optionsSchema(shape Shape) map[string]any {
 	properties := map[string]any{
-		"provider":   map[string]any{"type": "string", "description": "Only this provider's models, to narrow a large answer."},
-		"project_id": map[string]any{"type": "string", "description": "Only this project's workspaces and thread groups."},
-		"what": map[string]any{
-			"type":        "string",
-			"enum":        []string{OptionsModels, OptionsProjects, OptionsGroups},
-			"description": "Only one section. models is the providers, their models and the runtime modes; projects is each project with its path and workspaces; groups is each project's id and name with its thread groups and nothing else. Omit for everything.",
-		},
+		"provider":   map[string]any{"type": "string"},
+		"project_id": map[string]any{"type": "string"},
+		"what":       map[string]any{"type": "string", "enum": []string{OptionsModels, OptionsProjects, OptionsGroups}},
 	}
-	description := "What a spawn can choose from, rendered from the catalogs this app keeps: the providers, each provider's models with their reasoning efforts and context windows, the runtime modes with a one-line meaning each, and the projects with their workspaces and thread groups. Your own computer comes first and states your current provider, model, effort, mode and runtime mode as the defaults a spawn inherits. Call it when you want something other than your own setup, or to look up a project id; what narrows a large answer to the section you need. thread_spawn, thread_search and thread_update take a group by name, so a group id is rarely needed."
+	description := "List providers, models, efforts, runtime modes, profiles, projects, workspaces, groups and inherited defaults."
 	if shape.Paired() {
-		properties["computer_id"] = map[string]any{"type": "string", "description": "Only this computer's row. Omit for this computer and every paired one."}
-		description += " Each paired computer also reports whether it is reachable right now, its operating system, and its projects' workspace paths as that computer sees them, which are not paths on this computer."
+		properties["computer_id"] = map[string]any{"type": "string"}
+		description += " Includes paired computers."
 	}
 	return tool("thread_options", description, properties)
 }
@@ -295,10 +247,10 @@ func runtimeModeEnum() []string {
 }
 
 var runtimeModeMeanings = map[provider.RuntimeMode]string{
-	provider.RuntimeReadOnly:         "is only for work that needs nothing but reading, and blocks much more than writes: Claude Code refuses every shell command, so no git, build, test or search command runs, and Codex runs commands in a read-only sandbox. It never asks a person, so unattended reading keeps moving. Never pick it for caution: a thread that turns out to need a command or a write fails at it",
-	provider.RuntimeApprovalRequired: "asks the user before every tool use",
-	provider.RuntimeAutoAcceptEdits:  "applies file edits in the workspace without asking but still asks for shell commands",
-	provider.RuntimeAuto:             "lets a model-based reviewer approve or deny each sensitive tool use instead of the user",
+	provider.RuntimeReadOnly:         "blocks writes and shell commands on Claude Code, read-only sandbox on Codex; use only for pure reading, never for caution",
+	provider.RuntimeApprovalRequired: "asks user before every tool",
+	provider.RuntimeAutoAcceptEdits:  "auto-accepts file edits, asks for shell commands",
+	provider.RuntimeAuto:             "model reviewer approves/denies sensitive tools",
 	provider.RuntimeFullAccess:       "runs everything without approvals",
 }
 
@@ -309,14 +261,4 @@ func RuntimeModeOptions() []map[string]any {
 		options = append(options, map[string]any{"runtime_mode": string(mode), "meaning": runtimeModeMeanings[mode]})
 	}
 	return options
-}
-
-func runtimeModeSentence() string {
-	parts := make([]string, 0, len(provider.AllRuntimeModes))
-	for _, mode := range provider.AllRuntimeModes {
-		if meaning := runtimeModeMeanings[mode]; meaning != "" {
-			parts = append(parts, string(mode)+" "+meaning)
-		}
-	}
-	return strings.Join(parts, "; ")
 }

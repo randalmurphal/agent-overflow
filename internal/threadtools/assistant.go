@@ -85,20 +85,10 @@ func (c *session) newAssistant(ctx context.Context, raw json.RawMessage) (any, e
 
 func newAssistantSchema() map[string]any {
 	properties := map[string]any{
-		"name": map[string]any{
-			"type":        "string",
-			"description": "The new assistant's name, which is its thread title. Names are unique on this computer, ignoring case; a name in use is refused naming the assistant that holds it.",
-		},
-		"role": map[string]any{
-			"type":        "string",
-			"description": "Your opening role text for it: what it is responsible for and what it may do. It is quoted to the new assistant as your words, and it proposes its role line from it.",
-		},
-		"projects": map[string]any{
-			"type":        "array",
-			"items":       map[string]any{"type": "string"},
-			"description": "Ids of the projects it serves, each one you serve. Omitted, it serves every project you serve.",
-		},
+		"name":     map[string]any{"type": "string"},
+		"role":     map[string]any{"type": "string"},
+		"projects": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 	}
-	description := "Create a new assistant (a standing agent with its own home) that reports to you. Only an assistant's current thread may call it, never a worker. The assistant is created on this computer outside every project, in its own home, serving the projects you name, with your provider and model; it starts with no grants and appears as its own sidebar row. Its first message tells it who created it and quotes role; it replies to you with thread_reply, and its questions and approvals come to you. Returns its assistant_id, name, home and the request token its replies answer. The answer arrives in this thread as a message."
+	description := "Create a sub-assistant reporting to you (assistants only; returns assistant_id, name, home, token)."
 	return tool("thread_new_assistant", description, properties, "name", "role")
 }

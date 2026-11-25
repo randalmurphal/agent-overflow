@@ -72,9 +72,9 @@ func TestEveryAgentWakeWriterStoresItsFacts(t *testing.T) {
 		headline string
 	}{
 		{"a loop's fire", builtMessage(t)(renderAgentLoopWake(store.AgentWake{Label: "nightly", Note: "Check  the build."}, agentWakeFire{missed: 2})),
-			store.AgentWakeLoop, `Loop "nightly" fired. ` + agentWakeDataNotice, `note: "Check  the build."`, "Check the build."},
+			store.AgentWakeLoop, `Loop "nightly" fired. ` + agentWakeDataNotice + " " + agentWakeUnattendedNotice, `note: "Check  the build."`, "Check the build."},
 		{"a watch's output", builtMessage(t)(renderAgentWatchWake(store.AgentWake{Label: "ci"}, agentWakeFire{}, watchOut, cappedOutput{})),
-			store.AgentWakeWatch, `Watch "ci" reported. ` + agentWakeDataNotice, `"build failed: exit 2"`, "build failed: exit 2"},
+			store.AgentWakeWatch, `Watch "ci" reported. ` + agentWakeDataNotice + " " + agentWakeUnattendedNotice, `"build failed: exit 2"`, "build failed: exit 2"},
 		{"an outside send", builtMessage(t)(renderAgentSendWake("deploy finished\nall good")),
 			string(agentmeta.ReportSend), agentSendWakeHeader + " " + agentWakeDataNotice, `"all good"`, "deploy finished"},
 		{"a worker's approval request", builtMessage(t)(workerPromptMessage(usermessage.Reporter{Label: "Worker", ThreadID: "t-worker"}, approval)),

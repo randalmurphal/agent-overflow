@@ -540,7 +540,7 @@ func TestWaitsAreBounded(t *testing.T) {
 			t.Errorf("%s wait_seconds maximum = %v, want 150", name, got)
 		}
 	}
-	if guide := server.Instructions(capped); !strings.Contains(guide, "(at most 150)") {
+	if guide := server.Instructions(capped); !strings.Contains(guide, "(max 150)") {
 		t.Errorf("instructions missing 150s cap: %q", guide)
 	}
 	for tool, args := range map[string]string{

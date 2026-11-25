@@ -42,7 +42,7 @@ export const MORE_ROWS = [
   'thread_spawn', 'thread_send', 'thread_ask', 'thread_show', 'thread_item', 'thread_update', 'thread_group',
   'thread_remind', 'thread_watch', 'thread_cancel', 'thread_status',
   'workflow_list', 'workflow_schema', 'run_start', 'run_list', 'run_amend', 'run_guide', 'run_watch', 'memory_add', 'memory_list',
-  'browser_open_file', 'browser_snapshot', 'browser_evaluate', 'browser_pages', 'browser_screenshot',
+  'browser_open', 'browser_snapshot', 'browser_evaluate', 'browser_page', 'browser_screenshot',
   'remote_computers', 'remote_run',
 ] as const;
 
@@ -173,10 +173,10 @@ export async function driveMoreAoToolRows(app: HarnessApp, remote: HarnessApp, p
           { call: { server: WORKFLOW_TOOLS_SERVER, tool: 'run_watch', args: { run_id: '${RUN}', wait_seconds: 5 } } },
           { call: { server: WORKFLOW_TOOLS_SERVER, tool: 'memory_add', args: { kind: 'learning', text: 'The digest needs the schema first.', run_id: '${RUN}' } } },
           { call: { server: WORKFLOW_TOOLS_SERVER, tool: 'memory_list', args: { run_id: '${RUN}' } } },
-          { call: { server: BROWSER, tool: 'browser_open_file', args: { path: join(lead.path, 'status.html') } } },
+          { call: { server: BROWSER, tool: 'browser_open', args: { path: join(lead.path, 'status.html') } } },
           { call: { server: BROWSER, tool: 'browser_snapshot', args: {} } },
           { call: { server: BROWSER, tool: 'browser_evaluate', args: { expression: 'document.title' } } },
-          { call: { server: BROWSER, tool: 'browser_pages', args: {} } },
+          { call: { server: BROWSER, tool: 'browser_page', args: { action: 'list' } } },
           { call: { server: BROWSER, tool: 'browser_screenshot', args: {} } },
           { call: { server: REMOTE, tool: 'remote_computers', args: {} } },
           {
@@ -300,7 +300,7 @@ export async function readMoreRows(app: HarnessApp, page: Page, shot: (name: str
     browser_evaluate: (row) => expect(row.getByText('renders no page content').first()).toBeVisible(),
     browser_snapshot: (row) => expect(row.getByText('renders no page content').first()).toBeVisible(),
     browser_screenshot: (row) => expect(row.getByText('renders no page content').first()).toBeVisible(),
-    browser_pages: (row) => expect(row.getByTestId('tool-call-card-ao-line')).toHaveCount(1),
+    browser_page: (row) => expect(row.getByTestId('tool-call-card-ao-line')).toHaveCount(1),
     memory_list: (row) => expect(row.getByTestId('tool-call-card-ao-line').filter({ hasText: 'The digest needs the schema first.' })).toHaveCount(1),
     memory_add: (row) => expect(row.getByTestId('tool-call-card-ao-outcome')).toContainText('learning added'),
     workflow_schema: async (row) => {

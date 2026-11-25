@@ -263,7 +263,44 @@ const REMOTE_TOOLS: Record<string, AoToolSpec> = {
 };
 
 const BROWSER_TOOLS: Record<string, AoToolSpec> = {
-  browser_open: { label: 'open', what: (input) => str(input, 'url') },
+  browser_open: { label: 'open', what: (input) => str(input, 'url') || str(input, 'path') },
+  browser_page: {
+    label: 'page',
+    what: (input, names) => {
+      const action = str(input, 'action');
+      if (action === 'list') return 'list pages';
+      if (action === 'new') return 'new page';
+      if (action === 'label') {
+        const label = str(input, 'label');
+        const page = pageRef(input, names);
+        return label ? `label ${page ? `${page} as ` : ''}${quoted(label)}` : `label ${page}`.trim();
+      }
+      const page = pageRef(input, names);
+      return [action, page].filter(Boolean).join(' ');
+    },
+  },
+  browser_pane: {
+    label: 'pane',
+    what: (input, names) => {
+      const action = str(input, 'action');
+      if (action === 'session') return str(input, 'name') || 'session';
+      if (action === 'visibility') {
+        if (input.visible === false) return `hide ${pageRef(input, names) || 'companion'}`;
+        if (input.visible === true) {
+          const page = pageRef(input, names);
+          return page ? `show ${page}` : 'show';
+        }
+        return 'visibility';
+      }
+      if (action === 'viewport_set') {
+        const width = num(input, 'width');
+        const height = num(input, 'height');
+        return width !== null && height !== null ? `viewport ${width}×${height}` : 'viewport set';
+      }
+      return action.replace('_', ' ');
+    },
+  },
+  // Retired tool names kept so persisted chat history continues rendering cleanly.
   browser_new_page: { label: 'open', what: () => 'new page' },
   browser_open_file: { label: 'open', what: (input) => str(input, 'path') },
   browser_pages: { label: 'list', what: () => 'pages' },
@@ -322,7 +359,10 @@ const BROWSER_TOOLS: Record<string, AoToolSpec> = {
     what: (input) => {
       const action = str(input, 'action');
       const node = str(input, 'node_id');
-      return [action, node ? `node ${node}` : ''].filter(Boolean).join(' ');
+      const selector = str(input, 'selector');
+      const key = str(input, 'key') || strings(input, 'keys').join('+');
+      const target = node ? `node ${node}` : selector || key;
+      return [action, target].filter(Boolean).join(' ');
     },
   },
   browser_type: {
@@ -845,7 +885,7 @@ const ALREADY_SHOWN: Record<string, ReadonlySet<string>> = {
   thread_attention: new Set(['kind', 'reason']),
   thread_new_assistant: new Set(['name']),
   run_start: new Set(['workflow_id', 'goal']),
-  browser_open: new Set(['url']),
+  browser_open: new Set(['url', 'path']),
   browser_open_file: new Set(['path']),
 };
 

@@ -13,7 +13,7 @@ import (
 )
 
 func TestToolDefinitionsCoverBrowserSurfaceAndCodexParity(t *testing.T) {
-	want := []string{"browser_assets", "browser_click", "browser_clipboard", "browser_close_page", "browser_console_logs", "browser_dom", "browser_downloads", "browser_evaluate", "browser_evaluate_readonly", "browser_history", "browser_label_page", "browser_locator", "browser_new_page", "browser_open", "browser_open_file", "browser_pages", "browser_pointer", "browser_press", "browser_screenshot", "browser_select_page", "browser_session", "browser_snapshot", "browser_scroll", "browser_type", "browser_viewport", "browser_visibility", "browser_wait"}
+	want := []string{"browser_assets", "browser_clipboard", "browser_console_logs", "browser_dom", "browser_downloads", "browser_evaluate", "browser_evaluate_readonly", "browser_locator", "browser_open", "browser_page", "browser_pane", "browser_pointer", "browser_screenshot", "browser_snapshot", "browser_wait"}
 	sort.Strings(want)
 	definitions := toolDefinitions()
 	got := make([]string, 0, len(definitions))
@@ -54,9 +54,8 @@ func TestParityToolSchemasDescribeNestedArguments(t *testing.T) {
 			t.Fatalf("browser_locator schema omits %s", field)
 		}
 	}
-	waitDefs, ok := byName["browser_wait"]["$defs"].(map[string]any)
-	if !ok || waitDefs["locator"] == nil {
-		t.Fatal("browser_wait schema does not describe its nested locator")
+	if _, hasWaitDefs := byName["browser_wait"]["$defs"]; hasWaitDefs {
+		t.Fatal("browser_wait should not duplicate locator $defs (use browser_locator action=wait)")
 	}
 	clipboardProperties := byName["browser_clipboard"]["properties"].(map[string]any)
 	items := clipboardProperties["items"].(map[string]any)
@@ -114,18 +113,60 @@ func TestArtifactQuotaPrunesOnlyExpiredFilesAndReservesAtomically(t *testing.T) 
 func TestMCPRoutesEveryParityTool(t *testing.T) {
 	server := NewMCPServer(&fakeController{}, true)
 	url := registerTestThread(t, server)
-	calls := map[string]map[string]any{
-		"browser_session": {"name": "test"}, "browser_open": {"url": "https://example.com"}, "browser_open_file": {"path": "/repo/a.html"}, "browser_pages": {}, "browser_select_page": {"page_id": "p"}, "browser_label_page": {"page_id": "p", "label": "preview"}, "browser_close_page": {"page_id": "p"}, "browser_visibility": {}, "browser_viewport": {"action": "get"}, "browser_snapshot": {}, "browser_screenshot": {}, "browser_locator": {"locator": map[string]any{"css": "button"}, "action": "count"}, "browser_click": {"selector": "button"}, "browser_type": {"selector": "input", "text": "x"}, "browser_press": {"key": "Enter"}, "browser_pointer": {"action": "move", "x": 1, "y": 1}, "browser_dom": {"action": "get_visible_dom"}, "browser_scroll": {"y": 1}, "browser_wait": {"milliseconds": 1}, "browser_history": {"action": "back"}, "browser_evaluate_readonly": {"expression": "document.title"}, "browser_evaluate": {"expression": "document.title"}, "browser_clipboard": {"action": "read"}, "browser_console_logs": {}, "browser_downloads": {"action": "list"}, "browser_assets": {"action": "list"},
-		"browser_new_page": {},
+	calls := []struct {
+		id, name string
+		args     map[string]any
+	}{
+		{"open-url", "browser_open", map[string]any{"url": "https://example.com"}},
+		{"open-file", "browser_open", map[string]any{"path": "/repo/a.html"}},
+		{"page-list", "browser_page", map[string]any{"action": "list"}},
+		{"page-new", "browser_page", map[string]any{"action": "new"}},
+		{"page-select", "browser_page", map[string]any{"action": "select", "page_id": "p"}},
+		{"page-label", "browser_page", map[string]any{"action": "label", "page_id": "p", "label": "preview"}},
+		{"page-close", "browser_page", map[string]any{"action": "close", "page_id": "p"}},
+		{"page-back", "browser_page", map[string]any{"action": "back"}},
+		{"pane-session", "browser_pane", map[string]any{"action": "session", "name": "test"}},
+		{"pane-visibility", "browser_pane", map[string]any{"action": "visibility"}},
+		{"pane-vp-get", "browser_pane", map[string]any{"action": "viewport_get"}},
+		{"pane-vp-set", "browser_pane", map[string]any{"action": "viewport_set", "width": 1024, "height": 768}},
+		{"pane-vp-reset", "browser_pane", map[string]any{"action": "viewport_reset"}},
+		{"snapshot", "browser_snapshot", map[string]any{}},
+		{"screenshot", "browser_screenshot", map[string]any{}},
+		{"locator", "browser_locator", map[string]any{"locator": map[string]any{"css": "button"}, "action": "count"}},
+		{"pointer", "browser_pointer", map[string]any{"action": "move", "x": 1, "y": 1}},
+		{"dom-get", "browser_dom", map[string]any{"action": "get_visible_dom"}},
+		{"dom-click-sel", "browser_dom", map[string]any{"action": "click", "selector": "button"}},
+		{"dom-type-sel", "browser_dom", map[string]any{"action": "type", "selector": "input", "text": "x", "clear": true}},
+		{"dom-press", "browser_dom", map[string]any{"action": "keypress", "key": "Enter"}},
+		{"dom-scroll-sel", "browser_dom", map[string]any{"action": "scroll", "selector": "main", "y": 100}},
+		{"wait", "browser_wait", map[string]any{"milliseconds": 1}},
+		{"eval-ro", "browser_evaluate_readonly", map[string]any{"expression": "document.title"}},
+		{"eval", "browser_evaluate", map[string]any{"expression": "document.title"}},
+		{"clipboard", "browser_clipboard", map[string]any{"action": "read"}},
+		{"console", "browser_console_logs", map[string]any{}},
+		{"downloads", "browser_downloads", map[string]any{"action": "list"}},
+		{"assets", "browser_assets", map[string]any{"action": "list"}},
 	}
-	for name, args := range calls {
-		response := postRPC(t, url, map[string]any{"jsonrpc": "2.0", "id": name, "method": "tools/call", "params": map[string]any{"name": name, "arguments": args}})
+	for _, tc := range calls {
+		response := postRPC(t, url, map[string]any{"jsonrpc": "2.0", "id": tc.id, "method": "tools/call", "params": map[string]any{"name": tc.name, "arguments": tc.args}})
 		if response["error"] != nil {
-			t.Fatalf("%s returned RPC error: %#v", name, response)
+			t.Fatalf("%s (%s) returned RPC error: %#v", tc.id, tc.name, response)
 		}
 		result, _ := response["result"].(map[string]any)
 		if isError, _ := result["isError"].(bool); isError {
-			t.Fatalf("%s returned tool error: %#v", name, response)
+			t.Fatalf("%s (%s) returned tool error: %#v", tc.id, tc.name, response)
+		}
+	}
+	// Retired tool names return a clear migration hint instead of silent failure.
+	for oldName, wantHint := range retiredBrowserToolHint {
+		response := postRPC(t, url, map[string]any{"jsonrpc": "2.0", "id": "retired-" + oldName, "method": "tools/call", "params": map[string]any{"name": oldName, "arguments": map[string]any{}}})
+		result, _ := response["result"].(map[string]any)
+		if isError, _ := result["isError"].(bool); !isError {
+			t.Fatalf("retired %s did not return tool error: %#v", oldName, response)
+		}
+		text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+		if !strings.Contains(text, wantHint) {
+			t.Fatalf("retired %s error = %q, want hint %q", oldName, text, wantHint)
 		}
 	}
 }

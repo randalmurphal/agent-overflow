@@ -663,6 +663,23 @@ func TestBuildThreadParamsIncludesMCPServers(t *testing.T) {
 	if config["mcp_servers"] == nil {
 		t.Fatal("expected mcp_servers config override")
 	}
+	if _, ok := config["plugins"]; ok {
+		t.Fatalf("unexpected plugins override when DisableBundledBrowserPlugin is false: %v", config["plugins"])
+	}
+
+	browserParams := buildThreadParams(Config{
+		Reaper:                      procutiltest.Reaper(),
+		DisableBundledBrowserPlugin: true,
+	}, "")
+	browserConfig := browserParams["config"].(map[string]any)
+	plugins, ok := browserConfig["plugins"].(map[string]any)
+	if !ok {
+		t.Fatalf("plugins override = %T, want map[string]any", browserConfig["plugins"])
+	}
+	entry, ok := plugins["browser@openai-bundled"].(map[string]any)
+	if !ok || entry["enabled"] != false {
+		t.Fatalf("browser@openai-bundled = %#v, want enabled=false", plugins["browser@openai-bundled"])
+	}
 }
 
 func TestReadRouteFields(t *testing.T) {

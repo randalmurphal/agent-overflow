@@ -34,8 +34,8 @@ type agentGuideServer struct {
 }
 
 var agentGuideServers = []agentGuideServer{
-	{appbrowser.ServerName, "`" + appbrowser.ServerName + "` drives a browser in a pane beside this chat; use it to show the user a page or an HTML file you made (make the page visible; screenshots reach only you)."},
-	{threadMCPName, "`" + threadMCPName + "` reads, starts and messages the user's other conversations."},
+	{appbrowser.ServerName, "`" + appbrowser.ServerName + "` is this app's built-in browser pane beside this chat; use its `browser_*` tools for all browser work here instead of other IDE or in-app browser plugins, and make a page visible when the user should see it (screenshots reach only you)."},
+	{threadMCPName, "`" + threadMCPName + "` reads, starts, messages and asks other conversations, schedules reminders/loops (`thread_remind`/`thread_loop`), and flags the user (`thread_attention`)."},
 	{remoteMCPName, "`" + remoteMCPName + "` runs commands on the user's other computers."},
 	{workflowMCPName, "`" + workflowMCPName + "` starts, watches and steers this project's workflow runs and authors its workflows."},
 }

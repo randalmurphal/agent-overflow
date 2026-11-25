@@ -8,12 +8,12 @@ persistent JavaScript objects and AO exposes stateless MCP calls.
 
 | Codex browser API | AO MCP equivalent |
 |---|---|
-| `nameSession` | `browser_session` |
-| `tabs.new/list/selected/get`, `user.openTabs` | `browser_new_page`, `browser_pages`, `browser_select_page`, and `page_id` on every page operation. AO's user-tab view is deliberately only the calling thread's managed tabs. |
-| visibility and viewport capabilities | `browser_visibility`, `browser_viewport` |
-| tab `goto/back/forward/reload/close/title/url` | `browser_open`, `browser_open_file`, `browser_history`, `browser_close_page`, `browser_pages` |
+| `nameSession` | `browser_pane` (`action: "session"`) |
+| `tabs.new/list/selected/get`, `user.openTabs` | `browser_page` (`action: "new" | "list" | "select"`) and `page_id` on every page operation. AO's user-tab view is deliberately only the calling thread's managed tabs. |
+| visibility and viewport capabilities | `browser_pane` (`action: "visibility" | "viewport_get" | "viewport_set" | "viewport_reset"`) |
+| tab `goto/back/forward/reload/close/title/url` | `browser_open` (`url` or `path`), `browser_page` (`action: "back" | "forward" | "reload" | "stop" | "close" | "list"`) |
 | clipped/full screenshots | `browser_screenshot` |
-| coordinate CUA click/double-click/drag/key/move/scroll/type | `browser_pointer`, `browser_press`, and focused `browser_dom` type/key operations |
+| coordinate CUA click/double-click/drag/key/move/scroll/type | `browser_pointer` and `browser_dom` (page-level `keypress` and `node_id`/`selector` actions) |
 | DOM CUA visible tree and node actions | `browser_snapshot`, `browser_dom` |
 | `domSnapshot` | `browser_snapshot` |
 | read-only `evaluate` | `browser_evaluate_readonly`; AO retains the pre-existing explicit mutation-capable `browser_evaluate` separately |
@@ -28,7 +28,7 @@ persistent JavaScript objects and AO exposes stateless MCP calls.
 | tab developer console logs | `browser_console_logs` |
 | page-assets list/bundle capability | `browser_assets` |
 
-`browser_label_page` is an AO coordination extension rather than a Codex
+`browser_page` (`action: "label"`) is an AO coordination extension rather than a Codex
 parity requirement. Labels are thread-local aliases for explicit page handles;
 they grant no additional page authority.
 
