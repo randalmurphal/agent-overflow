@@ -10,6 +10,7 @@ import (
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/trackerapp"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 )
 
@@ -38,10 +39,14 @@ func (r ThreadTicketRef) ticket() store.TicketRef {
 // and returns its row. The ticket is read through this computer's
 // connection to its site: from the issue mirror when it holds the ticket,
 // with no request, otherwise with one card read, bounded as a form read
-// is. A link that cannot be made leaves the link as it was.
+// is. A link that cannot be made leaves the link as it was. Reading the
+// ticket needs the ticket read grant as well as the thread's.
 //
 //ao:scope threads:operate
 func (a *App) SetThreadTicket(ctx context.Context, threadID string, ticket ThreadTicketRef) (store.Thread, error) {
+	if err := a.requireScope(ctx, transport.ScopeTrackerRead, "SetThreadTicket reads the ticket it links"); err != nil {
+		return store.Thread{}, err
+	}
 	svc, err := a.trackerService()
 	if err != nil {
 		return store.Thread{}, err

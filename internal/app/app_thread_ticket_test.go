@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/harness/trackerfake"
+	"agent-overflow/internal/identity"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
@@ -155,6 +156,34 @@ func TestThreadTicketMethodsLinkListAndClear(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.noThreadFrame(t, "t1", "a clear of no link")
+}
+
+// A link reads the ticket, so a session that may change a thread but not
+// read tickets, as every pairing made before the tracker scopes is, is
+// refused before the mirror or the tracker is read, and the thread stays
+// unlinked; with the ticket read grant it links.
+func TestSetThreadTicketNeedsTheTicketReadGrant(t *testing.T) {
+	t.Parallel()
+	f := newTrackerBoardFixture(t)
+	if err := f.a.store.CreateThread(store.Thread{ID: "t1", ProjectID: f.project, Title: "Thread", Provider: "claude", Model: "test-model",
+		WorkspacePath: "/tmp/web", CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.a.initIdentity("backend-under-test"); err != nil {
+		t.Fatal(err)
+	}
+	ticket := ThreadTicketRef{Kind: store.TrackerKindJira, Site: "https://example.atlassian.net", IssueID: "10101"}
+	threads := []identity.Scope{identity.ScopeThreadsRead, identity.ScopeThreadsOperate}
+	pre := pairSessionWithScopes(t, f.a, "pre-tracker", threads)
+	_, err := f.a.SetThreadTicket(callFrom(pre.ID, false), "t1", ticket)
+	wantScopeRefusal(t, err, transport.ScopeTrackerRead)
+	if row, err := f.a.store.GetThread("t1"); err != nil || row.TicketLink != nil {
+		t.Fatalf("the thread after a refused link = %+v, %v", row.TicketLink, err)
+	}
+	granted := pairSessionWithScopes(t, f.a, "tracker-reader", append(threads, identity.ScopeTrackerRead))
+	if row, err := f.a.SetThreadTicket(callFrom(granted.ID, false), "t1", ticket); err != nil || row.TicketLink == nil {
+		t.Fatalf("a link with the ticket read grant = %+v, %v", row.TicketLink, err)
+	}
 }
 
 // A thread's delete ends its link: the boards that show the ticket the
