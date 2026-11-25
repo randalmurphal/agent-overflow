@@ -34,6 +34,7 @@ var mirrorTableKeys = []struct{ table, keys string }{
 	{"tracker_cache_issue_sprints", "issue_id, sprint_id"},
 	{"tracker_cache_changes", "issue_id, gen, kind, seq"},
 	{"tracker_cache_issue_bodies", "rowid"},
+	{"tracker_cache_issue_missing", "issue_id"},
 	{"tracker_cache_open_tickets", "session, pump"},
 	{"tracker_cache_board_column_statuses", "board_id, status_id"},
 	{"tracker_cache_board_columns", "board_id, position"},
@@ -92,13 +93,28 @@ var mirrorBoardRestartSQL = func() string {
 
 // mirrorCleanupPendingSQL reports, in one statement, whether any cleanup
 // is pending: a detached root, a retired board, an issue with generations
-// of changes to delete, or an unkept issue. Each probe walks an index
-// sized by what it finds; the last walks the issues no board row keeps,
-// which are the linked ones when nothing is pending.
+// of changes to delete, an unkept issue, or an absence of an unkept issue.
+// Each probe walks an index sized by what it finds; the unkept issue's
+// walks the issues no board row keeps, which are the linked ones when
+// nothing is pending, and the absence's every absence, which are of
+// linked issues a read missed.
 var mirrorCleanupPendingSQL = `SELECT EXISTS (SELECT 1 FROM tracker_cache_roots WHERE connection_id IS NULL)
 	OR EXISTS (SELECT 1 FROM tracker_cache_boards WHERE retired = 1)
 	OR EXISTS (SELECT 1 FROM tracker_cache_issues WHERE history_dirty = 1)
-	OR EXISTS (SELECT 1 FROM tracker_cache_issues i WHERE i.board_rows = 0 AND NOT ` + mirrorIssueKept("i.root_id", "i.issue_id") + `)`
+	OR EXISTS (SELECT 1 FROM tracker_cache_issues i WHERE i.board_rows = 0 AND NOT ` + mirrorIssueKept("i.root_id", "i.issue_id") + `)
+	OR EXISTS (` + mirrorUnkeptAbsencesSQL + `)`
+
+// mirrorUnkeptAbsencesSQL reads the absences of the issues their live
+// root no longer keeps, mirrorAbsencesSweepSQL deletes them, at most
+// clearMirrorChunk a statement: a walk of every absence, of the linked
+// issues a read missed. A detached root's go with its drain.
+var (
+	mirrorUnkeptAbsencesSQL = `SELECT m.root_id, m.issue_id FROM tracker_cache_issue_missing m
+	  JOIN tracker_cache_roots r ON r.id = m.root_id AND r.connection_id IS NOT NULL
+	 WHERE NOT ` + mirrorIssueKept("m.root_id", "m.issue_id")
+	mirrorAbsencesSweepSQL = `DELETE FROM tracker_cache_issue_missing WHERE (root_id, issue_id) IN (` + mirrorUnkeptAbsencesSQL +
+		` LIMIT ` + strconv.Itoa(clearMirrorChunk) + `)`
+)
 
 // mirrorDirtyHistoriesSQL lists the issues of live roots whose history
 // staging left other generations, with the generation to keep.
@@ -114,8 +130,8 @@ var mirrorUnkeptRootsSQL = `SELECT DISTINCT i.root_id FROM tracker_cache_issues 
 // FinishMirrorCleanup deletes everything the mirror owes: the rows of every
 // detached root and then the root, the rows of every retired board and
 // then the board (starting a new lifetime of a board listed again), the
-// generations of changes a history staging left, and every unkept issue
-// with its changes, sprints and body. Each transaction deletes at most
+// generations of changes a history staging left, every unkept issue with
+// its changes, sprints and body, and the absences of unkept issues. Each transaction deletes at most
 // clearMirrorChunk rows, and pause runs before each. When ctx ends it
 // stops before the next transaction and returns ctx's cause. It is
 // idempotent, finishes what a crash, a failure or a stop left, and costs
@@ -184,11 +200,30 @@ func (s *Store) FinishMirrorCleanup(ctx context.Context, pause ChunkPause) error
 		for _, root := range roots {
 			item(func() error { return s.sweepMirrorRoot(root, between) })
 		}
+		item(func() error { return s.sweepMirrorAbsences(between) })
 	}
 	if err := errors.Join(append(errs, stop)...); err != nil {
 		return fmt.Errorf("store: finish tracker mirror cleanup: %w", err)
 	}
 	return nil
+}
+
+// sweepMirrorAbsences deletes the absences of the issues their root no
+// longer keeps, a chunk a transaction, when there is one. The probe walks
+// every absence, so it reads in a history read slot.
+func (s *Store) sweepMirrorAbsences(between func() error) error {
+	any, err := mirrorReadSnapshot(s, "probe tracker mirror absences no issue keeps", func(q sqlQueryer) (bool, error) {
+		var any bool
+		err := q.QueryRow(`SELECT EXISTS (` + mirrorUnkeptAbsencesSQL + `)`).Scan(&any)
+		return any, err
+	})
+	if err != nil {
+		return err
+	}
+	if !any {
+		return nil
+	}
+	return s.drainMirrorChunks(mirrorAbsencesSweepSQL, between)
 }
 
 // errMirrorCleanupStopped is the error of a cleanup whose context ended

@@ -282,14 +282,17 @@ func mirrorBoardShown(root, board string) string {
 }
 
 // mirrorLinksSQL is the FROM and WHERE of the links that keep issues in a
-// root's mirror: a thread this computer owns whose ticket names the root's
-// live connection's kind and site. link_ticket.issue_id is the issue.
+// root's mirror: a thread this computer owns whose ticket names the kind
+// and site of the root's live connection, when that connection is the
+// site's link reader (ticketSiteReaderSQL); another account of the site
+// keeps and polls no issue only a link names. link_ticket.issue_id is the
+// issue.
 func mirrorLinksSQL(root string) string {
 	return `tracker_cache_roots link_root
 	  JOIN tracker_connections link_conn ON link_conn.id = link_root.connection_id
 	  JOIN thread_tickets link_ticket ON link_ticket.kind = link_conn.kind AND link_ticket.site = link_conn.site
 	  JOIN owned_threads link_thread ON link_thread.id = link_ticket.thread_id
-	 WHERE link_root.id = ` + root
+	 WHERE link_root.id = ` + root + ` AND link_conn.id = ` + ticketSiteReaderSQL("link_conn.kind", "link_conn.site")
 }
 
 // mirrorIssueKept is the rule for which issues a mirror keeps, in one

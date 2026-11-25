@@ -293,7 +293,21 @@ func (r admittedTransferRunner) Run(ctx context.Context, id string) (store.Threa
 		return store.ThreadTransfer{}, err
 	}
 	defer release()
-	return r.runner.Run(ctx, id)
+	// A move away ends the thread's link here: once committed the thread
+	// is not this computer's, and its link keeps nothing. The link is read
+	// while it still is; an attempt after the commit reads none.
+	var links map[string]store.TicketRef
+	switch row, err := r.app.store.GetThreadTransfer(id); {
+	case err != nil:
+		log.Printf("thread links: read transfer %s before its attempt: %v; a link it ends stays shown in the views of its ticket until their board is read again", id, err)
+	case row.Direction == "outgoing" && row.Kind == "move":
+		links = r.app.threadLinksEnding([]string{row.ThreadID})
+	}
+	row, err := r.runner.Run(ctx, id)
+	if len(links) > 0 && (row.Phase == "committed" || row.Phase == "complete") {
+		r.app.endThreadLinks(links, []string{row.ThreadID})
+	}
+	return row, err
 }
 
 // quotedThreadTitle names a conversation in a refusal.

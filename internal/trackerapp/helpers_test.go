@@ -89,6 +89,7 @@ func testCallbacks(d Deps, log *eventLog) Deps {
 	d.Settled = log.waitSettled
 	d.ClientConnected = func() bool { return !log.disconnected.Load() }
 	d.LoopFailed = log.loopFailed
+	d.LinksChanged = log.linksChanged
 	return d
 }
 

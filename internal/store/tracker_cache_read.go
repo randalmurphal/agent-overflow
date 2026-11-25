@@ -69,6 +69,7 @@ var mirrorReadTimeColumns = []struct {
 	{"tracker_cache_boards", []string{"read_at", "rows_removed_at", "listing_read_at", "estimate_reset_at"}},
 	{"tracker_cache_board_unexplained", []string{"named_at"}},
 	{"tracker_cache_issues", []string{"read_at", "body_read_at", "body_opened_at", "status_read_at"}},
+	{"tracker_cache_issue_missing", []string{"read_at"}},
 	{"tracker_cache_board_issues", []string{"read_at"}},
 	{"tracker_cache_open_tickets", []string{"opened_at"}},
 	{"tracker_cache_worklog_days", []string{"read_at"}},

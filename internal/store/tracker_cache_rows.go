@@ -162,10 +162,11 @@ func (s *Store) writeMirrorRows(rootID int64, page MirrorRowPage, withCursor boo
 	action := fmt.Sprintf("store: write tracker mirror %d board %s rows", rootID, page.BoardID)
 	err = s.mirrorBoardWrite(rootID, page.BoardID, page.Lifetime, action, true, func(tx *sql.Tx, board mirrorBoard) error {
 		addsRows := readAt >= board.rowsRemovedAt
-		var err error
-		if changes.Catalog, err = upsertMirrorCatalogTx(tx, rootID, page.Catalog, readAt); err != nil {
+		catalog, err := upsertMirrorCatalogTx(tx, rootID, page.Catalog, readAt)
+		if err != nil {
 			return err
 		}
+		changes.Catalog, changes.Threads = catalog.Changed, catalog.Threads
 		if len(rows) > 0 {
 			if err := writeMirrorRowsTx(tx, rootID, page, readAt, rows, encoded, addsRows, board, &changes); err != nil {
 				return err
@@ -239,12 +240,12 @@ func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, readAt int6
 	}
 	slices.Sort(advancing)
 	slices.Sort(moved)
-	stored, err := storeMirrorCardsTx(tx, mirrorRowCards, rootID, rows, encoded, readAt, moved, mirrorCardReadMove(tx, rootID, readAt, advancing),
-		page.BoardID, addsRows)
+	stored, err := storeMirrorCardsTx(tx, mirrorRowCards, rootID, rows, encoded, readAt, moved, advancing,
+		mirrorCardReadMove(tx, rootID, readAt, advancing), page.BoardID, addsRows)
 	if err != nil {
 		return err
 	}
-	changes.Cards = stored.changed
+	changes.Cards, changes.Threads = stored.changed, unionSorted(changes.Threads, stored.threads)
 	if write {
 		if changes.Rows, err = queryIDs(tx, mirrorRowsUpsertSQL, rootID, encoded, page.BoardID, readAt, addsRows); err != nil {
 			return fmt.Errorf("upsert rows: %w", err)

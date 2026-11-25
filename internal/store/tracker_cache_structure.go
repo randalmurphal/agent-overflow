@@ -168,11 +168,13 @@ func (st MirrorStructure) check(read mirrorReadTimes) error {
 // walking the board's rows that captured another value starts its walk
 // over from the sync state. Catalog reports a changed user or status,
 // which the root's every board shows, as MirrorChanges.Catalog does; it
-// is part of Changed.
+// is part of Changed. Threads are the threads whose row shows a status
+// the catalog renamed or regrouped (MirrorCatalogWrite.Threads).
 type MirrorStructureWrite struct {
 	MirrorWrite
 	EstimateResetAt int64
 	Catalog         bool
+	Threads         []string
 }
 
 // ReplaceMirrorStructure stores one read of a board's structure under
@@ -209,7 +211,9 @@ func (s *Store) ReplaceMirrorStructure(rootID int64, st MirrorStructure) (result
 		}
 		var err error
 		var reset bool
-		result.Changed, result.Catalog, reset, err = replaceMirrorStructureTx(tx, rootID, st, read, board)
+		var catalog MirrorCatalogWrite
+		result.Changed, catalog, reset, err = replaceMirrorStructureTx(tx, rootID, st, read, board)
+		result.Catalog, result.Threads = catalog.Changed, catalog.Threads
 		if reset {
 			result.EstimateResetAt = read.at
 		}
@@ -274,12 +278,12 @@ const (
 // replaceMirrorStructureTx writes an admitted structure and reports
 // whether it changed, whether its catalog changed, and whether it reset
 // the board's estimate definition.
-func replaceMirrorStructureTx(tx *sql.Tx, rootID int64, st MirrorStructure, read mirrorReadTimes, board mirrorBoard) (changed, catalog, reset bool, err error) {
+func replaceMirrorStructureTx(tx *sql.Tx, rootID int64, st MirrorStructure, read mirrorReadTimes, board mirrorBoard) (changed bool, catalog MirrorCatalogWrite, reset bool, err error) {
 	b := st.Board
 	if catalog, err = upsertMirrorCatalogTx(tx, rootID, st.Catalog, read.at); err != nil {
-		return false, false, false, err
+		return false, MirrorCatalogWrite{}, false, err
 	}
-	changed = catalog
+	changed = catalog.Changed
 	names := make([]string, len(st.Columns))
 	places := []mirrorStatusPlace{}
 	for position, column := range st.Columns {
@@ -296,12 +300,12 @@ func replaceMirrorStructureTx(tx *sql.Tx, rootID int64, st MirrorStructure, read
 	lists := make([]string, 3)
 	for i, v := range []any{names, places, sprints} {
 		if lists[i], err = encodeMirrorJSON(v); err != nil {
-			return false, false, false, err
+			return false, MirrorCatalogWrite{}, false, err
 		}
 	}
 	boardChanged, reset, err := writeMirrorBoardTx(tx, rootID, st, read.at)
 	if err != nil {
-		return false, false, false, err
+		return false, MirrorCatalogWrite{}, false, err
 	}
 	changed = changed || boardChanged
 	steps := []struct {
@@ -319,7 +323,7 @@ func replaceMirrorStructureTx(tx *sql.Tx, rootID int64, st MirrorStructure, read
 	for _, step := range steps {
 		stepChanged, err := execChangedTx(tx, step.query, step.args...)
 		if err != nil {
-			return false, false, false, fmt.Errorf("%s: %w", step.what, err)
+			return false, MirrorCatalogWrite{}, false, fmt.Errorf("%s: %w", step.what, err)
 		}
 		changed = changed || stepChanged
 	}
@@ -330,7 +334,7 @@ func replaceMirrorStructureTx(tx *sql.Tx, rootID int64, st MirrorStructure, read
 	if read.at > board.readAt {
 		if _, err := tx.Exec(`UPDATE tracker_cache_boards SET read_at = ?3, structure_wall = ?4 WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2`,
 			rootID, b.ID, read.at, read.wall); err != nil {
-			return false, false, false, fmt.Errorf("record the structure's read: %w", err)
+			return false, MirrorCatalogWrite{}, false, fmt.Errorf("record the structure's read: %w", err)
 		}
 	}
 	return changed, catalog, reset, nil

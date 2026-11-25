@@ -138,7 +138,8 @@ func (a *App) initTrackers() error {
 			return bus != nil && bus.SubscriberCount() > 0
 		},
 		// The service logs each failure of its linked-issues loop itself.
-		LoopFailed: func(error) {},
+		LoopFailed:   func(error) {},
+		LinksChanged: a.announceThreadLinks,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialise tracker connections: %w", err)

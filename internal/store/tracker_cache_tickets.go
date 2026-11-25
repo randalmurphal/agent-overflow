@@ -374,10 +374,11 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 	action := fmt.Sprintf("store: store tracker mirror %d tickets of %d issues", rootID, len(tickets))
 	err = s.mirrorSweptWrite(rootID, sweep, action, func(tx *sql.Tx) error {
 		out = MirrorTicketsWrite{Tickets: make([]MirrorTicketWrite, len(tickets))}
-		var err error
-		if out.Changes.Catalog, err = upsertMirrorCatalogTx(tx, rootID, catalog, readAt); err != nil {
+		catalogWrite, err := upsertMirrorCatalogTx(tx, rootID, catalog, readAt)
+		if err != nil {
 			return err
 		}
+		out.Changes.Catalog, out.Changes.Threads = catalogWrite.Changed, catalogWrite.Threads
 		states, err := readMirrorCardStatesTx(tx, rootID, encoded, len(rows), readAt)
 		if err != nil {
 			return err
@@ -388,7 +389,7 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 		// holds (mirrorTicketMoveSQL.full).
 		versions := false
 		var bodies []int
-		var moved []string
+		var moved, advancing []string
 		started := false
 		for i, t := range tickets {
 			st, w := states[i], &out.Tickets[i]
@@ -406,6 +407,9 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 			}
 			if st.refused {
 				out.Changes.Superseded = append(out.Changes.Superseded, id)
+			}
+			if st.advances {
+				advancing = append(advancing, id)
 			}
 			m := mirrorTicketMove{ID: id, Advance: st.advances, U: t.Card.UpdatedAt}
 			if a := admitted[i]; a.admitted {
@@ -468,11 +472,12 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 			return nil
 		}
 		slices.Sort(moved)
-		stored, err := storeMirrorCardsTx(tx, mirrorLinkedCards, rootID, rows, encoded, readAt, moved, move)
+		slices.Sort(advancing)
+		stored, err := storeMirrorCardsTx(tx, mirrorLinkedCards, rootID, rows, encoded, readAt, moved, advancing, move)
 		if err != nil {
 			return err
 		}
-		out.Changes.Cards = stored.changed
+		out.Changes.Cards, out.Changes.Threads = stored.changed, unionSorted(out.Changes.Threads, stored.threads)
 		for _, i := range bodies {
 			if _, err := tx.Exec(mirrorBodyWriteSQL, rootID, tickets[i].Card.IssueID, mirrorData(tickets[i].Body)); err != nil {
 				return fmt.Errorf("write the body of issue %s: %w", tickets[i].Card.IssueID, err)

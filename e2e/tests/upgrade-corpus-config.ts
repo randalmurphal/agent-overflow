@@ -51,7 +51,24 @@ export const migrationExceptions: MigrationException[] = [
   { version: 154, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v154 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
   { version: 154, table: 'remote_watches', rowsMayShrink: true, reason: 'v154 rebuilds remote_watches to cascade from its thread and deletes the watches whose thread is already gone' },
   { version: 158, table: 'thread_requests', columns: ['next_check'], reason: 'v158 makes the acknowledgement it owes again for an answer from a paired computer due at once' },
-  { version: 165, table: 'tracker_cache_issue_details', dropped: true, reason: 'v165 drops the documents of opened tracker issues; each ticket body is read again into tracker_cache_issue_bodies at its next opening' },
+  { version: 165, table: 'tracker_cache_issue_details', dropped: true, reason: 'v165 drops the documents of opened tracker issues; each ticket body is read again into tracker_cache_issue_bodies at its next opening' },  // v167 empties the tracker mirror as a restore leaves it: its cards gain a title column their blob no longer carries, and every card is read again whole.
+  { version: 167, table: 'tracker_cache_board_column_statuses', rowsMayShrink: true, reason: 'v167 empties the tracker mirror, a cache every connection reads again' },
+  { version: 167, table: 'tracker_cache_board_columns', rowsMayShrink: true, reason: 'v167 empties the tracker mirror, a cache every connection reads again' },
+  { version: 167, table: 'tracker_cache_board_issues', rowsMayShrink: true, reason: 'v167 empties the tracker mirror, a cache every connection reads again' },
+  { version: 167, table: 'tracker_cache_board_unexplained', rowsMayShrink: true, reason: 'v167 empties the tracker mirror, a cache every connection reads again' },
+  { version: 167, table: 'tracker_cache_boards', rowsMayShrink: true, reason: 'v167 empties the tracker mirror, a cache every connection reads again' },
+  { version: 167, table: 'tracker_cache_changes', rowsMayShrink: true, reason: 'v167 empties the tracker mirror, a cache every connection reads again' },
+  { version: 167, table: 'tracker_cache_issue_bodies', rowsMayShrink: true, reason: 'v167 empties the tracker mirror, a cache every connection reads again' },
+  { version: 167, table: 'tracker_cache_issue_sprints', rowsMayShrink: true, reason: 'v167 empties the tracker mirror, a cache every connection reads again' },
+  { version: 167, table: 'tracker_cache_issues', rowsMayShrink: true, reason: 'v167 empties the tracker mirror, a cache every connection reads again' },
+  { version: 167, table: 'tracker_cache_open_tickets', rowsMayShrink: true, reason: 'v167 empties the tracker mirror, a cache every connection reads again' },
+  { version: 167, table: 'tracker_cache_roots', rowsMayShrink: true, reason: 'v167 empties the tracker mirror, a cache every connection reads again' },
+  { version: 167, table: 'tracker_cache_sprints', rowsMayShrink: true, reason: 'v167 empties the tracker mirror, a cache every connection reads again' },
+  { version: 167, table: 'tracker_cache_statuses', rowsMayShrink: true, reason: 'v167 empties the tracker mirror, a cache every connection reads again' },
+  { version: 167, table: 'tracker_cache_sync', rowsMayShrink: true, reason: 'v167 empties the tracker mirror, a cache every connection reads again' },
+  { version: 167, table: 'tracker_cache_users', rowsMayShrink: true, reason: 'v167 empties the tracker mirror, a cache every connection reads again' },
+  { version: 167, table: 'tracker_cache_worklog_days', rowsMayShrink: true, reason: 'v167 empties the tracker mirror, a cache every connection reads again' },
+  { version: 167, table: 'tracker_cache_worklogs', rowsMayShrink: true, reason: 'v167 empties the tracker mirror, a cache every connection reads again' },
 ];
 
 /**
@@ -933,7 +950,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'diff_review_comments', columns: ['claim_settles'], values: { claim_settles: ['row', 'confirm'] }, reason: "a sent draft's claim waits for its message's row or the provider's confirmation, and settles before the turn rests" },
   { table: 'thread_pull_requests', columns: ['merged_at', 'handled_at', 'removal_failed_at', 'outcome'], values: { forge: ['gitlab'], outcome: ['removed', 'kept', 'gone', 'closed', 'skipped'] }, reason: "the top-up's pull request stays open, so no merge cleanup runs; one forge's pull request proves the table" },
   { table: 'pr_list_projects', reason: "the Pull requests list's stored copy of a forge project's read; the top-up's one forge-origin project names a repository the fake forge does not have, so its read fails and nothing is stored" },
-  { table: 'thread_tickets', reason: 'the ticket a thread is linked to (v162); no app method writes the tracker tables yet' },
+  { table: 'thread_tickets', reason: 'the ticket a thread is linked to (v162, its last-seen status v167); no step of the top-up links a thread' },
   // The top-up reads the fake Jira's scrum board into the mirror through a
   // board subscription (connectTrackers); what that read leaves empty:
   { table: 'tracker_cache_roots', columns: ['sweep'], reason: 'a mirror root\'s sweep counter (v162), which a cleanup sweep that deletes an issue or a board moves; nothing the top-up reads leaves the mirror' },
@@ -961,6 +978,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
     reason: 'a sync scope\'s failure and its reconcile\'s failure (v162); every read the top-up makes of the fake trackers succeeds',
   },
   { table: 'tracker_cache_open_tickets', reason: 'a tracker ticket a person has open, which keeps its issue in the mirror (v165); the top-up opens no ticket' },
+  { table: 'tracker_cache_issue_missing', reason: 'a read that did not return a linked issue (v167); no step of the top-up links a thread' },
   { table: 'chat_model_profiles', values: { reasoning_effort: ['none', 'minimal', 'low', 'xhigh'], runtime_mode: ['read-only', 'approval-required', 'auto-accept-edits'] }, reason: 'one remembered profile per provider and model holds the settings used last' },
 
   // Provider accounting the mock does not report.
