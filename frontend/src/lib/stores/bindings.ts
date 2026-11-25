@@ -655,6 +655,21 @@ export {
   TrackerMoves,
   RankTrackerIssues,
   MoveTrackerIssuesToSprint,
+  // A ticket's attachments, links and planning poker
+  // (transport/attachmentTransfer.ts, stores/trackerTicketWrites.svelte.ts,
+  // stores/trackerTicket.svelte.ts).
+  MintTrackerAttachmentUploadTicket,
+  MintTrackerAttachmentDownloadTicket,
+  SaveTrackerAttachment,
+  TrackerLinkTypes,
+  LinkTrackerIssues,
+  UnlinkTrackerIssues,
+  TrackerPokerSupport,
+  FollowTrackerPoker,
+  TrackerPoker,
+  VoteTrackerPoker,
+  RevealTrackerPoker,
+  ClearTrackerPokerVotes,
   // A thread's ticket link (stores/threadTicketLinks.svelte.ts).
   ClearThreadTicket,
   SetThreadTicket,

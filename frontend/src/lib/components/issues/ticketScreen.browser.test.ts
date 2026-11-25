@@ -35,16 +35,16 @@ function mountTicket(width: number) {
   document.body.appendChild(host);
   const state: TrackerTicketState = {
     detail: DETAIL, readAt: 1, failure: null, ended: false, refreshing: false, refreshNotice: null, readError: null,
-    earlier: { pages: [], next: null, loading: false, error: null },
+    earlier: { pages: [], next: null, loading: false, error: null }, poker: null,
   };
   const ref = { backend: HOME_BACKEND, connection: 'c1', issue: '1' };
-  const attachment: TrackerTicketAttachment = { key: 'ticket', ref, current: state, error: null, setShown: () => {}, release: () => {} };
+  const attachment: TrackerTicketAttachment = { key: 'ticket', ref, current: state, error: null, setShown: () => {}, setPokerShown: () => {}, release: () => {} };
   const app = mount(TicketScreen, {
     target: host,
     props: {
-      attachment, seed: { key: 'WEB-1', title: 'Issue 1', card: null }, board: '1', kind: 'jira', computerName: 'This computer',
+      attachment, seed: { key: 'WEB-1', title: 'Issue 1', card: null }, board: '1', kind: 'jira', computerName: 'This computer', account: null,
       offline: false, compact: false, trail: 0, placement: 'over', besideFits: false,
-      onPlacement: () => {}, onBack: () => {}, onClose: () => {}, onOpenIssue: () => {},
+      onPlacement: () => {}, takeFocus: () => false, onBack: () => {}, onClose: () => {}, onOpenIssue: () => {},
     },
   });
   mounted.push({ app, host });

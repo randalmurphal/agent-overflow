@@ -139,6 +139,12 @@ Other:
   `/file/{media id}/binary` and whose query carries a signed token. With
   `redirect=false` the same path answers 200 with the file from the Jira
   site itself.
+- Not measured. An ADF `media` node names its file by the media service ID,
+  which no field of an issue's attachment record carries, and by its `alt`,
+  which the Jira editor fills with the file's name. The ticket screen shows
+  a node as the attachment of that name only when exactly one attachment of
+  the issue has it, and as the name alone otherwise
+  (`frontend/src/lib/stores/trackerTicketModel.ts#mediaAttachment`).
 - `POST /issue/bulkfetch` is documented to take 1000 issues when `fields`
   names at least one field and at most 100, none of them a wildcard or
   one that "returns multiple values (for example `comment`, `worklog`, or

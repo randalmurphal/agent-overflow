@@ -90,6 +90,7 @@
     setTicketPlacement,
     takeTicketOpenRequest,
     ticketOpenRequested,
+    type OpenTicket,
   } from '../../stores/issuesPane.svelte';
   import { dismissTrackerRefreshNotice, refreshTrackerBoard } from '../../stores/trackerBoard.svelte';
   import {
@@ -144,12 +145,59 @@
   const boardCovered = $derived(!!ticket && selection.placement === 'over');
 
   // The ticket view open now, for its own step back (the Details rail).
-  let ticketView: { stepBack(): boolean } | undefined = $state();
+  let ticketView: { stepBack(): boolean; focus(): void } | undefined = $state();
   function stepBack(): boolean {
     if (!selection.ticket) return false;
-    if (!ticketView?.stepBack()) selection.stepBack();
+    if (!ticketView?.stepBack()) showTicket(() => selection.stepBack());
     return true;
   }
+
+  // A ticket a person opens, or steps back to, takes the focus, so a key
+  // or a paste of files goes to it: the card that opened it may be under
+  // it, inert, and Back is gone with the ticket it was on.
+  //
+  // The focus an open asks for must keep true:
+  // - It belongs to that one open (the `OpenTicket` the open made), and
+  //   only that open's mount takes it: a close, another open or a step
+  //   back ends it, and a ticket mounting again because the pane moved,
+  //   or opened from outside the pane (a thread's link), takes none.
+  // - A focus or a press anywhere after the open ends it, so a ticket
+  //   that mounts late never takes the focus from where the person put
+  //   it meanwhile.
+  let focusRequest: { open: OpenTicket; end(): void } | null = null;
+  function endFocusRequest(): void {
+    focusRequest?.end();
+    focusRequest = null;
+  }
+  function requestFocus(open: OpenTicket): void {
+    endFocusRequest();
+    const options = { capture: true } as const;
+    document.addEventListener('focusin', endFocusRequest, options);
+    document.addEventListener('pointerdown', endFocusRequest, options);
+    focusRequest = {
+      open,
+      end: () => {
+        document.removeEventListener('focusin', endFocusRequest, options);
+        document.removeEventListener('pointerdown', endFocusRequest, options);
+      },
+    };
+  }
+  function showTicket(change: () => void): void {
+    const before = selection.ticket;
+    change();
+    const after = selection.ticket;
+    if (!after) return;
+    if (after === before && ticketView) ticketView.focus();
+    else requestFocus(after);
+  }
+  function takeOpenFocus(): boolean {
+    // An ended open is never the ticket again: a close or a linked open
+    // clears the trail, and a step back asks anew.
+    const asked = focusRequest?.open === selection.ticket;
+    endFocusRequest();
+    return asked;
+  }
+  onDestroy(endFocusRequest);
   const disposeProbe = registerToolDetailProbe('issues', () => selection.ticket !== null);
   const disposeBack = registerIssuesBackHandler(stepBack);
   onDestroy(() => {
@@ -158,7 +206,7 @@
   });
 
   function openCard(row: RowView): void {
-    selection.openTicket(row.card.id, { key: row.card.key, title: row.card.title, card: row.card }, 'list');
+    showTicket(() => selection.openTicket(row.card.id, { key: row.card.key, title: row.card.title, card: row.card }, 'list'));
   }
 
   // A move from the board whose screen takes fields: the ticket opens with
@@ -473,7 +521,7 @@
               {compact}
               shown={selection.timeShown}
               openIssue={ticket?.ref.issue ?? null}
-              onOpenTicket={(t) => selection.openTicket(t.issue, { key: t.key, title: t.title, card: null }, 'list')}
+              onOpenTicket={(t) => showTicket(() => selection.openTicket(t.issue, { key: t.key, title: t.title, card: null }, 'list'))}
             />
           {:catch err}
             <p class="px-4 py-6 text-sm text-error" role="alert" data-testid="time-load-error">The Time screen could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</p>
@@ -526,15 +574,17 @@
               board={openBoard.board}
               kind={boardKind}
               computerName={computerName(openBoard.backend)}
+              account={me}
               offline={boardOffline}
               {compact}
               trail={selection.trail}
               placement={selection.placement}
               {besideFits}
               onPlacement={(p) => setTicketPlacement(screen, p)}
-              onBack={() => selection.stepBack()}
+              takeFocus={takeOpenFocus}
+              onBack={() => showTicket(() => selection.stepBack())}
               onClose={() => selection.closeTicket()}
-              onOpenIssue={(issue, seed) => selection.openTicket(issue, seed, 'ticket')}
+              onOpenIssue={(issue, seed) => showTicket(() => selection.openTicket(issue, seed, 'ticket'))}
             />
           {/key}
         {:catch err}

@@ -45,7 +45,7 @@ export interface ConnectedBoard {
  * More for the fake Jira site, in its fixture shape: projects, boards and
  * issues (trackerfake.JiraProject, JiraBoard and JiraIssue) beside the
  * seed's own, where an issue's created and updated times are the seed's,
- * and `poker: {}` for the planning poker add-on (trackerfake.JiraPoker).
+ * and `poker` for the planning poker add-on (trackerfake.JiraPoker).
  */
 export interface ExtraJira {
   projects: Array<{ id: string; key: string; name: string }>;
@@ -59,7 +59,15 @@ export interface ExtraJira {
     /** Other fields' values by field ID (trackerfake.JiraIssue.Values). */
     values?: Record<string, unknown>;
     changelog?: Array<{ id: string; author?: string; created: string; items: Array<{ fieldId: string; field: string; fieldtype: string; from?: string | null; fromString?: string | null; to?: string | null; toString?: string | null }> }>;
+    /** Files attached to the issue (trackerfake.JiraAttachment): `content`
+     * is base64, `mediaId` the media node ID its text names it by. */
+    attachments?: Array<{ id: string; filename: string; mimeType?: string; content: string; author?: string; created?: string; mediaId?: string }>;
   }>;
+  /** Other people who sign in to the site (trackerfake.JiraMember), each
+   * a user of `users` with a token of their own. */
+  members?: Array<{ account: string; token: string }>;
+  /** More users of the site beside User 1 (trackerfake.JiraUser). */
+  users?: Array<{ accountId: string; displayName: string; email?: string; timeZone?: string }>;
   /** The site's custom fields (trackerfake.JiraField). */
   fields?: Array<{ id: string; name: string; schema: { type: string; items?: string; custom?: string; customId?: number }; options?: Array<{ id: string; value: string }> }>;
   resolutions?: Array<{ id: string; name: string }>;
@@ -73,7 +81,8 @@ export interface ExtraJira {
   estimation?: string;
   /** The accounts WEB's issues can be assigned (trackerfake.JiraProject.Assignable). */
   assignable?: string[];
-  poker?: Record<string, never>;
+  /** The add-on, with the votes already cast (trackerfake.JiraPoker). */
+  poker?: { rounds?: Array<{ issue: string; revealed?: boolean; votes?: Array<{ id: string; account: string; vote: number; created: string }> }> };
 }
 
 /**
@@ -113,7 +122,8 @@ export async function seedFakeJira(harness: HarnessApp, extra?: ExtraJira): Prom
   const origins = await harness.rpc<{ jira: Record<string, string> }>('HarnessTrackerSeed', {
     jira: [{
       site: JIRA_SITE, account: 'acc-user1', token: JIRA_TOKEN,
-      users: [{ accountId: 'acc-user1', displayName: 'User 1', email: JIRA_ACCOUNT, timeZone: 'UTC' }],
+      users: [{ accountId: 'acc-user1', displayName: 'User 1', email: JIRA_ACCOUNT, timeZone: 'UTC' }, ...(extra?.users ?? [])],
+      ...(extra?.members ? { members: extra.members } : {}),
       projects: [{
         id: '10000', key: 'WEB', name: 'Web',
         ...(extra?.issueTypes ? { issueTypes: extra.issueTypes } : {}),

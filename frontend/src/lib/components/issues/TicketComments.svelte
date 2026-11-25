@@ -26,6 +26,7 @@
     editTicketComment,
     dropTicketDraft,
     setTicketDraft,
+    ticketCommentDrafts,
     ticketDraft,
     ticketWrite,
     type TicketWriteContext,
@@ -52,7 +53,7 @@
 
   let shown = $state(COMMENTS_FIRST);
   const held = $derived(heldComments(detail, earlier.pages));
-  const view = $derived(commentWindow(held, shown, order));
+  const view = $derived(commentWindow(held, shown, order, ticketCommentDrafts(ctx.key)));
   const moreToRead = $derived((earlier.next ?? detail.more_comments ?? '') !== '');
   const revealCount = $derived(Math.min(COMMENTS_STEP, view.hidden));
 

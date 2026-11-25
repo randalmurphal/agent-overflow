@@ -58,31 +58,3 @@ export function rejectionReason(file: File, maxImageBytes: number): string | nul
   }
   return null;
 }
-
-/**
- * True when the DragEvent is carrying file payloads (or an image MIME
- * type) we care about. Used to ignore noise from the many non-file
- * drag sources the browser fires (text, links, etc.).
- */
-export function hasFilePayload(event: DragEvent): boolean {
-  const types = event.dataTransfer?.types;
-  if (!types) return false;
-  return Array.from(types).some((type) => type === 'Files' || type.startsWith('image/'));
-}
-
-/**
- * Extract image files from a ClipboardEvent. Returns the non-empty
- * list or an empty array if no image clippings exist.
- */
-export function extractClipboardImages(event: ClipboardEvent): File[] {
-  const clip = event.clipboardData;
-  if (!clip) return [];
-  const files: File[] = [];
-  for (const item of Array.from(clip.items)) {
-    if (item.kind === 'file' && item.type.startsWith('image/')) {
-      const file = item.getAsFile();
-      if (file) files.push(file);
-    }
-  }
-  return files;
-}

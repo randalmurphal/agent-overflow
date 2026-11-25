@@ -1,3 +1,18 @@
+<script module lang="ts">
+  // Planning poker and the Log time form load on their first use, each in
+  // its own chunk, through one promise each for every ticket.
+  let pokerModule: Promise<typeof import('./TicketPoker.svelte')> | null = null;
+  function loadPoker(): Promise<typeof import('./TicketPoker.svelte')> {
+    pokerModule ??= import('./TicketPoker.svelte');
+    return pokerModule;
+  }
+  let worklogModule: Promise<typeof import('./WorklogForm.svelte')> | null = null;
+  function loadWorklogForm(): Promise<typeof import('./WorklogForm.svelte')> {
+    worklogModule ??= import('./WorklogForm.svelte');
+    return worklogModule;
+  }
+</script>
+
 <script lang="ts">
   // One ticket (docs/specs/issues.md, "Ticket"), loaded on its first open
   // in its own chunk. The header holds the type mark (which changes the
@@ -8,8 +23,12 @@
   // assignee, priority and points sits over the content and Details
   // slides the rail over it. The content is the description, the other
   // long text fields in one line that names them until opened, the linked
-  // tickets by relation, each opening in this ticket's place, and the
-  // activity: comments and history.
+  // tickets by relation, each opening in this ticket's place, the
+  // attachments, planning poker on a Jira site that has it (folded until
+  // opened), and the activity: comments and history. A Jira ticket's
+  // header also holds its estimate, which opens the estimate's editor.
+  // Files dropped anywhere on a Jira ticket, or pasted with the focus in
+  // it (an editor's too, whose text stays the editor's), are attached.
   //
   // What it draws is the ticket's subscription (`attachment`): until its
   // computer has read the ticket's body, the card it was opened from. A
@@ -25,7 +44,9 @@
   import PanelRight from '@lucide/svelte/icons/panel-right';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import X from '@lucide/svelte/icons/x';
-  import { tick } from 'svelte';
+  import { setContext, tick, untrack } from 'svelte';
+  import { TRACKER_MEDIA_CONTEXT } from '../chat/markdown/trackerMediaContext';
+  import Button from '../primitives/Button.svelte';
   import ContextMenu from '../primitives/ContextMenu.svelte';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
@@ -37,10 +58,14 @@
   import RenderBoundary from '../shared/RenderBoundary.svelte';
   import PriorityIcon from './PriorityIcon.svelte';
   import StatusMark from './StatusMark.svelte';
+  import TicketAttachments from './TicketAttachments.svelte';
   import TicketComments from './TicketComments.svelte';
+  import type TicketPoker from './TicketPoker.svelte';
   import TicketField, { type FieldEditor } from './TicketField.svelte';
   import TicketHistory from './TicketHistory.svelte';
+  import TicketLinks from './TicketLinks.svelte';
   import TicketText from './TicketText.svelte';
+  import Popover from '../primitives/Popover.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
   import TypeIcon from './TypeIcon.svelte';
   import TicketMoveForm from './TicketMoveForm.svelte';
@@ -63,27 +88,35 @@
     type TicketSeed,
   } from '../../stores/issuesPane.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { errString } from '../../utils/errors';
   import {
+    askTrackerPokerSupport,
     dismissTrackerTicketRefreshNotice,
     refreshTrackerTicket,
+    trackerPokerSupport,
     type TrackerTicketAttachment,
   } from '../../stores/trackerTicket.svelte';
-  import { fieldText, isFilled, linkGroups, moreFields, sectionFields, shownText, ticketRow } from '../../stores/trackerTicketModel';
+  import { fieldText, isFilled, moreFields, pokerEstimateChoice, pokerResult, sectionFields, shownText, ticketRow } from '../../stores/trackerTicketModel';
+  import { localDay } from '../../stores/trackerTimeModel';
   import {
     assignableUsers,
+    attachTicketFiles,
     editTicketFields,
     fieldChoices,
     fieldTarget,
     moveTicket,
     openTicketMove,
+    revealTicketPoker,
     setTicketPoints,
     ticketMoveDraft,
     ticketWrite,
     type TicketWriteContext,
   } from '../../stores/trackerTicketWrites.svelte';
   import { copyToClipboard } from '../../utils/clipboard';
-  import { handleExternalURL } from '../../utils/externalLinks';
+  import { handleExternalURL, safeExternalURL } from '../../utils/externalLinks';
+  import { clipboardFiles, hasFilePayload } from '../../utils/filePayload';
   import { relativeTime } from '../../utils/format';
+  import { trackerMediaReader, type TrackerAttachmentTicket } from '../../utils/trackerAttachments';
 
   interface Props {
     attachment: TrackerTicketAttachment;
@@ -93,6 +126,9 @@
     /** The connection's tracker: jira or linear. */
     kind: string;
     computerName: string;
+    /** The person's account on the connection; null when it was never
+     * verified, and Log time cannot say whose time it logs. */
+    account: string | null;
     /** The ticket's computer is not connected now. */
     offline: boolean;
     compact: boolean;
@@ -102,13 +138,26 @@
     /** The pane fits the ticket beside the board. */
     besideFits: boolean;
     onPlacement: (placement: TicketPlacement) => void;
+    /** Whether the open this ticket mounts for asked for the focus, which
+     * it then takes (IssuesPane `focusRequest`); answers true once. */
+    takeFocus: () => boolean;
     onBack: () => void;
     onClose: () => void;
     /** Opens another issue of the connection from this ticket. */
     onOpenIssue: (issue: string, seed: TicketSeed) => void;
   }
 
-  let { attachment, seed, board, kind, computerName, offline, compact, trail, placement, besideFits, onPlacement, onBack, onClose, onOpenIssue }: Props = $props();
+  let { attachment, seed, board, kind, computerName, account, offline, compact, trail, placement, besideFits, onPlacement, takeFocus, onBack, onClose, onOpenIssue }: Props = $props();
+
+  // The ticket a person opened takes the focus, so a key or a paste of
+  // files goes to it (IssuesPane `showTicket`).
+  let root: HTMLElement | undefined = $state();
+  export function focus(): void {
+    root?.focus({ preventScroll: true });
+  }
+  $effect(() => {
+    if (root && untrack(takeFocus)) focus();
+  });
 
   const NARROW_PX = 720;
 
@@ -194,23 +243,109 @@
   // Points are the row of the board the ticket was opened from, else the
   // first board the mirror shows it on.
   const row = $derived(ticketRow(detail?.rows, board));
+  // The row the ticket's estimate is set on: points, or hours typed for a
+  // board that estimates in time (the tracker takes seconds).
+  const estimateRow = $derived(row && row.unit !== 'none' ? row : null);
   const pointsLabel = $derived(row?.unit === 'time' ? 'Estimate (hours)' : 'Points');
-  const pointsEditor: FieldEditor | null = $derived(row && row.unit !== 'none' ? {
+  function setEstimate(on: NonNullable<typeof estimateRow>, value: number | null): void {
+    void setTicketPoints(ctx, on.board, value === null ? null : on.unit === 'time' ? Math.round(value * 3600) : value);
+  }
+  const pointsEditor: FieldEditor | null = $derived(estimateRow ? {
     kind: 'type',
     input: 'number',
-    text: row.estimate == null ? '' : String(row.unit === 'time' ? row.estimate / 3600 : row.estimate),
-    onSave: (text: string) => {
-      const n = text === '' ? null : Number(text);
-      void setTicketPoints(ctx, row.board, n === null ? null : row.unit === 'time' ? Math.round(n * 3600) : n);
-    },
+    text: estimateRow.estimate == null ? '' : String(estimateRow.unit === 'time' ? estimateRow.estimate / 3600 : estimateRow.estimate),
+    onSave: (text: string) => setEstimate(estimateRow, text === '' ? null : Number(text)),
   } : null);
   const pointsText = $derived(row ? formatEstimate(row.estimate, row.unit) ?? '' : '');
+  const pointsPending = $derived(ticketWrite(ctx.key, 'points')?.pending ?? false);
+
+  // Open in the tracker and Copy link take a web page's address only.
+  const trackerURL = $derived(safeExternalURL(detail?.url));
+  const mediaTicket: TrackerAttachmentTicket = $derived({ key: attachment.key, ref: attachment.ref, url: trackerURL ?? '' });
+  // The files the ticket's text names show as its attachments.
+  setContext(TRACKER_MEDIA_CONTEXT, trackerMediaReader(() => (detail ? { ticket: mediaTicket, attachments: detail.attachments ?? [] } : null)));
+
+  // A tracker that stores files takes them: a pick, a drop or a paste.
+  const canAttach = $derived(!linear && !!detail);
+  const attachmentsOpen = $derived(ticketSectionOpen(section('attachments'), true));
+  let attachmentsSection: TicketAttachments | undefined = $state();
+  function attach(files: readonly File[]): void {
+    if (files.length === 0) return;
+    setTicketSectionOpen(section('attachments'), true);
+    attachTicketFiles(ctx, files);
+  }
+  let dropping = $state(false);
+  function onDragOver(event: DragEvent): void {
+    if (!canAttach || !hasFilePayload(event)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+    dropping = true;
+  }
+  function onDragLeave(event: DragEvent): void {
+    if (event.relatedTarget instanceof Node && (event.currentTarget as HTMLElement).contains(event.relatedTarget)) return;
+    dropping = false;
+  }
+  function onDrop(event: DragEvent): void {
+    dropping = false;
+    if (!canAttach || !hasFilePayload(event)) return;
+    event.preventDefault();
+    attach(Array.from(event.dataTransfer?.files ?? []));
+  }
+  // A paste's files are attached; its text stays the editor's.
+  function onPaste(event: ClipboardEvent): void {
+    if (!canAttach) return;
+    const files = clipboardFiles(event);
+    if (files.length === 0) return;
+    if (!event.clipboardData?.types.includes('text/plain')) event.preventDefault();
+    attach(files);
+  }
+
+  // Planning poker, on a Jira site that has it: the store's poker support
+  // rules decide when it is asked. The ticket asks when it shows its body;
+  // a reconnect drops the body and the store's answer, so the body's return
+  // asks again.
+  const hasDetail = $derived(!!detail);
+  const pokerSupport = $derived(linear ? null : trackerPokerSupport(attachment.ref.backend, attachment.ref.connection));
+  function askPokerSupport(): void {
+    askTrackerPokerSupport(attachment.ref.backend, attachment.ref.connection);
+  }
+  $effect(() => {
+    if (linear || !hasDetail) return;
+    untrack(askPokerSupport);
+  });
+  const pokerOffered = $derived(hasDetail && pokerSupport !== null && typeof pokerSupport === 'object' && 'available' in pokerSupport && pokerSupport.available);
+  const pokerSupportFailure = $derived(hasDetail && pokerSupport !== null && typeof pokerSupport === 'object' && 'failed' in pokerSupport ? pokerSupport.failed : null);
+  const pokerOpen = $derived(ticketSectionOpen(section('poker'), false));
+  const pokerPending = $derived(ticketWrite(ctx.key, 'poker')?.pending ?? false);
+  // A revealed round's values, which the menu offers as the estimate as
+  // the section does; known only while the section follows the votes.
+  const pokerView = $derived(ticketState?.poker?.view ?? null);
+  const pokerEstimates = $derived(pokerView?.loaded && pokerView.revealed ? pokerResult(pokerView.votes ?? []) : []);
+  let pokerBody: TicketPoker | undefined = $state();
+  async function openPoker(then: (body: TicketPoker) => void): Promise<void> {
+    setTicketSectionOpen(section('poker'), true);
+    try {
+      await loadPoker();
+    } catch {
+      // The section says the code could not load.
+      return;
+    }
+    await tick();
+    if (pokerBody) then(pokerBody);
+  }
+  function revealVotes(): void {
+    setTicketSectionOpen(section('poker'), true);
+    void revealTicketPoker(ctx);
+  }
+
+  // Log time: the Time screen's form, filled with this ticket and today.
+  let logging = $state(false);
+  const timeCtx = $derived(account ? { backend: attachment.ref.backend, connection: attachment.ref.connection, author: account, computer: computerName } : null);
 
   // A field of the ticket's own, changed in place.
   const editorOf = (f: FieldView): FieldEditor | null => fieldEditor(f, targetOf(f.id, f.value));
 
   const sections = $derived(detail ? sectionFields(detail.fields) : []);
-  const links = $derived(detail ? linkGroups(detail.links ?? []) : []);
   const moreOpen = $derived(ticketSectionOpen(section('more-sections'), false));
   const fieldsOpen = $derived(ticketSectionOpen(section('more-fields'), false));
   let fieldFind = $state('');
@@ -237,6 +372,7 @@
   let typeField: TicketField | undefined = $state();
   let descriptionText: TicketText | undefined = $state();
   let comments: TicketComments | undefined = $state();
+  let linksSection: TicketLinks | undefined = $state();
 
   async function change(which: 'status' | 'assignee' | 'priority' | 'points' | 'type'): Promise<void> {
     if (narrow && which !== 'type') {
@@ -259,8 +395,7 @@
   // The app's one opener of a web link: this browser for a page served
   // to another machine, the computer's browser otherwise.
   async function openInTracker(): Promise<void> {
-    const url = detail?.url;
-    if (url && !(await handleExternalURL(url))) addToast('error', `Could not open ${ctx.label} in the tracker: its link ${url} is not a web address.`);
+    if (!trackerURL || !(await handleExternalURL(trackerURL))) addToast('error', `Could not open ${ctx.label} in the tracker: it has no web address.`);
   }
 
   async function copy(text: string, what: string): Promise<void> {
@@ -428,28 +563,52 @@
         {/if}
       </div>
     {/if}
-    {#if links.length > 0}
-      <section class="flex flex-col gap-1.5" data-testid="ticket-links">
-        <span class="px-1 text-sm font-medium text-fg">Linked tickets</span>
-        {#each links as group (group.relation)}
-          <div class="flex flex-col" data-testid="ticket-link-group">
-            <span class="px-1 text-xs text-fg-muted" data-testid="ticket-link-relation">{group.relation}</span>
-            {#each group.links as link (link.id)}
-              {@const issue = link.issue}
-              <button
-                type="button"
-                class="flex min-w-0 items-center gap-1.5 rounded-[var(--radius-control)] px-1 py-0.5 text-left text-sm text-fg hover:bg-surface-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:min-h-9 compact:select-none"
-                title="Open {issue.key || issue.title}"
-                data-testid="ticket-link"
-                onclick={() => onOpenIssue(issue.id, { key: issue.key, title: issue.title, card: null })}
-              >
-                <StatusMark group={issue.status.group} />
-                <span class="shrink-0 tabular-nums text-fg-muted">{issue.key}</span>
-                <span class="min-w-0 truncate">{issue.title}</span>
-              </button>
-            {/each}
-          </div>
-        {/each}
+    <TicketLinks bind:this={linksSection} {ctx} links={detail.links ?? []} {onOpenIssue} />
+    {#if !linear || (detail.attachments?.length ?? 0) > 0}
+      <TicketAttachments
+        bind:this={attachmentsSection}
+        {ctx}
+        ticket={mediaTicket}
+        attachments={detail.attachments ?? []}
+        {canAttach}
+        open={attachmentsOpen}
+        onFold={(open) => setTicketSectionOpen(section('attachments'), open)}
+      />
+    {/if}
+    {#if pokerOffered}
+      <section class="flex flex-col gap-1.5" data-testid="ticket-poker-section">
+        <button
+          type="button"
+          class="inline-flex min-w-0 items-center gap-1 self-start rounded-[var(--radius-control)] px-1 text-sm font-medium text-fg hover:bg-surface-1 compact:min-h-9 compact:select-none"
+          aria-expanded={pokerOpen}
+          data-testid="ticket-poker-fold"
+          onclick={() => setTicketSectionOpen(section('poker'), !pokerOpen)}
+        >
+          <Icon icon={pokerOpen ? ChevronDown : ChevronRight} size={13} strokeWidth={2} />
+          Planning poker
+        </button>
+        {#if pokerOpen}
+          {#await loadPoker()}
+            <p class="px-1 text-xs text-fg-muted" data-testid="ticket-poker-loading">Opening planning poker…</p>
+          {:then mod}
+            <mod.default
+              bind:this={pokerBody}
+              {attachment}
+              {ctx}
+              poker={ticketState?.poker ?? null}
+              onSetEstimate={estimateRow ? (value) => { if (estimateRow) setEstimate(estimateRow, value); } : null}
+              hours={estimateRow?.unit === 'time'}
+            />
+          {:catch err}
+            <p class="px-1 text-xs text-error" role="alert" data-testid="ticket-poker-load-error">Planning poker could not load: {errString(err)}. Reload the window to try again.</p>
+          {/await}
+        {/if}
+      </section>
+    {:else if pokerSupportFailure !== null}
+      <section class="flex flex-col items-start gap-1 text-sm" data-testid="ticket-poker-section">
+        <span class="px-1 font-medium text-fg">Planning poker</span>
+        <p class="px-1 text-xs text-error" role="alert" data-testid="ticket-poker-support-error">Could not find out whether this site has planning poker: {pokerSupportFailure}</p>
+        <Button size="sm" variant="ghost" testId="ticket-poker-support-retry" onclick={askPokerSupport}>Retry</Button>
       </section>
     {/if}
     <section class="flex flex-col gap-2" data-testid="ticket-activity">
@@ -472,7 +631,25 @@
   {/if}
 {/snippet}
 
-<div class="relative flex h-full min-h-0 min-w-0 flex-col bg-surface-0" bind:clientWidth={width} data-testid="ticket-screen" data-issue={attachment.ref.issue} data-narrow={narrow ? '' : undefined}>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  class="relative flex h-full min-h-0 min-w-0 flex-col bg-surface-0 focus:outline-none"
+  bind:this={root}
+  tabindex="-1"
+  bind:clientWidth={width}
+  data-testid="ticket-screen"
+  data-issue={attachment.ref.issue}
+  data-narrow={narrow ? '' : undefined}
+  ondragover={onDragOver}
+  ondragleave={onDragLeave}
+  ondrop={onDrop}
+  onpaste={onPaste}
+>
+  {#if dropping}
+    <div class="pointer-events-none absolute inset-0 z-[3] flex items-center justify-center border-2 border-dashed border-accent bg-surface-0/80 text-sm text-fg" data-testid="ticket-drop">
+      Drop the files to attach them to {ctx.label}
+    </div>
+  {/if}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <header class="flex flex-col gap-1 border-b border-border-subtle px-3 py-2" oncontextmenu={openMenu} data-testid="ticket-header">
     <div class="flex min-w-0 items-center gap-1.5">
@@ -528,7 +705,18 @@
           options={[{ value: 'over', label: 'Over' }, { value: 'beside', label: 'Beside' }]}
         />
       {/if}
-      {#if detail?.url}
+      {#if !linear && estimateRow}
+        <button
+          type="button"
+          class="inline-flex shrink-0 items-center gap-1 rounded-[var(--radius-control)] border border-border-subtle px-1.5 text-xs text-fg-muted hover:bg-surface-1 hover:text-fg disabled:opacity-60 compact:min-h-9 compact:select-none"
+          aria-label="Estimate: {pointsText || 'none'}"
+          title="Change the estimate"
+          disabled={pointsPending}
+          data-testid="ticket-estimate"
+          onclick={() => { void change('points'); }}
+        >Estimate <span class="tabular-nums text-fg">{pointsText || '–'}</span></button>
+      {/if}
+      {#if trackerURL}
         <IconButton label="Open in the tracker" size="sm" testId="ticket-open-tracker" onClick={() => { void openInTracker(); }}>
           {#snippet children()}<Icon icon={ExternalLink} size={13} strokeWidth={2} />{/snippet}
         </IconButton>
@@ -636,22 +824,52 @@
       <MenuDivider />
       <MenuSectionHeader label="Add" />
       <MenuItem label="Comment" testId="ticket-menu-comment" onSelect={() => run(addComment)} />
+      {#if canAttach}
+        <MenuItem label="Attachment…" testId="ticket-menu-attach" onSelect={() => run(() => attachmentsSection?.pick())} />
+      {/if}
+      <MenuItem label="Link…" testId="ticket-menu-link" onSelect={() => run(() => linksSection?.add())} />
+      {#if !linear}
+        <MenuItem
+          label="Log time…"
+          description={timeCtx ? undefined : 'The app does not know your account on this connection'}
+          disabled={!timeCtx}
+          testId="ticket-menu-log-time"
+          onSelect={() => run(() => { logging = true; })}
+        />
+      {/if}
       <MenuDivider />
+      {#if pokerOffered}
+        <MenuSectionHeader label="Planning poker" />
+        <MenuItem label="Vote…" disabled={pokerPending} testId="ticket-menu-poker-vote" onSelect={() => run(() => openPoker((body) => body.focusVote()))} />
+        <MenuItem label="Reveal votes" disabled={pokerPending} testId="ticket-menu-poker-reveal" onSelect={() => run(revealVotes)} />
+        <MenuItem label="Clear votes…" disabled={pokerPending} testId="ticket-menu-poker-clear" onSelect={() => run(() => openPoker((body) => body.askClear()))} />
+        {#if estimateRow}
+          {@const on = estimateRow}
+          {#each pokerEstimates as r (r.value)}
+            {@const choice = pokerEstimateChoice(r, on.unit === 'time')}
+            <MenuItem label="{choice.action} {choice.votes}" disabled={pointsPending} testId="ticket-menu-poker-estimate" onSelect={() => run(() => setEstimate(on, r.value))} />
+          {/each}
+        {/if}
+        <MenuDivider />
+      {/if}
     {/if}
-    <MenuSectionHeader label="Open" />
-    {#if detail?.url}
-      <MenuItem label="In the tracker" testId="ticket-menu-open-tracker" onSelect={() => run(openInTracker)} />
-    {/if}
-    {#if besideFits}
-      <MenuItem label="Over the board" checked={placement === 'over'} onSelect={() => run(() => onPlacement('over'))} />
-      <MenuItem label="Beside the board" checked={placement === 'beside'} onSelect={() => run(() => onPlacement('beside'))} />
+    {#if trackerURL || besideFits}
+      <MenuSectionHeader label="Open" />
+      {#if trackerURL}
+        <MenuItem label="In the tracker" testId="ticket-menu-open-tracker" onSelect={() => run(openInTracker)} />
+      {/if}
+      {#if besideFits}
+        <MenuItem label="Over the board" checked={placement === 'over'} onSelect={() => run(() => onPlacement('over'))} />
+        <MenuItem label="Beside the board" checked={placement === 'beside'} onSelect={() => run(() => onPlacement('beside'))} />
+      {/if}
+      <MenuDivider />
     {/if}
     <MenuItem label="Refresh" testId="ticket-menu-refresh" disabled={!ticketState || ticketState.ended} onSelect={() => run(refresh)} />
     <MenuDivider />
     <MenuSectionHeader label="Copy" />
     <MenuItem label="Key" testId="ticket-menu-copy-key" onSelect={() => run(() => copy(ctx.label, 'key'))} />
-    {#if detail?.url}
-      {@const url = detail.url}
+    {#if trackerURL}
+      {@const url = trackerURL}
       <MenuItem label="Link" testId="ticket-menu-copy-link" onSelect={() => run(() => copy(url, 'link'))} />
     {/if}
     <MenuDivider />
@@ -660,4 +878,21 @@
     {/if}
     <MenuItem label="Close" testId="ticket-menu-close" onSelect={() => run(onClose)} />
   </ContextMenu>
+{/if}
+
+{#if logging && timeCtx}
+  <Popover anchor={menuButton} open={true} role="dialog" ariaLabel="Log time" onClose={() => { logging = false; }}>
+    {#await loadWorklogForm()}
+      <p class="p-3 text-xs text-fg-muted" data-testid="ticket-log-time-loading">Opening Log time…</p>
+    {:then mod}
+      <mod.default
+        ctx={timeCtx}
+        ticket={{ issue: attachment.ref.issue, key: card?.key || seed.key, title: card?.title || seed.title }}
+        day={localDay(new Date())}
+        onDone={() => { logging = false; }}
+      />
+    {:catch err}
+      <p class="p-3 text-xs text-error" role="alert" data-testid="ticket-log-time-load-error">Log time could not load: {errString(err)}. Reload the window to try again.</p>
+    {/await}
+  </Popover>
 {/if}
