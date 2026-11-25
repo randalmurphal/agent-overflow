@@ -1641,7 +1641,9 @@ named by the board's lifetime and totals revision (the board view's
 `totals_revision`, a patch's `totals.revision`), which moves with every
 change that can change a total and not with a title or rank. The client
 sends the status groups version its sections were read with
-(`TotalsAt.Groups`); another version is refused as stale. The client's
+(`TotalsAt.Groups`); another version is refused as stale, and the
+client reads the board again (`readPatch` in
+`frontend/src/lib/stores/trackerBoard.svelte.ts`). The client's
 rule for applying a patch is the `BoardPatch` comment
 (`trackerapp/patch.go`), and its reference implementation is `applyPatch`
 in `trackerapp/patch_model_test.go`. A randomized test checks it against a
