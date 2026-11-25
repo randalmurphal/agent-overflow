@@ -405,6 +405,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "PreviewNotificationSound", ID: 2105157519, Scope: "host", Route: "home"},                                                         // main.App.PreviewNotificationSound
 	{Name: "ProjectDeletionPreview", ID: 2575010484, Scope: "git:operate", Route: "project"},                                                 // main.App.ProjectDeletionPreview
 	{Name: "ProjectTrackerBoards", ID: 1066511111, Scope: "tracker:read", Route: "project"},                                                  // main.App.ProjectTrackerBoards
+	{Name: "ProjectTrackerSetup", ID: 3259060803, Scope: "tracker:read", Route: "project"},                                                   // main.App.ProjectTrackerSetup
 	{Name: "PromoteScratchThread", ID: 4079123887, Scope: "threads:operate", Route: "thread"},                                                // main.App.PromoteScratchThread
 	{Name: "ProviderTerminalAttach", ID: 1393518281, Scope: "terminal:operate", Route: "thread", CallerBound: true},                          // main.App.ProviderTerminalAttach
 	{Name: "ProviderTerminalDetach", ID: 2584141779, Scope: "terminal:operate", Route: "thread"},                                             // main.App.ProviderTerminalDetach
@@ -525,6 +526,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetPipelineActive", ID: 1113626255, Scope: "git:operate", Route: "home"},                                                         // main.App.SetPipelineActive
 	{Name: "SetPipelineFollows", ID: 2435786137, Scope: "git:operate", Route: "home"},                                                        // main.App.SetPipelineFollows
 	{Name: "SetProjectTrackerBoards", ID: 1148228013, Scope: "tracker:operate", Route: "project"},                                            // main.App.SetProjectTrackerBoards
+	{Name: "SetProjectTrackerSetup", ID: 2325537073, Scope: "tracker:operate", Route: "project"},                                             // main.App.SetProjectTrackerSetup
 	{Name: "SetProjectWorktreeSetup", ID: 322092470, Scope: "terminal:operate", Route: "project", StepUp: true},                              // main.App.SetProjectWorktreeSetup
 	{Name: "SetProviderAccountAutoSwitch", ID: 2230720062, Scope: "access:admin", Route: "home"},                                             // main.App.SetProviderAccountAutoSwitch
 	{Name: "SetProviderCustomEnvVar", ID: 2118904465, Scope: "settings:write", Route: "home", StepUp: true},                                  // main.App.SetProviderCustomEnvVar

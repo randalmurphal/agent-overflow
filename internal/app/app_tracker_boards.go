@@ -328,7 +328,7 @@ func trackerRefusal(err error) (code, message string) {
 	case errors.Is(err, trackerapp.ErrNotMirrored):
 		return "tracker_board_not_read", "this computer has not read this board from the tracker yet; it shows once the first read finishes"
 	case errors.Is(err, trackerapp.ErrStalePage):
-		return "tracker_page_stale", "the board changed since this section was read; read the section again from its start"
+		return "tracker_page_stale", "the board, or the project's status groups, changed since this section was read; read the section again from its start"
 	case errors.Is(err, trackerapp.ErrProjectNotFound):
 		return "tracker_project_missing", "this project no longer exists on this computer"
 	case errors.Is(err, trackerapp.ErrBoardsChanged):
