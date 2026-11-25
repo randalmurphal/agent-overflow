@@ -10,6 +10,7 @@
 
 import { untrack } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
+import { getAttachedBackends } from './attachedBackends.svelte';
 import { onFrontendValueChanged, readFrontendValue, writeFrontendValue } from './frontendStorage';
 import {
   attachTrackerBoard,
@@ -29,6 +30,8 @@ import {
   type ComputerChoices,
   type ListedBoardChoice,
 } from './trackerBoardChoices.svelte';
+import { pageGrantsKnownTracked, scopeGrant } from '../transport/scopes';
+import type { BoardChoice } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 
 /** A card field the Display menu turns on and off. Title always shows. */
 export type CardField = 'type' | 'key' | 'parent' | 'labels' | 'priority' | 'estimate' | 'assignee' | 'days';
@@ -147,14 +150,16 @@ export interface OpeningDecision {
  * computers answered (`computers`, in attach order): the board that opens
  * first of the project the pane was opened from, else that project's first
  * openable one, as soon as its computer answered; else, once every computer
- * has answered or could not be read, the same of the first project in
- * sidebar order (`order`, read only then) that lists an openable board;
- * else none. A board that cannot be opened (`isBoardChoiceOpenable`) is
- * never chosen.
+ * has answered or could not be read and the sidebar lists the projects of
+ * each computer with an openable board (`listed`), the same of the first
+ * project in sidebar order (`order`, read only then) that lists an openable
+ * board; else none. A board that cannot be opened (`isBoardChoiceOpenable`)
+ * is never chosen.
  */
 export function openingBoard(
   computers: readonly { readonly backend: string; readonly state: ComputerChoices }[],
   openedFromProject: string | null,
+  listed: (backend: string) => boolean,
   order: () => ReadonlyMap<string, number>,
 ): OpeningDecision {
   const choices: ListedBoardChoice[] = computers.flatMap(({ backend, state }) => (state.rows ?? []).map((choice) => ({ backend, choice })));
@@ -170,6 +175,10 @@ export function openingBoard(
     if (board) return { board, waiting: false };
   }
   if (computers.some((c) => c.state.kind === 'reading')) return { board: null, waiting: true };
+  // Before the sidebar lists a computer's projects, their order is not
+  // the one the person sees.
+  const candidates = new Set(choices.filter((c) => isBoardChoiceOpenable(c.choice)).map((c) => c.backend));
+  if ([...candidates].some((backend) => !listed(backend))) return { board: null, waiting: true };
   const positions = order();
   const at = (project: string) => positions.get(project) ?? Number.POSITIVE_INFINITY;
   let best: TrackerBoardRef | null = null;
@@ -203,6 +212,18 @@ export interface BoardSelectionOptions {
   readonly shown: () => boolean;
   /** Each project's position in the sidebar as it shows now. */
   readonly projectOrder: () => ReadonlyMap<string, number>;
+  /** Whether the sidebar lists a computer's projects; reactive. */
+  readonly projectsListed: (backend: string) => boolean;
+}
+
+/** Where a board's computer stands for the pane: `waiting` until the page
+ * knows its grants, `gone` when it is not attached or refuses tracker:read
+ * (it can never answer), else `ready`. Reactive. */
+function boardComputer(backend: string): 'waiting' | 'gone' | 'ready' {
+  if (!pageGrantsKnownTracked()) return 'waiting';
+  if (!getAttachedBackends().some((entry) => entry.id === backend)) return 'gone';
+  const grant = scopeGrant('tracker:read', backend);
+  return grant === 'granted' ? 'ready' : grant === 'refused' ? 'gone' : 'waiting';
 }
 
 /**
@@ -211,11 +232,15 @@ export interface BoardSelectionOptions {
  * rule. Nothing else changes it: another window, a later answer, a board
  * that ends. Its computer is the authority on whether it opens: when it
  * refuses or ends the board picked last before the pane showed any of its
- * cards, the selection lets it go and the opening rule chooses. An ended
- * board is subscribed again once an answer of its computer read after the
- * end lists it as openable (a connection turned back on). Holds the board
- * choices and the subscription until `destroy`; create it in a component's
- * setup.
+ * cards, the selection lets it go and the opening rule chooses; so does a
+ * computer that is forgotten or refuses tracker:read, at any time and with
+ * no call. An ended board is subscribed again once an answer of its
+ * computer read after the end lists it as openable (a connection turned
+ * back on). A board its project stops listing while another project of the
+ * same computer lists it moves to that project's listing, which subscribes
+ * again under it. Holds the board choices and the subscription until
+ * `destroy`; create it in a component's setup. The states and what moves
+ * them are in docs/specs/issues.md, "Pane".
  */
 export function createBoardSelection(opts: BoardSelectionOptions): BoardSelection {
   const releaseChoices = acquireTrackerBoardChoices();
@@ -228,11 +253,21 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
   // The last read of the board's computer started when the end was seen,
   // or when it was last renewed: only an answer read after it renews.
   let renewAfter: number | null = null;
+  // The last read of the board's computer started when it was attached:
+  // only an answer read after it moves the board to another listing.
+  let attachedAfter = 0;
+  const computer = $derived(board ? boardComputer(board.backend) : 'waiting');
 
   const stop = $effect.root(() => {
     $effect(() => {
+      if (computer !== 'gone') return;
+      unconfirmed = false;
+      board = null;
+    });
+
+    $effect(() => {
       const ref = board;
-      if (!ref) {
+      if (!ref || computer !== 'ready') {
         attachment = null;
         return;
       }
@@ -241,6 +276,7 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
       const held = untrack(() => attachTrackerBoard(ref, opts.shown()));
       attachment = held;
       renewAfter = null;
+      attachedAfter = untrack(() => trackerBoardChoicesReadStarted(ref.backend));
       return () => held.release();
     });
 
@@ -256,19 +292,29 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
       const state = held?.current;
       if (!held || !ref || !state) return;
       if (state.held) unconfirmed = false;
+      if (unconfirmed) {
+        // The subscribe answers for the board picked last.
+        if (state.ended) {
+          unconfirmed = false;
+          board = null;
+        }
+        return;
+      }
+      const answeredBy = trackerBoardChoicesAnsweredBy(ref.backend);
+      const rows = trackerBoardChoicesOf(ref.backend)?.rows ?? [];
+      const listing = (c: BoardChoice) => c.connection === ref.connection && c.board === ref.board;
+      if (answeredBy > attachedAfter && !rows.some((c) => listing(c) && c.project === ref.projectId)) {
+        const moved = rows.find(listing);
+        if (moved) untrack(() => moveTo(ref, choiceRef({ backend: ref.backend, choice: moved })));
+        return;
+      }
       if (!state.ended) {
         renewAfter = null;
         return;
       }
-      if (unconfirmed) {
-        unconfirmed = false;
-        board = null;
-        return;
-      }
       renewAfter ??= untrack(() => trackerBoardChoicesReadStarted(ref.backend));
-      if (trackerBoardChoicesAnsweredBy(ref.backend) <= renewAfter) return;
-      const rows = trackerBoardChoicesOf(ref.backend)?.rows ?? [];
-      if (!rows.some((c) => sameBoard(choiceRef({ backend: ref.backend, choice: c }), ref) && isBoardChoiceOpenable(c))) return;
+      if (answeredBy <= renewAfter) return;
+      if (!rows.some((c) => listing(c) && c.project === ref.projectId && isBoardChoiceOpenable(c))) return;
       renewAfter = untrack(() => trackerBoardChoicesReadStarted(ref.backend));
       untrack(() => renewEndedTrackerBoard(held.key));
     });
@@ -278,11 +324,18 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
         choosing = false;
         return;
       }
-      const decision = openingBoard(trackerBoardChoiceComputers(), opts.openedFromProject, () => untrack(opts.projectOrder));
+      const decision = openingBoard(trackerBoardChoiceComputers(), opts.openedFromProject, opts.projectsListed, () => untrack(opts.projectOrder));
       choosing = decision.waiting;
       if (decision.board) board = decision.board;
     });
   });
+
+  // The board stays; its listing moved to another project. A save of the
+  // board moves with it, so the next pane opens it too.
+  function moveTo(from: TrackerBoardRef, to: TrackerBoardRef): void {
+    if (sameBoard(pickedBoard(), from)) savePick(to);
+    board = to;
+  }
 
   return {
     get board() { return board; },

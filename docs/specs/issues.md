@@ -229,13 +229,19 @@ Widths are CSS pixels of the pane, not the window.
 
 - The pane opens on the board the person picked last. When its computer
   refuses that board (no project lists it, or its connection is off or
-  removed), or none was picked, it opens the board that opens first of
-  the project it was opened from, else of the first project in sidebar
-  order that lists one. A board whose connection is turned off is listed
-  in the picker but not offered, and the pane never opens it on its own.
+  removed), when that computer is no longer paired or does not let this
+  window read boards, or when none was picked, it opens the board that
+  opens first of the project it was opened from, else of the first project
+  in sidebar order that lists one, once the sidebar lists the projects of
+  each computer with a board to open. A board whose connection is turned
+  off is listed in the picker but not offered, and the pane never opens it
+  on its own. While the board's computer is not connected, the pane says so
+  and shows the board when it connects.
   Each open pane keeps its board and Only mine; a pick and Only mine are
   what the next pane opens with. A board that ended because its connection
-  was turned off opens again once the connection is turned back on.
+  was turned off opens again once the connection is turned back on. A board
+  its project stops listing while another project of the same computer
+  lists it stays open under that project, and a pick of it moves with it.
 - The top bar holds the board picker, the tabs Board, Backlog, Dashboards
   and Time, Display, Only mine and Search. As the pane narrows, the
   right-hand controls become icons, then the tabs fold into one picker.

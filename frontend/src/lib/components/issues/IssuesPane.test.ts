@@ -14,8 +14,9 @@ import { hiddenCardFields } from '../../stores/issuesPane.svelte';
 import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
 import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { detachBackend } from '../../transport/backends';
 import { takePinnedBackend } from '../../transport/backends';
-import { listCatalogTreesForTest } from '../../stores/sidebarCatalogs';
+import { listCatalogTreesForTest, resetSidebarCatalogsForTest } from '../../stores/sidebarCatalogs';
 import { setCarriedSessionScopes } from '../../transport/scopes';
 import { DisconnectedError } from '../../transport/wsClient';
 import { openPaneFind, setPaneFindQuery } from '../../stores/paneFind.svelte';
@@ -109,6 +110,8 @@ function install(opts: { choices?: BoardChoice[]; view?: BoardView | null; failu
   });
   const release = setBindingMock('ReleaseTrackerSubscription', async () => undefined);
   const visible = setBindingMock('SetTrackerSubscriptionVisible', async () => undefined);
+  // The sidebar lists every attached computer's projects.
+  listCatalogTreesForTest();
   return { choices, subscribe, release, visible };
 }
 
@@ -589,5 +592,138 @@ describe('which board the pane holds', () => {
     await waitFor(() => expect(mocks.subscribe).toHaveBeenCalledWith('p9', 'c1', '7', [], true));
     view.unmount();
     resetStagedBackends();
+  });
+});
+
+describe('the selection against its computer, its listing and the sidebar', () => {
+  it('lets a saved board on a forgotten computer go, and opens a board of this computer', async () => {
+    stageBackend();
+    setCarriedSessionScopes('laptop', ['tracker:read']);
+    writeFromAnotherWindow(BOARD_KEY, boardRef('7', 'p9', 'laptop'));
+    detachBackend('laptop');
+    const mocks = install({ choices: [choice('1', { opens_first: true })] });
+    openedFrom.project = 'p1';
+    try {
+      const view = mount();
+      await view.findAllByTestId('issues-card');
+      expect(mocks.subscribe.mock.calls.map((c) => [c[0], c[2]])).toEqual([['p1', '1']]);
+      view.unmount();
+    } finally {
+      openedFrom.project = null;
+    }
+  });
+
+  it('lets a saved board go when its computer refuses this window the boards', async () => {
+    stageBackend();
+    setCarriedSessionScopes('laptop', ['threads:read']);
+    writeFromAnotherWindow(BOARD_KEY, boardRef('7', 'p9', 'laptop'));
+    const mocks = install({ choices: [choice('1', { opens_first: true })] });
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    expect(mocks.subscribe.mock.calls.map((c) => [c[0], c[2]])).toEqual([['p1', '1']]);
+    view.unmount();
+  });
+
+  it('keeps a shown board while its computer is not connected, and shows it again when it connects', async () => {
+    const mocks = install();
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null });
+    expect(await view.findByTestId('issues-board-offline')).toHaveTextContent('is not connected. The board shows when it connects.');
+    expect(view.queryByTestId('issues-opening')).toBeNull();
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+    await view.findAllByTestId('issues-card');
+    expect(view.queryByTestId('issues-board-offline')).toBeNull();
+    expect(mocks.subscribe.mock.calls.map((c) => c[2])).toEqual(['1', '1']);
+    view.unmount();
+  });
+
+  it('moves the board picked last to the project that still lists it, for the next pane too', async () => {
+    const both = [choice('1'), choice('1', { project: 'p2' })];
+    let rows = both;
+    const mocks = install();
+    setBindingMock('TrackerBoardChoices', async () => rows);
+    writeFromAnotherWindow(BOARD_KEY, boardRef('1'));
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    rows = [both[1]];
+    applyTrackerConnectionsChanged(HOME_BACKEND);
+    await waitFor(() => expect(mocks.subscribe).toHaveBeenLastCalledWith('p2', 'c1', '1', [], true));
+    expect(picked()).toEqual(boardRef('1', 'p2'));
+    view.unmount();
+  });
+
+  it("says the saved board's computer is not connected while it is not", async () => {
+    stageBackend({ status: 'reconnecting' });
+    setCarriedSessionScopes('laptop', ['tracker:read']);
+    writeFromAnotherWindow(BOARD_KEY, boardRef('7', 'p9', 'laptop'));
+    install({ choices: [choice('1', { opens_first: true })] });
+    const view = mount();
+    const notice = await view.findByTestId('issues-board-offline');
+    expect(notice).toHaveTextContent('Laptop is not connected. The board shows when it connects.');
+    expect(view.queryByTestId('issues-opening')).toBeNull();
+    view.unmount();
+  });
+
+  it('follows a board to the project that still lists it when its own project stops listing it, and keeps Only mine', async () => {
+    const both = [choice('1', { opens_first: true }), choice('1', { project: 'p2', opens_first: true })];
+    let rows = both;
+    const mocks = install({
+      view: kanban({ rows: [row('1', 'a', 's1', { assignee: { id: 'acc-user1', name: 'User 1' } }), row('3', 'c', 's1')] }, { rows: [] }),
+    });
+    setBindingMock('TrackerBoardChoices', async () => rows);
+    openedFrom.project = 'p1';
+    try {
+      const view = mount();
+      await waitFor(() => expect(view.getAllByTestId('issues-card')).toHaveLength(2));
+      await fireEvent.click(view.getByTestId('issues-only-mine'));
+      await waitFor(() => expect(view.getAllByTestId('issues-card').map((c) => c.dataset.issue)).toEqual(['1']));
+      rows = [both[1]];
+      applyTrackerConnectionsChanged(HOME_BACKEND);
+      await waitFor(() => expect(mocks.subscribe).toHaveBeenLastCalledWith('p2', 'c1', '1', [], true));
+      await waitFor(() => expect(view.getAllByTestId('issues-card').map((c) => c.dataset.issue)).toEqual(['1']));
+      expect(view.queryByTestId('issues-only-mine-unknown')).toBeNull();
+      view.unmount();
+    } finally {
+      openedFrom.project = null;
+    }
+  });
+
+  it('shows the way to Settings once the first project is added under an open empty pane', async () => {
+    install({ choices: [] });
+    const view = mount();
+    await waitFor(() => expect(view.getByTestId('issues-empty')).toHaveTextContent('No project lists a board yet.'));
+    expect(view.queryByTestId('issues-empty-settings')).toBeNull();
+    project('p1', 'widgets', 0);
+    await fireEvent.click(await view.findByTestId('issues-empty-settings'));
+    expect(requestedTrackerBoardsProject()).toBe('p1');
+    view.unmount();
+  });
+
+  it('waits for the sidebar before it opens the first project in its order', async () => {
+    const mocks = install({ choices: [choice('1'), choice('3', { project: 'p2' })] });
+    resetSidebarCatalogsForTest();
+    project('p1', 'widgets', 0, 1);
+    project('p2', 'gadgets', 1, 5);
+    const view = mount();
+    await waitFor(() => expect(mocks.choices).toHaveBeenCalled());
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(view.getByTestId('issues-empty')).toHaveTextContent('Listing boards…');
+    expect(mocks.subscribe.mock.calls).toEqual([]);
+    listCatalogTreesForTest();
+    await waitFor(() => expect(mocks.subscribe).toHaveBeenCalledWith('p2', 'c1', '3', [], true));
+    expect(mocks.subscribe).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+
+  it('offers no way to the connections to a window that may not turn one on', async () => {
+    await pairWithScopes(['threads:read', 'tracker:read']);
+    install({ choices: [choice('1', { connection_enabled: false })] });
+    const view = mount();
+    await view.findByTestId('issues-empty-off');
+    expect(view.queryByTestId('issues-empty-connections')).toBeNull();
+    view.unmount();
+    resetToLocalPage();
   });
 });

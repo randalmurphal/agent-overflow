@@ -30,17 +30,18 @@
   import { isPaneOnScreen } from '../../stores/paneLayout.svelte';
   import { openSettingsOverlay, openTrackerBoardsSettings } from '../../stores/settingsOverlay.svelte';
   import { openPaneFind, registerPaneFindProvider } from '../../stores/paneFind.svelte';
-  import { getProject } from '../../stores/projects.svelte';
+  import { getProject, getProjects } from '../../stores/projects.svelte';
   import { projectBackend } from '../../transport/entityIndex';
   import { sidebarProjectOrder } from '../sidebar/sidebarEntries';
+  import { catalogTreeListed } from '../../stores/sidebarCatalogs';
   import { scopeGrant } from '../../transport/scopes';
+  import { getTransportStatusFor } from '../../stores/transportStatus.svelte';
+  import { isTransportOutage } from '../../transport/wsClient';
   import { attachedBackendEntry, backendDisplayName } from '../../stores/attachedBackends.svelte';
   import { toolOpenedFromProject } from '../../stores/toolPanes.svelte';
   import {
-    choiceRef,
     createBoardSelection,
     hiddenCardFields,
-    sameBoard,
     saveOnlyMine,
     savedOnlyMine,
     setCardFieldShown,
@@ -67,7 +68,12 @@
   const openedFrom = toolOpenedFromProject('issues');
 
   const shown = $derived(isPaneOnScreen(paneId));
-  const selection = createBoardSelection({ openedFromProject: openedFrom, shown: () => shown, projectOrder: sidebarProjectOrder });
+  const selection = createBoardSelection({
+    openedFromProject: openedFrom,
+    shown: () => shown,
+    projectOrder: sidebarProjectOrder,
+    projectsListed: catalogTreeListed,
+  });
   onDestroy(() => selection.destroy());
 
   const choices = $derived(trackerBoardChoices());
@@ -75,14 +81,24 @@
   const board = $derived(selection.board);
   const attachment = $derived(selection.attachment);
   const pending = $derived(selection.choosing);
-  const boardChoice = $derived(choices.find((c) => sameBoard(choiceRef(c), board)) ?? null);
+  // The board's computer answered what its projects list.
+  const boardComputerAnswered = $derived(!!board && (computers.find((c) => c.backend === board.backend)?.state.rows ?? null) !== null);
+  // The board's computer cannot be reached now. The subscription holds
+  // nothing until it connects again (the entity store drops a value on its
+  // computer's every connection change).
+  const boardOffline = $derived(!!board && isTransportOutage(getTransportStatusFor(board.backend).status));
 
   const boardState = $derived(attachment?.current ?? null);
   const held = $derived(boardState?.held ?? null);
 
   // Search is the pane's find bar, filtering the board.
   let query = $state('');
-  const me = $derived(boardChoice?.choice.verified_account || null);
+  // The verified account is the connection's: any listing of it names it.
+  const me = $derived(
+    board
+      ? choices.find((c) => c.backend === board.backend && c.choice.connection === board.connection && c.choice.verified_account)?.choice.verified_account ?? null
+      : null,
+  );
   // This pane's own; the next pane opens with it.
   let onlyMine = $state(savedOnlyMine());
   function setOnlyMine(on: boolean): void {
@@ -152,9 +168,13 @@
     return { projectId, backend };
   }
   // No project lists a board: the project the pane was opened from, else
-  // the first in sidebar order.
+  // the first in sidebar order. It follows the projects there are; their
+  // order is read when that changes, so a thread's activity does not wake
+  // the pane.
+  const projectIds = $derived(getProjects().map((p) => p.project.id).join('\n'));
   const emptyTarget = $derived.by(() => {
     if (board || pending || !allAnswered || anyListed) return null;
+    void projectIds;
     const first = untrack(() => [...sidebarProjectOrder()].sort((x, y) => x[1] - y[1])[0]?.[0]);
     const projectId = (openedFrom && getProject(openedFrom) ? openedFrom : first) ?? null;
     return boardsSettingsFor(projectId, projectId ? projectBackend(projectId) : undefined);
@@ -265,8 +285,11 @@
       testId="issues-read-error"
     />
   {/if}
-  {#if onlyMine && boardChoice && !me}
-    <p class="border-b border-border-subtle px-3 py-1.5 text-xs text-fg-muted" data-testid="issues-only-mine-unknown">Only mine shows every card: this connection has not been verified, so the app does not know which account is yours.</p>
+  {#if board && boardOffline && !boardState?.ended}
+    <p class="border-b border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg-muted" role="status" data-testid="issues-board-offline">{computerName(board.backend)} is not connected. The board shows when it connects.</p>
+  {/if}
+  {#if onlyMine && boardComputerAnswered && !me}
+    <p class="border-b border-border-subtle px-3 py-1.5 text-xs text-fg-muted" data-testid="issues-only-mine-unknown">Only mine shows every card: the app does not know which account is yours on this board's connection.</p>
   {/if}
 
   <div class="flex min-h-0 flex-1 flex-col" bind:this={bodyEl} tabindex="-1">
@@ -288,7 +311,9 @@
             {:else if anyListed && offTarget !== null}
               {@const target = offTarget}
               <p data-testid="issues-empty-off">Every board listed here is on a connection that is turned off. Turn one on in Settings, then pick its board.</p>
-              <button type="button" class="text-accent hover:underline" data-testid="issues-empty-connections" onclick={() => openSettingsOverlay('tracker-connections', target)}>Open the tracker connections</button>
+              {#if scopeGrant('tracker:operate', target) === 'granted'}
+                <button type="button" class="text-accent hover:underline" data-testid="issues-empty-connections" onclick={() => openSettingsOverlay('tracker-connections', target)}>Open the tracker connections</button>
+              {/if}
             {/if}
           {/if}
         </div>
@@ -296,7 +321,7 @@
         <BoardScreen boardKey={attachment.key} boardRef={board} {held} paging={boardState!.paging} {filter} {hidden} {compact} {shown} />
       {:else if boardState && !boardState.ended}
         <p class="px-4 py-6 text-sm text-fg-muted" data-testid="issues-not-read">This computer has not read the board yet. It appears here once it has.</p>
-      {:else if !boardState && !attachment?.error}
+      {:else if !boardState && !attachment?.error && !boardOffline}
         <p class="px-4 py-6 text-sm text-fg-muted" data-testid="issues-opening">Opening the board…</p>
       {/if}
     </RenderBoundary>
