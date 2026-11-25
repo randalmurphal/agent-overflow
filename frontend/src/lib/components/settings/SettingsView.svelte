@@ -266,7 +266,7 @@
               {needsComputer}
               hasDeviceControls={activeSection === 'performance' || activeSection === 'notifications' || activeSection === 'voice'}
               alreadyRefreshed={refreshedComputers.has(computer)}
-              onRefreshed={() => refreshedComputers.add(computer)}
+              onRefreshed={(refreshed) => refreshedComputers.add(refreshed)}
             />
           {/key}
         {:else if pageLoadError}

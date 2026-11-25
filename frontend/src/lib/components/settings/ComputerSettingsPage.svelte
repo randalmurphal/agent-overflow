@@ -18,7 +18,7 @@
     needsComputer: boolean;
     hasDeviceControls?: boolean;
     alreadyRefreshed?: boolean;
-    onRefreshed?: () => void;
+    onRefreshed?: (backend: BackendKey) => void;
   } = $props();
   const computer = untrack(() => backend);
   provideSettingsComputer(computer);
@@ -29,7 +29,7 @@
     const ok = await loadSettings(computer);
     failed = !ok;
     loading = false;
-    if (ok) onRefreshed?.();
+    if (ok) onRefreshed?.(computer);
   }
   onMount(() => {
     if (needsComputer && (!alreadyRefreshed || !hasComputerSettings(computer))) void load();
