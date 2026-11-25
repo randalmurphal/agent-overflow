@@ -1,18 +1,41 @@
-// How a ticket field is changed in place (docs/specs/issues.md, "Ticket"):
-// the one rule for which fields take an editor, what a pick or a typed
-// value sends, and how a field of several values takes a pick. The ticket
-// saves an edit at once (TicketScreen.svelte); a move's form collects
-// them for the move (TicketMoveForm.svelte). Each passes its own target.
+// How a ticket field is changed in place (docs/specs/issues.md, "Ticket"
+// and "Board"): the one rule for which fields take an editor, what a pick
+// or a typed value sends, and how a field of several values takes a pick.
+// The ticket and a Board card save an edit at once (`cardEditor`, the
+// card's four fields as both make them); a move's form collects them for
+// the move (TicketMoveForm.svelte). Each passes its own target.
 
 import type {
+  CardView,
   ChoiceListView,
   FieldEditInput,
   FieldValueView,
   FieldView,
 } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import { fieldText } from '../../stores/trackerTicketModel';
+import {
+  assignableUsers,
+  editTicketFields,
+  fieldChoices,
+  fieldTarget,
+  setTicketPoints,
+  type TicketWriteContext,
+} from '../../stores/trackerTicketWrites.svelte';
 import type { FieldEditor } from './TicketField.svelte';
 import type { PickItem } from './TicketPicker.svelte';
+
+/** The fields a Board card changes from its marks. */
+export type CardEditField = 'type' | 'priority' | 'points' | 'assignee';
+
+// The names the card's fields go by, for a refusal naming them.
+const CARD_FIELD_NAMES: Readonly<Record<string, string>> = {
+  status: 'Status', assignee: 'Assignee', priority: 'Priority', type: 'Type', points: 'Points', description: 'Description', title: 'Title',
+};
+
+/** A card field's name as a person reads it; the ID for another field. */
+export function cardFieldName(id: string): string {
+  return CARD_FIELD_NAMES[id] ?? id;
+}
 
 /** Where an editor's values come from and where its edit goes. */
 export interface EditorTarget {
@@ -86,4 +109,67 @@ export function fieldEditor(f: FieldView, target: EditorTarget): FieldEditor | n
 /** The target of a field the ticket holds, whose edit is saved at once. */
 export function ticketTarget(value: FieldValueView, choices: EditorTarget['choices'], save: (edit: FieldEditInput) => void): EditorTarget {
   return { picked: pickedOf(value), text: fieldText(value), choices, save: (edit) => save(edit) };
+}
+
+/** The estimate a ticket or a card shows, on the board it is set on. */
+export interface PointsRow {
+  readonly board: string;
+  /** points, time (seconds) or none. */
+  readonly unit: string;
+  readonly estimate: number | null | undefined;
+}
+
+/** The label of an estimate in `unit`. */
+export function pointsLabel(unit: string): string {
+  return unit === 'time' ? 'Estimate (hours)' : 'Points';
+}
+
+/** An option value holding `c`, or the empty value. */
+function choiceValue(c: { id: string; name?: string } | null | undefined): FieldValueView {
+  return (c ? { kind: 'option', choices: [c] } : {}) as FieldValueView;
+}
+
+/** A field the ticket holds, whose edit is saved at once on `field`'s target. */
+function savedTarget(ctx: TicketWriteContext, field: string, value: FieldValueView): EditorTarget {
+  return ticketTarget(value, (text) => fieldChoices(ctx, field, text), (edit) => {
+    void editTicketFields(ctx, fieldTarget(field), [edit]);
+  });
+}
+
+/**
+ * The editor of one of a card's fields, as the ticket screen and a Board
+ * card make it, each edit saved at once: the assignee from the people who
+ * may be assigned (Unassigned clears it), the priority and the type from
+ * the values the ticket allows, and the estimate typed, in hours on a
+ * board that estimates time. None for the type on a tracker without
+ * types (`typed`), or for the estimate on a board without one.
+ */
+export function cardEditor(ctx: TicketWriteContext, card: CardView, field: CardEditField, points: PointsRow | null, typed: boolean): FieldEditor | null {
+  switch (field) {
+    case 'assignee':
+      return pickEditor('assignee', 'user', {
+        ...savedTarget(ctx, 'assignee', choiceValue(card.assignee)),
+        choices: async (text) => {
+          const got = await assignableUsers(ctx, text);
+          return { choices: (got.users ?? []).map((u) => ({ id: u.id, name: u.name })), more: got.more };
+        },
+      }, { clear: 'Unassigned' });
+    case 'priority':
+      return pickEditor('priority', 'option', savedTarget(ctx, 'priority', choiceValue(card.priority)));
+    case 'type':
+      return typed ? pickEditor('type', 'option', savedTarget(ctx, 'type', choiceValue(card.type))) : null;
+    case 'points': {
+      if (!points || points.unit === 'none' || points.unit === '') return null;
+      const { board, unit, estimate } = points;
+      return {
+        kind: 'type',
+        input: 'number',
+        text: estimate == null ? '' : String(unit === 'time' ? estimate / 3600 : estimate),
+        onSave: (text: string) => {
+          const n = text === '' ? null : Number(text);
+          void setTicketPoints(ctx, board, n === null ? null : unit === 'time' ? Math.round(n * 3600) : n);
+        },
+      };
+    }
+  }
 }

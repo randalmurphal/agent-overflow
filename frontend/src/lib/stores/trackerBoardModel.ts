@@ -15,6 +15,7 @@ import type {
   BoardView,
   CardView,
   ColumnView,
+  MoveView,
   RowView,
   Section,
   SectionCursor,
@@ -54,6 +55,9 @@ export interface BoardShape {
   readonly unit: string;
   readonly columns: readonly ColumnView[];
   readonly sprints: readonly SprintView[];
+  /** A card's address less its key; empty when cards carry their own
+   * (`cardURL`). */
+  readonly issueURL: string;
 }
 
 /** What the client holds of a board: its shape, lifetime and revision,
@@ -97,6 +101,7 @@ export function heldFromView(view: BoardView, intern: (row: RowView) => RowView)
       unit: view.estimate.unit,
       columns: view.columns,
       sprints: view.sprints,
+      issueURL: view.issue_url ?? '',
     },
     lifetime: view.lifetime,
     revision: view.revision,
@@ -405,4 +410,66 @@ export function createRowInterner(): (row: RowView) => RowView {
     if (card.labels) card.labels = card.labels.map((l) => share('l', l) ?? l);
     return row;
   };
+}
+
+/** A card's address in the tracker: its own, else its board's with its
+ * key; empty when neither is known. The one rule every surface asks. */
+export function cardURL(shape: BoardShape, card: CardView): string {
+  if (card.url) return card.url;
+  return shape.issueURL ? shape.issueURL + encodeURIComponent(card.key) : '';
+}
+
+/** The moves of a ticket that reach each column, by column index: a move
+ * reaches a column whose statuses hold the status it leads to. A column
+ * no move reaches is absent. */
+export function columnsReached(columns: readonly ColumnView[], moves: readonly MoveView[]): Map<number, MoveView[]> {
+  const reached = new Map<number, MoveView[]>();
+  columns.forEach((col, i) => {
+    const into = moves.filter((m) => col.statuses.some((st) => st.id === m.to.id));
+    if (into.length > 0) reached.set(i, into);
+  });
+  return reached;
+}
+
+/** A card drawn somewhere else while its write is out: in `column`,
+ * before the card `before` names (null: at the end), or where its order
+ * places it when `before` is undefined. */
+export interface WaitingCard {
+  readonly row: RowView;
+  readonly column: number;
+  readonly before?: string | null;
+}
+
+/**
+ * The shown columns with each waiting card drawn where it waits: taken
+ * out of the column it shows in and put in its own, before the card
+ * `before` names or where its order places it. The rows only: the
+ * headers count a moved card by `columnWith`. Nothing the board holds
+ * changes, and a column no waiting card touches keeps its object.
+ */
+export function withWaiting(shown: readonly ShownColumn[], waiting: Iterable<WaitingCard>): readonly ShownColumn[] {
+  let out: ShownColumn[] | null = null;
+  for (const w of waiting) {
+    if (w.column < 0 || w.column >= shown.length) continue;
+    out ??= shown.slice();
+    const id = w.row.card.id;
+    for (let i = 0; i < out.length; i += 1) {
+      if (out[i].rows.some((r) => r.card.id === id)) out[i] = { rows: out[i].rows.filter((r) => r.card.id !== id), counted: out[i].counted };
+    }
+    const rows = out[w.column].rows.slice();
+    const at = w.before === undefined ? insertionIndex(rows, w.row) : w.before === null ? -1 : rows.findIndex((r) => r.card.id === w.before);
+    rows.splice(at < 0 ? rows.length : at, 0, w.row);
+    out[w.column] = { rows, counted: out[w.column].counted };
+  }
+  return out ?? shown;
+}
+
+/** A column and its shown rows as their header counts them with `row`
+ * added (1) or taken out (-1): what the column becomes while a card is
+ * carried over it or waits in it. A row of a status the project leaves
+ * out of counts changes nothing. */
+export function columnWith(held: HeldBoard, col: ScreenColumn, shown: ShownColumn, row: RowView, sign: 1 | -1): { col: ScreenColumn; shown: ShownColumn } {
+  if (!counts(held, row)) return { col, shown };
+  const total = col.total && { rows: col.total.rows + sign, estimate: col.total.estimate + sign * (row.estimate ?? 0) };
+  return { col: { ...col, total, counted: col.counted + sign }, shown: { rows: shown.rows, counted: shown.counted + sign } };
 }

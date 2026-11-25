@@ -295,7 +295,17 @@ async function write(
   consent.sending(k);
   writes.set(k, { ref: t.ref, target, pending: true, outcome: null, saveAnyway: null });
   const outcome = await sendWrite(t.ref.backend, computerName(t.ref.backend), TICKET_SUBJECT, () => send(acceptLoss));
-  if (outcome.kind === 'applied') await Promise.all([trackerTicketSettled(t.key, comment), trackerBoardsSettled(t.ref.backend, t.ref.connection)]);
+  if (outcome.kind === 'applied') {
+    // Both asked now; awaited one by one, so the outcome changes in the
+    // same update as the view that lands last.
+    const boards = trackerBoardsSettled(t.ref.backend, t.ref.connection);
+    const ticket = trackerTicketSettled(t.key, comment);
+    // A comment's page read may fail while the boards are awaited: the
+    // await below throws it.
+    ticket.catch(() => undefined);
+    await boards;
+    await ticket;
+  }
   // The ticket changed since it was read: read it again, so the person
   // sees what the tracker holds before trying again.
   if (outcome.kind === 'refused' && outcome.refusal.reason === 'stale') void refreshTrackerTicket(t.key);

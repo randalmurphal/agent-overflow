@@ -58,7 +58,18 @@
     };
   });
 
+  // A menu whose rows change while open (a Show more, a page of it) is
+  // clamped again at its new size.
+  let resized = $state(0);
   $effect(() => {
+    if (!menuEl || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => { resized += 1; });
+    observer.observe(menuEl);
+    return () => observer.disconnect();
+  });
+
+  $effect(() => {
+    void resized;
     const rect = menuEl?.getBoundingClientRect();
     // The visual viewport, not the layout one: with the soft keyboard up a
     // long-press menu near the bottom would otherwise be clamped under it.

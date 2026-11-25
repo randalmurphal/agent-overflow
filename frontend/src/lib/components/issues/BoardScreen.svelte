@@ -1,3 +1,12 @@
+<script lang="ts" module>
+  // The carry loads on the first press of a card, once per page.
+  let carryModule: Promise<typeof import('./boardCarry')> | null = null;
+  function loadCarry(): Promise<typeof import('./boardCarry')> {
+    carryModule ??= import('./boardCarry');
+    return carryModule;
+  }
+</script>
+
 <script lang="ts">
   // The Board screen: the board's columns side by side, the row scrolling
   // sideways when the pane is narrower than the columns. Under compact the
@@ -6,23 +15,50 @@
   // app runs; the first in-progress column until one is picked). Only mine
   // and Search filter the held cards; while either is on, each column not
   // held whole is read whole from this computer's copy.
-  import { untrack } from 'svelte';
+  //
+  // Changing a card (docs/specs/issues.md, "Board"). A card's marks open
+  // its field editors (BoardCard); its menu is BoardCardMenu. A mouse or
+  // pen carries a card (boardCarry.ts): to another column it moves the
+  // ticket by the move that reaches that column, read when the card first
+  // leaves its own; within its own column it ranks it between the cards
+  // shown either side of the drop. A dropped card waits where it was
+  // dropped while its write is out (`stores/trackerBoardCarry.svelte.ts`),
+  // and the headers count it there. While carried, the column under it
+  // says whether it can take it and the two headers show what they would
+  // count; nothing else renders per pointer move.
+  import { tick, untrack } from 'svelte';
+  import BoardCardMenu from './BoardCardMenu.svelte';
   import BoardColumn from './BoardColumn.svelte';
   import StatusMark from './StatusMark.svelte';
+  import ContextMenu from '../primitives/ContextMenu.svelte';
+  import MenuItem from '../primitives/MenuItem.svelte';
   import { columnCount } from './boardFormat';
+  import type { Carry, CarryColumn, CarryHost } from './boardCarry';
+  import type { CardEditField } from './ticketEditors';
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
   import { compactColumn, setCompactColumn, type CardField } from '../../stores/issuesPane.svelte';
   import { loadMoreOfSection, setTrackerBoardFiltered, type TrackerBoardRef } from '../../stores/trackerBoard.svelte';
-  import type { RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+  import { cardMovePending, cardWriteContext, moveCard, rankCard, waitingCards } from '../../stores/trackerBoardCarry.svelte';
+  import { moveTicketToSprint, ticketMoves, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
+  import type { MoveView, RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import {
+    cardURL,
+    columnsReached,
+    columnWith,
     filtering,
     screenColumns,
     sectionKey,
     shownColumn,
+    withWaiting,
     type CardFilter,
     type HeldBoard,
     type ScreenColumn,
+    type ShownColumn,
   } from '../../stores/trackerBoardModel';
+  import { copyToClipboard } from '../../utils/clipboard';
+  import { errString } from '../../utils/errors';
+  import { handleExternalURL } from '../../utils/externalLinks';
 
   interface Props {
     boardKey: string;
@@ -39,11 +75,14 @@
     shown: boolean;
     /** The issue whose ticket is open, null for none. */
     openIssue: string | null;
+    /** The tracker has issue types (not Linear). */
+    typed: boolean;
     onOpenCard: (row: RowView) => void;
-    onCardMenu: (row: RowView, event: MouseEvent) => void;
+    /** A move whose screen takes fields: the ticket opens with its form. */
+    onMoveWithFields: (row: RowView, move: MoveView) => void;
   }
 
-  let { boardKey, boardRef, held, paging, sectionErrors, filter, hidden, compact, shown, openIssue, onOpenCard, onCardMenu }: Props = $props();
+  let { boardKey, boardRef, held, paging, sectionErrors, filter, hidden, compact, shown, openIssue, typed, onOpenCard, onMoveWithFields }: Props = $props();
 
   // The last columns, so a rebuild keeps the rows arrays nothing changed.
   let previous: ScreenColumn[] = [];
@@ -56,8 +95,64 @@
   const visible = $derived(columns.map((col) => shownColumn(held, col, filter)));
   const now = $derived(getMinuteNow());
   const unit = $derived(held.shape.unit);
+
+  // The cards waiting where they were dropped, drawn there.
+  const waiting = $derived(waitingCards(boardKey));
+  const drawn = $derived(withWaiting(visible, waiting));
+
+  // A carry under way: the card, the column it came from, the column under
+  // it and the drop slot in its own column, and what the moves read said.
+  type MovesRead = { readonly state: 'reading' } | { readonly state: 'read'; readonly reached: Map<number, MoveView[]> } | { readonly state: 'failed'; readonly error: unknown };
+  interface Carrying {
+    readonly row: RowView;
+    readonly ctx: TicketWriteContext;
+    readonly from: number;
+    readonly over: number | null;
+    readonly slot: number | null;
+    readonly moves: MovesRead | null;
+  }
+  let carrying = $state.raw<Carrying | null>(null);
+  const carriedIssue = $derived(carrying?.row.card.id ?? null);
+
+  /** Whether a carried card over `column`, another than its own, may be
+   * dropped there: unknown (null) until the moves are read. */
+  function reaches(c: Carrying, column: number): boolean | null {
+    if (!c.moves || c.moves.state === 'reading') return null;
+    return c.moves.state === 'read' && c.moves.reached.has(column);
+  }
+
+  // The cards counted in a column other than the one holding them: each
+  // waiting card, and a carried card over a column that may take it.
+  const moved = $derived.by(() => {
+    const out: { row: RowView; from: number; to: number }[] = [];
+    for (const w of waiting) {
+      const from = columns.findIndex((col) => col.rows.some((r) => r.card.id === w.row.card.id));
+      if (from !== w.column) out.push({ row: w.row, from, to: w.column });
+    }
+    const c = carrying;
+    if (c && c.over !== null && c.over !== c.from && reaches(c, c.over) !== false) out.push({ row: c.row, from: c.from, to: c.over });
+    return out;
+  });
+  const heads = $derived(columns.map((col, i) => {
+    let head: { col: ScreenColumn; shown: ShownColumn } = { col, shown: drawn[i] };
+    for (const m of moved) {
+      if (m.from === i) head = columnWith(held, head.col, head.shown, m.row, -1);
+      if (m.to === i) head = columnWith(held, head.col, head.shown, m.row, 1);
+    }
+    return head;
+  }));
   // One header count per column, for the strip and the column's header.
-  const counts = $derived(columns.map((col, i) => columnCount(col, visible[i], filtered, unit)));
+  const counts = $derived(heads.map((h) => columnCount(h.col, h.shown, filtered, unit)));
+
+  /** What column `i` says while the carried card is over it. */
+  function dropNote(i: number): string | null {
+    const c = carrying;
+    if (!c || c.over !== i || i === c.from) return null;
+    const key = c.row.card.key;
+    if (!c.moves || c.moves.state === 'reading') return `Checking whether ${key} can move here…`;
+    if (c.moves.state === 'failed') return `Could not read where ${key} can move: ${errString(c.moves.error)}`;
+    return c.moves.reached.has(i) ? null : `No move of ${key} reaches ${columns[i].name}`;
+  }
   const noSprint = $derived(held.shape.plansSprints && !held.shape.sprints.some((sp) => sp.state === 'active'));
 
   // A filter reads the rest of every column while it is on.
@@ -87,6 +182,237 @@
   function failedOf(col: ScreenColumn): boolean {
     return readingFrom(col).some((k) => sectionErrors.has(k));
   }
+
+  // The card whose field editor is open, and the field.
+  let editing = $state.raw<{ readonly issue: string; readonly field: CardEditField } | null>(null);
+  function onEditCard(row: RowView, field: CardEditField | null): void {
+    editing = field ? { issue: row.card.id, field } : null;
+  }
+
+  // The card menu, at the pointer; under compact the status mark opens it
+  // at Move to….
+  let menu = $state.raw<{ x: number; y: number; row: RowView; from: number; atMove: boolean } | null>(null);
+  function columnShowing(issue: string): number {
+    return drawn.findIndex((col) => col.rows.some((r) => r.card.id === issue));
+  }
+  function onCardMenu(row: RowView, event: MouseEvent): void {
+    menu = { x: event.clientX, y: event.clientY, row, from: columnShowing(row.card.id), atMove: false };
+  }
+  function onMoveCard(row: RowView, anchor: HTMLElement): void {
+    const r = anchor.getBoundingClientRect();
+    menu = { x: r.left, y: r.bottom + 4, row, from: columnShowing(row.card.id), atMove: true };
+  }
+
+  async function copy(text: string, what: string): Promise<void> {
+    if (!(await copyToClipboard(text))) addToast('error', `Could not copy the ${what}.`);
+  }
+
+  /** Moves the card by `move` into `column`: with its form when the move
+   * takes fields, else at once, the card waiting there. */
+  function moveTo(row: RowView, column: number, move: MoveView): void {
+    if (move.fields?.length) {
+      onMoveWithFields(row, move);
+      return;
+    }
+    void moveCard(boardKey, cardWriteContext(boardRef, row), row, column, move);
+  }
+
+  // Several moves reach the column a card was dropped on: which.
+  let dropChoice = $state.raw<{ x: number; y: number; row: RowView; column: number; moves: readonly MoveView[] } | null>(null);
+
+  // A press on a card, until it moves far enough to pick the card up or
+  // ends as the click that opens the ticket.
+  interface Press {
+    readonly id: number;
+    readonly el: HTMLElement;
+    readonly row: RowView;
+    readonly from: number;
+    readonly level: boolean;
+    readonly sx: number;
+    readonly sy: number;
+    x: number;
+    y: number;
+    carry: Carry | null;
+    starting: boolean;
+  }
+  let press: Press | null = null;
+  let columnsEl: HTMLElement | undefined = $state();
+  const columnRefs: ({ carryColumn(): CarryColumn } | undefined)[] = [];
+
+  function onPointerDown(event: PointerEvent): void {
+    if (compact || press || event.button !== 0 || (event.pointerType !== 'mouse' && event.pointerType !== 'pen')) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target || target.closest('[data-card-mark]')) return;
+    const el = target.closest<HTMLElement>('[data-testid="issues-card"]');
+    const issue = el?.dataset.issue;
+    if (!el || !issue) return;
+    const from = columnShowing(issue);
+    const row = from >= 0 ? drawn[from].rows.find((r) => r.card.id === issue) : undefined;
+    if (!row || cardMovePending(cardWriteContext(boardRef, row))) return;
+    void loadCarry().catch(() => {});
+    press = { id: event.pointerId, el, row, from, level: target.closest('[data-grab]') !== null, sx: event.clientX, sy: event.clientY, x: event.clientX, y: event.clientY, carry: null, starting: false };
+    window.addEventListener('pointermove', onPressMove);
+    window.addEventListener('pointerup', onPressUp);
+    window.addEventListener('pointercancel', onPressCancel);
+  }
+
+  function endPress(): void {
+    window.removeEventListener('pointermove', onPressMove);
+    window.removeEventListener('pointerup', onPressUp);
+    window.removeEventListener('pointercancel', onPressCancel);
+    press = null;
+  }
+
+  function onPressMove(event: PointerEvent): void {
+    const p = press;
+    if (!p || event.pointerId !== p.id) return;
+    p.x = event.clientX;
+    p.y = event.clientY;
+    if (p.carry) {
+      p.carry.move(p.x, p.y);
+      return;
+    }
+    if (p.starting || Math.hypot(p.x - p.sx, p.y - p.sy) < PICK_UP_PX) return;
+    p.starting = true;
+    loadCarry().then(
+      (mod) => {
+        if (press !== p) return;
+        pickUp(mod.startCarry, p);
+      },
+      (err: unknown) => {
+        if (press === p) endPress();
+        addErrorToast('Could not carry the card: the board\'s carry did not load. Reload the window to try again.', err);
+      },
+    );
+  }
+
+  // How far a press moves before it picks the card up.
+  const PICK_UP_PX = 5;
+
+  function pickUp(start: typeof import('./boardCarry').startCarry, p: Press): void {
+    const scroller = columnsEl;
+    const geometry = columnRefs.map((ref) => ref?.carryColumn());
+    if (!scroller || geometry.some((g) => !g)) {
+      endPress();
+      return;
+    }
+    editing = null;
+    menu = null;
+    movesRead = null;
+    const ctx = cardWriteContext(boardRef, p.row);
+    carrying = { row: p.row, ctx, from: p.from, over: p.from, slot: null, moves: null };
+    const host: CarryHost = {
+      columns: geometry as CarryColumn[],
+      scroller,
+      from: p.from,
+      over(column) {
+        const c = carrying;
+        if (!c) return;
+        carrying = { ...c, over: column };
+        if (column !== null && column !== c.from) readMoves();
+      },
+      slot(index) {
+        const c = carrying;
+        if (c && c.slot !== index) carrying = { ...c, slot: index };
+      },
+      drop: (column, slot, at) => drop(p.row, p.from, column, slot, at),
+      end() {
+        carrying = null;
+      },
+    };
+    p.carry = start(p.el, p.sx, p.sy, p.x, p.y, p.level, host);
+  }
+
+  // The moves of the carried ticket, read once per carry when the card
+  // first leaves its own column.
+  let movesRead: Promise<MoveView[]> | null = null;
+  function readMoves(): Promise<MoveView[]> {
+    const c = carrying!;
+    if (movesRead) return movesRead;
+    const read = ticketMoves(c.ctx);
+    movesRead = read;
+    carrying = { ...c, moves: { state: 'reading' } };
+    read.then(
+      (moves) => {
+        if (movesRead === read && carrying) carrying = { ...carrying, moves: { state: 'read', reached: columnsReached(held.shape.columns, moves) } };
+      },
+      (error: unknown) => {
+        if (movesRead === read && carrying) carrying = { ...carrying, moves: { state: 'failed', error } };
+      },
+    );
+    return read;
+  }
+
+  /** Where the card shows now, for the carried copy to glide to; null
+   * when it is not mounted. */
+  async function shownAt(issue: string): Promise<DOMRect | null> {
+    await tick();
+    const el = columnsEl?.querySelector<HTMLElement>(`[data-testid="issues-card"][data-issue="${CSS.escape(issue)}"]`);
+    return el?.getBoundingClientRect() ?? null;
+  }
+
+  async function drop(row: RowView, from: number, column: number | null, slot: number | null, at: { x: number; y: number }): Promise<DOMRect | null> {
+    const ctx = cardWriteContext(boardRef, row);
+    if (column === null) return shownAt(row.card.id);
+    if (column === from) {
+      if (slot === null) return shownAt(row.card.id);
+      // The neighbors among the cards shown, the carried one left out.
+      const rows = drawn[from].rows;
+      const own = rows.findIndex((r) => r.card.id === row.card.id);
+      const k = own >= 0 && own < slot ? slot - 1 : slot;
+      if (k === own) return shownAt(row.card.id);
+      const rest = rows.filter((r) => r.card.id !== row.card.id);
+      void rankCard(boardKey, ctx, boardRef.board, row, from, rest[k - 1]?.card.id ?? '', rest[k]?.card.id ?? '');
+      return shownAt(row.card.id);
+    }
+    const known = carrying?.moves?.state === 'read' || carrying?.moves?.state === 'failed';
+    let moves: MoveView[];
+    try {
+      moves = await (movesRead ?? readMoves());
+    } catch (err) {
+      if (!known) addErrorToast(`Could not read where ${row.card.key} can move.`, err);
+      return shownAt(row.card.id);
+    }
+    const into = columnsReached(held.shape.columns, moves).get(column) ?? [];
+    if (into.length === 0) {
+      if (!known) addToast('info', `No move of ${row.card.key} reaches ${columns[column].name}.`);
+      return shownAt(row.card.id);
+    }
+    if (into.length > 1) {
+      dropChoice = { x: at.x, y: at.y, row, column, moves: into };
+      return shownAt(row.card.id);
+    }
+    moveTo(row, column, into[0]);
+    return shownAt(row.card.id);
+  }
+
+  function onPressUp(event: PointerEvent): void {
+    const p = press;
+    if (!p || event.pointerId !== p.id) return;
+    endPress();
+    if (!p.carry) return;
+    // The click a carry's release raises opens nothing.
+    const swallow = (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    window.addEventListener('click', swallow, { capture: true, once: true });
+    setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 0);
+    p.carry.up();
+  }
+
+  function onPressCancel(event: PointerEvent): void {
+    const p = press;
+    if (!p || event.pointerId !== p.id) return;
+    endPress();
+    p.carry?.cancel();
+  }
+
+  $effect(() => () => {
+    const p = press;
+    endPress();
+    p?.carry?.cancel();
+  });
 
   const picked = $derived.by(() => {
     const chosen = compactColumn(boardRef);
@@ -123,7 +449,7 @@
       <div class="flex min-h-0 flex-1 px-2 pt-2">
         <BoardColumn
           column={columns[picked]}
-          rows={visible[picked].rows}
+          rows={drawn[picked].rows}
           count={counts[picked]}
           {filtered}
           {unit}
@@ -135,17 +461,28 @@
           {shown}
           wide
           {openIssue}
+          {boardRef}
+          {typed}
+          {compact}
+          carriedIssue={null}
+          {editing}
+          dropNote={null}
+          slot={null}
           {onOpenCard}
           {onCardMenu}
+          {onEditCard}
+          {onMoveCard}
         />
       </div>
     {/key}
   {:else}
-    <div class="flex min-h-0 flex-1 gap-3 overflow-x-auto px-3 pt-3" data-testid="issues-columns">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div bind:this={columnsEl} class="flex min-h-0 flex-1 gap-3 overflow-x-auto px-3 pt-3" data-testid="issues-columns" onpointerdown={onPointerDown}>
       {#each columns as col, i (i)}
         <BoardColumn
+          bind:this={columnRefs[i]}
           column={col}
-          rows={visible[i].rows}
+          rows={drawn[i].rows}
           count={counts[i]}
           {filtered}
           {unit}
@@ -156,10 +493,59 @@
           onNearEnd={moreOf(col)}
           {shown}
           {openIssue}
+          {boardRef}
+          {typed}
+          {compact}
+          {carriedIssue}
+          {editing}
+          dropNote={dropNote(i)}
+          slot={carrying?.from === i ? carrying.slot : null}
           {onOpenCard}
           {onCardMenu}
+          {onEditCard}
+          {onMoveCard}
         />
       {/each}
     </div>
   {/if}
 </div>
+
+{#if menu}
+  {@const open = menu}
+  {@const ctx = cardWriteContext(boardRef, open.row)}
+  {#key open}
+    <BoardCardMenu
+      x={open.x}
+      y={open.y}
+      row={open.row}
+      {ctx}
+      shape={held.shape}
+      from={open.from}
+      {typed}
+      url={cardURL(held.shape, open.row.card)}
+      moving={cardMovePending(ctx)}
+      atMove={open.atMove}
+      onOpen={() => onOpenCard(open.row)}
+      onOpenURL={() => { void handleExternalURL(cardURL(held.shape, open.row.card)); }}
+      onCopy={(text, what) => { void copy(text, what); }}
+      onEdit={(field) => onEditCard(open.row, field)}
+      onMove={(column, move) => moveTo(open.row, column, move)}
+      onSprint={(sprint) => { void moveTicketToSprint(ctx, boardRef.board, sprint); }}
+      onDismiss={() => { menu = null; }}
+    />
+  {/key}
+{/if}
+
+{#if dropChoice}
+  {@const choice = dropChoice}
+  <ContextMenu x={choice.x} y={choice.y} ariaLabel="Move {choice.row.card.key} by" onDismiss={() => { dropChoice = null; }}>
+    {#each choice.moves as move (move.id)}
+      <MenuItem
+        label={move.name}
+        description={move.fields?.length ? 'Asks for fields' : undefined}
+        testId="issues-card-drop-move"
+        onSelect={() => { dropChoice = null; moveTo(choice.row, choice.column, move); }}
+      />
+    {/each}
+  </ContextMenu>
+{/if}
