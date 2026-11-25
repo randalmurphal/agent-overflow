@@ -52,7 +52,6 @@
     FieldEditInput,
     FieldValueView,
     FieldView,
-    MoveView,
   } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import { captureError, type CapturedError } from '../../stores/errorReports.svelte';
   import {
@@ -69,14 +68,16 @@
     refreshTrackerTicket,
     type TrackerTicketAttachment,
   } from '../../stores/trackerTicket.svelte';
-  import { fieldText, isFilled, linkGroups, moreFields, sectionFields, ticketRow } from '../../stores/trackerTicketModel';
+  import { fieldText, isFilled, linkGroups, moreFields, sectionFields, shownText, ticketRow } from '../../stores/trackerTicketModel';
   import {
     assignableUsers,
     editTicketFields,
     fieldChoices,
     fieldTarget,
     moveTicket,
+    openTicketMove,
     setTicketPoints,
+    ticketMoveDraft,
     ticketWrite,
     type TicketWriteContext,
   } from '../../stores/trackerTicketWrites.svelte';
@@ -149,8 +150,9 @@
   }
 
   // The status: the moves the view holds, no tracker call. A move whose
-  // screen takes fields opens their form first.
-  let moveForm = $state<MoveView | null>(null);
+  // screen takes fields opens their form first, each long field starting
+  // from the text the ticket shows for it.
+  const moveForm = $derived(ticketMoveDraft(ctx.key));
   const statusEditor: FieldEditor | null = $derived(detail ? {
     kind: 'pick',
     checked: new Set<string>(),
@@ -161,8 +163,12 @@
     onPick: (item: PickItem | null) => {
       const move = item && detail.moves.find((m) => m.id === item.id);
       if (!move) return;
-      if (move.fields?.length) moveForm = move;
-      else void moveTicket(ctx, move.id);
+      if (!move.fields?.length) {
+        void moveTicket(ctx, move.id);
+        return;
+      }
+      const long = move.fields.filter((f) => f.kind === 'rich_text' && f.editable);
+      openTicketMove(ctx.key, move, new Map(long.map((f) => [f.id, shownText(detail, f.id)])));
     },
   } : null);
 
@@ -366,9 +372,7 @@
 
 {#snippet content()}
   {#if moveForm && detail}
-    {#key moveForm}
-      <TicketMoveForm {ctx} move={moveForm} fields={detail.fields} {fieldName} onOpenTracker={() => { void openInTracker(); }} onClose={() => { moveForm = null; }} />
-    {/key}
+    <TicketMoveForm {ctx} form={moveForm} fields={detail.fields} {fieldName} onOpenTracker={() => { void openInTracker(); }} />
   {/if}
   {#if narrow}
     <div class="flex flex-col gap-0.5 border-b border-border-subtle pb-2" data-testid="ticket-narrow-row">
@@ -385,7 +389,7 @@
       bind:this={descriptionText}
       field="description"
       title="Description"
-      markdown={detail.description}
+      markdown={shownText(detail, 'description')}
       editable={true}
       open={null}
       onSave={saveText('description')}
@@ -411,7 +415,7 @@
             <TicketText
               field={f.id}
               title={f.name}
-              markdown={fieldText(f.value)}
+              markdown={shownText(detail, f.id)}
               editable={f.editable ?? false}
               open={ticketSectionOpen(id, true)}
               onFold={(open) => setTicketSectionOpen(id, open)}

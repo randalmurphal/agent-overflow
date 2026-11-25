@@ -80,19 +80,19 @@ var mirrorHistoryDueSQL = func() string {
 	}
 	selects := make([]string, len(arms)+1)
 	selects[0] = `SELECT * FROM (SELECT ` + columns + ` FROM json_each(?3) f CROSS JOIN tracker_cache_issues i
-	  WHERE i.root_id = ?1 AND i.issue_id = f.value AND (` + strings.Join(byAny, " OR ") + `) AND ` + kept + ` LIMIT ` + limit + `)`
+	  WHERE i.root_id = CAST(?1 AS INTEGER) AND i.issue_id = f.value AND (` + strings.Join(byAny, " OR ") + `) AND ` + kept + ` LIMIT ` + limit + `)`
 	for k, arm := range arms {
 		where := arm.where
 		if k == len(arms)-1 {
 			where += ` AND NOT (` + arms[0].where + `) AND NOT (` + arms[1].where + `)`
 		}
 		selects[k+1] = `SELECT * FROM (SELECT ` + columns + ` FROM tracker_cache_issues i
-		  WHERE i.root_id = ?1 AND ` + where + ` AND i.issue_id NOT IN (SELECT value FROM json_each(?3)) AND ` + kept + `
+		  WHERE i.root_id = CAST(?1 AS INTEGER) AND ` + where + ` AND i.issue_id NOT IN (SELECT value FROM json_each(?3)) AND ` + kept + `
 		  ORDER BY ` + arm.order + ` LIMIT ` + limit + `)`
 	}
 	return `SELECT d.issue_id,
 	  (SELECT json_group_array(b.board_id) FROM tracker_cache_board_issues b
-	    WHERE b.root_id = ?1 AND b.issue_id = d.issue_id AND ` + mirrorBoardShown("b.root_id", "b.board_id") + `), d.boards_rev,
+	    WHERE b.root_id = CAST(?1 AS INTEGER) AND b.issue_id = d.issue_id AND ` + mirrorBoardShown("b.root_id", "b.board_id") + `), d.boards_rev,
 	  d.updated_at, d.history_for, d.history_answered_at, d.history_wait, d.history_receipt
 	FROM (` + strings.Join(selects, "\n\tUNION ALL ") + `) d LIMIT ` + limit
 }()
@@ -103,7 +103,7 @@ func mirrorHistoryDueExistsSQL(now string) string {
 	arms := mirrorHistoryDue("hd", now)
 	probes := make([]string, len(arms))
 	for k, arm := range arms {
-		probes[k] = `EXISTS (SELECT 1 FROM tracker_cache_issues hd WHERE hd.root_id = ?1 AND ` + arm.where + `
+		probes[k] = `EXISTS (SELECT 1 FROM tracker_cache_issues hd WHERE hd.root_id = CAST(?1 AS INTEGER) AND ` + arm.where + `
 		    AND ` + mirrorIssueKept("hd.root_id", "hd.issue_id") + `)`
 	}
 	return `(` + strings.Join(probes, "\n\t  OR ") + `)`

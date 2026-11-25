@@ -30,7 +30,9 @@ export const METHODS_AFTER_V0_0_19 = [
   'SetTrackerSubscriptionVisible', 'RefreshTrackerSubscription', 'ReleaseTrackerSubscription',
   'SubscribeTrackerTicket', 'TrackerTicket', 'TrackerComments', 'TrackerAssignableUsers', 'TrackerChoices',
   'EditTrackerIssue', 'MoveTrackerIssue', 'SetTrackerEstimate', 'AddTrackerComment', 'EditTrackerComment',
-  'DeleteTrackerComment', 'MintTrackerAttachmentUploadTicket', 'MintTrackerAttachmentDownloadTicket',
+  'DeleteTrackerComment',
+  'EditTrackerSprint', 'EditTrackerWorklog', 'DeleteTrackerWorklog', 'TrackerWorklogs', 'RefreshTrackerWorklogs',
+  'MintTrackerAttachmentUploadTicket', 'MintTrackerAttachmentDownloadTicket',
   'SaveTrackerAttachment', 'TrackerLinkTypes', 'LinkTrackerIssues', 'UnlinkTrackerIssues', 'TrackerPokerSupport',
   'FollowTrackerPoker', 'TrackerPoker', 'VoteTrackerPoker', 'RevealTrackerPoker', 'ClearTrackerPokerVotes',
 ] as const;

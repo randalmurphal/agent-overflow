@@ -195,6 +195,9 @@ func (s *jiraSite) userJSON(id string) any {
 	if u.Email != "" {
 		out["emailAddress"] = u.Email
 	}
+	if u.HidesTimeZone {
+		out["timeZone"] = nil
+	}
 	return out
 }
 

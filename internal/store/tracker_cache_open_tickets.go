@@ -189,13 +189,13 @@ func (s *Store) KeepMirrorTicket(rootID int64, issueID string, session, pump int
 	}
 	defer rollbackTx(tx, action, &err)
 	var hidden bool
-	if err = tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM tracker_cache_issues WHERE root_id = ?1 AND issue_id = ?2) AND NOT `+
-		mirrorIssueKept("?1", "?2"), rootID, issueID).Scan(&hidden); err != nil {
+	if err = tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM tracker_cache_issues WHERE root_id = CAST(?1 AS INTEGER) AND issue_id = ?2) AND NOT `+
+		mirrorIssueKept(intParam("?1"), "?2"), rootID, issueID).Scan(&hidden); err != nil {
 		return MirrorBind{}, false, fmt.Errorf("%s: read the keep of the issue: %w", action, err)
 	}
 	var openedAt int64
 	err = tx.QueryRow(`INSERT INTO tracker_cache_open_tickets(root_id, issue_id, session, pump, opened_at)
-		SELECT id, ?2, ?3, ?4, ?5 FROM tracker_cache_roots WHERE id = ?1 AND connection_id IS NOT NULL
+		SELECT id, ?2, ?3, ?4, ?5 FROM tracker_cache_roots WHERE id = CAST(?1 AS INTEGER) AND connection_id IS NOT NULL
 		ON CONFLICT DO NOTHING
 		RETURNING opened_at`, rootID, issueID, session, pump, at.at).Scan(&openedAt)
 	kept := err == nil
@@ -203,8 +203,8 @@ func (s *Store) KeepMirrorTicket(rootID int64, issueID string, session, pump int
 	case errors.Is(err, sql.ErrNoRows):
 		var other bool
 		err = tx.QueryRow(`SELECT coalesce((SELECT o.opened_at FROM tracker_cache_open_tickets o JOIN tracker_cache_roots r ON r.id = o.root_id
-			  WHERE o.session = ?3 AND o.pump = ?4 AND o.root_id = ?1 AND o.issue_id = ?2 AND r.connection_id IS NOT NULL), 0),
-			EXISTS (SELECT 1 FROM tracker_cache_open_tickets WHERE session = ?3 AND pump = ?4 AND (root_id <> ?1 OR issue_id <> ?2))`,
+			  WHERE o.session = CAST(?3 AS INTEGER) AND o.pump = CAST(?4 AS INTEGER) AND o.root_id = CAST(?1 AS INTEGER) AND o.issue_id = ?2 AND r.connection_id IS NOT NULL), 0),
+			EXISTS (SELECT 1 FROM tracker_cache_open_tickets WHERE session = CAST(?3 AS INTEGER) AND pump = CAST(?4 AS INTEGER) AND (root_id <> ?1 OR issue_id <> ?2))`,
 			rootID, issueID, session, pump).Scan(&openedAt, &other)
 		switch {
 		case err != nil:
@@ -249,7 +249,7 @@ func (s *Store) DropMirrorTicket(session, pump int64) (unkept bool, err error) {
 		return false, fmt.Errorf("%s: %w", action, err)
 	default:
 		var kept bool
-		if err = tx.QueryRow(`SELECT `+mirrorIssueKept("?1", "?2"), root, issue).Scan(&kept); err != nil {
+		if err = tx.QueryRow(`SELECT `+mirrorIssueKept(intParam("?1"), "?2"), root, issue).Scan(&kept); err != nil {
 			return false, fmt.Errorf("%s: read the keep of issue %s: %w", action, issue, err)
 		}
 		unkept = !kept

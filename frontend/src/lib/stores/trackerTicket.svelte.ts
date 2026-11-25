@@ -16,10 +16,29 @@
 // reconnect, which subscribes again. The earlier comments a person loaded
 // are held by page, each with the token that read it, kept across a
 // reconnect and gone with the ticket's last surface; whether a page is
-// being read, and its failure, are the subscription's own. A comment has
-// one copy the screen draws from: an applied edit of one on an earlier
-// page reads that page again, and an applied delete takes it out
-// (`trackerTicketSettled`).
+// being read, and its failure, are the subscription's own.
+//
+// Held comment pages. What must hold:
+// - the comments shown are the view's first page, then the held pages,
+//   which continue from it: the first held page is the one the first
+//   page's `more_comments` names, and each next one the one before names;
+//   `next` is what the last names, empty once none is left;
+// - a comment has one copy the screen draws from: an applied edit of one
+//   on a held page reads that page again, an applied delete takes it out
+//   (`trackerTicketSettled`);
+// - whenever a new first page lands (a write's, a refresh's, an event's,
+//   a re-subscribe's) and names another page than the first held one,
+//   the held pages are read again from the page it names, until they
+//   reach the oldest comment held before or none is left, so no loaded
+//   comment goes and none shows twice. That costs at most one read per
+//   page held, plus one, and only when the boundary moved: a comment
+//   added or deleted. A boundary that moved past more than one page
+//   between two reads leaves the comments past those reads to the reveal
+//   control; a read that fails keeps the pages read before it and lets
+//   the control read on from it.
+// Every change to the held pages (a reveal, a re-read after an edit, the
+// reconcile) runs one at a time per ticket (`onPages`), each reading the
+// pages as they are when it runs.
 //
 // The handle votes shown while any surface shows the ticket and the window
 // is visible, so a ticket nobody can see makes no tracker read.
@@ -180,6 +199,8 @@ let nextSurface = 0;
 // The earlier comment pages each held ticket's surfaces loaded; kept
 // across a re-subscribe, dropped with the last surface.
 const earlierByKey = new Map<string, HeldPages>();
+// The change to each ticket's held pages last queued (`onPages`).
+const pageWork = new Map<string, Promise<void>>();
 const closedListeners = new Set<(key: string) => void>();
 
 const votes = createPumpVotes('trackerTicket', (id, visible) => SetTrackerSubscriptionVisible(id, visible));
@@ -248,6 +269,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
   apply(live.state);
   vote(live);
   follow(live);
+  if (pagesAdrift(key)) void onPages(key, () => reconcilePages(key));
   void drain(live);
   return cleanup;
 }
@@ -357,6 +379,7 @@ async function run(live: Live): Promise<void> {
       ...(live.seq === seq ? { failure: read.failure } : {}),
       readError: null,
     });
+    if (pagesAdrift(live.key)) await onPages(live.key, () => reconcilePages(live.key));
   }
 }
 
@@ -378,7 +401,56 @@ export interface CommentChange {
 export function trackerTicketSettled(key: string, comment?: CommentChange): Promise<void> {
   const live = lives.get(key);
   const drained = live ? drain(live) : Promise.resolve();
-  return comment ? drained.then(() => commentSettled(key, comment)) : drained;
+  return comment ? drained.then(() => onPages(key, () => commentSettled(key, comment))) : drained;
+}
+
+/** Runs `step` once the ticket's earlier changes to its held pages have
+ * run; its failure is its caller's, and the next change runs after it. */
+function onPages(key: string, step: () => Promise<void>): Promise<void> {
+  const next = (pageWork.get(key) ?? Promise.resolve()).then(step);
+  pageWork.set(key, next.catch(() => undefined));
+  return next;
+}
+
+/** Whether the ticket's first page names another page than the first
+ * held one. */
+function pagesAdrift(key: string): boolean {
+  const detail = lives.get(key)?.state.detail;
+  const first = earlierByKey.get(key)?.pages[0];
+  return !!detail && !!first && first.token !== (detail.more_comments ?? '');
+}
+
+/** Reads the held pages again from the page the first page names, when
+ * that is not the first held one (see "Held comment pages" above). */
+async function reconcilePages(key: string): Promise<void> {
+  const live = lives.get(key);
+  const held = earlierByKey.get(key);
+  const boundary = live?.state.detail?.more_comments ?? '';
+  if (!live || !held || !pagesAdrift(key)) return;
+  if (!boundary) {
+    // The first page holds every comment now.
+    setPages(key, { pages: [], next: null });
+    return;
+  }
+  const last = held.pages[held.pages.length - 1].comments;
+  const oldest = last[last.length - 1] ?? null;
+  const pages: CommentPage[] = [];
+  let token = boundary;
+  update(live, { earlier: { ...live.state.earlier, loading: true, error: null } });
+  for (let reads = 0; token && reads <= held.pages.length; reads++) {
+    let read;
+    try {
+      read = await withBackendTarget(live.ref.backend, () => TrackerComments(live.ref.connection, live.ref.issue, token));
+    } catch (err) {
+      setPages(key, { pages, next: token }, { loading: false, error: err });
+      return;
+    }
+    const comments = read.comments ?? [];
+    pages.push({ token, comments });
+    token = read.next ?? '';
+    if (!oldest || comments.some((c) => c.id === oldest.id || c.created <= oldest.created)) break;
+  }
+  setPages(key, { pages, next: token }, { loading: false, error: null });
 }
 
 async function commentSettled(key: string, comment: CommentChange): Promise<void> {
@@ -403,6 +475,8 @@ async function commentSettled(key: string, comment: CommentChange): Promise<void
 /** The ticket's held pages, as the store and the subscription showing it
  * hold them. */
 function setPages(key: string, held: HeldPages, state: Partial<Pick<EarlierComments, 'loading' | 'error'>> = {}): void {
+  // A ticket no surface holds keeps nothing.
+  if (!surfaces.has(key)) return;
   earlierByKey.set(key, held);
   const live = lives.get(key);
   if (live) update(live, { earlier: { ...live.state.earlier, ...held, ...state } });
@@ -445,22 +519,31 @@ export function dismissTrackerTicketRefreshNotice(key: string): void {
 
 /** Reads the next page of the ticket's earlier comments, as the person
  * asked; nothing while one is being read or none is left. */
-export async function loadEarlierTrackerComments(key: string): Promise<void> {
-  const live = lives.get(key);
-  const detail = live?.state.detail;
-  if (!live || !detail || live.state.earlier.loading) return;
-  const token = live.state.earlier.next ?? detail.more_comments ?? '';
-  if (!token) return;
-  update(live, { earlier: { ...live.state.earlier, loading: true, error: null } });
-  try {
-    const page = await withBackendTarget(live.ref.backend, () => TrackerComments(live.ref.connection, live.ref.issue, token));
-    if (lives.get(key) !== live) return;
+export function loadEarlierTrackerComments(key: string): Promise<void> {
+  const asked = lives.get(key);
+  if (!asked?.state.detail || asked.state.earlier.loading) return Promise.resolve();
+  update(asked, { earlier: { ...asked.state.earlier, loading: true, error: null } });
+  return onPages(key, async () => {
+    const live = lives.get(key);
+    const detail = live?.state.detail;
+    if (!live || !detail) return;
+    // The pages as they are now: a reconcile before this one moved them.
     const held = earlierByKey.get(key) ?? { pages: [], next: null };
-    setPages(key, { pages: [...held.pages, { token, comments: page.comments ?? [] }], next: page.next ?? '' }, { loading: false, error: null });
-  } catch (err) {
-    if (lives.get(key) !== live) return;
-    update(live, { earlier: { ...live.state.earlier, loading: false, error: err } });
-  }
+    const token = held.next ?? detail.more_comments ?? '';
+    if (!token) {
+      update(live, { earlier: { ...live.state.earlier, loading: false } });
+      return;
+    }
+    update(live, { earlier: { ...live.state.earlier, loading: true, error: null } });
+    try {
+      const page = await withBackendTarget(live.ref.backend, () => TrackerComments(live.ref.connection, live.ref.issue, token));
+      if (lives.get(key) !== live) return;
+      setPages(key, { pages: [...held.pages, { token, comments: page.comments ?? [] }], next: page.next ?? '' }, { loading: false, error: null });
+    } catch (err) {
+      if (lives.get(key) !== live) return;
+      update(live, { earlier: { ...live.state.earlier, loading: false, error: err } });
+    }
+  });
 }
 
 /** Whether the ticket's handle should read: a surface shows it and the
@@ -685,6 +768,7 @@ export function attachTrackerTicket(ref: TrackerTicketRef, shown: boolean): Trac
       if (last) {
         surfaces.delete(key);
         earlierByKey.delete(key);
+        pageWork.delete(key);
       } else {
         restate();
       }
@@ -701,5 +785,6 @@ export function resetTrackerTicketsForTest(): void {
   surfaces.clear();
   earlierByKey.clear();
   pokerSupport.clear();
+  pageWork.clear();
   votes.resetForTest();
 }

@@ -41,21 +41,22 @@ board methods, events and the patch read in
   one per ticket for every surface showing it: subscribe with the vote,
   the `tracker:issue_updated` fold, the one view read in flight, the gap
   read, Refresh and the earlier comments held by page with the token that
-  read each, which an applied edit of one of their comments reads again
-  and an applied delete takes the comment out of. It follows a ticket's
-  planning poker while one surface shows the ticket with its poker part
-  on screen (`setPokerShown`), and holds whether each connection's site
-  has poker.
+  read each. The rules those pages keep ("Held comment pages") are written
+  at the top of the store. It follows a ticket's planning poker while one
+  surface shows the ticket with its poker part on screen
+  (`setPokerShown`), and holds whether each connection's site has poker.
 - `stores/trackerTicketWrites.svelte.ts` makes every write and picker read
   of the ticket screen and holds each write's outcome by ticket and target:
   one pending write per target, Save anyway as the person's second press,
   and a toast for a write that settles after its ticket closed. It also
-  holds the text being written to each target with its base (the drafts),
-  which the editors show, so a draft outlives its editor; a pane's
+  holds what is being written to each target (the drafts): a text with its
+  base, or a move's form with the base of each long field, which the
+  editors and the form show, so a draft outlives its editor; a pane's
   selection holds the drafts of its open ticket and Back trail
-  (`holdTicketDrafts`). Files are attached through it one at a time per
-  ticket, each its own `attach:` write; it holds a connection's link
-  types for the link form.
+  (`holdTicketDrafts`). The loss consent rules ("Loss consent") are
+  written at the top of the store. Files are attached through it one at a
+  time per ticket, each its own `attach:` write; it holds a connection's
+  link types for the link form.
 - `stores/trackerTicketModel.ts` is the pure part: what a write's answer
   means for the person (`writeOutcome`), the comment and history windows,
   the rail's order, the side a new link sends, a poker round's result,

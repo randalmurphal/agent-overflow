@@ -79,7 +79,7 @@ func (w *lastRead) sent() int {
 func TestWritesRestOnTheirLastRead(t *testing.T) {
 	old := adf.ToMarkdown(adf.Doc(para("old")))
 	review := adf.ToMarkdown(adf.Doc(para("Review")))
-	from := tracker.Worklog{ID: "300", Issue: "10001", Author: "acc-user1", Day: day1(), Spent: time.Hour, Description: review}
+	from := tracker.Worklog{ID: "300", Issue: "10001", Author: "acc-user1", Day: day1(), Spent: time.Hour, Description: review, Updated: jiraRevision}
 	worklog := func(t *testing.T, f *jiratest.Server) *lastRead {
 		w := watchRecord(t, f, "GET "+worklogsPath+"/300", "PUT "+worklogsPath+"/300")
 		f.On("GET", "/rest/api/3/user", jiratest.Reply(200, user1JSON))
@@ -202,7 +202,7 @@ func TestTempoEditRestsOnItsLastRead(t *testing.T) {
 		"requiredSeconds":144000,"timeSpentSeconds":72000,"status":{"key":"OPEN","actor":{"accountId":"acc-user1","self":"x"},"updatedAt":"2026-11-08T10:00:00Z"}}`)
 	// Changed while the checks ran.
 	ts.On("GET", "/4/worklogs/70", nil, "", 200, tempoWL(70, 10001, "2026-11-10", "13:00:00", 3600, "Planning, edited"))
-	from := tracker.Worklog{ID: "70", Issue: "10001", Author: "acc-user1", Day: day(t, 2026, 11, 10), Spent: time.Hour, Description: "Planning"}
+	from := tracker.Worklog{ID: "70", Issue: "10001", Author: "acc-user1", Day: day(t, 2026, 11, 10), Spent: time.Hour, Description: "Planning", Updated: tempoRevision}
 	res := checked(t, p.Time().EditWorklog(t.Context(), tracker.WorklogEdit{From: from, Spent: ptr(2 * time.Hour)}))
 	if reason(res, 0) != tracker.ReasonStale {
 		t.Errorf("%s, want refused as stale: %v", states(res), res.Parts[0].Outcome.Err())

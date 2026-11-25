@@ -139,16 +139,16 @@ func (s *Store) listWireItemsTx(q sqlQueryer, threadID string, ids []string) ([]
 	if err != nil {
 		return nil, err
 	}
-	selectedSQL, selectedArgs, err := wireItemsSelection(q, threadID, list)
+	selection, err := wireItemsSelection(q, threadID, list)
 	if err != nil {
 		return nil, err
 	}
-	return s.querySelectedPagedItems(q, threadID, selectedSQL, selectedArgs...)
+	return s.querySelectedPagedItems(q, threadID, selection)
 }
 
 // wireItemsSelection selects the rows a JSON array of ids names, each by
 // key on every arm.
-func wireItemsSelection(q sqlQueryer, threadID, ids string) (string, []any, error) {
+func wireItemsSelection(q sqlQueryer, threadID, ids string) (idSelection, error) {
 	return timelineIDSelection(q, threadID, timelineSelection{
 		KeyFirst:  true,
 		Where:     "items.id IN (SELECT value FROM json_each(?))",

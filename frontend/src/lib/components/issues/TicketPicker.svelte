@@ -17,13 +17,20 @@
 <script lang="ts">
   // A ticket value's pick list, at its control: the values a read answers
   // (a move list held by the view, or a form read of the tracker), and one
-  // row that clears the value where the field may be empty. Typed text
-  // narrows a whole list here; when the first answer says the tracker
-  // holds more matches, each pause in typing reads the matches for the
-  // text, and until that answer lands the last list shows narrowed here.
-  // An answer that lands after a later read was asked is dropped. A read's failure shows
-  // its sentence in the list. The values a field holds now are checked; a
-  // pick closes the list unless the field holds several.
+  // row that clears the value where the field may be empty. The values a
+  // field holds now are checked; a pick closes the list unless the field
+  // holds several.
+  //
+  // Search. What must hold: the list shown answers the text in the box
+  // now. The opening read (empty text) says whether the tracker holds more
+  // than it listed. When it does not, the list is whole and typed text
+  // narrows it here, asking nothing. When it does, each pause in typing
+  // asks the tracker for the text, and so does the opening answer when
+  // text was typed before it landed; until the answer for the text in the
+  // box lands, the last list shows narrowed here and says it is searching,
+  // never that nothing matches. A search's answer or failure lands only
+  // while the box holds the text it was asked for; the opening read's
+  // lands while the list is open.
   import { untrack } from 'svelte';
   import Menu from '../primitives/Menu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
@@ -55,66 +62,82 @@
   const PAUSE_MS = 250;
 
   let text = $state('');
-  let list = $state.raw<PickList | null>(null);
-  // The text `list` answers.
-  let listFor = $state('');
-  // The first answer said the tracker holds more than it listed.
-  let remote = $state(false);
+  // The opening read's answer, and the last search's, with its text.
+  let first = $state.raw<PickList | null>(null);
+  let found = $state.raw<{ readonly text: string; readonly list: PickList } | null>(null);
   let failure = $state<string | null>(null);
-  let reading = $state(false);
-  // Only the last read asked lands.
-  let asked = 0;
+  // Each opening bumps it: a read of an earlier one does not land.
+  let opening = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
-  async function read(query: string): Promise<void> {
-    const mine = ++asked;
-    reading = true;
-    failure = null;
+  const query = $derived(text.trim());
+  const remote = $derived(first?.more ?? false);
+
+  async function openRead(): Promise<void> {
+    const mine = ++opening;
     try {
-      const got = await load(query);
-      if (mine !== asked) return;
-      list = got;
-      listFor = query;
-      if (query === '') remote = got.more;
+      const got = await load('');
+      if (mine !== opening) return;
+      first = got;
+      // Text typed before the answer: search for it now.
+      if (got.more && query) search(query);
     } catch (err) {
-      if (mine === asked) failure = errString(err);
-    } finally {
-      if (mine === asked) reading = false;
+      if (mine === opening) failure = errString(err);
+    }
+  }
+
+  async function search(words: string): Promise<void> {
+    const mine = opening;
+    try {
+      const got = await load(words);
+      if (mine === opening && words === query) found = { text: words, list: got };
+    } catch (err) {
+      if (mine === opening && words === query) failure = errString(err);
     }
   }
 
   $effect(() => {
     if (!open) return;
     text = '';
-    list = null;
-    listFor = '';
-    remote = false;
+    first = null;
+    found = null;
+    failure = null;
     // One read per opening: a field holding several values gets a new
     // load with each pick, which must not read again.
-    untrack(() => void read(''));
+    untrack(() => void openRead());
     return () => {
-      asked += 1;
+      opening += 1;
       if (timer) clearTimeout(timer);
       timer = null;
     };
   });
 
   function onInput(): void {
-    if (!remote) return;
+    // A failed search was for the text before.
+    if (failure && first) failure = null;
     if (timer) clearTimeout(timer);
-    const query = text;
+    timer = null;
+    if (!remote || !query) return;
+    const words = query;
     timer = setTimeout(() => {
       timer = null;
-      void read(query);
+      void search(words);
     }, PAUSE_MS);
   }
 
-  const shown = $derived.by(() => {
-    const items = list?.items ?? [];
-    if (remote && listFor === text) return items;
-    const words = text.trim().toLowerCase();
+  function narrowed(items: readonly PickItem[]): readonly PickItem[] {
+    const words = query.toLowerCase();
     return words ? items.filter((i) => i.name.toLowerCase().includes(words)) : items;
+  }
+
+  // The answer for the text in the box, or null while it is out.
+  const answer = $derived.by((): PickList | null => {
+    if (!first) return null;
+    if (!remote || !query) return { items: narrowed(first.items), more: remote };
+    return found?.text === query ? found.list : null;
   });
+  const shown = $derived(answer ? answer.items : narrowed(found?.list.items ?? first?.items ?? []));
+  const searching = $derived(!!first && !answer && !failure);
 
   function close(reason?: PopoverCloseReason): void {
     onClose();
@@ -148,11 +171,13 @@
       </Menu>
       {#if failure}
         <p class="px-3 py-2 text-xs text-error" role="alert" data-testid="ticket-picker-error">{failure}</p>
-      {:else if reading && !list}
+      {:else if !first}
         <p class="px-3 py-2 text-xs text-fg-muted" data-testid="ticket-picker-loading">Loading…</p>
-      {:else if list && shown.length === 0}
+      {:else if searching}
+        <p class="px-3 py-2 text-xs text-fg-muted" data-testid="ticket-picker-searching">Searching the tracker…</p>
+      {:else if answer && shown.length === 0}
         <p class="px-3 py-2 text-xs text-fg-muted" data-testid="ticket-picker-none">Nothing matches.</p>
-      {:else if list?.more}
+      {:else if answer?.more}
         <p class="px-3 py-2 text-xs text-fg-muted">The tracker holds more matches; type to narrow them.</p>
       {/if}
     </div>

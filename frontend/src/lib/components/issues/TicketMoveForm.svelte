@@ -1,40 +1,45 @@
 <script lang="ts">
   // The fields a move's screen takes, filled before the move is sent
-  // (docs/specs/issues.md, "Ticket"). Each field's values are the move's
-  // own (`TrackerChoices` with the move in its scope), a field of several
-  // values takes each pick as one more, and a long text field is written
-  // as Markdown from the text the ticket holds. Move sends the move once
-  // with what the form holds; the form stays open until the move is made,
-  // so a refusal, under the status, leaves what was filled. A required
+  // (docs/specs/issues.md, "Ticket"). The form is the ticket's move draft
+  // (`ticketMoveDraft`): it shows while one is held, so it comes back after
+  // a remount, and it goes with Cancel, an applied move by Move or by Save
+  // anyway, or the ticket leaving the trail. Each field's values are the
+  // move's own (`TrackerChoices` with the move in its scope), a field of
+  // several values takes each pick as one more, and a long text field is
+  // written as Markdown from the text the ticket showed when the form
+  // opened, its edit base. Move sends the move once with what the form
+  // holds; while it is out, every input takes no change and an open picker
+  // closes, so the move made is what the form shows. A refusal, under the
+  // status, leaves what was filled. A required
   // field the app cannot set makes the form say so, with the way to the
   // tracker, and offers no Move.
-  import { SvelteMap } from 'svelte/reactivity';
   import Button from '../primitives/Button.svelte';
   import TicketField from './TicketField.svelte';
-  import type { PickItem } from './TicketPicker.svelte';
   import { fieldEditor, pickedOf, type EditorTarget } from './ticketEditors';
-  import type { FieldEditInput, FieldView, MoveView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+  import type { FieldView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import { fieldText } from '../../stores/trackerTicketModel';
-  import { fieldChoices, moveTicket, ticketWrite, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
+  import {
+    dropTicketDraft,
+    fieldChoices,
+    moveTicket,
+    setTicketMoveField,
+    ticketWrite,
+    type TicketMoveDraft,
+    type TicketWriteContext,
+  } from '../../stores/trackerTicketWrites.svelte';
 
   interface Props {
     ctx: TicketWriteContext;
-    move: MoveView;
+    form: TicketMoveDraft;
     /** The ticket's own fields: the values a move's field holds now. */
     fields: readonly FieldView[];
     fieldName: (id: string) => string;
     onOpenTracker: () => void;
-    onClose: () => void;
   }
 
-  let { ctx, move, fields, fieldName, onOpenTracker, onClose }: Props = $props();
+  let { ctx, form, fields, fieldName, onOpenTracker }: Props = $props();
 
-  interface Filled {
-    readonly edit: FieldEditInput;
-    readonly picked: readonly PickItem[];
-    readonly text: string;
-  }
-  const filled = new SvelteMap<string, Filled>();
+  const move = $derived(form.move);
   const pending = $derived(ticketWrite(ctx.key, 'status')?.pending ?? false);
 
   /** What the ticket holds in field `f` now, else the move's value. */
@@ -43,12 +48,12 @@
   }
 
   function targetOf(f: FieldView): EditorTarget {
-    const got = filled.get(f.id);
+    const got = form.fields.get(f.id);
     return {
       picked: got ? got.picked : pickedOf(held(f)),
       text: got ? got.text : fieldText(held(f)),
       choices: (text) => fieldChoices(ctx, f.id, text, move.id),
-      save: (edit, picked) => filled.set(f.id, { edit, picked, text: edit.typed?.[0] ?? '' }),
+      save: (edit, picked) => setTicketMoveField(ctx.key, f.id, { edit, picked, text: edit.typed?.[0] ?? '' }),
     };
   }
 
@@ -60,18 +65,23 @@
   const unsettable = $derived(rows.filter((r) => r.f.required && !r.long && !r.editor).map((r) => r.f.name));
 
   function shown(f: FieldView): string {
-    const got = filled.get(f.id);
+    const got = form.fields.get(f.id);
     if (!got) return fieldText(held(f));
     return got.picked.length ? got.picked.map((p) => p.name).join(', ') : got.text;
   }
 
-  function writeText(f: FieldView, markdown: string): void {
-    filled.set(f.id, { edit: { field: f.id, markdown: { markdown, from: fieldText(held(f)) } }, picked: [], text: markdown });
+  function longText(f: FieldView): string {
+    return form.fields.get(f.id)?.text ?? form.bases.get(f.id) ?? '';
   }
 
-  async function submit(): Promise<void> {
-    const edits = (move.fields ?? []).flatMap((f) => filled.get(f.id)?.edit ?? []);
-    if ((await moveTicket(ctx, move.id, edits))?.kind === 'applied') onClose();
+  function writeText(f: FieldView, markdown: string): void {
+    setTicketMoveField(ctx.key, f.id, { edit: { field: f.id, markdown: { markdown, from: form.bases.get(f.id) ?? '' } }, picked: [], text: markdown });
+  }
+
+  // An applied move drops the draft, which closes the form.
+  function submit(): void {
+    const edits = (move.fields ?? []).flatMap((f) => form.fields.get(f.id)?.edit ?? []);
+    void moveTicket(ctx, move.id, edits);
   }
 </script>
 
@@ -84,14 +94,14 @@
         <textarea
           rows="4"
           class="w-full resize-y rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1.5 font-mono text-[0.8125rem] text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-          value={shown(f)}
+          value={longText(f)}
           disabled={pending}
           data-testid="ticket-move-text"
           oninput={(event) => writeText(f, event.currentTarget.value)}
         ></textarea>
       </label>
     {:else}
-      <TicketField label={f.required ? `${f.name} (required)` : f.name} field={f.id} value={shown(f)} {editor} ticketKey={ctx.key} target="move-form" {fieldName} />
+      <TicketField label={f.required ? `${f.name} (required)` : f.name} field={f.id} value={shown(f)} {editor} ticketKey={ctx.key} target="move-form" {fieldName} disabled={pending} />
     {/if}
   {/each}
   {#if unsettable.length > 0}
@@ -102,8 +112,8 @@
   {/if}
   <div class="flex items-center gap-1.5">
     {#if unsettable.length === 0}
-      <Button size="sm" variant="primary" disabled={pending} testId="ticket-move-submit" onclick={() => { void submit(); }}>Move</Button>
+      <Button size="sm" variant="primary" disabled={pending} testId="ticket-move-submit" onclick={submit}>Move</Button>
     {/if}
-    <Button size="sm" variant="ghost" disabled={pending} testId="ticket-move-cancel" onclick={onClose}>Cancel</Button>
+    <Button size="sm" variant="ghost" disabled={pending} testId="ticket-move-cancel" onclick={() => dropTicketDraft(ctx.key, 'status')}>Cancel</Button>
   </div>
 </section>

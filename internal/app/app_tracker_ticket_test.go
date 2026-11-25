@@ -70,6 +70,11 @@ func TestTrackerTicketMethodsCarryTheirScopeAndRoute(t *testing.T) {
 		"LinkTrackerIssues":                   write,
 		"UnlinkTrackerIssues":                 write,
 		"AddTrackerWorklog":                   write,
+		"EditTrackerSprint":                   write,
+		"EditTrackerWorklog":                  write,
+		"DeleteTrackerWorklog":                write,
+		"TrackerWorklogs":                     form,
+		"RefreshTrackerWorklogs":              form,
 	} {
 		i := slices.IndexFunc(transport.GeneratedMethods, func(m transport.MethodMeta) bool { return m.Name == name })
 		if i < 0 {

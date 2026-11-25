@@ -110,6 +110,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	4104302889: 'home', // DeleteThreadGroup
 	362983967: 'home', // DeleteThreads
 	1742610839: 'home', // DeleteTrackerComment
+	2679403039: 'home', // DeleteTrackerWorklog
 	604263015: 'home', // DevicePairingStatus
 	1721991996: 'selected', // DictationSources
 	1061100039: 'selected', // DisallowPreviewPort
@@ -126,6 +127,8 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3416415152: 'home', // EditTrackerComment
 	2133356294: 'home', // EditTrackerIssue
 	1347598600: 'home', // EditTrackerKeyFile
+	3891799979: 'home', // EditTrackerSprint
+	670991272: 'home', // EditTrackerWorklog
 	1594348919: 'selected', // FetchForgeAttachment
 	2178028847: 'selected', // FinishDictation
 	3774452621: 'selected', // FinishLiveDictation
@@ -382,6 +385,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2539237007: 'home', // RefreshProviderAccountUsage
 	2618043580: 'home', // RefreshTerminal
 	247632441: 'home', // RefreshTrackerSubscription
+	2905282814: 'home', // RefreshTrackerWorklogs
 	3682640111: 'thread', // RegenerateThreadTitle
 	111779378: 'home', // RegisterOwnDevice
 	2641306153: 'home', // RegisterPushToken
@@ -551,6 +555,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1584024747: 'home', // TrackerSearch
 	4150293291: 'home', // TrackerSectionRows
 	105684651: 'home', // TrackerTicket
+	1862710581: 'home', // TrackerWorklogs
 	1291217507: 'thread', // TriggerMcpAuth
 	417766274: 'selected', // TriggerWorkspaceMcpAuth
 	2161888729: 'selected', // UnapprovePR
@@ -643,8 +648,11 @@ export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
 	3981856226: 180000, // CreateTrackerIssue
 	759363647: 180000, // CreateTrackerSprint
 	1742610839: 180000, // DeleteTrackerComment
+	2679403039: 180000, // DeleteTrackerWorklog
 	3416415152: 180000, // EditTrackerComment
 	2133356294: 180000, // EditTrackerIssue
+	3891799979: 180000, // EditTrackerSprint
+	670991272: 180000, // EditTrackerWorklog
 	1594348919: 660000, // FetchForgeAttachment
 	2178028847: 180000, // FinishDictation
 	3520335973: 60000, // FinishProviderAccountReset

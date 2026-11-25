@@ -133,7 +133,7 @@ func forkRunningTurnRowsTx(tx *sql.Tx, forkID, sourceID string, plan forkCut, se
 		return nil, nil
 	}
 	rows, err := queryInheritedRows(tx, forkID, timelineSelection{
-		Turn: "?", TurnArgs: []any{plan.turn},
+		Turn: boundInt, TurnArgs: []any{plan.turn},
 		Where: "(items.turn_index, items.item_index) < (?, ?)", WhereArgs: []any{plan.turn, plan.item},
 	})
 	if err != nil {

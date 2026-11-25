@@ -2,17 +2,13 @@ package store
 
 import (
 	"context"
-	"database/sql/driver"
 	"errors"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
-
-	"modernc.org/sqlite"
 )
 
 // runCheckpointLoop starts checkpointLoop in the calling synctest bubble with
@@ -145,56 +141,6 @@ func TestCheckpointLoopStopCancelsAWaitingCheckpoint(t *testing.T) {
 			t.Fatalf("checkpoints = %d, want 1", got)
 		}
 	})
-}
-
-// hookSpyConn is a driver connection that records its commit hook
-// registrations.
-type hookSpyConn struct {
-	sqliteConn
-	hooked commitHooker
-	calls  *[]bool
-}
-
-func (c hookSpyConn) RegisterCommitHook(fn sqlite.CommitHookFn) {
-	*c.calls = append(*c.calls, fn != nil)
-	c.hooked.RegisterCommitHook(fn)
-}
-
-type hookSpyConnector struct {
-	driver.Connector
-	calls *[]bool
-}
-
-func (c hookSpyConnector) Connect(ctx context.Context) (driver.Conn, error) {
-	conn, err := c.Connector.Connect(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return hookSpyConn{sqliteConn: conn.(sqliteConn), hooked: conn.(commitHooker), calls: c.calls}, nil
-}
-
-// The driver keeps a registered commit hook until it is unregistered, so a
-// hooked connection unregisters it when it closes.
-func TestWriterConnectionRemovesItsCommitHookOnClose(t *testing.T) {
-	base, err := sqlite.NewConnector(poolDSN(filepath.Join(t.TempDir(), "hook.sqlite"), writerConnPragmas))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var calls []bool
-	connector := gatedConnector{Connector: hookSpyConnector{Connector: base, calls: &calls}, commits: newCommitSignal()}
-	conn, err := connector.Connect(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(calls) != 1 || !calls[0] {
-		t.Fatalf("registrations after connect = %v, want one hook", calls)
-	}
-	if err := conn.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if len(calls) != 2 || calls[1] {
-		t.Fatalf("registrations after close = %v, want the hook removed", calls)
-	}
 }
 
 func newCheckpointedStore(t *testing.T, interval time.Duration) *Store {

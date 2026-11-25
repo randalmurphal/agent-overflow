@@ -39,12 +39,12 @@ const shownItemLevelsSQL = `SELECT l.thread_id, l.depth, l.cut_turn_index, l.cut
 // ?1's row of turn ?2: readerShowsTurnSQL's lineage rows.
 const shownTurnLevelsSQL = `SELECT l.thread_id, l.depth, l.cut_turn_index, l.cut_item_index
   FROM thread_fork_lineage l
- WHERE l.ancestor_id = ?1 AND l.cut_turn_index > ?2
-   AND NOT EXISTS (SELECT 1 FROM turns held WHERE held.thread_id = l.thread_id AND held.turn_index = ?2)
+ WHERE l.ancestor_id = ?1 AND l.cut_turn_index > CAST(?2 AS INTEGER)
+   AND NOT EXISTS (SELECT 1 FROM turns held WHERE held.thread_id = l.thread_id AND held.turn_index = CAST(?2 AS INTEGER))
    AND NOT EXISTS (SELECT 1 FROM thread_fork_lineage nearer
-                     JOIN turns held ON held.thread_id = nearer.ancestor_id AND held.turn_index = ?2
+                     JOIN turns held ON held.thread_id = nearer.ancestor_id AND held.turn_index = CAST(?2 AS INTEGER)
                     WHERE nearer.thread_id = l.thread_id AND nearer.depth < l.depth
-                      AND nearer.cut_turn_index > ?2)`
+                      AND nearer.cut_turn_index > CAST(?2 AS INTEGER))`
 
 // threadReadSQL is true when a lineage row names ?.
 const threadReadSQL = `SELECT EXISTS (SELECT 1 FROM thread_fork_lineage WHERE ancestor_id = ?)`

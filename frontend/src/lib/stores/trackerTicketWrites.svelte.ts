@@ -4,17 +4,34 @@
 // (a field, the status, the points, a comment, the new comment), and a
 // second press of a pending target sends nothing. Nothing retries on its
 // own; a refusal for what a rich text edit would lose offers Save anyway,
-// the same write accepting the loss, as the person's second action. That
-// consent is for the one text refused: changing the text or canceling
-// withdraws it, so a revised text is checked again.
+// the same write accepting the loss, as the person's second action.
 //
-// The text a person is writing (a new comment, a comment's edit, a long
-// text field's edit, each with the text it was edited from) is held here
-// too, by ticket and target, so it outlives the editor showing it: a
-// switch to History, a dropped connection, a linked ticket opened and Back.
-// A draft goes with Cancel, an applied save of its target, or its ticket
-// leaving every pane's open ticket and Back trail (`holdTicketDrafts`):
-// Close, another board, the trail's cap.
+// What a person is writing is held here too, by ticket and target, so it
+// outlives the editor showing it (a switch to History, a dropped
+// connection, a linked ticket opened and Back): a new comment, a comment's
+// edit, a long text field's edit, each with the text it was edited from,
+// and a move's form (target `status`), with the text each long field of
+// it started from. A draft goes with Cancel, an applied write of its
+// target, or its ticket leaving every pane's open ticket and Back trail
+// (`holdTicketDrafts`): Close, another board, the trail's cap.
+//
+// Loss consent. What must hold, for every write a loss can refuse (a
+// section's text, a comment's edit, a move's form):
+// - Save anyway is offered only for the draft that was sent and refused,
+//   as it stands then;
+// - any change to that draft, its replacement, or Cancel withdraws the
+//   offer, so what is sent next is checked again;
+// - a write that is made, by Save or by Save anyway, drops its target's
+//   draft, which closes the editor or form showing it.
+// A draft takes no change while its write is out: every editor and the
+// move's form, its pickers included, are disabled while their target's
+// write is pending, so what a write sends is what its editor shows. The
+// draft can still go while its write is out (its ticket closed, which
+// keeps the write), and a reopened ticket holds a new draft or none. So
+// `write` keeps the revision of the draft it sent and offers Save anyway
+// only when the target still holds that revision once the refusal lands;
+// every change to a draft after that is `putDraft`, which gives it a new
+// revision and withdraws the offer.
 //
 // A write's outcome is held here under its ticket and target, not in the
 // component, so a person who closed the ticket while it ran still learns
@@ -41,6 +58,7 @@ import type {
   FieldEditInput,
   LinkTypeView,
   LinkView,
+  MoveView,
   UserListView,
   WriteView,
 } from '../../../bindings/agent-overflow/internal/trackerapp/models';
@@ -105,12 +123,34 @@ const writes = new SvelteMap<string, TicketWrite>();
 /** Text a person is writing, and the text it was edited from (empty for
  * a new comment). */
 export interface TicketDraft {
+  readonly kind: 'text';
   readonly ticket: string;
   readonly text: string;
   readonly from: string;
 }
 
-const drafts = new SvelteMap<string, TicketDraft>();
+/** A field of a move's form the person filled: the edit it sends, the
+ * values a pick left it holding, and its text. */
+export interface MoveFieldDraft {
+  readonly edit: FieldEditInput;
+  readonly picked: readonly { readonly id: string; readonly name: string }[];
+  readonly text: string;
+}
+
+/** A move's form: the move, the text each long field started from (its
+ * edit base), and the fields filled. */
+export interface TicketMoveDraft {
+  readonly kind: 'move';
+  readonly ticket: string;
+  readonly move: MoveView;
+  readonly bases: ReadonlyMap<string, string>;
+  readonly fields: ReadonlyMap<string, MoveFieldDraft>;
+}
+
+type Draft = TicketDraft | TicketMoveDraft;
+
+const drafts = new SvelteMap<string, { readonly draft: Draft; readonly revision: number }>();
+let nextRevision = 1;
 // The tickets each pane holds open or on its Back trail, by holder.
 const draftHolders = new Map<number, ReadonlySet<string>>();
 let nextDraftHolder = 0;
@@ -140,30 +180,54 @@ export function dismissTicketWrite(ticket: string, target: string): void {
   if (writes.get(k)?.pending === false) writes.delete(k);
 }
 
-/** Withdraws a Save anyway offer: the text it was for changed or its
- * edit was canceled. Other outcomes stay, a lost answer among them. */
+/** Withdraws a Save anyway offer: the draft it was for changed or was
+ * canceled. Other outcomes stay, a lost answer among them. */
 function withdrawLossConsent(k: string): void {
   if (writes.get(k)?.saveAnyway) writes.delete(k);
 }
 
+/** The one change of a draft: a new revision, and no Save anyway for the
+ * one before. */
+function putDraft(k: string, draft: Draft | null): void {
+  withdrawLossConsent(k);
+  if (draft) drafts.set(k, { draft, revision: nextRevision++ });
+  else drafts.delete(k);
+}
+
 /** The text being written to the target; reactive. */
 export function ticketDraft(ticket: string, target: string): TicketDraft | null {
-  return drafts.get(writeKey(ticket, target)) ?? null;
+  const held = drafts.get(writeKey(ticket, target))?.draft;
+  return held?.kind === 'text' ? held : null;
 }
 
 /** Opens or changes the text being written to the target, edited from
- * `from`; a Save anyway offered for the text before goes. */
+ * `from`. */
 export function setTicketDraft(ticket: string, target: string, text: string, from: string): void {
-  const k = writeKey(ticket, target);
-  withdrawLossConsent(k);
-  drafts.set(k, { ticket, text, from });
+  putDraft(writeKey(ticket, target), { kind: 'text', ticket, text, from });
 }
 
-/** Cancel: the text goes, with a Save anyway offered for it. */
+/** Cancel: the draft goes, a text or a move's form. */
 export function dropTicketDraft(ticket: string, target: string): void {
-  const k = writeKey(ticket, target);
-  withdrawLossConsent(k);
-  drafts.delete(k);
+  putDraft(writeKey(ticket, target), null);
+}
+
+/** The move form open on the ticket; reactive. */
+export function ticketMoveDraft(ticket: string): TicketMoveDraft | null {
+  const held = drafts.get(writeKey(ticket, 'status'))?.draft;
+  return held?.kind === 'move' ? held : null;
+}
+
+/** Opens the form of `move`, in place of any open, each long field
+ * starting from the text the ticket shows for it (`bases`). */
+export function openTicketMove(ticket: string, move: MoveView, bases: ReadonlyMap<string, string>): void {
+  putDraft(writeKey(ticket, 'status'), { kind: 'move', ticket, move, bases, fields: new Map() });
+}
+
+/** Fills one field of the open move form. */
+export function setTicketMoveField(ticket: string, field: string, filled: MoveFieldDraft): void {
+  const open = ticketMoveDraft(ticket);
+  if (!open) return;
+  putDraft(writeKey(ticket, 'status'), { ...open, fields: new Map(open.fields).set(field, filled) });
 }
 
 /** One pane's hold on its tickets' drafts: `set` names the tickets it
@@ -173,8 +237,8 @@ export function holdTicketDrafts(): { set(tickets: readonly string[]): void; rel
   const id = nextDraftHolder++;
   draftHolders.set(id, new Set());
   const prune = () => {
-    for (const [k, d] of drafts) {
-      if (![...draftHolders.values()].some((held) => held.has(d.ticket))) drafts.delete(k);
+    for (const [k, { draft }] of drafts) {
+      if (![...draftHolders.values()].some((held) => held.has(draft.ticket))) drafts.delete(k);
     }
   };
   return {
@@ -220,6 +284,8 @@ async function write(
 ): Promise<WriteOutcome | null> {
   const k = writeKey(t.key, target);
   if (writes.get(k)?.pending) return null;
+  // The draft as it was sent: Save anyway is for it alone.
+  const sent = drafts.get(k)?.revision;
   const subject = options.subject ?? null;
   writes.set(k, { pending: true, outcome: null, saveAnyway: null, subject });
   let outcome: WriteOutcome;
@@ -237,7 +303,7 @@ async function write(
   // The ticket changed since it was read: read it again, so the person
   // sees what the tracker holds before trying again.
   if (outcome.kind === 'refused' && outcome.refusal.reason === 'stale') void refreshTrackerTicket(t.key);
-  const loss = outcome.kind === 'refused' && outcome.refusal.reason === 'loss' && !acceptLoss;
+  const loss = outcome.kind === 'refused' && outcome.refusal.reason === 'loss' && !acceptLoss && drafts.get(k)?.revision === sent;
   if (outcome.kind === 'applied') drafts.delete(k);
   if (!isTrackerTicketHeld(t.key)) {
     writes.delete(k);

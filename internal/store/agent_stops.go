@@ -131,14 +131,14 @@ func (s *Store) NewestTaskStop(threadID, taskID string) (Item, bool, error) {
 	if taskID == "" {
 		return Item{}, false, nil
 	}
-	selection, args, err := timelineKeyedIDSelection(s.reader(), threadID,
+	selection, err := timelineKeyedIDSelection(s.reader(), threadID,
 		"items.created_at AS created_at",
 		"json_extract(items.meta, '$.task_id') = ? AND items.kind = 'tool_completion' AND items.completion_of <> ''", []any{taskID},
 		"created_at DESC", 1)
 	if err != nil {
 		return Item{}, false, err
 	}
-	stop, found, err := queryOneHydratedTimelineItem(s.reader(), threadID, selection, args...)
+	stop, found, err := queryOneHydratedTimelineItem(s.reader(), threadID, selection)
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: read the newest stop of task %s/%s: %w", threadID, taskID, err)
 	}
