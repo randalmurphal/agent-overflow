@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/store"
 )
@@ -73,6 +74,53 @@ func TestHarnessTrackersServeTheirSeedAndResetWithTheHarness(t *testing.T) {
 		t.Fatalf("HarnessTrackerRequests = %+v, %v", log, err)
 	}
 
+	// A hold keeps the next request unanswered, logged as held, until its
+	// release; then it is answered as usual.
+	jiraOrigin := `{"tracker":"jira","site":"example.atlassian.net"}`
+	if err := h.HarnessTrackerFault(json.RawMessage(`{"origin":` + jiraOrigin + `,"route":"GET rest/api/3/myself","kind":"hold","tims":1}`)); err == nil {
+		t.Fatal("a fault with an unknown member was accepted")
+	}
+	if err := h.HarnessTrackerFault(json.RawMessage(`{"origin":` + jiraOrigin + `,"route":"GET rest/api/3/myself","kind":"hold","times":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	answered := make(chan int, 1)
+	go func() {
+		held, err := http.DefaultClient.Do(req.Clone(t.Context()))
+		if err != nil {
+			answered <- 0
+			return
+		}
+		_ = held.Body.Close()
+		answered <- held.StatusCode
+	}()
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		log, err := h.HarnessTrackerRequests(1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(log.Requests) == 1 && log.Requests[0].Held {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no request held: %+v", log)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case got := <-answered:
+		t.Fatalf("the held request was answered %d before its release", got)
+	default:
+	}
+	if err := h.HarnessTrackerRelease(json.RawMessage(`{"origin":` + jiraOrigin + `,"route":"GET rest/api/3/myself"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-answered; got != http.StatusOK {
+		t.Fatalf("the released request = %d", got)
+	}
+	if err := h.HarnessTrackerRelease(json.RawMessage(`{"origin":` + jiraOrigin + `,"route":"GET rest/api/3/myself"}`)); err == nil {
+		t.Fatal("a release of no armed hold was accepted")
+	}
+
 	if err := h.HarnessReset(); err != nil {
 		t.Fatal(err)
 	}
@@ -106,6 +154,12 @@ func TestHarnessTrackerMethodsNeedTheFake(t *testing.T) {
 	}
 	if _, err := h.HarnessTrackerRequests(0); err == nil {
 		t.Fatal("HarnessTrackerRequests without fake trackers")
+	}
+	if err := h.HarnessTrackerFault(json.RawMessage(`{}`)); err == nil {
+		t.Fatal("HarnessTrackerFault without fake trackers")
+	}
+	if err := h.HarnessTrackerRelease(json.RawMessage(`{}`)); err == nil {
+		t.Fatal("HarnessTrackerRelease without fake trackers")
 	}
 	if err := h.HarnessReset(); err != nil {
 		t.Fatal(err)

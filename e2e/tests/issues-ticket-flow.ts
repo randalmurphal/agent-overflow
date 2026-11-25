@@ -20,16 +20,22 @@
 //
 // Fields in place: points typed, cleared and refused as a typo; a list of
 // texts shown with no editor; a due date typed; an option past the first
-// 50 found by typing, which asks the tracker; the type changed from the
-// header's mark; Open in the tracker reaching the computer's opener; a
+// 50 found by typing, which asks the tracker, also when the text was
+// typed before the first answer (held by the fake); the type changed from
+// the header's mark; Open in the tracker reaching the computer's opener; a
 // turned-off connection saying once that the ticket is no longer
 // followed. Links grouped by relation open their ticket, and what was
 // typed on the ticket before survives Back and goes with Close. A move
 // whose screen needs an attachment says the app cannot set it; Resolve
-// takes its resolution, two affected parts and a root cause from its own
-// screen, one read of the moves per picker. An edit of a comment on the
-// page before Jira's newest 50 re-reads that page, a delete there reads
-// nothing, and Refresh brings neither back; unsent text outlasts a look
+// takes its resolution, two affected parts, a root cause and the
+// description from its own screen, one read of the moves per picker, the
+// description starting from the ticket's; a description that would lose
+// its layout is refused, a change withdraws Save anyway, and Save anyway
+// makes the move and closes the form. An edit of a comment on the page
+// before Jira's newest 50 re-reads that page, a delete there and a
+// comment posted with every comment shown read the held page again from
+// the moved boundary with no comment lost, and Refresh brings neither
+// the old body nor the deleted comment back; unsent text outlasts a look
 // at the history.
 
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -43,7 +49,7 @@ import { expect, test } from './fixtures.js';
 import { pairOwnDevice } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { longPress } from './touch-helpers.js';
-import { connectFakeJiraBoard, seedFakeJira, type ExtraJira } from './tracker-helpers.js';
+import { JIRA_SITE, connectFakeJiraBoard, seedFakeJira, type ExtraJira } from './tracker-helpers.js';
 
 export interface TicketSurface {
   compact: boolean;
@@ -88,9 +94,10 @@ const day = (n: number) => new Date(Date.now() - n * 60_000 - 3600_000).toISOStr
 
 // The fields and moves of the edits a person makes in place: points the
 // board estimates in, a list of texts, a select of 60 options, a due date;
-// a Resolve move whose screen takes the resolution, a multi-select and a
-// long text, and a move that needs an attachment. WEB-5 is edited in
-// place; WEB-6 blocks WEB-1 and is blocked by WEB-2; WEB-7 has 60 comments
+// a Resolve move whose screen takes the resolution, a multi-select, a
+// long text and the description, and a move that needs an attachment.
+// WEB-5 is edited in place; WEB-6, its description in columns, blocks
+// WEB-1 and is blocked by WEB-2; WEB-7 has 60 comments
 // (Jira's first page is the newest 50) and 30 changes in its history.
 const EDITED: ExtraJira = {
   projects: [],
@@ -125,7 +132,10 @@ const EDITED: ExtraJira = {
     { id: '11', name: 'To Do', to: '10000' },
     { id: '21', name: 'In Progress', to: '10001' },
     { id: '31', name: 'Done', to: '10002' },
-    { id: '41', name: 'Resolve', to: '10002', screen: [{ field: 'resolution', required: true }, { field: 'customfield_10090' }, { field: 'customfield_10095' }] },
+    {
+      id: '41', name: 'Resolve', to: '10002',
+      screen: [{ field: 'resolution', required: true }, { field: 'customfield_10090' }, { field: 'customfield_10095' }, { field: 'description' }],
+    },
     { id: '51', name: 'Archive', to: '10002', screen: [{ field: 'attachment', required: true }] },
   ],
   links: [{ id: '40001', type: '10000', outward: '10106', inward: '10101' }, { id: '40002', type: '10000', outward: '10102', inward: '10106' }],
@@ -134,7 +144,10 @@ const EDITED: ExtraJira = {
       id: '10105', key: 'WEB-5', project: 'WEB', type: '10002', status: '10001', summary: 'Edited in place', sprints: [1], dueDate: '2026-01-02',
       values: { customfield_10016: 3, customfield_10070: ['A', 'B'] },
     },
-    { id: '10106', key: 'WEB-6', project: 'WEB', type: '10002', status: '10001', summary: 'Linked and moved', sprints: [1] },
+    {
+      id: '10106', key: 'WEB-6', project: 'WEB', type: '10002', status: '10001', summary: 'Linked and moved', sprints: [1],
+      description: doc(paragraph('Linked intro'), { type: 'layoutSection', content: [column('Left side'), column('Right side')] }),
+    },
     {
       id: '10107', key: 'WEB-7', project: 'WEB', type: '10002', status: '10001', summary: 'Long discussion', sprints: [1],
       comments: Array.from({ length: 60 }, (_, i) => ({ id: String(50_001 + i), author: 'acc-user1', body: doc(paragraph(`Seeded comment ${i + 1}`)), created: day(60 - i) })),
@@ -176,7 +189,7 @@ function field(ticket: Locator, id: string): Locator {
   return ticket.locator(`[data-testid="ticket-field"][data-field="${id}"]`);
 }
 
-interface LoggedRequest { route?: string; path: string; query?: Record<string, string[]>; status: number; body?: unknown }
+interface LoggedRequest { route?: string; path: string; query?: Record<string, string[]>; status: number; held?: boolean; body?: unknown }
 
 /** The fake's requests to `route`; with `issue` ([key, ID]), those naming it either way. */
 async function trackerRequests(harness: HarnessApp, route: string, issue?: readonly [string, string]): Promise<LoggedRequest[]> {
@@ -430,6 +443,22 @@ export function registerIssuesTicketFlow({ compact }: TicketSurface): void {
     await press(items.filter({ hasText: 'Area 55' }), compact);
     await expect(area.getByTestId('ticket-field-value')).toHaveText('Area 55', { timeout: 15_000 });
     expect((await edits()).at(-1)?.body).toEqual({ fields: { customfield_10080: { id: '20055' } } });
+    // Typed before the first answer lands: once it says more match, the
+    // text in the box is searched.
+    const route = 'GET rest/api/3/issue/{issue}/editmeta';
+    const origin = { tracker: 'jira', site: JIRA_SITE };
+    await harness.rpc('HarnessTrackerFault', { origin, route, kind: 'hold', times: 1 });
+    const metaHeld = (await editmeta()).length;
+    await press(area.getByTestId('ticket-field-value'), compact);
+    await expect.poll(async () => (await editmeta()).some((r) => r.held)).toBe(true);
+    await page.getByTestId('ticket-picker-find').pressSequentially('Area 57');
+    await expect(page.getByTestId('ticket-picker-loading')).toBeVisible();
+    await harness.rpc('HarnessTrackerRelease', { origin, route });
+    await expect(items).toHaveText(['Area 57']);
+    await expect(page.getByTestId('ticket-picker-none')).toHaveCount(0);
+    expect((await editmeta()).length - metaHeld).toBe(2);
+    await page.keyboard.press('Escape');
+    await expect(items).toHaveCount(0);
     if (compact) await press(ticket.getByTestId('ticket-details-close'), compact);
 
     // The header's type mark changes the type.
@@ -471,7 +500,7 @@ export function registerIssuesTicketFlow({ compact }: TicketSurface): void {
     await box.pressSequentially('Typed before following a link');
     const description = ticket.locator('[data-testid="ticket-section"][data-field="description"]');
     await press(description.getByTestId('ticket-section-edit'), compact);
-    await description.getByTestId('ticket-section-editor').pressSequentially('A description typed before the link');
+    await retype(description.getByTestId('ticket-section-editor'), 'A description typed before the link');
     await press(groups.nth(0).getByTestId('ticket-link'), compact);
     await expect(ticket).toHaveAttribute('data-issue', '10101');
     await expect(ticket.getByTestId('ticket-title')).toHaveText('First story');
@@ -534,11 +563,27 @@ export function registerIssuesTicketFlow({ compact }: TicketSurface): void {
     await page.keyboard.press('Escape');
     await expect(parts.getByTestId('ticket-field-value')).toHaveText('Web, API');
     expect((await moveReads()).length - readsBefore).toBe(2);
-    await form.getByTestId('ticket-move-text').pressSequentially('A stale cache key');
+    const longText = (id: string) => form.locator(`[data-testid="ticket-move-text-field"][data-field="${id}"]`).getByTestId('ticket-move-text');
+    await longText('customfield_10095').pressSequentially('A stale cache key');
+    // The description starts from the one the ticket shows, layout and all;
+    // the same text typed without the layout's markers is refused for the
+    // layout it would lose.
+    const moveDescription = longText('description');
+    expect(await moveDescription.inputValue()).toContain('<!-- layout -->');
+    await retype(moveDescription, 'Linked intro, resolved\n\nLeft side\n\nRight side');
     const sent = () => trackerRequests(harness, 'POST rest/api/3/issue/{issue}/transitions', ['WEB-6', '10106']);
-    expect(await sent()).toEqual([]);
+    const anyway = ticket.getByTestId('ticket-write-save-anyway');
     await press(form.getByTestId('ticket-move-submit'), compact);
+    await expect(anyway).toBeVisible({ timeout: 15_000 });
+    // Changing the form withdraws Save anyway: what Move sends next is checked again.
+    await longText('customfield_10095').pressSequentially(', checked again');
+    await expect(anyway).toHaveCount(0);
+    await press(form.getByTestId('ticket-move-submit'), compact);
+    await expect(anyway).toBeVisible({ timeout: 15_000 });
+    expect(await sent()).toEqual([]);
+    await press(anyway, compact);
     await expect(form).toHaveCount(0, { timeout: 15_000 });
+    await expect(anyway).toHaveCount(0);
     await expect(status.getByTestId('ticket-field-value')).toContainText('Done');
     const [move] = await sent();
     expect(move.status).toBe(204);
@@ -546,7 +591,10 @@ export function registerIssuesTicketFlow({ compact }: TicketSurface): void {
       transition: { id: '41' },
       fields: { resolution: { id: '10001' }, customfield_10090: [{ id: '21001' }, { id: '21002' }] },
     });
-    expect(JSON.stringify((move.body as { fields: Record<string, unknown> }).fields.customfield_10095)).toContain('A stale cache key');
+    const moved = (move.body as { fields: Record<string, unknown> }).fields;
+    expect(JSON.stringify(moved.customfield_10095)).toContain('A stale cache key, checked again');
+    expect(JSON.stringify(moved.description)).toContain('Linked intro, resolved');
+    await expect(ticket.locator('[data-testid="ticket-section"][data-field="description"]').getByTestId('ticket-section-text')).toContainText('Linked intro, resolved', { timeout: 15_000 });
   });
 
   test('an older page of comments takes an edit and a delete, and what was typed outlasts a look at the history', async ({ harness, page }) => {
@@ -590,14 +638,28 @@ export function registerIssuesTicketFlow({ compact }: TicketSurface): void {
     expect((await trackerRequests(harness, 'PUT rest/api/3/issue/{issue}/comment/{id}')).map((r) => r.status)).toEqual([200]);
     await expect.poll(async () => (await pageReads()).length - readsBeforeEdit).toBe(1);
 
-    // A delete there goes with no read.
+    // A delete there takes it out. Jira's first page now starts one
+    // comment earlier, so the page held is read again from there, once.
     const deleted = ticket.locator('[data-testid="ticket-comment"][data-comment="50003"]');
     menu = await commentMenu(page, deleted, compact);
     await press(menu.getByTestId('ticket-comment-menu-delete'), compact);
     await press(deleted.getByTestId('ticket-comment-delete'), compact);
     await expect(deleted).toHaveCount(0, { timeout: 15_000 });
     expect((await trackerRequests(harness, 'DELETE rest/api/3/issue/{issue}/comment/{id}')).map((r) => r.status)).toEqual([204]);
-    expect((await pageReads()).length - readsBeforeEdit).toBe(1);
+    await expect.poll(async () => (await pageReads()).length - readsBeforeEdit).toBe(2);
+    await expect(comments).toHaveCount(59);
+
+    // A comment posted with every comment shown moves the first page one
+    // on: the comment at the old boundary stays, read again with its page.
+    const boundary = ticket.locator('[data-testid="ticket-comment"][data-comment="50011"]');
+    await expect(boundary).toContainText('Seeded comment 11');
+    await ticket.getByTestId('ticket-comment-input').pressSequentially('Posted with every comment shown');
+    await press(ticket.getByTestId('ticket-comment-send'), compact);
+    await expect(comments.filter({ hasText: 'Posted with every comment shown' })).toHaveCount(1, { timeout: 15_000 });
+    await expect.poll(async () => (await pageReads()).length - readsBeforeEdit).toBe(3);
+    await expect(comments).toHaveCount(60);
+    await expect(boundary).toContainText('Seeded comment 11');
+    await expect(ticket.getByTestId('ticket-comments-earlier')).toHaveCount(0);
 
     // Refresh brings neither back.
     const issueReads = () => trackerRequests(harness, 'GET rest/api/3/issue/{issue}', ['WEB-7', '10107']);
