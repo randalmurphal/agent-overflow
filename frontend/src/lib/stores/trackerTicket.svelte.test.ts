@@ -775,4 +775,3 @@ describe('links and poker writes', () => {
     expect(ticketLinkTypes(HOME_BACKEND, 'c1')?.types?.map((t) => t.name)).toEqual(['New']);
   });
 });
-

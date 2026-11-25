@@ -311,16 +311,18 @@ type changed in place, a move whose screen takes fields through their form, and 
 typed value behind the control with its find box (a field of several
 typed values is shown, not edited); each long text field as a
 section that folds and is edited as Markdown, an image or attachment in
-its text shown as that attachment (an image under 16 MB in place, any
-other file with its size and Save), else as a chip naming the file;
+its text shown as that attachment (an image up to 16 MB in place while
+it is near the view, any other file with its size and Save), else as a
+chip naming the file;
 comments in either order
 with the control and the comment box, edited, deleted and copied from a
 comment's menu; history; linked tickets grouped by relation, each
 opening in the ticket's place, added through a form that finds the other
 ticket by key or words and removed from their row; attachments, attached
-one at a time by picking, dropping or pasting, each saved, opened or
-copied from its row; on a Jira site that has it, planning poker, folded
-until opened, with the estimate set from its result; on Jira, the
+one at a time by picking, dropping or pasting, each saved or copied from
+its row and an image up to 16 MB opened in the app; on a Jira site that
+has it, planning poker, folded until opened, with the estimate set from
+its result in the section or the ticket's menu; on Jira, the
 estimate in the header and Log time; the control that opens it in the
 tracker; and Back through the tickets opened from one another. Not built:
 pinning a field or a section, the mark on a section holding the template

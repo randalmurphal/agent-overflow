@@ -116,6 +116,8 @@ whose screen takes fields, its pickers asking that move's values.
 A ticket's Log time opens the Time screen's `WorklogForm.svelte` with the
 ticket and today, and the link form (`TicketLinkForm.svelte`) finds the
 other ticket with `TicketFinder.svelte`; neither has a second copy here.
+Planning poker, the link form and the Log time form load on first use
+(`lib/architecture.test.ts` keeps them out of the ticket's chunk).
 Every input of a ticket write (an editor, the move form, the link form,
 the poker votes) is disabled while its target's write is pending.
 
@@ -124,8 +126,10 @@ text fields and comments: ChatMarkdown with embedded HTML and
 `trackerMedia`, which shows a tracker's `media:` image or attachment as a
 chip naming the file (`utils/trackerMedia.ts`). On a ticket's screen
 (`TRACKER_MEDIA_CONTEXT`) a name one attachment has shows that file: an
-image under 16 MB in place, fetched once its box comes within 200 px of
-the viewport, any other file with its size and Save.
+image the app previews (`previewsInApp`, the rule Open on its row uses
+too) in place while its box is within 200 px of the viewport, keeping
+its box and letting its bytes go once it leaves, any other file with its
+size and Save.
 
 A ticket mounts its newest five comments and 20 history changes; each
 press of the reveal control mounts 20 more, so the DOM grows only with

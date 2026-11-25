@@ -1692,7 +1692,9 @@ estimate**: a person sets the agreed estimate as any other edit
   is a read by connection, not a field of the ticket subscribe's answer,
   because a subscribe answers from the mirror with no tracker call. A
   listing that fails answers `available: false` with its failure, which
-  is poker's alone and settles nothing of the connection.
+  is poker's alone and settles nothing of the connection: the ticket
+  shows it in its poker section with Retry, and the client holds only an
+  answer, so the next ticket opened on the connection asks again.
 - **The votes follow a ticket while its poker panel is open.**
   `FollowTrackerPoker(subscriptionID, true)` makes that ticket handle a
   follower. While at least one handle both follows and shows the ticket,
