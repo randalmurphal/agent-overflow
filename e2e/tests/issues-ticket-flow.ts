@@ -7,7 +7,8 @@
 // comment sent from the box reaches Jira and shows; a description edit
 // that would lose a column layout is refused with what it would lose, and
 // Save anyway sends it; closing the ticket shows the board, which reads at
-// once and holds the moved card. A paired computer going off takes its open
+// once and holds the moved card; Escape (the phone's Back on compact)
+// closes a ticket too. A paired computer going off takes its open
 // ticket's content with it, saying once where it was that the computer is
 // not connected, and the ticket reads again when the computer is back.
 
@@ -171,6 +172,17 @@ export function registerIssuesTicketFlow({ compact }: TicketSurface): void {
       const done = pane.locator('[data-testid="issues-column"][data-column="Done"]');
       await expect(card(done, ISSUE_ID)).toBeVisible({ timeout: 15_000 });
     }
+
+    // Escape, and the phone's Back, close the ticket too. The compact
+    // board shows the moved card under Done.
+    if (compact) await press(pane.getByTestId('issues-column-tab').filter({ hasText: 'Done' }), compact);
+    const reopened = await openTicket(pane, ISSUE_ID, compact);
+    await expect(reopened.getByTestId('ticket-title')).toHaveText('Ticket with comments');
+    if (compact) await page.goBack();
+    else await page.keyboard.press('Escape');
+    await expect(reopened).toHaveCount(0);
+    await expect(card(pane, ISSUE_ID)).toBeVisible();
+    if (compact) await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'thread');
   });
 
   test('a ticket open on a paired computer that goes off says so where its content was, and shows again once it is back', async ({ page }) => {
