@@ -57,7 +57,7 @@ pages and nothing else (§6).
   record of finished downloads, and headless Chromium's download
   directories and quotas stay per workspace, so two worktrees sharing a
   project jar keep their own authority.
-- A page is parked until `browser_visibility` presents it inside the
+- A page is parked until `browser_pane` (`action: "visibility"`) presents it inside the
   pane. A parked page keeps its viewport, layout and fresh snapshots out
   of sight: WebKitGTK keeps the view mapped in a host that measures 0x0
   and clips it to nothing, WKWebView keeps it in a 1x1 layer-masked park
@@ -314,7 +314,7 @@ view is positioned over.
   only the presented page; another page of the thread takes the viewport
   before it is shown or a tool acts on it, and the thread's state is
   pushed once the resize settles. Moving the pane does no page-metrics
-  work. When the agent pinned a size with `browser_viewport set`, the
+  work. When the agent pinned a size with `browser_pane` (`action: "viewport_set"`), the
   address row shows `1280 × 720 · 62%` style labels so a scaled
   presentation is visible as such. The placement never changes a page's
   size.

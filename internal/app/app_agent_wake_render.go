@@ -21,7 +21,7 @@ func renderAgentLoopWake(row store.AgentWake, fire agentWakeFire) (usermessage.A
 	out.WriteString("note: ")
 	out.WriteString(untrustedtext.Quote(row.Note, 0))
 	return usermessage.Report(agentmeta.ReportLoop, usermessage.Reporter{Label: row.Label},
-		fmt.Sprintf("Loop %s fired. %s", untrustedtext.Quote(row.Label, 0), agentWakeDataNotice), out.String(), row.Note)
+		fmt.Sprintf("Loop %s fired. %s %s", untrustedtext.Quote(row.Label, 0), agentWakeDataNotice, agentWakeUnattendedNotice), out.String(), row.Note)
 }
 
 // renderAgentWatchWake renders one watch wake: its stdout, then its stderr
@@ -47,7 +47,7 @@ func renderAgentWatchWake(row store.AgentWake, fire agentWakeFire, stdout, stder
 		headline = firstDataLine(string(stderr.data))
 	}
 	return usermessage.Report(agentmeta.ReportWatch, usermessage.Reporter{Label: row.Label},
-		fmt.Sprintf("Watch %s reported. %s", untrustedtext.Quote(row.Label, 0), agentWakeDataNotice),
+		fmt.Sprintf("Watch %s reported. %s %s", untrustedtext.Quote(row.Label, 0), agentWakeDataNotice, agentWakeUnattendedNotice),
 		strings.TrimRight(out.String(), "\n"), headline)
 }
 

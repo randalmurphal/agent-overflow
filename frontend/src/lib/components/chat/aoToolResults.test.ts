@@ -417,8 +417,9 @@ describe('browser tool results', () => {
   });
 
   it('lists pages', () => {
-    const view = browserResultView('browser_pages', json([{ id: 'p1', url: 'https://a.test', title: 'A', selected: true }]), names)!;
+    const view = browserResultView('browser_page', json([{ id: 'p1', url: 'https://a.test', title: 'A', selected: true }]), names)!;
     expect(view.lines[0]).toMatchObject({ title: 'A', detail: 'https://a.test · selected' });
+    expect(browserResultView('browser_page', '[]', names)!.outcome).toBe('no pages');
     expect(browserResultView('browser_pages', '[]', names)!.outcome).toBe('no pages');
   });
 });

@@ -1297,13 +1297,39 @@ var knownAOMCPServers = []struct {
 	{"ao_workflow_tools", "ao-workflow-tools"},
 }
 
+// isAgyMCPFingerprint reports whether s is agy's 8-hex-char server-name
+// disambiguation suffix from cli/acp/mcp.Fingerprint (e.g. "997288b7").
+func isAgyMCPFingerprint(s string) bool {
+	if len(s) != 8 {
+		return false
+	}
+	for i := 0; i < 8; i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // parseAgyMCPToolName parses both `mcp__<server>__<tool>` and agy's
-// single-underscore `mcp_<server>_<tool>` tool names.
+// single-underscore `mcp_<server>_<tool>` tool names, stripping agy's
+// `_<8-hex>` server-name fingerprint suffix on known AO loopback servers.
 func parseAgyMCPToolName(name string) (server, tool string, ok bool) {
 	if strings.HasPrefix(name, "mcp__") {
 		rest := name[len("mcp__"):]
 		if sep := strings.Index(rest, "__"); sep > 0 && sep+2 < len(rest) {
-			return rest[:sep], rest[sep+2:], true
+			srv, tl := rest[:sep], rest[sep+2:]
+			for _, known := range knownAOMCPServers {
+				if srv == known.wire {
+					return known.server, tl, true
+				}
+				prefix := known.wire + "_"
+				if strings.HasPrefix(srv, prefix) && isAgyMCPFingerprint(srv[len(prefix):]) {
+					return known.server, tl, true
+				}
+			}
+			return srv, tl, true
 		}
 		return "", "", false
 	}
@@ -1314,7 +1340,11 @@ func parseAgyMCPToolName(name string) (server, tool string, ok bool) {
 	for _, known := range knownAOMCPServers {
 		prefix := known.wire + "_"
 		if strings.HasPrefix(rest, prefix) && len(rest) > len(prefix) {
-			return known.server, rest[len(prefix):], true
+			tail := rest[len(prefix):]
+			if len(tail) > 9 && tail[8] == '_' && isAgyMCPFingerprint(tail[:8]) {
+				tail = tail[9:]
+			}
+			return known.server, tail, true
 		}
 	}
 	sep := strings.IndexByte(rest, '_')

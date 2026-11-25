@@ -96,7 +96,7 @@ const (
 	// MaxTitleRunes bounds a title or a group name.
 	MaxTitleRunes = 200
 	// MaxNoteRunes bounds a reminder note and a loop note.
-	MaxNoteRunes = 2000
+	MaxNoteRunes = 16000
 	// MaxWakeLabelRunes bounds a loop or watch label.
 	MaxWakeLabelRunes = 80
 	// MaxWakeCommandBytes bounds a watch command; a longer script belongs

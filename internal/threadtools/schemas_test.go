@@ -81,9 +81,10 @@ func TestSchemasAreClosed(t *testing.T) {
 			t.Errorf("%v: required must serialize as an array, got %s", tool["name"], data)
 		}
 		for name, property := range schemaProperties(t, tool) {
-			description, _ := property.(map[string]any)["description"].(string)
-			if strings.TrimSpace(description) == "" {
-				t.Errorf("%v: parameter %s has no description", tool["name"], name)
+			if raw, present := property.(map[string]any)["description"]; present {
+				if description, ok := raw.(string); !ok || strings.TrimSpace(description) == "" {
+					t.Errorf("%v: parameter %s has empty description", tool["name"], name)
+				}
 			}
 		}
 	}
@@ -170,11 +171,10 @@ func TestReadToolsFrameContentAsData(t *testing.T) {
 // one. The tool, each of its properties and the guide say that one thing,
 // and none calls the new thread visible in the sidebar.
 func TestSpawnTextSaysASpawnIsAWorkerWithoutASidebarRow(t *testing.T) {
-	const rowRule = "A thread meant for the user to read or continue themselves gets a sidebar row"
 	for _, shape := range []Shape{soloShape(), pairedShape()} {
 		spawn := toolsByName(t, shape)["thread_spawn"]
 		description := spawn["description"].(string)
-		for _, want := range []string{"your worker", "By default it has no sidebar row", rowRule} {
+		for _, want := range []string{"your worker", "with no sidebar row", "only for threads meant for the user"} {
 			if !strings.Contains(description, want) {
 				t.Errorf("paired=%v: thread_spawn description lacks %q: %s", shape.Paired(), want, description)
 			}
@@ -183,10 +183,10 @@ func TestSpawnTextSaysASpawnIsAWorkerWithoutASidebarRow(t *testing.T) {
 		for name, property := range schemaProperties(t, spawn) {
 			texts[name], _ = property.(map[string]any)["description"].(string)
 		}
-		if fork := texts["from_thread"]; !strings.Contains(fork, "your worker like any spawn, placed by placement and group") {
+		if fork := texts["from_thread"]; !strings.Contains(fork, "placed like any spawn") {
 			t.Errorf("paired=%v: from_thread does not say a fork is placed like any spawn: %s", shape.Paired(), fork)
 		}
-		if placement := texts["placement"]; !strings.Contains(placement, "owned, the default: it is your worker, with no sidebar row") {
+		if placement := texts["placement"]; !strings.Contains(placement, "owned (default): your worker, no sidebar row") {
 			t.Errorf("paired=%v: placement does not state the owned default: %s", shape.Paired(), placement)
 		}
 		for name, text := range texts {
@@ -197,17 +197,16 @@ func TestSpawnTextSaysASpawnIsAWorkerWithoutASidebarRow(t *testing.T) {
 			}
 		}
 		guide := New(newFakeApp("laptop")).Instructions(shape)
-		if !strings.Contains(guide, "your worker, with no sidebar row unless you give it one") || !strings.Contains(guide, rowRule) {
+		if !strings.Contains(guide, "your worker thread (no sidebar row by default)") || !strings.Contains(guide, "only for threads meant for the user to read or continue themselves") {
 			t.Errorf("paired=%v: the guide does not say a spawn is a worker with a row only for the user's threads", shape.Paired())
 		}
 		// A group is a sidebar row, so the choice is the same one: the text
 		// says who a group is for where the group is chosen, and never
 		// offers it as the way to keep a batch of workers together.
-		const workerRule = "A worker whose answer comes back to you, such as a reviewer, a researcher or a helper, takes "
-		if group := texts["group"]; !strings.Contains(group, "a row in the user's sidebar") || !strings.Contains(group, workerRule+"no group") {
+		if group := texts["group"]; !strings.Contains(group, "Sidebar group name") || !strings.Contains(group, "never for your workers") {
 			t.Errorf("paired=%v: group does not say it is a sidebar row and not for a worker: %s", shape.Paired(), group)
 		}
-		if !strings.Contains(guide, workerRule+"neither") {
+		if !strings.Contains(guide, "workers whose answers return to you take neither") {
 			t.Errorf("paired=%v: the guide does not say a worker takes no placement or group", shape.Paired())
 		}
 		for name, text := range map[string]string{"group": texts["group"], "guide": guide} {
@@ -223,7 +222,7 @@ func TestSpawnTextSaysASpawnIsAWorkerWithoutASidebarRow(t *testing.T) {
 func TestSpawnModelTextSaysAFamilyRunsItsNewestModel(t *testing.T) {
 	for _, shape := range []Shape{soloShape(), pairedShape()} {
 		text := schemaProperties(t, toolsByName(t, shape)["thread_spawn"])["model"].(map[string]any)["description"].(string)
-		if !strings.Contains(text, "A family named without a version, such as claude-opus or gpt-sol, runs the newest model of that family the target computer lists") {
+		if !strings.Contains(text, "unversioned family (e.g. claude-opus, gpt-sol -> newest)") {
 			t.Errorf("paired=%v: model does not say what a family runs: %s", shape.Paired(), text)
 		}
 	}
@@ -258,7 +257,7 @@ func TestSpawnWorktreeIsABranchName(t *testing.T) {
 			t.Errorf("paired=%v: worktree is %v, want a branch name string", shape.Paired(), worktree["type"])
 		}
 		description, _ := worktree["description"].(string)
-		for _, want := range []string{"Branch to run on", "already checked out", "exists locally or on a remote", "checked out as it is", "is a tag, or refs/tags/<name>", "detached at the tag", "refs/heads/<name> names a branch only", "created in a fresh worktree from base", "project_id"} {
+		for _, want := range []string{"Branch or tag to run on", "reuses checked-out branch", "existing local/remote branch or tag", "detached", "refs/heads/", "refs/tags/", "new branch from base"} {
 			if !strings.Contains(description, want) {
 				t.Errorf("paired=%v: the worktree description does not say %q: %q", shape.Paired(), want, description)
 			}
@@ -270,7 +269,7 @@ func TestSpawnWorktreeIsABranchName(t *testing.T) {
 			t.Errorf("paired=%v: base = %v, want a branch name string", shape.Paired(), base)
 		}
 		baseDescription, _ := base["description"].(string)
-		for _, want := range []string{"origin's head", "does not exist yet", "Branch or tag", "refs/tags/<name>"} {
+		for _, want := range []string{"origin's head", "Refused for existing branches/tags", "branch or tag", "base_local"} {
 			if !strings.Contains(baseDescription, want) {
 				t.Errorf("paired=%v: the base description does not say %q: %q", shape.Paired(), want, baseDescription)
 			}
@@ -304,7 +303,7 @@ func TestProviderMaxWaitSecondsCapInSchemasInstructionsAndCalls(t *testing.T) {
 		t.Errorf("thread_ask description = %q, want capped default", askDesc)
 	}
 	guide := New(newFakeApp("laptop")).Instructions(shape)
-	if !strings.Contains(guide, "up to 150); ask waits 150 seconds") {
+	if !strings.Contains(guide, "(max 150) is set; ask waits 150 seconds") {
 		t.Errorf("instructions did not reflect 150s cap: %q", guide)
 	}
 

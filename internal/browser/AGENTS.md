@@ -111,7 +111,7 @@ of the functions and types named below are their doc comments.
 
 ## Files, downloads and site data
 
-- `browser_open_file` authorization is `authorizeFile`. The download rows
+- `browser_open` (`path`) authorization is `authorizeFile`. The download rows
   the Manager lists are the one record of which downloaded files are
   openable (`listedDownloadFile`); keep no second one. Use direct `file://`
   navigation.

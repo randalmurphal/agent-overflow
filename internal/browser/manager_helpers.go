@@ -133,7 +133,7 @@ func ambiguousPageError(tabs []threadTab) error {
 		}
 		refs = append(refs, ref)
 	}
-	return fmt.Errorf("browser: page_id is required because this thread has %d open pages; call browser_pages and pass the intended page_id (%s)", len(tabs), strings.Join(refs, ", "))
+	return fmt.Errorf("browser: page_id is required because this thread has %d open pages; call browser_page(action=\"list\") and pass the intended page_id (%s)", len(tabs), strings.Join(refs, ", "))
 }
 
 func (p *managedPage) touch() { p.lastUse.Store(time.Now().UnixNano()) }
