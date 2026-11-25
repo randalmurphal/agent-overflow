@@ -852,6 +852,11 @@ type Config struct {
 	// is mined for them. A loaded thread keeps the config it was loaded
 	// with. Stamped at spawn by the app, like SessionStartHook.
 	NativeMemoryOff bool
+	// DisableBundledBrowserPlugin disables Codex Desktop's
+	// browser@openai-bundled plugin for this thread when AO's own
+	// ao-browser-tools server is active, because that plugin's skill
+	// forbids external browser MCP servers and fails without Codex Desktop.
+	DisableBundledBrowserPlugin bool
 	// WritableRoots are folders outside the workspace a turn may write in
 	// the workspace-write sandbox, sent in every turn's `sandboxPolicy`
 	// (turnSandboxPolicy): the memory folders and an assistant's projects.

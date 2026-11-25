@@ -1218,6 +1218,18 @@ describe('architecture', () => {
     ).toEqual([]);
   });
 
+  it('keeps the week cache out of what the log form imports', () => {
+    // A ticket's Log time loads the log form; the weeks the Time screen
+    // holds, and their listeners, load with the Time screen alone.
+    const graph = staticGraph(join(SRC_ROOT, 'lib', 'components', 'issues', 'WorklogForm.svelte'));
+    expect(graph.reached('lib/stores/trackerTimeWrites.svelte.ts'), 'the walk reaches the worklog writes').toBe(true);
+    const weeks = 'lib/stores/trackerTime.svelte.ts';
+    expect(
+      graph.reached(weeks) ? [graph.chain(weeks)] : [],
+      'The log form imports the week cache; the Time host owns the weeks and their invalidation.',
+    ).toEqual([]);
+  });
+
   it('keeps event-driven refresh on the rate-bounded scheduler', () => {
     const offenders = new Map<string, string[]>();
     let debounceImporters = 0;

@@ -82,21 +82,10 @@ func (c *session) attention(ctx context.Context, raw json.RawMessage) (any, erro
 
 func attentionSchema() map[string]any {
 	properties := map[string]any{
-		"kind": map[string]any{
-			"type": "string",
-			"enum": []string{AttentionDecision, AttentionReview, AttentionProblem, AttentionNone},
-			"description": "decision: the user has to choose or approve something before you can go on. " +
-				"review: something is ready for the user to look at. " +
-				"problem: something is wrong that you cannot fix yourself. " +
-				"none: lower the flag, because what it was for no longer needs the user.",
-		},
-		"reason": map[string]any{
-			"type":        "string",
-			"maxLength":   MaxAttentionReasonRunes,
-			"description": "One short line saying what needs the user, shown on the thread's sidebar row. Required unless kind is none.",
-		},
+		"kind":   map[string]any{"type": "string", "enum": []string{AttentionDecision, AttentionReview, AttentionProblem, AttentionNone}},
+		"reason": map[string]any{"type": "string", "maxLength": MaxAttentionReasonRunes, "description": "One-line sidebar label (required unless none)."},
 	}
-	description := "Flag this thread as needing the user. The sidebar marks the thread with the kind and your reason, and the user is notified when your turn ends, until they open the thread, which lowers the flag. A new flag replaces the one before it. Put the detail in your reply; the reason only says why to look. During a turn your loop or watch started nobody is watching, and this is the only way to reach the user: such a turn that flags nothing ends without marking the thread unread or notifying anyone."
+	description := "Flag thread in sidebar and notify user at turn end (required from loop/watch turns)."
 	return tool("thread_attention", description, properties, "kind")
 }
 

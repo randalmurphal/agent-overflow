@@ -10,7 +10,10 @@
   // the screen lives and read only while `shown`; the writes are
   // stores/trackerTimeWrites.svelte.ts's. Every action of an entry, a cell
   // and a day is in its menu; the log and change form opens at its
-  // control.
+  // control, and changes the entry as the week shows it now. A write the
+  // week has not caught up with is a receipt above the week until a
+  // refresh reads it. Today moves at midnight; the week shown stays
+  // until the person moves it.
   import { untrack } from 'svelte';
   import ChevronLeft from '@lucide/svelte/icons/chevron-left';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -38,8 +41,10 @@
     dayInSentence,
     localDay,
     mondayOf,
+    timeOfflineText,
     weekLabel,
     weekShape,
+    weekTickets,
     type WeekTicket,
     type WorklogTicket,
   } from '../../stores/trackerTimeModel';
@@ -85,7 +90,20 @@
     refreshing = $bindable(false),
   }: Props = $props();
 
-  const today = localDay(new Date());
+  // Today, moved at each midnight while the screen lives.
+  let today = $state(localDay(new Date()));
+  $effect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = (): void => {
+      const now = new Date();
+      today = localDay(now);
+      const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      timer = setTimeout(arm, midnight.getTime() - now.getTime());
+    };
+    untrack(arm);
+    return () => clearTimeout(timer);
+  });
+  // svelte-ignore state_referenced_locally
   let monday = $state(mondayOf(today));
   let layout = $state<TimeLayout>(savedTimeLayout());
   let compactDay = $state<string | null>(null);
@@ -113,6 +131,8 @@
 
   const weekState = $derived(week?.current ?? null);
   const shape = $derived(weekState?.days ? weekShape(monday, weekState.days) : null);
+  // Read by By ticket and the log form only, so By day builds none.
+  const tickets = $derived(shape ? weekTickets(shape) : []);
   $effect(() => { refreshing = weekState?.refreshing ?? false; });
 
   /** Refresh: reads the week from the tracker now. */
@@ -168,7 +188,17 @@
   function openForm(open: FormOpen): void {
     form = open;
   }
-  const candidates = $derived<readonly WorklogTicket[]>(shape?.tickets ?? []);
+  // The entry the form changes, as the week shows it now; the one it was
+  // opened on once the week no longer holds it.
+  const formWorklog = $derived.by(() => {
+    const opened = form?.worklog;
+    if (!opened || !shape) return opened;
+    for (const d of shape.days) {
+      const found = d.entries.find((e) => e.id === opened.id);
+      if (found) return found;
+    }
+    return opened;
+  });
 
   function ticketOf(w: WorklogView): WorklogTicket {
     return { issue: w.issue, key: w.key ?? '', title: w.title ?? '' };
@@ -241,7 +271,7 @@
 
 <div class="flex min-h-0 flex-1 flex-col" data-testid="time-screen">
   {#if offline}
-    <p class="px-4 py-6 text-sm text-fg-muted" data-testid="time-offline">{computerName} is not connected. Your time shows when it connects.</p>
+    <p class="px-4 py-6 text-sm text-fg-muted" data-testid="time-offline">{timeOfflineText(computerName)}</p>
   {:else if connectionKind === 'linear'}
     <p class="px-4 py-6 text-sm text-fg-muted" data-testid="time-linear">Linear has no time tracking, so this board's connection has no logged time.</p>
   {:else if !connectionOn}
@@ -259,7 +289,7 @@
       </IconButton>
       <span class="whitespace-nowrap font-semibold text-fg" data-testid="time-week">{weekLabel(monday)}</span>
       {#if monday !== mondayOf(today)}
-        <button type="button" class="rounded-[var(--radius-control)] px-1.5 py-0.5 text-accent hover:bg-surface-1" data-testid="time-this-week" onclick={() => moveWeek(mondayOf(today))}>This week</button>
+        <button type="button" class="rounded-[var(--radius-control)] px-1.5 py-0.5 text-accent hover:bg-surface-1" data-testid="time-this-week" onclick={() => { today = localDay(new Date()); moveWeek(mondayOf(today)); }}>This week</button>
       {/if}
       {#if shape}
         <span class="whitespace-nowrap text-fg-muted" data-testid="time-week-total">
@@ -277,6 +307,12 @@
     {#if weekState?.failure}
       <p class="border-b border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning" role="status" data-testid="time-refresh-failure">{weekState.failure.message} The week is shown as this computer last read it.</p>
     {/if}
+    {#each weekState?.receipts ?? [] as r (r.id)}
+      <div class="flex items-center gap-2 border-b border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning" role="status" data-testid="time-receipt">
+        <span class="min-w-0 flex-1">{r.sentence}</span>
+        <button type="button" class="shrink-0 text-accent hover:underline" data-testid="time-receipt-refresh" onclick={refresh}>Refresh</button>
+      </div>
+    {/each}
     {#if readFailure}
       <ErrorNotice
         message="Could not read your logged time: {readFailure.report.reason}"
@@ -317,6 +353,7 @@
       {:else}
         <TimeByTicket
           {shape}
+          {tickets}
           {today}
           {compact}
           {openIssue}
@@ -335,9 +372,9 @@
           ctx={writeCtx}
           ticket={open.ticket}
           day={open.day}
-          worklog={open.worklog}
+          worklog={formWorklog}
           confirmDelete={open.confirmDelete}
-          {candidates}
+          candidates={tickets}
           {onSaved}
           onDone={() => { if (form === open) form = null; }}
         />

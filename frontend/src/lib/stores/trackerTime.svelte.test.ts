@@ -15,9 +15,11 @@ import {
   type TrackerWeekRef,
 } from './trackerTime.svelte';
 import { __setBackendStatusForTest } from './transportStatus.svelte';
+import { addWorklog } from './trackerTimeWrites.svelte';
 import { getPinnedBackend } from '../transport/backends';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { getToasts } from './toast.svelte';
 
 const REF: TrackerWeekRef = { backend: 'peer-1', connection: 'c1', author: 'acct-1', monday: '2026-11-09' };
 
@@ -219,11 +221,135 @@ describe('what a week shows', () => {
   });
 });
 
+describe('the order of answers', () => {
+  it('never shows a stored answer that arrives after a refresh answered', async () => {
+    const stored = held('TrackerWorklogs');
+    const refresh = held('RefreshTrackerWorklogs');
+    const week = attachTrackerWeek(REF, true);
+    refresh.answer({ worklogs: [log('1'), log('2', '2026-11-10')] });
+    await flush();
+    stored.answer({ worklogs: [log('1')] });
+    await flush();
+    expect(week.current.days?.worklogs.map((w) => w.id)).toEqual(['1', '2']);
+    week.release();
+  });
+
+  it('runs one more refresh after the one out when a write asks for it, and answers how that read ended', async () => {
+    const stored = held('TrackerWorklogs');
+    const refresh = held('RefreshTrackerWorklogs');
+    const week = attachTrackerWeek(REF, true);
+    stored.answer({ worklogs: [] });
+    const asked = refreshTrackerWorklogDays('peer-1', 'c1', 'acct-1', ['2026-11-10']);
+    expect(refresh.calls).toHaveLength(1);
+    refresh.answer({ worklogs: [] });
+    await flush();
+    expect(refresh.calls).toHaveLength(2);
+    let ended: unknown = null;
+    void asked.then((end) => { ended = end; });
+    await flush();
+    expect(ended).toBeNull();
+    refresh.answer({ worklogs: [log('9', '2026-11-10')] });
+    await flush();
+    expect(ended).toEqual({ kind: 'read' });
+    expect(week.current.days?.worklogs.map((w) => w.id)).toEqual(['9']);
+    week.release();
+  });
+
+  it('rereads the stored copy after the refresh out when a write was made meanwhile', async () => {
+    const stored = held('TrackerWorklogs');
+    const refresh = held('RefreshTrackerWorklogs');
+    const week = attachTrackerWeek(REF, true);
+    stored.answer({ worklogs: [] });
+    await flush();
+    rereadTrackerWorklogDays('peer-1', 'c1', 'acct-1', ['2026-11-10']);
+    expect(stored.calls).toHaveLength(1);
+    refresh.answer({ worklogs: [] });
+    await flush();
+    expect(stored.calls).toHaveLength(2);
+    stored.answer({ worklogs: [log('3', '2026-11-10')] });
+    await flush();
+    expect(week.current.days?.worklogs.map((w) => w.id)).toEqual(['3']);
+    week.release();
+  });
+});
+
+describe('a write the week has not caught up with', () => {
+  const CTX = { backend: 'peer-1', connection: 'c1', author: 'acct-1', computer: 'Laptop' };
+  const NEW = { issue: '10001', key: 'WEB-1', day: '2026-11-11', spentSeconds: 5400, description: '' };
+  const failure = { kind: 'transient', message: 'Jira could not be reached; try again', at: 1 };
+  const UNREAD = { parts: [{ step: 'worklog', state: 'applied' }], stale: [{ connection: 'c1', resources: [{ kind: 'worklogs', author: 'acct-1', day: '2026-11-11' }], failure }] };
+
+  it('keeps its receipt through a refresh that started before it, and Refresh then reads after that one', async () => {
+    const stored = held('TrackerWorklogs');
+    const refresh = held('RefreshTrackerWorklogs');
+    setBindingMock('AddTrackerWorklog', async () => UNREAD);
+    const week = attachTrackerWeek(REF, true);
+    stored.answer({ worklogs: [] });
+    await addWorklog(CTX, NEW);
+    expect(week.current.receipts.map((r) => r.sentence)).toEqual([
+      '1h 30m logged on WEB-1 for Nov 11: Saved. The week shows it after its next read: Jira could not be reached; try again',
+    ]);
+    void refreshTrackerWeek(week.key);
+    expect(refresh.calls).toHaveLength(1);
+    refresh.answer({ worklogs: [] });
+    await flush();
+    expect(week.current.receipts).toHaveLength(1);
+    expect(refresh.calls).toHaveLength(2);
+    refresh.answer({ worklogs: [], failure });
+    await flush();
+    expect(week.current.receipts).toHaveLength(1);
+    void refreshTrackerWeek(week.key);
+    refresh.answer({ worklogs: [log('new', '2026-11-11')] });
+    await flush();
+    expect(week.current.receipts).toEqual([]);
+    week.release();
+  });
+
+  it('makes no receipt when only the ticket could not be read after the write', async () => {
+    const stored = held('TrackerWorklogs');
+    held('RefreshTrackerWorklogs');
+    setBindingMock('AddTrackerWorklog', async () => ({
+      parts: [{ step: 'worklog', state: 'applied' }],
+      stale: [{ connection: 'c1', resources: [{ kind: 'detail', issue: '10001' }], failure }],
+    }));
+    const week = attachTrackerWeek(REF, true);
+    stored.answer({ worklogs: [] });
+    expect(await addWorklog(CTX, NEW)).toEqual({ kind: 'applied', note: null });
+    expect(week.current.receipts).toEqual([]);
+    expect(getToasts()).toEqual([]);
+    week.release();
+  });
+});
+
+describe('a read queued behind the refresh out', () => {
+  it('does not start for a week that stopped showing; the week is due when it shows again', async () => {
+    const stored = held('TrackerWorklogs');
+    const refresh = held('RefreshTrackerWorklogs');
+    const week = attachTrackerWeek(REF, true);
+    stored.answer({ worklogs: [] });
+    await flush();
+    const asked = refreshTrackerWorklogDays('peer-1', 'c1', 'acct-1', ['2026-11-10']);
+    rereadTrackerWorklogDays('peer-1', 'c1', 'acct-1', ['2026-11-10']);
+    setTrackerWeekShown(week.key, false);
+    refresh.answer({ worklogs: [] });
+    await flush();
+    expect(refresh.calls).toHaveLength(1);
+    expect(stored.calls).toHaveLength(1);
+    expect(await asked).toEqual({ kind: 'later' });
+    setTrackerWeekShown(week.key, true);
+    expect(stored.calls).toHaveLength(2);
+    expect(refresh.calls).toHaveLength(2);
+    week.release();
+  });
+});
+
 describe('what a write asks of the weeks', () => {
   it('rereads the stored copy of a shown week holding its day, and of no other', async () => {
     const stored = held('TrackerWorklogs');
     const refresh = held('RefreshTrackerWorklogs');
     const week = attachTrackerWeek(REF, true);
+    refresh.answer({ worklogs: [] });
+    await flush();
     rereadTrackerWorklogDays('peer-1', 'c1', 'acct-1', ['2026-11-20']);
     rereadTrackerWorklogDays('peer-1', 'c2', 'acct-1', ['2026-11-10']);
     expect(stored.calls).toHaveLength(1);

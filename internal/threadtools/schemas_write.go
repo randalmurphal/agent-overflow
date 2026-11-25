@@ -13,67 +13,37 @@ import (
 func spawnSchema(shape Shape) map[string]any {
 	defaults := shape.Defaults
 	properties := map[string]any{
-		"prompt": map[string]any{
-			"type":        "string",
-			"minLength":   1,
-			"description": "The first user message of the new thread. Write it so the new thread can act without seeing your conversation: it starts with no context but the prompt, and the history from_thread gives it.",
-		},
-		"title": map[string]any{
-			"type":        "string",
-			"maxLength":   MaxTitleRunes,
-			"description": "Optional title, shown wherever the thread is listed. Omitted, the app titles the thread itself from its first turn.",
-		},
+		"prompt": map[string]any{"type": "string", "minLength": 1},
+		"title":  map[string]any{"type": "string", "maxLength": MaxTitleRunes},
 		"from_thread": map[string]any{
 			"type":        "string",
-			"description": "Fork this thread's history at its tail first, then send prompt there, for trying a second approach without disturbing the original. The fork is your worker like any spawn, placed by placement and group, never by its source's group. It runs on the source thread's computer, in its project and workspace, and keeps that thread's provider, which a fork cannot change; every other setting still defaults to yours. A source mid-turn is forked at its tail with that turn settled as interrupted. A fork runs in its source's workspace, so from_thread cannot be combined with workspace_path, worktree, base or base_local.",
+			"description": "Fork thread id (placed like any spawn; exclusive with workspace_path/worktree/base).",
 		},
-		"project_id": map[string]any{
-			"type":        "string",
-			"description": "Project for the new thread. Defaults to yours. Projects are registered per computer, so a spawn on another computer must name one of that computer's project ids; omitting it there is refused with that computer's projects and worktrees listed.",
-		},
-		"workspace_path": map[string]any{
-			"type":        "string",
-			"description": "Checkout to run in: the project root or any worktree git has for it, as the OWNING computer spells it. Defaults to your workspace locally. To work on a branch, pass worktree instead.",
-		},
+		"project_id":     map[string]any{"type": "string", "description": "Defaults to yours; required remotely."},
+		"workspace_path": map[string]any{"type": "string"},
 		"worktree": map[string]any{
 			"type":        "string",
-			"description": "Branch to run on. A branch already checked out runs in that checkout; one that exists locally or on a remote (after a fetch of origin) is checked out as it is in a fresh worktree, tracking origin's, else the one remote's that has it, so this is how to work on or review an existing branch such as a merge request's. A name that is no branch but is a tag, or refs/tags/<name>, is checked out as it is in a fresh worktree detached at the tag, on no branch; base is refused for it. refs/heads/<name> names a branch only. A branch that does not exist yet is created in a fresh worktree from base, or from the project's current branch when base is omitted. On another computer it is resolved in project_id's repository there. Pass workspace_path or worktree, not both, and neither with from_thread.",
+			"description": "Branch or tag to run on: reuses checked-out branch, checks out existing local/remote branch or tag (detached; refs/heads/ or refs/tags/), or creates new branch from base.",
 		},
 		"base": map[string]any{
 			"type":        "string",
-			"description": "Branch or tag a new worktree branch starts from, for example main, release/2.4 or v2.4.0: a branch from origin's head of it after a fetch, or from the local head when origin cannot be reached or does not have it; a name that is no branch is a tag of that name (or spell it refs/tags/<name>), which is local; refs/heads/<name> names a branch only. Omit to start from the project's current branch. Only with worktree naming a branch that does not exist yet; an existing branch is checked out as it is and base is refused for it.",
+			"description": "Base branch or tag for new worktree (origin's head unless base_local). Refused for existing branches/tags.",
 		},
-		"base_local": map[string]any{
-			"type":        "boolean",
-			"description": "Start from the local head of base instead of origin's, with no fetch: commits on this computer that are not pushed yet are then in the worktree. A tag base is local either way. Only with worktree naming a new branch. Default false, which starts from origin's head so the thread works on what was pushed.",
-		},
+		"base_local": map[string]any{"type": "boolean", "description": "Use local head without fetching origin."},
 		"group": map[string]any{
 			"type":        "string",
 			"maxLength":   MaxTitleRunes,
-			"description": "Gives the new thread a row in the user's sidebar, inside this group: only for a thread the user will open and work in themselves. A worker whose answer comes back to you, such as a reviewer, a researcher or a helper, takes no group: your workers are already listed together under your thread's Agents. The group is named inside the thread's own project and created when it does not exist; the same name in another project is a different group. Implies placement grouped.",
+			"description": "Sidebar group name (implies grouped; never for your workers).",
 		},
-		"placement": placementProperty("Whether the user sees the new thread in the sidebar. owned, the default: it is your worker, with no sidebar row; the user reaches it from your thread. standalone gives it a plain row in its own project, and grouped, which group implies, a row in that group. Give it a row when the thread is for the user to read or continue themselves. On another computer it applies there."),
-		"provider": map[string]any{
-			"type":        "string",
-			"description": spawnDefaultText("Provider for the new thread", defaults.Provider) + " A provider given without a model uses that provider's default model. A provider the target computer does not offer is refused with the list it does; thread_options lists them. With from_thread it must be the source thread's provider, which a fork resumes.",
-		},
-		"model": map[string]any{
-			"type":        "string",
-			"description": spawnDefaultText("Model slug for the new thread", defaults.Model) + " A family named without a version, such as claude-opus or gpt-sol, runs the newest model of that family the target computer lists; a slug it offers as written is that model. A model or family the target computer does not offer is refused with the list it does; thread_options lists them per provider.",
-		},
-		"effort": map[string]any{
-			"type":        "string",
-			"description": spawnDefaultText("Reasoning effort", defaults.Effort) + " Valid values differ per model; thread_options marks each model's default.",
-		},
-		"mode": map[string]any{
-			"type":        "string",
-			"enum":        []string{"chat", "plan"},
-			"description": spawnDefaultText("What the new thread does: chat works, plan proposes a plan first", defaults.Mode),
-		},
+		"placement": placementProperty("owned (default): your worker, no sidebar row. standalone/grouped: user-facing row."),
+		"provider":  map[string]any{"type": "string", "description": spawnDefaultText("Provider", defaults.Provider)},
+		"model":     map[string]any{"type": "string", "description": spawnDefaultText("Model or unversioned family (e.g. claude-opus, gpt-sol -> newest)", defaults.Model)},
+		"effort":    map[string]any{"type": "string", "description": spawnDefaultText("Effort", defaults.Effort)},
+		"mode":      map[string]any{"type": "string", "enum": []string{"chat", "plan"}, "description": spawnDefaultText("Mode", defaults.Mode)},
 		"runtime_mode": map[string]any{
 			"type":        "string",
 			"enum":        runtimeModeEnum(),
-			"description": spawnDefaultText("Permission level of the new thread, a separate axis from mode", defaults.RuntimeMode) + " Keep the inherited one unless the task needs another. " + runtimeModeSentence() + ".",
+			"description": spawnDefaultText("Permission mode", defaults.RuntimeMode) + " read-only blocks shell/writes; see thread_options.",
 		},
 	}
 	properties["profile"] = map[string]any{
@@ -83,16 +53,16 @@ func spawnSchema(shape Shape) map[string]any {
 	properties["instructions"] = map[string]any{
 		"type":        "string",
 		"maxLength":   MaxSpawnInstructionsBytes,
-		"description": fmt.Sprintf("Text appended to the new thread's system prompt for its whole life, after everything the app and the user already put there, for a one-off role such as a reviewer told what to look for. A profile's own instructions come first. At most %d bytes with the profile's. The task itself goes in prompt.", MaxSpawnInstructionsBytes),
+		"description": "Persistent system prompt addition.",
 	}
 	if !shape.AssistantsOff {
 		properties["home_files"] = homeFilesProperty("prompt")
 	}
-	waitProperties(properties, 0, shape.maxWaitSeconds(), "the new thread to answer")
-	computerIDProperty(shape, properties, "the project the thread should run in")
-	description := "Open a new thread, your worker, send prompt as its first user message, start its turn, and return the thread id and a request token. It inherits your project, workspace, provider, model, effort, mode and runtime mode unless you override them. By default it has no sidebar row: the user reaches it from your thread, and its questions and approvals come to you. A thread meant for the user to read or continue themselves gets a sidebar row: pass placement standalone, or group to file it in a group. Use your own subagents for pieces of your current task; use this " + spawnWhen(shape) + "."
+	waitProperties(properties, 0, shape.maxWaitSeconds(), "answer")
+	computerIDProperty(shape, properties, "the project")
+	description := "Spawn a new worker thread with prompt (returns thread_id and token). Inherits settings. Default is your worker with no sidebar row; pass placement standalone or group only for threads meant for the user."
 	if shape.Paired() {
-		description += " With computer_id the thread is created on that computer, runs on its account, and project_id must name one of its projects."
+		description += " Remote spawns require computer_id and project_id."
 	}
 	return tool("thread_spawn", description, properties, "prompt")
 }
@@ -101,11 +71,10 @@ func spawnSchema(shape Shape) map[string]any {
 // beside the parameter (GuideProfileNames), so a spawn by profile needs no
 // discovery call for the name.
 func profileDescription(names []string) string {
-	text := "Agent profile to spawn as, by name: the provider, model, effort, runtime mode and instructions the user set up for one kind of work. provider, model, effort and runtime_mode passed beside it override that part of it. thread_options lists each profile's use-for line and what it runs on each computer."
 	if len(names) > 0 {
-		text += " Profiles on this computer's providers: " + strings.Join(names, ", ") + "."
+		return "Profile (see thread_options): " + strings.Join(names, ", ") + "."
 	}
-	return text
+	return "Profile (see thread_options)."
 }
 
 // homeFilesProperty is home_files on thread_spawn and thread_send.
@@ -115,7 +84,7 @@ func homeFilesProperty(field string) map[string]any {
 		"items":       map[string]any{"type": "string", "minLength": 1},
 		"minItems":    1,
 		"maxItems":    agenthome.MaxHomeFiles,
-		"description": fmt.Sprintf("Only for a standing agent: files in your agent home, by path relative to it (for example memory/release-checks.md), prepended to %s under their names so the receiver has them without you pasting them. At most %d files and %d KiB together. Refused for a thread that is not a standing agent, and for a path that is absolute, leaves your home or is not a file there.", field, agenthome.MaxHomeFiles, agenthome.HomeFilesCap>>10),
+		"description": fmt.Sprintf("Assistant home files prepended to %s.", field),
 	}
 }
 
@@ -123,59 +92,56 @@ func homeFilesProperty(field string) map[string]any {
 // common case needs no discovery call at all.
 func spawnDefaultText(what, value string) string {
 	if value == "" {
-		return what + ". Omit to inherit yours."
+		return what + " (inherited)."
 	}
-	return fmt.Sprintf("%s. Omit to inherit yours, currently %s.", what, value)
+	return fmt.Sprintf("%s (currently %s).", what, value)
 }
 
 func sendSchema(shape Shape) map[string]any {
 	properties := map[string]any{
-		"thread_id": map[string]any{"type": "string", "description": "The thread to continue. Full id, or an unambiguous prefix of at least 6 characters. You cannot send to your own thread; use thread_remind to wake yourself."},
-		"message":   map[string]any{"type": "string", "minLength": 1, "description": "Exactly what the user would have typed there. The receiving agent sees it as a user message with a footer naming this thread and the token, so write it to be read without your context."},
+		"thread_id": map[string]any{"type": "string"},
+		"message":   map[string]any{"type": "string", "minLength": 1},
 	}
 	if !shape.AssistantsOff {
 		properties["home_files"] = homeFilesProperty("message")
 	}
-	waitProperties(properties, 0, shape.maxWaitSeconds(), "that thread to answer")
+	waitProperties(properties, 0, shape.maxWaitSeconds(), "answer")
 	computerIDProperty(shape, properties, "the thread")
-	description := "Continue an existing thread as if the user had typed message there. A thread mid-turn queues it for the turn boundary with the user's draft preserved; an idle thread receives it now and its session starts lazily. Works across projects" + pairedSuffix(shape, " and computers") + ". Returns a request token. Use send to give a thread work; use thread_ask to consult one without touching it."
+	description := "Queue a follow-up message on an existing thread" + pairedSuffix(shape, " (local or remote)") + " (not self) and return a token. Use thread_ask for read-only questions."
 	return tool("thread_send", description, properties, "thread_id", "message")
 }
 
 func askSchema(shape Shape) map[string]any {
 	properties := map[string]any{
-		"thread_id": map[string]any{"type": "string", "description": "The thread whose context you want to consult. Full id, or an unambiguous prefix of at least 6 characters. You cannot ask your own thread."},
-		"question":  map[string]any{"type": "string", "minLength": 1, "description": "The question. Ask for exactly what you need: the copy answers once and is then gone, so a clarifying question back costs you another call."},
+		"thread_id": map[string]any{"type": "string"},
+		"question":  map[string]any{"type": "string", "minLength": 1},
 	}
 	maxWait := shape.maxWaitSeconds()
 	defaultWait := min(DefaultAskWaitSeconds, maxWait)
-	waitProperties(properties, defaultWait, maxWait, "the answer")
+	waitProperties(properties, defaultWait, maxWait, "answer")
 	computerIDProperty(shape, properties, "the thread")
-	description := fmt.Sprintf("Ask a one-shot question of a thread's context. The target is forked at its tail, in-flight turn included, into a hidden throwaway copy forced to the read-only runtime mode whatever the source runs; the question goes there and the copy is deleted as soon as its answer is stored. The real thread is never touched and never sees the question. Read-only means the copy refuses writes and mutating commands immediately rather than waiting on a person, so it always comes back; if it needed a write to answer it says so. Waits %d seconds by default. If the answer is a clarifying question, ask again or switch to thread_send on the real thread.", defaultWait)
-	if shape.Paired() {
-		description += " A thread on another computer is forked and answered there; only the answer crosses."
-	}
+	description := fmt.Sprintf("Ask a one-shot question on a hidden read-only throwaway fork (never touches the real thread; not self). Waits %d seconds by default.", defaultWait)
 	return tool("thread_ask", description, properties, "thread_id", "question")
 }
 
 func replySchema() map[string]any {
 	properties := map[string]any{
-		"token": map[string]any{"type": "string", "description": "The token from the \"Agent request\" footer of the message you are answering, or from a worker's question or approval that woke you. It resolves to one pending request on this computer; a token from anywhere else is refused."},
-		"text":  map[string]any{"type": "string", "minLength": 1, "description": "Your answer. The sender sees only this text and none of your thread, so make it self-contained. For a worker's question with one part this is the answer it receives; for a worker's approval it is your reason, kept with your decision."},
+		"token": map[string]any{"type": "string"},
+		"text":  map[string]any{"type": "string", "minLength": 1, "description": "Self-contained answer or approval reason."},
 		"decision": map[string]any{
 			"type":        "string",
 			"enum":        []string{DecisionAllow, DecisionDeny},
-			"description": "Only for a worker's approval: allow runs what it asked to run, deny refuses it.",
+			"description": "Worker approval.",
 		},
 		"answers": map[string]any{
 			"type":        "array",
 			"items":       map[string]any{"type": "string", "minLength": 1},
 			"minItems":    1,
 			"maxItems":    MaxReplyAnswers,
-			"description": "Only for a worker's question with several parts: one answer per part, in the order the wake lists them. text is then not sent to the worker.",
+			"description": "Multi-part worker question answers.",
 		},
 	}
-	description := "Answer the agent in another thread that sent you a message, or a worker of yours that is waiting on your answer to its question or approval. Call it once, when an answer is due. One reply per token: a retry with the same token and the same text returns the existing acceptance, a different second reply is refused, and an unknown token is an error. If you end your turn without replying, the sender receives your final text marked as not a reply, once nothing you started is still running when it spawned you, and a reply after that still reaches it as a follow-up. Your reply is stored where you are, so it succeeds even when the sender's computer is unreachable right now. A worker's prompt is answered in the worker at once; if the user answered it there first, the reply is refused."
+	description := "Reply once to an Agent request token or worker question/approval wake."
 	return tool("thread_reply", description, properties, "token", "text")
 }
 
@@ -183,105 +149,90 @@ func statusSchema(shape Shape) map[string]any {
 	maxWait := shape.maxWaitSeconds()
 	properties := map[string]any{
 		"tokens": map[string]any{
-			"type":        "array",
-			"items":       map[string]any{"type": "string"},
-			"minItems":    1,
-			"maxItems":    MaxStatusTokens,
-			"description": fmt.Sprintf("Up to %d request tokens from your own spawns, sends, asks and reminders. Duplicates are refused. Each row returns the request's state, the target thread, the answer kind and the answer.", MaxStatusTokens),
+			"type":     "array",
+			"items":    map[string]any{"type": "string"},
+			"minItems": 1,
+			"maxItems": MaxStatusTokens,
 		},
 		"thread_ids": map[string]any{
-			"type":        "array",
-			"items":       map[string]any{"type": "string"},
-			"minItems":    1,
-			"maxItems":    MaxStatusTokens,
-			"description": fmt.Sprintf("Up to %d thread ids to watch instead of tokens, including threads you never messaged. Each row returns that thread's live state. Duplicates and your own thread are refused.", MaxStatusTokens),
+			"type":     "array",
+			"items":    map[string]any{"type": "string"},
+			"minItems": 1,
+			"maxItems": MaxStatusTokens,
 		},
 		"wait_seconds": map[string]any{
-			"type":        "integer",
-			"minimum":     0,
-			"maximum":     maxWait,
-			"default":     0,
-			"description": fmt.Sprintf("Wait up to this long, returning as soon as ANY listed request settles, any listed thread rests (nothing it started still running), or any target becomes blocked on a person, with the request still open. Zero reads the current state and returns. Maximum %d.", maxWait),
+			"type":    "integer",
+			"minimum": 0,
+			"maximum": maxWait,
+			"default": 0,
 		},
 		"after_revision": map[string]any{
 			"type":        "integer",
 			"minimum":     0,
-			"description": "Skip settlements you have already seen. Every request carries a revision that increases on each settlement and on a late reply, so passing the revision you last read is how you wait for a late reply on a request that already finished.",
+			"description": "Skip settlements <= revision.",
 		},
 		"max_bytes": map[string]any{
-			"type":        "integer",
-			"minimum":     MinShowBytes,
-			"maximum":     MaxShowBytes,
-			"default":     DefaultShowBytes,
-			"description": "Inline budget for the answers in this reply. A longer answer returns a cursor to continue, or use to_file.",
+			"type":    "integer",
+			"minimum": MinShowBytes,
+			"maximum": MaxShowBytes,
+			"default": DefaultShowBytes,
 		},
-		"to_file": map[string]any{"type": "boolean", "default": false, "description": "Write a single request's whole answer to a file and return its path instead of inline text. Requires exactly one token."},
-		"cursor":  map[string]any{"type": "string", "description": "Opaque cursor from a previous thread_status result, passed back unchanged to continue a long answer or a listing."},
+		"to_file": map[string]any{"type": "boolean", "default": false, "description": "Write full answer to file."},
+		"cursor":  map[string]any{"type": "string"},
 	}
-	description := "Re-attach to the requests this thread made, or watch any thread. With tokens it returns each request's state (unconfirmed, accepted, running, blocked, replied, finished, errored, cancelled, interrupted, expired or refused), the target, the answer kind (reply, final, error or note) and the answer. With thread_ids it returns those threads' live states, so you can wait for a thread the user is running without having sent it anything; a thread on a computer that did not answer reads unavailable, with that computer under errors; a thread that could not be read carries its own error, and one deleted or moved away ends the wait; a reference whose lookup a computer did not answer reads unresolved. With neither it lists this thread's requests, open ones first then newest first, which is how you recover your tokens after losing context, and this thread's loops and watches with their next fire, last outcome and missed count. An answer collected here IS the delivery, so no message is queued for it; a message already queued still lands and the reply says so. The answer stays available for the request's lifetime even after the thread that wrote it is gone."
+	description := "Check/wait on request tokens or thread_ids until rest, or omit both to list active requests, loops and watches."
 	return tool("thread_status", description, properties)
 }
 
 func cancelSchema(shape Shape) map[string]any {
 	properties := map[string]any{
-		"token":     map[string]any{"type": "string", "description": "Cancel this request of yours: a message still queued is removed from the queue, a turn that request's message started is interrupted, a reminder is dropped. A turn the user or another request started is never interrupted through a token."},
-		"thread_id": map[string]any{"type": "string", "description": "Stop this thread. A thread you spawned is stopped whole: its session ends; its queued messages, loops, watches, reminders and requests are cancelled; the workflow runs that report to it are paused; and the threads it spawned are stopped the same way. It is not archived, and a later message starts it again. A thread you only sent to or asked has its running turn interrupted. Any other thread is refused."},
-		"label":     map[string]any{"type": "string", "description": "Stop this thread's loop or watch with this label: it will not fire or run again, and a long-running watch's process is stopped."},
+		"token":     map[string]any{"type": "string"},
+		"thread_id": map[string]any{"type": "string"},
+		"label":     map[string]any{"type": "string", "description": "Loop or watch label."},
 	}
 	computerIDProperty(shape, properties, "the thread")
-	description := "Stop work you started. Pass exactly one of token, thread_id or label. This interrupts, it never reverts: nothing a thread already did is undone. A cancelled request settles cancelled and its answer, if any, is what it had at the time."
+	description := "Stop work you started (pass one of token, thread_id, label). Interrupts without reverting."
 	return tool("thread_cancel", description, properties)
 }
 
 func updateSchema(shape Shape) map[string]any {
 	properties := map[string]any{
 		"thread_ids": map[string]any{
-			"type":        "array",
-			"items":       map[string]any{"type": "string"},
-			"minItems":    1,
-			"maxItems":    MaxUpdateThreads,
-			"description": fmt.Sprintf("One to %d threads to change, by full id or unambiguous prefix. The same patch applies to all of them and the result reports each id separately, so one refusal does not stop the rest.", MaxUpdateThreads),
+			"type":     "array",
+			"items":    map[string]any{"type": "string"},
+			"minItems": 1,
+			"maxItems": MaxUpdateThreads,
 		},
-		"title":    map[string]any{"type": "string", "description": "New title. It is trimmed, and a title that is empty after trimming is refused."},
-		"archived": map[string]any{"type": "boolean", "description": "Archive or unarchive. Archiving the thread you are in is refused."},
-		"pin": map[string]any{
-			"type":        "string",
-			"enum":        []string{PinFront, PinBack, PinNone},
-			"description": "Pin tier: front or back burner, or none to unpin. A thread inside a group pins the same way.",
-		},
-		"group": map[string]any{
-			"type":        []string{"string", "null"},
-			"description": "Group name inside the thread's own project, created when it does not exist. null ungroups, leaving the thread standalone. A thread joins groups only on its own computer, and a group of the same name in another project is a different group. Joining or leaving a group unpins the thread; a pin in the same call applies after the move. Implies placement grouped.",
-		},
-		"placement": placementProperty("Whether the user sees a thread in the sidebar: standalone as a plain row in its own project or grouped (with group, unless it is in a group already) gives it a row, and owned takes it out, back to the thread that spawned it. owned is refused for a thread no thread spawned as its worker, on this computer or another, and for an assistant's own thread. Changing it unpins the thread."),
+		"title":     map[string]any{"type": "string"},
+		"archived":  map[string]any{"type": "boolean", "description": "Refused on self."},
+		"pin":       map[string]any{"type": "string", "enum": []string{PinFront, PinBack, PinNone}},
+		"group":     map[string]any{"type": []string{"string", "null"}, "description": "Group name (null ungroups)."},
+		"placement": placementProperty("standalone, grouped, or owned (workers only)."),
 	}
-	description := "Organize threads the way the sidebar does: rename, archive, pin to the front or back burner, group them, or place them, many at once. Set at least one of title, archived, pin, group or placement. The whole patch is checked against each thread before anything is touched, so a thread is either fully updated or untouched with a reason. An archive also archives the thread's workers; one it could not archive is named in workers_not_archived on the thread's row, still open."
-	if shape.Paired() {
-		description += " Threads on other computers are grouped by computer and applied there; one unreachable computer fails only its own ids."
-	}
+	description := "Batch-update threads (title, archived, pin, group, placement)."
 	return tool("thread_update", description, properties, "thread_ids")
 }
 
 func groupSchema(shape Shape) map[string]any {
 	properties := map[string]any{
-		"group":      map[string]any{"type": "string", "description": "Group name within the project. Use this or group_id."},
-		"group_id":   map[string]any{"type": "string", "description": "Group id from thread_options. Use this or group."},
-		"project_id": map[string]any{"type": "string", "description": "Project the group belongs to. Defaults to your own project when the group is named rather than given by id; a group is per project."},
-		"rename":     map[string]any{"type": "string", "maxLength": MaxTitleRunes, "description": "New name for the group."},
-		"delete":     map[string]any{"type": "boolean", "description": "Delete the group. Its threads are ungrouped, not deleted, exactly as the sidebar does it."},
+		"group":      map[string]any{"type": "string"},
+		"group_id":   map[string]any{"type": "string"},
+		"project_id": map[string]any{"type": "string"},
+		"rename":     map[string]any{"type": "string", "maxLength": MaxTitleRunes},
+		"delete":     map[string]any{"type": "boolean", "description": "Ungroups threads."},
 	}
 	computerIDProperty(shape, properties, "the group")
-	description := "Rename or delete one thread group. Name it with group plus project_id, or with group_id. Pass exactly one of rename or delete. A group is not pinned; pin its threads with thread_update."
+	description := "Rename or delete a thread group (pass group or group_id, and rename or delete)."
 	return tool("thread_group", description, properties)
 }
 
 func remindSchema() map[string]any {
 	properties := map[string]any{
-		"after_seconds": map[string]any{"type": "integer", "minimum": 1, "description": "Wake this thread this many seconds from now. There is no ceiling: next week is a valid reminder."},
-		"at":            map[string]any{"type": "string", "description": "RFC 3339 timestamp with an offset to wake at instead. A time already past fires on the next sweep."},
-		"note":          map[string]any{"type": "string", "minLength": 1, "maxLength": MaxNoteRunes, "description": "What to tell yourself. It arrives as the reminder's answer, so write what you need to pick the work back up."},
+		"after_seconds": map[string]any{"type": "integer", "minimum": 1},
+		"at":            map[string]any{"type": "string", "description": "RFC 3339 wake time."},
+		"note":          map[string]any{"type": "string", "minLength": 1, "maxLength": MaxNoteRunes, "description": "Brief wake cue (keep concise; thread keeps its context)."},
 	}
-	description := "Wake this thread later with a note. Pass exactly one of after_seconds or at. The reminder is a request like any other: it has a token, it is listed and cancelled through thread_status and thread_cancel, and it fires once. Use it instead of sleeping in a loop when you are waiting on something slow, such as a build or a deploy: end your turn and the reminder starts a new one."
+	description := "Schedule a one-shot wake (pass after_seconds or at). Use instead of sleeping."
 	return tool("thread_remind", description, properties, "note")
 }
 
@@ -297,6 +248,6 @@ func placementProperty(description string) map[string]any {
 	return map[string]any{
 		"type":        "string",
 		"enum":        []string{PlacementOwned, PlacementGrouped, PlacementStandalone},
-		"description": description + " Placement is organization only: the spawn record, thread_send, thread_show and the answer arriving as a message are the same in every placement.",
+		"description": description,
 	}
 }

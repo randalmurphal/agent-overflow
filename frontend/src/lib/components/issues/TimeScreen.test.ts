@@ -3,12 +3,13 @@
 // and deleting an entry, a stale refusal, a refused read, and compact.
 
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
-import type { ComponentProps } from 'svelte';
+import { tick, type ComponentProps } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorklogView, WriteView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import TimeScreen from './TimeScreen.svelte';
 import { methodNotFound } from '../../../test/helpers/olderComputer';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
 
 const BASE: ComponentProps<typeof TimeScreen> = {
   backend: 'peer-1',
@@ -211,7 +212,8 @@ describe('writes', () => {
     const form = await body().findByTestId('worklog-form');
     await fireEvent.input(within(form).getByTestId('worklog-form-time'), { target: { value: '2h' } });
     await fireEvent.click(within(form).getByTestId('worklog-form-save'));
-    expect(await within(form).findByTestId('worklog-form-write-outcome')).toHaveTextContent('This entry changed on the tracker since it was read. The week was read again; look at it before you change it.');
+    const note = await within(form).findByTestId('worklog-form-write-outcome');
+    await waitFor(() => expect(note).toHaveTextContent('This entry changed on the tracker since it was read. The week was read again; look at it before you change it.'));
     expect(getBindingMock('RefreshTrackerWorklogs')!.mock.calls.length).toBe(refreshes + 1);
   });
 });
@@ -235,5 +237,181 @@ describe('compact', () => {
     const view = render(TimeScreen, { ...BASE, compact: true });
     const rows = await view.findAllByTestId('time-ticket-row');
     expect(within(rows[0]).getByTestId('time-ticket-open').textContent?.trim()).toBe('WEB-1');
+  });
+});
+
+const LOSS = { parts: [{ step: 'worklog', state: 'refused', refusal: { reason: 'loss', message: 'This change would lose formatting.', lost: ['a table'] } }] } as WriteView;
+const STALE = { parts: [{ step: 'worklog', state: 'refused', refusal: { reason: 'stale', message: 'worklog 501 changed since it was read' } }] } as WriteView;
+
+/** Opens the form of the week's first entry from its hours. */
+async function changeFirst(view: { findAllByTestId: (id: string) => Promise<HTMLElement[]> }): Promise<HTMLElement> {
+  const entry = (await view.findAllByTestId('time-entry'))[0];
+  await fireEvent.click(within(entry).getByTestId('time-entry-hours'));
+  return body().findByTestId('worklog-form');
+}
+
+describe('Save anyway', () => {
+  it('is withdrawn when the person changes the refused draft, so the next Save sends what the form holds', async () => {
+    answerWeek(WEEK);
+    const edit = setBindingMock('EditTrackerWorklog', async () => LOSS);
+    const view = render(TimeScreen, BASE);
+    const form = await changeFirst(view);
+    await fireEvent.input(within(form).getByTestId('worklog-form-description'), { target: { value: 'Review, with a table' } });
+    await fireEvent.click(within(form).getByTestId('worklog-form-save'));
+    await within(form).findByTestId('worklog-form-write-save-anyway');
+    await fireEvent.input(within(form).getByTestId('worklog-form-description'), { target: { value: 'Review, corrected' } });
+    expect(within(form).queryByTestId('worklog-form-write-save-anyway')).toBeNull();
+    expect(edit).toHaveBeenCalledTimes(1);
+  });
+
+  it('is withdrawn when the form closes, and the entry never offers it', async () => {
+    answerWeek(WEEK);
+    setBindingMock('EditTrackerWorklog', async () => LOSS);
+    const view = render(TimeScreen, BASE);
+    const form = await changeFirst(view);
+    await fireEvent.input(within(form).getByTestId('worklog-form-description'), { target: { value: 'Review, with a table' } });
+    await fireEvent.click(within(form).getByTestId('worklog-form-save'));
+    await within(form).findByTestId('worklog-form-write-save-anyway');
+    const entry = view.getAllByTestId('time-entry')[0];
+    expect(within(entry).queryByTestId('time-entry-write-save-anyway')).toBeNull();
+    await fireEvent.click(within(form).getByTestId('worklog-form-cancel'));
+    await waitFor(() => expect(body().queryByTestId('worklog-form')).toBeNull());
+    expect(within(entry).queryByTestId('time-entry-write-save-anyway')).toBeNull();
+    // Opened again, the form holds the entry's values, not the refused draft.
+    const again = await changeFirst(view);
+    expect(within(again).getByTestId('worklog-form-description')).toHaveValue('Review');
+    expect(within(again).queryByTestId('worklog-form-write-save-anyway')).toBeNull();
+  });
+});
+
+describe('Save anyway, for a form closed while its write was out', () => {
+  it('is not offered when the refusal lands after the form closed', async () => {
+    answerWeek(WEEK);
+    let refuse!: (v: WriteView) => void;
+    setBindingMock('EditTrackerWorklog', () => new Promise<WriteView>((r) => { refuse = r; }));
+    const view = render(TimeScreen, BASE);
+    const form = await changeFirst(view);
+    await fireEvent.input(within(form).getByTestId('worklog-form-description'), { target: { value: 'Review, with a table' } });
+    await fireEvent.click(within(form).getByTestId('worklog-form-save'));
+    await within(form).findByTestId('worklog-form-write-pending');
+    await fireEvent.click(within(form).getByTestId('worklog-form-cancel'));
+    await waitFor(() => expect(body().queryByTestId('worklog-form')).toBeNull());
+    refuse(LOSS);
+    const entry = view.getAllByTestId('time-entry')[0];
+    await within(entry).findByTestId('time-entry-write-outcome');
+    const again = await changeFirst(view);
+    expect(within(again).getByTestId('worklog-form-write-outcome')).toHaveAttribute('data-kind', 'refused');
+    expect(within(again).queryByTestId('worklog-form-write-save-anyway')).toBeNull();
+  });
+});
+
+describe('a write the week has not caught up with', () => {
+  it('leaves a receipt at the week after an add whose read failed, until a refresh reads the week', async () => {
+    answerWeek(WEEK);
+    const stale = { connection: 'c1', resources: [{ kind: 'worklogs', author: 'acct-1', day: '2026-11-11' }], failure: { kind: 'transient', message: 'Jira could not be reached; try again', at: 1 } };
+    const add = setBindingMock('AddTrackerWorklog', async () => ({ ...APPLIED, stale: [stale] }) as unknown as WriteView);
+    localStorage.setItem('agent-overflow:frontend:issues-time-layout', JSON.stringify('ticket'));
+    const view = render(TimeScreen, BASE);
+    const row = (await view.findAllByTestId('time-ticket-row'))[0];
+    await fireEvent.click(within(row).getAllByTestId('time-cell')[2]);
+    const form = await body().findByTestId('worklog-form');
+    await fireEvent.input(within(form).getByTestId('worklog-form-time'), { target: { value: '1h 30m' } });
+    await fireEvent.click(within(form).getByTestId('worklog-form-save'));
+    await waitFor(() => expect(body().queryByTestId('worklog-form')).toBeNull());
+    expect(add).toHaveBeenCalledTimes(1);
+    const receipt = await view.findByTestId('time-receipt');
+    expect(receipt).toHaveTextContent('1h 30m logged on WEB-1 for Nov 11');
+    expect(receipt).toHaveTextContent('Jira could not be reached; try again');
+    // The stored copy does not have it yet: the cell is still empty.
+    expect(within(view.getAllByTestId('time-ticket-row')[0]).getAllByTestId('time-cell')[2]).toHaveAttribute('data-count', '0');
+    await fireEvent.click(within(receipt).getByTestId('time-receipt-refresh'));
+    await waitFor(() => expect(view.queryByTestId('time-receipt')).toBeNull());
+  });
+});
+
+describe('a stale refusal', () => {
+  it('says the week is being read again until that read lands, then edits the entry as it was read', async () => {
+    answerWeek(WEEK);
+    const edit = setBindingMock('EditTrackerWorklog', vi.fn().mockResolvedValueOnce(STALE).mockResolvedValue(APPLIED));
+    const view = render(TimeScreen, BASE);
+    await view.findAllByTestId('time-entry');
+    const changed = log('501', '2026-11-09', 7200, { description: 'Review', updated: 8 });
+    let answer!: (v: { worklogs: WorklogView[] }) => void;
+    setBindingMock('RefreshTrackerWorklogs', () => new Promise((r) => { answer = r; }));
+    setBindingMock('TrackerWorklogs', async () => ({ worklogs: [changed, WEEK[1]] }));
+    const form = await changeFirst(view);
+    await fireEvent.input(within(form).getByTestId('worklog-form-time'), { target: { value: '2h 30m' } });
+    await fireEvent.click(within(form).getByTestId('worklog-form-save'));
+    const note = await within(form).findByTestId('worklog-form-write-outcome');
+    expect(note).toHaveTextContent('This entry changed on the tracker since it was read.');
+    expect(note).not.toHaveTextContent('The week was read again');
+    answer({ worklogs: [changed, WEEK[1]] });
+    await waitFor(() => expect(note).toHaveTextContent('The week was read again'));
+    await fireEvent.click(within(form).getByTestId('worklog-form-save'));
+    await waitFor(() => expect(edit).toHaveBeenCalledTimes(2));
+    expect(edit.mock.calls[1][1]).toEqual(expect.objectContaining({ from: changed, spent_seconds: 9000 }));
+  });
+
+  it('says the week could not be read again when that read fails', async () => {
+    answerWeek(WEEK);
+    setBindingMock('EditTrackerWorklog', async () => STALE);
+    const view = render(TimeScreen, BASE);
+    await view.findAllByTestId('time-entry');
+    setBindingMock('RefreshTrackerWorklogs', async () => ({ worklogs: WEEK, failure: { kind: 'transient', message: 'Jira could not be reached; try again', at: 1 } }));
+    const form = await changeFirst(view);
+    await fireEvent.input(within(form).getByTestId('worklog-form-time'), { target: { value: '2h' } });
+    await fireEvent.click(within(form).getByTestId('worklog-form-save'));
+    const note = await within(form).findByTestId('worklog-form-write-outcome');
+    await waitFor(() => expect(note).toHaveTextContent('The week could not be read again: Jira could not be reached; try again'));
+  });
+});
+
+describe('the form sends only what the person changed', () => {
+  it('leaves a description it did not touch out of a change of the hours', async () => {
+    const spaced = log('501', '2026-11-09', 5400, { description: '  Review\n' });
+    answerWeek([spaced]);
+    const edit = setBindingMock('EditTrackerWorklog', async () => APPLIED);
+    const view = render(TimeScreen, BASE);
+    const form = await changeFirst(view);
+    await fireEvent.input(within(form).getByTestId('worklog-form-time'), { target: { value: '2h' } });
+    await fireEvent.click(within(form).getByTestId('worklog-form-save'));
+    await waitFor(() => expect(edit).toHaveBeenCalledTimes(1));
+    expect(edit.mock.calls[0][1]).toEqual(expect.objectContaining({ spent_seconds: 7200, description: undefined, day: undefined }));
+  });
+});
+
+describe('this week', () => {
+  it('moves with the clock: a screen open from Sunday into Monday goes to the new week', async () => {
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    vi.setSystemTime(new Date(2026, 10, 15, 23, 0));
+    answerWeek([]);
+    const view = render(TimeScreen, BASE);
+    expect(view.queryByTestId('time-this-week')).toBeNull();
+    const sunday = view.getByTestId('time-week').textContent;
+    await vi.advanceTimersByTimeAsync(2 * 3600_000);
+    // Timers are fake here, so the test reads the DOM as it stands.
+    await fireEvent.click(view.getByTestId('time-this-week'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(view.getByTestId('time-week').textContent).not.toBe(sunday);
+    expect(getBindingMock('TrackerWorklogs')!.mock.calls.at(-1)).toEqual(['c1', 'acct-1', '2026-11-16', '2026-11-22']);
+  });
+});
+
+describe('a change of the computer\'s connections', () => {
+  it('keeps the week and an open form, and reads nothing', async () => {
+    answerWeek(WEEK);
+    const view = render(TimeScreen, BASE);
+    const form = await changeFirst(view);
+    await fireEvent.input(within(form).getByTestId('worklog-form-description'), { target: { value: 'Review, half done' } });
+    const reads = () => [getBindingMock('TrackerWorklogs')!.mock.calls.length, getBindingMock('RefreshTrackerWorklogs')!.mock.calls.length];
+    const before = reads();
+    applyTrackerConnectionsChanged('peer-1');
+    await tick();
+    await tick();
+    expect(view.getAllByTestId('time-entry')).toHaveLength(WEEK.length);
+    expect(view.queryByTestId('time-reading')).toBeNull();
+    expect(within(body().getByTestId('worklog-form')).getByTestId('worklog-form-description')).toHaveValue('Review, half done');
+    expect(reads()).toEqual(before);
   });
 });

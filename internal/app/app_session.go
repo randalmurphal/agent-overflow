@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/aocli"
+	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/acp"
@@ -670,6 +671,7 @@ func (a *App) spawnProviderSession(
 		cfg.SessionStartForget = mem.Forget
 		cfg.WritableRoots = mem.Dirs
 		cfg.NativeMemoryOff = mem.OwnMemoryOff
+		cfg.DisableBundledBrowserPlugin = a.agentGuideServersOn(t.ID, mcpServers)[appbrowser.ServerName]
 		cfg.DeveloperInstructionsDelivery, err = a.codexDeveloperInstructionsDelivery(threadID, cfg.ResumeThreadID)
 		if err != nil {
 			return session{}, err

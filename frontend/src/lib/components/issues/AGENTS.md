@@ -55,29 +55,34 @@ board methods, events and the patch read in
   base, or a move's form with the base of each long field, which the
   editors and the form show, so a draft outlives its editor; a pane's
   selection holds the drafts of its open ticket and Back trail
-  (`holdTicketDrafts`). The loss consent rules ("Loss consent") are
-  written at the top of the store. Files are attached through it one at a
-  time per ticket, each its own `attach:` write; it holds a connection's
-  link types for the link form.
+  (`holdTicketDrafts`). Files are attached through it one at a time per
+  ticket, each its own `attach:` write; it holds a connection's link
+  types for the link form.
 - `stores/trackerTicketModel.ts` is the pure part: the comment and
   history windows, the rail's order, the side a new link sends, a poker
   round's result, the attachment a file in the text names and the board
   row a ticket shows its points from.
 - `stores/trackerWriteOutcome.ts` is what a tracker write's answer means
-  for the person (`writeOutcome`, worded per subject) and the one runner
-  of a write (`sendWrite`), shared by the ticket's and the Time screen's
-  writes.
+  for the person (`writeOutcome`, worded per subject), the one runner
+  of a write (`sendWrite`) and the loss consent rule (`LossConsent`,
+  its rules written beside it), shared by the ticket's and the Time
+  screen's writes; each write store holds its own consent and revises it
+  on every change of a draft.
 - `stores/trackerTime.svelte.ts` holds the weeks the Time screen reads,
   one per computer, connection, person and Monday, the five used last:
   the stored read and the refresh when a week shows, Refresh, the
-  reconnect's refresh and the reads a write owes its days. Its rules are
-  written at the top of the store. `stores/trackerTimeModel.ts` is the
-  pure part: the days of a week, what a day's total leaves out, and the
-  By ticket rows.
+  reconnect's refresh, the reads a write owes its days and their order,
+  and the receipts of writes the week has not caught up with. Its rules
+  are written at the top of the store. `stores/trackerTimeModel.ts` is
+  the pure part: the days of a week, what a day's total leaves out, and
+  the By ticket rows (`weekTickets`, derived only while By ticket or the
+  form reads them).
 - `stores/trackerTimeWrites.svelte.ts` makes the Time screen's writes
   (log, change, delete), one pending write per entry or per ticket and
   day, and holds each outcome, with a toast for one that settles after
-  its form and entry are gone.
+  its form and entry are gone. It does not import the weeks: the weeks'
+  store takes what a write asks of them (`takeWorklogWrites`), so a
+  surface that only logs time loads no week.
 - `utils/trackerAttachments.ts` is what saving an attachment does on this
   page (`fileSaveAction`: the ticket's computer writes it, a connected
   browser downloads it up to 256 MB), its bytes, and the images a ticket's

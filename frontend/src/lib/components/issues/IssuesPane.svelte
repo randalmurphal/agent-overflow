@@ -99,6 +99,7 @@
     trackerBoardChoices,
   } from '../../stores/trackerBoardChoices.svelte';
   import { cardMatches, filtering, screenColumns, searchWords, type CardFilter } from '../../stores/trackerBoardModel';
+  import { timeOfflineText } from '../../stores/trackerTimeModel';
   import { relativeTime } from '../../utils/format';
 
   interface Props {
@@ -462,7 +463,15 @@
         </div>
       {:else if screen === 'time'}
         {#if !boardChoice}
-          <p class="px-4 py-6 text-sm text-fg-muted" data-testid="issues-time-listing">Listing boards…</p>
+          <!-- No listing names the board: its computer is not connected,
+               the listing is still out, or no listing has it any more. -->
+          {#if boardOffline}
+            <p class="px-4 py-6 text-sm text-fg-muted" data-testid="time-offline">{timeOfflineText(computerName(board.backend))}</p>
+          {:else if boardComputerAnswered || boardState?.ended}
+            <p class="px-4 py-6 text-sm text-fg-muted" data-testid="time-board-gone">No project lists this board any more, or its connection was removed. Pick another board to see your time.</p>
+          {:else}
+            <p class="px-4 py-6 text-sm text-fg-muted" data-testid="issues-time-listing">Listing boards…</p>
+          {/if}
         {:else}
           {@const choice = boardChoice}
           {@const timeBoard = board}

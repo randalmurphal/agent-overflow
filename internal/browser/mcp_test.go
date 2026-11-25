@@ -16,7 +16,9 @@ import (
 
 type fakeController struct {
 	openedURL   string
+	openedFile  string
 	openOptions OpenOptions
+	lastCall    string
 	access      Access
 	evaluations []fakeEvaluation
 	// evaluated, evaluateNote and evaluateErr answer every evaluate call.
@@ -43,27 +45,44 @@ func (f *fakeController) Open(_ context.Context, a Access, u string, opts OpenOp
 func (f *fakeController) Bind(caller Caller) Access {
 	return Access{caller: caller, tb: newThreadBrowser(caller.ThreadID)}
 }
-func (f *fakeController) NewPage(context.Context, Access) (PageInfo, error) { return PageInfo{}, nil }
-func (f *fakeController) OpenFile(context.Context, Access, string, OpenOptions) (PageInfo, error) {
+func (f *fakeController) NewPage(context.Context, Access) (PageInfo, error) {
+	f.lastCall = "NewPage"
 	return PageInfo{}, nil
 }
-func (f *fakeController) Pages(context.Context, Access) ([]PageInfo, error) { return []PageInfo{}, nil }
+func (f *fakeController) OpenFile(_ context.Context, _ Access, path string, opts OpenOptions) (PageInfo, error) {
+	f.lastCall = "OpenFile"
+	f.openedFile = path
+	f.openOptions = opts
+	return PageInfo{ID: "p", URL: "file://" + path}, nil
+}
+func (f *fakeController) Pages(context.Context, Access) ([]PageInfo, error) {
+	f.lastCall = "Pages"
+	return []PageInfo{}, nil
+}
 func (f *fakeController) SelectPage(context.Context, Access, PageID) (PageInfo, error) {
+	f.lastCall = "SelectPage"
 	return PageInfo{}, nil
 }
 func (f *fakeController) LabelPage(context.Context, Access, PageID, string) (PageInfo, error) {
+	f.lastCall = "LabelPage"
 	return PageInfo{}, nil
 }
 func (f *fakeController) NameSession(context.Context, Access, string) (SessionInfo, error) {
+	f.lastCall = "NameSession"
 	return SessionInfo{}, nil
 }
 func (f *fakeController) Visibility(context.Context, Access, *bool, PageID) (SessionInfo, error) {
+	f.lastCall = "Visibility"
 	return SessionInfo{}, nil
 }
-func (f *fakeController) Viewport(context.Context, Access, ViewportOptions) (SessionInfo, error) {
+func (f *fakeController) Viewport(_ context.Context, _ Access, opts ViewportOptions) (SessionInfo, error) {
+	f.lastCall = "Viewport:" + opts.Action
 	return SessionInfo{}, nil
 }
-func (f *fakeController) ClosePage(context.Context, Access, PageID) error { return nil }
+func (f *fakeController) ClosePage(context.Context, Access, PageID) error {
+	f.lastCall = "ClosePage"
+	return nil
+}
 func (f *fakeController) Snapshot(context.Context, Access, PageID) (Snapshot, error) {
 	return Snapshot{}, nil
 }
@@ -77,6 +96,7 @@ func (f *fakeController) Pointer(context.Context, Access, PointerOptions) (PageI
 	return PageInfo{}, nil
 }
 func (f *fakeController) DOMAction(context.Context, Access, DOMActionOptions) (any, error) {
+	f.lastCall = "DOMAction"
 	return nil, nil
 }
 func (f *fakeController) Clipboard(context.Context, Access, ClipboardOptions) (any, error) {
@@ -93,18 +113,27 @@ func (f *fakeController) WaitAdvanced(context.Context, Access, WaitOptions) (Pag
 	return PageInfo{}, nil
 }
 func (f *fakeController) Click(context.Context, Access, PageID, string) (PageInfo, error) {
+	f.lastCall = "Click"
 	return PageInfo{}, nil
 }
-func (f *fakeController) Type(context.Context, Access, TypeOptions) (PageInfo, error) {
+func (f *fakeController) Type(_ context.Context, _ Access, opts TypeOptions) (PageInfo, error) {
+	if opts.Clear {
+		f.lastCall = "Type:clear"
+	} else {
+		f.lastCall = "Type"
+	}
 	return PageInfo{}, nil
 }
-func (f *fakeController) Press(context.Context, Access, PageID, string) (PageInfo, error) {
+func (f *fakeController) Press(_ context.Context, _ Access, _ PageID, key string) (PageInfo, error) {
+	f.lastCall = "Press:" + key
 	return PageInfo{}, nil
 }
 func (f *fakeController) Scroll(context.Context, Access, PageID, string, float64, float64) (PageInfo, error) {
+	f.lastCall = "Scroll"
 	return PageInfo{}, nil
 }
-func (f *fakeController) History(context.Context, Access, PageID, string) (PageInfo, error) {
+func (f *fakeController) History(_ context.Context, _ Access, _ PageID, action string) (PageInfo, error) {
+	f.lastCall = "History:" + action
 	return PageInfo{}, nil
 }
 func (f *fakeController) Evaluate(_ context.Context, _ Access, _ PageID, code string, argument json.RawMessage) (any, string, error) {
@@ -128,8 +157,8 @@ func TestMCPServerDisabledIsConnectedButAdvertisesNoTools(t *testing.T) {
 	server.SetEnabled(true)
 	response = postRPC(t, url, map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
 	tools = response["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 27 {
-		t.Fatalf("enabled tools = %d, want 27", len(tools))
+	if len(tools) != 15 {
+		t.Fatalf("enabled tools = %d, want 15", len(tools))
 	}
 }
 
@@ -139,7 +168,7 @@ func TestMCPInitializeExplainsSafeParallelPageUsage(t *testing.T) {
 	response := postRPC(t, url, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize"})
 	result := response["result"].(map[string]any)
 	instructions, _ := result["instructions"].(string)
-	for _, required := range []string{"page_id", "browser_pages", "browser_visibility"} {
+	for _, required := range []string{"page_id", "browser_page", "browser_pane"} {
 		if !strings.Contains(instructions, required) {
 			t.Fatalf("MCP instructions omit %q: %q", required, instructions)
 		}
@@ -161,8 +190,8 @@ func TestMCPServerThreadToggleIsScopedAndDefaultsOn(t *testing.T) {
 	}
 	firstTools := postRPC(t, first, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"].(map[string]any)["tools"].([]any)
 	secondTools := postRPC(t, second, map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/list"})["result"].(map[string]any)["tools"].([]any)
-	if len(firstTools) != 0 || len(secondTools) != 27 {
-		t.Fatalf("thread tool lists = %d, %d; want 0, 27", len(firstTools), len(secondTools))
+	if len(firstTools) != 0 || len(secondTools) != 15 {
+		t.Fatalf("thread tool lists = %d, %d; want 0, 15", len(firstTools), len(secondTools))
 	}
 }
 
@@ -470,4 +499,88 @@ func postMCPRequest(t *testing.T, url, contentType string, headers map[string]st
 	}
 	t.Cleanup(func() { _ = resp.Body.Close() })
 	return resp
+}
+
+func TestMCPConsolidatedToolValidationAndRouting(t *testing.T) {
+	fake := &fakeController{}
+	server := NewMCPServer(fake, true)
+	url := registerTestThread(t, server)
+
+	call := func(name string, args map[string]any) (bool, string) {
+		t.Helper()
+		fake.lastCall = ""
+		resp := postRPC(t, url, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "tools/call",
+			"params":  map[string]any{"name": name, "arguments": args},
+		})
+		if resp["error"] != nil {
+			t.Fatalf("%s(%v): rpc error = %#v", name, args, resp["error"])
+		}
+		res := resp["result"].(map[string]any)
+		isErr, _ := res["isError"].(bool)
+		text := res["content"].([]any)[0].(map[string]any)["text"].(string)
+		return isErr, text
+	}
+
+	// Valid consolidated routes.
+	routes := []struct {
+		name     string
+		args     map[string]any
+		wantCall string
+	}{
+		{"browser_open", map[string]any{"path": "/repo/index.html"}, "OpenFile"},
+		{"browser_page", map[string]any{"action": "list"}, "Pages"},
+		{"browser_page", map[string]any{"action": "new"}, "NewPage"},
+		{"browser_page", map[string]any{"action": "select", "page_id": "p1"}, "SelectPage"},
+		{"browser_page", map[string]any{"action": "label", "page_id": "p1", "label": "docs"}, "LabelPage"},
+		{"browser_page", map[string]any{"action": "close", "page_id": "p1"}, "ClosePage"},
+		{"browser_page", map[string]any{"action": "reload", "page_id": "p1"}, "History:reload"},
+		{"browser_pane", map[string]any{"action": "session", "name": "QA"}, "NameSession"},
+		{"browser_pane", map[string]any{"action": "visibility", "visible": true, "page_id": "p1"}, "Visibility"},
+		{"browser_pane", map[string]any{"action": "viewport_get"}, "Viewport:get"},
+		{"browser_pane", map[string]any{"action": "viewport_set", "width": 390, "height": 844}, "Viewport:set"},
+		{"browser_pane", map[string]any{"action": "viewport_reset"}, "Viewport:reset"},
+		{"browser_dom", map[string]any{"action": "click", "selector": "#go"}, "Click"},
+		{"browser_dom", map[string]any{"action": "type", "selector": "#q", "text": "hi", "clear": true}, "Type:clear"},
+		{"browser_dom", map[string]any{"action": "scroll", "selector": "#list", "y": 100}, "Scroll"},
+		{"browser_dom", map[string]any{"action": "keypress", "keys": []string{"Control", "L"}}, "Press:Control+L"},
+		{"browser_dom", map[string]any{"action": "keypress", "node_id": "n1", "key": "Enter"}, "DOMAction"},
+	}
+	for _, tc := range routes {
+		isErr, text := call(tc.name, tc.args)
+		if isErr {
+			t.Errorf("%s(%v) unexpected error: %s", tc.name, tc.args, text)
+		}
+		if fake.lastCall != tc.wantCall {
+			t.Errorf("%s(%v) routed to %q, want %q", tc.name, tc.args, fake.lastCall, tc.wantCall)
+		}
+	}
+
+	// Refused invalid combinations.
+	invalid := []struct {
+		name        string
+		args        map[string]any
+		wantContain string
+	}{
+		{"browser_open", map[string]any{}, "url or path is required"},
+		{"browser_open", map[string]any{"url": "https://a.test", "path": "/repo/a.html"}, "pass either url or path, not both"},
+		{"browser_page", map[string]any{"action": "select"}, "page_id is required"},
+		{"browser_page", map[string]any{"action": "label"}, "page_id is required"},
+		{"browser_page", map[string]any{"action": "close"}, "page_id is required"},
+		{"browser_page", map[string]any{"action": "bogus"}, "unknown action \"bogus\""},
+		{"browser_pane", map[string]any{"action": "bogus"}, "unknown action \"bogus\""},
+		{"browser_dom", map[string]any{"action": "click", "node_id": "n1", "selector": "#go"}, "pass either node_id or selector, not both"},
+		{"browser_dom", map[string]any{"action": "double_click", "selector": "#go"}, "selector is supported for click, type, and scroll"},
+	}
+	for _, tc := range invalid {
+		isErr, text := call(tc.name, tc.args)
+		if !isErr || !strings.Contains(text, tc.wantContain) {
+			t.Errorf("%s(%v) => isErr=%v text=%q, want error containing %q", tc.name, tc.args, isErr, text, tc.wantContain)
+		}
+		if fake.lastCall != "" {
+			t.Errorf("%s(%v) reached controller method %q despite validation error", tc.name, tc.args, fake.lastCall)
+		}
+	}
 }

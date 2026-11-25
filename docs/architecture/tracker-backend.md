@@ -1938,7 +1938,10 @@ board subscription's methods and `tracker:board_updated`'s TypeScript
 type, and its ticket screen, with the wrappers of the ticket
 subscription's methods, `TrackerComments`, the issue and comment writes,
 `TrackerAssignableUsers` and `TrackerChoices`, and
-`tracker:issue_updated`'s TypeScript type (`components/issues/AGENTS.md`).
+`tracker:issue_updated`'s TypeScript type, and its Time screen, with the
+wrappers of `TrackerWorklogs`, `RefreshTrackerWorklogs`,
+`AddTrackerWorklog`, `EditTrackerWorklog`, `DeleteTrackerWorklog`,
+`TrackerLookup` and `TrackerSearch` (`components/issues/AGENTS.md`).
 A failure of the linked-issues
 loop after boot reaches only the log (`Deps.LoopFailed`): its failures
 are outside the tracker (a store error, the cleanup), and a tracker
@@ -1947,12 +1950,10 @@ Not built, owed by the app layer:
 
 - The ticket screen's attachments, links, planning poker and Log time,
   and a ticket in a pane of its own: the `bindings.ts` wrappers of the
-  attachment mints, `TrackerLinkTypes`, `TrackerLookup`, `TrackerSearch`,
-  `LinkTrackerIssues`, `UnlinkTrackerIssues`, `AddTrackerWorklog` and the
-  planning poker methods ship with them.
-- The Time screen and a sprint edit on the Backlog screen: the
-  `bindings.ts` wrappers of the worklog methods and `EditTrackerSprint`
-  ship with them.
+  attachment mints, `TrackerLinkTypes`, `LinkTrackerIssues`,
+  `UnlinkTrackerIssues` and the planning poker methods ship with them.
+- A sprint edit on the Backlog screen: the `bindings.ts` wrapper of
+  `EditTrackerSprint` ships with it.
 - Sidebar search by a linked ticket's key and title: the frontend's
   `threadMatchesQuery` (`components/sidebar/threadSearch.ts`) adds
   `ticketLink.key` and `ticketLink.title` to what it matches.

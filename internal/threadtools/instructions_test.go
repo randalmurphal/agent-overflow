@@ -104,7 +104,7 @@ func TestSoloInstructionsSayNothingAboutComputers(t *testing.T) {
 			t.Errorf("the single-computer instructions contain %q", forbidden)
 		}
 	}
-	if !strings.Contains(text, "on this computer, the way the user would from the sidebar") {
+	if !strings.Contains(text, "on this computer.") {
 		t.Error("the single-computer opening paragraph does not say \"on this computer\"")
 	}
 }
@@ -112,7 +112,7 @@ func TestSoloInstructionsSayNothingAboutComputers(t *testing.T) {
 // TestPairedInstructionsCarryTheOtherComputersParagraph is the other half.
 func TestPairedInstructionsCarryTheOtherComputersParagraph(t *testing.T) {
 	text := instructionsFor(pairedShape())
-	for _, want := range []string{"Other computers.", "`computers`", "`computer_id`", "on the user's other paired computers"} {
+	for _, want := range []string{"Other computers.", "`computers`", "`computer_id`", "on the user's paired computers"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the paired instructions are missing %q", want)
 		}
@@ -127,7 +127,7 @@ func TestTheDefaultsParagraphKeepsInheritingAndTheReadOnlyWarning(t *testing.T) 
 	for _, shape := range []Shape{soloShape(), pairedShape()} {
 		text := instructionsDefaults(shape)
 		for _, want := range []string{
-			"Defaults. A spawn inherits your provider, model, effort, and runtime mode; keep them unless the task suits another agent.",
+			"Defaults. Spawns inherit your provider, model, effort and runtime mode; keep them unless the task suits another agent.",
 			"`read-only` is the exception, not the safe choice:",
 			"Choose it only when the work needs nothing but reading files",
 		} {
@@ -144,7 +144,7 @@ func TestTheDefaultsParagraphNamesTheProfilesThisComputerRuns(t *testing.T) {
 	shape := soloShape()
 	shape.Spawn = SpawnShape{Level: 0, Limit: 2, Providers: []string{"claude", "codex"}, Profiles: []string{"Opus", "Sol"}}
 	text := instructionsFor(shape)
-	for _, want := range []string{"pass `profile` with one of Opus and Sol", "`thread_options` lists each one's"} {
+	for _, want := range []string{"Pass `profile` (Opus and Sol)", "`thread_options` lists each profile's"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the guide is missing %q", want)
 		}
@@ -193,14 +193,14 @@ func TestTheGuideReadsCorrectlyWithOneProvider(t *testing.T) {
 func TestTheGuideCountsOneLevelInTheSingular(t *testing.T) {
 	shape := soloShape()
 	shape.Spawn = SpawnShape{Level: 1, Limit: 1, Providers: []string{"codex"}}
-	if text := instructionsFor(shape); !strings.Contains(text, "You are 1 level of sub-threads below the thread the user talks to, the deepest allowed") {
+	if text := instructionsFor(shape); !strings.Contains(text, "You are 1 level of sub-threads below the user's thread (the deepest allowed, so you cannot open new threads or subagents)") {
 		t.Fatalf("the guide at level 1 reads %q", text)
 	}
 }
 
 // spawnEnds opens the Waiting paragraph's sentences on when a spawn ends,
 // which only a session that can spawn reads.
-const spawnEnds = "A thread you spawned, and a send to it, end only when it has nothing left running"
+const spawnEnds = "Spawned threads and sends to them finish only when idle"
 
 func TestASessionAtTheLimitHasNoSpawnAndReadsNoWordOfIt(t *testing.T) {
 	for _, base := range []Shape{soloShape(), pairedShape()} {
@@ -215,14 +215,14 @@ func TestASessionAtTheLimitHasNoSpawnAndReadsNoWordOfIt(t *testing.T) {
 				t.Errorf("paired=%v: the guide at the limit says %q", shape.Paired(), forbidden)
 			}
 		}
-		if !strings.Contains(text, "You are 2 levels of sub-threads below the thread the user talks to, the deepest allowed") {
+		if !strings.Contains(text, "You are 2 levels of sub-threads below the user's thread (the deepest allowed, so you cannot open new threads or subagents)") {
 			t.Errorf("paired=%v: the guide at the limit does not say why it cannot spawn", shape.Paired())
 		}
 		shape.Spawn.Level = 1
 		if _, ok := toolsByName(t, shape)["thread_spawn"]; !ok {
 			t.Fatalf("paired=%v: a session one level above the limit has no thread_spawn", shape.Paired())
 		}
-		if !strings.Contains(instructionsFor(shape), "A thread you spawn is at the deepest level of sub-threads allowed") {
+		if !strings.Contains(instructionsFor(shape), "Spawned threads are at the deepest sub-thread level allowed") {
 			t.Errorf("paired=%v: the spawner of the last level is not told its workers cannot spawn", shape.Paired())
 		}
 		if !strings.Contains(instructionsFor(shape), spawnEnds) {

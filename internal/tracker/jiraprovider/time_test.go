@@ -105,20 +105,34 @@ func TestJiraWorklogsSayWhichStepRefused(t *testing.T) {
 	})
 	t.Run("a hidden time zone ends the search", func(t *testing.T) {
 		f, p := newSite(t)
-		ended := make(chan struct{})
+		entered, ended := make(chan struct{}), make(chan struct{})
 		// The search answers only once the read gives it up.
 		f.On("POST", searchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
+			close(entered)
 			<-r.Context().Done()
 			close(ended)
 		})
-		f.On("GET", "/rest/api/3/user", jiratest.Reply(200, hidden))
-		// A read that waits for the search ends at this bound instead.
+		// The person's answer waits for the search to be running.
+		f.On("GET", "/rest/api/3/user", func(w http.ResponseWriter, r *http.Request, b []byte) {
+			select {
+			case <-entered:
+			case <-r.Context().Done():
+				return
+			}
+			jiratest.Reply(200, hidden)(w, r, b)
+		})
+		// A read that waits for the search, or a search never sent, ends
+		// at this bound instead.
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
 		if _, err := p.Time().Worklogs(ctx, q); !errors.Is(err, tracker.ErrNoTimeZone) || ctx.Err() != nil {
 			t.Fatalf("a hidden zone with the search running: %v, bound %v", err, ctx.Err())
 		}
-		<-ended
+		select {
+		case <-ended:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the search the read gave up was not ended")
+		}
 	})
 	t.Run("the search refused", func(t *testing.T) {
 		f, p := newSite(t)
@@ -395,8 +409,21 @@ func TestTempoWorklogsAreNamedByJira(t *testing.T) {
 	}
 	f.On("POST", bulkFetchPath, jiratest.Reply(403, `{"errorMessages":["refused"],"errors":{}}`))
 	_, err = p.Time().Worklogs(t.Context(), q)
-	if status, ok := errors.AsType[*trackerapi.StatusError](err); !errors.Is(err, tracker.ErrWorklogNames) || !ok || status.Tracker != "jira" || status.Status != 403 {
+	if status, ok := errors.AsType[*trackerapi.StatusError](err); !errors.Is(err, tracker.ErrWorklogNames) || !errors.Is(err, tracker.ErrWorklogJira) || !ok || status.Tracker != "jira" || status.Status != 403 {
 		t.Fatalf("a refused read of the issues: %v", err)
+	}
+}
+
+// A Tempo worklog's add reads who logs the time from Jira first: that
+// read's failure says it was Jira's (tracker.ErrWorklogJira), so its
+// sentence names Jira and not the Tempo the rest of the time answers.
+func TestATempoAddSaysJiraFailedToSayWhoLogs(t *testing.T) {
+	t.Parallel()
+	f, _, p := tempoSite(t)
+	f.On("GET", myselfPath, jiratest.Reply(400, `{"errorMessages":["refused"],"errors":{}}`))
+	res := checked(t, p.Time().AddWorklog(t.Context(), tracker.WorklogInput{Issue: "10001", Day: day(t, 2026, 11, 10), Spent: time.Hour}))
+	if err := res.Parts[0].Outcome.Err(); states(res) != "worklog:refused" || !errors.Is(err, tracker.ErrWorklogJira) {
+		t.Fatalf("a refused read of who logs the time: %s, %v", states(res), err)
 	}
 }
 

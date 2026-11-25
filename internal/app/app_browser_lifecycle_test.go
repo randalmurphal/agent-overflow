@@ -86,7 +86,7 @@ func TestDeleteThreadWaitsForARunningBrowserToolCall(t *testing.T) {
 	url := config[appbrowser.ServerName].(map[string]any)["url"].(string)
 	call := make(chan error, 1)
 	go func() {
-		resp, err := http.Post(url, "application/json", bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_new_page","arguments":{}}}`))
+		resp, err := http.Post(url, "application/json", bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_page","arguments":{"action":"new"}}}`))
 		if err == nil {
 			err = resp.Body.Close()
 			if err == nil && resp.StatusCode != http.StatusOK {
