@@ -1455,10 +1455,14 @@ estimate**: a person sets the agreed estimate as any other edit
   is poker's alone and settles nothing of the connection.
 - **The votes follow a ticket while its poker panel is open.**
   `FollowTrackerPoker(subscriptionID, true)` makes that ticket handle a
-  follower. While at least one handle follows and one handle shows the
-  ticket, the ticket's pump reads the votes at once and then every 5
-  seconds (`trackerapp.PokerEvery`, `Cadence.Poker`) on its own goroutine,
-  one read for every follower. A read whose view differs from the last
+  follower. While at least one handle both follows and shows the ticket,
+  a poker run of the ticket's reads the votes at once and then every 5
+  seconds (`trackerapp.PokerEvery`, `Cadence.Poker`), one read for every
+  follower. The run is its own goroutine, so a slow add-on never holds
+  the ticket's own refresh; when no handle both follows and shows the
+  ticket, the run ends, its read in flight is cancelled, and nothing it
+  read after is applied. The ticket's pump and `Stop` wait for it. A read
+  whose view differs from the last
   sends `tracker:issue_updated` with `poker: true`, and the client reads
   `TrackerPoker(subscriptionID)` from memory; a read that changed nothing
   sends nothing. A hidden ticket, an unfollowed one and a closed one make
@@ -1468,7 +1472,9 @@ estimate**: a person sets the agreed estimate as any other edit
 - **What a read shows** (`trackerapp.PokerView`): whether the votes are
   revealed, and each vote's voter, named from the tracker's users (one
   user read for each voter the client has not kept in 30 minutes), and
-  whether it is the caller's own. Before the reveal only the caller's own
+  whether it is the caller's own. A voter Jira does not show (a 404, or a
+  403 for a credential that may not see users) is shown by account ID,
+  the round stands, and that answer is kept 30 minutes as a name is. Before the reveal only the caller's own
   vote has a value, whatever the add-on answered (the provider hides the
   rest). A read that fails keeps the last votes, carries its failure, and
   is retried on the round's retry schedule or when a rate limit lifts.
@@ -1479,8 +1485,8 @@ estimate**: a person sets the agreed estimate as any other edit
 - **The writes** (`VoteTrackerPoker`, `RevealTrackerPoker`,
   `ClearTrackerPokerVotes`) go through `Service.write` and answer a
   `WriteView` with one `poker` part, as every write does: refused with a
-  sentence (a site without the add-on, a vote outside 0 to 1000, the
-  add-on's or the gateway's 4xx), unknown with "look at the ticket's
+  sentence (a site without the add-on, a vote with no value or a null
+  one, a vote outside 0 to 1000, the add-on's or the gateway's 4xx), unknown with "look at the ticket's
   poker votes before you try again" (a 5xx, or an answer that could not
   be read), or applied. A write that may have happened makes the
   issue's following pump read the votes at once, including after a read
@@ -1489,8 +1495,8 @@ estimate**: a person sets the agreed estimate as any other edit
   minutes. The Jira client keeps it in memory only (at most 16 issues),
   reuses it until 60 seconds before it expires, and drops it when the
   gateway refuses it. It is never logged, stored, put in an error, or
-  sent to a client: a gateway message that repeats it is cut to 200
-  bytes with the token replaced.
+  sent to a client: the invoke replaces it in every text of the answer it
+  returns or puts in an error (see [tracker clients](tracker-clients.md#planning-poker)).
 - **Cost.** A follower's ticket costs one invoke every 5 seconds while
   its panel is shown: 720 an hour per open panel, on top of the ticket's
   own reads. The first read of an issue, and one every 14 minutes after,

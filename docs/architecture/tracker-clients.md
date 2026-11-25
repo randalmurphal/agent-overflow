@@ -410,19 +410,24 @@ It sends the measured GraphQL documents exactly.
 - **Calls.** `PokerVotes` reads `planningPoker/{issueId}`;
   `CastPokerVote`, `RevealPokerVotes` and `ClearPokerVotes` are the three
   writes, each one `Invoke` of `requestConnectBackend`. A write's body is
-  encoded in one place (`pokerBody`), since its encoding is the one part
-  not measured. `PokerInstalled` and `PokerVotes` are walks
+  sent as the JSON value itself, at one place in `pokerInvoke`, since its
+  encoding is the one part not measured. `PokerInstalled` and `PokerVotes` are walks
   (`trackerapi.Walk`), so a credential change part way starts them again.
 - **Errors.** An answer the measured shapes do not cover is a
   `*PokerError` naming its step (cloud ID, listing, token, gateway, poker
   app) and what was wrong, never a ticket's error. A write is applied only
   on the poker app's 2xx; its 4xx, and a gateway refusal with a 4xx
-  `statusCode`, refuse it; any other answer leaves it unknown. A gateway
-  message is cut to 200 bytes with the token replaced by `<redacted>`.
+  `statusCode`, refuse it; any other answer leaves it unknown. The invoke
+  returns nothing of its answer that could repeat the token: the poker
+  app's body and status text and a gateway message (cut to 200 bytes)
+  have it replaced by `<redacted>`, an HTTP status the gateway answers is
+  a `*PokerError` that wraps no `*trackerapi.StatusError`, and a refused
+  credential's message has it replaced.
 - **The fake.** `trackerfake` serves the same three routes
   (`jira_poker.go`): it matches the two documents exactly, signs a token
   with the measured claim names, refuses a missing, expired or
-  mismatched token, and keeps each issue's votes. Unverified: the three
+  mismatched token, and keeps each issue's votes. The listing and a GET
+  invoke are reads (`readsWhen`), so a poll saves no copy of the site. Unverified: the three
   writes' request encoding, and the answers it had to choose for a failed
   invoke, an issue the token does not name, a vote out of range and the
   round after a clear. A site's `Members` are other people who sign in to

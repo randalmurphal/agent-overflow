@@ -703,8 +703,8 @@ Routes, each under the path prefix `/forge/rest/eausm/latest/`:
 The read was measured again on 2026-11-24 with the same shape. The three
 writes were not: whether the backend takes a write's `body` as the JSON
 value or as a JSON string is the first thing real use shows
-(`pokerBody` in `internal/tracker/jira/poker.go` is the one place that
-encodes it).
+(the invoke's `body` in `pokerInvoke`, `internal/tracker/jira/poker.go`,
+is the one place that encodes it).
 
 `issueId` is the numeric Jira issue ID and `userId` is an Atlassian account
 ID. The calls add no changelog entry and no entity property to the issue. A
