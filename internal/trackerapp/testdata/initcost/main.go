@@ -191,6 +191,8 @@ func reachTrackerApp(arg string) {
 	svc, err := trackerapp.New(trackerapp.Deps{
 		Changed:         func() {},
 		CredentialsDir:  arg,
+		ConfigDir:       arg,
+		SetupChanged:    func() {},
 		Origin:          trackerapp.APIOrigin,
 		Version:         arg,
 		Now:             time.Now,

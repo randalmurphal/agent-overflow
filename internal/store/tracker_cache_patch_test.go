@@ -55,14 +55,27 @@ var patchSections = []MirrorSection{
 // section's pages shows for those issues, whole and in order, names what
 // those rows name as the pages name it, and carries the totals and
 // revision CountMirrorSections reads; for a caller holding those totals it
-// carries none and the same rows. It returns the patch.
+// carries none and the same rows. It holds read with each of
+// testRegroups, and returns the patch read with no regrouping.
 func requirePatchParity(t *testing.T, s *Store, root int64, step string, named []string) MirrorBoardPatch {
 	t.Helper()
-	patch, ok, err := s.ReadMirrorBoardPatch(root, "10", patchSections, named, MirrorTotalsAt{})
+	var patch MirrorBoardPatch
+	for i, rg := range testRegroups(t) {
+		read := requirePatchParityWith(t, s, root, rg.regroup, step+", "+rg.name, named)
+		if i == 0 {
+			patch = read
+		}
+	}
+	return patch
+}
+
+func requirePatchParityWith(t *testing.T, s *Store, root int64, regroup MirrorRegroup, step string, named []string) MirrorBoardPatch {
+	t.Helper()
+	patch, ok, err := s.ReadMirrorBoardPatch(root, "10", regroup, patchSections, named, MirrorTotalsAt{})
 	if err != nil || !ok || patch.Counts == nil {
 		t.Fatalf("%s: patch = %+v, %v, %v", step, patch, ok, err)
 	}
-	counts, err := s.CountMirrorSections(root, "10")
+	counts, err := s.CountMirrorSections(root, "10", regroup)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +83,7 @@ func requirePatchParity(t *testing.T, s *Store, root int64, step string, named [
 		t.Errorf("%s: patch totals %+v at %d/%d; counts %+v", step, *patch.Counts, patch.Lifetime, patch.Revision, counts)
 	}
 	held := MirrorTotalsAt{Lifetime: patch.Lifetime, Revision: counts.TotalsRevision}
-	if again, ok, err := s.ReadMirrorBoardPatch(root, "10", patchSections, named, held); err != nil || !ok || again.Counts != nil ||
+	if again, ok, err := s.ReadMirrorBoardPatch(root, "10", regroup, patchSections, named, held); err != nil || !ok || again.Counts != nil ||
 		!reflect.DeepEqual(again.Sections, patch.Sections) || again.Revision != patch.Revision {
 		t.Errorf("%s: a patch for the totals held at %+v = %+v, %v, %v", step, held, again, ok, err)
 	}
@@ -79,7 +92,7 @@ func requirePatchParity(t *testing.T, s *Store, root int64, step string, named [
 	for i, section := range patchSections {
 		var want []MirrorRow
 		for after := (MirrorRowKey{}); ; {
-			page, err := s.ListMirrorSection(root, "10", section, after)
+			page, err := s.ListMirrorSection(root, "10", regroup, section, after)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -215,10 +228,10 @@ func TestMirrorBoardPatchMatchesTheSections(t *testing.T) {
 		t.Fatalf("the patch names parents %+v; want 30000", patch.Names.Parents)
 	}
 
-	if _, ok, err := s.ReadMirrorBoardPatch(root, "11", patchSections, named, MirrorTotalsAt{}); ok || err != nil {
+	if _, ok, err := s.ReadMirrorBoardPatch(root, "11", MirrorRegroup{}, patchSections, named, MirrorTotalsAt{}); ok || err != nil {
 		t.Fatalf("a board with no structure: %v, %v", ok, err)
 	}
-	if _, _, err := s.ReadMirrorBoardPatch(root, "10", patchSections, make([]string, mirrorMaxLookup+1), MirrorTotalsAt{}); err == nil {
+	if _, _, err := s.ReadMirrorBoardPatch(root, "10", MirrorRegroup{}, patchSections, make([]string, mirrorMaxLookup+1), MirrorTotalsAt{}); err == nil {
 		t.Fatal("an over-long list was read")
 	}
 }
@@ -236,7 +249,7 @@ func TestMirrorBoardPatchStatements(t *testing.T) {
 	statements := countMirrorStatements(t, func() {
 		var ok bool
 		var err error
-		if patch, ok, err = s.ReadMirrorBoardPatch(root, "10", sections, ids[:1], MirrorTotalsAt{}); err != nil || !ok {
+		if patch, ok, err = s.ReadMirrorBoardPatch(root, "10", MirrorRegroup{}, sections, ids[:1], MirrorTotalsAt{}); err != nil || !ok {
 			t.Fatalf("%v, %v", ok, err)
 		}
 	})
@@ -246,7 +259,7 @@ func TestMirrorBoardPatchStatements(t *testing.T) {
 	}
 	held := MirrorTotalsAt{Lifetime: patch.Lifetime, Revision: patch.Counts.TotalsRevision}
 	statements = countMirrorStatements(t, func() {
-		if again, ok, err := s.ReadMirrorBoardPatch(root, "10", sections, ids[:1], held); err != nil || !ok || again.Counts != nil {
+		if again, ok, err := s.ReadMirrorBoardPatch(root, "10", MirrorRegroup{}, sections, ids[:1], held); err != nil || !ok || again.Counts != nil {
 			t.Fatalf("%+v, %v, %v", again, ok, err)
 		}
 	})

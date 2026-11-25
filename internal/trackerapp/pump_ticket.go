@@ -183,7 +183,7 @@ func (s *Service) launchTicketLocked(tp *ticketPump) {
 func (s *Service) takeTicketHandle(key ticketKey, visible bool, tie Tie) (id string, tp *ticketPump, start bool, seq uint64, told TicketView, err error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
-	kind, err := s.subscribableLocked(key.connection)
+	row, err := s.subscribableLocked(key.connection)
 	if err != nil {
 		return "", nil, false, 0, TicketView{}, err
 	}
@@ -207,7 +207,7 @@ func (s *Service) takeTicketHandle(key ticketKey, visible bool, tie Tie) (id str
 		}
 		s.subs.pumps++
 		tp = &ticketPump{
-			core: s.newCore(), key: key, kind: kind, number: s.subs.pumps, gen: s.genLocked(key.connection), every: s.cadence.ticket(kind),
+			core: s.newCore(), key: key, kind: row.Kind, number: s.subs.pumps, gen: s.genLocked(key.connection), every: s.cadence.ticket(row.Kind),
 			exited: make(chan struct{}), viewChanged: make(chan struct{}, 1), dirty: 1,
 		}
 		s.subs.tickets[key] = tp

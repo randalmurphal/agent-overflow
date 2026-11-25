@@ -54,7 +54,7 @@ func (s *fakeScenario) atScale(t *testing.T, scope Scope, n int, edit func()) {
 	var ticks int
 	op("first sync", func() { ticks = pumpTicks(t, s.svc, scope) })
 	t.Logf("first sync: %d ticks", ticks)
-	if v := must[BoardView](t)(s.svc.Board(scope, nil)); v.All.Rows != n {
+	if v := must[BoardView](t)(s.svc.Board(scope, StatusGroups{}, nil)); v.All.Rows != n {
 		t.Fatalf("the board holds %d rows of %d", v.All.Rows, n)
 	}
 	op("idle tick", func() { pumpTicks(t, s.svc, scope) })

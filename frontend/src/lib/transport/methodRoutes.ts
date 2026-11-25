@@ -354,6 +354,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2105157519: 'home', // PreviewNotificationSound
 	2575010484: 'project', // ProjectDeletionPreview
 	1066511111: 'project', // ProjectTrackerBoards
+	3259060803: 'project', // ProjectTrackerSetup
 	4079123887: 'thread', // PromoteScratchThread
 	1393518281: 'thread', // ProviderTerminalAttach
 	2584141779: 'thread', // ProviderTerminalDetach
@@ -474,6 +475,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1113626255: 'home', // SetPipelineActive
 	2435786137: 'home', // SetPipelineFollows
 	1148228013: 'project', // SetProjectTrackerBoards
+	2325537073: 'project', // SetProjectTrackerSetup
 	322092470: 'project', // SetProjectWorktreeSetup
 	2230720062: 'home', // SetProviderAccountAutoSwitch
 	2118904465: 'home', // SetProviderCustomEnvVar

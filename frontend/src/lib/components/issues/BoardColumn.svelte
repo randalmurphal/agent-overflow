@@ -13,7 +13,6 @@
   import LongListVirtualizer, { type LongListHandle } from '../virtual/LongListVirtualizer.svelte';
   import BoardCard from './BoardCard.svelte';
   import StatusMark from './StatusMark.svelte';
-  import { columnCount } from './boardFormat';
   import type { RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import type { ScreenColumn } from '../../stores/trackerBoardModel';
   import type { CardField } from '../../stores/issuesPane.svelte';
@@ -30,6 +29,8 @@
     column: ScreenColumn;
     /** The cards shown: the column's rows, filtered. */
     rows: readonly RowView[];
+    /** The header's count (`columnCount`). */
+    count: string;
     filtered: boolean;
     unit: string;
     hidden: ReadonlySet<CardField>;
@@ -50,7 +51,7 @@
     onCardMenu: (row: RowView, event: MouseEvent) => void;
   }
 
-  let { column, rows, filtered, unit, hidden, now, paging, failed, onNearEnd, shown, wide = false, openIssue, onOpenCard, onCardMenu }: Props = $props();
+  let { column, rows, count, filtered, unit, hidden, now, paging, failed, onNearEnd, shown, wide = false, openIssue, onOpenCard, onCardMenu }: Props = $props();
 
   const estimate: RowEstimate = { at: () => CARD_ESTIMATE_PX, isExact: () => false };
   const getKey = (row: RowView) => row.card.id;
@@ -101,7 +102,6 @@
     return ref.subscribeContentGeometry(() => untrack(check));
   });
 
-  const countText = $derived(columnCount(column, rows.length, filtered, unit));
 </script>
 
 <section
@@ -114,7 +114,7 @@
     <header class="flex min-w-0 items-center gap-1.5 px-1 pb-2 text-sm">
       <StatusMark group={column.statusGroups[0]} />
       <span class="truncate font-medium text-fg">{column.name}</span>
-      <span class="ml-auto shrink-0 tabular-nums text-fg-muted" data-testid="issues-column-count">{countText}</span>
+      <span class="ml-auto shrink-0 tabular-nums text-fg-muted" data-testid="issues-column-count">{count}</span>
     </header>
   {/if}
   <div

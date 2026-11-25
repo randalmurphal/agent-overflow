@@ -33,12 +33,13 @@ var mirrorBoardViewSQL = `SELECT b.board_id, b.project_id, b.name, b.plans_sprin
 // ReadMirrorBoardView reads, in one snapshot (mirrorReadSnapshot), a
 // board's structure (as GetMirrorBoard), its section totals (as
 // CountMirrorSections), the first page of each section pick names from
-// that structure (as ListMirrorSection) and what they name (MirrorNames):
-// one statement per part, the board's columns and their statuses read once
-// for the structure and the totals. pick runs inside the snapshot, again on
-// each of its retries, so the sections it chooses are the structure's. ok is false for a board
-// the mirror does not show.
-func (s *Store) ReadMirrorBoardView(rootID int64, boardID string, pick func(MirrorStructure) []MirrorSection) (view MirrorBoardView, ok bool, err error) {
+// that structure (as ListMirrorSection) and what they name (MirrorNames),
+// each read with regroup: one statement per part, the board's columns and
+// their statuses read once for the structure and the totals. pick runs
+// inside the snapshot, again on each of its retries, so the sections it
+// chooses are the structure's. ok is false for a board the mirror does not
+// show.
+func (s *Store) ReadMirrorBoardView(rootID int64, boardID string, regroup MirrorRegroup, pick func(MirrorStructure) []MirrorSection) (view MirrorBoardView, ok bool, err error) {
 	label := fmt.Sprintf("read tracker mirror %d board %s view", rootID, boardID)
 	view, err = mirrorReadSnapshot(s, label, func(tx sqlQueryer) (MirrorBoardView, error) {
 		var v MirrorBoardView
@@ -67,7 +68,7 @@ func (s *Store) ReadMirrorBoardView(rootID int64, boardID string, pick func(Mirr
 				columns[status] = position
 			}
 		}
-		if v.Counts, err = countMirrorSectionsTx(tx, rootID, boardID, board, columns); err != nil {
+		if v.Counts, err = countMirrorSectionsTx(tx, rootID, boardID, board, regroup, columns); err != nil {
 			return MirrorBoardView{}, err
 		}
 		sections := pick(*st)
@@ -82,7 +83,7 @@ func (s *Store) ReadMirrorBoardView(rootID int64, boardID string, pick func(Mirr
 		v.Pages = make([]MirrorSectionPage, len(sections))
 		rows := make([][]MirrorRow, len(sections))
 		for i, section := range sections {
-			if v.Pages[i], err = readMirrorSectionTx(tx, rootID, boardID, board, section, MirrorRowKey{}); err != nil {
+			if v.Pages[i], err = readMirrorSectionTx(tx, rootID, boardID, board, regroup, section, MirrorRowKey{}); err != nil {
 				return MirrorBoardView{}, fmt.Errorf("section %d: %w", i, err)
 			}
 			rows[i] = v.Pages[i].Rows

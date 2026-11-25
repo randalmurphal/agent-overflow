@@ -40,7 +40,7 @@ function card(i: number): RowView {
 }
 
 function column(rows: RowView[], more: boolean): ScreenColumn {
-  return { name: 'To Do', statusGroups: ['todo'], rows, moreFrom: more ? 0 : null, total: { rows: more ? rows.length + 500 : rows.length, estimate: 0 }, unread: false };
+  return { name: 'To Do', statusGroups: ['todo'], rows, moreFrom: more ? 0 : null, total: { rows: more ? rows.length + 500 : rows.length, estimate: 0 }, counted: rows.length, unread: false };
 }
 
 function mountColumn(rows: RowView[], more: boolean) {
@@ -51,6 +51,7 @@ function mountColumn(rows: RowView[], more: boolean) {
   const props = rawProps({
     column: column(rows, more),
     rows: rows as readonly RowView[],
+    count: String(rows.length),
     filtered: false,
     unit: 'points',
     hidden: new Set<CardField>() as ReadonlySet<CardField>,

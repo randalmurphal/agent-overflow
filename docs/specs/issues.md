@@ -5,7 +5,9 @@ the connections and a project's board list, in Settings > Issues
 (Connections, Boards), and the Issues pane with its Board screen, opened
 from the tool row's Issues entry, and the Ticket screen, opened from a
 card. The other screens are not built; the [Board](#board) and
-[Ticket](#ticket) sections say what of them is.
+[Ticket](#ticket) sections say what of them is. A project's status
+groups and ticket pins are built in the backend, and no screen sets them
+yet.
 
 ## Goal
 

@@ -119,6 +119,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.TrackerBoardUpdated,
 		eventchan.TrackerConnectionsUpdated,
 		eventchan.TrackerIssueUpdated,
+		eventchan.TrackerSetupUpdated,
 		eventchan.UpdaterDownloadStarted,
 		eventchan.UpdaterError,
 		eventchan.UpdaterInstall,

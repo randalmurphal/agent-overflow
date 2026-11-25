@@ -1348,6 +1348,16 @@ var channelPolicies = []ChannelPolicy{
 			"pull half, is tracker:read and never carries a token.",
 	},
 	{
+		Channel:   eventchan.TrackerSetupUpdated,
+		Audience:  AudienceAny,
+		Retention: RetentionLatestOnly,
+		Scope:     ScopeTrackerRead,
+		Why: "Payload-less refetch nudge for the projects' tracker setups, " +
+			"the same shape as tracker:connections_updated: N retained frames " +
+			"would be N identical refetches of the setups a client holds. " +
+			"Scope: ProjectTrackerSetup, the pull half, is tracker:read.",
+	},
+	{
 		Channel:   eventchan.TrackerBoardUpdated,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

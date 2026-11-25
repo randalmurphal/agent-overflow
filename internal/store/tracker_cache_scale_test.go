@@ -202,6 +202,26 @@ func readyListedAgainAtScale(t *testing.T, s *Store, rec *mirrorWriteRecorder) {
 		took.Round(time.Microsecond), statements, total, most)
 }
 
+// benchRegroup is a project's regrouping of 30 statuses of the bench
+// mirror's site: 28 its boards do not use and, when used, its in-progress
+// status as done and its canceled one left out of counts, or two more it
+// does not use.
+func benchRegroup(t *testing.T, used bool) MirrorRegroup {
+	t.Helper()
+	groups := map[string]int{"unused-a": MirrorGroupDone, "unused-b": MirrorGroupLeftOut}
+	if used {
+		groups = map[string]int{"3": MirrorGroupDone, "5": MirrorGroupLeftOut}
+	}
+	for i := range 28 {
+		groups[fmt.Sprint("unused-", i)] = 1 + i%MirrorGroupLeftOut
+	}
+	regroup, err := NewMirrorRegroup(groups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return regroup
+}
+
 // scalePaths measures each path on board 0 of a mirror of size.
 func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *mirrorWriteRecorder) map[string]scaleCost {
 	t.Helper()
@@ -297,7 +317,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		t.Fatal(err)
 	}
 	cards := func(n int) []MirrorCard { return slices.Clone(held[:n]) }
-	first, err := s.ListMirrorSection(root, board, sections[0], MirrorRowKey{})
+	first, err := s.ListMirrorSection(root, board, MirrorRegroup{}, sections[0], MirrorRowKey{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,21 +361,55 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		_, _, err = s.ReplaceMirrorHistories(root, sweep, batch, MirrorCatalog{}, mirrorReadOf(root, int64(1_000_000+rep)))
 		return err
 	})
-	out["board view, 3 sections"] = measureScale(t, rec, nil, func(int) error {
-		_, _, err := s.ReadMirrorBoardView(root, board, theseSections(sections))
-		return err
-	})
-	out["section page, middle of a column"] = measureScale(t, rec, func(int) {
-		page, err := s.ListMirrorSection(root, board, sections[0], MirrorRowKey{})
+	// The board's reads, with no regrouping and with a project's 30
+	// regrouped statuses: none of them the board's, or two of them, one
+	// left out of counts (a fifth of the board's rows).
+	for _, regrouped := range []struct {
+		name    string
+		regroup MirrorRegroup
+	}{{"", MirrorRegroup{}}, {", 30 regrouped, none used", benchRegroup(t, false)}, {", 30 regrouped, 2 used", benchRegroup(t, true)}} {
+		regroup := regrouped.regroup
+		out["board view, 3 sections"+regrouped.name] = measureScale(t, rec, nil, func(int) error {
+			_, _, err := s.ReadMirrorBoardView(root, board, regroup, theseSections(sections))
+			return err
+		})
+		out["section page, middle of a column"+regrouped.name] = measureScale(t, rec, func(int) {
+			page, err := s.ListMirrorSection(root, board, regroup, sections[0], MirrorRowKey{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			deep.Revision = page.Next.Revision
+		}, func(int) error {
+			_, err := s.ListMirrorSection(root, board, regroup, sections[0], deep)
+			return err
+		})
+		out["section page, backlog"+regrouped.name] = measureScale(t, rec, nil, func(int) error {
+			_, err := s.ListMirrorSection(root, board, regroup, MirrorSection{Kind: MirrorSectionBacklog}, MirrorRowKey{})
+			return err
+		})
+		out["section counts"+regrouped.name] = measureScale(t, rec, nil, func(int) error {
+			_, err := s.CountMirrorSections(root, board, regroup)
+			return err
+		})
+		counts, err := s.CountMirrorSections(root, board, regroup)
 		if err != nil {
 			t.Fatal(err)
 		}
-		deep.Revision = page.Next.Revision
-	}, func(int) error {
-		_, err := s.ListMirrorSection(root, board, sections[0], deep)
-		return err
-	})
-	out["section counts"] = measureScale(t, rec, nil, func(int) error { _, err := s.CountMirrorSections(root, board); return err })
+		// A change that moved a total, and one that did not: the caller holds
+		// the totals the patch would read.
+		for _, held := range []MirrorTotalsAt{{}, {Lifetime: lifetime, Revision: counts.TotalsRevision}} {
+			kind := map[bool]string{true: "totals moved", false: "totals held"}[held == MirrorTotalsAt{}]
+			for _, k := range []int{1, 100} {
+				out[fmt.Sprintf("patch read, %d changed, %s%s", k, kind, regrouped.name)] = measureScale(t, rec, nil, func(rep int) error {
+					patch, _, err := s.ReadMirrorBoardPatch(root, board, regroup, sections, listing[:k], held)
+					if err == nil && (patch.Counts == nil) != (held != MirrorTotalsAt{}) {
+						err = fmt.Errorf("held %+v, read totals %v", held, patch.Counts != nil)
+					}
+					return err
+				})
+			}
+		}
+	}
 	// The rows a view build of MirrorMaxBodies open tickets reads, spread
 	// over the board.
 	ticketIDs := make([]string, MirrorMaxBodies)
@@ -369,24 +423,6 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		}
 		return err
 	})
-	counts, err := s.CountMirrorSections(root, board)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A change that moved a total, and one that did not: the caller holds
-	// the totals the patch would read.
-	for _, held := range []MirrorTotalsAt{{}, {Lifetime: lifetime, Revision: counts.TotalsRevision}} {
-		kind := map[bool]string{true: "totals moved", false: "totals held"}[held == MirrorTotalsAt{}]
-		for _, k := range []int{1, 100} {
-			out[fmt.Sprintf("patch read, %d changed, %s", k, kind)] = measureScale(t, rec, nil, func(rep int) error {
-				patch, _, err := s.ReadMirrorBoardPatch(root, board, sections, listing[:k], held)
-				if err == nil && (patch.Counts == nil) != (held != MirrorTotalsAt{}) {
-					err = fmt.Errorf("held %+v, read totals %v", held, patch.Counts != nil)
-				}
-				return err
-			})
-		}
-	}
 	// The deltas moved some of the tickets' cards.
 	heldCards()
 	out["ticket open, stored and verified"] = measureScale(t, rec, nil, func(int) error {
