@@ -353,7 +353,11 @@ no step runs at root creation, restore or start.
   is the board's, so every subscriber of such a board reads again. Each set of groups has a
   version, which the board view, its section cursors and the totals a
   patch names carry: a page or a patch read with another version is
-  refused as `ErrStalePage`, so no section mixes two versions.
+  refused as `ErrStalePage`, so no section mixes two versions. The board
+  view also names the statuses those groups leave out (`left_out`): a
+  total the client adds up from rows it holds, such as a sprint board's
+  columns (`screenColumns` in
+  `frontend/src/lib/stores/trackerBoardModel.ts`), skips the rows in them.
 
 ## Tables
 
@@ -1836,9 +1840,6 @@ Not built, owed by the app layer:
 - Sidebar search by a linked ticket's key and title: the frontend's
   `threadMatchesQuery` (`components/sidebar/threadSearch.ts`) adds
   `ticketLink.key` and `ticketLink.title` to what it matches.
-- A status renamed or moved to another group in the tracker reaches a
-  link's copy at the ticket's next card change, not at the catalog write
-  ([Thread links](#thread-links)).
 - A link on a thread with nothing sent does not keep the thread: clearing
   its composer deletes the thread, link included. The slice that first
   lets a person link such a thread decides it.
