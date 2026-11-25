@@ -200,3 +200,8 @@ func (c *countingStore) ProjectTrackerBoardListed(projectID, connectionID, board
 	c.count("ProjectTrackerBoardListed")
 	return c.Store.ProjectTrackerBoardListed(projectID, connectionID, boardID)
 }
+
+func (c *countingStore) ListProjectTrackerBoards(projectID string) ([]store.ProjectTrackerBoard, error) {
+	c.count("ListProjectTrackerBoards")
+	return c.Store.ListProjectTrackerBoards(projectID)
+}

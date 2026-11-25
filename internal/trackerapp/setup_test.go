@@ -587,8 +587,8 @@ func TestASubscribeReadsItsProjectOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 		calls := cs.take()
-		if reads := calls["GetProject"] + calls["ListProjectTrackerBoards"] + calls["ProjectTrackerBoardListed"]; reads != 1 {
-			t.Errorf("%s: a subscribe read its project %d times (%v); want once", step, reads, calls)
+		if calls["ProjectTrackerBoardListed"] != 1 || calls["GetProject"] != 0 || calls["ListProjectTrackerBoards"] != 0 {
+			t.Errorf("%s: a subscribe read its project with %v; want one keyed lookup of its listing and no other project read", step, calls)
 		}
 		m.svc.ReleaseSubscription(sub.ID)
 		m.saveSetup(t, m.project(), m.regrouped(map[string]string{"1": "done"}))
