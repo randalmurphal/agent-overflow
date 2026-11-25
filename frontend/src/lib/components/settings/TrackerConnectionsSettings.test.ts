@@ -12,6 +12,7 @@ import { setCarriedSessionScopes } from '../../transport/scopes';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
 import type { TrackerConnection } from '../../stores/bindings';
+import { FailureKind } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 
 /** The computer's list: what TrackerConnections answers now. */
 let rows: TrackerConnection[] = [];
@@ -150,7 +151,7 @@ describe('<TrackerConnectionsSettings>', () => {
   it('keeps the renewal steps open after a check that did not verify, from either Check, and closes them on one that did', async () => {
     const base = trackerConnection({ tokenExpiresAt: Date.now() + 3 * 24 * 60 * 60 * 1000 });
     rows = [base];
-    const failed = (): TrackerConnection => (rows = [{ ...base, problem: { kind: 'transient', message: 'The tracker did not answer in time' } }])[0];
+    const failed = (): TrackerConnection => (rows = [{ ...base, problem: { kind: FailureKind.FailureTransient, message: 'The tracker did not answer in time' } }])[0];
     const verified = (): TrackerConnection => (rows = [base])[0];
     const answers: (() => TrackerConnection)[] = [failed, failed, verified];
     const verify = setBindingMock('VerifyTrackerConnection', async () => answers.shift()!());
