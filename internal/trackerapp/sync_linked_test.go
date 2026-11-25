@@ -36,14 +36,31 @@ func (m *mirrorFixture) thread(threadID string) {
 	}
 }
 
-// linkOldCard links threadID to issue of connection id from a read of the
-// issue's card older than every card a test's tracker answers with, as a
-// link made before the test: the mirror holds that card from then on.
+// linkOldCard links threadID to issue of connection id as a link made
+// before the test: from the card the mirror holds of it, as LinkThread
+// links, or else from a read of the issue's card older than every card a
+// test's tracker answers with, which the mirror holds from then on.
 func linkOldCard(tb testing.TB, st *store.Store, id, threadID string, issue tracker.IssueID) {
 	tb.Helper()
 	root, _, err := st.GetOrCreateMirrorRoot(id)
 	if err != nil {
 		tb.Fatal(err)
+	}
+	held, err := st.ListMirrorCards(root, []string{string(issue)})
+	if err != nil {
+		tb.Fatal(err)
+	}
+	if len(held) == 1 {
+		c, ok := cardOf(held[0])
+		if !ok {
+			tb.Fatalf("the mirror's card of %s has no blob this version reads", issue)
+		}
+		w := store.ThreadTicketWrite{ThreadID: threadID, Origin: store.TicketOriginManual, LinkedAt: 1, Root: root, Card: held[0]}
+		w.Card.Title = c.Title
+		if _, err := st.SetThreadTicket(w); err != nil {
+			tb.Fatal(err)
+		}
+		return
 	}
 	sync, _, err := st.GetMirrorSync(root, "", 1)
 	if err != nil {

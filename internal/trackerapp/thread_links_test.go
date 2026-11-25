@@ -239,6 +239,44 @@ func TestAdoptLinksTakesTheMirrorsCard(t *testing.T) {
 	}
 }
 
+// A link read from the tracker while a later read stored the ticket's
+// renamed card (the issue kept by another link), at the same update time,
+// takes the card the mirror kept:
+// the store refuses the read card, which the later one supersedes, and
+// the link is made from the mirror's card, with no second request.
+func TestLinkThreadTakesTheMirrorsLaterCard(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.thread("a")
+	const updated = 1_799_000_000_000
+	if _, _, err := m.st.GetOrCreateMirrorRoot(m.conn.ID); err != nil {
+		t.Fatal(err)
+	}
+	// A link another computer carried here keeps the issue, whose card
+	// the mirror does not hold yet.
+	receiveLinkedThread(t, m.st, "carried", m.ticket("10011"))
+	asked := 0
+	m.p.set(func(p *scripted) {
+		p.cards = func(q []tracker.IssueID) (tracker.Cards, error) {
+			asked++
+			later := must[store.MirrorRead](t)(m.st.BeginMirrorRead(m.root(), 2))
+			renamed := card("10011", updated)
+			renamed.Key = "NEW-11"
+			stored := must[store.MirrorCard](t)(mirrorCard(renamed))
+			if ch, err := m.st.UpsertMirrorCards(m.root(), m.sync("").Sweep, []store.MirrorCard{stored}, store.MirrorCatalog{}, later); err != nil || !slices.Equal(ch.Cards, []string{"10011"}) {
+				t.Errorf("the later read's card = %+v, %v; want it stored", ch, err)
+			}
+			return tracker.Cards{Cards: []tracker.Card{card("10011", updated)}}, nil
+		}
+	})
+	if changed, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10011"), store.TicketOriginManual); err != nil || !changed {
+		t.Fatalf("a link read while a later read stored the card: %v, %v", changed, err)
+	}
+	if link := m.rowLink("a"); link == nil || link.Key != "NEW-11" || link.State != store.TicketLinkCurrent || asked != 1 {
+		t.Fatalf("the link = %+v after %d reads; want NEW-11, current, one read", link, asked)
+	}
+}
+
 // receiveLinkedThread commits an incoming copy of thread threadID whose
 // manifest carries a link to ticket, origin start_work, as another
 // computer's thread row shows it: its copy names no mirror of this one.

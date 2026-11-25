@@ -109,37 +109,22 @@ func (s *Service) LinkThread(ctx context.Context, threadID string, ticket store.
 // the card the mirror holds when it holds one, else from one card read.
 // asked reports that it made a tracker call, whose outcome the caller
 // settles (run.answer). A card the mirror replaced between its read and
-// the write is read from the mirror once more.
+// the write, and a read card a later read's card superseded, are taken
+// from the mirror once more.
 func (r *run) linkThread(threadID string, ticket store.TicketRef, origin string) (set store.ThreadTicketSet, asked bool, err error) {
 	if err := r.readState(); err != nil {
 		return set, false, err
 	}
-	w := store.ThreadTicketWrite{ThreadID: threadID, Origin: origin, LinkedAt: millis(r.s.now()), Root: r.root}
+	base := store.ThreadTicketWrite{ThreadID: threadID, Origin: origin, LinkedAt: millis(r.s.now()), Root: r.root}
 	for again := false; ; again = true {
-		held, err := r.s.store.ListMirrorCards(r.root, []string{ticket.IssueID})
-		if err != nil {
-			return set, false, fmt.Errorf("trackerapp: read the card of %s from the mirror of %s: %w", ticket.IssueID, r.row.ID, err)
-		}
-		if len(held) != 1 {
-			break
-		}
-		card, ok := cardOf(held[0])
-		if !ok {
-			// A card whose blob this version cannot read has no title:
-			// the tracker's card has.
-			break
-		}
-		w.Card = held[0]
-		w.Card.Title = card.Title
-		set, err = r.s.store.SetThreadTicket(w)
+		set, linked, err := r.linkHeld(base, ticket.IssueID)
 		if errors.Is(err, store.ErrThreadTicketCardMoved) && !again {
 			continue
 		}
-		if err != nil {
+		if err != nil || linked {
 			return set, false, err
 		}
-		r.told("", changesOf(set.Cards))
-		return set, false, nil
+		break
 	}
 	err = r.againIfSwept(func() error {
 		began, err := r.beginRead()
@@ -169,6 +154,7 @@ func (r *run) linkThread(threadID string, ticket store.TicketRef, origin string)
 		if err != nil {
 			return err
 		}
+		w := base
 		w.Card, w.Read, w.Catalog, w.Sweep = card, began, catalog, r.state.Sweep
 		if set, err = r.s.store.SetThreadTicket(w); err != nil {
 			return err
@@ -176,7 +162,39 @@ func (r *run) linkThread(threadID string, ticket store.TicketRef, origin string)
 		r.told("", changesOf(set.Cards))
 		return nil
 	})
+	if errors.Is(err, store.ErrThreadTicketCardMoved) {
+		// A later read stored the ticket's card meanwhile; the mirror's
+		// card is the one to link.
+		var linked bool
+		if set, linked, err = r.linkHeld(base, ticket.IssueID); err == nil && !linked {
+			err = fmt.Errorf("trackerapp: the mirror's card of %s superseded the card read for the link, and no longer holds one", ticket.IssueID)
+		}
+	}
 	return set, true, err
+}
+
+// linkHeld writes w from the card of issueID the run's mirror holds, and
+// reports whether the mirror held one it could link from: none, or one
+// whose blob this version cannot read and so has no title, links nothing.
+func (r *run) linkHeld(w store.ThreadTicketWrite, issueID string) (set store.ThreadTicketSet, linked bool, err error) {
+	held, err := r.s.store.ListMirrorCards(r.root, []string{issueID})
+	if err != nil {
+		return set, false, fmt.Errorf("trackerapp: read the card of %s from the mirror of %s: %w", issueID, r.row.ID, err)
+	}
+	if len(held) != 1 {
+		return set, false, nil
+	}
+	card, ok := cardOf(held[0])
+	if !ok {
+		return set, false, nil
+	}
+	w.Card = held[0]
+	w.Card.Title = card.Title
+	if set, err = r.s.store.SetThreadTicket(w); err != nil {
+		return set, false, err
+	}
+	r.told("", changesOf(set.Cards))
+	return set, true, nil
 }
 
 // UnlinkThread removes thread threadID's ticket link and reports whether
