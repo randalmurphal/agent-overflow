@@ -39,6 +39,7 @@ func TestTrackerBoardMethodsCarryTheirScopeAndRoute(t *testing.T) {
 		"TrackerProjects":               {read, transport.RouteHome, false},
 		"TrackerBoards":                 {read, transport.RouteHome, false},
 		"ProjectTrackerBoards":          {read, transport.RouteProject, false},
+		"TrackerBoardChoices":           {read, transport.RouteAll, false},
 		"SetProjectTrackerBoards":       {operate, transport.RouteProject, false},
 		"SubscribeTrackerBoard":         {read, transport.RouteProject, true},
 		"TrackerBoard":                  {read, transport.RouteHome, false},
@@ -291,6 +292,9 @@ func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoa
 	}
 	if got, err := a.ProjectTrackerBoards(ctx, project.ID); err != nil || !slices.Equal(got, want) {
 		t.Fatalf("ProjectTrackerBoards = %+v, %v; want %+v", got, err, want)
+	}
+	if got, err := a.TrackerBoardChoices(ctx); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("TrackerBoardChoices = %+v, %v; want %+v", got, err, want)
 	}
 	return &trackerBoardFixture{a: a, e: e, conn: conn, project: project.ID, events: events}
 }

@@ -6752,6 +6752,17 @@ export function TrackerBoard(subscriptionID: string, sections: trackerapp$0.Sect
 }
 
 /**
+ * TrackerBoardChoices lists the boards every project of this computer
+ * lists, as ProjectTrackerBoards names each: the Issues pane's board
+ * picker, which asks every attached computer.
+ */
+export function TrackerBoardChoices(): $CancellablePromise<trackerapp$0.BoardChoice[]> {
+    return $Call.ByID(1666670763).then(($result: any) => {
+        return $$createType219($result);
+    });
+}
+
+/**
  * TrackerBoardPatch reads what a tracker:board_updated event changed in
  * the sections a client holds: the named issues' rows in each, and every
  * section's total unless held names the ones the board has now.

@@ -1182,6 +1182,7 @@ selected computer.
 | `TrackerProjects(connectionID)` | `Projects` | read | connection |
 | `TrackerBoards(connectionID, project)` | `Boards` | read | connection |
 | `ProjectTrackerBoards(projectID)` | `ProjectBoards` | read | project |
+| `TrackerBoardChoices()` | `BoardChoices` | read | all |
 | `SetProjectTrackerBoards(projectID, held, boards)` | `SetProjectBoards` | operate | project |
 | `SubscribeTrackerBoard(projectID, connectionID, boardID, sections)` | `SubscribeBoard` | read | project, caller-bound |
 | `TrackerBoard(subscriptionID, sections)` | `Board` | read | home |
@@ -1551,16 +1552,18 @@ settings screen (Settings > Issues: Connections and Boards), with the
 `bindings.ts` wrappers of the connection methods, the two picker lists,
 `ProjectTrackerBoards` and `SetProjectTrackerBoards`, and their stores
 (`stores/trackerConnections.svelte.ts`,
-`stores/trackerProjectBoards.svelte.ts`). A failure of the linked-issues
+`stores/trackerProjectBoards.svelte.ts`), and the Issues pane's Board
+screen, with the `bindings.ts` wrappers of `TrackerBoardChoices` and the
+board subscription's methods and `tracker:board_updated`'s TypeScript
+type (`components/issues/AGENTS.md`). A failure of the linked-issues
 loop after boot reaches only the log (`Deps.LoopFailed`): its failures
 are outside the tracker (a store error, the cleanup), and a tracker
 failure of the loop's sync shows on its connection's row as its problem.
 Not built, owed by the app layer:
 
-- The board and ticket screens: the `bindings.ts` wrappers of the board,
-  ticket, write and form-read methods and the two events' TypeScript
-  types ship with them, as the connection methods' wrappers ship with the
-  Issues settings screen.
+- The ticket screen: the `bindings.ts` wrappers of the ticket, write and
+  form-read methods and `tracker:issue_updated`'s TypeScript type ship
+  with it, as the board methods' wrappers ship with the Board screen.
 - The Time screen's bound methods: `Worklogs`, `RefreshWorklogs`,
   `EditWorklog` and `DeleteWorklog`. `EditSprint` is bound when a screen
   edits a sprint.

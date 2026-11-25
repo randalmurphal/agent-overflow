@@ -12,7 +12,16 @@ import { applyTrackerBoardEvent } from '../../stores/trackerBoard.svelte';
 import { hiddenCardFields, lastShownBoard, showBoard } from '../../stores/issuesPane.svelte';
 import { openPaneFind, setPaneFindQuery } from '../../stores/paneFind.svelte';
 import { noteCompactPaneShown, setCompactLayoutForTest, showCompactList, showCompactThread } from '../../stores/layoutMode.svelte';
-import { closeSettingsOverlay, openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
+import {
+  closeSettingsOverlay,
+  getSettingsSection,
+  isSettingsOpen,
+  openSettingsOverlay,
+  requestedTrackerBoardsProject,
+} from '../../stores/settingsOverlay.svelte';
+import { addProjectLocal } from '../../stores/projects.svelte';
+import { noteProject } from '../../transport/entityIndex';
+import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { TransportError } from '../../transport/wsClient';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
@@ -70,6 +79,12 @@ function install(opts: { choices?: BoardChoice[]; view?: BoardView | null; failu
   const release = setBindingMock('ReleaseTrackerSubscription', async () => undefined);
   const visible = setBindingMock('SetTrackerSubscriptionVisible', async () => undefined);
   return { choices, subscribe, release, visible };
+}
+
+/** A project of this computer, as its catalog read lists it. */
+function project(id: string, name: string, sortPosition: number): void {
+  noteProject(id, HOME_BACKEND);
+  addProjectLocal({ id, name, path: `/repos/${name}`, createdAt: 1, updatedAt: 1, sortPosition, archived: false });
 }
 
 function mount() {
@@ -234,15 +249,34 @@ describe('the Issues pane', () => {
     await view.findByTestId('issues-not-read');
     expect(view.getByTestId('issues-refresh')).not.toBeDisabled();
     applyTrackerBoardEvent({ scope: { connection: 'c1', board: '1' }, seq: 11, ended: true }, HOME_BACKEND);
-    await view.findByTestId('issues-board-ended');
+    const ended = await view.findByTestId('issues-board-ended');
     expect(view.getByTestId('issues-refresh')).toBeDisabled();
+    await fireEvent.click(within(ended).getByTestId('issues-ended-settings'));
+    expect(getSettingsSection()).toBe('tracker-boards');
+    expect(requestedTrackerBoardsProject()).toBe('p1');
   });
 
-  it('says no project lists a board when none does', async () => {
+  it('says no project lists a board when none does, with the way to the first project\'s boards', async () => {
     const mocks = install({ choices: [] });
+    project('p2', 'gadgets', 1);
+    project('p1', 'widgets', 0);
     const view = mount();
     await waitFor(() => expect(view.getByTestId('issues-empty')).toHaveTextContent('No project lists a board yet.'));
     expect(mocks.subscribe).not.toHaveBeenCalled();
+    await fireEvent.click(view.getByTestId('issues-empty-settings'));
+    expect(isSettingsOpen()).toBe(true);
+    expect(getSettingsSection()).toBe('tracker-boards');
+    expect(requestedTrackerBoardsProject()).toBe('p1');
+  });
+
+  it('offers no way to Settings to a window that may not change a project\'s boards', async () => {
+    await pairWithScopes(['threads:read', 'tracker:read']);
+    install({ choices: [] });
+    project('p1', 'widgets', 0);
+    const view = mount();
+    await waitFor(() => expect(view.getByTestId('issues-empty')).toHaveTextContent('No project lists a board yet.'));
+    expect(view.queryByTestId('issues-empty-settings')).toBeNull();
+    resetToLocalPage();
   });
 
   it('switches boards from the picker, releasing the one it showed', async () => {

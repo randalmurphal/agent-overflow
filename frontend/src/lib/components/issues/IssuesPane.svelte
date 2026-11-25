@@ -25,9 +25,11 @@
   import DisplayMenu from './DisplayMenu.svelte';
   import { captureError, type CapturedError } from '../../stores/errorReports.svelte';
   import { compactShownPaneId, getCompactScreen, isCompactLayout } from '../../stores/layoutMode.svelte';
-  import { isSettingsOpen } from '../../stores/settingsOverlay.svelte';
+  import { isSettingsOpen, openTrackerBoardsSettings } from '../../stores/settingsOverlay.svelte';
   import { openPaneFind, registerPaneFindProvider } from '../../stores/paneFind.svelte';
-  import { getProject, projectOrderPosition } from '../../stores/projects.svelte';
+  import { getProject, getProjects, projectOrderPosition } from '../../stores/projects.svelte';
+  import { projectBackend } from '../../transport/entityIndex';
+  import { scopeGrant } from '../../transport/scopes';
   import { attachedBackendEntry, backendDisplayName } from '../../stores/attachedBackends.svelte';
   import { toolOpenedFromProject } from '../../stores/toolPanes.svelte';
   import {
@@ -177,6 +179,23 @@
   const choiceFailures = $derived(trackerBoardChoiceErrors());
   let dismissedChoiceFailures = $state.raw<readonly unknown[]>([]);
 
+  // The way to Settings > Issues > Boards, for a project on a computer
+  // that lets this window change a project's boards; null otherwise.
+  interface BoardsSettingsTarget { projectId: string; backend: string }
+  function boardsSettingsFor(projectId: string | null, backend: string | undefined): BoardsSettingsTarget | null {
+    if (!projectId || backend === undefined || scopeGrant('tracker:operate', backend) !== 'granted') return null;
+    return { projectId, backend };
+  }
+  // No project lists a board: the project the pane was opened from, else
+  // the first in sidebar order.
+  const emptyTarget = $derived.by(() => {
+    if (board || pending) return null;
+    const first = [...getProjects()].sort((x, y) => projectOrderPosition(x) - projectOrderPosition(y))[0];
+    const projectId = (openedFrom && getProject(openedFrom) ? openedFrom : first?.project.id) ?? null;
+    return boardsSettingsFor(projectId, projectId ? projectBackend(projectId) : undefined);
+  });
+  const endedTarget = $derived(boardState?.ended && board ? boardsSettingsFor(board.projectId, board.backend) : null);
+
   function refresh(): void {
     if (attachment) void refreshTrackerBoard(attachment.key);
   }
@@ -241,7 +260,13 @@
     <p class="border-b border-error/30 bg-error/10 px-3 py-1.5 text-xs text-error" role="alert" data-testid="issues-subscribe-error">Could not open this board: {attachment.error}</p>
   {/if}
   {#if boardState?.ended}
-    <p class="border-b border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg-muted" data-testid="issues-board-ended">This board is no longer followed: its connection was turned off or removed, or no project lists it any more. Pick another board.</p>
+    <div class="flex items-center gap-2 border-b border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg-muted" data-testid="issues-board-ended">
+      <span class="min-w-0 flex-1">This board is no longer followed: its connection was turned off or removed, or no project lists it any more. Pick another board.</span>
+      {#if endedTarget}
+        {@const target = endedTarget}
+        <button type="button" class="shrink-0 text-accent hover:underline" data-testid="issues-ended-settings" onclick={() => openTrackerBoardsSettings(target.projectId, target.backend)}>Open the project's boards</button>
+      {/if}
+    </div>
   {:else if boardState?.failure}
     <p class="border-b border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning" role="status" data-testid="issues-board-failure">{boardState.failure.message} {lastRead(boardState.readAt)}</p>
   {/if}
@@ -279,9 +304,13 @@
   <div class="flex min-h-0 flex-1 flex-col" bind:this={bodyEl} tabindex="-1">
     <RenderBoundary label="The board" testId="issues-board-render-error">
       {#if !board}
-        <p class="px-4 py-6 text-sm text-fg-muted" data-testid="issues-empty">
-          {pending ? 'Listing boards…' : 'No project lists a board yet. A project lists its boards in Settings.'}
-        </p>
+        <div class="flex flex-col items-start gap-2 px-4 py-6 text-sm text-fg-muted" data-testid="issues-empty">
+          <p>{pending ? 'Listing boards…' : 'No project lists a board yet. A project lists its boards in Settings.'}</p>
+          {#if emptyTarget}
+            {@const target = emptyTarget}
+            <button type="button" class="text-accent hover:underline" data-testid="issues-empty-settings" onclick={() => openTrackerBoardsSettings(target.projectId, target.backend)}>Choose boards in Settings</button>
+          {/if}
+        </div>
       {:else if held && attachment}
         <BoardScreen boardKey={attachment.key} boardRef={board} {held} paging={boardState!.paging} {filter} {hidden} {compact} {shown} />
       {:else if boardState && !boardState.ended}

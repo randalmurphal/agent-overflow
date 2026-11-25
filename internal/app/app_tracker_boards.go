@@ -98,6 +98,21 @@ func (a *App) ProjectTrackerBoards(ctx context.Context, projectID string) ([]tra
 	return out, trackerError(err)
 }
 
+// TrackerBoardChoices lists the boards every project of this computer
+// lists, as ProjectTrackerBoards names each: the Issues pane's board
+// picker, which asks every attached computer.
+//
+//ao:scope tracker:read
+//ao:route all
+func (a *App) TrackerBoardChoices(ctx context.Context) ([]trackerapp.BoardChoice, error) {
+	svc, err := a.trackerService()
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.BoardChoices()
+	return out, trackerError(err)
+}
+
 // SetProjectTrackerBoards makes boards, in order, the boards a project's
 // picker shows, and answers the list stored as ProjectTrackerBoards reads
 // it. held is the list the picker showed and built boards from; a save

@@ -2,8 +2,9 @@
 
 Status: product rulings and screen designs recorded 2026-11-15. Built:
 the connections and a project's board list, in Settings > Issues
-(Connections, Boards). The Issues pane is not, and the tool row has no
-Issues entry until it is.
+(Connections, Boards), and the Issues pane with its Board screen, opened
+from the tool row's Issues entry. The other screens are not built; the
+[Board](#board) section says what of it is.
 
 ## Goal
 
@@ -238,6 +239,15 @@ Widths are CSS pixels of the pane, not the window.
   least 380 and the list at least 520.
 
 ### Board
+
+Status: built: the columns of a sprint or kanban board, cards, Display,
+Only mine, Search, Refresh, the board picker and the compact strip. Not
+built: the summary row, changing a card's fields from the card, and
+carrying a card. A card's state line shows days in the status but not a
+running thread or what blocks it; its parent shows as a chip but is not
+known to be an epic; its type and priority marks are picked by name, not
+the tracker's icons; its assignee shows as initials, not the tracker's
+avatar.
 
 - A summary row sits above the columns. It is one line of chips until
   expanded into tiles. Its tiles are dashboard widgets pinned to the board,

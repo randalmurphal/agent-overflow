@@ -82,11 +82,25 @@ func (s *Service) ProjectBoards(projectID string) ([]BoardChoice, error) {
 	return s.boardChoices(projectID)
 }
 
-// boardChoices reads projectID's board choices. The caller is inside the
-// service (enter).
+// BoardChoices lists the boards every project of this computer lists, by
+// project name, then project ID, then picker order: the Issues pane's
+// board picker.
+func (s *Service) BoardChoices() ([]BoardChoice, error) {
+	if err := s.enter(); err != nil {
+		return nil, err
+	}
+	defer s.leave()
+	return s.boardChoices("")
+}
+
+// boardChoices reads projectID's board choices, or with projectID empty
+// every project's. The caller is inside the service (enter).
 func (s *Service) boardChoices(projectID string) ([]BoardChoice, error) {
 	rows, err := s.store.ListTrackerBoardChoices(projectID)
 	if err != nil {
+		if projectID == "" {
+			return nil, fmt.Errorf("trackerapp: read the boards every project lists: %w", err)
+		}
 		return nil, fmt.Errorf("trackerapp: read the boards of project %s: %w", projectID, err)
 	}
 	out := make([]BoardChoice, len(rows))

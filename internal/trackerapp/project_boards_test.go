@@ -202,6 +202,9 @@ func TestProjectBoardsAreNamedAsTheyWereChosen(t *testing.T) {
 	if got, err := m.svc.ProjectBoards(m.project()); err != nil || !slices.Equal(got, want) {
 		t.Fatalf("ProjectBoards = %+v, %v; want %+v", got, err, want)
 	}
+	if got, err := m.svc.BoardChoices(); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("BoardChoices = %+v, %v; want %+v", got, err, want)
+	}
 	if got, err := m.svc.ProjectBoards(""); !errors.Is(err, ErrProjectNotFound) {
 		t.Fatalf("ProjectBoards of no project = %+v, %v; want ErrProjectNotFound", got, err)
 	}
