@@ -67,6 +67,34 @@ export function resetLiveUsageSnapshotsForTest(): void {
   liveUsageSnapshotByThread.clear();
 }
 
+let lastParsedRaw = '';
+let lastParsedUsage: PersistedTokenUsage | null = null;
+
+function parsePersistedTokenUsage(raw: string): PersistedTokenUsage | null {
+  if (raw === lastParsedRaw) return lastParsedUsage;
+  try {
+    const parsed = JSON.parse(raw) as PersistedTokenUsage;
+    lastParsedRaw = raw;
+    lastParsedUsage = parsed;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function sameContextWindow(a: ContextWindow | null, b: ContextWindow | null): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  return (
+    a.usedTokens === b.usedTokens &&
+    a.maxTokens === b.maxTokens &&
+    a.usedPercentage === b.usedPercentage &&
+    a.exceeded === b.exceeded &&
+    a.autoCompactPercent === b.autoCompactPercent &&
+    a.autoCompactTokenLimit === b.autoCompactTokenLimit
+  );
+}
+
 export function seedContextWindow(nextThread: Thread | null): ContextWindow | null {
   const live = nextThread ? liveUsageSnapshotByThread.get(nextThread.id) : undefined;
   const raw = live !== undefined ? live.trim() : nextThread?.lastTokenUsage?.trim();
@@ -79,20 +107,16 @@ export function seedContextWindow(nextThread: Thread | null): ContextWindow | nu
     }, nextThread);
   }
 
-  try {
-    const parsed = JSON.parse(raw) as PersistedTokenUsage;
-    if (typeof parsed.usedTokens !== 'number') return null;
-    return normalizeContextWindowForThread({
-      usedTokens: parsed.usedTokens,
-      maxTokens: parsed.maxTokens,
-      usedPercentage: parsed.contextPercent,
-      autoCompactPercent: parsed.autoCompactPercent,
-      autoCompactTokenLimit: parsed.autoCompactTokenLimit,
-      exceeded: parsed.exceeded,
-    }, nextThread);
-  } catch {
-    return null;
-  }
+  const parsed = parsePersistedTokenUsage(raw);
+  if (!parsed || typeof parsed.usedTokens !== 'number') return null;
+  return normalizeContextWindowForThread({
+    usedTokens: parsed.usedTokens,
+    maxTokens: parsed.maxTokens,
+    usedPercentage: parsed.contextPercent,
+    autoCompactPercent: parsed.autoCompactPercent,
+    autoCompactTokenLimit: parsed.autoCompactTokenLimit,
+    exceeded: parsed.exceeded,
+  }, nextThread);
 }
 
 export function normalizeContextWindowForThread(

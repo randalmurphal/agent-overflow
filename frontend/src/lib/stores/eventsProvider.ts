@@ -45,7 +45,7 @@ import {
   takeLiveUsageSnapshot,
 } from './threadContextWindow';
 import { bumpUsageRefresh } from './usageRefresh.svelte';
-import { patchThreadDurableStatus, syncLatestTurnCompleted, syncThreadActivity, updateThreadUsageCache } from './eventsThreadRows';
+import { applyTurnCompletedThreadUpdate, patchThreadDurableStatus, syncThreadActivity, updateThreadUsageCache } from './eventsThreadRows';
 
 import type { ErrorSurface, ThreadPaneIngest } from './threadPaneRoles';
 import type { UnsavedThreadRowsEvent } from '../../../bindings/agent-overflow/internal/app/models';
@@ -509,20 +509,21 @@ export function applyTurnCompleted(evt: TurnCompletedEvent, sequence?: number): 
     aborted: settled.aborted,
     errorMessage: settled.errorMessage,
   });
-  patchThreadDurableStatus(evt.threadId, {
-    hasIncompleteTurn: false,
-    ...(settled.errorMessage !== '' ? { hasFailedTurn: true } : {}),
-  });
-  // Converge the durable row with the turn's usage ONCE, at the turn
-  // boundary: mid-turn snapshots live in the side cache (consulted by
-  // seedContextWindow, so mid-turn thread switches still seed fresh),
-  // and this single row write replaces the per-usage-event
-  // patchThreadEverywhere churn. take() drops the entry, so the row is
-  // the authority again until the next turn's first usage event.
+  // Converge the durable row with turn status, context-window usage, and
+  // latestTurnCompletedAt in ONE registry + pane update at the turn
+  // boundary: mid-turn usage snapshots live in the side cache (consulted by
+  // seedContextWindow, so mid-turn thread switches still seed fresh), and
+  // take() drops the entry so the row is the authority again until the next
+  // turn's first usage event.
   const usageSnapshot = takeLiveUsageSnapshot(evt.threadId);
-  if (usageSnapshot !== undefined) {
-    updateThreadUsageCache(evt.threadId, usageSnapshot);
-  }
+  applyTurnCompletedThreadUpdate(
+    evt,
+    {
+      hasIncompleteTurn: false,
+      ...(settled.errorMessage !== '' ? { hasFailedTurn: true } : {}),
+    },
+    usageSnapshot,
+  );
   for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.settleTurn(settled);
@@ -533,9 +534,8 @@ export function applyTurnCompleted(evt: TurnCompletedEvent, sequence?: number): 
   // turns update live turn state without changing read/sidebar state. A
   // quiet tick keeps the thread where it was: its row, sent just before
   // this event, already read past the completion.
-  if (evt.countsAsActivity !== false && Number.isFinite(evt.completedAt)) {
-    syncLatestTurnCompleted(evt);
-    if (!evt.quiet) syncThreadActivity(evt.threadId, evt.completedAt);
+  if (evt.countsAsActivity !== false && Number.isFinite(evt.completedAt) && !evt.quiet) {
+    syncThreadActivity(evt.threadId, evt.completedAt);
   }
   // Send-queue drain is owned by the backend. Triage flushes queued
   // messages at safe provider boundaries and the frontend mirrors that

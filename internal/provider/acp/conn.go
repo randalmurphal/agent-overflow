@@ -913,7 +913,7 @@ func (c *Conn) dispatchLine(line []byte) {
 			}
 			if ok && !abandoned {
 				select {
-				case ch <- append(json.RawMessage(nil), line...):
+				case ch <- json.RawMessage(line):
 				default:
 				}
 			}
@@ -932,7 +932,7 @@ func (c *Conn) dispatchLine(line []byte) {
 		}
 		if ok {
 			select {
-			case ch <- append(json.RawMessage(nil), line...):
+			case ch <- json.RawMessage(line):
 			default:
 			}
 		}

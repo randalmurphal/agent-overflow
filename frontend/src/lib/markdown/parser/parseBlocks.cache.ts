@@ -165,6 +165,14 @@ export const updateParseBlockStringMaterialization = (cache: ParseBlocksCache, e
 // Ignored space/footnote tokens after the rendered block stay in the same raw
 // suffix. This avoids feeding marked an unrelated prior list/table on every
 // prose reveal while preserving the backward-merge transition.
+const BLANK_LINE_CACHE = /(?:\r\n|\n|\r(?!\n))[ \t]*(?:\r\n|\n|\r)/;
+const LIST_ITEM_LINE_CACHE = /^ {0,3}(?:[*+-]|\d{1,9}[.)])[ \t]/;
+
+const endsWithLineBreak = (raw: string): boolean => {
+    if (raw.length === 0) return false;
+    const last = raw.charCodeAt(raw.length - 1);
+    return last === 10 || last === 13;
+};
 const BACKWARD_MERGE_MARKER = /^[|:=_*\- \t\r\n]+$/;
 export const trailingBlockMayMergeBackward = (cache: ParseBlocksCache): boolean => {
     for (let i = cache.raws.length - 1; i >= 0; i--) {
@@ -240,7 +248,9 @@ export const updateTrailingBlockRecord = (
                     kind: 'table-line',
                     rawIndex: rawIndex + i,
                     blockStart,
-                    prefixLen
+                    prefixLen,
+                    endsWithNewline: endsWithLineBreak(token.raw),
+                    hasBlankLine: BLANK_LINE_CACHE.test(token.raw)
                 };
                 return;
             }
@@ -269,7 +279,8 @@ export const updateTrailingBlockRecord = (
             cache.trailingBlock = {
                 kind: 'paragraph',
                 rawIndex: rawIndex + i,
-                blockStart
+                blockStart,
+                endsWithNewline: false
             };
             return;
         }
@@ -280,7 +291,8 @@ export const updateTrailingBlockRecord = (
             cache.trailingBlock = {
                 kind: 'line-block',
                 rawIndex: rawIndex + i,
-                blockStart
+                blockStart,
+                endsWithNewline: false
             };
             return;
         }
@@ -297,7 +309,10 @@ export const updateTrailingBlockRecord = (
                     kind: 'list-line',
                     rawIndex: rawIndex + i,
                     blockStart,
-                    normalized
+                    normalized,
+                    startsWithListItem: LIST_ITEM_LINE_CACHE.test(
+                        token.raw.length > 20 ? token.raw.slice(0, 20) : token.raw
+                    )
                 };
                 return;
             }
@@ -364,6 +379,8 @@ export type ParseBlocksCache = {
         rawIndex: number;
         blockStart: number;
         prefixLen: number;
+        endsWithNewline: boolean;
+        hasBlankLine: boolean;
     } | {
         kind: 'fence';
         rawIndex: number;
@@ -380,15 +397,18 @@ export type ParseBlocksCache = {
         kind: 'paragraph';
         rawIndex: number;
         blockStart: number;
+        endsWithNewline: boolean;
     } | {
         kind: 'line-block';
         rawIndex: number;
         blockStart: number;
+        endsWithNewline: boolean;
     } | {
         kind: 'list-line';
         rawIndex: number;
         blockStart: number;
         normalized: boolean;
+        startsWithListItem: boolean;
     } | null;
     /** proven append applied to the last rendered block by the latest call */
     lastBlockAppend?: ProvenAppend;

@@ -77,9 +77,13 @@ const MAX_MATCHES = 5000;
 const RECOMPUTE_DELAY_MS = 40;
 const RECOMPUTE_MAX_WAIT_MS = 200;
 const SKIP_SELECTOR = 'script,style,noscript,textarea,[data-find-skip]';
-// What ends a run: skipped content, an image, which has no text, and a
-// line break, which puts what follows on another line.
-const BOUNDARY_SELECTOR = `${SKIP_SELECTOR},img,br`;
+const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'script', 'style']);
+const BLOCK_TAGS = new Set([
+  'ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'DD', 'DETAILS', 'DIV', 'DL', 'DT',
+  'FIGCAPTION', 'FIGURE', 'FOOTER', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'HEADER',
+  'LI', 'MAIN', 'NAV', 'OL', 'P', 'PRE', 'SECTION', 'SUMMARY', 'TABLE', 'TD', 'TH',
+  'TR', 'UL',
+]);
 const BLOCK_SELECTOR = [
   'address', 'article', 'aside', 'blockquote', 'dd', 'details', 'div', 'dl', 'dt',
   'figcaption', 'figure', 'footer', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header',
@@ -105,6 +109,14 @@ export function findHighlightName(paneId: string): string {
 
 let sheet: CSSStyleSheet | null = null;
 const ruleUsers = new Map<string, number>();
+// Keep ::highlight(name) rules in the shared constructed stylesheet ONLY while
+// at least one FindHighlighter is mounted (so typing/clearing queries while the
+// find bar is open never mutates adoptedStyleSheets or sheet.cssRules), and
+// detach the stylesheet from document.adoptedStyleSheets once the last
+// highlighter disposes. Leaving inactive ::highlight rules permanently in
+// adoptedStyleSheets forces Blink's style engine out of its non-highlight fast
+// path on every UpdateLayoutTree across the entire app.
+const installedRuleNames = new Set<string>();
 
 function ruleTexts(name: string): string[] {
   return [
@@ -113,15 +125,31 @@ function ruleTexts(name: string): string[] {
   ];
 }
 
-function retainRules(name: string): void {
-  const users = ruleUsers.get(name) ?? 0;
-  ruleUsers.set(name, users + 1);
-  if (users > 0) return;
+function ensureSheetInstalled(): CSSStyleSheet {
   if (!sheet) {
     sheet = new CSSStyleSheet();
     document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
   }
-  for (const text of ruleTexts(name)) sheet.insertRule(text, sheet.cssRules.length);
+  return sheet;
+}
+
+function retainRules(name: string): void {
+  const users = ruleUsers.get(name) ?? 0;
+  ruleUsers.set(name, users + 1);
+  if (installedRuleNames.has(name)) return;
+  const s = ensureSheetInstalled();
+  for (const text of ruleTexts(name)) s.insertRule(text, s.cssRules.length);
+  installedRuleNames.add(name);
+}
+
+function deleteRulesFromSheet(name: string): void {
+  installedRuleNames.delete(name);
+  if (!sheet) return;
+  const prefixes = [`::highlight(${name})`, `::highlight(${name}-current)`];
+  for (let i = sheet.cssRules.length - 1; i >= 0; i -= 1) {
+    const text = sheet.cssRules[i].cssText;
+    if (prefixes.some((prefix) => text.startsWith(prefix))) sheet.deleteRule(i);
+  }
 }
 
 function releaseRules(name: string): void {
@@ -131,11 +159,12 @@ function releaseRules(name: string): void {
     return;
   }
   ruleUsers.delete(name);
-  if (!sheet) return;
-  const prefixes = [`::highlight(${name})`, `::highlight(${name}-current)`];
-  for (let i = sheet.cssRules.length - 1; i >= 0; i -= 1) {
-    const text = sheet.cssRules[i].cssText;
-    if (prefixes.some((prefix) => text.startsWith(prefix))) sheet.deleteRule(i);
+  deleteRulesFromSheet(name);
+  if (ruleUsers.size === 0 && sheet) {
+    const detach = sheet;
+    sheet = null;
+    installedRuleNames.clear();
+    document.adoptedStyleSheets = document.adoptedStyleSheets.filter((s) => s !== detach);
   }
 }
 
@@ -155,9 +184,14 @@ interface Segment {
   island?: number;
 }
 
-// A closed <details> shows only its summary.
-function hiddenByDetails(element: Element): boolean {
-  for (let details = element.closest('details'); details; details = details.parentElement?.closest('details') ?? null) {
+// A closed <details> shows only its summary. When `includeSelf` is false,
+// only ancestor <details> are inspected so a closed <details> passed as `root`
+// still exposes its <summary> through the DFS.
+function hiddenByDetails(element: Element, includeSelf = true): boolean {
+  const start = includeSelf
+    ? element.closest('details')
+    : (element.parentElement?.closest('details') ?? null);
+  for (let details = start; details; details = details.parentElement?.closest('details') ?? null) {
     if ((details as HTMLDetailsElement).open) continue;
     const summary = details.querySelector(':scope > summary');
     if (!summary || !summary.contains(element)) return true;
@@ -165,62 +199,260 @@ function hiddenByDetails(element: Element): boolean {
   return false;
 }
 
-function collectSegments(root: Element, rowSelector: string | undefined, rowsOnly: boolean, laidOut = true, keepHidden = false, textSelector?: string, islands?: ReadonlyMap<Element, number>): Segment[] {
-  const visible = new Map<Element, boolean>();
-  // checkVisibility fails a `display: contents` element, which has no box,
-  // though its loose text renders in its parent's.
-  const laidOutVisible = (element: Element): boolean => {
-    if (typeof element.checkVisibility !== 'function' || element.checkVisibility()) return true;
-    const parent = element.parentElement;
-    return parent !== null && getComputedStyle(element).display === 'contents' && isVisible(parent);
-  };
-  const isVisible = (element: Element): boolean => {
-    let answer = visible.get(element);
-    if (answer === undefined) {
-      // checkVisibility passes a closed <details> itself, whose loose
-      // body text it does not show.
-      answer = !hiddenByDetails(element) && (!laidOut || laidOutVisible(element));
-      visible.set(element, answer);
+function isSkipElement(element: Element): boolean {
+  return SKIP_TAGS.has(element.tagName) || element.hasAttribute('data-find-skip');
+}
+
+function firstDirectSummary(details: Element): Element | null {
+  for (let child = details.firstElementChild; child; child = child.nextElementSibling) {
+    if (child.tagName === 'SUMMARY') return child;
+  }
+  return null;
+}
+
+const SIMPLE_ATTR_SELECTOR_RE = /^\[([A-Za-z0-9_-]+)\]$/;
+
+function compileSelectorMatcher(selector: string | undefined): ((el: Element) => boolean) | null {
+  if (!selector) return null;
+  const simple = SIMPLE_ATTR_SELECTOR_RE.exec(selector);
+  if (simple) {
+    const attr = simple[1];
+    return (el: Element) => el.hasAttribute(attr);
+  }
+  return (el: Element) => el.matches(selector);
+}
+
+const PLAIN_VISIBLE_TAGS = new Set([
+  'A', 'B', 'BLOCKQUOTE', 'CODE', 'DEL', 'EM', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+  'I', 'INS', 'KBD', 'LI', 'MARK', 'OL', 'P', 'PRE', 'S', 'SMALL', 'SPAN',
+  'STRONG', 'SUB', 'SUP', 'TABLE', 'TBODY', 'TD', 'TFOOT', 'TH', 'THEAD', 'TR', 'UL',
+]);
+
+// Single top-down DFS replacing TreeWalker + per-text-node closest() chains.
+// Inherits skip, closed-<details>, row, region and block context down the tree
+// and prunes skipped or display:none subtrees immediately.
+function collectSegments(
+  root: Element,
+  rowSelector: string | undefined,
+  rowsOnly: boolean,
+  laidOut = true,
+  keepHidden = false,
+  textSelector?: string,
+  islands?: ReadonlyMap<Element, number>,
+): Segment[] {
+  if (root.parentElement?.closest(SKIP_SELECTOR)) return [];
+
+  const rootDetailsHidden = hiddenByDetails(root, false);
+  if (rootDetailsHidden && !keepHidden) return [];
+
+  const matchesRow = rowsOnly ? compileSelectorMatcher(rowSelector) : null;
+  const matchesRegion = compileSelectorMatcher(textSelector);
+
+  const checkVis = (element: Element, parentLaidOutVisible: boolean): boolean => {
+    if (!laidOut) return true;
+    if (!parentLaidOutVisible) return false;
+    // Bare prose/inline elements without classes/style/hidden and syntax token
+    // spans (`styles/syntax.css`) never set display:none or content-visibility:hidden.
+    // Skipping Blink's checkVisibility() on them avoids thousands of C++ layout
+    // visibility queries per find walk over markdown and code-heavy threads.
+    if (!element.hasAttribute('style') && !element.hasAttribute('hidden')) {
+      const cls = element.className;
+      if (typeof cls === 'string') {
+        const tag = element.tagName;
+        if (
+          (cls === '' && PLAIN_VISIBLE_TAGS.has(tag)) ||
+          (tag === 'SPAN' && (cls.startsWith('syntax-') || cls.startsWith('rounded-[2px] ')))
+        ) {
+          return true;
+        }
+      }
     }
-    return answer;
+    if (typeof element.checkVisibility !== 'function' || element.checkVisibility()) return true;
+    return getComputedStyle(element).display === 'contents';
   };
-  // Text nodes, and the elements that end a run: island placeholders too.
-  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
-    acceptNode: (node) => node.nodeType === Node.TEXT_NODE || (node as Element).matches(BOUNDARY_SELECTOR) || islands?.has(node as Element)
-      ? NodeFilter.FILTER_ACCEPT
-      : NodeFilter.FILTER_SKIP,
-  });
+
+  // Seed inherited state from `root`'s own ancestry once instead of per text node.
+  const rootParent = root.parentElement;
+  const rootParentVisible = !laidOut || !rootParent || (
+    (typeof rootParent.checkVisibility !== 'function' || rootParent.checkVisibility()) ||
+    getComputedStyle(rootParent).display === 'contents'
+  );
+  const rootBlock = root.closest(BLOCK_SELECTOR);
+  const rootRow = matchesRow && matchesRow(root) ? root : null;
+  const rootRegion = matchesRegion && matchesRegion(root) ? root : null;
+
   const segments: Segment[] = [];
   let current: Segment | null = null;
-  for (let next = walker.nextNode(); next; next = walker.nextNode()) {
-    if (next.nodeType !== Node.TEXT_NODE) {
+
+  const visit = (
+    element: Element,
+    row: Element | null,
+    region: Element | null,
+    block: Element | null,
+    detailsHidden: boolean,
+    parentLaidOutVisible: boolean,
+    isRoot: boolean,
+  ): void => {
+    const tag = element.tagName;
+    const island = isRoot ? undefined : islands?.get(element);
+    const skip = !isRoot && isSkipElement(element);
+    if (island !== undefined) {
       current = null;
-      const element = next as Element;
-      const island = islands?.get(element);
-      if (island === undefined || element.parentElement?.closest(SKIP_SELECTOR)) continue;
-      const hidden = !isVisible(element);
-      if (!hidden || keepHidden) segments.push({ nodes: [], starts: [], text: '', block: null, row: null, region: null, hidden, island });
-      continue;
+      const elemVisible = !detailsHidden && checkVis(element, parentLaidOutVisible);
+      const hidden = !elemVisible;
+      if (!hidden || keepHidden) {
+        segments.push({ nodes: [], starts: [], text: '', block: null, row: null, region: null, hidden, island });
+      }
+      if (skip) return;
+    } else if (skip || (!isRoot && (tag === 'IMG' || tag === 'BR'))) {
+      current = null;
+      return;
+    } else if (element.firstChild === null) {
+      // Empty leaf element cannot hold text or descendants; skip layout visibility checks.
+      return;
     }
-    const node = next as Text;
-    const parent = node.parentElement;
-    if (!parent || node.data.length === 0) continue;
-    if (parent.closest(SKIP_SELECTOR)) continue;
-    const hidden = !isVisible(parent);
-    if (hidden && !keepHidden) continue;
-    const row = rowsOnly && rowSelector ? parent.closest(rowSelector) : null;
-    if (rowsOnly && (!row || !root.contains(row))) continue;
-    const region = textSelector ? parent.closest(textSelector) : null;
-    if (textSelector && (!region || !root.contains(region))) continue;
-    const block = parent.closest(BLOCK_SELECTOR);
-    if (!current || current.block !== block || current.row !== row || current.region !== region || current.hidden !== hidden) {
-      current = { nodes: [], starts: [], text: '', block, row, region, hidden };
-      segments.push(current);
+
+    const elemLaidOutVisible = checkVis(element, parentLaidOutVisible);
+    const elemHidden = detailsHidden || !elemLaidOutVisible;
+    if (!elemLaidOutVisible && !keepHidden) {
+      // A display:none (or non-contents boxless) element hides its entire subtree.
+      return;
     }
-    current.starts.push(current.text.length);
-    current.nodes.push(node);
-    current.text += foldFindText(node.data);
+
+    const nextRow = isRoot
+      ? row
+      : (matchesRow && matchesRow(element) ? element : row);
+    const nextRegion = isRoot
+      ? region
+      : (matchesRegion && matchesRegion(element) ? element : region);
+    const nextBlock = isRoot
+      ? block
+      : (BLOCK_TAGS.has(tag) ? element : block);
+
+    const closedDetails = tag === 'DETAILS' && !(element as HTMLDetailsElement).open;
+    const visibleSummary = closedDetails ? firstDirectSummary(element) : null;
+
+    for (let child = element.firstChild; child; child = child.nextSibling) {
+      const nodeType = child.nodeType;
+      if (nodeType === 3 /* Node.TEXT_NODE */) {
+        const textNode = child as Text;
+        if (textNode.data.length === 0) continue;
+        // Direct text inside a closed <details> is body text, not summary text.
+        const textHidden = elemHidden || closedDetails;
+        if (textHidden && !keepHidden) continue;
+        if (rowsOnly && !nextRow) continue;
+        if (textSelector && !nextRegion) continue;
+        if (
+          !current ||
+          current.block !== nextBlock ||
+          current.row !== nextRow ||
+          current.region !== nextRegion ||
+          current.hidden !== textHidden
+        ) {
+          current = {
+            nodes: [],
+            starts: [],
+            text: '',
+            block: nextBlock,
+            row: nextRow,
+            region: nextRegion,
+            hidden: textHidden,
+          };
+          segments.push(current);
+        }
+        current.starts.push(current.text.length);
+        current.nodes.push(textNode);
+        current.text += foldFindText(textNode.data);
+      } else if (nodeType === 1 /* Node.ELEMENT_NODE */) {
+        const childEl = child as Element;
+        const childDetailsHidden = detailsHidden || (closedDetails && childEl !== visibleSummary);
+        if (childDetailsHidden && !keepHidden) continue;
+        visit(childEl, nextRow, nextRegion, nextBlock, childDetailsHidden, elemLaidOutVisible, false);
+      }
+    }
+  };
+
+  // If `root` itself matches SKIP_SELECTOR (e.g., data-find-skip), none of its
+  // descendants can match because `parent.closest(SKIP_SELECTOR)` hits `root`.
+  if (isSkipElement(root)) return [];
+
+  // Fast path when `rowsOnly` is set with a `rowSelector` and no islands:
+  // query only the matching row elements instead of traversing unrelated pane
+  // chrome (toolbars, file trees, Lucide SVGs) and running checkVisibility()
+  // on every node. Shared ancestors are verified once via a memoized map.
+  if (rowsOnly && rowSelector && (!islands || islands.size === 0) && !rootRow) {
+    const rootVisible = checkVis(root, rootParentVisible);
+    if (!rootVisible && !keepHidden) return [];
+    const matchedRows = root.querySelectorAll(rowSelector);
+    if (matchedRows.length === 0) return [];
+
+    interface AncestorInfo {
+      skip: boolean;
+      visible: boolean;
+      detailsHidden: boolean;
+      region: Element | null;
+      block: Element | null;
+      insideMatchedRow: boolean;
+    }
+    const ancestorCache = new Map<Element, AncestorInfo>([
+      [
+        root,
+        {
+          skip: false,
+          visible: rootVisible,
+          detailsHidden: rootDetailsHidden,
+          region: rootRegion,
+          block: rootBlock,
+          insideMatchedRow: false,
+        },
+      ],
+    ]);
+
+    const resolveAncestor = (el: Element): AncestorInfo => {
+      const cached = ancestorCache.get(el);
+      if (cached) return cached;
+      const parent = el.parentElement;
+      const pInfo = parent ? resolveAncestor(parent) : ancestorCache.get(root)!;
+      if (pInfo.skip || pInfo.insideMatchedRow || (!pInfo.visible && !keepHidden)) {
+        const out: AncestorInfo = {
+          skip: pInfo.skip,
+          visible: false,
+          detailsHidden: pInfo.detailsHidden,
+          region: pInfo.region,
+          block: pInfo.block,
+          insideMatchedRow: pInfo.insideMatchedRow,
+        };
+        ancestorCache.set(el, out);
+        return out;
+      }
+      const skip = isSkipElement(el);
+      const insideMatchedRow = matchesRow ? matchesRow(el) : false;
+      const closedParent = parent !== null && parent.tagName === 'DETAILS' && !(parent as HTMLDetailsElement).open;
+      const detailsHidden = pInfo.detailsHidden || (closedParent && el !== firstDirectSummary(parent));
+      const visible = (!skip && (!detailsHidden || keepHidden)) ? checkVis(el, pInfo.visible) : false;
+      const region = matchesRegion && matchesRegion(el) ? el : pInfo.region;
+      const block = BLOCK_TAGS.has(el.tagName) ? el : pInfo.block;
+      const out: AncestorInfo = { skip, visible, detailsHidden, region, block, insideMatchedRow };
+      ancestorCache.set(el, out);
+      return out;
+    };
+
+    for (let i = 0; i < matchedRows.length; i += 1) {
+      const rowEl = matchedRows[i];
+      const parent = rowEl.parentElement;
+      const pInfo = parent ? resolveAncestor(parent) : ancestorCache.get(root)!;
+      if (pInfo.skip || pInfo.insideMatchedRow) continue;
+      if (!pInfo.visible && !keepHidden) continue;
+      const closedParent = parent !== null && parent.tagName === 'DETAILS' && !(parent as HTMLDetailsElement).open;
+      const rowDetailsHidden = pInfo.detailsHidden || (closedParent && rowEl !== firstDirectSummary(parent));
+      if (rowDetailsHidden && !keepHidden) continue;
+      current = null;
+      visit(rowEl, rowEl, pInfo.region, pInfo.block, rowDetailsHidden, pInfo.visible, false);
+    }
+    return segments;
   }
+
+  visit(root, rootRow, rootRegion, rootBlock, rootDetailsHidden, rootParentVisible, true);
   return segments;
 }
 
@@ -304,6 +536,11 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
   let rulesHeld = false;
   let disposed = false;
 
+  if (paints) {
+    retainRules(name);
+    rulesHeld = true;
+  }
+
   // Indexes of the current matches.
   function currentIndexes(): number[] {
     const now = typeof current === 'function' ? current() : current;
@@ -358,10 +595,6 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
     // `toggle` does not bubble; a capture listener sees every <details>.
     onToggle = () => pending.request();
     root.addEventListener('toggle', onToggle, true);
-    if (paints && !rulesHeld) {
-      retainRules(name);
-      rulesHeld = true;
-    }
   }
 
   function unfollow(): void {
@@ -371,10 +604,6 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
     onToggle = null;
     scheduler?.dispose();
     scheduler = null;
-    if (rulesHeld) {
-      releaseRules(name);
-      rulesHeld = false;
-    }
   }
 
   return {
@@ -403,6 +632,10 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
       matches = [];
       paint();
       unfollow();
+      if (rulesHeld) {
+        releaseRules(name);
+        rulesHeld = false;
+      }
       disposed = true;
     },
   };

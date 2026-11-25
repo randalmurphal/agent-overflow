@@ -154,10 +154,9 @@
     sectionOfBlock = map;
   }
 
-  // Re-measure when the reading moves to another section or its layout or
-  // the reply changes.
+  // Re-measure when the sections or reply blocks change (moving between
+  // sections does not change block layout geometry).
   $effect(() => {
-    void position?.section;
     void sections;
     void expectedBlocks;
     measure();

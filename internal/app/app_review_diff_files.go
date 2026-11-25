@@ -564,6 +564,84 @@ func (a *App) startReviewDiffPin(ctx context.Context, record *reviewDiffRecord, 
 	})
 }
 
+// lastTurnEditOfPaths resolves the turn's last edit payload for every path in
+// want in a single reverse scan of the turn's edit payloads, stopping early
+// once every requested path is resolved.
+func (a *App) lastTurnEditOfPaths(ctx context.Context, threadID string, turnIndex int, want map[string]struct{}) (map[string]string, error) {
+	resolved := make(map[string]string, len(want))
+	if len(want) == 0 {
+		return resolved, nil
+	}
+	payloadIDs, err := a.store.ListTurnEditDiffPayloads(threadID, turnIndex)
+	if err != nil {
+		return nil, err
+	}
+	remaining := len(want)
+	for i := len(payloadIDs) - 1; i >= 0 && remaining > 0; i-- {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		matched, err := a.payloadEditedPaths(threadID, payloadIDs[i], want, resolved)
+		if err != nil {
+			return nil, err
+		}
+		remaining -= matched
+	}
+	return resolved, nil
+}
+
+// payloadEditedPaths scans one payload once, recording payloadID into resolved
+// for each path in want not yet resolved, returning how many new paths matched.
+func (a *App) payloadEditedPaths(threadID, payloadID string, want map[string]struct{}, resolved map[string]string) (int, error) {
+	var paths highlight.PatchPaths
+	var line []byte
+	matched := 0
+	record := func(closed string, ok bool) {
+		if !ok {
+			return
+		}
+		if _, needed := want[closed]; !needed {
+			return
+		}
+		if _, already := resolved[closed]; already {
+			return
+		}
+		resolved[closed] = payloadID
+		matched++
+	}
+	for offset := 0; ; {
+		data, total, _, err := a.store.GetPayloadChunk(threadID, payloadID, offset, editScanChunkBytes)
+		if err != nil {
+			return 0, fmt.Errorf("read edit payload %s: %w", payloadID, err)
+		}
+		for _, b := range data {
+			if b == '\n' {
+				closed, ok := paths.Line(string(line))
+				line = line[:0]
+				record(closed, ok)
+				if len(resolved) >= len(want) {
+					return matched, nil
+				}
+				continue
+			}
+			if len(line) < editScanLineBytes {
+				line = append(line, b)
+			}
+		}
+		offset += len(data)
+		if len(data) == 0 || offset >= total {
+			break
+		}
+	}
+	if len(line) > 0 {
+		closed, ok := paths.Line(string(line))
+		record(closed, ok)
+	}
+	closed, ok := paths.End()
+	record(closed, ok)
+	return matched, nil
+}
+
 // lastTurnEditOfPath answers the turn's last edit that changes path: its
 // payload, scanned from the end of the turn, each patch read in chunks.
 func (a *App) lastTurnEditOfPath(ctx context.Context, threadID string, turnIndex int, path string) (string, bool, error) {

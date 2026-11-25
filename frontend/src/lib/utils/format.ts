@@ -17,22 +17,34 @@ import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
  * Omitting it means home, which is what every caller meant before a
  * client could attach a second machine.
  */
+const TIME_12H_FORMAT = new Intl.DateTimeFormat(undefined, {
+  hour: 'numeric',
+  minute: '2-digit',
+  hour12: true,
+  month: 'short',
+  day: 'numeric',
+});
+
+const TIME_24H_FORMAT = new Intl.DateTimeFormat(undefined, {
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+  month: 'short',
+  day: 'numeric',
+});
+
 export function relativeTime(
   timestampMs: number,
   format: 'locale' | '12-hour' | '24-hour' = 'locale',
   backendId: BackendKey = HOME_BACKEND,
 ): string {
   if (format === '12-hour') {
-    return new Date(timestampMs).toLocaleString(undefined, {
-      hour: 'numeric', minute: '2-digit', hour12: true,
-      month: 'short', day: 'numeric',
-    });
+    if (!Number.isFinite(timestampMs)) return 'Invalid Date';
+    return TIME_12H_FORMAT.format(timestampMs);
   }
   if (format === '24-hour') {
-    return new Date(timestampMs).toLocaleString(undefined, {
-      hour: '2-digit', minute: '2-digit', hour12: false,
-      month: 'short', day: 'numeric',
-    });
+    if (!Number.isFinite(timestampMs)) return 'Invalid Date';
+    return TIME_24H_FORMAT.format(timestampMs);
   }
 
   // Allocation-free: one Map lookup, one closure call, one subtraction.

@@ -1,12 +1,15 @@
 package workspacefiles
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unsafe"
@@ -405,5 +408,65 @@ func TestBuildIndexRespectsMaxEntries(t *testing.T) {
 	}
 	if !idx.truncated {
 		t.Fatal("expected truncated flag")
+	}
+}
+
+func TestInvalidateOnlyDropsMatchingRootInFlight(t *testing.T) {
+	rootA := setupWorkspace(t)
+	rootB := setupWorkspace(t)
+
+	origGit := gitCommand
+	t.Cleanup(func() { gitCommand = origGit })
+
+	enteredA := make(chan struct{})
+	enteredB := make(chan struct{})
+	release := make(chan struct{})
+	var onceA, onceB sync.Once
+
+	gitCommand = func(ctx context.Context, cwd string, args ...string) *exec.Cmd {
+		switch cwd {
+		case rootA:
+			onceA.Do(func() { close(enteredA) })
+			<-release
+		case rootB:
+			onceB.Do(func() { close(enteredB) })
+			<-release
+		}
+		return exec.CommandContext(ctx, "printf", "src/components/App.tsx\\0")
+	}
+
+	s := NewSearcher(Config{TTL: time.Hour})
+	errCh := make(chan error, 2)
+	go func() {
+		_, _, err := s.Search(rootA, "App", 10)
+		errCh <- err
+	}()
+	go func() {
+		_, _, err := s.Search(rootB, "App", 10)
+		errCh <- err
+	}()
+
+	<-enteredA
+	<-enteredB
+	// Invalidating rootA while both builds are in flight must discard rootA's
+	// stale build on completion without preventing rootB from caching.
+	s.Invalidate(rootA)
+	close(release)
+
+	for range 2 {
+		if err := <-errCh; err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+	}
+
+	s.mu.Lock()
+	_, hasA := s.indices[rootA]
+	_, hasB := s.indices[rootB]
+	s.mu.Unlock()
+	if hasA {
+		t.Fatal("invalidated in-flight build for rootA was cached")
+	}
+	if !hasB {
+		t.Fatal("unrelated in-flight build for rootB was dropped by Invalidate(rootA)")
 	}
 }

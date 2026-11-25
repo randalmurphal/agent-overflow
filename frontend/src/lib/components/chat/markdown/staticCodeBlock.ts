@@ -4,8 +4,9 @@ import { copyToClipboard, reportCopyFailure } from '../../../utils/clipboard';
 import { reportFrontendDiagnostic } from '../../../utils/frontendErrorCapture';
 import { maskSpriteRef } from '../../../utils/maskSprite';
 import { spanSegments, type EncodedLine } from '../../../utils/syntaxSpans';
-import { getCachedBlockSpans } from './codeSpanCache';
-import { isCodeBlockUnwrapped, setCodeBlockUnwrapped } from './codeWrapState';
+import { contentKey } from '../../../utils/fnv1a';
+import { getCachedBlockSpansByContentKey } from './codeSpanCache';
+import { isCodeBlockUnwrappedByKey, setCodeBlockUnwrapped } from './codeWrapState';
 import { CODE_RUN_CLASS, CODE_RUN_LABEL, isRunnableShellLang, runCodeBlock } from './codeRun';
 
 type StreamdownContext = ReturnType<
@@ -105,18 +106,25 @@ const COPY_BUTTON_CLASS = [
 ].join(' ');
 
 const CODE_OVERLAY_CLASS = [
-  'absolute top-1 right-1 z-10 flex items-center gap-0.5',
+  'ao-code-overlay absolute top-1 right-1 z-10 flex items-center gap-0.5',
   'opacity-0 transition-opacity duration-150 ease-out',
-  'group-hover/codeblock:opacity-100 focus-within:opacity-100 compact:opacity-100',
+  'focus-within:opacity-100 compact:opacity-100',
 ].join(' ');
 
+const HTML_ESCAPE_PROBE_RE = /[&<>"']/;
+const HTML_ESCAPE_RE = /[&<>"']/g;
+const HTML_ESCAPE_MAP: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+};
+
 function escapeHtml(value: unknown): string {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
+  const str = String(value ?? '');
+  if (!HTML_ESCAPE_PROBE_RE.test(str)) return str;
+  return str.replace(HTML_ESCAPE_RE, (ch) => HTML_ESCAPE_MAP[ch]);
 }
 
 function attribute(name: string, value: unknown): string {
@@ -167,27 +175,36 @@ function runIconRef(): string {
   );
 }
 
+let cachedRunButtonHtml: string | undefined;
 function runButtonHtml(): string {
-  return '<button type="button"' +
+  if (cachedRunButtonHtml !== undefined) return cachedRunButtonHtml;
+  const ref = runIconRef();
+  return (cachedRunButtonHtml = '<button type="button"' +
     attribute('aria-label', CODE_RUN_LABEL) + attribute('title', CODE_RUN_LABEL) +
     attribute('class', `${CODE_RUN_CLASS} ${COPY_BUTTON_CLASS}`) +
     ' data-icon-button data-static-code-run>' +
     '<span aria-hidden="true"' +
-      attribute('style', `width:13px;height:13px;-webkit-mask-image:${runIconRef()};mask-image:${runIconRef()}`) +
+      attribute('style', `width:13px;height:13px;-webkit-mask-image:${ref};mask-image:${ref}`) +
       ' class="lucide-icon lucide lucide-play inline-block shrink-0 opacity-80"></span>' +
-    '</button>';
+    '</button>');
 }
 
+let cachedCopyIconHtml: string | undefined;
 function copyIconHtml(): string {
-  return '<span aria-hidden="true" data-static-code-copy-icon' +
-    attribute('style', `width:13px;height:13px;-webkit-mask-image:${copyIconRef()};mask-image:${copyIconRef()}`) +
-    ' class="lucide-icon lucide lucide-copy inline-block shrink-0 opacity-80"></span>';
+  if (cachedCopyIconHtml !== undefined) return cachedCopyIconHtml;
+  const ref = copyIconRef();
+  return (cachedCopyIconHtml = '<span aria-hidden="true" data-static-code-copy-icon' +
+    attribute('style', `width:13px;height:13px;-webkit-mask-image:${ref};mask-image:${ref}`) +
+    ' class="lucide-icon lucide lucide-copy inline-block shrink-0 opacity-80"></span>');
 }
 
+let cachedWrapIconHtml: string | undefined;
 function wrapIconHtml(): string {
-  return '<span aria-hidden="true"' +
-    attribute('style', `width:13px;height:13px;-webkit-mask-image:${wrapIconRef()};mask-image:${wrapIconRef()}`) +
-    ' class="lucide-icon lucide lucide-text-wrap inline-block shrink-0 opacity-80"></span>';
+  if (cachedWrapIconHtml !== undefined) return cachedWrapIconHtml;
+  const ref = wrapIconRef();
+  return (cachedWrapIconHtml = '<span aria-hidden="true"' +
+    attribute('style', `width:13px;height:13px;-webkit-mask-image:${ref};mask-image:${ref}`) +
+    ' class="lucide-icon lucide lucide-text-wrap inline-block shrink-0 opacity-80"></span>');
 }
 
 /**
@@ -223,7 +240,7 @@ export function renderStaticCodeBlockHtml(
 
   const wrapLabel = codeWrapLabel(unwrapped);
   const numbered = !!token.firstLine;
-  return '<div class="streamdown-code-host group/codeblock relative" data-code-source=""' +
+  return '<div class="streamdown-code-host relative" data-code-source=""' +
     attribute('data-code-lang', token.lang ?? '') +
     (unwrapped || numbered ? ' data-code-unwrapped=""' : '') +
     '><div' +
@@ -278,7 +295,8 @@ export function renderCachedStaticCodeBlockHtml(
   if (completed) {
     return completed.render(id);
   }
-  const spans = lang ? getCachedBlockSpans(lang, token.text) : null;
+  const sourceKey = contentKey(token.text);
+  const spans = lang ? getCachedBlockSpansByContentKey(lang, sourceKey) : null;
   if (lang && spans === null) return null;
   const lines = token.text.split('\n');
   return renderStaticCodeBlockHtml(
@@ -287,7 +305,7 @@ export function renderCachedStaticCodeBlockHtml(
     streamdown,
     lines,
     (index) => spans?.[index] ?? null,
-    isCodeBlockUnwrapped(lang, token.text),
+    isCodeBlockUnwrappedByKey(lang, sourceKey),
   );
 }
 

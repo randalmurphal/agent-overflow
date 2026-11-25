@@ -45,6 +45,7 @@ import { noteProject, noteThread, noteWorkflowItem, projectBackend, workflowItem
 import { getAttachedBackends } from './attachedBackends.svelte';
 
 const REFRESH_DEBOUNCE_MS = 200;
+const DETAIL_REFRESH_DEBOUNCE_MS = 150;
 
 export interface WorkflowLivePhase {
   phaseId: string;
@@ -68,6 +69,8 @@ let lastProjectIds: string[] = [];
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let inFlight: Promise<void> | null = null;
 const detailLoads = new Map<string, { promise: Promise<WorkflowItemDetail | null> | null }>();
+const detailRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
+let overlayMountedCount = 0;
 let listRevision = 0;
 let projectRevision = 0;
 let attentionRequested = false;
@@ -139,6 +142,18 @@ export function recordWorkflowReceipt(receipt: WorkflowResolvedReceipt): void {
 export function clearWorkflowReceipts(): void {
   if (receipts.size === 0) return;
   receipts = new Map();
+}
+
+/** Tracks whether any WorkflowsPane surface is mounted so background refreshes
+ * when the pane is closed only query unresolved attention rows. */
+export function retainWorkflowOverlay(): () => void {
+  overlayMountedCount += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    overlayMountedCount = Math.max(0, overlayMountedCount - 1);
+  };
 }
 
 /**
@@ -237,14 +252,42 @@ export function refreshWorkflowRunsSoon(): void {
   refreshTimer = setTimeout(() => {
     refreshTimer = null;
     if (!overlayLoaded && !attentionRequested) return;
+    const readAll = overlayLoaded && overlayMountedCount > 0;
     void (async () => {
       try {
-        await readRuns(overlayLoaded);
+        await readRuns(readAll);
       } catch (err) {
         console.warn('workflows: run refresh failed:', err);
       }
     })();
   }, REFRESH_DEBOUNCE_MS);
+}
+
+/** Leading-edge + trailing debounce for high-frequency phase-state reloads
+ * (e.g. fan-out waves): runs immediately when idle, coalescing bursts while
+ * a reload is already in flight. */
+function scheduleWorkflowDetailRefresh(itemId: string): void {
+  if (!details.has(itemId)) return;
+  if (!detailLoads.has(itemId) && !detailRefreshTimers.has(itemId)) {
+    void loadWorkflowDetail(itemId, true);
+    return;
+  }
+  const existing = detailRefreshTimers.get(itemId);
+  if (existing !== undefined) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    detailRefreshTimers.delete(itemId);
+    if (details.has(itemId)) void loadWorkflowDetail(itemId, true);
+  }, DETAIL_REFRESH_DEBOUNCE_MS);
+  detailRefreshTimers.set(itemId, timer);
+}
+
+function refreshWorkflowDetailNow(itemId: string): void {
+  const existing = detailRefreshTimers.get(itemId);
+  if (existing !== undefined) {
+    clearTimeout(existing);
+    detailRefreshTimers.delete(itemId);
+  }
+  if (details.has(itemId)) void loadWorkflowDetail(itemId, true);
 }
 
 /**
@@ -294,6 +337,11 @@ export async function loadWorkflowDetail(itemId: string, force = false): Promise
  */
 export function retainWorkflowDetails(rootItemId: string | null): void {
   for (const id of detailLoads.keys()) if (id !== rootItemId) detailLoads.delete(id);
+  for (const [id, timer] of detailRefreshTimers) {
+    if (id === rootItemId) continue;
+    clearTimeout(timer);
+    detailRefreshTimers.delete(id);
+  }
   if (details.size === 0) return;
   const kept = rootItemId !== null ? details.get(rootItemId) : undefined;
   if (rootItemId === null || kept === undefined) {
@@ -312,7 +360,7 @@ export function applyWorkflowItemState(event: WorkflowItemStateEvent): void {
   // An event supersedes outstanding list reads, but carries only part of the
   // row (no endedAt, for example). Reconcile once after the event burst.
   refreshWorkflowRunsSoon();
-  if (details.has(event.itemId)) void loadWorkflowDetail(event.itemId, true);
+  refreshWorkflowDetailNow(event.itemId);
   if (event.to !== 'running') {
     const next = new Map(livePhases);
     if (next.delete(event.itemId)) livePhases = next;
@@ -327,7 +375,7 @@ export function applyWorkflowPhaseState(event: WorkflowPhaseStateEvent): void {
     status: event.status ?? '',
     unitId: event.unitId ?? '',
   });
-  if (details.has(event.itemId)) void loadWorkflowDetail(event.itemId, true);
+  scheduleWorkflowDetailRefresh(event.itemId);
 }
 
 export function applyWorkflowSoftStop(event: WorkflowSoftStopEvent): void {
@@ -336,7 +384,7 @@ export function applyWorkflowSoftStop(event: WorkflowSoftStopEvent): void {
   listRevision++;
   runs = patchWorkflowSoftStop(runs, event.itemId, event.armed);
   refreshWorkflowRunsSoon();
-  if (details.has(event.itemId)) void loadWorkflowDetail(event.itemId, true);
+  refreshWorkflowDetailNow(event.itemId);
 }
 
 export function applyWorkflowEngineState(event: WorkflowEngineStateEvent, backend: BackendKey = HOME_BACKEND): void {
@@ -381,6 +429,11 @@ onBackendDetached(({ backendId, projectIds, workflowItemIds }) => {
   for (const id of removed) {
     details.delete(id);
     detailLoads.delete(id);
+    const timer = detailRefreshTimers.get(id);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      detailRefreshTimers.delete(id);
+    }
     livePhases.delete(id);
     receipts.delete(id);
     delete nextCosts[id];
@@ -401,6 +454,9 @@ export function resetWorkflowRunsForTest(): void {
     clearTimeout(refreshTimer);
     refreshTimer = null;
   }
+  for (const timer of detailRefreshTimers.values()) clearTimeout(timer);
+  detailRefreshTimers.clear();
+  overlayMountedCount = 0;
   inFlight = null;
   detailLoads.clear();
   listRevision++;

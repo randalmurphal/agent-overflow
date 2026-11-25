@@ -179,10 +179,11 @@ function applyContextExpansionUncached(file: ReviewFile, state: ContextExpansion
     const next = hunks[index + 1];
     const nextStart = next?.newStart;
     while (hunk.newStart - 1 > prevEnd && state.lines.has(hunk.newStart - 1)) {
-      hunk.before.unshift(state.lines.get(hunk.newStart - 1)!);
+      hunk.before.push(state.lines.get(hunk.newStart - 1)!);
       hunk.newStart -= 1;
       hunk.oldStart -= 1;
     }
+    if (hunk.before.length > 1) hunk.before.reverse();
     let endNew = hunk.newStart - 1 + hunk.before.length + hunk.newCount;
     const limit = nextStart !== undefined ? nextStart - 1 : (state.eofLine ?? Number.MAX_SAFE_INTEGER);
     while (endNew < limit && state.lines.has(endNew + 1)) {

@@ -8,8 +8,16 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 )
+
+var drainPipeBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 32<<10)
+		return &b
+	},
+}
 
 // RunDrained runs cmd with its stdout and stderr copied to the given writers
 // (nil discards) and returns once the process has exited and everything it
@@ -117,7 +125,9 @@ func drainPipe(src *os.File, dst io.Writer, exited, stop <-chan struct{}, linger
 	if dst == nil {
 		dst = io.Discard
 	}
-	buf := make([]byte, 32<<10)
+	bp := drainPipeBufPool.Get().(*[]byte)
+	buf := *bp
+	defer drainPipeBufPool.Put(bp)
 	var writeErr error
 	for {
 		select {

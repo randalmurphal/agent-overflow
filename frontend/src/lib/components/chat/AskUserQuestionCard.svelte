@@ -154,7 +154,7 @@
 </script>
 
 <div
-  class="group/tool overflow-hidden"
+  class="ao-tool-row overflow-hidden"
   data-testid="ask-user-question-card"
   data-status={item.status}
 >

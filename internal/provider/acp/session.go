@@ -109,9 +109,10 @@ type pendingPromptConfirm struct {
 }
 
 type chunkBuffer struct {
-	kind  provider.EventKind // EventTextDelta or EventThinking
-	buf   strings.Builder
-	timer *time.Timer
+	kind       provider.EventKind // EventTextDelta or EventThinking
+	buf        strings.Builder
+	timer      *time.Timer
+	timerArmed bool
 }
 
 type pendingBackgroundCommand struct {
@@ -2320,9 +2321,9 @@ func (s *Session) bufferChunk(kind provider.EventKind, text string) {
 			flushKind = s.chunk.kind
 			flushText = s.chunk.buf.String()
 			s.chunk.buf.Reset()
-			if s.chunk.timer != nil {
+			if s.chunk.timer != nil && s.chunk.timerArmed {
 				s.chunk.timer.Stop()
-				s.chunk.timer = nil
+				s.chunk.timerArmed = false
 			}
 		}
 	}
@@ -2332,12 +2333,17 @@ func (s *Session) bufferChunk(kind provider.EventKind, text string) {
 	if s.chunk.buf.Len() >= chunkCoalesceBytes {
 		curText = s.chunk.buf.String()
 		s.chunk.buf.Reset()
-		if s.chunk.timer != nil {
+		if s.chunk.timer != nil && s.chunk.timerArmed {
 			s.chunk.timer.Stop()
-			s.chunk.timer = nil
+			s.chunk.timerArmed = false
 		}
-	} else if s.chunk.timer == nil {
-		s.chunk.timer = time.AfterFunc(chunkCoalesceWindow, s.flushChunks)
+	} else if !s.chunk.timerArmed {
+		if s.chunk.timer == nil {
+			s.chunk.timer = time.AfterFunc(chunkCoalesceWindow, s.flushChunks)
+		} else {
+			s.chunk.timer.Reset(chunkCoalesceWindow)
+		}
+		s.chunk.timerArmed = true
 	}
 	s.mu.Unlock()
 
@@ -2358,9 +2364,9 @@ func (s *Session) bufferChunk(kind provider.EventKind, text string) {
 // drainAndCloseActiveBlockLocked atomically drains any buffered chunk and
 // clears s.activeBlockKind. Caller holds both s.chunkEmitMu and s.mu.
 func (s *Session) drainAndCloseActiveBlockLocked() (flushKind provider.EventKind, flushText string, stopKind provider.EventKind, turnID string) {
-	if s.chunk.timer != nil {
+	if s.chunk.timer != nil && s.chunk.timerArmed {
 		s.chunk.timer.Stop()
-		s.chunk.timer = nil
+		s.chunk.timerArmed = false
 	}
 	turnID = s.activeTurnID
 	if s.chunk.buf.Len() > 0 {
@@ -2415,9 +2421,9 @@ func (s *Session) flushChunks() {
 	defer s.chunkEmitMu.Unlock()
 
 	s.mu.Lock()
-	if s.chunk.timer != nil {
+	if s.chunk.timer != nil && s.chunk.timerArmed {
 		s.chunk.timer.Stop()
-		s.chunk.timer = nil
+		s.chunk.timerArmed = false
 	}
 	if s.chunk.buf.Len() == 0 {
 		s.mu.Unlock()
@@ -2441,6 +2447,7 @@ func (s *Session) stopChunkTimer() {
 		s.chunk.timer.Stop()
 		s.chunk.timer = nil
 	}
+	s.chunk.timerArmed = false
 	s.mu.Unlock()
 }
 

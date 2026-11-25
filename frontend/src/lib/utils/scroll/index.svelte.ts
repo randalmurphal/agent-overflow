@@ -204,8 +204,14 @@ export function createUseStickToBottomController(
     // Subtracting -1 here just left the user 1 px above the actual
     // bottom; the scrollbar showed a one-tick gap and the snap felt
     // incomplete.
-    const target = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
-    if (options.externalContentGeometry === true) {
+    const scrollHeight = scrollEl.scrollHeight;
+    const clientHeight = scrollEl.clientHeight;
+    const target = Math.max(0, scrollHeight - clientHeight);
+    cachedScrollHeight = scrollHeight;
+    cachedClientHeight = clientHeight;
+    cachedMetricsValid = true;
+    cachedGeometryFloored = scrollHeight <= clientHeight;
+    if (options.externalContentGeometry === true || options.cacheObservedBottomTarget === true) {
       cachedBottomTarget = target;
       cachedBottomTargetValid = true;
     }
@@ -250,6 +256,9 @@ export function createUseStickToBottomController(
   // real reads until scrollable content returns. Those are the panes where
   // the read is cheap.
   let cachedScrollTop = 0;
+  let cachedScrollHeight = 0;
+  let cachedClientHeight = 0;
+  let cachedMetricsValid = false;
   let cachedGeometryValid = false;
   let cachedGeometryFloored = false;
   let cachedBottomTarget = 0;
@@ -268,12 +277,29 @@ export function createUseStickToBottomController(
     }
     cachedBottomTarget = Math.max(0, target);
     cachedBottomTargetValid = true;
+    if (cachedMetricsValid && Number.isFinite(height) && Number.isFinite(viewportHeight)) {
+      // Keep cachedScrollHeight in sync with external content height so
+      // secondary geometry consumers (OverlayScrollbar) can update without
+      // forcing a synchronous scrollHeight/clientHeight layout pass.
+      const padding = Math.max(0, cachedClientHeight - viewportHeight);
+      cachedScrollHeight = Math.max(cachedClientHeight, height + padding);
+    }
+  }
+
+  function springCurrentClientHeight(forceLayoutRead = false): number {
+    if (!scrollEl) return 0;
+    if (!forceLayoutRead && cachedClientHeight > 0) {
+      return cachedClientHeight;
+    }
+    const clientHeight = scrollEl.clientHeight;
+    cachedClientHeight = clientHeight;
+    return clientHeight;
   }
 
   function springTargetScrollTop(forceLayoutRead = false): number {
     if (
       !forceLayoutRead
-      && options.externalContentGeometry === true
+      && (options.externalContentGeometry === true || options.cacheObservedBottomTarget === true)
       && cachedBottomTargetValid
     ) {
       return cachedBottomTarget;
@@ -285,7 +311,7 @@ export function createUseStickToBottomController(
     if (!scrollEl) return 0;
     if (
       !forceLayoutRead
-      && options.externalContentGeometry === true
+      && (options.externalContentGeometry === true || options.cacheObservedBottomTarget === true)
       && cachedGeometryValid
     ) {
       return cachedScrollTop;
@@ -304,13 +330,41 @@ export function createUseStickToBottomController(
       const clientHeight = scrollEl.clientHeight;
       dist = scrollHeight - scrollTop - clientHeight;
       cachedScrollTop = scrollTop;
+      cachedScrollHeight = scrollHeight;
+      cachedClientHeight = clientHeight;
+      cachedMetricsValid = true;
       cachedGeometryValid = true;
       cachedGeometryFloored = scrollHeight <= clientHeight;
+      intent.seedObservedScrollTopIfUnset(scrollTop);
     }
     // No scrollEl (empty timeline) still refreshes the band from dist 0
     // — markAtBottom's empty-thread branch relies on it.
     setIsNearBottomFromDistance(dist);
     return dist;
+  }
+
+  function readBottomGeometry(): { target: number; scrollTop: number } {
+    if (!scrollEl) {
+      setIsNearBottomFromDistance(0);
+      return { target: 0, scrollTop: 0 };
+    }
+    const scrollTop = scrollEl.scrollTop;
+    const scrollHeight = scrollEl.scrollHeight;
+    const clientHeight = scrollEl.clientHeight;
+    const target = Math.max(0, scrollHeight - clientHeight);
+    cachedScrollTop = scrollTop;
+    cachedScrollHeight = scrollHeight;
+    cachedClientHeight = clientHeight;
+    cachedMetricsValid = true;
+    cachedGeometryValid = true;
+    cachedGeometryFloored = scrollHeight <= clientHeight;
+    intent.seedObservedScrollTopIfUnset(scrollTop);
+    if (options.externalContentGeometry === true || options.cacheObservedBottomTarget === true) {
+      cachedBottomTarget = target;
+      cachedBottomTargetValid = true;
+    }
+    setIsNearBottomFromDistance(scrollHeight - scrollTop - clientHeight);
+    return { target, scrollTop };
   }
 
   function refreshIsNearBottomAfterWrite(scrollTop: number, bottomTarget?: number): number {
@@ -322,8 +376,13 @@ export function createUseStickToBottomController(
     if (target === undefined) {
       const height = scrollEl?.scrollHeight ?? 0;
       const viewport = scrollEl?.clientHeight ?? 0;
+      cachedScrollHeight = height;
+      cachedClientHeight = viewport;
+      cachedMetricsValid = scrollEl !== undefined;
       cachedGeometryFloored = height <= viewport;
       target = Math.max(0, height - viewport);
+    } else if (target > 0) {
+      cachedGeometryFloored = false;
     }
     const dist = target - scrollTop;
     setIsNearBottomFromDistance(dist);
@@ -497,6 +556,7 @@ export function createUseStickToBottomController(
     selectionActive: () => (scrollEl ? isSelectingInside(scrollEl) : false),
     targetScrollTop: springTargetScrollTop,
     currentScrollTop: springCurrentScrollTop,
+    currentClientHeight: springCurrentClientHeight,
     arrival: arrivalReadback,
     writeScrollTop,
     liveContentActive: liveContentActiveNow,
@@ -536,14 +596,25 @@ export function createUseStickToBottomController(
     isNearBottom: () => isNearBottomState,
     targetScrollTop,
     refreshIsNearBottom,
+    readBottomGeometry,
     viewportGeometryChanged: notifyLiveContentMaybeGrew,
     cacheExternalBottomTarget,
     contentGeometryForSample,
     writeScrollTop,
     resolverStateSnapshot,
     prefersReducedMotion: motionReduced,
-    contentGeometryProcessed: (scrollable) =>
-      options.onContentGeometryProcessed?.(scrollable),
+    contentGeometryProcessed: (scrollable, metricsFresh = true) =>
+      options.onContentGeometryProcessed?.(
+        scrollable,
+        metricsFresh && cachedMetricsValid && cachedGeometryValid
+          ? { scrollTop: cachedScrollTop, scrollHeight: cachedScrollHeight, clientHeight: cachedClientHeight }
+          : undefined,
+      ),
+    cachedScrollableHint: () => (
+      cachedMetricsValid
+        ? cachedScrollHeight - cachedClientHeight > 1
+        : null
+    ),
     spring,
   });
 
@@ -637,7 +708,7 @@ export function createUseStickToBottomController(
       escapedFromLockState,
       pauseDepth,
     }));
-    writeScrollTop(decision.write.caller, decision.write.value);
+    writeScrollTop(decision.write.caller, decision.write.value, observation.bottomTarget);
     // A DISPLACED redirect — the anchor-redirect tier recovering a
     // pinned viewport that a large post-warm remeasure burst threw off
     // the bottom (bug-report-20260822T020840Z) — proves a measurement-
@@ -815,7 +886,8 @@ export function createUseStickToBottomController(
     }
     if (!scrollEl) return;
     isAtBottomState = true;
-    writeScrollTop(opts.caller ?? 'requestBottom', targetScrollTop());
+    const target = targetScrollTop();
+    writeScrollTop(opts.caller ?? 'requestBottom', target, target);
   }
 
   function markAtBottom(): void {
@@ -867,11 +939,15 @@ export function createUseStickToBottomController(
     };
   }
 
-  function instantPinAfterExternalGeometryChange(caller: ScrollWriteCaller): void {
+  function instantPinAfterExternalGeometryChange(
+    caller: ScrollWriteCaller,
+    knownTarget?: number,
+  ): void {
     // Stamped BEFORE the write so the resulting scroll event is treated
     // as RO-correlated, not user-driven (see the observer pipeline).
     observers.stampSyntheticResizeCorrelation();
-    writeScrollTop(caller, targetScrollTop());
+    const target = knownTarget ?? targetScrollTop();
+    writeScrollTop(caller, target, target);
   }
 
   // Mid-flight, the bottom target belongs to the chase. Both notify
@@ -892,9 +968,10 @@ export function createUseStickToBottomController(
   // snap: content collapsed out from under the viewport, and animating
   // upward across it is the same artifact the resolver's mid-spring
   // threshold exists to prevent.
-  function absorbedByActiveSpring(): boolean {
+  function absorbedByActiveSpring(knownTarget?: number): boolean {
     if (!scrollEl || !spring.isActive()) return false;
-    const overshoot = scrollEl.scrollTop - targetScrollTop();
+    const target = knownTarget ?? targetScrollTop();
+    const overshoot = scrollEl.scrollTop - target;
     if (overshoot > SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX) return false;
     spring.markTargetChanged();
     return true;
@@ -917,11 +994,17 @@ export function createUseStickToBottomController(
       target: scrollEl ? Math.round(targetScrollTop()) : null,
     }));
     if (!gate.canPin) return;
-    if (absorbedByActiveSpring()) return;
-    instantPinAfterExternalGeometryChange('notifyContentMaybeGrew');
+    const target = targetScrollTop();
+    if (absorbedByActiveSpring(target)) return;
+    instantPinAfterExternalGeometryChange('notifyContentMaybeGrew', target);
   }
 
-  function notifyLiveContentMaybeGrew(): void {
+  function notifyLiveContentMaybeGrew(kind: 'live-content' | 'composer-geometry' = 'live-content'): void {
+    if (kind === 'composer-geometry') {
+      // Viewport/padding changed outside contentRO: force fresh DOM reads on
+      // this observation and any subsequent spring frame even if gated out.
+      cachedBottomTargetValid = false;
+    }
     const gate = readNotifyContentGate();
     // Liveness IS load-bearing here, unlike the growth-delta path. This
     // path also carries VIEWPORT changes ('composer-geometry'): the
@@ -956,12 +1039,30 @@ export function createUseStickToBottomController(
     }));
     if (!gate.canPin) return;
 
+    // External-geometry surfaces (MessageTimeline) already deliver exact
+    // bottom targets post-flush. When a structural 'live-content' nudge lands
+    // while a spring chase is already active and within overshoot tolerance,
+    // refreshing the retain window needs no forced layout read.
+    if (
+      kind === 'live-content'
+      && options.externalContentGeometry === true
+      && spring.isActive()
+      && cachedBottomTargetValid
+      && cachedGeometryValid
+      && !cachedGeometryFloored
+      && cachedScrollTop - cachedBottomTarget <= SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX
+    ) {
+      spring.markTargetChanged();
+      return;
+    }
+
     const target = targetScrollTop();
     if (scrollEl && scrollTopIsAtTarget(target)) {
       if (arrivalReadback.shouldWriteExact(target)) {
         arrivalReadback.writeExact('notifyLiveContentMaybeGrew.arrive', target);
+      } else {
+        refreshIsNearBottomAfterWrite(scrollEl.scrollTop, target);
       }
-      refreshIsNearBottom();
       return;
     }
     if (willSpring && scrollEl) {
@@ -990,8 +1091,8 @@ export function createUseStickToBottomController(
     // modes, warm-up, reduced-motion users, and no-distance/overshoot
     // nudges where a spring has nothing useful to chase — but never
     // over a chase already in flight (absorbedByActiveSpring).
-    if (absorbedByActiveSpring()) return;
-    instantPinAfterExternalGeometryChange('notifyLiveContentMaybeGrew');
+    if (absorbedByActiveSpring(target)) return;
+    instantPinAfterExternalGeometryChange('notifyLiveContentMaybeGrew', target);
   }
 
   // Public observation entry point — maps the source hint onto the two
@@ -1004,7 +1105,7 @@ export function createUseStickToBottomController(
     switch (kind) {
       case 'live-content':
       case 'composer-geometry':
-        notifyLiveContentMaybeGrew();
+        notifyLiveContentMaybeGrew(kind);
         return;
       case 'content':
       case 'host-layout':
@@ -1138,7 +1239,13 @@ export function createUseStickToBottomController(
     }));
     observers.attach();
     intent.attach(nextScrollEl);
-    refreshIsNearBottom();
+    // Avoid forcing a synchronous document layout inside mount-time $effect
+    // attach() when public isAtBottom is already decided by isAtBottomState or
+    // escapedFromLockState; the post-layout firstFire delivery refreshes the
+    // real geometry before first paint.
+    if (!isAtBottomState && !escapedFromLockState) {
+      refreshIsNearBottom();
+    }
     installStickStateDevHook();
   }
 
@@ -1211,6 +1318,9 @@ export function createUseStickToBottomController(
     chokepoint.resetLedger();
     scrollEl = undefined;
     contentEl = undefined;
+    cachedScrollHeight = 0;
+    cachedClientHeight = 0;
+    cachedMetricsValid = false;
     cachedGeometryValid = false;
     cachedBottomTargetValid = false;
   }

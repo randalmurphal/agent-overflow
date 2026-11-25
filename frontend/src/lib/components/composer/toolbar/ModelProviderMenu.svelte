@@ -149,6 +149,7 @@
   let settings = $derived(getSettings(backend));
   let isLocked = $derived(pane.isLocked);
   let visibleFavorites = $derived.by(() => {
+    if (!open) return [];
     // Hidden sets built once per provider per recompute, not per
     // favorite (the list holds up to 30 entries).
     const hiddenByProvider = new Map<ProviderID, ReadonlySet<string>>();

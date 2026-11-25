@@ -136,7 +136,9 @@ func windowDigestRowHash(row WindowDigestRow) uint64 {
 	fold(row.ID)
 	unit(windowDigestFieldSep)
 	var buf [20]byte
-	fold(string(strconv.AppendInt(buf[:0], row.Rev, 10)))
+	for _, b := range strconv.AppendInt(buf[:0], row.Rev, 10) {
+		unit(uint16(b))
+	}
 	return h
 }
 
@@ -299,6 +301,19 @@ func windowEdgeCursorTx(q sqlQueryer, threadID, itemID string, scope timelineSco
 // The limit is validated HERE rather than trusted from the caller: it is
 // the only bound on how many rows this statement may walk, and
 // timelineArms renders a zero limit as no LIMIT clause at all.
+// windowDigestLimitBucket rounds a caller's held-window limit up to one of
+// a small fixed set of literal SQL LIMIT values so stmtCacheConn reuses
+// compiled statements across distinct window counts instead of compiling a
+// fresh statement for every count.
+func windowDigestLimitBucket(limit int) int {
+	for _, bucket := range [...]int{64, 128, 256, 512, 1024, 2048, 4096} {
+		if limit <= bucket {
+			return min(bucket, MaxHeldWindowItems+1)
+		}
+	}
+	return MaxHeldWindowItems + 1
+}
+
 func windowDigestRowsTx(
 	q sqlQueryer,
 	threadID string,
@@ -311,6 +326,7 @@ func windowDigestRowsTx(
 			"store: held window row limit %d for %s is outside 1..%d",
 			limit, threadID, MaxHeldWindowItems+1)
 	}
+	sqlLimit := windowDigestLimitBucket(limit)
 	filter, filterArgs := scope.filter("items.")
 	selection, args, err := timelineArms(q, threadID, timelineSelection{
 		Columns: func(string, string) string {
@@ -325,7 +341,7 @@ func windowDigestRowsTx(
 		   AND (items.turn_index, items.item_index) <= (?, ?)`,
 		WhereArgs: append(filterArgs, oldest.TurnIndex, oldest.ItemIndex, newest.TurnIndex, newest.ItemIndex),
 		OrderBy:   "turn_index ASC, item_index ASC",
-		Limit:     limit,
+		Limit:     sqlLimit,
 	})
 	if err != nil {
 		return nil, err
@@ -348,6 +364,9 @@ func windowDigestRowsTx(
 			return nil, fmt.Errorf("store: scan held window row for %s: %w", threadID, err)
 		}
 		out = append(out, row)
+		if len(out) >= limit {
+			break
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate held window rows for %s: %w", threadID, err)

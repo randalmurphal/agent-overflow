@@ -149,7 +149,9 @@
   // configured: it shows no pickers, as an agent pane does not.
   let hasComposableSurface = $derived(pane.canCompose && !pane.thread?.askCopy);
   let toolbarEl: HTMLDivElement | undefined = $state(undefined);
-  let toolbarDensity = $state<ComposerToolbarDensity>('compact');
+  // Start at the roomiest rung so desktop opens hit measureDensity's zero-mutation
+  // fast path instead of forcing 3 style-recalc layout probes on every mount.
+  let toolbarDensity = $state<ComposerToolbarDensity>('full');
 
   // Measured density (densityLadder.ts): the width read and the
   // data-density write are frame-queued, and only a width move can

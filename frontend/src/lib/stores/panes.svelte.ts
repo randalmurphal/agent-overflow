@@ -1,6 +1,8 @@
+import { untrack } from 'svelte';
 import { compactShownPaneId, getCompactScreen, isCompactLayout, showCompactList, showCompactThread } from './layoutMode.svelte';
 import type { Thread } from '../types/models';
 import { createThreadPane, type ThreadPane } from './thread.svelte';
+import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
   addPaneLayoutItem,
   averagePaneWidthPx,
@@ -30,6 +32,7 @@ import { onBackendDetached } from '../transport/backends';
 import { onThreadOwnershipChanged } from '../transport/entityIndex';
 import { REVEAL_PANE_EVENT } from './eventNames';
 import {
+  onWatchedThreadsComposed,
   refreshWatchedThreads,
   registerWatchedThreadSource,
   watchThreadsBeforeMount,
@@ -44,6 +47,42 @@ let focusedPaneId: string | null = $state('main');
 export type PaneActivation = 'preview' | 'committed';
 let paneActivationById: Map<string, PaneActivation> = $state(new Map());
 let nextGeneratedPaneId = 1;
+
+// Per-thread open membership for sidebar rows and tree previews so switching
+// a thread or opening a pane wakes only the threads whose open state flipped,
+// rather than every ThreadRow in the sidebar.
+const openThreads = createKeyedSignalRegistry<boolean>(false);
+const openThreadIdSet = new Set<string>();
+
+function syncOpenThreads(): void {
+  untrack(() => {
+    const current = new Set<string>();
+    for (const pane of panes.values()) {
+      if (pane.threadId) current.add(pane.threadId);
+    }
+    for (const id of openThreadIdSet) {
+      if (!current.has(id)) {
+        openThreadIdSet.delete(id);
+        openThreads.set(id, false);
+      }
+    }
+    for (const id of current) {
+      if (!openThreadIdSet.has(id)) {
+        openThreadIdSet.add(id);
+        openThreads.set(id, true);
+      }
+    }
+  });
+}
+
+onWatchedThreadsComposed(() => syncOpenThreads());
+
+/** Release the per-thread open/shown signal boxes when a thread is removed. */
+export function dropOpenThreadSignal(id: string): void {
+  openThreadIdSet.delete(id);
+  openThreads.drop(id);
+  for (const pane of panes.values()) pane.dropShownThreadSignal(id);
+}
 let panePersistenceHandler: (() => void) | null = null;
 // Notified with a paneId after that pane (a ThreadPane) is destroyed.
 // Companion stores register here to cascade-close panes paired to a closing
@@ -208,6 +247,7 @@ function newThreadPane(paneId: string): ThreadPane {
   return createThreadPane({
     paneId,
     onThreadChanged: () => {
+      syncOpenThreads();
       if (registryRestores === 0) requestPanePersistence();
     },
   });
@@ -216,6 +256,7 @@ function newThreadPane(paneId: string): ThreadPane {
 function registerPane(id: string, pane: ThreadPane, activation: PaneActivation = 'committed'): ThreadPane {
   panes = new Map(panes).set(id, pane);
   paneActivationById = new Map(paneActivationById).set(id, activation);
+  syncOpenThreads();
   return pane;
 }
 
@@ -378,6 +419,15 @@ export function isThreadVisible(threadId: string): boolean {
 }
 
 /**
+ * Per-thread reactive check for whether `threadId` is mounted in any pane.
+ * Subscribes only to this thread's signal box so pane opens, closes, and
+ * thread switches wake only the affected rows rather than every sidebar row.
+ */
+export function isThreadOpen(threadId: string): boolean {
+  return openThreads.get(threadId);
+}
+
+/**
  * Ids of every thread mounted in some pane. Reactive over the registry and
  * each pane's threadId; callers that read it inside a $derived re-run only
  * when a pane opens, closes, or swaps thread.
@@ -453,6 +503,7 @@ export function destroyPane(id: string): void {
   if (getPaneLayoutItems().length === 0) showCompactList();
   // After the companion cascade, so one recompute covers every pane the
   // close removed rather than one per observer.
+  syncOpenThreads();
   refreshWatchedThreads();
   requestPanePersistence();
 }
@@ -563,6 +614,8 @@ export function resetPanesForTest(): void {
   paneActivationById = new Map();
   focusedPaneId = 'main';
   nextGeneratedPaneId = 1;
+  openThreadIdSet.clear();
+  openThreads.reset();
   refreshWatchedThreads();
 }
 
@@ -572,6 +625,7 @@ export function resetPaneRegistry(nextFocusedPaneId: string | null = null): void
   paneActivationById = new Map();
   focusedPaneId = nextFocusedPaneId;
   nextGeneratedPaneId = 1;
+  syncOpenThreads();
   refreshWatchedThreads();
 }
 
@@ -636,6 +690,7 @@ async function restorePaneRegistry(
     console.error(`Failed to restore pane "${paneId}":`, result.reason);
   }
   if (droppedPaneIds.size === 0) {
+    syncOpenThreads();
     refreshWatchedThreads();
     return;
   }
@@ -652,6 +707,7 @@ async function restorePaneRegistry(
     removePaneLayoutItem(paneId, { persist: false });
   }
   // One recompute for the whole drop pass, after the registry has settled.
+  syncOpenThreads();
   refreshWatchedThreads();
   // Based on what was REQUESTED, not on what survived the resolve above: a
   // focused pane that was deduplicated never entered `panes`, so

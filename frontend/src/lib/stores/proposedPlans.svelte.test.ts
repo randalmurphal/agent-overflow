@@ -6,6 +6,11 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  getCachedPlanMarkdown,
+  hasLoadedThreadProposedPlans,
+  invalidateProposedPlansLoaded,
+  retainProposedPlanEventListener,
+  setCachedPlanMarkdown,
   upsertProposedPlanForTests,
   getThreadCurrentProposedPlan,
   getThreadProposedPlans,
@@ -13,6 +18,8 @@ import {
   resetProposedPlanCacheForTests,
 } from './proposedPlans.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { stageBackend } from '../../test/helpers/backends';
+import { noteThread } from '../transport/entityIndex';
 import type { Item } from '../types/models';
 
 function planItem(overrides: Partial<Item> = {}): Item {
@@ -151,5 +158,75 @@ describe('proposed-plan refresh / sync upsert race', () => {
     await refreshDone;
 
     expect(getThreadCurrentProposedPlan('thread-1')?.id).toBe('plan-fresh');
+  });
+
+  it('keeps loaded false after RPC failure and unfocused upserts, and clears loaded when all listeners detach', async () => {
+    setBindingMock('ListThreadProposedPlans', async () => { throw new Error('offline'); });
+    await refreshThreadProposedPlans('thread-err');
+    expect(hasLoadedThreadProposedPlans('thread-err')).toBe(false);
+
+    upsertProposedPlanForTests(planItem({ id: 'plan-u', threadId: 'thread-u' }));
+    expect(hasLoadedThreadProposedPlans('thread-u')).toBe(false);
+
+    const release = retainProposedPlanEventListener(() => 'thread-ok');
+    setBindingMock('ListThreadProposedPlans', async () => [planItem({ id: 'plan-ok', threadId: 'thread-ok' })]);
+    await refreshThreadProposedPlans('thread-ok');
+    expect(hasLoadedThreadProposedPlans('thread-ok')).toBe(true);
+
+    release();
+    expect(hasLoadedThreadProposedPlans('thread-ok')).toBe(false);
+  });
+
+  it('invalidates cached plan markdown when the plan version changes', () => {
+    setCachedPlanMarkdown('t1', 'p1', '# V1', '100\0{}');
+    expect(getCachedPlanMarkdown('t1', 'p1', '100\0{}')).toBe('# V1');
+    expect(getCachedPlanMarkdown('t1', 'p1', '200\0{}')).toBeNull();
+    // Stale entry was evicted on mismatch.
+    expect(getCachedPlanMarkdown('t1', 'p1', '100\0{}')).toBeNull();
+  });
+
+  it('does not mark loaded if the last retainer released while refresh was in flight, and supports explicit invalidation', async () => {
+    let resolveRpc!: (items: Item[]) => void;
+    setBindingMock('ListThreadProposedPlans', async () => new Promise<Item[]>((resolve) => {
+      resolveRpc = resolve;
+    }));
+
+    const release = retainProposedPlanEventListener(() => 'thread-inflight');
+    const pending = refreshThreadProposedPlans('thread-inflight');
+    release();
+    resolveRpc([planItem({ threadId: 'thread-inflight' })]);
+    await pending;
+    expect(hasLoadedThreadProposedPlans('thread-inflight')).toBe(false);
+
+    // Explicit invalidation clears loaded state for one thread or all threads.
+    const release2 = retainProposedPlanEventListener(() => 'thread-a');
+    setBindingMock('ListThreadProposedPlans', async (tid: string) => [planItem({ threadId: tid })]);
+    await refreshThreadProposedPlans('thread-a');
+    await refreshThreadProposedPlans('thread-b');
+    expect(hasLoadedThreadProposedPlans('thread-a')).toBe(true);
+    expect(hasLoadedThreadProposedPlans('thread-b')).toBe(true);
+
+    invalidateProposedPlansLoaded('thread-a');
+    expect(hasLoadedThreadProposedPlans('thread-a')).toBe(false);
+    expect(hasLoadedThreadProposedPlans('thread-b')).toBe(true);
+
+    invalidateProposedPlansLoaded();
+    expect(hasLoadedThreadProposedPlans('thread-b')).toBe(false);
+
+    // History invalidation (e.g. thread ownership move) clears loaded state
+    // and evicts markdown cache for matching threads only.
+    stageBackend({ id: 'gpu' });
+    noteThread('thread-a', '', 0);
+    noteThread('thread-b', '', 0);
+    await refreshThreadProposedPlans('thread-a');
+    await refreshThreadProposedPlans('thread-b');
+    setCachedPlanMarkdown('thread-a', 'plan-1', '# A', '1\0{}');
+    setCachedPlanMarkdown('thread-b', 'plan-1', '# B', '1\0{}');
+    noteThread('thread-a', 'gpu', 1);
+    expect(hasLoadedThreadProposedPlans('thread-a')).toBe(false);
+    expect(hasLoadedThreadProposedPlans('thread-b')).toBe(true);
+    expect(getCachedPlanMarkdown('thread-a', 'plan-1', '1\0{}')).toBeNull();
+    expect(getCachedPlanMarkdown('thread-b', 'plan-1', '1\0{}')).toBe('# B');
+    release2();
   });
 });

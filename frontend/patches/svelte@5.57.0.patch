@@ -209,7 +209,7 @@ index 141b914537e3e9a463061a34eab08cba85bff86e..dd3e4a22147ceacaa1b3708052c4f811
  	};
  
 diff --git a/src/internal/client/dom/blocks/each.js b/src/internal/client/dom/blocks/each.js
-index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..be8c16319d433b0e2d0a3156168a28d8bbba05c2 100644
+index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..bbee1ee69688b6310154d5bfcb6d1a236dc6cd73 100644
 --- a/src/internal/client/dom/blocks/each.js
 +++ b/src/internal/client/dom/blocks/each.js
 @@ -29,6 +29,7 @@ import {
@@ -220,7 +220,16 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..be8c16319d433b0e2d0a3156168a28d8
  	move_effect,
  	pause_effect,
  	resume_effect
-@@ -151,17 +152,30 @@ function destroy_effects(state, to_destroy, remove_dom = true) {
+@@ -36,7 +37,7 @@ import {
+ import { source, mutable_source, internal_set } from '../../reactivity/sources.js';
+ import { array_from, is_array } from '../../../shared/utils.js';
+ import { BRANCH_EFFECT, COMMENT_NODE, DESTROYED, EFFECT_OFFSCREEN, INERT } from '#client/constants';
+-import { queue_micro_task } from '../task.js';
++import { get_micro_task_epoch, queue_micro_task } from '../task.js';
+ import { get } from '../../runtime.js';
+ import { DEV } from 'esm-env';
+ import { derived_safe_equal } from '../../reactivity/deriveds.js';
+@@ -151,23 +152,71 @@ function destroy_effects(state, to_destroy, remove_dom = true) {
  		}
  	}
  
@@ -259,7 +268,48 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..be8c16319d433b0e2d0a3156168a28d8
  	}
  }
  
-@@ -219,6 +233,29 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
+ /** @type {TemplateNode} */
+ var offscreen_anchor;
+ 
++// ao patch (flip-phases): batch FLIP destination reads and animation creates
++// across all animated {#each} blocks updated in the same reactive flush.
++// Without this, each block runs abort -> measure_to -> apply per item or per
++// block, interleaving style writes with getBoundingClientRect reads.
++// Stored as a deduplicated Set so a cascading reorder of the same block inside
++// one flush never calls apply() twice on the same effect.
++/** @type {Set<Effect>} */
++var pending_to_animate = new Set();
++var pending_to_animate_epoch = 0;
++
++function flush_pending_to_animate() {
++	if (pending_to_animate.size === 0) return;
++	var effects = pending_to_animate;
++	pending_to_animate = new Set();
++
++	// Phase 1: all style writes (abort in-flight FLIP animations)
++	for (var effect of effects) {
++		if ((effect.f & DESTROYED) === 0) {
++			effect.nodes?.a?.abort();
++		}
++	}
++	// Phase 2: all destination rect reads in ONE layout pass across all blocks
++	for (var effect of effects) {
++		if ((effect.f & DESTROYED) === 0) {
++			effect.nodes?.a?.measure_to();
++		}
++	}
++	// Phase 3: all FLIP animation creations
++	for (var effect of effects) {
++		if ((effect.f & DESTROYED) === 0) {
++			effect.nodes?.a?.apply();
++		}
++	}
++}
++
+ /**
+  * @template V
+  * @param {Element | Comment} node The next sibling node, or the parent node if this is a 'controlled' block
+@@ -219,6 +268,29 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
  	/** @type {V[]} */
  	var array;
  
@@ -289,7 +339,7 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..be8c16319d433b0e2d0a3156168a28d8
  	/** @type {Map<Batch, Set<any>>} */
  	var pending = new Map();
  
-@@ -235,7 +272,7 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
+@@ -235,7 +307,7 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
  		state.pending.delete(batch);
  
  		state.fallback = fallback;
@@ -298,7 +348,7 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..be8c16319d433b0e2d0a3156168a28d8
  
  		if (fallback !== null) {
  			if (array.length === 0) {
-@@ -284,6 +321,7 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
+@@ -284,6 +356,7 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
  		}
  
  		var keys = new Set();
@@ -306,7 +356,7 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..be8c16319d433b0e2d0a3156168a28d8
  		var batch = /** @type {Batch} */ (current_batch);
  		var defer = should_defer_append();
  
-@@ -311,6 +349,17 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
+@@ -311,6 +384,17 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
  				}
  			}
  
@@ -324,7 +374,7 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..be8c16319d433b0e2d0a3156168a28d8
  			var item = first_run ? null : items.get(key);
  
  			if (item) {
-@@ -352,14 +401,8 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
+@@ -352,14 +436,8 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
  			}
  		}
  
@@ -341,7 +391,7 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..be8c16319d433b0e2d0a3156168a28d8
  
  		// remove excess nodes
  		if (hydrating && length > 0) {
-@@ -407,6 +450,45 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
+@@ -407,6 +485,45 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
  	}
  }
  
@@ -387,23 +437,75 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..be8c16319d433b0e2d0a3156168a28d8
  /**
   * Skip past any non-branch effects (which could be created with `createSubscriber`, for example) to find the next branch effect
   * @param {Effect | null} effect
-@@ -650,6 +732,15 @@ function reconcile(state, array, anchor, flags, get_key) {
- 	if (is_animated) {
- 		queue_micro_task(() => {
- 			if (to_animate === undefined) return;
-+			// ao patch (flip-phases): phased loops — all style writes (aborts),
-+			// then all forced reads, then all animation creations — so the whole
-+			// set pays one forced style/layout pass instead of one per item.
-+			for (effect of to_animate) {
-+				effect.nodes?.a?.abort();
-+			}
-+			for (effect of to_animate) {
-+				effect.nodes?.a?.measure_to();
-+			}
- 			for (effect of to_animate) {
- 				effect.nodes?.a?.apply();
+@@ -444,10 +561,8 @@ function reconcile(state, array, anchor, flags, get_key) {
+ 
+ 	/** @type {undefined | Set<Effect>} */
+ 	var to_animate;
+-
+ 	/** @type {Effect[]} */
+ 	var matched = [];
+-
+ 	/** @type {Effect[]} */
+ 	var stashed = [];
+ 
+@@ -495,7 +610,7 @@ function reconcile(state, array, anchor, flags, get_key) {
+ 			resume_effect(effect);
+ 			if (is_animated) {
+ 				effect.nodes?.a?.unfix();
+-				(to_animate ??= new Set()).delete(effect);
++				to_animate?.delete(effect);
  			}
-@@ -747,30 +838,3 @@ function link(state, prev, next) {
+ 		}
+ 
+@@ -639,7 +754,19 @@ function reconcile(state, array, anchor, flags, get_key) {
+ 				}
+ 
+ 				for (i = 0; i < destroy_length; i += 1) {
+-					to_destroy[i].nodes?.a?.fix();
++					to_destroy[i].nodes?.a?.fix_read();
++				}
++
++				for (i = 0; i < destroy_length; i += 1) {
++					to_destroy[i].nodes?.a?.fix_position();
++				}
++
++				for (i = 0; i < destroy_length; i += 1) {
++					to_destroy[i].nodes?.a?.fix_measure();
++				}
++
++				for (i = 0; i < destroy_length; i += 1) {
++					to_destroy[i].nodes?.a?.fix_transform();
+ 				}
+ 			}
+ 
+@@ -647,13 +774,19 @@ function reconcile(state, array, anchor, flags, get_key) {
+ 		}
+ 	}
+ 
+-	if (is_animated) {
+-		queue_micro_task(() => {
+-			if (to_animate === undefined) return;
+-			for (effect of to_animate) {
+-				effect.nodes?.a?.apply();
+-			}
+-		});
++	if (is_animated && to_animate !== undefined && to_animate.size > 0) {
++		var epoch = get_micro_task_epoch();
++		if (pending_to_animate_epoch !== epoch) {
++			pending_to_animate = new Set();
++			pending_to_animate_epoch = epoch;
++		}
++		var should_schedule = pending_to_animate.size === 0;
++		for (var anim_effect of to_animate) {
++			pending_to_animate.add(anim_effect);
++		}
++		if (should_schedule) {
++			queue_micro_task(flush_pending_to_animate);
++		}
+ 	}
+ }
+ 
+@@ -747,30 +880,3 @@ function link(state, prev, next) {
  		next.prev = prev;
  	}
  }
@@ -496,10 +598,21 @@ index 0fe1b8b2d3f9d176a9ecd55ae761b62788c9fcf7..0f6fd49a583afe8589b6fea10dca7181
  
  			prev = current;
 diff --git a/src/internal/client/dom/elements/transitions.js b/src/internal/client/dom/elements/transitions.js
-index 67b177841ade6faf0675c855b1ce7c2ae599472f..4d4865b3dd18b2c1fa2b3f643fb383c1d0b82330 100644
+index 67b177841ade6faf0675c855b1ce7c2ae599472f..3e60788574d8620b11ae9892fb9a821a691b5167 100644
 --- a/src/internal/client/dom/elements/transitions.js
 +++ b/src/internal/client/dom/elements/transitions.js
-@@ -102,11 +102,22 @@ export function animation(element, get_fn, get_params) {
+@@ -97,16 +97,33 @@ export function animation(element, get_fn, get_params) {
+ 	/** @type {null | { position: string, width: string, height: string, transform: string }} */
+ 	var original_styles = null;
+ 
++	/** @type {null | { width: string, height: string }} */
++	var pending_fix = null;
++
++	/** @type {DOMRect | undefined} */
++	var fixed_to;
++
+ 	nodes.a ??= {
+ 		element,
  		measure() {
  			from = this.element.getBoundingClientRect();
  		},
@@ -525,11 +638,90 @@ index 67b177841ade6faf0675c855b1ce7c2ae599472f..4d4865b3dd18b2c1fa2b3f643fb383c1
  			if (
  				from.left !== to.left ||
  				from.right !== to.right ||
+@@ -128,7 +145,14 @@ export function animation(element, get_fn, get_params) {
+ 				);
+ 			}
+ 		},
+-		fix() {
++		// ao patch (flip-phases): `fix()` used to run getComputedStyle (read),
++		// style.position/width/height (write), getBoundingClientRect (forced
++		// read), and style.transform (write) per exiting element, forcing up to
++		// 2N style/layout passes when N items leave an animated each-block at
++		// once. Split into four phased methods called across `to_destroy` so the
++		// whole removal set pays one forced layout pass.
++		fix_read() {
++			pending_fix = null;
+ 			// If an animation is already running, transforming the element is likely to fail,
+ 			// because the styles applied by the animation take precedence. In the case of crossfade,
+ 			// that means the `translate(...)` of the crossfade transition overrules the `translate(...)`
+@@ -140,26 +164,46 @@ export function animation(element, get_fn, get_params) {
+ 			var { position, width, height } = getComputedStyle(element);
+ 
+ 			if (position !== 'absolute' && position !== 'fixed') {
+-				var style = /** @type {HTMLElement | SVGElement} */ (element).style;
+-
+-				original_styles = {
+-					position: style.position,
+-					width: style.width,
+-					height: style.height,
+-					transform: style.transform
+-				};
++				pending_fix = { width, height };
++			}
++		},
++		fix_position() {
++			if (pending_fix === null) return;
++			var style = /** @type {HTMLElement | SVGElement} */ (element).style;
++
++			original_styles = {
++				position: style.position,
++				width: style.width,
++				height: style.height,
++				transform: style.transform
++			};
+ 
+-				style.position = 'absolute';
+-				style.width = width;
+-				style.height = height;
+-				var to = element.getBoundingClientRect();
++			style.position = 'absolute';
++			style.width = pending_fix.width;
++			style.height = pending_fix.height;
++		},
++		fix_measure() {
++			if (pending_fix === null) return;
++			fixed_to = element.getBoundingClientRect();
++		},
++		fix_transform() {
++			if (pending_fix === null) return;
++			pending_fix = null;
++			var to = /** @type {DOMRect} */ (fixed_to);
++			fixed_to = undefined;
+ 
+-				if (from.left !== to.left || from.top !== to.top) {
+-					var transform = `translate(${from.left - to.left}px, ${from.top - to.top}px)`;
+-					style.transform = style.transform ? `${style.transform} ${transform}` : transform;
+-				}
++			if (from.left !== to.left || from.top !== to.top) {
++				var style = /** @type {HTMLElement | SVGElement} */ (element).style;
++				var transform = `translate(${from.left - to.left}px, ${from.top - to.top}px)`;
++				style.transform = style.transform ? `${style.transform} ${transform}` : transform;
+ 			}
+ 		},
++		fix() {
++			this.fix_read();
++			this.fix_position();
++			this.fix_measure();
++			this.fix_transform();
++		},
+ 		unfix() {
+ 			if (original_styles) {
+ 				var style = /** @type {HTMLElement | SVGElement} */ (element).style;
 diff --git a/src/internal/client/dom/task.js b/src/internal/client/dom/task.js
-index 8c513614672b07a41e4626dc041f8d216345e014..8c593df62edc70e76c065a3e30a2e2d6e31633e1 100644
+index 8c513614672b07a41e4626dc041f8d216345e014..ad67cdacb8c293d850486481936a84262ecadea5 100644
 --- a/src/internal/client/dom/task.js
 +++ b/src/internal/client/dom/task.js
-@@ -1,13 +1,20 @@
+@@ -1,13 +1,37 @@
  import { run_all } from '../../shared/utils.js';
  import { is_flushing_sync } from '../reactivity/batch.js';
 +import { FLUSH_TASKS_MAX_TASKS, flush_loop_exceeded } from '../flush-caps.js';
@@ -538,6 +730,18 @@ index 8c513614672b07a41e4626dc041f8d216345e014..8c593df62edc70e76c065a3e30a2e2d6
  let micro_tasks = [];
  
 +/**
++ * PATCH(agent-overflow flip-phases): bumped whenever `clear_micro_tasks` drops
++ * queued tasks so batched microtask schedulers (e.g. phased FLIP flushes)
++ * discard abandoned state instead of holding a stale scheduled flag.
++ */
++let micro_task_epoch = 0;
++
++/** @returns {number} */
++export function get_micro_task_epoch() {
++	return micro_task_epoch;
++}
++
++/**
 + * PATCH(agent-overflow flush-loop-caps): returns how many tasks ran, so
 + * `flush_tasks` can bound its drain.
 + * @returns {number}
@@ -545,12 +749,18 @@ index 8c513614672b07a41e4626dc041f8d216345e014..8c593df62edc70e76c065a3e30a2e2d6
  function run_micro_tasks() {
  	var tasks = micro_tasks;
  	micro_tasks = [];
- 	run_all(tasks);
+-	run_all(tasks);
++	try {
++		run_all(tasks);
++	} catch (err) {
++		micro_task_epoch += 1;
++		throw err;
++	}
 +	return tasks.length;
  }
  
  /**
-@@ -32,11 +39,36 @@ export function queue_micro_task(fn) {
+@@ -32,11 +56,37 @@ export function queue_micro_task(fn) {
  	micro_tasks.push(fn);
  }
  
@@ -565,6 +775,7 @@ index 8c513614672b07a41e4626dc041f8d216345e014..8c593df62edc70e76c065a3e30a2e2d6
 + */
 +export function clear_micro_tasks() {
 +	micro_tasks = [];
++	micro_task_epoch += 1;
 +}
 +
  /**

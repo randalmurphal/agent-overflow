@@ -170,7 +170,7 @@
   }
 </script>
 
-<div class="group/tool overflow-hidden" data-testid="read-group-row" data-tool-kind="eye">
+<div class="ao-tool-row overflow-hidden" data-testid="read-group-row" data-tool-kind="eye">
   <TranscriptDisclosureHeader
     expanded={false}
     expandable={false}

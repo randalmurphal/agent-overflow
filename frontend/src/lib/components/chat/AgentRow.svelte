@@ -249,14 +249,14 @@
       title="Open in agent pane"
       aria-label="Open {agentLabel} in agent pane"
       data-testid="agent-row-open-pane"
-      class="inline-flex items-center justify-center opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 compact:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      class="ao-hover-reveal inline-flex items-center justify-center opacity-0 focus-visible:opacity-100 compact:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
     >
       <Icon icon={PanelRightOpen} size={12} />
     </button>
   {/if}
 {/snippet}
 
-<div class="group/tool overflow-hidden" data-testid="agent-row" data-tool-kind="robot">
+<div class="ao-tool-row overflow-hidden" data-testid="agent-row" data-tool-kind="robot">
   <TranscriptDisclosureHeader
     {agentLayout}
     metrics={headerMetrics}

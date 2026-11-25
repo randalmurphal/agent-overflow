@@ -66,6 +66,7 @@
 
   let rowEl: HTMLDivElement | undefined = $state(undefined);
   let ctxOpen = $state(false);
+  let ctxMounted = $state(false);
 
   let memberCount = $derived(memberThreadIds.length);
   // A group row is always top-level; its chevron centres on the pin column.
@@ -162,6 +163,7 @@
     if (editing) cancelRename();
     e.preventDefault();
     e.stopPropagation();
+    ctxMounted = true;
     ctxOpen = true;
   }
 
@@ -345,11 +347,13 @@
   </div>
 </div>
 
-<ThreadGroupContextMenu
-  {group}
-  {pane}
-  anchor={rowEl}
-  open={ctxOpen}
-  onClose={() => { ctxOpen = false; }}
-  onRename={startRename}
-/>
+{#if ctxMounted}
+  <ThreadGroupContextMenu
+    {group}
+    {pane}
+    anchor={rowEl}
+    open={ctxOpen}
+    onClose={() => { ctxOpen = false; }}
+    onRename={startRename}
+  />
+{/if}

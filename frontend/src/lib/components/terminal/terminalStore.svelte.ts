@@ -1,5 +1,10 @@
 import type { TerminalSessionSummary } from '../../types/terminal';
 import { dropPaneFindRegion } from '../../stores/paneFind.svelte';
+import {
+  clearWarmTerminals,
+  evictWarmTerminal,
+  evictWarmTerminalsForHandle,
+} from './terminalWarmPool';
 
 /** The find region of a terminal's tab, under every pane that shows it
  * (`terminalFindKey`). */
@@ -51,22 +56,40 @@ export const PENDING_OUTPUT_LIMITS = {
 function appendPendingOutput(
   existing: Uint8Array[],
   existingSequences: number[],
+  existingBytes: number,
   chunk: Uint8Array,
   sequence: number,
-): { output: Uint8Array[]; sequences: number[] } {
-  if (chunk.length === 0) return { output: existing, sequences: existingSequences };
+): { output: Uint8Array[]; sequences: number[]; bytes: number; overflowed: boolean } {
+  if (chunk.length === 0) {
+    return { output: existing, sequences: existingSequences, bytes: existingBytes, overflowed: false };
+  }
   if (chunk.length >= PENDING_OUTPUT_BYTE_CAP) {
-    return { output: [chunk.slice(chunk.length - PENDING_OUTPUT_BYTE_CAP)], sequences: [sequence] };
+    return {
+      output: [chunk.slice(chunk.length - PENDING_OUTPUT_BYTE_CAP)],
+      sequences: [sequence],
+      bytes: PENDING_OUTPUT_BYTE_CAP,
+      overflowed: existing.length > 0 || chunk.length > PENDING_OUTPUT_BYTE_CAP,
+    };
   }
   const output = [...existing, chunk];
   const sequences = [...existingSequences, sequence];
-  let size = 0;
-  for (const s of output) size += s.length;
-  while (size > PENDING_OUTPUT_BYTE_CAP) {
-    size -= output.shift()!.length;
-    sequences.shift();
+  let size = existingBytes + chunk.length;
+  let overflowed = false;
+  let dropCount = 0;
+  while (size > PENDING_OUTPUT_BYTE_CAP && dropCount < output.length) {
+    size -= output[dropCount]!.length;
+    dropCount += 1;
+    overflowed = true;
   }
-  return { output, sequences };
+  if (dropCount > 0) {
+    return {
+      output: output.slice(dropCount),
+      sequences: sequences.slice(dropCount),
+      bytes: size,
+      overflowed,
+    };
+  }
+  return { output, sequences, bytes: size, overflowed };
 }
 
 /**
@@ -78,11 +101,16 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
   let tabs: TerminalTabState[] = $state([]);
   let activeTerminalID: string | null = $state(null);
   let drawerHeight: number = $state(DEFAULT_DRAWER_HEIGHT);
+  let released = false;
   const pendingSequencesByTerminal = new Map<string, number[]>();
+  const pendingBytesByTerminal = new Map<string, number>();
   const replayWatermarkByTerminal = new Map<string, number>();
   // The mounted xterm per tab, registered by TerminalBody while it lives.
   // Plain Map, not $state: nothing renders from it, commands just call into it.
   const xtermByTerminal = new Map<string, TerminalXtermActions>();
+  // Direct PTY output sink registered by a hydrated TerminalBody so live
+  // chunks bypass reactive `tabs` cloning and $effect wakeups.
+  const outputSinkByTerminal = new Map<string, (chunk: Uint8Array) => void>();
   // Per list read in flight, the tabs added or removed since it left.
   const listReadsInFlight = new Set<Set<string>>();
 
@@ -114,6 +142,7 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
       },
     ];
     pendingSequencesByTerminal.set(summary.terminalID, []);
+    pendingBytesByTerminal.set(summary.terminalID, 0);
     replayWatermarkByTerminal.set(summary.terminalID, 0);
     if (activate || activeTerminalID === null) activeTerminalID = summary.terminalID;
   }
@@ -123,20 +152,27 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
   function removeTab(terminalID: string): void {
     noteTabChange(terminalID);
     dropPaneFindRegion(terminalFindRegion(terminalID));
+    evictWarmTerminal(terminalID);
     const nextTabs = tabs.filter((t) => t.terminalID !== terminalID);
     tabs = nextTabs;
     pendingSequencesByTerminal.delete(terminalID);
+    pendingBytesByTerminal.delete(terminalID);
     replayWatermarkByTerminal.delete(terminalID);
     xtermByTerminal.delete(terminalID);
+    outputSinkByTerminal.delete(terminalID);
     if (activeTerminalID === terminalID) {
       activeTerminalID = nextTabs.length > 0 ? nextTabs[nextTabs.length - 1]!.terminalID : null;
     }
   }
 
-  return {
+  const handle: ThreadTerminalStateHandle = {
     get tabs() { return tabs; },
     get activeTerminalID() { return activeTerminalID; },
     get drawerHeight() { return drawerHeight; },
+
+    hasTab(terminalID: string): boolean {
+      return tabs.some((t) => t.terminalID === terminalID);
+    },
 
     addTab,
     removeTab,
@@ -171,27 +207,51 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
     appendOutput(terminalID: string, data: Uint8Array, sequence = 0): void {
       const watermark = replayWatermarkByTerminal.get(terminalID) ?? 0;
       if (sequence > 0 && sequence <= watermark) return;
-      tabs = tabs.map((t) => {
-        if (t.terminalID !== terminalID) return t;
-        const next = appendPendingOutput(
-          t.pendingOutput,
-          pendingSequencesByTerminal.get(terminalID) ?? [],
-          data,
-          sequence,
-        );
-        pendingSequencesByTerminal.set(terminalID, next.sequences);
-        return { ...t, pendingOutput: next.output };
-      });
+      if (data.length === 0) return;
+      const sink = outputSinkByTerminal.get(terminalID);
+      if (sink) {
+        if (sequence > watermark) replayWatermarkByTerminal.set(terminalID, sequence);
+        sink(data);
+        return;
+      }
+      const idx = tabs.findIndex((t) => t.terminalID === terminalID);
+      if (idx < 0) return;
+      const tab = tabs[idx]!;
+      const next = appendPendingOutput(
+        tab.pendingOutput,
+        pendingSequencesByTerminal.get(terminalID) ?? [],
+        pendingBytesByTerminal.get(terminalID) ?? 0,
+        data,
+        sequence,
+      );
+      pendingSequencesByTerminal.set(terminalID, next.sequences);
+      pendingBytesByTerminal.set(terminalID, next.bytes);
+      if (next.overflowed) evictWarmTerminal(terminalID);
+      const nextTabs = tabs.slice();
+      nextTabs[idx] = { ...tab, pendingOutput: next.output };
+      tabs = nextTabs;
     },
 
     drainOutput(terminalID: string): Uint8Array[] {
-      const match = tabs.find((t) => t.terminalID === terminalID);
-      if (!match || match.pendingOutput.length === 0) return [];
+      const idx = tabs.findIndex((t) => t.terminalID === terminalID);
+      if (idx < 0) return [];
+      const match = tabs[idx]!;
+      if (match.pendingOutput.length === 0) return [];
       const drained = match.pendingOutput;
+      const sequences = pendingSequencesByTerminal.get(terminalID);
+      if (sequences && sequences.length > 0) {
+        let maxSeq = replayWatermarkByTerminal.get(terminalID) ?? 0;
+        for (let i = 0; i < sequences.length; i += 1) {
+          const s = sequences[i]!;
+          if (s > maxSeq) maxSeq = s;
+        }
+        if (maxSeq > 0) replayWatermarkByTerminal.set(terminalID, maxSeq);
+      }
       pendingSequencesByTerminal.set(terminalID, []);
-      tabs = tabs.map((t) =>
-        t.terminalID === terminalID ? { ...t, pendingOutput: [] } : t,
-      );
+      pendingBytesByTerminal.set(terminalID, 0);
+      const nextTabs = tabs.slice();
+      nextTabs[idx] = { ...match, pendingOutput: [] };
+      tabs = nextTabs;
       return drained;
     },
 
@@ -202,27 +262,34 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
       if (fromSequence <= 0 || nextWatermark <= 0) return;
 
       const sequences = pendingSequencesByTerminal.get(terminalID) ?? [];
-      const match = tabs.find((t) => t.terminalID === terminalID);
+      const idx = tabs.findIndex((t) => t.terminalID === terminalID);
+      const match = idx >= 0 ? tabs[idx] : undefined;
       if (!match || match.pendingOutput.length === 0 || sequences.length === 0) return;
 
       const nextOutput: Uint8Array[] = [];
       const nextSequences: number[] = [];
+      let nextBytes = 0;
       for (let i = 0; i < match.pendingOutput.length; i += 1) {
         const sequence = sequences[i] ?? 0;
         if (sequence > fromSequence && sequence <= nextWatermark) continue;
-        nextOutput.push(match.pendingOutput[i]!);
+        const chunk = match.pendingOutput[i]!;
+        nextOutput.push(chunk);
         nextSequences.push(sequence);
+        nextBytes += chunk.length;
       }
       pendingSequencesByTerminal.set(terminalID, nextSequences);
-      tabs = tabs.map((t) =>
-        t.terminalID === terminalID ? { ...t, pendingOutput: nextOutput } : t,
-      );
+      pendingBytesByTerminal.set(terminalID, nextBytes);
+      const nextTabs = tabs.slice();
+      nextTabs[idx] = { ...match, pendingOutput: nextOutput };
+      tabs = nextTabs;
     },
 
     updateSummary(summary: TerminalSessionSummary): void {
-      tabs = tabs.map((t) =>
-        t.terminalID === summary.terminalID ? { ...t, summary } : t,
-      );
+      const idx = tabs.findIndex((t) => t.terminalID === summary.terminalID);
+      if (idx < 0) return;
+      const nextTabs = tabs.slice();
+      nextTabs[idx] = { ...tabs[idx]!, summary };
+      tabs = nextTabs;
     },
 
     setDrawerHeight(height: number): void {
@@ -238,6 +305,13 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
       };
     },
 
+    attachOutputSink(terminalID: string, sink: (chunk: Uint8Array) => void): () => void {
+      outputSinkByTerminal.set(terminalID, sink);
+      return () => {
+        if (outputSinkByTerminal.get(terminalID) === sink) outputSinkByTerminal.delete(terminalID);
+      };
+    },
+
     clearActive(): boolean {
       const xterm = activeTerminalID ? xtermByTerminal.get(activeTerminalID) : undefined;
       if (!xterm) return false;
@@ -246,19 +320,35 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
     },
 
     clear(): void {
+      evictWarmTerminalsForHandle(handle);
       tabs = [];
       activeTerminalID = null;
       pendingSequencesByTerminal.clear();
+      pendingBytesByTerminal.clear();
       replayWatermarkByTerminal.clear();
       xtermByTerminal.clear();
+      outputSinkByTerminal.clear();
+    },
+
+    isReleased(): boolean {
+      return released;
     },
   };
+
+  releasedStateMark.set(handle, () => {
+    released = true;
+  });
+
+  return handle;
 }
+
+const releasedStateMark = new WeakMap<ThreadTerminalStateHandle, () => void>();
 
 export interface ThreadTerminalStateHandle {
   readonly tabs: TerminalTabState[];
   readonly activeTerminalID: string | null;
   readonly drawerHeight: number;
+  hasTab(terminalID: string): boolean;
   /** Add or refresh a tab. `activate: false` leaves the active tab alone unless there was none. */
   addTab(summary: TerminalSessionSummary, options?: { activate?: boolean }): void;
   removeTab(terminalID: string): void;
@@ -286,12 +376,21 @@ export interface ThreadTerminalStateHandle {
    */
   attachXterm(terminalID: string, xterm: TerminalXtermActions): () => void;
   /**
+   * Register a direct live PTY output sink for a hydrated terminal body,
+   * avoiding reactive `tabs` cloning per output chunk.
+   */
+  attachOutputSink(terminalID: string, sink: (chunk: Uint8Array) => void): () => void;
+  /**
    * Wipe the active tab's xterm buffer and scrollback (the terminal.clear
    * command). Frontend-only: nothing goes to the PTY. Returns false when no
    * active tab has a mounted xterm.
    */
   clearActive(): boolean;
   clear(): void;
+  /** True once `releaseThreadTerminalState` has retired this handle (thread
+   * deleted or backend detached), so an unmounting TerminalBody disposes its
+   * WebGL2 xterm instead of parking an unreachable zombie in the warm pool. */
+  isReleased(): boolean;
 }
 
 export const TERMINAL_DRAWER_LIMITS = {
@@ -405,7 +504,13 @@ export function migrateThreadTerminalState(
 }
 
 export function releaseThreadTerminalState(threadID: string): void {
-  terminalStatesByThread.delete(terminalStateKey(threadID));
+  const key = terminalStateKey(threadID);
+  const existing = terminalStatesByThread.get(key);
+  if (existing) {
+    releasedStateMark.get(existing)?.();
+    evictWarmTerminalsForHandle(existing);
+  }
+  terminalStatesByThread.delete(key);
 }
 
 /** A mounted surface: its thread and its re-read of that thread's terminal list. */
@@ -434,6 +539,7 @@ export function getMountedTerminalSurfaces(): MountedTerminalSurface[] {
 }
 
 export function resetThreadTerminalStatesForTest(): void {
+  clearWarmTerminals();
   terminalStatesByThread.clear();
 }
 

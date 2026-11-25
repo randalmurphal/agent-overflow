@@ -59,6 +59,7 @@
     observeActivityRunExpansion,
   } from '../../utils/activityRunClip';
   import { readScrollMetrics, type ScrollMetrics } from '../../utils/scroll/overlayScrollbar';
+  import { createAnimationFrameBatcher } from '../../utils/animationFrameBatcher';
   import { createContentGeometryNotifier } from '../../utils/scroll/contentGeometryNotifier';
   import { chatRowDomId } from '../../utils/chatDomIds';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
@@ -173,13 +174,14 @@
 
   function createStick(): UseStickToBottomController {
     return createUseStickToBottomController({
+      cacheObservedBottomTarget: true,
       liveContentActive: () =>
         isTail && isLiveContentActive(
           performance.now(),
           pane.lastLiveContentAt,
           LIVE_CONTENT_ACTIVE_HOLD_MS,
         ),
-      onContentGeometryProcessed: () => processClipGeometry(false),
+      onContentGeometryProcessed: (_scrollable, metrics) => processClipGeometry(false, metrics),
       // Every controller write states the fade from the written value, so
       // the scroll event it fires needs no geometry read (`onClipScroll`
       // skips non-reader frames entirely).
@@ -606,23 +608,28 @@
   let holdForGlide = $state(false);
   let wantsController = $derived(isTail || holdForGlide);
 
+  const glideHoldFrames = createAnimationFrameBatcher('activity-run-glide-hold', 'dom-update');
+
   $effect(() => {
     if (isTail) return;
     const controller = untrack(() => stick);
     if (!controller || controller.escapedFromLock || !controller.autoScrollInFlight()) return;
     holdForGlide = true;
+    let disposed = false;
     let frame = 0;
     const check = (): void => {
       frame = 0;
+      if (disposed) return;
       if (controller.escapedFromLock || !controller.autoScrollInFlight()) {
         holdForGlide = false;
         return;
       }
-      frame = requestAnimationFrame(check);
+      frame = glideHoldFrames.request(check);
     };
-    frame = requestAnimationFrame(check);
+    frame = glideHoldFrames.request(check);
     return () => {
-      cancelAnimationFrame(frame);
+      disposed = true;
+      if (frame !== 0) glideHoldFrames.cancel(frame);
       holdForGlide = false;
     };
   });
@@ -712,13 +719,22 @@
    * advances a clamped mount restore until the content can hold the saved
    * offset. The overlay notification runs last, after any position write.
    */
-  function processClipGeometry(followHistorical: boolean): void {
+  function processClipGeometry(followHistorical: boolean, known?: ScrollMetrics): void {
     const clip = clipEl;
     if (!clip) return;
-    syncPosition(clip);
+    if (known) {
+      knownMetrics = {
+        scrollTop: known.scrollTop,
+        scrollHeight: known.scrollHeight,
+        clientHeight: known.clientHeight,
+      };
+      fadedTop = known.scrollTop > FADE_EPSILON_PX;
+    } else {
+      syncPosition(clip);
+    }
 
     if (followHistorical && followingBottom) {
-      const bottom = clip.scrollHeight;
+      const bottom = knownMetrics ? knownMetrics.scrollHeight : clip.scrollHeight;
       clip.scrollTop = bottom;
       readerScrolling = false;
       syncPositionFromWrittenTop(bottom);
@@ -726,7 +742,9 @@
 
     const target = pendingRestoreTop;
     if (target !== null) {
-      const max = clip.scrollHeight - clip.clientHeight;
+      const max = knownMetrics
+        ? knownMetrics.scrollHeight - knownMetrics.clientHeight
+        : clip.scrollHeight - clip.clientHeight;
       if (max > 0) {
         clip.scrollTop = Math.min(target, max);
         readerScrolling = false;

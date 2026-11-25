@@ -42,9 +42,6 @@ import { parseListSource } from './extensions/list';
 import { parseTableBlockSource } from './extensions/tableSource';
 import { parseBlockquoteSource } from './extensions/blockquoteSource';
 const INITIAL_HEADING = /^ {0,3}#{1,6}(?:[ \t]+|$)/;
-// A blank line: a line ending, optional spaces or tabs, then another line
-// ending. A CR that begins a CRLF is not a line ending of its own.
-const BLANK_LINE = /(?:\r\n|\n|\r(?!\n))[ \t]*(?:\r\n|\n|\r)/;
 // A list item's line with text: its marker, then a space or a tab.
 const LIST_ITEM_LINE = /^ {0,3}(?:[*+-]|\d{1,9}[.)])[ \t]/;
 // Seeds a boundary without a Lexer, so only where no alignment is in force:
@@ -125,15 +122,17 @@ const parseBlocksCached = (
     provenAppend: ProvenAppend | undefined,
     alignStart: Alignment
 ): string[] => {
+    let alignChanged = false;
     if (cache) {
         cache.lastBlockAppend = undefined;
         cache.lastPath = 'none';
-        cache.generation++;
-        cache.changedFrom = cache.raws.length;
         if (cache.alignStart !== alignStart) {
+            alignChanged = true;
             cache.alignStart = alignStart;
             cache.content = '';
             cache.source.reset('');
+            cache.generation++;
+            cache.changedFrom = 0;
             truncateParseBlocksCache(cache, 0);
             cache.trailingBlock = null;
         }
@@ -155,6 +154,10 @@ const parseBlocksCached = (
     if (cache && cache.extKey === extKey && markdown === cache.content) {
         cache.lastPath = 'unchanged';
         return cache.blocks;
+    }
+    if (cache && !alignChanged) {
+        cache.generation++;
+        cache.changedFrom = cache.raws.length;
     }
     // No sealed boundary holds while an extension that reopens sealed blocks
     // takes part: every update is a full parse.
@@ -179,7 +182,7 @@ const parseBlocksCached = (
             if ((t.kind === 'paragraph' || t.kind === 'line-block') &&
                 blockStart === t.blockStart &&
                 (blockStart === 0 || cache.source.charAt(blockStart - 1) === '\n' || cache.source.charAt(blockStart - 1) === '\r') &&
-                !/[\r\n]$/.test(priorRaw) &&
+                !t.endsWithNewline &&
                 !/[\r\n]/.test(appendDelta) &&
                 !extensions.some(({ level, applyInBlockParsing }) => level === 'block' && applyInBlockParsing)) {
                 const blockAppend = createProvenAppend(priorRaw, appendDelta);
@@ -197,11 +200,12 @@ const parseBlocksCached = (
                 blockStart === t.blockStart &&
                 priorRaw.length >= t.prefixLen &&
                 !/[\r\n]/.test(appendDelta) &&
-                !BLANK_LINE.test(priorRaw) &&
-                (!/[\r\n]$/.test(priorRaw) || /^ {0,3}\|/.test(appendDelta)) &&
+                !t.hasBlankLine &&
+                (!t.endsWithNewline || /^ {0,3}\|/.test(appendDelta)) &&
                 !extensions.some(({ level, applyInBlockParsing }) => level === 'block' && applyInBlockParsing)) {
                 const blockAppend = createProvenAppend(priorRaw, appendDelta);
                 replaceParseBlockRaw(cache, t.rawIndex, blockAppend.next);
+                if (appendDelta.length > 0) t.endsWithNewline = false;
                 cache.content = markdown;
                 cache.lastBlockAppend = blockAppend;
                 cache.lastPath = 'table-line-append';
@@ -228,8 +232,11 @@ const parseBlocksCached = (
                     ? priorRaw.slice(0, -1) + priorSourceWhitespace + appendDelta
                     : priorRaw + appendDelta;
                 // A lone marker is an empty item; text right after it makes
-                // the line a paragraph.
-                if (combinedTrailingWhitespace <= 1 && LIST_ITEM_LINE.test(appended)) {
+                // the line a paragraph. The marker pattern only inspects the
+                // first 14 characters, so never scan a long ConsString.
+                const hasListItem = (!t.normalized && t.startsWithListItem) ||
+                    LIST_ITEM_LINE.test(appended.length > 20 ? appended.slice(0, 20) : appended);
+                if (combinedTrailingWhitespace <= 1 && hasListItem) {
                     const blockAppend = createProvenAppend(priorRaw, appendDelta);
                     let nextRaw = t.normalized ? appended : blockAppend.next;
                     const normalized = combinedTrailingWhitespace === 1;
@@ -243,6 +250,7 @@ const parseBlocksCached = (
                     if (!t.normalized && !normalized && nextRaw === blockAppend.next)
                         cache.lastBlockAppend = blockAppend;
                     t.normalized = normalized;
+                    t.startsWithListItem = true;
                     cache.content = markdown;
                     cache.lastPath = 'list-line-append';
                     return cache.blocks;
@@ -333,10 +341,16 @@ const parseBlocksCached = (
                     truncateParseBlocksCache(cache, t.rawIndex);
                     // Sealed source bytes + the mini token's own tail raw, for
                     // the same byte-fidelity reason as the list branch.
-                    const raw = cache.source.slice(t.blockStart, t.lastRowStart) + mini.raw.slice(t.prefixLen);
+                    const miniTail = mini.raw.slice(t.prefixLen);
+                    const raw = cache.source.slice(t.blockStart, t.lastRowStart) + miniTail;
                     appendParseBlockRaw(cache, raw, true, t.blockStart);
                     cache.content = markdown;
-                    const nextLastRow = lastLineStartOf(raw);
+                    let miniTailEnd = miniTail.length;
+                    while (miniTailEnd > 0 && miniTail.charCodeAt(miniTailEnd - 1) === 10)
+                        miniTailEnd--;
+                    const nextLastRow = miniTailEnd > 0
+                        ? (t.lastRowStart - t.blockStart) + (miniTail.lastIndexOf('\n', miniTailEnd - 1) + 1)
+                        : lastLineStartOf(raw);
                     cache.trailingBlock = nextLastRow > t.prefixLen
                         ? {
                             kind: 'table',
@@ -346,9 +360,11 @@ const parseBlocksCached = (
                             lastRowStart: t.blockStart + nextLastRow
                         }
                         : null;
-                    const blockAppend = createProvenAppend(priorRaw, appendDelta);
-                    if (raw === blockAppend.next)
-                        cache.lastBlockAppend = blockAppend;
+                    if (raw.length === priorRaw.length + appendDelta.length) {
+                        const blockAppend = createProvenAppend(priorRaw, appendDelta);
+                        if (raw === blockAppend.next)
+                            cache.lastBlockAppend = blockAppend;
+                    }
                     cache.lastPath = 'table-descent';
                     return cache.blocks;
                 }

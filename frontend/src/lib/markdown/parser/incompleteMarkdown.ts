@@ -49,6 +49,9 @@ export class IncompleteMarkdownParser {
             fenceInfo: undefined
         };
         let result = text;
+        const initialLines = result.split('\n');
+        let sharedLines: string[] | null = initialLines;
+        this.state.lines = initialLines;
         // Execute preprocess hooks for all plugins
         for (const plugin of this.plugins) {
             if (plugin.preprocess) {
@@ -59,10 +62,18 @@ export class IncompleteMarkdownParser {
                         setState: this.setState
                     });
                     if (typeof preprocessResult === 'string') {
-                        result = preprocessResult;
+                        if (preprocessResult !== result) {
+                            result = preprocessResult;
+                            sharedLines = null;
+                            this.state.lines = undefined;
+                        }
                     }
                     else {
-                        result = preprocessResult.text;
+                        if (preprocessResult.text !== result) {
+                            result = preprocessResult.text;
+                            sharedLines = null;
+                            this.state.lines = undefined;
+                        }
                         this.setState(preprocessResult.state);
                     }
                 }
@@ -71,24 +82,33 @@ export class IncompleteMarkdownParser {
                 }
             }
         }
-        // Split into lines for processing
-        const lines = result.split('\n');
-        const processedLines = [...lines];
+        // Split into lines for processing (reuse preprocess split when unchanged)
+        const processedLines = sharedLines ?? result.split('\n');
+        const hasMdxIncomplete = (this.state.mdxLineStates?.length ?? 0) > 0;
+        let lineChanged = false;
         // Process each line with each plugin
         for (let i = 0; i < processedLines.length; i++) {
             this.state.currentLine = i;
             let line = processedLines[i];
+            const originalLine = line;
+            const currentLineContext = this.state.lineContexts?.[i];
             for (const plugin of this.plugins) {
+                if (!plugin.handler) continue;
+                if (plugin.name === 'mdx' && !hasMdxIncomplete) continue;
                 // Skip this plugin if current line is in a blocking context
-                const currentLineContext = this.state.lineContexts?.[i];
-                const shouldSkip = currentLineContext &&
-                    (plugin.skipInBlockTypes || []).some((blockType) => currentLineContext[blockType]);
-                if (shouldSkip) {
-                    continue;
+                if (currentLineContext && plugin.skipInBlockTypes) {
+                    let shouldSkip = false;
+                    for (let s = 0; s < plugin.skipInBlockTypes.length; s++) {
+                        if (currentLineContext[plugin.skipInBlockTypes[s]]) {
+                            shouldSkip = true;
+                            break;
+                        }
+                    }
+                    if (shouldSkip) continue;
                 }
                 try {
                     const match = plugin.pattern ? line.match(plugin.pattern) : line.match(/.*/);
-                    if (match && plugin.handler) {
+                    if (match) {
                         line = plugin.handler({
                             line,
                             text: line,
@@ -102,10 +122,15 @@ export class IncompleteMarkdownParser {
                     console.error(`Plugin ${plugin.name} failed on line ${i}:`, error);
                 }
             }
-            processedLines[i] = line;
+            if (line !== originalLine) {
+                processedLines[i] = line;
+                lineChanged = true;
+            }
         }
-        // Rebuild text from processed lines
-        result = processedLines.join('\n');
+        // Rebuild text from processed lines only when a line actually changed
+        if (lineChanged) {
+            result = processedLines.join('\n');
+        }
         // Execute afterParse hooks for all plugins
         for (const plugin of this.plugins) {
             if (plugin.postprocess) {

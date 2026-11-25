@@ -12,6 +12,16 @@ import (
 	"agent-overflow/internal/store"
 )
 
+var (
+	_ eventscope.ThreadIDProvider  = ItemStreamEvent{}
+	_ eventscope.ScopeRootProvider = ItemStreamEvent{}
+	_ eventscope.ThreadIDProvider  = SubagentProgressEvent{}
+	_ eventscope.ScopeRootProvider = SubagentProgressEvent{}
+	_ eventscope.ThreadIDProvider  = TurnStartedEvent{}
+	_ eventscope.ThreadIDProvider  = ActiveTurnSnapshot{}
+	_ eventscope.ThreadIDProvider  = TurnCompletedEvent{}
+)
+
 // A mid-stream meta carries no row either, so it names the row's parent
 // like a delta: the transport reads it to withhold a subagent's rows from a
 // connection not viewing that agent, and a meta that read as root scope

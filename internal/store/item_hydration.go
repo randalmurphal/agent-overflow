@@ -27,7 +27,7 @@ func itemHydrationColumns(threadID, payloadKind, payloadMeta, previewSpans, meta
 
 // localItemHydrationColumns is the projection of a local row, own or a
 // fork's inherited one. An own row serves its merged meta over the join
-// resolveSelectedTimelineSQL renders when the caller passes servedItemJoin;
+// buildSelectedTimelineBranches renders when the caller passes servedItemJoin;
 // an inherited row reads revision -1 and serves its stored meta.
 func localItemHydrationColumns(thread, rev string) string {
 	return itemHydrationColumns(
@@ -55,7 +55,35 @@ func importedItemHydrationColumns(thread, rev string) string {
 	)
 }
 
-// resolveSelectedTimelineSQL renders the branches that resolve the
+// localStoredItemHydrationColumns is localItemHydrationColumns without
+// subagentServedMetaSQL, for callers that read a row to write it back.
+func localStoredItemHydrationColumns(thread, rev string) string {
+	return itemHydrationColumns(
+		thread,
+		"COALESCE(payloads.kind, '')",
+		"COALESCE(payloads.meta, '')",
+		"COALESCE(payloads.preview_spans, '')",
+		"items.meta",
+		streamEndSQL,
+		rev,
+	)
+}
+
+// importedStoredItemHydrationColumns mirrors importedItemHydrationColumns with
+// raw stored meta.
+func importedStoredItemHydrationColumns(thread, rev string) string {
+	return itemHydrationColumns(
+		thread,
+		"COALESCE(local_payloads.kind, imported_payloads.kind, '')",
+		"COALESCE(local_payloads.meta, imported_payloads.meta, '')",
+		"COALESCE(local_payloads.preview_spans, imported_payloads.preview_spans, '')",
+		"items.meta",
+		"NULL",
+		rev,
+	)
+}
+
+// buildSelectedTimelineBranches renders the branches that resolve the
 // `selected(id)` set of selectedIDsSQL to rows of one thread, each through the
 // physical source that owns the id:
 //
@@ -70,16 +98,7 @@ func importedItemHydrationColumns(thread, rev string) string {
 //     the row, which is where the fork's copy-on-write put it. Only a fork
 //     renders these branches: on every other thread they would only make
 //     each read's statement several times as costly to prepare.
-//
-// local and imported render a branch's projection from its logical thread
-// id and row revision expressions. localJoin is a join the own local
-// branch's projection reads (servedItemJoin for served meta), or "". It
-// returns the branches and their bind values, which follow the ids'.
-func resolveSelectedTimelineSQL(q sqlQueryer, threadID string, local, imported func(thread, rev string) string, localJoin, orderBy string) (string, []any, error) {
-	depth, err := forkLineageDepth(q, threadID)
-	if err != nil {
-		return "", nil, err
-	}
+func buildSelectedTimelineBranches(local, imported func(thread, rev string) string, localJoin, orderBy string, forked bool) string {
 	sql := `
 		SELECT ` + local("items.thread_id", "items.rev") + `
 		  FROM selected
@@ -99,8 +118,7 @@ func resolveSelectedTimelineSQL(q sqlQueryer, threadID string, local, imported f
 		  LEFT JOIN thread_import_item_overrides AS overrides
 		    ON overrides.thread_id = refs.thread_id AND overrides.item_id = items.id
 		 WHERE refs.thread_id = ? AND overrides.item_id IS NULL`
-	args := []any{threadID, threadID}
-	if depth > 0 {
+	if forked {
 		sql += `
 		UNION ALL
 		SELECT ` + local("l.thread_id", importedItemRevExpr) + `
@@ -127,10 +145,29 @@ func resolveSelectedTimelineSQL(q sqlQueryer, threadID string, local, imported f
 		    ON overrides.thread_id = refs.thread_id AND overrides.item_id = items.id
 		 WHERE l.thread_id = ? AND overrides.item_id IS NULL
 		   AND ` + inheritedItemVisibleSQL
-		args = append(args, threadID, threadID)
 	}
 	return sql + `
-		 ORDER BY ` + orderBy, args, nil
+		 ORDER BY ` + orderBy
+}
+
+// Precomputed timeline hydration branches eliminate per-query fmt.Sprintf and
+// SQL string concatenation across the hot read and write-read paths.
+var (
+	hydratedTimelineBranchesNoFork = buildSelectedTimelineBranches(localItemHydrationColumns, importedItemHydrationColumns, servedItemJoin, "3, 4", false)
+	hydratedTimelineBranchesFork   = buildSelectedTimelineBranches(localItemHydrationColumns, importedItemHydrationColumns, servedItemJoin, "3, 4", true)
+	storedTimelineBranchesNoFork   = buildSelectedTimelineBranches(localStoredItemHydrationColumns, importedStoredItemHydrationColumns, "", "3, 4", false)
+	storedTimelineBranchesFork     = buildSelectedTimelineBranches(localStoredItemHydrationColumns, importedStoredItemHydrationColumns, "", "3, 4", true)
+)
+
+func resolvePrecomputedTimelineSQL(q sqlQueryer, threadID, noForkSQL, forkSQL string) (string, []any, error) {
+	depth, err := forkLineageDepth(q, threadID)
+	if err != nil {
+		return "", nil, err
+	}
+	if depth > 0 {
+		return forkSQL, []any{threadID, threadID, threadID, threadID}, nil
+	}
+	return noForkSQL, []any{threadID, threadID}, nil
 }
 
 // idSelection is SQL that returns one `id` column, and its bind values.
@@ -147,12 +184,12 @@ func fixedIDSelection(sql string, args ...any) idSelection {
 	return idSelection{sql: sql, args: args}
 }
 
-// selectedIDsSQL is the `selected(id)` set of resolveSelectedTimelineSQL's
+// selectedIDsSQL is the `selected(id)` set of buildSelectedTimelineBranches'
 // branches as a list of ids bound as one JSON array.
 const selectedIDsSQL = `
 		WITH selected(id) AS MATERIALIZED (SELECT value FROM json_each(?))`
 
-// selectedSet renders the `selected(id)` set resolveSelectedTimelineSQL's
+// selectedSet renders the `selected(id)` set buildSelectedTimelineBranches'
 // branches read from sel, and its bind values; found is false when sel
 // selected nothing. The set is MATERIALIZED: every branch reads it.
 //
@@ -201,7 +238,7 @@ func queryHydratedTimelineItems(q sqlQueryer, threadID string, sel idSelection) 
 	if err != nil {
 		return nil, fmt.Errorf("store: select hydrated timeline items for %s: %w", threadID, err)
 	}
-	return hydrateSelectedSet(q, threadID, set, args, found)
+	return hydrateSelectedSetWithBranches(q, threadID, hydratedTimelineBranchesNoFork, hydratedTimelineBranchesFork, set, args, found)
 }
 
 // hydrateTimelineIDs is queryHydratedTimelineItems for ids a caller holds.
@@ -210,37 +247,43 @@ func hydrateTimelineIDs(q sqlQueryer, threadID string, ids []string) ([]Item, er
 	if err != nil {
 		return nil, err
 	}
-	return hydrateSelectedSet(q, threadID, set, args, found)
+	return hydrateSelectedSetWithBranches(q, threadID, hydratedTimelineBranchesNoFork, hydratedTimelineBranchesFork, set, args, found)
 }
 
-func hydrateSelectedSet(q sqlQueryer, threadID, set string, setArgs []any, found bool) ([]Item, error) {
+func hydrateSelectedSetWithBranches(q sqlQueryer, threadID, noForkSQL, forkSQL, set string, setArgs []any, found bool) ([]Item, error) {
 	if !found {
 		return []Item{}, nil
 	}
-	branches, branchArgs, err := resolveSelectedTimelineSQL(q, threadID, localItemHydrationColumns, importedItemHydrationColumns, servedItemJoin, "3, 4")
+	branches, branchArgs, err := resolvePrecomputedTimelineSQL(q, threadID, noForkSQL, forkSQL)
 	if err != nil {
 		return nil, fmt.Errorf("store: query hydrated timeline items for %s: %w", threadID, err)
 	}
-	rows, err := q.Query(set+branches, append(slices.Clone(setArgs), branchArgs...)...)
+	args := slices.Concat(setArgs, branchArgs)
+	rows, err := q.Query(set+branches, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: query hydrated timeline items for %s: %w", threadID, err)
 	}
-	items := []Item{}
-	for rows.Next() {
-		item, err := scanItemRow(rows)
-		if err != nil {
-			return nil, errors.Join(fmt.Errorf("store: scan hydrated timeline item row: %w", err), rows.Close())
-		}
-		items = append(items, item)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, fmt.Errorf("store: iterate hydrated timeline items for %s: %w", threadID, err)
+	items, scanErr := scanItemRows(rows, 0)
+	if err := errors.Join(scanErr, rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: scan hydrated timeline item row for %s: %w", threadID, err)
 	}
 	return items, nil
 }
 
 func queryOneHydratedTimelineItem(q sqlQueryer, threadID string, sel idSelection) (Item, bool, error) {
-	items, err := queryHydratedTimelineItems(q, threadID, sel)
+	return queryOneTimelineItemWithBranches(q, threadID, hydratedTimelineBranchesNoFork, hydratedTimelineBranchesFork, sel)
+}
+
+func queryOneStoredTimelineItem(q sqlQueryer, threadID string, sel idSelection) (Item, bool, error) {
+	return queryOneTimelineItemWithBranches(q, threadID, storedTimelineBranchesNoFork, storedTimelineBranchesFork, sel)
+}
+
+func queryOneTimelineItemWithBranches(q sqlQueryer, threadID, noForkSQL, forkSQL string, sel idSelection) (Item, bool, error) {
+	set, args, found, err := selectedSet(q, sel)
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: select hydrated timeline items for %s: %w", threadID, err)
+	}
+	items, err := hydrateSelectedSetWithBranches(q, threadID, noForkSQL, forkSQL, set, args, found)
 	if err != nil {
 		return Item{}, false, err
 	}

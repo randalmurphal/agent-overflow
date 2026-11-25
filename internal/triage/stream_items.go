@@ -1,6 +1,7 @@
 package triage
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -31,6 +32,32 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 		return nil
 	}
 	evt.Content = streamedText(evt.Content)
+	now := evt.Timestamp.UnixMilli()
+	if now == 0 {
+		now = time.Now().UnixMilli()
+	}
+	if evt.ParentToolUseID == "" {
+		if hit, retired, itemID, offset, flushAfterEmit := r.advanceActiveStreamAndStage(
+			evt.ThreadID, evt.ItemID, evt.SessionToken, itemKindAssistantText, evt.Content, now,
+		); retired {
+			return nil
+		} else if hit {
+			r.emitItemDelta(ItemDeltaEvent{
+				ThreadID:  evt.ThreadID,
+				ItemID:    itemID,
+				Kind:      itemKindAssistantText,
+				Delta:     evt.Content,
+				Offset:    offset,
+				UpdatedAt: now,
+			})
+			if flushAfterEmit {
+				if err := r.flushStreamingItem(evt.ThreadID, itemID); err != nil {
+					return fmt.Errorf("text delta flush %s: %w", itemID, err)
+				}
+			}
+			return r.emitInline(evt)
+		}
+	}
 	turnIndex, err := r.turnIndexForEvent(evt)
 	if err != nil {
 		return fmt.Errorf("text delta turn index: %w", err)
@@ -42,10 +69,6 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 	}
 	if firstBlock {
 		defer r.drainInterruptQueueIfIdle(evt.ThreadID)
-	}
-	now := evt.Timestamp.UnixMilli()
-	if now == 0 {
-		now = time.Now().UnixMilli()
 	}
 
 	payloadID := AssistantTextPayloadID(itemID)
@@ -112,6 +135,32 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 		)
 	}
 	evt.Content = streamedText(evt.Content)
+	now := evt.Timestamp.UnixMilli()
+	if now == 0 {
+		now = time.Now().UnixMilli()
+	}
+	if evt.ParentToolUseID == "" {
+		if hit, retired, itemID, offset, flushAfterEmit := r.advanceActiveStreamAndStage(
+			evt.ThreadID, evt.ItemID, evt.SessionToken, itemKindThinking, evt.Content, now,
+		); retired {
+			return nil
+		} else if hit {
+			r.emitItemDelta(ItemDeltaEvent{
+				ThreadID:  evt.ThreadID,
+				ItemID:    itemID,
+				Kind:      itemKindThinking,
+				Delta:     evt.Content,
+				Offset:    offset,
+				UpdatedAt: now,
+			})
+			if flushAfterEmit {
+				if err := r.flushStreamingItem(evt.ThreadID, itemID); err != nil {
+					return fmt.Errorf("thinking delta flush %s: %w", itemID, err)
+				}
+			}
+			return r.emitInline(evt)
+		}
+	}
 	turnIndex, err := r.turnIndexForEvent(evt)
 	if err != nil {
 		return fmt.Errorf("thinking turn index: %w", err)
@@ -123,10 +172,6 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 	}
 	if firstBlock {
 		defer r.drainInterruptQueueIfIdle(evt.ThreadID)
-	}
-	now := evt.Timestamp.UnixMilli()
-	if now == 0 {
-		now = time.Now().UnixMilli()
 	}
 
 	// Payload id is deterministic so subsequent deltas can address the
@@ -179,7 +224,7 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 }
 
 func eventMetaBool(meta json.RawMessage, key string) bool {
-	if len(meta) == 0 {
+	if len(meta) == 0 || !bytes.Contains(meta, []byte(key)) {
 		return false
 	}
 	var fields map[string]json.RawMessage

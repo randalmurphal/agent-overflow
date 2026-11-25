@@ -117,20 +117,33 @@ func writeWorktreeTree(ctx context.Context, workspace string, env []string, head
 	if !hasGitIndexFileEnv(env) {
 		return "", errors.New("gitdiff: refusing to snapshot without temporary GIT_INDEX_FILE")
 	}
-	// Seed the temp index from HEAD so the snapshot includes tracked files that
-	// exist only on HEAD. Skip on a fresh-init repo where HEAD doesn't resolve.
 	if head != "" {
+		// Fast path: ask git against the real index (read-only via
+		// --no-optional-locks) so clean tracked files use the warm stat cache
+		// instead of reading and hashing every file in the repository against
+		// a cold temp index. Fall back to the cold temp-index scan on any error.
+		changed, fastOK := listWorktreeChangesWarm(ctx, workspace, head)
+		if fastOK && len(changed) == 0 && beforeWorktreeHash == nil {
+			// Worktree matches HEAD exactly: no temp index or write-tree needed.
+			return head, nil
+		}
 		if _, _, _, err := runGit(ctx, workspace, env, false, "read-tree", head); err != nil {
 			return "", fmt.Errorf("gitdiff: read-tree HEAD: %w", err)
 		}
-	}
-
-	// Stage tracked changes and untracked-not-ignored files without invoking
-	// clean/smudge filters from repo config or .gitattributes. These diffs run
-	// automatically on review-pane loads, so honoring arbitrary filter
-	// commands from an opened repo would be an unwanted execution surface.
-	if err := stageWorktreeNoFilters(ctx, workspace, env); err != nil {
-		return "", err
+		if fastOK {
+			if err := stageWorktreePathsNoFilters(ctx, workspace, env, changed); err != nil {
+				return "", err
+			}
+		} else {
+			if err := stageWorktreeNoFilters(ctx, workspace, env); err != nil {
+				return "", err
+			}
+		}
+	} else {
+		// Fresh-init repo with no HEAD: stage untracked-not-ignored files.
+		if err := stageWorktreeNoFilters(ctx, workspace, env); err != nil {
+			return "", err
+		}
 	}
 
 	tree, _, _, err := runGit(ctx, workspace, env, false, "write-tree")
@@ -176,12 +189,61 @@ func gitObjectPath(ctx context.Context, workspace string) (string, error) {
 // listed and inspected the changed paths and before it reads any of them.
 var beforeWorktreeHash func()
 
+// listWorktreeChangesWarm lists every path where the working tree may differ
+// from head by reading the repository's own index with --no-optional-locks.
+// That leverages the warm stat cache so clean tracked files only lstat()
+// instead of being read and hashed from scratch. Returns ok=false if any
+// read-only probe fails (e.g. corrupt/missing real index), in which case the
+// caller falls back to scanning against the cold temporary index.
+func listWorktreeChangesWarm(ctx context.Context, workspace, head string) ([]string, bool) {
+	// 1. Tracked worktree modifications, deletions, mode changes, and moved
+	//    submodule HEADs relative to the real index (--ignore-submodules=dirty
+	//    overrides diff.ignoreSubmodules=all so moved gitlinks are never
+	//    hidden while dirty-only submodule worktrees keep the clean fast path).
+	wdTracked, _, _, err := runGit(ctx, workspace, nil, false,
+		"--no-optional-locks", "diff-files", "--ignore-submodules=dirty", "--name-only", "-z")
+	if err != nil {
+		return nil, false
+	}
+	// 2. Staged differences between the real index and HEAD.
+	staged, _, _, err := runGit(ctx, workspace, nil, false,
+		"--no-optional-locks", "diff-index", "--ignore-submodules=dirty", "--cached", "--name-only", "-z", head)
+	if err != nil {
+		return nil, false
+	}
+	// 3. Untracked, non-ignored files in the working tree.
+	untracked, _, _, err := runGit(ctx, workspace, nil, false,
+		"--no-optional-locks", "ls-files", "-z", "--others", "--exclude-standard")
+	if err != nil {
+		return nil, false
+	}
+	if wdTracked == "" && staged == "" && untracked == "" {
+		return nil, true
+	}
+	var out []string
+	for _, chunk := range [3]string{wdTracked, staged, untracked} {
+		if chunk == "" {
+			continue
+		}
+		for _, p := range strings.Split(chunk, "\x00") {
+			if p != "" {
+				out = append(out, p)
+			}
+		}
+	}
+	return out, true
+}
+
 func stageWorktreeNoFilters(ctx context.Context, workspace string, env []string) error {
 	changed, _, _, err := runGit(ctx, workspace, env, false,
 		"ls-files", "-z", "--modified", "--deleted", "--others", "--exclude-standard")
 	if err != nil {
 		return fmt.Errorf("gitdiff: list worktree changes: %w", err)
 	}
+	return stageWorktreePathsNoFilters(ctx, workspace, env, strings.Split(changed, "\x00"))
+}
+
+func stageWorktreePathsNoFilters(ctx context.Context, workspace string, env []string, paths []string) error {
 	// Partition once: deletions, repositories and symlinks need per-path
 	// handling; the (overwhelmingly common) regular files batch into ONE
 	// hash-object and ONE update-index so a large worktree doesn't fan out
@@ -203,7 +265,7 @@ func stageWorktreeNoFilters(ctx context.Context, workspace string, env []string)
 		indexInfo.WriteString(path)
 		indexInfo.WriteByte(0)
 	}
-	for _, p := range strings.Split(changed, "\x00") {
+	for _, p := range paths {
 		if p == "" {
 			continue
 		}

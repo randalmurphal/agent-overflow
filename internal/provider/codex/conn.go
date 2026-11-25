@@ -1182,7 +1182,7 @@ func (c *Conn) dispatchNotification(method string, params json.RawMessage) {
 		Method: method,
 		Params: params,
 	}, nil); target != nil {
-		target.dispatchNotification(method, params)
+		target.dispatchNotificationWithThreadID(method, params, providerThreadID)
 	}
 }
 

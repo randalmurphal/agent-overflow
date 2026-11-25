@@ -228,9 +228,16 @@ export function estimateBodyChars(body: ReplicaBody): number {
   return chars;
 }
 
+/** Return the body's estimated char size if it fits the per-envelope caps, else null. */
+export function measureBodyWithinCaps(body: ReplicaBody): number | null {
+  if (body.items.length > MAX_ENVELOPE_ITEMS) return null;
+  const chars = estimateBodyChars(body);
+  return chars <= MAX_ENVELOPE_CHARS ? chars : null;
+}
+
 /** Does this window fit the per-envelope caps? */
 export function bodyFitsCaps(body: ReplicaBody): boolean {
-  return body.items.length <= MAX_ENVELOPE_ITEMS && estimateBodyChars(body) <= MAX_ENVELOPE_CHARS;
+  return measureBodyWithinCaps(body) !== null;
 }
 
 export function wrapEnvelope(body: ReplicaBody): ReplicaEnvelope {

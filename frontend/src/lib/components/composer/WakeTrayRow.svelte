@@ -185,7 +185,7 @@
 {/snippet}
 
 <div
-  class="group/tool rounded-[var(--radius-control)] border border-border-subtle bg-transparent px-1 py-1"
+  class="ao-tool-row rounded-[var(--radius-control)] border border-border-subtle bg-transparent px-1 py-1"
   data-testid="wake-tray-row"
   data-kind={row.kind}
   data-label={row.label}

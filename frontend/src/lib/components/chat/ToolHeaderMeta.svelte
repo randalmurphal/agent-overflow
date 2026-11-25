@@ -63,7 +63,7 @@
 
   {#if duration}
     <span
-      class="shrink-0 inline-block min-w-[3rem] compact:min-w-[2rem] text-right tabular-nums text-[0.625rem] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
+      class="ao-hover-reveal shrink-0 inline-block min-w-[3rem] compact:min-w-[2rem] text-right tabular-nums text-[0.625rem] text-fg-hint opacity-70 transition-opacity"
       data-testid={duration.testId}
     >
       {duration.label}

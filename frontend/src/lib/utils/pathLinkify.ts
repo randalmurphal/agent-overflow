@@ -64,7 +64,11 @@ import { compositeKey } from './compositeKey';
 // frame (Block.svelte's `tokens` derived). Bounded LRU; entries are
 // small (a handful of validated paths per row).
 const PATH_REFS_MEMO_CAP = 128;
-const pathRefsMemo: Map<string, PathRef[] | undefined> = new Map();
+interface PathRefsMemoEntry {
+  readonly refs: PathRef[] | undefined;
+  readonly contentKey: string | undefined;
+}
+const pathRefsMemo: Map<string, PathRefsMemoEntry> = new Map();
 
 /**
  * THE empty allowlist. Every `getPathRefsFromMeta(...) ?? []` site and
@@ -91,28 +95,24 @@ export const EMPTY_PATH_REFS: PathRef[] = [];
  */
 export function getPathRefsFromMeta(meta: string | undefined | null): PathRef[] | undefined {
   if (meta === undefined || meta === null || meta === '') return undefined;
-  if (pathRefsMemo.has(meta)) {
-    const memoized = pathRefsMemo.get(meta);
+  const hit = pathRefsMemo.get(meta);
+  if (hit !== undefined) {
     // Refresh recency (Map iteration order is insertion order).
     pathRefsMemo.delete(meta);
-    pathRefsMemo.set(meta, memoized);
-    // Re-canonicalize on every hit, not just on parse: a draining
-    // row's per-frame calls hit this branch, and without the refresh
-    // its CONTENT entry would keep the recency stamp from the last
-    // meta change — 128 distinct allowlists parsed elsewhere before
-    // settle would evict it, and the settle meta would mint a fresh
-    // identity (the re-lex regression, back for exactly the row that
-    // needs the guarantee). If the entry was already evicted, this
-    // reinstalls the live instance as canonical.
-    return canonicalizePathRefs(memoized);
+    pathRefsMemo.set(meta, hit);
+    if (hit.contentKey !== undefined && hit.refs !== undefined) {
+      return touchCanonicalPathRefs(hit.contentKey, hit.refs);
+    }
+    return hit.refs;
   }
-  const out = canonicalizePathRefs(parsePathRefsFromMeta(meta));
+  const parsed = parsePathRefsFromMeta(meta);
+  const canonical = canonicalizePathRefs(parsed);
   if (pathRefsMemo.size >= PATH_REFS_MEMO_CAP) {
     const oldest = pathRefsMemo.keys().next().value;
     if (oldest !== undefined) pathRefsMemo.delete(oldest);
   }
-  pathRefsMemo.set(meta, out);
-  return out;
+  pathRefsMemo.set(meta, canonical);
+  return canonical.refs;
 }
 
 /**
@@ -140,21 +140,9 @@ export function getAuthoredWorkspaceFromMeta(meta: string | undefined | null): s
 // ONE array instance, so Svelte's derived equality cuts the chain.
 const pathRefsByContent: Map<string, PathRef[]> = new Map();
 
-function canonicalizePathRefs(refs: PathRef[] | undefined): PathRef[] | undefined {
-  if (!refs) return undefined;
-  // One flat parts list, three parts per ref: fixed arity is what makes a
-  // single-separator join injective over a SEQUENCE of refs, so no record
-  // terminator is needed on top of it. `compositeKey` also refuses a path
-  // that carries the separator, which the hand-rolled join could only
-  // assume.
-  const parts: (string | number)[] = [];
-  for (const ref of refs) {
-    parts.push(ref.path, ref.line ?? '', ref.col ?? '');
-  }
-  const key = compositeKey(...parts);
+function touchCanonicalPathRefs(key: string, refs: PathRef[]): PathRef[] {
   const canonical = pathRefsByContent.get(key);
   if (canonical) {
-    // Refresh recency (Map iteration order is insertion order).
     pathRefsByContent.delete(key);
     pathRefsByContent.set(key, canonical);
     return canonical;
@@ -165,6 +153,21 @@ function canonicalizePathRefs(refs: PathRef[] | undefined): PathRef[] | undefine
   }
   pathRefsByContent.set(key, refs);
   return refs;
+}
+
+function canonicalizePathRefs(refs: PathRef[] | undefined): PathRefsMemoEntry {
+  if (!refs) return { refs: undefined, contentKey: undefined };
+  // One flat parts list, three parts per ref: fixed arity is what makes a
+  // single-separator join injective over a SEQUENCE of refs, so no record
+  // terminator is needed on top of it. `compositeKey` also refuses a path
+  // that carries the separator, which the hand-rolled join could only
+  // assume.
+  const parts: (string | number)[] = [];
+  for (const ref of refs) {
+    parts.push(ref.path, ref.line ?? '', ref.col ?? '');
+  }
+  const key = compositeKey(...parts);
+  return { refs: touchCanonicalPathRefs(key, refs), contentKey: key };
 }
 
 function parsePathRefsFromMeta(meta: string): PathRef[] | undefined {

@@ -89,12 +89,9 @@ type threadState struct {
 	// through nextScopeSequence rather than indexing it directly.
 	timelineSeqByScope map[string]int
 
-	// Active streaming block bookkeeping, keyed by
-	// activeStreamKey(turnIndex, scope, providerItemID).
-	activeTextBlocks        map[string]bool
-	activeThinkingBlocks    map[string]bool
-	activeTextBlockRefs     map[string]activeStreamBlock
-	activeThinkingBlockRefs map[string]activeStreamBlock
+	// Active streaming block bookkeeping, keyed by streamBlockKey.
+	activeTextBlocks     map[streamBlockKey]*activeStreamBlock
+	activeThinkingBlocks map[streamBlockKey]*activeStreamBlock
 
 	// openStreamBlock is, per scope, the content block a
 	// content_block_start opened whose first delta has not yet created its
@@ -114,8 +111,8 @@ type threadState struct {
 	// (no per-chunk delta channel exists for command rows). Keyed by
 	// itemID.
 	//
-	// Lock order for the buffers: r.streamFlushMu is taken FIRST and
-	// r.mu nested inside it (every flush funnel does exactly this —
+	// Lock order for the buffers: threadIdentity.streamFlushMu is taken FIRST
+	// and r.mu nested inside it (every flush funnel does exactly this —
 	// flushStreamPersistenceKey, flushStreamingItem,
 	// flushStreamingThread, flushAllStreamPersistence, and the
 	// replaceCommandOutput rewrite). Never acquire streamFlushMu while
@@ -416,6 +413,13 @@ type threadIdentity struct {
 	// the order of the reads they carry. A leaf: nothing else is taken
 	// while it is held. Never replaced (same reasoning as anchorLock).
 	trayLock sync.Mutex
+	// streamFlushMu serializes, PER THREAD, stream-persist flush critical
+	// sections (extract buffer + SQLite write) against each other and
+	// against the command-output Replace rewrite. Per-thread so one
+	// thread's flush never blocks another thread's flush or FlushThread.
+	// Lock order: after anchorLock and drainLock, before r.mu. Never
+	// replaced (same reasoning as anchorLock).
+	streamFlushMu sync.Mutex
 
 	// claimedFlushItems holds batch items mid-handoff between the
 	// queue delete in tryFlushQueue and the dispatcher's synchronous
@@ -573,6 +577,13 @@ func (r *Router) threadStateIfPresent(threadID string) *threadState {
 // held at all (the anchor/drain lock lookups, which must run BEFORE r.mu
 // per the documented lock order).
 func (r *Router) identity(threadID string) *threadIdentity {
+	r.identitiesMu.RLock()
+	if id := r.identities[threadID]; id != nil {
+		r.identitiesMu.RUnlock()
+		return id
+	}
+	r.identitiesMu.RUnlock()
+
 	r.identitiesMu.Lock()
 	defer r.identitiesMu.Unlock()
 	if id := r.identities[threadID]; id != nil {
@@ -587,7 +598,8 @@ func (r *Router) identity(threadID string) *threadIdentity {
 // leaf-lock rules as identity; used by the read-only probes (is the
 // thread stopped, what is its epoch) so a query never mints a record.
 func (r *Router) identityIfPresent(threadID string) *threadIdentity {
-	r.identitiesMu.Lock()
-	defer r.identitiesMu.Unlock()
-	return r.identities[threadID]
+	r.identitiesMu.RLock()
+	id := r.identities[threadID]
+	r.identitiesMu.RUnlock()
+	return id
 }

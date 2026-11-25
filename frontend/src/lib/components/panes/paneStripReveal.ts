@@ -1,7 +1,11 @@
 // Bringing a pane into view in the pane strip: the deferred reveal request,
 // the glide that carries the strip there, and the instant snap.
 
+import { createAnimationFrameBatcher } from '../../utils/animationFrameBatcher';
+
 export type PaneRevealAlignment = 'start' | 'end';
+
+const paneStripRevealFrames = createAnimationFrameBatcher('pane-strip-reveal', 'before-dom-update');
 
 export interface PaneStripRevealOptions {
   /** The strip's scroller. */
@@ -61,6 +65,7 @@ export function createPaneStripReveal(options: PaneStripRevealOptions): PaneStri
   // position the user never saw, so gliding it would animate from nowhere.
   let pendingPaneId: string | null = null;
   let pendingInstant = false;
+  let pendingRequestFrame = 0;
 
   let targetLeft: number | null = null;
   let targetPaneId: string | null = null;
@@ -78,7 +83,7 @@ export function createPaneStripReveal(options: PaneStripRevealOptions): PaneStri
   let leftAsWritten = 0;
 
   function cancelGlide(): void {
-    if (frame) cancelAnimationFrame(frame);
+    if (frame) paneStripRevealFrames.cancel(frame);
     frame = 0;
     targetLeft = null;
     targetPaneId = null;
@@ -107,7 +112,7 @@ export function createPaneStripReveal(options: PaneStripRevealOptions): PaneStri
     }
     el.scrollLeft = currentLeft;
     leftAsWritten = el.scrollLeft;
-    frame = requestAnimationFrame(step);
+    frame = paneStripRevealFrames.request(step);
   }
 
   function glideTo(el: HTMLElement, left: number, paneId: string, alignment: PaneRevealAlignment): void {
@@ -118,7 +123,7 @@ export function createPaneStripReveal(options: PaneStripRevealOptions): PaneStri
     currentLeft = el.scrollLeft;
     leftAsWritten = el.scrollLeft;
     lastTs = null;
-    frame = requestAnimationFrame(step);
+    frame = paneStripRevealFrames.request(step);
   }
 
   function alignedLeft(el: HTMLElement, paneEl: HTMLElement, alignment: PaneRevealAlignment): number {
@@ -134,9 +139,11 @@ export function createPaneStripReveal(options: PaneStripRevealOptions): PaneStri
   ): { left: number; alignment: PaneRevealAlignment } | null {
     const paneLeft = paneEl.offsetLeft;
     const paneRight = paneLeft + paneEl.offsetWidth;
-    if (paneLeft >= viewLeft && paneRight <= viewLeft + el.clientWidth) return null;
+    const clientWidth = el.clientWidth;
+    if (paneLeft >= viewLeft && paneRight <= viewLeft + clientWidth) return null;
     const alignment: PaneRevealAlignment = paneLeft < viewLeft ? 'start' : 'end';
-    return { left: alignedLeft(el, paneEl, alignment), alignment };
+    const left = alignment === 'start' ? paneLeft : paneRight - clientWidth;
+    return { left, alignment };
   }
 
   function snap(paneEl: HTMLElement): void {
@@ -163,7 +170,8 @@ export function createPaneStripReveal(options: PaneStripRevealOptions): PaneStri
     pendingPaneId = paneId;
     pendingInstant = pendingInstant || (opts?.instant ?? false);
     if (alreadyScheduled) return;
-    requestAnimationFrame(() => {
+    pendingRequestFrame = paneStripRevealFrames.request(() => {
+      pendingRequestFrame = 0;
       const target = pendingPaneId;
       const instant = pendingInstant;
       pendingPaneId = null;
@@ -200,6 +208,10 @@ export function createPaneStripReveal(options: PaneStripRevealOptions): PaneStri
     cancelGlide,
     cancel() {
       cancelGlide();
+      if (pendingRequestFrame) {
+        paneStripRevealFrames.cancel(pendingRequestFrame);
+        pendingRequestFrame = 0;
+      }
       pendingPaneId = null;
       pendingInstant = false;
     },

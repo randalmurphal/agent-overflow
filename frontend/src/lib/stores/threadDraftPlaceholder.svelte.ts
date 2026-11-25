@@ -97,6 +97,23 @@ export async function createDraftThread(
   }))) as Thread;
 }
 
+const MAX_INVALIDATED_DRAFT_TERMINAL_IDS = 64;
+
+function createBoundedStringSet(maxSize: number): Set<string> {
+  const set = new Set<string>();
+  const origAdd = set.add.bind(set);
+  set.add = (value: string): Set<string> => {
+    if (set.has(value)) return set;
+    origAdd(value);
+    if (set.size > maxSize) {
+      const oldest = set.values().next().value;
+      if (oldest !== undefined) set.delete(oldest);
+    }
+    return set;
+  };
+  return set;
+}
+
 /** The settings a placeholder row carries: what its CreateThread sends. */
 type PlaceholderSettings = DraftPlaceholderDefaults & { worktreePath?: string };
 
@@ -144,13 +161,13 @@ export function createThreadDraftPlaceholder(
   options: ThreadDraftPlaceholderOptions,
 ) {
   const { paneId } = options;
-  let draftPlaceholder: DraftThreadPlaceholder | null = $state(null);
+  let draftPlaceholder: DraftThreadPlaceholder | null = $state.raw(null);
   // materializingThreadPromise coalesces concurrent ensureMaterializedThread
   // callers — composer input, paste/upload, send, toolbar pickers — into a
   // single CreateThread call. Cleared in `finally` so a subsequent
   // placeholder can materialize on its own.
   let materializingThreadPromise: Promise<string | null> | null = null;
-  const invalidatedDraftTerminalIds = new Set<string>();
+  const invalidatedDraftTerminalIds = createBoundedStringSet(MAX_INVALIDATED_DRAFT_TERMINAL_IDS);
 
   function setDraftPlaceholderMode(mode: DraftPlaceholderMode): boolean {
     const thread = options.getThread();

@@ -8,11 +8,14 @@ import {
   adoptDiffSpanOwner,
   evictDiffSpansForThread,
   getSpansForLine,
+  getSpansForReviewFile,
   getSpansForReviewLine,
   HIGHLIGHT_MAX_PATCH_CHARS,
+  needsReviewFileSpanRetry,
   requestFileSpans,
   requestReviewFileSpans,
   resetDiffSpanCacheForTest,
+  retainReviewFileSpanPin,
   seedPayloadPatchSpans,
   PaintedSpans,
   type PatchSpanSeedWire,
@@ -1198,5 +1201,67 @@ describe('primed span upgrades (monotonic)', () => {
     expect(unprimed).not.toHaveBeenCalled();
     // The read side falls through the missing scoped entry to the base.
     expect(getSpansForLine(file, file.lines[2], context)?.r?.[0]).toBe(1);
+  });
+
+  it('pins mounted over-budget review files against LRU eviction without re-touching', async () => {
+    const runPairs = Math.ceil((DIFF_SPAN_CACHE_MAX_BYTES * 0.55) / 8);
+    const makeReview = (path: string, line: string) =>
+      parseReviewFiles(`diff --git a/${path} b/${path}\n@@ -1,1 +1,1 @@\n+${line}`)[0];
+    const fileA = makeReview('src/pin-a.ts', 'const a = 1;');
+    const fileB = makeReview('src/pin-b.ts', 'const b = 2;');
+    const fileC = makeReview('src/pin-c.ts', 'const c = 3;');
+    setBindingMock('HighlightPatch', async () => ({
+      lang: 'typescript',
+      lines: [
+        { r: Array.from({ length: runPairs * 2 }, (_, i) => (i % 2 === 0 ? 1 : 1)) },
+        {},
+        {},
+      ],
+      truncated: false,
+    }));
+
+    const unpinA = retainReviewFileSpanPin(fileA);
+    const unpinB = retainReviewFileSpanPin(fileB);
+    const unpinC = retainReviewFileSpanPin(fileC);
+    try {
+      await requestReviewFileSpans(fileA, 'thread-1');
+      await requestReviewFileSpans(fileB, 'thread-1');
+      // Inserting C exceeds DIFF_SPAN_CACHE_MAX_BYTES, yet pinned A and B stay resident.
+      await requestReviewFileSpans(fileC, 'thread-1');
+      expect(getSpansForReviewFile(fileA)).not.toBeNull();
+      expect(getSpansForReviewFile(fileB)).not.toBeNull();
+      expect(getSpansForReviewFile(fileC)).not.toBeNull();
+    } finally {
+      unpinA();
+      unpinB();
+      unpinC();
+    }
+  });
+
+  it('needsReviewFileSpanRetry tracks missing primed entries and ignores oversized/empty files', async () => {
+    const rawPatch = 'diff --git a/src/retry-primed.ts b/src/retry-primed.ts\n@@ -1,1 +1,1 @@\n+const x = 1;';
+    const [reviewFile] = parseReviewFiles(rawPatch);
+    const [patchFile] = parsePatchFiles(rawPatch);
+    const context = { scope: 'workspace', commitSHA: '', headSHA: '', workspace: WS };
+
+    // Unprimed base exists (e.g. from an inline chat diff), scoped primed entry does not yet exist.
+    setBindingMock('HighlightPatch', async () => keywordResult(patchFile));
+    await requestFileSpans(patchFile, 'thread-1');
+    expect(getSpansForReviewFile(reviewFile, context)).not.toBeNull();
+    expect(needsReviewFileSpanRetry(reviewFile, context)).toBe(true);
+
+    // Once the primed entry lands, retry subscription drops.
+    setBindingMock('HighlightPatchWithContext', async () => ({ ...keywordResult(patchFile), primed: true }));
+    await requestReviewFileSpans(reviewFile, 'thread-1', context);
+    expect(needsReviewFileSpanRetry(reviewFile, context)).toBe(false);
+
+    // Oversized files never request spans and never need retry subscription.
+    const oversized = {
+      ...reviewFile,
+      body: Object.create(reviewFile.body, {
+        textSize: { value: HIGHLIGHT_MAX_PATCH_CHARS + 1 },
+      }) as typeof reviewFile.body,
+    };
+    expect(needsReviewFileSpanRetry(oversized, context)).toBe(false);
   });
 });

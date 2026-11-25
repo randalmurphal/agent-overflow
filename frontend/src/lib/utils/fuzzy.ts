@@ -72,16 +72,14 @@ export function fuzzyFilter<T>(query: string, candidates: FuzzyCandidate<T>[]): 
   if (query.length === 0) {
     return candidates.map((c) => ({ item: c.item, score: 0, indices: [] }));
   }
-  const out: FuzzyResult<T>[] = [];
+  const scored: Array<{ result: FuzzyResult<T>; textLen: number }> = [];
   for (const c of candidates) {
     const m = fuzzyMatch(query, c.text);
-    if (m) out.push({ item: c.item, score: m.score, indices: m.indices });
+    if (m) scored.push({ result: { item: c.item, score: m.score, indices: m.indices }, textLen: c.text.length });
   }
-  out.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    const la = candidates.find((c) => c.item === a.item)?.text.length ?? 0;
-    const lb = candidates.find((c) => c.item === b.item)?.text.length ?? 0;
-    return la - lb;
+  scored.sort((a, b) => {
+    if (b.result.score !== a.result.score) return b.result.score - a.result.score;
+    return a.textLen - b.textLen;
   });
-  return out;
+  return scored.map((entry) => entry.result);
 }

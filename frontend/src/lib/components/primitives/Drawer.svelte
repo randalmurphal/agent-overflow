@@ -8,7 +8,7 @@
    * Size is bindable — use `bind:size` if you want the parent to
    * track the live value during drag rather than only on drag-end.
    */
-  import type { Snippet } from 'svelte';
+  import { onDestroy, type Snippet } from 'svelte';
 
   type Position = 'bottom' | 'right';
 
@@ -55,6 +55,8 @@
   let startPointer = 0;
   let startSize = 0;
   let releaseResizeLease: (() => void) | null = null;
+  let pendingSize: number | null = null;
+  let dragFrame = 0;
 
   // Resolve the effective maximum size: explicit cap, or 85% of the
   // viewport on the relevant axis. Computed at drag-start so later
@@ -66,16 +68,46 @@
     return Math.floor(axis * 0.85);
   }
 
+  let dragMax = Infinity;
+
   function clamp(value: number): number {
-    const max = resolveMax();
-    return Math.max(minSize, Math.min(max, value));
+    return Math.max(minSize, Math.min(dragMax, value));
+  }
+
+  function flushPendingSize(): void {
+    if (dragFrame) {
+      cancelAnimationFrame(dragFrame);
+      dragFrame = 0;
+    }
+    if (pendingSize !== null) {
+      size = pendingSize;
+      pendingSize = null;
+    }
+  }
+
+  function finishDrag(e?: PointerEvent): void {
+    if (!dragging) return;
+    dragging = false;
+    flushPendingSize();
+    if (e) {
+      const target = e.currentTarget as HTMLElement | null;
+      if (target?.hasPointerCapture?.(e.pointerId)) {
+        target.releasePointerCapture(e.pointerId);
+      }
+    }
+    releaseResizeLease?.();
+    releaseResizeLease = null;
+    onResize?.(size);
   }
 
   function onPointerDown(e: PointerEvent): void {
     if (!resizable) return;
+    finishDrag();
     dragging = true;
     startPointer = position === 'bottom' ? e.clientY : e.clientX;
     startSize = size;
+    dragMax = resolveMax();
+    pendingSize = null;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     releaseResizeLease = acquireResizeLease?.() ?? null;
   }
@@ -87,17 +119,32 @@
     // grows when the pointer moves left. Invert the delta in both
     // cases so positive drag-towards-center grows the drawer.
     const delta = startPointer - pointer;
-    size = clamp(startSize + delta);
+    const next = clamp(startSize + delta);
+    if (typeof requestAnimationFrame === 'undefined') {
+      size = next;
+      return;
+    }
+    pendingSize = next;
+    if (dragFrame) return;
+    dragFrame = requestAnimationFrame(() => {
+      dragFrame = 0;
+      if (pendingSize !== null) {
+        size = pendingSize;
+        pendingSize = null;
+      }
+    });
   }
 
-  function onPointerUp(e: PointerEvent): void {
-    if (!dragging) return;
+  onDestroy(() => {
+    if (dragFrame) {
+      cancelAnimationFrame(dragFrame);
+      dragFrame = 0;
+    }
+    pendingSize = null;
     dragging = false;
-    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     releaseResizeLease?.();
     releaseResizeLease = null;
-    onResize?.(size);
-  }
+  });
 
   const sizeStyle = $derived(
     fill ? undefined : position === 'bottom' ? `height: ${size}px;` : `width: ${size}px;`,
@@ -106,6 +153,12 @@
   // A filled drawer has nothing to resize against — it is already the whole
   // available box — so the handle would only be a dead grab target.
   const showHandle = $derived(resizable && !fill);
+
+  // If the handle unmounts mid-drag (e.g. crossing the compact breakpoint),
+  // settle any queued frame and release the scroll-pause lease immediately.
+  $effect(() => {
+    if (!showHandle) finishDrag();
+  });
 
   const chromeClass = $derived(
     position === 'bottom'
@@ -142,8 +195,9 @@
       ].join(' ')}
       onpointerdown={onPointerDown}
       onpointermove={onPointerMove}
-      onpointerup={onPointerUp}
-      onpointercancel={onPointerUp}
+      onpointerup={finishDrag}
+      onpointercancel={finishDrag}
+      onlostpointercapture={finishDrag}
     ></div>
   {/if}
   {@render children()}

@@ -3,6 +3,7 @@ import { applyThreadWakesGap } from './eventsThreadWakes';
 import { refreshProviderMemory } from './providerMemory.svelte';
 import { applyThreadAgentRowsGap } from './eventsThreadAgentRows';
 import { refreshTimelineSurfaces } from './timelineSurfaces';
+import { invalidateProposedPlansLoaded } from './proposedPlans.svelte';
 import type { EventOrigin } from '../transport/handle';
 import { backendKeyForOrigin } from '../transport/backends';
 import type { TransportGap } from '../transport/wsClient';
@@ -70,6 +71,8 @@ import { reconcileThreadLiveActivity } from './threadLiveActivity';
 import { reconcileSettledFlushes } from './flushSettlement';
 import { recoverThreadWindows } from './threadWindowRecovery';
 import { resyncLiveCodeRows } from '../components/chat/markdown/liveCodeSpans.svelte';
+import { flushPendingHighlightLive } from './eventsHighlight';
+import { evictWarmTerminalsForBackend } from '../components/terminal/terminalWarmPool';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
 // the ingest surface at the one acquisition point, so a new pane member
@@ -148,6 +151,7 @@ function resyncThreadLiveActivity(origin?: EventOrigin): void {
 /** The blanket answer: forget the stamps, re-read the sidebar, refresh every pane. */
 function refreshEverything(): void {
   refreshTimelineSurfaces();
+  invalidateProposedPlansLoaded();
   dropStampsAfterGap();
   refreshSidebarProjections();
   for (const pane of ingestPanes()) {
@@ -499,6 +503,13 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       // thread's row carries the outcome (still listed, where opening it
       // reports the refusal, or deleted on `thread:updated`).
       return;
+    case 'terminal:output': {
+      // Parked warm terminals skip GetTerminalReplay on reattach; evicting them
+      // ensures the next mount fetches a full replay instead of missing bytes
+      // lost during the gap.
+      evictWarmTerminalsForBackend(backendKeyForOrigin(origin?.backendId ?? ''));
+      return;
+    }
     case 'terminal:opened':
     case 'terminal:exit': {
       // A lost open hides a running terminal and a lost exit leaves a dead
@@ -509,8 +520,10 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
     }
     case 'highlight:live':
       // Lost deltas show as a sequence gap on the row's next push, but a
-      // lost final push has no next push: every open row asks for a
-      // keyframe, which also stops the fences that ended meanwhile.
+      // lost final push has no next push: flush any rAF-queued pushes first
+      // so stale frames cannot land after the resync, then ask every open row
+      // for a keyframe (which also stops fences that ended meanwhile).
+      flushPendingHighlightLive();
       resyncLiveCodeRows(backendKeyForOrigin(origin?.backendId ?? ''));
       return;
     case 'system:stats':

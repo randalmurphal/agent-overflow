@@ -16,6 +16,7 @@ interface ViewStore {
   backend: BackendKey;
   bucket: Map<string, string>;
   hydrated: boolean;
+  migratedWritten: boolean;
   touched: Set<string>;
   loading: Promise<boolean> | null;
   generation: number;
@@ -35,7 +36,8 @@ function readBucket(backend: BackendKey): Map<string, string> {
 function storeFor(backend: BackendKey): ViewStore {
   let store = stores.get(backend);
   if (!store) {
-    store = { backend, bucket: readBucket(backend), hydrated: readLocal(keyFor(MIGRATED_KEY, backend)) === '1',
+    const migrated = readLocal(keyFor(MIGRATED_KEY, backend)) === '1';
+    store = { backend, bucket: readBucket(backend), hydrated: migrated, migratedWritten: migrated,
       touched: new Set(), loading: null, generation: 0 };
     stores.set(backend, store);
   }
@@ -44,7 +46,10 @@ function storeFor(backend: BackendKey): ViewStore {
 function persist(store: ViewStore): void {
   try {
     localStorage.setItem(keyFor(BUCKET_KEY, store.backend), JSON.stringify(Object.fromEntries(store.bucket)));
-    localStorage.setItem(keyFor(MIGRATED_KEY, store.backend), '1');
+    if (!store.migratedWritten) {
+      localStorage.setItem(keyFor(MIGRATED_KEY, store.backend), '1');
+      store.migratedWritten = true;
+    }
     saveFailureShown = false;
   } catch (err) {
     if (!saveFailureShown) {
@@ -58,12 +63,14 @@ export function appStorageGet(key: string, backend: BackendKey = HOME_BACKEND): 
 }
 export function appStorageSet(key: string, value: string, backend: BackendKey = HOME_BACKEND): void {
   const store = storeFor(backend);
+  if (store.bucket.get(key) === value && (store.hydrated || store.touched.has(key))) return;
   store.bucket.set(key, value);
   if (!store.hydrated) store.touched.add(key);
   persist(store);
 }
 export function appStorageDelete(key: string, backend: BackendKey = HOME_BACKEND): void {
   const store = storeFor(backend);
+  if (!store.bucket.has(key) && (store.hydrated || store.touched.has(key))) return;
   store.bucket.delete(key);
   if (!store.hydrated) store.touched.add(key);
   persist(store);

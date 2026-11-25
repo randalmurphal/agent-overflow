@@ -25,7 +25,7 @@
     RowEstimate,
     ScrollToIndexAlign,
   } from '../../utils/virtual/types';
-  import { observedScrollTopFromEvent } from '../../utils/scroll/eventObservation';
+  import { observedScrollTopFromEvent, recordScrollEventObservation } from '../../utils/scroll/eventObservation';
   import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
   import VirtualRow from './VirtualRow.svelte';
 
@@ -147,7 +147,7 @@
      * there the per-beat pin write already absorbs growth anywhere in the
      * content, so tracking a reading anchor would cost a hit-test per
      * scroll event and change nothing. Defaults to always-track. */
-    trackReadingAnchor?: () => boolean;
+    trackReadingAnchor?: (offset?: number) => boolean;
     children: Snippet<[item: T, index: number]>;
   }
 
@@ -256,6 +256,7 @@
   // applier seam had, which the resolver tiers were calibrated against.
   let pendingCompensation: EngineCompensation | null = null;
   let deliveredGeometryVersion = -1;
+  let deliveredContentGeometryTrigger = -1;
   let deliveredDataSnapshot: object | null = null;
   let appliedIntrinsicViewportLimitCss: string | undefined;
 
@@ -322,11 +323,14 @@
     }
     const currentGeometryVersion = geometryVersion;
     const currentData = reconciledData;
-    void contentGeometryTrigger;
+    const currentContentGeometryTrigger = contentGeometryTrigger;
     const geometryChanged = currentGeometryVersion !== deliveredGeometryVersion;
     const dataChanged = currentData !== deliveredDataSnapshot;
+    const contentGeometryTriggerChanged =
+      currentContentGeometryTrigger !== deliveredContentGeometryTrigger;
     deliveredGeometryVersion = currentGeometryVersion;
     deliveredDataSnapshot = currentData;
+    deliveredContentGeometryTrigger = currentContentGeometryTrigger;
     const compensation = pendingCompensation;
     pendingCompensation = null;
     untrack(() => {
@@ -343,7 +347,10 @@
       }
       convergeIndexScroll();
       const spliceCorrected = correctHeadSpliceAnchor();
-      maybeDeliverContentGeometry();
+      const structuralChange = dataChanged && currentData.mutation.kind !== 'unchanged';
+      if (geometryChanged || structuralChange || contentGeometryTriggerChanged) {
+        maybeDeliverContentGeometry();
+      }
       reportNonFiniteGeometry();
       if (measurementBarrier.active && (engine.getItemCount() === 0 || windowFullyMeasured())) {
         measurementBarrier.commit();
@@ -358,7 +365,6 @@
       // delta. Refreshing here would sample the already-grown DOM and erase
       // the shift. Geometry updates run this effect again after measurement;
       // structural key changes need a fresh anchor immediately.
-      const structuralChange = dataChanged && currentData.mutation.kind !== 'unchanged';
       if (geometryChanged || structuralChange) {
         const consumed = straddleShiftConsumed;
         straddleShiftConsumed = false;
@@ -496,24 +502,19 @@
     void geometryVersion;
     const current = reconciledData;
     const currentData = current.items;
+    const currentKeys = current.keys;
     const windowRange = engine.getWindow();
     const [start, end] = windowRange;
+    const firstIndex = Math.max(0, start);
     const lastIndex = Math.min(end, currentData.length - 1);
-    const rows: RenderRow[] = [];
+    const rowCount = lastIndex >= firstIndex ? lastIndex - firstIndex + 1 : 0;
     const globalRows: GlobalPlaneRow<unknown>[] = [];
-    for (let index = Math.max(0, start); index <= lastIndex; index++) {
-      const key = reconciledData.keys[index];
-      const globalOffset = engine.getItemOffset(index);
-      globalRows.push({ key, offset: globalOffset, size: engine.sizeAt(index) });
-      rows.push({
-        item: currentData[index],
-        key,
-        index,
-        offset: globalOffset,
-        measured: engine.isMeasuredAt(index),
-        // Exact rows never attach a ResizeObserver — their estimate IS the
-        // rendered height (RowEstimate.isExact contract).
-        observe: !(engineEstimate.isExact?.(index) ?? false),
+    for (let i = 0; i < rowCount; i++) {
+      const index = firstIndex + i;
+      globalRows.push({
+        key: currentKeys[index],
+        offset: engine.getItemOffset(index),
+        size: engine.sizeAt(index),
       });
     }
     const newDataSnapshot = current !== planeDataSnapshot;
@@ -524,32 +525,35 @@
       newDataSnapshot && (current.mutation.kind === 'head' || current.mutation.kind === 'keyed'),
     );
     planeState = plane;
-    // An unchanged row keeps its previous OBJECT, not just its values. This
-    // derived re-runs on every reveal tick and every geometry bump, and the
-    // keyed each writes each row into a per-key signal — a fresh object
-    // there reads as a change, so every mounted row re-ran its wrapper
-    // effects (position style, setRowIndex) and re-validated its snippet on
-    // every streamed chunk, O(window) per tick with almost every value
-    // identical (2026-08-26, the 165Hz frame-drop attribution — same
-    // identity-churn class as the projection node caches). Reused objects
-    // are never mutated: a candidate replaces the cached row unless EVERY
-    // field matches.
+    // An unchanged row keeps its previous OBJECT, not just its values. Check
+    // against `rowReuse` before allocating a new RenderRow so steady-state
+    // streaming ticks allocate zero descriptor objects for unchanged rows.
+    const rows: RenderRow[] = [];
     const reused = new Map<unknown, RenderRow>();
-    for (let i = 0; i < rows.length; i++) {
-      const candidate = rows[i];
-      candidate.offset = plane.localOffsets.get(candidate.key) ?? 0;
-      const previous = rowReuse.get(candidate.key);
+    const isExact = engineEstimate.isExact;
+    for (let i = 0; i < rowCount; i++) {
+      const index = firstIndex + i;
+      const key = currentKeys[index];
+      const item = currentData[index];
+      const offset = plane.localOffsets.get(key) ?? 0;
+      const measured = engine.isMeasuredAt(index);
+      const observe = !(isExact?.(index) ?? false);
+      const previous = rowReuse.get(key);
+      let row: RenderRow;
       if (
         previous &&
-        previous.item === candidate.item &&
-        previous.index === candidate.index &&
-        previous.offset === candidate.offset &&
-        previous.measured === candidate.measured &&
-        previous.observe === candidate.observe
+        previous.item === item &&
+        previous.index === index &&
+        previous.offset === offset &&
+        previous.measured === measured &&
+        previous.observe === observe
       ) {
-        rows[i] = previous;
+        row = previous;
+      } else {
+        row = { item, key, index, offset, measured, observe };
       }
-      reused.set(candidate.key, rows[i]);
+      rows.push(row);
+      reused.set(key, row);
     }
     rowReuse = reused;
     return { rows, plane: plane.geometry };
@@ -569,16 +573,26 @@
   // changes stay on the applyLength path (its head-splice compensation
   // kind is load-bearing for load-older); anything else remaps measured
   // sizes by row identity.
-  function keysFor(items: readonly T[]): unknown[] {
-    const keys = items.map((item, index) => getKey(item, index));
-    const unique = new Set(keys);
-    if (unique.size !== keys.length) {
-      throw new Error('TimelineVirtualizer requires a unique key for every row');
+  const UNCHANGED_KEY_MUTATION = { kind: 'unchanged', headSplice: 0 } as const;
+  const TAIL_APPEND_KEY_MUTATION = { kind: 'tail', headSplice: 0 } as const;
+
+  function keysFor(items: readonly T[]): { keys: unknown[]; unique: Set<unknown> } {
+    const keys: unknown[] = [];
+    const unique = new Set<unknown>();
+    for (let index = 0; index < items.length; index++) {
+      const key = getKey(items[index], index);
+      if (unique.has(key)) {
+        throw new Error('TimelineVirtualizer requires a unique key for every row');
+      }
+      unique.add(key);
+      keys.push(key);
     }
-    return keys;
+    return { keys, unique };
   }
 
-  let prevKeys: readonly unknown[] = untrack(() => keysFor(data));
+  const initialKeys = untrack(() => keysFor(data));
+  let prevKeys: readonly unknown[] = initialKeys.keys;
+  let prevKeySet: Set<unknown> = initialKeys.unique;
 
   // This reconciliation is a render dependency, not an effect. An effect.pre
   // still lets Svelte derive one intermediate template from NEW data and the
@@ -595,9 +609,53 @@
   let latestReconciledData: object | null = null;
   const reconciledData = $derived.by(() => {
     const items = data;
-    const nextKeys = keysFor(data);
     const prev = prevKeys;
+    const prevLen = prev.length;
+    const nextLen = items.length;
+
+    // Fast path for the two dominant streaming shapes (unchanged key sequence
+    // and pure tail append): `prev` is already verified unique, so matching
+    // its prefix skips rebuilding a full key array and full uniqueness Set on
+    // every reveal beat.
+    if (nextLen >= prevLen) {
+      let prefixMatches = true;
+      for (let i = 0; i < prevLen; i++) {
+        if (getKey(items[i], i) !== prev[i]) {
+          prefixMatches = false;
+          break;
+        }
+      }
+      if (prefixMatches) {
+        if (nextLen === prevLen) {
+          const next = { items, keys: prev, mutation: UNCHANGED_KEY_MUTATION };
+          latestReconciledData = next;
+          return next;
+        }
+        const nextKeys = prev.slice();
+        const added = nextLen - prevLen === 1 ? null : new Set<unknown>();
+        for (let i = prevLen; i < nextLen; i++) {
+          const key = getKey(items[i], i);
+          if (prevKeySet.has(key) || added?.has(key)) {
+            throw new Error('TimelineVirtualizer requires a unique key for every row');
+          }
+          added?.add(key);
+          nextKeys.push(key);
+        }
+        for (let i = prevLen; i < nextLen; i++) {
+          prevKeySet.add(nextKeys[i]);
+        }
+        prevKeys = nextKeys;
+        queueUpdate(engine.applyLength(nextLen, 0));
+        const next = { items, keys: nextKeys, mutation: TAIL_APPEND_KEY_MUTATION };
+        latestReconciledData = next;
+        return next;
+      }
+    }
+
+    const built = keysFor(items);
+    const nextKeys = built.keys;
     prevKeys = nextKeys;
+    prevKeySet = built.unique;
     const mutation = classifyKeyedSequenceMutation(prev, nextKeys);
     switch (mutation.kind) {
       case 'unchanged':
@@ -707,8 +765,21 @@
     return undefined;
   }
 
-  function readingAnchorWanted(): boolean {
-    return trackReadingAnchor?.() ?? true;
+  function readingAnchorWanted(offset?: number): boolean {
+    return trackReadingAnchor?.(offset) ?? true;
+  }
+
+  // Exact-height rows (e.g. non-wrapped diff blocks & file headers) never
+  // resize via ResizeObserver, so sub-row straddle shifts cannot occur on
+  // them. Skipping sampleReadingAnchor avoids a forced getBoundingClientRect
+  // + document.elementFromPoint hit-test on every scroll event and flush.
+  function isTopRowExact(offset: number): boolean {
+    const isExact = estimate?.isExact;
+    if (!isExact) return false;
+    const count = engine.getItemCount();
+    if (count <= 0) return false;
+    const idx = engine.findItemIndex(engineOffsetFor(offset));
+    return idx >= 0 && idx < count && isExact(idx);
   }
 
   // No DOM reads except the sub-row sample itself. This runs from the
@@ -734,7 +805,7 @@
       latestViewportAnchor = null;
       return;
     }
-    if (!readingAnchorWanted()) {
+    if (!readingAnchorWanted(offset) || isTopRowExact(offset)) {
       readingAnchor = null;
     } else if (
       forceSample ||
@@ -1083,9 +1154,38 @@
     onscrollend?.();
   }
 
-  function handleScroll(event: Event): void {
+  // Capture-phase listener performs pure reads only (reading-anchor sample
+  // and scrollTop observation) so neither `intent.ts` (capture) nor this
+  // sample ever sees DOM writes flushed in the inter-listener microtask
+  // checkpoint by OverlayScrollbar or the virtualizer's bubble-phase update.
+  function handleScrollCapture(event: Event): void {
     const scroller = observedScroller;
     if (!scroller) return;
+    if (event.target !== scroller) {
+      const anchor = readingAnchor;
+      if (anchor && event.target instanceof Node && anchor.anchorEl && event.target.contains(anchor.anchorEl)) {
+        readingAnchor = null;
+      }
+      return;
+    }
+    let offset = observedScrollTopFromEvent(event);
+    if (offset === undefined) {
+      offset = scroller.scrollTop;
+      recordScrollEventObservation(event, offset);
+    }
+    // The viewport top now sits over different content. Re-sample unless
+    // the position is unchanged (the controller's own compensation write
+    // already re-sampled from the post-flush effect, and its scroll event
+    // arrives afterwards with nothing left to move).
+    if (offset !== anchorScrollTop) refreshReadingAnchor(offset, true);
+  }
+
+  // Bubble-phase listener applies the virtualizer range update after both
+  // capture-phase readers (`intent.ts` and `handleScrollCapture`) have
+  // finished reading clean layout.
+  function handleScroll(event: Event): void {
+    const scroller = observedScroller;
+    if (!scroller || event.target !== scroller) return;
     lastScrollTime = performance.now();
     const offset = observedScrollTopFromEvent(event) ?? scroller.scrollTop;
     if (headSpliceAnchor && Math.abs(offset - actualScrollOffset) > 0.01) {
@@ -1094,25 +1194,7 @@
     actualScrollOffset = offset;
     applyUpdate(engine.applyScroll(engineOffsetFor(offset)));
     onscroll?.(offset);
-    // The viewport top now sits over different content. Re-sample unless
-    // the position is unchanged (the controller's own compensation write
-    // already re-sampled from the post-flush effect, and its scroll event
-    // arrives afterwards with nothing left to move).
-    if (offset !== anchorScrollTop) refreshReadingAnchor(offset, true);
     armScrollEnd();
-  }
-
-  // A scroller that holds the sampled anchor (an activity run's clip) moves
-  // it with no scroll event here, so the anchor no longer measures growth:
-  // the inner scroll would read as growth above the reading position. Drop
-  // it; the next post-flush pass samples afresh. A scroller beside the
-  // anchor (a code block, a textarea) moves nothing the anchor measures.
-  // Dropping rather than re-sampling keeps a clip that chases its own tail
-  // every frame from costing a hit test per frame.
-  function handleNestedScroll(event: Event): void {
-    const anchor = readingAnchor;
-    if (!anchor || event.target === observedScroller) return;
-    if (event.target instanceof Node && event.target.contains(anchor.anchorEl)) readingAnchor = null;
   }
 
   function handleWheel(event: WheelEvent): void {
@@ -1152,15 +1234,15 @@
       ensureResizeObserver().observe(intrinsicLimit);
     }
     observedScroller = scroller;
+    scroller.addEventListener('scroll', handleScrollCapture, { capture: true, passive: true });
     scroller.addEventListener('scroll', handleScroll, { passive: true });
-    scroller.addEventListener('scroll', handleNestedScroll, { capture: true, passive: true });
     scroller.addEventListener('wheel', handleWheel, { passive: true });
     scroller.addEventListener('touchstart', handleTouchStart, { passive: true });
     scroller.addEventListener('touchend', handleTouchEnd, { passive: true });
     scroller.addEventListener('touchcancel', handleTouchEnd, { passive: true });
     return () => {
+      scroller.removeEventListener('scroll', handleScrollCapture, { capture: true });
       scroller.removeEventListener('scroll', handleScroll);
-      scroller.removeEventListener('scroll', handleNestedScroll, { capture: true });
       scroller.removeEventListener('wheel', handleWheel);
       scroller.removeEventListener('touchstart', handleTouchStart);
       scroller.removeEventListener('touchend', handleTouchEnd);
@@ -1255,15 +1337,20 @@
     cancelIndexScrollSettle(pending);
     pending.settleTimer = setTimeout(() => {
       pending.settleTimer = undefined;
+      if (pendingIndexScroll !== pending) return;
       let frames = 0;
       const frame = () => {
+        if (pendingIndexScroll !== pending) {
+          pending.settleFrame = undefined;
+          return;
+        }
         frames++;
         if (frames < INDEX_SCROLL_SETTLE_FRAMES) {
           pending.settleFrame = requestAnimationFrame(frame);
           return;
         }
         pending.settleFrame = undefined;
-        if (pendingIndexScroll === pending) clearIndexScroll();
+        clearIndexScroll();
       };
       pending.settleFrame = requestAnimationFrame(frame);
     }, INDEX_SCROLL_SETTLE_MS);
@@ -1305,31 +1392,6 @@
       return;
     }
     pending.index = index;
-    const scroller = observedScroller;
-    if (scroller && Number.isFinite(pending.expectedPosition)) {
-      // Where should the viewport be if nobody but this navigation (and
-      // the compensations delivered on its behalf) has moved it? The
-      // expectation, re-clamped against the CURRENT layout: when the
-      // content under the navigation shrinks (a run collapsing in view),
-      // the browser clamps scrollTop with no write from anyone — that is
-      // the navigation's own ground shifting, not a takeover, and the
-      // restore pass that follows is exactly the one that puts the
-      // anchored row back. The browser's range, not the engine's: the
-      // scroller can hold content after the rows (chat's "Load newer
-      // messages" footer), and the browser clamps against all of it.
-      const expected = Math.max(0, Math.min(
-        pending.expectedPosition,
-        scroller.scrollHeight - scroller.clientHeight,
-      ));
-      // Live DOM reads, not engine.getScrollOffset(): the engine's offset
-      // lags its own write until the scroll event lands, and a stale
-      // offset here would read the navigation's own write as a takeover.
-      // Cold path — only runs while a navigation is pending.
-      if (Math.abs(scroller.scrollTop - expected) > SCROLL_TAKEOVER_TOLERANCE_PX) {
-        clearIndexScroll();
-        return;
-      }
-    }
     const clampedTarget =
       engine.targetOffsetFor(pending.index, pending.align, pending.extraOffset) + renderHeaderSize;
     let target = clampedTarget;
@@ -1377,11 +1439,38 @@
     ) {
       pending.tailExtentBaseline = tailExtent;
     }
-    // An unchanged target needs no write once the last one landed. One the
+    // An unchanged target needs no write once the last one landed. Check
+    // before reading scroller layout so no-op convergence passes skip forced
+    // scrollHeight/clientHeight/scrollTop reads on dirty frames. One the
     // browser clamped short is written again: a navigation issued in the
     // same flush as a data change writes before the DOM holds the new rows,
     // and the pass after that flush is the one that can reach the target.
     if (target === pending.lastTarget && pending.reached) return;
+    const scroller = observedScroller;
+    if (scroller && Number.isFinite(pending.expectedPosition)) {
+      // Where should the viewport be if nobody but this navigation (and
+      // the compensations delivered on its behalf) has moved it? The
+      // expectation, re-clamped against the CURRENT layout: when the
+      // content under the navigation shrinks (a run collapsing in view),
+      // the browser clamps scrollTop with no write from anyone — that is
+      // the navigation's own ground shifting, not a takeover, and the
+      // restore pass that follows is exactly the one that puts the
+      // anchored row back. The browser's range, not the engine's: the
+      // scroller can hold content after the rows (chat's "Load newer
+      // messages" footer), and the browser clamps against all of it.
+      const expected = Math.max(0, Math.min(
+        pending.expectedPosition,
+        scroller.scrollHeight - scroller.clientHeight,
+      ));
+      // Live DOM reads, not engine.getScrollOffset(): the engine's offset
+      // lags its own write until the scroll event lands, and a stale
+      // offset here would read the navigation's own write as a takeover.
+      // Cold path — only runs while a navigation actually needs to write.
+      if (Math.abs(scroller.scrollTop - expected) > SCROLL_TAKEOVER_TOLERANCE_PX) {
+        clearIndexScroll();
+        return;
+      }
+    }
     if (pending.passesLeft <= 0) {
       clearIndexScroll();
       return;
@@ -1582,11 +1671,7 @@
      sizing breaks the explicit height. No pointer-events toggling — that
      upstream behavior is deliberately dropped (plan §2 DOM contracts). -->
 <div
-  style:contain="size style"
-  style:overflow-anchor="none"
-  style:flex="none"
-  style:position="relative"
-  style:width="100%"
+  style="contain: size style; overflow-anchor: none; flex: none; position: relative; width: 100%;"
   style:height="{renderTotalSize + renderHeaderSize}px"
 >
   {#if intrinsicViewportLimitCss !== undefined}
@@ -1597,23 +1682,14 @@
       bind:this={intrinsicViewportLimitEl}
       data-virtual-intrinsic-viewport-limit
       aria-hidden="true"
-      style:position="fixed"
-      style:left="-10000px"
-      style:top="0px"
-      style:width="0px"
+      style="position: fixed; left: -10000px; top: 0px; width: 0px; visibility: hidden; pointer-events: none; contain: strict;"
       style:height={intrinsicViewportLimitCss}
-      style:visibility="hidden"
-      style:pointer-events="none"
-      style:contain="strict"
     ></div>
   {/if}
   {#if renderHeader}
     <div
       data-virtual-header
-      style:position="absolute"
-      style:left="0px"
-      style:top="0px"
-      style:width="100%"
+      style="position: absolute; left: 0px; top: 0px; width: 100%;"
       style:height="{renderHeaderSize}px"
     >
       {@render renderHeader()}
@@ -1622,10 +1698,8 @@
   <div
     bind:this={renderPlane}
     data-virtual-row-plane
-    style:position="absolute"
-    style:left="0px"
+    style="position: absolute; left: 0px; width: 100%;"
     style:top="{plane.origin + renderHeaderSize}px"
-    style:width="100%"
     style:height="{plane.size}px"
   >
     {#each rows as row (row.key)}

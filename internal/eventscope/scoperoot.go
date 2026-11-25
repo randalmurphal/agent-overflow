@@ -6,6 +6,13 @@ import (
 	"strings"
 )
 
+// ScopeRootProvider is an optional fast-path interface event payload structs
+// may implement to report their transcript scope root without reflection or
+// JSON fallback.
+type ScopeRootProvider interface {
+	EventScopeRootID() string
+}
+
 // ScopeRootIDFromEvent does a best-effort lookup of the transcript scope a
 // timeline-row payload belongs to: the `parentId` of the row it is about.
 // An empty result means the root scope (a top-level row) or a payload this
@@ -17,13 +24,14 @@ import (
 // (`item.parentId`). The top-level value wins when both are present.
 //
 // Lookup order:
-//  1. map[string]any / map[string]string with a "parentId" key, or a
+//  1. ScopeRootProvider interface (zero-reflection fast path).
+//  2. map[string]any / map[string]string with a "parentId" key, or a
 //     map[string]any "item" holding one.
-//  2. Struct (or pointer-to-struct) with an exported ParentID string field
+//  3. Struct (or pointer-to-struct) with an exported ParentID string field
 //     or an exported Item struct (or pointer-to-struct) field carrying
 //     one. A struct that declares either field is answered here, empty
 //     included, so a root-scope frame never pays the JSON round trip.
-//  3. JSON round-trip fallback for every other shape, including the raw
+//  4. JSON round-trip fallback for every other shape, including the raw
 //     payloads the harness publishes.
 //
 // The id is space-trimmed before return, like ThreadIDFromEvent's.
@@ -32,6 +40,8 @@ func ScopeRootIDFromEvent(data any) string {
 		return ""
 	}
 	switch payload := data.(type) {
+	case ScopeRootProvider:
+		return strings.TrimSpace(payload.EventScopeRootID())
 	case map[string]any:
 		return scopeRootFromMap(payload)
 	case map[string]string:

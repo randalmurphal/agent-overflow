@@ -153,6 +153,18 @@ export function createNavRailViewportSync(ctx: NavRailSyncCtx): NavRailViewportS
   let clipPx = 0;
   let frame: number | undefined;
 
+  function clearElementCaches(): void {
+    currentEl = null;
+    markerEl = null;
+    markerTop = '';
+    stripEl = null;
+    stripClip = 0;
+    firstArrowEl = null;
+    firstArrowOn = false;
+    latestArrowEl = null;
+    latestArrowOn = false;
+  }
+
   function applyCurrent(next: number | null): void {
     const el = next === null ? null : tickEls[next] ?? null;
     if (el === currentEl) return;
@@ -165,6 +177,7 @@ export function createNavRailViewportSync(ctx: NavRailSyncCtx): NavRailViewportS
     const list = ctx.getListRef();
     if (!list) return;
     const merged = ctx.getTicks();
+    if (tickEls.length > merged.ticks.length) tickEls.length = merged.ticks.length;
     if (merged.ticks.length === 0) {
       applyCurrent(null);
       return;
@@ -322,6 +335,8 @@ export function createNavRailViewportSync(ctx: NavRailSyncCtx): NavRailViewportS
         viewportSyncFrames.cancel(frame);
         frame = undefined;
       }
+      clearElementCaches();
+      tickEls.length = 0;
     },
   };
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 )
 
 // Tiered residency: ONE service, three homes (docs/specs/remote-access.md §6,
@@ -409,32 +410,53 @@ func applyRows(target *Settings, rows map[string]string, want Tier) {
 	if len(rows) == 0 {
 		return
 	}
-	object := make(map[string]json.RawMessage, len(rows))
+	// Assemble the JSON object directly from the already-encoded row values,
+	// avoiding an intermediate map[string]json.RawMessage and json.Marshal pass.
+	size := 2
+	matched := 0
 	for key, value := range rows {
 		if tier, ok := TierForKey(key); !ok || tier != want {
 			continue
 		}
-		object[key] = json.RawMessage(value)
+		matched++
+		size += len(key) + len(value) + 4
 	}
-	if len(object) == 0 {
+	if matched == 0 {
 		return
 	}
-	if err := decodeObject(target, object); err == nil {
+	buf := make([]byte, 0, size)
+	buf = append(buf, '{')
+	first := true
+	for key, value := range rows {
+		if tier, ok := TierForKey(key); !ok || tier != want {
+			continue
+		}
+		if !first {
+			buf = append(buf, ',')
+		}
+		first = false
+		buf = strconv.AppendQuote(buf, key)
+		buf = append(buf, ':')
+		buf = append(buf, value...)
+	}
+	buf = append(buf, '}')
+	if err := json.Unmarshal(buf, target); err == nil {
 		return
 	}
-	for key, value := range object {
-		if err := decodeObject(target, map[string]json.RawMessage{key: value}); err != nil {
+	for key, value := range rows {
+		if tier, ok := TierForKey(key); !ok || tier != want {
+			continue
+		}
+		buf = buf[:0]
+		buf = append(buf, '{')
+		buf = strconv.AppendQuote(buf, key)
+		buf = append(buf, ':')
+		buf = append(buf, value...)
+		buf = append(buf, '}')
+		if err := json.Unmarshal(buf, target); err != nil {
 			log.Printf("settings: drop unreadable %s row %q: %v", want, key, err)
 		}
 	}
-}
-
-func decodeObject(target *Settings, object map[string]json.RawMessage) error {
-	encoded, err := json.Marshal(object)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(encoded, target)
 }
 
 // persistScope writes the changed keys of one tier into its scope. Values are
