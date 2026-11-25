@@ -8,12 +8,13 @@ import (
 // KeyedTicket is a ticket key a text names, as this computer's mirrors
 // know it: ConnectionID is the link reader of the site whose mirror holds
 // the key's project, and IssueID and Title the issue when that mirror
-// holds it, empty when it holds only other issues of the project.
+// holds it, empty when it holds only other issues of the project. A pull
+// request row carries the tickets it names in this shape (app.PRListItem).
 type KeyedTicket struct {
-	Key          string
-	ConnectionID string
-	IssueID      string
-	Title        string
+	Key          string `json:"key"`
+	ConnectionID string `json:"connectionId"`
+	IssueID      string `json:"issueId,omitempty"`
+	Title        string `json:"title,omitempty"`
 }
 
 // ticketsByKeySQL resolves each key of the bound JSON array against the

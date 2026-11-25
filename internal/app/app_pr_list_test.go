@@ -198,7 +198,7 @@ func prListSnapshotNow(app *App) PRListSnapshot {
 func storePRList(t *testing.T, app *App, projectID string, repo gitops.RepoReference, rows []gitops.PRListRow, ago time.Duration) {
 	t.Helper()
 	at := time.Now().Add(-ago)
-	encoded, err := json.Marshal(prListReadOf(projectID, "stored", repo, rows, at, ""))
+	encoded, err := json.Marshal(prListReadOf(projectID, "stored", repo, rows, nil, at, ""))
 	if err != nil {
 		t.Fatal(err)
 	}
