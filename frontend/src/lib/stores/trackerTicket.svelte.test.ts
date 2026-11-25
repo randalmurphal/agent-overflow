@@ -701,7 +701,7 @@ describe('attaching files', () => {
     await flush();
     const outcomes = ticketAttachOutcomes(ticket.key).map((o) => ({ name: o.name, kind: o.outcome.kind, said: 'message' in o.outcome ? o.outcome.message : 'error' in o.outcome ? (o.outcome.error as Error).message : o.outcome.kind === 'refused' ? o.outcome.refusal.message : '' }));
     expect(outcomes).toEqual([
-      { name: 'huge.zip', kind: 'failed', said: 'the tracker stores files up to 2.0 GB, and this one is 3.1 GB; share it another way and link to it' },
+      { name: 'huge.zip', kind: 'failed', said: 'Not sent: the tracker stores files up to 2.0 GB, and this one is 3.1 GB; share it another way and link to it' },
       { name: 'changed.pdf', kind: 'not_sent', said: 'the file is now 5 bytes, not the 1 it was when its upload was prepared; select the file again and attach it' },
       { name: 'cut.pdf', kind: 'unknown', said: 'The file may or may not be attached; look at the ticket\'s attachments before attaching it again.' },
       { name: 'later.pdf', kind: 'refused', said: 'Jira refused the file' },

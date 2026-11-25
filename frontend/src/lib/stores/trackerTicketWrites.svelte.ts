@@ -89,9 +89,9 @@ import {
   type TrackerTicketRef,
 } from './trackerTicket.svelte';
 import { linkRequest, type LinkRelation } from './trackerTicketModel';
-import { refusalSentence, sendWrite, TICKET_SUBJECT, writeOutcome, type WriteOutcome } from './trackerWriteOutcome';
+import { refusalSentence, sendWrite, TICKET_SUBJECT, type WriteOutcome } from './trackerWriteOutcome';
 import { onBackendStatusChange } from './transportStatus.svelte';
-import { TransferInterruptedError, TransferRefusedError, uploadTrackerAttachmentBytes } from '../transport/attachmentTransfer';
+import { TransferInterruptedError, TransferRefusedError, UploadNotSentError, uploadTrackerAttachmentBytes } from '../transport/attachmentTransfer';
 import type { BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
 import { composeWorkspaceKey, workspaceKeyBackend } from '../utils/workspaceKey';
@@ -276,9 +276,9 @@ function computerName(backend: string): string {
 interface WriteOptions {
   /** The comment an applied write changed (`trackerTicketSettled`). */
   readonly comment?: CommentChange;
-  /** What a failure of `send` means, in place of a call's rule, when
-   * `send` is more than one call (an upload's mint and transfer). */
-  readonly failure?: (err: unknown) => WriteOutcome;
+  /** What a failure of `send` means when `send` is more than one call (an
+   * upload's mint and transfer); null leaves it to the call's rule. */
+  readonly failure?: (err: unknown) => WriteOutcome | null;
   /** What the write sends, as the person names it (a file's name). */
   readonly subject?: string;
 }
@@ -296,10 +296,7 @@ async function write(
   const sent = drafts.get(k)?.revision;
   const subject = options.subject ?? null;
   writes.set(k, { pending: true, outcome: null, saveAnyway: null, subject });
-  const { failure } = options;
-  const outcome = failure
-    ? await withBackendTarget(t.ref.backend, () => send(acceptLoss)).then((view) => writeOutcome(view, TICKET_SUBJECT), failure)
-    : await sendWrite(t.ref.backend, computerName(t.ref.backend), TICKET_SUBJECT, () => send(acceptLoss));
+  const outcome = await sendWrite(t.ref.backend, computerName(t.ref.backend), TICKET_SUBJECT, () => send(acceptLoss), options.failure);
   const { comment } = options;
   if (outcome.kind === 'applied') await trackerTicketSettled(t.key, comment);
   // The ticket changed since it was read: read it again, so the person
@@ -309,7 +306,7 @@ async function write(
   if (outcome.kind === 'applied') drafts.delete(k);
   if (!isTrackerTicketHeld(t.key)) {
     writes.delete(k);
-    toastAfterClose(t, outcome);
+    toastAfterClose(t, outcome, subject);
     return outcome;
   }
   const plain = outcome.kind === 'applied' && outcome.note === null;
@@ -319,21 +316,23 @@ async function write(
 }
 
 /** A write that settled after its ticket closed: said in a toast unless
- * it was made. */
-function toastAfterClose(t: TicketWriteContext, outcome: WriteOutcome): void {
+ * it was made, naming what it sent (`subject`, a file) when it has one. */
+function toastAfterClose(t: TicketWriteContext, outcome: WriteOutcome, subject: string | null): void {
+  const change = subject ? `${subject} for ${t.label}` : `the change to ${t.label}`;
+  const what = subject ? `Attaching ${subject} to ${t.label}` : `The change to ${t.label}`;
   switch (outcome.kind) {
     case 'applied':
       return;
     case 'refused':
-      addToast('error', `The tracker refused the change to ${t.label}: ${refusalSentence(outcome.refusal, (id) => id)}`);
+      addToast('error', `The tracker refused ${change}: ${refusalSentence(outcome.refusal, (id) => id)}`);
       return;
     case 'unknown':
     case 'not_sent':
     case 'lost':
-      addToast('error', `The change to ${t.label}: ${outcome.message}`);
+      addToast('error', `${what}: ${outcome.message}`);
       return;
     case 'failed':
-      addErrorToast(`The change to ${t.label} was not confirmed`, outcome.error);
+      addErrorToast(`${what} was not confirmed`, outcome.error);
   }
 }
 
@@ -472,16 +471,29 @@ async function drainUploads(queue: UploadQueue): Promise<void> {
   }
 }
 
-/** What a failed upload means. A refusal the route worded before the
- * tracker judged the file attached nothing. A transfer that broke off, or
- * a failure the route did not word, may or may not have attached it. A
- * failed mint, its connection's drop included, sent no byte: a failed
- * call, whose error says why. */
-function uploadFailure(err: unknown): WriteOutcome {
+/** What a failed upload means, from where it failed (attachmentTransfer.ts)
+ * and the route's code:
+ * - Before the PUT left (the mint, the route to the computer): not sent,
+ *   a failed call whose error gives the reason and keeps the mint's code.
+ * - Answered with a code that says the write may have been made
+ *   (`UNCLEAR_UPLOAD_CODES`): unclear, in the route's sentence.
+ * - Answered with another refusal the route worded: not attached, in its
+ *   sentence.
+ * - Broken off, or a failure the route did not word: unclear.
+ * A refusal by the tracker itself is part of the write's answer
+ * (`writeOutcome`). */
+function uploadFailure(err: unknown): WriteOutcome | null {
+  if (err instanceof UploadNotSentError) return { kind: 'failed', error: err };
+  if (err instanceof TransferRefusedError && err.code !== null && UNCLEAR_UPLOAD_CODES.has(err.code)) return { kind: 'unknown', message: err.message };
   if (err instanceof TransferRefusedError && err.status < 500) return { kind: 'not_sent', message: err.message };
   if (err instanceof TransferRefusedError || err instanceof TransferInterruptedError) return { kind: 'unknown', message: UPLOAD_UNKNOWN };
-  return { kind: 'failed', error: err };
+  return null;
 }
+
+/** The route's codes for an attach that may have been made: a tracker
+ * answer the computer could not read, and the attach's budget running out
+ * (internal/app/app_tracker_writes.go `trackerWriteError`). */
+const UNCLEAR_UPLOAD_CODES: ReadonlySet<string> = new Set(['tracker_write_unclear', 'method_budget_exceeded']);
 
 const UPLOAD_UNKNOWN = 'The file may or may not be attached; look at the ticket\'s attachments before attaching it again.';
 

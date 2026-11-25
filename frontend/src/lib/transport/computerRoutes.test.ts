@@ -140,6 +140,31 @@ it('checks request credentials after selection without binding future requests t
   expect(original).toHaveBeenCalledTimes(1);
 });
 
+it('says a request that failed before it left was not sent, and one that failed after it left was', async () => {
+  const routes = await import('./computerRoutes');
+  const ctx = context();
+  const original = vi.fn<typeof fetch>().mockRejectedValue(new TypeError('connection reset'));
+  const before = [
+    routes.fetchComputerRoute({ ...ctx, beforeRequest: () => { throw new Error('Computer session changed. Reconnect to continue.'); } }, original, request),
+    routes.fetchComputerRoute({ ...ctx, current: () => false }, original, request),
+  ];
+  for (const failed of before) {
+    const err = await failed.catch((e: unknown) => e);
+    expect((err as Error).name).toBe('RequestNotSentError');
+  }
+  expect(original).not.toHaveBeenCalled();
+  // No route to select: nothing left.
+  await routes.learnComputerRoutes(ctx, [alternate]);
+  routes.failComputerRoute(ctx, primary.endpoint);
+  mocks.probe.mockRejectedValue(new Error('offline'));
+  const unrouted = await routes.fetchComputerRoute(ctx, original, request).catch((e: unknown) => e);
+  expect((unrouted as Error).name).toBe('RequestNotSentError');
+  expect((unrouted as Error).message).toBe('No verified address for this computer is reachable.');
+
+  const after = await routes.fetchComputerRoute({ ...context(), backend: 'other', backendId: 'other' }, original, request).catch((e: unknown) => e);
+  expect((after as Error).name).toBe('TypeError');
+});
+
 it('does not enable route selection in an older APK or for an unrelated request origin', async () => {
   const routes = await import('./computerRoutes');
   const ctx = context();

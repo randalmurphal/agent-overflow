@@ -1,5 +1,6 @@
 import { networkFetch } from './networkFetch';
 import { fetchPairedComputer } from './deviceSession';
+import { RequestNotSentError } from './computerRoutes';
 // Attachment bytes, over HTTP rather than over the WebSocket.
 //
 // Every attachment byte used to ride base64 inside one WS RPC frame, so a
@@ -113,12 +114,19 @@ export async function fetchAttachmentBytes(threadId: string, attachmentId: strin
  * tracker that stores no files, and a file over its ceiling, before any
  * byte crosses. The route answers the write as JSON once the tracker
  * judged it; a refusal before that throws `TransferRefusedError` with the
- * route's code and sentence. A transfer that breaks off, with the bytes
- * partly sent or the answer lost, throws `TransferInterruptedError`:
- * whether the file was attached is then unknown.
+ * route's code and sentence. A failure before the PUT left (the mint, or
+ * the route to a paired computer) throws `UploadNotSentError`: the file
+ * was not attached. A transfer that breaks off, with the bytes partly sent
+ * or the answer lost, throws `TransferInterruptedError`: whether the file
+ * was attached is then unknown.
  */
 export async function uploadTrackerAttachmentBytes(backend: BackendKey, connection: string, issue: string, file: File): Promise<WriteView> {
-  const url = await withBackendTarget(backend, () => MintTrackerAttachmentUploadTicket(connection, issue, file.name, file.size));
+  let url: string;
+  try {
+    url = await withBackendTarget(backend, () => MintTrackerAttachmentUploadTicket(connection, issue, file.name, file.size));
+  } catch (err) {
+    throw new UploadNotSentError(err);
+  }
   let response: Response;
   try {
     response = await fetchPairedComputer(backend, networkFetch, backendTransferUrl(url, backend), {
@@ -127,6 +135,7 @@ export async function uploadTrackerAttachmentBytes(backend: BackendKey, connecti
       credentials: backendCredentials(backend),
     });
   } catch (err) {
+    if (err instanceof RequestNotSentError) throw new UploadNotSentError(err);
     throw new TransferInterruptedError(`the upload of ${file.name} broke off`, err);
   }
   if (!response.ok) throw await refusal(response, null);
@@ -134,6 +143,16 @@ export async function uploadTrackerAttachmentBytes(backend: BackendKey, connecti
     return (await response.json()) as WriteView;
   } catch (err) {
     throw new TransferInterruptedError(`the answer to the upload of ${file.name} was cut short`, err);
+  }
+}
+
+/** An upload that failed before its bytes left: the mint failed or was
+ * refused (its error, with its code, is the cause), or no route to the
+ * computer could be used. Nothing was attached. */
+export class UploadNotSentError extends Error {
+  constructor(cause: unknown) {
+    super(`Not sent: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.name = 'UploadNotSentError';
   }
 }
 

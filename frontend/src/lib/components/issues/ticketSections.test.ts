@@ -18,6 +18,8 @@ import { setTicketPoints, type TicketWriteContext } from '../../stores/trackerTi
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { rememberImageTier } from '../../utils/imageTiers';
+import { DisconnectedError, TransportError } from '../../transport/wsClient';
+import { getToasts } from '../../stores/toast.svelte';
 import { BROWSER_SAVE_MAX_BYTES } from '../../utils/trackerAttachments';
 import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 
@@ -81,6 +83,82 @@ describe('the attachments section', () => {
     expect(outcome.dataset.name).toBe('notes.txt');
     expect(outcome.textContent).toContain('select the file again and attach it');
     held.release();
+  });
+
+  it('says of each file whether it was not sent, not attached, or may have been attached, from where it failed and the route\'s code', async () => {
+    let mints = 0;
+    setBindingMock('MintTrackerAttachmentUploadTicket', async () => {
+      mints += 1;
+      if (mints === 3) throw new DisconnectedError('transport disconnected');
+      return '/attachments/tracker/upload?ticket=t';
+    });
+    const answers: Array<(r: Response) => void> = [];
+    globalThis.fetch = (() => new Promise<Response>((resolve) => answers.push(resolve))) as typeof globalThis.fetch;
+    setBindingMock('SubscribeTrackerTicket', async () => ({ id: 'sub-1', seq: 1, loaded: true, read_at: 1 }));
+    setBindingMock('SetTrackerSubscriptionVisible', async () => {});
+    setBindingMock('ReleaseTrackerSubscription', async () => {});
+    const held = attachTrackerTicket(REF, true);
+    const ctx = { ...CTX, key: held.key };
+    const { getByTestId, queryByTestId, container } = render(TicketAttachments, {
+      props: { ctx, ticket: { ...TICKET, key: held.key }, attachments: [], canAttach: true, open: true, onFold: () => {} },
+    });
+    const input = getByTestId('ticket-attach-input') as HTMLInputElement;
+    Object.defineProperty(input, 'files', { configurable: true, value: [new File(['a'], 'unclear.txt'), new File(['b'], 'changed.txt'), new File(['c'], 'unsent.txt')] });
+    await fireEvent.change(input);
+    await flush();
+    const unclear = 'the tracker\'s answer to this change could not be read, so it may or may not have been made; look at the ticket\'s attachments before you try again';
+    answers.shift()!(new Response(JSON.stringify({ code: 'tracker_write_unclear', message: unclear }), { status: 400 }));
+    await flush();
+    answers.shift()!(new Response(JSON.stringify({ code: 'tracker_upload_size_changed', message: 'select the file again and attach it' }), { status: 400 }));
+    await waitFor(() => expect(queryByTestId('ticket-uploading')).toBeNull());
+    const note = (name: string) => container.querySelector<HTMLElement>(`[data-testid="ticket-attach-outcome"][data-name="${name}"] [data-testid="ticket-write-outcome"]`)!;
+    expect(note('unclear.txt').dataset.kind).toBe('unknown');
+    expect(note('unclear.txt').textContent).toContain(unclear);
+    expect(note('changed.txt').dataset.kind).toBe('not_sent');
+    expect(note('changed.txt').textContent).toContain('select the file again and attach it');
+    expect(note('unsent.txt').textContent).toMatch(/^\s*Not sent: /);
+    expect(note('unsent.txt').textContent).not.toContain('may or may not');
+    held.release();
+  });
+
+  it('offers the tracker for a file the tracker cannot take here', async () => {
+    setBindingMock('MintTrackerAttachmentUploadTicket', async () => {
+      throw new TransportError('tracker_attachment_too_large', 'the tracker stores files up to 2.0 GB, and this one is 3.1 GB; share it another way and link to it');
+    });
+    setBindingMock('SubscribeTrackerTicket', async () => ({ id: 'sub-1', seq: 1, loaded: true, read_at: 1 }));
+    setBindingMock('SetTrackerSubscriptionVisible', async () => {});
+    setBindingMock('ReleaseTrackerSubscription', async () => {});
+    const held = attachTrackerTicket(REF, true);
+    const { getByTestId, findByTestId } = render(TicketAttachments, {
+      props: { ctx: { ...CTX, key: held.key }, ticket: { ...TICKET, key: held.key }, attachments: [], canAttach: true, open: true, onFold: () => {} },
+    });
+    const input = getByTestId('ticket-attach-input') as HTMLInputElement;
+    Object.defineProperty(input, 'files', { configurable: true, value: [new File(['a'], 'huge.zip')] });
+    await fireEvent.change(input);
+    expect(await findByTestId('ticket-attach-open-tracker')).toHaveTextContent('Open in the tracker');
+    held.release();
+  });
+
+  it('names the file in the toast of an upload that settles after its ticket closed', async () => {
+    setBindingMock('MintTrackerAttachmentUploadTicket', async () => '/attachments/tracker/upload?ticket=t');
+    const answers: Array<(r: Response) => void> = [];
+    globalThis.fetch = (() => new Promise<Response>((resolve) => answers.push(resolve))) as typeof globalThis.fetch;
+    setBindingMock('SubscribeTrackerTicket', async () => ({ id: 'sub-1', seq: 1, loaded: true, read_at: 1 }));
+    setBindingMock('SetTrackerSubscriptionVisible', async () => {});
+    setBindingMock('ReleaseTrackerSubscription', async () => {});
+    const held = attachTrackerTicket(REF, true);
+    const ctx = { ...CTX, key: held.key };
+    const { getByTestId, unmount } = render(TicketAttachments, {
+      props: { ctx, ticket: { ...TICKET, key: held.key }, attachments: [], canAttach: true, open: true, onFold: () => {} },
+    });
+    const input = getByTestId('ticket-attach-input') as HTMLInputElement;
+    Object.defineProperty(input, 'files', { configurable: true, value: [new File(['a'], 'report.pdf')] });
+    await fireEvent.change(input);
+    await flush();
+    unmount();
+    held.release();
+    answers.shift()!(new Response(JSON.stringify({ code: 'tracker_upload_size_changed', message: 'select the file again and attach it' }), { status: 400 }));
+    await waitFor(() => expect(getToasts().map((t) => t.message)).toContainEqual(expect.stringContaining('report.pdf')));
   });
 
   it('saves the attachment its row menu was opened on', async () => {

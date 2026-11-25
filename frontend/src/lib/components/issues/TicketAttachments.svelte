@@ -28,6 +28,7 @@
     ticketUploads,
     type TicketWriteContext,
   } from '../../stores/trackerTicketWrites.svelte';
+  import { UploadNotSentError } from '../../transport/attachmentTransfer';
   import { TransportError } from '../../transport/wsClient';
   import { copyToClipboard } from '../../utils/clipboard';
   import { errString } from '../../utils/errors';
@@ -79,7 +80,8 @@
   // cannot take it here, and the tracker's own page may.
   const FILE_REFUSALS: ReadonlySet<string> = new Set(['tracker_attachment_too_large', 'tracker_attachments_unsupported']);
   function refusedByTracker(error: unknown): boolean {
-    return error instanceof TransportError && FILE_REFUSALS.has(error.code);
+    const mint = error instanceof UploadNotSentError ? error.cause : null;
+    return mint instanceof TransportError && FILE_REFUSALS.has(mint.code);
   }
 
   async function openImage(a: AttachmentView): Promise<void> {

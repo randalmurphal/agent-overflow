@@ -159,27 +159,56 @@ function waitForRoute(state: State, signal?: AbortSignal | null): Promise<Comput
   });
 }
 
-/** Called only for a paired computer, never for invitation redemption or an
- * external URL. A failed request is surfaced once; the next one selects. */
-export async function fetchComputerRoute(context: ComputerRouteContext, fetcher: typeof fetch, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  if (!context.primary.endpoint.startsWith('https://') || !await canVerifyComputerRoutes()) {
-    context.beforeRequest?.();
-    return fetcher(input, init);
+/** A request that failed before it left this page: no route was chosen, or
+ * the pairing or session it was made under changed. Nothing reached the
+ * computer, so the caller knows its effect did not happen. */
+export class RequestNotSentError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = 'RequestNotSentError';
   }
-  const url = new URL(input instanceof Request ? input.url : String(input), globalThis.location?.href);
-  if (url.origin !== context.primary.endpoint || url.username || url.password) throw new Error('Request does not belong to this computer.');
-  const state = stateFor(context);
+}
+
+/** Runs the steps before a request leaves; a failure there, but an abort,
+ * is `RequestNotSentError`. */
+async function beforeSending<T>(signal: AbortSignal | null | undefined, steps: () => T | Promise<T>): Promise<T> {
+  try {
+    return await steps();
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    throw new RequestNotSentError(err);
+  }
+}
+
+/** Called only for a paired computer, never for invitation redemption or an
+ * external URL. A failed request is surfaced once; the next one selects.
+ * A failure before the request leaves is `RequestNotSentError`. */
+export async function fetchComputerRoute(context: ComputerRouteContext, fetcher: typeof fetch, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
-  const selected = await waitForRoute(state, signal);
-  assertCurrent(state);
-  if (!context.current()) throw new Error('Computer pairing changed. Reconnect to continue.');
-  signal?.throwIfAborted();
-  context.beforeRequest?.();
-  // URL.host does not clear an existing explicit port when the new host
-  // uses its default. Replace the port too (LAN :60522 → HTTPS/WSS :443).
-  const target = new URL(selected.endpoint);
-  url.protocol = target.protocol; url.host = target.host; url.port = target.port;
-  const redirected = input instanceof Request ? new Request(url, input) : url.href;
+  const verified = await beforeSending(signal, async () => {
+    if (!context.primary.endpoint.startsWith('https://') || !await canVerifyComputerRoutes()) {
+      context.beforeRequest?.();
+      return false;
+    }
+    return true;
+  });
+  if (!verified) return fetcher(input, init);
+  const { state, selected, redirected, url } = await beforeSending(signal, async () => {
+    const url = new URL(input instanceof Request ? input.url : String(input), globalThis.location?.href);
+    if (url.origin !== context.primary.endpoint || url.username || url.password) throw new Error('Request does not belong to this computer.');
+    const state = stateFor(context);
+    const selected = await waitForRoute(state, signal);
+    assertCurrent(state);
+    if (!context.current()) throw new Error('Computer pairing changed. Reconnect to continue.');
+    signal?.throwIfAborted();
+    context.beforeRequest?.();
+    // URL.host does not clear an existing explicit port when the new host
+    // uses its default. Replace the port too (LAN :60522 → HTTPS/WSS :443).
+    const target = new URL(selected.endpoint);
+    url.protocol = target.protocol; url.host = target.host; url.port = target.port;
+    const redirected = input instanceof Request ? new Request(url, input) : url.href;
+    return { state, selected, redirected, url };
+  });
   try {
     const response = sameRoute(selected, context.primary) ? await fetcher(redirected, init)
       : selected.certFingerprint ? await pinnedFetch(redirected, init, selected.certFingerprint)
