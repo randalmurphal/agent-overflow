@@ -22,7 +22,14 @@ import { fetchPairedComputer } from './deviceSession';
 // (./homeEndpoint.ts), and the ticket in the query is the admission
 // either way.
 
-import { MintAttachmentDownloadTicket, MintAttachmentUploadTicket, MintDictationChunkTicket } from '../stores/bindings';
+import {
+  MintAttachmentDownloadTicket,
+  MintAttachmentUploadTicket,
+  MintDictationChunkTicket,
+  MintTrackerAttachmentDownloadTicket,
+  MintTrackerAttachmentUploadTicket,
+} from '../stores/bindings';
+import type { WriteView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import { backendCredentials, backendTransferUrl } from './homeEndpoint';
 import { requireEntityBackend, withBackendTarget } from './backends';
 import { resolveThreadBackend } from './entityIndex';
@@ -64,7 +71,7 @@ export async function uploadAttachmentBytes(threadId: string, file: File): Promi
     credentials: backendCredentials(backend),
   });
   if (!response.ok) {
-    throw new Error(await transferFailure(response, 'Upload failed'));
+    throw new Error((await transferFailure(response, 'Upload failed')).message);
   }
   return (await response.json()) as Attachment;
 }
@@ -83,7 +90,7 @@ export async function uploadDictationPiece(backend: BackendKey, recordingId: str
     credentials: backendCredentials(backend),
   });
   if (!response.ok) {
-    throw new Error(await transferFailure(response, 'Recording upload failed'));
+    throw new Error((await transferFailure(response, 'Recording upload failed')).message);
   }
 }
 
@@ -100,15 +107,50 @@ export async function fetchAttachmentBytes(threadId: string, attachmentId: strin
   return fetchTicketedBytes(backend, url, 'Could not load image', signal);
 }
 
+/**
+ * Attaches one file to a tracker issue through the computer that holds
+ * its connection, and answers the write's outcome. The mint refuses a
+ * tracker that stores no files, and a file over its ceiling, before any
+ * byte crosses. The route answers the write as JSON once the tracker
+ * judged it; a refusal before that throws `TransferRefusedError` with the
+ * route's code and sentence. A fetch that fails, with the bytes partly
+ * sent or the answer lost, throws as fetch does: whether the file was
+ * attached is then unknown.
+ */
+export async function uploadTrackerAttachmentBytes(backend: BackendKey, connection: string, issue: string, file: File): Promise<WriteView> {
+  const url = await withBackendTarget(backend, () => MintTrackerAttachmentUploadTicket(connection, issue, file.name, file.size));
+  const response = await fetchPairedComputer(backend, networkFetch, backendTransferUrl(url, backend), {
+    method: 'PUT',
+    body: file,
+    credentials: backendCredentials(backend),
+  });
+  if (!response.ok) throw await refusal(response, null);
+  return (await response.json()) as WriteView;
+}
+
+/**
+ * One attachment of a subscribed ticket as a Blob, through the computer
+ * that answered the subscribe. The route sends the tracker's bytes as an
+ * untyped save; the caller knows the attachment's type.
+ */
+export async function fetchTrackerAttachmentBytes(backend: BackendKey, subscriptionId: string, attachmentId: string, signal?: AbortSignal): Promise<Blob> {
+  const url = await withBackendTarget(backend, () => MintTrackerAttachmentDownloadTicket(subscriptionId, attachmentId));
+  return fetchTicketedBytes(backend, url, 'Could not load the attachment', signal);
+}
+
 /** A ticketed route refused the transfer with `status`; the message is
  * what the user sees. */
 export class TransferRefusedError extends Error {
   readonly status: number;
+  /** The refusal's code, from a route that answers `{code, message}`
+   * (the tracker routes); null from one that answers a line. */
+  readonly code: string | null;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code: string | null = null) {
     super(message);
     this.name = 'TransferRefusedError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -136,24 +178,31 @@ export class TransferUnavailableError extends TransferRefusedError {
  */
 export async function fetchTicketedBytes(backend: BackendKey, url: string, prefix: string | null, signal?: AbortSignal): Promise<Blob> {
   const response = await fetchPairedComputer(backend, networkFetch, backendTransferUrl(url, backend), { credentials: backendCredentials(backend), signal });
-  if (!response.ok) {
-    const message = await transferFailure(response, prefix);
-    throw response.status === 404 ? new TransferUnavailableError(message) : new TransferRefusedError(message, response.status);
-  }
+  if (!response.ok) throw await refusal(response, prefix);
   return await response.blob();
 }
 
+/** A refused transfer as the error it throws: a 404 as
+ * `TransferUnavailableError`, any other status as `TransferRefusedError`. */
+async function refusal(response: Response, prefix: string | null): Promise<TransferRefusedError> {
+  const { message, code } = await transferFailure(response, prefix);
+  return response.status === 404 ? new TransferUnavailableError(message) : new TransferRefusedError(message, response.status, code);
+}
+
 /**
- * Turns a refused transfer into one sentence worth showing a person.
+ * Turns a refused transfer into one sentence worth showing a person, with
+ * the refusal's code when the route answered one.
  *
- * The routes answer a status and a short line, never a stack or a path. A
- * spent, missing or mismatched ticket is the plain 404 every ticketed route
- * answers, which says nothing worth quoting. A caller with no prefix wants
- * the route's own reason, so its 404 with a reason (a read-aloud sentence
- * that expired) is quoted. The body is read anyway so the connection can be
- * reused rather than abandoned mid-response.
+ * The routes answer a status and a short line, never a stack or a path;
+ * the tracker routes answer `{code, message}`, whose message is the app's
+ * own sentence and is quoted whole. A spent, missing or mismatched ticket
+ * is the plain 404 every ticketed route answers, which says nothing worth
+ * quoting. A caller with no prefix wants the route's own reason, so its
+ * 404 with a reason (a read-aloud sentence that expired) is quoted. The
+ * body is read anyway so the connection can be reused rather than
+ * abandoned mid-response.
  */
-async function transferFailure(response: Response, prefix: string | null): Promise<string> {
+async function transferFailure(response: Response, prefix: string | null): Promise<{ message: string; code: string | null }> {
   let detail = '';
   try {
     detail = (await response.text()).trim();
@@ -161,17 +210,35 @@ async function transferFailure(response: Response, prefix: string | null): Promi
     // A body we could not read tells us nothing the status did not.
   }
   const say = (reason: string): string => (prefix ? `${prefix}: ${reason}` : reason);
+  const answered = answeredRefusal(detail);
+  if (answered) return { message: say(answered.message), code: answered.code };
   if (response.status === 413) {
-    return say('the file is larger than this backend accepts.');
+    return { message: say('the file is larger than this backend accepts.'), code: null };
   }
   const quotable = detail !== '' && detail.length <= 200;
   if (response.status === 404 && (prefix !== null || !quotable || detail === PLAIN_NOT_FOUND)) {
-    return say('this transfer is no longer available. Try again.');
+    return { message: say('this transfer is no longer available. Try again.'), code: null };
   }
   if (quotable) {
-    return say(detail);
+    return { message: say(detail), code: null };
   }
-  return prefix ? `${prefix} (${response.status}).` : `the computer answered ${response.status}.`;
+  return { message: prefix ? `${prefix} (${response.status}).` : `the computer answered ${response.status}.`, code: null };
+}
+
+/** A `{code, message}` refusal body (transport/trackerroutes.go), or null
+ * for any other body. */
+function answeredRefusal(detail: string): { code: string; message: string } | null {
+  if (!detail.startsWith('{')) return null;
+  let body: unknown;
+  try {
+    body = JSON.parse(detail);
+  } catch {
+    return null;
+  }
+  if (!body || typeof body !== 'object') return null;
+  const { code, message } = body as { code?: unknown; message?: unknown };
+  if (typeof message !== 'string' || message === '') return null;
+  return { code: typeof code === 'string' ? code : '', message };
 }
 
 /** The body of Go's `http.NotFound`. */

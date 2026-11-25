@@ -10,17 +10,21 @@ import { tick } from 'svelte';
 import type {
   CommentPageView,
   DetailView,
+  PokerView,
   TicketSubscription,
   TicketView,
   WriteView,
 } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import { trackerIssueUpdated, trackerTicketsGap, type TrackerIssueEvent } from './trackerBoardEvents';
 import {
+  askTrackerPokerSupport,
   attachTrackerTicket,
   loadEarlierTrackerComments,
   refreshTrackerTicket,
+  trackerPokerSupport,
   type TrackerTicketRef,
 } from './trackerTicket.svelte';
+import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 import {
   addTicketComment,
   editTicketComment,
@@ -258,6 +262,124 @@ describe('the ticket subscription', () => {
     expect(off.current?.ended).toBe(true);
     expect(off.current?.earlier.pages).toEqual([]);
     off.release();
+  });
+});
+
+describe('planning poker', () => {
+  const diagnostics = installDiagnosticsCapture();
+  const votes = (value: number | null, readAt: number): PokerView => ({
+    loaded: true, revealed: value !== null, votes: [{ voter: { id: 'acc-user1', name: 'User 1' }, value, mine: true }], read_at: readAt,
+  } as PokerView);
+
+  it('follows only while one surface both shows the ticket and has its poker on screen', async () => {
+    install();
+    const follows = setBindingMock('FollowTrackerPoker', async () => votes(null, 1));
+    const over = attachTrackerTicket(REF, true);
+    const beside = attachTrackerTicket(REF, false);
+    await flush();
+    // Shown without poker, and poker on a surface that is hidden: the
+    // shared handle shows the ticket, and nobody looks at its votes.
+    beside.setPokerShown(true);
+    await flush();
+    expect(follows).not.toHaveBeenCalled();
+    expect(over.current?.poker).toBeNull();
+
+    beside.setShown(true);
+    await flush();
+    expect(follows.mock.calls).toEqual([['sub-1', true]]);
+    expect(beside.current?.poker).toEqual({ view: votes(null, 1), error: null });
+
+    beside.setShown(false);
+    await flush();
+    expect(follows.mock.calls.at(-1)).toEqual(['sub-1', false]);
+    expect(over.current?.poker).toBeNull();
+    over.release();
+    beside.release();
+  });
+
+  it('stops following while the window is hidden, and follows again on its return', async () => {
+    install();
+    const follows = setBindingMock('FollowTrackerPoker', async () => votes(null, 1));
+    const ticket = attachTrackerTicket(REF, true);
+    ticket.setPokerShown(true);
+    await flush();
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await flush();
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await flush();
+    expect(follows.mock.calls).toEqual([['sub-1', true], ['sub-1', false], ['sub-1', true]]);
+    ticket.release();
+  });
+
+  it('reads the votes once per change told, and keeps a newer answer over an older one', async () => {
+    install();
+    const follows = held<PokerView>('FollowTrackerPoker');
+    const reads = held<PokerView>('TrackerPoker');
+    const ticket = attachTrackerTicket(REF, true);
+    ticket.setPokerShown(true);
+    await flush();
+    // A change told before the follow answered: its read answers first.
+    trackerIssueUpdated(event(11, { poker: true }), HOME_BACKEND);
+    trackerIssueUpdated(event(12, { poker: true }), HOME_BACKEND);
+    await flush();
+    expect(reads.calls).toEqual([['sub-1']]);
+    reads.answer(votes(5, 20));
+    await flush();
+    expect(ticket.current?.poker?.view?.read_at).toBe(20);
+    follows.answer(votes(null, 10));
+    await flush();
+    expect(ticket.current?.poker?.view?.read_at).toBe(20);
+    // The second change was told while the first read was out: one more.
+    expect(reads.calls.length).toBe(2);
+    reads.fail(new Error('the add-on did not answer'));
+    await flush();
+    expect(ticket.current?.poker).toEqual({ view: votes(5, 20), error: new Error('the add-on did not answer') });
+    // A change of the ticket alone reads no votes.
+    trackerIssueUpdated(event(13, { changed: true }), HOME_BACKEND);
+    await flush();
+    expect(reads.calls.length).toBe(2);
+    ticket.release();
+  });
+
+  it('follows again on a new subscription, and reads the votes again on a gap', async () => {
+    const mocks = install();
+    const follows = setBindingMock('FollowTrackerPoker', async () => votes(null, 1));
+    const reads = setBindingMock('TrackerPoker', async () => votes(3, 2));
+    const ticket = attachTrackerTicket(REF, true);
+    ticket.setPokerShown(true);
+    await flush();
+    await trackerTicketsGap(HOME_BACKEND);
+    expect(reads).toHaveBeenCalledWith('sub-1');
+    expect(ticket.current?.poker?.view?.read_at).toBe(2);
+    __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
+    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+    await flush();
+    expect(mocks.subscribe).toHaveBeenCalledTimes(2);
+    expect(follows.mock.calls).toEqual([['sub-1', true], ['sub-2', true]]);
+    ticket.release();
+  });
+
+  it('asks once per connection whether its site has poker, says a failure as none, and asks again after a reconnect', async () => {
+    const support = setBindingMock('TrackerPokerSupport', async () => ({ available: false, failure: { kind: 'transient', message: 'Jira did not answer', at: 1 } }));
+    expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toBe('asking');
+    askTrackerPokerSupport(HOME_BACKEND, 'c1');
+    askTrackerPokerSupport(HOME_BACKEND, 'c1');
+    await flush();
+    expect(support).toHaveBeenCalledTimes(1);
+    expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toEqual({ available: false });
+    expect(await diagnostics.all()).toEqual([expect.objectContaining({
+      message: 'Tracker ticket: whether the site has planning poker could not be read', detail: 'Jira did not answer',
+    })]);
+
+    support.mockResolvedValue({ available: true });
+    __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
+    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+    expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toBe('asking');
+    askTrackerPokerSupport(HOME_BACKEND, 'c1');
+    await flush();
+    expect(trackerPokerSupport(HOME_BACKEND, 'c1')).toEqual({ available: true });
   });
 });
 
