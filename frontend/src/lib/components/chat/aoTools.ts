@@ -688,14 +688,14 @@ const WORKFLOW_TOOLS: Record<string, AoToolSpec> = {
   memory_list: { label: 'notes', what: (input, names) => str(input, 'kind') || runRef(input, names) || 'campaign notes' },
 };
 
-// A read with no key reads the thread's linked ticket; one that pages
-// older comments names no ticket of its own.
+// A read with no key reads the thread's linked ticket; one that continues
+// an earlier answer names no ticket of its own.
 const TRACKER_TOOLS: Record<string, AoToolSpec> = {
   ticket_find: { label: 'find', what: (input) => quoted(str(input, 'text')) },
   ticket_read: {
     label: 'read',
     what: (input) => {
-      if (str(input, 'more_comments')) return 'older comments';
+      if (str(input, 'more')) return 'more of a ticket';
       const key = str(input, 'key') || 'linked ticket';
       return input.history === true ? `${key} with history` : key;
     },
@@ -888,7 +888,7 @@ const HIDDEN_FACTS = new Set([
   'computer_id', 'computer_name', 'request_id', 'project_id', 'page_id',
   'command', 'argv', 'interpreter', 'script',
   'thread_id', 'thread_ids', 'run_id', 'token', 'tokens', 'cursor',
-  'home_files', 'next', 'more_comments',
+  'home_files', 'next', 'more',
 ]);
 
 // Inputs a tool's header or decoded reply already says in its own words

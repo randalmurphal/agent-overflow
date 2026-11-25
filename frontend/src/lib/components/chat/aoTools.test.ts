@@ -282,7 +282,7 @@ describe('AO tool presentation', () => {
       ['ticket_read', {}, 'read', 'linked ticket'],
       ['ticket_read', { key: 'WEB-12' }, 'read', 'WEB-12'],
       ['ticket_read', { key: 'WEB-12', history: true }, 'read', 'WEB-12 with history'],
-      ['ticket_read', { more_comments: 'eyJjIjoiYSJ9' }, 'read', 'older comments'],
+      ['ticket_read', { more: 'eyJjIjoiYSJ9' }, 'read', 'more of a ticket'],
     ])('%s %j', (tool, input, label, what) => {
       const p = aoToolPresentation(meta(TRACKER_TOOLS_SERVER, tool, input))!;
       expect(p).toMatchObject({ icon: 'file', label, what, headerLabel: `Ticket ${label}` });
@@ -291,7 +291,7 @@ describe('AO tool presentation', () => {
     it('keeps the continuations a person does not read out of the body', () => {
       expect(aoToolFacts(meta(TRACKER_TOOLS_SERVER, 'ticket_find', { text: 'login', next: 'eyJjIjoiYSJ9' }))).toEqual([]);
       expect(aoToolFacts(meta(TRACKER_TOOLS_SERVER, 'ticket_read', { key: 'WEB-1', history: true }))).toEqual([]);
-      expect(aoToolFacts(meta(TRACKER_TOOLS_SERVER, 'ticket_read', { more_comments: 'eyJjIjoiYSJ9' }))).toEqual([]);
+      expect(aoToolFacts(meta(TRACKER_TOOLS_SERVER, 'ticket_read', { more: 'eyJjIjoiYSJ9' }))).toEqual([]);
     });
   });
 

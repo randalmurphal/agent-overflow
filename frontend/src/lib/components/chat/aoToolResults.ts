@@ -1139,8 +1139,9 @@ function ticketCommentLines(comments: Input[]): AoResultLine[] {
 
 /**
  * Reads a tracker tools reply (`internal/trackertools`): a page of tickets
- * found, a ticket read, or a read's older comments. Its continuation
- * (`next`, `more_comments`) is for the model and shows only as "more".
+ * found, a ticket read, or the part of one an earlier read left out. A
+ * continuation (`next`, a value of `more`) is for the model; a read shows
+ * what it left out by the sentences `more` names it with.
  */
 export function trackerResultView(data: string): AoResultView | null {
   const reply = obj(parseFirstJson(data));
@@ -1158,13 +1159,12 @@ export function trackerResultView(data: string): AoResultView | null {
   }
   const comments = list(reply.comments);
   const key = str(reply, 'key');
-  if (!key) {
-    view.lines = ticketCommentLines(comments);
-    view.outcome = join(plural(comments.length, 'older comment'), str(reply, 'more_comments') ? 'more' : '');
-    return view;
-  }
-  view.outcome = join(`${key} ${str(reply, 'title')}`.trim(), str(reply, 'status'));
+  const title = str(reply, 'title');
+  const leftOut = Object.keys(obj(reply.more) ?? {});
+  view.outcome = title ? join(`${key} ${title}`, str(reply, 'status')) : `${key} continued`;
+  view.note = leftOut.length ? `Left out: ${leftOut.join('; ')}` : '';
   fact(view.facts, 'assignee', str(reply, 'assignee'));
+  fact(view.facts, 'estimate', str(reply, 'estimate'));
   fact(view.facts, 'type', str(reply, 'type'));
   fact(view.facts, 'priority', str(reply, 'priority'));
   const history = list(reply.history);

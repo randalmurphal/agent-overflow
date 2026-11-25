@@ -517,27 +517,30 @@ describe('tracker tool results', () => {
 
   it('reads a ticket as its key and status, its description to fold, and its comments', () => {
     const view = trackerResultView(json({
-      key: 'WEB-12', title: 'Login fails on Safari', status: 'In Progress', type: 'Bug', assignee: 'User 1',
+      key: 'WEB-12', title: 'Login fails on Safari', status: 'In Progress', type: 'Bug', assignee: 'User 1', estimate: '3 points',
       description: 'Steps:\n1. Open the page.',
       comments: [{ by: 'User 2', at: '2025-11-24T16:05Z', body: 'Repro on 18.1 too.', internal: true }],
       history: [{ at: '2025-11-24T16:05Z', field: 'status', to: 'In Progress' }],
-      more_comments: 'eyJjIjoiYSJ9',
+      more: { '12 older comments': 'eyJjIjoiYSJ9', 'the rest of the description (40 KB)': 'eyJjIjoiYiJ9' },
     }))!;
     expect(view.outcome).toBe('WEB-12 Login fails on Safari · In Progress');
     expect(view.facts).toEqual([
       { label: 'assignee', value: 'User 1' },
+      { label: 'estimate', value: '3 points' },
       { label: 'type', value: 'Bug' },
       { label: 'history', value: '1 change' },
     ]);
+    expect(view.note).toBe('Left out: 12 older comments; the rest of the description (40 KB)');
     expect(view.preview).toEqual({ label: 'description', text: 'Steps:\n1. Open the page.' });
     expect(view.lines).toHaveLength(1);
     expect(view.lines[0]).toMatchObject({ title: 'User 2', text: 'Repro on 18.1 too.' });
     expect(view.lines[0]!.detail).toMatch(/ · internal$/);
   });
 
-  it('reads older comments alone', () => {
-    const view = trackerResultView(json({ comments: [{ by: 'User 1', at: '2025-11-20T10:00Z', body: 'First.' }] }))!;
-    expect(view.outcome).toBe('1 older comment');
+  it('reads the part of a ticket an earlier read left out as that ticket continued', () => {
+    const view = trackerResultView(json({ key: 'WEB-12', comments: [{ by: 'User 1', at: '2025-11-20T10:00Z', body: 'First.' }] }))!;
+    expect(view.outcome).toBe('WEB-12 continued');
+    expect(view.note).toBe('');
     expect(view.lines.map((l) => l.title)).toEqual(['User 1']);
   });
 });

@@ -274,11 +274,14 @@ type IssueRef struct {
 type IssueDetail struct {
 	DescribedIssue
 	// ProjectName is the name of the issue's project; empty for none.
-	ProjectName     string
-	Parent          *IssueRef
-	Children        []IssueRef
-	MoreChildren    bool
-	Comments        Page[Comment]
+	ProjectName  string
+	Parent       *IssueRef
+	Children     []IssueRef
+	MoreChildren bool
+	// Assignee is the issue's assignee whole, nil for none or one Linear
+	// answered null for.
+	Assignee        *User
+	Comments        Page[NamedComment]
 	Attachments     []Attachment
 	MoreAttachments bool
 	// Relations holds every relation of the issue in both directions,
@@ -292,6 +295,23 @@ type IssueDetail struct {
 	// than the page holds.
 	States     []WorkflowState
 	MoreStates bool
+}
+
+// NamedComment is a comment with its author, as Issue, IssueDetails and
+// IssueComments read it in the same request. User is nil for a comment
+// with no author or one Linear answered null for; UserID is complete
+// either way.
+type NamedComment struct {
+	Comment
+	User *User
+}
+
+// SearchHit is an issue as SearchIssues finds it, with its state and
+// assignee, nil when it has none or Linear answered null.
+type SearchHit struct {
+	Issue
+	State    *WorkflowState
+	Assignee *User
 }
 
 // Comment is a comment on an issue. ParentID names the comment it
@@ -382,6 +402,9 @@ type HistoryEntry struct {
 // IDs are complete either way.
 type NamedEntry struct {
 	HistoryEntry
+	// Actor is who made the change, nil for none or a user Linear
+	// answered null for.
+	Actor                      *User
 	FromAssignee, ToAssignee   *UserRef
 	FromCycle, ToCycle         *CycleRef
 	FromProject, ToProject     *ProjectRef

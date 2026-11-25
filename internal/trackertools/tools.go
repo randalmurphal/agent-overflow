@@ -1,5 +1,10 @@
 package trackertools
 
+import (
+	"context"
+	"encoding/json"
+)
+
 // Instructions is the guide the model reads once per session. Claude reads
 // it from the server's instructions; Codex never shows the model that
 // string, so a Codex session receives it in its developer instructions.
@@ -10,20 +15,40 @@ const Instructions = "Omit a ticket key to use the ticket this thread is linked 
 // pageSize is the most tickets one ticket_find answer holds.
 const pageSize = 20
 
-// commentsShown is the most comments one ticket_read answer holds.
-const commentsShown = 10
-
-// historyShown is the most changes one ticket_read answer with history
-// holds, the newest.
-const historyShown = 50
+// toolSpec is one tool: its name, what tools/list says of it, and the
+// handler Call runs, so a tool cannot be listed without one.
+type toolSpec struct {
+	name        string
+	description string
+	properties  map[string]any
+	required    []string
+	call        func(s *Server, ctx context.Context, threadID string, args json.RawMessage) (any, error)
+}
 
 // toolTable is every tool, in the order tools/list returns them.
-var toolTable = []struct {
-	name   string
-	schema func() map[string]any
-}{
-	{"ticket_find", findSchema},
-	{"ticket_read", readSchema},
+var toolTable = []toolSpec{
+	{
+		name:        "ticket_find",
+		description: "Search tickets by text, 20 at a time.",
+		properties: map[string]any{
+			"text": property("string", ""),
+			"next": property("string", "From the previous answer, for the next 20."),
+		},
+		required: []string{"text"},
+		call: func(s *Server, ctx context.Context, _ string, args json.RawMessage) (any, error) {
+			return s.find(ctx, args)
+		},
+	},
+	{
+		name:        "ticket_read",
+		description: "Read a ticket: fields, description, latest comments and links.",
+		properties: map[string]any{
+			"key":     property("string", ""),
+			"history": property("boolean", "Add its change history."),
+			"more":    property("string", "One value from an earlier answer's more, for that part alone."),
+		},
+		call: (*Server).read,
+	},
 }
 
 // ToolNames is every tool, in table order.
@@ -35,29 +60,26 @@ func ToolNames() []string {
 	return names
 }
 
-// Tools returns every tool's schema, in table order.
+// Tools returns every tool's definition, in table order.
 func (s *Server) Tools() []map[string]any {
 	tools := make([]map[string]any, len(toolTable))
 	for i, spec := range toolTable {
-		tools[i] = spec.schema()
+		required := spec.required
+		if required == nil {
+			required = []string{}
+		}
+		tools[i] = map[string]any{
+			"name":        spec.name,
+			"description": spec.description,
+			"inputSchema": map[string]any{
+				"type":                 "object",
+				"properties":           spec.properties,
+				"required":             required,
+				"additionalProperties": false,
+			},
+		}
 	}
 	return tools
-}
-
-func tool(name, description string, properties map[string]any, required ...string) map[string]any {
-	if required == nil {
-		required = []string{}
-	}
-	return map[string]any{
-		"name":        name,
-		"description": description,
-		"inputSchema": map[string]any{
-			"type":                 "object",
-			"properties":           properties,
-			"required":             required,
-			"additionalProperties": false,
-		},
-	}
 }
 
 func property(kind, description string) map[string]any {
@@ -66,19 +88,4 @@ func property(kind, description string) map[string]any {
 		p["description"] = description
 	}
 	return p
-}
-
-func findSchema() map[string]any {
-	return tool("ticket_find", "Search tickets by text, 20 at a time.", map[string]any{
-		"text": property("string", ""),
-		"next": property("string", "From the previous answer, for the next 20."),
-	}, "text")
-}
-
-func readSchema() map[string]any {
-	return tool("ticket_read", "Read a ticket: fields, description, latest comments and links.", map[string]any{
-		"key":           property("string", ""),
-		"history":       property("boolean", "Add its change history."),
-		"more_comments": property("string", "From an earlier read: answers those older comments alone."),
-	})
 }

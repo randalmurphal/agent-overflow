@@ -117,7 +117,7 @@ func TestThreadMCPRegistersForInteractiveSessionsAndNotPhases(t *testing.T) {
 		t.Fatalf("claude-tui got thread tools: %#v, %v", servers, err)
 	}
 	t.Cleanup(func() { _ = app.workflowMCPServer().Close() })
-	servers, err = app.workflowMCPConfigForThread(terminal, terminalToken)
+	servers, err = app.workflowMCPConfigForThread(terminal, terminalToken, app.sessionScopeOf(terminal))
 	if err != nil || len(servers) != 1 || servers[workflowMCPName] == nil {
 		t.Fatalf("claude-tui servers = %#v, %v, want exactly %s", servers, err, workflowMCPName)
 	}

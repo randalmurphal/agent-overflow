@@ -27,7 +27,7 @@ import (
 // URL its provider would be configured with.
 func workflowMCPEndpoint(t *testing.T, a *App, thread store.Thread, token string) string {
 	t.Helper()
-	servers, err := a.workflowMCPConfigForThread(thread, token)
+	servers, err := a.workflowMCPConfigForThread(thread, token, a.sessionScopeOf(thread))
 	if err != nil {
 		t.Fatalf("workflowMCPConfigForThread: %v", err)
 	}
@@ -131,11 +131,11 @@ func TestWorkflowMCPRegistersForEveryProjectSession(t *testing.T) {
 	if err := app.store.CreateThread(projectless); err != nil {
 		t.Fatal(err)
 	}
-	servers, err := app.workflowMCPConfigForThread(projectless, uuid.NewString())
+	servers, err := app.workflowMCPConfigForThread(projectless, uuid.NewString(), app.sessionScopeOf(projectless))
 	if err != nil || len(servers) != 0 {
 		t.Fatalf("a projectless thread got %#v, %v", servers, err)
 	}
-	if row := findServer(app.withWorkflowMCPRow(projectless, nil, true), workflowMCPName); row.Name != "" {
+	if row := findServer(app.withWorkflowMCPRow(projectless, nil, true, app.sessionScopeOf(projectless)), workflowMCPName); row.Name != "" {
 		t.Fatalf("a projectless thread lists the workflow tools row: %#v", row)
 	}
 }
@@ -390,7 +390,7 @@ func TestWorkflowMCPRowHasNoToggle(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, _ := remoteMCPThread(t, app, string(provider.Claude))
-	row := findServer(app.withWorkflowMCPRow(thread, nil, true), workflowMCPName)
+	row := findServer(app.withWorkflowMCPRow(thread, nil, true, app.sessionScopeOf(thread)), workflowMCPName)
 	if row.Name != workflowMCPName || row.ToggleDisabledReason == "" || row.Disabled {
 		t.Fatalf("row = %#v", row)
 	}

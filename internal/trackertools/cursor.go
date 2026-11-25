@@ -6,7 +6,7 @@ import (
 )
 
 // A cursor is the opaque text an answer gives the model to continue it
-// (ticket_find's next, ticket_read's more_comments): base64url of a small
+// (ticket_find's next, a value of ticket_read's more): base64url of a small
 // JSON document. It names connections and issues by ID, which no answer
 // shows otherwise. A cursor the model altered decodes to a refusal, or to a
 // read the tracker refuses; it reaches nothing a key could not.

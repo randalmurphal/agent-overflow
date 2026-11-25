@@ -11,7 +11,6 @@ import (
 // Site is the site as a person names it.
 type TicketSource struct {
 	ID   string
-	Kind string
 	Site string
 }
 
@@ -33,7 +32,7 @@ func (s *Service) TicketSources() ([]TicketSource, error) {
 		if !row.Enabled || (row.Kind != store.TrackerKindJira && row.Kind != store.TrackerKindLinear) {
 			continue
 		}
-		out = append(out, TicketSource{ID: row.ID, Kind: row.Kind, Site: siteName(row.Site)})
+		out = append(out, TicketSource{ID: row.ID, Site: siteName(row.Site)})
 	}
 	return out, nil
 }

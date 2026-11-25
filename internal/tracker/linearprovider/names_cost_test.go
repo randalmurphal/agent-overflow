@@ -136,10 +136,10 @@ func TestDetailNamesCost(t *testing.T) {
 
 	r.pin(map[string]pinned{
 		"Identity (first call)":           {2, 6},
-		"Details (1, assignee and cycle)": {1, 2554},
-		"Details (10, every kind)":        {1, 2554},
-		"Details (11, every kind)":        {2, 5108},
-		"Details (351 entries)":           {3, 12060},
-		"Details (gone entities)":         {1, 2554},
+		"Details (1, assignee and cycle)": {1, 2679},
+		"Details (10, every kind)":        {1, 2679},
+		"Details (11, every kind)":        {2, 5358},
+		"Details (351 entries)":           {3, 12809},
+		"Details (gone entities)":         {1, 2679},
 	})
 }

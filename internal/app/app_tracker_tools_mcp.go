@@ -24,7 +24,9 @@ import (
 // it when it belongs to a project, its provider takes it, and the computer
 // has a ticket source when the session starts; a source turned on later
 // reaches the thread at its next session start, and one turned off later
-// refuses each call with trackerapp's sentence.
+// refuses each call with trackerapp's sentence. The thread's MCP menu
+// follows the same rule: a running session's row is what that session was
+// given, a stopped thread's what its next session would get.
 
 const trackerMCPName = trackertools.MCPServerName
 
@@ -51,29 +53,33 @@ func (a *App) trackerMCPServer() *threadmcp.Server[trackerMCPAccess] {
 		a.trackerMCP.server = threadmcp.New(trackerMCPName, trackertools.Instructions, func(trackerMCPAccess) []map[string]any {
 			return a.trackerMCP.tools.Tools()
 		}, a.callTrackerMCP)
+		// Antigravity sessions do not get these tools (SupportsTrackerMCP).
+		a.trackerMCP.server.OmitAlwaysLoad()
 	})
 	return a.trackerMCP.server
 }
 
-// trackerToolsFor reports whether thread's sessions get the tracker tools:
-// a project thread on a provider that takes them, on a computer with a
-// Jira or Linear connection turned on. An App built without the tracker
-// service (Start builds it before any session) has no source.
-func (a *App) trackerToolsFor(thread store.Thread) (bool, error) {
+// trackerToolsFor reports whether a session of thread starting now gets the
+// tracker tools: a project thread on a provider that takes them, on a
+// computer with a Jira or Linear connection turned on. An App built without
+// the tracker service (Start builds it before any session) has no source.
+// The connection rows are read first: a computer with none on decides
+// without resolving the session's scope.
+func (a *App) trackerToolsFor(thread store.Thread, scope sessionScope) (bool, error) {
 	if !provider.CapabilitiesForProvider(thread.Provider).SupportsTrackerMCP || a.trackers == nil {
 		return false, nil
 	}
-	if _, ok, err := a.workflowCallerScope(thread); err != nil || !ok {
+	if sources, err := a.trackers.TicketSources(); err != nil || len(sources) == 0 {
 		return false, err
 	}
-	sources, err := a.trackers.TicketSources()
-	return len(sources) > 0, err
+	_, ok, err := scope()
+	return ok, err
 }
 
 // trackerMCPConfigForThread registers the thread's session and returns its
 // server entry, or none when the thread does not get the tools.
-func (a *App) trackerMCPConfigForThread(thread store.Thread, sessionToken string) (map[string]any, error) {
-	ok, err := a.trackerToolsFor(thread)
+func (a *App) trackerMCPConfigForThread(thread store.Thread, sessionToken string, scope sessionScope) (map[string]any, error) {
+	ok, err := a.trackerToolsFor(thread, scope)
 	if err != nil || !ok {
 		return nil, err
 	}
@@ -106,19 +112,24 @@ func (a *App) callTrackerMCP(w http.ResponseWriter, ctx context.Context, req thr
 	threadmcp.WriteToolJSON(w, req.ID, result)
 }
 
-// withTrackerMCPRow shows the tracker tools in a thread's MCP menu while
-// its sessions get them. They follow the computer's connections rather
-// than a per-conversation choice, so the row carries no toggle.
-func (a *App) withTrackerMCPRow(thread store.Thread, rows []ThreadMCPServer, live bool) []ThreadMCPServer {
-	if ok, err := a.trackerToolsFor(thread); err != nil || !ok {
-		if err != nil {
+// withTrackerMCPRow shows the tracker tools in a thread's MCP menu: for
+// the running session liveSession ("" when none runs), whether that
+// session was given them; otherwise, whether its next session would be.
+// They follow the computer's connections rather than a per-conversation
+// choice, so the row carries no toggle.
+func (a *App) withTrackerMCPRow(thread store.Thread, rows []ThreadMCPServer, liveSession string, scope sessionScope) []ThreadMCPServer {
+	var has bool
+	source := mcpRowSourceConfig
+	if liveSession != "" {
+		has, source = a.trackerMCPServer().HoldsSession(thread.ID, liveSession), mcpRowSourceSession
+	} else {
+		var err error
+		if has, err = a.trackerToolsFor(thread, scope); err != nil {
 			log.Printf("tracker tools: menu row for %s: %v", thread.ID, err)
 		}
-		return slices.DeleteFunc(rows, func(row ThreadMCPServer) bool { return row.Name == trackerMCPName })
 	}
-	source := mcpRowSourceConfig
-	if live {
-		source = mcpRowSourceSession
+	if !has {
+		return slices.DeleteFunc(rows, func(row ThreadMCPServer) bool { return row.Name == trackerMCPName })
 	}
 	for i := range rows {
 		if rows[i].Name != trackerMCPName {

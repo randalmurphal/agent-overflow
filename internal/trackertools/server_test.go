@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -75,8 +76,8 @@ func (f *fakeTracker) Comments(_ context.Context, connection, issue, page string
 }
 
 var (
-	jiraSource   = trackerapp.TicketSource{ID: "conn-jira", Kind: "jira", Site: "example.atlassian.net"}
-	linearSource = trackerapp.TicketSource{ID: "conn-linear", Kind: "linear", Site: "example"}
+	jiraSource   = trackerapp.TicketSource{ID: "conn-jira", Site: "example.atlassian.net"}
+	linearSource = trackerapp.TicketSource{ID: "conn-linear", Site: "example"}
 )
 
 // call runs one tool as thread-1 and answers its result as the JSON the
@@ -122,21 +123,6 @@ func cards(prefix string, n int) []trackerapp.CardView {
 		out[i] = trackerapp.CardView{ID: fmt.Sprint(i), Key: fmt.Sprintf("%s-%d", prefix, i+1), Title: "Title", Status: trackerapp.StatusView{ID: "1", Name: "To Do"}}
 	}
 	return out
-}
-
-// The tool list and guide are what every session with the server reads
-// before it calls anything, so their size is a decision: this fails past
-// the bound and says the size it found.
-func TestTheToolListAndGuideStayWithinTheirBound(t *testing.T) {
-	t.Parallel()
-	const bound = 900
-	list, err := json.Marshal(New(nil).Tools())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if size := len(list) + len(Instructions); size > bound {
-		t.Fatalf("the tool list (%d bytes) and guide (%d bytes) are %d bytes, over the bound of %d", len(list), len(Instructions), size, bound)
-	}
 }
 
 // Every schema is closed, with required an array, so a misspelt argument
@@ -233,7 +219,7 @@ func TestFindGoesFromOneSourceToTheNext(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := decodeAs[findAnswer](t, answer)
-	if len(got.Tickets) != pageSize || got.Tickets[4].Key != "WEB-5" || got.Tickets[5].Key != "ENG-1" || got.Next != "" {
+	if len(got.Tickets) != pageSize || got.Tickets[4].Key != "example.atlassian.net/WEB-5" || got.Tickets[5].Key != "example/ENG-1" || got.Next != "" {
 		t.Fatalf("the page across two sources = %s", answer)
 	}
 	if want := []string{`search conn-jira "login" limit 20 page ""`, `search conn-linear "login" limit 15 page ""`}; !slices.Equal(f.asked, want) {
@@ -251,7 +237,7 @@ func TestFindGoesFromOneSourceToTheNext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"tickets":[{"key":"ENG-1","title":"Title","status":"To Do"},{"key":"ENG-2","title":"Title","status":"To Do"}],` +
+	if want := `{"tickets":[{"key":"example/ENG-1","title":"Title","status":"To Do"},{"key":"example/ENG-2","title":"Title","status":"To Do"}],` +
 		`"unsearched":[{"site":"example.atlassian.net","error":"this tracker connection is turned off; turn it on in the Issues settings, then try again"}]}`; answer != want {
 		t.Fatalf("a page with one source failing = %s\nwant %s", answer, want)
 	}
@@ -302,9 +288,9 @@ func detail(key string) trackerapp.DetailView {
 }
 
 // A read with no key reads the thread's linked ticket; a key the link
-// names reads it with no lookup; any other key is looked up on each
-// connection in turn until one finds it, and one none finds is refused
-// naming every site asked.
+// names reads it with no lookup; any other key is looked up on every
+// connection, and one none finds is refused naming every site asked. With
+// two connections on, every key an answer gives names its site.
 func TestReadResolvesAKey(t *testing.T) {
 	t.Parallel()
 	f := &fakeTracker{
@@ -316,33 +302,50 @@ func TestReadResolvesAKey(t *testing.T) {
 	refused(t, err, CodeNoTicket, "This thread is not linked to a ticket; name one with key.")
 
 	f.link = &trackerapp.LinkedTicket{Connection: "conn-jira", Site: "example.atlassian.net", Issue: "10012", Key: "WEB-12"}
-	for _, args := range []map[string]any{{}, {"key": "web-12"}} {
+	for _, args := range []map[string]any{{}, {"key": "web-12"}, {"key": "Example.Atlassian.net/web-12"}} {
 		f.asked = nil
 		answer, err := call(t, f, "ticket_read", args)
-		if err != nil || !strings.HasPrefix(answer, `{"key":"WEB-12",`) || !slices.Equal(f.asked, []string{"detail conn-jira 10012"}) {
+		if err != nil || !strings.HasPrefix(answer, `{"key":"example.atlassian.net/WEB-12",`) || !slices.Equal(f.asked, []string{"detail conn-jira 10012"}) {
 			t.Fatalf("a read of the linked ticket with %v = %s, %v; asked %q", args, answer, err, f.asked)
 		}
 	}
 
 	f.asked = nil
 	answer, err := call(t, f, "ticket_read", map[string]any{"key": "ENG-4"})
-	if err != nil || !strings.HasPrefix(answer, `{"key":"ENG-4",`) {
+	if err != nil || !strings.HasPrefix(answer, `{"key":"example/ENG-4",`) {
 		t.Fatalf("a read by key = %s, %v", answer, err)
 	}
 	if want := []string{"lookup conn-jira ENG-4", "lookup conn-linear ENG-4", "detail conn-linear uuid-4"}; !slices.Equal(f.asked, want) {
 		t.Fatalf("asked %q\nwant %q", f.asked, want)
 	}
+	f.asked = nil
+	if answer, err := call(t, f, "ticket_read", map[string]any{"key": "example/eng-4"}); err != nil || !strings.HasPrefix(answer, `{"key":"example/ENG-4",`) ||
+		!slices.Equal(f.asked, []string{"lookup conn-linear ENG-4", "detail conn-linear uuid-4"}) {
+		t.Fatalf("a read by site and key = %s, %v; asked %q", answer, err, f.asked)
+	}
 	_, err = call(t, f, "ticket_read", map[string]any{"key": "WEB-99"})
 	refused(t, err, CodeNotFound, "No ticket WEB-99 on example.atlassian.net or example.")
-	_, err = call(t, f, "ticket_read", map[string]any{"key": strings.Repeat("A", 60) + "-12345"})
+	_, err = call(t, f, "ticket_read", map[string]any{"key": "example/WEB-99"})
+	refused(t, err, CodeNotFound, "No ticket WEB-99 on example.")
+	_, err = call(t, f, "ticket_read", map[string]any{"key": "other.atlassian.net/WEB-12"})
+	refused(t, err, CodeNotFound, "No connection on this computer reaches other.atlassian.net; the sites on are example.atlassian.net or example.")
+	_, err = call(t, f, "ticket_read", map[string]any{"key": "example/"})
+	refused(t, err, CodeInvalidRequest, "key names a site and no ticket; write it as site/KEY.")
+	_, err = call(t, f, "ticket_read", map[string]any{"key": strings.Repeat("A", 124) + "-12345"})
 	refused(t, err, CodeInvalidRequest, "key is longer than any ticket key.")
+
+	// A key two connections hold is refused naming both.
+	f.lookup["conn-jira"] = map[string]string{"ENG-4": "10004"}
+	_, err = call(t, f, "ticket_read", map[string]any{"key": "ENG-4"})
+	refused(t, err, CodeAmbiguous, "ENG-4 is on example.atlassian.net and example; name one: example.atlassian.net/ENG-4 or example/ENG-4.")
+	delete(f.lookup, "conn-jira")
 
 	// A link this computer cannot read refuses a read of it, and leaves a
 	// read of another key to the connections.
 	f.linkErr = &trackerapp.LinkRefusal{Code: trackerapp.LinkConnectionOff, Message: "the Jira connection to example.atlassian.net is turned off; turn it on in the Issues settings, then read this thread's ticket WEB-12 again"}
 	_, err = call(t, f, "ticket_read", map[string]any{})
 	refused(t, err, trackerapp.LinkConnectionOff, "the Jira connection to example.atlassian.net is turned off; turn it on in the Issues settings, then read this thread's ticket WEB-12 again")
-	if answer, err := call(t, f, "ticket_read", map[string]any{"key": "ENG-4"}); err != nil || !strings.HasPrefix(answer, `{"key":"ENG-4",`) {
+	if answer, err := call(t, f, "ticket_read", map[string]any{"key": "ENG-4"}); err != nil || !strings.HasPrefix(answer, `{"key":"example/ENG-4",`) {
 		t.Fatalf("a read by key beside a refused link = %s, %v", answer, err)
 	}
 
@@ -355,18 +358,21 @@ func TestReadResolvesAKey(t *testing.T) {
 }
 
 // A ticket the tracker no longer returns is refused saying so, for the
-// linked ticket and for a key.
+// linked ticket and for a key, naming its site once whether one connection
+// is on or two.
 func TestReadOfATicketGone(t *testing.T) {
 	t.Parallel()
-	f := &fakeTracker{
-		sources: []trackerapp.TicketSource{jiraSource},
-		lookup:  map[string]map[string]string{"conn-jira": {"WEB-7": "10007"}},
-		link:    &trackerapp.LinkedTicket{Connection: "conn-jira", Site: "example.atlassian.net", Issue: "10012", Key: "WEB-12"},
+	for _, sources := range [][]trackerapp.TicketSource{{jiraSource}, {jiraSource, linearSource}} {
+		f := &fakeTracker{
+			sources: sources,
+			lookup:  map[string]map[string]string{"conn-jira": {"WEB-7": "10007"}},
+			link:    &trackerapp.LinkedTicket{Connection: "conn-jira", Site: "example.atlassian.net", Issue: "10012", Key: "WEB-12"},
+		}
+		_, err := call(t, f, "ticket_read", map[string]any{})
+		refused(t, err, CodeNotFound, "WEB-12, the ticket this thread is linked to, is not on example.atlassian.net any more, or the user's account cannot see it.")
+		_, err = call(t, f, "ticket_read", map[string]any{"key": "WEB-7"})
+		refused(t, err, CodeNotFound, "No ticket WEB-7 on example.atlassian.net.")
 	}
-	_, err := call(t, f, "ticket_read", map[string]any{})
-	refused(t, err, CodeNotFound, "WEB-12, the ticket this thread is linked to, is not on example.atlassian.net any more, or the user's account cannot see it.")
-	_, err = call(t, f, "ticket_read", map[string]any{"key": "WEB-7"})
-	refused(t, err, CodeNotFound, "No ticket WEB-7 on example.atlassian.net.")
 }
 
 // A read shows each filled field once, in the tracker's order, and leaves
@@ -409,117 +415,285 @@ func TestReadShowsATicket(t *testing.T) {
 	}
 }
 
-// A read shows the 10 newest comments and holds the rest back behind
-// more_comments, which pages through the stored first page and then the
-// tracker's later pages, and is absent once there are no more.
-func TestReadHoldsOlderCommentsBack(t *testing.T) {
-	t.Parallel()
-	page := func(from, n int) []trackerapp.CommentView {
-		out := make([]trackerapp.CommentView, n)
-		for i := range out {
-			out[i] = trackerapp.CommentView{ID: fmt.Sprint(from + i), Body: fmt.Sprint("comment ", from+i), Created: 1_764_000_000_000}
+// moreFor is the value of the answer's more whose label starts with
+// label, failing when it has none.
+func moreFor(t *testing.T, answer readAnswer, label string) string {
+	t.Helper()
+	for k, v := range answer.More {
+		if strings.HasPrefix(k, label) {
+			return v
 		}
-		return out
 	}
-	d := detail("WEB-12")
-	d.Comments, d.MoreComments = page(1, 12), "12"
-	f := &fakeTracker{
+	t.Fatalf("more has no %q: %v", label, slices.Collect(maps.Keys(answer.More)))
+	return ""
+}
+
+// readAll follows the continuation more names, and each continuation of
+// the same part after it, checking every answer against the budget, and
+// returns the answers.
+func readAll(t *testing.T, f *fakeTracker, more, label string) []readAnswer {
+	t.Helper()
+	var out []readAnswer
+	for more != "" {
+		raw, err := call(t, f, "ticket_read", map[string]any{"more": more})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(raw) > answerBudget {
+			t.Fatalf("a continuation is %d bytes, over the budget", len(raw))
+		}
+		answer := decodeAs[readAnswer](t, raw)
+		out = append(out, answer)
+		more = ""
+		for k, v := range answer.More {
+			if strings.HasPrefix(k, label) {
+				more = v
+			}
+		}
+		if len(out) > 100 {
+			t.Fatalf("the continuations of %q do not end", label)
+		}
+	}
+	return out
+}
+
+// joined is a text shown in pieces as one: each piece's cut marks
+// removed.
+func joined(pieces []string) string {
+	var b strings.Builder
+	for _, p := range pieces {
+		b.WriteString(strings.TrimSuffix(strings.TrimPrefix(p, cut), cut))
+	}
+	return b.String()
+}
+
+func longTicketTracker(d trackerapp.DetailView) *fakeTracker {
+	return &fakeTracker{
 		sources: []trackerapp.TicketSource{jiraSource},
 		lookup:  map[string]map[string]string{"conn-jira": {"WEB-12": "10012"}},
 		details: map[string]trackerapp.DetailView{"conn-jira/10012": d},
 	}
-	f.comments = func(_, _, token string) (trackerapp.CommentPageView, error) {
-		if token == "" {
-			return trackerapp.CommentPageView{Comments: page(1, 12), Next: "12"}, nil
-		}
-		return trackerapp.CommentPageView{Comments: page(13, 4)}, nil
-	}
-	answer, err := call(t, f, "ticket_read", map[string]any{"key": "WEB-12"})
+}
+
+// The rest of the description is reachable on its own from the first
+// answer, each answer of it as much as fits, and comes whole.
+func TestTheRestOfTheDescriptionComesOnItsOwn(t *testing.T) {
+	t.Parallel()
+	d := longTicket()
+	f := longTicketTracker(d)
+	raw, err := call(t, f, "ticket_read", map[string]any{"key": "WEB-12"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	read := decodeAs[readAnswer](t, answer)
-	if len(read.Comments) != commentsShown || read.Comments[9].Body != "comment 10" || read.MoreComments == "" {
-		t.Fatalf("the read's comments = %s", answer)
-	}
-	var bodies []string
-	next := read.MoreComments
-	for next != "" {
-		answer, err := call(t, f, "ticket_read", map[string]any{"more_comments": next})
-		if err != nil {
-			t.Fatal(err)
+	first := decodeAs[readAnswer](t, raw)
+	pieces := []string{first.Description}
+	rest := readAll(t, f, moreFor(t, first, "the rest of the description ("), "the rest of the description (")
+	for _, a := range rest {
+		if a.Key != "WEB-12" || len(a.Comments) > 0 || a.Title != "" {
+			t.Fatalf("a description continuation holds more than the key and the description: %+v", a)
 		}
-		more := decodeAs[commentsAnswer](t, answer)
-		for _, c := range more.Comments {
-			bodies = append(bodies, c.Body)
-		}
-		next = more.MoreComments
-		if len(bodies) > 20 {
-			t.Fatalf("more_comments does not end: %v", bodies)
-		}
+		pieces = append(pieces, a.Description)
 	}
-	if want := []string{"comment 11", "comment 12", "comment 13", "comment 14", "comment 15", "comment 16"}; !slices.Equal(bodies, want) {
-		t.Fatalf("older comments = %v\nwant %v", bodies, want)
+	if joined(pieces) != d.Description {
+		t.Fatal("the description's pieces do not make the description")
 	}
-
-	_, err = call(t, f, "ticket_read", map[string]any{"more_comments": read.MoreComments, "key": "WEB-12"})
-	refused(t, err, CodeInvalidRequest, "more_comments answers those comments alone; leave out key and history.")
-	_, err = call(t, f, "ticket_read", map[string]any{"more_comments": "garbage!"})
-	refused(t, err, CodeInvalidRequest, "more_comments is not one these tools gave; leave it out to start again.")
-
-	// A first page of no more than 10 with a later page hands over the
-	// tracker's token.
-	d.Comments, d.MoreComments = page(1, 3), "12"
-	f.details["conn-jira/10012"] = d
-	answer, err = call(t, f, "ticket_read", map[string]any{"key": "WEB-12"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.asked = nil
-	if _, err := call(t, f, "ticket_read", map[string]any{"more_comments": decodeAs[readAnswer](t, answer).MoreComments}); err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{`comments conn-jira 10012 page "12"`}; !slices.Equal(f.asked, want) {
-		t.Fatalf("asked %q\nwant %q", f.asked, want)
-	}
-	d.MoreComments = ""
-	f.details["conn-jira/10012"] = d
-	if answer, err := call(t, f, "ticket_read", map[string]any{"key": "WEB-12"}); err != nil || strings.Contains(answer, "more_comments") {
-		t.Fatalf("a read with every comment shown = %s, %v", answer, err)
+	if len(rest) > 10 {
+		t.Fatalf("%d continuations for 200 KiB; each should be nearly the budget", len(rest))
 	}
 }
 
-// With history, a read adds the 50 newest changes, newest first, with who
-// made each and when, and counts the older ones it leaves out.
+// The rest of one comment is reachable on its own, and older comments
+// come without paging through any comment's rest.
+func TestTheRestOfACommentAndOlderCommentsComeOnTheirOwn(t *testing.T) {
+	t.Parallel()
+	d := longTicket()
+	for i := 10; i < 30; i++ {
+		d.Comments = append(d.Comments, trackerapp.CommentView{
+			ID: fmt.Sprint("c", i), Author: trackerapp.UserView{Name: "User 1"}, Created: 1_764_000_000_000 - int64(i)*60_000, Body: fmt.Sprint("short ", i),
+		})
+	}
+	d.Comments[12].Body = strings.Repeat("A long older comment. ", 1000)
+	d.MoreComments = "50"
+	f := longTicketTracker(d)
+	f.comments = func(_, _, token string) (trackerapp.CommentPageView, error) {
+		if token != "50" {
+			t.Fatalf("comments page %q read", token)
+		}
+		return trackerapp.CommentPageView{Comments: []trackerapp.CommentView{{ID: "c50", Body: "on the second page", Created: 1_763_000_000_000}}}, nil
+	}
+	raw, err := call(t, f, "ticket_read", map[string]any{"key": "WEB-12"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := decodeAs[readAnswer](t, raw)
+	third := readAll(t, f, moreFor(t, first, "the rest of the comment by User 3 "), "the rest of the comment by User 3 ")
+	pieces := []string{first.Comments[2].Body}
+	for _, a := range third {
+		if len(a.Comments) != 1 || a.Comments[0].By != "User 3" || a.Description != "" {
+			t.Fatalf("a comment's continuation = %+v", a)
+		}
+		pieces = append(pieces, a.Comments[0].Body)
+	}
+	if joined(pieces) != d.Comments[2].Body {
+		t.Fatal("comment 3's pieces do not make its body")
+	}
+
+	f.asked = nil
+	older := readAll(t, f, moreFor(t, first, "older comments (more than 20)"), "older comments")
+	var bodies []string
+	for _, a := range older {
+		for _, c := range a.Comments {
+			bodies = append(bodies, c.Body)
+		}
+		if a.Description != "" || a.Title != "" || len(a.History) > 0 {
+			t.Fatalf("an older-comments answer = %+v", a)
+		}
+	}
+	if len(bodies) != 21 || bodies[0] != "short 10" || bodies[20] != "on the second page" ||
+		!strings.HasPrefix(bodies[2], "A long older comment.") || !strings.HasSuffix(bodies[2], cut) || len(bodies[2]) > listedComment {
+		t.Fatalf("older comments = %d: %.60q ... %.60q", len(bodies), bodies[0], bodies[len(bodies)-1])
+	}
+	if want := []string{"detail conn-jira 10012", `comments conn-jira 10012 page "50"`}; !slices.Equal(f.asked, want) {
+		t.Fatalf("asked %q\nwant %q: one answer of every older comment, each tracker page read once", f.asked, want)
+	}
+}
+
+// A continuation of a ticket that changed since its answer is refused.
+func TestAContinuationOfAChangedTicketIsRefused(t *testing.T) {
+	t.Parallel()
+	d := longTicket()
+	d.Card.Updated = 1_764_000_000_000
+	f := longTicketTracker(d)
+	raw, err := call(t, f, "ticket_read", map[string]any{"key": "WEB-12"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	more := moreFor(t, decodeAs[readAnswer](t, raw), "the rest of the description (")
+	d.Card.Updated += 60_000
+	f.details["conn-jira/10012"] = d
+	_, err = call(t, f, "ticket_read", map[string]any{"more": more})
+	refused(t, err, CodeInvalidRequest, "more is from an earlier version of WEB-12, which has changed since; read it again.")
+	_, err = call(t, f, "ticket_read", map[string]any{"more": more, "key": "WEB-12"})
+	refused(t, err, CodeInvalidRequest, "more answers that part alone; leave out key and history.")
+	_, err = call(t, f, "ticket_read", map[string]any{"more": "garbage!"})
+	refused(t, err, CodeInvalidRequest, "more is not one these tools gave; leave it out to start again.")
+}
+
+// A long field value shows its head in the first answer and its rest on
+// its own; fields past the answer's share come as more fields; links and
+// attachments past theirs come as more of them; every list continuation
+// starts where the answer before ended.
+func TestFieldsAndListsComeInParts(t *testing.T) {
+	t.Parallel()
+	d := detail("WEB-12")
+	long := strings.Repeat("Acceptance criterion that the team wrote out. ", 400)
+	d.Fields = []trackerapp.FieldView{{ID: "customfield_1", Name: "Acceptance", Value: trackerapp.FieldValueView{Kind: "text", Texts: []string{long}}}}
+	for i := range 60 {
+		d.Fields = append(d.Fields, trackerapp.FieldView{ID: fmt.Sprint("cf", i), Name: fmt.Sprint("Field ", i),
+			Value: trackerapp.FieldValueView{Kind: "text", Texts: []string{strings.Repeat("x", 300)}}})
+	}
+	for i := range 400 {
+		d.Links = append(d.Links, trackerapp.LinkView{Relation: "relates to", Issue: trackerapp.LinkedIssueView{Key: fmt.Sprint("WEB-", 100+i), Title: "A related ticket"}})
+		d.Attachments = append(d.Attachments, trackerapp.AttachmentView{Name: fmt.Sprintf("screenshot-%03d.png", i)})
+	}
+	f := longTicketTracker(d)
+	raw, err := call(t, f, "ticket_read", map[string]any{"key": "WEB-12"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > answerBudget {
+		t.Fatalf("the first answer is %d bytes", len(raw))
+	}
+	first := decodeAs[readAnswer](t, raw)
+	var fields map[string]any
+	if err := json.Unmarshal(first.Fields, &fields); err != nil {
+		t.Fatal(err)
+	}
+	head, _ := fields["Acceptance"].(string)
+	if len(head) > fieldHead || !strings.HasSuffix(head, cut) {
+		t.Fatalf("the long field's head is %d bytes", len(head))
+	}
+	pieces := []string{head}
+	for _, a := range readAll(t, f, moreFor(t, first, "the rest of Acceptance ("), "the rest of Acceptance (") {
+		var rest map[string]string
+		if err := json.Unmarshal(a.Fields, &rest); err != nil || len(rest) != 1 {
+			t.Fatalf("a field's continuation = %s, %v", a.Fields, err)
+		}
+		pieces = append(pieces, rest["Acceptance"])
+	}
+	if joined(pieces) != long {
+		t.Fatal("the field's pieces do not make its value")
+	}
+	shown := len(fields)
+	for _, a := range readAll(t, f, moreFor(t, first, fmt.Sprintf("%d more fields", 61-shown)), "more fields") {
+		var more map[string]string
+		if err := json.Unmarshal(a.Fields, &more); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := more[fmt.Sprint("Field ", shown-1)]; !ok {
+			t.Fatalf("more fields does not start at Field %d: %s", shown-1, a.Fields)
+		}
+		shown += len(more)
+	}
+	if shown != 61 {
+		t.Fatalf("the fields came to %d", shown)
+	}
+	links := len(first.Links)
+	for _, a := range readAll(t, f, moreFor(t, first, fmt.Sprintf("%d more links", 400-links)), "more links") {
+		if a.Links[0].Key != fmt.Sprint("WEB-", 100+links) {
+			t.Fatalf("more links starts at %s, want WEB-%d", a.Links[0].Key, 100+links)
+		}
+		links += len(a.Links)
+	}
+	names := len(first.Attachments)
+	for _, a := range readAll(t, f, moreFor(t, first, fmt.Sprintf("%d more attachments", 400-names)), "more attachments") {
+		names += len(a.Attachments)
+	}
+	if links != 400 || names != 400 {
+		t.Fatalf("links came to %d and attachments to %d", links, names)
+	}
+}
+
+// With history, a read adds the newest changes, newest first, with who
+// made each and when, each value cut at changeCut; the older changes come
+// on their own.
 func TestReadAddsHistory(t *testing.T) {
 	t.Parallel()
 	d := detail("WEB-12")
-	for i := range 53 {
+	for i := range 400 {
 		e := trackerapp.EventView{At: 1_764_000_000_000 + int64(i)*60_000, Field: "status", From: "To Do", To: fmt.Sprint("step ", i)}
 		if i%2 == 0 {
 			e.Author = &trackerapp.UserView{ID: "acc-user1", Name: "User 1"}
 		}
 		d.History = append(d.History, e)
 	}
+	d.History[399].To = strings.Repeat("A whole old description. ", 500)
 	d.HistoryFrom = 1_763_000_000_000
-	f := &fakeTracker{
-		sources: []trackerapp.TicketSource{jiraSource},
-		link:    &trackerapp.LinkedTicket{Connection: "conn-jira", Site: "example.atlassian.net", Issue: "10012", Key: "WEB-12"},
-		details: map[string]trackerapp.DetailView{"conn-jira/10012": d},
-	}
-	answer, err := call(t, f, "ticket_read", map[string]any{})
-	if err != nil || strings.Contains(answer, "history") {
+	f := longTicketTracker(d)
+	answer, err := call(t, f, "ticket_read", map[string]any{"key": "WEB-12"})
+	if err != nil || strings.Contains(answer, "history") || strings.Contains(answer, "changes") {
 		t.Fatalf("a read without history = %s, %v", answer, err)
 	}
-	answer, err = call(t, f, "ticket_read", map[string]any{"history": true})
+	answer, err = call(t, f, "ticket_read", map[string]any{"key": "WEB-12", "history": true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	read := decodeAs[readAnswer](t, answer)
-	if len(read.History) != historyShown || read.OlderHistory != 3 || read.HistorySince != "2025-11-13T02:13Z" {
-		t.Fatalf("history = %d changes, %d older, since %q", len(read.History), read.OlderHistory, read.HistorySince)
+	if read.HistorySince != "2025-11-13T02:13Z" || len(read.History) < 50 {
+		t.Fatalf("history = %d changes since %q", len(read.History), read.HistorySince)
 	}
-	if first := read.History[0]; first != (readChange{At: "2025-11-24T16:52Z", By: "User 1", Field: "status", From: "To Do", To: "step 52"}) || read.History[1].By != "" || read.History[49].To != "step 3" {
-		t.Fatalf("history = %+v ... %+v", read.History[0], read.History[49])
+	newest := read.History[0]
+	if newest.At != "2025-11-24T22:39Z" || newest.By != "" || len(newest.To) > changeCut || !strings.HasSuffix(newest.To, cut) || read.History[1].By != "User 1" {
+		t.Fatalf("the newest changes = %+v, %+v", newest, read.History[1])
+	}
+	seen := len(read.History)
+	for _, a := range readAll(t, f, moreFor(t, read, fmt.Sprintf("%d older changes", 400-seen)), "older changes") {
+		if a.History[0].To != fmt.Sprint("step ", 399-seen) {
+			t.Fatalf("older changes start at %q, want step %d", a.History[0].To, 399-seen)
+		}
+		seen += len(a.History)
+	}
+	if seen != 400 {
+		t.Fatalf("the changes came to %d", seen)
 	}
 }

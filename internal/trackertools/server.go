@@ -38,6 +38,9 @@ const (
 	CodeNoTicket = "tracker_no_ticket"
 	// CodeNotFound is a key no connection on this computer can read.
 	CodeNotFound = "tracker_not_found"
+	// CodeAmbiguous is a key without a site that tickets on several
+	// connections have.
+	CodeAmbiguous = "tracker_ambiguous"
 	// CodeFailed is a call that failed for a reason the model cannot act on;
 	// the app logs the cause.
 	CodeFailed = "tracker_call_failed"
@@ -70,11 +73,10 @@ func (s *Server) Call(ctx context.Context, threadID, name string, args json.RawM
 	if threadID == "" {
 		return nil, invalidf("The tracker tools could not tell which thread called them.")
 	}
-	switch name {
-	case "ticket_find":
-		return s.find(ctx, args)
-	case "ticket_read":
-		return s.read(ctx, threadID, args)
+	for _, spec := range toolTable {
+		if spec.name == name {
+			return spec.call(s, ctx, threadID, args)
+		}
 	}
 	return nil, invalidf("There is no tool named %q. The tracker tools are: %s.", name, strings.Join(ToolNames(), ", "))
 }
@@ -122,13 +124,19 @@ func siteList(sources []trackerapp.TicketSource) string {
 	for i, src := range sources {
 		names[i] = src.Site
 	}
+	return sayList(names, "or")
+}
+
+// sayList is names joined as a sentence does with conjunction and: "a",
+// "a and b", "a, b, and c".
+func sayList(names []string, and string) string {
 	switch len(names) {
 	case 1:
 		return names[0]
 	case 2:
-		return names[0] + " or " + names[1]
+		return names[0] + " " + and + " " + names[1]
 	}
-	return strings.Join(names[:len(names)-1], ", ") + ", or " + names[len(names)-1]
+	return strings.Join(names[:len(names)-1], ", ") + ", " + and + " " + names[len(names)-1]
 }
 
 // notFound reports whether err is the tracker's answer that it holds no

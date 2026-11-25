@@ -272,8 +272,13 @@ func (a *App) ListThreadMcpServers(threadID string) ([]ThreadMCPServer, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, live := a.sessionManager().get(threadID)
-	return a.withTrackerMCPRow(thread, a.withWorkflowMCPRow(thread, a.withThreadMCPRow(thread, a.withRemoteMCPRow(thread, a.withBrowserMCPRow(thread, threadMCPServers(rows), live), live), live), live), live), nil
+	running, live := a.sessionManager().get(threadID)
+	liveSession := ""
+	if live {
+		liveSession = running.Token
+	}
+	scope := a.sessionScopeOf(thread)
+	return a.withTrackerMCPRow(thread, a.withWorkflowMCPRow(thread, a.withThreadMCPRow(thread, a.withRemoteMCPRow(thread, a.withBrowserMCPRow(thread, threadMCPServers(rows), live), live), live), live, scope), liveSession, scope), nil
 }
 
 // ListWorkspaceMcpServers returns the config+cache view of a

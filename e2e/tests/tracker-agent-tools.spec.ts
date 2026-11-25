@@ -31,7 +31,7 @@ for (const provider of PROVIDERS) {
       url: 'https://example.atlassian.net/browse/WEB-12', description: 'The page reloads and shows the form again.\n',
       comments: [{ by: 'User 1', body: 'The staging proxy drops the cookie.\n' }],
     });
-    expect(read).not.toHaveProperty('more_comments');
+    expect(read).not.toHaveProperty('more');
     expect(run.unlinked).toEqual({ isError: true, text: '[tracker_no_ticket] This thread is not linked to a ticket; name one with key.' });
 
     await openTicketReader(harness, page);

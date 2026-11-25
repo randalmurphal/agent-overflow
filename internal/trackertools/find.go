@@ -109,8 +109,10 @@ func (s *Server) find(ctx context.Context, raw json.RawMessage) (any, error) {
 			out.Unsearched = append(out.Unsearched, unsearched{Site: src.Site, Error: message})
 			continue
 		}
+		key := qualifier(sources, src.Site)
 		for _, card := range got.Cards {
-			row := foundTicket{Key: card.Key, Title: card.Title, Status: card.Status.Name}
+			row := foundTicket{Key: key(card.Key), Status: card.Status.Name}
+			row.Title, _ = textClip(card.Title, 0, refCut)
 			if card.Assignee != nil {
 				row.Assignee = card.Assignee.Name
 			}
