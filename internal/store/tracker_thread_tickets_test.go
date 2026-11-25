@@ -284,15 +284,19 @@ func mustConnectionOf(t *testing.T, s *Store, root int64) string {
 func TestThreadTicketReadsByTicketThreadsAndSite(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	for i, id := range []string{"a", "b", "c", "d", "ask"} {
+	for i, id := range []string{"a", "b", "c", "d", "ask", "side"} {
 		mustCreateThread(t, s, id)
 		mustExec(t, s.db, `UPDATE threads SET updated_at = ? WHERE id = ?`, i+1, id)
 	}
-	mustExec(t, s.db, `UPDATE threads SET mode = 'scratch' WHERE id = 'ask'`)
+	// An ask's hidden copy, and a person's side chat before Keep, which no
+	// request owns; both carry their source's link.
+	mustExec(t, s.db, `UPDATE threads SET mode = 'scratch' WHERE id IN ('ask', 'side')`)
 	mustExec(t, s.db, `INSERT INTO scratch_threads(thread_id, source_thread_id, return_mode, created_at, request_token) VALUES ('ask', 'a', 'chat', 1, 'token')`)
+	mustExec(t, s.db, `INSERT INTO scratch_threads(thread_id, source_thread_id, return_mode, created_at) VALUES ('side', 'a', 'chat', 1)`)
 	seedThreadTicket(t, s, webLink("a"))
 	seedThreadTicket(t, s, webLink("b"))
 	seedThreadTicket(t, s, webLink("ask"))
+	seedThreadTicket(t, s, webLink("side"))
 	sameIDOtherSite := webLink("c")
 	sameIDOtherSite.Ticket.Site = "https://other.example.com"
 	seedThreadTicket(t, s, sameIDOtherSite)
@@ -311,6 +315,13 @@ func TestThreadTicketReadsByTicketThreadsAndSite(t *testing.T) {
 	if !slices.Equal(ids, []string{"b", "a"}) {
 		t.Fatalf("threads of the ticket = %v; want b, a", ids)
 	}
+	// Keep makes the side chat an ordinary thread, with the link it carried.
+	if _, err := s.PromoteScratchThread("side"); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := s.ListThreadsForTicket(webTicket); err != nil || len(rows) != 3 || rows[0].ID != "side" {
+		t.Fatalf("threads of the ticket after Keep = %+v, %v; want side first", rows, err)
+	}
 	if _, err := s.ListThreadsForTicket(TicketRef{Kind: TrackerKindTempo, Site: "s", IssueID: "1"}); !errors.Is(err, ErrInvalidThreadTicket) {
 		t.Fatalf("threads of a Tempo ticket: %v", err)
 	}
@@ -322,7 +333,7 @@ func TestThreadTicketReadsByTicketThreadsAndSite(t *testing.T) {
 	if byThread, err := s.ListThreadTickets(nil); err != nil || len(byThread) != 0 {
 		t.Fatalf("batch read of none = %+v, %v", byThread, err)
 	}
-	if got, err := s.ListThreadsLinkedToSite(TrackerKindJira, mirrorSite); err != nil || !slices.Equal(got, []string{"a", "ask", "b"}) {
+	if got, err := s.ListThreadsLinkedToSite(TrackerKindJira, mirrorSite); err != nil || !slices.Equal(got, []string{"a", "ask", "b", "side"}) {
 		t.Fatalf("threads of the site = %v, %v", got, err)
 	}
 	if got, err := s.ListThreadsLinkedToSite(TrackerKindLinear, mirrorSite); err != nil || len(got) != 0 {

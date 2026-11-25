@@ -82,8 +82,9 @@ func (a *App) ClearThreadTicket(ctx context.Context, threadID string) (store.Thr
 }
 
 // ThreadsForTicket lists the rows of this computer's threads linked to
-// ticket, newest first, an ask's hidden copy left out. Its cost grows with
-// the ticket's links, not with the threads.
+// ticket, newest first, as search lists them: an ask's copy and a side
+// chat before Keep left out. Its cost grows with the ticket's links, not
+// with the threads.
 //
 //ao:scope threads:read
 //ao:route selected

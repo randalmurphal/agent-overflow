@@ -6125,7 +6125,8 @@ export function SetThreadPlacement(threadIDs: string[], placement: string): $Can
  * and returns its row. The ticket is read through this computer's
  * connection to its site: from the issue mirror when it holds the ticket,
  * with no request, otherwise with one card read, bounded as a form read
- * is. A link that cannot be made leaves the link as it was.
+ * is. A link that cannot be made leaves the link as it was. Reading the
+ * ticket needs the ticket read grant as well as the thread's.
  */
 export function SetThreadTicket(threadID: string, ticket: app$0.ThreadTicketRef): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(913920043, threadID, ticket).then(($result: any) => {
@@ -6754,8 +6755,9 @@ export function ThreadToolWatch(call: app$0.ThreadPeerCall): $CancellablePromise
 
 /**
  * ThreadsForTicket lists the rows of this computer's threads linked to
- * ticket, newest first, an ask's hidden copy left out. Its cost grows with
- * the ticket's links, not with the threads.
+ * ticket, newest first, as search lists them: an ask's copy and a side
+ * chat before Keep left out. Its cost grows with the ticket's links, not
+ * with the threads.
  */
 export function ThreadsForTicket(ticket: app$0.ThreadTicketRef): $CancellablePromise<store$0.Thread[]> {
     return $Call.ByID(1230945765, ticket).then(($result: any) => {

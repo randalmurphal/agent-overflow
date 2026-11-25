@@ -543,17 +543,20 @@ func (s *Store) ListThreadTickets(threadIDs []string) (map[string]ThreadTicket, 
 }
 
 // ListThreadsForTicket reads the rows of the threads this computer owns
-// that are linked to ticket, newest first, an ask's hidden copy left out:
-// one statement on idx_thread_tickets_issue, whose cost grows with the
-// ticket's links and not with the threads.
+// that are linked to ticket, newest first, a hidden mode left out as
+// search leaves it out (an ask's copy, a side chat before Keep, which
+// carries its source's link and lists once kept): one statement on
+// idx_thread_tickets_issue, whose cost grows with the ticket's links and
+// not with the threads.
 func (s *Store) ListThreadsForTicket(ticket TicketRef) ([]Thread, error) {
 	if err := ticket.validate(); err != nil {
 		return nil, err
 	}
+	hidden, args := hiddenThreadModesClause("threads.mode")
 	rows, err := s.reader().Query(`SELECT `+threadColumns+` FROM owned_threads AS threads
 		WHERE threads.id IN (SELECT thread_id FROM thread_tickets WHERE kind = ? AND site = ? AND issue_id = ?)
-		  AND NOT (`+askCopySQL+`)
-		ORDER BY updated_at DESC`, ticket.Kind, ticket.Site, ticket.IssueID)
+		  AND `+hidden+`
+		ORDER BY updated_at DESC`, append([]any{ticket.Kind, ticket.Site, ticket.IssueID}, args...)...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list threads of %s ticket %s: %w", ticket.Kind, ticket.IssueID, err)
 	}
