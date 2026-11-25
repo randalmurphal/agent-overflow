@@ -59,6 +59,9 @@ function mountColumn(rows: RowView[], more: boolean) {
     failed: false,
     onNearEnd: () => { asks.push(Date.now()); },
     shown: true,
+    openIssue: null,
+    onOpenCard: () => {},
+    onCardMenu: () => {},
   });
   const app = mount(BoardColumn, { target: host, props });
   mounted.push({ app, host });

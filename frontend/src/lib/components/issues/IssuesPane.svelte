@@ -1,3 +1,20 @@
+<script module lang="ts">
+  import type { SplitSpec } from '../shared/splitWidth.svelte';
+
+  /** The board beside a ticket keeps 520, the ticket 380; the split starts
+   * at half. */
+  const TICKET_SPLIT: SplitSpec = { listMin: 520, listMax: Infinity, detailMin: 380, initial: (body) => Math.floor(body / 2) };
+  /** A ticket shows beside the board only in a pane this wide. */
+  const BESIDE_MIN_PX = 900;
+
+  // The ticket's components load on its first open, once per page.
+  let ticketScreen: Promise<typeof import('./TicketScreen.svelte')> | null = null;
+  function loadTicketScreen(): Promise<typeof import('./TicketScreen.svelte')> {
+    ticketScreen ??= import('./TicketScreen.svelte');
+    return ticketScreen;
+  }
+</script>
+
 <script lang="ts">
   // The Issues tool pane (docs/specs/issues.md, "Pane" and "Board"): one
   // app-wide pane over every project's boards on every attached computer.
@@ -9,8 +26,22 @@
   // pane's board selection (`createBoardSelection`); the subscription is
   // voted hidden while the window is hidden or the pane is not on screen
   // (`isPaneOnScreen`: another pane promoted, or a compact screen showing
-  // something else).
+  // something else). A card opens its ticket over the board, or beside it
+  // in a pane 900 or wider when the person chose that; the board stays
+  // mounted under it, with its scroll and its loaded depth, and is voted
+  // hidden while a ticket covers it. Back, Escape and the phone's Back
+  // step back through the tickets opened from one another, then close the
+  // ticket.
   import { onDestroy } from 'svelte';
+  import ContextMenu from '../primitives/ContextMenu.svelte';
+  import MenuItem from '../primitives/MenuItem.svelte';
+  import SplitResizer from '../shared/SplitResizer.svelte';
+  import { SplitWidth } from '../shared/splitWidth.svelte';
+  import type { RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+  import { registerIssuesBackHandler } from '../../stores/issuesCommands';
+  import { registerToolDetailProbe } from '../../stores/toolPanes.svelte';
+  import { addToast } from '../../stores/toast.svelte';
+  import { copyToClipboard } from '../../utils/clipboard';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Search from '@lucide/svelte/icons/search';
   import UserRound from '@lucide/svelte/icons/user-round';
@@ -43,6 +74,7 @@
     saveOnlyMine,
     savedOnlyMine,
     setCardFieldShown,
+    setTicketPlacement,
   } from '../../stores/issuesPane.svelte';
   import { dismissTrackerRefreshNotice, refreshTrackerBoard } from '../../stores/trackerBoard.svelte';
   import {
@@ -66,8 +98,38 @@
   const openedFrom = toolOpenedFromProject('issues');
 
   const shown = $derived(isPaneOnScreen(paneId));
-  const selection = createBoardSelection({ openedFromProject: openedFrom, shown: () => shown });
+  let bodyWidth = $state(0);
+  const besideFits = $derived(!compact && bodyWidth >= BESIDE_MIN_PX);
+  const selection = createBoardSelection({ openedFromProject: openedFrom, shown: () => shown, besideFits: () => besideFits });
   onDestroy(() => selection.destroy());
+  const ticket = $derived(selection.ticket);
+  const split = new SplitWidth('issuesTicketSplit:board', TICKET_SPLIT);
+
+  // The ticket view open now, for its own step back (the Details rail).
+  let ticketView: { stepBack(): boolean } | undefined = $state();
+  function stepBack(): boolean {
+    if (!selection.ticket) return false;
+    if (!ticketView?.stepBack()) selection.stepBack();
+    return true;
+  }
+  const disposeProbe = registerToolDetailProbe('issues', () => selection.ticket !== null);
+  const disposeBack = registerIssuesBackHandler(stepBack);
+  onDestroy(() => {
+    disposeBack();
+    disposeProbe();
+  });
+
+  function openCard(row: RowView): void {
+    selection.openTicket(row.card.id, { key: row.card.key, title: row.card.title, card: row.card }, 'board');
+  }
+
+  let cardMenu = $state<{ x: number; y: number; row: RowView } | null>(null);
+  function openCardMenu(row: RowView, event: MouseEvent): void {
+    cardMenu = { x: event.clientX, y: event.clientY, row };
+  }
+  async function copyKey(key: string): Promise<void> {
+    if (!(await copyToClipboard(key))) addToast('error', 'Could not copy the key.');
+  }
 
   const choices = $derived(trackerBoardChoices());
   const computers = $derived(trackerBoardChoiceComputers());
@@ -192,7 +254,7 @@
 </script>
 
 <div class="flex h-full min-h-0 flex-col" data-testid="issues-pane">
-  <ToolPaneHeader {paneId} kind="issues" {onPaneDragStart}>
+  <ToolPaneHeader {paneId} kind="issues" {onPaneDragStart} onBack={compact && ticket ? () => { stepBack(); } : undefined} backTestId="issues-back">
     <div class="flex min-w-0 flex-1 items-center gap-1">
       <BoardPicker
         {choices}
@@ -293,7 +355,16 @@
     <p class="border-b border-border-subtle px-3 py-1.5 text-xs text-fg-muted" data-testid="issues-only-mine-unknown">Only mine shows every card: the app does not know which account is yours on this board's connection.</p>
   {/if}
 
-  <div class="flex min-h-0 flex-1 flex-col" bind:this={bodyEl} tabindex="-1">
+  <div class="relative flex min-h-0 flex-1" bind:clientWidth={bodyWidth}>
+  <div
+    class="relative flex min-h-0 flex-col {ticket && selection.placement === 'beside' ? 'shrink-0 border-r border-border-subtle' : 'min-w-0 flex-1'}"
+    style:width={ticket && selection.placement === 'beside' ? `${split.width}px` : undefined}
+    bind:this={bodyEl}
+    tabindex="-1"
+    aria-hidden={ticket && selection.placement === 'over' ? 'true' : undefined}
+    inert={!!ticket && selection.placement === 'over'}
+    data-testid="issues-board-region"
+  >
     <RenderBoundary label="The board" testId="issues-board-render-error">
       {#if !board}
         <div class="flex flex-col items-start gap-2 px-4 py-6 text-sm text-fg-muted" data-testid="issues-empty">
@@ -319,12 +390,75 @@
           {/if}
         </div>
       {:else if held && attachment}
-        <BoardScreen boardKey={attachment.key} boardRef={board} {held} paging={boardState!.paging} sectionErrors={boardState!.sectionErrors} {filter} {hidden} {compact} {shown} />
+        <BoardScreen
+          boardKey={attachment.key}
+          boardRef={board}
+          {held}
+          paging={boardState!.paging}
+          sectionErrors={boardState!.sectionErrors}
+          {filter}
+          {hidden}
+          {compact}
+          shown={selection.boardShown}
+          openIssue={ticket?.ref.issue ?? null}
+          onOpenCard={openCard}
+          onCardMenu={openCardMenu}
+        />
       {:else if boardState && !boardState.ended}
         <p class="px-4 py-6 text-sm text-fg-muted" data-testid="issues-not-read">This computer has not read the board yet. It appears here once it has.</p>
       {:else if !boardState && !attachment?.error && !boardOffline}
         <p class="px-4 py-6 text-sm text-fg-muted" data-testid="issues-opening">Opening the board…</p>
       {/if}
     </RenderBoundary>
+    {#if ticket && selection.placement === 'beside'}
+      <SplitResizer column={split} testId="issues-ticket-resize" />
+    {/if}
+  </div>
+  {#if ticket && board && selection.ticketAttachment}
+    {@const held = selection.ticketAttachment}
+    {@const open = ticket}
+    {@const openBoard = board}
+    <div
+      class={selection.placement === 'over' ? 'absolute inset-0 z-[3] flex min-h-0 flex-col bg-surface-0' : 'flex min-h-0 min-w-0 flex-1 flex-col'}
+      data-testid="issues-ticket"
+      data-placement={selection.placement}
+    >
+      <RenderBoundary label="The ticket" testId="issues-ticket-render-error">
+        {#await loadTicketScreen()}
+          <p class="px-4 py-6 text-sm text-fg-muted" data-testid="ticket-loading">Opening the ticket…</p>
+        {:then mod}
+          {#key held.key}
+            <mod.default
+              bind:this={ticketView}
+              attachment={held}
+              seed={open.seed}
+              board={openBoard.board}
+              kind={choices.find((c) => c.backend === openBoard.backend && c.choice.connection === openBoard.connection)?.choice.connection_kind ?? ''}
+              computerName={computerName(openBoard.backend)}
+              offline={boardOffline}
+              {compact}
+              trail={selection.trail}
+              placement={selection.placement}
+              {besideFits}
+              onPlacement={(p) => setTicketPlacement('board', p)}
+              onBack={() => selection.stepBack()}
+              onClose={() => selection.closeTicket()}
+              onOpenIssue={(issue, seed) => selection.openTicket(issue, seed, 'ticket')}
+            />
+          {/key}
+        {:catch err}
+          <p class="px-4 py-6 text-sm text-error" role="alert" data-testid="ticket-load-error">The ticket screen could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</p>
+        {/await}
+      </RenderBoundary>
+    </div>
+  {/if}
   </div>
 </div>
+
+{#if cardMenu}
+  {@const row = cardMenu.row}
+  <ContextMenu x={cardMenu.x} y={cardMenu.y} ariaLabel="Card actions" onDismiss={() => { cardMenu = null; }}>
+    <MenuItem label="Open" testId="issues-card-menu-open" onSelect={() => { cardMenu = null; openCard(row); }} />
+    <MenuItem label="Copy key" testId="issues-card-menu-copy-key" onSelect={() => { cardMenu = null; void copyKey(row.card.key); }} />
+  </ContextMenu>
+{/if}

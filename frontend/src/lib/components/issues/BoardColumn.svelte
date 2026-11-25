@@ -44,9 +44,13 @@
     shown: boolean;
     /** Fills the pane (compact) rather than a fixed width. */
     wide?: boolean;
+    /** The issue whose ticket is open, null for none. */
+    openIssue: string | null;
+    onOpenCard: (row: RowView) => void;
+    onCardMenu: (row: RowView, event: MouseEvent) => void;
   }
 
-  let { column, rows, filtered, unit, hidden, now, paging, failed, onNearEnd, shown, wide = false }: Props = $props();
+  let { column, rows, filtered, unit, hidden, now, paging, failed, onNearEnd, shown, wide = false, openIssue, onOpenCard, onCardMenu }: Props = $props();
 
   const estimate: RowEstimate = { at: () => CARD_ESTIMATE_PX, isExact: () => false };
   const getKey = (row: RowView) => row.card.id;
@@ -133,7 +137,7 @@
         onscroll={check}
       >
         {#snippet children(row: RowView)}
-          <BoardCard {row} {hidden} {unit} {now} />
+          <BoardCard {row} {hidden} {unit} {now} open={row.card.id === openIssue} onOpen={onOpenCard} onMenu={onCardMenu} />
         {/snippet}
       </LongListVirtualizer>
     {/if}
