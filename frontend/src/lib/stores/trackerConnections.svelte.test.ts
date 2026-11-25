@@ -17,7 +17,7 @@ import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import { deferred } from '../../test/helpers/providerAccounts';
 import { REMOTE_BACKEND_UUID, stageBackend } from '../../test/helpers/backends';
 import { trackerConnection } from '../../test/helpers/trackerConnections';
-import { answerAsV0019 } from '../../test/helpers/olderComputer';
+import { SCOPES_AT_V0_0_19, answerAsV0019 } from '../../test/helpers/olderComputer';
 import { pairWithScopes, resetToLocalPage } from '../../test/helpers/scopes';
 import { __resetBackendsForTest, getPinnedBackend } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
@@ -58,7 +58,7 @@ describe('a held connection list', () => {
     expect(trackerConnectionsOf(HOME_BACKEND).loaded).toBe(true);
     second();
     second();
-    expect(trackerConnectionsOf(HOME_BACKEND)).toEqual({ list: [], loaded: false, error: null });
+    expect(trackerConnectionsOf(HOME_BACKEND)).toEqual({ list: [], loaded: false, error: null, older: false });
 
     // Nobody holds it: a nudge reads nothing.
     applyTrackerConnectionsChanged(HOME_BACKEND);
@@ -155,12 +155,11 @@ describe('a held connection list', () => {
     expect(trackerConnectionsOf(HOME_BACKEND).list).toHaveLength(1);
   });
 
-  it('reads as empty on a computer whose release has no trackers', async () => {
+  it('reads as empty, and says so, on a computer whose release has no trackers', async () => {
     answerAsV0019();
     acquireTrackerConnections(HOME_BACKEND);
     await vi.waitFor(() => expect(trackerConnectionsOf(HOME_BACKEND).loaded).toBe(true));
-    expect(trackerConnectionsOf(HOME_BACKEND).list).toEqual([]);
-    expect(trackerConnectionsOf(HOME_BACKEND).error).toBeNull();
+    expect(trackerConnectionsOf(HOME_BACKEND)).toMatchObject({ list: [], error: null, older: true });
   });
 
   it('asks nothing of a computer that does not grant tracker:read', async () => {
@@ -267,6 +266,26 @@ describe('two computers', () => {
     // Each action read its own computer again, and only that one.
     const readTargets = read.mock.calls.length;
     expect(readTargets).toBe(2 + 3);
+  });
+
+  // v0.0.19 has no tracker scopes, so its grant never holds tracker:read,
+  // and it answers a method it lacks before it checks a grant.
+  it('says a computer on v0.0.19 lacks trackers, with the grants that release gives', async () => {
+    setCarriedSessionScopes('laptop', SCOPES_AT_V0_0_19);
+    answerAsV0019();
+    acquireTrackerConnections('laptop');
+    await vi.waitFor(() => expect(trackerConnectionsOf('laptop').loaded).toBe(true));
+    expect(trackerConnectionsOf('laptop')).toMatchObject({ older: true, list: [], error: null });
+  });
+
+  it('keeps a current computer’s refusal of tracker:read a refusal', async () => {
+    setCarriedSessionScopes('laptop', ['threads:read']);
+    setBindingMock('TrackerConnections', async () => {
+      throw new TransportError('scope_required', 'tracker:read required', { scope: 'tracker:read' });
+    });
+    acquireTrackerConnections('laptop');
+    await vi.waitFor(() => expect(trackerConnectionsOf('laptop').loaded).toBe(true));
+    expect(trackerConnectionsOf('laptop')).toMatchObject({ older: false, list: [], error: null });
   });
 
   it('drops a computer’s list when it is detached', async () => {

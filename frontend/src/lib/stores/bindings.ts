@@ -1501,9 +1501,9 @@ export {
 export type { TrackerConnection, NewTrackerConnection } from '../../../bindings/agent-overflow/internal/app/models.js';
 export type { BoardChoice as TrackerBoardChoice, ProjectBoard as TrackerProjectBoard, ProjectView as TrackerProjectView, BoardInfoView as TrackerBoardInfo } from '../../../bindings/agent-overflow/internal/trackerapp/models.js';
 
-/** This computer's tracker connections; none on a computer without them. */
-export function TrackerConnections(): Promise<TrackerConnectionRow[]> {
-  return orOlder(() => TrackerConnectionsRaw(), () => []);
+/** This computer's tracker connections; null on a computer whose release has no trackers. */
+export function TrackerConnections(): Promise<TrackerConnectionRow[] | null> {
+  return orOlder(() => TrackerConnectionsRaw(), () => null);
 }
 
 /** The boards a project lists; none on a computer without trackers. */

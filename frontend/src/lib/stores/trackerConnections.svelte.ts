@@ -15,6 +15,14 @@
 // Every call is pinned to the computer (withBackendTarget): a connection
 // ID names a connection on the computer that answered it, and nothing
 // else says which computer that is.
+//
+// Whether an attached computer has trackers at all is its answer's to
+// say: a release before them (v0.0.19) has no tracker scope to grant, so
+// its grant never holds tracker:read, and it answers a method it lacks
+// before it checks a grant. So the read goes to an attached computer
+// whatever its grant, and a current one's scope_required is the refusal
+// the page already shows from the grant. The page's own computer runs
+// this release, so there the grant alone decides.
 
 import { SvelteMap } from 'svelte/reactivity';
 import {
@@ -32,8 +40,9 @@ import {
 } from './bindings';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { attachedBackends, onBackendsChanged, withBackendTarget } from '../transport/backends';
-import { hasScope, pageGrantsResolved } from '../transport/scopes';
+import { hasScope, pageGrantsResolved, type ScopeGrant } from '../transport/scopes';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
+import { isScopeRefusal } from '../transport/scopeRefusal';
 import { onBackendStatusChange } from './transportStatus.svelte';
 
 class HeldConnections {
@@ -42,6 +51,8 @@ class HeldConnections {
   loaded = $state(false);
   /** The last read's failure, cleared by the next read that lands. */
   error = $state<unknown>(null);
+  /** The computer's release has no trackers: it does not have the read. */
+  older = $state(false);
   holders = 0;
   dropped = false;
   private running: Promise<void> | null = null;
@@ -70,25 +81,34 @@ class HeldConnections {
   private async fetch(): Promise<void> {
     if (this.backend === HOME_BACKEND) await pageGrantsResolved();
     if (this.dropped) return;
-    if (!hasScope('tracker:read', this.backend)) {
-      this.list = [];
-      this.loaded = true;
+    const granted = hasScope('tracker:read', this.backend);
+    if (!granted && this.backend === HOME_BACKEND) {
+      this.settle([], false);
       return;
     }
     try {
       const list = await withBackendTarget(this.backend, () => TrackerConnections());
       if (this.dropped) return;
-      this.list = list;
-      this.error = null;
-      this.loaded = true;
+      this.settle(list ?? [], list === null);
     } catch (err) {
       if (this.dropped) return;
+      if (!granted && isScopeRefusal(err)) {
+        this.settle([], false);
+        return;
+      }
       // Once a list was read, a dropped connection keeps it: it is not
       // evidence the connections changed, and the reconnect reads again.
       // Before any read answered, every failure is shown, since there is
       // no list to keep and an empty one would read as "no connections".
       if (!this.loaded || !isPassiveConnectionFailure(err)) this.error = err;
     }
+  }
+
+  private settle(list: TrackerConnection[], older: boolean): void {
+    this.list = list;
+    this.older = older;
+    this.error = null;
+    this.loaded = true;
   }
 }
 
@@ -129,9 +149,25 @@ export interface TrackerConnectionsView {
   list: readonly TrackerConnection[];
   loaded: boolean;
   error: unknown;
+  /** The computer's release has no trackers. */
+  older: boolean;
 }
 
-const NONE: TrackerConnectionsView = { list: [], loaded: false, error: null };
+const NONE: TrackerConnectionsView = { list: [], loaded: false, error: null, older: false };
+
+/**
+ * What a tracker page shows for its computer, from its connections and
+ * its grant of tracker:read: `older` when the computer's release has no
+ * trackers, `refused` once a current computer answered while its grant
+ * refuses, `waiting` while an attached computer whose grant refuses has
+ * not answered (only its answer says which of the two it is), otherwise
+ * `open`.
+ */
+export function trackerReadGate(view: TrackerConnectionsView, grant: ScopeGrant): 'older' | 'refused' | 'waiting' | 'open' {
+  if (view.older) return 'older';
+  if (grant !== 'refused') return 'open';
+  return view.loaded || view.error !== null ? 'refused' : 'waiting';
+}
 
 /**
  * Hold `backend`'s connections while the caller shows them, reading them

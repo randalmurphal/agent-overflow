@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import TrackerBoardsSettings from './TrackerBoardsSettings.svelte';
+import ComputerSettingsPage from './ComputerSettingsPage.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { readSidebarCatalogs } from '../../../test/helpers/sidebarCatalogs';
 import { trackerBoardChoice, trackerConnection } from '../../../test/helpers/trackerConnections';
@@ -8,6 +9,9 @@ import { noteProject } from '../../transport/entityIndex';
 import { getPinnedBackend } from '../../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
 import { TransportError } from '../../transport/wsClient';
+import { setCarriedSessionScopes } from '../../transport/scopes';
+import { SCOPES_AT_V0_0_19, answerAsV0019, methodNotFound } from '../../../test/helpers/olderComputer';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { addProjectLocal } from '../../stores/projects.svelte';
 import { openTrackerBoardsSettings } from '../../stores/settingsOverlay.svelte';
 import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
@@ -231,5 +235,40 @@ describe('<TrackerBoardsSettings>', () => {
     stored.p1 = [trackerBoardChoice({ board: '42', name: '', tracker_project: '' })];
     await renderOnP1();
     await waitFor(() => expect(names()).toEqual(['Board 42']));
+  });
+
+  describe('on an attached computer', () => {
+    beforeEach(() => {
+      stageBackend();
+    });
+    afterEach(() => {
+      resetStagedBackends();
+    });
+
+    // v0.0.19 grants a full-access device every scope it has, none of
+    // them a tracker scope, and answers the tracker methods as missing.
+    it('says a computer on v0.0.19 has no issue trackers, not that this device may not read them', async () => {
+      setCarriedSessionScopes('laptop', SCOPES_AT_V0_0_19);
+      answerAsV0019();
+      let refuse!: (err: unknown) => void;
+      setBindingMock('TrackerConnections', () => new Promise<never>((_resolve, reject) => (refuse = reject)));
+      const view = render(ComputerSettingsPage, { props: { backend: 'laptop', Page: TrackerBoardsSettings, needsComputer: false } });
+      // Until the computer answers, its grant alone cannot say which it is.
+      await view.findByTestId('settings-tracker-boards-waiting');
+      expect(view.queryByTestId('settings-tracker-boards-refused')).toBeNull();
+      refuse(methodNotFound());
+      expect((await view.findByTestId('settings-older-computer')).textContent).toBe('Laptop runs an older version: it has no issue trackers.');
+      expect(view.queryByTestId('settings-tracker-boards-refused')).toBeNull();
+    });
+
+    it('keeps a current computer’s refusal of tracker:read a refusal', async () => {
+      setCarriedSessionScopes('laptop', ['threads:read']);
+      setBindingMock('TrackerConnections', async () => {
+        throw new TransportError('scope_required', 'tracker:read required', { scope: 'tracker:read' });
+      });
+      const view = render(ComputerSettingsPage, { props: { backend: 'laptop', Page: TrackerBoardsSettings, needsComputer: false } });
+      await view.findByTestId('settings-tracker-boards-refused');
+      expect(view.queryByTestId('settings-older-computer')).toBeNull();
+    });
   });
 });

@@ -13,7 +13,7 @@
   import { projectBackend } from '../../transport/entityIndex';
   import { getProjects, isLoaded } from '../../stores/projects.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
-  import { acquireTrackerConnections, refreshTrackerConnections, trackerConnectionsOf } from '../../stores/trackerConnections.svelte';
+  import { acquireTrackerConnections, refreshTrackerConnections, trackerConnectionsOf, trackerReadGate } from '../../stores/trackerConnections.svelte';
   import {
     acquireTrackerProjectBoards,
     saveTrackerProjectBoards,
@@ -34,6 +34,7 @@
   import Icon from '../primitives/Icon.svelte';
   import SettingsField from './SettingsField.svelte';
   import TrackerBoardAdd from './TrackerBoardAdd.svelte';
+  import SettingsOlderComputer from './SettingsOlderComputer.svelte';
   import { GHOST_BUTTON_CLASS, SELECT_CLASS } from './styles';
   import { trackerConnectionName, trackerKindName } from './trackerConnectionStatus';
 
@@ -80,7 +81,7 @@
   let choosable = $derived(connections.filter((c) => c.enabled && c.kind !== 'tempo'));
   let listed = $derived(new Set(list.map((b) => `${b.connection}\u0000${b.board}`)));
 
-  let readGrant = $derived(scopeGrant('tracker:read'));
+  let gate = $derived(trackerReadGate(connectionsView, scopeGrant('tracker:read')));
   let operateGrant = $derived(scopeGrant('tracker:operate'));
   let operateReason = $derived(
     operateGrant === 'granted'
@@ -135,10 +136,14 @@
 </script>
 
 <div class="settings-sections flex flex-col gap-4" data-testid="settings-tracker-boards">
-  {#if readGrant === 'refused'}
+  {#if gate === 'older'}
+    <SettingsOlderComputer {backend} lacks="issue trackers" />
+  {:else if gate === 'refused'}
     <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-boards-refused">
       This device may not read a project's boards on this computer.
     </p>
+  {:else if gate === 'waiting'}
+    <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-boards-waiting">Asking this computer about its trackers…</p>
   {:else if projectsLoaded && projects.length === 0}
     <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-boards-no-projects">
       No projects yet. Add one from the sidebar first.

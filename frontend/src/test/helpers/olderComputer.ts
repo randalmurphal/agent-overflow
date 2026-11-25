@@ -28,6 +28,16 @@ export const METHODS_AFTER_V0_0_19 = [
   'ProjectTrackerBoards', 'SetProjectTrackerBoards',
 ] as const;
 
+/**
+ * What v0.0.19 grants a device it gives full access: every scope that
+ * release has, which holds no tracker scope.
+ */
+export const SCOPES_AT_V0_0_19 = [
+  'threads:read', 'files:read', 'threads:operate', 'approvals:respond', 'threads:autonomy',
+  'terminal:operate', 'preview:open', 'git:operate', 'attachments:write', 'settings:read',
+  'settings:write', 'access:admin',
+] as const;
+
 /** The App methods that answer a value in this build and `null` on v0.0.19. */
 export const RESULTLESS_AT_V0_0_19 = ['ArchiveThread', 'DeleteThread'] as const;
 

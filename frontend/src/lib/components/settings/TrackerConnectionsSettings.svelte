@@ -10,10 +10,12 @@
     acquireTrackerConnections,
     refreshTrackerConnections,
     trackerConnectionsOf,
+    trackerReadGate,
   } from '../../stores/trackerConnections.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import TrackerConnectionAdd from './TrackerConnectionAdd.svelte';
   import TrackerConnectionRow from './TrackerConnectionRow.svelte';
+  import SettingsOlderComputer from './SettingsOlderComputer.svelte';
   import { GHOST_BUTTON_CLASS } from './styles';
 
   const { backend, onHost, scopeGrant } = settingsComputer();
@@ -21,7 +23,7 @@
   onMount(() => acquireTrackerConnections(backend));
 
   let view = $derived(trackerConnectionsOf(backend));
-  let readGrant = $derived(scopeGrant('tracker:read'));
+  let gate = $derived(trackerReadGate(view, scopeGrant('tracker:read')));
   let operateGrant = $derived(scopeGrant('tracker:operate'));
   let operateReason = $derived(
     operateGrant === 'granted'
@@ -35,7 +37,9 @@
 </script>
 
 <div class="settings-sections flex flex-col gap-4" data-testid="settings-tracker-connections">
-  {#if readGrant === 'refused'}
+  {#if gate === 'older'}
+    <SettingsOlderComputer {backend} lacks="issue trackers" />
+  {:else if gate === 'refused'}
     <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-connections-refused">
       This device may not read the tracker connections on this computer.
     </p>

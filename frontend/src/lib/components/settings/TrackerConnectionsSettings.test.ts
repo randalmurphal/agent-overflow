@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import TrackerConnectionsSettings from './TrackerConnectionsSettings.svelte';
+import ComputerSettingsPage from './ComputerSettingsPage.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { KeyFileState, trackerConnection } from '../../../test/helpers/trackerConnections';
+import { SCOPES_AT_V0_0_19, answerAsV0019 } from '../../../test/helpers/olderComputer';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { TransportError } from '../../transport/wsClient';
+import { setCarriedSessionScopes } from '../../transport/scopes';
 import type { TrackerConnection } from '../../stores/bindings';
 
 /** The computer's list: what TrackerConnections answers now. */
@@ -293,5 +297,35 @@ describe('<TrackerConnectionsSettings>', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await screen.findByTestId('tracker-connection-jira-1');
     expect(screen.queryByTestId('settings-tracker-connections-error')).toBeNull();
+  });
+
+  describe('on an attached computer', () => {
+    beforeEach(() => {
+      stageBackend();
+    });
+    afterEach(() => {
+      resetStagedBackends();
+    });
+
+    // v0.0.19 grants a full-access device every scope it has, none of
+    // them a tracker scope, and answers the tracker methods as missing.
+    it('says a computer on v0.0.19 has no issue trackers, not that this device may not read them', async () => {
+      setCarriedSessionScopes('laptop', SCOPES_AT_V0_0_19);
+      answerAsV0019();
+      const view = render(ComputerSettingsPage, { props: { backend: 'laptop', Page: TrackerConnectionsSettings, needsComputer: false } });
+      expect((await view.findByTestId('settings-older-computer')).textContent).toBe('Laptop runs an older version: it has no issue trackers.');
+      expect(view.queryByTestId('settings-tracker-connections-refused')).toBeNull();
+      expect(view.queryByTestId('tracker-connection-add')).toBeNull();
+    });
+
+    it('keeps a current computer’s refusal of tracker:read a refusal', async () => {
+      setCarriedSessionScopes('laptop', ['threads:read']);
+      setBindingMock('TrackerConnections', async () => {
+        throw new TransportError('scope_required', 'tracker:read required', { scope: 'tracker:read' });
+      });
+      const view = render(ComputerSettingsPage, { props: { backend: 'laptop', Page: TrackerConnectionsSettings, needsComputer: false } });
+      await view.findByTestId('settings-tracker-connections-refused');
+      expect(view.queryByTestId('settings-older-computer')).toBeNull();
+    });
   });
 });
