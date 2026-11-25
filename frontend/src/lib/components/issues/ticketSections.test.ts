@@ -17,6 +17,9 @@ import { attachTrackerTicket, type TrackerTicketAttachment } from '../../stores/
 import { setTicketPoints, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { HOME_BACKEND } from '../../transport/backendKey';
+import { rememberImageTier } from '../../utils/imageTiers';
+import { BROWSER_SAVE_MAX_BYTES } from '../../utils/trackerAttachments';
+import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 
 const REF = { backend: HOME_BACKEND, connection: 'c1', issue: '10101' };
 const CTX: TicketWriteContext = { key: 'ticket-1', ref: REF, label: 'WEB-1' };
@@ -94,6 +97,43 @@ describe('the attachments section', () => {
     await fireEvent.click(await waitFor(() => document.body.querySelector<HTMLElement>('[data-testid="ticket-attachment-save"]')!));
     await waitFor(() => expect(save).toHaveBeenCalledWith('sub-1', 'a2'));
     held.release();
+  });
+
+  it('offers Open only for an image small enough to preview here, and Save or the tracker for a larger one', async () => {
+    const { getAllByTestId } = render(TicketAttachments, {
+      props: {
+        ctx: CTX, ticket: TICKET, canAttach: true, open: true, onFold: () => {},
+        attachments: [file('a1', 'small.png', 2, 1_000_000, 'image/png'), file('a2', 'huge.png', 1, 40 * 1024 * 1024, 'image/png')],
+      },
+    });
+    const menu = async (row: number) => {
+      await fireEvent.click(getAllByTestId('ticket-attachment-menu')[row]);
+      await waitFor(() => expect(document.body.querySelector('[data-testid="ticket-attachment-save"]')).not.toBeNull());
+      const offered = Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')).map((m) => m.dataset.testid);
+      await fireEvent.keyDown(document.body, { key: 'Escape' });
+      await waitFor(() => expect(document.body.querySelector('[data-testid="ticket-attachment-save"]')).toBeNull());
+      return offered;
+    };
+    expect(await menu(0)).toContain('ticket-attachment-open');
+    const huge = await menu(1);
+    expect(huge).not.toContain('ticket-attachment-open');
+    expect(huge).toContain('ticket-attachment-save');
+  });
+
+  it('offers Open in the tracker once when a connected browser saves a large file there', async () => {
+    await pairWithScopes(['threads:read', 'tracker:read']);
+    try {
+      const { getAllByTestId } = render(TicketAttachments, {
+        props: { ctx: CTX, ticket: TICKET, canAttach: true, open: true, onFold: () => {}, attachments: [file('a1', 'huge.zip', 1, BROWSER_SAVE_MAX_BYTES + 1, 'application/zip')] },
+      });
+      await fireEvent.click(getAllByTestId('ticket-attachment-menu')[0]);
+      const save = await waitFor(() => document.body.querySelector<HTMLElement>('[data-testid="ticket-attachment-save"]')!);
+      expect(save.textContent?.trim()).toBe('Open in the tracker');
+      const labels = Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')).map((m) => m.textContent?.trim());
+      expect(labels.filter((l) => l === 'Open in the tracker')).toHaveLength(1);
+    } finally {
+      resetToLocalPage();
+    }
   });
 
   it('offers no Attach where the tracker stores no files', () => {
@@ -247,5 +287,59 @@ describe('a file the ticket\'s text names', () => {
     await flush();
     expect(container.querySelector('[data-tracker-media]')).toBeNull();
     vi.unstubAllGlobals();
+  });
+
+  it('lets an image scrolled away release its bytes while keeping its box, and paints it again when it comes back', async () => {
+    const observers: Array<(entries: Array<{ isIntersecting: boolean }>) => void> = [];
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(report: (entries: Array<{ isIntersecting: boolean }>) => void, options: { rootMargin: string }) {
+        if (options.rootMargin === '200px') observers.push(report);
+      }
+      observe(): void {}
+      disconnect(): void {}
+    });
+    try {
+      const releases: string[] = [];
+      const acquire = vi.fn(() => ({
+        settled: { url: 'blob:diagram', mimeType: 'image/png', width: 0, height: 0, originalWidth: 0, originalHeight: 0, originalBytes: 10, derived: false, blob: new Blob() },
+        value: new Promise<never>(() => {}),
+        sized: Promise.resolve(undefined),
+        release: () => releases.push('diagram'),
+      }));
+      const image = { key: 'img-2', filename: 'diagram.png', acquire, original: async () => new Blob(), menuTag: {} };
+      const read: TrackerMediaReader = (name) => (name === 'diagram.png' ? { name, size: 10, image, save: () => {}, saveLabel: 'Save' } : null);
+      // Painted before, so a mount paints from the cache in its frame.
+      rememberImageTier(image.key, 0);
+      const { container } = render(TicketMarkdown, {
+        props: { source: '![diagram.png](media:1)' },
+        context: new Map([[TRACKER_MEDIA_CONTEXT, read]]),
+      });
+      await waitFor(() => expect(observers).toHaveLength(1));
+      observers[0]!([{ isIntersecting: true }]);
+      const img = await waitFor(() => {
+        const found = container.querySelector<HTMLImageElement>('img[src="blob:diagram"]');
+        expect(found).not.toBeNull();
+        return found!;
+      });
+      // The picture as the browser decoded it.
+      Object.defineProperty(img, 'naturalWidth', { configurable: true, value: 640 });
+      Object.defineProperty(img, 'naturalHeight', { configurable: true, value: 480 });
+      expect(releases).toEqual([]);
+
+      observers[0]!([{ isIntersecting: false }]);
+      await flush();
+      expect(releases).toEqual(['diagram']);
+      expect(container.querySelector('img[src="blob:diagram"]')).toBeNull();
+      const box = container.querySelector<HTMLElement>('[data-streamdown-image-box] [role="img"]');
+      expect(box).not.toBeNull();
+      expect(box!.style.width).toBe('640px');
+      expect(box!.style.aspectRatio).toBe('640 / 480');
+
+      observers[0]!([{ isIntersecting: true }]);
+      await waitFor(() => expect(container.querySelector('img[src="blob:diagram"]')).not.toBeNull());
+      expect(acquire).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

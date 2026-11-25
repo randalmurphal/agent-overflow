@@ -2290,6 +2290,37 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
     }
   });
 
+  it('sets the estimate from a revealed poker round through the ticket menu', async () => {
+    install();
+    installTicket();
+    setBindingMock('TrackerPokerSupport', async () => ({ available: true }));
+    setBindingMock('FollowTrackerPoker', async () => ({
+      loaded: true, revealed: true, read_at: 1,
+      votes: [{ voter: { id: 'u1', name: 'User 1' }, value: 5, mine: true }, { voter: { id: 'u2', name: 'User 2' }, value: 5 }, { voter: { id: 'u3', name: 'User 3' }, value: 3 }],
+    }));
+    const estimate = setBindingMock('SetTrackerEstimate', async () => applied());
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(private report: (entries: Array<{ isIntersecting: boolean }>) => void) {}
+      observe(): void {
+        this.report([{ isIntersecting: true }]);
+      }
+      disconnect(): void {}
+    });
+    try {
+      const view = mount();
+      const screen = await openCard(view, '1');
+      await fireEvent.click(await within(screen).findByTestId('ticket-poker-fold'));
+      await within(screen).findByTestId('ticket-poker-result');
+      await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+      const items = await within(document.body).findAllByTestId('ticket-menu-poker-estimate');
+      expect(items.map((i) => i.textContent?.replace(/\s+/g, ' ').trim())).toEqual(['Set estimate to 5 (2 votes)', 'Set estimate to 3 (1 vote)']);
+      await fireEvent.click(items[0]!);
+      await waitFor(() => expect(estimate).toHaveBeenCalledWith('c1', { board: '1', issue: '1', value: 5 }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('says in the poker section that the site could not be asked, asks again on Retry and on the next opening', async () => {
     install();
     installTicket();

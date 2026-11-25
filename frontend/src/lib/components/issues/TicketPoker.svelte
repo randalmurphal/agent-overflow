@@ -12,7 +12,7 @@
   // the ticket's board row, most votes first. A poker failure shows here
   // and nowhere else.
   import type { TicketPoker, TrackerTicketAttachment } from '../../stores/trackerTicket.svelte';
-  import { pokerResult } from '../../stores/trackerTicketModel';
+  import { pokerEstimateChoice, pokerResult } from '../../stores/trackerTicketModel';
   import {
     clearTicketPokerVotes,
     revealTicketPoker,
@@ -179,8 +179,9 @@
       {#if onSetEstimate}
         {@const set = onSetEstimate}
         {#each result as r (r.value)}
+          {@const choice = pokerEstimateChoice(r, hours)}
           <button type="button" class="rounded-[var(--radius-control)] border border-border-subtle px-2 py-0.5 text-xs text-fg hover:bg-surface-1 disabled:opacity-60 compact:min-h-9" disabled={settingEstimate} data-testid="ticket-poker-set-estimate" onclick={() => set(r.value)}>
-            Set estimate to {r.value}{hours ? (r.value === 1 ? ' hour' : ' hours') : ''} <span class="text-fg-muted">({r.count} {r.count === 1 ? 'vote' : 'votes'})</span>
+            {choice.action} <span class="text-fg-muted">{choice.votes}</span>
           </button>
         {/each}
       {:else}

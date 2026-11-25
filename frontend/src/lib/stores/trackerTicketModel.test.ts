@@ -9,7 +9,7 @@ import {
   commentWindow,
   heldComments,
   historyWindow,
-  INLINE_IMAGE_MAX_BYTES,
+  PREVIEW_MAX_BYTES,
   linkRelations,
   linkRequest,
   mediaAttachment,
@@ -17,7 +17,7 @@ import {
   newestHistory,
   pokerResult,
   sectionFields,
-  showsInline,
+  previewsInApp,
   ticketRow,
 } from './trackerTicketModel';
 
@@ -111,9 +111,9 @@ describe('files in the text', () => {
     expect(mediaAttachment([a], 'missing.png')).toBeNull();
   });
 
-  it('shows an image in place up to the cap, and anything else as a chip', () => {
-    expect(showsInline(file('1', 'a.png', 'image/png', INLINE_IMAGE_MAX_BYTES))).toBe(true);
-    expect(showsInline(file('1', 'a.png', 'image/png', INLINE_IMAGE_MAX_BYTES + 1))).toBe(false);
-    expect(showsInline(file('1', 'a.pdf', 'application/pdf', 10))).toBe(false);
+  it('previews an image up to the cap, and nothing else', () => {
+    expect(previewsInApp(file('1', 'a.png', 'image/png', PREVIEW_MAX_BYTES))).toBe(true);
+    expect(previewsInApp(file('1', 'a.png', 'image/png', PREVIEW_MAX_BYTES + 1))).toBe(false);
+    expect(previewsInApp(file('1', 'a.pdf', 'application/pdf', 10))).toBe(false);
   });
 });

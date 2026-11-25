@@ -2,7 +2,8 @@
 // "Ticket"): which comments and changes are mounted, the order of the
 // rail's fields, which fields are sections, how linked tickets group and
 // which side a new link sends, what a poker round's votes add up to,
-// which attachment a file in the text names, and the row of the board the
+// which attachment a file in the text names and which the app previews,
+// and the row of the board the
 // ticket shows its points from. What a write's answer means is
 // trackerWriteOutcome.ts's. The stores and the components call these;
 // each rule is here once.
@@ -138,10 +139,18 @@ export function pokerResult(votes: readonly PokerVoteView[]): readonly { readonl
   return [...counts].map(([value, count]) => ({ value, count })).sort((a, b) => b.count - a.count || a.value - b.value);
 }
 
-/** The largest image the ticket's text shows in place; a larger one stays
- * a chip with its size and Save, so one image cannot take more than a
- * quarter of the media cache (utils/mediaBlobCache.ts). */
-export const INLINE_IMAGE_MAX_BYTES = 16 * 1024 * 1024;
+/** A revealed round's choice as the poker section and the ticket menu
+ * offer it: "Set estimate to 5 hours" and "(2 votes)". */
+export function pokerEstimateChoice(r: { readonly value: number; readonly count: number }, hours: boolean): { readonly action: string; readonly votes: string } {
+  const unit = hours ? (r.value === 1 ? ' hour' : ' hours') : '';
+  return { action: `Set estimate to ${r.value}${unit}`, votes: `(${r.count} ${r.count === 1 ? 'vote' : 'votes'})` };
+}
+
+/** The largest image the app previews, in the ticket's text or from its
+ * attachment row; a larger one is saved or opened in the tracker, so one
+ * image cannot take more than a quarter of the media cache
+ * (utils/mediaBlobCache.ts). */
+export const PREVIEW_MAX_BYTES = 16 * 1024 * 1024;
 
 /** The attachment a file in the ticket's text names: the one attachment
  * whose name is the text's, or null when none or several have it. The
@@ -157,9 +166,10 @@ export function mediaAttachment(attachments: readonly AttachmentView[], name: st
   return found;
 }
 
-/** Whether the ticket's text shows the attachment as an image in place. */
-export function showsInline(attachment: AttachmentView): boolean {
-  return (attachment.mime_type ?? '').startsWith('image/') && attachment.size <= INLINE_IMAGE_MAX_BYTES;
+/** Whether the app previews the attachment: the one admission rule for
+ * an image in the ticket's text and for Open on its row. */
+export function previewsInApp(attachment: AttachmentView): boolean {
+  return (attachment.mime_type ?? '').startsWith('image/') && attachment.size <= PREVIEW_MAX_BYTES;
 }
 
 /** Whether a field holds a value. */

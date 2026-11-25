@@ -81,7 +81,7 @@
     trackerPokerSupport,
     type TrackerTicketAttachment,
   } from '../../stores/trackerTicket.svelte';
-  import { fieldText, isFilled, moreFields, sectionFields, shownText, ticketRow } from '../../stores/trackerTicketModel';
+  import { fieldText, isFilled, moreFields, pokerEstimateChoice, pokerResult, sectionFields, shownText, ticketRow } from '../../stores/trackerTicketModel';
   import { localDay } from '../../stores/trackerTimeModel';
   import {
     assignableUsers,
@@ -290,6 +290,10 @@
   const pokerSupportFailure = $derived(hasDetail && pokerSupport !== null && typeof pokerSupport === 'object' && 'failed' in pokerSupport ? pokerSupport.failed : null);
   const pokerOpen = $derived(ticketSectionOpen(section('poker'), false));
   const pokerPending = $derived(ticketWrite(ctx.key, 'poker')?.pending ?? false);
+  // A revealed round's values, which the menu offers as the estimate as
+  // the section does; known only while the section follows the votes.
+  const pokerView = $derived(ticketState?.poker?.view ?? null);
+  const pokerEstimates = $derived(pokerView?.loaded && pokerView.revealed ? pokerResult(pokerView.votes ?? []) : []);
   let pokerBody: TicketPoker | undefined = $state();
   async function openPoker(then: (body: TicketPoker) => void): Promise<void> {
     setTicketSectionOpen(section('poker'), true);
@@ -798,6 +802,13 @@
         <MenuItem label="Vote…" disabled={pokerPending} testId="ticket-menu-poker-vote" onSelect={() => run(() => openPoker((body) => body.focusVote()))} />
         <MenuItem label="Reveal votes" disabled={pokerPending} testId="ticket-menu-poker-reveal" onSelect={() => run(revealVotes)} />
         <MenuItem label="Clear votes…" disabled={pokerPending} testId="ticket-menu-poker-clear" onSelect={() => run(() => openPoker((body) => body.askClear()))} />
+        {#if estimateRow}
+          {@const on = estimateRow}
+          {#each pokerEstimates as r (r.value)}
+            {@const choice = pokerEstimateChoice(r, on.unit === 'time')}
+            <MenuItem label="{choice.action} {choice.votes}" disabled={pointsPending} testId="ticket-menu-poker-estimate" onSelect={() => run(() => setEstimate(on, r.value))} />
+          {/each}
+        {/if}
         <MenuDivider />
       {/if}
     {/if}

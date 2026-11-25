@@ -20,7 +20,7 @@ import {
   trackerMediaReader,
   type TrackerAttachmentTicket,
 } from './trackerAttachments';
-import { INLINE_IMAGE_MAX_BYTES } from '../stores/trackerTicketModel';
+import { PREVIEW_MAX_BYTES } from '../stores/trackerTicketModel';
 
 const action = vi.hoisted(() => ({ value: 'download' as 'save-here' | 'save-there' | 'download' }));
 const downloads = vi.hoisted(() => [] as Array<{ name: string; type: string; size: number }>);
@@ -125,7 +125,7 @@ describe('a file the ticket\'s text names', () => {
     const attachments = [
       file('a1', 'diagram.png', 'image/png', 10),
       file('a2', 'report.pdf', 'application/pdf', 10),
-      file('a3', 'huge.png', 'image/png', INLINE_IMAGE_MAX_BYTES + 1),
+      file('a3', 'huge.png', 'image/png', PREVIEW_MAX_BYTES + 1),
       file('a4', 'twice.png', 'image/png', 10),
       file('a5', 'twice.png', 'image/png', 10),
     ];

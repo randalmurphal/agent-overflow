@@ -2,7 +2,8 @@
   // A ticket's attachments (docs/specs/issues.md, "Ticket"): a folding
   // section, newest first, each row its name, size, author and date, and a
   // menu (also on a right-click or long press of the row): Open for an
-  // image, Save, Open in the tracker and Copy name. No thumbnail is read.
+  // image the app previews (`previewsInApp`), Save, Open in the tracker
+  // and Copy name. No thumbnail is read.
   // Attach on the header picks files; while files go, one line says which
   // one and its place ("Uploading report.pdf (4.1 MB)… 2 of 3"), and each
   // file that was not attached plainly keeps what became of it until
@@ -19,6 +20,7 @@
   import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
   import { openImageLightbox } from '../../stores/imageLightbox.svelte';
+  import { previewsInApp } from '../../stores/trackerTicketModel';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import {
     attachTicketFiles,
@@ -79,8 +81,6 @@
   function refusedByTracker(error: unknown): boolean {
     return error instanceof TransportError && FILE_REFUSALS.has(error.code);
   }
-
-  const isImage = (a: AttachmentView) => (a.mime_type ?? '').startsWith('image/');
 
   async function openImage(a: AttachmentView): Promise<void> {
     const source = trackerMarkdownImageSource(ticket, a);
@@ -174,7 +174,7 @@
         >
           <span class="min-w-0 flex-1 truncate text-fg" title={a.name}>{a.name}</span>
           <span class="shrink-0 text-xs tabular-nums text-fg-muted">{formatBytes(a.size)}</span>
-          <span class="hidden shrink-0 truncate text-xs text-fg-muted sm:inline">{a.author?.name || 'Unknown user'}</span>
+          <span class="min-w-0 max-w-[40%] shrink truncate text-xs text-fg-muted" data-testid="ticket-attachment-author">{a.author?.name || 'Unknown user'}</span>
           <span class="shrink-0 text-xs text-fg-muted" title={new Date(a.created).toLocaleString()}>{relativeTime(a.created, 'locale', ctx.ref.backend)}</span>
           <IconButton label="Actions for {a.name}" size="xs" testId="ticket-attachment-menu" ariaHaspopup="menu" onClick={(event) => openMenuFrom(event.currentTarget as HTMLElement, a)}>
             {#snippet children()}<Icon icon={Ellipsis} size={12} strokeWidth={2} />{/snippet}
@@ -190,11 +190,13 @@
 {#if menuOpen && menu}
   {@const a = menu.attachment}
   <ContextMenu x={menu.x} y={menu.y} ariaLabel="Actions for {a.name}" onDismiss={() => { menuOpen = false; }}>
-    {#if isImage(a)}
+    {#if previewsInApp(a)}
       <MenuItem label="Open" testId="ticket-attachment-open" onSelect={() => run(openImage)} />
     {/if}
-    <MenuItem label={trackerAttachmentSaveLabel(trackerAttachmentSave(ticket, a))} testId="ticket-attachment-save" onSelect={() => run((of) => saveTrackerAttachment(ticket, of))} />
-    {#if trackerURL}
+    {@const save = trackerAttachmentSave(ticket, a)}
+    <MenuItem label={trackerAttachmentSaveLabel(save)} testId="ticket-attachment-save" onSelect={() => run((of) => saveTrackerAttachment(ticket, of))} />
+    <!-- Save that opens the tracker is already this row. -->
+    {#if trackerURL && save !== 'tracker'}
       <MenuItem label="Open in the tracker" testId="ticket-attachment-open-tracker" onSelect={() => run(openInTracker)} />
     {/if}
     <MenuItem label="Copy name" testId="ticket-attachment-copy-name" onSelect={() => run((of) => copyName(of.name))} />

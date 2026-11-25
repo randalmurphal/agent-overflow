@@ -16,13 +16,23 @@
 // paints from the media cache (mediaBlobCache.ts) under the ticket and
 // attachment, so a reconnect does not fetch a held image again, and every
 // entry of a ticket goes when its last surface lets it go.
+//
+// Previews must keep true:
+// - One rule admits an attachment to a preview in the app, in the text
+//   and from its row: `previewsInApp` (an image up to PREVIEW_MAX_BYTES).
+//   Any other file is saved, or opened in the tracker.
+// - While a ticket is open, the bytes held for its images are those of
+//   the images within 200 px of the viewport and of an open lightbox: an
+//   image scrolled away releases its hold and keeps its box
+//   (TrackerMediaChip.svelte), and the media cache evicts what nobody
+//   holds past its budget.
 
 import type { AttachmentView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import type { TrackerMediaFile, TrackerMediaReader } from '../components/chat/markdown/trackerMediaContext';
 import { SaveTrackerAttachment } from '../stores/bindings';
 import { addErrorToast, addToast } from '../stores/toast.svelte';
 import { onTrackerTicketClosed, trackerTicketSubscription, type TrackerTicketRef } from '../stores/trackerTicket.svelte';
-import { mediaAttachment, showsInline } from '../stores/trackerTicketModel';
+import { mediaAttachment, previewsInApp } from '../stores/trackerTicketModel';
 import { fetchTrackerAttachmentBytes } from '../transport/attachmentTransfer';
 import { withBackendTarget } from '../transport/backends';
 import { downloadBlob } from './blobDownload';
@@ -147,7 +157,7 @@ export function trackerMediaReader(current: () => { ticket: TrackerAttachmentTic
     const file: TrackerMediaFile = {
       name: attachment.name,
       size: attachment.size,
-      image: showsInline(attachment) ? trackerMarkdownImageSource(now.ticket, attachment) : null,
+      image: previewsInApp(attachment) ? trackerMarkdownImageSource(now.ticket, attachment) : null,
       save: () => {
         void saveTrackerAttachment(now.ticket, attachment);
       },
