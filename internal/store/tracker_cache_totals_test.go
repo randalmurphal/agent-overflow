@@ -25,7 +25,7 @@ func pagedTotals(t *testing.T, s *Store, root int64, board string, section Mirro
 	t.Helper()
 	var total MirrorSectionTotal
 	for after := (MirrorRowKey{}); ; {
-		page, err := s.ListMirrorSection(root, board, section, after)
+		page, err := s.ListMirrorSection(root, board, MirrorRegroup{}, section, after)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -48,7 +48,7 @@ func pagedTotals(t *testing.T, s *Store, root int64, board string, section Mirro
 // is every row of the board.
 func requireCountsMatchPages(t *testing.T, s *Store, root int64, board, step string) {
 	t.Helper()
-	counts, err := s.CountMirrorSections(root, board)
+	counts, err := s.CountMirrorSections(root, board, MirrorRegroup{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestMirrorCountsMatchThePages(t *testing.T) {
 		}
 	}
 	check("as written")
-	if counts, err := s.CountMirrorSections(root, "10"); err != nil || counts.Backlog.Rows != 5 || len(counts.Sprints) != 3 {
+	if counts, err := s.CountMirrorSections(root, "10", MirrorRegroup{}); err != nil || counts.Backlog.Rows != 5 || len(counts.Sprints) != 3 {
 		t.Fatalf("board 10's counts %+v, %v; want 5 rows in the backlog and 3 sprints", counts, err)
 	}
 
@@ -232,12 +232,12 @@ func TestMirrorTotalsRevisionMovesWithTheTotals(t *testing.T) {
 		{"an estimate unit", structure(func() { st.Board.EstimateUnit = MirrorEstimateTime }), true},
 		{"a row read again after the estimate reset", func() { page(rows[2])() }, true},
 	} {
-		before, err := s.CountMirrorSections(root, "10")
+		before, err := s.CountMirrorSections(root, "10", MirrorRegroup{})
 		if err != nil {
 			t.Fatal(err)
 		}
 		step.write()
-		after, err := s.CountMirrorSections(root, "10")
+		after, err := s.CountMirrorSections(root, "10", MirrorRegroup{})
 		if err != nil {
 			t.Fatal(err)
 		}

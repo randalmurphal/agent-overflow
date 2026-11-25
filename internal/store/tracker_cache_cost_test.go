@@ -167,9 +167,9 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		func() error { _, err := s.ListMirrorCards(root, []string{"10001"}); return err },
 		func() error { _, _, err := s.ListMirrorIssueRows(root, "10001", ""); return err },
 		func() error { _, _, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10"}); return err },
-		func() error { _, err := s.CountMirrorSections(root, "10"); return err },
+		func() error { _, err := s.CountMirrorSections(root, "10", MirrorRegroup{}); return err },
 		func() error {
-			_, _, err := s.ReadMirrorBoardPatch(root, "10", []MirrorSection{{Kind: MirrorSectionSprint, SprintID: "21"},
+			_, _, err := s.ReadMirrorBoardPatch(root, "10", MirrorRegroup{}, []MirrorSection{{Kind: MirrorSectionSprint, SprintID: "21"},
 				{Kind: MirrorSectionBacklog}, {Kind: MirrorSectionColumn}}, []string{"10001", "10002"}, MirrorTotalsAt{})
 			return err
 		},
@@ -182,12 +182,15 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 			return err
 		},
 		func() error {
-			_, _, err := s.ReadMirrorBoardView(root, "10", []MirrorSection{{Kind: MirrorSectionBacklog}})
+			_, _, err := s.ReadMirrorBoardView(root, "10", MirrorRegroup{}, []MirrorSection{{Kind: MirrorSectionBacklog}})
 			return err
 		},
 	}
 	for _, section := range []MirrorSection{{Kind: MirrorSectionSprint, SprintID: "21"}, {Kind: MirrorSectionBacklog}, {Kind: MirrorSectionColumn}} {
-		reads = append(reads, func() error { _, err := s.ListMirrorSection(root, "10", section, MirrorRowKey{}); return err })
+		reads = append(reads, func() error {
+			_, err := s.ListMirrorSection(root, "10", MirrorRegroup{}, section, MirrorRowKey{})
+			return err
+		})
 	}
 	for i, read := range reads {
 		if err := read(); err != nil {
@@ -294,6 +297,9 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 		"every entry of the partial index is due a history read, and the listing stops at a page"},
 	{"WITH h AS MATERIALIZED (SELECT value FROM json_each(?2))", "SCAN h",
 		"a write's bound list (the ticket move's, the history times'), read once; it drives the issue lookups by primary key"},
+	{"WHERE st.root_id = ?1 AND st.status_group IN (4, 5) AND st.status_id NOT IN (SELECT o.key FROM json_each(", "SEARCH st USING PRIMARY KEY (root_id=?)",
+		"the statuses that count as done (mirrorNotDone) are listed once a statement from the root's catalog, which holds the statuses " +
+			"the root's reads named, not its issues"},
 	{"i.status_id IN (SELECT value FROM json_each(?2))", "SEARCH i USING COVERING INDEX idx_tracker_cache_issues_status (root_id=?)",
 		"a status entering or leaving the done groups is rare; finding the boards whose rows have it walks the root's statuses once, " +
 			"in the index the counts read"},

@@ -45,12 +45,12 @@ func TestMirrorBoardViewIsOneSnapshot(t *testing.T) {
 	var view MirrorBoardView
 	var ok bool
 	var err error
-	statements := countMirrorStatements(t, func() { view, ok, err = s.ReadMirrorBoardView(root, "10", sections) })
+	statements := countMirrorStatements(t, func() { view, ok, err = s.ReadMirrorBoardView(root, "10", MirrorRegroup{}, sections) })
 	if err != nil || !ok || statements != 11 {
 		t.Fatalf("view = %v, %v in %d statements; want 11", ok, err, statements)
 	}
 	armed.Store(true)
-	view, ok, err = s.ReadMirrorBoardView(root, "10", sections)
+	view, ok, err = s.ReadMirrorBoardView(root, "10", MirrorRegroup{}, sections)
 	if err != nil || !ok || armed.Load() {
 		t.Fatalf("view = %v, %v; the sync ran %v", ok, err, !armed.Load())
 	}
@@ -66,11 +66,11 @@ func TestMirrorBoardViewIsOneSnapshot(t *testing.T) {
 	if len(names.Users) != 1 || len(names.Statuses) == 0 || len(view.Names.Parents) != 1 || view.Names.Parents[0].Key != "WEB-10002" || slices.ContainsFunc(names.Statuses, func(st MirrorStatus) bool { return st.Name == "Renamed" }) {
 		t.Fatalf("names = %+v; want those of the snapshot", names)
 	}
-	page, err := s.ListMirrorSection(root, "10", MirrorSection{Kind: MirrorSectionBacklog}, MirrorRowKey{})
+	page, err := s.ListMirrorSection(root, "10", MirrorRegroup{}, MirrorSection{Kind: MirrorSectionBacklog}, MirrorRowKey{})
 	if err != nil || len(page.Names.Catalog.Statuses) == 0 || page.Names.Catalog.Statuses[0].Name != "Renamed" {
 		t.Fatalf("a section page's names = %+v, %v; want them read with its rows", page.Names, err)
 	}
-	if _, err := s.ListMirrorSection(root, "10", MirrorSection{Kind: MirrorSectionBacklog}, view.Pages[0].Next); !errors.Is(err, ErrTrackerCacheStale) {
+	if _, err := s.ListMirrorSection(root, "10", MirrorRegroup{}, MirrorSection{Kind: MirrorSectionBacklog}, view.Pages[0].Next); !errors.Is(err, ErrTrackerCacheStale) {
 		t.Fatalf("a page continued from the view after the board changed: %v; want stale", err)
 	}
 }

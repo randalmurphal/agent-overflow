@@ -37,7 +37,7 @@ var mirrorBoardViewSQL = `SELECT b.board_id, b.project_id, b.name, b.plans_sprin
 // part, the board's columns and their statuses read once for the
 // structure and the totals. ok is false for a board the mirror does not
 // show.
-func (s *Store) ReadMirrorBoardView(rootID int64, boardID string, sections []MirrorSection) (view MirrorBoardView, ok bool, err error) {
+func (s *Store) ReadMirrorBoardView(rootID int64, boardID string, regroup MirrorRegroup, sections []MirrorSection) (view MirrorBoardView, ok bool, err error) {
 	if len(sections) > mirrorMaxViewSections {
 		return MirrorBoardView{}, false, fmt.Errorf("%w: %d sections, over %d", ErrInvalidTrackerCache, len(sections), mirrorMaxViewSections)
 	}
@@ -74,13 +74,13 @@ func (s *Store) ReadMirrorBoardView(rootID int64, boardID string, sections []Mir
 				columns[status] = position
 			}
 		}
-		if v.Counts, err = countMirrorSectionsTx(tx, rootID, boardID, board, columns); err != nil {
+		if v.Counts, err = countMirrorSectionsTx(tx, rootID, boardID, board, regroup, columns); err != nil {
 			return MirrorBoardView{}, err
 		}
 		v.Pages = make([]MirrorSectionPage, len(sections))
 		rows := make([][]MirrorRow, len(sections))
 		for i, section := range sections {
-			if v.Pages[i], err = readMirrorSectionTx(tx, rootID, boardID, board, section, MirrorRowKey{}); err != nil {
+			if v.Pages[i], err = readMirrorSectionTx(tx, rootID, boardID, board, regroup, section, MirrorRowKey{}); err != nil {
 				return MirrorBoardView{}, fmt.Errorf("section %d: %w", i, err)
 			}
 			rows[i] = v.Pages[i].Rows

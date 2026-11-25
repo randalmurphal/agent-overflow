@@ -15,7 +15,7 @@ func mirrorEstimates(t *testing.T, s *Store, root int64) string {
 		}
 		return fmt.Sprint(*e)
 	}
-	page, err := s.ListMirrorSection(root, "10", MirrorSection{Kind: MirrorSectionBacklog}, MirrorRowKey{})
+	page, err := s.ListMirrorSection(root, "10", MirrorRegroup{}, MirrorSection{Kind: MirrorSectionBacklog}, MirrorRowKey{})
 	if err != nil || len(page.Rows) != 1 {
 		t.Fatalf("backlog = %+v, %v", page, err)
 	}
@@ -23,7 +23,7 @@ func mirrorEstimates(t *testing.T, s *Store, root int64) string {
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("issue rows = %+v, %v", rows, err)
 	}
-	counts, err := s.CountMirrorSections(root, "10")
+	counts, err := s.CountMirrorSections(root, "10", MirrorRegroup{})
 	if err != nil {
 		t.Fatal(err)
 	}

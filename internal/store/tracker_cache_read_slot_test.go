@@ -128,7 +128,7 @@ func TestMirrorReadsTakeAHistoryReadSlot(t *testing.T) {
 	var reads []read
 	for range 5 {
 		reads = append(reads, read{"ReadMirrorBoardPatch", func() error {
-			_, ok, err := s.ReadMirrorBoardPatch(root, "10", patchSections, ids[:3], MirrorTotalsAt{})
+			_, ok, err := s.ReadMirrorBoardPatch(root, "10", MirrorRegroup{}, patchSections, ids[:3], MirrorTotalsAt{})
 			if err == nil && !ok {
 				t.Error("the patch read no board")
 			}
@@ -136,12 +136,15 @@ func TestMirrorReadsTakeAHistoryReadSlot(t *testing.T) {
 		}})
 	}
 	reads = append(reads,
-		read{"ReadMirrorBoardView", func() error { _, _, err := s.ReadMirrorBoardView(root, "10", patchSections); return err }},
-		read{"ListMirrorSection", func() error {
-			_, err := s.ListMirrorSection(root, "10", MirrorSection{Kind: MirrorSectionBacklog}, MirrorRowKey{})
+		read{"ReadMirrorBoardView", func() error {
+			_, _, err := s.ReadMirrorBoardView(root, "10", MirrorRegroup{}, patchSections)
 			return err
 		}},
-		read{"CountMirrorSections", func() error { _, err := s.CountMirrorSections(root, "10"); return err }},
+		read{"ListMirrorSection", func() error {
+			_, err := s.ListMirrorSection(root, "10", MirrorRegroup{}, MirrorSection{Kind: MirrorSectionBacklog}, MirrorRowKey{})
+			return err
+		}},
+		read{"CountMirrorSections", func() error { _, err := s.CountMirrorSections(root, "10", MirrorRegroup{}); return err }},
 		read{"GetMirrorBoard", func() error { _, _, err := s.GetMirrorBoard(root, "10"); return err }},
 		read{"ListMirrorOffBoardLinkedIssues", func() error { _, _, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10"}); return err }},
 		read{"FinishMirrorCleanup", func() error { return s.FinishMirrorCleanup(context.Background(), nil) }},
