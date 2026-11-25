@@ -41,7 +41,8 @@
   } from '../../stores/ticketWork.svelte';
   import { projectBackend, threadBackend } from '../../transport/entityIndex';
   import { HOME_BACKEND } from '../../transport/backendKey';
-  import { hasScope } from '../../transport/scopes';
+  import { scopeGrant } from '../../transport/scopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { SELECT_CLASS } from '../settings/styles';
   import type { Thread } from '../../types/models';
   import { copyToClipboard } from '../../utils/clipboard';
@@ -205,10 +206,14 @@
   // What this device's grants on the ticket's computer allow: a thread is
   // made under threads:operate, and Start work's worktree under
   // git:operate.
-  const askDenied = $derived(hasScope('threads:operate', ref.backend) ? '' : 'This device may not start threads on this computer.');
-  const startDenied = $derived(askDenied || (hasScope('git:operate', ref.backend) ? '' : 'This device may not use git on this computer.'));
-  const askBlocked = $derived(askDenied || unplaced);
-  const startBlocked = $derived(startDenied || unplaced);
+  const threadsGrant = $derived(scopeGrant('threads:operate', ref.backend));
+  const gitGrant = $derived(scopeGrant('git:operate', ref.backend));
+  const startGrant = $derived(threadsGrant === 'granted' ? gitGrant : threadsGrant);
+  const askBlocked = $derived(grantBlockedTitle(threadsGrant) ?? unplaced);
+  const startBlocked = $derived(grantBlockedTitle(startGrant) ?? unplaced);
+  const grantNote = $derived(threadsGrant === 'refused'
+    ? 'This device may not start threads on this computer.'
+    : gitGrant === 'refused' ? 'This device may not use git on this computer. Ask still works.' : '');
 </script>
 
 <section class="mt-4 flex flex-col gap-2 border-t border-border-subtle pt-3" data-testid="ticket-work">
@@ -229,8 +234,8 @@
       {/each}
     </select>
   </label>
-  {#if askDenied || startDenied}
-    <p class="px-1 text-xs text-fg-muted" data-testid="ticket-work-grants">{askDenied || startDenied}{askDenied ? '' : ' Ask still works.'}</p>
+  {#if grantNote}
+    <p class="px-1 text-xs text-fg-muted" data-testid="ticket-work-grants">{grantNote}</p>
   {/if}
 
   {#if run}
