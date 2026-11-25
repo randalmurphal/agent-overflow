@@ -480,8 +480,8 @@ func TestAnEditOfAnOpenTicketShowsItsStatusTimeOnceAFinalReadDecidesIt(t *testin
 	}
 }
 
-// A card whose blob this version cannot read shows its columns and is
-// listed as stale.
+// A card whose blob this version cannot read shows its columns, its
+// title among them, and is listed as stale.
 func TestAStaleCardShowsItsColumns(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
@@ -490,7 +490,7 @@ func TestAStaleCardShowsItsColumns(t *testing.T) {
 	bad.Card.Data = []byte(`{"v":0,"title":"old"}`)
 	must[store.MirrorChanges](t)(m.st.WriteMirrorRows(m.root(), store.MirrorRowPage{BoardID: string(testBoard), Lifetime: m.sync(testBoard).Lifetime, Rows: []store.MirrorRow{bad}, ReadAt: beginReadAt(t, m.st, m.root(), m.now().UnixMilli()+1)}))
 	page := must[SectionPage](t)(m.svc.SectionRows(m.scope(), StatusGroups{}, Section{Kind: SectionBacklog}, nil))
-	if !slices.Equal(page.Stale, []string{"10002"}) || page.Rows[0].Card.Key != "WEB-2" || page.Rows[0].Card.Title != "" {
+	if !slices.Equal(page.Stale, []string{"10002"}) || page.Rows[0].Card.Key != "WEB-2" || page.Rows[0].Card.Title != "Issue 10002" || page.Rows[0].Card.Labels != nil {
 		t.Fatalf("page %+v", page)
 	}
 	if v := must[IssueView](t)(m.svc.Issue(m.conn.ID, "10002")); !v.Stale || v.Card.Status.Name != "To Do" {

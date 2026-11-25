@@ -288,10 +288,18 @@ func (op *familyDelete) refuse(cause error) error {
 // commit commits the claimed family (phase 3) and tells clients its rows
 // are gone.
 func (op *familyDelete) commit() error {
+	// The claim fences every link write of the family, so the links read
+	// here are the ones the commit ends.
+	ids := make([]string, len(op.members))
+	for i, member := range op.members {
+		ids[i] = member.ThreadID
+	}
+	links := op.app.threadLinksEnding(ids)
 	committed, err := op.app.store.CommitDeleteClaim(op.id, op.holds.owing())
 	if err != nil {
 		return err
 	}
+	op.app.endThreadLinks(links, committed.Threads)
 	// The starts waiting for the decision find the threads committed and
 	// start nothing; their queues are their teardowns'.
 	op.app.deleteDecisions.decide(op.id, true)

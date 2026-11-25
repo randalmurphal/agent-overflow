@@ -43,6 +43,7 @@ export {
     ThreadGroup,
     ThreadMessageHit,
     ThreadOrigin,
+    ThreadTicketLink,
     ThreadTransfer,
     TimelineCursor,
     TimelineDigestContext,

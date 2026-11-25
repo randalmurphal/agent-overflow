@@ -1024,7 +1024,9 @@ func rawStringLiterals(source string) []string {
 // for every thread in the sidebar. ListProjectsWithThreadCounts carries
 // the same probe once per project row. The tripwire is "no node scans a base
 // table of the view and no automatic index is built", checked on the
-// production statements.
+// production statements; the one automatic index the lists build is on
+// their links CTE (threadListSelect), whose plan
+// TestThreadLinkColumnReadsByKey pins.
 func TestTimelineItemsViewJoinPushesDown(t *testing.T) {
 	s := newTestStore(t)
 	seedTimelineParityThread(t, s)
@@ -1043,7 +1045,8 @@ func TestTimelineItemsViewJoinPushesDown(t *testing.T) {
 	for _, tc := range cases {
 		plan := explainPlan(t, s, tc.query, tc.args...)
 		for _, r := range plan {
-			if r.detail == "SCAN items" || r.detail == "SCAN imported" || strings.Contains(r.detail, "AUTOMATIC") {
+			linksProbe := r.detail == "SEARCH links USING AUTOMATIC COVERING INDEX (thread_id=?) LEFT-JOIN"
+			if r.detail == "SCAN items" || r.detail == "SCAN imported" || strings.Contains(r.detail, "AUTOMATIC") && !linksProbe {
 				t.Errorf("%s: timeline_items is materialized instead of searched (%q)\n%s", tc.name, r.detail, planText(plan))
 				break
 			}

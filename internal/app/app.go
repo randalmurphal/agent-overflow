@@ -46,6 +46,7 @@ import (
 	"agent-overflow/internal/readaloud"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/reviewimage"
+	"agent-overflow/internal/serialqueue"
 	"agent-overflow/internal/sessionruntime"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/shellrun"
@@ -1127,6 +1128,10 @@ type App struct {
 	// trackers owns the tracker connections; built by initTrackers during
 	// Start and stopped by Shutdown before the store closes.
 	trackers *trackerapp.Service
+	// threadLinkAnnounces announces the rows of the threads whose ticket
+	// link the tracker service moved (trackerapp Deps.LinksChanged), one
+	// job per call, in order; Shutdown drains it after the service stops.
+	threadLinkAnnounces serialqueue.Queue
 	// prLookupRetryBase replaces how long the git.Core caches a first
 	// failed open-PR lookup (git.WithPRLookupErrorBase); zero keeps the
 	// product value. Only a harness boot sets it. Set once before Start.

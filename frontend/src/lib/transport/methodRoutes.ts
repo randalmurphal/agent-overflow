@@ -74,6 +74,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2932719708: 'thread', // CheckThreadImportUpdates
 	544013229: 'home', // ClearBrowserSiteData
 	1055713894: 'home', // ClearPushSenderCredential
+	347935562: 'thread', // ClearThreadTicket
 	3142429700: 'home', // ClearTrackerPokerVotes
 	2321581502: 'home', // CloseComputerPairing
 	2702963191: 'home', // CloseTerminal
@@ -483,6 +484,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1041195811: 'thread', // SetThreadMcpServerEnabled
 	3112222989: 'thread', // SetThreadPinGroup
 	2294583674: 'home', // SetThreadPlacement
+	913920043: 'thread', // SetThreadTicket
 	3921109066: 'home', // SetTrackerConnectionEnabled
 	2967721565: 'home', // SetTrackerConnectionTokenExpiry
 	2301582015: 'home', // SetTrackerEstimate
@@ -528,6 +530,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	4150382574: 'selected', // ThreadToolRequestStatus
 	1018082581: 'selected', // ThreadToolResolve
 	515024442: 'selected', // ThreadToolWatch
+	1230945765: 'selected', // ThreadsForTicket
 	3346989894: 'home', // TrackerAssignableUsers
 	3524633257: 'home', // TrackerBoard
 	1666670763: 'all', // TrackerBoardChoices

@@ -264,9 +264,10 @@ func TestCleanupSweepsIssuesWhoseLinksGo(t *testing.T) {
 	linkIssue(t, s, "unlinked", "10001")
 	linkIssue(t, s, "deleted", "10002")
 	seedLinearSource(t, s, "retired", 1)
-	mustSetThreadTicket(t, s, ThreadTicket{ThreadID: "retired", Ticket: TicketRef{Kind: TrackerKindJira, Site: mirrorSite, IssueID: "10003"},
-		IssueKey: "WEB-3", Origin: TicketOriginManual, LinkedAt: 10}, true)
+	// Forked before the link, so the fork has none of its own.
 	mustPointerFork(t, s, "retired", "retired-fork", ForkCut{})
+	seedThreadTicket(t, s, ThreadTicket{ThreadID: "retired", Ticket: TicketRef{Kind: TrackerKindJira, Site: mirrorSite, IssueID: "10003"},
+		IssueKey: "WEB-3", Origin: TicketOriginManual, LinkedAt: 10})
 	linkIssue(t, s, "moved", "10004")
 	linkIssue(t, s, "kept", "10005")
 	mustWriteRowPage(t, s, root, webPage("10", webRow("10006", 5, "a")), nil)
@@ -278,7 +279,7 @@ func TestCleanupSweepsIssuesWhoseLinksGo(t *testing.T) {
 		t.Fatalf("linked issues = %v, %v, %v", linked, more, err)
 	}
 
-	if _, err := s.ClearThreadTicket("unlinked"); err != nil {
+	if _, _, err := s.ClearThreadTicket("unlinked"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeleteThread("deleted"); err != nil {
@@ -321,7 +322,7 @@ func TestCleanupSweepIsLeafFirstAndBounded(t *testing.T) {
 		if _, err := replaceHistory(s, root, h); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.ClearThreadTicket("link-" + id); err != nil {
+		if _, _, err := s.ClearThreadTicket("link-" + id); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -808,6 +808,15 @@ export function ClearPushSenderCredential(): $CancellablePromise<void> {
 }
 
 /**
+ * ClearThreadTicket removes the thread's ticket link and returns its row.
+ */
+export function ClearThreadTicket(threadID: string): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(347935562, threadID).then(($result: any) => {
+        return $$createType12($result);
+    });
+}
+
+/**
  * ClearTrackerPokerVotes removes every vote on an issue.
  */
 export function ClearTrackerPokerVotes(connectionID: string, issue: string): $CancellablePromise<trackerapp$0.WriteView> {
@@ -6167,6 +6176,20 @@ export function SetThreadPlacement(threadIDs: string[], placement: string): $Can
 }
 
 /**
+ * SetThreadTicket links the thread to ticket, replacing the link it had,
+ * and returns its row. The ticket is read through this computer's
+ * connection to its site: from the issue mirror when it holds the ticket,
+ * with no request, otherwise with one card read, bounded as a form read
+ * is. A link that cannot be made leaves the link as it was. Reading the
+ * ticket needs the ticket read grant as well as the thread's.
+ */
+export function SetThreadTicket(threadID: string, ticket: app$0.ThreadTicketRef): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(913920043, threadID, ticket).then(($result: any) => {
+        return $$createType12($result);
+    });
+}
+
+/**
  * SetTrackerConnectionEnabled turns a connection on or off. Off keeps its
  * row and key file and closes its client.
  */
@@ -6784,6 +6807,18 @@ export function ThreadToolResolve(resolve: app$0.ThreadPeerResolve): $Cancellabl
 export function ThreadToolWatch(call: app$0.ThreadPeerCall): $CancellablePromise<app$0.ThreadPeerReply> {
     return $Call.ByID(515024442, call).then(($result: any) => {
         return $$createType266($result);
+    });
+}
+
+/**
+ * ThreadsForTicket lists the rows of this computer's threads linked to
+ * ticket, newest first, as search lists them: an ask's copy and a side
+ * chat before Keep left out. Its cost grows with the ticket's links, not
+ * with the threads.
+ */
+export function ThreadsForTicket(ticket: app$0.ThreadTicketRef): $CancellablePromise<store$0.Thread[]> {
+    return $Call.ByID(1230945765, ticket).then(($result: any) => {
+        return $$createType152($result);
     });
 }
 
