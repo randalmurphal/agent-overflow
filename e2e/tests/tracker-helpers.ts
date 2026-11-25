@@ -36,9 +36,10 @@ export interface ConnectedBoard {
  * Seeds the fake Jira site: project WEB with one scrum board, its active
  * sprint holding WEB-1 and WEB-2, and WEB-3 in the backlog. Then seeds a
  * project, adds and verifies a Jira connection to the site, and lists the
- * board on the project.
+ * board on the project. site adds members to the site's fixture, such as
+ * `poker: {}` for the planning poker add-on.
  */
-export async function connectFakeJiraBoard(harness: HarnessApp, name: string): Promise<ConnectedBoard> {
+export async function connectFakeJiraBoard(harness: HarnessApp, name: string, site: Record<string, unknown> = {}): Promise<ConnectedBoard> {
   const day = new Date(Date.now() - 48 * 3600_000).toISOString();
   const sprintEnd = new Date(Date.now() + 12 * 24 * 3600_000).toISOString();
   const origins = await harness.rpc<{ jira: Record<string, string> }>('HarnessTrackerSeed', {
@@ -55,6 +56,7 @@ export async function connectFakeJiraBoard(harness: HarnessApp, name: string): P
         { id: '10102', key: 'WEB-2', project: 'WEB', type: '10002', summary: 'Second task', sprints: [1], status: '10000', created: day, updated: day },
         { id: '10103', key: 'WEB-3', project: 'WEB', type: '10002', summary: 'Backlog task', status: '10000', created: day, updated: day },
       ],
+      ...site,
     }],
   });
   const jiraURL = origins.jira[JIRA_SITE];
