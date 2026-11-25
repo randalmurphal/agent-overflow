@@ -103,12 +103,10 @@ export interface WeekTicket {
   readonly total: number;
 }
 
-/** A week's worklogs as the screen lays them out. */
+/** A week's worklogs by day, as both layouts read them. */
 export interface WeekShape {
   /** Monday to Friday, then Saturday and Sunday when either holds time. */
   readonly days: readonly WeekDay[];
-  /** Every ticket the week holds time on, by key. */
-  readonly tickets: readonly WeekTicket[];
   /** The time logged on the counted days. */
   readonly total: number;
   /** The days shown that have no total. */
@@ -143,7 +141,18 @@ export function weekShape(monday: string, answer: WorklogDays): WeekShape {
     const uncounted: UncountedReason | null = unread.has(day) ? 'unread' : cut !== null && day >= cut ? 'partial' : null;
     return { day, entries, uncounted, total: uncounted ? null : entries.reduce((s, w) => s + w.spent_seconds, 0) };
   });
-  const counted = new Set(days.filter((d) => d.total !== null).map((d) => d.day));
+  const counted = days.filter((d) => d.total !== null).length;
+  return {
+    days,
+    total: days.reduce((s, d) => s + (d.total ?? 0), 0),
+    uncounted: days.length - counted,
+  };
+}
+
+/** Every ticket the week holds time on, by key: By ticket's rows and the
+ * tickets the log form offers first. */
+export function weekTickets(shape: WeekShape): readonly WeekTicket[] {
+  const { days } = shape;
   const tickets = new Map<string, { issue: string; key: string; title: string; cells: WorklogView[][]; total: number }>();
   days.forEach((d, i) => {
     for (const w of d.entries) {
@@ -159,15 +168,15 @@ export function weekShape(monday: string, answer: WorklogDays): WeekShape {
         t.title = w.title ?? '';
       }
       t.cells[i].push(w);
-      if (counted.has(d.day)) t.total += w.spent_seconds;
+      if (d.total !== null) t.total += w.spent_seconds;
     }
   });
-  return {
-    days,
-    tickets: [...tickets.values()].sort(byKey),
-    total: days.reduce((s, d) => s + (d.total ?? 0), 0),
-    uncounted: days.length - counted.size,
-  };
+  return [...tickets.values()].sort(byKey);
+}
+
+/** Where the week would be while its computer is not connected. */
+export function timeOfflineText(computer: string): string {
+  return `${computer} is not connected. Your time shows when it connects.`;
 }
 
 /** What a day without a total says in its place. */

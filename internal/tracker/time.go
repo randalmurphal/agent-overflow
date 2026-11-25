@@ -64,6 +64,12 @@ type Worklog struct {
 // worklogs are named by Jira, not by Tempo.
 var ErrWorklogNames = errors.New("tracker: the tracker did not name the worklogs' issues")
 
+// ErrWorklogJira is matched by the failure of a request that a Jira
+// connection's Tempo time makes to Jira: naming the worklogs' issues
+// (ErrWorklogNames matches it too) and reading who logs the time. Every
+// other failure of that time is Tempo's.
+var ErrWorklogJira = errors.New("tracker: Jira, not Tempo, failed")
+
 // WorklogQuery selects one author's worklogs by day.
 type WorklogQuery struct {
 	Author   UserID

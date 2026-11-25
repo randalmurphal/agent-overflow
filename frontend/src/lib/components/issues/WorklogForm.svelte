@@ -10,7 +10,10 @@
   // goes through stores/trackerTimeWrites.svelte.ts once; the form says
   // while it is out and what became of it, and closes once it was made.
   // The form holds its target while it is open, so an outcome that
-  // settles after it closed reaches the person as a toast.
+  // settles after it closed reaches the person as a toast. Every change of
+  // its draft, a new base of the entry and its close revise the target's
+  // loss consent (`reviseTimeDraft`), so Save anyway sends only the draft
+  // that was refused.
   import Button from '../primitives/Button.svelte';
   import TicketFinder from './TicketFinder.svelte';
   import WriteNote from './WriteNote.svelte';
@@ -23,6 +26,7 @@
     editWorklog,
     holdTimeWriteTarget,
     timeWrite,
+    reviseTimeDraft,
     timeWriteText,
     worklogTarget,
     type TimeWriteContext,
@@ -31,6 +35,7 @@
   import { unnamedTicketText, type WorklogTicket } from '../../stores/trackerTimeModel';
   import type { WriteOutcome } from '../../stores/trackerWriteOutcome';
   import { formatTimeSpent, parseTimeSpent, TIME_SPENT_REFUSAL } from '../../utils/timeSpent';
+  import { untrack } from 'svelte';
 
   interface Props {
     ctx: TimeWriteContext;
@@ -38,7 +43,8 @@
     ticket: WorklogTicket | null;
     /** The day it was opened from; null leaves the day empty. */
     day: string | null;
-    /** The entry it changes; absent to log a new one. */
+    /** The entry it changes, as the week shows it now; absent to log a
+     * new one. */
     worklog?: WorklogView;
     /** Opened by Delete: the delete's question shows at once. */
     confirmDelete?: boolean;
@@ -53,16 +59,25 @@
 
   let { ctx, ticket, day, worklog, confirmDelete = false, candidates = [], onSaved, onDone }: Props = $props();
 
-  // The form's own values, seeded once from what it was opened with.
+  // The form's own values, seeded from what it was opened with. `seed` is
+  // what each input started from: a change sends only the inputs the
+  // person moved off it, and the entry as read (`base`) is what it changes.
   // svelte-ignore state_referenced_locally
   let picked = $state<WorklogTicket | null>(ticket ?? (worklog ? { issue: worklog.issue, key: worklog.key ?? '', title: worklog.title ?? '' } : null));
+  interface Seed { readonly day: string; readonly time: string; readonly description: string }
+  function seedOf(w: WorklogView): Seed {
+    return { day: w.day, time: formatTimeSpent(w.spent_seconds), description: w.description ?? '' };
+  }
   // svelte-ignore state_referenced_locally
-  const startTime = worklog ? formatTimeSpent(worklog.spent_seconds) : '';
+  let base = $state<WorklogView | undefined>(worklog);
   // svelte-ignore state_referenced_locally
-  let dayValue = $state(worklog?.day ?? day ?? '');
-  let timeText = $state(startTime);
+  let seed = $state<Seed>(worklog ? seedOf(worklog) : { day: day ?? '', time: '', description: '' });
   // svelte-ignore state_referenced_locally
-  let description = $state(worklog?.description ?? '');
+  let dayValue = $state(seed.day);
+  // svelte-ignore state_referenced_locally
+  let timeText = $state(seed.time);
+  // svelte-ignore state_referenced_locally
+  let description = $state(seed.description);
   // svelte-ignore state_referenced_locally
   let confirming = $state(confirmDelete);
   let problem = $state('');
@@ -72,18 +87,52 @@
   let finding = $state(false);
   let findAnchor = $state<HTMLElement | undefined>();
 
-  const target = $derived(worklog ? worklogTarget(worklog.id) : picked && dayValue ? addTarget(picked.issue, dayValue) : null);
+  const target = $derived(base ? worklogTarget(base.id) : picked && dayValue ? addTarget(picked.issue, dayValue) : null);
+  // The form holds its target while it shows it. Its draft goes when the
+  // form closes or moves to another target, so Save anyway goes with it.
   $effect(() => {
-    if (target) return holdTimeWriteTarget(ctx, target);
+    const held = target;
+    if (!held) return;
+    const release = holdTimeWriteTarget(ctx, held);
+    return () => {
+      reviseTimeDraft(ctx, held);
+      release();
+    };
   });
+  /** The person changed the draft: what was sent before is no longer it. */
+  function revised(): void {
+    if (target) reviseTimeDraft(ctx, target);
+  }
   const write = $derived(target ? timeWrite(ctx, target) : null);
   const pending = $derived(write?.pending ?? false);
   const pendingText = $derived(write?.kind === 'delete' ? 'Deleting…' : write?.kind === 'add' ? 'Logging…' : 'Saving…');
+
+  // The entry as the week now shows it: once no write of it is out, the
+  // form changes that one. An input the person left follows it; one they
+  // changed keeps their value, measured from the new entry.
+  $effect(() => {
+    const now = worklog;
+    if (!now || !base || pending || now.id !== base.id) return;
+    if (now.updated === base.updated && now.day === base.day && now.spent_seconds === base.spent_seconds && (now.description ?? '') === (base.description ?? '')) return;
+    untrack(() => {
+      const next = seedOf(now);
+      if (dayValue === seed.day) dayValue = next.day;
+      if (timeText === seed.time) timeText = next.time;
+      if (description === seed.description) description = next.description;
+      seed = next;
+      base = now;
+      revised();
+    });
+  });
+
+  // The day of the write last sent, for the sentence of a made one: a
+  // change of the day revises the draft, so Save anyway sends this one.
+  let sentDay: string | null = null;
   // Save anyway closes the form once the write it sends was made.
   const noteWrite = $derived.by(() => {
     if (!write) return null;
     const again = write.saveAnyway;
-    return { ...write, saveAnyway: again ? async () => finish(await again(), dayValue) : null };
+    return { ...write, saveAnyway: again ? async () => finish(await again(), sentDay) : null };
   });
 
   function finish(outcome: WriteOutcome | null, savedDay: string | null): void {
@@ -104,44 +153,46 @@
       problem = 'Pick the day.';
       return;
     }
-    if (!worklog) {
+    if (!base) {
       const spent = parseTimeSpent(timeText);
       if (spent === null) {
         problem = TIME_SPENT_REFUSAL;
         return;
       }
-      const at = dayValue;
-      finish(await addWorklog(ctx, { issue: picked.issue, key: picked.key, day: at, spentSeconds: spent, description: description.trim() }), at);
+      sentDay = dayValue;
+      finish(await addWorklog(ctx, { issue: picked.issue, key: picked.key, day: dayValue, spentSeconds: spent, description: description.trim() }), sentDay);
       return;
     }
     const change: { -readonly [K in keyof WorklogChange]: WorklogChange[K] } = {};
-    if (dayValue !== worklog.day) change.day = dayValue;
-    if (timeText !== startTime) {
+    if (dayValue !== seed.day) change.day = dayValue;
+    if (timeText !== seed.time) {
       const spent = parseTimeSpent(timeText);
       if (spent === null) {
         problem = TIME_SPENT_REFUSAL;
         return;
       }
-      if (spent !== worklog.spent_seconds) change.spentSeconds = spent;
+      if (spent !== base.spent_seconds) change.spentSeconds = spent;
     }
-    if (description.trim() !== (worklog.description ?? '')) change.description = description.trim();
+    if (description !== seed.description) change.description = description.trim();
     if (Object.keys(change).length === 0) {
       onDone();
       return;
     }
-    finish(await editWorklog(ctx, worklog, change), change.day ?? null);
+    sentDay = change.day ?? null;
+    finish(await editWorklog(ctx, base, change), sentDay);
   }
 
   async function remove(): Promise<void> {
-    if (!worklog || pending) return;
-    finish(await deleteWorklog(ctx, worklog), null);
+    if (!base || pending) return;
+    sentDay = null;
+    finish(await deleteWorklog(ctx, base), null);
   }
 
   const inputClass = 'w-full rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1 text-sm text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-60';
 </script>
 
-<form class="flex w-[min(20rem,calc(100vw-2rem))] flex-col gap-2 p-3" data-testid="worklog-form" onsubmit={submit}>
-  <h3 class="text-sm font-semibold text-fg">{worklog ? 'Change logged time' : 'Log time'}</h3>
+<form class="flex w-[min(20rem,calc(100vw-2rem))] flex-col gap-2 p-3" data-testid="worklog-form" onsubmit={submit} oninput={revised}>
+  <h3 class="text-sm font-semibold text-fg">{base ? 'Change logged time' : 'Log time'}</h3>
   <div class="flex min-w-0 items-baseline gap-1.5 text-sm" data-testid="worklog-form-ticket">
     {#if picked}
       {#if picked.key}
@@ -188,11 +239,11 @@
   <WriteNote
     write={noteWrite}
     {pendingText}
-    text={write?.outcome ? timeWriteText(write.outcome) : ''}
+    text={write ? timeWriteText(write) : ''}
     onDismiss={() => { if (target) dismissTimeWrite(ctx, target); }}
     testId="worklog-form-write"
   />
-  {#if confirming && worklog}
+  {#if confirming && base}
     <div class="flex flex-wrap items-center gap-1.5 text-xs" data-testid="worklog-form-confirm-delete">
       <span class="text-fg">Delete this entry from the tracker?</span>
       <Button size="xs" variant="danger" disabled={pending} testId="worklog-form-delete-confirm" onclick={() => { void remove(); }}>Delete</Button>
@@ -200,10 +251,10 @@
     </div>
   {/if}
   <div class="flex items-center gap-1.5">
-    <Button type="submit" size="sm" variant="primary" disabled={pending} testId="worklog-form-save">{worklog ? 'Save' : 'Log'}</Button>
+    <Button type="submit" size="sm" variant="primary" disabled={pending} testId="worklog-form-save">{base ? 'Save' : 'Log'}</Button>
     <Button size="sm" variant="ghost" testId="worklog-form-cancel" onclick={onDone}>Cancel</Button>
     <span class="flex-1"></span>
-    {#if worklog && !confirming}
+    {#if base && !confirming}
       <Button size="sm" variant="danger-ghost" disabled={pending} testId="worklog-form-delete" onclick={() => { confirming = true; }}>Delete</Button>
     {/if}
   </div>

@@ -2,8 +2,8 @@
   // One entry of By day: its ticket's key (which opens the ticket), its
   // hours (which open the form that changes it), the ticket's title and
   // the entry's description in two lines. While a write of it is out the
-  // entry dims and says so; what became of the write shows under it. The
-  // entry holds its write's target while it is shown.
+  // entry dims and says so; what became of the write shows under it, with
+  // no Save anyway. The entry holds its write's target while it is shown.
   import type { WorklogView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import WriteNote from './WriteNote.svelte';
   import {
@@ -63,10 +63,12 @@
   {#if worklog.description}
     <p class="line-clamp-2 text-xs text-fg-muted" data-testid="time-entry-description">{worklog.description}</p>
   {/if}
+  <!-- Save anyway is the form's: it sends the form's draft, which the
+       entry does not hold. -->
   <WriteNote
-    {write}
+    write={write ? { ...write, saveAnyway: null } : null}
     pendingText={write?.kind === 'delete' ? 'Deleting…' : 'Saving…'}
-    text={write?.outcome ? timeWriteText(write.outcome) : ''}
+    text={write ? timeWriteText(write) : ''}
     onDismiss={() => dismissTimeWrite(ctx, target)}
     testId="time-entry-write"
   />

@@ -83,6 +83,7 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 		if err := res.Check(); err != nil {
 			return WriteView{}, fmt.Errorf("%w: %w", ErrBadResult, err)
 		}
+		res = timeAnsweredParts(r.timeBy, res)
 		if !sentNothing(res) {
 			r.calls++
 		}
