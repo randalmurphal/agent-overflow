@@ -122,6 +122,34 @@ func (a *App) MintTrackerAttachmentDownloadTicket(ctx context.Context, subscript
 	return server.MintTrackerDownloadTicket(connection, string(issue), att.ID, att.Name)
 }
 
+// SaveTrackerAttachment saves one attachment of a subscribed ticket into
+// this computer's Downloads folder and returns the path, for a client that
+// cannot run a browser download (frontend utils/fileSaveAction.ts). Like
+// the download ticket it finds the attachment on the ticket as its
+// subscribers were last told of it; the bytes stream from the tracker into
+// the file, so none is held in memory. A save cut short, by the tracker or
+// by the budget, leaves no file.
+//
+//ao:scope tracker:operate
+//ao:route home
+//ao:budget 30m
+func (a *App) SaveTrackerAttachment(ctx context.Context, subscriptionID, attachmentID string) (string, error) {
+	svc, err := a.trackerService()
+	if err != nil {
+		return "", err
+	}
+	connection, issue, att, err := svc.TicketAttachment(subscriptionID, attachmentID)
+	if err != nil {
+		return "", trackerError(err)
+	}
+	ctx, cancel := a.trackerRun(ctx, "SaveTrackerAttachment", "Saving "+att.Name, "open the ticket in the tracker to save it from there")
+	defer cancel()
+	path, err := a.saveDownloadFrom(att.Name, att.MimeType, func(w io.Writer) error {
+		return svc.Download(ctx, connection, string(issue), att.ID, w)
+	})
+	return path, trackerRunError(ctx, err)
+}
+
 // byteSize is n bytes as a person reads a file's size.
 func byteSize(n int64) string {
 	switch {
