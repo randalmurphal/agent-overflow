@@ -68,6 +68,10 @@
         : '',
   );
   let locked = $derived(operateReason !== '');
+  // Renew shows the setup steps again, which a connection that is off does
+  // not show: it is offered exactly where it opens them.
+  let renewable = $derived(connection.enabled && (expiry?.renew ?? false));
+  let showSteps = $derived(connection.enabled && (status.needsSetup || (renewing && renewable)));
 
   let busy = $state<string | null>(null);
   let error = $state<unknown>(null);
@@ -175,7 +179,7 @@
       onclick={check}
       data-testid="tracker-connection-check"
     >{busy === 'check' ? 'Checking…' : 'Check'}</button>
-    {#if expiry?.renew && !renewing}
+    {#if renewable && !renewing}
       <button type="button" class={SECONDARY_BUTTON_CLASS} onclick={() => (renewing = true)} data-testid="tracker-connection-renew">Renew</button>
     {/if}
     <button
@@ -222,7 +226,7 @@
     />
   {/if}
 
-  {#if (status.needsSetup || renewing) && connection.enabled}
+  {#if showSteps}
     <TrackerConnectionSetup
       {connection}
       {host}
@@ -235,7 +239,7 @@
         if ((await check()) && renewing) renewing = false;
       }}
     />
-    {#if renewing}
+    {#if renewing && renewable}
       <div>
         <button type="button" class={GHOST_BUTTON_CLASS} onclick={() => (renewing = false)}>Done</button>
       </div>

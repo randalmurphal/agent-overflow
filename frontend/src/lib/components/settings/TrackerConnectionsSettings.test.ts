@@ -114,6 +114,14 @@ describe('<TrackerConnectionsSettings>', () => {
     expect(within(soon).getByTestId('tracker-connection-setup')).toBeTruthy();
   });
 
+  it('offers Renew only where clicking it opens the steps: not on a connection that is off', async () => {
+    rows = [trackerConnection({ enabled: false, tokenExpiresAt: Date.now() - 1000 })];
+    render(TrackerConnectionsSettings);
+    const row = await screen.findByTestId('tracker-connection-jira-1');
+    expect(within(row).getByTestId('tracker-connection-expiry').dataset.tone).toBe('error');
+    expect(within(row).queryByTestId('tracker-connection-renew')).toBeNull();
+  });
+
   it('records the expiry date as the start of that day here, and clears it', async () => {
     rows = [trackerConnection()];
     const expiry = setBindingMock('SetTrackerConnectionTokenExpiry', async (_id: string, at: number) => {
