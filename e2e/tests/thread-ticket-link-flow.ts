@@ -89,7 +89,81 @@ async function pickTicket(page: Page, text: string, key: string, compact: boolea
   await expect(find).toHaveCount(0);
 }
 
+interface ThreadRow { id: string; ticketLink?: { key: string } | null }
+
+const threadRows = (harness: HarnessApp) => harness.rpc<ThreadRow[]>('HarnessListThreadRows');
+
+/** Error toasts only: the class is the toast's one type discriminator. */
+const errorToasts = (page: Page) => page.locator('[role="alert"].text-error');
+
+/** Opens the project's New thread: a pane on a placeholder, no row. */
+async function openNewThread(page: Page, compact: boolean): Promise<void> {
+  await press(page.getByTestId('project-item-new-thread').first(), compact);
+  if (compact) await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'thread');
+  await expect(page.getByTestId('chat-header-title')).toHaveText('New Thread');
+}
+
+/** Link ticket… from the Thread actions menu, then picks `key`. */
+async function linkFromThreadActions(page: Page, key: string, compact: boolean): Promise<void> {
+  await press(page.getByTestId('chat-header-more'), compact);
+  await expect(page.getByTestId('chat-header-menu-ticket-find')).toHaveText(/Link ticket…/);
+  await press(page.getByTestId('chat-header-menu-ticket-find'), compact);
+  await pickTicket(page, key.toLowerCase(), key, compact);
+}
+
+/** The header's ticket: the button, or the Thread actions menu's row on the
+ * phone (the menu is closed again after). */
+async function expectHeaderTicket(page: Page, key: string | null, compact: boolean): Promise<void> {
+  if (!compact) {
+    if (key) await expect(page.getByTestId('chat-header-ticket')).toHaveText(key);
+    else await expect(page.getByTestId('chat-header-ticket')).toHaveCount(0);
+    return;
+  }
+  await page.getByTestId('chat-header-more').tap();
+  await expect(page.getByTestId('chat-header-menu-ticket-find')).toHaveText(key ? /Change ticket…/ : /Link ticket…/);
+  if (key) await expect(page.getByTestId('chat-header-menu-ticket')).toContainText(key);
+  else await expect(page.getByTestId('chat-header-menu-ticket')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('chat-header-menu-ticket-find')).toHaveCount(0);
+}
+
 export function registerThreadTicketLinkFlow({ compact }: LinkSurface): void {
+  test('a new thread linked before anything is typed is a linked thread', async ({ harness, page }) => {
+    test.setTimeout(90_000);
+    await connectFakeJiraBoard(harness, compact ? 'compact-new-thread-link' : 'new-thread-link');
+    await harness.open(page);
+    await openNewThread(page, compact);
+    expect(await threadRows(harness)).toHaveLength(0);
+
+    await linkFromThreadActions(page, 'WEB-1', compact);
+    await expectHeaderTicket(page, 'WEB-1', compact);
+    await expect.poll(async () => (await threadRows(harness)).map((r) => r.ticketLink?.key ?? null)).toEqual(['WEB-1']);
+    await expect(errorToasts(page)).toHaveCount(0);
+  });
+
+  test('a linked new thread whose text is erased is deleted with its link, and the header offers no ticket', async ({ harness, page }) => {
+    test.setTimeout(90_000);
+    await connectFakeJiraBoard(harness, compact ? 'compact-erased-thread-link' : 'erased-thread-link');
+    await harness.open(page);
+    await openNewThread(page, compact);
+    const input = page.getByLabel('Message Input');
+    await input.fill('an unsent thought');
+    await expect.poll(async () => (await threadRows(harness)).length).toBe(1);
+
+    await linkFromThreadActions(page, 'WEB-1', compact);
+    await expectHeaderTicket(page, 'WEB-1', compact);
+    expect((await threadRows(harness)).map((r) => r.ticketLink?.key ?? null)).toEqual(['WEB-1']);
+
+    // Erased: the draft and its link are deleted, and the New thread the
+    // pane shows again has no ticket to open.
+    await input.fill('');
+    await expect.poll(async () => (await threadRows(harness)).length).toBe(0);
+    await expect(page.getByTestId('chat-header-title')).toHaveText('New Thread');
+    await expectHeaderTicket(page, null, compact);
+    await expect(errorToasts(page)).toHaveCount(0);
+  });
+
+
   test('a thread linked through the finder shows its ticket in the sidebar and the header, is found by it, opens it, changes and drops it', async ({ harness, page }) => {
     test.setTimeout(120_000);
     const board = await connectFakeJiraBoard(harness, compact ? 'compact-thread-link' : 'thread-link', undefined, ['Linked thread', 'Unlinked thread'].map((title) => ({
