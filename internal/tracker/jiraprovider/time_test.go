@@ -55,6 +55,55 @@ func worklogSite(t *testing.T) (*jiratest.Server, *Provider) {
 	return f, p
 }
 
+// TestJiraWorklogsSayWhichStepRefused proves a worklog read's error says
+// which request Jira refused: the person's lookup (tracker.ErrWorklogAuthor),
+// the search for the issues (tracker.ErrWorklogSearch), or neither for an
+// issue's own worklogs. The lookup's refusal wins over the search's, even
+// when the search is refused first.
+func TestJiraWorklogsSayWhichStepRefused(t *testing.T) {
+	q := tracker.WorklogQuery{Author: "acc-user1", From: day(t, 2026, 11, 10), To: day(t, 2026, 11, 10)}
+	refused := jiratest.Reply(400, `{"errorMessages":["refused"],"errors":{}}`)
+	t.Run("the lookup refused after the search", func(t *testing.T) {
+		f, p := newSite(t)
+		searched := make(chan struct{})
+		f.On("POST", searchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
+			refused(w, r, b)
+			close(searched)
+		})
+		f.On("GET", "/rest/api/3/user", func(w http.ResponseWriter, r *http.Request, b []byte) {
+			select {
+			case <-searched:
+			case <-r.Context().Done():
+				return
+			}
+			jiratest.Reply(404, `{"errorMessages":["Specified user does not exist"],"errors":{}}`)(w, r, b)
+		})
+		_, err := p.Time().Worklogs(t.Context(), q)
+		if status, ok := errors.AsType[*trackerapi.StatusError](err); !errors.Is(err, tracker.ErrWorklogAuthor) || !ok || status.Status != 404 {
+			t.Fatalf("a lookup refused after the search refused: %v", err)
+		}
+	})
+	t.Run("the search refused", func(t *testing.T) {
+		f, p := newSite(t)
+		f.On("GET", "/rest/api/3/user", jiratest.Reply(200, user1JSON))
+		f.On("POST", searchPath, refused)
+		if _, err := p.Time().Worklogs(t.Context(), q); !errors.Is(err, tracker.ErrWorklogSearch) || errors.Is(err, tracker.ErrWorklogAuthor) {
+			t.Fatalf("a search refused: %v", err)
+		}
+	})
+	t.Run("an issue's worklogs refused", func(t *testing.T) {
+		f, p := newSite(t)
+		f.On("GET", "/rest/api/3/user", jiratest.Reply(200, user1JSON))
+		f.On("POST", searchPath, jiratest.Reply(200, page("",
+			issue("10001", "WEB-1", updatedAt, map[string]any{"worklog": json.RawMessage(`{"startAt":0,"maxResults":20,"total":21,"worklogs":[]}`)}))))
+		f.On("GET", worklogsPath, refused)
+		_, err := p.Time().Worklogs(t.Context(), q)
+		if status, ok := errors.AsType[*trackerapi.StatusError](err); !ok || status.Status != 400 || errors.Is(err, tracker.ErrWorklogSearch) || errors.Is(err, tracker.ErrWorklogAuthor) {
+			t.Fatalf("an issue's worklogs refused: %v", err)
+		}
+	})
+}
+
 // TestJiraWorklogs proves a worklog's day is the day its start falls on
 // in its author's zone, and that only the author's are listed, the one
 // starting at the next day's midnight left out whether or not Jira's

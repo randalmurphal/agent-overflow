@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/adf"
 	"agent-overflow/internal/tracker/jira"
@@ -63,25 +61,31 @@ func (t *jiraTime) Worklogs(ctx context.Context, q tracker.WorklogQuery) ([]trac
 		// Paged in an order that cannot change between pages: Jira returns
 		// an unordered search in no stable order (measured).
 		" ORDER BY id ASC"
+	// The lookup's failure wins over the search's: a person Jira will not
+	// look up is the answer whichever request Jira answers first, so the
+	// search's failure does not end the lookup, and the lookup's ends the
+	// search.
 	var (
-		author jira.User
-		res    jira.SearchResult
+		res       jira.SearchResult
+		searchErr error
 	)
-	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() (err error) {
-		if author, err = t.jira.User(gctx, string(q.Author)); err != nil {
-			return fmt.Errorf("jiraprovider: worklogs of %s: %w: %w", q.Author, tracker.ErrWorklogAuthor, err)
-		}
-		return nil
-	})
-	g.Go(func() (err error) {
-		if res, err = t.jira.SearchAll(gctx, jira.SearchQuery{JQL: jql, Fields: []string{"worklog"}}, 0); err != nil {
-			return fmt.Errorf("jiraprovider: issues %s logged time on: %w", q.Author, err)
-		}
-		return nil
-	})
-	if err := g.Wait(); err != nil {
-		return nil, err
+	searchCtx, stopSearch := context.WithCancel(ctx)
+	searched := make(chan struct{})
+	go func() {
+		defer close(searched)
+		res, searchErr = t.jira.SearchAll(searchCtx, jira.SearchQuery{JQL: jql, Fields: []string{"worklog"}}, 0)
+	}()
+	author, err := t.jira.User(ctx, string(q.Author))
+	if err != nil {
+		stopSearch()
+	}
+	<-searched
+	stopSearch()
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("jiraprovider: worklogs of %s: %w: %w", q.Author, tracker.ErrWorklogAuthor, err)
+	case searchErr != nil:
+		return nil, fmt.Errorf("jiraprovider: issues %s logged time on: %w: %w", q.Author, tracker.ErrWorklogSearch, searchErr)
 	}
 	if !res.Complete {
 		return nil, fmt.Errorf("jiraprovider: issues %s logged time on: Jira warned that the search is incomplete", q.Author)

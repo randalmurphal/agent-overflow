@@ -147,8 +147,12 @@ func TestAWorklogRequestRefusalIsNotTheConnectionsProblem(t *testing.T) {
 		{"Tempo's 400", &trackerapi.StatusError{Tracker: "tempo", Status: 400}, nil, FailureTracker,
 			"Tempo refused the worklogs of acc-user2 from 2026-11-01 to 2026-11-02 (HTTP 400); check the person and the days", ""},
 		{"another reset", reset, nil, FailureTransient, "Jira could not be reached", FailureTransient},
-		{"Jira's 400", fmt.Errorf("jiraprovider: issues acc-user2 logged time on: %w", &trackerapi.StatusError{Tracker: "jira", Status: 400}), nil, FailureTracker,
+		{"Jira's 400 for the search", fmt.Errorf("jiraprovider: issues acc-user2 logged time on: %w: %w", tracker.ErrWorklogSearch, &trackerapi.StatusError{Tracker: "jira", Status: 400}), nil, FailureTracker,
 			"Jira refused the search for acc-user2's worklogs from 2026-11-01 to 2026-11-02 (HTTP 400); check the person and the days", ""},
+		// A 400 for another of the read's requests (an issue's own
+		// worklogs) is no refusal of the person or the days.
+		{"Jira's 400 for an issue's worklogs", &trackerapi.StatusError{Tracker: "jira", Status: 400}, nil, FailureTracker, "Jira answered HTTP 400", FailureTracker},
+		{"Jira's 400 for the person", author(400), nil, FailureTracker, "Jira refused the account ID acc-user2 (HTTP 400); choose another person", ""},
 		{"a third reset", reset, nil, FailureTransient, "Jira could not be reached", FailureTransient},
 		{"a hidden time zone", fmt.Errorf("jiraprovider: acc-user2: %w", tracker.ErrNoTimeZone), nil, FailureTracker,
 			"Jira does not show which time zone acc-user2 is in, so Agent Overflow cannot tell which day their time falls on; choose another person, or ask them to show their time zone in their Atlassian profile", ""},

@@ -279,7 +279,10 @@ func worklogRefusal(author tracker.UserID, from, to tracker.Date, err error) (Fa
 	case status.Tracker == store.TrackerKindTempo && status.Status == http.StatusBadRequest:
 		return Failure{Kind: FailureTracker, Message: fmt.Sprintf(
 			"Tempo refused the worklogs of %s from %s to %s (HTTP 400); check the person and the days", author, from, to)}, true
-	case status.Tracker == store.TrackerKindJira && status.Status == http.StatusBadRequest:
+	case errors.Is(err, tracker.ErrWorklogAuthor) && status.Status == http.StatusBadRequest:
+		return Failure{Kind: FailureTracker, Message: fmt.Sprintf(
+			"%s refused the account ID %s (HTTP 400); choose another person", name, author)}, true
+	case errors.Is(err, tracker.ErrWorklogSearch) && status.Status == http.StatusBadRequest:
 		return Failure{Kind: FailureTracker, Message: fmt.Sprintf(
 			"Jira refused the search for %s's worklogs from %s to %s (HTTP 400); check the person and the days", author, from, to)}, true
 	}
