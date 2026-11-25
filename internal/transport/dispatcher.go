@@ -320,6 +320,12 @@ func (d *Dispatcher) ResolveForOrigin(id uint32, name string, isLoopback bool) (
 // answers with the method's own error text and wrap chain on every origin.
 // Panic values stay in the log; their frame carries only the reference.
 func (d *Dispatcher) Invoke(ctx context.Context, m *Method, params []json.RawMessage) (result json.RawMessage, frameErr *FrameError) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = nil
+			frameErr = panicFrameError(m, r)
+		}
+	}()
 	results, fe := d.invokeRaw(ctx, m, params)
 	if fe != nil {
 		return nil, fe
@@ -332,7 +338,12 @@ func (d *Dispatcher) Invoke(ctx context.Context, m *Method, params []json.RawMes
 // intermediate json.Marshal slices and ServerFrame re-marshaling on the hot
 // connection path. Output is byte-identical to json.Marshal(ServerFrame{Type:
 // frameTypeRPC, ID: id, Result: result}).
-func (d *Dispatcher) invokeToRPCFrame(ctx context.Context, m *Method, id string, params []json.RawMessage, dst *bytes.Buffer) *FrameError {
+func (d *Dispatcher) invokeToRPCFrame(ctx context.Context, m *Method, id string, params []json.RawMessage, dst *bytes.Buffer) (frameErr *FrameError) {
+	defer func() {
+		if r := recover(); r != nil {
+			frameErr = panicFrameError(m, r)
+		}
+	}()
 	results, fe := d.invokeRaw(ctx, m, params)
 	if fe != nil {
 		return fe
@@ -340,20 +351,17 @@ func (d *Dispatcher) invokeToRPCFrame(ctx context.Context, m *Method, id string,
 	return d.processResultsToRPCFrame(m, id, results, dst)
 }
 
-func (d *Dispatcher) invokeRaw(ctx context.Context, m *Method, params []json.RawMessage) (results []reflect.Value, frameErr *FrameError) {
-	defer func() {
-		if r := recover(); r != nil {
-			cid := newCorrelationID()
-			log.Printf("transport: panic in %s (id: %s): %v\n%s", m.FQN, cid, r, debug.Stack())
-			results = nil
-			frameErr = &FrameError{
-				Code:    ErrCodeInternal,
-				Message: "internal error",
-				Detail:  methodErrorDetail(m, cid, nil),
-			}
-		}
-	}()
+func panicFrameError(m *Method, r any) *FrameError {
+	cid := newCorrelationID()
+	log.Printf("transport: panic in %s (id: %s): %v\n%s", m.FQN, cid, r, debug.Stack())
+	return &FrameError{
+		Code:    ErrCodeInternal,
+		Message: "internal error",
+		Detail:  methodErrorDetail(m, cid, nil),
+	}
+}
 
+func (d *Dispatcher) invokeRaw(ctx context.Context, m *Method, params []json.RawMessage) ([]reflect.Value, *FrameError) {
 	if len(params) > MaxRPCParams {
 		return nil, unreadableParams(m, dispatchrefusal.CountRefusal(m.Name, MaxRPCParams, len(params), false, true))
 	}

@@ -2,6 +2,7 @@ import type { Item, ProposedPlanComment } from '../types/models';
 import { comparePlanItemPosition, latestProposedPlanItem } from '../utils/proposedPlan';
 import { ListProposedPlanComments, ListThreadProposedPlans } from './bindings';
 import { onItemUpsert } from './eventsItemStream';
+import { onWatchedThreadsComposed } from './watchedThreads';
 import { itemsAreEqual } from './threadItems';
 
 const REFRESH_DEBOUNCE_MS = 100;
@@ -45,6 +46,28 @@ export function hasLoadedThreadProposedPlans(threadId: string | null | undefined
   if (!threadId) return false;
   return cache[threadId]?.loaded === true;
 }
+
+/**
+ * Mark cached proposed-plan state as needing a fresh backend read on the next
+ * mount/open (e.g. after a turn revert, transport gap, or unwatch). Keeps any
+ * cached items visible until the refresh resolves.
+ */
+export function invalidateProposedPlansLoaded(threadId?: string | null): void {
+  if (threadId) {
+    const entry = cache[threadId];
+    if (entry) entry.loaded = false;
+    return;
+  }
+  for (const entry of Object.values(cache)) {
+    entry.loaded = false;
+  }
+}
+
+onWatchedThreadsComposed((watched) => {
+  for (const [threadId, entry] of Object.entries(cache)) {
+    if (!watched.has(threadId)) entry.loaded = false;
+  }
+});
 
 export function getCachedPlanMarkdown(
   threadId: string | null | undefined,
@@ -168,7 +191,7 @@ export async function refreshThreadProposedPlans(threadId: string | null | undef
     if (!itemListsAreEqual(entry.items, nextItems)) {
       entry.items = nextItems;
     }
-    entry.loaded = true;
+    entry.loaded = listenerRefCount > 0;
     cacheAccess.set(threadId, Date.now());
     evictOldPlanCacheEntries();
   } catch (err) {

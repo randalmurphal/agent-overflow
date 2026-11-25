@@ -250,8 +250,7 @@ func (s *Store) ListWireItemsBehind(threadID string, emitted map[string]int64) (
 		var id, parentID, completionOf, status string
 		var rev int64
 		if err := rows.Scan(&id, &parentID, &completionOf, &status, &rev); err != nil {
-			_ = rows.Close()
-			return nil, fmt.Errorf("store: scan written row %s: %w", threadID, err)
+			return nil, errors.Join(fmt.Errorf("store: scan written row %s: %w", threadID, err), rows.Close())
 		}
 		current[id] = rev
 		if parentID == "" {
@@ -286,8 +285,7 @@ func (s *Store) ListWireItemsBehind(threadID string, emitted map[string]int64) (
 		for lRows.Next() {
 			var id, launchParent string
 			if err := lRows.Scan(&id, &launchParent); err != nil {
-				_ = lRows.Close()
-				return nil, fmt.Errorf("store: scan launch %s: %w", threadID, err)
+				return nil, errors.Join(fmt.Errorf("store: scan launch %s: %w", threadID, err), lRows.Close())
 			}
 			if launchParent == "" {
 				candidates[id] = struct{}{}
@@ -319,8 +317,7 @@ func (s *Store) ListWireItemsBehind(threadID string, emitted map[string]int64) (
 		for sRows.Next() {
 			var id string
 			if err := sRows.Scan(&id); err != nil {
-				_ = sRows.Close()
-				return nil, fmt.Errorf("store: scan root completion sibling for %s: %w", threadID, err)
+				return nil, errors.Join(fmt.Errorf("store: scan root completion sibling for %s: %w", threadID, err), sRows.Close())
 			}
 			candidates[id] = struct{}{}
 		}

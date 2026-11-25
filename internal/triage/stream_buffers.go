@@ -401,12 +401,10 @@ func (r *Router) FlushThread(threadID string) error {
 
 func (r *Router) flushAllStreamPersistence() error {
 	seen := make(map[string]struct{})
-	r.identitiesMu.RLock()
-	for tid := range r.identities {
-		seen[tid] = struct{}{}
-	}
-	r.identitiesMu.RUnlock()
-
+	// Scan r.threads before r.identities: flushStreamPersistenceKey inserts
+	// tid into r.identities before acquiring r.mu to drain
+	// st.streamPersistBuffers, so this order guarantees every thread with
+	// buffered or mid-flush writes appears in at least one map.
 	r.mu.Lock()
 	for tid, st := range r.threads {
 		if len(st.streamPersistBuffers) > 0 {
@@ -414,6 +412,12 @@ func (r *Router) flushAllStreamPersistence() error {
 		}
 	}
 	r.mu.Unlock()
+
+	r.identitiesMu.RLock()
+	for tid := range r.identities {
+		seen[tid] = struct{}{}
+	}
+	r.identitiesMu.RUnlock()
 
 	var firstErr error
 	for tid := range seen {

@@ -3,6 +3,7 @@ import { applyThreadWakesGap } from './eventsThreadWakes';
 import { refreshProviderMemory } from './providerMemory.svelte';
 import { applyThreadAgentRowsGap } from './eventsThreadAgentRows';
 import { refreshTimelineSurfaces } from './timelineSurfaces';
+import { invalidateProposedPlansLoaded } from './proposedPlans.svelte';
 import type { EventOrigin } from '../transport/handle';
 import { backendKeyForOrigin } from '../transport/backends';
 import type { TransportGap } from '../transport/wsClient';
@@ -150,6 +151,7 @@ function resyncThreadLiveActivity(origin?: EventOrigin): void {
 /** The blanket answer: forget the stamps, re-read the sidebar, refresh every pane. */
 function refreshEverything(): void {
   refreshTimelineSurfaces();
+  invalidateProposedPlansLoaded();
   dropStampsAfterGap();
   refreshSidebarProjections();
   for (const pane of ingestPanes()) {

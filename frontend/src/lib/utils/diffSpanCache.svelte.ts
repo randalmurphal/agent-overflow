@@ -175,6 +175,29 @@ let resetGeneration = $state(0);
 let nextBaseVersion = 0;
 const baseGenerations = new SvelteMap<string, number>();
 const baseEntryCounts = new Map<string, number>();
+// Refcounted base-key pins held by mounted ReviewLineBlockRow components.
+// Because highlighted review blocks subscribe only to `evictionGeneration`
+// rather than every sibling completion `generation`, `entry.gen >= generation`
+// alone cannot protect over-budget mounted files from evicting each other in
+// a refetch loop; mountedBaseCounts keeps every mounted review file pinned
+// against LRU eviction while it remains rendered.
+const mountedBaseCounts = new Map<string, number>();
+
+/** Pin a mounted ReviewFile's base key against LRU eviction until unmount. */
+export function retainReviewFileSpanPin(file: ReviewFile): () => void {
+  const key = file.body.contentKey();
+  if (key === null) return () => {};
+  const base = `${file.path} ${key}`;
+  mountedBaseCounts.set(base, (mountedBaseCounts.get(base) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const next = (mountedBaseCounts.get(base) ?? 1) - 1;
+    if (next <= 0) mountedBaseCounts.delete(base);
+    else mountedBaseCounts.set(base, next);
+  };
+}
 
 function baseKeyOf(key: string): string {
   const nul = key.indexOf('\0');
@@ -315,10 +338,14 @@ function insert(key: string, spans: EncodedLine[], incomplete: boolean, primed: 
   if (totalBytes > DIFF_SPAN_CACHE_MAX_BYTES) {
     for (const [candidate, entry] of entries) {
       if (totalBytes <= DIFF_SPAN_CACHE_MAX_BYTES) break;
-      // Skip the fresh insert and hot entries (touched since the last
-      // bump — see SpanEntry.gen): evicting either would trigger an
-      // immediate re-request and loop.
-      if (candidate === key || entry.gen >= generation) continue;
+      // Skip the fresh insert, hot entries (touched since the last bump —
+      // see SpanEntry.gen), and mounted review files held by active blocks:
+      // evicting any of them would trigger an immediate re-request and loop.
+      if (
+        candidate === key
+        || entry.gen >= generation
+        || (mountedBaseCounts.get(baseKeyOf(candidate)) ?? 0) > 0
+      ) continue;
       entries.delete(candidate);
       keyThreads.delete(candidate);
       totalBytes -= entry.bytes;
@@ -839,16 +866,30 @@ export function getSpansForReviewFile(
   return null;
 }
 
-/** Reports whether the cached span entry for `file` is marked incomplete and
- * eligible for damped retry (`INCOMPLETE_RETRY_MS`). Non-reactive. */
-export function hasIncompleteSpansForReviewFile(
+/** Reports whether `file` still needs its target span entry (missing, evicted,
+ * unprimed while a scoped context is active, or marked incomplete for damped
+ * retry) and therefore should subscribe to `diffSpanCacheGeneration()`.
+ * Oversized and empty files never issue a request and return false. Non-reactive. */
+export function needsReviewFileSpanRetry(
   file: ReviewFile,
   context?: PatchScopeContext | null,
 ): boolean {
-  const key = file.body.contentKey();
-  if (key === null) return false;
-  const entry = entryForKey(`${file.path} ${key}`, context);
-  return entry?.incompleteAt !== undefined;
+  const body = file.body;
+  if (body.lineCount === 0 || body.textSize > HIGHLIGHT_MAX_PATCH_CHARS) return false;
+  const key = body.contentKey();
+  if (key === null) return true;
+  const base = `${file.path} ${key}`;
+  const subject = context ? scopeSubjectKey(context) : '';
+  if (subject !== '') {
+    const baseEntry = entries.get(base);
+    if (baseEntry && baseEntry.primed && baseEntry.incompleteAt === undefined) {
+      return false;
+    }
+    const scoped = entries.get(scopedKey(base, subject, context!));
+    return scoped === undefined || scoped.incompleteAt !== undefined;
+  }
+  const entry = entries.get(base);
+  return entry === undefined || entry.incompleteAt !== undefined;
 }
 
 /** Non-reactive per-line span resolution against a block's already-resolved
@@ -1013,6 +1054,7 @@ export function resetDiffSpanCacheForTest(): void {
   pendingIngestThreads.clear();
   baseGenerations.clear();
   baseEntryCounts.clear();
+  mountedBaseCounts.clear();
   ingestGeneration += 1;
   totalBytes = 0;
   generation = 0;

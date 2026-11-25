@@ -83,9 +83,6 @@ type LiveCodeEvent struct {
 	Head string
 }
 
-func (e LiveCodeEvent) EventThreadID() string    { return e.ThreadID }
-func (e LiveCodeEvent) EventScopeRootID() string { return e.ParentID }
-
 type liveHighlighter struct {
 	mu        sync.Mutex
 	items     map[string]*liveItem

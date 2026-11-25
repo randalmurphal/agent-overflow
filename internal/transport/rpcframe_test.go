@@ -16,8 +16,18 @@ func (*rpcFrameParityReceiver) Echo(s string) (map[string]any, error) {
 func (*rpcFrameParityReceiver) Multi(a int, b string) (int, string) {
 	return a, b
 }
+
+type panickingJSONValue struct{}
+
+func (panickingJSONValue) MarshalJSON() ([]byte, error) {
+	panic("boom during marshal")
+}
+
 func (*rpcFrameParityReceiver) RawNil() json.RawMessage {
 	return nil
+}
+func (*rpcFrameParityReceiver) PanicMarshal() panickingJSONValue {
+	return panickingJSONValue{}
 }
 
 func TestInvokeToRPCFrameMatchesServerFrameMarshalByteForByte(t *testing.T) {
@@ -67,5 +77,27 @@ func TestInvokeToRPCFrameMatchesServerFrameMarshalByteForByte(t *testing.T) {
 				t.Fatalf("wire mismatch:\n got: %s\nwant: %s", buf.Bytes(), want)
 			}
 		})
+	}
+}
+
+func TestDispatcherPanicDuringResultMarshalRecovered(t *testing.T) {
+	d := NewDispatcher()
+	if _, err := d.Register(&rpcFrameParityReceiver{}, RegisterOptions{Package: "test", TypeName: "R"}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	m, ok := d.LookupName("PanicMarshal")
+	if !ok {
+		t.Fatal("missing PanicMarshal")
+	}
+
+	res, fe := d.Invoke(context.Background(), m, nil)
+	if fe == nil || fe.Code != ErrCodeInternal {
+		t.Fatalf("Invoke panic during marshal: got (%q, %+v), want ErrCodeInternal", res, fe)
+	}
+
+	var buf bytes.Buffer
+	fe = d.invokeToRPCFrame(context.Background(), m, "rpc-panic", nil, &buf)
+	if fe == nil || fe.Code != ErrCodeInternal {
+		t.Fatalf("invokeToRPCFrame panic during marshal: got %+v, want ErrCodeInternal", fe)
 	}
 }

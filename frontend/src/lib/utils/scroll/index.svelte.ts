@@ -563,7 +563,7 @@ export function createUseStickToBottomController(
     prefersReducedMotion: motionReduced,
     scrollGrid: () => documentScrollGrid(scrollEl?.ownerDocument ?? document),
     forceNextSpringTickTrace,
-    scrollTopUnexplained: () => scrollTopUnexplained(),
+    scrollTopUnexplained,
     reportWriteRefusal,
   });
 

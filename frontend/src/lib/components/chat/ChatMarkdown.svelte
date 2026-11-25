@@ -1,8 +1,12 @@
 <script lang="ts" module>
   import { CHAT_IMAGE_PREFIXES, CHAT_LINK_PREFIXES } from './markdown/chatLinkPrefixes';
+  import { createParseBlocksCache, type Extension } from '../../markdown';
 
   const ALLOWED_LINK_PREFIXES: string[] = [...CHAT_LINK_PREFIXES];
   const ALLOWED_IMAGE_PREFIXES: string[] = [...CHAT_IMAGE_PREFIXES];
+  // Stable shared identities for settled bodies without document-level facts.
+  const NO_EXTENSIONS: Extension[] = [];
+  const NO_BLOCKS = createParseBlocksCache();
 </script>
 
 <script lang="ts">
@@ -56,8 +60,8 @@
     Streamdown,
     alignmentAtEnd,
     createDocumentContextCache,
-    createParseBlocksCache,
     documentContextOf,
+    emptyDocumentContext,
     mayNeedDocumentContext,
     parseBlocks,
     sanitizeEmbeddedHtmlToken,
@@ -65,7 +69,6 @@
     type DocumentContext,
     type DocumentForge,
     type DocumentReading,
-    type Extension,
     type ProvenAppend,
     type Tokens,
   } from '../../markdown';
@@ -421,11 +424,6 @@
   // block's lex. A definition still in the volatile tail resolves the
   // committed blocks once it commits; the tail sees the committed ones.
   const documentForge = $derived<DocumentForge>(forgeForge === 'github' || forgeForge === 'gitlab' ? forgeForge : null);
-  // Stable identities: a fresh list or cache per evaluation would reset
-  // the context's per-block memo.
-  const NO_EXTENSIONS: Extension[] = [];
-  // Never parsed: a settled body with nothing to share folds no blocks.
-  const NO_BLOCKS = createParseBlocksCache();
   let prefixAlignmentCache: ReturnType<typeof createParseBlocksCache> | null = null;
   let prefixDocumentCache: ReturnType<typeof createDocumentContextCache> | null = null;
   const prefixState = $derived.by((): { align: Alignment; document: DocumentContext | null } => {
@@ -465,6 +463,9 @@
   const settledDocument = $derived.by((): DocumentContext | null => {
     const parsed = settledBlocks;
     if (!parsed) return null;
+    if (parsed.blocks === NO_BLOCKS && !forgeFacts) {
+      return emptyDocumentContext(documentForge);
+    }
     settledDocumentCache ??= createDocumentContextCache();
     return documentContextOf(parsed.blocks, extensions ?? NO_EXTENSIONS, settledDocumentCache, documentForge, forgeFacts);
   });

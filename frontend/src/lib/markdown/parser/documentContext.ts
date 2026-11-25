@@ -251,6 +251,9 @@ const EMPTY_CONTEXTS = {
 	gitlab: fixedContext(scopeOf('gitlab', null, null), null, true)
 };
 
+export const emptyDocumentContext = (forge: DocumentForge): DocumentContext =>
+	EMPTY_CONTEXTS[forge ?? 'chat'];
+
 /** Backslash-escapes every ASCII punctuation character: `text` as Markdown. */
 const literal = (text: string): string => text.replace(/[!-/:-@[-`{-~]/g, '\\$&');
 

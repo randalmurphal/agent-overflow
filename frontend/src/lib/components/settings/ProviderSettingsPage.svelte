@@ -119,9 +119,11 @@
     const isInitialMount = !initialBinaryPathSeen;
     initialBinaryPathSeen = true;
     const generation = ++modelGeneration;
-    const loadModels = isInitialMount
-      ? ensureProviderModels(provider, backend)
-      : refreshProviderModels(provider, backend);
+    const loadModels = untrack(() =>
+      isInitialMount
+        ? ensureProviderModels(provider, backend)
+        : refreshProviderModels(provider, backend),
+    );
     loadModels.catch((err: unknown) => {
       if (generation !== modelGeneration) return;
       console.error(`Failed to load ${definition.label} models:`, err);

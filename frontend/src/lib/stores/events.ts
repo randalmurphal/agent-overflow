@@ -501,6 +501,7 @@ export function setupEventListeners(): () => void {
   const cancelTerminalLaunches = onBackendHelloChange((backend, hello) => {
     if (hello === null) {
       terminalLaunches.delete(backend);
+      evictWarmTerminalsForBackend(backend);
       return;
     }
     const launch = hello.launchId;

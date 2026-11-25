@@ -58,16 +58,20 @@ export function measureDensity<T extends string>(el: HTMLElement, rungs: readonl
   }
 
   // Restore the attribute afterward; Svelte remains the final owner.
+  const startIndex = previous === rungs[0] ? 1 : 0;
   let result: T = rungs[rungs.length - 1];
-  for (const rung of rungs) {
+  for (let i = startIndex; i < rungs.length - 1; i += 1) {
+    const rung = rungs[i];
     el.dataset.density = rung;
     if (fits()) {
       result = rung;
       break;
     }
   }
-  if (previous === undefined) delete el.dataset.density;
-  else el.dataset.density = previous;
+  if (el.dataset.density !== previous) {
+    if (previous === undefined) delete el.dataset.density;
+    else el.dataset.density = previous;
+  }
   return result;
 }
 

@@ -5,7 +5,18 @@
   import { rowMatchesAnchor, type RowType } from '../../utils/patchRows';
   import { DIFF_CONTEXT_EXPAND_STEP, type ExpandDirection } from '../../utils/diffContextExpansion';
   import { gutterTintClass, lineTintClass } from '../../utils/diffLineTint';
-  import { diffSpanCacheEvictionGeneration, diffSpanCacheGeneration, getSpansForReviewFile, hasIncompleteSpansForReviewFile, requestReviewFileSpans, resolveReviewLineSpan, type PaintedSpans, type PatchScopeContext } from '../../utils/diffSpanCache.svelte';
+  import {
+    diffSpanCacheEvictionGeneration,
+    diffSpanCacheGeneration,
+    getSpansForReviewFile,
+    needsReviewFileSpanRetry,
+    requestReviewFileSpans,
+    resolveReviewLineSpan,
+    retainReviewFileSpanPin,
+    type PaintedSpans,
+    type PatchScopeContext,
+  } from '../../utils/diffSpanCache.svelte';
+  import { patchTextVersion } from '../../utils/patchMemory.svelte';
   import { stripPatchLinePrefix, type DiffGap, type PatchDisplayRow, type SplitDisplayRow } from '../../utils/patchFiles';
   import type { ReviewFile } from '../../utils/patchParser';
   import { REVIEW_LINE_HEIGHT_PX } from '../../utils/reviewRows';
@@ -145,12 +156,24 @@
   let fileSpans = $derived(getSpansForReviewFile(file, spanContext));
 
   $effect(() => {
+    if (file.body.contentKey() === null) {
+      void patchTextVersion();
+      return;
+    }
+    return retainReviewFileSpanPin(file);
+  });
+
+  $effect(() => {
     // Steady-state highlighted blocks only subscribe to eviction/reset so
-    // sibling file completions do not wake them. Missing or incomplete blocks
-    // also subscribe to `diffSpanCacheGeneration()` so transient RPC failures
-    // and incomplete parses retry when sibling completions land.
+    // sibling file completions do not wake them. Missing, unprimed, or
+    // incomplete blocks also subscribe to `diffSpanCacheGeneration()` so
+    // transient RPC failures and incomplete parses retry when sibling
+    // completions land. Reading `fileSpans` keeps the per-file base
+    // dependency so the effect drops the global subscription once its own
+    // target entry lands.
     diffSpanCacheEvictionGeneration();
-    if (fileSpans === null || hasIncompleteSpansForReviewFile(file, spanContext)) {
+    void fileSpans;
+    if (needsReviewFileSpanRetry(file, spanContext)) {
       diffSpanCacheGeneration();
     }
     const fileNow = file;

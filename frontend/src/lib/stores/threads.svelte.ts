@@ -527,6 +527,7 @@ export function dropThreadsForDetachedBackend(ids: readonly string[]): void {
     dropOpenThreadSignal(id);
     dropLiveTodoUiPrefs(id);
     dropActivityRailUiPrefs(id);
+    releaseThreadTerminalState(id);
   }
   const gone = new Set(ids);
   const kept = threads.filter((t) => !gone.has(t.id));

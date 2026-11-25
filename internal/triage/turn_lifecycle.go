@@ -817,12 +817,15 @@ func (r *Router) forceCloseOrphanToolCalls(threadID string, turnIndex int, now i
 		return fmt.Errorf("force-close orphan tool calls: %w", err)
 	}
 	r.emitItemUpserts(threadID, flipped)
+	var flushErrs []error
 	for _, item := range flipped {
-		r.dropStreamPersistenceBuffer(threadID, item.ID)
+		if err := r.flushAndDropStreamingItem(threadID, item.ID); err != nil {
+			flushErrs = append(flushErrs, fmt.Errorf("flush orphan tool stream %s/%s: %w", threadID, item.ID, err))
+		}
 		r.metrics.ItemsPersisted.Add(context.Background(), 1,
 			metric.WithAttributes(attribute.String("kind", item.Kind)))
 	}
-	return nil
+	return errors.Join(flushErrs...)
 }
 
 const forceCloseSuffix = " — turn ended with tool unresolved"

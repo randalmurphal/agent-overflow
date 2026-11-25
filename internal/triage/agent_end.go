@@ -83,15 +83,18 @@ func (r *Router) persistAgentEndLocked(item store.Item, payload *store.Payload, 
 	if err != nil {
 		return errors.Join(streamErr, queueErr, requestErr, fmt.Errorf("end agent %s/%s: %w", threadID, end.rootID, err))
 	}
-	for _, row := range settled {
-		r.dropStreamPersistenceBuffer(threadID, row.Item.ID)
-	}
 	rows := make([]store.Item, 0, 1+len(settled))
 	rows = append(rows, persisted)
 	for _, row := range settled {
 		rows = append(rows, row.Item)
 	}
 	r.emitItemUpserts(threadID, rows)
+	var flushErrs []error
+	for _, row := range settled {
+		if err := r.flushAndDropStreamingItem(threadID, row.Item.ID); err != nil {
+			flushErrs = append(flushErrs, fmt.Errorf("flush settled agent item %s/%s: %w", threadID, row.Item.ID, err))
+		}
+	}
 	for _, row := range rows {
 		r.metrics.ItemsPersisted.Add(context.Background(), 1,
 			metric.WithAttributes(attribute.String("kind", row.Kind)))
@@ -100,7 +103,7 @@ func (r *Router) persistAgentEndLocked(item store.Item, payload *store.Payload, 
 		r.metrics.PayloadsPersisted.Add(context.Background(), 1,
 			metric.WithAttributes(attribute.String("kind", payload.Kind)))
 	}
-	return errors.Join(streamErr, queueErr, requestErr)
+	return errors.Join(streamErr, queueErr, requestErr, errors.Join(flushErrs...))
 }
 
 // settleAgentStreams settles every streaming row end's agent owns through
@@ -219,7 +222,7 @@ func (r *Router) dropTurnStreamsLocked(threadID string, st *threadState, turnInd
 			r.decStreamingCounts(threadID, ref.scope)
 			delete(blocks, key)
 			delete(st.streamingPathRefsLast, ref.itemID)
-			if buffer := st.streamPersistBuffers[ref.itemID]; buffer != nil {
+			if buffer := st.streamPersistBuffers[ref.itemID]; buffer != nil && buffer.content.Len() == 0 {
 				if buffer.timer != nil {
 					buffer.timer.Stop()
 					buffer.timer = nil

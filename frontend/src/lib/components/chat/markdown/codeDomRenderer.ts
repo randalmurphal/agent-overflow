@@ -138,7 +138,7 @@ export class CodeDomRenderer {
     if (count > 0) {
       const tail = nodes[count - 1];
       if (tail.nodeType === 3) {
-        (tail as Text).data += delta;
+        (tail as Text).appendData(delta);
         last.dirty = false;
         return;
       }

@@ -21,6 +21,7 @@ import { get, set, state } from 'svelte/internal/client';
 import FlipRowsHost from './svelte-patch-fixtures/FlipRowsHost.svelte';
 import FlipSiblingListsHost from './svelte-patch-fixtures/FlipSiblingListsHost.svelte';
 import FlipNestedListsHost, { type NestedGroup } from './svelte-patch-fixtures/FlipNestedListsHost.svelte';
+import FlipCascadeHost from './svelte-patch-fixtures/FlipCascadeHost.svelte';
 
 /** Interleaving log: `read:<id>`, `create:<id>`, `cancel:<id>`, `mark:*`. */
 let log: string[] = [];
@@ -339,6 +340,41 @@ describe('svelte patch: phased FLIP application on keyed-each reorder', () => {
     const entries = afterMark();
     const creates = phaseIndices(entries, 'create');
     expect(creates).toHaveLength(3);
+
+    await Promise.resolve(unmount(app)).catch(() => {});
+    target.remove();
+  });
+
+  it('deduplicates effects when an $effect triggers a cascading reorder in the same flush', async () => {
+    const items = state<number[]>([1, 2, 3, 4]);
+    const target = document.body.appendChild(document.createElement('div'));
+    const app = mount(FlipCascadeHost, {
+      target,
+      props: {
+        getItems: () => get(items),
+        onFirstReorder: () => {
+          set(items, [3, 4, 1, 2]);
+        },
+      },
+    });
+    flushSync();
+    await drainMicrotasks();
+
+    log.push('mark:cascade');
+    set(items, [4, 1, 2, 3]);
+    flushSync();
+    await drainMicrotasks();
+
+    const entries = afterMark();
+    const creates = entries.filter((l) => l.startsWith('create:'));
+    // Every row must receive exactly 1 animation (never double-applied across
+    // the two reconciles inside the same flush, which would orphan a WAAPI
+    // animation).
+    expect(creates).toHaveLength(4);
+    expect(new Set(creates).size).toBe(4);
+    expect(Math.min(...phaseIndices(entries, 'create'))).toBeGreaterThan(
+      Math.max(...phaseIndices(entries, 'read')),
+    );
 
     await Promise.resolve(unmount(app)).catch(() => {});
     target.remove();

@@ -37,37 +37,16 @@ func (p *Parser) tryParseStreamEventLine(threadID string, line []byte) ([]provid
 		}
 		if err := json.Unmarshal(line, &fast); err == nil &&
 			fast.Type == "stream_event" && fast.Event.Type == "content_block_delta" {
-			now := time.Now()
-			switch fast.Event.Delta.Type {
-			case "text_delta":
-				if fast.Event.Delta.Text == "" {
-					return nil, true, nil
-				}
-				return []provider.ProviderEvent{{
-					Kind:            provider.EventTextDelta,
-					ThreadID:        threadID,
-					Content:         fast.Event.Delta.Text,
-					Role:            "assistant",
-					ParentToolUseID: fast.ParentToolUseID,
-					Timestamp:       now,
-				}}, true, nil
-			case "thinking_delta":
-				if fast.Event.Delta.Thinking == "" {
-					return nil, true, nil
-				}
-				return []provider.ProviderEvent{{
-					Kind:            provider.EventThinking,
-					ThreadID:        threadID,
-					Content:         fast.Event.Delta.Thinking,
-					ParentToolUseID: fast.ParentToolUseID,
-					Timestamp:       now,
-				}}, true, nil
-			case "signature_delta":
-				p.appendStreamSignature(fast.ParentToolUseID, fast.Event.Index, fast.Event.Delta.Signature)
-				return nil, true, nil
-			default:
-				return nil, true, nil
-			}
+			return p.emitContentBlockDelta(
+				threadID,
+				fast.ParentToolUseID,
+				fast.Event.Index,
+				fast.Event.Delta.Type,
+				fast.Event.Delta.Text,
+				fast.Event.Delta.Thinking,
+				fast.Event.Delta.Signature,
+				time.Now(),
+			), true, nil
 		}
 	}
 
@@ -86,13 +65,90 @@ func (p *Parser) tryParseStreamEventLine(threadID string, line []byte) ([]provid
 		return nil, false, nil
 	}
 
-	now := time.Now()
-	eventRaw := env.Data
+	events, err := p.parseStreamEventPayload(
+		threadID,
+		env.ParentToolUseID,
+		env.APIMessageID,
+		env.Data,
+		env.Event,
+		env.AbandonedBlocks,
+		true,
+		time.Now(),
+	)
+	return events, true, err
+}
+
+// parseStreamEvent handles the `stream_event` envelope produced by the
+// Claude CLI when `--include-partial-messages` is enabled. Unlike the
+// assistant-message path, partial messages preserve content block
+// boundaries, so we emit explicit start/stop events for text/thinking blocks
+// and remember the block type by (parent_tool_use_id,index) so a later stop
+// can settle the right streaming item.
+func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
+	return p.parseStreamEventPayload(
+		threadID,
+		readRawString(raw["parent_tool_use_id"]),
+		readRawString(raw["api_message_id"]),
+		raw["data"],
+		raw["event"],
+		raw["abandoned_blocks"],
+		false,
+		now,
+	)
+}
+
+func (p *Parser) emitContentBlockDelta(
+	threadID, parentToolUseID string,
+	index int,
+	deltaType, text, thinking, signature string,
+	now time.Time,
+) []provider.ProviderEvent {
+	switch deltaType {
+	case "text_delta":
+		if text == "" {
+			return nil
+		}
+		return []provider.ProviderEvent{{
+			Kind:            provider.EventTextDelta,
+			ThreadID:        threadID,
+			Content:         text,
+			Role:            "assistant",
+			ParentToolUseID: parentToolUseID,
+			Timestamp:       now,
+		}}
+	case "thinking_delta":
+		if thinking == "" {
+			return nil
+		}
+		return []provider.ProviderEvent{{
+			Kind:            provider.EventThinking,
+			ThreadID:        threadID,
+			Content:         thinking,
+			ParentToolUseID: parentToolUseID,
+			Timestamp:       now,
+		}}
+	case "signature_delta":
+		// The signature is never content. It is kept until the block's
+		// stop only to read its tag (settledBlockMeta).
+		p.appendStreamSignature(parentToolUseID, index, signature)
+		return nil
+	default:
+		return nil
+	}
+}
+
+func (p *Parser) parseStreamEventPayload(
+	threadID, parentToolUseID, envelopeAPIMessageID string,
+	dataRaw, rawEvent, abandonedRaw json.RawMessage,
+	updateTurnWindow bool,
+	now time.Time,
+) ([]provider.ProviderEvent, error) {
+	eventRaw := dataRaw
 	if len(eventRaw) == 0 {
-		eventRaw = env.Event
+		eventRaw = rawEvent
 	}
 	if len(eventRaw) == 0 {
-		return nil, true, nil
+		return nil, nil
 	}
 
 	var inner struct {
@@ -107,20 +163,19 @@ func (p *Parser) tryParseStreamEventLine(threadID string, line []byte) ([]provid
 		Usage json.RawMessage `json:"usage"`
 	}
 	if json.Unmarshal(eventRaw, &inner) != nil {
-		return nil, true, nil
+		return nil, nil
 	}
 
 	eventType := inner.Type
 	if eventType == "" {
-		eventType = readRawString(env.Event)
+		eventType = readRawString(rawEvent)
 	}
 	if eventType == "" {
-		return nil, true, nil
+		return nil, nil
 	}
 
-	parentToolUseID := env.ParentToolUseID
-	if p != nil && parentToolUseID == "" && len(env.Event) > 0 {
-		if len(env.Data) == 0 {
+	if updateTurnWindow && p != nil && parentToolUseID == "" && len(rawEvent) > 0 {
+		if len(dataRaw) == 0 {
 			if inner.Type == "message_start" {
 				p.betweenTurns = false
 			}
@@ -128,39 +183,50 @@ func (p *Parser) tryParseStreamEventLine(threadID string, line []byte) ([]provid
 			var ev struct {
 				Type string `json:"type"`
 			}
-			if json.Unmarshal(env.Event, &ev) == nil && ev.Type == "message_start" {
+			if json.Unmarshal(rawEvent, &ev) == nil && ev.Type == "message_start" {
 				p.betweenTurns = false
 			}
 		}
 	}
 
+	// API id of the response a stream_event belongs to: the envelope's
+	// `api_message_id` when the CLI stamped one, else the id remembered from
+	// the scope's `message_start`. Empty when neither is known.
 	apiMessageIDFor := func() string {
-		if env.APIMessageID != "" {
-			return env.APIMessageID
+		if envelopeAPIMessageID != "" {
+			return envelopeAPIMessageID
 		}
-		if p != nil {
-			return p.streamMessageIDs[parentToolUseID]
+		if p == nil || p.streamMessageIDs == nil {
+			return ""
 		}
-		return ""
+		return p.streamMessageIDs[parentToolUseID]
 	}
 
 	switch eventType {
 	case "message_start":
+		// Record the message id so the coalesced `assistant` snapshot
+		// carrying the same id is recognised as already-streamed and its
+		// text/thinking blocks are dropped (anti-double-render). A snapshot
+		// whose id was never seen here never streamed and is recovered as a
+		// completed block — see parse_assistant.go and the streamedMessageIDs
+		// field doc. No downstream event: message_start carries no content.
 		var msg struct {
 			ID string `json:"id"`
 		}
 		if json.Unmarshal(inner.Message, &msg) == nil {
 			p.rememberStreamedMessageID(msg.ID)
-			p.rememberStreamMessageID(parentToolUseID, firstNonEmpty(env.APIMessageID, msg.ID))
+			p.rememberStreamMessageID(parentToolUseID, firstNonEmpty(envelopeAPIMessageID, msg.ID))
 		}
 		p.startAdvisorMessage(parentToolUseID)
-		return p.startUsageMessage(threadID, parentToolUseID, inner.Message, now), true, nil
+		return p.startUsageMessage(threadID, parentToolUseID, inner.Message, now), nil
 
 	case "content_block_start":
 		if inner.ContentBlock.Type == "" {
-			return nil, true, nil
+			return nil, nil
 		}
 		p.rememberStreamBlock(parentToolUseID, inner.Index, inner.ContentBlock.Type)
+		// The streamed block opens with an empty signature that
+		// signature_delta fills; a start that already carries one seeds it.
 		p.appendStreamSignature(parentToolUseID, inner.Index, inner.ContentBlock.Signature)
 		return []provider.ProviderEvent{{
 			Kind:            provider.EventContentBlockStart,
@@ -168,7 +234,7 @@ func (p *Parser) tryParseStreamEventLine(threadID string, line []byte) ([]provid
 			Meta:            blockMeta(inner.Index, inner.ContentBlock.Type, apiMessageIDFor()),
 			ParentToolUseID: parentToolUseID,
 			Timestamp:       now,
-		}}, true, nil
+		}}, nil
 
 	case "content_block_stop":
 		blockType, signature := p.takeStreamBlock(parentToolUseID, inner.Index)
@@ -178,24 +244,30 @@ func (p *Parser) tryParseStreamEventLine(threadID string, line []byte) ([]provid
 			Meta:            settledBlockMeta(inner.Index, blockType, apiMessageIDFor(), sessionimport.ThinkingIsNarration(signature)),
 			ParentToolUseID: parentToolUseID,
 			Timestamp:       now,
-		}}, true, nil
+		}}, nil
 
 	case "message_stop":
+		// The CLI closes a response it stopped reading (stalled or failed
+		// stream) with a message_stop of its own whose envelope carries
+		// `abandoned_blocks`: the response's blocks from that index on
+		// were streamed but will never get an assistant message and are
+		// not in the transcript (claude-wire.md §abandoned_blocks). The
+		// API's own message_stop carries no such key and emits nothing.
 		defer p.forgetStreamMessageID(parentToolUseID)
 		p.forgetStreamSignatures(parentToolUseID)
-		if len(env.AbandonedBlocks) == 0 {
-			return nil, true, nil
+		if len(abandonedRaw) == 0 {
+			return nil, nil
 		}
 		var abandoned struct {
 			APIMessageID   string `json:"api_message_id"`
 			FromBlockIndex int    `json:"from_block_index"`
 		}
-		if json.Unmarshal(env.AbandonedBlocks, &abandoned) != nil {
-			return nil, true, nil
+		if json.Unmarshal(abandonedRaw, &abandoned) != nil {
+			return nil, nil
 		}
 		apiMessageID := firstNonEmpty(abandoned.APIMessageID, apiMessageIDFor())
 		if apiMessageID == "" || abandoned.FromBlockIndex < 0 {
-			return nil, true, nil
+			return nil, nil
 		}
 		meta, _ := json.Marshal(provider.BlocksAbandonedMeta{
 			APIMessageID:   apiMessageID,
@@ -207,11 +279,11 @@ func (p *Parser) tryParseStreamEventLine(threadID string, line []byte) ([]provid
 			Meta:            meta,
 			ParentToolUseID: parentToolUseID,
 			Timestamp:       now,
-		}}, true, nil
+		}}, nil
 
 	case "content_block_delta":
 		if len(inner.Delta) == 0 {
-			return nil, true, nil
+			return nil, nil
 		}
 		var delta struct {
 			Type      string `json:"type"`
@@ -220,40 +292,38 @@ func (p *Parser) tryParseStreamEventLine(threadID string, line []byte) ([]provid
 			Signature string `json:"signature,omitempty"`
 		}
 		if json.Unmarshal(inner.Delta, &delta) != nil {
-			return nil, true, nil
+			return nil, nil
 		}
-		switch delta.Type {
-		case "text_delta":
-			if delta.Text == "" {
-				return nil, true, nil
-			}
-			return []provider.ProviderEvent{{
-				Kind:            provider.EventTextDelta,
-				ThreadID:        threadID,
-				Content:         delta.Text,
-				Role:            "assistant",
-				ParentToolUseID: parentToolUseID,
-				Timestamp:       now,
-			}}, true, nil
-		case "thinking_delta":
-			if delta.Thinking == "" {
-				return nil, true, nil
-			}
-			return []provider.ProviderEvent{{
-				Kind:            provider.EventThinking,
-				ThreadID:        threadID,
-				Content:         delta.Thinking,
-				ParentToolUseID: parentToolUseID,
-				Timestamp:       now,
-			}}, true, nil
-		case "signature_delta":
-			p.appendStreamSignature(parentToolUseID, inner.Index, delta.Signature)
-			return nil, true, nil
-		default:
-			return nil, true, nil
-		}
+		return p.emitContentBlockDelta(
+			threadID,
+			parentToolUseID,
+			inner.Index,
+			delta.Type,
+			delta.Text,
+			delta.Thinking,
+			delta.Signature,
+			now,
+		), nil
 
 	case "message_delta":
+		// `message_delta` can emit two events from one envelope: an
+		// EventTokenUsage from the `usage` snapshot (drives the
+		// context meter) AND a soft EventTurnComplete from the inner
+		// `delta.stop_reason` (drives the working indicator off when
+		// the parent stops emitting, without waiting for the wire
+		// `result` — docs/architecture/turn-lifecycle.md §Rounds and
+		// turns). The two gates are independent; a malformed envelope
+		// missing one field must still let the other fire.
+		//
+		// The top-level `usage` fields are the cumulative sum of every
+		// parent `type:"message"` iteration in this SSE message. That
+		// sum — NOT the last iteration's snapshot — is what the CLI's
+		// own auto-compact trigger uses; verified across five
+		// production compactions where `compactMetadata.preTokens`
+		// matched top-level within 1-2% and was ~2x the last-iteration
+		// snapshot on advisor turns. See
+		// internal/provider/wirecaptures/claude/advisor_pretokens_correlation_20260523.summary.json
+		// and docs/references/claude-wire.md §Context-window usage.
 		var events []provider.ProviderEvent
 		if len(inner.Usage) > 0 {
 			var u assistantUsage
@@ -268,184 +338,8 @@ func (p *Parser) tryParseStreamEventLine(threadID string, line []byte) ([]provid
 		if soft := p.buildSoftTurnComplete(threadID, parentToolUseID, inner.Delta, now); soft != nil {
 			events = append(events, *soft)
 		}
-		return events, true, nil
-
-	default:
-		return nil, true, nil
-	}
-}
-
-// parseStreamEvent handles the `stream_event` envelope produced by the
-// Claude CLI when `--include-partial-messages` is enabled. Unlike the
-// assistant-message path, partial messages preserve content block
-// boundaries, so we emit explicit start/stop events for text/thinking blocks
-// and remember the block type by (parent_tool_use_id,index) so a later stop
-// can settle the right streaming item.
-func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
-	eventRaw := raw["data"]
-	if len(eventRaw) == 0 {
-		eventRaw = raw["event"]
-	}
-	if len(eventRaw) == 0 {
-		return nil, nil
-	}
-
-	var eventObj map[string]json.RawMessage
-	if json.Unmarshal(eventRaw, &eventObj) != nil {
-		return nil, nil
-	}
-
-	eventType := firstNonEmpty(readRawString(eventObj["type"]), readRawString(raw["event"]))
-	if eventType == "" {
-		return nil, nil
-	}
-
-	parentToolUseID := readRawString(raw["parent_tool_use_id"])
-
-	switch eventType {
-	case "message_start":
-		// Record the message id so the coalesced `assistant` snapshot
-		// carrying the same id is recognised as already-streamed and its
-		// text/thinking blocks are dropped (anti-double-render). A snapshot
-		// whose id was never seen here never streamed and is recovered as a
-		// completed block — see parse_assistant.go and the streamedMessageIDs
-		// field doc. No downstream event: message_start carries no content.
-		var msg struct {
-			ID string `json:"id"`
-		}
-		if json.Unmarshal(eventObj["message"], &msg) == nil {
-			p.rememberStreamedMessageID(msg.ID)
-			p.rememberStreamMessageID(parentToolUseID, firstNonEmpty(readRawString(raw["api_message_id"]), msg.ID))
-		}
-		p.startAdvisorMessage(parentToolUseID)
-		return p.startUsageMessage(threadID, parentToolUseID, eventObj["message"], now), nil
-
-	case "content_block_start":
-		index, _ := readIntAtAnyKey(eventRaw, "index")
-		var block map[string]json.RawMessage
-		if json.Unmarshal(eventObj["content_block"], &block) != nil {
-			return nil, nil
-		}
-		blockType := readRawString(block["type"])
-		if blockType == "" {
-			return nil, nil
-		}
-		p.rememberStreamBlock(parentToolUseID, index, blockType)
-		// The streamed block opens with an empty signature that
-		// signature_delta fills; a start that already carries one seeds it.
-		p.appendStreamSignature(parentToolUseID, index, readRawString(block["signature"]))
-		return []provider.ProviderEvent{{
-			Kind:            provider.EventContentBlockStart,
-			ThreadID:        threadID,
-			Meta:            blockMeta(index, blockType, p.streamAPIMessageID(raw, parentToolUseID)),
-			ParentToolUseID: parentToolUseID,
-			Timestamp:       now,
-		}}, nil
-
-	case "content_block_stop":
-		index, _ := readIntAtAnyKey(eventRaw, "index")
-		blockType, signature := p.takeStreamBlock(parentToolUseID, index)
-		return []provider.ProviderEvent{{
-			Kind:            provider.EventContentBlockStop,
-			ThreadID:        threadID,
-			Meta:            settledBlockMeta(index, blockType, p.streamAPIMessageID(raw, parentToolUseID), sessionimport.ThinkingIsNarration(signature)),
-			ParentToolUseID: parentToolUseID,
-			Timestamp:       now,
-		}}, nil
-
-	case "message_stop":
-		// The CLI closes a response it stopped reading (stalled or failed
-		// stream) with a message_stop of its own whose envelope carries
-		// `abandoned_blocks`: the response's blocks from that index on
-		// were streamed but will never get an assistant message and are
-		// not in the transcript (claude-wire.md §abandoned_blocks). The
-		// API's own message_stop carries no such key and emits nothing.
-		defer p.forgetStreamMessageID(parentToolUseID)
-		p.forgetStreamSignatures(parentToolUseID)
-		return p.blocksAbandonedEvent(threadID, raw, parentToolUseID, now), nil
-
-	case "content_block_delta":
-		deltaRaw, ok := eventObj["delta"]
-		if !ok {
-			return nil, nil
-		}
-		var delta struct {
-			Type      string `json:"type"`
-			Text      string `json:"text,omitempty"`
-			Thinking  string `json:"thinking,omitempty"`
-			Signature string `json:"signature,omitempty"`
-		}
-		if json.Unmarshal(deltaRaw, &delta) != nil {
-			return nil, nil
-		}
-		switch delta.Type {
-		case "text_delta":
-			if delta.Text == "" {
-				return nil, nil
-			}
-			return []provider.ProviderEvent{{
-				Kind:            provider.EventTextDelta,
-				ThreadID:        threadID,
-				Content:         delta.Text,
-				Role:            "assistant",
-				ParentToolUseID: parentToolUseID,
-				Timestamp:       now,
-			}}, nil
-		case "thinking_delta":
-			if delta.Thinking == "" {
-				return nil, nil
-			}
-			return []provider.ProviderEvent{{
-				Kind:            provider.EventThinking,
-				ThreadID:        threadID,
-				Content:         delta.Thinking,
-				ParentToolUseID: parentToolUseID,
-				Timestamp:       now,
-			}}, nil
-		case "signature_delta":
-			// The signature is never content. It is kept until the block's
-			// stop only to read its tag (settledBlockMeta).
-			index, _ := readIntAtAnyKey(eventRaw, "index")
-			p.appendStreamSignature(parentToolUseID, index, delta.Signature)
-			return nil, nil
-		default:
-			return nil, nil
-		}
-	case "message_delta":
-		// `message_delta` can emit two events from one envelope: an
-		// EventTokenUsage from the `usage` snapshot (drives the
-		// context meter) AND a soft EventTurnComplete from the inner
-		// `delta.stop_reason` (drives the working indicator off when
-		// the parent stops emitting, without waiting for the wire
-		// `result` — docs/architecture/turn-lifecycle.md §Rounds and
-		// turns). The two gates are
-		// independent; a malformed envelope missing one field
-		// must still let the other fire.
-		//
-		// The top-level `usage` fields are the cumulative sum of every
-		// parent `type:"message"` iteration in this SSE message. That
-		// sum — NOT the last iteration's snapshot — is what the CLI's
-		// own auto-compact trigger uses; verified across five
-		// production compactions where `compactMetadata.preTokens`
-		// matched top-level within 1-2% and was ~2x the last-iteration
-		// snapshot on advisor turns. See
-		// internal/provider/wirecaptures/claude/advisor_pretokens_correlation_20260523.summary.json
-		// and docs/references/claude-wire.md §Context-window usage.
-		var events []provider.ProviderEvent
-		if usageRaw := eventObj["usage"]; len(usageRaw) > 0 {
-			var u assistantUsage
-			if json.Unmarshal(usageRaw, &u) == nil {
-				if p != nil && parentToolUseID == "" {
-					events = append(events, p.reportMessageUsage(threadID, p.usageProgress.activeMessage, "", &u, now)...)
-				}
-				events = appendContextUsageEvent(events, threadID, parentToolUseID, now, u)
-				events = p.stampAdvisorModels(events, threadID, parentToolUseID, &u, now)
-			}
-		}
-		if soft := p.buildSoftTurnComplete(threadID, parentToolUseID, eventObj["delta"], now); soft != nil {
-			events = append(events, *soft)
-		}
 		return events, nil
+
 	default:
 		return nil, nil
 	}
@@ -480,42 +374,6 @@ func settledBlockMeta(index int, blockType, apiMessageID string, narration bool)
 	}
 	meta, _ := json.Marshal(fields)
 	return meta
-}
-
-// blocksAbandonedEvent reads a message_stop envelope's `abandoned_blocks`
-// into an EventBlocksAbandoned, or nil when the key is absent or does not
-// name a response. The key is an envelope sibling of `event`, not a field
-// of the inner event. ParentToolUseID passes through unchanged: the CLI
-// emits the key only for the top-level stream today (its close events
-// hardcode a null parent), and a scoped signal would mark that scope's
-// rows the same way.
-func (p *Parser) blocksAbandonedEvent(threadID string, raw map[string]json.RawMessage, parentToolUseID string, now time.Time) []provider.ProviderEvent {
-	abandonedRaw := raw["abandoned_blocks"]
-	if len(abandonedRaw) == 0 {
-		return nil
-	}
-	var abandoned struct {
-		APIMessageID   string `json:"api_message_id"`
-		FromBlockIndex int    `json:"from_block_index"`
-	}
-	if json.Unmarshal(abandonedRaw, &abandoned) != nil {
-		return nil
-	}
-	apiMessageID := firstNonEmpty(abandoned.APIMessageID, p.streamAPIMessageID(raw, parentToolUseID))
-	if apiMessageID == "" || abandoned.FromBlockIndex < 0 {
-		return nil
-	}
-	meta, _ := json.Marshal(provider.BlocksAbandonedMeta{
-		APIMessageID:   apiMessageID,
-		FromBlockIndex: abandoned.FromBlockIndex,
-	})
-	return []provider.ProviderEvent{{
-		Kind:            provider.EventBlocksAbandoned,
-		ThreadID:        threadID,
-		Meta:            meta,
-		ParentToolUseID: parentToolUseID,
-		Timestamp:       now,
-	}}
 }
 
 // buildSoftTurnComplete inspects a top-level `message_delta` envelope

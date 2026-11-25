@@ -51,12 +51,14 @@
    * filter the group renders only its matching members, and "Archive Threads
    * (n)" acting on that subset would silently do a fraction of what it says.
    */
+  function currentMemberThreadIds(): string[] {
+    return getThreads()
+      .filter((t) => t.groupId === group.id && !t.archived)
+      .map((t) => t.id);
+  }
+
   let memberThreadIds = $derived(
-    open || showArchiveConfirm || showDeleteConfirm
-      ? getThreads()
-          .filter((t) => t.groupId === group.id && !t.archived)
-          .map((t) => t.id)
-      : [],
+    open || showArchiveConfirm || showDeleteConfirm ? currentMemberThreadIds() : [],
   );
   let memberCount = $derived(memberThreadIds.length);
   // Every row writes the group or its members on the project's computer;
@@ -71,8 +73,8 @@
    * other against one SQLite store, and a pile of simultaneous toasts hides
    * whichever failure actually mattered.
    */
-  async function archiveMembers(): Promise<void> {
-    for (const id of memberThreadIds.slice()) {
+  async function archiveMembers(ids: readonly string[] = currentMemberThreadIds()): Promise<void> {
+    for (const id of ids) {
       const thread = getThreadById(id);
       if (!thread) continue;
       try {
@@ -93,9 +95,10 @@
   }
 
   function handleArchive(): void {
+    const ids = currentMemberThreadIds();
     onClose();
     if (getSettings().confirmArchive) showArchiveConfirm = true;
-    else void archiveMembers();
+    else void archiveMembers(ids);
   }
 
   function handleDelete(): void {
@@ -132,8 +135,9 @@
           disabled={memberCount === 0 || operateUngranted}
           title={ungrantedTitle}
           onSelect={() => {
+            const ids = currentMemberThreadIds();
             onClose();
-            void markAllReadAction(memberThreadIds.flatMap((id) => getThreadById(id) ?? []));
+            void markAllReadAction(ids.flatMap((id) => getThreadById(id) ?? []));
           }}
         />
         <MenuItem
@@ -147,8 +151,9 @@
           disabled={memberCount === 0 || operateUngranted}
           title={ungrantedTitle}
           onSelect={() => {
+            const ids = currentMemberThreadIds();
             onClose();
-            void removeThreadsFromGroupAction(memberThreadIds);
+            void removeThreadsFromGroupAction(ids);
           }}
         />
         <MenuDivider />

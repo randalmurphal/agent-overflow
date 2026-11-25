@@ -1031,8 +1031,8 @@ type Subscriber struct {
 	// background lease) since the pump last took it. The pump turns each
 	// entry into a watermark (takeWithheld). deliver writes it under the
 	// bus mutex and the pump takes it without, hence withheldMu. hasWithheld
-	// lets clearWithheld and takeWithheld skip withheldMu on the common path
-	// where nothing has been withheld.
+	// lets clearWithheld skip withheldMu on the common path where nothing
+	// has been withheld.
 	hasWithheld atomic.Bool
 	withheldMu  sync.Mutex
 	withheld    map[string]uint64

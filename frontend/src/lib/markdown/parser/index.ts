@@ -64,7 +64,7 @@ export type {
   IncrementalLexObserver,
   IncrementalLexPath
 } from './incrementalLex.cache';
-export { createDocumentContextCache, documentContextOf, mayNeedDocumentContext } from './documentContext';
+export { createDocumentContextCache, documentContextOf, emptyDocumentContext, mayNeedDocumentContext } from './documentContext';
 export type { DocumentContext, DocumentContextCache } from './documentContext';
 export { factDenied, readFact, sameScopeReads } from './documentScope';
 export type { DocumentForge, DocumentReading, DocumentScope, ForgeFactReader, ForgeFactState } from './documentScope';

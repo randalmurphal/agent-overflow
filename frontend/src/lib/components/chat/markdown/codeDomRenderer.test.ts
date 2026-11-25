@@ -142,4 +142,27 @@ describe('CodeDomRenderer', () => {
     expect(spans3[0].textContent).toBe('func');
     expect(spans3[1].textContent).toBe('"hi"');
   });
+
+  it('preserves live DOM Range selections inside the trailing text node across streaming appends', () => {
+    const code = document.createElement('code');
+    document.body.appendChild(code);
+    try {
+      const r = new CodeDomRenderer('const hello');
+      r.mount(code);
+      const tail = code.firstChild;
+      expect(tail?.nodeType).toBe(Node.TEXT_NODE);
+      const range = document.createRange();
+      range.setStart(tail!, 6);
+      range.setEnd(tail!, 11);
+      expect(range.toString()).toBe('hello');
+
+      r.append(' = "world";');
+      expect(range.startContainer).toBe(tail);
+      expect(range.startOffset).toBe(6);
+      expect(range.endOffset).toBe(11);
+      expect(range.toString()).toBe('hello');
+    } finally {
+      code.remove();
+    }
+  });
 });

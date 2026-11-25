@@ -135,7 +135,7 @@
 		id: string;
 	} = $props();
 
-	let mermaid = $state<any>(loadedMermaid);
+	let mermaid = $state.raw<any>(loadedMermaid);
 	// The source Mermaid last rejected; that source shows as written.
 	let rejected = $state<string | null>(null);
 	const failed = $derived(rejected === token.text ? { [RENDER_FAILED_ATTR]: '' } : {});

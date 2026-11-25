@@ -1317,20 +1317,6 @@ func (p *Parser) rememberStreamMessageID(parentToolUseID, id string) {
 	p.streamMessageIDs[parentToolUseID] = id
 }
 
-// streamAPIMessageID is the API id of the response a stream_event belongs
-// to: the envelope's `api_message_id` when the CLI stamped one, else the
-// id remembered from the scope's `message_start`. Empty when neither is
-// known (an older CLI mid-response, a plugin-rewritten event).
-func (p *Parser) streamAPIMessageID(raw map[string]json.RawMessage, parentToolUseID string) string {
-	if id := readRawString(raw["api_message_id"]); id != "" {
-		return id
-	}
-	if p == nil || p.streamMessageIDs == nil {
-		return ""
-	}
-	return p.streamMessageIDs[parentToolUseID]
-}
-
 // forgetStreamMessageID releases a scope's remembered response id at its
 // message_stop.
 func (p *Parser) forgetStreamMessageID(parentToolUseID string) {

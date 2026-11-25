@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   getCachedPlanMarkdown,
   hasLoadedThreadProposedPlans,
+  invalidateProposedPlansLoaded,
   retainProposedPlanEventListener,
   setCachedPlanMarkdown,
   upsertProposedPlanForTests,
@@ -180,5 +181,35 @@ describe('proposed-plan refresh / sync upsert race', () => {
     expect(getCachedPlanMarkdown('t1', 'p1', '200\0{}')).toBeNull();
     // Stale entry was evicted on mismatch.
     expect(getCachedPlanMarkdown('t1', 'p1', '100\0{}')).toBeNull();
+  });
+
+  it('does not mark loaded if the last retainer released while refresh was in flight, and supports explicit invalidation', async () => {
+    let resolveRpc!: (items: Item[]) => void;
+    setBindingMock('ListThreadProposedPlans', async () => new Promise<Item[]>((resolve) => {
+      resolveRpc = resolve;
+    }));
+
+    const release = retainProposedPlanEventListener(() => 'thread-inflight');
+    const pending = refreshThreadProposedPlans('thread-inflight');
+    release();
+    resolveRpc([planItem({ threadId: 'thread-inflight' })]);
+    await pending;
+    expect(hasLoadedThreadProposedPlans('thread-inflight')).toBe(false);
+
+    // Explicit invalidation clears loaded state for one thread or all threads.
+    const release2 = retainProposedPlanEventListener(() => 'thread-a');
+    setBindingMock('ListThreadProposedPlans', async (tid: string) => [planItem({ threadId: tid })]);
+    await refreshThreadProposedPlans('thread-a');
+    await refreshThreadProposedPlans('thread-b');
+    expect(hasLoadedThreadProposedPlans('thread-a')).toBe(true);
+    expect(hasLoadedThreadProposedPlans('thread-b')).toBe(true);
+
+    invalidateProposedPlansLoaded('thread-a');
+    expect(hasLoadedThreadProposedPlans('thread-a')).toBe(false);
+    expect(hasLoadedThreadProposedPlans('thread-b')).toBe(true);
+
+    invalidateProposedPlansLoaded();
+    expect(hasLoadedThreadProposedPlans('thread-b')).toBe(false);
+    release2();
   });
 });
