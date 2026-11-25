@@ -427,7 +427,7 @@ func TestBoardHandlesAreUntiedByEveryRemoval(t *testing.T) {
 				return sub.ID, err
 			},
 			held: func(m *mirrorFixture, id string) error {
-				scope, err := m.svc.SubscriptionBoard(id)
+				scope, _, err := m.svc.SubscriptionBoard(id)
 				if err == nil && scope != m.scope() {
 					return fmt.Errorf("the handle's board is %+v", scope)
 				}
@@ -507,7 +507,7 @@ func TestBoardHandlesAreUntiedByEveryRemoval(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := m.svc.SubscriptionBoard(sub.ID); !errors.Is(err, ErrInvalidRequest) {
+		if _, _, err := m.svc.SubscriptionBoard(sub.ID); !errors.Is(err, ErrInvalidRequest) {
 			t.Fatalf("a ticket handle's board: %v", err)
 		}
 	})

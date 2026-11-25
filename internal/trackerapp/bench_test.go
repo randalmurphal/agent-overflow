@@ -57,7 +57,7 @@ func benchService(b testing.TB) (*Service, *scripted, Scope) {
 	p := &scripted{t: b}
 	st := storetest.Clone(b)
 	svc, err := New(testCallbacks(Deps{
-		Store: st, Changed: func() {}, CredentialsDir: filepath.Join(b.TempDir(), keyfile.DirName),
+		Store: st, Changed: func() {}, CredentialsDir: filepath.Join(b.TempDir(), keyfile.DirName), ConfigDir: b.TempDir(),
 		Origin: APIOrigin, Version: "1", Now: time.Now, Life: b.Context(),
 	}, newEventLog()))
 	if err != nil {
@@ -152,7 +152,7 @@ func BenchmarkBoardView500(b *testing.B) {
 	sections := []Section{{Kind: SectionColumn, Column: 0}, {Kind: SectionColumn, Column: 1}, {Kind: SectionColumn, Column: 2}}
 	b.ReportAllocs()
 	for b.Loop() {
-		v, err := svc.Board(scope, sections)
+		v, err := svc.Board(scope, StatusGroups{}, sections)
 		if err != nil || v.All.Rows != 500 || len(v.Sections[0].Rows) != 100 {
 			b.Fatalf("view: %d rows, %v", v.All.Rows, err)
 		}
@@ -165,7 +165,7 @@ func BenchmarkSectionPage100(b *testing.B) {
 	seedBoard(b, svc, p, scope, 500)
 	b.ReportAllocs()
 	for b.Loop() {
-		page, err := svc.SectionRows(scope, Section{Kind: SectionColumn, Column: 1}, nil)
+		page, err := svc.SectionRows(scope, StatusGroups{}, Section{Kind: SectionColumn, Column: 1}, nil)
 		if err != nil || len(page.Rows) != 100 {
 			b.Fatalf("page: %d rows, %v", len(page.Rows), err)
 		}

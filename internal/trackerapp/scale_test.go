@@ -142,7 +142,7 @@ func serviceAtScale(t *testing.T, n int) {
 	var ticks int
 	logCost("first sync", m.measure(nil, func(int) { ticks = pumpTicks(t, svc, scope) }, true))
 	t.Logf("first sync: %d ticks", ticks)
-	if v := must[BoardView](t)(svc.Board(scope, nil)); v.All.Rows != n {
+	if v := must[BoardView](t)(svc.Board(scope, StatusGroups{}, nil)); v.All.Rows != n {
 		t.Fatalf("the board holds %d rows of %d", v.All.Rows, n)
 	}
 	// A hidden subscription, so the change funnel looks up the boards of
@@ -183,24 +183,24 @@ func serviceAtScale(t *testing.T, n int) {
 		must[Outcome](t)(svc.syncTick(t.Context(), scope, BoardDue{Reconcile: true}, Background))
 	}, false))
 	sections := []Section{{Kind: SectionColumn}, {Kind: SectionBacklog}, {Kind: SectionSprint, Sprint: "1"}}
-	logCost("board view, 3 sections", m.measure(nil, func(int) { must[BoardView](t)(svc.Board(scope, sections)) }, false))
+	logCost("board view, 3 sections", m.measure(nil, func(int) { must[BoardView](t)(svc.Board(scope, StatusGroups{}, sections)) }, false))
 	// The page that starts halfway down the backlog.
 	var deep *SectionCursor
-	for page := must[SectionPage](t)(svc.SectionRows(scope, sections[1], nil)); page.Next != nil && len(page.Rows) > 0; {
+	for page := must[SectionPage](t)(svc.SectionRows(scope, StatusGroups{}, sections[1], nil)); page.Next != nil && len(page.Rows) > 0; {
 		if strings.Compare(page.Rows[0].Order, fmt.Sprintf("0|i%05d:", n/2)) >= 0 {
 			break
 		}
 		deep = page.Next
-		page = must[SectionPage](t)(svc.SectionRows(scope, sections[1], deep))
+		page = must[SectionPage](t)(svc.SectionRows(scope, StatusGroups{}, sections[1], deep))
 	}
-	logCost("section page, deep", m.measure(nil, func(int) { must[SectionPage](t)(svc.SectionRows(scope, sections[1], deep)) }, false))
-	v := must[BoardView](t)(svc.Board(scope, sections))
+	logCost("section page, deep", m.measure(nil, func(int) { must[SectionPage](t)(svc.SectionRows(scope, StatusGroups{}, sections[1], deep)) }, false))
+	v := must[BoardView](t)(svc.Board(scope, StatusGroups{}, sections))
 	for _, held := range []TotalsAt{{}, {Lifetime: v.Lifetime, Revision: v.TotalsRevision}} {
 		kind := map[bool]string{true: "totals moved", false: "totals held"}[held == TotalsAt{}]
 		for _, k := range []int{1, 100} {
 			ids := board.ids(spread(n, k))
 			logCost(fmt.Sprintf("patch read, %d changed, %s", k, kind), m.measure(nil, func(int) {
-				must[BoardPatch](t)(svc.BoardPatch(scope, sections, ids, held))
+				must[BoardPatch](t)(svc.BoardPatch(scope, StatusGroups{}, sections, ids, held))
 			}, false))
 		}
 	}
@@ -217,7 +217,7 @@ func serviceAtScale(t *testing.T, n int) {
 	}, false))
 	logCost("trackerapp.New", m.measure(nil, func(int) {
 		other, err := New(testCallbacks(Deps{
-			Store: cs, Changed: func() {}, CredentialsDir: svc.credentialsDir, Origin: APIOrigin, Version: "1", Now: time.Now, Life: t.Context(),
+			Store: cs, Changed: func() {}, CredentialsDir: svc.credentialsDir, ConfigDir: svc.configDir, Origin: APIOrigin, Version: "1", Now: time.Now, Life: t.Context(),
 		}, newEventLog()))
 		if err != nil {
 			t.Fatal(err)

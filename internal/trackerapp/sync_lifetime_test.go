@@ -158,7 +158,7 @@ func TestUnitsAfterStop(t *testing.T) {
 	if _, err := m.svc.tickDelta(t.Context(), m.scope(), Background); !errors.Is(err, ErrStopped) {
 		t.Fatalf("delta after Stop: %v", err)
 	}
-	if _, err := m.svc.Board(m.scope(), nil); !errors.Is(err, ErrStopped) {
+	if _, err := m.svc.Board(m.scope(), StatusGroups{}, nil); !errors.Is(err, ErrStopped) {
 		t.Fatalf("board after Stop: %v", err)
 	}
 }

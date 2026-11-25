@@ -84,7 +84,7 @@ func TestAFailedCascadeStructureReadIsReadAgain(t *testing.T) {
 	})
 	reads := m.structureReads()
 	out := must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
-	v := must[BoardView](t)(m.svc.Board(m.scope(), nil))
+	v := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, nil))
 	if m.structureReads() != reads+1 || !slices.ContainsFunc(v.Sprints, func(s SprintView) bool { return s.ID == "3" }) {
 		t.Fatalf("the next tick %+v read the structure %d times; sprints %+v", out, m.structureReads()-reads, v.Sprints)
 	}
@@ -121,7 +121,7 @@ func TestANewSprintReadsTheStructurePastManyUnexplained(t *testing.T) {
 	d.set(withSprint(row("10001", 1_799_000_000_000, "a"), 1_799_000_000_001, "new"))
 	reads := m.structureReads()
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
-	v := must[BoardView](t)(m.svc.Board(m.scope(), nil))
+	v := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, nil))
 	if m.structureReads() != reads+1 || !slices.ContainsFunc(v.Sprints, func(s SprintView) bool { return s.ID == "new" }) {
 		t.Fatalf("a new sprint read the structure %d times; sprints %d", m.structureReads()-reads, len(v.Sprints))
 	}
@@ -159,7 +159,7 @@ func TestBoardTotalsAndRowsAreOneState(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
 	m.seedBoard(t)
-	before := must[BoardView](t)(m.svc.Board(m.scope(), []Section{{Kind: SectionBacklog}}))
+	before := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, []Section{{Kind: SectionBacklog}}))
 	if before.Backlog.Rows != len(before.Sections[0].Rows) {
 		t.Fatalf("a quiet board: backlog total %d, %d rows", before.Backlog.Rows, len(before.Sections[0].Rows))
 	}
@@ -171,11 +171,11 @@ func TestBoardTotalsAndRowsAreOneState(t *testing.T) {
 	m.svc.store = &syncBetween{Store: m.svc.store, between: func() {
 		must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
 	}}
-	v := must[BoardView](t)(m.svc.Board(m.scope(), []Section{{Kind: SectionBacklog}}))
+	v := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, []Section{{Kind: SectionBacklog}}))
 	if v.Backlog.Rows != len(v.Sections[0].Rows) {
 		t.Fatalf("a board read across a sync: backlog total %d, %d rows", v.Backlog.Rows, len(v.Sections[0].Rows))
 	}
-	after := must[BoardView](t)(m.svc.Board(m.scope(), []Section{{Kind: SectionBacklog}}))
+	after := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, []Section{{Kind: SectionBacklog}}))
 	if after.Backlog.Rows != before.Backlog.Rows+1 || len(after.Sections[0].Rows) != after.Backlog.Rows {
 		t.Fatalf("after the sync: backlog total %d, %d rows, before %d", after.Backlog.Rows, len(after.Sections[0].Rows), before.Backlog.Rows)
 	}
@@ -190,7 +190,7 @@ func TestARowEstimateShowsOnlyInItsOwnUnit(t *testing.T) {
 	m.tickingClock()
 	m.seedBoard(t)
 	sprint := []Section{{Kind: SectionSprint, Sprint: "1"}}
-	if v := must[BoardView](t)(m.svc.Board(m.scope(), sprint)); v.Estimate.Unit != "points" || v.Sections[0].Rows[0].Estimate == nil {
+	if v := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, sprint)); v.Estimate.Unit != "points" || v.Sections[0].Rows[0].Estimate == nil {
 		t.Fatalf("seeded: unit %s, row %+v", v.Estimate.Unit, v.Sections[0].Rows[0])
 	}
 	m.p.set(func(p *scripted) {
@@ -201,7 +201,7 @@ func TestARowEstimateShowsOnlyInItsOwnUnit(t *testing.T) {
 		}
 	})
 	must[Outcome](t)(m.svc.tickStructure(t.Context(), m.scope(), Background))
-	v := must[BoardView](t)(m.svc.Board(m.scope(), sprint))
+	v := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, sprint))
 	if r := v.Sections[0].Rows[0]; v.Estimate.Unit != "time" || r.Estimate != nil || v.Sprints[0].Total != (SectionTotal{Rows: 1}) {
 		t.Fatalf("a row read in points shows %v in the board's unit %s; sprint total %+v", r.Estimate, v.Estimate.Unit, v.Sprints[0].Total)
 	}
@@ -226,7 +226,7 @@ func TestARowEstimateShowsOnlyInItsOwnUnit(t *testing.T) {
 		}
 	})
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
-	v = must[BoardView](t)(m.svc.Board(m.scope(), sprint))
+	v = must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, sprint))
 	if r := v.Sections[0].Rows[0]; r.Estimate == nil || *r.Estimate != 3600 || v.Sprints[0].Total.Estimate != 3600 {
 		t.Fatalf("the row read again: %v, sprint total %+v", r.Estimate, v.Sprints[0].Total)
 	}
@@ -247,7 +247,7 @@ func TestAColumnCursorIsStaleAfterItsStatusesMove(t *testing.T) {
 		return tracker.RowPage{Rows: rows, Next: cursorAfter("x")}, nil
 	}
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
-	first := must[SectionPage](t)(m.svc.SectionRows(m.scope(), Section{Kind: SectionColumn, Column: 0}, nil))
+	first := must[SectionPage](t)(m.svc.SectionRows(m.scope(), StatusGroups{}, Section{Kind: SectionColumn, Column: 0}, nil))
 	if len(first.Rows) != 100 || first.Next == nil {
 		t.Fatalf("first page: %d rows, next %+v", len(first.Rows), first.Next)
 	}
@@ -259,7 +259,7 @@ func TestAColumnCursorIsStaleAfterItsStatusesMove(t *testing.T) {
 		}
 	})
 	must[Outcome](t)(m.svc.tickStructure(t.Context(), m.scope(), Background))
-	page, err := m.svc.SectionRows(m.scope(), Section{Kind: SectionColumn, Column: 0}, first.Next)
+	page, err := m.svc.SectionRows(m.scope(), StatusGroups{}, Section{Kind: SectionColumn, Column: 0}, first.Next)
 	if !errors.Is(err, ErrStalePage) {
 		t.Fatalf("the page after the columns changed: %d rows, %v", len(page.Rows), err)
 	}

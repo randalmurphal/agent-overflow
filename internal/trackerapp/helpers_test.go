@@ -89,6 +89,7 @@ func testCallbacks(d Deps, log *eventLog) Deps {
 	d.Settled = log.waitSettled
 	d.ClientConnected = func() bool { return !log.disconnected.Load() }
 	d.LoopFailed = log.loopFailed
+	d.SetupChanged = func() { log.setups.Add(1) }
 	return d
 }
 
@@ -109,6 +110,7 @@ func newFixtureWith(t *testing.T, cad Cadence) *fixture {
 		Store:          f.st,
 		Changed:        func() { f.changes.Add(1) },
 		CredentialsDir: f.creds,
+		ConfigDir:      t.TempDir(),
 		Origin: func(kind, site string) (string, error) {
 			if f.origin != nil {
 				return f.origin(kind, site)
