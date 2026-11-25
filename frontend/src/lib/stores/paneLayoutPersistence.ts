@@ -165,8 +165,8 @@ function boundedString(value: unknown, max: number): value is string {
 
 /**
  * Validate a ticket pane's saved ticket. Anything but a ticket with its
- * computer, connection and issue answers null, and the caller drops the
- * pane: a ticket pane with no ticket has nothing to show.
+ * computer, connection and issue answers null: the pane comes back with no
+ * ticket and says so (components/panes/TicketPane.svelte).
  */
 export function parsePersistedTicket(value: unknown): PaneLayoutPersistedTicket | null {
   if (!value || typeof value !== 'object') return null;
@@ -292,12 +292,12 @@ function parsePersistedLayout(raw: unknown): PersistedPaneLayout | null {
         widthPx: persistedWidthFor(pane, record.version),
       });
     } else if (pane.kind === 'ticket') {
-      // A ticket pane IS its ticket: no ticket, no pane.
+      // A ticket that does not read back keeps its pane, which says so
+      // until the person closes it.
       if (!pane.paneId.startsWith('ticket-')) continue;
       const ticket = parsePersistedTicket(pane.ticket);
-      if (!ticket) continue;
       seenPaneIds.add(pane.paneId);
-      panes.push({ paneId: pane.paneId, kind: 'ticket', ticket, widthPx: persistedWidthFor(pane, record.version) });
+      panes.push({ paneId: pane.paneId, kind: 'ticket', ...(ticket ? { ticket } : {}), widthPx: persistedWidthFor(pane, record.version) });
     }
     if (panes.length >= MAX_RESTORED_PANES) break;
   }
@@ -360,8 +360,7 @@ function buildSnapshot(): PersistedPaneLayout {
       });
     } else if (item.kind === 'ticket') {
       const ticket = ticketPaneCarrier(item.paneId);
-      if (!ticket) continue;
-      panes.push({ paneId: item.paneId, kind: 'ticket', ticket: { ...ticket }, widthPx: normalizePersistedWidthPx(item.widthPx) });
+      panes.push({ paneId: item.paneId, kind: 'ticket', ...(ticket ? { ticket: { ...ticket } } : {}), widthPx: normalizePersistedWidthPx(item.widthPx) });
     }
   }
   // Focus persists as-is when the focused pane itself is in the snapshot
@@ -443,9 +442,11 @@ export async function loadPersistedPaneLayout(
       layoutItems.push({ id: pane.paneId, paneId: pane.paneId, kind: pane.kind, widthPx: pane.widthPx });
       continue;
     }
-    if (pane.kind === 'ticket' && pane.ticket) {
-      // The record before its item, which a layout without it drops.
-      restoreTicketPane(pane.paneId, pane.ticket);
+    if (pane.kind === 'ticket') {
+      // The record is written before the layout takes its item, so the
+      // pane's first render reads it; a pane whose ticket did not read
+      // back has none and says so.
+      if (pane.ticket) restoreTicketPane(pane.paneId, pane.ticket);
       layoutItems.push({ id: pane.paneId, paneId: pane.paneId, kind: 'ticket', widthPx: pane.widthPx });
       continue;
     }

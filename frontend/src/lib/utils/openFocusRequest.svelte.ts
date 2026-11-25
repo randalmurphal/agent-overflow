@@ -8,10 +8,14 @@
 //   only the surface showing that open takes it: a close, another open or a
 //   step back ends it, and a surface mounting again because its pane moved,
 //   or opened by no person's act (a restore, a thread's link), takes none.
-// - A focus or a press anywhere after the open ends it, so a surface that
-//   mounts late never takes the focus from where the person put it
-//   meanwhile.
+// - A focus or a press anywhere after the open ends it, and so does a move
+//   to another pane that leaves the page's focus where it was (a keyboard
+//   pane move), so a surface that mounts late never takes the focus from
+//   where the person put it meanwhile.
 // - Taking it ends it: it is taken once.
+
+import { untrack } from 'svelte';
+import { getFocusedPaneId } from '../stores/panes.svelte';
 
 /** One surface's request, for the opens it shows. */
 export interface OpenFocusRequest<T extends object> {
@@ -37,9 +41,14 @@ export function createOpenFocusRequest<T extends object>(): OpenFocusRequest<T> 
       const options = { capture: true } as const;
       document.addEventListener('focusin', end, options);
       document.addEventListener('pointerdown', end, options);
+      const pane = getFocusedPaneId();
+      const stopWatching = $effect.root(() => {
+        $effect(() => { if (getFocusedPaneId() !== pane) untrack(end); });
+      });
       stopListening = () => {
         document.removeEventListener('focusin', end, options);
         document.removeEventListener('pointerdown', end, options);
+        stopWatching();
       };
       asked = open;
     },

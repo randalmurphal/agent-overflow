@@ -115,7 +115,8 @@ export interface PaneLayoutPersistedPane {
    * other kind omits it.
    */
   agentScope?: AgentPaneScopeSnapshot;
-  /** Present on `ticket` panes only, and required there. */
+  /** Present on `ticket` panes only; absent on one whose ticket did not
+   * read back. */
   ticket?: PaneLayoutPersistedTicket;
 }
 

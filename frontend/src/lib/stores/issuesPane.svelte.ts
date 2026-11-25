@@ -561,6 +561,9 @@ export function createTicketTrail({ state, shown }: TicketTrailOptions): TicketT
       const open = ticket;
       if (!open || computer !== 'ready') {
         view = null;
+        // A computer that can never answer shows nothing: what held the
+        // ticket for this trail lets go.
+        if (computer === 'gone') untrack(() => state.takeHandoff()?.());
         return;
       }
       const attachment = untrack(() => attachTrackerTicket(open.ref, shown()));

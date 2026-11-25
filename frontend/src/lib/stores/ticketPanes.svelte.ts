@@ -2,17 +2,33 @@
 // "A ticket in its own pane"). A ticket pane is a layout item of kind
 // `ticket` under a generated id, and a record here: the ticket it shows,
 // the tickets Back steps through, the board it was opened from (its points
-// are that board's row) and the connection's tracker kind. The record is
-// the one owner of which ticket the pane shows; the layout's save reads it
-// (`ticketPaneCarrier`) and its restore writes it (`restoreTicketPane`).
-// The trail is not saved: a reload reopens the pane on the ticket it
-// showed.
+// are that board's row) and the connection's tracker kind. The trail is
+// not saved: a reload reopens the pane on the ticket it showed.
+//
+// Who owns what:
+// - Running: the layout item owns that the pane exists, its place and its
+//   width; the record owns which ticket it shows. Nothing else names the
+//   ticket.
+// - Saving: the layout's save reads the record of each ticket item
+//   (`ticketPaneCarrier`); an item with no record is saved with no ticket.
+// - Restoring: the saved entry owns the ticket until the restore writes
+//   the record (`restoreTicketPane`), before the layout takes the item. An
+//   entry whose ticket does not read back comes back as an item with no
+//   record, which says so until the person closes it
+//   (components/panes/TicketPane.svelte).
 //
 // Must keep true:
-// - A record exists exactly while its layout item does: every way an item
+// - A record exists only while its layout item does: every way an item
 //   leaves the layout (its close, a thread or tool taking its slot, a
 //   layout reset or restore) drops the record, here, through the layout's
-//   removal listener.
+//   removal listener. An item has no record only when its saved ticket did
+//   not read back.
+// - A move's bridge (`handoff`) is the new hold taken before the Issues
+//   pane lets go of the ticket, since the pane's body loads after the
+//   move. It ends when the pane's body holds the ticket itself, when the
+//   ticket's computer is gone, or with the pane (its record dropped).
+//   Nothing else holds it, and nothing outlives a reload: the page and its
+//   subscriptions go together.
 // - One pane per ticket for a person's open: opening a ticket a pane shows
 //   focuses and reveals that pane. A pane that steps to a ticket another
 //   pane shows is not merged with it.

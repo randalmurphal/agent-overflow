@@ -44,6 +44,8 @@ import {
 import { installPaneMocks, makeItem } from '../../test/helpers/chat';
 import { setHostWindowFromBootstrap } from '../transport/pageHost';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { restoreTicketPane, ticketPaneCarrier, ticketPaneRecord } from './ticketPanes.svelte';
+import { HOME_BACKEND } from '../transport/backendKey';
 
 const LEGACY_KEY = 'agentOverflowPaneLayout';
 
@@ -91,6 +93,7 @@ function makeSavedLayout(
     | { paneId: string; kind: 'thread'; threadId: string; widthPx: number }
     | { paneId: string; kind: 'plan' | 'review'; sourcePaneId: string; widthPx: number }
     | { paneId: string; kind: 'pulls' | 'workflows'; widthPx: number }
+    | { paneId: string; kind: 'ticket'; widthPx: number; ticket?: unknown }
     | {
         paneId: string;
         kind: 'agent';
@@ -103,7 +106,7 @@ function makeSavedLayout(
 ): PaneLayoutPersistedSettings {
   return {
     version: 3,
-    panes: panes.map((pane) => 'kind' in pane ? pane : { ...pane, kind: 'thread' }),
+    panes: panes.map((pane) => 'kind' in pane ? pane : { ...pane, kind: 'thread' }) as PaneLayoutPersistedSettings['panes'],
     focusedPaneId,
   };
 }
@@ -268,6 +271,59 @@ describe('pane layout persistence', () => {
     expect(getPaneLayoutItems()[0]).toEqual({ id: 'tool-pulls', paneId: 'tool-pulls', kind: 'pulls', widthPx: 610 });
     expect(getFocusedPaneId()).toBe('tool-workflows');
     expect(getAllPanes().has('tool-workflows')).toBe(false);
+  });
+
+  it('round-trips a ticket pane of the home computer in its place, focused, with its ticket', async () => {
+    const thread = makeThread({ id: 'thread-a' });
+    installPaneMocks();
+    seedPane('left', thread);
+    const saved = { backend: HOME_BACKEND, connection: 'c1', issue: '10001', key: 'WEB-1', title: 'Issue 1', board: '1', kind: 'jira' };
+    restoreTicketPane('ticket-a', saved);
+    setPaneLayoutItemsForTest([
+      { id: 'ticket-a', paneId: 'ticket-a', kind: 'ticket', widthPx: 640 },
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 660 },
+    ]);
+    focusPane('ticket-a');
+
+    persistPaneLayout();
+    await waitForPaneLayoutPersistenceForTest();
+    resetPanesForTest();
+    setPaneLayoutItemsForTest([]);
+    expect(ticketPaneRecord('ticket-a')).toBeNull();
+
+    await loadPersistedPaneLayout([thread]);
+
+    expect(persistedPaneLayout()).toEqual(makeSavedLayout([
+      { paneId: 'ticket-a', kind: 'ticket', ticket: saved, widthPx: 640 },
+      { paneId: 'left', threadId: 'thread-a', widthPx: 660 },
+    ], 'ticket-a'));
+    expect(getPaneLayoutItems()).toEqual([
+      { id: 'ticket-a', paneId: 'ticket-a', kind: 'ticket', widthPx: 640 },
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 660 },
+    ]);
+    expect(getFocusedPaneId()).toBe('ticket-a');
+    expect(ticketPaneCarrier('ticket-a')).toEqual(saved);
+  });
+
+  it('keeps a ticket pane whose saved ticket does not read back, with no ticket, and saves it so; drops one wearing another id', async () => {
+    await installUIStateMock(makeSavedLayout([
+      { paneId: 'ticket-a', kind: 'ticket', widthPx: 640, ticket: { backend: HOME_BACKEND, connection: '', issue: '1', key: 'WEB-1', title: 'x', board: '1', kind: 'jira' } },
+      { paneId: 'ticket-b', kind: 'ticket', widthPx: 640 },
+      { paneId: 'pane-9', kind: 'ticket', widthPx: 640, ticket: { backend: HOME_BACKEND, connection: 'c1', issue: '1', key: 'WEB-1', title: 'x', board: '1', kind: 'jira' } },
+    ], null));
+    await loadPersistedPaneLayout([]);
+    expect(getPaneLayoutItems()).toEqual([
+      { id: 'ticket-a', paneId: 'ticket-a', kind: 'ticket', widthPx: 640 },
+      { id: 'ticket-b', paneId: 'ticket-b', kind: 'ticket', widthPx: 640 },
+    ]);
+    expect(ticketPaneRecord('ticket-a')).toBeNull();
+    expect(ticketPaneRecord('ticket-b')).toBeNull();
+    persistPaneLayout();
+    await waitForPaneLayoutPersistenceForTest();
+    expect((persistedPaneLayout() as PaneLayoutPersistedSettings).panes).toEqual([
+      { paneId: 'ticket-a', kind: 'ticket', widthPx: 640 },
+      { paneId: 'ticket-b', kind: 'ticket', widthPx: 640 },
+    ]);
   });
 
   it('restores a layout holding only a tool pane, focused', async () => {

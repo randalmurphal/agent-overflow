@@ -171,16 +171,18 @@
     openTicketPane({ ref: { backend: board.backend, connection: board.connection, issue: row.card.id }, seed }, { board: board.board, kind: boardKind });
   }
 
-  // The ticket open here moves into a pane of its own, and this pane shows
-  // the board. The ticket's subscription is held across the move, so
-  // nothing it holds (earlier comments, a write's outcome) is read again;
-  // its drafts are the ticket pane's from the open on.
+  // The ticket open here moves into a pane of its own, which takes the
+  // focus, and this pane shows the board. The new pane holds the ticket
+  // before this one lets it go: its subscription through the bridge (the
+  // pane's body loads after the move), so nothing it holds (earlier
+  // comments, a write's outcome) is read again, and its drafts through the
+  // pane's record.
   function moveToOwnPane(): void {
     const open = selection.ticket;
     if (!open || !board) return;
     const bridge = attachTrackerTicket(open.ref, false);
     openTicketPane(open, { board: board.board, kind: boardKind, handoff: () => bridge.release() });
-    selection.stepBack();
+    selection.tickets.close();
   }
 
   let cardMenu = $state<{ x: number; y: number; row: RowView } | null>(null);
