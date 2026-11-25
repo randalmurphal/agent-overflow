@@ -239,3 +239,117 @@ func TestListUnkeptLinkedIssues(t *testing.T) {
 		t.Fatalf("unkept of none = %+v, %v", got, err)
 	}
 }
+
+// Two accounts of one site: only the site's link reader, its lowest
+// connection ID turned on, writes and keeps the site's links. Unchanged
+// cards from both mirrors, alternating, the other's kept by a ticket a
+// person has open through it, name no thread and leave the link current
+// through the reader; the other mirror's missing read marks
+// nothing and its linked loop polls no issue only a link names; a link
+// whose copy names the other mirror's root reads not checked through the
+// reader until the reader reads it.
+func TestASitesLinksFollowItsLinkReaderOnly(t *testing.T) {
+	t.Parallel()
+	s, first, firstRoot := newMirror(t)
+	second := mustCreateTrackerConnection(t, s, jiraConnection(mirrorSite, "user2@example.com", 20))
+	secondRoot, _, err := s.GetOrCreateMirrorRoot(second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, readerRoot, otherRoot := first, firstRoot, secondRoot
+	if second.ID < first.ID {
+		reader, readerRoot, otherRoot = second, secondRoot, firstRoot
+	}
+	mustCreateThread(t, s, "a")
+	card := titledCard("10001", 5, "Fix the login page")
+	mustSetThreadTicket(t, s, readLink(s, readerRoot, "a", card))
+	if _, _, err := s.KeepMirrorTicket(otherRoot, "10001", 1, 1, nextMirrorRead(s, otherRoot)); err != nil {
+		t.Fatal(err)
+	}
+	write := func(root int64) []string {
+		t.Helper()
+		changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{card}, webStructure().Catalog, nextMirrorRead(s, root))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return changes.Threads
+	}
+	current := func(what string) {
+		t.Helper()
+		row, err := s.GetThread("a")
+		if err != nil || row.TicketLink == nil || row.TicketLink.State != TicketLinkCurrent || row.TicketLink.ConnectionID != reader.ID {
+			t.Fatalf("%s: link = %+v, %v; want current through the reader %s", what, row.TicketLink, err, reader.ID)
+		}
+	}
+	for round := range 2 {
+		if got := write(otherRoot); len(got) != 0 {
+			t.Fatalf("round %d: the other account's unchanged card named %v", round, got)
+		}
+		current("after the other account's card")
+		if got := write(readerRoot); len(got) != 0 {
+			t.Fatalf("round %d: the reader's unchanged card named %v", round, got)
+		}
+		current("after the reader's card")
+	}
+
+	if got, err := s.MarkMirrorLinksMissing(otherRoot, nextMirrorRead(s, otherRoot), []string{"10001"}); err != nil || len(got) != 0 {
+		t.Fatalf("the other account's missing read marked %v, %v", got, err)
+	}
+	current("after the other account's missing read")
+	if got, _, err := s.ListMirrorOffBoardLinkedIssues(otherRoot, "", nil); err != nil || len(got) != 0 {
+		t.Fatalf("the other account polls %v, %v; want none", got, err)
+	}
+	if got, _, err := s.ListMirrorOffBoardLinkedIssues(readerRoot, "", nil); err != nil || !slices.Equal(got, []string{"10001"}) {
+		t.Fatalf("the reader polls %v, %v; want 10001", got, err)
+	}
+
+	mustExec(t, s.db, `UPDATE thread_tickets SET seen_root = ? WHERE thread_id = 'a'`, otherRoot)
+	if row, err := s.GetThread("a"); err != nil || row.TicketLink == nil || row.TicketLink.State != TicketLinkNotChecked || row.TicketLink.ConnectionID != reader.ID {
+		t.Fatalf("a link whose copy names the other root = %+v, %v; want not checked through %s", row.TicketLink, err, reader.ID)
+	}
+}
+
+// A link takes only the card the mirror kept (mirrorCardSupersededSQL,
+// mirrorCardDiffersSQL): after a read from later stored the renamed key
+// NEW-1 at the same update time, an older read's OLD-1 copies nothing,
+// links no other thread from that read, and is no held card to link from.
+func TestALinkCopiesOnlyTheCardTheMirrorKept(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	for _, id := range []string{"a", "b", "c"} {
+		mustCreateThread(t, s, id)
+	}
+	mustSetThreadTicket(t, s, readLink(s, root, "a", titledCard("10001", 5, "Fix the login page")))
+	n := nextMirrorRead(s, root).rootOrder
+	early, later := mirrorReadOf(root, n), mirrorReadOf(root, n+1)
+	renamed, stale := titledCard("10001", 5, "Fix the login page"), titledCard("10001", 5, "Fix the login page")
+	renamed.Key, stale.Key = "NEW-1", "OLD-1"
+	if got, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{renamed}, MirrorCatalog{}, later); err != nil || !slices.Equal(got.Threads, []string{"a"}) {
+		t.Fatalf("the later read's rename = %+v, %v; want a", got, err)
+	}
+
+	got, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{stale}, MirrorCatalog{}, early)
+	if err != nil || len(got.Threads) != 0 {
+		t.Fatalf("the older read's card = %+v, %v; want no thread", got, err)
+	}
+	if link := mustGetThreadTicket(t, s, "a"); link.IssueKey != "NEW-1" || linkState(t, s, "a") != TicketLinkCurrent {
+		t.Fatalf("link after the older read = %+v, %s; want NEW-1, current", link, linkState(t, s, "a"))
+	}
+
+	cold := readLink(s, root, "b", stale)
+	cold.Read = early
+	if _, err := s.SetThreadTicket(cold); !errors.Is(err, ErrThreadTicketCardMoved) {
+		t.Fatalf("a link from the older read = %v; want ErrThreadTicketCardMoved", err)
+	}
+	if _, ok, err := s.GetThreadTicket("b"); err != nil || ok {
+		t.Fatalf("b after the refused link: linked %v, %v", ok, err)
+	}
+	if _, err := s.SetThreadTicket(heldLink(root, "c", stale)); !errors.Is(err, ErrThreadTicketCardMoved) {
+		t.Fatalf("a link from a held card the mirror no longer holds = %v; want ErrThreadTicketCardMoved", err)
+	}
+	mustSetThreadTicket(t, s, heldLink(root, "c", renamed))
+	if link := mustGetThreadTicket(t, s, "c"); link.IssueKey != "NEW-1" {
+		t.Fatalf("a link from the mirror's card = %+v", link)
+	}
+}

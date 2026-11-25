@@ -105,10 +105,12 @@ type ThreadTicketLink struct {
 // threadTicketLinkColumn is threadColumns' column of a thread's link, a
 // ThreadTicketLink as JSON or NULL: one probe of thread_tickets' key per
 // thread, and for a linked thread one of its root and at most two of the
-// connections of its site. The copy is current while seen_root names a
-// root that is attached; a root's ID is never reused, so a detached,
-// removed or emptied mirror's copy is not.
-const threadTicketLinkColumn = `CASE WHEN EXISTS (SELECT 1 FROM thread_tickets) THEN (SELECT json_object(
+// connections of its site. The copy is current while seen_root names an
+// attached root of the site's link reader (ticketSiteReaderSQL); a root's
+// ID is never reused, so a detached, removed or emptied mirror's copy is
+// not, and neither is one another connection of the site wrote before it
+// stopped being the reader. connectionId is the link reader.
+var threadTicketLinkColumn = `CASE WHEN EXISTS (SELECT 1 FROM thread_tickets) THEN (SELECT json_object(
         'kind', tt.kind, 'site', tt.site, 'issueId', tt.issue_id, 'key', tt.issue_key, 'title', tt.issue_title,
         'statusId', tt.status_id, 'statusName', tt.status_name, 'statusGroup', tt.status_group,
         'origin', tt.origin, 'linkedAt', tt.linked_at,
@@ -116,21 +118,30 @@ const threadTicketLinkColumn = `CASE WHEN EXISTS (SELECT 1 FROM thread_tickets) 
           ELSE ` + ticketSiteStateSQL + ` END,
         'connectionId', COALESCE(seen.connection_id, ` + ticketSiteConnectionSQL + `, ''))
       FROM thread_tickets tt LEFT JOIN tracker_cache_roots seen ON seen.id = tt.seen_root
+        AND seen.connection_id = ` + ticketSiteConnectionSQL + `
      WHERE tt.thread_id = threads.id) END`
 
+// ticketSiteReaderSQL is the one rule for which connection here reads and
+// writes the links of tracker kind's site site, both SQL expressions: the
+// site's link reader, its lowest connection ID turned on, NULL when none
+// is. The thread row's link, TicketConnection, the card writers' copy
+// (mirrorLinkCopySQL), the missing mark and the links' keep
+// (mirrorLinksSQL) all read it, so another account of the site neither
+// writes nor keeps a link, and a link and the call that makes one name the
+// same connection.
+func ticketSiteReaderSQL(kind, site string) string {
+	return `(SELECT MIN(reader.id) FROM tracker_connections reader
+          WHERE reader.kind = ` + kind + ` AND reader.site = ` + site + ` AND reader.parent_id IS NULL AND reader.enabled = 1)`
+}
+
 // ticketSiteStateSQL is the state of a link to a ticket of tracker
-// tt.kind's site tt.site that no live mirror here has read, and
-// ticketSiteConnectionSQL the connection here that reads that site: the
-// lowest ID of those turned on, NULL when none is. The thread row's link
-// and TicketConnection both read them, so a link and the call that makes
-// one name the same connection.
-const (
-	ticketSiteStateSQL = `CASE (SELECT MAX(c.enabled) FROM tracker_connections c
+// tt.kind's site tt.site that the link reader's live mirror has not read,
+// and ticketSiteConnectionSQL that site's link reader.
+const ticketSiteStateSQL = `CASE (SELECT MAX(c.enabled) FROM tracker_connections c
             WHERE c.kind = tt.kind AND c.site = tt.site AND c.parent_id IS NULL)
           WHEN 1 THEN 'not_checked' WHEN 0 THEN 'turned_off' ELSE 'no_connection' END`
-	ticketSiteConnectionSQL = `(SELECT MIN(c.id) FROM tracker_connections c
-          WHERE c.kind = tt.kind AND c.site = tt.site AND c.parent_id IS NULL AND c.enabled = 1)`
-)
+
+var ticketSiteConnectionSQL = ticketSiteReaderSQL("tt.kind", "tt.site")
 
 // TicketConnection is the connection of this computer that reads ticket,
 // "" when none of its tracker and site is turned on, and the state a link
@@ -191,8 +202,9 @@ var ErrThreadTicketCardMoved = errors.New("store: the mirror's card of the ticke
 // mirror (UpsertMirrorCards' rule, at Sweep) in the link's transaction,
 // since the link is what makes the mirror keep the issue. With no Read,
 // Card is the mirror's own card of the issue, which the mirror must still
-// hold at Card.UpdatedAt (ErrThreadTicketCardMoved). Card.Title is the
-// title the link shows.
+// hold with all of its content (ErrThreadTicketCardMoved). A read card a
+// later read's card supersedes (mirrorCardSupersededSQL) fails the same
+// way, having changed nothing. Card.Title is the title the link shows.
 type ThreadTicketWrite struct {
 	ThreadID string
 	Origin   string
@@ -246,17 +258,15 @@ func (s *Store) SetThreadTicket(w ThreadTicketWrite) (set ThreadTicketSet, err e
 	if err != nil {
 		return ThreadTicketSet{}, err
 	}
-	var rows []mirrorCardRow
-	var encoded string
 	switch {
 	case times.at > 0 && w.Sweep <= 0:
 		return ThreadTicketSet{}, fmt.Errorf("%w: a card read for a link needs its sweep", ErrInvalidTrackerCache)
-	case times.at > 0:
-		if rows, encoded, err = prepareMirrorCards([]MirrorCard{w.Card}, w.Catalog); err != nil {
-			return ThreadTicketSet{}, err
-		}
-	case w.Sweep != 0:
+	case times.at == 0 && w.Sweep != 0:
 		return ThreadTicketSet{}, fmt.Errorf("%w: a sweep with no read", ErrInvalidTrackerCache)
+	}
+	rows, encoded, err := prepareMirrorCards([]MirrorCard{w.Card}, w.Catalog)
+	if err != nil {
+		return ThreadTicketSet{}, err
 	}
 	action := fmt.Sprintf("store: link thread %s to issue %s of tracker mirror %d", w.ThreadID, w.Card.IssueID, w.Root)
 	err = s.mirrorSweptWrite(w.Root, w.Sweep, action, func(tx *sql.Tx) error {
@@ -277,8 +287,7 @@ func (s *Store) SetThreadTicket(w ThreadTicketWrite) (set ThreadTicketSet, err e
 		}
 		if times.at == 0 {
 			var held bool
-			if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM tracker_cache_issues WHERE root_id = ? AND issue_id = ? AND updated_at = ?)`,
-				w.Root, w.Card.IssueID, w.Card.UpdatedAt).Scan(&held); err != nil {
+			if err := tx.QueryRow(mirrorHoldsCardSQL, w.Root, encoded, w.Card.IssueID).Scan(&held); err != nil {
 				return fmt.Errorf("read the mirror's card: %w", err)
 			}
 			if !held {
@@ -302,6 +311,16 @@ func (s *Store) SetThreadTicket(w ThreadTicketWrite) (set ThreadTicketSet, err e
 		if times.at > 0 {
 			if set.Cards, err = upsertMirrorCardsTx(tx, w.Root, rows, encoded, w.Catalog, times.at); err != nil {
 				return err
+			}
+			// A later read's card the mirror kept is what the link shows,
+			// with its own title: the caller links from the mirror again.
+			var superseded bool
+			if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM tracker_cache_issues i WHERE i.root_id = ?1 AND i.issue_id = ?2
+				AND `+mirrorCardSupersededSQL("i", "?3", "?4")+`)`, w.Root, w.Card.IssueID, w.Card.UpdatedAt, times.at).Scan(&superseded); err != nil {
+				return fmt.Errorf("read the mirror's card: %w", err)
+			}
+			if superseded {
+				return ErrThreadTicketCardMoved
 			}
 			// The thread's own change is Changed, which its caller announces.
 			set.Cards.Threads = slices.DeleteFunc(set.Cards.Threads, func(id string) bool { return id == w.ThreadID })
@@ -341,44 +360,58 @@ func readThreadTicketTx(tx *sql.Tx, threadID string) (ThreadTicket, bool, error)
 	return t, true, nil
 }
 
+// mirrorHoldsCardSQL holds when root ?1's mirror holds issue ?3 with all
+// of the content of the one card of the JSON list ?2, as the card
+// statements read it (mirrorCardDiffersSQL): a held card a later read
+// replaced at the same update time, a project key's rename, is no card to
+// link from.
+var mirrorHoldsCardSQL = `SELECT EXISTS (SELECT 1 FROM tracker_cache_issues i, json_each(?2) c
+	WHERE i.root_id = ?1 AND i.issue_id = ?3 AND NOT ` + mirrorCardDiffersSQL("i.", mirrorJSONCard) + `)`
+
 // sameTicketSQL is true in SetThreadTicket's upsert when the stored row
 // names the ticket being set.
 const sameTicketSQL = `(kind = excluded.kind AND site = excluded.site AND issue_id = excluded.issue_id)`
 
 // mirrorLinkCopySQL is the card writers' copy of their cards to the links
 // that name the issues (storeMirrorCardsTx): ?1 the root, ?2 the cards as
-// the card statements read them. Each link of the root's connection's
-// tracker and site whose issue the write's card is of takes the card the
-// mirror now holds, when that card is of the same update time as the
-// write's (an older card the upsert superseded copies nothing; the write
-// that stored the newer one copied it), and names the root: key, title,
-// status and the status's name and group in the root's catalog, not
-// missing. It writes a link only where one of those differs, so a card
-// that changes nothing a link shows writes nothing and returns no thread,
-// and only a link SetThreadTicket could write. With no link at all it
-// reads no card (the CTE's constant guard).
+// the card statements read them, ?3 when their read began. When the root
+// is its site's link reader's (ticketSiteReaderSQL), each link of that
+// site whose issue the write's card is of takes the card, when the mirror
+// kept it (mirrorCardSupersededSQL, the card statements' own rule: a card
+// a later read superseded copies nothing, and the write that stored the
+// later one copied it), and names the root: the stored key and status,
+// the status's name and group in the root's catalog, the write's title
+// (the mirror keeps it only in the card's data), not missing. It writes a
+// link only where one of those differs, so a card that changes nothing a
+// link shows writes nothing and returns no thread, and only a link
+// SetThreadTicket could write. A write for a site with no link, or of
+// another account of the site, reads no card (the CTE's constant guard,
+// one probe of the site's links).
 var mirrorLinkCopySQL = `WITH c AS MATERIALIZED (
-	  SELECT value ->> 'i' AS i, value ->> 'k' AS k, value ->> 'x' AS x, value ->> 's' AS s, value ->> 'u' AS u
-	    FROM json_each(?2) WHERE EXISTS (SELECT 1 FROM thread_tickets))
-	UPDATE thread_tickets SET issue_key = c.k, issue_title = c.x, status_id = c.s,
+	  SELECT value ->> 'i' AS i, value ->> 'x' AS x, value ->> 'u' AS u
+	    FROM json_each(?2) WHERE EXISTS (SELECT 1 FROM tracker_cache_roots gr
+	      JOIN tracker_connections gc ON gc.id = gr.connection_id
+	      JOIN thread_tickets gt ON gt.kind = gc.kind AND gt.site = gc.site
+	     WHERE gr.id = ?1 AND gc.id = ` + ticketSiteReaderSQL("gc.kind", "gc.site") + `))
+	UPDATE thread_tickets SET issue_key = i.issue_key, issue_title = c.x, status_id = i.status_id,
 	  status_name = COALESCE(st.name, ''), status_group = COALESCE(st.status_group, 0), seen_root = ?1, missing = 0
 	FROM c
-	  JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = c.i AND i.updated_at = c.u
+	  JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = c.i AND NOT ` + mirrorCardSupersededSQL("i", "c.u", "?3") + `
 	  JOIN tracker_cache_roots r ON r.id = ?1
 	  JOIN tracker_connections conn ON conn.id = r.connection_id
-	  LEFT JOIN tracker_cache_statuses st ON st.root_id = ?1 AND st.status_id = c.s
+	  LEFT JOIN tracker_cache_statuses st ON st.root_id = ?1 AND st.status_id = i.status_id
 	WHERE thread_tickets.kind = conn.kind AND thread_tickets.site = conn.site AND thread_tickets.issue_id = c.i
 	  AND ` + ticketThreadWritableSQL + `
-	  AND (thread_tickets.issue_key IS NOT c.k OR thread_tickets.issue_title IS NOT c.x OR thread_tickets.status_id IS NOT c.s
+	  AND (thread_tickets.issue_key IS NOT i.issue_key OR thread_tickets.issue_title IS NOT c.x OR thread_tickets.status_id IS NOT i.status_id
 	    OR thread_tickets.status_name IS NOT COALESCE(st.name, '') OR thread_tickets.status_group IS NOT COALESCE(st.status_group, 0)
 	    OR thread_tickets.seen_root IS NOT ?1 OR thread_tickets.missing <> 0)
 	RETURNING thread_tickets.thread_id`
 
 // MarkMirrorLinksMissing records that read, a read of root's tracker
-// that began at read, did not return the issues issueIDs names: each link
-// of the root's tracker and site to one of them names the root and is
-// missing, unless the mirror holds a card of the issue from a read that
-// began after read. It returns the threads whose link changed, sorted. A
+// that began at read, did not return the issues issueIDs names: when the
+// root is its site's link reader's (ticketSiteReaderSQL), each link of
+// that site to one of them names the root and is missing, unless the
+// mirror holds a card of the issue from a read that began after read. It returns the threads whose link changed, sorted. A
 // detached root fails with ErrTrackerCacheGone.
 func (s *Store) MarkMirrorLinksMissing(rootID int64, read MirrorRead, issueIDs []string) ([]string, error) {
 	times, err := read.in(rootID)
@@ -398,7 +431,8 @@ func (s *Store) MarkMirrorLinksMissing(rootID int64, read MirrorRead, issueIDs [
 		var err error
 		threads, err = queryIDs(tx, `UPDATE thread_tickets SET missing = 1, seen_root = ?1
 			FROM tracker_cache_roots r JOIN tracker_connections conn ON conn.id = r.connection_id
-			WHERE r.id = ?1 AND thread_tickets.kind = conn.kind AND thread_tickets.site = conn.site
+			WHERE r.id = ?1 AND conn.id = `+ticketSiteReaderSQL("conn.kind", "conn.site")+`
+			  AND thread_tickets.kind = conn.kind AND thread_tickets.site = conn.site
 			  AND thread_tickets.issue_id IN (SELECT value FROM json_each(?2))
 			  AND NOT EXISTS (SELECT 1 FROM tracker_cache_issues i WHERE i.root_id = ?1 AND i.issue_id = thread_tickets.issue_id AND i.read_at > ?3)
 			  AND `+ticketThreadWritableSQL+`

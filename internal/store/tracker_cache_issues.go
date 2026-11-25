@@ -531,7 +531,7 @@ func storeMirrorCardsTx(tx *sql.Tx, statements mirrorCardStatements, rootID int6
 	if err := move(stored); err != nil {
 		return mirrorCardsStored{}, err
 	}
-	if out.threads, err = queryIDs(tx, mirrorLinkCopySQL, rootID, encoded); err != nil {
+	if out.threads, err = queryIDs(tx, mirrorLinkCopySQL, rootID, encoded, readAt); err != nil {
 		return mirrorCardsStored{}, fmt.Errorf("copy the cards to their links: %w", err)
 	}
 	slices.Sort(out.threads)

@@ -301,10 +301,9 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 		"a write's bound list (the ticket move's, the history times'), read once; it drives the issue lookups by primary key"},
 	{threadTicketLinkColumn, "", "a thread row read, which names the mirror only in its link column: the read's plan is its own, " +
 		"and the column's is TestThreadLinkColumnReadsByKey"},
-	{"FROM json_each(?2) WHERE EXISTS (SELECT 1 FROM thread_tickets))", "SCAN thread_tickets EXISTS USING COVERING INDEX sqlite_autoindex_thread_tickets_1",
-		"the guard that some thread has a link, run once and stopped at the first row"},
-	{"FROM json_each(?2) WHERE EXISTS (SELECT 1 FROM thread_tickets))", "SCAN c",
-		"a card write's bound cards, read once; they drive the link lookups by tracker, site and issue"},
+	{"FROM json_each(?2) WHERE EXISTS (SELECT 1 FROM tracker_cache_roots gr", "SCAN c",
+		"a card write's bound cards, read once when the root's site has a link and the root is its link reader's; " +
+			"they drive the link lookups by tracker, site and issue"},
 	{"i.status_id IN (SELECT value FROM json_each(?2))", "SEARCH i USING COVERING INDEX idx_tracker_cache_issues_status (root_id=?)",
 		"a status entering or leaving the done groups is rare; finding the boards whose rows have it walks the root's statuses once, " +
 			"in the index the counts read"},

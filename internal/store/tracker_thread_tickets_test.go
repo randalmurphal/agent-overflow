@@ -517,13 +517,15 @@ func TestThreadLinkColumnReadsByKey(t *testing.T) {
 		"SCAN threads USING COVERING INDEX sqlite_autoindex_threads_1",
 		"SCALAR SUBQUERY 1",
 		"SCAN thread_tickets USING COVERING INDEX sqlite_autoindex_thread_tickets_1",
-		"CORRELATED SCALAR SUBQUERY 4",
+		"CORRELATED SCALAR SUBQUERY 5",
 		"SEARCH tt USING INDEX sqlite_autoindex_thread_tickets_1 (thread_id=?)",
 		"SEARCH seen USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+		"CORRELATED SCALAR SUBQUERY 4",
+		"SEARCH reader USING INDEX idx_tracker_connections_site (kind=? AND site=?)",
 		"CORRELATED SCALAR SUBQUERY 2",
 		"SEARCH c USING INDEX idx_tracker_connections_site (kind=? AND site=?)",
 		"CORRELATED SCALAR SUBQUERY 3",
-		"SEARCH c USING INDEX idx_tracker_connections_site (kind=? AND site=?)",
+		"SEARCH reader USING INDEX idx_tracker_connections_site (kind=? AND site=?)",
 	}
 	if !slices.Equal(lines, want) {
 		t.Fatalf("link column plan:\n%s\nwant\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))

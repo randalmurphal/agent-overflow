@@ -1500,35 +1500,50 @@ the bytes, the calls and `ReadMirrorBoardPatch`'s statements. The full read is o
 A thread links to at most one ticket (`thread_tickets`), named by kind,
 site and issue ID, so the link means the same ticket on every computer.
 
+- **The link reader.** A site's links are read, written and kept by one
+  connection here, the site's link reader: its lowest connection ID
+  turned on (`ticketSiteReaderSQL`). The row's state and `connectionId`,
+  `TicketConnection`, the copy, the missing mark and the links' keep
+  (`mirrorLinksSQL`) all read that one expression, so a second account of
+  the site neither writes a link nor keeps or polls an issue only a link
+  names. A link the reader cannot see reads not found, whatever another
+  account of the site can see.
 - **The copy.** The link holds the ticket's key, title and status (ID,
-  name, group) as a mirror here last stored its card, and `seen_root`,
-  that mirror's root. Every card write (`storeMirrorCardsTx`: row pages,
-  card reads, ticket reads) runs one more statement,
-  `mirrorLinkCopySQL`, which copies the cards it stored to the writable
-  links of their tickets and returns the threads whose shown values,
-  root or not-found mark moved; a card that moves none of them writes no
-  link and names no thread. With no link at all it stops at its guard. A
-  read that does not return an issue marks its links not found
-  (`MarkMirrorLinksMissing`), unless a later read stored its card.
+  name, group) as the link reader's mirror last stored its card, and
+  `seen_root`, that mirror's root. Every card write
+  (`storeMirrorCardsTx`: row pages, card reads, ticket reads) runs one
+  more statement, `mirrorLinkCopySQL`, which copies the cards the mirror
+  kept (`mirrorCardSupersededSQL`, the card statements' own rule) to the
+  writable links of their tickets and returns the threads whose shown
+  values, root or not-found mark moved; a card that moves none of them
+  writes no link and names no thread, and an older read's card a later
+  one superseded copies nothing. With no link of the site, or for another
+  account's mirror, it stops at its guard. A read that does not return an
+  issue marks its links not found (`MarkMirrorLinksMissing`), unless a
+  later read stored its card.
 - **The state** is derived when the row is read, on the computer that
   answers: `current` or `not_found` while `seen_root` names an attached
-  root, else from the site's connections, `not_checked` (one is on),
-  `turned_off` (all are off) or `no_connection`. `connectionId` is the
-  root's connection, else the lowest ID turned on (`TicketConnection`).
-  A turn off or a removal detaches the root, and no root ID returns, so
-  no write resets a copy. A restore, whose snapshot's root IDs are
+  root of the link reader, else from the site's connections,
+  `not_checked` (one is on), `turned_off` (all are off) or
+  `no_connection`. `connectionId` is the link reader. A turn off or a
+  removal detaches the root, and no root ID returns, so no write resets a
+  copy; a lower ID added or turned on becomes the reader, and its links
+  read not checked through it until its first linked read. Each of those
+  changes sends the site's links' rows (Frames, below). A restore, whose snapshot's root IDs are
   another database's, sets every link's root to none in its transaction.
 - **The row.** `threadColumns` carries the link as one JSON column
   (`threadTicketLinkColumn`), guarded by one `EXISTS` on
   `thread_tickets` that runs once per statement: a full thread list read
-  of 5,000 threads costs about 0.1% more with no link and a few percent
-  more with 500 (`BenchmarkListThreadsLinked`).
+  of 5,000 threads costs about 0.1% more with no link and 5% to 13%
+  more with 500, a median of about 9% (`BenchmarkListThreadsLinked`).
 - **Writes.** `SetThreadTicket` (bound, `threads:operate`, and
   `tracker:read` since it reads the ticket) links through
   `trackerapp.Service.LinkThread`: the connection `TicketConnection`
-  names, the card the mirror holds with no request, otherwise one card
+  names, the card the mirror holds with no request when the mirror still
+  holds all of its content (`mirrorCardDiffersSQL`), otherwise one card
   read stored with the link in one transaction (a card the mirror
-  replaced meanwhile is read from the mirror once more). A refusal leaves
+  replaced meanwhile, or a later read's card that supersedes the read
+  one, is read from the mirror once more). A refusal leaves
   the link and the mirror as they were. `ClearThreadTicket` unlinks;
   `ThreadsForTicket` (`threads:read`, route selected) lists a ticket's
   threads by the issue index, as search lists threads: an ask's copy and
@@ -1555,11 +1570,6 @@ site and issue ID, so the link means the same ticket on every computer.
 A delete claims its family before it reads the family's links, and every
 link write checks the claim in its transaction, so a link set during a
 delete is refused and the links the delete read are the ones it ends.
-
-Sequences left as they are: a card write that commits between a link's
-mirror read and its commit leaves the copy of the earlier card until the
-ticket's next change; two connections to one site read through the lowest
-ID.
 
 ## Agent tools
 
