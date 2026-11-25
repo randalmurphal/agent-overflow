@@ -44,8 +44,8 @@ func (m *mirrorFixture) readSoon(issues ...tracker.IssueID) {
 }
 
 // quiet waits until no ticket pump of s owes work: each first read has
-// settled, no shown ticket is due a read now, no view is behind its inputs,
-// no rebuild is queued and no round is reading (its history read after
+// settled, no shown ticket is due a read now or owes a view, no build is in
+// flight and no round is reading (its history read after
 // its tickets settled included). A test calls it before comparing what the
 // subscribers were told with what the service holds.
 func quiet(t *testing.T, s *Service) {
@@ -61,7 +61,7 @@ func quiet(t *testing.T, s *Service) {
 				busy = fmt.Sprint(k.issue, " has its first read in flight")
 			case tp.shownLocked() && !tp.due.After(now):
 				busy = fmt.Sprint(k.issue, " is due a read")
-			case tp.behindLocked() && tp.shownLocked(), len(tp.viewChanged) > 0 && tp.shownLocked():
+			case tp.building > 0, tp.dirty != tp.built && tp.shownLocked():
 				busy = fmt.Sprint(k.issue, " owes a view")
 			}
 		}

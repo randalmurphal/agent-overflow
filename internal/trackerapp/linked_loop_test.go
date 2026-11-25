@@ -221,8 +221,9 @@ func TestLinkedLoopWaitsForTheSettle(t *testing.T) {
 	ls.waitFor(t, "the first round", func(_, linked, cleanups, _ int) bool { return linked >= 1 && cleanups >= 1 })
 }
 
-// With no client connected the loop skips its rounds, after one cleanup;
-// a client connecting resumes them.
+// With no client connected the loop skips its rounds and their
+// cleanups, the start's included, which is the app's; a client
+// connecting resumes them.
 func TestLinkedLoopSkipsWithNoClient(t *testing.T) {
 	t.Parallel()
 	f, ls := newLoopFixture(t)
@@ -232,11 +233,11 @@ func TestLinkedLoopSkipsWithNoClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	ls.waitFor(t, "five skipped rounds", func(_, _, _, asked int) bool { return asked >= 5 })
-	if _, linked, cleanups, _ := ls.snapshot(); linked != 0 || cleanups != 1 {
-		t.Fatalf("with no client the loop made %d linked reads and %d cleanups; want 0 and 1", linked, cleanups)
+	if _, linked, cleanups, _ := ls.snapshot(); linked != 0 || cleanups != 0 {
+		t.Fatalf("with no client the loop made %d linked reads and %d cleanups; want none", linked, cleanups)
 	}
 	ls.count(func() { ls.connected = true })
-	ls.waitFor(t, "a round", func(_, linked, cleanups, _ int) bool { return linked >= 1 && cleanups >= 2 })
+	ls.waitFor(t, "a round", func(_, linked, cleanups, _ int) bool { return linked >= 1 && cleanups >= 1 })
 }
 
 // A cleanup that fails is reported, and the loop goes on.

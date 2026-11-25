@@ -156,7 +156,7 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		func() error { _, _, err := s.GetMirrorSync(root, "10", testNow); return err },
 		func() error { _, _, err := s.GetMirrorSync(root, "", testNow); return err },
 		func() error { _, _, err := s.ListMirrorHistoryDue(root, testNow); return err },
-		func() error { _, _, err := s.GetMirrorBody(root, "10001"); return err },
+		func() error { _, err := s.ListMirrorBodies(root, []string{"10001"}); return err },
 		func() error {
 			_, _, err := s.ListMirrorWorklogs(root, "acc-user1", "2026-01-01", "2026-01-31")
 			return err

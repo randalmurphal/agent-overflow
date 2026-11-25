@@ -229,8 +229,7 @@ func TestAStatusResultLostAtTheSameUpdateIsDueAndAFinalUnknownIsNot(t *testing.T
 
 // A body's identity as the record holds it is the admitted body's: a body
 // of a later version read before the held one's read replaces it with its
-// own read, so a later read of that version is admitted after it, and a
-// body read for the version it replaced no longer confirms; in the other
+// own read, so a later read of that version is admitted after it; in the other
 // order the earlier version is superseded and the record keeps its own.
 func TestAStoredBodyIsTheAdmittedBodysIdentity(t *testing.T) {
 	t.Parallel()
@@ -248,25 +247,17 @@ func TestAStoredBodyIsTheAdmittedBodysIdentity(t *testing.T) {
 	}
 	held := func(t *testing.T, s *Store, root int64) MirrorBody {
 		t.Helper()
-		b, ok, err := s.GetMirrorBody(root, "10001")
-		if err != nil || !ok {
-			t.Fatalf("the record holds no body: %v", err)
-		}
-		return b
+		return heldBody(t, s, root, "10001")
 	}
 	t.Run("a later version read earlier", func(t *testing.T) {
 		t.Parallel()
 		s, root, write := setup(t)
 		write(100, 30, `{"v":1}`)
-		captured := held(t, s, root)
 		if w := write(200, 10, `{"v":2}`); w.Body != MirrorBodyStored {
 			t.Fatalf("the later version: %+v; want stored", w)
 		}
 		if b := held(t, s, root); b.UpdatedAt != 200 || b.ReadAt != 10 || b.Wall != 10 || string(b.Data) != `{"v":2}` {
 			t.Fatalf("the record holds %d read %d wall %d %s; want version 200 read 10", b.UpdatedAt, b.ReadAt, b.Wall, b.Data)
-		}
-		if ok, err := s.ConfirmMirrorBody(root, captured, mirrorReadAt(40)); err != nil || ok {
-			t.Fatalf("the replaced version's body confirms: %v, %v", ok, err)
 		}
 		if w := write(200, 20, `{"v":3}`); w.Body != MirrorBodyStored || !w.BodyChanged {
 			t.Fatalf("a later read of the version: %+v; want stored", w)

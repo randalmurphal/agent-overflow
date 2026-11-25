@@ -6,6 +6,537 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 /**
+ * BoardInfoView is a board a project has, for picking the boards it
+ * lists.
+ */
+export class BoardInfoView {
+    "id": string;
+    "project"?: string;
+    "name": string;
+    "plans_sprints": boolean;
+
+    /** Creates a new BoardInfoView instance. */
+    constructor($$source: Partial<BoardInfoView> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("plans_sprints" in $$source)) {
+            this["plans_sprints"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new BoardInfoView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): BoardInfoView {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new BoardInfoView($$parsedSource as Partial<BoardInfoView>);
+    }
+}
+
+/**
+ * BoardPatch is what a client holding some sections of a board needs to
+ * apply a BoardEvent's IDs, read in one snapshot (store
+ * ReadMirrorBoardPatch): the board's lifetime and revision, which the
+ * client carries into its section cursors, every section's total unless
+ * the client holds them (Totals nil), and for each section asked, in
+ * order, the named issues' rows that are members of it now, in board
+ * order.
+ * 
+ * The client's rule, for each ID of the event: remove it from every
+ * section held; insert each returned row at its (order, issue) place when
+ * that place is inside the pages already loaded or the section is loaded
+ * whole; take the totals when the patch has them; set the revision and
+ * lifetime of each cursor.
+ */
+export class BoardPatch {
+    "lifetime": number;
+    "revision": number;
+    "totals"?: BoardTotals | null;
+    "sections": PatchSection[];
+
+    /** Creates a new BoardPatch instance. */
+    constructor($$source: Partial<BoardPatch> = {}) {
+        if (!("lifetime" in $$source)) {
+            this["lifetime"] = 0;
+        }
+        if (!("revision" in $$source)) {
+            this["revision"] = 0;
+        }
+        if (!("sections" in $$source)) {
+            this["sections"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new BoardPatch instance from a string or object.
+     */
+    static createFrom($$source: any = {}): BoardPatch {
+        const $$createField2_0 = $$createType1;
+        const $$createField3_0 = $$createType3;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("totals" in $$parsedSource) {
+            $$parsedSource["totals"] = $$createField2_0($$parsedSource["totals"]);
+        }
+        if ("sections" in $$parsedSource) {
+            $$parsedSource["sections"] = $$createField3_0($$parsedSource["sections"]);
+        }
+        return new BoardPatch($$parsedSource as Partial<BoardPatch>);
+    }
+}
+
+/**
+ * BoardSubscription is a board subscribe's answer: the handle, the
+ * sequence number the answer is as of, and the board view of the sections
+ * asked for when the mirror holds the board's structure (Loaded), or no
+ * view: the pump's first tick reads it, and its event says so. Failure is
+ * the board's failure as its subscribers were last told of it, which the
+ * view's sync state carries too. PollEvery is the pump's delta interval in
+ * milliseconds: while no failure is reported, the board was read within
+ * it, so the last read time needs no event of its own.
+ */
+export class BoardSubscription {
+    "id": string;
+    "seq": number;
+    "loaded": boolean;
+    "view"?: BoardView | null;
+    "failure"?: FailureView | null;
+    "poll_every": number;
+
+    /** Creates a new BoardSubscription instance. */
+    constructor($$source: Partial<BoardSubscription> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("seq" in $$source)) {
+            this["seq"] = 0;
+        }
+        if (!("loaded" in $$source)) {
+            this["loaded"] = false;
+        }
+        if (!("poll_every" in $$source)) {
+            this["poll_every"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new BoardSubscription instance from a string or object.
+     */
+    static createFrom($$source: any = {}): BoardSubscription {
+        const $$createField3_0 = $$createType5;
+        const $$createField4_0 = $$createType7;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("view" in $$parsedSource) {
+            $$parsedSource["view"] = $$createField3_0($$parsedSource["view"]);
+        }
+        if ("failure" in $$parsedSource) {
+            $$parsedSource["failure"] = $$createField4_0($$parsedSource["failure"]);
+        }
+        return new BoardSubscription($$parsedSource as Partial<BoardSubscription>);
+    }
+}
+
+/**
+ * BoardTotals is every section's total at the board's totals Revision; a
+ * sprint or column absent from Sprints or Columns holds no row.
+ */
+export class BoardTotals {
+    "revision": number;
+    "all": SectionTotal;
+    "backlog": SectionTotal;
+    "sprints"?: SprintTotal[];
+    "columns"?: ColumnTotal[];
+
+    /** Creates a new BoardTotals instance. */
+    constructor($$source: Partial<BoardTotals> = {}) {
+        if (!("revision" in $$source)) {
+            this["revision"] = 0;
+        }
+        if (!("all" in $$source)) {
+            this["all"] = (new SectionTotal());
+        }
+        if (!("backlog" in $$source)) {
+            this["backlog"] = (new SectionTotal());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new BoardTotals instance from a string or object.
+     */
+    static createFrom($$source: any = {}): BoardTotals {
+        const $$createField1_0 = $$createType8;
+        const $$createField2_0 = $$createType8;
+        const $$createField3_0 = $$createType10;
+        const $$createField4_0 = $$createType12;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("all" in $$parsedSource) {
+            $$parsedSource["all"] = $$createField1_0($$parsedSource["all"]);
+        }
+        if ("backlog" in $$parsedSource) {
+            $$parsedSource["backlog"] = $$createField2_0($$parsedSource["backlog"]);
+        }
+        if ("sprints" in $$parsedSource) {
+            $$parsedSource["sprints"] = $$createField3_0($$parsedSource["sprints"]);
+        }
+        if ("columns" in $$parsedSource) {
+            $$parsedSource["columns"] = $$createField4_0($$parsedSource["columns"]);
+        }
+        return new BoardTotals($$parsedSource as Partial<BoardTotals>);
+    }
+}
+
+/**
+ * BoardView is a board as the pane opens it: its structure, the totals of
+ * its sections (All its rows) at its TotalsRevision, its sync state and
+ * the first page of each section asked for, at the board's Lifetime and
+ * Revision (which a patch moves forward, BoardPatch). Project is empty for
+ * a board of no one project.
+ */
+export class BoardView {
+    "id": string;
+    "lifetime": number;
+    "revision": number;
+    "totals_revision": number;
+    "name": string;
+    "project"?: string;
+    "plans_sprints": boolean;
+    "estimate": EstimateView;
+    "columns": ColumnView[];
+    "sprints": SprintView[];
+    "all": SectionTotal;
+    "backlog": SectionTotal;
+    "sync": SyncView;
+    "sections": SectionPage[];
+
+    /** Creates a new BoardView instance. */
+    constructor($$source: Partial<BoardView> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("lifetime" in $$source)) {
+            this["lifetime"] = 0;
+        }
+        if (!("revision" in $$source)) {
+            this["revision"] = 0;
+        }
+        if (!("totals_revision" in $$source)) {
+            this["totals_revision"] = 0;
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("plans_sprints" in $$source)) {
+            this["plans_sprints"] = false;
+        }
+        if (!("estimate" in $$source)) {
+            this["estimate"] = (new EstimateView());
+        }
+        if (!("columns" in $$source)) {
+            this["columns"] = [];
+        }
+        if (!("sprints" in $$source)) {
+            this["sprints"] = [];
+        }
+        if (!("all" in $$source)) {
+            this["all"] = (new SectionTotal());
+        }
+        if (!("backlog" in $$source)) {
+            this["backlog"] = (new SectionTotal());
+        }
+        if (!("sync" in $$source)) {
+            this["sync"] = (new SyncView());
+        }
+        if (!("sections" in $$source)) {
+            this["sections"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new BoardView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): BoardView {
+        const $$createField7_0 = $$createType13;
+        const $$createField8_0 = $$createType15;
+        const $$createField9_0 = $$createType17;
+        const $$createField10_0 = $$createType8;
+        const $$createField11_0 = $$createType8;
+        const $$createField12_0 = $$createType18;
+        const $$createField13_0 = $$createType20;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("estimate" in $$parsedSource) {
+            $$parsedSource["estimate"] = $$createField7_0($$parsedSource["estimate"]);
+        }
+        if ("columns" in $$parsedSource) {
+            $$parsedSource["columns"] = $$createField8_0($$parsedSource["columns"]);
+        }
+        if ("sprints" in $$parsedSource) {
+            $$parsedSource["sprints"] = $$createField9_0($$parsedSource["sprints"]);
+        }
+        if ("all" in $$parsedSource) {
+            $$parsedSource["all"] = $$createField10_0($$parsedSource["all"]);
+        }
+        if ("backlog" in $$parsedSource) {
+            $$parsedSource["backlog"] = $$createField11_0($$parsedSource["backlog"]);
+        }
+        if ("sync" in $$parsedSource) {
+            $$parsedSource["sync"] = $$createField12_0($$parsedSource["sync"]);
+        }
+        if ("sections" in $$parsedSource) {
+            $$parsedSource["sections"] = $$createField13_0($$parsedSource["sections"]);
+        }
+        return new BoardView($$parsedSource as Partial<BoardView>);
+    }
+}
+
+/**
+ * CardView is an issue as a board or backlog row draws it. Times are Unix
+ * milliseconds, 0 for none; StatusSince is when the issue entered its
+ * current status, from its stored history, 0 while that is unknown.
+ */
+export class CardView {
+    "id": string;
+    "key": string;
+    "title": string;
+    "type"?: IssueTypeView | null;
+    "status": StatusView;
+    "assignee"?: UserView | null;
+    "priority"?: ChoiceView | null;
+    "labels"?: ChoiceView[];
+    "parent"?: ParentView | null;
+    "sprints"?: string[];
+    "created": number;
+    "updated": number;
+    "resolved"?: number;
+    "status_since"?: number;
+
+    /** Creates a new CardView instance. */
+    constructor($$source: Partial<CardView> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("key" in $$source)) {
+            this["key"] = "";
+        }
+        if (!("title" in $$source)) {
+            this["title"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = (new StatusView());
+        }
+        if (!("created" in $$source)) {
+            this["created"] = 0;
+        }
+        if (!("updated" in $$source)) {
+            this["updated"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CardView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CardView {
+        const $$createField3_0 = $$createType22;
+        const $$createField4_0 = $$createType23;
+        const $$createField5_0 = $$createType25;
+        const $$createField6_0 = $$createType27;
+        const $$createField7_0 = $$createType28;
+        const $$createField8_0 = $$createType30;
+        const $$createField9_0 = $$createType31;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("type" in $$parsedSource) {
+            $$parsedSource["type"] = $$createField3_0($$parsedSource["type"]);
+        }
+        if ("status" in $$parsedSource) {
+            $$parsedSource["status"] = $$createField4_0($$parsedSource["status"]);
+        }
+        if ("assignee" in $$parsedSource) {
+            $$parsedSource["assignee"] = $$createField5_0($$parsedSource["assignee"]);
+        }
+        if ("priority" in $$parsedSource) {
+            $$parsedSource["priority"] = $$createField6_0($$parsedSource["priority"]);
+        }
+        if ("labels" in $$parsedSource) {
+            $$parsedSource["labels"] = $$createField7_0($$parsedSource["labels"]);
+        }
+        if ("parent" in $$parsedSource) {
+            $$parsedSource["parent"] = $$createField8_0($$parsedSource["parent"]);
+        }
+        if ("sprints" in $$parsedSource) {
+            $$parsedSource["sprints"] = $$createField9_0($$parsedSource["sprints"]);
+        }
+        return new CardView($$parsedSource as Partial<CardView>);
+    }
+}
+
+/**
+ * ChoiceView is an option, priority or label by ID with its name.
+ */
+export class ChoiceView {
+    "id": string;
+    "name"?: string;
+
+    /** Creates a new ChoiceView instance. */
+    constructor($$source: Partial<ChoiceView> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ChoiceView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ChoiceView {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ChoiceView($$parsedSource as Partial<ChoiceView>);
+    }
+}
+
+/**
+ * ColumnTotal is a column's total in a patch, the column by position.
+ */
+export class ColumnTotal {
+    "column": number;
+    "total": SectionTotal;
+
+    /** Creates a new ColumnTotal instance. */
+    constructor($$source: Partial<ColumnTotal> = {}) {
+        if (!("column" in $$source)) {
+            this["column"] = 0;
+        }
+        if (!("total" in $$source)) {
+            this["total"] = (new SectionTotal());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ColumnTotal instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ColumnTotal {
+        const $$createField1_0 = $$createType8;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("total" in $$parsedSource) {
+            $$parsedSource["total"] = $$createField1_0($$parsedSource["total"]);
+        }
+        return new ColumnTotal($$parsedSource as Partial<ColumnTotal>);
+    }
+}
+
+/**
+ * ColumnView is a board column, its statuses and its rows' total.
+ */
+export class ColumnView {
+    "name": string;
+    "statuses": StatusView[];
+    "total": SectionTotal;
+
+    /** Creates a new ColumnView instance. */
+    constructor($$source: Partial<ColumnView> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("statuses" in $$source)) {
+            this["statuses"] = [];
+        }
+        if (!("total" in $$source)) {
+            this["total"] = (new SectionTotal());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ColumnView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ColumnView {
+        const $$createField1_0 = $$createType32;
+        const $$createField2_0 = $$createType8;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("statuses" in $$parsedSource) {
+            $$parsedSource["statuses"] = $$createField1_0($$parsedSource["statuses"]);
+        }
+        if ("total" in $$parsedSource) {
+            $$parsedSource["total"] = $$createField2_0($$parsedSource["total"]);
+        }
+        return new ColumnView($$parsedSource as Partial<ColumnView>);
+    }
+}
+
+/**
+ * EstimateChoiceView is one value of a fixed estimate scale.
+ */
+export class EstimateChoiceView {
+    "value": number;
+    "label"?: string;
+
+    /** Creates a new EstimateChoiceView instance. */
+    constructor($$source: Partial<EstimateChoiceView> = {}) {
+        if (!("value" in $$source)) {
+            this["value"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EstimateChoiceView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): EstimateChoiceView {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new EstimateChoiceView($$parsedSource as Partial<EstimateChoiceView>);
+    }
+}
+
+/**
+ * EstimateView is a board's estimate: its unit (none, points or time in
+ * seconds) and the values a person picks from when the tracker fixes
+ * them.
+ */
+export class EstimateView {
+    "unit": string;
+    "choices"?: EstimateChoiceView[];
+
+    /** Creates a new EstimateView instance. */
+    constructor($$source: Partial<EstimateView> = {}) {
+        if (!("unit" in $$source)) {
+            this["unit"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EstimateView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): EstimateView {
+        const $$createField1_0 = $$createType34;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("choices" in $$parsedSource) {
+            $$parsedSource["choices"] = $$createField1_0($$parsedSource["choices"]);
+        }
+        return new EstimateView($$parsedSource as Partial<EstimateView>);
+    }
+}
+
+/**
  * FailureKind sorts a failed tracker call by what the person can do about
  * it, so a surface chooses its presentation without reading the text.
  */
@@ -59,3 +590,613 @@ export enum FailureKind {
      */
     FailureInternal = "internal",
 };
+
+/**
+ * FailureView is a scope's last failure: its kind (FailureKind), the
+ * sentence a person reads and when it happened, by this computer's wall
+ * clock.
+ */
+export class FailureView {
+    "kind": string;
+    "message": string;
+    "at": number;
+
+    /** Creates a new FailureView instance. */
+    constructor($$source: Partial<FailureView> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("message" in $$source)) {
+            this["message"] = "";
+        }
+        if (!("at" in $$source)) {
+            this["at"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new FailureView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): FailureView {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new FailureView($$parsedSource as Partial<FailureView>);
+    }
+}
+
+/**
+ * IssueTypeView is an issue's type; Level is -1 for a subtask, 0 for a
+ * standard issue and 1 for an epic.
+ */
+export class IssueTypeView {
+    "id": string;
+    "name"?: string;
+    "level": number;
+
+    /** Creates a new IssueTypeView instance. */
+    constructor($$source: Partial<IssueTypeView> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("level" in $$source)) {
+            this["level"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new IssueTypeView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): IssueTypeView {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new IssueTypeView($$parsedSource as Partial<IssueTypeView>);
+    }
+}
+
+/**
+ * ParentView is an issue's parent (its epic), with its key and title when
+ * the mirror holds it.
+ */
+export class ParentView {
+    "id": string;
+    "key"?: string;
+    "title"?: string;
+
+    /** Creates a new ParentView instance. */
+    constructor($$source: Partial<ParentView> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ParentView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ParentView {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ParentView($$parsedSource as Partial<ParentView>);
+    }
+}
+
+/**
+ * PatchSection is the rows of one section of a patch; Stale is as
+ * SectionPage has it.
+ */
+export class PatchSection {
+    "section": Section;
+    "rows": RowView[];
+    "stale"?: string[];
+
+    /** Creates a new PatchSection instance. */
+    constructor($$source: Partial<PatchSection> = {}) {
+        if (!("section" in $$source)) {
+            this["section"] = (new Section());
+        }
+        if (!("rows" in $$source)) {
+            this["rows"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PatchSection instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PatchSection {
+        const $$createField0_0 = $$createType35;
+        const $$createField1_0 = $$createType37;
+        const $$createField2_0 = $$createType31;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("section" in $$parsedSource) {
+            $$parsedSource["section"] = $$createField0_0($$parsedSource["section"]);
+        }
+        if ("rows" in $$parsedSource) {
+            $$parsedSource["rows"] = $$createField1_0($$parsedSource["rows"]);
+        }
+        if ("stale" in $$parsedSource) {
+            $$parsedSource["stale"] = $$createField2_0($$parsedSource["stale"]);
+        }
+        return new PatchSection($$parsedSource as Partial<PatchSection>);
+    }
+}
+
+/**
+ * ProjectBoard is one board a project lists.
+ */
+export class ProjectBoard {
+    "connection": string;
+    "board": string;
+    "opens_first"?: boolean;
+
+    /** Creates a new ProjectBoard instance. */
+    constructor($$source: Partial<ProjectBoard> = {}) {
+        if (!("connection" in $$source)) {
+            this["connection"] = "";
+        }
+        if (!("board" in $$source)) {
+            this["board"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProjectBoard instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProjectBoard {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProjectBoard($$parsedSource as Partial<ProjectBoard>);
+    }
+}
+
+/**
+ * ProjectView is a tracker project: a Jira project or a Linear team.
+ * ChoosesAudience is a project whose new comments say who they reach.
+ */
+export class ProjectView {
+    "id": string;
+    "key": string;
+    "name": string;
+    "chooses_audience"?: boolean;
+
+    /** Creates a new ProjectView instance. */
+    constructor($$source: Partial<ProjectView> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("key" in $$source)) {
+            this["key"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProjectView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProjectView {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProjectView($$parsedSource as Partial<ProjectView>);
+    }
+}
+
+/**
+ * RowView is a card on one board, with that board's order key (compared
+ * bytewise, never read) and estimate in the board's unit.
+ */
+export class RowView {
+    "card": CardView;
+    "order": string;
+    "estimate"?: number | null;
+
+    /** Creates a new RowView instance. */
+    constructor($$source: Partial<RowView> = {}) {
+        if (!("card" in $$source)) {
+            this["card"] = (new CardView());
+        }
+        if (!("order" in $$source)) {
+            this["order"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RowView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RowView {
+        const $$createField0_0 = $$createType38;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("card" in $$parsedSource) {
+            $$parsedSource["card"] = $$createField0_0($$parsedSource["card"]);
+        }
+        return new RowView($$parsedSource as Partial<RowView>);
+    }
+}
+
+/**
+ * Section names one section of a board: a sprint by ID, the backlog
+ * (rows in no open sprint whose status is not done or canceled), or a
+ * column by its position.
+ */
+export class Section {
+    "kind": string;
+    "sprint"?: string;
+    "column"?: number;
+
+    /** Creates a new Section instance. */
+    constructor($$source: Partial<Section> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Section instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Section {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new Section($$parsedSource as Partial<Section>);
+    }
+}
+
+/**
+ * SectionCursor is where a section's next page starts, and the lifetime
+ * and revision of the board the page before it was read at.
+ */
+export class SectionCursor {
+    "order": string;
+    "issue": string;
+    "lifetime": number;
+    "revision": number;
+
+    /** Creates a new SectionCursor instance. */
+    constructor($$source: Partial<SectionCursor> = {}) {
+        if (!("order" in $$source)) {
+            this["order"] = "";
+        }
+        if (!("issue" in $$source)) {
+            this["issue"] = "";
+        }
+        if (!("lifetime" in $$source)) {
+            this["lifetime"] = 0;
+        }
+        if (!("revision" in $$source)) {
+            this["revision"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SectionCursor instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SectionCursor {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SectionCursor($$parsedSource as Partial<SectionCursor>);
+    }
+}
+
+/**
+ * SectionPage is a page of a section's rows in board order. Next is where
+ * the following page starts; nil when no rows follow. Stale lists the
+ * rows whose card the mirror holds only in part (a stored encoding this
+ * version cannot read): they show what the columns hold, and a read of
+ * their rows through the board replaces them.
+ */
+export class SectionPage {
+    "section": Section;
+    "rows": RowView[];
+    "next"?: SectionCursor | null;
+    "stale"?: string[];
+
+    /** Creates a new SectionPage instance. */
+    constructor($$source: Partial<SectionPage> = {}) {
+        if (!("section" in $$source)) {
+            this["section"] = (new Section());
+        }
+        if (!("rows" in $$source)) {
+            this["rows"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SectionPage instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SectionPage {
+        const $$createField0_0 = $$createType35;
+        const $$createField1_0 = $$createType37;
+        const $$createField2_0 = $$createType40;
+        const $$createField3_0 = $$createType31;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("section" in $$parsedSource) {
+            $$parsedSource["section"] = $$createField0_0($$parsedSource["section"]);
+        }
+        if ("rows" in $$parsedSource) {
+            $$parsedSource["rows"] = $$createField1_0($$parsedSource["rows"]);
+        }
+        if ("next" in $$parsedSource) {
+            $$parsedSource["next"] = $$createField2_0($$parsedSource["next"]);
+        }
+        if ("stale" in $$parsedSource) {
+            $$parsedSource["stale"] = $$createField3_0($$parsedSource["stale"]);
+        }
+        return new SectionPage($$parsedSource as Partial<SectionPage>);
+    }
+}
+
+/**
+ * SectionTotal is how many rows a section holds and the sum of their
+ * estimates in the board's unit, a row with none adding nothing; the
+ * store counts both.
+ */
+export class SectionTotal {
+    "rows": number;
+    "estimate": number;
+
+    /** Creates a new SectionTotal instance. */
+    constructor($$source: Partial<SectionTotal> = {}) {
+        if (!("rows" in $$source)) {
+            this["rows"] = 0;
+        }
+        if (!("estimate" in $$source)) {
+            this["estimate"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SectionTotal instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SectionTotal {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SectionTotal($$parsedSource as Partial<SectionTotal>);
+    }
+}
+
+/**
+ * SprintTotal is a sprint's total in a patch.
+ */
+export class SprintTotal {
+    "sprint": string;
+    "total": SectionTotal;
+
+    /** Creates a new SprintTotal instance. */
+    constructor($$source: Partial<SprintTotal> = {}) {
+        if (!("sprint" in $$source)) {
+            this["sprint"] = "";
+        }
+        if (!("total" in $$source)) {
+            this["total"] = (new SectionTotal());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SprintTotal instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SprintTotal {
+        const $$createField1_0 = $$createType8;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("total" in $$parsedSource) {
+            $$parsedSource["total"] = $$createField1_0($$parsedSource["total"]);
+        }
+        return new SprintTotal($$parsedSource as Partial<SprintTotal>);
+    }
+}
+
+/**
+ * SprintView is a sprint of a board and the total of the board's rows in
+ * it. State is future, active or closed; times are Unix milliseconds, 0
+ * when the sprint has not reached them.
+ */
+export class SprintView {
+    "id": string;
+    "name": string;
+    "goal"?: string;
+    "state": string;
+    "start"?: number;
+    "end"?: number;
+    "completed"?: number;
+    "total": SectionTotal;
+
+    /** Creates a new SprintView instance. */
+    constructor($$source: Partial<SprintView> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("total" in $$source)) {
+            this["total"] = (new SectionTotal());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SprintView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SprintView {
+        const $$createField7_0 = $$createType8;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("total" in $$parsedSource) {
+            $$parsedSource["total"] = $$createField7_0($$parsedSource["total"]);
+        }
+        return new SprintView($$parsedSource as Partial<SprintView>);
+    }
+}
+
+/**
+ * StatusView is a status with its name and group: backlog, todo,
+ * in_progress, done or canceled; both empty when the mirror does not hold
+ * it.
+ */
+export class StatusView {
+    "id": string;
+    "name"?: string;
+    "group"?: string;
+
+    /** Creates a new StatusView instance. */
+    constructor($$source: Partial<StatusView> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new StatusView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): StatusView {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new StatusView($$parsedSource as Partial<StatusView>);
+    }
+}
+
+/**
+ * SyncView is a scope's sync state: when it was last read and
+ * reconciled (Unix milliseconds by this computer's wall clock as each
+ * began, 0 for never or for one stored before the mirror kept wall times)
+ * and its last failure.
+ */
+export class SyncView {
+    "read_at"?: number;
+    "reconciled_at"?: number;
+    "failure"?: FailureView | null;
+
+    /** Creates a new SyncView instance. */
+    constructor($$source: Partial<SyncView> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SyncView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SyncView {
+        const $$createField2_0 = $$createType7;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("failure" in $$parsedSource) {
+            $$parsedSource["failure"] = $$createField2_0($$parsedSource["failure"]);
+        }
+        return new SyncView($$parsedSource as Partial<SyncView>);
+    }
+}
+
+/**
+ * TotalsAt names the totals a client holds: those of the board's Lifetime
+ * at its totals Revision (BoardView.TotalsRevision, BoardTotals.Revision).
+ * The zero value holds none.
+ */
+export class TotalsAt {
+    "lifetime": number;
+    "revision": number;
+
+    /** Creates a new TotalsAt instance. */
+    constructor($$source: Partial<TotalsAt> = {}) {
+        if (!("lifetime" in $$source)) {
+            this["lifetime"] = 0;
+        }
+        if (!("revision" in $$source)) {
+            this["revision"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TotalsAt instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TotalsAt {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TotalsAt($$parsedSource as Partial<TotalsAt>);
+    }
+}
+
+/**
+ * UserView is a user as a card or ticket names one.
+ */
+export class UserView {
+    "id": string;
+    "name"?: string;
+    "avatar_url"?: string;
+
+    /** Creates a new UserView instance. */
+    constructor($$source: Partial<UserView> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UserView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): UserView {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new UserView($$parsedSource as Partial<UserView>);
+    }
+}
+
+// Private type creation functions
+const $$createType0 = BoardTotals.createFrom;
+const $$createType1 = $Create.Nullable($$createType0);
+const $$createType2 = PatchSection.createFrom;
+const $$createType3 = $Create.Array($$createType2);
+const $$createType4 = BoardView.createFrom;
+const $$createType5 = $Create.Nullable($$createType4);
+const $$createType6 = FailureView.createFrom;
+const $$createType7 = $Create.Nullable($$createType6);
+const $$createType8 = SectionTotal.createFrom;
+const $$createType9 = SprintTotal.createFrom;
+const $$createType10 = $Create.Array($$createType9);
+const $$createType11 = ColumnTotal.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = EstimateView.createFrom;
+const $$createType14 = ColumnView.createFrom;
+const $$createType15 = $Create.Array($$createType14);
+const $$createType16 = SprintView.createFrom;
+const $$createType17 = $Create.Array($$createType16);
+const $$createType18 = SyncView.createFrom;
+const $$createType19 = SectionPage.createFrom;
+const $$createType20 = $Create.Array($$createType19);
+const $$createType21 = IssueTypeView.createFrom;
+const $$createType22 = $Create.Nullable($$createType21);
+const $$createType23 = StatusView.createFrom;
+const $$createType24 = UserView.createFrom;
+const $$createType25 = $Create.Nullable($$createType24);
+const $$createType26 = ChoiceView.createFrom;
+const $$createType27 = $Create.Nullable($$createType26);
+const $$createType28 = $Create.Array($$createType26);
+const $$createType29 = ParentView.createFrom;
+const $$createType30 = $Create.Nullable($$createType29);
+const $$createType31 = $Create.Array($Create.Any);
+const $$createType32 = $Create.Array($$createType23);
+const $$createType33 = EstimateChoiceView.createFrom;
+const $$createType34 = $Create.Array($$createType33);
+const $$createType35 = Section.createFrom;
+const $$createType36 = RowView.createFrom;
+const $$createType37 = $Create.Array($$createType36);
+const $$createType38 = CardView.createFrom;
+const $$createType39 = SectionCursor.createFrom;
+const $$createType40 = $Create.Nullable($$createType39);

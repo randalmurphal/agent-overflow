@@ -316,6 +316,10 @@ func TestASignInCheckRefusedAfterAMatchKeepsThePass(t *testing.T) {
 func TestAPersistent400ListsTheBoardOnceAnInterval(t *testing.T) {
 	t.Parallel()
 	s := newRuleScenario(t)
+	// The ticks are placed against the refusal by shift alone: time the
+	// test spends between them must not move the service's clock.
+	frozen := time.Now()
+	s.svc.now = func() time.Time { return frozen.Add(time.Duration(s.shift.Load())) }
 	// The units other than the reconcile run first, so that the ticks
 	// below run each only when its interval has passed.
 	if _, _, err := s.svc.syncBoard(t.Context(), s.pump, Background, func(r *run) BoardDue {

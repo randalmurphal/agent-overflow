@@ -321,6 +321,7 @@ var connectionTieChecks = map[string]func(*testing.T) connectionTie{
 	"ProviderTerminalAttach":     providerTerminalConnectionTie,
 	"WatchBackgroundTaskOutput":  backgroundTaskOutputConnectionTie,
 	"GetNativeNetworkConfig":     nativeNetworkConnectionTie,
+	"SubscribeTrackerBoard":      trackerBoardConnectionTie,
 	"OpenComputerPairing": func(t *testing.T) connectionTie {
 		return computerPairingConnectionTie(t, nil, func(a *App, ctx context.Context) (ComputerPairingWindow, error) {
 			return a.OpenComputerPairing(ctx, "lan", "full")

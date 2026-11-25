@@ -209,8 +209,8 @@ func TestAKeepWhosePumpRetiredMeanwhilePublishesNothing(t *testing.T) {
 	s, conn, gate, other, _ := bindScenario(t)
 	s.closeTicket(t, conn, s.openTicket(t, conn, "10105"), "10105")
 	s.svc.subMu.Lock()
-	other.shows = append(other.shows, "10105")
-	inputs := other.inputs
+	other.view.shows = append(other.view.shows, "10105")
+	dirty := other.dirty
 	s.svc.subMu.Unlock()
 	keep := gate.holdCall(t, callKeep, "")
 	drop := gate.holdCall(t, callDrop, "")
@@ -224,7 +224,7 @@ func TestAKeepWhosePumpRetiredMeanwhilePublishesNothing(t *testing.T) {
 		t.Fatal("the keep did not show the closed ticket's record again")
 	}
 	s.svc.subMu.Lock()
-	moved := other.inputs != inputs
+	moved := other.dirty != dirty
 	s.svc.subMu.Unlock()
 	if moved {
 		t.Error("the retired pump's keep was published")
@@ -253,7 +253,7 @@ func TestAPumpStoppedBeforeItsLaunchDropsTheRowARefreshKept(t *testing.T) {
 			if !stop {
 				fail = errors.New("test: the first paint's read failed")
 			}
-			paint := gate.holdFailing(t, callRead, "(*Service).MirroredDetail(", fail)
+			paint := gate.holdFailing(t, callBodies, "(*Service).SubscribeTicket(", fail)
 			subscribed := make(chan error, 1)
 			go func() {
 				_, err := s.svc.SubscribeTicket(conn.ID, "10105")

@@ -116,7 +116,8 @@ func mirrorAtScale(t *testing.T, size benchMirrorSize) {
 			t.Error(err)
 		}
 	})
-	rec := recordMirrorWrites(t, filled)
+	filledRec := recordMirrorWrites(t, filled)
+	rec := filledRec
 	start := time.Now()
 	statements := countMirrorStatements(t, func() { err = fillBenchMirror(filled, size) })
 	if err != nil {
@@ -168,7 +169,37 @@ func mirrorAtScale(t *testing.T, size benchMirrorSize) {
 	for _, name := range slices.Sorted(maps.Keys(paths)) {
 		t.Logf("%-34s %s", name, paths[name])
 	}
+	readyListedAgainAtScale(t, filled, filledRec)
 	mirrorPlansAtScale(t, s)
+}
+
+// readyListedAgainAtScale measures, once, on the first sync's store s,
+// whose copy the paths ran on, what a save that lists board 0 again waits
+// for while its retired copy holds every row of the sync and the root
+// stays live: ReadyTrackerBoards of that board.
+func readyListedAgainAtScale(t *testing.T, s *Store, rec *mirrorWriteRecorder) {
+	t.Helper()
+	listed, err := s.ListProjectTrackerBoards(defaultTestProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ReplaceProjectTrackerBoards(defaultTestProjectID, listed[1:]); err != nil {
+		t.Fatal(err)
+	}
+	_, listing, err := s.ReplaceProjectTrackerBoards(defaultTestProjectID, listed)
+	if err != nil || len(listing.Relisted) != 1 {
+		t.Fatalf("listing board 0 again: %+v, %v", listing, err)
+	}
+	rec.reset()
+	start := time.Now()
+	statements := countMirrorStatements(t, func() { err = s.ReadyTrackerBoards(context.Background(), listing.Relisted) })
+	took := time.Since(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	most, total := rec.mostDeletedInATransaction()
+	t.Logf("%-34s %9s %5d statements, %d rows deleted, at most %d in a transaction", "ready a board listed again",
+		took.Round(time.Microsecond), statements, total, most)
 }
 
 // scalePaths measures each path on board 0 of a mirror of size.
@@ -349,8 +380,8 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		if err := syncState(""); err != nil {
 			return err
 		}
-		if _, ok, err := s.GetMirrorBody(root, tickets[0]); err != nil || !ok {
-			return fmt.Errorf("body held %v: %v", ok, err)
+		if bodies, err := s.ListMirrorBodies(root, tickets[:1]); err != nil || len(bodies) != 1 {
+			return fmt.Errorf("bodies held %d: %v", len(bodies), err)
 		}
 		if _, err := s.GetMirrorCatalog(root, []string{"acc-user1"}, []string{"1"}); err != nil {
 			return err

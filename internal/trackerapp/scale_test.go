@@ -147,7 +147,7 @@ func serviceAtScale(t *testing.T, n int) {
 	}
 	// A hidden subscription, so the change funnel looks up the boards of
 	// what a tick changed as it does for a client, and no pump ticks.
-	sub := must[BoardSubscription](t)(svc.SubscribeBoard("boards-"+scope.Connection, scope, nil))
+	sub := must[BoardSubscription](t)(svc.SubscribeBoard("boards-"+scope.Connection, scope, nil, untied))
 	idleBoards(t, svc, p)
 	if err := svc.SetSubscriptionVisible(sub.ID, false); err != nil {
 		t.Fatal(err)
@@ -209,7 +209,7 @@ func serviceAtScale(t *testing.T, n int) {
 	logCost("ticket open, stored", m.measure(nil, func(int) {
 		must3(t)(svc.IssueDetail(t.Context(), scope.Connection, opened, Interactive))
 	}, false))
-	logCost("ticket first paint", m.measure(nil, func(int) { must3(t)(svc.MirroredDetail(scope.Connection, opened)) }, false))
+	logCost("ticket first paint", m.measure(nil, func(int) { must3(t)(svc.mirroredDetail(scope.Connection, opened)) }, false))
 	logCost("cleanup pass", m.measure(nil, func(int) {
 		if err := svc.FinishMirrorCleanup(); err != nil {
 			t.Fatal(err)

@@ -27,11 +27,12 @@ func (s *ticketStore) StoreMirrorTickets(root, sweep int64, tickets []store.Mirr
 	return s.Store.StoreMirrorTickets(root, sweep, tickets, catalog, opened, read)
 }
 
-func (s *ticketStore) ListMirrorCards(root int64, issues []string) ([]store.MirrorCard, error) {
+// ListMirrorBodies is the first read of a view's build.
+func (s *ticketStore) ListMirrorBodies(root int64, issues []string) ([]store.MirrorBody, error) {
 	if s.failViews.Load() {
 		return nil, errStoreDown
 	}
-	return s.Store.ListMirrorCards(root, issues)
+	return s.Store.ListMirrorBodies(root, issues)
 }
 
 // pumpOf is the pump of issue's open ticket on m's connection.
@@ -47,8 +48,8 @@ func (m *mirrorFixture) pumpOf(issue tracker.IssueID) *ticketPump {
 // schedule, which the other's success leaves running; the current one
 // settles as read, due with the round's next regular read. The check
 // stored the changed card in the issue record, so the failed ticket is
-// told the failure, then its view with the record's card over the body it
-// held, still with the failure.
+// told the failure with its view with the record's card over the body it
+// held, in one event, and is not read again before its retry.
 func TestARoundTellsItsFailureOnlyToTheTicketsItDidNotRead(t *testing.T) {
 	t.Parallel()
 	until := time.UnixMilli(1_900_000_000_000).UTC()
@@ -83,7 +84,7 @@ func TestARoundTellsItsFailureOnlyToTheTicketsItDidNotRead(t *testing.T) {
 				t.Fatalf("the round read %v in full", got)
 			}
 			got := m.issueEventsSince(events)
-			if len(got) != 2 || got[0].Changed || !got[1].Changed {
+			if len(got) != 1 || !got[0].Changed {
 				t.Fatalf("events %+v", got)
 			}
 			for _, e := range got {
@@ -196,7 +197,8 @@ func TestAnAnsweredTicketShowsItsDocumentWhenTheReadFails(t *testing.T) {
 
 // A Jira read of two tickets stopped while the changed one is read in
 // full: the current one, which the check answered, settles; the other is
-// left as it was, told nothing, to be read again.
+// not settled, and shows the card the check stored over the body it held,
+// due a read at once for it.
 func TestAStoppedReadSettlesTheTicketsItAnswered(t *testing.T) {
 	t.Parallel()
 	m, st, issues, _ := newRoundFixture(t, 2, true)
@@ -214,18 +216,21 @@ func TestAStoppedReadSettlesTheTicketsItAnswered(t *testing.T) {
 	})
 	unread, read := m.pumpOf(issues[0]), m.pumpOf(issues[1])
 	m.svc.subMu.Lock()
-	unreadDue, readSettled := unread.due, read.settled
+	unreadSettled, readSettled := unread.settled, read.settled
 	m.svc.subMu.Unlock()
 	events := m.issueEventCount()
 	m.svc.readTickets(ctx, m.conn.ID, []*ticketPump{unread, read}, Background, false, false)
-	if got := m.issueEventsSince(events); len(got) != 0 {
-		t.Fatalf("events %+v", got)
+	if got := m.issueEventsSince(events); len(got) != 1 || got[0].Issue != issues[0] || !got[0].Changed || got[0].Failure != nil {
+		t.Fatalf("events %+v; want the unread ticket's new card", got)
 	}
 	m.svc.subMu.Lock()
 	defer m.svc.subMu.Unlock()
-	if read.settled == readSettled || unread.settled > readSettled || !unread.due.Equal(unreadDue) {
-		t.Fatalf("the answered ticket settled %d (was %d); the other settled %d, due %v (was %v)",
-			read.settled, readSettled, unread.settled, unread.due, unreadDue)
+	if read.settled == readSettled || unread.settled != unreadSettled {
+		t.Fatalf("the answered ticket settled %d (was %d); the other settled %d (was %d)",
+			read.settled, readSettled, unread.settled, unreadSettled)
+	}
+	if v := unread.view.detail; v.Card.Title != "Renamed" || !v.BodyBehind || unread.due.After(m.now()) {
+		t.Fatalf("the unread ticket shows %q, behind %v, due %v", v.Card.Title, v.BodyBehind, unread.due)
 	}
 }
 

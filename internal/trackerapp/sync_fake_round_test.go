@@ -127,7 +127,8 @@ func TestFakeRoundRequests(t *testing.T) {
 	}
 }
 
-// settled waits until every ticket pump of s has settled its first read.
+// settled waits until every ticket pump of s has settled its first read
+// and built the view it settled with.
 func settled(t *testing.T, s *Service) {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
@@ -135,7 +136,7 @@ func settled(t *testing.T, s *Service) {
 		s.subMu.Lock()
 		ok := true
 		for _, tp := range s.subs.tickets {
-			ok = ok && tp.settled > 0
+			ok = ok && tp.settled > 0 && tp.building == 0
 		}
 		s.subMu.Unlock()
 		if ok {

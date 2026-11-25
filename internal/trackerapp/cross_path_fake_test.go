@@ -121,9 +121,12 @@ func TestFakeJiraKeyRenameAtAnUnchangedUpdateTime(t *testing.T) {
 			if err := s.e.Seed(trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}}); err != nil {
 				t.Fatal(err)
 			}
+			// The direct read's answer is the card its own check committed,
+			// key and address, the first time.
 			detail := func() {
-				if _, _, err := s.svc.IssueDetail(t.Context(), conn.ID, tc.issue, Interactive); err != nil {
-					t.Fatal(err)
+				v, _, err := s.svc.IssueDetail(t.Context(), conn.ID, tc.issue, Interactive)
+				if err != nil || v.Card.Key != "APP-1" || !strings.HasSuffix(v.URL, "/browse/APP-1") {
+					t.Fatalf("the direct read answered %s at %s, %v; want APP-1", v.Card.Key, v.URL, err)
 				}
 			}
 			check := func() {

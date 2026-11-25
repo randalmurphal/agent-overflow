@@ -72,7 +72,7 @@ func TestAnIdleRoundOfAdvancingAnswersRewritesNothing(t *testing.T) {
 	bodies := func() []string {
 		out := make([]string, len(issues))
 		for i, id := range issues {
-			d, ok, err := m.st.GetMirrorBody(m.root(), string(id))
+			d, ok, err := getMirrorBody(m.st, m.root(), string(id))
 			if err != nil || !ok {
 				t.Fatalf("the body of %s: %v, %v", id, ok, err)
 			}
@@ -170,7 +170,9 @@ func TestARoundReadsOnlyTheChangedTicketInFull(t *testing.T) {
 }
 
 // A round that changes every shown ticket builds their views from one
-// cards read and one catalog read, however many tickets changed.
+// read of their bodies, each with its own card, and one catalog read,
+// however many tickets changed (up to store.MirrorMaxBodies); tickets
+// that show no other issue read no other card.
 func TestARoundBuildsTheChangedViewsInOneRead(t *testing.T) {
 	t.Parallel()
 	for _, jira := range []bool{true, false} {
@@ -196,8 +198,8 @@ func TestARoundBuildsTheChangedViewsInOneRead(t *testing.T) {
 				if got := m.issueEventsSince(events); len(got) != n {
 					t.Fatalf("%d events for %d changed tickets", len(got), n)
 				}
-				if calls["ListMirrorCards"] != 1 || calls["GetMirrorCatalog"] != 1 {
-					t.Fatalf("the round built %d views with %s; want one cards read and one catalog read", n, describeCounts(calls))
+				if calls["ListMirrorBodies"] != 1 || calls["ListMirrorCards"] != 0 || calls["GetMirrorCatalog"] != 1 {
+					t.Fatalf("the round built %d views with %s; want one bodies read, no cards read and one catalog read", n, describeCounts(calls))
 				}
 			})
 		}

@@ -14,13 +14,18 @@ import (
 // declared budget.
 const methodBudgetExceededCode = "method_budget_exceeded"
 
-// budgetExceeded is the cause of a run cut at its method's budget.
+// budgetExceeded is the cause of a run cut at its method's budget. then,
+// when set, says what the person does next.
 type budgetExceeded struct {
 	doing  string
 	budget time.Duration
+	then   string
 }
 
 func (e budgetExceeded) Error() string {
+	if e.then != "" {
+		return fmt.Sprintf("%s took longer than %s, so it was stopped; %s", e.doing, e.budget, e.then)
+	}
 	return fmt.Sprintf("%s took longer than %s, so it was stopped", e.doing, e.budget)
 }
 
@@ -39,8 +44,12 @@ func withinMethodBudget(ctx context.Context, method, doing string) (context.Cont
 // that step and what follows it take, so the run still answers within
 // its budget.
 func withinMethodBudgetFinishing(ctx context.Context, method, doing string, finish time.Duration) (context.Context, context.CancelFunc) {
-	cutoff := transport.MethodBudget(method) - finish
-	return context.WithTimeoutCause(ctx, cutoff, budgetExceeded{doing: doing, budget: cutoff})
+	return withinBudget(ctx, budgetExceeded{doing: doing, budget: transport.MethodBudget(method) - finish})
+}
+
+// withinBudget ends ctx at cause's budget, with cause.
+func withinBudget(ctx context.Context, cause budgetExceeded) (context.Context, context.CancelFunc) {
+	return context.WithTimeoutCause(ctx, cause.budget, cause)
 }
 
 // budgetError is err, or the budget's own readable error once ctx ended at

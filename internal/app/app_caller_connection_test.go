@@ -116,6 +116,14 @@ var callerConnectionRefusals = map[string]connectionRefusal{
 		},
 		created: func(a *App) bool { return a.taskOutput.bindings != nil || a.taskOutput.tailer.Load() != nil },
 	},
+	"SubscribeTrackerBoard": {
+		call: func(a *App, ctx context.Context) error {
+			return ignoreResult(a.SubscribeTrackerBoard(ctx, "project", "connection", "1", nil))
+		},
+		// The App has no tracker service: a step past the refusal fails
+		// with "tracker connections are not available before the app has
+		// started".
+	},
 	"GetNativeNetworkConfig": {
 		call: func(a *App, ctx context.Context) error { return ignoreResult(a.GetNativeNetworkConfig(ctx)) },
 		created: func(a *App) bool {

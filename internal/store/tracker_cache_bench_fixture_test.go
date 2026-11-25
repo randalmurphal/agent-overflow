@@ -119,7 +119,7 @@ func fillBenchMirror(s *Store, size benchMirrorSize) error {
 	for board := range size.boards {
 		listing = append(listing, ProjectTrackerBoard{ConnectionID: jira.ID, BoardID: benchBoardID(board)})
 	}
-	if _, err := s.ReplaceProjectTrackerBoards(defaultTestProjectID, listing); err != nil {
+	if _, _, err := s.ReplaceProjectTrackerBoards(defaultTestProjectID, listing); err != nil {
 		return err
 	}
 	for board := range size.boards {

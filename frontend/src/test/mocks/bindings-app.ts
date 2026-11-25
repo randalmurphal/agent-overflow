@@ -1105,3 +1105,15 @@ export const SetTrackerConnectionEnabled = dispatch('SetTrackerConnectionEnabled
 export const SetTrackerConnectionTokenExpiry = dispatch('SetTrackerConnectionTokenExpiry');
 export const EditTrackerKeyFile = dispatch('EditTrackerKeyFile');
 export const OpenTrackerTokenPage = dispatch('OpenTrackerTokenPage');
+
+export const TrackerProjects = dispatch('TrackerProjects');
+export const TrackerBoards = dispatch('TrackerBoards');
+export const ProjectTrackerBoards = dispatch('ProjectTrackerBoards');
+export const SetProjectTrackerBoards = dispatch('SetProjectTrackerBoards');
+export const SubscribeTrackerBoard = dispatch('SubscribeTrackerBoard');
+export const TrackerBoard = dispatch('TrackerBoard');
+export const TrackerSectionRows = dispatch('TrackerSectionRows');
+export const TrackerBoardPatch = dispatch('TrackerBoardPatch');
+export const SetTrackerSubscriptionVisible = dispatch('SetTrackerSubscriptionVisible');
+export const RefreshTrackerSubscription = dispatch('RefreshTrackerSubscription');
+export const ReleaseTrackerSubscription = dispatch('ReleaseTrackerSubscription');

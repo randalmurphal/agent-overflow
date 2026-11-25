@@ -17,6 +17,8 @@ package pump
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 )
@@ -168,11 +170,16 @@ func (c *Core[R]) wakeUp() {
 	}
 }
 
+// ErrNotTaken marks a request whose caller gave up before the goroutine
+// took it: the goroutine never ran it.
+var ErrNotTaken = errors.New("pump: the request was not taken")
+
 // Request hands body to the goroutine and waits until it ran, returning
 // the error the goroutine finished it with. It is served whether or not
 // the pump is paused: a person asked. It returns Refusals.Stopped when the
 // core stops first, including after the goroutine took it and exited
-// without finishing it, ctx's error when the caller gives up, and
+// without finishing it, ctx's error when the caller gives up, wrapped
+// with ErrNotTaken when the goroutine had not taken the request, and
 // Refusals.LifetimeEnded when the core's lifetime ends before the
 // goroutine took the request, stopped or not. The pump's own goroutine
 // must not call it.
@@ -189,7 +196,7 @@ func (c *Core[R]) Request(ctx context.Context, body R) error {
 		}
 		return c.refusals.Stopped
 	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("%w: %w", ErrNotTaken, ctx.Err())
 	case <-c.lifetime.Done():
 		return c.refusals.LifetimeEnded
 	}

@@ -29,6 +29,8 @@ type Store interface {
 	RecordTrackerConnectionVerification(id string, v store.TrackerVerification) (store.TrackerConnection, bool, error)
 	DeleteTrackerConnection(id string) ([]string, error)
 	ListProjectTrackerBoards(projectID string) ([]store.ProjectTrackerBoard, error)
+	ReplaceProjectTrackerBoards(projectID string, boards []store.ProjectTrackerBoard) (bool, store.TrackerBoardListing, error)
+	ReadyTrackerBoards(ctx context.Context, boards []store.TrackerBoardRef) error
 }
 
 // Deps are the service's capabilities. Every field is required but
@@ -431,17 +433,24 @@ func (s *Service) begin(c *clients) stamp {
 // caller
 // holds opMu, which serializes settlements and keeps the connection in
 // use during record.
-func (s *Service) settle(id, kind string, at stamp, callErr error, record func() error) (bool, error) {
+//
+// changed reports that what a list of connections shows moved: the
+// problem started, changed or cleared, or record wrote. A success that
+// finds no problem, and a failure the same as the one held, change
+// nothing, so a poll that keeps succeeding tells no one.
+func (s *Service) settle(id, kind string, at stamp, callErr error, record func() error) (applied, changed bool, _ error) {
 	s.mu.Lock()
 	applies, err := s.appliesLocked(id, at)
 	s.mu.Unlock()
 	if !applies {
-		return false, err
+		return false, false, err
 	}
+	recorded := false
 	if callErr == nil && record != nil {
 		if err := record(); err != nil {
-			return false, err
+			return false, false, err
 		}
+		recorded = true
 	}
 	if s.beforePublish != nil {
 		s.beforePublish()
@@ -451,17 +460,19 @@ func (s *Service) settle(id, kind string, at stamp, callErr error, record func()
 	// Checked again where it publishes: Stop takes no opMu and may have
 	// run since. A verification row record wrote stays; it is true.
 	if applies, err := s.appliesLocked(id, at); !applies {
-		return false, err
+		return false, false, err
 	}
 	if at.c != nil {
 		at.c.settled = at.gen
 	}
+	held, had := s.problems[id]
 	if callErr != nil {
-		s.problems[id] = ClassifyFailure(kind, callErr)
-	} else {
-		delete(s.problems, id)
+		f := ClassifyFailure(kind, callErr)
+		s.problems[id] = f
+		return true, recorded || !had || held != f, nil
 	}
-	return true, nil
+	delete(s.problems, id)
+	return true, recorded || had, nil
 }
 
 // appliesLocked reports whether the outcome of the call begun at at on

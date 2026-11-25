@@ -116,14 +116,9 @@ func (c *countingStore) StoreMirrorTickets(root, sweep int64, tickets []store.Mi
 	return c.Store.StoreMirrorTickets(root, sweep, tickets, catalog, opened, read)
 }
 
-func (c *countingStore) ConfirmMirrorBody(root int64, b store.MirrorBody, opened store.MirrorRead) (bool, error) {
-	c.count("ConfirmMirrorBody")
-	return c.Store.ConfirmMirrorBody(root, b, opened)
-}
-
-func (c *countingStore) GetMirrorBody(root int64, issue string) (store.MirrorBody, bool, error) {
-	c.count("GetMirrorBody")
-	return c.Store.GetMirrorBody(root, issue)
+func (c *countingStore) ListMirrorBodies(root int64, issues []string) ([]store.MirrorBody, error) {
+	c.count("ListMirrorBodies")
+	return c.Store.ListMirrorBodies(root, issues)
 }
 
 func (c *countingStore) GetMirrorBoard(root int64, board string) (store.MirrorStructure, bool, error) {

@@ -12,60 +12,67 @@ import (
 	"agent-overflow/internal/tracker"
 )
 
-// A subscriber that joins while nothing holds the ticket's content, after
-// a drop no event told, is answered not loaded and is told when the
-// content is held again, though that content is what the first subscriber
-// was told before.
-func TestAJoinerAnsweredNotLoadedIsToldTheLoad(t *testing.T) {
+// An open ticket whose body the cap drops keeps the view it showed, which
+// a subscriber who joins is answered, and is read again at once. The cap
+// drops the body that read brings too (200 tickets opened later are open),
+// so the ticket is told that failure, still showing its view.
+func TestAnEvictedTicketKeepsItsViewAndIsReadAgain(t *testing.T) {
 	t.Parallel()
-	m, _ := capFixture(t)
+	m, evict := capFixture(t)
 	m.p.updatedMovesWithDetail(cardsOf)
-	must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "40000"))
-	m.settledTickets(t)
-	m.round(t)
-	m.evictUntold(t)
-	joined := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "40000"))
-	if joined.Loaded {
-		t.Fatal("the joiner was answered with a dropped detail")
-	}
-	for range 3 {
-		m.round(t)
-	}
+	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "40000"))
 	quiet(t, m.svc)
-	if v := m.ticketView(t, joined.ID); !v.Loaded {
-		t.Fatal("the content is not held again")
-	}
-	_, issues, _ := m.events.snapshot()
-	if !slices.ContainsFunc(issues, func(e IssueEvent) bool { return e.Seq > joined.Seq && e.Changed }) {
-		t.Fatalf("the joiner was never told its ticket loaded: %+v", issues)
-	}
-}
-
-// Finding a ticket not loaded again, while the read that loads it is in
-// flight, leaves that read standing: it settles, and the ticket is read
-// once.
-func TestFindingATicketNotLoadedAgainKeepsTheReadInFlight(t *testing.T) {
-	t.Parallel()
-	m, _ := capFixture(t)
-	m.p.updatedMovesWithDetail(cardsOf)
-	must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "40000"))
-	quiet(t, m.svc)
-	m.evictUntold(t)
-	reads := m.p.count("Details")
+	calls, events := len(m.p.callsInOrder()), m.issueEventCount()
 	call := holdNext(m.p, "Details")
-	joined := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "40000"))
-	if joined.Loaded {
-		t.Fatal("the joiner was answered with a dropped detail")
+	evict()
+	waitClosed(t, "the read the eviction makes due", call.arrived)
+	if v := m.ticketView(t, sub.ID); !v.Loaded {
+		t.Fatal("the eviction unloaded the ticket")
 	}
-	<-call.arrived
-	for range 2 {
-		if v := m.ticketView(t, joined.ID); v.Loaded {
-			t.Fatal("the ticket is loaded before its read answered")
-		}
+	if joined := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "40000")); !joined.Loaded {
+		t.Fatal("a joiner was answered not loaded")
 	}
 	close(call.release)
 	quiet(t, m.svc)
-	if v := m.ticketView(t, joined.ID); !v.Loaded {
+	if got := describeCounts(countsOf(m.p.callsInOrder()[calls:])); got != "Cards:1 Details:1" {
+		t.Fatalf("after the eviction the ticket's reads called %s", got)
+	}
+	got := m.issueEventsSince(events)
+	if len(got) != 1 || got[0].Changed || got[0].Failure == nil || got[0].Failure.Kind != string(FailureInternal) {
+		t.Fatalf("the eviction and the read told %+v; want the read's failure alone", got)
+	}
+	if v := m.ticketView(t, sub.ID); !v.Loaded || v.Detail.Card.ID != "40000" {
+		t.Fatalf("after the read the ticket shows %+v", v)
+	}
+}
+
+// An eviction told while the ticket's read is in flight is left to that
+// read: a build made meanwhile asks for no read, the read stores the body
+// again and settles, and the ticket is read once.
+func TestAnEvictionDuringAReadIsLeftToTheRead(t *testing.T) {
+	t.Parallel()
+	m, evict := capFixture(t)
+	m.p.updatedMovesWithDetail(cardsOf)
+	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "40000"))
+	quiet(t, m.svc)
+	reads := m.p.count("Details")
+	call := holdNext(m.p, "Details")
+	tp := m.svc.ticketPumpOf(m.conn.ID, "40000")
+	done := make(chan ticketsResult, 1)
+	go func() {
+		done <- m.svc.readTickets(context.Background(), m.conn.ID, []*ticketPump{tp}, Background, true, false)
+	}()
+	waitClosed(t, "the held call", call.arrived)
+	evict()
+	// A build of the connection's views made meanwhile leaves the ticket to
+	// its read: it asks for no read of its own.
+	m.svc.buildShown(m.conn.ID)
+	close(call.release)
+	if res := <-done; res.failed {
+		t.Fatalf("the read %+v", res)
+	}
+	quiet(t, m.svc)
+	if v := m.ticketView(t, sub.ID); !v.Loaded {
 		t.Fatal("the ticket did not load")
 	}
 	if got := m.p.count("Details") - reads; got != 1 {
@@ -134,11 +141,13 @@ func (m *mirrorFixture) sweepUntold(t *testing.T, issue string) {
 	}
 }
 
-// A read succeeds only with the ticket's content held by the mirror or by
-// the pump, whatever the cap dropped or the cleanup swept untold while the
-// tracker was asked or before the read: before it, during the cards read
-// that checks the document, and during the detail read; for a round's
-// background read and for a person's opening.
+// A read succeeds only with the ticket's content held by the mirror,
+// whatever the cap dropped or the cleanup swept untold while the tracker
+// was asked or before the read: before it, during the cards read that
+// checks the document, and during the detail read; for a round's
+// background read and for a person's opening. A ticket whose body the cap
+// drops again as the read stores it (200 tickets opened later are open)
+// keeps the view it showed and is told the failure.
 func TestAReadLeavesTheContentHeld(t *testing.T) {
 	t.Parallel()
 	for _, when := range []string{"before", "Cards", "Details"} {
@@ -197,14 +206,14 @@ func TestAReadLeavesTheContentHeld(t *testing.T) {
 					}
 					v := m.ticketView(t, sub.ID)
 					if !v.Loaded || v.Detail.Card.ID != "40000" {
-						t.Fatalf("the ticket after a successful read %+v", v)
+						t.Fatalf("the ticket after the read %+v", v)
 					}
-					tp := m.svc.ticketPumpOf(m.conn.ID, "40000")
-					m.svc.subMu.Lock()
-					held := tp.held != nil
-					m.svc.subMu.Unlock()
-					if _, _, stored := m.storedDetail(t, "40000"); held == stored {
-						t.Fatalf("the pump holds a view %v, the mirror holds the detail %v", held, stored)
+					_, _, stored := m.storedDetail(t, "40000")
+					switch {
+					case how == "evicted" && (stored || v.Failure == nil || v.Failure.Kind != string(FailureInternal)):
+						t.Fatalf("a read whose body the cap dropped: stored %v, failure %+v", stored, v.Failure)
+					case how == "swept" && (!stored || v.Failure != nil):
+						t.Fatalf("a read after a sweep: stored %v, failure %+v", stored, v.Failure)
 					}
 				})
 			}
@@ -239,7 +248,7 @@ func TestChangedTicketsShareOneRead(t *testing.T) {
 			reads := len(m.p.detailsRead())
 			held := holdNext(m.p, "Details")
 			rename(issues, "Renamed")
-			<-held.arrived
+			waitClosed(t, "the held build", held.arrived)
 			rename(issues[2:5], "Renamed again")
 			close(held.release)
 			quiet(t, m.svc)
@@ -251,5 +260,75 @@ func TestChangedTicketsShareOneRead(t *testing.T) {
 				t.Fatalf("%d cards reads; the round before the change made the one", n)
 			}
 		})
+	}
+}
+
+// A tracker whose documents lag its cards (the record's card is newer than
+// any body a read brings) costs one read at once per card version, not a
+// loop: the view built after that read is still behind the same card, and
+// a later build of it asks for no read before the round's regular one.
+func TestABodyBehindItsCardIsReadOncePerCardVersion(t *testing.T) {
+	t.Parallel()
+	m, st, issues, subs := newRoundFixture(t, 1, true)
+	m.settledTickets(t)
+	quiet(t, m.svc)
+	stale := must[tracker.Detail](t)(st.detail(issues[0]))
+	m.p.set(func(p *scripted) { p.detail = func(tracker.IssueID) (tracker.Detail, error) { return stale, nil } })
+	st.edit(issues[0], func(c *tracker.Card) { c.Title = "Renamed" })
+	reads := m.p.count("Details")
+	m.tracks([]tracker.Row{{Card: st.cards[issues[0]], Order: "a000"}})
+	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+	quiet(t, m.svc)
+	if v := m.ticketView(t, subs[0].ID); v.Detail.Card.Title != "Renamed" || !v.Detail.BodyBehind {
+		t.Fatalf("the ticket shows %q, behind %v; want the record's card over the lagging body", v.Detail.Card.Title, v.Detail.BodyBehind)
+	}
+	if got := m.p.count("Details") - reads; got != 1 {
+		t.Fatalf("%d full reads for the new card; want 1", got)
+	}
+	m.publishRaw(Changes{Catalog: true})
+	quiet(t, m.svc)
+	if got := m.p.count("Details") - reads; got != 1 {
+		t.Fatalf("%d full reads after a later build of the same card; want 1", got)
+	}
+}
+
+// A body whose issue the mirror no longer keeps, left for the cleanup to
+// sweep, is not shown: a ticket opened on it is answered not loaded, and
+// its first read brings the body again.
+func TestABodyLeftToTheSweepIsNotShown(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.p.changedRows = pagedDelta(t, []tracker.Row{row("10001", 1_799_000_000_000, "a")})
+	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+	m.p.detail = func(id tracker.IssueID) (tracker.Detail, error) {
+		return tracker.Detail{Card: card(string(id), 1_799_000_000_000)}, nil
+	}
+	m.openDetail(t, "10001")
+	page := store.MirrorRowPage{BoardID: string(testBoard), Lifetime: m.sync(testBoard).Lifetime, Missing: []string{"10001"}, ReadAt: m.read()}
+	// No cleanup runs: the body stays stored, its issue kept by nothing.
+	must[store.MirrorChanges](t)(m.st.WriteMirrorRows(m.root(), page))
+	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001"))
+	if sub.Loaded || sub.Detail != nil {
+		t.Fatalf("a ticket opened on a body left to the sweep was answered %+v", sub.TicketView)
+	}
+	quiet(t, m.svc)
+	if v := m.ticketView(t, sub.ID); !v.Loaded || v.Failure != nil {
+		t.Fatalf("after its first read the ticket shows %+v", v)
+	}
+}
+
+// A change told to a ticket whose read is in flight is counted and wakes
+// no build: the read's settlement claims the ticket's build
+// (settleTickets). One told to a ticket with no read in flight wakes its
+// pump.
+func TestATellDuringAReadWakesNoBuild(t *testing.T) {
+	t.Parallel()
+	s := &Service{}
+	for _, reading := range []int{1, 0} {
+		tp := &ticketPump{key: ticketKey{connection: "c", issue: "10001"}, viewChanged: make(chan struct{}, 1), reading: reading}
+		s.tellTicketLocked(tp, Changes{Cards: []tracker.IssueID{"10001"}})
+		if tp.dirty != 1 || (len(tp.viewChanged) == 1) != (reading == 0) {
+			t.Fatalf("a tell with %d reads in flight: dirty %d, %d nudges", reading, tp.dirty, len(tp.viewChanged))
+		}
 	}
 }

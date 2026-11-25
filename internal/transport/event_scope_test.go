@@ -56,6 +56,7 @@ func TestChannelScopeMatchesItsReadRPC(t *testing.T) {
 		{eventchan.WebviewTrim, ScopeHost, "an imperative directive at this desktop's renderer"},
 		{eventchan.DevServerList, ScopePreviewOpen, "GetDevServers returns this exact shape"},
 		{eventchan.TrackerConnectionsUpdated, ScopeTrackerRead, "TrackerConnections is tracker:read"},
+		{eventchan.TrackerBoardUpdated, ScopeTrackerRead, "TrackerBoardPatch and TrackerBoard are tracker:read"},
 	} {
 		policy, registered := policyForChannel(string(tc.channel))
 		if !registered {

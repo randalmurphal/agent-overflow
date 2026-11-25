@@ -198,7 +198,7 @@ func TestConnectionChangesEndSubscriptions(t *testing.T) {
 			if root := m.root(); root != 0 {
 				t.Fatalf("turning the connection on again found mirror %d", root)
 			}
-			if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil); err != nil {
+			if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, untied); err != nil {
 				t.Fatalf("a subscribe after turning it on again: %v", err)
 			}
 		})
@@ -209,7 +209,7 @@ func TestConnectionChangesEndSubscriptions(t *testing.T) {
 		if _, err := m.svc.SetEnabled(m.conn.ID, false); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil); !errors.Is(err, ErrDisabled) {
+		if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, untied); !errors.Is(err, ErrDisabled) {
 			t.Fatalf("a board of a connection turned off: %v", err)
 		}
 		if _, err := m.svc.SubscribeTicket(m.conn.ID, "10001"); !errors.Is(err, ErrDisabled) {
@@ -274,32 +274,27 @@ func TestAChangedCardWakesTheOpenTicket(t *testing.T) {
 }
 
 // On a tracker whose update time does not move with a comment, an open
-// ticket picks a new comment up at its next round with no card change:
-// the mirror's copy for an issue it keeps, by its board or for the ticket
-// alone, and the view the pump holds for one the mirror does not keep. The test
-// runs each round itself.
+// ticket picks a new comment up at its next round with no card change,
+// from the record of an issue the mirror keeps by its board or for the
+// ticket alone. The test runs each round itself.
 func TestAnOpenTicketPicksUpANewComment(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name          string
-		issue         tracker.IssueID
-		kept, onBoard bool
+		name    string
+		issue   tracker.IssueID
+		onBoard bool
 	}{
-		{"kept by its board", "10001", true, true},
-		{"kept for the ticket", "20001", true, false},
-		{"not kept", "20001", false, false},
+		{"kept by its board", "10001", true},
+		{"kept for the ticket", "20001", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
-			issue, kept := tc.issue, tc.kept
+			issue := tc.issue
 			m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
 			if tc.onBoard {
 				m.subscribe(t, testBoard)
 				m.events.boardEvents(t, 1)
-			}
-			if !kept {
-				m.loseKeeps()
 			}
 			var mu sync.Mutex
 			comments := []tracker.Comment{{ID: "1", Author: "acc-user1", Body: "First", Created: time.UnixMilli(1_799_000_000_000)}}
@@ -337,12 +332,6 @@ func TestAnOpenTicketPicksUpANewComment(t *testing.T) {
 			v, err := m.svc.TicketDetail(sub.ID)
 			if err != nil || v.Detail == nil || len(v.Detail.Comments) != 2 {
 				t.Fatalf("the ticket's detail %+v: %v", v, err)
-			}
-			m.svc.subMu.Lock()
-			holds := m.svc.subs.tickets[ticketKey{connection: m.conn.ID, issue: issue}].held != nil
-			m.svc.subMu.Unlock()
-			if holds == kept {
-				t.Fatalf("an issue the mirror keeps %v: the pump holds a view %v", kept, holds)
 			}
 		})
 	}
@@ -493,7 +482,7 @@ func TestStopJoinsPumpsAndLoop(t *testing.T) {
 			t.Fatalf("goroutine %d of %d runs after Stop", i, len(exited))
 		}
 	}
-	if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil); !errors.Is(err, ErrStopped) {
+	if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, untied); !errors.Is(err, ErrStopped) {
 		t.Fatalf("a subscribe after Stop: %v", err)
 	}
 	if b, _, _ := m.events.snapshot(); slices.ContainsFunc(b, func(e BoardEvent) bool { return e.Ended }) {

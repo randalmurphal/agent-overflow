@@ -133,7 +133,7 @@ func TestIssueDetail(t *testing.T) {
 	// The opening began at later, the check's read a millisecond after it
 	// and the detail's read one more on the frozen clock (store
 	// BeginMirrorRead); the opening is recorded as the read that served it.
-	if d, ok, err := m.st.GetMirrorBody(m.root(), "10001"); err != nil || !ok || d.OpenedAt != later.UnixMilli()+2 || d.ReadAt != later.UnixMilli()+2 {
+	if d, ok, err := getMirrorBody(m.st, m.root(), "10001"); err != nil || !ok || d.OpenedAt != later.UnixMilli()+2 || d.ReadAt != later.UnixMilli()+2 {
 		t.Fatalf("the detail read again: opened %d, read %d, want %d: %v", d.OpenedAt, d.ReadAt, later.UnixMilli()+2, err)
 	}
 	// A card the tracker does not return is no check: the detail is read.
@@ -157,7 +157,7 @@ func TestIssueDetail(t *testing.T) {
 	if m.p.count("Details") != 5 || m.p.count("Cards") != 3 {
 		t.Fatalf("%d detail reads, %d card reads", m.p.count("Details"), m.p.count("Cards"))
 	}
-	if _, _, err := m.svc.MirroredDetail(m.conn.ID, "10009"); !errors.Is(err, ErrNotMirrored) {
+	if _, _, err := m.svc.mirroredDetail(m.conn.ID, "10009"); !errors.Is(err, ErrNotMirrored) {
 		t.Fatalf("the mirror's copy of an unkept issue: %v", err)
 	}
 }
@@ -187,7 +187,7 @@ func TestADetailIsReadWhereItsUpdateTimeDoesNotMove(t *testing.T) {
 	if m.p.count("Details") != 3 || m.p.count("Cards") != 0 {
 		t.Fatalf("%d detail reads, %d card reads", m.p.count("Details"), m.p.count("Cards"))
 	}
-	if v, _, err := m.svc.MirroredDetail(m.conn.ID, "10001"); err != nil || len(v.Comments) != 2 {
+	if v, _, err := m.svc.mirroredDetail(m.conn.ID, "10001"); err != nil || len(v.Comments) != 2 {
 		t.Fatalf("the mirror's copy: %d comments, %v", len(v.Comments), err)
 	}
 }
@@ -223,7 +223,7 @@ func TestIssueDetailFailure(t *testing.T) {
 	if _, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive); err == nil {
 		t.Fatal("a detail of another issue was accepted")
 	}
-	if _, ok, _ := m.st.GetMirrorBody(m.root(), "10002"); ok {
+	if _, ok, _ := getMirrorBody(m.st, m.root(), "10002"); ok {
 		t.Fatal("the other issue's detail was stored")
 	}
 	if _, err := m.svc.SetEnabled(m.conn.ID, false); err != nil {
@@ -266,7 +266,7 @@ func TestAFailedCheckKeepsTheStoredDetail(t *testing.T) {
 			if !ok || after.ReadAt != before.ReadAt || !bytes.Equal(after.Data, before.Data) {
 				t.Fatalf("the stored detail changed: read %d, was %d", after.ReadAt, before.ReadAt)
 			}
-			v, readAt, err := m.svc.MirroredDetail(m.conn.ID, "10001")
+			v, readAt, err := m.svc.mirroredDetail(m.conn.ID, "10001")
 			if err != nil || readAt != before.Wall || v.Description != "Body" {
 				t.Fatalf("the mirror's copy: read %d, %q, %v", readAt, v.Description, err)
 			}
@@ -317,9 +317,8 @@ func TestATurnOffDuringADetailReadEndsIt(t *testing.T) {
 	}
 }
 
-// The mirror's copy of a detail builds no client and makes no call, marks
-// the detail opened, and is not mirrored when the mirror holds no detail
-// of the issue.
+// A view built from the record builds no client and makes no call, and is
+// not mirrored when the mirror holds no body of the issue.
 func TestMirroredDetailBuildsNoClient(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
@@ -338,18 +337,12 @@ func TestMirroredDetailBuildsNoClient(t *testing.T) {
 		return m.p, nil
 	}
 	stored, _, _ := m.storedDetail(t, "10001")
-	v, readAt, err := svc.MirroredDetail(m.conn.ID, "10001")
+	v, readAt, err := svc.mirroredDetail(m.conn.ID, "10001")
 	if err != nil || v.Card.ID != "10001" || readAt != stored.Wall {
 		t.Fatalf("the mirror's copy %+v read at %d (stored %d): %v", v.Card, readAt, stored.Wall, err)
 	}
-	if opened, _, _ := m.storedDetail(t, "10001"); opened.OpenedAt != later.UnixMilli() {
-		t.Fatalf("the mirror's copy left the detail opened at %d", opened.OpenedAt)
-	}
-	if _, _, err := svc.MirroredDetail(m.conn.ID, "10002"); !errors.Is(err, ErrNotMirrored) {
+	if _, _, err := svc.mirroredDetail(m.conn.ID, "10002"); !errors.Is(err, ErrNotMirrored) {
 		t.Fatalf("a kept issue with no detail: %v", err)
-	}
-	if _, _, err := svc.MirroredDetail(m.conn.ID, ""); !errors.Is(err, ErrInvalidRequest) {
-		t.Fatalf("no issue: %v", err)
 	}
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
@@ -419,7 +412,7 @@ func TestDetailReadBoundsItsHistory(t *testing.T) {
 		var v DetailView
 		var err error
 		if mirrored {
-			v, _, err = m.svc.MirroredDetail(m.conn.ID, "10001")
+			v, _, err = m.svc.mirroredDetail(m.conn.ID, "10001")
 		} else {
 			v, _, err = m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
 		}
@@ -430,5 +423,64 @@ func TestDetailReadBoundsItsHistory(t *testing.T) {
 	created := millis(card("10001", 0).Created)
 	if r := m.recordOf(t, "10001"); r.StatusSince != created || !r.StatusFinal {
 		t.Fatalf("the record holds status since %d, final %v; want the creation %d, final", r.StatusSince, r.StatusFinal, created)
+	}
+}
+
+// mirroredDetail is issue's view on connection id as the record holds it,
+// built as an open ticket's is (recordViews), with when its body's read
+// began; it fails wrapping ErrNotMirrored when the record holds no body.
+func (s *Service) mirroredDetail(id string, issue tracker.IssueID) (DetailView, int64, error) {
+	built, err := s.recordViews(id, 0, []*ticketPump{{key: ticketKey{connection: id, issue: issue}}})
+	if err != nil {
+		return DetailView{}, 0, err
+	}
+	if built[0].view == nil {
+		return DetailView{}, 0, fmt.Errorf("%w: the body of issue %s", ErrNotMirrored, issue)
+	}
+	return *built[0].view, built[0].body.Wall, nil
+}
+
+// bodyLister reads the bodies the record holds (store ListMirrorBodies).
+type bodyLister interface {
+	ListMirrorBodies(root int64, issues []string) ([]store.MirrorBody, error)
+}
+
+// getMirrorBody is the body the record of issue holds, if any.
+func getMirrorBody(st bodyLister, root int64, issue string) (store.MirrorBody, bool, error) {
+	bodies, err := st.ListMirrorBodies(root, []string{issue})
+	if err != nil || len(bodies) == 0 {
+		return store.MirrorBody{}, false, err
+	}
+	return bodies[0], true, nil
+}
+
+// A stored body this version cannot read (another version's form) is no
+// body to a direct Jira read's check: with the tracker's card unchanged,
+// the read is made in full and answers the tracker's document.
+func TestADirectReadOfAnUnreadableStoredBodyReadsInFull(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.seedBoard(t)
+	c := card("10001", 1_799_000_000_000)
+	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) { return detailOfCard(c), nil }
+	m.p.updatedMovesWithDetail(cardsAnswering(&c))
+	m.openDetail(t, "10001")
+	m.pass(time.Minute)
+	at := m.read()
+	ticket := store.MirrorTicket{Card: must[store.MirrorCard](t)(mirrorCard(c)), Body: []byte(`{"v":0}`)}
+	if _, err := m.st.StoreMirrorTickets(m.root(), m.sync("").Sweep, []store.MirrorTicket{ticket}, store.MirrorCatalog{}, at, at); err != nil {
+		t.Fatal(err)
+	}
+	b, ok := must2[store.MirrorBody, bool](t)(getMirrorBody(m.st, m.root(), "10001"))
+	if _, readable := bodyOf(b); !ok || readable {
+		t.Fatalf("the record holds a body %v, readable %v; want an unreadable one", ok, readable)
+	}
+	calls := len(m.p.callsInOrder())
+	v, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
+	if err != nil || v.Description != "Body" {
+		t.Fatalf("a direct read over an unreadable body: %q, %v", v.Description, err)
+	}
+	if got := describeCounts(countsOf(m.p.callsInOrder()[calls:])); got != "Details:1" {
+		t.Fatalf("the read called %s; want the full read alone", got)
 	}
 }

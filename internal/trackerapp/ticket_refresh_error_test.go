@@ -9,18 +9,18 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// failingCards fails, while fail is set, the mirror's cards read a ticket
-// view's build makes.
-type failingCards struct {
+// failingBodies fails, while fail is set, the mirror's bodies read a
+// ticket view's build makes.
+type failingBodies struct {
 	Store
 	fail atomic.Bool
 }
 
-func (s *failingCards) ListMirrorCards(root int64, ids []string) ([]store.MirrorCard, error) {
+func (s *failingBodies) ListMirrorBodies(root int64, ids []string) ([]store.MirrorBody, error) {
 	if s.fail.Load() {
 		return nil, errStoreDown
 	}
-	return s.Store.ListMirrorCards(root, ids)
+	return s.Store.ListMirrorBodies(root, ids)
 }
 
 // A person's refresh of a ticket whose changed document's view cannot be
@@ -33,7 +33,7 @@ func TestATicketRefreshWhoseViewFailsAnswersTheFailure(t *testing.T) {
 			t.Parallel()
 			m, st, issues, subs := newRoundFixture(t, 1, jira)
 			quiet(t, m.svc)
-			fs := &failingCards{Store: m.svc.store}
+			fs := &failingBodies{Store: m.svc.store}
 			m.svc.store = fs
 			st.comment(issues[0], "Changed")
 			fs.fail.Store(true)

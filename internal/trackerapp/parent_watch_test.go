@@ -13,9 +13,8 @@ import (
 )
 
 // heldLookup is a mirror store that holds each read of the mirror's cards
-// naming issue, after it read them, until the test releases it: one at a
-// time in any order (release), or every one held and every later one
-// (releaseAll).
+// naming issue, after it read them, until the test releases every one held
+// and every later one (releaseAll).
 type heldLookup struct {
 	Store
 	issue   string
@@ -57,25 +56,15 @@ func (h *heldLookup) next(t *testing.T, what string) {
 	}
 }
 
-// release lets the i-th read held, from zero, go on.
-func (h *heldLookup) release(i int) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	close(h.held[i])
-	h.held[i] = nil
-}
-
 // releaseAll lets every read held go on, and every later one pass.
 func (h *heldLookup) releaseAll() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.free = true
-	for i, rel := range h.held {
-		if rel != nil {
-			close(rel)
-			h.held[i] = nil
-		}
+	for _, rel := range h.held {
+		close(rel)
 	}
+	h.held = nil
 }
 
 // parentFixture is an open ticket of 10001 whose board also holds 10002,
@@ -145,19 +134,10 @@ func (f *parentFixture) tick(t *testing.T) {
 // rename (the same view again).
 func (f *parentFixture) titleGoesBackIsTold(t *testing.T, original string) {
 	t.Helper()
-	tp := f.svc.ticketPumpOf(f.conn.ID, "10001")
-	for deadline := time.Now().Add(10 * time.Second); ; {
-		f.svc.subMu.Lock()
-		behind := tp.behindLocked()
-		f.svc.subMu.Unlock()
-		if !behind {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the ticket's view stayed behind its inputs")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	// A read in flight or due takes the changes told meanwhile
+	// (buildShown): let the reads run and wait for every one to end.
+	f.letReads()
+	quiet(t, f.svc)
 	_, issues, _ := f.events.snapshot()
 	told := len(issues)
 	f.st.edit("10002", func(c *tracker.Card) { c.Title = original })
@@ -165,6 +145,7 @@ func (f *parentFixture) titleGoesBackIsTold(t *testing.T, original string) {
 	f.events.waitFor(t, "the ticket told its parent's title went back", func(_ []BoardEvent, is []IssueEvent, _ []error) bool {
 		return slices.ContainsFunc(is[told:], func(e IssueEvent) bool { return e.Issue == "10001" && e.Changed })
 	})
+	quiet(t, f.svc)
 	if v := f.ticketView(t, f.sub.ID); v.Detail == nil || v.Detail.Card.Parent == nil || v.Detail.Card.Parent.Title != original {
 		t.Fatalf("the ticket shows its parent as %+v; want %q", v.Detail, original)
 	}
@@ -194,12 +175,11 @@ func TestAParentChangedBeforeTheTicketWatchesItShows(t *testing.T) {
 	f.titleGoesBackIsTold(t, original)
 }
 
-// The same, when the view installed is a read's: the rebuild the reparent
-// made due reads the mirror first and is held, the ticket's read then
-// builds its view from the parent's card, the parent's title changes, and
-// the read installs its view before the rebuild ends (which, a read having
-// installed since, installs nothing).
-func TestAParentChangedBeforeATicketsReadInstallsShows(t *testing.T) {
+// The same, when a read of the ticket settles while the build the
+// reparent made is held: the read builds nothing (a build is in flight),
+// the parent's title changes, and the build in flight, whose inputs moved,
+// builds again and shows it.
+func TestAParentChangedWhileAReadSettlesDuringABuildShows(t *testing.T) {
 	t.Parallel()
 	f := newParentFixture(t)
 	original := f.st.cards["10002"].Title
@@ -207,14 +187,20 @@ func TestAParentChangedBeforeATicketsReadInstallsShows(t *testing.T) {
 	f.tick(t)
 	f.lookups.next(t, "the ticket's rebuild")
 	f.letReads()
-	f.lookups.next(t, "the ticket's read")
+	tp := f.svc.ticketPumpOf(f.conn.ID, "10001")
+	if res := f.svc.readTickets(t.Context(), f.conn.ID, []*ticketPump{tp}, Background, true, false); res.failed {
+		t.Fatalf("the read %+v", res)
+	}
 	f.st.edit("10002", func(c *tracker.Card) { c.Title = "Parent renamed" })
 	f.tick(t)
 	_, before, _ := f.events.snapshot()
-	f.lookups.release(1)
-	f.events.waitFor(t, "the ticket's read installing its view", func(_ []BoardEvent, is []IssueEvent, _ []error) bool {
+	f.lookups.releaseAll()
+	f.events.waitFor(t, "the build installing its view", func(_ []BoardEvent, is []IssueEvent, _ []error) bool {
 		return slices.ContainsFunc(is[len(before):], func(e IssueEvent) bool { return e.Issue == "10001" && e.Changed })
 	})
-	f.lookups.releaseAll()
+	quiet(t, f.svc)
+	if v := f.ticketView(t, f.sub.ID); v.Detail.Card.Parent == nil || v.Detail.Card.Parent.Title != "Parent renamed" {
+		t.Fatalf("the ticket shows its parent as %+v", v.Detail.Card.Parent)
+	}
 	f.titleGoesBackIsTold(t, original)
 }

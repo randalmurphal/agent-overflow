@@ -337,6 +337,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2870364785: 'thread', // PrepareThreadWorktree
 	2105157519: 'home', // PreviewNotificationSound
 	2575010484: 'project', // ProjectDeletionPreview
+	1066511111: 'project', // ProjectTrackerBoards
 	4079123887: 'thread', // PromoteScratchThread
 	1393518281: 'thread', // ProviderTerminalAttach
 	2584141779: 'thread', // ProviderTerminalDetach
@@ -362,12 +363,14 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2745242207: 'project', // RefreshProjectIdentity
 	2539237007: 'home', // RefreshProviderAccountUsage
 	2618043580: 'home', // RefreshTerminal
+	247632441: 'home', // RefreshTrackerSubscription
 	3682640111: 'thread', // RegenerateThreadTitle
 	111779378: 'home', // RegisterOwnDevice
 	2641306153: 'home', // RegisterPushToken
 	1034543696: 'thread', // RegisterQueueItem
 	3381314677: 'selected', // ReleaseReadAloudTicket
 	504085501: 'home', // ReleaseReviewDiff
+	1393115131: 'home', // ReleaseTrackerSubscription
 	3940492954: 'selected', // RemoteCommandArtifact
 	235246962: 'selected', // RemoteCommandCancel
 	753690041: 'selected', // RemoteCommandEnvironment
@@ -452,6 +455,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1078249699: 'home', // SetPRUpdatesActive
 	1113626255: 'home', // SetPipelineActive
 	2435786137: 'home', // SetPipelineFollows
+	1148228013: 'project', // SetProjectTrackerBoards
 	322092470: 'project', // SetProjectWorktreeSetup
 	2230720062: 'home', // SetProviderAccountAutoSwitch
 	2118904465: 'home', // SetProviderCustomEnvVar
@@ -462,6 +466,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2294583674: 'home', // SetThreadPlacement
 	3921109066: 'selected', // SetTrackerConnectionEnabled
 	2967721565: 'selected', // SetTrackerConnectionTokenExpiry
+	2154788414: 'home', // SetTrackerSubscriptionVisible
 	3978807241: 'home', // SetWSLDistroPreference
 	4062584181: 'home', // SetWebviewGPUVsyncDisabled
 	3648660014: 'home', // SetWindowBackgroundColor
@@ -487,6 +492,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2065051829: 'selected', // SubscribePRList
 	3272491649: 'selected', // SubscribePRUpdates
 	2067341173: 'selected', // SubscribePipeline
+	2857898243: 'project', // SubscribeTrackerBoard
 	1249964095: 'home', // SwitchProviderAccount
 	3897387725: 'thread', // SwitchThread
 	1289411773: 'home', // SyncOwnDevices
@@ -500,7 +506,12 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	4150382574: 'selected', // ThreadToolRequestStatus
 	1018082581: 'selected', // ThreadToolResolve
 	515024442: 'selected', // ThreadToolWatch
+	3524633257: 'home', // TrackerBoard
+	2847247437: 'home', // TrackerBoardPatch
+	2450480430: 'selected', // TrackerBoards
 	1356803888: 'selected', // TrackerConnections
+	2816087609: 'selected', // TrackerProjects
+	4150293291: 'home', // TrackerSectionRows
 	1291217507: 'thread', // TriggerMcpAuth
 	417766274: 'selected', // TriggerWorkspaceMcpAuth
 	2161888729: 'selected', // UnapprovePR

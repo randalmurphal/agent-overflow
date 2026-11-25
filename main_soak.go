@@ -142,7 +142,7 @@ func runSoak(flags cliFlags) {
 	// than the (attended) Windows harness, which rides the same wire flag.
 	// The dev-server scan pin is the harness's too; see isolationOptions.
 	appService, nativeWindow := newIsolatedProviderApp(paths, isolationOptionsFor(flags))
-	h := newHarness(appService, paths, nativeWindow)
+	h := newHarness(appService, paths, nativeWindow, nil)
 	// This shell is launcher-spawned, so it takes the same window-close
 	// door the production headless boot does. The request lands on the
 	// signal wait below, which is what runs this function's deferred

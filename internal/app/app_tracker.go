@@ -116,16 +116,14 @@ func (a *App) initTrackers() error {
 		Version:        a.version,
 		Now:            time.Now,
 		Life:           a.appCtx,
-		// No bound method subscribes to a board or a ticket yet, so no event
-		// has a channel: one arriving means a subscription was made without
-		// its channel.
-		EmitBoard: func(e trackerapp.BoardEvent) {
-			log.Printf("tracker: a board event of connection %s has no channel to its clients", e.Scope.Connection)
-		},
+		EmitBoard:      func(e trackerapp.BoardEvent) { a.emit(eventchan.TrackerBoardUpdated, e) },
+		// No bound method subscribes to a ticket yet, so its event has no
+		// channel: one arriving means a subscription was made without it.
 		EmitIssue: func(e trackerapp.IssueEvent) {
 			log.Printf("tracker: an issue event of connection %s has no channel to its clients", e.Connection)
 		},
 		Settled: a.awaitFirstReadsSettled,
+		Cadence: a.trackerCadence,
 		ClientConnected: func() bool {
 			bus := a.eventBus.Load()
 			return bus != nil && bus.SubscriberCount() > 0
@@ -137,6 +135,33 @@ func (a *App) initTrackers() error {
 		return fmt.Errorf("failed to initialise tracker connections: %w", err)
 	}
 	a.trackers = svc
+	return nil
+}
+
+// startTrackers is the trackers' boot step: it arms the linked-issues
+// loop, which waits for the first client's reads before its first round,
+// and finishes, once they settle, the mirror cleanup an earlier run left
+// unfinished. That cleanup is this step's alone: the loop runs one only
+// after a round, while a connection is on and a client connected. Before the
+// first reads settle it reads the connections once and nothing that grows
+// with the mirror. A failure of either is a boot failure.
+func (a *App) startTrackers() error {
+	svc, err := a.trackerService()
+	if err != nil {
+		return err
+	}
+	ctx := a.lifeCtx()
+	a.unattendedLoops.Go(func() {
+		if err := a.awaitFirstReadsSettled(ctx); err != nil {
+			return
+		}
+		if err := svc.FinishMirrorCleanup(); err != nil && !errors.Is(err, trackerapp.ErrStopped) {
+			a.bootPhaseFailed(fmt.Errorf("finish the issue tracker cleanup the last run left: %w", err))
+		}
+	})
+	if err := svc.StartLinkedSync(); err != nil {
+		return fmt.Errorf("start the issue trackers' linked-issues sync: %w", err)
+	}
 	return nil
 }
 

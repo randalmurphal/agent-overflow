@@ -93,9 +93,14 @@ type BoardSubscription struct {
 // made on the first handle, reads the tracker after it, its first tick
 // interactive. A connection turned off or removed is refused (ErrDisabled,
 // ErrNotFound), as is a subscribe over the cap (ErrTooManySubscriptions).
-func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Section) (BoardSubscription, error) {
+// tie ties the handle to its client before any pump is made for it; its
+// refusal is the subscribe's.
+func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Section, tie Tie) (BoardSubscription, error) {
 	if err := scope.boardOnly(); err != nil {
 		return BoardSubscription{}, err
+	}
+	if tie == nil {
+		return BoardSubscription{}, fmt.Errorf("%w: a board subscribe ties its handle to its client", ErrInvalidRequest)
 	}
 	if projectID == "" || len(sections) > maxViewSections {
 		return BoardSubscription{}, fmt.Errorf("%w: a board subscribe names its project and at most %d sections", ErrInvalidRequest, maxViewSections)
@@ -118,7 +123,7 @@ func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Secti
 	}) {
 		return BoardSubscription{}, fmt.Errorf("%w: project %s, board %s of %s", ErrNotListed, projectID, scope.Board, scope.Connection)
 	}
-	id, p, start, seq, told, err := s.takeBoardHandle(scope)
+	id, p, start, seq, told, err := s.takeBoardHandle(scope, tie)
 	if err != nil {
 		return BoardSubscription{}, err
 	}
@@ -155,13 +160,13 @@ func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Secti
 	return answer, nil
 }
 
-// takeBoardHandle takes a handle on scope's pump, making the pump when
-// there is none; start reports that the caller launches it. seq is the
-// answer's sequence number, and told the board's sync state as the pump's
-// subscribers were last told of it then. The connection is read under
-// opMu, so a turn off orders entirely before (refused) or after (the pump
-// ends).
-func (s *Service) takeBoardHandle(scope Scope) (id string, p *boardPump, start bool, seq uint64, told SyncView, err error) {
+// takeBoardHandle takes a handle on scope's pump, tied by tie, making the
+// pump when there is none; start reports that the caller launches it. seq
+// is the answer's sequence number, and told the board's sync state as the
+// pump's subscribers were last told of it then. The connection is read
+// under opMu, so a turn off orders entirely before (refused) or after (the
+// pump ends).
+func (s *Service) takeBoardHandle(scope Scope, tie Tie) (id string, p *boardPump, start bool, seq uint64, told SyncView, err error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	kind, err := s.subscribableLocked(scope.Connection)
@@ -176,6 +181,11 @@ func (s *Service) takeBoardHandle(scope Scope) (id string, p *boardPump, start b
 	case s.subs.boardHandles >= maxBoardSubscriptions:
 		return "", nil, false, 0, SyncView{}, fmt.Errorf("%w: %d board subscriptions", ErrTooManySubscriptions, maxBoardSubscriptions)
 	}
+	id = newHandleID()
+	untie, err := tie(id)
+	if err != nil {
+		return "", nil, false, 0, SyncView{}, err
+	}
 	p = s.subs.boards[scope]
 	if p == nil {
 		if s.subs.boards == nil {
@@ -185,7 +195,7 @@ func (s *Service) takeBoardHandle(scope Scope) (id string, p *boardPump, start b
 		s.subs.boards[scope] = p
 		start = true
 	}
-	id = s.takeHandleLocked(&handle{board: p}, &p.core)
+	s.takeHandleLocked(id, &handle{board: p, untie: untie}, &p.core)
 	return id, p, start, s.nextSeqLocked(), p.toldLocked(), nil
 }
 
