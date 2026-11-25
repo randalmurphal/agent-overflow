@@ -130,7 +130,7 @@ func TestProjectSetupSavesReadsAndRemoves(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if empty.Revision != "" || empty.StatusGroups == nil || len(empty.StatusGroups) != 0 || empty.TicketPins == nil || len(empty.TicketPins) != 0 {
+	if empty.Revision != "" || empty.Setup.StatusGroups == nil || len(empty.Setup.StatusGroups) != 0 || empty.Setup.TicketPins == nil || len(empty.Setup.TicketPins) != 0 {
 		t.Fatalf("a project with no setup file: %+v", empty)
 	}
 	setup := m.regrouped(map[string]string{"s1": "done"})
@@ -153,11 +153,11 @@ func TestProjectSetupSavesReadsAndRemoves(t *testing.T) {
 	if !strings.Contains(string(data), `"sections": []`) || strings.Contains(string(data), `"fields"`) {
 		t.Fatalf("the pinned lists set to empty and not set, as written:\n%s", data)
 	}
-	pins := save.Stored.TicketPins
+	pins := save.Stored.Setup.TicketPins
 	if len(pins) != 1 || pins[0].Fields != nil || pins[0].Sections == nil || len(*pins[0].Sections) != 0 {
 		t.Fatalf("pins as stored: %+v", pins)
 	}
-	if got := must[SetupView](t)(m.svc.ProjectSetup(m.project())); got.Revision != save.Stored.Revision || len(got.StatusGroups) != 1 {
+	if got := must[SetupView](t)(m.svc.ProjectSetup(m.project())); got.Revision != save.Stored.Revision || len(got.Setup.StatusGroups) != 1 {
 		t.Fatalf("the setup read after the save: %+v", got)
 	}
 	if n := m.events.setups.Load(); n != 1 {
@@ -187,7 +187,7 @@ func TestProjectSetupSavesReadsAndRemoves(t *testing.T) {
 	refused := must[SetupSave](t)(m.svc.SetProjectSetup(m.project(), save.Stored.Revision, Setup{}))
 	editedSum := sha256.Sum256([]byte(edited))
 	if refused.Saved || refused.Stored.Revision != hex.EncodeToString(editedSum[:]) ||
-		len(refused.Stored.StatusGroups) != 1 || refused.Stored.StatusGroups[0].Statuses["s2"] != "left_out" || len(refused.Stored.TicketPins) != 0 {
+		len(refused.Stored.Setup.StatusGroups) != 1 || refused.Stored.Setup.StatusGroups[0].Statuses["s2"] != "left_out" || len(refused.Stored.Setup.TicketPins) != 0 {
 		t.Fatalf("a save over a file edited by hand: %+v", refused)
 	}
 	if n := m.events.setups.Load(); n != 2 {
@@ -214,7 +214,7 @@ func TestProjectSetupSurvivesARestart(t *testing.T) {
 	save := m.saveSetup(t, m.project(), m.regrouped(map[string]string{"s1": "done"}))
 	m.restart(t)
 	got := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
-	if got.Revision != save.Stored.Revision || len(got.StatusGroups) != 1 || got.StatusGroups[0].Statuses["s1"] != "done" {
+	if got.Revision != save.Stored.Revision || len(got.Setup.StatusGroups) != 1 || got.Setup.StatusGroups[0].Statuses["s1"] != "done" {
 		t.Fatalf("the setup after a restart: %+v", got)
 	}
 }
@@ -277,7 +277,7 @@ func TestProjectSetupKeepsWhatANewerVersionSaved(t *testing.T) {
 	groups := `{"version": 2, "rules": ["any"]}`
 	m.writeSetupFile(t, m.project(), `{"card_marks": `+marks+`, "status_groups": `+groups+`}`)
 	stored := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
-	if !slices.Equal(stored.Newer, []string{"card_marks", "status_groups"}) || len(stored.StatusGroups) != 0 {
+	if !slices.Equal(stored.Newer, []string{"card_marks", "status_groups"}) || len(stored.Setup.StatusGroups) != 0 {
 		t.Fatalf("a setup a newer version saved: %+v", stored)
 	}
 	pins := Setup{TicketPins: []SitePins{{Tracker: store.TrackerKindJira, Site: m.conn.Site, Fields: &[]string{"summary"}}}}
@@ -374,7 +374,7 @@ func TestProjectSetupValidates(t *testing.T) {
 		{Tracker: "jira", Site: "b.example.com", Statuses: map[string]string{}},
 		{Tracker: "jira", Site: jiraSiteIn, Statuses: map[string]string{"s1": "left_out"}},
 	}})
-	if got := save.Stored.StatusGroups; len(got) != 2 || got[0].Site != m.conn.Site || got[1].Site != linear.Site {
+	if got := save.Stored.Setup.StatusGroups; len(got) != 2 || got[0].Site != m.conn.Site || got[1].Site != linear.Site {
 		t.Fatalf("the sites as stored: %+v; want %s and %s", got, m.conn.Site, linear.Site)
 	}
 	sub := m.subscribeShown(t, m.project())
@@ -404,7 +404,7 @@ func TestAHandWrittenSiteIsReadAsItsConnectionNamesIt(t *testing.T) {
 	m.writeSetupFile(t, m.project(), data)
 	sum := sha256.Sum256([]byte(data))
 	got := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
-	if got.Revision != hex.EncodeToString(sum[:]) || len(got.StatusGroups) != 1 || got.StatusGroups[0].Site != m.conn.Site {
+	if got.Revision != hex.EncodeToString(sum[:]) || len(got.Setup.StatusGroups) != 1 || got.Setup.StatusGroups[0].Site != m.conn.Site {
 		t.Fatalf("the hand-written setup = %+v; want site %s at the revision of its bytes", got, m.conn.Site)
 	}
 	sub := m.subscribeShown(t, m.project())
@@ -808,7 +808,7 @@ func TestWhatASaveWritesTheReaderAccepts(t *testing.T) {
 			if !reflect.DeepEqual(read, save.Stored) {
 				t.Fatalf("the cold read = %+v; want what the save stored, %+v", read, save.Stored)
 			}
-			again, err := m.svc.SetProjectSetup(m.project(), read.Revision, setupOf(read))
+			again, err := m.svc.SetProjectSetup(m.project(), read.Revision, read.Setup)
 			if err != nil || !again.Saved || again.Stored.Revision != read.Revision {
 				t.Fatalf("a save over the cold read = %+v, %v; want it saved unchanged", again, err)
 			}
@@ -826,9 +826,4 @@ func TestWhatASaveWritesTheReaderAccepts(t *testing.T) {
 			}
 		})
 	}
-}
-
-// setupOf is the setup a read answers, as a replace gives it.
-func setupOf(v SetupView) Setup {
-	return Setup{StatusGroups: v.StatusGroups, TicketPins: v.TicketPins}
 }

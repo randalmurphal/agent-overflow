@@ -180,14 +180,15 @@ type SitePins struct {
 }
 
 // SetupView is a project's tracker setup as it is stored: the revision a
-// replace names (empty while there is no file), the sections this build
-// reads, and the names of the sections a newer version saved, which this
-// build keeps as they are.
+// replace names (empty while there is no file), the setup itself, which a
+// replace gives back as it is or changed, and the names of the sections a
+// newer version saved, which this build keeps as they are. The setup is a
+// field of its own, beside what a replace does not give, so the value a
+// screen edits and saves is the value it read.
 type SetupView struct {
-	Revision     string             `json:"revision"`
-	StatusGroups []SiteStatusGroups `json:"status_groups"`
-	TicketPins   []SitePins         `json:"ticket_pins"`
-	Newer        []string           `json:"newer,omitempty"`
+	Revision string   `json:"revision"`
+	Setup    Setup    `json:"setup"`
+	Newer    []string `json:"newer,omitempty"`
 }
 
 // SetupSave is a replace's answer: whether it saved, the sentence that
@@ -623,7 +624,7 @@ func setupRevision(data []byte) string {
 // keeps (named by newer) and the revision of its file.
 func heldOf(setup Setup, raw map[string]json.RawMessage, newer []string, revision string) (*heldSetup, error) {
 	held := &heldSetup{
-		view: SetupView{Revision: revision, StatusGroups: slicesx.OrEmpty(setup.StatusGroups), TicketPins: slicesx.OrEmpty(setup.TicketPins), Newer: newer},
+		view: SetupView{Revision: revision, Setup: Setup{StatusGroups: slicesx.OrEmpty(setup.StatusGroups), TicketPins: slicesx.OrEmpty(setup.TicketPins)}, Newer: newer},
 		raw:  raw, groups: map[siteKey]StatusGroups{},
 	}
 	for _, site := range setup.StatusGroups {

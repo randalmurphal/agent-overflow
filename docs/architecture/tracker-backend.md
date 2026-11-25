@@ -349,6 +349,11 @@ no step runs at root creation, restore or start.
   the computer cannot read (`bad_params`, before the method runs), as the
   file's reader refuses a field of a section it reads; `{}` is the empty
   setup.
+- **A read** answers `{revision, setup, newer}` (`SetupView`, also a
+  replace's `stored`): `setup` is the value a replace takes, so a screen
+  saves the setup it read, changed, with the revision beside it; the
+  revision and the newer sections are not part of it, and a replace that
+  sends them is refused as an argument the computer cannot read.
 - **A replace** names the revision it was built from, the SHA-256 of the
   file's bytes (empty for no file). When the file moved since, nothing is
   written and the answer carries the setup stored now. An empty setup

@@ -33,7 +33,9 @@ interface BoardView {
   name: string; lifetime: number; totals_revision: number; groups?: string; left_out?: string[]; sections: SectionPage[];
   sprints: Array<{ id: string; total: { rows: number } }>;
 }
-interface SetupSave { saved: boolean; stored: { revision: string } }
+interface Setup { status_groups: { tracker: string; site: string; statuses: Record<string, string> }[]; ticket_pins: unknown[] }
+interface SetupView { revision: string; setup: Setup; newer?: string[] }
+interface SetupSave { saved: boolean; stored: SetupView }
 interface BoardPatch { sections: SectionPage[] }
 
 const sprint = [{ kind: 'sprint', sprint: SPRINT_ID }];
@@ -111,7 +113,11 @@ test("a project's status groups reach its open board over the wire", async ({ ha
   await expect(harness.rpc('TrackerBoardPatch', sub.id, sprint, ['10101'], {
     lifetime: before.lifetime, revision: before.totals_revision, groups: before.groups ?? '',
   })).rejects.toThrow(/^tracker_page_stale: /);
-  const stored = await harness.rpc<{ revision: string }>('ProjectTrackerSetup', board.projectId);
+  const stored = await harness.rpc<SetupView>('ProjectTrackerSetup', board.projectId);
   expect(stored.revision).toBe(save.stored.revision);
+  // The setup a read answers is the value a save takes back.
+  const again = await harness.rpc<SetupSave>('SetProjectTrackerSetup', board.projectId, stored.revision, stored.setup);
+  expect(again.saved, 'the setup read is saved back as it is').toBe(true);
+  expect(again.stored.revision).toBe(stored.revision);
   await harness.rpc('ReleaseTrackerSubscription', sub.id);
 });

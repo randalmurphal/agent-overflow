@@ -205,7 +205,7 @@ func TestATrackerSetupWriteThatMayHaveHappenedSaysSo(t *testing.T) {
 		t.Fatalf("a save whose sync failed = %v (code %q, %q)", err, code, message)
 	}
 	got, err := f.a.ProjectTrackerSetup(ctx, f.project)
-	if err != nil || len(got.StatusGroups) != 1 || got.StatusGroups[0].Statuses["10001"] != "left_out" {
+	if err != nil || len(got.Setup.StatusGroups) != 1 || got.Setup.StatusGroups[0].Statuses["10001"] != "left_out" {
 		t.Fatalf("the setup after = %+v, %v; want the file's, which holds the change", got, err)
 	}
 }
@@ -252,7 +252,7 @@ func TestASetupArgumentThisComputerCannotReadIsRefused(t *testing.T) {
 	}
 	result, frame := rpc.call("SetProjectTrackerSetup", f.project, stored.Revision, json.RawMessage(`{}`))
 	var save trackerapp.SetupSave
-	if frame != nil || json.Unmarshal(result, &save) != nil || !save.Saved || len(save.Stored.StatusGroups) != 0 ||
+	if frame != nil || json.Unmarshal(result, &save) != nil || !save.Saved || len(save.Stored.Setup.StatusGroups) != 0 ||
 		!slices.Equal(save.Stored.Newer, []string{"card_marks"}) {
 		t.Fatalf("an empty setup = %s, %+v; want saved, keeping the newer app's section", result, frame)
 	}
@@ -305,5 +305,31 @@ func TestARefusedSiteIsNeverRepeated(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), marker) {
 		t.Errorf("the log repeats a refused site:\n%s", logs.String())
+	}
+}
+
+// The setup a read answers is the value a save takes: a client that sends
+// back the read's setup, changed or not, with the read's revision, saves
+// it, as a settings screen would.
+func TestTheSetupAReadAnswersIsSavedBack(t *testing.T) {
+	t.Parallel()
+	f := newTrackerBoardFixture(t)
+	rpc := newAppDispatch(t, f.a)
+	setup := `{"status_groups": [{"tracker": "jira", "site": "` + f.conn.Site + `", "statuses": {"10001": "left_out"}}], "ticket_pins": []}`
+	if _, frame := rpc.call("SetProjectTrackerSetup", f.project, "", json.RawMessage(setup)); frame != nil {
+		t.Fatalf("the first save: %+v", frame)
+	}
+	result, frame := rpc.call("ProjectTrackerSetup", f.project)
+	var read struct {
+		Revision string          `json:"revision"`
+		Setup    json.RawMessage `json:"setup"`
+	}
+	if frame != nil || json.Unmarshal(result, &read) != nil {
+		t.Fatalf("the read = %s, %+v", result, frame)
+	}
+	result, frame = rpc.call("SetProjectTrackerSetup", f.project, read.Revision, read.Setup)
+	var save trackerapp.SetupSave
+	if frame != nil || json.Unmarshal(result, &save) != nil || !save.Saved || save.Stored.Revision != read.Revision {
+		t.Fatalf("the read's setup saved back = %s, %+v; want it saved as it was (read %s)", result, frame, read.Setup)
 	}
 }
