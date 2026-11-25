@@ -18,7 +18,7 @@
   import { isEnterKey } from '../../utils/localEnter';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { dropTicketDraft, setTicketDraft, ticketDraft, ticketWrite } from '../../stores/trackerTicketWrites.svelte';
-  import type { WriteOutcome } from '../../stores/trackerTicketModel';
+  import type { WriteOutcome } from '../../stores/trackerWriteOutcome';
 
   interface Props {
     /** The field's ID. */

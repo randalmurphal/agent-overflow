@@ -1859,11 +1859,18 @@ site and issue ID, so the link means the same ticket on every computer.
   frame per thread.
 - **Keep.** A link keeps its issue in the mirror (`mirrorIssueKept`).
   When links end (an unlink, a link replaced, a thread's delete commit,
-  an empty draft's delete, a move away), `LinksEnded` tells the issues
-  no longer kept as `Changes.Visibility`, as an open ticket's drop does.
-- **A draft with nothing sent.** A link does not keep it: a draft with
-  nothing sent stays deletable, and clearing its composer deletes it and
-  ends its link as a delete does.
+  a move away, a draft's copy to another computer), `LinksEnded` tells
+  the issues no longer kept as `Changes.Visibility`, as an open ticket's
+  drop does.
+- **A thread with nothing sent.** A link makes it real
+  (`threadRealClause`, which states the rule): `SetThreadTicket` and
+  `ClearThreadTicket` report the listing change they make
+  (`ThreadTicketSet.Listing`, `ThreadTicketClear.Listing`) and announce
+  it, and the empty-draft delete refuses a linked thread. A draft moved
+  to another project here takes its link in `MoveThreadDraft`'s
+  transaction; a draft's copy to another computer carries it, and the
+  transaction that completes the copy (`consumeTransferredDraft`) ends
+  the source's with its draft.
 - **Fork and transfer.** `CreatePointerFork` copies the link in its
   transaction. A transfer's manifest carries `store.Thread`, link
   included; `CommitIncomingThreadTransfer` replaces the receiver's link

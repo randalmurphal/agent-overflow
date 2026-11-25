@@ -21,13 +21,16 @@ var mirrorStatements sync.Map
 // vmSteps holds, while countMirrorVMSteps or countStatementRuns counts,
 // the VM steps the cached statements ran (of query alone when it is set)
 // and the runs of query, and each statement's step counter at its last
-// run, so a run's steps are the counter's growth since.
+// run, so a run's steps are the counter's growth since. The counter is
+// keyed by the driver statement, which the map keeps alive: SQLite reuses
+// a finalized statement's address for a later statement, whose run would
+// otherwise count from the finalized one's counter.
 var vmSteps struct {
 	mu          sync.Mutex
 	counting    bool
 	query       string
 	total, runs int
-	last        map[uintptr]int
+	last        map[driver.Stmt]int
 }
 
 func init() {
@@ -59,9 +62,9 @@ func recordVMSteps(stmt driver.Stmt, query string) {
 	vmSteps.mu.Lock()
 	defer vmSteps.mu.Unlock()
 	if vmSteps.last == nil {
-		vmSteps.last = map[uintptr]int{}
+		vmSteps.last = map[driver.Stmt]int{}
 	}
-	last := vmSteps.last[pstmt]
+	last := vmSteps.last[stmt]
 	if now < last {
 		last = 0
 	}
@@ -69,7 +72,7 @@ func recordVMSteps(stmt driver.Stmt, query string) {
 		vmSteps.total += now - last
 		vmSteps.runs++
 	}
-	vmSteps.last[pstmt] = now
+	vmSteps.last[stmt] = now
 }
 
 // countMirrorVMSteps runs fn and returns the VM steps of the cached mirror
@@ -85,6 +88,39 @@ func countMirrorVMSteps(t *testing.T, fn func()) int {
 	defer vmSteps.mu.Unlock()
 	vmSteps.counting = false
 	return vmSteps.total
+}
+
+// A statement SQLite placed at a finalized statement's address counts
+// all its steps: the wrapper stands for that later statement, the same
+// SQLite handle under a new driver statement. Not parallel: it counts VM
+// steps.
+func TestAStatementAtAReusedAddressCountsAllItsSteps(t *testing.T) {
+	var first driver.Stmt
+	var query string
+	checked := cachedStmtRan
+	cachedStmtRan = func(stmt driver.Stmt, q string) {
+		checked(stmt, q)
+		if first == nil && strings.Contains(q, "tracker_cache_") {
+			first, query = stmt, q
+		}
+	}
+	t.Cleanup(func() { cachedStmtRan = checked })
+	mirrorWithStatuses(t, 5)
+	if first == nil {
+		t.Fatal("the mirror ran no cached statement")
+	}
+	tls, pstmt, err := sqliteStmtHandles(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := int(sqlite3.Xsqlite3_stmt_status(tls, pstmt, sqlite3.SQLITE_STMTSTATUS_VM_STEP, 0))
+	if ran == 0 {
+		t.Fatalf("%q ran no VM steps", query)
+	}
+	later := &observedStmt{Stmt: first, query: query}
+	if got := countMirrorVMSteps(t, func() { recordVMSteps(later, query) }); got != ran {
+		t.Errorf("the later statement counted %d VM steps; want its %d", got, ran)
+	}
 }
 
 // countStatementRuns runs fn and returns how many times it ran the cached

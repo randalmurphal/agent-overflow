@@ -97,6 +97,49 @@ export async function createDraftThread(
   }))) as Thread;
 }
 
+/** The settings a placeholder row carries: what its CreateThread sends. */
+type PlaceholderSettings = DraftPlaceholderDefaults & { worktreePath?: string };
+
+/**
+ * The synthetic row a pane shows for `placeholder`: its project and mode,
+ * the settings its CreateThread will send, and nothing a stored row holds
+ * (a link, a pin, read or turn state, a session). The one shape of a
+ * placeholder row, for a New thread and for a draft emptied back to one.
+ */
+function placeholderThread(
+  placeholder: DraftThreadPlaceholder,
+  settings: PlaceholderSettings | undefined,
+  groupId: string | undefined,
+): Thread {
+  return {
+    id: placeholder.id,
+    title: 'New Thread',
+    groupId,
+    provider: asProviderID(settings?.provider) ?? 'codex',
+    workspacePath: settings?.workspacePath || placeholder.projectPath,
+    worktreePath: settings?.worktreePath,
+    projectPath: placeholder.projectPath,
+    projectId: placeholder.projectId,
+    mode: placeholder.mode,
+    model: settings?.model ?? '',
+    reasoningEffort: settings?.reasoningEffort as Thread['reasoningEffort'],
+    fastMode: settings?.fastMode,
+    contextWindow: settings?.contextWindow,
+    autoCompactStandardPercent: settings?.autoCompactStandardPercent,
+    autoCompactExtendedPercent: settings?.autoCompactExtendedPercent,
+    runtimeMode: settings?.runtimeMode as Thread['runtimeMode'],
+    branch: settings?.branch,
+    createdAt: placeholder.createdAt,
+    updatedAt: placeholder.createdAt,
+    archived: false,
+    // Match the backend projection: a synthetic placeholder has no
+    // items, so isDraft is the truth even before the row exists.
+    // Any consumer reading pane.thread?.isDraft gets the right
+    // answer in both placeholder and materialized phases.
+    isDraft: true,
+  };
+}
+
 export function createThreadDraftPlaceholder(
   options: ThreadDraftPlaceholderOptions,
 ) {
@@ -196,16 +239,20 @@ export function createThreadDraftPlaceholder(
     };
     migrateWorktreeIntent(current.id, placeholder.id);
     draftPlaceholder = placeholder;
-    options.setThread({
-      ...current,
-      id: placeholder.id,
-      title: 'New Thread',
-      createdAt: now,
-      updatedAt: now,
-      isDraft: true,
-      // A setup run belongs to the row being removed; the placeholder has none.
-      worktreeSetupState: undefined,
-    });
+    // The settings carry over; what the removed row held goes with it.
+    options.setThread(placeholderThread(placeholder, {
+      provider: current.provider,
+      model: current.model,
+      reasoningEffort: current.reasoningEffort,
+      fastMode: current.fastMode,
+      contextWindow: current.contextWindow,
+      autoCompactStandardPercent: current.autoCompactStandardPercent,
+      autoCompactExtendedPercent: current.autoCompactExtendedPercent,
+      runtimeMode: current.runtimeMode,
+      branch: current.branch,
+      workspacePath: current.workspacePath,
+      worktreePath: current.worktreePath,
+    }, current.groupId));
     removeThread(current.id);
     options.bumpSwitchGeneration();
     return true;
@@ -238,33 +285,7 @@ export function createThreadDraftPlaceholder(
     // caller couldn't fetch them (offline, race, etc.) we still render
     // a usable placeholder — the toolbar pickers fall back to their
     // own resolution paths.
-    const seededProvider = asProviderID(defaults?.provider);
-    options.setThread({
-      id: placeholder.id,
-      title: 'New Thread',
-      groupId,
-      provider: seededProvider ?? 'codex',
-      workspacePath: defaults?.workspacePath || project.path,
-      projectPath: project.path,
-      projectId: project.id,
-      mode,
-      model: defaults?.model ?? '',
-      reasoningEffort: defaults?.reasoningEffort as Thread['reasoningEffort'],
-      fastMode: defaults?.fastMode,
-      contextWindow: defaults?.contextWindow,
-      autoCompactStandardPercent: defaults?.autoCompactStandardPercent,
-      autoCompactExtendedPercent: defaults?.autoCompactExtendedPercent,
-      runtimeMode: defaults?.runtimeMode as Thread['runtimeMode'],
-      branch: defaults?.branch,
-      createdAt: now,
-      updatedAt: now,
-      archived: false,
-      // Match the backend projection: a synthetic placeholder has no
-      // items, so isDraft is the truth even before the row exists.
-      // Any consumer reading pane.thread?.isDraft gets the right
-      // answer in both placeholder and materialized phases.
-      isDraft: true,
-    });
+    options.setThread(placeholderThread(placeholder, defaults, groupId));
     options.bumpSwitchGeneration();
   }
 

@@ -41,7 +41,7 @@ func cardsOf(asked []tracker.IssueID) (tracker.Cards, error) {
 func (m *mirrorFixture) sweep(t *testing.T, threadID string) {
 	t.Helper()
 	before := m.sync("").Sweep
-	if _, _, err := m.st.ClearThreadTicket(threadID); err != nil {
+	if _, err := m.st.ClearThreadTicket(threadID); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.st.FinishMirrorCleanup(context.Background(), nil); err != nil {

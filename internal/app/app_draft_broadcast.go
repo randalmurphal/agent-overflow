@@ -109,9 +109,25 @@ func (a *App) writeMovedThreadDraft(who transport.ClientIdentity, source, destin
 	if err != nil {
 		return err
 	}
-	a.announceDraftWrite(who, destination.ThreadID, destination.UpdatedAt, move.Destination)
-	a.announceDraftWrite(who, source.ThreadID, destination.UpdatedAt, move.Source)
+	a.announceMovedDraft(who, destination.ThreadID, destination.UpdatedAt, move.Destination, move.LinkMoved)
+	a.announceMovedDraft(who, source.ThreadID, destination.UpdatedAt, move.Source, move.LinkMoved)
 	return nil
+}
+
+// announceMovedDraft announces one thread of a draft move: its draft write
+// (announceDraftWrite). When the move took the ticket link to or from it,
+// the row changed whatever the draft write did: the move's listing change
+// announces it, or, with none, its row.
+func (a *App) announceMovedDraft(who transport.ClientIdentity, threadID string, updatedAt int64, write store.DraftWrite, linkMoved bool) {
+	if !linkMoved {
+		a.announceDraftWrite(who, threadID, updatedAt, write)
+		return
+	}
+	if !a.announceListing(threadID, write.Listing) {
+		a.announceThread(triage.ThreadActionFull, threadID)
+	}
+	write.Listing = store.ListingUnchanged
+	a.announceDraftWrite(who, threadID, updatedAt, write)
 }
 
 // writeHandedOffThreadDraft writes an assistant's next thread's draft and

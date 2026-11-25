@@ -327,7 +327,7 @@
           testId="chat-header-menu-ticket-find"
           disabled={linkGrant !== 'granted'}
           title={grantBlockedTitle(linkGrant)}
-          onSelect={() => pick(() => findThreadTicket(thread, triggerEl))}
+          onSelect={() => pick(() => findThreadTicket(thread, triggerEl, pane))}
         />
         {#if ticketLink}
           <MenuItem

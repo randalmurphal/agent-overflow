@@ -244,7 +244,7 @@ func TestListUnkeptLinkedIssues(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"gone", "kept"} {
-		if _, _, err := s.ClearThreadTicket(id); err != nil {
+		if _, err := s.ClearThreadTicket(id); err != nil {
 			t.Fatal(err)
 		}
 	}

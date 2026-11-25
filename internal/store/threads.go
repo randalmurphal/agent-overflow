@@ -2134,7 +2134,10 @@ func listThreadsWithItemsQuery() (string, []any) {
 // product rule in docs/decisions.md, "Sidebar, threads, drafts"). A thread is
 // real once it holds something a person would lose with it: an item, a draft
 // with content, a draft recovery, a bound worktree (the thread is how the
-// person reaches the checkout), a fork being prepared, a terminal, or an
+// person reaches the checkout), a ticket link (the person chose the ticket;
+// a never-sent thread is kept with its link whatever its composer holds,
+// and is deletable again once the link is removed),
+// a fork being prepared, a terminal, or an
 // assistant's record naming it as its current thread, which a new assistant
 // or a handoff's successor holds before its opening message lands (its
 // delete goes through deleteAgentRecordTx), or a spawn relation: a thread
@@ -2165,6 +2168,7 @@ var threadRealClause = `(
 		                WHERE ` + agentSpawnLinkSQL("link") + ` AND link.caller_thread_id = threads.id)
 		    OR EXISTS (SELECT 1 FROM thread_request_receipts AS receipt
 		                WHERE receipt.target_thread_id = threads.id AND receipt.kind = 'spawn')
+		    OR EXISTS (SELECT 1 FROM thread_tickets WHERE thread_tickets.thread_id = threads.id)
 		   )`
 
 // sidebarListedClause is the condition, on a row of owned_threads aliased

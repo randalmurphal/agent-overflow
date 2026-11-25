@@ -10,7 +10,7 @@
   import TicketFinder, { type FinderSource, type FoundTicket } from './TicketFinder.svelte';
   import { trackerConnectionName, trackerKindName } from '../settings/trackerConnectionStatus';
   import { acquireTrackerConnections, trackerConnectionsOf, trackerReadGate } from '../../stores/trackerConnections.svelte';
-  import { backendDisplayName, attachedBackendEntry, threadMachine } from '../../stores/attachedBackends.svelte';
+  import { backendDisplayName, attachedBackendEntry } from '../../stores/attachedBackends.svelte';
   import { closeThreadTicketFinder, linkThreadTicket, type ThreadTicketFinding } from '../../stores/threadTicketLinks.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
@@ -19,11 +19,11 @@
 
   const LINKABLE = new Set(['jira', 'linear']);
 
-  // The host mounts one finder per open (keyed by it), so its thread and
-  // computer are fixed for its life.
+  // The host mounts one finder per open (keyed by it), so what it links
+  // and the computer it reads are fixed for its life.
   // svelte-ignore state_referenced_locally
-  const { thread, anchor } = finding;
-  const backend = threadMachine(thread.id, thread.projectId);
+  const found = finding;
+  const { backend, anchor } = found;
   onMount(() => acquireTrackerConnections(backend));
   const view = $derived(trackerConnectionsOf(backend));
   const gate = $derived(trackerReadGate(view));
@@ -53,7 +53,7 @@
       addToast('error', `The thread was not linked to ${ticket.key || 'the ticket'}: its connection is no longer turned on on ${computerName()}.`);
       return;
     }
-    void linkThreadTicket(thread, { kind: connection.kind, site: connection.site, issueId: ticket.issue, key: ticket.key });
+    void linkThreadTicket(found, { kind: connection.kind, site: connection.site, issueId: ticket.issue, key: ticket.key });
   }
 </script>
 

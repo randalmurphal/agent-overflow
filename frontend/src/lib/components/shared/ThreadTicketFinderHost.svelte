@@ -7,19 +7,14 @@
   import { closeThreadTicketFinder, threadTicketFinding } from '../../stores/threadTicketLinks.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
+  import { retryingLoad } from '../../utils/retryingLoad';
 
-  type FinderModule = typeof import('../issues/ThreadTicketFinder.svelte');
-  let finderModule: Promise<FinderModule> | null = null;
-  function loadFinder(): Promise<FinderModule> {
-    finderModule ??= import('../issues/ThreadTicketFinder.svelte').catch((err: unknown) => {
-      // A failed load is tried again on the next open.
-      finderModule = null;
-      addErrorToast(`The ticket finder could not load: ${userFacingError(err)}`, err);
-      closeThreadTicketFinder();
-      throw err;
-    });
-    return finderModule;
-  }
+  // A failed load is said, closes the open, and is tried again on the next.
+  const loadFinder = retryingLoad(() => import('../issues/ThreadTicketFinder.svelte').catch((err: unknown) => {
+    addErrorToast(`The ticket finder could not load: ${userFacingError(err)}`, err);
+    closeThreadTicketFinder();
+    throw err;
+  }));
 
   const finding = $derived(threadTicketFinding());
 </script>

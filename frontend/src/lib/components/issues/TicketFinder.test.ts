@@ -87,6 +87,33 @@ describe('TicketFinder', () => {
     await waitFor(() => expect(rows()).toEqual(['WEB-1 Login · Work Jira', 'APP-2 Login · Side Linear']));
   });
 
+  it('lists what the connections that answered found, and names the one that failed with its sentence', async () => {
+    setBindingMock('TrackerSearch', async (connection: string, req: { text: string }) => {
+      if (connection === 'c2' && req.text === 'login') throw new TransportError('tracker_unreachable', 'Linear could not be reached; try again');
+      return { cards: [card(connection === 'c1' ? '1' : '2', connection === 'c1' ? 'WEB-1' : 'APP-2', 'Login page')] };
+    });
+    mount({ sources: [...ONE, { backend: 'home', connection: 'c2', name: 'Side Linear' }] });
+    await type('login');
+    await waitFor(() => expect(rows()).toEqual(['WEB-1 Login page · Work Jira']));
+    expect(body().getByTestId('ticket-picker-partial')).toHaveTextContent('Side Linear: Linear could not be reached; try again');
+    expect(body().queryByTestId('ticket-picker-error')).toBeNull();
+    // The note answers the text it was asked for: the next text's search
+    // that both answer says nothing failed.
+    await type('login p');
+    await waitFor(() => expect(rows()).toEqual(['WEB-1 Login page · Work Jira', 'APP-2 Login page · Side Linear']));
+    expect(body().queryByTestId('ticket-picker-partial')).toBeNull();
+  });
+
+  it('says why when every connection failed', async () => {
+    setBindingMock('TrackerSearch', async (connection: string) => {
+      throw new TransportError('tracker_unreachable', `${connection === 'c1' ? 'Jira' : 'Linear'} could not be reached; try again`);
+    });
+    mount({ sources: [...ONE, { backend: 'home', connection: 'c2', name: 'Side Linear' }] });
+    await type('login');
+    expect(await body().findByTestId('ticket-picker-error')).toHaveTextContent('Jira could not be reached; try again');
+    expect(rows()).toEqual([]);
+  });
+
   it('says in the list why a search failed', async () => {
     setBindingMock('TrackerSearch', async () => { throw new TransportError('tracker_unreachable', 'Jira could not be reached; try again'); });
     mount();
