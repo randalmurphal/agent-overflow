@@ -104,7 +104,7 @@ import {
   getWorkflowsOverlayTop,
   isWorkflowsPaneFocused,
 } from './workflowsOverlay.svelte';
-import { focusedToolDetailOpen, focusedToolKind, isToolAvailable } from './toolPanes.svelte';
+import { focusedPaneDetailOpen, focusedToolKind, isToolAvailable } from './toolPanes.svelte';
 import {
   escapeSettingsOverlay,
   isSettingsOpen,
@@ -1232,7 +1232,7 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     overlayOpen,
     paneFindAvailable: hasPaneFindProvider(findTarget),
     paneFindOpen: isPaneFindOpen(findTarget),
-    toolDetailOpen: focusedToolDetailOpen(),
+    toolDetailOpen: focusedPaneDetailOpen(),
     workflowsPaneFocused: isWorkflowsPaneFocused(),
     pullsPaneFocused: isPullsPaneFocused(),
     issuesPaneFocused: isIssuesPaneFocused(),

@@ -2,7 +2,8 @@
   // One card of the Board screen: the epic or parent, the title, labels,
   // then type, priority and key, the estimate and the assignee, and how
   // long the card has sat in its status. Display hides any of them but the
-  // title. A click opens its ticket, and its menu (right-click, or a long
+  // title. A click opens its ticket, with Ctrl or Cmd in a pane of its own
+  // (`opensTicketPane`), and its menu (right-click, or a long
   // press under compact) lists what can be done with it; the open ticket's
   // card is marked. The assignee is initials (ReviewAvatar); no avatar
   // image is fetched.
@@ -12,6 +13,7 @@
   import type { RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import type { CardField } from '../../stores/issuesPane.svelte';
   import { daysInStatus, formatEstimate } from './boardFormat';
+  import { opensTicketPane } from '../../stores/ticketPanes.svelte';
 
   interface Props {
     row: RowView;
@@ -22,7 +24,8 @@
     now: number;
     /** Its ticket is the one open. */
     open: boolean;
-    onOpen: (row: RowView) => void;
+    /** Opens its ticket: over or beside the board, or in its own pane. */
+    onOpen: (row: RowView, ownPane: boolean) => void;
     onMenu: (row: RowView, event: MouseEvent) => void;
   }
 
@@ -49,7 +52,7 @@
     aria-label="Open {card.key}: {card.title}"
     aria-current={open ? 'true' : undefined}
     data-testid="issues-card-open"
-    onclick={() => onOpen(row)}
+    onclick={(event) => onOpen(row, opensTicketPane(event))}
   ></button>
   {#if parentText && !hidden.has('parent')}
     <span class="max-w-full self-start truncate rounded-sm bg-accent/10 px-1.5 text-[0.6875rem] text-accent" title={card.parent?.key ? `${card.parent.key} ${parentText}` : parentText} data-testid="issues-card-parent">{parentText}</span>

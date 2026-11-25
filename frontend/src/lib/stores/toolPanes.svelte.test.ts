@@ -3,14 +3,14 @@ import {
   activeToolKind,
   addToolPaneClosedObserver,
   closeToolPane,
-  focusedToolDetailOpen,
+  focusedPaneDetailOpen,
   focusedToolKind,
   installToolPanes,
   isToolOpen,
   lastToolKind,
   noteToolUsed,
   openTool,
-  registerToolDetailProbe,
+  registerPaneDetailProbe,
   resetToolPanesForTest,
   syncToolPanesFromAppStorage,
   toggleTool,
@@ -545,27 +545,27 @@ describe('focus and the active tool', () => {
     expect(lastToolKind()).toBe('pulls');
   });
 
-  it('reports the focused tool\'s detail step through its probe', () => {
+  it('reports the focused pane\'s detail step through its probe', () => {
     let open = false;
-    const restore = registerToolDetailProbe('pulls', () => open);
+    const restore = registerPaneDetailProbe('tool-pulls', () => open);
     threadLayout([threadItem('left'), toolItem('pulls')], 'left');
     open = true;
-    expect(focusedToolDetailOpen()).toBe(false);
+    expect(focusedPaneDetailOpen()).toBe(false);
     focusPane('tool-pulls');
-    expect(focusedToolDetailOpen()).toBe(true);
+    expect(focusedPaneDetailOpen()).toBe(true);
     open = false;
-    expect(focusedToolDetailOpen()).toBe(false);
+    expect(focusedPaneDetailOpen()).toBe(false);
     restore();
   });
 
   it('restores the probe a registration replaced when it is disposed', () => {
     threadLayout([toolItem('pulls')], 'tool-pulls');
-    const restoreFirst = registerToolDetailProbe('pulls', () => true);
-    const restoreSecond = registerToolDetailProbe('pulls', () => false);
-    expect(focusedToolDetailOpen()).toBe(false);
+    const restoreFirst = registerPaneDetailProbe('tool-pulls', () => true);
+    const restoreSecond = registerPaneDetailProbe('tool-pulls', () => false);
+    expect(focusedPaneDetailOpen()).toBe(false);
     restoreSecond();
-    expect(focusedToolDetailOpen()).toBe(true);
+    expect(focusedPaneDetailOpen()).toBe(true);
     restoreFirst();
-    expect(focusedToolDetailOpen()).toBe(false);
+    expect(focusedPaneDetailOpen()).toBe(false);
   });
 });

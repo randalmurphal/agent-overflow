@@ -39,7 +39,7 @@
     shown: boolean;
     /** The issue whose ticket is open, null for none. */
     openIssue: string | null;
-    onOpenCard: (row: RowView) => void;
+    onOpenCard: (row: RowView, ownPane: boolean) => void;
     onCardMenu: (row: RowView, event: MouseEvent) => void;
   }
 

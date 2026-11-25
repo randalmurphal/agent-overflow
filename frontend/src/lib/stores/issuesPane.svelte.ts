@@ -24,6 +24,8 @@ import {
   type TrackerBoardRef,
 } from './trackerBoard.svelte';
 import { attachTrackerTicket, trackerTicketKey, type TrackerTicketAttachment, type TrackerTicketRef } from './trackerTicket.svelte';
+import { setTicketPaneTicket, takeTicketPaneHandoff, ticketPaneRecord } from './ticketPanes.svelte';
+import { createOpenFocusRequest, type OpenFocusRequest } from '../utils/openFocusRequest.svelte';
 import { holdTicketDrafts } from './trackerTicketWrites.svelte';
 import type { CommentOrder } from './trackerTicketModel';
 import {
@@ -392,10 +394,11 @@ export interface BoardSelection {
   readonly attachment: TrackerBoardAttachment | null;
   /** The opening rule is waiting on a computer's boards. Reactive. */
   readonly choosing: boolean;
+  /** The ticket open over or beside the board, its subscription and the
+   * tickets Back steps through. */
+  readonly tickets: TicketTrail;
   /** The ticket open over or beside the board; null for none. Reactive. */
   readonly ticket: OpenTicket | null;
-  /** Its subscription, null with no ticket. Reactive. */
-  readonly ticketAttachment: TrackerTicketAttachment | null;
   /** The screen the pane shows: the Board or Time. Reactive. */
   readonly screen: IssuesScreen;
   /** Where the ticket shows now: beside only when the pane fits it and the
@@ -408,17 +411,15 @@ export interface BoardSelection {
   /** Whether the person sees the Time screen, by the same rule. Its week
    * is read only while it is. Reactive. */
   readonly timeShown: boolean;
-  /** How many tickets Back steps through before it closes the ticket.
-   * Reactive. */
-  readonly trail: number;
   /** The person picked `ref`: shown and saved for the next pane. A pick of
    * the board shown while it has ended subscribes it again. */
   pick(ref: TrackerBoardRef): void;
   /** Switches the screen: saved for the next pane; the ticket open and
    * its trail close. */
   setScreen(screen: IssuesScreen): void;
-  /** Opens issue `issue` of the board's connection: from the screen's
-   * list, or from the ticket open now, which Back then returns to. */
+  /** A person opens issue `issue` of the board's connection: from the
+   * screen's list, or from the ticket open now, which Back then returns
+   * to. */
   openTicket(issue: string, seed: TicketSeed, from: 'list' | 'ticket'): void;
   /** Opens a ticket asked for from outside the pane, on the Board screen:
    * over the board shown when it is of the ticket's computer and
@@ -429,8 +430,6 @@ export interface BoardSelection {
   openRequested(request: TicketOpenRequest): void;
   /** Back: the ticket this one was opened from, else closes it. */
   stepBack(): void;
-  /** Close: the ticket goes, and the tickets it was opened from. */
-  closeTicket(): void;
   destroy(): void;
 }
 
@@ -443,14 +442,182 @@ export interface BoardSelectionOptions {
   readonly besideFits: () => boolean;
 }
 
-/** Where a board's computer stands for the pane: `waiting` until the page
+/** Where a tracker's computer stands for a pane: `waiting` until the page
  * knows its grants, `gone` when it is not attached or refuses tracker:read
  * (it can never answer), else `ready`. Reactive. */
-function boardComputer(backend: string): 'waiting' | 'gone' | 'ready' {
+export function trackerComputer(backend: string): 'waiting' | 'gone' | 'ready' {
   if (!pageGrantsKnownTracked()) return 'waiting';
   if (!getAttachedBackends().some((entry) => entry.id === backend)) return 'gone';
   const grant = scopeGrant('tracker:read', backend);
   return grant === 'granted' ? 'ready' : grant === 'refused' ? 'gone' : 'waiting';
+}
+
+/** Where a ticket trail keeps the ticket it shows and the tickets Back
+ * steps through, and the focus its opens ask for: the Issues pane's own
+ * (`localTicketTrailState`) or a ticket pane's record
+ * (`ticketPaneTrailState`). */
+export interface TicketTrailState {
+  /** Reactive. */
+  readonly ticket: OpenTicket | null;
+  /** Reactive; oldest first. */
+  readonly trail: readonly OpenTicket[];
+  set(ticket: OpenTicket | null, trail: readonly OpenTicket[]): void;
+  readonly focus: OpenFocusRequest<OpenTicket>;
+  /** What held the ticket until this trail subscribed it, taken. */
+  takeHandoff(): (() => void) | null;
+}
+
+/** A pane's ticket and the tickets it was opened from, and the
+ * subscription that shows it. The one owner of the open, Back and Close
+ * rules, for the Issues pane and for a ticket pane alike. */
+export interface TicketTrail {
+  /** The ticket shown; null for none. Reactive. */
+  readonly ticket: OpenTicket | null;
+  /** The ticket shown and its subscription, set together, so what draws
+   * one never draws the other's; null with no ticket or while its
+   * computer is not ready. Reactive. */
+  readonly view: { readonly open: OpenTicket; readonly attachment: TrackerTicketAttachment } | null;
+  /** Where the ticket's computer stands; null with no ticket. Reactive. */
+  readonly computer: 'waiting' | 'gone' | 'ready' | null;
+  /** How many tickets Back steps through. Reactive. */
+  readonly depth: number;
+  /** The ticket shown and those on the trail. Reactive. */
+  readonly held: readonly OpenTicket[];
+  /** Whether the open shown asked for the focus and nothing ended the
+   * ask (utils/openFocusRequest.svelte.ts). Reactive. */
+  readonly focusAsked: boolean;
+  /** The surface took the focus the open asked for. */
+  focusTaken(): void;
+  /** A person opens `ref`: from a list (the trail starts over) or from the
+   * ticket shown, which Back then returns to. It asks for the focus; an
+   * open of the ticket shown asks again and changes nothing else. */
+  open(ref: TrackerTicketRef, seed: TicketSeed, from: 'list' | 'ticket'): void;
+  /** Shows `open`, or nothing, with no trail and asking no focus: an open
+   * no person made here (a thread's link, a board change). The ticket
+   * shown stays when it is the same ticket. */
+  show(open: OpenTicket | null): void;
+  /** A person's Back to the ticket this one was opened from, which asks
+   * for the focus. False when the trail is empty. */
+  stepBack(): boolean;
+  /** No ticket and no trail. */
+  close(): void;
+  destroy(): void;
+}
+
+function sameTicketRef(a: TrackerTicketRef, b: TrackerTicketRef): boolean {
+  return a.backend === b.backend && a.connection === b.connection && a.issue === b.issue;
+}
+
+/** The Issues pane's own state for its trail. */
+export function localTicketTrailState(): TicketTrailState {
+  let ticket = $state.raw<OpenTicket | null>(null);
+  let trail = $state.raw<readonly OpenTicket[]>([]);
+  return {
+    get ticket() { return ticket; },
+    get trail() { return trail; },
+    set(next, nextTrail) {
+      ticket = next;
+      trail = nextTrail;
+    },
+    focus: createOpenFocusRequest<OpenTicket>(),
+    takeHandoff: () => null,
+  };
+}
+
+/** A ticket pane's record as its trail's state. */
+export function ticketPaneTrailState(paneId: string): TicketTrailState {
+  const record = ticketPaneRecord(paneId);
+  if (!record) throw new Error(`ticketPaneTrailState: ${paneId} is not a ticket pane`);
+  const { focus } = record;
+  return {
+    get ticket() { return ticketPaneRecord(paneId)?.ticket ?? null; },
+    get trail() { return ticketPaneRecord(paneId)?.trail ?? []; },
+    set(next, nextTrail) {
+      if (!next) throw new Error('A ticket pane always shows a ticket: close the pane instead');
+      setTicketPaneTicket(paneId, next, nextTrail);
+    },
+    focus,
+    takeHandoff: () => takeTicketPaneHandoff(paneId),
+  };
+}
+
+export interface TicketTrailOptions {
+  readonly state: TicketTrailState;
+  /** Whether the pane is on screen now; reactive. */
+  readonly shown: () => boolean;
+}
+
+/** Holds the subscription of the ticket `state` shows until `destroy`;
+ * create it in a component's setup. */
+export function createTicketTrail({ state, shown }: TicketTrailOptions): TicketTrail {
+  let view = $state.raw<TicketTrail['view']>(null);
+  // An unchanged ticket stops here, so a record replaced for its trail
+  // alone subscribes nothing again.
+  const ticket = $derived(state.ticket);
+  const computer = $derived(ticket ? trackerComputer(ticket.ref.backend) : null);
+
+  const stop = $effect.root(() => {
+    $effect(() => {
+      const open = ticket;
+      if (!open || computer !== 'ready') {
+        view = null;
+        return;
+      }
+      const attachment = untrack(() => attachTrackerTicket(open.ref, shown()));
+      view = { open, attachment };
+      untrack(() => state.takeHandoff()?.());
+      return () => attachment.release();
+    });
+
+    $effect(() => {
+      const held = view?.attachment;
+      const on = shown();
+      if (held) untrack(() => held.setShown(on));
+    });
+  });
+
+  return {
+    get ticket() { return ticket; },
+    get view() { return view; },
+    get computer() { return computer; },
+    get depth() { return state.trail.length; },
+    get held() { return state.ticket ? [...state.trail, state.ticket] : state.trail; },
+    get focusAsked() { return state.focus.askedFor(view?.open ?? null); },
+    focusTaken() {
+      state.focus.end();
+    },
+    open(ref, seed, from) {
+      const current = state.ticket;
+      if (current && sameTicketRef(current.ref, ref)) {
+        state.focus.ask(current);
+        return;
+      }
+      const next: OpenTicket = { ref, seed };
+      state.set(next, from === 'ticket' && current ? [...state.trail, current].slice(-MAX_TICKET_TRAIL) : []);
+      state.focus.ask(next);
+    },
+    show(open) {
+      state.focus.end();
+      const current = state.ticket;
+      state.set(open && current && sameTicketRef(current.ref, open.ref) ? current : open, []);
+    },
+    stepBack() {
+      const trail = state.trail;
+      if (trail.length === 0) return false;
+      const back = trail[trail.length - 1];
+      state.set(back, trail.slice(0, -1));
+      state.focus.ask(back);
+      return true;
+    },
+    close() {
+      state.focus.end();
+      state.set(null, []);
+    },
+    destroy() {
+      stop();
+      state.focus.end();
+    },
+  };
 }
 
 /**
@@ -485,10 +652,9 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
   // The last read of the board's computer started when it was attached:
   // only an answer read after it moves the board to another listing.
   let attachedAfter = 0;
-  const computer = $derived(board ? boardComputer(board.backend) : 'waiting');
-  let ticket = $state.raw<OpenTicket | null>(null);
-  let trail = $state.raw<readonly OpenTicket[]>([]);
-  let ticketAttachment = $state.raw<TrackerTicketAttachment | null>(null);
+  const computer = $derived(board ? trackerComputer(board.backend) : 'waiting');
+  const tickets = createTicketTrail({ state: localTicketTrailState(), shown: opts.shown });
+  const ticket = $derived(tickets.ticket);
   // A ticket asked for from outside the pane, while it waits on its
   // computer's boards (openRequested).
   let requested = $state.raw<TicketOpenRequest | null>(null);
@@ -537,31 +703,13 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
     $effect.pre(() => {
       void boardOnComputer;
       untrack(() => {
-        ticket = arriving;
+        tickets.show(arriving);
         arriving = null;
-        trail = [];
       });
     });
 
     $effect(() => {
-      const open = ticket;
-      if (!open) {
-        ticketAttachment = null;
-        return;
-      }
-      const held = untrack(() => attachTrackerTicket(open.ref, opts.shown()));
-      ticketAttachment = held;
-      return () => held.release();
-    });
-
-    $effect(() => {
-      const held = ticketAttachment;
-      const shown = opts.shown();
-      if (held) untrack(() => held.setShown(shown));
-    });
-
-    $effect(() => {
-      const keys = [...trail, ...(ticket ? [ticket] : [])].map((t) => trackerTicketKey(t.ref));
+      const keys = tickets.held.map((t) => trackerTicketKey(t.ref));
       untrack(() => drafts.set(keys));
     });
 
@@ -614,9 +762,7 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
         untrack(() => {
           requested = null;
           screen = 'board';
-          trail = [];
-          const held = ticket?.ref;
-          if (held?.backend !== ref.backend || held.connection !== ref.connection || held.issue !== ref.issue) ticket = open;
+          tickets.show(open);
         });
         return;
       }
@@ -660,40 +806,27 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
     get board() { return board; },
     get attachment() { return attachment; },
     get choosing() { return choosing; },
+    get tickets() { return tickets; },
     get ticket() { return ticket; },
-    get ticketAttachment() { return ticketAttachment; },
     get screen() { return screen; },
     get placement() { return placement; },
     get boardShown() { return boardShown; },
     get timeShown() { return timeShown; },
-    get trail() { return trail.length; },
     setScreen(next) {
       writeFrontendValue(SCREEN_KEY, next);
       if (next === screen) return;
       screen = next;
-      ticket = null;
-      trail = [];
+      tickets.close();
     },
     openTicket(issue, seed, from) {
-      if (!board || ticket?.ref.issue === issue) return;
-      const next: OpenTicket = { ref: { backend: board.backend, connection: board.connection, issue }, seed };
-      trail = from === 'ticket' && ticket ? [...trail, ticket].slice(-MAX_TICKET_TRAIL) : [];
-      ticket = next;
+      if (!board) return;
+      tickets.open({ backend: board.backend, connection: board.connection, issue }, seed, from);
     },
     openRequested(request) {
       requested = request;
     },
     stepBack() {
-      if (trail.length === 0) {
-        ticket = null;
-        return;
-      }
-      ticket = trail[trail.length - 1];
-      trail = trail.slice(0, -1);
-    },
-    closeTicket() {
-      ticket = null;
-      trail = [];
+      if (!tickets.stepBack()) tickets.close();
     },
     pick(ref) {
       savePick(ref);
@@ -706,6 +839,7 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
     },
     destroy() {
       stop();
+      tickets.destroy();
       releaseChoices();
       drafts.release();
     },

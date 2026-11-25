@@ -46,6 +46,7 @@ import {
 } from '../../stores/settingsOverlay.svelte';
 import { addProjectLocal } from '../../stores/projects.svelte';
 import { demotePane, promotePane, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
+import { focusPane } from '../../stores/panes.svelte';
 import { noteProject } from '../../transport/entityIndex';
 import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { HOME_BACKEND } from '../../transport/backendKey';
@@ -164,6 +165,14 @@ function project(id: string, name: string, sortPosition: number, updatedAt = 1):
 
 function mount() {
   return render(IssuesPane, { paneId: PANE });
+}
+
+// Escape acts on the focused pane: the Issues pane is placed and focused,
+// and the command runs as its chord does.
+function focusIssuesPane(): () => void {
+  setPaneLayoutItemsForTest([{ id: PANE, paneId: PANE, kind: 'issues', widthPx: 600 }]);
+  focusPane(PANE);
+  return () => runCommand('issues.escape', { pane: null, paneId: null, flags: { issuesPaneFocused: true, toolDetailOpen: true } } as unknown as CommandContext);
 }
 
 function columns(view: ReturnType<typeof mount>): Array<{ name: string; count: string; cards: string[] }> {
@@ -1828,7 +1837,7 @@ describe('the ticket in the pane', () => {
     const ticket = installTicket((issue) => ticketDetail(issue, { parent: String(Number(issue) + 1) }));
     clearCommandRegistry();
     registerIssuesCommands();
-    const escape = () => runCommand('issues.escape', { pane: null, paneId: null, flags: { issuesPaneFocused: true, toolDetailOpen: true } } as unknown as CommandContext);
+    const escape = focusIssuesPane();
     const view = mount();
     await openCard(view, '1');
     for (let i = 2; i <= 23; i += 1) {
@@ -2264,11 +2273,12 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
     installTicket();
     clearCommandRegistry();
     registerIssuesCommands();
+    const escape = focusIssuesPane();
     const view = mount();
     await view.findAllByTestId('issues-card');
     const start = document.activeElement;
     clickCardNow(view, '1');
-    runCommand('issues.escape', { pane: null, paneId: null, flags: { issuesPaneFocused: true, toolDetailOpen: true } } as unknown as CommandContext);
+    escape();
     await tick();
     expect(view.queryByTestId('ticket-screen')).toBeNull();
     requestTicketOpen({ ref: { backend: HOME_BACKEND, connection: 'c1', issue: '1' }, seed: { key: 'WEB-1', title: 'Linked', card: null }, project: 'p1', unplaced: vi.fn() });

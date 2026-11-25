@@ -97,7 +97,7 @@
   import { selectedBackend } from '../../stores/selectedBackend.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { paneFindDetailKey } from '../../stores/paneFind.svelte';
-  import { registerToolDetailProbe } from '../../stores/toolPanes.svelte';
+  import { registerPaneDetailProbe } from '../../stores/toolPanes.svelte';
   import type { PullRowView } from './pullRowView';
   import type { PipelineRowView } from './pipelineRowView';
 
@@ -172,7 +172,7 @@
     list: () => (tab === 'mrs' ? mrList : pipeList),
   });
   const detailFindKey = paneFindDetailKey(ownerPaneId);
-  const disposeProbe = registerToolDetailProbe('pulls', () => (tab === 'mrs' ? detailOpen(paneId) : pipelineDetailOpen(paneId)));
+  const disposeProbe = registerPaneDetailProbe(ownerPaneId, () => (tab === 'mrs' ? detailOpen(paneId) : pipelineDetailOpen(paneId)));
   const disposeBack = registerPullsBackHandler(stepBack);
   onDestroy(() => {
     disposeBack();

@@ -9,13 +9,6 @@
   /** The tabs fold into one picker in a pane narrower than this. */
   const TABS_MIN_PX = 640;
 
-  // The ticket's components load on its first open, once per page.
-  let ticketScreen: Promise<typeof import('./TicketScreen.svelte')> | null = null;
-  function loadTicketScreen(): Promise<typeof import('./TicketScreen.svelte')> {
-    ticketScreen ??= import('./TicketScreen.svelte');
-    return ticketScreen;
-  }
-
   // The Time screen loads on its first switch to Time, once per page.
   let timeScreen: Promise<typeof import('./TimeScreen.svelte')> | null = null;
   function loadTimeScreen(): Promise<typeof import('./TimeScreen.svelte')> {
@@ -45,7 +38,10 @@
   // mounted under it, with its scroll and its loaded depth, and is voted
   // hidden while a ticket covers it. Back, Escape and the phone's Back
   // step back through the tickets opened from one another, then close the
-  // ticket.
+  // ticket. A card pressed with Ctrl or Cmd, or "Open in its own pane" in
+  // its menu, opens its ticket in a pane of its own beside this one
+  // (stores/ticketPanes.svelte.ts); the same row in the ticket's menu
+  // moves the ticket open here into one, and this pane shows the board.
   import { onDestroy, untrack } from 'svelte';
   import ContextMenu from '../primitives/ContextMenu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
@@ -53,7 +49,10 @@
   import { SplitWidth } from '../shared/splitWidth.svelte';
   import type { RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import { registerIssuesBackHandler } from '../../stores/issuesCommands';
-  import { registerToolDetailProbe } from '../../stores/toolPanes.svelte';
+  import { registerPaneDetailProbe } from '../../stores/toolPanes.svelte';
+  import TicketHost from './TicketHost.svelte';
+  import { openTicketPane, ticketPanesOffered } from '../../stores/ticketPanes.svelte';
+  import { attachTrackerTicket } from '../../stores/trackerTicket.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { copyToClipboard } from '../../utils/clipboard';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
@@ -92,7 +91,6 @@
     setTicketPlacement,
     takeTicketOpenRequest,
     ticketOpenRequested,
-    type OpenTicket,
   } from '../../stores/issuesPane.svelte';
   import { dismissTrackerRefreshNotice, refreshTrackerBoard } from '../../stores/trackerBoard.svelte';
   import {
@@ -147,68 +145,42 @@
   const boardCovered = $derived(!!ticket && selection.placement === 'over');
 
   // The ticket view open now, for its own step back (the Details rail).
-  let ticketView: { stepBack(): boolean; focus(): void } | undefined = $state();
+  let ticketView: TicketHost | undefined = $state();
   function stepBack(): boolean {
     if (!selection.ticket) return false;
-    if (!ticketView?.stepBack()) showTicket(() => selection.stepBack());
+    if (!ticketView?.stepBack()) selection.stepBack();
     return true;
   }
-
-  // A ticket a person opens, or steps back to, takes the focus, so a key
-  // or a paste of files goes to it: the card that opened it may be under
-  // it, inert, and Back is gone with the ticket it was on.
-  //
-  // The focus an open asks for must keep true:
-  // - It belongs to that one open (the `OpenTicket` the open made), and
-  //   only that open's mount takes it: a close, another open or a step
-  //   back ends it, and a ticket mounting again because the pane moved,
-  //   or opened from outside the pane (a thread's link), takes none.
-  // - A focus or a press anywhere after the open ends it, so a ticket
-  //   that mounts late never takes the focus from where the person put
-  //   it meanwhile.
-  let focusRequest: { open: OpenTicket; end(): void } | null = null;
-  function endFocusRequest(): void {
-    focusRequest?.end();
-    focusRequest = null;
-  }
-  function requestFocus(open: OpenTicket): void {
-    endFocusRequest();
-    const options = { capture: true } as const;
-    document.addEventListener('focusin', endFocusRequest, options);
-    document.addEventListener('pointerdown', endFocusRequest, options);
-    focusRequest = {
-      open,
-      end: () => {
-        document.removeEventListener('focusin', endFocusRequest, options);
-        document.removeEventListener('pointerdown', endFocusRequest, options);
-      },
-    };
-  }
-  function showTicket(change: () => void): void {
-    const before = selection.ticket;
-    change();
-    const after = selection.ticket;
-    if (!after) return;
-    if (after === before && ticketView) ticketView.focus();
-    else requestFocus(after);
-  }
-  function takeOpenFocus(): boolean {
-    // An ended open is never the ticket again: a close or a linked open
-    // clears the trail, and a step back asks anew.
-    const asked = focusRequest?.open === selection.ticket;
-    endFocusRequest();
-    return asked;
-  }
-  onDestroy(endFocusRequest);
-  const disposeProbe = registerToolDetailProbe('issues', () => selection.ticket !== null);
-  const disposeBack = registerIssuesBackHandler(stepBack);
+  // A tool pane's id is fixed for its life (`tool-issues`).
+  // svelte-ignore state_referenced_locally
+  const disposeProbe = registerPaneDetailProbe(paneId, () => selection.ticket !== null);
+  // svelte-ignore state_referenced_locally
+  const disposeBack = registerIssuesBackHandler(paneId, () => { stepBack(); });
   onDestroy(() => {
     disposeBack();
     disposeProbe();
   });
 
-  function openCard(row: RowView): void {
-    showTicket(() => selection.openTicket(row.card.id, { key: row.card.key, title: row.card.title, card: row.card }, 'list'));
+  function openCard(row: RowView, ownPane = false): void {
+    const seed = { key: row.card.key, title: row.card.title, card: row.card };
+    if (!ownPane) {
+      selection.openTicket(row.card.id, seed, 'list');
+      return;
+    }
+    if (!board) return;
+    openTicketPane({ ref: { backend: board.backend, connection: board.connection, issue: row.card.id }, seed }, { board: board.board, kind: boardKind });
+  }
+
+  // The ticket open here moves into a pane of its own, and this pane shows
+  // the board. The ticket's subscription is held across the move, so
+  // nothing it holds (earlier comments, a write's outcome) is read again;
+  // its drafts are the ticket pane's from the open on.
+  function moveToOwnPane(): void {
+    const open = selection.ticket;
+    if (!open || !board) return;
+    const bridge = attachTrackerTicket(open.ref, false);
+    openTicketPane(open, { board: board.board, kind: boardKind, handoff: () => bridge.release() });
+    selection.stepBack();
   }
 
   let cardMenu = $state<{ x: number; y: number; row: RowView } | null>(null);
@@ -237,6 +209,9 @@
   // nothing until it connects again (the entity store drops a value on its
   // computer's every connection change).
   const boardOffline = $derived(!!board && isTransportOutage(getTransportStatusFor(board.backend).status));
+
+  // The board's connection's tracker, for the tickets it opens.
+  const boardKind = $derived(board ? choices.find((c) => c.backend === board.backend && c.choice.connection === board.connection)?.choice.connection_kind ?? '' : '');
 
   const boardState = $derived(attachment?.current ?? null);
   const held = $derived(boardState?.held ?? null);
@@ -528,7 +503,7 @@
               {compact}
               shown={selection.timeShown}
               openIssue={ticket?.ref.issue ?? null}
-              onOpenTicket={(t) => showTicket(() => selection.openTicket(t.issue, { key: t.key, title: t.title, card: null }, 'list'))}
+              onOpenTicket={(t) => selection.openTicket(t.issue, { key: t.key, title: t.title, card: null }, 'list')}
             />
           {:catch err}
             <p class="px-4 py-6 text-sm text-error" role="alert" data-testid="time-load-error">The Time screen could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</p>
@@ -559,44 +534,23 @@
       <SplitResizer column={split} testId="issues-ticket-resize" />
     {/if}
   </div>
-  {#if ticket && board && selection.ticketAttachment}
-    {@const held = selection.ticketAttachment}
-    {@const open = ticket}
+  {#if ticket && board}
     {@const openBoard = board}
     <div
       class={selection.placement === 'over' ? 'absolute inset-0 z-[3] flex min-h-0 flex-col bg-surface-0' : 'flex min-h-0 min-w-0 flex-1 flex-col'}
       data-testid="issues-ticket"
       data-placement={selection.placement}
     >
-      <RenderBoundary label="The ticket" testId="issues-ticket-render-error">
-        {#await loadTicketScreen()}
-          <p class="px-4 py-6 text-sm text-fg-muted" data-testid="ticket-loading">Opening the ticket…</p>
-        {:then mod}
-          {#key held.key}
-            <mod.default
-              bind:this={ticketView}
-              attachment={held}
-              seed={open.seed}
-              board={openBoard.board}
-              kind={choices.find((c) => c.backend === openBoard.backend && c.choice.connection === openBoard.connection)?.choice.connection_kind ?? ''}
-              computerName={computerName(openBoard.backend)}
-              account={me}
-              offline={boardOffline}
-              {compact}
-              trail={selection.trail}
-              placement={selection.placement}
-              {besideFits}
-              onPlacement={(p) => setTicketPlacement(screen, p)}
-              takeFocus={takeOpenFocus}
-              onBack={() => showTicket(() => selection.stepBack())}
-              onClose={() => selection.closeTicket()}
-              onOpenIssue={(issue, seed) => showTicket(() => selection.openTicket(issue, seed, 'ticket'))}
-            />
-          {/key}
-        {:catch err}
-          <p class="px-4 py-6 text-sm text-error" role="alert" data-testid="ticket-load-error">The ticket screen could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</p>
-        {/await}
-      </RenderBoundary>
+      <TicketHost
+        bind:this={ticketView}
+        trail={selection.tickets}
+        board={openBoard.board}
+        kind={boardKind}
+        {compact}
+        placement={besideFits ? { value: selection.placement, set: (p) => setTicketPlacement(screen, p) } : undefined}
+        onClose={() => selection.tickets.close()}
+        onOwnPane={moveToOwnPane}
+      />
     </div>
   {/if}
   </div>
@@ -604,7 +558,10 @@
 
 {#if cardMenu}
   <ContextMenu x={cardMenu.x} y={cardMenu.y} ariaLabel="Card actions" onDismiss={() => { cardMenu = null; }}>
-    <MenuItem label="Open" testId="issues-card-menu-open" onSelect={() => fromCardMenu(openCard)} />
+    <MenuItem label="Open" testId="issues-card-menu-open" onSelect={() => fromCardMenu((row) => openCard(row))} />
+    {#if ticketPanesOffered()}
+      <MenuItem label="Open in its own pane" testId="issues-card-menu-own-pane" onSelect={() => fromCardMenu((row) => openCard(row, true))} />
+    {/if}
     <MenuItem label="Copy key" testId="issues-card-menu-copy-key" onSelect={() => fromCardMenu((row) => { void copyKey(row.card.key); })} />
   </ContextMenu>
 {/if}

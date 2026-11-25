@@ -28,12 +28,23 @@ import type { AgentPaneScopeSnapshot } from '../types/settings';
 // like a thread pane does (resnap, move and reorder treat it as a lead), is
 // not in the ThreadPane registry, and exists at most once per kind under the
 // id `tool-<kind>` (toolPanes.svelte.ts).
+//
+// A ticket pane ('ticket') is a tracker ticket in a pane of its own: it
+// leads its block as a tool pane does and has no ThreadPane either, but
+// there is one per ticket, under a generated id; which ticket it shows is
+// ticketPanes.svelte.ts's.
 export type ToolPaneKind = 'pulls' | 'workflows' | 'issues';
 export type CompanionPaneKind = 'take-control' | 'browser' | 'plan' | 'review' | 'agent' | 'side-chat' | 'agent-thread';
-export type PaneLayoutKind = 'thread' | CompanionPaneKind | ToolPaneKind;
+export type PaneLayoutKind = 'thread' | CompanionPaneKind | ToolPaneKind | 'ticket';
 
 export function isToolKind(kind: unknown): kind is ToolPaneKind {
   return kind === 'pulls' || kind === 'workflows' || kind === 'issues';
+}
+
+/** A block lead with no ThreadPane behind it: a tool pane or a ticket
+ * pane. */
+export function isSurfaceKind(kind: unknown): kind is ToolPaneKind | 'ticket' {
+  return isToolKind(kind) || kind === 'ticket';
 }
 
 /** The one layout id a tool kind's pane has. */

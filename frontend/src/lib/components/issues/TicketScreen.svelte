@@ -15,10 +15,15 @@
 
 <script lang="ts">
   // One ticket (docs/specs/issues.md, "Ticket"), loaded on its first open
-  // in its own chunk. The header holds the type mark (which changes the
-  // type), key, parent and title, with Back or Close, over or beside at
-  // 900 or wider, Open in the tracker, Refresh and the ticket's menu (also
-  // on a right-click or long press of the header). At 720 or wider the content is on the left and
+  // in its own chunk and mounted by `TicketHost.svelte`, in the Issues
+  // pane or in a pane of its own. The header holds the type mark (which
+  // changes the type), key, parent and title, with Back or Close, over or
+  // beside where the Issues pane fits it, Open in the tracker, Refresh and
+  // the ticket's menu (also on a right-click or long press of the header).
+  // In a pane of its own the header is the pane's: its focus line, the key
+  // as its drag handle and the pane's close. A linked ticket or the parent
+  // pressed with Ctrl or Cmd opens in a pane of its own, and the menu's
+  // "In its own pane" moves the ticket into one. At 720 or wider the content is on the left and
   // the rail of fields on the right; narrower, one row of status,
   // assignee, priority and points sits over the content and Details
   // slides the rail over it. The content is the description, the other
@@ -56,6 +61,8 @@
   import Segmented from '../primitives/Segmented.svelte';
   import ErrorNotice from '../shared/ErrorNotice.svelte';
   import RenderBoundary from '../shared/RenderBoundary.svelte';
+  import PaneCloseButton from '../panes/PaneCloseButton.svelte';
+  import PaneHeaderLine from '../panes/PaneHeaderLine.svelte';
   import PriorityIcon from './PriorityIcon.svelte';
   import StatusMark from './StatusMark.svelte';
   import TicketAttachments from './TicketAttachments.svelte';
@@ -87,6 +94,7 @@
     type TicketPlacement,
     type TicketSeed,
   } from '../../stores/issuesPane.svelte';
+  import { opensTicketPane, ticketPanesOffered } from '../../stores/ticketPanes.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import {
@@ -132,32 +140,38 @@
     /** The ticket's computer is not connected now. */
     offline: boolean;
     compact: boolean;
-    /** Tickets Back steps through before it closes this one. */
+    /** Tickets Back steps through. */
     trail: number;
-    placement: TicketPlacement;
-    /** The pane fits the ticket beside the board. */
-    besideFits: boolean;
-    onPlacement: (placement: TicketPlacement) => void;
-    /** Whether the open this ticket mounts for asked for the focus, which
-     * it then takes (IssuesPane `focusRequest`); answers true once. */
-    takeFocus: () => boolean;
+    /** Over or beside the board, offered where the pane fits the ticket
+     * beside it; omitted elsewhere. */
+    placement?: { readonly value: TicketPlacement; readonly set: (placement: TicketPlacement) => void };
+    /** The ticket is a pane of its own: its header is the pane's, with the
+     * pane's focus line, its key the drag handle and its close the pane's. */
+    pane?: { readonly id: string; readonly onDragStart?: (event: DragEvent) => void };
+    /** Whether the open this ticket shows asked for the focus, which it
+     * then takes (utils/openFocusRequest.svelte.ts). Reactive. */
+    focusAsked: boolean;
+    onFocusTaken: () => void;
     onBack: () => void;
     onClose: () => void;
-    /** Opens another issue of the connection from this ticket. */
-    onOpenIssue: (issue: string, seed: TicketSeed) => void;
+    /** Moves the ticket into a pane of its own; omitted where it is one. */
+    onOwnPane?: () => void;
+    /** Opens another issue of the connection from this ticket: here, or in
+     * a pane of its own. */
+    onOpenIssue: (issue: string, seed: TicketSeed, ownPane: boolean) => void;
   }
 
-  let { attachment, seed, board, kind, computerName, account, offline, compact, trail, placement, besideFits, onPlacement, takeFocus, onBack, onClose, onOpenIssue }: Props = $props();
+  let { attachment, seed, board, kind, computerName, account, offline, compact, trail, placement, pane, focusAsked, onFocusTaken, onBack, onClose, onOwnPane, onOpenIssue }: Props = $props();
 
   // The ticket a person opened takes the focus, so a key or a paste of
-  // files goes to it (IssuesPane `showTicket`).
+  // files goes to it; an open of the ticket shown asks again.
   let root: HTMLElement | undefined = $state();
-  export function focus(): void {
-    root?.focus({ preventScroll: true });
-  }
   $effect(() => {
-    if (root && untrack(takeFocus)) focus();
+    if (!root || !focusAsked) return;
+    untrack(onFocusTaken);
+    root.focus({ preventScroll: true });
   });
+  const ownPaneOffered = $derived(!!onOwnPane && ticketPanesOffered());
 
   const NARROW_PX = 720;
 
@@ -184,6 +198,11 @@
     if (!railOpen) return false;
     railOpen = false;
     return true;
+  }
+
+  /** Whether `stepBack` has a step to take; reactive. */
+  export function hasStepBack(): boolean {
+    return railOpen;
   }
 
   // The names fields go by, for a refusal naming them.
@@ -651,7 +670,10 @@
     </div>
   {/if}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <header class="flex flex-col gap-1 border-b border-border-subtle px-3 py-2" oncontextmenu={openMenu} data-testid="ticket-header">
+  <header class="relative flex flex-col gap-1 border-b border-border-subtle px-3 py-2" oncontextmenu={openMenu} data-testid="ticket-header">
+    {#if pane}
+      <PaneHeaderLine paneId={pane.id} />
+    {/if}
     <div class="flex min-w-0 items-center gap-1.5">
       {#if backShown}
         <IconButton label="Back" size="sm" testId="ticket-back" onClick={onBack}>
@@ -684,7 +706,19 @@
           />
         {/if}
       {/if}
-      <span class="shrink-0 text-sm tabular-nums text-fg-muted" data-testid="ticket-key">{card?.key || seed.key}</span>
+      {#if pane}
+        <!-- The pane's drag handle, as a tool pane's title is. -->
+        <button
+          type="button"
+          draggable={pane.onDragStart != null && !compact}
+          ondragstart={(event) => pane.onDragStart?.(event)}
+          class="shrink-0 cursor-grab rounded-[var(--radius-control)] text-sm tabular-nums text-fg-muted hover:bg-surface-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 active:cursor-grabbing"
+          title="Drag to move the pane"
+          data-testid="ticket-key"
+        >{card?.key || seed.key}</button>
+      {:else}
+        <span class="shrink-0 text-sm tabular-nums text-fg-muted" data-testid="ticket-key">{card?.key || seed.key}</span>
+      {/if}
       {#if card?.parent}
         {@const parent = card.parent}
         <button
@@ -692,16 +726,16 @@
           class="min-w-0 truncate rounded-sm bg-accent/10 px-1.5 text-[0.6875rem] text-accent hover:bg-accent/20 compact:min-h-9 compact:select-none"
           title="Open {parent.key || 'the parent'}"
           data-testid="ticket-parent"
-          onclick={() => onOpenIssue(parent.id, { key: parent.key ?? '', title: parent.title ?? '', card: null })}
+          onclick={(event) => onOpenIssue(parent.id, { key: parent.key ?? '', title: parent.title ?? '', card: null }, opensTicketPane(event))}
         >{parent.key ? `${parent.key} ${parent.title ?? ''}` : parent.title}</button>
       {/if}
       <span class="flex-1"></span>
-      {#if besideFits}
+      {#if placement}
         <Segmented
           ariaLabel="Show the ticket"
           size="sm"
-          value={placement}
-          onChange={onPlacement}
+          value={placement.value}
+          onChange={placement.set}
           options={[{ value: 'over', label: 'Over' }, { value: 'beside', label: 'Beside' }]}
         />
       {/if}
@@ -729,7 +763,9 @@
           {#snippet children()}<Icon icon={Ellipsis} size={14} strokeWidth={2} />{/snippet}
         </IconButton>
       </span>
-      {#if !compact}
+      {#if pane && !compact}
+        <PaneCloseButton paneId={pane.id} testId="ticket-close" />
+      {:else if !compact}
         <IconButton label="Close the ticket" size="sm" testId="ticket-close" onClick={onClose}>
           {#snippet children()}<Icon icon={X} size={14} strokeWidth={2} />{/snippet}
         </IconButton>
@@ -853,14 +889,19 @@
         <MenuDivider />
       {/if}
     {/if}
-    {#if trackerURL || besideFits}
+    {#if trackerURL || placement || ownPaneOffered}
       <MenuSectionHeader label="Open" />
       {#if trackerURL}
         <MenuItem label="In the tracker" testId="ticket-menu-open-tracker" onSelect={() => run(openInTracker)} />
       {/if}
-      {#if besideFits}
-        <MenuItem label="Over the board" checked={placement === 'over'} onSelect={() => run(() => onPlacement('over'))} />
-        <MenuItem label="Beside the board" checked={placement === 'beside'} onSelect={() => run(() => onPlacement('beside'))} />
+      {#if ownPaneOffered && onOwnPane}
+        {@const move = onOwnPane}
+        <MenuItem label="In its own pane" testId="ticket-menu-own-pane" onSelect={() => run(move)} />
+      {/if}
+      {#if placement}
+        {@const at = placement}
+        <MenuItem label="Over the board" checked={at.value === 'over'} onSelect={() => run(() => at.set('over'))} />
+        <MenuItem label="Beside the board" checked={at.value === 'beside'} onSelect={() => run(() => at.set('beside'))} />
       {/if}
       <MenuDivider />
     {/if}

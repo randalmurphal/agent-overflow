@@ -87,10 +87,24 @@ export interface AgentPaneScopeSnapshot {
   breadcrumb: AgentPaneBreadcrumbEntry[];
 }
 
+/** The ticket a ticket pane shows, as the layout saves it
+ * (stores/ticketPanes.svelte.ts). */
+export interface PaneLayoutPersistedTicket {
+  backend: string;
+  connection: string;
+  issue: string;
+  key: string;
+  title: string;
+  /** The board it was opened from; its points are that board's row. */
+  board: string;
+  /** The connection's tracker: jira or linear. */
+  kind: string;
+}
+
 export interface PaneLayoutPersistedPane {
   paneId: string;
   /** Tool kinds (`pulls`, `workflows`, `issues`) carry only an id and a width. */
-  kind: "thread" | "plan" | "review" | "agent" | "pulls" | "workflows" | "issues";
+  kind: "thread" | "plan" | "review" | "agent" | "pulls" | "workflows" | "issues" | "ticket";
   threadId?: string;
   sourcePaneId?: string;
   widthPx: number;
@@ -101,6 +115,8 @@ export interface PaneLayoutPersistedPane {
    * other kind omits it.
    */
   agentScope?: AgentPaneScopeSnapshot;
+  /** Present on `ticket` panes only, and required there. */
+  ticket?: PaneLayoutPersistedTicket;
 }
 
 export interface PaneLayoutPersistedSettings {
