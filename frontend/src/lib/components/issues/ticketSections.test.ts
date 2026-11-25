@@ -177,6 +177,15 @@ describe('a file the ticket\'s text names', () => {
     expect(chips[1].querySelector('button')).toBeNull();
   });
 
+  it('shows the file inside embedded HTML too, whose hosts are mounted apart from the text', async () => {
+    const read: TrackerMediaReader = (name) => (name === 'spec.pdf' ? { name, size: 2_000, image: null, save: () => {}, saveLabel: 'Save' } : null);
+    const { container } = render(TicketMarkdown, {
+      props: { source: '<div><img src="media:9" alt="spec.pdf"></div>' },
+      context: new Map([[TRACKER_MEDIA_CONTEXT, read]]),
+    });
+    await waitFor(() => expect(container.querySelector('[data-tracker-media]')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('spec.pdf 2 KB Save'));
+  });
+
   it('fetches an image the text shows in place only once its box comes near the viewport', async () => {
     const observers: Array<{ report: (entries: Array<{ isIntersecting: boolean }>) => void; margin: string }> = [];
     vi.stubGlobal('IntersectionObserver', class {

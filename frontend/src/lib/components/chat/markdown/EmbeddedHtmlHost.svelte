@@ -28,7 +28,7 @@
   // link around an inline tag (`inLink` on the token), is marked `inLink`
   // as a parser claim is (markdownImageSource.ts#claimedInLink), so the
   // host renders no control inside it.
-  import { getAllContexts, mount, unmount, untrack } from 'svelte';
+  import { mount, unmount, untrack } from 'svelte';
   import ForgeAttachmentHost from './ForgeAttachmentHost.svelte';
   import TrackerMediaChip from './TrackerMediaChip.svelte';
   import { isTrackerMediaHref } from '../../../utils/trackerMedia';
@@ -50,10 +50,6 @@
   // keeps the exact DOM shape it had before this host existed, so the
   // sibling-sensitive paragraph-gap reconciliation in the renderer still
   // sees the injected elements as direct siblings of the surrounding blocks.
-  // The hosts mounted below read the surface's context as the rest of the
-  // text does (a ticket's files, TRACKER_MEDIA_CONTEXT): `mount` gives a
-  // tree none of its own.
-  const contexts = getAllContexts();
   const claimed = $derived(content.includes(MEDIA_CLAIM_ATTR));
   const tokenInLink = $derived('inLink' in token && token.inLink === true);
 
@@ -95,7 +91,7 @@
       // A repository file's image and a tracker's file have their own
       // hosts; every other claim is a forge attachment.
       const Host = href.startsWith(REPOSITORY_IMAGE_HREF_PREFIX) ? RepositoryImageHost : isTrackerMediaHref(href) ? TrackerMediaChip : ForgeAttachmentHost;
-      mounted.push(mount(Host, { target, props: { token: inLink ? { ...image, inLink } : image }, context: contexts }));
+      mounted.push(mount(Host, { target, props: { token: inLink ? { ...image, inLink } : image } }));
     }
     return mounted;
   }
