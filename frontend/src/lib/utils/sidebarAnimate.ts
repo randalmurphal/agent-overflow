@@ -44,11 +44,17 @@ export const SIDEBAR_ANIM_MS = 180;
 // .98–1, first 270ms after entering) is immediately reordered — there the
 // stock version would preserve ≤2% scale during the slide and this one
 // lets it settle to 1. Pure rect math otherwise, byte-identical keyframes.
+// Cached heights from recent FLIP measurements so a mid-animation exit
+// (where Svelte's fix_read skips pinning style.height because an animation is
+// active) avoids forcing a synchronous offsetHeight layout pass per row.
+const lastKnownHeight = new WeakMap<Element, number>();
+
 export function sidebarFlip(
   node: Element,
   { from, to }: { from: DOMRect; to: DOMRect },
 ): AnimationConfig {
-  void node;
+  const measuredHeight = to.height || from.height;
+  if (measuredHeight > 0) lastKnownHeight.set(node, measuredHeight);
   const dx = from.left - to.left;
   const dy = from.top - to.top;
   return {
@@ -73,7 +79,17 @@ export function sidebarEnter(node: Element): TransitionConfig {
 }
 
 export function sidebarExit(node: Element): TransitionConfig {
-  const height = (node as HTMLElement).offsetHeight;
+  // Svelte's keyed-each FLIP `fix()` pins exiting elements to `position: absolute`
+  // with their computed pixel `style.height` right before invoking the out
+  // transition. Reading that inline pixel value (or a recent FLIP measurement)
+  // avoids forcing a full layout pass (`offsetHeight`) per exiting row during
+  // rapid filter/search updates.
+  const el = node as HTMLElement;
+  const inlineHeight = el.style.height;
+  const parsed = inlineHeight.endsWith('px') ? Number.parseFloat(inlineHeight) : Number.NaN;
+  const height = Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : (lastKnownHeight.get(el) ?? el.offsetHeight);
   return {
     duration: SIDEBAR_ANIM_MS,
     easing: cubicOut,

@@ -100,17 +100,29 @@
     return () => clearTimeout(debounceTimer);
   });
 
+  let wasOpen = false;
   $effect(() => {
-    if (open) {
+    if (open && !wasOpen) {
       // Reset state on each open so the sheet doesn't show yesterday's
       // query. Modal's focus trap lands focus on the search input
       // (`data-autofocus`) so the query can be typed at once; mod+/
       // toggles focus to the list root, where plain j/k navigates.
       query = '';
       hits = [];
+      hitsQuery = '';
       error = null;
+      loading = false;
       activeIndex = 0;
+    } else if (!open && wasOpen) {
+      // Release retained search result payloads when the modal closes.
+      searchSeq += 1;
+      clearTimeout(debounceTimer);
+      hits = [];
+      hitsQuery = '';
+      error = null;
+      loading = false;
     }
+    wasOpen = open;
   });
 
   $effect(() => {
@@ -142,8 +154,9 @@
       updatedAt: 0,
       archived: false,
     });
+    const target = pane;
     onClose();
-    const targetPane = await openThreadFromNavigation(thread, pane);
+    const targetPane = await openThreadFromNavigation(thread, target);
     // Scroll the timeline to the hit: the pane holds the request until its
     // timeline can take it, then loads the item into the window and jumps
     // through the virtualizer's scrollToIndex (an escaped, controller-routed

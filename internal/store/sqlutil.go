@@ -20,17 +20,20 @@ type sqlQueryer interface {
 }
 
 // contextReadTx keeps every statement in a snapshot under the deadline that
-// owns the transaction. A BeginTx deadline alone does not interrupt Query.
+// owns the transaction, and caches immutable snapshot-scoped metadata
+// (such as fork lineage depth per thread) so repeated timeline queries inside
+// one read transaction do not re-query it.
 type contextReadTx struct {
 	*sql.Tx
-	ctx context.Context
+	ctx           context.Context
+	lineageDepths map[string]int
 }
 
-func (q contextReadTx) Query(query string, args ...any) (*sql.Rows, error) {
+func (q *contextReadTx) Query(query string, args ...any) (*sql.Rows, error) {
 	return q.Tx.QueryContext(q.ctx, query, args...)
 }
 
-func (q contextReadTx) QueryRow(query string, args ...any) *sql.Row {
+func (q *contextReadTx) QueryRow(query string, args ...any) *sql.Row {
 	return q.Tx.QueryRowContext(q.ctx, query, args...)
 }
 

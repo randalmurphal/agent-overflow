@@ -105,4 +105,23 @@ describe('<Drawer>', () => {
     await fireEvent.pointerMove(handle, { clientY: 400, pointerId: 1 });
     expect(onResize).not.toHaveBeenCalled();
   });
+
+  it('settles drag and flushes size when pointer capture is lost mid-drag', async () => {
+    const onResize = vi.fn();
+    const { container } = render(Harness, {
+      props: { size: 300, minSize: 120, maxSize: 600, onResize },
+    });
+    const handle = container.querySelector('[role="separator"]')! as HTMLElement;
+
+    await fireEvent.pointerDown(handle, { clientY: 500, pointerId: 1 });
+    await fireEvent.pointerMove(handle, { clientY: 440, pointerId: 1 });
+    await fireEvent(handle, new Event('lostpointercapture'));
+
+    expect(onResize).toHaveBeenCalledTimes(1);
+    expect(onResize).toHaveBeenCalledWith(360);
+
+    // Subsequent moves without a new pointerdown must not keep dragging.
+    await fireEvent.pointerMove(handle, { clientY: 300, pointerId: 1 });
+    expect(onResize).toHaveBeenCalledTimes(1);
+  });
 });

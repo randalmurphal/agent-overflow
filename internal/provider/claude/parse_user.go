@@ -48,13 +48,21 @@ func (p *Parser) parseUser(threadID string, raw map[string]json.RawMessage, now 
 	}
 
 	// user.message.content can be either a plain string or an array of
-	// blocks (tool_result, text, image).
-	var blocks []map[string]json.RawMessage
-	if err := json.Unmarshal(msg.Content, &blocks); err != nil {
+	// blocks (tool_result, text, image). Unmarshal into []json.RawMessage
+	// first so each tool_result block's original JSON bytes can be embedded
+	// verbatim without re-marshaling its decoded map.
+	var rawBlocks []json.RawMessage
+	if err := json.Unmarshal(msg.Content, &rawBlocks); err != nil {
 		// String content. Nothing at this layer wants a top-level one (the
 		// user's own text arrives through the `isReplay` echo), but a
 		// SCOPED one is the subagent's opening prompt.
 		return subagentPromptEvents(threadID, raw, msg.Content, nil, now), nil
+	}
+	blocks := make([]map[string]json.RawMessage, len(rawBlocks))
+	for i, rb := range rawBlocks {
+		if err := json.Unmarshal(rb, &blocks[i]); err != nil {
+			return subagentPromptEvents(threadID, raw, msg.Content, nil, now), nil
+		}
 	}
 	if !hasBlockOfType(blocks, "tool_result") {
 		return subagentPromptEvents(threadID, raw, nil, blocks, now), nil
@@ -65,8 +73,8 @@ func (p *Parser) parseUser(threadID string, raw map[string]json.RawMessage, now 
 	toolUseResults := indexToolUseResults(raw["tool_use_result"])
 
 	events := make([]provider.ProviderEvent, 0, len(blocks))
-	for _, block := range blocks {
-		events = p.appendToolResultBlock(events, threadID, now, line, raw, block, toolUseResults)
+	for i, block := range blocks {
+		events = p.appendToolResultBlock(events, threadID, now, line, raw, block, rawBlocks[i], toolUseResults)
 	}
 	return events, nil
 }
@@ -207,6 +215,7 @@ func (p *Parser) appendToolResultBlock(
 	now time.Time,
 	line []byte,
 	raw, block map[string]json.RawMessage,
+	blockRaw json.RawMessage,
 	toolUseResults map[string]json.RawMessage,
 ) []provider.ProviderEvent {
 	var blockType string
@@ -441,7 +450,7 @@ func (p *Parser) appendToolResultBlock(
 	events = appendToolResultCompletion(
 		events, threadID, toolUseID, now, line,
 		isBackground, backgroundTaskID, ackOutputFile, monitorLaunched, skillForked, forkedAgentID, forkedCommandName,
-		block, content, toolUseResultRaw,
+		block, blockRaw, content, toolUseResultRaw,
 	)
 	if skillForked {
 		// The fork's agentId is the id a later `can_use_tool.agent_id`
@@ -619,6 +628,7 @@ func appendToolResultCompletion(
 	skillForkAgentID string,
 	skillForkCommandName string,
 	block map[string]json.RawMessage,
+	blockRaw json.RawMessage,
 	content string,
 	toolUseResult json.RawMessage,
 ) []provider.ProviderEvent {
@@ -627,15 +637,19 @@ func appendToolResultCompletion(
 		_ = json.Unmarshal(v, &isError)
 	}
 
-	toolResultJSON, marshalErr := json.Marshal(block)
 	metaFields := map[string]any{
 		"is_error": isError,
 	}
-	if marshalErr != nil {
-		metaFields["tool_result"] = json.RawMessage(`{}`)
-		metaFields["tool_result_marshal_error"] = marshalErr.Error()
+	if len(blockRaw) > 0 {
+		metaFields["tool_result"] = blockRaw
 	} else {
-		metaFields["tool_result"] = json.RawMessage(toolResultJSON)
+		toolResultJSON, marshalErr := json.Marshal(block)
+		if marshalErr != nil {
+			metaFields["tool_result"] = json.RawMessage(`{}`)
+			metaFields["tool_result_marshal_error"] = marshalErr.Error()
+		} else {
+			metaFields["tool_result"] = json.RawMessage(toolResultJSON)
+		}
 	}
 	if len(toolUseResult) > 0 {
 		metaFields["tool_use_result"] = json.RawMessage(toolUseResult)

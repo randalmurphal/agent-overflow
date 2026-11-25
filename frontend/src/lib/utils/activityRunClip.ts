@@ -33,6 +33,16 @@
 // the disclosure was collapsed (the content-dependent previews), else 0.
 
 import type { ScrollMetrics } from './scroll/overlayScrollbar';
+import { createAnimationFrameBatcher } from './animationFrameBatcher';
+
+const clipResizeFrames = createAnimationFrameBatcher('activity-run-clip', 'dom-update');
+
+function declaredCollapsedLines(body: HTMLElement): number {
+  const raw = body.getAttribute('data-collapsed-lines');
+  if (!raw) return 0;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
 
 /**
  * Activity rows the cap admits before a run starts scrolling in place.
@@ -185,7 +195,13 @@ export function activityRunDisclosureBodies(clip: Element): ActivityRunDisclosur
  * truth of what expansion will replace.
  */
 export function activityRunRecordCollapsedHeights(bodies: readonly HTMLElement[]): void {
-  for (const body of bodies) measuredCollapsedHeights.set(body, boxHeight(body));
+  for (const body of bodies) {
+    // Bodies declaring `data-collapsed-lines` compute their collapsed baseline
+    // from their declared clamp (`min(height, N lines)`) and never consult
+    // `measuredCollapsedHeights`; skip their layout read on the hot path.
+    if (declaredCollapsedLines(body) > 0) continue;
+    measuredCollapsedHeights.set(body, boxHeight(body));
+  }
 }
 
 /**
@@ -198,12 +214,12 @@ export function activityRunRecordCollapsedHeights(bodies: readonly HTMLElement[]
  * after the reader expanded it mid-clamp-fill it goes stale, while
  * `min(height, N lines)` stays exactly what collapsing would show now.
  */
-function collapsedBaselinePx(body: HTMLElement): number {
-  const declaredLines = Number(body.getAttribute('data-collapsed-lines') ?? '');
-  if (Number.isFinite(declaredLines) && declaredLines > 0) {
+function collapsedBaselinePx(body: HTMLElement, height: number): number {
+  const declaredLines = declaredCollapsedLines(body);
+  if (declaredLines > 0) {
     const lineHeight = Number.parseFloat(getComputedStyle(body).lineHeight);
     if (Number.isFinite(lineHeight) && lineHeight > 0) {
-      return Math.min(boxHeight(body), declaredLines * lineHeight);
+      return Math.min(height, declaredLines * lineHeight);
     }
   }
   return measuredCollapsedHeights.get(body) ?? 0;
@@ -216,7 +232,8 @@ function collapsedBaselinePx(body: HTMLElement): number {
 export function activityRunExpandedHeight(bodies: readonly HTMLElement[]): number {
   let total = 0;
   for (const body of bodies) {
-    const contribution = Math.max(0, boxHeight(body) - collapsedBaselinePx(body));
+    const height = boxHeight(body);
+    const contribution = Math.max(0, height - collapsedBaselinePx(body, height));
     lastContributions.set(body, contribution);
     total += contribution;
   }
@@ -265,6 +282,10 @@ export function activityRunLastExpandedHeight(bodies: readonly HTMLElement[]): n
  */
 export function observeActivityRunExpansion(clip: HTMLElement): () => void {
   let applied: number | null = null;
+  let disposed = false;
+  let cachedBodies: ActivityRunDisclosureBodies = { expanded: [], collapsed: [] };
+  let observableCollapsed: HTMLElement[] = [];
+
   function apply(px: number): void {
     if (applied === px) return;
     applied = px;
@@ -277,27 +298,39 @@ export function observeActivityRunExpansion(clip: HTMLElement): () => void {
   // which no later cap write undoes. With nothing expanded the sync path
   // reads nothing at all; collapsed baselines come from the resize path,
   // whose read follows a layout the cap already reached.
-  function measureAndApply(fromMutation: boolean): void {
-    const bodies = activityRunDisclosureBodies(clip);
+  function measureAndApply(fromMutation: boolean, bodies: ActivityRunDisclosureBodies): void {
+    if (disposed) return;
     if (fromMutation) {
       apply(activityRunLastExpandedHeight(bodies.expanded));
       if (bodies.expanded.length === 0) return;
     }
-    activityRunRecordCollapsedHeights(bodies.collapsed);
+    activityRunRecordCollapsedHeights(observableCollapsed);
     apply(activityRunExpandedHeight(bodies.expanded));
   }
   let deferred: number | null = null;
   function measureNextFrame(): void {
-    if (deferred !== null) return;
-    deferred = requestAnimationFrame(() => {
+    if (disposed || deferred !== null) return;
+    if (cachedBodies.expanded.length === 0 && observableCollapsed.length === 0) return;
+    deferred = clipResizeFrames.request(() => {
       deferred = null;
-      measureAndApply(false);
+      if (disposed) return;
+      measureAndApply(false, cachedBodies);
     });
   }
   const sizes = new ResizeObserver(measureNextFrame);
-  const contents = new MutationObserver(() => measureAndApply(true));
+  // A mutation inside an expanded body may reveal a nested disclosure; refresh
+  // bodies once on that cold path rather than on every ResizeObserver tick.
+  const contents = new MutationObserver(() => {
+    if (disposed) return;
+    cachedBodies = activityRunDisclosureBodies(clip);
+    observableCollapsed = cachedBodies.collapsed.filter((body) => declaredCollapsedLines(body) === 0);
+    measureAndApply(true, cachedBodies);
+  });
   function retarget(fromMutation: boolean): void {
+    if (disposed) return;
     const bodies = activityRunDisclosureBodies(clip);
+    cachedBodies = bodies;
+    observableCollapsed = bodies.collapsed.filter((body) => declaredCollapsedLines(body) === 0);
     sizes.disconnect();
     contents.disconnect();
     for (const body of bodies.expanded) {
@@ -307,8 +340,8 @@ export function observeActivityRunExpansion(clip: HTMLElement): () => void {
       // height.
       contents.observe(body, { childList: true, characterData: true, subtree: true });
     }
-    for (const body of bodies.collapsed) sizes.observe(body);
-    if (fromMutation) measureAndApply(true);
+    for (const body of observableCollapsed) sizes.observe(body);
+    if (fromMutation) measureAndApply(true, bodies);
     else if (bodies.expanded.length === 0) apply(0);
   }
   const disclosures = new MutationObserver(() => retarget(true));
@@ -319,11 +352,12 @@ export function observeActivityRunExpansion(clip: HTMLElement): () => void {
   });
   retarget(false);
   return () => {
+    disposed = true;
     disclosures.disconnect();
     contents.disconnect();
     sizes.disconnect();
     if (deferred !== null) {
-      cancelAnimationFrame(deferred);
+      clipResizeFrames.cancel(deferred);
       deferred = null;
     }
   };

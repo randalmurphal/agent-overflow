@@ -73,6 +73,30 @@ function formatValue(v: number): string {
 const GLOW_CLASSES = ['status-glow-warning', 'status-glow-info'] as const;
 const GLOW_SELECTOR = GLOW_CLASSES.map((name) => `.${name}`).join(',');
 
+function hasGlowClass(el: Element): boolean {
+  const list = el.classList;
+  return list.contains('status-glow-warning') || list.contains('status-glow-info');
+}
+
+// High-churn subtrees that can never host sidebar/workflow status glows (e.g.
+// virtualized message timelines) register here so the suspended wake observer
+// skips their streaming mutations without traversing added DOM subtrees.
+const excludedWakeRoots = new Set<Element>();
+
+export function registerAmbientGlowExcludedRoot(root: Element): () => void {
+  excludedWakeRoots.add(root);
+  return () => {
+    excludedWakeRoots.delete(root);
+  };
+}
+
+function isInsideExcludedRoot(node: Node): boolean {
+  for (const root of excludedWakeRoots) {
+    if (root.contains(node)) return true;
+  }
+  return false;
+}
+
 /** Consecutive empty ticks before the timer suspends. One second, so a
  * surface that briefly has no indicator does not thrash the timer off
  * and on. */
@@ -146,16 +170,20 @@ function armWake(): void {
   }
   wake = new MutationObserver((records) => {
     for (const record of records) {
+      const target = record.target;
+      if (excludedWakeRoots.size > 0 && isInsideExcludedRoot(target)) continue;
       if (record.type === 'attributes') {
-        const target = record.target;
-        if (target instanceof Element && target.isConnected && target.matches(GLOW_SELECTOR)) {
+        if (target instanceof Element && target.isConnected && hasGlowClass(target)) {
           syncNow();
           return;
         }
       } else {
         for (const node of record.addedNodes) {
-          if (node instanceof Element && node.isConnected
-            && (node.matches(GLOW_SELECTOR) || node.querySelector(GLOW_SELECTOR))) {
+          if (
+            node instanceof Element
+            && node.isConnected
+            && (hasGlowClass(node) || (node.childElementCount > 0 && node.querySelector(GLOW_SELECTOR) !== null))
+          ) {
             syncNow();
             return;
           }

@@ -5,9 +5,16 @@ import (
 	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/eventscope"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
+)
+
+var (
+	_ eventscope.ThreadIDProvider  = HighlightLiveCodeEvent{}
+	_ eventscope.ScopeRootProvider = HighlightLiveCodeEvent{}
+	_ eventscope.ThreadIDProvider  = HighlightDiffSeedEvent{}
 )
 
 // TestEmitAttributesItemEventsToTheirScope pins the funnel half of scope

@@ -6,17 +6,24 @@ import (
 	"strings"
 )
 
+// ThreadIDProvider is an optional fast-path interface event payload structs
+// may implement to report their thread id without reflection or JSON fallback.
+type ThreadIDProvider interface {
+	EventThreadID() string
+}
+
 // ThreadIDFromEvent does a best-effort lookup of the thread id on an
 // event payload. The transport's Emit takes `any`, so the payload can
 // be almost anything; this helper handles the common shapes rather than
 // trying to enumerate every event struct in the codebase.
 //
 // Lookup order:
-//  1. map[string]any / map[string]string with a "threadId" key (the
+//  1. ThreadIDProvider interface (zero-reflection fast path).
+//  2. map[string]any / map[string]string with a "threadId" key (the
 //     most common shape for frontend-visible events).
-//  2. Struct (or pointer-to-struct) with an exported ThreadID field —
+//  3. Struct (or pointer-to-struct) with an exported ThreadID field —
 //     the shape on provider.ProviderEvent.
-//  3. JSON round-trip fallback for anonymous struct literals that embed
+//  4. JSON round-trip fallback for anonymous struct literals that embed
 //     a `threadId` tag without exposing a direct Go field name we can
 //     reach via reflection.
 //
@@ -29,6 +36,8 @@ func ThreadIDFromEvent(data any) string {
 	}
 
 	switch payload := data.(type) {
+	case ThreadIDProvider:
+		return strings.TrimSpace(payload.EventThreadID())
 	case map[string]any:
 		if id, ok := payload["threadId"].(string); ok {
 			return strings.TrimSpace(id)

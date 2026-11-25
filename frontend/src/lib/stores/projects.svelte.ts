@@ -26,7 +26,7 @@ import { forgetProject, projectBackend, noteProject } from '../transport/entityI
 import { onBackendDetached } from '../transport/backends';
 import { hasMultipleBackends } from './attachedBackends.svelte';
 
-let projects: ProjectWithCounts[] = $state([]);
+let projects: ProjectWithCounts[] = $state.raw([]);
 let loaded = $state(false);
 
 // Per-project live-activity bumps (streaming beats). Kept out of the
@@ -413,7 +413,7 @@ export function projectCatalogPart(): CatalogPart<ProjectWithCounts> {
  * wraps it as ProjectWithCounts with zero counts — the next refresh will
  * reconcile actual totals.
  */
-const catalogWriter = computerCatalogWriter('projects', () => projects, (rows) => { projects = rows; }, (row) => projectBackend(row.project.id));
+const catalogWriter = computerCatalogWriter('projects', () => projects, (rows) => { projects = rows; }, (row) => projectBackend(row.project.id), { rowsAreValues: true });
 
 export function addProjectLocal(p: Project): void {
   const wrapped: ProjectWithCounts = {
@@ -522,6 +522,7 @@ export function removeProjectLocal(id: string): void {
  */
 export function dropProjectsForDetachedBackend(ids: readonly string[]): void {
   if (ids.length === 0) return;
+  for (const id of ids) liveActivityAt.drop(id);
   const gone = new Set(ids);
   const kept = projects.filter((p) => !gone.has(p.project.id));
   if (kept.length === projects.length) return;

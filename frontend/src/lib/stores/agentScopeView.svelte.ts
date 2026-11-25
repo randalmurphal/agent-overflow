@@ -153,6 +153,7 @@ export function createAgentScopeView(
     get searchRevision() { return itemWindow.searchRevision; },
     watchSearchableEvents: itemWindow.watchSearchableEvents,
     get timelineRevision() { return itemWindow.timelineRevision; },
+    get discardedItemIds() { return itemWindow.discardedItemIds; },
     get rowUiRetentionRevision() { return itemWindow.rowUiRetentionRevision; },
     get switchGeneration() { return owner.generation; },
     getItemById: (id: string) => itemWindow.getItemById(id) ?? (id === scopeItemId || id === root?.id ? root : undefined),
@@ -196,6 +197,8 @@ export function createAgentScopeView(
   const forwarded = {
     get thread() { return sourcePane.thread; },
     get threadId() { return sourcePane.threadId; },
+    get isShowingThread() { return sourcePane.isShowingThread; },
+    get dropShownThreadSignal() { return sourcePane.dropShownThreadSignal; },
     get workspace() { return sourcePane.workspace; },
     get activeModel() { return sourcePane.activeModel; },
     get effectiveModel() { return sourcePane.effectiveModel; },

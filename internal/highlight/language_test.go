@@ -79,11 +79,7 @@ func Preflight() error {
 		if lang == LangPlaintext {
 			return fmt.Errorf("grammar %q has no Lang registry entry", name)
 		}
-		engineFor(lang)
-		engineTable.mu.Lock()
-		err := engineTable.errs[lang]
-		engineTable.mu.Unlock()
-		if err != nil {
+		if err := engineErrFor(lang); err != nil {
 			return err
 		}
 	}

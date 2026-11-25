@@ -308,6 +308,9 @@ export function materializeRows(file: ReviewFile, start: Readonly<RowStart>, cou
     return text;
   };
   const partners = new Pairing(body, gapsOn);
+  // Memoize intraline diff per delIndex so paired del+add rows inside the same
+  // block compute intralineRanges once instead of twice.
+  const pairIntraline = new Map<number, ReturnType<typeof intralineRanges>>();
   while (rows.length < count && walker.next()) {
     if (walker.type === 'gap') {
       rows.push({
@@ -349,12 +352,17 @@ export function materializeRows(file: ReviewFile, start: Readonly<RowStart>, cou
       const partner = partners.of(index, kind);
       const partnerText = partner >= 0 ? textOf(partner) : null;
       if (text !== null && partnerText !== null) {
-        const delText = kind === LINE_DEL ? line.content : partnerText;
-        const addText = kind === LINE_ADD ? line.content : partnerText;
-        const ranges = intralineRanges(
-          stripPatchLinePrefix({ content: delText, type: 'del' }),
-          stripPatchLinePrefix({ content: addText, type: 'add' }),
-        );
+        const delIndex = kind === LINE_DEL ? index : partner;
+        let ranges = pairIntraline.get(delIndex);
+        if (ranges === undefined) {
+          const delText = kind === LINE_DEL ? line.content : partnerText;
+          const addText = kind === LINE_ADD ? line.content : partnerText;
+          ranges = intralineRanges(
+            stripPatchLinePrefix({ content: delText, type: 'del' }),
+            stripPatchLinePrefix({ content: addText, type: 'add' }),
+          );
+          pairIntraline.set(delIndex, ranges);
+        }
         const range = ranges ? (kind === LINE_DEL ? ranges.del : ranges.add) : null;
         if (range && range.end > range.start) row.intraline = range;
       }

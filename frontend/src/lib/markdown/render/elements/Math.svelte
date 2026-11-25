@@ -1,3 +1,15 @@
+<script lang="ts" module>
+	// Module-level KaTeX HTML cache and loaded KaTeX singleton. `renderToString`
+	// is fast (~1 ms for typical expressions) but the split-Streamdown
+	// architecture causes each settled math block to remount once when migrating
+	// from the volatile tail Streamdown to the committed prefix Streamdown.
+	// Caching the module and output makes remounts synchronous with zero blank frame.
+	type KatexModule = typeof import('katex').default;
+	const _katexHtmlCache: Map<string, string> = new Map();
+	const _KATEX_CACHE_MAX = 500;
+	let loadedKatex: KatexModule | null = null;
+</script>
+
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { useStreamdown } from '../context.svelte';
@@ -5,23 +17,6 @@
 	import type { MathToken } from '../../parser/index';
 	import type { KatexOptions } from 'katex';
 	import 'katex/dist/katex.min.css';
-
-	// Module-level KaTeX HTML cache. `renderToString` is fast (~1 ms for
-	// typical expressions) but the split-Streamdown architecture causes
-	// each settled math block to remount once when migrating from the
-	// volatile tail Streamdown to the committed prefix Streamdown.
-	// Caching the output makes that remount free. KaTeX output is
-	// deterministic and contains no random ids or fragment refs, so a
-	// straight string cache is safe — no id-rewrite needed (unlike
-	// mermaid). The cap is generous because each entry is small
-	// (hundreds of bytes to a few KB).
-	//
-	// Cache key is `${displayMode}:${source}`. Custom `katexConfig`
-	// fields (macros, trust callbacks) are not part of the key — callers
-	// who vary katexConfig per call for the same source should bust
-	// manually by varying the source text.
-	const _katexHtmlCache: Map<string, string> = new Map();
-	const _KATEX_CACHE_MAX = 500;
 
 	const {
 		token,
@@ -32,13 +27,15 @@
 	} = $props();
 
 	const streamdown = useStreamdown();
-	let katexInstance = $state<typeof import('katex').default | null>(null);
+	let katexInstance = $state.raw<KatexModule | null>(loadedKatex);
 
 	onMount(() => {
+		if (katexInstance) return;
 		const resolveAsync = streamdown.registerAsyncResource?.();
 		import('katex')
 			.then((mod) => {
-				katexInstance = mod.default;
+				loadedKatex ??= mod.default;
+				katexInstance = loadedKatex;
 			})
 			.finally(() => resolveAsync?.());
 	});

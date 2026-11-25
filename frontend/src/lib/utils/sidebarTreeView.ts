@@ -7,12 +7,23 @@
 // Pure logic, no Svelte / DOM imports — table-drivable from unit tests.
 
 import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
-import type { ThreadStatusPill } from './threadStatusPill';
+import type { Thread } from '../types/models';
 import {
+  lastKnownThreadStatusPill,
+  resolveEffectiveThreadStatus,
+  resolveThreadStatusPill,
+  type ThreadStatusPill,
+} from './threadStatusPill';
+import { isHiddenThreadMode } from './threadModes';
+import {
+  getStatusSortGroup,
   sidebarNodeSection,
+  sidebarPinGroup,
   sidebarTreeNodeId,
   displayStatusOutranks,
+  type BuildSidebarThreadTreeInput,
   type SidebarTreeNode,
+  type ThreadStatusSortGroup,
 } from './sidebarTree';
 import { THREAD_PREVIEW_LIMIT } from './sidebarThreadLimits';
 
@@ -323,4 +334,75 @@ export function rollupDisplayStatus(
   }
   if (best === null || bestPill === null) return null;
   return { liveStatus: best.displayLiveStatus, pill: bestPill };
+}
+
+/**
+ * Matches `compareTreeNodes` for two thread rows that share the same
+ * `(sortGroup, displayLiveStatus)` rank (for example an idle unread thread
+ * vs an idle attention-flagged thread, which carry different dot colors).
+ */
+function threadOutranksOnRollupTie(candidate: Thread, best: Thread): boolean {
+  const candidateDraft = candidate.isDraft === true;
+  const bestDraft = best.isDraft === true;
+  if (candidateDraft !== bestDraft) return candidateDraft;
+  if (candidateDraft) {
+    if (candidate.createdAt !== best.createdAt) return candidate.createdAt > best.createdAt;
+    return candidate.id > best.id;
+  }
+  const candidatePin = sidebarPinGroup(candidate);
+  const bestPin = sidebarPinGroup(best);
+  if (candidatePin !== bestPin) {
+    if (candidatePin === null) return false;
+    if (bestPin === null) return true;
+    return candidatePin === 'front';
+  }
+  const candidateActivity = candidate.updatedAt ?? 0;
+  const bestActivity = best.updatedAt ?? 0;
+  if (candidateActivity !== bestActivity) return candidateActivity > bestActivity;
+  return candidate.id > best.id;
+}
+
+/**
+ * Single-pass status rollup directly over a collapsed project's thread list,
+ * producing the exact same result as `rollupDisplayStatus(buildSidebarThreadTree(...))`
+ * without allocating tree nodes or sorting.
+ */
+export function rollupProjectThreads(
+  input: Pick<BuildSidebarThreadTreeInput, 'threads' | 'statusOf' | 'liveStatusOf' | 'waitingOnOf' | 'unreachableMachineOf'>,
+): SidebarStatusRollup | null {
+  let bestThread: Thread | null = null;
+  let bestSortGroup: ThreadStatusSortGroup | null = null;
+  let bestLiveStatus: ThreadLiveStatus = 'idle';
+  let bestPill: ThreadStatusPill | null = null;
+  for (const thread of input.threads) {
+    if (isHiddenThreadMode(thread.mode)) continue;
+    const ownLiveStatus = input.statusOf
+      ? input.statusOf(thread)
+      : resolveEffectiveThreadStatus(thread, input.liveStatusOf?.(thread.id) ?? 'idle');
+    const resolvedPill = resolveThreadStatusPill(thread, ownLiveStatus, input.waitingOnOf?.(thread.id));
+    const unreachableMachine = input.unreachableMachineOf?.(thread) ?? null;
+    const ownPill = unreachableMachine !== null ? lastKnownThreadStatusPill(resolvedPill, unreachableMachine) : resolvedPill;
+    if (ownPill === null) continue;
+    const sortGroup = getStatusSortGroup(ownLiveStatus, ownPill);
+    const takesLead =
+      bestSortGroup === null
+      || displayStatusOutranks(
+        { sortGroup, displayLiveStatus: ownLiveStatus },
+        { sortGroup: bestSortGroup, displayLiveStatus: bestLiveStatus },
+      )
+      || (
+        sortGroup === bestSortGroup
+        && ownLiveStatus === bestLiveStatus
+        && bestThread !== null
+        && threadOutranksOnRollupTie(thread, bestThread)
+      );
+    if (takesLead) {
+      bestThread = thread;
+      bestSortGroup = sortGroup;
+      bestLiveStatus = ownLiveStatus;
+      bestPill = ownPill;
+    }
+  }
+  if (bestPill === null) return null;
+  return { liveStatus: bestLiveStatus, pill: bestPill };
 }

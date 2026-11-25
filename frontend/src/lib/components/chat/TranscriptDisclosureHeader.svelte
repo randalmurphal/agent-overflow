@@ -63,7 +63,7 @@
 
 <div
   class={[
-    'flex w-full items-center gap-2 compact:gap-1 text-left',
+    'ao-tool-header flex w-full items-center gap-2 compact:gap-1 text-left',
     agentLayout ? '@container/agent-header flex-wrap gap-y-0.5 [--agent-inset:2.625rem] compact:[--agent-inset:2.125rem]' : '',
     className,
   ].join(' ')}
@@ -142,7 +142,7 @@
       </span>
     {/if}
     {#if actions}
-      <span class="flex shrink-0 items-center gap-2 compact:gap-1">{@render actions()}</span>
+      <span class="ao-tool-header-actions flex shrink-0 items-center gap-2 compact:gap-1">{@render actions()}</span>
     {/if}
     {#if details}
       <span class="order-2 block w-full min-w-0 pl-[var(--agent-inset)]">

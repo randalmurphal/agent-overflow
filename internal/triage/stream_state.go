@@ -32,11 +32,18 @@ type activeStreamBlock struct {
 	owner *threadState
 }
 
-func activeStreamKey(turnIndex int, scope, providerItemID string) string {
-	if providerItemID == "" {
-		return scopeCounterKey(turnIndex, scope)
+type streamBlockKey struct {
+	turnIndex      int
+	scope          string
+	providerItemID string
+}
+
+func makeStreamBlockKey(turnIndex int, scope, providerItemID string) streamBlockKey {
+	return streamBlockKey{
+		turnIndex:      turnIndex,
+		scope:          scope,
+		providerItemID: providerItemID,
 	}
-	return fmt.Sprintf("%d|%s|provider:%s", turnIndex, scope, providerItemID)
 }
 
 func providerItemMeta(providerItemID string) string {
@@ -59,6 +66,55 @@ func withProviderItemMeta(existing string, providerItemID string) string {
 	return mergeItemMetaJSON(existing, json.RawMessage(meta))
 }
 
+// advanceActiveStreamAndStage fuses open-turn lookup, active-block offset
+// reservation, and stream persistence staging under one r.mu acquisition
+// for steady-state unscoped text/thinking deltas. Returns hit=false when
+// the block has not opened yet or no open turn is cached, letting the
+// caller fall through to the full start path.
+func (r *Router) advanceActiveStreamAndStage(
+	threadID, providerItemID, sessionToken, kind, delta string,
+	updatedAt int64,
+) (hit, retired bool, itemID string, offset int64, flushNow bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		return false, true, "", 0, false
+	}
+	st := r.threadStateIfPresent(threadID)
+	if st == nil || !st.openTurnSet {
+		return false, false, "", 0, false
+	}
+	key := makeStreamBlockKey(st.openTurn, "", providerItemID)
+	var ref *activeStreamBlock
+	if kind == itemKindAssistantText {
+		ref = st.activeTextBlocks[key]
+	} else {
+		ref = st.activeThinkingBlocks[key]
+	}
+	if ref == nil {
+		return false, false, "", 0, false
+	}
+	offset = ref.streamed
+	ref.streamed += int64(len(delta))
+	itemID = ref.itemID
+	var payloadID string
+	if kind == itemKindAssistantText {
+		payloadID = AssistantTextPayloadID(itemID)
+	} else {
+		payloadID = ThinkingPayloadID(itemID)
+	}
+	flushNow = r.stageStreamPersistenceLocked(st, pendingStreamFlush{
+		threadID:     threadID,
+		itemID:       itemID,
+		kind:         kind,
+		payloadID:    payloadID,
+		summaryDelta: delta,
+		payloadDelta: delta,
+		updatedAt:    updatedAt,
+	}, false)
+	return true, false, itemID, offset, flushNow
+}
+
 // ensureTextBlockStarted opens the stream's block unless it is open,
 // and reserves the next n bytes of its text for the delta being handled.
 // It returns whether the block is new, the row id, and the delta's offset.
@@ -66,32 +122,28 @@ func withProviderItemMeta(existing string, providerItemID string) string {
 // the stream would hold the replacement busy with nothing of its own to
 // end it.
 func (r *Router) ensureTextBlockStarted(threadID string, turnIndex int, scope, providerItemID string, n int, sessionToken string) (opened bool, itemID string, offset int64, ok bool) {
-	key := activeStreamKey(turnIndex, scope, providerItemID)
-	counterKey := scopeCounterKey(turnIndex, scope)
+	key := makeStreamBlockKey(turnIndex, scope, providerItemID)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.frameRetiredLocked(threadID, sessionToken) {
 		return false, "", 0, false
 	}
 	st := r.state(threadID)
-	if st.activeTextBlocks[key] {
-		ref := st.activeTextBlockRefs[key]
+	if ref := st.activeTextBlocks[key]; ref != nil {
 		offset := ref.streamed
 		ref.streamed += int64(n)
-		st.activeTextBlockRefs[key] = ref
 		return false, ref.itemID, offset, true
 	}
+	counterKey := scopeCounterKey(turnIndex, scope)
 	if st.segmentIndexByScope == nil {
 		st.segmentIndexByScope = make(map[string]int)
 	}
 	st.segmentIndexByScope[counterKey] = st.segmentIndexByScope[counterKey] + 1
 	itemID = scopedStreamItemID("text", turnIndex, scope, providerItemID, TextItemID(turnIndex, scope, st.segmentIndexByScope[counterKey]))
 	if st.activeTextBlocks == nil {
-		st.activeTextBlocks = make(map[string]bool)
-		st.activeTextBlockRefs = make(map[string]activeStreamBlock)
+		st.activeTextBlocks = make(map[streamBlockKey]*activeStreamBlock)
 	}
-	st.activeTextBlocks[key] = true
-	st.activeTextBlockRefs[key] = activeStreamBlock{
+	st.activeTextBlocks[key] = &activeStreamBlock{
 		threadID:  threadID,
 		turnIndex: turnIndex,
 		scope:     scope,
@@ -110,32 +162,28 @@ func (r *Router) ensureTextBlockStarted(threadID string, turnIndex int, scope, p
 // the stream would hold the replacement busy with nothing of its own to
 // end it.
 func (r *Router) ensureThinkingBlockStarted(threadID string, turnIndex int, scope, providerItemID string, n int, sessionToken string) (opened bool, itemID string, offset int64, ok bool) {
-	key := activeStreamKey(turnIndex, scope, providerItemID)
-	counterKey := scopeCounterKey(turnIndex, scope)
+	key := makeStreamBlockKey(turnIndex, scope, providerItemID)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.frameRetiredLocked(threadID, sessionToken) {
 		return false, "", 0, false
 	}
 	st := r.state(threadID)
-	if st.activeThinkingBlocks[key] {
-		ref := st.activeThinkingBlockRefs[key]
+	if ref := st.activeThinkingBlocks[key]; ref != nil {
 		offset := ref.streamed
 		ref.streamed += int64(n)
-		st.activeThinkingBlockRefs[key] = ref
 		return false, ref.itemID, offset, true
 	}
+	counterKey := scopeCounterKey(turnIndex, scope)
 	if st.blockIndexByScope == nil {
 		st.blockIndexByScope = make(map[string]int)
 	}
 	st.blockIndexByScope[counterKey] = st.blockIndexByScope[counterKey] + 1
 	itemID = scopedStreamItemID("think", turnIndex, scope, providerItemID, ThinkingItemID(turnIndex, scope, st.blockIndexByScope[counterKey]))
 	if st.activeThinkingBlocks == nil {
-		st.activeThinkingBlocks = make(map[string]bool)
-		st.activeThinkingBlockRefs = make(map[string]activeStreamBlock)
+		st.activeThinkingBlocks = make(map[streamBlockKey]*activeStreamBlock)
 	}
-	st.activeThinkingBlocks[key] = true
-	st.activeThinkingBlockRefs[key] = activeStreamBlock{
+	st.activeThinkingBlocks[key] = &activeStreamBlock{
 		threadID:  threadID,
 		turnIndex: turnIndex,
 		scope:     scope,
@@ -220,16 +268,16 @@ func (r *Router) decStreamingCounts(threadID, scope string) {
 func (r *Router) settleTurnStreaming(threadID string, turnIndex int, status string, agentScopes map[string]bool) error {
 	r.waitThreadSettles(threadID)
 	r.mu.Lock()
-	textKeys := make([]string, 0)
-	thinkingKeys := make([]string, 0)
+	var textKeys []streamBlockKey
+	var thinkingKeys []streamBlockKey
 	if st := r.threadStateIfPresent(threadID); st != nil {
-		for key, ref := range st.activeTextBlockRefs {
-			if ref.turnIndex == turnIndex && st.activeTextBlocks[key] && !agentScopes[ref.scope] {
+		for key, ref := range st.activeTextBlocks {
+			if ref != nil && ref.turnIndex == turnIndex && !agentScopes[ref.scope] {
 				textKeys = append(textKeys, key)
 			}
 		}
-		for key, ref := range st.activeThinkingBlockRefs {
-			if ref.turnIndex == turnIndex && st.activeThinkingBlocks[key] && !agentScopes[ref.scope] {
+		for key, ref := range st.activeThinkingBlocks {
+			if ref != nil && ref.turnIndex == turnIndex && !agentScopes[ref.scope] {
 				thinkingKeys = append(thinkingKeys, key)
 			}
 		}
@@ -309,7 +357,7 @@ func interruptedSummary(summary string) string {
 // Returns (block, true) when the caller should proceed to the heavy
 // body; (_, false) when another caller already settled this block.
 func (r *Router) takeActiveTextBlock(threadID string, turnIndex int, scope, providerItemID string) (activeStreamBlock, bool) {
-	key := activeStreamKey(turnIndex, scope, providerItemID)
+	key := makeStreamBlockKey(turnIndex, scope, providerItemID)
 	ref, active := r.takeActiveTextBlockByKey(threadID, key)
 	if active {
 		return ref, true
@@ -320,24 +368,22 @@ func (r *Router) takeActiveTextBlock(threadID string, turnIndex int, scope, prov
 	return r.takeFirstActiveTextBlock(threadID, turnIndex, scope)
 }
 
-func (r *Router) takeActiveTextBlockByKey(threadID, key string) (activeStreamBlock, bool) {
+func (r *Router) takeActiveTextBlockByKey(threadID string, key streamBlockKey) (activeStreamBlock, bool) {
 	r.mu.Lock()
 	st := r.threadStateIfPresent(threadID)
 	if st == nil {
 		r.mu.Unlock()
 		return activeStreamBlock{}, false
 	}
-	active := st.activeTextBlocks[key]
-	ref := st.activeTextBlockRefs[key]
-	if active {
+	ref := st.activeTextBlocks[key]
+	if ref != nil {
 		delete(st.activeTextBlocks, key)
-		delete(st.activeTextBlockRefs, key)
 	}
 	r.mu.Unlock()
-	if !active {
+	if ref == nil {
 		return activeStreamBlock{}, false
 	}
-	return ref, true
+	return *ref, true
 }
 
 func (r *Router) takeFirstActiveTextBlock(threadID string, turnIndex int, scope string) (activeStreamBlock, bool) {
@@ -347,11 +393,10 @@ func (r *Router) takeFirstActiveTextBlock(threadID string, turnIndex int, scope 
 	if st == nil {
 		return activeStreamBlock{}, false
 	}
-	for key, ref := range st.activeTextBlockRefs {
-		if ref.turnIndex == turnIndex && ref.scope == scope && st.activeTextBlocks[key] {
+	for key, ref := range st.activeTextBlocks {
+		if ref != nil && ref.turnIndex == turnIndex && ref.scope == scope {
 			delete(st.activeTextBlocks, key)
-			delete(st.activeTextBlockRefs, key)
-			return ref, true
+			return *ref, true
 		}
 	}
 	return activeStreamBlock{}, false
@@ -429,7 +474,7 @@ func (r *Router) settleStreamingTextRow(threadID, itemID, status string, summari
 		}
 	}()
 
-	if err := r.flushStreamingItem(threadID, itemID); err != nil {
+	if err := r.flushAndDropStreamingItem(threadID, itemID); err != nil {
 		return err
 	}
 	item, found, err := r.store.GetThreadItem(threadID, itemID)
@@ -546,16 +591,16 @@ func (r *Router) settleStreamingTextScopeAsync(threadID string, turnIndex int, s
 	}
 }
 
-func (r *Router) activeTextKeysForScope(threadID string, turnIndex int, scope string) []string {
+func (r *Router) activeTextKeysForScope(threadID string, turnIndex int, scope string) []streamBlockKey {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	keys := make([]string, 0)
+	var keys []streamBlockKey
 	st := r.threadStateIfPresent(threadID)
 	if st == nil {
 		return keys
 	}
-	for key, ref := range st.activeTextBlockRefs {
-		if ref.turnIndex == turnIndex && ref.scope == scope && st.activeTextBlocks[key] {
+	for key, ref := range st.activeTextBlocks {
+		if ref != nil && ref.turnIndex == turnIndex && ref.scope == scope {
 			keys = append(keys, key)
 		}
 	}
@@ -810,30 +855,26 @@ func (r *Router) enrichStreamingPathRefsAndEmit(item store.Item, updatedAt int64
 	r.emit(eventchan.ProviderItemEvent, newItemStreamMeta(item.ThreadID, item.ID, item.ParentID, item.Kind, merged, updatedAt))
 }
 
-// workspacePathFor returns the directory threadID's provider process works
-// in, through the thread state's cache (see threadState.workspacePath) so
-// the streaming flushes and prose settles of a turn do not each pay a
-// SQLite read. A failed lookup logs and returns empty so the caller skips
-// enrichment cleanly.
-func (r *Router) workspacePathFor(threadID string) string {
+func (r *Router) loadProviderWorkspace(threadID string) (providerName, workspacePath string, err error) {
 	r.mu.Lock()
 	st := r.threadStateIfPresent(threadID)
-	if st != nil && st.workspacePathSet {
-		cached := st.workspacePath
+	if st != nil && st.providerSet && st.workspacePathSet {
+		providerName, workspacePath = st.provider, st.workspacePath
 		r.mu.Unlock()
-		return cached
+		return providerName, workspacePath, nil
 	}
 	r.mu.Unlock()
-	_, workspacePath, err := r.store.GetThreadProviderWorkspace(threadID)
+	providerName, workspacePath, err = r.store.GetThreadProviderWorkspace(threadID)
 	if err != nil {
-		log.Printf("triage: pathlinks lookup thread %s: %v", threadID, err)
-		return ""
+		return "", "", err
 	}
 	r.mu.Lock()
 	// A final settle can outlive CleanupThread. Reads never resurrect its
 	// caches, and a lookup begun by an old session cannot seed its replacement.
 	// A move the process reported during the read is newer than the row.
 	if st != nil && r.threadStateIfPresent(threadID) == st {
+		st.provider = providerName
+		st.providerSet = true
 		if st.workspacePathSet {
 			workspacePath = st.workspacePath
 		} else {
@@ -842,6 +883,41 @@ func (r *Router) workspacePathFor(threadID string) string {
 		}
 	}
 	r.mu.Unlock()
+	return providerName, workspacePath, nil
+}
+
+// providerFor returns threads.provider for threadID, using the per-session
+// cache populated alongside workspacePathFor.
+func (r *Router) providerFor(threadID string) (string, error) {
+	r.mu.Lock()
+	if st := r.threadStateIfPresent(threadID); st != nil && st.providerSet {
+		cached := st.provider
+		r.mu.Unlock()
+		return cached, nil
+	}
+	r.mu.Unlock()
+	providerName, _, err := r.loadProviderWorkspace(threadID)
+	return providerName, err
+}
+
+// workspacePathFor returns the directory threadID's provider process works
+// in, through the thread state's cache (see threadState.workspacePath) so
+// the streaming flushes and prose settles of a turn do not each pay a
+// SQLite read. A failed lookup logs and returns empty so the caller skips
+// enrichment cleanly.
+func (r *Router) workspacePathFor(threadID string) string {
+	r.mu.Lock()
+	if st := r.threadStateIfPresent(threadID); st != nil && st.workspacePathSet {
+		cached := st.workspacePath
+		r.mu.Unlock()
+		return cached
+	}
+	r.mu.Unlock()
+	_, workspacePath, err := r.loadProviderWorkspace(threadID)
+	if err != nil {
+		log.Printf("triage: pathlinks lookup thread %s: %v", threadID, err)
+		return ""
+	}
 	return workspacePath
 }
 
@@ -913,7 +989,7 @@ func mergePathRefsIntoMeta(meta string, refs []pathlinks.PathRef) (string, error
 // defer the count decrement to finishSettle so the streaming-active
 // signal survives the async heavy body.
 func (r *Router) takeActiveThinkingBlock(threadID string, turnIndex int, scope, providerItemID string) (activeStreamBlock, bool) {
-	key := activeStreamKey(turnIndex, scope, providerItemID)
+	key := makeStreamBlockKey(turnIndex, scope, providerItemID)
 	ref, active := r.takeActiveThinkingBlockByKey(threadID, key)
 	if active {
 		return ref, true
@@ -924,24 +1000,22 @@ func (r *Router) takeActiveThinkingBlock(threadID string, turnIndex int, scope, 
 	return r.takeFirstActiveThinkingBlock(threadID, turnIndex, scope)
 }
 
-func (r *Router) takeActiveThinkingBlockByKey(threadID, key string) (activeStreamBlock, bool) {
+func (r *Router) takeActiveThinkingBlockByKey(threadID string, key streamBlockKey) (activeStreamBlock, bool) {
 	r.mu.Lock()
 	st := r.threadStateIfPresent(threadID)
 	if st == nil {
 		r.mu.Unlock()
 		return activeStreamBlock{}, false
 	}
-	active := st.activeThinkingBlocks[key]
-	ref := st.activeThinkingBlockRefs[key]
-	if active {
+	ref := st.activeThinkingBlocks[key]
+	if ref != nil {
 		delete(st.activeThinkingBlocks, key)
-		delete(st.activeThinkingBlockRefs, key)
 	}
 	r.mu.Unlock()
-	if !active {
+	if ref == nil {
 		return activeStreamBlock{}, false
 	}
-	return ref, true
+	return *ref, true
 }
 
 func (r *Router) takeFirstActiveThinkingBlock(threadID string, turnIndex int, scope string) (activeStreamBlock, bool) {
@@ -951,11 +1025,10 @@ func (r *Router) takeFirstActiveThinkingBlock(threadID string, turnIndex int, sc
 	if st == nil {
 		return activeStreamBlock{}, false
 	}
-	for key, ref := range st.activeThinkingBlockRefs {
-		if ref.turnIndex == turnIndex && ref.scope == scope && st.activeThinkingBlocks[key] {
+	for key, ref := range st.activeThinkingBlocks {
+		if ref != nil && ref.turnIndex == turnIndex && ref.scope == scope {
 			delete(st.activeThinkingBlocks, key)
-			delete(st.activeThinkingBlockRefs, key)
-			return ref, true
+			return *ref, true
 		}
 	}
 	return activeStreamBlock{}, false
@@ -984,7 +1057,7 @@ func (r *Router) doSettleStreamingThinking(block activeStreamBlock, status, fina
 // provider.MetaNarrationKey: a thinking row that completes with it
 // settles as assistant text (settleNarrationRow).
 func (r *Router) settleStreamingThinkingRow(threadID, itemID, status string, summarise func(string) string, finalContent string, finalContentPresent, narration bool) error {
-	if err := r.flushStreamingItem(threadID, itemID); err != nil {
+	if err := r.flushAndDropStreamingItem(threadID, itemID); err != nil {
 		return err
 	}
 	item, found, err := r.store.GetThreadItem(threadID, itemID)
@@ -1050,16 +1123,16 @@ func (r *Router) settleStreamingThinkingScopeAsync(threadID string, turnIndex in
 	}
 }
 
-func (r *Router) activeThinkingKeysForScope(threadID string, turnIndex int, scope string) []string {
+func (r *Router) activeThinkingKeysForScope(threadID string, turnIndex int, scope string) []streamBlockKey {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	keys := make([]string, 0)
+	var keys []streamBlockKey
 	st := r.threadStateIfPresent(threadID)
 	if st == nil {
 		return keys
 	}
-	for key, ref := range st.activeThinkingBlockRefs {
-		if ref.turnIndex == turnIndex && ref.scope == scope && st.activeThinkingBlocks[key] {
+	for key, ref := range st.activeThinkingBlocks {
+		if ref != nil && ref.turnIndex == turnIndex && ref.scope == scope {
 			keys = append(keys, key)
 		}
 	}

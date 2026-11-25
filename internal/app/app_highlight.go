@@ -221,6 +221,9 @@ type HighlightLiveCodeEvent struct {
 	Head string `json:"head,omitempty"`
 }
 
+func (e HighlightLiveCodeEvent) EventThreadID() string    { return e.ThreadID }
+func (e HighlightLiveCodeEvent) EventScopeRootID() string { return e.ParentID }
+
 // PatchSpanSeed is one file's precomputed diff spans. ContentKey is the
 // frontend `contentKey(patch text)` string; together with Path it is
 // exactly the diffSpanCache base key, so the frontend can insert
@@ -245,6 +248,9 @@ type HighlightDiffSeedEvent struct {
 	ThreadID string          `json:"threadId"`
 	Files    []PatchSpanSeed `json:"files"`
 }
+
+func (e HighlightDiffSeedEvent) EventThreadID() string { return e.ThreadID }
+
 type PersistedCodeSpan struct {
 	Lang       string                  `json:"lang"`
 	ContentKey string                  `json:"contentKey"`

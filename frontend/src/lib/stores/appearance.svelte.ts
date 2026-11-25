@@ -126,6 +126,8 @@ let selection = $state.raw<AppearanceSelection>(INITIAL_SELECTION);
  * identical. One narrow box costs one assignment per mode change.
  */
 let selectionMode = $state<AppearanceMode>(INITIAL_SELECTION.mode);
+let selectionUiTheme = $state<string>(INITIAL_SELECTION.uiTheme);
+let selectionCodeTheme = $state<string>(INITIAL_SELECTION.codeTheme);
 let themes = $state.raw<readonly ParsedTheme[]>([]);
 let fileWarnings = $state.raw<readonly string[]>([]);
 let directory = $state('');
@@ -155,6 +157,15 @@ export function getAppearance(): AppearanceSelection {
  */
 export function getAppearanceMode(): AppearanceMode {
   return selectionMode;
+}
+
+/** Narrow UI/code theme boxes so `windowBackground` sync writes never wake theme apply. */
+export function getAppearanceUiTheme(): string {
+  return selectionUiTheme;
+}
+
+export function getAppearanceCodeTheme(): string {
+  return selectionCodeTheme;
 }
 
 export function getAppearanceThemes(): readonly ParsedTheme[] {
@@ -266,6 +277,8 @@ function writeLocalSelection(value: AppearanceSelection): void {
 function setSelection(next: AppearanceSelection): void {
   selection = next;
   if (selectionMode !== next.mode) selectionMode = next.mode;
+  if (selectionUiTheme !== next.uiTheme) selectionUiTheme = next.uiTheme;
+  if (selectionCodeTheme !== next.codeTheme) selectionCodeTheme = next.codeTheme;
   writeLocalSelection(next);
 }
 
@@ -547,6 +560,8 @@ export function getThemeParseWarnings(): readonly ThemeWarning[] {
 export function resetAppearanceForTest(): void {
   selection = DEFAULT_SELECTION;
   selectionMode = DEFAULT_SELECTION.mode;
+  selectionUiTheme = DEFAULT_SELECTION.uiTheme;
+  selectionCodeTheme = DEFAULT_SELECTION.codeTheme;
   themes = [];
   fileWarnings = [];
   directory = '';

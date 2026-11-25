@@ -382,12 +382,32 @@ const SUBSCRIBER_OWNERSHIP_CHANNELS: ReadonlySet<string> = new Set(['provider:se
 // last rows arrive after the destination owns the thread. Its subscriber
 // keys rows by the delivering computer instead.
 const OWNER_INDEPENDENT_CHANNELS: ReadonlySet<string> = new Set(['thread:transfer']);
+// High-frequency runtime stream channels that never carry repository
+// coordinates (projects/threads metadata), so per-event payloads can skip
+// safeRepositoryMetadata traversal.
+const NO_REPO_METADATA_CHANNELS: ReadonlySet<string> = new Set([
+  'provider:item_event',
+  'provider:usage',
+  'provider:turn_started',
+  'provider:turn_completed',
+  'provider:subagent_progress',
+  'provider:background_tray',
+  'provider:todo_update',
+  'provider:sends_pending',
+  'provider:queue_state_changed',
+  'provider:queue_flushed',
+  'provider:queue_restored',
+  'system:stats',
+  'terminal:output',
+  'terminal:exit',
+]);
 
 export const Events = {
   On(
     name: string,
     handler: (ev: { name: string; data: unknown; origin?: EventOrigin; sequence?: number; replayed?: boolean }) => void,
   ): () => void {
+    const skipRepoSanitize = NO_REPO_METADATA_CHANNELS.has(name);
     return subscribeEveryBackend(name, (data, transport, sequence, replayed) => {
       // threadId is the shared routing field on thread-scoped runtime events.
       // Row ownership events use id/thread.id and are admitted separately so a
@@ -395,7 +415,13 @@ export const Events = {
       const threadId = (data as { threadId?: unknown } | null)?.threadId;
       if (typeof threadId === 'string' && !SUBSCRIBER_OWNERSHIP_CHANNELS.has(name) && !OWNER_INDEPENDENT_CHANNELS.has(name)
         && !currentThreadEvent(threadId, backendKeyForOrigin(transport.origin.backendId))) return;
-      handler({ name, data: safeRepositoryMetadata(data), origin: transport.origin, sequence, replayed });
+      handler({
+        name,
+        data: skipRepoSanitize ? data : safeRepositoryMetadata(data),
+        origin: transport.origin,
+        sequence,
+        replayed,
+      });
     });
   },
 };

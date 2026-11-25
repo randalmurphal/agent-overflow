@@ -51,6 +51,8 @@ export interface ParseState {
     currentLine: number;
     context: 'normal' | 'list' | 'blockquote' | 'descriptionList';
     blockingContexts: Set<'code' | 'math'>;
+    /** Shared line split populated by IncompleteMarkdownParser.parse to avoid repeated splits. */
+    lines?: string[];
     lineContexts?: LineContext[];
     fenceInfo?: FenceInfo;
     mdxUnclosedTags?: Array<{

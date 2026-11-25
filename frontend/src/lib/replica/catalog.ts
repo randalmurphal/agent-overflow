@@ -18,34 +18,75 @@ type RecordValue = Record<string, unknown>;
 function object(value: unknown): value is RecordValue {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
-function fields(row: RecordValue, strings: readonly string[], numbers: readonly string[], booleans: readonly string[] = []): boolean {
-  return strings.every((key) => typeof row[key] === 'string')
-    && numbers.every((key) => typeof row[key] === 'number' && Number.isFinite(row[key]))
-    && booleans.every((key) => typeof row[key] === 'boolean');
+const EMPTY_KEYS: readonly string[] = [];
+const PROJECT_REQ_STR = ['id', 'name', 'path'] as const;
+const PROJECT_REQ_NUM = ['sortPosition', 'createdAt', 'updatedAt'] as const;
+const PROJECT_REQ_BOOL = ['archived'] as const;
+const PROJECT_OPT_STR = ['color', 'repositoryID', 'identityError'] as const;
+const PROJECT_WRAP_REQ_NUM = ['threadCount'] as const;
+const PROJECT_WRAP_OPT_NUM = ['lastActive'] as const;
+const GROUP_REQ_STR = ['id', 'name', 'projectId'] as const;
+const GROUP_REQ_NUM = ['createdAt', 'updatedAt'] as const;
+const THREAD_REQ_STR = ['id', 'title', 'provider', 'workspacePath', 'projectPath', 'model'] as const;
+const THREAD_REQ_NUM = ['createdAt', 'updatedAt'] as const;
+const THREAD_REQ_BOOL = ['archived'] as const;
+const ATTENTION_REQ_STR = ['kind', 'reason'] as const;
+const ATTENTION_REQ_NUM = ['at'] as const;
+const THREAD_OPT_STR = [
+  'sessionRef', 'pendingForkRef', 'projectId', 'worktreePath', 'branch', 'prRef', 'mode',
+  'reasoningEffort', 'runtimeMode', 'forkedFromThreadId', 'lastTokenUsage',
+  'worktreeSetupState', 'importSource', 'groupId',
+] as const;
+const THREAD_OPT_NUM = [
+  'contextWindow', 'autoCompactStandardPercent', 'autoCompactExtendedPercent', 'latestTurnCompletedAt',
+  'lastReadAt', 'pinnedAt', 'pinGroup',
+] as const;
+const THREAD_OPT_BOOL = [
+  'forkPreparing', 'fastMode', 'hasActionableProposedPlan', 'hasIncompleteTurn', 'hasFailedTurn', 'isDraft',
+] as const;
+
+function fields(row: RecordValue, strings: readonly string[], numbers: readonly string[], booleans: readonly string[] = EMPTY_KEYS): boolean {
+  for (let i = 0; i < strings.length; i++) {
+    if (typeof row[strings[i]] !== 'string') return false;
+  }
+  for (let i = 0; i < numbers.length; i++) {
+    const v = row[numbers[i]];
+    if (typeof v !== 'number' || !Number.isFinite(v)) return false;
+  }
+  for (let i = 0; i < booleans.length; i++) {
+    if (typeof row[booleans[i]] !== 'boolean') return false;
+  }
+  return true;
 }
-function optional(row: RecordValue, strings: readonly string[], numbers: readonly string[], booleans: readonly string[] = []): boolean {
-  const present = (keys: readonly string[]) => keys.filter((key) => row[key] !== undefined && row[key] !== null);
-  return fields(row, present(strings), present(numbers), present(booleans));
+function optional(row: RecordValue, strings: readonly string[], numbers: readonly string[], booleans: readonly string[] = EMPTY_KEYS): boolean {
+  for (let i = 0; i < strings.length; i++) {
+    const v = row[strings[i]];
+    if (v !== undefined && v !== null && typeof v !== 'string') return false;
+  }
+  for (let i = 0; i < numbers.length; i++) {
+    const v = row[numbers[i]];
+    if (v !== undefined && v !== null && (typeof v !== 'number' || !Number.isFinite(v))) return false;
+  }
+  for (let i = 0; i < booleans.length; i++) {
+    const v = row[booleans[i]];
+    if (v !== undefined && v !== null && typeof v !== 'boolean') return false;
+  }
+  return true;
 }
 function validRow(row: unknown, kind: CatalogKind): boolean {
   if (!object(row)) return false;
   if (kind === 'projects') {
     const project = row.project;
-    return object(project) && fields(project, ['id', 'name', 'path'], ['sortPosition', 'createdAt', 'updatedAt'], ['archived'])
-      && optional(project, ['color', 'repositoryID', 'identityError'], [])
-      && fields(row, [], ['threadCount']) && optional(row, [], ['lastActive']);
+    return object(project) && fields(project, PROJECT_REQ_STR, PROJECT_REQ_NUM, PROJECT_REQ_BOOL)
+      && optional(project, PROJECT_OPT_STR, EMPTY_KEYS)
+      && fields(row, EMPTY_KEYS, PROJECT_WRAP_REQ_NUM) && optional(row, EMPTY_KEYS, PROJECT_WRAP_OPT_NUM);
   }
-  if (kind === 'groups') return fields(row, ['id', 'name', 'projectId'], ['createdAt', 'updatedAt']);
-  return fields(row, ['id', 'title', 'provider', 'workspacePath', 'projectPath', 'model'], ['createdAt', 'updatedAt'], ['archived'])
+  if (kind === 'groups') return fields(row, GROUP_REQ_STR, GROUP_REQ_NUM);
+  return fields(row, THREAD_REQ_STR, THREAD_REQ_NUM, THREAD_REQ_BOOL)
     && (row.ownershipEpoch === undefined || validOwnershipEpoch(row.ownershipEpoch))
     && isProviderID(row.provider)
-    && (row.attention == null || (object(row.attention) && fields(row.attention, ['kind', 'reason'], ['at'])))
-    && optional(row, ['sessionRef', 'pendingForkRef', 'projectId', 'worktreePath', 'branch', 'prRef', 'mode',
-      'reasoningEffort', 'runtimeMode', 'forkedFromThreadId', 'lastTokenUsage',
-      'worktreeSetupState', 'importSource', 'groupId'],
-    ['contextWindow', 'autoCompactStandardPercent', 'autoCompactExtendedPercent', 'latestTurnCompletedAt',
-      'lastReadAt', 'pinnedAt', 'pinGroup'],
-    ['forkPreparing', 'fastMode', 'hasActionableProposedPlan', 'hasIncompleteTurn', 'hasFailedTurn', 'isDraft']);
+    && (row.attention == null || (object(row.attention) && fields(row.attention, ATTENTION_REQ_STR, ATTENTION_REQ_NUM)))
+    && optional(row, THREAD_OPT_STR, THREAD_OPT_NUM, THREAD_OPT_BOOL);
 }
 
 export function readCatalogRecord<K extends CatalogKind>(raw: unknown, generation: string, kind: K, stamp: string): CatalogRows[K][] | null {

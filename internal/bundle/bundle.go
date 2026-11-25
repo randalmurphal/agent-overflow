@@ -208,6 +208,7 @@ func (b *Bundle) build() (Manifest, error) {
 	files := make([]File, 0, 64)
 	version := b.version
 	digest := sha256.New()
+	copyBuf := make([]byte, 32*1024)
 	err := fs.WalkDir(b.fsys, ".", func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -237,7 +238,7 @@ func (b *Bundle) build() (Manifest, error) {
 			hash := sha256.Sum256(data)
 			sum, size = hex.EncodeToString(hash[:]), int64(len(data))
 		} else {
-			sum, size, err = b.hashFile(name, digest)
+			sum, size, err = b.hashFile(name, digest, copyBuf)
 		}
 		if err != nil {
 			return err
@@ -293,11 +294,13 @@ func ID(files []File) string {
 	sorted := append([]File(nil), files...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Path < sorted[j].Path })
 	digest := sha256.New()
+	var nul = [1]byte{0}
+	var nl = [1]byte{'\n'}
 	for _, file := range sorted {
-		_, _ = digest.Write([]byte(file.Path))
-		_, _ = digest.Write([]byte{0})
-		_, _ = digest.Write([]byte(file.SHA256))
-		_, _ = digest.Write([]byte{'\n'})
+		_, _ = io.WriteString(digest, file.Path)
+		_, _ = digest.Write(nul[:])
+		_, _ = io.WriteString(digest, file.SHA256)
+		_, _ = digest.Write(nl[:])
 	}
 	return hex.EncodeToString(digest.Sum(nil))
 }
@@ -306,14 +309,14 @@ func ID(files []File) string {
 // than fs.ReadFile: the largest entry in a production dist is a few MB,
 // and there is no reason for the manifest walk's peak to be the size of
 // the biggest chunk.
-func (b *Bundle) hashFile(name string, digest hash.Hash) (string, int64, error) {
+func (b *Bundle) hashFile(name string, digest hash.Hash, copyBuf []byte) (string, int64, error) {
 	file, err := b.fsys.Open(name)
 	if err != nil {
 		return "", 0, err
 	}
 	defer file.Close()
 	digest.Reset()
-	size, err := io.Copy(digest, file)
+	size, err := io.CopyBuffer(digest, file, copyBuf)
 	if err != nil {
 		return "", 0, err
 	}
@@ -338,6 +341,7 @@ func (b *Bundle) compress(manifest Manifest) ([]byte, error) {
 	buf := bytes.NewBuffer(make([]byte, 0, total/2))
 	archive := zip.NewWriter(buf)
 	digest := sha256.New()
+	copyBuf := make([]byte, 32*1024)
 	for _, file := range manifest.Files {
 		// No Modified: a zero time is written identically on every
 		// build, so two builds of identical content produce identical
@@ -346,7 +350,7 @@ func (b *Bundle) compress(manifest Manifest) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("bundle: archive %s: %w", file.Path, err)
 		}
-		sum, size, err := b.copyVerified(file.Path, entry, digest)
+		sum, size, err := b.copyVerified(file.Path, entry, digest, copyBuf)
 		if err != nil {
 			return nil, fmt.Errorf("bundle: archive %s: %w", file.Path, err)
 		}
@@ -362,14 +366,14 @@ func (b *Bundle) compress(manifest Manifest) ([]byte, error) {
 
 // copyVerified writes one file into the archive and hashes it on the way
 // through, so verification costs one read rather than two.
-func (b *Bundle) copyVerified(name string, dst io.Writer, digest hash.Hash) (string, int64, error) {
+func (b *Bundle) copyVerified(name string, dst io.Writer, digest hash.Hash, copyBuf []byte) (string, int64, error) {
 	file, err := b.fsys.Open(name)
 	if err != nil {
 		return "", 0, err
 	}
 	defer file.Close()
 	digest.Reset()
-	size, err := io.Copy(io.MultiWriter(dst, digest), file)
+	size, err := io.CopyBuffer(io.MultiWriter(dst, digest), file, copyBuf)
 	if err != nil {
 		return "", 0, err
 	}

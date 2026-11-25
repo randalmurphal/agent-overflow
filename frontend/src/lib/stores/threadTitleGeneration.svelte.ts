@@ -21,6 +21,8 @@
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { RegenerateThreadTitle } from './bindings';
 import { findPaneShowingThread } from './panes.svelte';
+import { addThreadRemovedObserver } from './threads.svelte';
+import { onBackendDetached } from '../transport/backends';
 import { onTransportStatusChange } from './transportStatus.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import { errString } from '../utils/errors';
@@ -38,10 +40,29 @@ const pending = createKeyedSignalRegistry<boolean>(false);
 // key enumeration (and its reset() is test-only), and the reconnect sweep
 // below needs to release exactly the flags that are up.
 const awaited = new Set<string>();
+let threadRemovalObserverInstalled = false;
+
+function dropThreadTitleGenerationState(threadId: string): void {
+  awaited.delete(threadId);
+  pending.drop(threadId);
+}
+
+function ensureThreadRemovalObserver(): void {
+  if (threadRemovalObserverInstalled) return;
+  threadRemovalObserverInstalled = true;
+  addThreadRemovedObserver(dropThreadTitleGenerationState);
+  onBackendDetached(({ threadIds }) => {
+    for (const id of threadIds) dropThreadTitleGenerationState(id);
+  });
+}
 
 function setPending(threadId: string, value: boolean): void {
-  if (value) awaited.add(threadId);
-  else awaited.delete(threadId);
+  if (value) {
+    ensureThreadRemovalObserver();
+    awaited.add(threadId);
+  } else {
+    awaited.delete(threadId);
+  }
   pending.set(threadId, value);
 }
 
@@ -56,7 +77,7 @@ function setPending(threadId: string, value: boolean): void {
  * returns without starting a second run).
  */
 export function releaseThreadTitleGenerationPending(): void {
-  for (const threadId of [...awaited]) setPending(threadId, false);
+  for (const threadId of Array.from(awaited)) setPending(threadId, false);
 }
 
 let wasDown = false;

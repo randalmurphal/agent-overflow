@@ -67,6 +67,7 @@
   import { verifiedThreadMachine } from '../../stores/attachedBackends.svelte';
   import { readAloudPreferences } from '../../stores/readAloudPreferences.svelte';
   import { refreshReadAloudSource } from '../../stores/readAloudSource.svelte';
+  import { registerAmbientGlowExcludedRoot } from '../../utils/ambientTicker';
 
   // Visual breathing room between the last message and the composer
   // overlay; combined with the --composer-height variable from ChatView.
@@ -680,11 +681,13 @@
       }
       lastTouchY = y;
     };
+    const unregisterAmbientGlowExclusion = registerAmbientGlowExcludedRoot(surface);
     surface.addEventListener('wheel', onWheel, { passive: true });
     surface.addEventListener('touchstart', onTouchStart, { passive: true });
     surface.addEventListener('touchmove', onTouchMove, { passive: true });
     surface.addEventListener('keydown', onKeyDown);
     return () => {
+      unregisterAmbientGlowExclusion();
       surface.removeEventListener('wheel', onWheel);
       surface.removeEventListener('touchstart', onTouchStart);
       surface.removeEventListener('touchmove', onTouchMove);

@@ -22,11 +22,15 @@ type engine struct {
 	inj          *injectionQuery // nil when the language has no injections
 }
 
-var engineTable = struct {
-	mu    sync.Mutex
-	built map[Lang]*engine
-	errs  map[Lang]error
-}{built: map[Lang]*engine{}, errs: map[Lang]error{}}
+type engineSlot struct {
+	once sync.Once
+	eng  *engine
+	err  error
+}
+
+// engineSlots compiles each language at most once with per-language sync.Once
+// so parallel grammars compile concurrently and steady-state lookups are lock-free.
+var engineSlots [langCount]engineSlot
 
 // engineFor returns the engine for a language, or nil when the
 // language has no grammar wired up or its vendored query failed to
@@ -34,21 +38,25 @@ var engineTable = struct {
 // defects; Preflight surfaces them loudly (tests fail CI, the app can
 // log at startup).
 func engineFor(lang Lang) *engine {
-	engineTable.mu.Lock()
-	defer engineTable.mu.Unlock()
-	if e, ok := engineTable.built[lang]; ok {
-		return e
-	}
-	if _, failed := engineTable.errs[lang]; failed {
+	if lang < 0 || lang >= langCount {
 		return nil
 	}
-	e, err := buildEngine(lang)
-	if err != nil {
-		engineTable.errs[lang] = err
+	slot := &engineSlots[lang]
+	slot.once.Do(func() {
+		slot.eng, slot.err = buildEngine(lang)
+	})
+	return slot.eng
+}
+
+func engineErrFor(lang Lang) error {
+	if lang < 0 || lang >= langCount {
 		return nil
 	}
-	engineTable.built[lang] = e // nil for grammarless languages
-	return e
+	slot := &engineSlots[lang]
+	slot.once.Do(func() {
+		slot.eng, slot.err = buildEngine(lang)
+	})
+	return slot.err
 }
 
 func buildEngine(lang Lang) (*engine, error) {

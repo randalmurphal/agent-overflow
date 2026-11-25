@@ -259,6 +259,19 @@ export function buildPathLinkExtension(
   // `earliestPathLinkHit`. Its `lastIndex` is reset on entry there, never
   // carried between calls.
   const scanRe = alternation ? new RegExp(`(?:${alternation})`, 'g') : null;
+  // First-character filter for `tokenizer`: rejects non-candidate inline
+  // positions in O(1) before running the alternation regex.
+  let bareFirstAscii: Uint8Array | null = null;
+  let bareHasNonAscii = false;
+  if (paths.length > 0) {
+    bareFirstAscii = new Uint8Array(128);
+    bareFirstAscii[64] = 1; // '@' prefix
+    for (let i = 0; i < paths.length; i++) {
+      const code = paths[i].charCodeAt(0);
+      if (code < 128) bareFirstAscii[code] = 1;
+      else bareHasNonAscii = true;
+    }
+  }
 
   // Build a link token from a successful regex match. `childKind`
   // selects the marked token type that wraps the visible text inside
@@ -347,21 +360,12 @@ export function buildPathLinkExtension(
       // A link label is not prose.
       if (isInsideMarkdownLinkLabel(this) || !bareRe || !wrappedRe) return undefined;
 
-      // Boundary check: marked invokes inline extensions at every
-      // position it advances to — including positions reached by
-      // consuming non-extension text. Without this guard, an
-      // email-shaped pattern like `name@src/foo.ts` would match once
-      // marked emits `name` as text and lands on `@src/foo.ts`. Both
-      // branches require this guard — for the wrapped branch it
-      // rejects `x\`src/foo.ts\``-glued-to-alphanumeric shapes too.
-      const prev = lastConsumedChar(tokens);
-      if (!isBoundary(prev)) return undefined;
-
-      // Try wrapped form first when src begins with a backtick. If it
-      // fails (path not in allowlist, or unbalanced backticks), return
-      // undefined so marked falls through to its built-in codespan
-      // tokenizer and renders the unrelated code span normally.
-      if (src.startsWith('`')) {
+      const firstCode = src.charCodeAt(0);
+      if (firstCode === 96 /* ` */) {
+        const nextCode = src.charCodeAt(1);
+        if (bareFirstAscii && nextCode < 128 && bareFirstAscii[nextCode] === 0) return undefined;
+        const prev = lastConsumedChar(tokens);
+        if (!isBoundary(prev)) return undefined;
         const w = wrappedRe.exec(src);
         if (!w) return undefined;
         const path = w[2];
@@ -376,6 +380,13 @@ export function buildPathLinkExtension(
         const col = w[4] ? Number(w[4]) : undefined;
         return buildLinkToken(raw, path, line, col, 'codespan', inner);
       }
+
+      if (bareFirstAscii && (firstCode < 128 ? bareFirstAscii[firstCode] === 0 : !bareHasNonAscii)) {
+        return undefined;
+      }
+
+      const prev = lastConsumedChar(tokens);
+      if (!isBoundary(prev)) return undefined;
 
       const m = bareRe.exec(src);
       if (!m) return undefined;

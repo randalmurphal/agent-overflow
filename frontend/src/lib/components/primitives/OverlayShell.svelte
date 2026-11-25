@@ -52,15 +52,19 @@
 {#if open}
   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
   <div
-    class="fixed inset-0 z-40 flex items-stretch justify-center bg-overlay p-4 backdrop-blur-sm md:p-8 compact:p-0 compact:pt-[env(safe-area-inset-top)] compact:pb-[env(safe-area-inset-bottom)]"
+    class="fixed inset-0 z-40 bg-overlay backdrop-blur-sm [contain:strict] [transform:translateZ(0)]"
     data-testid={scrimTestId}
     use:airspaceSurface
     onclick={handleScrimClick}
     transition:fade={{ duration: 120 }}
+  ></div>
+  <div
+    class="pointer-events-none fixed inset-0 z-40 flex items-stretch justify-center p-4 md:p-8 compact:p-0 compact:pt-[env(safe-area-inset-top)] compact:pb-[env(safe-area-inset-bottom)]"
+    transition:fade={{ duration: 120 }}
   >
     <div
       use:focusTrap={{ active: open, initialFocus }}
-      class="flex h-full w-full max-w-5xl flex-col overflow-hidden rounded-[var(--radius-card)] border border-border-subtle bg-surface-1 shadow-modal compact:max-w-none compact:rounded-none compact:border-0"
+      class="pointer-events-auto flex h-full w-full max-w-5xl flex-col overflow-hidden rounded-[var(--radius-card)] border border-border-subtle bg-surface-1 shadow-modal [contain:layout_paint] [transform:translateZ(0)] compact:max-w-none compact:rounded-none compact:border-0"
       role="dialog"
       aria-modal="true"
       aria-label={ariaLabel}

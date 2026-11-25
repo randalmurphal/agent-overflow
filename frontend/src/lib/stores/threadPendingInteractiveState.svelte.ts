@@ -40,8 +40,8 @@ export interface ThreadPendingInteractiveState {
 }
 
 export function createThreadPendingInteractiveState(): ThreadPendingInteractiveState {
-  let approvals: ApprovalRequest[] = $state([]);
-  let userInputs: UserInputRequest[] = $state([]);
+  let approvals: ApprovalRequest[] = $state.raw([]);
+  let userInputs: UserInputRequest[] = $state.raw([]);
   const resolvedApprovalIds = new Set<string>();
   const resolvedUserInputIds = new Set<string>();
 

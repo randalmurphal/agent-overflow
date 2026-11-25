@@ -246,7 +246,7 @@ function addButtons(): HTMLButtonElement[] {
 // The code text of the row holding `control`: somewhere to release a press
 // that is not a button.
 function rowText(control: Element): Element {
-  return control.closest('.group')!.querySelector('[data-find-key]')!;
+  return control.closest('.ao-diff-line')!.querySelector('[data-find-key]')!;
 }
 
 // The middle of `element` in the page's coordinates, which the input

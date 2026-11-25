@@ -1,6 +1,7 @@
 import type { Item } from '../types/models';
 import type { AttachmentPreviewCache, ImagePreviewItem } from '../utils/attachmentPreview.svelte';
 import { userMessageIdentity } from '../utils/userMessageIdentity';
+import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 
 interface MessageAttachments {
   previews: Map<string, ImagePreviewItem>;
@@ -14,7 +15,8 @@ interface Options {
 
 /** Message presentation survives confirmation, and ends when the message leaves retention. */
 export function createThreadMessageUiState(options: Options) {
-  let expanded = $state<ReadonlySet<string>>(new Set());
+  const expandedKeys = new Set<string>();
+  const expandedSignals = createKeyedSignalRegistry<boolean>(false);
   const attachments = new Map<string, MessageAttachments>();
 
   function itemKey(item: Item): string {
@@ -42,16 +44,15 @@ export function createThreadMessageUiState(options: Options) {
   }
 
   function isExpanded(itemId: string, part = ''): boolean {
-    return expanded.has(entryFor(itemId, part));
+    return expandedSignals.get(entryFor(itemId, part));
   }
 
   function setExpanded(itemId: string, value: boolean, part = ''): void {
     const key = entryFor(itemId, part);
-    if (expanded.has(key) === value) return;
-    const next = new Set(expanded);
-    if (value) next.add(key);
-    else next.delete(key);
-    expanded = next;
+    if (expandedKeys.has(key) === value) return;
+    if (value) expandedKeys.add(key);
+    else expandedKeys.delete(key);
+    expandedSignals.set(key, value);
   }
 
   function revoke(preview: ImagePreviewItem): void {
@@ -92,11 +93,11 @@ export function createThreadMessageUiState(options: Options) {
 
   function disposeItems(items: readonly Item[]): void {
     let retainedKeys: Set<string> | undefined;
-    const open = new Set(Array.from(expanded, messageKeyOf));
+    const open = expandedKeys.size > 0 ? new Set(Array.from(expandedKeys, messageKeyOf)) : null;
     const released = new Set<string>();
     for (const item of items) {
       const key = itemKey(item);
-      if (!open.has(key) && !attachments.has(key)) continue;
+      if (!(open?.has(key)) && !attachments.has(key)) continue;
       if (userMessageIdentity(item) !== null) {
         retainedKeys ??= new Set(Array.from(options.loadedItems(), itemKey));
         if (retainedKeys.has(key)) continue;
@@ -104,29 +105,38 @@ export function createThreadMessageUiState(options: Options) {
       disposeAttachments(key);
       released.add(key);
     }
-    if (released.size === 0 || expanded.size === 0) return;
-    const next = new Set([...expanded].filter((entry) => !released.has(messageKeyOf(entry))));
-    if (next.size !== expanded.size) expanded = next;
+    if (released.size === 0 || expandedKeys.size === 0) return;
+    for (const entry of Array.from(expandedKeys)) {
+      if (released.has(messageKeyOf(entry))) {
+        expandedKeys.delete(entry);
+        expandedSignals.drop(entry);
+      }
+    }
   }
 
   function prune(itemIds: ReadonlySet<string>): void {
-    if (expanded.size === 0 && attachments.size === 0) return;
+    if (expandedKeys.size === 0 && attachments.size === 0) return;
     const kept = new Set(Array.from(itemIds, keyForId));
     for (const key of attachments.keys()) {
       if (!kept.has(key)) disposeAttachments(key);
     }
-    const next = new Set([...expanded].filter((entry) => kept.has(messageKeyOf(entry))));
-    if (next.size !== expanded.size) expanded = next;
+    for (const entry of Array.from(expandedKeys)) {
+      if (!kept.has(messageKeyOf(entry))) {
+        expandedKeys.delete(entry);
+        expandedSignals.drop(entry);
+      }
+    }
   }
 
   function clear(): void {
-    expanded = new Set();
+    expandedKeys.clear();
+    expandedSignals.reset();
     for (const key of attachments.keys()) disposeAttachments(key);
   }
 
   return {
     isExpanded, setExpanded, attachmentCacheFor, disposeItems, prune, clear,
-    expansionSignature: () => expanded.size > 0 ? `u:${JSON.stringify([...expanded].sort())}` : '',
-    stats: () => ({ expandedUserMessages: expanded.size, attachmentItems: attachments.size }),
+    expansionSignature: () => expandedKeys.size > 0 ? `u:${JSON.stringify([...expandedKeys].sort())}` : '',
+    stats: () => ({ expandedUserMessages: expandedKeys.size, attachmentItems: attachments.size }),
   };
 }

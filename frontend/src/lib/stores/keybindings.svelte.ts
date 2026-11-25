@@ -73,6 +73,13 @@ let resolved: ResolvedKeybinding[] = $state([]);
 let issues: KeybindingIssue[] = $state([]);
 let loaded = $state(false);
 let loadError: string | null = $state(null);
+// Cached subsets of `resolved` filtered by a caller's ReadonlySet of command
+// ids, cleared whenever `resolved` is replaced. Keeps the editable-target
+// keydown fast path O(|subset|) with zero DOM queries or context allocation.
+let resolvedSubsetCache = new WeakMap<ReadonlySet<string>, ResolvedKeybinding[]>();
+// Precomputed command-id -> effective chord key map (last-registered binding
+// wins, matching reverse scan), rebuilt whenever `resolved` is replaced.
+let keyByCommandId = new Map<string, string>();
 
 /** The native shell has no local Go service. Its bootstrap installs
  * frontend-owned persistence before any loader or settings action runs. */
@@ -91,6 +98,12 @@ function compileEffectiveRules(): void {
   const compiled = compileAll(rules);
   resolved = compiled.resolved;
   issues = compiled.issues;
+  resolvedSubsetCache = new WeakMap();
+  const nextKeys = new Map<string, string>();
+  for (const entry of compiled.resolved) {
+    nextKeys.set(entry.rule.command, entry.rule.key);
+  }
+  keyByCommandId = nextKeys;
 }
 
 /**
@@ -202,12 +215,9 @@ export function getKeybindingLoadError(): string | null {
  * bug the unbound state exists to fix.
  */
 export function keybindingForCommand(commandId: string): string | null {
-  for (let i = resolved.length - 1; i >= 0; i -= 1) {
-    if (resolved[i].rule.command === commandId) {
-      return resolved[i].rule.key;
-    }
-  }
-  return null;
+  // Read `resolved` so Svelte tracks rebindings while keeping the lookup O(1).
+  void resolved;
+  return keyByCommandId.get(commandId) ?? null;
 }
 
 /**
@@ -340,6 +350,8 @@ async function readKeybindings(announce: boolean): Promise<void> {
     rules = [];
     resolved = [];
     issues = [];
+    keyByCommandId = new Map();
+    resolvedSubsetCache = new WeakMap();
     loaded = true;
     // The call never reached the file, so any earlier file-read failure is
     // no longer something we know to be true — leaving it set would keep a
@@ -406,6 +418,8 @@ export function resetKeybindingsStore(): void {
   rules = [];
   resolved = [];
   issues = [];
+  keyByCommandId = new Map();
+  resolvedSubsetCache = new WeakMap();
   loaded = false;
   loadError = null;
 }
@@ -483,6 +497,34 @@ export function keyWouldDispatch(
   return false;
 }
 
+function resolvedForCommands(commandIds: ReadonlySet<string>): ResolvedKeybinding[] {
+  let cached = resolvedSubsetCache.get(commandIds);
+  if (!cached) {
+    cached = resolved.filter((r) => commandIds.has(r.rule.command));
+    resolvedSubsetCache.set(commandIds, cached);
+  }
+  return cached;
+}
+
+/**
+ * Pure chord pre-filter against a command subset (zero DOM queries, zero
+ * command-context construction). Callers on the editable-target keydown hot
+ * path use this to skip `makeAppCommandContext` on ordinary typing keystrokes.
+ */
+export function hasChordMatchForCommands(
+  event: KeyboardEvent,
+  commandIds: ReadonlySet<string>,
+  options: { isMac?: boolean } = {},
+): boolean {
+  const subset = resolvedForCommands(commandIds);
+  if (subset.length === 0) return false;
+  const isMac = options.isMac ?? isMacPlatform();
+  for (let i = subset.length - 1; i >= 0; i -= 1) {
+    if (chordMatches(subset[i].chord, event, isMac)) return true;
+  }
+  return false;
+}
+
 export function eventMatchesKeybindingCommand(
   event: KeyboardEvent,
   ctx: CommandContext,
@@ -494,11 +536,12 @@ export function eventMatchesKeybindingCommand(
   // none does. Diverging would let the editable-target path in
   // App.svelte claim (and preventDefault) a chord dispatch then refuses.
   if (isKeybindingCaptureTarget(event.target)) return false;
+  const subset = resolvedForCommands(commandIds);
+  if (subset.length === 0) return false;
   const isMac = options.isMac ?? isMacPlatform();
 
-  for (let i = resolved.length - 1; i >= 0; i -= 1) {
-    const r = resolved[i];
-    if (!commandIds.has(r.rule.command)) continue;
+  for (let i = subset.length - 1; i >= 0; i -= 1) {
+    const r = subset[i];
     if (!chordMatches(r.chord, event, isMac)) continue;
     if (r.whenAst && !evaluateRuleWhen(r.whenAst, ctx)) continue;
     if (!isCommandEnabled(r.rule.command, ctx)) continue;

@@ -31,6 +31,8 @@ export interface SpringChaseDeps {
   /** Force a native geometry read for sentinel/clamp/refusal arbitration. */
   targetScrollTop(forceLayoutRead?: boolean): number;
   currentScrollTop(forceLayoutRead?: boolean): number;
+  /** Client height for sentinel rebasing; avoids forcing layout when cached. */
+  currentClientHeight?(forceLayoutRead?: boolean): number;
   arrival: ArrivalReadback;
   writeScrollTop(caller: ScrollWriteCaller, value: number, bottomTarget: number): number | undefined;
   liveContentActive(): boolean;

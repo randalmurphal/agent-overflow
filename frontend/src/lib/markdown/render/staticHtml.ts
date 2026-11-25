@@ -17,13 +17,23 @@ import {
 	previewOfToken,
 } from './previewLink';
 
+const HTML_ESCAPE_PROBE_RE = /[&<>"']/;
+const HTML_ESCAPE_RE = /[&<>"']/g;
+const HTML_ESCAPE_MAP: Record<string, string> = {
+	'&': '&amp;',
+	'<': '&lt;',
+	'>': '&gt;',
+	'"': '&quot;',
+	"'": '&#39;',
+};
+const NO_TOKENS: readonly StreamdownToken[] = [];
+const NO_PREFIXES: string[] = [];
+const TABLE_ALIGNMENTS = new Set(['left', 'center', 'right', 'justify', 'char']);
+
 function escapeHtml(value: unknown): string {
-	return String(value ?? '')
-		.replaceAll('&', '&amp;')
-		.replaceAll('<', '&lt;')
-		.replaceAll('>', '&gt;')
-		.replaceAll('"', '&quot;')
-		.replaceAll("'", '&#39;');
+	const str = String(value ?? '');
+	if (!HTML_ESCAPE_PROBE_RE.test(str)) return str;
+	return str.replace(HTML_ESCAPE_RE, (ch) => HTML_ESCAPE_MAP[ch]);
 }
 
 function attribute(name: string, value: unknown): string {
@@ -38,10 +48,10 @@ function attributes(values: Record<string, string>): string {
 	return out;
 }
 
-function childrenOf(token: StreamdownToken): StreamdownToken[] {
+function childrenOf(token: StreamdownToken): readonly StreamdownToken[] {
 	return Array.isArray((token as { tokens?: StreamdownToken[] }).tokens)
 		? (token as { tokens: StreamdownToken[] }).tokens
-		: [];
+		: NO_TOKENS;
 }
 
 function extensionToken(_token: never): false {
@@ -228,7 +238,7 @@ export function renderStaticTokenHtml(
 				case 'th': {
 					if (streamdown.snippets[token.type]) return false;
 					if (!tableCellRenders(token)) break;
-					const align = token.align && ['left', 'center', 'right', 'justify', 'char'].includes(token.align)
+					const align = token.align && TABLE_ALIGNMENTS.has(token.align)
 						? token.align
 						: 'left';
 					output.push(
@@ -246,9 +256,10 @@ export function renderStaticTokenHtml(
 
 				case 'link': {
 					if (streamdown.snippets.link) return false;
+					const allowedPrefixes = streamdown.allowedLinkPrefixes ?? NO_PREFIXES;
 					const linkClass = classifyLinkHref(
 						token.href,
-						streamdown.allowedLinkPrefixes ?? [],
+						allowedPrefixes,
 						!!streamdown.document?.forge,
 					);
 					// Mirrors Link.svelte's fragment branch.
@@ -310,7 +321,7 @@ export function renderStaticTokenHtml(
 							'>',
 						);
 						if (!render(children)) return false;
-						const tag = linkTagText(token.href, streamdown.allowedLinkPrefixes ?? []);
+						const tag = linkTagText(token.href, allowedPrefixes);
 						if (tag) output.push(`<span data-find-skip="">${escapeHtml(tag)}</span>`);
 						output.push('</span>');
 					}
@@ -389,7 +400,7 @@ export function renderStaticTokenHtml(
 				// Mirrors Element.svelte: an anchor for an approved href, else
 				// the same chip as a span; styles only from accepted colors.
 				case 'labelChip': {
-					const linkClass = classifyLinkHref(token.href, streamdown.allowedLinkPrefixes ?? [], !!streamdown.document?.forge);
+					const linkClass = classifyLinkHref(token.href, streamdown.allowedLinkPrefixes ?? NO_PREFIXES, !!streamdown.document?.forge);
 					const tag = linkClass.kind === 'anchor' ? 'a' : 'span';
 					output.push(
 						`<${tag} data-streamdown-label-chip="${dataId}"` +
@@ -475,7 +486,7 @@ export function renderStaticTokenHtml(
 		return true;
 	};
 
-	const aligned = alignedTokens([...tokens], align, {
+	const aligned = alignedTokens(tokens, align, {
 		mdxComponents: streamdown.mdxComponents,
 		mdxSnippet: streamdown.snippets.mdx,
 	});

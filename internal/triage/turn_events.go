@@ -19,6 +19,8 @@ type TurnStartedEvent struct {
 	StartedAt int64  `json:"startedAt"`
 }
 
+func (e TurnStartedEvent) EventThreadID() string { return e.ThreadID }
+
 // ActiveTurnSnapshot is the server-owned live projection of the currently
 // open frontend wire round. It intentionally mirrors TurnStartedEvent so a
 // reconnecting frontend can rebuild the same active-turn registry it would
@@ -29,6 +31,8 @@ type ActiveTurnSnapshot struct {
 	TurnIndex int    `json:"turnIndex"`
 	StartedAt int64  `json:"startedAt"`
 }
+
+func (e ActiveTurnSnapshot) EventThreadID() string { return e.ThreadID }
 
 // TurnCompletedEvent is the frontend-facing payload for
 // provider:turn_completed. Carries the settled-turn projection the UI
@@ -79,6 +83,8 @@ type TurnCompletedEvent struct {
 	HistoryRev   int64 `json:"historyRev"`
 	HistoryEpoch int64 `json:"historyEpoch"`
 }
+
+func (e TurnCompletedEvent) EventThreadID() string { return e.ThreadID }
 
 // SessionDiedEvent is the frontend-facing payload for
 // `provider:session_died`. Emitted when a provider process exits

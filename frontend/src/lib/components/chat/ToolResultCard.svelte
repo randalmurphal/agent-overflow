@@ -144,7 +144,7 @@
   }
 </script>
 
-<div class="group/tool overflow-hidden" data-testid="tool-result-card">
+<div class="ao-tool-row overflow-hidden" data-testid="tool-result-card">
   <TranscriptDisclosureHeader
     expanded={false}
     expandable={false}

@@ -183,7 +183,7 @@ export type AlignedToken<T> = {
  * the elements an unaligned render has, in the same order.
  */
 export const alignedTokens = <T extends { type: string; tagName?: string; tokens?: unknown }>(
-    tokens: T[],
+    tokens: readonly T[],
     align: Alignment,
     renderers: MdxRenderers
 ): AlignedToken<T>[] | null => {
@@ -191,7 +191,7 @@ export const alignedTokens = <T extends { type: string; tagName?: string; tokens
         return null;
     const out: AlignedToken<T>[] = [];
     let current = align;
-    const collect = (from: T[], nested: boolean): void => {
+    const collect = (from: readonly T[], nested: boolean): void => {
         for (const token of from) {
             if (token.type === 'align') {
                 const marker = token as unknown as AlignToken;

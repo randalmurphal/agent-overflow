@@ -480,7 +480,10 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       if (current !== target && !deps.arrival.matches(target)) {
         if (
           sentinelEntryTarget >= 0
-          && withinArrivalBand(target, rebasedSentinelEntryTarget(el.clientHeight))
+          && withinArrivalBand(
+            target,
+            rebasedSentinelEntryTarget(deps.currentClientHeight ? deps.currentClientHeight(false) : el.clientHeight),
+          )
           && witnessClampIfUnexplained()
         ) {
           snapOscillationToBottom('spring.oscillationSnap', target);
@@ -535,7 +538,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
           if (chaseTelemetry) chaseTelemetry.sentinelTicks += 1;
           if (sentinelEntryTarget < 0) {
             sentinelEntryTarget = target;
-            sentinelEntryClientHeight = el.clientHeight;
+            sentinelEntryClientHeight = deps.currentClientHeight ? deps.currentClientHeight(false) : el.clientHeight;
             sentinelClampWitnessed = false;
             if (chaseTelemetry) chaseTelemetry.sentinelEntries += 1;
           }
@@ -583,7 +586,10 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       if (sentinelEntryTarget < 0) return -1;
       const el = deps.getScrollEl();
       if (!el) return sentinelEntryTarget;
-      return rebasedSentinelEntryTarget(el.clientHeight);
+      const clientHeight = deps.currentClientHeight
+        ? deps.currentClientHeight(true)
+        : el.clientHeight;
+      return rebasedSentinelEntryTarget(clientHeight);
     },
     sentinelClampWitnessed: () => witnessClampIfUnexplained(),
     refusalLatched: () => writeRefusalLatched,

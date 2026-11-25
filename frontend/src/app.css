@@ -1,4 +1,8 @@
 @import "tailwindcss";
+/* Block Tailwind's unused `.container` utility so JS/test identifiers such as
+   `rendered.container` and `theme.code.container` do not emit 40–96rem
+   viewport media queries that trigger full-document style recalcs on resize. */
+@source not inline("container");
 @import "./styles/tokens.css";
 @import "./styles/syntax.css";
 
@@ -1383,7 +1387,7 @@ svg[data-mermaid-svg] .labelBox {
   opacity: 0;
   transition: opacity 0.12s ease-out;
 }
-.markdown-body pre:hover .code-copy-mount,
+.markdown-body pre:hover > .code-copy-mount,
 .markdown-body .code-copy-mount:focus-within,
 .layout-compact .markdown-body .code-copy-mount {
   opacity: 1;
@@ -1697,14 +1701,14 @@ html.light .working-sprite {
   align-items: center;
   gap: var(--run-map-spine-gap);
 }
-.run-map-spine > * {
+.run-map-spine > .run-map-node {
   position: relative;
   max-width: 100%;
   min-width: 0;
 }
 /* Rows that carry a whole line of their own (wave summaries, cards) fill the
    column; plain nodes size to their content and sit centered in it. */
-.run-map-spine-wide > * {
+.run-map-spine-wide > .run-map-node {
   width: 100%;
 }
 /* The connector selector needs a CLASS in both sibling compounds: as
@@ -1940,6 +1944,53 @@ html.light .working-sprite {
   margin-top: 1.75rem;
   padding-top: 1.75rem;
   border-top: 1px solid var(--border-subtle);
+}
+
+/* Sub-lines tucked under a sidebar thread row (attention, agent state, worktree/machine). */
+.thread-row-lines > .thread-row-line {
+  margin-top: -0.125rem;
+}
+.thread-row-lines > .thread-row-line:first-child {
+  margin-top: -0.375rem;
+}
+
+/* Direct-child hover reveal rules for chat messages and code blocks.
+   Using `>` instead of Tailwind's descendant `.group:hover .group-hover:*`
+   keeps Blink's style invalidator from walking hundreds of markdown and
+   syntax-highlighted descendants on every pointerover during scrolling. */
+@media (hover: hover) {
+  .ao-assistant-msg:hover > [data-testid='assistant-message-meta'] > [data-testid='assistant-message-copy-slot'] > .ao-hover-reveal:not(:disabled),
+  .ao-assistant-msg:hover > [data-testid='assistant-message-meta'] > .ao-hover-reveal:not(:disabled),
+  .ao-user-msg:hover > .ao-user-msg-col > .ao-user-msg-meta > .ao-hover-reveal:not(:disabled),
+  .streamdown-code-host:hover > .ao-code-overlay,
+  .ao-tool-row:hover > .ao-tool-header > .ao-hover-reveal:not(:disabled),
+  .ao-tool-row:hover > .ao-tool-header > .ao-tool-header-actions > .ao-hover-reveal:not(:disabled),
+  .ao-tool-row:hover > .ao-tool-header > .ao-tool-header-actions > [data-tool-header-meta] > .ao-hover-reveal:not(:disabled),
+  .ao-tool-row:hover > .ao-tool-header > [data-tool-header-meta] > .ao-hover-reveal:not(:disabled),
+  .ao-tool-row:hover > .ao-tool-header-wrap > .ao-tool-header > .ao-hover-reveal:not(:disabled),
+  .ao-tool-row:hover > .ao-tool-header-wrap > .ao-tool-header > [data-tool-header-meta] > .ao-hover-reveal:not(:disabled),
+  .ao-diff-line:hover > .ao-diff-action > .ao-diff-add-btn {
+    opacity: 1;
+  }
+}
+
+/* Diff line overlays: create ::before only when hovered or targeted rather than
+   allocating an idle pseudo-element layer on every mounted diff line. */
+.ao-diff-line[data-review-target]::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-color: color-mix(in oklab, var(--accent) 15%, transparent);
+}
+@media (hover: hover) {
+  .ao-diff-line:hover::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-color: color-mix(in oklab, var(--text-primary) 4%, transparent);
+  }
 }
 
 /*

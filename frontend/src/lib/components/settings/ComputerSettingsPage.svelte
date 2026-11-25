@@ -5,8 +5,20 @@
   import { provideSettingsComputer } from './settingsComputer';
   import { PRIMARY_BUTTON_CLASS } from './styles';
 
-  let { backend, Page, needsComputer, hasDeviceControls = false }: {
-    backend: BackendKey; Page: Component; needsComputer: boolean; hasDeviceControls?: boolean;
+  let {
+    backend,
+    Page,
+    needsComputer,
+    hasDeviceControls = false,
+    alreadyRefreshed = false,
+    onRefreshed,
+  }: {
+    backend: BackendKey;
+    Page: Component;
+    needsComputer: boolean;
+    hasDeviceControls?: boolean;
+    alreadyRefreshed?: boolean;
+    onRefreshed?: (backend: BackendKey) => void;
   } = $props();
   const computer = untrack(() => backend);
   provideSettingsComputer(computer);
@@ -14,10 +26,14 @@
   let failed = $state(false);
   async function load(): Promise<void> {
     loading = !hasComputerSettings(computer);
-    failed = !await loadSettings(computer);
+    const ok = await loadSettings(computer);
+    failed = !ok;
     loading = false;
+    if (ok) onRefreshed?.(computer);
   }
-  onMount(() => { if (needsComputer) void load(); });
+  onMount(() => {
+    if (needsComputer && (!alreadyRefreshed || !hasComputerSettings(computer))) void load();
+  });
 </script>
 
 {#if loading && !hasDeviceControls}

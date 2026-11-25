@@ -422,7 +422,7 @@
 {/snippet}
 
 <div
-  class="group/tool overflow-hidden"
+  class="ao-tool-row overflow-hidden"
   data-testid="tool-call-card"
   data-tool-kind={classification.icon}
 >

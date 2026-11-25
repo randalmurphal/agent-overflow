@@ -25,8 +25,8 @@ import { collapseThreadList } from './sidebar.svelte';
 import type { ThreadGroup } from '../types/models';
 import type { ThreadGroupUpdateEvent } from '../types/events';
 
-let threadGroups: ThreadGroup[] = $state([]);
-const catalogWriter = computerCatalogWriter('groups', () => threadGroups, (rows) => { threadGroups = rows; }, (row) => threadGroupBackend(row.id));
+let threadGroups: ThreadGroup[] = $state.raw([]);
+const catalogWriter = computerCatalogWriter('groups', () => threadGroups, (rows) => { threadGroups = rows; }, (row) => threadGroupBackend(row.id), { rowsAreValues: true });
 
 // Shared empty bucket so a project with no groups hands every reader the
 // same reference — an identity cutoff downstream can't be defeated by a

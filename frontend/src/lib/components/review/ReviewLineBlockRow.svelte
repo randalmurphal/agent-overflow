@@ -5,12 +5,23 @@
   import { rowMatchesAnchor, type RowType } from '../../utils/patchRows';
   import { DIFF_CONTEXT_EXPAND_STEP, type ExpandDirection } from '../../utils/diffContextExpansion';
   import { gutterTintClass, lineTintClass } from '../../utils/diffLineTint';
-  import { diffSpanCacheGeneration, getSpansForReviewLine, requestReviewFileSpans, type PaintedSpans, type PatchScopeContext } from '../../utils/diffSpanCache.svelte';
+  import {
+    diffSpanCacheEvictionGeneration,
+    diffSpanCacheGeneration,
+    getSpansForReviewFile,
+    needsReviewFileSpanRetry,
+    requestReviewFileSpans,
+    resolveReviewLineSpan,
+    retainReviewFileSpanPin,
+    type PaintedSpans,
+    type PatchScopeContext,
+  } from '../../utils/diffSpanCache.svelte';
+  import { patchTextVersion } from '../../utils/patchMemory.svelte';
   import { stripPatchLinePrefix, type DiffGap, type PatchDisplayRow, type SplitDisplayRow } from '../../utils/patchFiles';
   import type { ReviewFile } from '../../utils/patchParser';
   import { REVIEW_LINE_HEIGHT_PX } from '../../utils/reviewRows';
   import { findLineKey } from '../../utils/reviewFindIdentity';
-  import { seenActivation } from '../../utils/seenActivation';
+  import { delegatedSeenActivation } from '../../utils/seenActivation';
   import { rowInRange, type LineRange } from '../../utils/reviewRange';
   import type { LineCommentGate } from '../../stores/reviewRangeComments';
 
@@ -87,15 +98,51 @@
       && rowMatchesAnchor(ROW_TYPES[row.side], row.oldLine, row.newLine, target));
   }
 
-  // An add button acts on the row and diff it was pressed on: a reload
-  // between the press and the click must not open the comment on the row
-  // that replaced it.
-  // With Shift held it spans the open editor to the row instead.
-  function addComment(anchor: () => EditorAnchor) {
-    return seenActivation(() => ({ anchor: anchor(), generation }), (at, click) => {
+  // Delegated activation on the block root: 4 DOM listeners per block instead
+  // of 4 per line (up to 256 per split block), preserving exact seenActivation
+  // press-to-click capture semantics and computing anchors lazily on demand.
+  function matchAddButton(target: EventTarget | null): HTMLElement | null {
+    return target instanceof Element
+      ? target.closest<HTMLElement>('[data-testid="review-add-comment"]')
+      : null;
+  }
+
+  function readAddActivation(button: HTMLElement): { anchor: EditorAnchor; generation: number | undefined } | null {
+    const idxStr = button.dataset.rowIdx;
+    if (idxStr === undefined) return null;
+    const idx = Number(idxStr);
+    const half = button.dataset.half;
+    if (splitRows) {
+      const pair = splitRows[idx];
+      if (!pair) return null;
+      if (half === 'old' && pair.left) return { anchor: sideAnchor(pair.left, 'old'), generation };
+      if (half === 'new' && pair.right) return { anchor: sideAnchor(pair.right, 'new'), generation };
+      return null;
+    }
+    const row = rows[idx];
+    return row ? { anchor: stackedAnchor(row), generation } : null;
+  }
+
+  const blockAddComment = delegatedSeenActivation(
+    matchAddButton,
+    readAddActivation,
+    (at, click) => {
       if (click.shiftKey && onExtendRange) onExtendRange(at.anchor, at.generation);
       else onAddComment?.(at.anchor, at.generation);
-    });
+    },
+  );
+
+  function handleBlockContextMenu(event: MouseEvent): void {
+    if (!onLineMenu || !(event.target instanceof Element)) return;
+    const gutterEl = event.target.closest<HTMLElement>('[data-testid="review-line-gutter"]');
+    if (!gutterEl) return;
+    const idxStr = gutterEl.dataset.rowIdx;
+    if (idxStr === undefined) return;
+    const idx = Number(idxStr);
+    const row = splitRows
+      ? (gutterEl.dataset.half === 'old' ? splitRows[idx]?.left : splitRows[idx]?.right) ?? null
+      : (rows[idx] ?? null);
+    openLineMenu(event, row);
   }
 
   // Whether a row (or its half in split view) is inside a tinted range.
@@ -104,15 +151,31 @@
     return ranges.some((range) => rowInRange(row.oldLine, row.newLine, half, range));
   }
   const RANGE_CLASS = "after:pointer-events-none after:absolute after:inset-0 after:bg-accent/15 after:content-['']";
-  // The tree's selected-row wash.
-  const TARGET_CLASS = 'before:bg-accent/15';
+
+  // Resolve the file's span array once per block instead of 32–64 times per line.
+  let fileSpans = $derived(getSpansForReviewFile(file, spanContext));
 
   $effect(() => {
-    // Generation dependency: an eviction (LRU pressure, same-thread
-    // reload) re-runs this effect so mounted rows re-request instead
-    // of staying plain; on a cache hit the re-run is a cheap Map
-    // lookup.
-    diffSpanCacheGeneration();
+    if (file.body.contentKey() === null) {
+      void patchTextVersion();
+      return;
+    }
+    return retainReviewFileSpanPin(file);
+  });
+
+  $effect(() => {
+    // Steady-state highlighted blocks only subscribe to eviction/reset so
+    // sibling file completions do not wake them. Missing, unprimed, or
+    // incomplete blocks also subscribe to `diffSpanCacheGeneration()` so
+    // transient RPC failures and incomplete parses retry when sibling
+    // completions land. Reading `fileSpans` keeps the per-file base
+    // dependency so the effect drops the global subscription once its own
+    // target entry lands.
+    diffSpanCacheEvictionGeneration();
+    void fileSpans;
+    if (needsReviewFileSpanRetry(file, spanContext)) {
+      diffSpanCacheGeneration();
+    }
     const fileNow = file;
     const context = spanContext;
     const owner = spanOwner;
@@ -120,6 +183,10 @@
       void requestReviewFileSpans(fileNow, owner, context);
     });
   });
+
+  function spansForRow(row: PatchDisplayRow) {
+    return resolveReviewLineSpan(file.path, row.lineIndex ?? -1, row.line, fileSpans, painted);
+  }
 
   // Heights come from the shared constant, not rem-based Tailwind
   // classes, so the estimate table and the rendered geometry cannot
@@ -192,18 +259,19 @@
 <!-- Reserved action column: a real cell at the row's left edge, so
      the hover affordance never paints over the line numbers. A row whose
      text is still being read (`pending`) has no text to quote yet. -->
-{#snippet actionCell(row: PatchDisplayRow, anchor: EditorAnchor, side: string)}
-  {@const gate = lineComment?.(anchor) ?? null}
-  <span class="flex w-5 shrink-0 items-center justify-center">
+{#snippet actionCell(row: PatchDisplayRow, rowIdx: number, half: 'old' | 'new' | null, sideLabel: string)}
+  {@const gate = lineComment ? lineComment(half ? sideAnchor(row, half) : stackedAnchor(row)) : null}
+  <span class="ao-diff-action flex w-5 shrink-0 items-center justify-center">
     {#if onAddComment && !row.pending && gate?.target !== 'none'}
       <button
         type="button"
-        class="flex size-4 items-center justify-center rounded-[3px] bg-accent text-[0.6875rem] font-semibold leading-none text-accent-fg opacity-0 transition-opacity duration-75 group-hover:opacity-100 focus-visible:opacity-100 compact:opacity-100 hover:brightness-110 focus:outline-none"
-        aria-label={`Add ${side} comment`}
+        class="ao-diff-add-btn flex size-4 items-center justify-center rounded-[3px] bg-accent text-[0.6875rem] font-semibold leading-none text-accent-fg opacity-0 focus-visible:opacity-100 compact:opacity-100 hover:brightness-110 focus:outline-none"
+        aria-label={`Add ${sideLabel} comment`}
         title={gate?.reason ?? (onExtendRange ? 'Add a comment (Shift+click to span the open comment to this line)' : undefined)}
         data-comment-target={gate?.target}
         data-testid="review-add-comment"
-        {@attach addComment(() => anchor)}
+        data-row-idx={rowIdx}
+        data-half={half ?? undefined}
       >
         +
       </button>
@@ -291,11 +359,14 @@
 <!-- Slab inset + border-x: each file renders as an inset card slab on the
      darker page background. Horizontal only — the exact-height contract
      allows no vertical borders here. -->
+<!-- svelte-ignore a11y_no_static_element_interactions (delegated contextmenu for line gutters; line has no keyboard focus to open it from) -->
 <div
   class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1 font-mono text-xs text-fg"
   style:line-height={lineHeight}
   data-testid="review-line-block"
   data-path={path}
+  {@attach blockAddComment}
+  oncontextmenu={handleBlockContextMenu}
 >
   {#if splitRows}
     {#each splitRows as pair, pairIndex (pairIndex)}
@@ -307,46 +378,49 @@
         <!-- Gap bands span both sides too (context-like mirror row). -->
         {@render gapRow(pair.left.gap)}
       {:else}
+      {@const leftTarget = pair.left ? isTarget(pair.left, 'old') : false}
+      {@const leftRange = pair.left ? inRange(pair.left, 'old') : false}
+      {@const rightTarget = pair.right ? isTarget(pair.right, 'new') : false}
+      {@const rightRange = pair.right ? inRange(pair.right, 'new') : false}
       <div class={lineClass} style:height={wordWrap ? undefined : lineHeight}>
-        <div class="group relative flex w-1/2 min-w-0 before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.left ? lineTintClass(pair.left.line.type) : 'bg-surface-0/40'} {pair.left && isTarget(pair.left, 'old') ? TARGET_CLASS : ''} {pair.left && inRange(pair.left, 'old') ? RANGE_CLASS : ''}" data-review-range={pair.left && inRange(pair.left, 'old') ? '' : undefined} data-review-target={pair.left && isTarget(pair.left, 'old') ? '' : undefined}>
+        <div class="ao-diff-line relative flex w-1/2 min-w-0 {pair.left ? lineTintClass(pair.left.line.type) : 'bg-surface-0/40'} {leftRange ? RANGE_CLASS : ''}" data-review-range={leftRange ? '' : undefined} data-review-target={leftTarget ? '' : undefined}>
           {#if pair.left}
-            {@render actionCell(pair.left, sideAnchor(pair.left, 'old'), 'old-line')}
-            <!-- svelte-ignore a11y_no_static_element_interactions (the menu is a pointer gesture; the line has no keyboard focus to open it from) -->
-            <span class="flex shrink-0 {gutterTintClass(pair.left.line.type)}" data-testid="review-line-gutter" oncontextmenu={(event) => openLineMenu(event, pair.left)}>{@render gutter(pair.left.oldLine)}</span>
-            <span class="min-w-0 flex-1 {contentClass} pr-2" data-find-key={leftFindKey(pair.left, pair.right)}><DiffLineContent line={pair.left.line} spans={getSpansForReviewLine(file, pair.left.lineIndex ?? -1, pair.left.line, spanContext, painted)} intraline={pair.left.intraline ?? null} /></span>
+            {@render actionCell(pair.left, pairIndex, 'old', 'old-line')}
+            <span class="flex shrink-0 {gutterTintClass(pair.left.line.type)}" data-testid="review-line-gutter" data-row-idx={pairIndex} data-half="old">{@render gutter(pair.left.oldLine)}</span>
+            <span class="min-w-0 flex-1 {contentClass} pr-2" data-find-key={leftFindKey(pair.left, pair.right)}><DiffLineContent line={pair.left.line} spans={spansForRow(pair.left)} intraline={pair.left.intraline ?? null} /></span>
           {/if}
         </div>
-        <div class="group relative flex w-1/2 min-w-0 border-l border-border-subtle before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.right ? lineTintClass(pair.right.line.type) : 'bg-surface-0/40'} {pair.right && isTarget(pair.right, 'new') ? TARGET_CLASS : ''} {pair.right && inRange(pair.right, 'new') ? RANGE_CLASS : ''}" data-review-range={pair.right && inRange(pair.right, 'new') ? '' : undefined} data-review-target={pair.right && isTarget(pair.right, 'new') ? '' : undefined}>
+        <div class="ao-diff-line relative flex w-1/2 min-w-0 border-l border-border-subtle {pair.right ? lineTintClass(pair.right.line.type) : 'bg-surface-0/40'} {rightRange ? RANGE_CLASS : ''}" data-review-range={rightRange ? '' : undefined} data-review-target={rightTarget ? '' : undefined}>
           {#if pair.right}
-            {@render actionCell(pair.right, sideAnchor(pair.right, 'new'), 'new-line')}
-            <!-- svelte-ignore a11y_no_static_element_interactions (the menu is a pointer gesture; the line has no keyboard focus to open it from) -->
-            <span class="flex shrink-0 {gutterTintClass(pair.right.line.type)}" data-testid="review-line-gutter" oncontextmenu={(event) => openLineMenu(event, pair.right)}>{@render gutter(pair.right.newLine)}</span>
-            <span class="min-w-0 flex-1 {contentClass} pr-2" data-find-key={findKey(pair.right)}><DiffLineContent line={pair.right.line} spans={getSpansForReviewLine(file, pair.right.lineIndex ?? -1, pair.right.line, spanContext, painted)} intraline={pair.right.intraline ?? null} /></span>
+            {@render actionCell(pair.right, pairIndex, 'new', 'new-line')}
+            <span class="flex shrink-0 {gutterTintClass(pair.right.line.type)}" data-testid="review-line-gutter" data-row-idx={pairIndex} data-half="new">{@render gutter(pair.right.newLine)}</span>
+            <span class="min-w-0 flex-1 {contentClass} pr-2" data-find-key={findKey(pair.right)}><DiffLineContent line={pair.right.line} spans={spansForRow(pair.right)} intraline={pair.right.intraline ?? null} /></span>
           {/if}
         </div>
       </div>
       {/if}
     {/each}
   {:else}
-    {#each rows as row (row.id)}
+    {#each rows as row, rowIndex (row.id)}
       {#if row.line.fold}
         {@render foldRow(row.line.fold)}
       {:else if row.gap}
         {@render gapRow(row.gap)}
       {:else}
+        {@const target = isTarget(row, null)}
+        {@const ranged = inRange(row, null)}
         <div
-          class="group relative {lineClass} {lineTintClass(row.line.type)} before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {isTarget(row, null) ? TARGET_CLASS : ''} {inRange(row, null) ? RANGE_CLASS : ''}"
+          class="ao-diff-line relative {lineClass} {lineTintClass(row.line.type)} {ranged ? RANGE_CLASS : ''}"
           style:height={wordWrap ? undefined : lineHeight}
-          data-review-target={isTarget(row, null) ? '' : undefined}
-          data-review-range={inRange(row, null) ? '' : undefined}
+          data-review-target={target ? '' : undefined}
+          data-review-range={ranged ? '' : undefined}
         >
-          {@render actionCell(row, stackedAnchor(row), 'line')}
-          <!-- svelte-ignore a11y_no_static_element_interactions (the menu is a pointer gesture; the line has no keyboard focus to open it from) -->
-          <span class="flex shrink-0 {gutterTintClass(row.line.type)}" data-testid="review-line-gutter" oncontextmenu={(event) => openLineMenu(event, row)}>
+          {@render actionCell(row, rowIndex, null, 'line')}
+          <span class="flex shrink-0 {gutterTintClass(row.line.type)}" data-testid="review-line-gutter" data-row-idx={rowIndex}>
             {@render gutter(row.oldLine)}
             {@render gutter(row.newLine)}
           </span>
-          <span class="min-w-0 flex-1 {contentClass} pr-3" data-find-key={findKey(row)}><DiffLineContent line={row.line} spans={getSpansForReviewLine(file, row.lineIndex ?? -1, row.line, spanContext, painted)} intraline={row.intraline ?? null} /></span>
+          <span class="min-w-0 flex-1 {contentClass} pr-3" data-find-key={findKey(row)}><DiffLineContent line={row.line} spans={spansForRow(row)} intraline={row.intraline ?? null} /></span>
         </div>
       {/if}
     {/each}

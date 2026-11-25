@@ -160,6 +160,14 @@ export function getCachedBlockSpans(lang: string, source: string): EncodedLine[]
   return getCachedByKey(keyOf(lang, source), undefined);
 }
 
+/** Synchronous cache read when the caller already computed `contentKey(source)`. */
+export function getCachedBlockSpansByContentKey(
+  lang: string,
+  sourceContentKey: string,
+): EncodedLine[] | null {
+  return getCachedByKey(keyFor(lang, sourceContentKey), undefined);
+}
+
 /** `owner` identifies a block that is still streaming; omit it for a
  * complete block. */
 export function getCachedBlockSpansByIdentity(

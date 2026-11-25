@@ -11,7 +11,7 @@
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { getSettings } from '../../stores/settings.svelte';
   import { decodeTerminalOutput, encodeTerminalInput, normalizeTerminalReplay } from '../../types/terminal';
-  import { getXtermTheme } from './terminalTheme';
+  import { getXtermTheme, sameXtermTheme, xtermPaletteIdentity } from './terminalTheme';
   import { registerTerminalFind, type TerminalFindRegistration } from './terminalFind.svelte';
   import {
     terminalFocusRegion,
@@ -21,7 +21,10 @@
   import { insertIntoFocusedFindInput } from '../panes/PaneFindBar.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
-  import { buildTerminal } from './terminalXterm';
+  import { buildTerminal, type BuiltTerminal } from './terminalXterm';
+  import { parkWarmTerminal, takeWarmTerminal } from './terminalWarmPool';
+  import { threadMachine } from '../../stores/attachedBackends.svelte';
+  import { terminalBackend } from '../../transport/entityIndex';
   import { applyStickyCtrl } from './terminalKeys';
   import TerminalKeyRow from './TerminalKeyRow.svelte';
   import {
@@ -43,6 +46,7 @@
   let { handle, terminalID, paneId, findKey }: Props = $props();
 
   let mountEl: HTMLDivElement | undefined = $state();
+  let built: BuiltTerminal | null = null;
   let term: Terminal | null = null;
   let fit: FitAddon | null = null;
   // The widget's clipboard paste and read, for the compact key row. Null
@@ -54,9 +58,13 @@
   // Unregisters this xterm from the store handle (terminal.clear reaches the
   // active tab's xterm through it). Null until hydrate() has built the term.
   let detachXterm: (() => void) | null = null;
+  // Direct live output sink registered once hydrated, avoiding reactive `tabs`
+  // array cloning on every PTY output chunk.
+  let detachOutputSink: (() => void) | null = null;
   // The xterm's registered find. Null until hydrate()'s writes are parsed.
   let find: TerminalFindRegistration | null = null;
   let destroyed = false;
+  let initialFitDone = false;
   // A focus() request can arrive before hydrate() has opened the xterm (it
   // awaits a replay round-trip). Latch it here; hydrate()'s tail focuses once
   // the terminal exists.
@@ -144,75 +152,112 @@
   async function hydrate() {
     if (!mountEl || destroyed) return;
 
-    const built = buildTerminal(mountEl, {
+    const callbacks = {
       onInput: writeInput,
       isDisposed: () => destroyed,
       acceptsPaste: () => !isPaneFindBarFocused(findKey),
-    });
-    term = built.term;
-    fit = built.fit;
-    paste = built.paste;
-    readClipboard = built.readClipboard;
-    detachXterm = handle.attachXterm(terminalID, term);
+    };
 
-    // Size the grid to the width the provider last drew at BEFORE writing the
-    // replay. A fresh xterm defaults to 80x24; the replay blob is the provider's
-    // most recent frame, laid out for the PTY's current (rows, cols). Writing it
-    // into an 80-col grid bakes the provider's cursor/erase escapes against the
-    // wrong width — the later fit() reflow rewraps cells but can't re-run those
-    // already-consumed escapes, so the frame stays mangled until a real resize
-    // forces a repaint. That is the close→reopen corruption: a same-size reopen
-    // never changes the PTY winsize, so no SIGWINCH ever arrives to heal it. The
-    // backend reports its cached size in the summary (== the width the frame was
-    // drawn for), so sizing to it here makes the replay land correctly no matter
-    // when flex layout settles. scheduleFit() below then measures the real pane;
-    // if it genuinely differs, that resize round-trips a SIGWINCH and the
-    // provider repaints at the new width.
-    const summary = handle.tabs.find((t) => t.terminalID === terminalID)?.summary;
-    if (summary && summary.cols > 0 && summary.rows > 0) {
-      try {
-        term.resize(summary.cols, summary.rows);
-      } catch (err) {
-        console.error('terminal: pre-replay resize to backend size failed', err);
-      }
-    }
-
-    // Writes parse asynchronously; find registers after the last of
-    // hydrate()'s writes is parsed, so a kept query searches the restored
-    // buffer rather than an empty one.
+    const warm = takeWarmTerminal(handle, terminalID);
+    let activeBuilt: BuiltTerminal;
     let wrote = false;
-    // Load replay buffer before draining pending output so order is correct.
-    try {
-      const replay = normalizeTerminalReplay(await GetTerminalReplay(terminalID) as unknown);
-      if (!destroyed && replay.data) {
-        term.write(decodeTerminalOutput(replay.data));
-        wrote = true;
+
+    if (warm) {
+      warm.rebind(callbacks);
+      warm.attachMount(mountEl);
+      activeBuilt = warm;
+      built = activeBuilt;
+      term = activeBuilt.term;
+      fit = activeBuilt.fit;
+      paste = activeBuilt.paste;
+      readClipboard = activeBuilt.readClipboard;
+      detachXterm = handle.attachXterm(terminalID, term);
+
+      // Sync theme and fontSize only when changed while parked so the WebGL2
+      // glyph atlas is not cleared and rebuilt on a no-op warm reattach.
+      const nextTheme = getXtermTheme(getResolvedTheme());
+      if (!sameXtermTheme(term.options.theme, nextTheme)) {
+        term.options.theme = nextTheme;
       }
-      handle.markReplayed(terminalID, replay.fromSequence, replay.throughSequence);
-    } catch (err) {
-      console.error('terminal: GetTerminalReplay failed', err);
-    }
+      const nextFontSize = getSettings().fontSize;
+      if (term.options.fontSize !== nextFontSize) {
+        term.options.fontSize = nextFontSize;
+      }
 
-    if (destroyed || !term) return;
+      for (const chunk of handle.drainOutput(terminalID)) {
+        try {
+          term.write(chunk);
+          wrote = true;
+        } catch (err) {
+          console.error('terminal: write during warm reattach drain failed', err);
+        }
+      }
+    } else {
+      activeBuilt = buildTerminal(mountEl, callbacks);
+      built = activeBuilt;
+      term = activeBuilt.term;
+      fit = activeBuilt.fit;
+      paste = activeBuilt.paste;
+      readClipboard = activeBuilt.readClipboard;
+      detachXterm = handle.attachXterm(terminalID, term);
 
-    // Drain output buffered during the await, after markReplayed so
-    // replay-covered chunks are already dropped. Each write is guarded: a throw
-    // escaping here would reject the un-awaited hydrate() silently and leave the
-    // gate (`hydrated`, set below) shut forever, stranding all future output.
-    // The steady-state $effect needs no guard — it runs with the gate already
-    // open and re-drains on the next event. Log and continue so the gate opens.
-    for (const chunk of handle.drainOutput(terminalID)) {
+      // Size the grid to the width the provider last drew at BEFORE writing the
+      // replay. A fresh xterm defaults to 80x24; the replay blob is the provider's
+      // most recent frame, laid out for the PTY's current (rows, cols). Writing it
+      // into an 80-col grid bakes the provider's cursor/erase escapes against the
+      // wrong width — the later fit() reflow rewraps cells but can't re-run those
+      // already-consumed escapes, so the frame stays mangled until a real resize
+      // forces a repaint. That is the close→reopen corruption: a same-size reopen
+      // never changes the PTY winsize, so no SIGWINCH ever arrives to heal it. The
+      // backend reports its cached size in the summary (== the width the frame was
+      // drawn for), so sizing to it here makes the replay land correctly no matter
+      // when flex layout settles. fitThenRegister() below then measures the real pane;
+      // if it genuinely differs, that resize round-trips a SIGWINCH and the
+      // provider repaints at the new width.
+      const summary = handle.tabs.find((t) => t.terminalID === terminalID)?.summary;
+      if (summary && summary.cols > 0 && summary.rows > 0) {
+        try {
+          term.resize(summary.cols, summary.rows);
+        } catch (err) {
+          console.error('terminal: pre-replay resize to backend size failed', err);
+        }
+      }
+
+      // Load replay buffer before draining pending output so order is correct.
       try {
-        term.write(chunk);
-        wrote = true;
+        const replay = normalizeTerminalReplay(await GetTerminalReplay(terminalID) as unknown);
+        if (!destroyed && replay.data) {
+          term.write(decodeTerminalOutput(replay.data));
+          wrote = true;
+        }
+        handle.markReplayed(terminalID, replay.fromSequence, replay.throughSequence);
       } catch (err) {
-        console.error('terminal: write during hydrate drain failed', err);
+        console.error('terminal: GetTerminalReplay failed', err);
+      }
+
+      if (destroyed || !term) return;
+
+      // Drain output buffered during the await, after markReplayed so
+      // replay-covered chunks are already dropped. Each write is guarded: a throw
+      // escaping here would reject the un-awaited hydrate() silently and leave the
+      // gate (`hydrated`, set below) shut forever, stranding all future output.
+      for (const chunk of handle.drainOutput(terminalID)) {
+        try {
+          term.write(chunk);
+          wrote = true;
+        } catch (err) {
+          console.error('terminal: write during hydrate drain failed', err);
+        }
       }
     }
 
-    // Replay applied and we're caught up — open the drain $effect for live
-    // output from here on. (Flipping this re-runs the effect, which finds the
-    // queue empty after the drain above; subsequent output drains normally.)
+    // Route subsequent live output directly to xterm without reactive `tabs` cloning.
+    detachOutputSink = handle.attachOutputSink(terminalID, (chunk) => {
+      if (term && !destroyed) term.write(chunk);
+    });
+
+    // Replay applied and we're caught up — open the drain gate for any chunks
+    // already queued in tabs before the sink attached.
     hydrated = true;
 
     // Find registers once the grid is fitted to the parsed buffer, a frame
@@ -220,11 +265,14 @@
     // xterm's viewport, catching up with a resize later, can scroll back a
     // search made right after the fit.
     const registerFind = () => {
-      if (!destroyed) find = registerTerminalFind(findKey, built);
+      if (!destroyed) find = registerTerminalFind(findKey, activeBuilt);
     };
     const fitThenRegister = () => {
       requestAnimationFrame(() => {
         fitNow();
+        if (warm && term && !destroyed) {
+          term.refresh(0, Math.max(0, term.rows - 1));
+        }
         requestAnimationFrame(registerFind);
       });
     };
@@ -234,7 +282,6 @@
     dataDisposable = term.onData(writeInput);
 
     attachResizeObserver();
-    scheduleFit();
 
     if (pendingFocus) {
       pendingFocus = false;
@@ -261,7 +308,14 @@
   function fitNow() {
     if (!fit || !term || destroyed) return;
     try {
+      if (initialFitDone && typeof fit.proposeDimensions === 'function') {
+        const proposed = fit.proposeDimensions();
+        if (!proposed || (proposed.cols === term.cols && proposed.rows === term.rows)) {
+          return;
+        }
+      }
       fit.fit();
+      initialFitDone = true;
       const { rows, cols } = term;
       resizeWriter.resize(rows, cols);
     } catch (err) {
@@ -289,12 +343,22 @@
   // is what reads the palette identity, so a tick that finds no terminal yet
   // must still register the dependency, or the pane that mounts next never
   // re-themes when a theme file changes under an unchanged mode.
+  let lastPaletteIdentity = untrack(() => xtermPaletteIdentity(getResolvedTheme()));
   $effect(() => {
-    const theme = getXtermTheme(getResolvedTheme());
+    const mode = getResolvedTheme();
+    const identity = xtermPaletteIdentity(mode);
+    const theme = getXtermTheme(mode);
+    const identityChanged = identity !== lastPaletteIdentity;
+    lastPaletteIdentity = identity;
     if (!term) return;
-    term.options.theme = theme;
-    // Match grounds come from the same palette; repaint them with it.
-    untrack(() => find?.restyle());
+    const paletteChanged = !sameXtermTheme(term.options.theme, theme);
+    if (paletteChanged) {
+      term.options.theme = theme;
+    }
+    if (paletteChanged || identityChanged) {
+      // Match grounds come from the same palette; repaint them with it.
+      untrack(() => find?.restyle());
+    }
   });
 
   // Follow the app font-size setting (the mod+/- zoom chords) live. Writing
@@ -305,7 +369,7 @@
   // dependency.
   $effect(() => {
     const fontSize = getSettings().fontSize;
-    if (!term) return;
+    if (!term || term.options.fontSize === fontSize) return;
     term.options.fontSize = fontSize;
     scheduleFit();
   });
@@ -321,17 +385,31 @@
     // Before the xterm goes: the release clears the provider's paint.
     find?.release();
     find = null;
+    detachOutputSink?.();
+    detachOutputSink = null;
     detachXterm?.();
     detachXterm = null;
     inputWriter.dispose();
     resizeWriter.dispose();
     resizeObserver?.disconnect();
     resizeObserver = null;
-    term?.dispose();
+    const activeBuilt = built;
+    built = null;
     term = null;
     fit = null;
     paste = null;
     readClipboard = null;
+    if (activeBuilt) {
+      if (activeBuilt.hasWebgl && hydrated && !handle.isReleased() && handle.hasTab(terminalID)) {
+        const threadID = handle.tabs.find((t) => t.terminalID === terminalID)?.summary.threadID ?? '';
+        const backend = terminalBackend(terminalID) ?? threadMachine(threadID, null);
+        activeBuilt.term.clearSelection();
+        activeBuilt.detachMount();
+        parkWarmTerminal({ terminalID, handle, paneId, backend, built: activeBuilt });
+      } else {
+        activeBuilt.dispose();
+      }
+    }
   });
 
   export function focus() {
@@ -357,7 +435,7 @@
 </script>
 
 <div class="flex-1 min-h-0 flex flex-col bg-terminal-bg" data-testid={`terminal-body-${terminalID}`}>
-  <div bind:this={mountEl} class="relative flex-1 min-h-0 bg-terminal-bg" {@attach terminalFocusRegion(paneId)}></div>
+  <div bind:this={mountEl} class="relative flex flex-1 min-h-0 flex-col bg-terminal-bg" {@attach terminalFocusRegion(paneId)}></div>
   {#if compact}
     <TerminalKeyRow onKey={pressKeyRow} {ctrlArmed} onToggleCtrl={toggleStickyCtrl} onPaste={pasteKeyRow} {findFocused} />
   {/if}

@@ -21,6 +21,7 @@ import {
   getThreadTerminalStateForTerminalEvent,
   type ThreadTerminalStateHandle,
 } from '../components/terminal/terminalStore.svelte';
+import { evictWarmTerminalsForBackend } from '../components/terminal/terminalWarmPool';
 import type { ThreadPane } from './thread.svelte';
 import type { BackendKey } from '../transport/backendKey';
 import { threadMachine } from './attachedBackends.svelte';
@@ -99,6 +100,7 @@ export function startTerminal<R>(call: () => Promise<R>, adopt: (answer: R) => v
  * to a gap leaves one too, and a lost open hides a running terminal.
  */
 export function reconcileTerminalSurfaces(backend: BackendKey): void {
+  evictWarmTerminalsForBackend(backend);
   for (const surface of getMountedTerminalSurfaces()) {
     if (threadMachine(surface.threadID, null) === backend) void surface.relist();
   }
