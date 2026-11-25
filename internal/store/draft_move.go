@@ -36,20 +36,30 @@ func consumeTransferredDraft(tx *sql.Tx, transfer ThreadTransfer) error {
 	if current != *private.Draft {
 		return errors.New("The source draft changed during transfer.")
 	}
-	_, err = tx.Exec(`DELETE FROM thread_drafts WHERE thread_id = ?`, transfer.ThreadID)
+	if _, err = tx.Exec(`DELETE FROM thread_drafts WHERE thread_id = ?`, transfer.ThreadID); err != nil {
+		return err
+	}
+	// The copy carries the link (its manifest's thread row); the source
+	// gives it up here, with the draft, so the emptied source is deletable.
+	_, err = tx.Exec(`DELETE FROM thread_tickets WHERE thread_id = ?`, transfer.ThreadID)
 	return err
 }
 
-// DraftMove is what MoveThreadDraft wrote on each thread.
+// DraftMove is what MoveThreadDraft wrote on each thread: the draft write
+// on each, the listing change being the whole move's, and whether the
+// source's ticket link moved to the destination.
 type DraftMove struct {
 	Destination DraftWrite
 	Source      DraftWrite
+	LinkMoved   bool
 }
 
 // MoveThreadDraft publishes the destination and consumes the exact source in
-// one transaction. Both threads must still be unsent chat/plan drafts. It
-// reports the write on each: the destination gains the draft, the source
-// loses it.
+// one transaction. Both threads must still be unsent chat/plan drafts. The
+// source's ticket link, which keeps it (threadRealClause), moves with the
+// draft, so the emptied source is deletable and the destination is the
+// linked thread. It reports the write on each: the destination gains the
+// draft, the source loses it.
 func (s *Store) MoveThreadDraft(expected, destination ThreadDraft) (DraftMove, error) {
 	if expected.ThreadID == "" || destination.ThreadID == "" || expected.ThreadID == destination.ThreadID {
 		return DraftMove{}, errors.New("draft move requires two different threads")
@@ -83,7 +93,18 @@ func (s *Store) MoveThreadDraft(expected, destination ThreadDraft) (DraftMove, e
 	if target.Content != "" || target.Attachments != "[]" || target.TerminalChips != "[]" || target.PendingPlanImplementation != "" {
 		return DraftMove{}, errors.New("The destination already contains a draft.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 	}
+	var targetLinked bool
+	if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM thread_tickets WHERE thread_id = ?)`, destination.ThreadID).Scan(&targetLinked); err != nil {
+		return DraftMove{}, err
+	}
+	if targetLinked {
+		return DraftMove{}, errors.New("The destination is already linked to a ticket.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
+	}
 	sourceListed, err := threadListed(tx, expected.ThreadID)
+	if err != nil {
+		return DraftMove{}, err
+	}
+	destinationListed, err := threadListed(tx, destination.ThreadID)
 	if err != nil {
 		return DraftMove{}, err
 	}
@@ -94,11 +115,25 @@ func (s *Store) MoveThreadDraft(expected, destination ThreadDraft) (DraftMove, e
 	if _, err = tx.Exec(`DELETE FROM thread_drafts WHERE thread_id = ?`, expected.ThreadID); err != nil {
 		return DraftMove{}, err
 	}
+	linkMoved, err := tx.Exec(`UPDATE thread_tickets SET thread_id = ?1 WHERE thread_id = ?2`, destination.ThreadID, expected.ThreadID)
+	if err != nil {
+		return DraftMove{}, fmt.Errorf("move the draft's ticket link: %w", err)
+	}
+	moved, err := linkMoved.RowsAffected()
+	if err != nil {
+		return DraftMove{}, fmt.Errorf("move the draft's ticket link: %w", err)
+	}
+	move.LinkMoved = moved > 0
 	sourceStillListed, err := threadListed(tx, expected.ThreadID)
 	if err != nil {
 		return DraftMove{}, err
 	}
+	destinationNowListed, err := threadListed(tx, destination.ThreadID)
+	if err != nil {
+		return DraftMove{}, err
+	}
 	move.Source = DraftWrite{Changed: true, Listing: listingChange(sourceListed, sourceStillListed)}
+	move.Destination.Listing = listingChange(destinationListed, destinationNowListed)
 	return move, tx.Commit()
 }
 

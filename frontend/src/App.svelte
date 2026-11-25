@@ -122,6 +122,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
   import { closeImageLightbox, imageLightbox } from './lib/stores/imageLightbox.svelte';
   import FootnotePopoverHost from './lib/components/chat/FootnotePopoverHost.svelte';
   import ExternalLinkContextHost from './lib/components/shared/ExternalLinkContextHost.svelte';
+  import ThreadTicketFinderHost from './lib/components/shared/ThreadTicketFinderHost.svelte';
   import {
     openDraftThreadForProject,
     resolveDraftTargetProject,
@@ -752,6 +753,8 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
 <ImageMenuHost />
 <FootnotePopoverHost />
 <ExternalLinkContextHost />
+<!-- The ticket finder a thread's Link ticket… or Change ticket… opens. -->
+<ThreadTicketFinderHost />
 <!-- The one image lightbox; any image opens it through stores/imageLightbox. -->
 {#if lightbox}
   <ExpandedImageDialog preview={lightbox} onClose={closeImageLightbox} />

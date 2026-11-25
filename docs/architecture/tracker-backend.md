@@ -1796,7 +1796,8 @@ site and issue ID, so the link means the same ticket on every computer.
   (`mirrorIssueHeldSQL`: a card, and no read that missed the issue began
   after the card's latest read) the row shows the card's key, title and
   status, the status's name and group from that root's catalog, and
-  `current`; while a read that missed it is in force
+  `current` (the group by its name, `store.MirrorGroupNames`, as a board
+  read names it); while a read that missed it is in force
   (`mirrorIssueGoneSQL`) it shows `not_found`; otherwise the link's
   last-seen copy and, from the site's connections, `not_checked` (one is
   on), `turned_off` (all are off) or `no_connection`. `connectionId` is
@@ -1860,8 +1861,18 @@ site and issue ID, so the link means the same ticket on every computer.
   frame per thread.
 - **Keep.** A link keeps its issue in the mirror (`mirrorIssueKept`).
   When links end (an unlink, a link replaced, a thread's delete commit,
-  a move away), `LinksEnded` tells the issues no longer kept as
-  `Changes.Visibility`, as an open ticket's drop does.
+  a move away, a draft's copy to another computer), `LinksEnded` tells
+  the issues no longer kept as `Changes.Visibility`, as an open ticket's
+  drop does.
+- **A thread with nothing sent.** A link makes it real
+  (`threadRealClause`, which states the rule): `SetThreadTicket` and
+  `ClearThreadTicket` report the listing change they make
+  (`ThreadTicketSet.Listing`, `ThreadTicketClear.Listing`) and announce
+  it, and the empty-draft delete refuses a linked thread. A draft moved
+  to another project here takes its link in `MoveThreadDraft`'s
+  transaction; a draft's copy to another computer carries it, and the
+  transaction that completes the copy (`consumeTransferredDraft`) ends
+  the source's with its draft.
 - **Fork and transfer.** `CreatePointerFork` copies the link in its
   transaction. A transfer's manifest carries `store.Thread`, link
   included; `CommitIncomingThreadTransfer` replaces the receiver's link
@@ -1938,28 +1949,26 @@ board subscription's methods and `tracker:board_updated`'s TypeScript
 type, and its ticket screen, with the wrappers of the ticket
 subscription's methods, `TrackerComments`, the issue and comment writes,
 `TrackerAssignableUsers` and `TrackerChoices`, and
-`tracker:issue_updated`'s TypeScript type, and its Time screen, with the
-wrappers of `TrackerWorklogs`, `RefreshTrackerWorklogs`,
+`tracker:issue_updated`'s TypeScript type, and the ticket's attachments,
+links, planning poker and Log time, with the wrappers of the attachment
+mints, `SaveTrackerAttachment`, `TrackerLinkTypes`, `LinkTrackerIssues`,
+`UnlinkTrackerIssues` and the planning poker methods, its Time screen,
+with the wrappers of `TrackerWorklogs`, `RefreshTrackerWorklogs`,
 `AddTrackerWorklog`, `EditTrackerWorklog`, `DeleteTrackerWorklog`,
-`TrackerLookup` and `TrackerSearch` (`components/issues/AGENTS.md`).
+`TrackerLookup` and `TrackerSearch` (`components/issues/AGENTS.md`),
+and the thread link's screens: the header's ticket, its menus, the
+sidebar row's line and search, and Link and Change ticket through the
+ticket finder, with the `SetThreadTicket` and `ClearThreadTicket`
+wrappers (`stores/threadTicketLinks.svelte.ts`).
 A failure of the linked-issues
 loop after boot reaches only the log (`Deps.LoopFailed`): its failures
 are outside the tracker (a store error, the cleanup), and a tracker
 failure of the loop's sync shows on its connection's row as its problem.
 Not built, owed by the app layer:
 
-- The ticket screen's attachments, links, planning poker and Log time,
-  and a ticket in a pane of its own: the `bindings.ts` wrappers of the
-  attachment mints, `TrackerLinkTypes`, `LinkTrackerIssues`,
-  `UnlinkTrackerIssues` and the planning poker methods ship with them.
+- A ticket in a pane of its own.
 - A sprint edit on the Backlog screen: the `bindings.ts` wrapper of
   `EditTrackerSprint` ships with it.
-- Sidebar search by a linked ticket's key and title: the frontend's
-  `threadMatchesQuery` (`components/sidebar/threadSearch.ts`) adds
-  `ticketLink.key` and `ticketLink.title` to what it matches.
-- A link on a thread with nothing sent does not keep the thread: clearing
-  its composer deletes the thread, link included. The slice that first
-  lets a person link such a thread decides it.
 - The rest of the project's tracker setup, each a section of its file:
   card marks, Start work defaults, draft settings and what agents may do;
   and the `bindings.ts` wrappers of the setup methods, which ship with the

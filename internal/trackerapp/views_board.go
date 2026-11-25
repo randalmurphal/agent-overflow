@@ -188,7 +188,8 @@ func screenSections(m store.MirrorStructure) (screen []Section, stored []store.M
 // The wire names of the model's enums, indexed by value: arrays, which
 // cost nothing to link, read through nameOf.
 var (
-	groupNames  = [...]string{tracker.GroupBacklog: "backlog", tracker.GroupToDo: "todo", tracker.GroupInProgress: "in_progress", tracker.GroupDone: "done", tracker.GroupCanceled: "canceled"}
+	// The mirror stores a tracker.StatusGroup as its number.
+	groupNames  = store.MirrorGroupNames
 	unitNames   = [...]string{tracker.UnitNone: "none", tracker.UnitPoints: "points", tracker.UnitTime: "time"}
 	sprintNames = [...]string{tracker.SprintFuture: "future", tracker.SprintActive: "active", tracker.SprintClosed: "closed"}
 )

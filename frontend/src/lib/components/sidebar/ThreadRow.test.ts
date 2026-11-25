@@ -29,6 +29,7 @@ import {
 } from '../../stores/keyboardModifiers.svelte';
 import type { Thread } from '../../types/models';
 import type { Settings } from '../../types/settings';
+import type { ThreadTicketLink } from '../../../../bindings/agent-overflow/internal/store/models';
 import { TransportError } from '../../transport/wsClient';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { answerAsV0019 } from '../../../test/helpers/olderComputer';
@@ -795,6 +796,44 @@ describe('<ThreadRow> worktree metadata', () => {
     });
 
     expect(queryByTestId('thread-row-worktree')).toBeNull();
+  });
+
+  describe('the linked ticket', () => {
+    const ticketLink = (overrides: Partial<ThreadTicketLink> = {}): ThreadTicketLink => ({
+      kind: 'jira', site: 'https://example.atlassian.net', issueId: '10001', key: 'WEB-1', title: 'Retry cursor returns no rows',
+      statusId: '3', statusName: 'In Progress', statusGroup: 'in_progress', origin: 'manual', linkedAt: 1,
+      state: 'current', connectionId: 'conn-1',
+      ...overrides,
+    });
+
+    it('shows its mark and key after the worktree', () => {
+      const thread = makeThread({ id: 'linked', worktreePath: '/tmp/worktrees/feature-demo', ticketLink: ticketLink() });
+      const { getByTestId } = render(ThreadRow, { props: { thread, pane: createThreadPane() } });
+      const ticket = getByTestId('thread-row-ticket');
+      expect(ticket.textContent?.trim()).toBe('WEB-1');
+      expect(ticket.title).toBe('WEB-1 · Retry cursor returns no rows');
+      expect(ticket.querySelector('[data-status-group]')?.getAttribute('data-status-group')).toBe('in_progress');
+      expect(getByTestId('thread-row-worktree-name').compareDocumentPosition(ticket) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('leaves the key out when the worktree is named after it, whatever its case', () => {
+      const thread = makeThread({ id: 'linked', worktreePath: '/tmp/worktrees/web-1-retry-cursor', ticketLink: ticketLink() });
+      const { getByTestId, queryByTestId } = render(ThreadRow, { props: { thread, pane: createThreadPane() } });
+      expect(getByTestId('thread-row-worktree-name').textContent?.trim()).toBe('web-1-retry-cursor');
+      expect(queryByTestId('thread-row-ticket')).toBeNull();
+    });
+
+    it('gives a linked thread with no worktree the line for its ticket alone', () => {
+      const thread = makeThread({ id: 'linked', worktreePath: undefined, ticketLink: ticketLink({ state: 'not_found' }) });
+      const { getByTestId } = render(ThreadRow, { props: { thread, pane: createThreadPane() } });
+      const line = getByTestId('thread-row-worktree');
+      expect(line.getAttribute('aria-label')).toBe('Ticket WEB-1');
+      const ticket = getByTestId('thread-row-ticket');
+      expect(ticket.dataset.linkState).toBe('not_found');
+      expect(ticket.title).toBe('WEB-1 · Retry cursor returns no rows\nThe last read of Jira did not return it: it was deleted, or the token\'s user may not see it.');
+      expect(ticket.querySelector('.opacity-50 [data-status-group]')).not.toBeNull();
+      expect(line.textContent).not.toContain('·');
+    });
   });
 
   it('exposes the full worktree path, and the sublabel is part of the tap target', async () => {

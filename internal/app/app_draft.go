@@ -215,6 +215,8 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 		return false, fmt.Errorf("delete empty draft thread %s: %w", threadID, errors.Join(errs...))
 	}
 
+	// A linked thread is real (store threadRealClause), so no link ends
+	// here: the delete refuses it.
 	deleted, err := a.store.DeleteEmptyDraftThread(threadID)
 	if err != nil {
 		return false, err

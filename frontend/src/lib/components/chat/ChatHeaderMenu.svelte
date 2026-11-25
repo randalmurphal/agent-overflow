@@ -45,6 +45,8 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import Popover from '../primitives/Popover.svelte';
   import { runTerminalToggle } from '../terminal/terminalToggle';
+  import StatusMark from '../issues/StatusMark.svelte';
+  import { findThreadTicket, linkedTicketStateNote, openLinkedTicket, removeThreadTicketLink, threadTicketLinkGrant } from '../../stores/threadTicketLinks.svelte';
   import { openPrReview, takeControlState, terminalGrant, toggleTakeControl, toggleWorkspaceReview } from './headerPaneActions';
 
   let { pane }: { pane: ThreadPane } = $props();
@@ -198,6 +200,9 @@
     hasWorkspace && (pane.gitStatus.statusError !== null || (gitStatus?.isRepo ?? false)),
   );
   let diffSuffix = $derived(`+${gitStatus?.insertions ?? 0} −${gitStatus?.deletions ?? 0}`);
+  let ticketLink = $derived(pane.thread?.ticketLink ?? null);
+  // ClearThreadTicket rides threads:operate on the thread's computer.
+  let ticketGrant = $derived(threadScopeGrant('threads:operate', pane.threadId, pane.thread?.projectId));
   let prHref = $derived(safeExternalURL(gitStatus?.openPrUrl));
   let prLabel = $derived.by(() => {
     const labels = forgeLabels(gitStatus?.forge);
@@ -238,6 +243,21 @@
           checked={pane.showReviewPane}
           onSelect={() => pick(() => toggleWorkspaceReview(pane))}
         />
+      {/if}
+      {#if compact && ticketLink && pane.thread}
+        {@const thread = pane.thread}
+        <!-- The phone header has no room for the ticket's button: the
+             ticket is this row, above the pull request
+             (docs/specs/issues.md, "Compact layout"). -->
+        <MenuItem
+          label={ticketLink.key}
+          suffix={ticketLink.title}
+          title={linkedTicketStateNote(ticketLink) || undefined}
+          testId="chat-header-menu-ticket"
+          onSelect={() => pick(() => void openLinkedTicket(thread))}
+        >
+          {#snippet icon()}<span class={ticketLink.state === 'current' ? '' : 'opacity-50'}><StatusMark group={ticketLink.statusGroup} size={11} /></span>{/snippet}
+        </MenuItem>
       {/if}
       {#if compact && prHref}
         <MenuItem
@@ -297,6 +317,27 @@
           title={grantBlockedTitle(regenerateGrant)}
           onSelect={() => pick(regenerateTitle)}
         />
+      {/if}
+      {#if pane.thread}
+        {@const thread = pane.thread}
+        {@const linkGrant = threadTicketLinkGrant(thread)}
+        <MenuDivider />
+        <MenuItem
+          label={ticketLink ? 'Change ticket…' : 'Link ticket…'}
+          testId="chat-header-menu-ticket-find"
+          disabled={linkGrant !== 'granted'}
+          title={grantBlockedTitle(linkGrant)}
+          onSelect={() => pick(() => findThreadTicket(thread, triggerEl, pane))}
+        />
+        {#if ticketLink}
+          <MenuItem
+            label="Remove ticket link"
+            testId="chat-header-menu-ticket-remove"
+            disabled={ticketGrant !== 'granted'}
+            title={grantBlockedTitle(ticketGrant)}
+            onSelect={() => pick(() => void removeThreadTicketLink(thread))}
+          />
+        {/if}
       {/if}
       {#if editorRows.length > 0}
         <MenuDivider />

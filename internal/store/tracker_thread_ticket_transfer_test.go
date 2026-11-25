@@ -39,7 +39,7 @@ func receiveThread(t *testing.T, s *Store, kind string, target Thread, epoch int
 func forgedManifestThread(t *testing.T, id string) Thread {
 	t.Helper()
 	carried := []byte(`{"id":"` + id + `","provider":"claude","ticketLink":{"kind":"jira","site":"` + mirrorSite + `","issueId":"10001",
-		"key":"WEB-1","title":"Fix the login page","statusId":"3","statusName":"In Progress","statusGroup":3,
+		"key":"WEB-1","title":"Fix the login page","statusId":"3","statusName":"In Progress","statusGroup":"in_progress",
 		"origin":"start_work","linkedAt":10,"state":"current","connectionId":"sender-connection","seenRoot":1,"seen_root":1,"missing":1}}`)
 	var thread Thread
 	if err := json.Unmarshal(carried, &thread); err != nil {
@@ -139,7 +139,7 @@ func TestReceivedInvalidLinkFailsTheCommit(t *testing.T) {
 		"unknown kind":   func(l *ThreadTicketLink) { l.Kind = "tempo" },
 		"no key":         func(l *ThreadTicketLink) { l.Key = "" },
 		"unknown origin": func(l *ThreadTicketLink) { l.Origin = "pasted" },
-		"status group":   func(l *ThreadTicketLink) { l.StatusGroup = 6 },
+		"status group":   func(l *ThreadTicketLink) { l.StatusGroup = "left_out" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

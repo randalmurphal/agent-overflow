@@ -173,8 +173,9 @@ Mechanism in
   and the original plan stays unaccepted.
 
 - The sidebar lists a never-sent thread only while it is real: it has draft
-  content, a bound worktree or an item (an app notice or error counts), or
-  is a terminal or a fork being prepared (owner ruling 2026-11-15). A thread
+  content, a bound worktree, a ticket link (ruling 2026-11-25) or an item
+  (an app notice or error counts), or is a terminal or a fork being
+  prepared (owner ruling 2026-11-15). A thread
   with a spawn relation is real too: one a spawn made, here or from another
   computer, and one that spawned a thread. A screen
   opened later and a screen already open list the same threads. A staged

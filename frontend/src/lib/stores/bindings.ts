@@ -664,6 +664,9 @@ export {
   VoteTrackerPoker,
   RevealTrackerPoker,
   ClearTrackerPokerVotes,
+  // A thread's ticket link (stores/threadTicketLinks.svelte.ts).
+  ClearThreadTicket,
+  SetThreadTicket,
   // A person's logged time and its writes (stores/trackerTime.svelte.ts,
   // stores/trackerTimeWrites.svelte.ts).
   TrackerWorklogs,

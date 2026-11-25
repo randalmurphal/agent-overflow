@@ -35,6 +35,7 @@ export const METHODS_AFTER_V0_0_19 = [
   'MintTrackerAttachmentUploadTicket', 'MintTrackerAttachmentDownloadTicket',
   'SaveTrackerAttachment', 'TrackerLinkTypes', 'LinkTrackerIssues', 'UnlinkTrackerIssues', 'TrackerPokerSupport',
   'FollowTrackerPoker', 'TrackerPoker', 'VoteTrackerPoker', 'RevealTrackerPoker', 'ClearTrackerPokerVotes',
+  'SetThreadTicket', 'ClearThreadTicket', 'ThreadsForTicket',
 ] as const;
 
 /**
