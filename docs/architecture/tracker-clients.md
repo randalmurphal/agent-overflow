@@ -415,7 +415,8 @@ It sends the measured GraphQL documents exactly.
   `PokerVotes` are walks (`trackerapi.Walk`), so a credential change part
   way starts them again. `PokerVoter` is `User` for a voter: a 404 or 403
   matches `ErrUserWithheld` and is kept 30 minutes, so the votes' poll
-  asks again only then; `User` itself asks each time.
+  asks again only then, unless a lookup of any kind learns that user
+  first; `User` itself asks each time.
 - **Errors.** An answer the measured shapes do not cover is a
   `*PokerError` naming its step (cloud ID, listing, token, gateway, poker
   app) and what was wrong, never a ticket's error. A write is applied only
