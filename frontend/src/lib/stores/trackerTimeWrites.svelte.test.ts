@@ -83,8 +83,9 @@ describe('a worklog write', () => {
     const before = reads();
     const outcome = await deleteWorklog(CTX, FROM);
     expect(reads().refreshed).toBe(before.refreshed + 1);
-    expect(timeWriteText(outcome!)).toBe('This entry changed on the tracker since it was read. The week was read again; look at it before you change it.');
-    expect(timeWrite(CTX, worklogTarget('501'))?.outcome?.kind).toBe('refused');
+    expect(outcome?.kind).toBe('refused');
+    await vi.waitFor(() => expect(timeWrite(CTX, worklogTarget('501'))?.reread).toEqual({ kind: 'read' }));
+    expect(timeWriteText(timeWrite(CTX, worklogTarget('501'))!)).toBe('This entry changed on the tracker since it was read. The week was read again; look at it before you change it.');
     release();
     // The last surface showing it let go: the outcome goes with it.
     expect(timeWrite(CTX, worklogTarget('501'))).toBeNull();
@@ -116,7 +117,7 @@ describe('a worklog write', () => {
     setBindingMock('DeleteTrackerWorklog', async () => STALE);
     await deleteWorklog(CTX, FROM);
     expect(getToasts().map((t) => t.message)).toEqual([
-      'The delete of the time on WEB-1: This entry changed on the tracker since it was read. The week was read again; look at it before you change it.',
+      'The delete of the time on WEB-1: This entry changed on the tracker since it was read. Look at the week before you change it.',
     ]);
     setBindingMock('DeleteTrackerWorklog', async () => APPLIED);
     await deleteWorklog(CTX, FROM);

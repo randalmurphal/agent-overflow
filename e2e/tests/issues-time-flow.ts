@@ -8,7 +8,9 @@
 // entry that someone changed in Jira since the week was read is refused
 // as stale, sends nothing, and the week shows what Jira holds; a week
 // whose read Jira refuses says so and shows its days as not read yet
-// until Refresh reads them; Time opens again on the next pane. A Linear
+// until Refresh reads them; Time opens again on the next pane. On the
+// desktop, By ticket in a 900 px pane with a ticket beside it scrolls
+// sideways in its own frame, so every column and the totals are reached. A Linear
 // board says Linear has no time tracking. A week shown from a paired
 // computer that goes off says once that the computer is not connected,
 // and shows again once it is back.
@@ -206,6 +208,59 @@ export function registerIssuesTimeFlow({ compact }: TimeSurface): void {
     await expect(pane.getByTestId('time-screen')).toBeVisible({ timeout: 30_000 });
     await expect(pane.getByTestId('issues-card')).toHaveCount(0);
   });
+
+  if (!compact) {
+    test('By ticket in a 900 px pane with a ticket beside it reaches every column and the totals', async ({ harness, page }) => {
+      test.setTimeout(120_000);
+      await page.setViewportSize({ width: 1600, height: 900 });
+      const board = await connectFakeJiraBoard(harness, 'issues-time-beside');
+      await logJiraWork(board.jiraURL, 'WEB-2', weekDay(0), 7200);
+      await harness.open(page);
+      const pane = await openIssuesPane(page, false);
+      await expect(pane.getByTestId('issues-card').first()).toBeVisible({ timeout: 30_000 });
+      const time = await switchToTime(page, pane, false);
+      await time.getByRole('radio', { name: 'By ticket' }).click();
+      const row = time.locator('[data-testid="time-ticket-row"][data-issue="10102"]');
+      await expect(row.getByTestId('time-ticket-total')).toHaveText('2h', { timeout: 30_000 });
+      await row.getByTestId('time-ticket-open').click();
+      const placed = pane.getByTestId('issues-ticket');
+      await pane.getByTestId('ticket-screen').getByRole('radio', { name: 'Beside' }).click();
+      await expect(placed).toHaveAttribute('data-placement', 'beside');
+
+      // The pane at 900 px, the ticket still beside the week.
+      const sidebar = 1600 - (await pane.boundingBox())!.width;
+      await page.setViewportSize({ width: Math.round(900 + sidebar), height: 900 });
+      await expect.poll(async () => Math.round((await pane.boundingBox())!.width)).toBe(900);
+      await expect(placed).toHaveAttribute('data-placement', 'beside');
+
+      // A cell is reached when it lies inside the list beside the ticket;
+      // the person scrolls the table sideways with the wheel, as no action
+      // of the spec scrolls it for them.
+      const region = pane.getByTestId('issues-board-region');
+      const rows = time.locator('[role="table"] > [role="row"]');
+      const cells = [
+        time.getByRole('columnheader', { name: 'Total' }),
+        ...await row.getByTestId('time-cell').all(),
+        row.getByTestId('time-ticket-total'),
+        rows.last().locator('[role="cell"]').last(),
+      ];
+      const inside = async (cell: Locator): Promise<boolean> => {
+        const r = (await region.boundingBox())!;
+        const c = (await cell.boundingBox())!;
+        return c.x >= r.x - 1 && c.x + c.width <= r.x + r.width + 1;
+      };
+      const reached = new Set<number>();
+      const look = async () => { for (const [i, cell] of cells.entries()) if (await inside(cell)) reached.add(i); };
+      await look();
+      const table = time.getByTestId('time-by-ticket');
+      const box = (await table.boundingBox())!;
+      await page.mouse.move(box.x + box.width / 2, box.y + 20);
+      await page.mouse.wheel(4000, 0);
+      await expect.poll(async () => inside(cells[cells.length - 1])).toBe(true);
+      await look();
+      expect(cells.map((_, i) => reached.has(i)), 'a column the list never shows').toEqual(cells.map(() => true));
+    });
+  }
 
   test('a Linear board says Linear has no time tracking', async ({ harness, page }) => {
     test.setTimeout(90_000);

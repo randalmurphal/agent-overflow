@@ -1188,6 +1188,38 @@ describe('architecture', () => {
     ).toEqual([]);
   });
 
+  it('keeps the week cache out of what the log form imports', () => {
+    // The ticket screen imports the log form; the weeks the Time screen
+    // holds, and their listeners, load with the Time screen alone.
+    const byModule = new Map<string, (typeof sources)[number][]>();
+    for (const source of sources) {
+      const names = [source.file.replace(/\.(ts|svelte)$/, '')];
+      if (source.file.endsWith('.svelte.ts')) names.push(source.file.slice(0, -'.svelte.ts'.length));
+      for (const name of names) byModule.set(name, [...(byModule.get(name) ?? []), source]);
+    }
+    const form = sources.find((source) => source.path === 'lib/components/issues/WorklogForm.svelte');
+    expect(form, 'the walk starts from the log form').toBeDefined();
+    const reached = new Map<string, string>([[form!.path, '']]);
+    const queue = [form!];
+    while (queue.length > 0) {
+      const source = queue.shift()!;
+      for (const parsed of source.imports) {
+        if (parsed.dynamic || parsed.typeOnly) continue;
+        const local = resolveLocalModule(source.file, parsed.specifier);
+        if (local === null) continue;
+        for (const target of byModule.get(local) ?? []) {
+          if (reached.has(target.path)) continue;
+          reached.set(target.path, source.path);
+          queue.push(target);
+        }
+      }
+    }
+    expect(reached.has('lib/stores/trackerTimeWrites.svelte.ts'), 'the walk reaches the worklog writes').toBe(true);
+    const chain: string[] = [];
+    for (let at: string | undefined = 'lib/stores/trackerTime.svelte.ts'; at && reached.has(at); at = reached.get(at)) chain.unshift(at);
+    expect(chain, 'The log form imports the week cache; the Time host owns the weeks and their invalidation.').toEqual([]);
+  });
+
   it('keeps event-driven refresh on the rate-bounded scheduler', () => {
     const offenders = new Map<string, string[]>();
     let debounceImporters = 0;

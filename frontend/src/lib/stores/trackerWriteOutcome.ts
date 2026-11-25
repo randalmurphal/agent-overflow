@@ -71,6 +71,56 @@ export function refusalSentence(refusal: RefusalView, fieldName: (id: string) =>
   return fields.length > 0 ? `${said} ${fields.join('; ')}${lost}` : `${said}${lost}`;
 }
 
+/**
+ * Loss consent: Save anyway, a write sent again accepting what a rich
+ * text change would lose. What must hold, for every write a loss can
+ * refuse, on every screen:
+ * - Save anyway is offered only for the draft that was sent and refused,
+ *   as it stands then;
+ * - any change to that draft, its replacement, or Cancel withdraws the
+ *   offer, so what is sent next is checked again;
+ * - a draft takes no change while its write is out: every input of it is
+ *   disabled while its target's write is pending, so what a write sends
+ *   is what its editor shows.
+ * A draft can still go while its write is out (its editor closed, which
+ * keeps the write), and a new editor holds a new draft. So a store takes
+ * the draft's revision when it sends (`sent`) and offers Save anyway only
+ * when the target still holds that revision once the refusal lands
+ * (`offers`); every change of a draft, Cancel and a closed editor among
+ * them, is `revise`, which gives it a new revision and withdraws the
+ * offer through `withdraw`, the store's.
+ */
+export class LossConsent {
+  readonly #revisions = new Map<string, number>();
+  #next = 1;
+  readonly #withdraw: (key: string) => void;
+
+  constructor(withdraw: (key: string) => void) {
+    this.#withdraw = withdraw;
+  }
+
+  /** The draft of `key` changed, was replaced, or went. */
+  revise(key: string): void {
+    this.#revisions.set(key, this.#next++);
+    this.#withdraw(key);
+  }
+
+  /** The draft's revision as a write of it is sent. */
+  sent(key: string): number {
+    return this.#revisions.get(key) ?? 0;
+  }
+
+  /** Whether `outcome` of a write of `key` sent at revision `sent`
+   * offers Save anyway. */
+  offers(key: string, sent: number, outcome: WriteOutcome, acceptedLoss: boolean): boolean {
+    return outcome.kind === 'refused' && outcome.refusal.reason === 'loss' && !acceptedLoss && this.sent(key) === sent;
+  }
+
+  clear(): void {
+    this.#revisions.clear();
+  }
+}
+
 /** Sends a write once on `backend`, the computer holding its connection,
  * and answers its outcome; `computer` names that computer in the sentence
  * of an answer the connection lost. Nothing retries. */

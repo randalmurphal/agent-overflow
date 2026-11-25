@@ -53,34 +53,41 @@ board methods, events and the patch read in
   base, or a move's form with the base of each long field, which the
   editors and the form show, so a draft outlives its editor; a pane's
   selection holds the drafts of its open ticket and Back trail
-  (`holdTicketDrafts`). The loss consent rules ("Loss consent") are
-  written at the top of the store.
+  (`holdTicketDrafts`).
 - `stores/trackerTicketModel.ts` is the pure part: the comment and
   history windows, the rail's order and the board row a ticket shows its
   points from.
 - `stores/trackerWriteOutcome.ts` is what a tracker write's answer means
-  for the person (`writeOutcome`, worded per subject) and the one runner
-  of a write (`sendWrite`), shared by the ticket's and the Time screen's
-  writes.
+  for the person (`writeOutcome`, worded per subject), the one runner
+  of a write (`sendWrite`) and the loss consent rule (`LossConsent`,
+  its rules written beside it), shared by the ticket's and the Time
+  screen's writes; each write store holds its own consent and revises it
+  on every change of a draft.
 - `stores/trackerTime.svelte.ts` holds the weeks the Time screen reads,
   one per computer, connection, person and Monday, the five used last:
   the stored read and the refresh when a week shows, Refresh, the
-  reconnect's refresh and the reads a write owes its days. Its rules are
-  written at the top of the store. `stores/trackerTimeModel.ts` is the
-  pure part: the days of a week, what a day's total leaves out, and the
-  By ticket rows.
+  reconnect's refresh, the reads a write owes its days and their order,
+  the receipts of writes the week has not caught up with, and the drop of
+  a computer's weeks when its connections change. Its rules are written
+  at the top of the store. `stores/trackerTimeModel.ts` is the pure part:
+  the days of a week, what a day's total leaves out, and the By ticket
+  rows (`weekTickets`, derived only while By ticket or the form reads
+  them).
 - `stores/trackerTimeWrites.svelte.ts` makes the Time screen's writes
   (log, change, delete), one pending write per entry or per ticket and
   day, and holds each outcome, with a toast for one that settles after
-  its form and entry are gone.
+  its form and entry are gone. It does not import the weeks: the weeks'
+  store takes what a write asks of them (`takeWorklogWrites`), so a
+  surface that only logs time loads no week.
 
 These stores load with the pane (`ToolPane.svelte` imports it on demand),
 `TicketScreen.svelte` loads on the first open of a ticket and
 `TimeScreen.svelte` on the first switch to Time.
 The always-loaded stores reach them only through
 `stores/trackerBoardEvents.ts`, where the board and ticket stores take
-`tracker:board_updated`, `tracker:issue_updated` and their gaps and the
-choices store hears that a computer's board lists may have changed;
+`tracker:board_updated`, `tracker:issue_updated` and their gaps, the
+choices store hears that a computer's board lists may have changed and
+the weeks' store that its connections changed;
 `lib/architecture.test.ts` fails when one of them enters the startup
 graph.
 

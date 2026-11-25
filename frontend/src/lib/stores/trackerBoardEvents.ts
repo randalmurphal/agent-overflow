@@ -86,3 +86,16 @@ export function onTrackerBoardListsChanged(listener: (backend: BackendKey) => vo
 export function trackerBoardListsChanged(backend: BackendKey): void {
   for (const listener of listsChanged) listener(backend);
 }
+
+let connectionsChanged: ((backend: BackendKey) => void) | null = null;
+
+/** The weeks' store takes the changes of a computer's connections when it
+ * loads. */
+export function takeTrackerConnectionsChanged(listener: (backend: BackendKey) => void): void {
+  connectionsChanged = listener;
+}
+
+/** `tracker:connections_updated`, or a gap on it, from `backend`. */
+export function trackerConnectionsChanged(backend: BackendKey): void {
+  connectionsChanged?.(backend);
+}
