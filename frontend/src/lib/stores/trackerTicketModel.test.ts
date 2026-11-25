@@ -9,6 +9,7 @@ import {
   heldComments,
   historyWindow,
   moreFields,
+  newestHistory,
   refusalSentence,
   sectionFields,
   ticketRow,
@@ -87,7 +88,7 @@ describe('comments', () => {
 
   it('mounts the newest changes first', () => {
     const history = [{ at: 1, field: 'status' }, { at: 3, field: 'assignee' }, { at: 2, field: 'priority' }] as EventView[];
-    expect(historyWindow(history, 2)).toEqual({ events: [history[1], history[2]], hidden: 1 });
+    expect(historyWindow(newestHistory(history), 2)).toEqual({ events: [history[1], history[2]], hidden: 1 });
   });
 });
 

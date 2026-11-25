@@ -3,7 +3,7 @@
   // the older ones behind a control that mounts 20 more a press. A change
   // the tracker made itself names no one.
   import type { DetailView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
-  import { HISTORY_FIRST, HISTORY_STEP, historyWindow } from '../../stores/trackerTicketModel';
+  import { HISTORY_FIRST, HISTORY_STEP, historyWindow, newestHistory } from '../../stores/trackerTicketModel';
   import { relativeTime } from '../../utils/format';
 
   interface Props {
@@ -14,7 +14,8 @@
   let { detail, backend }: Props = $props();
 
   let shown = $state(HISTORY_FIRST);
-  const view = $derived(historyWindow(detail.history ?? [], shown));
+  const newest = $derived(newestHistory(detail.history ?? []));
+  const view = $derived(historyWindow(newest, shown));
 </script>
 
 <section class="flex flex-col gap-1.5" data-testid="ticket-history">

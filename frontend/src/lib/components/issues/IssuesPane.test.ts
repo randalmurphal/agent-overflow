@@ -1350,6 +1350,31 @@ describe('the ticket in the pane', () => {
     await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('1'));
   });
 
+  it('mounts the newest 20 changes of the history and 20 more a press, ordering them once', async () => {
+    install();
+    // Oldest first, as a changelog lists them, with two out of order.
+    const history = Array.from({ length: 50 }, (_, i) => ({ at: 1_000 + i, field: `f${i}`, to: `v${i}` }));
+    [history[10], history[11]] = [history[11], history[10]];
+    installTicket((issue) => ({ ...ticketDetail(issue), history }) as unknown as DetailView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await fireEvent.click(within(screen).getByRole('radio', { name: 'History' }));
+    const fields = () => within(screen).queryAllByTestId('ticket-history-event').map((e) => e.textContent?.match(/changed (f\d+)/)?.[1]);
+    await waitFor(() => expect(fields()).toHaveLength(20));
+    expect(fields().slice(0, 2)).toEqual(['f49', 'f48']);
+    const sort = vi.spyOn(Array.prototype, 'sort');
+    try {
+      await fireEvent.click(within(screen).getByTestId('ticket-history-earlier'));
+      await waitFor(() => expect(fields()).toHaveLength(40));
+      await fireEvent.click(within(screen).getByTestId('ticket-history-earlier'));
+      await waitFor(() => expect(fields()).toHaveLength(50));
+      expect(sort).not.toHaveBeenCalled();
+    } finally {
+      sort.mockRestore();
+    }
+    expect(fields().slice(37, 41)).toEqual(['f12', 'f11', 'f10', 'f9']);
+  });
+
   it('mounts the newest five comments and the earlier ones 20 a press, reading the next page once the held ones run out', async () => {
     install();
     installTicket((issue) => ticketDetail(issue, { comments: 30, more: 'page-2' }));

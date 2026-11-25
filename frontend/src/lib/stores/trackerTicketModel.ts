@@ -92,9 +92,15 @@ export function commentWindow(held: readonly CommentView[], shown: number, order
   return { comments: order === 'newest' ? take : take.reverse(), hidden: held.length - take.length };
 }
 
-/** The changes mounted, newest first, and how many older ones are not. */
-export function historyWindow(history: readonly EventView[], shown: number): { readonly events: readonly EventView[]; readonly hidden: number } {
-  const newest = [...history].sort((a, b) => b.at - a.at);
+/** The ticket's changes newest first: ordered once per view, and
+ * `historyWindow` slices them on each reveal. */
+export function newestHistory(history: readonly EventView[]): readonly EventView[] {
+  return [...history].sort((a, b) => b.at - a.at);
+}
+
+/** The changes mounted from `newest` (newestHistory), and how many older
+ * ones are not. */
+export function historyWindow(newest: readonly EventView[], shown: number): { readonly events: readonly EventView[]; readonly hidden: number } {
   const take = newest.slice(0, Math.max(0, shown));
   return { events: take, hidden: newest.length - take.length };
 }
