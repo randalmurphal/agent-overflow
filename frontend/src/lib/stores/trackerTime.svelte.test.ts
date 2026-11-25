@@ -199,6 +199,24 @@ describe('what a week shows', () => {
     kept.release();
     dropped.release();
   });
+
+  it('never drops a week a surface holds, however many others it reads', async () => {
+    const stored = held('TrackerWorklogs');
+    const refresh = held('RefreshTrackerWorklogs');
+    const shown = attachTrackerWeek(REF, true);
+    stored.answer({ worklogs: [log('shown')] });
+    refresh.answer({ worklogs: [log('shown')] });
+    await flush();
+    for (const monday of ['2026-10-05', '2026-10-12', '2026-10-19', '2026-10-26', '2026-11-02', '2026-11-16']) {
+      attachTrackerWeek({ ...REF, monday }, false).release();
+    }
+    void refreshTrackerWeek(shown.key);
+    expect(refresh.calls).toHaveLength(2);
+    refresh.answer({ worklogs: [log('shown'), log('later')] });
+    await flush();
+    expect(shown.current.days?.worklogs.map((w) => w.id)).toEqual(['shown', 'later']);
+    shown.release();
+  });
 });
 
 describe('what a write asks of the weeks', () => {
