@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -187,10 +188,9 @@ func lookupUserPromptAnchor(appDataDir, sessionID, content string, minExclusiveI
 	if err != nil || len(steps) == 0 {
 		return -1, ""
 	}
-	want := normalizePromptText(content)
-	if want != "" {
+	if strings.TrimSpace(content) != "" {
 		for _, s := range steps {
-			if normalizePromptText(s.Text) == want {
+			if promptTextMatchesStep(content, false, s) {
 				return s.Idx, FormatStepAnchor(s.Idx, s.StepHash)
 			}
 		}
@@ -425,16 +425,37 @@ func neighborScore(userSteps []nativeUserStep, pos int, target UserPromptCutTarg
 	return score
 }
 
+var reImageMarker = regexp.MustCompile(`\[Image #\d+\]`)
+
+func stripImageMarkers(s string) string {
+	return strings.Join(strings.Fields(reImageMarker.ReplaceAllString(s, " ")), " ")
+}
+
+// promptTextMatchesStep compares an AO prompt string (which retains composer
+// `[Image #N]` placeholders that buildPromptBlocks strips before sending to
+// agy) against a decoded native USER_INPUT step.
+func promptTextMatchesStep(rawPrompt string, hasMediaHint bool, step nativeUserStep) bool {
+	want := normalizePromptText(rawPrompt)
+	got := normalizePromptText(step.Text)
+	if want != "" && got == want {
+		return true
+	}
+	if !step.HasMedia && !hasMediaHint {
+		return false
+	}
+	wantStripped := stripImageMarkers(want)
+	gotStripped := stripImageMarkers(got)
+	if wantStripped != "" {
+		return step.HasMedia && wantStripped == gotStripped
+	}
+	return step.HasMedia && gotStripped == "" && (hasMediaHint || reImageMarker.MatchString(want))
+}
+
 func hintMatchesStepExact(hint UserPromptHint, step nativeUserStep) bool {
 	if hint.IsQuestion {
 		return false
 	}
-	want := normalizePromptText(hint.Text)
-	got := normalizePromptText(step.Text)
-	if want != "" {
-		return got == want
-	}
-	return hint.HasMedia && got == "" && step.HasMedia
+	return promptTextMatchesStep(hint.Text, hint.HasMedia, step)
 }
 
 func hintMatchesStepAsNeighbor(hint UserPromptHint, step nativeUserStep) bool {

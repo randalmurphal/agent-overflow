@@ -152,6 +152,22 @@ func TestResolvePromptStepAnchorMonotonicForRepeatedSteers(t *testing.T) {
 		t.Fatalf("media-only ResolvePromptStepAnchor = %q, want agy-step:6:hash6", a3)
 	}
 
+	// Concurrent steers with image attachments ([Image #N] markers stripped by
+	// buildPromptBlocks before agy writes step_payload) must still resolve
+	// uniquely when multiple user steps exist after beforeToken.
+	appendTestStepRows(t, dbPath, []testStepRow{
+		{idx: 8, stepType: cortexStepTypeUserInput, payload: encodeTestUserInputStep("look at  this screenshot", "hash8", 5000, true, false)},
+		{idx: 10, stepType: cortexStepTypeUserInput, payload: encodeTestUserInputStep("", "hash10", 6000, true, false)},
+	})
+	a4 := f.ResolvePromptStepAnchor(context.Background(), sid, "look at [Image #1] this screenshot", 6)
+	if a4 != "agy-step:8:hash8" {
+		t.Fatalf("inline-image multi-steer ResolvePromptStepAnchor = %q, want agy-step:8:hash8", a4)
+	}
+	a5 := f.ResolvePromptStepAnchor(context.Background(), sid, "[Image #1]", 6)
+	if a5 != "agy-step:10:hash10" {
+		t.Fatalf("image-only multi-steer ResolvePromptStepAnchor = %q, want agy-step:10:hash10", a5)
+	}
+
 	// Nil beforeToken must never guess from step 0.
 	if got := f.ResolvePromptStepAnchor(context.Background(), sid, "first", nil); got != "" {
 		t.Fatalf("ResolvePromptStepAnchor(nil beforeToken) = %q, want empty", got)
@@ -316,9 +332,9 @@ func TestForkConversationBeforeTargetContentNeighborAndTimestampDrift(t *testing
 		t.Fatalf("duplicate text cut maxIdx = %d, want %d (recent restart)", got, recentRestartIdx-1)
 	}
 
-	// 3. Media-only message matches HasMedia step accurately.
+	// 3. Media-only message matches HasMedia step accurately (both empty text and "[Image #1]" placeholder).
 	dst3, clean3, err := ForkConversationBeforeTarget(appDataDir, srcID, UserPromptCutTarget{
-		Target:        UserPromptHint{Text: "", HasMedia: true, CreatedAtMs: t0 + 2_900_200},
+		Target:        UserPromptHint{Text: "[Image #1]", HasMedia: true, CreatedAtMs: t0 + 2_900_200},
 		PromptsBefore: 2,
 		PromptsAfter:  3,
 	})
@@ -328,6 +344,27 @@ func TestForkConversationBeforeTargetContentNeighborAndTimestampDrift(t *testing
 	defer func() { _ = clean3() }()
 	if got := readTestDBMaxIdx(t, appDataDir, dst3); got != imgIdx-1 {
 		t.Fatalf("media-only cut maxIdx = %d, want %d", got, imgIdx-1)
+	}
+
+	// 3b. Image+text message with leading "[Image #1] " placeholder matches agy's marker-free text.
+	imgTextID := "sess-img-text"
+	seedRichConversationDB(t, appDataDir, imgTextID, []testStepRow{
+		{idx: 0, stepType: cortexStepTypeUserInput, payload: encodeTestUserInputStep("first", "h0", t0, false, false)},
+		{idx: 1, stepType: cortexStepTypePlannerResponse, payload: []byte("r")},
+		{idx: 2, stepType: cortexStepTypeUserInput, payload: encodeTestUserInputStep(" Is this the right position?", "h2", t0+1000, true, false)},
+		{idx: 3, stepType: cortexStepTypePlannerResponse, payload: []byte("r")},
+	})
+	dstImgText, cleanImgText, err := ForkConversationBeforeTarget(appDataDir, imgTextID, UserPromptCutTarget{
+		Target:        UserPromptHint{Text: "[Image #1] Is this the right position?", HasMedia: true, CreatedAtMs: t0 + 1100},
+		PromptsBefore: 1,
+		PromptsAfter:  0,
+	})
+	if err != nil {
+		t.Fatalf("image+text cut: %v", err)
+	}
+	defer func() { _ = cleanImgText() }()
+	if got := readTestDBMaxIdx(t, appDataDir, dstImgText); got != 1 {
+		t.Fatalf("image+text cut maxIdx = %d, want 1", got)
 	}
 
 	// 4. Unwritten tail prompt (never written to agy DB) keeps full DB cleanly.
