@@ -371,8 +371,9 @@ func (in UnlinkRequest) model() tracker.UnlinkInput {
 }
 
 // WorklogView is time logged on an issue: Day is YYYY-MM-DD in the
-// author's own zone, Updated Unix milliseconds. A worklog edit or delete
-// names the worklog as read.
+// author's own zone, Updated the tracker's revision in Unix milliseconds.
+// A worklog edit or delete names the worklog as read, Updated included: a
+// worklog whose revision moved since is refused as stale.
 type WorklogView struct {
 	ID           string `json:"id"`
 	Issue        string `json:"issue"`

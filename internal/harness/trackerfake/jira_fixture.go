@@ -63,6 +63,11 @@ type JiraUser struct {
 	// AccountType is atlassian (the default), app or customer.
 	AccountType string `json:"accountType,omitempty"`
 	TimeZone    string `json:"timeZone,omitempty"`
+	// HidesTimeZone is a profile whose privacy setting hides the time
+	// zone: Jira answers it as null (documented: "Depending on the user's
+	// privacy setting, this may be returned as null"). TimeZone still
+	// places the user's Tempo days.
+	HidesTimeZone bool `json:"hidesTimeZone,omitempty"`
 }
 
 // JiraStatus is a workflow status; Category is new, indeterminate or done.

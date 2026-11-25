@@ -55,6 +55,13 @@ var ErrTrackerCacheUnlisted = errors.New("store: no project lists the tracker bo
 // content again.
 var ErrTrackerCacheSwept = errors.New("store: tracker mirror swept issues since the read began; read it again")
 
+// ErrTrackerCacheSourceChanged is returned by ReplaceMirrorWorklogs for
+// worklogs read from a time source the root's connection no longer uses:
+// its Tempo connection was added, turned on or off, or removed since the
+// read's provider was made (migration v168). Nothing is stored; the
+// caller reads the days again.
+var ErrTrackerCacheSourceChanged = errors.New("store: the connection's time tracking changed since the worklogs were read")
+
 // ErrTrackerCacheStale is returned by ListMirrorSection for a continuation
 // read at another revision of the board than the page it continues: the
 // caller reads the section again from its start.

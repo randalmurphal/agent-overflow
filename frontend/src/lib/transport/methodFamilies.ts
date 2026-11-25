@@ -122,6 +122,11 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
   4036611847: 'trackerConnection', // LinkTrackerIssues
   1599312374: 'trackerConnection', // UnlinkTrackerIssues
   2437411241: 'trackerConnection', // AddTrackerWorklog
+  3891799979: 'trackerConnection', // EditTrackerSprint
+  670991272: 'trackerConnection', // EditTrackerWorklog
+  2679403039: 'trackerConnection', // DeleteTrackerWorklog
+  1862710581: 'trackerConnection', // TrackerWorklogs
+  2905282814: 'trackerConnection', // RefreshTrackerWorklogs
   4253452655: 'trackerConnection', // TrackerPokerSupport
   141171752: 'trackerConnection', // VoteTrackerPoker
   3151648721: 'trackerConnection', // RevealTrackerPoker

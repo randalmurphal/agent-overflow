@@ -73,6 +73,16 @@ func TestClassifyFailureSortsEveryKind(t *testing.T) {
 			FailureTracker, "Tempo answered HTTP 500"},
 		"a body too large": {"jira", &trackerapi.BodyTooLargeError{Tracker: "jira", Limit: 1},
 			FailureTracker, "larger than Agent Overflow reads"},
+		// A Jira connection's time is answered by its linked Tempo
+		// connection, which the sentence names.
+		"Tempo's rate limit on a Jira connection's time": {"jira", &trackerapi.RateLimitedError{Tracker: "tempo", Status: 429, Until: until},
+			FailureRateLimited, "Tempo is limiting requests until 2026-11-19T10:00:00Z"},
+		"Tempo's 403 on a Jira connection's time": {"jira", &trackerapi.StatusError{Tracker: "tempo", Status: 403},
+			FailureForbidden, "Tempo refused access (HTTP 403)"},
+		"Tempo's 500 on a Jira connection's time": {"jira", &trackerapi.StatusError{Tracker: "tempo", Status: 500},
+			FailureTracker, "Tempo answered HTTP 500"},
+		"Tempo's answer too large on a Jira connection's time": {"jira", &trackerapi.BodyTooLargeError{Tracker: "tempo", Limit: 1},
+			FailureTracker, "Tempo sent an answer larger"},
 		"a reset": {"jira", &trackerapi.TransientError{Err: errors.New(secret)},
 			FailureTransient, "Jira could not be reached"},
 		"a dial failure": {"linear", &trackerapi.NotSentError{Err: errors.New(secret)},
