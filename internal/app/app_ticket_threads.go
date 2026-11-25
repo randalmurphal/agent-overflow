@@ -31,9 +31,16 @@ type StartTicketThreadRequest struct {
 // linked to the ticket with the request's origin, with the ticket file
 // (trackerapp.TicketFileText, KEY.md) attached to its draft, unsent, and,
 // for Start work, the draft's text "Work on KEY: title." and a worktree on
-// the branch: the worktree that already has the branch checked out, else
-// a new one on the branch, made from the project's current branch when the
-// branch does not exist. The ticket is read before anything is made (from
+// exactly the branch named: the worktree that already has the branch
+// checked out, else a new one on the branch, made from the project's
+// current branch when the branch does not exist; never a tag of that name.
+// A Start work for a ticket, project and branch that already has a Start
+// work thread, not archived, answers that thread and makes nothing, so
+// asking again after a lost reply is safe; one ticket's Start works in a
+// project run one at a time, so two at once make one thread. An archived
+// one leaves the branch and its worktree as they are: the new thread runs
+// in the worktree that still has the branch checked out, or in a new one
+// on it. The ticket is read before anything is made (from
 // the mirror, or once from the tracker when it holds no body); a failure
 // at any later step deletes the thread, which ends its link and tells the
 // views that showed the ticket as kept by it, and takes back the worktree
@@ -59,6 +66,9 @@ func (a *App) StartTicketThread(ctx context.Context, projectID string, req Start
 		if err := a.requireScope(ctx, transport.ScopeGitOperate, "Start work makes a worktree"); err != nil {
 			return store.Thread{}, err
 		}
+		if branch == "" {
+			return store.Thread{}, errorsx.Public("ticket_thread_branch_invalid", "Start work names a branch for its worktree", nil)
+		}
 		if err := gitops.ValidateBranchName(branch); err != nil {
 			return store.Thread{}, errorsx.Public("ticket_thread_branch_invalid", fmt.Sprintf("git cannot name a branch %q", branch), err)
 		}
@@ -77,6 +87,18 @@ func (a *App) StartTicketThread(ctx context.Context, projectID string, req Start
 	if err != nil {
 		return store.Thread{}, trackerError(err)
 	}
+	ticket := store.TicketRef{Kind: conn.Kind, Site: conn.Site, IssueID: req.IssueID}
+	if req.Origin == store.TicketOriginStartWork {
+		release, err := a.startWork.acquire(ctx, strings.Join([]string{project.ID, ticket.Kind, ticket.Site, ticket.IssueID}, "\n"))
+		if err != nil {
+			return store.Thread{}, err
+		}
+		defer release()
+		started, ok, err := a.startedWorkThread(project.ID, ticket, branch)
+		if err != nil || ok {
+			return started, err
+		}
+	}
 	readCtx, cancel := withinBudget(ctx, budgetExceeded{doing: "Reading the ticket", budget: transport.DefaultMethodBudget, then: trackerSlow})
 	detail, err := svc.DetailForThread(readCtx, req.ConnectionID, tracker.IssueID(req.IssueID))
 	cancel()
@@ -94,7 +116,9 @@ func (a *App) StartTicketThread(ctx context.Context, projectID string, req Start
 		if held != "" {
 			opts.WorktreePath, opts.Branch = held, branch
 		} else {
-			opts.WorktreeBranch = branch
+			// Spelled in full, the branch is exactly this name: git's
+			// refusal and no tidying, and never a tag of that name.
+			opts.WorktreeBranch = "refs/heads/" + branch
 		}
 	}
 	thread, cut, err := a.createThreadWithWorktree(ctx, opts, false)
@@ -104,8 +128,12 @@ func (a *App) StartTicketThread(ctx context.Context, projectID string, req Start
 	undo := func(cause error) (store.Thread, error) {
 		return store.Thread{}, errors.Join(cause, a.rollBackCreatedThread("start ticket thread", project, thread, cut))
 	}
+	if branch != "" && thread.Branch != branch {
+		return undo(errorsx.Public("ticket_thread_branch_changed",
+			fmt.Sprintf("the worktree came out on %q, not on the branch %q named; nothing was made", thread.Branch, branch), nil))
+	}
 
-	write, err := svc.LinkThread(ctx, thread.ID, store.TicketRef{Kind: conn.Kind, Site: conn.Site, IssueID: req.IssueID}, req.Origin)
+	write, err := svc.LinkThread(ctx, thread.ID, ticket, req.Origin)
 	if err != nil {
 		return undo(threadTicketError(ctx, err))
 	}
@@ -123,6 +151,23 @@ func (a *App) StartTicketThread(ctx context.Context, projectID string, req Start
 		return undo(fmt.Errorf("start ticket thread: seed the draft: %w", err))
 	}
 	return a.store.GetThread(thread.ID)
+}
+
+// startedWorkThread is the Start work thread already linked to ticket in
+// projectID on branch, which a Start work asked again answers: its reply
+// may never have arrived, or another window asked at the same moment. An
+// archived one is the person's to leave, so it never answers.
+func (a *App) startedWorkThread(projectID string, ticket store.TicketRef, branch string) (store.Thread, bool, error) {
+	threads, err := a.store.ListThreadsForTicket(ticket)
+	if err != nil {
+		return store.Thread{}, false, fmt.Errorf("start ticket thread: the threads of the ticket: %w", err)
+	}
+	for _, t := range threads {
+		if t.ProjectID == projectID && t.Branch == branch && !t.Archived && t.TicketLink != nil && t.TicketLink.Origin == store.TicketOriginStartWork {
+			return t, true, nil
+		}
+	}
+	return store.Thread{}, false, nil
 }
 
 // branchCheckout is the worktree of project that has branch checked out,

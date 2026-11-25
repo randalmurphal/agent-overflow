@@ -73,7 +73,8 @@ type TicketWorkProblem struct {
 // refs, with no forge or tracker request: the stored Pull requests list
 // (open pull requests), the pull requests its linked threads were last
 // seen with (merged and closed ones too), and the branches of the projects
-// that list a board of the connection or hold one of those pull requests.
+// that list a board of the connection, hold one of those pull requests or
+// hold a thread linked to the ticket.
 // The ticket's key is the one its mirror holds, so the ticket must have
 // been read on this computer, as an open ticket has.
 //
@@ -129,6 +130,17 @@ func (a *App) GetTicketWork(ctx context.Context, connectionID, issueID string) (
 	for _, pr := range work.PullRequests {
 		if pr.ProjectID != "" && !slices.Contains(projects, pr.ProjectID) {
 			projects = append(projects, pr.ProjectID)
+		}
+	}
+	// A thread linked to the ticket may run in a repository that lists no
+	// board of the connection and has no pull request yet.
+	linked, err := a.store.ListThreadsForTicket(store.TicketRef{Kind: conn.Kind, Site: conn.Site, IssueID: issueID})
+	if err != nil {
+		return TicketWork{}, err
+	}
+	for _, t := range linked {
+		if t.ProjectID != "" && !slices.Contains(projects, t.ProjectID) {
+			projects = append(projects, t.ProjectID)
 		}
 	}
 	for _, projectID := range projects {

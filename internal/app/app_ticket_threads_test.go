@@ -6,9 +6,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	attachmentstore "agent-overflow/internal/attachment"
+	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/harness/trackerfake"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
@@ -175,6 +177,125 @@ func TestStartTicketThreadThatFailsLeavesNothing(t *testing.T) {
 	}
 	if worktrees, err := f.a.gitCore().ListWorktrees(f.repo); err != nil || len(worktrees) != 1 {
 		t.Fatalf("worktrees = %+v (%v); want the main checkout alone", worktrees, err)
+	}
+}
+
+// gitProject is a new project of f's App on a git checkout with one
+// commit on main.
+func (f *ticketThreadFixture) gitProject(t *testing.T, name string) store.Project {
+	t.Helper()
+	dir := t.TempDir()
+	runGit(t, dir, "init", "-b", "main")
+	runGit(t, dir, "config", "user.name", "Test")
+	runGit(t, dir, "config", "user.email", "test@example.com")
+	writeFile(t, dir, ".gitkeep", "")
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "initial")
+	project, err := f.a.store.CreateProject(store.Project{ID: entityid.New(), Path: dir, Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return project
+}
+
+func (f *ticketThreadFixture) startWork(branch string) (store.Thread, error) {
+	return f.a.StartTicketThread(f.ctx, f.project, StartTicketThreadRequest{ConnectionID: f.conn.ID, IssueID: "10101", Origin: store.TicketOriginStartWork, Branch: branch})
+}
+
+// A Start work asked again for the same ticket, project and branch, after
+// a reply that never arrived or from another window at the same moment,
+// answers the thread the first made: one thread, one link, one draft. An
+// archived one is the person's to leave: a new Start work makes a new
+// thread, in the worktree that still has the branch.
+func TestStartWorkAskedAgainAnswersTheThreadItMade(t *testing.T) {
+	t.Parallel()
+	f := newTicketThreadFixture(t)
+
+	var wg sync.WaitGroup
+	made := make([]store.Thread, 2)
+	errs := make([]error, 2)
+	for i := range made {
+		wg.Go(func() { made[i], errs[i] = f.startWork("WEB-1-first-story") })
+	}
+	wg.Wait()
+	if errs[0] != nil || errs[1] != nil || made[0].ID == "" || made[0].ID != made[1].ID {
+		t.Fatalf("two Start works at once = %q (%v), %q (%v); want one thread", made[0].ID, errs[0], made[1].ID, errs[1])
+	}
+	again, err := f.startWork("WEB-1-first-story")
+	if err != nil || again.ID != made[0].ID {
+		t.Fatalf("Start work again = %q, %v; want %q", again.ID, err, made[0].ID)
+	}
+	threads, err := f.a.store.ListThreadsByProject(f.project)
+	if err != nil || len(threads) != 1 {
+		t.Fatalf("threads = %d, %v; want one", len(threads), err)
+	}
+	if draft, _ := f.draftOf(t, made[0].ID); draft.Content != "Work on WEB-1: First story." {
+		t.Fatalf("the draft = %q", draft.Content)
+	}
+
+	// Another branch is another Start work.
+	other, err := f.startWork("WEB-1-second-try")
+	if err != nil || other.ID == made[0].ID {
+		t.Fatalf("Start work on another branch = %q, %v; want a new thread", other.ID, err)
+	}
+
+	if _, err := f.a.ArchiveThread(made[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	after, err := f.startWork("WEB-1-first-story")
+	if err != nil || after.ID == made[0].ID {
+		t.Fatalf("Start work after the archive = %q, %v; want a new thread", after.ID, err)
+	}
+	if after.Branch != "WEB-1-first-story" || after.WorktreePath == "" {
+		t.Fatalf("the new thread runs in %q on %q", after.WorktreePath, after.Branch)
+	}
+}
+
+// Start work names a branch, and its thread is on exactly that branch: a
+// name git's tidying would change and a tag of that name are never what it
+// makes, and an empty one is refused before anything is made.
+func TestStartWorkMakesExactlyTheBranchNamed(t *testing.T) {
+	t.Parallel()
+	f := newTicketThreadFixture(t)
+	runGit(t, f.repo, "tag", "WEB-1-tagged")
+
+	for _, branch := range []string{"feature/WEB-1--fix", "WEB-7-v1.2", "WEB-1-tagged"} {
+		thread, err := f.startWork(branch)
+		if err != nil {
+			t.Fatalf("Start work on %q: %v", branch, err)
+		}
+		if thread.Branch != branch {
+			t.Errorf("Start work on %q made a thread on %q", branch, thread.Branch)
+		}
+		// The full name: a branch a tag shares its name with abbreviates
+		// to heads/NAME, and a detached HEAD has none.
+		head := strings.TrimSpace(gitOutput(t, thread.WorktreePath, "symbolic-ref", "-q", "HEAD"))
+		if head != "refs/heads/"+branch {
+			t.Errorf("Start work on %q checked out %q", branch, head)
+		}
+	}
+	_, err := f.startWork("  ")
+	if err == nil || !strings.Contains(err.Error(), "names a branch") {
+		t.Errorf("Start work on no branch = %v; want it refused", err)
+	}
+}
+
+// A Start work in a repository that lists no board of the ticket's
+// connection, with no pull request yet: Work reads the branches of the
+// linked thread's project too, so it lists the branch just made.
+func TestTicketWorkListsTheBranchOfAThreadInAnotherRepository(t *testing.T) {
+	t.Parallel()
+	f := newTicketThreadFixture(t)
+	other := f.gitProject(t, "elsewhere")
+	if _, err := f.a.StartTicketThread(f.ctx, other.ID, StartTicketThreadRequest{ConnectionID: f.conn.ID, IssueID: "10101", Origin: store.TicketOriginStartWork, Branch: "WEB-1-elsewhere"}); err != nil {
+		t.Fatal(err)
+	}
+	work, err := f.a.GetTicketWork(f.ctx, f.conn.ID, "10101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(work.Branches, func(b TicketBranch) bool { return b.ProjectID == other.ID && b.Name == "WEB-1-elsewhere" }) {
+		t.Fatalf("branches = %+v; want WEB-1-elsewhere of %s", work.Branches, other.ID)
 	}
 }
 
