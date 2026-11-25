@@ -66,6 +66,18 @@ const TOKENS: readonly string[] = [
   ...ANSI_SLOTS.map(([, token]) => token),
 ];
 
+/** Value equality over xterm's ITheme palette fields. Guards redundant
+ * `term.options.theme = ...` writes that force @xterm/addon-webgl to clear
+ * and rebuild its GPU glyph texture atlas on mount and warm pool reattach. */
+export function sameXtermTheme(a: ITheme | undefined, b: ITheme): boolean {
+  if (a === b) return true;
+  if (!a) return false;
+  for (const key of Object.keys(b) as (keyof ITheme)[]) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
 /**
  * Selection alpha. The old palette stated selection as an opaque slab plus a
  * matching foreground, which meant restating the text color for every theme;

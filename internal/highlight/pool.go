@@ -46,6 +46,41 @@ var paintSpanPool = sync.Pool{
 	},
 }
 
+const maxRetainedClassSlabCap = 64 * 1024
+
+var classSlabPool = sync.Pool{
+	New: func() any {
+		s := make([]uint16, 0, 4096)
+		return &s
+	},
+}
+
+func acquireClassSlab(n int) (*[]uint16, []uint16) {
+	if n <= 0 {
+		return nil, nil
+	}
+	if n > maxRetainedClassSlabCap {
+		return nil, make([]uint16, n)
+	}
+	ptr := classSlabPool.Get().(*[]uint16)
+	buf := *ptr
+	if cap(buf) < n {
+		buf = make([]uint16, n)
+	} else {
+		buf = buf[:n]
+		clear(buf)
+	}
+	return ptr, buf
+}
+
+func releaseClassSlab(ptr *[]uint16, buf []uint16) {
+	if ptr == nil || cap(buf) > maxRetainedClassSlabCap {
+		return
+	}
+	*ptr = buf[:0]
+	classSlabPool.Put(ptr)
+}
+
 func acquireParser() *tree_sitter.Parser {
 	var p *tree_sitter.Parser
 	select {
@@ -84,9 +119,10 @@ func releaseParser(p *tree_sitter.Parser) {
 	}
 }
 
-// parseWithDeadline parses src, halting at the parser's configured
-// timeout (set by acquireParser). Returns nil on timeout; the caller
-// must Close the parser (see releaseParser) and degrade to plain text.
-func parseWithDeadline(p *tree_sitter.Parser, src []byte) *tree_sitter.Tree {
-	return p.Parse(src, nil)
+// parseWithDeadline parses src (incrementally reusing oldTree when non-nil),
+// halting at the parser's configured timeout (set by acquireParser). Returns
+// nil on timeout; the caller must Close the parser (see releaseParser) and
+// degrade to plain text.
+func parseWithDeadline(p *tree_sitter.Parser, src []byte, oldTree *tree_sitter.Tree) *tree_sitter.Tree {
+	return p.Parse(src, oldTree)
 }

@@ -34,6 +34,7 @@
     type ProviderID,
   } from '../../providers/catalog';
   import {
+    ensureProviderModels,
     getProviderModels,
     refreshProviderModels,
   } from '../../stores/providerModels.svelte';
@@ -112,10 +113,16 @@
     readStatus();
   });
 
+  let initialBinaryPathSeen = false;
   $effect(() => {
     void binaryPath;
+    const isInitialMount = !initialBinaryPathSeen;
+    initialBinaryPathSeen = true;
     const generation = ++modelGeneration;
-    refreshProviderModels(provider, backend).catch((err: unknown) => {
+    const loadModels = isInitialMount
+      ? ensureProviderModels(provider, backend)
+      : refreshProviderModels(provider, backend);
+    loadModels.catch((err: unknown) => {
       if (generation !== modelGeneration) return;
       console.error(`Failed to load ${definition.label} models:`, err);
       addErrorToast(`Failed to load ${definition.label} models.`, err);

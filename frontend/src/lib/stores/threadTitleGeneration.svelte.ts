@@ -71,7 +71,7 @@ function setPending(threadId: string, value: boolean): void {
  * returns without starting a second run).
  */
 export function releaseThreadTitleGenerationPending(): void {
-  for (const threadId of [...awaited]) setPending(threadId, false);
+  for (const threadId of Array.from(awaited)) setPending(threadId, false);
 }
 
 let wasDown = false;

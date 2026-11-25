@@ -67,10 +67,10 @@ export function createTimelineDiagnostics(
     if (!isUiRenderTraceEnabled()) return;
     const pane = options.getPane();
     const revealedNodes = options.getRevealedNodes();
-    pane.threadId;
-    pane.items.length;
-    pane.timelineRevision;
-    revealedNodes.length;
+    void pane.threadId;
+    void pane.items.length;
+    void pane.timelineRevision;
+    void revealedNodes.length;
     recordTimelineRenderTrace(pane, revealedNodes, options.getScrollEl(), options.getListRef());
   }
 

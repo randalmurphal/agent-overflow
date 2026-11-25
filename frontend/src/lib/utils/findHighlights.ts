@@ -256,7 +256,7 @@ function collectSegments(
         const tag = element.tagName;
         if (
           (cls === '' && PLAIN_VISIBLE_TAGS.has(tag)) ||
-          (tag === 'SPAN' && cls.startsWith('syntax-'))
+          (tag === 'SPAN' && (cls.startsWith('syntax-') || cls.startsWith('rounded-[2px] ')))
         ) {
           return true;
         }
@@ -370,6 +370,83 @@ function collectSegments(
   // If `root` itself matches SKIP_SELECTOR (e.g., data-find-skip), none of its
   // descendants can match because `parent.closest(SKIP_SELECTOR)` hits `root`.
   if (isSkipElement(root)) return [];
+
+  // Fast path when `rowsOnly` is set with a `rowSelector` and no islands:
+  // query only the matching row elements instead of traversing unrelated pane
+  // chrome (toolbars, file trees, Lucide SVGs) and running checkVisibility()
+  // on every node. Shared ancestors are verified once via a memoized map.
+  if (rowsOnly && rowSelector && (!islands || islands.size === 0) && !rootRow) {
+    const rootVisible = checkVis(root, rootParentVisible);
+    if (!rootVisible && !keepHidden) return [];
+    const matchedRows = root.querySelectorAll(rowSelector);
+    if (matchedRows.length === 0) return [];
+
+    interface AncestorInfo {
+      skip: boolean;
+      visible: boolean;
+      detailsHidden: boolean;
+      region: Element | null;
+      block: Element | null;
+      insideMatchedRow: boolean;
+    }
+    const ancestorCache = new Map<Element, AncestorInfo>([
+      [
+        root,
+        {
+          skip: false,
+          visible: rootVisible,
+          detailsHidden: rootDetailsHidden,
+          region: rootRegion,
+          block: rootBlock,
+          insideMatchedRow: false,
+        },
+      ],
+    ]);
+
+    const resolveAncestor = (el: Element): AncestorInfo => {
+      const cached = ancestorCache.get(el);
+      if (cached) return cached;
+      const parent = el.parentElement;
+      const pInfo = parent ? resolveAncestor(parent) : ancestorCache.get(root)!;
+      if (pInfo.skip || pInfo.insideMatchedRow || (!pInfo.visible && !keepHidden)) {
+        const out: AncestorInfo = {
+          skip: pInfo.skip,
+          visible: false,
+          detailsHidden: pInfo.detailsHidden,
+          region: pInfo.region,
+          block: pInfo.block,
+          insideMatchedRow: pInfo.insideMatchedRow,
+        };
+        ancestorCache.set(el, out);
+        return out;
+      }
+      const skip = isSkipElement(el);
+      const insideMatchedRow = matchesRow ? matchesRow(el) : false;
+      const closedParent = parent !== null && parent.tagName === 'DETAILS' && !(parent as HTMLDetailsElement).open;
+      const detailsHidden = pInfo.detailsHidden || (closedParent && el !== firstDirectSummary(parent));
+      const visible = (!skip && (!detailsHidden || keepHidden)) ? checkVis(el, pInfo.visible) : false;
+      const region = matchesRegion && matchesRegion(el) ? el : pInfo.region;
+      const block = BLOCK_TAGS.has(el.tagName) ? el : pInfo.block;
+      const out: AncestorInfo = { skip, visible, detailsHidden, region, block, insideMatchedRow };
+      ancestorCache.set(el, out);
+      return out;
+    };
+
+    for (let i = 0; i < matchedRows.length; i += 1) {
+      const rowEl = matchedRows[i];
+      const parent = rowEl.parentElement;
+      const pInfo = parent ? resolveAncestor(parent) : ancestorCache.get(root)!;
+      if (pInfo.skip || pInfo.insideMatchedRow) continue;
+      if (!pInfo.visible && !keepHidden) continue;
+      const closedParent = parent !== null && parent.tagName === 'DETAILS' && !(parent as HTMLDetailsElement).open;
+      const rowDetailsHidden = pInfo.detailsHidden || (closedParent && rowEl !== firstDirectSummary(parent));
+      if (rowDetailsHidden && !keepHidden) continue;
+      current = null;
+      visit(rowEl, rowEl, pInfo.region, pInfo.block, rowDetailsHidden, pInfo.visible, false);
+    }
+    return segments;
+  }
+
   visit(root, rootRow, rootRegion, rootBlock, rootDetailsHidden, rootParentVisible, true);
   return segments;
 }

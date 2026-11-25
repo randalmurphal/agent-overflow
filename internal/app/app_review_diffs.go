@@ -374,13 +374,35 @@ func (a *App) VerifyEditDiffs(threadID string, req VerifyEditDiffsRequest) (Veri
 	if err != nil {
 		return VerifyEditDiffsResult{}, err
 	}
+	var turnPayloadByPath map[string]string
+	if req.EditPayloadID == "" && len(files) > 0 {
+		want := make(map[string]struct{}, len(files))
+		for _, f := range files {
+			want[f.Path] = struct{}{}
+		}
+		if resolved, err := a.lastTurnEditOfPaths(context.Background(), threadID, req.EditTurnIndex, want); err == nil {
+			turnPayloadByPath = resolved
+		} else {
+			log.Printf("app: scan turn edits of %s/%d: %v", threadID, req.EditTurnIndex, err)
+		}
+	}
 	expandable := []string{}
 	for _, file := range files {
+		payloadID := req.EditPayloadID
+		if payloadID == "" && turnPayloadByPath != nil {
+			if id, ok := turnPayloadByPath[file.Path]; ok {
+				payloadID = id
+			} else {
+				// No edit payload in this turn touched file.Path: skip the
+				// per-file scan; workspace fallback still runs below.
+				payloadID = noEditPayloadSentinel
+			}
+		}
 		_, _, err := a.diffContextContent(action, workspace, threadID, DiffContextRequest{
 			Scope:         "edits",
 			Path:          file.Path,
 			VerifyPatch:   file.VerifyPatch,
-			EditPayloadID: req.EditPayloadID,
+			EditPayloadID: payloadID,
 			EditTurnIndex: req.EditTurnIndex,
 		}, highlight.MaxPrimeBytes)
 		if err == nil {
@@ -482,11 +504,18 @@ func (a *App) diffContextContent(action, workspace, threadID string, req DiffCon
 	}
 }
 
+// noEditPayloadSentinel marks a pre-scanned turn path known to have no
+// matching edit payload so editFileSnapshot skips redundant SQLite chunk scans.
+const noEditPayloadSentinel = "\x00none"
+
 // editFileSnapshot resolves the persisted new-side snapshot for the
 // request's edit selection. Store read errors log and report no
 // snapshot — the workspace fallback may still verify, and refusing
 // expansion over a cache-read hiccup would retire arrows needlessly.
 func (a *App) editFileSnapshot(threadID string, req DiffContextRequest) (string, bool) {
+	if req.EditPayloadID == noEditPayloadSentinel {
+		return "", false
+	}
 	if req.EditPayloadID != "" {
 		content, found, err := a.store.GetEditFileSnapshot(threadID, req.EditPayloadID, req.Path)
 		if err != nil {

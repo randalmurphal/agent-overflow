@@ -77,6 +77,9 @@ let loadError: string | null = $state(null);
 // ids, cleared whenever `resolved` is replaced. Keeps the editable-target
 // keydown fast path O(|subset|) with zero DOM queries or context allocation.
 let resolvedSubsetCache = new WeakMap<ReadonlySet<string>, ResolvedKeybinding[]>();
+// Precomputed command-id -> effective chord key map (last-registered binding
+// wins, matching reverse scan), rebuilt whenever `resolved` is replaced.
+let keyByCommandId = new Map<string, string>();
 
 /** The native shell has no local Go service. Its bootstrap installs
  * frontend-owned persistence before any loader or settings action runs. */
@@ -96,6 +99,11 @@ function compileEffectiveRules(): void {
   resolved = compiled.resolved;
   issues = compiled.issues;
   resolvedSubsetCache = new WeakMap();
+  const nextKeys = new Map<string, string>();
+  for (const entry of compiled.resolved) {
+    nextKeys.set(entry.rule.command, entry.rule.key);
+  }
+  keyByCommandId = nextKeys;
 }
 
 /**
@@ -207,12 +215,9 @@ export function getKeybindingLoadError(): string | null {
  * bug the unbound state exists to fix.
  */
 export function keybindingForCommand(commandId: string): string | null {
-  for (let i = resolved.length - 1; i >= 0; i -= 1) {
-    if (resolved[i].rule.command === commandId) {
-      return resolved[i].rule.key;
-    }
-  }
-  return null;
+  // Read `resolved` so Svelte tracks rebindings while keeping the lookup O(1).
+  void resolved;
+  return keyByCommandId.get(commandId) ?? null;
 }
 
 /**

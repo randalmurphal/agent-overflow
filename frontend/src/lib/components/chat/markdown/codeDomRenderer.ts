@@ -62,16 +62,16 @@ function makeLineNodes(doc: Document, text: string, spans: EncodedLine | null): 
   if (text.length === 0) return [];
   if (!colorRuns(spans)) return [doc.createTextNode(text)];
   const segs = spanSegments(text, spans);
-  const out = new Array<Text | HTMLSpanElement>(segs.length);
+  const out: (Text | HTMLSpanElement)[] = [];
   for (let i = 0; i < segs.length; i++) {
     const seg = segs[i];
     if (seg.className) {
       const span = doc.createElement('span');
       span.className = seg.className;
       span.textContent = seg.text;
-      out[i] = span;
+      out.push(span);
     } else {
-      out[i] = doc.createTextNode(seg.text);
+      out.push(doc.createTextNode(seg.text));
     }
   }
   return out;
@@ -83,17 +83,18 @@ export class CodeDomRenderer {
 
   constructor(initialText: string) {
     const parts = initialText.split('\n');
-    this.#lines = new Array<RenderedLine>(parts.length);
+    const lines: RenderedLine[] = [];
     for (let i = 0; i < parts.length; i++) {
-      this.#lines[i] = {
+      lines.push({
         text: parts[i],
         spans: null,
         spansByteLen: 0,
         newlineNode: null,
         nodes: [],
         dirty: true,
-      };
+      });
     }
+    this.#lines = lines;
   }
 
   /** Attaches to the `<code>` element and renders all current lines in one pass. */
@@ -291,8 +292,8 @@ export class CodeDomRenderer {
 
   texts(): string[] {
     const lines = this.#lines;
-    const out = new Array<string>(lines.length);
-    for (let i = 0; i < lines.length; i++) out[i] = lines[i].text;
+    const out: string[] = [];
+    for (let i = 0; i < lines.length; i++) out.push(lines[i].text);
     return out;
   }
 
@@ -314,7 +315,7 @@ export class CodeDomRenderer {
     const segs = line.text.length === 0 ? [] : spanSegments(line.text, line.spans);
 
     // Fast path: reuse existing nodes in place when segment count and kinds align.
-    const nextNodes = new Array<Text | HTMLSpanElement>(segs.length);
+    const nextNodes: (Text | HTMLSpanElement)[] = [];
     let i = 0;
     const common = Math.min(oldNodes.length, segs.length);
     for (; i < common; i++) {
@@ -330,22 +331,22 @@ export class CodeDomRenderer {
           } else {
             span.textContent = seg.text;
           }
-          nextNodes[i] = span;
+          nextNodes.push(span);
         } else {
           const span = doc.createElement('span');
           span.className = seg.className;
           span.textContent = seg.text;
           el.replaceChild(span, existing);
-          nextNodes[i] = span;
+          nextNodes.push(span);
         }
       } else if (existing.nodeType === 3) {
         const textNode = existing as Text;
         if (textNode.data !== seg.text) textNode.data = seg.text;
-        nextNodes[i] = textNode;
+        nextNodes.push(textNode);
       } else {
         const textNode = doc.createTextNode(seg.text);
         el.replaceChild(textNode, existing);
-        nextNodes[i] = textNode;
+        nextNodes.push(textNode);
       }
     }
 
@@ -367,7 +368,7 @@ export class CodeDomRenderer {
         } else {
           node = doc.createTextNode(seg.text);
         }
-        nextNodes[j] = node;
+        nextNodes.push(node);
         if (frag) frag.appendChild(node);
         else el.insertBefore(node, anchor);
       }

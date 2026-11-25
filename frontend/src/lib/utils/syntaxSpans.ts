@@ -150,7 +150,12 @@ function syntaxClassName(id: number): string {
  * contract). Run lengths are UTF-8 byte counts; this walk converts
  * them to UTF-16 slice offsets.
  */
-const NON_ASCII_RE = /[^\x00-\x7f]/;
+function isAscii(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) > 0x7f) return false;
+  }
+  return true;
+}
 
 export function spanSegments(text: string, line: EncodedLine | null | undefined): SpanSegment[] {
   const runs = line?.r;
@@ -168,7 +173,7 @@ export function spanSegments(text: string, line: EncodedLine | null | undefined)
   };
   let charIdx = 0;
   const len = text.length;
-  if (!NON_ASCII_RE.test(text)) {
+  if (isAscii(text)) {
     for (let i = 0; i + 1 < runs.length && charIdx < len; i += 2) {
       const bytes = runs[i] ?? 0;
       if (bytes <= 0) continue;

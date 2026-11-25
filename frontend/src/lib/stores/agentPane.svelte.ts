@@ -18,7 +18,7 @@
 // a transient, never a thing a reload can land in.
 
 import { addPaneDestroyedObserver } from './panes.svelte';
-import { openCompanion } from './companionPanes.svelte';
+import { addCompanionClosedObserver, openCompanion } from './companionPanes.svelte';
 import { requestPaneLayoutPersistence } from './paneLayout.svelte';
 import type { AgentPaneBreadcrumbEntry, AgentPaneScopeSnapshot } from '../types/settings';
 
@@ -77,17 +77,24 @@ export interface AgentPaneState {
 
 const statesBySourcePane = new Map<string, AgentPaneState>();
 let unsubscribePaneDestroyed: (() => void) | null = null;
+let unsubscribeCompanionClosed: (() => void) | null = null;
 
 // Registered on first use rather than from an app-level install hook: the
-// only thing this observer does is drop a Map entry, and lazy registration
+// only thing these observers do is drop a Map entry, and lazy registration
 // keeps the agent store out of the eager startup graph (its pane body is a
 // lazily-imported chunk). Idempotent — `installCompanionPanes`'s cascade
 // close and this run independently, in either order.
 function ensurePaneDestroyedObserver(): void {
-  if (unsubscribePaneDestroyed) return;
-  unsubscribePaneDestroyed = addPaneDestroyedObserver((destroyedPaneId) => {
-    statesBySourcePane.delete(destroyedPaneId);
-  });
+  if (!unsubscribePaneDestroyed) {
+    unsubscribePaneDestroyed = addPaneDestroyedObserver((destroyedPaneId) => {
+      statesBySourcePane.delete(destroyedPaneId);
+    });
+  }
+  if (!unsubscribeCompanionClosed) {
+    unsubscribeCompanionClosed = addCompanionClosedObserver((sourcePaneId, kind) => {
+      if (kind === 'agent') statesBySourcePane.delete(sourcePaneId);
+    });
+  }
 }
 
 // True only while layout RESTORE is seeding a state. A save requested then
@@ -283,4 +290,6 @@ export function __resetAgentPaneStateForTest(): void {
   statesBySourcePane.clear();
   unsubscribePaneDestroyed?.();
   unsubscribePaneDestroyed = null;
+  unsubscribeCompanionClosed?.();
+  unsubscribeCompanionClosed = null;
 }

@@ -378,7 +378,7 @@
   ondrop={handleDrop}
   ondragend={handleDragEnd}
   class={
-    'group relative flex flex-col transition-opacity ' +
+    'relative flex flex-col transition-opacity ' +
     (isDragging ? 'opacity-40' : '')
   }
 >
@@ -414,7 +414,7 @@
     onclick={handleRowClick}
     onkeydown={handleRowKeydown}
     class={
-      'flex items-center gap-1.5 px-2 py-1 compact:py-2 compact:select-none rounded-[var(--radius-field)] text-fg hover:bg-surface-2/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ' +
+      'group flex items-center gap-1.5 px-2 py-1 compact:py-2 compact:select-none rounded-[var(--radius-field)] text-fg hover:bg-surface-2/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ' +
       (manualMode ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer')
     }
   >

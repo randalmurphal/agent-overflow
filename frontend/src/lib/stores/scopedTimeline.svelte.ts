@@ -212,7 +212,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     else stream.applyItemPatch(mutation.event);
     if (event.itemId === scope?.root.id || event.itemId === scope?.lifecycle.id || event.itemId === scope?.completion?.id) {
       contextVersion++;
-      contextRefresh.request();
+      if (mutation.kind !== 'delta') contextRefresh.request();
     }
   }
   function apply(observation: WindowObservation) {

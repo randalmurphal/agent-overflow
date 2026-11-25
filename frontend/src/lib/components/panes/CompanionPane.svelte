@@ -1,8 +1,22 @@
+<script module lang="ts">
+  import { createCachedComponentLoader, type CachedComponentLoader } from '../../utils/lazyComponent';
+  import type { CompanionPanelKind } from '../../stores/companionPanes.svelte';
+
+  // Panel bodies load lazily so browser/plan/review feature chunks stay out of
+  // the eager startup graph, and cache their resolved component at module scope
+  // so warm reopens and thread switches mount synchronously on frame 1.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const COMPANION_LOADERS: Record<CompanionPanelKind, CachedComponentLoader<any>> = {
+    plan: createCachedComponentLoader(() => import('../chat/PlanSidebar.svelte')),
+    review: createCachedComponentLoader(() => import('../review/ReviewPane.svelte')),
+    agent: createCachedComponentLoader(() => import('../agent/AgentPane.svelte')),
+    browser: createCachedComponentLoader(() => import('../browser/BrowserPane.svelte')),
+  };
+</script>
+
 <script lang="ts">
-  import type { Component } from 'svelte';
   import {
     closeCompanion,
-    type CompanionPanelKind,
   } from '../../stores/companionPanes.svelte';
   import { makePanelContext } from '../../stores/panelContext.svelte';
   import { getPane } from '../../stores/panes.svelte';
@@ -18,31 +32,14 @@
     sourcePaneId: string;
   }
 
-  // Panel bodies load lazily so browser/plan/review feature chunks
-  // stay out of the eager startup graph — a companion pane only exists
-  // after an explicit user action.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  type CompanionLoader = () => Promise<{ default: Component<any> }>;
-
-  const COMPANION_LOADERS = {
-    plan: () => import('../chat/PlanSidebar.svelte'),
-    review: () => import('../review/ReviewPane.svelte'),
-    agent: () => import('../agent/AgentPane.svelte'),
-    browser: () => import('../browser/BrowserPane.svelte'),
-  } satisfies Record<CompanionPanelKind, CompanionLoader>;
-
   let { paneId, kind, sourcePaneId }: Props = $props();
-  // Captured ONCE, deliberately non-reactive: an {#await} block re-runs
-  // its expression whenever any dependency invalidates, with no
-  // promise-identity cutoff — and a divider drag replaces this pane's
-  // layout item (the source behind the `kind` prop) every frame. Calling
-  // the loader inside the template minted a fresh promise per frame,
-  // flashing the pending branch and remounting the panel body mid-drag
-  // (full review reload + scroll reset). A companion's kind is fixed for
-  // its lifetime, so one promise is correct; thread switches remount the
-  // body through {#key panelKey} without changing kind.
+  // Captured ONCE, deliberately non-reactive: a companion's kind is fixed for
+  // its lifetime, and divider drags replace the layout item behind `kind` every
+  // frame. Thread switches remount the body through {#key panelKey}.
   // svelte-ignore state_referenced_locally
-  const panelLoad = COMPANION_LOADERS[kind]();
+  const loader = COMPANION_LOADERS[kind];
+  const cachedComponent = loader.peek();
+  const panelLoad = cachedComponent ? null : loader.load();
   let sourcePane = $derived(getPane(sourcePaneId));
   let panelContext = $derived(
     sourcePane ? makePanelContext(sourcePane, () => closeCompanion(paneId)) : null,
@@ -67,13 +64,18 @@
     data-companion-source-pane-id={sourcePaneId}
   >
     {#key panelKey}
-      {#await panelLoad then { default: PanelComponent }}
+      {#if cachedComponent}
+        {@const PanelComponent = cachedComponent}
         <PanelComponent ctx={panelContext} />
-      {:catch err}
-        <div class="flex h-full min-h-0 items-center justify-center px-4 text-sm text-error" data-testid="companion-pane-load-error">
-          Failed to load panel: {err instanceof Error ? err.message : String(err)}
-        </div>
-      {/await}
+      {:else if panelLoad}
+        {#await panelLoad then PanelComponent}
+          <PanelComponent ctx={panelContext} />
+        {:catch err}
+          <div class="flex h-full min-h-0 items-center justify-center px-4 text-sm text-error" data-testid="companion-pane-load-error">
+            Failed to load panel: {err instanceof Error ? err.message : String(err)}
+          </div>
+        {/await}
+      {/if}
     {/key}
   </aside>
 {:else}

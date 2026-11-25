@@ -52,7 +52,7 @@
 
 {#if show}
   <div
-    class="relative flex h-3.5 items-center text-[0.625rem] leading-none text-fg-hint"
+    class="thread-row-line relative flex h-3.5 items-center text-[0.625rem] leading-none text-fg-hint"
     style="padding-left: {indentPx}px; padding-right: {rightPaddingPx}px"
     title={worktreeName ? `Worktree: ${thread.worktreePath}` : machineTitle}
     aria-label={worktreeName ? `Worktree ${worktreeName}` : `Computer ${machineName}`}

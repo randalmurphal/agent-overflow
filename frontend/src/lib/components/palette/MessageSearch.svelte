@@ -100,17 +100,29 @@
     return () => clearTimeout(debounceTimer);
   });
 
+  let wasOpen = false;
   $effect(() => {
-    if (open) {
+    if (open && !wasOpen) {
       // Reset state on each open so the sheet doesn't show yesterday's
       // query. Modal's focus trap lands focus on the search input
       // (`data-autofocus`) so the query can be typed at once; mod+/
       // toggles focus to the list root, where plain j/k navigates.
       query = '';
       hits = [];
+      hitsQuery = '';
       error = null;
+      loading = false;
       activeIndex = 0;
+    } else if (!open && wasOpen) {
+      // Release retained search result payloads when the modal closes.
+      searchSeq += 1;
+      clearTimeout(debounceTimer);
+      hits = [];
+      hitsQuery = '';
+      error = null;
+      loading = false;
     }
+    wasOpen = open;
   });
 
   $effect(() => {

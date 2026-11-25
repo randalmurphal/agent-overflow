@@ -118,27 +118,6 @@ export function syncThreadRow(updated: Thread): Thread {
   return merged;
 }
 
-export function syncLatestTurnCompleted(evt: TurnCompletedEvent): void {
-  const known = getThreadById(evt.threadId);
-  // A row sent with the completion already in it (a quiet tick's) has
-  // nothing to add.
-  if (known && (known.latestTurnCompletedAt ?? Number.NEGATIVE_INFINITY) >= evt.completedAt) {
-    return;
-  }
-  const cachedThread = known ?? ingestPaneShowingThread(evt.threadId)?.thread;
-  if (!cachedThread) {
-    return;
-  }
-  const latestTurnCompletedAt = Math.max(
-    cachedThread.latestTurnCompletedAt ?? Number.NEGATIVE_INFINITY,
-    evt.completedAt,
-  );
-  syncThreadRow({
-    ...cachedThread,
-    latestTurnCompletedAt,
-  });
-}
-
 export function syncThreadActivity(threadId: string, updatedAt: number): void {
   if (!threadId || !Number.isFinite(updatedAt)) return;
   // Live bumps land in per-entity boxes (threads/projects stores), not

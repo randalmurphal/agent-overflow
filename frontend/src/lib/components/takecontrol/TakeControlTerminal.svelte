@@ -33,8 +33,8 @@
     normalizeTerminalReplay,
     type TerminalOutputEventPayload,
   } from '../../types/terminal';
-  import { getXtermTheme } from '../terminal/terminalTheme';
-  import { buildTerminal } from '../terminal/terminalXterm';
+  import { getXtermTheme, sameXtermTheme } from '../terminal/terminalTheme';
+  import { buildTerminal, type BuiltTerminal } from '../terminal/terminalXterm';
   import {
     createTerminalInputWriter,
     createTerminalResizeWriter,
@@ -54,8 +54,10 @@
   let { paneId, threadId }: { paneId: string; threadId: string } = $props();
 
   let mountEl: HTMLDivElement | undefined = $state();
+  let built: BuiltTerminal | null = null;
   let term: Terminal | null = null;
   let fit: FitAddon | null = null;
+  let initialFitDone = false;
   let resizeObserver: ResizeObserver | null = null;
   let dataDisposable: { dispose(): void } | null = null;
   let cancelOutput: (() => void) | null = null;
@@ -149,13 +151,14 @@
 
     // A paste whose clipboard read outlived the xterm's focus never reaches
     // the PTY from the find bar.
-    const built = buildTerminal(mountEl, {
+    const activeBuilt = buildTerminal(mountEl, {
       onInput: writeInput,
       isDisposed: () => destroyed,
       acceptsPaste: () => !isPaneFindBarFocused(paneId),
     });
-    term = built.term;
-    fit = built.fit;
+    built = activeBuilt;
+    term = activeBuilt.term;
+    fit = activeBuilt.fit;
 
     // Size to the width the provider last drew at BEFORE writing the replay, so
     // the frame's cursor/erase escapes land against the right grid (same
@@ -203,7 +206,7 @@
     // to the parsed buffer, so a restored search keeps its match in view.
     const registerFind = () => {
       if (destroyed) return;
-      find = registerTerminalFind(paneId, built);
+      find = registerTerminalFind(paneId, activeBuilt);
       termReady = true;
     };
     const fitThenRegister = () => {
@@ -216,7 +219,6 @@
     else fitThenRegister();
     dataDisposable = term.onData(writeInput);
     attachResizeObserver();
-    scheduleFit();
   }
 
   function attachResizeObserver(): void {
@@ -238,7 +240,14 @@
   function fitNow(): void {
     if (!fit || !term || destroyed) return;
     try {
+      if (initialFitDone && typeof fit.proposeDimensions === 'function') {
+        const proposed = fit.proposeDimensions();
+        if (!proposed || (proposed.cols === term.cols && proposed.rows === term.rows)) {
+          return;
+        }
+      }
       fit.fit();
+      initialFitDone = true;
       const { rows, cols } = term;
       resizeWriter.resize(rows, cols);
     } catch (err) {
@@ -249,11 +258,20 @@
   // Follow the app palette live — mode flips AND theme-file edits, since
   // `getXtermTheme` reads the palette identity. Resolved before the `term`
   // guard so the dependency is registered even on a tick with no terminal.
+  let lastThemeMode: ReturnType<typeof getResolvedTheme> = untrack(() => getResolvedTheme());
   $effect(() => {
-    const theme = getXtermTheme(getResolvedTheme());
+    const mode = getResolvedTheme();
+    const theme = getXtermTheme(mode);
+    const modeChanged = mode !== lastThemeMode;
+    lastThemeMode = mode;
     if (!term) return;
-    term.options.theme = theme;
-    untrack(() => find?.restyle());
+    const paletteChanged = !sameXtermTheme(term.options.theme, theme);
+    if (paletteChanged) {
+      term.options.theme = theme;
+    }
+    if (paletteChanged || modeChanged) {
+      untrack(() => find?.restyle());
+    }
   });
 
   // Follow the app font-size setting (the mod+/- zoom chords) live; same
@@ -261,7 +279,7 @@
   // its PTY resize) has to be requested here.
   $effect(() => {
     const fontSize = getSettings().fontSize;
-    if (!term) return;
+    if (!term || term.options.fontSize === fontSize) return;
     term.options.fontSize = fontSize;
     scheduleFit();
   });
@@ -339,7 +357,8 @@
     resizeWriter.dispose();
     resizeObserver?.disconnect();
     resizeObserver = null;
-    term?.dispose();
+    built?.dispose();
+    built = null;
     term = null;
     fit = null;
   });
@@ -393,7 +412,7 @@
     <div class="relative compact:static flex flex-1 min-h-0 min-w-0 flex-col" data-terminal-find-host>
       <div
         bind:this={mountEl}
-        class="relative flex-1 min-h-0 bg-terminal-bg"
+        class="relative flex flex-1 min-h-0 flex-col bg-terminal-bg"
         data-testid="take-control-mount"
         {@attach terminalFocusRegion(paneId)}
       ></div>

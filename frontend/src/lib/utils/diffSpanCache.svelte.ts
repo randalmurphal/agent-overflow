@@ -163,11 +163,13 @@ function evictEpoch(threadId: string): number {
   return threadEvictEpochs.get(threadId) ?? 0;
 }
 
-// Bumped when spans land or entries are evicted. Request effects depend on
-// it via diffSpanCacheGeneration; per-line renderers subscribe to their file's
-// base key via `baseGenerations` so one file landing does not re-evaluate
-// every other mounted diff file's lines.
+// Bumped when spans land or entries are evicted. Request effects that only need
+// to re-request after evictions/resets read `evictionGeneration` via
+// `diffSpanCacheEvictionGeneration()`, avoiding O(B * N) wakeups when unrelated
+// files land; per-line/block renderers subscribe to their file's base key via
+// `baseGenerations`.
 let generation = $state(0);
+let evictionGeneration = $state(0);
 let resetGeneration = $state(0);
 let nextBaseVersion = 0;
 const baseGenerations = new SvelteMap<string, number>();
@@ -202,6 +204,13 @@ function recordBaseDelete(key: string): void {
  * a mounted consumer re-runs and re-requests its file's spans. */
 export function diffSpanCacheGeneration(): number {
   return generation;
+}
+
+/** Reactive read bumped only when entries are evicted or the cache resets, so
+ * mounted diff blocks don't wake O(B * N) times as sibling files finish
+ * highlighting. */
+export function diffSpanCacheEvictionGeneration(): number {
+  return evictionGeneration;
 }
 
 function patchTextOf(file: PatchFile): string {
@@ -301,6 +310,7 @@ function insert(key: string, spans: EncodedLine[], incomplete: boolean, primed: 
   });
   totalBytes += bytes;
   recordBaseInsert(key, prior !== undefined);
+  let evictedAny = false;
   if (totalBytes > DIFF_SPAN_CACHE_MAX_BYTES) {
     for (const [candidate, entry] of entries) {
       if (totalBytes <= DIFF_SPAN_CACHE_MAX_BYTES) break;
@@ -312,9 +322,11 @@ function insert(key: string, spans: EncodedLine[], incomplete: boolean, primed: 
       keyThreads.delete(candidate);
       totalBytes -= entry.bytes;
       recordBaseDelete(candidate);
+      evictedAny = true;
     }
   }
   generation += 1;
+  if (evictedAny) evictionGeneration += 1;
 }
 
 function registerThread(key: string, owner: string): void {
@@ -675,6 +687,9 @@ function seedPatchFileSpans(
 /** Lines per path a PaintedSpans keeps: far more than one screen of
  * rows, and a bound however far a reader scrolls through a large file. */
 const PAINTED_LINES_PER_PATH = 4096;
+/** Maximum distinct file paths a PaintedSpans retains concurrently (LRU) so
+ * scrolling across hundreds of files in a large diff stays memory-bounded. */
+const PAINTED_MAX_PATHS = 24;
 
 /** Only add, del and context rows carry spans: meta and marker rows
  * (fold rows included) go to the backend as non-content lines, so no
@@ -707,7 +722,15 @@ export class PaintedSpans {
     if (!span?.r || span.r.length < 2 || !carriesSpans(line)) return;
     let byContent = this.files.get(path);
     if (!byContent) {
+      if (this.files.size >= PAINTED_MAX_PATHS) {
+        const oldestPath = this.files.keys().next().value;
+        if (oldestPath !== undefined) this.files.delete(oldestPath);
+      }
       byContent = new Map();
+      this.files.set(path, byContent);
+    } else {
+      // Touch path to maintain LRU order across scrolled files.
+      this.files.delete(path);
       this.files.set(path, byContent);
     }
     if (byContent.get(line.content) === span) return;
@@ -789,6 +812,48 @@ export function getSpansForLine(
 }
 
 /**
+ * Block-level reactive lookup returning the file's full `EncodedLine[]` array
+ * once per mounted review block (rather than computing contentKey/scopedKey
+ * and subscribing 32–64 times per block). Returns null while pending or
+ * oversized.
+ */
+export function getSpansForReviewFile(
+  file: ReviewFile,
+  context?: PatchScopeContext | null,
+): EncodedLine[] | null {
+  void resetGeneration;
+  const body = file.body;
+  if (body.textSize > HIGHLIGHT_MAX_PATCH_CHARS) return null;
+  const key = body.contentKey();
+  if (key !== null) {
+    const base = `${file.path} ${key}`;
+    void baseGenerations.get(base);
+    return entryForKey(base, context)?.spans ?? null;
+  }
+  // Evicted body text has no content key until re-read; subscribe to cache
+  // generation so the block repaints once the re-read lands.
+  void generation;
+  return null;
+}
+
+/** Non-reactive per-line span resolution against a block's already-resolved
+ * `fileSpans` array, recording/falling back to `painted`. */
+export function resolveReviewLineSpan(
+  path: string,
+  lineIndex: number,
+  line: PatchLine,
+  fileSpans: readonly EncodedLine[] | null,
+  painted?: PaintedSpans | null,
+): EncodedLine | null {
+  if (fileSpans !== null) {
+    const span = fileSpans[lineIndex] ?? null;
+    painted?.note(path, line, span);
+    return span;
+  }
+  return painted?.lookup(path, line) ?? null;
+}
+
+/**
  * getSpansForLine for a review file's row: `lineIndex` is the row's
  * index in the file's lines (PatchDisplayRow.lineIndex).
  */
@@ -799,24 +864,13 @@ export function getSpansForReviewLine(
   context?: PatchScopeContext | null,
   painted?: PaintedSpans | null,
 ): EncodedLine | null {
-  void resetGeneration;
-  const body = file.body;
-  // A body with evicted text has no key until it is read again; the span
-  // request that reads it bumps the generation when its answer lands.
-  const key = body.textSize <= HIGHLIGHT_MAX_PATCH_CHARS ? body.contentKey() : null;
-  if (key !== null) {
-    const base = `${file.path} ${key}`;
-    void baseGenerations.get(base);
-    const direct = entryForKey(base, context);
-    if (direct) {
-      const span = direct.spans[lineIndex] ?? null;
-      painted?.note(file.path, line, span);
-      return span;
-    }
-  } else {
-    void generation;
-  }
-  return painted?.lookup(file.path, line) ?? null;
+  return resolveReviewLineSpan(
+    file.path,
+    lineIndex,
+    line,
+    getSpansForReviewFile(file, context),
+    painted,
+  );
 }
 
 /**
@@ -898,7 +952,41 @@ export function evictDiffSpansForThread(threadId: string): void {
       removed = true;
     }
   }
-  if (removed) generation += 1;
+  if (removed) {
+    generation += 1;
+    evictionGeneration += 1;
+  }
+}
+
+/**
+ * Evict only scoped/primed diff-span entries (ReviewPane entries, keyed with
+ * `\0` scope suffix) owned by `ownerId`, leaving unscoped inline chat diff
+ * entries for the same thread intact. Called when a ReviewPane closes so
+ * megabytes of review diff spans are released immediately.
+ */
+export function evictPrimedDiffSpansForOwner(ownerId: string): void {
+  if (!ownerId) return;
+  let removed = false;
+  for (const [key, owners] of keyThreads) {
+    if (!key.includes('\0')) continue;
+    if (!owners.delete(ownerId)) continue;
+    if (owners.size > 0) continue;
+    keyThreads.delete(key);
+    const entry = entries.get(key);
+    if (entry) {
+      entries.delete(key);
+      totalBytes -= entry.bytes;
+      recordBaseDelete(key);
+      removed = true;
+    }
+    if (inFlight.delete(key)) {
+      removed = true;
+    }
+  }
+  if (removed) {
+    generation += 1;
+    evictionGeneration += 1;
+  }
 }
 
 export function resetDiffSpanCacheForTest(): void {
@@ -913,6 +1001,7 @@ export function resetDiffSpanCacheForTest(): void {
   ingestGeneration += 1;
   totalBytes = 0;
   generation = 0;
+  evictionGeneration += 1;
   resetGeneration += 1;
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"agent-overflow/internal/mcpstatus"
@@ -202,19 +203,26 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		}
 	}
 	handleEvent := func(evt provider.ProviderEvent) { handle(evt, 0) }
-	var cachedQueue *providerEventQueue
+	// Atomic because provider teardown (e.g. Claude Close -> clearPendingApprovals)
+	// can emit concurrently with the session readLoop.
+	var cachedQueue atomic.Pointer[providerEventQueue]
 	return func(evt provider.ProviderEvent) {
 		// Activity and rate-limit attribution describe the wire as it is
 		// read, so they stay on the provider's goroutine; everything else
 		// runs on the thread's worker, in emission order.
 		evt.SessionToken = sessionToken
 		evt = a.providerLifecycleService().PrepareEvent(threadID, sessionToken, evt)
+		prev := cachedQueue.Load()
+		var next *providerEventQueue
 		if evt.Kind == provider.EventSessionStatus && evt.Content == "error" && a.triage != nil {
 			epoch := a.triage.ThreadEpoch(threadID)
-			cachedQueue = a.providerEvents.enqueueCached(cachedQueue, threadID, evt, func(evt provider.ProviderEvent) { handle(evt, epoch) })
-			return
+			next = a.providerEvents.enqueueCached(prev, threadID, evt, func(evt provider.ProviderEvent) { handle(evt, epoch) })
+		} else {
+			next = a.providerEvents.enqueueCached(prev, threadID, evt, handleEvent)
 		}
-		cachedQueue = a.providerEvents.enqueueCached(cachedQueue, threadID, evt, handleEvent)
+		if next != prev {
+			cachedQueue.Store(next)
+		}
 	}
 }
 

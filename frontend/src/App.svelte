@@ -38,6 +38,10 @@
     isSettingsOpen,
     openSettingsOverlay,
   } from './lib/stores/settingsOverlay.svelte';
+  import {
+    getAppShellBlur,
+    registerAppShellBlurHost,
+  } from './lib/stores/backdropBlur.svelte';
   import { hydrateWorkflowAttention } from './lib/stores/workflowRuns.svelte';
   import { syncSidebarLayoutFromAppStorage } from './lib/stores/sidebarLayout.svelte';
   import { installLayoutMode } from './lib/stores/layoutMode.svelte';
@@ -54,9 +58,10 @@
   import { applyThemeClass } from './lib/utils/theme';
   import { getResolvedTheme } from './lib/stores/themeMode.svelte';
   import {
-    getAppearance,
+    getAppearanceCodeTheme,
     getAppearanceRevision,
     getAppearanceThemes,
+    getAppearanceUiTheme,
     installAppearanceEvents,
     isAppearanceLoaded,
     loadAppearance,
@@ -83,7 +88,6 @@
   import Toast from './lib/components/shared/Toast.svelte';
   import TransportStatusBanner from './lib/components/shared/TransportStatusBanner.svelte';
   import CommandPalette from './lib/components/palette/CommandPalette.svelte';
-  import KeybindingsCheatSheet from './lib/components/palette/KeybindingsCheatSheet.svelte';
   import MessageSearch from './lib/components/palette/MessageSearch.svelte';
   import UnifiedThreadPicker from './lib/components/palette/UnifiedThreadPicker.svelte';
   import ThreadActionConfirmationHost from './lib/components/palette/ThreadActionConfirmationHost.svelte';
@@ -350,11 +354,10 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
   // who wrote a theme file. `isAppearanceLoaded()` is a `$state` read, so this
   // re-runs the moment the first answer lands (success, refusal or failure).
   $effect.pre(() => {
-    const appearance = getAppearance();
     applyTheme(
       {
         mode: getResolvedTheme(),
-        appearance: { uiTheme: appearance.uiTheme, codeTheme: appearance.codeTheme },
+        appearance: { uiTheme: getAppearanceUiTheme(), codeTheme: getAppearanceCodeTheme() },
         themes: getAppearanceThemes(),
         revision: getAppearanceRevision(),
       },
@@ -400,6 +403,8 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
   $effect(() => {
     applyFontScale(getSettings().fontSize);
   });
+
+  $effect(() => registerAppShellBlurHost());
 
   $effect(() => {
     const el = appContentEl;
@@ -683,35 +688,40 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
 </script>
 
 <main class="app-shell relative h-dvh w-screen overflow-hidden text-text-primary flex flex-col">
-  <TransportStatusBanner />
-  <div bind:this={appContentEl} class="relative flex flex-1 min-h-0 w-full">
-    <Sidebar
-      pane={sidebarPane}
-      onOpenSettings={() => openSettingsOverlay('theme')}
-      registerFocusSearch={(focus) => (searchFocuser = focus)}
-    />
-    {#if appReady}
-      <PaneHost />
-    {:else}
-      <StartupScreen />
-    {/if}
-    <!--
-      Settings (UI-SPEC §2.1) is a SIBLING of PaneHost, layered over it —
-      never a pane kind, never a surface that replaces the strip. The pane
-      tree stays mounted underneath, so opening and closing rebuild nothing.
-      It loads lazily so its chunk stays out of the eager startup graph.
-      Workflows is a tool pane inside the strip (toolPanes.svelte.ts).
-    -->
-    <LazyOverlay
-      load={() => import('./lib/components/settings/SettingsOverlay.svelte')}
-      active={isSettingsOpen()}
-      props={{
-        open: isSettingsOpen(),
-        initialSection: getSettingsSection(),
-        onClose: closeSettingsOverlay,
-      }}
-    />
+  <div
+    class="relative flex flex-1 min-h-0 w-full flex-col"
+    data-shell-blur={getAppShellBlur() ?? undefined}
+  >
+    <TransportStatusBanner />
+    <div bind:this={appContentEl} class="relative flex flex-1 min-h-0 w-full">
+      <Sidebar
+        pane={sidebarPane}
+        onOpenSettings={() => openSettingsOverlay('theme')}
+        registerFocusSearch={(focus) => (searchFocuser = focus)}
+      />
+      {#if appReady}
+        <PaneHost />
+      {:else}
+        <StartupScreen />
+      {/if}
+    </div>
   </div>
+  <!--
+    Settings (UI-SPEC §2.1) is a SIBLING of PaneHost, layered over it —
+    never a pane kind, never a surface that replaces the strip. The pane
+    tree stays mounted underneath, so opening and closing rebuild nothing.
+    It loads lazily so its chunk stays out of the eager startup graph.
+    Workflows is a tool pane inside the strip (toolPanes.svelte.ts).
+  -->
+  <LazyOverlay
+    load={() => import('./lib/components/settings/SettingsOverlay.svelte')}
+    active={isSettingsOpen()}
+    props={{
+      open: isSettingsOpen(),
+      initialSection: getSettingsSection(),
+      onClose: closeSettingsOverlay,
+    }}
+  />
 </main>
 <CommandPalette context={paletteContext} contextForPane={makeCommandContextForPaneId} />
 <ThreadActionConfirmationHost />
@@ -723,7 +733,11 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
 <UnsentMessageConfirmationHost />
 <BackgroundKillConfirmationHost />
 <ProviderUpdateNotesHost />
-<KeybindingsCheatSheet open={isCheatSheetOpen()} onClose={closeCheatSheet} />
+<LazyOverlay
+  load={() => import('./lib/components/palette/KeybindingsCheatSheet.svelte')}
+  active={isCheatSheetOpen()}
+  props={{ open: isCheatSheetOpen(), onClose: closeCheatSheet }}
+/>
 <MessageSearch open={isMessageSearchOpen()} pane={messageSearchPane} onClose={closeMessageSearch} />
 <UnifiedThreadPicker open={isThreadPickerOpen()} pane={threadPickerPane} onClose={closeThreadPicker} />
 <!--

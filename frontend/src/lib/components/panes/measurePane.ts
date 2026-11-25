@@ -26,14 +26,14 @@ export function measurePane(node: HTMLElement, options: MeasurePaneOptions) {
   function publish(): void {
     if (promoted) return;
     setPaneWidth(currentPaneId, node.getBoundingClientRect().width);
-    onOffsetChange(currentPaneId, node.offsetLeft);
+    onOffsetChange(currentPaneId, 0);
   }
 
   const obs = new ResizeObserver((entries) => {
     const entry = entries[0];
     if (!entry || promoted) return;
     setPaneWidth(currentPaneId, entry.contentRect.width);
-    onOffsetChange(currentPaneId, node.offsetLeft);
+    onOffsetChange(currentPaneId, 0);
   });
   obs.observe(node);
   publish();

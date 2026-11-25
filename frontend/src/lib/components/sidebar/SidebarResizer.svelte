@@ -16,6 +16,7 @@
     getSidebarMaxWidth,
   } from '../../stores/sidebarLayout.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { iterPanes } from '../../stores/panes.svelte';
   import { createResizeGesture } from '../../utils/resizeGesture.svelte';
 
   interface Props {
@@ -47,7 +48,24 @@
     direction: 1,
     onResizeLive,
     onResizeEnd: () => onResizeEnd(),
-    acquireLease: () => pane?.scrollController?.pauseAutoScroll() ?? null,
+    acquireLease: () => {
+      const releases: Array<() => void> = [];
+      const seen = new Set<ThreadPane>();
+      if (pane) {
+        seen.add(pane);
+        const rel = pane.scrollController?.pauseAutoScroll();
+        if (rel) releases.push(rel);
+      }
+      for (const mounted of iterPanes()) {
+        if (seen.has(mounted)) continue;
+        const rel = mounted.scrollController?.pauseAutoScroll();
+        if (rel) releases.push(rel);
+      }
+      if (releases.length === 0) return null;
+      return () => {
+        for (const release of releases) release();
+      };
+    },
   }));
 
   // If the resizer is torn down mid-drag (window close, sidebar swap,

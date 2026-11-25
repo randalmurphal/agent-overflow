@@ -264,8 +264,24 @@
   // The overlay must stop short of the scroll container's scrollbar —
   // `inset-x-0` on the outer wrapper would paint over it. Classic
   // scrollbars report their width via offsetWidth − clientWidth;
-  // overlay scrollbars report 0 and need no inset.
+  // overlay scrollbars report 0 and need no inset. Measured via
+  // ResizeObserver rather than on every scroll event to avoid forcing
+  // synchronous layout mid-scroll.
   let scrollbarInset = $state(0);
+
+  $effect(() => {
+    const el = scrollEl;
+    if (!el) return;
+    const syncInset = (): void => {
+      const next = el.offsetWidth - el.clientWidth;
+      if (next !== scrollbarInset) scrollbarInset = next;
+    };
+    syncInset();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(syncInset);
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
 
   function setTopFileIndex(fileIndex: number): void {
     if (topFileIndex === fileIndex) return;
@@ -280,8 +296,6 @@
   }
 
   function updateSticky(offset: number): void {
-    const el = scrollEl;
-    if (el) scrollbarInset = el.offsetWidth - el.clientWidth;
     const ref = listRef;
     if (!ref || built.rows.length === 0) {
       stickyFileIndex = -1;
@@ -569,6 +583,25 @@
     if (el && delta !== 0) scroll.applyScrollTarget(Math.max(0, el.scrollTop + delta));
   }
 
+  // Intra-row straddle-shift tracking (`sampleReadingAnchor`) only matters when
+  // the top straddling row can grow or shrink internally (overview, comments,
+  // editors). Static diff rows (line blocks, file headers, surface-end, media)
+  // never mutate internally while scrolled, so skip the forced hit-test on them
+  // even when wordWrap is enabled.
+  function trackReviewReadingAnchor(offset?: number): boolean {
+    const ref = listRef;
+    if (!ref || built.rows.length === 0) return false;
+    const at = offset ?? ref.getScrollOffset();
+    const row = built.rows[ref.findItemIndex(at)];
+    if (!row) return false;
+    return (
+      row.kind !== 'line-block' &&
+      row.kind !== 'file-header' &&
+      row.kind !== 'surface-end' &&
+      row.kind !== 'media'
+    );
+  }
+
 </script>
 
 <div class="relative h-full min-h-0 min-w-0 flex-1" data-testid="review-diff-body">
@@ -611,6 +644,7 @@
         renderAll={IS_TEST}
         applyScrollTarget={scroll.applyScrollTarget}
         onCompensation={scroll.applyCompensation}
+        trackReadingAnchor={trackReviewReadingAnchor}
         onscroll={(offset) => { updateSticky(offset); captureAnchor(offset); }}
         onscrollend={() => saveReadingPosition(scrollKey, readingAnchor)}
       >

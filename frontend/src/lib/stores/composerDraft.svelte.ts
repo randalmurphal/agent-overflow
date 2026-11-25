@@ -192,13 +192,20 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
    * read means for them.
    */
   async function fetchPersistedSnapshot(id: string): Promise<ComposerDraftSnapshot> {
-    const [draft, records] = await Promise.all([
-      GetDraft(id) as Promise<Draft>,
-      ListAttachments(id).then((rows) => (rows as Attachment[] | null) ?? []),
-    ]);
+    const draft = (await GetDraft(id)) as Draft;
+    const attachmentIds = draft.attachmentIds ?? [];
+    if (attachmentIds.length === 0) {
+      return {
+        content: draft.content ?? '',
+        attachments: [],
+        terminalChips: draft.terminalChips ?? [],
+        sourceProposedPlan: draft.sourceProposedPlan ?? null,
+      };
+    }
+    const records = ((await ListAttachments(id)) as Attachment[] | null) ?? [];
     const byId = new Map(records.map((record) => [record.id, record]));
-    const attachments = (draft.attachmentIds ?? []).map((id) => {
-      const record = byId.get(id);
+    const attachments = attachmentIds.map((attachmentId) => {
+      const record = byId.get(attachmentId);
       if (!record) throw new Error('A saved draft attachment is unavailable.');
       return record;
     });

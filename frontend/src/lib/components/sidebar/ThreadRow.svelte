@@ -331,9 +331,9 @@
   // The row's activity stamp. getThreadLiveActivityAt folds in the
   // per-thread streaming box (row objects no longer churn per beat),
   // and getMinuteNow keeps an idle row's relative label creeping
-  // forward now that unrelated beats no longer re-render every row.
+  // forward when using relative ('locale') format.
   let timeLabel = $derived.by(() => {
-    getMinuteNow();
+    if (getSettings().timestampFormat === 'locale') getMinuteNow();
     // Read against the clock of the machine that minted the stamp
     // (transport/backendClock.ts); a row whose owner is not known yet
     // reads as home, which is what every row meant before a second
@@ -676,7 +676,7 @@
     <!-- The lines under the row: the first tucks under the row's own
          bottom padding, and each later one under the line above it, so
          any of them may be absent. -->
-    <div class="[&>*+*]:-mt-0.5 [&>*:first-child]:-mt-1.5" data-testid="thread-row-lines">
+    <div class="thread-row-lines" data-testid="thread-row-lines">
       {#if attention && !editing}
         <ThreadAttentionLine {attention} indentPx={worktreeIndentPx} />
       {/if}
@@ -686,7 +686,7 @@
         <AgentStateLine threadId={thread.id} indentPx={rowPaddingLeftPx} />
         {#if agentProjects != null}
           <div
-            class="relative flex h-3.5 items-center pr-1 text-[0.625rem] leading-none text-fg-hint"
+            class="thread-row-line relative flex h-3.5 items-center pr-1 text-[0.625rem] leading-none text-fg-hint"
             style="padding-left: {rowPaddingLeftPx}px"
             title={agentProjects}
             data-testid="thread-row-agent-projects"

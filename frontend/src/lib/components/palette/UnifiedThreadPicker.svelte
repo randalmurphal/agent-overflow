@@ -49,25 +49,40 @@
   // A closed picker reads no threads: it is always mounted, and the clamp
   // effect below keeps this chain live, so it would otherwise filter the
   // whole catalog on every thread change.
+  interface IndexedThread {
+    thread: Thread;
+    titleLower: string;
+    wsLower: string;
+    projLower: string;
+  }
+
   let visibleThreads: Thread[] = $derived(
     open ? getThreads().filter((thread) => !thread.archived && !isHiddenThreadMode(thread.mode) && !hiddenAssistantThread(thread)) : [],
+  );
+
+  // Precompute lowercase fields once while open so typing into the filter
+  // performs zero per-row `.toLowerCase()` allocations or sorting.
+  let indexedThreads: IndexedThread[] = $derived(
+    visibleThreads.map((thread) => ({
+      thread,
+      titleLower: (thread.title || '').toLowerCase(),
+      wsLower: (thread.workspacePath || '').toLowerCase(),
+      projLower: (thread.projectPath || '').toLowerCase(),
+    })),
   );
 
   let matches: Ranked[] = $derived.by(() => {
     const q = query.trim().toLowerCase();
     if (q.length === 0) return visibleThreads.map((thread) => ({ thread, rank: 1 }));
-    const out: Ranked[] = [];
-    for (const thread of visibleThreads) {
-      const title = (thread.title || '').toLowerCase();
-      const ws = (thread.workspacePath || '').toLowerCase();
-      const proj = (thread.projectPath || '').toLowerCase();
-      if (title.startsWith(q)) out.push({ thread, rank: 0 });
-      else if (title.includes(q)) out.push({ thread, rank: 1 });
-      else if (ws.includes(q) || proj.includes(q)) out.push({ thread, rank: 2 });
+    const prefix: Ranked[] = [];
+    const titleSub: Ranked[] = [];
+    const pathSub: Ranked[] = [];
+    for (const entry of indexedThreads) {
+      if (entry.titleLower.startsWith(q)) prefix.push({ thread: entry.thread, rank: 0 });
+      else if (entry.titleLower.includes(q)) titleSub.push({ thread: entry.thread, rank: 1 });
+      else if (entry.wsLower.includes(q) || entry.projLower.includes(q)) pathSub.push({ thread: entry.thread, rank: 2 });
     }
-    // Stable sort by rank so prefix hits bubble to the top.
-    out.sort((a, b) => a.rank - b.rank);
-    return out;
+    return [...prefix, ...titleSub, ...pathSub];
   });
 
   let hits: Ranked[] = $derived(matches.slice(0, LIMIT));

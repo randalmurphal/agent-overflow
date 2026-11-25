@@ -17,7 +17,9 @@
     failed = !await loadSettings(computer);
     loading = false;
   }
-  onMount(() => { if (needsComputer) void load(); });
+  onMount(() => {
+    if (needsComputer && !hasComputerSettings(computer)) void load();
+  });
 </script>
 
 {#if loading && !hasDeviceControls}

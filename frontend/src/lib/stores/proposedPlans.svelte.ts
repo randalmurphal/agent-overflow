@@ -7,6 +7,7 @@ import { itemsAreEqual } from './threadItems';
 const REFRESH_DEBOUNCE_MS = 100;
 const MAX_CACHED_THREADS = 64;
 const MAX_CACHED_PLAN_COMMENTS = 32;
+const MAX_CACHED_PLAN_MARKDOWN = 8;
 
 interface ProposedPlanCacheEntry {
   items: Item[];
@@ -34,6 +35,40 @@ const listenerThreadScopes = new Set<() => string | null | undefined>();
 
 const commentCache = $state<Record<string, ProposedPlanCommentCacheEntry>>({});
 const commentCacheAccess = new Map<string, number>();
+const planMarkdownCache = new Map<string, string>();
+
+export function hasLoadedThreadProposedPlans(threadId: string | null | undefined): boolean {
+  if (!threadId) return false;
+  return cache[threadId]?.loaded === true;
+}
+
+export function getCachedPlanMarkdown(
+  threadId: string | null | undefined,
+  payloadId: string | null | undefined,
+): string | null {
+  if (!threadId || !payloadId) return null;
+  const key = `${threadId}\0${payloadId}`;
+  const hit = planMarkdownCache.get(key);
+  if (hit === undefined) return null;
+  planMarkdownCache.delete(key);
+  planMarkdownCache.set(key, hit);
+  return hit;
+}
+
+export function setCachedPlanMarkdown(
+  threadId: string,
+  payloadId: string,
+  markdown: string,
+): void {
+  const key = `${threadId}\0${payloadId}`;
+  planMarkdownCache.delete(key);
+  planMarkdownCache.set(key, markdown);
+  while (planMarkdownCache.size > MAX_CACHED_PLAN_MARKDOWN) {
+    const oldest = planMarkdownCache.keys().next().value;
+    if (oldest === undefined) break;
+    planMarkdownCache.delete(oldest);
+  }
+}
 
 function entryForThread(threadId: string): ProposedPlanCacheEntry {
   cache[threadId] ??= {
@@ -346,6 +381,7 @@ export function resetProposedPlanCacheForTests(): void {
   }
   cacheAccess.clear();
   commentCacheAccess.clear();
+  planMarkdownCache.clear();
   cancelItemUpsert?.();
   cancelItemUpsert = null;
   listenerThreadScopes.clear();

@@ -139,22 +139,53 @@
   const FADE = '2em';
   let scrollerEl: HTMLElement | undefined = $state(undefined);
   const titleText = $derived(pane.thread ? assistantDisplayName(pane.thread) : '');
+  let lastFadeLeft = '';
+  let lastFadeRight = '';
+  let fadeFrame = 0;
 
   function updateFade(): void {
     const el = scrollerEl;
     if (!el) return;
     const beyondRight = el.scrollWidth - el.clientWidth - el.scrollLeft;
-    el.style.setProperty('--fade-left', el.scrollLeft > 1 ? FADE : '0px');
-    el.style.setProperty('--fade-right', beyondRight > 1 ? FADE : '0px');
+    const nextLeft = el.scrollLeft > 1 ? FADE : '0px';
+    const nextRight = beyondRight > 1 ? FADE : '0px';
+    if (nextLeft !== lastFadeLeft) {
+      lastFadeLeft = nextLeft;
+      el.style.setProperty('--fade-left', nextLeft);
+    }
+    if (nextRight !== lastFadeRight) {
+      lastFadeRight = nextRight;
+      el.style.setProperty('--fade-right', nextRight);
+    }
+  }
+
+  function scheduleUpdateFade(): void {
+    if (typeof requestAnimationFrame === 'undefined') {
+      updateFade();
+      return;
+    }
+    if (fadeFrame) return;
+    fadeFrame = requestAnimationFrame(() => {
+      fadeFrame = 0;
+      updateFade();
+    });
   }
 
   $effect(() => {
     const el = scrollerEl;
+    lastFadeLeft = '';
+    lastFadeRight = '';
     if (!el) return;
     if (typeof ResizeObserver === 'undefined') return;
-    const sizes = new ResizeObserver(() => updateFade());
+    const sizes = new ResizeObserver(() => scheduleUpdateFade());
     sizes.observe(el);
-    return () => sizes.disconnect();
+    return () => {
+      sizes.disconnect();
+      if (fadeFrame) {
+        cancelAnimationFrame(fadeFrame);
+        fadeFrame = 0;
+      }
+    };
   });
 
   $effect(() => {

@@ -128,7 +128,7 @@ import type {
   Thread,
 } from '../types/models';
 import { randomId } from '../utils/randomId';
-import { PaintedSpans, type PatchScopeContext } from '../utils/diffSpanCache.svelte';
+import { PaintedSpans, evictPrimedDiffSpansForOwner, type PatchScopeContext } from '../utils/diffSpanCache.svelte';
 import { conflictPatchFile } from '../utils/conflictFile';
 import { hunkExcerptForComment } from '../utils/prHunkExcerpt';
 import {
@@ -683,8 +683,13 @@ function installHeldPRObservers(): void {
   heldPRObserversInstalled = true;
   addCompanionClosedObserver((sourcePaneId, kind, threadId) => {
     if (kind !== 'review') return;
-    const row = threadId ?? statesBySourcePane.get(sourcePaneId)?.rowId;
+    const state = statesBySourcePane.get(sourcePaneId);
+    const row = threadId ?? state?.rowId;
     if (row) heldPRByRow.delete(row);
+    // Guard against closing a review companion before its lazy Svelte chunk
+    // mounts: dispose the pre-registered state immediately so PR polls and
+    // buffers cannot leak.
+    if (state) disposeReviewStateForPane(sourcePaneId, state);
   });
   // A deleted or archived thread takes its hidden companions with it
   // (companionStash), with no live companion left to close.
@@ -1790,6 +1795,7 @@ export function createReviewPaneState(
   }
 
   function dispose(): void {
+    if (disposed) return;
     disposed = true;
     prLineIndex.close();
     media.setTarget(null);
@@ -1806,6 +1812,18 @@ export function createReviewPaneState(
     manage.dispose();
     releasePR();
     prIdentity.dispose();
+    // Release review-only primed diff spans unless another open review pane
+    // shares this rowId.
+    if (rowId) {
+      let shared = false;
+      for (const other of statesBySourcePane.values()) {
+        if (other.dispose !== dispose && other.rowId === rowId) {
+          shared = true;
+          break;
+        }
+      }
+      if (!shared) evictPrimedDiffSpansForOwner(rowId);
+    }
   }
 
   // The one writer of `conflictView`, so the reconcile permit cannot drift
@@ -1913,7 +1931,9 @@ export function createReviewPaneState(
     commitSelectionLost = false;
     if (sameCommitSelection(next, selectedCommits)) return;
     navigationSeq++;
-    seedPRLineIndex();
+    if (scope === 'pr' && next !== null && isCommitRange(next) && next.last === commitsHead) {
+      seedPRLineIndex();
+    }
     retireDiffSubject();
     selectedCommitSHA = next?.last ?? null;
     rangeFirstSHA = next && next.first !== next.last ? next.first : null;
@@ -2387,6 +2407,8 @@ export function createReviewPaneState(
     }
     return { scope, commitSHA: '', headSHA: '', workspace };
   }
+
+  const memoizedSpanContext = $derived(patchScopeContext());
 
   // The open a load's rows read files through: a git diff's files handle
   // (reopened when the server forgets it only for an open of immutable
@@ -3778,7 +3800,7 @@ export function createReviewPaneState(
     get prUpdateError() { return prUpdateError; },
     get prUpdateFailure() { return prUpdateFailure; },
     get spanContext(): PatchScopeContext {
-      return patchScopeContext();
+      return memoizedSpanContext;
     },
     get prStale() { return prStale; },
     get awaitingPR() { return awaitingPR; },

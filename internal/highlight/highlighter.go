@@ -2,9 +2,10 @@ package highlight
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"io"
-	"sort"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -107,26 +108,63 @@ func HighlightPatchTextPrimed(lang Lang, patch, fileContent string) Result {
 		return Result{Truncated: true}
 	}
 	out := plainLines(parsed.lineCount)
+	eng := engineFor(lang)
+	if eng == nil || len(parsed.hunks) == 0 {
+		return Result{Lines: out}
+	}
+
+	budget := time.Now().Add(patchParseBudget)
+	hunkNeedOld := make([]bool, len(parsed.hunks))
+	hunkNeedNew := make([]bool, len(parsed.hunks))
+	anyOld, anyNew := false, false
+	for i := range parsed.hunks {
+		for _, ref := range parsed.hunks[i].lines {
+			switch ref.side {
+			case sideOld:
+				hunkNeedOld[i] = true
+				anyOld = true
+			case sideNew, sideBoth:
+				hunkNeedNew[i] = true
+				anyNew = true
+			case sideNone:
+			}
+		}
+	}
+	if !anyOld && !anyNew {
+		return Result{Lines: out}
+	}
+
+	// Fast path: when primed with fileContent and hunks are ascending and
+	// non-overlapping, reconstruct one whole old-side file and one whole
+	// new-side file (at most 2 tree-sitter parses regardless of hunk count)
+	// and run query captures + RLE encoding strictly on each hunk's byte
+	// range. Falls back to per-hunk trimmed windows if a reconstructed file
+	// exceeds maxInputBytes or if hunks are out of order / past EOF.
+	if fileContent != "" {
+		if oldLinesByHunk, newLinesByHunk, res, ok := highlightPatchWholeDocs(eng, fileContent, parsed.hunks, hunkNeedOld, hunkNeedNew, anyOld, anyNew, budget); ok {
+			for i, hunk := range parsed.hunks {
+				var oldLines, newLines []EncodedLine
+				if i < len(oldLinesByHunk) {
+					oldLines = oldLinesByHunk[i]
+				}
+				if i < len(newLinesByHunk) {
+					newLines = newLinesByHunk[i]
+				}
+				applyHunkLines(out, hunk, oldLines, newLines)
+			}
+			return Result{Lines: out, Truncated: res.Truncated, Incomplete: res.Incomplete}
+		}
+	}
+
 	truncated := false
 	incomplete := false
-	budget := time.Now().Add(patchParseBudget)
 	primer := primer{content: fileContent}
-	// Per-call parse memo, keyed on the spliced document's bytes. When
-	// the patch matches the file (the persist tap verifies it), every
-	// hunk's NEW-side splice — prime + newDoc + suffix — reconstructs
-	// the SAME full file content, so an H-hunk patch was parsing one
-	// identical document H times (measured 2026-08-25: this path was
-	// 37% of all backend allocation, 591MB in 10 minutes of agent
-	// edits). The memo collapses those to one parse; old-side docs
-	// differ per hunk and simply miss. Scoped to this call on purpose —
-	// the shared Cache already dedupes whole calls, and cross-call
-	// reuse of a spliced doc has no second consumer.
 	var memo hunkDocMemo
-	if fileContent != "" {
+	if fileContent != "" && len(fileContent) <= maxInputBytes {
 		memo = make(hunkDocMemo, 2)
 	}
 
-	for _, hunk := range parsed.hunks {
+	for i, hunk := range parsed.hunks {
 		if time.Now().After(budget) {
 			// Aggregate budget spent — remaining hunks render plain.
 			// Wall-clock exhaustion is load-dependent (the same patch
@@ -138,27 +176,330 @@ func HighlightPatchTextPrimed(lang Lang, patch, fileContent string) Result {
 		}
 		prime := primer.primeFor(hunk.newStart)
 		suffix := primer.suffixFrom(hunk.newStart + hunk.newCount)
-		oldLines, oldRes := highlightHunkDoc(lang, prime, suffix, hunk.oldDoc, memo)
-		newLines, newRes := highlightHunkDoc(lang, prime, suffix, hunk.newDoc, memo)
+		var oldLines, newLines []EncodedLine
+		var oldRes, newRes Result
+		if hunkNeedOld[i] {
+			oldLines, oldRes = highlightHunkDoc(eng, lang, prime, suffix, hunk.oldDoc, memo)
+		}
+		if hunkNeedNew[i] {
+			newLines, newRes = highlightHunkDoc(eng, lang, prime, suffix, hunk.newDoc, memo)
+		}
 		truncated = truncated || oldRes.Truncated || newRes.Truncated
 		incomplete = incomplete || oldRes.Incomplete || newRes.Incomplete
-		for _, ref := range hunk.lines {
-			var line EncodedLine
-			switch ref.side {
-			case sideOld:
-				if ref.oldDocLine < len(oldLines) {
-					line = oldLines[ref.oldDocLine]
-				}
-			case sideNew, sideBoth:
-				if ref.newDocLine < len(newLines) {
-					line = newLines[ref.newDocLine]
-				}
-			case sideNone:
-			}
-			out[ref.patchIndex] = padRuns(line, ref.outPad)
-		}
+		applyHunkLines(out, hunk, oldLines, newLines)
 	}
 	return Result{Lines: out, Truncated: truncated, Incomplete: incomplete}
+}
+
+func applyHunkLines(out []EncodedLine, hunk patchHunk, oldLines, newLines []EncodedLine) {
+	for _, ref := range hunk.lines {
+		var line EncodedLine
+		switch ref.side {
+		case sideOld:
+			if ref.oldDocLine < len(oldLines) {
+				line = oldLines[ref.oldDocLine]
+			}
+		case sideNew, sideBoth:
+			if ref.newDocLine < len(newLines) {
+				line = newLines[ref.newDocLine]
+			}
+		case sideNone:
+		}
+		out[ref.patchIndex] = padRuns(line, ref.outPad)
+	}
+}
+
+type byteRange struct {
+	lo, hi int
+}
+
+// buildWholePrimedDoc splices all hunks' old or new docs into fileContent in a
+// single forward pass, returning the reconstructed file bytes, each hunk's
+// content byte range inside it, and each hunk's splice range (the exact region
+// between identical unchanged gap segments, for incremental tree-sitter edits).
+// Returns ok=false if hunks are out of order, overlap, extend past
+// fileContent, or exceed maxInputBytes / maxResultLines.
+func buildWholePrimedDoc(fileContent string, hunks []patchHunk, useOld bool, needHunk []bool) (doc []byte, ranges []byteRange, splices []byteRange, ok bool) {
+	// Validate ascending non-overlapping hunk order first.
+	prevEnd := 1
+	totalHunkBytes := 0
+	for _, h := range hunks {
+		if h.newStart < prevEnd {
+			return nil, nil, nil, false
+		}
+		prevEnd = h.newStart + h.newCount
+		if useOld {
+			totalHunkBytes += len(h.oldDoc) + 1
+		} else {
+			totalHunkBytes += len(h.newDoc) + 1
+		}
+	}
+
+	ranges = make([]byteRange, len(hunks))
+	splices = make([]byteRange, len(hunks))
+	buf := make([]byte, 0, len(fileContent)+totalHunkBytes)
+	hasContent := false
+	line := 1 // 1-based current line in fileContent
+	off := 0  // byte offset of `line` in fileContent
+
+	advanceTo := func(targetLine int) (gap string, hadGap bool, pastEOF bool) {
+		if targetLine <= line {
+			return "", false, false
+		}
+		startOff := off
+		for line < targetLine {
+			if off > len(fileContent) {
+				return "", false, true
+			}
+			idx := strings.IndexByte(fileContent[off:], '\n')
+			if idx < 0 {
+				return "", false, true
+			}
+			off += idx + 1
+			line++
+		}
+		// Exclude the newline immediately before targetLine.
+		return fileContent[startOff : off-1], true, false
+	}
+
+	skipTo := func(targetLine int) bool {
+		for line < targetLine {
+			if off >= len(fileContent) {
+				// Last line without trailing newline: advancing past it lands at EOF.
+				if line+1 == targetLine {
+					off = len(fileContent)
+					line++
+					return true
+				}
+				return false
+			}
+			idx := strings.IndexByte(fileContent[off:], '\n')
+			if idx < 0 {
+				if line+1 == targetLine {
+					off = len(fileContent)
+					line++
+					return true
+				}
+				return false
+			}
+			off += idx + 1
+			line++
+		}
+		return true
+	}
+
+	// appendSegment returns the start offset of seg's own bytes (after any
+	// separating '\n') and the end offset after seg.
+	appendSegment := func(seg string) (segStart, segEnd int) {
+		if hasContent {
+			buf = append(buf, '\n')
+		}
+		segStart = len(buf)
+		buf = append(buf, seg...)
+		segEnd = len(buf)
+		hasContent = true
+		return segStart, segEnd
+	}
+
+	for i, h := range hunks {
+		gap, hadGap, pastEOF := advanceTo(h.newStart)
+		if pastEOF {
+			return nil, nil, nil, false
+		}
+		gapStart := len(buf)
+		if hadGap {
+			gapStart, _ = appendSegment(gap)
+		}
+		if i > 0 {
+			splices[i-1].hi = gapStart
+		}
+		splices[i].lo = len(buf)
+		var hunkBytes []byte
+		if useOld {
+			hunkBytes = h.oldDoc
+		} else {
+			hunkBytes = h.newDoc
+		}
+		if len(hunkBytes) > 0 {
+			if hasContent {
+				buf = append(buf, '\n')
+			}
+			lo := len(buf)
+			buf = append(buf, hunkBytes...)
+			hi := len(buf)
+			hasContent = true
+			if needHunk[i] {
+				ranges[i] = byteRange{lo: lo, hi: hi}
+			}
+		}
+		if !skipTo(h.newStart + h.newCount) {
+			return nil, nil, nil, false
+		}
+	}
+
+	tailStart := len(buf)
+	if off < len(fileContent) {
+		tailStart, _ = appendSegment(fileContent[off:])
+	}
+	if len(hunks) > 0 {
+		splices[len(hunks)-1].hi = tailStart
+	}
+
+	if len(buf) > maxInputBytes || countLines(buf) > maxResultLines {
+		return nil, nil, nil, false
+	}
+	return buf, ranges, splices, true
+}
+
+func advancePoint(start tree_sitter.Point, seg []byte) tree_sitter.Point {
+	if len(seg) == 0 {
+		return start
+	}
+	lastNL := bytes.LastIndexByte(seg, '\n')
+	if lastNL < 0 {
+		return tree_sitter.Point{
+			Row:    start.Row,
+			Column: start.Column + uint(len(seg)),
+		}
+	}
+	rows := bytes.Count(seg[:lastNL+1], []byte{'\n'})
+	return tree_sitter.Point{
+		Row:    start.Row + uint(rows),
+		Column: uint(len(seg) - lastNL - 1),
+	}
+}
+
+// applyIncrementalEdits mutates oldTree in-place so tree-sitter can parse
+// newDoc incrementally from oldTree, reusing unchanged AST subtrees across
+// unmodified gaps between hunks. Returns false if splice geometry is not
+// edit-compatible, signaling the caller to parse newDoc from scratch.
+func applyIncrementalEdits(
+	oldTree *tree_sitter.Tree,
+	oldDoc []byte,
+	oldSplices []byteRange,
+	newDoc []byte,
+	newSplices []byteRange,
+) bool {
+	if oldTree == nil || len(oldSplices) != len(newSplices) || len(oldSplices) == 0 {
+		return false
+	}
+	expectedNewLen := len(oldDoc)
+	for i := range oldSplices {
+		os, ns := oldSplices[i], newSplices[i]
+		if os.lo < 0 || os.hi < os.lo || os.hi > len(oldDoc) || ns.lo < 0 || ns.hi < ns.lo || ns.hi > len(newDoc) {
+			return false
+		}
+		expectedNewLen += (ns.hi - ns.lo) - (os.hi - os.lo)
+	}
+	if expectedNewLen != len(newDoc) {
+		return false
+	}
+
+	// Single forward pass over oldDoc to compute (Row, Column) points for each
+	// splice start/end. Applying edits in reverse order below keeps every
+	// earlier splice's old byte offset and point coordinates invariant.
+	oldStartPts := make([]tree_sitter.Point, len(oldSplices))
+	oldEndPts := make([]tree_sitter.Point, len(oldSplices))
+	pos := 0
+	pt := tree_sitter.Point{}
+	for i, os := range oldSplices {
+		if os.lo < pos {
+			return false
+		}
+		pt = advancePoint(pt, oldDoc[pos:os.lo])
+		pos = os.lo
+		oldStartPts[i] = pt
+		pt = advancePoint(pt, oldDoc[pos:os.hi])
+		pos = os.hi
+		oldEndPts[i] = pt
+	}
+
+	for i := len(oldSplices) - 1; i >= 0; i-- {
+		os, ns := oldSplices[i], newSplices[i]
+		oldSeg := oldDoc[os.lo:os.hi]
+		newSeg := newDoc[ns.lo:ns.hi]
+		if bytes.Equal(oldSeg, newSeg) {
+			continue
+		}
+		oldTree.Edit(&tree_sitter.InputEdit{
+			StartByte:      uint(os.lo),
+			OldEndByte:     uint(os.hi),
+			NewEndByte:     uint(os.lo + len(newSeg)),
+			StartPosition:  oldStartPts[i],
+			OldEndPosition: oldEndPts[i],
+			NewEndPosition: advancePoint(oldStartPts[i], newSeg),
+		})
+	}
+	return true
+}
+
+func highlightPatchWholeDocs(
+	eng *engine,
+	fileContent string,
+	hunks []patchHunk,
+	needOld, needNew []bool,
+	anyOld, anyNew bool,
+	budget time.Time,
+) (oldByHunk, newByHunk [][]EncodedLine, res Result, ok bool) {
+	var oldDoc, newDoc []byte
+	var oldRanges, newRanges []byteRange
+	var oldSplices, newSplices []byteRange
+
+	if anyOld {
+		oldDoc, oldRanges, oldSplices, ok = buildWholePrimedDoc(fileContent, hunks, true, needOld)
+		if !ok {
+			return nil, nil, Result{}, false
+		}
+	}
+	if anyNew {
+		newDoc, newRanges, newSplices, ok = buildWholePrimedDoc(fileContent, hunks, false, needNew)
+		if !ok {
+			return nil, nil, Result{}, false
+		}
+	}
+
+	var incomplete, truncated bool
+	var oldTree *tree_sitter.Tree
+	keepOldTree := anyOld && anyNew && len(oldDoc) > 0 && len(newDoc) > 0
+	defer func() {
+		if oldTree != nil {
+			oldTree.Close()
+		}
+	}()
+
+	if anyOld && len(oldDoc) > 0 {
+		if time.Now().After(budget) {
+			return nil, nil, Result{Truncated: true, Incomplete: true}, true
+		}
+		hunkDocParses.Add(1)
+		var lines [][]EncodedLine
+		var complete bool
+		lines, complete, oldTree = eng.highlightRangesWithTree(oldDoc, oldRanges, nil, keepOldTree)
+		if lines == nil {
+			incomplete = true
+		} else {
+			oldByHunk = lines
+			incomplete = incomplete || !complete
+		}
+	}
+	if anyNew && len(newDoc) > 0 {
+		if time.Now().After(budget) {
+			return oldByHunk, nil, Result{Truncated: true, Incomplete: true}, true
+		}
+		var reuseTree *tree_sitter.Tree
+		if oldTree != nil && applyIncrementalEdits(oldTree, oldDoc, oldSplices, newDoc, newSplices) {
+			reuseTree = oldTree
+		}
+		hunkDocParses.Add(1)
+		lines, complete, _ := eng.highlightRangesWithTree(newDoc, newRanges, reuseTree, false)
+		if lines == nil {
+			incomplete = true
+		} else {
+			newByHunk = lines
+			incomplete = incomplete || !complete
+		}
+	}
+	return oldByHunk, newByHunk, Result{Truncated: truncated, Incomplete: incomplete}, true
 }
 
 // primer yields fileContent prefixes (everything above a hunk's first
@@ -242,7 +583,7 @@ func highlightHunkParse(lang Lang, src []byte) Result {
 // spliced between preceding and following file content. Empty docs
 // (the old side of an added file) short-circuit; only the doc's own
 // lines are returned.
-func highlightHunkDoc(lang Lang, prime, suffix string, doc []byte, memo hunkDocMemo) ([]EncodedLine, Result) {
+func highlightHunkDoc(eng *engine, lang Lang, prime, suffix string, doc []byte, memo hunkDocMemo) ([]EncodedLine, Result) {
 	if len(doc) == 0 {
 		return nil, Result{}
 	}
@@ -278,12 +619,7 @@ func highlightHunkDoc(lang Lang, prime, suffix string, doc []byte, memo hunkDocM
 		prime = prime[overflow+cut+1:]
 	}
 	// Memo lookup before materializing the splice: hash the exact byte
-	// sequence the concat below would produce. When the patch matches
-	// the file, every hunk's new-side splice reconstructs the SAME full
-	// file content, so without this an H-hunk patch parsed one
-	// identical document H times — measured at 591MB of allocation in
-	// 10 minutes of agent edits, 37% of the backend total (2026-08-25).
-	// A hit skips the parse AND the concat.
+	// sequence the concat below would produce.
 	var key [sha256.Size]byte
 	if memo != nil {
 		h := sha256.New()
@@ -306,14 +642,27 @@ func highlightHunkDoc(lang Lang, prime, suffix string, doc []byte, memo hunkDocM
 		size += 1 + len(suffix)
 	}
 	combined := make([]byte, 0, size)
+	docLo := 0
 	if prime != "" {
 		combined = append(combined, prime...)
 		combined = append(combined, '\n')
+		docLo = len(combined)
 	}
 	combined = append(combined, doc...)
+	docHi := len(combined)
 	if suffix != "" {
 		combined = append(combined, '\n')
 		combined = append(combined, suffix...)
+	}
+	// When no memo needs the full document (or combined fits caps), query and
+	// encode only [docLo, docHi] instead of the whole 1 MiB prime+suffix window.
+	if memo == nil && len(combined) <= maxInputBytes && countLines(combined) <= maxResultLines {
+		hunkDocParses.Add(1)
+		linesByRange, complete := eng.highlightRanges(combined, []byteRange{{lo: docLo, hi: docHi}})
+		if linesByRange == nil {
+			return nil, Result{Incomplete: true}
+		}
+		return linesByRange[0], Result{Lines: linesByRange[0], Incomplete: !complete}
 	}
 	res := highlightHunkParse(lang, combined)
 	if memo != nil && !res.Incomplete {
@@ -366,6 +715,145 @@ func (e *engine) classify(src []byte) (classes []uint16, complete bool) {
 	return classes, complete
 }
 
+// highlightRanges parses src once, runs capture queries and injections only
+// over the non-empty byte ranges in targets, and returns one []EncodedLine
+// slice per entry in targets (nil for empty ranges). Returns nil on parse
+// timeout/failure.
+func (e *engine) highlightRanges(src []byte, targets []byteRange) ([][]EncodedLine, bool) {
+	lines, complete, _ := e.highlightRangesWithTree(src, targets, nil, false)
+	return lines, complete
+}
+
+func (e *engine) highlightRangesWithTree(
+	src []byte,
+	targets []byteRange,
+	oldTree *tree_sitter.Tree,
+	returnTree bool,
+) ([][]EncodedLine, bool, *tree_sitter.Tree) {
+	totalBytes := 0
+	for _, r := range targets {
+		if r.hi > r.lo {
+			totalBytes += r.hi - r.lo
+		}
+	}
+	if totalBytes == 0 {
+		return make([][]EncodedLine, len(targets)), true, nil
+	}
+	slabPtr, slab := acquireClassSlab(totalBytes)
+	defer releaseClassSlab(slabPtr, slab)
+
+	slicesBuf := make([][]uint16, len(targets))
+	pos := 0
+	for i, r := range targets {
+		if r.hi > r.lo {
+			n := r.hi - r.lo
+			slicesBuf[i] = slab[pos : pos+n]
+			pos += n
+		}
+	}
+
+	ok, complete, tree := e.paintTargetRanges(src, nil, targets, slicesBuf, 0, oldTree, returnTree)
+	if !ok {
+		return nil, false, nil
+	}
+
+	out := make([][]EncodedLine, len(targets))
+	for i, r := range targets {
+		if r.hi > r.lo {
+			out[i] = encodeLines(src[r.lo:r.hi], slicesBuf[i])
+		}
+	}
+	return out, complete, tree
+}
+
+// injectionOverlapsTargets reports whether any range in site overlaps any
+// non-empty target range. Both inputs are sorted ascending.
+func injectionOverlapsTargets(site []tree_sitter.Range, targets []byteRange) bool {
+	for _, sr := range site {
+		sLo, sHi := int(sr.StartByte), int(sr.EndByte)
+		for _, tr := range targets {
+			if tr.hi <= tr.lo {
+				continue
+			}
+			if tr.lo >= sHi {
+				break
+			}
+			if tr.hi > sLo {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (e *engine) paintTargetRanges(
+	src []byte,
+	included []tree_sitter.Range,
+	targets []byteRange,
+	classSlices [][]uint16,
+	depth int,
+	oldTree *tree_sitter.Tree,
+	returnTree bool,
+) (ok, complete bool, keptTree *tree_sitter.Tree) {
+	p := acquireParser()
+	if err := p.SetLanguage(e.lang); err != nil {
+		releaseParser(p)
+		return false, false, nil
+	}
+	if included != nil {
+		if err := p.SetIncludedRanges(included); err != nil {
+			releaseParser(p)
+			return false, false, nil
+		}
+	}
+	tree := parseWithDeadline(p, src, oldTree)
+	if tree == nil {
+		p.Close()
+		return false, false, nil
+	}
+	releaseParser(p)
+	defer func() {
+		if keptTree == nil {
+			tree.Close()
+		}
+	}()
+
+	qc := acquireQueryCursor()
+	spansPtr := paintSpanPool.Get().(*[]paintSpan)
+	spans := (*spansPtr)[:0]
+	for i, r := range targets {
+		if r.hi <= r.lo {
+			continue
+		}
+		if included != nil && !injectionOverlapsTargets(included, targets[i:i+1]) {
+			continue
+		}
+		spans = e.paintCapturesWith(qc, spans[:0], tree, src, r.lo, r.hi, classSlices[i])
+	}
+	if cap(spans) <= maxRetainedPaintSpanCap {
+		*spansPtr = spans[:0]
+		paintSpanPool.Put(spansPtr)
+	}
+	releaseQueryCursor(qc)
+
+	complete = true
+	if e.inj != nil && depth < maxInjectionDepth {
+		for _, site := range e.inj.collectInjectionsInRanges(tree.RootNode(), src, targets) {
+			if !injectionOverlapsTargets(site.ranges, targets) {
+				continue
+			}
+			if child := engineFor(site.lang); child != nil {
+				_, childComplete, _ := child.paintTargetRanges(src, site.ranges, targets, classSlices, depth+1, nil, false)
+				complete = complete && childComplete
+			}
+		}
+	}
+	if returnTree {
+		keptTree = tree
+	}
+	return true, complete, keptTree
+}
+
 // paint parses src — restricted to ranges when non-nil (injection
 // regions, host-document coordinates) — paints capture classes into
 // classes, and recurses into injections. ok reports whether THIS parse
@@ -384,7 +872,7 @@ func (e *engine) paint(src []byte, ranges []tree_sitter.Range, classes []uint16,
 			return false, false
 		}
 	}
-	tree := parseWithDeadline(p, src)
+	tree := parseWithDeadline(p, src, nil)
 	if tree == nil {
 		// Cancelled parses poison the parser (see releaseParser) —
 		// retire it rather than pooling it.
@@ -417,18 +905,28 @@ func (e *engine) paint(src []byte, ranges []tree_sitter.Range, classes []uint16,
 func (e *engine) paintCaptures(tree *tree_sitter.Tree, src []byte, lo, hi int, classes []uint16) {
 	qc := acquireQueryCursor()
 	defer releaseQueryCursor(qc)
+	spansPtr := paintSpanPool.Get().(*[]paintSpan)
+	spans := e.paintCapturesWith(qc, (*spansPtr)[:0], tree, src, lo, hi, classes)
+	if cap(spans) <= maxRetainedPaintSpanCap {
+		*spansPtr = spans[:0]
+		paintSpanPool.Put(spansPtr)
+	}
+}
+
+func (e *engine) paintCapturesWith(
+	qc *tree_sitter.QueryCursor,
+	spans []paintSpan,
+	tree *tree_sitter.Tree,
+	src []byte,
+	lo, hi int,
+	classes []uint16,
+) []paintSpan {
 	if lo > 0 || hi < len(src) {
 		qc.SetByteRange(uint(lo), uint(hi))
+	} else {
+		qc.SetByteRange(0, uint(len(src)))
 	}
 	matches := qc.Matches(e.query, tree.RootNode(), src)
-	spansPtr := paintSpanPool.Get().(*[]paintSpan)
-	spans := (*spansPtr)[:0]
-	defer func() {
-		if cap(spans) <= maxRetainedPaintSpanCap {
-			*spansPtr = spans[:0]
-			paintSpanPool.Put(spansPtr)
-		}
-	}()
 	for m := matches.Next(); m != nil; m = matches.Next() {
 		for _, c := range m.Captures {
 			class := e.captureClass[c.Index]
@@ -452,12 +950,12 @@ func (e *engine) paintCaptures(tree *tree_sitter.Tree, src []byte, lo, hi int, c
 	// nvim-treesitter) document "last matching pattern wins", and their
 	// files are ordered broad-to-specific accordingly. Remaining ties
 	// keep match order, which a ranged query shares with a whole one.
-	sort.SliceStable(spans, func(i, j int) bool {
-		li, lj := spans[i].end-spans[i].start, spans[j].end-spans[j].start
-		if li != lj {
-			return li > lj
+	slices.SortStableFunc(spans, func(a, b paintSpan) int {
+		la, lb := a.end-a.start, b.end-b.start
+		if la != lb {
+			return cmp.Compare(lb, la)
 		}
-		return spans[i].pattern < spans[j].pattern
+		return cmp.Compare(a.pattern, b.pattern)
 	})
 
 	for _, s := range spans {
@@ -465,4 +963,5 @@ func (e *engine) paintCaptures(tree *tree_sitter.Tree, src []byte, lo, hi int, c
 			classes[i-lo] = s.class
 		}
 	}
+	return spans
 }

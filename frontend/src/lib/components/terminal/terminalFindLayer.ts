@@ -49,6 +49,7 @@ export function createTerminalFindLayer(mount: HTMLElement, terminal: Terminal):
   let columns = 0;
   let layer: HTMLDivElement | null = null;
   let rendered: IDisposable | null = null;
+  let cachedScreen: Element | null = null;
   const nodes: HTMLDivElement[] = [];
 
   function place(node: HTMLDivElement, isActive: boolean, left: number, top: number, width: number, height: number): void {
@@ -61,9 +62,15 @@ export function createTerminalFindLayer(mount: HTMLElement, terminal: Terminal):
     node.style.height = `${height}px`;
   }
 
+  function resolveScreen(): Element | null {
+    if (cachedScreen && cachedScreen.isConnected) return cachedScreen;
+    cachedScreen = terminal.element?.querySelector('.xterm-screen') ?? null;
+    return cachedScreen;
+  }
+
   function draw(): void {
     if (!layer) return;
-    const screen = terminal.element?.querySelector('.xterm-screen');
+    const screen = resolveScreen();
     let shown = 0;
     if (screen && terminal.cols === columns && terminal.rows > 0) {
       const grid = screen.getBoundingClientRect();

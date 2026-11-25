@@ -139,18 +139,31 @@ export class PatchBody {
   }
 
   kind(index: number): LineKind {
+    if (this.segments.length === 1) {
+      const seg = this.segments[0];
+      return seg.store.kind(seg.start + index);
+    }
     const { store, line } = this.locate(index);
     return store.kind(line);
   }
 
   /** A line's text. Throws PatchTextNotResident when it is evicted. */
   text(index: number): string {
+    if (this.segments.length === 1) {
+      const seg = this.segments[0];
+      return seg.store.text(seg.start + index);
+    }
     const { store, line } = this.locate(index);
     return store.text(line);
   }
 
   /** UTF-8 bytes of a line's text, known without its text. */
   lineSize(index: number): number {
+    if (this.segments.length === 1) {
+      const seg = this.segments[0];
+      const line = seg.start + index;
+      return seg.store.storedLineEnd(line) - seg.store.storedLineStart(line);
+    }
     const { store, line } = this.locate(index);
     return store.storedLineEnd(line) - store.storedLineStart(line);
   }
@@ -159,6 +172,10 @@ export class PatchBody {
    * every line. */
   resident(start = 0, end = this.lineCount): boolean {
     if (end <= start) return true;
+    if (this.segments.length === 1) {
+      const seg = this.segments[0];
+      return seg.store.resident(seg.start + start, seg.start + Math.min(end, this.lineCount));
+    }
     for (let at = this.segmentAt(start); at < this.segments.length && this.bases[at] < end; at += 1) {
       const segment = this.segments[at];
       const base = this.bases[at];

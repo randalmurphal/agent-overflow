@@ -77,11 +77,8 @@ export class CodeLines {
     }
     const parts = delta.split('\n');
     lines[lines.length - 1].text += parts[0];
-    const oldLen = lines.length;
-    const added = parts.length - 1;
-    const next = new Array<CodeLine>(oldLen + added);
-    for (let i = 0; i < oldLen; i++) next[i] = lines[i];
-    for (let i = 0; i < added; i++) next[oldLen + i] = new CodeLine(parts[i + 1]);
+    const next = lines.slice();
+    for (let i = 1; i < parts.length; i++) next.push(new CodeLine(parts[i]));
     this.lines = next;
   }
 
@@ -94,9 +91,8 @@ export class CodeLines {
     if (parts.length < lines.length) {
       this.lines = lines.slice(0, parts.length);
     } else if (parts.length > lines.length) {
-      const next = new Array<CodeLine>(parts.length);
-      for (let i = 0; i < kept; i++) next[i] = lines[i];
-      for (let i = kept; i < parts.length; i++) next[i] = new CodeLine(parts[i]);
+      const next = lines.slice();
+      for (let i = kept; i < parts.length; i++) next.push(new CodeLine(parts[i]));
       this.lines = next;
     }
   }

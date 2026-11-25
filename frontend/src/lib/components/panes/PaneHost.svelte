@@ -1,3 +1,11 @@
+<script module lang="ts">
+  import { createCachedComponentLoader } from '../../utils/lazyComponent';
+
+  const takeControlPaneLoader = createCachedComponentLoader(
+    () => import('../takecontrol/TakeControlPane.svelte'),
+  );
+</script>
+
 <script lang="ts">
   import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
   import PaneCloseButton from './PaneCloseButton.svelte';
@@ -43,16 +51,18 @@
   let compact = $derived(isCompactLayout());
   let threadInert = $derived(compact && getCompactScreen() !== 'thread');
   let focusedPaneId = $derived(getFocusedPaneId());
-  // Source panes that currently have a paired take-control terminal pane. Both
-  // halves of the pair carry the shared top-border indicator so the user reads
-  // them as one bound entity across two panes.
-  let pairedSourceIds = $derived(
-    new Set(
-      layoutItems
-        .filter((item) => item.kind === 'take-control' && item.sourcePaneId)
-        .map((item) => item.sourcePaneId as string),
-    ),
-  );
+  // Source panes that currently have a paired take-control terminal pane. Keyed
+  // on layout membership so divider-drag width updates do not reallocate a Set.
+  let pairedSourceIds = $derived.by(() => {
+    void paneStructureKey;
+    return untrack(() => {
+      const ids = new Set<string>();
+      for (const item of layoutItems) {
+        if (item.kind === 'take-control' && item.sourcePaneId) ids.add(item.sourcePaneId);
+      }
+      return ids;
+    });
+  });
   let stripEl: HTMLDivElement | undefined = $state(undefined);
   let hostEl: HTMLDivElement | undefined = $state(undefined);
   // The sections' offsets and the strip width they were measured at, one
@@ -215,7 +225,7 @@
       const entry = entries[0];
       if (entry) setPaneHostWidth(entry.contentRect.width);
       reconcilePaneHostGeometry();
-      promotion.holdStrip(el, flowScrollMax(el));
+      if (promotion.shownId !== null) promotion.holdStrip(el, flowScrollMax(el));
       realignCompactStrip();
     });
     obs.observe(el);
@@ -608,16 +618,22 @@
               {:else if item.kind === 'take-control'}
                 <!-- Lazy: TakeControlPane pulls the xterm stack; a static
                      import here would drag the terminal chunks into the eager
-                     startup graph (see the TerminalView mount in ChatView). -->
-                {#await import('../takecontrol/TakeControlPane.svelte')}
-                  <div class="flex h-full items-center justify-center text-xs text-fg-muted">Loading terminal...</div>
-                {:then { default: TakeControlPane }}
-                  <TakeControlPane paneId={item.paneId} />
-                {:catch err}
-                  <div class="flex h-full items-center justify-center text-xs text-error" data-testid="take-control-load-error">
-                    Failed to load terminal: {err instanceof Error ? err.message : String(err)}
-                  </div>
-                {/await}
+                     startup graph. Cached once loaded so divider drags never
+                     remount it and warm reopens render synchronously. -->
+                {@const CachedTakeControl = takeControlPaneLoader.peek()}
+                {#if CachedTakeControl}
+                  <CachedTakeControl paneId={item.paneId} />
+                {:else}
+                  {#await takeControlPaneLoader.load()}
+                    <div class="flex h-full items-center justify-center text-xs text-fg-muted">Loading terminal...</div>
+                  {:then TakeControlPane}
+                    <TakeControlPane paneId={item.paneId} />
+                  {:catch err}
+                    <div class="flex h-full items-center justify-center text-xs text-error" data-testid="take-control-load-error">
+                      Failed to load terminal: {err instanceof Error ? err.message : String(err)}
+                    </div>
+                  {/await}
+                {/if}
               {:else}
                 <CompanionPane paneId={item.paneId} kind={item.kind} sourcePaneId={item.sourcePaneId!} />
               {/if}

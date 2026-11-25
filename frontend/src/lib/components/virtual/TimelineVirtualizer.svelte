@@ -147,7 +147,7 @@
      * there the per-beat pin write already absorbs growth anywhere in the
      * content, so tracking a reading anchor would cost a hit-test per
      * scroll event and change nothing. Defaults to always-track. */
-    trackReadingAnchor?: () => boolean;
+    trackReadingAnchor?: (offset?: number) => boolean;
     children: Snippet<[item: T, index: number]>;
   }
 
@@ -508,14 +508,14 @@
     const firstIndex = Math.max(0, start);
     const lastIndex = Math.min(end, currentData.length - 1);
     const rowCount = lastIndex >= firstIndex ? lastIndex - firstIndex + 1 : 0;
-    const globalRows: GlobalPlaneRow<unknown>[] = new Array(rowCount);
+    const globalRows: GlobalPlaneRow<unknown>[] = [];
     for (let i = 0; i < rowCount; i++) {
       const index = firstIndex + i;
-      globalRows[i] = {
+      globalRows.push({
         key: currentKeys[index],
         offset: engine.getItemOffset(index),
         size: engine.sizeAt(index),
-      };
+      });
     }
     const newDataSnapshot = current !== planeDataSnapshot;
     planeDataSnapshot = current;
@@ -528,7 +528,7 @@
     // An unchanged row keeps its previous OBJECT, not just its values. Check
     // against `rowReuse` before allocating a new RenderRow so steady-state
     // streaming ticks allocate zero descriptor objects for unchanged rows.
-    const rows: RenderRow[] = new Array(rowCount);
+    const rows: RenderRow[] = [];
     const reused = new Map<unknown, RenderRow>();
     const isExact = engineEstimate.isExact;
     for (let i = 0; i < rowCount; i++) {
@@ -552,7 +552,7 @@
       } else {
         row = { item, key, index, offset, measured, observe };
       }
-      rows[i] = row;
+      rows.push(row);
       reused.set(key, row);
     }
     rowReuse = reused;
@@ -577,7 +577,7 @@
   const TAIL_APPEND_KEY_MUTATION = { kind: 'tail', headSplice: false } as const;
 
   function keysFor(items: readonly T[]): { keys: unknown[]; unique: Set<unknown> } {
-    const keys = new Array<unknown>(items.length);
+    const keys: unknown[] = [];
     const unique = new Set<unknown>();
     for (let index = 0; index < items.length; index++) {
       const key = getKey(items[index], index);
@@ -585,7 +585,7 @@
         throw new Error('TimelineVirtualizer requires a unique key for every row');
       }
       unique.add(key);
-      keys[index] = key;
+      keys.push(key);
     }
     return { keys, unique };
   }
@@ -765,8 +765,21 @@
     return undefined;
   }
 
-  function readingAnchorWanted(): boolean {
-    return trackReadingAnchor?.() ?? true;
+  function readingAnchorWanted(offset?: number): boolean {
+    return trackReadingAnchor?.(offset) ?? true;
+  }
+
+  // Exact-height rows (e.g. non-wrapped diff blocks & file headers) never
+  // resize via ResizeObserver, so sub-row straddle shifts cannot occur on
+  // them. Skipping sampleReadingAnchor avoids a forced getBoundingClientRect
+  // + document.elementFromPoint hit-test on every scroll event and flush.
+  function isTopRowExact(offset: number): boolean {
+    const isExact = estimate?.isExact;
+    if (!isExact) return false;
+    const count = engine.getItemCount();
+    if (count <= 0) return false;
+    const idx = engine.findItemIndex(engineOffsetFor(offset));
+    return idx >= 0 && idx < count && isExact(idx);
   }
 
   // No DOM reads except the sub-row sample itself. This runs from the
@@ -792,7 +805,7 @@
       latestViewportAnchor = null;
       return;
     }
-    if (!readingAnchorWanted()) {
+    if (!readingAnchorWanted(offset) || isTopRowExact(offset)) {
       readingAnchor = null;
     } else if (
       forceSample ||

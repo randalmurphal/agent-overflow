@@ -20,6 +20,8 @@ export interface PickerBranches {
   open(): Promise<void>;
   /** A list another call answered with, for the thread it ran for. */
   replace(threadId: string, branches: GitBranch[]): void;
+  /** Release the cached branch list when the picker closes. */
+  clear(): void;
 }
 
 export function createPickerBranches(opts: {
@@ -107,6 +109,11 @@ export function createPickerBranches(opts: {
     },
     replace(threadId, next) {
       if (opts.pane().thread?.id === threadId) branches = next;
+    },
+    clear() {
+      seq += 1;
+      if (branches.length > 0) branches = [];
+      error = null;
     },
   };
 }

@@ -25,6 +25,7 @@
     settingsSectionIds,
     type SettingsSection,
   } from './sections';
+  import { SETTINGS_PAGE_LOADERS } from './pageLoaders';
   import {
     searchHitKey,
     searchSettings,
@@ -205,6 +206,8 @@
             <button
               id="settings-tab-{section.id}"
               onclick={() => onSelectSection(section.id)}
+              onpointerenter={() => void SETTINGS_PAGE_LOADERS[section.id].load()}
+              onfocus={() => void SETTINGS_PAGE_LOADERS[section.id].load()}
               onkeydown={handleTabKeydown}
               role="tab"
               aria-selected={activeSection === section.id}

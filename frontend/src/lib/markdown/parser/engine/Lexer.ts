@@ -515,7 +515,7 @@ export class Lexer {
     const startInline = this.options.extensions?.startInline;
     // Where each inline extension may claim next, as an index into `run.src`,
     // mirroring `htmlTextTokens` so scanning does not degrade to O(n^2).
-    const nextStart = startInline ? new Array<number>(startInline.length).fill(-1) : null;
+    const nextStart = startInline ? new Float64Array(startInline.length).fill(-1) : null;
 
     let keepPrevChar = false;
     let prevChar = '';

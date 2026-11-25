@@ -412,14 +412,14 @@
       untrack(() => sync.cancel());
       return;
     }
-    ticks;
+    void ticks;
     untrack(() => sync.schedule());
   });
 
   // A column resize changes the window's clip math without a scroll
   // event to schedule the sync — re-sync on the RO-fed height.
   $effect(() => {
-    availableHeightPx;
+    void availableHeightPx;
     untrack(() => sync.schedule());
   });
 
