@@ -122,7 +122,7 @@ func TestPokerWithoutTheAddOn(t *testing.T) {
 		"reveal": poker.Reveal(s.ctx, "10101"),
 		"clear":  poker.Clear(s.ctx, "10101"),
 	} {
-		if r, ok := res.Parts[0].Outcome.Refusal(); !ok || r.Reason != tracker.ReasonUnsupported || r.Message != pokerAbsent {
+		if r, ok := res.Parts[0].Outcome.Refusal(); !ok || r.Reason != tracker.ReasonUnsupported || r.Message != PokerAbsent {
 			t.Errorf("%s: %+v", name, res.Parts[0].Outcome)
 		}
 	}

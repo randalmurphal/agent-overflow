@@ -367,6 +367,20 @@ var walkCases = map[string]walkCase{
 			return fmt.Sprintf("%v complete=%t", authors, l.Complete), err
 		}, fmt.Sprintf("map[acc-b:%d] complete=true", worklogListLimit+1),
 	},
+	"PokerInstalled": {
+		pokerRoutes,
+		func(ctx context.Context, c *Client) (string, error) {
+			ok, err := c.PokerInstalled(ctx)
+			return fmt.Sprint(ok), err
+		}, "true",
+	},
+	"PokerVotes": {
+		pokerRoutes,
+		func(ctx context.Context, c *Client) (string, error) {
+			r, err := c.PokerVotes(ctx, "10101")
+			return ids(r.Votes, func(v PokerVote) string { return v.Account }), err
+		}, "acc-b@cloud-b",
+	},
 	"FindUser": {
 		func(s *walkSite) {
 			s.route("GET", "/rest/api/3/user/search", func(u string, r *http.Request, _ []byte) string {
@@ -390,6 +404,41 @@ var walkCases = map[string]walkCase{
 			return u.AccountID, err
 		}, "acc-b2",
 	},
+}
+
+// pokerRoutes answer the poker calls by user: the cloud ID and the token
+// are the user's, the listing names the panel only for the user's own
+// cloud ID, and the one vote names its voter and the cloud ID the invoke
+// was sent with.
+func pokerRoutes(s *walkSite) {
+	s.route("GET", "/_edge/tenant_info", func(u string, _ *http.Request, _ []byte) string { return `{"cloudId":"cloud-` + u + `"}` })
+	s.route("GET", "/rest/api/3/issue/10101", func(string, *http.Request, []byte) string { return pokerTestIssue })
+	s.route("POST", "/rest/internal/2/forge/context/token", func(u string, _ *http.Request, _ []byte) string {
+		return `{"token":"` + pokerJWT(strings.Replace(pokerTestClaims, "acc-user1", "acc-"+u, 1)) + `","expiresIn":899442}`
+	})
+	s.route("POST", "/gateway/api/graphql", func(u string, _ *http.Request, body []byte) string {
+		if strings.Contains(string(body), `"operationName":"Invoke"`) {
+			var req struct {
+				Variables struct {
+					Input struct {
+						Payload struct {
+							Context struct {
+								CloudID string `json:"cloudId"`
+							} `json:"context"`
+						} `json:"payload"`
+					} `json:"input"`
+				} `json:"variables"`
+			}
+			_ = json.Unmarshal(body, &req)
+			voter := "acc-" + u + "@" + req.Variables.Input.Payload.Context.CloudID
+			return invokeBody(200, `{"issueId":"10101","isRevealed":true,"votes":[{"userId":"`+voter+`","vote":3}]}`)
+		}
+		if !strings.Contains(string(body), `site/cloud-`+u+`"`) {
+			// Another user's site lists no poker panel.
+			return `{"data":{"extensionContexts":[{"id":"x","extensionsByType":[]}]}}`
+		}
+		return pokerTestListing
+	})
 }
 
 func sprintRoutes(s *walkSite) {
@@ -472,7 +521,7 @@ var (
 		"CompleteSprint", "CreateSprint", "DeleteAttachment", "DeleteComment", "DeleteSprint", "DeleteWorklog",
 		"EditComment", "LinkIssues", "MoveToBacklog", "MoveToSprint", "PlanCreate", "PlanEdit", "Rank",
 		"RemoveRemoteLink", "RemoveWatcher", "SetEstimate", "StartSprint", "Transition", "Unassign", "UnlinkIssues",
-		"UpdateSprint", "UpdateWorklog", "Value",
+		"UpdateSprint", "UpdateWorklog", "Value", "CastPokerVote", "RevealPokerVotes", "ClearPokerVotes",
 	}
 	noRequest = []string{"Close", "ForgetBoard", "ForgetCredential"}
 )

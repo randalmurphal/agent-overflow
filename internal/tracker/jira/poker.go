@@ -201,13 +201,16 @@ func gatewayMessage(errs []gqlError, token *secret.Bytes) string {
 }
 
 // PokerInstalled reports whether the site has the planning poker add-on:
-// one listing a siteAge, the first after the cloud ID's one read.
+// one listing a siteAge, the first after the cloud ID's one read, the
+// two one walk.
 func (c *Client) PokerInstalled(ctx context.Context) (bool, error) {
 	if err := c.admit(ctx); err != nil {
 		return false, err
 	}
-	app, err := c.pokerApp(ctx)
-	return app.ext != nil, err
+	return trackerapi.Walk(ctx, func(ctx context.Context) (bool, error) {
+		app, err := c.pokerApp(ctx)
+		return app.ext != nil, err
+	})
 }
 
 // pokerCloud is the site's cloud ID.
@@ -450,7 +453,9 @@ type PokerVote struct {
 	Vote    float64
 }
 
-// PokerVotes reads issue's votes; issue is a numeric issue ID.
+// PokerVotes reads issue's votes; issue is a numeric issue ID. The
+// listing, the issue, the token and the invoke are one walk: the token is
+// the caller's, so the votes it marks as the caller's are one account's.
 func (c *Client) PokerVotes(ctx context.Context, issue string) (PokerRound, error) {
 	if err := c.admit(ctx); err != nil {
 		return PokerRound{}, err
@@ -458,6 +463,10 @@ func (c *Client) PokerVotes(ctx context.Context, issue string) (PokerRound, erro
 	if err := checkID("issue", issue); err != nil {
 		return PokerRound{}, err
 	}
+	return trackerapi.Walk(ctx, func(ctx context.Context) (PokerRound, error) { return c.pokerVotes(ctx, issue) })
+}
+
+func (c *Client) pokerVotes(ctx context.Context, issue string) (PokerRound, error) {
 	a, err := c.pokerInvoke(ctx, issue, http.MethodGet, "planningPoker/"+issue, nil, true)
 	if err != nil {
 		return PokerRound{}, err

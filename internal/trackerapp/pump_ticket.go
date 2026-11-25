@@ -21,6 +21,8 @@ import (
 type ticketPump struct {
 	core pump.Core[readRequest]
 	key  ticketKey
+	// kind is the connection's tracker kind.
+	kind string
 	// number names the pump within the service's session: its row in the
 	// mirror's open tickets, which keeps its issue. kept reports that the
 	// row committed under root (keepTicketLocked), and dropped that the
@@ -45,6 +47,9 @@ type ticketPump struct {
 	// tickets that owe one (buildShown). One queued nudge is enough; a
 	// hidden pump builds when shown again.
 	viewChanged chan struct{}
+	// pokerWake nudges the pump to take its poker timer again: a follow
+	// began or ended, or a write asks for a read now (poker.go).
+	pokerWake chan struct{}
 
 	// dirty counts the stored changes to an input of the view
 	// (tellTicketLocked), built is the count the view was built after, and
@@ -72,6 +77,8 @@ type ticketPump struct {
 	failure          *FailureView
 	changed, pending bool
 	over             bool
+	// poker is the ticket's planning poker while a handle follows it.
+	poker pokerFollow
 }
 
 // toldView is what a ticket's subscribers were last told of its view: the
@@ -196,8 +203,8 @@ func (s *Service) takeTicketHandle(key ticketKey, tie Tie) (id string, tp *ticke
 		}
 		s.subs.pumps++
 		tp = &ticketPump{
-			core: s.newCore(), key: key, number: s.subs.pumps, gen: s.genLocked(key.connection), every: s.cadence.ticket(kind),
-			exited: make(chan struct{}), viewChanged: make(chan struct{}, 1), dirty: 1,
+			core: s.newCore(), key: key, kind: kind, number: s.subs.pumps, gen: s.genLocked(key.connection), every: s.cadence.ticket(kind),
+			exited: make(chan struct{}), viewChanged: make(chan struct{}, 1), pokerWake: make(chan struct{}, 1), dirty: 1,
 		}
 		s.subs.tickets[key] = tp
 		start = true
@@ -267,9 +274,11 @@ func (s *Service) digestOf(v DetailView) uint64 {
 }
 
 // runTicketPump is a ticket pump's goroutine: an interactive first read
-// that records the opening, a full read on a person's request, and the
+// that records the opening, a full read on a person's request, the
 // builds of its connection's views when an input of one moved, made when
-// shown again if it came while hidden. A failed read is retried by the
+// shown again if it came while hidden, and the reads of its planning
+// poker while a handle follows it and one shows it (poker.go), on the
+// one timer the goroutine holds. A failed read is retried by the
 // connection's round. The mirror keeps the ticket's issue from the bind
 // its first read makes (bindTickets) until the goroutine returns
 // (dropTicket), which every end of the pump comes to: its last handle
@@ -282,7 +291,11 @@ func (s *Service) runTicketPump(tp *ticketPump) {
 	defer s.dropTicket(tp)
 	ctx, conn, self := tp.core.Context(), tp.key.connection, []*ticketPump{tp}
 	over := s.readTickets(ctx, conn, self, Interactive, false, true).over
+	poker := time.NewTimer(time.Hour)
+	poker.Stop()
+	defer poker.Stop()
 	for !over {
+		s.armPoker(tp, poker)
 		select {
 		case <-tp.core.Done():
 			return
@@ -300,6 +313,9 @@ func (s *Service) runTicketPump(tp *ticketPump) {
 			if !tp.core.Paused() {
 				s.buildShown(conn)
 			}
+		case <-tp.pokerWake:
+		case <-poker.C:
+			s.readPoker(ctx, tp)
 		}
 	}
 }
@@ -313,9 +329,9 @@ func (s *Service) flushTicketLocked(tp *ticketPump, end bool) {
 	}
 	ev := IssueEvent{
 		Connection: tp.key.connection, Issue: tp.key.issue, Seq: s.nextSeqLocked(),
-		Changed: tp.changed, Failure: tp.failure, Ended: end,
+		Changed: tp.changed, Failure: tp.failure, Poker: tp.poker.changed, Ended: end,
 	}
-	tp.changed, tp.pending = false, false
+	tp.changed, tp.pending, tp.poker.changed = false, false, false
 	s.emitIssue(ev)
 }
 

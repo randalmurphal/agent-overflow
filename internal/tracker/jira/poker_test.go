@@ -230,12 +230,14 @@ func TestPokerShapeChangesArePokersOwn(t *testing.T) {
 		change func(*pokerAnswers)
 		step   string
 	}{
-		"no cloud ID":             {func(a *pokerAnswers) { a.tenant = `{"id":"x"}` }, pokerStepCloud},
-		"listing of no contexts":  {func(a *pokerAnswers) { a.listing = `{"data":{"extensionContexts":[]}}` }, pokerStepListing},
-		"panel without its app":   {func(a *pokerAnswers) { a.listing = strings.Replace(pokerTestListing, `"appId":"a"`, `"appId":""`, 1) }, pokerStepListing},
-		"listing errors":          {func(a *pokerAnswers) { a.listing = `{"errors":[{"message":"Cannot query field"}]}` }, pokerStepListing},
-		"token without its claim": {func(a *pokerAnswers) { a.token = `{"token":"` + pokerJWT(`{"accountId":"a"}`) + `","expiresIn":899442}` }, pokerStepToken},
-		"token not a JWT":         {func(a *pokerAnswers) { a.token = `{"token":"opaque","expiresIn":899442}` }, pokerStepToken},
+		"no cloud ID":            {func(a *pokerAnswers) { a.tenant = `{"id":"x"}` }, pokerStepCloud},
+		"listing of no contexts": {func(a *pokerAnswers) { a.listing = `{"data":{"extensionContexts":[]}}` }, pokerStepListing},
+		"panel without its app":  {func(a *pokerAnswers) { a.listing = strings.Replace(pokerTestListing, `"appId":"a"`, `"appId":""`, 1) }, pokerStepListing},
+		"listing errors":         {func(a *pokerAnswers) { a.listing = `{"errors":[{"message":"Cannot query field"}]}` }, pokerStepListing},
+		"token without its claim": {func(a *pokerAnswers) {
+			a.token = `{"token":"` + pokerJWT(`{"accountId":"a"}`) + `","expiresIn":899442}`
+		}, pokerStepToken},
+		"token not a JWT": {func(a *pokerAnswers) { a.token = `{"token":"opaque","expiresIn":899442}` }, pokerStepToken},
 		"body as a string": {func(a *pokerAnswers) {
 			a.invoke = func([]byte) string {
 				return `{"data":{"invokeExtension":{"success":true,"response":{"body":"{}"}}}}`
@@ -245,7 +247,9 @@ func TestPokerShapeChangesArePokersOwn(t *testing.T) {
 			a.invoke = func([]byte) string { return invokeBody(200, `{"issueId":"10101","votes":[]}`) }
 		}, pokerStepApp},
 		"vote without its value": {func(a *pokerAnswers) {
-			a.invoke = func([]byte) string { return invokeBody(200, `{"issueId":"10101","isRevealed":true,"votes":[{"userId":"a"}]}`) }
+			a.invoke = func([]byte) string {
+				return invokeBody(200, `{"issueId":"10101","isRevealed":true,"votes":[{"userId":"a"}]}`)
+			}
 		}, pokerStepApp},
 	} {
 		t.Run(name, func(t *testing.T) {

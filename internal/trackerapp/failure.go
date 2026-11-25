@@ -144,6 +144,8 @@ func ClassifyFailure(kind string, err error) Failure {
 	var source *trackerapi.SourceError
 	var cut *trackerapi.CutError
 	switch {
+	case pokerOwn(err):
+		return pokerFailure(err)
 	case errors.As(err, &source):
 		return Failure{Kind: FailureUpload, Message: "the file stopped arriving before its end, so " + name + " stored none of it; attach it again"}
 	case errors.As(err, &cut):

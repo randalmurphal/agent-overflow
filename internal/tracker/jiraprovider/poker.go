@@ -20,9 +20,9 @@ var _ tracker.Poker = jiraPoker{}
 // Support's answer.
 func (p *Provider) Poker() tracker.Poker { return jiraPoker{jira: p.jira} }
 
-// pokerAbsent is the sentence of a poker write on a site without the
-// add-on.
-const pokerAbsent = "planning poker (Easy Agile TeamRhythm) is not installed on this Jira site"
+// PokerAbsent is the sentence of poker on a site without the add-on: a
+// write's refusal here, and a read's failure in trackerapp.
+const PokerAbsent = "planning poker (Easy Agile TeamRhythm) is not installed on this Jira site"
 
 // Support reports whether the site has the add-on.
 func (j jiraPoker) Support(ctx context.Context) (bool, error) {
@@ -99,7 +99,7 @@ func (j jiraPoker) Clear(ctx context.Context, issue tracker.IssueID) tracker.Res
 // client call returned err. It changes nothing the mirror holds.
 func pokerResult(issue tracker.IssueID, err error) tracker.Result {
 	if errors.Is(err, jira.ErrPokerAbsent) {
-		return tracker.Refuse(tracker.StepPoker, tracker.Refusal{Reason: tracker.ReasonUnsupported, Message: pokerAbsent, Err: err}, issue)
+		return tracker.Refuse(tracker.StepPoker, tracker.Refusal{Reason: tracker.ReasonUnsupported, Message: PokerAbsent, Err: err}, issue)
 	}
 	return tracker.Result{Parts: []tracker.Part{{Issue: issue, Step: tracker.StepPoker, Outcome: outcome(err)}}}
 }
