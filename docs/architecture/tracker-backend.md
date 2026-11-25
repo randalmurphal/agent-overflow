@@ -1653,7 +1653,11 @@ settings screen (Settings > Issues: Connections and Boards), with the
 `stores/trackerProjectBoards.svelte.ts`), and the Issues pane's Board
 screen, with the `bindings.ts` wrappers of `TrackerBoardChoices` and the
 board subscription's methods and `tracker:board_updated`'s TypeScript
-type (`components/issues/AGENTS.md`). A failure of the linked-issues
+type, and its ticket screen, with the wrappers of the ticket
+subscription's methods, `TrackerComments`, the issue and comment writes,
+`TrackerAssignableUsers` and `TrackerChoices`, and
+`tracker:issue_updated`'s TypeScript type (`components/issues/AGENTS.md`).
+A failure of the linked-issues
 loop after boot reaches only the log (`Deps.LoopFailed`): its failures
 are outside the tracker (a store error, the cleanup), and a tracker
 failure of the loop's sync shows on its connection's row as its problem.

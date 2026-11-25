@@ -3,8 +3,9 @@
 Status: product rulings and screen designs recorded 2026-11-15. Built:
 the connections and a project's board list, in Settings > Issues
 (Connections, Boards), and the Issues pane with its Board screen, opened
-from the tool row's Issues entry. The other screens are not built; the
-[Board](#board) section says what of it is.
+from the tool row's Issues entry, and the Ticket screen, opened from a
+card. The other screens are not built; the [Board](#board) and
+[Ticket](#ticket) sections say what of them is.
 
 ## Goal
 
@@ -301,10 +302,27 @@ avatar.
 
 ### Ticket
 
+Status: built: a ticket opened from a card over or beside the board, the
+choice remembered, with the split between them; the wide and narrow
+layouts with the rail and Details; status, assignee, priority, points and
+type changed in place, and the other fields with allowed values or typed
+values behind the control with its find box; each long text field as a
+section that folds and is edited as Markdown; comments in either order
+with the control and the comment box, edited, deleted and copied from a
+comment's menu; history; the control that opens it in the tracker; and
+Back through the tickets opened from one another. Not built: pinning a
+field or a section, the mark on a section holding the template text, Work,
+the thread an agent's comment came from, attachments, linked tickets, Log
+time, planning poker, and a ticket in a pane of its own.
+
 - At 720 or wider the content is on the left and a rail on the right holds
   Fields, then Work. Narrower, the ticket shows the content only, with one
   row of status, assignee, priority and points, each changed in place, and
   a Details control that slides the rail over the content.
+- A ticket opened from another ticket takes its place. Back returns
+  through the last 20 tickets opened that way, then closes the ticket;
+  Close leaves at once. Picking another board drops them, and a reload
+  does not remember them.
 - Fields pinned for the project show first on every ticket of that
   project. The rest sit behind a control with a find box, filled fields
   first. A field is pinned from its row. A field with allowed values is

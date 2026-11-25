@@ -32,14 +32,31 @@ board methods, events and the patch read in
   `IssuesPane.svelte`), the opening rule (`openingBoard`), the board
   picked last and Only mine as saved for the next pane, Display per board,
   and the compact column for the session. Only a pick is saved; another
-  window's change never moves an open pane.
+  window's change never moves an open pane. Its selection also holds the
+  open ticket, its subscription and the trail Back steps through, and
+  decides whether the board is shown (`boardShown`: the pane is on screen
+  and no ticket covers it), which is the board's vote. The ticket's
+  placement, its folds and the comment order are remembered here too.
+- `stores/trackerTicket.svelte.ts` holds each open ticket's subscription,
+  one per ticket for every surface showing it: subscribe with the vote,
+  the `tracker:issue_updated` fold, the one view read in flight, the gap
+  read, Refresh and the earlier comments read by page.
+- `stores/trackerTicketWrites.svelte.ts` makes every write and picker read
+  of the ticket screen and holds each write's outcome by ticket and target:
+  one pending write per target, Save anyway as the person's second press,
+  and a toast for a write that settles after its ticket closed.
+- `stores/trackerTicketModel.ts` is the pure part: what a write's answer
+  means for the person (`writeOutcome`), the comment and history windows,
+  the rail's order and the board row a ticket shows its points from.
 
-These stores load with the pane (`ToolPane.svelte` imports it on demand).
+These stores load with the pane (`ToolPane.svelte` imports it on demand),
+and `TicketScreen.svelte` loads on the first open of a ticket.
 The always-loaded stores reach them only through
-`stores/trackerBoardEvents.ts`, where the board store takes
-`tracker:board_updated` and its gaps and the choices store hears that a
-computer's board lists may have changed; `lib/architecture.test.ts` fails
-when one of them enters the startup graph.
+`stores/trackerBoardEvents.ts`, where the board and ticket stores take
+`tracker:board_updated`, `tracker:issue_updated` and their gaps and the
+choices store hears that a computer's board lists may have changed;
+`lib/architecture.test.ts` fails when one of them enters the startup
+graph.
 
 ## Rendering
 
@@ -50,3 +67,8 @@ part. A column asks for its next page near the end of its held rows
 touch keep their objects, so their cards do not re-render; keep that when
 deriving rows (filter into new arrays, never copy rows). Marks are picked
 by name or level in `boardFormat.ts`; no tracker image is fetched.
+
+A ticket mounts its newest five comments and 20 history changes; each
+press of the reveal control mounts 20 more, so the DOM grows only with
+what the person asked to see. The Issues browser specs assert the mounted
+count (`e2e/tests/issues-ticket-flow.ts`).

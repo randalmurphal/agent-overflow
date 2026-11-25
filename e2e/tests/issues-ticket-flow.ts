@@ -197,6 +197,7 @@ export function registerIssuesTicketFlow({ compact }: TicketSurface): void {
       await expect(ticket.getByTestId('ticket-title')).toHaveText('Ticket with comments');
       await expect(comments).toHaveCount(0);
       await expect(ticket.getByTestId('ticket-opening')).toHaveCount(0);
+      await expect(ticket.getByText('Laptop is not connected')).toHaveCount(1);
 
       // Back on, at its new address, with its Jira site served again: the
       // open ticket reads again.
