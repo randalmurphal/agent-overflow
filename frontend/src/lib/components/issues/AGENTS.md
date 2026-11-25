@@ -42,7 +42,10 @@ board methods, events and the patch read in
   the `tracker:issue_updated` fold, the one view read in flight, the gap
   read, Refresh and the earlier comments held by page with the token that
   read each, which an applied edit of one of their comments reads again
-  and an applied delete takes the comment out of.
+  and an applied delete takes the comment out of. It follows a ticket's
+  planning poker while one surface shows the ticket with its poker part
+  on screen (`setPokerShown`), and holds whether each connection's site
+  has poker.
 - `stores/trackerTicketWrites.svelte.ts` makes every write and picker read
   of the ticket screen and holds each write's outcome by ticket and target:
   one pending write per target, Save anyway as the person's second press,
@@ -50,10 +53,19 @@ board methods, events and the patch read in
   holds the text being written to each target with its base (the drafts),
   which the editors show, so a draft outlives its editor; a pane's
   selection holds the drafts of its open ticket and Back trail
-  (`holdTicketDrafts`).
+  (`holdTicketDrafts`). Files are attached through it one at a time per
+  ticket, each its own `attach:` write; it holds a connection's link
+  types for the link form.
 - `stores/trackerTicketModel.ts` is the pure part: what a write's answer
   means for the person (`writeOutcome`), the comment and history windows,
-  the rail's order and the board row a ticket shows its points from.
+  the rail's order, the side a new link sends, a poker round's result,
+  the attachment a file in the text names and the board row a ticket
+  shows its points from.
+- `utils/trackerAttachments.ts` is what saving an attachment does on this
+  page (`fileSaveAction`: the ticket's computer writes it, a connected
+  browser downloads it up to 256 MB), its bytes, and the images a ticket's
+  text shows in place, held in the media cache until the ticket's last
+  surface goes.
 
 These stores load with the pane (`ToolPane.svelte` imports it on demand),
 and `TicketScreen.svelte` loads on the first open of a ticket.
@@ -72,7 +84,7 @@ part. A column asks for its next page near the end of its held rows
 (`BoardColumn`), never while a filter reads it whole. Rows a patch does not
 touch keep their objects, so their cards do not re-render; keep that when
 deriving rows (filter into new arrays, never copy rows). Marks are picked
-by name or level in `boardFormat.ts`; no tracker image is fetched.
+by name or level in `boardFormat.ts`; a board fetches no tracker image.
 
 `ticketEditors.ts` is the one rule for which ticket fields take an
 editor in place and what a pick or a typed value sends; the ticket saves
@@ -82,7 +94,10 @@ whose screen takes fields, its pickers asking that move's values.
 `TicketMarkdown.svelte` is the one renderer of a ticket's text, its long
 text fields and comments: ChatMarkdown with embedded HTML and
 `trackerMedia`, which shows a tracker's `media:` image or attachment as a
-chip naming the file (`utils/trackerMedia.ts`).
+chip naming the file (`utils/trackerMedia.ts`). On a ticket's screen
+(`TRACKER_MEDIA_CONTEXT`) a name one attachment has shows that file: an
+image under 16 MB in place, fetched once its box comes within 200 px of
+the viewport, any other file with its size and Save.
 
 A ticket mounts its newest five comments and 20 history changes; each
 press of the reveal control mounts 20 more, so the DOM grows only with
