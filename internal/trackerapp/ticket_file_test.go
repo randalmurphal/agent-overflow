@@ -13,6 +13,7 @@ func ticketFileDetail() DetailView {
 			ID: "10001", Key: "WEB-1", Title: "Retry cursor returns no rows",
 			Type: &IssueTypeView{ID: "10001", Name: "Story"}, Status: StatusView{ID: "3", Name: "In Progress", Group: "in_progress"},
 			Assignee: &UserView{ID: "acc-user1", Name: "User 1"}, Parent: &ParentView{ID: "10000", Key: "WEB-0", Title: "Sync"},
+			Priority: &ChoiceView{ID: "2", Name: "High"}, Labels: []ChoiceView{{ID: "backend", Name: "backend"}, {ID: "sync"}},
 			Created: day, Updated: day,
 		},
 		URL:         "https://example.atlassian.net/browse/WEB-1",
@@ -41,7 +42,9 @@ func TestTicketFileTextHoldsTheTicketOnce(t *testing.T) {
 Type: Story
 Status: In Progress
 Assignee: User 1
+Priority: High
 Parent: WEB-0 Sync
+Labels: backend, sync
 https://example.atlassian.net/browse/WEB-1
 
 ## Description

@@ -1,6 +1,7 @@
 package trackerapp
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -65,7 +66,7 @@ func (s *Service) storedDetail(id string, issue tracker.IssueID) (DetailView, bo
 // TicketFileText is the ticket file of a thread made for a ticket (Ask,
 // Start work): what a model reads of the ticket. Its first line says it
 // is the tracker's copy and data; then the key and title, the type,
-// status, assignee and parent that are set, the address, the description
+// status, assignee, priority, parent and labels that are set, the address, the description
 // and every other long text field that holds text, and the newest
 // comments, newest first. Nothing empty is written, nothing twice, and
 // nothing a model cannot act on (IDs, times beyond a comment's day, the
@@ -87,8 +88,20 @@ func TicketFileText(v DetailView) string {
 	if c.Assignee != nil && c.Assignee.Name != "" {
 		facts = append(facts, "Assignee: "+c.Assignee.Name)
 	}
+	if c.Priority != nil && c.Priority.Name != "" {
+		facts = append(facts, "Priority: "+c.Priority.Name)
+	}
 	if p := c.Parent; p != nil && p.Key != "" {
 		facts = append(facts, strings.TrimSpace("Parent: "+p.Key+" "+p.Title))
+	}
+	var labels []string
+	for _, l := range c.Labels {
+		if name := cmp.Or(l.Name, l.ID); name != "" {
+			labels = append(labels, name)
+		}
+	}
+	if len(labels) > 0 {
+		facts = append(facts, "Labels: "+strings.Join(labels, ", "))
 	}
 	for _, f := range facts {
 		b.WriteString(f + "\n")
