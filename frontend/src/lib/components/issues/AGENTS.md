@@ -40,7 +40,9 @@ board methods, events and the patch read in
 - `stores/trackerTicket.svelte.ts` holds each open ticket's subscription,
   one per ticket for every surface showing it: subscribe with the vote,
   the `tracker:issue_updated` fold, the one view read in flight, the gap
-  read, Refresh and the earlier comments read by page.
+  read, Refresh and the earlier comments held by page with the token that
+  read each, which an applied edit of one of their comments reads again
+  and an applied delete takes the comment out of.
 - `stores/trackerTicketWrites.svelte.ts` makes every write and picker read
   of the ticket screen and holds each write's outcome by ticket and target:
   one pending write per target, Save anyway as the person's second press,

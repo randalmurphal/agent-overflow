@@ -1488,6 +1488,89 @@ describe('the ticket in the pane', () => {
     expect(fields().slice(37, 41)).toEqual(['f12', 'f11', 'f10', 'f9']);
   });
 
+  it('shows an applied edit or delete of an older page\'s comment, re-reading that page for an edit only', async () => {
+    install();
+    installTicket((issue) => ticketDetail(issue, { comments: 50, more: '50' }));
+    // The tracker's older page: what it holds changes with the writes.
+    const older = Array.from({ length: 10 }, (_, i) => ({ id: `old${i}`, author: { id: 'u1', name: 'User 1' }, body: `Older ${i}`, created: 900 - i }));
+    const page = setBindingMock('TrackerComments', async (_c: string, _i: string, token: string) => {
+      expect(token).toBe('50');
+      return { comments: older.map((c) => ({ ...c })), next: '' };
+    });
+    setBindingMock('EditTrackerComment', async (_c: string, input: { comment: string; markdown: string }): Promise<WriteView> => {
+      older.find((c) => c.id === input.comment)!.body = input.markdown;
+      return { parts: [{ step: 'comment', state: 'applied' }] } as WriteView;
+    });
+    setBindingMock('DeleteTrackerComment', async (_c: string, input: { comment: string }): Promise<WriteView> => {
+      older.splice(older.findIndex((c) => c.id === input.comment), 1);
+      return { parts: [{ step: 'comment', state: 'applied' }] } as WriteView;
+    });
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await within(screen).findAllByTestId('ticket-comment');
+    for (let i = 0; i < 3; i += 1) await fireEvent.click(within(screen).getByTestId('ticket-comments-earlier'));
+    await waitFor(() => expect(page).toHaveBeenCalledTimes(1));
+    const comment = (id: string) => waitFor(() => within(screen).getAllByTestId('ticket-comment').find((c) => c.dataset.comment === id)!);
+    // Edit an older comment.
+    const two = await comment('old2');
+    await fireEvent.contextMenu(two);
+    await fireEvent.click(await within(document.body).findByTestId('ticket-comment-menu-edit'));
+    await fireEvent.input(within(two).getByTestId('ticket-comment-editor'), { target: { value: 'Older 2, edited' } });
+    await fireEvent.click(within(two).getByTestId('ticket-comment-save'));
+    await waitFor(() => expect(within(two).getByTestId('ticket-comment-body')).toHaveTextContent('Older 2, edited'));
+    expect(page).toHaveBeenCalledTimes(2);
+    // Delete another.
+    const three = await comment('old3');
+    await fireEvent.contextMenu(three);
+    await fireEvent.click(await within(document.body).findByTestId('ticket-comment-menu-delete'));
+    await fireEvent.click(within(three).getByTestId('ticket-comment-delete'));
+    await waitFor(() => expect(within(screen).getAllByTestId('ticket-comment').map((c) => c.dataset.comment)).not.toContain('old3'));
+    expect(page).toHaveBeenCalledTimes(2);
+    // Refresh brings neither the old body nor the deleted comment back.
+    const refresh = setBindingMock('RefreshTrackerSubscription', async () => undefined);
+    await fireEvent.click(within(screen).getByTestId('ticket-refresh'));
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+    const read = getBindingMock('TrackerTicket')!;
+    const reads = read.mock.calls.length;
+    trackerIssueUpdated({ connection: 'c1', issue: '1', seq: 20, changed: true }, HOME_BACKEND);
+    await waitFor(() => expect(read.mock.calls.length).toBe(reads + 1));
+    await tick();
+    const ids = within(screen).getAllByTestId('ticket-comment').map((c) => c.dataset.comment);
+    expect(ids).not.toContain('old3');
+    expect((await comment('old2')).textContent).toContain('Older 2, edited');
+  });
+
+  it('drops an older page whose re-read after an edit failed, and reads it again from the control', async () => {
+    install();
+    installTicket((issue) => ticketDetail(issue, { comments: 50, more: '50' }));
+    const older = Array.from({ length: 10 }, (_, i) => ({ id: `old${i}`, author: { id: 'u1', name: 'User 1' }, body: `Older ${i}`, created: 900 - i }));
+    let fail = false;
+    const page = setBindingMock('TrackerComments', async () => {
+      if (fail) throw new TransportError('timeout', 'Jira did not answer in time');
+      return { comments: older.map((c) => ({ ...c })), next: '' };
+    });
+    setBindingMock('EditTrackerComment', async (_c: string, input: { comment: string; markdown: string }): Promise<WriteView> => {
+      older.find((c) => c.id === input.comment)!.body = input.markdown;
+      fail = true;
+      return { parts: [{ step: 'comment', state: 'applied' }] } as WriteView;
+    });
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await within(screen).findAllByTestId('ticket-comment');
+    for (let i = 0; i < 3; i += 1) await fireEvent.click(within(screen).getByTestId('ticket-comments-earlier'));
+    const two = await waitFor(() => within(screen).getAllByTestId('ticket-comment').find((c) => c.dataset.comment === 'old2')!);
+    await fireEvent.contextMenu(two);
+    await fireEvent.click(await within(document.body).findByTestId('ticket-comment-menu-edit'));
+    await fireEvent.input(within(two).getByTestId('ticket-comment-editor'), { target: { value: 'Older 2, edited' } });
+    await fireEvent.click(within(two).getByTestId('ticket-comment-save'));
+    await waitFor(() => expect(within(screen).getByTestId('ticket-comments-earlier-error')).toHaveTextContent('Jira did not answer in time'));
+    expect(within(screen).getAllByTestId('ticket-comment').map((c) => c.dataset.comment).filter((id) => id?.startsWith('old'))).toEqual([]);
+    fail = false;
+    await fireEvent.click(within(screen).getByTestId('ticket-comments-earlier'));
+    await waitFor(() => expect((within(screen).getAllByTestId('ticket-comment').find((c) => c.dataset.comment === 'old2'))?.textContent).toContain('Older 2, edited'));
+    expect(page).toHaveBeenCalledTimes(3);
+  });
+
   it('mounts the newest five comments and the earlier ones 20 a press, reading the next page once the held ones run out', async () => {
     install();
     installTicket((issue) => ticketDetail(issue, { comments: 30, more: 'page-2' }));

@@ -85,7 +85,7 @@ describe('Jira media in ticket text', () => {
       props: {
         ctx: { key: 'ticket', ref: { backend: HOME_BACKEND, connection: 'c1', issue: '1' }, label: 'WEB-1' },
         detail: { comments: [comment] } as unknown as DetailView,
-        earlier: { comments: [], next: null, loading: false, error: null },
+        earlier: { pages: [], next: null, loading: false, error: null },
         order: 'oldest',
         onOrder: () => {},
         fieldName: (id: string) => id,

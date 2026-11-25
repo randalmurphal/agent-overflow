@@ -75,12 +75,12 @@ describe('comments', () => {
   const detail = { comments: first } as unknown as DetailView;
 
   it('holds the first page, then the earlier pages, each comment once', () => {
-    expect(heldComments(detail, [comment('7', 7), comment('6', 6)]).map((c) => c.id)).toEqual(['9', '8', '7', '6']);
+    expect(heldComments(detail, [{ comments: [comment('7', 7)] }, { comments: [comment('6', 6)] }]).map((c) => c.id)).toEqual(['9', '8', '7', '6']);
     expect(heldComments(detail, [])).toBe(first);
   });
 
   it('mounts the newest of them, in the order they read', () => {
-    const held = heldComments(detail, [comment('6', 6), comment('5', 5)]);
+    const held = heldComments(detail, [{ comments: [comment('6', 6), comment('5', 5)] }]);
     expect(commentWindow(held, 2, 'oldest')).toEqual({ comments: [held[1], held[0]], hidden: 3 });
     expect(commentWindow(held, 2, 'newest')).toEqual({ comments: [held[0], held[1]], hidden: 3 });
     expect(commentWindow(held, 50, 'oldest').hidden).toBe(0);

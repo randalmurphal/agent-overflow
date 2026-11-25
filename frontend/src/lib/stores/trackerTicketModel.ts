@@ -69,16 +69,19 @@ export const HISTORY_FIRST = 20;
 export const HISTORY_STEP = 20;
 
 /** The ticket's comments held, newest first: the view's first page, then
- * the earlier pages a person loaded, each comment once. */
-export function heldComments(detail: DetailView, earlier: readonly CommentView[]): readonly CommentView[] {
+ * the earlier pages a person loaded in order, each comment once (a page
+ * read again after a delete can repeat a newer page's last comment). */
+export function heldComments(detail: DetailView, pages: readonly { readonly comments: readonly CommentView[] }[]): readonly CommentView[] {
   const first = detail.comments ?? [];
-  if (earlier.length === 0) return first;
+  if (pages.length === 0) return first;
   const seen = new Set(first.map((c) => c.id));
   const out = [...first];
-  for (const c of earlier) {
-    if (seen.has(c.id)) continue;
-    seen.add(c.id);
-    out.push(c);
+  for (const page of pages) {
+    for (const c of page.comments) {
+      if (seen.has(c.id)) continue;
+      seen.add(c.id);
+      out.push(c);
+    }
   }
   return out;
 }

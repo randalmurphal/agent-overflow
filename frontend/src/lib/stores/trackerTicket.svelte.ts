@@ -14,7 +14,12 @@
 // A read that fails is shown (`readError`) and waits for a recovery
 // trigger (an event, a gap, Refresh); a dropped connection is left to the
 // reconnect, which subscribes again. The earlier comments a person loaded
-// are kept across a reconnect and go with the ticket's last surface.
+// are held by page, each with the token that read it, kept across a
+// reconnect and gone with the ticket's last surface; whether a page is
+// being read, and its failure, are the subscription's own. A comment has
+// one copy the screen draws from: an applied edit of one on an earlier
+// page reads that page again, and an applied delete takes it out
+// (`trackerTicketSettled`).
 //
 // The handle votes shown while any surface shows the ticket and the window
 // is visible, so a ticket nobody can see makes no tracker read.
@@ -52,16 +57,29 @@ export interface TrackerTicketRef {
   readonly issue: string;
 }
 
+/** A page of comments past the view's first, with the token that read
+ * it. */
+export interface CommentPage {
+  readonly token: string;
+  /** Newest first. */
+  readonly comments: readonly CommentView[];
+}
+
 /** The comments past the view's first page that a person loaded. */
 export interface EarlierComments {
   /** Newest first, continuing the view's first page. */
-  readonly comments: readonly CommentView[];
+  readonly pages: readonly CommentPage[];
   /** The next page's token: null before the first earlier page, empty
    * once the last is read. */
   readonly next: string | null;
+  /** A page is being read for this subscription. */
   readonly loading: boolean;
+  /** This subscription's last page read failed. */
   readonly error: unknown;
 }
+
+/** What carries over to the ticket's next subscription. */
+type HeldPages = Pick<EarlierComments, 'pages' | 'next'>;
 
 /** A ticket as a surface draws it. Replaced whole on every change. */
 export interface TrackerTicketState {
@@ -99,7 +117,7 @@ interface Live {
   voted: boolean;
 }
 
-const NO_EARLIER: EarlierComments = { comments: [], next: null, loading: false, error: null };
+const NO_EARLIER: EarlierComments = { pages: [], next: null, loading: false, error: null };
 
 const FIRST_STATE: TrackerTicketState = {
   detail: null, readAt: 0, failure: null, ended: false, refreshing: false, refreshNotice: null, readError: null, earlier: NO_EARLIER,
@@ -113,9 +131,9 @@ const lives = new Map<string, Live>();
 // Each ticket's surfaces and whether each shows it now, by surface.
 const surfaces = new Map<string, Map<number, boolean>>();
 let nextSurface = 0;
-// The earlier comments each held ticket's surfaces loaded; kept across a
-// re-subscribe, dropped with the last surface.
-const earlierByKey = new Map<string, EarlierComments>();
+// The earlier comment pages each held ticket's surfaces loaded; kept
+// across a re-subscribe, dropped with the last surface.
+const earlierByKey = new Map<string, HeldPages>();
 const closedListeners = new Set<(key: string) => void>();
 
 const votes = createPumpVotes('trackerTicket', (id, visible) => SetTrackerSubscriptionVisible(id, visible));
@@ -143,7 +161,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
   const ref = getCtx();
   const live: Live = {
     key, ref, id: '', seq: 0, joining: [], apply, aborted: false,
-    state: { ...FIRST_STATE, earlier: earlierByKey.get(key) ?? NO_EARLIER },
+    state: { ...FIRST_STATE, earlier: { ...NO_EARLIER, ...earlierByKey.get(key) } },
     dirty: false, retryHeld: false, running: null, voted: visibleOf(key),
   };
   lives.set(key, live);
@@ -287,13 +305,65 @@ async function run(live: Live): Promise<void> {
   }
 }
 
+/** A comment an applied write changed. */
+export interface CommentChange {
+  readonly id: string;
+  readonly deleted: boolean;
+}
+
 /** Settles once the ticket's view holds what its computer last told: the
  * read in flight, and the one an event asked for meanwhile, have landed or
  * failed. A write waits on it before its control stops saying "Saving",
- * since the write's refresh tells its event before its answer arrives. */
-export function trackerTicketSettled(key: string): Promise<void> {
+ * since the write's refresh tells its event before its answer arrives.
+ * With `comment`, the earlier pages holding that comment show the write
+ * too: a delete takes it out, and an edit reads each such page again by
+ * its token, since the body the tracker stored is its own conversion. A
+ * page that fails to read is dropped with the pages after it, so no old
+ * copy shows, and the reveal control reads them again. */
+export function trackerTicketSettled(key: string, comment?: CommentChange): Promise<void> {
   const live = lives.get(key);
-  return live ? drain(live) : Promise.resolve();
+  const drained = live ? drain(live) : Promise.resolve();
+  return comment ? drained.then(() => commentSettled(key, comment)) : drained;
+}
+
+async function commentSettled(key: string, comment: CommentChange): Promise<void> {
+  const holding = (earlierByKey.get(key)?.pages ?? []).filter((p) => p.comments.some((c) => c.id === comment.id));
+  for (const page of holding) {
+    if (comment.deleted) {
+      replacePage(key, page.token, (p) => ({ ...p, comments: p.comments.filter((c) => c.id !== comment.id) }));
+      continue;
+    }
+    const ref = lives.get(key)?.ref;
+    if (!ref) return;
+    try {
+      const read = await withBackendTarget(ref.backend, () => TrackerComments(ref.connection, ref.issue, page.token));
+      replacePage(key, page.token, () => ({ token: page.token, comments: read.comments ?? [] }));
+    } catch (err) {
+      dropPagesFrom(key, page.token, err);
+      return;
+    }
+  }
+}
+
+/** The ticket's held pages, as the store and the subscription showing it
+ * hold them. */
+function setPages(key: string, held: HeldPages, state: Partial<Pick<EarlierComments, 'loading' | 'error'>> = {}): void {
+  earlierByKey.set(key, held);
+  const live = lives.get(key);
+  if (live) update(live, { earlier: { ...live.state.earlier, ...held, ...state } });
+}
+
+function replacePage(key: string, token: string, next: (page: CommentPage) => CommentPage): void {
+  const held = earlierByKey.get(key);
+  if (!held) return;
+  setPages(key, { ...held, pages: held.pages.map((p) => (p.token === token ? next(p) : p)) });
+}
+
+function dropPagesFrom(key: string, token: string, error: unknown): void {
+  const held = earlierByKey.get(key);
+  const at = held?.pages.findIndex((p) => p.token === token) ?? -1;
+  if (!held || at < 0) return;
+  setPages(key, { pages: held.pages.slice(0, at), next: token }, { error });
 }
 
 /** Has the ticket's computer read it from the tracker now, as the
@@ -324,23 +394,18 @@ export async function loadEarlierTrackerComments(key: string): Promise<void> {
   const live = lives.get(key);
   const detail = live?.state.detail;
   if (!live || !detail || live.state.earlier.loading) return;
-  const before = live.state.earlier;
-  const token = before.next ?? detail.more_comments ?? '';
+  const token = live.state.earlier.next ?? detail.more_comments ?? '';
   if (!token) return;
-  setEarlier(live, { ...before, loading: true, error: null });
+  update(live, { earlier: { ...live.state.earlier, loading: true, error: null } });
   try {
     const page = await withBackendTarget(live.ref.backend, () => TrackerComments(live.ref.connection, live.ref.issue, token));
     if (lives.get(key) !== live) return;
-    setEarlier(live, { comments: [...before.comments, ...(page.comments ?? [])], next: page.next ?? '', loading: false, error: null });
+    const held = earlierByKey.get(key) ?? { pages: [], next: null };
+    setPages(key, { pages: [...held.pages, { token, comments: page.comments ?? [] }], next: page.next ?? '' }, { loading: false, error: null });
   } catch (err) {
     if (lives.get(key) !== live) return;
-    setEarlier(live, { ...before, loading: false, error: err });
+    update(live, { earlier: { ...live.state.earlier, loading: false, error: err } });
   }
-}
-
-function setEarlier(live: Live, earlier: EarlierComments): void {
-  earlierByKey.set(live.key, earlier);
-  update(live, { earlier });
 }
 
 /** Whether the ticket's handle should read: a surface shows it and the

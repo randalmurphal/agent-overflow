@@ -43,6 +43,7 @@ import {
   onTrackerTicketClosed,
   refreshTrackerTicket,
   trackerTicketSettled,
+  type CommentChange,
   type TrackerTicketRef,
 } from './trackerTicket.svelte';
 import { lostWriteSentence, refusalSentence, writeOutcome, type WriteOutcome } from './trackerTicketModel';
@@ -119,6 +120,7 @@ async function write(
   target: string,
   send: (acceptLoss: boolean) => Promise<WriteView>,
   acceptLoss: boolean,
+  comment?: CommentChange,
 ): Promise<WriteOutcome | null> {
   const k = writeKey(t.key, target);
   if (writes.get(k)?.pending) return null;
@@ -132,7 +134,7 @@ async function write(
       ? { kind: 'lost', message: lostWriteSentence(computerName(t.ref.backend)) }
       : { kind: 'failed', error: err };
   }
-  if (outcome.kind === 'applied') await trackerTicketSettled(t.key);
+  if (outcome.kind === 'applied') await trackerTicketSettled(t.key, comment);
   // The ticket changed since it was read: read it again, so the person
   // sees what the tracker holds before trying again.
   if (outcome.kind === 'refused' && outcome.refusal.reason === 'stale') void refreshTrackerTicket(t.key);
@@ -144,7 +146,7 @@ async function write(
   }
   const plain = outcome.kind === 'applied' && outcome.note === null;
   if (plain) writes.delete(k);
-  else writes.set(k, { pending: false, outcome, saveAnyway: loss ? () => write(t, target, send, true) : null });
+  else writes.set(k, { pending: false, outcome, saveAnyway: loss ? () => write(t, target, send, true, comment) : null });
   return outcome;
 }
 
@@ -189,11 +191,11 @@ export function addTicketComment(t: TicketWriteContext, markdown: string): Promi
 
 /** Replaces a comment's body; `from` is the body it was edited from. */
 export function editTicketComment(t: TicketWriteContext, comment: string, markdown: string, from: string): Promise<WriteOutcome | null> {
-  return write(t, commentTarget(comment), (acceptLoss) => EditTrackerComment(t.ref.connection, { issue: t.ref.issue, comment, markdown, from, accept_loss: acceptLoss }), false);
+  return write(t, commentTarget(comment), (acceptLoss) => EditTrackerComment(t.ref.connection, { issue: t.ref.issue, comment, markdown, from, accept_loss: acceptLoss }), false, { id: comment, deleted: false });
 }
 
 export function deleteTicketComment(t: TicketWriteContext, comment: string): Promise<WriteOutcome | null> {
-  return write(t, commentTarget(comment), () => DeleteTrackerComment(t.ref.connection, { issue: t.ref.issue, comment }), false);
+  return write(t, commentTarget(comment), () => DeleteTrackerComment(t.ref.connection, { issue: t.ref.issue, comment }), false, { id: comment, deleted: true });
 }
 
 /** The people who may be assigned the ticket whose name starts with

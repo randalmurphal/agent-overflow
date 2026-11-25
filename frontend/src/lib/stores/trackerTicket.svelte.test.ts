@@ -243,20 +243,20 @@ describe('the ticket subscription', () => {
     const ticket = attachTrackerTicket(REF, true);
     await flush();
     await loadEarlierTrackerComments(ticket.key);
-    expect(ticket.current?.earlier.comments.map((c) => c.id)).toEqual(['8']);
+    expect(ticket.current?.earlier.pages.flatMap((p) => p.comments).map((c) => c.id)).toEqual(['8']);
     expect(ticket.current?.earlier.next).toBe('');
     __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
     __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
     await flush();
     expect(mocks.subscribe).toHaveBeenCalledTimes(2);
-    expect(ticket.current?.earlier.comments.map((c) => c.id)).toEqual(['8']);
+    expect(ticket.current?.earlier.pages.flatMap((p) => p.comments).map((c) => c.id)).toEqual(['8']);
     ticket.release();
 
     mocks.subscribe.mockRejectedValue(new TransportError('tracker_connection_off', 'this tracker connection is turned off'));
     const off = attachTrackerTicket(REF, true);
     await flush();
     expect(off.current?.ended).toBe(true);
-    expect(off.current?.earlier.comments).toEqual([]);
+    expect(off.current?.earlier.pages).toEqual([]);
     off.release();
   });
 });
