@@ -673,17 +673,40 @@ uses. With the limit at 1 KiB, a stored value of 2,000 bytes failed the
 statement with `SQLITE_TOOBIG` before any row was read. The aggregate
 checks the limit only on its finished result and grows without it while it
 collects: over 160 values of 400 bytes it read all 160 rows, about 65 KB
-of JSON, before it failed. An evaluator with a memory budget therefore
-counts bytes while the rows are collected. A Go function in the wrapper's
-`WHERE` does it inside the same first step:
+of JSON, before it failed.
+
+A cap on the encoded result's size counts, while the rows are collected,
+the bytes of each row's encoding as it enters the result, with the bracket
+or comma before it and the closing bracket, and evaluates each row once. A
+Go function in the wrapper's `WHERE`, such as
+`WHERE within_budget(octet_length(json_array(c1, ..., cn)))`, does neither:
+
+- `length()` counts characters. With `length()` in its place and a
+  2,048-byte budget, five rows of 400 emoji passed as an 8,026-byte result;
+  `octet_length()` failed the statement at the second row. Neither counts
+  the brackets and commas.
+- SQLite evaluated the agent's column once for the `WHERE` and again for
+  the aggregate. Over 20 rows of a function that
+  returned 1 and 1,000 bytes in turn, the function ran 40 times, the
+  `WHERE` was charged 100 bytes, and the result was 20,101 bytes.
+
+A Go aggregate in place of `json_group_array` does both:
 
 ```sql
-... FROM r WHERE within_budget(length(json_array(c1, ..., cn)))
+WITH r(c1, ..., cn) AS (<agent SQL>)
+SELECT bounded_rows(c1, ..., cn) FROM r
 ```
 
-where `within_budget` adds its argument to the statement's running total
-and returns an error once the total passes the budget. With a 2,048-byte
-budget over the same 160 rows, it stopped the statement at the sixth row.
+Its step receives the row's SQL values once, encodes them as a JSON array,
+and fails once the result so far, the separator, the row and the closing
+bracket would pass the budget. With a 2,048-byte budget it returned one
+emoji row as a 1,606-byte result and failed at the second row. Over the
+alternating function it evaluated each row once and failed at the sixth
+row, the first that would pass the budget. It is still one aggregate row,
+produced in the first step: a cancel from inside the agent SQL stopped it
+after 387, 653 and 682 of 12,000 rows, against 460, 1,496 and 1,246 for
+`json_group_array` in the same run. With the process held to one CPU, the
+cancel stopped neither form in 5 of 6 runs.
 
 `json_array` takes a BLOB as SQLite JSONB when the bytes parse as JSONB,
 and fails the statement otherwise ("JSON cannot hold BLOB values"). So
@@ -695,6 +718,10 @@ by SQL type, writing each column as
 a one-element array of its hex digits, which no text, number or `NULL`
 decodes to. An evaluator that rejects BLOBs instead fails on the first
 such array it decodes.
+
+The aggregate receives a BLOB as Go `[]byte` whatever its bytes hold, so it
+encodes BLOBs by SQL type without the `iif`: it wrote `x'00ff'` as
+`["00FF"]` and `jsonb('[1,2]')` as `["4B13311332"]`.
 
 ## Planning poker add-on
 
