@@ -41,6 +41,7 @@
   import TicketField, { type FieldEditor } from './TicketField.svelte';
   import TicketHistory from './TicketHistory.svelte';
   import TicketText from './TicketText.svelte';
+  import TicketWork from './TicketWork.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
   import TypeIcon from './TypeIcon.svelte';
   import TicketMoveForm from './TicketMoveForm.svelte';
@@ -368,6 +369,7 @@
       {/if}
     {/if}
   </div>
+  <TicketWork {attachment} {board} />
 {/snippet}
 
 {#snippet content()}

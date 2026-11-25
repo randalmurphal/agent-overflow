@@ -133,6 +133,8 @@ interface Live {
   /** A read failed: nothing is read until a recovery trigger. */
   retryHeld: boolean;
   running: Promise<void> | null;
+  /** The Refresh in flight, which a second Refresh waits on. */
+  refresh: Promise<TrackerRefreshNotice | null> | null;
   voted: boolean;
 }
 
@@ -184,7 +186,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
   const live: Live = {
     key, ref, id: '', seq: 0, joining: [], apply, aborted: false,
     state: { ...FIRST_STATE, earlier: { ...NO_EARLIER, pages: held?.pages ?? [], next: held?.next ?? null } },
-    dirty: false, retryHeld: false, running: null, voted: visibleOf(key),
+    dirty: false, retryHeld: false, running: null, refresh: null, voted: visibleOf(key),
   };
   lives.set(key, live);
   signal.addEventListener('abort', () => {
@@ -441,20 +443,30 @@ function dropPagesFrom(key: string, token: string, error: unknown): void {
   setPages(key, { pages: held.pages.slice(0, at), next: token }, { error });
 }
 
+/** A Refresh asked of a ticket whose subscription has not answered. */
+const NOT_SUBSCRIBED: TrackerRefreshNotice = { kind: 'not_run', message: 'The ticket is still opening on its computer; refresh it once it shows.' };
+
 /** Has the ticket's computer read it from the tracker now, as the
  * person's action; what the read finds arrives as an event. A failed read
- * of the view is run again with it. */
-export async function refreshTrackerTicket(key: string): Promise<void> {
+ * of the view is run again with it. Answers what the Refresh answered
+ * (null when it read), the one in flight when one is: once it resolves,
+ * `trackerTicketSettled` waits for the view the read published. */
+export function refreshTrackerTicket(key: string): Promise<TrackerRefreshNotice | null> {
   const live = lives.get(key);
-  if (!live?.id || live.state.refreshing) return;
-  update(live, { refreshing: true, refreshNotice: null });
-  const notice = await requestTrackerRefresh(live.ref.backend, live.id);
-  if (notice?.kind === 'failed' && isSubscriptionGone(notice.error)) store.invalidate(live.key);
-  if (lives.get(key) !== live) return;
-  live.retryHeld = false;
-  if (live.state.readError) live.dirty = true;
-  update(live, { refreshing: false, refreshNotice: notice });
-  void drain(live);
+  if (!live?.id) return Promise.resolve(NOT_SUBSCRIBED);
+  live.refresh ??= (async () => {
+    update(live, { refreshing: true, refreshNotice: null });
+    const notice = await requestTrackerRefresh(live.ref.backend, live.id);
+    live.refresh = null;
+    if (notice?.kind === 'failed' && isSubscriptionGone(notice.error)) store.invalidate(live.key);
+    if (lives.get(key) !== live) return notice;
+    live.retryHeld = false;
+    if (live.state.readError) live.dirty = true;
+    update(live, { refreshing: false, refreshNotice: notice });
+    void drain(live);
+    return notice;
+  })();
+  return live.refresh;
 }
 
 /** Drops what a Refresh answered. */

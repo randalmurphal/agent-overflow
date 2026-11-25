@@ -10463,13 +10463,7 @@ export class TicketPullRequest {
  * name or title names the ticket's key (trackerapp.TicketKeys).
  */
 export class TicketWork {
-    /**
-     * Key is the ticket's key; Kind and Site name its tracker site as a
-     * thread's link names it, so the client finds the ticket's threads.
-     */
     "key": string;
-    "kind": string;
-    "site": string;
     "pullRequests": TicketPullRequest[];
     "branches": TicketBranch[];
 
@@ -10483,12 +10477,6 @@ export class TicketWork {
     constructor($$source: Partial<TicketWork> = {}) {
         if (!("key" in $$source)) {
             this["key"] = "";
-        }
-        if (!("kind" in $$source)) {
-            this["kind"] = "";
-        }
-        if (!("site" in $$source)) {
-            this["site"] = "";
         }
         if (!("pullRequests" in $$source)) {
             this["pullRequests"] = [];
@@ -10507,18 +10495,18 @@ export class TicketWork {
      * Creates a new TicketWork instance from a string or object.
      */
     static createFrom($$source: any = {}): TicketWork {
-        const $$createField3_0 = $$createType205;
-        const $$createField4_0 = $$createType207;
-        const $$createField5_0 = $$createType209;
+        const $$createField1_0 = $$createType205;
+        const $$createField2_0 = $$createType207;
+        const $$createField3_0 = $$createType209;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pullRequests" in $$parsedSource) {
-            $$parsedSource["pullRequests"] = $$createField3_0($$parsedSource["pullRequests"]);
+            $$parsedSource["pullRequests"] = $$createField1_0($$parsedSource["pullRequests"]);
         }
         if ("branches" in $$parsedSource) {
-            $$parsedSource["branches"] = $$createField4_0($$parsedSource["branches"]);
+            $$parsedSource["branches"] = $$createField2_0($$parsedSource["branches"]);
         }
         if ("problems" in $$parsedSource) {
-            $$parsedSource["problems"] = $$createField5_0($$parsedSource["problems"]);
+            $$parsedSource["problems"] = $$createField3_0($$parsedSource["problems"]);
         }
         return new TicketWork($$parsedSource as Partial<TicketWork>);
     }

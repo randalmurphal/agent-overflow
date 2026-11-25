@@ -25,3 +25,13 @@ export function ticketBranchName(template: string, key: string, title: string): 
   const name = (template || DEFAULT_BRANCH_TEMPLATE).replaceAll('{key}', key).replaceAll('{title}', titleSlug(title));
   return name.replace(/-{2,}/g, '-').replace(/^-+|-+$/g, '');
 }
+
+/** The template a branch name the person wrote for the ticket stands for:
+ * the ticket's title made a branch name is `{title}` and its key `{key}`.
+ * Null when the name does not hold the key, which would name every
+ * ticket's branch the same. */
+export function branchTemplateOf(name: string, key: string, title: string): string | null {
+  const slug = titleSlug(title);
+  const template = (slug ? name.replace(slug, '{title}') : name).replace(key, '{key}');
+  return template.includes('{key}') ? template : null;
+}

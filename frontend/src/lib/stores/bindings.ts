@@ -653,9 +653,11 @@ export {
   ClearThreadTicket,
   SetThreadTicket,
   // A ticket's Work: its pull requests and branches, and the threads of
-  // its Ask and Start work (stores/ticketWork.svelte.ts).
+  // its Ask and Start work, and the project's setup file that holds the
+  // Start work defaults (stores/ticketWork.svelte.ts).
   GetTicketWork,
-  StartTicketThread,
+  ProjectTrackerSetup,
+  SetProjectTrackerSetup,
   // A person's logged time and its writes (stores/trackerTime.svelte.ts,
   // stores/trackerTimeWrites.svelte.ts).
   TrackerWorklogs,
@@ -907,6 +909,7 @@ import {
   GetThreadDefaults as GetThreadDefaultsRaw,
   SendMessageWithOptions as SendMessageWithOptionsRaw,
   StartTerminal as StartTerminalRaw,
+  StartTicketThread as StartTicketThreadRaw,
   UpdateNewThreadDefaults as UpdateNewThreadDefaultsRaw,
 } from '../../../bindings/agent-overflow/app.js';
 import {
@@ -915,6 +918,7 @@ import {
   NewThreadDefaultsUpdate as NewThreadDefaultsUpdateClass,
   SendMessageOptions as SendMessageOptionsClass,
   StartTerminalOptions as StartTerminalOptionsClass,
+  StartTicketThreadRequest as StartTicketThreadRequestClass,
 } from '../../../bindings/agent-overflow/internal/app/models.js';
 import type { SourceDiffReview, SourceProposedPlan, Thread } from '../types/models';
 import type { DraftSnapshot } from '../types/draft';
@@ -963,6 +967,15 @@ export function UpdateNewThreadDefaults(
 
 export function CreateThread(opts: CreateThreadOptions): Promise<Thread> {
   return CreateThreadRaw(new CreateThreadOptionsClass(opts)) as unknown as Promise<Thread>;
+}
+
+/** The thread of a ticket's Ask or Start work (stores/ticketWork.svelte.ts):
+ * its row, as CreateThread answers one. */
+export function StartTicketThread(
+  projectId: string,
+  req: { connectionId: string; issueId: string; origin: 'ask' | 'start_work'; branch?: string },
+): Promise<Thread> {
+  return StartTicketThreadRaw(projectId, new StartTicketThreadRequestClass(req)) as unknown as Promise<Thread>;
 }
 
 export function MoveDraftToThread(threadId: string, destinationThreadId: string, snapshot: DraftSnapshot) {

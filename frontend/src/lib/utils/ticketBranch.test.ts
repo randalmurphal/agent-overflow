@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { ticketBranchName, titleSlug } from './ticketBranch';
+import { branchTemplateOf, ticketBranchName, titleSlug } from './ticketBranch';
+
+describe('branchTemplateOf', () => {
+  it('gives back the template a branch name of the ticket stands for', () => {
+    expect(branchTemplateOf('feature/WEB-1-retry-cursor', 'WEB-1', 'Retry cursor')).toBe('feature/{key}-{title}');
+    expect(branchTemplateOf('WEB-1', 'WEB-1', 'Retry cursor')).toBe('{key}');
+    expect(branchTemplateOf(ticketBranchName('', 'WEB-1', 'Retry cursor'), 'WEB-1', 'Retry cursor')).toBe('{key}-{title}');
+  });
+
+  it('refuses a name that does not hold the key', () => {
+    expect(branchTemplateOf('fix-retry-cursor', 'WEB-1', 'Retry cursor')).toBeNull();
+  });
+});
 
 describe('ticketBranchName', () => {
   it('names the branch by the default template, the key as spelled and the title made a branch name', () => {
