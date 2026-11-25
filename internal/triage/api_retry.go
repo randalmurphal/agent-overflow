@@ -120,19 +120,27 @@ func (r *Router) handleAPIRetry(evt provider.ProviderEvent) error {
 
 func (r *Router) markOpenAPIRetryRow(threadID string) {
 	r.mu.Lock()
-	r.state(threadID).openAPIRetryRow = true
+	st := r.state(threadID)
+	if !st.openAPIRetryRow {
+		st.openAPIRetryRow = true
+		r.openAPIRetryCount.Add(1)
+	}
 	r.mu.Unlock()
 }
 
 func (r *Router) clearOpenAPIRetryRow(threadID string) {
 	r.mu.Lock()
-	if st := r.threadStateIfPresent(threadID); st != nil {
+	if st := r.threadStateIfPresent(threadID); st != nil && st.openAPIRetryRow {
 		st.openAPIRetryRow = false
+		r.openAPIRetryCount.Add(-1)
 	}
 	r.mu.Unlock()
 }
 
 func (r *Router) hasOpenAPIRetryRow(threadID string) bool {
+	if r.openAPIRetryCount.Load() == 0 {
+		return false
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := r.threadStateIfPresent(threadID)

@@ -22,6 +22,7 @@
 // evicted (LRU pressure, same-thread reload) re-requests instead of
 // staying plain.
 
+import { SvelteMap } from 'svelte/reactivity';
 import {
   HighlightEditPatchWithContext,
   HighlightPatch,
@@ -32,7 +33,7 @@ import { withHighlightBackend, withHighlightService } from './highlightService';
 import { projectBackend, threadBackend } from '../transport/entityIndex';
 import { requireEntityBackend } from '../transport/backends';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
-import { contentKey } from './fnv1a';
+import { appendFNV1a32, FNV_OFFSET_BASIS_32, formatContentKey } from './fnv1a';
 import { workspaceKeyForRef } from './workspaceKey';
 import type { WorkspaceRef } from '../types/git';
 import type { PatchFile, PatchLine } from './patchFiles';
@@ -162,10 +163,40 @@ function evictEpoch(threadId: string): number {
   return threadEvictEpochs.get(threadId) ?? 0;
 }
 
-// Bumped when spans land or entries are evicted. Renderers depend on
-// it via getSpansForLine; request effects depend on it via
-// diffSpanCacheGeneration.
+// Bumped when spans land or entries are evicted. Request effects depend on
+// it via diffSpanCacheGeneration; per-line renderers subscribe to their file's
+// base key via `baseGenerations` so one file landing does not re-evaluate
+// every other mounted diff file's lines.
 let generation = $state(0);
+let resetGeneration = $state(0);
+let nextBaseVersion = 0;
+const baseGenerations = new SvelteMap<string, number>();
+const baseEntryCounts = new Map<string, number>();
+
+function baseKeyOf(key: string): string {
+  const nul = key.indexOf('\0');
+  return nul === -1 ? key : key.slice(0, nul);
+}
+
+function recordBaseInsert(key: string, hadPrior: boolean): void {
+  const base = baseKeyOf(key);
+  if (!hadPrior) {
+    baseEntryCounts.set(base, (baseEntryCounts.get(base) ?? 0) + 1);
+  }
+  baseGenerations.set(base, ++nextBaseVersion);
+}
+
+function recordBaseDelete(key: string): void {
+  const base = baseKeyOf(key);
+  const nextCount = (baseEntryCounts.get(base) ?? 1) - 1;
+  if (nextCount <= 0) {
+    baseEntryCounts.delete(base);
+    baseGenerations.delete(base);
+  } else {
+    baseEntryCounts.set(base, nextCount);
+    baseGenerations.set(base, ++nextBaseVersion);
+  }
+}
 
 /** Reactive read for the request effects: an eviction bumps this, so
  * a mounted consumer re-runs and re-requests its file's spans. */
@@ -192,12 +223,22 @@ function patchTextOf(file: PatchFile): string {
 function ensureFileKey(file: PatchFile): string {
   let key = fileKeys.get(file.lines);
   if (key !== undefined) return key;
-  key = `${file.path} ${contentKey(patchTextOf(file))}`;
-  fileKeys.set(file.lines, key);
+  let hash = FNV_OFFSET_BASIS_32;
+  let length = 0;
   const index = new Map<PatchLine, number>();
   for (let i = 0; i < file.lines.length; i += 1) {
-    index.set(file.lines[i], i);
+    if (i > 0) {
+      hash = appendFNV1a32(hash, '\n');
+      length += 1;
+    }
+    const line = file.lines[i];
+    index.set(line, i);
+    const text = line.type === 'marker' || line.fold !== undefined ? '\\ marker' : line.content;
+    hash = appendFNV1a32(hash, text);
+    length += text.length;
   }
+  key = `${file.path} ${formatContentKey(hash, length)}`;
+  fileKeys.set(file.lines, key);
   lineIndexes.set(file.lines, index);
   return key;
 }
@@ -259,6 +300,7 @@ function insert(key: string, spans: EncodedLine[], incomplete: boolean, primed: 
     ...(incomplete ? { incompleteAt: Date.now() } : {}),
   });
   totalBytes += bytes;
+  recordBaseInsert(key, prior !== undefined);
   if (totalBytes > DIFF_SPAN_CACHE_MAX_BYTES) {
     for (const [candidate, entry] of entries) {
       if (totalBytes <= DIFF_SPAN_CACHE_MAX_BYTES) break;
@@ -269,6 +311,7 @@ function insert(key: string, spans: EncodedLine[], incomplete: boolean, primed: 
       entries.delete(candidate);
       keyThreads.delete(candidate);
       totalBytes -= entry.bytes;
+      recordBaseDelete(candidate);
     }
   }
   generation += 1;
@@ -726,14 +769,16 @@ export function getSpansForLine(
   context?: PatchScopeContext | null,
   painted?: PaintedSpans | null,
 ): EncodedLine | null {
-  void generation;
+  void resetGeneration;
   // Register the array's key and line index synchronously (memoized
   // per array identity): a rebuilt array whose content key already has
   // a landed entry — reload followed by the same expansion — must
   // paint its spans on the FIRST render. The request effect runs after
   // render and its cache hit does not bump the generation, so there is
   // no later repaint to fix a miss here.
-  const direct = entryForKey(ensureFileKey(file), context);
+  const base = ensureFileKey(file);
+  void baseGenerations.get(base);
+  const direct = entryForKey(base, context);
   if (direct) {
     const index = lineIndexes.get(file.lines)?.get(line);
     const span = index === undefined ? null : (direct.spans[index] ?? null);
@@ -754,18 +799,22 @@ export function getSpansForReviewLine(
   context?: PatchScopeContext | null,
   painted?: PaintedSpans | null,
 ): EncodedLine | null {
-  void generation;
+  void resetGeneration;
   const body = file.body;
   // A body with evicted text has no key until it is read again; the span
   // request that reads it bumps the generation when its answer lands.
   const key = body.textSize <= HIGHLIGHT_MAX_PATCH_CHARS ? body.contentKey() : null;
   if (key !== null) {
-    const direct = entryForKey(`${file.path} ${key}`, context);
+    const base = `${file.path} ${key}`;
+    void baseGenerations.get(base);
+    const direct = entryForKey(base, context);
     if (direct) {
       const span = direct.spans[lineIndex] ?? null;
       painted?.note(file.path, line, span);
       return span;
     }
+  } else {
+    void generation;
   }
   return painted?.lookup(file.path, line) ?? null;
 }
@@ -837,6 +886,7 @@ export function evictDiffSpansForThread(threadId: string): void {
     if (entry) {
       entries.delete(key);
       totalBytes -= entry.bytes;
+      recordBaseDelete(key);
       removed = true;
     }
     if (inFlight.delete(key)) {
@@ -858,9 +908,12 @@ export function resetDiffSpanCacheForTest(): void {
   warnedExtensions.clear();
   threadEvictEpochs.clear();
   pendingIngestThreads.clear();
+  baseGenerations.clear();
+  baseEntryCounts.clear();
   ingestGeneration += 1;
   totalBytes = 0;
   generation = 0;
+  resetGeneration += 1;
 }
 
 /** Test-only inspection. */

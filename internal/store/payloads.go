@@ -319,7 +319,7 @@ func (s *Store) AppendPayloadData(threadID, id string, delta []byte, meta string
 	}
 	defer tx.Rollback()
 
-	if err := appendPayloadDataTx(tx, threadID, id, delta, meta, createdAt); err != nil {
+	if err := appendPayloadDataTx(tx, threadID, id, delta, meta, true, createdAt); err != nil {
 		return err
 	}
 	if err := bumpHistoryRevForPayloadTx(tx, threadID, id, fmt.Sprintf("store: append payload data %s", id)); err != nil {
@@ -333,16 +333,31 @@ func (s *Store) AppendPayloadData(threadID, id string, delta []byte, meta string
 
 // appendPayloadDataTx is AppendPayloadData's body inside a caller-owned
 // transaction, shared with the combined streaming-flush writers so one
-// flush window costs one transaction instead of two.
-func appendPayloadDataTx(tx *sql.Tx, threadID, id string, delta []byte, meta string, createdAt int64) error {
+// flush window costs one transaction instead of two. When updateMeta is
+// false, the payloads row updates only created_at, skipping the
+// data/meta update triggers (trg_payloads_find_text_update and
+// trg_payloads_shown_update) while trg_payload_chunks_find_text keeps
+// find_text current in O(delta).
+func appendPayloadDataTx(tx *sql.Tx, threadID, id string, delta []byte, meta string, updateMeta bool, createdAt int64) error {
 	label := fmt.Sprintf("store: append payload data %s", id)
 	if err := requireMutablePayloadTx(tx, threadID, id, label); err != nil {
 		return err
 	}
-	result, err := tx.Exec(
-		`UPDATE payloads SET meta = ?, created_at = ? WHERE thread_id = ? AND id = ?`,
-		meta, createdAt, threadID, id,
+	var (
+		result sql.Result
+		err    error
 	)
+	if updateMeta {
+		result, err = tx.Exec(
+			`UPDATE payloads SET meta = ?, created_at = ? WHERE thread_id = ? AND id = ?`,
+			meta, createdAt, threadID, id,
+		)
+	} else {
+		result, err = tx.Exec(
+			`UPDATE payloads SET created_at = ? WHERE thread_id = ? AND id = ?`,
+			createdAt, threadID, id,
+		)
+	}
 	if err != nil {
 		return fmt.Errorf("%s: %w", label, err)
 	}

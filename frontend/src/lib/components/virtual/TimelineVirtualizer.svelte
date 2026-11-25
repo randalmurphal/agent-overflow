@@ -256,6 +256,7 @@
   // applier seam had, which the resolver tiers were calibrated against.
   let pendingCompensation: EngineCompensation | null = null;
   let deliveredGeometryVersion = -1;
+  let deliveredContentGeometryTrigger = -1;
   let deliveredDataSnapshot: object | null = null;
   let appliedIntrinsicViewportLimitCss: string | undefined;
 
@@ -322,11 +323,14 @@
     }
     const currentGeometryVersion = geometryVersion;
     const currentData = reconciledData;
-    void contentGeometryTrigger;
+    const currentContentGeometryTrigger = contentGeometryTrigger;
     const geometryChanged = currentGeometryVersion !== deliveredGeometryVersion;
     const dataChanged = currentData !== deliveredDataSnapshot;
+    const contentGeometryTriggerChanged =
+      currentContentGeometryTrigger !== deliveredContentGeometryTrigger;
     deliveredGeometryVersion = currentGeometryVersion;
     deliveredDataSnapshot = currentData;
+    deliveredContentGeometryTrigger = currentContentGeometryTrigger;
     const compensation = pendingCompensation;
     pendingCompensation = null;
     untrack(() => {
@@ -343,7 +347,10 @@
       }
       convergeIndexScroll();
       const spliceCorrected = correctHeadSpliceAnchor();
-      maybeDeliverContentGeometry();
+      const structuralChange = dataChanged && currentData.mutation.kind !== 'unchanged';
+      if (geometryChanged || structuralChange || contentGeometryTriggerChanged) {
+        maybeDeliverContentGeometry();
+      }
       reportNonFiniteGeometry();
       if (measurementBarrier.active && (engine.getItemCount() === 0 || windowFullyMeasured())) {
         measurementBarrier.commit();
@@ -358,7 +365,6 @@
       // delta. Refreshing here would sample the already-grown DOM and erase
       // the shift. Geometry updates run this effect again after measurement;
       // structural key changes need a fresh anchor immediately.
-      const structuralChange = dataChanged && currentData.mutation.kind !== 'unchanged';
       if (geometryChanged || structuralChange) {
         const consumed = straddleShiftConsumed;
         straddleShiftConsumed = false;
@@ -496,25 +502,20 @@
     void geometryVersion;
     const current = reconciledData;
     const currentData = current.items;
+    const currentKeys = current.keys;
     const windowRange = engine.getWindow();
     const [start, end] = windowRange;
+    const firstIndex = Math.max(0, start);
     const lastIndex = Math.min(end, currentData.length - 1);
-    const rows: RenderRow[] = [];
-    const globalRows: GlobalPlaneRow<unknown>[] = [];
-    for (let index = Math.max(0, start); index <= lastIndex; index++) {
-      const key = reconciledData.keys[index];
-      const globalOffset = engine.getItemOffset(index);
-      globalRows.push({ key, offset: globalOffset, size: engine.sizeAt(index) });
-      rows.push({
-        item: currentData[index],
-        key,
-        index,
-        offset: globalOffset,
-        measured: engine.isMeasuredAt(index),
-        // Exact rows never attach a ResizeObserver — their estimate IS the
-        // rendered height (RowEstimate.isExact contract).
-        observe: !(engineEstimate.isExact?.(index) ?? false),
-      });
+    const rowCount = lastIndex >= firstIndex ? lastIndex - firstIndex + 1 : 0;
+    const globalRows: GlobalPlaneRow<unknown>[] = new Array(rowCount);
+    for (let i = 0; i < rowCount; i++) {
+      const index = firstIndex + i;
+      globalRows[i] = {
+        key: currentKeys[index],
+        offset: engine.getItemOffset(index),
+        size: engine.sizeAt(index),
+      };
     }
     const newDataSnapshot = current !== planeDataSnapshot;
     planeDataSnapshot = current;
@@ -524,32 +525,35 @@
       newDataSnapshot && (current.mutation.kind === 'head' || current.mutation.kind === 'keyed'),
     );
     planeState = plane;
-    // An unchanged row keeps its previous OBJECT, not just its values. This
-    // derived re-runs on every reveal tick and every geometry bump, and the
-    // keyed each writes each row into a per-key signal — a fresh object
-    // there reads as a change, so every mounted row re-ran its wrapper
-    // effects (position style, setRowIndex) and re-validated its snippet on
-    // every streamed chunk, O(window) per tick with almost every value
-    // identical (2026-08-26, the 165Hz frame-drop attribution — same
-    // identity-churn class as the projection node caches). Reused objects
-    // are never mutated: a candidate replaces the cached row unless EVERY
-    // field matches.
+    // An unchanged row keeps its previous OBJECT, not just its values. Check
+    // against `rowReuse` before allocating a new RenderRow so steady-state
+    // streaming ticks allocate zero descriptor objects for unchanged rows.
+    const rows: RenderRow[] = new Array(rowCount);
     const reused = new Map<unknown, RenderRow>();
-    for (let i = 0; i < rows.length; i++) {
-      const candidate = rows[i];
-      candidate.offset = plane.localOffsets.get(candidate.key) ?? 0;
-      const previous = rowReuse.get(candidate.key);
+    const isExact = engineEstimate.isExact;
+    for (let i = 0; i < rowCount; i++) {
+      const index = firstIndex + i;
+      const key = currentKeys[index];
+      const item = currentData[index];
+      const offset = plane.localOffsets.get(key) ?? 0;
+      const measured = engine.isMeasuredAt(index);
+      const observe = !(isExact?.(index) ?? false);
+      const previous = rowReuse.get(key);
+      let row: RenderRow;
       if (
         previous &&
-        previous.item === candidate.item &&
-        previous.index === candidate.index &&
-        previous.offset === candidate.offset &&
-        previous.measured === candidate.measured &&
-        previous.observe === candidate.observe
+        previous.item === item &&
+        previous.index === index &&
+        previous.offset === offset &&
+        previous.measured === measured &&
+        previous.observe === observe
       ) {
-        rows[i] = previous;
+        row = previous;
+      } else {
+        row = { item, key, index, offset, measured, observe };
       }
-      reused.set(candidate.key, rows[i]);
+      rows[i] = row;
+      reused.set(key, row);
     }
     rowReuse = reused;
     return { rows, plane: plane.geometry };
@@ -569,16 +573,26 @@
   // changes stay on the applyLength path (its head-splice compensation
   // kind is load-bearing for load-older); anything else remaps measured
   // sizes by row identity.
-  function keysFor(items: readonly T[]): unknown[] {
-    const keys = items.map((item, index) => getKey(item, index));
-    const unique = new Set(keys);
-    if (unique.size !== keys.length) {
-      throw new Error('TimelineVirtualizer requires a unique key for every row');
+  const UNCHANGED_KEY_MUTATION = { kind: 'unchanged' } as const;
+  const TAIL_APPEND_KEY_MUTATION = { kind: 'tail', headSplice: false } as const;
+
+  function keysFor(items: readonly T[]): { keys: unknown[]; unique: Set<unknown> } {
+    const keys = new Array<unknown>(items.length);
+    const unique = new Set<unknown>();
+    for (let index = 0; index < items.length; index++) {
+      const key = getKey(items[index], index);
+      if (unique.has(key)) {
+        throw new Error('TimelineVirtualizer requires a unique key for every row');
+      }
+      unique.add(key);
+      keys[index] = key;
     }
-    return keys;
+    return { keys, unique };
   }
 
-  let prevKeys: readonly unknown[] = untrack(() => keysFor(data));
+  const initialKeys = untrack(() => keysFor(data));
+  let prevKeys: readonly unknown[] = initialKeys.keys;
+  let prevKeySet: Set<unknown> = initialKeys.unique;
 
   // This reconciliation is a render dependency, not an effect. An effect.pre
   // still lets Svelte derive one intermediate template from NEW data and the
@@ -595,9 +609,53 @@
   let latestReconciledData: object | null = null;
   const reconciledData = $derived.by(() => {
     const items = data;
-    const nextKeys = keysFor(data);
     const prev = prevKeys;
+    const prevLen = prev.length;
+    const nextLen = items.length;
+
+    // Fast path for the two dominant streaming shapes (unchanged key sequence
+    // and pure tail append): `prev` is already verified unique, so matching
+    // its prefix skips rebuilding a full key array and full uniqueness Set on
+    // every reveal beat.
+    if (nextLen >= prevLen) {
+      let prefixMatches = true;
+      for (let i = 0; i < prevLen; i++) {
+        if (getKey(items[i], i) !== prev[i]) {
+          prefixMatches = false;
+          break;
+        }
+      }
+      if (prefixMatches) {
+        if (nextLen === prevLen) {
+          const next = { items, keys: prev, mutation: UNCHANGED_KEY_MUTATION };
+          latestReconciledData = next;
+          return next;
+        }
+        const nextKeys = prev.slice();
+        const added = nextLen - prevLen === 1 ? null : new Set<unknown>();
+        for (let i = prevLen; i < nextLen; i++) {
+          const key = getKey(items[i], i);
+          if (prevKeySet.has(key) || added?.has(key)) {
+            throw new Error('TimelineVirtualizer requires a unique key for every row');
+          }
+          added?.add(key);
+          nextKeys.push(key);
+        }
+        for (let i = prevLen; i < nextLen; i++) {
+          prevKeySet.add(nextKeys[i]);
+        }
+        prevKeys = nextKeys;
+        queueUpdate(engine.applyLength(nextLen, 0));
+        const next = { items, keys: nextKeys, mutation: TAIL_APPEND_KEY_MUTATION };
+        latestReconciledData = next;
+        return next;
+      }
+    }
+
+    const built = keysFor(items);
+    const nextKeys = built.keys;
     prevKeys = nextKeys;
+    prevKeySet = built.unique;
     const mutation = classifyKeyedSequenceMutation(prev, nextKeys);
     switch (mutation.kind) {
       case 'unchanged':
@@ -1255,15 +1313,20 @@
     cancelIndexScrollSettle(pending);
     pending.settleTimer = setTimeout(() => {
       pending.settleTimer = undefined;
+      if (pendingIndexScroll !== pending) return;
       let frames = 0;
       const frame = () => {
+        if (pendingIndexScroll !== pending) {
+          pending.settleFrame = undefined;
+          return;
+        }
         frames++;
         if (frames < INDEX_SCROLL_SETTLE_FRAMES) {
           pending.settleFrame = requestAnimationFrame(frame);
           return;
         }
         pending.settleFrame = undefined;
-        if (pendingIndexScroll === pending) clearIndexScroll();
+        clearIndexScroll();
       };
       pending.settleFrame = requestAnimationFrame(frame);
     }, INDEX_SCROLL_SETTLE_MS);

@@ -84,6 +84,18 @@ type ItemStreamEvent struct {
 	UpdatedAt int64       `json:"updatedAt,omitempty"`
 }
 
+func (e ItemStreamEvent) EventThreadID() string { return e.ThreadID }
+
+func (e ItemStreamEvent) EventScopeRootID() string {
+	if e.ParentID != "" {
+		return e.ParentID
+	}
+	if e.Item != nil {
+		return e.Item.ParentID
+	}
+	return ""
+}
+
 // NewItemStreamUpsert is the single constructor every
 // item-upsert emit site goes through, which is why the wire projection
 // sits here rather than at the eleven call sites: a new emitter cannot

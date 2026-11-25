@@ -111,9 +111,9 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
   let refusalLatchedAt = 0;
   let lastRefusalRetryAt = 0;
 
-  function witnessClampIfUnexplained(): boolean {
+  function witnessClampIfUnexplained(readFree = false): boolean {
     if (sentinelEntryTarget < 0) return false;
-    if (!sentinelClampWitnessed && deps.scrollTopUnexplained()) {
+    if (!sentinelClampWitnessed && deps.scrollTopUnexplained(readFree)) {
       sentinelClampWitnessed = true;
     }
     return sentinelClampWitnessed;
@@ -480,7 +480,10 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       if (current !== target && !deps.arrival.matches(target)) {
         if (
           sentinelEntryTarget >= 0
-          && withinArrivalBand(target, rebasedSentinelEntryTarget(el.clientHeight))
+          && withinArrivalBand(
+            target,
+            rebasedSentinelEntryTarget(deps.currentClientHeight ? deps.currentClientHeight(false) : el.clientHeight),
+          )
           && witnessClampIfUnexplained()
         ) {
           snapOscillationToBottom('spring.oscillationSnap', target);
@@ -535,7 +538,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
           if (chaseTelemetry) chaseTelemetry.sentinelTicks += 1;
           if (sentinelEntryTarget < 0) {
             sentinelEntryTarget = target;
-            sentinelEntryClientHeight = el.clientHeight;
+            sentinelEntryClientHeight = deps.currentClientHeight ? deps.currentClientHeight(false) : el.clientHeight;
             sentinelClampWitnessed = false;
             if (chaseTelemetry) chaseTelemetry.sentinelEntries += 1;
           }
@@ -579,13 +582,16 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       structuralAppendSpringUntil = 0;
       springStartedFromStructuralAppend = false;
     },
-    sentinelTarget: () => {
+    sentinelTarget: (readFree = false) => {
       if (sentinelEntryTarget < 0) return -1;
       const el = deps.getScrollEl();
       if (!el) return sentinelEntryTarget;
-      return rebasedSentinelEntryTarget(el.clientHeight);
+      const clientHeight = deps.currentClientHeight
+        ? deps.currentClientHeight(!readFree)
+        : el.clientHeight;
+      return rebasedSentinelEntryTarget(clientHeight);
     },
-    sentinelClampWitnessed: () => witnessClampIfUnexplained(),
+    sentinelClampWitnessed: (readFree = false) => witnessClampIfUnexplained(readFree),
     refusalLatched: () => writeRefusalLatched,
   };
 }

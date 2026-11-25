@@ -21,6 +21,7 @@
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { RegenerateThreadTitle } from './bindings';
 import { findPaneShowingThread } from './panes.svelte';
+import { addThreadRemovedObserver } from './threads.svelte';
 import { onTransportStatusChange } from './transportStatus.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import { errString } from '../utils/errors';
@@ -38,10 +39,24 @@ const pending = createKeyedSignalRegistry<boolean>(false);
 // key enumeration (and its reset() is test-only), and the reconnect sweep
 // below needs to release exactly the flags that are up.
 const awaited = new Set<string>();
+let threadRemovalObserverInstalled = false;
+
+function ensureThreadRemovalObserver(): void {
+  if (threadRemovalObserverInstalled) return;
+  threadRemovalObserverInstalled = true;
+  addThreadRemovedObserver((threadId) => {
+    awaited.delete(threadId);
+    pending.drop(threadId);
+  });
+}
 
 function setPending(threadId: string, value: boolean): void {
-  if (value) awaited.add(threadId);
-  else awaited.delete(threadId);
+  if (value) {
+    ensureThreadRemovalObserver();
+    awaited.add(threadId);
+  } else {
+    awaited.delete(threadId);
+  }
   pending.set(threadId, value);
 }
 

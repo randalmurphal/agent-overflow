@@ -122,8 +122,20 @@
   }
 
   function sample(sampleTarget = target): void {
-    if (sampleTarget) metrics = readScrollMetrics(sampleTarget);
-    if (trackEl) trackPx = trackEl.clientHeight;
+    if (sampleTarget) {
+      const next = readScrollMetrics(sampleTarget);
+      if (
+        next.scrollTop !== metrics.scrollTop
+        || next.scrollHeight !== metrics.scrollHeight
+        || next.clientHeight !== metrics.clientHeight
+      ) {
+        metrics = next;
+      }
+    }
+    if (trackEl) {
+      const nextTrackPx = trackEl.clientHeight;
+      if (nextTrackPx !== trackPx) trackPx = nextTrackPx;
+    }
   }
 
   function isAtBottom(value: ScrollMetrics): boolean {
@@ -252,9 +264,11 @@
     // layout, unlike a requestAnimationFrame geometry read, which would force
     // layout before paint. Hidden bars skip every later sample; interaction
     // paths sample before they read.
+    let disposed = false;
     let sampledGeometry = false;
     let mountFallback: ResizeObserver | undefined;
     const unsubscribeContentGeometry = contentGeometry.subscribe((scrollable) => {
+      if (disposed) return;
       if (!sampledGeometry || recentlyActive || dragging) {
         sampledGeometry = true;
         mountFallback?.disconnect();
@@ -269,7 +283,7 @@
       }
     });
     const initialSampleFrame = requestAnimationFrame(() => {
-      if (sampledGeometry) return;
+      if (disposed || sampledGeometry) return;
       const fallbackTarget = trackEl;
       if (!fallbackTarget) {
         throw new Error('OverlayScrollbar mount fallback requires its track element');
@@ -277,13 +291,14 @@
       mountFallback = new ResizeObserver(() => {
         mountFallback?.disconnect();
         mountFallback = undefined;
-        if (sampledGeometry) return;
+        if (disposed || sampledGeometry) return;
         sampledGeometry = true;
         sample();
       });
       mountFallback.observe(fallbackTarget);
     });
     return () => {
+      disposed = true;
       el.removeEventListener('scroll', onScroll);
       unsubscribeContentGeometry();
       cancelAnimationFrame(initialSampleFrame);

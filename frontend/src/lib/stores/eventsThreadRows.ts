@@ -360,7 +360,7 @@ export function patchThreadDurableStatus(
   // through any component that reads `pane.thread` directly. The durable
   // plan flag's other writer is the backend, which sends the whole row on
   // `thread:updated` whenever a proposed-plan write moves it.
-  const existing = getThreads().find((thread) => thread.id === threadId);
+  const existing = getThreadById(threadId);
   if (existing && !patchMatchesThread(existing, patch)) {
     replaceThread({ ...existing, ...patch });
   }
@@ -368,6 +368,52 @@ export function patchThreadDurableStatus(
     if (pane.threadId !== threadId || !pane.thread) continue;
     if (patchMatchesThread(pane.thread, patch)) continue;
     pane.replaceThread({ ...pane.thread, ...patch });
+  }
+}
+
+/**
+ * Coalesce the three turn-completion row writes (durable status flags,
+ * persisted context-window usage snapshot, and latestTurnCompletedAt) into a
+ * single registry + pane replacement per completed turn.
+ */
+export function applyTurnCompletedThreadUpdate(
+  evt: TurnCompletedEvent,
+  durablePatch: Pick<Partial<Thread>, 'hasActionableProposedPlan' | 'hasIncompleteTurn' | 'hasFailedTurn'>,
+  usageSnapshot: string | undefined,
+): void {
+  const threadId = evt.threadId;
+  const known = getThreadById(threadId);
+  const countsAsActivity = evt.countsAsActivity !== false && Number.isFinite(evt.completedAt);
+  const needsCompletionBump = countsAsActivity
+    && !(known && (known.latestTurnCompletedAt ?? Number.NEGATIVE_INFINITY) >= evt.completedAt);
+
+  if (needsCompletionBump) {
+    const cachedThread = known ?? ingestPaneShowingThread(threadId)?.thread;
+    if (cachedThread) {
+      const latestTurnCompletedAt = Math.max(
+        cachedThread.latestTurnCompletedAt ?? Number.NEGATIVE_INFINITY,
+        evt.completedAt,
+      );
+      syncThreadRow({
+        ...cachedThread,
+        ...durablePatch,
+        ...(usageSnapshot !== undefined ? { lastTokenUsage: usageSnapshot } : {}),
+        latestTurnCompletedAt,
+      });
+      return;
+    }
+  }
+
+  const combinedPatch: Partial<Thread> = usageSnapshot !== undefined
+    ? { ...durablePatch, lastTokenUsage: usageSnapshot }
+    : durablePatch;
+  if (known && (usageSnapshot !== undefined || !patchMatchesThread(known, durablePatch))) {
+    replaceThread({ ...known, ...combinedPatch });
+  }
+  for (const pane of ingestPanes()) {
+    if (pane.threadId !== threadId || !pane.thread) continue;
+    if (usageSnapshot === undefined && patchMatchesThread(pane.thread, durablePatch)) continue;
+    pane.replaceThread({ ...pane.thread, ...combinedPatch });
   }
 }
 

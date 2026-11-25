@@ -513,6 +513,9 @@ export class Lexer {
     const maskedSrc = run.masked;
     const inlineExtensions = this.options.extensions?.inline;
     const startInline = this.options.extensions?.startInline;
+    // Where each inline extension may claim next, as an index into `run.src`,
+    // mirroring `htmlTextTokens` so scanning does not degrade to O(n^2).
+    const nextStart = startInline ? new Array<number>(startInline.length).fill(-1) : null;
 
     let keepPrevChar = false;
     let prevChar = '';
@@ -620,17 +623,24 @@ export class Lexer {
       // text
       // prevent inlineText consuming extensions by clipping 'src' to extension start
       let cutSrc = src;
-      if (startInline) {
+      if (startInline && nextStart) {
+        const at = run.at;
         let startIndex = Infinity;
-        const tempSrc = src.slice(1);
+        let tempSrc: string | undefined;
         for (let i = 0; i < startInline.length; i++) {
-          const tempStart = startInline[i].call(this.tokenizerContext, tempSrc);
-          if (typeof tempStart === 'number' && tempStart >= 0) {
-            startIndex = Math.min(startIndex, tempStart);
+          let next = nextStart[i];
+          if (next <= at) {
+            tempSrc ??= src.slice(1);
+            const tempStart = startInline[i].call(this.tokenizerContext, tempSrc);
+            next = typeof tempStart === 'number' && tempStart >= 0 ? at + 1 + tempStart : Infinity;
+            nextStart[i] = next;
+          }
+          if (next < startIndex) {
+            startIndex = next;
           }
         }
-        if (startIndex < Infinity && startIndex >= 0) {
-          cutSrc = src.substring(0, startIndex + 1);
+        if (startIndex < Infinity) {
+          cutSrc = src.substring(0, startIndex - at);
         }
       }
       if ((token = this.tokenizer.inlineText(cutSrc))) {

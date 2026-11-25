@@ -23,6 +23,8 @@ import type { SettledTurn, TimelineTurnFacet } from './threadTurnProjection';
 
 export interface ThreadPaneTurnsOptions {
   getThread(): Thread | null;
+  /** Stable thread-id getter when available so activeKey does not wake on thread metadata patches. */
+  getThreadId?(): string | null;
   /**
    * Release the deferred recent-window prune a settled turn unblocks
    * (`threadTimelineWindow.settleRecentWindowPrune`).
@@ -39,26 +41,34 @@ export function createThreadPaneTurns(options: ThreadPaneTurnsOptions) {
   // departing thread. `latestSettledTurn` stays per-pane for read-state
   // and trace/debug consumers; on thread switch we rehydrate it from the
   // most recent `ListRecentTurns` row whose `completedAt` is non-null.
-  let latestSettledTurn: SettledTurn | null = $state(null);
+  let latestSettledTurn: SettledTurn | null = $state.raw(null);
+
+  const activeKey = $derived.by(() => {
+    const tid = options.getThreadId ? options.getThreadId() : (options.getThread()?.id ?? null);
+    return tid ? (getActiveTurn(tid)?.turnIndex ?? null) : null;
+  });
+  const settledSummary = $derived.by(() => {
+    const settled = latestSettledTurn;
+    if (!settled) return null;
+    return {
+      key: settled.turnIndex,
+      startedAt: settled.startedAt,
+      completedAt: settled.completedAt,
+    };
+  });
 
   // Turn identity for the timeline's response decorations
   // (`TimelineTurnFacet`): the provider turn. One object for the pane's
-  // lifetime — the getters read the live signals — so the per-row pill
-  // lookup allocates nothing. The agent pane's scoped facade overrides
-  // this with its launch's own lifecycle.
+  // lifetime — the getters read memoized $deriveds — so the per-row pill
+  // lookup allocates nothing and ignores unrelated thread metadata patches.
+  // The agent pane's scoped facade overrides this with its launch's own lifecycle.
   const timelineTurns: TimelineTurnFacet = {
     keyOf: itemTurnIndexKey,
     get activeKey() {
-      return getActiveTurn(options.getThread()?.id)?.turnIndex ?? null;
+      return activeKey;
     },
     get settled() {
-      const settled = latestSettledTurn;
-      if (!settled) return null;
-      return {
-        key: settled.turnIndex,
-        startedAt: settled.startedAt,
-        completedAt: settled.completedAt,
-      };
+      return settledSummary;
     },
   };
 

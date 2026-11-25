@@ -70,12 +70,16 @@
   // ChatMarkdown's code hosts mount, so their first cache reads hit and
   // no highlight RPC fires. The initial-value capture is the point —
   // the $effect below covers meta arriving later (settle mid-session,
-  // virtualized item replacement). Streaming rows have no codeSpans key
-  // yet and no-op cheaply.
+  // virtualized item replacement) without re-running on the same meta.
+  // svelte-ignore state_referenced_locally
+  let lastIngestedMeta: string | undefined = item.meta;
   // svelte-ignore state_referenced_locally
   ingestPersistedCodeSpans(item.meta);
   $effect(() => {
-    ingestPersistedCodeSpans(item.meta);
+    const meta = item.meta;
+    if (meta === lastIngestedMeta) return;
+    lastIngestedMeta = meta;
+    ingestPersistedCodeSpans(meta);
   });
 
   // Rendered streaming mode. Status alone is NOT the signal: the wire
@@ -157,8 +161,17 @@
   const imageWorkspacePath = $derived(getAuthoredWorkspaceFromMeta(item.meta));
   const threadId = $derived(pane?.threadId ?? '');
   // Names the row to its code blocks, which paint from the spans the backend
-  // pushes while it streams.
-  const liveCodeRow = $derived({ threadId: item.threadId, itemId: item.id });
+  // pushes while it streams. Stabilized by (threadId, itemId) so per-reveal
+  // item replacements do not mint a fresh object each tick.
+  let cachedLiveCodeRow: { threadId: string; itemId: string } | undefined;
+  const liveCodeRow = $derived.by(() => {
+    const tid = item.threadId;
+    const iid = item.id;
+    if (cachedLiveCodeRow?.threadId === tid && cachedLiveCodeRow.itemId === iid) {
+      return cachedLiveCodeRow;
+    }
+    return (cachedLiveCodeRow = { threadId: tid, itemId: iid });
+  });
   // Stable across per-reveal row replacements. A context transition can
   // remount or reinterpret the volatile parser tree even when its source is
   // unchanged, so the router must drop direct DOM before that transition.
@@ -190,20 +203,20 @@
     return cachedParserRenderContext;
   });
 
+  const parsedMeta = $derived(parseJsonObject(item.meta));
+
   // Codex marks an assistant message the model emitted mid-turn — a progress
   // note alongside its work, not the turn's answer — with `delivery: "async"`
   // on the block's stop event. Read POSITIVELY and only positively: absence is
   // not evidence of finality (most providers never set the key at all), so a
   // row without it is rendered exactly as before.
-  const isInterim = $derived(
-    (parseJsonObject(item.meta)?.delivery ?? '') === 'async',
-  );
+  const isInterim = $derived((parsedMeta?.delivery ?? '') === 'async');
 
   // Claude replaces some of its mid-turn notes with a summary and sends them
   // as a thinking block tagged as narration; the backend stores those as
   // prose with `narration: true` (docs/references/claude-wire.md). The tag
   // says the words are a summary, not the model's own.
-  const isSummarized = $derived(parseJsonObject(item.meta)?.narration === true);
+  const isSummarized = $derived(parsedMeta?.narration === true);
 
   // Streamdown reads the router's stable parser checkpoint while sink-owned
   // literal text extends its trailing leaf. Punctuation and authoritative
@@ -230,16 +243,26 @@
   const markdownSource = $derived(rendered.source);
   const markdownSourceAppend = $derived(rendered.append);
   const directSourceIsRawJson = $derived(rendered.rawJson);
-  const pathCompletionGuard = new AllowlistedPathCompletionGuard();
   // State so the section layer, mounted in the same pass when a row
   // remounts mid-reading, receives the element once it is bound.
   let bodyRoot = $state<HTMLElement>();
-  const directRevealSink = createStreamingAssistantLiteralOwner({
-    getRoot: () => bodyRoot,
-    canAppendSource: (source, nextSource, delta) =>
-      !directSourceIsRawJson &&
-      !pathCompletionGuard.completes(pathRefs, source, nextSource, delta),
-  });
+  // Lazily allocated only while streaming: settled historical rows never
+  // receive direct literal reveal appends.
+  let pathCompletionGuard: AllowlistedPathCompletionGuard | null = null;
+  let directRevealSink: ReturnType<typeof createStreamingAssistantLiteralOwner> | null = null;
+  function ensureDirectRevealSink() {
+    if (!directRevealSink) {
+      pathCompletionGuard ??= new AllowlistedPathCompletionGuard();
+      const guard = pathCompletionGuard;
+      directRevealSink = createStreamingAssistantLiteralOwner({
+        getRoot: () => bodyRoot,
+        canAppendSource: (source, nextSource, delta) =>
+          !directSourceIsRawJson &&
+          !guard.completes(pathRefs, source, nextSource, delta),
+      });
+    }
+    return directRevealSink;
+  }
 
   // Harness-only, source-preserving visibility for transient Markdown
   // failures. The object stores no source strings: its getters read the row
@@ -278,8 +301,9 @@
   let registeredRevealGeneration = -1;
   let unregisterRevealSink: (() => void) | undefined;
   $effect(() => {
-    const nextPane = pane;
-    const nextItemId = revealItemId;
+    const active = streaming;
+    const nextPane = active ? pane : undefined;
+    const nextItemId = active ? revealItemId : '';
     const nextGeneration = nextPane?.assistantRevealRegistrationGeneration ?? 0;
     if (
       nextPane === registeredRevealPane &&
@@ -299,17 +323,22 @@
       transitionErrors.push(error);
     }
 
-    try {
-      const releaseNext = nextPane?.registerAssistantRevealSink?.(
-        nextItemId,
-        directRevealSink,
-      );
-      registeredRevealPane = nextPane;
-      registeredRevealItemId = nextItemId;
-      registeredRevealGeneration = nextGeneration;
-      unregisterRevealSink = releaseNext;
-    } catch (error) {
-      transitionErrors.push(error);
+    if (nextPane) {
+      try {
+        const releaseNext = nextPane.registerAssistantRevealSink?.(
+          nextItemId,
+          ensureDirectRevealSink(),
+        );
+        registeredRevealPane = nextPane;
+        registeredRevealItemId = nextItemId;
+        registeredRevealGeneration = nextGeneration;
+        unregisterRevealSink = releaseNext;
+      } catch (error) {
+        transitionErrors.push(error);
+      }
+    } else {
+      directRevealSink = null;
+      pathCompletionGuard = null;
     }
     if (transitionErrors.length === 1) throw transitionErrors[0];
     if (transitionErrors.length > 1) {

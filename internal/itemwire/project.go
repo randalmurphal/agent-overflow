@@ -1,6 +1,7 @@
 package itemwire
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 
@@ -281,7 +282,11 @@ func ProjectPayloadMeta(payloadMeta string, inlinePreviews bool) (string, bool, 
 		budget = InlinePreviewMaxBytes
 	}
 	elidedAny, keptAny, changed := false, false, false
+	patchMarker := []byte(`"previewPatch"`)
 	for i, rawFile := range files {
+		if !bytes.Contains(rawFile, patchMarker) {
+			continue
+		}
 		var file map[string]json.RawMessage
 		if json.Unmarshal(rawFile, &file) != nil || file == nil {
 			continue
@@ -316,17 +321,19 @@ func ProjectPayloadMeta(payloadMeta string, inlinePreviews bool) (string, bool, 
 		return payloadMeta, false, keptAny
 	}
 
-	encodedFiles, err := json.Marshal(files)
-	if err != nil {
-		return payloadMeta, false, true
+	// Single top-level marshal instead of re-encoding files -> diff -> top
+	// into intermediate buffers.
+	diffOut := make(map[string]any, len(diff))
+	for k, v := range diff {
+		diffOut[k] = v
 	}
-	diff["files"] = encodedFiles
-	encodedDiff, err := json.Marshal(diff)
-	if err != nil {
-		return payloadMeta, false, true
+	diffOut["files"] = files
+	topOut := make(map[string]any, len(top))
+	for k, v := range top {
+		topOut[k] = v
 	}
-	top["inlineDiff"] = encodedDiff
-	out, err := json.Marshal(top)
+	topOut["inlineDiff"] = diffOut
+	out, err := json.Marshal(topOut)
 	if err != nil {
 		return payloadMeta, false, true
 	}

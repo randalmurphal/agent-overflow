@@ -1,3 +1,10 @@
+<script lang="ts" module>
+  import { CHAT_IMAGE_PREFIXES, CHAT_LINK_PREFIXES } from './markdown/chatLinkPrefixes';
+
+  const ALLOWED_LINK_PREFIXES: string[] = [...CHAT_LINK_PREFIXES];
+  const ALLOWED_IMAGE_PREFIXES: string[] = [...CHAT_IMAGE_PREFIXES];
+</script>
+
 <script lang="ts">
   import { threadMachine } from '../../stores/attachedBackends.svelte';
   // Streaming-aware markdown renderer.
@@ -85,7 +92,6 @@
   } from '../../utils/markdownEnhance';
   import { buildPathLinkExtension, type PathLinkMode } from '../../utils/pathLinkExtension';
   import { buildPreviewLinkExtension } from '../../utils/previewLinkExtension';
-  import { CHAT_IMAGE_PREFIXES, CHAT_LINK_PREFIXES } from './markdown/chatLinkPrefixes';
   import {
     FORGE_ATTACHMENT_SOURCE_CONTEXT,
     type ForgeAttachmentSourceReader,
@@ -331,8 +337,8 @@
   // `[click](agent-overflow:open?path=/etc/passwd)` cannot satisfy
   // the nonce-prefixed form and is rejected before any anchor is
   // rendered.
-  const allowedLinkPrefixes = [...CHAT_LINK_PREFIXES];
-  const allowedImagePrefixes = [...CHAT_IMAGE_PREFIXES];
+  const allowedLinkPrefixes = ALLOWED_LINK_PREFIXES;
+  const allowedImagePrefixes = ALLOWED_IMAGE_PREFIXES;
 
   // Diagram palette. Without a `mermaidConfig` the renderer falls back
   // to mermaid's built-in `'dark'`/`'default'` themes, which
@@ -370,27 +376,16 @@
     return markdownFenceUnwrapper.outputAppend;
   });
 
-  // Streaming-only block-boundary memoization. When `streaming === true`,
-  // the source is split at the last stable markdown block boundary
-  // (incremark's BoundaryDetector, `lib/markdown/boundary/`); the committed prefix is parsed once and
-  // never re-parses while streaming, and the volatile tail re-parses on
-  // every update with `parseIncompleteMarkdown` enabled to absorb
-  // half-typed fences / tables / setext underlines.
-  //
-  // `StreamingBoundarySplitter` owns the committed high-water mark and a
-  // persistent detector, resuming detection from the last committed line
-  // each call (O(n) over the stream) instead of re-scanning from line 0
-  // every reveal tick (O(n²)). It is created once per component instance
-  // and is non-reactive; `split()` is idempotent for a given source, so
-  // calling it inside the derivation is safe even if Svelte coalesces or
-  // re-evaluates. `streaming` is only ever true for the assistant_text
-  // row, whose source is append-only — the splitter's precondition.
-  const boundarySplitter = new StreamingBoundarySplitter();
+  // Streaming-only block-boundary memoization. Lazily allocated only while
+  // streaming so settled messages retain zero splitter / alignment-cache graphs.
+  let boundarySplitter: StreamingBoundarySplitter | null = null;
 
   const splitDerived = $derived.by(() => {
     if (!streaming) {
+      boundarySplitter = null;
       return { prefix: processedSource, tail: '', prefixAppend: undefined, tailAppend: undefined };
     }
+    boundarySplitter ??= new StreamingBoundarySplitter();
     const split = boundarySplitter.split(
       processedSource,
       processedSourceAppend,
@@ -401,6 +396,12 @@
       tailAppend: boundarySplitter.tailAppend,
     };
   });
+  // Isolate prefix and tail signals so tail-only reveal ticks (the 90%+ case)
+  // do not wake prefixState, boundary selection capture, or the committed Streamdown.
+  const committedPrefix = $derived(splitDerived.prefix);
+  const committedPrefixAppend = $derived(splitDerived.prefixAppend);
+  const volatileTail = $derived(splitDerived.tail);
+  const volatileTailAppend = $derived(splitDerived.tailAppend);
 
   // The volatile tail continues the committed prefix, so it starts under
   // the `[center]`/`[right]` alignment in force at the prefix's end. The
@@ -417,15 +418,17 @@
   const NO_EXTENSIONS: Extension[] = [];
   // Never parsed: a settled body with nothing to share folds no blocks.
   const NO_BLOCKS = createParseBlocksCache();
-  let prefixAlignmentCache = createParseBlocksCache();
-  const prefixDocumentCache = createDocumentContextCache();
+  let prefixAlignmentCache: ReturnType<typeof createParseBlocksCache> | null = null;
+  let prefixDocumentCache: ReturnType<typeof createDocumentContextCache> | null = null;
   const prefixState = $derived.by((): { align: Alignment; document: DocumentContext | null } => {
     if (!streaming) {
-      prefixAlignmentCache = createParseBlocksCache();
+      prefixAlignmentCache = null;
+      prefixDocumentCache = null;
       return { align: null, document: null };
     }
-    const { prefix, prefixAppend } = splitDerived;
-    parseBlocks(prefix, extensions, prefixAlignmentCache, prefixAppend);
+    prefixAlignmentCache ??= createParseBlocksCache();
+    prefixDocumentCache ??= createDocumentContextCache();
+    parseBlocks(committedPrefix, extensions, prefixAlignmentCache, committedPrefixAppend);
     return {
       align: alignmentAtEnd(prefixAlignmentCache),
       document: documentContextOf(prefixAlignmentCache, extensions ?? NO_EXTENSIONS, prefixDocumentCache, documentForge, forgeFacts),
@@ -437,20 +440,24 @@
   // definition, footnote, heading link or contents marker skips the parse;
   // a forge body still gets its forge's empty context, which makes its
   // `#name` links jump within it (markdown/fragmentLinks.ts).
-  const settledBlocksCache = createParseBlocksCache();
-  const settledDocumentCache = createDocumentContextCache();
+  let settledBlocksCache: ReturnType<typeof createParseBlocksCache> | null = null;
+  let settledDocumentCache: ReturnType<typeof createDocumentContextCache> | null = null;
   // The parse apart from the fold, so new facts fold nothing and parse
   // nothing: only the context's scopes are handed out again.
   const settledBlocks = $derived.by((): { blocks: ReturnType<typeof createParseBlocksCache> } | null => {
     if (streaming) return null;
     const source = processedSource;
     const needed = mayNeedDocumentContext(source, documentForge);
-    if (needed) parseBlocks(source, extensions, settledBlocksCache);
-    return { blocks: needed ? settledBlocksCache : NO_BLOCKS };
+    if (needed) {
+      settledBlocksCache ??= createParseBlocksCache();
+      parseBlocks(source, extensions, settledBlocksCache);
+    }
+    return { blocks: needed ? settledBlocksCache! : NO_BLOCKS };
   });
   const settledDocument = $derived.by((): DocumentContext | null => {
     const parsed = settledBlocks;
     if (!parsed) return null;
+    settledDocumentCache ??= createDocumentContextCache();
     return documentContextOf(parsed.blocks, extensions ?? NO_EXTENSIONS, settledDocumentCache, documentForge, forgeFacts);
   });
   const documentContext = $derived(streaming ? prefixState.document : settledDocument);
@@ -464,7 +471,7 @@
   let renderedPrefix = '';
   let boundarySelectionGeneration = 0;
   $effect.pre(() => {
-    const { prefix } = splitDerived;
+    const prefix = committedPrefix;
     if (prefix === renderedPrefix) return;
     const generation = ++boundarySelectionGeneration;
     const selection: StreamingAssistantSelectionSnapshot | null = markdownRoot
@@ -512,7 +519,7 @@
     streaming && !getSettings().streamingEnabled,
   );
   const showVolatileTail = $derived(
-    !hideVolatileTail && (splitDerived.tail.length > 0 || splitDerived.prefix.length === 0),
+    !hideVolatileTail && (volatileTail.length > 0 || committedPrefix.length === 0),
   );
   // A forge lists its footnotes after the body.
   const footnoteSection = $derived(documentContext?.footnoteSection ?? null);
@@ -612,12 +619,12 @@
   {@attach publishFootnoteSource}
   class={['markdown-body', className].filter(Boolean).join(' ')}
 >
-  {#if splitDerived.prefix}
+  {#if committedPrefix}
     {@render streamdownInstance(
-      splitDerived.prefix,
+      committedPrefix,
       false,
       'md-committed',
-      splitDerived.prefixAppend,
+      committedPrefixAppend,
       true,
       !showVolatileTail && !footnoteSection,
       null,
@@ -626,11 +633,11 @@
   {/if}
   {#if showVolatileTail}
     {@render streamdownInstance(
-      splitDerived.tail,
+      volatileTail,
       streaming,
       'md-volatile',
-      splitDerived.tailAppend,
-      !splitDerived.prefix,
+      volatileTailAppend,
+      !committedPrefix,
       !footnoteSection,
       tailAlignStart,
       documentContext?.after ?? null,

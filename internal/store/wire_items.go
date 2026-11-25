@@ -73,6 +73,31 @@ func (s *Store) ProbeWireItem(item Item) (WireItemProbe, error) {
 		}
 		return WireItemProbe{NeedsDecoration: exists}, nil
 	}
+	if item.Rev >= 0 {
+		if !SubagentAnchorable(item.Kind, item.ToolName) {
+			return WireItemProbe{}, nil
+		}
+		var state sql.NullInt64
+		var listed bool
+		err := s.reader().QueryRow(
+			`SELECT (SELECT state FROM subagent_aggregates WHERE thread_id = ?1 AND item_id = ?2),
+			        EXISTS(SELECT 1 FROM subagent_aggregate_backfill WHERE thread_id = ?1)`,
+			item.ThreadID, item.ID,
+		).Scan(&state, &listed)
+		if err != nil {
+			return WireItemProbe{}, fmt.Errorf("store: decide decoration of %s/%s: %w", item.ThreadID, item.ID, err)
+		}
+		if state.Valid {
+			return WireItemProbe{
+				NeedsDecoration: int(state.Int64) != aggStateClean,
+				Anchors:         true,
+			}, nil
+		}
+		if root := transcriptRootFromMeta(item.Meta); root != "" && root != item.ID {
+			return WireItemProbe{NeedsDecoration: true, Anchors: true}, nil
+		}
+		return WireItemProbe{NeedsDecoration: listed, Anchors: listed}, nil
+	}
 	decider, err := newSubagentWalkDecider(s.reader(), item.ThreadID, map[string]Item{item.ID: item})
 	if err != nil {
 		return WireItemProbe{}, fmt.Errorf("store: decide decoration of %s/%s: %w", item.ThreadID, item.ID, err)
@@ -184,51 +209,139 @@ func (s *Store) ListWireItemsBehind(threadID string, emitted map[string]int64) (
 		return nil, fmt.Errorf("store: begin behind wire item read for %s: %w", threadID, err)
 	}
 	defer tx.Rollback()
+	q := &contextReadTx{Tx: tx, ctx: context.Background()}
 
-	candidates := make(map[string]struct{})
-	current := make(map[string]int64, len(emitted))
+	emittedIDs := make([]string, 0, len(emitted))
 	for id := range emitted {
-		var parentID, completionOf, status string
+		emittedIDs = append(emittedIDs, id)
+	}
+	emittedList, err := jsonList(emittedIDs)
+	if err != nil {
+		return nil, err
+	}
+	writtenSQL, writtenArgs, err := timelineArms(q, threadID, timelineSelection{
+		Columns: func(_, revExpr string) string {
+			return "items.id, items.parent_id, items.completion_of, items.status, " + revExpr
+		},
+		KeyFirst:  true,
+		Where:     "items.id IN (SELECT value FROM json_each(?))",
+		WhereArgs: []any{emittedList},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	candidates := make(map[string]struct{}, len(emitted))
+	current := make(map[string]int64, len(emitted))
+	type stampedCoord struct {
+		id       string
+		parentID string
+	}
+	var rootIDs []string
+	var scopedCoords []stampedCoord
+	var completionTargets []string
+	seenCompletion := make(map[string]struct{})
+
+	rows, err := q.Query(writtenSQL, writtenArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("store: resolve written rows for %s: %w", threadID, err)
+	}
+	for rows.Next() {
+		var id, parentID, completionOf, status string
 		var rev int64
-		written, args, err := timelineArms(tx, threadID, timelineSelection{
-			Columns: func(_, revExpr string) string {
-				return "items.parent_id, items.completion_of, items.status, " + revExpr
-			},
-			KeyFirst: true,
-			Where:    "items.id = ?", WhereArgs: []any{id},
-		})
-		if err != nil {
-			return nil, err
-		}
-		err = tx.QueryRow(written, args...).Scan(&parentID, &completionOf, &status, &rev)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("store: resolve written row %s/%s: %w", threadID, id, err)
+		if err := rows.Scan(&id, &parentID, &completionOf, &status, &rev); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("store: scan written row %s: %w", threadID, err)
 		}
 		current[id] = rev
-		if err := collectStampedRowIDs(tx, threadID, id, parentID, candidates); err != nil {
-			return nil, err
+		if parentID == "" {
+			candidates[id] = struct{}{}
+			rootIDs = append(rootIDs, id)
+		} else {
+			scopedCoords = append(scopedCoords, stampedCoord{id: id, parentID: parentID})
 		}
-		if completionOf == "" || status == ItemStatusParked {
-			continue
-		}
-		var launchParent string
-		err = tx.QueryRow(
-			`SELECT parent_id FROM items WHERE thread_id = ? AND id = ?`,
-			threadID, completionOf,
-		).Scan(&launchParent)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("store: resolve launch %s/%s: %w", threadID, completionOf, err)
-		}
-		if err := collectStampedRowIDs(tx, threadID, completionOf, launchParent, candidates); err != nil {
-			return nil, err
+		if completionOf != "" && status != ItemStatusParked {
+			if _, ok := seenCompletion[completionOf]; !ok {
+				seenCompletion[completionOf] = struct{}{}
+				completionTargets = append(completionTargets, completionOf)
+			}
 		}
 	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: iterate written rows for %s: %w", threadID, err)
+	}
+
+	if len(completionTargets) > 0 {
+		targetList, err := jsonList(completionTargets)
+		if err != nil {
+			return nil, err
+		}
+		lRows, err := q.Query(
+			`SELECT id, parent_id FROM items WHERE thread_id = ?1 AND id IN (SELECT value FROM json_each(?2))`,
+			threadID, targetList,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("store: resolve launches for %s: %w", threadID, err)
+		}
+		for lRows.Next() {
+			var id, launchParent string
+			if err := lRows.Scan(&id, &launchParent); err != nil {
+				_ = lRows.Close()
+				return nil, fmt.Errorf("store: scan launch %s: %w", threadID, err)
+			}
+			if launchParent == "" {
+				candidates[id] = struct{}{}
+				rootIDs = append(rootIDs, id)
+			} else {
+				scopedCoords = append(scopedCoords, stampedCoord{id: id, parentID: launchParent})
+			}
+		}
+		if err := errors.Join(lRows.Err(), lRows.Close()); err != nil {
+			return nil, fmt.Errorf("store: iterate launches for %s: %w", threadID, err)
+		}
+	}
+
+	// For rows with parent_id = '', the recursive ancestor CTE in
+	// stampedRowIDsByParamsSQL is empty, so the only extra stamped rows are
+	// non-parked completion siblings. Collect all of them in one batch query.
+	if len(rootIDs) > 0 {
+		rootList, err := jsonList(rootIDs)
+		if err != nil {
+			return nil, err
+		}
+		sRows, err := q.Query(
+			`SELECT id FROM items WHERE thread_id = ?1 AND completion_of <> '' AND completion_of IN (SELECT value FROM json_each(?2))`+stampedSiblingTerm,
+			threadID, rootList,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("store: select root completion siblings for %s: %w", threadID, err)
+		}
+		for sRows.Next() {
+			var id string
+			if err := sRows.Scan(&id); err != nil {
+				_ = sRows.Close()
+				return nil, fmt.Errorf("store: scan root completion sibling for %s: %w", threadID, err)
+			}
+			candidates[id] = struct{}{}
+		}
+		if err := errors.Join(sRows.Err(), sRows.Close()); err != nil {
+			return nil, fmt.Errorf("store: iterate root completion siblings for %s: %w", threadID, err)
+		}
+	}
+
+	if len(scopedCoords) > 0 {
+		seenCoord := make(map[stampedCoord]struct{}, len(scopedCoords))
+		for _, coord := range scopedCoords {
+			if _, dup := seenCoord[coord]; dup {
+				continue
+			}
+			seenCoord[coord] = struct{}{}
+			if err := collectStampedRowIDs(q, threadID, coord.id, coord.parentID, candidates); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	ids := make([]string, 0, len(candidates))
 	for id := range candidates {
 		if pushed, written := emitted[id]; written {
@@ -241,7 +354,7 @@ func (s *Store) ListWireItemsBehind(threadID string, emitted map[string]int64) (
 	if len(ids) == 0 {
 		return []Item{}, nil
 	}
-	return s.listWireItemsTx(tx, threadID, ids)
+	return s.listWireItemsTx(q, threadID, ids)
 }
 
 // stampedRowIDsByParamsSQL is stampedRowIDsSQL with the written row's

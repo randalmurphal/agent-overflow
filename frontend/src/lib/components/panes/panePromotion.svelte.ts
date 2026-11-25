@@ -130,6 +130,7 @@ export function createPanePromotion(options: PanePromotionOptions) {
   let lastProgress = 0;
   let frame = 0;
   let lastTs: number | null = null;
+  let destroyed = false;
 
   function cancelFrame(): void {
     if (frame) cancelAnimationFrame(frame);
@@ -264,6 +265,7 @@ export function createPanePromotion(options: PanePromotionOptions) {
 
   function step(ts: number): void {
     frame = 0;
+    if (destroyed) return;
     const dt = lastTs === null ? 16 : clamp(ts - lastTs, 0, MAX_FRAME_MS);
     lastTs = ts;
     progress = clamp(progress + (direction * dt) / PANE_PROMOTE_DURATION_MS, 0, 1);
@@ -401,6 +403,7 @@ export function createPanePromotion(options: PanePromotionOptions) {
   }
 
   function destroy(): void {
+    destroyed = true;
     cancelFrame();
     if (shownId !== null) setPromotedLayer(null, null);
   }

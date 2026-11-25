@@ -1,3 +1,17 @@
+<script lang="ts" module>
+	const templatesByDocument = new WeakMap<Document, HTMLTemplateElement>();
+	let batchSepSeq = 0;
+
+	function reusableTemplate(ownerDocument: Document): HTMLTemplateElement {
+		let template = templatesByDocument.get(ownerDocument);
+		if (!template) {
+			template = ownerDocument.createElement('template');
+			templatesByDocument.set(ownerDocument, template);
+		}
+		return template;
+	}
+</script>
+
 <script lang="ts">
 	import { getAllContexts, mount, onDestroy, onMount, unmount } from 'svelte';
 	import Block from './Block.svelte';
@@ -88,6 +102,23 @@
 	let retryScheduler: StaticWorkScheduler | undefined;
 	let retryCursor = 0;
 	let documentInteraction: DocumentInteraction | undefined;
+	let mounted = false;
+	let componentCount = 0;
+	let retryableComponentCount = 0;
+
+	function syncDocumentInteraction(target?: HTMLElement): void {
+		if (!mounted || destroyed || retryableComponentCount === 0) {
+			if (documentInteraction) {
+				documentInteraction.release();
+				documentInteraction = undefined;
+			}
+			return;
+		}
+		if (!documentInteraction) {
+			const ownerDocument = target?.ownerDocument ?? renderedRoot?.ownerDocument ?? root?.ownerDocument ?? document;
+			documentInteraction = acquireDocumentInteraction(ownerDocument, restartStaticRetry);
+		}
+	}
 
 	function readConfiguration(): Configuration {
 		return {
@@ -143,19 +174,25 @@
 		console.error('[streamdown-compact-blocks] component unmount failed', error);
 	}
 
-	function removeComponentRecord(record: ComponentRecord): void {
+	function unmountComponentNodes(start: Comment, end: Comment, instance: Mounted): void {
 		try {
-			void Promise.resolve(unmount(record.instance)).catch(reportUnmountFailure);
+			void Promise.resolve(unmount(instance)).catch(reportUnmountFailure);
 		} catch (error) {
 			reportUnmountFailure(error);
 		}
-		let node: ChildNode | null = record.start;
+		let node: ChildNode | null = start;
 		while (node) {
 			const next: ChildNode | null = node.nextSibling;
 			node.remove();
-			if (node === record.end) break;
+			if (node === end) break;
 			node = next;
 		}
+	}
+
+	function removeComponentRecord(record: ComponentRecord): void {
+		componentCount--;
+		if (record.retryStatic) retryableComponentCount--;
+		unmountComponentNodes(record.start, record.end, record.instance);
 	}
 
 	function removeRecord(record: Record): void {
@@ -172,10 +209,11 @@
 		}
 		records.length = length;
 		retryCursor = Math.min(retryCursor, length);
+		syncDocumentInteraction();
 	}
 
-	function staticNodes(html: string): { fragment: DocumentFragment; nodes: ChildNode[] } {
-		const template = document.createElement('template');
+	function staticNodes(ownerDocument: Document, html: string): { fragment: DocumentFragment; nodes: ChildNode[] } {
+		const template = reusableTemplate(ownerDocument);
 		template.innerHTML = html;
 		return {
 			fragment: template.content,
@@ -192,7 +230,7 @@
 		html: string,
 		lexed: { scope: DocumentScope | null; reads: Set<string> | null }
 	): StaticRecord {
-		const { fragment, nodes } = staticNodes(html);
+		const { fragment, nodes } = staticNodes(target.ownerDocument, html);
 		try {
 			target.insertBefore(fragment, anchor);
 			reconcileParagraphGapsInNodes(nodes);
@@ -201,6 +239,122 @@
 			throw error;
 		}
 		return { kind: 'static', block, align, nodes, scope: lexed.scope, reads: lexed.reads };
+	}
+
+	type PendingStaticEntry =
+		| { marker: true; block: string }
+		| {
+			marker: false;
+			block: string;
+			align: Alignment;
+			html: string;
+			scope: DocumentScope | null;
+			reads: Set<string> | null;
+		};
+
+	// Appends a contiguous run of static blocks at `anchor === null` using one
+	// HTML parse and one DocumentFragment insertion instead of one <template>
+	// parse + DOM insert per block.
+	function flushPendingStaticAppend(target: HTMLElement, pending: PendingStaticEntry[]): void {
+		if (pending.length === 0) return;
+		let nonMarkerCount = 0;
+		for (let i = 0; i < pending.length; i++) {
+			if (!pending[i].marker) nonMarkerCount++;
+		}
+		if (nonMarkerCount <= 1) {
+			for (let i = 0; i < pending.length; i++) {
+				const entry = pending[i];
+				if (entry.marker) {
+					records.push({ kind: 'static', block: entry.block, align: 'marker', nodes: [], scope: null, reads: null });
+				} else {
+					records.push(insertStaticRecord(target, null, entry.block, entry.align, entry.html, entry));
+				}
+			}
+			pending.length = 0;
+			return;
+		}
+
+		let sep = `ao-sd-sep-${++batchSepSeq}`;
+		let collision = true;
+		while (collision) {
+			collision = false;
+			for (let i = 0; i < pending.length; i++) {
+				const entry = pending[i];
+				if (!entry.marker && entry.html.includes(sep)) {
+					sep = `ao-sd-sep-${++batchSepSeq}`;
+					collision = true;
+					break;
+				}
+			}
+		}
+
+		const parts: string[] = [];
+		for (let i = 0; i < pending.length; i++) {
+			const entry = pending[i];
+			if (!entry.marker) parts.push(entry.html);
+		}
+		const template = reusableTemplate(target.ownerDocument);
+		template.innerHTML = parts.join(`<!--${sep}-->`);
+		const fragment = template.content;
+
+		const buckets: ChildNode[][] = [];
+		let currentNodes: ChildNode[] = [];
+		buckets.push(currentNodes);
+		const separators: Comment[] = [];
+		for (let node = fragment.firstChild; node !== null; node = node.nextSibling) {
+			if (node.nodeType === 8 && (node as Comment).data === sep) {
+				separators.push(node as Comment);
+				currentNodes = [];
+				buckets.push(currentNodes);
+			} else {
+				currentNodes.push(node);
+			}
+		}
+
+		if (buckets.length !== nonMarkerCount) {
+			template.innerHTML = '';
+			for (let i = 0; i < pending.length; i++) {
+				const entry = pending[i];
+				if (entry.marker) {
+					records.push({ kind: 'static', block: entry.block, align: 'marker', nodes: [], scope: null, reads: null });
+				} else {
+					records.push(insertStaticRecord(target, null, entry.block, entry.align, entry.html, entry));
+				}
+			}
+			pending.length = 0;
+			return;
+		}
+
+		for (let i = 0; i < separators.length; i++) separators[i].remove();
+		try {
+			target.insertBefore(fragment, null);
+			for (let i = 0; i < buckets.length; i++) {
+				reconcileParagraphGapsInNodes(buckets[i]);
+			}
+		} catch (error) {
+			for (let i = 0; i < buckets.length; i++) {
+				for (const node of buckets[i]) node.remove();
+			}
+			throw error;
+		}
+
+		let bucketIndex = 0;
+		for (let i = 0; i < pending.length; i++) {
+			const entry = pending[i];
+			if (entry.marker) {
+				records.push({ kind: 'static', block: entry.block, align: 'marker', nodes: [], scope: null, reads: null });
+			} else {
+				records.push({
+					kind: 'static',
+					block: entry.block,
+					align: entry.align,
+					nodes: buckets[bucketIndex++],
+					scope: entry.scope,
+					reads: entry.reads
+				});
+			}
+		}
+		pending.length = 0;
 	}
 
 	function insertComponentRecord(
@@ -233,18 +387,13 @@
 				nodes.push(node);
 			}
 			reconcileParagraphGapsInNodes(nodes);
+			componentCount++;
+			retryableComponentCount++;
+			syncDocumentInteraction(target);
 			return { kind: 'component', block, align, start, end, instance, retryStatic: true };
 		} catch (error) {
 			if (instance) {
-				removeComponentRecord({
-					kind: 'component',
-					block,
-					align,
-					start,
-					end,
-					instance,
-					retryStatic: false
-				});
+				unmountComponentNodes(start, end, instance);
 			} else {
 				start.remove();
 				end.remove();
@@ -294,6 +443,7 @@
 		const next = buildRecord(target, firstNodeFrom(index), old.block, old.align, index);
 		removeRecord(old);
 		records[index] = next;
+		syncDocumentInteraction(target);
 	}
 
 	function recordHasActiveInteraction(record: ComponentRecord): boolean {
@@ -322,7 +472,7 @@
 	}
 
 	function retryStaticRecords(limit: number): boolean {
-		if (destroyed) return false;
+		if (destroyed || retryableComponentCount === 0) return false;
 		let attempts = 0;
 		while (retryCursor < records.length) {
 			const index = retryCursor++;
@@ -340,22 +490,28 @@
 			);
 			if (html === null) {
 				record.retryStatic = false;
-				if (attempts >= limit) return retryCursor < records.length;
+				retryableComponentCount--;
+				syncDocumentInteraction();
+				if (attempts >= limit) return retryableComponentCount > 0 && retryCursor < records.length;
 				continue;
 			}
 			record.retryStatic = false;
+			retryableComponentCount--;
 
-			const { fragment, nodes } = staticNodes(html);
+			const { fragment, nodes } = staticNodes(record.start.ownerDocument, html);
 			try {
 				record.start.before(fragment);
 				reconcileParagraphGapsInNodes(nodes);
 			} catch (error) {
 				for (const node of nodes) node.remove();
+				record.retryStatic = true;
+				retryableComponentCount++;
 				throw error;
 			}
 			removeComponentRecord(record);
 			records[index] = { kind: 'static', block: record.block, align: record.align, nodes, scope, reads: lexed.reads };
-			if (attempts >= limit) return retryCursor < records.length;
+			syncDocumentInteraction();
+			if (attempts >= limit) return retryableComponentCount > 0 && retryCursor < records.length;
 		}
 		return false;
 	}
@@ -377,7 +533,7 @@
 	}
 
 	function scheduleStaticRetry(): void {
-		if (destroyed || retryScheduled) return;
+		if (destroyed || retryScheduled || retryableComponentCount === 0) return;
 		retryScheduled = true;
 		const scheduler = streamdown.staticWorkScheduler;
 		if (!scheduler) {
@@ -400,9 +556,14 @@
 	}
 
 	function rearmStaticRetries(): void {
+		if (componentCount === 0) return;
 		for (const record of records) {
-			if (record.kind === 'component') record.retryStatic = true;
+			if (record.kind === 'component' && !record.retryStatic) {
+				record.retryStatic = true;
+				retryableComponentCount++;
+			}
 		}
+		syncDocumentInteraction();
 		restartStaticRetry();
 	}
 
@@ -465,9 +626,31 @@
 				replaced = true;
 			}
 		}
+		const pendingStatic: PendingStaticEntry[] = [];
+		const extensions = streamdown.extensions ?? [];
 		for (let index = common; index < blocks.length; index++) {
-			records.push(buildRecord(target, null, blocks[index], alignments[index], index));
+			const block = blocks[index];
+			const align = alignments[index];
+			if (align === 'marker') {
+				pendingStatic.push({ marker: true, block });
+				continue;
+			}
+			const scope = scopeAt(index);
+			const lexed = lexCapture(block, extensions, null, null, scope);
+			const html = renderStaticTokenHtml(
+				lexed.tokens,
+				streamdown,
+				`${id}-${index}`,
+				align
+			);
+			if (html === null) {
+				flushPendingStaticAppend(target, pendingStatic);
+				records.push(insertComponentRecord(target, null, block, align, index));
+			} else {
+				pendingStatic.push({ marker: false, block, align, html, scope, reads: lexed.reads });
+			}
 		}
+		flushPendingStaticAppend(target, pendingStatic);
 		// A rebuilt record may be a component record behind the retry cursor.
 		if (replaced) restartStaticRetry();
 		else scheduleStaticRetry();
@@ -487,10 +670,11 @@
 	});
 
 	onMount(() => {
-		const ownerDocument = root?.ownerDocument ?? document;
-		documentInteraction = acquireDocumentInteraction(ownerDocument, restartStaticRetry);
+		mounted = true;
+		syncDocumentInteraction(root);
 		const releaseStaticRetry = streamdown.registerStaticRetry(rearmStaticRetries);
 		return () => {
+			mounted = false;
 			releaseStaticRetry();
 			documentInteraction?.release();
 			documentInteraction = undefined;
@@ -504,6 +688,8 @@
 		retryHandle = undefined;
 		retryScheduler = undefined;
 		truncateRecords(0);
+		documentInteraction?.release();
+		documentInteraction = undefined;
 		renderedRoot = undefined;
 		renderedDocument = undefined;
 		configuration = undefined;

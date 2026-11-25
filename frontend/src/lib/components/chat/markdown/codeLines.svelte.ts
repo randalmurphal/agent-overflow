@@ -51,6 +51,7 @@ class CodeLine {
   }
 
   paint(spans: EncodedLine | null): void {
+    if (this.#spans === spans) return;
     if (!sameSpans(this.#spans, spans)) this.#segments = spanSegments(this.#text, spans);
     // Equal runs keep the segments but take the new line, so a line never
     // holds an older response alive.
@@ -68,12 +69,20 @@ export class CodeLines {
   /** Extends the source by delta, touching only its last line and the
    * lines delta adds. */
   append(delta: string): void {
-    const parts = delta.split('\n');
+    const firstNewline = delta.indexOf('\n');
     const lines = this.lines;
-    lines[lines.length - 1].text += parts[0];
-    if (parts.length > 1) {
-      this.lines = lines.concat(parts.slice(1).map((text) => new CodeLine(text)));
+    if (firstNewline === -1) {
+      lines[lines.length - 1].text += delta;
+      return;
     }
+    const parts = delta.split('\n');
+    lines[lines.length - 1].text += parts[0];
+    const oldLen = lines.length;
+    const added = parts.length - 1;
+    const next = new Array<CodeLine>(oldLen + added);
+    for (let i = 0; i < oldLen; i++) next[i] = lines[i];
+    for (let i = 0; i < added; i++) next[oldLen + i] = new CodeLine(parts[i + 1]);
+    this.lines = next;
   }
 
   /** Replaces the source, keeping the lines already rendered. */
@@ -85,7 +94,10 @@ export class CodeLines {
     if (parts.length < lines.length) {
       this.lines = lines.slice(0, parts.length);
     } else if (parts.length > lines.length) {
-      this.lines = lines.concat(parts.slice(kept).map((line) => new CodeLine(line)));
+      const next = new Array<CodeLine>(parts.length);
+      for (let i = 0; i < kept; i++) next[i] = lines[i];
+      for (let i = kept; i < parts.length; i++) next[i] = new CodeLine(parts[i]);
+      this.lines = next;
     }
   }
 

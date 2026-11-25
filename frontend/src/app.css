@@ -1697,14 +1697,14 @@ html.light .working-sprite {
   align-items: center;
   gap: var(--run-map-spine-gap);
 }
-.run-map-spine > * {
+.run-map-spine > .run-map-node {
   position: relative;
   max-width: 100%;
   min-width: 0;
 }
 /* Rows that carry a whole line of their own (wave summaries, cards) fill the
    column; plain nodes size to their content and sit centered in it. */
-.run-map-spine-wide > * {
+.run-map-spine-wide > .run-map-node {
   width: 100%;
 }
 /* The connector selector needs a CLASS in both sibling compounds: as

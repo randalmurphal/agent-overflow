@@ -202,6 +202,7 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		}
 	}
 	handleEvent := func(evt provider.ProviderEvent) { handle(evt, 0) }
+	var cachedQueue *providerEventQueue
 	return func(evt provider.ProviderEvent) {
 		// Activity and rate-limit attribution describe the wire as it is
 		// read, so they stay on the provider's goroutine; everything else
@@ -210,10 +211,10 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		evt = a.providerLifecycleService().PrepareEvent(threadID, sessionToken, evt)
 		if evt.Kind == provider.EventSessionStatus && evt.Content == "error" && a.triage != nil {
 			epoch := a.triage.ThreadEpoch(threadID)
-			a.providerEvents.enqueue(threadID, evt, func(evt provider.ProviderEvent) { handle(evt, epoch) })
+			cachedQueue = a.providerEvents.enqueueCached(cachedQueue, threadID, evt, func(evt provider.ProviderEvent) { handle(evt, epoch) })
 			return
 		}
-		a.providerEvents.enqueue(threadID, evt, handleEvent)
+		cachedQueue = a.providerEvents.enqueueCached(cachedQueue, threadID, evt, handleEvent)
 	}
 }
 

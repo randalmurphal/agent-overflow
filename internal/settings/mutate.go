@@ -144,15 +144,24 @@ func (s *Service) mutate(bucket string, class DeviceClass, apply func(current Se
 			promptWrites, promptRemoves = s.settlePromptOverrides(priorPrompts, &next)
 		}
 		// after keeps the prompt text, so an edit counts as a moved key and
-		// is announced; persisted is what the stores actually hold.
+		// is announced; persisted is what the stores actually hold. When no
+		// prompt overrides exist, stored is identical to next so reuse after
+		// instead of marshalling the full Settings struct a third time.
 		after, err := keyValues(next)
 		if err != nil {
 			return Settings{}, err
 		}
-		stored := persistedPromptOverrides(next, filesOwnPrompts)
-		persisted, err := keyValues(stored)
-		if err != nil {
-			return Settings{}, err
+		var stored Settings
+		var persisted map[string]string
+		if len(next.ClaudePromptOverrides) == 0 && len(next.CodexPromptOverrides) == 0 && len(next.AgyPromptOverrides) == 0 {
+			stored = next
+			persisted = after
+		} else {
+			stored = persistedPromptOverrides(next, filesOwnPrompts)
+			persisted, err = keyValues(stored)
+			if err != nil {
+				return Settings{}, err
+			}
 		}
 		moved := changedKeys(before, after)
 		persist := moved

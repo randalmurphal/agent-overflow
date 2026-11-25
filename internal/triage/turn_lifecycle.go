@@ -1902,7 +1902,10 @@ func (r *Router) clearOpenTurn(threadID string, agentScopes map[string]bool) {
 	// still needs flipping". By turn-end the row was either flipped
 	// already or the turn closed without forward progress; either way
 	// the next turn starts with a clean flag.
-	st.openAPIRetryRow = false
+	if st.openAPIRetryRow {
+		st.openAPIRetryRow = false
+		r.openAPIRetryCount.Add(-1)
+	}
 	r.mu.Unlock()
 }
 
@@ -2413,6 +2416,10 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 				buffer.timer.Stop()
 			}
 		}
+		if st.openAPIRetryRow {
+			st.openAPIRetryRow = false
+			r.openAPIRetryCount.Add(-1)
+		}
 		hadEffectiveModel = st.effectiveModelSet
 		pendingUsage, hasPendingUsage = r.takeUsageEmitPendingLocked(threadID)
 		pendingProgress, hasPendingProgress = takeUsagePending(st.usageProgressThrottle)
@@ -2482,10 +2489,11 @@ func (r *Router) frameRefusal(evt provider.ProviderEvent) string {
 // events carry no token and are refused only while the thread is stopped.
 // Caller holds r.mu.
 func (r *Router) frameRefusalLocked(evt provider.ProviderEvent) string {
-	if id := r.identityIfPresent(evt.ThreadID); id != nil && (id.closing || id.stopped) {
+	id := r.identityIfPresent(evt.ThreadID)
+	if id != nil && (id.closing || id.stopped) {
 		return "stopped thread"
 	}
-	if r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) {
+	if evt.SessionToken != "" && (id == nil || id.stopped || id.sessionToken != evt.SessionToken) {
 		return "retired session"
 	}
 	return ""

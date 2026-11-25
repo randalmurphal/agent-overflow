@@ -688,7 +688,9 @@ function installHeldPRObservers(): void {
   });
   // A deleted or archived thread takes its hidden companions with it
   // (companionStash), with no live companion left to close.
-  addThreadRemovedObserver((threadId) => heldPRByRow.delete(threadId));
+  addThreadRemovedObserver((threadId) => {
+    heldPRByRow.delete(threadId);
+  });
 }
 
 // Stable identity for "this pane is on no PR": ReviewDiffBody re-anchors

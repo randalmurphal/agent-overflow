@@ -56,8 +56,7 @@ import {
 } from '../transport/backendIdentity';
 import {
   REPLICA_SCHEMA_VERSION,
-  bodyFitsCaps,
-  estimateBodyChars,
+  measureBodyWithinCaps,
   metaMatches,
   normalizeBody,
   readEnvelope,
@@ -642,14 +641,15 @@ export async function putReplicaWindow(
     const db = await activeDb(token);
     if (!db) return;
     const normalized = normalizeBody(body);
-    if (!bodyFitsCaps(normalized)) {
+    const chars = measureBodyWithinCaps(normalized);
+    if (chars === null) {
       await removeReplicaWindow(threadId, token);
       return;
     }
     const entry: ReplicaIndexEntry = {
       threadId,
       savedAt: normalized.savedAt,
-      chars: estimateBodyChars(normalized),
+      chars,
     };
     const merged = await commitEnvelope(db, threadId, wrapEnvelope(normalized), (stored) =>
       planWrite(readIndexEntries(stored), entry),

@@ -2,6 +2,7 @@ import { applyTimelineMutation } from './timelineSurfaces';
 import { getTransportHelloFor } from './transportStatus.svelte';
 import { threadBackend, HOME_BACKEND } from '../transport/entityIndex';
 import type { UserMessageRevertedEvent } from '../types/messageRevert';
+import { addThreadRemovedObserver } from './threads.svelte';
 import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 // Item-stream event batching: the provider:item_event ordered mutation
 // queue (upsert/delta/meta/patch actions sharing one wire channel), its
@@ -20,6 +21,7 @@ import { isBoundedString, isFiniteNumber, isStreamOffset } from './eventsGuards'
 import { utf8Length } from '../utils/utf8Offsets';
 import { compositeKey } from '../utils/compositeKey';
 import { isPendingFlushRow } from '../utils/userMessageMeta';
+import { createAnimationFrameBatcher } from '../utils/animationFrameBatcher';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { itemEventQueued, itemEventsSettled, resetItemEventSettlement } from './itemEventSettlement';
 
@@ -59,8 +61,17 @@ const cuts = new Map<string, { sequence: number; turnIndex: number; kept: Set<st
 onThreadHistoryInvalidated((owns) => {
   for (const id of cuts.keys()) if (owns(id)) cuts.delete(id);
 });
+let cutRemovalObserverInstalled = false;
+function ensureCutRemovalObserver(): void {
+  if (cutRemovalObserverInstalled) return;
+  cutRemovalObserverInstalled = true;
+  addThreadRemovedObserver((id) => {
+    cuts.delete(id);
+  });
+}
 
 export function fenceConversationSnapshot(threadId: string, sequence: number, turns?: { turnStartedSequence?: number; turnCompletedSequence?: number }): void {
+  ensureCutRemovalObserver();
   cuts.set(threadId, { sequence, turnIndex: -1, kept: new Set(), ...turns, launchId: getTransportHelloFor(threadBackend(threadId) ?? HOME_BACKEND)?.launchId });
 }
 
@@ -96,6 +107,7 @@ function survivesCut(entry: QueuedItemEvent): boolean {
 
 /** Fence queued and not-yet-delivered pre-cut frames without flushing other threads. */
 export function fenceRevertedItemEvents(cut: UserMessageRevertedEvent): void {
+  ensureCutRemovalObserver();
   if (typeof cut.itemEventSequence === 'number') {
     cuts.set(cut.threadId, {
       sequence: cut.itemEventSequence, turnIndex: cut.turnIndex,
@@ -128,17 +140,18 @@ function itemEventChars(evt: ItemStreamEvent): number {
 let itemEventQueueStart = 0;
 let itemEventFlushFrame: number | null = null;
 let itemEventFlushTimeout: number | null = null;
+const itemEventFrameBatcher = createAnimationFrameBatcher('item-event-flush', 'dom-update');
 
 function requestFrame(callback: () => void): number {
   if (typeof requestAnimationFrame === 'function') {
-    return requestAnimationFrame(callback);
+    return itemEventFrameBatcher.request(() => callback());
   }
   return window.setTimeout(callback, 0);
 }
 
 function cancelFrame(handle: number): void {
   if (typeof cancelAnimationFrame === 'function') {
-    cancelAnimationFrame(handle);
+    itemEventFrameBatcher.cancel(handle);
   } else {
     window.clearTimeout(handle);
   }

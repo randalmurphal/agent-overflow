@@ -108,7 +108,7 @@ func (r *Router) blockTypeForStop(threadID string, turnIndex int, scope, provide
 	if blockType != "" {
 		return blockType
 	}
-	key := activeStreamKey(turnIndex, scope, providerItemID)
+	key := makeStreamBlockKey(turnIndex, scope, providerItemID)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := r.threadStateIfPresent(threadID)
@@ -117,22 +117,22 @@ func (r *Router) blockTypeForStop(threadID string, turnIndex int, scope, provide
 	}
 	// fall back to whichever block is currently active in the scope
 	// (Claude content_block_stop omits the type on the wire).
-	if st.activeThinkingBlocks[key] {
+	if st.activeThinkingBlocks[key] != nil {
 		return "thinking"
 	}
-	if st.activeTextBlocks[key] {
+	if st.activeTextBlocks[key] != nil {
 		return "text"
 	}
 	if providerItemID != "" {
 		return ""
 	}
-	for key, ref := range st.activeThinkingBlockRefs {
-		if ref.turnIndex == turnIndex && ref.scope == scope && st.activeThinkingBlocks[key] {
+	for _, ref := range st.activeThinkingBlocks {
+		if ref != nil && ref.turnIndex == turnIndex && ref.scope == scope {
 			return "thinking"
 		}
 	}
-	for key, ref := range st.activeTextBlockRefs {
-		if ref.turnIndex == turnIndex && ref.scope == scope && st.activeTextBlocks[key] {
+	for _, ref := range st.activeTextBlocks {
+		if ref != nil && ref.turnIndex == turnIndex && ref.scope == scope {
 			return "text"
 		}
 	}

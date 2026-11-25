@@ -79,6 +79,8 @@ export interface DocumentContextCache {
 	key: string;
 	/** The raw index of the document's first block (`firstRawIndex`). */
 	lead: number;
+	/** The rendered block index of `lead`, or -1. */
+	leadBlockIndex: number;
 	context: DocumentContext | null;
 	/** The block parse, and its `generation`, that `raws` were last read from. */
 	blocks: ParseBlocksCache | null;
@@ -97,6 +99,7 @@ export const createDocumentContextCache = (): DocumentContextCache => ({
 	facts: [],
 	key: '',
 	lead: -1,
+	leadBlockIndex: -1,
 	context: null,
 	blocks: null,
 	generation: 0,
@@ -352,6 +355,7 @@ const foldedContextOf = (
 		cache.facts = [];
 		cache.key = '';
 		cache.lead = -1;
+		cache.leadBlockIndex = -1;
 		cache.context = null;
 		cache.factScopes = null;
 	}
@@ -366,9 +370,10 @@ const foldedContextOf = (
 	cache.blocks = blocks;
 	cache.generation = blocks.generation;
 	const lead = firstRawIndex(raws);
-	// Whether the context is folded again: a fact or the first block may
-	// have changed, or a fact sits where block indexes may have moved.
-	let changed = cache.context === null || lead !== cache.lead || lead >= from;
+	const leadBlockIndex = lead >= 0 ? (blocks.blockIndexes[lead] ?? -1) : -1;
+	// Whether the context is folded again: a fact or the first block's position
+	// changed, or a fact sits where block indexes may have moved.
+	let changed = cache.context === null || lead !== cache.lead || leadBlockIndex !== cache.leadBlockIndex;
 	if (lead !== cache.lead) from = 0;
 	for (let index = from; index < cache.facts.length; index++) if (holdsFact(cache.facts[index])) changed = true;
 	for (let index = from; index < raws.length; index++) {
@@ -385,6 +390,7 @@ const foldedContextOf = (
 		}
 	}
 	cache.lead = lead;
+	cache.leadBlockIndex = leadBlockIndex;
 	cache.raws.length = raws.length;
 	cache.facts.length = raws.length;
 	if (!changed && cache.context) return cache.context;

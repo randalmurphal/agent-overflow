@@ -181,9 +181,16 @@ export class StreamingBoundarySplitter {
       // message that commits often). The trailing +1 assumes a
       // terminating newline; capping at text.length reproduces
       // offsetAfterLine's last-line (no trailing newline) case.
+      const prevCommitted = Math.max(this.committedLine, 0);
       let start = this.committedLineStart;
-      for (let i = Math.max(this.committedLine, 0); i < result.line; i++) {
+      for (let i = prevCommitted; i < result.line; i++) {
         start += lines[i].length + 1;
+      }
+      // Release committed line substrings strictly behind the detector's
+      // 2-line lookback (`lines[lineIndex - 2]` in BoundaryDetector).
+      const clearEnd = result.line - 1;
+      for (let i = Math.max(0, prevCommitted - 1); i < clearEnd; i++) {
+        lines[i] = '';
       }
       this.committedLine = result.line;
       this.committedLineStart = start;

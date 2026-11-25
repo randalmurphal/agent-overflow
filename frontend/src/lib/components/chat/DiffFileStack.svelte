@@ -74,9 +74,18 @@
   // blob arriving later (persist-tap write racing the row's first
   // emission, item upserts).
   // svelte-ignore state_referenced_locally
+  let lastIngestedThreadId = item.threadId;
+  // svelte-ignore state_referenced_locally
+  let lastIngestedSpans = item.payloadPreviewSpans;
+  // svelte-ignore state_referenced_locally
   ingestPersistedPatchSpans(item.threadId, item.payloadPreviewSpans);
   $effect(() => {
-    ingestPersistedPatchSpans(item.threadId, item.payloadPreviewSpans);
+    const tid = item.threadId;
+    const spans = item.payloadPreviewSpans;
+    if (tid === lastIngestedThreadId && spans === lastIngestedSpans) return;
+    lastIngestedThreadId = tid;
+    lastIngestedSpans = spans;
+    ingestPersistedPatchSpans(tid, spans);
   });
 
   // What the recovery route has returned for this row, if a reader

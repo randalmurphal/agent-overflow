@@ -5,12 +5,276 @@
 package claude
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionimport"
 )
+
+// tryParseStreamEventLine is the zero-map fast path for `stream_event`
+// NDJSON lines (the >90% streaming hot path). Returns handled=false when
+// the line is not actually a `stream_event` envelope so ParseLine falls
+// back to the general decoder.
+func (p *Parser) tryParseStreamEventLine(threadID string, line []byte) ([]provider.ProviderEvent, bool, error) {
+	// Ultra-hot single-unmarshal path: content_block_delta carrying `event`
+	// directly (no `data` wrapper).
+	if bytes.Contains(line, []byte(`"content_block_delta"`)) && !bytes.Contains(line, []byte(`"data"`)) {
+		var fast struct {
+			Type            string `json:"type"`
+			ParentToolUseID string `json:"parent_tool_use_id"`
+			Event           struct {
+				Type  string `json:"type"`
+				Index int    `json:"index"`
+				Delta struct {
+					Type      string `json:"type"`
+					Text      string `json:"text"`
+					Thinking  string `json:"thinking"`
+					Signature string `json:"signature"`
+				} `json:"delta"`
+			} `json:"event"`
+		}
+		if err := json.Unmarshal(line, &fast); err == nil &&
+			fast.Type == "stream_event" && fast.Event.Type == "content_block_delta" {
+			now := time.Now()
+			switch fast.Event.Delta.Type {
+			case "text_delta":
+				if fast.Event.Delta.Text == "" {
+					return nil, true, nil
+				}
+				return []provider.ProviderEvent{{
+					Kind:            provider.EventTextDelta,
+					ThreadID:        threadID,
+					Content:         fast.Event.Delta.Text,
+					Role:            "assistant",
+					ParentToolUseID: fast.ParentToolUseID,
+					Timestamp:       now,
+				}}, true, nil
+			case "thinking_delta":
+				if fast.Event.Delta.Thinking == "" {
+					return nil, true, nil
+				}
+				return []provider.ProviderEvent{{
+					Kind:            provider.EventThinking,
+					ThreadID:        threadID,
+					Content:         fast.Event.Delta.Thinking,
+					ParentToolUseID: fast.ParentToolUseID,
+					Timestamp:       now,
+				}}, true, nil
+			case "signature_delta":
+				p.appendStreamSignature(fast.ParentToolUseID, fast.Event.Index, fast.Event.Delta.Signature)
+				return nil, true, nil
+			default:
+				return nil, true, nil
+			}
+		}
+	}
+
+	var env struct {
+		Type            string          `json:"type"`
+		ParentToolUseID string          `json:"parent_tool_use_id"`
+		APIMessageID    string          `json:"api_message_id"`
+		Data            json.RawMessage `json:"data"`
+		Event           json.RawMessage `json:"event"`
+		AbandonedBlocks json.RawMessage `json:"abandoned_blocks"`
+	}
+	if err := json.Unmarshal(line, &env); err != nil {
+		return nil, true, fmt.Errorf("invalid JSON: %w", err)
+	}
+	if env.Type != "stream_event" {
+		return nil, false, nil
+	}
+
+	now := time.Now()
+	eventRaw := env.Data
+	if len(eventRaw) == 0 {
+		eventRaw = env.Event
+	}
+	if len(eventRaw) == 0 {
+		return nil, true, nil
+	}
+
+	var inner struct {
+		Type         string          `json:"type"`
+		Index        int             `json:"index"`
+		Message      json.RawMessage `json:"message"`
+		ContentBlock struct {
+			Type      string `json:"type"`
+			Signature string `json:"signature"`
+		} `json:"content_block"`
+		Delta json.RawMessage `json:"delta"`
+		Usage json.RawMessage `json:"usage"`
+	}
+	if json.Unmarshal(eventRaw, &inner) != nil {
+		return nil, true, nil
+	}
+
+	eventType := inner.Type
+	if eventType == "" {
+		eventType = readRawString(env.Event)
+	}
+	if eventType == "" {
+		return nil, true, nil
+	}
+
+	parentToolUseID := env.ParentToolUseID
+	if p != nil && parentToolUseID == "" && len(env.Event) > 0 {
+		if len(env.Data) == 0 {
+			if inner.Type == "message_start" {
+				p.betweenTurns = false
+			}
+		} else {
+			var ev struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(env.Event, &ev) == nil && ev.Type == "message_start" {
+				p.betweenTurns = false
+			}
+		}
+	}
+
+	apiMessageIDFor := func() string {
+		if env.APIMessageID != "" {
+			return env.APIMessageID
+		}
+		if p != nil {
+			return p.streamMessageIDs[parentToolUseID]
+		}
+		return ""
+	}
+
+	switch eventType {
+	case "message_start":
+		var msg struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(inner.Message, &msg) == nil {
+			p.rememberStreamedMessageID(msg.ID)
+			p.rememberStreamMessageID(parentToolUseID, firstNonEmpty(env.APIMessageID, msg.ID))
+		}
+		p.startAdvisorMessage(parentToolUseID)
+		return p.startUsageMessage(threadID, parentToolUseID, inner.Message, now), true, nil
+
+	case "content_block_start":
+		if inner.ContentBlock.Type == "" {
+			return nil, true, nil
+		}
+		p.rememberStreamBlock(parentToolUseID, inner.Index, inner.ContentBlock.Type)
+		p.appendStreamSignature(parentToolUseID, inner.Index, inner.ContentBlock.Signature)
+		return []provider.ProviderEvent{{
+			Kind:            provider.EventContentBlockStart,
+			ThreadID:        threadID,
+			Meta:            blockMeta(inner.Index, inner.ContentBlock.Type, apiMessageIDFor()),
+			ParentToolUseID: parentToolUseID,
+			Timestamp:       now,
+		}}, true, nil
+
+	case "content_block_stop":
+		blockType, signature := p.takeStreamBlock(parentToolUseID, inner.Index)
+		return []provider.ProviderEvent{{
+			Kind:            provider.EventContentBlockStop,
+			ThreadID:        threadID,
+			Meta:            settledBlockMeta(inner.Index, blockType, apiMessageIDFor(), sessionimport.ThinkingIsNarration(signature)),
+			ParentToolUseID: parentToolUseID,
+			Timestamp:       now,
+		}}, true, nil
+
+	case "message_stop":
+		defer p.forgetStreamMessageID(parentToolUseID)
+		p.forgetStreamSignatures(parentToolUseID)
+		if len(env.AbandonedBlocks) == 0 {
+			return nil, true, nil
+		}
+		var abandoned struct {
+			APIMessageID   string `json:"api_message_id"`
+			FromBlockIndex int    `json:"from_block_index"`
+		}
+		if json.Unmarshal(env.AbandonedBlocks, &abandoned) != nil {
+			return nil, true, nil
+		}
+		apiMessageID := firstNonEmpty(abandoned.APIMessageID, apiMessageIDFor())
+		if apiMessageID == "" || abandoned.FromBlockIndex < 0 {
+			return nil, true, nil
+		}
+		meta, _ := json.Marshal(provider.BlocksAbandonedMeta{
+			APIMessageID:   apiMessageID,
+			FromBlockIndex: abandoned.FromBlockIndex,
+		})
+		return []provider.ProviderEvent{{
+			Kind:            provider.EventBlocksAbandoned,
+			ThreadID:        threadID,
+			Meta:            meta,
+			ParentToolUseID: parentToolUseID,
+			Timestamp:       now,
+		}}, true, nil
+
+	case "content_block_delta":
+		if len(inner.Delta) == 0 {
+			return nil, true, nil
+		}
+		var delta struct {
+			Type      string `json:"type"`
+			Text      string `json:"text,omitempty"`
+			Thinking  string `json:"thinking,omitempty"`
+			Signature string `json:"signature,omitempty"`
+		}
+		if json.Unmarshal(inner.Delta, &delta) != nil {
+			return nil, true, nil
+		}
+		switch delta.Type {
+		case "text_delta":
+			if delta.Text == "" {
+				return nil, true, nil
+			}
+			return []provider.ProviderEvent{{
+				Kind:            provider.EventTextDelta,
+				ThreadID:        threadID,
+				Content:         delta.Text,
+				Role:            "assistant",
+				ParentToolUseID: parentToolUseID,
+				Timestamp:       now,
+			}}, true, nil
+		case "thinking_delta":
+			if delta.Thinking == "" {
+				return nil, true, nil
+			}
+			return []provider.ProviderEvent{{
+				Kind:            provider.EventThinking,
+				ThreadID:        threadID,
+				Content:         delta.Thinking,
+				ParentToolUseID: parentToolUseID,
+				Timestamp:       now,
+			}}, true, nil
+		case "signature_delta":
+			p.appendStreamSignature(parentToolUseID, inner.Index, delta.Signature)
+			return nil, true, nil
+		default:
+			return nil, true, nil
+		}
+
+	case "message_delta":
+		var events []provider.ProviderEvent
+		if len(inner.Usage) > 0 {
+			var u assistantUsage
+			if json.Unmarshal(inner.Usage, &u) == nil {
+				if p != nil && parentToolUseID == "" {
+					events = append(events, p.reportMessageUsage(threadID, p.usageProgress.activeMessage, "", &u, now)...)
+				}
+				events = appendContextUsageEvent(events, threadID, parentToolUseID, now, u)
+				events = p.stampAdvisorModels(events, threadID, parentToolUseID, &u, now)
+			}
+		}
+		if soft := p.buildSoftTurnComplete(threadID, parentToolUseID, inner.Delta, now); soft != nil {
+			events = append(events, *soft)
+		}
+		return events, true, nil
+
+	default:
+		return nil, true, nil
+	}
+}
 
 // parseStreamEvent handles the `stream_event` envelope produced by the
 // Claude CLI when `--include-partial-messages` is enabled. Unlike the

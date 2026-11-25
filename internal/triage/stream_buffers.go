@@ -57,9 +57,10 @@ type streamPersistBuffer struct {
 	// meta carries the most recent chunk's provider meta. Only
 	// command_output flushes consume it (buildPayloadMeta reads
 	// command/exit fields from it); text/thinking leave it nil.
-	meta      json.RawMessage
-	updatedAt int64
-	timer     *time.Timer
+	meta       json.RawMessage
+	updatedAt  int64
+	timer      *time.Timer
+	timerArmed bool
 }
 
 // contentWeight is the value compared against persistByteThresholdForKind.
@@ -170,8 +171,23 @@ func (r *Router) discardCommandOutputBufferLocked(threadID, itemID string) {
 	}
 	if buffer.timer != nil {
 		buffer.timer.Stop()
+		buffer.timerArmed = false
 	}
 	delete(st.streamPersistBuffers, itemID)
+}
+
+func (r *Router) dropStreamPersistenceBuffer(threadID, itemID string) {
+	r.mu.Lock()
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		if buffer := st.streamPersistBuffers[itemID]; buffer != nil {
+			if buffer.timer != nil {
+				buffer.timer.Stop()
+				buffer.timerArmed = false
+			}
+			delete(st.streamPersistBuffers, itemID)
+		}
+	}
+	r.mu.Unlock()
 }
 
 // stageStreamPersistence records a live delta in the in-memory flush buffer.
@@ -183,11 +199,13 @@ func (r *Router) stageStreamPersistence(delta pendingStreamFlush, flushOnThresho
 	if delta.summaryDelta == "" && delta.payloadDelta == "" {
 		return false
 	}
-
-	flushNow := false
-
 	r.mu.Lock()
-	st := r.state(delta.threadID)
+	flushNow := r.stageStreamPersistenceLocked(r.state(delta.threadID), delta, flushOnThreshold)
+	r.mu.Unlock()
+	return flushNow
+}
+
+func (r *Router) stageStreamPersistenceLocked(st *threadState, delta pendingStreamFlush, flushOnThreshold bool) bool {
 	buffer := st.streamPersistBuffers[delta.itemID]
 	if buffer == nil {
 		buffer = &streamPersistBuffer{
@@ -217,6 +235,7 @@ func (r *Router) stageStreamPersistence(delta pendingStreamFlush, flushOnThresho
 		buffer.meta = delta.meta
 	}
 
+	flushNow := false
 	if buffer.contentWeight() >= persistByteThresholdForKind(buffer.kind) {
 		flushNow = true
 		if !flushOnThreshold {
@@ -225,7 +244,6 @@ func (r *Router) stageStreamPersistence(delta pendingStreamFlush, flushOnThresho
 	} else {
 		r.scheduleStreamPersistenceLocked(buffer)
 	}
-	r.mu.Unlock()
 	return flushNow
 }
 
@@ -244,18 +262,28 @@ func (r *Router) persistIntervalForKind(kind string) time.Duration {
 }
 
 func (r *Router) scheduleStreamPersistenceLocked(buffer *streamPersistBuffer) {
-	if buffer.timer != nil {
+	if buffer.timerArmed {
 		return
 	}
-	threadID, itemID := buffer.threadID, buffer.itemID
-	buffer.timer = time.AfterFunc(r.persistIntervalForKind(buffer.kind), func() {
-		r.flushStreamPersistenceKey(threadID, itemID)
-	})
+	interval := r.persistIntervalForKind(buffer.kind)
+	if buffer.timer == nil {
+		threadID, itemID := buffer.threadID, buffer.itemID
+		buffer.timer = time.AfterFunc(interval, func() {
+			r.flushStreamPersistenceKey(threadID, itemID)
+		})
+	} else {
+		buffer.timer.Reset(interval)
+	}
+	buffer.timerArmed = true
 }
 
-// takeStreamPersistenceLocked extracts and removes one thread's buffer
-// for itemID. Caller holds r.mu.
-func (r *Router) takeStreamPersistenceLocked(st *threadState, itemID string) *pendingStreamFlush {
+const maxRetainedStreamBufferCap = 16 * 1024
+
+// takeStreamPersistenceLocked extracts one thread's buffer for itemID.
+// When deleteEntry is false, the buffer struct and its timer stay pooled on
+// st.streamPersistBuffers so recurring flush windows avoid reallocating a
+// buffer, closure, and timer per window. Caller holds r.mu.
+func (r *Router) takeStreamPersistenceLocked(st *threadState, itemID string, deleteEntry bool) *pendingStreamFlush {
 	if st == nil {
 		return nil
 	}
@@ -265,9 +293,12 @@ func (r *Router) takeStreamPersistenceLocked(st *threadState, itemID string) *pe
 	}
 	if buffer.timer != nil {
 		buffer.timer.Stop()
-		buffer.timer = nil
+		buffer.timerArmed = false
 	}
-	delete(st.streamPersistBuffers, itemID)
+	if deleteEntry {
+		buffer.timer = nil
+		delete(st.streamPersistBuffers, itemID)
+	}
 	if buffer.content.Len() == 0 {
 		return nil
 	}
@@ -287,19 +318,28 @@ func (r *Router) takeStreamPersistenceLocked(st *threadState, itemID string) *pe
 	if buffer.kind != payloadKindCommandOutput {
 		pending.summaryDelta = content
 	}
+	if !deleteEntry {
+		if buffer.content.Cap() > maxRetainedStreamBufferCap {
+			buffer.content = strings.Builder{}
+		} else {
+			buffer.content.Reset()
+		}
+		buffer.meta = nil
+	}
 	return pending
 }
 
-// flushStreamPersistenceKey is the timer callback. It holds streamFlushMu
-// across extract+write so a concurrent replace/settle on the read loop
-// cannot interleave with the SQLite write — without it a timer flush
+// flushStreamPersistenceKey is the timer callback. It holds the thread's
+// streamFlushMu across extract+write so a concurrent replace/settle on the
+// read loop cannot interleave with the SQLite write — without it a timer flush
 // extracted-but-not-committed when a command's authoritative Replace
 // snapshot lands would append a duplicate output tail after the rewrite.
 func (r *Router) flushStreamPersistenceKey(threadID, itemID string) {
-	r.streamFlushMu.Lock()
-	defer r.streamFlushMu.Unlock()
+	id := r.identity(threadID)
+	id.streamFlushMu.Lock()
+	defer id.streamFlushMu.Unlock()
 	r.mu.Lock()
-	pending := r.takeStreamPersistenceLocked(r.threadStateIfPresent(threadID), itemID)
+	pending := r.takeStreamPersistenceLocked(r.threadStateIfPresent(threadID), itemID, false)
 	r.mu.Unlock()
 	if pending == nil {
 		return
@@ -310,10 +350,19 @@ func (r *Router) flushStreamPersistenceKey(threadID, itemID string) {
 }
 
 func (r *Router) flushStreamingItem(threadID, itemID string) error {
-	r.streamFlushMu.Lock()
-	defer r.streamFlushMu.Unlock()
+	return r.flushStreamingItemMode(threadID, itemID, false)
+}
+
+func (r *Router) flushAndDropStreamingItem(threadID, itemID string) error {
+	return r.flushStreamingItemMode(threadID, itemID, true)
+}
+
+func (r *Router) flushStreamingItemMode(threadID, itemID string, deleteEntry bool) error {
+	id := r.identity(threadID)
+	id.streamFlushMu.Lock()
+	defer id.streamFlushMu.Unlock()
 	r.mu.Lock()
-	pending := r.takeStreamPersistenceLocked(r.threadStateIfPresent(threadID), itemID)
+	pending := r.takeStreamPersistenceLocked(r.threadStateIfPresent(threadID), itemID, deleteEntry)
 	r.mu.Unlock()
 	if pending == nil {
 		return nil
@@ -322,13 +371,15 @@ func (r *Router) flushStreamingItem(threadID, itemID string) error {
 }
 
 func (r *Router) flushStreamingThread(threadID string) error {
-	r.streamFlushMu.Lock()
-	defer r.streamFlushMu.Unlock()
+	id := r.identity(threadID)
+	id.streamFlushMu.Lock()
+	defer id.streamFlushMu.Unlock()
 	r.mu.Lock()
-	pending := make([]pendingStreamFlush, 0)
-	if st := r.threadStateIfPresent(threadID); st != nil {
+	var pending []pendingStreamFlush
+	if st := r.threadStateIfPresent(threadID); st != nil && len(st.streamPersistBuffers) > 0 {
+		pending = make([]pendingStreamFlush, 0, len(st.streamPersistBuffers))
 		for itemID := range st.streamPersistBuffers {
-			if flush := r.takeStreamPersistenceLocked(st, itemID); flush != nil {
+			if flush := r.takeStreamPersistenceLocked(st, itemID, true); flush != nil {
 				pending = append(pending, *flush)
 			}
 		}
@@ -355,26 +406,25 @@ func (r *Router) FlushThread(threadID string) error {
 }
 
 func (r *Router) flushAllStreamPersistence() error {
-	r.streamFlushMu.Lock()
-	defer r.streamFlushMu.Unlock()
+	seen := make(map[string]struct{})
+	r.identitiesMu.RLock()
+	for tid := range r.identities {
+		seen[tid] = struct{}{}
+	}
+	r.identitiesMu.RUnlock()
+
 	r.mu.Lock()
-	pending := make([]pendingStreamFlush, 0)
-	for _, st := range r.threads {
-		for itemID := range st.streamPersistBuffers {
-			if flush := r.takeStreamPersistenceLocked(st, itemID); flush != nil {
-				pending = append(pending, *flush)
-			}
+	for tid, st := range r.threads {
+		if len(st.streamPersistBuffers) > 0 {
+			seen[tid] = struct{}{}
 		}
 	}
 	r.mu.Unlock()
 
 	var firstErr error
-	for _, flush := range pending {
-		if err := r.flushStreamPersistence(flush); err != nil {
-			r.providerWriteFailed(flush.threadID, fmt.Sprintf("stream persistence flush %s/%s", flush.threadID, flush.itemID), err)
-			if firstErr == nil {
-				firstErr = err
-			}
+	for tid := range seen {
+		if err := r.flushStreamingThread(tid); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
 	return firstErr
@@ -401,6 +451,7 @@ func (r *Router) flushStreamPersistence(flush pendingStreamFlush) error {
 			flush.updatedAt,
 		)
 		if isLateStreamPersistence(err) {
+			r.dropStreamPersistenceBuffer(flush.threadID, flush.itemID)
 			return nil
 		}
 		if err != nil {
@@ -416,7 +467,7 @@ func (r *Router) flushStreamPersistence(flush pendingStreamFlush) error {
 		r.enrichStreamingPathRefsAndEmit(updated, flush.updatedAt)
 		return nil
 	case itemKindThinking:
-		_, err := r.store.AppendItemSummaryTailAndPayloadData(
+		err := r.store.AppendItemSummaryTailAndPayloadDataNoRead(
 			flush.threadID,
 			flush.itemID,
 			flush.summaryDelta,
@@ -426,6 +477,7 @@ func (r *Router) flushStreamPersistence(flush pendingStreamFlush) error {
 			flush.updatedAt,
 		)
 		if isLateStreamPersistence(err) {
+			r.dropStreamPersistenceBuffer(flush.threadID, flush.itemID)
 			return nil
 		}
 		return err

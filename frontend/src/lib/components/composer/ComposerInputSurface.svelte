@@ -179,6 +179,7 @@
   }
 
   function handleKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape') invalidateTriggerSnapshot();
     dispatchComposerInputKeydown(event, {
       mentions,
       slash,
@@ -201,9 +202,42 @@
     refreshCompletionTriggers();
   }
 
+  // Deduplicate back-to-back refresh calls fired by `input` + `keyup`/`select`
+  // on the exact same (textarea, value, selection, shellPrefix) snapshot.
+  let lastTriggerTextarea: HTMLTextAreaElement | undefined;
+  let lastTriggerValue = '';
+  let lastTriggerStart = -1;
+  let lastTriggerEnd = -1;
+  let lastTriggerShell = false;
+
+  function invalidateTriggerSnapshot(): void {
+    lastTriggerTextarea = undefined;
+  }
+
   // Both completion menus read the same (value, caret) pair, so they refresh
   // together — a caret move that closes one must be able to open the other.
-  function refreshCompletionTriggers() {
+  function refreshCompletionTriggers(force = false) {
+    const el = textarea;
+    if (el) {
+      const val = el.value;
+      const start = el.selectionStart;
+      const end = el.selectionEnd;
+      if (
+        !force
+        && el === lastTriggerTextarea
+        && val === lastTriggerValue
+        && start === lastTriggerStart
+        && end === lastTriggerEnd
+        && shellPrefix === lastTriggerShell
+      ) {
+        return;
+      }
+      lastTriggerTextarea = el;
+      lastTriggerValue = val;
+      lastTriggerStart = start;
+      lastTriggerEnd = end;
+      lastTriggerShell = shellPrefix;
+    }
     mentions.refreshTriggers();
     slash.refreshTrigger();
     syncSelectionState();
@@ -461,7 +495,7 @@
       error={mentions.mentionError}
       workspacePath={paneWorkspacePath(pane)}
       onSelect={mentions.insertMention}
-      onClose={mentions.closeMention}
+      onClose={() => { invalidateTriggerSnapshot(); mentions.closeMention(); }}
       onHover={(idx) => mentions.setMentionActiveIndex(idx)}
     />
 
@@ -471,7 +505,7 @@
       sections={slash.slashSections}
       activeIndex={slash.slashActiveIndex}
       onSelect={slash.insertCommand}
-      onClose={slash.closeSlash}
+      onClose={() => { invalidateTriggerSnapshot(); slash.closeSlash(); }}
       onHover={(idx) => slash.setSlashActiveIndex(idx)}
     />
 

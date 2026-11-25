@@ -7,6 +7,7 @@
 // write callers.
 
 import type { ContentGeometrySample, EngineCompensation } from '../virtual/types';
+import type { ScrollMetrics } from './overlayScrollbar';
 import type { ContentWriteCaller, EngineWriteCaller } from './resolver';
 
 // Every programmatic scrollTop write names its origin AT the single write
@@ -519,7 +520,7 @@ export interface UseStickToBottomOptions {
    * content subtree. The callback is imperative and does not imply a Svelte
    * subscription.
    */
-  onContentGeometryProcessed?: (scrollable: boolean) => void;
+  onContentGeometryProcessed?: (scrollable: boolean, metrics?: ScrollMetrics) => void;
   /**
    * Every chokepoint write, reported with the browser-rounded readback
    * the scroll event will carry. Chat's MessageTimeline forwards it to

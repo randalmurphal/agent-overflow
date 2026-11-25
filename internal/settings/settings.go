@@ -1170,9 +1170,42 @@ func (s *Service) AddRecentWorkspace(path string) {
 	s.addRecentWorkspace("", DeviceDesktop, path)
 }
 
+func recentWorkspacesAlreadyHead(recent []string, path string) bool {
+	if len(recent) == 0 || len(recent) > 10 || recent[0] != path {
+		return false
+	}
+	return !slices.Contains(recent[1:], path)
+}
+
 func (s *Service) addRecentWorkspace(bucket string, class DeviceClass, path string) {
 	path = strings.TrimSpace(path)
 	if path == "" {
+		return
+	}
+
+	// Fast no-op check: adding a workspace that is already at the head of this
+	// caller's recent list (with no duplicates) produces no change, so avoid
+	// full settings file reload, triple keyValues JSON projections, and disk
+	// writes. Matches TestAddRecentWorkspaceAnnouncesOnceThenStaysSilent.
+	s.mu.RLock()
+	store := s.store
+	deviceScope := bucket
+	if deviceScope == "" {
+		deviceScope = s.backendBucket
+	}
+	s.mu.RUnlock()
+	if store != nil {
+		if deviceScope != "" {
+			if rows, err := store.GetUIState(deviceScope); err == nil {
+				if raw, ok := rows["recentWorkspaces"]; ok {
+					var recent []string
+					if json.Unmarshal([]byte(raw), &recent) == nil && recentWorkspacesAlreadyHead(recent, path) {
+						return
+					}
+				}
+			}
+		}
+	} else if recentWorkspacesAlreadyHead(s.Get().RecentWorkspaces, path) {
 		return
 	}
 

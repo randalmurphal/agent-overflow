@@ -408,6 +408,10 @@
   // (isEnabled → `visible`): these effects must re-run on exactly their
   // named dependency, not on whatever a getter happens to touch.
   $effect(() => {
+    if (!visible) {
+      untrack(() => sync.cancel());
+      return;
+    }
     ticks;
     untrack(() => sync.schedule());
   });

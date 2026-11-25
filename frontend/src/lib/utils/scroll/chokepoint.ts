@@ -65,8 +65,8 @@ export interface WriteChokepoint {
   /** Write and return the browser-rounded readback. A caller that just
    * sampled the bottom target can pass it to avoid repeating layout reads. */
   writeScrollTop(caller: ScrollWriteCaller, value: number, bottomTarget?: number): number | undefined;
-  /** Ledger check: live scrollTop differs from the last explained position. */
-  scrollTopUnexplained(): boolean;
+  /** Ledger check: live (or caller-supplied) scrollTop differs from the last explained position. */
+  scrollTopUnexplained(knownScrollTop?: number): boolean;
   /** The ledger's last explained scrollTop; null until the first write or
    * classified scroll after attach. */
   lastExplainedScrollTop(): number | null;
@@ -87,10 +87,11 @@ export function createWriteChokepoint(deps: WriteChokepointDeps): WriteChokepoin
   // own arrival-band conditions ignore ≤1px strands anyway.
   let lastExplainedScrollTop: number | null = null;
 
-  function scrollTopUnexplained(): boolean {
+  function scrollTopUnexplained(knownScrollTop?: number): boolean {
     const scrollEl = deps.getScrollEl();
     if (!scrollEl || lastExplainedScrollTop === null) return false;
-    return !withinArrivalBand(scrollEl.scrollTop, lastExplainedScrollTop);
+    const currentTop = knownScrollTop !== undefined ? knownScrollTop : scrollEl.scrollTop;
+    return !withinArrivalBand(currentTop, lastExplainedScrollTop);
   }
 
   // ===== Arrival-readback acceptance =====

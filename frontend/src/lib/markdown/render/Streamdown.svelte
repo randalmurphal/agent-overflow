@@ -174,6 +174,7 @@
 	const blocksCache = createParseBlocksCache();
 	const isolatedBlockValues = [''];
 	let isolatedBlockSource: string | null = null;
+	let isolatedBlockEndsWithNewline = false;
 	let isolatedBlockAppendSafe = false;
 	let documentParseCalls = 0;
 	let documentPublications = 0;
@@ -212,6 +213,7 @@
 	const blocksState = $derived.by(() => {
 		if (isStatic) {
 			isolatedBlockSource = null;
+			isolatedBlockEndsWithNewline = false;
 			isolatedBlockAppendSafe = false;
 			lastDocumentBlocksState = undefined;
 			lastEvaluationPath = 'static';
@@ -227,7 +229,7 @@
 			isolatedVolatileTail &&
 			isolatedBlockAppendSafe &&
 			appendMatchesIsolatedBlock &&
-			!/[\r\n]$/.test(isolatedBlockSource ?? '') &&
+			!isolatedBlockEndsWithNewline &&
 			!/[\r\n]/.test(contentAppend?.delta ?? '');
 		if (useIsolatedBlock) {
 			isolatedBlockValues[0] = content;
@@ -254,6 +256,12 @@
 		);
 		isolatedBlockAppendSafe = values.length === 1 && parseRecordAllowsSameLineBypass();
 		isolatedBlockSource = isolatedBlockAppendSafe ? content : null;
+		if (isolatedBlockAppendSafe && content.length > 0) {
+			const lastCode = content.charCodeAt(content.length - 1);
+			isolatedBlockEndsWithNewline = lastCode === 10 || lastCode === 13;
+		} else {
+			isolatedBlockEndsWithNewline = false;
+		}
 		lastEvaluationPath = blocksCache.lastPath;
 		if (blocksCache.lastPath === 'unchanged' && lastDocumentBlocksState?.values === values) {
 			return lastDocumentBlocksState;

@@ -258,6 +258,11 @@ func (p *pendingWorktreeExits) settle(threadID, token string) bool {
 // by a refused or unreadable result, by the end of the top-level turn, or by
 // the session closing.
 func (a *App) observeClaudeWorktreeExit(threadID, sessionToken string, evt provider.ProviderEvent) {
+	switch evt.Kind {
+	case provider.EventToolStart, provider.EventToolComplete, provider.EventError, provider.EventTurnComplete:
+	default:
+		return
+	}
 	if claude.WorktreeRemovalStarted(evt) {
 		a.pendingWorktreeExits.start(threadID, sessionToken, evt.ItemID)
 		return

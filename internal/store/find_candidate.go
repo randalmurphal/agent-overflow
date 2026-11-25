@@ -63,6 +63,35 @@ const findSeparator = "\n"
 // removed. It keeps every non-ASCII code point, so it needs no Unicode
 // class table beyond the fold's.
 func findLoose(text string) string {
+	// Single-pass ASCII fast path: avoid an intermediate FoldForFind copy
+	// and second pass when the input is pure ASCII.
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if c >= 0x80 {
+			return findLooseUnicode(text)
+		}
+		if ('a' <= c && c <= 'z') || ('0' <= c && c <= '9') {
+			continue
+		}
+		b := make([]byte, 0, len(text))
+		b = append(b, text[:i]...)
+		for ; i < len(text); i++ {
+			c = text[i]
+			if c >= 0x80 {
+				return findLooseUnicode(text)
+			}
+			if ('a' <= c && c <= 'z') || ('0' <= c && c <= '9') {
+				b = append(b, c)
+			} else if 'A' <= c && c <= 'Z' {
+				b = append(b, c+('a'-'A'))
+			}
+		}
+		return string(b)
+	}
+	return text
+}
+
+func findLooseUnicode(text string) string {
 	folded := stringsx.FoldForFind(text)
 	keep := 0
 	for i := 0; i < len(folded); i++ {

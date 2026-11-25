@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -118,6 +119,11 @@ type Parser struct {
 	// timeline row. Two generations bound it: a task's binding outlives
 	// the next parserTaskMapCap tasks, whatever their kind.
 	taskToolUses recentMap[taskToolUseRef]
+	// orphanTasksByToolUse indexes taskIDs recorded in taskToolUses before
+	// toolUseParents learned their tool_use_id's parent, so rememberToolUseParent
+	// patches only affected entries in O(1) instead of scanning both recentMap
+	// generations.
+	orphanTasksByToolUse map[string][]string
 	// toolUseNames records the tool name of every observed tool_use,
 	// forwarded on stdout or projected from the session mirror. Two
 	// readers need it. system/task_started's resume detection
@@ -518,6 +524,7 @@ func (p *Parser) Close() {
 	p.advisorMessages = nil
 	p.toolUseParents = nil
 	p.taskToolUses = recentMap[taskToolUseRef]{}
+	p.orphanTasksByToolUse = nil
 	p.toolUseNames = recentMap[string]{}
 	p.unclassifiedTaskCalls = recentMap[agentTaskStart]{}
 	p.taskTranscriptRoots = recentMap[string]{}
@@ -584,6 +591,15 @@ func ParseLine(threadID string, line []byte) ([]provider.ProviderEvent, error) {
 // ParseLine on a Parser preserves state across calls so tool-use / tool-result
 // pairs can share metadata (e.g. the `is_background` flag).
 func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEvent, error) {
+	// Hot path: streaming partial messages account for >90% of Claude CLI
+	// stdout lines. Decode directly into typed structs without allocating
+	// top-level or inner map[string]json.RawMessage maps.
+	if bytes.Contains(line, []byte(`"stream_event"`)) {
+		if events, handled, err := p.tryParseStreamEventLine(threadID, line); handled {
+			return events, err
+		}
+	}
+
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
@@ -905,13 +921,18 @@ func (p *Parser) rememberToolUseParent(toolUseID, parentToolUseID string) {
 		p.toolUseParents = make(map[string]string)
 	}
 	p.toolUseParents[toolUseID] = parentToolUseID
-	for _, generation := range []map[string]taskToolUseRef{p.taskToolUses.current, p.taskToolUses.previous} {
-		for taskID, ref := range generation {
-			if ref.ToolUseID == toolUseID && ref.ParentToolUseID == "" {
+	if orphanTasks := p.orphanTasksByToolUse[toolUseID]; len(orphanTasks) > 0 {
+		for _, taskID := range orphanTasks {
+			if ref, ok := p.taskToolUses.current[taskID]; ok && ref.ToolUseID == toolUseID && ref.ParentToolUseID == "" {
 				ref.ParentToolUseID = parentToolUseID
-				generation[taskID] = ref
+				p.taskToolUses.current[taskID] = ref
+			}
+			if ref, ok := p.taskToolUses.previous[taskID]; ok && ref.ToolUseID == toolUseID && ref.ParentToolUseID == "" {
+				ref.ParentToolUseID = parentToolUseID
+				p.taskToolUses.previous[taskID] = ref
 			}
 		}
+		delete(p.orphanTasksByToolUse, toolUseID)
 	}
 }
 
@@ -926,10 +947,20 @@ func (p *Parser) rememberTaskToolUse(taskID, toolUseID string) {
 	if p == nil || taskID == "" || toolUseID == "" {
 		return
 	}
+	parentID := p.toolUseParent(toolUseID)
 	p.taskToolUses.set(taskID, taskToolUseRef{
 		ToolUseID:       toolUseID,
-		ParentToolUseID: p.toolUseParent(toolUseID),
+		ParentToolUseID: parentID,
 	})
+	if parentID == "" {
+		if p.orphanTasksByToolUse == nil {
+			p.orphanTasksByToolUse = make(map[string][]string)
+		}
+		if len(p.orphanTasksByToolUse) >= parserTaskMapCap {
+			p.orphanTasksByToolUse = make(map[string][]string)
+		}
+		p.orphanTasksByToolUse[toolUseID] = append(p.orphanTasksByToolUse[toolUseID], taskID)
+	}
 }
 
 func (p *Parser) taskToolUseRef(taskID string) taskToolUseRef {

@@ -111,10 +111,15 @@ type processBound struct {
 
 	// workspacePath caches the directory the thread's provider process
 	// works in, for path-ref enrichment: every streaming text flush and
-	// every prose settle reads it, 10-30 times in a heavy turn. It is read
-	// from the thread row at first use, follows the process's own move
-	// (followWorkspaceChange). A replacement launches from the thread row's
-	// workspace. Every other checkout move restarts the session.
+	// every prose settle reads it, 10-30 times in a heavy turn. provider
+	// caches threads.provider from the same single-row lookup so tool
+	// start/complete and background tray paths avoid repeated SQLite reads.
+	// Both are read from the thread row at first use; workspacePath follows
+	// the process's own move (followWorkspaceChange). A replacement launches
+	// from the thread row's workspace. Every other checkout move restarts
+	// the session.
+	provider         string
+	providerSet      bool
 	workspacePath    string
 	workspacePathSet bool
 }

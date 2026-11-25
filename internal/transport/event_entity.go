@@ -169,7 +169,11 @@ type subscriberWatchFilter struct {
 // needs its (thread, scope) pair or its thread named whole, unless the set
 // stated no scopes.
 func (f *subscriberWatchFilter) admits(channel, entityKey, entityScope string) bool {
-	if entityScope == "" || f.scopes == nil || !channelTranscriptScopeFiltered(channel) {
+	return f.admitsWithScope(entityKey, entityScope, channelTranscriptScopeFiltered(channel))
+}
+
+func (f *subscriberWatchFilter) admitsWithScope(entityKey, entityScope string, scopeFiltered bool) bool {
+	if entityScope == "" || f.scopes == nil || !scopeFiltered {
 		_, ok := f.threads[entityKey]
 		return ok
 	}

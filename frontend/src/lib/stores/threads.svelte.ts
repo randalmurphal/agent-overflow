@@ -1,4 +1,4 @@
-import { getAllPanes } from './panes.svelte';
+import { dropOpenThreadSignal, getAllPanes } from './panes.svelte';
 import { reconcileThreadRows } from './eventsThreadRows';
 import { computerCatalogWriter } from './computerCatalogWriter';
 import { computerCatalog, retainUnavailableComputerRows, type CatalogPart, type ComputerRows } from './computerRows';
@@ -18,6 +18,7 @@ import { invalidateReplicaCatalog } from '../replica/session';
 
 import { clearLiveUsageSnapshot } from './threadContextWindow';
 import { clearThreadStatus } from './threadStatuses.svelte';
+import { forgetQueueForThread } from './sendQueue.svelte';
 import { notifyStandingAgentEnded } from './standingAgentEnded';
 import { releaseThreadTerminalState } from '../components/terminal/terminalStore.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
@@ -265,6 +266,8 @@ export function removeThread(id: string): void {
   // Drop any live-status entry so the sidebar doesn't keep painting a
   // dot for a thread that no longer exists in the list.
   clearThreadStatus(id);
+  forgetQueueForThread(id);
+  dropOpenThreadSignal(id);
   // Drop the live-todo UI prefs entry too so the module-scoped map
   // doesn't accumulate dead-thread keys across long sessions.
   dropLiveTodoUiPrefs(id);
@@ -306,7 +309,7 @@ export function replaceThread(thread: Thread): void {
  */
 export function touchThreadActivity(id: string, updatedAt: number): Thread | undefined {
   if (!id || !Number.isFinite(updatedAt)) return undefined;
-  const existing = threads.find((t) => t.id === id);
+  const existing = getThreadById(id);
   if (existing === undefined) return undefined;
 
   if (getThreadLiveActivityAt(existing) < updatedAt) {
@@ -520,6 +523,8 @@ export function dropThreadsForDetachedBackend(ids: readonly string[]): void {
   for (const id of ids) {
     liveActivityAt.drop(id);
     clearThreadStatus(id);
+  forgetQueueForThread(id);
+  dropOpenThreadSignal(id);
     dropLiveTodoUiPrefs(id);
     dropActivityRailUiPrefs(id);
   }

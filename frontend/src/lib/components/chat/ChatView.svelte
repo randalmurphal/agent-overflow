@@ -295,8 +295,8 @@
       thread.attention?.at ?? '',
       thread.hasIncompleteTurn ? 'interrupted' : '',
       thread.hasFailedTurn ? 'failed' : '',
-      pane.timelineRevision,
       pane.latestSettledTurn?.turnId ?? '',
+      pane.latestSettledTurn?.completedAt ?? '',
     ].join(':');
     if (marker === lastReadMarker) return;
     lastReadMarker = marker;
@@ -373,6 +373,7 @@
   });
 
   $effect(() => {
+    if (!isUiRenderTraceEnabled()) return;
     void pane.threadId;
     void pane.loading;
     void pane.items.length;
@@ -384,7 +385,6 @@
     void pane.showPlanSidebar;
     void pane.showReviewPane;
 
-    if (!isUiRenderTraceEnabled()) return;
     recordUiTrace('chat.state', summarizePaneForTrace(pane));
     scheduleDomUiTrace('chat', 'chat.dom', () => snapshotChatDomForTrace(chatRoot));
   });

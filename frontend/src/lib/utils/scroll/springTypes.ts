@@ -31,13 +31,15 @@ export interface SpringChaseDeps {
   /** Force a native geometry read for sentinel/clamp/refusal arbitration. */
   targetScrollTop(forceLayoutRead?: boolean): number;
   currentScrollTop(forceLayoutRead?: boolean): number;
+  /** Client height for sentinel rebasing; avoids forcing layout when cached. */
+  currentClientHeight?(forceLayoutRead?: boolean): number;
   arrival: ArrivalReadback;
   writeScrollTop(caller: ScrollWriteCaller, value: number, bottomTarget: number): number | undefined;
   liveContentActive(): boolean;
   prefersReducedMotion(): boolean;
   scrollGrid(): ScrollGrid;
   forceNextSpringTickTrace(): void;
-  scrollTopUnexplained(): boolean;
+  scrollTopUnexplained(readFree?: boolean): boolean;
   reportWriteRefusal(event: SpringWriteRefusalEvent): void;
 }
 
@@ -57,7 +59,7 @@ export interface SpringChase {
   markStructuralAppend(): void;
   structuralAppendPending(): boolean;
   clearStructuralAppend(): void;
-  sentinelTarget(): number;
-  sentinelClampWitnessed(): boolean;
+  sentinelTarget(readFree?: boolean): number;
+  sentinelClampWitnessed(readFree?: boolean): boolean;
   refusalLatched(): boolean;
 }

@@ -45,7 +45,7 @@
   import { getEffectiveThreadStatus, getThreadWaitingOn } from '../../stores/threadStatuses.svelte';
   import { unreachableThreadMachineName } from '../../stores/attachedBackends.svelte';
   import { getThreadLiveActivityAt } from '../../stores/threads.svelte';
-  import { openThreadIds } from '../../stores/panes.svelte';
+  import { isThreadOpen } from '../../stores/panes.svelte';
   import { sidebarFlip, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
   import { buildSidebarThreadTree, type SidebarGroupTreeNode, type SidebarTreeNode } from '../../utils/sidebarTree';
   import {
@@ -98,9 +98,32 @@
     }),
   );
 
-  // Threads mounted in any pane never hide behind the cut. Re-minted only
-  // when a pane opens, closes, or swaps thread.
-  let openIds = $derived(openThreadIds());
+  // Threads in this list that are mounted in any pane never hide behind the
+  // cut. Keyed per thread id with identity cutoff so opening or switching a
+  // thread in another project does not re-derive this list's preview or rows.
+  const EMPTY_OPEN_IDS: ReadonlySet<string> = new Set();
+  let prevOpenIds: ReadonlySet<string> = EMPTY_OPEN_IDS;
+  let openIds = $derived.by<ReadonlySet<string>>(() => {
+    let next: Set<string> | null = null;
+    for (const thread of threads) {
+      if (!isThreadOpen(thread.id)) continue;
+      if (!next) next = new Set();
+      next.add(thread.id);
+    }
+    const candidate = next ?? EMPTY_OPEN_IDS;
+    if (candidate.size === prevOpenIds.size) {
+      let same = true;
+      for (const id of candidate) {
+        if (!prevOpenIds.has(id)) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return prevOpenIds;
+    }
+    prevOpenIds = candidate;
+    return candidate;
+  });
   let visibleLimit = $derived(list.kind === 'project'
     ? list.limit
     : getThreadListVisibleLimit(ASSISTANTS_LIST_KEY));
@@ -142,10 +165,34 @@
   // sameSidebarVisibleRows.
   let prevVisibleNodes: ReturnType<typeof flattenSidebarThreadTree> = [];
   let visibleNodes = $derived.by(() => {
+    const collapsedGroupIds = getCollapsedGroups();
+    // Only collapsed groups need `activeThreadId` (to inline-pin their
+    // active member beneath the group header). Skipping `pane?.threadId`
+    // when no group in this list is collapsed keeps thread switches in
+    // other lists from re-flattening this list at all.
+    let activeThreadId: string | null = null;
+    if (pane && collapsedGroupIds.size > 0) {
+      const hasShowingSignal = typeof pane.isShowingThread === 'function';
+      for (const node of preview.visibleNodes) {
+        if (node.kind !== 'group' || !collapsedGroupIds.has(node.group.id)) continue;
+        if (hasShowingSignal) {
+          for (const member of node.children) {
+            if (pane.isShowingThread(member.thread.id)) {
+              activeThreadId = member.thread.id;
+              break;
+            }
+          }
+          if (activeThreadId !== null) break;
+        } else {
+          activeThreadId = pane.threadId ?? null;
+          break;
+        }
+      }
+    }
     const next = flattenSidebarThreadTree({
       nodes: preview.visibleNodes,
-      collapsedGroupIds: getCollapsedGroups(),
-      activeThreadId: pane?.threadId ?? null,
+      collapsedGroupIds,
+      activeThreadId,
       openThreadIds: openIds,
       groupVisibleLimit: getThreadListVisibleLimit,
     });

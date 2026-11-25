@@ -191,6 +191,9 @@ export interface ContentObserverDeps {
   isNearBottom(): boolean;
   targetScrollTop(): number;
   refreshIsNearBottom(): number;
+  /** Single-pass DOM geometry read + near-bottom refresh (avoids back-to-back
+   * scrollHeight/clientHeight/scrollTop reads on the non-cached path). */
+  readBottomGeometry?(): { target: number; scrollTop: number };
   /** A viewport-only sample uses the controller's shared geometry policy. */
   viewportGeometryChanged(): void;
   /**
@@ -205,12 +208,14 @@ export interface ContentObserverDeps {
   ): { target: number; scrollTop: number } | null;
   /** Publish the exact bottom target carried by an external geometry sample. */
   cacheExternalBottomTarget(height: number, viewportHeight: number): void;
-  writeScrollTop(caller: ScrollWriteCaller, value: number): void;
-  resolverStateSnapshot(): ResolverState;
+  writeScrollTop(caller: ScrollWriteCaller, value: number, bottomTarget?: number): void;
+  resolverStateSnapshot(readFree?: boolean): ResolverState;
   /** OS prefers-reduced-motion OR the app's low-power setting. */
   prefersReducedMotion(): boolean;
   /** Secondary consumers run after the controller has applied this sample. */
   contentGeometryProcessed(scrollable: boolean): void;
+  /** Returns cached scrollability when a fresh DOM read already landed in this sample. */
+  cachedScrollableHint?(): boolean | null;
   /** Narrowed to what a delivery decision may drive on the spring. */
   spring: Pick<SpringChase, 'structuralAppendPending' | 'snapOscillationToBottom' | 'markTargetChanged' | 'start'>;
 }
@@ -274,6 +279,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   // observes live content or an armed structural append.
   let coldLoadSettleUntil = 0;
   let resizeDifference = 0;
+  let resizeClearSentinel = 0;
   let resizeClearTimer: ReturnType<typeof setTimeout> | null = null;
   let resizeClearFrame: number | null = null;
   let resizeClearGeneration = 0;
@@ -311,14 +317,19 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   }
 
   function scheduleResizeDifferenceClear(sentinel: number): void {
+    resizeClearSentinel = sentinel;
+    // Coalesce burst stamps arriving within the same 1ms timer window without
+    // churning clearTimeout+setTimeout on every streaming beat.
+    if (resizeClearTimer !== null) return;
     cancelResizeDifferenceClear();
     const generation = resizeClearGeneration;
     resizeClearTimer = setTimeout(() => {
       resizeClearTimer = null;
+      const expectedSentinel = resizeClearSentinel;
       resizeClearFrame = requestAnimationFrame(() => {
         if (generation !== resizeClearGeneration) return;
         resizeClearFrame = null;
-        if (resizeDifference === sentinel) {
+        if (resizeDifference === expectedSentinel) {
           resizeDifference = 0;
           resizeCorrelatedUntaggedScrollBudget = 0;
         }
@@ -511,9 +522,14 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     // sampling hidden geometry on every streaming beat.
     const reportProcessedGeometry = (): void => {
       const viewportHeight = settle?.viewportHeight;
+      if (viewportHeight !== undefined) {
+        deps.contentGeometryProcessed(nextHeight - viewportHeight > 1);
+        return;
+      }
+      const hint = deps.cachedScrollableHint?.();
       deps.contentGeometryProcessed(
-        viewportHeight !== undefined
-          ? nextHeight - viewportHeight > 1
+        hint !== null && hint !== undefined
+          ? hint
           : scrollEl.scrollHeight - scrollEl.clientHeight > 1,
       );
     };
@@ -575,9 +591,10 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       // First fire: snap to bottom synchronously so the initial paint
       // lands at the right place. Matches upstream's `initial` behavior
       // when isAtBottom starts true.
+      const firstTarget = deps.targetScrollTop();
       const decision = resolveContentDelivery(deps.resolverStateSnapshot(), {
         kind: 'first',
-        target: deps.targetScrollTop(),
+        target: firstTarget,
       });
       if (isUiRenderTraceEnabled()) trace('scroll.contentRO.firstFire', () => ({
         nextHeight: Math.round(nextHeight),
@@ -589,9 +606,10 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
         clientHeight: Math.round(scrollEl.clientHeight),
       }));
       if (decision.write) {
-        deps.writeScrollTop(decision.write.caller, decision.write.value);
+        deps.writeScrollTop(decision.write.caller, decision.write.value, firstTarget);
+      } else {
+        deps.refreshIsNearBottom();
       }
-      deps.refreshIsNearBottom();
       reportProcessedGeometry();
       return;
     }
@@ -688,16 +706,14 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     if (cachedGeometry) {
       target = cachedGeometry.target;
       scrollTopAtDelivery = cachedGeometry.scrollTop;
+    } else if (deps.readBottomGeometry) {
+      // Single-pass DOM read: refreshes isNearBottom + cached geometry and
+      // returns both target and scrollTop without repeated scrollHeight/clientHeight reads.
+      const read = deps.readBottomGeometry();
+      target = read.target;
+      scrollTopAtDelivery = read.scrollTop;
     } else {
-      // Refresh the geometric near-bottom flag BEFORE resolving so the
-      // decision and its trace see the same post-resize geometry.
       deps.refreshIsNearBottom();
-      // Cache the bottom target once per RO delivery. `targetScrollTop()`
-      // reads `scrollHeight` + `clientHeight` (forced layout), and neither
-      // changes across this synchronous callback — the only writes here
-      // are to `scrollTop`, which don't affect them — so one read serves
-      // the whole decision. Mirrors the spring tick's per-frame
-      // `const target` discipline.
       target = deps.targetScrollTop();
       scrollTopAtDelivery = scrollEl.scrollTop;
     }
@@ -715,7 +731,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       pinnedRemeasureActive,
       prefersReducedMotion: deps.prefersReducedMotion(),
     };
-    const decision = resolveContentDelivery(deps.resolverStateSnapshot(), observation);
+    const decision = resolveContentDelivery(deps.resolverStateSnapshot(true), observation);
     if (isUiRenderTraceEnabled()) trace('scroll.contentRO', () => ({
       prev: Math.round(prev),
       next: Math.round(nextHeight),
@@ -768,7 +784,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       // upward jolt on an above-viewport image row remeasure).
       deps.spring.snapOscillationToBottom(decision.write.caller, decision.write.value);
     } else if (decision.write) {
-      deps.writeScrollTop(decision.write.caller, decision.write.value);
+      deps.writeScrollTop(decision.write.caller, decision.write.value, target);
     }
     if (decision.startSpring) {
       deps.spring.markTargetChanged();

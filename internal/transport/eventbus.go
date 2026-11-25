@@ -132,6 +132,34 @@ type EventBus struct {
 // the bus's steady-state memory. It evicts its oldest entries to stay
 // within capacity entries and byteBudget wire bytes, and an aging ring
 // also releases entries older than RingRetainFor.
+// ringDeliveryPolicy caches a channel's immutable registry flags on its ring
+// so EmitScoped's per-subscriber fanout avoids repeated map hash probes under
+// EventBus.mu.
+type ringDeliveryPolicy struct {
+	remoteVisible      bool
+	scopeBit           scopeMask
+	entityFiltered     bool
+	scopeFiltered      bool
+	backgroundWithheld bool
+	retention          Retention
+}
+
+func deliveryPolicyForChannel(channel string) ringDeliveryPolicy {
+	policy, _ := policyForChannel(channel)
+	bit, ok := channelScopeBits[channel]
+	if !ok {
+		bit = unregisteredChannelBit
+	}
+	return ringDeliveryPolicy{
+		remoteVisible:      policy.Audience == AudienceAny,
+		scopeBit:           bit,
+		entityFiltered:     policy.EntityFiltered,
+		scopeFiltered:      policy.EntityFiltered && policy.TranscriptScopeFiltered,
+		backgroundWithheld: backgroundWithheldChannel(channel),
+		retention:          policy.Retention,
+	}
+}
+
 type ring struct {
 	head     int
 	count    int
@@ -155,6 +183,8 @@ type ring struct {
 	// Cached so Emit can assemble WireBytes with plain appends under the
 	// bus mutex instead of a reflection marshal (see appendEventWire).
 	envPrefix []byte
+	// policy holds this channel's pre-resolved delivery flags.
+	policy ringDeliveryPolicy
 }
 
 // ringInitialCapacity is the first backing allocation for a non-empty
@@ -164,8 +194,9 @@ const ringInitialCapacity = 16
 // newRing sizes channel's ring from its retention (event_channels.go):
 // capacity is the depth of a RetentionDefault ring.
 func newRing(channel string, capacity, byteBudget int) *ring {
-	r := &ring{capacity: capacity, byteBudget: byteBudget}
-	switch channelRetention(channel) {
+	policy := deliveryPolicyForChannel(channel)
+	r := &ring{capacity: capacity, byteBudget: byteBudget, policy: policy}
+	switch policy.retention {
 	case RetentionEphemeral:
 		// Seed-style cache warmers and one-shot directives: sequence
 		// tracking only, no replay retention.
@@ -257,6 +288,22 @@ func (r *ring) releaseAged(now int64) {
 	}
 	if r.count == 0 && r.backing != nil {
 		r.backing, r.stamps, r.head = nil, nil, 0
+		return
+	}
+	// Shrink an oversized burst backing once aged eviction drops occupancy
+	// to <= 1/4 so a steady low-rate channel does not pin a multi-thousand
+	// slot slice indefinitely.
+	if len(r.backing) > ringInitialCapacity*4 && r.count <= len(r.backing)/4 {
+		newCap := max(ringInitialCapacity, r.count*2)
+		fresh := make([]Event, newCap)
+		stamps := make([]int64, newCap)
+		for i := range r.count {
+			j := (r.head + i) % len(r.backing)
+			fresh[i] = r.backing[j]
+			stamps[i] = r.stamps[j]
+		}
+		r.backing, r.stamps = fresh, stamps
+		r.head = 0
 	}
 }
 
@@ -316,13 +363,24 @@ func (r *ring) replayAfter(lastSeq uint64) (events []Event, hadGap bool) {
 	if lastSeq+1 < oldest {
 		return nil, true
 	}
-	cap := len(r.backing)
-	out := make([]Event, 0, r.count)
-	for i := 0; i < r.count; i++ {
-		e := r.backing[(r.head+i)%cap]
-		if e.Seq > lastSeq {
-			out = append(out, e)
+	backingCap := len(r.backing)
+	// Entries in [head, head+count) have strictly increasing Seq: binary
+	// search for the first slot with Seq > lastSeq and exact-size the slice.
+	lo, hi := 0, r.count
+	for lo < hi {
+		mid := int(uint(lo+hi) >> 1)
+		if r.backing[(r.head+mid)%backingCap].Seq <= lastSeq {
+			lo = mid + 1
+		} else {
+			hi = mid
 		}
+	}
+	if lo == r.count {
+		return nil, false
+	}
+	out := make([]Event, 0, r.count-lo)
+	for i := lo; i < r.count; i++ {
+		out = append(out, r.backing[(r.head+i)%backingCap])
 	}
 	return out, false
 }
@@ -563,7 +621,7 @@ func (b *EventBus) EmitScoped(typedChannel eventchan.Channel, entityKey, entityS
 	// seq-gap recovery contract; a healthy subscriber can no longer see a
 	// false gap caused by two Emit goroutines racing after the lock.
 	for _, s := range b.subList {
-		s.deliver(evt)
+		s.deliver(evt, r.policy)
 	}
 	b.mu.Unlock()
 	return evt, nil
@@ -956,9 +1014,12 @@ type Subscriber struct {
 	// subscriber by the connection's own election (its watch set or its
 	// background lease) since the pump last took it. The pump turns each
 	// entry into a watermark (takeWithheld). deliver writes it under the
-	// bus mutex and the pump takes it without, hence withheldMu.
-	withheldMu sync.Mutex
-	withheld   map[string]uint64
+	// bus mutex and the pump takes it without, hence withheldMu. hasWithheld
+	// lets clearWithheld and takeWithheld skip withheldMu on the common path
+	// where nothing has been withheld.
+	hasWithheld atomic.Bool
+	withheldMu  sync.Mutex
+	withheld    map[string]uint64
 }
 
 type subscriberChannelFilter map[string]struct{}
@@ -1097,6 +1158,17 @@ func (s *Subscriber) watches(channel, entityKey, entityScope string) bool {
 	return filter.admits(channel, entityKey, entityScope)
 }
 
+func (s *Subscriber) watchesWithPolicy(entityKey, entityScope string, policy ringDeliveryPolicy) bool {
+	if entityKey == "" || !policy.entityFiltered {
+		return true
+	}
+	filter := s.watched.Load()
+	if filter == nil {
+		return true
+	}
+	return filter.admitsWithScope(entityKey, entityScope, policy.scopeFiltered)
+}
+
 func (s *Subscriber) explicitlySubscribes(channel string) bool {
 	filter := s.channels.Load()
 	if filter == nil {
@@ -1111,17 +1183,17 @@ func (s *Subscriber) explicitlySubscribes(channel string) bool {
 // next event that does fit on that channel is stamped Gap:true so the
 // client resyncs even when nothing else ever arrives to expose a seq
 // skip. Runs only from Emit's fanout, under the bus mutex.
-func (s *Subscriber) deliver(e Event) {
+func (s *Subscriber) deliver(e Event, policy ringDeliveryPolicy) {
 	if s.closed.Load() {
 		return
 	}
 	if !s.accepts(e.Channel) {
 		return
 	}
-	if lb := s.loopback.Load(); lb != nil && !eventVisibleToOrigin(e.Channel, *lb) {
+	if lb := s.loopback.Load(); lb != nil && !(*lb || policy.remoteVisible) {
 		return
 	}
-	if scopes := s.scopes.Load(); scopes != nil && !scopes.allows(e.Channel) {
+	if scopes := s.scopes.Load(); scopes != nil && scopes.active && scopes.granted&policy.scopeBit == 0 {
 		return
 	}
 	// Ahead of every gap concern, exactly like the three filters above it:
@@ -1139,7 +1211,7 @@ func (s *Subscriber) deliver(e Event) {
 	// connection's cursor: hello's baseline and handleReplay apply the same
 	// visibility filter, and a connection that subscribed to named channels
 	// keeps cursors for those channels only.
-	if !s.watches(e.Channel, e.EntityKey, e.EntityScope) {
+	if !s.watchesWithPolicy(e.EntityKey, e.EntityScope, policy) {
 		s.noteWithheld(e)
 		return
 	}
@@ -1148,8 +1220,8 @@ func (s *Subscriber) deliver(e Event) {
 	// was not sent is not a frame it lost, so it must not flag the channel
 	// (lease.go). The atomic is read FIRST because it is false on every
 	// connection that never leased background, which short-circuits the
-	// map probe away on the fanout hot path.
-	if s.background.Load() && backgroundWithheldChannel(e.Channel) {
+	// policy check away on the fanout hot path.
+	if s.background.Load() && policy.backgroundWithheld {
 		s.noteWithheld(e)
 		return
 	}
@@ -1183,7 +1255,7 @@ func (s *Subscriber) deliver(e Event) {
 		// Drop. A whole-state channel's next frame supersedes the lost
 		// one (the same reasoning as Replay's latest-only carve-out), so
 		// only deeper retentions need the loss announced.
-		if channelRetention(e.Channel) != RetentionLatestOnly {
+		if policy.retention != RetentionLatestOnly {
 			s.noteDrop(e)
 		}
 	}
@@ -1209,13 +1281,20 @@ func (s *Subscriber) noteWithheld(e Event) {
 		s.withheld = make(map[string]uint64)
 	}
 	s.withheld[e.Channel] = e.Seq
+	s.hasWithheld.Store(true)
 	s.withheldMu.Unlock()
 }
 
 // clearWithheld drops channel's mark; see noteWithheld.
 func (s *Subscriber) clearWithheld(channel string) {
+	if !s.hasWithheld.Load() {
+		return
+	}
 	s.withheldMu.Lock()
 	delete(s.withheld, channel)
+	if len(s.withheld) == 0 {
+		s.hasWithheld.Store(false)
+	}
 	s.withheldMu.Unlock()
 }
 
@@ -1225,6 +1304,7 @@ func (s *Subscriber) takeWithheld() map[string]uint64 {
 	s.withheldMu.Lock()
 	marks := s.withheld
 	s.withheld = nil
+	s.hasWithheld.Store(false)
 	s.withheldMu.Unlock()
 	if len(marks) == 0 {
 		return nil

@@ -13,7 +13,7 @@ import (
 )
 
 // stmtCacheSize bounds the statements one connection keeps compiled.
-const stmtCacheSize = 64
+const stmtCacheSize = 128
 
 // textParam is the text parameter param ("?" or "?N") as an expression
 // the planner cannot read, for a comparison with a column that a partial
@@ -105,8 +105,9 @@ func newStmtCacheConn(conn driver.Conn) (*stmtCacheConn, error) {
 }
 
 func (c *stmtCacheConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	c.countWrite(query, true)
-	entry, err := c.acquire(ctx, query)
+	kw := leadingKeyword(query)
+	c.countWriteKeyword(kw, true)
+	entry, err := c.acquireKeyword(ctx, query, kw)
 	if err != nil {
 		return nil, err
 	}
@@ -118,8 +119,9 @@ func (c *stmtCacheConn) ExecContext(ctx context.Context, query string, args []dr
 }
 
 func (c *stmtCacheConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	c.countWrite(query, false)
-	entry, err := c.acquire(ctx, query)
+	kw := leadingKeyword(query)
+	c.countWriteKeyword(kw, false)
+	entry, err := c.acquireKeyword(ctx, query, kw)
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +157,14 @@ func (c *stmtCacheConn) countWrite(query string, exec bool) {
 	if c.writes == nil {
 		return
 	}
-	switch leadingKeyword(query) {
+	c.countWriteKeyword(leadingKeyword(query), exec)
+}
+
+func (c *stmtCacheConn) countWriteKeyword(kw string, exec bool) {
+	if c.writes == nil {
+		return
+	}
+	switch kw {
 	case "INSERT", "UPDATE", "DELETE", "REPLACE":
 		c.writes.Add(1)
 	case "WITH":
@@ -187,7 +196,11 @@ func (s countedStmt) QueryContext(ctx context.Context, args []driver.NamedValue)
 // it on first use. It returns nil when query is not cached or its statement is
 // busy; the caller then runs query uncached.
 func (c *stmtCacheConn) acquire(ctx context.Context, query string) (*cachedStmt, error) {
-	if !cacheableSQL(query) {
+	return c.acquireKeyword(ctx, query, leadingKeyword(query))
+}
+
+func (c *stmtCacheConn) acquireKeyword(ctx context.Context, query, kw string) (*cachedStmt, error) {
+	if !cacheableKeyword(kw) {
 		return nil, nil
 	}
 	c.mu.Lock()
@@ -282,19 +295,75 @@ func (r *cachedRows) Close() error {
 // cacheableSQL reports whether query reads or writes rows, the statements a
 // connection runs repeatedly.
 func cacheableSQL(query string) bool {
-	switch leadingKeyword(query) {
+	return cacheableKeyword(leadingKeyword(query))
+}
+
+func cacheableKeyword(kw string) bool {
+	switch kw {
 	case "SELECT", "INSERT", "UPDATE", "DELETE", "REPLACE", "WITH":
 		return true
 	}
 	return false
 }
 
-// leadingKeyword is query's first word, upper-cased.
+// leadingKeyword is query's first ASCII word, upper-cased. Hot DML/DQL
+// keywords return canonical literals without allocating.
 func leadingKeyword(query string) string {
-	query = strings.TrimLeft(query, " \t\r\n")
-	end := strings.IndexFunc(query, func(r rune) bool { return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') })
-	if end < 0 {
-		end = len(query)
+	i := 0
+	for i < len(query) {
+		c := query[i]
+		if c != ' ' && c != '\t' && c != '\r' && c != '\n' {
+			break
+		}
+		i++
 	}
-	return strings.ToUpper(query[:end])
+	start := i
+	for i < len(query) {
+		c := query[i]
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+			break
+		}
+		i++
+	}
+	word := query[start:i]
+	switch len(word) {
+	case 4:
+		if asciiEqualFold4(word, "WITH") {
+			return "WITH"
+		}
+	case 6:
+		switch {
+		case asciiEqualFold6(word, "SELECT"):
+			return "SELECT"
+		case asciiEqualFold6(word, "INSERT"):
+			return "INSERT"
+		case asciiEqualFold6(word, "UPDATE"):
+			return "UPDATE"
+		case asciiEqualFold6(word, "DELETE"):
+			return "DELETE"
+		}
+	case 7:
+		if asciiEqualFold7(word, "REPLACE") {
+			return "REPLACE"
+		}
+	}
+	return strings.ToUpper(word)
+}
+
+func asciiEqualFold4(s, upper string) bool {
+	return (s[0]&^0x20) == upper[0] && (s[1]&^0x20) == upper[1] &&
+		(s[2]&^0x20) == upper[2] && (s[3]&^0x20) == upper[3]
+}
+
+func asciiEqualFold6(s, upper string) bool {
+	return (s[0]&^0x20) == upper[0] && (s[1]&^0x20) == upper[1] &&
+		(s[2]&^0x20) == upper[2] && (s[3]&^0x20) == upper[3] &&
+		(s[4]&^0x20) == upper[4] && (s[5]&^0x20) == upper[5]
+}
+
+func asciiEqualFold7(s, upper string) bool {
+	return (s[0]&^0x20) == upper[0] && (s[1]&^0x20) == upper[1] &&
+		(s[2]&^0x20) == upper[2] && (s[3]&^0x20) == upper[3] &&
+		(s[4]&^0x20) == upper[4] && (s[5]&^0x20) == upper[5] &&
+		(s[6]&^0x20) == upper[6]
 }

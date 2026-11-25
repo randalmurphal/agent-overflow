@@ -129,11 +129,24 @@
     return true;
   }
 
+  // Coalesce simultaneous pane ResizeObserver deliveries (e.g. window resize
+  // moving N panes in the same frame) into one DOM offset walk.
+  let offsetPublishQueued = false;
+  let hostDestroyed = false;
+
   // A pane's own observer saw it move or resize: republish the whole
   // snapshot rather than patch one offset into a snapshot of another width.
   function handlePaneOffsetChange(paneId: string, offsetLeft: number | null): void {
-    if (offsetLeft === null) stripGeometry.offsets.delete(paneId);
-    else publishPaneOffsets();
+    if (offsetLeft === null) {
+      stripGeometry.offsets.delete(paneId);
+      return;
+    }
+    if (offsetPublishQueued) return;
+    offsetPublishQueued = true;
+    queueMicrotask(() => {
+      offsetPublishQueued = false;
+      if (!hostDestroyed) publishPaneOffsets();
+    });
   }
 
   // Also runs after a divider resize gesture: panes past the boundary
@@ -230,9 +243,10 @@
 
   $effect(() => {
     return () => {
+      hostDestroyed = true;
       drag.destroy();
       promotion.destroy();
-      reveal.cancelGlide();
+      reveal.cancel();
       // The record measures this strip; it ends with it.
       noteCompactPaneShown(null);
       if (geometryReconcileFrame) cancelAnimationFrame(geometryReconcileFrame);

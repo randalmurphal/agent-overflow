@@ -52,9 +52,11 @@
    * (n)" acting on that subset would silently do a fraction of what it says.
    */
   let memberThreadIds = $derived(
-    getThreads()
-      .filter((t) => t.groupId === group.id && !t.archived)
-      .map((t) => t.id),
+    open || showArchiveConfirm || showDeleteConfirm
+      ? getThreads()
+          .filter((t) => t.groupId === group.id && !t.archived)
+          .map((t) => t.id)
+      : [],
   );
   let memberCount = $derived(memberThreadIds.length);
   // Every row writes the group or its members on the project's computer;
@@ -162,31 +164,35 @@
   {/snippet}
 </Popover>
 
-<ConfirmDialog
-  open={showArchiveConfirm}
-  title={`Archive ${memberCount} Thread${memberCount === 1 ? '' : 's'}`}
-  description="This will hide the group's threads from the sidebar. Open Settings → Storage to find them later."
-  confirmLabel="Archive"
-  onConfirm={() => {
-    showArchiveConfirm = false;
-    void archiveMembers();
-  }}
-  onCancel={() => {
-    showArchiveConfirm = false;
-  }}
-/>
+{#if showArchiveConfirm}
+  <ConfirmDialog
+    open={true}
+    title={`Archive ${memberCount} Thread${memberCount === 1 ? '' : 's'}`}
+    description="This will hide the group's threads from the sidebar. Open Settings → Storage to find them later."
+    confirmLabel="Archive"
+    onConfirm={() => {
+      showArchiveConfirm = false;
+      void archiveMembers();
+    }}
+    onCancel={() => {
+      showArchiveConfirm = false;
+    }}
+  />
+{/if}
 
-<ConfirmDialog
-  open={showDeleteConfirm}
-  title="Delete Group"
-  description={`Remove this group. Its ${memberCount} thread${memberCount === 1 ? '' : 's'} stay in the project.`}
-  confirmLabel="Delete"
-  destructive={true}
-  onConfirm={() => {
-    showDeleteConfirm = false;
-    void deleteThreadGroupAction(group.id);
-  }}
-  onCancel={() => {
-    showDeleteConfirm = false;
-  }}
-/>
+{#if showDeleteConfirm}
+  <ConfirmDialog
+    open={true}
+    title="Delete Group"
+    description={`Remove this group. Its ${memberCount} thread${memberCount === 1 ? '' : 's'} stay in the project.`}
+    confirmLabel="Delete"
+    destructive={true}
+    onConfirm={() => {
+      showDeleteConfirm = false;
+      void deleteThreadGroupAction(group.id);
+    }}
+    onCancel={() => {
+      showDeleteConfirm = false;
+    }}
+  />
+{/if}

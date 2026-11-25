@@ -63,6 +63,9 @@ export function measureScrollGrid(read: (requested: number) => number): ScrollGr
 interface DocumentGrid {
   dirty: boolean;
   ratio: number;
+  visualScale: number;
+  inlineZoom: string;
+  computedZoom: string;
   grid: ScrollGrid | null;
 }
 const documents = new WeakMap<Document, DocumentGrid>();
@@ -73,13 +76,33 @@ export function documentScrollGrid(doc: Document): ScrollGrid {
   if (!win) throw new Error('Scroll grid requires a document with a window');
   let state = documents.get(doc);
   if (!state) {
-    state = { dirty: true, ratio: 0, grid: null };
+    state = {
+      dirty: true,
+      ratio: 0,
+      visualScale: 1,
+      inlineZoom: '',
+      computedZoom: '',
+      grid: null,
+    };
     documents.set(doc, state);
     const ownedState = state;
     win.addEventListener('resize', () => { ownedState.dirty = true; }, { passive: true });
   }
   const ratio = win.devicePixelRatio;
   if (state.grid && !state.dirty && state.ratio === ratio) return state.grid;
+  const visualScale = win.visualViewport?.scale ?? 1;
+  const inlineZoom = doc.documentElement.style.zoom ?? '';
+  const computedZoom = win.getComputedStyle(doc.documentElement).zoom ?? '';
+  if (
+    state.grid
+    && state.ratio === ratio
+    && state.visualScale === visualScale
+    && state.inlineZoom === inlineZoom
+    && state.computedZoom === computedZoom
+  ) {
+    state.dirty = false;
+    return state.grid;
+  }
   const scroller = doc.createElement('div');
   const content = doc.createElement('div');
   scroller.style.cssText = 'all:initial;position:fixed;left:-10000px;top:0;width:1px;height:1px;overflow:scroll;visibility:hidden;pointer-events:none;contain:strict;scroll-behavior:auto;';
@@ -93,6 +116,9 @@ export function documentScrollGrid(doc: Document): ScrollGrid {
     });
     state.grid = grid;
     state.ratio = ratio;
+    state.visualScale = visualScale;
+    state.inlineZoom = inlineZoom;
+    state.computedZoom = computedZoom;
     state.dirty = false;
     return grid;
   } finally {

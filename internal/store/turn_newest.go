@@ -43,13 +43,16 @@ type newestTurnState int
 
 const (
 	// newestTurnAtRest: no turn, or one that settled and is not an unread
-	// interruption.
+	// interruption or error.
 	newestTurnAtRest newestTurnState = iota
 	// newestTurnOpen: the row is still in flight.
 	newestTurnOpen
 	// newestTurnInterruptedUnread: the row settled as interrupted after the
 	// user last read the thread.
 	newestTurnInterruptedUnread
+	// newestTurnErrorUnread: the row settled as error after the user last
+	// read the thread.
+	newestTurnErrorUnread
 )
 
 // newestTurnStateSQL is a threads row's newestTurnState, one probe of its
@@ -60,5 +63,8 @@ func newestTurnStateSQL() string {
 	        WHEN nt.stop_reason = 'interrupted'
 	         AND (threads.last_read_at IS NULL OR threads.last_read_at < nt.completed_at)
 	          THEN `+strconv.Itoa(int(newestTurnInterruptedUnread))+`
+	        WHEN nt.stop_reason = 'error'
+	         AND (threads.last_read_at IS NULL OR threads.last_read_at < nt.completed_at)
+	          THEN `+strconv.Itoa(int(newestTurnErrorUnread))+`
 	        ELSE `+strconv.Itoa(int(newestTurnAtRest))+` END`) + `, ` + strconv.Itoa(int(newestTurnAtRest)) + `)`
 }

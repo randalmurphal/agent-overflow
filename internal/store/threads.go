@@ -91,14 +91,7 @@ var threadColumns = `id, COALESCE(project_id, ''),
          AND EXISTS (` + proposedPlanItemSQL() + `)
     ),
     ` + newestTurnStateSQL() + `,
-    COALESCE((
-      SELECT turns.stop_reason = 'error'
-         AND (threads.last_read_at IS NULL OR threads.last_read_at < turns.completed_at)
-        FROM turns
-       WHERE turns.thread_id = threads.id
-       ORDER BY turns.turn_index DESC
-       LIMIT 1
-    ), 0) OR (
+    (
       threads.newest_turn_error_at IS NOT NULL
       AND (threads.last_read_at IS NULL OR threads.last_read_at < threads.newest_turn_error_at)
     ),
@@ -260,7 +253,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	t.HasActionableProposedPlan = hasActionableProposedPlan != 0
 	t.HasIncompleteTurn = newestTurn == newestTurnInterruptedUnread
 	t.HasOpenTurn = newestTurn == newestTurnOpen
-	t.HasFailedTurn = hasFailedTurn != 0
+	t.HasFailedTurn = newestTurn == newestTurnErrorUnread || hasFailedTurn != 0
 	t.IsDraft = isDraft != 0
 	if latestTurnCompletedAt.Valid {
 		v := latestTurnCompletedAt.Int64

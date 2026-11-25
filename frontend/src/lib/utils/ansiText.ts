@@ -20,30 +20,99 @@ import { escapeHtml } from './markdownRender';
 const ESC = 0x1b;
 const BEL = 0x07;
 const LF = 0x0a;
+const CR = 0x0d;
 const BACKSLASH = 0x5c;
 const SEMICOLON = 0x3b;
 const OPEN_BRACKET = 0x5b;
+const CLOSE_BRACKET = 0x5d;
+const UNDERSCORE = 0x5f;
 const LOWER_M = 0x6d;
 
+const ANSI_CLASS_CACHE_MAX = 256;
+const ansiClassCache = new Map<string, string>();
+
 function ansiClass(codeText: string): string {
-  const codes = codeText
-    .split(';')
-    .map((code) => Number(code || 0))
-    .filter((code) => Number.isFinite(code));
-  if (codes.includes(0)) return '';
-  const classes: string[] = [];
-  if (codes.includes(1)) classes.push('ansi-bold');
-  if (codes.includes(3)) classes.push('ansi-italic');
-  if (codes.includes(4)) classes.push('ansi-underline');
-  const foreground = codes.find((code) => (code >= 30 && code <= 37) || (code >= 90 && code <= 97));
-  if (foreground) classes.push(`ansi-fg-${foreground}`);
-  return classes.join(' ');
+  const cached = ansiClassCache.get(codeText);
+  if (cached !== undefined) return cached;
+  let bold = false;
+  let italic = false;
+  let underline = false;
+  let fg = 0;
+  let reset = false;
+  let i = 0;
+  const len = codeText.length;
+  while (true) {
+    let val = 0;
+    let valid = true;
+    let hasDigits = false;
+    while (i < len) {
+      const c = codeText.charCodeAt(i);
+      if (c === SEMICOLON) break;
+      if (c >= 0x30 && c <= 0x39) {
+        val = val * 10 + (c - 0x30);
+        hasDigits = true;
+      } else {
+        valid = false;
+      }
+      i += 1;
+    }
+    if (valid) {
+      const code = hasDigits ? val : 0;
+      if (code === 0) {
+        reset = true;
+        break;
+      }
+      if (code === 1) bold = true;
+      else if (code === 3) italic = true;
+      else if (code === 4) underline = true;
+      else if (fg === 0 && ((code >= 30 && code <= 37) || (code >= 90 && code <= 97))) fg = code;
+    }
+    if (i >= len) break;
+    i += 1;
+  }
+  let out = '';
+  if (!reset) {
+    if (bold) out = 'ansi-bold';
+    if (italic) out = out ? `${out} ansi-italic` : 'ansi-italic';
+    if (underline) out = out ? `${out} ansi-underline` : 'ansi-underline';
+    if (fg !== 0) out = out ? `${out} ansi-fg-${fg}` : `ansi-fg-${fg}`;
+  }
+  if (ansiClassCache.size >= ANSI_CLASS_CACHE_MAX) ansiClassCache.clear();
+  ansiClassCache.set(codeText, out);
+  return out;
 }
 
 // What a scan reports: text between forms, and each SGR's parameters.
 interface ScanVisitor {
   text(from: number, to: number): void;
   sgr(params: string): void;
+  incompleteEscape?(): void;
+}
+
+// Whether an unrecognized ESC at `at` reached EOF in a state that further
+// appended bytes could complete into a valid OSC, APC or SGR sequence.
+function isIncompleteEscapeAt(input: string, at: number): boolean {
+  const len = input.length;
+  if (at + 1 >= len) return true;
+  const kind = input.charCodeAt(at + 1);
+  if (kind === CLOSE_BRACKET || kind === UNDERSCORE) {
+    for (let i = at + 2; i < len; i += 1) {
+      const c = input.charCodeAt(i);
+      if (c === LF) return false;
+      if (c === ESC) return i + 1 === len;
+      if (kind === CLOSE_BRACKET && c === BEL) return false;
+    }
+    return true;
+  }
+  if (kind === OPEN_BRACKET) {
+    for (let i = at + 2; i < len; i += 1) {
+      const c = input.charCodeAt(i);
+      if ((c >= 0x30 && c <= 0x39) || c === SEMICOLON) continue;
+      return false;
+    }
+    return true;
+  }
+  return false;
 }
 
 // The end (exclusive) of the OSC, APC or SGR starting at the ESC at `at`,
@@ -93,6 +162,9 @@ function scanAnsi(input: string, visit: ScanVisitor): number {
     steps.n += 1;
     const end = formEnd(input, i, steps);
     if (end < 0) {
+      if (visit.incompleteEscape && isIncompleteEscapeAt(input, i)) {
+        visit.incompleteEscape();
+      }
       i += 1;
       continue;
     }
@@ -105,22 +177,120 @@ function scanAnsi(input: string, visit: ScanVisitor): number {
   return steps.n;
 }
 
-/** The HTML AnsiText sets: escaped text and colour spans. */
-export function ansiHtml(input: string): string {
+/** Tail state after rendering an ANSI string, used by AnsiText for O(delta) appends. */
+export interface AnsiTailState {
+  openClass: string;
+  incompleteTail: boolean;
+  endsWithCR: boolean;
+}
+
+function normalizeHtmlParserText(text: string): string {
+  let out = text.indexOf('\r') < 0 ? text : text.replace(/\r\n?/g, '\n');
+  if (out.indexOf('\0') >= 0) out = out.replace(/\0/g, '');
+  return out;
+}
+
+/** The HTML AnsiText sets alongside its tail state for incremental appends. */
+export function ansiHtmlWithState(input: string): { html: string; state: AnsiTailState } {
   let out = '';
-  let open = false;
+  let openClass = '';
+  let incompleteTail = false;
   scanAnsi(input, {
     text: (from, to) => {
       out += escapeHtml(input.slice(from, to));
     },
     sgr: (params) => {
-      if (open) out += '</span>';
-      const className = ansiClass(params);
-      open = className !== '';
-      if (open) out += `<span class="${className}">`;
+      if (openClass !== '') out += '</span>';
+      openClass = ansiClass(params);
+      if (openClass !== '') out += `<span class="${openClass}">`;
+    },
+    incompleteEscape: () => {
+      incompleteTail = true;
     },
   });
-  return open ? `${out}</span>` : out;
+  return {
+    html: openClass !== '' ? `${out}</span>` : out,
+    state: {
+      openClass,
+      incompleteTail,
+      endsWithCR: input.length > 0 && input.charCodeAt(input.length - 1) === CR,
+    },
+  };
+}
+
+/**
+ * Appends `delta` directly to `root` when the prior tail ended cleanly.
+ * Returns the next tail state on success, or null when the caller must fall
+ * back to full morphing. Preserves existing Text and Span node identity so
+ * active selections never break.
+ */
+export function appendAnsiDeltaToDom(
+  root: HTMLElement,
+  delta: string,
+  prevState: AnsiTailState,
+): AnsiTailState | null {
+  if (delta.length === 0) return prevState;
+  if (prevState.incompleteTail) return null;
+  if (prevState.endsWithCR && delta.charCodeAt(0) === LF) return null;
+
+  const doc = root.ownerDocument;
+  let openClass = prevState.openClass;
+  let activeSpan: HTMLSpanElement | null = null;
+  if (openClass !== '') {
+    const last = root.lastChild;
+    if (!(last instanceof HTMLSpanElement) || last.className !== openClass) {
+      return null;
+    }
+    activeSpan = last;
+  }
+
+  let incompleteTail = false;
+  const appendText = (raw: string): void => {
+    const text = normalizeHtmlParserText(raw);
+    if (text.length === 0) return;
+    const container: Node = activeSpan ?? root;
+    const last = container.lastChild;
+    if (last && last.nodeType === 3 /* Node.TEXT_NODE */) {
+      (last as Text).appendData(text);
+    } else {
+      container.appendChild(doc.createTextNode(text));
+    }
+  };
+
+  if (delta.indexOf('\x1b') < 0) {
+    appendText(delta);
+  } else {
+    scanAnsi(delta, {
+      text: (from, to) => {
+        appendText(delta.slice(from, to));
+      },
+      sgr: (params) => {
+        openClass = ansiClass(params);
+        if (openClass !== '') {
+          const span = doc.createElement('span');
+          span.className = openClass;
+          root.appendChild(span);
+          activeSpan = span;
+        } else {
+          activeSpan = null;
+        }
+      },
+      incompleteEscape: () => {
+        incompleteTail = true;
+      },
+    });
+  }
+
+  return {
+    openClass,
+    incompleteTail,
+    endsWithCR: delta.charCodeAt(delta.length - 1) === CR,
+  };
+}
+
+/** The HTML AnsiText sets: escaped text and colour spans. */
+export function ansiHtml(input: string): string {
+  return ansiHtmlWithState(input).html;
 }
 
 /** The text AnsiText shows for `input`, as its DOM reads: the HTML parser

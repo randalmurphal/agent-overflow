@@ -7,12 +7,21 @@
 // Pure logic, no Svelte / DOM imports — table-drivable from unit tests.
 
 import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
-import type { ThreadStatusPill } from './threadStatusPill';
 import {
+  lastKnownThreadStatusPill,
+  resolveEffectiveThreadStatus,
+  resolveThreadStatusPill,
+  type ThreadStatusPill,
+} from './threadStatusPill';
+import { isHiddenThreadMode } from './threadModes';
+import {
+  getStatusSortGroup,
   sidebarNodeSection,
   sidebarTreeNodeId,
   displayStatusOutranks,
+  type BuildSidebarThreadTreeInput,
   type SidebarTreeNode,
+  type ThreadStatusSortGroup,
 } from './sidebarTree';
 import { THREAD_PREVIEW_LIMIT } from './sidebarThreadLimits';
 
@@ -323,4 +332,41 @@ export function rollupDisplayStatus(
   }
   if (best === null || bestPill === null) return null;
   return { liveStatus: best.displayLiveStatus, pill: bestPill };
+}
+
+/**
+ * Single-pass status rollup directly over a collapsed project's thread list,
+ * producing the exact same result as `rollupDisplayStatus(buildSidebarThreadTree(...))`
+ * without allocating tree nodes or sorting.
+ */
+export function rollupProjectThreads(
+  input: Pick<BuildSidebarThreadTreeInput, 'threads' | 'statusOf' | 'liveStatusOf' | 'waitingOnOf' | 'unreachableMachineOf'>,
+): SidebarStatusRollup | null {
+  let bestSortGroup: ThreadStatusSortGroup | null = null;
+  let bestLiveStatus: ThreadLiveStatus = 'idle';
+  let bestPill: ThreadStatusPill | null = null;
+  for (const thread of input.threads) {
+    if (isHiddenThreadMode(thread.mode)) continue;
+    const ownLiveStatus = input.statusOf
+      ? input.statusOf(thread)
+      : resolveEffectiveThreadStatus(thread, input.liveStatusOf?.(thread.id) ?? 'idle');
+    const resolvedPill = resolveThreadStatusPill(thread, ownLiveStatus, input.waitingOnOf?.(thread.id));
+    const unreachableMachine = input.unreachableMachineOf?.(thread) ?? null;
+    const ownPill = unreachableMachine !== null ? lastKnownThreadStatusPill(resolvedPill, unreachableMachine) : resolvedPill;
+    if (ownPill === null) continue;
+    const sortGroup = getStatusSortGroup(ownLiveStatus, ownPill);
+    if (
+      bestSortGroup === null ||
+      displayStatusOutranks(
+        { sortGroup, displayLiveStatus: ownLiveStatus },
+        { sortGroup: bestSortGroup, displayLiveStatus: bestLiveStatus },
+      )
+    ) {
+      bestSortGroup = sortGroup;
+      bestLiveStatus = ownLiveStatus;
+      bestPill = ownPill;
+    }
+  }
+  if (bestPill === null) return null;
+  return { liveStatus: bestLiveStatus, pill: bestPill };
 }

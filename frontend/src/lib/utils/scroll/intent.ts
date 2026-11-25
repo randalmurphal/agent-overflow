@@ -259,6 +259,11 @@ export interface ScrollIntent {
    * via the token ring and updates the re-stick direction baseline.
    */
   noteProgrammaticWrite(top: number): void;
+  /**
+   * Seed the re-stick direction baseline from a post-layout read when attach
+   * skipped the mount-time DOM read.
+   */
+  seedObservedScrollTopIfUnset(top: number): void;
   /** Snapshot of the machine's windows/consent for the dev-hook dump. */
   debugState(): {
     recentDownIntentActive: boolean;
@@ -345,6 +350,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   // motion.
   let lastObservedScrollTopForRestick = -1;
   let detachListeners: (() => void) | undefined;
+  const pendingDeferredScrollTimers = new Set<ReturnType<typeof setTimeout>>();
 
   // ===== Restore-snap consent =====
   // One-shot flag the thread-switch entry point arms (via
@@ -433,6 +439,10 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
 
   function armScrollbarDragSession(): void {
     clearScrollbarDragSession({ invalidateCapturedScrolls: false });
+    if (lastObservedScrollTopForRestick < 0) {
+      const el = deps.getScrollEl();
+      if (el) lastObservedScrollTopForRestick = el.scrollTop;
+    }
     scrollbarDragSessionActive = true;
     scrollbarDragSessionVersion += 1;
     document.addEventListener('pointerup', handleScrollbarDragEnd, { capture: true });
@@ -483,7 +493,11 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     downLandingPending = true;
     const el = deps.getScrollEl();
     const distFromBottom = el ? deps.distanceFromBottom() : 0;
-    downIntentShownEnd = el ? el.scrollTop + distFromBottom : -1;
+    const scrollTopNow = el ? el.scrollTop : -1;
+    if (el && lastObservedScrollTopForRestick < 0) {
+      lastObservedScrollTopForRestick = scrollTopNow;
+    }
+    downIntentShownEnd = el ? scrollTopNow + distFromBottom : -1;
     if (isUiRenderTraceEnabled()) trace('scroll.intent.down', () => ({
       source,
       recentDownIntentUntil: Math.round(recentDownIntentUntil),
@@ -774,7 +788,8 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     if (!shouldRunDeferredScrollIntentCheck) return;
     // Defer 1ms so a concurrent RO callback can update resizeDifference
     // before we interpret direction. Mirrors upstream.
-    setTimeout(() => {
+    const deferredTimer = setTimeout(() => {
+      pendingDeferredScrollTimers.delete(deferredTimer);
       const el = deps.getScrollEl();
       if (!el) return;
       const eventCameFromCurrentScrollbarDrag =
@@ -863,6 +878,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
         if (deps.distanceFromBottom() > AUTO_FOLLOW_BOTTOM_EPSILON_PX) deps.followBottom();
       }
     }, RESIZE_CLEAR_PADDING_MS);
+    pendingDeferredScrollTimers.add(deferredTimer);
   }
 
   // Keydown / touch handlers (intent signals).
@@ -945,12 +961,17 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
       el.removeEventListener('touchend', handleTouchEnd);
       el.removeEventListener('touchcancel', handleTouchEnd);
     };
-    lastObservedScrollTopForRestick = el.scrollTop;
+    // Defer the initial scrollTop baseline instead of forcing a synchronous
+    // layout read inside mount-time $effect attach(); seeded lazily on first
+    // user gesture, programmatic write, or post-layout geometry read.
+    lastObservedScrollTopForRestick = -1;
   }
 
   function detach(): void {
     detachListeners?.();
     detachListeners = undefined;
+    for (const timer of pendingDeferredScrollTimers) clearTimeout(timer);
+    pendingDeferredScrollTimers.clear();
     clearProgrammaticScrollState();
     clearRecentDownIntent();
     clearDownLanding();
@@ -986,6 +1007,9 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     },
     clearScrollbarDragSession: () => clearScrollbarDragSession(),
     noteProgrammaticWrite,
+    seedObservedScrollTopIfUnset: (top: number): void => {
+      if (lastObservedScrollTopForRestick < 0) lastObservedScrollTopForRestick = top;
+    },
     debugState: () => ({
       recentDownIntentActive: hasRecentDownIntent(),
       recentDownIntentUntil: Math.round(recentDownIntentUntil),

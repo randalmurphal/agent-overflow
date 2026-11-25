@@ -78,7 +78,7 @@ type liveApplyKey struct {
 // leaf: methods never call into App, stores, providers, or callbacks while it
 // is held.
 type Manager struct {
-	mu sync.Mutex
+	mu sync.RWMutex
 
 	sessions                            map[string]Entry
 	starting                            map[string]*Start
@@ -348,8 +348,8 @@ func (m *Manager) UpdateProviderCredentials(providerName string, generation uint
 // errored before its completion would otherwise hold the counter at 1 and
 // keep the idle reaper off the thread for good.
 func (m *Manager) RecordActivity(threadID, sessionToken string, kind provider.EventKind, content string, now time.Time) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	entry, ok := m.sessions[threadID]
 	if !ok || entry.Token != sessionToken || entry.Liveness == nil {
 		return
@@ -372,8 +372,8 @@ func (m *Manager) RecordActivity(threadID, sessionToken string, kind provider.Ev
 }
 
 func (m *Manager) AnyCodexSession() (*codex.Session, string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	for _, entry := range m.sessions {
 		if entry.Codex != nil {
 			return entry.Codex, entry.CredentialAccountID
@@ -391,8 +391,8 @@ func normalizeCodexBinary(binary string) string {
 
 func (m *Manager) CodexSessionForBinary(binary string) *codex.Session {
 	binary = normalizeCodexBinary(binary)
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	for _, entry := range m.sessions {
 		if entry.Codex != nil && normalizeCodexBinary(entry.Codex.Binary()) == binary {
 			return entry.Codex
