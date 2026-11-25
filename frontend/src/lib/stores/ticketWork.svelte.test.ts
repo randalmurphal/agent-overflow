@@ -250,9 +250,12 @@ describe('Start work', () => {
     ticket.release();
   });
 
-  it('does not say the thread was not made when its reply was lost, and Try again asks for it again', async () => {
+  it.each([
+    ['the connection dropped', new DisconnectedError('closed')],
+    ['the call timed out', new TransportError('timeout', 'RPC 7 timed out after 30000ms')],
+  ])('does not say the thread was not made when %s before its reply, and Try again asks for it again', async (_what, err) => {
     const { ticket, ctx, read } = await openTicket();
-    const start = setBindingMock('StartTicketThread', async () => { throw new DisconnectedError('closed'); });
+    const start = setBindingMock('StartTicketThread', async () => { throw err; });
     const move = setBindingMock('MoveTrackerIssue', async () => applied());
     await startWork(ctx, PLAN, read);
     const run = startWorkRun(ticket.key)!;
@@ -323,6 +326,53 @@ describe('Start work', () => {
     expect(steps(ticket.key).move).toBe('unknown');
     await retryStartWork(ctx, read);
     expect(move).toHaveBeenCalledTimes(1);
+    expect(startWorkRun(ticket.key)).toBeNull();
+    ticket.release();
+  });
+
+  it('does not assign after a move whose reply was lost: the move assigned it, and Try again finds it already done', async () => {
+    const { ticket, ctx, read } = await openTicket();
+    setBindingMock('StartTicketThread', async () => thread('t-move-lost'));
+    // The tracker's transition assigns the ticket to the mover; the reply
+    // and its event never arrive.
+    const move = setBindingMock('MoveTrackerIssue', async () => {
+      held = detail({ id: 's2', name: 'In Progress' }, 'acc-1');
+      throw new DisconnectedError('closed');
+    });
+    const edit = setBindingMock('EditTrackerIssue', async () => applied());
+    setBindingMock('GetTicketWork', async () => ({ key: 'WEB-1', pullRequests: [], branches: [], problems: [] }));
+    await startWork(ctx, PLAN, read);
+    await flush();
+    expect(steps(ticket.key)).toEqual({ thread: 'applied', move: 'unknown', assign: 'not_sent', defaults: 'skipped' });
+    expect(startWorkRun(ticket.key)?.steps.assign).toMatchObject({ text: 'Not decided: the move is not confirmed. Try again reads the ticket first.' });
+    expect(edit).not.toHaveBeenCalled();
+
+    await retryStartWork(ctx, read);
+    expect(move).toHaveBeenCalledTimes(1);
+    expect(edit).not.toHaveBeenCalled();
+    expect(startWorkRun(ticket.key)).toBeNull();
+    expect(mounted('t-move-lost')).toBe(true);
+    ticket.release();
+  });
+
+  it('does not call the ticket yours after a move that timed out: the move gave it away, and Try again assigns it', async () => {
+    const { ticket, ctx, read } = await openTicket();
+    // The ticket is this person's when the run starts.
+    held = detail({ id: 's1', name: 'To Do' }, 'acc-1');
+    setBindingMock('StartTicketThread', async () => thread('t-move-timeout'));
+    const move = setBindingMock('MoveTrackerIssue', async () => {
+      held = detail({ id: 's2', name: 'In Progress' }, 'acc-2');
+      throw new TransportError('timeout', 'RPC 9 timed out after 30000ms');
+    });
+    const edit = setBindingMock('EditTrackerIssue', async () => { held = detail(held.card.status, 'acc-1'); return applied(); });
+    setBindingMock('GetTicketWork', async () => ({ key: 'WEB-1', pullRequests: [], branches: [], problems: [] }));
+    await startWork(ctx, PLAN, read);
+    await flush();
+    expect(steps(ticket.key)).toEqual({ thread: 'applied', move: 'unknown', assign: 'not_sent', defaults: 'skipped' });
+
+    await retryStartWork(ctx, read);
+    expect(move).toHaveBeenCalledTimes(1);
+    expect(edit).toHaveBeenCalledTimes(1);
     expect(startWorkRun(ticket.key)).toBeNull();
     ticket.release();
   });

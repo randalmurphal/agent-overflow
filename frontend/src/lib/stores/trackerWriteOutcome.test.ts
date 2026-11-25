@@ -91,11 +91,14 @@ describe('sendWrite', () => {
     expect(outcome).toEqual({ kind: 'applied', note: null });
   });
 
-  it('says an answer a dropped connection lost may or may not have been made', async () => {
-    const outcome = await sendWrite('peer-1', 'Laptop', WEEK, async () => { throw new DisconnectedError('client closed'); });
+  it.each([
+    ['a dropped connection', new DisconnectedError('client closed')],
+    ['a call that timed out', new TransportError('timeout', 'RPC 7 timed out after 30000ms')],
+  ])('says a write whose answer %s kept may or may not have been made', async (_what, err) => {
+    const outcome = await sendWrite('peer-1', 'Laptop', WEEK, async () => { throw err; });
     expect(outcome).toEqual({
       kind: 'lost',
-      message: "Laptop: the connection dropped before the answer, so the change may or may not have been made; look at the day's logged time before you try again.",
+      message: "Laptop: no answer came back, so the change may or may not have been made; look at the day's logged time before you try again.",
     });
   });
 

@@ -566,7 +566,7 @@ describe('a ticket write', () => {
     expect(outcome?.kind).toBe('lost');
     expect(ticketWrite(ticket.key, 'new-comment')?.outcome).toEqual({
       kind: 'lost',
-      message: 'This computer: the connection dropped before the answer, so the change may or may not have been made; look at the ticket before you try again.',
+      message: 'This computer: no answer came back, so the change may or may not have been made; look at the ticket before you try again.',
     });
     ticket.release();
   });

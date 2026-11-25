@@ -11,11 +11,12 @@
 // outcome. The steps run in order: the thread (StartTicketThread, which
 // undoes what it made when it fails, so on its failure nothing else runs),
 // then the move, then the assignment, decided from the ticket as the move
-// left it, then saving the defaults. Nothing is done twice: Try again runs
-// the steps not applied, and its thread call answers the Start work thread
-// the computer already made for the ticket, project and branch, so a lost
-// reply never makes a second one; a tracker step is decided only from a
-// read of the ticket that succeeded after the run began, sends nothing
+// left it (after a move whose outcome is unknown, by Try again), then
+// saving the defaults. Nothing is done twice: Try again runs the steps not
+// applied, and its thread call answers the Start work thread the computer
+// already made for the ticket, project and branch, so a reply that never
+// came never makes a second one; a tracker step is decided only from a
+// read of the ticket that succeeded after the step before it, sends nothing
 // when the ticket already holds what it would set, and is not sent when
 // that read failed; and the write store sends nothing for a target with a
 // write out.
@@ -36,7 +37,7 @@ import { editTicketFields, fieldTarget, moveTicket, type TicketWriteContext } fr
 import { refusalSentence, type WriteOutcome } from './trackerWriteOutcome';
 import type { TrackerRefreshNotice } from './trackerBoard.svelte';
 import { hasScope } from '../transport/scopes';
-import { DisconnectedError } from '../transport/wsClient';
+import { isTransportClassError } from './transportStatus.svelte';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { withBackendTarget } from '../transport/backends';
 import type { Thread } from '../types/models';
@@ -308,15 +309,17 @@ function unreadReason(notice: TrackerRefreshNotice | null, state: TrackerTicketS
   return null;
 }
 
-/** The steps of a run whose thread call failed. A reply the connection
- * lost leaves the thread unknown: the computer may have made it, and Try
- * again asks for it again, which answers the thread it made. Any other
- * failure is the computer's answer that it made nothing. */
+/** The steps of a run whose thread call failed. A failure of the wire
+ * (`isTransportClassError`: the connection dropped, or the call timed out
+ * while the computer may still hold it) leaves the thread unknown: the
+ * computer may have made it, and Try again asks for it again, which
+ * answers the thread it made. Any other failure is the computer's answer
+ * that it made nothing. */
 function threadFailed(err: unknown): StartWorkRun['steps'] {
-  if (err instanceof DisconnectedError) {
+  if (isTransportClassError(err)) {
     const waiting: StepOutcome = { kind: 'not_sent', text: 'Not run yet: the thread is not confirmed.' };
     return {
-      thread: { kind: 'unknown', text: 'The connection dropped before the reply, so the thread may have been made; Try again finds it if it was.' },
+      thread: { kind: 'unknown', text: 'No answer came back, so the thread may have been made; Try again finds it if it was.' },
       move: waiting, assign: waiting, defaults: waiting,
     };
   }
@@ -372,30 +375,37 @@ async function runSteps(t: TicketWriteContext, read: () => TrackerTicketState | 
     setStep(key, 'thread', { kind: 'applied', note: null });
   }
   // The move settles before the assignment is decided, and each decision
-  // rests on a read of the ticket that succeeded after this run began: the
-  // Refresh here, then the read the move's own write made.
+  // rests on a read of the ticket that succeeded after the step before it:
+  // the Refresh here, then the read the move's own write made. No read is
+  // known to follow a move whose outcome is unknown, so nothing is decided
+  // after it in this run; Try again starts from a Refresh.
   const wantMove = owed('move') && plan.status !== null;
   const wantAssign = owed('assign') && plan.assign && plan.me !== '';
-  let unread: string | null = null;
+  const unsent = (reason: string | null): StepOutcome | null =>
+    reason === null ? null : { kind: 'not_sent', text: `${t.label} could not be read again, so this was not sent: ${reason}` };
+  // Why the ticket as `read()` holds it cannot decide the next step; null
+  // when it can.
+  let undecided: StepOutcome | null = null;
   if (wantMove || wantAssign) {
     if (wantMove) setStep(key, 'move', { kind: 'running' });
     if (wantAssign) setStep(key, 'assign', { kind: 'running' });
     const notice = await refreshTrackerTicket(key);
     await trackerTicketSettled(key);
-    unread = unreadReason(notice, read());
+    undecided = unsent(unreadReason(notice, read()));
   }
-  const unsent = (): StepOutcome => ({ kind: 'not_sent', text: `${t.label} could not be read again, so this was not sent: ${unread}` });
   if (owed('move')) {
-    const move = wantMove && unread !== null ? unsent() : await moveStep(t, plan, read());
+    const move = wantMove && undecided ? undecided : await moveStep(t, plan, read());
     if (!mine()) return;
     setStep(key, 'move', move);
-    if (move.kind === 'applied' || move.kind === 'unknown') {
+    if (move.kind === 'applied') {
       await trackerTicketSettled(key);
-      unread = unreadReason(null, read());
+      undecided = unsent(unreadReason(null, read()));
+    } else if (move.kind === 'unknown') {
+      undecided = { kind: 'not_sent', text: 'Not decided: the move is not confirmed. Try again reads the ticket first.' };
     }
   }
   if (owed('assign')) {
-    const assign = wantAssign && unread !== null ? unsent() : await assignStep(t, plan, read());
+    const assign = wantAssign && undecided ? undecided : await assignStep(t, plan, read());
     if (!mine()) return;
     setStep(key, 'assign', assign);
   }
