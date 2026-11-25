@@ -172,9 +172,9 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		func() error { _, err := s.ListMirrorCards(root, []string{"10001"}); return err },
 		func() error { _, _, err := s.ListMirrorIssueRows(root, "10001", ""); return err },
 		func() error { _, _, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10"}); return err },
-		func() error { _, err := s.CountMirrorSections(root, "10"); return err },
+		func() error { _, err := s.CountMirrorSections(root, "10", MirrorRegroup{}); return err },
 		func() error {
-			_, _, err := s.ReadMirrorBoardPatch(root, "10", []MirrorSection{{Kind: MirrorSectionSprint, SprintID: "21"},
+			_, _, err := s.ReadMirrorBoardPatch(root, "10", MirrorRegroup{}, []MirrorSection{{Kind: MirrorSectionSprint, SprintID: "21"},
 				{Kind: MirrorSectionBacklog}, {Kind: MirrorSectionColumn}}, []string{"10001", "10002"}, MirrorTotalsAt{})
 			return err
 		},
@@ -187,12 +187,15 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 			return err
 		},
 		func() error {
-			_, _, err := s.ReadMirrorBoardView(root, "10", theseSections([]MirrorSection{{Kind: MirrorSectionBacklog}}))
+			_, _, err := s.ReadMirrorBoardView(root, "10", MirrorRegroup{}, theseSections([]MirrorSection{{Kind: MirrorSectionBacklog}}))
 			return err
 		},
 	}
 	for _, section := range []MirrorSection{{Kind: MirrorSectionSprint, SprintID: "21"}, {Kind: MirrorSectionBacklog}, {Kind: MirrorSectionColumn}} {
-		reads = append(reads, func() error { _, err := s.ListMirrorSection(root, "10", section, MirrorRowKey{}); return err })
+		reads = append(reads, func() error {
+			_, err := s.ListMirrorSection(root, "10", MirrorRegroup{}, section, MirrorRowKey{})
+			return err
+		})
 	}
 	for i, read := range reads {
 		if err := read(); err != nil {
@@ -299,6 +302,9 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 		"every entry of the partial index is due a history read, and the listing stops at a page"},
 	{"WITH h AS MATERIALIZED (SELECT value FROM json_each(?2))", "SCAN h",
 		"a write's bound list (the ticket move's, the history times'), read once; it drives the issue lookups by primary key"},
+	{"WHERE st.root_id = ?1 AND st.status_group IN (4, 5) AND st.status_id NOT IN (SELECT o.key FROM json_each(", "SEARCH st USING PRIMARY KEY (root_id=?)",
+		"the statuses that count as done (mirrorNotDone) are listed once a statement from the root's catalog, which holds the statuses " +
+			"the root's reads named, not its issues"},
 	{threadTicketLinkColumn, "", "a thread row read, which names the mirror only in its link column: the read's plan is its own, " +
 		"and the column's is TestThreadLinkColumnReadsByKey"},
 	{"FROM tracker_cache_issue_missing m\n\t  JOIN tracker_cache_roots r ON r.id = m.root_id AND r.connection_id IS NOT NULL", "SCAN m",
@@ -404,6 +410,24 @@ func TestMirrorReadsUseTheirIndexes(t *testing.T) {
 		plan := explainMirror(t, s, read.query)
 		if !strings.Contains(plan, read.index) || strings.Contains(plan, "TEMP B-TREE") {
 			t.Errorf("%s plan:\n%s\nwant %s and no sort", name, plan, read.index)
+		}
+	}
+	// A project's regrouping costs each statement one list of the statuses
+	// that count as done, from the root's catalog and the bound groups,
+	// read once (an uncorrelated list), never once a row; the left-out
+	// rows a sprint total skips are one bound list too.
+	doneOnce := "LIST SUBQUERY 5\nCOMPOUND QUERY\nLEFT-MOST SUBQUERY\nSEARCH st USING PRIMARY KEY (root_id=?)\nLIST SUBQUERY 3\nSCAN o VIRTUAL TABLE INDEX 1:"
+	for name, read := range map[string]struct{ query, plan string }{
+		"backlog section":    {mirrorRegroupedBacklogSectionSQL, doneOnce},
+		"backlog rows by ID": {mirrorRegroupedBacklogPatchSQL, doneOnce},
+		"row count":          {mirrorRegroupedCountRowsSQL, "LIST SUBQUERY 4\nCOMPOUND QUERY\nLEFT-MOST SUBQUERY\nSEARCH st USING PRIMARY KEY (root_id=?)\nLIST SUBQUERY 2\nSCAN o VIRTUAL TABLE INDEX 1:"},
+		"sprint totals, rows left out": {mirrorCountSprintsLeftOutSQL, "SEARCH sp USING PRIMARY KEY (root_id=? AND board_id=?)\n" +
+			"SEARCH m USING COVERING INDEX idx_tracker_cache_issue_sprints_sprint (root_id=? AND sprint_id=?)\n" +
+			"SEARCH b USING PRIMARY KEY (root_id=? AND issue_id=? AND board_id=?)\nLIST SUBQUERY 1\nSCAN json_each VIRTUAL TABLE INDEX 1:"},
+	} {
+		plan := explainMirror(t, s, read.query)
+		if !strings.Contains(plan, read.plan) || strings.Contains(plan, "CORRELATED LIST SUBQUERY") || strings.Contains(plan, "TEMP B-TREE") {
+			t.Errorf("%s plan:\n%s\nwant %s, no correlated list and no sort", name, plan, read.plan)
 		}
 	}
 	// The cap's eviction walks the bodies held alone, and sorts those

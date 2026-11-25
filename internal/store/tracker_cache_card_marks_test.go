@@ -55,7 +55,7 @@ func TestEveryCardWriterMarksWhatItsCardsLack(t *testing.T) {
 				mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a")), nil)
 				counts := func() MirrorSectionCounts {
 					t.Helper()
-					c, err := s.CountMirrorSections(root, "10")
+					c, err := s.CountMirrorSections(root, "10", MirrorRegroup{})
 					if err != nil {
 						t.Fatal(err)
 					}

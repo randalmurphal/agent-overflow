@@ -106,7 +106,7 @@ func TestASaveThatUnlistsABoardEndsItsViews(t *testing.T) {
 			if !slices.ContainsFunc(boards, func(e BoardEvent) bool { return e.Scope == m.scope() && e.Ended }) {
 				t.Fatal("the save answered before the unlisted board's subscribers were told it ended")
 			}
-			if _, err := m.svc.SubscriptionBoard(sub.ID); !errors.Is(err, ErrUnknownSubscription) {
+			if _, _, err := m.svc.SubscriptionBoard(sub.ID); !errors.Is(err, ErrUnknownSubscription) {
 				t.Fatalf("the unlisted board's handle: %v", err)
 			}
 			if n := ties.untiedOf(sub.ID); n != 1 {

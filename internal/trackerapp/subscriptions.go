@@ -141,6 +141,9 @@ type handle struct {
 	ticket *ticketPump
 	ref    *pump.Handle[readRequest]
 	untie  func()
+	// setup names the status groups a board handle's reads apply: its
+	// project's, for its connection's site.
+	setup setupKey
 }
 
 // Tie ties a subscription's handle to the client that holds it as the
@@ -222,21 +225,37 @@ func (s *Service) SetSubscriptionVisible(id string, visible bool) error {
 	return nil
 }
 
-// SubscriptionBoard is the board handle id subscribes to, for the reads a
-// board subscription makes (Board, SectionRows, BoardPatch). A handle the
-// service does not hold fails with ErrUnknownSubscription, and a ticket's
-// with ErrInvalidRequest.
-func (s *Service) SubscriptionBoard(id string) (Scope, error) {
+// SubscriptionBoard is the board handle id subscribes to and the status
+// groups its project gives the board's site, for the reads a board
+// subscription makes (Board, SectionRows, BoardPatch). A handle the
+// service does not hold fails with ErrUnknownSubscription, a ticket's with
+// ErrInvalidRequest, and one whose project's setup file cannot be read
+// with ErrSetupUnreadable.
+func (s *Service) SubscriptionBoard(id string) (Scope, StatusGroups, error) {
+	scope, key, err := s.boardHandle(id)
+	if err != nil {
+		return Scope{}, StatusGroups{}, err
+	}
+	groups, err := s.boardStatusGroups(key)
+	if err != nil {
+		return Scope{}, StatusGroups{}, err
+	}
+	return scope, groups, nil
+}
+
+// boardHandle is board handle id's scope and the status groups it reads
+// with.
+func (s *Service) boardHandle(id string) (Scope, setupKey, error) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	h := s.subs.handles[id]
 	switch {
 	case h == nil:
-		return Scope{}, fmt.Errorf("%w: %s", ErrUnknownSubscription, id)
+		return Scope{}, setupKey{}, fmt.Errorf("%w: %s", ErrUnknownSubscription, id)
 	case h.board == nil:
-		return Scope{}, fmt.Errorf("%w: subscription %s is a ticket's, not a board's", ErrInvalidRequest, id)
+		return Scope{}, setupKey{}, fmt.Errorf("%w: subscription %s is a ticket's, not a board's", ErrInvalidRequest, id)
 	}
-	return h.board.scope, nil
+	return h.board.scope, h.setup, nil
 }
 
 // SubscriptionCountsForTesting reports the board and ticket handles the

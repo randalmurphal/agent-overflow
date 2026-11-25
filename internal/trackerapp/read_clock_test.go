@@ -156,7 +156,7 @@ func TestNoShownTimeIsAheadOfTheClockAfterAStepBack(t *testing.T) {
 	m.svc.subMu.Unlock()
 	ahead("the pump's read", told.ReadAt)
 	ahead("the pump's reconcile", told.ReconciledAt)
-	board := must[BoardView](t)(m.svc.Board(m.scope(), nil))
+	board := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, nil))
 	ahead("the board view's read", board.Sync.ReadAt)
 	ahead("the board view's reconcile", board.Sync.ReconciledAt)
 	ahead("the open ticket's read", m.ticketView(t, sub.ID).ReadAt)
@@ -178,7 +178,7 @@ func TestNoShownTimeIsAheadOfTheClockAfterAStepBack(t *testing.T) {
 		t.Fatal("the pump shows no failure")
 	}
 	ahead("the pump's failure", told.Failure.At)
-	board = must[BoardView](t)(m.svc.Board(m.scope(), nil))
+	board = must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, nil))
 	if board.Sync.Failure == nil {
 		t.Fatal("the board view shows no failure")
 	}

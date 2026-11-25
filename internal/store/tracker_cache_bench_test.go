@@ -169,7 +169,7 @@ func BenchmarkMirrorSectionPage(b *testing.B) {
 		b.Run(name, func(b *testing.B) {
 			s, root := openBenchMirror(b)
 			measureMirror(b, func(int) error {
-				_, err := s.ListMirrorSection(root, benchBoardID(0), section, MirrorRowKey{})
+				_, err := s.ListMirrorSection(root, benchBoardID(0), MirrorRegroup{}, section, MirrorRowKey{})
 				return err
 			})
 		})
@@ -180,7 +180,7 @@ func BenchmarkMirrorSectionPage(b *testing.B) {
 func BenchmarkMirrorCountSections(b *testing.B) {
 	s, root := openBenchMirror(b)
 	measureMirror(b, func(int) error {
-		_, err := s.CountMirrorSections(root, benchBoardID(0))
+		_, err := s.CountMirrorSections(root, benchBoardID(0), MirrorRegroup{})
 		return err
 	})
 }
