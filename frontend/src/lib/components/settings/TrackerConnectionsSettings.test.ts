@@ -209,7 +209,10 @@ describe('<TrackerConnectionsSettings>', () => {
     await openMenu('jira-1');
     await fireEvent.click(await screen.findByTestId('tracker-connection-menu-remove'));
     const dialog = await screen.findByRole('dialog');
-    expect(dialog.textContent).toContain('deletes its key file, its Tempo time logging and every board a project lists from it');
+    // The removal takes the Tempo connection and its own key file too (trackerapp/connections.go Remove).
+    expect(dialog.textContent).toContain(
+      'This computer removes example.atlassian.net and its Tempo time logging connection, deletes both of their key files, and drops every board a project lists from example.atlassian.net.',
+    );
     await fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(remove).not.toHaveBeenCalled();
 

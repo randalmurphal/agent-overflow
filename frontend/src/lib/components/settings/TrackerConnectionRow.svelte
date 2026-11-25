@@ -110,10 +110,15 @@
     void run('remove', () => removeTrackerConnection(backend, connection.id));
   }
 
+  // What RemoveTrackerConnection deletes (trackerapp/connections.go Remove):
+  // the connection, the Tempo connection that belongs to it, both key
+  // files and both rows; the project listings go with the row.
   let removeDescription = $derived(
     connection.kind === 'tempo'
-      ? `This computer deletes the Tempo key file and stops logging time through it. To use Tempo again, add it and save a new token.`
-      : `This computer deletes its key file${tempo ? ', its Tempo time logging' : ''} and every board a project lists from it, and keeps no copy of its issues. To use it again, add it and save a new token.`,
+      ? 'This computer removes Tempo time logging, deletes its key file, and stops logging time through it. To use Tempo again, add it and save a new token.'
+      : tempo
+        ? `This computer removes ${name} and its Tempo time logging connection, deletes both of their key files, and drops every board a project lists from ${name}. It keeps no copy of their data. To use them again, add them and save new tokens.`
+        : `This computer removes ${name}, deletes its key file, and drops every board a project lists from it. It keeps no copy of its issues. To use it again, add it and save a new token.`,
   );
 
   let trigger: HTMLButtonElement | undefined = $state(undefined);
