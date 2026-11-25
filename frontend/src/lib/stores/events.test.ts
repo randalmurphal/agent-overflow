@@ -255,7 +255,7 @@ describe('setupEventListeners', () => {
       await vi.waitFor(() => expect(board.current).not.toBeNull());
       emitWailsEvent('tracker:board_updated', { scope: { connection: 'c1', board: '2' }, seq: 5, changed: ['10101'] });
       emitWailsEvent('tracker:board_updated', { scope: { connection: 'c1', board: '1' }, seq: 6, changed: ['10101'] });
-      await vi.waitFor(() => expect(patch).toHaveBeenCalledWith('sub-1', [], ['10101'], { lifetime: 1, revision: 1 }));
+      await vi.waitFor(() => expect(patch).toHaveBeenCalledWith('sub-1', [], ['10101'], { lifetime: 1, revision: 1, groups: '' }));
       expect(patch).toHaveBeenCalledTimes(1);
     } finally {
       board.release();
