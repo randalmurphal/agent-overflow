@@ -80,9 +80,6 @@ type stmtCacheConn struct {
 	entries map[string]*list.Element
 	// order holds *cachedStmt, most recently used first.
 	order list.List
-	// beforeClose, when set, releases what the connector attached to the
-	// connection (the writer's commit hook) before it closes.
-	beforeClose func()
 	// writes, when set, counts the row writes the connection runs; see
 	// Store.WriteCount. Only the writer's connections set it.
 	writes *atomic.Uint64
@@ -246,9 +243,6 @@ func (c *stmtCacheConn) evictLocked(keep int) {
 // database/sql closes a connection only after every Rows on it has closed, so
 // no cached statement is running.
 func (c *stmtCacheConn) Close() error {
-	if c.beforeClose != nil {
-		c.beforeClose()
-	}
 	c.mu.Lock()
 	var errs []error
 	for el := c.order.Front(); el != nil; el = el.Next() {

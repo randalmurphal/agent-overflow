@@ -60,15 +60,15 @@ length, bind the list as one JSON array and read it with `json_each`, as the
 history repair's unseal statements and the timeline page hydration do
 (`TestPagesOfAnyLengthShareStatements`). A LIMIT is a literal in the SQL text,
 rendered with `strconv.Itoa`, because the planner reads a bound LIMIT when it
-compiles the statement, so each rebind would expire the cached statement and
-its next run would compile it again; OFFSET may bind. The planner also reads
+compiles the statement, so each new value bound would expire the cached
+statement and its next run would compile it again; OFFSET may bind. The planner also reads
 a bare `?` compared with a column that a partial index's WHERE pins to a
 literal, such as `items.kind` or `items.parent_id`, and the pattern of a
 `LIKE ?`, so such a parameter binds through `boundText` (`CAST(? AS TEXT)`),
 or `textParam` for a positional `?N`, and a code constant the planner must
 match is a literal (`sqlTextLiteral`). The package's tests check each cached
-statement after each run and fail on a statement of the package whose next
-run would compile it again (`sql_rebind_test.go`). Statements that write `items`
+statement after each run and fail on a statement of the package whose plan
+reads a bound value (`sql_rebind_test.go`). Statements that write `items`
 or `subagent_aggregates` carry those tables' triggers: a compiled `items`
 write holds 200 to 245 KB and the other writes 80 to 175 KB. Thread row and
 timeline reads hold 40 to 100 KB; about half the statements hold under

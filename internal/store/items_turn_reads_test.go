@@ -258,15 +258,18 @@ func TestNarrowTurnReadsPlans(t *testing.T) {
 					t.Fatal(readErr)
 				}
 				checked := 0
-				for _, stmt := range stmts {
-					plan := explainPlan(t, s, stmt.query, stmt.args...)
-					selection := planSubtree(plan, "MATERIALIZE selected")
-					if len(selection) == 0 {
+				for i, stmt := range stmts {
+					// The hydrator reads the lineage depth, runs the
+					// selection, then resolves its ids in a statement that
+					// opens with selectedIDsSQL.
+					if i == 0 || !strings.HasPrefix(stmt.query, selectedIDsSQL) {
 						continue
 					}
+					selected := stmts[i-1]
+					plan := explainPlan(t, s, selected.query, selected.args...)
 					checked++
 					local, imported := 0, 0
-					for _, r := range selection {
+					for _, r := range plan {
 						switch {
 						case strings.HasPrefix(r.detail, "SEARCH items USING COVERING INDEX idx_items_top_level "):
 							local++
@@ -289,22 +292,6 @@ func TestNarrowTurnReadsPlans(t *testing.T) {
 			})
 		}
 	}
-}
-
-// planSubtree returns the plan nodes below the node whose detail is root.
-func planSubtree(plan []planRow, root string) []planRow {
-	in := map[int]bool{}
-	var out []planRow
-	for _, r := range plan {
-		switch {
-		case r.detail == root:
-			in[r.id] = true
-		case in[r.parent]:
-			in[r.id] = true
-			out = append(out, r)
-		}
-	}
-	return out
 }
 
 // The rows a turn diff can upgrade are the turn's own rows whose payload is

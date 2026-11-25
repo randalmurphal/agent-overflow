@@ -18,21 +18,24 @@ import (
 )
 
 // A statement whose plan SQLite chose by reading a bound value recompiles
-// on every run: the planner compares a bound `kind = ?` with the
-// `kind = 'user_text'` of a partial index's WHERE, reads a bound LIMIT and
-// the prefix of a bound LIKE pattern, and marks the parameter so that
-// binding it expires the statement. The statement cache (stmt_cache.go)
-// cannot help such a statement.
+// whenever that value changes: the planner compares a bound `kind = ?`
+// with the `kind = 'user_text'` of a partial index's WHERE, reads a bound
+// LIMIT and the prefix of a bound LIKE pattern, and marks the parameter in
+// the statement's expmask so that binding it another value expires the
+// statement. The statement cache (stmt_cache.go) cannot help such a
+// statement.
 //
 // The package's tests check every statement the cache runs, after each
-// run (cachedStmtRan). modernc clears a cached statement's bindings after
-// a run, and SQLite expires a statement when it clears or binds a
-// parameter its plan read, so a statement expired after its run compiles
-// again on its next. A schema change expires statements before a run,
-// which recompiles them first, so it never shows here. TestMain fails the
-// package on any statement of the package's source that recompiles, named
-// with the call that ran it; a statement a test writes is not checked, nor
-// is one prepared with Prepare, which bypasses the cache.
+// run (cachedStmtRan), for a parameter its plan read, whatever the run
+// bound. Since SQLite 3.54 the planner also marks a `col = ?` term of a
+// join or of an ORDER BY query, whose plan changes only between 0 or 1
+// and any other integer (smimask); the check leaves those out, as SQLite
+// expires them only on that change. A schema change expires statements
+// before a run, which recompiles them first, so it never shows here.
+// TestMain fails the package on any statement of the package's source
+// whose plan reads a bound value, named with the call that ran it; a
+// statement a test writes is not checked, nor is one prepared with
+// Prepare, which bypasses the cache.
 func init() {
 	cachedStmtRan = checkCachedStmtRun
 }
@@ -71,7 +74,13 @@ func checkCachedStmtRun(stmt driver.Stmt, query string) {
 }
 
 // cachedStmtRecompiles reports whether stmt, a cached statement that has
-// just run, compiles again on its next run.
+// just run, compiles again on a run that binds a parameter its plan read
+// another value, or on its next run, expired already.
+//
+// The parameter marks are read from the statement itself: the driver
+// keeps an integer bound between runs, so a statement bound the same
+// LIMIT twice is not expired after either run and an expiry check alone
+// would pass it.
 func cachedStmtRecompiles(stmt driver.Stmt) (bool, error) {
 	tls, pstmt, err := sqliteStmtHandles(stmt)
 	if err != nil || pstmt == 0 {
@@ -79,7 +88,8 @@ func cachedStmtRecompiles(stmt driver.Stmt) (bool, error) {
 		// compiles it per run.
 		return false, err
 	}
-	return sqlite3.Xsqlite3_expired(tls, pstmt) != 0, nil
+	vdbe := (*sqlite3.TVdbe)(unsafe.Pointer(pstmt))
+	return vdbe.Fexpmask&^vdbe.Fsmimask != 0 || sqlite3.Xsqlite3_expired(tls, pstmt) != 0, nil
 }
 
 func recordRecompiling(query, site string) {

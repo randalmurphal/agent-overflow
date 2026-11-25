@@ -207,13 +207,14 @@ func queryActivityScanRows(
 	if err != nil {
 		return nil, fmt.Errorf("store: query activity scan rows for %s: %w", threadID, err)
 	}
-	args := append(append([]any{}, selectedArgs...), branchArgs...)
-	rows, err := q.Query(`
-		WITH selected(id) AS MATERIALIZED (
-			`+selectedSQL+`
-		)`+branches,
-		args...,
-	)
+	ids, n, err := selectTimelineIDs(q, selectedSQL, selectedArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("store: select activity scan rows for %s: %w", threadID, err)
+	}
+	if n == 0 {
+		return nil, nil
+	}
+	rows, err := q.Query(selectedIDsSQL+branches, append([]any{ids}, branchArgs...)...)
 	if err != nil {
 		return nil, fmt.Errorf("store: query activity scan rows for %s: %w", threadID, err)
 	}

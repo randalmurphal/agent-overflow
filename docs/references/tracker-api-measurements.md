@@ -620,7 +620,7 @@ API v4.
   `modernc.org/sqlite` exposes from v1.61.0, with query cancellation fixes
   in v1.61.1
   ([changelog](https://gitlab.com/cznic/sqlite/-/raw/master/CHANGELOG.md)).
-  `go.mod` pins v1.60.1. SQLite's guidance for untrusted SQL adds defensive
+  `go.mod` pins v1.63.0 (SQLite 3.54.1). SQLite's guidance for untrusted SQL adds defensive
   mode, lowered limits and an interrupt
   ([security](https://www.sqlite.org/security.html),
   [authorizer](https://www.sqlite.org/c3ref/set_authorizer.html)).
