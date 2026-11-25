@@ -157,6 +157,37 @@ export class BoardPatch {
 }
 
 /**
+ * BoardRef is one board of the list a save was built from, as
+ * ProjectBoards answered it: its connection, its board and whether it
+ * opens first.
+ */
+export class BoardRef {
+    "connection": string;
+    "board": string;
+    "opens_first"?: boolean;
+
+    /** Creates a new BoardRef instance. */
+    constructor($$source: Partial<BoardRef> = {}) {
+        if (!("connection" in $$source)) {
+            this["connection"] = "";
+        }
+        if (!("board" in $$source)) {
+            this["board"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new BoardRef instance from a string or object.
+     */
+    static createFrom($$source: any = {}): BoardRef {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new BoardRef($$parsedSource as Partial<BoardRef>);
+    }
+}
+
+/**
  * BoardSubscription is a board subscribe's answer: the handle, the
  * sequence number the answer is as of, and the board view of the sections
  * asked for when the mirror holds the board's structure (Loaded), or no

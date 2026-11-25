@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   acquireTrackerProjectBoards,
+  refreshTrackerProjectBoards,
   saveTrackerProjectBoards,
   trackerProjectBoardsOf,
   withBoardAdded,
@@ -16,6 +17,7 @@ import { answerAsV0019 } from '../../test/helpers/olderComputer';
 import { __resetBackendsForTest, getPinnedBackend } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { setCarriedSessionScopes } from '../transport/scopes';
+import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { __setBackendStatusForTest } from './transportStatus.svelte';
 import type { TrackerBoardChoice, TrackerProjectBoard } from './bindings';
 
@@ -66,7 +68,7 @@ describe('a held project board list', () => {
     expect(read).toHaveBeenCalledWith('p1');
     expect(ids(trackerProjectBoardsOf(HOME_BACKEND, 'p1').list)).toEqual(['1*']);
 
-    const save = setBindingMock('SetProjectTrackerBoards', async (_p: string, boards: TrackerProjectBoard[]) =>
+    const save = setBindingMock('SetProjectTrackerBoards', async (_p: string, _held: unknown, boards: TrackerProjectBoard[]) =>
       boards.map((x) => trackerBoardChoice({ ...x, opens_first: x.opens_first ?? false })),
     );
     await saveTrackerProjectBoards(HOME_BACKEND, 'p1', withBoardAdded([a], { connection: 'jira-1', board: '2', name: 'Ops board', tracker_project: 'OPS' }));
@@ -114,6 +116,75 @@ describe('a held project board list', () => {
     await expect(saveTrackerProjectBoards(HOME_BACKEND, 'p1', [])).rejects.toBe(refusal);
     expect(ids(trackerProjectBoardsOf(HOME_BACKEND, 'p1').list)).toEqual(['1*']);
     expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1').saving).toBe(false);
+  });
+
+  it('sends, with each save, the list it holds as the one the save was built from', async () => {
+    setBindingMock('ProjectTrackerBoards', async () => [a, b]);
+    acquireTrackerProjectBoards(HOME_BACKEND, 'p1');
+    await vi.waitFor(() => expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1').loaded).toBe(true));
+    const save = setBindingMock('SetProjectTrackerBoards', async () => [b]);
+    await saveTrackerProjectBoards(HOME_BACKEND, 'p1', withBoardRemoved([a, b], 0));
+    expect(save).toHaveBeenCalledWith('p1', [
+      { connection: 'jira-1', board: '1', opens_first: true },
+      { connection: 'jira-1', board: '2', opens_first: false },
+    ], [{ connection: 'jira-1', board: '2', opens_first: true, name: 'Ops board', tracker_project: 'OPS' }]);
+  });
+
+  it('shows a failed first read as a failure, never as an empty list, a dropped connection included', async () => {
+    const answers: (() => Promise<TrackerBoardChoice[]>)[] = [
+      async () => { throw new DisconnectedError('the connection closed'); },
+      async () => [a],
+    ];
+    setBindingMock('ProjectTrackerBoards', () => answers.shift()!());
+    acquireTrackerProjectBoards(HOME_BACKEND, 'p1');
+    await vi.waitFor(() => expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1').error).toBeInstanceOf(DisconnectedError));
+    expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1')).toMatchObject({ loaded: false, current: false, list: [] });
+    await expect(saveTrackerProjectBoards(HOME_BACKEND, 'p1', [])).rejects.toThrow('has not been read');
+    await refreshTrackerProjectBoards(HOME_BACKEND, 'p1');
+    expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1')).toMatchObject({ loaded: true, current: true, error: null });
+    expect(ids(trackerProjectBoardsOf(HOME_BACKEND, 'p1').list)).toEqual(['1*']);
+  });
+
+  it('keeps a read list over a failed read, and takes no edit built from it until a read answers', async () => {
+    const reading = deferred<TrackerBoardChoice[]>();
+    const answers: (() => Promise<TrackerBoardChoice[]>)[] = [
+      async () => [a],
+      async () => { throw new TransportError('method_error', 'store: disk I/O error'); },
+      () => reading.promise,
+    ];
+    setBindingMock('ProjectTrackerBoards', () => answers.shift()!());
+    acquireTrackerProjectBoards(HOME_BACKEND, 'p1');
+    await vi.waitFor(() => expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1').loaded).toBe(true));
+    await refreshTrackerProjectBoards(HOME_BACKEND, 'p1');
+    expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1')).toMatchObject({ loaded: true, current: false });
+    expect(ids(trackerProjectBoardsOf(HOME_BACKEND, 'p1').list)).toEqual(['1*']);
+    const save = setBindingMock('SetProjectTrackerBoards', async () => []);
+    await expect(saveTrackerProjectBoards(HOME_BACKEND, 'p1', [])).rejects.toThrow('has not been read');
+    expect(save).not.toHaveBeenCalled();
+    const retried = refreshTrackerProjectBoards(HOME_BACKEND, 'p1');
+    reading.resolve([a, b]);
+    await retried;
+    expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1')).toMatchObject({ current: true, error: null });
+  });
+
+  // A save that fails may still have stored its list ("saved, and reading
+  // back failed"), and a refused one was built from a list another save
+  // changed: either way the list shown is not known to be the stored one.
+  it('reads the list again after any failed save, and takes no edit until that read answers', async () => {
+    setBindingMock('ProjectTrackerBoards', async () => [a]);
+    acquireTrackerProjectBoards(HOME_BACKEND, 'p1');
+    await vi.waitFor(() => expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1').loaded).toBe(true));
+    const reading = deferred<TrackerBoardChoice[]>();
+    const read = setBindingMock('ProjectTrackerBoards', () => reading.promise);
+    const failure = new TransportError('method_error', 'trackerapp: the boards of project p1 are saved, and reading them back failed, so read them again');
+    setBindingMock('SetProjectTrackerBoards', async () => { throw failure; });
+    await expect(saveTrackerProjectBoards(HOME_BACKEND, 'p1', withBoardAdded([a], { connection: 'jira-1', board: '2' }))).rejects.toBe(failure);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1').current).toBe(false);
+    await expect(saveTrackerProjectBoards(HOME_BACKEND, 'p1', [])).rejects.toThrow('has not been read');
+    reading.resolve([a, b]);
+    await vi.waitFor(() => expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1').current).toBe(true));
+    expect(ids(trackerProjectBoardsOf(HOME_BACKEND, 'p1').list)).toEqual(['1*', '2']);
   });
 
   it('reads as empty on a computer whose release has no trackers', async () => {

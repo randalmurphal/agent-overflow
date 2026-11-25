@@ -25,6 +25,9 @@ var (
 	// a name or tracker project longer than 255 characters, or a
 	// connection that does not exist or has no boards (Tempo).
 	ErrInvalidBoards = errors.New("trackerapp: invalid board list")
+	// ErrBoardsChanged is a save built from a list that is no longer the
+	// stored one: another save, or a connection's removal, changed it.
+	ErrBoardsChanged = errors.New("trackerapp: the project's boards changed after they were read")
 )
 
 // ProjectBoard is one board of a list SetProjectBoards stores. Name and
@@ -37,6 +40,15 @@ type ProjectBoard struct {
 	OpensFirst     bool   `json:"opens_first,omitempty"`
 	Name           string `json:"name,omitempty"`
 	TrackerProject string `json:"tracker_project,omitempty"`
+}
+
+// BoardRef is one board of the list a save was built from, as
+// ProjectBoards answered it: its connection, its board and whether it
+// opens first.
+type BoardRef struct {
+	Connection string `json:"connection"`
+	Board      string `json:"board"`
+	OpensFirst bool   `json:"opens_first,omitempty"`
 }
 
 // BoardChoice is one board a project lists as its board picker shows it:
@@ -90,9 +102,12 @@ func (s *Service) boardChoices(projectID string) ([]BoardChoice, error) {
 
 // SetProjectBoards makes boards, in order, the whole list of boards
 // projectID lists, and answers the list stored as ProjectBoards reads it.
-// A missing project fails
-// with ErrProjectNotFound and a list the store refuses with
-// ErrInvalidBoards; either leaves the stored list as it was.
+// held is the list, in order, that boards was built from; when the stored
+// list is not that one the save fails with ErrBoardsChanged. A missing
+// project fails with ErrProjectNotFound and a list the store refuses with
+// ErrInvalidBoards. Each failure leaves the stored list as it was. A
+// board the list keeps keeps the name and tracker project stored when it
+// was added.
 //
 // A list that changed takes effect before the answer, and the save does
 // only what its own list needs. Each board the write left no project
@@ -105,13 +120,14 @@ func (s *Service) boardChoices(projectID string) ([]BoardChoice, error) {
 // adds. A reorder or a move of the board that opens first does neither.
 // A readying that fails leaves the list saved, and the next cleanup
 // readies the board.
-func (s *Service) SetProjectBoards(projectID string, boards []ProjectBoard) ([]BoardChoice, error) {
+func (s *Service) SetProjectBoards(projectID string, held []BoardRef, boards []ProjectBoard) ([]BoardChoice, error) {
 	if err := s.enter(); err != nil {
 		return nil, err
 	}
 	defer s.leave()
-	if boards == nil {
-		boards = []ProjectBoard{}
+	heldRows := make([]store.HeldTrackerBoard, len(held))
+	for i, b := range held {
+		heldRows[i] = store.HeldTrackerBoard{ConnectionID: b.Connection, BoardID: b.Board, OpensFirst: b.OpensFirst}
 	}
 	rows := make([]store.ProjectTrackerBoard, len(boards))
 	for i, b := range boards {
@@ -120,10 +136,12 @@ func (s *Service) SetProjectBoards(projectID string, boards []ProjectBoard) ([]B
 			Name: b.Name, TrackerProject: b.TrackerProject,
 		}
 	}
-	_, listing, err := s.store.ReplaceProjectTrackerBoards(projectID, rows)
+	_, listing, err := s.store.ReplaceProjectTrackerBoards(projectID, heldRows, rows)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, fmt.Errorf("%w: %s: %w", ErrProjectNotFound, projectID, err)
+	case errors.Is(err, store.ErrTrackerBoardsChanged):
+		return nil, fmt.Errorf("%w: %w", ErrBoardsChanged, err)
 	case errors.Is(err, store.ErrInvalidTrackerBoards):
 		return nil, fmt.Errorf("%w: %w", ErrInvalidBoards, err)
 	case err != nil:

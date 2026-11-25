@@ -93,19 +93,20 @@ func (a *App) ProjectTrackerBoards(ctx context.Context, projectID string) ([]tra
 }
 
 // SetProjectTrackerBoards makes boards, in order, the boards a project's
-// picker shows, each with the name and tracker project the picker showed,
-// and answers the list stored as ProjectTrackerBoards reads it. A board it
-// leaves out that
-// no other project lists stops being kept on this computer, and its open
-// views end.
+// picker shows, and answers the list stored as ProjectTrackerBoards reads
+// it. held is the list the picker showed and built boards from; a save
+// built from a list that is no longer the stored one is refused. A board
+// it adds is stored with the name and tracker project the picker showed.
+// A board it leaves out that no other project lists stops being kept on
+// this computer, and its open views end.
 //
 //ao:scope tracker:operate
-func (a *App) SetProjectTrackerBoards(ctx context.Context, projectID string, boards []trackerapp.ProjectBoard) ([]trackerapp.BoardChoice, error) {
+func (a *App) SetProjectTrackerBoards(ctx context.Context, projectID string, held []trackerapp.BoardRef, boards []trackerapp.ProjectBoard) ([]trackerapp.BoardChoice, error) {
 	svc, err := a.trackerService()
 	if err != nil {
 		return nil, err
 	}
-	out, err := svc.SetProjectBoards(projectID, boards)
+	out, err := svc.SetProjectBoards(projectID, held, boards)
 	return out, trackerError(err)
 }
 
@@ -313,6 +314,8 @@ func trackerRefusal(err error) (code, message string) {
 		return "tracker_page_stale", "the board changed since this section was read; read the section again from its start"
 	case errors.Is(err, trackerapp.ErrProjectNotFound):
 		return "tracker_project_missing", "this project no longer exists on this computer"
+	case errors.Is(err, trackerapp.ErrBoardsChanged):
+		return "tracker_boards_changed", "this project's boards changed after this list was read; the list shown now is the saved one, so make the change again"
 	case errors.Is(err, trackerapp.ErrInvalidBoards):
 		return "tracker_boards_refused", "this board list cannot be saved; fix what the detail names and save again"
 	}

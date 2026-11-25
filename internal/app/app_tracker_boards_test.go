@@ -265,13 +265,27 @@ func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoa
 			})
 		}
 	}
-	if got, err := a.SetProjectTrackerBoards(ctx, project.ID, listed); err != nil || !slices.Equal(got, want) {
+	if got, err := a.SetProjectTrackerBoards(ctx, project.ID, nil, listed); err != nil || !slices.Equal(got, want) {
 		t.Fatalf("SetProjectTrackerBoards = %+v, %v; want %+v", got, err, want)
 	}
 	if got, err := a.ProjectTrackerBoards(ctx, project.ID); err != nil || !slices.Equal(got, want) {
 		t.Fatalf("ProjectTrackerBoards = %+v, %v; want %+v", got, err, want)
 	}
 	return &trackerBoardFixture{a: a, e: e, conn: conn, project: project.ID, events: events}
+}
+
+// held is the project's list as a page that read it holds it.
+func (f *trackerBoardFixture) held(t *testing.T, ctx context.Context) []trackerapp.BoardRef {
+	t.Helper()
+	listed, err := f.a.ProjectTrackerBoards(ctx, f.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make([]trackerapp.BoardRef, len(listed))
+	for i, b := range listed {
+		out[i] = trackerapp.BoardRef{Connection: b.Connection, Board: b.Board, OpensFirst: b.OpensFirst}
+	}
+	return out
 }
 
 // subscribe subscribes ctx's connection to the board with its sprint.
@@ -666,10 +680,13 @@ func TestTrackerBoardRefusalsSayWhatToDo(t *testing.T) {
 	}{
 		{"a board the project does not list", "tracker_board_not_listed", trackerapp.ErrNotListed, func() error { return subscribe(f.project, f.conn.ID, "2") }},
 		{"a project that does not exist", "tracker_project_missing", trackerapp.ErrProjectNotFound, func() error {
-			return ignoreResult(f.a.SetProjectTrackerBoards(ctx, "no-such-project", nil))
+			return ignoreResult(f.a.SetProjectTrackerBoards(ctx, "no-such-project", nil, nil))
 		}},
 		{"a board list naming a Tempo connection", "tracker_boards_refused", trackerapp.ErrInvalidBoards, func() error {
-			return ignoreResult(f.a.SetProjectTrackerBoards(ctx, f.project, []trackerapp.ProjectBoard{{Connection: tempo.ID, Board: "1"}}))
+			return ignoreResult(f.a.SetProjectTrackerBoards(ctx, f.project, f.held(t, ctx), []trackerapp.ProjectBoard{{Connection: tempo.ID, Board: "1"}}))
+		}},
+		{"a board list built from a list that is no longer stored", "tracker_boards_changed", trackerapp.ErrBoardsChanged, func() error {
+			return ignoreResult(f.a.SetProjectTrackerBoards(ctx, f.project, nil, nil))
 		}},
 		{"the projects of a Tempo connection", "tracker_connection_tempo", trackerapp.ErrNoProvider, func() error {
 			return ignoreResult(f.a.TrackerProjects(ctx, tempo.ID))
@@ -709,6 +726,12 @@ func TestTrackerBoardRefusalsSayWhatToDo(t *testing.T) {
 	_, message, _ := errorsx.PublicDetails(ignoreResult(f.a.AddTrackerConnection(ctx, NewTrackerConnection{Kind: store.TrackerKindJira, Site: "example.atlassian.net/jira", Account: "user1@example.com"})))
 	if want := "the Jira site must be an address such as https://example.atlassian.net: it has a path"; message != want {
 		t.Errorf("a Jira site with a path is told %q, want %q", message, want)
+	}
+	// True whichever screen changed the list, the one that saves included
+	// (a connection removed there deletes its listings).
+	_, message, _ = errorsx.PublicDetails(ignoreResult(f.a.SetProjectTrackerBoards(ctx, f.project, nil, nil)))
+	if want := "this project's boards changed after this list was read; the list shown now is the saved one, so make the change again"; message != want {
+		t.Errorf("a save from an old list is told %q, want %q", message, want)
 	}
 	// Every sentence differs: each names its own remedy.
 	sentences := map[string]string{}

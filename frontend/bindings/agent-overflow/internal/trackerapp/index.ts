@@ -5,6 +5,7 @@ export {
     BoardChoice,
     BoardInfoView,
     BoardPatch,
+    BoardRef,
     BoardSubscription,
     BoardTotals,
     BoardView,

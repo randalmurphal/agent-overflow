@@ -387,23 +387,27 @@ async function connectTrackers(harness: HarnessApp, projectId: string): Promise<
     projects: [],
     boards: [{ id: 2, name: 'WEB kanban', type: 'kanban', project: 'WEB', columns: [{ name: 'To Do', statuses: ['10000'] }] }],
   });
-  const listed = await harness.rpc<TrackerConnection[]>('TrackerConnections');
-  const jira = listed.find((c) => c.kind === 'jira' && c.site === JIRA_SITE && c.account === JIRA_ACCOUNT)
+  const connections = await harness.rpc<TrackerConnection[]>('TrackerConnections');
+  const jira = connections.find((c) => c.kind === 'jira' && c.site === JIRA_SITE && c.account === JIRA_ACCOUNT)
     ?? await harness.rpc<TrackerConnection>('AddTrackerConnection', { kind: 'jira', site: JIRA_SITE, account: JIRA_ACCOUNT });
   // The token a person would paste into the key file the app named.
   await writeFile(jira.keyFilePath, JIRA_TOKEN, { mode: 0o600 });
   const verified = await harness.rpc<TrackerConnection>('VerifyTrackerConnection', jira.id);
   if (verified.problem) throw new Error(`the fake Jira refused the connection: ${JSON.stringify(verified.problem)}`);
   await harness.rpc('SetTrackerConnectionTokenExpiry', jira.id, Date.now() + 90 * 24 * 3600_000);
-  if (!listed.some((c) => c.parentId === jira.id)) {
+  if (!connections.some((c) => c.parentId === jira.id)) {
     await harness.rpc('AddTrackerConnection', { kind: 'tempo', site: '', parentId: jira.id });
   }
-  if (!listed.some((c) => c.kind === 'linear')) {
+  if (!connections.some((c) => c.kind === 'linear')) {
     const linear = await harness.rpc<TrackerConnection>('AddTrackerConnection', { kind: 'linear', site: 'example' });
     await harness.rpc('RenameTrackerConnection', linear.id, 'Top-up Linear');
     await harness.rpc('SetTrackerConnectionEnabled', linear.id, false);
   }
-  await harness.rpc('SetProjectTrackerBoards', projectId, [
+  // Built from the list the project holds: a run after an earlier one at
+  // this version reuses its project.
+  const listed = await harness.rpc<Array<{ connection: string; board: string; opens_first: boolean }>>('ProjectTrackerBoards', projectId);
+  const built = listed.map(({ connection, board, opens_first }) => ({ connection, board, opens_first }));
+  await harness.rpc('SetProjectTrackerBoards', projectId, built, [
     { connection: jira.id, board: BOARD_ID, opens_first: true, name: 'WEB board', tracker_project: 'WEB' },
     { connection: jira.id, board: '2', opens_first: false, name: 'WEB kanban', tracker_project: 'WEB' },
   ]);

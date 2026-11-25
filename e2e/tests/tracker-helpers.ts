@@ -60,8 +60,9 @@ export async function connectFakeJiraBoard(harness: HarnessApp, name: string, ex
   await writeFile(added.keyFilePath, JIRA_TOKEN, { mode: 0o600 });
   const verified = await harness.rpc<TrackerConnection>('VerifyTrackerConnection', added.id);
   if (verified.problem) throw new Error(`the fake Jira refused the connection: ${JSON.stringify(verified.problem)}`);
-  // As the board picker sends it: with the name and project it showed.
-  await harness.rpc('SetProjectTrackerBoards', projectId, [{ connection: added.id, board: BOARD_ID, opens_first: true, name: 'WEB board', tracker_project: 'WEB' }]);
+  // As the board picker sends it: built from the project's empty list,
+  // with the name and project it showed.
+  await harness.rpc('SetProjectTrackerBoards', projectId, [], [{ connection: added.id, board: BOARD_ID, opens_first: true, name: 'WEB board', tracker_project: 'WEB' }]);
   return { projectId, connectionId: added.id, jiraURL };
 }
 

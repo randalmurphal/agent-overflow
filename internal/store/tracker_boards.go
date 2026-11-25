@@ -17,6 +17,12 @@ import (
 // connection that does not exist or has no boards (Tempo).
 var ErrInvalidTrackerBoards = errors.New("store: invalid tracker board list")
 
+// ErrTrackerBoardsChanged is returned by ReplaceProjectTrackerBoards when
+// the list the caller built its change from is not the stored one: another
+// save, or a connection's removal, changed the list after the caller read
+// it.
+var ErrTrackerBoardsChanged = errors.New("store: the project's tracker boards changed after they were read")
+
 // TrackerBoardRef names one board: the tracker's own board ID within a
 // connection.
 type TrackerBoardRef struct {
@@ -34,6 +40,23 @@ type ProjectTrackerBoard struct {
 	OpensFirst     bool
 	Name           string
 	TrackerProject string
+}
+
+// HeldTrackerBoard is one board of the list a caller read and built its
+// change from: what a project's list holds, less the names it stored.
+type HeldTrackerBoard struct {
+	ConnectionID string
+	BoardID      string
+	OpensFirst   bool
+}
+
+// heldTrackerBoards is boards as a caller holds them.
+func heldTrackerBoards(boards []ProjectTrackerBoard) []HeldTrackerBoard {
+	out := make([]HeldTrackerBoard, len(boards))
+	for i, b := range boards {
+		out[i] = HeldTrackerBoard{ConnectionID: b.ConnectionID, BoardID: b.BoardID, OpensFirst: b.OpensFirst}
+	}
+	return out
 }
 
 // maxTrackerBoardTextRunes bounds a listing's name and tracker project,
@@ -89,13 +112,17 @@ type TrackerBoardListing struct {
 
 // ReplaceProjectTrackerBoards makes boards, in order, the whole list of
 // boards projectID lists, and reports whether the list changed and what
-// that did to the boards' stored copies. A missing project fails with
-// sql.ErrNoRows and an invalid list with ErrInvalidTrackerBoards; either
-// leaves the stored list as it was. Only the listings it removes are
-// deleted, so a board still listed elsewhere is not retired. A reorder or
-// a move of the board that opens first removes and adds none, and reads
-// nothing more.
-func (s *Store) ReplaceProjectTrackerBoards(projectID string, boards []ProjectTrackerBoard) (changed bool, listing TrackerBoardListing, err error) {
+// that did to the boards' stored copies. held is the list the caller read
+// and built boards from, in order; when the stored list is not that one
+// (another save, or a connection's removal, changed it since), the save
+// fails with ErrTrackerBoardsChanged. A missing project fails with
+// sql.ErrNoRows and an invalid list with ErrInvalidTrackerBoards. Each
+// failure leaves the stored list as it was. A listing that stays keeps the
+// name and tracker project it stored; only a listing the save adds takes
+// them from boards. Only the listings it removes are deleted, so a board
+// still listed elsewhere is not retired. A reorder or a move of the board
+// that opens first removes and adds none, and reads nothing more.
+func (s *Store) ReplaceProjectTrackerBoards(projectID string, held []HeldTrackerBoard, boards []ProjectTrackerBoard) (changed bool, listing TrackerBoardListing, err error) {
 	if err := validateProjectTrackerBoards(boards); err != nil {
 		return false, listing, err
 	}
@@ -126,6 +153,16 @@ func (s *Store) ReplaceProjectTrackerBoards(projectID string, boards []ProjectTr
 	if err := tx.QueryRow(`SELECT 1 FROM projects WHERE id = ?`, projectID).Scan(new(int)); err != nil {
 		return false, listing, fmt.Errorf("%s: read project: %w", action, err)
 	}
+	// Before the connections are checked: a list built before a
+	// connection's removal names it, and the removal is the cause.
+	current, err := listProjectTrackerBoards(tx, projectID)
+	if err != nil {
+		return false, listing, fmt.Errorf("%s: %w", action, err)
+	}
+	stored := heldTrackerBoards(current)
+	if !slices.Equal(stored, held) {
+		return false, listing, fmt.Errorf("%w: project %s lists %d boards, not the %d the change was built from or not in their order", ErrTrackerBoardsChanged, projectID, len(stored), len(held))
+	}
 	unknown, err := queryIDs(tx, `SELECT value FROM json_each(?)
 		WHERE value NOT IN (SELECT id FROM tracker_connections WHERE kind <> 'tempo') ORDER BY value`, string(encodedConnections))
 	if err != nil {
@@ -134,11 +171,7 @@ func (s *Store) ReplaceProjectTrackerBoards(projectID string, boards []ProjectTr
 	if len(unknown) > 0 {
 		return false, listing, fmt.Errorf("%w: connection %s does not exist or has no boards", ErrInvalidTrackerBoards, unknown[0])
 	}
-	current, err := listProjectTrackerBoards(tx, projectID)
-	if err != nil {
-		return false, listing, fmt.Errorf("%s: %w", action, err)
-	}
-	if slices.Equal(current, boards) {
+	if slices.Equal(stored, heldTrackerBoards(boards)) {
 		return false, listing, nil
 	}
 	removed, err := queryTrackerBoardRefs(tx, `DELETE FROM project_tracker_boards WHERE project_id = ?1 AND (connection_id, board_id) NOT IN (
@@ -164,8 +197,7 @@ func (s *Store) ReplaceProjectTrackerBoards(projectID string, boards []ProjectTr
 		{"place", `INSERT INTO project_tracker_boards(project_id, connection_id, board_id, position, opens_first, name, tracker_project)
 			SELECT ?1, value ->> 'c', value ->> 'b', key, value ->> 'f', COALESCE(value ->> 'n', ''), COALESCE(value ->> 'p', '')
 			FROM json_each(?2) WHERE true
-			ON CONFLICT(project_id, connection_id, board_id) DO UPDATE SET position = excluded.position, opens_first = excluded.opens_first,
-			 name = excluded.name, tracker_project = excluded.tracker_project`,
+			ON CONFLICT(project_id, connection_id, board_id) DO UPDATE SET position = excluded.position, opens_first = excluded.opens_first`,
 			[]any{projectID, string(encodedRows)}},
 	} {
 		if _, err := tx.Exec(step.query, step.args...); err != nil {

@@ -50,7 +50,7 @@ beforeEach(async () => {
     trackerConnection({ id: 'lin-off', kind: 'linear', site: 'example', account: '', enabled: false }),
   ]);
   setBindingMock('ProjectTrackerBoards', async (project: string) => stored[project]);
-  setBindingMock('SetProjectTrackerBoards', async (project: string, boards: TrackerProjectBoard[]) => {
+  setBindingMock('SetProjectTrackerBoards', async (project: string, _held: unknown, boards: TrackerProjectBoard[]) => {
     saves.push(boards);
     stored[project] = asStored(project, boards);
     return stored[project];
@@ -187,6 +187,65 @@ describe('<TrackerBoardsSettings>', () => {
       'This tracker connection was removed from this computer; add it again in the Issues settings, or choose another board.',
     );
     expect(names()).toEqual(['A']);
+  });
+
+  it('says the boards could not be read, offers Retry and no edit, and shows the list once a read answers', async () => {
+    stored.p1 = [trackerBoardChoice({ board: '1', name: 'A', opens_first: true })];
+    let fail = true;
+    setBindingMock('ProjectTrackerBoards', async (project: string) => {
+      if (fail) throw new TransportError('method_error', 'store: disk I/O error', { detail: { ref: 'r', method: 'ProjectTrackerBoards', at: 1, chain: ['store: disk I/O error'] } });
+      return stored[project];
+    });
+    await renderOnP1();
+    expect((await screen.findByTestId('settings-tracker-boards-error')).textContent).toBe('The boards could not be read: Store: disk I/O error.');
+    // A read that failed is not "no boards", and nothing can be added from it.
+    expect(screen.queryByTestId('settings-tracker-boards-empty')).toBeNull();
+    expect(screen.queryByTestId('tracker-board-add-open')).toBeNull();
+    fail = false;
+    await fireEvent.click(screen.getByTestId('settings-tracker-boards-retry'));
+    await waitFor(() => expect(names()).toEqual(['A']));
+    expect(screen.queryByTestId('settings-tracker-boards-error')).toBeNull();
+    expect((screen.getByTestId('tracker-board-remove') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('shows the stored list and says the boards changed when a save was built from an older list', async () => {
+    stored.p1 = [trackerBoardChoice({ board: '1', name: 'A', opens_first: true }), trackerBoardChoice({ board: '2', name: 'B' })];
+    await renderOnP1();
+    await waitFor(() => expect(names()).toEqual(['A', 'B']));
+    // Another window removes B; this page still shows it, and removes A.
+    stored.p1 = [trackerBoardChoice({ board: '1', name: 'A', opens_first: true })];
+    setBindingMock('SetProjectTrackerBoards', async () => {
+      throw new TransportError('tracker_boards_changed', "this project's boards changed after this list was read; the list shown now is the saved one, so make the change again", {
+        detail: { ref: 'r', method: 'SetProjectTrackerBoards', at: 1, chain: [] },
+      });
+    });
+    await fireEvent.click(screen.getAllByTestId('tracker-board-remove')[0]);
+    expect((await screen.findByTestId('settings-tracker-boards-save-error')).textContent).toBe(
+      "This project's boards changed after this list was read; the list shown now is the saved one, so make the change again.",
+    );
+    await waitFor(() => expect(names()).toEqual(['A']));
+  });
+
+  it('after a save that failed, reads the list again and offers no edit until it answers', async () => {
+    stored.p1 = [trackerBoardChoice({ board: '1', name: 'A', opens_first: true }), trackerBoardChoice({ board: '2', name: 'B' })];
+    await renderOnP1();
+    await waitFor(() => expect(names()).toEqual(['A', 'B']));
+    let answer!: (list: TrackerBoardChoice[]) => void;
+    setBindingMock('ProjectTrackerBoards', () => new Promise<TrackerBoardChoice[]>((resolve) => (answer = resolve)));
+    // The save stored the list and failed reading it back.
+    setBindingMock('SetProjectTrackerBoards', async () => {
+      stored.p1 = [trackerBoardChoice({ board: '2', name: 'B', opens_first: true })];
+      throw new TransportError('method_error', 'trackerapp: the boards of project p1 are saved, and reading them back failed, so read them again', {
+        detail: { ref: 'r', method: 'SetProjectTrackerBoards', at: 1, chain: [] },
+      });
+    });
+    await fireEvent.click(screen.getAllByTestId('tracker-board-remove')[0]);
+    await screen.findByTestId('settings-tracker-boards-save-error');
+    for (const button of screen.getAllByTestId('tracker-board-remove')) expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId('tracker-board-add-open') as HTMLButtonElement).disabled).toBe(true);
+    answer(stored.p1);
+    await waitFor(() => expect(names()).toEqual(['B']));
+    expect((screen.getByTestId('tracker-board-remove') as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('shows the project a deep link names, then each project’s own boards', async () => {

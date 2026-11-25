@@ -1,8 +1,16 @@
 // The boards a project's board picker lists, held while a surface shows
 // them: read when a surface acquires them and when the project's computer
 // reconnects, and replaced by the answer of every save, which is the list
-// as stored. One save runs at a time for a project; a save while one runs
-// is refused, so every save is built from the list the last answer stored.
+// as stored. Every save sends the list it was built from, and the computer
+// refuses it when that is no longer the stored list (another window's
+// save, or a connection's removal, changed it).
+//
+// An edit is built only from a list known to be the stored one (`current`):
+// one that a read or a save answered with no failure since. A read that
+// fails keeps the list it had, a failed first read holds none and is never
+// shown as an empty list, and a save that fails reads the list again,
+// since it may have stored its list or been refused for an older one. One
+// save runs at a time for a project; a save while one runs is refused.
 //
 // A project lives on one computer and its boards name that computer's
 // connections, so every call is pinned to the computer the surface named.
@@ -15,17 +23,21 @@ import {
   ProjectTrackerBoards,
   SetProjectTrackerBoards,
   type TrackerBoardChoice,
+  type TrackerBoardRef,
   type TrackerProjectBoard,
 } from './bindings';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { attachedBackends, onBackendsChanged, withBackendTarget } from '../transport/backends';
 import { hasScope, pageGrantsResolved } from '../transport/scopes';
-import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { onBackendStatusChange } from './transportStatus.svelte';
 
 class HeldBoards {
   list = $state<TrackerBoardChoice[]>([]);
+  /** A read or a save answered; a failed one never sets it. */
   loaded = $state(false);
+  /** The list is the stored one: a read or a save answered, and nothing failed since. */
+  current = $state(false);
+  /** The last read's failure, cleared by the next read that answers. */
   error = $state<unknown>(null);
   saving = $state(false);
   holders = 0;
@@ -40,36 +52,54 @@ class HeldBoards {
     if (this.backend === HOME_BACKEND) await pageGrantsResolved();
     if (this.dropped || generation !== this.generation) return;
     if (!hasScope('tracker:read', this.backend)) {
-      this.list = [];
-      this.loaded = true;
+      this.settle([]);
       return;
     }
     try {
       const list = await withBackendTarget(this.backend, () => ProjectTrackerBoards(this.projectId));
       if (this.dropped || generation !== this.generation) return;
-      this.list = list;
-      this.error = null;
+      this.settle(list);
     } catch (err) {
       if (this.dropped || generation !== this.generation) return;
-      if (!isPassiveConnectionFailure(err)) this.error = err;
+      // A dropped connection included: the reconnect reads again, and
+      // until a read answers nothing may be built from this list.
+      this.error = err;
+      this.current = false;
     }
-    this.loaded = true;
   }
 
   async save(boards: TrackerProjectBoard[]): Promise<void> {
     if (this.saving) throw new Error('The board list is still saving; try again once it has saved.');
+    if (!this.current) throw new Error('The board list has not been read since it changed; try again once it shows.');
     this.saving = true;
     const generation = ++this.generation;
+    const held = heldOf(this.list);
     try {
-      const list = await withBackendTarget(this.backend, () => SetProjectTrackerBoards(this.projectId, boards));
+      const list = await withBackendTarget(this.backend, () => SetProjectTrackerBoards(this.projectId, held, boards));
       if (this.dropped || generation !== this.generation) return;
-      this.list = list;
-      this.error = null;
-      this.loaded = true;
+      this.settle(list);
+    } catch (err) {
+      if (!this.dropped && generation === this.generation) {
+        this.current = false;
+        void this.read();
+      }
+      throw err;
     } finally {
       this.saving = false;
     }
   }
+
+  private settle(list: TrackerBoardChoice[]): void {
+    this.list = list;
+    this.error = null;
+    this.loaded = true;
+    this.current = true;
+  }
+}
+
+/** The list a save was built from, as the computer compares it with the stored one. */
+function heldOf(list: readonly TrackerBoardChoice[]): TrackerBoardRef[] {
+  return list.map((b) => ({ connection: b.connection, board: b.board, opens_first: b.opens_first }));
 }
 
 const held = new SvelteMap<string, HeldBoards>();
@@ -82,11 +112,13 @@ function keyOf(backend: BackendKey, projectId: string): string {
 export interface TrackerProjectBoardsView {
   list: readonly TrackerBoardChoice[];
   loaded: boolean;
+  /** An edit can be built from the list: it is the stored one. */
+  current: boolean;
   error: unknown;
   saving: boolean;
 }
 
-const NONE: TrackerProjectBoardsView = { list: [], loaded: false, error: null, saving: false };
+const NONE: TrackerProjectBoardsView = { list: [], loaded: false, current: false, error: null, saving: false };
 
 /**
  * Hold `projectId`'s boards on `backend` while the caller shows them,
@@ -119,9 +151,16 @@ export function trackerProjectBoardsOf(backend: BackendKey, projectId: string): 
   return held.get(keyOf(backend, projectId)) ?? NONE;
 }
 
+/** Read the project's boards again if a surface holds them. */
+export function refreshTrackerProjectBoards(backend: BackendKey, projectId: string): Promise<void> {
+  return held.get(keyOf(backend, projectId))?.read() ?? Promise.resolve();
+}
+
 /**
- * Makes `boards` the project's whole list. Rejects with the computer's
- * refusal, or while an earlier save of the project still runs.
+ * Makes `boards`, built from the list held now, the project's whole list.
+ * Rejects with the computer's refusal, while an earlier save of the
+ * project still runs, or while the held list is not known to be the
+ * stored one.
  */
 export function saveTrackerProjectBoards(backend: BackendKey, projectId: string, boards: TrackerProjectBoard[]): Promise<void> {
   const entry = held.get(keyOf(backend, projectId));
@@ -129,7 +168,10 @@ export function saveTrackerProjectBoards(backend: BackendKey, projectId: string,
   return entry.save(boards);
 }
 
-/** The list a save sends: each board as it is shown, its name included. */
+/**
+ * The list a save sends: each board as it is shown, its name included,
+ * which the computer stores only for a board the save adds.
+ */
 function boardsOf(list: readonly TrackerBoardChoice[]): TrackerProjectBoard[] {
   return list.map((b) => ({
     connection: b.connection,

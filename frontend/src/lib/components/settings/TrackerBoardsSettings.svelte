@@ -16,6 +16,7 @@
   import { acquireTrackerConnections, refreshTrackerConnections, trackerConnectionsOf, trackerReadGate } from '../../stores/trackerConnections.svelte';
   import {
     acquireTrackerProjectBoards,
+    refreshTrackerProjectBoards,
     saveTrackerProjectBoards,
     trackerProjectBoardsOf,
     withBoardAdded,
@@ -98,7 +99,9 @@
     saveError = null;
   });
 
-  let locked = $derived(operateReason !== '' || (boards?.saving ?? false));
+  // An edit is built only from the stored list: not while a save runs, nor
+  // after a read or a save failed until a read answers.
+  let locked = $derived(operateReason !== '' || (boards?.saving ?? false) || !(boards?.current ?? false));
 
   async function save(next: TrackerProjectBoard[]): Promise<boolean> {
     const id = selectedId;
@@ -177,10 +180,20 @@
       >
         <p class="text-[0.8125rem] font-medium text-fg">Boards</p>
         {#if boards.error !== null}
-          <p class="text-[0.75rem] text-error" role="alert" data-testid="settings-tracker-boards-error">{userFacingError(boards.error)}</p>
+          <div class="flex flex-wrap items-center gap-2" role="alert">
+            <p class="text-[0.75rem] text-error" data-testid="settings-tracker-boards-error">The boards could not be read: {userFacingError(boards.error)}</p>
+            <button
+              type="button"
+              class={GHOST_BUTTON_CLASS}
+              onclick={() => void refreshTrackerProjectBoards(backend, selectedId)}
+              data-testid="settings-tracker-boards-retry"
+            >Try again</button>
+          </div>
         {/if}
         {#if !boards.loaded}
-          <p class="text-[0.75rem] text-fg-muted">Loading boards…</p>
+          {#if boards.error === null}
+            <p class="text-[0.75rem] text-fg-muted">Loading boards…</p>
+          {/if}
         {:else if list.length === 0}
           <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-boards-empty">
             This project lists no boards. Add one to see it in the project's Issues pane.

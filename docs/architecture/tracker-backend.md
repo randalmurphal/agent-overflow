@@ -1142,7 +1142,7 @@ method wraps (see [Build order](#build-order)).
 | `TrackerProjects(connectionID)` | `Projects` | read | selected |
 | `TrackerBoards(connectionID, project)` | `Boards` | read | selected |
 | `ProjectTrackerBoards(projectID)` | `ProjectBoards` | read | project |
-| `SetProjectTrackerBoards(projectID, boards)` | `SetProjectBoards` | operate | project |
+| `SetProjectTrackerBoards(projectID, held, boards)` | `SetProjectBoards` | operate | project |
 | `SubscribeTrackerBoard(projectID, connectionID, boardID, sections)` | `SubscribeBoard` | read | project, caller-bound |
 | `TrackerBoard(subscriptionID, sections)` | `Board` | read | home |
 | `TrackerSectionRows(subscriptionID, section, after)` | `SectionRows` | read | home |
@@ -1203,7 +1203,11 @@ method wraps (see [Build order](#build-order)).
   `tracker_connection_off`, `tracker_connection_missing`,
   `tracker_connection_tempo`, `tracker_board_not_listed`,
   `tracker_board_not_read`, `tracker_page_stale`,
-  `tracker_project_missing` and `tracker_boards_refused`.
+  `tracker_project_missing`, `tracker_boards_refused` and
+  `tracker_boards_changed` (a board list built from one that is no
+  longer stored: `held`, the list the save was built from, is compared
+  with the stored one, in order with which board opens first, in the
+  store's transaction).
 
 A board answer is bounded: the subscribe returns the board's structure,
 its sprints and the cards of the sections on screen, and a section's
