@@ -148,12 +148,19 @@ func (s *Store) ReplaceProjectTrackerBoards(projectID string, boards []ProjectTr
 	}
 	// Kept listings move past every new position first, so the upsert
 	// never meets a position or an opens-first another row still holds.
+	// They move by more than the largest stored position, so no row lands
+	// on one another row still holds: a connection's removal deletes its
+	// listings and leaves gaps, which a count of the rows does not cover.
+	var past int
+	if err := tx.QueryRow(`SELECT COALESCE(MAX(position), -1) + 1 FROM project_tracker_boards WHERE project_id = ?`, projectID).Scan(&past); err != nil {
+		return false, listing, fmt.Errorf("%s: read the last position: %w", action, err)
+	}
 	for _, step := range []struct {
 		what, query string
 		args        []any
 	}{
 		{"move aside", `UPDATE project_tracker_boards SET position = position + ?2, opens_first = 0 WHERE project_id = ?1`,
-			[]any{projectID, len(current) + len(boards)}},
+			[]any{projectID, past + len(boards)}},
 		{"place", `INSERT INTO project_tracker_boards(project_id, connection_id, board_id, position, opens_first, name, tracker_project)
 			SELECT ?1, value ->> 'c', value ->> 'b', key, value ->> 'f', COALESCE(value ->> 'n', ''), COALESCE(value ->> 'p', '')
 			FROM json_each(?2) WHERE true

@@ -324,3 +324,39 @@ func TestListTrackerBoardChoices(t *testing.T) {
 	}
 	check("the mirror detached", "", eleven, tenOfR, ten, team)
 }
+
+// A connection's removal deletes its listings and leaves gaps in the
+// positions of the ones that stay; every later save works over them.
+func TestReplaceProjectTrackerBoardsOverPositionGaps(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	p := mustCreateTrackerProject(t, s, "p")
+	x := mustCreateTrackerConnection(t, s, jiraConnection("https://example.atlassian.net", "user1@example.com", 1))
+	y := mustCreateTrackerConnection(t, s, NewTrackerConnection{Kind: TrackerKindLinear, Site: "workspace-a", CreatedAt: 1})
+	five := []ProjectTrackerBoard{
+		{ConnectionID: x.ID, BoardID: "1", OpensFirst: true},
+		{ConnectionID: y.ID, BoardID: "a"}, {ConnectionID: y.ID, BoardID: "b"}, {ConnectionID: y.ID, BoardID: "c"},
+		{ConnectionID: x.ID, BoardID: "2"},
+	}
+	if _, _, err := s.ReplaceProjectTrackerBoards(p, five); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DeleteTrackerConnection(y.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []struct {
+		what   string
+		boards []ProjectTrackerBoard
+	}{
+		{"reorder", []ProjectTrackerBoard{five[4], five[0]}},
+		{"add", []ProjectTrackerBoard{five[4], five[0], {ConnectionID: x.ID, BoardID: "3"}}},
+		{"remove", []ProjectTrackerBoard{five[0], {ConnectionID: x.ID, BoardID: "3"}}},
+	} {
+		if _, _, err := s.ReplaceProjectTrackerBoards(p, step.boards); err != nil {
+			t.Fatalf("%s after the removal: %v", step.what, err)
+		}
+		if got, err := s.ListProjectTrackerBoards(p); err != nil || !slices.Equal(got, step.boards) {
+			t.Fatalf("%s: list = %+v, %v; want %+v", step.what, got, err, step.boards)
+		}
+	}
+}
