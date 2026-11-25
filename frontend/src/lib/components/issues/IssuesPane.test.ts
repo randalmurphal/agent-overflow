@@ -2294,6 +2294,20 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
     await waitFor(() => expect(within(screen).queryByTestId('ticket-link-removing')).toBeNull());
   });
 
+  it('removes the link its row menu was opened on', async () => {
+    install();
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      links: [{ id: '40001', type: '10000', relation: 'blocks', issue: { id: '6', key: 'WEB-6', title: 'Issue 6', status: { id: 's1', name: 'To Do', group: 'todo' } } }],
+    }) as unknown as DetailView);
+    const unlink = setBindingMock('UnlinkTrackerIssues', async () => applied());
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await fireEvent.click(await within(screen).findByTestId('ticket-link-menu'));
+    await fireEvent.click(await within(document.body).findByTestId('ticket-link-menu-remove'));
+    await waitFor(() => expect(unlink).toHaveBeenCalledWith('c1', { issue: '1', link: '40001', other: '6' }));
+  });
+
   it("opens the estimate's editor from the header, and Log time's form filled with the ticket and today", async () => {
     install();
     installTicket();

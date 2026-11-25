@@ -14,7 +14,7 @@ import TicketPoker from './TicketPoker.svelte';
 import TicketMarkdown from './TicketMarkdown.svelte';
 import { TRACKER_MEDIA_CONTEXT, type TrackerMediaReader } from '../chat/markdown/trackerMediaContext';
 import { attachTrackerTicket, type TrackerTicketAttachment } from '../../stores/trackerTicket.svelte';
-import type { TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
+import { setTicketPoints, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { HOME_BACKEND } from '../../transport/backendKey';
 
@@ -77,6 +77,22 @@ describe('the attachments section', () => {
     const outcome = getByTestId('ticket-attach-outcome');
     expect(outcome.dataset.name).toBe('notes.txt');
     expect(outcome.textContent).toContain('select the file again and attach it');
+    held.release();
+  });
+
+  it('saves the attachment its row menu was opened on', async () => {
+    setBindingMock('SubscribeTrackerTicket', async () => ({ id: 'sub-1', seq: 1, loaded: true, read_at: 1 }));
+    setBindingMock('SetTrackerSubscriptionVisible', async () => {});
+    setBindingMock('ReleaseTrackerSubscription', async () => {});
+    const save = setBindingMock('SaveTrackerAttachment', async () => '/home/user/Downloads/new.pdf');
+    const held = attachTrackerTicket(REF, true);
+    await flush();
+    const { getAllByTestId } = render(TicketAttachments, {
+      props: { ctx: { ...CTX, key: held.key }, ticket: { ...TICKET, key: held.key }, attachments: [file('a1', 'old.pdf', 1), file('a2', 'new.pdf', 2)], canAttach: true, open: true, onFold: () => {} },
+    });
+    await fireEvent.click(getAllByTestId('ticket-attachment-menu')[0]);
+    await fireEvent.click(await waitFor(() => document.body.querySelector<HTMLElement>('[data-testid="ticket-attachment-save"]')!));
+    await waitFor(() => expect(save).toHaveBeenCalledWith('sub-1', 'a2'));
     held.release();
   });
 
@@ -144,6 +160,22 @@ describe('the poker section', () => {
     expect(getAllByTestId('ticket-poker-set-estimate')[0].textContent?.replace(/\s+/g, ' ').trim()).toBe('Set estimate to 5 hours (2 votes)');
     await rerender({ attachment: attachment([]), ctx: CTX, poker, onSetEstimate: null, hours: false });
     expect(getByTestId('ticket-poker-no-row').textContent).toBe('Open the ticket\'s board in Issues to set its estimate.');
+  });
+
+  it('takes no vote while a poker write is out, and waits for the estimate being set', async () => {
+    const answers: Array<(view: WriteView) => void> = [];
+    setBindingMock('VoteTrackerPoker', () => new Promise<WriteView>((resolve) => answers.push(resolve)));
+    setBindingMock('SetTrackerEstimate', () => new Promise<WriteView>((resolve) => answers.push(resolve)));
+    const poker = { view: view(true, [['User 1', 3, true]]), error: null };
+    const { getAllByTestId, getByTestId } = render(TicketPoker, { props: { attachment: attachment([]), ctx: CTX, poker, onSetEstimate: (v: number) => { void setTicketPoints(CTX, '1', v); }, hours: false } });
+    await fireEvent.click(getAllByTestId('ticket-poker-card')[1]);
+    expect(getAllByTestId('ticket-poker-card').every((c) => (c as HTMLButtonElement).disabled)).toBe(true);
+    expect((getByTestId('ticket-poker-typed') as HTMLInputElement).disabled).toBe(true);
+    await fireEvent.click(getByTestId('ticket-poker-set-estimate'));
+    expect((getByTestId('ticket-poker-set-estimate') as HTMLButtonElement).disabled).toBe(true);
+    for (const answer of answers) answer({ parts: [{ step: 'poker', state: 'applied' }] } as WriteView);
+    await waitFor(() => expect((getByTestId('ticket-poker-typed') as HTMLInputElement).disabled).toBe(false));
+    await waitFor(() => expect((getByTestId('ticket-poker-set-estimate') as HTMLButtonElement).disabled).toBe(false));
   });
 
   it('refuses a typed vote outside 0 to 1000 and sends one inside', async () => {

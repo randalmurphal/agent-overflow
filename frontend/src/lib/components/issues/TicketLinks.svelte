@@ -53,18 +53,23 @@
     if (!(await copyToClipboard(key))) addToast('error', 'Could not copy the key.');
   }
 
+  // The row the menu was last opened on stays after it closes, so nothing
+  // the closing menu still reads finds it gone.
   let menu = $state<{ x: number; y: number; link: LinkView } | null>(null);
+  let menuOpen = $state(false);
   function openMenu(event: MouseEvent, link: LinkView): void {
     event.preventDefault();
     menu = { x: event.clientX, y: event.clientY, link };
+    menuOpen = true;
   }
   function openMenuFrom(button: HTMLElement, link: LinkView): void {
     const rect = button.getBoundingClientRect();
     menu = { x: rect.left, y: rect.bottom + 4, link };
+    menuOpen = true;
   }
-  function run(action: () => void | Promise<void>): void {
-    menu = null;
-    void action();
+  function run(action: (link: LinkView) => void | Promise<void>): void {
+    menuOpen = false;
+    if (menu) void action(menu.link);
   }
 </script>
 
@@ -122,15 +127,14 @@
   <TicketLinkForm {ctx} onDone={() => { adding = false; }} />
 </Popover>
 
-{#if menu}
+{#if menuOpen && menu}
   {@const link = menu.link}
   {@const removing = ticketWrite(ctx.key, linkTarget(link.id))?.pending ?? false}
-  <ContextMenu x={menu.x} y={menu.y} ariaLabel="Actions for {link.issue.key || link.issue.title}" onDismiss={() => { menu = null; }}>
-    <MenuItem label="Open" testId="ticket-link-menu-open" onSelect={() => run(() => open(link))} />
-    <MenuItem label="Remove link" variant="danger" disabled={removing} testId="ticket-link-menu-remove" onSelect={() => run(() => remove(link))} />
+  <ContextMenu x={menu.x} y={menu.y} ariaLabel="Actions for {link.issue.key || link.issue.title}" onDismiss={() => { menuOpen = false; }}>
+    <MenuItem label="Open" testId="ticket-link-menu-open" onSelect={() => run(open)} />
+    <MenuItem label="Remove link" variant="danger" disabled={removing} testId="ticket-link-menu-remove" onSelect={() => run(remove)} />
     {#if link.issue.key}
-      {@const key = link.issue.key}
-      <MenuItem label="Copy key" testId="ticket-link-menu-copy-key" onSelect={() => run(() => copyKey(key))} />
+      <MenuItem label="Copy key" testId="ticket-link-menu-copy-key" onSelect={() => run((of) => copyKey(of.issue.key))} />
     {/if}
   </ContextMenu>
 {/if}

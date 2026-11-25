@@ -106,18 +106,23 @@
     if (!(await copyToClipboard(name))) addToast('error', 'Could not copy the name.');
   }
 
+  // The row the menu was last opened on stays after it closes, so nothing
+  // the closing menu still reads finds it gone.
   let menu = $state<{ x: number; y: number; attachment: AttachmentView } | null>(null);
+  let menuOpen = $state(false);
   function openMenu(event: MouseEvent, attachment: AttachmentView): void {
     event.preventDefault();
     menu = { x: event.clientX, y: event.clientY, attachment };
+    menuOpen = true;
   }
   function openMenuFrom(button: HTMLElement, attachment: AttachmentView): void {
     const rect = button.getBoundingClientRect();
     menu = { x: rect.left, y: rect.bottom + 4, attachment };
+    menuOpen = true;
   }
-  function run(action: () => void | Promise<void>): void {
-    menu = null;
-    void action();
+  function run(action: (a: AttachmentView) => void | Promise<void>): void {
+    menuOpen = false;
+    if (menu) void action(menu.attachment);
   }
 </script>
 
@@ -182,16 +187,16 @@
   {/if}
 </section>
 
-{#if menu}
+{#if menuOpen && menu}
   {@const a = menu.attachment}
-  <ContextMenu x={menu.x} y={menu.y} ariaLabel="Actions for {a.name}" onDismiss={() => { menu = null; }}>
+  <ContextMenu x={menu.x} y={menu.y} ariaLabel="Actions for {a.name}" onDismiss={() => { menuOpen = false; }}>
     {#if isImage(a)}
-      <MenuItem label="Open" testId="ticket-attachment-open" onSelect={() => run(() => openImage(a))} />
+      <MenuItem label="Open" testId="ticket-attachment-open" onSelect={() => run(openImage)} />
     {/if}
-    <MenuItem label={trackerAttachmentSaveLabel(trackerAttachmentSave(ticket, a))} testId="ticket-attachment-save" onSelect={() => run(() => saveTrackerAttachment(ticket, a))} />
+    <MenuItem label={trackerAttachmentSaveLabel(trackerAttachmentSave(ticket, a))} testId="ticket-attachment-save" onSelect={() => run((of) => saveTrackerAttachment(ticket, of))} />
     {#if trackerURL}
       <MenuItem label="Open in the tracker" testId="ticket-attachment-open-tracker" onSelect={() => run(openInTracker)} />
     {/if}
-    <MenuItem label="Copy name" testId="ticket-attachment-copy-name" onSelect={() => run(() => copyName(a.name))} />
+    <MenuItem label="Copy name" testId="ticket-attachment-copy-name" onSelect={() => run((of) => copyName(of.name))} />
   </ContextMenu>
 {/if}
