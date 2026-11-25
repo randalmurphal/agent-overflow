@@ -35,13 +35,13 @@ type MirrorWorklogChanges struct {
 	Changed, Removed, SupersededDays []string
 }
 
-// mirrorDays lists the days from fromDay to toDay, both included, which
-// checkMirrorWorklogRange has checked.
-func mirrorDays(fromDay, toDay string) []string {
-	from, _ := time.Parse(time.DateOnly, fromDay)
-	var days []string
-	for day := from; day.Format(time.DateOnly) <= toDay; day = day.AddDate(0, 0, 1) {
-		days = append(days, day.Format(time.DateOnly))
+// mirrorDays lists n days from from on, by count: a string comparison
+// with the last day would pass 9999-12-31, since 10000-01-01 sorts
+// before it.
+func mirrorDays(from time.Time, n int) []string {
+	days := make([]string, n)
+	for i := range n {
+		days[i] = from.AddDate(0, 0, i).Format(time.DateOnly)
 	}
 	return days
 }
@@ -54,31 +54,34 @@ func parseMirrorDay(day string) (time.Time, error) {
 	return t, nil
 }
 
-func checkMirrorWorklogRange(authorID, fromDay, toDay string, readAt int64, logs []MirrorWorklog) error {
+// checkMirrorWorklogRange checks a replace and returns the days of its
+// range.
+func checkMirrorWorklogRange(authorID, fromDay, toDay string, readAt int64, logs []MirrorWorklog) ([]string, error) {
 	from, fromErr := parseMirrorDay(fromDay)
 	to, toErr := parseMirrorDay(toDay)
 	if err := errors.Join(fromErr, toErr); err != nil {
-		return err
+		return nil, err
 	}
-	switch days := int(to.Sub(from).Hours()/24) + 1; {
+	days := int(to.Sub(from).Hours()/24) + 1
+	switch {
 	case authorID == "" || readAt <= 0 || days < 1:
-		return fmt.Errorf("%w: worklogs need an author, a read time and days in order", ErrInvalidTrackerCache)
+		return nil, fmt.Errorf("%w: worklogs need an author, a read time and days in order", ErrInvalidTrackerCache)
 	case days > mirrorMaxWorklogDays || len(logs) > clearMirrorChunk:
-		return fmt.Errorf("%w: %d days and %d worklogs, over %d and %d", ErrInvalidTrackerCache, days, len(logs), mirrorMaxWorklogDays, clearMirrorChunk)
+		return nil, fmt.Errorf("%w: %d days and %d worklogs, over %d and %d", ErrInvalidTrackerCache, days, len(logs), mirrorMaxWorklogDays, clearMirrorChunk)
 	}
 	seen := make(map[string]bool, len(logs))
 	for _, w := range logs {
 		if w.ID == "" || seen[w.ID] || w.IssueID == "" || w.AuthorID != authorID || w.Day < fromDay || w.Day > toDay ||
 			w.SpentSeconds <= 0 || w.UpdatedAt < 0 {
-			return fmt.Errorf("%w: worklog %q is repeated, incomplete, or not %s's from %s to %s",
+			return nil, fmt.Errorf("%w: worklog %q is repeated, incomplete, or not %s's from %s to %s",
 				ErrInvalidTrackerCache, w.ID, authorID, fromDay, toDay)
 		}
 		if _, err := parseMirrorDay(w.Day); err != nil {
-			return err
+			return nil, err
 		}
 		seen[w.ID] = true
 	}
-	return nil
+	return mirrorDays(from, days), nil
 }
 
 type mirrorWorklogRow struct {
@@ -145,7 +148,8 @@ func (s *Store) ReplaceMirrorWorklogs(rootID int64, authorID, fromDay, toDay str
 		return MirrorWorklogChanges{}, err
 	}
 	readAt := times.at
-	if err := checkMirrorWorklogRange(authorID, fromDay, toDay, readAt, logs); err != nil {
+	days, err := checkMirrorWorklogRange(authorID, fromDay, toDay, readAt, logs)
+	if err != nil {
 		return MirrorWorklogChanges{}, err
 	}
 	rows := make([]mirrorWorklogRow, len(logs))
@@ -156,7 +160,7 @@ func (s *Store) ReplaceMirrorWorklogs(rootID int64, authorID, fromDay, toDay str
 	if err != nil {
 		return MirrorWorklogChanges{}, err
 	}
-	rangeDays, err := encodeMirrorIDs(mirrorDays(fromDay, toDay))
+	rangeDays, err := encodeMirrorIDs(days)
 	if err != nil {
 		return MirrorWorklogChanges{}, err
 	}

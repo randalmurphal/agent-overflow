@@ -101,6 +101,16 @@ func TestReplaceMirrorWorklogs(t *testing.T) {
 	}
 }
 
+// The last day a date holds is a range of one day: its days are counted,
+// not compared as text, where 10000-01-01 sorts before 9999-12-31.
+func TestMirrorWorklogsCoverTheLastDay(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceWorklogs(t, s, root, "9999-12-31", "9999-12-31", 10, nil, MirrorWorklogChanges{})
+	mustReplaceWorklogs(t, s, root, "9999-12-01", "9999-12-31", 11, nil, MirrorWorklogChanges{})
+	assertRows(t, s.db, `SELECT count(*) || ' ' || min(day) || ' ' || max(day) FROM tracker_cache_worklog_days`, "31 9999-12-01 9999-12-31")
+}
+
 func replaceOne(s *Store, root int64, w MirrorWorklog) error {
 	_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-09", mirrorReadAt(1), []MirrorWorklog{w})
 	return err
