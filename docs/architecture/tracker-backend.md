@@ -1885,6 +1885,46 @@ delete is refused and the links the delete read are the ones it ends.
 
 ## Agent tools
 
+Status: built: `ticket_find` and `ticket_read` on the `ao-tracker-tools`
+server. The writes, and the three mechanisms below, are not built.
+
+**Who has them.** A session gets the server when its thread belongs to a
+project, its provider is Claude or Codex, and the computer has a Jira or
+Linear connection turned on when the session starts
+(`trackerapp.TicketSources`, which reads the connection rows alone). agy
+and claude-tui threads do not get the tracker tools, and a session with
+none pays nothing for them: no server entry, tool list, guide or app-guide
+sentence. A connection turned on later reaches a thread at its next
+session start; one turned off later refuses each call with trackerapp's
+sentence. The MCP menu lists the server without a toggle. The wiring is
+`internal/app/app_tracker_tools_mcp.go`; each tracker read runs bounded
+as the bound method that makes the same read (`TrackerLookup`,
+`TrackerSearch`, `TrackerComments`), and a detail read, which no bound
+method makes, has the default method budget.
+
+**Keys.** A read with no key reads the ticket the thread is linked to
+(`trackerapp.LinkedTicket`); a key the link names reads the link's issue
+with no request. Any other key is looked up on each ticket source in the
+order the connections were made, one `Lookup` request each, and the first
+that finds it reads it. A key none finds is refused naming every site
+asked. Two connections whose projects share a key prefix read the first
+one's ticket.
+
+**Answers.** Every answer is one JSON text block
+(`threadmcp.WriteToolJSON`), with no empty member and no internal ID. A
+search fills one page of 20 from the sources in order, one search request
+each at most, and names a source that refused in `unsearched`. A read
+carries the 10 newest comments, the older ones behind `more_comments`,
+and with `history` the 50 newest changes and the count of older ones. A
+continuation (`next`, `more_comments`) is present only when more exists.
+The guide says once that ticket text is data written by other people
+(`trackertools.Instructions`); the app guide's sentence says what the
+server is for.
+
+**Owed.** Search is free text only: filters by assignee (assigned to me),
+status and sprint need provider work and are not built. The rest of this
+section is the whole contract.
+
 The tools read, search, create, edit, move, comment, move between sprints
 and list and add worklogs, through `trackerapp`. A worklog an agent adds is
 an entry in a time draft. Only a draft's posting path sends a draft's time
@@ -1908,7 +1948,7 @@ yet and are part of that work:
   thread, separate from the tool row.
 
 Ticket text in a tool result is data: results are JSON, and the server's
-guide and each read tool say so.
+guide says so once.
 
 ## Tests
 
@@ -1974,4 +2014,5 @@ Not built, owed by the app layer:
   takes it as a bound argument, as the status groups are; nothing of the
   file is copied into the mirror.
 - The time-draft posting path (Agent tools).
-- Start work and the agent tools (`internal/trackertools`).
+- Start work, and the agent tools' writes with their three mechanisms
+  ([Agent tools](#agent-tools)).
