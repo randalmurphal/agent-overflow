@@ -68,10 +68,6 @@
         : '',
   );
   let locked = $derived(operateReason !== '');
-  // Renew shows the setup steps again, which a connection that is off does
-  // not show: it is offered exactly where it opens them.
-  let renewable = $derived(connection.enabled && (expiry?.renew ?? false));
-  let showSteps = $derived(connection.enabled && (status.needsSetup || (renewing && renewable)));
 
   let busy = $state<string | null>(null);
   let error = $state<unknown>(null);
@@ -80,6 +76,11 @@
   let editingExpiry = $state(false);
   let renewing = $state(false);
   let confirmingRemove = $state(false);
+
+  // Renew shows the setup steps again, which a connection that is off does
+  // not show: it is offered exactly where it opens them.
+  let renewable = $derived(connection.enabled && (expiry?.renew ?? false));
+  let showSteps = $derived(connection.enabled && (status.needsSetup || (renewing && renewable)));
 
   async function run(what: string, action: () => Promise<unknown>): Promise<boolean> {
     busy = what;
