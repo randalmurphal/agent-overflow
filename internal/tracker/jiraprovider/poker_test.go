@@ -158,3 +158,66 @@ func TestPokerWriteOutcomes(t *testing.T) {
 		}
 	}
 }
+
+// userReads counts the user lookups the fake answered for account.
+func userReads(s *scenario, account string) int {
+	n := 0
+	for _, r := range s.e.Requests(0).Requests {
+		if r.Route == "GET rest/api/3/user" && r.Query.Get("accountId") == account {
+			n++
+		}
+	}
+	return n
+}
+
+// F4: a connection Jira refuses user lookups (no Browse users and groups
+// permission) still reads the round: the votes, the caller's own value
+// and the reveal, with the voter shown by account ID. The refusal is
+// remembered, so the next read asks again no sooner than a name is kept.
+func TestPokerVoterNameRefused(t *testing.T) {
+	s := newScenario(t, false)
+	mine, theirs := s.p.Poker(), s.memberPoker(t)
+	allApplied(t, "my vote", mine.Vote(s.ctx, tracker.PokerVoteInput{Issue: "10101", Value: 3}))
+	allApplied(t, "their vote", theirs.Vote(s.ctx, tracker.PokerVoteInput{Issue: "10101", Value: 8}))
+	allApplied(t, "reveal", theirs.Reveal(s.ctx, "10101"))
+	if err := s.e.AddFault(trackerfake.Fault{Origin: trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: scenarioSite},
+		Route: "GET rest/api/3/user", Kind: trackerfake.FaultRefuse, Status: 403,
+		Body: []byte(`{"errorMessages":["You do not have the permission to see the specified user."]}`)}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		r, err := mine.Read(s.ctx, "10101")
+		if err != nil {
+			t.Fatalf("a refused name lookup failed the round: %v", err)
+		}
+		if got := pokerValues(r); !r.Revealed || got["acc-user1"] != 3.0 || got["acc-user2"] != 8.0 {
+			t.Fatalf("the round read %v, revealed %v", got, r.Revealed)
+		}
+	}
+	if n := userReads(s, "acc-user2"); n != 1 {
+		t.Fatalf("%d lookups of a user Jira refused to show, over two reads", n)
+	}
+}
+
+// F4: a voter Jira no longer returns (404) is shown by account ID, and
+// looked up once, not on every read.
+func TestPokerVoterJiraLacks(t *testing.T) {
+	s := newScenario(t, false)
+	mine, theirs := s.p.Poker(), s.memberPoker(t)
+	allApplied(t, "their vote", theirs.Vote(s.ctx, tracker.PokerVoteInput{Issue: "10101", Value: 5}))
+	allApplied(t, "reveal", theirs.Reveal(s.ctx, "10101"))
+	if err := s.e.AddFault(trackerfake.Fault{Origin: trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: scenarioSite},
+		Route: "GET rest/api/3/user", Kind: trackerfake.FaultRefuse, Status: 404, Header: map[string]string{"X-AAccountId": "acc-user1"},
+		Body: []byte(`{"errorMessages":["Specified user does not exist or you do not have required permissions"]}`)}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		r, err := mine.Read(s.ctx, "10101")
+		if err != nil || pokerValues(r)["acc-user2"] != 5.0 {
+			t.Fatalf("read %+v, %v", r, err)
+		}
+	}
+	if n := userReads(s, "acc-user2"); n != 1 {
+		t.Fatalf("%d lookups of a user Jira lacks, over two reads", n)
+	}
+}

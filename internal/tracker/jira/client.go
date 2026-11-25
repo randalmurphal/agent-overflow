@@ -101,6 +101,9 @@ type Client struct {
 	sprintLists *cache[int64, SprintList]
 	// me is who the credential belongs to (Me).
 	me *cache[struct{}, User]
+	// userMisses are the user lookups Jira withheld (User), kept as long
+	// as a user is.
+	userMisses *cache[string, error]
 	// cloudID, poker and pokerTokens are planning poker's (poker.go):
 	// the site's cloud ID, its add-on as the extension listing names it,
 	// and the context tokens by issue ID.
@@ -147,6 +150,7 @@ func New(opts Options) (*Client, error) {
 	c := &Client{
 		api: api, maxImages: opts.MaxImageBytes,
 		users:       newCache[string, User](userCacheSize, siteAge, nil, api.CredentialMark),
+		userMisses:  newCache[string, error](userCacheSize, siteAge, nil, api.CredentialMark),
 		catalog:     newCache[struct{}, *Catalog](1, siteAge, nil, api.CredentialMark),
 		configs:     newCache[int64, BoardConfig](boardConfigCacheSize, 0, cloneBoardConfig, api.CredentialMark),
 		sprintLists: newCache[int64, SprintList](boardConfigCacheSize, 0, cloneSprintList, api.CredentialMark),

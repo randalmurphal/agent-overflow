@@ -7,7 +7,6 @@ import (
 
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/jira"
-	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // jiraPoker is the planning poker add-on of a Jira site, over the jira
@@ -37,8 +36,9 @@ func (j jiraPoker) Support(ctx context.Context) (bool, error) {
 // vote keeps its value, whatever the add-on answered (the measured test
 // had one voter, so whether the add-on hides the others is not known).
 // Voters are named from the client's users, one read for each the client
-// has not kept (siteAge); an account Jira no longer returns stays
-// unnamed.
+// has not kept (siteAge). A voter Jira withholds (missing, or a
+// credential that may not see users) stays unnamed, shown by account ID,
+// and the round stands; the client keeps that answer as long as a name.
 func (j jiraPoker) Read(ctx context.Context, issue tracker.IssueID) (tracker.PokerRound, error) {
 	round, err := j.jira.PokerVotes(ctx, string(issue))
 	if errors.Is(err, jira.ErrPokerAbsent) {
@@ -61,7 +61,7 @@ func (j jiraPoker) Read(ctx context.Context, issue tracker.IssueID) (tracker.Pok
 		out.Votes = append(out.Votes, vote)
 		u, err := j.jira.User(ctx, v.Account)
 		switch {
-		case errors.Is(err, trackerapi.ErrNotFound):
+		case errors.Is(err, jira.ErrUserWithheld):
 		case err != nil:
 			return tracker.PokerRound{}, fmt.Errorf("jiraprovider: planning poker of %s: voter %s: %w", issue, v.Account, err)
 		default:

@@ -2,7 +2,9 @@ package jira
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -99,8 +101,16 @@ func (c *Client) Me(ctx context.Context) (User, error) {
 	return c.Myself(ctx)
 }
 
+// ErrUserWithheld is matched by the error of a user lookup Jira withheld:
+// the user is missing (also trackerapi.ErrNotFound), or the credential
+// may not see users (403, without the Browse users and groups
+// permission).
+var ErrUserWithheld = errors.New("jira: Jira does not show this user")
+
 // User returns the user with accountID, from the client's cache when it
 // holds it. A missing user is an error matching trackerapi.ErrNotFound.
+// A lookup Jira withheld matches ErrUserWithheld and is kept as long as
+// a user is, so asking again sends nothing until then.
 func (c *Client) User(ctx context.Context, accountID string) (User, error) {
 	if err := c.admit(ctx); err != nil {
 		return User{}, err
@@ -111,14 +121,30 @@ func (c *Client) User(ctx context.Context, accountID string) (User, error) {
 	if u, ok := c.users.get(ctx, accountID); ok {
 		return u, nil
 	}
-	epoch := c.users.epoch()
+	if err, ok := c.userMisses.get(ctx, accountID); ok {
+		return User{}, fmt.Errorf("jira: user %s: %w", accountID, err)
+	}
+	epoch, missEpoch, mark := c.users.epoch(), c.userMisses.epoch(), c.api.CredentialMark()
 	var u userJSON
 	resp, err := c.call(ctx, trackerapi.Request{Path: apiPath + "user", Query: url.Values{"accountId": {accountID}}}, &u)
 	if err != nil {
+		if withheld(err) {
+			err = fmt.Errorf("%w: %w", ErrUserWithheld, err)
+			// Drawn under the credential the request was sent with, or
+			// dropped by put when that changed meanwhile.
+			c.userMisses.put(missEpoch, mark, accountID, err)
+		}
 		return User{}, fmt.Errorf("jira: user %s: %w", accountID, err)
 	}
 	c.keepUsers(epoch, resp.CredentialMark(), u.user())
 	return u.user(), nil
+}
+
+// withheld reports a user lookup's error that is Jira withholding the
+// user: a confirmed 404, or a 403.
+func withheld(err error) bool {
+	se, ok := errors.AsType[*trackerapi.StatusError](err)
+	return errors.Is(err, trackerapi.ErrNotFound) || ok && se.Status == http.StatusForbidden
 }
 
 // keepUsers caches us under epoch, drawn under the credential read mark.
