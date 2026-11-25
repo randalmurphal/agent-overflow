@@ -1366,14 +1366,23 @@ selected computer.
   removed, and a tracker with no time tracking (Linear, decided by kind,
   which `TestTheMirrorReadOfWorklogsRefusesWhatTheRefreshRefuses` holds
   to the providers' answer). `RefreshTrackerWorklogs` reads at most 31
-  days at the default budget, as a form read does. Its requests grow with
-  the time logged: Tempo answers in pages; Jira looks the author up
+  days at the default budget, as a form read does. Each worklog carries
+  its issue's key and title (`key`, `title`) as that read found them,
+  stored with it (`tracker_cache_worklogs.issue_key`, `issue_title`),
+  both empty for an issue the tracker did not return. Its requests grow
+  with the time logged: Tempo answers in pages, and Jira names their
+  issues in one bulk read of the summary (500 issues a request), since
+  a Tempo worklog names its issue by ID alone; Jira looks the author up
   unless its client has the user cached, pages the issues the author
-  logged time on with the worklogs each embeds (up to 20), and reads an
-  issue with more in pages of its own. On `jiraprovider`'s cost fixture, a
-  month of 20 worklogs on 20 issues, that is 1 Tempo request of about
-  11.8 KB or 2 Jira requests of about 28.0 KB (`TestRequestCost`,
-  `TestRequestCostJiraWorklogs`). A longer range is
+  logged time on with the worklogs each embeds (up to 20) and each one's
+  summary, and reads an issue with more in pages of its own. On
+  `jiraprovider`'s cost fixture, a month of 20 worklogs on 20 issues,
+  that is 2 requests of about 15.4 KB through Tempo (1 Tempo, 1 Jira; it
+  was 1 Tempo request of 11.8 KB before the issues were named) or 2 Jira
+  requests of about 29.1 KB (`TestRequestCost`,
+  `TestRequestCostJiraWorklogs`). A read that names the issues and fails
+  fails the refresh with Jira's sentence, the worklogs stored as they
+  were. A longer range is
   `tracker_request_invalid` before anything is sent, a tracker with no
   time tracking is `tracker_unsupported` ("this tracker has no time
   tracking"), and a read the tracker fails is the answer's `failure`,
@@ -1683,7 +1692,9 @@ estimate**: a person sets the agreed estimate as any other edit
   is a read by connection, not a field of the ticket subscribe's answer,
   because a subscribe answers from the mirror with no tracker call. A
   listing that fails answers `available: false` with its failure, which
-  is poker's alone and settles nothing of the connection.
+  is poker's alone and settles nothing of the connection: the ticket
+  shows it in its poker section with Retry, and the client holds only an
+  answer, so the next ticket opened on the connection asks again.
 - **The votes follow a ticket while its poker panel is open.**
   `FollowTrackerPoker(subscriptionID, true)` makes that ticket handle a
   follower. While at least one handle both follows and shows the ticket,
@@ -1785,7 +1796,8 @@ site and issue ID, so the link means the same ticket on every computer.
   (`mirrorIssueHeldSQL`: a card, and no read that missed the issue began
   after the card's latest read) the row shows the card's key, title and
   status, the status's name and group from that root's catalog, and
-  `current`; while a read that missed it is in force
+  `current` (the group by its name, `store.MirrorGroupNames`, as a board
+  read names it); while a read that missed it is in force
   (`mirrorIssueGoneSQL`) it shows `not_found`; otherwise the link's
   last-seen copy and, from the site's connections, `not_checked` (one is
   on), `turned_off` (all are off) or `no_connection`. `connectionId` is
@@ -1849,8 +1861,18 @@ site and issue ID, so the link means the same ticket on every computer.
   frame per thread.
 - **Keep.** A link keeps its issue in the mirror (`mirrorIssueKept`).
   When links end (an unlink, a link replaced, a thread's delete commit,
-  a move away), `LinksEnded` tells the issues no longer kept as
-  `Changes.Visibility`, as an open ticket's drop does.
+  a move away, a draft's copy to another computer), `LinksEnded` tells
+  the issues no longer kept as `Changes.Visibility`, as an open ticket's
+  drop does.
+- **A thread with nothing sent.** A link makes it real
+  (`threadRealClause`, which states the rule): `SetThreadTicket` and
+  `ClearThreadTicket` report the listing change they make
+  (`ThreadTicketSet.Listing`, `ThreadTicketClear.Listing`) and announce
+  it, and the empty-draft delete refuses a linked thread. A draft moved
+  to another project here takes its link in `MoveThreadDraft`'s
+  transaction; a draft's copy to another computer carries it, and the
+  transaction that completes the copy (`consumeTransferredDraft`) ends
+  the source's with its draft.
 - **Fork and transfer.** `CreatePointerFork` copies the link in its
   transaction. A transfer's manifest carries `store.Thread`, link
   included; `CommitIncomingThreadTransfer` replaces the receiver's link
@@ -1927,27 +1949,26 @@ board subscription's methods and `tracker:board_updated`'s TypeScript
 type, and its ticket screen, with the wrappers of the ticket
 subscription's methods, `TrackerComments`, the issue and comment writes,
 `TrackerAssignableUsers` and `TrackerChoices`, and
-`tracker:issue_updated`'s TypeScript type (`components/issues/AGENTS.md`).
+`tracker:issue_updated`'s TypeScript type, and the ticket's attachments,
+links, planning poker and Log time, with the wrappers of the attachment
+mints, `SaveTrackerAttachment`, `TrackerLinkTypes`, `LinkTrackerIssues`,
+`UnlinkTrackerIssues` and the planning poker methods, its Time screen,
+with the wrappers of `TrackerWorklogs`, `RefreshTrackerWorklogs`,
+`AddTrackerWorklog`, `EditTrackerWorklog`, `DeleteTrackerWorklog`,
+`TrackerLookup` and `TrackerSearch` (`components/issues/AGENTS.md`),
+and the thread link's screens: the header's ticket, its menus, the
+sidebar row's line and search, and Link and Change ticket through the
+ticket finder, with the `SetThreadTicket` and `ClearThreadTicket`
+wrappers (`stores/threadTicketLinks.svelte.ts`).
 A failure of the linked-issues
 loop after boot reaches only the log (`Deps.LoopFailed`): its failures
 are outside the tracker (a store error, the cleanup), and a tracker
 failure of the loop's sync shows on its connection's row as its problem.
 Not built, owed by the app layer:
 
-- The ticket screen's attachments, links, planning poker and Log time,
-  and a ticket in a pane of its own: the `bindings.ts` wrappers of the
-  attachment mints, `TrackerLinkTypes`, `TrackerLookup`, `TrackerSearch`,
-  `LinkTrackerIssues`, `UnlinkTrackerIssues`, `AddTrackerWorklog` and the
-  planning poker methods ship with them.
-- The Time screen and a sprint edit on the Backlog screen: the
-  `bindings.ts` wrappers of the worklog methods and `EditTrackerSprint`
-  ship with them.
-- Sidebar search by a linked ticket's key and title: the frontend's
-  `threadMatchesQuery` (`components/sidebar/threadSearch.ts`) adds
-  `ticketLink.key` and `ticketLink.title` to what it matches.
-- A link on a thread with nothing sent does not keep the thread: clearing
-  its composer deletes the thread, link included. The slice that first
-  lets a person link such a thread decides it.
+- A ticket in a pane of its own.
+- A sprint edit on the Backlog screen: the `bindings.ts` wrapper of
+  `EditTrackerSprint` ships with it.
 - The rest of the project's tracker setup, each a section of its file:
   card marks, Start work defaults, draft settings and what agents may do;
   and the `bindings.ts` wrappers of the setup methods, which ship with the

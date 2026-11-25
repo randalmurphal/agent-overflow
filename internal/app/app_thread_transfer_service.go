@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -294,20 +295,35 @@ func (r admittedTransferRunner) Run(ctx context.Context, id string) (store.Threa
 	}
 	defer release()
 	// A move away ends the thread's link here: once committed the thread
-	// is not this computer's, and its link keeps nothing. The link is read
-	// while it still is; an attempt after the commit reads none.
+	// is not this computer's, and its link keeps nothing. A draft's copy to
+	// another computer's project ends the source's link in the transaction
+	// that completes it (store consumeTransferredDraft): the copy carries
+	// it. The link is read while it still is; an attempt after that reads
+	// none.
 	var links map[string]store.TicketRef
+	endsAt := ""
 	switch row, err := r.app.store.GetThreadTransfer(id); {
 	case err != nil:
 		log.Printf("thread links: read transfer %s before its attempt: %v; a link it ends stays shown in the views of its ticket until their board is read again", id, err)
 	case row.Direction == "outgoing" && row.Kind == "move":
-		links = r.app.threadLinksEnding([]string{row.ThreadID})
+		links, endsAt = r.app.threadLinksEnding([]string{row.ThreadID}), "committed"
+	case row.Direction == "outgoing" && row.Kind == "copy" && transferConsumesDraft(row):
+		links, endsAt = r.app.threadLinksEnding([]string{row.ThreadID}), "complete"
 	}
 	row, err := r.runner.Run(ctx, id)
-	if len(links) > 0 && (row.Phase == "committed" || row.Phase == "complete") {
+	if len(links) > 0 && (row.Phase == endsAt || row.Phase == "complete") {
 		r.app.endThreadLinks(links, []string{row.ThreadID})
 	}
 	return row, err
+}
+
+// transferConsumesDraft reports whether outgoing transfer row is a draft's
+// copy to another computer's project, which consumes the source's draft
+// and link when it completes. Unreadable private state answers false: the
+// runner refuses such a row itself.
+func transferConsumesDraft(row store.ThreadTransfer) bool {
+	var source threadtransfer.SourceData
+	return json.Unmarshal(row.PrivateState, &source) == nil && source.DraftToConsume != nil
 }
 
 // quotedThreadTitle names a conversation in a refusal.

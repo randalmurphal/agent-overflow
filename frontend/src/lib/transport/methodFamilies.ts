@@ -84,6 +84,7 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
   3749273758: 'subscription', // MintTrackerAttachmentDownloadTicket
   2943151489: 'subscription', // FollowTrackerPoker
   3990595752: 'subscription', // TrackerPoker
+  1443136041: 'subscription', // SaveTrackerAttachment
 
   // Tracker connection ids: every call that names a connection belongs to
   // the computer that holds it.

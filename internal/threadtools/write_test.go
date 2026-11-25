@@ -63,7 +63,7 @@ func TestSpawnPassesATagThrough(t *testing.T) {
 		t.Errorf("spawn = %+v, want base as written", got)
 	}
 	for _, shape := range []Shape{soloShape(), pairedShape()} {
-		if text := New(app).Instructions(shape); !strings.Contains(text, "detached at the tag when the name is no branch but a tag") {
+		if text := New(app).Instructions(shape); !strings.Contains(text, "tag detached when not a branch") {
 			t.Errorf("paired=%v: the guide does not say what a tag worktree does", shape.Paired())
 		}
 	}
@@ -397,6 +397,11 @@ func TestRemindTakesExactlyOneClockAndResolvesItAgainstNow(t *testing.T) {
 	call(t, server, localCaller(), "thread_remind", `{"at":"2026-09-20T09:00:00Z","note":"standup"}`)
 	if app.rem[1].DueAtUnixMs != time.Date(2026, 9, 20, 9, 0, 0, 0, time.UTC).UnixMilli() {
 		t.Fatalf("at did not parse: %d", app.rem[1].DueAtUnixMs)
+	}
+
+	call(t, server, localCaller(), "thread_remind", `{"after_seconds":60,"note":"`+strings.Repeat("n", 4000)+`"}`)
+	if len(app.rem) != 3 || len(app.rem[2].Note) != 4000 {
+		t.Fatalf("4000-char reminder note was not accepted: %+v", app.rem)
 	}
 
 	callErr(t, server, localCaller(), "thread_remind", `{"note":"soon"}`, CodeInvalidRequest)

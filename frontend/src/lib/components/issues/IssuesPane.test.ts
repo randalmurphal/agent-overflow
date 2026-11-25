@@ -15,6 +15,7 @@ import type {
   BoardView,
   CommentView,
   DetailView,
+  PokerView,
   RowView,
   Section,
   SectionPage,
@@ -26,7 +27,7 @@ import IssuesPane from './IssuesPane.svelte';
 import { trackerBoardUpdated as applyTrackerBoardEvent, trackerIssueUpdated } from '../../stores/trackerBoardEvents';
 import { registerIssuesCommands } from '../../stores/issuesCommands';
 import { clearCommandRegistry, runCommand, type CommandContext } from '../../stores/commandRegistry.svelte';
-import { hiddenCardFields } from '../../stores/issuesPane.svelte';
+import { hiddenCardFields, requestTicketOpen, takeTicketOpenRequest } from '../../stores/issuesPane.svelte';
 import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
 import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
@@ -50,9 +51,9 @@ import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { TransportError } from '../../transport/wsClient';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
-import { getToasts } from '../../stores/toast.svelte';
 import { trackerTicketKey } from '../../stores/trackerTicket.svelte';
 import { ticketDraft } from '../../stores/trackerTicketWrites.svelte';
+import { localDay, mondayOf } from '../../stores/trackerTimeModel';
 
 // The project of the thread the pane was opened from (toolPanes owns it).
 const openedFrom = vi.hoisted(() => ({ project: null as string | null }));
@@ -1004,6 +1005,55 @@ describe('the ticket in the pane', () => {
     await waitFor(() => expect(mocks.release).toHaveBeenCalledWith('ticket-1-1'));
   });
 
+  describe('a ticket asked for from outside the pane', () => {
+    function ask(connection: string, issue: string, project: string | null, unplaced = vi.fn()) {
+      requestTicketOpen({ ref: { backend: HOME_BACKEND, connection, issue }, seed: { key: `WEB-${issue}`, title: 'Linked', card: null }, project, unplaced });
+      return unplaced;
+    }
+
+    it('opens over the board shown when that board is of its connection, and is taken once', async () => {
+      const mocks = install();
+      const ticket = installTicket();
+      const view = mount();
+      await view.findAllByTestId('issues-card');
+      ask('c1', '77', 'p1');
+      await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('77'));
+      expect(ticket.subscribe).toHaveBeenCalledWith('c1', '77', true);
+      expect(mocks.subscribe).toHaveBeenCalledTimes(1);
+      expect(takeTicketOpenRequest()).toBeNull();
+    });
+
+    it("switches to its connection's board, the asking project's first, without saving it as a pick", async () => {
+      const mocks = install({ choices: [choice('1', { opens_first: true }), choice('5', { connection: 'c2', project: 'p2' }), choice('6', { connection: 'c2', project: 'p3' })] });
+      const ticket = installTicket();
+      const view = mount();
+      await view.findAllByTestId('issues-card');
+      ask('c2', '77', 'p3');
+      await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('77'));
+      expect(mocks.subscribe).toHaveBeenLastCalledWith('p3', 'c2', '6', [], false);
+      expect(ticket.subscribe).toHaveBeenCalledWith('c2', '77', true);
+      expect(picked()).toBeNull();
+    });
+
+    it('is taken by a pane that mounts after it was asked', async () => {
+      install();
+      installTicket();
+      ask('c1', '77', null);
+      const view = mount();
+      await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('77'));
+    });
+
+    it('says so when no board of its connection is listed, and opens nothing', async () => {
+      install();
+      installTicket();
+      const view = mount();
+      await view.findAllByTestId('issues-card');
+      const unplaced = ask('c9', '77', 'p1');
+      await waitFor(() => expect(unplaced).toHaveBeenCalledWith(null));
+      expect(view.queryByTestId('ticket-screen')).toBeNull();
+    });
+  });
+
   it('moves a card on the board under the ticket when a status change made in the ticket lands', async () => {
     install();
     installTicket();
@@ -1123,23 +1173,6 @@ describe('the ticket in the pane', () => {
       expect(host).not.toHaveBeenCalled();
     } finally {
       (window as unknown as { happyDOM: { setURL(url: string): void } }).happyDOM.setURL(page);
-      open.mockRestore();
-    }
-  });
-
-  it('says a ticket link that is not a web address cannot be opened, and opens nothing', async () => {
-    install();
-    installTicket((issue) => ({ ...ticketDetail(issue), url: 'javascript:alert(1)' }) as DetailView);
-    const host = setBindingMock('OpenExternalURL', async () => undefined);
-    const open = vi.spyOn(window, 'open').mockReturnValue(null);
-    try {
-      const view = mount();
-      const screen = await openCard(view, '1');
-      await fireEvent.click(await within(screen).findByTestId('ticket-open-tracker'));
-      await waitFor(() => expect(getToasts().map((t) => t.message)).toContain('Could not open WEB-1 in the tracker: its link javascript:alert(1) is not a web address.'));
-      expect(host).not.toHaveBeenCalled();
-      expect(open).not.toHaveBeenCalled();
-    } finally {
       open.mockRestore();
     }
   });
@@ -1998,6 +2031,42 @@ describe('the ticket in the pane', () => {
     expect(within(screen).getByTestId('ticket-comment-editor')).toHaveValue('Comment 1, half edited');
   });
 
+  it('keeps an open edit of a comment past the newest five in view after a switch to History and back', async () => {
+    install();
+    installTicket((issue) => ticketDetail(issue, { comments: 8 }));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const mounted = () => within(screen).queryAllByTestId('ticket-comment').map((c) => c.dataset.comment);
+    await waitFor(() => expect(mounted()).toEqual(['c4', 'c5', 'c6', 'c7', 'c8']));
+    await fireEvent.click(within(screen).getByTestId('ticket-comments-earlier'));
+    await waitFor(() => expect(mounted()).toHaveLength(8));
+    const oldest = within(screen).getAllByTestId('ticket-comment').find((c) => c.dataset.comment === 'c2')!;
+    await fireEvent.contextMenu(oldest);
+    await fireEvent.click(await within(document.body).findByTestId('ticket-comment-menu-edit'));
+    await fireEvent.input(within(oldest).getByTestId('ticket-comment-editor'), { target: { value: 'Comment 2, half edited' } });
+    await fireEvent.click(within(screen).getByRole('radio', { name: 'History' }));
+    await waitFor(() => expect(within(screen).queryByTestId('ticket-comments')).toBeNull());
+    await fireEvent.click(within(screen).getByRole('radio', { name: 'Comments' }));
+    // The window reaches back to the edit, and stays one run.
+    await waitFor(() => expect(mounted()).toEqual(['c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8']));
+    expect(within(screen).getByTestId('ticket-comment-editor')).toHaveValue('Comment 2, half edited');
+    expect(within(screen).getByTestId('ticket-comments-earlier')).toHaveTextContent('Show 1 earlier comment');
+  });
+
+  it.each(['mailto:user@example.com', 'javascript:alert(1)'])('offers neither Open in the tracker nor Copy link for %s, which is not a web page', async (url) => {
+    install();
+    installTicket((issue) => ({ ...ticketDetail(issue), url }) as DetailView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await waitFor(() => expect(within(screen).getByTestId('ticket-title')).toHaveTextContent('Issue 1'));
+    await within(screen).findByTestId('ticket-comment-input');
+    expect(within(screen).queryByTestId('ticket-open-tracker')).toBeNull();
+    await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+    await within(document.body).findByTestId('ticket-menu-copy-key');
+    expect(within(document.body).queryByTestId('ticket-menu-open-tracker')).toBeNull();
+    expect(within(document.body).queryByTestId('ticket-menu-copy-link')).toBeNull();
+  });
+
   it('keeps unsent text and its edit base across a dropped connection to the ticket\'s computer', async () => {
     install();
     const ticket = installTicket((issue) => ticketDetail(issue, { comments: 1 }));
@@ -2092,5 +2161,584 @@ describe('the ticket in the pane', () => {
     expect(page).toHaveBeenCalledWith('c1', '1', 'page-2');
     expect(mounted()[0]).toBe('old9');
     expect(within(screen).queryByTestId('ticket-comments-earlier')).toBeNull();
+  });
+});
+
+describe("the ticket's attachments, links, poker, estimate and logged time", () => {
+  beforeAll(async () => {
+    await import('./TicketScreen.svelte');
+  });
+
+  const applied = (): WriteView => ({ parts: [{ step: 'write', state: 'applied' }] }) as WriteView;
+  const file = (name: string, type = 'application/pdf') => new File(['bytes'], name, { type });
+
+  /** Uploads that answer applied; the mint's file names, in order. */
+  function installUploads(): string[] {
+    const names: string[] = [];
+    setBindingMock('MintTrackerAttachmentUploadTicket', async (_c: string, _i: string, name: string) => {
+      names.push(name);
+      return `/attachments/tracker/upload?ticket=${name}`;
+    });
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify(applied()), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    return names;
+  }
+
+  it('attaches files dropped anywhere on a Jira ticket, and files pasted into its comment box, whose text stays', async () => {
+    install();
+    installTicket();
+    const names = installUploads();
+    try {
+      const view = mount();
+      const screen = await openCard(view, '1');
+      await within(screen).findByTestId('ticket-attachments');
+      // Folded, the drop opens the section.
+      await fireEvent.click(within(screen).getByTestId('ticket-attachments-fold'));
+      expect(within(screen).getByTestId('ticket-attachments-fold')).toHaveAttribute('aria-expanded', 'false');
+      const dataTransfer = { types: ['Files'], files: [file('report.pdf')], dropEffect: 'none' };
+      expect(await fireEvent.dragOver(within(screen).getByTestId('ticket-content'), { dataTransfer })).toBe(false);
+      expect(within(screen).getByTestId('ticket-drop')).toHaveTextContent('Drop the files to attach them to WEB-1');
+      await fireEvent.drop(within(screen).getByTestId('ticket-content'), { dataTransfer });
+      expect(within(screen).queryByTestId('ticket-drop')).toBeNull();
+      await waitFor(() => expect(names).toEqual(['report.pdf']));
+      expect(within(screen).getByTestId('ticket-attachments-fold')).toHaveAttribute('aria-expanded', 'true');
+
+      const box = within(screen).getByTestId('ticket-comment-input');
+      const shot = file('shot.png', 'image/png');
+      const pasted = await fireEvent.paste(box, {
+        clipboardData: { types: ['text/plain', 'Files'], items: [{ kind: 'file', type: 'image/png', getAsFile: () => shot }, { kind: 'string', type: 'text/plain', getAsFile: () => null }] },
+      });
+      // Not prevented: the text part goes into the box.
+      expect(pasted).toBe(true);
+      await waitFor(() => expect(names).toEqual(['report.pdf', 'shot.png']));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('gives the ticket a card opens the focus, so a paste of files right after attaches them', async () => {
+    install();
+    installTicket();
+    const names = installUploads();
+    try {
+      const view = mount();
+      const screen = await openCard(view, '1');
+      await waitFor(() => expect(document.activeElement).toBe(screen));
+      await fireEvent.paste(document.activeElement!, {
+        clipboardData: { types: ['Files'], items: [{ kind: 'file', type: 'image/png', getAsFile: () => file('image.png', 'image/png') }] },
+      });
+      await waitFor(() => expect(names).toEqual(['image.png']));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // The ticket mounts after its code loads, a later turn than the click
+  // that opened it; a person's focus or press elsewhere in between, or the
+  // ticket's close, ends that open's claim on the focus.
+  function clickCardNow(view: ReturnType<typeof mount>, issue: string): void {
+    const card = view.getAllByTestId('issues-card').find((c) => c.dataset.issue === issue)!;
+    within(card).getByTestId('issues-card-open').click();
+  }
+
+  it('leaves the focus where the person put it while the ticket a card opened was loading', async () => {
+    install();
+    installTicket();
+    const composer = document.body.appendChild(document.createElement('textarea'));
+    try {
+      const view = mount();
+      await view.findAllByTestId('issues-card');
+      clickCardNow(view, '1');
+      // Before the ticket mounts: a click into another pane's composer.
+      composer.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      composer.focus();
+      await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('1'));
+      await tick();
+      expect(document.activeElement).toBe(composer);
+    } finally {
+      composer.remove();
+    }
+  });
+
+  it('ends the focus a card open asked for when the ticket closes before it mounts, so a linked open of it later takes none', async () => {
+    install();
+    installTicket();
+    clearCommandRegistry();
+    registerIssuesCommands();
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    const start = document.activeElement;
+    clickCardNow(view, '1');
+    runCommand('issues.escape', { pane: null, paneId: null, flags: { issuesPaneFocused: true, toolDetailOpen: true } } as unknown as CommandContext);
+    await tick();
+    expect(view.queryByTestId('ticket-screen')).toBeNull();
+    requestTicketOpen({ ref: { backend: HOME_BACKEND, connection: 'c1', issue: '1' }, seed: { key: 'WEB-1', title: 'Linked', card: null }, project: 'p1', unplaced: vi.fn() });
+    const screen = await waitFor(() => view.getByTestId('ticket-screen'));
+    await tick();
+    expect(document.activeElement).not.toBe(screen);
+    expect(document.activeElement).toBe(start);
+  });
+
+  it('takes no drop or paste of files on a Linear ticket, and offers it no Attach', async () => {
+    install({ choices: [choice('1', { opens_first: true, connection_kind: 'linear' })] });
+    installTicket();
+    const names = installUploads();
+    try {
+      const view = mount();
+      const screen = await openCard(view, '1');
+      await within(screen).findByTestId('ticket-comment-input');
+      expect(within(screen).queryByTestId('ticket-attachments')).toBeNull();
+      const dataTransfer = { types: ['Files'], files: [file('report.pdf')] };
+      expect(await fireEvent.dragOver(within(screen).getByTestId('ticket-content'), { dataTransfer })).toBe(true);
+      await fireEvent.drop(within(screen).getByTestId('ticket-content'), { dataTransfer });
+      await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+      await within(document.body).findByTestId('ticket-menu-copy-key');
+      expect(within(document.body).queryByTestId('ticket-menu-attach')).toBeNull();
+      expect(within(document.body).queryByTestId('ticket-menu-log-time')).toBeNull();
+      expect(within(screen).queryByTestId('ticket-estimate')).toBeNull();
+      expect(names).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('shows a file the description names with its size and Save once the ticket holds it', async () => {
+    install();
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      description: 'See [report.pdf](media:abc).',
+      attachments: [{ id: 'a1', name: 'report.pdf', mime_type: 'application/pdf', size: 2048, created: 1, author: { id: 'u1', name: 'User 1' } }],
+    }) as unknown as DetailView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const chip = await waitFor(() => {
+      const found = screen.querySelector<HTMLElement>('[data-testid="ticket-section"] [data-tracker-media]');
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    await waitFor(() => expect(chip.textContent?.replace(/\s+/g, ' ')).toContain('report.pdf'));
+    expect(within(chip).getByRole('button')).toBeInTheDocument();
+    expect(chip.textContent).toContain('2 KB');
+  });
+
+  it('offers planning poker only where the site has it, folded until opened, and follows the votes only while it shows', async () => {
+    install();
+    installTicket();
+    setBindingMock('TrackerPokerSupport', async () => ({ available: true }));
+    const follow = setBindingMock('FollowTrackerPoker', async () => ({ loaded: true, revealed: false, votes: [], read_at: 1 }));
+    const observers: Array<(entries: Array<{ isIntersecting: boolean }>) => void> = [];
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(report: (entries: Array<{ isIntersecting: boolean }>) => void) {
+        observers.push(report);
+      }
+      observe(): void {
+        observers.at(-1)?.([{ isIntersecting: true }]);
+      }
+      disconnect(): void {}
+    });
+    try {
+      const view = mount();
+      const screen = await openCard(view, '1');
+      const fold = await within(screen).findByTestId('ticket-poker-fold');
+      expect(fold).toHaveAttribute('aria-expanded', 'false');
+      expect(follow).not.toHaveBeenCalled();
+      await fireEvent.click(fold);
+      await waitFor(() => expect(follow).toHaveBeenCalledWith('ticket-1-1', true));
+      expect(await within(screen).findByTestId('ticket-poker-votes')).toBeInTheDocument();
+      await fireEvent.click(fold);
+      await waitFor(() => expect(follow).toHaveBeenLastCalledWith('ticket-1-1', false));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('sends one poker follow change at a time, ending on the state the section last asked for, and says nothing of votes before a read', async () => {
+    install();
+    installTicket();
+    setBindingMock('TrackerPokerSupport', async () => ({ available: true }));
+    const answers: Array<(view: PokerView) => void> = [];
+    const follow = setBindingMock('FollowTrackerPoker', () => new Promise<PokerView>((resolve) => { answers.push(resolve); }));
+    const reports: Array<(entries: Array<{ isIntersecting: boolean }>) => void> = [];
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(report: (entries: Array<{ isIntersecting: boolean }>) => void) {
+        reports.push(report);
+      }
+      observe(): void {}
+      disconnect(): void {}
+    });
+    const unread = { loaded: false, revealed: false, votes: [], read_at: 0 } as unknown as PokerView;
+    try {
+      const view = mount();
+      const screen = await openCard(view, '1');
+      await fireEvent.click(await within(screen).findByTestId('ticket-poker-fold'));
+      await waitFor(() => expect(reports).toHaveLength(1));
+      const onScreen = async (shown: boolean) => {
+        reports.at(-1)!([{ isIntersecting: shown }]);
+        await tick();
+      };
+      // Scrolled into view, out and in again, and out, while the first
+      // follow is out.
+      await onScreen(true);
+      await waitFor(() => expect(follow).toHaveBeenCalledTimes(1));
+      await onScreen(false);
+      await onScreen(true);
+      await onScreen(false);
+      expect(follow.mock.calls).toEqual([['ticket-1-1', true]]);
+      answers[0]!(unread);
+      await waitFor(() => expect(follow).toHaveBeenCalledTimes(2));
+      expect(follow.mock.calls[1]).toEqual(['ticket-1-1', false]);
+      answers[1]!(unread);
+      await tick();
+      expect(follow).toHaveBeenCalledTimes(2);
+
+      // On screen again: the round is not read yet, so the section says so.
+      await onScreen(true);
+      await waitFor(() => expect(follow).toHaveBeenCalledTimes(3));
+      answers[2]!(unread);
+      await tick();
+      expect(await within(screen).findByTestId('ticket-poker-reading')).toHaveTextContent('Reading the votes…');
+      expect(within(screen).getByTestId('ticket-poker').textContent).not.toMatch(/No votes yet|Not revealed/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('sets the estimate from a revealed poker round through the ticket menu', async () => {
+    install();
+    installTicket();
+    setBindingMock('TrackerPokerSupport', async () => ({ available: true }));
+    setBindingMock('FollowTrackerPoker', async () => ({
+      loaded: true, revealed: true, read_at: 1,
+      votes: [{ voter: { id: 'u1', name: 'User 1' }, value: 5, mine: true }, { voter: { id: 'u2', name: 'User 2' }, value: 5 }, { voter: { id: 'u3', name: 'User 3' }, value: 3 }],
+    }));
+    const estimate = setBindingMock('SetTrackerEstimate', async () => applied());
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(private report: (entries: Array<{ isIntersecting: boolean }>) => void) {}
+      observe(): void {
+        this.report([{ isIntersecting: true }]);
+      }
+      disconnect(): void {}
+    });
+    try {
+      const view = mount();
+      const screen = await openCard(view, '1');
+      await fireEvent.click(await within(screen).findByTestId('ticket-poker-fold'));
+      await within(screen).findByTestId('ticket-poker-result');
+      await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+      const items = await within(document.body).findAllByTestId('ticket-menu-poker-estimate');
+      expect(items.map((i) => i.textContent?.replace(/\s+/g, ' ').trim())).toEqual(['Set estimate to 5 (2 votes)', 'Set estimate to 3 (1 vote)']);
+      await fireEvent.click(items[0]!);
+      await waitFor(() => expect(estimate).toHaveBeenCalledWith('c1', { board: '1', issue: '1', value: 5 }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('says in the poker section that the site could not be asked, asks again on Retry and on the next opening', async () => {
+    install();
+    installTicket();
+    const support = setBindingMock('TrackerPokerSupport', async () => ({ available: false, failure: { kind: 'transient', message: 'Jira did not answer', at: 1 } }));
+    const view = mount();
+    let screen = await openCard(view, '1');
+    const failed = await within(screen).findByTestId('ticket-poker-support-error');
+    expect(failed).toHaveTextContent('Could not find out whether this site has planning poker: Jira did not answer');
+    expect(within(screen).queryByTestId('ticket-poker-fold')).toBeNull();
+
+    await fireEvent.click(within(screen).getByTestId('ticket-poker-support-retry'));
+    await waitFor(() => expect(support).toHaveBeenCalledTimes(2));
+    await within(screen).findByTestId('ticket-poker-support-error');
+
+    // The next opening asks again, and an answer offers poker.
+    await fireEvent.click(view.getByTestId('ticket-close'));
+    support.mockResolvedValue({ available: true });
+    screen = await openCard(view, '1');
+    await within(screen).findByTestId('ticket-poker-fold');
+    expect(support).toHaveBeenCalledTimes(3);
+    expect(within(screen).queryByTestId('ticket-poker-support-error')).toBeNull();
+  });
+
+  it('asks again whether the site has poker for an open ticket once its computer connects again', async () => {
+    install();
+    installTicket();
+    const support = setBindingMock('TrackerPokerSupport', async () => ({ available: false }));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await waitFor(() => expect(support).toHaveBeenCalledTimes(1));
+    support.mockResolvedValue({ available: true });
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'disconnected', nextAttemptAt: null });
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+    await within(screen).findByTestId('ticket-poker-fold');
+    expect(support).toHaveBeenCalledTimes(2);
+  });
+
+  it('offers no planning poker on a site without it', async () => {
+    install();
+    installTicket();
+    const support = setBindingMock('TrackerPokerSupport', async () => ({ available: false }));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await within(screen).findByTestId('ticket-comment-input');
+    await waitFor(() => expect(support).toHaveBeenCalledWith('c1'));
+    expect(within(screen).queryByTestId('ticket-poker-fold')).toBeNull();
+  });
+
+  it('links the ticket to one found by key on the side its phrase reads, taking no change while the link is out', async () => {
+    install();
+    installTicket();
+    setBindingMock('TrackerLinkTypes', async () => [{ id: '10000', name: 'Blocks', outward: 'blocks', inward: 'is blocked by' }]);
+    setBindingMock('TrackerLookup', async () => ({ found: [{ key: 'WEB-7', card: { id: '7', key: 'WEB-7', title: 'Issue 7' } }] }));
+    let answer: ((view: WriteView) => void) | null = null;
+    const link = setBindingMock('LinkTrackerIssues', () => new Promise<WriteView>((resolve) => { answer = resolve; }));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await fireEvent.click(await within(screen).findByTestId('ticket-link-add'));
+    const form = await within(document.body).findByTestId('ticket-link-form');
+    const relation = await within(form).findByTestId('ticket-link-form-relation');
+    expect(Array.from((relation as HTMLSelectElement).options).map((o) => o.text)).toEqual(['blocks', 'is blocked by']);
+    await fireEvent.change(relation, { target: { value: '1' } });
+    expect(relation).toHaveDisplayValue('is blocked by');
+    await fireEvent.click(within(form).getByTestId('ticket-link-form-find'));
+    await fireEvent.input(await within(document.body).findByTestId('ticket-picker-find'), { target: { value: 'WEB-7' } });
+    await fireEvent.click(await within(document.body).findByTestId('ticket-picker-item'));
+    await waitFor(() => expect(within(form).getByTestId('ticket-link-form-other')).toHaveTextContent('WEB-7'));
+    await fireEvent.click(within(form).getByTestId('ticket-link-form-save'));
+    await waitFor(() => expect(link).toHaveBeenCalledWith('c1', { type: '10000', outward: '7', inward: '1' }));
+    expect(relation).toBeDisabled();
+    expect(within(form).getByTestId('ticket-link-form-find')).toBeDisabled();
+    expect(within(form).getByTestId('ticket-link-form-save')).toBeDisabled();
+    answer!(applied());
+    await waitFor(() => expect(within(document.body).queryByTestId('ticket-link-form')).toBeNull());
+  });
+
+  it('reads the link types once per opening of the link form, keeping a refusal on screen until Retry', async () => {
+    install();
+    installTicket();
+    // A read past the third never answers, so a loop that reads again on
+    // each refusal stops there instead of running the worker out of memory.
+    const types = setBindingMock('TrackerLinkTypes', () =>
+      types.mock.calls.length > 3 ? new Promise<never>(() => {}) : Promise.reject(new Error('link types are hidden from you')),
+    );
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await fireEvent.click(await within(screen).findByTestId('ticket-link-add'));
+    const form = await within(document.body).findByTestId('ticket-link-form');
+    await waitFor(() => expect(types).toHaveBeenCalled());
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    await tick();
+    expect(types).toHaveBeenCalledTimes(1);
+    expect(within(form).getByTestId('ticket-link-form-types-error')).toHaveTextContent('link types are hidden from you');
+
+    await fireEvent.click(within(form).getByTestId('ticket-link-form-types-retry'));
+    await waitFor(() => expect(types).toHaveBeenCalledTimes(2));
+    expect(await within(form).findByTestId('ticket-link-form-types-error')).toBeInTheDocument();
+
+    // Closed and opened again, the form reads them again.
+    await fireEvent.click(within(form).getByTestId('ticket-link-form-cancel'));
+    await waitFor(() => expect(within(document.body).queryByTestId('ticket-link-form')).toBeNull());
+    types.mockImplementation(async () => [{ id: '10000', name: 'Blocks', outward: 'blocks', inward: 'is blocked by' }]);
+    await fireEvent.click(within(screen).getByTestId('ticket-link-add'));
+    const again = await within(document.body).findByTestId('ticket-link-form');
+    await within(again).findByTestId('ticket-link-form-relation');
+    expect(types).toHaveBeenCalledTimes(3);
+  });
+
+  it('removes a link at once from its row and says so until the ticket drops it', async () => {
+    install();
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      links: [{ id: '40001', type: '10000', relation: 'blocks', issue: { id: '6', key: 'WEB-6', title: 'Issue 6', status: { id: 's1', name: 'To Do', group: 'todo' } } }],
+    }) as unknown as DetailView);
+    let answer: ((view: WriteView) => void) | null = null;
+    const unlink = setBindingMock('UnlinkTrackerIssues', () => new Promise<WriteView>((resolve) => { answer = resolve; }));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await fireEvent.click(await within(screen).findByTestId('ticket-link-remove'));
+    expect(unlink).toHaveBeenCalledWith('c1', { issue: '1', link: '40001', other: '6' });
+    expect(await within(screen).findByTestId('ticket-link-removing')).toHaveTextContent('Removing…');
+    expect(within(screen).getByTestId('ticket-link-remove')).toBeDisabled();
+    answer!(applied());
+    await waitFor(() => expect(within(screen).queryByTestId('ticket-link-removing')).toBeNull());
+  });
+
+  it('removes the link its row menu was opened on', async () => {
+    install();
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      links: [{ id: '40001', type: '10000', relation: 'blocks', issue: { id: '6', key: 'WEB-6', title: 'Issue 6', status: { id: 's1', name: 'To Do', group: 'todo' } } }],
+    }) as unknown as DetailView);
+    const unlink = setBindingMock('UnlinkTrackerIssues', async () => applied());
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await fireEvent.click(await within(screen).findByTestId('ticket-link-menu'));
+    await fireEvent.click(await within(document.body).findByTestId('ticket-link-menu-remove'));
+    await waitFor(() => expect(unlink).toHaveBeenCalledWith('c1', { issue: '1', link: '40001', other: '6' }));
+  });
+
+  it("opens the estimate's editor from the header, and Log time's form filled with the ticket and today", async () => {
+    install();
+    installTicket();
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const estimate = await within(screen).findByTestId('ticket-estimate');
+    expect(estimate).toHaveAccessibleName('Estimate: 2');
+    await fireEvent.click(estimate);
+    const points = within(screen).getByTestId('ticket-rail').querySelector<HTMLElement>('[data-field="points"]')!;
+    await waitFor(() => expect(within(points).getByTestId('ticket-field-input')).toHaveValue(2));
+
+    await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+    await fireEvent.click(await within(document.body).findByTestId('ticket-menu-log-time'));
+    const form = await within(document.body).findByTestId('worklog-form');
+    expect(within(form).getByTestId('worklog-form-ticket')).toHaveTextContent('WEB-1');
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    expect(within(form).getByTestId('worklog-form-day')).toHaveValue(today);
+    expect(within(form).queryByTestId('worklog-form-find')).toBeNull();
+  });
+
+  it('offers no Log time while the app does not know whose time it logs', async () => {
+    install({ choices: [choice('1', { opens_first: true, verified_account: '' })] });
+    installTicket();
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await within(screen).findByTestId('ticket-comment-input');
+    await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+    expect(await within(document.body).findByTestId('ticket-menu-log-time')).toHaveAttribute('aria-disabled', 'true');
+  });
+});
+
+/** Switches the pane to `label` through its folded tab picker (jsdom
+ * measures the pane 0 wide). */
+async function switchTo(view: ReturnType<typeof mount>, label: 'Board' | 'Time'): Promise<void> {
+  await fireEvent.click(await view.findByTestId('issues-tabs-picker'));
+  const option = within(menu()).getAllByTestId('issues-tab-option').find((o) => o.textContent?.includes(label))!;
+  await fireEvent.click(option);
+}
+
+describe('the Time screen in the pane', () => {
+  beforeAll(async () => {
+    await import('./TimeScreen.svelte');
+    await import('./TicketScreen.svelte');
+  });
+
+  // On this week's Monday, which the screen opens on.
+  const worklog = { id: '501', issue: '1', key: 'WEB-1', title: 'Issue 1', author: 'acc-user1', day: mondayOf(localDay(new Date())), spent_seconds: 3600, updated: 1 };
+
+  it('switches to Time, reads the person\'s week on the board\'s connection, votes the board hidden, and opens on Time next', async () => {
+    const mocks = install();
+    const stored = setBindingMock('TrackerWorklogs', async () => ({ worklogs: [worklog] }));
+    setBindingMock('RefreshTrackerWorklogs', async () => ({ worklogs: [worklog] }));
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await switchTo(view, 'Time');
+    await view.findByTestId('time-screen');
+    await waitFor(() => expect(stored).toHaveBeenCalled());
+    expect(stored.mock.calls[0].slice(0, 2)).toEqual(['c1', 'acc-user1']);
+    // The board is not mounted on Time, and its subscription is voted hidden.
+    expect(view.queryAllByTestId('issues-card')).toHaveLength(0);
+    await waitFor(() => expect(votes(mocks.visible, 'sub-')).toEqual([false]));
+    // Only mine, Display and Search are the board's.
+    expect(view.queryByTestId('issues-only-mine')).toBeNull();
+    expect(view.queryByTestId('issues-display')).toBeNull();
+    expect(view.queryByTestId('issues-search')).toBeNull();
+    expect(view.getByTestId('issues-tabs-picker')).toHaveTextContent('Time');
+    view.unmount();
+    const again = mount();
+    expect(await again.findByTestId('time-screen')).toBeInTheDocument();
+    again.unmount();
+  });
+
+  it("switches to the Board on the ticket's board for a ticket asked for from outside the pane, and opens on Time next", async () => {
+    const mocks = install({ choices: [choice('1', { opens_first: true }), choice('5', { connection: 'c2', project: 'p2' })] });
+    installTicket();
+    setBindingMock('TrackerWorklogs', async () => ({ worklogs: [worklog] }));
+    setBindingMock('RefreshTrackerWorklogs', async () => ({ worklogs: [worklog] }));
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await switchTo(view, 'Time');
+    await view.findByTestId('time-screen');
+    const ask = (connection: string, issue: string) => requestTicketOpen({
+      ref: { backend: HOME_BACKEND, connection, issue }, seed: { key: `WEB-${issue}`, title: 'Linked', card: null }, project: null, unplaced: vi.fn(),
+    });
+    // Of the board shown.
+    ask('c1', '77');
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('77'));
+    expect(view.getByTestId('issues-tabs-picker')).toHaveTextContent('Board');
+    expect(view.queryByTestId('time-screen')).toBeNull();
+    // Of another connection's board, from Time again.
+    await switchTo(view, 'Time');
+    await view.findByTestId('time-screen');
+    ask('c2', '88');
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('88'));
+    expect(mocks.subscribe).toHaveBeenLastCalledWith('p2', 'c2', '5', [], false);
+    expect(view.getByTestId('issues-tabs-picker')).toHaveTextContent('Board');
+    view.unmount();
+    // The person's screen stays Time; the switch was the request's.
+    const again = mount();
+    expect(await again.findByTestId('time-screen')).toBeInTheDocument();
+    again.unmount();
+  });
+
+  it('refreshes the week from the header', async () => {
+    install();
+    setBindingMock('TrackerWorklogs', async () => ({ worklogs: [] }));
+    const refresh = setBindingMock('RefreshTrackerWorklogs', async () => ({ worklogs: [] }));
+    const view = mount();
+    await switchTo(view, 'Time');
+    await view.findByTestId('time-toolbar');
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    await fireEvent.click(view.getByTestId('issues-refresh'));
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+  });
+
+  it('opens an entry\'s ticket through the pane\'s one ticket host, and a switch of screen closes it', async () => {
+    install();
+    const ticket = installTicket();
+    setBindingMock('TrackerWorklogs', async () => ({ worklogs: [worklog] }));
+    setBindingMock('RefreshTrackerWorklogs', async () => ({ worklogs: [worklog] }));
+    const view = mount();
+    await switchTo(view, 'Time');
+    await fireEvent.click(await view.findByTestId('time-entry-key'));
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('1'));
+    expect(ticket.subscribe).toHaveBeenCalledWith('c1', '1', true);
+    await switchTo(view, 'Board');
+    await waitFor(() => expect(view.queryByTestId('issues-ticket')).toBeNull());
+    await view.findAllByTestId('issues-card');
+  });
+
+  it('says a Linear board has no time tracking, and reads nothing', async () => {
+    install({ choices: [choice('1', { opens_first: true, connection_kind: 'linear' })] });
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await switchTo(view, 'Time');
+    expect(await view.findByTestId('time-linear')).toBeInTheDocument();
+    expect(getBindingMock('TrackerWorklogs')?.mock.calls ?? []).toHaveLength(0);
+  });
+
+  it('opens on Time with the saved board\'s computer not connected and says so, not that it is listing boards', async () => {
+    stageBackend({ status: 'reconnecting' });
+    setCarriedSessionScopes('laptop', ['tracker:read']);
+    writeFromAnotherWindow(BOARD_KEY, boardRef('7', 'p9', 'laptop'));
+    localStorage.setItem('agent-overflow:frontend:issues-screen', JSON.stringify('time'));
+    install({ choices: [choice('1', { opens_first: true })] });
+    const view = mount();
+    expect(await view.findByTestId('time-offline')).toHaveTextContent('Laptop is not connected. Your time shows when it connects.');
+    expect(view.queryByTestId('issues-time-listing')).toBeNull();
+    view.unmount();
+  });
+
+  it('says the board is gone when its listing goes while Time shows it', async () => {
+    let rows = [choice('1', { opens_first: true })];
+    install();
+    setBindingMock('TrackerBoardChoices', async () => rows);
+    setBindingMock('TrackerWorklogs', async () => ({ worklogs: [] }));
+    setBindingMock('RefreshTrackerWorklogs', async () => ({ worklogs: [] }));
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await switchTo(view, 'Time');
+    await view.findByTestId('time-toolbar');
+    rows = [];
+    applyTrackerConnectionsChanged(HOME_BACKEND);
+    expect(await view.findByTestId('time-board-gone')).toHaveTextContent('No project lists this board any more, or its connection was removed. Pick another board to see your time.');
+    expect(view.queryByTestId('issues-time-listing')).toBeNull();
+    view.unmount();
   });
 });

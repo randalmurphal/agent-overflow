@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -44,6 +45,7 @@ func TestTrackerTicketMethodsCarryTheirScopeAndRoute(t *testing.T) {
 		"TrackerTicket":                       {read, transport.RouteHome, false, 0},
 		"MintTrackerAttachmentUploadTicket":   {operate, transport.RouteHome, false, 0},
 		"MintTrackerAttachmentDownloadTicket": {read, transport.RouteHome, false, 0},
+		"SaveTrackerAttachment":               {operate, transport.RouteHome, false, 30 * time.Minute},
 		"TrackerIssueTypes":                   form,
 		"TrackerCreateFields":                 form,
 		"TrackerMoves":                        form,
@@ -188,33 +190,12 @@ func TestATrackerTicketReachesItsClient(t *testing.T) {
 	})
 
 	payload := bytes.Repeat([]byte("attached bytes\n"), 10_000)
-	upload, err := f.a.MintTrackerAttachmentUploadTicket(ctx, f.conn.ID, "10101", "notes.txt", int64(len(payload)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req, err := http.NewRequest(http.MethodPut, base+upload, bytes.NewReader(payload))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var attached trackerapp.WriteView
-	err = json.NewDecoder(resp.Body).Decode(&attached)
-	_ = resp.Body.Close()
-	if err != nil || resp.StatusCode != http.StatusOK || !appliedOnly(attached) {
-		t.Fatalf("the upload answered %d, %+v, %v", resp.StatusCode, attached, err)
-	}
-	d := f.ticketShows(t, ctx, sub.ID, "the attachment", func(d *trackerapp.DetailView) bool {
-		return slices.ContainsFunc(d.Attachments, func(a trackerapp.AttachmentView) bool { return a.Name == "notes.txt" })
-	})
-	att := d.Attachments[slices.IndexFunc(d.Attachments, func(a trackerapp.AttachmentView) bool { return a.Name == "notes.txt" })]
+	att := f.attach(t, ctx, base, sub.ID, "notes.txt", payload)
 	download, err := f.a.MintTrackerAttachmentDownloadTicket(ctx, sub.ID, att.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err = http.Get(base + download)
+	resp, err := http.Get(base + download)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,6 +216,88 @@ func TestATrackerTicketReachesItsClient(t *testing.T) {
 	}
 	if _, err := f.a.MintTrackerAttachmentDownloadTicket(ctx, sub.ID, att.ID); !hasCode(err, "tracker_subscription_unknown") {
 		t.Fatalf("a download from a released ticket = %v", err)
+	}
+}
+
+// attach puts payload on issue 10101 as name through the upload route, as
+// a client does, and answers the attachment once the subscribed ticket sub
+// shows it.
+func (f *trackerBoardFixture) attach(t *testing.T, ctx context.Context, base, sub, name string, payload []byte) trackerapp.AttachmentView {
+	t.Helper()
+	upload, err := f.a.MintTrackerAttachmentUploadTicket(ctx, f.conn.ID, "10101", name, int64(len(payload)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPut, base+upload, bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var attached trackerapp.WriteView
+	err = json.NewDecoder(resp.Body).Decode(&attached)
+	_ = resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusOK || !appliedOnly(attached) {
+		t.Fatalf("the upload answered %d, %+v, %v", resp.StatusCode, attached, err)
+	}
+	named := func(a trackerapp.AttachmentView) bool { return a.Name == name }
+	d := f.ticketShows(t, ctx, sub, "the attachment "+name, func(d *trackerapp.DetailView) bool {
+		return slices.ContainsFunc(d.Attachments, named)
+	})
+	return d.Attachments[slices.IndexFunc(d.Attachments, named)]
+}
+
+// An attachment saved on the computer lands whole in its Downloads
+// folder, a second save beside it rather than over it; a save the tracker
+// fails leaves no file; an attachment the ticket does not show, or a
+// released ticket, is refused before anything is asked.
+func TestATrackerAttachmentSavesIntoDownloads(t *testing.T) {
+	t.Parallel()
+	f := newTrackerBoardFixture(t)
+	base := f.serveTrackerTransfers(t)
+	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
+	sub, err := f.a.SubscribeTrackerTicket(ctx, f.conn.ID, "10101", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := bytes.Repeat([]byte("saved bytes\n"), 50_000)
+	att := f.attach(t, ctx, base, sub.ID, "report.pdf", payload)
+	downloads := filepath.Join(f.a.configDir, "downloads")
+
+	first, err := f.a.SaveTrackerAttachment(ctx, sub.ID, att.ID)
+	if err != nil || first != filepath.Join(downloads, "report.pdf") {
+		t.Fatalf("SaveTrackerAttachment = %q, %v", first, err)
+	}
+	if got, err := os.ReadFile(first); err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("the saved file holds %d bytes, %v; want %d", len(got), err, len(payload))
+	}
+	second, err := f.a.SaveTrackerAttachment(ctx, sub.ID, att.ID)
+	if err != nil || second != filepath.Join(downloads, "report (2).pdf") {
+		t.Fatalf("a second save = %q, %v", second, err)
+	}
+
+	const route = "GET rest/api/3/attachment/content/{id}"
+	if err := f.e.AddFault(trackerfake.Fault{Origin: trackerBoardOrigin, Route: route, Kind: trackerfake.FaultRefuse, Status: 403, Body: json.RawMessage(`{"errorMessages":["down"]}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if path, err := f.a.SaveTrackerAttachment(ctx, sub.ID, att.ID); err == nil {
+		t.Fatalf("a save the tracker failed = %q", path)
+	}
+	f.e.ClearFaults(trackerBoardOrigin, route)
+	if _, err := os.Stat(filepath.Join(downloads, "report (3).pdf")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a failed save left a file: %v", err)
+	}
+
+	if _, err := f.a.SaveTrackerAttachment(ctx, sub.ID, "999999"); !hasCode(err, "tracker_attachment_unknown") {
+		t.Fatalf("an attachment the ticket does not show = %v", err)
+	}
+	if err := f.a.ReleaseTrackerSubscription(ctx, sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.a.SaveTrackerAttachment(ctx, sub.ID, att.ID); !hasCode(err, "tracker_subscription_unknown") {
+		t.Fatalf("a save from a released ticket = %v", err)
 	}
 }
 

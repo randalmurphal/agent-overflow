@@ -324,7 +324,12 @@ func TestAgyFlavorRichToolAndMCPMetadata(t *testing.T) {
 		wire, server, tool string
 	}{
 		{"mcp_ao-thread-tools_spawn_thread", "ao-thread-tools", "spawn_thread"},
+		{"mcp_ao-thread-tools_997288b7_thread_options", "ao-thread-tools", "thread_options"},
+		{"mcp__ao-thread-tools_997288b7__thread_spawn", "ao-thread-tools", "thread_spawn"},
 		{"mcp_ao_browser_tools_click", "ao-browser-tools", "click"},
+		{"mcp_ao-browser-tools_a576d177_browser_open", "ao-browser-tools", "browser_open"},
+		{"mcp_ao-remote-tools_0be5a981_remote_run", "ao-remote-tools", "remote_run"},
+		{"mcp_ao-workflow-tools_86720d12_run_list", "ao-workflow-tools", "run_list"},
 		{"mcp__github__list_prs", "github", "list_prs"},
 		{"mcp_postgres_run_query", "postgres", "run_query"},
 	}
@@ -539,8 +544,11 @@ func TestClassifyPermissionAutoAllowsAOMCPServers(t *testing.T) {
 
 	for _, name := range []string{
 		"mcp_ao-thread-tools_thread_options",
+		"mcp_ao-thread-tools_997288b7_thread_options",
 		"mcp__ao-thread-tools__thread_spawn",
+		"mcp__ao-thread-tools_997288b7__thread_spawn",
 		"mcp_ao-workflow-tools_run_list",
+		"mcp_ao-workflow-tools_86720d12_run_list",
 	} {
 		cls := f.ClassifyPermission("t1", "turn1", "req1", acp.RequestPermissionParams{
 			ToolCall: acp.ToolCallUpdate{ToolCallID: "c1", Name: name, Kind: "other"},
@@ -562,7 +570,9 @@ func TestClassifyPermissionAutoAllowsAOMCPServers(t *testing.T) {
 	for _, name := range []string{
 		"mcp_ao_thread_tools_evil_delete_repo",
 		"mcp_ao-thread-tools_evil_tool",
+		"mcp_ao-thread-tools_997288b7_evil_tool",
 		"mcp_ao-remote-tools_run_command",
+		"mcp_ao-remote-tools_0be5a981_remote_run",
 		"mcp_github_create_issue",
 		"run_command",
 	} {
@@ -601,6 +611,7 @@ func TestClassifyPermissionAutoAllowsAOMCPServers(t *testing.T) {
 		toolName string
 	}{
 		{"exact_underscore_global", `{"mcpServers":{"ao_thread_tools":{"command":"evil"}}}`, "mcp_ao_thread_tools_thread_spawn"},
+		{"fingerprinted_global", `{"mcpServers":{"ao-thread-tools_997288b7":{"command":"evil"}}}`, "mcp_ao-thread-tools_997288b7_thread_spawn"},
 		{"exact_double_underscore_global", `{"mcpServers":{"ao-thread-tools":{"command":"evil"}}}`, "mcp__ao-thread-tools__thread_spawn"},
 		{"shorter_prefix_global", `{"mcpServers":{"ao":{"command":"evil"}}}`, "mcp_ao_thread_tools_thread_spawn"},
 		{"corrupt_global_config", `{not-valid-json`, "mcp_ao_thread_tools_thread_spawn"},

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // Mirror enumerations, aligned with the CHECKs of migration v162.
@@ -26,6 +27,41 @@ const (
 	MirrorEstimatePoints = 1
 	MirrorEstimateTime   = 2
 )
+
+// MirrorGroupNames are the status groups' names on the wire, by number:
+// what a status view and a thread row's ticket link say.
+var MirrorGroupNames = [...]string{
+	MirrorGroupBacklog: "backlog", MirrorGroupToDo: "todo", MirrorGroupInProgress: "in_progress",
+	MirrorGroupDone: "done", MirrorGroupCanceled: "canceled",
+}
+
+// mirrorGroupNameSQL is the name of the status group expr (an SQL
+// expression of its number) by MirrorGroupNames, ” for none.
+func mirrorGroupNameSQL(expr string) string {
+	var b strings.Builder
+	b.WriteString("CASE " + expr)
+	for n, name := range MirrorGroupNames {
+		if name != "" {
+			fmt.Fprintf(&b, " WHEN %d THEN '%s'", n, name)
+		}
+	}
+	b.WriteString(" ELSE '' END")
+	return b.String()
+}
+
+// mirrorGroupNumber is the number of the status group named name, 0 for
+// "" (no group); false for a name MirrorGroupNames does not hold.
+func mirrorGroupNumber(name string) (int, bool) {
+	if name == "" {
+		return 0, true
+	}
+	for n, known := range MirrorGroupNames {
+		if known != "" && known == name {
+			return n, true
+		}
+	}
+	return 0, false
+}
 
 // Bounds of one board's structure and of one catalog. A structure's rows
 // together stay within clearMirrorChunk, so a replace that removes all of

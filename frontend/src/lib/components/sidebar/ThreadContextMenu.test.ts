@@ -26,6 +26,9 @@ import {
 } from '../../stores/threadGroups.svelte';
 import type { Thread } from '../../types/models';
 import type { Settings } from '../../types/settings';
+import type { ThreadTicketLink } from '../../../../bindings/agent-overflow/internal/store/models';
+import { takeTicketOpenRequest } from '../../stores/issuesPane.svelte';
+import { closeThreadTicketFinder, threadTicketFinding } from '../../stores/threadTicketLinks.svelte';
 import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { entryRecordForTest, setEntryExpanded } from '../../stores/sidebarEntryContinuity.svelte';
 
@@ -84,6 +87,7 @@ describe('<ThreadContextMenu> single-row menu', () => {
     expect(visibleLabels(baseElement)).toEqual([
       'Open in New Pane',
       'Rename Thread',
+      'Link Ticket…',
       'Fork Thread',
       'Mark Unread',
       'Pin Thread',
@@ -126,6 +130,7 @@ describe('<ThreadContextMenu> single-row menu', () => {
     expect(visibleLabels(baseElement)).toEqual([
       'Open in New Pane',
       'Rename Thread',
+      'Link Ticket…',
       'Fork Thread',
       'Mark Unread',
       'Move to Back Burner',
@@ -1042,6 +1047,7 @@ describe('<ThreadContextMenu> standing agent', () => {
       'Projects…',
       'Previous Threads…',
       'Loops and Watches',
+      'Link Ticket…',
       'Fork Thread',
       'Mark Unread',
       'Copy Path',
@@ -1251,5 +1257,82 @@ describe('<ThreadContextMenu> standing agent', () => {
     // has read the thread's own rail preferences.
     await waitFor(() => expect(pane.activityRailBackgroundOpen).toBe(true));
     expect(pane.threadId).toBe('thread-1');
+  });
+});
+
+describe('<ThreadContextMenu> the linked ticket', () => {
+  const ticketLink: ThreadTicketLink = {
+    kind: 'jira', site: 'https://example.atlassian.net', issueId: '10001', key: 'WEB-1', title: 'Retry cursor returns no rows',
+    statusId: '3', statusName: 'In Progress', statusGroup: 'in_progress', origin: 'manual', linkedAt: 1,
+    state: 'current', connectionId: 'conn-1',
+  };
+
+  beforeEach(() => {
+    clearThreadSelection();
+  });
+
+  afterEach(() => {
+    takeTicketOpenRequest();
+    resetToLocalPage();
+  });
+
+  function row(el: HTMLElement, testId: string): HTMLElement {
+    const node = el.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+    if (!node) throw new Error(`${testId} not rendered`);
+    return node;
+  }
+
+  afterEach(() => {
+    closeThreadTicketFinder();
+  });
+
+  it('offers Open Ticket, Change Ticket… and Remove Ticket Link before Fork, and Link Ticket… for a thread with no link', () => {
+    const linked = renderMenu(makeThread({ ticketLink }));
+    const labels = visibleLabels(linked.baseElement);
+    expect(labels.slice(labels.indexOf('Open Ticket WEB-1'), labels.indexOf('Fork Thread') + 1))
+      .toEqual(['Open Ticket WEB-1', 'Change Ticket…', 'Remove Ticket Link', 'Fork Thread']);
+    linked.unmount();
+    const bare = renderMenu(makeThread());
+    expect(visibleLabels(bare.baseElement).filter((label) => /Ticket/.test(label))).toEqual(['Link Ticket…']);
+  });
+
+  it('opens the ticket finder for the thread at its row', async () => {
+    const { baseElement } = renderMenu(makeThread());
+    await fireEvent.click(row(baseElement, 'thread-menu-ticket-find'));
+    expect(threadTicketFinding()?.thread.id).toBe('thread-1');
+    expect(threadTicketFinding()?.anchor).toBeInstanceOf(HTMLElement);
+  });
+
+  it('holds Link Ticket… inert without tracker:read, saying why', async () => {
+    await pairWithScopes(['threads:read', 'threads:operate']);
+    const { baseElement } = renderMenu(makeThread());
+    expect(row(baseElement, 'thread-menu-ticket-find').getAttribute('aria-disabled')).toBe('true');
+    expect(row(baseElement, 'thread-menu-ticket-find').getAttribute('title')).toBe('Not granted to this device');
+    await fireEvent.click(row(baseElement, 'thread-menu-ticket-find'));
+    expect(threadTicketFinding()).toBeNull();
+  });
+
+  it('opens the ticket in the Issues pane', async () => {
+    const { baseElement } = renderMenu(makeThread({ ticketLink, projectId: 'project-1' }));
+    await fireEvent.click(row(baseElement, 'thread-menu-ticket-open'));
+    await waitFor(() => expect(takeTicketOpenRequest()?.ref).toMatchObject({ connection: 'conn-1', issue: '10001' }));
+  });
+
+  it('removes the link and applies the row the computer answers', async () => {
+    const thread = makeThread({ ticketLink });
+    replaceAllThreads([thread]);
+    const clear = setBindingMock('ClearThreadTicket', async () => ({ ...thread, ticketLink: null }));
+    const { baseElement } = renderMenu(thread);
+    await fireEvent.click(row(baseElement, 'thread-menu-ticket-remove'));
+    await waitFor(() => expect(getThreadById('thread-1')?.ticketLink).toBeNull());
+    expect(clear).toHaveBeenCalledWith('thread-1');
+  });
+
+  it('holds Remove Ticket Link inert without threads:operate, and Open Ticket live', async () => {
+    await pairViewOnly();
+    const { baseElement } = renderMenu(makeThread({ ticketLink }));
+    expect(row(baseElement, 'thread-menu-ticket-remove').getAttribute('aria-disabled')).toBe('true');
+    expect(row(baseElement, 'thread-menu-ticket-remove').getAttribute('title')).toBe('Not granted to this device');
+    expect(row(baseElement, 'thread-menu-ticket-open').getAttribute('aria-disabled')).not.toBe('true');
   });
 });

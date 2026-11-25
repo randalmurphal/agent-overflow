@@ -225,7 +225,7 @@ func TestSpawnInstructionsAreAppendedLastOnEveryProvider(t *testing.T) {
 			continue
 		}
 		if !strings.HasPrefix(prompts.codexDeveloper, guide+"\n\nBLOCK\n\n") || !strings.HasSuffix(prompts.codexDeveloper, "\n\nROLE") ||
-			!strings.Contains(prompts.codexDeveloper, "Starting work.") {
+			!strings.Contains(prompts.codexDeveloper, "Starting.") {
 			t.Errorf("codex developer instructions = %q", prompts.codexDeveloper)
 		}
 	}

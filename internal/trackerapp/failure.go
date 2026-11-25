@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -185,8 +186,10 @@ func (e *ClientError) Unwrap() error { return e.Err }
 // errors choose the other kinds. The message is built from the error's
 // type and status alone, so neither the token nor tracker text reaches
 // it. An answer names the tracker that gave it (a Jira connection's
-// linked Tempo connection answers for its time), any other failure the
-// connection's kind.
+// linked Tempo connection answers for its time); a call the caller marked
+// with the tracker it went to (answeredBy) names that tracker when it
+// could not be read, reached or answered as the token changed; any other
+// failure names the connection's kind.
 func ClassifyFailure(kind string, err error) Failure {
 	name := trackerName(kind)
 	answered := func(responder string) string {
@@ -194,6 +197,11 @@ func ClassifyFailure(kind string, err error) Failure {
 			return name
 		}
 		return trackerName(responder)
+	}
+	// The tracker a call that carries none of its own was made to.
+	responder := ""
+	if by, ok := errors.AsType[*answeredBy](err); ok {
+		responder = by.tracker
 	}
 	var keyErr *KeyFileError
 	var wrong *linear.WrongWorkspaceError
@@ -238,14 +246,10 @@ func ClassifyFailure(kind string, err error) Failure {
 	case errors.Is(err, trackerapi.ErrCredentialChanged):
 		// The token in the key file was replaced while the answer was
 		// read; asking again uses the new one.
-		return Failure{Kind: FailureTransient, Message: name + " answered as the token in the key file was being replaced; try again"}
+		return Failure{Kind: FailureTransient, Message: answered(responder) + " answered as the token in the key file was being replaced; try again"}
 	case errors.As(err, &transient), errors.Is(err, context.DeadlineExceeded),
 		errors.As(err, &notSent) && !errors.Is(err, trackerapi.ErrInvalidInput):
-		return Failure{Kind: FailureTransient, Message: name + " could not be reached; try again"}
-	}
-	responder := ""
-	if by, ok := errors.AsType[*answeredBy](err); ok {
-		responder = by.tracker
+		return Failure{Kind: FailureTransient, Message: answered(responder) + " could not be reached; try again"}
 	}
 	return Failure{Kind: FailureTracker, Message: answered(responder) + " answered in a way Agent Overflow could not use"}
 }
@@ -261,6 +265,56 @@ type answeredBy struct {
 
 func (e *answeredBy) Error() string { return e.err.Error() }
 func (e *answeredBy) Unwrap() error { return e.err }
+
+// timeAnswered is err, a failure of a connection's time whose tracker is
+// timeBy (a store.TrackerKind*; empty for the connection's own), marked
+// with that tracker, except a request the time made to Jira
+// (tracker.ErrWorklogJira). Nil stays nil.
+func timeAnswered(timeBy string, err error) error {
+	if err == nil || timeBy == "" || errors.Is(err, tracker.ErrWorklogJira) {
+		return err
+	}
+	return &answeredBy{tracker: timeBy, err: err}
+}
+
+// timeAnsweredParts is res with each worklog part's failure marked as
+// timeAnswered marks it, so its sentence and the connection's problem
+// name the tracker that failed.
+func timeAnsweredParts(timeBy string, res tracker.Result) tracker.Result {
+	if timeBy == "" {
+		return res
+	}
+	parts := slices.Clone(res.Parts)
+	for i, p := range parts {
+		if p.Step != tracker.StepWorklog || p.Outcome.Err() == nil {
+			continue
+		}
+		err := timeAnswered(timeBy, p.Outcome.Err())
+		switch p.Outcome.State() {
+		case tracker.StateRefused:
+			r, _ := p.Outcome.Refusal()
+			r.Err = err
+			parts[i].Outcome = tracker.Refused(r)
+		case tracker.StateUnknown:
+			parts[i].Outcome = tracker.Unknown(err)
+		case tracker.StateNotSent:
+			parts[i].Outcome = tracker.NotSent(err)
+		case tracker.StateApplied:
+			// An applied part has no error, so the loop skipped it.
+		}
+	}
+	res.Parts = parts
+	return res
+}
+
+// responderOf is the tracker kind err names: the one it was marked as
+// answered by, else kind.
+func responderOf(kind string, err error) string {
+	if by, ok := errors.AsType[*answeredBy](err); ok {
+		return by.tracker
+	}
+	return kind
+}
 
 // worklogRefusal is the failure of a worklog read of author's days from
 // to to that the tracker refused for what it asked, and true; false for

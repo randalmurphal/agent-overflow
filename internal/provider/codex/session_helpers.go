@@ -86,6 +86,11 @@ func buildThreadParams(cfg Config, codexVersion string) map[string]any {
 	for key, value := range threadFeatureOverrides(cfg.NativeMemoryOff) {
 		configOverrides[key] = value
 	}
+	if cfg.DisableBundledBrowserPlugin {
+		configOverrides["plugins"] = map[string]any{
+			"browser@openai-bundled": map[string]any{"enabled": false},
+		}
+	}
 	// Shared with thread/resume like the tool overrides: a resumed thread
 	// that compacts runs the hook too, and runs the prompt hook at each
 	// turn.

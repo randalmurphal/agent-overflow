@@ -72,27 +72,27 @@ func connectionRefusal(ticket store.TicketRef, state string, err error) error {
 // (store ErrThreadTicketNotReader: another connection of the site took
 // over the links since) fails with the store's error, and one this
 // computer cannot make fails with a *LinkRefusal; the link stays as it was
-// either way. It reports whether thread threadID's
-// link changed, which its caller announces. The other threads whose link
+// either way. It reports what the write did to thread threadID's row
+// (ThreadLinkWrite), which its caller announces. The other threads whose link
 // the card it stored moved are told (Deps.LinksChanged), and the ticket a
 // replaced link named is told as no longer kept when nothing else keeps it
 // (LinksEnded).
-func (s *Service) LinkThread(ctx context.Context, threadID string, ticket store.TicketRef, origin string) (changed bool, _ error) {
+func (s *Service) LinkThread(ctx context.Context, threadID string, ticket store.TicketRef, origin string) (ThreadLinkWrite, error) {
 	id, state, err := s.store.TicketConnection(ticket)
 	if err != nil {
-		return false, fmt.Errorf("trackerapp: the connection of %s ticket %s: %w", ticket.Kind, ticket.IssueID, err)
+		return ThreadLinkWrite{}, fmt.Errorf("trackerapp: the connection of %s ticket %s: %w", ticket.Kind, ticket.IssueID, err)
 	}
 	if id == "" {
-		return false, connectionRefusal(ticket, state, nil)
+		return ThreadLinkWrite{}, connectionRefusal(ticket, state, nil)
 	}
 	r, err := s.interact(ctx, id)
 	switch {
 	case errors.Is(err, ErrDisabled):
-		return false, connectionRefusal(ticket, store.TicketLinkTurnedOff, err)
+		return ThreadLinkWrite{}, connectionRefusal(ticket, store.TicketLinkTurnedOff, err)
 	case errors.Is(err, ErrNotFound):
-		return false, connectionRefusal(ticket, store.TicketLinkNoConnection, err)
+		return ThreadLinkWrite{}, connectionRefusal(ticket, store.TicketLinkNoConnection, err)
 	case err != nil:
-		return false, err
+		return ThreadLinkWrite{}, err
 	}
 	set, asked, err := r.linkThread(threadID, ticket, origin)
 	if asked {
@@ -100,12 +100,21 @@ func (s *Service) LinkThread(ctx context.Context, threadID string, ticket store.
 	}
 	r.finish()
 	if err != nil {
-		return false, err
+		return ThreadLinkWrite{}, err
 	}
 	if set.Replaced != nil {
 		s.LinksEnded([]store.TicketRef{*set.Replaced})
 	}
-	return set.Changed, nil
+	return ThreadLinkWrite{Changed: set.Changed, Listing: set.Listing}, nil
+}
+
+// ThreadLinkWrite is what a link write did to its thread's row: whether
+// the link the row shows changed, and how the write moved the thread
+// across the sidebar listing rule (a link makes a never-sent thread real).
+// Its caller announces both.
+type ThreadLinkWrite struct {
+	Changed bool
+	Listing store.ListingChange
 }
 
 // linkThread writes the link of LinkThread on the run's connection: of
@@ -160,21 +169,22 @@ func (r *run) linkThread(threadID string, ticket store.TicketRef, origin string)
 	return set, true, err
 }
 
-// UnlinkThread removes thread threadID's ticket link and reports whether
-// it had one, which its caller announces. A thread the store refuses a
-// link write for fails with the store's error. A link removed tells its
-// ticket as no longer kept when nothing else keeps it (LinksEnded).
-func (s *Service) UnlinkThread(threadID string) (had bool, _ error) {
+// UnlinkThread removes thread threadID's ticket link and reports what it
+// did to the row (ThreadLinkWrite; Changed when it had one), which its
+// caller announces. A thread the store refuses a link write for fails with
+// the store's error. A link removed tells its ticket as no longer kept
+// when nothing else keeps it (LinksEnded).
+func (s *Service) UnlinkThread(threadID string) (ThreadLinkWrite, error) {
 	if err := s.enter(); err != nil {
-		return false, err
+		return ThreadLinkWrite{}, err
 	}
 	defer s.leave()
-	ticket, had, err := s.store.ClearThreadTicket(threadID)
-	if err != nil || !had {
-		return false, err
+	cleared, err := s.store.ClearThreadTicket(threadID)
+	if err != nil || !cleared.Had {
+		return ThreadLinkWrite{}, err
 	}
-	s.LinksEnded([]store.TicketRef{ticket})
-	return true, nil
+	s.LinksEnded([]store.TicketRef{cleared.Ticket})
+	return ThreadLinkWrite{Changed: true, Listing: cleared.Listing}, nil
 }
 
 // LinksEnded tells, for tickets whose links ended (an unlink, a link

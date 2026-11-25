@@ -86,7 +86,8 @@ func TestThreadTicketWritesFollowTheThreadLifecycle(t *testing.T) {
 
 			moved, copyErr := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{titledCard("10001", 6, "Moved")}, MirrorCatalog{}, nextMirrorRead(s, root))
 			_, setErr := s.SetThreadTicket(readLink(s, root, "a", titledCard("10002", 5, "Another")))
-			_, cleared, clearErr := s.ClearThreadTicket("a")
+			clearing, clearErr := s.ClearThreadTicket("a")
+			cleared := clearing.Had
 			if copyErr != nil {
 				t.Fatalf("card write: %v", copyErr)
 			}

@@ -1783,6 +1783,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: trackerBoardNamesMigrationVersion, Name: "tracker_board_names", SQL: trackerBoardNamesV166SQL},
 	{Version: threadTicketCopyMigrationVersion, Name: "thread_ticket_copy", SQL: threadTicketCopyV167SQL},
 	{Version: worklogSourceMigrationVersion, Name: "worklog_source", SQL: worklogSourceV168SQL},
+	{Version: worklogNamesMigrationVersion, Name: "worklog_names", SQL: worklogNamesV169SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

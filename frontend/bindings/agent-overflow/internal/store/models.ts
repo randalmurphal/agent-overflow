@@ -2559,7 +2559,12 @@ export class ThreadTicketLink {
     "title": string;
     "statusId": string;
     "statusName": string;
-    "statusGroup": number;
+
+    /**
+     * StatusGroup is the status's group by name (MirrorGroupNames), ""
+     * for none.
+     */
+    "statusGroup": string;
     "origin": string;
     "linkedAt": number;
     "state": string;
@@ -2589,7 +2594,7 @@ export class ThreadTicketLink {
             this["statusName"] = "";
         }
         if (!("statusGroup" in $$source)) {
-            this["statusGroup"] = 0;
+            this["statusGroup"] = "";
         }
         if (!("origin" in $$source)) {
             this["origin"] = "";

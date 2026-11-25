@@ -6,13 +6,14 @@ import { isHiddenThreadMode } from '../../utils/threadModes';
  *
  * `query` must be pre-normalised (trimmed + lowercased); `''` means "no
  * filter" and always matches. A thread matches when the query is a substring
- * of its title or workspace path — the single source of truth for what
+ * of its title, its workspace path, or its linked ticket's key or title — the single source of truth for what
  * "matches the search" means in the project-grouped list (`threadsByProject`).
  */
 export function threadMatchesQuery(thread: Thread, query: string): boolean {
   if (isHiddenThreadMode(thread.mode)) return false;
   if (!query) return true;
-  const hay = `${thread.title ?? ''} ${thread.workspacePath ?? ''}`.toLowerCase();
+  const link = thread.ticketLink;
+  const hay = `${thread.title ?? ''} ${thread.workspacePath ?? ''}${link ? ` ${link.key} ${link.title}` : ''}`.toLowerCase();
   return hay.includes(query);
 }
 

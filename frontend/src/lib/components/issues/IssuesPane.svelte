@@ -1,11 +1,13 @@
 <script module lang="ts">
   import type { SplitSpec } from '../shared/splitWidth.svelte';
 
-  /** The board beside a ticket keeps 520, the ticket 380; the split starts
+  /** The list beside a ticket keeps 520, the ticket 380; the split starts
    * at half. */
   const TICKET_SPLIT: SplitSpec = { listMin: 520, listMax: Infinity, detailMin: 380, initial: (body) => Math.floor(body / 2) };
-  /** A ticket shows beside the board only in a pane this wide. */
+  /** A ticket shows beside the list only in a pane this wide. */
   const BESIDE_MIN_PX = 900;
+  /** The tabs fold into one picker in a pane narrower than this. */
+  const TABS_MIN_PX = 640;
 
   // The ticket's components load on its first open, once per page.
   let ticketScreen: Promise<typeof import('./TicketScreen.svelte')> | null = null;
@@ -13,13 +15,25 @@
     ticketScreen ??= import('./TicketScreen.svelte');
     return ticketScreen;
   }
+
+  // The Time screen loads on its first switch to Time, once per page.
+  let timeScreen: Promise<typeof import('./TimeScreen.svelte')> | null = null;
+  function loadTimeScreen(): Promise<typeof import('./TimeScreen.svelte')> {
+    timeScreen ??= import('./TimeScreen.svelte');
+    return timeScreen;
+  }
 </script>
 
 <script lang="ts">
-  // The Issues tool pane (docs/specs/issues.md, "Pane" and "Board"): one
-  // app-wide pane over every project's boards on every attached computer.
-  // The header holds the board picker, Only mine, Display, Search and
-  // Refresh; under compact Only mine moves into the Display menu. Notices
+  // The Issues tool pane (docs/specs/issues.md, "Pane", "Board" and
+  // "Time"): one app-wide pane over every project's boards on every
+  // attached computer. The header holds the board picker, the screens
+  // (Board and Time, folded into one picker in a narrow pane and under
+  // compact), and on the Board Only mine, Display and Search, and Refresh;
+  // under compact Only mine moves into the Display menu. Time shows the
+  // person's logged time on the board's connection (TimeScreen, loaded on
+  // the first switch to it); while it shows, the board is not mounted and
+  // its subscription is voted hidden, and Refresh reads the week. Notices
   // under the header say what the board's computer last told about it: a
   // failure with when it last read the board, what a Refresh answered, a
   // board that ended. Which board it shows, and its subscription, are the
@@ -32,7 +46,7 @@
   // hidden while a ticket covers it. Back, Escape and the phone's Back
   // step back through the tickets opened from one another, then close the
   // ticket.
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import ContextMenu from '../primitives/ContextMenu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import SplitResizer from '../shared/SplitResizer.svelte';
@@ -56,6 +70,7 @@
   import BoardPicker from './BoardPicker.svelte';
   import BoardScreen from './BoardScreen.svelte';
   import DisplayMenu from './DisplayMenu.svelte';
+  import IssuesTabs from './IssuesTabs.svelte';
   import { captureError, type CapturedError } from '../../stores/errorReports.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { isPaneOnScreen } from '../../stores/paneLayout.svelte';
@@ -75,6 +90,9 @@
     savedOnlyMine,
     setCardFieldShown,
     setTicketPlacement,
+    takeTicketOpenRequest,
+    ticketOpenRequested,
+    type OpenTicket,
   } from '../../stores/issuesPane.svelte';
   import { dismissTrackerRefreshNotice, refreshTrackerBoard } from '../../stores/trackerBoard.svelte';
   import {
@@ -84,6 +102,7 @@
     trackerBoardChoices,
   } from '../../stores/trackerBoardChoices.svelte';
   import { cardMatches, filtering, screenColumns, searchWords, type CardFilter } from '../../stores/trackerBoardModel';
+  import { timeOfflineText } from '../../stores/trackerTimeModel';
   import { relativeTime } from '../../utils/format';
 
   interface Props {
@@ -98,24 +117,89 @@
   const openedFrom = toolOpenedFromProject('issues');
 
   const shown = $derived(isPaneOnScreen(paneId));
-  // The body the board and a ticket beside it share, measured into the
-  // split, which also decides whether a ticket fits beside.
-  const split = new SplitWidth('issuesTicketSplit:board', TICKET_SPLIT);
-  const besideFits = $derived(!compact && split.paneWidth >= BESIDE_MIN_PX);
+  // The body a screen's list and a ticket beside it share, measured into
+  // each screen's split; its width also decides whether a ticket fits
+  // beside and whether the tabs fold.
+  let paneWidth = $state(0);
+  const splits = { board: new SplitWidth('issuesTicketSplit:board', TICKET_SPLIT), time: new SplitWidth('issuesTicketSplit:time', TICKET_SPLIT) };
+  function measure(width: number): void {
+    paneWidth = width;
+    splits.board.paneWidth = width;
+    splits.time.paneWidth = width;
+  }
+  const besideFits = $derived(!compact && paneWidth >= BESIDE_MIN_PX);
   const selection = createBoardSelection({ openedFromProject: openedFrom, shown: () => shown, besideFits: () => besideFits });
   onDestroy(() => selection.destroy());
+  const screen = $derived(selection.screen);
+  const split = $derived(splits[screen]);
+  // The Time screen open now, for Refresh, and whether its refresh is out.
+  let timeView: { refresh(): void } | undefined = $state();
+  let timeRefreshing = $state(false);
+  // A ticket another surface asked for (a thread's link) opens here.
+  $effect(() => {
+    if (!ticketOpenRequested()) return;
+    const request = untrack(takeTicketOpenRequest);
+    if (request) selection.openRequested(request);
+  });
   const ticket = $derived(selection.ticket);
   // A ticket over the board covers the board's notices with it: what they
   // say is the board's, and the ticket says its own.
   const boardCovered = $derived(!!ticket && selection.placement === 'over');
 
   // The ticket view open now, for its own step back (the Details rail).
-  let ticketView: { stepBack(): boolean } | undefined = $state();
+  let ticketView: { stepBack(): boolean; focus(): void } | undefined = $state();
   function stepBack(): boolean {
     if (!selection.ticket) return false;
-    if (!ticketView?.stepBack()) selection.stepBack();
+    if (!ticketView?.stepBack()) showTicket(() => selection.stepBack());
     return true;
   }
+
+  // A ticket a person opens, or steps back to, takes the focus, so a key
+  // or a paste of files goes to it: the card that opened it may be under
+  // it, inert, and Back is gone with the ticket it was on.
+  //
+  // The focus an open asks for must keep true:
+  // - It belongs to that one open (the `OpenTicket` the open made), and
+  //   only that open's mount takes it: a close, another open or a step
+  //   back ends it, and a ticket mounting again because the pane moved,
+  //   or opened from outside the pane (a thread's link), takes none.
+  // - A focus or a press anywhere after the open ends it, so a ticket
+  //   that mounts late never takes the focus from where the person put
+  //   it meanwhile.
+  let focusRequest: { open: OpenTicket; end(): void } | null = null;
+  function endFocusRequest(): void {
+    focusRequest?.end();
+    focusRequest = null;
+  }
+  function requestFocus(open: OpenTicket): void {
+    endFocusRequest();
+    const options = { capture: true } as const;
+    document.addEventListener('focusin', endFocusRequest, options);
+    document.addEventListener('pointerdown', endFocusRequest, options);
+    focusRequest = {
+      open,
+      end: () => {
+        document.removeEventListener('focusin', endFocusRequest, options);
+        document.removeEventListener('pointerdown', endFocusRequest, options);
+      },
+    };
+  }
+  function showTicket(change: () => void): void {
+    const before = selection.ticket;
+    change();
+    const after = selection.ticket;
+    if (!after) return;
+    if (after === before && ticketView) ticketView.focus();
+    else requestFocus(after);
+  }
+  function takeOpenFocus(): boolean {
+    // An ended open is never the ticket again: a close or a linked open
+    // clears the trail, and a step back asks anew.
+    const asked = focusRequest?.open === selection.ticket;
+    endFocusRequest();
+    return asked;
+  }
+  onDestroy(endFocusRequest);
   const disposeProbe = registerToolDetailProbe('issues', () => selection.ticket !== null);
   const disposeBack = registerIssuesBackHandler(stepBack);
   onDestroy(() => {
@@ -124,7 +208,7 @@
   });
 
   function openCard(row: RowView): void {
-    selection.openTicket(row.card.id, { key: row.card.key, title: row.card.title, card: row.card }, 'board');
+    showTicket(() => selection.openTicket(row.card.id, { key: row.card.key, title: row.card.title, card: row.card }, 'list'));
   }
 
   let cardMenu = $state<{ x: number; y: number; row: RowView } | null>(null);
@@ -173,7 +257,7 @@
   }
   const filter: CardFilter = $derived({ mine: onlyMine ? me : null, words: searchWords(query) });
   const matchCount = $derived.by(() => {
-    if (!held || !filtering(filter)) return 0;
+    if (screen !== 'board' || !held || !filtering(filter)) return 0;
     let n = 0;
     for (const col of screenColumns(held)) for (const r of col.rows) if (cardMatches(r.card, filter)) n += 1;
     return n;
@@ -256,8 +340,12 @@
   const endedTarget = $derived(boardState?.ended && board ? boardsSettingsFor(board.projectId, board.backend) : null);
 
   function refresh(): void {
-    if (attachment) void refreshTrackerBoard(attachment.key);
+    if (screen === 'time') timeView?.refresh();
+    else if (attachment) void refreshTrackerBoard(attachment.key);
   }
+
+  // The board's listing: its connection's kind, whether it may be opened.
+  const boardChoice = $derived(board ? choices.find((c) => c.backend === board.backend && c.choice.connection === board.connection && c.choice.board === board.board)?.choice ?? null : null);
 
   function lastRead(at: number): string {
     return at > 0 ? `Last read ${relativeTime(at, 'locale', board?.backend)}.` : 'Not read yet.';
@@ -278,8 +366,9 @@
         onPick={(ref) => selection.pick(ref)}
         onOpen={readTrackerBoardChoices}
       />
+      <IssuesTabs current={screen} folded={compact || paneWidth < TABS_MIN_PX} onPick={(next) => selection.setScreen(next)} />
       <span class="flex-1"></span>
-      {#if !compact}
+      {#if !compact && screen === 'board'}
         <button
           type="button"
           class="inline-flex h-6 shrink-0 items-center gap-1 rounded-[var(--radius-control)] px-2 text-[0.75rem] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 {onlyMine ? 'bg-accent/15 text-accent' : 'text-fg-muted hover:bg-surface-1 hover:text-fg'}"
@@ -291,19 +380,25 @@
           <span>Only mine</span>
         </button>
       {/if}
-      {#if board}
+      {#if board && screen === 'board'}
         <DisplayMenu
           {hidden}
           onField={(field, on) => setCardFieldShown(board, field, on)}
           onlyMine={compact ? { on: onlyMine, set: setOnlyMine } : undefined}
         />
       {/if}
-      <PaneHeaderIconButton label="Search" testId="issues-search" onclick={() => openPaneFind(paneId, { returnFocus: document.activeElement as HTMLElement | null })}>
-        <Icon icon={Search} size={14} strokeWidth={2} />
-      </PaneHeaderIconButton>
-      <PaneHeaderIconButton label="Refresh the board" testId="issues-refresh" disabled={!boardState || boardState.ended} onclick={refresh}>
-        <Icon icon={RefreshCw} size={13} strokeWidth={1.75} class={boardState?.refreshing ? 'animate-spin' : ''} />
-      </PaneHeaderIconButton>
+      {#if screen === 'board'}
+        <PaneHeaderIconButton label="Search" testId="issues-search" onclick={() => openPaneFind(paneId, { returnFocus: document.activeElement as HTMLElement | null })}>
+          <Icon icon={Search} size={14} strokeWidth={2} />
+        </PaneHeaderIconButton>
+        <PaneHeaderIconButton label="Refresh the board" testId="issues-refresh" disabled={!boardState || boardState.ended} onclick={refresh}>
+          <Icon icon={RefreshCw} size={13} strokeWidth={1.75} class={boardState?.refreshing ? 'animate-spin' : ''} />
+        </PaneHeaderIconButton>
+      {:else}
+        <PaneHeaderIconButton label="Refresh the week" testId="issues-refresh" disabled={!timeView} onclick={refresh}>
+          <Icon icon={RefreshCw} size={13} strokeWidth={1.75} class={timeRefreshing ? 'animate-spin' : ''} />
+        </PaneHeaderIconButton>
+      {/if}
     </div>
   </ToolPaneHeader>
   <PaneFindBar {paneId} title="Issues" fallbackFocus={() => bodyEl ?? null} />
@@ -318,7 +413,7 @@
       />
     {/if}
   {/each}
-  {#if !boardCovered}
+  {#if !boardCovered && screen === 'board'}
   {#if attachment?.error}
     <p class="border-b border-error/30 bg-error/10 px-3 py-1.5 text-xs text-error" role="alert" data-testid="issues-subscribe-error">Could not open this board: {attachment.error}</p>
   {/if}
@@ -368,7 +463,7 @@
   {/if}
   {/if}
 
-  <div class="relative flex min-h-0 flex-1" bind:clientWidth={split.paneWidth}>
+  <div class="relative flex min-h-0 flex-1" bind:clientWidth={() => paneWidth, measure}>
   <div
     class="relative flex min-h-0 flex-col {ticket && selection.placement === 'beside' ? 'shrink-0 border-r border-border-subtle' : 'min-w-0 flex-1'}"
     style:width={ticket && selection.placement === 'beside' ? `${split.width}px` : undefined}
@@ -377,8 +472,9 @@
     aria-hidden={ticket && selection.placement === 'over' ? 'true' : undefined}
     inert={!!ticket && selection.placement === 'over'}
     data-testid="issues-board-region"
+    data-screen={screen}
   >
-    <RenderBoundary label="The board" testId="issues-board-render-error">
+    <RenderBoundary label={screen === 'time' ? 'Time' : 'The board'} testId="issues-board-render-error">
       {#if !board}
         <div class="flex flex-col items-start gap-2 px-4 py-6 text-sm text-fg-muted" data-testid="issues-empty">
           {#if pending}
@@ -402,6 +498,42 @@
             {/if}
           {/if}
         </div>
+      {:else if screen === 'time'}
+        {#if !boardChoice}
+          <!-- No listing names the board: its computer is not connected,
+               the listing is still out, or no listing has it any more. -->
+          {#if boardOffline}
+            <p class="px-4 py-6 text-sm text-fg-muted" data-testid="time-offline">{timeOfflineText(computerName(board.backend))}</p>
+          {:else if boardComputerAnswered || boardState?.ended}
+            <p class="px-4 py-6 text-sm text-fg-muted" data-testid="time-board-gone">No project lists this board any more, or its connection was removed. Pick another board to see your time.</p>
+          {:else}
+            <p class="px-4 py-6 text-sm text-fg-muted" data-testid="issues-time-listing">Listing boards…</p>
+          {/if}
+        {:else}
+          {@const choice = boardChoice}
+          {@const timeBoard = board}
+          {#await loadTimeScreen()}
+            <p class="px-4 py-6 text-sm text-fg-muted" data-testid="time-loading">Opening Time…</p>
+          {:then mod}
+            <mod.default
+              bind:this={timeView}
+              bind:refreshing={timeRefreshing}
+              backend={timeBoard.backend}
+              connection={timeBoard.connection}
+              connectionKind={choice.connection_kind}
+              connectionOn={isBoardChoiceOpenable(choice) && !boardState?.ended}
+              author={me}
+              computerName={computerName(timeBoard.backend)}
+              offline={boardOffline}
+              {compact}
+              shown={selection.timeShown}
+              openIssue={ticket?.ref.issue ?? null}
+              onOpenTicket={(t) => showTicket(() => selection.openTicket(t.issue, { key: t.key, title: t.title, card: null }, 'list'))}
+            />
+          {:catch err}
+            <p class="px-4 py-6 text-sm text-error" role="alert" data-testid="time-load-error">The Time screen could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</p>
+          {/await}
+        {/if}
       {:else if held && attachment}
         <BoardScreen
           boardKey={attachment.key}
@@ -448,15 +580,17 @@
               board={openBoard.board}
               kind={choices.find((c) => c.backend === openBoard.backend && c.choice.connection === openBoard.connection)?.choice.connection_kind ?? ''}
               computerName={computerName(openBoard.backend)}
+              account={me}
               offline={boardOffline}
               {compact}
               trail={selection.trail}
               placement={selection.placement}
               {besideFits}
-              onPlacement={(p) => setTicketPlacement('board', p)}
-              onBack={() => selection.stepBack()}
+              onPlacement={(p) => setTicketPlacement(screen, p)}
+              takeFocus={takeOpenFocus}
+              onBack={() => showTicket(() => selection.stepBack())}
               onClose={() => selection.closeTicket()}
-              onOpenIssue={(issue, seed) => selection.openTicket(issue, seed, 'ticket')}
+              onOpenIssue={(issue, seed) => showTicket(() => selection.openTicket(issue, seed, 'ticket'))}
             />
           {/key}
         {:catch err}

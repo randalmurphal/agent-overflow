@@ -1,64 +1,26 @@
 // The ticket screen's rules that hold no state (docs/specs/issues.md,
-// "Ticket"): what a write's answer means for the person, which comments
-// and changes are mounted, the order of the rail's fields, which fields
-// are sections, how linked tickets group, and the row of the board the
-// ticket shows its points from. The stores and the components call these; each rule is here once.
+// "Ticket"): which comments and changes are mounted, the order of the
+// rail's fields, which fields are sections, how linked tickets group and
+// which side a new link sends, what a poker round's votes add up to,
+// which attachment a file in the text names and which the app previews,
+// and the row of the board the
+// ticket shows its points from. What a write's answer means is
+// trackerWriteOutcome.ts's. The stores and the components call these;
+// each rule is here once.
 
 import type {
+  AttachmentView,
   CommentView,
   DetailView,
   EventView,
   FieldValueView,
   FieldView,
+  LinkRequest,
+  LinkTypeView,
   LinkView,
-  RefusalView,
+  PokerVoteView,
   TicketRowView,
-  WriteView,
 } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-
-/** What became of a write, as the person reads it. */
-export type WriteOutcome =
-  /** Made. `note` says what the ticket does not show yet, or null. */
-  | { readonly kind: 'applied'; readonly note: string | null }
-  /** The tracker, or the computer before sending, refused a part. */
-  | { readonly kind: 'refused'; readonly refusal: RefusalView }
-  /** A part was sent and not answered in full (`unknown`), or was not
-   * sent; `message` says which and where to look. */
-  | { readonly kind: 'unknown' | 'not_sent'; readonly message: string }
-  /** The call failed: its error says why and what to do. */
-  | { readonly kind: 'failed'; readonly error: unknown }
-  /** The connection to the ticket's computer dropped before the answer. */
-  | { readonly kind: 'lost'; readonly message: string };
-
-/** A write's answer as its outcome: the first part that was not applied
- * decides; with every part applied, what the mirror could not show yet is
- * its note. */
-export function writeOutcome(view: WriteView): WriteOutcome {
-  for (const part of view.parts ?? []) {
-    if (part.state === 'applied') continue;
-    if (part.state === 'refused' && part.refusal) return { kind: 'refused', refusal: part.refusal };
-    const kind = part.state === 'not_sent' ? 'not_sent' : 'unknown';
-    return { kind, message: part.failure?.message ?? 'The tracker did not say what became of this change; look at the ticket before you try again.' };
-  }
-  if (view.ended) return { kind: 'applied', note: 'Saved. Its connection was turned off or removed while saving, so this ticket no longer follows it.' };
-  const stale = view.stale?.[0];
-  if (stale) return { kind: 'applied', note: `Saved. The ticket shows it after its next read: ${stale.failure.message}` };
-  return { kind: 'applied', note: null };
-}
-
-/** The sentence of a write whose answer a dropped connection lost. */
-export function lostWriteSentence(computer: string): string {
-  return `${computer}: the connection dropped before the answer, so the change may or may not have been made; look at the ticket before you try again.`;
-}
-
-/** A refusal as one sentence, with what the tracker said of each field,
- * named by `fieldName`. */
-export function refusalSentence(refusal: RefusalView, fieldName: (id: string) => string): string {
-  const fields = (refusal.fields ?? []).map((f) => `${fieldName(f.field)}: ${f.message}`);
-  const lost = refusal.reason === 'loss' && refusal.lost?.length ? ` It would lose: ${refusal.lost.join(', ')}.` : '';
-  const said = refusal.message || 'The tracker refused this change.';
-  return fields.length > 0 ? `${said} ${fields.join('; ')}${lost}` : `${said}${lost}`;
-}
 
 /** Comments shown on open, and how many more each press of the control
  * mounts. */
@@ -89,9 +51,26 @@ export function heldComments(detail: DetailView, pages: readonly { readonly comm
 export type CommentOrder = 'oldest' | 'newest';
 
 /** The comments mounted, in the order they read, and the earlier ones not
- * mounted: the newest `shown` of the held (newest first). */
-export function commentWindow(held: readonly CommentView[], shown: number, order: CommentOrder): { readonly comments: readonly CommentView[]; readonly hidden: number } {
-  const take = held.slice(0, Math.max(0, shown));
+ * mounted: the newest `shown` of the held (newest first), widened to the
+ * oldest comment whose edit a person left unsent (`drafted`), so that
+ * text is never hidden behind the reveal control and the window stays
+ * one run. */
+export function commentWindow(
+  held: readonly CommentView[],
+  shown: number,
+  order: CommentOrder,
+  drafted: ReadonlySet<string>,
+): { readonly comments: readonly CommentView[]; readonly hidden: number } {
+  let count = Math.max(0, shown);
+  if (drafted.size > 0) {
+    for (let i = held.length - 1; i >= count; i--) {
+      if (drafted.has(held[i].id)) {
+        count = i + 1;
+        break;
+      }
+    }
+  }
+  const take = held.slice(0, count);
   return { comments: order === 'newest' ? take : take.reverse(), hidden: held.length - take.length };
 }
 
@@ -118,6 +97,79 @@ export function linkGroups(links: readonly LinkView[]): readonly { readonly rela
     else groups.set(l.relation, [l]);
   }
   return [...groups].map(([relation, of]) => ({ relation, links: of }));
+}
+
+/** One way the ticket can relate to another: a link type's phrase from
+ * one of its sides. `outward` is whether the ticket is the type's outward
+ * issue ("blocks") or its inward one ("is blocked by"). */
+export interface LinkRelation {
+  readonly type: string;
+  readonly phrase: string;
+  readonly outward: boolean;
+}
+
+/** Every relation the link types offer, in the tracker's order: each
+ * type's outward phrase, then its inward one when it reads differently (a
+ * "relates to" type is one relation either way). */
+export function linkRelations(types: readonly LinkTypeView[]): readonly LinkRelation[] {
+  const out: LinkRelation[] = [];
+  for (const t of types) {
+    out.push({ type: t.id, phrase: t.outward, outward: true });
+    if (t.inward !== t.outward) out.push({ type: t.id, phrase: t.inward, outward: false });
+  }
+  return out;
+}
+
+/** The link that makes `ticket` relate to `other` as `relation` reads,
+ * both named by issue ID. */
+export function linkRequest(relation: LinkRelation, ticket: string, other: string): LinkRequest {
+  return relation.outward
+    ? { type: relation.type, outward: ticket, inward: other }
+    : { type: relation.type, outward: other, inward: ticket };
+}
+
+/** The values the votes show, each with how many chose it, most votes
+ * first and the lower value first among equals. A vote whose value the
+ * read does not show counts toward none. */
+export function pokerResult(votes: readonly PokerVoteView[]): readonly { readonly value: number; readonly count: number }[] {
+  const counts = new Map<number, number>();
+  for (const v of votes) {
+    if (typeof v.value === 'number') counts.set(v.value, (counts.get(v.value) ?? 0) + 1);
+  }
+  return [...counts].map(([value, count]) => ({ value, count })).sort((a, b) => b.count - a.count || a.value - b.value);
+}
+
+/** A revealed round's choice as the poker section and the ticket menu
+ * offer it: "Set estimate to 5 hours" and "(2 votes)". */
+export function pokerEstimateChoice(r: { readonly value: number; readonly count: number }, hours: boolean): { readonly action: string; readonly votes: string } {
+  const unit = hours ? (r.value === 1 ? ' hour' : ' hours') : '';
+  return { action: `Set estimate to ${r.value}${unit}`, votes: `(${r.count} ${r.count === 1 ? 'vote' : 'votes'})` };
+}
+
+/** The largest image the app previews, in the ticket's text or from its
+ * attachment row; a larger one is saved or opened in the tracker, so one
+ * image cannot take more than a quarter of the media cache
+ * (utils/mediaBlobCache.ts). */
+export const PREVIEW_MAX_BYTES = 16 * 1024 * 1024;
+
+/** The attachment a file in the ticket's text names: the one attachment
+ * whose name is the text's, or null when none or several have it. The
+ * tracker's text names a file by its media ID, which no attachment of the
+ * view carries, and by its name. */
+export function mediaAttachment(attachments: readonly AttachmentView[], name: string): AttachmentView | null {
+  let found: AttachmentView | null = null;
+  for (const a of attachments) {
+    if (a.name !== name) continue;
+    if (found) return null;
+    found = a;
+  }
+  return found;
+}
+
+/** Whether the app previews the attachment: the one admission rule for
+ * an image in the ticket's text and for Open on its row. */
+export function previewsInApp(attachment: AttachmentView): boolean {
+  return (attachment.mime_type ?? '').startsWith('image/') && attachment.size <= PREVIEW_MAX_BYTES;
 }
 
 /** Whether a field holds a value. */

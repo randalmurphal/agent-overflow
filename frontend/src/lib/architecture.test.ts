@@ -409,9 +409,10 @@ const HARNESS_STATIC_IMPORT_ALLOWLIST: Record<string, string> = {};
 // ---------------------------------------------------------------------------
 // Rule 4b — the Issues pane's stores load with the pane, not at startup.
 //
-// The board store, its model, the board choices, the pane's state and the
-// ticket's store, model and writes hold a visibility listener, a pump-vote
-// queue and every rule of the board and the ticket, which a person who
+// The board store, its model, the board choices, the pane's state, the
+// ticket's store, model and writes, and the Time screen's weeks and
+// writes hold visibility and connection listeners, a pump-vote queue and
+// every rule of the board, the ticket and logged time, which a person who
 // never opens Issues has no use for. The pane is the
 // dynamic `import('../issues/IssuesPane.svelte')` in ToolPane.svelte, and
 // the always-loaded stores reach those stores only through
@@ -428,6 +429,22 @@ const ISSUES_LAZY_MODULES = [
   'lib/stores/trackerTicket.svelte.ts',
   'lib/stores/trackerTicketModel.ts',
   'lib/stores/trackerTicketWrites.svelte.ts',
+  'lib/stores/trackerTime.svelte.ts',
+  'lib/stores/trackerTimeModel.ts',
+  'lib/stores/trackerTimeWrites.svelte.ts',
+  'lib/stores/trackerWriteOutcome.ts',
+  'lib/utils/timeSpent.ts',
+] as const;
+
+// Rule 4c — the ticket's parts used by few load on first use: planning
+// poker when its section opens, the link form and the Log time form when
+// they open. The ticket is its own chunk (IssuesPane.svelte's dynamic
+// import), and a static import from anything it reaches folds the part in.
+const TICKET_SCREEN = join(SRC_ROOT, 'lib', 'components', 'issues', 'TicketScreen.svelte');
+const TICKET_FIRST_USE_MODULES = [
+  'lib/components/issues/TicketPoker.svelte',
+  'lib/components/issues/TicketLinkForm.svelte',
+  'lib/components/issues/WorklogForm.svelte',
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -1141,7 +1158,9 @@ describe('architecture', () => {
     );
   });
 
-  it('keeps the Issues stores out of the startup graph', () => {
+  /** The modules `entryFile`'s static, non-type imports reach, each with
+   * the chain that reached it first. */
+  function staticGraph(entryFile: string): { reached: (path: string) => boolean; chain: (path: string) => string } {
     // An import names a module without its extension, and `x.svelte.ts` as
     // `x.svelte`: every name a file can be imported by leads to it.
     const byModule = new Map<string, (typeof sources)[number][]>();
@@ -1150,8 +1169,8 @@ describe('architecture', () => {
       if (source.file.endsWith('.svelte.ts')) names.push(source.file.slice(0, -'.svelte.ts'.length));
       for (const name of names) byModule.set(name, [...(byModule.get(name) ?? []), source]);
     }
-    const entry = sources.find((source) => source.file === APP_ENTRY);
-    expect(entry, 'main.ts is the app entry the walk starts from').toBeDefined();
+    const entry = sources.find((source) => source.file === entryFile);
+    expect(entry, `${entryFile} is where the walk starts`).toBeDefined();
     // Each module reached, with the module that reached it first.
     const reachedFrom = new Map<string, string>([[entry!.path, '']]);
     const queue = [entry!];
@@ -1168,17 +1187,46 @@ describe('architecture', () => {
         }
       }
     }
-    // Without this the rule would pass over a walk that reached nothing.
-    expect(reachedFrom.has('lib/stores/trackerBoardEvents.ts'), 'the walk reaches the registration module').toBe(true);
-    const chain = (path: string): string => {
-      const out = [path];
-      for (let at = reachedFrom.get(path); at; at = reachedFrom.get(at)) out.push(at);
-      return out.reverse().join(' → ');
+    return {
+      reached: (path) => reachedFrom.has(path),
+      chain: (path) => {
+        const out = [path];
+        for (let at = reachedFrom.get(path); at; at = reachedFrom.get(at)) out.push(at);
+        return out.reverse().join(' → ');
+      },
     };
-    const offenders = ISSUES_LAZY_MODULES.filter((path) => reachedFrom.has(path)).map(chain);
+  }
+
+  it('keeps the Issues stores out of the startup graph', () => {
+    const graph = staticGraph(APP_ENTRY);
+    // Without this the rule would pass over a walk that reached nothing.
+    expect(graph.reached('lib/stores/trackerBoardEvents.ts'), 'the walk reaches the registration module').toBe(true);
+    const offenders = ISSUES_LAZY_MODULES.filter(graph.reached).map(graph.chain);
     expect(
       offenders,
       'An Issues store is in the startup graph. Reach it through stores/trackerBoardEvents.ts or the pane\'s dynamic import; see frontend/CLAUDE.md → Performance-sensitive rules.',
+    ).toEqual([]);
+  });
+
+  it('keeps planning poker, the link form and the Log time form out of the ticket\'s chunk', () => {
+    const graph = staticGraph(TICKET_SCREEN);
+    expect(graph.reached('lib/components/issues/TicketLinks.svelte'), 'the walk reaches the linked tickets').toBe(true);
+    const offenders = TICKET_FIRST_USE_MODULES.filter(graph.reached).map(graph.chain);
+    expect(
+      offenders,
+      'A ticket part that loads on first use is in the ticket\'s chunk. Load it with a dynamic import at its section or form; see frontend/CLAUDE.md → Performance-sensitive rules.',
+    ).toEqual([]);
+  });
+
+  it('keeps the week cache out of what the log form imports', () => {
+    // A ticket's Log time loads the log form; the weeks the Time screen
+    // holds, and their listeners, load with the Time screen alone.
+    const graph = staticGraph(join(SRC_ROOT, 'lib', 'components', 'issues', 'WorklogForm.svelte'));
+    expect(graph.reached('lib/stores/trackerTimeWrites.svelte.ts'), 'the walk reaches the worklog writes').toBe(true);
+    const weeks = 'lib/stores/trackerTime.svelte.ts';
+    expect(
+      graph.reached(weeks) ? [graph.chain(weeks)] : [],
+      'The log form imports the week cache; the Time host owns the weeks and their invalidation.',
     ).toEqual([]);
   });
 

@@ -4862,14 +4862,11 @@ export function RefreshTrackerSubscription(subscriptionID: string): $Cancellable
  * from the connection's time tracker, then answers them as
  * TrackerWorklogs does. A read that failed is the answer's failure, with
  * the worklogs as this computer held them before. It runs at the default
- * budget, as a form read does. Its requests grow with the time logged:
- * Tempo answers in pages, and Jira looks the author up (unless its client
- * has the user cached), pages the issues the author logged time on with the
- * worklogs each embeds (up to 20), and reads the worklogs of an issue
- * with more in pages of their own. On jiraprovider's cost fixture,
- * a month of 20 worklogs on 20 issues, the read is 1 Tempo request of
- * about 11.8 KB (TestRequestCost) or 2 Jira requests of about 28.0 KB
- * (TestRequestCostJiraWorklogs).
+ * budget, as a form read does. Its requests grow with the time logged;
+ * on jiraprovider's cost fixture, a month of 20 worklogs on 20 issues,
+ * the read is 2 requests through Tempo (the Tempo page and the Jira read
+ * that names its issues) or 2 Jira requests, as
+ * docs/architecture/tracker-backend.md, "Methods and events", details.
  */
 export function RefreshTrackerWorklogs(connectionID: string, author: string, $from: string, to: string): $CancellablePromise<trackerapp$0.WorklogDays> {
     return $Call.ByID(2905282814, connectionID, author, $from, to).then(($result: any) => {
@@ -5702,6 +5699,19 @@ export function SavePRCIJobLog(repo: git$0.RepoReference, jobID: string, jobName
  */
 export function SavePRCIJobLogSection(repo: git$0.RepoReference, jobID: string, jobName: string, sectionKey: string): $CancellablePromise<string> {
     return $Call.ByID(1281545488, repo, jobID, jobName, sectionKey);
+}
+
+/**
+ * SaveTrackerAttachment saves one attachment of a subscribed ticket into
+ * this computer's Downloads folder and returns the path, for a client that
+ * cannot run a browser download (frontend utils/fileSaveAction.ts). Like
+ * the download ticket it finds the attachment on the ticket as its
+ * subscribers were last told of it; the bytes stream from the tracker into
+ * the file, so none is held in memory. A save cut short, by the tracker or
+ * by the budget, leaves no file.
+ */
+export function SaveTrackerAttachment(subscriptionID: string, attachmentID: string): $CancellablePromise<string> {
+    return $Call.ByID(1443136041, subscriptionID, attachmentID);
 }
 
 /**
