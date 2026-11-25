@@ -148,6 +148,27 @@ describe('writes', () => {
     expect(add).toHaveBeenCalledWith('c1', { issue: '10001', day: '2026-11-11', spent_seconds: 5400, description: 'Pairing' });
   });
 
+  it('logs on another ticket found from the week\'s tickets, with nothing filled in', async () => {
+    answerWeek(WEEK);
+    const add = setBindingMock('AddTrackerWorklog', async () => APPLIED);
+    localStorage.setItem('agent-overflow:frontend:issues-time-layout', JSON.stringify('ticket'));
+    const view = render(TimeScreen, BASE);
+    await view.findAllByTestId('time-ticket-row');
+    await fireEvent.click(view.getByTestId('time-log-other'));
+    const form = await body().findByTestId('worklog-form');
+    expect(within(form).getByTestId('worklog-form-day')).toHaveValue('');
+    await fireEvent.click(within(form).getByTestId('worklog-form-save'));
+    expect(within(form).getByTestId('worklog-form-problem')).toHaveTextContent('Pick the ticket to log time on.');
+    await fireEvent.click(within(form).getByTestId('worklog-form-find'));
+    await waitFor(() => expect(body().getAllByTestId('ticket-picker-item').map((i) => i.textContent?.replace(/\s+/g, ' ').trim())).toEqual(['WEB-1 First story', 'WEB-2 Second story']));
+    await fireEvent.click(body().getAllByTestId('ticket-picker-item')[1]);
+    expect(within(form).getByTestId('worklog-form-ticket')).toHaveTextContent('WEB-2');
+    await fireEvent.input(within(form).getByTestId('worklog-form-day'), { target: { value: '2026-11-13' } });
+    await fireEvent.input(within(form).getByTestId('worklog-form-time'), { target: { value: '45' } });
+    await fireEvent.click(within(form).getByTestId('worklog-form-save'));
+    await waitFor(() => expect(add).toHaveBeenCalledWith('c1', { issue: '10002', day: '2026-11-13', spent_seconds: 2700, description: undefined }));
+  });
+
   it('changes an entry sending only what changed, and says when it landed outside the week', async () => {
     answerWeek(WEEK);
     const edit = setBindingMock('EditTrackerWorklog', async () => APPLIED);

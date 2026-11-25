@@ -2,7 +2,9 @@
   // The form that logs time by hand, or changes or deletes one entry
   // (docs/specs/issues.md, "Time"). It is filled with what it was opened
   // from and nothing else: the ticket and the day when the person started
-  // from them, an entry's values when it changes one. The day is any day;
+  // from them, an entry's values when it changes one. Opened with no
+  // ticket, the person finds one by key or words (TicketFinder, offering
+  // `candidates` first). The day is any day;
   // the time is typed ("1h 30m", "45m", "1.5h" or minutes) and read by
   // `utils/timeSpent.ts`. Delete asks in place before it sends. The write
   // goes through stores/trackerTimeWrites.svelte.ts once; the form says
@@ -10,6 +12,7 @@
   // The form holds its target while it is open, so an outcome that
   // settles after it closed reaches the person as a toast.
   import Button from '../primitives/Button.svelte';
+  import TicketFinder from './TicketFinder.svelte';
   import WriteNote from './WriteNote.svelte';
   import type { WorklogView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import {
@@ -25,7 +28,7 @@
     type TimeWriteContext,
     type WorklogChange,
   } from '../../stores/trackerTimeWrites.svelte';
-  import { ticketLabel, unnamedTicketText, type WorklogTicket } from '../../stores/trackerTimeModel';
+  import { unnamedTicketText, type WorklogTicket } from '../../stores/trackerTimeModel';
   import type { WriteOutcome } from '../../stores/trackerWriteOutcome';
   import { formatTimeSpent, parseTimeSpent, TIME_SPENT_REFUSAL } from '../../utils/timeSpent';
 
@@ -39,7 +42,8 @@
     worklog?: WorklogView;
     /** Opened by Delete: the delete's question shows at once. */
     confirmDelete?: boolean;
-    /** The tickets offered to pick from while `ticket` is null. */
+    /** The tickets the finder offers before anything is typed, when
+     * `ticket` is null. */
     candidates?: readonly WorklogTicket[];
     /** A write was made that put time on `day`. */
     onSaved?: (day: string) => void;
@@ -62,6 +66,11 @@
   // svelte-ignore state_referenced_locally
   let confirming = $state(confirmDelete);
   let problem = $state('');
+  // Opened with no ticket: the person finds one, and may find another.
+  // svelte-ignore state_referenced_locally
+  const findable = !ticket && !worklog;
+  let finding = $state(false);
+  let findAnchor = $state<HTMLElement | undefined>();
 
   const target = $derived(worklog ? worklogTarget(worklog.id) : picked && dayValue ? addTarget(picked.issue, dayValue) : null);
   $effect(() => {
@@ -133,31 +142,37 @@
 
 <form class="flex w-[min(20rem,calc(100vw-2rem))] flex-col gap-2 p-3" data-testid="worklog-form" onsubmit={submit}>
   <h3 class="text-sm font-semibold text-fg">{worklog ? 'Change logged time' : 'Log time'}</h3>
-  {#if picked}
-    <p class="flex min-w-0 items-baseline gap-1.5 text-sm" data-testid="worklog-form-ticket">
+  <div class="flex min-w-0 items-baseline gap-1.5 text-sm" data-testid="worklog-form-ticket">
+    {#if picked}
       {#if picked.key}
         <span class="shrink-0 font-medium text-fg">{picked.key}</span>
         <span class="min-w-0 truncate text-fg-muted">{picked.title}</span>
       {:else}
         <span class="min-w-0 text-fg-muted">{unnamedTicketText(picked.issue)}</span>
       {/if}
-    </p>
-  {:else}
-    <div class="flex flex-col gap-1" data-testid="worklog-form-pick">
-      <span class="text-xs text-fg-muted">Ticket</span>
-      {#each candidates as c (c.issue)}
-        <button type="button" class="flex min-w-0 items-baseline gap-1.5 rounded-[var(--radius-control)] px-1.5 py-1 text-left text-sm hover:bg-surface-1" data-testid="worklog-form-candidate" onclick={() => { picked = c; }}>
-          <span class="shrink-0 font-medium text-fg">{ticketLabel(c)}</span>
-          <span class="min-w-0 truncate text-fg-muted">{c.title}</span>
-        </button>
-      {:else}
-        <p class="text-xs text-fg-muted">No ticket of this week to pick from.</p>
-      {/each}
-    </div>
-  {/if}
+    {/if}
+    {#if findable}
+      <button
+        type="button"
+        class="shrink-0 text-xs text-accent hover:underline disabled:opacity-60"
+        disabled={pending}
+        bind:this={findAnchor}
+        data-testid="worklog-form-find"
+        onclick={() => { finding = true; }}
+      >{picked ? 'Another ticket' : 'Pick a ticket'}</button>
+    {/if}
+  </div>
+  <TicketFinder
+    anchor={findAnchor}
+    open={finding}
+    sources={[{ backend: ctx.backend, connection: ctx.connection, name: '' }]}
+    before={candidates.map((c) => ({ backend: ctx.backend, connection: ctx.connection, ...c }))}
+    onPick={(t) => { picked = { issue: t.issue, key: t.key, title: t.title }; }}
+    onClose={() => { finding = false; }}
+  />
   <label class="flex flex-col gap-1 text-xs text-fg-muted">
     Day
-    <input type="date" class={inputClass} bind:value={dayValue} disabled={pending} required data-testid="worklog-form-day" />
+    <input type="date" class={inputClass} bind:value={dayValue} disabled={pending} data-testid="worklog-form-day" />
   </label>
   <label class="flex flex-col gap-1 text-xs text-fg-muted">
     Time spent
