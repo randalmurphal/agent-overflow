@@ -1554,6 +1554,13 @@ to the client to read by page.
 - Both answers carry the failure the subscribers were last told, the
   tracker's or one outside it, so a subscriber that joins while reads fail
   shows the failure.
+- A ticket's answer names its connection's kind, and its view (the answer
+  and every `TicketDetail`) the person's account there as the
+  connection's row holds it, empty before a verification records one. A
+  verification that records another account tells each open ticket of
+  the connection as changed (`tellTicketAccount`); a pump made after it
+  starts from the new row. Both happen under `opMu`, so no ticket misses
+  the change.
 - `SetSubscriptionVisible`, `RefreshSubscription` and `ReleaseSubscription`
   take any handle; one the service does not hold fails a visibility change
   or a refresh with `ErrUnknownSubscription`. A refresh is a person's read: a board's four
