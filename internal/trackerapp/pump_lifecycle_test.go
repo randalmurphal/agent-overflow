@@ -3,6 +3,7 @@ package trackerapp
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"sync"
 	"testing"
@@ -148,7 +149,7 @@ func TestConnectionChangesEndSubscriptions(t *testing.T) {
 			m.events.boardEvents(t, 1)
 			arrived := make(chan struct{}, 4)
 			heldCalls(m.p, arrived, "ChangedRows", "Details")
-			ticket, err := m.svc.SubscribeTicket(m.conn.ID, "10001", untied)
+			ticket, err := m.svc.SubscribeTicket(m.conn.ID, "10001", true, untied)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -212,7 +213,7 @@ func TestConnectionChangesEndSubscriptions(t *testing.T) {
 		if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, true, untied); !errors.Is(err, ErrDisabled) {
 			t.Fatalf("a board of a connection turned off: %v", err)
 		}
-		if _, err := m.svc.SubscribeTicket(m.conn.ID, "10001", untied); !errors.Is(err, ErrDisabled) {
+		if _, err := m.svc.SubscribeTicket(m.conn.ID, "10001", true, untied); !errors.Is(err, ErrDisabled) {
 			t.Fatalf("a ticket of a connection turned off: %v", err)
 		}
 	})
@@ -236,6 +237,80 @@ func TestUnlistedBoardEndsItsSubscription(t *testing.T) {
 	}
 }
 
+// An open ticket shows its issue's estimate on each board the mirror shows
+// it on, in the board's unit, and an estimate a board's tick changes
+// reaches the ticket as a change of its view with no read of its own.
+func TestAnOpenTicketShowsItsEstimatesPerBoard(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
+	held := card("10001", 1_799_000_000_000)
+	three, five := 3.0, 5.0
+	m.tracks([]tracker.Row{{Card: held, Order: "a", Estimate: &three}})
+	m.p.updatedMovesWithDetail(cardsAnswering(&held))
+	m.p.set(func(p *scripted) {
+		p.detail = func(tracker.IssueID) (tracker.Detail, error) { return tracker.Detail{Card: held}, nil }
+	})
+	board := m.subscribe(t, testBoard)
+	m.events.boardEvents(t, 1)
+	ticket := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001", true, untied))
+	m.events.issueEvents(t, 1)
+	rows := func() []TicketRowView {
+		v, err := m.svc.TicketDetail(ticket.ID)
+		if err != nil || v.Detail == nil {
+			t.Fatalf("the ticket's detail %+v, %v", v, err)
+		}
+		return v.Detail.Rows
+	}
+	if got := rows(); !reflect.DeepEqual(got, []TicketRowView{{Board: string(testBoard), Estimate: &three, Unit: "points"}}) {
+		t.Fatalf("the ticket's rows %+v", got)
+	}
+	reads := m.p.count("Details")
+	m.tracks([]tracker.Row{{Card: held, Order: "a", Estimate: &five}})
+	if err := m.svc.RefreshSubscription(t.Context(), board.ID); err != nil {
+		t.Fatal(err)
+	}
+	if e := m.events.issueEvents(t, 2)[1]; e.Issue != "10001" || !e.Changed {
+		t.Fatalf("the estimate's change told %+v", e)
+	}
+	if got := rows(); len(got) != 1 || got[0].Estimate == nil || *got[0].Estimate != five {
+		t.Fatalf("after the board's tick the ticket's rows %+v", got)
+	}
+	if got := m.p.count("Details"); got != reads {
+		t.Fatalf("the estimate's change read the ticket %d times", got-reads)
+	}
+}
+
+// A ticket subscribed hidden reads nothing from the tracker until a handle
+// shows it or a person asks: a refresh while hidden is its first read, and
+// the first visible vote runs the first read of a ticket never refreshed.
+func TestATicketSubscribedHiddenReadsWhenShown(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
+	cards := map[tracker.IssueID]tracker.Card{"10001": card("10001", 1_799_000_000_000), "10002": card("10002", 1_799_000_000_000)}
+	m.tracks([]tracker.Row{{Card: cards["10001"], Order: "a"}, {Card: cards["10002"], Order: "b"}})
+	m.p.set(func(p *scripted) {
+		p.detail = func(id tracker.IssueID) (tracker.Detail, error) { return tracker.Detail{Card: cards[id]}, nil }
+	})
+	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001", false, untied))
+	if err := m.svc.RefreshSubscription(t.Context(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.p.count("Details"); got != 1 {
+		t.Fatalf("a refresh of a ticket subscribed hidden ran %d detail reads; want its own alone", got)
+	}
+
+	other := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10002", false, untied))
+	if err := m.svc.SetSubscriptionVisible(other.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if e := m.events.issueEvents(t, 2)[1]; e.Issue != "10002" || !e.Changed {
+		t.Fatalf("the first read after the vote told %+v", e)
+	}
+	if got := m.p.count("Details"); got != 2 {
+		t.Fatalf("%d detail reads; want the refresh's and the shown ticket's", got)
+	}
+}
+
 // A changed card of an open ticket's issue stored by a board's tick makes
 // the ticket read at once; its view changing is told once.
 func TestAChangedCardWakesTheOpenTicket(t *testing.T) {
@@ -249,7 +324,7 @@ func TestAChangedCardWakesTheOpenTicket(t *testing.T) {
 	})
 	board := m.subscribe(t, testBoard)
 	m.events.boardEvents(t, 1)
-	ticket, err := m.svc.SubscribeTicket(m.conn.ID, "10001", untied)
+	ticket, err := m.svc.SubscribeTicket(m.conn.ID, "10001", true, untied)
 	if err != nil || ticket.Loaded {
 		t.Fatalf("ticket answer %+v, %v", ticket, err)
 	}
@@ -307,7 +382,7 @@ func TestAnOpenTicketPicksUpANewComment(t *testing.T) {
 					return d, nil
 				}
 			})
-			sub, err := m.svc.SubscribeTicket(m.conn.ID, issue, untied)
+			sub, err := m.svc.SubscribeTicket(m.conn.ID, issue, true, untied)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -451,7 +526,7 @@ func TestStopJoinsPumpsAndLoop(t *testing.T) {
 	answerCardsFromDetails(m.p)
 	m.subscribe(t, testBoard)
 	m.subscribe(t, "2")
-	if _, err := m.svc.SubscribeTicket(m.conn.ID, "10001", untied); err != nil {
+	if _, err := m.svc.SubscribeTicket(m.conn.ID, "10001", true, untied); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.svc.StartLinkedSync(); err != nil {

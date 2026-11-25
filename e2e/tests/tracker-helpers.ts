@@ -46,7 +46,27 @@ export interface ConnectedBoard {
 export interface ExtraJira {
   projects: Array<{ id: string; key: string; name: string }>;
   boards: Array<{ id: number; name: string; type: 'scrum' | 'kanban'; project: string; columns: Array<{ name: string; statuses: string[] }> }>;
-  issues?: Array<{ id: string; key: string; project: string; type: string; status: string; summary: string; sprints?: number[]; assignee?: string }>;
+  issues?: Array<{
+    id: string; key: string; project: string; type: string; status: string; summary: string; sprints?: number[]; assignee?: string;
+    /** An Atlassian document. */
+    description?: unknown;
+    comments?: Array<{ id: string; author: string; body: unknown; created: string }>;
+    dueDate?: string;
+    /** Other fields' values by field ID (trackerfake.JiraIssue.Values). */
+    values?: Record<string, unknown>;
+    changelog?: Array<{ id: string; author?: string; created: string; items: Array<{ fieldId: string; field: string; fieldtype: string; from?: string | null; fromString?: string | null; to?: string | null; toString?: string | null }> }>;
+  }>;
+  /** The site's custom fields (trackerfake.JiraField). */
+  fields?: Array<{ id: string; name: string; schema: { type: string; items?: string; custom?: string; customId?: number }; options?: Array<{ id: string; value: string }> }>;
+  resolutions?: Array<{ id: string; name: string }>;
+  /** Links between issues (trackerfake.JiraLink): outward relates to inward by the type's outward name. */
+  links?: Array<{ id: string; type: string; outward: string; inward: string }>;
+  /** WEB's issue types with their edit screens (trackerfake.JiraIssueType) in place of the fake's. */
+  issueTypes?: Array<{ id: string; name: string; subtask?: boolean; hierarchyLevel?: number; screen: Array<{ field: string; required?: boolean }> }>;
+  /** WEB's workflow moves in place of one per status (trackerfake.JiraTransition). */
+  transitions?: Array<{ id: string; name: string; to: string; from?: string[]; screen?: Array<{ field: string; required?: boolean }> }>;
+  /** The field WEB's board estimates in. */
+  estimation?: string;
   poker?: Record<string, never>;
 }
 
@@ -82,10 +102,17 @@ export async function seedFakeJira(harness: HarnessApp, extra?: ExtraJira): Prom
     jira: [{
       site: JIRA_SITE, account: 'acc-user1', token: JIRA_TOKEN,
       users: [{ accountId: 'acc-user1', displayName: 'User 1', email: JIRA_ACCOUNT, timeZone: 'UTC' }],
-      projects: [{ id: '10000', key: 'WEB', name: 'Web' }, ...(extra?.projects ?? [])],
-      boards: [{ id: 1, name: 'WEB board', type: 'scrum', project: 'WEB', columns: [
+      projects: [{
+        id: '10000', key: 'WEB', name: 'Web',
+        ...(extra?.issueTypes ? { issueTypes: extra.issueTypes } : {}),
+        ...(extra?.transitions ? { transitions: extra.transitions } : {}),
+      }, ...(extra?.projects ?? [])],
+      boards: [{ id: 1, name: 'WEB board', type: 'scrum', project: 'WEB', ...(extra?.estimation ? { estimation: extra.estimation } : {}), columns: [
         { name: 'To Do', statuses: ['10000'] }, { name: 'In Progress', statuses: ['10001'] }, { name: 'Done', statuses: ['10002'] },
       ] }, ...(extra?.boards ?? [])],
+      ...(extra?.fields ? { fields: extra.fields } : {}),
+      ...(extra?.resolutions ? { resolutions: extra.resolutions } : {}),
+      ...(extra?.links ? { links: extra.links } : {}),
       sprints: [{ id: 1, board: 1, name: 'Sprint 1', state: 'active', start: day, end: sprintEnd }],
       issues: [
         { id: '10101', key: 'WEB-1', project: 'WEB', type: '10001', summary: 'First story', sprints: [1], status: '10001', created: day, updated: day },

@@ -59,7 +59,7 @@ func retainedAtScale(t *testing.T, n int) {
 	}
 	tickets := board.ids(spread(n, scaleShownTickets))
 	for _, id := range tickets {
-		sub := must[TicketSubscription](t)(svc.SubscribeTicket(scope.Connection, id, untied))
+		sub := must[TicketSubscription](t)(svc.SubscribeTicket(scope.Connection, id, true, untied))
 		handles = append(handles, sub.ID)
 	}
 	settled(t, svc)

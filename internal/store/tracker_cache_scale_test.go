@@ -410,6 +410,19 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 			}
 		}
 	}
+	// The rows a view build of MirrorMaxBodies open tickets reads, spread
+	// over the board.
+	ticketIDs := make([]string, MirrorMaxBodies)
+	for i := range ticketIDs {
+		ticketIDs[i] = benchIssueID(0, i*(size.issues/MirrorMaxBodies))
+	}
+	out["ticket rows, 16 tickets"] = measureScale(t, rec, nil, func(int) error {
+		rows, err := s.ListMirrorTicketRows(root, ticketIDs)
+		if err == nil && len(rows) != len(ticketIDs) {
+			err = fmt.Errorf("%d rows of %d tickets", len(rows), len(ticketIDs))
+		}
+		return err
+	})
 	// The deltas moved some of the tickets' cards.
 	heldCards()
 	out["ticket open, stored and verified"] = measureScale(t, rec, nil, func(int) error {

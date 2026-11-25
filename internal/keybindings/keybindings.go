@@ -287,6 +287,8 @@ var Defaults = []Keybinding{
 	// The Pull requests pane: the same shape, its own flag.
 	{Key: "mod+shift+p", Command: "pulls.toggle", DefaultID: "pulls.toggle"},
 	{Key: "esc", Command: "pulls.escape", When: "pullsPaneFocused && toolDetailOpen", DefaultID: "pulls.escape"},
+	// The Issues pane: Escape steps back out of an open ticket.
+	{Key: "esc", Command: "issues.escape", When: "issuesPaneFocused && toolDetailOpen", DefaultID: "issues.escape"},
 	{Key: "backspace", Command: "workflows.back", When: "workflowsRunDetail", DefaultID: "workflows.back"},
 	{Key: "j", Command: "workflows.sweep.next", When: "workflowsRunDetail", DefaultID: "workflows.sweep.next"},
 	{Key: "arrowdown", Command: "workflows.sweep.next", When: "workflowsRunDetail", DefaultID: "workflows.sweep.next.down"},

@@ -13,6 +13,7 @@
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
   import { compactColumn, setCompactColumn, type CardField } from '../../stores/issuesPane.svelte';
   import { loadMoreOfSection, setTrackerBoardFiltered, type TrackerBoardRef } from '../../stores/trackerBoard.svelte';
+  import type { RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import {
     filtering,
     screenColumns,
@@ -34,11 +35,15 @@
     filter: CardFilter;
     hidden: ReadonlySet<CardField>;
     compact: boolean;
-    /** False while the pane is not on screen. */
+    /** False while the person does not see the board. */
     shown: boolean;
+    /** The issue whose ticket is open, null for none. */
+    openIssue: string | null;
+    onOpenCard: (row: RowView) => void;
+    onCardMenu: (row: RowView, event: MouseEvent) => void;
   }
 
-  let { boardKey, boardRef, held, paging, sectionErrors, filter, hidden, compact, shown }: Props = $props();
+  let { boardKey, boardRef, held, paging, sectionErrors, filter, hidden, compact, shown, openIssue, onOpenCard, onCardMenu }: Props = $props();
 
   // The last columns, so a rebuild keeps the rows arrays nothing changed.
   let previous: ScreenColumn[] = [];
@@ -129,6 +134,9 @@
           onNearEnd={moreOf(columns[picked])}
           {shown}
           wide
+          {openIssue}
+          {onOpenCard}
+          {onCardMenu}
         />
       </div>
     {/key}
@@ -147,6 +155,9 @@
           failed={failedOf(col)}
           onNearEnd={moreOf(col)}
           {shown}
+          {openIssue}
+          {onOpenCard}
+          {onCardMenu}
         />
       {/each}
     </div>

@@ -267,10 +267,10 @@ func TestFakeJiraRequestCosts(t *testing.T) {
 	// mirror card already newer, the age bound and a refresh read the
 	// detail with no check.
 	s.detailCosts(t, conn, scope, "10102", "10000", "10002", "10000", map[string][2]int{
-		"detail, none stored": {2, 5}, "detail, verified unchanged": {1, 5},
-		"detail, the mirror's copy": {0, 3}, "detail, verified unchanged with 3 links": {1, 5},
-		"detail, after a comment": {3, 6}, "detail, the mirror already newer": {2, 5},
-		"detail, older than the age bound": {2, 5}, "detail, forced refresh": {2, 4},
+		"detail, none stored": {2, 6}, "detail, verified unchanged": {1, 6},
+		"detail, the mirror's copy": {0, 4}, "detail, verified unchanged with 3 links": {1, 6},
+		"detail, after a comment": {3, 7}, "detail, the mirror already newer": {2, 6},
+		"detail, older than the age bound": {2, 6}, "detail, forced refresh": {2, 5},
 	})
 }
 
@@ -293,10 +293,10 @@ func TestFakeLinearRequestCosts(t *testing.T) {
 	// Linear's update time does not move with a comment: every open reads
 	// the detail, in one request, and reads no stored detail first.
 	s.detailCosts(t, conn, scope, tracker.IssueID(lid(61)), tracker.ProjectID(lid(10)), "", "related", map[string][2]int{
-		"detail, none stored": {1, 4}, "detail, verified unchanged": {1, 4},
-		"detail, the mirror's copy": {0, 3}, "detail, verified unchanged with 3 links": {1, 4},
-		"detail, after a comment": {1, 4}, "detail, the mirror already newer": {1, 4},
-		"detail, older than the age bound": {1, 4}, "detail, forced refresh": {1, 4},
+		"detail, none stored": {1, 5}, "detail, verified unchanged": {1, 5},
+		"detail, the mirror's copy": {0, 4}, "detail, verified unchanged with 3 links": {1, 5},
+		"detail, after a comment": {1, 5}, "detail, the mirror already newer": {1, 5},
+		"detail, older than the age bound": {1, 5}, "detail, forced refresh": {1, 5},
 	})
 }
 

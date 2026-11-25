@@ -1,11 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { clearCommandRegistry, isCommandEnabled } from './commandRegistry.svelte';
+import { clearCommandRegistry, getCommand, isCommandEnabled, runCommand, type CommandContext } from './commandRegistry.svelte';
 import { makeCommandContext } from './builtinCommands.svelte';
-import { registerIssuesCommands } from './issuesCommands';
+import { isIssuesPaneFocused, registerIssuesBackHandler, registerIssuesCommands, resetIssuesCommandsForTest } from './issuesCommands';
+import { evaluateWhen, tryParseWhen } from './keybindingParser';
+import { focusPane } from './panes.svelte';
 import { openTool } from './toolPanes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import { grantBackendScopes, pairWithScopes, resetToLocalPage } from '../../test/helpers/scopes';
 import { HOME_BACKEND } from '../transport/backendKey';
+import { KEYBINDING_DEFAULTS } from '../generated/keybindingDefaults';
+
+function ctx(flags: Record<string, boolean> = {}): CommandContext {
+  return { pane: null, paneId: null, flags: { issuesPaneFocused: true, toolDetailOpen: true, ...flags } } as unknown as CommandContext;
+}
 
 describe('issues commands', () => {
   beforeEach(() => {
@@ -15,7 +22,10 @@ describe('issues commands', () => {
     registerIssuesCommands();
   });
 
-  afterEach(() => resetToLocalPage());
+  afterEach(() => {
+    resetToLocalPage();
+    resetIssuesCommandsForTest();
+  });
 
   it('offers Issues: Open only while a computer lets this window read issue trackers', async () => {
     await pairWithScopes(['threads:read']);
@@ -27,5 +37,36 @@ describe('issues commands', () => {
   it('refuses to open Issues in a window no computer lets read issue trackers', async () => {
     await pairWithScopes(['threads:read']);
     expect(() => openTool('issues')).toThrow(/tracker:read/);
+  });
+
+  it('steps back out of an open ticket on Escape, a surface dismissal gated on the pane and an open ticket', () => {
+    const command = getCommand('issues.escape');
+    expect(command?.dismissesSurface).toBe(true);
+    const when = tryParseWhen(command!.when!)!;
+    expect(evaluateWhen(when, ctx().flags)).toBe(true);
+    expect(evaluateWhen(when, ctx({ toolDetailOpen: false }).flags)).toBe(false);
+    expect(evaluateWhen(when, ctx({ issuesPaneFocused: false }).flags)).toBe(false);
+    expect(evaluateWhen(when, ctx({ overlayOpen: true }).flags)).toBe(false);
+    expect(evaluateWhen(when, ctx({ paneFindOpen: true }).flags)).toBe(false);
+    const escape = KEYBINDING_DEFAULTS.find((rule) => rule.command === 'issues.escape');
+    expect(escape?.key).toBe('esc');
+    expect(escape?.when).toBe('issuesPaneFocused && toolDetailOpen');
+
+    const steps: string[] = [];
+    const first = registerIssuesBackHandler(() => { steps.push('first'); return true; });
+    const second = registerIssuesBackHandler(() => { steps.push('second'); return true; });
+    runCommand('issues.escape', ctx());
+    second();
+    runCommand('issues.escape', ctx());
+    first();
+    runCommand('issues.escape', ctx());
+    expect(steps).toEqual(['second', 'first']);
+  });
+
+  it('knows when the Issues pane is the focused pane', () => {
+    setPaneLayoutItemsForTest([{ id: 'tool-issues', paneId: 'tool-issues', kind: 'issues', widthPx: 400 }]);
+    expect(isIssuesPaneFocused()).toBe(false);
+    focusPane('tool-issues');
+    expect(isIssuesPaneFocused()).toBe(true);
   });
 });

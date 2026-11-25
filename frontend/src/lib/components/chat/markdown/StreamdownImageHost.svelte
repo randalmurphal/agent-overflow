@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The one image renderer for chat markdown. Four sources:
+  // The one image renderer for chat markdown. Five sources:
   //
   //   - A local image the parse claimed (`agent-overflow:image?nonce=…`,
   //     utils/pathLinkExtension.ts): fetched through GetLocalImage on
@@ -16,6 +16,9 @@
   //   - A file of the PR's repository the parse claimed
   //     (`agent-overflow:repo-image?nonce=…`, utils/repositoryImageHref.ts):
   //     its own host paints it from the local git object store.
+  //   - A tracker's file in ticket text the parse claimed
+  //     (`agent-overflow:tracker-media?…`, utils/trackerMedia.ts): a chip
+  //     naming it, with no fetch.
   //   - An http(s) or `data:image/…` src the URL gate approved: rendered
   //     directly, as a player when the parse marked the image playable
   //     (`media`, markdown/parser/extensions/mediaImages.ts).
@@ -34,6 +37,8 @@
   import RepositoryImageHost from './RepositoryImageHost.svelte';
   import { parseRepositoryImageHref } from '../../../utils/repositoryImageHref';
   import MarkdownImage from './MarkdownImage.svelte';
+  import TrackerMediaChip from './TrackerMediaChip.svelte';
+  import { isTrackerMediaHref } from '../../../utils/trackerMedia';
 
   let {
     token,
@@ -51,7 +56,8 @@
   const href = $derived(token.href);
   const forge = $derived(parseForgeAttachmentHref(href) !== null);
   const repository = $derived(!forge && parseRepositoryImageHref(href) !== null);
-  const local = $derived(forge || repository ? null : parseLocalImageHref(href));
+  const trackerMedia = $derived(isTrackerMediaHref(href));
+  const local = $derived(forge || repository || trackerMedia ? null : parseLocalImageHref(href));
   const source = $derived(
     local ? localMarkdownImageSource(backend, local, localImageMenuTag({ backend, href, alt: token.text })) : null,
   );
@@ -63,7 +69,7 @@
   $effect(() => {
     // A forge attachment and a local image belong to their own renderers;
     // this effect must not claim either as an unpaintable scheme.
-    if (forge || repository || local) return;
+    if (forge || repository || trackerMedia || local) return;
     const direct = approvedSrc;
     reason = '';
     if (token.media ? /^https?:/i.test(direct) : /^(?:https?:|data:image\/)/i.test(direct)) {
@@ -88,7 +94,9 @@
   }
 </script>
 
-{#if forge}
+{#if trackerMedia}
+  <TrackerMediaChip {token} />
+{:else if forge}
   <ForgeAttachmentHost {token} />
 {:else if repository}
   <RepositoryImageHost {token} />

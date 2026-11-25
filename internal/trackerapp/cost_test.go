@@ -283,8 +283,9 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 		}
 	}
 	// Every detail answer reads the names it shows and the mirror's cards
-	// of the issue, its parent and the issues it links, in one lookup.
-	view := map[string]int{"GetMirrorCatalog": 1, "ListMirrorCards": 1}
+	// of the issue, its parent and the issues it links, in one lookup, and
+	// the issue's rows on the boards in one more.
+	view := map[string]int{"GetMirrorCatalog": 1, "ListMirrorCards": 1, "ListMirrorTicketRows": 1}
 	costTable(t, m, cs, []struct {
 		name string
 		run  func(t *testing.T)

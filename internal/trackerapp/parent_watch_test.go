@@ -91,7 +91,7 @@ func newParentFixture(t *testing.T) *parentFixture {
 	f := &parentFixture{mirrorFixture: m, st: st}
 	f.tick(t)
 	m.p.set(func(p *scripted) { p.detail, p.cards = st.detail, st.cardsRead })
-	f.sub = must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001", untied))
+	f.sub = must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001", true, untied))
 	m.events.issueEvents(t, 1)
 	m.settledTickets(t)
 

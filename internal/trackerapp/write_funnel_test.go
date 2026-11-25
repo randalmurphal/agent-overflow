@@ -77,7 +77,7 @@ func TestAWriteReachesTheFunnelOnce(t *testing.T) {
 	hasScope := func(b []BoardEvent, board tracker.BoardID) bool {
 		return slices.ContainsFunc(b, func(e BoardEvent) bool { return e.Scope.Board == board })
 	}
-	must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001", untied))
+	must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001", true, untied))
 	f.events.issueEvents(t, 1)
 	f.settledTickets(t)
 	// The pumps' first ticks end before the tracker changes, so only the
@@ -134,7 +134,7 @@ func TestAFailedRefreshOfAnOpenTicketIsRetried(t *testing.T) {
 	t.Parallel()
 	f := newWriteFixture(t)
 	f.svc.cadence.RetryBase = time.Millisecond
-	must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001", untied))
+	must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001", true, untied))
 	f.events.issueEvents(t, 1)
 	f.settledTickets(t)
 	var failing atomic.Bool
@@ -179,7 +179,7 @@ func TestAFailedRefreshOfAnOpenTicketIsRetried(t *testing.T) {
 func TestARefreshTellsAnOpenTicketOnceWhenItSettles(t *testing.T) {
 	t.Parallel()
 	f := newWriteFixture(t)
-	must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001", untied))
+	must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001", true, untied))
 	f.events.issueEvents(t, 1)
 	f.settledTickets(t)
 	quiet(t, f.svc)

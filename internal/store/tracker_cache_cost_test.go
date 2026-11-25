@@ -173,6 +173,7 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		func() error { _, err := s.GetMirrorCatalog(root, []string{"acc-user1"}, []string{"1"}); return err },
 		func() error { _, err := s.ListMirrorCards(root, []string{"10001"}); return err },
 		func() error { _, _, err := s.ListMirrorIssueRows(root, "10001", ""); return err },
+		func() error { _, err := s.ListMirrorTicketRows(root, []string{"10001", "10002"}); return err },
 		func() error { _, _, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10"}); return err },
 		func() error { _, err := s.CountMirrorSections(root, "10", MirrorRegroup{}); return err },
 		func() error {
@@ -393,7 +394,13 @@ func TestMirrorReadsUseTheirIndexes(t *testing.T) {
 		"ticket reads":  {mirrorTicketMoveSQL.reads, "SCAN h\nSEARCH tracker_cache_issues USING INDEX sqlite_autoindex_tracker_cache_issues_1 (root_id=? AND issue_id=?)"},
 		"history times": {mirrorHistoryTimesSQL, "SCAN h\nSEARCH tracker_cache_issues USING INDEX sqlite_autoindex_tracker_cache_issues_1 (root_id=? AND issue_id=?)"},
 		"issue rows":    {mirrorIssueRowsSQL, "PRIMARY KEY (root_id=? AND issue_id=? AND board_id>?)"},
-		"keep rule":     {`SELECT ` + mirrorIssueKept("?1", "?2"), "PRIMARY KEY (root_id=? AND issue_id=?)"},
+		"ticket rows": {mirrorTicketRowsSQL, "SEARCH b USING PRIMARY KEY (root_id=? AND issue_id=?)\nLIST SUBQUERY 1\n" +
+			"SCAN json_each VIRTUAL TABLE INDEX 1:\nCORRELATED SCALAR SUBQUERY 2\n" +
+			"SEARCH shown_board USING INDEX sqlite_autoindex_tracker_cache_boards_1 (root_id=? AND board_id=?)\n" +
+			"SEARCH shown_root USING INTEGER PRIMARY KEY (rowid=?)\n" +
+			"SEARCH shown_listing USING COVERING INDEX idx_project_tracker_boards_board (connection_id=? AND board_id=?)\n" +
+			"SEARCH r USING INDEX sqlite_autoindex_tracker_cache_boards_1 (root_id=? AND board_id=?)"},
+		"keep rule": {`SELECT ` + mirrorIssueKept("?1", "?2"), "PRIMARY KEY (root_id=? AND issue_id=?)"},
 		"backlog section": {mirrorSectionSQL[MirrorSectionBacklog],
 			"SEARCH m USING PRIMARY KEY (root_id=? AND issue_id=?)\nSEARCH sp USING PRIMARY KEY (root_id=? AND board_id=? AND sprint_id=?)"},
 		"sprint section": {mirrorSectionSQL[MirrorSectionSprint],

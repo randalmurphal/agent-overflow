@@ -8,12 +8,14 @@ import { afterEach, beforeEach, expect, it } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { userEvent } from 'vitest/browser';
 import '../../../app.css';
-import PullsPane from './PullsPane.svelte';
-import { DETAIL_MIN_PX, LIST_KEY_STEP_PX, LIST_MAX_PX, LIST_MIN_PX } from './listWidth.svelte';
+import PullsPane, { PULLS_SPLIT } from './PullsPane.svelte';
+import { SPLIT_KEY_STEP_PX as LIST_KEY_STEP_PX } from '../shared/splitWidth.svelte';
 import { appStorageGet, appStorageSet } from '../../stores/appStorage';
 import { __setTransportStatusForTest, getTransportStatus } from '../../stores/transportStatus.svelte';
 import { PULLS_PANE, installPullsPaneMocks, pullRowKey, resetPullsPane } from '../../../test/helpers/pullsPane';
 import { waitFor } from '../../../test/helpers/browserFrames';
+
+const { detailMin: DETAIL_MIN_PX, listMax: LIST_MAX_PX, listMin: LIST_MIN_PX } = PULLS_SPLIT;
 
 let host: HTMLDivElement;
 let app: ReturnType<typeof mount> | null = null;

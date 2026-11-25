@@ -51,10 +51,11 @@ type Capabilities struct {
 }
 
 // FieldScope is where a field's values are asked for: an existing issue,
-// or a create in a project with an issue type. The zero FieldScope names
-// neither and is refused.
+// one of its moves, or a create in a project with an issue type. The zero
+// FieldScope names neither and is refused.
 type FieldScope struct {
 	issue     IssueID
+	move      MoveID
 	project   ProjectID
 	issueType IssueTypeID
 }
@@ -62,14 +63,21 @@ type FieldScope struct {
 // OnIssue is the scope of an existing issue's fields.
 func OnIssue(issue IssueID) FieldScope { return FieldScope{issue: issue} }
 
+// OnMove is the scope of the fields move's screen takes on issue
+// (Move.Fields), whose values can differ from the issue's own.
+func OnMove(issue IssueID, move MoveID) FieldScope { return FieldScope{issue: issue, move: move} }
+
 // OnCreate is the scope of a create's fields in project with issueType,
 // which is empty without Capabilities.IssueTypes.
 func OnCreate(project ProjectID, issueType IssueTypeID) FieldScope {
 	return FieldScope{project: project, issueType: issueType}
 }
 
-// Issue is the issue of an OnIssue scope.
+// Issue is the issue of an OnIssue or an OnMove scope.
 func (s FieldScope) Issue() (IssueID, bool) { return s.issue, s.issue != "" }
+
+// Move is the move of an OnMove scope.
+func (s FieldScope) Move() (MoveID, bool) { return s.move, s.move != "" }
 
 // Create is the project and issue type of an OnCreate scope.
 func (s FieldScope) Create() (ProjectID, IssueTypeID, bool) {

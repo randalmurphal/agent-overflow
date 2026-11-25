@@ -36,6 +36,7 @@ import { forgeHtmlOptions } from '../../../utils/forgeHtmlText';
 import type { ForgeAttachmentSource } from '../../../utils/forgeAttachments';
 import { CHAT_IMAGE_PREFIXES, CHAT_LINK_PREFIXES } from './chatLinkPrefixes';
 import { forgeEmojiGeneration, forgeEmojiSlot, resolveForgeEmoji } from '../../../utils/forgeEmoji.svelte';
+import { trackerMediaExtension } from '../../../utils/trackerMedia';
 
 // Each forge's own Markdown syntax: its bare URL autolinks, GFM's `~text~`
 // strikethrough and its color chips on both, and GitLab's inline diff, `>>>` quotes, front
@@ -132,6 +133,24 @@ export function chatMarkdownForgeOptions(source: ForgeAttachmentSource | null | 
     htmlExtensions: embeddedHtml ? embedded.extensions : undefined,
     html: { policy: embedded.policy, destinations: destinationsOf(extensions), colorScheme, ...HTML_PREFIXES, ...htmlText },
     colorScheme,
+  };
+}
+
+// A ticket's text claims its tracker media (utils/trackerMedia.ts), in
+// Markdown and, through the same hook, inside embedded HTML.
+const TRACKER_EXTENSIONS: readonly Extension[] = [trackerMediaExtension];
+
+/** What a ticket's text adds to the parse and the sanitizer, in the shape
+ * a PR's forge options take (a ticket is no PR, so it reads no forge
+ * source): the tracker media claim. Module constants, so the identities
+ * hold across renders. */
+export function chatMarkdownTrackerOptions(embeddedHtml: boolean): ChatMarkdownForgeOptions {
+  const any = embeddedHtml ? embeddedHtmlFor(null) : undefined;
+  return {
+    extensions: TRACKER_EXTENSIONS,
+    htmlExtensions: any?.extensions,
+    html: any && { policy: any.policy, destinations: destinationsOf(TRACKER_EXTENSIONS), ...HTML_PREFIXES },
+    colorScheme: undefined,
   };
 }
 

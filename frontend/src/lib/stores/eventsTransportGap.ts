@@ -62,7 +62,7 @@ import {
 import { threadItemCache } from './threadItemCache';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { holdBackendRecovery, isBackendRecovering } from './transportRecovery';
-import { trackerBoardsGap } from './trackerBoardEvents';
+import { trackerBoardsGap, trackerTicketsGap } from './trackerBoardEvents';
 import { reconcileTerminalSurfaces } from './eventsTerminal';
 import { threadMachine, getAttachedBackends } from './attachedBackends.svelte';
 import { applyBackendSetChange } from './systems.svelte';
@@ -371,6 +371,14 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
     case 'tracker:board_updated': {
       const backend = backendKeyForOrigin(origin?.backendId ?? '');
       const resync = trackerBoardsGap(backend);
+      if (resync) holdBackendRecovery(backend, resync);
+      return;
+    }
+    // A lost frame is not restated either: each held ticket of the computer
+    // reads its view again under the recovery.
+    case 'tracker:issue_updated': {
+      const backend = backendKeyForOrigin(origin?.backendId ?? '');
+      const resync = trackerTicketsGap(backend);
       if (resync) holdBackendRecovery(backend, resync);
       return;
     }

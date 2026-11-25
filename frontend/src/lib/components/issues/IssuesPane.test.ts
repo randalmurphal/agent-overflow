@@ -1,15 +1,31 @@
 // The Issues pane over mocked bindings: the board it opens on, its columns
 // and cards, Display, Only mine and Search over the held cards (reading a
 // column whole when filtered), the notices of failure, refresh and end,
-// the empty pane, the compact strip, the picker and the hidden vote.
+// the empty pane, the compact strip, the picker and the hidden vote; and
+// the ticket a card opens over the board: the board's vote under it, a
+// write that moves a card under it, the trail Back steps through, an edit
+// in place and the comments it mounts.
 
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { describe, expect, it, vi } from 'vitest';
-import type { BoardChoice, BoardView, RowView, Section, SectionPage } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+import type {
+  BoardChoice,
+  BoardPatch,
+  BoardView,
+  CommentView,
+  DetailView,
+  RowView,
+  Section,
+  SectionPage,
+  TicketSubscription,
+  WriteView,
+} from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import type { TrackerBoardRef } from '../../stores/trackerBoard.svelte';
 import IssuesPane from './IssuesPane.svelte';
-import { trackerBoardUpdated as applyTrackerBoardEvent } from '../../stores/trackerBoardEvents';
+import { trackerBoardUpdated as applyTrackerBoardEvent, trackerIssueUpdated } from '../../stores/trackerBoardEvents';
+import { registerIssuesCommands } from '../../stores/issuesCommands';
+import { clearCommandRegistry, runCommand, type CommandContext } from '../../stores/commandRegistry.svelte';
 import { hiddenCardFields } from '../../stores/issuesPane.svelte';
 import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
 import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
@@ -34,6 +50,9 @@ import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { TransportError } from '../../transport/wsClient';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getToasts } from '../../stores/toast.svelte';
+import { trackerTicketKey } from '../../stores/trackerTicket.svelte';
+import { ticketDraft } from '../../stores/trackerTicketWrites.svelte';
 
 // The project of the thread the pane was opened from (toolPanes owns it).
 const openedFrom = vi.hoisted(() => ({ project: null as string | null }));
@@ -915,5 +934,1163 @@ describe('the selection against its computer, its listing and the sidebar', () =
     expect(view.queryByTestId('issues-empty-connections')).toBeNull();
     view.unmount();
     resetToLocalPage();
+  });
+});
+
+/** A ticket's view: issue `id` of the board's connection, its parent
+ * `parent`, and `comments` comments, the newest first. */
+function ticketDetail(id: string, opts: { parent?: string; comments?: number; more?: string; status?: string } = {}): DetailView {
+  const comments: CommentView[] = Array.from({ length: opts.comments ?? 0 }, (_, i) => ({
+    id: `c${opts.comments! - i}`, author: { id: 'u1', name: 'User 1' }, body: `Comment ${opts.comments! - i}`, created: 1_000 + opts.comments! - i,
+  }) as CommentView);
+  return {
+    card: {
+      id, key: `WEB-${id}`, title: `Issue ${id}`, status: { id: opts.status ?? 's1', name: opts.status === 's2' ? 'In Progress' : 'To Do', group: 'todo' },
+      created: 0, updated: 0, ...(opts.parent ? { parent: { id: opts.parent, key: `WEB-${opts.parent}`, title: `Issue ${opts.parent}` } } : {}),
+    },
+    url: `https://example.atlassian.net/browse/WEB-${id}`, description: 'The description', fields: [], comments, more_comments: opts.more,
+    links: [], attachments: [], history: [], rows: [{ board: '1', estimate: 2, unit: 'points' }],
+    moves: [{ id: '21', name: 'Start', to: { id: 's2', name: 'In Progress', group: 'in_progress' } }],
+  } as unknown as DetailView;
+}
+
+function installTicket(detailOf: (issue: string) => DetailView = (issue) => ticketDetail(issue)) {
+  let n = 0;
+  const subscribe = setBindingMock('SubscribeTrackerTicket', async (_c: string, issue: string): Promise<TicketSubscription> => {
+    n += 1;
+    return { id: `ticket-${issue}-${n}`, seq: 10, poll_every: 10_000, loaded: true, detail: detailOf(issue), read_at: Date.now() } as TicketSubscription;
+  });
+  const read = setBindingMock('TrackerTicket', async () => ({ loaded: true, detail: ticketDetail('1', { status: 's2' }) }));
+  return { subscribe, read };
+}
+
+/** The votes sent for the handles whose IDs start with `prefix`. */
+function votes(mock: ReturnType<typeof vi.fn>, prefix: string): boolean[] {
+  return mock.mock.calls.filter((c) => String(c[0]).startsWith(prefix)).map((c) => c[1] as boolean);
+}
+
+async function openCard(view: ReturnType<typeof mount>, issue: string): Promise<HTMLElement> {
+  await view.findAllByTestId('issues-card');
+  const card = view.getAllByTestId('issues-card').find((c) => c.dataset.issue === issue)!;
+  await fireEvent.click(within(card).getByTestId('issues-card-open'));
+  return waitFor(() => {
+    const screen = view.getByTestId('ticket-screen');
+    expect(screen.dataset.issue).toBe(issue);
+    return screen;
+  });
+}
+
+describe('the ticket in the pane', () => {
+  // The ticket's chunk loads on the first open; load it before the first
+  // test waits on it.
+  beforeAll(async () => {
+    await import('./TicketScreen.svelte');
+  });
+
+  it('opens a card\'s ticket over the board, votes the board hidden under it, and shown again when it closes', async () => {
+    const mocks = install();
+    const ticket = installTicket();
+    const view = mount();
+    await openCard(view, '1');
+    expect(ticket.subscribe).toHaveBeenCalledWith('c1', '1', true);
+    expect(view.getByTestId('issues-ticket')).toHaveAttribute('data-placement', 'over');
+    await waitFor(() => expect(view.getByTestId('ticket-title')).toHaveTextContent('Issue 1'));
+    // The board stays mounted under the ticket, its card marked.
+    expect(view.getAllByTestId('issues-card').find((c) => c.dataset.issue === '1')).toHaveAttribute('data-open');
+    await waitFor(() => expect(votes(mocks.visible, 'sub-')).toEqual([false]));
+    await fireEvent.click(view.getByTestId('ticket-close'));
+    await waitFor(() => expect(votes(mocks.visible, 'sub-')).toEqual([false, true]));
+    expect(view.queryByTestId('ticket-screen')).toBeNull();
+    await waitFor(() => expect(mocks.release).toHaveBeenCalledWith('ticket-1-1'));
+  });
+
+  it('moves a card on the board under the ticket when a status change made in the ticket lands', async () => {
+    install();
+    installTicket();
+    const patched = setBindingMock('TrackerBoardPatch', async (): Promise<BoardPatch> => ({
+      lifetime: 1, revision: 2,
+      // The changed card, now in the second column.
+      sections: [{ section: { kind: 'column', column: 0 }, rows: [] }, { section: { kind: 'column', column: 1 }, rows: [row('1', 'a', 's2')] }],
+    } as unknown as BoardPatch));
+    const move = setBindingMock('MoveTrackerIssue', async (): Promise<WriteView> => {
+      // The write's refresh tells the board and the ticket before it answers.
+      applyTrackerBoardEvent({ scope: { connection: 'c1', board: '1' }, seq: 11, changed: ['1'] }, HOME_BACKEND);
+      trackerIssueUpdated({ connection: 'c1', issue: '1', seq: 11, changed: true }, HOME_BACKEND);
+      return { parts: [{ step: 'move', state: 'applied' }] } as WriteView;
+    });
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const status = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'status')!;
+    await fireEvent.click(within(status).getByTestId('ticket-field-value'));
+    const item = await waitFor(() => within(menu()).getByTestId('ticket-picker-item'));
+    expect(item).toHaveTextContent('In Progress');
+    await fireEvent.click(item);
+    await waitFor(() => expect(move).toHaveBeenCalledWith('c1', { issue: '1', move: '21', fields: undefined, accept_loss: false }));
+    await waitFor(() => expect(patched).toHaveBeenCalled());
+    await waitFor(() => expect(columns(view).map((c) => c.cards)).toEqual([[], ['1', '2']]));
+    await waitFor(() => expect(within(status).getByTestId('ticket-field-value')).toHaveTextContent('In Progress'));
+    expect(within(status).queryByTestId('ticket-write-pending')).toBeNull();
+  });
+
+  it('shows the tracker\'s reason under a change it refused, and keeps the value as it was', async () => {
+    install();
+    installTicket();
+    setBindingMock('TrackerChoices', async () => ({ choices: [{ id: '1', name: 'Highest' }, { id: '3', name: 'Low' }] }));
+    const edit = setBindingMock('EditTrackerIssue', async (): Promise<WriteView> => ({
+      parts: [{ step: 'edit', state: 'refused', refusal: { reason: 'tracker', message: 'Priority is not on the edit screen of this issue' } }],
+    } as WriteView));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const priority = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'priority')!;
+    await fireEvent.click(within(priority).getByTestId('ticket-field-value'));
+    const items = await waitFor(() => {
+      const found = within(menu()).getAllByTestId('ticket-picker-item');
+      expect(found).toHaveLength(2);
+      return found;
+    });
+    await fireEvent.click(items[1]);
+    await waitFor(() => expect(edit).toHaveBeenCalledWith('c1', { issue: '1', fields: [{ field: 'priority', value: { kind: 'option', choices: [{ id: '3' }] } }], accept_loss: false }));
+    await waitFor(() => expect(within(priority).getByTestId('ticket-write-outcome')).toHaveTextContent('Priority is not on the edit screen of this issue'));
+    expect(within(priority).getByTestId('ticket-write-outcome')).toHaveAttribute('data-kind', 'refused');
+    expect(within(priority).getByTestId('ticket-field-value')).toHaveTextContent('None');
+  });
+
+  it('sets and clears the points typed in their field', async () => {
+    install();
+    installTicket();
+    const estimate = setBindingMock('SetTrackerEstimate', async (): Promise<WriteView> => ({ parts: [{ step: 'estimate', state: 'applied' }] }) as WriteView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const points = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'points')!;
+    const type = async (value: string) => {
+      await fireEvent.click(within(points).getByTestId('ticket-field-value'));
+      const input = within(points).getByTestId('ticket-field-input');
+      expect(input).toHaveValue(2);
+      await fireEvent.input(input, { target: { value } });
+      await fireEvent.keyDown(input, { key: 'Enter' });
+    };
+    await type('8');
+    await waitFor(() => expect(estimate).toHaveBeenCalledWith('c1', { board: '1', issue: '1', value: 8 }));
+    await waitFor(() => expect(within(points).getByTestId('ticket-field-value')).toBeEnabled());
+    await type('');
+    await waitFor(() => expect(estimate).toHaveBeenLastCalledWith('c1', { board: '1', issue: '1', value: undefined }));
+    expect(estimate).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows a field of several typed values without an editor, and edits a single typed value in place', async () => {
+    install();
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      fields: [
+        { id: 'tags', name: 'Tags', kind: 'text', list: true, editable: true, required: false, value: { kind: 'text', texts: ['A', 'B'] } },
+        { id: 'due', name: 'Due date', kind: 'date', list: false, editable: true, required: false, value: { kind: 'date', dates: ['2026-01-02'] } },
+      ],
+    } as unknown as DetailView));
+    const edit = setBindingMock('EditTrackerIssue', async (): Promise<WriteView> => ({ parts: [{ step: 'edit', state: 'applied' }] }) as WriteView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await fireEvent.click(within(screen).getByTestId('ticket-more-fields'));
+    const fieldOf = (id: string) => within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === id)!;
+    const tags = within(fieldOf('tags')).getByTestId('ticket-field-value');
+    expect(tags).toHaveTextContent('A, B');
+    expect(tags.tagName).toBe('SPAN');
+    await fireEvent.click(tags);
+    expect(within(fieldOf('tags')).queryByTestId('ticket-field-input')).toBeNull();
+    await fireEvent.click(within(fieldOf('due')).getByTestId('ticket-field-value'));
+    const due = within(fieldOf('due')).getByTestId('ticket-field-input');
+    await fireEvent.input(due, { target: { value: '2026-02-03' } });
+    await fireEvent.keyDown(due, { key: 'Enter' });
+    await waitFor(() => expect(edit).toHaveBeenCalledWith('c1', { issue: '1', fields: [{ field: 'due', typed: ['2026-02-03'] }], accept_loss: false }));
+    expect(edit).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the ticket in the tracker in this browser when the page is not on the computer', async () => {
+    install();
+    installTicket();
+    const host = setBindingMock('OpenExternalURL', async () => undefined);
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    const page = window.location.href;
+    // A connected browser: the page is served to another machine.
+    (window as unknown as { happyDOM: { setURL(url: string): void } }).happyDOM.setURL('http://192.168.1.20:8123/');
+    try {
+      const view = mount();
+      const screen = await openCard(view, '1');
+      await fireEvent.click(await within(screen).findByTestId('ticket-open-tracker'));
+      await fireEvent.contextMenu(within(screen).getByTestId('ticket-header'));
+      await fireEvent.click(await within(document.body).findByTestId('ticket-menu-open-tracker'));
+      await waitFor(() => expect(open).toHaveBeenCalledTimes(2));
+      expect(open.mock.calls.map((c) => c[0])).toEqual(['https://example.atlassian.net/browse/WEB-1', 'https://example.atlassian.net/browse/WEB-1']);
+      expect(host).not.toHaveBeenCalled();
+    } finally {
+      (window as unknown as { happyDOM: { setURL(url: string): void } }).happyDOM.setURL(page);
+      open.mockRestore();
+    }
+  });
+
+  it('says a ticket link that is not a web address cannot be opened, and opens nothing', async () => {
+    install();
+    installTicket((issue) => ({ ...ticketDetail(issue), url: 'javascript:alert(1)' }) as DetailView);
+    const host = setBindingMock('OpenExternalURL', async () => undefined);
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    try {
+      const view = mount();
+      const screen = await openCard(view, '1');
+      await fireEvent.click(await within(screen).findByTestId('ticket-open-tracker'));
+      await waitFor(() => expect(getToasts().map((t) => t.message)).toContain('Could not open WEB-1 in the tracker: its link javascript:alert(1) is not a web address.'));
+      expect(host).not.toHaveBeenCalled();
+      expect(open).not.toHaveBeenCalled();
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  it('asks the tracker for typed text when its list holds more matches, once per pause, showing only the answer for the latest text', async () => {
+    install();
+    installTicket();
+    const answers = new Map<string, (list: { choices: { id: string; name: string }[]; more?: boolean }) => void>();
+    const choices = setBindingMock('TrackerChoices', (_c: string, _s: unknown, _f: string, text: string) => new Promise((resolve) => {
+      if (text === '') {
+        resolve({ choices: Array.from({ length: 50 }, (_, i) => ({ id: `o${i}`, name: `Option ${i}` })), more: true });
+        return;
+      }
+      answers.set(text, resolve);
+    }));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const priority = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'priority')!;
+    await fireEvent.click(within(priority).getByTestId('ticket-field-value'));
+    await waitFor(() => expect(within(menu()).getAllByTestId('ticket-picker-item')).toHaveLength(50));
+    const find = within(document.body).getByTestId('ticket-picker-find');
+    for (const text of ['R', 'Re']) await fireEvent.input(find, { target: { value: text } });
+    await waitFor(() => expect(answers.has('Re')).toBe(true));
+    expect(choices.mock.calls.map((c) => c[3])).toEqual(['', 'Re']);
+    // The person types on; the answer for "Re" lands after the one for
+    // "Rel" and is not shown.
+    await fireEvent.input(find, { target: { value: 'Rel' } });
+    await waitFor(() => expect(answers.has('Rel')).toBe(true));
+    const items = () => within(menu()).queryAllByTestId('ticket-picker-item').map((i) => i.textContent?.trim());
+    answers.get('Rel')!({ choices: [{ id: 'r1', name: 'Release 1' }, { id: 'r9', name: 'Release 9' }] });
+    await waitFor(() => expect(items()).toEqual(['Release 1', 'Release 9']));
+    answers.get('Re')!({ choices: [{ id: 'r1', name: 'Release 1' }, { id: 'r2', name: 'Reopened' }] });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(items()).toEqual(['Release 1', 'Release 9']);
+    expect(choices.mock.calls.map((c) => c[3])).toEqual(['', 'Re', 'Rel']);
+  });
+
+  it('filters a whole list of values as the person types, asking nothing more', async () => {
+    install();
+    installTicket();
+    const choices = setBindingMock('TrackerChoices', async () => ({ choices: [{ id: '1', name: 'Highest' }, { id: '3', name: 'Low' }, { id: '4', name: 'Lowest' }] }));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const priority = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'priority')!;
+    await fireEvent.click(within(priority).getByTestId('ticket-field-value'));
+    await waitFor(() => expect(within(menu()).getAllByTestId('ticket-picker-item')).toHaveLength(3));
+    await fireEvent.input(within(document.body).getByTestId('ticket-picker-find'), { target: { value: 'low' } });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(within(menu()).getAllByTestId('ticket-picker-item').map((i) => i.textContent?.trim())).toEqual(['Low', 'Lowest']);
+    expect(choices).toHaveBeenCalledTimes(1);
+  });
+
+  it('says a ticket that could not be read once, and nothing about reading it', async () => {
+    install();
+    setBindingMock('SubscribeTrackerTicket', async (): Promise<TicketSubscription> => ({
+      id: 'ticket-1-1', seq: 10, poll_every: 10_000, loaded: false, read_at: 0,
+      failure: { kind: 'auth', message: 'Jira refused the credential.', at: 1 },
+    }) as unknown as TicketSubscription);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await waitFor(() => expect(within(screen).getByTestId('ticket-content')).toHaveTextContent('Jira refused the credential.'));
+    expect(screen.textContent?.split('Jira refused the credential.').length).toBe(2);
+    expect(within(screen).queryByTestId('ticket-opening')).toBeNull();
+  });
+
+  it('says a ticket whose read of this computer\'s copy failed, and nothing about reading it', async () => {
+    install();
+    setBindingMock('SubscribeTrackerTicket', async (): Promise<TicketSubscription> => ({ id: 'ticket-1-1', seq: 10, poll_every: 10_000, loaded: false, read_at: 0 }) as unknown as TicketSubscription);
+    setBindingMock('TrackerTicket', async () => { throw new TransportError('internal', 'the copy could not be read'); });
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await waitFor(() => expect(within(screen).getByTestId('ticket-opening')).toBeInTheDocument());
+    trackerIssueUpdated({ connection: 'c1', issue: '1', seq: 11, changed: true }, HOME_BACKEND);
+    await waitFor(() => expect(within(screen).getByTestId('ticket-read-error')).toHaveTextContent('The copy could not be read.'));
+    expect(within(screen).queryByTestId('ticket-opening')).toBeNull();
+    expect(within(screen).queryByTestId('ticket-read-error-dismiss')).toBeNull();
+  });
+
+  it('says a ticket could not be opened, and nothing about opening it', async () => {
+    install();
+    setBindingMock('SubscribeTrackerTicket', async () => { throw new TransportError('internal', 'the computer could not open it'); });
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await waitFor(() => expect(within(screen).getByTestId('ticket-subscribe-error')).toHaveTextContent('Could not open this ticket'));
+    expect(within(screen).queryByTestId('ticket-opening')).toBeNull();
+  });
+
+  it('says once that a ticket\'s connection was turned off', async () => {
+    install();
+    setBindingMock('SubscribeTrackerTicket', async () => { throw new TransportError('tracker_connection_off', 'this tracker connection is turned off'); });
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await waitFor(() => expect(within(screen).getByTestId('ticket-ended-empty')).toBeInTheDocument());
+    expect(within(screen).queryByTestId('ticket-ended')).toBeNull();
+  });
+
+  it('says once that the computer is not connected while its ticket covers the board', async () => {
+    install();
+    installTicket();
+    const view = mount();
+    await openCard(view, '1');
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null });
+    await waitFor(() => expect(view.getByTestId('ticket-offline')).toBeInTheDocument());
+    expect(view.queryByTestId('issues-board-offline')).toBeNull();
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+    await waitFor(() => expect(view.queryByTestId('ticket-offline')).toBeNull());
+    await fireEvent.click(view.getByTestId('ticket-close'));
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null });
+    expect(await view.findByTestId('issues-board-offline')).toBeInTheDocument();
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+  });
+
+  it('changes the type from the mark in the ticket\'s header', async () => {
+    install();
+    installTicket();
+    const choices = setBindingMock('TrackerChoices', async () => ({ choices: [{ id: 't1', name: 'Task' }, { id: 't2', name: 'Bug' }] }));
+    const edit = setBindingMock('EditTrackerIssue', async (): Promise<WriteView> => ({ parts: [{ step: 'edit', state: 'applied' }] }) as WriteView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const mark = within(screen).getByTestId('ticket-type-mark');
+    expect(mark.tagName).toBe('BUTTON');
+    await fireEvent.click(mark);
+    const items = await waitFor(() => {
+      const found = within(menu()).getAllByTestId('ticket-picker-item');
+      expect(found).toHaveLength(2);
+      return found;
+    });
+    expect(choices).toHaveBeenCalledWith('c1', { issue: '1' }, 'type', '');
+    await fireEvent.click(items[1]);
+    await waitFor(() => expect(edit).toHaveBeenCalledWith('c1', { issue: '1', fields: [{ field: 'type', value: { kind: 'option', choices: [{ id: 't2' }] } }], accept_loss: false }));
+  });
+
+  it('steps back or closes the whole trail from the ticket\'s menu', async () => {
+    install();
+    installTicket((issue) => ticketDetail(issue, { parent: String(Number(issue) + 1) }));
+    const view = mount();
+    await openCard(view, '1');
+    for (const next of ['2', '3']) {
+      await fireEvent.click(await view.findByTestId('ticket-parent'));
+      await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe(next));
+    }
+    const openMenu = async () => {
+      await fireEvent.contextMenu(view.getByTestId('ticket-header'));
+      return within(document.body);
+    };
+    await fireEvent.click(await (await openMenu()).findByTestId('ticket-menu-back'));
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('2'));
+    const items = await openMenu();
+    expect(await items.findByTestId('ticket-menu-back')).toBeInTheDocument();
+    await fireEvent.click(items.getByTestId('ticket-menu-close'));
+    await waitFor(() => expect(view.queryByTestId('ticket-screen')).toBeNull());
+    // With no trail the menu closes and has no Back.
+    await openCard(view, '1');
+    const first = await openMenu();
+    await first.findByTestId('ticket-menu-close');
+    expect(first.queryByTestId('ticket-menu-back')).toBeNull();
+  });
+
+  it('fills a move\'s own fields from that move\'s values, one read per picker, and sends the move once with them', async () => {
+    install();
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      fields: [{ id: 'environment', name: 'Environment', kind: 'rich_text', editable: true, value: { kind: 'rich_text', texts: ['Old notes'] } }],
+      moves: [{
+        id: '31', name: 'Resolve', to: { id: 's3', name: 'Done', group: 'done' },
+        fields: [
+          { id: 'resolution', name: 'Resolution', kind: 'option', required: true, editable: true, value: {} },
+          { id: 'versions', name: 'Fix versions', kind: 'option', list: true, editable: true, value: {} },
+          { id: 'environment', name: 'Environment', kind: 'rich_text', editable: true, value: {} },
+        ],
+      }],
+    }) as unknown as DetailView);
+    const choices = setBindingMock('TrackerChoices', async (_c: string, _scope: unknown, field: string) => (field === 'resolution'
+      ? { choices: [{ id: '1', name: 'Fixed' }, { id: '2', name: 'Won\'t do' }] }
+      : { choices: [{ id: 'v1', name: '1.0' }, { id: 'v2', name: '1.1' }, { id: 'v3', name: '2.0' }] }));
+    const move = setBindingMock('MoveTrackerIssue', async (): Promise<WriteView> => ({ parts: [{ step: 'move', state: 'applied' }] }) as WriteView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const status = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'status')!;
+    await fireEvent.click(within(status).getByTestId('ticket-field-value'));
+    await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-item')));
+    const form = await within(screen).findByTestId('ticket-move-form');
+    const formField = (id: string) => within(form).getAllByTestId('ticket-field').find((f) => f.dataset.field === id)!;
+    // Resolution: the move's values, filtered here as the person types.
+    await fireEvent.click(within(formField('resolution')).getByTestId('ticket-field-value'));
+    await waitFor(() => expect(within(menu()).getAllByTestId('ticket-picker-item')).toHaveLength(2));
+    await fireEvent.input(within(document.body).getByTestId('ticket-picker-find'), { target: { value: 'fix' } });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(within(menu()).getAllByTestId('ticket-picker-item').map((i) => i.textContent?.trim())).toEqual(['Fixed']);
+    await fireEvent.click(within(menu()).getByTestId('ticket-picker-item'));
+    expect(choices.mock.calls).toEqual([['c1', { issue: '1', move: '31' }, 'resolution', '']]);
+    expect(within(formField('resolution')).getByTestId('ticket-field-value')).toHaveTextContent('Fixed');
+    // Fix versions holds several: each pick adds one.
+    await fireEvent.click(within(formField('versions')).getByTestId('ticket-field-value'));
+    await waitFor(() => expect(within(menu()).getAllByTestId('ticket-picker-item')).toHaveLength(3));
+    await fireEvent.click(within(menu()).getAllByTestId('ticket-picker-item')[0]);
+    await fireEvent.click(within(menu()).getAllByTestId('ticket-picker-item')[2]);
+    await fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    expect(within(formField('versions')).getByTestId('ticket-field-value')).toHaveTextContent('1.0, 2.0');
+    expect(choices).toHaveBeenCalledTimes(2);
+    // Environment is written as Markdown, from the text the ticket holds.
+    const environment = within(form).getByTestId('ticket-move-text');
+    expect(environment).toHaveValue('Old notes');
+    await fireEvent.input(environment, { target: { value: 'New notes' } });
+    await fireEvent.click(within(form).getByTestId('ticket-move-submit'));
+    await waitFor(() => expect(move).toHaveBeenCalledWith('c1', {
+      issue: '1', move: '31', accept_loss: false, fields: [
+        { field: 'resolution', value: { kind: 'option', choices: [{ id: '1' }] } },
+        { field: 'versions', value: { kind: 'option', choices: [{ id: 'v1' }, { id: 'v3' }] } },
+        { field: 'environment', markdown: { markdown: 'New notes', from: 'Old notes' } },
+      ],
+    }));
+    await waitFor(() => expect(within(screen).queryByTestId('ticket-move-form')).toBeNull());
+    expect(move).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a move\'s form and what it holds when the tracker refuses the move', async () => {
+    install();
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      moves: [{ id: '31', name: 'Resolve', to: { id: 's3', name: 'Done', group: 'done' }, fields: [{ id: 'resolution', name: 'Resolution', kind: 'option', required: true, editable: true, value: {} }] }],
+    }) as unknown as DetailView);
+    setBindingMock('TrackerChoices', async () => ({ choices: [{ id: '1', name: 'Fixed' }] }));
+    const move = setBindingMock('MoveTrackerIssue', async (): Promise<WriteView> => ({
+      parts: [{ step: 'move', state: 'refused', refusal: { reason: 'tracker', message: 'The workflow refused this move.' } }],
+    }) as WriteView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const status = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'status')!;
+    await fireEvent.click(within(status).getByTestId('ticket-field-value'));
+    await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-item')));
+    const form = await within(screen).findByTestId('ticket-move-form');
+    const resolution = within(form).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'resolution')!;
+    await fireEvent.click(within(resolution).getByTestId('ticket-field-value'));
+    await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-item')));
+    await fireEvent.click(within(form).getByTestId('ticket-move-submit'));
+    await waitFor(() => expect(within(status).getByTestId('ticket-write-outcome')).toHaveTextContent('The workflow refused this move.'));
+    expect(within(screen).getByTestId('ticket-move-form')).toBe(form);
+    expect(within(resolution).getByTestId('ticket-field-value')).toHaveTextContent('Fixed');
+    expect(move).toHaveBeenCalledTimes(1);
+  });
+
+  it('says a move needs a field the app cannot set, with the way to the tracker, and offers no Move', async () => {
+    install();
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      moves: [{
+        id: '31', name: 'Resolve', to: { id: 's3', name: 'Done', group: 'done' },
+        fields: [{ id: 'attachment', name: 'Attachment', kind: 'read_only', required: true, editable: false, value: {} }],
+      }],
+    }) as unknown as DetailView);
+    const move = setBindingMock('MoveTrackerIssue', async (): Promise<WriteView> => ({ parts: [{ step: 'move', state: 'applied' }] }) as WriteView);
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    const host = setBindingMock('OpenExternalURL', async () => undefined);
+    try {
+      const view = mount();
+      const screen = await openCard(view, '1');
+      const status = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'status')!;
+      await fireEvent.click(within(status).getByTestId('ticket-field-value'));
+      await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-item')));
+      const form = await within(screen).findByTestId('ticket-move-form');
+      expect(within(form).getByTestId('ticket-move-unsettable')).toHaveTextContent('Moving to Done needs Attachment, which the app cannot set. Open the ticket in the tracker to make this move.');
+      expect(within(form).queryByTestId('ticket-move-submit')).toBeNull();
+      await fireEvent.click(within(form).getByTestId('ticket-move-open-tracker'));
+      await waitFor(() => expect([...host.mock.calls, ...open.mock.calls].map((c) => c[0])).toEqual(['https://example.atlassian.net/browse/WEB-1']));
+      expect(move).not.toHaveBeenCalled();
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  it('offers Save anyway on a move only for the form refused: a change, Cancel or another move withdraws it, and an applied retry closes the form', async () => {
+    install();
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      moves: [{
+        id: '31', name: 'Resolve', to: { id: 's3', name: 'Done', group: 'done' },
+        fields: [
+          { id: 'resolution', name: 'Resolution', kind: 'option', required: true, editable: true, value: {} },
+          { id: 'environment', name: 'Environment', kind: 'rich_text', editable: true, value: {} },
+        ],
+      }],
+    }) as unknown as DetailView);
+    setBindingMock('TrackerChoices', async () => ({ choices: [{ id: '1', name: 'Fixed' }, { id: '2', name: 'Won\'t do' }] }));
+    const move = setBindingMock('MoveTrackerIssue', async (_c: string, input: { accept_loss: boolean }): Promise<WriteView> => (input.accept_loss
+      ? { parts: [{ step: 'move', state: 'applied' }] }
+      : { parts: [{ step: 'move', state: 'refused', refusal: { reason: 'loss', message: 'This edit would lose formatting.', lost: ['a table'] } }] }) as WriteView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const status = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'status')!;
+    const openForm = async () => {
+      await fireEvent.click(within(status).getByTestId('ticket-field-value'));
+      await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-item')));
+      return within(screen).findByTestId('ticket-move-form');
+    };
+    const pick = async (form: HTMLElement, name: string) => {
+      const resolution = within(form).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'resolution')!;
+      await fireEvent.click(within(resolution).getByTestId('ticket-field-value'));
+      const items = await waitFor(() => within(menu()).getAllByTestId('ticket-picker-item'));
+      await fireEvent.click(items.find((i) => i.textContent?.includes(name))!);
+    };
+    const refused = async (form: HTMLElement) => {
+      await fireEvent.click(within(form).getByTestId('ticket-move-submit'));
+      return waitFor(() => within(status).getByTestId('ticket-write-save-anyway'));
+    };
+    const offered = () => within(status).queryByTestId('ticket-write-save-anyway');
+    let form = await openForm();
+    await pick(form, 'Fixed');
+    await fireEvent.input(within(form).getByTestId('ticket-move-text'), { target: { value: 'Draft A' } });
+    await refused(form);
+    // A changed text, and a changed pick, withdraw it.
+    await fireEvent.input(within(form).getByTestId('ticket-move-text'), { target: { value: 'Draft B' } });
+    expect(offered()).toBeNull();
+    await refused(form);
+    await pick(form, 'Won\'t do');
+    expect(offered()).toBeNull();
+    // Cancel withdraws it and closes the form.
+    await refused(form);
+    await fireEvent.click(within(form).getByTestId('ticket-move-cancel'));
+    expect(within(screen).queryByTestId('ticket-move-form')).toBeNull();
+    expect(offered()).toBeNull();
+    expect(within(status).queryByTestId('ticket-write-outcome')).toBeNull();
+    // Picking the move again replaces the form and withdraws it.
+    form = await openForm();
+    await pick(form, 'Fixed');
+    await refused(form);
+    form = await openForm();
+    expect(offered()).toBeNull();
+    // Save anyway sends what was refused and closes the form once made.
+    await pick(form, 'Fixed');
+    await fireEvent.input(within(form).getByTestId('ticket-move-text'), { target: { value: 'Draft C' } });
+    const again = await refused(form);
+    const sent = move.mock.calls.length;
+    await fireEvent.click(again);
+    await waitFor(() => expect(move).toHaveBeenCalledTimes(sent + 1));
+    expect(move).toHaveBeenLastCalledWith('c1', {
+      issue: '1', move: '31', accept_loss: true, fields: [
+        { field: 'resolution', value: { kind: 'option', choices: [{ id: '1' }] } },
+        { field: 'environment', markdown: { markdown: 'Draft C', from: '' } },
+      ],
+    });
+    await waitFor(() => expect(within(screen).queryByTestId('ticket-move-form')).toBeNull());
+    expect(offered()).toBeNull();
+  });
+
+  it('takes no change to a move\'s form while its move is out, so the move made is what the form shows', async () => {
+    install();
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      moves: [{
+        id: '31', name: 'Resolve', to: { id: 's3', name: 'Done', group: 'done' },
+        fields: [
+          { id: 'resolution', name: 'Resolution', kind: 'option', required: true, editable: true, value: {} },
+          { id: 'environment', name: 'Environment', kind: 'rich_text', editable: true, value: {} },
+        ],
+      }],
+    }) as unknown as DetailView);
+    setBindingMock('TrackerChoices', async () => ({ choices: [{ id: '1', name: 'Fixed' }, { id: '2', name: 'Won\'t do' }] }));
+    let answer: ((view: WriteView) => void) | undefined;
+    const move = setBindingMock('MoveTrackerIssue', () => new Promise<WriteView>((resolve) => { answer = resolve; }));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const status = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'status')!;
+    await fireEvent.click(within(status).getByTestId('ticket-field-value'));
+    await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-item')));
+    const form = await within(screen).findByTestId('ticket-move-form');
+    const resolution = within(form).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'resolution')!;
+    const items = () => within(document.body).queryAllByTestId('ticket-picker-item');
+    await fireEvent.click(within(resolution).getByTestId('ticket-field-value'));
+    await fireEvent.click(await waitFor(() => items().find((i) => i.textContent?.includes('Fixed'))!));
+    await fireEvent.input(within(form).getByTestId('ticket-move-text'), { target: { value: 'Draft A' } });
+    // The picker is open again when Move is pressed.
+    await fireEvent.click(within(resolution).getByTestId('ticket-field-value'));
+    await waitFor(() => expect(items()).toHaveLength(2));
+    await fireEvent.click(within(form).getByTestId('ticket-move-submit'));
+    await waitFor(() => expect(answer).toBeDefined());
+    // While the move is out, neither the open picker nor the field takes a pick.
+    await waitFor(() => expect(items()).toHaveLength(0));
+    expect(within(resolution).getByTestId('ticket-field-value')).toBeDisabled();
+    await fireEvent.click(within(resolution).getByTestId('ticket-field-value'));
+    expect(items()).toHaveLength(0);
+    expect(within(form).getByTestId('ticket-move-text')).toBeDisabled();
+    expect(within(resolution).getByTestId('ticket-field-value')).toHaveTextContent('Fixed');
+    answer!({ parts: [{ step: 'move', state: 'applied' }] } as WriteView);
+    await waitFor(() => expect(within(screen).queryByTestId('ticket-move-form')).toBeNull());
+    expect(move).toHaveBeenCalledTimes(1);
+    expect(move).toHaveBeenCalledWith('c1', {
+      issue: '1', move: '31', accept_loss: false, fields: [
+        { field: 'resolution', value: { kind: 'option', choices: [{ id: '1' }] } },
+        { field: 'environment', markdown: { markdown: 'Draft A', from: '' } },
+      ],
+    });
+  });
+
+  it('offers no Save anyway for a move whose form went with its ticket closed while the move was out', async () => {
+    install();
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      moves: [{
+        id: '31', name: 'Resolve', to: { id: 's3', name: 'Done', group: 'done' },
+        fields: [{ id: 'environment', name: 'Environment', kind: 'rich_text', editable: true, value: {} }],
+      }],
+    }) as unknown as DetailView);
+    let answer: ((view: WriteView) => void) | undefined;
+    const move = setBindingMock('MoveTrackerIssue', () => new Promise<WriteView>((resolve) => { answer = resolve; }));
+    const view = mount();
+    let screen = await openCard(view, '1');
+    const status = () => within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'status')!;
+    await fireEvent.click(within(status()).getByTestId('ticket-field-value'));
+    await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-item')));
+    const form = await within(screen).findByTestId('ticket-move-form');
+    await fireEvent.input(within(form).getByTestId('ticket-move-text'), { target: { value: 'Draft A' } });
+    await fireEvent.click(within(form).getByTestId('ticket-move-submit'));
+    await waitFor(() => expect(answer).toBeDefined());
+    // Closed while the move is out, the form goes; reopened before the refusal lands.
+    await fireEvent.click(view.getByTestId('ticket-close'));
+    await waitFor(() => expect(view.queryByTestId('ticket-screen')).toBeNull());
+    screen = await openCard(view, '1');
+    expect(within(screen).queryByTestId('ticket-move-form')).toBeNull();
+    answer!({ parts: [{ step: 'move', state: 'refused', refusal: { reason: 'loss', message: 'This edit would lose formatting.', lost: ['a table'] } }] } as WriteView);
+    await waitFor(() => expect(within(status()).getByTestId('ticket-write-outcome')).toHaveTextContent('This edit would lose formatting.'));
+    expect(within(status()).queryByTestId('ticket-write-save-anyway')).toBeNull();
+    expect(move).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts a move\'s Description from the description the ticket shows, and keeps that as its edit base', async () => {
+    install();
+    const detail = (issue: string, description: string) => ({
+      ...ticketDetail(issue),
+      description,
+      moves: [{
+        id: '31', name: 'Resolve', to: { id: 's3', name: 'Done', group: 'done' },
+        fields: [{ id: 'description', name: 'Description', kind: 'rich_text', editable: true, value: {} }],
+      }],
+    }) as unknown as DetailView;
+    installTicket((issue) => detail(issue, 'The description'));
+    setBindingMock('TrackerTicket', async () => ({ loaded: true, detail: detail('1', 'Changed elsewhere') }));
+    const move = setBindingMock('MoveTrackerIssue', async (): Promise<WriteView> => ({ parts: [{ step: 'move', state: 'applied' }] }) as WriteView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const status = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'status')!;
+    await fireEvent.click(within(status).getByTestId('ticket-field-value'));
+    await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-item')));
+    const form = await within(screen).findByTestId('ticket-move-form');
+    const text = within(form).getByTestId('ticket-move-text');
+    expect(text).toHaveValue('The description');
+    // The ticket is read again meanwhile: the edit is still from what the
+    // form started from.
+    trackerIssueUpdated({ connection: 'c1', issue: '1', seq: 11, changed: true }, HOME_BACKEND);
+    const description = within(screen).getAllByTestId('ticket-section').find((s) => s.dataset.field === 'description')!;
+    await waitFor(() => expect(within(description).getByTestId('ticket-section-text')).toHaveTextContent('Changed elsewhere'));
+    expect(text).toHaveValue('The description');
+    await fireEvent.input(text, { target: { value: 'The description, edited' } });
+    await fireEvent.click(within(form).getByTestId('ticket-move-submit'));
+    await waitFor(() => expect(move).toHaveBeenCalledWith('c1', {
+      issue: '1', move: '31', accept_loss: false, fields: [{ field: 'description', markdown: { markdown: 'The description, edited', from: 'The description' } }],
+    }));
+  });
+
+  it('keeps every comment loaded once a posted comment moves the first page past an older page', async () => {
+    install();
+    const comment = (n: number) => ({ id: `c${n}`, author: { id: 'u1', name: 'User 1' }, body: `Comment ${n}`, created: 1_000 + n }) as CommentView;
+    // Jira's pages: the newest 50, and the token T reads comments 1 to T.
+    const newest = (last: number) => ({ ...ticketDetail('1'), comments: Array.from({ length: 50 }, (_, i) => comment(last - i)), more_comments: String(last - 50) }) as DetailView;
+    installTicket(() => newest(51));
+    const pages = setBindingMock('TrackerComments', async (_c: string, _i: string, token: string) => ({
+      comments: Array.from({ length: Number(token) }, (_, i) => comment(Number(token) - i)), next: '',
+    }));
+    setBindingMock('TrackerTicket', async () => ({ loaded: true, detail: newest(52) }));
+    setBindingMock('AddTrackerComment', async (): Promise<WriteView> => {
+      trackerIssueUpdated({ connection: 'c1', issue: '1', seq: 11, changed: true }, HOME_BACKEND);
+      return { parts: [{ step: 'comment', state: 'applied' }] } as WriteView;
+    });
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const mounted = () => within(screen).queryAllByTestId('ticket-comment').map((c) => c.dataset.comment);
+    await waitFor(() => expect(mounted()).toHaveLength(5));
+    for (let i = 0; i < 4 && within(screen).queryByTestId('ticket-comments-earlier'); i++) {
+      const before = mounted().length;
+      await fireEvent.click(within(screen).getByTestId('ticket-comments-earlier'));
+      await waitFor(() => expect(mounted().length).toBeGreaterThan(before));
+    }
+    expect(mounted()).toEqual(Array.from({ length: 51 }, (_, i) => `c${i + 1}`));
+    expect(pages.mock.calls.map((c) => c[2])).toEqual(['1']);
+    await fireEvent.input(within(screen).getByTestId('ticket-comment-input'), { target: { value: 'Comment 52' } });
+    await fireEvent.click(within(screen).getByTestId('ticket-comment-send'));
+    await waitFor(() => expect(mounted()).toEqual(Array.from({ length: 52 }, (_, i) => `c${i + 1}`)));
+    await waitFor(() => expect(within(screen).getByTestId('ticket-comment-input')).toHaveValue(''));
+    // One read of the page now before the first: the one page held.
+    expect(pages.mock.calls.map((c) => c[2])).toEqual(['1', '2']);
+    expect(within(screen).queryByTestId('ticket-comments-earlier')).toBeNull();
+  });
+
+  it('searches for text typed before the first answer said the list holds more, and drops an older search\'s answer', async () => {
+    install();
+    installTicket();
+    let first: ((list: unknown) => void) | undefined;
+    const searches = new Map<string, { resolve: (list: unknown) => void; reject: (err: unknown) => void }>();
+    const choices = setBindingMock('TrackerChoices', (_c: string, _s: unknown, _f: string, text: string) => new Promise((resolve, reject) => {
+      if (text === '') first = resolve;
+      else searches.set(text, { resolve, reject });
+    }));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const priority = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'priority')!;
+    await fireEvent.click(within(priority).getByTestId('ticket-field-value'));
+    const find = await waitFor(() => within(document.body).getByTestId('ticket-picker-find'));
+    // Pasted before the opening read answers.
+    await fireEvent.input(find, { target: { value: 'Option 77' } });
+    await waitFor(() => expect(first).toBeDefined());
+    first!({ choices: Array.from({ length: 50 }, (_, i) => ({ id: `o${i}`, name: `Option ${i}` })), more: true });
+    await waitFor(() => expect(searches.has('Option 77')).toBe(true));
+    const items = () => within(menu()).queryAllByTestId('ticket-picker-item').map((i) => i.textContent?.trim());
+    expect(within(document.body).queryByTestId('ticket-picker-none')).toBeNull();
+    searches.get('Option 77')!.resolve({ choices: [{ id: 'o77', name: 'Option 77' }] });
+    await waitFor(() => expect(items()).toEqual(['Option 77']));
+    // The search for "Re" fails after the person typed on: nothing of it shows.
+    await fireEvent.input(find, { target: { value: 'Re' } });
+    await waitFor(() => expect(searches.has('Re')).toBe(true));
+    await fireEvent.input(find, { target: { value: 'Rel' } });
+    searches.get('Re')!.reject(new Error('The tracker did not answer'));
+    searches.get('Re')!.resolve({ choices: [] });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(within(document.body).queryByTestId('ticket-picker-error')).toBeNull();
+    await waitFor(() => expect(searches.has('Rel')).toBe(true));
+    searches.get('Rel')!.resolve({ choices: [{ id: 'r1', name: 'Release 1' }] });
+    await waitFor(() => expect(items()).toEqual(['Release 1']));
+    expect(choices.mock.calls.map((c) => c[3])).toEqual(['', 'Option 77', 'Re', 'Rel']);
+  });
+
+  it('opens a card\'s ticket from the card\'s menu, and copies its key from it', async () => {
+    install();
+    installTicket();
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined);
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    const card = view.getAllByTestId('issues-card').find((c) => c.dataset.issue === '2')!;
+    await fireEvent.contextMenu(card);
+    await fireEvent.click(await within(document.body).findByTestId('issues-card-menu-copy-key'));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('WEB-2'));
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(within(document.body).queryByTestId('issues-card-menu-copy-key')).toBeNull();
+    writeText.mockRestore();
+    await fireEvent.contextMenu(card);
+    await fireEvent.click(await within(document.body).findByTestId('issues-card-menu-open'));
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('2'));
+  });
+
+  it('closes a comment\'s editor once Save anyway sends the edit that would lose content', async () => {
+    install();
+    installTicket((issue) => ticketDetail(issue, { comments: 1 }));
+    const edit = setBindingMock('EditTrackerComment', async (_c: string, input: { accept_loss: boolean }): Promise<WriteView> => (input.accept_loss
+      ? { parts: [{ step: 'comment', state: 'applied' }] }
+      : { parts: [{ step: 'comment', state: 'refused', refusal: { reason: 'loss', message: 'This edit would lose formatting.', lost: ['a table'] } }] }) as WriteView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const comment = await waitFor(() => within(screen).getByTestId('ticket-comment'));
+    await fireEvent.contextMenu(comment);
+    await fireEvent.click(await within(document.body).findByTestId('ticket-comment-menu-edit'));
+    await fireEvent.input(within(comment).getByTestId('ticket-comment-editor'), { target: { value: 'Plain now' } });
+    await fireEvent.click(within(comment).getByTestId('ticket-comment-save'));
+    const again = await waitFor(() => within(comment).getByTestId('ticket-write-save-anyway'));
+    expect(within(comment).getByTestId('ticket-comment-editor')).toHaveValue('Plain now');
+    await fireEvent.click(again);
+    await waitFor(() => expect(edit).toHaveBeenLastCalledWith('c1', { issue: '1', comment: 'c1', markdown: 'Plain now', from: 'Comment 1', accept_loss: true }));
+    expect(edit).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(within(comment).queryByTestId('ticket-comment-editor')).toBeNull());
+    expect(within(comment).queryByTestId('ticket-write-outcome')).toBeNull();
+  });
+
+  it('withdraws Save anyway once the description is changed or the edit canceled, and checks a revised text again', async () => {
+    install();
+    installTicket();
+    const loss = { parts: [{ step: 'edit', state: 'refused', refusal: { reason: 'loss', message: 'This edit would lose formatting.', lost: ['a table'] } }] } as WriteView;
+    const edit = setBindingMock('EditTrackerIssue', async (): Promise<WriteView> => loss);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const description = within(screen).getAllByTestId('ticket-section').find((s) => s.dataset.field === 'description')!;
+    const editor = async () => {
+      await fireEvent.click(within(description).getByTestId('ticket-section-edit'));
+      return within(description).getByTestId('ticket-section-editor');
+    };
+    await fireEvent.input(await editor(), { target: { value: 'Draft A' } });
+    await fireEvent.click(within(description).getByTestId('ticket-section-save'));
+    await waitFor(() => within(description).getByTestId('ticket-write-save-anyway'));
+    // The person revises the text: the consent was for Draft A.
+    await fireEvent.input(within(description).getByTestId('ticket-section-editor'), { target: { value: 'Draft B' } });
+    expect(within(description).queryByTestId('ticket-write-save-anyway')).toBeNull();
+    await fireEvent.click(within(description).getByTestId('ticket-section-save'));
+    await waitFor(() => expect(edit).toHaveBeenCalledTimes(2));
+    expect(edit).toHaveBeenLastCalledWith('c1', { issue: '1', fields: [{ field: 'description', markdown: { markdown: 'Draft B', from: 'The description' } }], accept_loss: false });
+    await waitFor(() => within(description).getByTestId('ticket-write-save-anyway'));
+    // Cancel withdraws it too, and the restored text offers nothing.
+    await fireEvent.click(within(description).getByTestId('ticket-section-cancel'));
+    expect(within(description).queryByTestId('ticket-write-save-anyway')).toBeNull();
+    expect(within(description).queryByTestId('ticket-write-outcome')).toBeNull();
+    expect(edit).toHaveBeenCalledTimes(2);
+  });
+
+  it('offers no Save anyway for a description edit that went with its ticket closed while it was saving', async () => {
+    install();
+    installTicket();
+    let answer: ((view: WriteView) => void) | undefined;
+    const edit = setBindingMock('EditTrackerIssue', () => new Promise<WriteView>((resolve) => { answer = resolve; }));
+    const view = mount();
+    let screen = await openCard(view, '1');
+    const description = () => within(screen).getAllByTestId('ticket-section').find((s) => s.dataset.field === 'description')!;
+    await fireEvent.click(within(description()).getByTestId('ticket-section-edit'));
+    await fireEvent.input(within(description()).getByTestId('ticket-section-editor'), { target: { value: 'Draft A' } });
+    await fireEvent.click(within(description()).getByTestId('ticket-section-save'));
+    await waitFor(() => expect(answer).toBeDefined());
+    // Closed while it saves, the edit goes; reopened before the refusal lands.
+    await fireEvent.click(view.getByTestId('ticket-close'));
+    await waitFor(() => expect(view.queryByTestId('ticket-screen')).toBeNull());
+    screen = await openCard(view, '1');
+    expect(within(description()).queryByTestId('ticket-section-editor')).toBeNull();
+    answer!({ parts: [{ step: 'edit', state: 'refused', refusal: { reason: 'loss', message: 'This edit would lose formatting.', lost: ['a table'] } }] } as WriteView);
+    await waitFor(() => expect(within(description()).getByTestId('ticket-write-outcome')).toHaveTextContent('This edit would lose formatting.'));
+    expect(within(description()).queryByTestId('ticket-write-save-anyway')).toBeNull();
+    expect(edit).toHaveBeenCalledTimes(1);
+  });
+
+  it('withdraws Save anyway once a comment\'s edit is changed or canceled', async () => {
+    install();
+    installTicket((issue) => ticketDetail(issue, { comments: 1 }));
+    const edit = setBindingMock('EditTrackerComment', async (): Promise<WriteView> => ({
+      parts: [{ step: 'comment', state: 'refused', refusal: { reason: 'loss', message: 'This edit would lose formatting.', lost: ['a table'] } }],
+    }) as WriteView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const comment = await waitFor(() => within(screen).getByTestId('ticket-comment'));
+    const startEdit = async () => {
+      await fireEvent.contextMenu(comment);
+      await fireEvent.click(await within(document.body).findByTestId('ticket-comment-menu-edit'));
+    };
+    await startEdit();
+    await fireEvent.input(within(comment).getByTestId('ticket-comment-editor'), { target: { value: 'Draft A' } });
+    await fireEvent.click(within(comment).getByTestId('ticket-comment-save'));
+    await waitFor(() => within(comment).getByTestId('ticket-write-save-anyway'));
+    await fireEvent.input(within(comment).getByTestId('ticket-comment-editor'), { target: { value: 'Draft B' } });
+    expect(within(comment).queryByTestId('ticket-write-save-anyway')).toBeNull();
+    await fireEvent.click(within(comment).getByTestId('ticket-comment-save'));
+    await waitFor(() => within(comment).getByTestId('ticket-write-save-anyway'));
+    expect(edit).toHaveBeenLastCalledWith('c1', { issue: '1', comment: 'c1', markdown: 'Draft B', from: 'Comment 1', accept_loss: false });
+    await fireEvent.click(within(comment).getByTestId('ticket-comment-cancel'));
+    expect(within(comment).queryByTestId('ticket-write-save-anyway')).toBeNull();
+    expect(edit).toHaveBeenCalledTimes(2);
+  });
+
+  it('steps back through the tickets opened from one another, at most 20, then closes; Close and a board pick leave at once', async () => {
+    install();
+    // Each ticket's parent is the next issue.
+    const ticket = installTicket((issue) => ticketDetail(issue, { parent: String(Number(issue) + 1) }));
+    clearCommandRegistry();
+    registerIssuesCommands();
+    const escape = () => runCommand('issues.escape', { pane: null, paneId: null, flags: { issuesPaneFocused: true, toolDetailOpen: true } } as unknown as CommandContext);
+    const view = mount();
+    await openCard(view, '1');
+    for (let i = 2; i <= 23; i += 1) {
+      await fireEvent.click(await view.findByTestId('ticket-parent'));
+      await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe(String(i)));
+    }
+    expect(ticket.subscribe).toHaveBeenCalledTimes(23);
+    // Back returns through the 20 tickets before this one: 22 to 3.
+    const back: string[] = [];
+    for (let i = 0; i < 20; i += 1) {
+      if (i % 2 === 0) await fireEvent.click(view.getByTestId('ticket-back'));
+      else escape();
+      await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe(String(22 - i)));
+      back.push(view.getByTestId('ticket-screen').dataset.issue!);
+    }
+    expect(back[0]).toBe('22');
+    expect(back.at(-1)).toBe('3');
+    // With none left to step back to, Back closes the ticket.
+    expect(view.queryByTestId('ticket-back')).toBeNull();
+    escape();
+    await waitFor(() => expect(view.queryByTestId('ticket-screen')).toBeNull());
+
+    // Close leaves at once, whatever the trail.
+    await openCard(view, '1');
+    await fireEvent.click(await view.findByTestId('ticket-parent'));
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('2'));
+    await fireEvent.click(view.getByTestId('ticket-close'));
+    await waitFor(() => expect(view.queryByTestId('ticket-screen')).toBeNull());
+
+    // A pick of another board drops the ticket and its trail.
+    await openCard(view, '1');
+    await fireEvent.click(view.getByTestId('issues-board-picker'));
+    await fireEvent.click(within(menu()).getAllByTestId('issues-board-choice')[1]);
+    await waitFor(() => expect(view.queryByTestId('ticket-screen')).toBeNull());
+    clearCommandRegistry();
+  });
+
+  it('shows the linked tickets grouped by relation, each opening its ticket that Back returns from', async () => {
+    install();
+    const linked = (id: string, relation: string) => ({
+      id: `l${id}`, type: '10000', relation, issue: { id, key: `WEB-${id}`, title: `Issue ${id}`, status: { id: 's1', name: 'To Do', group: 'todo' } },
+    });
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      links: issue === '1' ? [linked('2', 'blocks'), linked('3', 'is blocked by'), linked('4', 'blocks')] : [],
+    }) as unknown as DetailView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const groups = await waitFor(() => {
+      const found = within(screen).getAllByTestId('ticket-link-group');
+      expect(found).toHaveLength(2);
+      return found;
+    });
+    expect(groups.map((g) => [
+      within(g).getByTestId('ticket-link-relation').textContent,
+      within(g).getAllByTestId('ticket-link').map((l) => l.textContent?.replace(/\s+/g, ' ').trim()),
+    ])).toEqual([
+      ['blocks', ['WEB-2 Issue 2', 'WEB-4 Issue 4']],
+      ['is blocked by', ['WEB-3 Issue 3']],
+    ]);
+    await fireEvent.click(within(groups[1]).getByTestId('ticket-link'));
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('3'));
+    await fireEvent.click(view.getByTestId('ticket-back'));
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('1'));
+  });
+
+  it('mounts the newest 20 changes of the history and 20 more a press, ordering them once', async () => {
+    install();
+    // Oldest first, as a changelog lists them, with two out of order.
+    const history = Array.from({ length: 50 }, (_, i) => ({ at: 1_000 + i, field: `f${i}`, to: `v${i}` }));
+    [history[10], history[11]] = [history[11], history[10]];
+    installTicket((issue) => ({ ...ticketDetail(issue), history }) as unknown as DetailView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await fireEvent.click(within(screen).getByRole('radio', { name: 'History' }));
+    const fields = () => within(screen).queryAllByTestId('ticket-history-event').map((e) => e.textContent?.match(/changed (f\d+)/)?.[1]);
+    await waitFor(() => expect(fields()).toHaveLength(20));
+    expect(fields().slice(0, 2)).toEqual(['f49', 'f48']);
+    const sort = vi.spyOn(Array.prototype, 'sort');
+    try {
+      await fireEvent.click(within(screen).getByTestId('ticket-history-earlier'));
+      await waitFor(() => expect(fields()).toHaveLength(40));
+      await fireEvent.click(within(screen).getByTestId('ticket-history-earlier'));
+      await waitFor(() => expect(fields()).toHaveLength(50));
+      expect(sort).not.toHaveBeenCalled();
+    } finally {
+      sort.mockRestore();
+    }
+    expect(fields().slice(37, 41)).toEqual(['f12', 'f11', 'f10', 'f9']);
+  });
+
+  it('shows an applied edit or delete of an older page\'s comment, re-reading that page for an edit only', async () => {
+    install();
+    installTicket((issue) => ticketDetail(issue, { comments: 50, more: '50' }));
+    // Read again, the first page is the same: no write here adds a comment
+    // past it or takes one from it.
+    setBindingMock('TrackerTicket', async () => ({ loaded: true, detail: ticketDetail('1', { comments: 50, more: '50' }) }));
+    // The tracker's older page: what it holds changes with the writes.
+    const older = Array.from({ length: 10 }, (_, i) => ({ id: `old${i}`, author: { id: 'u1', name: 'User 1' }, body: `Older ${i}`, created: 900 - i }));
+    const page = setBindingMock('TrackerComments', async (_c: string, _i: string, token: string) => {
+      expect(token).toBe('50');
+      return { comments: older.map((c) => ({ ...c })), next: '' };
+    });
+    setBindingMock('EditTrackerComment', async (_c: string, input: { comment: string; markdown: string }): Promise<WriteView> => {
+      older.find((c) => c.id === input.comment)!.body = input.markdown;
+      return { parts: [{ step: 'comment', state: 'applied' }] } as WriteView;
+    });
+    setBindingMock('DeleteTrackerComment', async (_c: string, input: { comment: string }): Promise<WriteView> => {
+      older.splice(older.findIndex((c) => c.id === input.comment), 1);
+      return { parts: [{ step: 'comment', state: 'applied' }] } as WriteView;
+    });
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await within(screen).findAllByTestId('ticket-comment');
+    for (let i = 0; i < 3; i += 1) await fireEvent.click(within(screen).getByTestId('ticket-comments-earlier'));
+    await waitFor(() => expect(page).toHaveBeenCalledTimes(1));
+    const comment = (id: string) => waitFor(() => {
+      const found = within(screen).getAllByTestId('ticket-comment').find((c) => c.dataset.comment === id);
+      expect(found).toBeDefined();
+      return found!;
+    });
+    // Edit an older comment.
+    const two = await comment('old2');
+    await fireEvent.contextMenu(two);
+    await fireEvent.click(await within(document.body).findByTestId('ticket-comment-menu-edit'));
+    await fireEvent.input(within(two).getByTestId('ticket-comment-editor'), { target: { value: 'Older 2, edited' } });
+    await fireEvent.click(within(two).getByTestId('ticket-comment-save'));
+    await waitFor(() => expect(within(two).getByTestId('ticket-comment-body')).toHaveTextContent('Older 2, edited'));
+    expect(page).toHaveBeenCalledTimes(2);
+    // Delete another.
+    const three = await comment('old3');
+    await fireEvent.contextMenu(three);
+    await fireEvent.click(await within(document.body).findByTestId('ticket-comment-menu-delete'));
+    await fireEvent.click(within(three).getByTestId('ticket-comment-delete'));
+    await waitFor(() => expect(within(screen).getAllByTestId('ticket-comment').map((c) => c.dataset.comment)).not.toContain('old3'));
+    expect(page).toHaveBeenCalledTimes(2);
+    // Refresh brings neither the old body nor the deleted comment back.
+    const refresh = setBindingMock('RefreshTrackerSubscription', async () => undefined);
+    await fireEvent.click(within(screen).getByTestId('ticket-refresh'));
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+    const read = getBindingMock('TrackerTicket')!;
+    const reads = read.mock.calls.length;
+    trackerIssueUpdated({ connection: 'c1', issue: '1', seq: 20, changed: true }, HOME_BACKEND);
+    await waitFor(() => expect(read.mock.calls.length).toBe(reads + 1));
+    await tick();
+    const ids = within(screen).getAllByTestId('ticket-comment').map((c) => c.dataset.comment);
+    expect(ids).not.toContain('old3');
+    expect((await comment('old2')).textContent).toContain('Older 2, edited');
+  });
+
+  it('drops an older page whose re-read after an edit failed, and reads it again from the control', async () => {
+    install();
+    installTicket((issue) => ticketDetail(issue, { comments: 50, more: '50' }));
+    const older = Array.from({ length: 10 }, (_, i) => ({ id: `old${i}`, author: { id: 'u1', name: 'User 1' }, body: `Older ${i}`, created: 900 - i }));
+    let fail = false;
+    const page = setBindingMock('TrackerComments', async () => {
+      if (fail) throw new TransportError('timeout', 'Jira did not answer in time');
+      return { comments: older.map((c) => ({ ...c })), next: '' };
+    });
+    setBindingMock('EditTrackerComment', async (_c: string, input: { comment: string; markdown: string }): Promise<WriteView> => {
+      older.find((c) => c.id === input.comment)!.body = input.markdown;
+      fail = true;
+      return { parts: [{ step: 'comment', state: 'applied' }] } as WriteView;
+    });
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await within(screen).findAllByTestId('ticket-comment');
+    for (let i = 0; i < 3; i += 1) await fireEvent.click(within(screen).getByTestId('ticket-comments-earlier'));
+    const two = await waitFor(() => {
+      const found = within(screen).getAllByTestId('ticket-comment').find((c) => c.dataset.comment === 'old2');
+      expect(found).toBeDefined();
+      return found!;
+    });
+    await fireEvent.contextMenu(two);
+    await fireEvent.click(await within(document.body).findByTestId('ticket-comment-menu-edit'));
+    await fireEvent.input(within(two).getByTestId('ticket-comment-editor'), { target: { value: 'Older 2, edited' } });
+    await fireEvent.click(within(two).getByTestId('ticket-comment-save'));
+    await waitFor(() => expect(within(screen).getByTestId('ticket-comments-earlier-error')).toHaveTextContent('Jira did not answer in time'));
+    expect(within(screen).getAllByTestId('ticket-comment').map((c) => c.dataset.comment).filter((id) => id?.startsWith('old'))).toEqual([]);
+    fail = false;
+    await fireEvent.click(within(screen).getByTestId('ticket-comments-earlier'));
+    await waitFor(() => expect((within(screen).getAllByTestId('ticket-comment').find((c) => c.dataset.comment === 'old2'))?.textContent).toContain('Older 2, edited'));
+    expect(page).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps unsent text and open editors across a switch to History and back', async () => {
+    install();
+    installTicket((issue) => ticketDetail(issue, { comments: 1 }));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await fireEvent.input(await within(screen).findByTestId('ticket-comment-input'), { target: { value: 'A new comment' } });
+    const comment = within(screen).getByTestId('ticket-comment');
+    await fireEvent.contextMenu(comment);
+    await fireEvent.click(await within(document.body).findByTestId('ticket-comment-menu-edit'));
+    await fireEvent.input(within(comment).getByTestId('ticket-comment-editor'), { target: { value: 'Comment 1, half edited' } });
+    await fireEvent.click(within(screen).getByRole('radio', { name: 'History' }));
+    await waitFor(() => expect(within(screen).queryByTestId('ticket-comments')).toBeNull());
+    await fireEvent.click(within(screen).getByRole('radio', { name: 'Comments' }));
+    expect(await within(screen).findByTestId('ticket-comment-input')).toHaveValue('A new comment');
+    expect(within(screen).getByTestId('ticket-comment-editor')).toHaveValue('Comment 1, half edited');
+  });
+
+  it('keeps unsent text and its edit base across a dropped connection to the ticket\'s computer', async () => {
+    install();
+    const ticket = installTicket((issue) => ticketDetail(issue, { comments: 1 }));
+    const edit = setBindingMock('EditTrackerIssue', async (): Promise<WriteView> => ({ parts: [{ step: 'edit', state: 'applied' }] }) as WriteView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const description = () => within(view.getByTestId('ticket-screen')).getAllByTestId('ticket-section').find((s) => s.dataset.field === 'description')!;
+    await fireEvent.click(within(description()).getByTestId('ticket-section-edit'));
+    await fireEvent.input(within(description()).getByTestId('ticket-section-editor'), { target: { value: 'A better description' } });
+    await fireEvent.input(within(screen).getByTestId('ticket-comment-input'), { target: { value: 'A new comment' } });
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null });
+    await waitFor(() => expect(view.queryByTestId('ticket-comment-input')).toBeNull());
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+    await waitFor(() => expect(ticket.subscribe).toHaveBeenCalledTimes(2));
+    expect(await view.findByTestId('ticket-comment-input')).toHaveValue('A new comment');
+    expect(within(description()).getByTestId('ticket-section-editor')).toHaveValue('A better description');
+    await fireEvent.click(within(description()).getByTestId('ticket-section-save'));
+    await waitFor(() => expect(edit).toHaveBeenCalledWith('c1', { issue: '1', fields: [{ field: 'description', markdown: { markdown: 'A better description', from: 'The description' } }], accept_loss: false }));
+    await waitFor(() => expect(within(description()).queryByTestId('ticket-section-editor')).toBeNull());
+  });
+
+  it('keeps a ticket\'s unsent comment while it is on the Back trail, and drops it once the ticket leaves the trail', async () => {
+    install();
+    installTicket((issue) => ticketDetail(issue, { parent: String(Number(issue) + 1) }));
+    const view = mount();
+    await openCard(view, '1');
+    await fireEvent.input(await view.findByTestId('ticket-comment-input'), { target: { value: 'Unsent on WEB-1' } });
+    await fireEvent.click(view.getByTestId('ticket-parent'));
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('2'));
+    expect(await view.findByTestId('ticket-comment-input')).toHaveValue('');
+    await fireEvent.click(view.getByTestId('ticket-back'));
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('1'));
+    expect(await view.findByTestId('ticket-comment-input')).toHaveValue('Unsent on WEB-1');
+    await fireEvent.click(view.getByTestId('ticket-close'));
+    await waitFor(() => expect(view.queryByTestId('ticket-screen')).toBeNull());
+    await openCard(view, '1');
+    expect(await view.findByTestId('ticket-comment-input')).toHaveValue('');
+    // Twenty tickets on from WEB-1, it leaves the trail, and its text goes.
+    await fireEvent.input(view.getByTestId('ticket-comment-input'), { target: { value: 'Unsent on WEB-1' } });
+    for (let i = 2; i <= 21; i += 1) {
+      await fireEvent.click(await view.findByTestId('ticket-parent'));
+      await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe(String(i)));
+    }
+    expect(ticketDraft(trackerTicketKey({ backend: HOME_BACKEND, connection: 'c1', issue: '1' }), 'new-comment')?.text).toBe('Unsent on WEB-1');
+    await fireEvent.click(await view.findByTestId('ticket-parent'));
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('22'));
+    expect(ticketDraft(trackerTicketKey({ backend: HOME_BACKEND, connection: 'c1', issue: '1' }), 'new-comment')).toBeNull();
+    // A pane that closes lets its tickets' drafts go.
+    await fireEvent.input(view.getByTestId('ticket-comment-input'), { target: { value: 'Unsent on WEB-22' } });
+    expect(ticketDraft(trackerTicketKey({ backend: HOME_BACKEND, connection: 'c1', issue: '22' }), 'new-comment')?.text).toBe('Unsent on WEB-22');
+    view.unmount();
+    expect(ticketDraft(trackerTicketKey({ backend: HOME_BACKEND, connection: 'c1', issue: '22' }), 'new-comment')).toBeNull();
+  });
+
+  it('lets the earlier comments be read again after the connection dropped while a page was being read', async () => {
+    install();
+    const ticket = installTicket((issue) => ticketDetail(issue, { comments: 3, more: 'page-2' }));
+    let answer: ((page: { comments: CommentView[]; next: string }) => void) | null = null;
+    setBindingMock('TrackerComments', () => new Promise((resolve) => { answer = resolve; }));
+    const view = mount();
+    await openCard(view, '1');
+    await fireEvent.click(await view.findByTestId('ticket-comments-earlier'));
+    await waitFor(() => expect(view.getByTestId('ticket-comments-earlier')).toBeDisabled());
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null });
+    await waitFor(() => expect(view.queryByTestId('ticket-comments-earlier')).toBeNull());
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+    await waitFor(() => expect(ticket.subscribe).toHaveBeenCalledTimes(2));
+    const control = await view.findByTestId('ticket-comments-earlier');
+    expect(control).toBeEnabled();
+    expect(control).toHaveTextContent('Show earlier comments');
+    answer!({ comments: [], next: '' });
+  });
+
+  it('mounts the newest five comments and the earlier ones 20 a press, reading the next page once the held ones run out', async () => {
+    install();
+    installTicket((issue) => ticketDetail(issue, { comments: 30, more: 'page-2' }));
+    const page = setBindingMock('TrackerComments', async () => ({
+      comments: Array.from({ length: 10 }, (_, i) => ({ id: `old${i}`, author: { id: 'u1', name: 'User 1' }, body: `Older ${i}`, created: 900 - i })),
+      next: '',
+    }));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const mounted = () => within(screen).queryAllByTestId('ticket-comment').map((c) => c.dataset.comment);
+    await waitFor(() => expect(mounted()).toEqual(['c26', 'c27', 'c28', 'c29', 'c30']));
+    expect(within(screen).getByTestId('ticket-comments-earlier')).toHaveTextContent('Show 20 earlier comments');
+    await fireEvent.click(within(screen).getByTestId('ticket-comments-earlier'));
+    await waitFor(() => expect(mounted()).toHaveLength(25));
+    expect(page).not.toHaveBeenCalled();
+    // Five held are left: the press reads the next page, then mounts 20.
+    await fireEvent.click(within(screen).getByTestId('ticket-comments-earlier'));
+    await waitFor(() => expect(mounted()).toHaveLength(40));
+    expect(page).toHaveBeenCalledWith('c1', '1', 'page-2');
+    expect(mounted()[0]).toBe('old9');
+    expect(within(screen).queryByTestId('ticket-comments-earlier')).toBeNull();
   });
 });

@@ -84,7 +84,7 @@ func TestAStoreFailureIsTold(t *testing.T) {
 	if joined.Failure == nil || joined.View.Sync.Failure == nil || joined.Failure.Kind != string(FailureInternal) {
 		t.Fatalf("a joining board subscriber's answer %+v", joined.Failure)
 	}
-	ticket := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, issues[0], untied))
+	ticket := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, issues[0], true, untied))
 	if ticket.Failure == nil || ticket.Failure.Kind != string(FailureInternal) {
 		t.Fatalf("a joining ticket subscriber's answer %+v", ticket.Failure)
 	}
@@ -143,7 +143,7 @@ func TestAnOpenTicketWhoseBindIsNotTheIssuesStoresNoBody(t *testing.T) {
 		}
 	})
 	m.loseKeeps()
-	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "20001", untied))
+	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "20001", true, untied))
 	m.settledTickets(t)
 	if _, _, ok := m.storedDetail(t, "20001"); ok {
 		t.Fatal("the mirror holds the detail of a read under a bind that is not the issue's")

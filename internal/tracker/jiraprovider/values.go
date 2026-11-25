@@ -48,12 +48,17 @@ func (p *Provider) CreateFields(ctx context.Context, project tracker.ProjectID, 
 	return out, nil
 }
 
-// screen is the edit screen of scope's issue, or the create screen of
-// its project and issue type.
+// screen is the screen of scope's move on its issue, the edit screen of
+// its issue, or the create screen of its project and issue type. A move's
+// screen is read with the issue's transitions, one request as the edit
+// screen is, and holds the fields and allowed values that move takes.
 func (p *Provider) screen(ctx context.Context, scope tracker.FieldScope) (jira.Screen, error) {
 	if issue, ok := scope.Issue(); ok {
 		if err := checkIssue(issue); err != nil {
 			return jira.Screen{}, err
+		}
+		if move, ok := scope.Move(); ok {
+			return p.moveScreen(ctx, issue, move)
 		}
 		screen, err := p.jira.EditMeta(ctx, string(issue))
 		if err != nil {
@@ -76,6 +81,19 @@ func (p *Provider) screen(ctx context.Context, scope tracker.FieldScope) (jira.S
 		return jira.Screen{}, fmt.Errorf("jiraprovider: create screen of %s type %s: %w", project, issueType, err)
 	}
 	return screen, nil
+}
+
+// moveScreen is the screen of move, a transition issue can make now.
+func (p *Provider) moveScreen(ctx context.Context, issue tracker.IssueID, move tracker.MoveID) (jira.Screen, error) {
+	ts, err := p.jira.Transitions(ctx, string(issue))
+	if err != nil {
+		return jira.Screen{}, fmt.Errorf("jiraprovider: moves of %s: %w", issue, err)
+	}
+	i := slices.IndexFunc(ts, func(t jira.Transition) bool { return t.ID == string(move) && t.Available })
+	if i < 0 {
+		return jira.Screen{}, invalidf("move %s is not one %s can make now", move, issue)
+	}
+	return ts[i].Fields, nil
 }
 
 // AssignableUsers are the users Jira says can be assigned in scope whose

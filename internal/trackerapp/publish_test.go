@@ -52,7 +52,7 @@ func TestATicksStoredPageIsToldBeforeItsNextCall(t *testing.T) {
 	m.p.set(func(p *scripted) {
 		p.detail = func(tracker.IssueID) (tracker.Detail, error) { return detailOfCard(seededCard()), nil }
 	})
-	must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001", untied))
+	must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001", true, untied))
 	m.settledTickets(t)
 	quiet(t, m.svc)
 	tp := m.svc.ticketPumpOf(m.conn.ID, "10001")
@@ -123,7 +123,7 @@ func TestACancelledRefreshTellsTheOpenTicketWhatItStored(t *testing.T) {
 	f := newWriteFixture(t)
 	f.subscribe(t, testBoard)
 	f.events.boardEvents(t, 1)
-	sub := must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001", untied))
+	sub := must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001", true, untied))
 	f.events.issueEvents(t, 1)
 	f.settledTickets(t)
 	_, issues, _ := f.events.snapshot()
@@ -227,7 +227,7 @@ func TestALinkedCardsWriteIsTold(t *testing.T) {
 			return tracker.Cards{Cards: []tracker.Card{first}}, nil
 		}
 	})
-	must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10005", untied))
+	must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10005", true, untied))
 	m.settledTickets(t)
 	must[Outcome](t)(m.svc.tickCards(t.Context(), m.conn.ID, Background))
 	quiet(t, m.svc)

@@ -1012,7 +1012,9 @@ No history being due costs no statement: the sync state the read takes
 says so.
 
 A ticket's view has one source, the issue's record in the mirror: its
-card and status time, its body, the cards of the issues the view shows
+card and status time, its body, its rows on the boards the mirror shows
+(each board's estimate and unit, `DetailView.Rows`, one statement for a
+build's tickets, `store.ListMirrorTicketRows`), the cards of the issues the view shows
 (its parent, the issues it links) and whether the mirror keeps them, and
 the connection's users and statuses (`trackerapp/ticket_view.go`). A
 read stores what it found and settles its outcome; every view a
@@ -1179,6 +1181,7 @@ named rows.
 | Patch read, 1 or 100 changed, totals moved | 8 | 9.9 to 10.0 ms | 39.2 to 41.7 ms |
 | Patch read, 1 or 100 changed, totals held | 5 | 0.07 to 0.81 ms | 0.06 to 0.70 ms |
 | Ticket open, stored | 13 | 0.32 ms | 0.37 ms |
+| Ticket rows of a view build, 16 tickets | 1 | 50 µs | 66 µs |
 | Jira round, 100 tickets, 10 changed | 21 | 5.9 ms | 6.0 ms |
 | Linear round, 100 tickets, 10 changed | 22 | 3.2 ms | 3.1 ms |
 | `New` | 0 | 11.2 ms | 10.6 ms |
@@ -1310,7 +1313,7 @@ selected computer.
 | `SetTrackerSubscriptionVisible(subscriptionID, visible)` | `SetSubscriptionVisible` | read | home |
 | `RefreshTrackerSubscription(subscriptionID)` | `RefreshSubscription` | read | home |
 | `ReleaseTrackerSubscription(subscriptionID)` | `ReleaseSubscription` | read | home |
-| `SubscribeTrackerTicket(connectionID, issue)` | `SubscribeTicket` | read | connection, caller-bound |
+| `SubscribeTrackerTicket(connectionID, issue, visible)` | `SubscribeTicket` | read | connection, caller-bound |
 | `TrackerTicket(subscriptionID)` | `TicketDetail` | read | home |
 | `MintTrackerAttachmentUploadTicket(connectionID, issue, filename, size)` | `AttachmentCeiling`, then the upload route's `Attach` | operate | connection |
 | `MintTrackerAttachmentDownloadTicket(subscriptionID, attachmentID)` | `TicketAttachment`, then the download route's `Download` | read | home |
@@ -1530,11 +1533,13 @@ to the client to read by page.
   64 board handles. The handle starts with
   `visible` as its vote. A pump made with every handle hidden makes no
   tracker call until a handle shows it or a person refreshes it
-  (`pump.Core.AwaitShown`). A ticket pump reads at once: its subscribe
-  carries no vote yet.
-- `SubscribeTicket(connection, issue, tie)` answers the same way with
-  the ticket's view built from the record, or the view its subscribers
-  were last told when its pump runs already; at most 64 ticket handles.
+  (`pump.Core.AwaitShown`).
+- `SubscribeTicket(connection, issue, visible, tie)` answers the same way
+  with the ticket's view built from the record, or the view its
+  subscribers were last told when its pump runs already; at most 64
+  ticket handles. The handle starts with `visible` as its vote, and a
+  ticket pump made with every handle hidden makes its first read once a
+  handle shows it or a person refreshes it, as a board's does.
   Both subscribes call their tie after the cap check and before a pump
   is made, and every removal of the handle unties it.
 - Both answers carry the failure the subscribers were last told, the
@@ -1919,17 +1924,21 @@ the `bindings.ts` wrappers of the connection methods, the two picker lists,
 `stores/trackerProjectBoards.svelte.ts`), and the Issues pane's Board
 screen, with the `bindings.ts` wrappers of `TrackerBoardChoices` and the
 board subscription's methods and `tracker:board_updated`'s TypeScript
-type (`components/issues/AGENTS.md`). A failure of the linked-issues
+type, and its ticket screen, with the wrappers of the ticket
+subscription's methods, `TrackerComments`, the issue and comment writes,
+`TrackerAssignableUsers` and `TrackerChoices`, and
+`tracker:issue_updated`'s TypeScript type (`components/issues/AGENTS.md`).
+A failure of the linked-issues
 loop after boot reaches only the log (`Deps.LoopFailed`): its failures
 are outside the tracker (a store error, the cleanup), and a tracker
 failure of the loop's sync shows on its connection's row as its problem.
 Not built, owed by the app layer:
 
-- The ticket screen: the `bindings.ts` wrappers of the ticket, write,
-  form-read and planning poker methods and `tracker:issue_updated`'s
-  TypeScript type ship with it, as the board methods' wrappers ship with
-  the Board screen. The ticket subscribe takes its visibility then, as the
-  board subscribe does.
+- The ticket screen's attachments, links, planning poker and Log time,
+  and a ticket in a pane of its own: the `bindings.ts` wrappers of the
+  attachment mints, `TrackerLinkTypes`, `TrackerLookup`, `TrackerSearch`,
+  `LinkTrackerIssues`, `UnlinkTrackerIssues`, `AddTrackerWorklog` and the
+  planning poker methods ship with them.
 - The Time screen and a sprint edit on the Backlog screen: the
   `bindings.ts` wrappers of the worklog methods and `EditTrackerSprint`
   ship with them.
