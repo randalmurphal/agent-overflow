@@ -1,6 +1,6 @@
 // Presentation of the tools Agent Overflow itself serves to a provider
 // (`ao-remote-tools`, `ao-browser-tools`, `ao-thread-tools`,
-// `ao-workflow-tools`), so their rows read like native
+// `ao-workflow-tools`, `ao-tracker-tools`), so their rows read like native
 // tool calls: an icon for the family, a verb in the gutter, and the one
 // argument a reader wants (the command, the URL, the selector) instead of
 // `server.tool(key=value, …)`.
@@ -43,6 +43,9 @@ export const THREAD_TOOLS_SERVER = 'ao-thread-tools';
 
 /** Mirrors `internal/workflowtools/server.go#MCPServerName`. */
 export const WORKFLOW_TOOLS_SERVER = 'ao-workflow-tools';
+
+/** Mirrors `internal/trackertools/server.go#MCPServerName`. */
+export const TRACKER_TOOLS_SERVER = 'ao-tracker-tools';
 
 /** Names for the ids a tool input carries; '' when the name is unknown. */
 export interface AoToolNames {
@@ -685,6 +688,20 @@ const WORKFLOW_TOOLS: Record<string, AoToolSpec> = {
   memory_list: { label: 'notes', what: (input, names) => str(input, 'kind') || runRef(input, names) || 'campaign notes' },
 };
 
+// A read with no key reads the thread's linked ticket; one that continues
+// an earlier answer names no ticket of its own.
+const TRACKER_TOOLS: Record<string, AoToolSpec> = {
+  ticket_find: { label: 'find', what: (input) => quoted(str(input, 'text')) },
+  ticket_read: {
+    label: 'read',
+    what: (input) => {
+      if (str(input, 'more')) return 'more of a ticket';
+      const key = str(input, 'key') || 'linked ticket';
+      return input.history === true ? `${key} with history` : key;
+    },
+  },
+};
+
 export const AO_TOOL_SERVERS: Record<string, AoToolServer> = {
   [REMOTE_TOOLS_SERVER]: {
     family: 'Remote',
@@ -711,6 +728,12 @@ export const AO_TOOL_SERVERS: Record<string, AoToolServer> = {
     icon: 'checklist',
     prefix: '',
     tools: WORKFLOW_TOOLS,
+  },
+  [TRACKER_TOOLS_SERVER]: {
+    family: 'Ticket',
+    icon: 'file',
+    prefix: 'ticket_',
+    tools: TRACKER_TOOLS,
   },
 };
 
@@ -865,7 +888,7 @@ const HIDDEN_FACTS = new Set([
   'computer_id', 'computer_name', 'request_id', 'project_id', 'page_id',
   'command', 'argv', 'interpreter', 'script',
   'thread_id', 'thread_ids', 'run_id', 'token', 'tokens', 'cursor',
-  'home_files',
+  'home_files', 'next', 'more',
 ]);
 
 // Inputs a tool's header or decoded reply already says in its own words
@@ -887,6 +910,8 @@ const ALREADY_SHOWN: Record<string, ReadonlySet<string>> = {
   run_start: new Set(['workflow_id', 'goal']),
   browser_open: new Set(['url', 'path']),
   browser_open_file: new Set(['path']),
+  ticket_find: new Set(['text']),
+  ticket_read: new Set(['key', 'history']),
 };
 
 const FACT_LABELS: Record<string, string> = {

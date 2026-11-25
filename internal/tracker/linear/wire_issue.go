@@ -28,8 +28,34 @@ const issueSelection = `
 const issueFields = `fragment IssueFields on Issue {` + issueSelection + `}`
 
 // issueSearchFields is issueSelection on a search result, a type of its
-// own with the same fields, which wireIssue decodes too.
-const issueSearchFields = `fragment IssueSearchFields on IssueSearchResult {` + issueSelection + `}`
+// own with the same fields, and the state and assignee whole: a search
+// row is shown with their names, whatever the app has read of the team.
+// A page of issues that selects objects costs the same however many it
+// selects (measured, docs/references/tracker-api-measurements.md), so
+// the names cost bytes and no points. Its documents spread StateFields
+// and UserFields too.
+const issueSearchFields = `fragment IssueSearchFields on IssueSearchResult {` + issueSelection + `  state { ...StateFields } assignee { ...UserFields }
+}`
+
+// wireSearchIssue is an issue as issueSearchFields selects it; its state
+// and assignee shadow issueSelection's { id } ones.
+type wireSearchIssue struct {
+	wireIssue
+	State    *wireState `json:"state"`
+	Assignee *User      `json:"assignee"`
+}
+
+func (w wireSearchIssue) typed() SearchHit {
+	hit := SearchHit{Issue: w.wireIssue.typed(), Assignee: w.Assignee}
+	if w.State != nil {
+		state := w.State.typed()
+		hit.State, hit.StateID = &state, state.ID
+	}
+	if w.Assignee != nil {
+		hit.AssigneeID = w.Assignee.ID
+	}
+	return hit
+}
 
 // describedFields is issueSelection with the description, for the reads
 // of one issue whose callers show or compare it.
@@ -150,6 +176,28 @@ func (w *wireIssueRef) typedPtr() *IssueRef {
 const commentFields = `fragment CommentFields on Comment {
   id issue { id } parent { id } user { id } body url createdAt updatedAt editedAt resolvedAt
 }`
+
+// namedCommentFields is commentFields with its author whole, for the
+// reads that show comments. Its documents spread UserFields too.
+const namedCommentFields = `fragment NamedCommentFields on Comment {
+  ...CommentFields
+  user { ...UserFields }
+}`
+
+// wireNamedComment is a comment as namedCommentFields selects it; its user
+// shadows commentFields' { id } one.
+type wireNamedComment struct {
+	wireComment
+	User *User `json:"user"`
+}
+
+func (w wireNamedComment) typed() NamedComment {
+	c := NamedComment{Comment: w.wireComment.typed(), User: w.User}
+	if w.User != nil {
+		c.UserID = w.User.ID
+	}
+	return c
+}
 
 type wireComment struct {
 	ID         string     `json:"id"`
@@ -292,6 +340,7 @@ func numberChange(from, to *float64) *NumberChange {
 // spreads it carries historyFields too.
 const namedHistoryFields = `fragment NamedHistoryFields on IssueHistory {
   ...HistoryFields
+  actor { ...UserFields }
   fromAssignee { id name displayName } toAssignee { id name displayName }
   fromCycle { id number name } toCycle { id number name }
   fromProject { id name } toProject { id name }
@@ -302,6 +351,7 @@ const namedHistoryFields = `fragment NamedHistoryFields on IssueHistory {
 
 type wireNamedHistory struct {
 	wireHistory
+	Actor         *User         `json:"actor"`
 	FromAssignee  *UserRef      `json:"fromAssignee"`
 	ToAssignee    *UserRef      `json:"toAssignee"`
 	FromCycle     *wireCycleRef `json:"fromCycle"`
@@ -332,7 +382,7 @@ func (w *wireCycleRef) typed() *CycleRef {
 
 func (w wireNamedHistory) typed() NamedEntry {
 	return NamedEntry{
-		HistoryEntry: w.wireHistory.typed(),
+		HistoryEntry: w.wireHistory.typed(), Actor: w.Actor,
 		FromAssignee: w.FromAssignee, ToAssignee: w.ToAssignee,
 		FromCycle: w.FromCycle.typed(), ToCycle: w.ToCycle.typed(),
 		FromProject: w.FromProject, ToProject: w.ToProject,

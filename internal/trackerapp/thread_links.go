@@ -19,10 +19,10 @@ import (
 // This file links and unlinks, and tells what a link's end leaves no
 // longer kept.
 
-// LinkRefusal is a link this computer did not make, for a reason the
-// person fixes outside the link: Message says what, in this package's
-// words, and that the link stayed as it was. Code names the reason for a
-// surface. It unwraps to Err.
+// LinkRefusal is a link this computer did not make, or a linked ticket it
+// cannot read, for a reason the person fixes outside the link: Message
+// says what, in this package's words, and what to do then. Code names the
+// reason for a surface. It unwraps to Err.
 type LinkRefusal struct {
 	Code    string
 	Message string
@@ -47,18 +47,56 @@ const (
 // a Linear workspace's key as it is.
 func siteName(site string) string { return strings.TrimPrefix(site, "https://") }
 
-// connectionRefusal is the refusal of a link to ticket when no connection
-// of its tracker and site is on here: state is the link state the store
-// gives that site (store TicketConnection).
-func connectionRefusal(ticket store.TicketRef, state string, err error) error {
+// connectionRefusal is the refusal of a link to ticket, or of a read of
+// the ticket a thread is linked to, when no connection of its tracker and
+// site is on here: state is the link state the store gives that site
+// (store TicketConnection), and then what to do once that is fixed.
+func connectionRefusal(ticket store.TicketRef, state string, err error, then string) error {
 	if state == store.TicketLinkTurnedOff {
 		return &LinkRefusal{Code: LinkConnectionOff, Err: err, Message: fmt.Sprintf(
-			"the %s connection to %s is turned off; turn it on in the Issues settings, then link the ticket again. The link was not changed",
-			trackerName(ticket.Kind), siteName(ticket.Site))}
+			"the %s connection to %s is turned off; turn it on in the Issues settings, then %s",
+			trackerName(ticket.Kind), siteName(ticket.Site), then)}
 	}
 	return &LinkRefusal{Code: LinkNoConnection, Err: err, Message: fmt.Sprintf(
-		"this computer has no %s connection to %s; add one in the Issues settings, then link the ticket again. The link was not changed",
-		trackerName(ticket.Kind), siteName(ticket.Site))}
+		"this computer has no %s connection to %s; add one in the Issues settings, then %s",
+		trackerName(ticket.Kind), siteName(ticket.Site), then)}
+}
+
+// linkAgain is what a refused link says to do once its connection is on.
+const linkAgain = "link the ticket again. The link was not changed"
+
+// LinkedTicket is the ticket a thread is linked to as this computer reads
+// it: the connection that reads its site (the link reader, store
+// TicketConnection) and the site as a person names it, its issue, and the
+// key the link last saw, which the tracker may have changed since.
+type LinkedTicket struct {
+	Connection string
+	Site       string
+	Issue      string
+	Key        string
+}
+
+// LinkedTicket is the ticket thread threadID is linked to; ok is false for
+// a thread with no link (or one this computer does not own). A link whose
+// site no connection here reads, or reads only through connections turned
+// off, fails with a *LinkRefusal that says which.
+func (s *Service) LinkedTicket(threadID string) (_ LinkedTicket, ok bool, _ error) {
+	if err := s.enter(); err != nil {
+		return LinkedTicket{}, false, err
+	}
+	defer s.leave()
+	link, ok, err := s.store.GetThreadTicket(threadID)
+	if err != nil || !ok {
+		return LinkedTicket{}, false, err
+	}
+	id, state, err := s.store.TicketConnection(link.Ticket)
+	if err != nil {
+		return LinkedTicket{}, false, fmt.Errorf("trackerapp: the connection of thread %s's ticket: %w", threadID, err)
+	}
+	if id == "" {
+		return LinkedTicket{}, false, connectionRefusal(link.Ticket, state, nil, "read this thread's ticket "+link.IssueKey+" again")
+	}
+	return LinkedTicket{Connection: id, Site: siteName(link.Ticket.Site), Issue: link.Ticket.IssueID, Key: link.IssueKey}, true, nil
 }
 
 // LinkThread links thread threadID to ticket, replacing the link it had,
@@ -83,14 +121,14 @@ func (s *Service) LinkThread(ctx context.Context, threadID string, ticket store.
 		return ThreadLinkWrite{}, fmt.Errorf("trackerapp: the connection of %s ticket %s: %w", ticket.Kind, ticket.IssueID, err)
 	}
 	if id == "" {
-		return ThreadLinkWrite{}, connectionRefusal(ticket, state, nil)
+		return ThreadLinkWrite{}, connectionRefusal(ticket, state, nil, linkAgain)
 	}
 	r, err := s.interact(ctx, id)
 	switch {
 	case errors.Is(err, ErrDisabled):
-		return ThreadLinkWrite{}, connectionRefusal(ticket, store.TicketLinkTurnedOff, err)
+		return ThreadLinkWrite{}, connectionRefusal(ticket, store.TicketLinkTurnedOff, err, linkAgain)
 	case errors.Is(err, ErrNotFound):
-		return ThreadLinkWrite{}, connectionRefusal(ticket, store.TicketLinkNoConnection, err)
+		return ThreadLinkWrite{}, connectionRefusal(ticket, store.TicketLinkNoConnection, err, linkAgain)
 	case err != nil:
 		return ThreadLinkWrite{}, err
 	}

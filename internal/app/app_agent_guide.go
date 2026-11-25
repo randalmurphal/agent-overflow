@@ -8,6 +8,7 @@ import (
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/trackertools"
 )
 
 // The app guide is the short text Agent Overflow appends to an interactive
@@ -38,6 +39,7 @@ var agentGuideServers = []agentGuideServer{
 	{threadMCPName, "`" + threadMCPName + "` reads, starts, messages and asks other conversations, schedules reminders/loops (`thread_remind`/`thread_loop`), and flags the user (`thread_attention`)."},
 	{remoteMCPName, "`" + remoteMCPName + "` runs commands on the user's other computers."},
 	{workflowMCPName, "`" + workflowMCPName + "` starts, watches and steers this project's workflow runs and authors its workflows."},
+	{trackerMCPName, "`" + trackerMCPName + "` finds and reads tickets in the user's issue tracker."},
 }
 
 const (
@@ -80,6 +82,9 @@ func (a *App) agentGuideServersOn(threadID string, registered map[string]any) ma
 	}
 	if registered[workflowMCPName] != nil {
 		on[workflowMCPName] = true
+	}
+	if registered[trackerMCPName] != nil {
+		on[trackerMCPName] = true
 	}
 	return on
 }
@@ -154,6 +159,9 @@ func (a *App) codexDeveloperInstructions(threadID, appGuide string, registered m
 	}
 	if on[workflowMCPName] {
 		parts = append(parts, a.workflowToolsInstructions(threadID))
+	}
+	if on[trackerMCPName] {
+		parts = append(parts, trackertools.Instructions)
 	}
 	return strings.Join(parts, "\n\n")
 }

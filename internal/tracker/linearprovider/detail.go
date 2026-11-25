@@ -14,6 +14,8 @@ import (
 // Detail is one issue as its ticket shows it: the issue with its first 50
 // comments, every relation each way, its team's states as moves, its due
 // date and project as fields, and its whole history with every ID named.
+// Its catalog holds its team's states and the users it shows (assignee,
+// comment authors, history actors), each read whole with what names it.
 // Linear's attachments are links, not files, so there are none. The
 // project's name, its labels' names, its team's states and its newest
 // 100 history entries, each with the users, cycles, projects, teams,
@@ -90,7 +92,7 @@ func (p *Provider) Details(ctx context.Context, issues []tracker.IssueID) (track
 // entries carry, and takes the card's for a label they do not name.
 func (p *Provider) details(ctx context.Context, ds []*linear.IssueDetail) ([]tracker.Detail, error) {
 	n := names{states: map[string]string{}, labels: map[string]string{}, users: map[string]string{}, cycles: map[string]string{},
-		projects: map[string]string{}, teams: map[string]string{}, issues: map[string]string{}}
+		projects: map[string]string{}, teams: map[string]string{}, issues: map[string]string{}, people: map[string]tracker.User{}}
 	states := make([][]linear.WorkflowState, len(ds))
 	older := make([][]linear.HistoryEntry, len(ds))
 	issues := make([]linear.Issue, len(ds))
@@ -160,6 +162,28 @@ func (n names) detail(d *linear.IssueDetail, states []linear.WorkflowState, olde
 	}
 	for _, s := range states {
 		out.Statuses = append(out.Statuses, status(s))
+	}
+	out.Users = n.shown(&out)
+	return out
+}
+
+// shown is the users d shows that n holds whole, each once, in the order
+// d first shows them.
+func (n names) shown(d *tracker.Detail) []tracker.User {
+	var out []tracker.User
+	seen := map[tracker.UserID]bool{}
+	show := func(id tracker.UserID) {
+		if u, ok := n.people[string(id)]; ok && !seen[id] {
+			seen[id] = true
+			out = append(out, u)
+		}
+	}
+	show(d.Card.Assignee)
+	for _, c := range d.Comments.Comments {
+		show(c.Author)
+	}
+	for _, e := range d.History {
+		show(e.Author)
 	}
 	return out
 }
@@ -243,12 +267,19 @@ func (p *Provider) summary(ctx context.Context, issue tracker.IssueID) (*linear.
 	return is, nil
 }
 
-func commentPage(p linear.Page[linear.Comment]) tracker.CommentPage {
+// commentPage is p as the neutral model has it, with each author it names
+// in its catalog once.
+func commentPage(p linear.Page[linear.NamedComment]) tracker.CommentPage {
 	out := tracker.CommentPage{}
+	seen := map[string]bool{}
 	for _, c := range p.Items {
 		out.Comments = append(out.Comments, tracker.Comment{
 			ID: tracker.CommentID(c.ID), Author: tracker.UserID(c.UserID), Body: c.Body, Created: c.CreatedAt, Updated: c.UpdatedAt,
 		})
+		if c.User != nil && !seen[c.User.ID] {
+			seen[c.User.ID] = true
+			out.Users = append(out.Users, user(*c.User))
+		}
 	}
 	if p.HasNextPage {
 		out.Next = tracker.PageToken(p.EndCursor)
@@ -270,9 +301,18 @@ func (p *Provider) Comments(ctx context.Context, issue tracker.IssueID, page tra
 }
 
 // names maps the IDs an issue's detail shows to names. An ID it has no
-// name for is shown as itself.
+// name for is shown as itself. people are the users the reads selected
+// whole (assignees, comment authors, history actors), for the catalog.
 type names struct {
 	states, labels, users, cycles, projects, teams, issues map[string]string
+	people                                                 map[string]tracker.User
+}
+
+// person adds u, when Linear answered one, to the users read whole.
+func (n names) person(u *linear.User) {
+	if u != nil {
+		n.people[u.ID] = user(*u)
+	}
 }
 
 func (n names) name(of map[string]string, id string) string {
@@ -300,6 +340,10 @@ func (n names) addIssue(d *linear.IssueDetail, states []linear.WorkflowState) {
 	if d.ProjectID != "" {
 		n.projects[d.ProjectID] = d.ProjectName
 	}
+	n.person(d.Assignee)
+	for _, c := range d.Comments.Items {
+		n.person(c.User)
+	}
 	for i := range d.History.Items {
 		n.add(&d.History.Items[i])
 	}
@@ -308,6 +352,7 @@ func (n names) addIssue(d *linear.IssueDetail, states []linear.WorkflowState) {
 // add names what e came with. A side Linear answered null for is left
 // out, so the event shows its ID.
 func (n names) add(e *linear.NamedEntry) {
+	n.person(e.Actor)
 	for _, u := range []*linear.UserRef{e.FromAssignee, e.ToAssignee} {
 		if u != nil {
 			n.users[u.ID] = userName(u.Name, u.DisplayName)
