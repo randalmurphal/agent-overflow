@@ -1186,8 +1186,9 @@ selected computer.
 | `TrackerProjects(connectionID)` | `Projects` | read | connection |
 | `TrackerBoards(connectionID, project)` | `Boards` | read | connection |
 | `ProjectTrackerBoards(projectID)` | `ProjectBoards` | read | project |
+| `TrackerBoardChoices()` | `BoardChoices` | read | all |
 | `SetProjectTrackerBoards(projectID, held, boards)` | `SetProjectBoards` | operate | project |
-| `SubscribeTrackerBoard(projectID, connectionID, boardID, sections)` | `SubscribeBoard` | read | project, caller-bound |
+| `SubscribeTrackerBoard(projectID, connectionID, boardID, sections, visible)` | `SubscribeBoard` | read | project, caller-bound |
 | `TrackerBoard(subscriptionID, sections)` | `Board` | read | home |
 | `TrackerSectionRows(subscriptionID, section, after)` | `SectionRows` | read | home |
 | `TrackerBoardPatch(subscriptionID, sections, issues, held)` | `BoardPatch` | read | home |
@@ -1347,15 +1348,23 @@ selected computer.
 
 A board answer is bounded: the subscribe returns the board's structure,
 its sprints and the cards of the sections on screen, and a section's
-remaining cards are read by page.
+remaining cards are read by page. A board view asked for no sections
+answers the Board screen's (`BoardView.Screen`): the active sprints of a
+board that plans sprints, else every column, chosen in the same snapshot
+as the structure, with the first page of the first 20 and the rest left
+to the client to read by page.
 
 ### Subscriptions
 
-- `SubscribeBoard(projectID, scope, sections, tie)` answers from the mirror
-  alone, before any tracker call: a handle, a sequence number, the view of
-  the sections or "not loaded", and the poll interval. It is refused for a
-  board the project does not list, a connection turned off, removed or
-  Tempo, and past 64 board handles.
+- `SubscribeBoard(projectID, scope, sections, visible, tie)` answers from
+  the mirror alone, before any tracker call: a handle, a sequence number,
+  the view of the sections or "not loaded", and the poll interval. It is
+  refused for a board the project does not list, a connection turned off,
+  removed or Tempo, and past 64 board handles. The handle starts with
+  `visible` as its vote. A pump made with every handle hidden makes no
+  tracker call until a handle shows it or a person refreshes it
+  (`pump.Core.AwaitShown`). A ticket pump reads at once: its subscribe
+  carries no vote yet.
 - `SubscribeTicket(connection, issue, tie)` answers the same way with
   the ticket's view built from the record, or the view its subscribers
   were last told when its pump runs already; at most 64 ticket handles.
@@ -1375,7 +1384,9 @@ remaining cards are read by page.
 - `TicketDetail(handle)` is the ticket as its subscribers were last told:
   its failure, and its view or not loaded, from memory.
 - `BoardPatch(scope, sections, issues, held)` is the patch read below;
-  `held` names the totals the client holds.
+  `held` names the totals the client holds. It takes up to every section
+  a board can have (`store.MirrorMaxViewSections`, 301), since it reads
+  only the named issues' rows of each.
 - `StartLinkedSync` arms the linked-issues loop. `New` starts nothing.
   The app's boot step `tracker.start` (`startTrackers`, with the
   unattended work) arms it, and once the first client's reads settle runs
@@ -1634,16 +1645,20 @@ settings screen (Settings > Issues: Connections and Boards), with the
 `bindings.ts` wrappers of the connection methods, the two picker lists,
 `ProjectTrackerBoards` and `SetProjectTrackerBoards`, and their stores
 (`stores/trackerConnections.svelte.ts`,
-`stores/trackerProjectBoards.svelte.ts`). A failure of the linked-issues
+`stores/trackerProjectBoards.svelte.ts`), and the Issues pane's Board
+screen, with the `bindings.ts` wrappers of `TrackerBoardChoices` and the
+board subscription's methods and `tracker:board_updated`'s TypeScript
+type (`components/issues/AGENTS.md`). A failure of the linked-issues
 loop after boot reaches only the log (`Deps.LoopFailed`): its failures
 are outside the tracker (a store error, the cleanup), and a tracker
 failure of the loop's sync shows on its connection's row as its problem.
 Not built, owed by the app layer:
 
-- The board and ticket screens: the `bindings.ts` wrappers of the board,
-  ticket, write, form-read and planning poker methods and the two events'
-  TypeScript types ship with them, as the connection methods' wrappers
-  ship with the Issues settings screen.
+- The ticket screen: the `bindings.ts` wrappers of the ticket, write,
+  form-read and planning poker methods and `tracker:issue_updated`'s
+  TypeScript type ship with it, as the board methods' wrappers ship with
+  the Board screen. The ticket subscribe takes its visibility then, as the
+  board subscribe does.
 - The Time screen's bound methods: `Worklogs`, `RefreshWorklogs`,
   `EditWorklog` and `DeleteWorklog`. `EditSprint` is bound when a screen
   edits a sprint.

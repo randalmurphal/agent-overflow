@@ -407,6 +407,26 @@ const HARNESS_BRIDGE_OWNER = 'lib/stores/harnessBridge.ts';
 const HARNESS_STATIC_IMPORT_ALLOWLIST: Record<string, string> = {};
 
 // ---------------------------------------------------------------------------
+// Rule 4b — the Issues pane's stores load with the pane, not at startup.
+//
+// The board store, its model, the board choices and the pane's state hold
+// a visibility listener, a pump-vote queue and every rule of the board,
+// which a person who never opens Issues has no use for. The pane is the
+// dynamic `import('../issues/IssuesPane.svelte')` in ToolPane.svelte, and
+// the always-loaded stores reach those stores only through
+// `stores/trackerBoardEvents.ts`, where they register when they load. A
+// static import of one of them from anything the entry reaches folds it into
+// the startup chunk. The rule walks the static, non-type imports from
+// `main.ts`.
+const APP_ENTRY = join(SRC_ROOT, 'main.ts');
+const ISSUES_LAZY_MODULES = [
+  'lib/stores/trackerBoard.svelte.ts',
+  'lib/stores/trackerBoardModel.ts',
+  'lib/stores/trackerBoardChoices.svelte.ts',
+  'lib/stores/issuesPane.svelte.ts',
+] as const;
+
+// ---------------------------------------------------------------------------
 // Rule 5 — an event-driven refresh uses the scheduler, never a plain debounce.
 //
 // `utils/debounce` is a pure TRAILING debounce: every call clears the standing
@@ -504,6 +524,8 @@ interface ParsedImport {
   readonly wholeModule: boolean;
   /** `import('…')`, which puts the target in its own chunk rather than this one. */
   readonly dynamic: boolean;
+  /** `import type` or `export type … from`: erased, so no edge of the module graph. */
+  readonly typeOnly: boolean;
 }
 
 /**
@@ -528,13 +550,13 @@ const DYNAMIC_IMPORT = /\bimport\s*\(\s*(['"])([^'"]+)\1\s*\)/g;
 function parseImports(source: string): ParsedImport[] {
   const imports: ParsedImport[] = [];
   for (const match of source.matchAll(STATIC_IMPORT)) {
-    imports.push({ specifier: match[3]!, ...parseClause(match[1]!), dynamic: false });
+    imports.push({ specifier: match[3]!, ...parseClause(match[1]!), dynamic: false, typeOnly: isTypeOnlyClause(match[1]!) });
   }
   for (const match of source.matchAll(SIDE_EFFECT_IMPORT)) {
-    imports.push({ specifier: match[2]!, names: [], wholeModule: false, dynamic: false });
+    imports.push({ specifier: match[2]!, names: [], wholeModule: false, dynamic: false, typeOnly: false });
   }
   for (const match of source.matchAll(DYNAMIC_IMPORT)) {
-    imports.push({ specifier: match[2]!, names: [], wholeModule: true, dynamic: true });
+    imports.push({ specifier: match[2]!, names: [], wholeModule: true, dynamic: true, typeOnly: false });
   }
   return imports;
 }
@@ -617,6 +639,18 @@ function parseClause(clause: string): { names: string[]; wholeModule: boolean } 
     if (name) names.push(name);
   }
   return { names, wholeModule: false };
+}
+
+/** Whether an import or re-export clause brings in no runtime value: `type
+ * { … }`, or braces whose every piece is `type X`. A default or namespace
+ * binding beside them is a value. */
+function isTypeOnlyClause(clause: string): boolean {
+  const trimmed = clause.trim();
+  if (/^type\b/.test(trimmed)) return true;
+  const braces = trimmed.match(/^\{([\s\S]*)\}$/);
+  if (!braces) return false;
+  const pieces = braces[1]!.split(',').map((piece) => piece.trim()).filter(Boolean);
+  return pieces.length > 0 && pieces.every((piece) => /^type\s/.test(piece));
 }
 
 /** Absolute, extensionless path a specifier points at, or null when external. */
@@ -1101,6 +1135,47 @@ describe('architecture', () => {
       'New violations.',
       `Reach the bridge through the dynamic import in ${HARNESS_BRIDGE_OWNER}; see frontend/CLAUDE.md → Layout, src/lib/harness/.`,
     );
+  });
+
+  it('keeps the Issues stores out of the startup graph', () => {
+    // An import names a module without its extension, and `x.svelte.ts` as
+    // `x.svelte`: every name a file can be imported by leads to it.
+    const byModule = new Map<string, (typeof sources)[number][]>();
+    for (const source of sources) {
+      const names = [source.file.replace(/\.(ts|svelte)$/, '')];
+      if (source.file.endsWith('.svelte.ts')) names.push(source.file.slice(0, -'.svelte.ts'.length));
+      for (const name of names) byModule.set(name, [...(byModule.get(name) ?? []), source]);
+    }
+    const entry = sources.find((source) => source.file === APP_ENTRY);
+    expect(entry, 'main.ts is the app entry the walk starts from').toBeDefined();
+    // Each module reached, with the module that reached it first.
+    const reachedFrom = new Map<string, string>([[entry!.path, '']]);
+    const queue = [entry!];
+    while (queue.length > 0) {
+      const source = queue.shift()!;
+      for (const parsed of source.imports) {
+        if (parsed.dynamic || parsed.typeOnly) continue;
+        const local = resolveLocalModule(source.file, parsed.specifier);
+        if (local === null) continue;
+        for (const target of byModule.get(local) ?? []) {
+          if (reachedFrom.has(target.path)) continue;
+          reachedFrom.set(target.path, source.path);
+          queue.push(target);
+        }
+      }
+    }
+    // Without this the rule would pass over a walk that reached nothing.
+    expect(reachedFrom.has('lib/stores/trackerBoardEvents.ts'), 'the walk reaches the registration module').toBe(true);
+    const chain = (path: string): string => {
+      const out = [path];
+      for (let at = reachedFrom.get(path); at; at = reachedFrom.get(at)) out.push(at);
+      return out.reverse().join(' → ');
+    };
+    const offenders = ISSUES_LAZY_MODULES.filter((path) => reachedFrom.has(path)).map(chain);
+    expect(
+      offenders,
+      'An Issues store is in the startup graph. Reach it through stores/trackerBoardEvents.ts or the pane\'s dynamic import; see frontend/CLAUDE.md → Performance-sensitive rules.',
+    ).toEqual([]);
   });
 
   it('keeps event-driven refresh on the rate-bounded scheduler', () => {

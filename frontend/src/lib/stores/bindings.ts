@@ -628,6 +628,14 @@ export {
   SetPipelineFollows,
   RefreshPipeline,
   UnsubscribePipeline,
+  // A tracker board's subscription (stores/trackerBoard.svelte.ts).
+  SubscribeTrackerBoard,
+  TrackerBoard,
+  TrackerSectionRows,
+  TrackerBoardPatch,
+  SetTrackerSubscriptionVisible,
+  RefreshTrackerSubscription,
+  ReleaseTrackerSubscription,
   ListLiveBackgroundTasks,
   GetThreadWakeDetail,
   WakeThreadWakeNow,
@@ -1253,6 +1261,7 @@ import {
   AgentRosterSeeds as AgentRosterSeedsRaw,
   CheckAgentProfiles as CheckAgentProfilesRaw,
   GetStandingAgent as GetStandingAgentRaw,
+  TrackerBoardChoices as TrackerBoardChoicesRaw,
   ListThreadRecurringJobs as ListThreadRecurringJobsRaw,
   DeleteThreads as DeleteThreadsRaw,
   GetDeleteDependents as GetDeleteDependentsRaw,
@@ -1407,6 +1416,11 @@ export function WorkflowPauseItemAndEndSessions(itemId: string): Promise<void> {
 /** Null on a computer without assistants: it has no standing agent. */
 export function GetStandingAgent(threadID: string): Promise<StandingAgentRow | null> {
   return orOlder(() => GetStandingAgentRaw(threadID), () => null);
+}
+
+/** Empty on a computer without the Issues pane's board list. */
+export function TrackerBoardChoices(): Promise<TrackerBoardChoiceRow[]> {
+  return orOlder(() => TrackerBoardChoicesRaw(), () => []);
 }
 
 /** Empty on a computer without recurring jobs. */

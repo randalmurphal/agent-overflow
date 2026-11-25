@@ -438,3 +438,76 @@ func TestRequestRefusedOnceTheLifetimeEnded(t *testing.T) {
 		}
 	})
 }
+
+// awaitShown runs AwaitShown on its own goroutine, as a pump's goroutine
+// does before its first poll.
+func awaitShown(core *Core[testRequest]) <-chan *Request[testRequest] {
+	out := make(chan *Request[testRequest], 1)
+	go func() {
+		req, _ := core.AwaitShown()
+		out <- req
+	}()
+	return out
+}
+
+func TestAwaitShownReturnsAtOnceWhileAHandleShowsThePump(t *testing.T) {
+	core := newTestCore(t, t.Context())
+	core.TakeLocked()
+	if req, stopped := core.AwaitShown(); req != nil || stopped {
+		t.Fatalf("AwaitShown = %v, %v; want the first poll at once", req, stopped)
+	}
+}
+
+func TestAwaitShownWaitsForTheFirstVisibleVote(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		core := newTestCore(t, t.Context())
+		h := core.TakeLocked()
+		h.VoteLocked(false)
+		done := awaitShown(core)
+		synctest.Wait()
+		select {
+		case <-done:
+			t.Fatal("a pump every handle hides ran its first poll")
+		default:
+		}
+		h.VoteLocked(true)
+		if req := <-done; req != nil {
+			t.Fatalf("AwaitShown served %+v; want the first poll", req)
+		}
+	})
+}
+
+func TestAwaitShownHandsOverARequestWhileHidden(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		core := newTestCore(t, t.Context())
+		core.TakeLocked().VoteLocked(false)
+		done := awaitShown(core)
+		answered := make(chan error, 1)
+		go func() { answered <- core.Request(t.Context(), testRequest{name: "refresh"}) }()
+		req := <-done
+		if req == nil || req.Body().name != "refresh" {
+			t.Fatalf("AwaitShown returned %+v; want the refresh", req)
+		}
+		req.Finish(nil)
+		if err := <-answered; err != nil {
+			t.Fatalf("Request = %v", err)
+		}
+	})
+}
+
+func TestAwaitShownEndsWithTheCore(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		core := newTestCore(t, t.Context())
+		core.TakeLocked().VoteLocked(false)
+		out := make(chan bool, 1)
+		go func() {
+			_, stopped := core.AwaitShown()
+			out <- stopped
+		}()
+		synctest.Wait()
+		core.StopLocked()
+		if !<-out {
+			t.Fatal("AwaitShown did not report the stop")
+		}
+	})
+}

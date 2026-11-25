@@ -23,6 +23,7 @@
   const TOOL_LOADERS = {
     pulls: () => import('../pulls/PullsPane.svelte'),
     workflows: () => import('../workflows/WorkflowsPane.svelte'),
+    issues: () => import('../issues/IssuesPane.svelte'),
   } satisfies Record<ToolPaneKind, ToolLoader>;
 
   let { paneId, kind, onPaneDragStart }: Props = $props();

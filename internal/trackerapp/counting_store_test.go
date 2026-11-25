@@ -151,7 +151,7 @@ func (c *countingStore) ListMirrorSection(root int64, board string, section stor
 	return c.Store.ListMirrorSection(root, board, section, after)
 }
 
-func (c *countingStore) ReadMirrorBoardView(root int64, board string, sections []store.MirrorSection) (store.MirrorBoardView, bool, error) {
+func (c *countingStore) ReadMirrorBoardView(root int64, board string, sections func(store.MirrorStructure) []store.MirrorSection) (store.MirrorBoardView, bool, error) {
 	c.count("ReadMirrorBoardView")
 	return c.Store.ReadMirrorBoardView(root, board, sections)
 }

@@ -420,7 +420,7 @@ async function connectTrackers(harness: HarnessApp, projectId: string): Promise<
   // tracker refused also returns, over the rows an earlier run left, so
   // the board's sync state is what says this read ran and was answered.
   const sprint = [{ kind: 'sprint', sprint: SPRINT_ID }];
-  const sub = await harness.rpc<{ id: string }>('SubscribeTrackerBoard', projectId, jira.id, BOARD_ID, sprint);
+  const sub = await harness.rpc<{ id: string }>('SubscribeTrackerBoard', projectId, jira.id, BOARD_ID, sprint, true);
   const asked = Date.now();
   await harness.rpc('RefreshTrackerSubscription', sub.id);
   type Rows = { rows: Array<{ card: { key: string } }> };

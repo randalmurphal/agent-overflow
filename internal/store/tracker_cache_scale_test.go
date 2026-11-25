@@ -342,7 +342,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		return err
 	})
 	out["board view, 3 sections"] = measureScale(t, rec, nil, func(int) error {
-		_, _, err := s.ReadMirrorBoardView(root, board, sections)
+		_, _, err := s.ReadMirrorBoardView(root, board, theseSections(sections))
 		return err
 	})
 	out["section page, middle of a column"] = measureScale(t, rec, func(int) {

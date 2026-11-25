@@ -391,6 +391,15 @@ func TestListTrackerBoardChoices(t *testing.T) {
 		t.Fatalf("detach = %v, %v", detached, err)
 	}
 	check("the mirror detached", "", eleven, tenOfR, ten, team)
+
+	// An archived project's listings say so, in the same place.
+	if _, _, err := s.ArchiveProject("q"); err != nil {
+		t.Fatal(err)
+	}
+	archivedEleven := eleven
+	archivedEleven.ProjectArchived = true
+	check("q archived", "", archivedEleven, tenOfR, ten, team)
+	check("q archived", "q", archivedEleven)
 }
 
 // A connection's removal deletes its listings and leaves gaps in the

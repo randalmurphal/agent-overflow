@@ -6553,14 +6553,16 @@ export function SubscribePipeline(repo: git$0.RepoReference, id: string): $Cance
 
 /**
  * SubscribeTrackerBoard subscribes the calling client to a board its
- * project lists, with the first page of each section asked for. The
+ * project lists, with the first page of each section asked for, or of the
+ * Board screen's sections when none is (trackerapp.Service.Board). The
  * answer comes from this computer's copy of the board; the board's reads
- * of the tracker follow it, and tracker:board_updated tells what they
- * change. The subscription is released by ReleaseTrackerSubscription or
- * when the client's connection ends.
+ * of the tracker follow it once a subscription shows it (visible here, or
+ * SetTrackerSubscriptionVisible later), and tracker:board_updated tells
+ * what they change. The subscription is released by
+ * ReleaseTrackerSubscription or when the client's connection ends.
  */
-export function SubscribeTrackerBoard(projectID: string, connectionID: string, boardID: string, sections: trackerapp$0.Section[]): $CancellablePromise<trackerapp$0.BoardSubscription> {
-    return $Call.ByID(2857898243, projectID, connectionID, boardID, sections).then(($result: any) => {
+export function SubscribeTrackerBoard(projectID: string, connectionID: string, boardID: string, sections: trackerapp$0.Section[], visible: boolean): $CancellablePromise<trackerapp$0.BoardSubscription> {
+    return $Call.ByID(2857898243, projectID, connectionID, boardID, sections, visible).then(($result: any) => {
         return $$createType259($result);
     });
 }
@@ -6773,12 +6775,24 @@ export function TrackerAssignableUsers(connectionID: string, scope: trackerapp$0
 
 /**
  * TrackerBoard reads a subscribed board whole again, with the first page
- * of each section asked for: after an event that says to read it again,
- * a reconnect, or a page that went stale.
+ * of each section asked for, or of the Board screen's sections when none
+ * is (trackerapp.Service.Board): after an event that says to read it
+ * again, a reconnect, or a page that went stale.
  */
 export function TrackerBoard(subscriptionID: string, sections: trackerapp$0.Section[]): $CancellablePromise<trackerapp$0.BoardView> {
     return $Call.ByID(3524633257, subscriptionID, sections).then(($result: any) => {
         return $$createType268($result);
+    });
+}
+
+/**
+ * TrackerBoardChoices lists the boards every project of this computer
+ * lists, as ProjectTrackerBoards names each: the Issues pane's board
+ * picker, which asks every attached computer.
+ */
+export function TrackerBoardChoices(): $CancellablePromise<trackerapp$0.BoardChoice[]> {
+    return $Call.ByID(1666670763).then(($result: any) => {
+        return $$createType220($result);
     });
 }
 
