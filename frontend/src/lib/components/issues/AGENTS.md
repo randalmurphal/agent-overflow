@@ -35,7 +35,8 @@ board methods, events and the patch read in
   window's change never moves an open pane. Its selection also holds the
   screen (Board or Time, saved for the next pane), the open ticket, its
   subscription, its project (`ticketProject`: the person's pick, else the
-  opener's, else the board's; Ask and Start work use it) and the trail
+  last opener's that named one, an opener of the ticket already open
+  included, else the board's; Ask and Start work use it) and the trail
   Back steps through, and decides whether the
   board and the week are shown (`boardShown`, `timeShown`: the pane is on
   screen on that screen and no ticket covers it), which are their votes.

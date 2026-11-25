@@ -356,8 +356,9 @@ from, and a ticket in a pane of its own.
   each with its state and owner. It offers Ask and Start work, and shows
   the project their thread goes in, which the person can change: the
   project the board was opened under, or the one the opener named for a
-  ticket opened from a thread or a pull request. There are no suggested
-  prompts.
+  ticket opened from a thread or a pull request. Opening the ticket
+  already shown from another thread or pull request takes that one's
+  project, unless the person picked one. There are no suggested prompts.
 - Comments can be read oldest or newest first, and the order is remembered.
   Past five, earlier comments sit behind a control. The comment box stays
   in view while comments are in view. A comment written by an agent names

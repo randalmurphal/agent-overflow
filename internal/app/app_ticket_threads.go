@@ -33,7 +33,8 @@ type StartTicketThreadRequest struct {
 // for Start work, the draft's text "Work on KEY: title." and a worktree on
 // exactly the branch named: the worktree that already has the branch
 // checked out, else a new one on the branch, made from the project's
-// current branch when the branch does not exist; never a tag of that name.
+// current branch when the branch does not exist. A name only a tag has
+// makes a branch of that name and checks it out, never the tag.
 // A Start work for a ticket, project and branch that already has a Start
 // work thread, not archived, answers that thread and makes nothing, so
 // asking again after a lost reply is safe; one ticket's Start works in a
@@ -117,7 +118,8 @@ func (a *App) StartTicketThread(ctx context.Context, projectID string, req Start
 			opts.WorktreePath, opts.Branch = held, branch
 		} else {
 			// Spelled in full, the branch is exactly this name: git's
-			// refusal and no tidying, and never a tag of that name.
+			// refusal and no tidying, and a branch even where a tag
+			// has the name.
 			opts.WorktreeBranch = "refs/heads/" + branch
 		}
 	}

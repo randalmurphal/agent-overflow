@@ -1929,9 +1929,10 @@ delete is refused and the links the delete read are the ones it ends.
   `tracker:read`, and `git:operate` for Start work) makes the thread of
   an Ask or a Start work in one rollback: the thread titled with the key
   and title, for Start work in a worktree on exactly the branch named
-  (the worktree that has it checked out, else a new one; never a tag of
-  that name, never a name git's tidying changed; the project's own
-  checkout and an empty name are refused), the link with its origin, the
+  (the worktree that has it checked out, else a new one; a name only a
+  tag has makes a branch of that name and checks it out, never the tag;
+  never a name git's tidying changed; the project's own checkout and an
+  empty name are refused), the link with its origin, the
   ticket file `KEY.md` attached to the unsent draft, and for Start work
   the draft's text. A failure removes what it made, ends the link and
   tells the tracker service. A Start work for a ticket, project and
@@ -1947,8 +1948,11 @@ delete is refused and the links the delete read are the ones it ends.
 - **The move and the assignment** of Start work are the ticket screen's
   writes (`stores/trackerTicketWrites.svelte.ts`); the run's order (the
   move, then the assignment decided from the ticket as the move left it),
-  "already", which rests on a read that succeeded after the run began,
-  and Try again are `stores/ticketWork.svelte.ts`'s.
+  "already", which rests on a read that succeeded after the step before
+  it, the assignment left to Try again after a move whose outcome is
+  unknown, and Try again are `stores/ticketWork.svelte.ts`'s. A call that
+  timed out counts as one whose answer was lost, for the thread and for
+  each write: it may have been made.
 - **A setup section a newer version saved** is never replaced by a save:
   the encoder refuses to write any section named in `Newer`
   (`ErrSetupNewer`), whatever its name, so Save as defaults over a newer
