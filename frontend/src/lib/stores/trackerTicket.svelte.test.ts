@@ -15,6 +15,7 @@ import type {
   BoardView,
   CommentPageView,
   DetailView,
+  MoveView,
   PokerView,
   TicketSubscription,
   TicketView,
@@ -42,10 +43,12 @@ import {
   linkTicket,
   loadTicketLinkTypes,
   moveTicket,
+  openTicketMove,
   rankTicket,
   revealTicketPoker,
   ticketAttachOutcomes,
   ticketLinkTypes,
+  ticketMoveDraft,
   ticketUploads,
   ticketWrite,
   unlinkTicket,
@@ -892,5 +895,39 @@ describe('links and poker writes', () => {
     answers[1]!(['New']);
     await after;
     expect(ticketLinkTypes(HOME_BACKEND, 'c1')?.types?.map((t) => t.name)).toEqual(['New']);
+  });
+});
+
+describe('a move\'s form', () => {
+  const RESOLVE = {
+    id: '41', name: 'Resolve', to: { id: 's3', name: 'Done' },
+    fields: [{ id: 'description', name: 'Description', kind: 'rich_text', editable: true, value: { kind: 'rich_text' } }],
+  } as unknown as MoveView;
+  const key = trackerTicketKey(REF);
+
+  it('takes its edit bases when the ticket\'s detail first lands, and keeps them after the detail changes', async () => {
+    const mocks = install({ detail: detail('First story', { description: 'What the person saw' }) });
+    mocks.read.mockImplementation(async () => ({ loaded: true, detail: detail('First story', { description: 'Changed in Jira since' }), read_at: 200 } as TicketView));
+    // Opened from a Board card: the ticket is not held yet.
+    openTicketMove(key, RESOLVE);
+    expect(ticketMoveDraft(key)?.bases).toBeNull();
+    const ticket = attachTrackerTicket(REF, true);
+    await flush();
+    expect(ticketMoveDraft(key)?.bases).toEqual(new Map([['description', 'What the person saw']]));
+    trackerIssueUpdated(event(11, { changed: true }), HOME_BACKEND);
+    await flush();
+    expect(mocks.read).toHaveBeenCalled();
+    expect(ticket.current?.detail?.description).toBe('Changed in Jira since');
+    expect(ticketMoveDraft(key)?.bases).toEqual(new Map([['description', 'What the person saw']]));
+    ticket.release();
+  });
+
+  it('takes them at once from a ticket already held', async () => {
+    install({ detail: detail('First story', { description: 'Held text' }) });
+    const ticket = attachTrackerTicket(REF, true);
+    await flush();
+    openTicketMove(key, RESOLVE);
+    expect(ticketMoveDraft(key)?.bases).toEqual(new Map([['description', 'Held text']]));
+    ticket.release();
   });
 });

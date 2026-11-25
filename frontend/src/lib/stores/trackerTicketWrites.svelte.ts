@@ -66,6 +66,7 @@
 import { SvelteMap } from 'svelte/reactivity';
 import type {
   ChoiceListView,
+  DetailView,
   FieldEditInput,
   LinkTypeView,
   LinkView,
@@ -98,13 +99,15 @@ import { addErrorToast, addToast } from './toast.svelte';
 import {
   isTrackerTicketHeld,
   onTrackerTicketClosed,
+  onTrackerTicketDetail,
   refreshTrackerTicket,
+  trackerTicketDetail,
   trackerTicketKey,
   trackerTicketSettled,
   type CommentChange,
   type TrackerTicketRef,
 } from './trackerTicket.svelte';
-import { linkRequest, type LinkRelation } from './trackerTicketModel';
+import { linkRequest, shownText, type LinkRelation } from './trackerTicketModel';
 import { LossConsent, refusalSentence, sendWrite, TICKET_SUBJECT, type WriteOutcome } from './trackerWriteOutcome';
 import { onBackendStatusChange } from './transportStatus.svelte';
 import { TransferInterruptedError, TransferRefusedError, UploadNotSentError, uploadTrackerAttachmentBytes } from '../transport/attachmentTransfer';
@@ -166,7 +169,10 @@ export interface TicketMoveDraft {
   readonly kind: 'move';
   readonly ticket: string;
   readonly move: MoveView;
-  readonly bases: ReadonlyMap<string, string>;
+  /** Null until the ticket's detail is first held (a move picked on a
+   * Board card opens the ticket with the form); then set once and kept
+   * (`takeMoveBases`), whatever the ticket's detail becomes. */
+  readonly bases: ReadonlyMap<string, string> | null;
   readonly fields: ReadonlyMap<string, MoveFieldDraft>;
 }
 
@@ -264,10 +270,23 @@ export function ticketMoveDraft(ticket: string): TicketMoveDraft | null {
 }
 
 /** Opens the form of `move`, in place of any open, each long field
- * starting from the text the ticket shows for it (`bases`). */
-export function openTicketMove(ticket: string, move: MoveView, bases: ReadonlyMap<string, string>): void {
-  putDraft(writeKey(ticket, 'status'), { kind: 'move', ticket, move, bases, fields: new Map() });
+ * starting from the text the ticket shows for it: now when the ticket's
+ * detail is held, else when it first lands. */
+export function openTicketMove(ticket: string, move: MoveView): void {
+  putDraft(writeKey(ticket, 'status'), { kind: 'move', ticket, move, bases: null, fields: new Map() });
+  const detail = trackerTicketDetail(ticket);
+  if (detail) takeMoveBases(ticket, detail);
 }
+
+/** The one writer of a move form's edit bases: the text `detail` shows for
+ * each long field of the move, taken once, by a form that has none yet. */
+function takeMoveBases(ticket: string, detail: DetailView): void {
+  const open = ticketMoveDraft(ticket);
+  if (!open || open.bases) return;
+  const long = (open.move.fields ?? []).filter((f) => f.kind === 'rich_text' && f.editable);
+  putDraft(writeKey(ticket, 'status'), { ...open, bases: new Map(long.map((f) => [f.id, shownText(detail, f.id)])) });
+}
+onTrackerTicketDetail(takeMoveBases);
 
 /** Fills one field of the open move form. */
 export function setTicketMoveField(ticket: string, field: string, filled: MoveFieldDraft): void {

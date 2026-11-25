@@ -205,6 +205,14 @@ const earlierByKey = new Map<string, HeldPages>();
 // The change to each ticket's held pages last queued (`onPages`).
 const pageWork = new Map<string, Promise<void>>();
 const closedListeners = new Set<(key: string) => void>();
+const detailListeners = new Set<(key: string, detail: DetailView) => void>();
+
+/** Tells the listeners the ticket's view landed with its detail. */
+function noteDetail(live: Live): void {
+  const detail = live.state.detail;
+  if (!detail || live.aborted) return;
+  for (const listener of detailListeners) listener(live.key, detail);
+}
 
 const votes = createPumpVotes('trackerTicket', (id, visible) => SetTrackerSubscriptionVisible(id, visible));
 
@@ -270,6 +278,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
   live.joining = null;
   for (const event of early) fold(live, event);
   apply(live.state);
+  noteDetail(live);
   vote(live);
   follow(live);
   if (pagesAdrift(key)) void onPages(key, () => reconcilePages(key));
@@ -287,6 +296,7 @@ function update(live: Live, next: StateChange): void {
   if (live.aborted) return;
   live.state = { ...live.state, ...next };
   live.apply(live.state);
+  if (next.detail) noteDetail(live);
 }
 
 function fold(live: Live, event: TrackerIssueEvent): void {
@@ -737,6 +747,17 @@ export function trackerTicketSubscription(key: string): string | null {
 /** Whether any surface holds the ticket now. */
 export function isTrackerTicketHeld(key: string): boolean {
   return surfaces.has(key);
+}
+
+/** The ticket's detail as last applied; null before its first view. */
+export function trackerTicketDetail(key: string): DetailView | null {
+  return lives.get(key)?.state.detail ?? null;
+}
+
+/** Runs `listener` with a ticket's key and detail each time a view of it
+ * lands, in the update that applies it. */
+export function onTrackerTicketDetail(listener: (key: string, detail: DetailView) => void): void {
+  detailListeners.add(listener);
 }
 
 /** Runs `listener` with a ticket's key whenever its last surface lets it

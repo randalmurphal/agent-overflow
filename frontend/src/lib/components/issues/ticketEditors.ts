@@ -116,12 +116,18 @@ export interface PointsRow {
   readonly board: string;
   /** points, time (seconds) or none. */
   readonly unit: string;
-  readonly estimate: number | null | undefined;
+  readonly estimate?: number | null;
 }
 
 /** The label of an estimate in `unit`. */
 export function pointsLabel(unit: string): string {
   return unit === 'time' ? 'Estimate (hours)' : 'Points';
+}
+
+/** Sets the estimate on `row`'s board: points as they are, hours as the
+ * seconds the tracker takes. */
+export function saveEstimate(ctx: TicketWriteContext, row: PointsRow, value: number | null): void {
+  void setTicketPoints(ctx, row.board, value === null ? null : row.unit === 'time' ? Math.round(value * 3600) : value);
 }
 
 /** An option value holding `c`, or the empty value. */
@@ -160,15 +166,12 @@ export function cardEditor(ctx: TicketWriteContext, card: CardView, field: CardE
       return typed ? pickEditor('type', 'option', savedTarget(ctx, 'type', choiceValue(card.type))) : null;
     case 'points': {
       if (!points || points.unit === 'none' || points.unit === '') return null;
-      const { board, unit, estimate } = points;
+      const row = points;
       return {
         kind: 'type',
         input: 'number',
-        text: estimate == null ? '' : String(unit === 'time' ? estimate / 3600 : estimate),
-        onSave: (text: string) => {
-          const n = text === '' ? null : Number(text);
-          void setTicketPoints(ctx, board, n === null ? null : unit === 'time' ? Math.round(n * 3600) : n);
-        },
+        text: row.estimate == null ? '' : String(row.unit === 'time' ? row.estimate / 3600 : row.estimate),
+        onSave: (text: string) => saveEstimate(ctx, row, text === '' ? null : Number(text)),
       };
     }
   }

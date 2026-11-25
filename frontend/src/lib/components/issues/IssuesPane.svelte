@@ -214,7 +214,7 @@
   function moveWithFields(row: RowView, move: MoveView): void {
     if (!board) return;
     openCard(row);
-    openTicketMove(trackerTicketKey({ backend: board.backend, connection: board.connection, issue: row.card.id }), move, new Map());
+    openTicketMove(trackerTicketKey({ backend: board.backend, connection: board.connection, issue: row.card.id }), move);
   }
 
   const choices = $derived(trackerBoardChoices());
