@@ -9,6 +9,8 @@ import { SCOPES_AT_V0_0_19, answerAsV0019 } from '../../../test/helpers/olderCom
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { TransportError } from '../../transport/wsClient';
 import { setCarriedSessionScopes } from '../../transport/scopes';
+import { HOME_BACKEND } from '../../transport/backendKey';
+import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
 import type { TrackerConnection } from '../../stores/bindings';
 
 /** The computer's list: what TrackerConnections answers now. */
@@ -116,6 +118,46 @@ describe('<TrackerConnectionsSettings>', () => {
 
     await fireEvent.click(within(soon).getByTestId('tracker-connection-renew'));
     expect(within(soon).getByTestId('tracker-connection-setup')).toBeTruthy();
+  });
+
+  // Renewing means a new token's expiry is saved before the check: the
+  // steps stay open until the check, or Done.
+  it('keeps the renewal steps open through a saved expiry until the check closes them', async () => {
+    const soon = Date.now() + 3 * 24 * 60 * 60 * 1000;
+    rows = [trackerConnection({ tokenExpiresAt: soon })];
+    setBindingMock('SetTrackerConnectionTokenExpiry', async (_id: string, at: number) => {
+      rows = [trackerConnection({ tokenExpiresAt: at })];
+      return rows[0];
+    });
+    const verify = setBindingMock('VerifyTrackerConnection', async () => rows[0]);
+    render(TrackerConnectionsSettings);
+    const row = await screen.findByTestId('tracker-connection-jira-1');
+    await fireEvent.click(within(row).getByTestId('tracker-connection-renew'));
+    const setup = within(row).getByTestId('tracker-connection-setup');
+    await fireEvent.input(within(setup).getByTestId('tracker-token-expiry-date'), { target: { value: '2031-05-20' } });
+    await fireEvent.click(within(setup).getByTestId('tracker-token-expiry-save'));
+    await waitFor(() => expect(within(row).getByTestId('tracker-connection-expiry').textContent).toMatch(/^Token good until /));
+    expect(within(row).getByTestId('tracker-connection-setup')).toBeTruthy();
+    const checkStep = within(row).getByTestId('tracker-connection-setup-check') as HTMLButtonElement;
+    await waitFor(() => expect(checkStep.disabled).toBe(false));
+    await fireEvent.click(checkStep);
+    await waitFor(() => expect(verify).toHaveBeenCalledWith('jira-1'));
+    await waitFor(() => expect(within(row).queryByTestId('tracker-connection-setup')).toBeNull());
+  });
+
+  it('closes the renewal steps when the connection is turned off, and does not reopen them when it is on again', async () => {
+    rows = [trackerConnection({ tokenExpiresAt: Date.now() + 3 * 24 * 60 * 60 * 1000 })];
+    render(TrackerConnectionsSettings);
+    const row = await screen.findByTestId('tracker-connection-jira-1');
+    await fireEvent.click(within(row).getByTestId('tracker-connection-renew'));
+    expect(within(row).getByTestId('tracker-connection-setup')).toBeTruthy();
+    rows = [trackerConnection({ enabled: false, tokenExpiresAt: rows[0].tokenExpiresAt })];
+    applyTrackerConnectionsChanged(HOME_BACKEND);
+    await waitFor(() => expect(within(row).queryByTestId('tracker-connection-setup')).toBeNull());
+    rows = [trackerConnection({ tokenExpiresAt: rows[0].tokenExpiresAt })];
+    applyTrackerConnectionsChanged(HOME_BACKEND);
+    await waitFor(() => expect(within(row).getByTestId('tracker-connection-renew')).toBeTruthy());
+    expect(within(row).queryByTestId('tracker-connection-setup')).toBeNull();
   });
 
   it('offers Renew only where clicking it opens the steps: not on a connection that is off', async () => {

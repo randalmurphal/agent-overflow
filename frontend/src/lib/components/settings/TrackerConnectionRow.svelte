@@ -78,9 +78,14 @@
   let confirmingRemove = $state(false);
 
   // Renew shows the setup steps again, which a connection that is off does
-  // not show: it is offered exactly where it opens them.
+  // not show: it is offered exactly where it opens them. Once open, the
+  // renewal stays open until the check or Done, whatever its steps change
+  // (a new expiry ends `renew`); turning the connection off ends it.
   let renewable = $derived(connection.enabled && (expiry?.renew ?? false));
-  let showSteps = $derived(connection.enabled && (status.needsSetup || (renewing && renewable)));
+  let showSteps = $derived(connection.enabled && (status.needsSetup || renewing));
+  $effect(() => {
+    if (!connection.enabled) renewing = false;
+  });
 
   async function run(what: string, action: () => Promise<unknown>): Promise<boolean> {
     busy = what;
@@ -240,7 +245,7 @@
         if ((await check()) && renewing) renewing = false;
       }}
     />
-    {#if renewing && renewable}
+    {#if renewing}
       <div>
         <button type="button" class={GHOST_BUTTON_CLASS} onclick={() => (renewing = false)}>Done</button>
       </div>
