@@ -11,6 +11,7 @@ import (
 
 	attachmentstore "agent-overflow/internal/attachment"
 	"agent-overflow/internal/entityid"
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/harness/trackerfake"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
@@ -296,6 +297,27 @@ func TestTicketWorkListsTheBranchOfAThreadInAnotherRepository(t *testing.T) {
 	}
 	if !slices.ContainsFunc(work.Branches, func(b TicketBranch) bool { return b.ProjectID == other.ID && b.Name == "WEB-1-elsewhere" }) {
 		t.Fatalf("branches = %+v; want WEB-1-elsewhere of %s", work.Branches, other.ID)
+	}
+}
+
+// A pull request whose key two sites' mirrors both hold carries the
+// ticket of the site whose boards its project lists, though the other
+// connection's ID sorts first.
+func TestAPullRequestsTicketIsOfItsProjectsSite(t *testing.T) {
+	t.Parallel()
+	f := newTicketThreadFixture(t)
+	execOnStore(t, f.dbPath, `INSERT INTO tracker_connections(id, kind, site, account, created_at) VALUES ('0000', 'jira', 'https://other.example.atlassian.net', 'user1@example.com', 1)`)
+	execOnStore(t, f.dbPath, `INSERT INTO tracker_cache_roots(connection_id, created_at) VALUES ('0000', 1)`)
+	execOnStore(t, f.dbPath, `INSERT INTO tracker_cache_issues(root_id, issue_id, issue_key, title, updated_at, read_at)
+		SELECT id, 'l1', 'WEB-1', 'Elsewhere', 1, 1 FROM tracker_cache_roots WHERE connection_id = '0000'`)
+	rows := []gitops.PRListRow{prListRow(prListRepoA, 5, func(r *gitops.PRListRow) { r.Title = "WEB-1 Retry cursor" })}
+
+	tickets := f.a.prRowTickets(prListRepoA.Key(), f.project, rows)
+	if len(tickets[0]) != 1 || tickets[0][0].ConnectionID != f.conn.ID || tickets[0][0].IssueID != "10101" {
+		t.Fatalf("the row's tickets = %+v; want WEB-1 of %s", tickets[0], f.conn.ID)
+	}
+	if other := f.a.prRowTickets(prListRepoA.Key(), "", rows); other[0][0].ConnectionID != "0000" {
+		t.Fatalf("with no project, the row's tickets = %+v; want the lowest connection's", other[0])
 	}
 }
 

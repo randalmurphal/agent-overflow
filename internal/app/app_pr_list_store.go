@@ -233,7 +233,7 @@ func (a *App) prefetchPRList(ctx context.Context) (int, error) {
 		}
 		now := time.Now()
 		project := names[read.key]
-		encoded, err := json.Marshal(prListReadOf(project.ProjectID, project.Name, read.repo, read.rows, a.prRowTickets(read.key, read.rows), now, detail))
+		encoded, err := json.Marshal(prListReadOf(project.ProjectID, project.Name, read.repo, read.rows, a.prRowTickets(read.key, project.ProjectID, read.rows), now, detail))
 		if err != nil {
 			log.Printf("pr list: encode the prefetch of %s: %v", read.key, err)
 			continue

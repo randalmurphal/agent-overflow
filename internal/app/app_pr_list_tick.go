@@ -183,7 +183,10 @@ func (a *App) landPRListRead(pump *prListPump, read prListRepoRead) {
 	listed := read.err == nil || errors.As(read.err, &detailErr)
 	var tickets [][]store.KeyedTicket
 	if listed {
-		tickets = a.prRowTickets(read.key, read.rows)
+		a.prUpdates.mu.Lock()
+		projectID, _ := pump.projectNamingLocked(read.repo)
+		a.prUpdates.mu.Unlock()
+		tickets = a.prRowTickets(read.key, projectID, read.rows)
 	}
 	a.prUpdates.mu.Lock()
 	if pump.DeadLocked() {

@@ -122,7 +122,7 @@ func TestTicketWorkCostAtRealSize(t *testing.T) {
 		})
 	}
 	measure("tickets of a 200-row landing", func() error {
-		tickets := f.a.prRowTickets(prListRepoA.Key(), rows)
+		tickets := f.a.prRowTickets(prListRepoA.Key(), f.project, rows)
 		if len(tickets[0]) != 1 || tickets[0][0].IssueID != "10101" {
 			return fmt.Errorf("row 1 tickets = %+v; want WEB-1's issue", tickets[0])
 		}
