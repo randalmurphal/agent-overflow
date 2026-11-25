@@ -353,8 +353,11 @@ from, and a ticket in a pane of its own.
   into one line that names them. A section still holding the project's
   template text is marked as not filled in.
 - Work lists the threads, pull requests and branches tied to the ticket,
-  each with its state and owner. It offers Ask and Start work. There are no
-  suggested prompts.
+  each with its state and owner. It offers Ask and Start work, and shows
+  the project their thread goes in, which the person can change: the
+  project the board was opened under, or the one the opener named for a
+  ticket opened from a thread or a pull request. There are no suggested
+  prompts.
 - Comments can be read oldest or newest first, and the order is remembered.
   Past five, earlier comments sit behind a control. The comment box stays
   in view while comments are in view. A comment written by an agent names

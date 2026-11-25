@@ -34,7 +34,9 @@ board methods, events and the patch read in
   and the compact column for the session. Only a pick is saved; another
   window's change never moves an open pane. Its selection also holds the
   screen (Board or Time, saved for the next pane), the open ticket, its
-  subscription and the trail Back steps through, and decides whether the
+  subscription, its project (`ticketProject`: the person's pick, else the
+  opener's, else the board's; Ask and Start work use it) and the trail
+  Back steps through, and decides whether the
   board and the week are shown (`boardShown`, `timeShown`: the pane is on
   screen on that screen and no ticket covers it), which are their votes.
   The ticket's placement per screen, its folds, the comment order and

@@ -1897,20 +1897,29 @@ delete is refused and the links the delete read are the ones it ends.
   branch and in a branch's name. It counts when this computer's mirror
   of an enabled connection holds an issue of its project
   (`store.TicketsByKey`, one statement for any number of keys, on the
-  index `idx_tracker_cache_issues_key`), which also answers the issue ID
-  and title it holds.
+  partial index `idx_tracker_cache_issues_key`), which also answers the
+  issue ID and title it holds. Which mirrors hold a project is read once
+  per project, and a key is looked up only in those, each one seek of
+  one root: 200 keys over a 20,000-issue mirror cost about 21,700 SQLite
+  VM steps with one connection and with a second
+  (`TestTicketsByKeyCostsTheSameWithASecondConnection`). When two sites'
+  mirrors hold a key, the one holding the issue answers, then a
+  connection whose boards the asker's project lists, then the lowest
+  connection ID.
 - **The pull request rows' tickets** (`PRListItem.Tickets`) are read when
   a repository's list lands, before it is stored and published, and on the
-  stored list's prefetch (`prRowTickets`): one statement per landing. A
-  connection added or turned off shows in the chips at the next read of
-  each repository.
+  stored list's prefetch (`prRowTickets`): one statement per landing, and
+  one read of the boards of the project the list is under, whose
+  connections pick between two sites. A connection added or turned off
+  shows in the chips at the next read of each repository.
 - **`GetTicketWork`** (home route, `git:operate` and `tracker:read`)
   answers a ticket's open pull requests from the stored lists, scanning
   each stored list's bytes for the key and decoding only the lists that
   hold it; the merged and closed pull requests its linked threads were
   last seen with; and the branches that name the key in the projects
-  listing the connection's boards and the pull requests' projects, a
-  branch a listed pull request names folded into it. A repository whose
+  listing the connection's boards, the pull requests' projects and the
+  linked threads' projects, a branch a listed pull request names folded
+  into it. A repository whose
   branches cannot be read is a problem beside the rest. At 2,000 stored
   rows over 10 repositories and a 500-branch project it costs 18 ms and
   4 MB an open, 23 ms and 5 MB when every list names the key
@@ -1919,19 +1928,31 @@ delete is refused and the links the delete read are the ones it ends.
 - **`StartTicketThread`** (project route, `threads:operate`, plus
   `tracker:read`, and `git:operate` for Start work) makes the thread of
   an Ask or a Start work in one rollback: the thread titled with the key
-  and title, for Start work in a worktree on the branch (the worktree
-  that has it checked out, else a new one; the project's own checkout is
-  refused), the link with its origin, the ticket file `KEY.md` attached
-  to the unsent draft, and for Start work the draft's text. A failure
-  removes what it made, ends the link and tells the tracker service. The
+  and title, for Start work in a worktree on exactly the branch named
+  (the worktree that has it checked out, else a new one; never a tag of
+  that name, never a name git's tidying changed; the project's own
+  checkout and an empty name are refused), the link with its origin, the
+  ticket file `KEY.md` attached to the unsent draft, and for Start work
+  the draft's text. A failure removes what it made, ends the link and
+  tells the tracker service. A Start work for a ticket, project and
+  branch that has a Start work thread not archived answers that thread
+  and makes nothing, and one ticket's Start works in a project run one
+  at a time, so a call repeated after a lost reply, or two at once, make
+  one thread. The
   ticket file (`trackerapp.TicketFileText`, from the stored body, else
   one ticket read) says first that it is the tracker's copy and data,
   holds the ticket's facts, long texts and newest 10 comments, and is cut
   at 200 KB at a line saying where the rest is: about 125 tokens for a
   typical ticket, about 51,000 at the bound.
 - **The move and the assignment** of Start work are the ticket screen's
-  writes (`stores/trackerTicketWrites.svelte.ts`); the run's order,
-  "already" and Try again are `stores/ticketWork.svelte.ts`'s.
+  writes (`stores/trackerTicketWrites.svelte.ts`); the run's order (the
+  move, then the assignment decided from the ticket as the move left it),
+  "already", which rests on a read that succeeded after the run began,
+  and Try again are `stores/ticketWork.svelte.ts`'s.
+- **A setup section a newer version saved** is never replaced by a save:
+  the encoder refuses to write any section named in `Newer`
+  (`ErrSetupNewer`), whatever its name, so Save as defaults over a newer
+  `start_work` saves nothing.
 
 ## Agent tools
 
