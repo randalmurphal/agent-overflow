@@ -24,15 +24,17 @@ import (
 // SubscribeTrackerTicket subscribes the calling client to an issue's
 // ticket. The answer comes from this computer's copy of the issue; the
 // ticket's reads of the tracker follow it, and tracker:issue_updated
-// tells what they change. The subscription is released by
-// ReleaseTrackerSubscription or when the client's connection ends, and
-// takes SetTrackerSubscriptionVisible and RefreshTrackerSubscription as a
-// board's does.
+// tells what they change. visible is whether the client shows the
+// ticket now: a ticket subscribed hidden is not read from the tracker
+// until it is shown (SetTrackerSubscriptionVisible) or refreshed. The
+// subscription is released by ReleaseTrackerSubscription or when the
+// client's connection ends, and takes SetTrackerSubscriptionVisible and
+// RefreshTrackerSubscription as a board's does.
 //
 //ao:scope tracker:read
 //ao:route home
 //ao:callerbound
-func (a *App) SubscribeTrackerTicket(ctx context.Context, connectionID, issue string) (trackerapp.TicketSubscription, error) {
+func (a *App) SubscribeTrackerTicket(ctx context.Context, connectionID, issue string, visible bool) (trackerapp.TicketSubscription, error) {
 	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		return trackerapp.TicketSubscription{}, err
@@ -41,7 +43,7 @@ func (a *App) SubscribeTrackerTicket(ctx context.Context, connectionID, issue st
 	if err != nil {
 		return trackerapp.TicketSubscription{}, err
 	}
-	sub, err := svc.SubscribeTicket(connectionID, tracker.IssueID(issue), trackerSubscriptionTie(conn, svc))
+	sub, err := svc.SubscribeTicket(connectionID, tracker.IssueID(issue), visible, trackerSubscriptionTie(conn, svc))
 	return sub, trackerError(err)
 }
 

@@ -159,7 +159,7 @@ func (s *jiraSite) renderCustom(is *JiraIssue, id string) any {
 		return is.Rank
 	case kindUnsupported, kindReadOnly, kindText, kindDoc, kindNumber, kindDate, kindDateTime,
 		kindUser, kindUsers, kindLabels, kindOption, kindOptions, kindCascade, kindPriority,
-		kindIssueType, kindComponents, kindParent, kindTimeEstimate:
+		kindResolution, kindIssueType, kindComponents, kindParent, kindTimeEstimate:
 		// The value as stored, below.
 	}
 	return rawOrNil(is.Values[id])

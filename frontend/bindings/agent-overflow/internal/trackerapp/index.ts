@@ -78,6 +78,7 @@ export {
     StaleView,
     StatusView,
     SyncView,
+    TicketRowView,
     TicketSubscription,
     TicketView,
     TotalsAt,

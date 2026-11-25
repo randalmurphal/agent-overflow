@@ -62,7 +62,7 @@
     type ProvenAppend,
     type Tokens,
   } from '../../markdown';
-  import { chatMarkdownExtensions, chatMarkdownForgeOptions } from './markdown/chatMarkdownOptions';
+  import { chatMarkdownExtensions, chatMarkdownForgeOptions, chatMarkdownTrackerOptions } from './markdown/chatMarkdownOptions';
   import {
     CHAT_MARKDOWN_PRESENCE_CONTEXT,
     CHAT_MARKDOWN_SETTLED_CONTEXT,
@@ -123,6 +123,7 @@
     threadId = '',
     liveCodeRow,
     embeddedHtml = false,
+    trackerMedia = false,
     codeClaim = null,
     class: className = '',
   }: {
@@ -169,6 +170,10 @@
      *  allowlist sanitizer, which keeps what the forge keeps. See
      *  `markdown/parser/extensions/embeddedHtml.ts`. */
     embeddedHtml?: boolean;
+    /** Ticket text: a tracker's `media:` images and attachments show as
+     *  chips naming the file (utils/trackerMedia.ts). Such a surface reads
+     *  no forge source. */
+    trackerMedia?: boolean;
     /** Fenced blocks the host renders itself, in place (codeClaim.ts). */
     codeClaim?: CodeClaim | null;
     class?: string;
@@ -296,17 +301,20 @@
   // derivation keys on the scalars above, so the extension and function
   // identities are stable across renders for one PR: a fresh closure per
   // render would invalidate the renderer's per-block caches on every frame.
+  // Ticket text (`trackerMedia`) takes the tracker's claim in their place.
   const forgeOptions = $derived.by(() =>
-    chatMarkdownForgeOptions(
-      forgeForge === 'github' || forgeForge === 'gitlab'
-        ? {
-            pr: { forge: forgeForge, host: forgeHost, namespace: forgeNamespace, repo: forgeRepo, number: forgeNumber },
-            backend: forgeBackend,
-            webBase: forgeWebBase,
-          }
-        : null,
-      embeddedHtml,
-    ),
+    trackerMedia
+      ? chatMarkdownTrackerOptions(embeddedHtml)
+      : chatMarkdownForgeOptions(
+          forgeForge === 'github' || forgeForge === 'gitlab'
+            ? {
+                pr: { forge: forgeForge, host: forgeHost, namespace: forgeNamespace, repo: forgeRepo, number: forgeNumber },
+                backend: forgeBackend,
+                webBase: forgeWebBase,
+              }
+            : null,
+          embeddedHtml,
+        ),
   );
   const renderEmbeddedHtml = $derived.by(() => {
     const options = forgeOptions.html;

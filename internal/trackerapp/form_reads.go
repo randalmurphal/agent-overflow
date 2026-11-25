@@ -147,21 +147,25 @@ func (s *Service) Moves(ctx context.Context, id, issue string) ([]MoveView, erro
 }
 
 // FieldScopeInput is where a pick list's values are asked for: an existing
-// Issue's fields, or a create's in Project with Type.
+// Issue's fields, the fields its Move's screen takes (MoveView.Fields), or
+// a create's in Project with Type.
 type FieldScopeInput struct {
 	Issue   string `json:"issue,omitempty"`
+	Move    string `json:"move,omitempty"`
 	Project string `json:"project,omitempty"`
 	Type    string `json:"type,omitempty"`
 }
 
 func (in FieldScopeInput) model() (tracker.FieldScope, error) {
 	switch {
-	case in.Issue != "" && in.Project == "" && in.Type == "":
+	case in.Issue != "" && in.Move == "" && in.Project == "" && in.Type == "":
 		return tracker.OnIssue(tracker.IssueID(in.Issue)), nil
-	case in.Issue == "" && in.Project != "":
+	case in.Issue != "" && in.Move != "" && in.Project == "" && in.Type == "":
+		return tracker.OnMove(tracker.IssueID(in.Issue), tracker.MoveID(in.Move)), nil
+	case in.Issue == "" && in.Move == "" && in.Project != "":
 		return tracker.OnCreate(tracker.ProjectID(in.Project), tracker.IssueTypeID(in.Type)), nil
 	}
-	return tracker.FieldScope{}, fmt.Errorf("%w: a field scope names an issue, or a project and its issue type", ErrInvalidRequest)
+	return tracker.FieldScope{}, fmt.Errorf("%w: a field scope names an issue, an issue and one of its moves, or a project and its issue type", ErrInvalidRequest)
 }
 
 // UserListView is the users a pick list offers; More reports that the

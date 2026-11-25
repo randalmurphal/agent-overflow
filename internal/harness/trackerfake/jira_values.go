@@ -226,6 +226,8 @@ func (s *jiraSite) setValue(is *JiraIssue, f *fieldDef, raw json.RawMessage) (re
 		return s.setOptions(is, f, raw, null, invalid)
 	case kindPriority:
 		return s.setPriority(is, raw, null, invalid)
+	case kindResolution:
+		return s.setResolution(is, raw, null, invalid)
 	case kindIssueType:
 		return s.setIssueType(is, raw)
 	case kindComponents:
@@ -310,6 +312,26 @@ func (s *jiraSite) setPriority(is *JiraIssue, raw json.RawMessage, null bool, in
 	for _, pr := range s.Priorities {
 		if pr.ID == r.ID || (r.ID == "" && pr.Name == r.Name) {
 			is.Priority = pr.ID
+			return "", ""
+		}
+	}
+	return invalid, ""
+}
+
+// setResolution sets is's resolution, a transition screen's field
+// (documented: the transition request's fields name it by ID or name).
+func (s *jiraSite) setResolution(is *JiraIssue, raw json.RawMessage, null bool, invalid string) (refusal, unhandled string) {
+	if null {
+		is.Resolution = ""
+		return "", ""
+	}
+	r, why := readRef(raw, "id", "name")
+	if why != "" {
+		return "", why
+	}
+	for _, res := range s.Resolutions {
+		if res.ID == r.ID || (r.ID == "" && res.Name == r.Name) {
+			is.Resolution = res.ID
 			return "", ""
 		}
 	}

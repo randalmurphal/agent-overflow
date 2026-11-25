@@ -243,7 +243,7 @@ func TestARefreshSettlesEachOpenTicketWithItsOwnRead(t *testing.T) {
 	ts := &ticketStore{Store: f.st}
 	f.svc.store = ts
 	for i, id := range []tracker.IssueID{"10001", "10002"} {
-		must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, id, untied))
+		must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, id, true, untied))
 		f.events.issueEvents(t, i+1)
 	}
 	f.settledTickets(t)

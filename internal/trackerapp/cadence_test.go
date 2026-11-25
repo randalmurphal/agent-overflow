@@ -46,7 +46,7 @@ func TestPollIntervalIsPerKind(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				ticket, err := m.svc.SubscribeTicket(sc.conn, "10001", untied)
+				ticket, err := m.svc.SubscribeTicket(sc.conn, "10001", true, untied)
 				if err != nil {
 					t.Fatal(err)
 				}

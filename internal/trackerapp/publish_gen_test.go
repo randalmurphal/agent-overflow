@@ -55,7 +55,7 @@ func genCrossing(t *testing.T, tick, rename bool) {
 		if err := f.svc.RefreshSubscription(ctx, board1.ID); err != nil {
 			t.Fatal(err)
 		}
-		must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001", untied))
+		must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001", true, untied))
 		f.events.issueEvents(t, 1)
 		f.settledTickets(t)
 	}
@@ -112,7 +112,7 @@ func genCrossing(t *testing.T, tick, rename bool) {
 		if err := f.svc.RefreshSubscription(ctx, board1.ID); err != nil {
 			t.Fatal(err)
 		}
-		must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001", untied))
+		must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001", true, untied))
 		f.settledTickets(t)
 	}
 	if tick {
@@ -174,7 +174,7 @@ func TestAChangeToldUnderAnEarlierGenerationReachesNoLaterPump(t *testing.T) {
 	must[Connection](t)(f.svc.SetEnabled(f.conn.ID, true))
 	tickOK(t, f.svc, f.scope(), BoardDue{Structure: true, Delta: true})
 	f.subscribe(t, testBoard)
-	must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001", untied))
+	must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001", true, untied))
 	f.settledTickets(t)
 	quiet(t, f.svc)
 	bp, tp := f.svc.boardPumpOf(f.scope()), f.svc.ticketPumpOf(f.conn.ID, "10001")

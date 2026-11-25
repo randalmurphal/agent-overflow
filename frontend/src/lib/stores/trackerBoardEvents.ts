@@ -1,12 +1,12 @@
 // What the always-loaded stores tell the Issues stores, which load with the
 // Issues pane (`components/panes/ToolPane.svelte` imports it on demand): a
-// store there registers here when it loads. Until one has, no board is held
-// and no pane holds the board choices, so a frame is dropped and a gap has
-// nothing to read again. This module is all of the Issues pane the startup
+// store there registers here when it loads. Until one has, no board or
+// ticket is held and no pane holds the board choices, so a frame is dropped
+// and a gap has nothing to read again. This module is all of the Issues pane the startup
 // chunk holds (`lib/architecture.test.ts` checks it).
 
 import type { BackendKey } from '../transport/backendKey';
-import type { SyncView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { FailureView, SyncView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 
 /** The `tracker:board_updated` frame (trackerapp.BoardEvent). Wails
  * generates no type for an event payload. */
@@ -21,20 +21,31 @@ export interface TrackerBoardEvent {
   ended?: boolean;
 }
 
-/** What the board store does with the channel. */
-export interface TrackerBoardChannel {
-  /** A frame from `backend`. */
-  event(event: TrackerBoardEvent, backend: BackendKey): void;
-  /** A gap on the channel from `backend`: answers the settling of the reads
-   * it starts, or undefined when no board of the computer is held. */
+/** The `tracker:issue_updated` frame (trackerapp.IssueEvent). */
+export interface TrackerIssueEvent {
+  connection: string;
+  issue: string;
+  seq: number;
+  changed?: boolean;
+  failure?: FailureView | null;
+  poker?: boolean;
+  ended?: boolean;
+}
+
+/** What a store does with a channel: a frame, and a gap that answers the
+ * settling of the reads it starts, or undefined when nothing of the
+ * computer is held. */
+interface TrackerChannel<E> {
+  event(event: E, backend: BackendKey): void;
   gap(backend: BackendKey): Promise<void> | undefined;
 }
 
-let boards: TrackerBoardChannel | null = null;
+let boards: TrackerChannel<TrackerBoardEvent> | null = null;
+let tickets: TrackerChannel<TrackerIssueEvent> | null = null;
 const listsChanged = new Set<(backend: BackendKey) => void>();
 
 /** The board store takes the channel when it loads. */
-export function takeTrackerBoardChannel(channel: TrackerBoardChannel): void {
+export function takeTrackerBoardChannel(channel: TrackerChannel<TrackerBoardEvent>): void {
   boards = channel;
 }
 
@@ -43,9 +54,24 @@ export function trackerBoardUpdated(event: TrackerBoardEvent, backend: BackendKe
   boards?.event(event, backend);
 }
 
-/** A gap on `tracker:board_updated` from `backend`; see `TrackerBoardChannel.gap`. */
+/** A gap on `tracker:board_updated` from `backend`; see `TrackerChannel.gap`. */
 export function trackerBoardsGap(backend: BackendKey): Promise<void> | undefined {
   return boards?.gap(backend);
+}
+
+/** The ticket store takes the channel when it loads. */
+export function takeTrackerTicketChannel(channel: TrackerChannel<TrackerIssueEvent>): void {
+  tickets = channel;
+}
+
+/** A `tracker:issue_updated` frame from `backend`. */
+export function trackerIssueUpdated(event: TrackerIssueEvent, backend: BackendKey): void {
+  tickets?.event(event, backend);
+}
+
+/** A gap on `tracker:issue_updated` from `backend`. */
+export function trackerTicketsGap(backend: BackendKey): Promise<void> | undefined {
+  return tickets?.gap(backend);
 }
 
 /** Runs `listener` whenever the boards some project of a computer lists may

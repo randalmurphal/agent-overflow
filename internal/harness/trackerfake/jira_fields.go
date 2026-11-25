@@ -25,6 +25,7 @@ const (
 	kindOptions
 	kindCascade
 	kindPriority
+	kindResolution
 	kindIssueType
 	kindComponents
 	kindParent
@@ -54,7 +55,7 @@ var systemFields = []fieldDef{
 	{id: "issuetype", name: "Issue Type", schema: JiraSchema{Type: "issuetype"}, kind: kindIssueType},
 	{id: "project", name: "Project", schema: JiraSchema{Type: "project"}, kind: kindReadOnly},
 	{id: "priority", name: "Priority", schema: JiraSchema{Type: "priority"}, kind: kindPriority},
-	{id: "resolution", name: "Resolution", schema: JiraSchema{Type: "resolution"}, kind: kindReadOnly},
+	{id: "resolution", name: "Resolution", schema: JiraSchema{Type: "resolution"}, kind: kindResolution},
 	{id: "assignee", name: "Assignee", schema: JiraSchema{Type: "user"}, kind: kindUser},
 	{id: "reporter", name: "Reporter", schema: JiraSchema{Type: "user"}, kind: kindUser},
 	{id: "labels", name: "Labels", schema: JiraSchema{Type: "array", Items: "string"}, kind: kindLabels},
@@ -127,6 +128,10 @@ func customKind(s JiraSchema) fieldKind {
 		case s.Items == "option":
 			return kindOptions
 		case s.Items == "string" && custom == "labels":
+			return kindLabels
+		case s.Items == "string":
+			// A list of strings of another custom type is read and written
+			// as labels are (unverified).
 			return kindLabels
 		}
 	}

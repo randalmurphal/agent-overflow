@@ -176,6 +176,12 @@ const ENDING_REFUSALS: ReadonlySet<string> = new Set(['tracker_connection_off', 
 // The refusals of a call through a handle its computer no longer holds.
 const SUBSCRIPTION_GONE: ReadonlySet<string> = new Set(['tracker_subscription_unknown', 'tracker_subscription_ended']);
 
+/** Whether `err` refused a call through a board or ticket handle its
+ * computer no longer holds: the holder subscribes again. */
+export function isSubscriptionGone(err: unknown): boolean {
+  return err instanceof TransportError && SUBSCRIPTION_GONE.has(err.code);
+}
+
 const lives = new Map<string, Live>();
 // Whether the pane shows each held board, before the window's own
 // visibility; kept across a re-subscribe.
@@ -371,7 +377,7 @@ async function run(live: Live): Promise<void> {
       if (live.aborted) return;
       // The reconnect subscribes again.
       if (err instanceof DisconnectedError) return;
-      if (err instanceof TransportError && SUBSCRIPTION_GONE.has(err.code)) {
+      if (isSubscriptionGone(err)) {
         // The handle is gone on its computer: subscribe again.
         store.invalidate(live.key);
         return;
@@ -497,7 +503,7 @@ async function readPage(live: Live, held: HeldBoard, at: number): Promise<void> 
       return;
     }
     // The connection and the handle are the whole board's.
-    if (err instanceof DisconnectedError || (err instanceof TransportError && SUBSCRIPTION_GONE.has(err.code))) throw err;
+    if (err instanceof DisconnectedError || isSubscriptionGone(err)) throw err;
     // The section keeps its demand, whatever first asked for the page.
     live.wantPage.add(k);
     update(live, { sectionErrors: new Map(live.state.sectionErrors).set(k, err) });
@@ -553,23 +559,29 @@ export async function refreshTrackerBoard(key: string): Promise<void> {
   const live = lives.get(key);
   if (!live?.id || live.state.refreshing) return;
   update(live, { refreshing: true, refreshNotice: null });
-  let notice: TrackerRefreshNotice | null = null;
-  try {
-    await withBackendTarget(live.ref.backend, () => RefreshTrackerSubscription(live.id));
-  } catch (err) {
-    const code = err instanceof TransportError ? err.code : '';
-    if (code === 'tracker_refresh_not_run' || code === 'tracker_refresh_waiting') {
-      notice = { kind: code === 'tracker_refresh_not_run' ? 'not_run' : 'waiting', message: (err as Error).message };
-    } else {
-      notice = { kind: 'failed', error: err };
-      if (code === 'tracker_subscription_unknown' || code === 'tracker_subscription_ended') store.invalidate(live.key);
-    }
-  }
+  const notice = await requestTrackerRefresh(live.ref.backend, live.id);
+  if (notice?.kind === 'failed' && isSubscriptionGone(notice.error)) store.invalidate(live.key);
   if (lives.get(key) !== live) return;
   const next: StateChange = { refreshing: false, refreshNotice: notice };
   releaseRetries(live, next);
   update(live, next);
   void drain(live);
+}
+
+/** Has a board's or ticket's computer read it from the tracker now, and
+ * answers what is worth showing of the answer: a refresh that did not run
+ * or was still reading, or its failure; null when it ran. */
+export async function requestTrackerRefresh(backend: BackendKey, id: string): Promise<TrackerRefreshNotice | null> {
+  try {
+    await withBackendTarget(backend, () => RefreshTrackerSubscription(id));
+    return null;
+  } catch (err) {
+    const code = err instanceof TransportError ? err.code : '';
+    if (code === 'tracker_refresh_not_run' || code === 'tracker_refresh_waiting') {
+      return { kind: code === 'tracker_refresh_not_run' ? 'not_run' : 'waiting', message: (err as Error).message };
+    }
+    return { kind: 'failed', error: err };
+  }
 }
 
 /** Subscribes an ended board again: its computer lists it as openable

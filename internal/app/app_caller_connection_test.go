@@ -126,7 +126,7 @@ var callerConnectionRefusals = map[string]connectionRefusal{
 	},
 	"SubscribeTrackerTicket": {
 		call: func(a *App, ctx context.Context) error {
-			return ignoreResult(a.SubscribeTrackerTicket(ctx, "connection", "10101"))
+			return ignoreResult(a.SubscribeTrackerTicket(ctx, "connection", "10101", true))
 		},
 		// As SubscribeTrackerBoard's.
 	},

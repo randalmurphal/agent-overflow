@@ -64,6 +64,7 @@ type MirrorStore interface {
 	GetMirrorCatalog(rootID int64, users, statuses []string) (store.MirrorCatalog, error)
 	ListMirrorCards(rootID int64, issueIDs []string) ([]store.MirrorCard, error)
 	ListMirrorIssueRows(rootID int64, issueID, afterBoard string) ([]store.MirrorIssueRow, bool, error)
+	ListMirrorTicketRows(rootID int64, issueIDs []string) ([]store.MirrorTicketRow, error)
 	ListMirrorOffBoardLinkedIssues(rootID int64, after string, polled []string) ([]string, bool, error)
 	ListMirrorSection(rootID int64, boardID string, regroup store.MirrorRegroup, section store.MirrorSection, after store.MirrorRowKey) (store.MirrorSectionPage, error)
 	ReadMirrorBoardView(rootID int64, boardID string, regroup store.MirrorRegroup, pick func(store.MirrorStructure) []store.MirrorSection) (store.MirrorBoardView, bool, error)

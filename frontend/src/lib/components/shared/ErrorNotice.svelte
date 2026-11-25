@@ -8,12 +8,14 @@
 
   // A failure of a tool page's own call (its header's refresh) as one line
   // under the header: the sentence, Details and copy through the shared
-  // error report controls, and a dismiss.
+  // error report controls, and a dismiss unless the page has nothing else
+  // to show in its place.
 
   interface Props {
     message: string;
     captured: CapturedError;
-    onDismiss: () => void;
+    /** None while the notice is all the page shows. */
+    onDismiss?: () => void;
     testId: string;
   }
 
@@ -26,9 +28,11 @@
     <span class="min-w-0 flex-1 break-words">{message}</span>
     <span class="flex shrink-0 items-center gap-0.5">
       <ErrorReportActions {captured} {expanded} onToggle={() => { expanded = !expanded; }} />
-      <IconButton label="Dismiss" size="xs" variant="tint" testId="{testId}-dismiss" onClick={onDismiss}>
-        {#snippet children()}<Icon icon={X} size={12} strokeWidth={2.25} />{/snippet}
-      </IconButton>
+      {#if onDismiss}
+        <IconButton label="Dismiss" size="xs" variant="tint" testId="{testId}-dismiss" onClick={onDismiss}>
+          {#snippet children()}<Icon icon={X} size={12} strokeWidth={2.25} />{/snippet}
+        </IconButton>
+      {/if}
     </span>
   </div>
   {#if expanded}

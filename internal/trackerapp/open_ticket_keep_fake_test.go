@@ -86,7 +86,7 @@ func (s *fakeScenario) kept(t *testing.T, conn Connection, issue tracker.IssueID
 // openTicket subscribes to issue's ticket and waits for its first read.
 func (s *fakeScenario) openTicket(t *testing.T, conn Connection, issue tracker.IssueID) TicketSubscription {
 	t.Helper()
-	sub := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, issue, untied))
+	sub := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, issue, true, untied))
 	settled(t, s.svc)
 	return sub
 }
@@ -410,7 +410,7 @@ func TestAFailedDeleteOfTheEarlierRowsIsRetried(t *testing.T) {
 	s.earlierRows(t, conn, "10105", 1)
 	drops := &earlierDrops{Store: s.st, fail: 1}
 	s.svc.store = drops
-	if _, err := s.svc.SubscribeTicket(conn.ID, "10105", untied); err == nil || !strings.Contains(err.Error(), "the store refused the delete") {
+	if _, err := s.svc.SubscribeTicket(conn.ID, "10105", true, untied); err == nil || !strings.Contains(err.Error(), "the store refused the delete") {
 		t.Fatalf("an opening whose delete failed: %v; want the delete's failure", err)
 	}
 	sub := s.openTicket(t, conn, "10105")
@@ -502,9 +502,9 @@ func TestOpeningAndClosingATicketKeepCosts(t *testing.T) {
 			// record once, as it settles; 10101's view shows other issues,
 			// whose cards it reads.
 			quiet(t, s.svc)
-			want := "GetMirrorCatalog:1 GetMirrorRoot:1 GetMirrorSync:1 KeepMirrorTicket:1 ListMirrorBodies:2 StoreMirrorTickets:1"
+			want := "GetMirrorCatalog:1 GetMirrorRoot:1 GetMirrorSync:1 KeepMirrorTicket:1 ListMirrorBodies:2 ListMirrorTicketRows:1 StoreMirrorTickets:1"
 			if issue == "10101" {
-				want = "GetMirrorCatalog:1 GetMirrorRoot:1 GetMirrorSync:1 KeepMirrorTicket:1 ListMirrorBodies:2 ListMirrorCards:1 StoreMirrorTickets:1"
+				want = "GetMirrorCatalog:1 GetMirrorRoot:1 GetMirrorSync:1 KeepMirrorTicket:1 ListMirrorBodies:2 ListMirrorCards:1 ListMirrorTicketRows:1 StoreMirrorTickets:1"
 			}
 			if got := describeCounts(cs.take()); got != want {
 				t.Fatalf("the opening cost %s; want %s", got, want)

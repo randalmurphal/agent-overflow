@@ -78,7 +78,7 @@ func TestCrossingTicketReadsKeepTheLater(t *testing.T) {
 					}
 				})
 				answerCardsFromDetails(m.p)
-				sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, issue, untied))
+				sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, issue, true, untied))
 				m.events.issueEvents(t, 1)
 				m.settledTickets(t)
 				tp := m.svc.ticketPumpOf(m.conn.ID, issue)
@@ -240,7 +240,7 @@ func TestALinkedCardChangeRebuildsTheTicketView(t *testing.T) {
 		p.detail = func(tracker.IssueID) (tracker.Detail, error) { return detailOfCard(ticket), nil }
 	})
 	m.p.updatedMovesWithDetail(cardsAnswering(&ticket))
-	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001", untied))
+	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001", true, untied))
 	m.events.issueEvents(t, 1)
 	m.settledTickets(t)
 	calls, events := len(m.p.callsInOrder()), m.issueEventCount()
@@ -323,7 +323,7 @@ func TestAnEndIsToldBeforeTheCoreStops(t *testing.T) {
 					t.Fatalf("a refused request (%v) returned before the end was told", err)
 				}
 			} else {
-				sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001", untied))
+				sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001", true, untied))
 				m.events.issueEvents(t, 1)
 				m.settledTickets(t)
 				tp := m.svc.ticketPumpOf(m.conn.ID, "10001")

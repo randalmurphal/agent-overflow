@@ -636,6 +636,19 @@ export {
   SetTrackerSubscriptionVisible,
   RefreshTrackerSubscription,
   ReleaseTrackerSubscription,
+  // A ticket's subscription, its writes and the reads its pickers make
+  // (stores/trackerTicket.svelte.ts, stores/trackerTicketWrites.svelte.ts).
+  SubscribeTrackerTicket,
+  TrackerTicket,
+  TrackerComments,
+  TrackerAssignableUsers,
+  TrackerChoices,
+  EditTrackerIssue,
+  MoveTrackerIssue,
+  SetTrackerEstimate,
+  AddTrackerComment,
+  EditTrackerComment,
+  DeleteTrackerComment,
   // A person's logged time and its writes (stores/trackerTime.svelte.ts,
   // stores/trackerTimeWrites.svelte.ts).
   TrackerWorklogs,
@@ -643,6 +656,9 @@ export {
   AddTrackerWorklog,
   EditTrackerWorklog,
   DeleteTrackerWorklog,
+  // The tickets a person finds by key or by words (components/issues/TicketFinder.svelte).
+  TrackerLookup,
+  TrackerSearch,
   ListLiveBackgroundTasks,
   GetThreadWakeDetail,
   WakeThreadWakeNow,

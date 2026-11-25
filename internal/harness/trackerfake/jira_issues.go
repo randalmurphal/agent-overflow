@@ -279,8 +279,13 @@ func transitionIssue(c *jiraCall) answer {
 		return fieldOutcome(w)
 	}
 	items := w.items
-	c.s.moveStatus(is, t.To, c.e.now())
+	_, resolutionSet := in.Fields["resolution"]
+	c.s.moveStatus(is, t.To, c.e.now(), resolutionSet)
 	for _, id := range []string{"status", "resolution"} {
+		if id == "resolution" && resolutionSet {
+			// The screen's write recorded it.
+			continue
+		}
 		if item, ok := c.s.changeItem(systemField(id), &before, is); ok {
 			items = append(items, item)
 		}
@@ -293,13 +298,16 @@ func transitionIssue(c *jiraCall) answer {
 }
 
 // moveStatus sets is's status; moving into a done status sets the first
-// resolution and the resolved time, and moving out clears them. A done
-// transition writing a resolution item is measured; which resolution a
-// site's workflow sets, and the clearing, are unverified.
-func (s *jiraSite) moveStatus(is *JiraIssue, to string, now time.Time) {
+// resolution, unless the transition's screen set one, and the resolved
+// time, and moving out clears them. A done transition writing a
+// resolution item is measured; which resolution a site's workflow sets,
+// and the clearing, are unverified.
+func (s *jiraSite) moveStatus(is *JiraIssue, to string, now time.Time, resolutionSet bool) {
 	wasDone := s.status(is.Status).Category == "done"
 	is.Status = to
 	switch done := s.status(to).Category == "done"; {
+	case done && !wasDone && resolutionSet:
+		is.Resolved = now
 	case done && !wasDone:
 		is.Resolution, is.Resolved = s.Resolutions[0].ID, now
 	case !done:
@@ -356,6 +364,12 @@ func (s *jiraSite) fieldMeta(p *JiraProject, is *JiraIssue, sf JiraScreenField, 
 		for _, pr := range s.Priorities {
 			allowed = append(allowed, s.priorityJSON(pr.ID))
 		}
+	case kindResolution:
+		// Documented: a screen that takes the resolution lists the site's
+		// resolutions as its allowed values.
+		for _, r := range s.Resolutions {
+			allowed = append(allowed, s.resolutionJSON(r.ID))
+		}
 	case kindComponents:
 		allowed = s.componentsJSON(p, componentIDs(p)).([]any)
 	case kindIssueType:
@@ -396,7 +410,7 @@ func fieldOperations(k fieldKind) []string {
 	case kindReadOnly, kindRank, kindTimeEstimate:
 		return []string{}
 	case kindUnsupported, kindText, kindDoc, kindNumber, kindDate, kindDateTime, kindUser,
-		kindOption, kindCascade, kindPriority, kindIssueType, kindParent, kindSprint:
+		kindOption, kindCascade, kindPriority, kindResolution, kindIssueType, kindParent, kindSprint:
 	}
 	return []string{"set"}
 }
