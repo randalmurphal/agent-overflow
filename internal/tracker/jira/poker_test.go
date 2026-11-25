@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/secret"
 	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
@@ -292,8 +291,8 @@ func TestPokerAppStatusDecidesTheWrite(t *testing.T) {
 }
 
 // TestPokerGatewayRefusalHidesTheToken: a gateway refusal that repeats
-// the token it was sent fails with the token replaced, drops the token,
-// and is refused for a 4xx statusCode.
+// the token it was sent fails with none of its text, drops the token, and
+// is refused for a 4xx statusCode.
 func TestPokerGatewayRefusalHidesTheToken(t *testing.T) {
 	a := measuredAnswers()
 	token := pokerJWT(pokerTestClaims)
@@ -304,7 +303,7 @@ func TestPokerGatewayRefusalHidesTheToken(t *testing.T) {
 	c, s := pokerServer(t, a)
 	err := c.CastPokerVote(t.Context(), "10101", 3)
 	pe, ok := errors.AsType[*PokerError](err)
-	if !ok || !pe.Refused || strings.Contains(err.Error(), token) || !strings.Contains(err.Error(), secret.Redacted) {
+	if !ok || !pe.Refused || strings.Contains(err.Error(), token) || !strings.Contains(err.Error(), "answered with the context token in its answer") {
 		t.Fatalf("got %v", err)
 	}
 	_ = c.CastPokerVote(t.Context(), "10101", 3)
@@ -337,18 +336,28 @@ func TestPokerAbsentSiteIsKept(t *testing.T) {
 	}
 }
 
-// F5: an answer the poker app accepted names no account by the token
-// either: the body the invoke returns has it replaced.
-func TestPokerAnswerBodyHoldsNoToken(t *testing.T) {
+// P1: a round that names a voter by the context token is refused before
+// any of its votes leaves the client, however the add-on spelled the
+// token: as it is, or with a character written as a JSON escape (the
+// inner body's, or the outer answer's). The error holds no token.
+func TestPokerRoundNamingTheTokenIsRefused(t *testing.T) {
 	token := pokerJWT(pokerTestClaims)
-	a := measuredAnswers()
-	a.invoke = func([]byte) string {
-		return invokeBody(200, `{"isRevealed":false,"votes":[{"userId":"`+token+`","vote":5}]}`)
-	}
-	c, _ := pokerServer(t, a)
-	r := got(c.PokerVotes(t.Context(), "10101")).must(t)
-	if len(r.Votes) != 1 || r.Votes[0].Account != secret.Redacted {
-		t.Fatalf("read %+v", r)
+	escaped := `\\u00` + fmt.Sprintf("%x", token[0]) + token[1:]
+	round := func(id string) string { return `{"isRevealed":false,"votes":[{"userId":"` + id + `","vote":5}]}` }
+	for name, invoke := range map[string]string{
+		"as it is": invokeBody(200, round(token)),
+		"escaped in the app's body": `{"data":{"invokeExtension":{"success":true,"errors":null,"response":{"body":{"status":200,"statusText":"OK","headers":{},"body":"` +
+			strings.ReplaceAll(round(escaped), `"`, `\"`) + `"}}}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			a := measuredAnswers()
+			a.invoke = func([]byte) string { return invoke }
+			c, _ := pokerServer(t, a)
+			r, err := c.PokerVotes(t.Context(), "10101")
+			if _, ok := errors.AsType[*PokerError](err); !ok || holdsToken(err, token) || len(r.Votes) != 0 {
+				t.Fatalf("read %+v, %#v", r, err)
+			}
+		})
 	}
 }
 
@@ -393,6 +402,8 @@ func TestPokerInvokeErrorsHoldNoToken(t *testing.T) {
 		"outer HTTP 502 body":    {502, `{"message":"bad gateway for ` + token + `"}`, false, false},
 		"inner 400 status text": {200, `{"data":{"invokeExtension":{"success":true,"errors":null,"response":{"body":{"status":400,"statusText":"bad ` +
 			token + `","headers":{},"body":"{}"}}}}}`, true, false},
+		"inner 400 status text, escaped": {200, `{"data":{"invokeExtension":{"success":true,"errors":null,"response":{"body":{"status":400,"statusText":"bad \u00` +
+			fmt.Sprintf("%x", token[0]) + token[1:] + `","headers":{},"body":"{}"}}}}}`, true, false},
 		"inner 500 status text": {200, `{"data":{"invokeExtension":{"success":true,"errors":null,"response":{"body":{"status":500,"statusText":"broke ` +
 			token + `","headers":{},"body":"{}"}}}}}`, false, false},
 		"gateway extension": {200, `{"data":{"invokeExtension":{"success":false,"response":null,"errors":[{"message":"no","extensions":{"errorType":"` +
@@ -408,8 +419,8 @@ func TestPokerInvokeErrorsHoldNoToken(t *testing.T) {
 				t.Fatalf("the write's error holds the token: %#v", err)
 			}
 			if c.auth {
-				if ae, ok := errors.AsType[*trackerapi.AuthError](err); !ok || !strings.Contains(ae.Message, secret.Redacted) {
-					t.Fatalf("got %v, want the refused credential with its message redacted", err)
+				if _, ok := errors.AsType[*trackerapi.AuthError](err); !ok {
+					t.Fatalf("got %v, want the refused credential", err)
 				}
 			} else if pe, ok := errors.AsType[*PokerError](err); !ok || pe.Refused != c.refused {
 				t.Fatalf("got %v, want a PokerError refused %v", err, c.refused)
