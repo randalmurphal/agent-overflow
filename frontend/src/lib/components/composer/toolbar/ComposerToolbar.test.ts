@@ -147,6 +147,38 @@ describe('<ComposerToolbar>', () => {
     )).toBe(true);
   });
 
+  function installAsyncAnimationFrame() {
+    restoreAnimationFrame?.();
+    const timers = new Map<number, ReturnType<typeof setTimeout>>();
+    let nextId = 1;
+    const frame = vi.spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((callback: FrameRequestCallback) => {
+        const id = nextId++;
+        const timer = setTimeout(() => {
+          timers.delete(id);
+          callback(performance.now());
+        }, 0);
+        timers.set(id, timer);
+        return id;
+      });
+    const cancel = vi.spyOn(window, 'cancelAnimationFrame')
+      .mockImplementation((id: number) => {
+        const timer = timers.get(id);
+        if (timer !== undefined) {
+          clearTimeout(timer);
+          timers.delete(id);
+        }
+      });
+    restoreAnimationFrame = () => {
+      for (const timer of timers.values()) {
+        clearTimeout(timer);
+      }
+      timers.clear();
+      frame.mockRestore();
+      cancel.mockRestore();
+    };
+  }
+
   it('the minimal rung keeps the model and the meters and rolls the other pickers up', async () => {
     // The model and the meters are what a phone user reads before sending;
     // the other pickers are one tap further away, not gone. Everything is
@@ -158,10 +190,7 @@ describe('<ComposerToolbar>', () => {
     // The suite's synchronous rAF stub is for the density measurement; an
     // open Popover re-requests a frame per frame to follow its anchor,
     // which a synchronous stub turns into unbounded recursion.
-    vi.mocked(window.requestAnimationFrame).mockImplementation((callback) => {
-      setTimeout(() => callback(performance.now()), 0);
-      return 0;
-    });
+    installAsyncAnimationFrame();
     const { container, getByTestId, getByRole, queryByRole } = renderToolbar();
     await waitFor(() => {
       expect(getByTestId('composer-toolbar')).toHaveAttribute('data-density', 'minimal');
@@ -182,10 +211,7 @@ describe('<ComposerToolbar>', () => {
   });
 
   it('shows live picker selections in the rollup, including cleared settings', async () => {
-    vi.mocked(window.requestAnimationFrame).mockImplementation((callback) => {
-      setTimeout(() => callback(performance.now()), 0);
-      return 0;
-    });
+    installAsyncAnimationFrame();
     let disabled = false;
     setBindingMock('ListThreadMcpServers', async () => [new ThreadMCPServer({
       provider: 'claude', name: 'configured', status: 'unknown', source: 'config', disabled,

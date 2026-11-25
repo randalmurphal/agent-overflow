@@ -739,3 +739,32 @@ describe('compact placement', () => {
     expect(floating.style.bottom).toBe('');
   });
 });
+
+describe('anchor-tracking cleanup', () => {
+  it('does not reschedule trackAnchor after unmount even if a queued frame fires late', async () => {
+    const queued: FrameRequestCallback[] = [];
+    let nextId = 1;
+    const rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+      queued.push(cb);
+      return nextId++;
+    });
+    // Deliberately ignore cancelAnimationFrame so the already-queued frame still fires late.
+    const cafSpy = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+    try {
+      const { unmount } = render(Harness, { props: { open: true, role: 'menu' } });
+      await tick();
+      expect(queued.length).toBeGreaterThan(0);
+
+      unmount();
+      const callsBeforeLateFrame = rafSpy.mock.calls.length;
+      const staleFrames = queued.splice(0, queued.length);
+      for (const cb of staleFrames) {
+        cb(performance.now());
+      }
+      expect(rafSpy.mock.calls.length).toBe(callsBeforeLateFrame);
+    } finally {
+      rafSpy.mockRestore();
+      cafSpy.mockRestore();
+    }
+  });
+});
