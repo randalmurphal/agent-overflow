@@ -41,6 +41,23 @@ describe('a connection row’s status', () => {
     expect(trackerConnectionStatus(unchecked)).toMatchObject({ label: 'Not checked yet', needsSetup: true });
   });
 
+  // The last check is history once the file changed: an editor may have
+  // put another person's token in it, or rewritten the same one.
+  it('says the key file changed after the last check, keeping who it was checked as, until a check after the change', () => {
+    const changed = trackerConnection({ keyFileModifiedAt: 1_700_000_000_001 });
+    expect(trackerConnectionStatus(changed)).toEqual({
+      tone: 'muted',
+      label: 'Key file changed after the last check',
+      detail: 'It was checked as User 1 (user1@example.com). Check the connection to see whose token it holds now.',
+      needsSetup: true,
+    });
+    const tempo = trackerConnection({ kind: 'tempo', account: '', verifiedAccountId: '', verifiedName: '', keyFileModifiedAt: 1_700_000_000_001 });
+    expect(trackerConnectionStatus(tempo)).toMatchObject({ label: 'Key file changed after the last check', detail: 'Check the connection to test the token it holds now.' });
+    // A check that read the file after the change stamps a later time.
+    expect(trackerConnectionStatus({ ...changed, verifiedAt: 1_700_000_000_002 }).label).toBe('Signed in as User 1 (user1@example.com)');
+    expect(trackerConnectionStatus(trackerConnection({ keyFileModifiedAt: 1_700_000_000_000 })).tone).toBe('ok');
+  });
+
   it('shows a problem as its kind and the app’s sentence, keeping who it was signed in as', () => {
     const refused = trackerConnection({ problem: { kind: FailureKind.FailureSetup, message: 'Jira refused the token; make a new one' } });
     expect(trackerConnectionStatus(refused)).toEqual({

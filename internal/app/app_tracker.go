@@ -50,6 +50,10 @@ type TrackerConnection struct {
 	KeyFileState keyfile.State `json:"keyFileState"`
 	// KeyFileProblem says why a refused key file is refused.
 	KeyFileProblem string `json:"keyFileProblem,omitempty"`
+	// KeyFileModifiedAt is when a present key file last changed (unix
+	// milliseconds), 0 when it is not present. Later than VerifiedAt, the
+	// file changed after the last check read it.
+	KeyFileModifiedAt int64 `json:"keyFileModifiedAt"`
 	// Problem is the connection's last failure, held in memory until a
 	// call succeeds or the connection is turned off.
 	Problem *TrackerProblem `json:"problem,omitempty"`
@@ -83,6 +87,7 @@ func trackerConnectionDTO(c trackerapp.Connection) TrackerConnection {
 		VerifiedAccountID: c.VerifiedAccountID, VerifiedName: c.VerifiedName, VerifiedAt: c.VerifiedAt,
 		TokenExpiresAt: c.TokenExpiresAt, CreatedAt: c.CreatedAt,
 		KeyFilePath: c.KeyFilePath, KeyFileState: c.KeyFile.State, KeyFileProblem: c.KeyFile.Problem,
+		KeyFileModifiedAt: c.KeyFile.ModifiedAt,
 	}
 	if c.Problem != nil {
 		out.Problem = &TrackerProblem{Kind: c.Problem.Kind, Message: c.Problem.Message}

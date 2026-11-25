@@ -10384,6 +10384,13 @@ export class TrackerConnection {
     "keyFileProblem"?: string;
 
     /**
+     * KeyFileModifiedAt is when a present key file last changed (unix
+     * milliseconds), 0 when it is not present. Later than VerifiedAt, the
+     * file changed after the last check read it.
+     */
+    "keyFileModifiedAt": number;
+
+    /**
      * Problem is the connection's last failure, held in memory until a
      * call succeeds or the connection is turned off.
      */
@@ -10430,6 +10437,9 @@ export class TrackerConnection {
         if (!("keyFileState" in $$source)) {
             this["keyFileState"] = keyfile$0.State.$zero;
         }
+        if (!("keyFileModifiedAt" in $$source)) {
+            this["keyFileModifiedAt"] = 0;
+        }
 
         Object.assign(this, $$source);
     }
@@ -10438,10 +10448,10 @@ export class TrackerConnection {
      * Creates a new TrackerConnection instance from a string or object.
      */
     static createFrom($$source: any = {}): TrackerConnection {
-        const $$createField15_0 = $$createType203;
+        const $$createField16_0 = $$createType203;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("problem" in $$parsedSource) {
-            $$parsedSource["problem"] = $$createField15_0($$parsedSource["problem"]);
+            $$parsedSource["problem"] = $$createField16_0($$parsedSource["problem"]);
         }
         return new TrackerConnection($$parsedSource as Partial<TrackerConnection>);
     }

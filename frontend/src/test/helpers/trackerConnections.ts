@@ -22,6 +22,8 @@ export function trackerConnection(overrides: Partial<TrackerConnection> = {}): T
     createdAt: 1_690_000_000_000,
     keyFilePath: '/home/user/.config/agent-overflow/tracker-keys/jira-1',
     keyFileState: KeyFileState.StatePresent,
+    // Written before the check.
+    keyFileModifiedAt: 1_699_000_000_000,
     ...overrides,
   };
 }

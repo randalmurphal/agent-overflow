@@ -65,9 +65,13 @@ func (s *Service) Verify(ctx context.Context, id string) (Connection, error) {
 	s.opMu.Unlock()
 
 	// The key file read that shows its state also hands a replaced token
-	// to the client, so the call checks the token in the file.
+	// to the client, so the call checks the token in the file. The
+	// verification's time is taken before that read: a file saved after
+	// it, during the call, is newer than the check (Status.ModifiedAt).
+	checkedAt := s.now().UnixMilli()
 	file := s.look(row).KeyFile
 	verification, callErr := s.identity(ctx, row, c)
+	verification.VerifiedAt = checkedAt
 
 	s.opMu.Lock()
 	out, changed, err := s.settleVerification(row, at, file, verification, callErr)
@@ -123,11 +127,10 @@ func (s *Service) identity(ctx context.Context, row store.TrackerConnection, c *
 // began at at, through settle: one whose outcome settle does not apply
 // records nothing, its verification row included, and returns the
 // connection as it is. file is the key file's state the verification
-// read. It reports whether what a list shows changed (settle). The caller
-// holds opMu.
+// read, and v carries the time taken before that read. It reports whether
+// what a list shows changed (settle). The caller holds opMu.
 func (s *Service) settleVerification(row store.TrackerConnection, at stamp, file keyfile.Status, v store.TrackerVerification, callErr error) (Connection, bool, error) {
 	record := func() error {
-		v.VerifiedAt = s.now().UnixMilli()
 		recorded, _, err := s.store.RecordTrackerConnectionVerification(row.ID, v)
 		if err != nil {
 			return s.writeError(row.ID, "record the verification of", err)

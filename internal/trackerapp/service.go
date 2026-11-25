@@ -350,9 +350,9 @@ type Connection struct {
 
 // view is row as Connection, its key file inspected now.
 func (s *Service) view(row store.TrackerConnection) Connection {
-	token, err := readToken(s.keyFile(row), row.Kind)
+	token, modified, err := readToken(s.keyFile(row), row.Kind)
 	token.Zero()
-	return s.viewWith(row, keyfile.StatusOf(err))
+	return s.viewWith(row, keyfile.StatusOf(modified, err))
 }
 
 // viewWith is row as Connection with its key file in state file.
@@ -370,7 +370,7 @@ func (s *Service) viewWith(row store.TrackerConnection, file keyfile.Status) Con
 // tells the connection's client, when it is in use, whether the token in
 // the file is still the one it was handed (clients.syncCredential).
 func (s *Service) look(row store.TrackerConnection) Connection {
-	token, err := readToken(s.keyFile(row), row.Kind)
+	token, modified, err := readToken(s.keyFile(row), row.Kind)
 	s.mu.Lock()
 	c := s.clients[row.ID]
 	s.mu.Unlock()
@@ -378,7 +378,7 @@ func (s *Service) look(row store.TrackerConnection) Connection {
 		c.syncCredential(token.Reveal())
 	}
 	token.Zero()
-	return s.viewWith(row, keyfile.StatusOf(err))
+	return s.viewWith(row, keyfile.StatusOf(modified, err))
 }
 
 // Connections lists every connection in the order they were made. A

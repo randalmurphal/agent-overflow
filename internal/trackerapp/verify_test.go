@@ -441,3 +441,63 @@ func TestAnOlderVerifyNeverOverwritesANewerOne(t *testing.T) {
 		})
 	}
 }
+
+// A verification's time is taken before it reads the key file, so a file
+// saved while its identity call waits reads as changed after the check.
+func TestAKeyFileSavedDuringAVerifyIsNewerThanIt(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.ticking.Store(true)
+	conn := f.addJira()
+	f.writeToken(conn, jiraToken)
+	var saved atomic.Int64
+	f.jira.On("GET", myselfPath, func(w http.ResponseWriter, r *http.Request, body []byte) {
+		at := f.deps.Now()
+		if err := os.WriteFile(conn.KeyFilePath, []byte(jiraToken), 0o600); err != nil {
+			t.Error(err)
+		}
+		if err := os.Chtimes(conn.KeyFilePath, at, at); err != nil {
+			t.Error(err)
+		}
+		saved.Store(at.UnixMilli())
+		myself(t, jiraToken)(w, r, body)
+	})
+	got := f.verify(conn.ID)
+	if got.Problem != nil {
+		t.Fatalf("Verify = problem %v", got.Problem)
+	}
+	if got.VerifiedAt >= saved.Load() {
+		t.Fatalf("a key file saved at %d, during a verification recorded at %d, reads as checked", saved.Load(), got.VerifiedAt)
+	}
+}
+
+// The list carries when a present key file last changed: a file saved
+// after a check is newer than it, a check after the save is newer than
+// the file, and a file that is not there has no time.
+func TestTheListShowsWhenTheKeyFileChanged(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.ticking.Store(true)
+	conn := f.addJira()
+	f.writeToken(conn, jiraToken)
+	f.jira.On("GET", myselfPath, myself(t, jiraToken))
+	f.verify(conn.ID)
+	saved := f.deps.Now()
+	f.writeToken(conn, jiraToken)
+	if err := os.Chtimes(conn.KeyFilePath, saved, saved); err != nil {
+		t.Fatal(err)
+	}
+	list, err := f.svc.Connections()
+	if err != nil || list[0].KeyFile.ModifiedAt != saved.UnixMilli() || list[0].KeyFile.ModifiedAt <= list[0].VerifiedAt {
+		t.Fatalf("a key file saved at %d after a check lists as %+v (%v)", saved.UnixMilli(), list, err)
+	}
+	if got := f.verify(conn.ID); got.VerifiedAt <= got.KeyFile.ModifiedAt || got.KeyFile.ModifiedAt != saved.UnixMilli() {
+		t.Fatalf("a check after the save = verified at %d, key file %+v", got.VerifiedAt, got.KeyFile)
+	}
+	if err := os.Remove(conn.KeyFilePath); err != nil {
+		t.Fatal(err)
+	}
+	if list, err := f.svc.Connections(); err != nil || list[0].KeyFile != (keyfile.Status{State: keyfile.StateMissing}) {
+		t.Fatalf("a removed key file lists as %+v (%v)", list, err)
+	}
+}

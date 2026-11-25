@@ -120,6 +120,18 @@ export function trackerConnectionStatus(connection: TrackerConnection): TrackerC
     };
   }
   const who = signedInAs(connection);
+  // The check is history once the file changed after it read the file: an
+  // editor may have put another token in it, or saved the same one again.
+  if (connection.keyFileModifiedAt > connection.verifiedAt) {
+    return {
+      tone: 'muted',
+      label: 'Key file changed after the last check',
+      detail: who
+        ? `It was checked as ${who}. Check the connection to see whose token it holds now.`
+        : 'Check the connection to test the token it holds now.',
+      needsSetup: true,
+    };
+  }
   return { tone: 'ok', label: who ? `Signed in as ${who}` : 'Token checked', detail: '', needsSetup: false };
 }
 

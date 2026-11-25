@@ -234,22 +234,24 @@ to the computer and are rows in `tracker_connections`.
 - Adding a connection creates the row and the empty key file. Opening the
   tracker's token page, opening the key file on that computer and
   verifying (one identity call to the tracker) are separate calls. The row
-  records who the token belongs to and when it was verified. A Linear client is bound to the
+  records who the token belongs to and when it was verified, a time taken
+  before the verification reads the key file. A Linear client is bound to the
   connection's workspace: every key it reads is checked before any request
   carries it, and a key for another workspace fails every read and write.
   Tempo's API has no read that names the Jira site a token belongs to, so
   a Tempo token from another site is not detected. No tracker reports when
   a token expires, so the
   expiry is the date the user enters from the token page. A status call returns
-  the file's state, the last verification and the last failure, never the
-  token.
+  the file's state, when a present file last changed (its modification
+  time), the last verification and the last failure, never the token.
 - Settings > Issues > Connections runs that sequence as steps on the new
   row: open the token page, open the key file, the optional expiry date
   (the start of that day on the screen that entered it) and Check. The
   steps show while the row has never verified, its key file holds no
-  token, or its problem is a setup one. The row warns from 14 days before
-  the expiry and shows a passed one as an error, each with Renew, which
-  shows the steps again. Away from the computer the two opens are absent
+  token or changed after the last check (the identity that check found is
+  shown as history), or its problem is a setup one. The row warns from 14
+  days before the expiry and shows a passed one as an error, each with
+  Renew, which shows the steps again until a check verifies or Done. Away from the computer the two opens are absent
   and the row names the key file's path to copy.
 - Where a client connects is one function from a connection's kind and
   site to an API origin. Its production value is the site, or Linear's

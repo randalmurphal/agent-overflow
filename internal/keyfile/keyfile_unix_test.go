@@ -238,8 +238,8 @@ func TestReadRefusesAnotherUsersFolder(t *testing.T) {
 func TestInspectNeverCarriesTheKey(t *testing.T) {
 	t.Parallel()
 	status := keyFile(t, testKey, 0o700, 0o600).Inspect()
-	if status != (Status{State: StatePresent}) {
-		t.Fatalf("Inspect = %+v, want present", status)
+	if status.State != StatePresent || status.Problem != "" || status.ModifiedAt == 0 {
+		t.Fatalf("Inspect = %+v, want present with when it changed", status)
 	}
 	if strings.Contains(fmt.Sprintf("%+v %#v", status, status), testKey) {
 		t.Fatal("status carries the key")

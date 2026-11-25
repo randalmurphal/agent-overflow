@@ -175,6 +175,24 @@ describe('<TrackerConnectionsSettings>', () => {
     await waitFor(() => expect(within(row).queryByTestId('tracker-connection-setup')).toBeNull());
   });
 
+  it('says a key file replaced after the last check is unchecked, with its Check step, until a check reads it', async () => {
+    rows = [trackerConnection({ keyFileModifiedAt: 1_700_000_005_000 })];
+    const verify = setBindingMock('VerifyTrackerConnection', async () => {
+      rows = [trackerConnection({ keyFileModifiedAt: 1_700_000_005_000, verifiedAt: 1_700_000_006_000, verifiedName: 'User 2', verifiedAccountId: 'acc-user2' })];
+      return rows[0];
+    });
+    render(TrackerConnectionsSettings);
+    const row = await screen.findByTestId('tracker-connection-jira-1');
+    expect(within(row).getByTestId('tracker-connection-status').textContent).toBe('Key file changed after the last check');
+    expect(within(row).getByTestId('tracker-connection-detail').textContent).toBe(
+      'It was checked as User 1 (user1@example.com). Check the connection to see whose token it holds now.',
+    );
+    await fireEvent.click(within(row).getByTestId('tracker-connection-setup-check'));
+    await waitFor(() => expect(verify).toHaveBeenCalledWith('jira-1'));
+    await waitFor(() => expect(within(row).getByTestId('tracker-connection-status').textContent).toMatch(/^Signed in as User 2 /));
+    expect(within(row).queryByTestId('tracker-connection-setup')).toBeNull();
+  });
+
   it('closes the renewal steps when the connection is turned off, and does not reopen them when it is on again', async () => {
     rows = [trackerConnection({ tokenExpiresAt: Date.now() + 3 * 24 * 60 * 60 * 1000 })];
     render(TrackerConnectionsSettings);

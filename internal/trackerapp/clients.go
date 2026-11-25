@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"agent-overflow/internal/keyfile"
 	"agent-overflow/internal/secret"
@@ -93,17 +94,17 @@ func (s *Service) keyFile(row store.TrackerConnection) keyfile.File {
 // readToken reads the token in a connection of kind's key file. A token
 // shorter than trackerapi.MinSecretLen, which the transport refuses, is
 // refused here, worded for the person who pasted it.
-func readToken(file keyfile.File, kind string) (*secret.Bytes, error) {
-	token, err := file.Read()
+func readToken(file keyfile.File, kind string) (*secret.Bytes, time.Time, error) {
+	token, modified, err := file.ReadModified()
 	if err != nil {
-		return nil, err
+		return nil, modified, err
 	}
 	if token.Len() < trackerapi.MinSecretLen {
 		token.Zero()
 		l := keyFileLabel(kind)
-		return nil, fmt.Errorf("the %s API %s file holds too little to be a %s; paste the whole %s into it", l.Service, l.Kind, l.Kind, l.Kind)
+		return nil, modified, fmt.Errorf("the %s API %s file holds too little to be a %s; paste the whole %s into it", l.Service, l.Kind, l.Kind, l.Kind)
 	}
-	return token, nil
+	return token, modified, nil
 }
 
 // keyFileSource is the trackerapi.CredentialSource of one connection: its
@@ -143,7 +144,7 @@ func (k *keyFileSource) Credential(ctx context.Context) (*trackerapi.Credential,
 		return nil, err
 	}
 	k.reads.Add(1)
-	token, err := readToken(k.file, k.kind)
+	token, _, err := readToken(k.file, k.kind)
 	if err != nil {
 		return nil, &KeyFileError{Path: k.file.Path(), Err: err}
 	}

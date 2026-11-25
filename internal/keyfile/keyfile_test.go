@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // writeKeyFile makes the file with contents through Create, as a user
@@ -33,23 +34,32 @@ func TestStatusOfIsTheStateOfOneRead(t *testing.T) {
 		}
 		return f
 	}
+	// The file's own modification time, which a read leaves as it is.
+	saved := time.UnixMilli(1_700_000_000_123)
+	present := file("present", "tok-1\n")
+	if err := os.Chtimes(present.Path(), saved, saved); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		file File
 		want Status
 	}{
-		{file("present", "tok-1\n"), Status{State: StatePresent}},
+		{present, Status{State: StatePresent, ModifiedAt: saved.UnixMilli()}},
 		{file("missing", ""), Status{State: StateMissing}},
 		{file("empty", " \n"), Status{State: StateEmpty}},
 		{file("two", "tok-1 tok-2"), Status{State: StateRefused, Problem: "it holds more than one token; leave only the token in it"}},
 	} {
-		key, err := tc.file.Read()
+		key, modified, err := tc.file.ReadModified()
 		key.Zero()
-		if got := StatusOf(err); got != tc.want || tc.file.Inspect() != tc.want {
+		if got := StatusOf(modified, err); got != tc.want || tc.file.Inspect() != tc.want {
 			t.Errorf("%s: StatusOf = %+v, Inspect = %+v; want %+v", filepath.Base(tc.file.Path()), got, tc.file.Inspect(), tc.want)
 		}
 	}
+	if info, err := os.Stat(present.Path()); err != nil || !info.ModTime().Equal(saved) {
+		t.Errorf("after its reads the file was modified at %v (%v), want %v", info.ModTime(), err, saved)
+	}
 	other := errors.New("read the Example API token file: input/output error")
-	if got := StatusOf(other); got != (Status{State: StateRefused, Problem: other.Error()}) {
+	if got := StatusOf(time.Time{}, other); got != (Status{State: StateRefused, Problem: other.Error()}) {
 		t.Errorf("StatusOf(another error) = %+v", got)
 	}
 }
