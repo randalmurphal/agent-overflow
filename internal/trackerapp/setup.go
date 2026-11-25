@@ -722,8 +722,8 @@ func checkSite(tracker, site, section string, seen map[siteKey]bool) (siteKey, e
 	if tracker != store.TrackerKindJira && tracker != store.TrackerKindLinear {
 		return siteKey{}, invalidSetup("%s names tracker %q, which is neither jira nor linear", section, tracker)
 	}
-	if strings.TrimSpace(site) == "" || len(site) > setupMaxID {
-		return siteKey{}, invalidSetup("%s names a %s site that is empty or over %d bytes", section, tracker, setupMaxID)
+	if strings.TrimSpace(site) == "" {
+		return siteKey{}, invalidSetup("%s names an empty %s site", section, tracker)
 	}
 	named := jiraSite
 	if tracker == store.TrackerKindLinear {
@@ -736,6 +736,9 @@ func checkSite(tracker, site, section string, seen map[siteKey]bool) (siteKey, e
 			reason = refused.Reason
 		}
 		return siteKey{}, invalidSetup("%s names a %s site its connection could not use: %s", section, tracker, reason)
+	}
+	if len(canonical) > setupMaxID {
+		return siteKey{}, invalidSetup("%s names a %s site over %d bytes as its connection names it", section, tracker, setupMaxID)
 	}
 	key := siteKey{tracker, canonical}
 	if seen[key] {

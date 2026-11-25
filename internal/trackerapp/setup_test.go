@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -335,7 +336,7 @@ func TestProjectSetupValidates(t *testing.T) {
 		says  string
 	}{
 		"a tracker of no kind": {Setup{StatusGroups: []SiteStatusGroups{{Tracker: "tempo", Site: site, Statuses: map[string]string{"s1": "done"}}}}, "neither jira nor linear"},
-		"an empty site":        {Setup{StatusGroups: []SiteStatusGroups{{Tracker: "jira", Site: " ", Statuses: map[string]string{"s1": "done"}}}}, "empty or over"},
+		"an empty site":        {Setup{StatusGroups: []SiteStatusGroups{{Tracker: "jira", Site: " ", Statuses: map[string]string{"s1": "done"}}}}, "an empty jira site"},
 		"a site twice": {Setup{StatusGroups: []SiteStatusGroups{
 			{Tracker: "jira", Site: site, Statuses: map[string]string{"s1": "done"}}, {Tracker: "jira", Site: site, Statuses: map[string]string{"s2": "done"}},
 		}}, "twice"},
@@ -722,4 +723,112 @@ func TestASaveWhoseSyncFailedHoldsWhatTheFileHolds(t *testing.T) {
 	if v := m.viewOf(t, sub.ID); v.Groups != "" {
 		t.Fatalf("the open board after the clear reads with groups %q", v.Groups)
 	}
+}
+
+// hostOf is a bare host of n bytes, in labels of at most 62 bytes.
+func hostOf(n int) string {
+	var b strings.Builder
+	for b.Len() < n {
+		if b.Len() > 0 {
+			b.WriteByte('.')
+		}
+		b.WriteString(strings.Repeat("a", min(62, n-b.Len())))
+	}
+	return b.String()
+}
+
+// idsOf is n IDs of size bytes each.
+func idsOf(n, size int) []string {
+	out := make([]string, n)
+	for i := range out {
+		id := fmt.Sprint(i, "-")
+		out[i] = id + strings.Repeat("x", size-len(id))
+	}
+	return out
+}
+
+// What a save writes, the reader of the same build accepts: at the edge
+// of each bound, a saved setup is read cold (after a restart) as it was
+// saved, and saved again over that read unchanged; checking a checked
+// setup returns it as it is. One past each edge is refused at the save,
+// before anything is written. A bound added later is held to it by
+// adding its edge here.
+func TestWhatASaveWritesTheReaderAccepts(t *testing.T) {
+	t.Parallel()
+	statuses := func(ids []string) map[string]string {
+		out := map[string]string{}
+		for _, id := range ids {
+			out[id] = "done"
+		}
+		return out
+	}
+	jira := func(site string, groups map[string]string) Setup {
+		return Setup{StatusGroups: []SiteStatusGroups{{Tracker: store.TrackerKindJira, Site: site, Statuses: groups}}}
+	}
+	pins := func(fields, sections []string) Setup {
+		return Setup{TicketPins: []SitePins{{Tracker: store.TrackerKindJira, Site: "a.example.com", Fields: &fields, Sections: &sections}}}
+	}
+	// The stored Jira site is https:// and the host: 247 bytes of host is
+	// a stored site of setupMaxID.
+	host := setupMaxID - len("https://")
+	edges := map[string]Setup{
+		"a Jira site stored at the bound":    jira(hostOf(host), map[string]string{"s1": "done"}),
+		"a Linear workspace at its bound":    {StatusGroups: []SiteStatusGroups{{Tracker: store.TrackerKindLinear, Site: strings.Repeat("k", 64), Statuses: map[string]string{"s1": "done"}}}},
+		"a status ID at the bound":           jira("a.example.com", statuses(idsOf(1, setupMaxID))),
+		"statuses at the bound":              jira("a.example.com", statuses(idsOf(setupMaxStatuses, 8))),
+		"a field and a section at the bound": pins(idsOf(1, setupMaxID), idsOf(1, setupMaxID)),
+		"fields and sections at the bound":   pins(idsOf(setupMaxFields, 8), idsOf(setupMaxSections, 8)),
+	}
+	past := map[string]Setup{
+		"a Jira site stored past the bound": jira(hostOf(host+4), map[string]string{"s1": "done"}),
+		"a Linear workspace past its bound": {StatusGroups: []SiteStatusGroups{{Tracker: store.TrackerKindLinear, Site: strings.Repeat("k", 65), Statuses: map[string]string{"s1": "done"}}}},
+		"a status ID past the bound":        jira("a.example.com", statuses(idsOf(1, setupMaxID+1))),
+		"statuses past the bound":           jira("a.example.com", statuses(idsOf(setupMaxStatuses+1, 8))),
+		"a field past the bound":            pins(idsOf(1, setupMaxID+1), nil),
+		"fields past the bound":             pins(idsOf(setupMaxFields+1, 8), nil),
+		"sections past the bound":           pins(nil, idsOf(setupMaxSections+1, 8)),
+	}
+	for name, setup := range edges {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			checked, err := validateSetup(setup)
+			if err != nil {
+				t.Fatalf("the setup does not validate: %v", err)
+			}
+			if again, err := validateSetup(checked); err != nil || !reflect.DeepEqual(again, checked) {
+				t.Fatalf("checking the checked setup = %+v, %v; want it unchanged", again, err)
+			}
+			m := newMirrorFixture(t)
+			save := m.saveSetup(t, m.project(), setup)
+			m.restart(t)
+			read, err := m.svc.ProjectSetup(m.project())
+			if err != nil {
+				t.Fatalf("the cold read of what the save wrote: %v", err)
+			}
+			if !reflect.DeepEqual(read, save.Stored) {
+				t.Fatalf("the cold read = %+v; want what the save stored, %+v", read, save.Stored)
+			}
+			again, err := m.svc.SetProjectSetup(m.project(), read.Revision, setupOf(read))
+			if err != nil || !again.Saved || again.Stored.Revision != read.Revision {
+				t.Fatalf("a save over the cold read = %+v, %v; want it saved unchanged", again, err)
+			}
+		})
+	}
+	for name, setup := range past {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			m := newMirrorFixture(t)
+			if save, err := m.svc.SetProjectSetup(m.project(), "", setup); !errors.Is(err, ErrInvalidSetup) {
+				t.Fatalf("the save = %+v, %v; want it refused", save, err)
+			}
+			if _, err := os.Stat(m.setupPathOf(t, m.project())); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("the refused save left a file: %v", err)
+			}
+		})
+	}
+}
+
+// setupOf is the setup a read answers, as a replace gives it.
+func setupOf(v SetupView) Setup {
+	return Setup{StatusGroups: v.StatusGroups, TicketPins: v.TicketPins}
 }
