@@ -42,7 +42,7 @@
 // read by then, or the read failed. The view changes only from the
 // tracker's answer; nothing is written over it before.
 //
-// What each outcome shows is in `trackerTicketModel.ts#writeOutcome`.
+// The send and what each outcome shows are `trackerWriteOutcome.ts`'s.
 //
 // Files are attached one at a time per ticket, in the order given, each
 // its own write under an `attach:` target so its outcome stays beside the
@@ -88,12 +88,12 @@ import {
   type CommentChange,
   type TrackerTicketRef,
 } from './trackerTicket.svelte';
-import { linkRequest, lostWriteSentence, refusalSentence, writeOutcome, type LinkRelation, type WriteOutcome } from './trackerTicketModel';
+import { linkRequest, type LinkRelation } from './trackerTicketModel';
+import { refusalSentence, sendWrite, TICKET_SUBJECT, writeOutcome, type WriteOutcome } from './trackerWriteOutcome';
 import { onBackendStatusChange } from './transportStatus.svelte';
 import { TransferInterruptedError, TransferRefusedError, uploadTrackerAttachmentBytes } from '../transport/attachmentTransfer';
 import type { BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
-import { DisconnectedError } from '../transport/wsClient';
 import { composeWorkspaceKey, workspaceKeyBackend } from '../utils/workspaceKey';
 
 /** The ticket a write is made to, as the screen holds it. */
@@ -296,16 +296,10 @@ async function write(
   const sent = drafts.get(k)?.revision;
   const subject = options.subject ?? null;
   writes.set(k, { pending: true, outcome: null, saveAnyway: null, subject });
-  let outcome: WriteOutcome;
-  try {
-    const view = await withBackendTarget(t.ref.backend, () => send(acceptLoss));
-    outcome = writeOutcome(view);
-  } catch (err) {
-    outcome = options.failure?.(err)
-      ?? (err instanceof DisconnectedError
-        ? { kind: 'lost', message: lostWriteSentence(computerName(t.ref.backend)) }
-        : { kind: 'failed', error: err });
-  }
+  const { failure } = options;
+  const outcome = failure
+    ? await withBackendTarget(t.ref.backend, () => send(acceptLoss)).then((view) => writeOutcome(view, TICKET_SUBJECT), failure)
+    : await sendWrite(t.ref.backend, computerName(t.ref.backend), TICKET_SUBJECT, () => send(acceptLoss));
   const { comment } = options;
   if (outcome.kind === 'applied') await trackerTicketSettled(t.key, comment);
   // The ticket changed since it was read: read it again, so the person

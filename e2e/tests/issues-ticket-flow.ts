@@ -49,7 +49,7 @@ import { expect, test } from './fixtures.js';
 import { pairOwnDevice } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { longPress } from './touch-helpers.js';
-import { JIRA_SITE, connectFakeJiraBoard, seedFakeJira, type ExtraJira } from './tracker-helpers.js';
+import { JIRA_SITE, connectFakeJiraBoard, openIssuesPane as openPane, press, seedFakeJira, trackerRequests, type ExtraJira } from './tracker-helpers.js';
 
 export interface TicketSurface {
   compact: boolean;
@@ -163,19 +163,6 @@ function card(pane: Locator, issueId: string): Locator {
   return pane.locator(`[data-testid="issues-card"][data-issue="${issueId}"]`);
 }
 
-/** Opens the pane from the tools row; on compact the thread screen holds it. */
-async function openPane(page: Page, compact: boolean): Promise<Locator> {
-  await page.getByTestId('sidebar-tool-issues').click();
-  if (compact) await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'thread');
-  const pane = page.getByTestId('issues-pane');
-  await expect(pane).toBeVisible();
-  return pane;
-}
-
-async function press(target: Locator, compact: boolean): Promise<void> {
-  await (compact ? target.tap() : target.click());
-}
-
 /** Opens the card's ticket and waits for its content. */
 async function openTicket(pane: Locator, issueId: string, compact: boolean): Promise<Locator> {
   await press(card(pane, issueId).getByTestId('issues-card-open'), compact);
@@ -187,14 +174,6 @@ async function openTicket(pane: Locator, issueId: string, compact: boolean): Pro
 
 function field(ticket: Locator, id: string): Locator {
   return ticket.locator(`[data-testid="ticket-field"][data-field="${id}"]`);
-}
-
-interface LoggedRequest { route?: string; path: string; query?: Record<string, string[]>; status: number; held?: boolean; body?: unknown }
-
-/** The fake's requests to `route`; with `issue` ([key, ID]), those naming it either way. */
-async function trackerRequests(harness: HarnessApp, route: string, issue?: readonly [string, string]): Promise<LoggedRequest[]> {
-  const log = await harness.rpc<{ requests: LoggedRequest[] }>('HarnessTrackerRequests', 0);
-  return log.requests.filter((r) => r.route === route && (!issue || r.path.split('/').some((part) => issue.includes(part))));
 }
 
 /** The rail of the ticket's fields; a narrow ticket opens it from Details. */

@@ -7,10 +7,13 @@
   }
 
   /** What a picker's read answered: the values, and whether the tracker
-   * holds more matches than it listed. */
+   * holds more matches than it listed. A read of several sources that
+   * some answered lists theirs, and says in `failed` why each other one
+   * did not, one sentence each. */
   export interface PickList {
     readonly items: readonly PickItem[];
     readonly more: boolean;
+    readonly failed?: readonly string[];
   }
 </script>
 
@@ -169,6 +172,9 @@
           <MenuItem label={item.name} description={item.description} checked={checked.has(item.id)} checkbox={multi} onSelect={() => pick(item)} testId="ticket-picker-item" />
         {/each}
       </Menu>
+      {#each answer?.failed ?? [] as sentence, i (i)}
+        <p class="px-3 py-2 text-xs text-error" role="alert" data-testid="ticket-picker-partial">{sentence}</p>
+      {/each}
       {#if failure}
         <p class="px-3 py-2 text-xs text-error" role="alert" data-testid="ticket-picker-error">{failure}</p>
       {:else if !first}

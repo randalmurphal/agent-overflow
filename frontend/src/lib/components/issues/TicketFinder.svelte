@@ -37,11 +37,14 @@
   // The picker it sits on (TicketPicker.svelte) keeps the search rules:
   // one read per pause in typing, an answer or failure shown only while
   // the box holds the text it was asked for, and a failure shown in the
-  // list. With several connections, every connection is asked and the
-  // first failure is what the list says.
+  // list. With several connections, every connection is asked: the list
+  // shows what those that answered found and names each that failed with
+  // its sentence; when every one failed, the first one's failure is what
+  // the list says.
   import TicketPicker, { type PickItem, type PickList } from './TicketPicker.svelte';
   import { TrackerLookup, TrackerSearch } from '../../stores/bindings';
   import { withBackendTarget } from '../../transport/backends';
+  import { errString } from '../../utils/errors';
 
   interface Props {
     anchor: HTMLElement | undefined;
@@ -85,8 +88,14 @@
       // More: typed text is always asked of the tracker.
       return { items: before.map(item), more: true };
     }
-    const answers = await Promise.all(sources.map((s) => find(s, text)));
-    return { items: answers.flatMap((a) => a.found).map(item), more: answers.some((a) => a.more) };
+    // Each connection's answer stands on its own: a failed one is named
+    // under what the others found, and only when every one failed is the
+    // read a failure.
+    const settled = await Promise.allSettled(sources.map((s) => find(s, text)));
+    const answers = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+    if (answers.length === 0) throw (settled[0] as PromiseRejectedResult).reason;
+    const failed = settled.flatMap((r, i) => (r.status === 'rejected' ? [`${sources[i].name}: ${errString(r.reason)}`] : []));
+    return { items: answers.flatMap((a) => a.found).map(item), more: answers.some((a) => a.more), failed };
   }
 
   function pick(picked: PickItem | null): void {
