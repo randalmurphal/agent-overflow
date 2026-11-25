@@ -316,7 +316,7 @@ func (f *trackerBoardFixture) held(t *testing.T, ctx context.Context) []trackera
 // subscribe subscribes ctx's connection to the board with its sprint.
 func (f *trackerBoardFixture) subscribe(t *testing.T, ctx context.Context) trackerapp.BoardSubscription {
 	t.Helper()
-	sub, err := f.a.SubscribeTrackerBoard(ctx, f.project, f.conn.ID, "1", []trackerapp.Section{{Kind: trackerapp.SectionSprint, Sprint: "1"}})
+	sub, err := f.a.SubscribeTrackerBoard(ctx, f.project, f.conn.ID, "1", []trackerapp.Section{{Kind: trackerapp.SectionSprint, Sprint: "1"}}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +508,7 @@ func TestAHiddenTrackerBoardIsNotRead(t *testing.T) {
 	})
 	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
 	sub := f.subscribe(t, ctx)
-	if _, err := f.a.SubscribeTrackerBoard(ctx, f.project, f.conn.ID, "2", nil); err != nil {
+	if _, err := f.a.SubscribeTrackerBoard(ctx, f.project, f.conn.ID, "2", nil, true); err != nil {
 		t.Fatal(err)
 	}
 	clock := func(n int) {
@@ -666,7 +666,7 @@ func TestTrackerBoardSubscriptionsFollowTheirClient(t *testing.T) {
 	if handles, pumps := f.boardHandles(); handles+pumps != 0 {
 		t.Fatalf("after the turn off: %d handles and %d pumps", handles, pumps)
 	}
-	if _, err := f.a.SubscribeTrackerBoard(ctx, f.project, f.conn.ID, "1", nil); !hasCode(err, "tracker_connection_off") {
+	if _, err := f.a.SubscribeTrackerBoard(ctx, f.project, f.conn.ID, "1", nil, true); !hasCode(err, "tracker_connection_off") {
 		t.Fatalf("a subscribe to a board of a connection turned off = %v", err)
 	}
 }
@@ -678,7 +678,7 @@ func trackerBoardConnectionTie(t *testing.T) connectionTie {
 	f := newTrackerBoardFixture(t)
 	return connectionTie{
 		open: func(ctx context.Context) (string, error) {
-			sub, err := f.a.SubscribeTrackerBoard(ctx, f.project, f.conn.ID, "1", nil)
+			sub, err := f.a.SubscribeTrackerBoard(ctx, f.project, f.conn.ID, "1", nil, true)
 			return sub.ID, err
 		},
 		// The handle and the pump it alone keeps.
@@ -700,7 +700,7 @@ func TestTrackerBoardRefusalsSayWhatToDo(t *testing.T) {
 	f := newTrackerBoardFixture(t)
 	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
 	subscribe := func(project, conn, board string) error {
-		return ignoreResult(f.a.SubscribeTrackerBoard(ctx, project, conn, board, nil))
+		return ignoreResult(f.a.SubscribeTrackerBoard(ctx, project, conn, board, nil, true))
 	}
 	tempo, err := f.a.AddTrackerConnection(ctx, NewTrackerConnection{Kind: store.TrackerKindTempo, Site: "https://api.tempo.io", ParentID: f.conn.ID})
 	if err != nil {

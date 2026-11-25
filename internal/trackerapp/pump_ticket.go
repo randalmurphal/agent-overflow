@@ -281,19 +281,29 @@ func (s *Service) runTicketPump(tp *ticketPump) {
 	defer close(tp.exited)
 	defer s.dropTicket(tp)
 	ctx, conn, self := tp.core.Context(), tp.key.connection, []*ticketPump{tp}
-	over := s.readTickets(ctx, conn, self, Interactive, false, true).over
+	serve := func(req *pump.Request[readRequest]) (over bool) {
+		res := s.readTickets(ctx, conn, self, Interactive, true, true)
+		err := res.errOf(0)
+		if res.over {
+			err = ErrSubscriptionEnded
+		}
+		req.Finish(err)
+		return res.over
+	}
+	// A pump launched hidden reads once it is shown or asked; one stopped
+	// first still makes its first read, which ends at once with its context.
+	var over bool
+	if req, _ := tp.core.AwaitShown(); req != nil {
+		over = serve(req)
+	} else {
+		over = s.readTickets(ctx, conn, self, Interactive, false, true).over
+	}
 	for !over {
 		select {
 		case <-tp.core.Done():
 			return
 		case req := <-tp.core.Requests():
-			res := s.readTickets(ctx, conn, self, Interactive, true, true)
-			over = res.over
-			err := res.errOf(0)
-			if over {
-				err = ErrSubscriptionEnded
-			}
-			req.Finish(err)
+			over = serve(req)
 		case <-tp.core.Wake():
 			s.buildShown(conn)
 		case <-tp.viewChanged:

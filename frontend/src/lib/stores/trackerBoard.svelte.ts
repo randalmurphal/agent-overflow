@@ -17,12 +17,18 @@
 // patch reads them all; a patch reads the board as it is now, so applying
 // one after a read that already holds its change is harmless.
 //
-// A full read runs after an event that says to read again, after a gap on
-// the channel, when the board's structure calls for other sections (a
-// sprint started), and when a patch would name more IDs than an event
-// carries (100). It reads each section again to the depth the client held,
-// then replaces the board at once, so a person scrolled deep stays where
-// they were.
+// The subscribe and every full read ask for no sections, which answers the
+// Board screen's (`BoardView.screen`, chosen by the board's computer from
+// the structure it read): the first page of up to 20 of them, and the store
+// reads the first page of the rest before it applies the answer. So a
+// sprint that starts or a column that is added arrives with the full read
+// its event asks for.
+//
+// A full read runs after an event that says to read again (a structure
+// change among them), after a gap on the channel, and when a patch would
+// name more IDs than an event carries (100). It reads each section again to
+// the depth the client held, then replaces the board at once, so a person
+// scrolled deep stays where they were.
 //
 // What the board holds is bounded by each section's loaded part: the first
 // page, the pages a person scrolled to, and, while a filter is on, the rest
@@ -53,12 +59,10 @@ import { isTransportClassError } from './transportStatus.svelte';
 import {
   appendPage,
   applyBoardPatch,
-  boardScreenSections,
   createRowInterner,
   heldFromView,
   heldSections,
   heldTotalsAt,
-  sameSections,
   sectionKey,
   type HeldBoard,
 } from './trackerBoardModel';
@@ -139,8 +143,8 @@ interface Live {
   intern: ReturnType<typeof createRowInterner>;
   /** The drain in progress, for a gap's recovery to wait on. */
   running: Promise<void> | null;
-  /** The visibility this handle last voted; null before its first vote. */
-  voted: boolean | null;
+  /** The visibility this handle last voted, the subscribe's first. */
+  voted: boolean;
 }
 
 /** Event IDs past which a patch is not read (trackerapp maxEventIssues). */
@@ -154,9 +158,6 @@ const lives = new Map<string, Live>();
 const shownByKey = new Map<string, boolean>();
 // Whether a filter is on over each held board; kept across a re-subscribe.
 const filteredByKey = new Map<string, boolean>();
-// The sections each board was last read with this session, so a
-// re-subscribe (a reconnect, a board picked again) asks for them at once.
-const lastSections = new Map<string, Section[]>();
 
 const votes = createPumpVotes('trackerBoard', (id, visible) => SetTrackerSubscriptionVisible(id, visible));
 
@@ -193,17 +194,16 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
     key, ref, id: '', seq: 0, joining: [], apply, aborted: false,
     state: { held: null, failure: null, readAt: 0, ended: false, paging: NO_SECTIONS, refreshing: false, refreshNotice: null, readError: null },
     pending: new Set(), readAgain: false, wantPage: new Set(), staleAt: -1,
-    intern: createRowInterner(), running: null, voted: null,
+    intern: createRowInterner(), running: null, voted: visibleOf(key),
   };
   lives.set(key, live);
   signal.addEventListener('abort', () => {
     live.aborted = true;
     if (lives.get(key) === live) lives.delete(key);
   }, { once: true });
-  const asked = lastSections.get(trackerBoardOnComputer(ref)) ?? [];
   let answer: BoardSubscription;
   try {
-    answer = await withBackendTarget(ref.backend, () => SubscribeTrackerBoard(ref.projectId, ref.connection, ref.board, asked));
+    answer = await withBackendTarget(ref.backend, () => SubscribeTrackerBoard(ref.projectId, ref.connection, ref.board, [], live.voted));
   } catch (err) {
     if (lives.get(key) === live) lives.delete(key);
     throw err;
@@ -219,9 +219,19 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
     }
   };
   if (signal.aborted) return cleanup;
+  let view = answer.view ?? null;
+  if (view) {
+    try {
+      view = await withScreenPages(ref.backend, id, view);
+    } catch (err) {
+      // The full read the drain runs reads the screen again, and shows
+      // what fails.
+      if (!isTransportClassError(err)) live.readAgain = true;
+    }
+    if (signal.aborted) return cleanup;
+  }
   live.id = id;
   live.seq = answer.seq;
-  const view = answer.view ?? null;
   const held = view ? heldFromView(view, live.intern) : null;
   live.state = {
     ...live.state,
@@ -230,7 +240,6 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
     readAt: view?.sync.read_at ?? 0,
     paging: held ? pagingOf(live, held) : NO_SECTIONS,
   };
-  if (held) lastSections.set(trackerBoardOnComputer(ref), heldSections(held));
   const early = live.joining ?? [];
   live.joining = null;
   for (const event of early) fold(live, event);
@@ -317,9 +326,7 @@ async function run(live: Live): Promise<void> {
     const held = live.state.held;
     try {
       if (live.readAgain) {
-        await readWhole(live, held ? boardScreenSections(held.shape) : (lastSections.get(trackerBoardOnComputer(live.ref)) ?? []));
-      } else if (held && !sameSections(heldSections(held), boardScreenSections(held.shape))) {
-        await readWhole(live, boardScreenSections(held.shape));
+        await readWhole(live);
       } else if (held && live.pending.size > 0) {
         await readPatch(live, held);
       } else {
@@ -341,7 +348,18 @@ async function run(live: Live): Promise<void> {
   }
 }
 
-async function readWhole(live: Live, sections: Section[]): Promise<void> {
+/** `view` with the first page of each Board screen section it holds no page
+ * of (those past the 20 a view reads), in the screen's order, read through
+ * handle `id`. */
+async function withScreenPages(backend: BackendKey, id: string, view: BoardView): Promise<BoardView> {
+  const read = new Set(view.sections.map((p) => sectionKey(p.section)));
+  const rest = view.screen.filter((s) => !read.has(sectionKey(s)));
+  if (rest.length === 0) return view;
+  const pages = await Promise.all(rest.map((s) => withBackendTarget(backend, () => TrackerSectionRows(id, s, null))));
+  return { ...view, sections: [...view.sections, ...pages] };
+}
+
+async function readWhole(live: Live): Promise<void> {
   const before = live.state.held;
   // An event folded while the read is out is newer than the read's sync
   // state, and keeps its failure and read time.
@@ -352,7 +370,9 @@ async function readWhole(live: Live, sections: Section[]): Promise<void> {
   const { ref } = live;
   let view: BoardView;
   try {
-    view = await withBackendTarget(ref.backend, () => TrackerBoard(live.id, sections));
+    view = await withBackendTarget(ref.backend, () => TrackerBoard(live.id, []));
+    if (live.aborted) return;
+    view = await withScreenPages(ref.backend, live.id, view);
   } catch (err) {
     if (err instanceof TransportError && err.code === 'tracker_board_not_read') {
       if (!live.aborted) update(live, { held: null, readError: null });
@@ -383,7 +403,6 @@ async function readWhole(live: Live, sections: Section[]): Promise<void> {
     }
   }
   live.intern = intern;
-  lastSections.set(trackerBoardOnComputer(ref), heldSections(held));
   live.staleAt = -1;
   const sync = live.seq === seq
     ? { failure: view.sync.failure ?? null, readAt: view.sync.read_at || live.state.readAt }
@@ -515,13 +534,16 @@ export function dismissTrackerRefreshNotice(key: string): void {
   if (live?.state.refreshNotice) update(live, { refreshNotice: null });
 }
 
+/** Whether the board's pump should read: the pane shows it and the window
+ * is visible. */
+function visibleOf(key: string): boolean {
+  return (shownByKey.get(key) ?? true) && !documentHidden();
+}
+
 function vote(live: Live): void {
   if (!live.id) return;
-  const visible = (shownByKey.get(live.key) ?? true) && !documentHidden();
-  if (live.voted === visible || (live.voted === null && visible)) {
-    live.voted = visible;
-    return;
-  }
+  const visible = visibleOf(live.key);
+  if (live.voted === visible) return;
   live.voted = visible;
   votes.setActive(live.ref.backend, live.id, visible);
 }
@@ -552,9 +574,12 @@ export interface TrackerBoardAttachment {
   release(): void;
 }
 
-/** Holds a board's subscription until the release. */
-export function attachTrackerBoard(ref: TrackerBoardRef): TrackerBoardAttachment {
+/** Holds a board's subscription until the release; `shown` is whether the
+ * pane shows it now, which the subscribe carries (setTrackerBoardShown
+ * after). */
+export function attachTrackerBoard(ref: TrackerBoardRef, shown: boolean): TrackerBoardAttachment {
   const key = trackerBoardKey(ref);
+  shownByKey.set(key, shown);
   const handle = store.attach(key, ref);
   return {
     key,
@@ -574,6 +599,5 @@ export function resetTrackerBoardsForTest(): void {
   lives.clear();
   shownByKey.clear();
   filteredByKey.clear();
-  lastSections.clear();
   votes.resetForTest();
 }

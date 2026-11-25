@@ -645,7 +645,7 @@ describe('transport gap — the tracker board channel', () => {
     const off = onBackendRecovery((backend, phase) => phases.push(`${backend}:${phase}`));
     const view = {
       id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'none' },
-      columns: [], sprints: [], all: { rows: 0, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: {}, sections: [],
+      columns: [], sprints: [], all: { rows: 0, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: {}, screen: [], sections: [],
     };
     setBindingMock('SubscribeTrackerBoard', async () => ({ id: 'sub-1', seq: 4, loaded: true, view, poll_every: 10_000 }));
     setBindingMock('ReleaseTrackerSubscription', async () => undefined);
@@ -653,7 +653,7 @@ describe('transport gap — the tracker board channel', () => {
     const read = setBindingMock('TrackerBoard', () => new Promise((resolve) => {
       answer = resolve;
     }));
-    const board = attachTrackerBoard({ backend: 'laptop', projectId: 'p1', connection: 'c1', board: '1' });
+    const board = attachTrackerBoard({ backend: 'laptop', projectId: 'p1', connection: 'c1', board: '1' }, true);
     try {
       await vi.waitFor(() => expect(board.current).not.toBeNull());
       laptop.replay('start');

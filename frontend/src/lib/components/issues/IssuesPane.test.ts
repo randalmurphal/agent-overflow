@@ -72,7 +72,7 @@ function kanban(todo: ColumnSeed, doing: ColumnSeed, extra: Partial<BoardView> =
       { name: 'In Progress', statuses: [{ id: 's2', group: 'in_progress' }], total: total(doing) },
     ],
     sprints: [], all: total({ rows: [...todo.rows, ...doing.rows] }), backlog: { rows: 0, estimate: 0 },
-    sync: { read_at: Date.now() }, sections, ...extra,
+    sync: { read_at: Date.now() }, screen: sections.map((s) => s.section), sections, ...extra,
   } as unknown as BoardView;
 }
 
@@ -116,7 +116,7 @@ describe('the Issues pane', () => {
     const mocks = install();
     const view = mount();
     await waitFor(() => expect(view.getAllByTestId('issues-card')).toHaveLength(2));
-    expect(mocks.subscribe).toHaveBeenCalledWith('p1', 'c1', '1', []);
+    expect(mocks.subscribe).toHaveBeenCalledWith('p1', 'c1', '1', [], true);
     expect(columns(view)).toEqual([
       { name: 'To Do', count: '1 · 2 pts', cards: ['1'] },
       { name: 'In Progress', count: '1 · 2 pts', cards: ['2'] },
@@ -133,9 +133,9 @@ describe('the Issues pane', () => {
     let list: (rows: BoardChoice[]) => void = () => {};
     setBindingMock('TrackerBoardChoices', () => new Promise<BoardChoice[]>((resolve) => { list = resolve; }));
     const view = mount();
-    await waitFor(() => expect(mocks.subscribe).toHaveBeenCalledWith('p1', 'c1', '2', []));
+    await waitFor(() => expect(mocks.subscribe).toHaveBeenCalledWith('p1', 'c1', '2', [], true));
     list([choice('1', { opens_first: true })]);
-    await waitFor(() => expect(mocks.subscribe).toHaveBeenLastCalledWith('p1', 'c1', '1', []));
+    await waitFor(() => expect(mocks.subscribe).toHaveBeenLastCalledWith('p1', 'c1', '1', [], true));
     await waitFor(() => expect(mocks.release).toHaveBeenCalledWith('sub-2-1'));
     expect(lastShownBoard()?.board).toBe('1');
     view.unmount();
@@ -330,7 +330,7 @@ describe('the Issues pane', () => {
     const items = within(menu()).getAllByTestId('issues-board-choice');
     expect(items.map((i) => i.textContent?.trim())).toEqual([expect.stringContaining('Board 1'), expect.stringContaining('Board 2')]);
     await fireEvent.click(items[1]);
-    await waitFor(() => expect(mocks.subscribe).toHaveBeenLastCalledWith('p1', 'c1', '2', []));
+    await waitFor(() => expect(mocks.subscribe).toHaveBeenLastCalledWith('p1', 'c1', '2', [], true));
     await waitFor(() => expect(mocks.release).toHaveBeenCalledWith('sub-1-1'));
     expect(lastShownBoard()?.board).toBe('2');
   });
@@ -369,6 +369,19 @@ describe('the Issues pane', () => {
     showCompactThread();
     await waitFor(() => expect(mocks.visible).toHaveBeenLastCalledWith('sub-1-1', true));
     expect(getBindingMock('SetTrackerSubscriptionVisible')).toHaveBeenCalledTimes(2);
+  });
+
+  it('subscribes with its vote down when it opens on a screen that is not shown', async () => {
+    setCompactLayoutForTest(true);
+    showCompactList();
+    const mocks = install();
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    expect(mocks.subscribe).toHaveBeenCalledWith('p1', 'c1', '1', [], false);
+    expect(mocks.visible).not.toHaveBeenCalled();
+    showCompactThread();
+    noteCompactPaneShown(PANE);
+    await waitFor(() => expect(mocks.visible).toHaveBeenCalledWith('sub-1-1', true));
   });
 
   it('votes hidden while another pane is promoted over the strip', async () => {

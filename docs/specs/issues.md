@@ -243,7 +243,9 @@ Widths are CSS pixels of the pane, not the window.
 Status: built: the columns of a sprint or kanban board, cards, Display,
 Only mine, Search, Refresh, the board picker and the compact strip. Not
 built: the summary row, changing a card's fields from the card, and
-carrying a card. A card's state line shows days in the status but not a
+carrying a card. A sprint on the board is read whole, and while Only mine
+or Search is on every column is read whole, so a board of thousands of
+cards holds them all. A card's state line shows days in the status but not a
 running thread or what blocks it; its parent shows as a chip but is not
 known to be an epic; its type and priority marks are picked by name, not
 the tracker's icons; its assignee shows as initials, not the tracker's

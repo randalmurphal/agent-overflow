@@ -1,7 +1,7 @@
 // What the client holds of a tracker board, and the pure rules that change
-// it: the patch rule, a further page, which sections the Board screen
-// reads, the grouping of a sprint's rows into the board's columns, and the
-// Only mine and Search match. No state lives here; the board store
+// it: the patch rule, a further page, the grouping of a sprint's rows into
+// the board's columns, and the Only mine and Search match. Which sections
+// the Board screen reads is the board's computer's (`BoardView.screen`). No state lives here; the board store
 // (trackerBoard.svelte.ts) owns it and replaces a held board whole.
 //
 // The patch rule is the backend's (the `BoardPatch` comment in
@@ -193,28 +193,9 @@ export function appendPage(held: HeldBoard, index: number, page: SectionPage, in
   return { ...held, sections };
 }
 
-/** Whether two section lists name the same sections in the same order. */
-export function sameSections(a: readonly Section[], b: readonly Section[]): boolean {
-  return a.length === b.length && a.every((s, i) => sectionKey(s) === sectionKey(b[i]));
-}
-
 /** One text per section, for keys and comparison. */
 export function sectionKey(s: Section): string {
   return `${s.kind}:${s.sprint ?? ''}:${s.column ?? 0}`;
-}
-
-/**
- * The sections the Board screen reads, from the board's structure: the
- * active sprints of a board that plans sprints (a Jira scrum board, a
- * Linear team with cycles), whose rows the screen groups into the board's
- * columns; every column of any other board. A board can show at most 20
- * sections (the backend's bound), more than any board has columns.
- */
-export function boardScreenSections(shape: Pick<BoardShape, 'plansSprints' | 'columns' | 'sprints'>): Section[] {
-  if (shape.plansSprints) {
-    return shape.sprints.filter((sp) => sp.state === 'active').map((sp) => ({ kind: 'sprint', sprint: sp.id }));
-  }
-  return shape.columns.map((_, i) => ({ kind: 'column', column: i }));
 }
 
 /** One column of the Board screen: its rows as held, whether more of

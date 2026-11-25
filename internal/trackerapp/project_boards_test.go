@@ -87,7 +87,7 @@ func TestASaveThatUnlistsABoardEndsItsViews(t *testing.T) {
 			m := newMirrorFixture(t)
 			m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
 			ties := &tieLog{}
-			sub, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, ties.tie)
+			sub, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, true, ties.tie)
 			if err != nil {
 				t.Fatal(err)
 			}

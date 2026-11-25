@@ -103,6 +103,8 @@
     if (board) untrack(() => showBoard(board));
   });
 
+  const shown = $derived(isPaneOnScreen(paneId));
+
   // One subscription, held while the pane shows the board.
   let attachment = $state.raw<TrackerBoardAttachment | null>(null);
   const boardIdentity = $derived(board ? `${board.backend}\n${board.projectId}\n${board.connection}\n${board.board}` : '');
@@ -113,12 +115,13 @@
       attachment = null;
       return;
     }
-    const held = attachTrackerBoard(ref);
+    // The subscribe carries whether the pane shows the board, so a board
+    // opened hidden reads nothing from the tracker until it shows.
+    const held = attachTrackerBoard(ref, untrack(() => shown));
     attachment = held;
     return () => held.release();
   });
 
-  const shown = $derived(isPaneOnScreen(paneId));
   $effect(() => {
     const key = attachment?.key;
     if (key) setTrackerBoardShown(key, shown);

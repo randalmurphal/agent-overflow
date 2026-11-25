@@ -54,7 +54,7 @@ func retainedAtScale(t *testing.T, n int) {
 	sections := []Section{{Kind: SectionColumn}, {Kind: SectionBacklog}, {Kind: SectionSprint, Sprint: "1"}}
 	var handles []string
 	for _, b := range boards {
-		sub := must[BoardSubscription](t)(svc.SubscribeBoard("boards-"+scope.Connection, Scope{Connection: scope.Connection, Board: b}, sections, untied))
+		sub := must[BoardSubscription](t)(svc.SubscribeBoard("boards-"+scope.Connection, Scope{Connection: scope.Connection, Board: b}, sections, true, untied))
 		handles = append(handles, sub.ID)
 	}
 	tickets := board.ids(spread(n, scaleShownTickets))

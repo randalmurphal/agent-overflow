@@ -45,14 +45,19 @@ function rows(from: number, count: number): RowView[] {
 }
 
 /** A sprint board's view: one active sprint (8), or the sprint named; or
- * with `kanban` a board of one column. */
-function view(pages: Array<{ section: Section; rows: RowView[]; next?: boolean }>, opts: { revision?: number; sprint?: string; kanban?: boolean } = {}): BoardView {
+ * with `kanban` a board of `columns` columns (one). The Board screen is the
+ * pages' sections unless `screen` names it. */
+function view(
+  pages: Array<{ section: Section; rows: RowView[]; next?: boolean }>,
+  opts: { revision?: number; sprint?: string; kanban?: boolean; columns?: number; screen?: Section[] } = {},
+): BoardView {
   const revision = opts.revision ?? 1;
   return {
     id: '1', lifetime: 1, revision, totals_revision: revision, name: 'WEB board', plans_sprints: !opts.kanban, estimate: { unit: 'points' },
-    columns: [{ name: 'To Do', statuses: [{ id: 's1', group: 'todo' }], total: { rows: 0, estimate: 0 } }],
+    columns: Array.from({ length: opts.columns ?? 1 }, (_, i) => ({ name: i === 0 ? 'To Do' : `Column ${i}`, statuses: i === 0 ? [{ id: 's1', group: 'todo' }] : [], total: { rows: 0, estimate: 0 } })),
     sprints: [{ id: opts.sprint ?? '8', name: 'Sprint', state: 'active', total: { rows: 1, estimate: 1 } }],
     all: { rows: 1, estimate: 1 }, backlog: { rows: 0, estimate: 0 }, sync: { read_at: 100 },
+    screen: opts.screen ?? pages.map((p) => p.section),
     sections: pages.map((p) => ({
       section: p.section, rows: p.rows,
       next: p.next ? { order: p.rows.at(-1)!.order, issue: p.rows.at(-1)!.card.id, lifetime: 1, revision } : null,
@@ -88,11 +93,12 @@ function install(answer: Partial<BoardSubscription> = {}): Mocks {
     subscribe: setBindingMock('SubscribeTrackerBoard', async () => {
       note('SubscribeTrackerBoard');
       n += 1;
-      return { id: `sub-${n}`, seq: 10, loaded: true, view: view([]), poll_every: 10_000, ...answer };
+      return { id: `sub-${n}`, seq: 10, loaded: true, view: view([{ section: SPRINT, rows: [row('1', 'a')] }]), poll_every: 10_000, ...answer };
     }),
-    board: setBindingMock('TrackerBoard', async (_id: string, sections: Section[]) => {
+    // The Board screen of the sprint board: its active sprint.
+    board: setBindingMock('TrackerBoard', async () => {
       note('TrackerBoard');
-      return view(sections.map((section) => ({ section, rows: [row('1', 'a')] })));
+      return view([{ section: SPRINT, rows: [row('1', 'a')] }]);
     }),
     patch: setBindingMock('TrackerBoardPatch', async () => {
       note('TrackerBoardPatch');
@@ -142,15 +148,16 @@ afterEach(() => {
 });
 
 describe('the board subscription', () => {
-  it('subscribes for the project, reads the Board screen sections, and releases on the last detach', async () => {
+  it('subscribes for the project with the Board screen\'s cards in the answer, and releases on the last detach', async () => {
     const mocks = install();
-    const board = attachTrackerBoard(REF);
-    const again = attachTrackerBoard(REF);
+    const board = attachTrackerBoard(REF, true);
+    const again = attachTrackerBoard(REF, true);
     await flush();
     expect(mocks.subscribe).toHaveBeenCalledTimes(1);
-    expect(mocks.subscribe).toHaveBeenCalledWith('p1', 'c1', '1', []);
-    // The structure names the active sprint: the screen reads it.
-    expect(mocks.board).toHaveBeenCalledWith('sub-1', [SPRINT]);
+    // No sections asks for the screen's; the answer holds its cards, so no
+    // full read follows.
+    expect(mocks.subscribe).toHaveBeenCalledWith('p1', 'c1', '1', [], true);
+    expect(mocks.board).not.toHaveBeenCalled();
     expect(heldIds(board)).toEqual([['1']]);
     expect(board.current?.readAt).toBe(100);
     again.release();
@@ -160,10 +167,11 @@ describe('the board subscription', () => {
     await flush();
     expect(mocks.release).toHaveBeenCalledWith('sub-1');
 
-    // Picked again this session, the board asks for its sections at once.
-    const third = attachTrackerBoard(REF);
+    // Picked again, the board asks for the screen's again.
+    const third = attachTrackerBoard(REF, true);
     await flush();
-    expect(mocks.subscribe).toHaveBeenLastCalledWith('p1', 'c1', '1', [SPRINT]);
+    expect(mocks.subscribe).toHaveBeenLastCalledWith('p1', 'c1', '1', [], true);
+    expect(mocks.board).not.toHaveBeenCalled();
     third.release();
   });
 
@@ -176,9 +184,11 @@ describe('the board subscription', () => {
       return view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true });
     });
     const ref = { ...REF, backend: 'laptop' };
-    const board = attachTrackerBoard(ref);
+    const board = attachTrackerBoard(ref, true);
     await flush();
     applyTrackerBoardEvent(event(11, { changed: ['1'] }), 'laptop');
+    await flush();
+    applyTrackerBoardEvent(event(12, { read_again: true }), 'laptop');
     await flush();
     loadMoreOfSection(board.key, COLUMN);
     await refreshTrackerBoard(board.key);
@@ -192,7 +202,7 @@ describe('the board subscription', () => {
     }
     // A frame from another computer for the same scope is not this board's.
     mocks.patch.mockClear();
-    const home = attachTrackerBoard(REF);
+    const home = attachTrackerBoard(REF, true);
     await flush();
     applyTrackerBoardEvent(event(50, { changed: ['1'] }), 'laptop');
     await flush();
@@ -202,14 +212,14 @@ describe('the board subscription', () => {
 
   it('says a board this computer has not read is not loaded, and reads it when the first read lands', async () => {
     const mocks = install({ loaded: false, view: null, failure: null });
-    const board = attachTrackerBoard(REF);
+    const board = attachTrackerBoard(REF, true);
     await flush();
     expect(board.current?.held).toBeNull();
     expect(mocks.board).not.toHaveBeenCalled();
     applyTrackerBoardEvent(event(11, { read_again: true }), HOME_BACKEND);
     await flush();
-    // The first read gives the structure; the screen then reads its sprint.
-    expect(mocks.board.mock.calls.map((c) => c[1])).toEqual([[], [SPRINT]]);
+    // The first read answers the screen with its cards.
+    expect(mocks.board.mock.calls.map((c) => c[1])).toEqual([[]]);
     expect(heldIds(board)).toEqual([['1']]);
     board.release();
   });
@@ -218,7 +228,7 @@ describe('the board subscription', () => {
     install();
     const subscribe = held<BoardSubscription>('SubscribeTrackerBoard');
     const patchCall = setBindingMock('TrackerBoardPatch', async () => patch([[row('2', 'b', 'renamed')]], 2));
-    const board = attachTrackerBoard(REF);
+    const board = attachTrackerBoard(REF, true);
     await flush();
     applyTrackerBoardEvent(event(9, { changed: ['1'] }), HOME_BACKEND);
     applyTrackerBoardEvent(event(12, { changed: ['2'], sync: { read_at: 300, failure: { kind: 'transient', message: 'Jira did not answer', at: 300 } } }), HOME_BACKEND);
@@ -241,7 +251,7 @@ describe('the board subscription', () => {
 
   it('gathers the IDs of events that arrive during a read into the next patch', async () => {
     install();
-    const board = attachTrackerBoard(REF);
+    const board = attachTrackerBoard(REF, true);
     await flush();
     const patches = held<BoardPatch>('TrackerBoardPatch');
     applyTrackerBoardEvent(event(11, { changed: ['1'] }), HOME_BACKEND);
@@ -263,13 +273,14 @@ describe('the board subscription', () => {
   });
 
   it('reads whole on read again, past 100 IDs and after a gap, to the depth it held', async () => {
-    const mocks = install();
-    mocks.board.mockImplementation(async () => view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true }));
+    const kanban = () => view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true });
+    const mocks = install({ view: kanban() });
+    mocks.board.mockImplementation(async () => kanban());
     mocks.page.mockImplementation(async (_id: string, _s: Section, after: { issue: string }) => {
       const from = Number(after.issue) + 1;
       return { section: COLUMN, rows: rows(from, 100), next: from + 100 < 300 ? { order: `k${String(from + 99).padStart(4, '0')}`, issue: String(from + 99), lifetime: 1, revision: 1 } : null };
     });
-    const board = attachTrackerBoard(REF);
+    const board = attachTrackerBoard(REF, true);
     await flush();
     loadMoreOfSection(board.key, COLUMN);
     expect(board.current?.paging.has('column::0')).toBe(true);
@@ -280,7 +291,7 @@ describe('the board subscription', () => {
     mocks.page.mockClear();
     applyTrackerBoardEvent(event(11, { read_again: true, changed: ['5'] }), HOME_BACKEND);
     await flush();
-    expect(mocks.board).toHaveBeenCalledTimes(2);
+    expect(mocks.board).toHaveBeenCalledTimes(1);
     expect(mocks.patch).not.toHaveBeenCalled();
     // One page brings the section back to the 200 rows held.
     expect(mocks.page).toHaveBeenCalledTimes(1);
@@ -288,36 +299,78 @@ describe('the board subscription', () => {
 
     applyTrackerBoardEvent(event(12, { changed: rows(0, 101).map((r) => r.card.id) }), HOME_BACKEND);
     await flush();
-    expect(mocks.board).toHaveBeenCalledTimes(3);
+    expect(mocks.board).toHaveBeenCalledTimes(2);
     expect(mocks.patch).not.toHaveBeenCalled();
 
     await resyncTrackerBoardsAfterGap(HOME_BACKEND);
-    expect(mocks.board).toHaveBeenCalledTimes(4);
+    expect(mocks.board).toHaveBeenCalledTimes(3);
     expect(resyncTrackerBoardsAfterGap('elsewhere')).toBeUndefined();
     board.release();
   });
 
-  it('reads the new active sprint when the structure changes', async () => {
+  it('ends a sprint start and a column change each in one full read that asks for the screen again', async () => {
     const mocks = install();
-    const board = attachTrackerBoard(REF);
+    const board = attachTrackerBoard(REF, true);
     await flush();
-    mocks.board.mockImplementationOnce(async () => view([{ section: SPRINT, rows: [] }], { sprint: '9' }));
-    mocks.board.mockImplementationOnce(async () => view([{ section: { kind: 'sprint', sprint: '9' }, rows: [row('7', 'a')] }], { sprint: '9' }));
+    // Sprint 9 started in place of 8: the computer answers its screen.
+    const nine: Section = { kind: 'sprint', sprint: '9' };
+    mocks.board.mockImplementationOnce(async () => view([{ section: nine, rows: [row('7', 'a')] }], { sprint: '9' }));
     applyTrackerBoardEvent(event(11, { read_again: true }), HOME_BACKEND);
     await flush();
-    expect(mocks.board.mock.calls.slice(-2).map((c) => c[1])).toEqual([[SPRINT], [{ kind: 'sprint', sprint: '9' }]]);
+    expect(mocks.board.mock.calls.map((c) => c[1])).toEqual([[]]);
+    expect(board.current?.held?.sections.map((s) => s.section)).toEqual([nine]);
     expect(heldIds(board)).toEqual([['7']]);
-    // The first paint's read, the read again, and one more for the sprint
-    // that started between the two: no further read follows.
+    board.release();
     await flush();
-    expect(mocks.board).toHaveBeenCalledTimes(3);
+
+    // A kanban board gains a column.
+    const second: Section = { kind: 'column', column: 1 };
+    mocks.subscribe.mockImplementationOnce(async () => ({ id: 'sub-9', seq: 10, loaded: true, view: view([{ section: COLUMN, rows: [row('1', 'a')] }], { kanban: true }), poll_every: 10_000 }));
+    mocks.board.mockClear();
+    mocks.board.mockImplementationOnce(async () => view([{ section: COLUMN, rows: [row('1', 'a')] }, { section: second, rows: [row('2', 'b')] }], { kanban: true, columns: 2 }));
+    const kanban = attachTrackerBoard(REF, true);
+    await flush();
+    applyTrackerBoardEvent(event(11, { read_again: true }), HOME_BACKEND);
+    await flush();
+    expect(mocks.board.mock.calls.map((c) => c[1])).toEqual([[]]);
+    expect(kanban.current?.held?.sections.map((s) => s.section)).toEqual([COLUMN, second]);
+    expect(heldIds(kanban)).toEqual([['1'], ['2']]);
+    kanban.release();
+  });
+
+  it('reads the first page of each screen section past the 20 an answer holds before it shows the board', async () => {
+    const mocks = install();
+    const screen: Section[] = Array.from({ length: 23 }, (_, i) => ({ kind: 'column', column: i }));
+    const answered = (rev: number) => view(screen.slice(0, 20).map((section, i) => ({ section, rows: [row(String(i), 'a')] })), { kanban: true, columns: 23, screen, revision: rev });
+    mocks.subscribe.mockImplementationOnce(async () => ({ id: 'sub-1', seq: 10, loaded: true, view: answered(1), poll_every: 10_000 }));
+    const pages = held<SectionPage>('TrackerSectionRows');
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    // Nothing shows until the three pages land.
+    expect(board.current).toBeNull();
+    expect(pages.calls).toEqual(screen.slice(20).map((s) => ['sub-1', s, null]));
+    for (const s of screen.slice(20)) pages.answer({ section: s, rows: [row(String(100 + (s.column ?? 0)), 'a')] } as unknown as SectionPage);
+    await flush();
+    expect(board.current?.held?.sections.map((s) => s.section)).toEqual(screen);
+    expect(heldIds(board).slice(19)).toEqual([['19'], ['120'], ['121'], ['122']]);
+
+    // A full read does the same.
+    mocks.board.mockImplementationOnce(async () => answered(2));
+    applyTrackerBoardEvent(event(11, { read_again: true }), HOME_BACKEND);
+    await flush();
+    expect(pages.calls.length).toBe(6);
+    for (const s of screen.slice(20)) pages.answer({ section: s, rows: [row(String(200 + (s.column ?? 0)), 'a')] } as unknown as SectionPage);
+    await flush();
+    expect(board.current?.held?.revision).toBe(2);
+    expect(heldIds(board).slice(20)).toEqual([['220'], ['221'], ['222']]);
     board.release();
   });
 
   it('reads a stale page again once the patch carries its cursor on', async () => {
-    const mocks = install();
-    mocks.board.mockImplementation(async () => view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true }));
-    const board = attachTrackerBoard(REF);
+    const kanban = () => view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true });
+    const mocks = install({ view: kanban() });
+    mocks.board.mockImplementation(async () => kanban());
+    const board = attachTrackerBoard(REF, true);
     await flush();
     mocks.page.mockImplementationOnce(async () => {
       throw new TransportError('tracker_page_stale', 'the board changed since this section was read; read the section again from its start');
@@ -339,13 +392,14 @@ describe('the board subscription', () => {
   });
 
   it('reads every page of a section while a filter is on', async () => {
-    const mocks = install();
-    mocks.board.mockImplementation(async () => view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true }));
+    const kanban = () => view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true });
+    const mocks = install({ view: kanban() });
+    mocks.board.mockImplementation(async () => kanban());
     mocks.page.mockImplementation(async (_id: string, _s: Section, after: { issue: string }) => {
       const from = Number(after.issue) + 1;
       return { section: COLUMN, rows: rows(from, 100), next: from + 100 < 300 ? { order: `k${String(from + 99).padStart(4, '0')}`, issue: String(from + 99), lifetime: 1, revision: 1 } : null };
     });
-    const board = attachTrackerBoard(REF);
+    const board = attachTrackerBoard(REF, true);
     await flush();
     setTrackerBoardFiltered(board.key, true);
     await flush();
@@ -361,7 +415,7 @@ describe('the board subscription', () => {
       const from = Number(after.issue) + 1;
       return { section: SPRINT, rows: rows(from, 100), next: from + 100 < 300 ? { order: `k${String(from + 99).padStart(4, '0')}`, issue: String(from + 99), lifetime: 1, revision: 1 } : null };
     });
-    const board = attachTrackerBoard(REF);
+    const board = attachTrackerBoard(REF, true);
     await tick();
     await tick();
     expect(board.current?.paging.has('sprint:8:0')).toBe(true);
@@ -374,20 +428,20 @@ describe('the board subscription', () => {
 
   it('stops at the end, and reads nothing after it', async () => {
     const mocks = install();
-    const board = attachTrackerBoard(REF);
+    const board = attachTrackerBoard(REF, true);
     await flush();
     applyTrackerBoardEvent(event(11, { ended: true, changed: ['1'] }), HOME_BACKEND);
     applyTrackerBoardEvent(event(12, { read_again: true }), HOME_BACKEND);
     await flush();
     expect(board.current?.ended).toBe(true);
     expect(mocks.patch).not.toHaveBeenCalled();
-    expect(mocks.board).toHaveBeenCalledTimes(1);
+    expect(mocks.board).not.toHaveBeenCalled();
     board.release();
   });
 
   it('subscribes again when its handle is gone, and on reconnect', async () => {
     const mocks = install();
-    const board = attachTrackerBoard(REF);
+    const board = attachTrackerBoard(REF, true);
     await flush();
     mocks.patch.mockImplementationOnce(async () => {
       throw new TransportError('tracker_subscription_unknown', 'this board view is no longer open on this computer');
@@ -406,7 +460,7 @@ describe('the board subscription', () => {
 
   it('shows a read that failed outside the tracker, and clears it with the next read', async () => {
     const mocks = install();
-    const board = attachTrackerBoard(REF);
+    const board = attachTrackerBoard(REF, true);
     await flush();
     const failure = new TransportError('internal', 'read a patch of board 1: database is locked');
     mocks.patch.mockImplementationOnce(async () => {
@@ -418,14 +472,14 @@ describe('the board subscription', () => {
     // The lost IDs are owed a full read, which the next event runs.
     applyTrackerBoardEvent(event(12, {}), HOME_BACKEND);
     await flush();
-    expect(mocks.board).toHaveBeenCalledTimes(2);
+    expect(mocks.board).toHaveBeenCalledTimes(1);
     expect(board.current?.readError).toBeNull();
     board.release();
   });
 
   it('reads the copy again on a Refresh after a read of it failed, with no event to run it', async () => {
     const mocks = install();
-    const board = attachTrackerBoard(REF);
+    const board = attachTrackerBoard(REF, true);
     await flush();
     mocks.patch.mockImplementationOnce(async () => {
       throw new TransportError('internal', 'read a patch of board 1: database is locked');
@@ -436,7 +490,7 @@ describe('the board subscription', () => {
     // The tracker read finds nothing new, so no event follows it.
     await refreshTrackerBoard(board.key);
     await flush();
-    expect(mocks.board).toHaveBeenCalledTimes(2);
+    expect(mocks.board).toHaveBeenCalledTimes(1);
     expect(board.current?.readError).toBeNull();
     board.release();
   });
@@ -445,10 +499,10 @@ describe('the board subscription', () => {
     const failure = { kind: 'auth', message: 'Jira refused the token', at: 50 };
     const mocks = install({ failure, view: { ...view([]), sync: { read_at: 100, failure } } as unknown as BoardView });
     let told: typeof failure | undefined = failure;
-    mocks.board.mockImplementation(async (_id: string, sections: Section[]) => (
-      { ...view(sections.map((section) => ({ section, rows: [row('1', 'a')] }))), sync: { read_at: 100, failure: told } }
+    mocks.board.mockImplementation(async () => (
+      { ...view([{ section: SPRINT, rows: [row('1', 'a')] }]), sync: { read_at: 100, failure: told } }
     ));
-    const board = attachTrackerBoard(REF);
+    const board = attachTrackerBoard(REF, true);
     await flush();
     expect(board.current?.failure).toEqual(failure);
     told = undefined;
@@ -473,7 +527,7 @@ describe('the board subscription', () => {
 describe('visibility', () => {
   it('votes the board down while the pane or the window is hidden and up when both show', async () => {
     const mocks = install();
-    const board = attachTrackerBoard(REF);
+    const board = attachTrackerBoard(REF, true);
     await flush();
     expect(mocks.visible).not.toHaveBeenCalled();
     setTrackerBoardShown(board.key, false);
@@ -489,18 +543,31 @@ describe('visibility', () => {
 
   it('subscribes a board the pane hides with its vote down', async () => {
     const mocks = install();
-    const key = attachTrackerBoard(REF);
-    setTrackerBoardShown(key.key, false);
+    const board = attachTrackerBoard(REF, false);
     await flush();
-    expect(mocks.visible.mock.calls).toEqual([['sub-1', false]]);
-    key.release();
+    expect(mocks.subscribe).toHaveBeenCalledWith('p1', 'c1', '1', [], false);
+    expect(mocks.visible).not.toHaveBeenCalled();
+    setTrackerBoardShown(board.key, true);
+    await flush();
+    expect(mocks.visible.mock.calls).toEqual([['sub-1', true]]);
+    board.release();
+    await flush();
+
+    // Hidden while the subscribe is out, it votes down once the answer lands.
+    mocks.visible.mockClear();
+    const late = attachTrackerBoard(REF, true);
+    setTrackerBoardShown(late.key, false);
+    await flush();
+    expect(mocks.subscribe).toHaveBeenLastCalledWith('p1', 'c1', '1', [], true);
+    expect(mocks.visible.mock.calls).toEqual([['sub-2', false]]);
+    late.release();
   });
 });
 
 describe('refresh', () => {
   it('spins only while its call is out and shows its two bounded answers as they are', async () => {
     const mocks = install();
-    const board = attachTrackerBoard(REF);
+    const board = attachTrackerBoard(REF, true);
     await flush();
     const calls = held<void>('RefreshTrackerSubscription');
     const running = refreshTrackerBoard(board.key);

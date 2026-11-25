@@ -34,7 +34,7 @@ test('a tracker board reaches its client and follows a change made in Jira', asy
   const board = await connectFakeJiraBoard(harness, 'tracker-board-wire');
   const ofBoard = (e: BoardEvent) => e.scope.connection === board.connectionId && e.scope.board === BOARD_ID;
 
-  const sub = await harness.rpc<BoardSubscription>('SubscribeTrackerBoard', board.projectId, board.connectionId, BOARD_ID, sprint);
+  const sub = await harness.rpc<BoardSubscription>('SubscribeTrackerBoard', board.projectId, board.connectionId, BOARD_ID, sprint, true);
   expect(sub.loaded, 'a board this computer never read is not loaded at its first subscribe').toBe(false);
   await harness.waitForEvent<BoardEvent>('tracker:board_updated', (e) => ofBoard(e) && e.read_again === true && e.seq > sub.seq);
 
@@ -60,7 +60,7 @@ test('a client whose socket closes has its board subscription released', async (
   const board = await connectFakeJiraBoard(harness, 'tracker-board-close');
   const client = await WireClient.connect('127.0.0.1', harness.bootstrap.port, new URLSearchParams({ token: harness.bootstrap.token }).toString());
   const sub = answered(
-    await client.call('SubscribeTrackerBoard', board.projectId, board.connectionId, BOARD_ID, sprint),
+    await client.call('SubscribeTrackerBoard', board.projectId, board.connectionId, BOARD_ID, sprint, true),
     'the second client subscribes to the board',
   ) as BoardSubscription;
   // The subscription is live: a refresh by its ID reads the fake Jira.

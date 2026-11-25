@@ -245,12 +245,12 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('tracker:board_updated')).toBe(1);
     const view = {
       id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'none' },
-      columns: [], sprints: [], all: { rows: 0, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: {}, sections: [],
+      columns: [], sprints: [], all: { rows: 0, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: {}, screen: [], sections: [],
     };
     setBindingMock('SubscribeTrackerBoard', async () => ({ id: 'sub-1', seq: 4, loaded: true, view, poll_every: 10_000 }));
     setBindingMock('ReleaseTrackerSubscription', async () => undefined);
     const patch = setBindingMock('TrackerBoardPatch', async () => ({ lifetime: 1, revision: 2, sections: [] }));
-    const board = attachTrackerBoard({ backend: HOME_BACKEND, projectId: 'p1', connection: 'c1', board: '1' });
+    const board = attachTrackerBoard({ backend: HOME_BACKEND, projectId: 'p1', connection: 'c1', board: '1' }, true);
     try {
       await vi.waitFor(() => expect(board.current).not.toBeNull());
       emitWailsEvent('tracker:board_updated', { scope: { connection: 'c1', board: '2' }, seq: 5, changed: ['10101'] });

@@ -17,14 +17,13 @@ import type {
 import {
   appendPage,
   applyBoardPatch,
-  boardScreenSections,
   cardMatches,
   createRowInterner,
   heldFromView,
   heldSections,
   heldTotalsAt,
-  sameSections,
   screenColumns,
+  sectionKey,
   searchWords,
   type HeldBoard,
 } from './trackerBoardModel';
@@ -141,17 +140,9 @@ function sprintBoard(rowsBySprint: Record<string, RowView[]>, more: string[] = [
 }
 
 describe('the Board screen', () => {
-  it('reads the active sprints of a board that plans sprints and every column of any other', () => {
-    const columns = [{ name: 'A', statuses: [], total: { rows: 0, estimate: 0 } }, { name: 'B', statuses: [], total: { rows: 0, estimate: 0 } }];
-    const sprints = [
-      { id: '7', name: 'S7', state: 'closed', total: { rows: 0, estimate: 0 } },
-      { id: '8', name: 'S8', state: 'active', total: { rows: 0, estimate: 0 } },
-      { id: '9', name: 'S9', state: 'future', total: { rows: 0, estimate: 0 } },
-    ];
-    expect(boardScreenSections({ plansSprints: true, columns, sprints })).toEqual([{ kind: 'sprint', sprint: '8' }]);
-    expect(boardScreenSections({ plansSprints: false, columns, sprints })).toEqual([{ kind: 'column', column: 0 }, { kind: 'column', column: 1 }]);
-    expect(sameSections([{ kind: 'column', column: 0 }], [{ kind: 'column' }])).toBe(true);
-    expect(sameSections([{ kind: 'sprint', sprint: '8' }], [{ kind: 'sprint', sprint: '9' }])).toBe(false);
+  it('keys a section the same whether the wire names its first column or leaves it out', () => {
+    expect(sectionKey({ kind: 'column', column: 0 })).toBe(sectionKey({ kind: 'column' }));
+    expect(sectionKey({ kind: 'sprint', sprint: '8' })).not.toBe(sectionKey({ kind: 'sprint', sprint: '9' }));
   });
 
   it('groups sprint rows into columns by status, merges sprints in board order and leaves out an unmapped status', () => {

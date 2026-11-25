@@ -110,7 +110,7 @@ func TestLinearReadsACardAtAnUnchangedUpdateTime(t *testing.T) {
 
 			// The round's read is told through the funnel: a board subscriber
 			// hears of a changed card.
-			board := must[BoardSubscription](t)(s.svc.SubscribeBoard("boards-"+conn.ID, scope, []Section{{Kind: SectionBacklog}}, untied))
+			board := must[BoardSubscription](t)(s.svc.SubscribeBoard("boards-"+conn.ID, scope, []Section{{Kind: SectionBacklog}}, true, untied))
 			if err := s.svc.RefreshSubscription(t.Context(), board.ID); err != nil {
 				t.Fatal(err)
 			}

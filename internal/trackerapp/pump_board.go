@@ -89,13 +89,15 @@ type BoardSubscription struct {
 
 // SubscribeBoard subscribes to scope's board for project projectID, which
 // must list it (ErrNotListed), with the first page of each of sections in
-// the answer. The answer comes from the mirror alone; the board's pump,
-// made on the first handle, reads the tracker after it, its first tick
-// interactive. A connection turned off or removed is refused (ErrDisabled,
+// the answer (none asks for the Board screen's, as Board reads them). The
+// handle starts with visible as its vote (SetSubscriptionVisible). The
+// answer comes from the mirror alone; the board's pump, made on the first
+// handle, reads the tracker after it, its first tick interactive, once a
+// handle shows it (pump.Core.AwaitShown). A connection turned off or removed is refused (ErrDisabled,
 // ErrNotFound), as is a subscribe over the cap (ErrTooManySubscriptions).
 // tie ties the handle to its client before any pump is made for it; its
 // refusal is the subscribe's.
-func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Section, tie Tie) (BoardSubscription, error) {
+func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Section, visible bool, tie Tie) (BoardSubscription, error) {
 	if err := scope.boardOnly(); err != nil {
 		return BoardSubscription{}, err
 	}
@@ -123,7 +125,7 @@ func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Secti
 	}) {
 		return BoardSubscription{}, fmt.Errorf("%w: project %s, board %s of %s", ErrNotListed, projectID, scope.Board, scope.Connection)
 	}
-	id, p, start, seq, told, err := s.takeBoardHandle(scope, tie)
+	id, p, start, seq, told, err := s.takeBoardHandle(scope, visible, tie)
 	if err != nil {
 		return BoardSubscription{}, err
 	}
@@ -160,13 +162,14 @@ func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Secti
 	return answer, nil
 }
 
-// takeBoardHandle takes a handle on scope's pump, tied by tie, making the
-// pump when there is none; start reports that the caller launches it. seq
+// takeBoardHandle takes a handle on scope's pump, tied by tie and voting
+// visible, making the pump when there is none; start reports that the
+// caller launches it. seq
 // is the answer's sequence number, and told the board's sync state as the
 // pump's subscribers were last told of it then. The connection is read
 // under opMu, so a turn off orders entirely before (refused) or after (the
 // pump ends).
-func (s *Service) takeBoardHandle(scope Scope, tie Tie) (id string, p *boardPump, start bool, seq uint64, told SyncView, err error) {
+func (s *Service) takeBoardHandle(scope Scope, visible bool, tie Tie) (id string, p *boardPump, start bool, seq uint64, told SyncView, err error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	kind, err := s.subscribableLocked(scope.Connection)
@@ -195,7 +198,9 @@ func (s *Service) takeBoardHandle(scope Scope, tie Tie) (id string, p *boardPump
 		s.subs.boards[scope] = p
 		start = true
 	}
-	s.takeHandleLocked(id, &handle{board: p, untie: untie}, &p.core)
+	h := &handle{board: p, untie: untie}
+	s.takeHandleLocked(id, h, &p.core)
+	h.ref.VoteLocked(visible)
 	return id, p, start, s.nextSeqLocked(), p.toldLocked(), nil
 }
 
@@ -250,10 +255,11 @@ func (s *Service) RefreshSubscription(ctx context.Context, id string) error {
 	return core.Request(ctx, readRequest{})
 }
 
-// runBoardPump is a board pump's goroutine: an interactive first tick,
-// then a tick every Cadence.Delta while a handle shows the board, at once
-// again while a tick reports More, on a person's request, and on the
-// retry schedule while ticks fail. It exits when the core stops.
+// runBoardPump is a board pump's goroutine: an interactive first tick once
+// a handle shows the board (pump.Core.AwaitShown), then a tick every
+// Cadence.Delta while one does, at once again while a tick reports More,
+// on a person's request, and on the retry schedule while ticks fail. It
+// exits when the core stops.
 func (s *Service) runBoardPump(p *boardPump) {
 	defer s.workers.Done()
 	defer close(p.exited)
@@ -292,7 +298,15 @@ func (s *Service) runBoardPump(p *boardPump) {
 		req.Finish(err)
 		return again, over
 	}
-	again, over, _ := step(false, Interactive)
+	var again, over bool
+	switch req, stopped := p.core.AwaitShown(); {
+	case stopped:
+		return
+	case req != nil:
+		again, over = serve(req)
+	default:
+		again, over, _ = step(false, Interactive)
+	}
 	for !over {
 		if again {
 			select {
