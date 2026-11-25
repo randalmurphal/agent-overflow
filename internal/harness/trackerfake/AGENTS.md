@@ -89,7 +89,8 @@ client contract it answers is
 
 ## Tenants and faults
 
-- Jira tenants are sites, one origin each. Tempo and Linear are one
+- Jira tenants are sites, one origin each; a site's `Members` sign in
+  with their own tokens and act as themselves. Tempo and Linear are one
   origin each; the bearer token or API key selects the tenant, so seeding
   refuses two tenants sharing one. `SetToken` rotates a credential.
 - A fault matches by origin and route name (`Request.Route`: `"GET

@@ -406,12 +406,10 @@ func backendAnswer(status int, body any) answer {
 	}}})
 }
 
-// pokerBackend answers the poker app's routes (paths and bodies as
-// recorded 2026-11-15; the read measured again 2026-11-24). The three
-// writes were not exercised by the 2026-11-24 measurement: the request
-// body's encoding (the JSON value, not a string holding it), the vote
-// record's members' types, a cleared round being unrevealed, and every
-// error status are unverified.
+// pokerBackend answers the poker app's routes: paths, methods, bodies and
+// answers as recorded 2026-11-15, the read measured again 2026-11-24. The
+// 2026-11-24 measurement made no write, so a write body's encoding (the
+// JSON value, not a string holding it) is unverified.
 func (c *jiraCall) pokerBackend(tok issuedToken, method, path string, body json.RawMessage) answer {
 	route, ok := strings.CutPrefix(path, pokerRoutesRoot)
 	if !ok {
@@ -494,6 +492,8 @@ func (c *jiraCall) pokerVote(tok issuedToken, body json.RawMessage) answer {
 	if refused != nil {
 		return *refused
 	}
+	// Documented: a vote is from 0 to 1000. The refusal's status and body
+	// are unverified.
 	if *in.Vote < 0 || *in.Vote > 1000 {
 		return backendAnswer(http.StatusBadRequest, map[string]string{"message": "A vote is from 0 to 1000"})
 	}
@@ -508,8 +508,8 @@ func (c *jiraCall) pokerVote(tok issuedToken, body json.RawMessage) answer {
 	return backendAnswer(http.StatusOK, voteJSON(issue, r.Votes[i]))
 }
 
-// pokerClear removes every vote on the issue and hides the next round
-// (recorded: 204).
+// pokerClear removes every vote on the issue (recorded: 204). That the
+// next round starts hidden is unverified.
 func (c *jiraCall) pokerClear(tok issuedToken, issue string) answer {
 	issue, refused := c.pokerTarget(tok, issue)
 	if refused != nil {

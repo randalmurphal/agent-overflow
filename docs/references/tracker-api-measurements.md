@@ -646,21 +646,35 @@ browser session. Both Atlassian endpoints are undocumented, and Atlassian
 does not support undocumented APIs
 ([help and feedback](https://developer.atlassian.com/developer-guide/help-and-feedback/)).
 
+0. **Find the cloud ID.** `GET /_edge/tenant_info` answers `{cloudId}`, a
+   UUID string (measured 2026-11-24).
 1. **Find the extension.** `POST /gateway/api/graphql`, query
    `extensionContexts(contextIds: ["ari:cloud:jira::site/{cloudId}"])` with
    `extensionsByType(type: "jira:issuePanel")`. The poker panel is the entry
    whose `key` is `planning-poker-forge-panel`. Take its `id`, `appId`,
    `environmentId`, `installationId` and `appVersion` from the response.
-   Absence means the add-on is off for that site.
+   Absence means the add-on is off for that site. Measured 2026-11-24 with
+   the document `query Ext($contextIds:[ID!]!){ extensionContexts(contextIds:$contextIds){ id extensionsByType(type:"jira:issuePanel"){ id key type appId environmentId installationId appVersion } } }`
+   and operation name `Ext`: `data.extensionContexts` has one entry, its
+   `extensionsByType` a list of those seven members, all strings, and no
+   `errors` member. The poker panel's `id` has the form
+   `ari:cloud:ecosystem::extension/{uuid}/{uuid}/static/planning-poker-forge-panel`
+   and `appVersion` the form `N.N.N`.
 2. **Get a context token.** `POST /rest/internal/2/forge/context/token` with
    `{extension, extensionData, localId, useWorkspaceAri: true}`.
    `extension` is the listing entry (`id`, `type`, `key`, `appId`,
    `environmentId`, `installationId`, `appVersion`). `extensionData` is
    `{type: "jira:issuePanel", issue: {key, id, type, typeId}, project: {id,
    key, type}}`. `localId` is the extension `id`. The response is `{token,
-   expiresAt, expiresIn, extensionId}`; `expiresIn` was about 899,000, so
-   roughly 15 minutes if milliseconds (units not verified). The gateway's
-   own signer, `forgeApp_signForgeContextTokens`, refuses API tokens.
+   expiresAt, expiresIn, extensionId}`. Measured 2026-11-24: `expiresAt` is
+   Unix milliseconds, `expiresIn` is milliseconds (899,442, with the
+   token's `exp - iat` 900 seconds), and `extensionId` is the extension
+   `id`. The issue and project values sent were the issue's own; whether
+   made-up values are refused was not tested. The token is a JWT whose
+   top-level `contextIds` claim holds one workspace ARI,
+   `ari:cloud:jira:{uuid}:workspace/{uuid}`, and whose `context` claim
+   names the issue, so a token is per issue. The gateway's own signer,
+   `forgeApp_signForgeContextTokens`, refuses API tokens.
 3. **Invoke.** `POST /gateway/api/graphql`, mutation `invokeExtension` with
    input `{contextIds, extensionId, entryPoint: "resolver", payload}`.
    `contextIds` must equal the `contextIds` claim inside the token (a
@@ -669,7 +683,13 @@ does not support undocumented APIs
    {path, method, headers, body}}, context: {cloudId, localId, moduleKey,
    extension: extensionData}, contextToken}`. Without `contextToken` the
    call fails with "Missing Forge Context Token". The backend's HTTP status
-   and body come back in `response.body`.
+   and body come back in `response.body`. Measured 2026-11-24 with the
+   document `mutation Invoke($input: InvokeExtensionInput!){ invokeExtension(input:$input){ success errors { message extensions { errorType statusCode } } response { body } } }`,
+   operation name `Invoke`, `moduleKey` `planning-poker-forge-panel`, and
+   `localId` the extension `id`: on success `success` is true, `errors`
+   is null, and `response.body` is an object `{status, statusText,
+   headers, body}` whose `body` is the backend's JSON document as a
+   string.
 
 Routes, each under the path prefix `/forge/rest/eausm/latest/`:
 
@@ -679,6 +699,12 @@ Routes, each under the path prefix `/forge/rest/eausm/latest/`:
 | Vote or change vote | `PUT planningPoker/vote` | `{issueId, vote}` | the vote record |
 | Reveal | `PUT planningPoker/reveal/{issueId}` | none | the read shape with `isRevealed: true` |
 | Clear all votes | `DELETE planningPoker/votes/{issueId}` | none | 204 |
+
+The read was measured again on 2026-11-24 with the same shape. The three
+writes were not: whether the backend takes a write's `body` as the JSON
+value or as a JSON string is the first thing real use shows
+(`pokerBody` in `internal/tracker/jira/poker.go` is the one place that
+encodes it).
 
 `issueId` is the numeric Jira issue ID and `userId` is an Atlassian account
 ID. The calls add no changelog entry and no entity property to the issue. A
@@ -692,5 +718,6 @@ Not verified: whether the read hides other voters' values before reveal. The
 test had one voter. The client hides other voters' values until
 `isRevealed` is true, whatever the response contains.
 
-The agreed estimate is written by the client to the board's estimation
-field through the normal Jira API. The poker backend does not write it.
+The poker backend does not write the issue's estimate, and neither does
+the app from a vote: a person sets the agreed estimate as any other edit,
+through the normal Jira API.
