@@ -14,6 +14,43 @@ import (
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
+// P3: a user lookup Jira refused or lacked is asked again on the next
+// call under the same credential, so a permission granted, or a user
+// made, shows at once to every caller of User (a worklog's author, among
+// them).
+func TestUserAsksAgainAfterAWithheldAnswer(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusNotFound} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			f := jiratest.NewServer(t)
+			c := newTestClient(t, f)
+			withheld := false
+			f.On("GET", "/rest/api/3/user", func(w http.ResponseWriter, r *http.Request, b []byte) {
+				if withheld && r.URL.Query().Get("accountId") == "acc-user2" {
+					w.Header().Set("X-AAccountId", "acc-user1")
+					jiratest.Reply(status, `{"errorMessages":["no"],"errors":{}}`)(w, r, b)
+					return
+				}
+				jiratest.Reply(200, strings.ReplaceAll(userOneJSON, "acc-user1", r.URL.Query().Get("accountId")))(w, r, b)
+			})
+			// A credential already in use: its first answer was a user.
+			if _, err := c.User(t.Context(), "acc-user1"); err != nil {
+				t.Fatal(err)
+			}
+			withheld = true
+			if _, err := c.User(t.Context(), "acc-user2"); err == nil {
+				t.Fatal("the withheld lookup succeeded")
+			}
+			withheld = false
+			if u, err := c.User(t.Context(), "acc-user2"); err != nil || u.AccountID != "acc-user2" {
+				t.Fatalf("after the grant: %+v, %v", u, err)
+			}
+			if n := f.Count("GET", "/rest/api/3/user"); n != 3 {
+				t.Fatalf("%d lookups, want 3", n)
+			}
+		})
+	}
+}
+
 // A user is read once and handed out until it is siteAge old, so a
 // changed name, time zone or active state shows by then.
 func TestUserIsCachedUntilItAges(t *testing.T) {

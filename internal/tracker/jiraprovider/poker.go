@@ -59,7 +59,7 @@ func (j jiraPoker) Read(ctx context.Context, issue tracker.IssueID) (tracker.Pok
 			vote.Value = &value
 		}
 		out.Votes = append(out.Votes, vote)
-		u, err := j.jira.User(ctx, v.Account)
+		u, err := j.jira.PokerVoter(ctx, v.Account)
 		switch {
 		case errors.Is(err, jira.ErrUserWithheld):
 		case err != nil:

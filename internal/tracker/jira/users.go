@@ -101,16 +101,8 @@ func (c *Client) Me(ctx context.Context) (User, error) {
 	return c.Myself(ctx)
 }
 
-// ErrUserWithheld is matched by the error of a user lookup Jira withheld:
-// the user is missing (also trackerapi.ErrNotFound), or the credential
-// may not see users (403, without the Browse users and groups
-// permission).
-var ErrUserWithheld = errors.New("jira: Jira does not show this user")
-
 // User returns the user with accountID, from the client's cache when it
 // holds it. A missing user is an error matching trackerapi.ErrNotFound.
-// A lookup Jira withheld matches ErrUserWithheld and is kept as long as
-// a user is, so asking again sends nothing until then.
 func (c *Client) User(ctx context.Context, accountID string) (User, error) {
 	if err := c.admit(ctx); err != nil {
 		return User{}, err
@@ -121,23 +113,39 @@ func (c *Client) User(ctx context.Context, accountID string) (User, error) {
 	if u, ok := c.users.get(ctx, accountID); ok {
 		return u, nil
 	}
-	if err, ok := c.userMisses.get(ctx, accountID); ok {
-		return User{}, fmt.Errorf("jira: user %s: %w", accountID, err)
-	}
-	epoch, missEpoch, mark := c.users.epoch(), c.userMisses.epoch(), c.api.CredentialMark()
+	epoch := c.users.epoch()
 	var u userJSON
 	resp, err := c.call(ctx, trackerapi.Request{Path: apiPath + "user", Query: url.Values{"accountId": {accountID}}}, &u)
 	if err != nil {
-		if withheld(err) {
-			err = fmt.Errorf("%w: %w", ErrUserWithheld, err)
-			// Drawn under the credential the request was sent with, or
-			// dropped by put when that changed meanwhile.
-			c.userMisses.put(missEpoch, mark, accountID, err)
-		}
 		return User{}, fmt.Errorf("jira: user %s: %w", accountID, err)
 	}
 	c.keepUsers(epoch, resp.CredentialMark(), u.user())
 	return u.user(), nil
+}
+
+// ErrUserWithheld is matched by the error of a poker voter's lookup Jira
+// withheld (PokerVoter): the user is missing (also trackerapi.ErrNotFound),
+// or the credential may not see users (403, without the Browse users and
+// groups permission).
+var ErrUserWithheld = errors.New("jira: Jira does not show this user")
+
+// PokerVoter is User for a planning poker voter, whose votes are read
+// every few seconds: a lookup Jira withheld matches ErrUserWithheld and
+// is kept as long as a user is, so the poll asks again only then. Every
+// other caller uses User, which asks each time.
+func (c *Client) PokerVoter(ctx context.Context, accountID string) (User, error) {
+	if err, ok := c.voterMisses.get(ctx, accountID); ok {
+		return User{}, err
+	}
+	// Taken before the lookup: put drops the answer when the credential
+	// changed meanwhile.
+	epoch, mark := c.voterMisses.epoch(), c.api.CredentialMark()
+	u, err := c.User(ctx, accountID)
+	if withheld(err) {
+		err = fmt.Errorf("%w: %w", ErrUserWithheld, err)
+		c.voterMisses.put(epoch, mark, accountID, err)
+	}
+	return u, err
 }
 
 // withheld reports a user lookup's error that is Jira withholding the

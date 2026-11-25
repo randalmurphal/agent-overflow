@@ -512,7 +512,7 @@ var (
 	oneRequest = []string{
 		"AttachmentMediaID", "Attachments", "Board", "BoardConfig", "Comment", "CountIssues", "CountListIssues",
 		"DownloadAttachment", "EditMeta", "Fields", "FieldsNaming", "GetIssue", "IssueLinkTypes", "MatchJQL", "Me", "Myself", "Project",
-		"ProjectStatuses", "RemoteLinks", "Statuses", "Transitions", "User", "Watchers", "Worklog",
+		"PokerVoter", "ProjectStatuses", "RemoteLinks", "Statuses", "Transitions", "User", "Watchers", "Worklog",
 	}
 	// writes and the plans and values they are built from compose a write,
 	// not a read's answer.
