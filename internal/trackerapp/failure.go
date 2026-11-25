@@ -243,8 +243,24 @@ func ClassifyFailure(kind string, err error) Failure {
 		errors.As(err, &notSent) && !errors.Is(err, trackerapi.ErrInvalidInput):
 		return Failure{Kind: FailureTransient, Message: name + " could not be reached; try again"}
 	}
-	return Failure{Kind: FailureTracker, Message: name + " answered in a way Agent Overflow could not use"}
+	responder := ""
+	if by, ok := errors.AsType[*answeredBy](err); ok {
+		responder = by.tracker
+	}
+	return Failure{Kind: FailureTracker, Message: answered(responder) + " answered in a way Agent Overflow could not use"}
 }
+
+// answeredBy is err, a call's failure that carries no tracker of its own
+// (no status, an answer that could not be read), with the tracker that
+// answered it, a store.TrackerKind*: a Jira connection's worklog read
+// answered by its Tempo connection.
+type answeredBy struct {
+	tracker string
+	err     error
+}
+
+func (e *answeredBy) Error() string { return e.err.Error() }
+func (e *answeredBy) Unwrap() error { return e.err }
 
 // worklogRefusal is the failure of a worklog read of author's days from
 // to to that the tracker refused for what it asked, and true; false for

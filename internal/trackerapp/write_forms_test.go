@@ -176,6 +176,34 @@ func TestAWorklogRequestRefusalIsNotTheConnectionsProblem(t *testing.T) {
 	}
 }
 
+// A worklog read that failed with no status the tracker answered (a
+// worklog whose date does not parse, say) names the time tracker that
+// answered it: Tempo while the Jira connection's Tempo connection is on,
+// Jira otherwise.
+func TestAWorklogReadFailureNamesTheTrackerThatAnswered(t *testing.T) {
+	t.Parallel()
+	f := newWriteFixture(t)
+	f.w.time.mu.Lock()
+	f.w.time.fail = errors.New("tempo: worklog 70: start date \"11/10\" does not parse")
+	f.w.time.mu.Unlock()
+	refresh := func() string {
+		t.Helper()
+		got := must[WorklogDays](t)(f.svc.RefreshWorklogs(t.Context(), f.conn.ID, "acc-user1", "2026-11-01", "2026-11-02"))
+		if got.Failure == nil {
+			t.Fatal("the refresh answered no failure")
+		}
+		return got.Failure.Message
+	}
+	if got := refresh(); got != "Jira answered in a way Agent Overflow could not use" {
+		t.Fatalf("Jira's own worklogs: %q", got)
+	}
+	tempo := f.addTempo(f.conn.ID)
+	f.writeToken(tempo, tempoToken)
+	if got := refresh(); got != "Tempo answered in a way Agent Overflow could not use" {
+		t.Fatalf("Tempo's worklogs: %q", got)
+	}
+}
+
 // On a tracker with no time tracking, a worklog write is refused as
 // unsupported with nothing sent and the connection's problem left as it
 // was, and a worklog refresh is refused by name.

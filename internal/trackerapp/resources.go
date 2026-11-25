@@ -250,6 +250,9 @@ func (r *run) worklogs(author tracker.UserID, from, to tracker.Date) error {
 		return &requestRefused{f: f, err: err}
 	}
 	if err != nil {
+		if r.timeSource != "" {
+			err = &answeredBy{tracker: store.TrackerKindTempo, err: err}
+		}
 		return fmt.Errorf("trackerapp: read the worklogs of %s from %s to %s: %w", author, from, to, call(err))
 	}
 	stored := make([]store.MirrorWorklog, len(logs))
