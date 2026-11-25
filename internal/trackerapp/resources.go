@@ -80,8 +80,9 @@ func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID, rule tr
 				return out, found, unsettled(), fmt.Errorf("trackerapp: store rows of board %s: %w", board, err)
 			}
 			r.markStructureDue(stored)
-			r.told(board, changesOf(stored))
-			out.add(changesOf(stored))
+			w := changesOf(stored)
+			r.told(board, w)
+			out.add(w.Changes)
 			for _, row := range rows.Rows {
 				if _, refused := slices.BinarySearch(stored.Refused, string(row.Card.ID)); !refused {
 					found = append(found, row.Card.ID)
@@ -142,28 +143,25 @@ func (r *run) cardsOf(batch []tracker.IssueID) (Changes, error) {
 	if err != nil {
 		return Changes{}, fmt.Errorf("trackerapp: store %d cards: %w", len(cards), err)
 	}
-	r.told("", changesOf(stored))
-	ch := changesOf(stored)
-	missing, err := r.markMissing(began, read.Missing)
-	ch.add(missing)
-	return ch, err
+	w := changesOf(stored)
+	r.told("", w)
+	return w.Changes, r.markMissing(began, read.Missing)
 }
 
 // markMissing records that the read begun at began did not return the
 // issues missing: the links to them show not found until a read returns
-// them (store MarkMirrorLinksMissing). What it moved is told and
-// returned as any write's.
-func (r *run) markMissing(began store.MirrorRead, missing []tracker.IssueID) (Changes, error) {
+// them (store MarkMirrorLinksMissing). The links it moved are told as
+// any write's.
+func (r *run) markMissing(began store.MirrorRead, missing []tracker.IssueID) error {
 	if len(missing) == 0 {
-		return Changes{}, nil
+		return nil
 	}
 	threads, err := r.s.store.MarkMirrorLinksMissing(r.root, began, idStrings(missing))
 	if err != nil {
-		return Changes{}, fmt.Errorf("trackerapp: mark the links to %d issues the tracker did not return: %w", len(missing), err)
+		return fmt.Errorf("trackerapp: mark the links to %d issues the tracker did not return: %w", len(missing), err)
 	}
-	ch := Changes{Threads: threads}
-	r.told("", ch)
-	return ch, nil
+	r.told("", written{links: threads})
+	return nil
 }
 
 // againIfSwept runs read, a read of content outside a board and its
@@ -215,7 +213,7 @@ func (r *run) structure(board tracker.BoardID) (Changes, error) {
 	// later one is the store's whether or not the call failed.
 	stored, err := r.s.store.ReplaceMirrorStructure(r.root, m)
 	ch := Changes{Structure: stored.Changed, Catalog: stored.Catalog}
-	r.told(board, ch)
+	r.told(board, written{Changes: ch})
 	if board == r.scope.Board && stored.EstimateResetAt > r.state.EstimateResetAt {
 		r.state.EstimateResetAt, r.state.Cursor = stored.EstimateResetAt, nil
 	}

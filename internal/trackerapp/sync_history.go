@@ -168,7 +168,7 @@ func (r *run) storeHistories(hs []store.MirrorHistory, catalog store.MirrorCatal
 		}
 	}
 	slices.Sort(changed)
-	r.told("", Changes{History: changed, Catalog: catalogChanged})
+	r.told("", written{Changes: Changes{History: changed, Catalog: catalogChanged}})
 	if err != nil {
 		return changed, catalogChanged, fmt.Errorf("trackerapp: store the history of %d issues: %w", len(hs), err)
 	}

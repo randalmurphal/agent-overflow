@@ -65,19 +65,22 @@ type run struct {
 	stop   func()
 }
 
-// told passes ch, what one store write of the run committed, through
+// told passes w, what one store write of the run committed, through
 // the change funnel as the write returns, before any later call of the
 // run can fail or wait: the one rule of every path's publication (a
-// tick's units, a write's refresh, a read of tickets). board is the board
-// the write's read went through, none for a read of cards or tickets;
-// every write of a board's tick is its board's (ownOf).
-func (r *run) told(board tracker.BoardID, ch Changes) {
-	if len(ch.Threads) > 0 {
-		r.s.linksChanged(ch.Threads)
+// tick's units, a write's refresh, a read of tickets). The links it moved
+// go to Deps.LinksChanged, whether or not a view of the connection is
+// open; its changes go to the views. board is the board the write's read
+// went through, none for a read of cards or tickets; every write of a
+// board's tick is its board's (ownOf).
+func (r *run) told(board tracker.BoardID, w written) {
+	if len(w.links) > 0 {
+		r.s.linksChanged(w.links)
 	}
 	if r.scope.Board != "" {
 		board = r.scope.Board
 	}
+	ch := w.Changes
 	r.s.publish(r.root, r.gen, r.row.ID, ch, ownOf(Scope{Connection: r.row.ID, Board: board}, ch), r.origin)
 	if r.tell != nil {
 		r.tell(ch)

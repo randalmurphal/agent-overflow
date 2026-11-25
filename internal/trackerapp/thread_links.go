@@ -151,7 +151,7 @@ func (r *run) linkThread(threadID string, ticket store.TicketRef, origin string)
 		if err != nil {
 			return fmt.Errorf("trackerapp: read the card of %s: %w", ticket.IssueID, call(err))
 		}
-		if _, err := r.markMissing(began, read.Missing); err != nil {
+		if err := r.markMissing(began, read.Missing); err != nil {
 			return err
 		}
 		switch {
