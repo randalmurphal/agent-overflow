@@ -17,7 +17,7 @@ import type { CensusGrowth } from './upgrade-corpus-helpers.js';
 import { writePeerSpawns, writeReviewDrafts, writeThreadRequests } from './upgrade-corpus-topup-records.js';
 import { timed } from './upgrade-corpus-tools.js';
 import { compactBoundaryLine } from './agent-visibility-helpers.js';
-import { BOARD_ID, JIRA_ACCOUNT, JIRA_SITE, JIRA_TOKEN, seedFakeJira, type TrackerConnection } from './tracker-helpers.js';
+import { BOARD_ID, JIRA_ACCOUNT, JIRA_SITE, JIRA_TOKEN, SPRINT_ID, seedFakeJira, type TrackerConnection } from './tracker-helpers.js';
 import { awaitToolAnswer, awaitTurnCompleted, plainScenario, threadToolsScenario } from './thread-tools-helpers.js';
 import {
   doneResult,
@@ -411,6 +411,18 @@ async function connectTrackers(harness: HarnessApp, projectId: string): Promise<
     { connection: jira.id, board: BOARD_ID, opens_first: true, name: 'WEB board', tracker_project: 'WEB' },
     { connection: jira.id, board: '2', opens_first: false, name: 'WEB kanban', tracker_project: 'WEB' },
   ]);
+
+  // The scrum board read into the mirror as a client opening it reads it
+  // (tracker-board-wire.spec.ts). A refresh returns once its read ran
+  // (structure, delta, reconcile and history), so the rows the corpus
+  // keeps are written by answers, never by a tick's timing.
+  const sprint = [{ kind: 'sprint', sprint: SPRINT_ID }];
+  const sub = await harness.rpc<{ id: string }>('SubscribeTrackerBoard', projectId, jira.id, BOARD_ID, sprint);
+  await harness.rpc('RefreshTrackerSubscription', sub.id);
+  const view = await harness.rpc<{ name: string; sections: Array<{ rows: unknown[] }> }>('TrackerBoard', sub.id, sprint);
+  if (view.name !== 'WEB board' || view.sections[0].rows.length === 0) throw new Error(`the fake Jira's board read as ${JSON.stringify(view)}`);
+  await harness.rpc('TrackerSectionRows', sub.id, { kind: 'backlog' }, null);
+  await harness.rpc('ReleaseTrackerSubscription', sub.id);
 }
 
 /** The chat-bar settings the top-up's draft threads carry, one thread each. */
