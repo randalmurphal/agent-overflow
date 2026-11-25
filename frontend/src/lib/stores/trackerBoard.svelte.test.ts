@@ -13,17 +13,19 @@ import type {
   SectionPage,
 } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import {
-  applyTrackerBoardEvent,
+  trackerBoardUpdated as applyTrackerBoardEvent,
+  trackerBoardsGap as resyncTrackerBoardsAfterGap,
+  type TrackerBoardEvent,
+} from './trackerBoardEvents';
+import {
   attachTrackerBoard,
   dismissTrackerRefreshNotice,
   loadMoreOfSection,
   refreshTrackerBoard,
   renewEndedTrackerBoard,
-  resyncTrackerBoardsAfterGap,
   setTrackerBoardFiltered,
   setTrackerBoardShown,
   type TrackerBoardAttachment,
-  type TrackerBoardEvent,
   type TrackerBoardRef,
 } from './trackerBoard.svelte';
 import { __setTransportStatusForTest } from './transportStatus.svelte';

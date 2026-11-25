@@ -62,7 +62,7 @@ import {
 import { threadItemCache } from './threadItemCache';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { holdBackendRecovery, isBackendRecovering } from './transportRecovery';
-import { resyncTrackerBoardsAfterGap } from './trackerBoard.svelte';
+import { trackerBoardsGap } from './trackerBoardEvents';
 import { reconcileTerminalSurfaces } from './eventsTerminal';
 import { threadMachine, getAttachedBackends } from './attachedBackends.svelte';
 import { applyBackendSetChange } from './systems.svelte';
@@ -370,7 +370,7 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
     // held board of the computer reads whole again under the recovery.
     case 'tracker:board_updated': {
       const backend = backendKeyForOrigin(origin?.backendId ?? '');
-      const resync = resyncTrackerBoardsAfterGap(backend);
+      const resync = trackerBoardsGap(backend);
       if (resync) holdBackendRecovery(backend, resync);
       return;
     }

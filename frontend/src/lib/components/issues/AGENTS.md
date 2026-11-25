@@ -34,6 +34,13 @@ board methods, events and the patch read in
   and the compact column for the session. Only a pick is saved; another
   window's change never moves an open pane.
 
+These stores load with the pane (`ToolPane.svelte` imports it on demand).
+The always-loaded stores reach them only through
+`stores/trackerBoardEvents.ts`, where the board store takes
+`tracker:board_updated` and its gaps and the choices store hears that a
+computer's board lists may have changed; `lib/architecture.test.ts` fails
+when one of them enters the startup graph.
+
 ## Rendering
 
 Each column is its own `LongListVirtualizer`, so the DOM holds the cards

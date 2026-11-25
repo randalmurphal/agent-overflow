@@ -42,7 +42,6 @@ import type {
   BoardView,
   FailureView,
   Section,
-  SyncView,
 } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import {
   RefreshTrackerSubscription,
@@ -55,6 +54,7 @@ import {
 } from './bindings';
 import { createEntityStore } from './entityStore.svelte';
 import { createPumpVotes } from './pumpVotes';
+import { takeTrackerBoardChannel, type TrackerBoardEvent } from './trackerBoardEvents';
 import { isTransportClassError } from './transportStatus.svelte';
 import {
   appendPage,
@@ -71,19 +71,6 @@ import { withBackendTarget } from '../transport/backends';
 import { TransportError } from '../transport/wsClient';
 import { documentHidden } from '../utils/pageVisibility';
 import { composeWorkspaceKey, workspaceKeyBackend } from '../utils/workspaceKey';
-
-/** The `tracker:board_updated` frame (trackerapp.BoardEvent). Wails
- * generates no type for an event payload. */
-export interface TrackerBoardEvent {
-  scope: { connection: string; board?: string };
-  seq: number;
-  changed?: string[] | null;
-  removed?: string[] | null;
-  truncated?: boolean;
-  read_again?: boolean;
-  sync?: SyncView;
-  ended?: boolean;
-}
 
 /** A board one project lists, on the computer that listed it. */
 export interface TrackerBoardRef {
@@ -298,7 +285,7 @@ function fold(live: Live, event: TrackerBoardEvent): void {
 }
 
 /** A `tracker:board_updated` frame from `backend`. */
-export function applyTrackerBoardEvent(event: TrackerBoardEvent, backend: BackendKey): void {
+function applyTrackerBoardEvent(event: TrackerBoardEvent, backend: BackendKey): void {
   if (!event?.scope || typeof event.seq !== 'number') return;
   for (const live of lives.values()) {
     if (live.ref.backend !== backend || live.ref.connection !== event.scope.connection || live.ref.board !== event.scope.board) continue;
@@ -314,7 +301,7 @@ export function applyTrackerBoardEvent(event: TrackerBoardEvent, backend: Backen
 /** A gap on `tracker:board_updated`: every board of the computer reads
  * whole again. Answers the settling of those reads, or undefined when no
  * board of the computer is held. */
-export function resyncTrackerBoardsAfterGap(backend: BackendKey): Promise<void> | undefined {
+function resyncTrackerBoardsAfterGap(backend: BackendKey): Promise<void> | undefined {
   const runs: Promise<void>[] = [];
   for (const live of lives.values()) {
     if (live.ref.backend !== backend || !live.id || live.state.ended) continue;
@@ -323,6 +310,8 @@ export function resyncTrackerBoardsAfterGap(backend: BackendKey): Promise<void> 
   }
   return runs.length === 0 ? undefined : Promise.all(runs).then(() => undefined);
 }
+
+takeTrackerBoardChannel({ event: applyTrackerBoardEvent, gap: resyncTrackerBoardsAfterGap });
 
 function drain(live: Live): Promise<void> {
   if (live.running) return live.running;

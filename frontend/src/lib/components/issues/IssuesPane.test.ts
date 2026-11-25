@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { BoardChoice, BoardView, RowView, Section, SectionPage } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import type { TrackerBoardRef } from '../../stores/trackerBoard.svelte';
 import IssuesPane from './IssuesPane.svelte';
-import { applyTrackerBoardEvent } from '../../stores/trackerBoard.svelte';
+import { trackerBoardUpdated as applyTrackerBoardEvent } from '../../stores/trackerBoardEvents';
 import { hiddenCardFields } from '../../stores/issuesPane.svelte';
 import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
 import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
