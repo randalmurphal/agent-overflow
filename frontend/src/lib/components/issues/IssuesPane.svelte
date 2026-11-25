@@ -92,6 +92,7 @@
     setTicketPlacement,
     takeTicketOpenRequest,
     ticketOpenRequested,
+    type OpenTicket,
   } from '../../stores/issuesPane.svelte';
   import { dismissTrackerRefreshNotice, refreshTrackerBoard } from '../../stores/trackerBoard.svelte';
   import {
@@ -155,22 +156,50 @@
 
   // A ticket a person opens, or steps back to, takes the focus, so a key
   // or a paste of files goes to it: the card that opened it may be under
-  // it, inert, and Back is gone with the ticket it was on. A ticket that
-  // mounts again because the pane moved leaves the focus where it is.
-  let focusIssue: string | null = null;
+  // it, inert, and Back is gone with the ticket it was on.
+  //
+  // The focus an open asks for must keep true:
+  // - It belongs to that one open (the `OpenTicket` the open made), and
+  //   only that open's mount takes it: a close, another open or a step
+  //   back ends it, and a ticket mounting again because the pane moved,
+  //   or opened from outside the pane (a thread's link), takes none.
+  // - A focus or a press anywhere after the open ends it, so a ticket
+  //   that mounts late never takes the focus from where the person put
+  //   it meanwhile.
+  let focusRequest: { open: OpenTicket; end(): void } | null = null;
+  function endFocusRequest(): void {
+    focusRequest?.end();
+    focusRequest = null;
+  }
+  function requestFocus(open: OpenTicket): void {
+    endFocusRequest();
+    const options = { capture: true } as const;
+    document.addEventListener('focusin', endFocusRequest, options);
+    document.addEventListener('pointerdown', endFocusRequest, options);
+    focusRequest = {
+      open,
+      end: () => {
+        document.removeEventListener('focusin', endFocusRequest, options);
+        document.removeEventListener('pointerdown', endFocusRequest, options);
+      },
+    };
+  }
   function showTicket(change: () => void): void {
-    const before = selection.ticket?.ref.issue ?? null;
+    const before = selection.ticket;
     change();
-    const after = selection.ticket?.ref.issue ?? null;
-    if (after === null) return;
-    if (after === before) ticketView?.focus();
-    else focusIssue = after;
+    const after = selection.ticket;
+    if (!after) return;
+    if (after === before && ticketView) ticketView.focus();
+    else requestFocus(after);
   }
-  function takeOpenFocus(issue: string): boolean {
-    if (focusIssue !== issue) return false;
-    focusIssue = null;
-    return true;
+  function takeOpenFocus(): boolean {
+    // An ended open is never the ticket again: a close or a linked open
+    // clears the trail, and a step back asks anew.
+    const asked = focusRequest?.open === selection.ticket;
+    endFocusRequest();
+    return asked;
   }
+  onDestroy(endFocusRequest);
   const disposeProbe = registerToolDetailProbe('issues', () => selection.ticket !== null);
   const disposeBack = registerIssuesBackHandler(stepBack);
   onDestroy(() => {

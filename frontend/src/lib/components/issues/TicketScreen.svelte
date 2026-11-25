@@ -138,9 +138,9 @@
     /** The pane fits the ticket beside the board. */
     besideFits: boolean;
     onPlacement: (placement: TicketPlacement) => void;
-    /** Whether a person just opened this issue, which then takes the
-     * focus as it mounts; answers true once. */
-    takeFocus: (issue: string) => boolean;
+    /** Whether the open this ticket mounts for asked for the focus, which
+     * it then takes (IssuesPane `focusRequest`); answers true once. */
+    takeFocus: () => boolean;
     onBack: () => void;
     onClose: () => void;
     /** Opens another issue of the connection from this ticket. */
@@ -156,7 +156,7 @@
     root?.focus({ preventScroll: true });
   }
   $effect(() => {
-    if (root && untrack(() => takeFocus(attachment.ref.issue))) focus();
+    if (root && untrack(takeFocus)) focus();
   });
 
   const NARROW_PX = 720;

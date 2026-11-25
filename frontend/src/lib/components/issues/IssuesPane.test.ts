@@ -2232,6 +2232,52 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
     }
   });
 
+  // The ticket mounts after its code loads, a later turn than the click
+  // that opened it; a person's focus or press elsewhere in between, or the
+  // ticket's close, ends that open's claim on the focus.
+  function clickCardNow(view: ReturnType<typeof mount>, issue: string): void {
+    const card = view.getAllByTestId('issues-card').find((c) => c.dataset.issue === issue)!;
+    within(card).getByTestId('issues-card-open').click();
+  }
+
+  it('leaves the focus where the person put it while the ticket a card opened was loading', async () => {
+    install();
+    installTicket();
+    const composer = document.body.appendChild(document.createElement('textarea'));
+    try {
+      const view = mount();
+      await view.findAllByTestId('issues-card');
+      clickCardNow(view, '1');
+      // Before the ticket mounts: a click into another pane's composer.
+      composer.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      composer.focus();
+      await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('1'));
+      await tick();
+      expect(document.activeElement).toBe(composer);
+    } finally {
+      composer.remove();
+    }
+  });
+
+  it('ends the focus a card open asked for when the ticket closes before it mounts, so a linked open of it later takes none', async () => {
+    install();
+    installTicket();
+    clearCommandRegistry();
+    registerIssuesCommands();
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    const start = document.activeElement;
+    clickCardNow(view, '1');
+    runCommand('issues.escape', { pane: null, paneId: null, flags: { issuesPaneFocused: true, toolDetailOpen: true } } as unknown as CommandContext);
+    await tick();
+    expect(view.queryByTestId('ticket-screen')).toBeNull();
+    requestTicketOpen({ ref: { backend: HOME_BACKEND, connection: 'c1', issue: '1' }, seed: { key: 'WEB-1', title: 'Linked', card: null }, project: 'p1', unplaced: vi.fn() });
+    const screen = await waitFor(() => view.getByTestId('ticket-screen'));
+    await tick();
+    expect(document.activeElement).not.toBe(screen);
+    expect(document.activeElement).toBe(start);
+  });
+
   it('takes no drop or paste of files on a Linear ticket, and offers it no Attach', async () => {
     install({ choices: [choice('1', { opens_first: true, connection_kind: 'linear' })] });
     installTicket();
