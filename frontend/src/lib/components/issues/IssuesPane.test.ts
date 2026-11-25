@@ -2166,6 +2166,23 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
     }
   });
 
+  it('gives the ticket a card opens the focus, so a paste of files right after attaches them', async () => {
+    install();
+    installTicket();
+    const names = installUploads();
+    try {
+      const view = mount();
+      const screen = await openCard(view, '1');
+      await waitFor(() => expect(document.activeElement).toBe(screen));
+      await fireEvent.paste(document.activeElement!, {
+        clipboardData: { types: ['Files'], items: [{ kind: 'file', type: 'image/png', getAsFile: () => file('image.png', 'image/png') }] },
+      });
+      await waitFor(() => expect(names).toEqual(['image.png']));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('takes no drop or paste of files on a Linear ticket, and offers it no Attach', async () => {
     install({ choices: [choice('1', { opens_first: true, connection_kind: 'linear' })] });
     installTicket();

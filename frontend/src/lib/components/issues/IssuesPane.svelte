@@ -137,10 +137,29 @@
   const boardCovered = $derived(!!ticket && selection.placement === 'over');
 
   // The ticket view open now, for its own step back (the Details rail).
-  let ticketView: { stepBack(): boolean } | undefined = $state();
+  let ticketView: { stepBack(): boolean; focus(): void } | undefined = $state();
   function stepBack(): boolean {
     if (!selection.ticket) return false;
-    if (!ticketView?.stepBack()) selection.stepBack();
+    if (!ticketView?.stepBack()) showTicket(() => selection.stepBack());
+    return true;
+  }
+
+  // A ticket a person opens, or steps back to, takes the focus, so a key
+  // or a paste of files goes to it: the card that opened it may be under
+  // it, inert, and Back is gone with the ticket it was on. A ticket that
+  // mounts again because the pane moved leaves the focus where it is.
+  let focusIssue: string | null = null;
+  function showTicket(change: () => void): void {
+    const before = selection.ticket?.ref.issue ?? null;
+    change();
+    const after = selection.ticket?.ref.issue ?? null;
+    if (after === null) return;
+    if (after === before) ticketView?.focus();
+    else focusIssue = after;
+  }
+  function takeOpenFocus(issue: string): boolean {
+    if (focusIssue !== issue) return false;
+    focusIssue = null;
     return true;
   }
   const disposeProbe = registerToolDetailProbe('issues', () => selection.ticket !== null);
@@ -151,7 +170,7 @@
   });
 
   function openCard(row: RowView): void {
-    selection.openTicket(row.card.id, { key: row.card.key, title: row.card.title, card: row.card }, 'list');
+    showTicket(() => selection.openTicket(row.card.id, { key: row.card.key, title: row.card.title, card: row.card }, 'list'));
   }
 
   let cardMenu = $state<{ x: number; y: number; row: RowView } | null>(null);
@@ -463,7 +482,7 @@
               {compact}
               shown={selection.timeShown}
               openIssue={ticket?.ref.issue ?? null}
-              onOpenTicket={(t) => selection.openTicket(t.issue, { key: t.key, title: t.title, card: null }, 'list')}
+              onOpenTicket={(t) => showTicket(() => selection.openTicket(t.issue, { key: t.key, title: t.title, card: null }, 'list'))}
             />
           {:catch err}
             <p class="px-4 py-6 text-sm text-error" role="alert" data-testid="time-load-error">The Time screen could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</p>
@@ -522,9 +541,10 @@
               placement={selection.placement}
               {besideFits}
               onPlacement={(p) => setTicketPlacement(screen, p)}
-              onBack={() => selection.stepBack()}
+              takeFocus={takeOpenFocus}
+              onBack={() => showTicket(() => selection.stepBack())}
               onClose={() => selection.closeTicket()}
-              onOpenIssue={(issue, seed) => selection.openTicket(issue, seed, 'ticket')}
+              onOpenIssue={(issue, seed) => showTicket(() => selection.openTicket(issue, seed, 'ticket'))}
             />
           {/key}
         {:catch err}

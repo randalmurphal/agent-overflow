@@ -1,3 +1,18 @@
+<script module lang="ts">
+  // Planning poker and the Log time form load on their first use, each in
+  // its own chunk, through one promise each for every ticket.
+  let pokerModule: Promise<typeof import('./TicketPoker.svelte')> | null = null;
+  function loadPoker(): Promise<typeof import('./TicketPoker.svelte')> {
+    pokerModule ??= import('./TicketPoker.svelte');
+    return pokerModule;
+  }
+  let worklogModule: Promise<typeof import('./WorklogForm.svelte')> | null = null;
+  function loadWorklogForm(): Promise<typeof import('./WorklogForm.svelte')> {
+    worklogModule ??= import('./WorklogForm.svelte');
+    return worklogModule;
+  }
+</script>
+
 <script lang="ts">
   // One ticket (docs/specs/issues.md, "Ticket"), loaded on its first open
   // in its own chunk. The header holds the type mark (which changes the
@@ -45,12 +60,11 @@
   import StatusMark from './StatusMark.svelte';
   import TicketAttachments from './TicketAttachments.svelte';
   import TicketComments from './TicketComments.svelte';
-  import TicketPoker from './TicketPoker.svelte';
+  import type TicketPoker from './TicketPoker.svelte';
   import TicketField, { type FieldEditor } from './TicketField.svelte';
   import TicketHistory from './TicketHistory.svelte';
   import TicketLinks from './TicketLinks.svelte';
   import TicketText from './TicketText.svelte';
-  import WorklogForm from './WorklogForm.svelte';
   import Popover from '../primitives/Popover.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
   import TypeIcon from './TypeIcon.svelte';
@@ -74,6 +88,7 @@
     type TicketSeed,
   } from '../../stores/issuesPane.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { errString } from '../../utils/errors';
   import {
     askTrackerPokerSupport,
     dismissTrackerTicketRefreshNotice,
@@ -123,13 +138,26 @@
     /** The pane fits the ticket beside the board. */
     besideFits: boolean;
     onPlacement: (placement: TicketPlacement) => void;
+    /** Whether a person just opened this issue, which then takes the
+     * focus as it mounts; answers true once. */
+    takeFocus: (issue: string) => boolean;
     onBack: () => void;
     onClose: () => void;
     /** Opens another issue of the connection from this ticket. */
     onOpenIssue: (issue: string, seed: TicketSeed) => void;
   }
 
-  let { attachment, seed, board, kind, computerName, account, offline, compact, trail, placement, besideFits, onPlacement, onBack, onClose, onOpenIssue }: Props = $props();
+  let { attachment, seed, board, kind, computerName, account, offline, compact, trail, placement, besideFits, onPlacement, takeFocus, onBack, onClose, onOpenIssue }: Props = $props();
+
+  // The ticket a person opened takes the focus, so a key or a paste of
+  // files goes to it (IssuesPane `showTicket`).
+  let root: HTMLElement | undefined = $state();
+  export function focus(): void {
+    root?.focus({ preventScroll: true });
+  }
+  $effect(() => {
+    if (root && untrack(() => takeFocus(attachment.ref.issue))) focus();
+  });
 
   const NARROW_PX = 720;
 
@@ -297,6 +325,12 @@
   let pokerBody: TicketPoker | undefined = $state();
   async function openPoker(then: (body: TicketPoker) => void): Promise<void> {
     setTicketSectionOpen(section('poker'), true);
+    try {
+      await loadPoker();
+    } catch {
+      // The section says the code could not load.
+      return;
+    }
     await tick();
     if (pokerBody) then(pokerBody);
   }
@@ -555,14 +589,20 @@
           Planning poker
         </button>
         {#if pokerOpen}
-          <TicketPoker
-            bind:this={pokerBody}
-            {attachment}
-            {ctx}
-            poker={ticketState?.poker ?? null}
-            onSetEstimate={estimateRow ? (value) => { if (estimateRow) setEstimate(estimateRow, value); } : null}
-            hours={estimateRow?.unit === 'time'}
-          />
+          {#await loadPoker()}
+            <p class="px-1 text-xs text-fg-muted" data-testid="ticket-poker-loading">Opening planning poker…</p>
+          {:then mod}
+            <mod.default
+              bind:this={pokerBody}
+              {attachment}
+              {ctx}
+              poker={ticketState?.poker ?? null}
+              onSetEstimate={estimateRow ? (value) => { if (estimateRow) setEstimate(estimateRow, value); } : null}
+              hours={estimateRow?.unit === 'time'}
+            />
+          {:catch err}
+            <p class="px-1 text-xs text-error" role="alert" data-testid="ticket-poker-load-error">Planning poker could not load: {errString(err)}. Reload the window to try again.</p>
+          {/await}
         {/if}
       </section>
     {:else if pokerSupportFailure !== null}
@@ -594,7 +634,9 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="relative flex h-full min-h-0 min-w-0 flex-col bg-surface-0"
+  class="relative flex h-full min-h-0 min-w-0 flex-col bg-surface-0 focus:outline-none"
+  bind:this={root}
+  tabindex="-1"
   bind:clientWidth={width}
   data-testid="ticket-screen"
   data-issue={attachment.ref.issue}
@@ -841,11 +883,17 @@
 
 {#if logging && timeCtx}
   <Popover anchor={menuButton} open={true} role="dialog" ariaLabel="Log time" onClose={() => { logging = false; }}>
-    <WorklogForm
-      ctx={timeCtx}
-      ticket={{ issue: attachment.ref.issue, key: card?.key || seed.key, title: card?.title || seed.title }}
-      day={localDay(new Date())}
-      onDone={() => { logging = false; }}
-    />
+    {#await loadWorklogForm()}
+      <p class="p-3 text-xs text-fg-muted" data-testid="ticket-log-time-loading">Opening Log time…</p>
+    {:then mod}
+      <mod.default
+        ctx={timeCtx}
+        ticket={{ issue: attachment.ref.issue, key: card?.key || seed.key, title: card?.title || seed.title }}
+        day={localDay(new Date())}
+        onDone={() => { logging = false; }}
+      />
+    {:catch err}
+      <p class="p-3 text-xs text-error" role="alert" data-testid="ticket-log-time-load-error">Log time could not load: {errString(err)}. Reload the window to try again.</p>
+    {/await}
   </Popover>
 {/if}

@@ -1,3 +1,13 @@
+<script module lang="ts">
+  // The link form loads on its first use, in its own chunk, through one
+  // promise for every ticket.
+  let linkFormModule: Promise<typeof import('./TicketLinkForm.svelte')> | null = null;
+  function loadLinkForm(): Promise<typeof import('./TicketLinkForm.svelte')> {
+    linkFormModule ??= import('./TicketLinkForm.svelte');
+    return linkFormModule;
+  }
+</script>
+
 <script lang="ts">
   // A ticket's linked tickets by relation (docs/specs/issues.md, "Ticket"):
   // each opens in this ticket's place. A row's menu (also on a right-click
@@ -15,13 +25,13 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import Popover from '../primitives/Popover.svelte';
   import StatusMark from './StatusMark.svelte';
-  import TicketLinkForm from './TicketLinkForm.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
   import type { TicketSeed } from '../../stores/issuesPane.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { linkGroups } from '../../stores/trackerTicketModel';
   import { linkTarget, ticketWrite, unlinkTicket, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
   import { copyToClipboard } from '../../utils/clipboard';
+  import { errString } from '../../utils/errors';
 
   interface Props {
     ctx: TicketWriteContext;
@@ -124,7 +134,15 @@
 </section>
 
 <Popover anchor={addButton} open={adding} role="dialog" ariaLabel="Link {ctx.label} to a ticket" onClose={() => { adding = false; }}>
-  <TicketLinkForm {ctx} onDone={() => { adding = false; }} />
+  {#if adding}
+    {#await loadLinkForm()}
+      <p class="p-3 text-xs text-fg-muted" data-testid="ticket-link-form-loading">Opening the link form…</p>
+    {:then mod}
+      <mod.default {ctx} onDone={() => { adding = false; }} />
+    {:catch err}
+      <p class="p-3 text-xs text-error" role="alert" data-testid="ticket-link-form-load-error">The link form could not load: {errString(err)}. Reload the window to try again.</p>
+    {/await}
+  {/if}
 </Popover>
 
 {#if menuOpen && menu}

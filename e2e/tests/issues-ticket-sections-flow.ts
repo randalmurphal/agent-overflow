@@ -4,8 +4,10 @@
 // Jira. Covered: an image the description names shows in place from bytes
 // the backend read from Jira, a file the description names is a chip with
 // its size and Save; the attachments list newest first; files attached by
-// the picker, by a drop on the ticket and by a paste into the comment box
-// (whose text stays), one line saying which file goes and its place while
+// the picker and by a drop on the ticket, a file on the clipboard pasted
+// with Ctrl+V right after a card opens the ticket, over the board and
+// beside it, and a picture with its caption pasted into the comment box
+// (the caption is the box's text), one line saying which file goes and its place while
 // one is held, a file the tracker refuses saying so beside the next one
 // attached; Save writes the file into this computer's downloads and Open
 // shows an image in the lightbox; a link added through the form on the
@@ -139,19 +141,8 @@ async function dropFile(page: Page, target: Locator, name: string, text: string)
   await target.dispatchEvent('drop', { dataTransfer: transfer });
 }
 
-/** Pastes `name` with the text `text` into `target`, as a copy from a page
- * carries both; answers whether the paste was left to the editor. */
-async function pasteFile(target: Locator, name: string, text: string): Promise<boolean> {
-  return target.evaluate((el, [n, t]) => {
-    const dt = new DataTransfer();
-    dt.setData('text/plain', t);
-    dt.items.add(new File([t], n, { type: 'text/plain' }));
-    return el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-  }, [name, text] as const);
-}
-
 export function registerIssuesTicketSectionsFlow({ compact }: SectionsSurface): void {
-  test('a ticket shows the files its text names and its attachments, and takes files picked, dropped and pasted', async ({ harness, page }) => {
+  test('a ticket shows the files its text names and its attachments, and takes files picked and dropped', async ({ harness, page }) => {
     test.setTimeout(120_000);
     await connectFakeJiraBoard(harness, compact ? 'compact-ticket-files' : 'ticket-files', SEEDED);
     await harness.open(page);
@@ -173,6 +164,8 @@ export function registerIssuesTicketSectionsFlow({ compact }: SectionsSurface): 
     const rows = ticket.getByTestId('ticket-attachment');
     await expect(rows).toHaveCount(2);
     expect(await rows.evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.name))).toEqual(['shot.png', 'notes.txt']);
+    // Who attached it shows at every width.
+    await expect(rows.first().getByText('User 1', { exact: true })).toBeVisible();
 
     // Save writes the file into this computer's downloads; Open shows the
     // image in the lightbox.
@@ -211,16 +204,59 @@ export function registerIssuesTicketSectionsFlow({ compact }: SectionsSurface): 
     await expect(refused).toContainText('The file type is not allowed here', { timeout: 30_000 });
     await expect(rows.filter({ hasText: 'after.txt' })).toHaveCount(1, { timeout: 30_000 });
 
-    // A drop anywhere on the ticket, and a paste into the comment box whose
-    // text stays the box's.
+    // A drop anywhere on the ticket.
     await dropFile(page, ticket.getByTestId('ticket-content'), 'dropped.txt', 'dropped');
     await expect(rows.filter({ hasText: 'dropped.txt' })).toHaveCount(1, { timeout: 30_000 });
-    const box = ticket.getByTestId('ticket-comment-input');
-    await box.focus();
-    expect(await pasteFile(box, 'pasted.txt', 'pasted')).toBe(true);
-    await expect(rows.filter({ hasText: 'pasted.txt' })).toHaveCount(1, { timeout: 30_000 });
     const sent = (await trackerRequests(harness, UPLOAD)).filter((r) => r.status === 200);
-    expect(sent).toHaveLength(5);
+    expect(sent).toHaveLength(4);
+  });
+
+  test('a file on the clipboard pasted right after a card opens its ticket is attached, and a paste into the comment box keeps its text', async ({ harness, page }) => {
+    test.setTimeout(120_000);
+    if (!compact) await page.setViewportSize({ width: 1600, height: 900 });
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(harness.url).origin });
+    await connectFakeJiraBoard(harness, compact ? 'compact-ticket-paste' : 'ticket-paste', SEEDED);
+    await harness.open(page);
+    const pane = await openPane(page, compact);
+    // The clipboard holds what copying a screenshot gives, and then what
+    // copying a picture and its caption from a page gives.
+    const copy = (text: string | null) => page.evaluate(async ([png, t]) => {
+      const bytes = Uint8Array.from(atob(png), (c) => c.charCodeAt(0));
+      const parts: Record<string, Blob> = { 'image/png': new Blob([bytes], { type: 'image/png' }) };
+      if (t !== null) parts['text/plain'] = new Blob([t], { type: 'text/plain' });
+      await navigator.clipboard.write([new ClipboardItem(parts)]);
+    }, [PNG_BASE64, text] as const);
+    await copy(null);
+
+    // Over the board: the board is inert under the ticket the card opened.
+    let ticket = await openTicket(pane, FILES_ID, compact);
+    await expect(pane.getByTestId('issues-ticket')).toHaveAttribute('data-placement', 'over');
+    const rows = ticket.getByTestId('ticket-attachment');
+    await expect(rows).toHaveCount(2, { timeout: 30_000 });
+    await page.keyboard.press('ControlOrMeta+V');
+    await expect(rows.filter({ hasText: 'image.png' })).toHaveCount(1, { timeout: 30_000 });
+
+    if (!compact) {
+      // Beside the board: the card that opened it stays in the board.
+      await ticket.getByRole('radio', { name: 'Beside' }).click();
+      await expect(pane.getByTestId('issues-ticket')).toHaveAttribute('data-placement', 'beside');
+      await ticket.getByTestId('ticket-close').click();
+      await expect(ticket).toHaveCount(0);
+      ticket = await openTicket(pane, FILES_ID, compact);
+      await expect(pane.getByTestId('issues-ticket')).toHaveAttribute('data-placement', 'beside');
+      await expect(rows).toHaveCount(3, { timeout: 30_000 });
+      await page.keyboard.press('ControlOrMeta+V');
+      await expect(rows.filter({ hasText: 'image.png' })).toHaveCount(2, { timeout: 30_000 });
+    }
+
+    // In the comment box, the picture is attached and the caption is the
+    // box's text.
+    await copy('The broken screen');
+    const box = ticket.getByTestId('ticket-comment-input');
+    await press(box, compact);
+    await page.keyboard.press('ControlOrMeta+V');
+    await expect(box).toHaveValue('The broken screen');
+    await expect(rows.filter({ hasText: 'image.png' })).toHaveCount(compact ? 2 : 3, { timeout: 30_000 });
   });
 
   test('a link is added on the side its phrase reads and another removed at once', async ({ harness, page }) => {
