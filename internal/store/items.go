@@ -104,6 +104,41 @@ func scanItemRow(scanner interface{ Scan(...any) error }) (Item, error) {
 	return it, nil
 }
 
+// scanItemRows drains a hydrated item result set while reusing one scan target
+// slice across iterations, avoiding 23 interface-boxing allocations per row.
+func scanItemRows(rows *sql.Rows, initialCap int) ([]Item, error) {
+	items := make([]Item, 0, initialCap)
+	var it Item
+	var isBackground int
+	var streamEnd sql.NullInt64
+	targets := []any{
+		&it.ID, &it.ThreadID, &it.TurnIndex, &it.ItemIndex,
+		&it.Kind, &it.Role, &it.Status, &it.Summary,
+		&it.PayloadID, &it.PayloadKind, &it.PayloadMeta,
+		&it.PayloadPreviewSpans,
+		&it.InputPayloadID,
+		&it.ParentID, &isBackground, &it.CompletionOf,
+		&it.ToolName, &it.Decision, &it.Meta, &it.CreatedAt, &it.UpdatedAt,
+		&streamEnd,
+		&it.Rev,
+	}
+	for rows.Next() {
+		it = Item{}
+		isBackground = 0
+		streamEnd = sql.NullInt64{}
+		if err := rows.Scan(targets...); err != nil {
+			return nil, err
+		}
+		it.IsBackground = isBackground != 0
+		if streamEnd.Valid {
+			end := streamEnd.Int64
+			it.StreamEnd = &end
+		}
+		items = append(items, it)
+	}
+	return items, rows.Err()
+}
+
 // defaultStatus coerces an empty Status to "completed" so callers that
 // don't explicitly set the field still produce a valid row. The CHECK
 // constraint would otherwise reject an empty string — this keeps the

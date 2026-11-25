@@ -180,13 +180,34 @@
     e.preventDefault();
     void removeThreadsFromGroupAction([payload.threadId]);
   }
+  const EMPTY_THREADS: readonly Thread[] = Object.freeze([]);
+  const EMPTY_PENDING_FORKS: readonly ReturnType<typeof pendingForks>[number][] = Object.freeze([]);
+
+  let forkPreparingThreads = $derived.by(() => {
+    let list: Thread[] | null = null;
+    for (const thread of threads) {
+      if (!thread.forkPreparing) continue;
+      if (!list) list = [];
+      list.push(thread);
+    }
+    return list ?? EMPTY_THREADS;
+  });
+
+  let unmatchedPendingForks = $derived.by(() => {
+    const forks = pendingForks(projectId);
+    if (forks.length === 0) return EMPTY_PENDING_FORKS;
+    if (forkPreparingThreads.length === 0) return forks;
+    return forks.filter((source) =>
+      !forkPreparingThreads.some((thread) => thread.forkedFromThreadId === source.id),
+    );
+  });
 </script>
 
-{#each threads.filter(thread => thread.forkPreparing) as thread (thread.id)}
+{#each forkPreparingThreads as thread (thread.id)}
   <ForkPendingRow title={thread.title} />
 {/each}
 
-{#each pendingForks(projectId).filter(source => !threads.some(thread => thread.forkPreparing && thread.forkedFromThreadId === source.id)) as source (source.id)}
+{#each unmatchedPendingForks as source (source.id)}
   <ForkPendingRow title={`${source.title} (fork)`} />
 {/each}
 

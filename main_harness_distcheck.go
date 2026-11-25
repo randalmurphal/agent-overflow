@@ -142,19 +142,21 @@ func hashFSTree(root fs.FS) (string, error) {
 	}
 	sort.Strings(paths)
 	h := sha256.New()
+	copyBuf := make([]byte, 32*1024)
+	var nul = [1]byte{0}
 	for _, p := range paths {
 		io.WriteString(h, p)
-		h.Write([]byte{0})
+		h.Write(nul[:])
 		f, err := root.Open(p)
 		if err != nil {
 			return "", err
 		}
-		_, copyErr := io.Copy(h, f)
+		_, copyErr := io.CopyBuffer(h, f, copyBuf)
 		f.Close()
 		if copyErr != nil {
 			return "", copyErr
 		}
-		h.Write([]byte{0})
+		h.Write(nul[:])
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }

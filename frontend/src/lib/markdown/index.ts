@@ -118,7 +118,7 @@ export { UNAVAILABLE_IMAGE_CLASS, unavailableImageText } from './render/elements
 // What a whole document defines, for each block's lex: reference
 // definitions everywhere, and a forge's footnotes, heading anchors and
 // table of contents (parser/documentContext.ts).
-export { createDocumentContextCache, documentContextOf, mayNeedDocumentContext } from './parser/index';
+export { createDocumentContextCache, documentContextOf, emptyDocumentContext, mayNeedDocumentContext } from './parser/index';
 export type { DocumentContext, DocumentContextCache, DocumentForge } from './parser/index';
 // What a host knows about the names a document mentions, read by a
 // host's tokenizer through its block's scope (parser/documentScope.ts).

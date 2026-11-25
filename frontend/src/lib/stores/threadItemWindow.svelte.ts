@@ -31,11 +31,13 @@ import type { ThreadSwitchLoad } from './threadSwitchLoad.svelte';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { isWindowedTimelineRow } from './threadWindowDigest';
 import type { TimelineSelection } from '../../../bindings/agent-overflow/internal/store/models';
+import { abandonedItemIds } from '../utils/discardedItems';
 
 /** Shared "nothing was dropped" list, so the common replacement allocates none. */
 const NO_ITEMS: readonly Item[] = Object.freeze([]);
 /** Shared empty error list for the successful commit path. */
 const NO_ERRORS: readonly unknown[] = Object.freeze([]);
+const EMPTY_DISCARDED_IDS: ReadonlySet<string> = new Set<string>();
 
 export interface TimelineCommitOptions {
   disposeDropped?: boolean;
@@ -125,6 +127,34 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
   // write below so an append does not recount the window. Plain, not
   // `$state`: its readers are the prune paths, which read imperatively.
   let windowedRows = 0;
+  // Ids marked discarded by loaded `abandoned_blocks` notification rows.
+  // Identity-stable `EMPTY_DISCARDED_IDS` unless an abandonment record is
+  // actually present, so mounted TimelineLeaf rows do not wake on every item
+  // append just to re-scan `pane.items`.
+  let discardedIds: ReadonlySet<string> = $state.raw(EMPTY_DISCARDED_IDS);
+
+  function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+    if (a === b) return true;
+    if (a.size !== b.size) return false;
+    for (const id of a) {
+      if (!b.has(id)) return false;
+    }
+    return true;
+  }
+
+  function recomputeDiscardedIds(list: readonly Item[]): void {
+    let next: Set<string> | null = null;
+    for (let i = 0; i < list.length; i += 1) {
+      const item = list[i];
+      if (item.kind !== 'notification') continue;
+      for (const id of abandonedItemIds(item)) {
+        (next ??= new Set<string>()).add(id);
+      }
+    }
+    const resolved: ReadonlySet<string> = next ?? EMPTY_DISCARDED_IDS;
+    if (!setsEqual(discardedIds, resolved)) discardedIds = resolved;
+  }
+
   const isWindowed = (item: Item): number =>
     (isWindowedTimelineRow(item, options.selection?.()) ? 1 : 0);
 
@@ -217,6 +247,9 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
       }
     }
     items[index] = next;
+    if (previous.kind === 'notification' || next.kind === 'notification') {
+      recomputeDiscardedIds(items);
+    }
     try {
       itemBoxes.set(next.id, next);
     } catch (error) {
@@ -403,6 +436,7 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
       // Indexes first: the box sync drops a previous row only when
       // `itemIndexById` no longer knows it.
       rebuildItemIndexes(items);
+      recomputeDiscardedIds(items);
       syncItemBoxes(previous, items);
       try {
         disposeDroppedItemState(droppedItems);
@@ -554,10 +588,18 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     } else {
       items = committed;
     }
+    let notificationChanged = false;
     for (const write of next.rowWrites) {
       windowedRows += isWindowed(write.item) - isWindowed(write.previous);
+      if (write.item.kind === 'notification' || write.previous.kind === 'notification') {
+        notificationChanged = true;
+      }
     }
-    for (const item of next.appendedItems) windowedRows += isWindowed(item);
+    for (const item of next.appendedItems) {
+      windowedRows += isWindowed(item);
+      if (item.kind === 'notification') notificationChanged = true;
+    }
+    if (notificationChanged) recomputeDiscardedIds(committed);
     try {
       options.switchLoad().noteItemMutations(next.changedItems);
     } catch (error) {
@@ -631,6 +673,9 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     },
     get timelineRevision() {
       return timelineRevision;
+    },
+    get discardedItemIds() {
+      return discardedIds;
     },
     get rowUiRetentionRevision() {
       return rowUiRetentionRevision;

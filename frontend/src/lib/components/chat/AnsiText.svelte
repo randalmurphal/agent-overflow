@@ -19,28 +19,61 @@
   // show is utils/ansiText.ts's, which find counts by.
 
   import { Idiomorph } from 'idiomorph';
-  import { ansiHtml } from '../../utils/ansiText';
+  import {
+    ansiHtmlWithState,
+    appendAnsiDeltaToDom,
+    type AnsiTailState,
+  } from '../../utils/ansiText';
 
   let { source, class: className = '' }: { source: string; class?: string } = $props();
 
   let root: HTMLPreElement | undefined = $state();
+  let renderedRoot: HTMLPreElement | undefined;
+  let renderedSource = '';
+  let tailState: AnsiTailState = { openClass: '', incompleteTail: false, endsWithCR: false };
 
   $effect(() => {
-    const html = ansiHtml(source);
+    const nextSource = source;
     if (!root) return;
-    // Parse the new HTML inside a detached <pre> so the browser tokenizes
-    // it in the same context our root <pre> uses, then hand Idiomorph the
-    // parsed CHILD NODES — not the <pre> host itself. Passing a parentless
-    // element makes Idiomorph wrap it in a dummy <div> and nest it as a
-    // child, yielding `<pre class="…wrap…"><pre>TEXT</pre></pre>`; that inner
-    // class-less <pre> computes the UA default `white-space: pre` and never
-    // wraps (the wrap classes only live on the outer <pre>). Morphing the
-    // child nodes diffs them straight into root's children, so the single
-    // classed root <pre> is the only <pre> and the wrap classes apply to the
-    // text.
+    const sameRoot = root === renderedRoot;
+    if (sameRoot && nextSource === renderedSource) return;
+
+    // Fast path 1: clean streaming append — mutates only the tail nodes in O(delta).
+    if (
+      sameRoot &&
+      renderedSource.length > 0 &&
+      nextSource.length > renderedSource.length &&
+      nextSource.startsWith(renderedSource)
+    ) {
+      const nextState = appendAnsiDeltaToDom(
+        root,
+        nextSource.slice(renderedSource.length),
+        tailState,
+      );
+      if (nextState !== null) {
+        renderedSource = nextSource;
+        tailState = nextState;
+        return;
+      }
+    }
+
+    const { html, state } = ansiHtmlWithState(nextSource);
+    // Fast path 2: initial mount into an empty <pre> needs no Idiomorph diff.
+    if (!sameRoot || root.firstChild === null) {
+      root.innerHTML = html;
+      renderedRoot = root;
+      renderedSource = nextSource;
+      tailState = state;
+      return;
+    }
+
+    // Fallback: non-append rewrite or completed split escape — morph via Idiomorph.
     const next = document.createElement('pre');
     next.innerHTML = html;
     Idiomorph.morph(root, Array.from(next.childNodes), { morphStyle: 'innerHTML' });
+    renderedRoot = root;
+    renderedSource = nextSource;
+    tailState = state;
   });
 </script>
 

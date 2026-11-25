@@ -144,7 +144,7 @@ let hasExpandableBody = $derived(Boolean(item.payloadId));
   const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? EMPTY_PATH_REFS);
 </script>
 
-<div class="group/tool overflow-hidden" data-testid="advisor-row" data-tool-kind="brain">
+<div class="ao-tool-row overflow-hidden" data-testid="advisor-row" data-tool-kind="brain">
   <TranscriptDisclosureHeader
     expanded={expansion.expanded}
     expandable={hasExpandableBody}

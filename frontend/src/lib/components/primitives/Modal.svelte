@@ -93,19 +93,23 @@
   // only end of that relationship still reachable from here.
   let panelEl: HTMLDivElement | undefined = $state(undefined);
 
-  // The backdrop is moved to `document.body` on mount. A dialog is rendered
-  // where its owner sits, and an owner inside a stacking context (the chat
-  // header's `z-10`) would otherwise cap the dialog's z-index at that
-  // context's level: the composer overlay (`z-20`) painted over, and took
-  // the clicks of, any dialog tall enough to reach it. The node is removed
-  // explicitly because Svelte only knows its original parent.
+  // Both the static blurred backdrop and the sibling dialog host are moved to
+  // `document.body` on mount (backdrop first, then panel host). Keeping them
+  // as separate body siblings isolates the full-viewport `backdrop-blur-md`
+  // layer from repaints, typing and scrolling inside the dialog panel, while
+  // preserving document-body stacking, pointer pass-through and backdrop clicks.
   let backdropEl: HTMLDivElement | undefined = $state(undefined);
+  let panelHostEl: HTMLDivElement | undefined = $state(undefined);
+
   $effect(() => {
-    if (!backdropEl) return;
-    const node = backdropEl;
-    document.body.appendChild(node);
+    const backdrop = backdropEl;
+    const host = panelHostEl;
+    if (!backdrop || !host) return;
+    document.body.appendChild(backdrop);
+    document.body.appendChild(host);
     return () => {
-      node.remove();
+      host.remove();
+      backdrop.remove();
     };
   });
 
@@ -166,7 +170,7 @@
   <div
     bind:this={backdropEl}
     class={[
-      'fixed inset-0 z-[60] flex justify-center bg-overlay backdrop-blur-md',
+      'fixed inset-0 z-[60] flex justify-center bg-overlay backdrop-blur-md [contain:strict] [transform:translateZ(0)]',
       align === 'top' ? 'items-start pt-[10vh]' : 'items-center',
     ].join(' ')}
     data-modal-backdrop
@@ -174,6 +178,13 @@
     use:airspaceSurface
     onclick={handleBackdropClick}
     transition:fade={{ duration: 140 }}
+  ></div>
+  <div
+    bind:this={panelHostEl}
+    class={[
+      'pointer-events-none fixed inset-0 z-[60] flex justify-center',
+      align === 'top' ? 'items-start pt-[10vh]' : 'items-center',
+    ].join(' ')}
   >
     <div
       bind:this={panelEl}
@@ -185,7 +196,7 @@
       data-modal-panel
       data-popover-clip-boundary="none"
       class={[
-        'w-full mx-4 bg-surface-1 border border-border-subtle rounded-[var(--radius-card)] shadow-modal',
+        'pointer-events-auto w-full mx-4 bg-surface-1 border border-border-subtle rounded-[var(--radius-card)] shadow-modal [contain:layout_paint] [transform:translateZ(0)]',
         'flex flex-col max-h-[calc(100dvh-2rem)]',
         WIDTH_CLASS[width],
       ].join(' ')}

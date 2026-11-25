@@ -1060,3 +1060,54 @@ func TestPRListStoppedPumpStoresNothing(t *testing.T) {
 		t.Fatalf("stored = %+v, want the stopped pump's read dropped", list.Rows)
 	}
 }
+
+// An unchanged refresh tick skips emitting a redundant pulls:updated frame
+// while still advancing the stored read_at timestamp in SQLite so a subsequent
+// cold subscribe does not treat the persisted copy as stale.
+func TestPRListUnchangedTickRefreshesStoredReadAtWithoutPublishing(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	fake.set(func(f *prListFake) {
+		f.projects = f.projects[:1]
+		f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 1, nil)}
+	})
+	events := capturePRList(t, app)
+	sub := subscribePRList(t, app)
+	first := awaitPRListRead(t, events)
+
+	beforeRecords, err := app.store.ListPRListProjects()
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeReadAt := beforeRecords[prListRepoA.Key()].ReadAt
+	if beforeReadAt == 0 {
+		t.Fatal("expected non-zero stored ReadAt after initial read")
+	}
+
+	// Ensure wall-clock milliseconds advance before the unchanged refresh.
+	time.Sleep(5 * time.Millisecond)
+	if err := app.RefreshPRList(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// No redundant pulls:updated event should have been published because rows
+	// and errors did not change semantically.
+	select {
+	case extra := <-events.updates:
+		if extra.Seq != first.Seq {
+			t.Fatalf("unchanged refresh published redundant frame seq %d after %d", extra.Seq, first.Seq)
+		}
+	case <-time.After(40 * time.Millisecond):
+	}
+
+	afterRecords, err := app.store.ListPRListProjects()
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterReadAt := afterRecords[prListRepoA.Key()].ReadAt
+	if afterReadAt <= beforeReadAt {
+		t.Fatalf("stored ReadAt did not advance on unchanged refresh: before=%d after=%d", beforeReadAt, afterReadAt)
+	}
+}

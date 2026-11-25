@@ -16,6 +16,7 @@ import {
   nextSidebarThreadRevealLimit,
   previewSidebarThreads,
   rollupDisplayStatus,
+  rollupProjectThreads,
   sameSidebarVisibleRows,
   sameThreadStatusPill,
   sidebarVisibleRowKey,
@@ -330,6 +331,37 @@ describe('rollupDisplayStatus', () => {
       liveStatusOf: liveStatusMap({ member: 'pending-approval' }),
     });
     expect(rollupDisplayStatus(tree)?.liveStatus).toBe('pending-approval');
+  });
+
+  it('rollupProjectThreads matches rollupDisplayStatus(buildSidebarThreadTree(...)) on tied sortGroup/liveStatus', () => {
+    const olderUnread = mkThread('t-old', {
+      updatedAt: 100,
+      latestTurnCompletedAt: 100,
+      lastReadAt: 50,
+    });
+    const newerProblem = mkThread('t-new', {
+      updatedAt: 200,
+      attention: { kind: 'problem', reason: 'Needs attention', at: 200 },
+    });
+    const pinnedDecision = mkThread('t-pin', {
+      updatedAt: 50,
+      pinnedAt: 1,
+      attention: { kind: 'decision', reason: 'Approve choice', at: 50 },
+    });
+
+    // Unsorted store order: older unread appears first, newer problem second.
+    const pair = [olderUnread, newerProblem];
+    expect(rollupProjectThreads({ threads: pair })).toEqual(
+      rollupDisplayStatus(buildSidebarThreadTree({ threads: pair })),
+    );
+    expect(rollupProjectThreads({ threads: pair })?.pill.dotClass).toBe('bg-warning');
+
+    // Pinned thread outranks newer unpinned thread in the same (completed, idle) bucket.
+    const withPinned = [olderUnread, newerProblem, pinnedDecision];
+    expect(rollupProjectThreads({ threads: withPinned })).toEqual(
+      rollupDisplayStatus(buildSidebarThreadTree({ threads: withPinned })),
+    );
+    expect(rollupProjectThreads({ threads: withPinned })?.pill.dotClass).toBe('bg-info');
   });
 });
 

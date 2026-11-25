@@ -275,7 +275,7 @@
     title="Open in agent pane"
     aria-label="Open {spawnLaunchInfo?.agentLabel || title} in agent pane"
     data-testid="collab-tool-row-open-pane"
-    class="inline-flex items-center justify-center opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 compact:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+    class="ao-hover-reveal inline-flex items-center justify-center opacity-0 focus-visible:opacity-100 compact:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
   >
     <Icon icon={PanelRightOpen} size={12} />
   </button>
@@ -314,7 +314,7 @@
   </ToolHeaderMeta>
 {/snippet}
 
-<div class="group/tool px-1 py-1 text-[0.75rem] text-fg-muted" data-testid="collab-tool-row">
+<div class="ao-tool-row px-1 py-1 text-[0.75rem] text-fg-muted" data-testid="collab-tool-row">
   <TranscriptDisclosureHeader
     {agentLayout}
     metrics={headerMetrics}

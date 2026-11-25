@@ -198,35 +198,17 @@ export function createTimelineQuietWork(
    * past the interval — a backwards jump would otherwise park the next
    * callback for the size of the jump.
    */
-  function rateBoundRemainingMs(): number {
+  function rateBoundRemainingMs(now: number): number {
     if (lastRunEndedAt === null) return 0;
     const elapsed = Math.min(
-      Math.max(Date.now() - lastRunEndedAt, 0),
+      Math.max(now - lastRunEndedAt, 0),
       QUIET_WORK_MIN_INTERVAL_MS,
     );
     return QUIET_WORK_MIN_INTERVAL_MS - elapsed;
   }
 
-  /**
-   * Arm exactly one run, no sooner than `minDelayMs` and never inside the
-   * rate bound. Supersedes whatever was armed rather than queueing beside
-   * it: every caller wants ONE next look at current state, and the run
-   * reads that state when it fires, so a request arriving during the wait
-   * is fully served by the pending run — except that it may need to
-   * happen SOONER, which is why the deadline is recomputed rather than
-   * left alone.
-   *
-   * With one exception: while the stand-down is in force, an armed
-   * deadline is a FLOOR rather than a default. Pulling a run forward is
-   * the designed coalescing everywhere else, but the stand-down exists
-   * BECAUSE a pass keeps reporting mutated geometry, and the structural
-   * triggers that call `schedule()` fire on every streamed row — so
-   * without this the very next external trigger would drag the run back
-   * to the rate bound and the promised "third of the rate" would be the
-   * full rate, warning line and all.
-   */
-  function armTimer(delayMs: number): void {
-    runTimerAt = Date.now() + delayMs;
+  function armTimer(now: number, delayMs: number): void {
+    runTimerAt = now + delayMs;
     runTimer = setTimeout(onRunTimer, delayMs);
   }
 
@@ -234,9 +216,10 @@ export function createTimelineQuietWork(
     runTimer = null;
     // Superseded by an immediate run (or invalidate) since arming.
     if (armedRunAt === null) return;
-    const remaining = armedRunAt - Date.now();
+    const now = Date.now();
+    const remaining = armedRunAt - now;
     if (remaining > 0) {
-      armTimer(remaining);
+      armTimer(now, remaining);
       return;
     }
     // Token read at fire time, not captured at arm time: the standing
@@ -248,12 +231,13 @@ export function createTimelineQuietWork(
   }
 
   function requestRun(minDelayMs: number): void {
-    let wait = Math.max(minDelayMs, rateBoundRemainingMs());
+    const now = Date.now();
+    let wait = Math.max(minDelayMs, rateBoundRemainingMs(now));
     if (mutatingLaps >= MAX_CONSECUTIVE_MUTATING_LAPS && armedRunAt !== null) {
-      wait = Math.max(wait, armedRunAt - Date.now());
+      wait = Math.max(wait, armedRunAt - now);
     }
     const current = ++token;
-    armedRunAt = Date.now() + Math.max(wait, 0);
+    armedRunAt = now + Math.max(wait, 0);
     // Tick-aligned either way: the passes must see the flush their
     // trigger produced, not the state that queued it. A standing timer
     // is left alone — when it fires it finds armedRunAt already nulled
@@ -263,14 +247,14 @@ export function createTimelineQuietWork(
       return;
     }
     if (runTimer === null) {
-      armTimer(wait);
+      armTimer(now, wait);
       return;
     }
     // Deadline pulled earlier than the standing fire: re-arm. Otherwise
     // the standing timer already fires soon enough and re-checks.
     if (runTimerAt > armedRunAt) {
       clearRunTimer();
-      armTimer(wait);
+      armTimer(now, wait);
     }
   }
 

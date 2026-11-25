@@ -81,6 +81,7 @@ let indexDirty = false;
 // only the latest capture per thread is ever written).
 const pendingEntries = new Map<string, SizePriorsEntry>();
 let flushTimer: ReturnType<typeof setTimeout> | undefined;
+let flushDeadlineAt = 0;
 
 // Set once a write fails with nothing left to evict. Persistence for the
 // rest of the session becomes a no-op rather than retrying a storage that
@@ -120,10 +121,21 @@ function bumpRecency(threadId: string): void {
   indexDirty = true;
 }
 
+function runFlushTimer(): void {
+  const remaining = flushDeadlineAt - Date.now();
+  if (remaining > 0) {
+    flushTimer = setTimeout(runFlushTimer, remaining);
+    return;
+  }
+  flush();
+}
+
 function scheduleFlush(): void {
   if (disabled) return;
-  clearTimeout(flushTimer);
-  flushTimer = setTimeout(flush, FLUSH_DEBOUNCE_MS);
+  flushDeadlineAt = Date.now() + FLUSH_DEBOUNCE_MS;
+  if (flushTimer === undefined) {
+    flushTimer = setTimeout(runFlushTimer, FLUSH_DEBOUNCE_MS);
+  }
 }
 
 /**
@@ -181,6 +193,7 @@ function writeItem(key: string, serialize: () => string): boolean {
 
 function flush(): void {
   flushTimer = undefined;
+  flushDeadlineAt = 0;
   if (disabled || !hasLocalStorage()) {
     pendingEntries.clear();
     indexDirty = false;
@@ -378,6 +391,7 @@ export function installSizePriorsPersistence(): void {
 export function __resetSizePriorsStorageForTest(): void {
   clearTimeout(flushTimer);
   flushTimer = undefined;
+  flushDeadlineAt = 0;
   pendingEntries.clear();
   indexOrder = [];
   indexLoaded = false;

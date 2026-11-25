@@ -277,7 +277,7 @@
   });
 </script>
 
-<div class="group/tool overflow-hidden" data-testid="command-output-row">
+<div class="ao-tool-row overflow-hidden" data-testid="command-output-row">
   {#snippet headerIcon()}
     <span data-testid="command-output-icon"><ToolKindIcon kind="terminal" ariaLabel="bash" /></span>
   {/snippet}
@@ -311,7 +311,7 @@
         title="Move to background"
         aria-label="Move command to background"
         data-testid="command-output-background-button"
-        class="inline-flex items-center justify-center opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 compact:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer disabled:cursor-default disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        class="ao-hover-reveal inline-flex items-center justify-center opacity-0 focus-visible:opacity-100 compact:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer disabled:cursor-default disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       >
         <Icon icon={SendToBack} size={12} />
       </button>

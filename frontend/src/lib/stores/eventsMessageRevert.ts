@@ -12,6 +12,7 @@ import { removeReplicaWindow } from '../replica';
 import { compositeKey } from '../utils/compositeKey';
 import { getConnectionId } from '../transport/clientIdentity';
 import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
+import { invalidateProposedPlansLoaded } from './proposedPlans.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
@@ -143,6 +144,7 @@ export function applyUserMessageReverted(payload: UserMessageRevertedEvent | nul
   // and so no orphaned Zone 2 chip (whose provider confirm died with
   // the reverted session) lingers under new output.
   projectThreadReverted(payload.threadId);
+  invalidateProposedPlansLoaded(payload.threadId);
   applyTimelineMutation(payload.threadId, { kind: 'revert', event: payload });
   for (const handler of revertSubscribers) handler(payload);
   if (payload.replacement) projectSendStarted(payload.threadId);

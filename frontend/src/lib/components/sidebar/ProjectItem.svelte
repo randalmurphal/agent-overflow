@@ -42,8 +42,7 @@
   import SidebarRowMenuButton from './SidebarRowMenuButton.svelte';
   import ProjectThreadList from './ProjectThreadList.svelte';
   import ThreadRow from './ThreadRow.svelte';
-  import { buildSidebarThreadTree } from '../../utils/sidebarTree';
-  import { rollupDisplayStatus } from '../../utils/sidebarTreeView';
+  import { rollupProjectThreads, sameThreadStatusPill } from '../../utils/sidebarTreeView';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import {
     shouldOpenProjectThreadInNewPane,
@@ -142,30 +141,45 @@
 
   let expanded = $derived(entry.expanded || searchOpened);
 
-  // Tree + rollup are only meaningful when the project is collapsed —
-  // when expanded, the nested ProjectThreadList computes its own. We
-  // skip the build entirely when expanded so the hot path (status
-  // streaming → re-derive across every project) doesn't pay a per-tick
-  // cost for output we'd throw away.
+  // Single-pass status rollup when the project is collapsed — avoids
+  // building or sorting a full sidebar tree just to pick the top status
+  // dot, and keeps object identity stable across unchanged beats.
+  let prevRollup: ReturnType<typeof rollupProjectThreads> = null;
   let rollup = $derived.by(() => {
-    if (expanded) return null;
-    const tree = buildSidebarThreadTree({
+    if (expanded) {
+      prevRollup = null;
+      return null;
+    }
+    const next = rollupProjectThreads({
       threads,
       statusOf: (thread) => getEffectiveThreadStatus(thread),
       waitingOnOf: getThreadWaitingOn,
       unreachableMachineOf: (thread) => unreachableThreadMachineName(thread.id, thread.projectId),
     });
-    return rollupDisplayStatus(tree);
+    if (
+      prevRollup !== null && next !== null
+      && prevRollup.liveStatus === next.liveStatus
+      && sameThreadStatusPill(prevRollup.pill, next.pill)
+    ) {
+      return prevRollup;
+    }
+    prevRollup = next;
+    return next;
   });
 
   // When collapsed, find the active-thread row (if any) so we render
-  // it inline beneath the project row. We do a flat `find` rather than
-  // walking the tree because we render the row at indent=1 regardless
-  // of whether it sits in a group — keeps the inline pin from looking
-  // like a "floating indented row".
+  // it inline beneath the project row. Uses the pane's per-thread signal
+  // when available so thread switches in other projects do not wake this
+  // collapsed project.
   let activeWhenCollapsed = $derived.by<Thread | null>(() => {
-    if (expanded) return null;
-    const activeId = pane?.threadId;
+    if (expanded || !pane) return null;
+    if (typeof pane.isShowingThread === 'function') {
+      for (const t of threads) {
+        if (pane.isShowingThread(t.id)) return t;
+      }
+      return null;
+    }
+    const activeId = pane.threadId;
     if (!activeId) return null;
     return threads.find((t) => t.id === activeId) ?? null;
   });
@@ -364,7 +378,7 @@
   ondrop={handleDrop}
   ondragend={handleDragEnd}
   class={
-    'group relative flex flex-col transition-opacity ' +
+    'relative flex flex-col transition-opacity ' +
     (isDragging ? 'opacity-40' : '')
   }
 >
@@ -400,7 +414,7 @@
     onclick={handleRowClick}
     onkeydown={handleRowKeydown}
     class={
-      'flex items-center gap-1.5 px-2 py-1 compact:py-2 compact:select-none rounded-[var(--radius-field)] text-fg hover:bg-surface-2/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ' +
+      'group flex items-center gap-1.5 px-2 py-1 compact:py-2 compact:select-none rounded-[var(--radius-field)] text-fg hover:bg-surface-2/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ' +
       (manualMode ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer')
     }
   >

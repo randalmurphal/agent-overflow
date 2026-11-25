@@ -958,9 +958,7 @@ func receiverAgentsByThreadID(meta json.RawMessage) map[string]codexWaitReceiver
 }
 
 func (r *Router) isCodexThread(threadID string) (bool, error) {
-	// Narrow column read — this runs on every tool completion, where
-	// GetThread's derived-sidebar-state subqueries would be wasted work.
-	provider, _, err := r.store.GetThreadProviderWorkspace(threadID)
+	provider, err := r.providerFor(threadID)
 	if err != nil {
 		return false, fmt.Errorf("lookup thread provider %s: %w", threadID, err)
 	}

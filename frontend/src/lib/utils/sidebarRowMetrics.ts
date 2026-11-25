@@ -87,7 +87,8 @@ export function sidebarGroupMemberPaddingLeftPx(indent: number): number {
  * single-backend page has always meant.
  */
 export function sidebarTimeLabel(timestampMs: number, backendId: BackendKey = HOME_BACKEND): string {
-  const label = relativeTime(timestampMs, getSettings().timestampFormat, backendId);
-  if (getSettings().timestampFormat !== 'locale') return label;
+  const format = getSettings().timestampFormat;
+  const label = relativeTime(timestampMs, format, backendId);
+  if (format !== 'locale') return label;
   return label === 'just now' ? 'now' : label.replace(/ ago$/, '');
 }

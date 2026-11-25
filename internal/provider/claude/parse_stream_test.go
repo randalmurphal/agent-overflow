@@ -38,3 +38,17 @@ func TestParseStreamEventMessageBoundariesDoNotEmitLifecycleEvents(t *testing.T)
 		}
 	}
 }
+
+func TestParseLineNonStreamEventWithConflictingEventFieldFallsBack(t *testing.T) {
+	// A non-stream_event line mentioning "stream_event" whose top-level "event"
+	// field is not a JSON string fails unmarshaling into the stream_event probe
+	// struct and must fall back to full ParseLine rather than returning an error.
+	line := []byte(`{"type":"result","event":{"nested":true},"subtype":"success","result":"mentions stream_event"}`)
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("ParseLine returned error on non-stream_event line: %v", err)
+	}
+	if len(events) == 0 || events[0].Kind != provider.EventTurnComplete {
+		t.Fatalf("events = %+v, want EventTurnComplete", events)
+	}
+}

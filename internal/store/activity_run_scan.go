@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
-	"slices"
 	"strings"
 
 	"agent-overflow/internal/agentmeta"
@@ -190,6 +189,11 @@ func importedActivityScanColumns(_, rev string) string {
 	)
 }
 
+var (
+	activityScanBranchesNoFork = buildSelectedTimelineBranches(localActivityScanColumns, importedActivityScanColumns, "", "2, 3", false)
+	activityScanBranchesFork   = buildSelectedTimelineBranches(localActivityScanColumns, importedActivityScanColumns, "", "2, 3", true)
+)
+
 // queryActivityScanRows resolves ids to scan rows through the physical
 // branch that owns each one, in (turn_index, item_index) order. It is
 // queryHydratedTimelineItems' narrow sibling and joins payloads exactly
@@ -203,11 +207,14 @@ func queryActivityScanRows(q sqlQueryer, threadID string, capacity int, sel idSe
 	if !found {
 		return nil, nil
 	}
-	branches, branchArgs, err := resolveSelectedTimelineSQL(q, threadID, localActivityScanColumns, importedActivityScanColumns, "", "2, 3")
+	branches, branchArgs, err := resolvePrecomputedTimelineSQL(q, threadID, activityScanBranchesNoFork, activityScanBranchesFork)
 	if err != nil {
 		return nil, fmt.Errorf("store: query activity scan rows for %s: %w", threadID, err)
 	}
-	rows, err := q.Query(set+branches, append(slices.Clone(setArgs), branchArgs...)...)
+	args := make([]any, 0, len(setArgs)+len(branchArgs))
+	args = append(args, setArgs...)
+	args = append(args, branchArgs...)
+	rows, err := q.Query(set+branches, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: query activity scan rows for %s: %w", threadID, err)
 	}

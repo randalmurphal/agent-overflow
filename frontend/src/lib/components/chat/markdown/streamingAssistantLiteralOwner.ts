@@ -73,9 +73,15 @@ function textRunSafeChunkEnd(
     if (boundary <= maxNodeCodeUnits) lastFittingBoundary = boundary;
   };
   for (const segment of directTextRunSegmenter().segment(combined)) {
-    visitBoundary(segment.index);
+    const boundary = segment.index;
+    visitBoundary(boundary);
+    if (boundary > maxNodeCodeUnits && firstFollowingBoundary > prefixLength) {
+      break;
+    }
   }
-  visitBoundary(combined.length);
+  if (firstFollowingBoundary < 0 || combined.length <= maxNodeCodeUnits) {
+    visitBoundary(combined.length);
+  }
 
   if (lastFittingBoundary > prefixLength) {
     return start + lastFittingBoundary - prefixLength;

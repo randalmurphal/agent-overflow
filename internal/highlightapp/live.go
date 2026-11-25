@@ -100,6 +100,7 @@ type liveItem struct {
 	wake                            chan struct{}
 
 	// Guarded by liveHighlighter.mu.
+	started bool
 	pending []byte
 	// scan is fed on the caller's goroutine; steps holds its steps for the
 	// row's goroutine, and spare is the batch that goroutine last took. A
@@ -171,20 +172,37 @@ func (s *Service) ObserveAssistantTextDelta(threadID, itemID, parentID, delta st
 	}
 	item := l.items[key]
 	if item == nil {
-		item = &liveItem{key: key, threadID: threadID, itemID: itemID, parentID: parentID, wake: make(chan struct{}, 1), digest: liveDigestSeed, open: -1, unannounced: -1}
+		item = &liveItem{key: key, threadID: threadID, itemID: itemID, parentID: parentID, digest: liveDigestSeed, open: -1, unannounced: -1}
 		l.items[key] = item
-		l.wg.Add(1)
-		go s.runLiveItem(item)
 	}
 	start, first := len(item.pending), len(item.steps)
 	item.pending = append(item.pending, delta...)
 	item.steps = item.scan.Write(item.pending[start:], item.steps)
 	announcements := item.announcements(item.steps[first:])
+	if !item.started {
+		if item.open >= 0 || len(announcements) > 0 {
+			item.started = true
+			item.wake = make(chan struct{}, 1)
+			l.wg.Add(1)
+			go s.runLiveItem(item)
+		} else {
+			// Pure prose (or un-languaged fence) so far: fold digest/streamed
+			// inline and discard pending bytes/steps without spawning a worker.
+			item.streamed += len(item.pending)
+			item.digest = foldDigest(item.digest, item.pending)
+			item.pending = item.pending[:0]
+			clear(item.steps)
+			item.steps = item.steps[:0]
+		}
+	}
+	started := item.started
 	l.mu.Unlock()
 	for _, event := range announcements {
 		s.config.EmitLiveCode(event)
 	}
-	item.signal()
+	if started {
+		item.signal()
+	}
 }
 
 // announcements records the fences steps open and returns the first push of
@@ -249,10 +267,47 @@ func headOf(source []byte) string {
 // of whichever text is final and releases the row.
 func (s *Service) EndAssistantText(threadID, itemID, text string) {
 	l := &s.live
+	key := threadID + "|" + itemID
 	l.mu.Lock()
-	item := l.items[threadID+"|"+itemID]
+	item := l.items[key]
 	if item == nil {
 		l.mu.Unlock()
+		return
+	}
+	if !item.started {
+		sameAsStreamed := text == "" || (len(text) == item.streamed && foldDigest(liveDigestSeed, []byte(text)) == item.digest)
+		var finishSteps []highlight.FenceStep
+		if sameAsStreamed {
+			hasFollowed := false
+			finishSteps = item.scan.Finish(nil)
+			for _, step := range finishSteps {
+				if step.Kind == highlight.FenceOpened && step.Lang != "" {
+					hasFollowed = true
+					break
+				}
+			}
+			if !hasFollowed {
+				delete(l.items, key)
+				l.mu.Unlock()
+				return
+			}
+		}
+		if l.closed {
+			delete(l.items, key)
+			l.mu.Unlock()
+			return
+		}
+		if len(finishSteps) > 0 {
+			item.steps = append(item.steps, finishSteps...)
+		}
+		item.started = true
+		item.wake = make(chan struct{}, 1)
+		item.endText = text
+		item.ended = true
+		l.wg.Add(1)
+		go s.runLiveItem(item)
+		l.mu.Unlock()
+		item.signal()
 		return
 	}
 	// A stop ends a row with its text and the settle after it ends the row
@@ -294,9 +349,11 @@ func (s *Service) PurgeThread(threadID string) {
 	var purged []*liveItem
 	for key, item := range l.items {
 		if strings.HasPrefix(key, prefix) {
-			item.purged = true
 			delete(l.items, key)
-			purged = append(purged, item)
+			if item.started {
+				item.purged = true
+				purged = append(purged, item)
+			}
 		}
 	}
 	l.mu.Unlock()
@@ -320,6 +377,11 @@ func (s *Service) Close() {
 	if !l.closed {
 		l.closed = true
 		close(l.stop)
+		for key, item := range l.items {
+			if !item.started {
+				delete(l.items, key)
+			}
+		}
 	}
 	l.mu.Unlock()
 	l.wg.Wait()

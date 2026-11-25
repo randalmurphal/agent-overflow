@@ -133,7 +133,7 @@
 {/snippet}
 
 <div
-  class="group/tool rounded-[var(--radius-control)] border border-border-subtle bg-transparent px-1 py-1"
+  class="ao-tool-row rounded-[var(--radius-control)] border border-border-subtle bg-transparent px-1 py-1"
   data-testid="remote-job-tray-row"
   data-row-id={task.rowId}
   data-status={task.status}

@@ -225,20 +225,22 @@
   // menu's anchor stay on screen. `agentRowKey` is the row's key, or
   // undefined for the picked MR.
   let agentOpen = $state(false);
+  let agentMenuMounted = $state(false);
   let agentAnchor: HTMLElement | undefined = $state(undefined);
   let agentRowKey: string | undefined = $state(undefined);
   let agentBusy = $state(false);
   const agentTarget = $derived(agentRowKey === undefined ? selection : listedPR(paneId, agentRowKey));
-  const agentThreads = $derived(threadsOnPR(paneId, agentRowKey));
-  const agentCheckedOutBy = $derived(newThreadCheckedOutBy(paneId, agentRowKey));
-  const agentProjectThreads = $derived(agentTarget ? projectThreads(agentTarget.projectId, backend) : []);
+  const agentThreads = $derived(agentOpen ? threadsOnPR(paneId, agentRowKey) : []);
+  const agentCheckedOutBy = $derived(agentOpen ? newThreadCheckedOutBy(paneId, agentRowKey) : null);
+  const agentProjectThreads = $derived(agentOpen && agentTarget ? projectThreads(agentTarget.projectId, backend) : []);
   const agentBranch = $derived(agentTarget ? (agentTarget.row.crossRepository ? `pr/${agentTarget.pr.number}` : agentTarget.row.headRefName) : '');
   // The drafts are the pinned review's, which is the picked MR's.
-  const draftsCount = $derived(agentTarget && agentTarget.key === selection?.key ? (currentPinnedReviewState(paneId)?.drafts.length ?? 0) : 0);
+  const draftsCount = $derived(agentOpen && agentTarget && agentTarget.key === selection?.key ? (currentPinnedReviewState(paneId)?.drafts.length ?? 0) : 0);
 
   function openAgentMenu(anchor: HTMLElement, rowKey?: string): void {
     agentAnchor = anchor;
     agentRowKey = rowKey;
+    agentMenuMounted = true;
     agentOpen = true;
     void loadThreadsOnPR(paneId, rowKey);
   }
@@ -415,7 +417,7 @@
   </div>
 </div>
 
-{#if agentTarget}
+{#if agentMenuMounted && agentTarget}
   <OpenWithAgentMenu
     anchor={agentAnchor}
     open={agentOpen}

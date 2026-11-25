@@ -1,6 +1,9 @@
 package highlight
 
 import (
+	"math"
+	"sync"
+
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 )
 
@@ -11,6 +14,72 @@ import (
 var parserPool = struct {
 	pool chan *tree_sitter.Parser
 }{pool: make(chan *tree_sitter.Parser, 8)}
+
+// QueryCursors are language-independent C objects reused across paintCaptures
+// calls to avoid per-chunk C malloc/free churn during live code streaming.
+var queryCursorPool = make(chan *tree_sitter.QueryCursor, 8)
+
+func acquireQueryCursor() *tree_sitter.QueryCursor {
+	select {
+	case qc := <-queryCursorPool:
+		return qc
+	default:
+		return tree_sitter.NewQueryCursor()
+	}
+}
+
+func releaseQueryCursor(qc *tree_sitter.QueryCursor) {
+	qc.SetByteRange(0, math.MaxUint)
+	select {
+	case queryCursorPool <- qc:
+	default:
+		qc.Close()
+	}
+}
+
+const maxRetainedPaintSpanCap = 4096
+
+var paintSpanPool = sync.Pool{
+	New: func() any {
+		s := make([]paintSpan, 0, 256)
+		return &s
+	},
+}
+
+const maxRetainedClassSlabCap = 64 * 1024
+
+var classSlabPool = sync.Pool{
+	New: func() any {
+		s := make([]uint16, 0, 4096)
+		return &s
+	},
+}
+
+func acquireClassSlab(n int) (*[]uint16, []uint16) {
+	if n <= 0 {
+		return nil, nil
+	}
+	if n > maxRetainedClassSlabCap {
+		return nil, make([]uint16, n)
+	}
+	ptr := classSlabPool.Get().(*[]uint16)
+	buf := *ptr
+	if cap(buf) < n {
+		buf = make([]uint16, n)
+	} else {
+		buf = buf[:n]
+		clear(buf)
+	}
+	return ptr, buf
+}
+
+func releaseClassSlab(ptr *[]uint16, buf []uint16) {
+	if ptr == nil || cap(buf) > maxRetainedClassSlabCap {
+		return
+	}
+	*ptr = buf[:0]
+	classSlabPool.Put(ptr)
+}
 
 func acquireParser() *tree_sitter.Parser {
 	var p *tree_sitter.Parser
@@ -50,9 +119,10 @@ func releaseParser(p *tree_sitter.Parser) {
 	}
 }
 
-// parseWithDeadline parses src, halting at the parser's configured
-// timeout (set by acquireParser). Returns nil on timeout; the caller
-// must Close the parser (see releaseParser) and degrade to plain text.
-func parseWithDeadline(p *tree_sitter.Parser, src []byte) *tree_sitter.Tree {
-	return p.Parse(src, nil)
+// parseWithDeadline parses src (incrementally reusing oldTree when non-nil),
+// halting at the parser's configured timeout (set by acquireParser). Returns
+// nil on timeout; the caller must Close the parser (see releaseParser) and
+// degrade to plain text.
+func parseWithDeadline(p *tree_sitter.Parser, src []byte, oldTree *tree_sitter.Tree) *tree_sitter.Tree {
+	return p.Parse(src, oldTree)
 }

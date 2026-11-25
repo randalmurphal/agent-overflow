@@ -119,7 +119,7 @@ type Router struct {
 	// the anchor/drain lookups must run before r.mu is taken (see the
 	// lock order on threadIdentity.anchorLock).
 	identities   map[string]*threadIdentity
-	identitiesMu sync.Mutex
+	identitiesMu sync.RWMutex
 	// flushStampSeq (guarded by r.mu) gives each stamping
 	// MarkFlushSendsInterrupted call a router-unique identity. Stamp
 	// epochs alone can't provide one: an applied restore steps the
@@ -133,16 +133,10 @@ type Router struct {
 	// thread — one struct{} per FAILED interrupt ever, so growth is
 	// negligible and there is nothing per-thread to sweep.
 	flushStampApplied map[uint64]struct{}
-	// streamFlushMu serializes stream-persist flush critical sections
-	// (extract buffer + SQLite write) against each other and against the
-	// command-output Replace rewrite. Timer flushes run off the provider
-	// read loop; without this lock a flush extracted-but-uncommitted when
-	// the authoritative Replace snapshot lands would append a duplicate
-	// output tail after the rewrite. Lock order: streamFlushMu first,
-	// r.mu nested inside. Never acquire streamFlushMu while holding r.mu.
-	// The per-thread anchor and drain locks are taken before it; see the
-	// threadState.streamPersistBuffers doc.
-	streamFlushMu sync.Mutex
+	// openAPIRetryCount counts threads whose threadState.openAPIRetryRow is
+	// currently true. Checked lock-free on every forward-progress event so
+	// the common case (0 open retry rows) skips r.mu completely.
+	openAPIRetryCount atomic.Int32
 	// unknownSessionStatusLogged throttles the "unknown session-status
 	// content" log to one line per distinct value. EventSessionStatus
 	// carries provider-specific Content strings ("disconnected",
@@ -152,13 +146,9 @@ type Router struct {
 	// provider subtype doesn't silently disappear.
 	unknownSessionStatusLogged map[string]struct{}
 	// eventHook is a test-only seam: when set, the Router invokes it for
-	// every Handle call AFTER the routing switch runs. Production code
-	// never sets a hook (the call site in Handle is nil-checked so the
-	// production path pays only one branch). Tests install a hook that
-	// forwards events to a channel so test assertions can synchronize on
-	// the routing pipeline without depending on a retired
-	// `provider:event` emission.
-	eventHook func(provider.ProviderEvent)
+	// every Handle call AFTER the routing switch runs. Stored atomically
+	// so the production path pays only one atomic load with no mutex lock.
+	eventHook atomic.Pointer[func(provider.ProviderEvent)]
 	// inflight counts Handle() calls currently in progress. Wait drains
 	// this to zero so app shutdown can flush observability + persistence
 	// without racing against events mid-persist. Counter is bumped at
@@ -481,9 +471,11 @@ func (r *Router) SetTelemetry(tracer trace.Tracer, m TurnMetrics) {
 // tests can synchronize on the routing pipeline without depending on a
 // wire-level emission. Pass nil to clear.
 func (r *Router) SetEventHook(hook func(provider.ProviderEvent)) {
-	r.mu.Lock()
-	r.eventHook = hook
-	r.mu.Unlock()
+	if hook == nil {
+		r.eventHook.Store(nil)
+		return
+	}
+	r.eventHook.Store(&hook)
 }
 
 // SetScopedWriteGate installs a test-only hook persistCodexAgentRow calls
@@ -745,11 +737,8 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 // Handle so the hook fires after the routing switch — callers can rely
 // on persistence and emissions having completed before the hook runs.
 func (r *Router) fireEventHook(evt provider.ProviderEvent) {
-	r.mu.Lock()
-	hook := r.eventHook
-	r.mu.Unlock()
-	if hook != nil {
-		hook(evt)
+	if hook := r.eventHook.Load(); hook != nil {
+		(*hook)(evt)
 	}
 }
 
@@ -856,7 +845,7 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 	// before completion, which discards the buffer — this covers
 	// completions whose aggregatedOutput is absent.
 	if itemID != "" {
-		if err := r.flushStreamingItem(evt.ThreadID, itemID); err != nil {
+		if err := r.flushAndDropStreamingItem(evt.ThreadID, itemID); err != nil {
 			return fmt.Errorf("flush streamed output before completion %s: %w", itemID, err)
 		}
 	}

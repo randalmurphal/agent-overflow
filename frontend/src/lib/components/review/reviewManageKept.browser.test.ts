@@ -109,8 +109,11 @@ async function present<T extends Element = HTMLElement>(id: string): Promise<T> 
 // fails here by name rather than later as a missing result.
 async function focusOn(id: string): Promise<HTMLElement> {
   const control = await present(id);
-  control.focus();
-  await vi.waitFor(() => expect(document.activeElement, `${id} has focus`).toBe(control));
+  await vi.waitFor(() => {
+    expect(getComputedStyle(control).visibility, `${id} is visible`).toBe('visible');
+    control.focus();
+    expect(document.activeElement, `${id} has focus`).toBe(control);
+  });
   return control;
 }
 

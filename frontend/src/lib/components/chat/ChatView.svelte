@@ -36,6 +36,7 @@
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { providerSupports } from '../../providers/catalog';
   import {
+    UI_TRACE_BUILD_GATE,
     isUiRenderTraceEnabled,
     recordUiTrace,
     scheduleDomUiTrace,
@@ -295,8 +296,8 @@
       thread.attention?.at ?? '',
       thread.hasIncompleteTurn ? 'interrupted' : '',
       thread.hasFailedTurn ? 'failed' : '',
-      pane.timelineRevision,
       pane.latestSettledTurn?.turnId ?? '',
+      pane.latestSettledTurn?.completedAt ?? '',
     ].join(':');
     if (marker === lastReadMarker) return;
     lastReadMarker = marker;
@@ -373,6 +374,7 @@
   });
 
   $effect(() => {
+    if (!UI_TRACE_BUILD_GATE) return;
     void pane.threadId;
     void pane.loading;
     void pane.items.length;

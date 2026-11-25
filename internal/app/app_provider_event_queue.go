@@ -125,17 +125,29 @@ type providerEventQueue struct {
 // enqueue appends evt to the thread's queue and returns once it is queued,
 // blocking while the queue is full. handle runs on the thread's worker.
 func (qs *providerEventQueues) enqueue(threadID string, evt provider.ProviderEvent, handle func(provider.ProviderEvent)) {
+	qs.enqueueCached(nil, threadID, evt, handle)
+}
+
+// enqueueCached is enqueue with a caller-held queue hint (such as the
+// sessionEventHandler closure) so the steady-state hot path skips the
+// registry mutex and map lookup on every event. When the cached queue has
+// retired, it refreshes from qs.queueFor and returns the live queue.
+func (qs *providerEventQueues) enqueueCached(hint *providerEventQueue, threadID string, evt provider.ProviderEvent, handle func(provider.ProviderEvent)) *providerEventQueue {
 	item := queuedProviderEvent{evt: evt, handle: handle, size: providerEventSize(evt)}
+	q := hint
 	for {
-		q := qs.queueFor(threadID)
+		if q == nil {
+			q = qs.queueFor(threadID)
+		}
 		start, queued := q.offer(item)
 		if !queued {
+			q = nil
 			continue
 		}
 		if start {
 			go qs.run(q)
 		}
-		return
+		return q
 	}
 }
 

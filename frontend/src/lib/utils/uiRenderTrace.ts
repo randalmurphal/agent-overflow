@@ -17,7 +17,7 @@ import { HOME_BACKEND } from '../transport/backendKey';
 //
 // Test mode also enables the gate so unit tests can flip `enabled` on
 // and off via the public setter.
-const UI_TRACE_BUILD_GATE: boolean =
+export const UI_TRACE_BUILD_GATE: boolean =
   import.meta.env.VITE_AGENT_OVERFLOW_UI_TRACE === '1' ||
   import.meta.env.MODE === 'test';
 
@@ -32,7 +32,7 @@ const UI_TRACE_BUILD_GATE: boolean =
 // measuring production-representative frame cadence. `DEBUG=1` sets
 // both flags (Makefile: `UI_ORACLES ?= $(DEBUG)`); test mode enables
 // both so oracle regression suites keep running.
-const UI_ORACLE_BUILD_GATE: boolean =
+export const UI_ORACLE_BUILD_GATE: boolean =
   import.meta.env.VITE_AGENT_OVERFLOW_UI_ORACLES === '1' ||
   import.meta.env.MODE === 'test';
 

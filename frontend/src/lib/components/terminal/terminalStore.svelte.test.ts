@@ -470,4 +470,17 @@ describe('pendingOutput cap', () => {
     const queue = s.tabs[0]!.pendingOutput;
     expect(dec(queue[queue.length - 1]!)).toBe('LAST');
   });
+
+  it('drainOutput advances the replay watermark so re-delivered sequences are deduplicated', () => {
+    const s = createThreadTerminalState();
+    s.addTab(makeSummary({ terminalID: 'T' }));
+    s.appendOutput('T', enc('a'), 5);
+    s.appendOutput('T', enc('b'), 6);
+    expect(s.drainOutput('T').map(dec)).toEqual(['a', 'b']);
+
+    // A replayed or duplicate chunk at or below sequence 6 is ignored.
+    s.appendOutput('T', enc('dup'), 6);
+    s.appendOutput('T', enc('new'), 7);
+    expect(s.drainOutput('T').map(dec)).toEqual(['new']);
+  });
 });

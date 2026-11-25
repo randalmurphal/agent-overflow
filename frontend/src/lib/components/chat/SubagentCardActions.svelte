@@ -65,7 +65,7 @@
     title="Move to background"
     aria-label="Move agent to background"
     data-testid="subagent-group-background-button"
-    class="opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 compact:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer disabled:cursor-default disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+    class="ao-hover-reveal opacity-0 focus-visible:opacity-100 compact:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer disabled:cursor-default disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
   >
     <Icon icon={SendToBack} size={12} />
   </button>
@@ -77,7 +77,7 @@
     title="Open in agent pane"
     aria-label="Open {agentTitle} in agent pane"
     data-testid="subagent-group-open-pane"
-    class={[navigationOnly ? 'opacity-100' : 'opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 compact:opacity-100', 'rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'].join(' ')}
+    class={[navigationOnly ? 'opacity-100' : 'ao-hover-reveal opacity-0 focus-visible:opacity-100 compact:opacity-100', 'rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'].join(' ')}
   >
     <Icon icon={PanelRightOpen} size={12} />
   </button>

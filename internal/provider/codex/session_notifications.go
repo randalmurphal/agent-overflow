@@ -41,21 +41,31 @@ var sessionSideChannelNotifications = map[string]func(*Session, json.RawMessage)
 }
 
 func (s *Session) dispatchNotification(method string, params json.RawMessage) {
+	s.dispatchNotificationWithThreadID(method, params, "")
+}
+
+func (s *Session) dispatchNotificationWithThreadID(method string, params json.RawMessage, providerThreadID string) {
 	if s.enqueueFrameIfPending(deferredChildWireEvent{
 		Method: method,
 		Params: params,
 	}) {
 		return
 	}
-	s.dispatchNotificationDirect(method, params)
+	s.dispatchNotificationDirectWithThreadID(method, params, providerThreadID)
 }
 
 func (s *Session) dispatchNotificationDirect(method string, params json.RawMessage) {
+	s.dispatchNotificationDirectWithThreadID(method, params, "")
+}
+
+func (s *Session) dispatchNotificationDirectWithThreadID(method string, params json.RawMessage, providerThreadID string) {
 	if handler, ok := sessionSideChannelNotifications[method]; ok {
 		handler(s, params)
 		return
 	}
-	providerThreadID := providerThreadIDFromParams(params)
+	if providerThreadID == "" {
+		providerThreadID = providerThreadIDFromParams(params)
+	}
 	if !s.dispatchesWireThread(providerThreadID, deferredChildWireEvent{
 		Method: method,
 		Params: params,
@@ -139,10 +149,10 @@ func (s *Session) claimNotificationOwnership(
 	if s.emitSubagentNotificationsFromRawMailboxCarrier(method, params, providerThreadID, parentToolUseID) {
 		return "", nil, true
 	}
-	if parentToolUseID != "" {
-		s.rememberAgentPathForProviderThread(providerThreadID, parentToolUseID, params)
-	}
 	if method == "thread/started" {
+		if parentToolUseID != "" {
+			s.rememberAgentPathForProviderThread(providerThreadID, parentToolUseID, params)
+		}
 		s.rememberAgentMetaForProviderThread(providerThreadID, params)
 		if parentToolUseID != "" {
 			s.registerChildMailboxTail(providerThreadID, readNestedString(params, "thread", "path"))

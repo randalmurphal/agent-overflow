@@ -19,6 +19,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { get, set, state } from 'svelte/internal/client';
 import FlipRowsHost from './svelte-patch-fixtures/FlipRowsHost.svelte';
+import FlipSiblingListsHost from './svelte-patch-fixtures/FlipSiblingListsHost.svelte';
+import FlipNestedListsHost, { type NestedGroup } from './svelte-patch-fixtures/FlipNestedListsHost.svelte';
+import FlipCascadeHost from './svelte-patch-fixtures/FlipCascadeHost.svelte';
 
 /** Interleaving log: `read:<id>`, `create:<id>`, `cancel:<id>`, `mark:*`. */
 let log: string[] = [];
@@ -152,6 +155,226 @@ describe('svelte patch: phased FLIP application on keyed-each reorder', () => {
       .map((l) => l.slice('create:'.length))
       .sort();
     expect(created).toEqual(['1', '2']);
+
+    await Promise.resolve(unmount(app)).catch(() => {});
+    target.remove();
+  });
+
+  it('batches fix() phases across removed rows without read/write interleaving', async () => {
+    const items = state<number[]>([1, 2, 3, 4]);
+    const target = document.body.appendChild(document.createElement('div'));
+    const app = mount(FlipRowsHost, {
+      target,
+      props: { getItems: () => get(items) },
+    });
+    flushSync();
+    await drainMicrotasks();
+
+    const styleLog: string[] = [];
+    const origGetComputedStyle = window.getComputedStyle;
+    vi.spyOn(window, 'getComputedStyle').mockImplementation((el: Element, pseudo?: string | null) => {
+      if (el.hasAttribute('data-id')) styleLog.push(`computed:${idOf(el)}`);
+      return origGetComputedStyle.call(window, el, pseudo);
+    });
+    const listItems = Array.from(target.querySelectorAll('li'));
+    for (const li of listItems) {
+      const id = idOf(li);
+      const rawStyle = li.style;
+      const styleProxy = new Proxy(rawStyle, {
+        set(obj, prop, value, receiver) {
+          if (prop === 'position' && value === 'absolute') styleLog.push(`position:${id}`);
+          if (prop === 'transform' && value) styleLog.push(`transform:${id}`);
+          return Reflect.set(obj, prop, value, receiver);
+        },
+      });
+      Object.defineProperty(li, 'style', {
+        configurable: true,
+        get: () => styleProxy,
+      });
+    }
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      const id = idOf(this);
+      if (this.hasAttribute('data-id')) {
+        styleLog.push(`rect:${id}`);
+        // Once position:absolute is applied, simulate collapsing into static top=0
+        // so removed rows need compensating translateY transforms.
+        const isAbs = (this as HTMLElement).style.position === 'absolute';
+        const idx = Number(id) - 1;
+        return new DOMRect(0, isAbs ? 0 : idx * 10, 100, 10);
+      }
+      return new DOMRect(0, 0, 100, 10);
+    });
+
+    // Remove 3 rows at once while keeping row 4.
+    set(items, [4]);
+    flushSync();
+    await drainMicrotasks();
+
+    const computedIdxs = phaseIndices(styleLog, 'computed');
+    const posIdxs = phaseIndices(styleLog, 'position');
+    const transformIdxs = phaseIndices(styleLog, 'transform');
+    // Pre-fix measure rects are followed by computed reads, then position writes,
+    // then post-detach rect reads, then transform writes — zero interleaving.
+    expect(computedIdxs).toHaveLength(3);
+    expect(posIdxs).toHaveLength(3);
+    expect(transformIdxs).toHaveLength(2); // rows 2 and 3 moved from y=10,20 to y=0
+    expect(Math.min(...posIdxs)).toBeGreaterThan(Math.max(...computedIdxs));
+    const postPosRects = phaseIndices(styleLog, 'rect').filter((i) => i > Math.max(...posIdxs));
+    expect(postPosRects.length).toBeGreaterThanOrEqual(3);
+    expect(Math.min(...transformIdxs)).toBeGreaterThan(Math.max(...postPosRects.slice(0, 3)));
+
+    await Promise.resolve(unmount(app)).catch(() => {});
+    target.remove();
+  });
+
+  it('batches FLIP destination reads and animation creates across sibling animated each blocks', async () => {
+    const itemsA = state<string[]>(['a1', 'a2', 'a3']);
+    const itemsB = state<string[]>(['b1', 'b2', 'b3']);
+    const target = document.body.appendChild(document.createElement('div'));
+    const app = mount(FlipSiblingListsHost, {
+      target,
+      props: {
+        getItemsA: () => get(itemsA),
+        getItemsB: () => get(itemsB),
+      },
+    });
+    flushSync();
+    await drainMicrotasks();
+
+    // Reorder BOTH sibling lists in the same reactive flush.
+    // Every destination read across BOTH lists must finish before ANY
+    // animation is created (zero cross-block read/write interleaving in the
+    // shared FLIP microtask).
+    log.push('mark:sibling-reorder');
+    set(itemsA, ['a3', 'a1', 'a2']);
+    set(itemsB, ['b3', 'b1', 'b2']);
+    flushSync();
+    await drainMicrotasks();
+
+    const reorderEntries = afterMark();
+    const reorderReads = phaseIndices(reorderEntries, 'read');
+    const reorderCreates = phaseIndices(reorderEntries, 'create');
+    expect(reorderReads).toHaveLength(12); // 6 pre-reads + 6 post-reads
+    expect(reorderCreates).toHaveLength(6);
+    expect(Math.min(...reorderCreates)).toBeGreaterThan(Math.max(...reorderReads));
+
+    await Promise.resolve(unmount(app)).catch(() => {});
+    target.remove();
+  });
+
+  it('reorders nested animated each blocks in one flush without double-measuring or interleaving creates', async () => {
+    const groups = state<NestedGroup[]>([
+      { id: 'g1', items: ['g1-a', 'g1-b'] },
+      { id: 'g2', items: ['g2-a', 'g2-b'] },
+    ]);
+    const target = document.body.appendChild(document.createElement('div'));
+    const app = mount(FlipNestedListsHost, {
+      target,
+      props: {
+        getGroups: () => get(groups),
+      },
+    });
+    flushSync();
+    await drainMicrotasks();
+
+    log.push('mark:nested-reorder');
+    set(groups, [
+      { id: 'g2', items: ['g2-b', 'g2-a'] },
+      { id: 'g1', items: ['g1-b', 'g1-a'] },
+    ]);
+    flushSync();
+    await drainMicrotasks();
+
+    const entries = afterMark();
+    const reads = phaseIndices(entries, 'read');
+    const creates = phaseIndices(entries, 'create');
+    // 2 outer groups + 4 inner items = 6 animated elements; each gets 1 pre-read
+    // + 1 destination read = 12 reads, and all 6 animate once after all reads.
+    expect(reads).toHaveLength(12);
+    expect(creates).toHaveLength(6);
+    expect(Math.min(...creates)).toBeGreaterThan(Math.max(...reads));
+
+    await Promise.resolve(unmount(app)).catch(() => {});
+    target.remove();
+  });
+
+  it('recovers cleanly if a FLIP animation callback throws during microtask drain', async () => {
+    const items = state<number[]>([1, 2, 3]);
+    const target = document.body.appendChild(document.createElement('div'));
+    const app = mount(FlipRowsHost, {
+      target,
+      props: { getItems: () => get(items) },
+    });
+    flushSync();
+    await drainMicrotasks();
+
+    // Force Element.prototype.animate to throw once during the microtask drain.
+    let shouldThrow = true;
+    vi.spyOn(Element.prototype, 'animate').mockImplementation(function (this: Element) {
+      if (shouldThrow) {
+        shouldThrow = false;
+        throw new Error('simulated FLIP failure');
+      }
+      const id = idOf(this);
+      log.push(`create:${id}`);
+      return {
+        onfinish: null,
+        effect: null,
+        cancel: () => {
+          log.push(`cancel:${id}`);
+        },
+      } as unknown as Animation;
+    });
+
+    expect(() => {
+      set(items, [3, 1, 2]);
+      flushSync();
+    }).toThrow('simulated FLIP failure');
+
+    // A subsequent reorder must not stay wedged behind a stale scheduled flag.
+    log.push('mark:after-throw');
+    set(items, [2, 3, 1]);
+    flushSync();
+    await drainMicrotasks();
+
+    const entries = afterMark();
+    const creates = phaseIndices(entries, 'create');
+    expect(creates).toHaveLength(3);
+
+    await Promise.resolve(unmount(app)).catch(() => {});
+    target.remove();
+  });
+
+  it('deduplicates effects when an $effect triggers a cascading reorder in the same flush', async () => {
+    const items = state<number[]>([1, 2, 3, 4]);
+    const target = document.body.appendChild(document.createElement('div'));
+    const app = mount(FlipCascadeHost, {
+      target,
+      props: {
+        getItems: () => get(items),
+        onFirstReorder: () => {
+          set(items, [3, 4, 1, 2]);
+        },
+      },
+    });
+    flushSync();
+    await drainMicrotasks();
+
+    log.push('mark:cascade');
+    set(items, [4, 1, 2, 3]);
+    flushSync();
+    await drainMicrotasks();
+
+    const entries = afterMark();
+    const creates = entries.filter((l) => l.startsWith('create:'));
+    // Every row must receive exactly 1 animation (never double-applied across
+    // the two reconciles inside the same flush, which would orphan a WAAPI
+    // animation).
+    expect(creates).toHaveLength(4);
+    expect(new Set(creates).size).toBe(4);
+    expect(Math.min(...phaseIndices(entries, 'create'))).toBeGreaterThan(
+      Math.max(...phaseIndices(entries, 'read')),
+    );
 
     await Promise.resolve(unmount(app)).catch(() => {});
     target.remove();

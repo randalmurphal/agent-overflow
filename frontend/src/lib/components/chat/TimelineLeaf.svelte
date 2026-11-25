@@ -71,7 +71,10 @@
   // re-pushes it is marked from the record (utils/discardedItems.ts).
   const discarded = $derived(
     (displayItem.kind === 'assistant_text' || displayItem.kind === 'thinking')
-      && (Boolean(displayItem.discardedBy) || discardedItemIds(pane.items).has(displayItem.id)),
+      && (
+        Boolean(displayItem.discardedBy)
+        || (pane.discardedItemIds ?? discardedItemIds(pane.items)).has(displayItem.id)
+      ),
   );
 </script>
 

@@ -1170,9 +1170,50 @@ func (s *Service) AddRecentWorkspace(path string) {
 	s.addRecentWorkspace("", DeviceDesktop, path)
 }
 
+func recentWorkspacesAlreadyHead(recent []string, path string) bool {
+	if len(recent) == 0 || len(recent) > 10 || recent[0] != path {
+		return false
+	}
+	for i := 1; i < len(recent); i++ {
+		if recent[i] == path {
+			return false
+		}
+		for j := 1; j < i; j++ {
+			if recent[j] == recent[i] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func (s *Service) addRecentWorkspace(bucket string, class DeviceClass, path string) {
 	path = strings.TrimSpace(path)
 	if path == "" {
+		return
+	}
+
+	// Fast no-op check under s.mu.RLock so concurrent AddRecentWorkspace calls
+	// cannot race a pre-commit UI state read against an active s.mutate write.
+	// Matches TestAddRecentWorkspaceAnnouncesOnceThenStaysSilent.
+	s.mu.RLock()
+	alreadyHead := false
+	deviceScope := bucket
+	if deviceScope == "" {
+		deviceScope = s.backendBucket
+	}
+	if s.store != nil && deviceScope != "" {
+		if rows, err := s.store.GetUIState(deviceScope); err == nil {
+			if raw, ok := rows["recentWorkspaces"]; ok {
+				var recent []string
+				if json.Unmarshal([]byte(raw), &recent) == nil && recentWorkspacesAlreadyHead(recent, path) {
+					alreadyHead = true
+				}
+			}
+		}
+	}
+	s.mu.RUnlock()
+	if alreadyHead {
 		return
 	}
 

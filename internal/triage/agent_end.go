@@ -89,6 +89,12 @@ func (r *Router) persistAgentEndLocked(item store.Item, payload *store.Payload, 
 		rows = append(rows, row.Item)
 	}
 	r.emitItemUpserts(threadID, rows)
+	var flushErrs []error
+	for _, row := range settled {
+		if err := r.flushAndDropStreamingItem(threadID, row.Item.ID); err != nil {
+			flushErrs = append(flushErrs, fmt.Errorf("flush settled agent item %s/%s: %w", threadID, row.Item.ID, err))
+		}
+	}
 	for _, row := range rows {
 		r.metrics.ItemsPersisted.Add(context.Background(), 1,
 			metric.WithAttributes(attribute.String("kind", row.Kind)))
@@ -97,7 +103,7 @@ func (r *Router) persistAgentEndLocked(item store.Item, payload *store.Payload, 
 		r.metrics.PayloadsPersisted.Add(context.Background(), 1,
 			metric.WithAttributes(attribute.String("kind", payload.Kind)))
 	}
-	return errors.Join(streamErr, queueErr, requestErr)
+	return errors.Join(streamErr, queueErr, requestErr, errors.Join(flushErrs...))
 }
 
 // settleAgentStreams settles every streaming row end's agent owns through
@@ -140,24 +146,23 @@ func (r *Router) settleAgentStreams(threadID string, end agentEnd) error {
 // router holds it: the entry its key names, when that entry writes this
 // row.
 func (r *Router) takeAgentStream(threadID string, stream store.AgentStream) (activeStreamBlock, bool) {
-	key := activeStreamKey(stream.TurnIndex, stream.ParentID, stream.ProviderItemID)
+	key := makeStreamBlockKey(stream.TurnIndex, stream.ParentID, stream.ProviderItemID)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := r.threadStateIfPresent(threadID)
 	if st == nil {
 		return activeStreamBlock{}, false
 	}
-	active, refs := st.activeTextBlocks, st.activeTextBlockRefs
+	blocks := st.activeTextBlocks
 	if stream.Kind == itemKindThinking {
-		active, refs = st.activeThinkingBlocks, st.activeThinkingBlockRefs
+		blocks = st.activeThinkingBlocks
 	}
-	ref, ok := refs[key]
-	if !ok || !active[key] || ref.itemID != stream.ID {
+	ref := blocks[key]
+	if ref == nil || ref.itemID != stream.ID {
 		return activeStreamBlock{}, false
 	}
-	delete(active, key)
-	delete(refs, key)
-	return ref, true
+	delete(blocks, key)
+	return *ref, true
 }
 
 // agentOwnedOpenScopes reports which scopes of the thread's open streams,
@@ -174,13 +179,13 @@ func (r *Router) agentOwnedOpenScopes(threadID string) (map[string]bool, error) 
 				scopes = append(scopes, scope)
 			}
 		}
-		for key, ref := range st.activeTextBlockRefs {
-			if st.activeTextBlocks[key] {
+		for _, ref := range st.activeTextBlocks {
+			if ref != nil {
 				add(ref.scope)
 			}
 		}
-		for key, ref := range st.activeThinkingBlockRefs {
-			if st.activeThinkingBlocks[key] {
+		for _, ref := range st.activeThinkingBlocks {
+			if ref != nil {
 				add(ref.scope)
 			}
 		}
@@ -209,20 +214,25 @@ func (r *Router) agentOwnedOpenScopes(threadID string) (map[string]bool, error) 
 // every turn when allTurns is set, except the ones an agent owns. Caller
 // holds r.mu.
 func (r *Router) dropTurnStreamsLocked(threadID string, st *threadState, turnIndex int, allTurns bool, agentScopes map[string]bool) {
-	drop := func(active map[string]bool, refs map[string]activeStreamBlock) {
-		for key, ref := range refs {
-			if (!allTurns && ref.turnIndex != turnIndex) || agentScopes[ref.scope] {
+	drop := func(blocks map[streamBlockKey]*activeStreamBlock) {
+		for key, ref := range blocks {
+			if ref == nil || (!allTurns && ref.turnIndex != turnIndex) || agentScopes[ref.scope] {
 				continue
 			}
-			if active[key] {
-				r.decStreamingCounts(threadID, ref.scope)
-			}
-			delete(active, key)
-			delete(refs, key)
+			r.decStreamingCounts(threadID, ref.scope)
+			delete(blocks, key)
 			delete(st.streamingPathRefsLast, ref.itemID)
+			if buffer := st.streamPersistBuffers[ref.itemID]; buffer != nil && buffer.content.Len() == 0 {
+				if buffer.timer != nil {
+					buffer.timer.Stop()
+					buffer.timer = nil
+					buffer.timerArmed = false
+				}
+				delete(st.streamPersistBuffers, ref.itemID)
+			}
 		}
 	}
-	drop(st.activeTextBlocks, st.activeTextBlockRefs)
-	drop(st.activeThinkingBlocks, st.activeThinkingBlockRefs)
+	drop(st.activeTextBlocks)
+	drop(st.activeThinkingBlocks)
 	dropStreamBlockRowsLocked(st, turnIndex, allTurns, agentScopes)
 }

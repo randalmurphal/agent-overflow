@@ -9,6 +9,7 @@
     getPaneLayoutItems,
     minAnchorPaneLayoutWidths,
     paneItemMinWidthPx,
+    paneLayoutKindOf,
   } from '../../stores/paneLayout.svelte';
   import { getPane } from '../../stores/panes.svelte';
   import { MAX_PANE_WIDTH_PX } from '../../utils/paneWidths';
@@ -37,8 +38,8 @@
 
   let { leftPaneId, rightPaneId, leftPaneWidthPx, getHostEl, onDragEnd }: Props = $props();
   let leftPaneMinWidthPx = $derived.by(() => {
-    const item = getPaneLayoutItems().find((candidate) => candidate.paneId === leftPaneId);
-    return item ? paneItemMinWidthPx(item, getMinPaneWidth()) : getMinPaneWidth();
+    const kind = paneLayoutKindOf(leftPaneId);
+    return kind ? paneItemMinWidthPx({ kind }, getMinPaneWidth()) : getMinPaneWidth();
   });
 
   // A double-click that was really two fine-tune drags must not nuke

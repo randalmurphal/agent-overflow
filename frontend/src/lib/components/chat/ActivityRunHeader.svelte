@@ -78,16 +78,17 @@
   let scopeCanBeRunning = $derived(
     pane.agentScopeRootId === '' || pane.timelineTurns.activeKey !== null,
   );
-  // The fourth signal is the registry's revision: the members the pane does
-  // NOT hold reach the header through the run's record (`summaryFacts`),
-  // and every change to a record bumps it.
+  // The fourth signal is the registry's windowRevision: the members the pane
+  // does NOT hold reach the header through the run's record (`summaryFacts`),
+  // and every change to a record bumps windowRevision (without waking headers
+  // on unrelated collapse toggles, mount-window scrolls, or focus requests).
   let summaryKey = $derived(compositeKey(
     pane.thread?.provider ?? '',
     run.runId,
     run.membershipEpoch,
     pane.activityRuns.memberContentRevision(run.runId),
     pane.activityRuns.wholesaleGeneration,
-    pane.activityRuns.revision,
+    pane.activityRuns.windowRevision,
     scopeCanBeRunning,
   ));
   let summary = $derived.by(() => {

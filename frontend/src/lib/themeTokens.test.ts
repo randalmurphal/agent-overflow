@@ -316,13 +316,30 @@ function findDeadTokens(text: string, pattern: RegExp, tokens: Set<string>): str
   return [...dead];
 }
 
+const CSS_VAR_DECL = /(--[a-zA-Z0-9_-]+)\s*:/g;
+const CSS_VAR_SET_PROP = /setProperty\(\s*['"](--[a-zA-Z0-9_-]+)['"]/g;
+const CSS_VAR_STYLE_DIRECTIVE = /style:(--[a-zA-Z0-9_-]+)/g;
+const CSS_VAR_USE = /var\(\s*(--[a-zA-Z0-9_-]+)\s*(?:,|\))/g;
+
+/** Custom properties referenced via `var(--…)` that have no definition in `defined`. */
+function findDeadCssVars(text: string, defined: ReadonlySet<string>): string[] {
+  const dead = new Set<string>();
+  for (const match of text.matchAll(CSS_VAR_USE)) {
+    const name = match[1]!;
+    if (!defined.has(name)) dead.add(name);
+  }
+  return [...dead].sort();
+}
+
 interface Scan {
   readonly rawClasses: Map<string, string[]>;
   readonly hexes: Map<string, string[]>;
+  readonly deadCssVars: Map<string, string[]>;
+  readonly definedCssVarCount: number;
 }
 
 /**
- * One pass over the tree, producing both rules' offender maps.
+ * One pass over the tree, producing every rule's offender map.
  *
  * Streamed on purpose: each file is read, stripped, matched and DROPPED. The
  * previous shape held every file's text plus a stripped copy for the whole
@@ -331,10 +348,22 @@ interface Scan {
 function scan(): Scan {
   const rawClasses = new Map<string, string[]>();
   const hexes = new Map<string, string[]>();
+  const definedCssVars = new Set<string>();
+  const cssVarUses = new Map<string, Set<string>>();
 
   for (const file of SCANNED.files(SOURCE_EXTENSIONS)) {
     const path = repoPath(file);
     const text = stripComments(SCANNED.text(file), path);
+
+    for (const match of text.matchAll(CSS_VAR_DECL)) definedCssVars.add(match[1]!);
+    if (!path.endsWith('.css')) {
+      for (const match of text.matchAll(CSS_VAR_SET_PROP)) definedCssVars.add(match[1]!);
+      for (const match of text.matchAll(CSS_VAR_STYLE_DIRECTIVE)) definedCssVars.add(match[1]!);
+    } else {
+      const uses = new Set<string>();
+      for (const match of text.matchAll(CSS_VAR_USE)) uses.add(match[1]!);
+      if (uses.size > 0) cssVarUses.set(path, uses);
+    }
 
     const reasons: string[] = [];
     const palette = findAll(text, RAW_PALETTE_CLASS);
@@ -361,7 +390,15 @@ function scan(): Scan {
     if (found.length > 0) hexes.set(path, [`hex color literals: ${found.join(', ')}`]);
   }
 
-  return { rawClasses, hexes };
+  const deadCssVars = new Map<string, string[]>();
+  for (const [path, uses] of cssVarUses) {
+    const missing = [...uses].filter((name) => !definedCssVars.has(name)).sort();
+    if (missing.length > 0) {
+      deadCssVars.set(path, [`var(--…) references with no definition: ${missing.join(', ')}`]);
+    }
+  }
+
+  return { rawClasses, hexes, deadCssVars, definedCssVarCount: definedCssVars.size };
 }
 
 const scanned = scan();
@@ -382,6 +419,16 @@ describe('theme tokens', () => {
       HEX_ALLOWLIST,
       'New hex color literals.',
       'Define the value as a token in app.css / styles/ and reference it with var(--…) or its utility. If the literal is genuinely not a UI color, add it here WITH the reason.',
+    );
+  });
+
+  it('resolves every stylesheet var(--…) reference to a defined custom property', () => {
+    expect(scanned.definedCssVarCount).toBeGreaterThan(80);
+    expectAllowlistExact(
+      scanned.deadCssVars,
+      {},
+      'Undefined CSS custom properties.',
+      'Reference an existing token defined in app.css, styles/tokens.css, styles/syntax.css, or set at runtime; an undefined var(--…) turns the entire CSS declaration invalid at computed-value time (transparent).',
     );
   });
 
@@ -466,6 +513,16 @@ describe('theme tokens', () => {
       const deadShadow = 'shadow-menu-' + 'strong';
       expect(findDeadTokens(deadShadow, TOKEN_SHADOW_UTILITY, SHADOW_TOKENS)).toEqual([deadShadow]);
       expect(findDeadTokens('shadow-' + 'menu', TOKEN_SHADOW_UTILITY, SHADOW_TOKENS)).toEqual([]);
+    });
+
+    it('catches undefined CSS custom properties in raw var(--…) expressions', () => {
+      const defined = new Set(['--text-primary', '--accent']);
+      expect(
+        findDeadCssVars('background-color: color-mix(in oklab, var(--' + 'fg) 4%, transparent);', defined),
+      ).toEqual(['--' + 'fg']);
+      expect(
+        findDeadCssVars('background-color: color-mix(in oklab, var(--text-primary) 4%, transparent);', defined),
+      ).toEqual([]);
     });
   });
 });

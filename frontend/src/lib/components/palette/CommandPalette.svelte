@@ -49,7 +49,7 @@
   // Every time the palette opens, reset state and focus the list
   // root so plain j/k navigates immediately. mod+/ toggles focus to
   // the input for filtering.
-  $effect(() => {
+  $effect.pre(() => {
     if (open && !wasOpen) {
       targetPaneId = context?.paneId ?? null;
       query = '';

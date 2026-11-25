@@ -80,6 +80,8 @@ export interface BuildTerminalOptions {
 export interface BuiltTerminal {
   term: Terminal;
   fit: FitAddon;
+  /** True when the WebGL2 renderer attached a live canvas. */
+  readonly hasWebgl: boolean;
   /**
    * Fires after every change to the buffer: parsed output (which covers a
    * full reset, the alternate screen and scrollback trimming), a resize,
@@ -95,6 +97,14 @@ export interface BuiltTerminal {
   paste: () => void;
   /** The clipboard text, for a paste that goes elsewhere (the find bar). */
   readClipboard: () => Promise<string>;
+  /** Update lifecycle/input callbacks when reusing a warm terminal instance. */
+  rebind(options: BuildTerminalOptions): void;
+  /** Attach the xterm host element and contextmenu handler to a mount box. */
+  attachMount(mount: HTMLDivElement): void;
+  /** Detach the xterm host element and contextmenu handler without disposing WebGL. */
+  detachMount(): void;
+  /** Release WebGL2 resources, DOM listeners, find layer and the xterm instance. */
+  dispose(): void;
 }
 
 // Build the xterm instance with its addons attached to the mount node. Extracted
@@ -106,9 +116,18 @@ export interface BuiltTerminal {
 // action with the same failure toast. The Unicode 11 width tables
 // (`terminal.unicode`) need `allowProposedApi`.
 export function buildTerminal(
-  mount: HTMLDivElement,
-  { onInput, isDisposed, acceptsPaste }: BuildTerminalOptions,
+  initialMount: HTMLDivElement,
+  initialOptions: BuildTerminalOptions,
 ): BuiltTerminal {
+  let currentOptions: BuildTerminalOptions = { ...initialOptions };
+  let currentMount: HTMLDivElement | null = null;
+  let webglAddon: WebglAddon | null = null;
+  let hasWebgl = false;
+  let disposed = false;
+
+  const host = initialMount.ownerDocument.createElement('div');
+  host.style.cssText = 'position:relative;flex:1 1 0%;min-height:0;width:100%;height:100%';
+
   const terminal = new Terminal({
     convertEol: false,
     cursorBlink: true,
@@ -145,7 +164,6 @@ export function buildTerminal(
   // document-level link delegate uses, which validates http(s) and picks
   // the host binding or window.open by run mode.
   terminal.loadAddon(new WebLinksAddon((_event, uri) => void handleExternalURL(uri)));
-  terminal.open(mount);
 
   // `clear()` and `reset()` change the buffer without a write, so they
   // announce themselves here, whoever calls them.
@@ -173,7 +191,7 @@ export function buildTerminal(
   // The surface floats its find bar over the top of the grid
   // (data-terminal-find-overlay inside data-terminal-find-host).
   function findOverlay(): Element | null {
-    return mount.closest('[data-terminal-find-host]')?.querySelector('[data-terminal-find-overlay]') ?? null;
+    return host.closest('[data-terminal-find-host]')?.querySelector('[data-terminal-find-overlay]') ?? null;
   }
   function obscured(): TerminalObscured {
     const overlay = findOverlay();
@@ -205,7 +223,7 @@ export function buildTerminal(
         addToast('error', 'Copy failed: clipboard unavailable');
         return;
       }
-      if (!isDisposed?.()) terminal.clearSelection();
+      if (!disposed && !currentOptions.isDisposed?.()) terminal.clearSelection();
     });
   }
 
@@ -225,11 +243,20 @@ export function buildTerminal(
   }
 
   function pasteClipboard(): void {
+    const capturedOptions = currentOptions;
     readClipboardText()
       .then((text) => {
         // The surface may have unmounted while the clipboard read was in
-        // flight; never write into a disposed xterm.
-        if (text && !isDisposed?.() && (acceptsPaste?.() ?? true)) terminal.paste(text);
+        // flight; never write into a disposed or detached xterm.
+        if (
+          text &&
+          !disposed &&
+          capturedOptions === currentOptions &&
+          !capturedOptions.isDisposed?.() &&
+          (capturedOptions.acceptsPaste?.() ?? true)
+        ) {
+          terminal.paste(text);
+        }
       })
       .catch((err) => {
         console.error('terminal: clipboard paste failed', err);
@@ -247,12 +274,42 @@ export function buildTerminal(
   // not paste the clipboard into the shell. Nothing is prevented either, so
   // an unhandled synthetic event is forgotten and the engine keeps its own
   // touch selection. The key row carries Paste on that layout.
-  mount.addEventListener('contextmenu', (event) => {
+  function handleContextMenu(event: MouseEvent): void {
     if (isCompactLayout()) return;
     event.preventDefault();
     if (terminal.hasSelection()) copySelection();
     else pasteClipboard();
-  });
+  }
+
+  function detachMount(): void {
+    // Svelte 5 detaches the DOM before running `onDestroy`, so removing a
+    // focused terminal never dispatches a native `blur` on xterm's helper
+    // textarea. Explicitly blur while still alive so CursorBlinkStateManager
+    // stops its 600ms timer while parked and unfocused warm reattaches never
+    // render a phantom active cursor.
+    if (!disposed && terminal.textarea) {
+      terminal.blur();
+      if (terminal.element?.classList.contains('focus')) {
+        terminal.textarea.dispatchEvent(new FocusEvent('blur'));
+      }
+    }
+    if (currentMount) {
+      currentMount.removeEventListener('contextmenu', handleContextMenu);
+      currentMount = null;
+    }
+    if (host.parentNode) host.remove();
+  }
+
+  function attachMount(mount: HTMLDivElement): void {
+    if (currentMount === mount && host.parentNode === mount) return;
+    detachMount();
+    currentMount = mount;
+    mount.appendChild(host);
+    mount.addEventListener('contextmenu', handleContextMenu);
+  }
+
+  attachMount(initialMount);
+  terminal.open(host);
 
   // Runs on every keydown in a focused xterm. It first fully consumes the
   // in-widget special cases handled below — Shift+Enter (newline) and the
@@ -287,7 +344,7 @@ export function buildTerminal(
     ) {
       event.preventDefault();
       event.stopPropagation();
-      onInput('\n');
+      currentOptions.onInput('\n');
       return false;
     }
     const chord = clipboardChordFor(event, isMac);
@@ -320,10 +377,15 @@ export function buildTerminal(
   try {
     const webgl = new WebglAddon();
     webgl.onContextLoss(() => {
+      if (disposed) return;
       console.warn('terminal: WebGL context lost; reverting to DOM renderer');
+      webglAddon = null;
+      hasWebgl = false;
       webgl.dispose();
     });
     terminal.loadAddon(webgl);
+    webglAddon = webgl;
+    hasWebgl = Boolean(terminal.element?.querySelector('canvas'));
   } catch (err) {
     console.warn(
       'terminal: WebGL renderer unavailable; using DOM renderer ' +
@@ -332,14 +394,50 @@ export function buildTerminal(
     );
   }
 
+  const findLayer = createTerminalFindLayer(host, terminal);
+
+  function dispose(): void {
+    if (disposed) return;
+    disposed = true;
+    detachMount();
+    findLayer.clear();
+    bufferListeners.clear();
+    if (webglAddon) {
+      const canvases = terminal.element?.querySelectorAll('canvas') ?? [];
+      for (const canvas of canvases) {
+        try {
+          const gl = canvas.getContext('webgl2') ?? canvas.getContext('webgl');
+          gl?.getExtension('WEBGL_lose_context')?.loseContext();
+        } catch {
+          // Context already lost or unavailable in headless environments.
+        }
+      }
+      try {
+        webglAddon.dispose();
+      } catch {
+        // Ignore teardown races if the addon was already detached.
+      }
+      webglAddon = null;
+      hasWebgl = false;
+    }
+    terminal.dispose();
+  }
+
   return {
     term: terminal,
     fit: fitAddon,
+    get hasWebgl() { return hasWebgl; },
     onBufferChange: (listener) => listen(bufferListeners, listener),
     obscured,
     onObscuredChange,
-    findLayer: createTerminalFindLayer(mount, terminal),
+    findLayer,
     paste: pasteClipboard,
     readClipboard: readClipboardText,
+    rebind(nextOptions) {
+      currentOptions = { ...nextOptions };
+    },
+    attachMount,
+    detachMount,
+    dispose,
   };
 }

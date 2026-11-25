@@ -101,11 +101,48 @@ func clipText(text string, max int) string {
 // exactSize is a value's encoded length. Clip and drop measure exactly so
 // the budget walk never believes it freed bytes it did not.
 func exactSize(value any) int {
+	if s, ok := value.(string); ok {
+		return jsonStringEncodedLen(s)
+	}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return 0
 	}
 	return len(encoded)
+}
+
+// jsonStringEncodedLen returns len(json.Marshal(s)) without allocating.
+// Mirrors encoding/json's HTML-escaped string encoder byte-for-byte.
+func jsonStringEncodedLen(s string) int {
+	n := 2 // surrounding quotes
+	for i := 0; i < len(s); {
+		b := s[i]
+		if b < utf8.RuneSelf {
+			if b >= 0x20 && b != '\\' && b != '"' && b != '<' && b != '>' && b != '&' {
+				n++
+			} else {
+				switch b {
+				case '\\', '"', '\b', '\f', '\n', '\r', '\t':
+					n += 2
+				default:
+					n += 6
+				}
+			}
+			i++
+			continue
+		}
+		c, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case c == utf8.RuneError && size == 1:
+			n += 3 // UTF-8 encoding of U+FFFD
+		case c == '\u2028' || c == '\u2029':
+			n += 6
+		default:
+			n += size
+		}
+		i += size
+	}
+	return n
 }
 
 // elideLargestLeaves clips leaf values in the decoded JSON value `raw`

@@ -32,11 +32,12 @@ const prListReadConcurrency = 4
 // graced a transient failure held back once while rows are on screen,
 // detailFail the active detail failure.
 type prListProjectState struct {
-	list       ProjectPRList
-	read       bool
-	fail       prForgeFailure
-	detailFail prForgeFailure
-	graced     bool
+	list            ProjectPRList
+	semanticEncoded []byte
+	read            bool
+	fail            prForgeFailure
+	detailFail      prForgeFailure
+	graced          bool
 }
 
 func (a *App) listProjectPRs(ctx context.Context, repo gitops.RepoReference) ([]gitops.PRListRow, error) {
@@ -110,7 +111,10 @@ func (a *App) pollPRList(ctx context.Context, pump *prListPump) (bool, time.Time
 	if !pump.seeded {
 		pump.seeded = true
 		for key, list := range stored {
-			pump.projects[key] = &prListProjectState{list: list, read: true}
+			semantic := list
+			semantic.ReadAt = ""
+			semJSON, _ := json.Marshal(semantic)
+			pump.projects[key] = &prListProjectState{list: list, semanticEncoded: semJSON, read: true}
 		}
 	}
 	for i, project := range projects {
@@ -160,10 +164,29 @@ func (a *App) pollPRList(ctx context.Context, pump *prListPump) (bool, time.Time
 		read.rows, read.err = a.listProjectPRs(round, read.repo)
 		results <- read
 	})
-	for range order {
+	for i := 0; i < len(order); {
 		read := <-results
-		if ctx.Err() == nil {
-			a.landPRListRead(pump, read)
+		i++
+		if ctx.Err() != nil {
+			continue
+		}
+		changed := a.landPRListRead(pump, read)
+		// Drain any other repository reads already buffered in results before
+		// publishing, avoiding O(N^2) snapshot marshals when repos finish together.
+	drain:
+		for i < len(order) {
+			select {
+			case next := <-results:
+				i++
+				if ctx.Err() == nil && a.landPRListRead(pump, next) {
+					changed = true
+				}
+			default:
+				break drain
+			}
+		}
+		if changed {
+			a.publishPRList(pump)
 		}
 	}
 	if ctx.Err() != nil {
@@ -177,8 +200,9 @@ func (a *App) pollPRList(ctx context.Context, pump *prListPump) (bool, time.Time
 }
 
 // landPRListRead folds one repository's read into the pump, stores a
-// successful one and publishes.
-func (a *App) landPRListRead(pump *prListPump, read prListRepoRead) {
+// successful one (refreshing SQLite read_at even when semantically unchanged),
+// and reports whether the published pump state changed.
+func (a *App) landPRListRead(pump *prListPump, read prListRepoRead) bool {
 	var detailErr *gitops.PRListDetailError
 	listed := read.err == nil || errors.As(read.err, &detailErr)
 	var tickets [][]store.KeyedTicket
@@ -191,7 +215,7 @@ func (a *App) landPRListRead(pump *prListPump, read prListRepoRead) {
 	a.prUpdates.mu.Lock()
 	if pump.DeadLocked() {
 		a.prUpdates.mu.Unlock()
-		return
+		return false
 	}
 	state := pump.projects[read.key]
 	if state == nil {
@@ -199,7 +223,10 @@ func (a *App) landPRListRead(pump *prListPump, read prListRepoRead) {
 		pump.projects[read.key] = state
 	}
 	var record []byte
+	var fallbackList *ProjectPRList
 	readAt := time.Now()
+	changed := false
+	touchReadAt := false
 	switch {
 	case listed:
 		if detailErr == nil {
@@ -209,13 +236,32 @@ func (a *App) landPRListRead(pump *prListPump, read prListRepoRead) {
 			log.Printf("pr list: detail of %s failed (id: %s): %v", read.key, fail.correlationID, read.err)
 		}
 		projectID, name := pump.projectNamingLocked(read.repo)
-		state.list = prListReadOf(projectID, name, read.repo, read.rows, tickets, readAt, state.detailFail.wire)
+		nextList := prListReadOf(projectID, name, read.repo, read.rows, tickets, readAt, state.detailFail.wire)
+		semantic := nextList
+		semantic.ReadAt = ""
+		semanticJSON, semErr := json.Marshal(semantic)
+		wasFailing := state.fail.failing() || state.graced
+		semanticChanged := !state.read || wasFailing || semErr != nil || string(semanticJSON) != string(state.semanticEncoded)
 		state.read, state.fail, state.graced = true, prForgeFailure{}, false
-		encoded, err := json.Marshal(state.list)
-		if err != nil {
-			log.Printf("pr list: encode the read of %s: %v", read.key, err)
+		if semanticChanged {
+			state.list = nextList
+			if semErr == nil {
+				state.semanticEncoded = semanticJSON
+			}
+			changed = true
+			encoded, err := json.Marshal(state.list)
+			if err != nil {
+				log.Printf("pr list: encode the read of %s: %v", read.key, err)
+			} else {
+				record = encoded
+			}
 		} else {
-			record = encoded
+			touchReadAt = true
+			if state.list.ReadAt == "" {
+				state.list.ReadAt = nextList.ReadAt
+			}
+			copyList := state.list
+			fallbackList = &copyList
 		}
 	default:
 		fail := a.newRepoForgeFailure(read.repo, read.err)
@@ -226,16 +272,24 @@ func (a *App) landPRListRead(pump *prListPump, read prListRepoRead) {
 		case state.fail.key != fail.key:
 			state.graced = false
 			state.fail = fail
+			changed = true
 			log.Printf("pr list: read of %s failed (id: %s): %v", read.key, fail.correlationID, read.err)
 		default:
 			state.graced = false
 		}
 	}
 	a.prUpdates.mu.Unlock()
+	writer := prListWriter{gen: pump.gen, pump: pump}
 	if record != nil {
-		a.storePRListRead(prListWriter{gen: pump.gen, pump: pump}, store.PRListProject{RepoKey: read.key, ProjectJSON: record, ReadAt: readAt.UnixMilli()})
+		a.storePRListRead(writer, store.PRListProject{RepoKey: read.key, ProjectJSON: record, ReadAt: readAt.UnixMilli()})
+	} else if touchReadAt {
+		if owned, updated := a.touchPRListReadAt(writer, read.key, readAt.UnixMilli()); owned && !updated && fallbackList != nil {
+			if encoded, err := json.Marshal(*fallbackList); err == nil {
+				a.storePRListRead(writer, store.PRListProject{RepoKey: read.key, ProjectJSON: encoded, ReadAt: readAt.UnixMilli()})
+			}
+		}
 	}
-	a.publishPRList(pump)
+	return changed
 }
 
 // prListReadOf is a repository's landed read as the list publishes and
