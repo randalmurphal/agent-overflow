@@ -134,14 +134,13 @@ func (s *Service) genLocked(conn string) uint64 {
 // handle is one subscriber's reference on a pump. untie, when set, is
 // the release of the tie the subscribe made (Tie): every removal of the
 // handle runs it, so the client that held the handle keeps no release for
-// it. poker reports a ticket's handle that follows its planning poker
-// (FollowPoker).
+// it. Whether a ticket's handle follows its planning poker is its
+// ticket's record (pokerFollow.followers).
 type handle struct {
 	board  *boardPump
 	ticket *ticketPump
 	ref    *pump.Handle[readRequest]
 	untie  func()
-	poker  bool
 }
 
 // Tie ties a subscription's handle to the client that holds it as the

@@ -79,11 +79,12 @@ type PokerVoteRequest struct {
 }
 
 // pokerFollow is an open ticket's poker while a handle follows it, under
-// subMu: the handles that follow, the view they were last told, when the
-// next read is due, the retry schedule's step, whether the next read is
-// a person's (a follow's first, or after a write), whether the next event
-// tells a change, and the run that reads, nil while no handle both
-// follows and shows the ticket (admitPokerLocked).
+// subMu: the handles that follow (the one record of who does), the view
+// they were last told, when the next read is due, the retry schedule's
+// step, whether the next read is a person's (a follow's first, or after
+// a write), whether the next event tells a change, and the run that
+// reads, nil while no handle both follows and shows the ticket
+// (admitPokerLocked).
 type pokerFollow struct {
 	followers map[*handle]struct{}
 	view      PokerView
@@ -167,30 +168,32 @@ func (s *Service) FollowPoker(id string, follow bool) (PokerView, error) {
 		return PokerView{}, noPoker(h.ticket.kind)
 	}
 	tp := h.ticket
+	_, following := tp.poker.followers[h]
 	switch {
-	case follow && !h.poker:
-		h.poker = true
+	case follow && !following:
 		if len(tp.poker.followers) == 0 {
 			tp.poker.followers = map[*handle]struct{}{}
 			tp.poker.due, tp.poker.asked = s.now(), true
 		}
 		tp.poker.followers[h] = struct{}{}
-	case !follow && h.poker:
+	case !follow && following:
 		s.unfollowPokerLocked(h)
 	}
 	s.admitPokerLocked(tp)
 	return tp.poker.viewCopy(), nil
 }
 
-// unfollowPokerLocked ends h's following; the last follower's end ends
-// the run and drops the votes. The caller holds subMu and then calls
-// admitPokerLocked.
+// unfollowPokerLocked ends h's following, if h follows (a board's handle
+// never does); the last follower's end ends the run and drops the votes.
+// The caller holds subMu and then calls admitPokerLocked.
 func (s *Service) unfollowPokerLocked(h *handle) {
-	if !h.poker {
+	tp := h.ticket
+	if tp == nil {
 		return
 	}
-	h.poker = false
-	tp := h.ticket
+	if _, ok := tp.poker.followers[h]; !ok {
+		return
+	}
 	delete(tp.poker.followers, h)
 	if len(tp.poker.followers) == 0 {
 		if tp.poker.run != nil {
