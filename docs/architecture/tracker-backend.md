@@ -1729,7 +1729,8 @@ site and issue ID, so the link means the same ticket on every computer.
   (`mirrorIssueHeldSQL`: a card, and no read that missed the issue began
   after the card's latest read) the row shows the card's key, title and
   status, the status's name and group from that root's catalog, and
-  `current`; while a read that missed it is in force
+  `current` (the group by its name, `store.MirrorGroupNames`, as a board
+  read names it); while a read that missed it is in force
   (`mirrorIssueGoneSQL`) it shows `not_found`; otherwise the link's
   last-seen copy and, from the site's connections, `not_checked` (one is
   on), `turned_off` (all are off) or `no_connection`. `connectionId` is
@@ -1793,7 +1794,7 @@ site and issue ID, so the link means the same ticket on every computer.
   frame per thread.
 - **Keep.** A link keeps its issue in the mirror (`mirrorIssueKept`).
   When links end (an unlink, a link replaced, a thread's delete commit,
-  a move away), `LinksEnded` tells the issues no longer kept as
+  an empty draft's delete, a move away), `LinksEnded` tells the issues no longer kept as
   `Changes.Visibility`, as an open ticket's drop does.
 - **Fork and transfer.** `CreatePointerFork` copies the link in its
   transaction. A transfer's manifest carries `store.Thread`, link
@@ -1871,7 +1872,10 @@ board subscription's methods and `tracker:board_updated`'s TypeScript
 type, and its ticket screen, with the wrappers of the ticket
 subscription's methods, `TrackerComments`, the issue and comment writes,
 `TrackerAssignableUsers` and `TrackerChoices`, and
-`tracker:issue_updated`'s TypeScript type (`components/issues/AGENTS.md`).
+`tracker:issue_updated`'s TypeScript type (`components/issues/AGENTS.md`),
+and the thread link's screens: the header's ticket, its menus, the
+sidebar row's line and search, with the `ClearThreadTicket` wrapper
+(`stores/threadTicketLinks.ts`).
 A failure of the linked-issues
 loop after boot reaches only the log (`Deps.LoopFailed`): its failures
 are outside the tracker (a store error, the cleanup), and a tracker
@@ -1886,12 +1890,12 @@ Not built, owed by the app layer:
 - The Time screen's bound methods: `Worklogs`, `RefreshWorklogs`,
   `EditWorklog` and `DeleteWorklog`. `EditSprint` is bound when a screen
   edits a sprint.
-- Sidebar search by a linked ticket's key and title: the frontend's
-  `threadMatchesQuery` (`components/sidebar/threadSearch.ts`) adds
-  `ticketLink.key` and `ticketLink.title` to what it matches.
+- Linking a thread and changing its ticket from a screen, with the
+  `SetThreadTicket` wrapper, which ship with the ticket finder.
 - A link on a thread with nothing sent does not keep the thread: clearing
-  its composer deletes the thread, link included. The slice that first
-  lets a person link such a thread decides it.
+  its composer deletes the thread and ends its link as a delete does. The
+  slice that first lets a person link such a thread decides whether a
+  link keeps it.
 - The rest of the project's tracker setup, each a section of its file:
   card marks, Start work defaults, draft settings and what agents may do;
   and the `bindings.ts` wrappers of the setup methods, which ship with the

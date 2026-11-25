@@ -371,7 +371,18 @@ sidebar and the thread header, on desktop and on a phone.
 
 - A thread linked to a ticket shows the ticket's status mark and key as a
   button in the thread header, before the pull request button. It opens the
-  ticket in the Issues pane.
+  ticket in the Issues pane beside the thread, over the board shown when
+  that board is of the ticket's connection, else over the thread's
+  project's board of that connection, else another project's. Its
+  right-click menu opens the ticket, copies its key and removes the link.
+  On a phone the ticket is the Thread actions menu's row above the pull
+  request.
+- The sidebar row's menu opens the ticket and removes the link, and the
+  Thread actions menu removes it.
+- A link its computer has not read, cannot see now or reads through a
+  connection that is off dims its mark and says which in its title. A
+  ticket whose connection is off or gone does not open: a message says
+  what to turn on or add.
 - The link outlives the pull request. It stays after the merge and after
   the worktree is removed.
 - In the sidebar the key and its status mark join the row's second line,
