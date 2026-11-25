@@ -1121,10 +1121,9 @@ type App struct {
 	// trackerCadence is the tracker service's sync intervals; the zero
 	// value is production's, and tests shorten them.
 	trackerCadence trackerapp.Cadence
-	// trackerPickerBudget replaces the budget that ends the tracker
-	// picker's lists (trackerCatalogRun); zero is each method's own, and
-	// tests shorten it.
-	trackerPickerBudget time.Duration
+	// trackerBudget replaces the budget that ends a tracker form read or
+	// write (trackerRun); zero is each method's own, and tests shorten it.
+	trackerBudget time.Duration
 	// trackers owns the tracker connections; built by initTrackers during
 	// Start and stopped by Shutdown before the store closes.
 	trackers *trackerapp.Service

@@ -290,7 +290,7 @@ func (p *Provider) Attach(ctx context.Context, in tracker.AttachInput) tracker.R
 	}
 	files := make([]jira.File, len(in.Files))
 	for i, f := range in.Files {
-		files[i] = jira.File{Name: f.Name, Content: f.Content}
+		files[i] = jira.File{Name: f.Name, Content: f.Content, Size: f.Size}
 	}
 	_, err := p.jira.Attach(ctx, string(in.Issue), files...)
 	return tracker.Result{Parts: []tracker.Part{{Issue: in.Issue, Step: tracker.StepUpload, Outcome: outcome(err), Changed: []tracker.Resource{tracker.DetailOf(in.Issue)}}}}

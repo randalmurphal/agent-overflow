@@ -291,9 +291,14 @@ const (
 // changed and removed issue IDs, whether to read the board again, its sync
 // state and its end. Receivers pull the rows through TrackerBoardPatch or
 // TrackerBoard.
+//
+// TrackerIssueUpdated is trackerapp.IssueEvent: a subscribed ticket that
+// changed (read it through TrackerTicket), a failure of its reads that
+// started, changed or cleared, or its end.
 const (
 	TrackerConnectionsUpdated Channel = "tracker:connections_updated"
 	TrackerBoardUpdated       Channel = "tracker:board_updated"
+	TrackerIssueUpdated       Channel = "tracker:issue_updated"
 )
 
 // terminal:* — local PTY session bytes and lifecycle.

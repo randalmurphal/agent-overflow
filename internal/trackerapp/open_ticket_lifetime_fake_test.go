@@ -135,12 +135,12 @@ func TestARetiredPumpsKeepGivesItNoBind(t *testing.T) {
 			} else {
 				h = gate.hold(t, "(*run).bindTickets(")
 			}
-			first := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, "10105"))
+			first := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, "10105", untied))
 			waitClosed(t, "the first read's keep", h.arrived)
 			p := s.svc.ticketPumpOf(conn.ID, "10105")
 			s.svc.ReleaseSubscription(first.ID)
 			if !inKeep {
-				again := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, "10105"))
+				again := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, "10105", untied))
 				q := s.svc.ticketPumpOf(conn.ID, "10105")
 				if q == p {
 					t.Fatal("the reopened ticket shares the retired pump")
@@ -177,7 +177,7 @@ func TestAPumpRetiredBeforeItsKeepMakesNoRowAndShowsNothing(t *testing.T) {
 	}
 	h := gate.hold(t, "(*run).bindTickets(")
 	drop := gate.holdCall(t, callDrop, "")
-	sub := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, "10105"))
+	sub := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, "10105", untied))
 	waitClosed(t, "the read's keep", h.arrived)
 	p := s.svc.ticketPumpOf(conn.ID, "10105")
 	s.svc.ReleaseSubscription(sub.ID)
@@ -214,7 +214,7 @@ func TestAKeepWhosePumpRetiredMeanwhilePublishesNothing(t *testing.T) {
 	s.svc.subMu.Unlock()
 	keep := gate.holdCall(t, callKeep, "")
 	drop := gate.holdCall(t, callDrop, "")
-	sub := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, "10105"))
+	sub := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, "10105", untied))
 	waitClosed(t, "the read's keep", keep.arrived)
 	p := s.svc.ticketPumpOf(conn.ID, "10105")
 	s.svc.ReleaseSubscription(sub.ID)
@@ -256,7 +256,7 @@ func TestAPumpStoppedBeforeItsLaunchDropsTheRowARefreshKept(t *testing.T) {
 			paint := gate.holdFailing(t, callBodies, "(*Service).SubscribeTicket(", fail)
 			subscribed := make(chan error, 1)
 			go func() {
-				_, err := s.svc.SubscribeTicket(conn.ID, "10105")
+				_, err := s.svc.SubscribeTicket(conn.ID, "10105", untied)
 				subscribed <- err
 			}()
 			waitClosed(t, "the first paint", paint.arrived)
@@ -300,7 +300,7 @@ func TestStopDuringAKeepLeavesNoRowAndNoBind(t *testing.T) {
 	t.Parallel()
 	s, conn, gate, _, _ := bindScenario(t)
 	keep := gate.holdCall(t, callKeep, "")
-	must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, "10105"))
+	must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, "10105", untied))
 	waitClosed(t, "the first read's keep", keep.arrived)
 	tp := s.svc.ticketPumpOf(conn.ID, "10105")
 	stopped := make(chan struct{})

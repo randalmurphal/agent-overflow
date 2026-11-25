@@ -38,8 +38,8 @@ type Request struct {
 	// Path is the request path, without its query.
 	Path string `json:"path"`
 	// Route names what answered: a REST route ("GET rest/api/3/issue/{issue}"),
-	// a GraphQL operation, or "offline", "unauthorized" or "closed". Empty
-	// when Unhandled.
+	// a GraphQL operation, or "offline", "unauthorized", "closed" or "cut
+	// short" (a body that stopped before its end). Empty when Unhandled.
 	Route string     `json:"route,omitempty"`
 	Query url.Values `json:"query,omitempty"`
 	// Operation and Variables are a GraphQL request's.

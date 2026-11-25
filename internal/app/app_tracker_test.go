@@ -42,26 +42,32 @@ func newTrackerTestApp(t *testing.T, configure func(*App)) *App {
 
 func TestTrackerMethodsCarryTheirScopeAndRoute(t *testing.T) {
 	t.Parallel()
-	want := map[string]transport.Scope{
-		"TrackerConnections":              transport.ScopeTrackerRead,
-		"AddTrackerConnection":            transport.ScopeTrackerOperate,
-		"RenameTrackerConnection":         transport.ScopeTrackerOperate,
-		"SetTrackerConnectionEnabled":     transport.ScopeTrackerOperate,
-		"SetTrackerConnectionTokenExpiry": transport.ScopeTrackerOperate,
-		"RemoveTrackerConnection":         transport.ScopeTrackerOperate,
-		"VerifyTrackerConnection":         transport.ScopeTrackerOperate,
-		"EditTrackerKeyFile":              transport.ScopeHost,
-		"OpenTrackerTokenPage":            transport.ScopeHost,
+	type want struct {
+		scope transport.Scope
+		route transport.MethodRoute
 	}
-	for name, scope := range want {
+	// A method that names a connection is routed by its client
+	// (family trackerConnection) and generated as home.
+	read, operate, host := transport.ScopeTrackerRead, transport.ScopeTrackerOperate, transport.ScopeHost
+	for name, w := range map[string]want{
+		"TrackerConnections":              {read, transport.RouteSelected},
+		"AddTrackerConnection":            {operate, transport.RouteSelected},
+		"RenameTrackerConnection":         {operate, transport.RouteHome},
+		"SetTrackerConnectionEnabled":     {operate, transport.RouteHome},
+		"SetTrackerConnectionTokenExpiry": {operate, transport.RouteHome},
+		"RemoveTrackerConnection":         {operate, transport.RouteHome},
+		"VerifyTrackerConnection":         {operate, transport.RouteHome},
+		"EditTrackerKeyFile":              {host, transport.RouteHome},
+		"OpenTrackerTokenPage":            {host, transport.RouteHome},
+	} {
 		i := slices.IndexFunc(transport.GeneratedMethods, func(m transport.MethodMeta) bool { return m.Name == name })
 		if i < 0 {
 			t.Errorf("%s is not a generated method", name)
 			continue
 		}
 		m := transport.GeneratedMethods[i]
-		if m.Scope != scope || m.Route != transport.RouteSelected || m.CallerBound || m.Budget != 0 {
-			t.Errorf("%s = %+v, want scope %s, route selected, not caller-bound, the default budget", name, m, scope)
+		if m.Scope != w.scope || m.Route != w.route || m.CallerBound || m.Budget != 0 {
+			t.Errorf("%s = %+v, want scope %s, route %s, not caller-bound, the default budget", name, m, w.scope, w.route)
 		}
 	}
 	if transport.ScopeTrackerRead.Tier() != transport.TierObserve || transport.ScopeTrackerOperate.Tier() != transport.TierExecute {

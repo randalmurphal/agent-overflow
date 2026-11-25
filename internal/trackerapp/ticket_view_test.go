@@ -20,7 +20,7 @@ func TestAnEvictedTicketKeepsItsViewAndIsReadAgain(t *testing.T) {
 	t.Parallel()
 	m, evict := capFixture(t)
 	m.p.updatedMovesWithDetail(cardsOf)
-	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "40000"))
+	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "40000", untied))
 	quiet(t, m.svc)
 	calls, events := len(m.p.callsInOrder()), m.issueEventCount()
 	call := holdNext(m.p, "Details")
@@ -29,7 +29,7 @@ func TestAnEvictedTicketKeepsItsViewAndIsReadAgain(t *testing.T) {
 	if v := m.ticketView(t, sub.ID); !v.Loaded {
 		t.Fatal("the eviction unloaded the ticket")
 	}
-	if joined := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "40000")); !joined.Loaded {
+	if joined := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "40000", untied)); !joined.Loaded {
 		t.Fatal("a joiner was answered not loaded")
 	}
 	close(call.release)
@@ -53,7 +53,7 @@ func TestAnEvictionDuringAReadIsLeftToTheRead(t *testing.T) {
 	t.Parallel()
 	m, evict := capFixture(t)
 	m.p.updatedMovesWithDetail(cardsOf)
-	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "40000"))
+	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "40000", untied))
 	quiet(t, m.svc)
 	reads := m.p.count("Details")
 	call := holdNext(m.p, "Details")
@@ -171,7 +171,7 @@ func TestAReadLeavesTheContentHeld(t *testing.T) {
 					}
 					var sub TicketSubscription
 					if !opening {
-						sub = must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "40000"))
+						sub = must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "40000", untied))
 						m.settledTickets(t)
 						m.round(t)
 					}
@@ -307,7 +307,7 @@ func TestABodyLeftToTheSweepIsNotShown(t *testing.T) {
 	page := store.MirrorRowPage{BoardID: string(testBoard), Lifetime: m.sync(testBoard).Lifetime, Missing: []string{"10001"}, ReadAt: m.read()}
 	// No cleanup runs: the body stays stored, its issue kept by nothing.
 	must[store.MirrorChanges](t)(m.st.WriteMirrorRows(m.root(), page))
-	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001"))
+	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001", untied))
 	if sub.Loaded || sub.Detail != nil {
 		t.Fatalf("a ticket opened on a body left to the sweep was answered %+v", sub.TicketView)
 	}

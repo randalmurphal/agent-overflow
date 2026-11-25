@@ -120,24 +120,19 @@ type UserList struct {
 	More  bool
 }
 
-// DownloadInput streams one attachment of one issue to To, at most Limit
-// bytes. To is written as the content arrives: after a failure it may
-// hold part of the file, which the caller discards.
+// DownloadInput streams one attachment of one issue to To. To is written
+// as the content arrives: after a failure it may hold part of the file,
+// which the caller discards.
 type DownloadInput struct {
 	Issue      IssueID
 	Attachment AttachmentID
 	To         io.Writer
-	Limit      int64
 }
 
-// Check refuses a download that names no issue, attachment or writer, or
-// has a limit that is not positive.
+// Check refuses a download that names no issue, attachment or writer.
 func (in DownloadInput) Check() error {
 	if in.Issue == "" || in.Attachment == "" || in.To == nil {
 		return invalidf("a download needs an issue, an attachment and a writer")
-	}
-	if in.Limit <= 0 {
-		return invalidf("a download needs a positive byte limit, not %d", in.Limit)
 	}
 	return nil
 }

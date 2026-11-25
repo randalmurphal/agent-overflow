@@ -303,6 +303,61 @@ method IDs. Receiver registration exposes all generated methods for that
 receiver, so production registration is an authorization decision. Local
 harness receivers stay local-only.
 
+## Byte route deadlines
+
+The ticketed byte routes under `/attachments/` replace the server's 60 s
+read and write timeouts per request. On the backend, an upload's bytes,
+and a thread attachment's download, get the transfer window for their
+length (`AttachmentTransferWindow`, a 5 minute floor at 35 KiB/s;
+`AttachmentTransferWindowFor`). A tracker upload's answer, which comes
+after the tracker's answer and the refresh, gets the whole upload's time
+(`UploadWindow`: the window, `AnswerAllowance` and a minute to write it).
+
+The tracker's download route is bounded by progress instead (a request
+with no body; `DownloadByProgress` refuses one that declares a body): no
+read deadline, since a read deadline that passes while the answer is
+awaited ends the request through net/http's background read, and a write
+deadline moved to 90 s past each write (`TransferStallWindow`), at most
+once a second (`ProgressEvery`). Such a download that stops moving ends
+89 to 90 s after its last byte, and one that keeps moving has no total.
+
+A relay (`backendproxy.CarryTransfer`) carries every byte route with one
+rule, owned by one timer per request (`internal/backendproxy/transfer.go`):
+the transfer ends when no byte moves for `TransferStallWindow` in the
+direction it waits on (the page's body while it goes up, the upstream's
+answer once its headers came), except that the upstream has
+`AnswerAllowance` (9 min: the slowest backend answer, a tracker upload's
+at 8 min, and a minute to cross the hops) from the request's last byte to
+its answer's headers. Nothing is sized from a declared length, and
+nothing relies on the backend's timers or on a dialer's keepalive, since
+the backend may be another computer on another version.
+
+What the page is told when a carry ends before the upstream's headers is
+true of what may have happened, and one function owns it
+(`carriedTransfer.failed`), from how the carry ended and two facts: whether
+the request is an upload (any method but GET and HEAD, whatever its
+length) and whether its body went out whole (an empty one is whole at
+once). An upload not sent on whole cannot have been applied and says to
+send it again: 408 for a page that stopped sending, 504 for an upstream
+that stopped taking the body, 502 for a connection that ended mid-body,
+503 when the request's headers never went out ("could not be reached, so
+nothing was sent") or this computer stopped. An upload sent on whole says
+it may have been received and to check before sending it again, whatever
+ended the wait: 504 for an answer that did not begin in time, 502 for a
+connection that closed or reset, 503 for this computer stopping. A request
+that is not an upload keeps a download's words: 504 "try again" for an
+answer that did not begin in time, and 503 "backend unreachable"
+otherwise. Each reason is plain text the page quotes. An upstream that
+stops after its headers has the page's answer cut. An upstream that
+answers before the body's end has its answer carried at once: the relay
+ends its read of the page rather than wait for the rest of the body.
+
+The request's context ending (the page leaving, this server shutting
+down) ends a blocked read of the page at once, so a shutdown's join does
+not wait out the stall window behind a page that stopped sending; the
+carry returns only after that callback, and a fire of the timer, have
+finished with the page's connection.
+
 ## Method metadata and routing
 
 `methodgen` scans bound methods and emits the Go `MethodMeta` table and the

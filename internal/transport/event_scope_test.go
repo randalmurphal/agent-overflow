@@ -57,6 +57,7 @@ func TestChannelScopeMatchesItsReadRPC(t *testing.T) {
 		{eventchan.DevServerList, ScopePreviewOpen, "GetDevServers returns this exact shape"},
 		{eventchan.TrackerConnectionsUpdated, ScopeTrackerRead, "TrackerConnections is tracker:read"},
 		{eventchan.TrackerBoardUpdated, ScopeTrackerRead, "TrackerBoardPatch and TrackerBoard are tracker:read"},
+		{eventchan.TrackerIssueUpdated, ScopeTrackerRead, "TrackerTicket is tracker:read"},
 	} {
 		policy, registered := policyForChannel(string(tc.channel))
 		if !registered {

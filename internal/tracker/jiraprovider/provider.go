@@ -105,7 +105,7 @@ func IssueURL(site, key string) string {
 // worklog each move an issue's `updated`
 // (docs/references/tracker-api-measurements.md, Jira Cloud).
 func (p *Provider) Capabilities() tracker.Capabilities {
-	return tracker.Capabilities{IssueTypes: true, CustomFields: true, MoveFields: true, SprintWrites: true, Attachments: true,
+	return tracker.Capabilities{IssueTypes: true, CustomFields: true, MoveFields: true, SprintWrites: true, MaxAttachmentBytes: jira.MaxAttachmentBytes,
 		DetailMovesUpdated: true, HistorySettle: historySettle}
 }
 

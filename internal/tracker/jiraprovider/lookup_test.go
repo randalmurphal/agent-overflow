@@ -126,10 +126,10 @@ func TestDownloadChecksTheIssue(t *testing.T) {
 		_, _ = w.Write([]byte("hello"))
 	})
 	var buf bytes.Buffer
-	if err := p.Download(t.Context(), tracker.DownloadInput{Issue: "10001", Attachment: "501", To: &buf, Limit: 10}); err != nil || buf.String() != "hello" {
+	if err := p.Download(t.Context(), tracker.DownloadInput{Issue: "10001", Attachment: "501", To: &buf}); err != nil || buf.String() != "hello" {
 		t.Fatalf("got %q %v", buf.String(), err)
 	}
-	err := p.Download(t.Context(), tracker.DownloadInput{Issue: "10001", Attachment: "502", To: &buf, Limit: 10})
+	err := p.Download(t.Context(), tracker.DownloadInput{Issue: "10001", Attachment: "502", To: &buf})
 	if !errors.Is(err, tracker.ErrInvalidInput) || !strings.Contains(err.Error(), "not issue 10001's") {
 		t.Errorf("another issue's attachment: %v", err)
 	}

@@ -69,7 +69,7 @@ func TestFakeTicketReadNamesOnlyItsCardInTheSharedCatalog(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			s, conn, _ := tc.open(t)
-			must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, tc.issue))
+			must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, tc.issue, untied))
 			settled(t, s.svc)
 			v, _, err := s.svc.IssueDetail(t.Context(), conn.ID, tc.issue, Interactive)
 			if err != nil {
@@ -106,7 +106,7 @@ func TestFakeJiraKeyRenameAtAnUnchangedUpdateTime(t *testing.T) {
 			s, conn, scope := tc.open(t)
 			s.listBoards(conn.ID, scope.Board)
 			s.syncBoard(t, scope)
-			must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, tc.issue))
+			must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, tc.issue, untied))
 			settled(t, s.svc)
 			before := must[IssueView](t)(s.svc.Issue(conn.ID, tc.issue)).Card
 			f := s.e.Snapshot()

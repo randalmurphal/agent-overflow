@@ -211,10 +211,11 @@ const (
 	// ScopeAccessAdmin covers the device list, revocation, and audit read.
 	ScopeAccessAdmin Scope = "access:admin"
 	// ScopeTrackerRead covers reads of the issue tracker connections,
-	// never a token.
+	// never a token, and of the boards and tickets they reach.
 	ScopeTrackerRead Scope = "tracker:read"
 	// ScopeTrackerOperate covers adding, changing, verifying and removing
-	// tracker connections.
+	// tracker connections, and writes to tickets and sprints as the
+	// connection's user.
 	ScopeTrackerOperate Scope = "tracker:operate"
 )
 

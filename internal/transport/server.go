@@ -285,6 +285,9 @@ type Config struct {
 	// SpeechTransfer reads admitted sections aloud (speechroutes.go). Nil
 	// answers that route 404.
 	SpeechTransfer SpeechTransfer
+	// TrackerTransfer attaches files to tickets and streams their
+	// attachments (trackerroutes.go). Nil answers those routes 404.
+	TrackerTransfer TrackerTransfer
 
 	// ThreadTransfers accepts narrowly authorized computer-to-computer handoffs.
 	// Nil leaves the route absent; control authorization stays in bound RPCs.
@@ -656,6 +659,18 @@ type Server struct {
 	// speechTickets is a sixth: a section to read aloud is none of the
 	// above, and its ticket is minted by a `threads:operate` call.
 	speechTickets *ticketBook
+	// trackerUploadTickets and trackerDownloadTickets are the tracker
+	// routes' (trackerroutes.go): a ticket's file is no thread's, and the
+	// upload is minted by a `tracker:operate` call, the download by a
+	// `tracker:read` one.
+	trackerUploadTickets   *ticketBook
+	trackerDownloadTickets *ticketBook
+	// trackerStall is the tracker download's stall window
+	// (TransferStallWindow) and trackerUploadWindow an upload's transfer
+	// window for its size (AttachmentTransferWindowFor); fields so a test
+	// can shorten them.
+	trackerStall        time.Duration
+	trackerUploadWindow func(size int64) time.Duration
 }
 
 // MaxFrontendTimingMs is the longest Config.FrontendTiming value: the page
@@ -746,6 +761,10 @@ func New(cfg Config) (*Server, error) {
 		localImageTickets:         newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
 		dictationTickets:          newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
 		speechTickets:             newTicketBook(maxOutstandingAttachmentTickets, SpeechTicketTTL),
+		trackerUploadTickets:      newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
+		trackerDownloadTickets:    newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
+		trackerStall:              TransferStallWindow,
+		trackerUploadWindow:       AttachmentTransferWindowFor,
 
 		bindTCP: listenTCPSharing,
 	}
@@ -1144,6 +1163,14 @@ func (s *Server) buildHTTPServer() *http.Server {
 	mux.HandleFunc(SpeechDownloadPath, withShellCORS(http.MethodGet,
 		s.loopbackHostGuard(s.handleSpeechDownload)))
 	mux.HandleFunc(SpeechDownloadPreflightPath, shellPreflightHandler(http.MethodGet))
+	// The tracker routes, same admission and subtree, and the local-image
+	// route's literal-segment precedence over the download route.
+	mux.HandleFunc(TrackerUploadPath, withShellCORS(http.MethodPut,
+		s.loopbackHostGuard(s.handleTrackerUpload)))
+	mux.HandleFunc(TrackerUploadPreflightPath, shellPreflightHandler(http.MethodPut))
+	mux.HandleFunc(TrackerDownloadPath, withShellCORS(http.MethodGet,
+		s.loopbackHostGuard(s.handleTrackerDownload)))
+	mux.HandleFunc(TrackerDownloadPreflightPath, shellPreflightHandler(http.MethodGet))
 	// The bundle routes. Registered unconditionally for the reason the
 	// attachment pair is: a route whose presence depended on when the mux
 	// happened to be built would be a boot whose shape varies. With no

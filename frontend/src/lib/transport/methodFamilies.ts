@@ -18,6 +18,10 @@ export type IdFamily =
   | 'workflowItem'
   | 'terminal'
   | 'subscription'
+  // A tracker connection id — argument 0 is `connectionID`, minted on one
+  // computer. The caller pins the computer whose answer named it
+  // (withBackendTarget); an unpinned call resolves no owner.
+  | 'trackerConnection'
   // A sidebar thread group — argument 0 is `groupID`. Belongs to one
   // project and so to one machine; learned from ListThreadGroups and the
   // `thread-group:updated` frames.
@@ -76,6 +80,46 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
   2154788414: 'subscription', // SetTrackerSubscriptionVisible
   247632441: 'subscription', // RefreshTrackerSubscription
   1393115131: 'subscription', // ReleaseTrackerSubscription
+  105684651: 'subscription', // TrackerTicket
+  3749273758: 'subscription', // MintTrackerAttachmentDownloadTicket
+
+  // Tracker connection ids: every call that names a connection belongs to
+  // the computer that holds it.
+  611052833: 'trackerConnection', // RenameTrackerConnection
+  3921109066: 'trackerConnection', // SetTrackerConnectionEnabled
+  2967721565: 'trackerConnection', // SetTrackerConnectionTokenExpiry
+  21628411: 'trackerConnection', // RemoveTrackerConnection
+  1424176184: 'trackerConnection', // VerifyTrackerConnection
+  1347598600: 'trackerConnection', // EditTrackerKeyFile
+  4215069807: 'trackerConnection', // OpenTrackerTokenPage
+  2816087609: 'trackerConnection', // TrackerProjects
+  2450480430: 'trackerConnection', // TrackerBoards
+  3193179933: 'trackerConnection', // SubscribeTrackerTicket
+  118334031: 'trackerConnection', // MintTrackerAttachmentUploadTicket
+  2749961211: 'trackerConnection', // TrackerIssueTypes
+  440800234: 'trackerConnection', // TrackerCreateFields
+  3632796459: 'trackerConnection', // TrackerMoves
+  3346989894: 'trackerConnection', // TrackerAssignableUsers
+  1109598697: 'trackerConnection', // TrackerChoices
+  2754714292: 'trackerConnection', // TrackerLinkTypes
+  2194444141: 'trackerConnection', // TrackerLookup
+  1584024747: 'trackerConnection', // TrackerSearch
+  1808895141: 'trackerConnection', // TrackerComments
+  3981856226: 'trackerConnection', // CreateTrackerIssue
+  2133356294: 'trackerConnection', // EditTrackerIssue
+  3688074763: 'trackerConnection', // MoveTrackerIssue
+  2301582015: 'trackerConnection', // SetTrackerEstimate
+  4067581165: 'trackerConnection', // RankTrackerIssues
+  3001763889: 'trackerConnection', // MoveTrackerIssuesToSprint
+  759363647: 'trackerConnection', // CreateTrackerSprint
+  1961738625: 'trackerConnection', // StartTrackerSprint
+  3259977090: 'trackerConnection', // CompleteTrackerSprint
+  790914661: 'trackerConnection', // AddTrackerComment
+  3416415152: 'trackerConnection', // EditTrackerComment
+  1742610839: 'trackerConnection', // DeleteTrackerComment
+  4036611847: 'trackerConnection', // LinkTrackerIssues
+  1599312374: 'trackerConnection', // UnlinkTrackerIssues
+  2437411241: 'trackerConnection', // AddTrackerWorklog
 
   // A thread group is a sidebar row of ONE project on one backend; its id
   // is minted there and the group list is fanned out to every backend, so
@@ -93,6 +137,7 @@ const RESOLVERS: Readonly<Record<IdFamily, (id: string) => BackendKey | undefine
   project: projectBackend,
   terminal: terminalBackend,
   subscription: () => undefined,
+  trackerConnection: () => undefined,
   threadGroup: threadGroupBackend,
   threadList: resolveThreadBackend,
 };

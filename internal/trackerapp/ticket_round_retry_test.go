@@ -30,7 +30,7 @@ func TestTheRoundRetriesFailedTicketReads(t *testing.T) {
 	})
 	// The pump's first read and the round's first retry fail.
 	failing.Store(2)
-	if _, err := m.svc.SubscribeTicket(m.conn.ID, "10001"); err != nil {
+	if _, err := m.svc.SubscribeTicket(m.conn.ID, "10001", untied); err != nil {
 		t.Fatal(err)
 	}
 	got := m.events.issueEvents(t, 2)
@@ -43,7 +43,7 @@ func TestTheRoundRetriesFailedTicketReads(t *testing.T) {
 
 	// A round of two tickets that fails retries itself.
 	failing.Store(0)
-	if _, err := m.svc.SubscribeTicket(m.conn.ID, "10002"); err != nil {
+	if _, err := m.svc.SubscribeTicket(m.conn.ID, "10002", untied); err != nil {
 		t.Fatal(err)
 	}
 	m.events.issueEvents(t, 3)

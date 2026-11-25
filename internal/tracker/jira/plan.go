@@ -93,7 +93,7 @@ type planState struct {
 }
 
 func newOwned(c *Client, imageDir string) owned {
-	return owned{state: &planState{client: c, stage: newImageStage(imageDir, c.maxUpload)}}
+	return owned{state: &planState{client: c, stage: newImageStage(imageDir, c.maxImages)}}
 }
 
 // claim refuses a plan made by another Client or by no PlanCreate or

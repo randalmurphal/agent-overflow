@@ -144,7 +144,7 @@ func (c *Client) worklogEditDoc(ctx context.Context, in WorklogEdit, base *Workl
 	if err := problemIn(base.Problems, "comment"); err != nil {
 		return nil, false, notSentErr(fmt.Errorf("jira: edit worklog %s on %s: its comment did not decode, so an edit cannot keep it: %w", in.ID, in.Issue, err))
 	}
-	b := &builder{c: c, opts: ValueOptions{Issue: in.Issue}, stage: newImageStage("", c.maxUpload)}
+	b := &builder{c: c, opts: ValueOptions{Issue: in.Issue}, stage: newImageStage("", c.maxImages)}
 	doc, ws, err := b.markdown(ctx, *in.Markdown, base.Comment)
 	if err == nil {
 		err = adf.CheckLoss(ws, in.AcceptLoss)

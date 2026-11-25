@@ -183,7 +183,7 @@ func (c *Client) Value(ctx context.Context, f FieldMeta, in Input, opts ValueOpt
 	if err := c.admit(ctx); err != nil {
 		return Value{}, err
 	}
-	b := &builder{c: c, opts: opts, stage: newImageStage(opts.ImageDir, c.maxUpload)}
+	b := &builder{c: c, opts: opts, stage: newImageStage(opts.ImageDir, c.maxImages)}
 	v, err := b.build(ctx, f, in)
 	return v, notSentErr(err)
 }

@@ -17,16 +17,16 @@ import (
 // lists, lookups and searches answer typed text against the whole tracker;
 // later comment pages and attachments are not stored. Each read holds the
 // connection as a write does, is interactive, and settles the connection's
-// problem with its outcome (ask). A tracker failure is returned with the
-// transport's typed error reachable through errors.As; ClassifyFailure
-// sorts it.
+// problem with its outcome (ask). A tracker failure is returned as a
+// *CallFailure, sorted by ClassifyFailure, with the transport's typed
+// error reachable through errors.As.
 
 // ask runs read, one provider read and what it reads of the mirror, on a
 // hold of connection id for a person, and settles the connection's
 // problem with the provider read's outcome: its failure, which read marks
 // with call, or a success. An input the provider refused before any
 // request, a read the tracker cannot serve, and a read whose context ended
-// leave the problem as it is. A failure is returned unmarked.
+// leave the problem as it is. A failure is returned as a *CallFailure.
 func ask[T any](s *Service, ctx context.Context, id string, read func(r *run) (T, error)) (T, error) {
 	r, err := s.interact(ctx, id)
 	if err != nil {
@@ -38,7 +38,7 @@ func ask[T any](s *Service, ctx context.Context, id string, read func(r *run) (T
 	c, failed := errors.AsType[*callError](err)
 	var callErr error
 	if failed {
-		callErr, err = c.err, c.err
+		callErr, err = c.err, callFailure(r.row.Kind, c.err)
 	}
 	switch {
 	case errors.Is(callErr, tracker.ErrInvalidInput), errors.Is(callErr, tracker.ErrUnsupported), r.ctx.Err() != nil:
@@ -319,15 +319,28 @@ func (s *Service) Comments(ctx context.Context, id, issue, page string) (Comment
 	})
 }
 
-// Download streams one of issue's attachments to to, at most limit bytes.
-// to may hold part of the file after a failure, which the caller
-// discards.
-func (s *Service) Download(ctx context.Context, id, issue, attachment string, to io.Writer, limit int64) error {
+// Download streams one of issue's attachments to to, at most the largest
+// file the tracker stores (tracker.Provider.Download). to may hold part
+// of the file after a failure, which the caller discards.
+func (s *Service) Download(ctx context.Context, id, issue, attachment string, to io.Writer) error {
 	_, err := ask(s, ctx, id, func(r *run) (struct{}, error) {
 		return struct{}{}, call(r.p.Download(r.ctx, tracker.DownloadInput{Issue: tracker.IssueID(issue),
-			Attachment: tracker.AttachmentID(attachment), To: to, Limit: limit}))
+			Attachment: tracker.AttachmentID(attachment), To: to}))
 	})
 	return err
+}
+
+// AttachmentCeiling is the largest file connection id's tracker stores,
+// zero for a tracker that stores none: what an attach may send. It makes
+// no tracker request; a connection that is off, removed or a Tempo
+// connection fails as a write does.
+func (s *Service) AttachmentCeiling(ctx context.Context, id string) (int64, error) {
+	r, err := s.interact(ctx, id)
+	if err != nil {
+		return 0, err
+	}
+	defer r.finish()
+	return r.p.Capabilities().MaxAttachmentBytes, nil
 }
 
 // foundCards are cards a lookup or search found as views, named from

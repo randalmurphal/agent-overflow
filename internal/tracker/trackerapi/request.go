@@ -33,8 +33,9 @@ type Request struct {
 	// X-Idempotency-Key, which would let net/http send a write again.
 	Header http.Header
 	// Body is JSON-encoded, except a []byte, which is sent as is with
-	// ContentType. An io.Reader is refused: Multipart turns an upload into
-	// bytes. The caller does not change a []byte until the call returns.
+	// ContentType, and an *Upload (Multipart), which is sent with its own
+	// type and length as its parts' contents are read. An io.Reader is
+	// refused. The caller does not change a []byte until the call returns.
 	// GET and HEAD carry no body.
 	Body any
 	// ContentType is the body's type: required for a []byte body,
@@ -80,10 +81,14 @@ type Response struct {
 
 // call is one prepared Request, sent by each attempt.
 type call struct {
-	method      string
-	target      *url.URL
-	body        []byte
-	hasBody     bool
+	method  string
+	target  *url.URL
+	body    []byte
+	upload  *Upload
+	hasBody bool
+	// once marks a body that is read once (Upload): the call is never
+	// sent again.
+	once        bool
 	contentType string
 	header      http.Header
 	read        bool // retried on a connection failure and a 503
@@ -214,10 +219,16 @@ func (k *call) setBody(r Request) error {
 			return errors.New("a []byte body needs a ContentType")
 		}
 		k.body = b
+	case *Upload:
+		if r.ContentType != "" {
+			return errors.New("an Upload carries its own content type")
+		}
+		k.upload, k.once = b, b.once
+		r.ContentType = b.contentType
 	case io.Reader:
 		// Encoded as JSON it would send "{}"; read here it would block
 		// before the call can be cancelled.
-		return errors.New("an io.Reader body is refused; pass its bytes")
+		return errors.New("an io.Reader body is refused; pass its bytes or an Upload")
 	default:
 		encoded, err := json.Marshal(b)
 		if err != nil {
@@ -264,26 +275,32 @@ func isTokenChar(r rune) bool {
 }
 
 // request builds one hop's http.Request to target on ctx, without a
-// credential. It has no GetBody, so net/http never sends its body again:
-// a request with a body is replayed only through GetBody. A transfer's
-// body reports its progress to st.
+// credential, and the upload body it sends, if any. It has no GetBody, so
+// net/http never sends its body again: a request with a body is replayed
+// only through GetBody. A transfer's body reports its progress to st.
 //
 // The header values are shared, never copied per hop: k's own copies of
 // the caller's, the client's User-Agent and acceptJSON. Nothing changes a
 // request's header once it is built.
-func (k *call) request(ctx context.Context, target *url.URL, st *stall, userAgent []string) (*http.Request, error) {
+func (k *call) request(ctx context.Context, target *url.URL, st *stall, userAgent []string) (*http.Request, *uploadBody, error) {
 	req, err := http.NewRequestWithContext(ctx, k.method, "", nil)
 	if err != nil {
-		return nil, fmt.Errorf("build the request: %w", err)
+		return nil, nil, fmt.Errorf("build the request: %w", err)
 	}
 	// The request's URL is its own copy, in the URL that parsing "" made.
 	*req.URL = *target
+	var sent *uploadBody
 	switch {
 	case !k.hasBody:
+	case k.upload != nil:
+		if sent, err = k.upload.open(); err != nil {
+			return nil, nil, err
+		}
+		req.Body, req.ContentLength = st.upload(sent, k.upload.size), k.upload.size
 	case len(k.body) == 0:
 		req.Body = http.NoBody
 	case st != nil:
-		req.Body, req.ContentLength = st.upload(k.body), int64(len(k.body))
+		req.Body, req.ContentLength = st.upload(bytes.NewReader(k.body), int64(len(k.body))), int64(len(k.body))
 	default:
 		body := &requestBody{}
 		body.Reset(k.body)
@@ -297,8 +314,11 @@ func (k *call) request(ctx context.Context, target *url.URL, st *stall, userAgen
 	if k.hasBody {
 		req.Header.Set("Content-Type", k.contentType)
 	}
-	return req, nil
+	return req, sent, nil
 }
+
+// sending reports whether a request of k carries body bytes.
+func (k *call) sending() bool { return len(k.body) > 0 || k.upload != nil }
 
 // acceptJSON is the Accept value of Do and JSON when the caller sets none.
 var acceptJSON = []string{"application/json"}

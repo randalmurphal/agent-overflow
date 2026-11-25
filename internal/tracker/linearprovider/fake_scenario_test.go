@@ -329,7 +329,7 @@ func TestFakeScenario(t *testing.T) {
 	before := len(s.e.Requests(0).Requests)
 	for name, r := range map[string]tracker.Result{
 		"sprint create": s.p.CreateSprint(s.ctx, tracker.SprintInput{Board: board, Name: "Cycle"}),
-		"attach":        s.p.Attach(s.ctx, tracker.AttachInput{Issue: tracker.IssueID(scIssue2), Files: []tracker.File{{Name: "a.txt", Content: strings.NewReader("a")}}}),
+		"attach":        s.p.Attach(s.ctx, tracker.AttachInput{Issue: tracker.IssueID(scIssue2), Files: []tracker.File{{Name: "a.txt", Content: strings.NewReader("a"), Size: 1}}}),
 	} {
 		if len(r.Parts) == 0 || !errors.Is(r.Parts[0].Outcome.Err(), tracker.ErrUnsupported) {
 			t.Fatalf("%s was not refused as unsupported: %+v", name, r)

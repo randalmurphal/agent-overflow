@@ -46,9 +46,9 @@ import (
 // apiPath is the platform REST API root every path starts from.
 const apiPath = "rest/api/3/"
 
-// defaultMaxUpload bounds one upload when Options.MaxUploadBytes is zero.
-// An upload is held in memory while it is sent.
-const defaultMaxUpload = 100 << 20
+// defaultMaxImages bounds the images one write embeds when
+// Options.MaxImageBytes is zero.
+const defaultMaxImages = 100 << 20
 
 // Options configures a Client.
 type Options struct {
@@ -72,17 +72,18 @@ type Options struct {
 	// X-Beta-RateLimit-Reason, each scrubbed of the credential. No other
 	// header reaches it. The timing rules are trackerapi.Options.OnAnswer's.
 	OnAnswer func(status int, header http.Header)
-	// MaxUploadBytes bounds one upload request, multipart framing
-	// included, and the local images one write embeds, together; zero
-	// means 100 MiB.
-	MaxUploadBytes int64
+	// MaxImageBytes bounds the local images one write embeds, together,
+	// which the write holds in memory from its plan's check to its
+	// uploads; zero means 100 MiB. A file attached from a stream (Attach)
+	// is not held, and this does not bound it.
+	MaxImageBytes int64
 }
 
 // Client calls one Jira Cloud site. It is safe for concurrent use; Close
 // releases it.
 type Client struct {
 	api       *trackerapi.Client
-	maxUpload int64
+	maxImages int64
 
 	// closedErr is the transport's refusal of a call on a closed client;
 	// it is set before closed.
@@ -117,10 +118,10 @@ func rateLimitHeaders() []string {
 
 // New builds a Client and the trackerapi.Client under it. Nothing is
 // sent until the first call. It refuses what trackerapi.New refuses and
-// a negative MaxUploadBytes.
+// a negative MaxImageBytes.
 func New(opts Options) (*Client, error) {
-	if opts.MaxUploadBytes < 0 {
-		return nil, errors.New("jira: Options.MaxUploadBytes is negative")
+	if opts.MaxImageBytes < 0 {
+		return nil, errors.New("jira: Options.MaxImageBytes is negative")
 	}
 	api, err := trackerapi.New(trackerapi.Options{
 		Name:          "jira",
@@ -137,15 +138,15 @@ func New(opts Options) (*Client, error) {
 		return nil, fmt.Errorf("jira: %w", err)
 	}
 	c := &Client{
-		api: api, maxUpload: opts.MaxUploadBytes,
+		api: api, maxImages: opts.MaxImageBytes,
 		users:       newCache[string, User](userCacheSize, siteAge, nil, api.CredentialMark),
 		catalog:     newCache[struct{}, *Catalog](1, siteAge, nil, api.CredentialMark),
 		configs:     newCache[int64, BoardConfig](boardConfigCacheSize, 0, cloneBoardConfig, api.CredentialMark),
 		sprintLists: newCache[int64, SprintList](boardConfigCacheSize, 0, cloneSprintList, api.CredentialMark),
 		me:          newCache[struct{}, User](1, 0, nil, api.CredentialMark),
 	}
-	if c.maxUpload == 0 {
-		c.maxUpload = defaultMaxUpload
+	if c.maxImages == 0 {
+		c.maxImages = defaultMaxImages
 	}
 	return c, nil
 }
