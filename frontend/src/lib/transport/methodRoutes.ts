@@ -220,6 +220,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3375683118: 'thread', // GetThreadWakeDetail
 	2442730827: 'thread', // GetThreadWorkerSummary
 	49371251: 'thread', // GetThreadWorktreeSetup
+	1106773146: 'home', // GetTicketWork
 	3815301456: 'thread', // GetTimelineUserMessageTicks
 	3380106838: 'home', // GetUIState
 	3135466533: 'all', // GetUsageStats

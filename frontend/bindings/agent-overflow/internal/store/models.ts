@@ -1100,6 +1100,40 @@ export class Item {
 }
 
 /**
+ * KeyedTicket is a ticket key a text names, as this computer's mirrors
+ * know it: ConnectionID is the link reader of the site whose mirror holds
+ * the key's project, and IssueID and Title the issue when that mirror
+ * holds it, empty when it holds only other issues of the project. A pull
+ * request row carries the tickets it names in this shape (app.PRListItem).
+ */
+export class KeyedTicket {
+    "key": string;
+    "connectionId": string;
+    "issueId"?: string;
+    "title"?: string;
+
+    /** Creates a new KeyedTicket instance. */
+    constructor($$source: Partial<KeyedTicket> = {}) {
+        if (!("key" in $$source)) {
+            this["key"] = "";
+        }
+        if (!("connectionId" in $$source)) {
+            this["connectionId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new KeyedTicket instance from a string or object.
+     */
+    static createFrom($$source: any = {}): KeyedTicket {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new KeyedTicket($$parsedSource as Partial<KeyedTicket>);
+    }
+}
+
+/**
  * PagedItems is the return shape for windowed item loads
  * (docs/architecture/timeline-window-pages.md §2).
  * 

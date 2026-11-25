@@ -272,6 +272,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetThreadWakeDetail", ID: 3375683118, Scope: "threads:read", Route: "thread"},                                                    // main.App.GetThreadWakeDetail
 	{Name: "GetThreadWorkerSummary", ID: 2442730827, Scope: "threads:read", Route: "thread"},                                                 // main.App.GetThreadWorkerSummary
 	{Name: "GetThreadWorktreeSetup", ID: 49371251, Scope: "terminal:operate", Route: "thread"},                                               // main.App.GetThreadWorktreeSetup
+	{Name: "GetTicketWork", ID: 1106773146, Scope: "git:operate", Route: "home"},                                                             // main.App.GetTicketWork
 	{Name: "GetTimelineUserMessageTicks", ID: 3815301456, Scope: "threads:read", Route: "thread"},                                            // main.App.GetTimelineUserMessageTicks
 	{Name: "GetUIState", ID: 3380106838, Scope: "session", Route: "home"},                                                                    // main.App.GetUIState
 	{Name: "GetUsageStats", ID: 3135466533, Scope: "threads:read", Route: "all"},                                                             // main.App.GetUsageStats
