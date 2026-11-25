@@ -788,16 +788,27 @@ Routes, each under the path prefix `/forge/rest/eausm/latest/`:
 
 | Action | Method and path | Body | Result |
 |---|---|---|---|
-| Read | `GET planningPoker/{issueId}` | none | `{issueId, isRevealed, votes: [{id, issueId, userId, vote, createdAt}]}` |
-| Vote or change vote | `PUT planningPoker/vote` | `{issueId, vote}` | the vote record |
+| Read | `GET planningPoker/{issueId}` | none | `{issueId, isRevealed, votes: [{issueId, userId, vote, createdAt}]}` |
+| Vote or change vote | `PUT planningPoker/vote` | `{issueId, vote}` | the vote record, `{issueId, userId, vote, createdAt}` |
 | Reveal | `PUT planningPoker/reveal/{issueId}` | none | the read shape with `isRevealed: true` |
-| Clear all votes | `DELETE planningPoker/votes/{issueId}` | none | 204 |
+| Clear all votes | `DELETE planningPoker/votes/{issueId}` | none | 204, empty body |
 
-The read was measured again on 2026-11-24 with the same shape. The three
-writes were not: whether the backend takes a write's `body` as the JSON
-value or as a JSON string is the first thing real use shows
-(the invoke's `body` in `pokerInvoke`, `internal/tracker/jira/poker.go`,
-is the one place that encodes it).
+The read and the three writes were measured on 2026-11-25 on one issue
+with one voter, through the invoke above. Every call answered backend
+status 200 except the clear, which answered 204 with an empty string as
+its body.
+
+- The vote's `body` is sent as the JSON value, an object whose `issueId`
+  is a string, as `pokerInvoke` (`internal/tracker/jira/poker.go`) sends
+  it. A read after it holds one vote with the caller's `userId` and the
+  value sent.
+- A second `PUT planningPoker/vote` changes the caller's vote: the read
+  still holds one vote, with the new value.
+- The reveal answers the read shape, and reads after it have
+  `isRevealed: true`.
+- The clear removes every vote and resets `isRevealed` to false.
+- `issueId` is a string and `vote` a number in every answer. A vote has no
+  `id` member (the 2026-11-15 note listed one).
 
 `issueId` is the numeric Jira issue ID and `userId` is an Atlassian account
 ID. The calls add no changelog entry and no entity property to the issue. A

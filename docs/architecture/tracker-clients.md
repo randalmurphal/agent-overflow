@@ -410,8 +410,10 @@ It sends the measured GraphQL documents exactly.
 - **Calls.** `PokerVotes` reads `planningPoker/{issueId}`;
   `CastPokerVote`, `RevealPokerVotes` and `ClearPokerVotes` are the three
   writes, each one `Invoke` of `requestConnectBackend`. A write's body is
-  sent as the JSON value itself, at one place in `pokerInvoke`, since its
-  encoding is the one part not measured. `PokerInstalled` and
+  sent as the JSON value itself, at one place in `pokerInvoke`, the
+  encoding the add-on was
+  [measured](../references/tracker-api-measurements.md#planning-poker-add-on)
+  to take. `PokerInstalled` and
   `PokerVotes` are walks (`trackerapi.Walk`), so a credential change part
   way starts them again. `PokerVoter` is `User` for a voter: a 404 or 403
   matches `ErrUserWithheld` and is kept 30 minutes, so the votes' poll
