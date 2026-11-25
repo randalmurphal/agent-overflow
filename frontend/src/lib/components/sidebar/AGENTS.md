@@ -102,7 +102,7 @@ which adds the project's empty state and drop targets.
   `stores/threadWorkerSummaries.svelte.ts`.
 - `threadRowActions.ts` and `threadGroupActions.ts` own mutations from this
   directory, except a thread's ticket link, whose actions are
-  `stores/threadTicketLinks.ts`'s on every surface. Reconcile rows from
+  `stores/threadTicketLinks.svelte.ts`'s on every surface. Reconcile rows from
   each RPC response.
 - Inline rename stays in the owning row. Context menus delegate through the
   row's handler and use the shared menu primitives.

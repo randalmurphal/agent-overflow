@@ -46,7 +46,7 @@
   import Popover from '../primitives/Popover.svelte';
   import { runTerminalToggle } from '../terminal/terminalToggle';
   import StatusMark from '../issues/StatusMark.svelte';
-  import { linkedTicketStateNote, openLinkedTicket, removeThreadTicketLink } from '../../stores/threadTicketLinks';
+  import { findThreadTicket, linkedTicketStateNote, openLinkedTicket, removeThreadTicketLink, threadTicketLinkGrant } from '../../stores/threadTicketLinks.svelte';
   import { openPrReview, takeControlState, terminalGrant, toggleTakeControl, toggleWorkspaceReview } from './headerPaneActions';
 
   let { pane }: { pane: ThreadPane } = $props();
@@ -318,16 +318,26 @@
           onSelect={() => pick(regenerateTitle)}
         />
       {/if}
-      {#if ticketLink && pane.thread}
+      {#if pane.thread}
         {@const thread = pane.thread}
+        {@const linkGrant = threadTicketLinkGrant(thread)}
         <MenuDivider />
         <MenuItem
-          label="Remove ticket link"
-          testId="chat-header-menu-ticket-remove"
-          disabled={ticketGrant !== 'granted'}
-          title={grantBlockedTitle(ticketGrant)}
-          onSelect={() => pick(() => void removeThreadTicketLink(thread))}
+          label={ticketLink ? 'Change ticket…' : 'Link ticket…'}
+          testId="chat-header-menu-ticket-find"
+          disabled={linkGrant !== 'granted'}
+          title={grantBlockedTitle(linkGrant)}
+          onSelect={() => pick(() => findThreadTicket(thread, triggerEl))}
         />
+        {#if ticketLink}
+          <MenuItem
+            label="Remove ticket link"
+            testId="chat-header-menu-ticket-remove"
+            disabled={ticketGrant !== 'granted'}
+            title={grantBlockedTitle(ticketGrant)}
+            onSelect={() => pick(() => void removeThreadTicketLink(thread))}
+          />
+        {/if}
       {/if}
       {#if editorRows.length > 0}
         <MenuDivider />

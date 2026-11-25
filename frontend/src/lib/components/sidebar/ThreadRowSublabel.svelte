@@ -19,7 +19,7 @@
   import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
   import Icon from '../primitives/Icon.svelte';
   import StatusMark from '../issues/StatusMark.svelte';
-  import { linkedTicketStateNote } from '../../stores/threadTicketLinks';
+  import { linkedTicketStateNote } from '../../stores/threadTicketLinks.svelte';
 
   interface Props {
     thread: Thread;

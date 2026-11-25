@@ -3,11 +3,18 @@
   // linked ticket's status mark and key, before the pull request badge, on
   // the desktop. A click opens the ticket in the Issues pane; a right-click
   // opens its menu. Under compact the ticket is a row of the Thread actions
-  // menu instead (ChatHeaderMenu). Every action is stores/threadTicketLinks.ts's.
+  // menu instead (ChatHeaderMenu). Every action is stores/threadTicketLinks.svelte.ts's.
   import type { Thread } from '../../types/models';
   import { threadScopeGrant } from '../../transport/entityScopes';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
-  import { copyLinkedTicketKey, linkedTicketStateNote, openLinkedTicket, removeThreadTicketLink } from '../../stores/threadTicketLinks';
+  import {
+    copyLinkedTicketKey,
+    findThreadTicket,
+    linkedTicketStateNote,
+    openLinkedTicket,
+    removeThreadTicketLink,
+    threadTicketLinkGrant,
+  } from '../../stores/threadTicketLinks.svelte';
   import { buttonClasses } from '../primitives/buttonClasses';
   import ContextMenu from '../primitives/ContextMenu.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
@@ -21,7 +28,9 @@
   const title = $derived(link ? [`${link.key} · ${link.title}`, note, 'Open it in Issues'].filter(Boolean).join('\n') : '');
   // ClearThreadTicket rides threads:operate on the thread's computer.
   const operateGrant = $derived(threadScopeGrant('threads:operate', thread.id, thread.projectId));
+  const linkGrant = $derived(threadTicketLinkGrant(thread));
 
+  let buttonEl: HTMLButtonElement | undefined = $state();
   let menu = $state<{ x: number; y: number } | null>(null);
 
   function run(action: () => void): void {
@@ -32,6 +41,7 @@
 
 {#if link}
   <button
+    bind:this={buttonEl}
     type="button"
     {title}
     aria-label="Open ticket {link.key}"
@@ -55,6 +65,13 @@
     <MenuDivider />
     <MenuItem label="Copy key" testId="chat-header-ticket-copy-key" onSelect={() => run(() => void copyLinkedTicketKey(thread))} />
     <MenuDivider />
+    <MenuItem
+      label="Change ticket…"
+      testId="chat-header-ticket-change"
+      disabled={linkGrant !== 'granted'}
+      title={grantBlockedTitle(linkGrant)}
+      onSelect={() => run(() => findThreadTicket(thread, buttonEl))}
+    />
     <MenuItem
       label="Remove link"
       testId="chat-header-ticket-remove"

@@ -8,7 +8,7 @@ import {
   linkedTicketUnopenable,
   openLinkedTicket,
   removeThreadTicketLink,
-} from './threadTicketLinks';
+} from './threadTicketLinks.svelte';
 import { takeTicketOpenRequest } from './issuesPane.svelte';
 import { getPaneLayoutItems, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import { getThreadById, prependThread, removeThread } from './threads.svelte';
