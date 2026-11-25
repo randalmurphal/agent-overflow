@@ -5,7 +5,8 @@
 // in-progress one until another is picked from the strip of statuses with
 // their counts; the header's menu holds Display and Only mine, and Only
 // mine narrows the column and the strip's count to the verified account's
-// cards. The desktop screen is issues-board.spec.ts.
+// cards; the header's Back closes an open Search before it leaves for the
+// list. The desktop screen is issues-board.spec.ts.
 
 import type { Locator } from '@playwright/test';
 
@@ -48,6 +49,24 @@ test('the compact board shows one status from its strip and keeps Only mine in i
   await expect(pane.getByTestId('issues-card')).toHaveCount(1);
   await expect(card(pane, '10102')).toContainText('Second task');
   await tabs.nth(1).click();
+
+  // Back closes Search before it leaves the board; Search's filter goes
+  // with it.
+  const screen = page.locator('html');
+  await pane.getByTestId('issues-search').click();
+  const bar = pane.getByTestId('pane-find-bar');
+  await bar.getByTestId('pane-find-input').fill('first');
+  await expect(pane.getByTestId('issues-card')).toHaveCount(1);
+  await pane.getByTestId('compact-back').click();
+  await expect(bar).toHaveCount(0);
+  await expect(screen).toHaveAttribute('data-compact-screen', 'thread');
+  await expect(pane.getByTestId('issues-card')).toHaveCount(2);
+  await pane.getByTestId('compact-back').click();
+  await expect(screen).toHaveAttribute('data-compact-screen', 'list');
+  await page.getByTestId('sidebar-tool-issues').click();
+  await expect(screen).toHaveAttribute('data-compact-screen', 'thread');
+  await expect(pane.getByTestId('pane-find-bar')).toHaveCount(0);
+  await expect(pane.getByTestId('issues-card')).toHaveCount(2);
 
   // The header has no Only mine of its own; the menu holds it with Display.
   await expect(pane.getByTestId('issues-only-mine')).toHaveCount(0);
