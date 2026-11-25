@@ -39,7 +39,7 @@ func (t *tempoTime) Worklogs(ctx context.Context, q tracker.WorklogQuery) ([]tra
 		return nil, fmt.Errorf("jiraprovider: Tempo worklogs of %s: %w", q.Author, err)
 	}
 	if err := t.name(ctx, out); err != nil {
-		return nil, fmt.Errorf("jiraprovider: the issues of %s's Tempo worklogs: %w: %w", q.Author, tracker.ErrWorklogNames, err)
+		return nil, fmt.Errorf("jiraprovider: the issues of %s's Tempo worklogs: %w: %w: %w", q.Author, tracker.ErrWorklogNames, tracker.ErrWorklogJira, err)
 	}
 	return out, nil
 }
@@ -84,7 +84,7 @@ func (t *tempoTime) AddWorklog(ctx context.Context, in tracker.WorklogInput) tra
 	}
 	me, err := t.jira.Me(ctx)
 	if err != nil {
-		return worklogResult(in.Issue, "", beforeSend(fmt.Errorf("jiraprovider: who logs the time: %w", err)))
+		return worklogResult(in.Issue, "", beforeSend(fmt.Errorf("jiraprovider: who logs the time: %w: %w", tracker.ErrWorklogJira, err)))
 	}
 	_, err = t.tempo.Create(ctx, tempo.Draft{
 		Issue: tempo.Issue{ID: issue}, Author: me.AccountID, Start: tempo.Start{Date: tempoDate(in.Day)},
