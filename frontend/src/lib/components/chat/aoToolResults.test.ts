@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BROWSER_TOOLS_SERVER } from '../../utils/browserTools';
-import { NO_AO_NAMES, REMOTE_TOOLS_SERVER, THREAD_TOOLS_SERVER, WORKFLOW_TOOLS_SERVER, type AoToolNames } from './aoTools';
+import { NO_AO_NAMES, REMOTE_TOOLS_SERVER, THREAD_TOOLS_SERVER, TRACKER_TOOLS_SERVER, WORKFLOW_TOOLS_SERVER, type AoToolNames } from './aoTools';
 import {
   aoResultView,
   aoToolError,
@@ -9,6 +9,7 @@ import {
   readFirstJson,
   remoteResultView,
   threadResultView,
+  trackerResultView,
   workflowResultView,
 } from './aoToolResults';
 
@@ -495,11 +496,58 @@ describe('workflow_schema', () => {
   });
 });
 
+describe('tracker tool results', () => {
+  it('lists the tickets a search found, says when there are more, and names a connection it could not search', () => {
+    const view = trackerResultView(json({
+      tickets: [
+        { key: 'WEB-12', title: 'Login fails on Safari', status: 'In Progress', assignee: 'User 1' },
+        { key: 'WEB-9', title: 'Session cookie lost', status: 'Done' },
+      ],
+      next: 'eyJjIjoiYSJ9',
+      unsearched: [{ site: 'other.atlassian.net', error: 'this tracker connection is turned off' }],
+    }))!;
+    expect(view.outcome).toBe('2 tickets · more');
+    expect(view.lines.map((l) => [l.title, l.detail])).toEqual([
+      ['WEB-12 · Login fails on Safari', 'In Progress · User 1'],
+      ['WEB-9 · Session cookie lost', 'Done'],
+    ]);
+    expect(view.note).toBe('Not searched: other.atlassian.net: this tracker connection is turned off');
+    expect(trackerResultView(json({ tickets: [] }))!.outcome).toBe('no tickets');
+  });
+
+  it('reads a ticket as its key and status, its description to fold, and its comments', () => {
+    const view = trackerResultView(json({
+      key: 'WEB-12', title: 'Login fails on Safari', status: 'In Progress', type: 'Bug', assignee: 'User 1',
+      description: 'Steps:\n1. Open the page.',
+      comments: [{ by: 'User 2', at: '2025-11-24T16:05Z', body: 'Repro on 18.1 too.', internal: true }],
+      history: [{ at: '2025-11-24T16:05Z', field: 'status', to: 'In Progress' }],
+      more_comments: 'eyJjIjoiYSJ9',
+    }))!;
+    expect(view.outcome).toBe('WEB-12 Login fails on Safari · In Progress');
+    expect(view.facts).toEqual([
+      { label: 'assignee', value: 'User 1' },
+      { label: 'type', value: 'Bug' },
+      { label: 'history', value: '1 change' },
+    ]);
+    expect(view.preview).toEqual({ label: 'description', text: 'Steps:\n1. Open the page.' });
+    expect(view.lines).toHaveLength(1);
+    expect(view.lines[0]).toMatchObject({ title: 'User 2', text: 'Repro on 18.1 too.' });
+    expect(view.lines[0]!.detail).toMatch(/ · internal$/);
+  });
+
+  it('reads older comments alone', () => {
+    const view = trackerResultView(json({ comments: [{ by: 'User 1', at: '2025-11-20T10:00Z', body: 'First.' }] }))!;
+    expect(view.outcome).toBe('1 older comment');
+    expect(view.lines.map((l) => l.title)).toEqual(['User 1']);
+  });
+});
+
 describe('aoResultView', () => {
   it('dispatches by server', () => {
     expect(aoResultView(THREAD_TOOLS_SERVER, 'thread_status', json({ requests: [] }), {}, NO_AO_NAMES)!.outcome).toBe('nothing open');
     expect(aoResultView(WORKFLOW_TOOLS_SERVER, 'run_status', json({ run: { itemId: 'r', state: 'running' }, outcome: 'running' }), {}, NO_AO_NAMES)!.outcome).toBe('running');
     expect(aoResultView(BROWSER_TOOLS_SERVER, 'browser_close_page', json({ closed: true }), {}, NO_AO_NAMES)!.facts).toEqual([{ label: 'closed', value: 'true' }]);
+    expect(aoResultView(TRACKER_TOOLS_SERVER, 'ticket_find', json({ tickets: [] }), {}, NO_AO_NAMES)!.outcome).toBe('no tickets');
     expect(aoResultView('docs', 'lookup', json({ a: 1 }), {}, NO_AO_NAMES)).toBeNull();
   });
 });

@@ -324,6 +324,10 @@ func (a *App) startSessionNow(threadID string) error {
 	if err != nil {
 		return fmt.Errorf("start session: register workflow tools: %w", err)
 	}
+	trackerServers, err := a.trackerMCPConfigForThread(t, sessionToken)
+	if err != nil {
+		return fmt.Errorf("start session: register tracker tools: %w", err)
+	}
 	if browserServers == nil {
 		browserServers = map[string]any{}
 	}
@@ -334,6 +338,9 @@ func (a *App) startSessionNow(threadID string) error {
 		browserServers[name] = threadMCPServerConfig(t.Provider, config)
 	}
 	for name, config := range workflowServers {
+		browserServers[name] = threadMCPServerConfig(t.Provider, config)
+	}
+	for name, config := range trackerServers {
 		browserServers[name] = threadMCPServerConfig(t.Provider, config)
 	}
 	if len(browserServers) == 0 {
@@ -616,6 +623,9 @@ func (a *App) spawnProviderSession(
 		}
 		if mcpServers[workflowMCPName] != nil {
 			cfg.AllowedTools = append(cfg.AllowedTools, WorkflowToolsAllowedTool)
+		}
+		if mcpServers[trackerMCPName] != nil {
+			cfg.AllowedTools = append(cfg.AllowedTools, TrackerToolsAllowedTool)
 		}
 		cfg.EventLogger = a.logger
 		cfg.Reaper = a.groupReaper("claude session")

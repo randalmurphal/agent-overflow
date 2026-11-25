@@ -21,6 +21,7 @@ import {
   REMOTE_TOOLS_SERVER,
   THREAD_TOOLS_SERVER,
   WORKFLOW_TOOLS_SERVER,
+  TRACKER_TOOLS_SERVER,
   runName,
   shortId,
   threadName,
@@ -1124,6 +1125,56 @@ function arrayView(rows: unknown[], names: AoToolNames): AoResultView {
   return view;
 }
 
+// ---- tracker tools -----------------------------------------------------
+
+function ticketCommentLines(comments: Input[]): AoResultLine[] {
+  return comments.map((comment, index) => ({
+    key: `${index}`,
+    title: str(comment, 'by') || 'comment',
+    detail: join(whenText(str(comment, 'at')), comment.internal === true ? 'internal' : ''),
+    text: clipText(str(comment, 'body'), LINE_TEXT_MAX),
+    link: null,
+  }));
+}
+
+/**
+ * Reads a tracker tools reply (`internal/trackertools`): a page of tickets
+ * found, a ticket read, or a read's older comments. Its continuation
+ * (`next`, `more_comments`) is for the model and shows only as "more".
+ */
+export function trackerResultView(data: string): AoResultView | null {
+  const reply = obj(parseFirstJson(data));
+  if (!reply) return null;
+  const view = emptyView();
+  if (Array.isArray(reply.tickets)) {
+    for (const ticket of list(reply.tickets)) {
+      const key = str(ticket, 'key');
+      view.lines.push({ key, title: join(key, str(ticket, 'title')), detail: join(str(ticket, 'status'), str(ticket, 'assignee')), text: '', link: null });
+    }
+    view.outcome = join(view.lines.length ? plural(view.lines.length, 'ticket') : 'no tickets', str(reply, 'next') ? 'more' : '');
+    const unsearched = list(reply.unsearched).map((source) => `${str(source, 'site')}: ${str(source, 'error')}`);
+    view.note = unsearched.length ? `Not searched: ${unsearched.join('; ')}` : '';
+    return view;
+  }
+  const comments = list(reply.comments);
+  const key = str(reply, 'key');
+  if (!key) {
+    view.lines = ticketCommentLines(comments);
+    view.outcome = join(plural(comments.length, 'older comment'), str(reply, 'more_comments') ? 'more' : '');
+    return view;
+  }
+  view.outcome = join(`${key} ${str(reply, 'title')}`.trim(), str(reply, 'status'));
+  fact(view.facts, 'assignee', str(reply, 'assignee'));
+  fact(view.facts, 'type', str(reply, 'type'));
+  fact(view.facts, 'priority', str(reply, 'priority'));
+  const history = list(reply.history);
+  if (history.length) fact(view.facts, 'history', plural(history.length, 'change'));
+  const description = str(reply, 'description');
+  view.preview = description ? { label: 'description', text: clipText(description, PREVIEW_MAX) } : null;
+  view.lines = ticketCommentLines(comments);
+  return view;
+}
+
 /**
  * The reply of any AO tool as its row's body shows it. Null when the reply
  * is not JSON, which the body reports as undecoded rather than painting,
@@ -1145,6 +1196,8 @@ export function aoResultView(
       return browserResultView(tool, data, names);
     case REMOTE_TOOLS_SERVER:
       return remoteResultView(data) ? null : remoteOtherView(tool, data, names);
+    case TRACKER_TOOLS_SERVER:
+      return trackerResultView(data);
     default:
       return null;
   }
