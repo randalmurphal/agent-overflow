@@ -27,7 +27,7 @@ test('planning poker reaches its client: read, vote, reveal and clear', async ({
   const poker = () => harness.rpc<PokerView>('TrackerPoker', sub.id);
 
   expect(await harness.rpc('TrackerPokerSupport', board.connectionId)).toEqual({ available: true });
-  const sub = await harness.rpc<{ id: string }>('SubscribeTrackerTicket', board.connectionId, '10101');
+  const sub = await harness.rpc<{ id: string }>('SubscribeTrackerTicket', board.connectionId, '10101', true);
   const followed = await harness.rpc<PokerView>('FollowTrackerPoker', sub.id, true);
   expect(followed.loaded).toBe(false);
   await harness.waitForEvent<IssueEvent>('tracker:issue_updated', (e) => e.issue === '10101' && e.poker === true);
