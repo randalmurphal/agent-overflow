@@ -1929,3 +1929,404 @@ func TestFailedSteeredPromptIsNeverArmedOrConfirmed(t *testing.T) {
 		}
 	}
 }
+
+type gatedStepAnchorFlavor struct {
+	DefaultFlavor
+	mu         sync.Mutex
+	canVerify  bool
+	anchorByID map[string]string
+	calls      int
+}
+
+func (f *gatedStepAnchorFlavor) BeforePrompt(_ context.Context, _ string) any {
+	return 1
+}
+
+func (f *gatedStepAnchorFlavor) CanVerifyPromptStep(sessionID string, beforeToken any) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := beforeToken.(int)
+	return f.canVerify && sessionID != "" && ok
+}
+
+func (f *gatedStepAnchorFlavor) ResolvePromptStepAnchor(_ context.Context, _ string, content string, _ any) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return f.anchorByID[content]
+}
+
+func TestSteerConfirmationWaitsForProviderStepAnchor(t *testing.T) {
+	t.Parallel()
+
+	t.Run("spontaneous wake pre-steer thinking and tools precede steered user message", func(t *testing.T) {
+		t.Parallel()
+		var mu sync.Mutex
+		var events []provider.ProviderEvent
+		fl := &gatedStepAnchorFlavor{
+			DefaultFlavor: DefaultFlavor{Kind: provider.Agy},
+			canVerify:     true,
+			anchorByID:    map[string]string{},
+		}
+		s := newUnitSession(fl, &events, &mu)
+		s.sessionID = "sess-steer-order"
+
+		// 1. Spontaneous background wake opens and starts streaming pre-steer thinking.
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "agent_thought_chunk",
+			Content:       json.RawMessage(`{"type":"text","text":"pre-steer thought 1 "}`),
+		})
+
+		// 2. User steers while the spontaneous wake is already active (before agy writes step_type=14).
+		steer := &pendingPromptConfirm{
+			uuid:              "u-steer-1",
+			content:           "Go deeper on optimizations",
+			beforeToken:       2364,
+			requireStepAnchor: true,
+		}
+		s.mu.Lock()
+		s.spontaneousTurnOpen = false
+		s.inFlightPrompts = 1
+		s.wireInFlightPrompts = 1
+		s.inFlightConfirms = []*pendingPromptConfirm{steer}
+		s.armedConfirms = []*pendingPromptConfirm{steer}
+		s.mu.Unlock()
+
+		// 3. Pre-steer LLM call finishes thinking and runs read_file + run_command
+		// before agy injects step_type=14 into its conversation DB.
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "agent_thought_chunk",
+			Content:       json.RawMessage(`{"type":"text","text":"pre-steer thought 2"}`),
+		})
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "tool_call",
+			ToolCallID:    "read-1",
+			Title:         "read_file",
+			Kind:          "read",
+			Status:        "in_progress",
+		})
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "tool_call_update",
+			ToolCallID:    "read-1",
+			Status:        "completed",
+		})
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "tool_call",
+			ToolCallID:    "bash-1",
+			Title:         "run_command",
+			Kind:          "execute",
+			Status:        "in_progress",
+		})
+
+		mu.Lock()
+		for _, ev := range events {
+			if ev.Kind == provider.EventUserText {
+				mu.Unlock()
+				t.Fatalf("steered prompt confirmed prematurely before step_type=14 landed: %+v", events)
+			}
+		}
+		mu.Unlock()
+
+		// 4. agy now writes step_type=14 (idx=2367) and starts the post-steer thinking block.
+		fl.mu.Lock()
+		fl.anchorByID["Go deeper on optimizations"] = "agy-step:2367:hash2367"
+		callsBeforePostSteer := fl.calls
+		fl.mu.Unlock()
+
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "agent_thought_chunk",
+			Content:       json.RawMessage(`{"type":"text","text":"post-steer thought"}`),
+		})
+		s.closeActiveContentBlock()
+
+		// Verify ResolvePromptStepAnchor was called exactly once for the ready step
+		// (pre-resolved anchor reused by emitPromptConfirmationWithAnchor).
+		fl.mu.Lock()
+		deltaCalls := fl.calls - callsBeforePostSteer
+		fl.mu.Unlock()
+		if deltaCalls != 1 {
+			t.Fatalf("expected 1 ResolvePromptStepAnchor call on ready chunk, got %d", deltaCalls)
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+		idxBashStart := -1
+		idxUserText := -1
+		idxPostThought := -1
+		var userMeta map[string]any
+		for i, ev := range events {
+			switch {
+			case ev.Kind == provider.EventToolStart && ev.ItemID == "bash-1":
+				idxBashStart = i
+			case ev.Kind == provider.EventUserText && ev.Content == "Go deeper on optimizations":
+				idxUserText = i
+				_ = json.Unmarshal(ev.Meta, &userMeta)
+			case ev.Kind == provider.EventThinking && strings.Contains(ev.Content, "post-steer thought"):
+				idxPostThought = i
+			}
+		}
+		if idxBashStart < 0 || idxUserText < 0 || idxPostThought < 0 {
+			t.Fatalf("missing expected events (bash=%d user=%d postThought=%d): %+v", idxBashStart, idxUserText, idxPostThought, events)
+		}
+		if idxBashStart >= idxUserText || idxUserText >= idxPostThought {
+			t.Fatalf("wrong event order: bash=%d user=%d postThought=%d; want bash < user < postThought", idxBashStart, idxUserText, idxPostThought)
+		}
+		if userMeta["parent_uuid"] != "agy-step:2367:hash2367" {
+			t.Fatalf("steered EventUserText parent_uuid = %v, want agy-step:2367:hash2367", userMeta["parent_uuid"])
+		}
+	})
+
+	t.Run("mid-turn FinishSteer does not split Prompt 1 block before step anchor lands", func(t *testing.T) {
+		t.Parallel()
+		var mu sync.Mutex
+		var events []provider.ProviderEvent
+		fl := &gatedStepAnchorFlavor{
+			DefaultFlavor: DefaultFlavor{Kind: provider.Agy},
+			canVerify:     true,
+			anchorByID:    map[string]string{},
+		}
+		s := newUnitSession(fl, &events, &mu)
+		s.sessionID = "sess-steer-split"
+		s.turnOpen = true
+		s.activeTurnID = "turn-1"
+
+		p1 := &pendingPromptConfirm{uuid: "u-p1", content: "first"}
+		p1.confirmed.Store(true)
+		p2 := &pendingPromptConfirm{
+			uuid:              "u-p2",
+			content:           "second steer",
+			beforeToken:       99,
+			requireStepAnchor: true,
+		}
+		s.inFlightPrompts = 2
+		s.activeFinishers = 2
+		s.wireInFlightPrompts = 2
+		s.inFlightConfirms = []*pendingPromptConfirm{p1, p2}
+
+		// Prompt 1 begins streaming text.
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "agent_message_chunk",
+			Content:       json.RawMessage(`{"type":"text","text":"Part 1 "}`),
+		})
+
+		// FinishSteer settles Prompt 1's wire RPC while Prompt 1 is still streaming
+		// and before agy writes Prompt 2's step_type=14.
+		settleP1 := s.makeWirePromptSettler(p1)
+		settleP1([]byte(`{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}`))
+
+		// Prompt 1's remaining text streams while step_type=14 is still absent.
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "agent_message_chunk",
+			Content:       json.RawMessage(`{"type":"text","text":"Part 2."}`),
+		})
+
+		mu.Lock()
+		for _, ev := range events {
+			if ev.Kind == provider.EventContentBlockStop || ev.Kind == provider.EventUserText {
+				mu.Unlock()
+				t.Fatalf("FinishSteer prematurely closed block or confirmed steer before step anchor: %+v", events)
+			}
+		}
+		mu.Unlock()
+
+		// Now agy persists step_type=14 and starts streaming Prompt 2's reply.
+		fl.mu.Lock()
+		fl.anchorByID["second steer"] = "agy-step:100:hash100"
+		fl.mu.Unlock()
+
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "agent_message_chunk",
+			Content:       json.RawMessage(`{"type":"text","text":"Reply to steer"}`),
+		})
+		s.closeActiveContentBlock()
+
+		mu.Lock()
+		defer mu.Unlock()
+		idxP1Text := -1
+		idxStop := -1
+		idxUser := -1
+		idxP2Text := -1
+		for i, ev := range events {
+			switch {
+			case ev.Kind == provider.EventTextDelta && strings.Contains(ev.Content, "Part 1 Part 2."):
+				idxP1Text = i
+			case ev.Kind == provider.EventContentBlockStop && idxStop < 0:
+				idxStop = i
+			case ev.Kind == provider.EventUserText && ev.Content == "second steer":
+				idxUser = i
+			case ev.Kind == provider.EventTextDelta && strings.Contains(ev.Content, "Reply to steer"):
+				idxP2Text = i
+			}
+		}
+		if idxP1Text < 0 || idxP1Text >= idxStop || idxStop >= idxUser || idxUser >= idxP2Text {
+			t.Fatalf("unexpected sequence (p1=%d stop=%d user=%d p2=%d): %+v", idxP1Text, idxStop, idxUser, idxP2Text, events)
+		}
+	})
+
+	t.Run("clean turn end fallback still confirms if step anchor never appears", func(t *testing.T) {
+		t.Parallel()
+		var mu sync.Mutex
+		var events []provider.ProviderEvent
+		fl := &gatedStepAnchorFlavor{
+			DefaultFlavor: DefaultFlavor{Kind: provider.Agy},
+			canVerify:     true,
+			anchorByID:    map[string]string{},
+		}
+		s := newUnitSession(fl, &events, &mu)
+		s.sessionID = "sess-steer-fallback"
+		s.turnOpen = true
+		s.activeTurnID = "turn-1"
+
+		p2 := &pendingPromptConfirm{
+			uuid:              "u-fallback",
+			content:           "empty reply steer",
+			beforeToken:       50,
+			requireStepAnchor: true,
+		}
+		s.inFlightPrompts = 1
+		s.activeFinishers = 1
+		s.wireInFlightPrompts = 1
+		s.inFlightConfirms = []*pendingPromptConfirm{p2}
+		s.armedConfirms = []*pendingPromptConfirm{p2}
+
+		s.finishPrompt(json.RawMessage(`{"stopReason":"end_turn"}`), nil, 50, p2)
+
+		mu.Lock()
+		defer mu.Unlock()
+		var confirmed bool
+		for _, ev := range events {
+			if ev.Kind == provider.EventUserText && ev.Content == "empty reply steer" {
+				confirmed = true
+			}
+		}
+		if !confirmed {
+			t.Fatalf("expected fallback EventUserText on clean turn end, got %+v", events)
+		}
+	})
+
+	t.Run("dispatchPrompt sets requireStepAnchor only on mid-turn and spontaneous-wake steers", func(t *testing.T) {
+		t.Parallel()
+		serverPath := writeFakeACPServer(t, `#!/usr/bin/env python3
+import json, sys, threading
+
+write_lock = threading.Lock()
+def send(obj):
+    with write_lock:
+        sys.stdout.write(json.dumps(obj) + "\n")
+        sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    mid = msg.get("id")
+    method = msg.get("method", "")
+    params = msg.get("params") or {}
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}}})
+    elif method == "session/new":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "sess-dispatch-gate"}})
+    elif method in ("session/set_mode", "session/set_config_option", "session/close"):
+        send({"jsonrpc": "2.0", "id": mid, "result": {}})
+    elif method == "session/prompt":
+        sid = params.get("sessionId", "")
+        text = " ".join(b.get("text", "") for b in params.get("prompt", []) if b.get("type") == "text")
+        if text == "TURN1":
+            send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "turn1-reply"}}}})
+            send({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}})
+        else:
+            # Leave steered prompt open until session closes so test controls updates deterministically.
+            pass
+`)
+		fl := &gatedStepAnchorFlavor{
+			DefaultFlavor: DefaultFlavor{Kind: provider.Agy},
+			canVerify:     true,
+			anchorByID:    map[string]string{},
+		}
+		var mu sync.Mutex
+		var events []provider.ProviderEvent
+		conn, err := Dial(context.Background(), ConnConfig{
+			Binary:       serverPath,
+			WorkDir:      t.TempDir(),
+			Reaper:       procutiltest.Reaper(),
+			ProviderName: "acp",
+		})
+		if err != nil {
+			t.Fatalf("Dial: %v", err)
+		}
+		defer func() { _ = conn.Close() }()
+		s, err := conn.OpenPooled(context.Background(), "thr-dispatch-gate", SessionConfig{
+			WorkDir: t.TempDir(),
+			Flavor:  fl,
+		}, func(ev provider.ProviderEvent) {
+			mu.Lock()
+			events = append(events, ev)
+			mu.Unlock()
+		}, nil)
+		if err != nil {
+			t.Fatalf("OpenPooled: %v", err)
+		}
+		defer func() { _ = s.Close() }()
+
+		// 1. Fresh Turn 1 must NOT require step anchor (confirms even when ResolvePromptStepAnchor returns "").
+		if err := s.Send(context.Background(), "TURN1", provider.SendOptions{UserMessageUUID: "u-t1"}); err != nil {
+			t.Fatalf("Send TURN1: %v", err)
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			mu.Lock()
+			done := false
+			for _, ev := range events {
+				if ev.Kind == provider.EventTurnComplete {
+					done = true
+					break
+				}
+			}
+			mu.Unlock()
+			if done {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		mu.Lock()
+		sawT1User := false
+		for _, ev := range events {
+			if ev.Kind == provider.EventUserText && ev.Content == "TURN1" {
+				sawT1User = true
+			}
+		}
+		mu.Unlock()
+		if !sawT1User {
+			t.Fatalf("fresh Turn 1 failed to confirm without step anchor: %+v", events)
+		}
+
+		// 2. Open spontaneous wake, then call real Send -> dispatchPrompt must set requireStepAnchor = true.
+		s.handleUpdate(SessionUpdate{
+			SessionUpdate: "agent_thought_chunk",
+			Content:       json.RawMessage(`{"type":"text","text":"wake-thinking"}`),
+		})
+		if err := s.Send(context.Background(), "STEER_WAKE", provider.SendOptions{UserMessageUUID: "u-wake-steer"}); err != nil {
+			t.Fatalf("Send STEER_WAKE: %v", err)
+		}
+		s.mu.Lock()
+		if len(s.armedConfirms) != 1 || !s.armedConfirms[0].requireStepAnchor {
+			got := s.armedConfirms
+			s.mu.Unlock()
+			t.Fatalf("expected spontaneous-wake steer to be armed with requireStepAnchor=true, got %+v", got)
+		}
+		s.mu.Unlock()
+
+		// 3. Second mid-turn steer while wireInFlightPrompts > 0 must ALSO set requireStepAnchor = true.
+		if err := s.Send(context.Background(), "STEER_ACTIVE", provider.SendOptions{UserMessageUUID: "u-active-steer"}); err != nil {
+			t.Fatalf("Send STEER_ACTIVE: %v", err)
+		}
+		s.mu.Lock()
+		if len(s.inFlightConfirms) < 2 || !s.inFlightConfirms[1].requireStepAnchor {
+			got := s.inFlightConfirms
+			s.mu.Unlock()
+			t.Fatalf("expected active-turn steer to have requireStepAnchor=true, got %+v", got)
+		}
+		s.mu.Unlock()
+	})
+}

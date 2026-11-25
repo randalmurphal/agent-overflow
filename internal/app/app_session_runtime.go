@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
@@ -162,6 +163,7 @@ func (a *App) revokeSessionMCP(threadID, token string) {
 	a.revokeRemoteMCP(threadID, token)
 	a.revokeThreadMCP(threadID, token)
 	a.workflowMCPServer().RevokeThread(threadID, token)
+	a.trackerMCPServer().RevokeThread(threadID, token)
 	if a.browser.mcp != nil {
 		a.browser.mcp.RevokeThread(threadID, token)
 	}
@@ -235,6 +237,26 @@ func (a *App) workflowCallerScope(thread store.Thread) (transport.CallerScope, b
 		return transport.CallerScope{}, false, err
 	}
 	return scope, true, nil
+}
+
+// sessionScope is a thread's workflowCallerScope, resolved on its first use
+// and then kept. A session start, or a listing of the thread's MCP menu,
+// makes one and hands it to every server that decides by it, so the
+// resolution, which decodes a workflow phase's run snapshot, runs at most
+// once and only for a server that needs it.
+type sessionScope func() (transport.CallerScope, bool, error)
+
+func (a *App) sessionScopeOf(thread store.Thread) sessionScope {
+	var (
+		once  sync.Once
+		scope transport.CallerScope
+		ok    bool
+		err   error
+	)
+	return func() (transport.CallerScope, bool, error) {
+		once.Do(func() { scope, ok, err = a.workflowCallerScope(thread) })
+		return scope, ok, err
+	}
 }
 
 // derivePhaseScope resolves the run, phase, frozen grants and access behind a

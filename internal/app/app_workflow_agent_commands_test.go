@@ -744,7 +744,7 @@ func TestWorkflowComposerBlockRendersTheProjectSurface(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixture.app.workflowMCPConfigForThread(refreshed, "session-1"); err != nil {
+	if _, err := fixture.app.workflowMCPConfigForThread(refreshed, "session-1", fixture.app.sessionScopeOf(refreshed)); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { fixture.app.workflowMCPServer().UnregisterThread(thread.ID) })

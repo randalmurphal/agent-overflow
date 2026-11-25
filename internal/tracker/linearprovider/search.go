@@ -84,10 +84,18 @@ func (p *Provider) Search(ctx context.Context, q tracker.SearchQuery) (tracker.S
 	}
 	next := searchToken{Team: team}
 	var page linear.Page[linear.Issue]
+	var catalog tracker.Catalog
 	var err error
 	if text != "" {
-		page, err = p.c.SearchIssues(ctx, linear.SearchQuery{Term: text, TeamID: team, Limit: limit}, from.After)
-		next.After = page.EndCursor
+		var hits linear.Page[linear.SearchHit]
+		hits, err = p.c.SearchIssues(ctx, linear.SearchQuery{Term: text, TeamID: team, Limit: limit}, from.After)
+		next.After, page.HasNextPage = hits.EndCursor, hits.HasNextPage
+		for _, h := range hits.Items {
+			page.Items = append(page.Items, h.Issue)
+		}
+		if err == nil {
+			catalog, err = hitsCatalog(hits.Items)
+		}
 	} else {
 		var recent linear.RecentPage
 		recent, err = p.c.RecentIssues(ctx, linear.RecentQuery{Filter: linear.IssueFilter{Teams: []string{team}}, Limit: limit,
@@ -101,11 +109,31 @@ func (p *Provider) Search(ctx context.Context, q tracker.SearchQuery) (tracker.S
 	if err != nil {
 		return tracker.SearchPage{}, err
 	}
-	out := tracker.SearchPage{Cards: cards}
+	out := tracker.SearchPage{Cards: cards, Catalog: catalog}
 	if page.HasNextPage {
 		if out.Next, err = encodeSearchToken(next); err != nil {
 			return tracker.SearchPage{}, err
 		}
 	}
 	return out, nil
+}
+
+// hitsCatalog is the states and assignees hits name, each once.
+func hitsCatalog(hits []linear.SearchHit) (tracker.Catalog, error) {
+	var c tracker.Catalog
+	statuses, users := map[string]bool{}, map[string]bool{}
+	for _, h := range hits {
+		if s := h.State; s != nil && !statuses[s.ID] {
+			if typeRank(s.Type) < 0 {
+				return tracker.Catalog{}, fmt.Errorf("linearprovider: workflow state %s has unknown type %q", s.ID, s.Type)
+			}
+			statuses[s.ID] = true
+			c.Statuses = append(c.Statuses, status(*s))
+		}
+		if u := h.Assignee; u != nil && !users[u.ID] {
+			users[u.ID] = true
+			c.Users = append(c.Users, user(*u))
+		}
+	}
+	return c, nil
 }

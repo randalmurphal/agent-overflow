@@ -21,9 +21,10 @@ var opIssue = newQuery("Issue", "issue", `query Issue($id: String!) {
 const issueDetailSelection = `
     ...DescribedFields
     project { id name }
+    assignee { ...UserFields }
     parent { ...IssueRefFields }
     children(first: 50) { nodes { ...IssueRefFields } pageInfo { hasNextPage } }
-    comments(first: 50) { nodes { ...CommentFields } pageInfo { hasNextPage endCursor } }
+    comments(first: 50) { nodes { ...NamedCommentFields } pageInfo { hasNextPage endCursor } }
     attachments(first: 25) { nodes { ...AttachmentFields } pageInfo { hasNextPage } }
     relations(first: 25) { nodes { ...RelationFields } pageInfo { hasNextPage endCursor } }
     inverseRelations(first: 25) { nodes { ...RelationFields } pageInfo { hasNextPage endCursor } }
@@ -31,7 +32,7 @@ const issueDetailSelection = `
     stateTeam: team { states(first: 50) { nodes { ...StateFields } pageInfo { hasNextPage } } }
 `
 
-const issueDetailFragments = describedFields + issueFields + issueRefFields + commentFields + attachmentFields + relationFields + namedHistoryFields + historyFields + stateFields
+const issueDetailFragments = describedFields + issueFields + issueRefFields + namedCommentFields + commentFields + attachmentFields + relationFields + namedHistoryFields + historyFields + stateFields + userFields
 
 // MaxIssueDetails is the most issues one IssueDetails request reads:
 // Linear charged the same points for 1, 2, 5 and 10 issues in full
@@ -109,11 +110,13 @@ type stateTeam struct {
 
 type wireIssueDetail struct {
 	wireDescribed
-	// Project shadows the fragment's project { id } with its name.
+	// Project shadows the fragment's project { id } with its name, and
+	// Assignee its assignee { id } with the user.
 	Project          *namedRef                    `json:"project"`
+	Assignee         *User                        `json:"assignee"`
 	Parent           *wireIssueRef                `json:"parent"`
 	Children         connection[wireIssueRef]     `json:"children"`
-	Comments         connection[wireComment]      `json:"comments"`
+	Comments         connection[wireNamedComment] `json:"comments"`
 	Attachments      connection[wireAttachment]   `json:"attachments"`
 	Relations        connection[wireRelation]     `json:"relations"`
 	InverseRelations connection[wireRelation]     `json:"inverseRelations"`
@@ -184,11 +187,14 @@ func (w *wireIssueDetail) detail(op operation, r reply) (*IssueDetail, error) {
 	if w.Project != nil {
 		d.ProjectID, d.ProjectName = w.Project.ID, w.Project.Name
 	}
+	if d.Assignee = w.Assignee; d.Assignee != nil {
+		d.AssigneeID = d.Assignee.ID
+	}
 	var err error
 	if d.Children, d.MoreChildren, err = firstPage(op, w.Children, wireIssueRef.typed); err != nil {
 		return nil, err
 	}
-	if d.Comments, err = page(op, w.Comments, r.Usage, wireComment.typed); err != nil {
+	if d.Comments, err = page(op, w.Comments, r.Usage, wireNamedComment.typed); err != nil {
 		return nil, err
 	}
 	if d.Attachments, d.MoreAttachments, err = firstPage(op, w.Attachments, wireAttachment.typed); err != nil {
@@ -247,20 +253,20 @@ type issuePageVars struct {
 
 var opIssueComments = newQuery("IssueComments", "node", `query IssueComments($id: String!, $first: Int!, $after: String) {
   node: issue(id: $id) {
-    page: comments(first: $first, after: $after) { nodes { ...CommentFields } pageInfo { hasNextPage endCursor } }
+    page: comments(first: $first, after: $after) { nodes { ...NamedCommentFields } pageInfo { hasNextPage endCursor } }
   }
 }
-`+commentFields)
+`+namedCommentFields+commentFields+userFields)
 
 // IssueComments returns the page of an issue's comments after the cursor
 // after, newest first (Linear's default order, by creation, which an
 // edit does not move a comment in); replies carry their ParentID. Issue
 // holds the first page and its EndCursor.
-func (c *Client) IssueComments(ctx context.Context, issueID, after string) (Page[Comment], error) {
+func (c *Client) IssueComments(ctx context.Context, issueID, after string) (Page[NamedComment], error) {
 	if issueID == "" {
-		return Page[Comment]{}, invalid("IssueComments", "an issue ID is required")
+		return Page[NamedComment]{}, invalid("IssueComments", "an issue ID is required")
 	}
-	return fetchPage(ctx, c, opIssueComments, issuePageVars{pageVars{commentPage, after}, issueID}, wireComment.typed)
+	return fetchPage(ctx, c, opIssueComments, issuePageVars{pageVars{commentPage, after}, issueID}, wireNamedComment.typed)
 }
 
 var opIssueHistory = newQuery("IssueHistory", "node", `query IssueHistory($id: String!, $first: Int!, $after: String) {
@@ -268,7 +274,7 @@ var opIssueHistory = newQuery("IssueHistory", "node", `query IssueHistory($id: S
     page: history(first: $first, after: $after) { nodes { ...NamedHistoryFields } pageInfo { hasNextPage endCursor } }
   }
 }
-`+namedHistoryFields+historyFields).withMaxBody(issueBodyBytes)
+`+namedHistoryFields+historyFields+userFields).withMaxBody(issueBodyBytes)
 
 // IssueHistory returns the page of an issue's recorded changes after the
 // cursor after, newest first (Linear's default order, by creation: an

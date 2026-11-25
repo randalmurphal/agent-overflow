@@ -376,7 +376,8 @@ func TestAgyModelPickerReconnectTurnUniquenessAndAskQuestionForkOrdinal(t *testi
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
 			items, listErr := app.store.ListItems(thread.ID)
-			if listErr == nil {
+			_, activeTurn, turnErr := app.store.GetActiveTurn(thread.ID)
+			if listErr == nil && turnErr == nil && !activeTurn {
 				count := 0
 				for _, it := range items {
 					if it.Kind == "assistant_text" && it.Status == "completed" {
@@ -389,7 +390,7 @@ func TestAgyModelPickerReconnectTurnUniquenessAndAskQuestionForkOrdinal(t *testi
 			}
 			time.Sleep(25 * time.Millisecond)
 		}
-		t.Fatalf("timed out waiting for %d completed assistant items", want)
+		t.Fatalf("timed out waiting for %d completed assistant items with idle turn", want)
 	}
 	waitAssistantCount(1)
 

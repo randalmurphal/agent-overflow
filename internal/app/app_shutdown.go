@@ -480,6 +480,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 	record("stop thread search index", nil)
 	record("close thread MCP server", a.threadMCPServer().Close())
 	record("close workflow MCP server", a.workflowMCPServer().Close())
+	record("close tracker MCP server", a.trackerMCPServer().Close())
 	// A workflow tool call's wait hold releases on the wake queue once its
 	// response is written, which can follow the engine's close and the drain
 	// there. Closing the server joins those calls, so their wake work is

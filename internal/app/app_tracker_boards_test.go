@@ -212,6 +212,9 @@ type trackerBoardSetup struct {
 	// arrive, when set, sees each request to the Jira site as it arrives,
 	// before its body is read.
 	arrive func(*http.Request)
+	// linear, when set, is a Linear workspace the fake serves beside the
+	// site; addLinear connects it.
+	linear *trackerfake.LinearWorkspace
 }
 
 func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoardFixture {
@@ -219,7 +222,11 @@ func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoa
 	opts, site := setup.engine, setup.site
 	e := trackerfake.New(opts)
 	t.Cleanup(e.Close)
-	if err := e.Seed(trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}}); err != nil {
+	fixture := trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}}
+	if setup.linear != nil {
+		fixture.Linear = []trackerfake.LinearWorkspace{*setup.linear}
+	}
+	if err := e.Seed(fixture); err != nil {
 		t.Fatal(err)
 	}
 	srv, err := trackerfake.Serve(e, "example.atlassian.net")
@@ -246,7 +253,10 @@ func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoa
 		}
 	})
 	a := newTrackerTestApp(t, func(a *App) {
-		ConfigureIsolation(a, IsolationConfig{TrackerOrigin: func(_, site string) (string, error) {
+		ConfigureIsolation(a, IsolationConfig{TrackerOrigin: func(kind, site string) (string, error) {
+			if kind == store.TrackerKindLinear {
+				return srv.LinearURL(), nil
+			}
 			if strings.TrimPrefix(site, "https://") == "example.atlassian.net" {
 				return jiraURL, nil
 			}
@@ -297,6 +307,24 @@ func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoa
 		t.Fatalf("TrackerBoardChoices = %+v, %v; want %+v", got, err, want)
 	}
 	return &trackerBoardFixture{a: a, e: e, conn: conn, project: project.ID, events: events}
+}
+
+// addLinear connects the fixture's Linear workspace, verified, and lists
+// none of its boards: the mirror holds nothing of it.
+func (f *trackerBoardFixture) addLinear(t *testing.T, ws trackerfake.LinearWorkspace) TrackerConnection {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := f.a.AddTrackerConnection(ctx, NewTrackerConnection{Kind: store.TrackerKindLinear, Site: ws.URLKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(conn.KeyFilePath, []byte(ws.APIKey), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if conn, err = f.a.VerifyTrackerConnection(ctx, conn.ID); err != nil || conn.Problem != nil {
+		t.Fatalf("VerifyTrackerConnection = %+v, %v", conn, err)
+	}
+	return conn
 }
 
 // held is the project's list as a page that read it holds it.

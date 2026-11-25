@@ -203,7 +203,7 @@ func TestRequestCost(t *testing.T) {
 		"ChangedRows walk of 500": {2, 16}, "ChangedRows idle tick 1": {1, 8}, "ChangedRows idle tick 2": {1, 8}, "ChangedRows idle tick 3": {1, 8},
 		"BoardIssues (500)": {3, 49}, "BoardRows (100)": {1, 8}, "BoardRows (500)": {2, 16}, "NewRows (2 boards)": {1, 8}, "Cards (100)": {1, 8},
 		"History (20 x 100 entries)": {1, 1005}, "History (50 issues)": {1, 1005}, "History (200 issues)": {4, 4020},
-		"Detail (60 comments, 100 entries)": {1, 2641}, "Detail (again)": {1, 2641}, "Comments (next page)": {1, 402},
+		"Detail (60 comments, 100 entries)": {1, 2766}, "Detail (again)": {1, 2766}, "Comments (next page)": {1, 402},
 		"Moves": {1, 104}, "AssignableUsers": {1, 104}, "Choices (labels)": {1, 604},
 		"Lookup (10 keys, all found)": {1, 8}, "Lookup (10 keys, 3 missing)": {4, 47}, "Search": {1, 8}, "Search (no text, 2 pages of 50)": {2, 16},
 		"Create": {1, 3}, "Edit (title, assignee, label)": {1, 3}, "Move": {2, 107}, "SetEstimate": {2, 9}, "Rank (5)": {2, 15},

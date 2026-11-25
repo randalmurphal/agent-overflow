@@ -166,18 +166,11 @@ func readNativeUserSteps(q sqlQuerier, minExclusiveIdx int) ([]nativeUserStep, i
 	return out, maxStepIdx, nil
 }
 
-// lookupUserPromptAnchor resolves the newly persisted CORTEX_STEP_TYPE_USER_INPUT
-// step written by agy after minExclusiveIdx and returns its (idx, anchor).
-// Returns (-1, "") when the conversation DB is unavailable or no unambiguous
-// user step matches.
-func lookupUserPromptAnchor(appDataDir, sessionID, content string, minExclusiveIdx int) (int, string) {
-	if strings.TrimSpace(appDataDir) == "" || strings.TrimSpace(sessionID) == "" {
-		return -1, ""
-	}
-	dbPath, err := conversationDBPath(appDataDir, sessionID)
-	if err != nil {
-		return -1, ""
-	}
+// lookupUserPromptAnchorAtPath resolves the newly persisted
+// CORTEX_STEP_TYPE_USER_INPUT step written by agy after minExclusiveIdx and
+// returns its (idx, anchor). Returns (-1, "") when the conversation DB is
+// unavailable or no unambiguous user step matches.
+func lookupUserPromptAnchorAtPath(dbPath, content string, minExclusiveIdx int) (int, string) {
 	db, err := openConversationDBReadOnly(dbPath)
 	if err != nil {
 		return -1, ""

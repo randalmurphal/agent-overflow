@@ -215,6 +215,8 @@ type App struct {
 	threadMCP appThreadMCP
 	// workflowMCP is ao-workflow-tools (app_workflow_tools_mcp.go).
 	workflowMCP appWorkflowMCP
+	// trackerMCP is ao-tracker-tools (app_tracker_tools_mcp.go).
+	trackerMCP appTrackerMCP
 	// threadRequests holds the agent thread-request ledger's in-process
 	// state: the parked waits, the per-token settle lock, and which
 	// threads own a receipt that a turn end could settle. Zero value
