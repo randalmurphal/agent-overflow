@@ -98,6 +98,9 @@ func (p *writing) Time() tracker.TimeTracker {
 	return p.time
 }
 
+// Poker is nil: a scripted tracker has no planning poker.
+func (p *writing) Poker() tracker.Poker { return nil }
+
 func (p *writing) Projects(ctx context.Context) ([]tracker.Project, error) {
 	p.mu.Lock()
 	h := p.projects

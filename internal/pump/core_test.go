@@ -153,6 +153,28 @@ func TestVotePausesOnlyWhenEveryHandleIsHidden(t *testing.T) {
 	}
 }
 
+// A handle reports its own last vote, whatever the other handles voted,
+// and shows nothing once released.
+func TestAHandleReportsItsOwnVisibility(t *testing.T) {
+	core := newTestCore(t, t.Context())
+	a, b := core.TakeLocked(), core.TakeLocked()
+	if !a.VisibleLocked() || !b.VisibleLocked() {
+		t.Fatal("a handle taken is not visible")
+	}
+	a.VoteLocked(false)
+	if a.VisibleLocked() || !b.VisibleLocked() {
+		t.Fatalf("after a hides: a %v, b %v", a.VisibleLocked(), b.VisibleLocked())
+	}
+	a.VoteLocked(true)
+	if !a.VisibleLocked() {
+		t.Fatal("a shown again is not visible")
+	}
+	b.ReleaseLocked()
+	if b.VisibleLocked() {
+		t.Fatal("a released handle is visible")
+	}
+}
+
 func TestARepeatedVoteChangesNothing(t *testing.T) {
 	core := newTestCore(t, t.Context())
 	a, b := core.TakeLocked(), core.TakeLocked()

@@ -38,14 +38,16 @@ export interface ConnectedBoard {
 }
 
 /**
- * More projects, boards and issues for the fake Jira site, in its fixture
- * shape (trackerfake.JiraProject, JiraBoard and JiraIssue), beside the
- * seed's own. An issue's created and updated times are the seed's.
+ * More for the fake Jira site, in its fixture shape: projects, boards and
+ * issues (trackerfake.JiraProject, JiraBoard and JiraIssue) beside the
+ * seed's own, where an issue's created and updated times are the seed's,
+ * and `poker: {}` for the planning poker add-on (trackerfake.JiraPoker).
  */
 export interface ExtraJira {
   projects: Array<{ id: string; key: string; name: string }>;
   boards: Array<{ id: number; name: string; type: 'scrum' | 'kanban'; project: string; columns: Array<{ name: string; statuses: string[] }> }>;
   issues?: Array<{ id: string; key: string; project: string; type: string; status: string; summary: string; sprints?: number[]; assignee?: string }>;
+  poker?: Record<string, never>;
 }
 
 /**
@@ -91,6 +93,7 @@ export async function seedFakeJira(harness: HarnessApp, extra?: ExtraJira): Prom
         { id: '10103', key: 'WEB-3', project: 'WEB', type: '10002', summary: 'Backlog task', status: '10000', created: day, updated: day },
         ...(extra?.issues ?? []).map((issue) => ({ ...issue, created: day, updated: day })),
       ],
+      ...(extra?.poker ? { poker: extra.poker } : {}),
     }],
   });
   const jiraURL = origins.jira[JIRA_SITE];
