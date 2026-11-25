@@ -247,14 +247,14 @@ func mustFind[T any](t *testing.T, what string) func(T, bool, error) {
 	}
 }
 
-// keyedLookups runs each lookup on th: the seeded thread, or a pointer fork
-// of it (TestPointerForkLookupsProbeTheLineage).
 // ownPayloadsLookup selects off the thread's own payloads, where the
 // seeded thread holds no summary-only diff, so it resolves no row through
 // the imported or lineage arms. Every other hydrated lookup runs the one
 // resolving statement those arms are in (selectedIDsSQL).
 const ownPayloadsLookup = "ListTurnSummaryOnlyDiffItems"
 
+// keyedLookups runs each lookup on th: the seeded thread, or a pointer fork
+// of it (TestPointerForkLookupsProbeTheLineage).
 func keyedLookups(th string) []keyedLookup {
 	return []keyedLookup{
 		{name: "GetThreadItem imported", run: func(t *testing.T, s *Store) {
