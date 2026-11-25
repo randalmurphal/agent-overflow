@@ -280,6 +280,40 @@ func TestLinkThreadReadsAKnownMissingTicketAgain(t *testing.T) {
 	}
 }
 
+// A thread linked to a ticket that a later read missed shows not found;
+// when the tracker returns the same card again, linking the same thread
+// to the same ticket reports the change, so its row is announced current.
+func TestRelinkingARecoveredTicketReportsTheChange(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.thread("a")
+	missing := false
+	m.p.set(func(p *scripted) {
+		p.cards = func(q []tracker.IssueID) (tracker.Cards, error) {
+			if missing {
+				return tracker.Cards{Missing: q}, nil
+			}
+			return tracker.Cards{Cards: []tracker.Card{card(string(q[0]), 1_799_000_000_000)}}, nil
+		}
+	})
+	if changed, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10006"), store.TicketOriginManual); err != nil || !changed {
+		t.Fatalf("the first link = %v, %v", changed, err)
+	}
+	missing = true
+	m.pass(time.Second)
+	must[Outcome](t)(m.svc.tickCards(t.Context(), m.conn.ID, Background))
+	if link := m.rowLink("a"); link == nil || link.State != store.TicketLinkNotFound {
+		t.Fatalf("the missing ticket's row = %+v; want not found", link)
+	}
+	missing = false
+	if changed, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10006"), store.TicketOriginManual); err != nil || !changed {
+		t.Fatalf("the same ticket found again = %v, %v; want changed", changed, err)
+	}
+	if link := m.rowLink("a"); link == nil || link.State != store.TicketLinkCurrent {
+		t.Fatalf("the row after the ticket was found again = %+v; want current", link)
+	}
+}
+
 // A link read from the tracker while a later read stored the ticket's
 // renamed card (the issue kept by another link), at the same update time,
 // shows the card the mirror kept: the later card supersedes the read one,

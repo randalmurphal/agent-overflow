@@ -184,3 +184,33 @@ func TestACachedRelinkKeepsAKnownMissingIssueNotFound(t *testing.T) {
 		t.Fatalf("state after the cached relink = %q; want not found", state)
 	}
 }
+
+// A read that misses a linked issue makes its link not found. When the
+// tracker returns the same card again and the same thread is set to the
+// same ticket, the stored link is unchanged but its row is current again:
+// the set reports the change, which its caller announces, and names no
+// other thread.
+func TestSettingARecoveredTicketAgainReportsTheRowChanged(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustCreateThread(t, s, "a")
+	card := titledCard("10001", 5, "Fix the login page")
+	mustSetThreadTicket(t, s, readLink(s, root, "a", card))
+	stored := mustGetThreadTicket(t, s, "a")
+	if _, err := s.MarkMirrorIssuesMissing(root, nextMirrorRead(s, root), []string{"10001"}); err != nil {
+		t.Fatal(err)
+	}
+	if state := linkState(t, s, "a"); state != TicketLinkNotFound {
+		t.Fatalf("state after the missing read = %q", state)
+	}
+	set := mustSetThreadTicket(t, s, readLink(s, root, "a", card))
+	if got := mustGetThreadTicket(t, s, "a"); got != stored {
+		t.Fatalf("stored link after the same card again = %+v; want %+v", got, stored)
+	}
+	if state := linkState(t, s, "a"); state != TicketLinkCurrent {
+		t.Fatalf("state after the same card again = %q; want current", state)
+	}
+	if !set.Changed || set.Replaced != nil || len(set.Cards.Threads) != 0 {
+		t.Fatalf("the set that made the row current = %+v; want the row changed and no other thread named", set)
+	}
+}

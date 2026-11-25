@@ -266,7 +266,7 @@ type ThreadTicketWrite struct {
 }
 
 // ThreadTicketSet is what SetThreadTicket did: whether the link as a
-// thread row shows it changed, the ticket it replaced (nil when the
+// thread row shows it changed, its state included, the ticket it replaced (nil when the
 // thread had none or had this one), and what storing a read card changed,
 // whose Threads are the other threads whose row the card moved.
 type ThreadTicketSet struct {
@@ -350,7 +350,7 @@ func (s *Store) SetThreadTicket(w ThreadTicketWrite) (set ThreadTicketSet, err e
 		if !reader {
 			return ErrThreadTicketNotReader
 		}
-		before, had, err := readThreadTicketTx(tx, w.ThreadID)
+		before, replaced, had, err := readThreadLinkTx(tx, w.ThreadID)
 		if err != nil {
 			return err
 		}
@@ -386,7 +386,7 @@ func (s *Store) SetThreadTicket(w ThreadTicketWrite) (set ThreadTicketSet, err e
 			if !held {
 				return ErrThreadTicketNotHeld
 			}
-			// The thread's own change is Changed, which its caller announces.
+			// The thread's own row is Changed's, which its caller announces.
 			set.Cards.Threads = slices.DeleteFunc(set.Cards.Threads, func(id string) bool { return id == w.ThreadID })
 		}
 		copied, err := queryIDs(tx, threadLinkCopySQL, w.Root, w.ThreadID)
@@ -396,13 +396,12 @@ func (s *Store) SetThreadTicket(w ThreadTicketWrite) (set ThreadTicketSet, err e
 		if len(copied) != 1 {
 			return fmt.Errorf("copy the mirror's card to the link: %d links copied, want the thread's", len(copied))
 		}
-		after, _, err := readThreadTicketTx(tx, w.ThreadID)
+		after, _, _, err := readThreadLinkTx(tx, w.ThreadID)
 		if err != nil {
 			return err
 		}
-		set.Changed = !had || before != after
-		if had && before.Ticket != ref {
-			replaced := before.Ticket
+		set.Changed = before != after
+		if had && replaced != ref {
 			set.Replaced = &replaced
 		}
 		return nil
@@ -430,16 +429,21 @@ func readMirrorIssueHeldTx(tx *sql.Tx, root int64, issue string, seen *ThreadTic
 	return held, nil
 }
 
-// readThreadTicketTx reads threadID's link in tx, false when it has none.
-func readThreadTicketTx(tx *sql.Tx, threadID string) (ThreadTicket, bool, error) {
-	t, err := scanThreadTicket(tx.QueryRow(`SELECT `+threadTicketColumns+` FROM thread_tickets WHERE thread_id = ?`, threadID).Scan)
+// readThreadLinkTx reads threadID's link in tx as its row shows it
+// (threadTicketLinkJSON), state included, and the ticket it names; had
+// is false, and link "", when it has none. SetThreadTicket's Changed
+// compares two of its reads, so a set that changes only the state, such
+// as a read that clears an absence, is announced.
+func readThreadLinkTx(tx *sql.Tx, threadID string) (link string, ticket TicketRef, had bool, err error) {
+	err = tx.QueryRow(`SELECT tt.kind, tt.site, tt.issue_id, `+threadTicketLinkJSON+` FROM `+threadTicketLinkFrom+`
+		WHERE tt.thread_id = ?`, threadID).Scan(&ticket.Kind, &ticket.Site, &ticket.IssueID, &link)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		return ThreadTicket{}, false, nil
+		return "", TicketRef{}, false, nil
 	case err != nil:
-		return ThreadTicket{}, false, fmt.Errorf("read thread %s ticket: %w", threadID, err)
+		return "", TicketRef{}, false, fmt.Errorf("read thread %s ticket link: %w", threadID, err)
 	}
-	return t, true, nil
+	return link, ticket, true, nil
 }
 
 // sameTicketSQL is true in SetThreadTicket's upsert when the stored row
