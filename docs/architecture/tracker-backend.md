@@ -1173,10 +1173,7 @@ at the observe tier or `tracker:operate` at the execute tier, and a
 route. Their events are `tracker:connections_updated`, sent when a
 connection or its problem changed, `tracker:board_updated`
 (`trackerapp.BoardEvent`) and `tracker:issue_updated`
-(`trackerapp.IssueEvent`), all at `tracker:read`. `EditSprint`,
-`EditWorklog`, `DeleteWorklog`, `Worklogs` and `RefreshWorklogs` are
-`trackerapp.Service` methods that no bound method wraps yet (see
-[Build order](#build-order)).
+(`trackerapp.IssueEvent`), all at `tracker:read`.
 
 A connection ID is minted on one computer. Every method whose first
 argument is one is generated with the route home and routed by its client
@@ -1205,7 +1202,9 @@ selected computer.
 | `MintTrackerAttachmentUploadTicket(connectionID, issue, filename, size)` | `AttachmentCeiling`, then the upload route's `Attach` | operate | connection |
 | `MintTrackerAttachmentDownloadTicket(subscriptionID, attachmentID)` | `TicketAttachment`, then the download route's `Download` | read | home |
 | `TrackerIssueTypes`, `TrackerCreateFields`, `TrackerMoves`, `TrackerAssignableUsers`, `TrackerChoices`, `TrackerLinkTypes`, `TrackerLookup`, `TrackerSearch`, `TrackerComments` | the form reads of the same names | read | connection |
-| `CreateTrackerIssue`, `EditTrackerIssue`, `MoveTrackerIssue`, `SetTrackerEstimate`, `RankTrackerIssues`, `MoveTrackerIssuesToSprint`, `CreateTrackerSprint`, `StartTrackerSprint`, `CompleteTrackerSprint`, `AddTrackerComment`, `EditTrackerComment`, `DeleteTrackerComment`, `LinkTrackerIssues`, `UnlinkTrackerIssues`, `AddTrackerWorklog` | `Create`, `Edit`, `Move`, `SetEstimate`, `Rank`, `MoveToSprint`, `CreateSprint`, `StartSprint`, `CompleteSprint`, `AddComment`, `EditComment`, `DeleteComment`, `Link`, `Unlink`, `AddWorklog` | operate | connection, budget 3m |
+| `CreateTrackerIssue`, `EditTrackerIssue`, `MoveTrackerIssue`, `SetTrackerEstimate`, `RankTrackerIssues`, `MoveTrackerIssuesToSprint`, `CreateTrackerSprint`, `StartTrackerSprint`, `CompleteTrackerSprint`, `EditTrackerSprint`, `AddTrackerComment`, `EditTrackerComment`, `DeleteTrackerComment`, `LinkTrackerIssues`, `UnlinkTrackerIssues`, `AddTrackerWorklog`, `EditTrackerWorklog`, `DeleteTrackerWorklog` | `Create`, `Edit`, `Move`, `SetEstimate`, `Rank`, `MoveToSprint`, `CreateSprint`, `StartSprint`, `CompleteSprint`, `EditSprint`, `AddComment`, `EditComment`, `DeleteComment`, `Link`, `Unlink`, `AddWorklog`, `EditWorklog`, `DeleteWorklog` | operate | connection, budget 3m |
+| `TrackerWorklogs(connectionID, author, from, to)` | `Worklogs` | read | connection |
+| `RefreshTrackerWorklogs(connectionID, author, from, to)` | `RefreshWorklogs` | read | connection |
 | `TrackerPokerSupport(connectionID)` | `PokerSupport` | read | connection |
 | `FollowTrackerPoker(subscriptionID, follow)` | `FollowPoker` | read | home |
 | `TrackerPoker(subscriptionID)` | `Poker` | read | home |
@@ -1237,6 +1236,17 @@ selected computer.
   result the provider may not give (`tracker_write_unclear`) say the
   same. A part refused for its credential says what the connection's
   problem says. A write's context is the server's, not the caller's.
+- **The worklog reads** take the author's account ID (a screen reads its
+  own from the connection's `verifiedAccountId`). `TrackerWorklogs`
+  answers from the mirror with no tracker call; a connection whose time
+  this computer has never read answers `tracker_worklogs_not_read`,
+  saying to refresh. `RefreshTrackerWorklogs` reads at most 31 days (1
+  Tempo request or 2 Jira requests for a month, `jiraprovider`'s
+  `TestRequestCost`) at the default budget, as a form read does; a longer
+  range is `tracker_request_invalid` before anything is sent, a tracker
+  with no time tracking (Linear) is `tracker_unsupported` ("this tracker
+  has no time tracking"), and a read the tracker fails is the answer's
+  `failure`, beside the worklogs as the mirror held them.
 - **A ticket subscription** belongs to its client connection as a
   board's does: `SubscribeTrackerTicket` ties its handle inside the
   service's publication, and the board's visibility, refresh and release
@@ -1740,7 +1750,7 @@ guide and each read tool say so.
 Built: `internal/tracker` and the two providers, `internal/keyfile`, the
 tracker tables and their accessors, `trackerfake`, and `trackerapp` with
 its sync, pumps, reads and writes; the connection, board, ticket, write,
-form-read and planning poker bound methods, the ticket file routes,
+form-read, worklog and planning poker bound methods, the ticket file routes,
 `tracker:board_updated` and `tracker:issue_updated`, the app's calls at
 start, the harness's fake trackers (`HarnessTrackerSeed`), and the Issues
 settings screen (Settings > Issues: Connections and Boards), with the
@@ -1761,9 +1771,9 @@ Not built, owed by the app layer:
   TypeScript type ship with it, as the board methods' wrappers ship with
   the Board screen. The ticket subscribe takes its visibility then, as the
   board subscribe does.
-- The Time screen's bound methods: `Worklogs`, `RefreshWorklogs`,
-  `EditWorklog` and `DeleteWorklog`. `EditSprint` is bound when a screen
-  edits a sprint.
+- The Time screen and a sprint edit on the Backlog screen: the
+  `bindings.ts` wrappers of the worklog methods and `EditTrackerSprint`
+  ship with them.
 - Sidebar search by a linked ticket's key and title: the frontend's
   `threadMatchesQuery` (`components/sidebar/threadSearch.ts`) adds
   `ticketLink.key` and `ticketLink.title` to what it matches.
