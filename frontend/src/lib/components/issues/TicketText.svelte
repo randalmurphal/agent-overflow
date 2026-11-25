@@ -54,8 +54,7 @@
 
   async function save(): Promise<void> {
     if (pending) return;
-    const outcome = await onSave(draft, from);
-    if (outcome?.kind === 'applied') editing = false;
+    if ((await onSave(draft, from))?.kind === 'applied') editing = false;
   }
 
   function onKeydown(event: KeyboardEvent): void {
@@ -117,6 +116,6 @@
     {:else}
       <p class="px-1 text-sm text-fg-muted" data-testid="ticket-section-empty">Nothing written yet.</p>
     {/if}
-    <TicketWriteNote {ticketKey} {target} {fieldName} />
+    <TicketWriteNote {ticketKey} {target} {fieldName} onApplied={() => { editing = false; }} />
   {/if}
 </section>

@@ -4,13 +4,14 @@
   // a part whose answer was lost (and where to look), the call's error as
   // it is, or what the ticket does not show yet of a write that was made.
   // A refusal for what a rich text edit would lose offers Save anyway,
-  // which sends the same write accepting the loss. Nothing shows once a
-  // plain success settled.
+  // which sends the same write accepting the loss; `onApplied` hears when
+  // that write was made, so the editor it came from can close as its own
+  // Save closes it. Nothing shows once a plain success settled.
   import X from '@lucide/svelte/icons/x';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
   import { dismissTicketWrite, ticketWrite } from '../../stores/trackerTicketWrites.svelte';
-  import { refusalSentence } from '../../stores/trackerTicketModel';
+  import { refusalSentence, type WriteOutcome } from '../../stores/trackerTicketModel';
   import { errString } from '../../utils/errors';
 
   interface Props {
@@ -18,9 +19,15 @@
     target: string;
     /** A field's name as the ticket shows it, for a refusal naming fields. */
     fieldName: (id: string) => string;
+    /** Called when Save anyway's write was made. */
+    onApplied?: () => void;
   }
 
-  let { ticketKey, target, fieldName }: Props = $props();
+  let { ticketKey, target, fieldName, onApplied }: Props = $props();
+
+  async function saveAnyway(again: () => Promise<WriteOutcome | null>): Promise<void> {
+    if ((await again())?.kind === 'applied') onApplied?.();
+  }
 
   const write = $derived(ticketWrite(ticketKey, target));
   const outcome = $derived(write?.outcome ?? null);
@@ -49,7 +56,7 @@
     <span class="min-w-0 flex-1 break-words">{text}</span>
     {#if write?.saveAnyway}
       {@const again = write.saveAnyway}
-      <button type="button" class="shrink-0 text-accent hover:underline" data-testid="ticket-write-save-anyway" onclick={() => { void again(); }}>Save anyway</button>
+      <button type="button" class="shrink-0 text-accent hover:underline" data-testid="ticket-write-save-anyway" onclick={() => { void saveAnyway(again); }}>Save anyway</button>
     {/if}
     <IconButton label="Dismiss" size="xs" variant="tint" testId="ticket-write-dismiss" onClick={() => dismissTicketWrite(ticketKey, target)}>
       {#snippet children()}<Icon icon={X} size={11} strokeWidth={2.25} />{/snippet}

@@ -579,9 +579,6 @@
   {:else if ticketState?.failure && (detail || !notFound)}
     <p class="border-b border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning" role="status" data-testid="ticket-failure">{ticketState.failure.message} {lastRead(ticketState.readAt)}</p>
   {/if}
-  {#if offline}
-    <p class="border-b border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg-muted" role="status" data-testid="ticket-offline">{computerName} is not connected. The ticket shows when it connects.</p>
-  {/if}
   {#if attachment.error}
     <p class="border-b border-error/30 bg-error/10 px-3 py-1.5 text-xs text-error" role="alert" data-testid="ticket-subscribe-error">Could not open this ticket: {attachment.error}</p>
   {/if}
@@ -612,7 +609,7 @@
           {:else if !detail && ticketState?.ended}
             <p class="text-sm text-fg-muted" data-testid="ticket-ended-empty">This ticket cannot be shown: its connection was turned off or removed on {computerName}.</p>
           {:else if !detail && offline}
-            <p class="text-sm text-fg-muted" data-testid="ticket-offline-empty">{computerName} is not connected, so the ticket cannot be read now.</p>
+            <p class="text-sm text-fg-muted" role="status" data-testid="ticket-offline">{computerName} is not connected. The ticket shows when it connects.</p>
           {:else if !detail}
             <p class="text-sm text-fg-muted" data-testid="ticket-opening">{ticketState ? 'Reading the ticket from the tracker…' : 'Opening the ticket…'}</p>
           {/if}

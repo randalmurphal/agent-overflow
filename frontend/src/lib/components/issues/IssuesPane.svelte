@@ -127,6 +127,13 @@
   function openCardMenu(row: RowView, event: MouseEvent): void {
     cardMenu = { x: event.clientX, y: event.clientY, row };
   }
+  // A menu row acts on the card the menu was opened on, taken before the
+  // menu closes.
+  function fromCardMenu(action: (row: RowView) => void): void {
+    const open = cardMenu;
+    cardMenu = null;
+    if (open) action(open.row);
+  }
   async function copyKey(key: string): Promise<void> {
     if (!(await copyToClipboard(key))) addToast('error', 'Could not copy the key.');
   }
@@ -456,9 +463,8 @@
 </div>
 
 {#if cardMenu}
-  {@const row = cardMenu.row}
   <ContextMenu x={cardMenu.x} y={cardMenu.y} ariaLabel="Card actions" onDismiss={() => { cardMenu = null; }}>
-    <MenuItem label="Open" testId="issues-card-menu-open" onSelect={() => { cardMenu = null; openCard(row); }} />
-    <MenuItem label="Copy key" testId="issues-card-menu-copy-key" onSelect={() => { cardMenu = null; void copyKey(row.card.key); }} />
+    <MenuItem label="Open" testId="issues-card-menu-open" onSelect={() => fromCardMenu(openCard)} />
+    <MenuItem label="Copy key" testId="issues-card-menu-copy-key" onSelect={() => fromCardMenu((row) => { void copyKey(row.card.key); })} />
   </ContextMenu>
 {/if}

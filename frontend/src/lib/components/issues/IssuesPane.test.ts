@@ -937,6 +937,39 @@ describe('the ticket in the pane', () => {
     expect(within(priority).getByTestId('ticket-field-value')).toHaveTextContent('None');
   });
 
+  it('opens a card\'s ticket from the card\'s menu', async () => {
+    install();
+    installTicket();
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    const card = view.getAllByTestId('issues-card').find((c) => c.dataset.issue === '2')!;
+    await fireEvent.contextMenu(card);
+    await fireEvent.click(await within(document.body).findByTestId('issues-card-menu-open'));
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('2'));
+  });
+
+  it('closes a comment\'s editor once Save anyway sends the edit that would lose content', async () => {
+    install();
+    installTicket((issue) => ticketDetail(issue, { comments: 1 }));
+    const edit = setBindingMock('EditTrackerComment', async (_c: string, input: { accept_loss: boolean }): Promise<WriteView> => (input.accept_loss
+      ? { parts: [{ step: 'comment', state: 'applied' }] }
+      : { parts: [{ step: 'comment', state: 'refused', refusal: { reason: 'loss', message: 'This edit would lose formatting.', lost: ['a table'] } }] }) as WriteView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const comment = await waitFor(() => within(screen).getByTestId('ticket-comment'));
+    await fireEvent.contextMenu(comment);
+    await fireEvent.click(await within(document.body).findByTestId('ticket-comment-menu-edit'));
+    await fireEvent.input(within(comment).getByTestId('ticket-comment-editor'), { target: { value: 'Plain now' } });
+    await fireEvent.click(within(comment).getByTestId('ticket-comment-save'));
+    const again = await waitFor(() => within(comment).getByTestId('ticket-write-save-anyway'));
+    expect(within(comment).getByTestId('ticket-comment-editor')).toHaveValue('Plain now');
+    await fireEvent.click(again);
+    await waitFor(() => expect(edit).toHaveBeenLastCalledWith('c1', { issue: '1', comment: 'c1', markdown: 'Plain now', from: 'Comment 1', accept_loss: true }));
+    expect(edit).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(within(comment).queryByTestId('ticket-comment-editor')).toBeNull());
+    expect(within(comment).queryByTestId('ticket-write-outcome')).toBeNull();
+  });
+
   it('steps back through the tickets opened from one another, at most 20, then closes; Close and a board pick leave at once', async () => {
     install();
     // Each ticket's parent is the next issue.

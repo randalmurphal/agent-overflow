@@ -46,7 +46,12 @@ export interface ConnectedBoard {
 export interface ExtraJira {
   projects: Array<{ id: string; key: string; name: string }>;
   boards: Array<{ id: number; name: string; type: 'scrum' | 'kanban'; project: string; columns: Array<{ name: string; statuses: string[] }> }>;
-  issues?: Array<{ id: string; key: string; project: string; type: string; status: string; summary: string; sprints?: number[]; assignee?: string }>;
+  issues?: Array<{
+    id: string; key: string; project: string; type: string; status: string; summary: string; sprints?: number[]; assignee?: string;
+    /** An Atlassian document. */
+    description?: unknown;
+    comments?: Array<{ id: string; author: string; body: unknown; created: string }>;
+  }>;
   poker?: Record<string, never>;
 }
 

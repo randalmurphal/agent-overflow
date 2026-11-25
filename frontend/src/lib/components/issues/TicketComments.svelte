@@ -122,6 +122,14 @@
     menu = { x: event.clientX, y: event.clientY, comment };
   }
 
+  // A menu row acts on the comment the menu was opened on, taken before
+  // the menu closes.
+  function fromMenu(action: (comment: CommentView) => void): void {
+    const open = menu;
+    menu = null;
+    if (open) action(open.comment);
+  }
+
   async function copy(comment: CommentView): Promise<void> {
     if (!(await copyToClipboard(comment.body))) addToast('error', 'Could not copy the comment.');
   }
@@ -217,7 +225,7 @@
             <Button size="xs" variant="ghost" onclick={() => { confirming = null; }}>Keep</Button>
           </div>
         {/if}
-        <TicketWriteNote ticketKey={ctx.key} target={commentTarget(c.id)} {fieldName} />
+        <TicketWriteNote ticketKey={ctx.key} target={commentTarget(c.id)} {fieldName} onApplied={() => { if (editing?.id === c.id) editing = null; }} />
       </li>
     {:else}
       <li class="text-sm text-fg-muted" data-testid="ticket-comments-none">No comments yet.</li>
@@ -227,12 +235,11 @@
 </section>
 
 {#if menu}
-  {@const target = menu.comment}
-  {@const pending = ticketWrite(ctx.key, commentTarget(target.id))?.pending ?? false}
+  {@const pending = ticketWrite(ctx.key, commentTarget(menu.comment.id))?.pending ?? false}
   <ContextMenu x={menu.x} y={menu.y} ariaLabel="Comment actions" onDismiss={() => { menu = null; }}>
-    <MenuItem label="Edit" disabled={pending} testId="ticket-comment-menu-edit" onSelect={() => { menu = null; startEdit(target); }} />
-    <MenuItem label="Delete" variant="danger" disabled={pending} testId="ticket-comment-menu-delete" onSelect={() => { menu = null; editing = null; confirming = target.id; }} />
+    <MenuItem label="Edit" disabled={pending} testId="ticket-comment-menu-edit" onSelect={() => fromMenu(startEdit)} />
+    <MenuItem label="Delete" variant="danger" disabled={pending} testId="ticket-comment-menu-delete" onSelect={() => fromMenu((c) => { editing = null; confirming = c.id; })} />
     <MenuDivider />
-    <MenuItem label="Copy text" testId="ticket-comment-menu-copy" onSelect={() => { menu = null; void copy(target); }} />
+    <MenuItem label="Copy text" testId="ticket-comment-menu-copy" onSelect={() => fromMenu((c) => { void copy(c); })} />
   </ContextMenu>
 {/if}
