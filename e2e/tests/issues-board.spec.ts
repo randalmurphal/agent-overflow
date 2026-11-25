@@ -8,7 +8,9 @@
 // Only mine shows the cards assigned to the verified account and Search
 // the cards whose text matches, each from the whole column; a board no
 // project lists any more says so and opens its project's Boards page in
-// Settings; Refresh reads the board from Jira now, with no poll due. The
+// Settings; Refresh reads the board from Jira now, with no poll due; a
+// board whose connection is turned off ends, a pane opened then does not
+// open it, and the board opens again once the connection is back on. The
 // compact strip and menu are compact-issues-board.spec.ts.
 
 import type { Locator, Page } from '@playwright/test';
@@ -159,5 +161,39 @@ test('Refresh reads the board from Jira when no poll is due', async ({ page }) =
     await renameJiraIssue(board, 'WEB-1', 'First story, renamed in Jira');
     await pane.getByTestId('issues-refresh').click();
     await expect(card(pane, '10101')).toContainText('First story, renamed in Jira', { timeout: 10_000 });
+  });
+});
+
+test('a board whose connection is turned off ends, and opens again once it is back on', async ({ page }) => {
+  test.setTimeout(90_000);
+  await withHarness({ 'tracker-poll': '10m' }, async (harness) => {
+    const board = await connectFakeJiraBoard(harness, 'issues-board-off');
+    await harness.open(page);
+    let pane = await openPane(page);
+    await expect(card(pane, '10101')).toBeVisible({ timeout: 30_000 });
+
+    await harness.rpc('SetTrackerConnectionEnabled', board.connectionId, false);
+    await expect(pane.getByTestId('issues-board-ended')).toBeVisible();
+
+    // A pane opened now does not open a board it cannot.
+    await page.locator('section[data-pane-kind="issues"]').getByTestId('pane-close').click();
+    await expect(pane).toHaveCount(0);
+    pane = await openPane(page);
+    await expect(pane.getByTestId('issues-empty-off')).toBeVisible();
+    await expect(pane.getByTestId('issues-card')).toHaveCount(0);
+
+    // Turned back on, the computer says so and the pane opens the board.
+    await harness.rpc('SetTrackerConnectionEnabled', board.connectionId, true);
+    await expect(card(pane, '10101')).toBeVisible({ timeout: 30_000 });
+
+    // Off and on again under an open board: it ends, then follows again.
+    await harness.rpc('SetTrackerConnectionEnabled', board.connectionId, false);
+    await expect(pane.getByTestId('issues-board-ended')).toBeVisible();
+    await harness.rpc('SetTrackerConnectionEnabled', board.connectionId, true);
+    await expect(pane.getByTestId('issues-board-ended')).toHaveCount(0);
+    await expect(card(pane, '10101')).toBeVisible();
+    await renameJiraIssue(board, 'WEB-1', 'First story, after the connection came back');
+    await pane.getByTestId('issues-refresh').click();
+    await expect(card(pane, '10101')).toContainText('after the connection came back', { timeout: 10_000 });
   });
 });
