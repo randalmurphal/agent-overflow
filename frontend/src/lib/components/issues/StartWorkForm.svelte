@@ -35,7 +35,7 @@
     ticket: string;
     detail: DetailView;
     backend: BackendKey;
-    /** The board's project: its setup holds the defaults, and the thread
+    /** The ticket's project: its setup holds the defaults, and the thread
      * runs in it unless another is picked. */
     project: string;
     /** Where the defaults sit in the setup; null while the connection's
@@ -116,8 +116,12 @@
 
   const projectName = $derived(getProjectLabelText(project));
   const defaultsError = $derived(defaults?.error ? userFacingError(defaults.error) : null);
+  // The form is confirmed only once the project's saved defaults have
+  // answered (or failed, which it says), so what it shows is what they say.
+  const defaultsSettled = $derived(defaults?.project === project && !defaults.loading);
 
   function start(): void {
+    if (!chosenBranch || !chosenRepository || !defaultsSettled) return;
     const statusName = statusChoices.find((s) => s.id === chosenStatus)?.name ?? chosenStatus;
     onStart({
       repository: chosenRepository,
@@ -205,7 +209,7 @@
 
     <div class="flex justify-end gap-2 pt-1">
       <Button size="sm" variant="ghost" testId="start-work-cancel" onclick={() => close()}>Cancel</Button>
-      <Button size="sm" variant="primary" type="submit" disabled={!chosenBranch || !chosenRepository} testId="start-work-go">Start work</Button>
+      <Button size="sm" variant="primary" type="submit" disabled={!chosenBranch || !chosenRepository || !defaultsSettled} title={defaultsSettled ? undefined : 'Waiting for the saved defaults'} testId="start-work-go">Start work</Button>
     </div>
   </form>
 </Popover>

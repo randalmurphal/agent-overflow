@@ -130,6 +130,10 @@
     /** The person's account on the connection; null when it was never
      * verified, and Log time cannot say whose time it logs. */
     account: string | null;
+    /** The ticket's project, which Work's Ask and Start work use
+     * (`BoardSelection.ticketProject`), and the person's pick of another. */
+    project: string | null;
+    onProject: (project: string) => void;
     /** The ticket's computer is not connected now. */
     offline: boolean;
     compact: boolean;
@@ -148,7 +152,7 @@
     onOpenIssue: (issue: string, seed: TicketSeed) => void;
   }
 
-  let { attachment, seed, board, kind, computerName, account, offline, compact, trail, placement, besideFits, onPlacement, takeFocus, onBack, onClose, onOpenIssue }: Props = $props();
+  let { attachment, seed, board, kind, computerName, account, project, onProject, offline, compact, trail, placement, besideFits, onPlacement, takeFocus, onBack, onClose, onOpenIssue }: Props = $props();
 
   // The ticket a person opened takes the focus, so a key or a paste of
   // files goes to it (IssuesPane `showTicket`).
@@ -504,7 +508,7 @@
       {/if}
     {/if}
   </div>
-  <TicketWork {attachment} {board} />
+  <TicketWork {attachment} {project} {onProject} me={account} />
 {/snippet}
 
 {#snippet content()}

@@ -581,6 +581,8 @@
               kind={choices.find((c) => c.backend === openBoard.backend && c.choice.connection === openBoard.connection)?.choice.connection_kind ?? ''}
               computerName={computerName(openBoard.backend)}
               account={me}
+              project={selection.ticketProject}
+              onProject={(p) => selection.setTicketProject(p)}
               offline={boardOffline}
               {compact}
               trail={selection.trail}

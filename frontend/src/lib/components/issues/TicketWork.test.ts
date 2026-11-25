@@ -6,14 +6,19 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import TicketWork from './TicketWork.svelte';
-import type { BoardChoice, DetailView, SetupView, TicketSubscription, TicketView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { DetailView, SetupView, TicketSubscription, TicketView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import type { ThreadTicketLink } from '../../../../bindings/agent-overflow/internal/store/models';
 import { addProjectLocal } from '../../stores/projects.svelte';
 import { listThread } from '../../stores/threads.svelte';
 import { attachTrackerTicket, type TrackerTicketAttachment } from '../../stores/trackerTicket.svelte';
+import { trackerIssueUpdated } from '../../stores/trackerBoardEvents';
 import { HOME_BACKEND } from '../../transport/backendKey';
+import { noteProject } from '../../transport/entityIndex';
+import { setCarriedSessionScopes } from '../../transport/scopes';
+import { TransportError } from '../../transport/wsClient';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeThread } from '../../../test/helpers/chat';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 
 const SITE = 'https://example.atlassian.net';
 
@@ -41,31 +46,38 @@ async function settle(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-async function mountWork() {
-  setBindingMock('SubscribeTrackerTicket', async () => ({ id: 'sub-1', seq: 1, poll_every: 10_000, loaded: true, detail: DETAIL, read_at: 1 } as TicketSubscription));
+const WORK = {
+  key: 'WEB-1',
+  pullRequests: [{ ref: { Forge: 'github', Host: 'github.com', Namespace: 'example', Repo: 'widgets', Number: 5 }, url: 'https://github.com/example/widgets/pull/5', title: 'WEB-1 Retry cursor', author: 'user1', state: 'open', ci: 'success', branch: 'WEB-1-retry', projectId: 'p1' }],
+  branches: [{ projectId: 'p1', name: 'web-1-spike', isCurrent: false, isDefault: false, aheadCount: 2 }],
+  problems: [{ projectId: 'p2', error: 'git for-each-ref failed: not a git repository' }],
+};
+
+async function mountWork(opts: { backend?: string; first?: DetailView | null; work?: () => Promise<unknown> } = {}) {
+  const backend = opts.backend ?? HOME_BACKEND;
+  const first = opts.first === undefined ? DETAIL : opts.first;
+  setBindingMock('SubscribeTrackerTicket', async () => ({ id: 'sub-1', seq: 1, poll_every: 10_000, loaded: first !== null, detail: first ?? undefined, read_at: first ? 1 : 0 } as TicketSubscription));
   setBindingMock('TrackerTicket', async () => ({ loaded: true, detail: DETAIL, read_at: 2 } as TicketView));
   setBindingMock('SetTrackerSubscriptionVisible', async () => {});
   setBindingMock('ReleaseTrackerSubscription', async () => {});
-  setBindingMock('TrackerBoardChoices', async () => [{
-    project: 'p1', connection: 'c1', connection_kind: 'jira', connection_label: 'Work', connection_enabled: true,
-    verified_account: 'acc-1', board: 'b1', name: 'Board', tracker_project: 'WEB', opens_first: false,
-  } as BoardChoice]);
   setBindingMock('TrackerConnections', async () => [{ id: 'c1', kind: 'jira', site: SITE, label: 'Work', enabled: true, account: 'User 1' }]);
-  setBindingMock('GetTicketWork', async () => ({
-    key: 'WEB-1',
-    pullRequests: [{ ref: { Forge: 'github', Host: 'github.com', Namespace: 'example', Repo: 'widgets', Number: 5 }, url: 'https://github.com/example/widgets/pull/5', title: 'WEB-1 Retry cursor', author: 'user1', state: 'open', ci: 'success', branch: 'WEB-1-retry', projectId: 'p1' }],
-    branches: [{ projectId: 'p1', name: 'web-1-spike', isCurrent: false, isDefault: false, aheadCount: 2 }],
-    problems: [{ projectId: 'p2', error: 'git for-each-ref failed: not a git repository' }],
-  }));
+  const reads = setBindingMock('GetTicketWork', opts.work ?? (async () => WORK));
+  noteProject('p1', backend);
   addProjectLocal({ id: 'p1', path: '/tmp/widgets', name: 'widgets', archived: false } as never);
   listThread(makeThread({ id: 't-linked', projectId: 'p1', title: 'WEB-1 Retry cursor', ticketLink: link('10101') }));
   listThread(makeThread({ id: 't-other', projectId: 'p1', title: 'WEB-2 Other', ticketLink: link('10102', 'ask') }));
   listThread(makeThread({ id: 't-plain', projectId: 'p1', title: 'No ticket' }));
-  ticket = attachTrackerTicket({ backend: HOME_BACKEND, connection: 'c1', issue: '10101' }, true);
+  ticket = attachTrackerTicket({ backend, connection: 'c1', issue: '10101' }, true);
   await settle();
-  const view = render(TicketWork, { attachment: ticket, board: 'b1' });
+  const view = render(TicketWork, { attachment: ticket, project: 'p1', onProject: () => {}, me: 'acc-1' });
   await settle();
-  return view;
+  return Object.assign(view, { reads });
+}
+
+function formOf(): HTMLElement {
+  const found = document.querySelector<HTMLElement>('[data-testid="start-work-form"]');
+  expect(found).not.toBeNull();
+  return found!;
 }
 
 describe('Work', () => {
@@ -116,5 +128,76 @@ describe('Work', () => {
     expect((form.querySelector('[data-testid="start-work-repository"]') as HTMLSelectElement).value).toBe('p1');
     expect(form.querySelector('[data-testid="start-work-started"]')?.textContent).toContain('WEB-1 already has a thread from Start work: WEB-1 Retry cursor');
     view.unmount();
+  });
+
+  it('cannot be confirmed until the project\'s saved defaults have answered', async () => {
+    let answer: (view: SetupView) => void = () => {};
+    setBindingMock('ProjectTrackerSetup', () => new Promise<SetupView>((resolve) => { answer = resolve; }));
+    const start = setBindingMock('StartTicketThread', async () => { throw new Error('stop here'); });
+    const view = await mountWork();
+    await waitFor(() => expect((view.getByTestId('ticket-work-start') as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(view.getByTestId('ticket-work-start'));
+    const form = await waitFor(formOf);
+    const go = form.querySelector('[data-testid="start-work-go"]') as HTMLButtonElement;
+    await fireEvent.click(go);
+    await settle();
+    expect(start).not.toHaveBeenCalled();
+    answer({ revision: 'r1', setup: { status_groups: [], ticket_pins: [], start_work: [{ tracker: 'jira', site: SITE, project: 'WEB', assign: false, branch: 'feature/{key}' }] } } as SetupView);
+    await waitFor(() => expect(go.disabled).toBe(false));
+    expect((form.querySelector('[data-testid="start-work-branch"]') as HTMLInputElement).value).toBe('feature/WEB-1');
+    view.unmount();
+  });
+
+  it('reads Work once its computer has read the ticket, not before', async () => {
+    // The subscription answers before the computer has the ticket's body;
+    // a read of Work then is refused ("open it first").
+    let readable = false;
+    const view = await mountWork({
+      first: null,
+      work: async () => {
+        if (!readable) throw new TransportError('ticket_not_read', 'this computer has not read the ticket yet: open it first');
+        return { key: 'WEB-1', pullRequests: [], branches: [{ projectId: 'p1', name: 'WEB-1-late' }], problems: [] };
+      },
+    });
+    readable = true;
+    trackerIssueUpdated({ connection: 'c1', issue: '10101', seq: 2, changed: true }, HOME_BACKEND);
+    await waitFor(() => expect(view.getByTestId('ticket-work-branch').textContent).toContain('WEB-1-late'));
+    expect(view.queryByTestId('ticket-work-error')).toBeNull();
+    view.unmount();
+  });
+
+  it('opens a branch with no thread in the Start work form on that branch, and a branch\'s thread only of its own project', async () => {
+    setBindingMock('ProjectTrackerSetup', async () => ({ revision: 'r1', setup: { status_groups: [], ticket_pins: [] } } as SetupView));
+    // A thread of another project whose worktree path is the same.
+    listThread(makeThread({ id: 't-elsewhere', projectId: 'p9', title: 'Elsewhere', worktreePath: '/tmp/widgets-wt' }));
+    const view = await mountWork({
+      work: async () => ({ key: 'WEB-1', pullRequests: [], problems: [], branches: [{ projectId: 'p1', name: 'WEB-1-spike', worktreePath: '/tmp/widgets-wt' }] }),
+    });
+    const row = await waitFor(() => view.getByTestId('ticket-work-branch'));
+    expect(row.textContent).not.toContain('Elsewhere');
+    await fireEvent.click(row);
+    const form = await waitFor(formOf);
+    await waitFor(() => expect((form.querySelector('[data-testid="start-work-branch"]') as HTMLInputElement).value).toBe('WEB-1-spike'));
+    view.unmount();
+  });
+
+  it('says why Ask and Start work cannot run when this device may not start threads or use git there', async () => {
+    stageBackend({ id: 'laptop' } as never);
+    setCarriedSessionScopes('laptop', ['tracker:read', 'threads:read']);
+    try {
+      const view = await mountWork({ backend: 'laptop' });
+      await waitFor(() => expect(view.getByTestId('ticket-work-grants').textContent).toContain('may not start threads'));
+      expect((view.getByTestId('ticket-work-ask') as HTMLButtonElement).disabled).toBe(true);
+      expect((view.getByTestId('ticket-work-start') as HTMLButtonElement).disabled).toBe(true);
+      view.unmount();
+      setCarriedSessionScopes('laptop', ['tracker:read', 'threads:read', 'threads:operate']);
+      const again = await mountWork({ backend: 'laptop' });
+      await waitFor(() => expect(again.getByTestId('ticket-work-grants').textContent).toContain('may not use git'));
+      expect((again.getByTestId('ticket-work-ask') as HTMLButtonElement).disabled).toBe(false);
+      expect((again.getByTestId('ticket-work-start') as HTMLButtonElement).disabled).toBe(true);
+      again.unmount();
+    } finally {
+      resetStagedBackends();
+    }
   });
 });

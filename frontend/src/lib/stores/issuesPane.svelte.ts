@@ -285,6 +285,9 @@ export interface TicketSeed {
 export interface OpenTicket {
   readonly ref: TrackerTicketRef;
   readonly seed: TicketSeed;
+  /** The project the opener named (a thread's, a pull request's); null
+   * for a ticket opened from the board, whose project is the board's. */
+  readonly project: string | null;
 }
 
 /** A ticket a surface outside the pane asked it to open (a thread's
@@ -396,6 +399,14 @@ export interface BoardSelection {
   readonly ticket: OpenTicket | null;
   /** Its subscription, null with no ticket. Reactive. */
   readonly ticketAttachment: TrackerTicketAttachment | null;
+  /** The open ticket's project, which its Ask and Start work make their
+   * thread in and whose setup holds its Start work defaults: the one the
+   * person picked for it, else the one its opener named, else the
+   * board's. Null with no ticket. Reactive. */
+  readonly ticketProject: string | null;
+  /** The person picked `project` for the open ticket; it holds while that
+   * ticket stays open. */
+  setTicketProject(project: string): void;
   /** The screen the pane shows: the Board or Time. Reactive. */
   readonly screen: IssuesScreen;
   /** Where the ticket shows now: beside only when the pane fits it and the
@@ -488,6 +499,10 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
   const computer = $derived(board ? boardComputer(board.backend) : 'waiting');
   let ticket = $state.raw<OpenTicket | null>(null);
   let trail = $state.raw<readonly OpenTicket[]>([]);
+  // The project the person picked for an open ticket, by the open it
+  // belongs to, so Back and a new open fall back to their own.
+  let projectPick = $state.raw<{ readonly open: OpenTicket; readonly project: string } | null>(null);
+  const ticketProject = $derived(!ticket ? null : projectPick?.open === ticket ? projectPick.project : ticket.project ?? board?.projectId ?? null);
   let ticketAttachment = $state.raw<TrackerTicketAttachment | null>(null);
   // A ticket asked for from outside the pane, while it waits on its
   // computer's boards (openRequested).
@@ -608,7 +623,7 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
       const request = requested;
       if (!request) return;
       const { ref } = request;
-      const open: OpenTicket = { ref, seed: request.seed };
+      const open: OpenTicket = { ref, seed: request.seed, project: request.project };
       const shown = board;
       if (shown && shown.backend === ref.backend && shown.connection === ref.connection) {
         untrack(() => {
@@ -662,6 +677,10 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
     get choosing() { return choosing; },
     get ticket() { return ticket; },
     get ticketAttachment() { return ticketAttachment; },
+    get ticketProject() { return ticketProject; },
+    setTicketProject(project) {
+      if (ticket) projectPick = { open: ticket, project };
+    },
     get screen() { return screen; },
     get placement() { return placement; },
     get boardShown() { return boardShown; },
@@ -676,7 +695,7 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
     },
     openTicket(issue, seed, from) {
       if (!board || ticket?.ref.issue === issue) return;
-      const next: OpenTicket = { ref: { backend: board.backend, connection: board.connection, issue }, seed };
+      const next: OpenTicket = { ref: { backend: board.backend, connection: board.connection, issue }, seed, project: null };
       trail = from === 'ticket' && ticket ? [...trail, ticket].slice(-MAX_TICKET_TRAIL) : [];
       ticket = next;
     },
