@@ -22,6 +22,19 @@ var referencesCTE = regexp.MustCompile(`\bWITH\b`)
 // lineage level, each naming its level's depth (renderTimelineArms).
 var perLevelArms = regexp.MustCompile(`\bl\.depth = [0-9]`)
 
+// compoundOrder matches the ordering or limit renderTimelineArms writes on
+// the compound after its last arm.
+var compoundOrder = regexp.MustCompile(`\b(ORDER BY|LIMIT)\b`)
+
+// orderedAfterItsArms reports whether query, which has a pair of arms per
+// level, orders or limits the compound after its deepest level's arms: the
+// selection's own ordering, which alone renders arms per level
+// (perLevelLineage).
+func orderedAfterItsArms(query string) bool {
+	levels := perLevelArms.FindAllStringIndex(query, -1)
+	return compoundOrder.MatchString(query[levels[len(levels)-1][1]:])
+}
+
 // itemIndexBound matches a statement that takes a turn's item index bound.
 var itemIndexBound = regexp.MustCompile(`\b(MIN|MAX)\(items\.item_index\)`)
 
@@ -140,14 +153,16 @@ func TestForkReadsKeepTheirShapeAtEveryDepth(t *testing.T) {
 		case itemIndexBound.MatchString(query) && query != minTurnItemIndexSQL && query != maxTurnItemIndexSQL:
 			t.Errorf("an item index bound ran at depth %d through a text other than turnItemIndexSQL's:\n%s",
 				forkLineageMaxDepth, strings.TrimSpace(query))
-		case perLevelArms.MatchString(query) && referencesCTE.MatchString(query):
-			t.Errorf("a statement with a pair of arms per level references a CTE at depth %d (%s cursors):\n%s",
-				forkLineageMaxDepth, cursorCountForTest(t, s, query), strings.TrimSpace(query))
-		case perLevelArms.MatchString(query):
 		case ran[shallow][query]:
 			shared++
-		default:
+		case !perLevelArms.MatchString(query):
 			grown = append(grown, query)
+		case referencesCTE.MatchString(query):
+			t.Errorf("a statement with a pair of arms per level references a CTE at depth %d (%s cursors):\n%s",
+				forkLineageMaxDepth, cursorCountForTest(t, s, query), strings.TrimSpace(query))
+		case !orderedAfterItsArms(query):
+			t.Errorf("a statement with a pair of arms per level has no ordering or limit of its own at depth %d (%d bytes):\n%.2000s",
+				forkLineageMaxDepth, len(query), strings.TrimSpace(query))
 		}
 	}
 	sort.Strings(grown)
