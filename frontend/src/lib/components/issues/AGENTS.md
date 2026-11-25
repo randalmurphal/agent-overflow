@@ -79,6 +79,18 @@ board methods, events and the patch read in
   store takes what a write asks of them (`takeWorklogWrites`), so a
   surface that only logs time loads no week.
 
+- `stores/ticketWork.svelte.ts` holds a ticket's Work read, its Ask in
+  flight and its Start work run: the plan, the thread it made and each
+  step's outcome, with the rules that keep a retry from doing anything
+  twice written at the top. `TicketWork.svelte` is the rail's Work
+  section, mounted by one line at the end of the rail, and
+  `StartWorkForm.svelte` the form it opens; the threads it lists are the
+  client's catalog filtered by link, with no call.
+- `stores/ticketOpen.ts` is the one opener of a ticket from outside the
+  pane (a thread's linked ticket, a pull request's ticket chip); it is in
+  the startup graph and reaches the pane's stores through one dynamic
+  import.
+
 These stores load with the pane (`ToolPane.svelte` imports it on demand),
 `TicketScreen.svelte` loads on the first open of a ticket and
 `TimeScreen.svelte` on the first switch to Time.

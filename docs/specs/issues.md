@@ -4,12 +4,14 @@ Status: product rulings and screen designs recorded 2026-11-15. Built:
 the connections and a project's board list, in Settings > Issues
 (Connections, Boards), and the Issues pane with its Board screen, opened
 from the tool row's Issues entry, and the Ticket screen, opened from a
-card or from a thread's linked ticket; a thread's ticket link, in the
-sidebar and the thread header. The other screens are not built; the
-[Board](#board), [Ticket](#ticket) and [Thread link](#thread-link)
-sections say what of them is. A project's status
-groups and ticket pins are built in the backend, and no screen sets them
-yet.
+card, from a thread's linked ticket or from a pull request's ticket chip;
+a thread's ticket link, in the sidebar and the thread header. The other
+screens are not built; the [Board](#board), [Ticket](#ticket),
+[Tickets, pull requests and branches](#tickets-pull-requests-and-branches)
+and [Thread link](#thread-link) sections say what of them is. A
+project's status groups and ticket pins are built in the backend, and no
+screen sets them yet; its Start work defaults are set from the Start work
+form.
 
 ## Goal
 
@@ -306,8 +308,8 @@ avatar.
 
 ### Ticket
 
-Status: built: a ticket opened from a card, or from a thread's linked
-ticket, over or beside the board, the choice remembered, with the split between them; the wide and narrow
+Status: built: a ticket opened from a card, from a thread's linked
+ticket or from a pull request's ticket chip, over or beside the board, the choice remembered, with the split between them; the wide and narrow
 layouts with the rail and Details; status, assignee, priority, points and
 type changed in place, a move whose screen takes fields through their form, and the other fields with allowed values or one
 typed value behind the control with its find box (a field of several
@@ -317,10 +319,11 @@ its text shown as a chip naming the file; comments in either order
 with the control and the comment box, edited, deleted and copied from a
 comment's menu; history; linked tickets grouped by relation, each
 opening in the ticket's place; the control that opens it in the tracker;
-and Back through the tickets opened from one another. Not built: pinning a
-field or a section, the mark on a section holding the template text, Work,
-the thread an agent's comment came from, attachments, adding and removing
-links, Log time, planning poker, and a ticket in a pane of its own.
+and Back through the tickets opened from one another; and Work, with Ask and
+Start work. Not built: pinning a field or a section, the mark on a section
+holding the template text, the thread an agent's comment came from,
+attachments, adding and removing links, Log time, planning poker, and a
+ticket in a pane of its own.
 
 - At 720 or wider the content is on the left and a rail on the right holds
   Fields, then Work. Narrower, the ticket shows the content only, with one
@@ -355,6 +358,14 @@ links, Log time, planning poker, and a ticket in a pane of its own.
   poker controls.
 
 ### Tickets, pull requests and branches
+
+Status: built: every bullet below but the forge search. A key matches when
+this computer's copy of an enabled connection holds an issue of its
+project. A ticket's Work reads the stored list of open pull requests, the
+pull requests its linked threads were last seen with (merged and closed
+among them) and the branches of the projects that list its connection's
+boards; it is read when Work shows and on the ticket's Refresh. Not built:
+searching the forge by key, and Jira's development data.
 
 - Ticket keys are found in branch names and pull request titles. Only the
   keys of connected tracker projects match.
