@@ -14,8 +14,14 @@
 // while the card is over it and refuses the drop, a column two moves reach
 // asks which, and a move that takes fields opens the ticket with its form,
 // its long field starting from the ticket's text;
-// a drop within the card's own column ranks it in Jira. On compact: the
-// fields change from the menu, and the status mark opens Move to….
+// a drop within the card's own column ranks it in Jira; a card let go over
+// a column's header sends nothing; a card whose drop is still reading its
+// moves makes no second drop; two ranks in one column go in turn, the
+// second naming the card the first placed; and a rank whose answer is
+// lost while a ticket covers the board is said in a toast and kept
+// nowhere. On compact: the fields change from the menu, the status mark
+// opens Move to…, and on a short screen the card's menu stays on screen
+// and scrolls to its last row.
 
 import type { Locator, Page } from '@playwright/test';
 
@@ -182,8 +188,17 @@ export function registerBoardWritesFlow({ compact }: BoardWritesSurface): void {
     await press(menu.getByTestId('issues-card-menu-move'), compact);
     await press(menu.getByTestId('issues-card-move-column').filter({ hasText: 'To Do' }), compact);
     const note = card(progress, '10107').getByTestId('ticket-write-outcome');
-    await expect(note).toContainText('WEB-7 cannot leave In Progress now.', { timeout: 15_000 });
-    await expect(note).toHaveAttribute('data-kind', 'refused');
+    if (compact) {
+      // It waited in To Do, which the phone does not show: the refusal is
+      // said in a toast, and the card is back with nothing under it.
+      await expect(page.getByTestId('toast').filter({ hasText: 'WEB-7 cannot leave In Progress now.' })).toBeVisible({ timeout: 15_000 });
+      await expect(card(progress, '10107')).toBeVisible();
+      await expect(note).toHaveCount(0);
+    } else {
+      await expect(note).toContainText('WEB-7 cannot leave In Progress now.', { timeout: 15_000 });
+      await expect(note).toHaveAttribute('data-kind', 'refused');
+      await expect(page.getByTestId('toast').filter({ hasText: 'WEB-7' })).toHaveCount(0);
+    }
     expect(await columnCards(progress)).toContain('10107');
   });
 
@@ -231,6 +246,37 @@ export function registerBoardWritesFlow({ compact }: BoardWritesSurface): void {
       await press(menu.getByTestId('issues-card-move-column').filter({ hasText: 'In Progress' }), true);
       const progress = await showColumn(pane, 'In Progress', true);
       await expect(card(progress, '10105')).toBeVisible({ timeout: 15_000 });
+    });
+
+    test('on a short phone screen the card menu stays on screen, its rows scrolling to the last', async ({ harness, page }) => {
+      test.setTimeout(120_000);
+      await page.setViewportSize({ width: 412, height: 460 });
+      await connectFakeJiraBoard(harness, 'compact-issues-board-short', BOARD);
+      await harness.open(page);
+      const pane = await openIssuesPane(page, true);
+      const todo = await showColumn(pane, 'To Do', true);
+      await expect(card(todo, '10102')).toBeVisible({ timeout: 30_000 });
+      const inView = async (menu: Locator) => {
+        const box = (await menu.boundingBox())!;
+        const height = await page.evaluate(() => window.visualViewport?.height ?? window.innerHeight);
+        expect(box.y).toBeGreaterThanOrEqual(0);
+        expect(box.y + box.height).toBeLessThanOrEqual(height + 0.5);
+      };
+      // Show more, ten actions and their headings: the last row is reached
+      // by scrolling the menu, and pressed.
+      const menu = await cardMenu(page, pane, '10102', 'WEB-2', true);
+      await press(menu.getByTestId('action-menu-more'), true);
+      await expect(menu.getByTestId('action-menu-choose')).toHaveCount(1);
+      await inView(menu);
+      const last = menu.getByTestId('action-menu-choose');
+      await last.scrollIntoViewIfNeeded();
+      await expect(last).toBeInViewport();
+      await press(last, true);
+      await expect(menu.getByTestId('action-menu')).toHaveAttribute('data-mode', 'choose');
+      await inView(menu);
+      await press(menu.getByTestId('action-menu-choose-done'), true);
+      await expect(menu.getByTestId('action-menu')).toHaveAttribute('data-mode', 'menu');
+      await inView(menu);
     });
   }
 
@@ -350,6 +396,97 @@ export function registerBoardWritesFlow({ compact }: BoardWritesSurface): void {
       // the form opened.
       await expect(form.getByTestId('ticket-move-text')).toHaveValue(/Steps written before the move/);
       expect(await trackerRequests(harness, MOVE_ROUTE, ['WEB-6', '10106'])).toEqual([]);
+    });
+
+    test('a release over no column\'s cards sends nothing, a deciding drop keeps its card, ranks in a column go in turn, and a rank settling under the ticket is a toast', async ({ harness, page }) => {
+      test.setTimeout(150_000);
+      await page.setViewportSize({ width: 1600, height: 900 });
+      await connectFakeJiraBoard(harness, 'issues-board-carry-turns', BOARD);
+      await harness.open(page);
+      const pane = await openIssuesPane(page, false);
+      const column = (name: string) => pane.locator(`[data-testid="issues-column"][data-column="${name}"]`);
+      const todo = column('To Do');
+      const progress = column('In Progress');
+      await expect(card(todo, '10102')).toBeVisible({ timeout: 30_000 });
+      const LOOKUP = 'GET rest/api/3/issue/{issue}/transitions';
+
+      // Let go over In Progress's header, above its cards: home, nothing
+      // read or sent.
+      await carry(page, card(todo, '10102'), await center(progress.locator('header')));
+      await expect(page.getByTestId('issues-card-carried')).toHaveCount(0);
+      await expect(card(todo, '10102')).toBeVisible();
+      expect(await trackerRequests(harness, MOVE_ROUTE)).toEqual([]);
+      expect(await trackerRequests(harness, RANK_ROUTE)).toEqual([]);
+
+      // Let go over In Progress while its moves are read: picked up again
+      // and let go over Done meanwhile, it makes no second drop.
+      const lookups = (await trackerRequests(harness, LOOKUP, ['WEB-2', '10102'])).length;
+      await harness.rpc('HarnessTrackerFault', { origin: JIRA, route: LOOKUP, kind: 'hold', times: 1 });
+      await carry(page, card(todo, '10102'), await center(progress.getByTestId('issues-column-cards')));
+      await expect.poll(async () => (await trackerRequests(harness, LOOKUP, ['WEB-2', '10102'])).some((r) => r.held)).toBe(true);
+      const title = (await card(todo, '10102').getByTestId('issues-card-title').boundingBox())!;
+      await page.mouse.move(title.x + 10, title.y + 5);
+      await page.mouse.down();
+      await page.mouse.move(title.x + 40, title.y + 20, { steps: 4 });
+      const doneAt = await center(column('Done').getByTestId('issues-column-cards'));
+      await page.mouse.move(doneAt.x, doneAt.y, { steps: 8 });
+      await expect(page.getByTestId('issues-card-carried')).toHaveCount(1);
+      await page.mouse.up();
+      expect(await trackerRequests(harness, LOOKUP, ['WEB-2', '10102'])).toHaveLength(lookups + 1);
+      await harness.rpc('HarnessTrackerRelease', { origin: JIRA, route: LOOKUP });
+      await expect(card(progress, '10102')).toBeVisible({ timeout: 15_000 });
+      await expect(card(progress, '10102').getByTestId('ticket-write-pending')).toHaveCount(0, { timeout: 15_000 });
+      expect((await trackerRequests(harness, MOVE_ROUTE, ['WEB-2', '10102'])).map((r) => r.body)).toEqual([{ transition: { id: '21' } }]);
+      // The one carry's read and the move's own check before it posts.
+      expect(await trackerRequests(harness, LOOKUP, ['WEB-2', '10102'])).toHaveLength(lookups + 2);
+
+      // Two ranks one after another, the first held: the second waits for
+      // it, then names the card the first put before it.
+      const order = await columnCards(progress);
+      expect(order.length).toBeGreaterThanOrEqual(4);
+      const [a, b, c, d] = order;
+      const above = async (id: string) => {
+        const box = (await card(progress, id).boundingBox())!;
+        return { x: box.x + box.width / 2, y: box.y + 6 };
+      };
+      await harness.rpc('HarnessTrackerFault', { origin: JIRA, route: RANK_ROUTE, kind: 'hold', times: 1 });
+      await carry(page, card(progress, d), await above(b), async () => {
+        await expect(progress.getByTestId('issues-column-slot')).toBeVisible();
+      });
+      await expect.poll(async () => (await trackerRequests(harness, RANK_ROUTE)).some((r) => r.held)).toBe(true);
+      await expect.poll(() => columnCards(progress)).toEqual([a, d, b, c, ...order.slice(4)]);
+      await carry(page, card(progress, c), await above(b), async () => {
+        await expect(progress.getByTestId('issues-column-slot')).toBeVisible();
+      });
+      await expect.poll(() => columnCards(progress)).toEqual([a, d, c, b, ...order.slice(4)]);
+      await expect(card(progress, c)).toHaveAttribute('data-moving', '');
+      expect(await trackerRequests(harness, RANK_ROUTE)).toHaveLength(1);
+      await harness.rpc('HarnessTrackerRelease', { origin: JIRA, route: RANK_ROUTE });
+      await expect.poll(async () => (await trackerRequests(harness, RANK_ROUTE)).length, { timeout: 15_000 }).toBe(2);
+      await expect(card(progress, c)).not.toHaveAttribute('data-moving', '', { timeout: 15_000 });
+      expect((await trackerRequests(harness, RANK_ROUTE)).map((r) => r.body)).toEqual([
+        expect.objectContaining({ issues: [d], rankAfterIssue: a }),
+        expect.objectContaining({ issues: [c], rankAfterIssue: d }),
+      ]);
+      await expect(progress.getByTestId('ticket-write-outcome')).toHaveCount(0);
+      expect(await columnCards(progress)).toEqual([a, d, c, b, ...order.slice(4)]);
+
+      // A rank out while the ticket of another card opens over the board,
+      // whose answer is lost: said in a toast, kept nowhere.
+      await harness.rpc('HarnessTrackerFault', { origin: JIRA, route: RANK_ROUTE, kind: 'hold', times: 1 });
+      await carry(page, card(progress, b), await above(a), async () => {
+        await expect(progress.getByTestId('issues-column-slot')).toBeVisible();
+      });
+      await expect.poll(async () => (await trackerRequests(harness, RANK_ROUTE)).some((r) => r.held)).toBe(true);
+      await card(todo, '10105').getByTestId('issues-card-open').click();
+      await expect(pane.getByTestId('issues-ticket')).toHaveAttribute('data-placement', 'over');
+      const key = (await card(progress, b).getByTestId('issues-card-key').textContent())!.trim();
+      await harness.rpc('HarnessTrackerRelease', { origin: JIRA, route: RANK_ROUTE, drop: true });
+      await expect(page.getByTestId('toast').filter({ hasText: key })).toBeVisible({ timeout: 15_000 });
+      await pane.getByTestId('ticket-close').click();
+      await expect(pane.getByTestId('ticket-screen')).toHaveCount(0);
+      await expect(card(progress, b).getByTestId('ticket-write-pending')).toHaveCount(0);
+      await expect(card(progress, b).getByTestId('ticket-write-outcome')).toHaveCount(0);
     });
   }
 }
