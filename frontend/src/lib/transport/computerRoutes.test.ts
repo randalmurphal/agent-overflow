@@ -165,6 +165,31 @@ it('says a request that failed before it left was not sent, and one that failed 
   expect((after as Error).name).toBe('TypeError');
 });
 
+it.each([
+  ['a direct request', false],
+  ['a verified request', true],
+])('sends %s in the same turn as its last pairing check', async (_name, verifiable) => {
+  const routes = await import('./computerRoutes');
+  mocks.supported.mockResolvedValue(verifiable);
+  // The pairing changes in the first microtask after the last check passes.
+  let paired = true;
+  const ctx: ComputerRouteContext = {
+    ...context(),
+    current: () => paired,
+    beforeRequest: () => {
+      if (!paired) throw new Error('Computer session changed. Reconnect to continue.');
+      queueMicrotask(() => { paired = false; });
+    },
+  };
+  const pairedWhenSent: boolean[] = [];
+  const original = vi.fn<typeof fetch>().mockImplementation(async () => {
+    pairedWhenSent.push(paired);
+    return new Response('{}');
+  });
+  await routes.fetchComputerRoute(ctx, original, request, { method: 'PUT', body: 'the file' });
+  expect(pairedWhenSent).toEqual([true]);
+});
+
 it('does not enable route selection in an older APK or for an unrelated request origin', async () => {
   const routes = await import('./computerRoutes');
   const ctx = context();
