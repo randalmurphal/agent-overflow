@@ -113,19 +113,37 @@ export async function fetchAttachmentBytes(threadId: string, attachmentId: strin
  * tracker that stores no files, and a file over its ceiling, before any
  * byte crosses. The route answers the write as JSON once the tracker
  * judged it; a refusal before that throws `TransferRefusedError` with the
- * route's code and sentence. A fetch that fails, with the bytes partly
- * sent or the answer lost, throws as fetch does: whether the file was
- * attached is then unknown.
+ * route's code and sentence. A transfer that breaks off, with the bytes
+ * partly sent or the answer lost, throws `TransferInterruptedError`:
+ * whether the file was attached is then unknown.
  */
 export async function uploadTrackerAttachmentBytes(backend: BackendKey, connection: string, issue: string, file: File): Promise<WriteView> {
   const url = await withBackendTarget(backend, () => MintTrackerAttachmentUploadTicket(connection, issue, file.name, file.size));
-  const response = await fetchPairedComputer(backend, networkFetch, backendTransferUrl(url, backend), {
-    method: 'PUT',
-    body: file,
-    credentials: backendCredentials(backend),
-  });
+  let response: Response;
+  try {
+    response = await fetchPairedComputer(backend, networkFetch, backendTransferUrl(url, backend), {
+      method: 'PUT',
+      body: file,
+      credentials: backendCredentials(backend),
+    });
+  } catch (err) {
+    throw new TransferInterruptedError(`the upload of ${file.name} broke off`, err);
+  }
   if (!response.ok) throw await refusal(response, null);
-  return (await response.json()) as WriteView;
+  try {
+    return (await response.json()) as WriteView;
+  } catch (err) {
+    throw new TransferInterruptedError(`the answer to the upload of ${file.name} was cut short`, err);
+  }
+}
+
+/** A transfer that broke off after its request went: what the computer
+ * did with it is unknown. */
+export class TransferInterruptedError extends Error {
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
+    this.name = 'TransferInterruptedError';
+  }
 }
 
 /**
