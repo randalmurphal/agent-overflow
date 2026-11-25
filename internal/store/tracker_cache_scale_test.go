@@ -356,6 +356,19 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		return err
 	})
 	out["section counts"] = measureScale(t, rec, nil, func(int) error { _, err := s.CountMirrorSections(root, board); return err })
+	// The rows a view build of MirrorMaxBodies open tickets reads, spread
+	// over the board.
+	ticketIDs := make([]string, MirrorMaxBodies)
+	for i := range ticketIDs {
+		ticketIDs[i] = benchIssueID(0, i*(size.issues/MirrorMaxBodies))
+	}
+	out["ticket rows, 16 tickets"] = measureScale(t, rec, nil, func(int) error {
+		rows, err := s.ListMirrorTicketRows(root, ticketIDs)
+		if err == nil && len(rows) != len(ticketIDs) {
+			err = fmt.Errorf("%d rows of %d tickets", len(rows), len(ticketIDs))
+		}
+		return err
+	})
 	counts, err := s.CountMirrorSections(root, board)
 	if err != nil {
 		t.Fatal(err)

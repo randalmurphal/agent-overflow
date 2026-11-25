@@ -3,6 +3,7 @@ package trackerapp
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"sync"
 	"testing"
@@ -233,6 +234,49 @@ func TestUnlistedBoardEndsItsSubscription(t *testing.T) {
 	b, _, _ := m.events.snapshot()
 	if !b[len(b)-1].Ended || slices.ContainsFunc(b[:len(b)-1], func(e BoardEvent) bool { return e.Ended }) {
 		t.Fatalf("events %+v; want one end, last", b)
+	}
+}
+
+// An open ticket shows its issue's estimate on each board the mirror shows
+// it on, in the board's unit, and an estimate a board's tick changes
+// reaches the ticket as a change of its view with no read of its own.
+func TestAnOpenTicketShowsItsEstimatesPerBoard(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
+	held := card("10001", 1_799_000_000_000)
+	three, five := 3.0, 5.0
+	m.tracks([]tracker.Row{{Card: held, Order: "a", Estimate: &three}})
+	m.p.updatedMovesWithDetail(cardsAnswering(&held))
+	m.p.set(func(p *scripted) {
+		p.detail = func(tracker.IssueID) (tracker.Detail, error) { return tracker.Detail{Card: held}, nil }
+	})
+	board := m.subscribe(t, testBoard)
+	m.events.boardEvents(t, 1)
+	ticket := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001", true, untied))
+	m.events.issueEvents(t, 1)
+	rows := func() []TicketRowView {
+		v, err := m.svc.TicketDetail(ticket.ID)
+		if err != nil || v.Detail == nil {
+			t.Fatalf("the ticket's detail %+v, %v", v, err)
+		}
+		return v.Detail.Rows
+	}
+	if got := rows(); !reflect.DeepEqual(got, []TicketRowView{{Board: string(testBoard), Estimate: &three, Unit: "points"}}) {
+		t.Fatalf("the ticket's rows %+v", got)
+	}
+	reads := m.p.count("Details")
+	m.tracks([]tracker.Row{{Card: held, Order: "a", Estimate: &five}})
+	if err := m.svc.RefreshSubscription(t.Context(), board.ID); err != nil {
+		t.Fatal(err)
+	}
+	if e := m.events.issueEvents(t, 2)[1]; e.Issue != "10001" || !e.Changed {
+		t.Fatalf("the estimate's change told %+v", e)
+	}
+	if got := rows(); len(got) != 1 || got[0].Estimate == nil || *got[0].Estimate != five {
+		t.Fatalf("after the board's tick the ticket's rows %+v", got)
+	}
+	if got := m.p.count("Details"); got != reads {
+		t.Fatalf("the estimate's change read the ticket %d times", got-reads)
 	}
 }
 

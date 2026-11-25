@@ -35,9 +35,9 @@ func TestChangedRoundCosts(t *testing.T) {
 			}
 			provider, stored := describeCounts(countsOf(m.p.callsInOrder()[calls:])), describeCounts(cs.take())
 			wantProvider := "Cards:1 Details:1"
-			wantStore := "GetMirrorCatalog:1 GetMirrorSync:1 ListMirrorBodies:1 StoreMirrorTickets:2"
+			wantStore := "GetMirrorCatalog:1 GetMirrorSync:1 ListMirrorBodies:1 ListMirrorTicketRows:1 StoreMirrorTickets:2"
 			if !jira {
-				wantProvider, wantStore = "Details:1", "GetMirrorCatalog:1 GetMirrorSync:1 ListMirrorBodies:1 StoreMirrorTickets:1"
+				wantProvider, wantStore = "Details:1", "GetMirrorCatalog:1 GetMirrorSync:1 ListMirrorBodies:1 ListMirrorTicketRows:1 StoreMirrorTickets:1"
 			}
 			t.Logf("10 of 50 changed: provider %s, store %s", provider, stored)
 			if provider != wantProvider || stored != wantStore {
