@@ -1302,7 +1302,6 @@ import {
   type ThreadRequestState as ThreadRequestStateRow,
 } from '../../../bindings/agent-overflow/internal/app/models.js';
 import type { AgentProfile, Settings as SettingsSnapshot } from '../../../bindings/agent-overflow/internal/settings/models.js';
-import type { BoardChoice as TrackerBoardChoice } from '../../../bindings/agent-overflow/internal/trackerapp/models.js';
 import type { PastAgentRowsCursor, StandingAgent as StandingAgentRow, Thread as StoreThread } from '../../../bindings/agent-overflow/internal/store/models.js';
 import { methodId } from '../transport/methodId';
 import { orOlder, ThreadsPartlyDeleted, withNote } from './olderComputer';
@@ -1420,7 +1419,7 @@ export function GetStandingAgent(threadID: string): Promise<StandingAgentRow | n
 }
 
 /** Empty on a computer without the Issues pane's board list. */
-export function TrackerBoardChoices(): Promise<TrackerBoardChoice[]> {
+export function TrackerBoardChoices(): Promise<TrackerBoardChoiceRow[]> {
   return orOlder(() => TrackerBoardChoicesRaw(), () => []);
 }
 
