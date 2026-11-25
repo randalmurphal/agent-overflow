@@ -215,6 +215,10 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 		return false, fmt.Errorf("delete empty draft thread %s: %w", threadID, errors.Join(errs...))
 	}
 
+	// The draft's ticket link goes with its row (the store's cascade, or a
+	// holder's retire); the tracker service is told, as a delete's commit
+	// tells it, so the ticket leaves the views that kept it for the link.
+	ending := a.threadLinksEnding([]string{threadID})
 	deleted, err := a.store.DeleteEmptyDraftThread(threadID)
 	if err != nil {
 		return false, err
@@ -222,6 +226,7 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	if !deleted {
 		return false, nil
 	}
+	a.endThreadLinks(ending, []string{threadID})
 	// As in DeleteThread: a page a companion action opened after the close
 	// above is left to this one.
 	var closeErr error

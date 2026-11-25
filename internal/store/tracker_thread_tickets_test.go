@@ -91,7 +91,7 @@ func TestSetThreadTicketLinksReplacesAndClears(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantRow := ThreadTicketLink{Kind: TrackerKindJira, Site: mirrorSite, IssueID: "10001", Key: "WEB-10001", Title: "Fix the login page",
-		StatusID: "1", StatusName: "To Do", StatusGroup: MirrorGroupToDo, Origin: TicketOriginManual, LinkedAt: 10,
+		StatusID: "1", StatusName: "To Do", StatusGroup: "todo", Origin: TicketOriginManual, LinkedAt: 10,
 		State: TicketLinkCurrent, ConnectionID: c.ID}
 	if row.TicketLink == nil || *row.TicketLink != wantRow {
 		t.Fatalf("thread row link = %+v\nwant %+v", row.TicketLink, wantRow)
@@ -598,5 +598,32 @@ func TestThreadLinkColumnReadsByKey(t *testing.T) {
 		if slices.Contains(got, "MATERIALIZE links") || !slices.Contains(got, "SEARCH tt USING INDEX sqlite_autoindex_thread_tickets_1 (thread_id=?)") {
 			t.Fatalf("%s plan:\n%s\nwant the link probed by thread and no links CTE", name, strings.Join(got, "\n"))
 		}
+	}
+}
+
+// A link names its status's group as the wire does, and a carried link's
+// name is stored as the group's number: each group both ways, no group as
+// "", and a number no group has as "".
+func TestTheLinksStatusGroupIsItsName(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for n := 0; n <= MirrorGroupLeftOut; n++ {
+		want := ""
+		if n < len(MirrorGroupNames) {
+			want = MirrorGroupNames[n]
+		}
+		var got string
+		if err := s.reader().QueryRow(`SELECT `+mirrorGroupNameSQL(`?`), n).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("the name of group %d = %q, want %q", n, got, want)
+		}
+		if back, ok := mirrorGroupNumber(got); !ok || (got != "" && back != n) {
+			t.Fatalf("the number of %q = %d, %v; want %d", got, back, ok, n)
+		}
+	}
+	if _, ok := mirrorGroupNumber("left_out"); ok {
+		t.Fatal("a name no status group has was read as one")
 	}
 }

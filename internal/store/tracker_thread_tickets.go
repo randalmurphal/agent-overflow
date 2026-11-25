@@ -91,14 +91,16 @@ const (
 // when the row is read: State as the constants above say, ConnectionID the
 // connection here that reads the ticket ("" when none is on).
 type ThreadTicketLink struct {
-	Kind         string `json:"kind"`
-	Site         string `json:"site"`
-	IssueID      string `json:"issueId"`
-	Key          string `json:"key"`
-	Title        string `json:"title"`
-	StatusID     string `json:"statusId"`
-	StatusName   string `json:"statusName"`
-	StatusGroup  int    `json:"statusGroup"`
+	Kind       string `json:"kind"`
+	Site       string `json:"site"`
+	IssueID    string `json:"issueId"`
+	Key        string `json:"key"`
+	Title      string `json:"title"`
+	StatusID   string `json:"statusId"`
+	StatusName string `json:"statusName"`
+	// StatusGroup is the status's group by name (MirrorGroupNames), ""
+	// for none.
+	StatusGroup  string `json:"statusGroup"`
 	Origin       string `json:"origin"`
 	LinkedAt     int64  `json:"linkedAt"`
 	State        string `json:"state"`
@@ -141,7 +143,7 @@ var (
 	    'key', COALESCE(i.issue_key, tt.issue_key), 'title', COALESCE(i.title, tt.issue_title),
 	    'statusId', COALESCE(i.status_id, tt.status_id),
 	    'statusName', iif(i.root_id IS NULL, tt.status_name, COALESCE(st.name, '')),
-	    'statusGroup', iif(i.root_id IS NULL, tt.status_group, COALESCE(st.status_group, 0)),
+	    'statusGroup', ` + mirrorGroupNameSQL(`iif(i.root_id IS NULL, tt.status_group, COALESCE(st.status_group, 0))`) + `,
 	    'origin', tt.origin, 'linkedAt', tt.linked_at,
 	    'state', CASE WHEN ` + mirrorIssueHeldSQL + ` THEN 'current' WHEN ` + mirrorIssueGoneSQL + ` THEN 'not_found'
 	      ELSE ` + ticketSiteStateSQL + ` END,
@@ -649,12 +651,13 @@ func replaceThreadTicketTx(tx *sql.Tx, threadID string, link *ThreadTicketLink) 
 	if err := t.validate(); err != nil {
 		return fmt.Errorf("store: the carried ticket link of %s: %w", threadID, err)
 	}
-	if link.StatusGroup < 0 || link.StatusGroup > 5 {
-		return fmt.Errorf("store: the carried ticket link of %s: %w: status group %d", threadID, ErrInvalidThreadTicket, link.StatusGroup)
+	group, ok := mirrorGroupNumber(link.StatusGroup)
+	if !ok {
+		return fmt.Errorf("store: the carried ticket link of %s: %w: status group %q", threadID, ErrInvalidThreadTicket, link.StatusGroup)
 	}
 	if _, err := tx.Exec(`INSERT INTO thread_tickets(`+threadTicketColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		threadID, t.Ticket.Kind, t.Ticket.Site, t.Ticket.IssueID, t.IssueKey, t.IssueTitle,
-		link.StatusID, link.StatusName, link.StatusGroup, t.Origin, t.LinkedAt); err != nil {
+		link.StatusID, link.StatusName, group, t.Origin, t.LinkedAt); err != nil {
 		return fmt.Errorf("store: write the carried ticket link of %s: %w", threadID, err)
 	}
 	return nil
