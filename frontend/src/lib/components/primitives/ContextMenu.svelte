@@ -1,8 +1,9 @@
 <script lang="ts">
   /**
    * Cursor-anchored menu shell. Owns the three things every right-click
-   * menu needs and nothing else: viewport clamping, click-outside, and
-   * Escape. Callers supply the rows as `<MenuItem>` children and keep
+   * menu needs and nothing else: viewport clamping (the menu stands no
+   * taller than the visual viewport, its rows scrolling inside it),
+   * click-outside, and Escape. Callers supply the rows as `<MenuItem>` children and keep
    * ownership of what the rows do.
    *
    * Paired with `Menu` (roles + roving tabindex + arrow nav) rather than
@@ -41,6 +42,7 @@
   let menuEl: HTMLDivElement | undefined = $state(undefined);
   let adjustedX = $state(0);
   let adjustedY = $state(0);
+  let maxHeight = $state(viewportSize().height - 2 * MARGIN_PX);
 
   // Moved to `document.body` on mount, as Modal and Popover are. A menu is
   // rendered where its owner sits, and an owner inside a stacking context
@@ -74,6 +76,7 @@
     // The visual viewport, not the layout one: with the soft keyboard up a
     // long-press menu near the bottom would otherwise be clamped under it.
     const viewport = viewportSize();
+    maxHeight = viewport.height - 2 * MARGIN_PX;
     const maxX = viewport.width - (rect?.width ?? 0) - MARGIN_PX;
     const maxY = viewport.height - (rect?.height ?? 0) - MARGIN_PX;
     adjustedX = Math.max(MARGIN_PX, Math.min(x, maxX));
@@ -138,7 +141,7 @@
   data-placement="point"
   use:airspaceSurface
 >
-  <Menu {ariaLabel} onClose={onDismiss} {minWidthClass}>
+  <Menu {ariaLabel} onClose={onDismiss} {minWidthClass} {maxHeight}>
     {@render children()}
   </Menu>
 </div>
