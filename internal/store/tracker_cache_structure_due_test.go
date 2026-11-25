@@ -50,14 +50,14 @@ func replaceDueStructure(t *testing.T, s *Store, root, readAt int64, complete bo
 func TestMirrorRowNamingAnUnknownSprintMakesTheStructureDue(t *testing.T) {
 	s, _, root := newMirror(t)
 	mustReplaceStructure(t, s, root, webStructure(), true)
-	if changes, statements := writeDuePage(t, s, root, 2, webRow("10001", 5, "a", "21")); changes.StructureDue || statements != 9 {
-		t.Fatalf("a page naming known references = %+v in %d statements; want not due in 9", changes, statements)
+	if changes, statements := writeDuePage(t, s, root, 2, webRow("10001", 5, "a", "21")); changes.StructureDue || statements != 10 {
+		t.Fatalf("a page naming known references = %+v in %d statements; want not due in 10", changes, statements)
 	}
-	if changes, statements := writeDuePage(t, s, root, 5, webRow("10002", 5, "b", "23")); !changes.StructureDue || statements != 9 {
-		t.Fatalf("a page naming a new sprint = %+v in %d statements; want due in 9", changes, statements)
+	if changes, statements := writeDuePage(t, s, root, 5, webRow("10002", 5, "b", "23")); !changes.StructureDue || statements != 10 {
+		t.Fatalf("a page naming a new sprint = %+v in %d statements; want due in 10", changes, statements)
 	}
-	if changes, statements := writeDuePage(t, s, root, 6, webRow("10003", 5, "c", "21")); !changes.StructureDue || statements != 9 {
-		t.Fatalf("a later page naming known references = %+v in %d statements; want still due in 9", changes, statements)
+	if changes, statements := writeDuePage(t, s, root, 6, webRow("10003", 5, "c", "21")); !changes.StructureDue || statements != 10 {
+		t.Fatalf("a later page naming known references = %+v in %d statements; want still due in 10", changes, statements)
 	}
 	for name, attempt := range map[string]MirrorSyncAttempt{
 		"a delta that succeeded":   {ReadAt: mirrorReadAt(7)},

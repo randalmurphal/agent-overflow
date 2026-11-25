@@ -101,7 +101,7 @@ func (c *countingStore) ReplaceMirrorStructure(root int64, st store.MirrorStruct
 	return c.Store.ReplaceMirrorStructure(root, st)
 }
 
-func (c *countingStore) ReplaceMirrorHistories(root, sweep int64, hs []store.MirrorHistory, catalog store.MirrorCatalog, read store.MirrorRead) ([]store.MirrorHistoryResult, bool, error) {
+func (c *countingStore) ReplaceMirrorHistories(root, sweep int64, hs []store.MirrorHistory, catalog store.MirrorCatalog, read store.MirrorRead) ([]store.MirrorHistoryResult, store.MirrorCatalogWrite, error) {
 	c.count("ReplaceMirrorHistories")
 	return c.Store.ReplaceMirrorHistories(root, sweep, hs, catalog, read)
 }

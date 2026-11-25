@@ -9,7 +9,6 @@ import (
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 )
@@ -113,6 +112,12 @@ func threadTicketError(ctx context.Context, err error) error {
 	case errors.Is(err, store.ErrInvalidThreadTicket):
 		return errorsx.Public("thread_ticket_invalid",
 			"this link cannot be stored: a ticket is named by its tracker (Jira or Linear), its site and its issue ID, and only a conversation can hold one", err)
+	case errors.Is(err, store.ErrThreadTicketNotReader):
+		return errorsx.Public("thread_ticket_connection_changed",
+			"another connection to this site started reading its tickets while the ticket was being linked; link it again. The link was not changed", err)
+	case errors.Is(err, store.ErrThreadTicketNotHeld):
+		return errorsx.Public("thread_ticket_not_found_since",
+			"a later read did not return this issue: it was deleted, or the token's user may not see it. The link was not changed", err)
 	}
 	return trackerRunError(ctx, err)
 }
@@ -167,18 +172,4 @@ func (a *App) endThreadLinks(ending map[string]store.TicketRef, ended []string) 
 		}
 	}
 	a.trackers.LinksEnded(tickets)
-}
-
-// adoptThreadLinks takes, for a thread another computer gave this one,
-// the card a mirror here holds of its link's ticket
-// (trackerapp.Service.AdoptLinks), before the received row is announced.
-// A failure is logged: the link reads as not checked until a read here
-// stores the card.
-func (a *App) adoptThreadLinks(threadID string) {
-	if a.trackers == nil {
-		return
-	}
-	if err := a.trackers.AdoptLinks([]string{threadID}); err != nil && !errors.Is(err, trackerapp.ErrStopped) {
-		log.Printf("thread links: take the mirror's card for the link of received thread %s: %v", threadID, err)
-	}
 }

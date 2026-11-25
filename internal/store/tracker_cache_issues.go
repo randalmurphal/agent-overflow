@@ -64,9 +64,8 @@ type MirrorCard struct {
 	StatusFinal                      bool
 	Sprints                          []string
 	Data                             []byte
-	// Title is the issue's title, which the mirror keeps only inside
-	// Data. A write copies it to the links that name the issue
-	// (thread_tickets, storeMirrorCardsTx); a read leaves it empty.
+	// Title is the issue's title (tracker_cache_issues.title), part of
+	// the card's content.
 	Title string
 }
 
@@ -99,8 +98,11 @@ type MirrorChanges struct {
 	// Unkept are the cards UpsertMirrorCards did not store because the
 	// mirror does not keep their issue.
 	Unkept []string
-	// Threads are the threads whose link the write moved: what the link
-	// shows of its ticket, or its state (storeMirrorCardsTx). Sorted.
+	// Threads are the threads whose row the write moved: a link to an
+	// issue whose card it stored or whose absence it cleared, on the root
+	// of the site's link reader (storeMirrorCardsTx), or whose card has a
+	// status its catalog renamed or regrouped (upsertMirrorCatalogTx).
+	// Sorted.
 	Threads []string
 	// Catalog reports a changed user or status.
 	Catalog bool
@@ -187,8 +189,8 @@ func mirrorCardAdvancesSQL(readAt string) string {
 // comparison that finds a card changed finds its sprints changed.
 var mirrorCardContent = []struct{ column, key string }{
 	{"issue_key", "k"}, {"project_id", "p"}, {"type_id", "t"}, {"type_level", "l"}, {"status_id", "s"}, {"assignee_id", "a"},
-	{"priority_id", "r"}, {"parent_id", "n"}, {"created_at", "c"}, {"updated_at", "u"}, {"resolved_at", "z"}, {"data", "d"},
-	{"sprint_set", "h"},
+	{"priority_id", "r"}, {"parent_id", "n"}, {"created_at", "c"}, {"updated_at", "u"}, {"resolved_at", "z"}, {"title", "x"},
+	{"data", "d"}, {"sprint_set", "h"},
 }
 
 // mirrorCardDiffersSQL holds when the stored issue i holds other content
@@ -238,11 +240,11 @@ func mirrorCardRefusedSQL(readAt string) string {
 // (mirrorCardRef), each with its card's issue and update time, so the
 // same filter and rule name them.
 const mirrorCardUpsertSQL = `INSERT INTO tracker_cache_issues(root_id, issue_id, issue_key, project_id, type_id, type_level,
-	        status_id, assignee_id, priority_id, parent_id, created_at, updated_at, resolved_at, read_at, data, sprint_set,
+	        status_id, assignee_id, priority_id, parent_id, created_at, updated_at, resolved_at, read_at, title, data, sprint_set,
 	        status_floor_at, status_read_at)
 	SELECT ?1, c.value ->> 'i', c.value ->> 'k', c.value ->> 'p', c.value ->> 't', c.value ->> 'l', c.value ->> 's',
 	       c.value ->> 'a', c.value ->> 'r', c.value ->> 'n', c.value ->> 'c', c.value ->> 'u', c.value ->> 'z', ?3,
-	       unhex(c.value ->> 'd'), unhex(c.value ->> 'h'), ?3, ?3
+	       c.value ->> 'x', unhex(c.value ->> 'd'), unhex(c.value ->> 'h'), ?3, ?3
 	  FROM json_each(?2) c WHERE `
 
 var mirrorCardConflictSQL = `
@@ -250,7 +252,7 @@ var mirrorCardConflictSQL = `
 	    type_id = excluded.type_id, type_level = excluded.type_level, status_id = excluded.status_id,
 	    assignee_id = excluded.assignee_id, priority_id = excluded.priority_id, parent_id = excluded.parent_id,
 	    created_at = excluded.created_at, updated_at = excluded.updated_at, resolved_at = excluded.resolved_at,
-	    read_at = excluded.read_at, data = excluded.data, sprint_set = excluded.sprint_set, ` + mirrorStatusKeptBy("excluded.status_id", "excluded.updated_at", "excluded.read_at") + `
+	    read_at = excluded.read_at, title = excluded.title, data = excluded.data, sprint_set = excluded.sprint_set, ` + mirrorStatusKeptBy("excluded.status_id", "excluded.updated_at", "excluded.read_at") + `
 	WHERE NOT ` + mirrorCardSupersededSQL("tracker_cache_issues", "excluded.updated_at", "excluded.read_at") + `
 	  AND ` + mirrorCardDiffersSQL("", func(column, _ string) string { return "excluded." + column }) + `
 	RETURNING ` + mirrorRecordAfterColumns
@@ -483,7 +485,7 @@ var (
 type mirrorCardsStored struct {
 	changed, marked []string
 	after           map[string]mirrorRecordAfter
-	// threads are the threads whose link the write moved
+	// threads are the threads whose row the write moved
 	// (mirrorLinkCopySQL), sorted.
 	threads []string
 }
@@ -496,21 +498,24 @@ type mirrorCardsStored struct {
 // (replaceMirrorCardSprintsTx): a card whose sprints stay costs the
 // digests' comparison and no membership read or write. Then move runs,
 // given the cards the upsert stored: the card writers' move
-// (mirrorCardReadMove) records the read as the latest of the stored cards
-// it admits from an earlier read and did not replace, so an identical
-// card from a later read orders the card's ties as a changed one does,
-// and reports no change; a ticket write moves its bodies and status
-// evidence in the same statement (StoreMirrorTickets). Then the mark
+// (mirrorCardReadMove) records the read as the latest of advancing, sorted,
+// the cards it admits from an earlier read, that the upsert did not
+// replace, so an identical card from a later read orders the card's ties
+// as a changed one does, and reports no change; a ticket write moves its
+// bodies and status evidence in the same statement (StoreMirrorTickets).
+// Then the absences of the admitted cards' issues that their read
+// supersedes are deleted (mirrorAbsencesClearSQL), and the links to the
+// issues of the stored cards and the cleared absences take the card the
+// mirror now holds (mirrorLinkCopySQL), so a link's copy changes in the
+// transaction that changes the card, and their threads are announced; a
+// write that stores and clears nothing runs neither. Then the mark
 // statement, a chunk of references at a time, marks the references the
 // admitted cards name that the mirror lacks, on each board the issue has
 // a row on: every card writer calls this, so a card that moves an issue
 // to a status, user or sprint the mirror has not read makes the boards
-// showing it due a structure read, whichever read brought it. Between
-// the move and the marks, the links that name a card's issue take the
-// card the mirror now holds (mirrorLinkCopySQL), so a link's copy changes
-// in the transaction that changes the card.
+// showing it due a structure read, whichever read brought it.
 func storeMirrorCardsTx(tx *sql.Tx, statements mirrorCardStatements, rootID int64, cards []mirrorCardRow, encoded string, readAt int64,
-	moved []string, move func(stored []string) error, filter ...any) (out mirrorCardsStored, err error) {
+	moved, advancing []string, move func(stored []string) error, filter ...any) (out mirrorCardsStored, err error) {
 	args := append([]any{rootID, encoded, readAt}, filter...)
 	out.after = map[string]mirrorRecordAfter{}
 	stored, err := scanMirrorRecordsAfter(tx, statements.upsert, out.after, args...)
@@ -531,10 +536,9 @@ func storeMirrorCardsTx(tx *sql.Tx, statements mirrorCardStatements, rootID int6
 	if err := move(stored); err != nil {
 		return mirrorCardsStored{}, err
 	}
-	if out.threads, err = queryIDs(tx, mirrorLinkCopySQL, rootID, encoded, readAt); err != nil {
-		return mirrorCardsStored{}, fmt.Errorf("copy the cards to their links: %w", err)
+	if out.threads, err = copyMirrorCardsToLinksTx(tx, rootID, stored, advancing); err != nil {
+		return mirrorCardsStored{}, err
 	}
-	slices.Sort(out.threads)
 	for refs := range slices.Chunk(mirrorCardRefsOf(cards), mirrorSprintChunk) {
 		if args[1], err = encodeMirrorJSON(refs); err != nil {
 			return mirrorCardsStored{}, err
@@ -548,6 +552,49 @@ func storeMirrorCardsTx(tx *sql.Tx, statements mirrorCardStatements, rootID int6
 	slices.Sort(out.marked)
 	out.marked = slices.Compact(out.marked)
 	return out, nil
+}
+
+// copyMirrorCardsToLinksTx is storeMirrorCardsTx's link step: of the
+// admitted issues, stored and advancing (both sorted), it clears the
+// absences their read supersedes, then copies the cards of the stored and
+// cleared ones to their links, and returns the links' threads, sorted.
+func copyMirrorCardsToLinksTx(tx *sql.Tx, rootID int64, stored, advancing []string) ([]string, error) {
+	admitted := unionSorted(stored, advancing)
+	if len(admitted) == 0 {
+		return nil, nil
+	}
+	list, err := encodeMirrorIDs(admitted)
+	if err != nil {
+		return nil, err
+	}
+	cleared, err := queryIDs(tx, mirrorAbsencesClearSQL, rootID, list)
+	if err != nil {
+		return nil, fmt.Errorf("clear the absences the cards' read supersedes: %w", err)
+	}
+	slices.Sort(cleared)
+	moved := unionSorted(stored, cleared)
+	if len(moved) == 0 {
+		return nil, nil
+	}
+	if list, err = encodeMirrorIDs(moved); err != nil {
+		return nil, err
+	}
+	threads, err := queryIDs(tx, mirrorLinkCopySQL, rootID, list)
+	if err != nil {
+		return nil, fmt.Errorf("copy the cards to their links: %w", err)
+	}
+	slices.Sort(threads)
+	return slices.Compact(threads), nil
+}
+
+// unionSorted is the sorted union of a and b, each sorted.
+func unionSorted(a, b []string) []string {
+	if len(a)+len(b) == 0 {
+		return nil
+	}
+	out := slices.Concat(a, b)
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // mirrorCardReadMove is the card writers' move of storeMirrorCardsTx:
@@ -641,9 +688,11 @@ func prepareMirrorCards(cards []MirrorCard, catalog MirrorCatalog) ([]mirrorCard
 // upsertMirrorCardsTx is UpsertMirrorCards' write, in tx: the catalog,
 // then each card of an issue the mirror keeps by the card rule.
 func upsertMirrorCardsTx(tx *sql.Tx, rootID int64, rows []mirrorCardRow, encoded string, catalog MirrorCatalog, readAt int64) (changes MirrorChanges, err error) {
-	if changes.Catalog, err = upsertMirrorCatalogTx(tx, rootID, catalog, readAt); err != nil {
+	catalogWrite, err := upsertMirrorCatalogTx(tx, rootID, catalog, readAt)
+	if err != nil {
 		return MirrorChanges{}, err
 	}
+	changes.Catalog, changes.Threads = catalogWrite.Changed, catalogWrite.Threads
 	if len(rows) == 0 {
 		return changes, nil
 	}
@@ -671,10 +720,11 @@ func upsertMirrorCardsTx(tx *sql.Tx, rootID int64, rows []mirrorCardRow, encoded
 	slices.Sort(changes.Superseded)
 	slices.Sort(advancing)
 	slices.Sort(moved)
-	stored, err := storeMirrorCardsTx(tx, mirrorLinkedCards, rootID, rows, encoded, readAt, moved, mirrorCardReadMove(tx, rootID, readAt, advancing))
+	stored, err := storeMirrorCardsTx(tx, mirrorLinkedCards, rootID, rows, encoded, readAt, moved, advancing,
+		mirrorCardReadMove(tx, rootID, readAt, advancing))
 	if err != nil {
 		return MirrorChanges{}, err
 	}
-	changes.Cards, changes.Threads = stored.changed, stored.threads
+	changes.Cards, changes.Threads = stored.changed, unionSorted(changes.Threads, stored.threads)
 	return changes, nil
 }

@@ -120,7 +120,7 @@ func TestDetachMirrorThenCleanupDrainsInBatches(t *testing.T) {
 // board.
 func TestMirrorDrainCoversEveryTable(t *testing.T) {
 	t.Parallel()
-	db := migrateThrough(t, trackerMirrorMigrationVersion)
+	db := migrateThrough(t, threadTicketCopyMigrationVersion)
 	tables, err := queryIDs(db, `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'tracker\_cache\_%' ESCAPE '\'
 		AND name <> 'tracker_cache_roots' ORDER BY name`)
 	if err != nil {
@@ -225,8 +225,8 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			_, _, err := s.RecordMirrorSyncAttempt(root, "11", currentAttempt(s, root, "11", MirrorSyncAttempt{ReadAt: mirrorReadOf(root, 8), Failure: MirrorAttemptFailure{At: mirrorReadOf(root, 9), Kind: MirrorFailureTransient, Message: "timed out"}}))
 			return err
 		},
-		"MarkMirrorLinksMissing": func(root int64) error {
-			_, err := s.MarkMirrorLinksMissing(root, mirrorReadOf(root, 9), []string{"10001"})
+		"MarkMirrorIssuesMissing": func(root int64) error {
+			_, err := s.MarkMirrorIssuesMissing(root, mirrorReadOf(root, 9), []string{"10001"})
 			return err
 		},
 		"KeepMirrorTicket": func(root int64) error {
@@ -440,7 +440,7 @@ func TestRestoreEmptiesTheMirror(t *testing.T) {
 		t.Fatalf("connection after restore = %+v, %v", got, err)
 	}
 	assertRows(t, st.db, `SELECT board_id FROM project_tracker_boards`, "10")
-	assertRows(t, st.db, `SELECT issue_id FROM thread_tickets`, "10001")
+	assertRows(t, st.db, `SELECT issue_id FROM thread_tickets ORDER BY issue_id`, "10001,10009")
 	if _, err := st.WriteMirrorRowPage(root, currentPage(st, root, webPage("10")), nil); !errors.Is(err, ErrTrackerCacheGone) {
 		t.Fatalf("write to the pre-restore root: %v", err)
 	}

@@ -24,9 +24,11 @@ import (
 // statuses (a Jira round's two writes each stamp them), and stamps each entry with its read (read_at), one row each
 // whether or not it changed: the stamp orders the entry's later reads, so
 // a read that began before this one cannot replace what this one found.
-// Every ticket write also copies its cards to the links of their tickets
-// (mirrorLinkCopySQL), one statement that stops at its guard when no
-// thread has a link. An idle round writes each ticket's read times and the catalog's, and no
+// Every ticket write also clears the absences its read supersedes
+// (mirrorAbsencesClearSQL), one statement that stops at its guard when the
+// root has none, and one that stored a card copies the stored cards to
+// the links of their tickets (mirrorLinkCopySQL), one statement that stops
+// at its guard when no thread has a link. An idle round writes each ticket's read times and the catalog's, and no
 // body bytes: a body read again is compared by its digest. Every input is
 // built before the round is counted.
 func TestChangedRoundStatements(t *testing.T) {
@@ -43,8 +45,8 @@ func TestChangedRoundStatements(t *testing.T) {
 	}
 	stamped := map[string]int{"tracker_cache_users": 4, "tracker_cache_statuses": 3}
 	pinned := map[string]cost{
-		"a Jira round":         {29, map[string]int{"tracker_cache_issue_bodies": 10, "tracker_cache_issues": 60, "tracker_cache_users": 8, "tracker_cache_statuses": 6}},
-		"a Linear round":       {21, map[string]int{"tracker_cache_issue_bodies": 10, "tracker_cache_issues": 60}},
+		"a Jira round":         {30, map[string]int{"tracker_cache_issue_bodies": 10, "tracker_cache_issues": 60, "tracker_cache_users": 8, "tracker_cache_statuses": 6}},
+		"a Linear round":       {22, map[string]int{"tracker_cache_issue_bodies": 10, "tracker_cache_issues": 60}},
 		"an idle Jira round":   {9, map[string]int{"tracker_cache_issues": 50}},
 		"an idle Linear round": {9, map[string]int{"tracker_cache_issues": 50}},
 	}

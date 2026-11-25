@@ -60,9 +60,14 @@ func proposedPlanItemSQL() string {
 // spawner). An assistant's current thread reads its record once, as one
 // JSON object (threadAgentColumn) that also carries the projects it serves,
 // and any other thread reads NULL there, so only an assistant's row pays
-// for them. The last column, AskCopy, probes scratch_threads by key only
-// for a scratch thread.
-var threadColumns = `id, COALESCE(project_id, ''),
+// for them. AskCopy probes scratch_threads by key only for a scratch
+// thread. The last column is the thread's ticket link
+// (threadTicketLinkColumn); a read of many threads takes it from
+// threadListSelect instead.
+var threadColumns = threadRowColumns + threadTicketLinkColumn
+
+// threadRowColumns are threadColumns but the last, the link.
+var threadRowColumns = `id, COALESCE(project_id, ''),
     COALESCE((SELECT path FROM projects WHERE projects.id = threads.project_id), ''),
     title, provider, model,
     workspace_path, COALESCE(worktree_path, ''), COALESCE(branch, ''),
@@ -119,7 +124,17 @@ var threadColumns = `id, COALESCE(project_id, ''),
     attention_kind, attention_reason, attention_at,
     spawn_instructions, spawn_level,
     ` + askCopySQL + `,
-    ` + threadTicketLinkColumn
+    `
+
+// threadListSelect is SELECT threadColumns FROM from (naming the thread
+// threads) for a read of every thread a list shows: the links CTE computes
+// each link once (threadTicketLinksSQL), not once per thread
+// (threadTicketLinkColumn), and each thread probes it by key. The CTE is
+// referenced once.
+func threadListSelect(from string) string {
+	return `WITH links AS MATERIALIZED (` + threadTicketLinksSQL + `) SELECT ` + threadRowColumns + `links.link FROM ` + from +
+		` LEFT JOIN links ON links.thread_id = threads.id`
+}
 
 // askCopySQL is true for the row of threads that is an ask's hidden copy
 // (Thread.AskCopy).
@@ -657,7 +672,7 @@ func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 func (s *Store) ListArchivedThreads() ([]Thread, error) {
 	hiddenClause, hiddenArgs := catalogThreadClause("threads")
 	rows, err := s.reader().Query(
-		`SELECT `+threadColumns+` FROM owned_threads AS threads
+		threadListSelect(`owned_threads AS threads`)+`
 		 WHERE archived = 1 AND `+hiddenClause+` ORDER BY updated_at DESC`, hiddenArgs...,
 	)
 	if err != nil {
@@ -683,7 +698,7 @@ func (s *Store) ListThreadsByProject(projectID string) ([]Thread, error) {
 	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
 	args := append([]any{projectID}, hiddenArgs...)
 	rows, err := s.reader().Query(
-		`SELECT `+threadColumns+` FROM owned_threads AS threads
+		threadListSelect(`owned_threads AS threads`)+`
 		 WHERE project_id = ? AND archived = 0 AND `+hiddenClause+`
 		 ORDER BY updated_at DESC`,
 		args...,
@@ -2088,7 +2103,7 @@ func normalizeRuntimeMode(mode string) string {
 // pins the production statement instead of a copy that is free to drift
 // from it. threadColumns reaches `timeline_items` through its
 // proposed-plan probe, which is the shape that tripwire exists for.
-var listThreadsQuery = `SELECT ` + threadColumns + ` FROM owned_threads AS threads
+var listThreadsQuery = threadListSelect(`owned_threads AS threads`) + `
 		 WHERE archived = 0 ORDER BY updated_at DESC`
 
 // listThreadsWithItemsQuery is the ListThreadsWithItems statement. It is a
@@ -2100,7 +2115,7 @@ var listThreadsQuery = `SELECT ` + threadColumns + ` FROM owned_threads AS threa
 // arms and scan `items` once per sidebar row (see importedItemRevExpr).
 func listThreadsWithItemsQuery() (string, []any) {
 	listed, args := sidebarListedClause()
-	return `SELECT ` + threadColumns + ` FROM owned_threads AS threads
+	return threadListSelect(`owned_threads AS threads`) + `
 		 WHERE ` + listed + `
 		 ORDER BY updated_at DESC`, args
 }

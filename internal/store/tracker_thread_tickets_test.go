@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -21,9 +22,9 @@ func webLink(threadID string) ThreadTicket {
 // reads, keeps or sweeps by links rather than of the link's writer.
 func seedThreadTicket(t *testing.T, s *Store, link ThreadTicket) {
 	t.Helper()
-	mustExec(t, s.db, `INSERT INTO thread_tickets(`+threadTicketColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	mustExec(t, s.db, `INSERT INTO thread_tickets(`+threadTicketColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		link.ThreadID, link.Ticket.Kind, link.Ticket.Site, link.Ticket.IssueID, link.IssueKey, link.IssueTitle,
-		link.StatusID, link.StatusName, link.StatusGroup, link.Origin, link.LinkedAt, link.SeenRoot, link.Missing)
+		link.StatusID, link.StatusName, link.StatusGroup, link.Origin, link.LinkedAt)
 }
 
 func mustGetThreadTicket(t *testing.T, s *Store, threadID string) ThreadTicket {
@@ -45,20 +46,20 @@ func titledCard(id string, updated int64, title string) MirrorCard {
 // readLink links threadID to card as a read of root just returned it,
 // with board 10's catalog.
 func readLink(s *Store, root int64, threadID string, card MirrorCard) ThreadTicketWrite {
-	return ThreadTicketWrite{ThreadID: threadID, Origin: TicketOriginManual, LinkedAt: 10, Root: root, Card: card,
+	return ThreadTicketWrite{ThreadID: threadID, Origin: TicketOriginManual, LinkedAt: 10, Root: root, IssueID: card.IssueID, Card: card,
 		Read: nextMirrorRead(s, root), Catalog: webStructure().Catalog, Sweep: currentSweep(s, root)}
 }
 
-// heldLink links threadID to the card root's mirror holds.
-func heldLink(root int64, threadID string, card MirrorCard) ThreadTicketWrite {
-	return ThreadTicketWrite{ThreadID: threadID, Origin: TicketOriginManual, LinkedAt: 10, Root: root, Card: card}
+// heldLink links threadID to the card of issue root's mirror holds.
+func heldLink(root int64, threadID, issue string) ThreadTicketWrite {
+	return ThreadTicketWrite{ThreadID: threadID, Origin: TicketOriginManual, LinkedAt: 10, Root: root, IssueID: issue}
 }
 
 func mustSetThreadTicket(t *testing.T, s *Store, w ThreadTicketWrite) ThreadTicketSet {
 	t.Helper()
 	set, err := s.SetThreadTicket(w)
 	if err != nil {
-		t.Fatalf("link %s to %s: %v", w.ThreadID, w.Card.IssueID, err)
+		t.Fatalf("link %s to %s: %v", w.ThreadID, w.IssueID, err)
 	}
 	return set
 }
@@ -78,7 +79,7 @@ func TestSetThreadTicketLinksReplacesAndClears(t *testing.T) {
 		t.Fatalf("first link = %+v; want a change and the other link of the ticket named", set)
 	}
 	want := ThreadTicket{ThreadID: "a", Ticket: webTicket, IssueKey: "WEB-10001", IssueTitle: "Fix the login page",
-		StatusID: "1", StatusName: "To Do", StatusGroup: MirrorGroupToDo, Origin: TicketOriginManual, LinkedAt: 10, SeenRoot: root}
+		StatusID: "1", StatusName: "To Do", StatusGroup: MirrorGroupToDo, Origin: TicketOriginManual, LinkedAt: 10}
 	if got := mustGetThreadTicket(t, s, "a"); got != want {
 		t.Fatalf("link = %+v\nwant %+v", got, want)
 	}
@@ -96,7 +97,7 @@ func TestSetThreadTicketLinksReplacesAndClears(t *testing.T) {
 		t.Fatalf("thread row link = %+v\nwant %+v", row.TicketLink, wantRow)
 	}
 
-	if set := mustSetThreadTicket(t, s, heldLink(root, "a", titledCard("10001", 5, "Fix the login page"))); set.Changed || set.Replaced != nil {
+	if set := mustSetThreadTicket(t, s, heldLink(root, "a", "10001")); set.Changed || set.Replaced != nil {
 		t.Fatalf("the same card from the mirror = %+v; want no change", set)
 	}
 
@@ -154,8 +155,21 @@ func TestSetThreadTicketRefusalsChangeNothing(t *testing.T) {
 			return w
 		}, is(ErrInvalidThreadTicket)},
 		{"no root", func(t *testing.T, s *Store, root int64) ThreadTicketWrite {
-			w := heldLink(root, "a", titledCard("10009", 5, "New"))
+			w := heldLink(root, "a", "10001")
 			w.Root = 0
+			return w
+		}, is(ErrInvalidThreadTicket)},
+		{"no issue", func(t *testing.T, s *Store, root int64) ThreadTicketWrite {
+			return heldLink(root, "a", "")
+		}, is(ErrInvalidThreadTicket)},
+		{"read card of another issue", func(t *testing.T, s *Store, root int64) ThreadTicketWrite {
+			w := readLink(s, root, "a", titledCard("10009", 5, "New"))
+			w.IssueID = "10008"
+			return w
+		}, is(ErrInvalidThreadTicket)},
+		{"held link with a card", func(t *testing.T, s *Store, root int64) ThreadTicketWrite {
+			w := heldLink(root, "a", "10001")
+			w.Card = titledCard("10001", 5, "Fix the login page")
 			return w
 		}, is(ErrInvalidThreadTicket)},
 		{"card with no key", func(t *testing.T, s *Store, root int64) ThreadTicketWrite {
@@ -211,9 +225,30 @@ func TestSetThreadTicketRefusalsChangeNothing(t *testing.T) {
 			}
 			return w
 		}, is(ErrTrackerCacheSwept)},
-		{"mirror card moved", func(t *testing.T, s *Store, root int64) ThreadTicketWrite {
-			return heldLink(root, "a", titledCard("10001", 4, "Fix the login page"))
-		}, is(ErrThreadTicketCardMoved)},
+		{"issue the mirror does not hold", func(t *testing.T, s *Store, root int64) ThreadTicketWrite {
+			return heldLink(root, "a", "10009")
+		}, is(ErrThreadTicketNotHeld)},
+		{"issue the mirror's latest read missed", func(t *testing.T, s *Store, root int64) ThreadTicketWrite {
+			mustCreateThread(t, s, "b")
+			if _, err := s.MarkMirrorIssuesMissing(root, nextMirrorRead(s, root), []string{"10001"}); err != nil {
+				t.Fatal(err)
+			}
+			return heldLink(root, "b", "10001")
+		}, is(ErrThreadTicketNotHeld)},
+		{"read card a later absence outranks", func(t *testing.T, s *Store, root int64) ThreadTicketWrite {
+			w := readLink(s, root, "a", titledCard("10001", 5, "Fix the login page"))
+			if _, err := s.MarkMirrorIssuesMissing(root, mirrorReadOf(root, nextMirrorRead(s, root).rootOrder+1), []string{"10001"}); err != nil {
+				t.Fatal(err)
+			}
+			return w
+		}, is(ErrThreadTicketNotHeld)},
+		{"connection turned off", func(t *testing.T, s *Store, root int64) ThreadTicketWrite {
+			w := heldLink(root, "a", "10001")
+			if _, _, err := s.SetTrackerConnectionEnabled(mustConnectionOf(t, s, root), false); err != nil {
+				t.Fatal(err)
+			}
+			return w
+		}, is(ErrThreadTicketNotReader)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
@@ -404,8 +439,8 @@ func TestForkCopiesTheLinkWhateverItsCut(t *testing.T) {
 }
 
 // The tracker tables are application records: a restore brings back the
-// snapshot's rows, and a link whose copy named a mirror root reads as not
-// checked, since the restore emptied the mirror and no root ID returns.
+// snapshot's rows, and a link reads its copy as not checked, since the
+// restore emptied the mirror.
 func TestRestoreKeepsTheTrackerTables(t *testing.T) {
 	st := snapshotTestStore(t)
 	seedSnapshotFixture(t, st, "t1", "linked")
@@ -449,10 +484,8 @@ func TestRestoreKeepsTheTrackerTables(t *testing.T) {
 	if got, err := st.ListProjectTrackerBoards("p1"); err != nil || !slices.Equal(got, boards) {
 		t.Fatalf("boards after restore = %+v, %v", got, err)
 	}
-	restored := link
-	restored.SeenRoot = 0
-	if got := mustGetThreadTicket(t, st, "t1"); got != restored {
-		t.Fatalf("link after restore = %+v; want %+v", got, restored)
+	if got := mustGetThreadTicket(t, st, "t1"); got != link {
+		t.Fatalf("link after restore = %+v; want %+v", got, link)
 	}
 	newRoot, _, err := st.GetOrCreateMirrorRoot(jira.ID)
 	if err != nil || newRoot == root {
@@ -464,11 +497,11 @@ func TestRestoreKeepsTheTrackerTables(t *testing.T) {
 }
 
 // A root ID is this database's: restored into another database, whose
-// own roots count from its own sequence, a link forgets the root its copy
-// named, so a root the destination makes for another site is never read
-// as the one the link saw. The ticket and its last seen key, title and
-// status stay.
-func TestRestoreFromAnotherDatabaseForgetsTheLinksRoots(t *testing.T) {
+// own roots count from its own sequence, a link reads its site's reader's
+// root alone, so a root the destination makes for another site with the
+// ID the link's mirror had is never read for it. The ticket and its last
+// seen key, title and status stay.
+func TestRestoreFromAnotherDatabaseReadsNoOtherSitesRoot(t *testing.T) {
 	src := snapshotTestStore(t)
 	seedSnapshotFixture(t, src, "t1", "linked")
 	siteA := mustCreateTrackerConnection(t, src, jiraConnection(mirrorSite, "user1@example.com", 1))
@@ -495,39 +528,61 @@ func TestRestoreFromAnotherDatabaseForgetsTheLinksRoots(t *testing.T) {
 	if err != nil || row.TicketLink == nil || row.TicketLink.State != TicketLinkNotChecked || row.TicketLink.ConnectionID != siteA.ID {
 		t.Fatalf("restored link row = %+v, %v; want not checked through %s", row.TicketLink, err, siteA.ID)
 	}
-	want := seen
-	want.SeenRoot, want.Missing = 0, false
-	if got := mustGetThreadTicket(t, dst, "t1"); got != want {
-		t.Fatalf("restored link = %+v; want %+v", got, want)
+	if got := mustGetThreadTicket(t, dst, "t1"); got != seen {
+		t.Fatalf("restored link = %+v; want %+v", got, seen)
 	}
 }
 
 // The link column of a thread row reads by key: its guard that some
 // thread has a link is a scalar subquery the row loop does not depend on,
-// so it runs once per statement, and the link's row, root and connections
-// are each one key lookup per thread.
+// so it runs once per statement, and the link's row, its reader's root,
+// card, absence and status, and the site's connections are each one key
+// lookup per thread. A list computes every link once in its links CTE,
+// with the same lookups per link, and probes it once per thread.
 func TestThreadLinkColumnReadsByKey(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	var lines []string
-	for line := range strings.SplitSeq(strings.TrimSpace(explainMirror(t, s, `SELECT `+threadTicketLinkColumn+` FROM threads`)), "\n") {
-		lines = append(lines, strings.TrimSpace(line))
+	// The subqueries' numbers are the planner's and differ between the two
+	// statements; their order and lookups are the contract.
+	numbered := regexp.MustCompile(`SUBQUERY \d+`)
+	plan := func(query string) []string {
+		var lines []string
+		for line := range strings.SplitSeq(strings.TrimSpace(explainMirror(t, s, query)), "\n") {
+			lines = append(lines, numbered.ReplaceAllString(strings.TrimSpace(line), "SUBQUERY"))
+		}
+		return lines
 	}
-	want := []string{
-		"SCAN threads USING COVERING INDEX sqlite_autoindex_threads_1",
-		"SCALAR SUBQUERY 1",
-		"SCAN thread_tickets USING COVERING INDEX sqlite_autoindex_thread_tickets_1",
-		"CORRELATED SCALAR SUBQUERY 5",
-		"SEARCH tt USING INDEX sqlite_autoindex_thread_tickets_1 (thread_id=?)",
-		"SEARCH seen USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
-		"CORRELATED SCALAR SUBQUERY 4",
+	link := []string{
+		"SEARCH rr USING COVERING INDEX sqlite_autoindex_tracker_cache_roots_1 (connection_id=?) LEFT-JOIN",
+		"CORRELATED SCALAR SUBQUERY",
 		"SEARCH reader USING INDEX idx_tracker_connections_site (kind=? AND site=?)",
-		"CORRELATED SCALAR SUBQUERY 2",
+		"SEARCH i USING INDEX sqlite_autoindex_tracker_cache_issues_1 (root_id=? AND issue_id=?) LEFT-JOIN",
+		"SEARCH m USING PRIMARY KEY (root_id=? AND issue_id=?) LEFT-JOIN",
+		"SEARCH st USING PRIMARY KEY (root_id=? AND status_id=?) LEFT-JOIN",
+		"CORRELATED SCALAR SUBQUERY",
 		"SEARCH c USING INDEX idx_tracker_connections_site (kind=? AND site=?)",
-		"CORRELATED SCALAR SUBQUERY 3",
+		"CORRELATED SCALAR SUBQUERY",
 		"SEARCH reader USING INDEX idx_tracker_connections_site (kind=? AND site=?)",
 	}
-	if !slices.Equal(lines, want) {
-		t.Fatalf("link column plan:\n%s\nwant\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
+	row := slices.Concat([]string{
+		"SCAN threads USING COVERING INDEX sqlite_autoindex_threads_1",
+		"SCALAR SUBQUERY",
+		"SCAN thread_tickets USING COVERING INDEX sqlite_autoindex_thread_tickets_1",
+		"CORRELATED SCALAR SUBQUERY",
+		"SEARCH tt USING INDEX sqlite_autoindex_thread_tickets_1 (thread_id=?)",
+	}, link)
+	if got := plan(`SELECT ` + threadTicketLinkColumn + ` FROM threads`); !slices.Equal(got, row) {
+		t.Fatalf("link column plan:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(row, "\n"))
+	}
+	list := slices.Concat([]string{"MATERIALIZE links", "SCAN tt"}, link, []string{
+		"SCAN threads USING COVERING INDEX sqlite_autoindex_threads_1",
+		"SEARCH links USING AUTOMATIC COVERING INDEX (thread_id=?) LEFT-JOIN",
+	})
+	got := plan(`WITH links AS MATERIALIZED (` + threadTicketLinksSQL + `) SELECT links.link FROM threads LEFT JOIN links ON links.thread_id = threads.id`)
+	if !slices.Equal(got, list) {
+		t.Fatalf("list links plan:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(list, "\n"))
+	}
+	if !strings.Contains(listThreadsQuery, `LEFT JOIN links ON links.thread_id = threads.id`) || strings.Count(listThreadsQuery, "links") != 4 {
+		t.Fatalf("the list statement names its links CTE other than once:\n%s", listThreadsQuery)
 	}
 }

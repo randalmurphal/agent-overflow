@@ -160,7 +160,8 @@ func (r *run) historyFinal(d store.MirrorHistoryDue, completeTo time.Time, began
 // keeps changes nothing and is no failure. A store call that failed part
 // way changed what it reports, which is returned with its error.
 func (r *run) storeHistories(hs []store.MirrorHistory, catalog store.MirrorCatalog, read store.MirrorRead) ([]tracker.IssueID, bool, error) {
-	results, catalogChanged, err := r.s.store.ReplaceMirrorHistories(r.root, r.state.Sweep, hs, catalog, read)
+	results, catalogWrite, err := r.s.store.ReplaceMirrorHistories(r.root, r.state.Sweep, hs, catalog, read)
+	catalogChanged := catalogWrite.Changed
 	var changed []tracker.IssueID
 	for _, res := range results {
 		if res.Changed {
@@ -168,7 +169,7 @@ func (r *run) storeHistories(hs []store.MirrorHistory, catalog store.MirrorCatal
 		}
 	}
 	slices.Sort(changed)
-	r.told("", written{Changes: Changes{History: changed, Catalog: catalogChanged}})
+	r.told("", written{Changes: Changes{History: changed, Catalog: catalogChanged}, links: catalogWrite.Threads})
 	if err != nil {
 		return changed, catalogChanged, fmt.Errorf("trackerapp: store the history of %d issues: %w", len(hs), err)
 	}

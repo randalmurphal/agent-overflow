@@ -34,8 +34,8 @@ func receiveThread(t *testing.T, s *Store, kind string, target Thread, epoch int
 }
 
 // forgedManifestThread is thread id as a manifest carries it, its link
-// carrying the sender's state, connection and root and a missing flag,
-// decoded as the receiver decodes a manifest.
+// carrying the sender's state and connection and members an earlier
+// version carried, decoded as the receiver decodes a manifest.
 func forgedManifestThread(t *testing.T, id string) Thread {
 	t.Helper()
 	carried := []byte(`{"id":"` + id + `","provider":"claude","ticketLink":{"kind":"jira","site":"` + mirrorSite + `","issueId":"10001",
@@ -124,8 +124,8 @@ func TestReturningThreadTakesTheCarriedLink(t *testing.T) {
 				}
 				return
 			}
-			if !ok || got.Ticket != webTicket || got.SeenRoot != 0 || got.Missing {
-				t.Fatalf("link after the return = %+v, %v; want the carried ticket with no root", got, ok)
+			if !ok || got.Ticket != webTicket || got.IssueKey != target.TicketLink.Key || got.IssueTitle != target.TicketLink.Title {
+				t.Fatalf("link after the return = %+v, %v; want the carried ticket and what it showed", got, ok)
 			}
 		})
 	}

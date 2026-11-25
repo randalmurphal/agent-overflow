@@ -210,40 +210,80 @@ func TestEndedLinksTellTheBoardsOfTheirChildren(t *testing.T) {
 	}
 }
 
-// A link another computer's thread carried, which names no mirror here,
-// takes the card the mirror holds and tells its thread; one whose ticket
-// the mirror does not hold stays not checked.
-func TestAdoptLinksTakesTheMirrorsCard(t *testing.T) {
+// A link another computer's thread carried shows the card the mirror here
+// holds, with nothing written for it, and tells no thread; one whose
+// ticket the mirror does not hold shows what the sender's row showed, not
+// checked.
+func TestACarriedLinkShowsTheMirrorsCard(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
 	m.linkThread("held", "10005")
-	m.linkThread("unheld", "10006")
+	_, before := m.events.linkedThreads()
 	for _, c := range []struct{ thread, issue string }{{"carried", "10005"}, {"carried-unheld", "10008"}} {
 		receiveLinkedThread(t, m.st, c.thread, m.ticket(c.issue))
 	}
-	if link := m.rowLink("carried"); link == nil || link.State != store.TicketLinkNotChecked {
-		t.Fatalf("a carried link = %+v; want not checked", link)
+	if link := m.rowLink("carried"); link == nil || link.State != store.TicketLinkCurrent || link.Title != "Issue 10005" ||
+		link.Key != "WEB-5" || link.Origin != store.TicketOriginStartWork || link.ConnectionID != m.conn.ID {
+		t.Fatalf("a carried link of a held ticket = %+v; want the mirror's card, current", link)
 	}
-	_, before := m.events.linkedThreads()
-	if err := m.svc.AdoptLinks([]string{"carried", "carried-unheld", "held"}); err != nil {
-		t.Fatal(err)
+	if got, ok, err := m.st.GetThreadTicket("carried"); err != nil || !ok || got.IssueKey != "WEB-x" || got.IssueTitle != "As the sender saw it" {
+		t.Fatalf("the carried link's copy = %+v, %v, %v; want what the sender's row showed", got, ok, err)
 	}
-	if link := m.rowLink("carried"); link.State != store.TicketLinkCurrent || link.Title != "Issue 10005" || link.Origin != store.TicketOriginStartWork {
-		t.Fatalf("the adopted link = %+v", link)
-	}
-	if link := m.rowLink("carried-unheld"); link.State != store.TicketLinkNotChecked {
-		t.Fatalf("a link the mirror does not hold = %+v; want not checked", link)
+	if link := m.rowLink("carried-unheld"); link == nil || link.State != store.TicketLinkNotChecked || link.Title != "As the sender saw it" {
+		t.Fatalf("a carried link the mirror does not hold = %+v; want the sender's copy, not checked", link)
 	}
 	if _, calls := m.events.linkedThreads(); calls != before {
-		t.Fatalf("adopting told LinksChanged %d times; want none, the caller announces the received rows", calls-before)
+		t.Fatalf("receiving told LinksChanged %d times; want none, the caller announces the received rows", calls-before)
+	}
+}
+
+// A link to a ticket whose latest read was missing it reads the ticket
+// from the tracker once more: the card it returns makes the link current,
+// and a ticket still missing is refused, the link as it was.
+func TestLinkThreadReadsAKnownMissingTicketAgain(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.linkThread("thread-1", "10006")
+	m.thread("a")
+	missing := true
+	asked := 0
+	m.p.set(func(p *scripted) {
+		p.cards = func(q []tracker.IssueID) (tracker.Cards, error) {
+			asked++
+			if missing {
+				return tracker.Cards{Missing: q}, nil
+			}
+			return tracker.Cards{Cards: []tracker.Card{card(string(q[0]), 1_799_000_000_000)}}, nil
+		}
+	})
+	m.pass(time.Second)
+	must[Outcome](t)(m.svc.tickCards(t.Context(), m.conn.ID, Background))
+	if link := m.rowLink("thread-1"); link == nil || link.State != store.TicketLinkNotFound {
+		t.Fatalf("the missing ticket's row = %+v; want not found", link)
+	}
+	asked = 0
+	var refusal *LinkRefusal
+	if _, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10006"), store.TicketOriginManual); !errors.As(err, &refusal) || refusal.Code != LinkNotFound || asked != 1 {
+		t.Fatalf("a link to a ticket still missing = %v after %d reads; want refused after one", err, asked)
+	}
+	if link := m.rowLink("a"); link != nil {
+		t.Fatalf("the refused link = %+v; want none", link)
+	}
+	missing, asked = false, 0
+	if changed, err := m.svc.LinkThread(t.Context(), "a", m.ticket("10006"), store.TicketOriginManual); err != nil || !changed || asked != 1 {
+		t.Fatalf("a link to a ticket found again = %v, %v after %d reads; want linked after one", changed, err, asked)
+	}
+	for _, id := range []string{"a", "thread-1"} {
+		if link := m.rowLink(id); link == nil || link.State != store.TicketLinkCurrent {
+			t.Fatalf("%s after the ticket was found again = %+v; want current", id, link)
+		}
 	}
 }
 
 // A link read from the tracker while a later read stored the ticket's
 // renamed card (the issue kept by another link), at the same update time,
-// takes the card the mirror kept:
-// the store refuses the read card, which the later one supersedes, and
-// the link is made from the mirror's card, with no second request.
+// shows the card the mirror kept: the later card supersedes the read one,
+// with no second request.
 func TestLinkThreadTakesTheMirrorsLaterCard(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
@@ -279,7 +319,7 @@ func TestLinkThreadTakesTheMirrorsLaterCard(t *testing.T) {
 
 // receiveLinkedThread commits an incoming copy of thread threadID whose
 // manifest carries a link to ticket, origin start_work, as another
-// computer's thread row shows it: its copy names no mirror of this one.
+// computer's thread row shows it.
 func receiveLinkedThread(t *testing.T, st *store.Store, threadID string, ticket store.TicketRef) {
 	t.Helper()
 	secret := bytes.Repeat([]byte{0xa5}, 32)

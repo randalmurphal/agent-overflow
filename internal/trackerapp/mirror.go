@@ -54,10 +54,10 @@ type MirrorStore interface {
 	UpsertMirrorCards(rootID, sweep int64, cards []store.MirrorCard, catalog store.MirrorCatalog, read store.MirrorRead) (store.MirrorChanges, error)
 	ReconcileMirrorBoard(rootID int64, boardID string, lifetime int64, listed []string, complete bool, read store.MirrorRead) (store.MirrorReconcile, error)
 	ReplaceMirrorStructure(rootID int64, st store.MirrorStructure) (store.MirrorStructureWrite, error)
-	ReplaceMirrorHistories(rootID, sweep int64, histories []store.MirrorHistory, catalog store.MirrorCatalog, read store.MirrorRead) ([]store.MirrorHistoryResult, bool, error)
+	ReplaceMirrorHistories(rootID, sweep int64, histories []store.MirrorHistory, catalog store.MirrorCatalog, read store.MirrorRead) ([]store.MirrorHistoryResult, store.MirrorCatalogWrite, error)
 	ListMirrorHistoryDue(rootID int64, now int64, first ...string) ([]store.MirrorHistoryDue, bool, error)
 	StoreMirrorTickets(rootID, sweep int64, tickets []store.MirrorTicket, catalog store.MirrorCatalog, opened, read store.MirrorRead) (store.MirrorTicketsWrite, error)
-	MarkMirrorLinksMissing(rootID int64, read store.MirrorRead, issueIDs []string) ([]string, error)
+	MarkMirrorIssuesMissing(rootID int64, read store.MirrorRead, issueIDs []string) ([]string, error)
 
 	ListMirrorBodies(rootID int64, issueIDs []string) ([]store.MirrorBody, error)
 	GetMirrorBoard(rootID int64, boardID string) (store.MirrorStructure, bool, error)
@@ -232,10 +232,11 @@ type Changes struct {
 }
 
 // written is what one store write committed, as run.told takes it: the
-// changes the views of the mirror show, and links, the threads whose
-// ticket link the write moved (its key, title or status, or whether it
-// is current: store MirrorChanges.Threads, MarkMirrorLinksMissing), which
-// no view shows and nothing gathers past the write.
+// changes the views of the mirror show, and links, the threads whose row's
+// ticket link the write moved (a card it stored, an absence it recorded or
+// cleared, a status it renamed: store MirrorChanges.Threads,
+// MirrorCatalogWrite.Threads, MarkMirrorIssuesMissing), which no view
+// shows and nothing gathers past the write.
 type written struct {
 	Changes
 	links []string

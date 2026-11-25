@@ -36,7 +36,6 @@ type Store interface {
 	TicketConnection(ticket store.TicketRef) (string, string, error)
 	SetThreadTicket(w store.ThreadTicketWrite) (store.ThreadTicketSet, error)
 	ClearThreadTicket(threadID string) (store.TicketRef, bool, error)
-	ListThreadTickets(threadIDs []string) (map[string]store.ThreadTicket, error)
 	ListThreadsLinkedToSite(kind, site string) ([]string, error)
 	ListUnkeptLinkedIssues(tickets []store.TicketRef) ([]store.MirrorIssueRef, error)
 }

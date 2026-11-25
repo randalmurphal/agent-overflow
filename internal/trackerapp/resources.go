@@ -150,15 +150,15 @@ func (r *run) cardsOf(batch []tracker.IssueID) (Changes, error) {
 
 // markMissing records that the read begun at began did not return the
 // issues missing: the links to them show not found until a read returns
-// them (store MarkMirrorLinksMissing). The links it moved are told as
+// them (store MarkMirrorIssuesMissing). The links it moved are told as
 // any write's.
 func (r *run) markMissing(began store.MirrorRead, missing []tracker.IssueID) error {
 	if len(missing) == 0 {
 		return nil
 	}
-	threads, err := r.s.store.MarkMirrorLinksMissing(r.root, began, idStrings(missing))
+	threads, err := r.s.store.MarkMirrorIssuesMissing(r.root, began, idStrings(missing))
 	if err != nil {
-		return fmt.Errorf("trackerapp: mark the links to %d issues the tracker did not return: %w", len(missing), err)
+		return fmt.Errorf("trackerapp: record the %d issues the tracker did not return: %w", len(missing), err)
 	}
 	r.told("", written{links: threads})
 	return nil
@@ -213,7 +213,7 @@ func (r *run) structure(board tracker.BoardID) (Changes, error) {
 	// later one is the store's whether or not the call failed.
 	stored, err := r.s.store.ReplaceMirrorStructure(r.root, m)
 	ch := Changes{Structure: stored.Changed, Catalog: stored.Catalog}
-	r.told(board, written{Changes: ch})
+	r.told(board, written{Changes: ch, links: stored.Threads})
 	if board == r.scope.Board && stored.EstimateResetAt > r.state.EstimateResetAt {
 		r.state.EstimateResetAt, r.state.Cursor = stored.EstimateResetAt, nil
 	}

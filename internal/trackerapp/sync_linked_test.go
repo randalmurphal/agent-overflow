@@ -51,12 +51,7 @@ func linkOldCard(tb testing.TB, st *store.Store, id, threadID string, issue trac
 		tb.Fatal(err)
 	}
 	if len(held) == 1 {
-		c, ok := cardOf(held[0])
-		if !ok {
-			tb.Fatalf("the mirror's card of %s has no blob this version reads", issue)
-		}
-		w := store.ThreadTicketWrite{ThreadID: threadID, Origin: store.TicketOriginManual, LinkedAt: 1, Root: root, Card: held[0]}
-		w.Card.Title = c.Title
+		w := store.ThreadTicketWrite{ThreadID: threadID, Origin: store.TicketOriginManual, LinkedAt: 1, Root: root, IssueID: string(issue)}
 		if _, err := st.SetThreadTicket(w); err != nil {
 			tb.Fatal(err)
 		}
@@ -75,7 +70,7 @@ func linkOldCard(tb testing.TB, st *store.Store, id, threadID string, issue trac
 		tb.Fatal(err)
 	}
 	if _, err := st.SetThreadTicket(store.ThreadTicketWrite{ThreadID: threadID, Origin: store.TicketOriginManual, LinkedAt: 1,
-		Root: root, Card: old, Read: read, Sweep: sync.Sweep}); err != nil {
+		Root: root, IssueID: string(issue), Card: old, Read: read, Sweep: sync.Sweep}); err != nil {
 		tb.Fatal(err)
 	}
 }

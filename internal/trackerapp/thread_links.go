@@ -12,11 +12,12 @@ import (
 
 // A thread's ticket link (store thread_tickets) names a ticket by tracker
 // kind, site and issue, so a thread moved to another computer keeps it.
-// The link holds the ticket's key, title and status as a mirror of this
-// computer last stored its card, and keeps that card in the mirror while
-// it exists. The store keeps the copy equal to the card in every card
-// write (store MirrorChanges.Threads); this file links, unlinks and adopts
-// links, and tells what a link's end leaves no longer kept.
+// The thread row shows the card the mirror of the site's link reader
+// holds, which the link keeps there, and the link's last-seen copy while
+// that mirror holds none (store ThreadTicketLink); the store writes the
+// copy and names the rows a card write moves (store MirrorChanges.Threads).
+// This file links and unlinks, and tells what a link's end leaves no
+// longer kept.
 
 // LinkRefusal is a link this computer did not make, for a reason the
 // person fixes outside the link: Message says what, in this package's
@@ -62,14 +63,16 @@ func connectionRefusal(ticket store.TicketRef, state string, err error) error {
 
 // LinkThread links thread threadID to ticket, replacing the link it had,
 // with origin (store.TicketOrigin*). It reads through the connection of
-// this computer that store TicketConnection names, and takes the ticket's
-// card from that connection's mirror when the mirror holds it, with no
-// request; otherwise it reads the card from the tracker, a read a person
-// waits on, and stores it with the link in one write, which the link
-// keeps from then on. A link the store refuses for its thread (moving,
-// being deleted, a holder, missing) or its input fails with the store's
-// error, and one this computer cannot make fails with a *LinkRefusal; the
-// link stays as it was either way. It reports whether thread threadID's
+// this computer that store TicketConnection names, and links the card
+// that connection's mirror holds when it holds one no later read missed,
+// with no request; otherwise it reads the card from the tracker, a read a
+// person waits on, and stores it with the link in one write, which the
+// link keeps from then on. A link the store refuses for its thread
+// (moving, being deleted, a holder, missing), its input or its connection
+// (store ErrThreadTicketNotReader: another connection of the site took
+// over the links since) fails with the store's error, and one this
+// computer cannot make fails with a *LinkRefusal; the link stays as it was
+// either way. It reports whether thread threadID's
 // link changed, which its caller announces. The other threads whose link
 // the card it stored moved are told (Deps.LinksChanged), and the ticket a
 // replaced link named is told as no longer kept when nothing else keeps it
@@ -105,26 +108,18 @@ func (s *Service) LinkThread(ctx context.Context, threadID string, ticket store.
 	return set.Changed, nil
 }
 
-// linkThread writes the link of LinkThread on the run's connection: from
-// the card the mirror holds when it holds one, else from one card read.
+// linkThread writes the link of LinkThread on the run's connection: of
+// the card the mirror holds when it holds one, else of one card read.
 // asked reports that it made a tracker call, whose outcome the caller
-// settles (run.answer). A card the mirror replaced between its read and
-// the write, and a read card a later read's card superseded, are taken
-// from the mirror once more.
+// settles (run.answer).
 func (r *run) linkThread(threadID string, ticket store.TicketRef, origin string) (set store.ThreadTicketSet, asked bool, err error) {
 	if err := r.readState(); err != nil {
 		return set, false, err
 	}
-	base := store.ThreadTicketWrite{ThreadID: threadID, Origin: origin, LinkedAt: millis(r.s.now()), Root: r.root}
-	for again := false; ; again = true {
-		set, linked, err := r.linkHeld(base, ticket.IssueID)
-		if errors.Is(err, store.ErrThreadTicketCardMoved) && !again {
-			continue
-		}
-		if err != nil || linked {
-			return set, false, err
-		}
-		break
+	base := store.ThreadTicketWrite{ThreadID: threadID, Origin: origin, LinkedAt: millis(r.s.now()), Root: r.root, IssueID: ticket.IssueID}
+	set, err = r.s.store.SetThreadTicket(base)
+	if !errors.Is(err, store.ErrThreadTicketNotHeld) {
+		return set, false, err
 	}
 	err = r.againIfSwept(func() error {
 		began, err := r.beginRead()
@@ -162,39 +157,7 @@ func (r *run) linkThread(threadID string, ticket store.TicketRef, origin string)
 		r.told("", changesOf(set.Cards))
 		return nil
 	})
-	if errors.Is(err, store.ErrThreadTicketCardMoved) {
-		// A later read stored the ticket's card meanwhile; the mirror's
-		// card is the one to link.
-		var linked bool
-		if set, linked, err = r.linkHeld(base, ticket.IssueID); err == nil && !linked {
-			err = fmt.Errorf("trackerapp: the mirror's card of %s superseded the card read for the link, and no longer holds one", ticket.IssueID)
-		}
-	}
 	return set, true, err
-}
-
-// linkHeld writes w from the card of issueID the run's mirror holds, and
-// reports whether the mirror held one it could link from: none, or one
-// whose blob this version cannot read and so has no title, links nothing.
-func (r *run) linkHeld(w store.ThreadTicketWrite, issueID string) (set store.ThreadTicketSet, linked bool, err error) {
-	held, err := r.s.store.ListMirrorCards(r.root, []string{issueID})
-	if err != nil {
-		return set, false, fmt.Errorf("trackerapp: read the card of %s from the mirror of %s: %w", issueID, r.row.ID, err)
-	}
-	if len(held) != 1 {
-		return set, false, nil
-	}
-	card, ok := cardOf(held[0])
-	if !ok {
-		return set, false, nil
-	}
-	w.Card = held[0]
-	w.Card.Title = card.Title
-	if set, err = r.s.store.SetThreadTicket(w); err != nil {
-		return set, false, err
-	}
-	r.told("", changesOf(set.Cards))
-	return set, true, nil
 }
 
 // UnlinkThread removes thread threadID's ticket link and reports whether
@@ -212,62 +175,6 @@ func (s *Service) UnlinkThread(threadID string) (had bool, _ error) {
 	}
 	s.LinksEnded([]store.TicketRef{ticket})
 	return true, nil
-}
-
-// AdoptLinks takes, for the links of threadIDs, the card a mirror of
-// this computer holds of each one's ticket, as a link made here would,
-// with no request: for links another computer's thread carried here,
-// whose copy names no mirror of this one. A link whose ticket no mirror
-// here holds stays not checked until a read stores its card. It tells
-// Deps.LinksChanged nothing: the caller announces the rows it received.
-// It returns every failure, having tried every link; a link it could not
-// adopt stays as it was.
-func (s *Service) AdoptLinks(threadIDs []string) error {
-	if err := s.enter(); err != nil {
-		return err
-	}
-	defer s.leave()
-	links, err := s.store.ListThreadTickets(threadIDs)
-	if err != nil {
-		return fmt.Errorf("trackerapp: read the links of %d threads: %w", len(threadIDs), err)
-	}
-	var errs []error
-	for _, link := range links {
-		if err := s.adoptLink(link); err != nil {
-			errs = append(errs, fmt.Errorf("trackerapp: adopt the link of thread %s: %w", link.ThreadID, err))
-		}
-	}
-	return errors.Join(errs...)
-}
-
-// adoptLink writes link from the card the mirror of its connection holds,
-// once more when the mirror replaced the card meanwhile.
-func (s *Service) adoptLink(link store.ThreadTicket) error {
-	id, _, err := s.store.TicketConnection(link.Ticket)
-	if err != nil || id == "" {
-		return err
-	}
-	root, ok, err := s.store.GetMirrorRoot(id)
-	if err != nil || !ok {
-		return err
-	}
-	for again := false; ; again = true {
-		held, err := s.store.ListMirrorCards(root, []string{link.Ticket.IssueID})
-		if err != nil || len(held) != 1 {
-			return err
-		}
-		card, ok := cardOf(held[0])
-		if !ok {
-			return nil
-		}
-		w := store.ThreadTicketWrite{ThreadID: link.ThreadID, Origin: link.Origin, LinkedAt: link.LinkedAt, Root: root, Card: held[0]}
-		w.Card.Title = card.Title
-		_, err = s.store.SetThreadTicket(w)
-		if errors.Is(err, store.ErrThreadTicketCardMoved) && !again {
-			continue
-		}
-		return err
-	}
 }
 
 // LinksEnded tells, for tickets whose links ended (an unlink, a link

@@ -2545,10 +2545,11 @@ export class ThreadOrigin {
 
 /**
  * ThreadTicketLink is a thread's link as its row shows it: the ticket,
- * its key, title and status as last seen, and how the link came to be.
- * State and ConnectionID are derived when the row is read: State as the
- * constants above say, ConnectionID the connection here that reads the
- * ticket ("" when none is on).
+ * its key, title and status, and how the link came to be. The key, title
+ * and status are the link reader's card while its mirror holds one, and
+ * the link's last-seen copy otherwise. State and ConnectionID are derived
+ * when the row is read: State as the constants above say, ConnectionID the
+ * connection here that reads the ticket ("" when none is on).
  */
 export class ThreadTicketLink {
     "kind": string;
