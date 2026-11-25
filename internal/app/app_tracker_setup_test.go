@@ -1,13 +1,10 @@
 package app
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"log"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -18,6 +15,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/project"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/transport"
 )
@@ -177,9 +175,6 @@ func TestTrackerSetupRefusalsSayWhatToDo(t *testing.T) {
 // again: the read answers what the file holds.
 func TestATrackerSetupWriteThatMayHaveHappenedSaysSo(t *testing.T) {
 	t.Parallel()
-	if runtime.GOOS == "windows" {
-		t.Skip("a directory is not synced on Windows")
-	}
 	f := newTrackerBoardFixture(t)
 	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
 	groups := func(group string) trackerapp.Setup {
@@ -192,12 +187,7 @@ func TestATrackerSetupWriteThatMayHaveHappenedSaysSo(t *testing.T) {
 		t.Fatalf("the first save = %+v, %v", save, err)
 	}
 	path := f.setupPath(t)
-	// Write and search without read: the file is renamed into place, and
-	// the directory's sync, which opens it, fails.
-	if err := os.Chmod(filepath.Dir(path), 0o300); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(filepath.Dir(path), 0o700) })
+	testutil.UnsyncableDir(t, filepath.Dir(path))
 	_, err = f.a.SetProjectTrackerSetup(ctx, f.project, save.Stored.Revision, groups("left_out"))
 	code, message, _ := errorsx.PublicDetails(err)
 	if code != "tracker_setup_unsure" || !errors.Is(err, trackerapp.ErrSetupWriteUnsure) || !strings.Contains(message, "may or may not be stored") ||
@@ -264,11 +254,7 @@ func TestASetupArgumentThisComputerCannotReadIsRefused(t *testing.T) {
 // by hand carries it, in its sentence, its detail or the log. Not
 // parallel: it reads the process's log.
 func TestARefusedSiteIsNeverRepeated(t *testing.T) {
-	var logs bytes.Buffer
-	previous := log.Writer()
-	log.SetOutput(&logs)
-	t.Cleanup(func() { log.SetOutput(previous) })
-
+	logs := testutil.CaptureLogOutput(t)
 	f := newTrackerBoardFixture(t)
 	rpc := newAppDispatch(t, f.a)
 	const marker = "tok3n-MARKER"

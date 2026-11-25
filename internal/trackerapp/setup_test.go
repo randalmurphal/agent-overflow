@@ -8,13 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
 
 	"agent-overflow/internal/project"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/tracker"
 )
 
@@ -595,24 +595,6 @@ func TestASubscribeReadsItsProjectOnce(t *testing.T) {
 	}
 }
 
-// unsyncableDir makes dir refuse to be opened, so a sync of it fails,
-// while a file in it can still be made, renamed and removed (write and
-// search permission without read), until the test ends.
-func unsyncableDir(t *testing.T, dir string) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("a directory is not synced on Windows")
-	}
-	if err := os.Chmod(dir, 0o300); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-	if f, err := os.Open(dir); err == nil {
-		_ = f.Close()
-		t.Skip("this user opens a directory it may not read")
-	}
-}
-
 // Clearing the setup syncs the directory the file was removed from, as a
 // write does, so the removal survives a power loss: a sync that fails
 // fails the save.
@@ -621,7 +603,7 @@ func TestClearingTheSetupSyncsItsDirectory(t *testing.T) {
 	m := newMirrorFixture(t)
 	save := m.saveSetup(t, m.project(), m.regrouped(map[string]string{"s1": "done"}))
 	path := m.setupPathOf(t, m.project())
-	unsyncableDir(t, filepath.Dir(path))
+	testutil.UnsyncableDir(t, filepath.Dir(path))
 	cleared, err := m.svc.SetProjectSetup(m.project(), save.Stored.Revision, Setup{})
 	if err == nil || !strings.Contains(err.Error(), "sync dir") {
 		t.Fatalf("a clear whose directory sync failed = %+v, %v; want the sync's error", cleared, err)
@@ -686,7 +668,7 @@ func TestASaveWhoseSyncFailedHoldsWhatTheFileHolds(t *testing.T) {
 	sub := m.subscribeShown(t, m.project())
 	held := m.viewOf(t, sub.ID).Groups
 	path := m.setupPathOf(t, m.project())
-	unsyncableDir(t, filepath.Dir(path))
+	testutil.UnsyncableDir(t, filepath.Dir(path))
 
 	n, told := m.boardEventCount(), m.events.setups.Load()
 	_, err := m.svc.SetProjectSetup(m.project(), save.Stored.Revision, m.regrouped(map[string]string{"s1": "left_out"}))
