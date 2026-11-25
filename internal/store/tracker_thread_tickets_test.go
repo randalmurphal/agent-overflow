@@ -577,6 +577,7 @@ func TestThreadLinkColumnReadsByKey(t *testing.T) {
 	}
 	list := slices.Concat([]string{"MATERIALIZE links", "SCAN tt"}, link, []string{
 		"SCAN threads USING COVERING INDEX sqlite_autoindex_threads_1",
+		"BLOOM FILTER ON links (thread_id=?)",
 		"SEARCH links USING AUTOMATIC COVERING INDEX (thread_id=?) LEFT-JOIN",
 	})
 	got := plan(`WITH links AS MATERIALIZED (` + threadTicketLinksSQL + `) SELECT links.link FROM threads LEFT JOIN links ON links.thread_id = threads.id`)

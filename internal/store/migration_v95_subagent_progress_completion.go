@@ -9,15 +9,19 @@ package store
 // a sibling. Codex spawns never carried them. A background launch that never
 // settled keeps its numbers: there is no sibling to move them to yet, and the
 // session-end settle that writes one folds the live entry, not the row.
+//
+// The counters are wrapped in json() outside the subquery: SQLite 3.54 drops
+// the JSON subtype of a scalar subquery's result, and json_set would store
+// them as a quoted string. This text stores what the original did on 3.53.
 const subagentProgressCompletionV95SQL = `
 UPDATE items
    SET meta = json_set(
          CASE WHEN json_valid(meta) THEN meta ELSE '{}' END,
          '$.subagentProgress',
-         (SELECT json(json_extract(launch.meta, '$.subagentProgress'))
-            FROM items launch
-           WHERE launch.thread_id = items.thread_id
-             AND launch.id = items.completion_of)
+         json((SELECT json_extract(launch.meta, '$.subagentProgress')
+                 FROM items launch
+                WHERE launch.thread_id = items.thread_id
+                  AND launch.id = items.completion_of))
        )
  WHERE completion_of <> ''
    AND kind = 'tool_completion'

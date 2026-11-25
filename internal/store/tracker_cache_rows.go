@@ -114,14 +114,14 @@ var (
 		    (b.root_id IS NOT NULL OR ?5) AND ` + mirrorCardAdvancesSQL("?4") + `,
 		    b.root_id IS NULL, ` + mirrorCardSprintsMovedSQL + `
 		  FROM json_each(?2) c
-		  LEFT JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = c.value ->> 'i'
-		  LEFT JOIN tracker_cache_board_issues b ON b.root_id = ?1 AND b.issue_id = c.value ->> 'i' AND b.board_id = ?3`
+		  LEFT JOIN tracker_cache_issues i ON i.root_id = CAST(?1 AS INTEGER) AND i.issue_id = c.value ->> 'i'
+		  LEFT JOIN tracker_cache_board_issues b ON b.root_id = CAST(?1 AS INTEGER) AND b.issue_id = c.value ->> 'i' AND b.board_id = ?3`
 	// mirrorRowsAdvanceSQL moves forward the read time of the rows ?2 (IDs).
 	mirrorRowsAdvanceSQL = `UPDATE tracker_cache_board_issues SET read_at = ?4
-		WHERE root_id = ?1 AND board_id = ?3 AND issue_id IN (SELECT value FROM json_each(?2)) AND read_at < ?4`
+		WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?3 AND issue_id IN (SELECT value FROM json_each(?2)) AND read_at < ?4`
 	mirrorRowsUpsertSQL = `INSERT INTO tracker_cache_board_issues(root_id, issue_id, board_id, order_key, estimate, read_at)
 		SELECT ?1, c.value ->> 'i', ?3, c.value ->> 'o', c.value ->> 'e', ?4 FROM json_each(?2) c
-		 WHERE ?5 OR EXISTS (SELECT 1 FROM tracker_cache_board_issues b WHERE b.root_id = ?1 AND b.issue_id = c.value ->> 'i' AND b.board_id = ?3)
+		 WHERE ?5 OR EXISTS (SELECT 1 FROM tracker_cache_board_issues b WHERE b.root_id = CAST(?1 AS INTEGER) AND b.issue_id = c.value ->> 'i' AND b.board_id = ?3)
 		ON CONFLICT(root_id, issue_id, board_id) DO UPDATE SET order_key = excluded.order_key, estimate = excluded.estimate,
 		    read_at = excluded.read_at
 		WHERE excluded.read_at >= read_at AND (order_key IS NOT excluded.order_key OR estimate IS NOT excluded.estimate)
@@ -130,15 +130,15 @@ var (
 	// reads begun no later than ?4 stored, by key: a read by ID's absences
 	// and a reconcile's unlisted rows.
 	mirrorRowsRemoveSQL = `DELETE FROM tracker_cache_board_issues
-		WHERE root_id = ?1 AND board_id = ?3 AND read_at <= ?4 AND issue_id IN (SELECT value FROM json_each(?2))
+		WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?3 AND read_at <= ?4 AND issue_id IN (SELECT value FROM json_each(?2))
 		RETURNING issue_id`
 	// mirrorRowsKeptSQL reads the rows of the issues ?2 (IDs) the board
 	// holds, and whether a read begun no later than ?4 stored each.
 	mirrorRowsKeptSQL = `SELECT b.issue_id, b.read_at <= ?4 FROM json_each(?2) c
-		CROSS JOIN tracker_cache_board_issues b ON b.root_id = ?1 AND b.issue_id = c.value AND b.board_id = ?3`
+		CROSS JOIN tracker_cache_board_issues b ON b.root_id = CAST(?1 AS INTEGER) AND b.issue_id = c.value AND b.board_id = ?3`
 	// mirrorRowsRemovedAtSQL records a removal; its callers run it only for
 	// a read later than the board's latest removal.
-	mirrorRowsRemovedAtSQL = `UPDATE tracker_cache_boards SET rows_removed_at = ?2 WHERE root_id = ?1 AND board_id = ?3`
+	mirrorRowsRemovedAtSQL = `UPDATE tracker_cache_boards SET rows_removed_at = ?2 WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?3`
 )
 
 func (s *Store) writeMirrorRows(rootID int64, page MirrorRowPage, withCursor bool, cursor []byte) (changes MirrorChanges, err error) {

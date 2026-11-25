@@ -257,8 +257,10 @@ an atomic persistence decision; they must not become a business-logic layer.
   `TestStoreSQLNeverBindsLimit` enforces this. For the same reason, bind a
   LIKE pattern, or a value compared with a column that a partial index pins
   to a literal (`items.kind`, `items.parent_id`), with `boundText`, or
-  `textParam` for a positional `?N`, not a bare parameter, and write a code
-  constant the planner must match with `sqlTextLiteral`. The package's tests
+  `textParam` for a positional `?N`, not a bare parameter, bind an integer
+  compared with a column with `boundInt` or `intParam` (the planner reads
+  whether it is 0 or 1), and write a code constant the planner must match
+  with `sqlTextLiteral`. The package's tests
   fail on any cached statement of the package that compiles again on its
   next run (`sql_rebind_test.go`, `TestStatementsCompileOnce`). See
   [Connections](../../docs/architecture/sqlite-store.md#connections).

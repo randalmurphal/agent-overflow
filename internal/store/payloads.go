@@ -50,9 +50,7 @@ func payloadInsertArgs(threadID string, payload Payload) []any {
 }
 
 // payloadDataArg is the bind value of payload data. Every payload data column
-// is BLOB NOT NULL, and the driver binds a nil slice as NULL. A nil slice is
-// also what the driver scans from a zero-length blob, so an empty payload read
-// back from the database arrives as nil.
+// is BLOB NOT NULL, and the driver binds a nil slice as NULL.
 func payloadDataArg(data []byte) []byte {
 	if data == nil {
 		return []byte{}

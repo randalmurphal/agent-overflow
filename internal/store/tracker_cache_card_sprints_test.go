@@ -19,7 +19,7 @@ func sprintsOf(first, n int) []string {
 // storedSprints is the sprints the mirror holds of issue, sorted.
 func storedSprints(t *testing.T, s *Store, root int64, issue string) []string {
 	t.Helper()
-	ids, err := queryIDs(s.db, `SELECT sprint_id FROM tracker_cache_issue_sprints WHERE root_id = ? AND issue_id = ? ORDER BY sprint_id`, root, issue)
+	ids, err := queryIDs(s.db, `SELECT sprint_id FROM tracker_cache_issue_sprints WHERE root_id = `+boundInt+` AND issue_id = ? ORDER BY sprint_id`, root, issue)
 	if err != nil {
 		t.Fatal(err)
 	}

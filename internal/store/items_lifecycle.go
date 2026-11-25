@@ -287,7 +287,7 @@ func forceCloseRunningToolCallsTx(tx *sql.Tx, w *cardWrite, turnIndex int, summa
 		`SELECT `+itemColumnsSansPayload+`
 		   FROM items`+servedItemJoin+`
 		  WHERE items.thread_id = ?
-		    AND items.turn_index = ?
+		    AND items.turn_index = `+boundInt+`
 		    AND items.kind = 'tool_call'
 		    AND items.status = 'running'
 		    AND items.is_background = 0

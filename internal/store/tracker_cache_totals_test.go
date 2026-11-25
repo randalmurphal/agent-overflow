@@ -108,7 +108,7 @@ func requireCountsMatchPagesWith(t *testing.T, s *Store, root int64, board strin
 	}
 	var estimates []float64
 	err = scanMirrorRows(s.db, `SELECT `+mirrorRowEstimate("?3")+`, i.status_id FROM tracker_cache_board_issues b
-		JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id WHERE b.root_id = ?1 AND b.board_id = ?2`,
+		JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id WHERE b.root_id = `+intParam("?1")+` AND b.board_id = ?2`,
 		[]any{root, board, currentEstimateReset(s, root, board)}, func(r rowScanner) error {
 			var e *float64
 			var status string

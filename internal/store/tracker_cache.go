@@ -215,7 +215,7 @@ func (b mirrorBoard) structureDueAt() int64 {
 // mirrorPendingAtSQL is the latest pending mark of board ?2 of root ?1,
 // zero for none: one probe of the end of the pending index.
 const mirrorPendingAtSQL = `coalesce((SELECT max(p.named_at) FROM tracker_cache_board_unexplained p
-	    WHERE p.root_id = ?1 AND p.board_id = ?2 AND p.named_at > 0), 0)`
+	    WHERE p.root_id = CAST(?1 AS INTEGER) AND p.board_id = ?2 AND p.named_at > 0), 0)`
 
 // mirrorBoardWriteSQL reads, in one statement, whether a root is live,
 // whether some project lists the board through its connection, and the
@@ -224,9 +224,9 @@ const mirrorBoardWriteSQL = `SELECT r.connection_id IS NOT NULL,
 	  EXISTS (SELECT 1 FROM project_tracker_boards p WHERE p.connection_id = r.connection_id AND p.board_id = ?2),
 	  coalesce(b.retired, 1), coalesce(b.read_at, 0), coalesce(b.rows_removed_at, 0), coalesce(b.listing_read_at, 0), coalesce(b.estimate_reset_at, 0),
 	  ` + mirrorPendingAtSQL + `,
-	  EXISTS (SELECT 1 FROM tracker_cache_board_unexplained u WHERE u.root_id = ?1 AND u.board_id = ?2)
-	FROM tracker_cache_roots r LEFT JOIN tracker_cache_boards b ON b.root_id = r.id AND b.board_id = ?2 AND b.lifetime = ?3
-	WHERE r.id = ?1`
+	  EXISTS (SELECT 1 FROM tracker_cache_board_unexplained u WHERE u.root_id = CAST(?1 AS INTEGER) AND u.board_id = ?2)
+	FROM tracker_cache_roots r LEFT JOIN tracker_cache_boards b ON b.root_id = r.id AND b.board_id = ?2 AND b.lifetime = CAST(?3 AS INTEGER)
+	WHERE r.id = CAST(?1 AS INTEGER)`
 
 // mirrorBoardWrite runs fn in one write transaction for a write naming
 // lifetime of boardID: the root must be live (ErrTrackerCacheGone), some

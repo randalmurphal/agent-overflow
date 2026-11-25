@@ -101,8 +101,15 @@ func runWhileOtherWriterHoldsLock(t *testing.T, s *Store, opFrame string, op fun
 	}
 }
 
-// awaitBusyWaitIn reports whether the goroutine running fn sits in
-// SQLite's busy handler before done delivers. done is left for the caller.
+// busyWaitFrames are the busy handlers a lock wait sleeps in: SQLite's
+// own, which PRAGMA busy_timeout installs, and the driver's, which
+// replaces it on a connection once a call there carries a context that
+// can end and keeps its schedule (modernc.org/sqlite busy.go).
+var busyWaitFrames = []string{"sqliteDefaultBusyCallback", "modernc.org/sqlite.busyHandler("}
+
+// awaitBusyWaitIn reports whether the goroutine running fn sits in a
+// busy handler (busyWaitFrames) before done delivers. done is left for
+// the caller.
 func awaitBusyWaitIn(fn string, done chan error) bool {
 	buf := make([]byte, 1<<20)
 	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); {
@@ -112,8 +119,13 @@ func awaitBusyWaitIn(fn string, done chan error) bool {
 			continue
 		}
 		for _, stack := range strings.Split(string(buf[:n]), "\n\n") {
-			if strings.Contains(stack, fn) && strings.Contains(stack, "sqliteDefaultBusyCallback") {
-				return true
+			if !strings.Contains(stack, fn) {
+				continue
+			}
+			for _, frame := range busyWaitFrames {
+				if strings.Contains(stack, frame) {
+					return true
+				}
 			}
 		}
 		select {

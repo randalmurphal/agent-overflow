@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql/driver"
+	"encoding/binary"
 	"fmt"
 	"reflect"
 	"runtime"
@@ -18,29 +19,36 @@ import (
 )
 
 // A statement whose plan SQLite chose by reading a bound value recompiles
-// on every run: the planner compares a bound `kind = ?` with the
-// `kind = 'user_text'` of a partial index's WHERE, reads a bound LIMIT and
-// the prefix of a bound LIKE pattern, and marks the parameter so that
-// binding it expires the statement. The statement cache (stmt_cache.go)
-// cannot help such a statement.
+// whenever that value changes: the planner compares a bound `kind = ?`
+// with the `kind = 'user_text'` of a partial index's WHERE, reads a bound
+// LIMIT and the prefix of a bound LIKE pattern, and marks the parameter in
+// the statement's expmask so that binding it another value expires the
+// statement. The statement cache (stmt_cache.go) cannot help such a
+// statement.
 //
 // The package's tests check every statement the cache runs, after each
-// run (cachedStmtRan). modernc clears a cached statement's bindings after
-// a run, and SQLite expires a statement when it clears or binds a
-// parameter its plan read, so a statement expired after its run compiles
-// again on its next. A schema change expires statements before a run,
-// which recompiles them first, so it never shows here. TestMain fails the
-// package on any statement of the package's source that recompiles, named
-// with the call that ran it; a statement a test writes is not checked, nor
-// is one prepared with Prepare, which bypasses the cache.
+// run (cachedStmtRan), for a parameter its plan read, whatever the run
+// bound. Since SQLite 3.54 the planner also reads whether an integer
+// bound to a `col = ?` term it estimates is 0 or 1 (smimask), and expires
+// the statement when a rebind moves it between 0 or 1 and any other
+// integer: a turn index, a root id and a time all do in ordinary use. The
+// check rebinds each such integer to 0, 1, 2 and a larger value and asks
+// SQLite whether that expired the statement. A schema change expires
+// statements before a run, which recompiles them first, so it never
+// shows here.
+// TestMain fails the package on any statement of the package's source
+// whose plan reads a bound value, named with the call that ran it; a
+// statement a test writes is not checked, nor is one prepared with
+// Prepare, which bypasses the cache.
 func init() {
 	cachedStmtRan = checkCachedStmtRun
 }
 
 // recompilingStatement is a statement of the package's source whose plan
-// reads a bound value, with the call site of its first such run.
+// reads a bound value, with the call site of its first such run and what
+// recompiles it.
 type recompilingStatement struct {
-	query, site string
+	query, site, reason string
 }
 
 var recompiling struct {
@@ -57,32 +65,106 @@ var storePackagePrefix = strings.TrimSuffix(runtime.FuncForPC(reflect.ValueOf(te
 
 func checkCachedStmtRun(stmt driver.Stmt, query string) {
 	cachedStmtRuns.Add(1)
-	recompiles, err := cachedStmtRecompiles(stmt)
+	reason, err := cachedStmtRecompiles(stmt)
 	if err != nil {
-		recordRecompiling(query, err.Error())
+		recordRecompiling(query, "", err.Error())
 		return
 	}
-	if !recompiles {
+	if reason == "" {
 		return
 	}
 	if site, own := statementCallSite(); own {
-		recordRecompiling(query, site)
+		recordRecompiling(query, site, reason)
 	}
 }
 
-// cachedStmtRecompiles reports whether stmt, a cached statement that has
-// just run, compiles again on its next run.
-func cachedStmtRecompiles(stmt driver.Stmt) (bool, error) {
+// cachedStmtRecompiles says why stmt, a cached statement that has just
+// run, compiles again on a run that binds a parameter its plan read
+// another value, or on its next run, expired already; it is empty when
+// the statement compiles once.
+//
+// The parameter marks are read from the statement itself: the driver
+// keeps an integer bound between runs, so a statement bound the same
+// LIMIT twice is not expired after either run and an expiry check alone
+// would pass it.
+func cachedStmtRecompiles(stmt driver.Stmt) (string, error) {
 	tls, pstmt, err := sqliteStmtHandles(stmt)
 	if err != nil || pstmt == 0 {
 		// A statement of several statements keeps no handle; the driver
 		// compiles it per run.
-		return false, err
+		return "", err
 	}
-	return sqlite3.Xsqlite3_expired(tls, pstmt) != 0, nil
+	var layout sqlite3.TVdbe
+	vdbe := libc.GoBytes(pstmt, int(unsafe.Sizeof(layout)))
+	expmask := binary.NativeEndian.Uint32(vdbe[unsafe.Offsetof(layout.Fexpmask):])
+	smimask := binary.NativeEndian.Uint32(vdbe[unsafe.Offsetof(layout.Fsmimask):])
+	if expmask&^smimask != 0 {
+		return fmt.Sprintf("its plan reads the value of parameters %#x", expmask&^smimask), nil
+	}
+	if sqlite3.Xsqlite3_expired(tls, pstmt) != 0 {
+		return "it expired", nil
+	}
+	return smallIntegerRebindExpires(tls, pstmt, vdbe, smimask)
 }
 
-func recordRecompiling(query, site string) {
+// smallIntegerRebindExpires rebinds each integer bound to a parameter in
+// smimask to 0, 1, 2 and 1<<20, says which rebind expired the statement,
+// and binds the integer back. The statement has run and been
+// reset, so it takes bindings. A text bound to such a parameter expires it
+// only when the value it replaces is 0 or 1, which a parameter that always
+// binds text never holds.
+func smallIntegerRebindExpires(tls *libc.TLS, pstmt uintptr, vdbe []byte, smimask uint32) (string, error) {
+	if smimask == 0 {
+		return "", nil
+	}
+	var layout sqlite3.TVdbe
+	var mem sqlite3.TMem
+	vars := uintptr(binary.NativeEndian.Uint64(vdbe[unsafe.Offsetof(layout.FaVar):]))
+	size := int(unsafe.Sizeof(mem))
+	for i := range int(sqlite3.Xsqlite3_bind_parameter_count(tls, pstmt)) {
+		bit := uint32(0x80000000)
+		if i < 31 {
+			bit = 1 << i
+		}
+		if smimask&bit == 0 {
+			continue
+		}
+		value := libc.GoBytes(vars+uintptr(i*size), size)
+		if binary.NativeEndian.Uint16(value[unsafe.Offsetof(mem.Fflags):])&memInt == 0 {
+			continue
+		}
+		bound := int64(binary.NativeEndian.Uint64(value[unsafe.Offsetof(mem.Fu):]))
+		reason := ""
+		from := bound
+		for _, probe := range []int64{0, 1, 2, 1 << 20} {
+			if rc := sqlite3.Xsqlite3_bind_int64(tls, pstmt, int32(i+1), probe); rc != sqlite3.SQLITE_OK {
+				return "", fmt.Errorf("rebind parameter %d to %d: rc %d", i+1, probe, rc)
+			}
+			if sqlite3.Xsqlite3_expired(tls, pstmt) != 0 {
+				reason = fmt.Sprintf("rebinding parameter %d from %d to %d expires it", i+1, from, probe)
+				if i >= 31 {
+					// SQLite keeps one mark for parameters 32 and up, so
+					// the parameter it read is any of them.
+					reason += "; SQLite marks parameters from the 32nd on together, so the one its plan read is any of them"
+				}
+				break
+			}
+			from = probe
+		}
+		if rc := sqlite3.Xsqlite3_bind_int64(tls, pstmt, int32(i+1), bound); rc != sqlite3.SQLITE_OK {
+			return "", fmt.Errorf("bind parameter %d back to %d: rc %d", i+1, bound, rc)
+		}
+		if reason != "" {
+			return reason, nil
+		}
+	}
+	return "", nil
+}
+
+// memInt is SQLite's MEM_Int flag: the value is an integer.
+const memInt = 0x0004
+
+func recordRecompiling(query, site, reason string) {
 	recompiling.mu.Lock()
 	defer recompiling.mu.Unlock()
 	if recompiling.seen == nil {
@@ -92,7 +174,7 @@ func recordRecompiling(query, site string) {
 		return
 	}
 	recompiling.seen[query] = true
-	recompiling.found = append(recompiling.found, recompilingStatement{query: query, site: site})
+	recompiling.found = append(recompiling.found, recompilingStatement{query: query, site: site, reason: reason})
 }
 
 // recompilingStatements returns the statements recorded so far.
@@ -108,11 +190,12 @@ func recompilingReport(found []recompilingStatement) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("statements recompile on every run because a bound value decides their plan; " +
-		"write a LIMIT or a code constant as a literal (sqlTextLiteral), and bind a LIKE pattern " +
-		"or a value compared with a column a partial index pins through textParam:\n")
+	b.WriteString("statements recompile because a bound value decides their plan; " +
+		"write a LIMIT or a code constant as a literal (sqlTextLiteral), bind a LIKE pattern " +
+		"or a value compared with a column a partial index pins through textParam, " +
+		"and an integer compared with a column through intParam:\n")
 	for _, stmt := range found {
-		fmt.Fprintf(&b, "%s:\n%s\n\n", stmt.site, strings.TrimSpace(stmt.query))
+		fmt.Fprintf(&b, "%s: %s:\n%s\n\n", stmt.site, stmt.reason, strings.TrimSpace(stmt.query))
 	}
 	return b.String()
 }
@@ -206,6 +289,8 @@ func TestCachedStatementCheckFindsBoundPlans(t *testing.T) {
 		{`SELECT id FROM items WHERE thread_id = ? LIMIT 5`, []any{"t"}, false},
 		{`SELECT id FROM items WHERE thread_id = ? AND LOWER(summary) LIKE ?`, []any{"t", "%a%"}, true},
 		{`SELECT id FROM items WHERE thread_id = ? AND LOWER(summary) LIKE ` + boundText, []any{"t", "%a%"}, false},
+		{`SELECT id FROM items WHERE thread_id = ? AND turn_index = ? ORDER BY created_at`, []any{"t", 5}, true},
+		{`SELECT id FROM items WHERE thread_id = ? AND turn_index = ` + boundInt + ` ORDER BY created_at`, []any{"t", 5}, false},
 	} {
 		for run := range 2 {
 			rows, err := conn.QueryContext(ctx, tc.query, tc.args...)
@@ -225,12 +310,12 @@ func TestCachedStatementCheckFindsBoundPlans(t *testing.T) {
 			if entry == nil {
 				t.Fatalf("%s is not cached", tc.query)
 			}
-			got, err := cachedStmtRecompiles(entry.stmt)
+			reason, err := cachedStmtRecompiles(entry.stmt)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got != tc.recompiles {
-				t.Errorf("run %d of %s: recompiles = %v, want %v", run+1, tc.query, got, tc.recompiles)
+			if got := reason != ""; got != tc.recompiles {
+				t.Errorf("run %d of %s: recompiles = %v (%s), want %v", run+1, tc.query, got, reason, tc.recompiles)
 			}
 		}
 	}
@@ -272,6 +357,75 @@ func TestStatementsCompileOnce(t *testing.T) {
 	}
 	if report := recompilingReport(recompilingStatements()[before:]); report != "" {
 		t.Error(report)
+	}
+}
+
+// The reads and writes a running turn makes compile once as the turn
+// index moves across 0 and 1: SQLite's own count of the times it compiled
+// each cached statement again (SQLITE_STMTSTATUS_REPREPARE) stays at 0
+// over turns 0, 1, 2, 5 and 0 again, on a thread and on a pointer fork.
+// The test only reads the count: the package's check (checkCachedStmtRun)
+// rebinds a statement's integers, and a rebind that expires it would add
+// a recompile of its own.
+func TestTurnReadsCompileOnceAcrossTurns(t *testing.T) {
+	s := newTestStore(t)
+	seedKeyedLookupThread(t, s)
+	if err := s.CreatePointerFork(makeThread(keyedForkID, "claude"), keyedThreadID, ForkCut{}, testInterruptedSummary, 1); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	counts := map[uintptr]int32{}
+	reprepared := map[string]int32{}
+	prev := cachedStmtRan
+	cachedStmtRan = func(stmt driver.Stmt, query string) {
+		tls, pstmt, err := sqliteStmtHandles(stmt)
+		if err != nil || pstmt == 0 {
+			return
+		}
+		n := sqlite3.Xsqlite3_stmt_status(tls, pstmt, sqlite3.SQLITE_STMTSTATUS_REPREPARE, 0)
+		mu.Lock()
+		defer mu.Unlock()
+		if last, ok := counts[pstmt]; ok && n > last {
+			reprepared[query] += n - last
+		}
+		counts[pstmt] = n
+	}
+	t.Cleanup(func() { cachedStmtRan = prev })
+
+	for _, threadID := range []string{keyedThreadID, keyedForkID} {
+		for _, turn := range []int{0, 1, 2, 5, 0} {
+			if _, err := s.ListTurnItems(threadID, turn); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.ListUnsettledTurnItems(threadID, turn); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := s.FindTurnItem(threadID, turn, "user_text"); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := s.FindStreamItemByProviderItemID(threadID, turn, "thinking", "", "no-such-item"); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := s.MaxItemIndexForTurn(threadID, turn); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for i, turn := range []int{0, 1, 2, 5, 0} {
+		at := int64(1_700_000_100_000 + i)
+		item := Item{ID: fmt.Sprintf("across-%d", i), ThreadID: keyedThreadID, TurnIndex: turn, Kind: "assistant_text",
+			Role: "assistant", Status: "completed", Summary: "row", Meta: "{}", CreatedAt: at, UpdatedAt: at}
+		if _, err := s.AppendItem(item); err != nil {
+			t.Fatalf("append at turn %d: %v", turn, err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(counts) < 5 {
+		t.Fatalf("saw %d statements; the check proved nothing", len(counts))
+	}
+	for query, n := range reprepared {
+		t.Errorf("compiled %d more times across turns:\n%s", n, strings.TrimSpace(query))
 	}
 }
 

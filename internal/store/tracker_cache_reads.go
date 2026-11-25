@@ -63,7 +63,7 @@ func (s *Store) GetMirrorBoard(rootID int64, boardID string) (st MirrorStructure
 		var out MirrorStructure
 		b := &out.Board
 		err := tx.QueryRow(`SELECT b.board_id, b.project_id, b.name, b.plans_sprints, b.estimate_unit, b.estimate_field, b.data, b.lifetime
-			FROM tracker_cache_boards b WHERE b.root_id = ?1 AND b.board_id = ?2 AND `+mirrorBoardShown("?1", "?2"), rootID, boardID).Scan(
+			FROM tracker_cache_boards b WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND `+mirrorBoardShown(intParam("?1"), "?2"), rootID, boardID).Scan(
 			&b.ID, &b.ProjectID, &b.Name, &b.PlansSprints, &b.EstimateUnit, &b.EstimateField, &b.Data, &out.Lifetime)
 		if errors.Is(err, sql.ErrNoRows) {
 			return MirrorStructure{}, nil
@@ -85,7 +85,7 @@ func (s *Store) GetMirrorBoard(rootID int64, boardID string) (st MirrorStructure
 }
 
 func readMirrorColumnsTx(tx sqlQueryer, rootID int64, boardID string) ([]MirrorColumn, error) {
-	names, err := queryIDs(tx, `SELECT name FROM tracker_cache_board_columns WHERE root_id = ? AND board_id = ?
+	names, err := queryIDs(tx, `SELECT name FROM tracker_cache_board_columns WHERE root_id = CAST(? AS INTEGER) AND board_id = ?
 		ORDER BY position LIMIT `+strconv.Itoa(mirrorMaxColumns), rootID, boardID)
 	if err != nil {
 		return nil, fmt.Errorf("read columns: %w", err)
@@ -94,7 +94,7 @@ func readMirrorColumnsTx(tx sqlQueryer, rootID int64, boardID string) ([]MirrorC
 	for i, name := range names {
 		columns[i].Name = name
 	}
-	err = scanMirrorRows(tx, `SELECT position, status_id FROM tracker_cache_board_column_statuses WHERE root_id = ? AND board_id = ?
+	err = scanMirrorRows(tx, `SELECT position, status_id FROM tracker_cache_board_column_statuses WHERE root_id = CAST(? AS INTEGER) AND board_id = ?
 		ORDER BY position, rank LIMIT `+strconv.Itoa(mirrorMaxColumnStatuses), []any{rootID, boardID}, func(r rowScanner) error {
 		var position int
 		var status string
@@ -115,7 +115,7 @@ func readMirrorColumnsTx(tx sqlQueryer, rootID int64, boardID string) ([]MirrorC
 func readMirrorSprintsTx(tx sqlQueryer, rootID int64, boardID string) ([]MirrorSprint, error) {
 	var sprints []MirrorSprint
 	err := scanMirrorRows(tx, `SELECT sprint_id, origin_board_id, name, goal, state, start_at, end_at, completed_at
-		FROM tracker_cache_sprints WHERE root_id = ? AND board_id = ?
+		FROM tracker_cache_sprints WHERE root_id = CAST(? AS INTEGER) AND board_id = ?
 		ORDER BY position, sprint_id LIMIT `+strconv.Itoa(mirrorMaxSprints), []any{rootID, boardID}, func(r rowScanner) error {
 		var sp MirrorSprint
 		err := r.Scan(&sp.ID, &sp.OriginBoardID, &sp.Name, &sp.Goal, &sp.State, &sp.StartAt, &sp.EndAt, &sp.CompletedAt)
@@ -146,11 +146,11 @@ func (s *Store) GetMirrorCatalog(rootID int64, users, statuses []string) (catalo
 // of root ?1, each list driving its arm by key: a user's group is NULL, a
 // status's data.
 var mirrorCatalogByIDSQL = `SELECT u.user_id, u.name, u.data, NULL FROM json_each(?2) l
-	CROSS JOIN tracker_cache_users u ON u.root_id = ?1 AND u.user_id = l.value
+	CROSS JOIN tracker_cache_users u ON u.root_id = CAST(?1 AS INTEGER) AND u.user_id = l.value
 	WHERE ` + mirrorRootLiveSQL + `
 	UNION ALL
 	SELECT st.status_id, st.name, NULL, st.status_group FROM json_each(?3) l
-	CROSS JOIN tracker_cache_statuses st ON st.root_id = ?1 AND st.status_id = l.value
+	CROSS JOIN tracker_cache_statuses st ON st.root_id = CAST(?1 AS INTEGER) AND st.status_id = l.value
 	WHERE ` + mirrorRootLiveSQL
 
 // readMirrorCatalogTx appends to catalog the users and statuses of rootID
@@ -282,7 +282,7 @@ func scanMirrorRows(q sqlQueryer, query string, args []any, scan func(rowScanner
 // mirrorCardsSQL reads the cards of the kept issues among a JSON list of
 // IDs, probing each by key.
 var mirrorCardsSQL = `SELECT ` + mirrorCardColumns + ` FROM json_each(?2) l
-	CROSS JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = l.value
+	CROSS JOIN tracker_cache_issues i ON i.root_id = CAST(?1 AS INTEGER) AND i.issue_id = l.value
 	WHERE ` + mirrorIssueKept("i.root_id", "i.issue_id")
 
 // ListMirrorCards reads the cards of issueIDs the mirror keeps, sorted by
@@ -329,7 +329,7 @@ type MirrorIssueRow struct {
 // later than its board's estimate definition last changed has no estimate.
 var mirrorIssueRowsSQL = `SELECT b.board_id, b.order_key, ` + mirrorRowEstimate(`(SELECT r.estimate_reset_at FROM tracker_cache_boards r
 	  WHERE r.root_id = b.root_id AND r.board_id = b.board_id)`) + ` FROM tracker_cache_board_issues b
-	WHERE b.root_id = ?1 AND b.issue_id = ?2 AND b.board_id > ?3 AND ` + mirrorBoardShown("b.root_id", "b.board_id") + `
+	WHERE b.root_id = CAST(?1 AS INTEGER) AND b.issue_id = ?2 AND b.board_id > ?3 AND ` + mirrorBoardShown("b.root_id", "b.board_id") + `
 	ORDER BY b.board_id LIMIT ` + strconv.Itoa(mirrorIssueRowsPage+1)
 
 // ListMirrorIssueRows reads up to mirrorIssueRowsPage of one issue's rows
@@ -357,10 +357,10 @@ func (s *Store) ListMirrorIssueRows(rootID int64, issueID, afterBoard string) (r
 // tickets' issue index in order, and per ticket a walk of the issue's own
 // rows, each tested against the list (built once; the unary plus keeps
 // the planner from probing the issue's key once per listed board).
-var mirrorOffBoardLinkedSQL = `SELECT DISTINCT link_ticket.issue_id FROM ` + mirrorLinksSQL("?1") + `
+var mirrorOffBoardLinkedSQL = `SELECT DISTINCT link_ticket.issue_id FROM ` + mirrorLinksSQL(intParam("?1")) + `
 	AND link_ticket.issue_id > ?2
 	AND NOT EXISTS (SELECT 1 FROM tracker_cache_board_issues on_board
-	                 WHERE on_board.root_id = ?1 AND on_board.issue_id = link_ticket.issue_id
+	                 WHERE on_board.root_id = CAST(?1 AS INTEGER) AND on_board.issue_id = link_ticket.issue_id
 	                   AND +on_board.board_id IN (SELECT value FROM json_each(?3))
 	                   AND ` + mirrorBoardShown("on_board.root_id", "on_board.board_id") + `)
 	ORDER BY link_ticket.issue_id LIMIT ` + strconv.Itoa(mirrorLinkedPage+1)

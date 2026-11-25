@@ -20,12 +20,11 @@ import (
 // connection opens, so a trigger that calls them runs on every connection
 // of the process; NULL text stays NULL.
 //
-// VolatileArgs is what keeps a TEXT argument's byte length: without it the
-// driver reads TEXT as a C string (libc.GoString), cut at the first NUL.
-// The arguments are then views of SQLite's memory, valid only during the
-// call; findLoose may return one (it returns unchanged text as it is),
-// which the driver copies (sqlite3_result_text, SQLITE_TRANSIENT) before
-// the call returns to SQLite.
+// VolatileArgs passes TEXT arguments as views of SQLite's memory rather
+// than copies, valid only during the call; findLoose may return one (it
+// returns unchanged text as it is), which the driver copies
+// (sqlite3_result_text, SQLITE_TRANSIENT) before the call returns to
+// SQLite.
 func init() {
 	sqlite.MustRegisterFunction("find_loose", &sqlite.FunctionImpl{
 		NArgs:         1,

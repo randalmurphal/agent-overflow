@@ -148,7 +148,7 @@ func (s *Store) ExportThreadHistoryWith(ctx context.Context, threadID string, ou
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		items, err := queryHydratedTimelineItems(s.reader(), threadID, `SELECT id FROM timeline_items WHERE thread_id = ? AND id > ? ORDER BY id LIMIT 128`, threadID, after)
+		items, err := queryHydratedTimelineItems(s.reader(), threadID, fixedIDSelection(`SELECT id FROM timeline_items WHERE thread_id = ? AND id > ? ORDER BY id LIMIT 128`, threadID, after))
 		if err != nil {
 			return err
 		}
