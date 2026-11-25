@@ -147,6 +147,15 @@ export function sectionFields(fields: readonly FieldView[]): readonly FieldView[
   return fields.filter(isSection);
 }
 
+/** The long text the ticket shows for field `id`, as Markdown: the
+ * description's own, which the view carries apart from its fields, or
+ * the field's. A section and a move's form both edit from it. */
+export function shownText(detail: DetailView, id: string): string {
+  if (id === 'description') return detail.description;
+  const f = detail.fields.find((o) => o.id === id);
+  return f ? fieldText(f.value) : '';
+}
+
 /** A field's value as text, for a row and for a section's Markdown. */
 export function fieldText(value: FieldValueView): string {
   switch (value.kind) {
