@@ -751,7 +751,7 @@ func TestTrackerBoardRefusalsSayWhatToDo(t *testing.T) {
 	// True whichever screen changed the list, the one that saves included
 	// (a connection removed there deletes its listings).
 	_, message, _ = errorsx.PublicDetails(ignoreResult(f.a.SetProjectTrackerBoards(ctx, f.project, nil, nil)))
-	if want := "this project's boards changed after this list was read; the list shown now is the saved one, so make the change again"; message != want {
+	if want := "this change was not saved: the project's boards changed after this list was read"; message != want {
 		t.Errorf("a save from an old list is told %q, want %q", message, want)
 	}
 	// Every sentence differs: each names its own remedy.

@@ -330,7 +330,7 @@ func trackerRefusal(err error) (code, message string) {
 	case errors.Is(err, trackerapp.ErrProjectNotFound):
 		return "tracker_project_missing", "this project no longer exists on this computer"
 	case errors.Is(err, trackerapp.ErrBoardsChanged):
-		return "tracker_boards_changed", "this project's boards changed after this list was read; the list shown now is the saved one, so make the change again"
+		return "tracker_boards_changed", "this change was not saved: the project's boards changed after this list was read"
 	case errors.Is(err, trackerapp.ErrInvalidBoards):
 		return "tracker_boards_refused", "this board list cannot be saved; fix what the detail names and save again"
 	case errors.Is(err, trackerapp.ErrUnknownAttachment):

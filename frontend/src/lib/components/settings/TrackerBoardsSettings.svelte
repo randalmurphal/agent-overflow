@@ -252,6 +252,12 @@
         {/if}
         {#if saveError !== null}
           <p class="text-[0.75rem] text-error" role="alert" data-testid="settings-tracker-boards-save-error">{userFacingError(saveError)}</p>
+          <!-- A failed save reads the list again; a read that fails says so above. -->
+          {#if boards.error === null}
+            <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-boards-reread">
+              {boards.current ? 'The list shown is the saved one; make the change again.' : 'Reading the saved list…'}
+            </p>
+          {/if}
         {/if}
         {#if connectionsView.error !== null}
           {@render connectionsFailure()}

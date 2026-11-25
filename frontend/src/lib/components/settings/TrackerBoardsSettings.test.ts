@@ -208,22 +208,52 @@ describe('<TrackerBoardsSettings>', () => {
     expect((screen.getByTestId('tracker-board-remove') as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('shows the stored list and says the boards changed when a save was built from an older list', async () => {
+  const changedRefusal = () => new TransportError('tracker_boards_changed', "this change was not saved: the project's boards changed after this list was read", {
+    detail: { ref: 'r', method: 'SetProjectTrackerBoards', at: 1, chain: [] },
+  });
+
+  it('says a save built from an older list was not saved, then that it shows the saved list once it has read it', async () => {
     stored.p1 = [trackerBoardChoice({ board: '1', name: 'A', opens_first: true }), trackerBoardChoice({ board: '2', name: 'B' })];
     await renderOnP1();
     await waitFor(() => expect(names()).toEqual(['A', 'B']));
     // Another window removes B; this page still shows it, and removes A.
     stored.p1 = [trackerBoardChoice({ board: '1', name: 'A', opens_first: true })];
-    setBindingMock('SetProjectTrackerBoards', async () => {
-      throw new TransportError('tracker_boards_changed', "this project's boards changed after this list was read; the list shown now is the saved one, so make the change again", {
-        detail: { ref: 'r', method: 'SetProjectTrackerBoards', at: 1, chain: [] },
-      });
-    });
+    let answer!: (list: TrackerBoardChoice[]) => void;
+    setBindingMock('ProjectTrackerBoards', () => new Promise<TrackerBoardChoice[]>((resolve) => (answer = resolve)));
+    setBindingMock('SetProjectTrackerBoards', async () => { throw changedRefusal(); });
     await fireEvent.click(screen.getAllByTestId('tracker-board-remove')[0]);
     expect((await screen.findByTestId('settings-tracker-boards-save-error')).textContent).toBe(
-      "This project's boards changed after this list was read; the list shown now is the saved one, so make the change again.",
+      "This change was not saved: the project's boards changed after this list was read.",
     );
+    // Until the read answers, the page claims nothing about the list.
+    expect(screen.getByTestId('settings-tracker-boards-reread').textContent).toBe('Reading the saved list…');
+    answer(stored.p1);
     await waitFor(() => expect(names()).toEqual(['A']));
+    expect(screen.getByTestId('settings-tracker-boards-reread').textContent).toBe('The list shown is the saved one; make the change again.');
+  });
+
+  it('says a save built from an older list was not saved, and that the saved list could not be read, with Try again', async () => {
+    stored.p1 = [trackerBoardChoice({ board: '1', name: 'A', opens_first: true }), trackerBoardChoice({ board: '2', name: 'B' })];
+    await renderOnP1();
+    await waitFor(() => expect(names()).toEqual(['A', 'B']));
+    setBindingMock('ProjectTrackerBoards', async () => { throw new TransportError('method_error', 'store: disk I/O error', { detail: { ref: 'r', method: 'ProjectTrackerBoards', at: 1, chain: ['store: disk I/O error'] } }); });
+    setBindingMock('SetProjectTrackerBoards', async () => { throw changedRefusal(); });
+    await fireEvent.click(screen.getAllByTestId('tracker-board-remove')[0]);
+    expect((await screen.findByTestId('settings-tracker-boards-error')).textContent).toBe('The boards could not be read: Store: disk I/O error.');
+    expect(screen.getByTestId('settings-tracker-boards-retry')).toBeTruthy();
+    expect(screen.queryByTestId('settings-tracker-boards-reread')).toBeNull();
+  });
+
+  it('reads the boards again when the connection list changes, so a connection removed elsewhere takes its boards', async () => {
+    stored.p1 = [trackerBoardChoice({ board: '1', name: 'A', opens_first: true })];
+    await renderOnP1();
+    await waitFor(() => expect(names()).toEqual(['A']));
+    // Another window removes jira-1, and its listing goes with it.
+    stored.p1 = [];
+    setBindingMock('TrackerConnections', async () => [trackerConnection({ id: 'lin-off', kind: 'linear', site: 'example', account: '', enabled: false })]);
+    applyTrackerConnectionsChanged(HOME_BACKEND);
+    await waitFor(() => expect(names()).toEqual([]));
+    expect(screen.getByTestId('settings-tracker-boards-empty')).toBeTruthy();
   });
 
   it('after a save that failed, reads the list again and offers no edit until it answers', async () => {

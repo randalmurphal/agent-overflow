@@ -210,11 +210,18 @@ export function withOpensFirst(list: readonly TrackerBoardChoice[], index: numbe
   return boardsOf(list).map((b, i) => ({ ...b, opens_first: i === index }));
 }
 
-onBackendStatusChange((backend, status) => {
-  if (status.status !== 'connected') return;
+/**
+ * Read every held board list of `backend` again: its connections changed,
+ * and a connection's removal takes its listings with it.
+ */
+export function readTrackerProjectBoardsOf(backend: BackendKey): void {
   for (const entry of held.values()) {
     if (entry.backend === backend && !entry.saving) void entry.read();
   }
+}
+
+onBackendStatusChange((backend, status) => {
+  if (status.status === 'connected') readTrackerProjectBoardsOf(backend);
 });
 
 onBackendsChanged(() => {
