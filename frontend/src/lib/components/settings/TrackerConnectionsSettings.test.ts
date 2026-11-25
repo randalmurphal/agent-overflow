@@ -145,6 +145,36 @@ describe('<TrackerConnectionsSettings>', () => {
     await waitFor(() => expect(within(row).queryByTestId('tracker-connection-setup')).toBeNull());
   });
 
+  // Both Check buttons are one check: renewal ends when it verified, never
+  // on a check whose answer carries a problem.
+  it('keeps the renewal steps open after a check that did not verify, from either Check, and closes them on one that did', async () => {
+    const base = trackerConnection({ tokenExpiresAt: Date.now() + 3 * 24 * 60 * 60 * 1000 });
+    rows = [base];
+    const failed = (): TrackerConnection => (rows = [{ ...base, problem: { kind: 'transient', message: 'The tracker did not answer in time' } }])[0];
+    const verified = (): TrackerConnection => (rows = [base])[0];
+    const answers: (() => TrackerConnection)[] = [failed, failed, verified];
+    const verify = setBindingMock('VerifyTrackerConnection', async () => answers.shift()!());
+    render(TrackerConnectionsSettings);
+    const row = await screen.findByTestId('tracker-connection-jira-1');
+    await fireEvent.click(within(row).getByTestId('tracker-connection-renew'));
+    const rowCheck = within(row).getByTestId('tracker-connection-check') as HTMLButtonElement;
+    const stepCheck = (): HTMLButtonElement => within(row).getByTestId('tracker-connection-setup-check') as HTMLButtonElement;
+
+    await fireEvent.click(stepCheck());
+    await waitFor(() => expect(verify).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(stepCheck().disabled).toBe(false));
+    expect(within(row).getByTestId('tracker-connection-setup')).toBeTruthy();
+
+    await fireEvent.click(rowCheck);
+    await waitFor(() => expect(verify).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(rowCheck.disabled).toBe(false));
+    expect(within(row).getByTestId('tracker-connection-setup')).toBeTruthy();
+
+    await fireEvent.click(rowCheck);
+    await waitFor(() => expect(verify).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(within(row).queryByTestId('tracker-connection-setup')).toBeNull());
+  });
+
   it('closes the renewal steps when the connection is turned off, and does not reopen them when it is on again', async () => {
     rows = [trackerConnection({ tokenExpiresAt: Date.now() + 3 * 24 * 60 * 60 * 1000 })];
     render(TrackerConnectionsSettings);

@@ -79,8 +79,9 @@
 
   // Renew shows the setup steps again, which a connection that is off does
   // not show: it is offered exactly where it opens them. Once open, the
-  // renewal stays open until the check or Done, whatever its steps change
-  // (a new expiry ends `renew`); turning the connection off ends it.
+  // renewal stays open until a check verifies or Done, whatever its steps
+  // change (a new expiry ends `renew`); turning the connection off ends it.
+  // `renewing` is written only here: Renew, Done, `check` and this effect.
   let renewable = $derived(connection.enabled && (expiry?.renew ?? false));
   let showSteps = $derived(connection.enabled && (status.needsSetup || renewing));
   $effect(() => {
@@ -101,7 +102,15 @@
     }
   }
 
-  const check = (): Promise<boolean> => run('check', () => verifyTrackerConnection(backend, connection.id));
+  // The row's Check and the steps' Check are this one check. A check whose
+  // answer carries a problem did not verify, and leaves a renewal open.
+  async function check(): Promise<void> {
+    let verified = false;
+    await run('check', async () => {
+      verified = !(await verifyTrackerConnection(backend, connection.id)).problem;
+    });
+    if (verified) renewing = false;
+  }
   const openKeyFile = (): Promise<boolean> => run('key-file', () => editTrackerKeyFile(backend, connection.id));
   const openTokenPage = (): Promise<boolean> => run('token-page', () => openTrackerTokenPage(backend, connection.id));
   const saveExpiry = (expiresAt: number): Promise<boolean> =>
@@ -241,9 +250,7 @@
       onOpenTokenPage={openTokenPage}
       onOpenKeyFile={openKeyFile}
       onSaveExpiry={saveExpiry}
-      onCheck={async () => {
-        if ((await check()) && renewing) renewing = false;
-      }}
+      onCheck={check}
     />
     {#if renewing}
       <div>
