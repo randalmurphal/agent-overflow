@@ -496,6 +496,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SaveLocalImage", ID: 1040176720, Scope: "files:read", Route: "selected"},                                                         // main.App.SaveLocalImage
 	{Name: "SavePRCIJobLog", ID: 1537914193, Scope: "git:operate", Route: "selected", Budget: 15 * time.Minute},                              // main.App.SavePRCIJobLog
 	{Name: "SavePRCIJobLogSection", ID: 1281545488, Scope: "git:operate", Route: "selected"},                                                 // main.App.SavePRCIJobLogSection
+	{Name: "SaveTrackerAttachment", ID: 1443136041, Scope: "tracker:operate", Route: "home", Budget: 30 * time.Minute},                       // main.App.SaveTrackerAttachment
 	{Name: "SearchPRCILog", ID: 349857499, Scope: "git:operate", Route: "selected", CallerBound: true},                                       // main.App.SearchPRCILog
 	{Name: "SearchPRCandidates", ID: 173160885, Scope: "git:operate", Route: "selected"},                                                     // main.App.SearchPRCandidates
 	{Name: "SearchThreadItems", ID: 1414650511, Scope: "threads:read", Route: "thread", CallerBound: true},                                   // main.App.SearchThreadItems

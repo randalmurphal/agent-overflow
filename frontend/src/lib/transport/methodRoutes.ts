@@ -444,6 +444,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1040176720: 'selected', // SaveLocalImage
 	1537914193: 'selected', // SavePRCIJobLog
 	1281545488: 'selected', // SavePRCIJobLogSection
+	1443136041: 'home', // SaveTrackerAttachment
 	349857499: 'selected', // SearchPRCILog
 	173160885: 'selected', // SearchPRCandidates
 	1414650511: 'thread', // SearchThreadItems
@@ -672,6 +673,7 @@ export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
 	1986917811: 1800000, // SaveCIArtifacts
 	2960563266: 660000, // SaveForgeAttachment
 	1537914193: 900000, // SavePRCIJobLog
+	1443136041: 1800000, // SaveTrackerAttachment
 	2301582015: 180000, // SetTrackerEstimate
 	1201673152: 60000, // SpendProviderAccountReset
 	1961738625: 180000, // StartTrackerSprint

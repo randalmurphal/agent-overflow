@@ -5658,6 +5658,19 @@ export function SavePRCIJobLogSection(repo: git$0.RepoReference, jobID: string, 
 }
 
 /**
+ * SaveTrackerAttachment saves one attachment of a subscribed ticket into
+ * this computer's Downloads folder and returns the path, for a client that
+ * cannot run a browser download (frontend utils/fileSaveAction.ts). Like
+ * the download ticket it finds the attachment on the ticket as its
+ * subscribers were last told of it; the bytes stream from the tracker into
+ * the file, so none is held in memory. A save cut short, by the tracker or
+ * by the budget, leaves no file.
+ */
+export function SaveTrackerAttachment(subscriptionID: string, attachmentID: string): $CancellablePromise<string> {
+    return $Call.ByID(1443136041, subscriptionID, attachmentID);
+}
+
+/**
  * SearchPRCILog counts the matches of query in a job's cached log as the
  * log view shows it (each line up to maxCILogLineBytes, escapes the view
  * hides left out), for the review pane's find bar: the lines holding
