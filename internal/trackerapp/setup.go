@@ -865,7 +865,8 @@ func isTicketProject(project string) bool {
 		return false
 	}
 	for i := 1; i < len(project); i++ {
-		if c := project[i]; !(c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_') {
+		c := project[i]
+		if (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' {
 			return false
 		}
 	}
