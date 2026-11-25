@@ -95,14 +95,16 @@ func (section MirrorSection) ruleArg() any {
 	return nil
 }
 
-// args are a section statement's arguments: the six every one binds, and
-// the regrouping as ?7 for the backlog, the one section whose rule reads
-// a status's group.
-func (section MirrorSection) args(regroup MirrorRegroup, six ...any) []any {
-	if section.Kind == MirrorSectionBacklog {
-		return append(six, regroup.arg())
+// statement is a section statement's text and arguments, the six every
+// one binds: the plain text of the section's kind, or, for the backlog
+// (the one section whose rule reads a status's group) under a regrouping
+// that regroups something, regroupedBacklog, which binds it as ?7.
+func (section MirrorSection) statement(regroup MirrorRegroup, plain map[MirrorSectionKind]string, regroupedBacklog string,
+	six ...any) (string, []any) {
+	if section.Kind == MirrorSectionBacklog && regroup.statuses != "" {
+		return regroupedBacklog, append(six, regroup.statuses)
 	}
-	return six
+	return plain[section.Kind], six
 }
 
 // The sprint rules hold for a row b of board ?2 of root ?1 in a future or
@@ -138,10 +140,12 @@ const MirrorGroupLeftOut = 6
 // which a board read applies: by status ID, the group the status counts
 // in (MirrorGroupBacklog to MirrorGroupCanceled, or MirrorGroupLeftOut).
 // A status it does not name keeps the group tracker_cache_statuses holds.
-// The zero value regroups nothing.
+// The zero value regroups nothing, and a read with it runs the plain
+// statements, which read a row's status by its key; a regrouping that
+// regroups something runs the regrouped ones, which bind it.
 type MirrorRegroup struct {
-	// statuses is the JSON object the statements read with json_each,
-	// empty for the zero value.
+	// statuses is the JSON object the regrouped statements read with
+	// json_each, empty for the zero value.
 	statuses string
 }
 
@@ -166,22 +170,19 @@ func NewMirrorRegroup(groups map[string]int) (MirrorRegroup, error) {
 	return MirrorRegroup{statuses: encoded}, nil
 }
 
-// arg is the regrouping as the statements bind it.
-func (r MirrorRegroup) arg() string {
-	if r.statuses == "" {
-		return "{}"
-	}
-	return r.statuses
-}
+// mirrorNotDoneSQL holds for a row of b whose issue i has a status the
+// mirror does not place in the done or canceled group, probed by key.
+const mirrorNotDoneSQL = `NOT EXISTS (SELECT 1 FROM tracker_cache_statuses st
+	 WHERE st.root_id = b.root_id AND st.status_id = i.status_id AND st.status_group IN (4, 5))`
 
-// mirrorNotDone holds for a row of b whose issue i has a status that does
-// not count as done for the regrouping the JSON object g binds: a status
-// the tracker places in the done or canceled group that g does not name,
-// or one g puts in done, canceled or left out, does. A status the mirror
-// does not know counts as not done unless g names it. The list is one
-// uncorrelated subquery, which the statement builds once and probes per
-// row.
-func mirrorNotDone(g string) string {
+// mirrorRegroupedNotDone holds for a row of b whose issue i has a status
+// that does not count as done for the regrouping the JSON object g binds:
+// a status the tracker places in the done or canceled group that g does
+// not name, or one g puts in done, canceled or left out, does. A status
+// the mirror does not know counts as not done unless g names it. The list
+// is one uncorrelated subquery, which the statement builds once from the
+// root's catalog and probes per row.
+func mirrorRegroupedNotDone(g string) string {
 	return `i.status_id NOT IN (SELECT st.status_id FROM tracker_cache_statuses st
 	 WHERE st.root_id = ?1 AND st.status_group IN (4, 5) AND st.status_id NOT IN (SELECT o.key FROM json_each(` + g + `) o)
 	 UNION ALL SELECT o.key FROM json_each(` + g + `) o WHERE o.value IN (4, 5, 6))`
@@ -189,16 +190,17 @@ func mirrorNotDone(g string) string {
 
 // mirrorLeftOut holds for a row whose issue i has a status the
 // regrouping g leaves out of counts. Only the count of a board's rows
-// states it (mirrorCountRowsSQL); the sprints' totals leave out the issues
-// that count found (mirrorCountSprintsLeftOutSQL).
+// states it (mirrorRegroupedCountRowsSQL); the sprints' totals leave out
+// the issues that count found (mirrorCountSprintsLeftOutSQL).
 func mirrorLeftOut(g string) string {
 	return `i.status_id IN (SELECT o.key FROM json_each(` + g + `) o WHERE o.value = 6)`
 }
 
 // mirrorBacklog holds for a row of b in the board's backlog, with
-// inOpenSprint one form of the open-sprint rule and g the regrouping.
-func mirrorBacklog(inOpenSprint, g string) string {
-	return `NOT ` + inOpenSprint + ` AND ` + mirrorNotDone(g)
+// inOpenSprint one form of the open-sprint rule and notDone one of the
+// not-done rule (mirrorNotDoneSQL, mirrorRegroupedNotDone).
+func mirrorBacklog(inOpenSprint, notDone string) string {
+	return `NOT ` + inOpenSprint + ` AND ` + notDone
 }
 
 // mirrorColumnRuleSQL holds for a row b (with its issue i) of board ?2 of
@@ -207,11 +209,18 @@ func mirrorBacklog(inOpenSprint, g string) string {
 const mirrorColumnRuleSQL = `i.status_id IN (SELECT c.status_id FROM tracker_cache_board_column_statuses c
 	  WHERE c.root_id = ?1 AND c.board_id = ?2 AND c.position = ?5)`
 
-var mirrorSectionSQL = map[MirrorSectionKind]string{
-	MirrorSectionSprint:  mirrorSectionRowsSQL + mirrorInSprintMembersSQL + mirrorSectionOrderSQL + strconv.Itoa(mirrorSectionPageSize+1),
-	MirrorSectionBacklog: mirrorSectionRowsSQL + mirrorBacklog(mirrorInOpenSprintProbeSQL, "?7") + mirrorSectionOrderSQL + strconv.Itoa(mirrorSectionPageSize+1),
-	MirrorSectionColumn:  mirrorSectionRowsSQL + mirrorColumnRuleSQL + mirrorSectionOrderSQL + strconv.Itoa(mirrorSectionPageSize+1),
-}
+// mirrorSectionSQL reads a page of a section of each kind, and
+// mirrorRegroupedBacklogSectionSQL one of the backlog under a regrouping
+// (MirrorSection.statement).
+var (
+	mirrorSectionSQL = map[MirrorSectionKind]string{
+		MirrorSectionSprint:  mirrorSectionRowsSQL + mirrorInSprintMembersSQL + mirrorSectionOrderSQL + strconv.Itoa(mirrorSectionPageSize+1),
+		MirrorSectionBacklog: mirrorSectionRowsSQL + mirrorBacklog(mirrorInOpenSprintProbeSQL, mirrorNotDoneSQL) + mirrorSectionOrderSQL + strconv.Itoa(mirrorSectionPageSize+1),
+		MirrorSectionColumn:  mirrorSectionRowsSQL + mirrorColumnRuleSQL + mirrorSectionOrderSQL + strconv.Itoa(mirrorSectionPageSize+1),
+	}
+	mirrorRegroupedBacklogSectionSQL = mirrorSectionRowsSQL + mirrorBacklog(mirrorInOpenSprintProbeSQL, mirrorRegroupedNotDone("?7")) + mirrorSectionOrderSQL +
+		strconv.Itoa(mirrorSectionPageSize+1)
+)
 
 // mirrorShownBoardSQL reads the lifetime, revisions, estimate unit and
 // estimate reset of a board the mirror shows.
@@ -274,9 +283,10 @@ func (s *Store) ListMirrorSection(rootID int64, boardID string, regroup MirrorRe
 // after after, in tx's snapshot.
 func readMirrorSectionTx(tx sqlQueryer, rootID int64, boardID string, board mirrorShownBoard, regroup MirrorRegroup, section MirrorSection,
 	after MirrorRowKey) (page MirrorSectionPage, err error) {
-	args := section.args(regroup, rootID, boardID, after.OrderKey, after.IssueID, section.ruleArg(), board.estimateResetAt)
+	query, args := section.statement(regroup, mirrorSectionSQL, mirrorRegroupedBacklogSectionSQL,
+		rootID, boardID, after.OrderKey, after.IssueID, section.ruleArg(), board.estimateResetAt)
 	page.Revision = board.revision
-	err = scanMirrorRows(tx, mirrorSectionSQL[section.Kind], args, func(r rowScanner) error {
+	err = scanMirrorRows(tx, query, args, func(r rowScanner) error {
 		row, err := scanMirrorRow(r)
 		page.Rows = append(page.Rows, row)
 		return err
@@ -316,21 +326,25 @@ type MirrorSectionCounts struct {
 // mirrorCountRowsSQL walks the board's rows once, in
 // idx_tracker_cache_board_issues_order, reads each row's status from
 // idx_tracker_cache_issues_status, tests it against the open sprints'
-// members and the regrouping ?4 (each list built once), and returns a row
-// per board row, which countMirrorSectionsTx sums: a GROUP BY would sort
-// every row, in memory that grows with the board. Its last column is the
-// issue of a row left out of counts, NULL for every other.
+// members (read once), and returns a row per board row, which
+// countMirrorSectionsTx sums: a GROUP BY would sort every row, in memory
+// that grows with the board. mirrorRegroupedCountRowsSQL does the same
+// under the regrouping ?4 (its list built once), and its last column is
+// the issue of a row left out of counts, NULL for every other.
 // mirrorCountSprintsSQL totals each sprint of the board from its members,
 // in the sprints' key order; mirrorCountSprintsLeftOutSQL does the same
 // without the issues of the JSON list ?4, the rows the first statement
 // found left out, so a sprint member's status is read once a board, not
 // once a member.
 var (
-	mirrorCountRowsSQL = `SELECT ` + mirrorBacklog(mirrorInOpenSprintMembersSQL, "?4") + `, i.status_id, ` + mirrorRowEstimate("?3") + `,
-		iif(` + mirrorLeftOut("?4") + `, b.issue_id, NULL)
+	mirrorCountRowsFromSQL = `
 		FROM tracker_cache_board_issues b
 		CROSS JOIN tracker_cache_issues i INDEXED BY idx_tracker_cache_issues_status ON i.root_id = b.root_id AND i.issue_id = b.issue_id
 		WHERE b.root_id = ?1 AND b.board_id = ?2`
+	mirrorCountRowsSQL = `SELECT ` + mirrorBacklog(mirrorInOpenSprintMembersSQL, mirrorNotDoneSQL) + `, i.status_id, ` + mirrorRowEstimate("?3") +
+		mirrorCountRowsFromSQL
+	mirrorRegroupedCountRowsSQL = `SELECT ` + mirrorBacklog(mirrorInOpenSprintMembersSQL, mirrorRegroupedNotDone("?4")) + `, i.status_id, ` +
+		mirrorRowEstimate("?3") + `, iif(` + mirrorLeftOut("?4") + `, b.issue_id, NULL)` + mirrorCountRowsFromSQL
 	mirrorCountSprintsRowsSQL = `SELECT sp.sprint_id, count(*), total(` + mirrorRowEstimate("?3") + `) FROM tracker_cache_sprints sp
 		  CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = sp.root_id AND m.sprint_id = sp.sprint_id
 		  CROSS JOIN tracker_cache_board_issues b ON b.root_id = sp.root_id AND b.issue_id = m.issue_id AND b.board_id = sp.board_id
@@ -397,9 +411,13 @@ func countMirrorSectionsTx(tx sqlQueryer, rootID int64, boardID string, board mi
 	var status, leftOut sql.RawBytes
 	var estimate sql.NullFloat64
 	var leftOutIssues []string
-	err := scanMirrorRows(tx, mirrorCountRowsSQL, []any{rootID, boardID, board.estimateResetAt, regroup.arg()}, func(r rowScanner) error {
-		var backlog bool
-		if err := r.Scan(&backlog, &status, &estimate, &leftOut); err != nil {
+	var backlog bool
+	query, args, dest := mirrorCountRowsSQL, []any{rootID, boardID, board.estimateResetAt}, []any{&backlog, &status, &estimate}
+	if regroup.statuses != "" {
+		query, args, dest = mirrorRegroupedCountRowsSQL, append(args, regroup.statuses), append(dest, &leftOut)
+	}
+	err := scanMirrorRows(tx, query, args, func(r rowScanner) error {
+		if err := r.Scan(dest...); err != nil {
 			return err
 		}
 		if leftOut != nil {

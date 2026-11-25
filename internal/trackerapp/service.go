@@ -28,7 +28,7 @@ type Store interface {
 	SetTrackerConnectionTokenExpiry(id string, expiresAt int64) (store.TrackerConnection, bool, error)
 	RecordTrackerConnectionVerification(id string, v store.TrackerVerification) (store.TrackerConnection, bool, error)
 	DeleteTrackerConnection(id string) ([]string, error)
-	ListProjectTrackerBoards(projectID string) ([]store.ProjectTrackerBoard, error)
+	ProjectTrackerBoardListed(projectID, connectionID, boardID string) (string, bool, error)
 	GetProject(id string) (store.Project, error)
 	ListTrackerBoardChoices(projectID string) ([]store.TrackerBoardChoice, error)
 	ReplaceProjectTrackerBoards(projectID string, held []store.HeldTrackerBoard, boards []store.ProjectTrackerBoard) (bool, store.TrackerBoardListing, error)

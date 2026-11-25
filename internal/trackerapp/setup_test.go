@@ -514,3 +514,26 @@ func TestTwoProjectsRegroupOneBoardApart(t *testing.T) {
 		t.Fatalf("the other project's backlog: %+v", v.Sections[0])
 	}
 }
+
+// A board subscribe reads its project once, whether or not the project
+// has a setup: the read that finds the board listed names the project's
+// slug, which the setup is found by.
+func TestASubscribeReadsItsProjectOnce(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	cs := newCountingStore(m.st)
+	m.svc.store = cs
+	for _, step := range []string{"no setup", "a setup"} {
+		cs.take()
+		sub, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, false, untied)
+		if err != nil {
+			t.Fatal(err)
+		}
+		calls := cs.take()
+		if reads := calls["GetProject"] + calls["ListProjectTrackerBoards"] + calls["ProjectTrackerBoardListed"]; reads != 1 {
+			t.Errorf("%s: a subscribe read its project %d times (%v); want once", step, reads, calls)
+		}
+		m.svc.ReleaseSubscription(sub.ID)
+		m.saveSetup(t, m.project(), m.regrouped(map[string]string{"1": "done"}))
+	}
+}

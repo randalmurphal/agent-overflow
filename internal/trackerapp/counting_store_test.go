@@ -190,3 +190,13 @@ func (c *countingStore) DropMirrorTicket(session, pump int64) (bool, error) {
 	c.count("DropMirrorTicket")
 	return c.Store.DropMirrorTicket(session, pump)
 }
+
+func (c *countingStore) GetProject(id string) (store.Project, error) {
+	c.count("GetProject")
+	return c.Store.GetProject(id)
+}
+
+func (c *countingStore) ProjectTrackerBoardListed(projectID, connectionID, boardID string) (string, bool, error) {
+	c.count("ProjectTrackerBoardListed")
+	return c.Store.ProjectTrackerBoardListed(projectID, connectionID, boardID)
+}

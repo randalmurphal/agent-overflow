@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"agent-overflow/internal/pump"
@@ -120,18 +119,12 @@ func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Secti
 		return BoardSubscription{}, err
 	}
 	defer s.leave()
-	listed, err := s.store.ListProjectTrackerBoards(projectID)
-	if err != nil {
+	slug, listed, err := s.store.ProjectTrackerBoardListed(projectID, scope.Connection, string(scope.Board))
+	switch {
+	case err != nil:
 		return BoardSubscription{}, fmt.Errorf("trackerapp: read the boards of project %s: %w", projectID, err)
-	}
-	if !slices.ContainsFunc(listed, func(b store.ProjectTrackerBoard) bool {
-		return b.ConnectionID == scope.Connection && b.BoardID == string(scope.Board)
-	}) {
+	case !listed:
 		return BoardSubscription{}, fmt.Errorf("%w: project %s, board %s of %s", ErrNotListed, projectID, scope.Board, scope.Connection)
-	}
-	slug, err := s.projectSlug(projectID)
-	if err != nil {
-		return BoardSubscription{}, err
 	}
 	id, p, start, seq, told, key, err := s.takeBoardHandle(scope, slug, visible, tie)
 	if err != nil {

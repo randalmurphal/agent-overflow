@@ -286,6 +286,21 @@ func (s *Store) ListProjectTrackerBoards(projectID string) ([]ProjectTrackerBoar
 	return boards, nil
 }
 
+// ProjectTrackerBoardListed is the slug of projectID when it lists
+// connectionID's board boardID, by the listing's key; listed is false
+// when it does not, or the project does not exist.
+func (s *Store) ProjectTrackerBoardListed(projectID, connectionID, boardID string) (slug string, listed bool, err error) {
+	err = s.reader().QueryRow(`SELECT p.slug FROM project_tracker_boards t JOIN projects p ON p.id = t.project_id
+		WHERE t.project_id = ? AND t.connection_id = ? AND t.board_id = ?`, projectID, connectionID, boardID).Scan(&slug)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", false, nil
+	case err != nil:
+		return "", false, fmt.Errorf("store: read project %s's listing of board %s of %s: %w", projectID, boardID, connectionID, err)
+	}
+	return slug, true, nil
+}
+
 func listProjectTrackerBoards(q sqlQueryer, projectID string) ([]ProjectTrackerBoard, error) {
 	rows, err := q.Query(`SELECT connection_id, board_id, opens_first, name, tracker_project FROM project_tracker_boards
 		WHERE project_id = ? ORDER BY position`, projectID)

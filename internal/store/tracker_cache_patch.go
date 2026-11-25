@@ -14,9 +14,9 @@ import (
 
 // mirrorPatchRowsSQL reads the rows of board ?2 of root ?1 among the
 // issues of the JSON list ?3, each probed by key, with ?5 a section's
-// sprint or column, ?6 the board's estimate reset and ?7 the regrouping,
-// projecting what a
-// section page shows of a row; a section's rule follows. The rows come in
+// sprint or column, ?6 the board's estimate reset and ?7 the regrouping
+// (MirrorSection.statement), projecting what a section page shows of a
+// row; a section's rule follows. The rows come in
 // list order; the caller sorts them, at most mirrorMaxLookup, rather than
 // sort in a temporary b-tree.
 var mirrorPatchRowsSQL = `SELECT ` + mirrorRowColumnsSQL + `
@@ -27,12 +27,16 @@ var mirrorPatchRowsSQL = `SELECT ` + mirrorRowColumnsSQL + `
 
 // mirrorPatchSQL reads, for each section kind, the named rows that are
 // members of a section, by the rule its pages read (mirrorSectionSQL),
-// each row probed.
-var mirrorPatchSQL = map[MirrorSectionKind]string{
-	MirrorSectionSprint:  mirrorPatchRowsSQL + mirrorInSprintProbeSQL,
-	MirrorSectionBacklog: mirrorPatchRowsSQL + mirrorBacklog(mirrorInOpenSprintProbeSQL, "?7"),
-	MirrorSectionColumn:  mirrorPatchRowsSQL + mirrorColumnRuleSQL,
-}
+// each row probed; mirrorRegroupedBacklogPatchSQL reads the backlog's
+// under a regrouping.
+var (
+	mirrorPatchSQL = map[MirrorSectionKind]string{
+		MirrorSectionSprint:  mirrorPatchRowsSQL + mirrorInSprintProbeSQL,
+		MirrorSectionBacklog: mirrorPatchRowsSQL + mirrorBacklog(mirrorInOpenSprintProbeSQL, mirrorNotDoneSQL),
+		MirrorSectionColumn:  mirrorPatchRowsSQL + mirrorColumnRuleSQL,
+	}
+	mirrorRegroupedBacklogPatchSQL = mirrorPatchRowsSQL + mirrorBacklog(mirrorInOpenSprintProbeSQL, mirrorRegroupedNotDone("?7"))
+)
 
 // MirrorTotalsAt names the section totals a caller holds: those of a
 // board's Lifetime at its totals Revision (MirrorSectionCounts). The zero
@@ -120,9 +124,10 @@ func (s *Store) ReadMirrorBoardPatch(rootID int64, boardID string, regroup Mirro
 // are members of a valid section of a shown board, in board order.
 func readMirrorPatchSectionTx(tx sqlQueryer, rootID int64, boardID string, board mirrorShownBoard, regroup MirrorRegroup, section MirrorSection,
 	list string) ([]MirrorRow, error) {
-	args := section.args(regroup, rootID, boardID, list, nil, section.ruleArg(), board.estimateResetAt)
+	query, args := section.statement(regroup, mirrorPatchSQL, mirrorRegroupedBacklogPatchSQL,
+		rootID, boardID, list, nil, section.ruleArg(), board.estimateResetAt)
 	var rows []MirrorRow
-	err := scanMirrorRows(tx, mirrorPatchSQL[section.Kind], args, func(r rowScanner) error {
+	err := scanMirrorRows(tx, query, args, func(r rowScanner) error {
 		row, err := scanMirrorRow(r)
 		rows = append(rows, row)
 		return err
