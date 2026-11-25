@@ -303,6 +303,31 @@ func TestProjectSetupKeepsWhatANewerVersionSaved(t *testing.T) {
 	}
 }
 
+// Every section a newer version saved is kept from a save, whatever its
+// name: Start work defaults saved over a newer start_work are refused and
+// write nothing.
+func TestProjectSetupNeverReplacesANewerSection(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	newer := `{"version": 2, "rules": ["any"]}`
+	m.writeSetupFile(t, m.project(), `{"start_work": `+newer+`}`)
+	stored := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
+	if !slices.Equal(stored.Newer, []string{"start_work"}) {
+		t.Fatalf("a setup a newer version saved: %+v", stored)
+	}
+	before, err := os.ReadFile(m.setupPathOf(t, m.project()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaults := Setup{StartWork: []StartWorkDefaults{{Tracker: store.TrackerKindJira, Site: m.conn.Site, Project: "WEB", Branch: "{key}"}}}
+	if _, err := m.svc.SetProjectSetup(m.project(), stored.Revision, defaults); !errors.Is(err, ErrSetupNewer) {
+		t.Fatalf("Start work defaults saved over a newer start_work: %v", err)
+	}
+	if after, _ := os.ReadFile(m.setupPathOf(t, m.project())); string(after) != string(before) {
+		t.Fatalf("a refused save of a newer section wrote the file:\n%s", after)
+	}
+}
+
 // A save is checked whole before anything is written: each refusal names
 // why, and no file is left.
 func TestProjectSetupValidates(t *testing.T) {

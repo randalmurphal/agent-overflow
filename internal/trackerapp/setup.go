@@ -367,12 +367,7 @@ func (s *Service) replaceSetup(slug, revision string, setup Setup) (save SetupSa
 	if after.view.Revision != revision {
 		return SetupSave{Refused: setupChangedSentence, Stored: after.view}, before, after, nil
 	}
-	for _, name := range after.view.Newer {
-		if (name == sectionStatusGroups && len(setup.StatusGroups) > 0) || (name == sectionTicketPins && len(setup.TicketPins) > 0) {
-			return SetupSave{}, before, after, fmt.Errorf("%w: section %s", ErrSetupNewer, name)
-		}
-	}
-	data, err := encodeSetup(setup, after.raw)
+	data, err := encodeSetup(setup, after.raw, after.view.Newer)
 	if err != nil {
 		return SetupSave{}, before, after, err
 	}
@@ -598,13 +593,19 @@ func decodeStrict(data []byte, v any) error {
 
 // encodeSetup is the file of setup and the sections raw keeps: a JSON
 // object of the sections in name order, each kept section as its bytes;
-// nil when it holds no section, which is no file.
-func encodeSetup(setup Setup, raw map[string]json.RawMessage) ([]byte, error) {
+// nil when it holds no section, which is no file. A section of setup that
+// would replace one a newer version saved (newer, SetupView.Newer) is
+// ErrSetupNewer: this is the one place a section is written, so every
+// section, one added later included, keeps that rule.
+func encodeSetup(setup Setup, raw map[string]json.RawMessage, newer []string) ([]byte, error) {
 	sections := map[string]json.RawMessage{}
 	for name, section := range raw {
 		sections[name] = section
 	}
 	add := func(name string, v any) error {
+		if slices.Contains(newer, name) {
+			return fmt.Errorf("%w: section %s", ErrSetupNewer, name)
+		}
 		encoded, err := json.MarshalIndent(v, "  ", "  ")
 		if err != nil {
 			return fmt.Errorf("trackerapp: encode the tracker setup's %s: %w", name, err)
