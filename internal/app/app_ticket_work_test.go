@@ -44,7 +44,7 @@ func TestTicketWorkListsThePullRequestsAndBranchesThatNameItsKey(t *testing.T) {
 
 	storePRList(t, f.a, f.project, prListRepoA, []gitops.PRListRow{
 		prListRow(prListRepoA, 5, func(r *gitops.PRListRow) {
-			r.Title, r.HeadRefName, r.Author.Login, r.PipelineStatus = "Retry cursor", "feature/WEB-1-ui", "user1", "success"
+			r.Title, r.HeadRefName, r.Author.Login, r.Author.Name, r.PipelineStatus = "Retry cursor", "feature/WEB-1-ui", "user1", "User 1", "success"
 		}),
 		prListRow(prListRepoA, 6, func(r *gitops.PRListRow) { r.Title, r.HeadRefName = "WEB-12 other", "other" }),
 	}, time.Minute)
@@ -75,7 +75,7 @@ func TestTicketWorkListsThePullRequestsAndBranchesThatNameItsKey(t *testing.T) {
 		t.Fatalf("work = %+v; want WEB-1's, with no problem", work)
 	}
 	wantPRs := []TicketPullRequest{
-		{Ref: prListRow(prListRepoA, 5, nil).Ref, Title: "Retry cursor", Author: "user1", State: TicketPROpen, CI: "success",
+		{Ref: prListRow(prListRepoA, 5, nil).Ref, Title: "Retry cursor", Author: "User 1", State: TicketPROpen, CI: "success",
 			Branch: "feature/WEB-1-ui", ProjectID: f.project},
 		{Ref: merged, URL: "https://github.com/acme/widgets/pull/9", State: TicketPRMerged, Branch: "web-1-first"},
 	}

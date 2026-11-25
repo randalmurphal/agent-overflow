@@ -10416,6 +10416,11 @@ export class TicketPullRequest {
     "ref": git$0.PRReference;
     "url": string;
     "title"?: string;
+
+    /**
+     * Author is the author's name, else their login, as the Pull
+     * requests page names them.
+     */
     "author"?: string;
 
     /**

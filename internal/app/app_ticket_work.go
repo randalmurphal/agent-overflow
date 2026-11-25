@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -32,10 +33,12 @@ type TicketWork struct {
 // A merged or closed one is the pull request a thread linked to the
 // ticket was last seen with, which records no title, author or CI.
 type TicketPullRequest struct {
-	Ref    gitops.PRReference `json:"ref"`
-	URL    string             `json:"url"`
-	Title  string             `json:"title,omitempty"`
-	Author string             `json:"author,omitempty"`
+	Ref   gitops.PRReference `json:"ref"`
+	URL   string             `json:"url"`
+	Title string             `json:"title,omitempty"`
+	// Author is the author's name, else their login, as the Pull
+	// requests page names them.
+	Author string `json:"author,omitempty"`
 	// State is draft, open, merged or closed.
 	State     string `json:"state"`
 	CI        string `json:"ci,omitempty"`
@@ -205,7 +208,7 @@ func (a *App) storedTicketPullRequests(key string) ([]TicketPullRequest, error) 
 				state = TicketPRDraft
 			}
 			out = append(out, TicketPullRequest{
-				Ref: row.Ref, URL: row.URL, Title: row.Title, Author: row.Author.Login, State: state,
+				Ref: row.Ref, URL: row.URL, Title: row.Title, Author: cmp.Or(row.Author.Name, row.Author.Login), State: state,
 				CI: row.CI, Branch: row.HeadRefName, ProjectID: list.ProjectID,
 			})
 		}
