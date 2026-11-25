@@ -2,9 +2,10 @@
   // Right-aligned action cluster for the chat header, and the home of the
   // pane's git-status subscription.
   //
-  // Desktop: [ PR#123 ] [ +X −Y ] [ git ] [ next thread ] [ take control ]
-  // [ browser ] [ menu ]. Compact: [ +X −Y ] [ next thread ] [ menu ], with
-  // the rest as rows of the menu (ChatHeaderMenu).
+  // Desktop: [ ticket ] [ PR#123 ] [ +X −Y ] [ git ] [ next thread ]
+  // [ take control ] [ browser ] [ menu ]. Compact: [ +X −Y ]
+  // [ next thread ] [ menu ], with the rest as rows of the menu
+  // (ChatHeaderMenu).
   //
   // This component is the pane's attacher on the shared, workspace-keyed
   // git-status store (stores/gitStatusStore.svelte.ts). GitActionsControl and
@@ -28,6 +29,7 @@
   import PrBadge from '../git/PrBadge.svelte';
   import WorkspaceDiffBadge from '../git/WorkspaceDiffBadge.svelte';
   import ChatHeaderMenu from './ChatHeaderMenu.svelte';
+  import ThreadTicketButton from './ThreadTicketButton.svelte';
   import { openPrReview, takeControlState, toggleTakeControl, toggleWorkspaceReview } from './headerPaneActions';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -131,6 +133,9 @@
      header moves it to a second row when the title is at its floor, and
      only a pane narrower than the cluster itself wraps it. -->
 <div class="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1.5 compact:flex-nowrap compact:gap-2">
+  {#if !compact && pane.thread?.ticketLink}
+    <ThreadTicketButton thread={pane.thread} />
+  {/if}
   {#if !compact}
     <!-- Plain click opens the companion review pane on the PR scope;
          mod+click, or a pane with no review subject yet, falls through to

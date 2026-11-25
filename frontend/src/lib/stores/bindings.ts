@@ -649,6 +649,8 @@ export {
   AddTrackerComment,
   EditTrackerComment,
   DeleteTrackerComment,
+  // A thread's ticket link (stores/threadTicketLinks.ts).
+  ClearThreadTicket,
   ListLiveBackgroundTasks,
   GetThreadWakeDetail,
   WakeThreadWakeNow,

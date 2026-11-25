@@ -77,6 +77,7 @@
     withDeleteNote,
   } from '../../stores/assistants.svelte';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
+  import { openLinkedTicket, removeThreadTicketLink } from '../../stores/threadTicketLinks';
 
   interface Props {
     thread: Thread;
@@ -526,6 +527,26 @@
             <MenuItem
               label="Loops and Watches"
               onSelect={() => void openLoopsAndWatches()}
+            />
+          {/if}
+          {#if thread.ticketLink}
+            <MenuItem
+              label="Open Ticket {thread.ticketLink.key}"
+              testId="thread-menu-ticket-open"
+              onSelect={() => {
+                onClose();
+                void openLinkedTicket(thread);
+              }}
+            />
+            <MenuItem
+              label="Remove Ticket Link"
+              testId="thread-menu-ticket-remove"
+              disabled={operateUngranted}
+              title={ungrantedTitle}
+              onSelect={() => {
+                onClose();
+                void removeThreadTicketLink(thread);
+              }}
             />
           {/if}
           {#if canFork}

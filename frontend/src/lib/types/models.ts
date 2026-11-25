@@ -1,5 +1,6 @@
 import type { ProviderID } from './providers';
 import type { ReasoningEffort } from './settings';
+import type { ThreadTicketLink } from '../../../bindings/agent-overflow/internal/store/models';
 
 // Wire shapes re-exported so feature code does not import from the
 // generated bindings tree: what a delete removes with a thread
@@ -137,6 +138,12 @@ export interface Thread {
    * grouped by its `groupId`.
    */
   placement?: ThreadPlacement | '';
+  /**
+   * The tracker ticket the thread is linked to, as its computer reads it
+   * (store.ThreadTicketLink); absent when it has none, and on a computer
+   * older than ticket links.
+   */
+  ticketLink?: ThreadTicketLink | null;
   /**
    * The hidden copy an agent's thread_ask runs in: it takes no message
    * from a person and cannot be kept, and it is deleted once it answers.

@@ -26,7 +26,7 @@ import IssuesPane from './IssuesPane.svelte';
 import { trackerBoardUpdated as applyTrackerBoardEvent, trackerIssueUpdated } from '../../stores/trackerBoardEvents';
 import { registerIssuesCommands } from '../../stores/issuesCommands';
 import { clearCommandRegistry, runCommand, type CommandContext } from '../../stores/commandRegistry.svelte';
-import { hiddenCardFields } from '../../stores/issuesPane.svelte';
+import { hiddenCardFields, requestTicketOpen, takeTicketOpenRequest } from '../../stores/issuesPane.svelte';
 import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
 import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
@@ -1002,6 +1002,55 @@ describe('the ticket in the pane', () => {
     await waitFor(() => expect(votes(mocks.visible, 'sub-')).toEqual([false, true]));
     expect(view.queryByTestId('ticket-screen')).toBeNull();
     await waitFor(() => expect(mocks.release).toHaveBeenCalledWith('ticket-1-1'));
+  });
+
+  describe('a ticket asked for from outside the pane', () => {
+    function ask(connection: string, issue: string, project: string | null, unplaced = vi.fn()) {
+      requestTicketOpen({ ref: { backend: HOME_BACKEND, connection, issue }, seed: { key: `WEB-${issue}`, title: 'Linked', card: null }, project, unplaced });
+      return unplaced;
+    }
+
+    it('opens over the board shown when that board is of its connection, and is taken once', async () => {
+      const mocks = install();
+      const ticket = installTicket();
+      const view = mount();
+      await view.findAllByTestId('issues-card');
+      ask('c1', '77', 'p1');
+      await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('77'));
+      expect(ticket.subscribe).toHaveBeenCalledWith('c1', '77', true);
+      expect(mocks.subscribe).toHaveBeenCalledTimes(1);
+      expect(takeTicketOpenRequest()).toBeNull();
+    });
+
+    it("switches to its connection's board, the asking project's first, without saving it as a pick", async () => {
+      const mocks = install({ choices: [choice('1', { opens_first: true }), choice('5', { connection: 'c2', project: 'p2' }), choice('6', { connection: 'c2', project: 'p3' })] });
+      const ticket = installTicket();
+      const view = mount();
+      await view.findAllByTestId('issues-card');
+      ask('c2', '77', 'p3');
+      await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('77'));
+      expect(mocks.subscribe).toHaveBeenLastCalledWith('p3', 'c2', '6', [], false);
+      expect(ticket.subscribe).toHaveBeenCalledWith('c2', '77', true);
+      expect(picked()).toBeNull();
+    });
+
+    it('is taken by a pane that mounts after it was asked', async () => {
+      install();
+      installTicket();
+      ask('c1', '77', null);
+      const view = mount();
+      await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('77'));
+    });
+
+    it('says so when no board of its connection is listed, and opens nothing', async () => {
+      install();
+      installTicket();
+      const view = mount();
+      await view.findAllByTestId('issues-card');
+      const unplaced = ask('c9', '77', 'p1');
+      await waitFor(() => expect(unplaced).toHaveBeenCalledWith(null));
+      expect(view.queryByTestId('ticket-screen')).toBeNull();
+    });
   });
 
   it('moves a card on the board under the ticket when a status change made in the ticket lands', async () => {
