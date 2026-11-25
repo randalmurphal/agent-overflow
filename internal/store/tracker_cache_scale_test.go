@@ -183,10 +183,10 @@ func readyListedAgainAtScale(t *testing.T, s *Store, rec *mirrorWriteRecorder) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.ReplaceProjectTrackerBoards(defaultTestProjectID, listed[1:]); err != nil {
+	if _, _, err := replaceFromStored(s, defaultTestProjectID, listed[1:]); err != nil {
 		t.Fatal(err)
 	}
-	_, listing, err := s.ReplaceProjectTrackerBoards(defaultTestProjectID, listed)
+	_, listing, err := replaceFromStored(s, defaultTestProjectID, listed)
 	if err != nil || len(listing.Relisted) != 1 {
 		t.Fatalf("listing board 0 again: %+v, %v", listing, err)
 	}

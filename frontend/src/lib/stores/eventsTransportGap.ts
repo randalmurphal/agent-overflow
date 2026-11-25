@@ -47,6 +47,7 @@ import { resendPRCILogFollowsForBackend } from './prReviewCIFollows.svelte';
 import { resyncPipelinesAfterGap, resyncPullsAfterGap } from './pullsStore.svelte';
 import { resyncMcpServersAfterGap } from './mcpServers.svelte';
 import { resyncProviderUpdatesAfterGap } from './providerUpdates.svelte';
+import { applyTrackerConnectionsChanged } from './trackerConnections.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { hasRememberedDraftSnapshot } from './composerDraftSnapshots';
 import { resyncSettings } from './settings.svelte';
@@ -476,6 +477,11 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       }
       return;
     }
+    case 'tracker:connections_updated':
+      // A lost nudge leaves a held list behind until the next one; the
+      // list is one read.
+      applyTrackerConnectionsChanged(backendKeyForOrigin(origin?.backendId ?? ''));
+      return;
     case 'agent-computers:changed':
       // Latest-only invalidation: the following retained event re-reads the
       // open settings page. Its mount/reconnect also reads the whole table.

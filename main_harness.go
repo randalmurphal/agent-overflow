@@ -421,6 +421,10 @@ func olderComputerSurface() (absent map[string]bool, reshape map[string]func(jso
 		"SaveGitBlobImage", "SendExternalThreadMessage", "SetAssistantProjects", "SetThreadPlacement",
 		"SpendProviderAccountReset", "StartNextAssistantThread", "StopThreadAgentIncoming", "StopThreadAgentRows",
 		"StopThreadAgentRow", "ThreadToolWatch", "WakeThreadWakeNow", "WorkflowPauseItemAndEndSessions",
+		"TrackerConnections", "AddTrackerConnection", "RenameTrackerConnection", "SetTrackerConnectionEnabled",
+		"SetTrackerConnectionTokenExpiry", "RemoveTrackerConnection", "VerifyTrackerConnection",
+		"EditTrackerKeyFile", "OpenTrackerTokenPage", "TrackerProjects", "TrackerBoards",
+		"ProjectTrackerBoards", "SetProjectTrackerBoards",
 	} {
 		absent[name] = true
 	}

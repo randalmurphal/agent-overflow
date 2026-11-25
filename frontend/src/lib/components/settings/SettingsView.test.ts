@@ -65,6 +65,7 @@ describe('settings section map', () => {
       'App',
       'Agents',
       'Workspace',
+      'Issues',
       'Remote access',
       'Data',
     ]);
@@ -73,6 +74,7 @@ describe('settings section map', () => {
       ['threads', 'performance', 'keybindings', 'notifications', 'voice', 'updates'],
       ['claude', 'codex', 'agy', 'commit-messages', 'browser', 'thread-tools', 'assistants', 'agent-profiles', 'agent-guide', 'memory'],
       ['projects', 'git', 'editor'],
+      ['tracker-connections', 'tracker-boards'],
       ['systems', 'remote', 'agent-access'],
       ['observability', 'storage'],
     ]);

@@ -1780,6 +1780,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: widenProviderChecksMigrationVersion, Name: "widen_provider_checks", SQL: widenProviderChecksV163SQL, Rebuild: true},
 	{Version: pairingBootstrapMigrationVersion, Name: "pairing_bootstrap", SQL: pairingBootstrapV164SQL},
 	{Version: trackerMirrorMigrationVersion, Name: "tracker_mirror", SQL: trackerMirrorV165SQL},
+	{Version: trackerBoardNamesMigrationVersion, Name: "tracker_board_names", SQL: trackerBoardNamesV166SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

@@ -208,7 +208,8 @@ not final for the update (see History under Sync).
 ## Connections and key files
 
 A connection is one credential for one site: a Jira site with the account's
-email, a Tempo region tied to a Jira connection, or a Linear workspace
+email, Tempo for a Jira connection (its API address, by default the one
+that serves every region), or a Linear workspace
 named by its URL key. Two sites of one tracker coexist. Connections belong
 to the computer and are rows in `tracker_connections`.
 
@@ -218,11 +219,13 @@ to the computer and are rows in `tracker_connections`.
   not secret and are columns.
 - `trackerapp` gives each client a `trackerapi.CredentialSource` that reads
   the key file. The client reads it at first use and after one 401. The
-  source keeps a keyed digest of the token it last read, never the token.
-  A list, a key file open and a verification each read the file once,
-  compare it with that digest and call `ForgetCredential` only when the
-  token changed or the file stopped giving one, so a replaced token is
-  picked up without a restart and a list never disturbs a call in flight.
+  source keeps the digest of the token it last read (`tokenDigest`:
+  SHA-256 over a fixed domain, the connection ID and the token), never the
+  token. A list, a key file open and a verification each read the file
+  once, compare its digest with that one and call `ForgetCredential` only
+  when the token changed or the file stopped giving one, so a replaced
+  token is picked up without a restart and a list never disturbs a call
+  in flight.
   A key file whose token is shorter than `trackerapi.MinSecretLen` is
   refused as a setup problem and nothing is sent.
 - A connection's problem is the outcome of the latest call whose outcome
@@ -230,18 +233,52 @@ to the computer and are rows in `tracker_connections`.
   applies an outcome unless a call begun later on the same client already
   applied its own. A failure that arrives late cannot replace a newer
   success, and nothing is applied once the service stopped.
+- Each outcome is bound to what it is about, where it is applied
+  (`settle`): the token every request of the call carried, a key file that
+  gave no token, no token (no client, or a failure before a token was
+  read), or a token that changed during the call. The connection's
+  credential source hands the client every token it sends and counts the
+  times the token the client may send stopped being the one it held (a
+  list's key file read made it drop the token, or a read handed another);
+  a first token on a client that held none is not a change. The stamp
+  holds that count when the call began (a verification takes it after its
+  key file read), and a different count at the end means either token
+  could have answered: a failure is then about neither and a success
+  records the identity with no token. A
+  verification stores its token's digest beside the identity
+  (`tracker_connections.verified_token`). Each read of the key file for a
+  list or a status compares the token in the file with that evidence: the
+  verification counts while the file holds the token it checked, and a
+  failure is current while it is about that token, about no token, or
+  about a key file read and the file still holds no token. The same token
+  saved again changes nothing; any other token, however the file was
+  written, makes the verification and a token failure history.
 - Adding a connection creates the row and the empty key file. Opening the
   tracker's token page, opening the key file on that computer and
   verifying (one identity call to the tracker) are separate calls. The row
-  records who the token belongs to and when it was verified. A Linear client is bound to the
+  records who the token belongs to, when it was verified and the digest of
+  the token checked. A Linear client is bound to the
   connection's workspace: every key it reads is checked before any request
   carries it, and a key for another workspace fails every read and write.
   Tempo's API has no read that names the Jira site a token belongs to, so
   a Tempo token from another site is not detected. No tracker reports when
   a token expires, so the
   expiry is the date the user enters from the token page. A status call returns
-  the file's state, the last verification and the last failure, never the
-  token.
+  the file's state, the last verification and whether the file holds the
+  token it checked, and the last failure and whether it is current, never
+  the token or its digest.
+- Settings > Issues > Connections runs that sequence as steps on the new
+  row: open the token page, open the key file, the optional expiry date
+  (the start of that day on the screen that entered it) and Check. The
+  steps show while the key file holds no token or one no check has
+  verified, or the current problem is a setup one. A verification not
+  bound to the token in the file (another token, or none recorded) reads
+  as who the connection was last checked as, and a
+  failure that is not current as history after "Before the change". The
+  row compares nothing itself (`trackerConnectionStatus`). The row warns from 14
+  days before the expiry and shows a passed one as an error, each with
+  Renew, which shows the steps again until a check verifies or Done. Away from the computer the two opens are absent
+  and the row names the key file's path to copy.
 - Where a client connects is one function from a connection's kind and
   site to an API origin. Its production value is the site, or Linear's
   fixed origin. A test supplies one that answers a loopback fake, through
@@ -296,8 +333,8 @@ Durable records, restored and kept like other application records:
 
 | Table | Holds |
 |---|---|
-| `tracker_connections` | Kind, site, account, the Jira connection a Tempo connection belongs to, label, on or off, verified identity and time, and the token expiry the user entered. |
-| `project_tracker_boards` | Which boards an app project lists, in order, and which opens first. Keyed by project, connection and board; the project and the connection cascade. |
+| `tracker_connections` | Kind, site, account, the Jira connection a Tempo connection belongs to, label, on or off, verified identity, time and token digest (empty for a verification recorded before v166 or one whose token changed during its call), and the token expiry the user entered. |
+| `project_tracker_boards` | Which boards an app project lists, in order, and which opens first, with the board's name and tracker project as the picker showed them (v166). Keyed by project, connection and board; the project and the connection cascade. |
 | `thread_tickets` | One ticket per thread: tracker kind, site and issue ID with its key and title as last seen. Keyed by thread, cascading with it, cleared when a thread retires to a holder. It names the site, not the connection, so a link survives a connection that is removed and added again. |
 
 The mirror is every table named `tracker_cache_*`. The name is the
@@ -1145,7 +1182,7 @@ selected computer.
 | `TrackerProjects(connectionID)` | `Projects` | read | connection |
 | `TrackerBoards(connectionID, project)` | `Boards` | read | connection |
 | `ProjectTrackerBoards(projectID)` | `ProjectBoards` | read | project |
-| `SetProjectTrackerBoards(projectID, boards)` | `SetProjectBoards` | operate | project |
+| `SetProjectTrackerBoards(projectID, held, boards)` | `SetProjectBoards` | operate | project |
 | `SubscribeTrackerBoard(projectID, connectionID, boardID, sections)` | `SubscribeBoard` | read | project, caller-bound |
 | `TrackerBoard(subscriptionID, sections)` | `Board` | read | home |
 | `TrackerSectionRows(subscriptionID, section, after)` | `SectionRows` | read | home |
@@ -1244,7 +1281,11 @@ selected computer.
   50 MiB and a download over 128 MiB, and says the file is over its
   limit.
 - **A project's boards** are the boards its picker shows, in order, and
-  the one that opens first (store `project_tracker_boards`). The list is
+  the one that opens first (store `project_tracker_boards`), each with
+  its connection's kind, label, state and verified account
+  (`store.ListTrackerBoardChoices`, one join). A board's name is the
+  mirror's once the board has been read and the stored one before that,
+  so a reload names a board that was never opened. The list is
   replaced whole, and the change takes effect before the save answers,
   doing only what the list needs. The store's write names, in its
   transaction, the boards whose last listing it removed and the boards it
@@ -1277,18 +1318,24 @@ selected computer.
   arrive as it lands.
 - **Refusals** a person can cause or see carry a code and a sentence of
   what to do next, with the service's error as their cause
-  (`trackerRefusal`): `tracker_subscription_unknown`,
+  (`trackerRefusal`), on the connection methods as on the board ones:
+  `tracker_connection_invalid` (the site, account, workspace or label
+  refused, with the reason), `tracker_connection_exists`,
+  `tracker_subscription_unknown`,
   `tracker_subscription_ended`, `tracker_subscriptions_full`,
   `tracker_connection_off`, `tracker_connection_missing`,
   `tracker_connection_tempo`, `tracker_board_not_listed`,
   `tracker_board_not_read`, `tracker_page_stale`,
   `tracker_project_missing`, `tracker_boards_refused`,
-  `tracker_attachment_unknown`, `tracker_write_unclear`,
-  `tracker_unsupported` and `tracker_request_invalid` (whose sentence
-  quotes what the request got wrong). A tracker call that failed is
-  `tracker_failed_<kind>` with `trackerapp`'s sentence for its kind
-  (`CallFailure`). The byte routes answer the same code and sentence as
-  JSON with a 400.
+  `tracker_boards_changed` (a board list built from one that is no
+  longer stored: `held`, the list the save was built from, is compared
+  with the stored one, in order with which board opens first, in the
+  store's transaction), `tracker_attachment_unknown`,
+  `tracker_write_unclear`, `tracker_unsupported` and
+  `tracker_request_invalid` (whose sentence quotes what the request got
+  wrong). A tracker call that failed is `tracker_failed_<kind>` with
+  `trackerapp`'s sentence for its kind (`CallFailure`). The byte routes
+  answer the same code and sentence as JSON with a 400.
 
 A board answer is bounded: the subscribe returns the board's structure,
 its sprints and the cards of the sections on screen, and a section's
@@ -1499,8 +1546,16 @@ tracker tables and their accessors, `trackerfake`, and `trackerapp` with
 its sync, pumps, reads and writes; the connection, board, ticket, write
 and form-read bound methods, the ticket file routes,
 `tracker:board_updated` and `tracker:issue_updated`, the app's calls at
-start, and the harness's fake trackers (`HarnessTrackerSeed`). Not built,
-owed by the app layer:
+start, the harness's fake trackers (`HarnessTrackerSeed`), and the Issues
+settings screen (Settings > Issues: Connections and Boards), with the
+`bindings.ts` wrappers of the connection methods, the two picker lists,
+`ProjectTrackerBoards` and `SetProjectTrackerBoards`, and their stores
+(`stores/trackerConnections.svelte.ts`,
+`stores/trackerProjectBoards.svelte.ts`). A failure of the linked-issues
+loop after boot reaches only the log (`Deps.LoopFailed`): its failures
+are outside the tracker (a store error, the cleanup), and a tracker
+failure of the loop's sync shows on its connection's row as its problem.
+Not built, owed by the app layer:
 
 - The board and ticket screens: the `bindings.ts` wrappers of the board,
   ticket, write and form-read methods and the two events' TypeScript
@@ -1509,14 +1564,6 @@ owed by the app layer:
 - The Time screen's bound methods: `Worklogs`, `RefreshWorklogs`,
   `EditWorklog` and `DeleteWorklog`. `EditSprint` is bound when a screen
   edits a sprint.
-- A failure of the linked-issues loop after boot reaches only the log
-  (`Deps.LoopFailed`); its user-facing surface is owed with the Issues
-  settings screen.
-- The sequence that follows adding a connection: open the token page,
-  open the key file, verify. The three bound methods exist; the sequence
-  is the frontend's.
-- The warning before a token lapses, from the expiry the user entered,
-  its only source.
 - A thread's ticket link carried by a fork, which starts with its
   source's link, and by a transfer, whose header carries it and whose
   receiver replaces the link it held (a receiver too old to read it drops
