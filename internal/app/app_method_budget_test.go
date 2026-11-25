@@ -130,6 +130,8 @@ var methodServerBounds = map[string]time.Duration{
 	"VoteTrackerPoker":          transport.MethodBudget("VoteTrackerPoker"),
 	"RevealTrackerPoker":        transport.MethodBudget("RevealTrackerPoker"),
 	"ClearTrackerPokerVotes":    transport.MethodBudget("ClearTrackerPokerVotes"),
+	// trackerRun: the attachment's stream into its file, cut at the budget.
+	"SaveTrackerAttachment": transport.MethodBudget("SaveTrackerAttachment"),
 }
 
 // hooked is one git or forge CLI command that runs a user's hook, stopped.

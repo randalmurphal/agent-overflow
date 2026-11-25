@@ -5,7 +5,9 @@ import {
   TransferUnavailableError,
   fetchAttachmentBytes,
   fetchTicketedBytes,
+  fetchTrackerAttachmentBytes,
   uploadAttachmentBytes,
+  uploadTrackerAttachmentBytes,
 } from './attachmentTransfer';
 import { HOME_BACKEND } from './backendKey';
 import { setHomeEndpoint, storeBackendEndpoint } from './homeEndpoint';
@@ -142,6 +144,54 @@ describe('fetchAttachmentBytes', () => {
 
     await expect(fetchAttachmentBytes('thr-1', 'att-1'))
       .rejects.toThrow(/Could not load image/);
+  });
+});
+
+describe('a tracker attachment', () => {
+  const view = { parts: [{ step: 'attach', state: 'applied' }] };
+
+  it('mints for the file on its connection and answers the write the PUT answered', async () => {
+    const mint = setBindingMock('MintTrackerAttachmentUploadTicket', () => '/attachments/tracker/upload?ticket=up');
+    answerWith(() => new Response(JSON.stringify(view), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    const file = new File([PNG], 'report.pdf', { type: 'application/pdf' });
+
+    await expect(uploadTrackerAttachmentBytes(HOME_BACKEND, 'conn-1', '10101', file)).resolves.toEqual(view);
+
+    expect(mint).toHaveBeenCalledWith('conn-1', '10101', 'report.pdf', file.size);
+    expect(requests[0]?.method).toBe('PUT');
+    expect(requests[0]?.url).toBe('http://page.test/attachments/tracker/upload?ticket=up');
+    expect(new Uint8Array(await requests[0]!.arrayBuffer())).toEqual(PNG);
+  });
+
+  it('throws the route\'s sentence and code for a refusal, whatever its length', async () => {
+    setBindingMock('MintTrackerAttachmentUploadTicket', () => '/attachments/tracker/upload?ticket=up');
+    // Longer than the 200 characters a plain line is quoted up to.
+    const message = 'the file is now 5 bytes, not the 4 it was when its upload was prepared; select the file again and attach it'.padEnd(240, '.');
+    answerWith(() => new Response(JSON.stringify({ code: 'tracker_upload_size_changed', message }), { status: 400, headers: { 'Content-Type': 'application/json' } }));
+
+    const refused = await uploadTrackerAttachmentBytes(HOME_BACKEND, 'conn-1', '10101', new File([PNG], 'a.pdf')).catch((err: unknown) => err);
+
+    expect(refused).toBeInstanceOf(TransferRefusedError);
+    expect(refused).toMatchObject({ status: 400, code: 'tracker_upload_size_changed', message });
+  });
+
+  it('reads one attachment through the subscription\'s download ticket', async () => {
+    const mint = setBindingMock('MintTrackerAttachmentDownloadTicket', () => '/attachments/tracker/att-1?ticket=down');
+    answerWith(() => new Response(PNG, { status: 200, headers: { 'Content-Type': 'application/octet-stream' } }));
+
+    const blob = await fetchTrackerAttachmentBytes(HOME_BACKEND, 'sub-1', 'att-1');
+
+    expect(mint).toHaveBeenCalledWith('sub-1', 'att-1');
+    expect(new Uint8Array(await blob.arrayBuffer())).toEqual(PNG);
+    expect(new URL(requests[0]!.url).pathname).toBe('/attachments/tracker/att-1');
+  });
+
+  it('says what the tracker answered when a download is refused before its first byte', async () => {
+    setBindingMock('MintTrackerAttachmentDownloadTicket', () => '/attachments/tracker/att-1?ticket=down');
+    answerWith(() => new Response(JSON.stringify({ code: 'tracker_unavailable', message: 'Jira answered 403 for this attachment' }), { status: 400 }));
+
+    await expect(fetchTrackerAttachmentBytes(HOME_BACKEND, 'sub-1', 'att-1'))
+      .rejects.toMatchObject({ code: 'tracker_unavailable', message: 'Could not load the attachment: Jira answered 403 for this attachment' });
   });
 });
 

@@ -438,6 +438,17 @@ const ISSUES_LAZY_MODULES = [
   'lib/utils/ticketBranch.ts',
 ] as const;
 
+// Rule 4c — the ticket's parts used by few load on first use: planning
+// poker when its section opens, the link form and the Log time form when
+// they open. The ticket is its own chunk (IssuesPane.svelte's dynamic
+// import), and a static import from anything it reaches folds the part in.
+const TICKET_SCREEN = join(SRC_ROOT, 'lib', 'components', 'issues', 'TicketScreen.svelte');
+const TICKET_FIRST_USE_MODULES = [
+  'lib/components/issues/TicketPoker.svelte',
+  'lib/components/issues/TicketLinkForm.svelte',
+  'lib/components/issues/WorklogForm.svelte',
+] as const;
+
 // ---------------------------------------------------------------------------
 // Rule 5 — an event-driven refresh uses the scheduler, never a plain debounce.
 //
@@ -1149,7 +1160,9 @@ describe('architecture', () => {
     );
   });
 
-  it('keeps the Issues stores out of the startup graph', () => {
+  /** The modules `entryFile`'s static, non-type imports reach, each with
+   * the chain that reached it first. */
+  function staticGraph(entryFile: string): { reached: (path: string) => boolean; chain: (path: string) => string } {
     // An import names a module without its extension, and `x.svelte.ts` as
     // `x.svelte`: every name a file can be imported by leads to it.
     const byModule = new Map<string, (typeof sources)[number][]>();
@@ -1158,8 +1171,8 @@ describe('architecture', () => {
       if (source.file.endsWith('.svelte.ts')) names.push(source.file.slice(0, -'.svelte.ts'.length));
       for (const name of names) byModule.set(name, [...(byModule.get(name) ?? []), source]);
     }
-    const entry = sources.find((source) => source.file === APP_ENTRY);
-    expect(entry, 'main.ts is the app entry the walk starts from').toBeDefined();
+    const entry = sources.find((source) => source.file === entryFile);
+    expect(entry, `${entryFile} is where the walk starts`).toBeDefined();
     // Each module reached, with the module that reached it first.
     const reachedFrom = new Map<string, string>([[entry!.path, '']]);
     const queue = [entry!];
@@ -1176,50 +1189,47 @@ describe('architecture', () => {
         }
       }
     }
-    // Without this the rule would pass over a walk that reached nothing.
-    expect(reachedFrom.has('lib/stores/trackerBoardEvents.ts'), 'the walk reaches the registration module').toBe(true);
-    const chain = (path: string): string => {
-      const out = [path];
-      for (let at = reachedFrom.get(path); at; at = reachedFrom.get(at)) out.push(at);
-      return out.reverse().join(' → ');
+    return {
+      reached: (path) => reachedFrom.has(path),
+      chain: (path) => {
+        const out = [path];
+        for (let at = reachedFrom.get(path); at; at = reachedFrom.get(at)) out.push(at);
+        return out.reverse().join(' → ');
+      },
     };
-    const offenders = ISSUES_LAZY_MODULES.filter((path) => reachedFrom.has(path)).map(chain);
+  }
+
+  it('keeps the Issues stores out of the startup graph', () => {
+    const graph = staticGraph(APP_ENTRY);
+    // Without this the rule would pass over a walk that reached nothing.
+    expect(graph.reached('lib/stores/trackerBoardEvents.ts'), 'the walk reaches the registration module').toBe(true);
+    const offenders = ISSUES_LAZY_MODULES.filter(graph.reached).map(graph.chain);
     expect(
       offenders,
       'An Issues store is in the startup graph. Reach it through stores/trackerBoardEvents.ts or the pane\'s dynamic import; see frontend/CLAUDE.md → Performance-sensitive rules.',
     ).toEqual([]);
   });
 
+  it('keeps planning poker, the link form and the Log time form out of the ticket\'s chunk', () => {
+    const graph = staticGraph(TICKET_SCREEN);
+    expect(graph.reached('lib/components/issues/TicketLinks.svelte'), 'the walk reaches the linked tickets').toBe(true);
+    const offenders = TICKET_FIRST_USE_MODULES.filter(graph.reached).map(graph.chain);
+    expect(
+      offenders,
+      'A ticket part that loads on first use is in the ticket\'s chunk. Load it with a dynamic import at its section or form; see frontend/CLAUDE.md → Performance-sensitive rules.',
+    ).toEqual([]);
+  });
+
   it('keeps the week cache out of what the log form imports', () => {
-    // The ticket screen imports the log form; the weeks the Time screen
+    // A ticket's Log time loads the log form; the weeks the Time screen
     // holds, and their listeners, load with the Time screen alone.
-    const byModule = new Map<string, (typeof sources)[number][]>();
-    for (const source of sources) {
-      const names = [source.file.replace(/\.(ts|svelte)$/, '')];
-      if (source.file.endsWith('.svelte.ts')) names.push(source.file.slice(0, -'.svelte.ts'.length));
-      for (const name of names) byModule.set(name, [...(byModule.get(name) ?? []), source]);
-    }
-    const form = sources.find((source) => source.path === 'lib/components/issues/WorklogForm.svelte');
-    expect(form, 'the walk starts from the log form').toBeDefined();
-    const reached = new Map<string, string>([[form!.path, '']]);
-    const queue = [form!];
-    while (queue.length > 0) {
-      const source = queue.shift()!;
-      for (const parsed of source.imports) {
-        if (parsed.dynamic || parsed.typeOnly) continue;
-        const local = resolveLocalModule(source.file, parsed.specifier);
-        if (local === null) continue;
-        for (const target of byModule.get(local) ?? []) {
-          if (reached.has(target.path)) continue;
-          reached.set(target.path, source.path);
-          queue.push(target);
-        }
-      }
-    }
-    expect(reached.has('lib/stores/trackerTimeWrites.svelte.ts'), 'the walk reaches the worklog writes').toBe(true);
-    const chain: string[] = [];
-    for (let at: string | undefined = 'lib/stores/trackerTime.svelte.ts'; at && reached.has(at); at = reached.get(at)) chain.unshift(at);
-    expect(chain, 'The log form imports the week cache; the Time host owns the weeks and their invalidation.').toEqual([]);
+    const graph = staticGraph(join(SRC_ROOT, 'lib', 'components', 'issues', 'WorklogForm.svelte'));
+    expect(graph.reached('lib/stores/trackerTimeWrites.svelte.ts'), 'the walk reaches the worklog writes').toBe(true);
+    const weeks = 'lib/stores/trackerTime.svelte.ts';
+    expect(
+      graph.reached(weeks) ? [graph.chain(weeks)] : [],
+      'The log form imports the week cache; the Time host owns the weeks and their invalidation.',
+    ).toEqual([]);
   });
 
   it('keeps event-driven refresh on the rate-bounded scheduler', () => {

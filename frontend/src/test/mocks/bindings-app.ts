@@ -166,6 +166,10 @@ const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
   // (stores/trackerBoardChoices): none for a computer whose projects list
   // no board (store ListTrackerBoardChoices).
   TrackerBoardChoices: async () => [],
+  // Whether a Jira ticket's site has planning poker, asked when the ticket
+  // opens (stores/trackerTicket askTrackerPokerSupport): a site whose
+  // add-on listing names no poker answers false (app_tracker_poker.go).
+  TrackerPokerSupport: async () => ({ available: false }),
   // A week of the Time screen, read when it shows (stores/trackerTime): no
   // worklogs, and every day unread, as a computer that never read the
   // person's time answers (trackerapp Service.Worklogs).
@@ -1192,3 +1196,4 @@ export const TrackerPoker = dispatch('TrackerPoker');
 export const VoteTrackerPoker = dispatch('VoteTrackerPoker');
 export const RevealTrackerPoker = dispatch('RevealTrackerPoker');
 export const ClearTrackerPokerVotes = dispatch('ClearTrackerPokerVotes');
+export const SaveTrackerAttachment = dispatch('SaveTrackerAttachment');

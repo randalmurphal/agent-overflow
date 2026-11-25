@@ -1696,7 +1696,9 @@ estimate**: a person sets the agreed estimate as any other edit
   is a read by connection, not a field of the ticket subscribe's answer,
   because a subscribe answers from the mirror with no tracker call. A
   listing that fails answers `available: false` with its failure, which
-  is poker's alone and settles nothing of the connection.
+  is poker's alone and settles nothing of the connection: the ticket
+  shows it in its poker section with Retry, and the client holds only an
+  answer, so the next ticket opened on the connection asks again.
 - **The votes follow a ticket while its poker panel is open.**
   `FollowTrackerPoker(subscriptionID, true)` makes that ticket handle a
   follower. While at least one handle both follows and shows the ticket,
@@ -1995,8 +1997,11 @@ board subscription's methods and `tracker:board_updated`'s TypeScript
 type, and its ticket screen, with the wrappers of the ticket
 subscription's methods, `TrackerComments`, the issue and comment writes,
 `TrackerAssignableUsers` and `TrackerChoices`, and
-`tracker:issue_updated`'s TypeScript type, its Time screen, with the
-wrappers of `TrackerWorklogs`, `RefreshTrackerWorklogs`,
+`tracker:issue_updated`'s TypeScript type, and the ticket's attachments,
+links, planning poker and Log time, with the wrappers of the attachment
+mints, `SaveTrackerAttachment`, `TrackerLinkTypes`, `LinkTrackerIssues`,
+`UnlinkTrackerIssues` and the planning poker methods, its Time screen,
+with the wrappers of `TrackerWorklogs`, `RefreshTrackerWorklogs`,
 `AddTrackerWorklog`, `EditTrackerWorklog`, `DeleteTrackerWorklog`,
 `TrackerLookup` and `TrackerSearch` (`components/issues/AGENTS.md`),
 and the thread link's screens: the header's ticket, its menus, the
@@ -2014,17 +2019,14 @@ are outside the tracker (a store error, the cleanup), and a tracker
 failure of the loop's sync shows on its connection's row as its problem.
 Not built, owed by the app layer:
 
-- The ticket screen's attachments, links, planning poker and Log time,
-  and a ticket in a pane of its own: the `bindings.ts` wrappers of the
-  attachment mints, `TrackerLinkTypes`, `LinkTrackerIssues`,
-  `UnlinkTrackerIssues` and the planning poker methods ship with them.
+- A ticket in a pane of its own.
 - A sprint edit on the Backlog screen: the `bindings.ts` wrapper of
   `EditTrackerSprint` ships with it.
 - The rest of the project's tracker setup, each a section of its file:
   card marks, draft settings and what agents may do, and the Setup pages
-  that edit the sections, Start work defaults among them. A query that needs part of the setup
-  takes it as a bound argument, as the status groups are; nothing of the
-  file is copied into the mirror.
+  that edit the sections, Start work defaults among them. A query that
+  needs part of the setup takes it as a bound argument, as the status
+  groups are; nothing of the file is copied into the mirror.
 - The time-draft posting path (Agent tools).
 - The agent tools (`internal/trackertools`).
 - Searching the forge by key for a pull request outside the stored list.

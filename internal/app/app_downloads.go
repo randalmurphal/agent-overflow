@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,11 +49,21 @@ func (a *App) downloadsDir() (string, error) {
 // the bytes were classified as; it supplies the extension a name without
 // one needs to open in the right program.
 func (a *App) saveDownload(name, mimeType string, data []byte) (string, error) {
+	return a.saveDownloadFrom(name, mimeType, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	})
+}
+
+// saveDownloadFrom is saveDownload for bytes that write streams into the
+// file as they arrive, so a save of any size holds none of it in memory. A
+// write that fails leaves no file.
+func (a *App) saveDownloadFrom(name, mimeType string, write func(io.Writer) error) (string, error) {
 	dir, err := a.downloadsDir()
 	if err != nil {
 		return "", err
 	}
-	return writeWithoutOverwriting(dir, downloadFileName(name, mimeType), data)
+	return writeWithoutOverwriting(dir, downloadFileName(name, mimeType), write)
 }
 
 // maxDownloadCollisions bounds the " (2)" walk. A directory already
@@ -63,8 +74,8 @@ const maxDownloadCollisions = 200
 // writeWithoutOverwriting creates the file exclusively, so a name already
 // in Downloads is never clobbered: the suffix walk is the same " (2)"
 // convention a browser uses, and O_EXCL is what makes the check and the
-// create one operation rather than a race.
-func writeWithoutOverwriting(dir, name string, data []byte) (string, error) {
+// create one operation rather than a race. write fills the file.
+func writeWithoutOverwriting(dir, name string, write func(io.Writer) error) (string, error) {
 	extension := filepath.Ext(name)
 	stem := strings.TrimSuffix(name, extension)
 	for attempt := 1; attempt <= maxDownloadCollisions; attempt++ {
@@ -80,7 +91,7 @@ func writeWithoutOverwriting(dir, name string, data []byte) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("save file: %w", err)
 		}
-		if _, err := file.Write(data); err != nil {
+		if err := write(file); err != nil {
 			return "", discardPartialDownload(file, path, err)
 		}
 		if err := file.Close(); err != nil {

@@ -135,16 +135,21 @@ export class LossConsent {
 
 /** Sends a write once on `backend`, the computer holding its connection,
  * and answers its outcome; `computer` names that computer in the sentence
- * of an answer the connection lost. Nothing retries. */
+ * of an answer the connection lost. A write sent other than as one call
+ * (an upload's bytes) says what its own failures mean through `failure`,
+ * which answers null for one it does not know. Nothing retries. */
 export async function sendWrite(
   backend: string,
   computer: string,
   subject: WriteSubject,
   send: () => Promise<WriteView>,
+  failure?: (err: unknown) => WriteOutcome | null,
 ): Promise<WriteOutcome> {
   try {
     return writeOutcome(await withBackendTarget(backend, send), subject);
   } catch (err) {
+    const known = failure?.(err);
+    if (known) return known;
     return err instanceof DisconnectedError
       ? { kind: 'lost', message: lostWriteSentence(computer, subject) }
       : { kind: 'failed', error: err };

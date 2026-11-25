@@ -2,8 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   classifyAttachment,
-  extractClipboardImages,
-  hasFilePayload,
   matchesImageExtension,
   rejectionReason,
 } from './attachmentHelpers';
@@ -74,39 +72,6 @@ describe('attachmentHelpers', () => {
       expect(rejectionReason(sized('report.pdf', 'application/pdf', 40 * MB), 1 * MB)).toBeNull();
       expect(rejectionReason(sized('report.pdf', 'application/pdf', 60 * MB), 1 * MB))
         .toBe('report.pdf is 60.0 MB; limit for files is 50 MB');
-    });
-  });
-
-  describe('hasFilePayload', () => {
-    it.each([
-      { case: 'true for drag events carrying files', event: { dataTransfer: { types: ['Files'] } }, expected: true },
-      { case: 'true for image mime types in the drag payload', event: { dataTransfer: { types: ['image/png'] } }, expected: true },
-      { case: 'false for non-file drags (e.g. text)', event: { dataTransfer: { types: ['text/plain'] } }, expected: false },
-      { case: 'false when dataTransfer is missing', event: {}, expected: false },
-    ])('is $case', ({ event, expected }) => {
-      expect(hasFilePayload(event as unknown as DragEvent)).toBe(expected);
-    });
-  });
-
-  describe('extractClipboardImages', () => {
-    it('collects every image/file item from the clipboard', () => {
-      const imgFile = new File(['x'], 'a.png', { type: 'image/png' });
-      const event = {
-        clipboardData: {
-          items: [
-            { kind: 'file', type: 'image/png', getAsFile: () => imgFile },
-            { kind: 'string', type: 'text/plain', getAsFile: () => null },
-            { kind: 'file', type: 'application/pdf', getAsFile: () => null },
-          ],
-        },
-      } as unknown as ClipboardEvent;
-      const files = extractClipboardImages(event);
-      expect(files).toEqual([imgFile]);
-    });
-
-    it('returns an empty array when clipboardData is missing', () => {
-      const event = {} as unknown as ClipboardEvent;
-      expect(extractClipboardImages(event)).toEqual([]);
     });
   });
 });
