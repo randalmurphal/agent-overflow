@@ -170,18 +170,24 @@ describe('the board subscription', () => {
   it('pins the subscribe and every handle call to the computer that listed the board', async () => {
     stageBackend();
     const mocks = install();
+    // A column held in part, so a page is read too.
+    mocks.board.mockImplementation(async () => {
+      (mocks.routed.TrackerBoard ??= []).push(String(takePinnedBackend() ?? ''));
+      return view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true });
+    });
     const ref = { ...REF, backend: 'laptop' };
     const board = attachTrackerBoard(ref);
     await flush();
     applyTrackerBoardEvent(event(11, { changed: ['1'] }), 'laptop');
-    loadMoreOfSection(board.key, SPRINT);
+    await flush();
+    loadMoreOfSection(board.key, COLUMN);
     await refreshTrackerBoard(board.key);
     setTrackerBoardShown(board.key, false);
     await flush();
     board.release();
     await flush();
-    for (const name of ['SubscribeTrackerBoard', 'TrackerBoard', 'TrackerBoardPatch', 'RefreshTrackerSubscription', 'SetTrackerSubscriptionVisible', 'ReleaseTrackerSubscription']) {
-      expect(mocks.routed[name], name).toEqual(mocks.routed[name].map(() => 'laptop'));
+    for (const name of ['SubscribeTrackerBoard', 'TrackerBoard', 'TrackerBoardPatch', 'TrackerSectionRows', 'RefreshTrackerSubscription', 'SetTrackerSubscriptionVisible', 'ReleaseTrackerSubscription']) {
+      expect(mocks.routed[name], name).toEqual(mocks.routed[name]?.map(() => 'laptop'));
       expect(mocks.routed[name].length, name).toBeGreaterThan(0);
     }
     // A frame from another computer for the same scope is not this board's.
@@ -301,6 +307,10 @@ describe('the board subscription', () => {
     await flush();
     expect(mocks.board.mock.calls.slice(-2).map((c) => c[1])).toEqual([[SPRINT], [{ kind: 'sprint', sprint: '9' }]]);
     expect(heldIds(board)).toEqual([['7']]);
+    // The first paint's read, the read again, and one more for the sprint
+    // that started between the two: no further read follows.
+    await flush();
+    expect(mocks.board).toHaveBeenCalledTimes(3);
     board.release();
   });
 

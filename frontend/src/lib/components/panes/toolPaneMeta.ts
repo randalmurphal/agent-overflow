@@ -15,7 +15,7 @@ export interface ToolPaneMeta {
   icon: Component<any>;
   /** The tools row lists the tool only while an attached computer grants
    * this scope. */
-  scope?: Scope;
+  scope?: Exclude<Scope, 'host'>;
 }
 
 export const TOOL_PANES: readonly ToolPaneMeta[] = [

@@ -201,7 +201,7 @@ describe('the Issues pane', () => {
     });
     const view = mount();
     const notice = await view.findByTestId('issues-board-failure');
-    expect(notice).toHaveTextContent(/^The tracker refused the key\. Last read/);
+    expect(notice.textContent).toMatch(/^The tracker refused the key\. Last read/);
     await fireEvent.click(view.getByTestId('issues-refresh'));
     const answered = await view.findByTestId('issues-refresh-notice');
     expect(answered).toHaveTextContent('The board was read 5 seconds ago, so it was not read again.');
