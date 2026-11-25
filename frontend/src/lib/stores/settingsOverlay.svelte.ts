@@ -22,6 +22,9 @@ import {
 let open = $state(false);
 let section = $state<SettingsSection>(DEFAULT_SETTINGS_SECTION);
 let computer = $state<BackendKey | null>(null);
+// The project a deep link asked the Boards page to show, until the page
+// takes it.
+let boardsProject = $state<string | null>(null);
 
 export function getSettingsComputer(): BackendKey | null { return computer; }
 export function setSettingsComputer(backend: BackendKey): void { computer = backend; }
@@ -64,7 +67,27 @@ export function openSettingsOverlay(nextSection: SettingsSection = section, back
   computer = backend ?? null;
   // A deep link to a specific section lands on that page directly.
   railOpen = target === DEFAULT_SETTINGS_SECTION;
+  boardsProject = null;
   open = true;
+}
+
+/**
+ * Opens Settings > Issues > Boards on `backend`, the computer that holds
+ * the project, with `projectId` chosen.
+ */
+export function openTrackerBoardsSettings(projectId: string, backend: BackendKey): void {
+  openSettingsOverlay('tracker-boards', backend);
+  boardsProject = projectId;
+}
+
+/** The project a deep link asked the Boards page for, if the page has not taken it. Reactive. */
+export function requestedTrackerBoardsProject(): string | null {
+  return boardsProject;
+}
+
+/** The Boards page has chosen the requested project. */
+export function takeRequestedTrackerBoardsProject(): void {
+  boardsProject = null;
 }
 
 /**
@@ -111,4 +134,5 @@ export function resetSettingsOverlayForTest(): void {
   section = DEFAULT_SETTINGS_SECTION;
   railOpen = true;
   computer = null;
+  boardsProject = null;
 }

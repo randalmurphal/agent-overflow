@@ -23,7 +23,7 @@ func TestATokenTooShortIsASetupProblem(t *testing.T) {
 	f.writeToken(conn, "abc123")
 	want := "the Jira API token file holds too little to be a token; paste the whole token into it"
 	got := f.verify(conn.ID)
-	if got.Problem == nil || *got.Problem != (Failure{Kind: FailureSetup, Message: want}) {
+	if got.Problem == nil || got.Problem.Failure != (Failure{Kind: FailureSetup, Message: want}) {
 		t.Fatalf("Verify of a token too short = %+v", got.Problem)
 	}
 	list, err := f.svc.Connections()
@@ -232,7 +232,7 @@ func TestAVerifyAnsweredAfterTheTokenChangedIsTransient(t *testing.T) {
 	close(release)
 	got := <-done
 	want := Failure{Kind: FailureTransient, Message: "Jira answered as the token in the key file was being replaced; try again"}
-	if got.Problem == nil || *got.Problem != want || got.VerifiedAt != 0 || f.row(conn.ID).VerifiedAt != 0 {
+	if got.Problem == nil || got.Problem.Failure != want || got.VerifiedAt != 0 || f.row(conn.ID).VerifiedAt != 0 {
 		t.Fatalf("a Verify answered after the token changed = %+v, problem %v", got.TrackerConnection, got.Problem)
 	}
 	if got := f.verify(conn.ID); got.Problem != nil || got.VerifiedAt == 0 {

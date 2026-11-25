@@ -92,6 +92,8 @@ const SERVICE_UPDATE_STORE = 'lib/stores/serviceUpdate.svelte.ts';
 const DEV_SERVERS_STORE = 'lib/stores/devServers.svelte.ts';
 const PROVIDER_UPDATES_STORE = 'lib/stores/providerUpdates.svelte.ts';
 const THREADS_STORE = 'lib/stores/threads.svelte.ts';
+const TRACKER_CONNECTIONS_STORE = 'lib/stores/trackerConnections.svelte.ts';
+const TRACKER_PROJECT_BOARDS_STORE = 'lib/stores/trackerProjectBoards.svelte.ts';
 
 const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   BrowserCompanionPaneAttach: owned(BROWSER_COMPANION_STORE, 'attachBrowserCompanion()'),
@@ -224,6 +226,21 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   ListAvailableEditors: owned(EDITORS_STORE, 'startLoad()'),
   GetEditorSettings: owned(EDITORS_STORE, 'startLoad()'),
   SetEditorSettings: owned(EDITORS_STORE, 'setEditorPreference()'),
+  // A computer's tracker connection list has one writer, its read, which
+  // every action waits for; a caller of an action outside the store would
+  // leave the list showing the state before it.
+  TrackerConnections: owned(TRACKER_CONNECTIONS_STORE, 'HeldConnections.fetch()'),
+  AddTrackerConnection: owned(TRACKER_CONNECTIONS_STORE, 'addTrackerConnection()'),
+  RenameTrackerConnection: owned(TRACKER_CONNECTIONS_STORE, 'renameTrackerConnection()'),
+  SetTrackerConnectionEnabled: owned(TRACKER_CONNECTIONS_STORE, 'setTrackerConnectionEnabled()'),
+  SetTrackerConnectionTokenExpiry: owned(TRACKER_CONNECTIONS_STORE, 'setTrackerConnectionTokenExpiry()'),
+  RemoveTrackerConnection: owned(TRACKER_CONNECTIONS_STORE, 'removeTrackerConnection()'),
+  VerifyTrackerConnection: owned(TRACKER_CONNECTIONS_STORE, 'verifyTrackerConnection()'),
+  EditTrackerKeyFile: owned(TRACKER_CONNECTIONS_STORE, 'editTrackerKeyFile()'),
+  // A project's board list is written by its read and by its save's
+  // answer, one save at a time.
+  ProjectTrackerBoards: owned(TRACKER_PROJECT_BOARDS_STORE, 'HeldBoards.read()'),
+  SetProjectTrackerBoards: owned(TRACKER_PROJECT_BOARDS_STORE, 'HeldBoards.save()'),
 };
 
 // Every home-routed browser binding the window can call, and how a call of

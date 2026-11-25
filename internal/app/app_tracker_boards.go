@@ -8,6 +8,7 @@ import (
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/pump"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/transport"
@@ -84,10 +85,11 @@ func trackerRunError(ctx context.Context, err error) error {
 }
 
 // ProjectTrackerBoards lists the boards a project's board picker shows, in
-// its order, and which opens first.
+// its order, and which opens first, each named and with its connection's
+// kind, label and state.
 //
 //ao:scope tracker:read
-func (a *App) ProjectTrackerBoards(ctx context.Context, projectID string) ([]trackerapp.ProjectBoard, error) {
+func (a *App) ProjectTrackerBoards(ctx context.Context, projectID string) ([]trackerapp.BoardChoice, error) {
 	svc, err := a.trackerService()
 	if err != nil {
 		return nil, err
@@ -97,17 +99,20 @@ func (a *App) ProjectTrackerBoards(ctx context.Context, projectID string) ([]tra
 }
 
 // SetProjectTrackerBoards makes boards, in order, the boards a project's
-// picker shows, and answers the list stored. A board it leaves out that
-// no other project lists stops being kept on this computer, and its open
-// views end.
+// picker shows, and answers the list stored as ProjectTrackerBoards reads
+// it. held is the list the picker showed and built boards from; a save
+// built from a list that is no longer the stored one is refused. A board
+// it adds is stored with the name and tracker project the picker showed.
+// A board it leaves out that no other project lists stops being kept on
+// this computer, and its open views end.
 //
 //ao:scope tracker:operate
-func (a *App) SetProjectTrackerBoards(ctx context.Context, projectID string, boards []trackerapp.ProjectBoard) ([]trackerapp.ProjectBoard, error) {
+func (a *App) SetProjectTrackerBoards(ctx context.Context, projectID string, held []trackerapp.BoardRef, boards []trackerapp.ProjectBoard) ([]trackerapp.BoardChoice, error) {
 	svc, err := a.trackerService()
 	if err != nil {
 		return nil, err
 	}
-	out, err := svc.SetProjectBoards(projectID, boards)
+	out, err := svc.SetProjectBoards(projectID, held, boards)
 	return out, trackerError(err)
 }
 
@@ -289,10 +294,15 @@ func trackerError(err error) error {
 // kind (tracker_failed_<kind>) with trackerapp's sentence for it, unless
 // it refused the input or the request before sending it.
 func trackerRefusal(err error) (code, message string) {
+	var invalid *trackerapp.InvalidError
 	failed, isCall := errors.AsType[*trackerapp.CallFailure](err)
 	switch {
 	case err == nil:
 		return "", ""
+	case errors.As(err, &invalid):
+		return "tracker_connection_invalid", invalid.Reason
+	case errors.Is(err, store.ErrTrackerConnectionExists):
+		return "tracker_connection_exists", "this computer already has that connection (the same Jira site and email, the same Linear workspace, or Tempo for that Jira connection); use the one listed"
 	case errors.Is(err, tracker.ErrUnsupported):
 		return "tracker_unsupported", "this tracker does not support that"
 	case errors.Is(err, trackerapp.ErrInvalidRequest), errors.Is(err, tracker.ErrInvalidInput):
@@ -319,6 +329,8 @@ func trackerRefusal(err error) (code, message string) {
 		return "tracker_page_stale", "the board changed since this section was read; read the section again from its start"
 	case errors.Is(err, trackerapp.ErrProjectNotFound):
 		return "tracker_project_missing", "this project no longer exists on this computer"
+	case errors.Is(err, trackerapp.ErrBoardsChanged):
+		return "tracker_boards_changed", "this change was not saved: the project's boards changed after this list was read"
 	case errors.Is(err, trackerapp.ErrInvalidBoards):
 		return "tracker_boards_refused", "this board list cannot be saved; fix what the detail names and save again"
 	case errors.Is(err, trackerapp.ErrUnknownAttachment):

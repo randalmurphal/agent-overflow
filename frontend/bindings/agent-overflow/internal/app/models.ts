@@ -3886,7 +3886,8 @@ export class NewThreadDefaultsUpdate {
 
 /**
  * NewTrackerConnection is what AddTrackerConnection takes. Site is the
- * Jira site (with or without https://), a Tempo API base URL, or the
+ * Jira site (with or without https://), a Tempo API base URL (empty for
+ * the one that serves every region), or the
  * Linear workspace's URL key or address; Account is the Jira account's
  * email; ParentID is the Jira connection a Tempo connection belongs to.
  */
@@ -10383,6 +10384,13 @@ export class TrackerConnection {
     "keyFileProblem"?: string;
 
     /**
+     * CheckedTokenInFile is true while the key file holds the token the
+     * last verification checked; otherwise the verified identity is who
+     * the connection was last checked as.
+     */
+    "checkedTokenInFile": boolean;
+
+    /**
      * Problem is the connection's last failure, held in memory until a
      * call succeeds or the connection is turned off.
      */
@@ -10429,6 +10437,9 @@ export class TrackerConnection {
         if (!("keyFileState" in $$source)) {
             this["keyFileState"] = keyfile$0.State.$zero;
         }
+        if (!("checkedTokenInFile" in $$source)) {
+            this["checkedTokenInFile"] = false;
+        }
 
         Object.assign(this, $$source);
     }
@@ -10437,10 +10448,10 @@ export class TrackerConnection {
      * Creates a new TrackerConnection instance from a string or object.
      */
     static createFrom($$source: any = {}): TrackerConnection {
-        const $$createField15_0 = $$createType203;
+        const $$createField16_0 = $$createType203;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("problem" in $$parsedSource) {
-            $$parsedSource["problem"] = $$createField15_0($$parsedSource["problem"]);
+            $$parsedSource["problem"] = $$createField16_0($$parsedSource["problem"]);
         }
         return new TrackerConnection($$parsedSource as Partial<TrackerConnection>);
     }
@@ -10455,6 +10466,13 @@ export class TrackerProblem {
     "kind": trackerapp$0.FailureKind;
     "message": string;
 
+    /**
+     * Current is true while the failure is about the token in the key
+     * file now, or about no token; otherwise it is about a token, or a
+     * key file read, that the file has since replaced.
+     */
+    "current": boolean;
+
     /** Creates a new TrackerProblem instance. */
     constructor($$source: Partial<TrackerProblem> = {}) {
         if (!("kind" in $$source)) {
@@ -10462,6 +10480,9 @@ export class TrackerProblem {
         }
         if (!("message" in $$source)) {
             this["message"] = "";
+        }
+        if (!("current" in $$source)) {
+            this["current"] = false;
         }
 
         Object.assign(this, $$source);

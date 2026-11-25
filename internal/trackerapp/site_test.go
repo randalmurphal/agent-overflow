@@ -36,6 +36,10 @@ func TestNormalizeKeepsWhatTheStoreKeeps(t *testing.T) {
 			NewConnection{Kind: "tempo", Site: tempo.DefaultBaseURL, ParentID: "p1"},
 			store.NewTrackerConnection{Kind: "tempo", Site: tempo.DefaultBaseURL, ParentID: "p1"},
 		},
+		"no Tempo site, which is the default": {
+			NewConnection{Kind: "tempo", Site: " ", ParentID: "p1"},
+			store.NewTrackerConnection{Kind: "tempo", Site: tempo.DefaultBaseURL, ParentID: "p1"},
+		},
 		"a bare Linear key": {
 			NewConnection{Kind: "linear", Site: " Example "},
 			store.NewTrackerConnection{Kind: "linear", Site: "example"},
