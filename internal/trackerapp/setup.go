@@ -650,8 +650,9 @@ func heldOf(setup Setup, raw map[string]json.RawMessage, newer []string, revisio
 	return held, nil
 }
 
-// validateSetup checks setup and returns it normalized: each section's
-// sites in (tracker, site) order, without a site that sets nothing.
+// validateSetup checks setup and returns it normalized: each site as its
+// connection names it (checkSite), each section's sites in (tracker,
+// site) order, without a site that sets nothing.
 func validateSetup(setup Setup) (Setup, error) {
 	var out Setup
 	seen := map[siteKey]bool{}
@@ -660,6 +661,7 @@ func validateSetup(setup Setup) (Setup, error) {
 		if err != nil {
 			return Setup{}, err
 		}
+		site.Site = key.site
 		if len(site.Statuses) > setupMaxStatuses {
 			return Setup{}, invalidSetup("%s %s regroups %d statuses, over %d", key.tracker, key.site, len(site.Statuses), setupMaxStatuses)
 		}
@@ -682,6 +684,7 @@ func validateSetup(setup Setup) (Setup, error) {
 		if err != nil {
 			return Setup{}, err
 		}
+		site.Site = key.site
 		if site.Fields != nil && key.tracker == store.TrackerKindLinear {
 			return Setup{}, invalidSetup("linear %s pins fields, but a Linear ticket's fields are fixed", key.site)
 		}
@@ -700,17 +703,33 @@ func validateSetup(setup Setup) (Setup, error) {
 	return out, nil
 }
 
-// checkSite checks a section's entry's tracker and site, once each in the
-// section (seen).
+// checkSite checks a section's entry's tracker and site, and returns the
+// site as a connection of the tracker names it, by the rule a connection's
+// site is read by (jiraSite, linearSite), so the entry is found by the
+// board handles of every connection to the site however it is spelled;
+// once each in the section (seen), after that rule.
 func checkSite(tracker, site, section string, seen map[siteKey]bool) (siteKey, error) {
-	key := siteKey{tracker, site}
-	switch {
-	case tracker != store.TrackerKindJira && tracker != store.TrackerKindLinear:
+	if tracker != store.TrackerKindJira && tracker != store.TrackerKindLinear {
 		return siteKey{}, invalidSetup("%s names tracker %q, which is neither jira nor linear", section, tracker)
-	case strings.TrimSpace(site) == "" || len(site) > setupMaxID:
+	}
+	if strings.TrimSpace(site) == "" || len(site) > setupMaxID {
 		return siteKey{}, invalidSetup("%s names a %s site that is empty or over %d bytes", section, tracker, setupMaxID)
-	case seen[key]:
-		return siteKey{}, invalidSetup("%s names %s %s twice", section, tracker, site)
+	}
+	named := jiraSite
+	if tracker == store.TrackerKindLinear {
+		named = linearSite
+	}
+	canonical, err := named(site)
+	if err != nil {
+		var refused *InvalidError
+		if !errors.As(err, &refused) {
+			return siteKey{}, err
+		}
+		return siteKey{}, invalidSetup("%s names %s site %q: %s", section, tracker, truncateID(site), refused.Reason)
+	}
+	key := siteKey{tracker, canonical}
+	if seen[key] {
+		return siteKey{}, invalidSetup("%s names %s %s twice", section, tracker, canonical)
 	}
 	seen[key] = true
 	return key, nil

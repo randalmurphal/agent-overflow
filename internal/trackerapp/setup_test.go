@@ -310,7 +310,11 @@ func TestProjectSetupValidates(t *testing.T) {
 	site := m.conn.Site
 	jira := func(statuses map[string]string) Setup { return m.regrouped(statuses) }
 	pinned := func(tracker string, fields, sections *[]string) Setup {
-		return Setup{TicketPins: []SitePins{{Tracker: tracker, Site: site, Fields: fields, Sections: sections}}}
+		at := site
+		if tracker == store.TrackerKindLinear {
+			at = "example"
+		}
+		return Setup{TicketPins: []SitePins{{Tracker: tracker, Site: at, Fields: fields, Sections: sections}}}
 	}
 	many := func(n int) map[string]string {
 		out := map[string]string{}
@@ -335,6 +339,13 @@ func TestProjectSetupValidates(t *testing.T) {
 		"a site twice": {Setup{StatusGroups: []SiteStatusGroups{
 			{Tracker: "jira", Site: site, Statuses: map[string]string{"s1": "done"}}, {Tracker: "jira", Site: site, Statuses: map[string]string{"s2": "done"}},
 		}}, "twice"},
+		"a site twice, spelled two ways": {Setup{StatusGroups: []SiteStatusGroups{
+			{Tracker: "jira", Site: site, Statuses: map[string]string{"s1": "done"}}, {Tracker: "jira", Site: jiraSiteIn, Statuses: map[string]string{"s2": "done"}},
+		}}, "twice"},
+		"a Jira site with a path": {Setup{StatusGroups: []SiteStatusGroups{{Tracker: "jira", Site: "https://a.example.com/x", Statuses: map[string]string{"s1": "done"}}}},
+			"it has a path"},
+		"a Linear site that is no workspace": {Setup{TicketPins: []SitePins{{Tracker: "linear", Site: "not a key", Sections: &[]string{"links"}}}},
+			"URL key"},
 		"an empty status":       {jira(map[string]string{"": "done"}), "status ID is empty"},
 		"a group of no name":    {jira(map[string]string{"s1": "blocked"}), `group "blocked"`},
 		"too many statuses":     {jira(many(setupMaxStatuses + 1)), "over 1000"},
@@ -352,14 +363,58 @@ func TestProjectSetupValidates(t *testing.T) {
 	if _, err := os.Stat(m.setupPathOf(t, m.project())); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a refused setup left a file: %v", err)
 	}
-	// A site that sets nothing is dropped, and sites are kept in order.
+	// A site is stored as its connection names it, however it is spelled,
+	// so the board handles of the connections to it find its entry; a
+	// site that sets nothing is dropped, and sites are kept in order.
+	m.tracks([]tracker.Row{row("10002", 1_799_000_000_000, "b")})
+	linear := m.addLinear()
 	save := m.saveSetup(t, m.project(), Setup{StatusGroups: []SiteStatusGroups{
 		{Tracker: "linear", Site: "https://linear.app/example/", Statuses: map[string]string{"x": "todo"}},
 		{Tracker: "jira", Site: "b.example.com", Statuses: map[string]string{}},
-		{Tracker: "jira", Site: "a.example.com", Statuses: map[string]string{"y": "canceled"}},
+		{Tracker: "jira", Site: jiraSiteIn, Statuses: map[string]string{"s1": "left_out"}},
 	}})
-	if got := save.Stored.StatusGroups; len(got) != 2 || got[0].Site != "a.example.com" || got[1].Tracker != "linear" {
-		t.Fatalf("the sites as stored: %+v", got)
+	if got := save.Stored.StatusGroups; len(got) != 2 || got[0].Site != m.conn.Site || got[1].Site != linear.Site {
+		t.Fatalf("the sites as stored: %+v; want %s and %s", got, m.conn.Site, linear.Site)
+	}
+	sub := m.subscribeShown(t, m.project())
+	if v := m.viewOf(t, sub.ID); v.Groups == "" || !slices.Equal(v.LeftOut, []string{"s1"}) {
+		t.Fatalf("the Jira connection's board reads with groups %q, left out %v; want the entry saved as %s", v.Groups, v.LeftOut, jiraSiteIn)
+	}
+	p, err := m.st.GetProject(m.project())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g, err := m.svc.boardStatusGroups(setupKey{slug: p.Slug, site: siteKey{linear.Kind, linear.Site}}); err != nil || g.version == "" {
+		t.Fatalf("a board of the Linear connection reads with groups %+v, %v; want the entry saved as https://linear.app/example/", g, err)
+	}
+}
+
+// A file written by hand that spells a site another way is read as the
+// site's connection names it, at the revision of its bytes, so its entry
+// applies; one that names a site twice in two spellings cannot be read.
+func TestAHandWrittenSiteIsReadAsItsConnectionNamesIt(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.tracks([]tracker.Row{row("10002", 1_799_000_000_000, "b")})
+	entry := func(site string) string {
+		return `{"tracker": "jira", "site": "` + site + `", "statuses": {"s1": "left_out"}}`
+	}
+	data := `{"status_groups": {"version": 1, "sites": [` + entry(jiraSiteIn) + `]}}`
+	m.writeSetupFile(t, m.project(), data)
+	sum := sha256.Sum256([]byte(data))
+	got := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
+	if got.Revision != hex.EncodeToString(sum[:]) || len(got.StatusGroups) != 1 || got.StatusGroups[0].Site != m.conn.Site {
+		t.Fatalf("the hand-written setup = %+v; want site %s at the revision of its bytes", got, m.conn.Site)
+	}
+	sub := m.subscribeShown(t, m.project())
+	if v := m.viewOf(t, sub.ID); !slices.Equal(v.LeftOut, []string{"s1"}) {
+		t.Fatalf("the board under the hand-written setup leaves out %v; want s1", v.LeftOut)
+	}
+
+	other := newMirrorFixture(t)
+	other.writeSetupFile(t, other.project(), `{"status_groups": {"version": 1, "sites": [`+entry(jiraSiteIn)+`, `+entry(other.conn.Site)+`]}}`)
+	if _, err := other.svc.ProjectSetup(other.project()); !errors.Is(err, ErrSetupUnreadable) || !strings.Contains(err.Error(), "twice") {
+		t.Fatalf("a file naming a site twice in two spellings = %v", err)
 	}
 }
 
