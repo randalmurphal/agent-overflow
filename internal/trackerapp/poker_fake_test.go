@@ -195,17 +195,18 @@ func TestPokerFollowTellsOtherVoters(t *testing.T) {
 	}
 }
 
-// settledCalls waits for a read in flight to end, and returns the invokes
-// made, which no healthy run moves past for wait.
+// settledCalls returns the invokes made once wait has passed, failing
+// when more than one began meanwhile: the read in flight when the caller
+// stopped the reads may still land, and no other may.
 func settledCalls(t *testing.T, s *fakeScenario, wait time.Duration) int {
 	t.Helper()
-	time.Sleep(100 * time.Millisecond)
 	n := s.gatewayCalls("Invoke")
 	time.Sleep(wait)
-	if got := s.gatewayCalls("Invoke"); got != n {
+	got := s.gatewayCalls("Invoke")
+	if got > n+1 {
 		t.Fatalf("%d poker reads while nothing should read", got-n)
 	}
-	return n
+	return got
 }
 
 // A followed ticket that no handle shows, one no handle follows, and a
@@ -258,8 +259,7 @@ func TestPokerTwoFollowersShareOneRead(t *testing.T) {
 		}
 	}
 	waitPoker(t, s.svc, b.ID, "the first read", func(v PokerView) bool { return v.Loaded })
-	settledCalls(t, s, 100*time.Millisecond)
-	if n := s.gatewayCalls("Invoke"); n != 1 {
+	if n := settledCalls(t, s, 100*time.Millisecond); n != 1 {
 		t.Fatalf("%d reads for two followers' first look; want 1", n)
 	}
 	s.svc.ReleaseSubscription(a.ID)
@@ -470,8 +470,10 @@ func TestPokerReadFailureIsPokersOwn(t *testing.T) {
 	appliedView(t, "vote", v, err)
 	waitPoker(t, s.svc, sub.ID, "my vote", func(v PokerView) bool { return len(v.Votes) == 1 })
 
-	if err := s.e.AddFault(trackerfake.Fault{Origin: trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: pokerSiteName},
-		Route: "POST gateway/api/graphql", Kind: trackerfake.FaultRefuse, Status: 400, Times: 1,
+	// The gateway refuses every request until the faults are cleared, so
+	// the failure stays to be seen whatever read is still owed.
+	gateway := trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: pokerSiteName}
+	if err := s.e.AddFault(trackerfake.Fault{Origin: gateway, Route: "POST gateway/api/graphql", Kind: trackerfake.FaultRefuse, Status: 400,
 		Body: []byte(`{"errors":[{"message":"Cannot query field"}]}`)}); err != nil {
 		t.Fatal(err)
 	}
@@ -481,6 +483,7 @@ func TestPokerReadFailureIsPokersOwn(t *testing.T) {
 		!strings.HasSuffix(failed.Failure.Message, "; the rest of the ticket is unaffected") {
 		t.Fatalf("the failed read: %+v", failed)
 	}
+	s.e.ClearFaults(gateway, "POST gateway/api/graphql")
 	waitPoker(t, s.svc, sub.ID, "the retry", func(v PokerView) bool { return v.Failure == nil })
 	_, issues, _ := s.events.snapshot()
 	for _, e := range issues {
@@ -551,22 +554,21 @@ func TestPokerTokenStaysInMemory(t *testing.T) {
 	if len(token) < 20 {
 		t.Fatalf("the proxy saw no context token: %q", token)
 	}
-	echo := func() {
-		t.Helper()
-		if err := s.e.AddFault(trackerfake.Fault{Origin: trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: pokerSiteName},
-			Route: "POST gateway/api/graphql", Kind: trackerfake.FaultRefuse, Status: 400, Times: 1,
-			Body: []byte(`{"errors":[{"message":"token ` + token + ` refused"}]}`)}); err != nil {
-			t.Fatal(err)
-		}
+	// Every gateway request is refused with a message that repeats the
+	// token until the faults are cleared, so a read still owed from the
+	// vote is refused too and cannot take the reveal's refusal.
+	gateway := trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: pokerSiteName}
+	if err := s.e.AddFault(trackerfake.Fault{Origin: gateway, Route: "POST gateway/api/graphql", Kind: trackerfake.FaultRefuse, Status: 400,
+		Body: []byte(`{"errors":[{"message":"token ` + token + ` refused"}]}`)}); err != nil {
+		t.Fatal(err)
 	}
-	echo()
 	s.svc.readPokerNow(conn.ID, "10101")
 	answers = append(answers, waitPoker(t, s.svc, sub.ID, "the refused read", func(v PokerView) bool { return v.Failure != nil }))
-	echo()
 	v, err = s.svc.RevealPoker(t.Context(), conn.ID, "10101")
 	if err != nil || v.Parts[0].State != "refused" {
 		t.Fatalf("the refused reveal: %+v, %v", v, err)
 	}
+	s.e.ClearFaults(gateway, "POST gateway/api/graphql")
 	answers = append(answers, v, must[PokerView](t)(s.svc.Poker(sub.ID)))
 	s.closeTicket(t, conn, sub, "10101")
 
