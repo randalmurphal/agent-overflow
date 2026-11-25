@@ -12,7 +12,8 @@
 // what it held: its subscription, its DOM and its heap. The pane's
 // header, with maximize and close, shows while its code loads and when
 // the ticket's code fails to load; the pane-navigation chord puts the
-// keyboard in the ticket while it loads and once it shows.
+// keyboard in a loading pane, then in its ticket once it shows, with no
+// key pressed meanwhile, and in a short ticket shown.
 //
 // The compact layout offers no ticket pane (compact-issues-ticket.spec.ts
 // and IssuesPane.test.ts); the move's hold, drafts and a restore that
@@ -116,7 +117,16 @@ test('a ticket opens in a pane of its own from a card and a link, steps back on 
   await expect.poll(releases).toBe(releasedAfterReload + 1);
 });
 
-test('the pane-navigation chord moves the keyboard focus into a ticket pane while it loads and once it shows a short ticket', async ({ harness, page }) => {
+// WEB-7's text runs past any pane's height, so Page Down scrolls it.
+const LONG: ExtraJira = {
+  ...LINKED,
+  issues: [...LINKED.issues!, {
+    id: '10107', key: 'WEB-7', project: 'WEB', type: '10002', status: '10001', summary: 'A long ticket', sprints: [1],
+    description: { type: 'doc', version: 1, content: Array.from({ length: 120 }, (_, i) => ({ type: 'paragraph', content: [{ type: 'text', text: `Paragraph ${i + 1} of the long ticket.` }] })) },
+  }],
+};
+
+test('the pane-navigation chord puts the keyboard in a ticket pane: in its ticket once a loading pane shows it, without pressing again, and in a short ticket shown', async ({ harness, page }) => {
   test.setTimeout(120_000);
   // Holds the ticket pane's code, so the pane is still loading when the
   // chord reaches it.
@@ -126,7 +136,7 @@ test('the pane-navigation chord moves the keyboard focus into a ticket pane whil
     await bodyHeld;
     await route.continue();
   });
-  await connectFakeJiraBoard(harness, 'issues-ticket-pane-nav', LINKED, [{
+  await connectFakeJiraBoard(harness, 'issues-ticket-pane-nav', LONG, [{
     title: 'Nav source', provider: 'claude', turns: [{ userText: 'Earlier prompt', items: [{ kind: 'assistant_text', summary: 'Earlier answer' }] }],
   }]);
   await harness.open(page);
@@ -137,36 +147,51 @@ test('the pane-navigation chord moves the keyboard focus into a ticket pane whil
   // Beside the thread, not in its place.
   await page.getByTestId('sidebar-tool-issues').click({ modifiers: ['ControlOrMeta'] });
   const issues = page.getByTestId('issues-pane');
-  await expect(card(issues, '10105')).toBeVisible({ timeout: 30_000 });
-  await card(issues, '10105').getByTestId('issues-card-open').click({ modifiers: ['ControlOrMeta'] });
+  await expect(card(issues, '10107')).toBeVisible({ timeout: 30_000 });
+  await card(issues, '10107').getByTestId('issues-card-open').click({ modifiers: ['ControlOrMeta'] });
   await expect(page.locator('section[data-pane-id]')).toHaveCount(3);
-  const ticketPane = page.locator('section[data-pane-kind="ticket"]');
-  await expect(ticketPane).toHaveCount(1);
+  const long = page.locator('section[data-pane-kind="ticket"]');
+  await expect(long).toHaveCount(1);
   // The pane's header while its code loads.
-  await expect(ticketPane.getByTestId('ticket-pane-loading')).toBeVisible();
-  await expect(ticketPane.getByTestId('tool-pane-header').getByTestId('pane-promote')).toBeVisible();
-  await expect(ticketPane.getByTestId('tool-pane-header').getByTestId('pane-close')).toBeVisible();
+  await expect(long.getByTestId('ticket-pane-loading')).toBeVisible();
+  await expect(long.getByTestId('tool-pane-header').getByTestId('pane-promote')).toBeVisible();
+  await expect(long.getByTestId('tool-pane-header').getByTestId('pane-close')).toBeVisible();
   const focusInTicketPane = () => page.evaluate(() => !!document.activeElement?.closest('section[data-pane-kind="ticket"]'));
+  const scrollerFocused = (issue: string) => page.evaluate((id) => {
+    const active = document.activeElement;
+    return active instanceof HTMLElement && active.hasAttribute('data-pane-scroller') && !!active.closest(`[data-testid="ticket-screen"][data-issue="${id}"]`);
+  }, issue);
 
   // Loading: the chord from the composer, through the Issues pane.
   await composer.click();
   await composer.fill('kept draft');
   await page.keyboard.press('Alt+l');
   await page.keyboard.press('Alt+l');
-  await expect(ticketPane).toHaveAttribute('data-pane-focused', 'true');
+  await expect(long).toHaveAttribute('data-pane-focused', 'true');
   await expect.poll(focusInTicketPane).toBe(true);
   await page.keyboard.type('stray');
   await expect(composer).toHaveValue('kept draft');
 
-  // Shown, a ticket whose content fits: back to the composer, and over again.
+  // Shown, with no key pressed since: the keyboard is in the ticket, and
+  // Page Down scrolls it.
   releaseBody!();
-  await expect(ticketPane.getByTestId('ticket-screen')).toHaveAttribute('data-issue', '10105');
-  await expect(ticketPane.getByTestId('ticket-title')).toHaveText('Moved into a pane');
+  await expect(long.getByTestId('ticket-title')).toHaveText('A long ticket');
+  await expect.poll(() => scrollerFocused('10107')).toBe(true);
+  const content = long.getByTestId('ticket-content');
+  expect(await content.evaluate((el) => el.scrollTop)).toBe(0);
+  await page.keyboard.press('PageDown');
+  await expect.poll(() => content.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+
+  // Shown, a ticket whose content fits: a pane of its own right of the
+  // Issues pane, and the chord from the composer over to it.
+  await card(issues, '10105').getByTestId('issues-card-open').click({ modifiers: ['ControlOrMeta'] });
+  const short = page.locator('section[data-pane-kind="ticket"]:has([data-testid="ticket-screen"][data-issue="10105"])');
+  await expect(short.getByTestId('ticket-title')).toHaveText('Moved into a pane');
   await composer.click();
   await page.keyboard.press('Alt+l');
   await page.keyboard.press('Alt+l');
-  await expect(ticketPane).toHaveAttribute('data-pane-focused', 'true');
-  await expect.poll(focusInTicketPane).toBe(true);
+  await expect(short).toHaveAttribute('data-pane-focused', 'true');
+  await expect.poll(() => scrollerFocused('10105')).toBe(true);
   await page.keyboard.type('stray');
   await expect(composer).toHaveValue('kept draft');
 });

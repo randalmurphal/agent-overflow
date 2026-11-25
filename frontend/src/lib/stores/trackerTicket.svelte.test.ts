@@ -224,6 +224,29 @@ describe('the ticket subscription', () => {
     ticket.release();
   });
 
+  it('holds its tracker from the answer and the account as its computer last told it, a changed account included', async () => {
+    install();
+    const reads = held<TicketView>('TrackerTicket');
+    setBindingMock('SubscribeTrackerTicket', async () => answer({ kind: 'jira', account: 'acc-user1' }));
+    const ticket = attachTrackerTicket(REF, true);
+    await flush();
+    expect(ticket.current).toMatchObject({ kind: 'jira', account: 'acc-user1' });
+    // A verification recorded another account: the event says changed,
+    // and the view read carries it.
+    trackerIssueUpdated(event(11, { changed: true }), HOME_BACKEND);
+    await flush();
+    reads.answer({ loaded: true, detail: detail(), read_at: 100, account: 'acc-user2' } as TicketView);
+    await flush();
+    expect(ticket.current).toMatchObject({ kind: 'jira', account: 'acc-user2' });
+    // No account recorded is none.
+    trackerIssueUpdated(event(12, { changed: true }), HOME_BACKEND);
+    await flush();
+    reads.answer({ loaded: true, detail: detail(), read_at: 100 } as TicketView);
+    await flush();
+    expect(ticket.current).toMatchObject({ kind: 'jira', account: null });
+    ticket.release();
+  });
+
   it('reads every held ticket of the computer again on a gap, under its recovery', async () => {
     const mocks = install();
     const ticket = attachTrackerTicket(REF, true);

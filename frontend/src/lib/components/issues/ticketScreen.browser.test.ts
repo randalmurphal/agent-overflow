@@ -34,7 +34,7 @@ function mountTicket(width: number) {
   host.style.cssText = `position: fixed; top: 0; left: 0; width: ${width}px; height: 700px; display: flex;`;
   document.body.appendChild(host);
   const state: TrackerTicketState = {
-    detail: DETAIL, readAt: 1, failure: null, ended: false, refreshing: false, refreshNotice: null, readError: null,
+    detail: DETAIL, readAt: 1, failure: null, kind: 'jira', account: null, ended: false, refreshing: false, refreshNotice: null, readError: null,
     earlier: { pages: [], next: null, loading: false, error: null }, poker: null,
   };
   const ref = { backend: HOME_BACKEND, connection: 'c1', issue: '1' };

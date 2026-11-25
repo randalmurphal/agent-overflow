@@ -127,6 +127,12 @@ export interface TrackerTicketState {
   /** The ticket's failure as its subscribers were last told; null while
    * its reads succeed. */
   readonly failure: FailureView | null;
+  /** Its connection's tracker kind, from the subscription's answer; empty
+   * until it answers. */
+  readonly kind: string;
+  /** The person's account on its connection, as its computer last told:
+   * null when no verification recorded one. */
+  readonly account: string | null;
   /** The subscription ended, or its computer refused it: its connection
    * was turned off or removed. */
   readonly ended: boolean;
@@ -180,7 +186,7 @@ interface Live {
 const NO_EARLIER: EarlierComments = { pages: [], next: null, loading: false, error: null };
 
 const FIRST_STATE: TrackerTicketState = {
-  detail: null, readAt: 0, failure: null, ended: false, refreshing: false, refreshNotice: null, readError: null, earlier: NO_EARLIER, poker: null,
+  detail: null, readAt: 0, failure: null, kind: '', account: null, ended: false, refreshing: false, refreshNotice: null, readError: null, earlier: NO_EARLIER, poker: null,
 };
 
 // The subscribe refusals that hold until the connection changes: the
@@ -265,7 +271,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
   if (signal.aborted) return cleanup;
   live.id = id;
   live.seq = answer.seq;
-  live.state = { ...live.state, ...viewState(answer) };
+  live.state = { ...live.state, ...viewState(answer), kind: answer.kind };
   const early = live.joining ?? [];
   live.joining = null;
   for (const event of early) fold(live, event);
@@ -277,8 +283,8 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
   return cleanup;
 }
 
-function viewState(view: TicketView): Pick<TrackerTicketState, 'detail' | 'readAt' | 'failure'> {
-  return { detail: view.detail ?? null, readAt: view.read_at ?? 0, failure: view.failure ?? null };
+function viewState(view: TicketView): Pick<TrackerTicketState, 'detail' | 'readAt' | 'failure' | 'account'> {
+  return { detail: view.detail ?? null, readAt: view.read_at ?? 0, failure: view.failure ?? null, account: view.account || null };
 }
 
 type StateChange = { -readonly [K in keyof TrackerTicketState]?: TrackerTicketState[K] };
@@ -379,6 +385,7 @@ async function run(live: Live): Promise<void> {
     update(live, {
       detail: read.detail,
       readAt: read.readAt || live.state.readAt,
+      account: read.account,
       ...(live.seq === seq ? { failure: read.failure } : {}),
       readError: null,
     });

@@ -139,6 +139,7 @@ func (s *Service) settleVerification(row store.TrackerConnection, at stamp, v st
 			return s.writeError(row.ID, "record the verification of", err)
 		}
 		row = recorded
+		s.tellTicketAccount(row.ID, row.VerifiedAccountID)
 		return nil
 	}
 	applied, changed, err := s.settle(row.ID, row.Kind, at, callErr, record)

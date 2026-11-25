@@ -21,8 +21,13 @@ import (
 type ticketPump struct {
 	core pump.Core[readRequest]
 	key  ticketKey
-	// kind is the connection's tracker kind.
-	kind string
+	// kind is the connection's tracker kind, fixed for its life; account
+	// is the person's account there as its row holds it now: who its token
+	// belonged to at the last verification (VerifiedAccountID), empty
+	// before one. A verification that records another account tells it
+	// (tellTicketAccount). account is under subMu.
+	kind    string
+	account string
 	// number names the pump within the service's session: its row in the
 	// mirror's open tickets, which keeps its issue. kept reports that the
 	// row committed under root (keepTicketLocked), and dropped that the
@@ -95,23 +100,27 @@ type toldView struct {
 
 // TicketView is an open ticket as its subscribers were last told of it:
 // its detail when the mirror holds one (Loaded), with when the read of its
-// body began (Unix milliseconds by this computer's wall clock), and its
-// failure, nil while its reads succeed.
+// body began (Unix milliseconds by this computer's wall clock), its
+// failure, nil while its reads succeed, and the person's account on its
+// connection, empty when no verification recorded one.
 type TicketView struct {
 	Loaded  bool         `json:"loaded"`
 	Detail  *DetailView  `json:"detail,omitempty"`
 	ReadAt  int64        `json:"read_at,omitempty"`
 	Failure *FailureView `json:"failure,omitempty"`
+	Account string       `json:"account,omitempty"`
 }
 
 // TicketSubscription is a ticket subscribe's answer: the handle, the
 // sequence number the answer is as of, and the ticket as of it. With no
 // detail loaded, the pump's first read follows, and its event says so.
-// PollEvery is the connection's round interval in milliseconds.
+// PollEvery is the connection's round interval in milliseconds, and Kind
+// its tracker kind.
 type TicketSubscription struct {
 	ID        string `json:"id"`
 	Seq       uint64 `json:"seq"`
 	PollEvery int64  `json:"poll_every"`
+	Kind      string `json:"kind"`
 	TicketView
 }
 
@@ -141,7 +150,7 @@ func (s *Service) SubscribeTicket(id string, issue tracker.IssueID, visible bool
 	if err != nil {
 		return TicketSubscription{}, err
 	}
-	answer := TicketSubscription{ID: hid, Seq: seq, PollEvery: tp.every.Milliseconds(), TicketView: told}
+	answer := TicketSubscription{ID: hid, Seq: seq, PollEvery: tp.every.Milliseconds(), Kind: tp.kind, TicketView: told}
 	if !start {
 		return answer, nil
 	}
@@ -207,7 +216,7 @@ func (s *Service) takeTicketHandle(key ticketKey, visible bool, tie Tie) (id str
 		}
 		s.subs.pumps++
 		tp = &ticketPump{
-			core: s.newCore(), key: key, kind: row.Kind, number: s.subs.pumps, gen: s.genLocked(key.connection), every: s.cadence.ticket(row.Kind),
+			core: s.newCore(), key: key, kind: row.Kind, account: row.VerifiedAccountID, number: s.subs.pumps, gen: s.genLocked(key.connection), every: s.cadence.ticket(row.Kind),
 			exited: make(chan struct{}), viewChanged: make(chan struct{}, 1), dirty: 1,
 		}
 		s.subs.tickets[key] = tp
@@ -227,7 +236,7 @@ func (s *Service) takeTicketHandle(key ticketKey, visible bool, tie Tie) (id str
 // toldLocked is tp's ticket as its subscribers were last told of it. The
 // caller holds subMu.
 func (tp *ticketPump) toldLocked() TicketView {
-	v := TicketView{Failure: tp.failure}
+	v := TicketView{Failure: tp.failure, Account: tp.account}
 	if d := tp.view.detail; d != nil {
 		view := *d
 		v.Loaded, v.Detail, v.ReadAt = true, &view, tp.view.body.Wall
@@ -347,6 +356,26 @@ func (s *Service) flushTicketLocked(tp *ticketPump, end bool) {
 	}
 	tp.changed, tp.pending, tp.poker.changed = false, false, false
 	s.emitIssue(ev)
+}
+
+// tellTicketAccount tells connection conn's open tickets that its row now
+// holds account, which a verification just recorded: each whose account
+// differs takes it and sends its event as changed, so its subscribers
+// read its view again (TicketDetail). The caller holds opMu, under which
+// a pump is made from the row (takeTicketHandle) and a verification
+// records it, so a pump made after the record holds the new account and
+// one made before is told here.
+func (s *Service) tellTicketAccount(conn, account string) {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	for k, tp := range s.subs.tickets {
+		if k.connection != conn || tp.account == account {
+			continue
+		}
+		tp.account = account
+		tp.changed, tp.pending = true, true
+		s.flushTicketLocked(tp, false)
+	}
 }
 
 // tellFailureLocked makes f tp's failure, due to be told when it is not the

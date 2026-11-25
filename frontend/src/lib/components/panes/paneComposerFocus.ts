@@ -52,35 +52,52 @@ function paneSection(paneId: string): HTMLElement | null {
  * pane focus left: its composer when it takes input; else the pane's
  * primary scroller (`data-pane-scroller`, focusable by script), where the
  * browser starts a keyboard scroll, so PageDown and the arrows scroll it;
- * else (a side chat still preparing) PaneHost's section, focusable only
- * while it holds this focus, so a click never lands on it. It is a focus
- * choice: no deferred focus asked for before it lands after it.
+ * else (a pane still loading, a side chat still preparing) PaneHost's
+ * section, focusable only while it holds this focus, so a click never
+ * lands on it. It is a focus choice: no deferred focus asked for before it
+ * lands after it.
+ *
+ * Must keep true: the caret ends where this choice would put it now, so a
+ * composer or scroller that mounts while the section still holds this
+ * focus takes it (`focusSectionUntilReady`); once anything else holds the
+ * focus, the move is over and nothing takes it back.
  */
 export function carryCaretIntoPane(paneId: string): void {
   focusChosen();
   if (focusPaneComposer(paneId)) return;
   const section = paneSection(paneId);
   if (!section) return;
-  const scroller = section.querySelector<HTMLElement>('[data-pane-scroller]');
-  if (scroller) {
-    scroller.focus({ preventScroll: true });
-    return;
-  }
-  focusSectionOnce(section);
+  if (focusPaneScroller(section)) return;
+  focusSectionUntilReady(paneId, section);
 }
 
-function focusSectionOnce(section: HTMLElement): void {
-  if (section.hasAttribute('tabindex')) {
-    section.focus({ preventScroll: true });
-    return;
-  }
-  section.tabIndex = -1;
+function focusPaneScroller(section: HTMLElement): boolean {
+  const scroller = section.querySelector<HTMLElement>('[data-pane-scroller]');
+  if (!scroller) return false;
+  scroller.focus({ preventScroll: true });
+  return true;
+}
+
+// The section holds the focus until the pane mounts what the choice
+// prefers, or the focus goes elsewhere: a person's click or key, or the
+// handoff itself, which blurs the section.
+function focusSectionUntilReady(paneId: string, section: HTMLElement): void {
+  const temporary = !section.hasAttribute('tabindex');
+  if (temporary) section.tabIndex = -1;
   section.focus({ preventScroll: true });
   if (document.activeElement !== section) {
-    section.removeAttribute('tabindex');
+    if (temporary) section.removeAttribute('tabindex');
     return;
   }
-  section.addEventListener('blur', () => section.removeAttribute('tabindex'), { once: true });
+  const handoff = new MutationObserver(() => {
+    if (document.activeElement !== section) return;
+    if (!focusPaneComposer(paneId)) focusPaneScroller(section);
+  });
+  handoff.observe(section, { childList: true, subtree: true });
+  section.addEventListener('blur', () => {
+    handoff.disconnect();
+    if (temporary) section.removeAttribute('tabindex');
+  }, { once: true });
 }
 
 /**

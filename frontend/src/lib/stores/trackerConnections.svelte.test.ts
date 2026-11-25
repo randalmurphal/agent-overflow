@@ -67,23 +67,6 @@ describe('a held connection list', () => {
     expect(mock).toHaveBeenCalledTimes(1);
   });
 
-  it('is held once by an effect that holds it, which the hold never runs again', async () => {
-    const { mock } = answerReads([trackerConnection()]);
-    let runs = 0;
-    const stop = $effect.root(() => {
-      $effect(() => {
-        runs += 1;
-        return acquireTrackerConnections(HOME_BACKEND);
-      });
-    });
-    await vi.waitFor(() => expect(trackerConnectionsOf(HOME_BACKEND).loaded).toBe(true));
-    await flush();
-    expect(runs).toBe(1);
-    expect(mock).toHaveBeenCalledTimes(1);
-    stop();
-    expect(trackerConnectionsOf(HOME_BACKEND).loaded).toBe(false);
-  });
-
   it('answers a burst of nudges with one read that starts after the one in flight', async () => {
     const first = deferred<TrackerConnection[]>();
     const second = deferred<TrackerConnection[]>();

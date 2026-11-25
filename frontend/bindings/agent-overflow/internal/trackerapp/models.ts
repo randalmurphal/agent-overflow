@@ -3023,16 +3023,19 @@ export class TicketRowView {
  * TicketSubscription is a ticket subscribe's answer: the handle, the
  * sequence number the answer is as of, and the ticket as of it. With no
  * detail loaded, the pump's first read follows, and its event says so.
- * PollEvery is the connection's round interval in milliseconds.
+ * PollEvery is the connection's round interval in milliseconds, and Kind
+ * its tracker kind.
  */
 export class TicketSubscription {
     "id": string;
     "seq": number;
     "poll_every": number;
+    "kind": string;
     "loaded": boolean;
     "detail"?: DetailView | null;
     "read_at"?: number;
     "failure"?: FailureView | null;
+    "account"?: string;
 
     /** Creates a new TicketSubscription instance. */
     constructor($$source: Partial<TicketSubscription> = {}) {
@@ -3045,6 +3048,9 @@ export class TicketSubscription {
         if (!("poll_every" in $$source)) {
             this["poll_every"] = 0;
         }
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
         if (!("loaded" in $$source)) {
             this["loaded"] = false;
         }
@@ -3056,14 +3062,14 @@ export class TicketSubscription {
      * Creates a new TicketSubscription instance from a string or object.
      */
     static createFrom($$source: any = {}): TicketSubscription {
-        const $$createField4_0 = $$createType85;
-        const $$createField6_0 = $$createType8;
+        const $$createField5_0 = $$createType85;
+        const $$createField7_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("detail" in $$parsedSource) {
-            $$parsedSource["detail"] = $$createField4_0($$parsedSource["detail"]);
+            $$parsedSource["detail"] = $$createField5_0($$parsedSource["detail"]);
         }
         if ("failure" in $$parsedSource) {
-            $$parsedSource["failure"] = $$createField6_0($$parsedSource["failure"]);
+            $$parsedSource["failure"] = $$createField7_0($$parsedSource["failure"]);
         }
         return new TicketSubscription($$parsedSource as Partial<TicketSubscription>);
     }
@@ -3072,14 +3078,16 @@ export class TicketSubscription {
 /**
  * TicketView is an open ticket as its subscribers were last told of it:
  * its detail when the mirror holds one (Loaded), with when the read of its
- * body began (Unix milliseconds by this computer's wall clock), and its
- * failure, nil while its reads succeed.
+ * body began (Unix milliseconds by this computer's wall clock), its
+ * failure, nil while its reads succeed, and the person's account on its
+ * connection, empty when no verification recorded one.
  */
 export class TicketView {
     "loaded": boolean;
     "detail"?: DetailView | null;
     "read_at"?: number;
     "failure"?: FailureView | null;
+    "account"?: string;
 
     /** Creates a new TicketView instance. */
     constructor($$source: Partial<TicketView> = {}) {

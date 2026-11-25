@@ -81,6 +81,50 @@ describe('paneComposerFocus', () => {
     expect(section.hasAttribute('tabindex')).toBe(false);
   });
 
+  // A pane still loading takes the caret on its section; what the choice
+  // prefers takes it once it mounts, unless the focus went elsewhere.
+  it('hands the section\'s focus to the scroller or composer that mounts while it holds it, and to nothing once it moved', async () => {
+    const target = mountPaneComposer('right');
+    target.remove();
+    const section = document.querySelector<HTMLElement>('[data-pane-id="right"]')!;
+    const left = mountPaneComposer('left');
+    left.focus();
+    carryCaretIntoPane('right');
+    expect(document.activeElement).toBe(section);
+    const scroller = document.createElement('div');
+    scroller.tabIndex = -1;
+    scroller.setAttribute('data-pane-scroller', '');
+    section.appendChild(scroller);
+    await vi.waitFor(() => expect(document.activeElement).toBe(scroller));
+    expect(section.hasAttribute('tabindex')).toBe(false);
+
+    // The composer comes first when both mount.
+    scroller.remove();
+    left.focus();
+    carryCaretIntoPane('right');
+    expect(document.activeElement).toBe(section);
+    const later = document.createElement('div');
+    later.tabIndex = -1;
+    later.setAttribute('data-pane-scroller', '');
+    section.append(later, target);
+    await vi.waitFor(() => expect(document.activeElement).toBe(target));
+
+    // Moved elsewhere first: what mounts later takes nothing.
+    later.remove();
+    target.remove();
+    left.focus();
+    carryCaretIntoPane('right');
+    expect(document.activeElement).toBe(section);
+    left.focus();
+    const last = document.createElement('div');
+    last.tabIndex = -1;
+    last.setAttribute('data-pane-scroller', '');
+    section.appendChild(last);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(document.activeElement).toBe(left);
+  });
+
   describe('restorePickerFocus', () => {
     it('puts the caret back in the composer on an explicit dismissal', () => {
       const textarea = mountPaneComposer('left');

@@ -49,7 +49,6 @@ import { demotePane, getPaneLayoutItems, getPromotedPaneId, promotePane, setPane
 import { focusPane, getFocusedPaneId } from '../../stores/panes.svelte';
 import TicketPane from '../panes/TicketPane.svelte';
 import { closeTicketPane, restoreTicketPane, ticketPaneCarrier, ticketPaneRecord } from '../../stores/ticketPanes.svelte';
-import type { TrackerConnection } from '../../stores/bindings';
 import { makeCommandContext } from '../../stores/builtinCommands.svelte';
 import { SCOPES_AT_V0_0_19 } from '../../../test/helpers/olderComputer';
 import { noteProject } from '../../transport/entityIndex';
@@ -969,19 +968,22 @@ function ticketDetail(id: string, opts: { parent?: string; comments?: number; mo
   } as unknown as DetailView;
 }
 
-/** A connection of this computer, as TrackerConnections lists it. */
-function connection(id: string, kind: 'jira' | 'linear'): TrackerConnection {
-  return { id, kind, site: 'https://example.atlassian.net', account: 'user1@example.com', label: 'Work', enabled: true, verifiedAccountId: 'acc-user1', verifiedName: 'User 1', verifiedAt: 1 } as TrackerConnection;
+/** The tracker a ticket's subscription names: its connection's kind and
+ * the person's account there. */
+interface TicketTracker {
+  kind: 'jira' | 'linear';
+  account: string;
 }
 
-function installTicket(detailOf: (issue: string) => DetailView = (issue) => ticketDetail(issue)) {
-  setBindingMock('TrackerConnections', async () => [connection('c1', 'jira')]);
+const JIRA_USER1: TicketTracker = { kind: 'jira', account: 'acc-user1' };
+
+function installTicket(detailOf: (issue: string) => DetailView = (issue) => ticketDetail(issue), tracker: TicketTracker = JIRA_USER1) {
   let n = 0;
   const subscribe = setBindingMock('SubscribeTrackerTicket', async (_c: string, issue: string): Promise<TicketSubscription> => {
     n += 1;
-    return { id: `ticket-${issue}-${n}`, seq: 10, poll_every: 10_000, loaded: true, detail: detailOf(issue), read_at: Date.now() } as TicketSubscription;
+    return { id: `ticket-${issue}-${n}`, seq: 10, poll_every: 10_000, ...tracker, loaded: true, detail: detailOf(issue), read_at: Date.now() } as TicketSubscription;
   });
-  const read = setBindingMock('TrackerTicket', async () => ({ loaded: true, detail: ticketDetail('1', { status: 's2' }) }));
+  const read = setBindingMock('TrackerTicket', async () => ({ loaded: true, detail: ticketDetail('1', { status: 's2' }), account: tracker.account }));
   return { subscribe, read };
 }
 
@@ -2301,8 +2303,7 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
 
   it('takes no drop or paste of files on a Linear ticket, and offers it no Attach', async () => {
     install();
-    installTicket();
-    setBindingMock('TrackerConnections', async () => [connection('c1', 'linear')]);
+    installTicket(undefined, { kind: 'linear', account: 'user-1' });
     const names = installUploads();
     try {
       const view = mount();
@@ -2618,8 +2619,7 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
 
   it('offers no Log time while the app does not know whose time it logs', async () => {
     install();
-    installTicket();
-    setBindingMock('TrackerConnections', async () => [{ ...connection('c1', 'jira'), verifiedAccountId: '' }]);
+    installTicket(undefined, { kind: 'jira', account: '' });
     const view = mount();
     const screen = await openCard(view, '1');
     await within(screen).findByTestId('ticket-comment-input');
@@ -3146,33 +3146,32 @@ describe('a ticket in a pane of its own', () => {
     expect(getPromotedPaneId()).toBeNull();
   });
 
-  it('reads its tracker from the connection: no Jira control on a Linear ticket opened before the board list answered, and none of either before the connection is known', async () => {
+  it('reads its tracker and account from its subscription: none of its own controls before it answers, all of them after, with the connections read failed and the board list unanswered', async () => {
     placeIssuesPane();
     writeFromAnotherWindow(BOARD_KEY, boardRef('1'));
-    let listBoards: ((choices: BoardChoice[]) => void) | undefined;
     install();
     installTicket();
-    setBindingMock('TrackerBoardChoices', () => new Promise<BoardChoice[]>((resolve) => { listBoards = resolve; }));
-    let listConnections: ((list: TrackerConnection[]) => void) | undefined;
-    setBindingMock('TrackerConnections', () => new Promise<TrackerConnection[]>((resolve) => { listConnections = resolve; }));
+    setBindingMock('TrackerBoardChoices', () => new Promise<BoardChoice[]>(() => {}));
+    setBindingMock('TrackerConnections', async () => { throw new TransportError('internal', 'The connections could not be read.'); });
+    let answer: ((sub: TicketSubscription) => void) | undefined;
+    setBindingMock('SubscribeTrackerTicket', () => new Promise<TicketSubscription>((resolve) => { answer = resolve; }));
     const view = mount();
     await within(view.container).findAllByTestId('issues-card');
-    expect(listBoards).toBeDefined();
     await fireEvent.click(within(card(view, '1')).getByTestId('issues-card-open'), { ctrlKey: true });
     const [paneId] = ticketPaneIds();
     const pane = mountTicketPane(paneId);
     const screen = await paneScreen(pane, '1');
-    await waitFor(() => expect(within(screen).getByTestId('ticket-title')).toHaveTextContent('Issue 1'));
-    // Not known yet: neither tracker's own controls.
+    await waitFor(() => expect(answer).toBeDefined());
+    // Not answered yet: neither tracker's own controls.
     expect(within(screen).queryByTestId('ticket-type-mark')).toBeNull();
     expect(within(screen).queryByTestId('ticket-estimate')).toBeNull();
-    await waitFor(() => expect(listConnections).toBeDefined());
-    listConnections!([connection('c1', 'linear')]);
-    listBoards!([choice('1', { opens_first: true, connection_kind: 'linear' })]);
-    await waitFor(() => expect(within(screen).getByTestId('ticket-comment-input')).toBeInTheDocument());
-    await tick();
-    expect(within(screen).queryByTestId('ticket-type-mark')).toBeNull();
-    expect(within(screen).queryByTestId('ticket-estimate')).toBeNull();
+    answer!({ id: 'ticket-1-1', seq: 10, poll_every: 10_000, ...JIRA_USER1, loaded: true, detail: ticketDetail('1'), read_at: Date.now() } as TicketSubscription);
+    // With the ticket's answer, at once: the Jira controls and Log time.
+    await waitFor(() => expect(within(screen).getByTestId('ticket-type-mark')).toBeInTheDocument());
+    expect(within(screen).getByTestId('ticket-estimate')).toBeInTheDocument();
+    await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+    expect(await within(document.body).findByTestId('ticket-menu-log-time')).not.toHaveAttribute('aria-disabled', 'true');
+    expect(within(document.body).getByTestId('ticket-menu-attach')).toBeInTheDocument();
     // Nothing of the tracker is kept with the pane.
     expect(ticketPaneCarrier(paneId)).toEqual({ backend: HOME_BACKEND, connection: 'c1', issue: '1' });
   });
@@ -3181,7 +3180,6 @@ describe('a ticket in a pane of its own', () => {
     install();
     let answer: ((sub: TicketSubscription) => void) | undefined;
     setBindingMock('SubscribeTrackerTicket', () => new Promise<TicketSubscription>((resolve) => { answer = resolve; }));
-    setBindingMock('TrackerConnections', async () => [connection('c1', 'jira')]);
     restoreTicketPane('ticket-r', { backend: HOME_BACKEND, connection: 'c1', issue: '5' });
     setPaneLayoutItemsForTest([{ id: 'ticket-r', paneId: 'ticket-r', kind: 'ticket', widthPx: 600 }]);
     const pane = mountTicketPane('ticket-r');
@@ -3189,9 +3187,50 @@ describe('a ticket in a pane of its own', () => {
     expect(within(screen).getByTestId('ticket-key')).toHaveTextContent('Ticket');
     expect(within(screen).getByTestId('ticket-title')).toHaveTextContent('');
     await waitFor(() => expect(answer).toBeDefined());
-    answer!({ id: 'ticket-5-1', seq: 10, poll_every: 10_000, loaded: true, detail: ticketDetail('5'), read_at: Date.now() } as TicketSubscription);
+    answer!({ id: 'ticket-5-1', seq: 10, poll_every: 10_000, ...JIRA_USER1, loaded: true, detail: ticketDetail('5'), read_at: Date.now() } as TicketSubscription);
     await waitFor(() => expect(within(screen).getByTestId('ticket-key')).toHaveTextContent('WEB-5'));
     expect(within(screen).getByTestId('ticket-title')).toHaveTextContent('Issue 5');
+  });
+
+  it('copies no key on a restored pane before its ticket is read, and copies its key once it is', async () => {
+    install();
+    let answer: ((sub: TicketSubscription) => void) | undefined;
+    setBindingMock('SubscribeTrackerTicket', () => new Promise<TicketSubscription>((resolve) => { answer = resolve; }));
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined);
+    try {
+      restoreTicketPane('ticket-r', { backend: HOME_BACKEND, connection: 'c1', issue: '5' });
+      setPaneLayoutItemsForTest([{ id: 'ticket-r', paneId: 'ticket-r', kind: 'ticket', widthPx: 600 }]);
+      const pane = mountTicketPane('ticket-r');
+      const screen = await paneScreen(pane, '5');
+      await waitFor(() => expect(answer).toBeDefined());
+      await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+      const copyKey = await within(document.body).findByTestId('ticket-menu-copy-key');
+      expect(copyKey).toHaveAttribute('aria-disabled', 'true');
+      await fireEvent.click(copyKey);
+      await tick();
+      expect(writeText).not.toHaveBeenCalled();
+      await fireEvent.keyDown(document.body, { key: 'Escape' });
+      await waitFor(() => expect(within(document.body).queryByTestId('ticket-menu-copy-key')).toBeNull());
+
+      // Answered, but not read yet: still no key.
+      answer!({ id: 'ticket-5-1', seq: 10, poll_every: 10_000, ...JIRA_USER1, loaded: false, read_at: 0 } as unknown as TicketSubscription);
+      await waitFor(() => expect(within(screen).getByTestId('ticket-type-mark')).toBeInTheDocument());
+      await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+      expect(await within(document.body).findByTestId('ticket-menu-copy-key')).toHaveAttribute('aria-disabled', 'true');
+      await fireEvent.keyDown(document.body, { key: 'Escape' });
+      await waitFor(() => expect(within(document.body).queryByTestId('ticket-menu-copy-key')).toBeNull());
+
+      // Read: its key copies.
+      setBindingMock('TrackerTicket', async () => ({ loaded: true, detail: ticketDetail('5'), account: JIRA_USER1.account }));
+      trackerIssueUpdated({ connection: 'c1', issue: '5', seq: 11, changed: true }, HOME_BACKEND);
+      await waitFor(() => expect(within(screen).getByTestId('ticket-key')).toHaveTextContent('WEB-5'));
+      await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+      await fireEvent.click(await within(document.body).findByTestId('ticket-menu-copy-key'));
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith('WEB-5'));
+      expect(writeText).toHaveBeenCalledTimes(1);
+    } finally {
+      writeText.mockRestore();
+    }
   });
 
   it('offers the parent\'s own actions on a right-click of it, in the Issues pane and in a ticket pane, never the ticket that shows it', async () => {

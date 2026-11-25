@@ -183,7 +183,11 @@
   // Jira's own controls (the type, the estimate, poker, attachments, Log
   // time) show on a Jira ticket only, never while the tracker is not known.
   const jira = $derived(kind === 'jira');
-  const ctx: TicketWriteContext = $derived({ key: attachment.key, ref: attachment.ref, label: card?.key || seed.key });
+  // The ticket's key, empty until a pane restored with none reads it:
+  // Copy key waits for it. (The commands that write the ticket, Log time
+  // among them, show only with its detail, which names its key.)
+  const ticketKey = $derived(card?.key || seed.key);
+  const ctx: TicketWriteContext = $derived({ key: attachment.key, ref: attachment.ref, label: ticketKey || 'this ticket' });
   const section = (id: string) => ({ backend: attachment.ref.backend, connection: attachment.ref.connection, section: id });
 
   // The targets of the narrow row's fields, whose notes the row shows.
@@ -210,7 +214,7 @@
     parentMenu = { x: event.clientX, y: event.clientY, parent };
     parentMenuOpen = true;
   }
-  const keyText = $derived(card?.key || seed.key || 'Ticket');
+  const keyText = $derived(ticketKey || 'Ticket');
 
   /** One step back inside the ticket: the Details rail over a narrow
    * ticket closes. False when there is none, and the pane steps on. */
@@ -951,7 +955,13 @@
     <MenuItem label="Refresh" testId="ticket-menu-refresh" disabled={!ticketState || ticketState.ended} onSelect={() => run(refresh)} />
     <MenuDivider />
     <MenuSectionHeader label="Copy" />
-    <MenuItem label="Key" testId="ticket-menu-copy-key" onSelect={() => run(() => copy(ctx.label, 'key'))} />
+    <MenuItem
+      label="Key"
+      description={ticketKey ? undefined : 'The key shows once the ticket is read'}
+      disabled={!ticketKey}
+      testId="ticket-menu-copy-key"
+      onSelect={() => run(() => copy(ticketKey, 'key'))}
+    />
     {#if trackerURL}
       {@const url = trackerURL}
       <MenuItem label="Link" testId="ticket-menu-copy-link" onSelect={() => run(() => copy(url, 'link'))} />
@@ -971,7 +981,7 @@
     {:then mod}
       <mod.default
         ctx={timeCtx}
-        ticket={{ issue: attachment.ref.issue, key: card?.key || seed.key, title: card?.title || seed.title }}
+        ticket={{ issue: attachment.ref.issue, key: ticketKey, title: card?.title || seed.title }}
         day={localDay(new Date())}
         onDone={() => { logging = false; }}
       />
