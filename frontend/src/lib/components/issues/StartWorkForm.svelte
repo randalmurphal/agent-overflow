@@ -21,7 +21,7 @@
     type StartWorkPlan,
   } from '../../stores/ticketWork.svelte';
   import { projectBackend } from '../../transport/entityIndex';
-  import type { BackendKey } from '../../transport/backendKey';
+  import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
   import type { Thread } from '../../types/models';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
@@ -67,7 +67,7 @@
     untrack(() => loadStartWorkDefaults(at.ticket, at.project));
   });
 
-  const projects = $derived(getProjects().map((p) => p.project).filter((p) => !p.archived && projectBackend(p.id) === backend));
+  const projects = $derived(getProjects().map((p) => p.project).filter((p) => !p.archived && (projectBackend(p.id) ?? HOME_BACKEND) === backend));
 
   // The rows as the person set them; null is "as the defaults say".
   let status = $state<string | null>(null);
