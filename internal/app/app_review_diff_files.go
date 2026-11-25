@@ -619,6 +619,9 @@ func (a *App) payloadEditedPaths(threadID, payloadID string, want map[string]str
 				closed, ok := paths.Line(string(line))
 				line = line[:0]
 				record(closed, ok)
+				if len(resolved) >= len(want) {
+					return matched, nil
+				}
 				continue
 			}
 			if len(line) < editScanLineBytes {

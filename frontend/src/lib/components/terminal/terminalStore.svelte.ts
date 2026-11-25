@@ -237,6 +237,15 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
       const match = tabs[idx]!;
       if (match.pendingOutput.length === 0) return [];
       const drained = match.pendingOutput;
+      const sequences = pendingSequencesByTerminal.get(terminalID);
+      if (sequences && sequences.length > 0) {
+        let maxSeq = replayWatermarkByTerminal.get(terminalID) ?? 0;
+        for (let i = 0; i < sequences.length; i += 1) {
+          const s = sequences[i]!;
+          if (s > maxSeq) maxSeq = s;
+        }
+        if (maxSeq > 0) replayWatermarkByTerminal.set(terminalID, maxSeq);
+      }
       pendingSequencesByTerminal.set(terminalID, []);
       pendingBytesByTerminal.set(terminalID, 0);
       const nextTabs = tabs.slice();

@@ -1813,8 +1813,9 @@ export function createReviewPaneState(
     releasePR();
     prIdentity.dispose();
     // Release review-only primed diff spans unless another open review pane
-    // shares this rowId.
-    if (rowId) {
+    // shares this rowId. Pinned PR review states manage their own shared-owner
+    // eviction in `disposePinnedState` (`reviewPanePinned.svelte.ts`).
+    if (!pinned && rowId) {
       let shared = false;
       for (const other of statesBySourcePane.values()) {
         if (other.dispose !== dispose && other.rowId === rowId) {

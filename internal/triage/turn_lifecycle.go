@@ -818,6 +818,7 @@ func (r *Router) forceCloseOrphanToolCalls(threadID string, turnIndex int, now i
 	}
 	r.emitItemUpserts(threadID, flipped)
 	for _, item := range flipped {
+		r.dropStreamPersistenceBuffer(threadID, item.ID)
 		r.metrics.ItemsPersisted.Add(context.Background(), 1,
 			metric.WithAttributes(attribute.String("kind", item.Kind)))
 	}

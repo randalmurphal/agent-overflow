@@ -23,7 +23,7 @@ func itemHydrationColumns(threadID, payloadKind, payloadMeta, previewSpans, meta
 
 // localItemHydrationColumns is the projection of a local row, own or a
 // fork's inherited one. An own row serves its merged meta over the join
-// resolveSelectedTimelineSQL renders when the caller passes servedItemJoin;
+// buildSelectedTimelineBranches renders when the caller passes servedItemJoin;
 // an inherited row reads revision -1 and serves its stored meta.
 func localItemHydrationColumns(thread, rev string) string {
 	return itemHydrationColumns(
@@ -151,7 +151,7 @@ func resolvePrecomputedTimelineSQL(q sqlQueryer, threadID, noForkSQL, forkSQL st
 	return noForkSQL, []any{threadID, threadID}, nil
 }
 
-// resolveSelectedTimelineSQL renders the branches that resolve a
+// buildSelectedTimelineBranches renders the branches that resolve a
 // MATERIALIZED `selected(id)` set to rows of one thread, each through the
 // physical source that owns the id:
 //
@@ -167,22 +167,6 @@ func resolvePrecomputedTimelineSQL(q sqlQueryer, threadID, noForkSQL, forkSQL st
 //     renders these branches: on every other thread they would only make
 //     each read's statement several times as costly to prepare.
 //
-// local and imported render a branch's projection from its logical thread
-// id and row revision expressions. localJoin is a join the own local
-// branch's projection reads (servedItemJoin for served meta), or "". It
-// returns the branches and their bind values, which follow the
-// selection's.
-func resolveSelectedTimelineSQL(q sqlQueryer, threadID string, local, imported func(thread, rev string) string, localJoin, orderBy string) (string, []any, error) {
-	depth, err := forkLineageDepth(q, threadID)
-	if err != nil {
-		return "", nil, err
-	}
-	if depth > 0 {
-		return buildSelectedTimelineBranches(local, imported, localJoin, orderBy, true), []any{threadID, threadID, threadID, threadID}, nil
-	}
-	return buildSelectedTimelineBranches(local, imported, localJoin, orderBy, false), []any{threadID, threadID}, nil
-}
-
 // queryHydratedTimelineItems selects logical item ids first, then resolves each
 // id through the physical branch that owns it. This shape is deliberately not
 // expressed as `timeline_items LEFT JOIN timeline_payloads`: SQLite materializes
@@ -191,7 +175,7 @@ func resolveSelectedTimelineSQL(q sqlQueryer, threadID string, local, imported f
 //
 // selectedSQL must return one `id` column. It runs once (MATERIALIZED matters
 // because every physical branch consumes it), then each id resolves through
-// the branch that owns it (resolveSelectedTimelineSQL).
+// the branch that owns it (resolvePrecomputedTimelineSQL).
 //
 // The caller chooses q, so SyncThreadWindow can keep selection, hydration,
 // decoration, and its history stamps in one WAL snapshot.

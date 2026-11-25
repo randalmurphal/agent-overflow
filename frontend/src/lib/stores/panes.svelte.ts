@@ -77,10 +77,11 @@ function syncOpenThreads(): void {
 
 onWatchedThreadsComposed(() => syncOpenThreads());
 
-/** Release the per-thread open-state signal box when a thread is removed. */
+/** Release the per-thread open/shown signal boxes when a thread is removed. */
 export function dropOpenThreadSignal(id: string): void {
   openThreadIdSet.delete(id);
   openThreads.drop(id);
+  for (const pane of panes.values()) pane.dropShownThreadSignal(id);
 }
 let panePersistenceHandler: (() => void) | null = null;
 // Notified with a paneId after that pane (a ThreadPane) is destroyed.

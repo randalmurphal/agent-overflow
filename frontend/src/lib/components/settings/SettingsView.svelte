@@ -10,7 +10,11 @@
     if (cachedVersion !== null) return Promise.resolve(cachedVersion);
     versionPromise ??= Version()
       .then((v: string) => {
-        cachedVersion = v;
+        if (v) {
+          cachedVersion = v;
+        } else {
+          versionPromise = null;
+        }
         return v;
       })
       .catch(() => {
@@ -55,13 +59,19 @@
     type SettingsSection,
   } from './sections';
   import { revealSettingsField, type SettingsSearchHit } from './settingsSearch';
-  import { SECTION_PROSE_CLASS } from './styles';
+  import { PRIMARY_BUTTON_CLASS, SECTION_PROSE_CLASS } from './styles';
   import { remoteAccessAvailable } from '../../transport/buildVariant';
   import ComputerSelect from '../primitives/ComputerSelect.svelte';
   import ComputerSettingsPage from './ComputerSettingsPage.svelte';
   import { selectedBackend } from '../../stores/selectedBackend.svelte';
   import { hasMultipleBackends, attachedBackendEntry, backendDisplayName } from '../../stores/attachedBackends.svelte';
+  import type { BackendKey } from '../../transport/backendKey';
   let computer = $state(untrack(() => getSettingsComputer() ?? selectedBackend()));
+  // Track computers whose settings succeeded a fresh read during this Settings
+  // open so tab switches skip redundant GetSettings() RPCs while opening
+  // Settings or switching computers still refreshes once and surfaces offline
+  // computers.
+  const refreshedComputers = new Set<BackendKey>();
   $effect(() => {
     const target = getSettingsComputer();
     if (target !== null) computer = target;
@@ -115,9 +125,11 @@
   let loadedPageSection = $state<SettingsSection | null>(null);
   let loadedPageComponent = $state.raw<Component | null>(null);
   let pageLoadError = $state<string | null>(null);
+  let pageLoadRetryNonce = $state(0);
 
   $effect(() => {
     const section = activeSection;
+    void pageLoadRetryNonce;
     const loader = SETTINGS_PAGE_LOADERS[section];
     const cached = loader.peek();
     if (cached) {
@@ -149,20 +161,29 @@
       (loadedPageSection === activeSection ? loadedPageComponent : null),
   );
   let panelEl = $state<HTMLElement | null>(null);
+  let selectHitSeq = 0;
 
   async function selectHit(hit: SettingsSearchHit): Promise<void> {
-    openSection(hit.page.id);
-    if (!SETTINGS_PAGE_LOADERS[hit.page.id].peek()) {
-      await SETTINGS_PAGE_LOADERS[hit.page.id].load().catch(() => null);
+    const seq = ++selectHitSeq;
+    const targetSection = hit.page.id;
+    openSection(targetSection);
+    if (!SETTINGS_PAGE_LOADERS[targetSection].peek()) {
+      await SETTINGS_PAGE_LOADERS[targetSection].load().catch(() => null);
+    }
+    if (seq !== selectHitSeq || activeSection !== targetSection || !SETTINGS_PAGE_LOADERS[targetSection].peek()) {
+      return;
     }
     if (hit.kind !== 'field') {
       await tick();
+      if (seq !== selectHitSeq || activeSection !== targetSection) return;
       panelEl?.scrollTo({ top: 0 });
       return;
     }
     const fieldId = hit.field.id;
     await tick();
+    if (seq !== selectHitSeq || activeSection !== targetSection) return;
     requestAnimationFrame(() => {
+      if (seq !== selectHitSeq || activeSection !== targetSection) return;
       if (panelEl) revealSettingsField(panelEl, fieldId);
     });
   }
@@ -239,10 +260,20 @@
         </header>
         {#if Page}
           {#key `${computer}:${activeSection}`}
-            <ComputerSettingsPage backend={computer} {Page} {needsComputer} hasDeviceControls={activeSection === 'performance' || activeSection === 'notifications' || activeSection === 'voice'} />
+            <ComputerSettingsPage
+              backend={computer}
+              {Page}
+              {needsComputer}
+              hasDeviceControls={activeSection === 'performance' || activeSection === 'notifications' || activeSection === 'voice'}
+              alreadyRefreshed={refreshedComputers.has(computer)}
+              onRefreshed={() => refreshedComputers.add(computer)}
+            />
           {/key}
         {:else if pageLoadError}
-          <p role="alert" class="text-sm text-error">Failed to load settings page: {pageLoadError}</p>
+          <div class="flex flex-col items-start gap-3">
+            <p role="alert" class="text-sm text-error">Failed to load settings page: {pageLoadError}</p>
+            <button class={PRIMARY_BUTTON_CLASS} onclick={() => { pageLoadRetryNonce += 1; }}>Retry</button>
+          </div>
         {:else}
           <p role="status" class="text-sm text-fg-muted">Loading…</p>
         {/if}

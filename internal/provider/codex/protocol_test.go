@@ -396,6 +396,20 @@ func TestClassifyNotification_ErrorWithWillRetry(t *testing.T) {
 	}
 }
 
+func TestClassifyNotification_ReasoningTextDeltaNonObjectContent(t *testing.T) {
+	t.Parallel()
+	// A reasoning delta carrying a non-object "content" field alongside "delta"
+	// must still parse "delta" without failing struct unmarshaling.
+	params := `{"turnId":"turn-9","itemId":"reason-1","delta":"thinking...","content":["ignored"]}`
+	events := ClassifyNotification("t1", "item/reasoning/textDelta", json.RawMessage(params))
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	if events[0].Kind != provider.EventThinking || events[0].Content != "thinking..." {
+		t.Fatalf("event = %+v, want EventThinking with 'thinking...'", events[0])
+	}
+}
+
 func TestParseCodexRetryCounts(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

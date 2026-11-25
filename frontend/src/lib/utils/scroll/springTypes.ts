@@ -39,7 +39,7 @@ export interface SpringChaseDeps {
   prefersReducedMotion(): boolean;
   scrollGrid(): ScrollGrid;
   forceNextSpringTickTrace(): void;
-  scrollTopUnexplained(readFree?: boolean): boolean;
+  scrollTopUnexplained(): boolean;
   reportWriteRefusal(event: SpringWriteRefusalEvent): void;
 }
 
@@ -59,7 +59,7 @@ export interface SpringChase {
   markStructuralAppend(): void;
   structuralAppendPending(): boolean;
   clearStructuralAppend(): void;
-  sentinelTarget(readFree?: boolean): number;
-  sentinelClampWitnessed(readFree?: boolean): boolean;
+  sentinelTarget(): number;
+  sentinelClampWitnessed(): boolean;
   refusalLatched(): boolean;
 }

@@ -277,12 +277,10 @@ func (r *Router) scheduleStreamPersistenceLocked(buffer *streamPersistBuffer) {
 	buffer.timerArmed = true
 }
 
-const maxRetainedStreamBufferCap = 16 * 1024
-
 // takeStreamPersistenceLocked extracts one thread's buffer for itemID.
-// When deleteEntry is false, the buffer struct and its timer stay pooled on
-// st.streamPersistBuffers so recurring flush windows avoid reallocating a
-// buffer, closure, and timer per window. Caller holds r.mu.
+// When deleteEntry is false (threshold flush mid-burst), the buffer struct and
+// its timer stay pooled on st.streamPersistBuffers so recurring burst flushes
+// avoid reallocating a buffer, closure, and timer per window. Caller holds r.mu.
 func (r *Router) takeStreamPersistenceLocked(st *threadState, itemID string, deleteEntry bool) *pendingStreamFlush {
 	if st == nil {
 		return nil
@@ -319,11 +317,7 @@ func (r *Router) takeStreamPersistenceLocked(st *threadState, itemID string, del
 		pending.summaryDelta = content
 	}
 	if !deleteEntry {
-		if buffer.content.Cap() > maxRetainedStreamBufferCap {
-			buffer.content = strings.Builder{}
-		} else {
-			buffer.content.Reset()
-		}
+		buffer.content.Reset()
 		buffer.meta = nil
 	}
 	return pending
@@ -339,7 +333,7 @@ func (r *Router) flushStreamPersistenceKey(threadID, itemID string) {
 	id.streamFlushMu.Lock()
 	defer id.streamFlushMu.Unlock()
 	r.mu.Lock()
-	pending := r.takeStreamPersistenceLocked(r.threadStateIfPresent(threadID), itemID, false)
+	pending := r.takeStreamPersistenceLocked(r.threadStateIfPresent(threadID), itemID, true)
 	r.mu.Unlock()
 	if pending == nil {
 		return

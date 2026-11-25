@@ -195,14 +195,21 @@ export function ansiHtmlWithState(input: string): { html: string; state: AnsiTai
   let out = '';
   let openClass = '';
   let incompleteTail = false;
+  let endsWithCR = false;
   scanAnsi(input, {
     text: (from, to) => {
-      out += escapeHtml(input.slice(from, to));
+      if (to > from) {
+        out += escapeHtml(input.slice(from, to));
+        endsWithCR = input.charCodeAt(to - 1) === CR;
+      }
     },
     sgr: (params) => {
-      if (openClass !== '') out += '</span>';
+      const wasOpen = openClass !== '';
+      if (wasOpen) out += '</span>';
       openClass = ansiClass(params);
-      if (openClass !== '') out += `<span class="${openClass}">`;
+      const isOpen = openClass !== '';
+      if (isOpen) out += `<span class="${openClass}">`;
+      if (wasOpen || isOpen) endsWithCR = false;
     },
     incompleteEscape: () => {
       incompleteTail = true;
@@ -213,7 +220,7 @@ export function ansiHtmlWithState(input: string): { html: string; state: AnsiTai
     state: {
       openClass,
       incompleteTail,
-      endsWithCR: input.length > 0 && input.charCodeAt(input.length - 1) === CR,
+      endsWithCR,
     },
   };
 }
@@ -259,32 +266,68 @@ export function appendAnsiDeltaToDom(
 
   if (delta.indexOf('\x1b') < 0) {
     appendText(delta);
-  } else {
-    scanAnsi(delta, {
-      text: (from, to) => {
-        appendText(delta.slice(from, to));
-      },
-      sgr: (params) => {
-        openClass = ansiClass(params);
-        if (openClass !== '') {
-          const span = doc.createElement('span');
-          span.className = openClass;
-          root.appendChild(span);
-          activeSpan = span;
-        } else {
-          activeSpan = null;
-        }
-      },
-      incompleteEscape: () => {
-        incompleteTail = true;
-      },
-    });
+    return {
+      openClass,
+      incompleteTail,
+      endsWithCR: delta.charCodeAt(delta.length - 1) === CR,
+    };
   }
+
+  // Buffer contiguous text across non-SGR escapes (OSC/APC) and no-op SGRs
+  // so `\r` + OSC + `\n` collapses to one `\n` just like `ansiHtml`/`ansiShownText`.
+  let pendingCR = prevState.endsWithCR;
+  let pendingText = '';
+  let crLfSplit = false;
+  const flushPendingText = (): void => {
+    if (pendingText.length === 0) return;
+    if (pendingCR && pendingText.charCodeAt(0) === LF) {
+      crLfSplit = true;
+      pendingText = '';
+      return;
+    }
+    pendingCR = pendingText.charCodeAt(pendingText.length - 1) === CR;
+    appendText(pendingText);
+    pendingText = '';
+  };
+
+  scanAnsi(delta, {
+    text: (from, to) => {
+      if (crLfSplit || to <= from) return;
+      if (pendingCR && pendingText.length === 0 && delta.charCodeAt(from) === LF) {
+        crLfSplit = true;
+        return;
+      }
+      pendingText += delta.slice(from, to);
+    },
+    sgr: (params) => {
+      if (crLfSplit) return;
+      const nextClass = ansiClass(params);
+      if (openClass === '' && nextClass === '') return;
+      flushPendingText();
+      if (crLfSplit) return;
+      pendingCR = false;
+      openClass = nextClass;
+      if (openClass !== '') {
+        const span = doc.createElement('span');
+        span.className = openClass;
+        root.appendChild(span);
+        activeSpan = span;
+      } else {
+        activeSpan = null;
+      }
+    },
+    incompleteEscape: () => {
+      incompleteTail = true;
+    },
+  });
+  if (crLfSplit) return null;
+  flushPendingText();
+  if (crLfSplit) return null;
 
   return {
     openClass,
     incompleteTail,
-    endsWithCR: delta.charCodeAt(delta.length - 1) === CR,
+    endsWithCR: pendingCR,
   };
 }
 

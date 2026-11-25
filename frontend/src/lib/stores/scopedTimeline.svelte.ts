@@ -189,16 +189,21 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
       return;
     }
     const event = mutation.event;
-    const update = (item: Item): Item => {
+    let scopeDeltaGapped = false;
+    const update = (item: Item, isScopeItem = false): Item => {
       if (item.id !== event.itemId) return item;
       if (mutation.kind === 'meta') return { ...item, meta: mutation.event.meta };
-      if (mutation.kind === 'delta') return appendPositionedDelta(item, mutation.event) ?? item;
+      if (mutation.kind === 'delta') {
+        const next = appendPositionedDelta(item, mutation.event);
+        if (!next && isScopeItem) scopeDeltaGapped = true;
+        return next ?? item;
+      }
       if (mutation.event.patch.status && isItemStatusRegression(item, { status: mutation.event.patch.status, updatedAt: mutation.event.patch.updatedAt })) return item;
       return applyItemPatchFields(item, mutation.event.patch);
     };
     if (scope && [scope.root.id, scope.lifecycle.id, scope.completion?.id].includes(event.itemId)) {
-      scope = { ...scope, root: update(scope.root as Item), lifecycle: update(scope.lifecycle as Item),
-        completion: scope.completion ? update(scope.completion as Item) : undefined };
+      scope = { ...scope, root: update(scope.root as Item, true), lifecycle: update(scope.lifecycle as Item, true),
+        completion: scope.completion ? update(scope.completion as Item, true) : undefined };
     }
     if (!getItemById(event.itemId)) {
       for (const ids of unheldMutations.values()) ids.add(event.itemId);
@@ -212,7 +217,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     else stream.applyItemPatch(mutation.event);
     if (event.itemId === scope?.root.id || event.itemId === scope?.lifecycle.id || event.itemId === scope?.completion?.id) {
       contextVersion++;
-      if (mutation.kind !== 'delta') contextRefresh.request();
+      if (mutation.kind !== 'delta' || scopeDeltaGapped || reads.size > 0) contextRefresh.request();
     }
   }
   function apply(observation: WindowObservation) {

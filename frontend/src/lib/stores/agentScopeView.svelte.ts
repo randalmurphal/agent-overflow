@@ -198,6 +198,7 @@ export function createAgentScopeView(
     get thread() { return sourcePane.thread; },
     get threadId() { return sourcePane.threadId; },
     get isShowingThread() { return sourcePane.isShowingThread; },
+    get dropShownThreadSignal() { return sourcePane.dropShownThreadSignal; },
     get workspace() { return sourcePane.workspace; },
     get activeModel() { return sourcePane.activeModel; },
     get effectiveModel() { return sourcePane.effectiveModel; },

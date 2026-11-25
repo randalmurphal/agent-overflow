@@ -102,15 +102,21 @@
   let backdropEl: HTMLDivElement | undefined = $state(undefined);
   let panelHostEl: HTMLDivElement | undefined = $state(undefined);
   let blurLease = $state.raw<BackdropBlurLease | null>(null);
+  let wasDelegated = $state(false);
   $effect(() => {
     if (!open) return;
-    const lease = acquireBackdropBlur('md');
+    wasDelegated = false;
+    const lease = acquireBackdropBlur('md', 60);
     blurLease = lease;
     return () => {
+      wasDelegated = lease.delegatedToShell;
       lease.release();
       if (blurLease === lease) blurLease = null;
     };
   });
+  // Keep native backdrop-filter suppressed through the fade-out outro when this
+  // modal was delegated to the app shell, preventing a native blur pop-in mid-fade.
+  const suppressBackdrop = $derived(Boolean(blurLease?.delegatedToShell || (!open && wasDelegated)));
 
   $effect(() => {
     const backdrop = backdropEl;
@@ -184,9 +190,9 @@
       'fixed inset-0 z-[60] flex justify-center bg-overlay backdrop-blur-md [contain:strict] [transform:translateZ(0)]',
       align === 'top' ? 'items-start pt-[10vh]' : 'items-center',
     ].join(' ')}
-    data-backdrop-cutout={blurLease?.delegatedToShell ? 'true' : undefined}
-    style:backdrop-filter={blurLease?.delegatedToShell ? 'none' : undefined}
-    style:-webkit-backdrop-filter={blurLease?.delegatedToShell ? 'none' : undefined}
+    data-backdrop-cutout={suppressBackdrop ? 'true' : undefined}
+    style:backdrop-filter={suppressBackdrop ? 'none' : undefined}
+    style:-webkit-backdrop-filter={suppressBackdrop ? 'none' : undefined}
     data-modal-backdrop
     data-modal-align={align}
     use:airspaceSurface

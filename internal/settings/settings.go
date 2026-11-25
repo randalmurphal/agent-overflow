@@ -1174,7 +1174,17 @@ func recentWorkspacesAlreadyHead(recent []string, path string) bool {
 	if len(recent) == 0 || len(recent) > 10 || recent[0] != path {
 		return false
 	}
-	return !slices.Contains(recent[1:], path)
+	for i := 1; i < len(recent); i++ {
+		if recent[i] == path {
+			return false
+		}
+		for j := 1; j < i; j++ {
+			if recent[j] == recent[i] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (s *Service) addRecentWorkspace(bucket string, class DeviceClass, path string) {
@@ -1183,29 +1193,27 @@ func (s *Service) addRecentWorkspace(bucket string, class DeviceClass, path stri
 		return
 	}
 
-	// Fast no-op check: adding a workspace that is already at the head of this
-	// caller's recent list (with no duplicates) produces no change, so avoid
-	// full settings file reload, triple keyValues JSON projections, and disk
-	// writes. Matches TestAddRecentWorkspaceAnnouncesOnceThenStaysSilent.
+	// Fast no-op check under s.mu.RLock so concurrent AddRecentWorkspace calls
+	// cannot race a pre-commit UI state read against an active s.mutate write.
+	// Matches TestAddRecentWorkspaceAnnouncesOnceThenStaysSilent.
 	s.mu.RLock()
-	store := s.store
+	alreadyHead := false
 	deviceScope := bucket
 	if deviceScope == "" {
 		deviceScope = s.backendBucket
 	}
-	s.mu.RUnlock()
-	if store != nil {
-		if deviceScope != "" {
-			if rows, err := store.GetUIState(deviceScope); err == nil {
-				if raw, ok := rows["recentWorkspaces"]; ok {
-					var recent []string
-					if json.Unmarshal([]byte(raw), &recent) == nil && recentWorkspacesAlreadyHead(recent, path) {
-						return
-					}
+	if s.store != nil && deviceScope != "" {
+		if rows, err := s.store.GetUIState(deviceScope); err == nil {
+			if raw, ok := rows["recentWorkspaces"]; ok {
+				var recent []string
+				if json.Unmarshal([]byte(raw), &recent) == nil && recentWorkspacesAlreadyHead(recent, path) {
+					alreadyHead = true
 				}
 			}
 		}
-	} else if recentWorkspacesAlreadyHead(s.Get().RecentWorkspaces, path) {
+	}
+	s.mu.RUnlock()
+	if alreadyHead {
 		return
 	}
 

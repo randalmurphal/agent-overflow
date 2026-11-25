@@ -36,6 +36,7 @@
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { providerSupports } from '../../providers/catalog';
   import {
+    UI_TRACE_BUILD_GATE,
     isUiRenderTraceEnabled,
     recordUiTrace,
     scheduleDomUiTrace,
@@ -373,7 +374,7 @@
   });
 
   $effect(() => {
-    if (!isUiRenderTraceEnabled()) return;
+    if (!UI_TRACE_BUILD_GATE) return;
     void pane.threadId;
     void pane.loading;
     void pane.items.length;
@@ -385,6 +386,7 @@
     void pane.showPlanSidebar;
     void pane.showReviewPane;
 
+    if (!isUiRenderTraceEnabled()) return;
     recordUiTrace('chat.state', summarizePaneForTrace(pane));
     scheduleDomUiTrace('chat', 'chat.dom', () => snapshotChatDomForTrace(chatRoot));
   });

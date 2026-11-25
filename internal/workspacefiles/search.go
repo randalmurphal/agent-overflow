@@ -83,7 +83,6 @@ type Searcher struct {
 	mu       sync.Mutex
 	indices  map[string]*workspaceIndex
 	inFlight map[string]*indexBuild
-	gen      uint64
 }
 
 // Config customises limits; zero values fall back to defaults.
@@ -109,11 +108,11 @@ func NewSearcher(cfg Config) *Searcher {
 	}
 }
 
-// Invalidate forgets any cached index for the given workspace.
+// Invalidate forgets any cached or in-flight index for the given workspace.
 func (s *Searcher) Invalidate(root string) {
 	s.mu.Lock()
 	delete(s.indices, root)
-	s.gen++
+	delete(s.inFlight, root)
 	s.mu.Unlock()
 }
 
@@ -166,15 +165,17 @@ func (s *Searcher) getIndex(root string) (*workspaceIndex, error) {
 	}
 	flight := &indexBuild{done: make(chan struct{})}
 	s.inFlight[root] = flight
-	startGen := s.gen
 	s.mu.Unlock()
 
 	built, err := buildIndex(root, s.maxEntries)
 
 	s.mu.Lock()
-	delete(s.inFlight, root)
-	if err == nil && s.gen == startGen {
-		s.indices[root] = built
+	stillCurrent := s.inFlight[root] == flight
+	if stillCurrent {
+		delete(s.inFlight, root)
+		if err == nil {
+			s.indices[root] = built
+		}
 	}
 	flight.idx = built
 	flight.err = err
@@ -184,11 +185,13 @@ func (s *Searcher) getIndex(root string) (*workspaceIndex, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Release the index when it expires, so an idle workspace's index (up
-	// to maxEntries entries, several MB for a large repo) does not stay
-	// resident until some later search. An expired index is never served,
-	// so dropping it only releases memory.
-	time.AfterFunc(s.ttl, func() { s.releaseExpired(root) })
+	if stillCurrent {
+		// Release the index when it expires, so an idle workspace's index (up
+		// to maxEntries entries, several MB for a large repo) does not stay
+		// resident until some later search. An expired index is never served,
+		// so dropping it only releases memory.
+		time.AfterFunc(s.ttl, func() { s.releaseExpired(root) })
+	}
 	return built, nil
 }
 

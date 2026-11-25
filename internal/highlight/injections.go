@@ -132,14 +132,14 @@ func (iq *injectionQuery) collectInjectionsInRanges(root *tree_sitter.Node, src 
 	if maxHi <= minLo {
 		return nil
 	}
-	// Combined injections accumulate fragments from earlier in the file so
-	// parser state carries across fragments; keep [0, maxHi] when any pattern
-	// is combined, and narrow to [minLo, maxHi] otherwise.
-	lo := minLo
+	// Combined injections accumulate fragments across the whole file so
+	// earlier openings and later closings stay paired; keep [0, len(src)]
+	// when any pattern is combined, and narrow to [minLo, maxHi] otherwise.
+	lo, hi := minLo, maxHi
 	if iq.hasCombined {
-		lo = 0
+		lo, hi = 0, len(src)
 	}
-	return iq.collectInjectionsBounded(root, src, lo, maxHi)
+	return iq.collectInjectionsBounded(root, src, lo, hi)
 }
 
 func (iq *injectionQuery) collectInjectionsBounded(root *tree_sitter.Node, src []byte, lo, hi int) []injectionSite {

@@ -39,6 +39,7 @@ import type { WorkspaceRef } from '../types/git';
 import type { PatchFile, PatchLine } from './patchFiles';
 import type { ReviewFile } from './patchParser';
 import { PatchTextLost } from './patchChunks';
+import { patchTextVersion } from './patchMemory.svelte';
 import {
   ensureHighlightSchemaVersion,
   ensureSyntaxClassNames,
@@ -830,10 +831,24 @@ export function getSpansForReviewFile(
     void baseGenerations.get(base);
     return entryForKey(base, context)?.spans ?? null;
   }
-  // Evicted body text has no content key until re-read; subscribe to cache
-  // generation so the block repaints once the re-read lands.
+  // Evicted body text has no content key until re-read; subscribe to both
+  // patchTextVersion (fires when text becomes resident again, even if spans
+  // were already cached) and cache generation so the block repaints.
+  void patchTextVersion();
   void generation;
   return null;
+}
+
+/** Reports whether the cached span entry for `file` is marked incomplete and
+ * eligible for damped retry (`INCOMPLETE_RETRY_MS`). Non-reactive. */
+export function hasIncompleteSpansForReviewFile(
+  file: ReviewFile,
+  context?: PatchScopeContext | null,
+): boolean {
+  const key = file.body.contentKey();
+  if (key === null) return false;
+  const entry = entryForKey(`${file.path} ${key}`, context);
+  return entry?.incompleteAt !== undefined;
 }
 
 /** Non-reactive per-line span resolution against a block's already-resolved

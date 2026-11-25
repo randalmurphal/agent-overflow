@@ -192,13 +192,9 @@ func (s countedStmt) QueryContext(ctx context.Context, args []driver.NamedValue)
 	return s.sqliteStmt.QueryContext(ctx, args)
 }
 
-// acquire returns query's cached statement marked busy, compiling and caching
-// it on first use. It returns nil when query is not cached or its statement is
-// busy; the caller then runs query uncached.
-func (c *stmtCacheConn) acquire(ctx context.Context, query string) (*cachedStmt, error) {
-	return c.acquireKeyword(ctx, query, leadingKeyword(query))
-}
-
+// acquireKeyword returns query's cached statement marked busy, compiling and
+// caching it on first use. It returns nil when query is not cached or its
+// statement is busy; the caller then runs query uncached.
 func (c *stmtCacheConn) acquireKeyword(ctx context.Context, query, kw string) (*cachedStmt, error) {
 	if !cacheableKeyword(kw) {
 		return nil, nil

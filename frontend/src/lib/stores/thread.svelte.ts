@@ -146,7 +146,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     const before = thread?.id ?? null;
     thread = next;
     const after = next?.id ?? null;
-    syncShownThreadKey(after);
+    syncShownThreadKey(draftState.placeholder ? null : after);
     if (after === before) return;
     // A thread is mounted in one pane, so `before` has none now.
     if (before) releaseFlushedLeftByPane(before);
@@ -761,7 +761,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       return stableThreadId;
     },
     isShowingThread(id: string): boolean {
-      return !draftState.placeholder && shownThreadRegistry.get(id);
+      return shownThreadRegistry.get(id);
+    },
+    dropShownThreadSignal(id: string): void {
+      if (shownThreadKey === id) shownThreadKey = null;
+      shownThreadRegistry.drop(id);
     },
     /**
      * The checkout this pane operates in, or null when the row names none

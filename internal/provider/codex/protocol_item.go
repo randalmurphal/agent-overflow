@@ -212,13 +212,11 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 	// case for why.
 	case "item/reasoning/textDelta", "item/reasoning/summaryTextDelta":
 		var fields struct {
-			TurnID  string `json:"turnId"`
-			ItemID  string `json:"itemId"`
-			Delta   string `json:"delta"`
-			Text    string `json:"text"`
-			Content struct {
-				Text string `json:"text"`
-			} `json:"content"`
+			TurnID  string          `json:"turnId"`
+			ItemID  string          `json:"itemId"`
+			Delta   string          `json:"delta"`
+			Text    string          `json:"text"`
+			Content json.RawMessage `json:"content"`
 		}
 		if json.Unmarshal(params, &fields) != nil {
 			return nil, true
@@ -227,8 +225,13 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 		if delta == "" {
 			delta = fields.Text
 		}
-		if delta == "" {
-			delta = fields.Content.Text
+		if delta == "" && len(fields.Content) > 0 && fields.Content[0] == '{' {
+			var content struct {
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(fields.Content, &content) == nil {
+				delta = content.Text
+			}
 		}
 		if delta == "" {
 			return nil, true

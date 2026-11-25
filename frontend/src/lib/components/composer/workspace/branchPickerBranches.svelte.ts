@@ -36,6 +36,7 @@ export function createPickerBranches(opts: {
   let error = $state<string | null>(null);
   let lastKey = '';
   let seq = 0;
+  let openSeq = 0;
 
   function keyOf(threadId: string | undefined, ws: WorkspaceRef | null, branch: string): string {
     return `${threadId ?? ''}\0${workspaceKeyForRef(ws) ?? ''}\0${branch}`;
@@ -82,6 +83,7 @@ export function createPickerBranches(opts: {
     async open() {
       const { thread, workspace: ws } = opts.pane();
       if (!thread || !ws || loading) return;
+      const openAt = ++openSeq;
       lastKey = keyOf(thread.id, ws, opts.checkoutBranch());
       loading = true;
       error = null;
@@ -104,7 +106,7 @@ export function createPickerBranches(opts: {
       try {
         await first;
       } finally {
-        loading = false;
+        if (openAt === openSeq) loading = false;
       }
     },
     replace(threadId, next) {
@@ -112,6 +114,8 @@ export function createPickerBranches(opts: {
     },
     clear() {
       seq += 1;
+      openSeq += 1;
+      loading = false;
       if (branches.length > 0) branches = [];
       error = null;
     },

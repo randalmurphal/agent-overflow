@@ -123,7 +123,7 @@ type Parser struct {
 	// toolUseParents learned their tool_use_id's parent, so rememberToolUseParent
 	// patches only affected entries in O(1) instead of scanning both recentMap
 	// generations.
-	orphanTasksByToolUse map[string][]string
+	orphanTasksByToolUse recentMap[[]string]
 	// toolUseNames records the tool name of every observed tool_use,
 	// forwarded on stdout or projected from the session mirror. Two
 	// readers need it. system/task_started's resume detection
@@ -524,7 +524,7 @@ func (p *Parser) Close() {
 	p.advisorMessages = nil
 	p.toolUseParents = nil
 	p.taskToolUses = recentMap[taskToolUseRef]{}
-	p.orphanTasksByToolUse = nil
+	p.orphanTasksByToolUse = recentMap[[]string]{}
 	p.toolUseNames = recentMap[string]{}
 	p.unclassifiedTaskCalls = recentMap[agentTaskStart]{}
 	p.taskTranscriptRoots = recentMap[string]{}
@@ -921,7 +921,7 @@ func (p *Parser) rememberToolUseParent(toolUseID, parentToolUseID string) {
 		p.toolUseParents = make(map[string]string)
 	}
 	p.toolUseParents[toolUseID] = parentToolUseID
-	if orphanTasks := p.orphanTasksByToolUse[toolUseID]; len(orphanTasks) > 0 {
+	if orphanTasks, ok := p.orphanTasksByToolUse.get(toolUseID); ok && len(orphanTasks) > 0 {
 		for _, taskID := range orphanTasks {
 			if ref, ok := p.taskToolUses.current[taskID]; ok && ref.ToolUseID == toolUseID && ref.ParentToolUseID == "" {
 				ref.ParentToolUseID = parentToolUseID
@@ -932,7 +932,7 @@ func (p *Parser) rememberToolUseParent(toolUseID, parentToolUseID string) {
 				p.taskToolUses.previous[taskID] = ref
 			}
 		}
-		delete(p.orphanTasksByToolUse, toolUseID)
+		p.orphanTasksByToolUse.delete(toolUseID)
 	}
 }
 
@@ -953,13 +953,8 @@ func (p *Parser) rememberTaskToolUse(taskID, toolUseID string) {
 		ParentToolUseID: parentID,
 	})
 	if parentID == "" {
-		if p.orphanTasksByToolUse == nil {
-			p.orphanTasksByToolUse = make(map[string][]string)
-		}
-		if len(p.orphanTasksByToolUse) >= parserTaskMapCap {
-			p.orphanTasksByToolUse = make(map[string][]string)
-		}
-		p.orphanTasksByToolUse[toolUseID] = append(p.orphanTasksByToolUse[toolUseID], taskID)
+		existing, _ := p.orphanTasksByToolUse.get(toolUseID)
+		p.orphanTasksByToolUse.set(toolUseID, append(existing, taskID))
 	}
 }
 

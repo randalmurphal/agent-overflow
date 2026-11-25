@@ -230,8 +230,8 @@ export function flattenReviewTree(
 
 function materializeChildren(dir: MutableDirectory): ReviewTreeNode[] {
   const directories = Array.from(dir.directories.values(), materializeDirectory);
-  const files = [...dir.files].sort((a, b) => a.name.localeCompare(b.name));
-  return [...directories.sort((a, b) => a.name.localeCompare(b.name)), ...files];
+  const files = [...dir.files].sort((a, b) => treePathCollator.compare(a.name, b.name));
+  return [...directories.sort((a, b) => treePathCollator.compare(a.name, b.name)), ...files];
 }
 
 function materializeDirectory(dir: MutableDirectory): ReviewTreeDirectoryNode {

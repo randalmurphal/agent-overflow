@@ -170,7 +170,7 @@ func (a *App) pollPRList(ctx context.Context, pump *prListPump) (bool, time.Time
 		if ctx.Err() != nil {
 			continue
 		}
-		changed := a.landPRListRead(pump, read, false)
+		changed := a.landPRListRead(pump, read)
 		// Drain any other repository reads already buffered in results before
 		// publishing, avoiding O(N^2) snapshot marshals when repos finish together.
 	drain:
@@ -178,7 +178,7 @@ func (a *App) pollPRList(ctx context.Context, pump *prListPump) (bool, time.Time
 			select {
 			case next := <-results:
 				i++
-				if ctx.Err() == nil && a.landPRListRead(pump, next, false) {
+				if ctx.Err() == nil && a.landPRListRead(pump, next) {
 					changed = true
 				}
 			default:
@@ -200,9 +200,9 @@ func (a *App) pollPRList(ctx context.Context, pump *prListPump) (bool, time.Time
 }
 
 // landPRListRead folds one repository's read into the pump, stores a
-// successful one when its semantic content changed, and reports whether
-// the pump state changed (optionally publishing immediately).
-func (a *App) landPRListRead(pump *prListPump, read prListRepoRead, publish bool) bool {
+// successful one (refreshing SQLite read_at even when semantically unchanged),
+// and reports whether the published pump state changed.
+func (a *App) landPRListRead(pump *prListPump, read prListRepoRead) bool {
 	var detailErr *gitops.PRListDetailError
 	listed := read.err == nil || errors.As(read.err, &detailErr)
 	a.prUpdates.mu.Lock()
@@ -216,8 +216,10 @@ func (a *App) landPRListRead(pump *prListPump, read prListRepoRead, publish bool
 		pump.projects[read.key] = state
 	}
 	var record []byte
+	var fallbackList *ProjectPRList
 	readAt := time.Now()
 	changed := false
+	touchReadAt := false
 	switch {
 	case listed:
 		if detailErr == nil {
@@ -246,8 +248,13 @@ func (a *App) landPRListRead(pump *prListPump, read prListRepoRead, publish bool
 			} else {
 				record = encoded
 			}
-		} else if state.list.ReadAt == "" {
-			state.list.ReadAt = nextList.ReadAt
+		} else {
+			touchReadAt = true
+			if state.list.ReadAt == "" {
+				state.list.ReadAt = nextList.ReadAt
+			}
+			copyList := state.list
+			fallbackList = &copyList
 		}
 	default:
 		fail := a.newRepoForgeFailure(read.repo, read.err)
@@ -265,11 +272,15 @@ func (a *App) landPRListRead(pump *prListPump, read prListRepoRead, publish bool
 		}
 	}
 	a.prUpdates.mu.Unlock()
+	writer := prListWriter{gen: pump.gen, pump: pump}
 	if record != nil {
-		a.storePRListRead(prListWriter{gen: pump.gen, pump: pump}, store.PRListProject{RepoKey: read.key, ProjectJSON: record, ReadAt: readAt.UnixMilli()})
-	}
-	if publish && changed {
-		a.publishPRList(pump)
+		a.storePRListRead(writer, store.PRListProject{RepoKey: read.key, ProjectJSON: record, ReadAt: readAt.UnixMilli()})
+	} else if touchReadAt {
+		if owned, updated := a.touchPRListReadAt(writer, read.key, readAt.UnixMilli()); owned && !updated && fallbackList != nil {
+			if encoded, err := json.Marshal(*fallbackList); err == nil {
+				a.storePRListRead(writer, store.PRListProject{RepoKey: read.key, ProjectJSON: encoded, ReadAt: readAt.UnixMilli()})
+			}
+		}
 	}
 	return changed
 }

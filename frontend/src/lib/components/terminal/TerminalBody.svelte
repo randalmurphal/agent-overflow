@@ -23,6 +23,7 @@
   import { errString } from '../../utils/errors';
   import { buildTerminal, type BuiltTerminal } from './terminalXterm';
   import { parkWarmTerminal, takeWarmTerminal } from './terminalWarmPool';
+  import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { applyStickyCtrl } from './terminalKeys';
   import TerminalKeyRow from './TerminalKeyRow.svelte';
   import {
@@ -398,9 +399,11 @@
     readClipboard = null;
     if (activeBuilt) {
       if (activeBuilt.hasWebgl && hydrated && handle.hasTab(terminalID)) {
+        const threadID = handle.tabs.find((t) => t.terminalID === terminalID)?.summary.threadID ?? '';
+        const backend = threadMachine(threadID, null);
         activeBuilt.term.clearSelection();
         activeBuilt.detachMount();
-        parkWarmTerminal({ terminalID, handle, paneId, built: activeBuilt });
+        parkWarmTerminal({ terminalID, handle, paneId, backend, built: activeBuilt });
       } else {
         activeBuilt.dispose();
       }

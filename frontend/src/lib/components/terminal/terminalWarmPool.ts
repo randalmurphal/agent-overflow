@@ -8,12 +8,14 @@
 // reached, or they sit unused past the idle window.
 
 import { onPaneLayoutItemsRemoved } from '../../stores/paneLayout.svelte';
+import type { BackendKey } from '../../transport/backendKey';
 import type { BuiltTerminal } from './terminalXterm';
 
 export interface WarmTerminalEntry {
   terminalID: string;
   handle: object;
   paneId: string;
+  backend: BackendKey;
   built: BuiltTerminal;
 }
 
@@ -74,7 +76,7 @@ export function takeWarmTerminal(
 ): BuiltTerminal | null {
   const entry = pool.get(terminalID);
   if (!entry) return null;
-  if (entry.handle !== handle) {
+  if (entry.handle !== handle || !entry.built.hasWebgl) {
     pool.delete(terminalID);
     disposeEntry(entry);
     return null;
@@ -105,6 +107,14 @@ export function evictWarmTerminalsForHandle(handle: object): void {
 export function evictWarmTerminalsForPane(paneId: string): void {
   for (const [id, entry] of pool) {
     if (entry.paneId !== paneId) continue;
+    pool.delete(id);
+    disposeEntry(entry);
+  }
+}
+
+export function evictWarmTerminalsForBackend(backend: BackendKey): void {
+  for (const [id, entry] of pool) {
+    if (entry.backend !== backend) continue;
     pool.delete(id);
     disposeEntry(entry);
   }

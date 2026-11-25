@@ -39,4 +39,27 @@ describe('backdropBlur store', () => {
     expect(getAppShellBlur()).toBeNull();
     unhost();
   });
+
+  it('delegates to a lower-tier overlay even when opened after a higher-tier modal', () => {
+    const unhost = registerAppShellBlurHost();
+    const modal = acquireBackdropBlur('md', 60);
+    expect(modal.delegatedToShell).toBe(true);
+    expect(getAppShellBlur()).toBe('md');
+
+    // OverlayShell (z-40) mounted beneath an already-open Modal (z-60) takes
+    // ownership of the app-shell blur so the higher Modal restores native
+    // backdrop-filter and blurs the OverlayShell beneath it.
+    const overlay = acquireBackdropBlur('sm', 40);
+    expect(overlay.delegatedToShell).toBe(true);
+    expect(modal.delegatedToShell).toBe(false);
+    expect(getAppShellBlur()).toBe('sm');
+
+    overlay.release();
+    expect(modal.delegatedToShell).toBe(true);
+    expect(getAppShellBlur()).toBe('md');
+
+    modal.release();
+    expect(getAppShellBlur()).toBeNull();
+    unhost();
+  });
 });

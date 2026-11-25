@@ -573,8 +573,8 @@
   // changes stay on the applyLength path (its head-splice compensation
   // kind is load-bearing for load-older); anything else remaps measured
   // sizes by row identity.
-  const UNCHANGED_KEY_MUTATION = { kind: 'unchanged' } as const;
-  const TAIL_APPEND_KEY_MUTATION = { kind: 'tail', headSplice: false } as const;
+  const UNCHANGED_KEY_MUTATION = { kind: 'unchanged', headSplice: 0 } as const;
+  const TAIL_APPEND_KEY_MUTATION = { kind: 'tail', headSplice: 0 } as const;
 
   function keysFor(items: readonly T[]): { keys: unknown[]; unique: Set<unknown> } {
     const keys: unknown[] = [];

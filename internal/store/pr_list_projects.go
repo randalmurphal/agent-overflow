@@ -41,6 +41,27 @@ func (s *Store) PutPRListProject(project PRListProject) error {
 	return nil
 }
 
+// TouchPRListProjectReadAt advances the persisted read_at timestamp for an
+// already-stored repository read without rewriting its unchanged JSON payload.
+// Reports whether a row existed to update.
+func (s *Store) TouchPRListProjectReadAt(repoKey string, readAt int64) (bool, error) {
+	switch {
+	case repoKey == "" || len(repoKey) > MaxDiffReviewSourceKeyBytes || hasControlCharacter(repoKey):
+		return false, fmt.Errorf("store: PR list repository key %q is invalid", repoKey)
+	case readAt <= 0:
+		return false, fmt.Errorf("store: PR list read of %s needs the time it landed", repoKey)
+	}
+	result, err := s.db.Exec(`UPDATE pr_list_projects SET read_at = ? WHERE repo_key = ?`, readAt, repoKey)
+	if err != nil {
+		return false, fmt.Errorf("store: touch PR list read of %s: %w", repoKey, err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: touch PR list read of %s: %w", repoKey, err)
+	}
+	return n > 0, nil
+}
+
 // ListPRListProjects reads every stored project read, by repository key.
 // There is one per forge repository the projects name.
 func (s *Store) ListPRListProjects() (map[string]PRListProject, error) {

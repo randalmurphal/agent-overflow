@@ -259,7 +259,6 @@ export function createUseStickToBottomController(
   let cachedScrollHeight = 0;
   let cachedClientHeight = 0;
   let cachedMetricsValid = false;
-  let lastExternalViewportHeight: number | undefined;
   let cachedGeometryValid = false;
   let cachedGeometryFloored = false;
   let cachedBottomTarget = 0;
@@ -271,16 +270,6 @@ export function createUseStickToBottomController(
   }
 
   function cacheExternalBottomTarget(height: number, viewportHeight: number): void {
-    if (
-      cachedClientHeight > 0
-      && lastExternalViewportHeight !== undefined
-      && Number.isFinite(viewportHeight)
-    ) {
-      cachedClientHeight = Math.max(0, cachedClientHeight + (viewportHeight - lastExternalViewportHeight));
-    }
-    if (Number.isFinite(viewportHeight)) {
-      lastExternalViewportHeight = viewportHeight;
-    }
     const target = height - viewportHeight;
     if (!Number.isFinite(target)) {
       cachedBottomTargetValid = false;
@@ -574,8 +563,7 @@ export function createUseStickToBottomController(
     prefersReducedMotion: motionReduced,
     scrollGrid: () => documentScrollGrid(scrollEl?.ownerDocument ?? document),
     forceNextSpringTickTrace,
-    scrollTopUnexplained: (readFree = false) =>
-      scrollTopUnexplained(readFree && cachedGeometryValid ? cachedScrollTop : undefined),
+    scrollTopUnexplained: () => scrollTopUnexplained(),
     reportWriteRefusal,
   });
 
@@ -615,10 +603,10 @@ export function createUseStickToBottomController(
     writeScrollTop,
     resolverStateSnapshot,
     prefersReducedMotion: motionReduced,
-    contentGeometryProcessed: (scrollable) =>
+    contentGeometryProcessed: (scrollable, metricsFresh = true) =>
       options.onContentGeometryProcessed?.(
         scrollable,
-        cachedMetricsValid && cachedGeometryValid
+        metricsFresh && cachedMetricsValid && cachedGeometryValid
           ? { scrollTop: cachedScrollTop, scrollHeight: cachedScrollHeight, clientHeight: cachedClientHeight }
           : undefined,
       ),
@@ -669,7 +657,7 @@ export function createUseStickToBottomController(
   });
 
   // Snapshot of the flags the pure delivery resolver decides over.
-  function resolverStateSnapshot(readFree = false): ResolverState {
+  function resolverStateSnapshot(): ResolverState {
     return {
       isAtBottom: isAtBottomState,
       isNearBottom: isNearBottomState,
@@ -679,8 +667,8 @@ export function createUseStickToBottomController(
       springActive: spring.isActive(),
       springStopRequested: spring.stopRequested(),
       structuralAppendPending: spring.structuralAppendPending(),
-      sentinelEntryTarget: spring.sentinelTarget(readFree),
-      sentinelClampWitnessed: spring.sentinelClampWitnessed(readFree),
+      sentinelEntryTarget: spring.sentinelTarget(),
+      sentinelClampWitnessed: spring.sentinelClampWitnessed(),
     };
   }
 
@@ -1333,7 +1321,6 @@ export function createUseStickToBottomController(
     cachedScrollHeight = 0;
     cachedClientHeight = 0;
     cachedMetricsValid = false;
-    lastExternalViewportHeight = undefined;
     cachedGeometryValid = false;
     cachedBottomTargetValid = false;
   }

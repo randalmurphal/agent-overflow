@@ -216,15 +216,14 @@
 
   // Both completion menus read the same (value, caret) pair, so they refresh
   // together — a caret move that closes one must be able to open the other.
-  function refreshCompletionTriggers(force = false) {
+  function refreshCompletionTriggers() {
     const el = textarea;
     if (el) {
       const val = el.value;
       const start = el.selectionStart;
       const end = el.selectionEnd;
       if (
-        !force
-        && el === lastTriggerTextarea
+        el === lastTriggerTextarea
         && val === lastTriggerValue
         && start === lastTriggerStart
         && end === lastTriggerEnd

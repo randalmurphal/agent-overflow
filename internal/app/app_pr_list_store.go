@@ -116,6 +116,23 @@ func (a *App) storePRListRead(w prListWriter, record store.PRListProject) bool {
 	return stored && err == nil
 }
 
+// touchPRListReadAt refreshes a repository's stored read_at timestamp for
+// writer w when its PR rows are semantically unchanged, returning whether a
+// stored row existed to update (or whether w no longer owns the store).
+func (a *App) touchPRListReadAt(w prListWriter, repoKey string, readAt int64) (owned, updated bool) {
+	var ok bool
+	owned, err := a.commitPRListStore(w, func() error {
+		var touchErr error
+		ok, touchErr = a.store.TouchPRListProjectReadAt(repoKey, readAt)
+		return touchErr
+	})
+	if err != nil {
+		log.Printf("pr list: refresh read time of %s: %v", repoKey, err)
+		return owned, false
+	}
+	return owned, ok
+}
+
 // prunePRListStore deletes, for writer w, the stored lists of
 // repositories no project names (current).
 func (a *App) prunePRListStore(w prListWriter, current map[string]bool) {

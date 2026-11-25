@@ -5,7 +5,7 @@
   import { rowMatchesAnchor, type RowType } from '../../utils/patchRows';
   import { DIFF_CONTEXT_EXPAND_STEP, type ExpandDirection } from '../../utils/diffContextExpansion';
   import { gutterTintClass, lineTintClass } from '../../utils/diffLineTint';
-  import { diffSpanCacheEvictionGeneration, getSpansForReviewFile, requestReviewFileSpans, resolveReviewLineSpan, type PaintedSpans, type PatchScopeContext } from '../../utils/diffSpanCache.svelte';
+  import { diffSpanCacheEvictionGeneration, diffSpanCacheGeneration, getSpansForReviewFile, hasIncompleteSpansForReviewFile, requestReviewFileSpans, resolveReviewLineSpan, type PaintedSpans, type PatchScopeContext } from '../../utils/diffSpanCache.svelte';
   import { stripPatchLinePrefix, type DiffGap, type PatchDisplayRow, type SplitDisplayRow } from '../../utils/patchFiles';
   import type { ReviewFile } from '../../utils/patchParser';
   import { REVIEW_LINE_HEIGHT_PX } from '../../utils/reviewRows';
@@ -141,11 +141,18 @@
   }
   const RANGE_CLASS = "after:pointer-events-none after:absolute after:inset-0 after:bg-accent/15 after:content-['']";
 
+  // Resolve the file's span array once per block instead of 32–64 times per line.
+  let fileSpans = $derived(getSpansForReviewFile(file, spanContext));
+
   $effect(() => {
-    // Eviction/reset dependency: only re-requests on actual evictions or cache
-    // resets rather than waking every mounted block whenever any sibling file
-    // finishes highlighting.
+    // Steady-state highlighted blocks only subscribe to eviction/reset so
+    // sibling file completions do not wake them. Missing or incomplete blocks
+    // also subscribe to `diffSpanCacheGeneration()` so transient RPC failures
+    // and incomplete parses retry when sibling completions land.
     diffSpanCacheEvictionGeneration();
+    if (fileSpans === null || hasIncompleteSpansForReviewFile(file, spanContext)) {
+      diffSpanCacheGeneration();
+    }
     const fileNow = file;
     const context = spanContext;
     const owner = spanOwner;
@@ -153,9 +160,6 @@
       void requestReviewFileSpans(fileNow, owner, context);
     });
   });
-
-  // Resolve the file's span array once per block instead of 32–64 times per line.
-  let fileSpans = $derived(getSpansForReviewFile(file, spanContext));
 
   function spansForRow(row: PatchDisplayRow) {
     return resolveReviewLineSpan(file.path, row.lineIndex ?? -1, row.line, fileSpans, painted);

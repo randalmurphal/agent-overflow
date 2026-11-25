@@ -397,7 +397,7 @@ const NO_REPO_METADATA_CHANNELS: ReadonlySet<string> = new Set([
   'provider:queue_state_changed',
   'provider:queue_flushed',
   'provider:queue_restored',
-  'sys:stats',
+  'system:stats',
   'terminal:output',
   'terminal:exit',
 ]);

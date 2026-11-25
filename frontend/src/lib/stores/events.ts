@@ -143,6 +143,7 @@ import {
 } from './providerAccounts.svelte';
 import type { ProviderLoginState } from './bindings';
 import { applyTerminalOutput, applyTerminalExit, applyTerminalOpened, applyTerminalEndFailed, reconcileTerminalSurfaces } from './eventsTerminal';
+import { evictWarmTerminalsForBackend } from '../components/terminal/terminalWarmPool';
 import { onBackendRecovery } from './transportRecovery';
 import {
   applyQueueStateChanged,
@@ -499,7 +500,10 @@ export function setupEventListeners(): () => void {
     if (!launch) return;
     const previous = terminalLaunches.get(backend);
     terminalLaunches.set(backend, launch);
-    if (previous !== undefined && previous !== launch) forgetBackendTerminals(backend);
+    if (previous !== undefined && previous !== launch) {
+      forgetBackendTerminals(backend);
+      evictWarmTerminalsForBackend(backend);
+    }
   });
   // A computer's list is the authority on its terminals once its replay has
   // applied. A gap on the terminal channels re-reads it too (eventsTransportGap.ts).

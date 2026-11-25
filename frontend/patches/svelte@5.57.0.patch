@@ -209,7 +209,7 @@ index 141b914537e3e9a463061a34eab08cba85bff86e..dd3e4a22147ceacaa1b3708052c4f811
  	};
  
 diff --git a/src/internal/client/dom/blocks/each.js b/src/internal/client/dom/blocks/each.js
-index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..f3a8deb0071e1929b784c0ad683ae6397fee570c 100644
+index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..266cea82f5529b52845f129a1bf08baf4bf20a33 100644
 --- a/src/internal/client/dom/blocks/each.js
 +++ b/src/internal/client/dom/blocks/each.js
 @@ -29,6 +29,7 @@ import {
@@ -220,7 +220,16 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..f3a8deb0071e1929b784c0ad683ae639
  	move_effect,
  	pause_effect,
  	resume_effect
-@@ -151,23 +152,255 @@ function destroy_effects(state, to_destroy, remove_dom = true) {
+@@ -36,7 +37,7 @@ import {
+ import { source, mutable_source, internal_set } from '../../reactivity/sources.js';
+ import { array_from, is_array } from '../../../shared/utils.js';
+ import { BRANCH_EFFECT, COMMENT_NODE, DESTROYED, EFFECT_OFFSCREEN, INERT } from '#client/constants';
+-import { queue_micro_task } from '../task.js';
++import { get_micro_task_epoch, queue_micro_task } from '../task.js';
+ import { get } from '../../runtime.js';
+ import { DEV } from 'esm-env';
+ import { derived_safe_equal } from '../../reactivity/deriveds.js';
+@@ -151,23 +152,75 @@ function destroy_effects(state, to_destroy, remove_dom = true) {
  		}
  	}
  
@@ -262,40 +271,20 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..f3a8deb0071e1929b784c0ad683ae639
  /** @type {TemplateNode} */
  var offscreen_anchor;
  
-+// ao patch (flip-phases): coordinate animated {#each} reconciliation across
-+// sibling and nested blocks updated in the same batch. Without this, K sibling
-+// animated blocks (e.g., per-project lists in the sidebar during a filter
-+// update) each run measure -> DOM writes -> fix_position -> fix_measure ->
-+// fix_transform -> microtask(abort -> measure_to -> apply) independently,
-+// forcing up to 3K full style/layout recalc passes. Deferring animated blocks
-+// into batch.oncommit and sharing one microtask queue turns all K blocks into
-+// at most 3 layout passes total (Phase 1 pre-reads, Phase 3 post-detach reads,
-+// Phase 5 destination reads).
-+/**
-+ * @typedef {{
-+ *   state: EachState;
-+ *   get_array: () => any[];
-+ *   get_anchor: () => Element | Comment | Text;
-+ *   get_fallback: () => Effect | null;
-+ *   flags: number;
-+ *   resolved_key: (value: any, index: number) => any;
-+ *   commit_fallback: () => void;
-+ * }} AnimatedCommitEntry
-+ */
-+
-+/** @type {Map<Batch, { entries: Set<AnimatedCommitEntry>, remaining: number }>} */
-+var animated_batches = new Map();
-+
++// ao patch (flip-phases): batch FLIP destination reads and animation creates
++// across all animated {#each} blocks updated in the same reactive flush.
++// Without this, each block runs abort -> measure_to -> apply per item or per
++// block, interleaving style writes with getBoundingClientRect reads.
 +/** @type {Set<Effect>[]} */
 +var pending_to_animate = [];
-+var to_animate_scheduled = false;
++var pending_to_animate_epoch = 0;
 +
 +function flush_pending_to_animate() {
++	if (pending_to_animate.length === 0) return;
 +	var sets = pending_to_animate;
 +	pending_to_animate = [];
-+	to_animate_scheduled = false;
 +
-+	// Phase 5a: all style writes (abort in-flight FLIP animations)
++	// Phase 1: all style writes (abort in-flight FLIP animations)
 +	for (var i = 0; i < sets.length; i += 1) {
 +		for (var effect of sets[i]) {
 +			if ((effect.f & DESTROYED) === 0) {
@@ -303,7 +292,7 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..f3a8deb0071e1929b784c0ad683ae639
 +			}
 +		}
 +	}
-+	// Phase 5b: all destination rect reads in ONE layout pass across all blocks
++	// Phase 2: all destination rect reads in ONE layout pass across all blocks
 +	for (var i = 0; i < sets.length; i += 1) {
 +		for (var effect of sets[i]) {
 +			if ((effect.f & DESTROYED) === 0) {
@@ -311,7 +300,7 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..f3a8deb0071e1929b784c0ad683ae639
 +			}
 +		}
 +	}
-+	// Phase 5c: all FLIP animation creations
++	// Phase 3: all FLIP animation creations
 +	for (var i = 0; i < sets.length; i += 1) {
 +		for (var effect of sets[i]) {
 +			if ((effect.f & DESTROYED) === 0) {
@@ -321,177 +310,13 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..f3a8deb0071e1929b784c0ad683ae639
 +	}
 +}
 +
-+/**
-+ * @param {Batch} batch
-+ * @param {AnimatedCommitEntry} entry
-+ * @param {(batch: Batch) => void} on_commit
-+ * @param {(batch: Batch) => void} on_discard
-+ */
-+function queue_animated_commit(batch, entry, on_commit, on_discard) {
-+	var record = animated_batches.get(batch);
-+	if (record === undefined) {
-+		record = { entries: new Set(), remaining: 0 };
-+		animated_batches.set(batch, record);
-+	}
-+	if (!record.entries.has(entry)) {
-+		record.entries.add(entry);
-+		record.remaining += 1;
-+		batch.oncommit(on_commit);
-+		batch.ondiscard(on_discard);
-+	}
-+}
-+
-+/**
-+ * @param {Batch} batch
-+ * @param {Set<AnimatedCommitEntry>} entries
-+ */
-+function flush_animated_commits(batch, entries) {
-+	/** @type {Array<{
-+	 *   entry: AnimatedCommitEntry;
-+	 *   array: any[];
-+	 *   anchor: Element | Comment | Text;
-+	 *   to_animate: Set<Effect> | undefined;
-+	 *   to_destroy: Effect[];
-+	 *   controlled_anchor: Node | null;
-+	 * }>} */
-+	var active = [];
-+
-+	// Phase 1 (READ-ONLY): measure every surviving item and every exiting item
-+	// (plus its computed styles) across all animated blocks before ANY DOM write.
-+	for (const entry of entries) {
-+		var state = entry.state;
-+		if ((state.effect.f & DESTROYED) !== 0) {
-+			continue;
-+		}
-+		state.pending.delete(batch);
-+		state.fallback = entry.get_fallback();
-+
-+		var array = entry.get_array();
-+		var anchor = entry.get_anchor();
-+		var length = array.length;
-+		var items = state.items;
-+		var get_key = entry.resolved_key;
-+
-+		/** @type {Set<Effect> | undefined} */
-+		var to_animate = undefined;
-+		/** @type {Set<Effect>} */
-+		var keep = new Set();
-+
-+		for (var i = 0; i < length; i += 1) {
-+			var value = array[i];
-+			var key = get_key(value, i);
-+			var effect = /** @type {EachItem} */ (items.get(key)).e;
-+			keep.add(effect);
-+
-+			// offscreen == coming in now, no animation in that case,
-+			// else this would happen https://github.com/sveltejs/svelte/issues/17181
-+			if ((effect.f & EFFECT_OFFSCREEN) === 0) {
-+				effect.nodes?.a?.measure();
-+				(to_animate ??= new Set()).add(effect);
-+			}
-+		}
-+
-+		// Collect exiting effects in DOM order before DOM writes so measure()
-+		// and fix_read() reuse Phase 1's clean layout across all blocks.
-+		/** @type {Effect[]} */
-+		var to_destroy = [];
-+		var cur = skip_to_branch(state.effect.first);
-+		while (cur !== null) {
-+			if (!keep.has(cur) && (cur.f & INERT) === 0 && cur !== state.fallback) {
-+				to_destroy.push(cur);
-+			}
-+			cur = skip_to_branch(cur.next);
-+		}
-+
-+		for (var j = 0; j < to_destroy.length; j += 1) {
-+			to_destroy[j].nodes?.a?.measure();
-+		}
-+		for (var j = 0; j < to_destroy.length; j += 1) {
-+			to_destroy[j].nodes?.a?.fix_read();
-+		}
-+
-+		var controlled_anchor =
-+			(entry.flags & EACH_IS_CONTROLLED) !== 0 && length === 0 ? anchor : null;
-+
-+		active.push({
-+			entry,
-+			array,
-+			anchor,
-+			to_animate,
-+			to_destroy,
-+			controlled_anchor
-+		});
-+	}
-+
-+	if (active.length === 0) return;
-+
-+	// Phase 2 (WRITE-ONLY): reconcile DOM order and pin exiting items across all
-+	// animated blocks before any post-detach rect reads.
-+	for (var a = 0; a < active.length; a += 1) {
-+		var item = active[a];
-+		reconcile_dom(
-+			item.entry.state,
-+			item.array,
-+			item.anchor,
-+			item.entry.resolved_key,
-+			true,
-+			item.to_animate
-+		);
-+
-+		var to_destroy = item.to_destroy;
-+		for (var j = 0; j < to_destroy.length; j += 1) {
-+			to_destroy[j].nodes?.a?.fix_position();
-+		}
-+	}
-+
-+	// Phase 3 (READ-ONLY): read post-detach rects for all exiting items across
-+	// all animated blocks in ONE layout pass.
-+	for (var a = 0; a < active.length; a += 1) {
-+		var to_destroy = active[a].to_destroy;
-+		for (var j = 0; j < to_destroy.length; j += 1) {
-+			to_destroy[j].nodes?.a?.fix_measure();
-+		}
-+	}
-+
-+	// Phase 4 (WRITE-ONLY): apply compensating transforms, schedule shared FLIP
-+	// microtask ahead of outro dummy animations, pause exiting effects, and
-+	// reconcile fallbacks.
-+	for (var a = 0; a < active.length; a += 1) {
-+		var item = active[a];
-+		var to_destroy = item.to_destroy;
-+		for (var j = 0; j < to_destroy.length; j += 1) {
-+			to_destroy[j].nodes?.a?.fix_transform();
-+		}
-+
-+		if (item.to_animate !== undefined && item.to_animate.size > 0) {
-+			pending_to_animate.push(item.to_animate);
-+			if (!to_animate_scheduled) {
-+				to_animate_scheduled = true;
-+				queue_micro_task(flush_pending_to_animate);
-+			}
-+		}
-+	}
-+
-+	for (var a = 0; a < active.length; a += 1) {
-+		var item = active[a];
-+		if (item.to_destroy.length > 0) {
-+			pause_effects(item.entry.state, item.to_destroy, item.controlled_anchor);
-+		}
-+		item.entry.commit_fallback();
-+	}
-+}
-+
  /**
   * @template V
   * @param {Element | Comment} node The next sibling node, or the parent node if this is a 'controlled' block
-@@ -219,24 +452,36 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
+@@ -219,6 +272,29 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
  	/** @type {V[]} */
  	var array;
  
--	/** @type {Map<Batch, Set<any>>} */
--	var pending = new Map();
--
--	var first_run = true;
 +	// PATCH(agent-overflow each-key-repair): a duplicate key is repaired to a
 +	// unique one and reported, never thrown. Pristine svelte throws
 +	// `each_key_duplicate` from inside the update flush, and a throw there
@@ -505,91 +330,29 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..f3a8deb0071e1929b784c0ad683ae639
 +	/** @type {Map<number, any> | null} index → repaired key, for the latest run */
 +	var repaired_keys = null;
 +	var reported_duplicate = false;
- 
- 	/**
--	 * @param {Batch} batch
++
++	/**
 +	 * @param {V} value
 +	 * @param {number} index
- 	 */
--	function commit(batch) {
--		if ((state.effect.f & DESTROYED) !== 0) {
--			return;
--		}
++	 */
 +	function resolved_key(value, index) {
 +		if (repaired_keys !== null && repaired_keys.has(index)) return repaired_keys.get(index);
 +		return get_key(value, index);
 +	}
++
+ 	/** @type {Map<Batch, Set<any>>} */
+ 	var pending = new Map();
  
--		state.pending.delete(batch);
-+	/** @type {Map<Batch, Set<any>>} */
-+	var pending = new Map();
+@@ -235,7 +311,7 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
+ 		state.pending.delete(batch);
  
--		state.fallback = fallback;
+ 		state.fallback = fallback;
 -		reconcile(state, array, anchor, flags, get_key);
-+	var first_run = true;
-+	var is_animated = (flags & EACH_IS_ANIMATED) !== 0;
++		reconcile(state, array, anchor, flags, resolved_key);
  
-+	function commit_fallback() {
  		if (fallback !== null) {
  			if (array.length === 0) {
- 				if ((fallback.f & EFFECT_OFFSCREEN) === 0) {
-@@ -256,6 +501,55 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
- 		}
- 	}
- 
-+	/** @type {AnimatedCommitEntry | null} */
-+	var animated_entry = is_animated
-+		? {
-+				state: /** @type {any} */ (null),
-+				get_array: () => array,
-+				get_anchor: () => anchor,
-+				get_fallback: () => fallback,
-+				flags,
-+				resolved_key,
-+				commit_fallback
-+			}
-+		: null;
-+
-+	/**
-+	 * @param {Batch} batch
-+	 */
-+	function on_animated_commit(batch) {
-+		var record = animated_batches.get(batch);
-+		if (record === undefined) return;
-+		record.remaining -= 1;
-+		if (record.remaining === 0) {
-+			animated_batches.delete(batch);
-+			flush_animated_commits(batch, record.entries);
-+		}
-+	}
-+
-+	/**
-+	 * @param {Batch} batch
-+	 */
-+	function discard_animated(batch) {
-+		state.pending.delete(batch);
-+		animated_batches.delete(batch);
-+	}
-+
-+	/**
-+	 * @param {Batch} batch
-+	 */
-+	function commit(batch) {
-+		if ((state.effect.f & DESTROYED) !== 0) {
-+			return;
-+		}
-+
-+		state.pending.delete(batch);
-+
-+		state.fallback = fallback;
-+		reconcile(state, array, anchor, flags, resolved_key);
-+		commit_fallback();
-+	}
-+
- 	/**
- 	 * @param {Batch} batch
- 	 */
-@@ -284,6 +578,7 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
+@@ -284,6 +360,7 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
  		}
  
  		var keys = new Set();
@@ -597,7 +360,7 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..f3a8deb0071e1929b784c0ad683ae639
  		var batch = /** @type {Batch} */ (current_batch);
  		var defer = should_defer_append();
  
-@@ -311,6 +606,17 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
+@@ -311,6 +388,17 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
  				}
  			}
  
@@ -615,18 +378,7 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..f3a8deb0071e1929b784c0ad683ae639
  			var item = first_run ? null : items.get(key);
  
  			if (item) {
-@@ -318,8 +624,8 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
- 				if (item.v) internal_set(item.v, value);
- 				if (item.i) internal_set(item.i, index);
- 
--				if (defer) {
--					batch.unskip_effect(item.e);
-+				if (defer || is_animated) {
-+					batch?.unskip_effect(item.e);
- 				}
- 			} else {
- 				item = create_item(
-@@ -352,14 +658,8 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
+@@ -352,14 +440,8 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
  			}
  		}
  
@@ -643,40 +395,7 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..f3a8deb0071e1929b784c0ad683ae639
  
  		// remove excess nodes
  		if (hydrating && length > 0) {
-@@ -369,15 +669,19 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
- 		if (!first_run) {
- 			pending.set(batch, keys);
- 
--			if (defer) {
-+			if (defer || (is_animated && animated_entry !== null && batch !== null)) {
- 				for (const [key, item] of items) {
- 					if (!keys.has(key)) {
- 						batch.skip_effect(item.e);
- 					}
- 				}
- 
--				batch.oncommit(commit);
--				batch.ondiscard(discard);
-+				if (is_animated && animated_entry !== null) {
-+					queue_animated_commit(batch, animated_entry, on_animated_commit, discard_animated);
-+				} else {
-+					batch.oncommit(commit);
-+					batch.ondiscard(discard);
-+				}
- 			} else {
- 				commit(batch);
- 			}
-@@ -399,6 +703,9 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
- 
- 	/** @type {EachState} */
- 	var state = { effect, flags, items, pending, outrogroups: null, fallback };
-+	if (animated_entry !== null) {
-+		animated_entry.state = state;
-+	}
- 
- 	first_run = false;
- 
-@@ -407,6 +714,45 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
+@@ -407,6 +489,45 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
  	}
  }
  
@@ -722,64 +441,18 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..f3a8deb0071e1929b784c0ad683ae639
  /**
   * Skip past any non-branch effects (which could be created with `createSubscriber`, for example) to find the next branch effect
   * @param {Effect | null} effect
-@@ -420,18 +766,18 @@ function skip_to_branch(effect) {
- }
+@@ -444,10 +565,8 @@ function reconcile(state, array, anchor, flags, get_key) {
  
- /**
-- * Add, remove, or reorder items output by an each block as its input changes
-+ * Reconcile live DOM order and outro groups without performing any layout reads.
-+ * Shared by non-animated `reconcile` and cross-block phased `flush_animated_commits`.
-  * @template V
-  * @param {EachState} state
-  * @param {Array<V>} array
-  * @param {Element | Comment | Text} anchor
-- * @param {number} flags
-  * @param {(value: V, index: number) => any} get_key
-- * @returns {void}
-+ * @param {boolean} is_animated
-+ * @param {undefined | Set<Effect>} to_animate
-+ * @returns {{ current: Effect | null, seen: undefined | Set<Effect> }}
-  */
--function reconcile(state, array, anchor, flags, get_key) {
--	var is_animated = (flags & EACH_IS_ANIMATED) !== 0;
--
-+function reconcile_dom(state, array, anchor, get_key, is_animated, to_animate) {
- 	var length = array.length;
- 	var items = state.items;
- 	var current = skip_to_branch(state.effect.first);
-@@ -442,9 +788,6 @@ function reconcile(state, array, anchor, flags, get_key) {
- 	/** @type {Effect | null} */
- 	var prev = null;
- 
--	/** @type {undefined | Set<Effect>} */
--	var to_animate;
+ 	/** @type {undefined | Set<Effect>} */
+ 	var to_animate;
 -
  	/** @type {Effect[]} */
  	var matched = [];
- 
-@@ -463,21 +806,6 @@ function reconcile(state, array, anchor, flags, get_key) {
- 	/** @type {number} */
- 	var i;
- 
--	if (is_animated) {
--		for (i = 0; i < length; i += 1) {
--			value = array[i];
--			key = get_key(value, i);
--			effect = /** @type {EachItem} */ (items.get(key)).e;
 -
--			// offscreen == coming in now, no animation in that case,
--			// else this would happen https://github.com/sveltejs/svelte/issues/17181
--			if ((effect.f & EFFECT_OFFSCREEN) === 0) {
--				effect.nodes?.a?.measure();
--				(to_animate ??= new Set()).add(effect);
--			}
--		}
--	}
--
- 	for (i = 0; i < length; i += 1) {
- 		value = array[i];
- 		key = get_key(value, i);
-@@ -495,7 +823,7 @@ function reconcile(state, array, anchor, flags, get_key) {
+ 	/** @type {Effect[]} */
+ 	var stashed = [];
+ 
+@@ -495,7 +614,7 @@ function reconcile(state, array, anchor, flags, get_key) {
  			resume_effect(effect);
  			if (is_animated) {
  				effect.nodes?.a?.unfix();
@@ -788,58 +461,7 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..f3a8deb0071e1929b784c0ad683ae639
  			}
  		}
  
-@@ -607,6 +935,50 @@ function reconcile(state, array, anchor, flags, get_key) {
- 		}
- 	}
- 
-+	return { current, seen };
-+}
-+
-+/**
-+ * Add, remove, or reorder items output by an each block as its input changes
-+ * @template V
-+ * @param {EachState} state
-+ * @param {Array<V>} array
-+ * @param {Element | Comment | Text} anchor
-+ * @param {number} flags
-+ * @param {(value: V, index: number) => any} get_key
-+ * @returns {void}
-+ */
-+function reconcile(state, array, anchor, flags, get_key) {
-+	var is_animated = (flags & EACH_IS_ANIMATED) !== 0;
-+	var length = array.length;
-+	var items = state.items;
-+
-+	/** @type {undefined | Set<Effect>} */
-+	var to_animate;
-+
-+	/** @type {Effect | undefined} */
-+	var effect;
-+
-+	/** @type {number} */
-+	var i;
-+
-+	if (is_animated) {
-+		for (i = 0; i < length; i += 1) {
-+			var value = array[i];
-+			var key = get_key(value, i);
-+			effect = /** @type {EachItem} */ (items.get(key)).e;
-+
-+			// offscreen == coming in now, no animation in that case,
-+			// else this would happen https://github.com/sveltejs/svelte/issues/17181
-+			if ((effect.f & EFFECT_OFFSCREEN) === 0) {
-+				effect.nodes?.a?.measure();
-+				(to_animate ??= new Set()).add(effect);
-+			}
-+		}
-+	}
-+
-+	var { current, seen } = reconcile_dom(state, array, anchor, get_key, is_animated, to_animate);
-+
- 	if (current !== null || seen !== undefined) {
- 		/** @type {Effect[]} */
- 		var to_destroy = [];
-@@ -639,7 +1011,19 @@ function reconcile(state, array, anchor, flags, get_key) {
+@@ -639,7 +758,19 @@ function reconcile(state, array, anchor, flags, get_key) {
  				}
  
  				for (i = 0; i < destroy_length; i += 1) {
@@ -860,7 +482,7 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..f3a8deb0071e1929b784c0ad683ae639
  				}
  			}
  
-@@ -647,13 +1031,12 @@ function reconcile(state, array, anchor, flags, get_key) {
+@@ -647,13 +778,14 @@ function reconcile(state, array, anchor, flags, get_key) {
  		}
  	}
  
@@ -872,15 +494,17 @@ index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..f3a8deb0071e1929b784c0ad683ae639
 -			}
 -		});
 +	if (is_animated && to_animate !== undefined && to_animate.size > 0) {
-+		pending_to_animate.push(to_animate);
-+		if (!to_animate_scheduled) {
-+			to_animate_scheduled = true;
-+			queue_micro_task(flush_pending_to_animate);
++		var epoch = get_micro_task_epoch();
++		if (pending_to_animate_epoch !== epoch) {
++			pending_to_animate = [];
++			pending_to_animate_epoch = epoch;
 +		}
++		pending_to_animate.push(to_animate);
++		queue_micro_task(flush_pending_to_animate);
  	}
  }
  
-@@ -747,30 +1130,3 @@ function link(state, prev, next) {
+@@ -747,30 +879,3 @@ function link(state, prev, next) {
  		next.prev = prev;
  	}
  }
@@ -1093,10 +717,10 @@ index 67b177841ade6faf0675c855b1ce7c2ae599472f..3e60788574d8620b11ae9892fb9a821a
  			if (original_styles) {
  				var style = /** @type {HTMLElement | SVGElement} */ (element).style;
 diff --git a/src/internal/client/dom/task.js b/src/internal/client/dom/task.js
-index 8c513614672b07a41e4626dc041f8d216345e014..8c593df62edc70e76c065a3e30a2e2d6e31633e1 100644
+index 8c513614672b07a41e4626dc041f8d216345e014..ad67cdacb8c293d850486481936a84262ecadea5 100644
 --- a/src/internal/client/dom/task.js
 +++ b/src/internal/client/dom/task.js
-@@ -1,13 +1,20 @@
+@@ -1,13 +1,37 @@
  import { run_all } from '../../shared/utils.js';
  import { is_flushing_sync } from '../reactivity/batch.js';
 +import { FLUSH_TASKS_MAX_TASKS, flush_loop_exceeded } from '../flush-caps.js';
@@ -1105,6 +729,18 @@ index 8c513614672b07a41e4626dc041f8d216345e014..8c593df62edc70e76c065a3e30a2e2d6
  let micro_tasks = [];
  
 +/**
++ * PATCH(agent-overflow flip-phases): bumped whenever `clear_micro_tasks` drops
++ * queued tasks so batched microtask schedulers (e.g. phased FLIP flushes)
++ * discard abandoned state instead of holding a stale scheduled flag.
++ */
++let micro_task_epoch = 0;
++
++/** @returns {number} */
++export function get_micro_task_epoch() {
++	return micro_task_epoch;
++}
++
++/**
 + * PATCH(agent-overflow flush-loop-caps): returns how many tasks ran, so
 + * `flush_tasks` can bound its drain.
 + * @returns {number}
@@ -1112,12 +748,18 @@ index 8c513614672b07a41e4626dc041f8d216345e014..8c593df62edc70e76c065a3e30a2e2d6
  function run_micro_tasks() {
  	var tasks = micro_tasks;
  	micro_tasks = [];
- 	run_all(tasks);
+-	run_all(tasks);
++	try {
++		run_all(tasks);
++	} catch (err) {
++		micro_task_epoch += 1;
++		throw err;
++	}
 +	return tasks.length;
  }
  
  /**
-@@ -32,11 +39,36 @@ export function queue_micro_task(fn) {
+@@ -32,11 +56,37 @@ export function queue_micro_task(fn) {
  	micro_tasks.push(fn);
  }
  
@@ -1132,6 +774,7 @@ index 8c513614672b07a41e4626dc041f8d216345e014..8c593df62edc70e76c065a3e30a2e2d6
 + */
 +export function clear_micro_tasks() {
 +	micro_tasks = [];
++	micro_task_epoch += 1;
 +}
 +
  /**

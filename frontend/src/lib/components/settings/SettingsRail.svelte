@@ -206,8 +206,8 @@
             <button
               id="settings-tab-{section.id}"
               onclick={() => onSelectSection(section.id)}
-              onpointerenter={() => void SETTINGS_PAGE_LOADERS[section.id].load()}
-              onfocus={() => void SETTINGS_PAGE_LOADERS[section.id].load()}
+              onpointerenter={() => void SETTINGS_PAGE_LOADERS[section.id].load().catch(() => {})}
+              onfocus={() => void SETTINGS_PAGE_LOADERS[section.id].load().catch(() => {})}
               onkeydown={handleTabKeydown}
               role="tab"
               aria-selected={activeSection === section.id}

@@ -123,3 +123,27 @@ func TestHTMLInjections(t *testing.T) {
 		t.Error("injected css property is unstyled")
 	}
 }
+
+func TestMarkdownCombinedHTMLInjectionWithLineSelection(t *testing.T) {
+	// Markdown combines html_block fragments via injection.combined. Highlighting
+	// a patch whose hunk ends before the closing </style> tag must still pass the
+	// full combined host document so the closing fragment after maxHi is not dropped.
+	src := "<style>\n.btn { color: blue; }\n\nParagraph in between.\n\n</style>\n"
+	patch := "@@ -1,2 +1,2 @@\n <style>\n-.btn { color: red; }\n+.btn { color: blue; }\n"
+	full := Highlight(LangMarkdown, []byte(src))
+	patched := HighlightPatchTextPrimed(LangMarkdown, patch, src)
+	if len(patched.Lines) != 4 {
+		t.Fatalf("patched lines = %d, want 4", len(patched.Lines))
+	}
+	// Line 3 of the patch is `+.btn { color: blue; }`, corresponding to line 1 of src.
+	got := patched.Lines[3]
+	want := full.Lines[1]
+	if len(got.Runs) != len(want.Runs) {
+		t.Fatalf("patched new line runs = %+v, want %+v", got.Runs, want.Runs)
+	}
+	for j := range want.Runs {
+		if got.Runs[j] != want.Runs[j] {
+			t.Fatalf("run %d = %d, want %d", j, got.Runs[j], want.Runs[j])
+		}
+	}
+}

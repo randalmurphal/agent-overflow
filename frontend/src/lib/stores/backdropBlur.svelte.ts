@@ -9,9 +9,12 @@
 // while preserving identical visuals.
 //
 // Stacking rule:
-// - Only the bottom-most open overlay/modal (index 0) delegates to the app
-//   shell when a shell host is mounted (`App.svelte`).
-// - Any stacked dialog on top (index >= 1) keeps its native `backdrop-filter`
+// - Only the lowest-tier (z-index) open overlay/modal delegates to the app
+//   shell when a shell host is mounted (`App.svelte`), breaking ties in FIFO
+//   order. This ensures an OverlayShell (z-40) mounted beneath an already-open
+//   Modal (z-60) owns the shell blur while the higher-tier Modal keeps native
+//   `backdrop-filter` to blur the OverlayShell beneath it.
+// - Any stacked surface above that base keeps its native `backdrop-filter`
 //   so it blurs the underlying overlay/modal as well.
 // - Standalone renders without an app-shell host (e.g. isolated unit tests)
 //   always fall back to native `backdrop-filter`.
@@ -23,11 +26,22 @@ export type BackdropBlurLevel = 'sm' | 'md';
 interface BlurEntry {
   readonly id: number;
   readonly level: BackdropBlurLevel;
+  readonly tier: number;
 }
 
 let nextId = 1;
 let hostCount = $state(0);
 let stack = $state<BlurEntry[]>([]);
+
+function baseEntry(): BlurEntry | null {
+  if (stack.length === 0) return null;
+  let winner = stack[0];
+  for (let i = 1; i < stack.length; i += 1) {
+    const candidate = stack[i];
+    if (candidate.tier < winner.tier) winner = candidate;
+  }
+  return winner;
+}
 
 export function registerAppShellBlurHost(): () => void {
   untrack(() => {
@@ -44,8 +58,8 @@ export function registerAppShellBlurHost(): () => void {
 }
 
 export function getAppShellBlur(): BackdropBlurLevel | null {
-  if (hostCount <= 0 || stack.length === 0) return null;
-  return stack[0].level;
+  if (hostCount <= 0) return null;
+  return baseEntry()?.level ?? null;
 }
 
 export interface BackdropBlurLease {
@@ -55,18 +69,18 @@ export interface BackdropBlurLease {
   release(): void;
 }
 
-export function acquireBackdropBlur(level: BackdropBlurLevel): BackdropBlurLease {
+export function acquireBackdropBlur(level: BackdropBlurLevel, tier = 0): BackdropBlurLease {
   const id = nextId++;
   // Read and update `stack` inside untrack so calling acquire/release from an
   // $effect never subscribes that effect to `stack` and triggers a loop.
   untrack(() => {
-    stack = [...stack, { id, level }];
+    stack = [...stack, { id, level, tier }];
   });
   let released = false;
 
   return {
     get delegatedToShell(): boolean {
-      return !released && hostCount > 0 && stack.length > 0 && stack[0].id === id;
+      return !released && hostCount > 0 && baseEntry()?.id === id;
     },
     release(): void {
       if (released) return;

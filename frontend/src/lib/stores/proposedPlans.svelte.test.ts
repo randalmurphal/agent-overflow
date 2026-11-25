@@ -6,6 +6,10 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  getCachedPlanMarkdown,
+  hasLoadedThreadProposedPlans,
+  retainProposedPlanEventListener,
+  setCachedPlanMarkdown,
   upsertProposedPlanForTests,
   getThreadCurrentProposedPlan,
   getThreadProposedPlans,
@@ -151,5 +155,30 @@ describe('proposed-plan refresh / sync upsert race', () => {
     await refreshDone;
 
     expect(getThreadCurrentProposedPlan('thread-1')?.id).toBe('plan-fresh');
+  });
+
+  it('keeps loaded false after RPC failure and unfocused upserts, and clears loaded when all listeners detach', async () => {
+    setBindingMock('ListThreadProposedPlans', async () => { throw new Error('offline'); });
+    await refreshThreadProposedPlans('thread-err');
+    expect(hasLoadedThreadProposedPlans('thread-err')).toBe(false);
+
+    upsertProposedPlanForTests(planItem({ id: 'plan-u', threadId: 'thread-u' }));
+    expect(hasLoadedThreadProposedPlans('thread-u')).toBe(false);
+
+    const release = retainProposedPlanEventListener(() => 'thread-ok');
+    setBindingMock('ListThreadProposedPlans', async () => [planItem({ id: 'plan-ok', threadId: 'thread-ok' })]);
+    await refreshThreadProposedPlans('thread-ok');
+    expect(hasLoadedThreadProposedPlans('thread-ok')).toBe(true);
+
+    release();
+    expect(hasLoadedThreadProposedPlans('thread-ok')).toBe(false);
+  });
+
+  it('invalidates cached plan markdown when the plan version changes', () => {
+    setCachedPlanMarkdown('t1', 'p1', '# V1', '100\0{}');
+    expect(getCachedPlanMarkdown('t1', 'p1', '100\0{}')).toBe('# V1');
+    expect(getCachedPlanMarkdown('t1', 'p1', '200\0{}')).toBeNull();
+    // Stale entry was evicted on mismatch.
+    expect(getCachedPlanMarkdown('t1', 'p1', '100\0{}')).toBeNull();
   });
 });

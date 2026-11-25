@@ -144,10 +144,10 @@
   let offsetPublishQueued = false;
   let hostDestroyed = false;
 
-  // A pane's own observer saw it move or resize: republish the whole
+  // A pane's own observer saw it mount, resize, or unmount: republish the whole
   // snapshot rather than patch one offset into a snapshot of another width.
-  function handlePaneOffsetChange(paneId: string, offsetLeft: number | null): void {
-    if (offsetLeft === null) {
+  function handlePanePresenceChange(paneId: string, present: boolean): void {
+    if (!present) {
       stripGeometry.offsets.delete(paneId);
       return;
     }
@@ -567,7 +567,7 @@
              pane with neither a composer nor a primary scroller focuses it
              for that moment (paneComposerFocus#carryCaretIntoPane). -->
         <section
-          use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange, promoted }}
+          use:measurePane={{ paneId: item.paneId, onPresenceChange: handlePanePresenceChange, promoted }}
           style={sectionStyle(item)}
           style:clip-path={promotion.clipFor(item.paneId)}
           class={[

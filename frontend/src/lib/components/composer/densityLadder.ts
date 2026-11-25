@@ -16,8 +16,8 @@ export function measureDensity<T extends string>(el: HTMLElement, rungs: readonl
   if (availableWidth <= 0) {
     return (rungs as readonly string[]).includes(previous ?? '') ? (previous as T) : rungs[0];
   }
-  // Outer box and trailing chrome padding/border stay constant across density
-  // rungs; compute them once outside the rung probe loop.
+  // Outer box and trailing chrome padding/border are uniform across non-final
+  // density rungs; compute them once outside the rung probe loop.
   let boxMeasured = false;
   let hasLayout = false;
   let boxLeft = 0;

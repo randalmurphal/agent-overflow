@@ -458,7 +458,7 @@ func highlightPatchWholeDocs(
 		}
 	}
 
-	var incomplete, truncated bool
+	var incomplete bool
 	var oldTree *tree_sitter.Tree
 	keepOldTree := anyOld && anyNew && len(oldDoc) > 0 && len(newDoc) > 0
 	defer func() {
@@ -499,7 +499,7 @@ func highlightPatchWholeDocs(
 			incomplete = incomplete || !complete
 		}
 	}
-	return oldByHunk, newByHunk, Result{Truncated: truncated, Incomplete: incomplete}, true
+	return oldByHunk, newByHunk, Result{Incomplete: incomplete}, true
 }
 
 // primer yields fileContent prefixes (everything above a hunk's first

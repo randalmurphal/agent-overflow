@@ -21,6 +21,8 @@ import {
   startReasoningTailJumpTrace,
 } from './messageTimelineTrace';
 import {
+  UI_ORACLE_BUILD_GATE,
+  UI_TRACE_BUILD_GATE,
   isUiOracleTraceEnabled,
   isUiRenderTraceEnabled,
   recordUiTrace,
@@ -64,13 +66,14 @@ export function createTimelineDiagnostics(
   // the helper, so this $effect's only steady-state cost is the reactive
   // dep tracking.
   function recordRenderTrace(): void {
-    if (!isUiRenderTraceEnabled()) return;
+    if (!UI_TRACE_BUILD_GATE) return;
     const pane = options.getPane();
     const revealedNodes = options.getRevealedNodes();
     void pane.threadId;
     void pane.items.length;
     void pane.timelineRevision;
     void revealedNodes.length;
+    if (!isUiRenderTraceEnabled()) return;
     recordTimelineRenderTrace(pane, revealedNodes, options.getScrollEl(), options.getListRef());
   }
 
@@ -239,9 +242,9 @@ export function createTimelineDiagnostics(
   // MutationObserver scoped to row add/remove discovery, so streaming text
   // mutations do not trigger trace-side layout measurements.
   function rowResizeTraceInstall(): (() => void) | undefined {
-    if (!isUiOracleTraceEnabled()) return undefined;
+    if (!UI_ORACLE_BUILD_GATE) return undefined;
     const contentEl = options.getContentEl();
-    if (!contentEl) return undefined;
+    if (!contentEl || !isUiOracleTraceEnabled()) return undefined;
     return startTimelineRowResizeTrace(contentEl);
   }
 
@@ -254,9 +257,9 @@ export function createTimelineDiagnostics(
   // that re-opened the collapse-out. Same trace-flag gate, so production skips
   // it entirely.
   function marginDivergenceTraceInstall(): (() => void) | undefined {
-    if (!isUiOracleTraceEnabled()) return undefined;
+    if (!UI_ORACLE_BUILD_GATE) return undefined;
     const contentEl = options.getContentEl();
-    if (!contentEl) return undefined;
+    if (!contentEl || !isUiOracleTraceEnabled()) return undefined;
     return startRowMarginDivergenceTrace(contentEl);
   }
 
@@ -268,9 +271,9 @@ export function createTimelineDiagnostics(
   // regression (or, on the pre-fix build, confirms the trigger fires live).
   // Same trace-flag gate, so production skips it entirely.
   function reasoningTailJumpTraceInstall(): (() => void) | undefined {
-    if (!isUiOracleTraceEnabled()) return undefined;
+    if (!UI_ORACLE_BUILD_GATE) return undefined;
     const contentEl = options.getContentEl();
-    if (!contentEl) return undefined;
+    if (!contentEl || !isUiOracleTraceEnabled()) return undefined;
     return startReasoningTailJumpTrace(contentEl);
   }
 

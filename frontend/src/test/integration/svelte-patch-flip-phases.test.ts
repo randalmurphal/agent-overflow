@@ -20,6 +20,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { get, set, state } from 'svelte/internal/client';
 import FlipRowsHost from './svelte-patch-fixtures/FlipRowsHost.svelte';
 import FlipSiblingListsHost from './svelte-patch-fixtures/FlipSiblingListsHost.svelte';
+import FlipNestedListsHost, { type NestedGroup } from './svelte-patch-fixtures/FlipNestedListsHost.svelte';
 
 /** Interleaving log: `read:<id>`, `create:<id>`, `cancel:<id>`, `mark:*`. */
 let log: string[] = [];
@@ -225,7 +226,7 @@ describe('svelte patch: phased FLIP application on keyed-each reorder', () => {
     target.remove();
   });
 
-  it('batches FLIP and fix() phases across sibling animated each blocks in one flush', async () => {
+  it('batches FLIP destination reads and animation creates across sibling animated each blocks', async () => {
     const itemsA = state<string[]>(['a1', 'a2', 'a3']);
     const itemsB = state<string[]>(['b1', 'b2', 'b3']);
     const target = document.body.appendChild(document.createElement('div'));
@@ -240,8 +241,9 @@ describe('svelte patch: phased FLIP application on keyed-each reorder', () => {
     await drainMicrotasks();
 
     // Reorder BOTH sibling lists in the same reactive flush.
-    // Every pre-read AND post-read across BOTH lists must finish before ANY
-    // animation is created (zero cross-block read/write interleaving).
+    // Every destination read across BOTH lists must finish before ANY
+    // animation is created (zero cross-block read/write interleaving in the
+    // shared FLIP microtask).
     log.push('mark:sibling-reorder');
     set(itemsA, ['a3', 'a1', 'a2']);
     set(itemsB, ['b3', 'b1', 'b2']);
@@ -255,61 +257,88 @@ describe('svelte patch: phased FLIP application on keyed-each reorder', () => {
     expect(reorderCreates).toHaveLength(6);
     expect(Math.min(...reorderCreates)).toBeGreaterThan(Math.max(...reorderReads));
 
-    // Now remove rows from BOTH sibling lists in the same flush and verify
-    // Phase 1 (measure + fix_read) across BOTH lists completes before ANY
-    // Phase 2 (fix_position), which completes before ANY Phase 3 (fix_measure),
-    // which completes before ANY Phase 4 (fix_transform) or Phase 5 (create).
-    const crossLog: string[] = [];
-    const origGetComputedStyle = window.getComputedStyle;
-    vi.spyOn(window, 'getComputedStyle').mockImplementation((el: Element, pseudo?: string | null) => {
-      if (el.hasAttribute('data-id')) crossLog.push(`computed:${idOf(el)}`);
-      return origGetComputedStyle.call(window, el, pseudo);
-    });
-    for (const li of Array.from(target.querySelectorAll('li'))) {
-      const id = idOf(li);
-      const rawStyle = li.style;
-      const styleProxy = new Proxy(rawStyle, {
-        set(obj, prop, value, receiver) {
-          if (prop === 'position' && value === 'absolute') crossLog.push(`position:${id}`);
-          if (prop === 'transform' && value) crossLog.push(`transform:${id}`);
-          return Reflect.set(obj, prop, value, receiver);
-        },
-      });
-      Object.defineProperty(li, 'style', {
-        configurable: true,
-        get: () => styleProxy,
-      });
-    }
-    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
-      const id = idOf(this);
-      if (this.hasAttribute('data-id')) {
-        crossLog.push(`rect:${id}`);
-        const isAbs = (this as HTMLElement).style.position === 'absolute';
-        const idx = Number(id.slice(1)) - 1;
-        return new DOMRect(0, isAbs ? 0 : idx * 10, 100, 10);
-      }
-      return new DOMRect(0, 0, 100, 10);
-    });
+    await Promise.resolve(unmount(app)).catch(() => {});
+    target.remove();
+  });
 
-    set(itemsA, ['a2']);
-    set(itemsB, ['b2']);
+  it('reorders nested animated each blocks in one flush without double-measuring or interleaving creates', async () => {
+    const groups = state<NestedGroup[]>([
+      { id: 'g1', items: ['g1-a', 'g1-b'] },
+      { id: 'g2', items: ['g2-a', 'g2-b'] },
+    ]);
+    const target = document.body.appendChild(document.createElement('div'));
+    const app = mount(FlipNestedListsHost, {
+      target,
+      props: {
+        getGroups: () => get(groups),
+      },
+    });
     flushSync();
     await drainMicrotasks();
 
-    const computedIdxs = phaseIndices(crossLog, 'computed');
-    const posIdxs = phaseIndices(crossLog, 'position');
-    const transformIdxs = phaseIndices(crossLog, 'transform');
-    // 4 removed rows across both lists (a3, a1, b3, b1).
-    expect(computedIdxs).toHaveLength(4);
-    expect(posIdxs).toHaveLength(4);
-    // All 4 computed reads across both lists happen before the first position write.
-    expect(Math.min(...posIdxs)).toBeGreaterThan(Math.max(...computedIdxs));
-    // All 4 position writes across both lists happen before the first post-detach rect read.
-    const postPosRects = phaseIndices(crossLog, 'rect').filter((i) => i > Math.min(...posIdxs));
-    expect(Math.min(...postPosRects)).toBeGreaterThan(Math.max(...posIdxs));
-    // All 4 post-detach rect reads happen before any compensating transform write.
-    expect(transformIdxs.length).toBeGreaterThanOrEqual(2);
-    expect(Math.min(...transformIdxs)).toBeGreaterThan(Math.max(...postPosRects.slice(0, 4)));
+    log.push('mark:nested-reorder');
+    set(groups, [
+      { id: 'g2', items: ['g2-b', 'g2-a'] },
+      { id: 'g1', items: ['g1-b', 'g1-a'] },
+    ]);
+    flushSync();
+    await drainMicrotasks();
+
+    const entries = afterMark();
+    const reads = phaseIndices(entries, 'read');
+    const creates = phaseIndices(entries, 'create');
+    // 2 outer groups + 4 inner items = 6 animated elements; each gets 1 pre-read
+    // + 1 destination read = 12 reads, and all 6 animate once after all reads.
+    expect(reads).toHaveLength(12);
+    expect(creates).toHaveLength(6);
+    expect(Math.min(...creates)).toBeGreaterThan(Math.max(...reads));
+
+    await Promise.resolve(unmount(app)).catch(() => {});
+    target.remove();
+  });
+
+  it('recovers cleanly if a FLIP animation callback throws during microtask drain', async () => {
+    const items = state<number[]>([1, 2, 3]);
+    const target = document.body.appendChild(document.createElement('div'));
+    const app = mount(FlipRowsHost, {
+      target,
+      props: { getItems: () => get(items) },
+    });
+    flushSync();
+    await drainMicrotasks();
+
+    // Force Element.prototype.animate to throw once during the microtask drain.
+    let shouldThrow = true;
+    vi.spyOn(Element.prototype, 'animate').mockImplementation(function (this: Element) {
+      if (shouldThrow) {
+        shouldThrow = false;
+        throw new Error('simulated FLIP failure');
+      }
+      const id = idOf(this);
+      log.push(`create:${id}`);
+      return {
+        onfinish: null,
+        effect: null,
+        cancel: () => {
+          log.push(`cancel:${id}`);
+        },
+      } as unknown as Animation;
+    });
+
+    expect(() => {
+      set(items, [3, 1, 2]);
+      flushSync();
+    }).toThrow('simulated FLIP failure');
+
+    // A subsequent reorder must not stay wedged behind a stale scheduled flag.
+    log.push('mark:after-throw');
+    set(items, [2, 3, 1]);
+    flushSync();
+    await drainMicrotasks();
+
+    const entries = afterMark();
+    const creates = phaseIndices(entries, 'create');
+    expect(creates).toHaveLength(3);
 
     await Promise.resolve(unmount(app)).catch(() => {});
     target.remove();

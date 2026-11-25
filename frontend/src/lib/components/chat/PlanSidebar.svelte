@@ -70,6 +70,9 @@
   // blank the body.
   let planKey = $derived(currentPlan?.id ?? null);
   let planPayloadIdKey = $derived(currentPlan?.payloadId ?? null);
+  let planPayloadVersion = $derived(
+    currentPlan ? `${currentPlan.updatedAt ?? ''}\0${currentPlan.payloadMeta ?? ''}` : '',
+  );
 
   let planMarkdown = $state<string | null>(null);
   let planLoadError = $state<string | null>(null);
@@ -136,9 +139,10 @@
       planMarkdownRequest = null;
       planMarkdownRequestKey = null;
       if (planId && payloadId && tid) {
-        const cached = getCachedPlanMarkdown(tid, payloadId);
+        const version = planPayloadVersion;
+        const cached = getCachedPlanMarkdown(tid, payloadId, version);
         planMarkdown = cached;
-        if (cached === null) void loadPlanMarkdown(tid, payloadId, planId);
+        if (cached === null) void loadPlanMarkdown(tid, payloadId, planId, version);
         void refreshPlanComments(tid, planId);
       } else {
         planMarkdown = null;
@@ -172,7 +176,12 @@
     releasePlanEvents?.();
   });
 
-  async function loadPlanMarkdown(tid: string, payloadId: string, planId: string): Promise<string> {
+  async function loadPlanMarkdown(
+    tid: string,
+    payloadId: string,
+    planId: string,
+    version = planPayloadVersion,
+  ): Promise<string> {
     if (planMarkdownRequestKey === planId && planMarkdownRequest) {
       return planMarkdownRequest;
     }
@@ -180,7 +189,7 @@
     planMarkdownRequest = (async () => {
       try {
         const content = await GetPayloadData(tid, payloadId);
-        setCachedPlanMarkdown(tid, payloadId, content.data);
+        setCachedPlanMarkdown(tid, payloadId, content.data, version);
         if (planMarkdownRequestKey === planId) {
           planMarkdown = content.data;
           planLoadError = null;

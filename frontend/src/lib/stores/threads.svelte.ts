@@ -523,8 +523,8 @@ export function dropThreadsForDetachedBackend(ids: readonly string[]): void {
   for (const id of ids) {
     liveActivityAt.drop(id);
     clearThreadStatus(id);
-  forgetQueueForThread(id);
-  dropOpenThreadSignal(id);
+    forgetQueueForThread(id);
+    dropOpenThreadSignal(id);
     dropLiveTodoUiPrefs(id);
     dropActivityRailUiPrefs(id);
   }

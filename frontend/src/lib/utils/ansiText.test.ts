@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import shared from '../../test/fixtures/ansiShownVectors.json';
-import { ansiHtml, ansiScanStepsForTest, ansiShownText } from './ansiText';
+import { ansiHtml, ansiHtmlWithState, ansiScanStepsForTest, ansiShownText, appendAnsiDeltaToDom } from './ansiText';
 import { countFindMatches, findNeedle } from './findMatch';
 
 // internal/cilog/search_test.go reads the same vectors, and
@@ -43,5 +43,35 @@ describe('ansiShownText', () => {
 
   it('colours by SGR and escapes the text', () => {
     expect(ansiHtml('\x1b[31m<b>\x1b[0m')).toBe('<span class="ansi-fg-31">&lt;b&gt;</span>');
+  });
+
+  it('does not double-newline when CR and LF are separated by OSC/APC within or across chunks', () => {
+    // Chunk ending with \r followed by OSC preserves endsWithCR so a subsequent
+    // \n chunk triggers fallback instead of appending a second newline.
+    const first = ansiHtmlWithState('a\r\x1b]0;title\x07');
+    expect(first.state.endsWithCR).toBe(true);
+
+    // Within one chunk via appendAnsiDeltaToDom: \r + OSC + \n collapses to one \n.
+    const hostWithin = document.createElement('div');
+    const stWithin = appendAnsiDeltaToDom(hostWithin, 'a\r\x1b]0;title\x07\nb', {
+      openClass: '',
+      incompleteTail: false,
+      endsWithCR: false,
+    });
+    expect(stWithin).not.toBeNull();
+    expect(hostWithin.textContent).toBe('a\nb');
+
+    // Across two chunks: chunk 1 ends with \r + OSC, chunk 2 starts with \n (or OSC + \n).
+    // appendAnsiDeltaToDom returns null so AnsiText falls back to full morphing instead of
+    // duplicating the newline.
+    const hostAcross = document.createElement('div');
+    const st1 = appendAnsiDeltaToDom(hostAcross, 'a\r\x1b]0;title\x07', {
+      openClass: '',
+      incompleteTail: false,
+      endsWithCR: false,
+    });
+    expect(st1?.endsWithCR).toBe(true);
+    expect(appendAnsiDeltaToDom(hostAcross, '\nb', st1!)).toBeNull();
+    expect(appendAnsiDeltaToDom(hostAcross, '\x1b]0;t2\x07\nb', st1!)).toBeNull();
   });
 });

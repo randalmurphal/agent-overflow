@@ -585,17 +585,16 @@
 
   // Intra-row straddle-shift tracking (`sampleReadingAnchor`) only matters when
   // the top straddling row can grow or shrink internally (overview, comments,
-  // editors). Static diff rows (line blocks, file headers, surface-end, media)
-  // never mutate internally while scrolled, so skip the forced hit-test on them
-  // even when wordWrap is enabled.
+  // editors, or wrapped line blocks whose lines re-wrap on width/text hydration).
+  // Unwrapped line blocks and static headers/media never change height internally.
   function trackReviewReadingAnchor(offset?: number): boolean {
     const ref = listRef;
     if (!ref || built.rows.length === 0) return false;
     const at = offset ?? ref.getScrollOffset();
     const row = built.rows[ref.findItemIndex(at)];
     if (!row) return false;
+    if (row.kind === 'line-block') return wordWrap;
     return (
-      row.kind !== 'line-block' &&
       row.kind !== 'file-header' &&
       row.kind !== 'surface-end' &&
       row.kind !== 'media'

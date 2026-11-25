@@ -279,9 +279,11 @@ func (s *Service) EndAssistantText(threadID, itemID, text string) {
 	}
 	if !item.started {
 		sameAsStreamed := text == "" || (len(text) == item.streamed && foldDigest(liveDigestSeed, []byte(text)) == item.digest)
+		var finishSteps []highlight.FenceStep
 		if sameAsStreamed {
 			hasFollowed := false
-			for _, step := range item.scan.Finish(nil) {
+			finishSteps = item.scan.Finish(nil)
+			for _, step := range finishSteps {
 				if step.Kind == highlight.FenceOpened && step.Lang != "" {
 					hasFollowed = true
 					break
@@ -297,6 +299,9 @@ func (s *Service) EndAssistantText(threadID, itemID, text string) {
 			delete(l.items, key)
 			l.mu.Unlock()
 			return
+		}
+		if len(finishSteps) > 0 {
+			item.steps = append(item.steps, finishSteps...)
 		}
 		item.started = true
 		item.wake = make(chan struct{}, 1)

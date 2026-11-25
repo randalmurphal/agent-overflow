@@ -72,7 +72,10 @@ const TOKENS: readonly string[] = [
 export function sameXtermTheme(a: ITheme | undefined, b: ITheme): boolean {
   if (a === b) return true;
   if (!a) return false;
-  for (const key of Object.keys(b) as (keyof ITheme)[]) {
+  const aKeys = Object.keys(a) as (keyof ITheme)[];
+  const bKeys = Object.keys(b) as (keyof ITheme)[];
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of bKeys) {
     if (a[key] !== b[key]) return false;
   }
   return true;

@@ -46,15 +46,21 @@
   }: Props = $props();
 
   let blurLease = $state.raw<BackdropBlurLease | null>(null);
+  let wasDelegated = $state(false);
   $effect(() => {
     if (!open) return;
-    const lease = acquireBackdropBlur('sm');
+    wasDelegated = false;
+    const lease = acquireBackdropBlur('sm', 40);
     blurLease = lease;
     return () => {
+      wasDelegated = lease.delegatedToShell;
       lease.release();
       if (blurLease === lease) blurLease = null;
     };
   });
+  // Keep native backdrop-filter suppressed through the fade-out outro when this
+  // overlay was delegated to the app shell, preventing a native blur pop-in mid-fade.
+  const suppressBackdrop = $derived(Boolean(blurLease?.delegatedToShell || (!open && wasDelegated)));
 
   function handleScrimClick(event: MouseEvent): void {
     if (event.target === event.currentTarget) onScrimClick();
@@ -65,9 +71,9 @@
   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
   <div
     class="fixed inset-0 z-40 bg-overlay backdrop-blur-sm [contain:strict] [transform:translateZ(0)]"
-    data-backdrop-cutout={blurLease?.delegatedToShell ? 'true' : undefined}
-    style:backdrop-filter={blurLease?.delegatedToShell ? 'none' : undefined}
-    style:-webkit-backdrop-filter={blurLease?.delegatedToShell ? 'none' : undefined}
+    data-backdrop-cutout={suppressBackdrop ? 'true' : undefined}
+    style:backdrop-filter={suppressBackdrop ? 'none' : undefined}
+    style:-webkit-backdrop-filter={suppressBackdrop ? 'none' : undefined}
     data-testid={scrimTestId}
     use:airspaceSurface
     onclick={handleScrimClick}

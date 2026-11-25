@@ -162,12 +162,24 @@ export function applyHighlightLive(evt: HighlightLiveCodeEvent, origin?: EventOr
 export function setupHighlightLiveEvents(): () => void {
   const offLive = wailsEventOn<HighlightLiveCodeEvent>('highlight:live', enqueueHighlightLive);
   const offRecovery = onBackendRecovery((backend, phase) => {
-    if (phase === 'complete') resyncLiveCodeRows(backend);
+    if (phase === 'complete') {
+      flushPendingHighlightLive();
+      resyncLiveCodeRows(backend);
+    }
   });
   const offLease = onClientLeaseChange((state) => {
-    if (state === 'active') resyncLiveCodeRows();
+    if (state === 'active') {
+      flushPendingHighlightLive();
+      resyncLiveCodeRows();
+    }
   });
-  const offWatched = onWatchedThreadsComposed(retainLiveCodeThreads);
+  const offWatched = onWatchedThreadsComposed((watched) => {
+    if (pendingHighlightLive.length > 0) {
+      pendingHighlightLive = pendingHighlightLive.filter((q) => watched.has(q.evt.threadId));
+      if (pendingHighlightLive.length === 0) cancelHighlightLiveSchedule();
+    }
+    retainLiveCodeThreads(watched);
+  });
   return () => {
     offLive();
     offRecovery();

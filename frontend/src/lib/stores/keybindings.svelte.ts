@@ -350,6 +350,7 @@ async function readKeybindings(announce: boolean): Promise<void> {
     rules = [];
     resolved = [];
     issues = [];
+    keyByCommandId = new Map();
     resolvedSubsetCache = new WeakMap();
     loaded = true;
     // The call never reached the file, so any earlier file-read failure is
@@ -417,6 +418,7 @@ export function resetKeybindingsStore(): void {
   rules = [];
   resolved = [];
   issues = [];
+  keyByCommandId = new Map();
   resolvedSubsetCache = new WeakMap();
   loaded = false;
   loadError = null;

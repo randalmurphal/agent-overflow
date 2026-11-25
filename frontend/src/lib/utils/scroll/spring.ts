@@ -111,9 +111,9 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
   let refusalLatchedAt = 0;
   let lastRefusalRetryAt = 0;
 
-  function witnessClampIfUnexplained(readFree = false): boolean {
+  function witnessClampIfUnexplained(): boolean {
     if (sentinelEntryTarget < 0) return false;
-    if (!sentinelClampWitnessed && deps.scrollTopUnexplained(readFree)) {
+    if (!sentinelClampWitnessed && deps.scrollTopUnexplained()) {
       sentinelClampWitnessed = true;
     }
     return sentinelClampWitnessed;
@@ -582,16 +582,16 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       structuralAppendSpringUntil = 0;
       springStartedFromStructuralAppend = false;
     },
-    sentinelTarget: (readFree = false) => {
+    sentinelTarget: () => {
       if (sentinelEntryTarget < 0) return -1;
       const el = deps.getScrollEl();
       if (!el) return sentinelEntryTarget;
       const clientHeight = deps.currentClientHeight
-        ? deps.currentClientHeight(!readFree)
+        ? deps.currentClientHeight(true)
         : el.clientHeight;
       return rebasedSentinelEntryTarget(clientHeight);
     },
-    sentinelClampWitnessed: (readFree = false) => witnessClampIfUnexplained(readFree),
+    sentinelClampWitnessed: () => witnessClampIfUnexplained(),
     refusalLatched: () => writeRefusalLatched,
   };
 }

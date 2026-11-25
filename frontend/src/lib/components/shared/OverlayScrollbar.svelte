@@ -133,7 +133,7 @@
   }
 
   function sample(sampleTarget = target, deliveredMetrics?: ScrollMetrics): void {
-    if (deliveredMetrics && trackPx > 0) {
+    if (deliveredMetrics && trackPx > 0 && deliveredMetrics.clientHeight === metrics.clientHeight) {
       applyMetrics(deliveredMetrics);
       return;
     }

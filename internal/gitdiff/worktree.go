@@ -196,16 +196,18 @@ var beforeWorktreeHash func()
 // read-only probe fails (e.g. corrupt/missing real index), in which case the
 // caller falls back to scanning against the cold temporary index.
 func listWorktreeChangesWarm(ctx context.Context, workspace, head string) ([]string, bool) {
-	// 1. Tracked worktree modifications, deletions, mode changes, and dirty
-	//    submodule HEADs relative to the real index.
+	// 1. Tracked worktree modifications, deletions, mode changes, and moved
+	//    submodule HEADs relative to the real index (--ignore-submodules=dirty
+	//    overrides diff.ignoreSubmodules=all so moved gitlinks are never
+	//    hidden while dirty-only submodule worktrees keep the clean fast path).
 	wdTracked, _, _, err := runGit(ctx, workspace, nil, false,
-		"--no-optional-locks", "diff-files", "--name-only", "-z")
+		"--no-optional-locks", "diff-files", "--ignore-submodules=dirty", "--name-only", "-z")
 	if err != nil {
 		return nil, false
 	}
 	// 2. Staged differences between the real index and HEAD.
 	staged, _, _, err := runGit(ctx, workspace, nil, false,
-		"--no-optional-locks", "diff-index", "--cached", "--name-only", "-z", head)
+		"--no-optional-locks", "diff-index", "--ignore-submodules=dirty", "--cached", "--name-only", "-z", head)
 	if err != nil {
 		return nil, false
 	}

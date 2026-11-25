@@ -83,6 +83,9 @@ func (r *Router) persistAgentEndLocked(item store.Item, payload *store.Payload, 
 	if err != nil {
 		return errors.Join(streamErr, queueErr, requestErr, fmt.Errorf("end agent %s/%s: %w", threadID, end.rootID, err))
 	}
+	for _, row := range settled {
+		r.dropStreamPersistenceBuffer(threadID, row.Item.ID)
+	}
 	rows := make([]store.Item, 0, 1+len(settled))
 	rows = append(rows, persisted)
 	for _, row := range settled {
@@ -216,6 +219,14 @@ func (r *Router) dropTurnStreamsLocked(threadID string, st *threadState, turnInd
 			r.decStreamingCounts(threadID, ref.scope)
 			delete(blocks, key)
 			delete(st.streamingPathRefsLast, ref.itemID)
+			if buffer := st.streamPersistBuffers[ref.itemID]; buffer != nil {
+				if buffer.timer != nil {
+					buffer.timer.Stop()
+					buffer.timer = nil
+					buffer.timerArmed = false
+				}
+				delete(st.streamPersistBuffers, ref.itemID)
+			}
 		}
 	}
 	drop(st.activeTextBlocks)

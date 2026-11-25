@@ -183,7 +183,10 @@
 				_mermaidSvgCache.delete(cacheKey);
 				_mermaidSvgCache.set(cacheKey, cached);
 				svgString = cached.svg.split(cached.baseId).join(uniqueId);
-				svgAttrs = cached.attrs;
+				svgAttrs = cached.attrs.map(([name, value]) => [
+					name,
+					value.includes(cached.baseId) ? value.split(cached.baseId).join(uniqueId) : value,
+				]);
 			} else {
 				let diagramType = '';
 				try {

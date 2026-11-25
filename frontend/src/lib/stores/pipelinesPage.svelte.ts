@@ -236,6 +236,9 @@ class PipelinesPageBackend {
     const stage = this.stages.get(pipeline.key);
     return {
       ...pipeline.baseView,
+      age: Number.isFinite(pipeline.createdAtMs)
+        ? relativeTime(pipeline.createdAtMs, 'locale', this.backend)
+        : '',
       stages: stage?.stages ?? null,
       stagesError: stage?.error ?? null,
     };
@@ -319,7 +322,6 @@ class PipelinesPageBackend {
         for (const summary of rows) {
           const key = ciKeyFor({ kind: 'pipeline', backend: this.backend, repo, pipelineId: summary.id });
           const createdAtMs = Date.parse(summary.createdAt);
-          const finiteAt = Number.isFinite(createdAtMs) ? createdAtMs : 0;
           listed.push({
             key,
             projectId: lister.projectId,
@@ -327,7 +329,7 @@ class PipelinesPageBackend {
             repoId,
             summary,
             projectName: lister.name,
-            createdAtMs: finiteAt,
+            createdAtMs,
             baseView: {
               key,
               id: summary.id,
@@ -341,7 +343,7 @@ class PipelinesPageBackend {
               shortSHA: shortSHA(summary.sha),
               title: summary.title ?? '',
               projectName: lister.name,
-              age: Number.isFinite(createdAtMs) ? relativeTime(createdAtMs, 'locale', this.backend) : '',
+              age: '',
               times: pipelineTimesText(summary.createdAt, summary.updatedAt),
               url: summary.url,
             },
@@ -350,7 +352,11 @@ class PipelinesPageBackend {
       }
       const pickedIds = new Set(picked.map((project) => project.projectId));
       for (const projectId of this.errors.keys()) if (!pickedIds.has(projectId)) this.errors.delete(projectId);
-      listed.sort((a, b) => (b.createdAtMs - a.createdAtMs) || Number(b.summary.id) - Number(a.summary.id));
+      listed.sort((a, b) => {
+        const atA = Number.isFinite(a.createdAtMs) ? a.createdAtMs : 0;
+        const atB = Number.isFinite(b.createdAtMs) ? b.createdAtMs : 0;
+        return (atB - atA) || Number(b.summary.id) - Number(a.summary.id);
+      });
       this.listed = listed;
       this.readWith = filters;
       this.loaded = true;

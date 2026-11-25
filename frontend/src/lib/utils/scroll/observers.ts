@@ -241,11 +241,11 @@ export interface ContentObserverDeps {
   /** Publish the exact bottom target carried by an external geometry sample. */
   cacheExternalBottomTarget(height: number, viewportHeight: number): void;
   writeScrollTop(caller: ScrollWriteCaller, value: number, bottomTarget?: number): void;
-  resolverStateSnapshot(readFree?: boolean): ResolverState;
+  resolverStateSnapshot(): ResolverState;
   /** OS prefers-reduced-motion OR the app's low-power setting. */
   prefersReducedMotion(): boolean;
   /** Secondary consumers run after the controller has applied this sample. */
-  contentGeometryProcessed(scrollable: boolean): void;
+  contentGeometryProcessed(scrollable: boolean, metricsFresh?: boolean): void;
   /** Returns cached scrollability when a fresh DOM read already landed in this sample. */
   cachedScrollableHint?(): boolean | null;
   /** Narrowed to what a delivery decision may drive on the spring. */
@@ -566,10 +566,14 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     // deliveries run after layout and can read the real scroll range without
     // forcing another layout pass. Secondary consumers use this edge without
     // sampling hidden geometry on every streaming beat.
-    const reportProcessedGeometry = (): void => {
+    const reportProcessedGeometry = (metricsFresh = true): void => {
       const viewportHeight = settle?.viewportHeight;
       if (viewportHeight !== undefined) {
-        deps.contentGeometryProcessed(nextHeight - viewportHeight > 1);
+        deps.contentGeometryProcessed(nextHeight - viewportHeight > 1, true);
+        return;
+      }
+      if (!metricsFresh) {
+        deps.contentGeometryProcessed(scrollEl.scrollHeight - scrollEl.clientHeight > 1, false);
         return;
       }
       const hint = deps.cachedScrollableHint?.();
@@ -577,6 +581,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
         hint !== null && hint !== undefined
           ? hint
           : scrollEl.scrollHeight - scrollEl.clientHeight > 1,
+        true,
       );
     };
     const prev = previousHeight;
@@ -656,7 +661,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       } else {
         deps.refreshIsNearBottom();
       }
-      reportProcessedGeometry();
+      reportProcessedGeometry(true);
       return;
     }
 
@@ -712,7 +717,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
         scrollHeight: Math.round(scrollEl.scrollHeight),
         clientHeight: Math.round(scrollEl.clientHeight),
       }));
-      reportProcessedGeometry();
+      reportProcessedGeometry(viewportDelta !== 0);
       return;
     }
     resizeDifference = delta;
@@ -777,7 +782,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       pinnedRemeasureActive,
       prefersReducedMotion: deps.prefersReducedMotion(),
     };
-    const decision = resolveContentDelivery(deps.resolverStateSnapshot(true), observation);
+    const decision = resolveContentDelivery(deps.resolverStateSnapshot(), observation);
     if (isUiRenderTraceEnabled()) trace('scroll.contentRO', () => ({
       prev: Math.round(prev),
       next: Math.round(nextHeight),

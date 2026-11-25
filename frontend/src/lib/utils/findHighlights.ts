@@ -77,7 +77,7 @@ const MAX_MATCHES = 5000;
 const RECOMPUTE_DELAY_MS = 40;
 const RECOMPUTE_MAX_WAIT_MS = 200;
 const SKIP_SELECTOR = 'script,style,noscript,textarea,[data-find-skip]';
-const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA']);
+const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'script', 'style']);
 const BLOCK_TAGS = new Set([
   'ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'DD', 'DETAILS', 'DIV', 'DL', 'DT',
   'FIGCAPTION', 'FIGURE', 'FOOTER', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'HEADER',
@@ -184,9 +184,14 @@ interface Segment {
   island?: number;
 }
 
-// A closed <details> shows only its summary.
-function hiddenByDetails(element: Element): boolean {
-  for (let details = element.closest('details'); details; details = details.parentElement?.closest('details') ?? null) {
+// A closed <details> shows only its summary. When `includeSelf` is false,
+// only ancestor <details> are inspected so a closed <details> passed as `root`
+// still exposes its <summary> through the DFS.
+function hiddenByDetails(element: Element, includeSelf = true): boolean {
+  const start = includeSelf
+    ? element.closest('details')
+    : (element.parentElement?.closest('details') ?? null);
+  for (let details = start; details; details = details.parentElement?.closest('details') ?? null) {
     if ((details as HTMLDetailsElement).open) continue;
     const summary = details.querySelector(':scope > summary');
     if (!summary || !summary.contains(element)) return true;
@@ -237,7 +242,7 @@ function collectSegments(
 ): Segment[] {
   if (root.parentElement?.closest(SKIP_SELECTOR)) return [];
 
-  const rootDetailsHidden = hiddenByDetails(root);
+  const rootDetailsHidden = hiddenByDetails(root, false);
   if (rootDetailsHidden && !keepHidden) return [];
 
   const matchesRow = rowsOnly ? compileSelectorMatcher(rowSelector) : null;
@@ -590,10 +595,6 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
     // `toggle` does not bubble; a capture listener sees every <details>.
     onToggle = () => pending.request();
     root.addEventListener('toggle', onToggle, true);
-    if (paints && !rulesHeld) {
-      retainRules(name);
-      rulesHeld = true;
-    }
   }
 
   function unfollow(): void {

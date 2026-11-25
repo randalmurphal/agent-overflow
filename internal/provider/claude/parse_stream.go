@@ -7,7 +7,6 @@ package claude
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -81,7 +80,7 @@ func (p *Parser) tryParseStreamEventLine(threadID string, line []byte) ([]provid
 		AbandonedBlocks json.RawMessage `json:"abandoned_blocks"`
 	}
 	if err := json.Unmarshal(line, &env); err != nil {
-		return nil, true, fmt.Errorf("invalid JSON: %w", err)
+		return nil, false, nil
 	}
 	if env.Type != "stream_event" {
 		return nil, false, nil
