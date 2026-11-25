@@ -119,12 +119,12 @@ func TestSetThreadTicketLinksReplacesAndClears(t *testing.T) {
 		t.Fatalf("after another ticket = %+v", got)
 	}
 
-	cleared, had, err := s.ClearThreadTicket("a")
-	if err != nil || !had || cleared != (TicketRef{Kind: TrackerKindJira, Site: mirrorSite, IssueID: "10002"}) {
-		t.Fatalf("clear = %+v, %v, %v", cleared, had, err)
+	cleared, err := s.ClearThreadTicket("a")
+	if err != nil || !cleared.Had || cleared.Ticket != (TicketRef{Kind: TrackerKindJira, Site: mirrorSite, IssueID: "10002"}) {
+		t.Fatalf("clear = %+v, %v", cleared, err)
 	}
-	if _, had, err := s.ClearThreadTicket("a"); err != nil || had {
-		t.Fatalf("second clear = %v, %v", had, err)
+	if again, err := s.ClearThreadTicket("a"); err != nil || again.Had {
+		t.Fatalf("second clear = %+v, %v", again, err)
 	}
 	if row, err := s.GetThread("a"); err != nil || row.TicketLink != nil {
 		t.Fatalf("thread row after clear = %+v, %v", row.TicketLink, err)
@@ -217,7 +217,7 @@ func TestSetThreadTicketRefusalsChangeNothing(t *testing.T) {
 			if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10008", 5)}, MirrorCatalog{}, nextMirrorRead(s, root)); err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := s.ClearThreadTicket("swept"); err != nil {
+			if _, err := s.ClearThreadTicket("swept"); err != nil {
 				t.Fatal(err)
 			}
 			if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
@@ -468,7 +468,7 @@ func TestRestoreKeepsTheTrackerTables(t *testing.T) {
 	if err := st.SnapshotTo(snap); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := st.ClearThreadTicket("t1"); err != nil {
+	if _, err := st.ClearThreadTicket("t1"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.DeleteTrackerConnection(tempo.ID); err != nil {

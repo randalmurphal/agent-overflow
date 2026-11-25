@@ -5,10 +5,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   copyLinkedTicketKey,
+  findThreadTicket,
   linkedTicketUnopenable,
+  linkThreadTicket,
   openLinkedTicket,
   removeThreadTicketLink,
+  threadTicketFinding,
+  ticketLinkPending,
 } from './threadTicketLinks.svelte';
+import { createThreadPane } from './thread.svelte';
+import { installThreadPaneTestEnv } from '../../test/helpers/threadPane';
+import { forgetProject, noteProject } from '../transport/entityIndex';
+import { HOME_BACKEND } from '../transport/backendKey';
+import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import type { Project } from '../types/models';
 import { takeTicketOpenRequest } from './issuesPane.svelte';
 import { getPaneLayoutItems, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import { getThreadById, prependThread, removeThread } from './threads.svelte';
@@ -124,5 +134,72 @@ describe('removeThreadTicketLink', () => {
     await removeThreadTicketLink(thread);
     expect(getThreadById('thread-1')?.ticketLink?.key).toBe('WEB-1');
     expect(toastTexts()).toEqual(['The link to WEB-1 was not removed: Thread is archived.']);
+  });
+});
+
+describe('linking a New thread', () => {
+  const project: Project = { id: 'p-new', path: '/tmp/new', name: 'New', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false };
+  const ticket = { kind: 'jira', site: 'https://example.atlassian.net', issueId: '10001', key: 'WEB-1' };
+
+  beforeEach(() => {
+    installThreadPaneTestEnv();
+    noteProject(project.id, HOME_BACKEND);
+  });
+  afterEach(() => {
+    forgetProject(project.id);
+    resetStagedBackends();
+  });
+
+  function newThreadFinding() {
+    const pane = createThreadPane();
+    pane.startDraftPlaceholder(project, 'chat');
+    findThreadTicket(pane.thread!, undefined, pane);
+    const found = threadTicketFinding();
+    if (!found) throw new Error('no finder opened');
+    return { pane, found };
+  }
+
+  it('creates the thread through its pane and links that thread, holding the empty-draft cleanup until the row lands', async () => {
+    const { pane, found } = newThreadFinding();
+    const created = makeThread({ id: 'created', projectId: project.id, projectPath: project.path, workspacePath: project.path, isDraft: true });
+    setBindingMock('CreateThread', async () => created);
+    const held: boolean[] = [];
+    const set = setBindingMock('SetThreadTicket', async () => {
+      held.push(ticketLinkPending(pane.paneId));
+      return { ...created, ticketLink: link() };
+    });
+    try {
+      await linkThreadTicket(found, ticket);
+      expect(set).toHaveBeenCalledWith('created', { kind: 'jira', site: 'https://example.atlassian.net', issueId: '10001' });
+      expect(held).toEqual([true]);
+      expect(ticketLinkPending(pane.paneId)).toBe(false);
+      expect(pane.thread?.id).toBe('created');
+      expect(toastTexts()).toEqual([]);
+    } finally { pane.clear(); }
+  });
+
+  it('links nothing once the pane no longer shows that New thread', async () => {
+    const { pane, found } = newThreadFinding();
+    const create = setBindingMock('CreateThread', async () => makeThread({ id: 'created' }));
+    const set = setBindingMock('SetThreadTicket', async () => makeThread({ id: 'created' }));
+    pane.clear();
+    await linkThreadTicket(found, ticket);
+    expect(create).not.toHaveBeenCalled();
+    expect(set).not.toHaveBeenCalled();
+    expect(toastTexts()).toEqual(['The thread was not linked to WEB-1: the New thread is no longer open.']);
+    expect(ticketLinkPending(pane.paneId)).toBe(false);
+  });
+
+  it('opens no finder, and no ticket, for a thread no computer verifiably holds', async () => {
+    stageBackend({ id: 'laptop', backendId: REMOTE_BACKEND_UUID });
+    const thread = linkedThread();
+    findThreadTicket(thread, undefined);
+    expect(threadTicketFinding()).toBeNull();
+    await openLinkedTicket(thread);
+    expect(takeTicketOpenRequest()).toBeNull();
+    expect(toastTexts()).toEqual([
+      'Agent Overflow cannot tell which computer holds this thread, so it cannot be linked to a ticket.',
+      'Agent Overflow cannot tell which computer holds this thread, so WEB-1 cannot open.',
+    ]);
   });
 });

@@ -505,7 +505,7 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
     }
     case 'emptied': {
       // A never-sent thread lost what listed it (its draft text, its
-      // worktree): off the sidebar, but it still exists, so a pane showing
+      // worktree, its ticket link): off the sidebar, but it still exists, so a pane showing
       // it stays and keeps its state.
       const id = evt.thread?.id ?? evt.id;
       if (!id) return;

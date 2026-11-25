@@ -9,6 +9,7 @@ import (
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 )
@@ -52,13 +53,11 @@ func (a *App) SetThreadTicket(ctx context.Context, threadID string, ticket Threa
 	}
 	ctx, cancel := a.trackerRun(ctx, "SetThreadTicket", "Linking the ticket", trackerSlow)
 	defer cancel()
-	changed, err := svc.LinkThread(ctx, threadID, ticket.ticket(), store.TicketOriginManual)
+	write, err := svc.LinkThread(ctx, threadID, ticket.ticket(), store.TicketOriginManual)
 	if err != nil {
 		return store.Thread{}, threadTicketError(ctx, err)
 	}
-	if changed {
-		a.announceThread(triage.ThreadActionFull, threadID)
-	}
+	a.announceThreadLink(threadID, write)
 	return a.store.GetThread(threadID)
 }
 
@@ -70,14 +69,24 @@ func (a *App) ClearThreadTicket(ctx context.Context, threadID string) (store.Thr
 	if err != nil {
 		return store.Thread{}, err
 	}
-	had, err := svc.UnlinkThread(threadID)
+	write, err := svc.UnlinkThread(threadID)
 	if err != nil {
 		return store.Thread{}, threadTicketError(ctx, err)
 	}
-	if had {
+	a.announceThreadLink(threadID, write)
+	return a.store.GetThread(threadID)
+}
+
+// announceThreadLink announces a link write's own thread: by the listing
+// change it made (a link lists a never-sent thread, its removal can take
+// it off, announceListing), else its row when the link changed.
+func (a *App) announceThreadLink(threadID string, write trackerapp.ThreadLinkWrite) {
+	if !write.Changed && write.Listing == store.ListingUnchanged {
+		return
+	}
+	if !a.announceListing(threadID, write.Listing) {
 		a.announceThread(triage.ThreadActionFull, threadID)
 	}
-	return a.store.GetThread(threadID)
 }
 
 // ThreadsForTicket lists the rows of this computer's threads linked to

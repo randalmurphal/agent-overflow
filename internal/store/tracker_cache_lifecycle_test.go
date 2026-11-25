@@ -281,7 +281,7 @@ func TestCleanupSweepsIssuesWhoseLinksGo(t *testing.T) {
 		t.Fatalf("linked issues = %v, %v, %v", linked, more, err)
 	}
 
-	if _, _, err := s.ClearThreadTicket("unlinked"); err != nil {
+	if _, err := s.ClearThreadTicket("unlinked"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeleteThread("deleted"); err != nil {
@@ -324,7 +324,7 @@ func TestCleanupSweepIsLeafFirstAndBounded(t *testing.T) {
 		if _, err := replaceHistory(s, root, h); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := s.ClearThreadTicket("link-" + id); err != nil {
+		if _, err := s.ClearThreadTicket("link-" + id); err != nil {
 			t.Fatal(err)
 		}
 	}

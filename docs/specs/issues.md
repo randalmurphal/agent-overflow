@@ -4,8 +4,10 @@ Status: product rulings and screen designs recorded 2026-11-15. Built:
 the connections and a project's board list, in Settings > Issues
 (Connections, Boards), and the Issues pane with its Board screen, opened
 from the tool row's Issues entry, and the Ticket screen, opened from a
-card. The other screens are not built; the [Board](#board) and
-[Ticket](#ticket) sections say what of them is. A project's status
+card or from a thread's linked ticket; a thread's ticket link, in the
+sidebar and the thread header. The other screens are not built; the
+[Board](#board), [Ticket](#ticket) and [Thread link](#thread-link)
+sections say what of them is. A project's status
 groups and ticket pins are built in the backend, and no screen sets them
 yet.
 
@@ -304,8 +306,8 @@ avatar.
 
 ### Ticket
 
-Status: built: a ticket opened from a card over or beside the board, the
-choice remembered, with the split between them; the wide and narrow
+Status: built: a ticket opened from a card, or from a thread's linked
+ticket, over or beside the board, the choice remembered, with the split between them; the wide and narrow
 layouts with the rail and Details; status, assignee, priority, points and
 type changed in place, a move whose screen takes fields through their form, and the other fields with allowed values or one
 typed value behind the control with its find box (a field of several
@@ -366,6 +368,8 @@ links, Log time, planning poker, and a ticket in a pane of its own.
 
 ### Thread link
 
+Status: built: every bullet below.
+
 A [second mockup](issues-thread-link-mockup.html) shows the link in the
 sidebar and the thread header, on desktop and on a phone.
 
@@ -373,7 +377,9 @@ sidebar and the thread header, on desktop and on a phone.
   button in the thread header, before the pull request button. It opens the
   ticket in the Issues pane beside the thread, over the board shown when
   that board is of the ticket's connection, else over the thread's
-  project's board of that connection, else another project's. Its
+  project's board of that connection, else another project's. A pane
+  showing Time switches to the Board for it; the next pane still opens on
+  the screen the person picked. Its
   right-click menu opens the ticket, copies its key and removes the link.
   On a phone the ticket is the Thread actions menu's row above the pull
   request.
@@ -383,7 +389,12 @@ sidebar and the thread header, on desktop and on a phone.
   menu, the Thread actions menu and the header ticket's menu, finds a
   ticket by key or by words of its title on the thread's computer's Jira
   and Linear connections that are on, and links the thread to the one
-  picked. A computer with no such connection says so.
+  picked. A computer with no such connection says so. A New thread
+  linked before anything is typed becomes a thread with the link.
+- A link keeps a thread that has sent nothing, as a bound worktree does:
+  it is listed, and erasing its text keeps it. Once its link is removed,
+  a thread with nothing sent and nothing typed is an empty draft again.
+  A linked draft moved to another project takes its link with it.
 - A link its computer has not read, cannot see now or reads through a
   connection that is off dims its mark and says which in its title. A
   ticket whose connection is off or gone does not open: a message says

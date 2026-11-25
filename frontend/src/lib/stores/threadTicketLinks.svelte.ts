@@ -29,6 +29,7 @@ import type { EntityScopeGrant } from '../transport/scopes';
 import { copyToClipboard } from '../utils/clipboard';
 import { userFacingError } from '../utils/userFacingError';
 import { retryingLoad } from '../utils/retryingLoad';
+import { SvelteMap } from 'svelte/reactivity';
 import { isDraftPlaceholderId } from './draftPlaceholderId';
 import type { BackendKey } from '../transport/backendKey';
 import type { ThreadPane } from './thread.svelte';
@@ -164,13 +165,25 @@ export interface ThreadTicketFinding {
   /** The computer the thread verifiably runs on, whose trackers it reads. */
   readonly backend: BackendKey;
   readonly anchor: HTMLElement | undefined;
-  /** The pane showing a New thread, which creates its thread when a ticket
-   * is picked; null for a thread that has a row. */
+  /** The pane the finder was opened from, null for the sidebar's row. A
+   * New thread's pane creates its thread when a ticket is picked. */
   readonly pane: ThreadPane | null;
 }
 
 // The one finder open; a later Link or Change replaces it.
 let finding = $state.raw<ThreadTicketFinding | null>(null);
+
+// The panes whose thread a link is being written to, from the pick to the
+// row the computer answers: the composer's empty-draft cleanup waits for
+// it (ticketLinkPending), since a New thread is materialized, empty, before
+// its link lands.
+const linkingPanes = new SvelteMap<string, number>();
+
+/** Whether a link is being written to the thread pane `paneId` shows;
+ * reactive. */
+export function ticketLinkPending(paneId: string): boolean {
+  return (linkingPanes.get(paneId) ?? 0) > 0;
+}
 
 /** Opens the ticket finder to link `thread` to a ticket of its computer's,
  * or change the ticket it links (Link ticket…, Change ticket…). A New
@@ -185,7 +198,7 @@ export function findThreadTicket(thread: Thread, anchor: HTMLElement | undefined
   if (isDraftPlaceholderId(thread.id) && pane?.draftPlaceholder?.id !== thread.id) {
     throw new Error(`findThreadTicket: the New thread ${thread.id} needs the pane that shows it`);
   }
-  finding = { thread, backend, anchor, pane: isDraftPlaceholderId(thread.id) ? pane : null };
+  finding = { thread, backend, anchor, pane };
 }
 
 /** The finder open, or null; reactive. */
@@ -211,7 +224,7 @@ export interface ThreadTicketChoice {
  * pane moved to. Null after a refusal said in a toast. */
 async function threadToLink(found: ThreadTicketFinding, key: string): Promise<string | null> {
   const { thread, pane } = found;
-  if (!pane) return thread.id;
+  if (!pane || !isDraftPlaceholderId(thread.id)) return thread.id;
   if (pane.draftPlaceholder?.id !== thread.id) {
     addToast('error', `The thread was not linked to ${key}: the New thread is no longer open.`);
     return null;
@@ -225,6 +238,8 @@ async function threadToLink(found: ThreadTicketFinding, key: string): Promise<st
  * computer's sentence. */
 export async function linkThreadTicket(found: ThreadTicketFinding, ticket: ThreadTicketChoice): Promise<void> {
   const key = ticket.key || 'the ticket';
+  const paneId = found.pane?.paneId;
+  if (paneId) linkingPanes.set(paneId, (linkingPanes.get(paneId) ?? 0) + 1);
   try {
     const threadId = await threadToLink(found, key);
     if (threadId === null) return;
@@ -234,9 +249,16 @@ export async function linkThreadTicket(found: ThreadTicketFinding, ticket: Threa
     syncThreadReply(row, mark);
   } catch (err) {
     addErrorToast(`The thread was not linked to ${key}: ${userFacingError(err)}`, err);
+  } finally {
+    if (paneId) {
+      const left = (linkingPanes.get(paneId) ?? 1) - 1;
+      if (left > 0) linkingPanes.set(paneId, left);
+      else linkingPanes.delete(paneId);
+    }
   }
 }
 
 export function resetThreadTicketFinderForTest(): void {
   finding = null;
+  linkingPanes.clear();
 }

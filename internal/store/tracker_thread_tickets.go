@@ -268,11 +268,14 @@ type ThreadTicketWrite struct {
 }
 
 // ThreadTicketSet is what SetThreadTicket did: whether the link as a
-// thread row shows it changed, its state included, the ticket it replaced (nil when the
-// thread had none or had this one), and what storing a read card changed,
-// whose Threads are the other threads whose row the card moved.
+// thread row shows it changed, its state included, how it moved the thread
+// across the sidebar listing rule (a link makes a never-sent thread real,
+// threadRealClause), the ticket it replaced (nil when the thread had none
+// or had this one), and what storing a read card changed, whose Threads
+// are the other threads whose row the card moved.
 type ThreadTicketSet struct {
 	Changed  bool
+	Listing  ListingChange
 	Replaced *TicketRef
 	Cards    MirrorChanges
 }
@@ -356,6 +359,10 @@ func (s *Store) SetThreadTicket(w ThreadTicketWrite) (set ThreadTicketSet, err e
 		if err != nil {
 			return err
 		}
+		listedBefore, err := threadListed(tx, w.ThreadID)
+		if err != nil {
+			return err
+		}
 		// The link's first copy is the read card, or the mirror's: the
 		// copy writer below makes it the card the mirror holds.
 		seen := ThreadTicket{IssueKey: w.Card.Key, IssueTitle: w.Card.Title, StatusID: w.Card.StatusID}
@@ -403,6 +410,11 @@ func (s *Store) SetThreadTicket(w ThreadTicketWrite) (set ThreadTicketSet, err e
 			return err
 		}
 		set.Changed = before != after
+		listedAfter, err := threadListed(tx, w.ThreadID)
+		if err != nil {
+			return err
+		}
+		set.Listing = listingChange(listedBefore, listedAfter)
 		if had && replaced != ref {
 			set.Replaced = &replaced
 		}
@@ -591,34 +603,52 @@ var ticketThreadWritableSQL = `EXISTS (SELECT 1 FROM threads
 // moved away whose cache stays here reads as having no link.
 const ticketThreadOwnedSQL = `EXISTS (SELECT 1 FROM owned_threads WHERE owned_threads.id = thread_tickets.thread_id)`
 
-// ClearThreadTicket removes threadID's ticket link and returns the ticket
-// it named, false when it had none. It refuses a thread SetThreadTicket
-// refuses for its transfer or its delete; a missing thread or a holder
-// has no link to clear.
-func (s *Store) ClearThreadTicket(threadID string) (cleared TicketRef, had bool, err error) {
+// ThreadTicketClear is what ClearThreadTicket did: the ticket the link
+// named and whether there was one, and how the removal moved the thread
+// across the sidebar listing rule (a never-sent thread its link alone
+// made real leaves the list, and the empty-draft cleanup may delete it).
+type ThreadTicketClear struct {
+	Ticket  TicketRef
+	Had     bool
+	Listing ListingChange
+}
+
+// ClearThreadTicket removes threadID's ticket link (ThreadTicketClear). It
+// refuses a thread SetThreadTicket refuses for its transfer or its delete;
+// a missing thread or a holder has no link to clear.
+func (s *Store) ClearThreadTicket(threadID string) (cleared ThreadTicketClear, err error) {
 	action := fmt.Sprintf("store: clear thread %s ticket", threadID)
 	tx, err := s.db.Begin()
 	if err != nil {
-		return TicketRef{}, false, fmt.Errorf("%s: begin: %w", action, err)
+		return ThreadTicketClear{}, fmt.Errorf("%s: begin: %w", action, err)
 	}
 	defer rollbackTx(tx, action, &err)
 	if err := checkTicketThreadWritableTx(tx, threadID); err != nil {
-		return TicketRef{}, false, err
+		return ThreadTicketClear{}, err
+	}
+	listedBefore, err := threadListed(tx, threadID)
+	if err != nil {
+		return ThreadTicketClear{}, fmt.Errorf("%s: %w", action, err)
 	}
 	err = tx.QueryRow(`DELETE FROM thread_tickets WHERE thread_id = ? RETURNING kind, site, issue_id`, threadID).
-		Scan(&cleared.Kind, &cleared.Site, &cleared.IssueID)
+		Scan(&cleared.Ticket.Kind, &cleared.Ticket.Site, &cleared.Ticket.IssueID)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		err = nil
 	case err != nil:
-		return TicketRef{}, false, fmt.Errorf("%s: %w", action, err)
+		return ThreadTicketClear{}, fmt.Errorf("%s: %w", action, err)
 	default:
-		had = true
+		cleared.Had = true
 	}
+	listedAfter, err := threadListed(tx, threadID)
+	if err != nil {
+		return ThreadTicketClear{}, fmt.Errorf("%s: %w", action, err)
+	}
+	cleared.Listing = listingChange(listedBefore, listedAfter)
 	if err := tx.Commit(); err != nil {
-		return TicketRef{}, false, fmt.Errorf("%s: commit: %w", action, err)
+		return ThreadTicketClear{}, fmt.Errorf("%s: commit: %w", action, err)
 	}
-	return cleared, had, nil
+	return cleared, nil
 }
 
 // copyThreadTicketTx gives a fork the link of its source, as it stands,
