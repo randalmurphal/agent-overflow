@@ -5,8 +5,16 @@
 // second press of a pending target sends nothing. Nothing retries on its
 // own; a refusal for what a rich text edit would lose offers Save anyway,
 // the same write accepting the loss, as the person's second action. That
-// consent is for the one text refused: the editor withdraws it when the
-// person changes the text or cancels, so a revised text is checked again.
+// consent is for the one text refused: changing the text or canceling
+// withdraws it, so a revised text is checked again.
+//
+// The text a person is writing (a new comment, a comment's edit, a long
+// text field's edit, each with the text it was edited from) is held here
+// too, by ticket and target, so it outlives the editor showing it: a
+// switch to History, a dropped connection, a linked ticket opened and Back.
+// A draft goes with Cancel, an applied save of its target, or its ticket
+// leaving every pane's open ticket and Back trail (`holdTicketDrafts`):
+// Close, another board, the trail's cap.
 //
 // A write's outcome is held here under its ticket and target, not in the
 // component, so a person who closed the ticket while it ran still learns
@@ -71,6 +79,19 @@ export interface TicketWrite {
 
 const writes = new SvelteMap<string, TicketWrite>();
 
+/** Text a person is writing, and the text it was edited from (empty for
+ * a new comment). */
+export interface TicketDraft {
+  readonly ticket: string;
+  readonly text: string;
+  readonly from: string;
+}
+
+const drafts = new SvelteMap<string, TicketDraft>();
+// The tickets each pane holds open or on its Back trail, by holder.
+const draftHolders = new Map<number, ReadonlySet<string>>();
+let nextDraftHolder = 0;
+
 function writeKey(ticket: string, target: string): string {
   return `${ticket}\n${target}`;
 }
@@ -98,9 +119,51 @@ export function dismissTicketWrite(ticket: string, target: string): void {
 
 /** Withdraws a Save anyway offer: the text it was for changed or its
  * edit was canceled. Other outcomes stay, a lost answer among them. */
-export function withdrawTicketLossConsent(ticket: string, target: string): void {
-  const k = writeKey(ticket, target);
+function withdrawLossConsent(k: string): void {
   if (writes.get(k)?.saveAnyway) writes.delete(k);
+}
+
+/** The text being written to the target; reactive. */
+export function ticketDraft(ticket: string, target: string): TicketDraft | null {
+  return drafts.get(writeKey(ticket, target)) ?? null;
+}
+
+/** Opens or changes the text being written to the target, edited from
+ * `from`; a Save anyway offered for the text before goes. */
+export function setTicketDraft(ticket: string, target: string, text: string, from: string): void {
+  const k = writeKey(ticket, target);
+  withdrawLossConsent(k);
+  drafts.set(k, { ticket, text, from });
+}
+
+/** Cancel: the text goes, with a Save anyway offered for it. */
+export function dropTicketDraft(ticket: string, target: string): void {
+  const k = writeKey(ticket, target);
+  withdrawLossConsent(k);
+  drafts.delete(k);
+}
+
+/** One pane's hold on its tickets' drafts: `set` names the tickets it
+ * holds open or on its Back trail, and a draft of a ticket no pane holds
+ * goes. */
+export function holdTicketDrafts(): { set(tickets: readonly string[]): void; release(): void } {
+  const id = nextDraftHolder++;
+  draftHolders.set(id, new Set());
+  const prune = () => {
+    for (const [k, d] of drafts) {
+      if (![...draftHolders.values()].some((held) => held.has(d.ticket))) drafts.delete(k);
+    }
+  };
+  return {
+    set(tickets) {
+      draftHolders.set(id, new Set(tickets));
+      prune();
+    },
+    release() {
+      draftHolders.delete(id);
+      prune();
+    },
+  };
 }
 
 // A ticket's outcomes go with its last surface; a write still pending
@@ -139,6 +202,7 @@ async function write(
   // sees what the tracker holds before trying again.
   if (outcome.kind === 'refused' && outcome.refusal.reason === 'stale') void refreshTrackerTicket(t.key);
   const loss = outcome.kind === 'refused' && outcome.refusal.reason === 'loss' && !acceptLoss;
+  if (outcome.kind === 'applied') drafts.delete(k);
   if (!isTrackerTicketHeld(t.key)) {
     writes.delete(k);
     toastAfterClose(t, outcome);
@@ -214,4 +278,6 @@ export function fieldChoices(t: TicketWriteContext, field: string, text: string,
 
 export function resetTicketWritesForTest(): void {
   writes.clear();
+  drafts.clear();
+  draftHolders.clear();
 }

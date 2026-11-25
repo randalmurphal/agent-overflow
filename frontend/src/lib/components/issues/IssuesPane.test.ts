@@ -51,6 +51,8 @@ import { HOME_BACKEND } from '../../transport/backendKey';
 import { TransportError } from '../../transport/wsClient';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { getToasts } from '../../stores/toast.svelte';
+import { trackerTicketKey } from '../../stores/trackerTicket.svelte';
+import { ticketDraft } from '../../stores/trackerTicketWrites.svelte';
 
 // The project of the thread the pane was opened from (toolPanes owns it).
 const openedFrom = vi.hoisted(() => ({ project: null as string | null }));
@@ -1569,6 +1571,96 @@ describe('the ticket in the pane', () => {
     await fireEvent.click(within(screen).getByTestId('ticket-comments-earlier'));
     await waitFor(() => expect((within(screen).getAllByTestId('ticket-comment').find((c) => c.dataset.comment === 'old2'))?.textContent).toContain('Older 2, edited'));
     expect(page).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps unsent text and open editors across a switch to History and back', async () => {
+    install();
+    installTicket((issue) => ticketDetail(issue, { comments: 1 }));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await fireEvent.input(await within(screen).findByTestId('ticket-comment-input'), { target: { value: 'A new comment' } });
+    const comment = within(screen).getByTestId('ticket-comment');
+    await fireEvent.contextMenu(comment);
+    await fireEvent.click(await within(document.body).findByTestId('ticket-comment-menu-edit'));
+    await fireEvent.input(within(comment).getByTestId('ticket-comment-editor'), { target: { value: 'Comment 1, half edited' } });
+    await fireEvent.click(within(screen).getByRole('radio', { name: 'History' }));
+    await waitFor(() => expect(within(screen).queryByTestId('ticket-comments')).toBeNull());
+    await fireEvent.click(within(screen).getByRole('radio', { name: 'Comments' }));
+    expect(await within(screen).findByTestId('ticket-comment-input')).toHaveValue('A new comment');
+    expect(within(screen).getByTestId('ticket-comment-editor')).toHaveValue('Comment 1, half edited');
+  });
+
+  it('keeps unsent text and its edit base across a dropped connection to the ticket\'s computer', async () => {
+    install();
+    const ticket = installTicket((issue) => ticketDetail(issue, { comments: 1 }));
+    const edit = setBindingMock('EditTrackerIssue', async (): Promise<WriteView> => ({ parts: [{ step: 'edit', state: 'applied' }] }) as WriteView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const description = () => within(view.getByTestId('ticket-screen')).getAllByTestId('ticket-section').find((s) => s.dataset.field === 'description')!;
+    await fireEvent.click(within(description()).getByTestId('ticket-section-edit'));
+    await fireEvent.input(within(description()).getByTestId('ticket-section-editor'), { target: { value: 'A better description' } });
+    await fireEvent.input(within(screen).getByTestId('ticket-comment-input'), { target: { value: 'A new comment' } });
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null });
+    await waitFor(() => expect(view.queryByTestId('ticket-comment-input')).toBeNull());
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+    await waitFor(() => expect(ticket.subscribe).toHaveBeenCalledTimes(2));
+    expect(await view.findByTestId('ticket-comment-input')).toHaveValue('A new comment');
+    expect(within(description()).getByTestId('ticket-section-editor')).toHaveValue('A better description');
+    await fireEvent.click(within(description()).getByTestId('ticket-section-save'));
+    await waitFor(() => expect(edit).toHaveBeenCalledWith('c1', { issue: '1', fields: [{ field: 'description', markdown: { markdown: 'A better description', from: 'The description' } }], accept_loss: false }));
+    await waitFor(() => expect(within(description()).queryByTestId('ticket-section-editor')).toBeNull());
+  });
+
+  it('keeps a ticket\'s unsent comment while it is on the Back trail, and drops it once the ticket leaves the trail', async () => {
+    install();
+    installTicket((issue) => ticketDetail(issue, { parent: String(Number(issue) + 1) }));
+    const view = mount();
+    await openCard(view, '1');
+    await fireEvent.input(await view.findByTestId('ticket-comment-input'), { target: { value: 'Unsent on WEB-1' } });
+    await fireEvent.click(view.getByTestId('ticket-parent'));
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('2'));
+    expect(await view.findByTestId('ticket-comment-input')).toHaveValue('');
+    await fireEvent.click(view.getByTestId('ticket-back'));
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('1'));
+    expect(await view.findByTestId('ticket-comment-input')).toHaveValue('Unsent on WEB-1');
+    await fireEvent.click(view.getByTestId('ticket-close'));
+    await waitFor(() => expect(view.queryByTestId('ticket-screen')).toBeNull());
+    await openCard(view, '1');
+    expect(await view.findByTestId('ticket-comment-input')).toHaveValue('');
+    // Twenty tickets on from WEB-1, it leaves the trail, and its text goes.
+    await fireEvent.input(view.getByTestId('ticket-comment-input'), { target: { value: 'Unsent on WEB-1' } });
+    for (let i = 2; i <= 21; i += 1) {
+      await fireEvent.click(await view.findByTestId('ticket-parent'));
+      await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe(String(i)));
+    }
+    expect(ticketDraft(trackerTicketKey({ backend: HOME_BACKEND, connection: 'c1', issue: '1' }), 'new-comment')?.text).toBe('Unsent on WEB-1');
+    await fireEvent.click(await view.findByTestId('ticket-parent'));
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('22'));
+    expect(ticketDraft(trackerTicketKey({ backend: HOME_BACKEND, connection: 'c1', issue: '1' }), 'new-comment')).toBeNull();
+    // A pane that closes lets its tickets' drafts go.
+    await fireEvent.input(view.getByTestId('ticket-comment-input'), { target: { value: 'Unsent on WEB-22' } });
+    expect(ticketDraft(trackerTicketKey({ backend: HOME_BACKEND, connection: 'c1', issue: '22' }), 'new-comment')?.text).toBe('Unsent on WEB-22');
+    view.unmount();
+    expect(ticketDraft(trackerTicketKey({ backend: HOME_BACKEND, connection: 'c1', issue: '22' }), 'new-comment')).toBeNull();
+  });
+
+  it('lets the earlier comments be read again after the connection dropped while a page was being read', async () => {
+    install();
+    const ticket = installTicket((issue) => ticketDetail(issue, { comments: 3, more: 'page-2' }));
+    let answer: ((page: { comments: CommentView[]; next: string }) => void) | null = null;
+    setBindingMock('TrackerComments', () => new Promise((resolve) => { answer = resolve; }));
+    const view = mount();
+    await openCard(view, '1');
+    await fireEvent.click(await view.findByTestId('ticket-comments-earlier'));
+    await waitFor(() => expect(view.getByTestId('ticket-comments-earlier')).toBeDisabled());
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null });
+    await waitFor(() => expect(view.queryByTestId('ticket-comments-earlier')).toBeNull());
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+    await waitFor(() => expect(ticket.subscribe).toHaveBeenCalledTimes(2));
+    const control = await view.findByTestId('ticket-comments-earlier');
+    expect(control).toBeEnabled();
+    expect(control).toHaveTextContent('Show earlier comments');
+    answer!({ comments: [], next: '' });
   });
 
   it('mounts the newest five comments and the earlier ones 20 a press, reading the next page once the held ones run out', async () => {

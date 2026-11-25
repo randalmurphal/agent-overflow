@@ -6,7 +6,10 @@
   // handful. The comment box sits where the order ends and stays in view
   // while the comments are (sticky within this section). A comment's menu
   // (right-click, or a long press under compact) edits, deletes or copies
-  // it; a delete asks once in place.
+  // it; a delete asks once in place. The comment box's text and each
+  // comment's edit are the ticket's drafts (`ticketDraft`), so they come
+  // back with this section after a switch to History or a reconnect; a
+  // comment's editor is open while its draft is held.
   import Button from '../primitives/Button.svelte';
   import ContextMenu from '../primitives/ContextMenu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
@@ -21,8 +24,10 @@
     commentTarget,
     deleteTicketComment,
     editTicketComment,
+    dropTicketDraft,
+    setTicketDraft,
+    ticketDraft,
     ticketWrite,
-    withdrawTicketLossConsent,
     type TicketWriteContext,
   } from '../../stores/trackerTicketWrites.svelte';
   import { COMMENTS_FIRST, COMMENTS_STEP, commentWindow, heldComments, type CommentOrder } from '../../stores/trackerTicketModel';
@@ -56,7 +61,8 @@
     shown += COMMENTS_STEP;
   }
 
-  let draft = $state('');
+  const NEW = 'new-comment';
+  const draft = $derived(ticketDraft(ctx.key, NEW)?.text ?? '');
   let box: HTMLTextAreaElement | undefined = $state();
   const boxPending = $derived(ticketWrite(ctx.key, 'new-comment')?.pending ?? false);
 
@@ -65,11 +71,16 @@
     box?.focus();
   }
 
+  // An applied comment drops the box's draft.
   async function send(): Promise<void> {
     const text = draft.trim();
     if (!text || boxPending) return;
-    const outcome = await addTicketComment(ctx, text);
-    if (outcome?.kind === 'applied') draft = '';
+    await addTicketComment(ctx, text);
+  }
+
+  function onBoxInput(text: string): void {
+    if (text) setTicketDraft(ctx.key, NEW, text, '');
+    else dropTicketDraft(ctx.key, NEW);
   }
 
   function onBoxKeydown(event: KeyboardEvent): void {
@@ -80,41 +91,33 @@
     }
   }
 
-  // The comment being edited, with the body it was edited from.
-  let editing = $state<{ id: string; from: string } | null>(null);
-  let editDraft = $state('');
   let confirming = $state<string | null>(null);
 
-  /** Closes the comment's editor; a Save anyway it was offered goes with
-   * it. */
-  function closeEdit(): void {
-    if (editing) withdrawTicketLossConsent(ctx.key, commentTarget(editing.id));
-    editing = null;
+  /** Cancel: the comment's edit goes, with a Save anyway offered for it. */
+  function closeEdit(id: string): void {
+    dropTicketDraft(ctx.key, commentTarget(id));
   }
 
   function startEdit(c: CommentView): void {
     confirming = null;
-    closeEdit();
-    editing = { id: c.id, from: c.body };
-    editDraft = c.body;
+    if (!ticketDraft(ctx.key, commentTarget(c.id))) setTicketDraft(ctx.key, commentTarget(c.id), c.body, c.body);
   }
 
-  async function saveEdit(): Promise<void> {
-    const open = editing;
-    if (!open) return;
-    const outcome = await editTicketComment(ctx, open.id, editDraft, open.from);
-    if (outcome?.kind === 'applied' && editing?.id === open.id) editing = null;
+  // An applied edit drops the comment's draft, which closes its editor.
+  async function saveEdit(id: string): Promise<void> {
+    const open = ticketDraft(ctx.key, commentTarget(id));
+    if (open) await editTicketComment(ctx, id, open.text, open.from);
   }
 
-  function onEditKeydown(event: KeyboardEvent): void {
+  function onEditKeydown(event: KeyboardEvent, id: string): void {
     if (isImeComposingEvent(event)) return;
     if (isEnterKey(event) && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
-      if (!event.repeat) void saveEdit();
+      if (!event.repeat) void saveEdit(id);
     } else if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
-      closeEdit();
+      closeEdit(id);
     }
   }
 
@@ -152,7 +155,8 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <textarea
       bind:this={box}
-      bind:value={draft}
+      value={draft}
+      oninput={(event) => onBoxInput(event.currentTarget.value)}
       rows="3"
       class="w-full resize-y rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1.5 text-sm text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
       {placeholder}
@@ -200,6 +204,7 @@
   {#if order === 'newest'}{@render commentBox()}{:else}{@render reveal()}{/if}
   <ol class="flex flex-col gap-3" data-testid="ticket-comment-list">
     {#each view.comments as c (c.id)}
+      {@const editDraft = ticketDraft(ctx.key, commentTarget(c.id))}
       <li
         class="flex flex-col gap-1 rounded-[var(--radius-field)] border border-border-subtle px-2.5 py-2"
         data-testid="ticket-comment"
@@ -212,14 +217,15 @@
           {#if c.updated && c.updated !== c.created}<span class="shrink-0">edited</span>{/if}
           {#if c.internal}<span class="shrink-0 rounded-sm bg-warning/15 px-1 text-warning">Internal</span>{/if}
         </div>
-        {#if editing?.id === c.id}
+        {#if editDraft}
           {@const pending = ticketWrite(ctx.key, commentTarget(c.id))?.pending ?? false}
+          {@const from = editDraft.from}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="flex flex-col gap-1.5" onkeydown={onEditKeydown}>
-            <textarea bind:value={editDraft} oninput={() => withdrawTicketLossConsent(ctx.key, commentTarget(c.id))} rows="4" class="w-full resize-y rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1.5 text-sm text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" aria-label="Comment, as Markdown" data-testid="ticket-comment-editor" disabled={pending}></textarea>
+          <div class="flex flex-col gap-1.5" onkeydown={(event) => onEditKeydown(event, c.id)}>
+            <textarea value={editDraft.text} oninput={(event) => setTicketDraft(ctx.key, commentTarget(c.id), event.currentTarget.value, from)} rows="4" class="w-full resize-y rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1.5 text-sm text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" aria-label="Comment, as Markdown" data-testid="ticket-comment-editor" disabled={pending}></textarea>
             <div class="flex items-center gap-1.5">
-              <Button size="sm" variant="primary" disabled={pending} testId="ticket-comment-save" onclick={() => { void saveEdit(); }}>Save</Button>
-              <Button size="sm" variant="ghost" disabled={pending} testId="ticket-comment-cancel" onclick={closeEdit}>Cancel</Button>
+              <Button size="sm" variant="primary" disabled={pending} testId="ticket-comment-save" onclick={() => { void saveEdit(c.id); }}>Save</Button>
+              <Button size="sm" variant="ghost" disabled={pending} testId="ticket-comment-cancel" onclick={() => closeEdit(c.id)}>Cancel</Button>
             </div>
           </div>
         {:else}
@@ -234,7 +240,7 @@
             <Button size="xs" variant="ghost" onclick={() => { confirming = null; }}>Keep</Button>
           </div>
         {/if}
-        <TicketWriteNote ticketKey={ctx.key} target={commentTarget(c.id)} {fieldName} onApplied={() => { if (editing?.id === c.id) editing = null; }} />
+        <TicketWriteNote ticketKey={ctx.key} target={commentTarget(c.id)} {fieldName} />
       </li>
     {:else}
       <li class="text-sm text-fg-muted" data-testid="ticket-comments-none">No comments yet.</li>
@@ -246,7 +252,7 @@
 {#if menu}
   <ContextMenu x={menu.x} y={menu.y} ariaLabel="Comment actions" onDismiss={() => { menu = null; }}>
     <MenuItem label="Edit" disabled={menuPending} testId="ticket-comment-menu-edit" onSelect={() => fromMenu(startEdit)} />
-    <MenuItem label="Delete" variant="danger" disabled={menuPending} testId="ticket-comment-menu-delete" onSelect={() => fromMenu((c) => { closeEdit(); confirming = c.id; })} />
+    <MenuItem label="Delete" variant="danger" disabled={menuPending} testId="ticket-comment-menu-delete" onSelect={() => fromMenu((c) => { confirming = c.id; })} />
     <MenuDivider />
     <MenuItem label="Copy text" testId="ticket-comment-menu-copy" onSelect={() => fromMenu((c) => { void copy(c); })} />
   </ContextMenu>

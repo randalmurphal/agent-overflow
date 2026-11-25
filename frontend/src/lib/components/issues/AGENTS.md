@@ -46,7 +46,11 @@ board methods, events and the patch read in
 - `stores/trackerTicketWrites.svelte.ts` makes every write and picker read
   of the ticket screen and holds each write's outcome by ticket and target:
   one pending write per target, Save anyway as the person's second press,
-  and a toast for a write that settles after its ticket closed.
+  and a toast for a write that settles after its ticket closed. It also
+  holds the text being written to each target with its base (the drafts),
+  which the editors show, so a draft outlives its editor; a pane's
+  selection holds the drafts of its open ticket and Back trail
+  (`holdTicketDrafts`).
 - `stores/trackerTicketModel.ts` is the pure part: what a write's answer
   means for the person (`writeOutcome`), the comment and history windows,
   the rail's order and the board row a ticket shows its points from.

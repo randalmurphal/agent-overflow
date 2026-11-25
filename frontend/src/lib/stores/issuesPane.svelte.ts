@@ -23,7 +23,8 @@ import {
   type TrackerBoardAttachment,
   type TrackerBoardRef,
 } from './trackerBoard.svelte';
-import { attachTrackerTicket, type TrackerTicketAttachment, type TrackerTicketRef } from './trackerTicket.svelte';
+import { attachTrackerTicket, trackerTicketKey, type TrackerTicketAttachment, type TrackerTicketRef } from './trackerTicket.svelte';
+import { holdTicketDrafts } from './trackerTicketWrites.svelte';
 import type { CommentOrder } from './trackerTicketModel';
 import {
   acquireTrackerBoardChoices,
@@ -358,6 +359,8 @@ function boardComputer(backend: string): 'waiting' | 'gone' | 'ready' {
  */
 export function createBoardSelection(opts: BoardSelectionOptions): BoardSelection {
   const releaseChoices = acquireTrackerBoardChoices();
+  // The drafts of the ticket open and those on the Back trail live on.
+  const drafts = holdTicketDrafts();
   let board = $state.raw<TrackerBoardRef | null>(pickedBoard());
   let attachment = $state.raw<TrackerBoardAttachment | null>(null);
   let choosing = $state(board === null);
@@ -433,6 +436,11 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
       const held = ticketAttachment;
       const shown = opts.shown();
       if (held) untrack(() => held.setShown(shown));
+    });
+
+    $effect(() => {
+      const keys = [...trail, ...(ticket ? [ticket] : [])].map((t) => trackerTicketKey(t.ref));
+      untrack(() => drafts.set(keys));
     });
 
     $effect(() => {
@@ -525,6 +533,7 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
     destroy() {
       stop();
       releaseChoices();
+      drafts.release();
     },
   };
 }

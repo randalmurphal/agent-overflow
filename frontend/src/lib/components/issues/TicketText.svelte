@@ -5,9 +5,10 @@
   // header, so a link in the text still opens on a click. The editor is
   // the Markdown as the ticket holds it; Save sends it with the text it
   // was edited from, so the tracker refuses an edit that would lose a
-  // change made since. Ctrl or Cmd+Enter saves and Escape cancels. A
-  // refusal keeps the editor and its text; changing the text or canceling
-  // withdraws a Save anyway offered for it.
+  // change made since. Ctrl or Cmd+Enter saves and Escape cancels. The
+  // text and its base are the ticket's draft (`ticketDraft`), so the
+  // editor is open while one is held and comes back with it after a
+  // remount; a refusal keeps it.
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Button from '../primitives/Button.svelte';
@@ -16,7 +17,7 @@
   import TicketWriteNote from './TicketWriteNote.svelte';
   import { isEnterKey } from '../../utils/localEnter';
   import { isImeComposingEvent } from '../../utils/imeComposition';
-  import { ticketWrite, withdrawTicketLossConsent } from '../../stores/trackerTicketWrites.svelte';
+  import { dropTicketDraft, setTicketDraft, ticketDraft, ticketWrite } from '../../stores/trackerTicketWrites.svelte';
   import type { WriteOutcome } from '../../stores/trackerTicketModel';
 
   interface Props {
@@ -37,29 +38,25 @@
   let { field, title, markdown, editable, open, onFold, onSave, ticketKey, target, fieldName }: Props = $props();
 
   const pending = $derived(ticketWrite(ticketKey, target)?.pending ?? false);
-  let editing = $state(false);
-  let draft = $state('');
-  let from = '';
+  const draft = $derived(ticketDraft(ticketKey, target));
   let textarea: HTMLTextAreaElement | undefined = $state();
 
   /** Opens the editor, as the header's menu row does. */
   export function edit(): void {
-    if (!editable || editing) return;
+    if (!editable || draft) return;
     if (open === false) onFold?.(true);
-    from = markdown;
-    draft = markdown;
-    editing = true;
+    setTicketDraft(ticketKey, target, markdown, markdown);
     queueMicrotask(() => textarea?.focus({ preventScroll: true }));
   }
 
   function cancel(): void {
-    editing = false;
-    withdrawTicketLossConsent(ticketKey, target);
+    dropTicketDraft(ticketKey, target);
   }
 
+  // An applied save drops the draft, which closes the editor.
   async function save(): Promise<void> {
-    if (pending) return;
-    if ((await onSave(draft, from))?.kind === 'applied') editing = false;
+    if (pending || !draft) return;
+    await onSave(draft.text, draft.from);
   }
 
   function onKeydown(event: KeyboardEvent): void {
@@ -92,18 +89,18 @@
       <span class="truncate px-1">{title}</span>
     {/if}
     <span class="flex-1"></span>
-    {#if editable && !editing && open !== false}
+    {#if editable && !draft && open !== false}
       <button type="button" class="shrink-0 rounded-[var(--radius-control)] px-1.5 text-xs text-fg-muted hover:bg-surface-1 hover:text-fg compact:min-h-9 compact:select-none" data-testid="ticket-section-edit" onclick={edit}>Edit</button>
     {/if}
   </header>
   {#if open !== false}
-    {#if editing}
+    {#if draft}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="flex flex-col gap-1.5" onkeydown={onKeydown}>
         <textarea
           bind:this={textarea}
-          bind:value={draft}
-          oninput={() => withdrawTicketLossConsent(ticketKey, target)}
+          value={draft.text}
+          oninput={(event) => setTicketDraft(ticketKey, target, event.currentTarget.value, draft.from)}
           rows="8"
           class="min-h-24 w-full resize-y rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1.5 font-mono text-[0.8125rem] text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           aria-label="{title}, as Markdown"
@@ -122,6 +119,6 @@
     {:else}
       <p class="px-1 text-sm text-fg-muted" data-testid="ticket-section-empty">Nothing written yet.</p>
     {/if}
-    <TicketWriteNote {ticketKey} {target} {fieldName} onApplied={() => { editing = false; }} />
+    <TicketWriteNote {ticketKey} {target} {fieldName} />
   {/if}
 </section>

@@ -159,9 +159,10 @@ type SourceArgs = Parameters<Parameters<typeof createEntityStore<TrackerTicketSt
 
 async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<() => Promise<void>> {
   const ref = getCtx();
+  const held = earlierByKey.get(key);
   const live: Live = {
     key, ref, id: '', seq: 0, joining: [], apply, aborted: false,
-    state: { ...FIRST_STATE, earlier: { ...NO_EARLIER, ...earlierByKey.get(key) } },
+    state: { ...FIRST_STATE, earlier: { ...NO_EARLIER, pages: held?.pages ?? [], next: held?.next ?? null } },
     dirty: false, retryHeld: false, running: null, voted: visibleOf(key),
   };
   lives.set(key, live);
