@@ -6,8 +6,9 @@
   // under the header say what the board's computer last told about it: a
   // failure with when it last read the board, what a Refresh answered, a
   // board that ended. The board's subscription is held while the pane
-  // shows it, and voted hidden while the window is hidden or a compact
-  // screen shows something else.
+  // shows it, and voted hidden while the window is hidden or the pane is
+  // not on screen (`isPaneOnScreen`: another pane promoted, or a compact
+  // screen showing something else).
   import { onDestroy, untrack } from 'svelte';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Search from '@lucide/svelte/icons/search';
@@ -24,7 +25,8 @@
   import BoardScreen from './BoardScreen.svelte';
   import DisplayMenu from './DisplayMenu.svelte';
   import { captureError, type CapturedError } from '../../stores/errorReports.svelte';
-  import { compactShownPaneId, getCompactScreen, isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { isPaneOnScreen } from '../../stores/paneLayout.svelte';
   import { isSettingsOpen, openTrackerBoardsSettings } from '../../stores/settingsOverlay.svelte';
   import { openPaneFind, registerPaneFindProvider } from '../../stores/paneFind.svelte';
   import { getProject, getProjects, projectOrderPosition } from '../../stores/projects.svelte';
@@ -116,7 +118,7 @@
     return () => held.release();
   });
 
-  const shown = $derived(!compact || (getCompactScreen() === 'thread' && compactShownPaneId() === paneId));
+  const shown = $derived(isPaneOnScreen(paneId));
   $effect(() => {
     const key = attachment?.key;
     if (key) setTrackerBoardShown(key, shown);

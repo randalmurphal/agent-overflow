@@ -20,6 +20,7 @@ import {
   requestedTrackerBoardsProject,
 } from '../../stores/settingsOverlay.svelte';
 import { addProjectLocal } from '../../stores/projects.svelte';
+import { demotePane, promotePane, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { noteProject } from '../../transport/entityIndex';
 import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { HOME_BACKEND } from '../../transport/backendKey';
@@ -348,5 +349,21 @@ describe('the Issues pane', () => {
     showCompactThread();
     await waitFor(() => expect(mocks.visible).toHaveBeenLastCalledWith('sub-1-1', true));
     expect(getBindingMock('SetTrackerSubscriptionVisible')).toHaveBeenCalledTimes(2);
+  });
+
+  it('votes hidden while another pane is promoted over the strip', async () => {
+    setCompactLayoutForTest(false);
+    setPaneLayoutItemsForTest([
+      { id: PANE, paneId: PANE, kind: 'issues', widthPx: 600 },
+      { id: 'thread-1', paneId: 'thread-1', kind: 'thread', widthPx: 600 },
+    ]);
+    const mocks = install();
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    expect(mocks.visible).not.toHaveBeenCalled();
+    expect(promotePane('thread-1')).toBe(true);
+    await waitFor(() => expect(mocks.visible).toHaveBeenCalledWith('sub-1-1', false));
+    demotePane();
+    await waitFor(() => expect(mocks.visible).toHaveBeenLastCalledWith('sub-1-1', true));
   });
 });
