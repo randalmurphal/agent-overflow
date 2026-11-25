@@ -311,7 +311,11 @@ pair. A per-level statement grows about 25 cursors a level, and SQLite 3.54
 refuses a CTE reference it expands once a statement holds 1000 cursors, so a
 per-level selection runs as its own statement and never inside a CTE
 (`renderTimelineArms`, `idSelection.perLevel`;
-`TestForkReadsKeepTheirShapeAtEveryDepth`). Inherited rows read `rev = -1`. A fork reads an ancestor's turn row
+`TestForkReadsKeepTheirShapeAtEveryDepth`). The MIN and MAX item index of a
+turn, which every append and head insert reads, is one text for every thread
+and depth: the thread's own arms, and the inherited arms evaluated once per
+lineage row on that row's depth, so each arm reads one index entry
+(`turnItemIndexSQL`). Inherited rows read `rev = -1`. A fork reads an ancestor's turn row
 below that level's cut turn where neither the fork nor a nearer level whose
 cut turn is past the turn holds a row of that turn (`forkTurnVisibleSQL`): a
 nearer level's rows of a turn at or past its cut are not the fork's history.

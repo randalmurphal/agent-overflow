@@ -1052,9 +1052,10 @@ func TestTimelineItemsViewJoinPushesDown(t *testing.T) {
 }
 
 // A turn's item index bound is taken per arm: every arm's bound, and so
-// the compound's, agrees with the view, and each local arm, one per lineage
-// level, stops at the first row of its turn index instead of reading the
-// turn.
+// the compound's, agrees with the view, and each local arm stops at the
+// first row of its turn index instead of reading the turn: the thread's
+// own once, and the inherited one once per lineage level, which it finds by
+// the lineage's primary key.
 func TestTurnItemIndexQueryTakesEachArmsBound(t *testing.T) {
 	s := newTestStore(t)
 	seedKeyedLookupThread(t, s)
@@ -1064,46 +1065,44 @@ func TestTurnItemIndexQueryTakesEachArmsBound(t *testing.T) {
 	if _, err := appendCarded(s, Item{ID: "fork-appended", ThreadID: keyedForkID, TurnIndex: 4, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "late"}); err != nil {
 		t.Fatal(err)
 	}
+	aggregates := []struct {
+		name, query string
+	}{{"MIN", minTurnItemIndexSQL}, {"MAX", maxTurnItemIndexSQL}}
 	for _, threadID := range []string{keyedThreadID, keyedForkID} {
 		for turn := range 6 {
-			for _, aggregate := range []string{"MIN", "MAX"} {
-				query, args, err := turnItemIndexQuery(s.db, threadID, turn, aggregate)
+			for _, aggregate := range aggregates {
+				got, err := turnItemIndexBound(s.db, aggregate.query, threadID, turn)
 				if err != nil {
 					t.Fatal(err)
 				}
-				var got, want sql.NullInt64
-				if err := s.db.QueryRow(query, args...).Scan(&got); err != nil {
-					t.Fatal(err)
-				}
-				if err := s.db.QueryRow(`SELECT `+aggregate+`(item_index) FROM timeline_items WHERE thread_id = ? AND turn_index = ?`, threadID, turn).Scan(&want); err != nil {
+				var want sql.NullInt64
+				if err := s.db.QueryRow(`SELECT `+aggregate.name+`(item_index) FROM timeline_items WHERE thread_id = ? AND turn_index = ?`, threadID, turn).Scan(&want); err != nil {
 					t.Fatal(err)
 				}
 				if got != want {
-					t.Errorf("%s turn %d %s = %v, view says %v", threadID, turn, aggregate, got, want)
+					t.Errorf("%s turn %d %s = %v, view says %v", threadID, turn, aggregate.name, got, want)
 				}
 			}
 		}
 	}
-	if _, _, err := turnItemIndexQuery(s.db, keyedThreadID, 4, "COUNT"); err == nil {
-		t.Error("turnItemIndexQuery rendered COUNT")
-	}
 
-	for _, threadID := range []string{keyedThreadID, keyedForkID} {
-		for _, aggregate := range []string{"MIN", "MAX"} {
-			query, args, err := turnItemIndexQuery(s.db, threadID, 4, aggregate)
-			if err != nil {
-				t.Fatal(err)
+	for _, aggregate := range aggregates {
+		// The thread's own local arm and the inherited local arm each step
+		// their aggregate once and leave the loop. An imported arm reads its
+		// turn across chunks, so its bound reads every row.
+		args := []any{keyedForkID, 4}
+		if got := aggregateEarlyOuts(t, s, aggregate.name, aggregate.query, args); got != 2 {
+			t.Errorf("%s: %d arms stop at their first row, want 2:\n%s", aggregate.name, got, aggregate.query)
+		}
+		plan := explainPlan(t, s, aggregate.query, args...)
+		levels := 0
+		for _, r := range plan {
+			if r.detail == "SEARCH l USING PRIMARY KEY (thread_id=? AND depth=?)" {
+				levels++
 			}
-			// The thread's own local arm, and on the fork the level's too,
-			// steps its aggregate once and leaves the loop. An imported arm
-			// reads its turn across chunks, so its bound reads every row.
-			want := 1
-			if threadID == keyedForkID {
-				want = 2
-			}
-			if got := aggregateEarlyOuts(t, s, aggregate, query, args); got != want {
-				t.Errorf("%s %s: %d arms stop at their first row, want %d:\n%s", threadID, aggregate, got, want, query)
-			}
+		}
+		if levels != 2 {
+			t.Errorf("%s: %d inherited arms read one lineage level, want 2\n%s", aggregate.name, levels, planText(plan))
 		}
 	}
 }

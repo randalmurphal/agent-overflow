@@ -1035,13 +1035,9 @@ func (s *Store) HasMatchingSystemItem(threadID string, turnIndex int, kind, pare
 // boundary: every row at or below this index existed before the echo, so
 // it precedes the queued message in the provider transcript.
 func (s *Store) MaxItemIndexForTurn(threadID string, turnIndex int) (int, bool, error) {
-	var maxIndex sql.NullInt64
-	query, args, err := turnItemIndexQuery(s.reader(), threadID, turnIndex, "MAX")
+	maxIndex, err := turnItemIndexBound(s.reader(), maxTurnItemIndexSQL, threadID, turnIndex)
 	if err != nil {
-		return 0, false, err
-	}
-	if err := s.reader().QueryRow(query, args...).Scan(&maxIndex); err != nil {
-		return 0, false, fmt.Errorf("store: max item index for %s/%d: %w", threadID, turnIndex, err)
+		return 0, false, fmt.Errorf("store: max item index: %w", err)
 	}
 	if !maxIndex.Valid {
 		return 0, false, nil

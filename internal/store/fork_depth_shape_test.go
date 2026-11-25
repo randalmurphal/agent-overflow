@@ -18,11 +18,19 @@ import (
 // referencesCTE matches a statement that names a common table expression.
 var referencesCTE = regexp.MustCompile(`\bWITH\b`)
 
+// perLevelArms matches a statement rendered with a pair of arms per
+// lineage level, each naming its level's depth (renderTimelineArms).
+var perLevelArms = regexp.MustCompile(`\bl\.depth = [0-9]`)
+
+// itemIndexBound matches a statement that takes a turn's item index bound.
+var itemIndexBound = regexp.MustCompile(`\b(MIN|MAX)\(items\.item_index\)`)
+
 // A fork's reads and writes open at every lineage depth up to the cap.
 // SQLite 3.54 refuses a CTE reference that it expands once the statement
-// holds 1000 cursors (select.c withExpand), so a statement that references
-// a CTE keeps one text at every depth; only an ordered read's pair of arms
-// per level grows, and it holds no CTE (renderTimelineArms). The fixture is
+// holds 1000 cursors (select.c withExpand), so every statement keeps one
+// text at every depth except an ordered read's pair of arms per level,
+// which grows and holds no CTE (renderTimelineArms). The append's item
+// index bound is one text at every depth (turnItemIndexSQL). The fixture is
 // imported history with an agent whose children span two turns, under a
 // chain of forks whose first cut excludes a child the source's card counts,
 // so the reads walk the agent instead of reading its stamp.
@@ -128,22 +136,32 @@ func TestForkReadsKeepTheirShapeAtEveryDepth(t *testing.T) {
 	var grown []string
 	shared := 0
 	for query := range ran[deep] {
-		if !referencesCTE.MatchString(query) {
-			continue
-		}
-		if ran[shallow][query] {
+		switch {
+		case itemIndexBound.MatchString(query) && query != minTurnItemIndexSQL && query != maxTurnItemIndexSQL:
+			t.Errorf("an item index bound ran at depth %d through a text other than turnItemIndexSQL's:\n%s",
+				forkLineageMaxDepth, strings.TrimSpace(query))
+		case perLevelArms.MatchString(query) && referencesCTE.MatchString(query):
+			t.Errorf("a statement with a pair of arms per level references a CTE at depth %d (%s cursors):\n%s",
+				forkLineageMaxDepth, cursorCountForTest(t, s, query), strings.TrimSpace(query))
+		case perLevelArms.MatchString(query):
+		case ran[shallow][query]:
 			shared++
-			continue
+		default:
+			grown = append(grown, query)
 		}
-		grown = append(grown, query)
 	}
 	sort.Strings(grown)
 	for _, query := range grown {
-		t.Errorf("a statement that references a CTE ran at depth %d with a text that never ran at depth 1 (%s cursors):\n%s",
+		t.Errorf("a statement ran at depth %d with a text that never ran at depth 1 (%s cursors):\n%s",
 			forkLineageMaxDepth, cursorCountForTest(t, s, query), strings.TrimSpace(query))
 	}
 	if shared < 10 {
-		t.Errorf("%d statements that reference a CTE ran at both depths; the check proved nothing", shared)
+		t.Errorf("%d statements ran at both depths; the check proved nothing", shared)
+	}
+	for _, threadID := range []string{shallow, deep} {
+		if !ran[threadID][maxTurnItemIndexSQL] {
+			t.Errorf("no item index bound ran at %s; the check proved nothing", threadID)
+		}
 	}
 }
 

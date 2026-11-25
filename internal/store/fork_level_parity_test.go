@@ -94,6 +94,14 @@ func forkLevelParityResults(t *testing.T) map[string]string {
 			index, found, err := s.MaxItemIndexForTurn(th, turn)
 			record(at+"MaxItemIndexForTurn", []any{found, index}, err)
 		}
+		// Every turn the chain holds and five it does not: the bounds a new
+		// row at the turn's head or tail is placed from.
+		for turn := range 9 {
+			for _, bound := range []struct{ name, query string }{{"MIN", minTurnItemIndexSQL}, {"MAX", maxTurnItemIndexSQL}} {
+				index, err := turnItemIndexBound(s.reader(), bound.query, th, turn)
+				record(fmt.Sprintf("%s/turn %d/%s item index", th, turn, bound.name), []any{index.Valid, index.Int64}, err)
+			}
+		}
 		for _, id := range ids {
 			item, found, err := s.GetThreadItem(th, id)
 			record(th+"/GetThreadItem "+id, []any{found, item}, err)

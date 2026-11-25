@@ -118,8 +118,8 @@ type timelineSelection struct {
 	FilterCut bool
 
 	// Turn, when non-empty, pins the selection to one turn, or with
-	// FromTurn to that turn and every later one. It is an SQL
-	// expression, boundInt or an outer query's column, and TurnArgs are its
+	// FromTurn to that turn and every later one. It is an SQL expression,
+	// boundInt, a numbered intParam or an outer query's column, and TurnArgs are its
 	// bind values, emitted at each place the expression is rendered. The
 	// imported arms read only the chunk references whose turn range can
 	// hold such a turn (importedTurnRange), so a turn past
@@ -136,10 +136,11 @@ type timelineSelection struct {
 	TurnArgs []any
 	FromTurn bool
 
-	// Thread, when non-empty, is an outer query's column that names the
-	// thread, for a selection correlated per outer row. It replaces the
-	// bound thread id; such a selection renders through
-	// correlatedTimelineArms.
+	// Thread, when non-empty, is the SQL expression that names the thread
+	// in place of a bound thread id: an outer query's column, for a
+	// selection correlated per outer row, which renders through
+	// correlatedTimelineArms, or a numbered parameter of a text that is
+	// the same for every thread (turnItemIndexSQL).
 	Thread string
 
 	// Where is the arm predicate, qualified with the `items.` alias and
@@ -589,25 +590,34 @@ func materializedIDSelection(q sqlQueryer, threadID string, sel timelineSelectio
 	return idSelection{sql: "WITH keyed AS MATERIALIZED (\n" + sql + "\n) SELECT id FROM keyed ORDER BY " + orderBy + " LIMIT " + strconv.Itoa(limit), args: args}, nil
 }
 
-// turnItemIndexQuery renders the MIN or MAX item_index of one turn's
-// logical rows; NULL when the turn has none. Each arm takes its own bound
-// and the compound the bound of those, so the local arm reads one entry
-// of its turn index instead of every row of the turn. An arm's bound is one
-// index entry only while the arm reads one lineage level, so the compound
-// is ordered, which renders a pair of arms per level; it orders at most one
-// row per arm.
-func turnItemIndexQuery(q sqlQueryer, threadID string, turnIndex int, aggregate string) (string, []any, error) {
-	if aggregate != "MIN" && aggregate != "MAX" {
-		return "", nil, fmt.Errorf("store: turn item index aggregate %q for %s is not MIN or MAX", aggregate, threadID)
+// The MIN and MAX item_index of one turn's logical rows, NULL when the turn
+// has none, bound to the thread (?1) and the turn (?2). Read them with
+// turnItemIndexBound.
+var (
+	minTurnItemIndexSQL = turnItemIndexSQL("MIN")
+	maxTurnItemIndexSQL = turnItemIndexSQL("MAX")
+)
+
+// turnItemIndexSQL renders aggregate, MIN or MAX, of one turn's item_index
+// as one text for every thread and depth. Each arm takes its own bound, so
+// a local arm reads one entry of its turn index instead of every row of the
+// turn: the thread's own arms once, and the inherited arms once per lineage
+// level, correlated on the level so each reads one ancestor. A turn past a
+// level's cut reads nothing there.
+func turnItemIndexSQL(aggregate string) string {
+	sel := timelineSelection{
+		Columns: func(string, string) string { return aggregate + "(items.item_index) AS item_index" },
+		Thread:  textParam("?1"),
+		Turn:    intParam("?2"),
 	}
-	sql, args, err := timelineArms(q, threadID, timelineSelection{
-		Columns:  func(string, string) string { return aggregate + "(items.item_index) AS item_index" },
-		Turn:     boundInt,
-		TurnArgs: []any{turnIndex},
-		OrderBy:  "item_index",
-	})
-	if err != nil {
-		return "", nil, err
-	}
-	return "SELECT " + aggregate + "(item_index) FROM (\n" + sql + "\n)", args, nil
+	own, _ := ownTimelineArms("", sel)
+	inherited, _ := inheritedTimelineArms("", "\n		   AND l.depth = lv.depth", sel)
+	return "SELECT " + aggregate + "(item_index) FROM (\n" + own + `
+		UNION ALL
+		SELECT (SELECT ` + aggregate + `(item_index) FROM (
+` + inherited + `
+		)) AS item_index
+		  FROM thread_fork_lineage lv
+		 WHERE lv.thread_id = ` + sel.Thread + `
+)`
 }

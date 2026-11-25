@@ -119,14 +119,14 @@ func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boun
 		}
 	}
 	if park {
-		var minimum int
-		query, args, err := turnItemIndexQuery(tx, threadID, turnIndex, "MIN")
+		bound, err := turnItemIndexBound(tx, minTurnItemIndexSQL, threadID, turnIndex)
 		if err != nil {
 			return nil, err
 		}
-		if err := tx.QueryRow(query, args...).Scan(&minimum); err != nil {
-			return nil, err
+		if !bound.Valid {
+			return nil, fmt.Errorf("store: place user rows in %s turn %d: the turn holds none of the rows to move", threadID, turnIndex)
 		}
+		minimum := int(bound.Int64)
 		for i, item := range group {
 			if !existing[i] {
 				continue
