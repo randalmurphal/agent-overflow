@@ -182,7 +182,15 @@ func listBoards(tb testing.TB, st *store.Store, id string, boards ...tracker.Boa
 	for i, b := range boards {
 		list[i] = store.ProjectTrackerBoard{ConnectionID: id, BoardID: string(b)}
 	}
-	if _, _, err := st.ReplaceProjectTrackerBoards(project.ID, list); err != nil {
+	current, err := st.ListProjectTrackerBoards(project.ID)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	held := make([]store.HeldTrackerBoard, len(current))
+	for i, b := range current {
+		held[i] = store.HeldTrackerBoard{ConnectionID: b.ConnectionID, BoardID: b.BoardID, OpensFirst: b.OpensFirst}
+	}
+	if _, _, err := st.ReplaceProjectTrackerBoards(project.ID, held, list); err != nil {
 		tb.Fatalf("list boards %v: %v", boards, err)
 	}
 }

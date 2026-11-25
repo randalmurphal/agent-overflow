@@ -23,7 +23,7 @@ interface WriteView { parts: { step: string; state: string; refusal?: { reason: 
 const jwt = /eyJ[\w-]+\.eyJ[\w-]+\./;
 
 test('planning poker reaches its client: read, vote, reveal and clear', async ({ harness }) => {
-  const board = await connectFakeJiraBoard(harness, 'tracker-poker-wire', { poker: {} });
+  const board = await connectFakeJiraBoard(harness, 'tracker-poker-wire', { projects: [], boards: [], poker: {} });
   const poker = () => harness.rpc<PokerView>('TrackerPoker', sub.id);
 
   expect(await harness.rpc('TrackerPokerSupport', board.connectionId)).toEqual({ available: true });

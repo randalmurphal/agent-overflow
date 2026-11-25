@@ -70,8 +70,12 @@ archived project, workflow runs (finished, gated, questioned, cancelled),
 review drafts in every side, scope and status (one claimed by the message
 that sent it, some owned by a pull request with no thread), agent
 `thread_send` and `thread_remind` requests (one wake carrying two answers),
-and the open pull request a worktree thread tracks
-(`upgrade-corpus-topup-records.ts`). Those rows are written by the candidate's own code
+the open pull request a worktree thread tracks
+(`upgrade-corpus-topup-records.ts`), and tracker connections to the fake
+trackers (a checked Jira connection with its Tempo, a Linear one turned
+off) with two boards listed on the version's project, and the scrum
+board read into the mirror through a board subscription and a refresh,
+which returns once its read ran. Those rows are written by the candidate's own code
 paths at its own schema, which is what a corpus handed to the next release
 needs: rows of every feature that existed when they were written. Because
 they are written after the candidate's migrations ran, a top-up step proves

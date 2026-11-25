@@ -15,11 +15,30 @@ import (
 
 // ErrInvalid matches the error of an input this package refuses before
 // it reaches the store: a site, account, parent or label a connection of
-// its kind cannot have.
+// its kind cannot have. Each such error is an *InvalidError.
 var ErrInvalid = errors.New("trackerapp: invalid tracker connection")
 
+// InvalidError is an input this package refuses before it reaches the
+// store. Reason says what is wrong and what it must be, a sentence a
+// person can act on; it matches ErrInvalid.
+type InvalidError struct {
+	Reason string
+}
+
+func (e *InvalidError) Error() string { return ErrInvalid.Error() + ": " + e.Reason }
+
+// Is matches ErrInvalid.
+func (e *InvalidError) Is(target error) bool { return target == ErrInvalid }
+
+// invalid is an *InvalidError with its reason formatted from format and
+// args.
+func invalid(format string, args ...any) error {
+	return &InvalidError{Reason: fmt.Sprintf(format, args...)}
+}
+
 // NewConnection is what Add needs. Site is the Jira site (with or without
-// https:// and a trailing slash), one of the tempo client's base URLs, or
+// https:// and a trailing slash), one of the tempo client's base URLs
+// (none for tempo.DefaultBaseURL), or
 // the Linear workspace's URL key (bare or as a linear.app address).
 // Account is the Jira account's email and empty for the others; ParentID
 // names the Jira connection a Tempo connection belongs to.
@@ -75,18 +94,18 @@ func normalize(c NewConnection) (store.NewTrackerConnection, error) {
 	case store.TrackerKindLinear:
 		out.Site, err = linearSite(c.Site)
 	default:
-		return store.NewTrackerConnection{}, fmt.Errorf("%w: unknown kind %q; use jira, tempo or linear", ErrInvalid, c.Kind)
+		return store.NewTrackerConnection{}, invalid("unknown kind %q; use jira, tempo or linear", c.Kind)
 	}
 	if err != nil {
 		return store.NewTrackerConnection{}, err
 	}
 	switch {
 	case c.Kind != store.TrackerKindJira && account != "":
-		return store.NewTrackerConnection{}, fmt.Errorf("%w: only a Jira connection names an account", ErrInvalid)
+		return store.NewTrackerConnection{}, invalid("only a Jira connection names an account")
 	case c.Kind == store.TrackerKindTempo && out.ParentID == "":
-		return store.NewTrackerConnection{}, fmt.Errorf("%w: a Tempo connection names the Jira connection it belongs to", ErrInvalid)
+		return store.NewTrackerConnection{}, invalid("a Tempo connection names the Jira connection it belongs to")
 	case c.Kind != store.TrackerKindTempo && out.ParentID != "":
-		return store.NewTrackerConnection{}, fmt.Errorf("%w: only a Tempo connection belongs to another connection", ErrInvalid)
+		return store.NewTrackerConnection{}, invalid("only a Tempo connection belongs to another connection")
 	}
 	return out, nil
 }
@@ -97,11 +116,11 @@ func normalizeLabel(label string) (string, error) {
 	label = strings.TrimSpace(label)
 	switch {
 	case !utf8.ValidString(label):
-		return "", fmt.Errorf("%w: the label is not valid text", ErrInvalid)
+		return "", invalid("the label is not valid text")
 	case utf8.RuneCountInString(label) > maxLabelRunes:
-		return "", fmt.Errorf("%w: the label is longer than %d characters", ErrInvalid, maxLabelRunes)
+		return "", invalid("the label is longer than %d characters", maxLabelRunes)
 	case strings.ContainsFunc(label, func(r rune) bool { return r < 0x20 || r == 0x7f }):
-		return "", fmt.Errorf("%w: the label holds a control character", ErrInvalid)
+		return "", invalid("the label holds a control character")
 	}
 	return label, nil
 }
@@ -116,7 +135,7 @@ func jiraSite(site string) (string, error) {
 	}
 	u, err := url.Parse(site)
 	refused := func(why string) error {
-		return fmt.Errorf("%w: the Jira site must be an address such as https://example.atlassian.net: %s", ErrInvalid, why)
+		return invalid("the Jira site must be an address such as https://example.atlassian.net: %s", why)
 	}
 	switch {
 	case err != nil:
@@ -144,21 +163,25 @@ func jiraAccount(account string) (string, error) {
 	parsed, err := mail.ParseAddress(account)
 	if err != nil || parsed.Name != "" || parsed.Address != account ||
 		!strings.Contains(account[strings.LastIndex(account, "@")+1:], ".") {
-		return "", fmt.Errorf("%w: the Jira account must be an email address such as user1@example.com", ErrInvalid)
+		return "", invalid("the Jira account must be an email address such as user1@example.com")
 	}
 	return account, nil
 }
 
 // tempoSite is one of the tempo client's base URLs, compared without
-// case or a trailing slash.
+// case or a trailing slash; none given is tempo.DefaultBaseURL, which
+// serves every region.
 func tempoSite(site string) (string, error) {
 	site = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(site)), "/")
+	if site == "" {
+		return tempo.DefaultBaseURL, nil
+	}
 	for _, known := range tempoSites {
 		if site == known {
 			return known, nil
 		}
 	}
-	return "", fmt.Errorf("%w: the Tempo site must be one of %s", ErrInvalid, strings.Join(tempoSites, ", "))
+	return "", invalid("the Tempo site must be one of %s", strings.Join(tempoSites, ", "))
 }
 
 // linearSite is a workspace URL key, lowercased, given bare or as a
@@ -170,7 +193,7 @@ func linearSite(site string) (string, error) {
 		key, _, _ = strings.Cut(rest, "/")
 	}
 	if !isLinearURLKey(key) {
-		return "", fmt.Errorf("%w: the Linear workspace must be its URL key, such as example, or an address such as https://linear.app/example", ErrInvalid)
+		return "", invalid("the Linear workspace must be its URL key, such as example, or an address such as https://linear.app/example")
 	}
 	return key, nil
 }
@@ -219,5 +242,5 @@ func tokenPage(kind, parentSite string) (string, error) {
 	case store.TrackerKindLinear:
 		return linearTokenPage, nil
 	}
-	return "", fmt.Errorf("%w: unknown kind %q", ErrInvalid, kind)
+	return "", invalid("unknown kind %q", kind)
 }

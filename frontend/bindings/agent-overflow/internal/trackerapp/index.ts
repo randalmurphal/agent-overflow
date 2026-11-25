@@ -3,8 +3,10 @@
 
 export {
     AttachmentView,
+    BoardChoice,
     BoardInfoView,
     BoardPatch,
+    BoardRef,
     BoardSubscription,
     BoardTotals,
     BoardView,

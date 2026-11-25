@@ -2,8 +2,8 @@ import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import { expect, type Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
-import type { SeedResult } from './fixtures.js';
 import { completeClaudeSignIn, completeCodexSignIn, seedNativeClaudeLogin } from './provider-account-helpers.js';
+import { connectFakeJiraBoard, type ExtraJira } from './tracker-helpers.js';
 
 export interface LayoutFault {
   section: string;
@@ -15,7 +15,8 @@ export interface LayoutFault {
     | 'control-wraps'
     | 'control-outside'
     | 'input-crushed'
-    | 'command-wraps';
+    | 'command-wraps'
+    | 'picker-beside-label';
   text: string;
 }
 
@@ -203,7 +204,13 @@ export async function settingsLayoutFaults(
   compact: boolean,
   viewports?: Array<{ width: number; height: number }>,
 ): Promise<LayoutFault[]> {
-  await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name: 'settings-layout', repo: {} }] });
+  // The project the pages show, listing a verified Jira connection's board,
+  // and that connection's Tempo, which shows the steps that set its token.
+  // The site also holds a project and a board whose names are longer than
+  // a phone's row, which the Boards page's picker offers.
+  const board = await connectFakeJiraBoard(harness, 'settings-layout', LONG_NAMED_JIRA);
+  await harness.rpc('AddTrackerConnection', { kind: 'tempo', site: '', parentId: board.connectionId });
+  await harness.rpc('SetTrackerConnectionTokenExpiry', board.connectionId, Date.now() + 5 * 24 * 3600_000);
   await page.addInitScript(() => {
     const voice = {
       voiceURI: 'layout-voice',
@@ -233,21 +240,66 @@ export async function settingsLayoutFaults(
       await rebindFirstCommand(page);
       await settle(page);
     }
-    if (!viewports) faults.push(...await layoutFaults(page, name));
-    // The section was opened and populated at the first width, so its own
-    // settle stands for the first sample; each later width settles anew.
-    for (const [index, viewport] of (viewports ?? []).entries()) {
-      if (index > 0) {
-        await page.setViewportSize(viewport);
-        await settle(page);
+    // The page was settled at the first width, so that settle stands for
+    // the first sample; each later width settles anew. A caller that
+    // measures again after it settles again.
+    const measure = async (label: string) => {
+      if (!viewports) {
+        faults.push(...await layoutFaults(page, label));
+        return;
       }
-      faults.push(...await layoutFaults(page, `${name} at ${viewport.width}px`));
+      for (const [index, viewport] of viewports.entries()) {
+        if (index > 0) {
+          await page.setViewportSize(viewport);
+          await settle(page);
+        }
+        faults.push(...await layoutFaults(page, `${label} at ${viewport.width}px`));
+      }
+      await page.setViewportSize(viewports[0]);
+    };
+    await measure(name);
+    if (name === 'Boards') {
+      if (compact) faults.push(...await projectPickerBesideLabel(page, name));
+      // The picker open on the long-named project, then on its boards.
+      await page.getByTestId('tracker-board-add-open').click();
+      await expect(page.getByTestId('tracker-board-add-project').filter({ hasText: LONG_NAMED_JIRA.projects[0].name })).toBeVisible();
+      await settle(page);
+      await measure(`${name} choosing a project`);
+      await page.getByTestId('tracker-board-add-project').filter({ hasText: LONG_NAMED_JIRA.projects[0].name }).click();
+      await expect(page.getByTestId('tracker-board-add-board').filter({ hasText: LONG_NAMED_JIRA.boards[0].name })).toBeVisible();
+      await settle(page);
+      await measure(`${name} choosing a board`);
+      await page.getByTestId('tracker-board-picker').getByRole('button', { name: 'Cancel', exact: true }).click();
     }
-    if (viewports) await page.setViewportSize(viewports[0]);
     if (providerPage) await removeEnvVars(page);
     if (compact) await page.getByTestId('settings-page-back').click();
   }
   return faults;
+}
+
+/** A project and a board whose names are longer than a phone's row. */
+const LONG_NAMED_JIRA: ExtraJira = {
+  projects: [{ id: '10001', key: 'ONB', name: 'Customer onboarding, account recovery and identity verification for every storefront region' }],
+  boards: [{
+    id: 2, name: 'Customer onboarding and account recovery sprint planning board for the storefront team', type: 'kanban', project: 'ONB',
+    columns: [{ name: 'To Do', statuses: ['10000'] }],
+  }],
+};
+
+/**
+ * On a phone the Boards page's project picker sits under its label, not
+ * beside it (docs/specs/issues.md, compact Settings).
+ */
+async function projectPickerBesideLabel(page: Page, section: string): Promise<LayoutFault[]> {
+  const label = await page.locator('label[for="settings-tracker-boards-project"]').boundingBox();
+  const picker = await page.getByTestId('settings-tracker-boards-project').boundingBox();
+  if (!label || !picker) throw new Error('the Boards page shows no project picker and label');
+  if (picker.y >= label.y + label.height - 1) return [];
+  return [{
+    section,
+    kind: 'picker-beside-label',
+    text: `the picker spans ${Math.round(picker.y)}-${Math.round(picker.y + picker.height)}px beside its label at ${Math.round(label.y)}-${Math.round(label.y + label.height)}px`,
+  }];
 }
 
 /**

@@ -2,8 +2,8 @@ package trackerapp
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -51,23 +51,45 @@ func (c *clients) forgetCredential() {
 	}
 }
 
-// syncCredential compares the token one read of the key file found
-// (token nil when the read failed, which matches no token) with the token
-// the client was last handed, and makes the client read the file again
-// only when they differ. A list, a key file open or a verification
+// syncCredential compares the digest of the token one read of the key
+// file found (zero when the read failed, which matches no token) with the
+// token the client was last handed, and makes the client read the file
+// again only when they differ. A list, a key file open or a verification
 // thereby picks up a replaced token without disturbing calls in flight
 // when nothing changed.
-func (c *clients) syncCredential(token []byte) {
+func (c *clients) syncCredential(found store.TrackerTokenDigest) {
 	c.source.mu.Lock()
 	defer c.source.mu.Unlock()
-	if c.source.handed == nil {
+	if !c.source.handed.Known() {
 		return // the client holds no credential, or one already dropped
 	}
-	if hmac.Equal(c.source.handed, c.source.digest(token)) {
+	if sameToken(c.source.handed, found) {
 		return
 	}
-	c.source.handed = nil
+	c.source.handed = store.TrackerTokenDigest{}
+	c.source.changes++
 	c.forgetCredential()
+}
+
+// tokenDigest is all the service keeps of a token: SHA-256 over a fixed
+// domain, the connection's ID and the token, stored only for a token a
+// tracker verified, whose random length leaves the digest nothing to give
+// away.
+func tokenDigest(id string, token []byte) store.TrackerTokenDigest {
+	h := sha256.New()
+	_, _ = h.Write([]byte("agent-overflow tracker token v1\x00")) // a hash.Hash never fails a write
+	_, _ = h.Write([]byte(id))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(token)
+	var d store.TrackerTokenDigest
+	h.Sum(d[:0])
+	return d
+}
+
+// sameToken reports whether two digests name one token, in constant time;
+// a zero digest names none.
+func sameToken(a, b store.TrackerTokenDigest) bool {
+	return a.Known() && subtle.ConstantTimeCompare(a[:], b[:]) == 1
 }
 
 func (c *clients) close() {
@@ -112,30 +134,47 @@ func readToken(file keyfile.File, kind string) (*secret.Bytes, error) {
 type keyFileSource struct {
 	file keyfile.File
 	kind string
+	// id is the connection's, which every digest of its tokens carries.
+	id string
 	// account is the Jira account email Basic authentication carries.
 	account string
-	// key is the service's per-process HMAC key the digests are made with.
-	key []byte
 
 	mu sync.Mutex
-	// handed is the keyed digest of the token the source last read for the
-	// client, and the client holds that token or holds nothing. It is nil
+	// handed is the digest of the token the source last read for the
+	// client, and the client holds that token or holds nothing. It is zero
 	// before the first read and after the client was made to drop it. A
 	// read that found no token leaves it, and the client then holds
 	// nothing: the transport drops the held token when a refresh fails. A
 	// token the client refuses (Linear's workspace check) or discards (a
 	// read ForgetCredential overtook) also leaves it holding nothing.
 	// Never the token, and never logged.
-	handed []byte
+	handed store.TrackerTokenDigest
+	// changes counts the times the token the client may send stopped
+	// being the one it held: syncCredential dropped it, or a read handed
+	// another than handed. A first token handed after none does not count,
+	// so a call that saw the count unchanged sent only the token handed
+	// now (heldSince).
+	changes uint64
 	// reads counts the file reads the client asked for, for tests.
 	reads atomic.Int64
 }
 
-// digest is token's keyed digest. The caller holds mu.
-func (k *keyFileSource) digest(token []byte) []byte {
-	m := hmac.New(sha256.New, k.key)
-	_, _ = m.Write(token) // a hash.Hash never fails a write
-	return m.Sum(nil)
+// changeCount is the count heldSince compares with.
+func (k *keyFileSource) changeCount() uint64 {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.changes
+}
+
+// heldSince is the digest of the token the source last handed the client
+// (zero for none), and whether the token the client may send stayed that
+// one since changeCount returned count. Every request runs the
+// transport's credential load, which waits for a read in flight, so a
+// request sent after count was taken carried that token or none.
+func (k *keyFileSource) heldSince(count uint64) (store.TrackerTokenDigest, bool) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.handed, k.changes == count
 }
 
 func (k *keyFileSource) Credential(ctx context.Context) (*trackerapi.Credential, error) {
@@ -147,8 +186,12 @@ func (k *keyFileSource) Credential(ctx context.Context) (*trackerapi.Credential,
 	if err != nil {
 		return nil, &KeyFileError{Path: k.file.Path(), Err: err}
 	}
+	d := tokenDigest(k.id, token.Reveal())
 	k.mu.Lock()
-	k.handed = k.digest(token.Reveal())
+	if k.handed.Known() && !sameToken(k.handed, d) {
+		k.changes++
+	}
+	k.handed = d
 	k.mu.Unlock()
 	switch k.kind {
 	case store.TrackerKindJira:
@@ -166,7 +209,7 @@ func (s *Service) buildClients(row store.TrackerConnection) (*clients, error) {
 	if err != nil {
 		return nil, &ClientError{Kind: row.Kind, Err: err}
 	}
-	source := &keyFileSource{file: s.keyFile(row), kind: row.Kind, account: row.Account, key: s.digestKey}
+	source := &keyFileSource{file: s.keyFile(row), kind: row.Kind, id: row.ID, account: row.Account}
 	c := clients{source: source, parentID: row.ParentID}
 	switch row.Kind {
 	case store.TrackerKindJira:

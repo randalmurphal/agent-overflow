@@ -51,6 +51,70 @@ export class AttachmentView {
 }
 
 /**
+ * BoardChoice is one board a project lists as its board picker shows it:
+ * the listing, its connection's kind, label, whether it is on and the
+ * account it was verified as, and the board's name, which is this
+ * computer's copy of the name once the board has been read and the name
+ * the listing stored until then (store ListTrackerBoardChoices).
+ */
+export class BoardChoice {
+    "project": string;
+    "connection": string;
+    "connection_kind": string;
+    "connection_label": string;
+    "connection_enabled": boolean;
+    "verified_account": string;
+    "board": string;
+    "name": string;
+    "tracker_project": string;
+    "opens_first": boolean;
+
+    /** Creates a new BoardChoice instance. */
+    constructor($$source: Partial<BoardChoice> = {}) {
+        if (!("project" in $$source)) {
+            this["project"] = "";
+        }
+        if (!("connection" in $$source)) {
+            this["connection"] = "";
+        }
+        if (!("connection_kind" in $$source)) {
+            this["connection_kind"] = "";
+        }
+        if (!("connection_label" in $$source)) {
+            this["connection_label"] = "";
+        }
+        if (!("connection_enabled" in $$source)) {
+            this["connection_enabled"] = false;
+        }
+        if (!("verified_account" in $$source)) {
+            this["verified_account"] = "";
+        }
+        if (!("board" in $$source)) {
+            this["board"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("tracker_project" in $$source)) {
+            this["tracker_project"] = "";
+        }
+        if (!("opens_first" in $$source)) {
+            this["opens_first"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new BoardChoice instance from a string or object.
+     */
+    static createFrom($$source: any = {}): BoardChoice {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new BoardChoice($$parsedSource as Partial<BoardChoice>);
+    }
+}
+
+/**
  * BoardInfoView is a board a project has, for picking the boards it
  * lists.
  */
@@ -134,6 +198,37 @@ export class BoardPatch {
             $$parsedSource["sections"] = $$createField3_0($$parsedSource["sections"]);
         }
         return new BoardPatch($$parsedSource as Partial<BoardPatch>);
+    }
+}
+
+/**
+ * BoardRef is one board of the list a save was built from, as
+ * ProjectBoards answered it: its connection, its board and whether it
+ * opens first.
+ */
+export class BoardRef {
+    "connection": string;
+    "board": string;
+    "opens_first"?: boolean;
+
+    /** Creates a new BoardRef instance. */
+    constructor($$source: Partial<BoardRef> = {}) {
+        if (!("connection" in $$source)) {
+            this["connection"] = "";
+        }
+        if (!("board" in $$source)) {
+            this["board"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new BoardRef instance from a string or object.
+     */
+    static createFrom($$source: any = {}): BoardRef {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new BoardRef($$parsedSource as Partial<BoardRef>);
     }
 }
 
@@ -1899,12 +1994,17 @@ export class PokerVoteView {
 }
 
 /**
- * ProjectBoard is one board a project lists.
+ * ProjectBoard is one board of a list SetProjectBoards stores. Name and
+ * TrackerProject are what the board picker showed when the person chose
+ * the board (BoardInfoView.Name, and ProjectView.Key of its project), each
+ * at most 255 characters, so the board is named before it is read.
  */
 export class ProjectBoard {
     "connection": string;
     "board": string;
     "opens_first"?: boolean;
+    "name"?: string;
+    "tracker_project"?: string;
 
     /** Creates a new ProjectBoard instance. */
     constructor($$source: Partial<ProjectBoard> = {}) {
