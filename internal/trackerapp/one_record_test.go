@@ -338,7 +338,7 @@ func TestATicketWithoutACardAtItsOpeningIsStoredByALaterRound(t *testing.T) {
 			return cardsAnswering(&c)(asked)
 		}
 	})
-	must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10009", untied))
+	must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10009", true, untied))
 	m.settledTickets(t)
 	answer.Lock()
 	cardsKnown = true
@@ -360,7 +360,7 @@ func TestAFailedKeepIsARetryableFailure(t *testing.T) {
 		p.detail = func(tracker.IssueID) (tracker.Detail, error) { return detailOfCard(c), nil }
 	})
 	m.refuseKeeps()
-	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10009", untied))
+	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10009", true, untied))
 	m.settledTickets(t)
 	if v := m.ticketView(t, sub.ID); v.Failure == nil || v.Failure.Kind != string(FailureInternal) {
 		t.Fatalf("a ticket whose keep failed shows %+v; want the failure that it tries again", v)
@@ -424,7 +424,7 @@ func TestAShownTicketsHistoryIsReadFirst(t *testing.T) {
 			return tracker.History{}, nil
 		}
 	})
-	must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, last.ID, untied))
+	must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, last.ID, true, untied))
 	m.settledTickets(t)
 	if m.recordOf(t, string(last.ID)).StatusFinal {
 		t.Fatal("the shown ticket's status time is final; the round would read no history")
@@ -509,7 +509,7 @@ func TestAFinalUnknownStatusTimeCostsNoFurtherRead(t *testing.T) {
 			return tracker.History{}, nil
 		}
 	})
-	must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, c.ID, untied))
+	must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, c.ID, true, untied))
 	m.settledTickets(t)
 	quiet(t, m.svc)
 	if r := m.recordOf(t, "10001"); !r.StatusFinal || r.StatusSince != 0 {
@@ -858,7 +858,7 @@ func TestARenameWithNoIssueUpdateShowsOnTheOpenTicket(t *testing.T) {
 			return d, nil
 		}
 	})
-	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001", untied))
+	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001", true, untied))
 	m.settledTickets(t)
 	quiet(t, m.svc)
 	if v := m.ticketView(t, sub.ID); v.Detail == nil || v.Detail.Card.Assignee == nil || v.Detail.Card.Assignee.Name != "User 1" {

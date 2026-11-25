@@ -102,7 +102,7 @@ func TestEveryRefreshExitAccountsForEveryResource(t *testing.T) {
 			f.subscribe(t, testBoard)
 			f.events.boardEvents(t, 1)
 			f.openDetail(t, "10002")
-			must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001", untied))
+			must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001", true, untied))
 			f.events.issueEvents(t, 1)
 			f.settledTickets(t)
 			u, d := tracker.UserID("acc-user1"), day(t, "2026-11-02")

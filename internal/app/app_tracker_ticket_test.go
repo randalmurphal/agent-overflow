@@ -165,7 +165,7 @@ func TestATrackerTicketReachesItsClient(t *testing.T) {
 	base := f.serveTrackerTransfers(t)
 	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
 
-	sub, err := f.a.SubscribeTrackerTicket(ctx, f.conn.ID, "10101")
+	sub, err := f.a.SubscribeTrackerTicket(ctx, f.conn.ID, "10101", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestATrackerUploadCutShortAttachesNothing(t *testing.T) {
 		v.Parts[0].Failure.Kind != string(trackerapp.FailureUpload) {
 		t.Fatalf("a short upload answered %d, %+v, %v", resp.StatusCode, v, err)
 	}
-	ticket, err := f.a.SubscribeTrackerTicket(ctx, f.conn.ID, "10101")
+	ticket, err := f.a.SubscribeTrackerTicket(ctx, f.conn.ID, "10101", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -423,7 +423,7 @@ func TestTrackerTicketRefusalsSayWhatToDo(t *testing.T) {
 	f := newTrackerBoardFixture(t)
 	f.serveTrackerTransfers(t)
 	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
-	sub, err := f.a.SubscribeTrackerTicket(ctx, f.conn.ID, "10101")
+	sub, err := f.a.SubscribeTrackerTicket(ctx, f.conn.ID, "10101", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +456,7 @@ func TestTrackerTicketRefusalsSayWhatToDo(t *testing.T) {
 			return ignoreResult(f.a.MintTrackerAttachmentUploadTicket(ctx, f.conn.ID, strings.Repeat("1", 65), "a.txt", 1))
 		}},
 		{"a ticket of an issue ID over 64 bytes", "tracker_request_invalid", tracker.ErrInvalidInput, func() error {
-			return ignoreResult(f.a.SubscribeTrackerTicket(ctx, f.conn.ID, strings.Repeat("1", 65)))
+			return ignoreResult(f.a.SubscribeTrackerTicket(ctx, f.conn.ID, strings.Repeat("1", 65), true))
 		}},
 		{"an attachment the ticket does not show", "tracker_attachment_unknown", trackerapp.ErrUnknownAttachment, func() error {
 			return ignoreResult(f.a.MintTrackerAttachmentDownloadTicket(ctx, sub.ID, "99999"))
@@ -465,7 +465,7 @@ func TestTrackerTicketRefusalsSayWhatToDo(t *testing.T) {
 			return ignoreResult(f.a.AddTrackerComment(ctx, f.conn.ID, trackerapp.CommentRequest{Issue: "10101", Markdown: "x", Audience: "everyone"}))
 		}},
 		{"a ticket of no issue", "tracker_request_invalid", trackerapp.ErrInvalidRequest, func() error {
-			return ignoreResult(f.a.SubscribeTrackerTicket(ctx, f.conn.ID, ""))
+			return ignoreResult(f.a.SubscribeTrackerTicket(ctx, f.conn.ID, "", true))
 		}},
 		{"a form read the tracker fails", "tracker_failed_tracker", nil, func() error {
 			return ignoreResult(f.a.TrackerMoves(ctx, f.conn.ID, "99999"))
@@ -486,7 +486,7 @@ func TestTrackerTicketRefusalsSayWhatToDo(t *testing.T) {
 	if _, err := f.a.MintTrackerAttachmentUploadTicket(ctx, f.conn.ID, "10101", strings.Repeat("文", 90)+".txt", 1); err != nil {
 		t.Errorf("a 274-byte name Windows holds: %v", err)
 	}
-	if _, err := f.a.SubscribeTrackerTicket(ctx, f.conn.ID, strings.Repeat("1", 65)); err == nil ||
+	if _, err := f.a.SubscribeTrackerTicket(ctx, f.conn.ID, strings.Repeat("1", 65), true); err == nil ||
 		!strings.Contains(err.Error(), "an issue ID is at most 64 bytes, and this one is 65") {
 		t.Errorf("a long issue ID's sentence: %v", err)
 	}
@@ -503,7 +503,7 @@ func TestTrackerTicketSubscriptionsFollowTheirClient(t *testing.T) {
 	f := newTrackerBoardFixture(t)
 	for range 3 {
 		ctx, conn := newTestConnection(t, transport.ConnPrincipal{})
-		sub, err := f.a.SubscribeTrackerTicket(ctx, f.conn.ID, "10101")
+		sub, err := f.a.SubscribeTrackerTicket(ctx, f.conn.ID, "10101", true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -524,7 +524,7 @@ func trackerTicketConnectionTie(t *testing.T) connectionTie {
 	f := newTrackerBoardFixture(t)
 	return connectionTie{
 		open: func(ctx context.Context) (string, error) {
-			sub, err := f.a.SubscribeTrackerTicket(ctx, f.conn.ID, "10101")
+			sub, err := f.a.SubscribeTrackerTicket(ctx, f.conn.ID, "10101", true)
 			return sub.ID, err
 		},
 		// The handle and the pump it alone keeps.

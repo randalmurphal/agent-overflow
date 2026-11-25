@@ -72,7 +72,7 @@ func TestTrackerPokerReachesItsClient(t *testing.T) {
 	if got, err := f.a.TrackerPokerSupport(ctx, f.conn.ID); err != nil || !got.Available {
 		t.Fatalf("TrackerPokerSupport = %+v, %v", got, err)
 	}
-	sub, err := f.a.SubscribeTrackerTicket(ctx, f.conn.ID, "10101")
+	sub, err := f.a.SubscribeTrackerTicket(ctx, f.conn.ID, "10101", true)
 	if err != nil {
 		t.Fatal(err)
 	}

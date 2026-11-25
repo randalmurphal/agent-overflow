@@ -120,10 +120,13 @@ type TicketSubscription struct {
 // builds its first paint from the record; a later handle is answered what
 // the subscribers were last told), then the pump made on the issue's first
 // handle reads it as the tracker says it is now, interactive, and the
-// connection's round reads it every Cadence.Ticket while shown. It is
-// refused, and tied by tie, as SubscribeBoard is, and refused for an
-// issue ID tracker.CheckIssueID refuses.
-func (s *Service) SubscribeTicket(id string, issue tracker.IssueID, tie Tie) (TicketSubscription, error) {
+// connection's round reads it every Cadence.Ticket while shown. The handle
+// starts with visible as its vote (SetSubscriptionVisible), and a pump
+// made with every handle hidden makes its first read once a handle shows
+// it or a person refreshes it (pump.Core.AwaitShown). It is refused, and
+// tied by tie, as SubscribeBoard is, and refused for an issue ID
+// tracker.CheckIssueID refuses.
+func (s *Service) SubscribeTicket(id string, issue tracker.IssueID, visible bool, tie Tie) (TicketSubscription, error) {
 	if id == "" || issue == "" || tie == nil {
 		return TicketSubscription{}, fmt.Errorf("%w: a ticket subscribe names its connection and issue and ties its handle to its client", ErrInvalidRequest)
 	}
@@ -134,7 +137,7 @@ func (s *Service) SubscribeTicket(id string, issue tracker.IssueID, tie Tie) (Ti
 		return TicketSubscription{}, err
 	}
 	defer s.leave()
-	hid, tp, start, seq, told, err := s.takeTicketHandle(ticketKey{connection: id, issue: issue}, tie)
+	hid, tp, start, seq, told, err := s.takeTicketHandle(ticketKey{connection: id, issue: issue}, visible, tie)
 	if err != nil {
 		return TicketSubscription{}, err
 	}
@@ -174,10 +177,10 @@ func (s *Service) launchTicketLocked(tp *ticketPump) {
 	s.followRoundLocked(tp.key.connection)
 }
 
-// takeTicketHandle takes a handle on key's pump, tied by tie, making the
-// pump when there is none; told is the ticket as its subscribers were last told of
-// it, as of seq.
-func (s *Service) takeTicketHandle(key ticketKey, tie Tie) (id string, tp *ticketPump, start bool, seq uint64, told TicketView, err error) {
+// takeTicketHandle takes a handle on key's pump voting visible, tied by
+// tie, making the pump when there is none; told is the ticket as its
+// subscribers were last told of it, as of seq.
+func (s *Service) takeTicketHandle(key ticketKey, visible bool, tie Tie) (id string, tp *ticketPump, start bool, seq uint64, told TicketView, err error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	kind, err := s.subscribableLocked(key.connection)
@@ -210,7 +213,9 @@ func (s *Service) takeTicketHandle(key ticketKey, tie Tie) (id string, tp *ticke
 		s.subs.tickets[key] = tp
 		start = true
 	}
-	s.takeHandleLocked(id, &handle{ticket: tp, untie: untie}, &tp.core)
+	h := &handle{ticket: tp, untie: untie}
+	s.takeHandleLocked(id, h, &tp.core)
+	h.ref.VoteLocked(visible)
 	if !start {
 		// A shown handle on a hidden pump shows it: its connection's round
 		// follows.
@@ -275,7 +280,9 @@ func (s *Service) digestOf(v DetailView) uint64 {
 }
 
 // runTicketPump is a ticket pump's goroutine: an interactive first read
-// that records the opening, a full read on a person's request, and the
+// that records the opening, made once a handle shows the ticket or a
+// person refreshes it (pump.Core.AwaitShown), a full read on a person's
+// request, and the
 // builds of its connection's views when an input of one moved, made when
 // shown again if it came while hidden. Its planning poker is read by a
 // run of its own (runPoker), which it waits for before it exits. A
@@ -291,19 +298,32 @@ func (s *Service) runTicketPump(tp *ticketPump) {
 	defer s.dropTicket(tp)
 	defer s.awaitPokerRuns(tp)
 	ctx, conn, self := tp.core.Context(), tp.key.connection, []*ticketPump{tp}
-	over := s.readTickets(ctx, conn, self, Interactive, false, true).over
+	// serve runs a person's refresh: a full read, whose tracker failure
+	// reaches the subscribers alone.
+	serve := func(req *pump.Request[readRequest]) (over bool) {
+		res := s.readTickets(ctx, conn, self, Interactive, true, true)
+		err := res.errOf(0)
+		if res.over {
+			err = ErrSubscriptionEnded
+		}
+		req.Finish(err)
+		return res.over
+	}
+	var over bool
+	switch req, stopped := tp.core.AwaitShown(); {
+	case stopped:
+		return
+	case req != nil:
+		over = serve(req)
+	default:
+		over = s.readTickets(ctx, conn, self, Interactive, false, true).over
+	}
 	for !over {
 		select {
 		case <-tp.core.Done():
 			return
 		case req := <-tp.core.Requests():
-			res := s.readTickets(ctx, conn, self, Interactive, true, true)
-			over = res.over
-			err := res.errOf(0)
-			if over {
-				err = ErrSubscriptionEnded
-			}
-			req.Finish(err)
+			over = serve(req)
 		case <-tp.core.Wake():
 			s.buildShown(conn)
 		case <-tp.viewChanged:

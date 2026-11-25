@@ -354,7 +354,7 @@ func TestARoundReadsTheShownTickets(t *testing.T) {
 		}
 	})
 	reads = m.p.count("Details")
-	if _, err := m.svc.SubscribeTicket(m.conn.ID, third, untied); err != nil {
+	if _, err := m.svc.SubscribeTicket(m.conn.ID, third, true, untied); err != nil {
 		t.Fatal(err)
 	}
 	waitCalls(t, m.p, "Details", reads+1)
@@ -404,7 +404,7 @@ func TestTheRoundFollowsTheShownTickets(t *testing.T) {
 	m.svc.cadence.RetryBase = time.Millisecond
 	for _, end := range []string{"off", "removed"} {
 		m.p.set(func(p *scripted) { p.block = nil })
-		if _, err := m.svc.SubscribeTicket(m.conn.ID, issues[0], untied); err != nil {
+		if _, err := m.svc.SubscribeTicket(m.conn.ID, issues[0], true, untied); err != nil {
 			t.Fatal(err)
 		}
 		m.settledTickets(t)
@@ -457,7 +457,7 @@ func TestTheRoundFollowsTheShownTickets(t *testing.T) {
 		conn  Connection
 		every time.Duration
 	}{{jira, JiraPollEvery}, {linear, LinearPollEvery}} {
-		sub, err := f.svc.SubscribeTicket(c.conn.ID, "10001", untied)
+		sub, err := f.svc.SubscribeTicket(c.conn.ID, "10001", true, untied)
 		if err != nil {
 			t.Fatal(err)
 		}

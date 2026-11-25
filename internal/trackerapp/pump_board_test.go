@@ -463,7 +463,7 @@ func TestBoardHandlesAreUntiedByEveryRemoval(t *testing.T) {
 		},
 		"ticket": {
 			subscribe: func(m *mirrorFixture, tie Tie) (string, error) {
-				sub, err := m.svc.SubscribeTicket(m.conn.ID, "10001", tie)
+				sub, err := m.svc.SubscribeTicket(m.conn.ID, "10001", true, tie)
 				return sub.ID, err
 			},
 			held: func(m *mirrorFixture, id string) error {
@@ -530,7 +530,7 @@ func TestBoardHandlesAreUntiedByEveryRemoval(t *testing.T) {
 	t.Run("a ticket's handle", func(t *testing.T) {
 		t.Parallel()
 		m := newMirrorFixture(t)
-		sub, err := m.svc.SubscribeTicket(m.conn.ID, "10001", untied)
+		sub, err := m.svc.SubscribeTicket(m.conn.ID, "10001", true, untied)
 		if err != nil {
 			t.Fatal(err)
 		}

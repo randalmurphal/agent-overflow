@@ -320,6 +320,35 @@ func TestListMirrorIssueRowsPages(t *testing.T) {
 	}
 }
 
+// The rows of several open tickets' issues read together, by issue and
+// then board, each with its estimate and its board's unit; a row on a board
+// no project lists any more is left out, and so is an issue the mirror has
+// no row of.
+func TestListMirrorTicketRows(t *testing.T) {
+	t.Parallel()
+	s, jira, root := newMirror(t)
+	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10", "11", "12")
+	five := 5.0
+	estimated := webRow("10001", 5, "a")
+	estimated.Estimate = &five
+	writeMirrorBoard(t, s, root, "10", []MirrorRow{estimated, webRow("10002", 5, "b")})
+	writeMirrorBoard(t, s, root, "11", []MirrorRow{webRow("10001", 5, "a")})
+	writeMirrorBoard(t, s, root, "12", []MirrorRow{webRow("10001", 5, "a")})
+	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10", "11")
+	rows, err := s.ListMirrorTicketRows(root, []string{"10002", "10001", "10009"})
+	want := []MirrorTicketRow{
+		{IssueID: "10001", BoardID: "10", Estimate: &five, EstimateUnit: MirrorEstimatePoints},
+		{IssueID: "10001", BoardID: "11", EstimateUnit: MirrorEstimatePoints},
+		{IssueID: "10002", BoardID: "10", EstimateUnit: MirrorEstimatePoints},
+	}
+	if err != nil || !reflect.DeepEqual(rows, want) {
+		t.Fatalf("rows = %+v, %v", rows, err)
+	}
+	if _, err := s.ListMirrorTicketRows(root, make([]string, MirrorMaxBodies+1)); !errors.Is(err, ErrInvalidTrackerCache) {
+		t.Fatalf("a read of more issues than a view build takes: %v", err)
+	}
+}
+
 // The linked issues no polled shown board has a row of read a page at a
 // time, each once however many threads link it; one with a row on a
 // polled shown board is left out, and one whose only row is on a board
