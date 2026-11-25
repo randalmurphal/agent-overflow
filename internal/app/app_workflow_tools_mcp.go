@@ -75,11 +75,11 @@ func (a *App) workflowToolsServer() *workflowtools.Server {
 // project gets one: an interactive thread with every tool, a workflow phase or
 // unit with the tools its grants and access admit. A projectless thread has no
 // project to run workflows in and gets none.
-func (a *App) workflowMCPConfigForThread(thread store.Thread, sessionToken string) (map[string]any, error) {
+func (a *App) workflowMCPConfigForThread(thread store.Thread, sessionToken string, sessionScope sessionScope) (map[string]any, error) {
 	if !provider.CapabilitiesForProvider(thread.Provider).SupportsWorkflowMCP {
 		return nil, nil
 	}
-	scope, ok, err := a.workflowCallerScope(thread)
+	scope, ok, err := sessionScope()
 	if err != nil {
 		return nil, err
 	}
@@ -137,11 +137,11 @@ func (a *App) callWorkflowMCP(w http.ResponseWriter, ctx context.Context, req th
 // withWorkflowMCPRow shows the workflow tools in a thread's MCP menu. They are
 // part of every project session rather than a per-conversation choice, so the
 // row carries no toggle.
-func (a *App) withWorkflowMCPRow(thread store.Thread, rows []ThreadMCPServer, live bool) []ThreadMCPServer {
+func (a *App) withWorkflowMCPRow(thread store.Thread, rows []ThreadMCPServer, live bool, scope sessionScope) []ThreadMCPServer {
 	if !provider.CapabilitiesForProvider(thread.Provider).SupportsWorkflowMCP {
 		return rows
 	}
-	if _, ok, err := a.workflowCallerScope(thread); err != nil || !ok {
+	if _, ok, err := scope(); err != nil || !ok {
 		return slices.DeleteFunc(rows, func(row ThreadMCPServer) bool { return row.Name == workflowMCPName })
 	}
 	source := mcpRowSourceConfig

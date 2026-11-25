@@ -106,6 +106,11 @@ type Capabilities struct {
 	SupportsAppManagedMCP bool
 	// SupportsWorkflowMCP reports whether the provider accepts ao-workflow-tools.
 	SupportsWorkflowMCP bool
+	// SupportsTrackerMCP reports whether the provider accepts ao-tracker-tools.
+	// agy does not: it admits without a prompt only the app servers it
+	// trusts (agy/flavor.go recordSessionMCPTrust), and the tracker tools are
+	// not one of them.
+	SupportsTrackerMCP bool
 	// SupportsAppendSystemPrompt reports whether the provider can append
 	// instructions / agent guide text to its system prompt.
 	SupportsAppendSystemPrompt bool
@@ -151,6 +156,7 @@ func CapabilitiesForProvider(providerName string) Capabilities {
 			ExtendedContextWindow:      CodexExtendedContextWindow,
 			SupportsAppManagedMCP:      true,
 			SupportsWorkflowMCP:        true,
+			SupportsTrackerMCP:         true,
 			SupportsAppendSystemPrompt: true,
 			SupportsOwnMemory:          true,
 			RollbackGranularity:        RollbackTurn,
@@ -186,6 +192,7 @@ func CapabilitiesForProvider(providerName string) Capabilities {
 			ExtendedContextWindow:      ClaudeExtendedContextWindow,
 			SupportsAppManagedMCP:      true,
 			SupportsWorkflowMCP:        true,
+			SupportsTrackerMCP:         true,
 			SupportsAppendSystemPrompt: true,
 			SupportsOwnMemory:          true,
 			RollbackGranularity:        RollbackItem,

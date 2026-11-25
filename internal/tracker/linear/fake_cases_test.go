@@ -96,6 +96,12 @@ var linearCases = map[string]func(t *testing.T, f *conformanceEnv){
 			d.Estimate != nil && *d.Estimate == 3 && d.Priority == PriorityHigh && slices.Equal(d.LabelIDs, []string{cfBug}) &&
 			len(d.History.Items) == 1 && !d.History.HasNextPage && d.History.Served.Equal(cfStart) && len(d.States) == 5 && !d.MoreStates,
 			"issue %+v", d)
+		// The assignee, each comment's author and each entry's actor come
+		// whole, with their IDs.
+		want(t, d.Assignee != nil && d.Assignee.Name == "User 1" && d.AssigneeID == cfUser1 &&
+			d.Comments.Items[0].User != nil && d.Comments.Items[0].User.Name == "User 2" && d.Comments.Items[0].UserID == cfUser2 &&
+			d.History.Items[0].Actor != nil && d.History.Items[0].Actor.Name == "User 1" && d.History.Items[0].ActorID == cfUser1,
+			"issue people %+v %+v %+v", d.Assignee, d.Comments.Items[0], d.History.Items[0])
 		// Past the first page of relations each way, the detail reads the
 		// rest with IssueRelations and IssueInverseRelations.
 		ws := conformanceWorkspace()
@@ -185,10 +191,12 @@ var linearCases = map[string]func(t *testing.T, f *conformanceEnv){
 	"IssueComments": func(t *testing.T, f *conformanceEnv) {
 		p := answered(f.c.IssueComments(f.ctx, cfIssue1, "")).must(t)
 		want(t, len(p.Items) == 1 && p.Items[0].Body == "Looks good" && !p.HasNextPage, "comments %+v", p)
+		want(t, p.Items[0].User != nil && p.Items[0].User.Name == "User 2" && p.Items[0].UserID == cfUser2, "comment author %+v", p.Items[0])
 	},
 	"IssueHistory": func(t *testing.T, f *conformanceEnv) {
 		p := answered(f.c.IssueHistory(f.ctx, cfIssue1, "")).must(t)
 		want(t, len(p.Items) == 1 && p.Items[0].State != nil && *p.Items[0].State == (Change{From: cfBacklog, To: cfTodo}), "history %+v", p)
+		want(t, p.Items[0].Actor != nil && p.Items[0].Actor.Name == "User 1", "history actor %+v", p.Items[0].Actor)
 		// Each entity an entry names comes with it; one the workspace
 		// lacks is null and its ID stays.
 		ws := conformanceWorkspace()
@@ -250,7 +258,15 @@ var linearCases = map[string]func(t *testing.T, f *conformanceEnv){
 	},
 	"SearchIssues": func(t *testing.T, f *conformanceEnv) {
 		p := answered(f.c.SearchIssues(f.ctx, SearchQuery{Term: "login", TeamID: cfTeam}, "")).must(t)
-		got := identifiers(p.Items)
+		var got []string
+		for _, h := range p.Items {
+			got = append(got, h.Identifier)
+			// Each hit comes with its state and assignee whole.
+			want(t, h.State != nil && h.State.ID == h.StateID && h.State.Name != "", "%s state %+v", h.Identifier, h.State)
+			if h.Identifier == "WEB-1" {
+				want(t, h.Assignee != nil && h.Assignee.ID == cfUser1 && h.AssigneeID == cfUser1 && h.Assignee.Name == "User 1", "WEB-1 assignee %+v", h.Assignee)
+			}
+		}
 		slices.Sort(got)
 		want(t, slices.Equal(got, []string{"WEB-1", "WEB-3"}), "search %v", got)
 	},

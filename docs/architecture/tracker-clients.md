@@ -520,9 +520,12 @@ only each issue's ID, manual order and team. A comment, relation, cycle or team
 is read by its ID, and labels by a set of IDs. Label names come nested
 with each issue; the read by ID covers only the labels that list leaves
 out. A ticket's history (`Issue`, `IssueDetails`, `IssueHistory`) carries
-with each entry the users, cycles, projects, teams, parent issues and
-labels it names, in the same request; one Linear answers as null leaves
-its ID alone. A trashed issue is still answered
+with each entry its actor and the users, cycles, projects, teams, parent
+issues and labels it names, in the same request; one Linear answers as
+null leaves its ID alone. The same reads carry the issue's assignee and
+each comment's author whole, as `IssueComments` does its comments'
+authors, and a `SearchIssues` hit its state and assignee, so a ticket and
+a search row are named however little of the workspace was read. A trashed issue is still answered
 ([measured](../references/tracker-api-measurements.md#linear-trashed-history));
 the other kinds (an
 archived label, cycle, project or team, a deactivated user) are

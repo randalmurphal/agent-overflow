@@ -21,6 +21,7 @@ import {
   REMOTE_TOOLS_SERVER,
   THREAD_TOOLS_SERVER,
   WORKFLOW_TOOLS_SERVER,
+  TRACKER_TOOLS_SERVER,
   runName,
   shortId,
   threadName,
@@ -1124,6 +1125,71 @@ function arrayView(rows: unknown[], names: AoToolNames): AoResultView {
   return view;
 }
 
+// ---- tracker tools -----------------------------------------------------
+
+function ticketCommentLines(comments: Input[]): AoResultLine[] {
+  return comments.map((comment, index) => ({
+    key: `${index}`,
+    title: str(comment, 'by') || 'comment',
+    detail: join(whenText(str(comment, 'at')), comment.internal === true ? 'internal' : ''),
+    text: clipText(str(comment, 'body'), LINE_TEXT_MAX),
+    link: null,
+  }));
+}
+
+/**
+ * Reads a tracker tools reply (`internal/trackertools`): a page of tickets
+ * found, a ticket read, or the part of one an earlier read left out. A
+ * continuation (`next`, a value of `more`) is for the model; a read shows
+ * what it left out by the sentences `more` names it with.
+ */
+export function trackerResultView(data: string): AoResultView | null {
+  const reply = obj(parseFirstJson(data));
+  if (!reply) return null;
+  const view = emptyView();
+  if (Array.isArray(reply.tickets)) {
+    for (const ticket of list(reply.tickets)) {
+      const key = str(ticket, 'key');
+      view.lines.push({ key, title: join(key, str(ticket, 'title')), detail: join(str(ticket, 'status'), str(ticket, 'assignee')), text: '', link: null });
+    }
+    view.outcome = join(view.lines.length ? plural(view.lines.length, 'ticket') : 'no tickets', str(reply, 'next') ? 'more' : '');
+    const unsearched = list(reply.unsearched).map((source) => `${str(source, 'site')}: ${str(source, 'error')}`);
+    view.note = unsearched.length ? `Not searched: ${unsearched.join('; ')}` : '';
+    return view;
+  }
+  const comments = list(reply.comments);
+  const key = str(reply, 'key');
+  const title = str(reply, 'title');
+  const leftOut = Object.keys(obj(reply.more) ?? {});
+  const fields = Object.entries(obj(reply.fields) ?? {});
+  // A continuation says which of the parts the row shows no other way it
+  // holds: comments, the description and history show below.
+  const held = [
+    [fields.length, 'field'],
+    [Array.isArray(reply.links) ? reply.links.length : 0, 'link'],
+    [Array.isArray(reply.attachments) ? reply.attachments.length : 0, 'attachment'],
+    [Array.isArray(reply.labels) ? reply.labels.length : 0, 'label'],
+  ] as const;
+  view.outcome = title
+    ? join(`${key} ${title}`, str(reply, 'status'))
+    : join(`${key} continued`, ...held.map(([count, noun]) => (count ? plural(count, noun) : '')));
+  view.note = leftOut.length ? `Left out: ${leftOut.join('; ')}` : '';
+  fact(view.facts, 'assignee', str(reply, 'assignee'));
+  fact(view.facts, 'estimate', str(reply, 'estimate'));
+  fact(view.facts, 'type', str(reply, 'type'));
+  fact(view.facts, 'priority', str(reply, 'priority'));
+  const history = list(reply.history);
+  if (history.length) fact(view.facts, 'history', plural(history.length, 'change'));
+  const description = str(reply, 'description');
+  view.preview = description ? { label: 'description', text: clipText(description, PREVIEW_MAX) } : null;
+  // The rest of one field is that field's text.
+  const only = fields.length === 1 && !title ? fields[0]! : null;
+  const fieldText = only ? (Array.isArray(only[1]) ? only[1].join(', ') : typeof only[1] === 'string' ? only[1] : '') : '';
+  if (!view.preview && fieldText) view.preview = { label: only![0], text: clipText(fieldText, PREVIEW_MAX) };
+  view.lines = ticketCommentLines(comments);
+  return view;
+}
+
 /**
  * The reply of any AO tool as its row's body shows it. Null when the reply
  * is not JSON, which the body reports as undecoded rather than painting,
@@ -1145,6 +1211,8 @@ export function aoResultView(
       return browserResultView(tool, data, names);
     case REMOTE_TOOLS_SERVER:
       return remoteResultView(data) ? null : remoteOtherView(tool, data, names);
+    case TRACKER_TOOLS_SERVER:
+      return trackerResultView(data);
     default:
       return null;
   }

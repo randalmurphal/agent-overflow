@@ -223,7 +223,7 @@ func (l *live) checkSearch(team Team, p *pair) {
 		l.step(fmt.Sprintf("SearchIssues %d", attempt), func(ctx context.Context) error {
 			pg, err := l.c.SearchIssues(ctx, SearchQuery{Term: p.word, TeamID: team.ID, Limit: 10}, "")
 			if err == nil {
-				found = slices.Contains(idsOf(pg.Items), p.a.ID)
+				found = slices.ContainsFunc(pg.Items, func(h SearchHit) bool { return h.ID == p.a.ID })
 				if found && len(pg.Items) != 1 {
 					err = fmt.Errorf("the unique word matched %d issues", len(pg.Items))
 				}

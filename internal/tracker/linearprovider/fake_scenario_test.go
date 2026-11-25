@@ -233,7 +233,9 @@ func TestFakeScenario(t *testing.T) {
 	if d.Card.Key != "WEB-1" || strings.TrimSpace(d.Description) != "Login fails" || len(d.Comments.Comments) != 1 || len(d.Moves) != 3 {
 		t.Fatalf("detail %+v", d)
 	}
-	if cs := scenarioMust[tracker.CommentPage](t)(s.p.Comments(s.ctx, tracker.IssueID(scIssue1), "")); len(cs.Comments) != 1 {
+	// A page of comments names its authors, whatever the mirror holds.
+	if cs := scenarioMust[tracker.CommentPage](t)(s.p.Comments(s.ctx, tracker.IssueID(scIssue1), "")); len(cs.Comments) != 1 ||
+		len(cs.Users) != 1 || cs.Users[0].ID != tracker.UserID(scUser2) || cs.Users[0].Name != "User 2" {
 		t.Fatalf("comments %+v", cs)
 	}
 	// An identifier an issue had before it moved team still finds it.

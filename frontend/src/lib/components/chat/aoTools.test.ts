@@ -6,6 +6,7 @@ import {
   REMOTE_TOOLS_SERVER,
   THREAD_TOOLS_SERVER,
   WORKFLOW_TOOLS_SERVER,
+  TRACKER_TOOLS_SERVER,
   aoToolFacts,
   aoToolPresentation,
   aoToolServer,
@@ -35,8 +36,9 @@ describe('AO tool presentation', () => {
     expect(REMOTE_TOOLS_SERVER).toBe('ao-remote-tools');
     expect(THREAD_TOOLS_SERVER).toBe('ao-thread-tools');
     expect(WORKFLOW_TOOLS_SERVER).toBe('ao-workflow-tools');
+    expect(TRACKER_TOOLS_SERVER).toBe('ao-tracker-tools');
     expect(Object.keys(AO_TOOL_SERVERS).sort()).toEqual(
-      [BROWSER_TOOLS_SERVER, REMOTE_TOOLS_SERVER, THREAD_TOOLS_SERVER, WORKFLOW_TOOLS_SERVER].sort(),
+      [BROWSER_TOOLS_SERVER, REMOTE_TOOLS_SERVER, THREAD_TOOLS_SERVER, WORKFLOW_TOOLS_SERVER, TRACKER_TOOLS_SERVER].sort(),
     );
   });
 
@@ -270,6 +272,26 @@ describe('AO tool presentation', () => {
     it('still presents a tool the table does not know, by its own name', () => {
       const p = aoToolPresentation(meta(WORKFLOW_TOOLS_SERVER, 'run_future', { run_id: rid }))!;
       expect(p).toMatchObject({ icon: 'checklist', label: 'run_future', headerLabel: 'Workflow run_future' });
+    });
+  });
+
+  describe('tracker tools', () => {
+    it.each([
+      ['ticket_find', { text: 'safari login' }, 'find', '"safari login"'],
+      ['ticket_find', { text: 'safari login', next: 'eyJjIjoiYSJ9' }, 'find', '"safari login"'],
+      ['ticket_read', {}, 'read', 'linked ticket'],
+      ['ticket_read', { key: 'WEB-12' }, 'read', 'WEB-12'],
+      ['ticket_read', { key: 'WEB-12', history: true }, 'read', 'WEB-12 with history'],
+      ['ticket_read', { more: 'eyJjIjoiYSJ9' }, 'read', 'more of a ticket'],
+    ])('%s %j', (tool, input, label, what) => {
+      const p = aoToolPresentation(meta(TRACKER_TOOLS_SERVER, tool, input))!;
+      expect(p).toMatchObject({ icon: 'file', label, what, headerLabel: `Ticket ${label}` });
+    });
+
+    it('keeps the continuations a person does not read out of the body', () => {
+      expect(aoToolFacts(meta(TRACKER_TOOLS_SERVER, 'ticket_find', { text: 'login', next: 'eyJjIjoiYSJ9' }))).toEqual([]);
+      expect(aoToolFacts(meta(TRACKER_TOOLS_SERVER, 'ticket_read', { key: 'WEB-1', history: true }))).toEqual([]);
+      expect(aoToolFacts(meta(TRACKER_TOOLS_SERVER, 'ticket_read', { more: 'eyJjIjoiYSJ9' }))).toEqual([]);
     });
   });
 

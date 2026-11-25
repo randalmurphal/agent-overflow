@@ -127,8 +127,10 @@ func historyLabels(f func(h *LinearHistory) []string) func(historyObj) any {
 }
 
 var historyFields = fieldTable[historyObj]{
-	"id":              historyID(func(h *LinearHistory) string { return h.ID }),
-	"actorId":         historyID(func(h *LinearHistory) string { return h.Actor }),
+	"id":      historyID(func(h *LinearHistory) string { return h.ID }),
+	"actorId": historyID(func(h *LinearHistory) string { return h.Actor }),
+	// documented: IssueHistory.actor is the User who made the change.
+	"actor":           historyRef(func(h *LinearHistory) string { return h.Actor }, (*linearWorkspace).userRef),
 	"fromStateId":     historyID(func(h *LinearHistory) string { return h.FromState }),
 	"toStateId":       historyID(func(h *LinearHistory) string { return h.ToState }),
 	"fromAssigneeId":  historyID(func(h *LinearHistory) string { return h.FromAssignee }),

@@ -121,6 +121,11 @@ be the full-suite gate before merge. A failing check in a relevant suite belongs
 change whether the code or the test is wrong: fix it before finishing, never
 record it as pre-existing.
 
+After opening a pull request, check it for bot comments (code scanning,
+dependency review, review bots) once its checks have run. Fix a finding
+that is real; where it is not, use a better pattern if one exists,
+otherwise dismiss it with the reason. Do not merge with one unsettled.
+
 Reproduce a flaky test by constraining the test, never by loading the
 machine. The developer is working on this machine while tests run.
 

@@ -247,6 +247,10 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		"stop thread search index",
 		"close thread MCP server",
 		"close workflow MCP server",
+		// "close tracker MCP server" joins the ticket calls in flight, which
+		// read the connection and link rows, so it precedes "close store";
+		// the tracker service stopped earlier, so those calls end at once.
+		"close tracker MCP server",
 		// "drain workflow wakes" MUST follow "close workflow MCP server" and
 		// precede "close store": a tool call's wait releases its hold on the
 		// wake queue after its response, and that server's close joins the
