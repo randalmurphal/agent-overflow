@@ -254,7 +254,6 @@ func mirrorIssueRows(t *testing.T, s *Store) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
 	var out []string
 	for rows.Next() {
 		var row string
@@ -263,7 +262,7 @@ func mirrorIssueRows(t *testing.T, s *Store) []string {
 		}
 		out = append(out, row)
 	}
-	if err := rows.Err(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		t.Fatal(err)
 	}
 	return out
