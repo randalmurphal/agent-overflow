@@ -6571,13 +6571,15 @@ export function SubscribeTrackerBoard(projectID: string, connectionID: string, b
  * SubscribeTrackerTicket subscribes the calling client to an issue's
  * ticket. The answer comes from this computer's copy of the issue; the
  * ticket's reads of the tracker follow it, and tracker:issue_updated
- * tells what they change. The subscription is released by
- * ReleaseTrackerSubscription or when the client's connection ends, and
- * takes SetTrackerSubscriptionVisible and RefreshTrackerSubscription as a
- * board's does.
+ * tells what they change. visible is whether the client shows the
+ * ticket now: a ticket subscribed hidden is not read from the tracker
+ * until it is shown (SetTrackerSubscriptionVisible) or refreshed. The
+ * subscription is released by ReleaseTrackerSubscription or when the
+ * client's connection ends, and takes SetTrackerSubscriptionVisible and
+ * RefreshTrackerSubscription as a board's does.
  */
-export function SubscribeTrackerTicket(connectionID: string, issue: string): $CancellablePromise<trackerapp$0.TicketSubscription> {
-    return $Call.ByID(3193179933, connectionID, issue).then(($result: any) => {
+export function SubscribeTrackerTicket(connectionID: string, issue: string, visible: boolean): $CancellablePromise<trackerapp$0.TicketSubscription> {
+    return $Call.ByID(3193179933, connectionID, issue, visible).then(($result: any) => {
         return $$createType260($result);
     });
 }
