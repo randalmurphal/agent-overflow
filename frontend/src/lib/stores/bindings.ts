@@ -1498,7 +1498,7 @@ export {
   TrackerBoards,
   SetProjectTrackerBoards,
 } from '../../../bindings/agent-overflow/app.js';
-export type { TrackerConnection, TrackerProblem, NewTrackerConnection } from '../../../bindings/agent-overflow/internal/app/models.js';
+export type { TrackerConnection, NewTrackerConnection } from '../../../bindings/agent-overflow/internal/app/models.js';
 export type { BoardChoice as TrackerBoardChoice, ProjectBoard as TrackerProjectBoard, ProjectView as TrackerProjectView, BoardInfoView as TrackerBoardInfo } from '../../../bindings/agent-overflow/internal/trackerapp/models.js';
 
 /** This computer's tracker connections; none on a computer without them. */

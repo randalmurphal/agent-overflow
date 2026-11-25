@@ -69,8 +69,9 @@
 
   let connections = $derived(trackerConnectionsOf(backend).list);
   let boards = $derived(selectedId ? trackerProjectBoardsOf(backend, selectedId) : null);
+  let list = $derived(boards?.list ?? []);
   let choosable = $derived(connections.filter((c) => c.enabled && c.kind !== 'tempo'));
-  let listed = $derived(new Set((boards?.list ?? []).map((b) => `${b.connection}\u0000${b.board}`)));
+  let listed = $derived(new Set(list.map((b) => `${b.connection}\u0000${b.board}`)));
 
   let readGrant = $derived(scopeGrant('tracker:read'));
   let operateGrant = $derived(scopeGrant('tracker:operate'));
@@ -151,13 +152,13 @@
         {/if}
         {#if !boards.loaded}
           <p class="text-[0.75rem] text-fg-muted">Loading boards…</p>
-        {:else if boards.list.length === 0}
+        {:else if list.length === 0}
           <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-boards-empty">
             This project lists no boards. Add one to see it in the project's Issues pane.
           </p>
         {:else}
           <ol class="flex flex-col gap-2" data-testid="settings-tracker-boards-list">
-            {#each boards.list as board, index (`${board.connection}\u0000${board.board}`)}
+            {#each list as board, index (`${board.connection}\u0000${board.board}`)}
               <li class="flex flex-col gap-1.5" data-testid="tracker-board-row" data-board={board.board}>
                 <div class="flex min-w-0 flex-wrap items-baseline gap-x-2">
                   <span class="truncate text-[0.8125rem] font-medium text-fg" data-testid="tracker-board-name">{board.name || `Board ${board.board}`}</span>
@@ -177,16 +178,16 @@
                     size="sm"
                     disabled={locked || index === 0}
                     testId="tracker-board-up"
-                    onClick={() => void save(withBoardMoved(boards!.list, index, -1))}
+                    onClick={() => void save(withBoardMoved(list, index, -1))}
                   >
                     {#snippet children()}<Icon icon={ArrowUp} size={14} />{/snippet}
                   </IconButton>
                   <IconButton
                     label="Move {board.name || 'board'} down"
                     size="sm"
-                    disabled={locked || index === boards.list.length - 1}
+                    disabled={locked || index === list.length - 1}
                     testId="tracker-board-down"
-                    onClick={() => void save(withBoardMoved(boards!.list, index, 1))}
+                    onClick={() => void save(withBoardMoved(list, index, 1))}
                   >
                     {#snippet children()}<Icon icon={ArrowDown} size={14} />{/snippet}
                   </IconButton>
@@ -196,7 +197,7 @@
                       class={GHOST_BUTTON_CLASS}
                       disabled={locked}
                       title={operateReason || undefined}
-                      onclick={() => void save(withOpensFirst(boards!.list, index))}
+                      onclick={() => void save(withOpensFirst(list, index))}
                       data-testid="tracker-board-open-first"
                     >Open first</button>
                   {/if}
@@ -205,7 +206,7 @@
                     class={GHOST_BUTTON_CLASS}
                     disabled={locked}
                     title={operateReason || undefined}
-                    onclick={() => void save(withBoardRemoved(boards!.list, index))}
+                    onclick={() => void save(withBoardRemoved(list, index))}
                     data-testid="tracker-board-remove"
                   >Remove</button>
                 </div>
@@ -224,7 +225,7 @@
               {listed}
               disabled={locked}
               disabledReason={operateReason || undefined}
-              onAdd={(board) => save(withBoardAdded(boards!.list, board))}
+              onAdd={(board) => save(withBoardAdded(list, board))}
             />
           {/key}
         {/if}

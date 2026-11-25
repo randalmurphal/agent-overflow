@@ -228,5 +228,5 @@ onBackendsChanged(() => {
 });
 
 export function resetTrackerConnectionsForTest(): void {
-  for (const [backend, entry] of [...held]) drop(backend, entry);
+  for (const [backend, entry] of held) drop(backend, entry);
 }
