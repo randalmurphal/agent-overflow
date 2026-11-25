@@ -58,12 +58,14 @@ export interface BoardShape {
 
 /** What the client holds of a board: its shape, lifetime and revision,
  * the version of the project's status groups it was read with (empty for
- * none), the totals, and the sections it reads. */
+ * none) and the statuses those groups leave out of counts, the totals, and
+ * the sections it reads. */
 export interface HeldBoard {
   readonly shape: BoardShape;
   readonly lifetime: number;
   readonly revision: number;
   readonly groups: string;
+  readonly leftOut: ReadonlySet<string>;
   readonly totals: HeldTotals;
   readonly sections: readonly HeldSection[];
 }
@@ -99,6 +101,7 @@ export function heldFromView(view: BoardView, intern: (row: RowView) => RowView)
     lifetime: view.lifetime,
     revision: view.revision,
     groups: view.groups ?? '',
+    leftOut: new Set(view.left_out ?? []),
     totals: { revision: view.totals_revision, all: view.all, backlog: view.backlog, sprints, columns },
     sections: [
       ...view.sections.map((page) => ({ section: page.section, rows: (page.rows ?? []).map(intern), next: page.next ?? null })),
@@ -202,6 +205,7 @@ export function applyBoardPatch(held: HeldBoard, ids: readonly string[], patch: 
     lifetime: patch.lifetime,
     revision: patch.revision,
     groups: held.groups,
+    leftOut: held.leftOut,
     totals: patch.totals ? totalsOf(patch.totals) : held.totals,
     sections,
   };
@@ -231,16 +235,37 @@ export interface ScreenColumn {
    * when every row of the column is held. */
   readonly moreFrom: number | null;
   /** The column's total: the backend's for a column section, the held
-   * rows' own for a sprint's rows loaded whole, null while not known. */
+   * rows' own for a sprint's rows loaded whole, null while not known. Both
+   * leave out the rows of a status the project leaves out of counts. */
   readonly total: SectionTotal | null;
+  /** How many of the held rows the total counts. */
+  readonly counted: number;
   /** No page of the column has been read yet. */
   readonly unread: boolean;
 }
 
-function sumOf(rows: readonly RowView[]): SectionTotal {
+/** Whether a total counts the row: not when the project leaves its status
+ * out of counts, as the backend's totals do (BoardView.left_out). */
+function counts(held: HeldBoard, row: RowView): boolean {
+  return !held.leftOut.has(row.card.status.id);
+}
+
+function countedOf(held: HeldBoard, rows: readonly RowView[]): number {
+  if (held.leftOut.size === 0) return rows.length;
+  let n = 0;
+  for (const r of rows) if (counts(held, r)) n += 1;
+  return n;
+}
+
+function sumOf(held: HeldBoard, rows: readonly RowView[]): SectionTotal {
+  let n = 0;
   let estimate = 0;
-  for (const r of rows) estimate += r.estimate ?? 0;
-  return { rows: rows.length, estimate };
+  for (const r of rows) {
+    if (!counts(held, r)) continue;
+    n += 1;
+    estimate += r.estimate ?? 0;
+  }
+  return { rows: n, estimate };
 }
 
 /**
@@ -264,6 +289,7 @@ export function screenColumns(held: HeldBoard, previous: readonly ScreenColumn[]
         rows: sec?.rows ?? [],
         moreFrom: sec?.next || sec?.unread ? at : null,
         total: totalOf(held.totals.columns, i),
+        counted: countedOf(held, sec?.rows ?? []),
         unread: sec?.unread === true,
       };
     });
@@ -292,7 +318,8 @@ export function screenColumns(held: HeldBoard, previous: readonly ScreenColumn[]
       statusGroups: groups(col),
       rows,
       moreFrom: unfinished >= 0 ? unfinished : null,
-      total: unfinished >= 0 ? null : sumOf(rows),
+      total: unfinished >= 0 ? null : sumOf(held, rows),
+      counted: countedOf(held, rows),
       unread,
     };
   });

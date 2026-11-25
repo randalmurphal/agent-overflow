@@ -101,6 +101,27 @@ function kanban(todo: ColumnSeed, doing: ColumnSeed, extra: Partial<BoardView> =
   } as unknown as BoardView;
 }
 
+/** A sprint board whose one column, To Do, holds statuses s1 and s2,
+ * with its active sprint 8 holding `rows` whole; `left_out` names the
+ * statuses the project leaves out of counts. */
+function sprintBoard(rows: RowView[], left_out?: string[]): BoardView {
+  const section = { kind: 'sprint', sprint: '8' };
+  return {
+    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'Board 1', plans_sprints: true, estimate: { unit: 'points' },
+    columns: [{ name: 'To Do', statuses: [{ id: 's1', group: 'todo' }, { id: 's2', group: 'in_progress' }], total: { rows: 0, estimate: 0 } }],
+    sprints: [{ id: '8', name: 'Sprint 8', state: 'active', total: { rows: 0, estimate: 0 } }],
+    all: { rows: 0, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: { read_at: Date.now() },
+    screen: [section], sections: [{ section, rows, next: null }],
+    ...(left_out ? { groups: 'g1', left_out } : {}),
+  } as unknown as BoardView;
+}
+
+/** The worked example: four tickets of 3 points in the sprint, the last
+ * in s2. */
+function fourOfThree(): RowView[] {
+  return ['1', '2', '3', '4'].map((id) => ({ ...row(id, `a${id}`, id === '4' ? 's2' : 's1'), estimate: 3 }));
+}
+
 function install(opts: { choices?: BoardChoice[]; view?: BoardView | null; failure?: { kind: string; message: string; at: number } } = {}) {
   const choices = setBindingMock('TrackerBoardChoices', async () => opts.choices ?? [choice('1', { opens_first: true }), choice('2')]);
   let n = 0;
@@ -482,6 +503,41 @@ describe('the Issues pane', () => {
     await waitFor(() => expect(mocks.visible).toHaveBeenCalledWith('sub-1-1', false));
     demotePane();
     await waitFor(() => expect(mocks.visible).toHaveBeenLastCalledWith('sub-1-1', true));
+  });
+});
+
+describe("the project's status groups on the Board screen", () => {
+  it('shows the cards of a status left out of counts and leaves them out of the column it adds up', async () => {
+    install({ view: sprintBoard(fourOfThree(), ['s2']) });
+    const view = mount();
+    await waitFor(() => expect(view.getAllByTestId('issues-card')).toHaveLength(4));
+    expect(columns(view)).toEqual([{ name: 'To Do', count: '3 · 9 pts', cards: ['1', '2', '3', '4'] }]);
+    view.unmount();
+  });
+
+  it("changes the column's total when a save changes what is left out and the board is read again", async () => {
+    install({ view: sprintBoard(fourOfThree()) });
+    const view = mount();
+    await waitFor(() => expect(columns(view)[0]?.count).toBe('4 · 12 pts'));
+    setBindingMock('TrackerBoard', async () => sprintBoard(fourOfThree(), ['s2']));
+    applyTrackerBoardEvent({ scope: { connection: 'c1', board: '1' }, seq: 11, read_again: true, sync: { read_at: Date.now() } }, HOME_BACKEND);
+    await waitFor(() => expect(columns(view)[0]?.count).toBe('3 · 9 pts'));
+    expect(columns(view)[0].cards).toEqual(['1', '2', '3', '4']);
+    view.unmount();
+  });
+
+  it('says how much of a filtered column has loaded in the rows its total counts', async () => {
+    // Ten of the 100 rows held are in s9, which the project leaves out:
+    // the computer's total of 140 does not count them.
+    const todo = Array.from({ length: 100 }, (_, i) => row(String(i + 10), `k${String(i).padStart(3, '0')}`, i < 10 ? 's9' : 's1'));
+    install({ view: kanban({ rows: todo, total: 140, next: true }, { rows: [] }, { groups: 'g1', left_out: ['s9'] } as Partial<BoardView>) });
+    setBindingMock('TrackerSectionRows', () => new Promise<SectionPage>(() => {}));
+    const view = mount();
+    await waitFor(() => expect(columns(view)[0]?.count).toBe('140 · 280 pts'));
+    openPaneFind(PANE);
+    setPaneFindQuery(PANE, 'issue');
+    await waitFor(() => expect(columns(view)[0].count).toBe('90 of 140 loaded'));
+    view.unmount();
   });
 });
 

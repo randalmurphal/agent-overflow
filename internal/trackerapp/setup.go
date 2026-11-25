@@ -161,11 +161,15 @@ const setupChangedSentence = "this change was not saved: the project's tracker s
 // StatusGroups is how a project regroups the statuses of one tracker
 // site, as a board read applies it, with its version: a board's view, its
 // section cursors and the totals a patch names carry the version, and a
-// read under another version is refused (ErrStalePage). The zero value
-// regroups nothing, at version "".
+// read under another version is refused (ErrStalePage). leftOut is the
+// statuses it leaves out of counts, which a board view names so that a
+// client adding up rows it holds leaves out the rows the store's totals
+// do. Both come from one site's entry of the setup, so they change
+// together. The zero value regroups nothing, at version "".
 type StatusGroups struct {
 	regroup store.MirrorRegroup
 	version string
+	leftOut []string
 }
 
 // setupGroup is the store's number of the group named name, which a
@@ -571,9 +575,14 @@ func heldOf(setup Setup, raw map[string]json.RawMessage, newer []string, revisio
 	}
 	for _, site := range setup.StatusGroups {
 		groups := make(map[string]int, len(site.Statuses))
+		var leftOut []string
 		for id, name := range site.Statuses {
 			groups[id], _ = setupGroup(name)
+			if groups[id] == store.MirrorGroupLeftOut {
+				leftOut = append(leftOut, id)
+			}
 		}
+		slices.Sort(leftOut)
 		regroup, err := store.NewMirrorRegroup(groups)
 		if err != nil {
 			return nil, fmt.Errorf("trackerapp: the status groups of %s %s: %w", site.Tracker, site.Site, err)
@@ -585,7 +594,7 @@ func heldOf(setup Setup, raw map[string]json.RawMessage, newer []string, revisio
 			return nil, fmt.Errorf("trackerapp: encode the status groups of %s %s: %w", site.Tracker, site.Site, err)
 		}
 		sum := sha256.Sum256(encoded)
-		held.groups[siteKey{site.Tracker, site.Site}] = StatusGroups{regroup: regroup, version: hex.EncodeToString(sum[:8])}
+		held.groups[siteKey{site.Tracker, site.Site}] = StatusGroups{regroup: regroup, version: hex.EncodeToString(sum[:8]), leftOut: leftOut}
 	}
 	return held, nil
 }

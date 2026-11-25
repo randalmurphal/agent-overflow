@@ -385,12 +385,13 @@ func TestStatusGroupsSetChangedAndCleared(t *testing.T) {
 		groups  map[string]string
 		backlog []string
 		all     int
+		leftOut []string
 	}{
 		// To Do counts as done: no To Do row is in the backlog.
-		{"set", map[string]string{"s1": "done"}, nil, 4},
+		{"set", map[string]string{"s1": "done"}, nil, 4, nil},
 		// To Do is left out: its rows are in no backlog and no total.
-		{"changed", map[string]string{"s1": "left_out"}, nil, 1},
-		{"cleared", nil, []string{"10002", "10004"}, 4},
+		{"changed", map[string]string{"s1": "left_out"}, nil, 1, []string{"s1"}},
+		{"cleared", nil, []string{"10002", "10004"}, 4, nil},
 	} {
 		n := m.boardEventCount()
 		setup := Setup{}
@@ -405,8 +406,8 @@ func TestStatusGroupsSetChangedAndCleared(t *testing.T) {
 		if got := rowIssues(v.Sections[0].Rows); !slices.Equal(got, step.backlog) || v.All.Rows != step.all || v.Backlog.Rows != len(step.backlog) {
 			t.Fatalf("%s: backlog %v, all %+v, backlog total %+v", step.name, got, v.All, v.Backlog)
 		}
-		if (v.Groups == "") != (step.groups == nil) {
-			t.Fatalf("%s: groups version %q", step.name, v.Groups)
+		if (v.Groups == "") != (step.groups == nil) || !slices.Equal(v.LeftOut, step.leftOut) {
+			t.Fatalf("%s: groups version %q, left out %v", step.name, v.Groups, v.LeftOut)
 		}
 	}
 	n := m.boardEventCount()
@@ -443,6 +444,9 @@ func TestALeftOutStatusShowsItsCardsAndCountsNothing(t *testing.T) {
 	nine := SectionTotal{Rows: 3, Estimate: 9}
 	if len(v.Sections[0].Rows) != 4 || v.Sprints[0].Total != nine || v.All != nine || v.Columns[0].Total != nine {
 		t.Fatalf("the sprint shows %d cards; sprint %+v, all %+v, columns %+v", len(v.Sections[0].Rows), v.Sprints[0].Total, v.All, v.Columns)
+	}
+	if !slices.Equal(v.LeftOut, []string{"s2"}) {
+		t.Fatalf("the view names %v as left out, want s2", v.LeftOut)
 	}
 	if got := rowIssues(v.Sections[1].Rows); !slices.Equal(got, []string{"10004"}) || v.Columns[1].Total != (SectionTotal{}) {
 		t.Fatalf("the left-out column shows %v and counts %+v", got, v.Columns[1].Total)

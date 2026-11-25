@@ -29,12 +29,12 @@ function formatTotal(total: SectionTotal, unit: string): string {
 }
 
 /** A column's header count: its total while unfiltered; under a filter the
- * cards that match, or how much of the column has loaded while it has
- * more. */
+ * cards that match, or how much of the column's counted rows has loaded
+ * while it has more. */
 export function columnCount(col: ScreenColumn, matching: number, filtered: boolean, unit: string): string {
   if (filtered) {
     if (col.moreFrom === null) return String(matching);
-    return col.total ? `${col.rows.length} of ${col.total.rows} loaded` : `${col.rows.length} loaded`;
+    return col.total ? `${col.counted} of ${col.total.rows} loaded` : `${col.counted} loaded`;
   }
   return col.total ? formatTotal(col.total, unit) : String(col.rows.length);
 }

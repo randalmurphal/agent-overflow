@@ -136,14 +136,17 @@ type FailureView struct {
 // forward, BoardPatch). Groups is the version of the status groups the
 // project gives the board's site (StatusGroups), which the sections and
 // totals were read with: a client sends it back in its cursors and in the
-// totals it holds (TotalsAt). Project is empty for a board of no one
-// project.
+// totals it holds (TotalsAt). LeftOut is the statuses those groups leave
+// out of counts: a total the client adds up from rows it holds leaves out
+// the rows in them, as the view's totals do. Project is empty for a board
+// of no one project.
 type BoardView struct {
 	ID             string        `json:"id"`
 	Lifetime       int64         `json:"lifetime"`
 	Revision       int64         `json:"revision"`
 	TotalsRevision int64         `json:"totals_revision"`
 	Groups         string        `json:"groups,omitempty"`
+	LeftOut        []string      `json:"left_out,omitempty"`
 	Name           string        `json:"name"`
 	Project        string        `json:"project,omitempty"`
 	PlansSprints   bool          `json:"plans_sprints"`
@@ -261,7 +264,7 @@ func (s *Service) Board(scope Scope, groups StatusGroups, sections []Section) (B
 	}
 	v := boardViewOf(snap.Structure, snap.Counts, names)
 	v.Lifetime, v.Revision, v.TotalsRevision = snap.Structure.Lifetime, snap.Counts.Revision, snap.Counts.TotalsRevision
-	v.Groups = groups.version
+	v.Groups, v.LeftOut = groups.version, groups.leftOut
 	sync, _, err := s.store.GetMirrorSync(root, string(scope.Board), s.steady().UnixMilli())
 	if err != nil {
 		return BoardView{}, fmt.Errorf("trackerapp: read the sync state of board %s: %w", scope.Board, err)
