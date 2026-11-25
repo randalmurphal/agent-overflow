@@ -1206,7 +1206,7 @@ func (s *Subscriber) deliver(e Event, policy ringDeliveryPolicy) {
 	if !s.accepts(e.Channel) {
 		return
 	}
-	if lb := s.loopback.Load(); lb != nil && !(*lb || policy.remoteVisible) {
+	if lb := s.loopback.Load(); lb != nil && !*lb && !policy.remoteVisible {
 		return
 	}
 	if scopes := s.scopes.Load(); scopes != nil && scopes.active && scopes.granted&policy.scopeBit == 0 {

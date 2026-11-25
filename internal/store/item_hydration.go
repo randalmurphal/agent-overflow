@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"fmt"
+	"slices"
 )
 
 // itemHydrationColumns is the canonical frontend-bound Item projection with
@@ -257,9 +258,7 @@ func hydrateSelectedSetWithBranches(q sqlQueryer, threadID, noForkSQL, forkSQL, 
 	if err != nil {
 		return nil, fmt.Errorf("store: query hydrated timeline items for %s: %w", threadID, err)
 	}
-	args := make([]any, 0, len(setArgs)+len(branchArgs))
-	args = append(args, setArgs...)
-	args = append(args, branchArgs...)
+	args := slices.Concat(setArgs, branchArgs)
 	rows, err := q.Query(set+branches, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: query hydrated timeline items for %s: %w", threadID, err)
