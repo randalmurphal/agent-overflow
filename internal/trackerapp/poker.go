@@ -250,12 +250,11 @@ func (s *Service) readPoker(ctx context.Context, tp *ticketPump) {
 		return
 	}
 	next := ps.view
-	switch {
-	case err == nil:
+	if err == nil {
 		next = read
 		next.ReadAt = began
 		ps.delay, ps.due = 0, s.now().Add(s.cadence.poker())
-	default:
+	} else {
 		next.Failure = s.pokerFailureView(tp.kind, err)
 		ps.delay = pump.NextDelay(ps.delay, s.cadence.RetryBase, s.cadence.poker())
 		ps.due = s.now().Add(ps.delay)
