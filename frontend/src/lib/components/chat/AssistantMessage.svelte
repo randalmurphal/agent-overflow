@@ -358,7 +358,7 @@
   });
 </script>
 
-<div class="group {discarded ? 'discarded-row' : ''}" data-item-kind={item.kind}>
+<div class="ao-assistant-msg {discarded ? 'discarded-row' : ''}" data-item-kind={item.kind}>
   <div
     bind:this={bodyRoot}
     class="text-fg-muted"
@@ -420,7 +420,7 @@
         class="flex h-7 w-7 shrink-0 items-center justify-center"
       >
         {#if canCopy}
-          <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100 compact:opacity-100">
+          <span class="ao-hover-reveal opacity-0 transition-opacity duration-150 focus-within:opacity-100 compact:opacity-100">
             <CopyButton
               text={item.summary}
               write={copyMarkdownToClipboard}
@@ -431,7 +431,7 @@
         {/if}
       </span>
       {#if canReadAloud}
-        <span class="flex shrink-0 items-center transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100 compact:opacity-100 {readingThis ? 'opacity-100' : 'opacity-0'}">
+        <span class="ao-hover-reveal flex shrink-0 items-center transition-opacity duration-150 focus-within:opacity-100 compact:opacity-100 {readingThis ? 'opacity-100' : 'opacity-0'}">
           <ReadAloudButton {readingKey} markdown={item.summary} threadId={item.threadId} />
         </span>
       {/if}

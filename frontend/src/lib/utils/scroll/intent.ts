@@ -21,7 +21,7 @@ import { nowMs } from './time';
 import { trace } from './trace';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
 import { canConsumeDelta, scrollDeltaConsumedBelow, touchDragConsumedBelow, wheelConsumedBelow } from './wheelAttribution';
-import { recordScrollEventObservation } from './eventObservation';
+import { observedScrollTopFromEvent, recordScrollEventObservation } from './eventObservation';
 import { wheelDeltaPx } from './overlayScrollbar';
 import { isMacPlatform } from '../platform';
 
@@ -702,7 +702,8 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     // nested-clip spring frame (bug-report-20260913T200555Z: 99.5% of the
     // pane's untagged scroll events had an unchanged scrollTop).
     if (event.target !== scrollEl) return;
-    const scrollTopAtEvent = scrollEl.scrollTop;
+    const observed = observedScrollTopFromEvent(event);
+    const scrollTopAtEvent = observed ?? scrollEl.scrollTop;
     // Bug A fix (Change 1): capture distance-from-bottom synchronously
     // at scroll-event time. The deferred re-stick check (below) must
     // use THIS value, not re-read distanceFromBottom() from inside the
@@ -717,7 +718,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     // per-token duplicate budget absorbs browser-coalesced event
     // duplicates for the same write.
     const tagged = consumeProgrammaticScrollEventToken(scrollTopAtEvent);
-    recordScrollEventObservation(event, scrollTopAtEvent);
+    if (observed === undefined) recordScrollEventObservation(event, scrollTopAtEvent);
     // Tagged programmatic write — bail synchronously without scheduling
     // the deferral timer. Steady-state streaming fires a sync-pin write
     // on every contentRO positive delta; allocating a closure + timer

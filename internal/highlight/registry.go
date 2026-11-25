@@ -38,6 +38,7 @@ const (
 	LangMake
 	LangXML
 	LangPowerShell
+	langCount
 )
 
 // langNames is the canonical wire name per Lang (shiki-compatible so
@@ -208,6 +209,18 @@ func LangFromPath(path string) Lang {
 	return LangPlaintext
 }
 
+var nameToLang = func() map[string]Lang {
+	m := make(map[string]Lang, len(langNames)+len(nameAliases))
+	for alias, lang := range nameAliases {
+		m[alias] = lang
+	}
+	// Canonical names take precedence over aliases, matching the prior scan order.
+	for lang, canonical := range langNames {
+		m[canonical] = lang
+	}
+	return m
+}()
+
 // LangFromName maps a language name (markdown fence info string or
 // canonical name) to a Lang. Unknown names return LangPlaintext.
 func LangFromName(name string) Lang {
@@ -215,12 +228,7 @@ func LangFromName(name string) Lang {
 	if name == "" {
 		return LangPlaintext
 	}
-	for lang, canonical := range langNames {
-		if name == canonical {
-			return lang
-		}
-	}
-	if lang, ok := nameAliases[name]; ok {
+	if lang, ok := nameToLang[name]; ok {
 		return lang
 	}
 	return LangPlaintext

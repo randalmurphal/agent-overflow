@@ -67,10 +67,7 @@
 <div
   bind:this={elementRef}
   data-virtual-row
-  style:contain="layout style"
-  style:position="absolute"
-  style:width="100%"
-  style:left="0px"
+  style="contain: layout style; position: absolute; width: 100%; left: 0px;"
   style:top="{offset}px"
   style:visibility={measured ? undefined : 'hidden'}
 >

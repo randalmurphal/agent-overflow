@@ -109,6 +109,14 @@ export function findHighlightName(paneId: string): string {
 
 let sheet: CSSStyleSheet | null = null;
 const ruleUsers = new Map<string, number>();
+// Keep ::highlight(name) rules in the shared constructed stylesheet ONLY while
+// at least one FindHighlighter is mounted (so typing/clearing queries while the
+// find bar is open never mutates adoptedStyleSheets or sheet.cssRules), and
+// detach the stylesheet from document.adoptedStyleSheets once the last
+// highlighter disposes. Leaving inactive ::highlight rules permanently in
+// adoptedStyleSheets forces Blink's style engine out of its non-highlight fast
+// path on every UpdateLayoutTree across the entire app.
+const installedRuleNames = new Set<string>();
 
 function ruleTexts(name: string): string[] {
   return [
@@ -117,15 +125,31 @@ function ruleTexts(name: string): string[] {
   ];
 }
 
-function retainRules(name: string): void {
-  const users = ruleUsers.get(name) ?? 0;
-  ruleUsers.set(name, users + 1);
-  if (users > 0) return;
+function ensureSheetInstalled(): CSSStyleSheet {
   if (!sheet) {
     sheet = new CSSStyleSheet();
     document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
   }
-  for (const text of ruleTexts(name)) sheet.insertRule(text, sheet.cssRules.length);
+  return sheet;
+}
+
+function retainRules(name: string): void {
+  const users = ruleUsers.get(name) ?? 0;
+  ruleUsers.set(name, users + 1);
+  if (installedRuleNames.has(name)) return;
+  const s = ensureSheetInstalled();
+  for (const text of ruleTexts(name)) s.insertRule(text, s.cssRules.length);
+  installedRuleNames.add(name);
+}
+
+function deleteRulesFromSheet(name: string): void {
+  installedRuleNames.delete(name);
+  if (!sheet) return;
+  const prefixes = [`::highlight(${name})`, `::highlight(${name}-current)`];
+  for (let i = sheet.cssRules.length - 1; i >= 0; i -= 1) {
+    const text = sheet.cssRules[i].cssText;
+    if (prefixes.some((prefix) => text.startsWith(prefix))) sheet.deleteRule(i);
+  }
 }
 
 function releaseRules(name: string): void {
@@ -135,11 +159,12 @@ function releaseRules(name: string): void {
     return;
   }
   ruleUsers.delete(name);
-  if (!sheet) return;
-  const prefixes = [`::highlight(${name})`, `::highlight(${name}-current)`];
-  for (let i = sheet.cssRules.length - 1; i >= 0; i -= 1) {
-    const text = sheet.cssRules[i].cssText;
-    if (prefixes.some((prefix) => text.startsWith(prefix))) sheet.deleteRule(i);
+  deleteRulesFromSheet(name);
+  if (ruleUsers.size === 0 && sheet) {
+    const detach = sheet;
+    sheet = null;
+    installedRuleNames.clear();
+    document.adoptedStyleSheets = document.adoptedStyleSheets.filter((s) => s !== detach);
   }
 }
 
@@ -180,6 +205,24 @@ function firstDirectSummary(details: Element): Element | null {
   return null;
 }
 
+const SIMPLE_ATTR_SELECTOR_RE = /^\[([A-Za-z0-9_-]+)\]$/;
+
+function compileSelectorMatcher(selector: string | undefined): ((el: Element) => boolean) | null {
+  if (!selector) return null;
+  const simple = SIMPLE_ATTR_SELECTOR_RE.exec(selector);
+  if (simple) {
+    const attr = simple[1];
+    return (el: Element) => el.hasAttribute(attr);
+  }
+  return (el: Element) => el.matches(selector);
+}
+
+const PLAIN_VISIBLE_TAGS = new Set([
+  'A', 'B', 'BLOCKQUOTE', 'CODE', 'DEL', 'EM', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+  'I', 'INS', 'KBD', 'LI', 'MARK', 'OL', 'P', 'PRE', 'S', 'SMALL', 'SPAN',
+  'STRONG', 'SUB', 'SUP', 'TABLE', 'TBODY', 'TD', 'TFOOT', 'TH', 'THEAD', 'TR', 'UL',
+]);
+
 // Single top-down DFS replacing TreeWalker + per-text-node closest() chains.
 // Inherits skip, closed-<details>, row, region and block context down the tree
 // and prunes skipped or display:none subtrees immediately.
@@ -194,9 +237,31 @@ function collectSegments(
 ): Segment[] {
   if (root.parentElement?.closest(SKIP_SELECTOR)) return [];
 
+  const rootDetailsHidden = hiddenByDetails(root);
+  if (rootDetailsHidden && !keepHidden) return [];
+
+  const matchesRow = rowsOnly ? compileSelectorMatcher(rowSelector) : null;
+  const matchesRegion = compileSelectorMatcher(textSelector);
+
   const checkVis = (element: Element, parentLaidOutVisible: boolean): boolean => {
     if (!laidOut) return true;
     if (!parentLaidOutVisible) return false;
+    // Bare prose/inline elements without classes/style/hidden and syntax token
+    // spans (`styles/syntax.css`) never set display:none or content-visibility:hidden.
+    // Skipping Blink's checkVisibility() on them avoids thousands of C++ layout
+    // visibility queries per find walk over markdown and code-heavy threads.
+    if (!element.hasAttribute('style') && !element.hasAttribute('hidden')) {
+      const cls = element.className;
+      if (typeof cls === 'string') {
+        const tag = element.tagName;
+        if (
+          (cls === '' && PLAIN_VISIBLE_TAGS.has(tag)) ||
+          (tag === 'SPAN' && cls.startsWith('syntax-'))
+        ) {
+          return true;
+        }
+      }
+    }
     if (typeof element.checkVisibility !== 'function' || element.checkVisibility()) return true;
     return getComputedStyle(element).display === 'contents';
   };
@@ -208,9 +273,8 @@ function collectSegments(
     getComputedStyle(rootParent).display === 'contents'
   );
   const rootBlock = root.closest(BLOCK_SELECTOR);
-  const rootRow = rowsOnly && rowSelector && root.matches(rowSelector) ? root : null;
-  const rootRegion = textSelector && root.matches(textSelector) ? root : null;
-  const rootDetailsHidden = hiddenByDetails(root);
+  const rootRow = matchesRow && matchesRow(root) ? root : null;
+  const rootRegion = matchesRegion && matchesRegion(root) ? root : null;
 
   const segments: Segment[] = [];
   let current: Segment | null = null;
@@ -238,6 +302,9 @@ function collectSegments(
     } else if (skip || (!isRoot && (tag === 'IMG' || tag === 'BR'))) {
       current = null;
       return;
+    } else if (element.firstChild === null) {
+      // Empty leaf element cannot hold text or descendants; skip layout visibility checks.
+      return;
     }
 
     const elemLaidOutVisible = checkVis(element, parentLaidOutVisible);
@@ -249,10 +316,10 @@ function collectSegments(
 
     const nextRow = isRoot
       ? row
-      : (rowsOnly && rowSelector && element.matches(rowSelector) ? element : row);
+      : (matchesRow && matchesRow(element) ? element : row);
     const nextRegion = isRoot
       ? region
-      : (textSelector && element.matches(textSelector) ? element : region);
+      : (matchesRegion && matchesRegion(element) ? element : region);
     const nextBlock = isRoot
       ? block
       : (BLOCK_TAGS.has(tag) ? element : block);
@@ -294,6 +361,7 @@ function collectSegments(
       } else if (nodeType === 1 /* Node.ELEMENT_NODE */) {
         const childEl = child as Element;
         const childDetailsHidden = detailsHidden || (closedDetails && childEl !== visibleSummary);
+        if (childDetailsHidden && !keepHidden) continue;
         visit(childEl, nextRow, nextRegion, nextBlock, childDetailsHidden, elemLaidOutVisible, false);
       }
     }
@@ -386,6 +454,11 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
   let rulesHeld = false;
   let disposed = false;
 
+  if (paints) {
+    retainRules(name);
+    rulesHeld = true;
+  }
+
   // Indexes of the current matches.
   function currentIndexes(): number[] {
     const now = typeof current === 'function' ? current() : current;
@@ -453,10 +526,6 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
     onToggle = null;
     scheduler?.dispose();
     scheduler = null;
-    if (rulesHeld) {
-      releaseRules(name);
-      rulesHeld = false;
-    }
   }
 
   return {
@@ -485,6 +554,10 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
       matches = [];
       paint();
       unfollow();
+      if (rulesHeld) {
+        releaseRules(name);
+        rulesHeld = false;
+      }
       disposed = true;
     },
   };

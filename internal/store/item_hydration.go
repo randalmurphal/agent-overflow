@@ -51,32 +51,35 @@ func importedItemHydrationColumns(thread, rev string) string {
 	)
 }
 
-// resolveSelectedTimelineSQL renders the branches that resolve a
-// MATERIALIZED `selected(id)` set to rows of one thread, each through the
-// physical source that owns the id:
-//
-//   - local rows probe items(thread_id,id) and payloads(thread_id,id);
-//   - imported rows probe the item ID index, check the owning chunk's thread
-//     membership, then resolve the chunk-scoped payload;
-//   - a local payload overlay wins over its immutable imported payload, which
-//     preserves timeline_payloads' copy-on-write shadowing contract;
-//   - a pointer fork's inherited rows repeat the first two branches against
-//     each lineage level's owner, under the same visibility rule as the
-//     timeline_items lineage arms. A payload resolves in the thread that owns
-//     the row, which is where the fork's copy-on-write put it. Only a fork
-//     renders these branches: on every other thread they would only make
-//     each read's statement several times as costly to prepare.
-//
-// local and imported render a branch's projection from its logical thread
-// id and row revision expressions. localJoin is a join the own local
-// branch's projection reads (servedItemJoin for served meta), or "". It
-// returns the branches and their bind values, which follow the
-// selection's.
-func resolveSelectedTimelineSQL(q sqlQueryer, threadID string, local, imported func(thread, rev string) string, localJoin, orderBy string) (string, []any, error) {
-	depth, err := forkLineageDepth(q, threadID)
-	if err != nil {
-		return "", nil, err
-	}
+// localStoredItemHydrationColumns is localItemHydrationColumns without
+// subagentServedMetaSQL, for callers that read a row to write it back.
+func localStoredItemHydrationColumns(thread, rev string) string {
+	return itemHydrationColumns(
+		thread,
+		"COALESCE(payloads.kind, '')",
+		"COALESCE(payloads.meta, '')",
+		"COALESCE(payloads.preview_spans, '')",
+		"items.meta",
+		streamEndSQL,
+		rev,
+	)
+}
+
+// importedStoredItemHydrationColumns mirrors importedItemHydrationColumns with
+// raw stored meta.
+func importedStoredItemHydrationColumns(thread, rev string) string {
+	return itemHydrationColumns(
+		thread,
+		"COALESCE(local_payloads.kind, imported_payloads.kind, '')",
+		"COALESCE(local_payloads.meta, imported_payloads.meta, '')",
+		"COALESCE(local_payloads.preview_spans, imported_payloads.preview_spans, '')",
+		"items.meta",
+		"NULL",
+		rev,
+	)
+}
+
+func buildSelectedTimelineBranches(local, imported func(thread, rev string) string, localJoin, orderBy string, forked bool) string {
 	sql := `
 		SELECT ` + local("items.thread_id", "items.rev") + `
 		  FROM selected
@@ -96,8 +99,7 @@ func resolveSelectedTimelineSQL(q sqlQueryer, threadID string, local, imported f
 		  LEFT JOIN thread_import_item_overrides AS overrides
 		    ON overrides.thread_id = refs.thread_id AND overrides.item_id = items.id
 		 WHERE refs.thread_id = ? AND overrides.item_id IS NULL`
-	args := []any{threadID, threadID}
-	if depth > 0 {
+	if forked {
 		sql += `
 		UNION ALL
 		SELECT ` + local("l.thread_id", importedItemRevExpr) + `
@@ -124,10 +126,61 @@ func resolveSelectedTimelineSQL(q sqlQueryer, threadID string, local, imported f
 		    ON overrides.thread_id = refs.thread_id AND overrides.item_id = items.id
 		 WHERE l.thread_id = ? AND overrides.item_id IS NULL
 		   AND ` + inheritedItemVisibleSQL
-		args = append(args, threadID, threadID)
 	}
 	return sql + `
-		 ORDER BY ` + orderBy, args, nil
+		 ORDER BY ` + orderBy
+}
+
+// Precomputed timeline hydration branches eliminate per-query fmt.Sprintf and
+// SQL string concatenation across the hot read and write-read paths.
+var (
+	hydratedTimelineBranchesNoFork = buildSelectedTimelineBranches(localItemHydrationColumns, importedItemHydrationColumns, servedItemJoin, "3, 4", false)
+	hydratedTimelineBranchesFork   = buildSelectedTimelineBranches(localItemHydrationColumns, importedItemHydrationColumns, servedItemJoin, "3, 4", true)
+	storedTimelineBranchesNoFork   = buildSelectedTimelineBranches(localStoredItemHydrationColumns, importedStoredItemHydrationColumns, "", "3, 4", false)
+	storedTimelineBranchesFork     = buildSelectedTimelineBranches(localStoredItemHydrationColumns, importedStoredItemHydrationColumns, "", "3, 4", true)
+)
+
+func resolvePrecomputedTimelineSQL(q sqlQueryer, threadID, noForkSQL, forkSQL string) (string, []any, error) {
+	depth, err := forkLineageDepth(q, threadID)
+	if err != nil {
+		return "", nil, err
+	}
+	if depth > 0 {
+		return forkSQL, []any{threadID, threadID, threadID, threadID}, nil
+	}
+	return noForkSQL, []any{threadID, threadID}, nil
+}
+
+// resolveSelectedTimelineSQL renders the branches that resolve a
+// MATERIALIZED `selected(id)` set to rows of one thread, each through the
+// physical source that owns the id:
+//
+//   - local rows probe items(thread_id,id) and payloads(thread_id,id);
+//   - imported rows probe the item ID index, check the owning chunk's thread
+//     membership, then resolve the chunk-scoped payload;
+//   - a local payload overlay wins over its immutable imported payload, which
+//     preserves timeline_payloads' copy-on-write shadowing contract;
+//   - a pointer fork's inherited rows repeat the first two branches against
+//     each lineage level's owner, under the same visibility rule as the
+//     timeline_items lineage arms. A payload resolves in the thread that owns
+//     the row, which is where the fork's copy-on-write put it. Only a fork
+//     renders these branches: on every other thread they would only make
+//     each read's statement several times as costly to prepare.
+//
+// local and imported render a branch's projection from its logical thread
+// id and row revision expressions. localJoin is a join the own local
+// branch's projection reads (servedItemJoin for served meta), or "". It
+// returns the branches and their bind values, which follow the
+// selection's.
+func resolveSelectedTimelineSQL(q sqlQueryer, threadID string, local, imported func(thread, rev string) string, localJoin, orderBy string) (string, []any, error) {
+	depth, err := forkLineageDepth(q, threadID)
+	if err != nil {
+		return "", nil, err
+	}
+	if depth > 0 {
+		return buildSelectedTimelineBranches(local, imported, localJoin, orderBy, true), []any{threadID, threadID, threadID, threadID}, nil
+	}
+	return buildSelectedTimelineBranches(local, imported, localJoin, orderBy, false), []any{threadID, threadID}, nil
 }
 
 // queryHydratedTimelineItems selects logical item ids first, then resolves each
@@ -148,11 +201,24 @@ func queryHydratedTimelineItems(
 	selectedSQL string,
 	selectedArgs ...any,
 ) ([]Item, error) {
-	branches, branchArgs, err := resolveSelectedTimelineSQL(q, threadID, localItemHydrationColumns, importedItemHydrationColumns, servedItemJoin, "3, 4")
+	return queryTimelineItemsWithBranches(q, threadID, hydratedTimelineBranchesNoFork, hydratedTimelineBranchesFork, selectedSQL, selectedArgs...)
+}
+
+func queryTimelineItemsWithBranches(
+	q sqlQueryer,
+	threadID string,
+	noForkSQL string,
+	forkSQL string,
+	selectedSQL string,
+	selectedArgs ...any,
+) ([]Item, error) {
+	branches, branchArgs, err := resolvePrecomputedTimelineSQL(q, threadID, noForkSQL, forkSQL)
 	if err != nil {
 		return nil, fmt.Errorf("store: query hydrated timeline items for %s: %w", threadID, err)
 	}
-	args := append(append([]any{}, selectedArgs...), branchArgs...)
+	args := make([]any, 0, len(selectedArgs)+len(branchArgs))
+	args = append(args, selectedArgs...)
+	args = append(args, branchArgs...)
 	rows, err := q.Query(`
 		WITH selected(id) AS MATERIALIZED (
 			`+selectedSQL+`
@@ -164,16 +230,9 @@ func queryHydratedTimelineItems(
 	}
 	defer rows.Close()
 
-	items := []Item{}
-	for rows.Next() {
-		item, err := scanItemRow(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: scan hydrated timeline item row: %w", err)
-		}
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate hydrated timeline items for %s: %w", threadID, err)
+	items, err := scanItemRows(rows, 0)
+	if err != nil {
+		return nil, fmt.Errorf("store: scan hydrated timeline item row for %s: %w", threadID, err)
 	}
 	return items, nil
 }
@@ -184,7 +243,27 @@ func queryOneHydratedTimelineItem(
 	selectedSQL string,
 	selectedArgs ...any,
 ) (Item, bool, error) {
-	items, err := queryHydratedTimelineItems(q, threadID, selectedSQL, selectedArgs...)
+	return queryOneTimelineItemWithBranches(q, threadID, hydratedTimelineBranchesNoFork, hydratedTimelineBranchesFork, selectedSQL, selectedArgs...)
+}
+
+func queryOneStoredTimelineItem(
+	q sqlQueryer,
+	threadID string,
+	selectedSQL string,
+	selectedArgs ...any,
+) (Item, bool, error) {
+	return queryOneTimelineItemWithBranches(q, threadID, storedTimelineBranchesNoFork, storedTimelineBranchesFork, selectedSQL, selectedArgs...)
+}
+
+func queryOneTimelineItemWithBranches(
+	q sqlQueryer,
+	threadID string,
+	noForkSQL string,
+	forkSQL string,
+	selectedSQL string,
+	selectedArgs ...any,
+) (Item, bool, error) {
+	items, err := queryTimelineItemsWithBranches(q, threadID, noForkSQL, forkSQL, selectedSQL, selectedArgs...)
 	if err != nil {
 		return Item{}, false, err
 	}

@@ -189,6 +189,11 @@ func importedActivityScanColumns(_, rev string) string {
 	)
 }
 
+var (
+	activityScanBranchesNoFork = buildSelectedTimelineBranches(localActivityScanColumns, importedActivityScanColumns, "", "2, 3", false)
+	activityScanBranchesFork   = buildSelectedTimelineBranches(localActivityScanColumns, importedActivityScanColumns, "", "2, 3", true)
+)
+
 // queryActivityScanRows resolves ids to scan rows through the physical
 // branch that owns each one, in (turn_index, item_index) order. It is
 // queryHydratedTimelineItems' narrow sibling and joins payloads exactly
@@ -203,11 +208,13 @@ func queryActivityScanRows(
 	selectedSQL string,
 	selectedArgs ...any,
 ) ([]activityScanRow, error) {
-	branches, branchArgs, err := resolveSelectedTimelineSQL(q, threadID, localActivityScanColumns, importedActivityScanColumns, "", "2, 3")
+	branches, branchArgs, err := resolvePrecomputedTimelineSQL(q, threadID, activityScanBranchesNoFork, activityScanBranchesFork)
 	if err != nil {
 		return nil, fmt.Errorf("store: query activity scan rows for %s: %w", threadID, err)
 	}
-	args := append(append([]any{}, selectedArgs...), branchArgs...)
+	args := make([]any, 0, len(selectedArgs)+len(branchArgs))
+	args = append(args, selectedArgs...)
+	args = append(args, branchArgs...)
 	rows, err := q.Query(`
 		WITH selected(id) AS MATERIALIZED (
 			`+selectedSQL+`

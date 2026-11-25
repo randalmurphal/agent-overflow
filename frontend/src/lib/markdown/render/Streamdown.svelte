@@ -16,6 +16,7 @@
 		type IncrementalLexPath,
 		updateParseBlockStringMaterialization
 	} from '../parser/index';
+	import { acquireCachedHtmlFragment } from './htmlFragmentCache';
 	import { renderStaticTokenHtml } from './staticHtml';
 	import { reconcileParagraphGapsInRoot } from './paragraphSpacing';
 	import { onMount, untrack } from 'svelte';
@@ -445,6 +446,22 @@
 		}
 		prevPending = curr;
 	});
+	const staticCompactHtml = $derived(
+		isStatic && compactStaticHtml
+			? renderStaticTokenHtml(lex(content, streamdown.extensions), streamdown, '', alignStart)
+			: null
+	);
+	$effect.pre(() => {
+		const html = staticCompactHtml;
+		const root = element;
+		if (!root || html === null) return;
+		const fragment = acquireCachedHtmlFragment(root.ownerDocument, html);
+		const inserted = Array.from(fragment.childNodes);
+		root.append(fragment);
+		return () => {
+			for (let i = 0; i < inserted.length; i++) inserted[i].remove();
+		};
+	});
 </script>
 
 <div
@@ -453,12 +470,7 @@
 	data-streamdown-last-block={lastRenderedBlockType}
 >
 	{#if isStatic}
-		{@const compactHtml = compactStaticHtml
-			? renderStaticTokenHtml(lex(content, streamdown.extensions), streamdown, id, alignStart)
-			: null}
-		{#if compactHtml !== null}
-			{@html compactHtml}
-		{:else}
+		{#if staticCompactHtml === null}
 			<Block static={isStatic} block={content} align={alignStart} />
 		{/if}
 	{:else}
@@ -468,7 +480,6 @@
 				blocks={blocksState.values}
 				alignments={compactAlignments}
 				revision={blocksState}
-				{id}
 			/>
 		{:else}
 			{#each blocksState.values as block, index (`${id}-block-${index}`)}

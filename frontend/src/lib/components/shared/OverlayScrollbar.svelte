@@ -17,6 +17,7 @@
   // geometry-inferred.
 
   import { canConsumeDelta } from '../../utils/scroll/wheelAttribution';
+  import { observedScrollTopFromEvent } from '../../utils/scroll/eventObservation';
   import {
     readScrollMetrics,
     scrollTopForDrag,
@@ -121,16 +122,23 @@
     }, IDLE_HIDE_MS);
   }
 
-  function sample(sampleTarget = target): void {
+  function applyMetrics(next: ScrollMetrics): void {
+    if (
+      next.scrollTop !== metrics.scrollTop
+      || next.scrollHeight !== metrics.scrollHeight
+      || next.clientHeight !== metrics.clientHeight
+    ) {
+      metrics = next;
+    }
+  }
+
+  function sample(sampleTarget = target, deliveredMetrics?: ScrollMetrics): void {
+    if (deliveredMetrics && trackPx > 0) {
+      applyMetrics(deliveredMetrics);
+      return;
+    }
     if (sampleTarget) {
-      const next = readScrollMetrics(sampleTarget);
-      if (
-        next.scrollTop !== metrics.scrollTop
-        || next.scrollHeight !== metrics.scrollHeight
-        || next.clientHeight !== metrics.clientHeight
-      ) {
-        metrics = next;
-      }
+      applyMetrics(deliveredMetrics ?? readScrollMetrics(sampleTarget));
     }
     if (trackEl) {
       const nextTrackPx = trackEl.clientHeight;
@@ -240,7 +248,7 @@
     // replacement's owner delivers geometry instead of painting the prior
     // target's range as a clickable control for a different surface.
     metrics = EMPTY_METRICS;
-    function onScroll(): void {
+    function onScroll(event: Event): void {
       // A streaming surface pins itself to new content on every chunk, and
       // each pin is a scroll event. Fading on those would mean never fading.
       if (!ownerDrivenPosition?.()) markActive();
@@ -250,7 +258,20 @@
       // turns (measured 2026-08-25: the dominant renderer garbage source).
       // markActive() re-samples on the hidden→visible transition, so the
       // thumb is fresh the frame it can first be seen.
-      if (recentlyActive || dragging) sample();
+      if (recentlyActive || dragging) {
+        const observedTop = observedScrollTopFromEvent(event);
+        if (observedTop !== undefined && metrics.scrollHeight > 0 && trackPx > 0) {
+          if (observedTop !== metrics.scrollTop) {
+            metrics = {
+              scrollTop: observedTop,
+              scrollHeight: metrics.scrollHeight,
+              clientHeight: metrics.clientHeight,
+            };
+          }
+        } else {
+          sample();
+        }
+      }
     }
     el.addEventListener('scroll', onScroll, { passive: true });
     // The surface owner reports both content and viewport geometry after it
@@ -267,19 +288,19 @@
     let disposed = false;
     let sampledGeometry = false;
     let mountFallback: ResizeObserver | undefined;
-    const unsubscribeContentGeometry = contentGeometry.subscribe((scrollable) => {
+    const unsubscribeContentGeometry = contentGeometry.subscribe((scrollable, deliveredMetrics) => {
       if (disposed) return;
       if (!sampledGeometry || recentlyActive || dragging) {
         sampledGeometry = true;
         mountFallback?.disconnect();
         mountFallback = undefined;
-        sample();
+        sample(target, deliveredMetrics);
       } else if (scrollable !== thumb.visible) {
         // Hidden bars keep full position/size geometry quiet, but their hit
         // target still has to appear and disappear when overflow crosses
         // zero. The owner derives this boolean from geometry it already has;
         // only the edge pays a sample and a reactive update.
-        sample();
+        sample(target, deliveredMetrics);
       }
     });
     const initialSampleFrame = requestAnimationFrame(() => {

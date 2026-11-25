@@ -174,6 +174,7 @@
 
   function createStick(): UseStickToBottomController {
     return createUseStickToBottomController({
+      cacheObservedBottomTarget: true,
       liveContentActive: () =>
         isTail && isLiveContentActive(
           performance.now(),

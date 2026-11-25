@@ -80,7 +80,12 @@ export function summarizeRevealDrain(panes: Iterable<RevealDrainPane>): RevealDr
  * arithmetic above is unit-testable without instantiating a pane. The
  * import resolves from the module cache on every call after the first.
  */
+let cachedListPanes: (() => Iterable<RevealDrainPane>) | null = null;
+
 export async function revealDrainStats(): Promise<RevealDrainSummary> {
-  const { listPanes } = await import('../stores/panes.svelte');
-  return summarizeRevealDrain(listPanes());
+  if (!cachedListPanes) {
+    const { listPanes } = await import('../stores/panes.svelte');
+    cachedListPanes = listPanes;
+  }
+  return summarizeRevealDrain(cachedListPanes());
 }

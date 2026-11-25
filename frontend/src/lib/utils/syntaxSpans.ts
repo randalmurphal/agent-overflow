@@ -150,6 +150,8 @@ function syntaxClassName(id: number): string {
  * contract). Run lengths are UTF-8 byte counts; this walk converts
  * them to UTF-16 slice offsets.
  */
+const NON_ASCII_RE = /[^\x00-\x7f]/;
+
 export function spanSegments(text: string, line: EncodedLine | null | undefined): SpanSegment[] {
   const runs = line?.r;
   if (!text) return [];
@@ -165,19 +167,37 @@ export function spanSegments(text: string, line: EncodedLine | null | undefined)
     segments.push({ text: segmentText, className });
   };
   let charIdx = 0;
-  for (let i = 0; i + 1 < runs.length && charIdx < text.length; i += 2) {
-    let bytes = runs[i] ?? 0;
-    const start = charIdx;
-    while (bytes > 0 && charIdx < text.length) {
-      const cp = text.codePointAt(charIdx) as number;
-      bytes -= cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
-      charIdx += cp >= 0x10000 ? 2 : 1;
-    }
-    if (charIdx > start) {
+  const len = text.length;
+  if (!NON_ASCII_RE.test(text)) {
+    for (let i = 0; i + 1 < runs.length && charIdx < len; i += 2) {
+      const bytes = runs[i] ?? 0;
+      if (bytes <= 0) continue;
+      const start = charIdx;
+      charIdx = start + bytes;
+      if (charIdx > len) charIdx = len;
       appendSegment(text.slice(start, charIdx), syntaxClassName(runs[i + 1] ?? 0));
     }
+  } else {
+    for (let i = 0; i + 1 < runs.length && charIdx < len; i += 2) {
+      let bytes = runs[i] ?? 0;
+      const start = charIdx;
+      while (bytes > 0 && charIdx < len) {
+        const cu = text.charCodeAt(charIdx);
+        if (cu < 0x80) {
+          bytes -= 1;
+          charIdx += 1;
+        } else {
+          const cp = text.codePointAt(charIdx) as number;
+          bytes -= cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+          charIdx += cp >= 0x10000 ? 2 : 1;
+        }
+      }
+      if (charIdx > start) {
+        appendSegment(text.slice(start, charIdx), syntaxClassName(runs[i + 1] ?? 0));
+      }
+    }
   }
-  if (charIdx < text.length) {
+  if (charIdx < len) {
     appendSegment(text.slice(charIdx), '');
   }
   return segments;

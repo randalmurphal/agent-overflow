@@ -40,7 +40,39 @@ import { trace } from './trace';
 import type { ScrollWriteCaller, WarmReason } from './types';
 import { reportFrontendDiagnostic } from '../frontendErrorCapture';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
+import { createAnimationFrameBatcher } from '../animationFrameBatcher';
 import type { ContentGeometrySample } from '../virtual/types';
+
+// Shared 1ms timer + coordinated rAF batcher for resizeDifference clears across
+// all mounted scroll controllers. Coalesces multi-pane streaming frames onto one
+// timer + the existing animation-frame coordinator instead of N separate timers
+// and N raw requestAnimationFrame calls per frame.
+const resizeClearBatcher = createAnimationFrameBatcher('scroll-resize-clear', 'dom-update');
+const pendingResizeClearCallbacks = new Set<() => void>();
+let sharedResizeClearTimer: ReturnType<typeof setTimeout> | null = null;
+
+function flushSharedResizeClearTimer(): void {
+  sharedResizeClearTimer = null;
+  if (pendingResizeClearCallbacks.size === 0) return;
+  const callbacks = Array.from(pendingResizeClearCallbacks);
+  pendingResizeClearCallbacks.clear();
+  for (let i = 0; i < callbacks.length; i++) callbacks[i]();
+}
+
+function enqueueCoalescedResizeClear(cb: () => void): void {
+  pendingResizeClearCallbacks.add(cb);
+  if (sharedResizeClearTimer === null) {
+    sharedResizeClearTimer = setTimeout(flushSharedResizeClearTimer, RESIZE_CLEAR_PADDING_MS);
+  }
+}
+
+function cancelCoalescedResizeClear(cb: () => void): void {
+  if (!pendingResizeClearCallbacks.delete(cb)) return;
+  if (pendingResizeClearCallbacks.size === 0 && sharedResizeClearTimer !== null) {
+    clearTimeout(sharedResizeClearTimer);
+    sharedResizeClearTimer = null;
+  }
+}
 
 // ResizeObserver width jitter at or below ~1 CSS px is measurement noise,
 // not a reflow: fractional-DPR displays report single-device-pixel wobble
@@ -280,7 +312,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   let coldLoadSettleUntil = 0;
   let resizeDifference = 0;
   let resizeClearSentinel = 0;
-  let resizeClearTimer: ReturnType<typeof setTimeout> | null = null;
+  let resizeClearPending = false;
   let resizeClearFrame: number | null = null;
   let resizeClearGeneration = 0;
   let resizeCorrelatedUntaggedScrollBudget = 0;
@@ -308,33 +340,47 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   // after the write, but only if no newer stamp replaced the sentinel in
   // the meantime. The delay lets the scroll event fired by the paired
   // layout change observe resizeDifference !== 0 and classify as layout.
+  function onResizeClearTimer(): void {
+    resizeClearPending = false;
+    const generation = resizeClearGeneration;
+    const expectedSentinel = resizeClearSentinel;
+    const commit = () => {
+      if (generation !== resizeClearGeneration) return;
+      resizeClearFrame = null;
+      if (resizeDifference === expectedSentinel) {
+        resizeDifference = 0;
+        resizeCorrelatedUntaggedScrollBudget = 0;
+      }
+    };
+    resizeClearFrame = typeof requestAnimationFrame === 'function'
+      ? resizeClearBatcher.request(commit)
+      : (setTimeout(commit, 0) as unknown as number);
+  }
+
   function cancelResizeDifferenceClear(): void {
     resizeClearGeneration += 1;
-    if (resizeClearTimer !== null) clearTimeout(resizeClearTimer);
-    if (resizeClearFrame !== null) cancelAnimationFrame(resizeClearFrame);
-    resizeClearTimer = null;
-    resizeClearFrame = null;
+    if (resizeClearPending) {
+      resizeClearPending = false;
+      cancelCoalescedResizeClear(onResizeClearTimer);
+    }
+    if (resizeClearFrame !== null) {
+      if (typeof cancelAnimationFrame === 'function') {
+        resizeClearBatcher.cancel(resizeClearFrame);
+      } else {
+        clearTimeout(resizeClearFrame);
+      }
+      resizeClearFrame = null;
+    }
   }
 
   function scheduleResizeDifferenceClear(sentinel: number): void {
     resizeClearSentinel = sentinel;
     // Coalesce burst stamps arriving within the same 1ms timer window without
     // churning clearTimeout+setTimeout on every streaming beat.
-    if (resizeClearTimer !== null) return;
+    if (resizeClearPending) return;
     cancelResizeDifferenceClear();
-    const generation = resizeClearGeneration;
-    resizeClearTimer = setTimeout(() => {
-      resizeClearTimer = null;
-      const expectedSentinel = resizeClearSentinel;
-      resizeClearFrame = requestAnimationFrame(() => {
-        if (generation !== resizeClearGeneration) return;
-        resizeClearFrame = null;
-        if (resizeDifference === expectedSentinel) {
-          resizeDifference = 0;
-          resizeCorrelatedUntaggedScrollBudget = 0;
-        }
-      });
-    }, RESIZE_CLEAR_PADDING_MS);
+    resizeClearPending = true;
+    enqueueCoalescedResizeClear(onResizeClearTimer);
   }
 
   function clearWarmupTimers(): void {

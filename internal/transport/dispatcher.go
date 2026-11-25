@@ -4,6 +4,7 @@ import (
 	"agent-overflow/internal/buildvariant"
 	"agent-overflow/internal/dispatchrefusal"
 	"agent-overflow/internal/errorsx"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -319,11 +320,32 @@ func (d *Dispatcher) ResolveForOrigin(id uint32, name string, isLoopback bool) (
 // answers with the method's own error text and wrap chain on every origin.
 // Panic values stay in the log; their frame carries only the reference.
 func (d *Dispatcher) Invoke(ctx context.Context, m *Method, params []json.RawMessage) (result json.RawMessage, frameErr *FrameError) {
+	results, fe := d.invokeRaw(ctx, m, params)
+	if fe != nil {
+		return nil, fe
+	}
+	return d.processResults(m, results)
+}
+
+// invokeToRPCFrame invokes m and writes its complete ServerFrame JSON
+// ({"type":"rpc","id":...,"result":...}) directly into dst, avoiding
+// intermediate json.Marshal slices and ServerFrame re-marshaling on the hot
+// connection path. Output is byte-identical to json.Marshal(ServerFrame{Type:
+// frameTypeRPC, ID: id, Result: result}).
+func (d *Dispatcher) invokeToRPCFrame(ctx context.Context, m *Method, id string, params []json.RawMessage, dst *bytes.Buffer) *FrameError {
+	results, fe := d.invokeRaw(ctx, m, params)
+	if fe != nil {
+		return fe
+	}
+	return d.processResultsToRPCFrame(m, id, results, dst)
+}
+
+func (d *Dispatcher) invokeRaw(ctx context.Context, m *Method, params []json.RawMessage) (results []reflect.Value, frameErr *FrameError) {
 	defer func() {
 		if r := recover(); r != nil {
 			cid := newCorrelationID()
 			log.Printf("transport: panic in %s (id: %s): %v\n%s", m.FQN, cid, r, debug.Stack())
-			result = nil
+			results = nil
 			frameErr = &FrameError{
 				Code:    ErrCodeInternal,
 				Message: "internal error",
@@ -349,13 +371,10 @@ func (d *Dispatcher) Invoke(ctx context.Context, m *Method, params []json.RawMes
 	// Variadic methods need CallSlice so the trailing slice argument
 	// is treated as the variadic slot in one piece, not iterated. Plain
 	// Call would expect each variadic element as a separate Value.
-	var results []reflect.Value
 	if m.IsVariadic {
-		results = m.fn.CallSlice(args)
-	} else {
-		results = m.fn.Call(args)
+		return m.fn.CallSlice(args), nil
 	}
-	return d.processResults(m, results)
+	return m.fn.Call(args), nil
 }
 
 // buildArgs decodes the json-encoded params array into reflect.Values
@@ -437,60 +456,9 @@ func (d *Dispatcher) buildArgs(ctx context.Context, m *Method, params []json.Raw
 // correlation ID its detail carries, unless it is ordinary application
 // state (CallerAnswer.Expected).
 func (d *Dispatcher) processResults(m *Method, results []reflect.Value) (json.RawMessage, *FrameError) {
-	if m.hasError {
-		errResult := results[len(results)-1]
-		if !errResult.IsNil() {
-			methodErr := errResult.Interface().(error)
-			// Ownership is application state, independent of authorization.
-			// A tiny interface keeps transport free of the store package and
-			// carries only fixed prose plus the operation/owner identities.
-			var transfer interface{ ThreadTransferRef() (string, string, bool) }
-			if errors.As(methodErr, &transfer) {
-				operationID, backendID, moved := transfer.ThreadTransferRef()
-				frame := &FrameError{Code: ErrCodeThreadTransferPending, Message: "This conversation has a pending transfer. Resume or cancel it before continuing.", Transfer: &TransferRef{OperationID: operationID, BackendID: backendID}}
-				if moved {
-					frame.Code, frame.Message = ErrCodeThreadMoved, "This conversation moved to another computer. Open it there to continue."
-				}
-				return nil, frame
-			}
-			if frame, isAuthz := AuthzFrame(methodErr); isAuthz {
-				// The method refused on its ARGUMENTS rather than failing
-				// (authorize.go): a runtime mode the session may not select,
-				// a host-tier settings key. Its message names the scope and
-				// is the whole answer, so it goes out verbatim.
-				return nil, frame
-			}
-			answer := CallerError(methodErr)
-			frame := &FrameError{Code: answer.Code, Message: answer.Message}
-			if answer.Expected {
-				return nil, frame
-			}
-			cid := newCorrelationID()
-			log.Printf("transport: %s returned error (id: %s): %v", m.FQN, cid, methodErr)
-			if answer.Detailed {
-				frame.Detail = &ErrorDetail{Ref: cid, Method: m.Name, At: time.Now().UnixMilli(), Chain: answer.Chain}
-			}
-			// The refused stop names what it would have killed. A tiny
-			// interface for the same reason as the transfer ref above.
-			var agents interface{ RefusedBackgroundAgents() json.RawMessage }
-			if answer.Code == ErrCodeBackgroundAgentsRunning && errors.As(methodErr, &agents) {
-				frame.BackgroundAgents = agents.RefusedBackgroundAgents()
-			}
-			// A forge rate limit says whether it kept the reserve and
-			// when it lifts (forgeapi.RateLimitedError).
-			var limit interface {
-				RateLimitRelease() (bool, time.Time)
-			}
-			if answer.Code == ErrCodeForgeRateLimited && errors.As(methodErr, &limit) {
-				reserve, until := limit.RateLimitRelease()
-				frame.Reserve = reserve
-				if !until.IsZero() {
-					frame.ResumeAt = until.UTC().Format(time.RFC3339)
-				}
-			}
-			return nil, frame
-		}
-		results = results[:len(results)-1]
+	results, fe := d.stripResultError(m, results)
+	if fe != nil {
+		return nil, fe
 	}
 
 	answer, frame := encodeResults(m, results)
@@ -502,6 +470,145 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value) (json.Ra
 		return nil, loggedFailure(m, ErrCodeInternal, "internal error", m.FQN+": reshape result", err)
 	}
 	return reshaped, nil
+}
+
+func (d *Dispatcher) processResultsToRPCFrame(m *Method, id string, results []reflect.Value, dst *bytes.Buffer) *FrameError {
+	results, fe := d.stripResultError(m, results)
+	if fe != nil {
+		return fe
+	}
+	if m.reshape != nil {
+		answer, frame := encodeResults(m, results)
+		if frame != nil {
+			return frame
+		}
+		reshaped, err := m.reshape(answer)
+		if err != nil {
+			return loggedFailure(m, ErrCodeInternal, "internal error", m.FQN+": reshape result", err)
+		}
+		buf, err := json.Marshal(ServerFrame{Type: frameTypeRPC, ID: id, Result: reshaped})
+		if err != nil {
+			return loggedFailure(m, ErrCodeInternal, "internal error", m.FQN+": marshal reshaped frame", err)
+		}
+		dst.Write(buf)
+		return nil
+	}
+	return encodeRPCResultFrame(dst, m, id, results)
+}
+
+func (d *Dispatcher) stripResultError(m *Method, results []reflect.Value) ([]reflect.Value, *FrameError) {
+	if !m.hasError {
+		return results, nil
+	}
+	errResult := results[len(results)-1]
+	if !errResult.IsNil() {
+		methodErr := errResult.Interface().(error)
+		// Ownership is application state, independent of authorization.
+		// A tiny interface keeps transport free of the store package and
+		// carries only fixed prose plus the operation/owner identities.
+		var transfer interface{ ThreadTransferRef() (string, string, bool) }
+		if errors.As(methodErr, &transfer) {
+			operationID, backendID, moved := transfer.ThreadTransferRef()
+			frame := &FrameError{Code: ErrCodeThreadTransferPending, Message: "This conversation has a pending transfer. Resume or cancel it before continuing.", Transfer: &TransferRef{OperationID: operationID, BackendID: backendID}}
+			if moved {
+				frame.Code, frame.Message = ErrCodeThreadMoved, "This conversation moved to another computer. Open it there to continue."
+			}
+			return nil, frame
+		}
+		if frame, isAuthz := AuthzFrame(methodErr); isAuthz {
+			// The method refused on its ARGUMENTS rather than failing
+			// (authorize.go): a runtime mode the session may not select,
+			// a host-tier settings key. Its message names the scope and
+			// is the whole answer, so it goes out verbatim.
+			return nil, frame
+		}
+		answer := CallerError(methodErr)
+		frame := &FrameError{Code: answer.Code, Message: answer.Message}
+		if answer.Expected {
+			return nil, frame
+		}
+		cid := newCorrelationID()
+		log.Printf("transport: %s returned error (id: %s): %v", m.FQN, cid, methodErr)
+		if answer.Detailed {
+			frame.Detail = &ErrorDetail{Ref: cid, Method: m.Name, At: time.Now().UnixMilli(), Chain: answer.Chain}
+		}
+		// The refused stop names what it would have killed. A tiny
+		// interface for the same reason as the transfer ref above.
+		var agents interface{ RefusedBackgroundAgents() json.RawMessage }
+		if answer.Code == ErrCodeBackgroundAgentsRunning && errors.As(methodErr, &agents) {
+			frame.BackgroundAgents = agents.RefusedBackgroundAgents()
+		}
+		// A forge rate limit says whether it kept the reserve and
+		// when it lifts (forgeapi.RateLimitedError).
+		var limit interface {
+			RateLimitRelease() (bool, time.Time)
+		}
+		if answer.Code == ErrCodeForgeRateLimited && errors.As(methodErr, &limit) {
+			reserve, until := limit.RateLimitRelease()
+			frame.Reserve = reserve
+			if !until.IsZero() {
+				frame.ResumeAt = until.UTC().Format(time.RFC3339)
+			}
+		}
+		return nil, frame
+	}
+	return results[:len(results)-1], nil
+}
+
+// encodeRPCResultFrame writes {"type":"rpc","id":...,"result":...} directly
+// into dst using json.Encoder (HTML-escaped compact JSON, byte-identical to
+// json.Marshal(ServerFrame{Type: frameTypeRPC, ID: id, Result: ...})).
+func encodeRPCResultFrame(dst *bytes.Buffer, m *Method, id string, results []reflect.Value) *FrameError {
+	dst.WriteString(`{"type":"rpc"`)
+	if id != "" {
+		dst.WriteString(`,"id":`)
+		writeJSONString(dst, id)
+	}
+	dst.WriteString(`,"result":`)
+	switch len(results) {
+	case 0:
+		dst.WriteString(`null`)
+	case 1:
+		if err := encodeCompactJSONValue(dst, results[0].Interface()); err != nil {
+			return loggedFailure(m, ErrCodeInternal, "internal error", m.FQN+": marshal result", err)
+		}
+	default:
+		out := make([]any, len(results))
+		for i, r := range results {
+			out[i] = r.Interface()
+		}
+		if err := encodeCompactJSONValue(dst, out); err != nil {
+			return loggedFailure(m, ErrCodeInternal, "internal error", m.FQN+": marshal multi-result", err)
+		}
+	}
+	dst.WriteByte('}')
+	return nil
+}
+
+func encodeCompactJSONValue(dst *bytes.Buffer, v any) error {
+	start := dst.Len()
+	if err := json.NewEncoder(dst).Encode(v); err != nil {
+		dst.Truncate(start)
+		return err
+	}
+	// json.Encoder always appends one trailing '\n'.
+	if n := dst.Len(); n > start && dst.Bytes()[n-1] == '\n' {
+		dst.Truncate(n - 1)
+	}
+	return nil
+}
+
+func writeJSONString(dst *bytes.Buffer, s string) {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 0x20 || c >= 0x80 || c == '"' || c == '\\' || c == '<' || c == '>' || c == '&' {
+			_ = encodeCompactJSONValue(dst, s)
+			return
+		}
+	}
+	dst.WriteByte('"')
+	dst.WriteString(s)
+	dst.WriteByte('"')
 }
 
 // encodeResults encodes a successful call's results, error removed.

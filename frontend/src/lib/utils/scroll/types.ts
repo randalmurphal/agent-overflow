@@ -514,6 +514,15 @@ export interface UseStickToBottomOptions {
    */
   externalContentGeometry?: boolean;
   /**
+   * When true on an RO-backed surface whose consumer also reports viewport
+   * resizes via `observe('composer-geometry')` (ActivityRun's clip), spring
+   * frames reuse the bottom target and scrollTop refreshed by post-layout
+   * ResizeObserver deliveries instead of forcing `scrollHeight`/`clientHeight`
+   * reads on every rAF tick. Sentinel arrival checks and write-refusal retries
+   * still force a fresh DOM read.
+   */
+  cacheObservedBottomTarget?: boolean;
+  /**
    * Runs after each content-geometry delivery has updated scroll ownership
    * and applied any resulting position write. Use this to feed secondary
    * geometry consumers without attaching another ResizeObserver to the same

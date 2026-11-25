@@ -394,7 +394,7 @@
   </div>
 {:else}
   <div
-    class="group/tool @container overflow-hidden"
+    class="ao-tool-row @container overflow-hidden"
     style="margin-left: {indentRem}rem"
     data-testid="subagent-group"
     data-tool-kind="robot"

@@ -106,9 +106,9 @@ const COPY_BUTTON_CLASS = [
 ].join(' ');
 
 const CODE_OVERLAY_CLASS = [
-  'absolute top-1 right-1 z-10 flex items-center gap-0.5',
+  'ao-code-overlay absolute top-1 right-1 z-10 flex items-center gap-0.5',
   'opacity-0 transition-opacity duration-150 ease-out',
-  'group-hover/codeblock:opacity-100 focus-within:opacity-100 compact:opacity-100',
+  'focus-within:opacity-100 compact:opacity-100',
 ].join(' ');
 
 const HTML_ESCAPE_PROBE_RE = /[&<>"']/;
@@ -240,7 +240,7 @@ export function renderStaticCodeBlockHtml(
 
   const wrapLabel = codeWrapLabel(unwrapped);
   const numbered = !!token.firstLine;
-  return '<div class="streamdown-code-host group/codeblock relative" data-code-source=""' +
+  return '<div class="streamdown-code-host relative" data-code-source=""' +
     attribute('data-code-lang', token.lang ?? '') +
     (unwrapped || numbered ? ' data-code-unwrapped=""' : '') +
     '><div' +

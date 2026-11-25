@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"encoding/json"
 	"log"
 	"slices"
@@ -11,6 +12,14 @@ import (
 
 	"agent-overflow/internal/eventchan"
 )
+
+const maxRetainedEventPayloadBufCap = 256 << 10
+
+var eventPayloadBufPool = sync.Pool{
+	New: func() any {
+		return bytes.NewBuffer(make([]byte, 0, 2048))
+	},
+}
 
 // DefaultRingCapacity and RingByteBudget bound a channel's replay ring,
 // and together they are the reconnect budget: a client that reconnects
@@ -556,10 +565,17 @@ func (b *EventBus) EmitScoped(typedChannel eventchan.Channel, entityKey, entityS
 		return Event{}, nil
 	}
 
-	data, err := json.Marshal(payload)
-	if err != nil {
+	buf := eventPayloadBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer func() {
+		if buf.Cap() <= maxRetainedEventPayloadBufCap {
+			eventPayloadBufPool.Put(buf)
+		}
+	}()
+	if err := encodeCompactJSONValue(buf, payload); err != nil {
 		return Event{}, err
 	}
+	data := buf.Bytes()
 
 	// The wire spelling. Free — string and eventchan.Channel share a
 	// representation — and it is what every map below is keyed by, since

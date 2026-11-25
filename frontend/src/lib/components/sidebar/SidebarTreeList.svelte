@@ -53,9 +53,9 @@
     nextSidebarThreadRevealLimit,
     previewSidebarThreads,
     rollupDisplayStatus,
-    sameSidebarVisibleRows,
     sameThreadStatusPill,
     sidebarVisibleRowKey,
+    type SidebarTreeVisibleRow,
   } from '../../utils/sidebarTreeView';
   import { THREAD_REVEAL_INCREMENT } from '../../utils/sidebarThreadLimits';
   import { GROUP_RAIL_LEFT_PX } from '../../utils/sidebarRowMetrics';
@@ -157,12 +157,55 @@
     return next;
   });
 
-  // Identity cutoff: return the PREVIOUS array when nothing the rows
-  // render has changed, so svelte's derived cutoff stops the animated
-  // each-block from reconciling. This is load-bearing for streaming
-  // performance: without it every item-event flush re-ran the FLIP
-  // measure pass (a forced synchronous layout per beat). See
-  // sameSidebarVisibleRows.
+  // Identity cutoff for the animated each-block: return the PREVIOUS array when
+  // nothing this template actually passes to rows has changed, so Svelte skips
+  // reconciling and never runs FLIP `getBoundingClientRect` passes for pure
+  // in-place status flips on thread rows (`ThreadRow` subscribes to live status
+  // directly; only `ThreadGroupRow` and `group-more` read rolled-up status here).
+  function sameRenderedSidebarRows(
+    a: readonly SidebarTreeVisibleRow[],
+    b: readonly SidebarTreeVisibleRow[],
+  ): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      const x = a[i];
+      const y = b[i];
+      if (x.kind === 'group-more' || y.kind === 'group-more') {
+        if (x.kind !== 'group-more' || y.kind !== 'group-more') return false;
+        if (x.groupId !== y.groupId || x.hiddenCount !== y.hiddenCount) return false;
+        if (x.canShowLess !== y.canShowLess) return false;
+        if (x.hiddenStatus !== y.hiddenStatus) {
+          if (
+            x.hiddenStatus === null
+            || y.hiddenStatus === null
+            || x.hiddenStatus.liveStatus !== y.hiddenStatus.liveStatus
+            || !sameThreadStatusPill(x.hiddenStatus.pill, y.hiddenStatus.pill)
+          ) return false;
+        }
+        continue;
+      }
+      if (x.kind !== y.kind) return false;
+      if (x.startsSection !== y.startsSection) return false;
+      if (x.ownerGroupId !== y.ownerGroupId) return false;
+      if (x.depth !== y.depth) return false;
+      if (x.kind === 'thread' && y.kind === 'thread') {
+        if (x.thread !== y.thread) return false;
+        continue;
+      }
+      if (x.kind === 'group' && y.kind === 'group') {
+        if (x.group !== y.group) return false;
+        if (x.children.length !== y.children.length) return false;
+        if (x.displayLiveStatus !== y.displayLiveStatus) return false;
+        if (!sameThreadStatusPill(x.displayStatus, y.displayStatus)) return false;
+        // Expanded/collapsed group rows also render memberThreadIds from children.
+        for (let j = 0; j < x.children.length; j++) {
+          if (x.children[j].thread.id !== y.children[j].thread.id) return false;
+        }
+      }
+    }
+    return true;
+  }
+
   let prevVisibleNodes: ReturnType<typeof flattenSidebarThreadTree> = [];
   let visibleNodes = $derived.by(() => {
     const collapsedGroupIds = getCollapsedGroups();
@@ -196,7 +239,7 @@
       openThreadIds: openIds,
       groupVisibleLimit: getThreadListVisibleLimit,
     });
-    if (sameSidebarVisibleRows(prevVisibleNodes, next)) return prevVisibleNodes;
+    if (sameRenderedSidebarRows(prevVisibleNodes, next)) return prevVisibleNodes;
     prevVisibleNodes = next;
     return next;
   });

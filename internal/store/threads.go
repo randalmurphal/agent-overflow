@@ -291,6 +291,93 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	return t, nil
 }
 
+// scanThreads drains a thread-row result set while reusing one scan target
+// slice across iterations, avoiding 54 interface-boxing allocations per row.
+func scanThreads(rows *sql.Rows, initialCap int, scanErrPrefix string) ([]Thread, error) {
+	var threads []Thread
+	var t Thread
+	var archived, fastMode, hasActionableProposedPlan, hasFailedTurn, isDraft, askCopy int
+	var newestTurn newestTurnState
+	var agentRecord sql.NullString
+	var latestTurnCompletedAt, lastReadAt, pinnedAt, pinGroup, agentSupersededAt, attentionAt sql.NullInt64
+	var attentionKind, attentionReason string
+	targets := []any{
+		&t.ID, &t.ProjectID, &t.ProjectPath, &t.Title, &t.Provider, &t.Model,
+		&t.WorkspacePath, &t.WorktreePath, &t.Branch,
+		&t.SessionRef, &t.PendingForkRef,
+		&t.PendingForkResumeAt, &t.ForkPreparing, &t.Delete,
+		&t.Mode, &t.ReasoningEffort, &fastMode, &t.ContextWindow,
+		&t.AutoCompactStandardPercent, &t.AutoCompactExtendedPercent, &t.RuntimeMode,
+		&t.ForkedFromThreadID, &t.LastTokenUsage,
+		&t.CreatedAt, &t.UpdatedAt, &latestTurnCompletedAt, &archived, &lastReadAt, &pinnedAt, &pinGroup,
+		&t.GroupID, &t.Placement,
+		&t.WorktreeSetupState, &t.ImportSource,
+		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.HeadCommit,
+		&hasActionableProposedPlan, &newestTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
+		&agentRecord, &t.PastAgentID, &agentSupersededAt, &t.HelperOfAgentID, &t.SpawnedByThreadID, &t.SpawnedByComputerID,
+		&attentionKind, &attentionReason, &attentionAt,
+		&t.SpawnInstructions, &t.SpawnLevel, &askCopy,
+	}
+	for rows.Next() {
+		t = Thread{}
+		archived, fastMode, hasActionableProposedPlan, hasFailedTurn, isDraft, askCopy = 0, 0, 0, 0, 0, 0
+		newestTurn = 0
+		agentRecord = sql.NullString{}
+		latestTurnCompletedAt, lastReadAt, pinnedAt, pinGroup, agentSupersededAt, attentionAt =
+			sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{}
+		attentionKind, attentionReason = "", ""
+		if err := rows.Scan(targets...); err != nil {
+			return nil, fmt.Errorf("%s: %w", scanErrPrefix, err)
+		}
+		t.FastMode = fastMode != 0
+		t.AskCopy = askCopy != 0
+		t.Archived = archived != 0
+		t.HasActionableProposedPlan = hasActionableProposedPlan != 0
+		t.HasIncompleteTurn = newestTurn == newestTurnInterruptedUnread
+		t.HasOpenTurn = newestTurn == newestTurnOpen
+		t.HasFailedTurn = newestTurn == newestTurnErrorUnread || hasFailedTurn != 0
+		t.IsDraft = isDraft != 0
+		if latestTurnCompletedAt.Valid {
+			v := latestTurnCompletedAt.Int64
+			t.LatestTurnCompletedAt = &v
+		}
+		if lastReadAt.Valid {
+			v := lastReadAt.Int64
+			t.LastReadAt = &v
+		}
+		if pinnedAt.Valid {
+			v := pinnedAt.Int64
+			t.PinnedAt = &v
+		}
+		if pinGroup.Valid {
+			v := int(pinGroup.Int64)
+			t.PinGroup = &v
+		}
+		if agentSupersededAt.Valid {
+			v := agentSupersededAt.Int64
+			t.AgentSupersededAt = &v
+		}
+		if attentionAt.Valid && attentionKind != "" {
+			t.Attention = &ThreadAttention{Kind: attentionKind, Reason: attentionReason, At: attentionAt.Int64}
+		}
+		if agentRecord.Valid {
+			var agent threadAgentColumn
+			if err := json.Unmarshal([]byte(agentRecord.String), &agent); err != nil {
+				return nil, fmt.Errorf("%s: read the assistant of thread %s: %w", scanErrPrefix, t.ID, err)
+			}
+			t.AgentID, t.AgentAllProjects = agent.ID, agent.AllProjects != 0
+			if len(agent.ProjectIDs) > 0 {
+				t.AgentProjectIDs = agent.ProjectIDs
+			}
+		}
+		if threads == nil && initialCap > 0 {
+			threads = make([]Thread, 0, initialCap)
+		}
+		threads = append(threads, t)
+	}
+	return threads, rows.Err()
+}
+
 func (s *Store) CreateThread(t Thread) error {
 	_, err := s.createThread(t, false)
 	return err
@@ -588,16 +675,7 @@ func (s *Store) ListThreads() ([]Thread, error) {
 		return nil, fmt.Errorf("store: list threads: %w", err)
 	}
 	defer rows.Close()
-
-	var threads []Thread
-	for rows.Next() {
-		t, err := scanThread(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: scan thread row: %w", err)
-		}
-		threads = append(threads, t)
-	}
-	return threads, rows.Err()
+	return scanThreads(rows, 64, "store: scan thread row")
 }
 
 // ListThreadsWithItems returns every non-archived thread that has at least
@@ -615,16 +693,7 @@ func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 		return nil, fmt.Errorf("store: list threads with items: %w", err)
 	}
 	defer rows.Close()
-
-	var threads []Thread
-	for rows.Next() {
-		t, err := scanThread(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: scan thread row: %w", err)
-		}
-		threads = append(threads, t)
-	}
-	return threads, rows.Err()
+	return scanThreads(rows, 64, "store: scan thread row")
 }
 
 // ListArchivedThreads returns every archived thread the sidebar would list
@@ -642,16 +711,7 @@ func (s *Store) ListArchivedThreads() ([]Thread, error) {
 		return nil, fmt.Errorf("store: list archived threads: %w", err)
 	}
 	defer rows.Close()
-
-	var threads []Thread
-	for rows.Next() {
-		t, err := scanThread(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: scan archived thread row: %w", err)
-		}
-		threads = append(threads, t)
-	}
-	return threads, rows.Err()
+	return scanThreads(rows, 32, "store: scan archived thread row")
 }
 
 // ListThreadsByProject returns all non-archived threads belonging to a
@@ -670,16 +730,7 @@ func (s *Store) ListThreadsByProject(projectID string) ([]Thread, error) {
 		return nil, fmt.Errorf("store: list threads for project %s: %w", projectID, err)
 	}
 	defer rows.Close()
-
-	var threads []Thread
-	for rows.Next() {
-		t, err := scanThread(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: scan project thread row: %w", err)
-		}
-		threads = append(threads, t)
-	}
-	return threads, rows.Err()
+	return scanThreads(rows, 32, "store: scan project thread row")
 }
 
 // catalogThreadClause is the one rule for which threads the sidebar's

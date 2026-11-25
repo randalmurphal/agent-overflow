@@ -1,6 +1,9 @@
 package highlight
 
 import (
+	"math"
+	"sync"
+
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 )
 
@@ -11,6 +14,37 @@ import (
 var parserPool = struct {
 	pool chan *tree_sitter.Parser
 }{pool: make(chan *tree_sitter.Parser, 8)}
+
+// QueryCursors are language-independent C objects reused across paintCaptures
+// calls to avoid per-chunk C malloc/free churn during live code streaming.
+var queryCursorPool = make(chan *tree_sitter.QueryCursor, 8)
+
+func acquireQueryCursor() *tree_sitter.QueryCursor {
+	select {
+	case qc := <-queryCursorPool:
+		return qc
+	default:
+		return tree_sitter.NewQueryCursor()
+	}
+}
+
+func releaseQueryCursor(qc *tree_sitter.QueryCursor) {
+	qc.SetByteRange(0, math.MaxUint)
+	select {
+	case queryCursorPool <- qc:
+	default:
+		qc.Close()
+	}
+}
+
+const maxRetainedPaintSpanCap = 4096
+
+var paintSpanPool = sync.Pool{
+	New: func() any {
+		s := make([]paintSpan, 0, 256)
+		return &s
+	},
+}
 
 func acquireParser() *tree_sitter.Parser {
 	var p *tree_sitter.Parser

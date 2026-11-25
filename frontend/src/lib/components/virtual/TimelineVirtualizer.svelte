@@ -25,7 +25,7 @@
     RowEstimate,
     ScrollToIndexAlign,
   } from '../../utils/virtual/types';
-  import { observedScrollTopFromEvent } from '../../utils/scroll/eventObservation';
+  import { observedScrollTopFromEvent, recordScrollEventObservation } from '../../utils/scroll/eventObservation';
   import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
   import VirtualRow from './VirtualRow.svelte';
 
@@ -1141,9 +1141,38 @@
     onscrollend?.();
   }
 
-  function handleScroll(event: Event): void {
+  // Capture-phase listener performs pure reads only (reading-anchor sample
+  // and scrollTop observation) so neither `intent.ts` (capture) nor this
+  // sample ever sees DOM writes flushed in the inter-listener microtask
+  // checkpoint by OverlayScrollbar or the virtualizer's bubble-phase update.
+  function handleScrollCapture(event: Event): void {
     const scroller = observedScroller;
     if (!scroller) return;
+    if (event.target !== scroller) {
+      const anchor = readingAnchor;
+      if (anchor && event.target instanceof Node && anchor.anchorEl && event.target.contains(anchor.anchorEl)) {
+        readingAnchor = null;
+      }
+      return;
+    }
+    let offset = observedScrollTopFromEvent(event);
+    if (offset === undefined) {
+      offset = scroller.scrollTop;
+      recordScrollEventObservation(event, offset);
+    }
+    // The viewport top now sits over different content. Re-sample unless
+    // the position is unchanged (the controller's own compensation write
+    // already re-sampled from the post-flush effect, and its scroll event
+    // arrives afterwards with nothing left to move).
+    if (offset !== anchorScrollTop) refreshReadingAnchor(offset, true);
+  }
+
+  // Bubble-phase listener applies the virtualizer range update after both
+  // capture-phase readers (`intent.ts` and `handleScrollCapture`) have
+  // finished reading clean layout.
+  function handleScroll(event: Event): void {
+    const scroller = observedScroller;
+    if (!scroller || event.target !== scroller) return;
     lastScrollTime = performance.now();
     const offset = observedScrollTopFromEvent(event) ?? scroller.scrollTop;
     if (headSpliceAnchor && Math.abs(offset - actualScrollOffset) > 0.01) {
@@ -1152,25 +1181,7 @@
     actualScrollOffset = offset;
     applyUpdate(engine.applyScroll(engineOffsetFor(offset)));
     onscroll?.(offset);
-    // The viewport top now sits over different content. Re-sample unless
-    // the position is unchanged (the controller's own compensation write
-    // already re-sampled from the post-flush effect, and its scroll event
-    // arrives afterwards with nothing left to move).
-    if (offset !== anchorScrollTop) refreshReadingAnchor(offset, true);
     armScrollEnd();
-  }
-
-  // A scroller that holds the sampled anchor (an activity run's clip) moves
-  // it with no scroll event here, so the anchor no longer measures growth:
-  // the inner scroll would read as growth above the reading position. Drop
-  // it; the next post-flush pass samples afresh. A scroller beside the
-  // anchor (a code block, a textarea) moves nothing the anchor measures.
-  // Dropping rather than re-sampling keeps a clip that chases its own tail
-  // every frame from costing a hit test per frame.
-  function handleNestedScroll(event: Event): void {
-    const anchor = readingAnchor;
-    if (!anchor || event.target === observedScroller) return;
-    if (event.target instanceof Node && event.target.contains(anchor.anchorEl)) readingAnchor = null;
   }
 
   function handleWheel(event: WheelEvent): void {
@@ -1210,15 +1221,15 @@
       ensureResizeObserver().observe(intrinsicLimit);
     }
     observedScroller = scroller;
+    scroller.addEventListener('scroll', handleScrollCapture, { capture: true, passive: true });
     scroller.addEventListener('scroll', handleScroll, { passive: true });
-    scroller.addEventListener('scroll', handleNestedScroll, { capture: true, passive: true });
     scroller.addEventListener('wheel', handleWheel, { passive: true });
     scroller.addEventListener('touchstart', handleTouchStart, { passive: true });
     scroller.addEventListener('touchend', handleTouchEnd, { passive: true });
     scroller.addEventListener('touchcancel', handleTouchEnd, { passive: true });
     return () => {
+      scroller.removeEventListener('scroll', handleScrollCapture, { capture: true });
       scroller.removeEventListener('scroll', handleScroll);
-      scroller.removeEventListener('scroll', handleNestedScroll, { capture: true });
       scroller.removeEventListener('wheel', handleWheel);
       scroller.removeEventListener('touchstart', handleTouchStart);
       scroller.removeEventListener('touchend', handleTouchEnd);
@@ -1368,31 +1379,6 @@
       return;
     }
     pending.index = index;
-    const scroller = observedScroller;
-    if (scroller && Number.isFinite(pending.expectedPosition)) {
-      // Where should the viewport be if nobody but this navigation (and
-      // the compensations delivered on its behalf) has moved it? The
-      // expectation, re-clamped against the CURRENT layout: when the
-      // content under the navigation shrinks (a run collapsing in view),
-      // the browser clamps scrollTop with no write from anyone — that is
-      // the navigation's own ground shifting, not a takeover, and the
-      // restore pass that follows is exactly the one that puts the
-      // anchored row back. The browser's range, not the engine's: the
-      // scroller can hold content after the rows (chat's "Load newer
-      // messages" footer), and the browser clamps against all of it.
-      const expected = Math.max(0, Math.min(
-        pending.expectedPosition,
-        scroller.scrollHeight - scroller.clientHeight,
-      ));
-      // Live DOM reads, not engine.getScrollOffset(): the engine's offset
-      // lags its own write until the scroll event lands, and a stale
-      // offset here would read the navigation's own write as a takeover.
-      // Cold path — only runs while a navigation is pending.
-      if (Math.abs(scroller.scrollTop - expected) > SCROLL_TAKEOVER_TOLERANCE_PX) {
-        clearIndexScroll();
-        return;
-      }
-    }
     const clampedTarget =
       engine.targetOffsetFor(pending.index, pending.align, pending.extraOffset) + renderHeaderSize;
     let target = clampedTarget;
@@ -1440,11 +1426,38 @@
     ) {
       pending.tailExtentBaseline = tailExtent;
     }
-    // An unchanged target needs no write once the last one landed. One the
+    // An unchanged target needs no write once the last one landed. Check
+    // before reading scroller layout so no-op convergence passes skip forced
+    // scrollHeight/clientHeight/scrollTop reads on dirty frames. One the
     // browser clamped short is written again: a navigation issued in the
     // same flush as a data change writes before the DOM holds the new rows,
     // and the pass after that flush is the one that can reach the target.
     if (target === pending.lastTarget && pending.reached) return;
+    const scroller = observedScroller;
+    if (scroller && Number.isFinite(pending.expectedPosition)) {
+      // Where should the viewport be if nobody but this navigation (and
+      // the compensations delivered on its behalf) has moved it? The
+      // expectation, re-clamped against the CURRENT layout: when the
+      // content under the navigation shrinks (a run collapsing in view),
+      // the browser clamps scrollTop with no write from anyone — that is
+      // the navigation's own ground shifting, not a takeover, and the
+      // restore pass that follows is exactly the one that puts the
+      // anchored row back. The browser's range, not the engine's: the
+      // scroller can hold content after the rows (chat's "Load newer
+      // messages" footer), and the browser clamps against all of it.
+      const expected = Math.max(0, Math.min(
+        pending.expectedPosition,
+        scroller.scrollHeight - scroller.clientHeight,
+      ));
+      // Live DOM reads, not engine.getScrollOffset(): the engine's offset
+      // lags its own write until the scroll event lands, and a stale
+      // offset here would read the navigation's own write as a takeover.
+      // Cold path — only runs while a navigation actually needs to write.
+      if (Math.abs(scroller.scrollTop - expected) > SCROLL_TAKEOVER_TOLERANCE_PX) {
+        clearIndexScroll();
+        return;
+      }
+    }
     if (pending.passesLeft <= 0) {
       clearIndexScroll();
       return;
@@ -1645,11 +1658,7 @@
      sizing breaks the explicit height. No pointer-events toggling — that
      upstream behavior is deliberately dropped (plan §2 DOM contracts). -->
 <div
-  style:contain="size style"
-  style:overflow-anchor="none"
-  style:flex="none"
-  style:position="relative"
-  style:width="100%"
+  style="contain: size style; overflow-anchor: none; flex: none; position: relative; width: 100%;"
   style:height="{renderTotalSize + renderHeaderSize}px"
 >
   {#if intrinsicViewportLimitCss !== undefined}
@@ -1660,23 +1669,14 @@
       bind:this={intrinsicViewportLimitEl}
       data-virtual-intrinsic-viewport-limit
       aria-hidden="true"
-      style:position="fixed"
-      style:left="-10000px"
-      style:top="0px"
-      style:width="0px"
+      style="position: fixed; left: -10000px; top: 0px; width: 0px; visibility: hidden; pointer-events: none; contain: strict;"
       style:height={intrinsicViewportLimitCss}
-      style:visibility="hidden"
-      style:pointer-events="none"
-      style:contain="strict"
     ></div>
   {/if}
   {#if renderHeader}
     <div
       data-virtual-header
-      style:position="absolute"
-      style:left="0px"
-      style:top="0px"
-      style:width="100%"
+      style="position: absolute; left: 0px; top: 0px; width: 100%;"
       style:height="{renderHeaderSize}px"
     >
       {@render renderHeader()}
@@ -1685,10 +1685,8 @@
   <div
     bind:this={renderPlane}
     data-virtual-row-plane
-    style:position="absolute"
-    style:left="0px"
+    style="position: absolute; left: 0px; width: 100%;"
     style:top="{plane.origin + renderHeaderSize}px"
-    style:width="100%"
     style:height="{plane.size}px"
   >
     {#each rows as row (row.key)}

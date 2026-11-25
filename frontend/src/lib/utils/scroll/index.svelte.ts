@@ -211,7 +211,7 @@ export function createUseStickToBottomController(
     cachedClientHeight = clientHeight;
     cachedMetricsValid = true;
     cachedGeometryFloored = scrollHeight <= clientHeight;
-    if (options.externalContentGeometry === true) {
+    if (options.externalContentGeometry === true || options.cacheObservedBottomTarget === true) {
       cachedBottomTarget = target;
       cachedBottomTargetValid = true;
     }
@@ -288,6 +288,13 @@ export function createUseStickToBottomController(
     }
     cachedBottomTarget = Math.max(0, target);
     cachedBottomTargetValid = true;
+    if (cachedMetricsValid && Number.isFinite(height) && Number.isFinite(viewportHeight)) {
+      // Keep cachedScrollHeight in sync with external content height so
+      // secondary geometry consumers (OverlayScrollbar) can update without
+      // forcing a synchronous scrollHeight/clientHeight layout pass.
+      const padding = Math.max(0, cachedClientHeight - viewportHeight);
+      cachedScrollHeight = Math.max(cachedClientHeight, height + padding);
+    }
   }
 
   function springCurrentClientHeight(forceLayoutRead = false): number {
@@ -303,7 +310,7 @@ export function createUseStickToBottomController(
   function springTargetScrollTop(forceLayoutRead = false): number {
     if (
       !forceLayoutRead
-      && options.externalContentGeometry === true
+      && (options.externalContentGeometry === true || options.cacheObservedBottomTarget === true)
       && cachedBottomTargetValid
     ) {
       return cachedBottomTarget;
@@ -315,7 +322,7 @@ export function createUseStickToBottomController(
     if (!scrollEl) return 0;
     if (
       !forceLayoutRead
-      && options.externalContentGeometry === true
+      && (options.externalContentGeometry === true || options.cacheObservedBottomTarget === true)
       && cachedGeometryValid
     ) {
       return cachedScrollTop;
@@ -363,7 +370,7 @@ export function createUseStickToBottomController(
     cachedGeometryValid = true;
     cachedGeometryFloored = scrollHeight <= clientHeight;
     intent.seedObservedScrollTopIfUnset(scrollTop);
-    if (options.externalContentGeometry === true) {
+    if (options.externalContentGeometry === true || options.cacheObservedBottomTarget === true) {
       cachedBottomTarget = target;
       cachedBottomTargetValid = true;
     }
@@ -1004,7 +1011,12 @@ export function createUseStickToBottomController(
     instantPinAfterExternalGeometryChange('notifyContentMaybeGrew', target);
   }
 
-  function notifyLiveContentMaybeGrew(): void {
+  function notifyLiveContentMaybeGrew(kind: 'live-content' | 'composer-geometry' = 'live-content'): void {
+    if (kind === 'composer-geometry') {
+      // Viewport/padding changed outside contentRO: force fresh DOM reads on
+      // this observation and any subsequent spring frame even if gated out.
+      cachedBottomTargetValid = false;
+    }
     const gate = readNotifyContentGate();
     // Liveness IS load-bearing here, unlike the growth-delta path. This
     // path also carries VIEWPORT changes ('composer-geometry'): the
@@ -1038,6 +1050,23 @@ export function createUseStickToBottomController(
       target: scrollEl ? Math.round(targetScrollTop()) : null,
     }));
     if (!gate.canPin) return;
+
+    // External-geometry surfaces (MessageTimeline) already deliver exact
+    // bottom targets post-flush. When a structural 'live-content' nudge lands
+    // while a spring chase is already active and within overshoot tolerance,
+    // refreshing the retain window needs no forced layout read.
+    if (
+      kind === 'live-content'
+      && options.externalContentGeometry === true
+      && spring.isActive()
+      && cachedBottomTargetValid
+      && cachedGeometryValid
+      && !cachedGeometryFloored
+      && cachedScrollTop - cachedBottomTarget <= SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX
+    ) {
+      spring.markTargetChanged();
+      return;
+    }
 
     const target = targetScrollTop();
     if (scrollEl && scrollTopIsAtTarget(target)) {
@@ -1088,7 +1117,7 @@ export function createUseStickToBottomController(
     switch (kind) {
       case 'live-content':
       case 'composer-geometry':
-        notifyLiveContentMaybeGrew();
+        notifyLiveContentMaybeGrew(kind);
         return;
       case 'content':
       case 'host-layout':

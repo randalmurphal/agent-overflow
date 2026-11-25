@@ -415,13 +415,20 @@ func (e *engine) paint(src []byte, ranges []tree_sitter.Range, classes []uint16,
 // range paints the same classes as the same bytes of a whole-document
 // paint.
 func (e *engine) paintCaptures(tree *tree_sitter.Tree, src []byte, lo, hi int, classes []uint16) {
-	qc := tree_sitter.NewQueryCursor()
-	defer qc.Close()
+	qc := acquireQueryCursor()
+	defer releaseQueryCursor(qc)
 	if lo > 0 || hi < len(src) {
 		qc.SetByteRange(uint(lo), uint(hi))
 	}
 	matches := qc.Matches(e.query, tree.RootNode(), src)
-	spans := make([]paintSpan, 0, 256)
+	spansPtr := paintSpanPool.Get().(*[]paintSpan)
+	spans := (*spansPtr)[:0]
+	defer func() {
+		if cap(spans) <= maxRetainedPaintSpanCap {
+			*spansPtr = spans[:0]
+			paintSpanPool.Put(spansPtr)
+		}
+	}()
 	for m := matches.Next(); m != nil; m = matches.Next() {
 		for _, c := range m.Captures {
 			class := e.captureClass[c.Index]

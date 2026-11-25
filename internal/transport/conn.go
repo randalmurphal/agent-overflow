@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -894,8 +895,15 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 	}
 	ctx = withServerLifetime(WithCallerProof(ctx, proof), h.lifetime)
 
-	result, fe := h.dispatcher.Invoke(ctx, method, frame.Params)
-	if fe != nil {
+	buf := rpcFrameBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer func() {
+		if buf.Cap() <= maxRetainedRPCBufCap {
+			rpcFrameBufPool.Put(buf)
+		}
+	}()
+
+	if fe := h.dispatcher.invokeToRPCFrame(ctx, method, frame.ID, frame.Params, buf); fe != nil {
 		h.replyError(ctx, frame.ID, fe)
 		// A method can refuse its own proof while the connection remains
 		// authorized. Only current session admission can end this socket.
@@ -907,11 +915,7 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 		return
 	}
 
-	h.writeReply(ctx, ServerFrame{
-		Type:   frameTypeRPC,
-		ID:     frame.ID,
-		Result: result,
-	})
+	h.writeReplyRaw(ctx, buf.Bytes())
 }
 
 // authorizeSession reads current admission and grants before each RPC.
@@ -1114,12 +1118,25 @@ type replyWrite struct {
 // (lease.go); a reply never depends on a streaming delta, and flushing the
 // window on every call would undo the lease. Events emitted after the reply
 // still coalesce as before.
+const maxRetainedRPCBufCap = 256 << 10
+
+var rpcFrameBufPool = sync.Pool{
+	New: func() any {
+		return bytes.NewBuffer(make([]byte, 0, 4096))
+	},
+}
+
 func (h *connHandler) writeReply(ctx context.Context, frame ServerFrame) {
 	buf, err := json.Marshal(frame)
 	if err != nil {
 		log.Printf("transport: marshal server frame: %v", err)
 		return
 	}
+	h.writeReplyRaw(ctx, buf)
+}
+
+func (h *connHandler) writeReplyRaw(ctx context.Context, buf []byte) {
+	var err error
 	if h.replies != nil {
 		req := replyWrite{ctx: ctx, frame: buf, done: make(chan struct{})}
 		select {

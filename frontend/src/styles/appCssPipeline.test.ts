@@ -141,4 +141,13 @@ describe('app.css as emitted by the build pipeline', () => {
     expect(body).not.toContain('var(--mask-icon)');
     expect(body).not.toMatch(/(^|;)(-webkit-)?mask:/);
   });
+
+  it('blocks the unused .container utility and its desktop resize media queries', async () => {
+    const css = await emittedCss(['container', '@container']);
+    expect(css).not.toMatch(/\.container\{/);
+    expect(css).not.toContain('64rem');
+    expect(css).not.toContain('80rem');
+    expect(css).not.toContain('96rem');
+    expect(css).toMatch(/\.\\@container\{/);
+  });
 });

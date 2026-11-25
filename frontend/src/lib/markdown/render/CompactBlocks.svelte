@@ -1,15 +1,17 @@
 <script lang="ts" module>
-	const templatesByDocument = new WeakMap<Document, HTMLTemplateElement>();
-	let batchSepSeq = 0;
+	import {
+		MAX_SINGLE_FRAGMENT_CHARS,
+		getCachedFragmentClone,
+		getFragmentCache,
+		reusableTemplate,
+		storeCachedFragment
+	} from './htmlFragmentCache';
 
-	function reusableTemplate(ownerDocument: Document): HTMLTemplateElement {
-		let template = templatesByDocument.get(ownerDocument);
-		if (!template) {
-			template = ownerDocument.createElement('template');
-			templatesByDocument.set(ownerDocument, template);
-		}
-		return template;
-	}
+	let batchSepSeq = 0;
+	// Static blocks use a deterministic empty marker value instead of per-mount
+	// `$props.id()` so remounting the same settled markdown across virtualized
+	// scrolls or thread switches hits the DocumentFragment cache.
+	const STATIC_HTML_ID = '';
 </script>
 
 <script lang="ts">
@@ -77,8 +79,7 @@
 		root,
 		blocks,
 		alignments,
-		revision,
-		id
+		revision
 	}: {
 		root: HTMLElement | undefined;
 		blocks: string[];
@@ -87,7 +88,6 @@
 		alignments: (Alignment | 'marker')[];
 		/** Fresh wrapper published after parseBlocks mutates its stable array. */
 		revision: object;
-		id: string;
 	} = $props();
 
 	const streamdown = useStreamdown();
@@ -213,8 +213,18 @@
 	}
 
 	function staticNodes(ownerDocument: Document, html: string): { fragment: DocumentFragment; nodes: ChildNode[] } {
+		const cached = getCachedFragmentClone(ownerDocument, html);
+		if (cached) {
+			return {
+				fragment: cached,
+				nodes: Array.from(cached.childNodes)
+			};
+		}
 		const template = reusableTemplate(ownerDocument);
 		template.innerHTML = html;
+		if (html.length > 0 && html.length <= MAX_SINGLE_FRAGMENT_CHARS) {
+			storeCachedFragment(ownerDocument, html, template.content.cloneNode(true) as DocumentFragment);
+		}
 		return {
 			fragment: template.content,
 			nodes: Array.from(template.content.childNodes)
@@ -274,6 +284,60 @@
 			return;
 		}
 
+		const ownerDocument = target.ownerDocument;
+		const docCache = getFragmentCache(ownerDocument);
+		if (docCache && docCache.map.size > 0) {
+			let allCached = true;
+			for (let i = 0; i < pending.length; i++) {
+				const entry = pending[i];
+				if (!entry.marker && !docCache.map.has(entry.html)) {
+					allCached = false;
+					break;
+				}
+			}
+			if (allCached) {
+				const combined = ownerDocument.createDocumentFragment();
+				const buckets: ChildNode[][] = [];
+				for (let i = 0; i < pending.length; i++) {
+					const entry = pending[i];
+					if (entry.marker) continue;
+					const clone = getCachedFragmentClone(ownerDocument, entry.html)!;
+					const nodes = Array.from(clone.childNodes);
+					buckets.push(nodes);
+					combined.appendChild(clone);
+				}
+				try {
+					target.insertBefore(combined, null);
+					for (let i = 0; i < buckets.length; i++) {
+						reconcileParagraphGapsInNodes(buckets[i]);
+					}
+				} catch (error) {
+					for (let i = 0; i < buckets.length; i++) {
+						for (const node of buckets[i]) node.remove();
+					}
+					throw error;
+				}
+				let bucketIndex = 0;
+				for (let i = 0; i < pending.length; i++) {
+					const entry = pending[i];
+					if (entry.marker) {
+						records.push({ kind: 'static', block: entry.block, align: 'marker', nodes: [], scope: null, reads: null });
+					} else {
+						records.push({
+							kind: 'static',
+							block: entry.block,
+							align: entry.align,
+							nodes: buckets[bucketIndex++],
+							scope: entry.scope,
+							reads: entry.reads
+						});
+					}
+				}
+				pending.length = 0;
+				return;
+			}
+		}
+
 		let sep = `ao-sd-sep-${++batchSepSeq}`;
 		let collision = true;
 		while (collision) {
@@ -293,7 +357,7 @@
 			const entry = pending[i];
 			if (!entry.marker) parts.push(entry.html);
 		}
-		const template = reusableTemplate(target.ownerDocument);
+		const template = reusableTemplate(ownerDocument);
 		template.innerHTML = parts.join(`<!--${sep}-->`);
 		const fragment = template.content;
 
@@ -326,6 +390,17 @@
 		}
 
 		for (let i = 0; i < separators.length; i++) separators[i].remove();
+		// Populate the per-block fragment cache before inserting into live DOM so
+		// scroll-back / thread revisits skip HTML parsing completely.
+		for (let i = 0; i < parts.length; i++) {
+			const html = parts[i];
+			if (html.length > 0 && html.length <= MAX_SINGLE_FRAGMENT_CHARS && !docCache?.map.has(html)) {
+				const cachedFrag = ownerDocument.createDocumentFragment();
+				const nodes = buckets[i];
+				for (let j = 0; j < nodes.length; j++) cachedFrag.appendChild(nodes[j].cloneNode(true));
+				storeCachedFragment(ownerDocument, html, cachedFrag);
+			}
+		}
 		try {
 			target.insertBefore(fragment, null);
 			for (let i = 0; i < buckets.length; i++) {
@@ -415,7 +490,7 @@
 		const html = renderStaticTokenHtml(
 			lexed.tokens,
 			streamdown,
-			`${id}-${index}`,
+			STATIC_HTML_ID,
 			align
 		);
 		return html === null
@@ -485,7 +560,7 @@
 			const html = renderStaticTokenHtml(
 				lexed.tokens,
 				streamdown,
-				`${id}-${index}`,
+				STATIC_HTML_ID,
 				record.align
 			);
 			if (html === null) {
@@ -640,7 +715,7 @@
 			const html = renderStaticTokenHtml(
 				lexed.tokens,
 				streamdown,
-				`${id}-${index}`,
+				STATIC_HTML_ID,
 				align
 			);
 			if (html === null) {
