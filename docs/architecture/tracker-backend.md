@@ -1521,8 +1521,9 @@ estimate**: a person sets the agreed estimate as any other edit
   user read for each voter the client has not kept in 30 minutes), and
   whether it is the caller's own. A voter Jira does not show (a 404, or a
   403 for a credential that may not see users) is shown by account ID,
-  the round stands, and that answer is kept 30 minutes as a name is. Before the reveal only the caller's own
-  vote has a value, whatever the add-on answered (the provider hides the
+  the round stands, and the poker read keeps that answer 30 minutes as
+  it keeps a name (`jira.Client.PokerVoter`; every other user lookup asks
+  each time). Before the reveal only the caller's own vote has a value, whatever the add-on answered (the provider hides the
   rest). A read that fails keeps the last votes, carries its failure, and
   is retried on the round's retry schedule or when a rate limit lifts.
   The failure is never the ticket's or the connection's; a change in the
@@ -1532,18 +1533,20 @@ estimate**: a person sets the agreed estimate as any other edit
 - **The writes** (`VoteTrackerPoker`, `RevealTrackerPoker`,
   `ClearTrackerPokerVotes`) go through `Service.write` and answer a
   `WriteView` with one `poker` part, as every write does: refused with a
-  sentence (a site without the add-on, a vote with no value or a null
-  one, a vote outside 0 to 1000, the add-on's or the gateway's 4xx), unknown with "look at the ticket's
+  sentence (a site without the add-on, a vote outside 0 to 1000, the
+  add-on's or the gateway's 4xx), unknown with "look at the ticket's
   poker votes before you try again" (a 5xx, or an answer that could not
-  be read), or applied. A write that may have happened makes the
+  be read), or applied. A `VoteTrackerPoker` request whose `vote` is
+  missing or null fails with `tracker_request_invalid` before anything is
+  sent; a vote of 0 is a vote. A write that may have happened makes the
   issue's following pump read the votes at once, including after a read
   that was in flight when the write landed.
 - **The context token** the add-on needs is per issue and lives about 15
   minutes. The Jira client keeps it in memory only (at most 16 issues),
   reuses it until 60 seconds before it expires, and drops it when the
   gateway refuses it. It is never logged, stored, put in an error, or
-  sent to a client: the invoke replaces it in every text of the answer it
-  returns or puts in an error (see [tracker clients](tracker-clients.md#planning-poker)).
+  sent to a client: an invoke answer that repeats it, however spelled, is
+  refused with none of its text (see [tracker clients](tracker-clients.md#planning-poker)).
 - **Cost.** A follower's ticket costs one invoke every 5 seconds while
   its panel is shown: 720 an hour per open panel, on top of the ticket's
   own reads. The first read of an issue, and one every 14 minutes after,

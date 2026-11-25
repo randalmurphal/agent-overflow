@@ -411,18 +411,27 @@ It sends the measured GraphQL documents exactly.
   `CastPokerVote`, `RevealPokerVotes` and `ClearPokerVotes` are the three
   writes, each one `Invoke` of `requestConnectBackend`. A write's body is
   sent as the JSON value itself, at one place in `pokerInvoke`, since its
-  encoding is the one part not measured. `PokerInstalled` and `PokerVotes` are walks
-  (`trackerapi.Walk`), so a credential change part way starts them again.
+  encoding is the one part not measured. `PokerInstalled` and
+  `PokerVotes` are walks (`trackerapi.Walk`), so a credential change part
+  way starts them again. `PokerVoter` is `User` for a voter: a 404 or 403
+  matches `ErrUserWithheld` and is kept 30 minutes, so the votes' poll
+  asks again only then; `User` itself asks each time.
 - **Errors.** An answer the measured shapes do not cover is a
   `*PokerError` naming its step (cloud ID, listing, token, gateway, poker
   app) and what was wrong, never a ticket's error. A write is applied only
   on the poker app's 2xx; its 4xx, and a gateway refusal with a 4xx
-  `statusCode`, refuse it; any other answer leaves it unknown. The invoke
-  returns nothing of its answer that could repeat the token: the poker
-  app's body and status text and a gateway message (cut to 200 bytes)
-  have it replaced by `<redacted>`, an HTTP status the gateway answers is
-  a `*PokerError` that wraps no `*trackerapi.StatusError`, and a refused
-  credential's message has it replaced.
+  `statusCode`, refuse it; any other answer leaves it unknown. A gateway
+  message is cut to 200 bytes.
+- **Nothing the invoke returns holds the token.** Its errors carry no
+  text of the answer but the strings it decoded: an HTTP status the
+  gateway answers is a `*PokerError` that wraps no
+  `*trackerapi.StatusError`, a refused credential has no message, and an
+  answer that did not decode wraps no decode error. After the last decode
+  (the gateway's answer, and the poker app's body into the round), one
+  check looks at every decoded string; an answer that holds the token, in
+  any spelling its JSON escapes allow, is a `*PokerError` "answered with
+  the context token in its answer" of the same step and refusal, and none
+  of its text or votes is used.
 - **The fake.** `trackerfake` serves the same three routes
   (`jira_poker.go`): it matches the two documents exactly, signs a token
   with the measured claim names, refuses a missing, expired or
