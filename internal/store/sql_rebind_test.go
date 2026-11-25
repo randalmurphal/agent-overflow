@@ -364,6 +364,9 @@ func TestStatementsCompileOnce(t *testing.T) {
 // index moves across 0 and 1: SQLite's own count of the times it compiled
 // each cached statement again (SQLITE_STMTSTATUS_REPREPARE) stays at 0
 // over turns 0, 1, 2, 5 and 0 again, on a thread and on a pointer fork.
+// The test only reads the count: the package's check (checkCachedStmtRun)
+// rebinds a statement's integers, and a rebind that expires it would add
+// a recompile of its own.
 func TestTurnReadsCompileOnceAcrossTurns(t *testing.T) {
 	s := newTestStore(t)
 	seedKeyedLookupThread(t, s)
@@ -375,7 +378,6 @@ func TestTurnReadsCompileOnceAcrossTurns(t *testing.T) {
 	reprepared := map[string]int32{}
 	prev := cachedStmtRan
 	cachedStmtRan = func(stmt driver.Stmt, query string) {
-		prev(stmt, query)
 		tls, pstmt, err := sqliteStmtHandles(stmt)
 		if err != nil || pstmt == 0 {
 			return
