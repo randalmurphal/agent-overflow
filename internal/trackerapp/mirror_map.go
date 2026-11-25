@@ -22,7 +22,7 @@ import (
 // read from the tracker replaces it. A blob is never an error a person
 // sees. Changing what a blob holds means bumping its version.
 const (
-	cardBlobVersion  = 1
+	cardBlobVersion  = 2
 	userBlobVersion  = 1
 	boardBlobVersion = 1
 	bodyBlobVersion  = 1
@@ -70,13 +70,10 @@ type choiceBlob struct {
 	Name string `json:"name,omitempty"`
 }
 
-// cardBlob is the part of a card no column holds. URL is a member a card
-// of version 1 written before it existed lacks, which reads as no URL: a
-// ticket's view of such a card falls back to none until the card is read
-// again, so the version did not move and no stored card became a miss.
+// cardBlob is the part of a card no column holds. Version 2 moved the
+// title to its column (store MirrorCard.Title).
 type cardBlob struct {
 	V        int          `json:"v"`
-	Title    string       `json:"title,omitempty"`
 	TypeName string       `json:"type_name,omitempty"`
 	Priority string       `json:"priority_name,omitempty"`
 	Labels   []choiceBlob `json:"labels,omitempty"`
@@ -86,7 +83,7 @@ type cardBlob struct {
 // mirrorCard is c as the store holds it. Its sprints are sorted, as the
 // store reads them back.
 func mirrorCard(c tracker.Card) (store.MirrorCard, error) {
-	blob := cardBlob{V: cardBlobVersion, Title: c.Title, TypeName: c.Type.Name, Priority: c.Priority.Name, URL: c.URL}
+	blob := cardBlob{V: cardBlobVersion, TypeName: c.Type.Name, Priority: c.Priority.Name, URL: c.URL}
 	for _, l := range c.Labels {
 		blob.Labels = append(blob.Labels, choiceBlob(l))
 	}
@@ -97,7 +94,7 @@ func mirrorCard(c tracker.Card) (store.MirrorCard, error) {
 	sprints := idStrings(c.Sprints)
 	slices.Sort(sprints)
 	return store.MirrorCard{
-		IssueID: string(c.ID), Key: c.Key, ProjectID: string(c.Project),
+		IssueID: string(c.ID), Key: c.Key, Title: c.Title, ProjectID: string(c.Project),
 		TypeID: string(c.Type.ID), TypeLevel: c.Type.Level,
 		StatusID: string(c.Status), AssigneeID: string(c.Assignee),
 		PriorityID: c.Priority.ID, ParentID: string(c.Parent),
@@ -107,11 +104,11 @@ func mirrorCard(c tracker.Card) (store.MirrorCard, error) {
 }
 
 // cardOf is the card m holds. ok is false when its blob is a miss: the
-// card then holds what the columns hold, and no title, type name,
-// priority name or labels.
+// card then holds what the columns hold, its title included, and no type
+// name, priority name or labels.
 func cardOf(m store.MirrorCard) (c tracker.Card, ok bool) {
 	c = tracker.Card{
-		ID: tracker.IssueID(m.IssueID), Key: m.Key, Project: tracker.ProjectID(m.ProjectID),
+		ID: tracker.IssueID(m.IssueID), Key: m.Key, Title: m.Title, Project: tracker.ProjectID(m.ProjectID),
 		Type:   tracker.IssueType{ID: tracker.IssueTypeID(m.TypeID), Level: m.TypeLevel},
 		Status: tracker.StatusID(m.StatusID), Assignee: tracker.UserID(m.AssigneeID),
 		Priority: tracker.Choice{ID: m.PriorityID}, Parent: tracker.IssueID(m.ParentID),
@@ -124,7 +121,7 @@ func cardOf(m store.MirrorCard) (c tracker.Card, ok bool) {
 	if !decodeBlob(m.Data, cardBlobVersion, &blob, &blob.V) {
 		return c, false
 	}
-	c.Title, c.Type.Name, c.Priority.Name, c.URL = blob.Title, blob.TypeName, blob.Priority, blob.URL
+	c.Type.Name, c.Priority.Name, c.URL = blob.TypeName, blob.Priority, blob.URL
 	for _, l := range blob.Labels {
 		c.Labels = append(c.Labels, tracker.Choice(l))
 	}

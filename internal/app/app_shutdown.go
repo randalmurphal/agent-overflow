@@ -456,6 +456,8 @@ func (a *App) Shutdown(ctx context.Context) error {
 		a.trackers.Stop()
 		record("stop tracker connections", nil)
 	}
+	// Fed by the tracker service, stopped above; its announces read rows.
+	record("drain thread link announces", drainSerialQueue(ctx, &a.threadLinkAnnounces, notificationDrainTimeout))
 
 	// Step 6: close PTYs. Must happen after provider sessions because
 	// a provider close might emit terminal output events; terminating

@@ -199,6 +199,7 @@ func reachTrackerApp(arg string) {
 		Settled:         func(context.Context) error { return nil },
 		ClientConnected: func() bool { return false },
 		LoopFailed:      func(error) {},
+		LinksChanged:    func([]string) {},
 	})
 	check(err)
 	defer svc.Stop()

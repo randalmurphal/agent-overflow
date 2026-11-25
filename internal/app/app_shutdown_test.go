@@ -236,6 +236,10 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		"close gitwatch manager",
 		"close PR update subscriptions",
 		"close background task output tails",
+		// "drain thread link announces" follows the tracker service's stop
+		// (not recorded here: this App has none), which ends the calls
+		// that feed it, and precedes "close store": its announces read rows.
+		"drain thread link announces",
 		"close terminal sessions",
 		"close remote MCP server",
 		// "stop thread search index" MUST appear before "close store" —

@@ -49,7 +49,7 @@ func mirrorScopes(t *testing.T, s *Store, root int64) map[string]mirrorScope {
 				return err
 			},
 			content: scalar(`SELECT data ->> 'v' FROM tracker_cache_issue_bodies`),
-			later:   map[string]int{"tracker_cache_issues": 1}, statements: 5,
+			later:   map[string]int{"tracker_cache_issues": 1}, statements: 6,
 		},
 		"board order": {
 			store: func(readAt int64, v string) error {
@@ -57,7 +57,7 @@ func mirrorScopes(t *testing.T, s *Store, root int64) map[string]mirrorScope {
 				return err
 			},
 			content: scalar(`SELECT order_key FROM tracker_cache_board_issues WHERE issue_id = '10001'`),
-			later:   map[string]int{"tracker_cache_board_issues": 1, "tracker_cache_issues": 1}, statements: 6,
+			later:   map[string]int{"tracker_cache_board_issues": 1, "tracker_cache_issues": 1}, statements: 7,
 		},
 		"card": {
 			store: func(readAt int64, v string) error {
@@ -69,7 +69,7 @@ func mirrorScopes(t *testing.T, s *Store, root int64) map[string]mirrorScope {
 			content: func() string {
 				return scalar(`SELECT issue_key FROM tracker_cache_issues WHERE issue_id = '10001'`)()[len("WEB-"):]
 			},
-			later: map[string]int{"tracker_cache_issues": 1}, statements: 5,
+			later: map[string]int{"tracker_cache_issues": 1}, statements: 6,
 		},
 		"cursor": {
 			store: func(readAt int64, v string) error {

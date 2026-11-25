@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 )
 
@@ -81,7 +82,7 @@ func TestMirrorEstimateChangeHidesRowsReadBefore(t *testing.T) {
 		read += 10
 		captured := currentPage(s, root, MirrorRowPage{BoardID: "10"})
 		got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, structure(step.unit, step.field, read)))
-		if err != nil || got != (MirrorStructureWrite{MirrorWrite: MirrorWrite{Changed: true}, EstimateResetAt: read}) {
+		if err != nil || !reflect.DeepEqual(got, MirrorStructureWrite{MirrorWrite: MirrorWrite{Changed: true}, EstimateResetAt: read}) {
 			t.Fatalf("%s: structure = %+v, %v; want changed and reset at %d", step.name, got, err, read)
 		}
 		if got := mirrorEstimates(t, s, root); got != "row unknown issue row unknown total 0" {
@@ -145,7 +146,7 @@ func TestMirrorEstimateChangeHidesRowsReadBefore(t *testing.T) {
 	read += 10
 	reset := currentEstimateReset(s, root, "10")
 	if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, structure(MirrorEstimatePoints, "", read))); err != nil ||
-		got != (MirrorStructureWrite{EstimateResetAt: reset}) {
+		!reflect.DeepEqual(got, MirrorStructureWrite{EstimateResetAt: reset}) {
 		t.Errorf("an unchanged estimate = %+v, %v; want unchanged, reset still %d", got, err, reset)
 	}
 	if c := mirrorCursor(t, s, root); c != "c2" {

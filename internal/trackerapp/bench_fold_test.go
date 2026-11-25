@@ -34,11 +34,7 @@ func BenchmarkLinkedCardsAllChanged10000(b *testing.B) {
 			Model: "test-model", WorkspacePath: project.Path, CreatedAt: 1, UpdatedAt: 1}); err != nil {
 			b.Fatal(err)
 		}
-		if _, err := st.SetThreadTicket(store.ThreadTicket{ThreadID: "thread-" + id,
-			Ticket: store.TicketRef{Kind: conn.Kind, Site: conn.Site, IssueID: id}, IssueKey: "WEB-1",
-			Origin: store.TicketOriginManual, LinkedAt: 1}); err != nil {
-			b.Fatal(err)
-		}
+		linkOldCard(b, st, conn.ID, "thread-"+id, tracker.IssueID(id))
 	}
 	updated := time.UnixMilli(1_799_000_000_000).UTC()
 	p.cards = func(asked []tracker.IssueID) (tracker.Cards, error) {

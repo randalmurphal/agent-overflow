@@ -84,7 +84,7 @@ func (d *depsModel) write(b tracker.BoardID, issues []tracker.IssueID, missing [
 	}
 	page := must[store.MirrorRowPage](d.t)(mirrorRows(b, rows, missing, d.catalog, beginReadAt(d.t, d.m.st, d.root, d.readAt)))
 	page.Lifetime = d.m.sync(b).Lifetime
-	ch := changesOf(must[store.MirrorChanges](d.t)(d.m.st.WriteMirrorRows(d.root, page)))
+	ch := changesOf(must[store.MirrorChanges](d.t)(d.m.st.WriteMirrorRows(d.root, page))).Changes
 	d.m.svc.publish(d.root, d.m.svc.gen(d.m.conn.ID), d.m.conn.ID, ch, ownOf(Scope{Connection: d.m.conn.ID, Board: b}, ch), nil)
 }
 
@@ -98,7 +98,7 @@ func (d *depsModel) restore(b tracker.BoardID, id tracker.IssueID) {
 	d.rows[b][id] = r
 	page := must[store.MirrorRowPage](d.t)(mirrorRows(b, []tracker.Row{r}, nil, d.catalog, beginReadAt(d.t, d.m.st, d.root, d.readAt)))
 	page.Lifetime = d.m.sync(b).Lifetime
-	ch := changesOf(must[store.MirrorChanges](d.t)(d.m.st.WriteMirrorRows(d.root, page)))
+	ch := changesOf(must[store.MirrorChanges](d.t)(d.m.st.WriteMirrorRows(d.root, page))).Changes
 	d.m.svc.publish(d.root, d.m.svc.gen(d.m.conn.ID), d.m.conn.ID, ch, ownOf(Scope{Connection: d.m.conn.ID, Board: b}, ch), nil)
 }
 

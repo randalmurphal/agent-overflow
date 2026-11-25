@@ -11,8 +11,8 @@ import (
 func linkIssue(t *testing.T, s *Store, threadID, issueID string) {
 	t.Helper()
 	mustCreateThread(t, s, threadID)
-	mustSetThreadTicket(t, s, ThreadTicket{ThreadID: threadID, Ticket: TicketRef{Kind: TrackerKindJira, Site: mirrorSite, IssueID: issueID},
-		IssueKey: "WEB-" + issueID, Origin: TicketOriginManual, LinkedAt: 10}, true)
+	seedThreadTicket(t, s, ThreadTicket{ThreadID: threadID, Ticket: TicketRef{Kind: TrackerKindJira, Site: mirrorSite, IssueID: issueID},
+		IssueKey: "WEB-" + issueID, Origin: TicketOriginManual, LinkedAt: 10})
 }
 
 func mustMirrorCards(t *testing.T, s *Store, root int64, ids ...string) []MirrorCard {
@@ -82,11 +82,11 @@ func TestMirrorKeepsIssuesLinkedToOwnedThreads(t *testing.T) {
 	linkIssue(t, s, "deleting", "10002")
 	mustExec(t, s.db, `UPDATE threads SET deleting = 1 WHERE id = 'deleting'`)
 	mustCreateThread(t, s, "other-kind")
-	mustSetThreadTicket(t, s, ThreadTicket{ThreadID: "other-kind", Ticket: TicketRef{Kind: TrackerKindLinear, Site: mirrorSite, IssueID: "10004"},
-		IssueKey: "APP-4", Origin: TicketOriginManual, LinkedAt: 10}, true)
+	seedThreadTicket(t, s, ThreadTicket{ThreadID: "other-kind", Ticket: TicketRef{Kind: TrackerKindLinear, Site: mirrorSite, IssueID: "10004"},
+		IssueKey: "APP-4", Origin: TicketOriginManual, LinkedAt: 10})
 	mustCreateThread(t, s, "elsewhere")
-	mustSetThreadTicket(t, s, ThreadTicket{ThreadID: "elsewhere", Ticket: TicketRef{Kind: TrackerKindJira, Site: "https://other.example.com", IssueID: "10003"},
-		IssueKey: "WEB-3", Origin: TicketOriginManual, LinkedAt: 10}, true)
+	seedThreadTicket(t, s, ThreadTicket{ThreadID: "elsewhere", Ticket: TicketRef{Kind: TrackerKindJira, Site: "https://other.example.com", IssueID: "10003"},
+		IssueKey: "WEB-3", Origin: TicketOriginManual, LinkedAt: 10})
 	if linked, more, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10"}); err != nil || more || len(linked) != 0 {
 		t.Fatalf("linked issues on a board = %v, %v, %v", linked, more, err)
 	}
@@ -101,7 +101,7 @@ func TestMirrorKeepsIssuesLinkedToOwnedThreads(t *testing.T) {
 		t.Fatalf("cards after the reconcile = %+v; want only the linked 10001", cards)
 	}
 	changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 7), webCard("10009", 7)}, MirrorCatalog{}, mirrorReadAt(1))
-	assertMirrorChanges(t, "linked cards", changes, MirrorChanges{Cards: []string{"10001"}, Unkept: []string{"10009"}})
+	assertMirrorChanges(t, "linked cards", changes, MirrorChanges{Cards: []string{"10001"}, Unkept: []string{"10009"}, Threads: []string{"linked"}})
 	if err != nil {
 		t.Fatal(err)
 	}

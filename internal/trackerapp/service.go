@@ -32,6 +32,12 @@ type Store interface {
 	ListTrackerBoardChoices(projectID string) ([]store.TrackerBoardChoice, error)
 	ReplaceProjectTrackerBoards(projectID string, held []store.HeldTrackerBoard, boards []store.ProjectTrackerBoard) (bool, store.TrackerBoardListing, error)
 	ReadyTrackerBoards(ctx context.Context, boards []store.TrackerBoardRef) error
+
+	TicketConnection(ticket store.TicketRef) (string, string, error)
+	SetThreadTicket(w store.ThreadTicketWrite) (store.ThreadTicketSet, error)
+	ClearThreadTicket(threadID string) (store.TicketRef, bool, error)
+	ListThreadsLinkedToSite(kind, site string) ([]string, error)
+	ListUnkeptLinkedIssues(tickets []store.TicketRef) ([]store.MirrorIssueRef, error)
 }
 
 // Deps are the service's capabilities. Every field is required but
@@ -69,6 +75,11 @@ type Deps struct {
 	// cleanup, a linked-issues tick that failed outside the tracker),
 	// which the loop also logs and survives. It must not block.
 	LoopFailed func(error)
+	// LinksChanged is told the threads whose ticket link a write of the
+	// service moved, or whose link a connection's change moves (what it
+	// shows, or whether it is current), so their rows are sent again. It
+	// must not block.
+	LinksChanged func(threadIDs []string)
 	// Cadence is the sync intervals; its zero value is production's.
 	Cadence Cadence
 }
@@ -161,6 +172,7 @@ type Service struct {
 	settled         func(context.Context) error
 	clientConnected func() bool
 	loopFailed      func(error)
+	linksChanged    func([]string)
 	cadence         Cadence
 	// digestSeed keys the digests an open ticket keeps of the view it last
 	// published (ticketPump.digest).
@@ -197,8 +209,9 @@ func New(deps Deps) (*Service, error) {
 	switch {
 	case deps.Store == nil, deps.Changed == nil, deps.Origin == nil, deps.Now == nil, deps.Life == nil:
 		return nil, errors.New("trackerapp: Deps needs Store, Changed, Origin, Now and Life")
-	case deps.EmitBoard == nil, deps.EmitIssue == nil, deps.Settled == nil, deps.ClientConnected == nil, deps.LoopFailed == nil:
-		return nil, errors.New("trackerapp: Deps needs EmitBoard, EmitIssue, Settled, ClientConnected and LoopFailed")
+	case deps.EmitBoard == nil, deps.EmitIssue == nil, deps.Settled == nil, deps.ClientConnected == nil, deps.LoopFailed == nil,
+		deps.LinksChanged == nil:
+		return nil, errors.New("trackerapp: Deps needs EmitBoard, EmitIssue, Settled, ClientConnected, LoopFailed and LinksChanged")
 	case deps.CredentialsDir == "":
 		return nil, errors.New("trackerapp: Deps.CredentialsDir is required")
 	case deps.Version == "":
@@ -218,7 +231,7 @@ func New(deps Deps) (*Service, error) {
 		locks: map[lockKey]*scopeLock{}, holds: map[string]*connHold{},
 		logf:      log.Printf,
 		emitBoard: deps.EmitBoard, emitIssue: deps.EmitIssue, settled: deps.Settled,
-		clientConnected: deps.ClientConnected, loopFailed: deps.LoopFailed, cadence: deps.Cadence.withDefaults(),
+		clientConnected: deps.ClientConnected, loopFailed: deps.LoopFailed, linksChanged: deps.LinksChanged, cadence: deps.Cadence.withDefaults(),
 		digestSeed: maphash.MakeSeed(), session: int64(binary.LittleEndian.Uint64(session[:]) >> 1),
 	}
 	s.makeProvider = func(row store.TrackerConnection, c, tempo *clients) (tracker.Provider, error) {
