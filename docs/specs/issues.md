@@ -4,7 +4,8 @@ Status: product rulings and screen designs recorded 2026-11-15. Built:
 the connections and a project's board list, in Settings > Issues
 (Connections, Boards), and the Issues pane with its Board screen, opened
 from the tool row's Issues entry. The other screens are not built; the
-[Board](#board) section says what of it is.
+[Board](#board) section says what of it is. A project's status groups
+and ticket pins are built in the backend, and no screen sets them yet.
 
 ## Goal
 

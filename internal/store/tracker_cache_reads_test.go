@@ -67,20 +67,20 @@ func TestListMirrorSectionSelectsItsRows(t *testing.T) {
 		{MirrorSection{Kind: MirrorSectionColumn, Column: 1}, "10002,10005,10004"},
 		{MirrorSection{Kind: MirrorSectionColumn, Column: 2}, "10007,10008"},
 	} {
-		page, err := s.ListMirrorSection(root, "10", tc.section, MirrorRowKey{})
+		page, err := s.ListMirrorSection(root, "10", MirrorRegroup{}, tc.section, MirrorRowKey{})
 		if err != nil || sectionIDs(page) != tc.want || page.More {
 			t.Errorf("%+v = %s (more %v), %v; want %s", tc.section, sectionIDs(page), page.More, err, tc.want)
 		}
 	}
-	page, err := s.ListMirrorSection(root, "10", MirrorSection{Kind: MirrorSectionSprint, SprintID: "21"}, MirrorRowKey{})
+	page, err := s.ListMirrorSection(root, "10", MirrorRegroup{}, MirrorSection{Kind: MirrorSectionSprint, SprintID: "21"}, MirrorRowKey{})
 	if err != nil || !reflect.DeepEqual(page.Rows[1], sectionRow("10005", "b", "3", 5, "20", "21")) {
 		t.Fatalf("row = %+v, %v", page.Rows, err)
 	}
-	if _, err := s.ListMirrorSection(root, "10", MirrorSection{}, MirrorRowKey{}); !errors.Is(err, ErrInvalidTrackerCache) {
+	if _, err := s.ListMirrorSection(root, "10", MirrorRegroup{}, MirrorSection{}, MirrorRowKey{}); !errors.Is(err, ErrInvalidTrackerCache) {
 		t.Fatalf("no section kind: %v", err)
 	}
 
-	counts, err := s.CountMirrorSections(root, "10")
+	counts, err := s.CountMirrorSections(root, "10", MirrorRegroup{})
 	want := MirrorSectionCounts{Revision: page.Revision, TotalsRevision: currentTotalsRevision(s, root, "10"),
 		All: MirrorSectionTotal{8, 17}, Backlog: MirrorSectionTotal{3, 9},
 		Sprints: map[string]MirrorSectionTotal{"20": {2, 5}, "21": {2, 6}, "22": {1, 2}},
@@ -88,11 +88,11 @@ func TestListMirrorSectionSelectsItsRows(t *testing.T) {
 	if err != nil || page.Revision == 0 || !reflect.DeepEqual(counts, want) {
 		t.Fatalf("counts = %+v, %v\nwant %+v", counts, err, want)
 	}
-	noUnit, err := s.CountMirrorSections(root, "11")
+	noUnit, err := s.CountMirrorSections(root, "11", MirrorRegroup{})
 	if err != nil || noUnit.All != (MirrorSectionTotal{Rows: 1}) || noUnit.Sprints["21"] != (MirrorSectionTotal{Rows: 1}) {
 		t.Fatalf("counts of a board with no estimate unit = %+v, %v", noUnit, err)
 	}
-	empty, err := s.CountMirrorSections(root, "12")
+	empty, err := s.CountMirrorSections(root, "12", MirrorRegroup{})
 	if err != nil || !reflect.DeepEqual(empty, MirrorSectionCounts{Sprints: map[string]MirrorSectionTotal{}, Columns: map[int]MirrorSectionTotal{}}) {
 		t.Fatalf("counts of no board = %+v, %v", empty, err)
 	}
@@ -115,11 +115,11 @@ func TestMirrorBacklogFollowsStatusGroups(t *testing.T) {
 	}
 	backlog := func(board string) (string, int) {
 		t.Helper()
-		page, err := s.ListMirrorSection(root, board, MirrorSection{Kind: MirrorSectionBacklog}, MirrorRowKey{})
+		page, err := s.ListMirrorSection(root, board, MirrorRegroup{}, MirrorSection{Kind: MirrorSectionBacklog}, MirrorRowKey{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		counts, err := s.CountMirrorSections(root, board)
+		counts, err := s.CountMirrorSections(root, board, MirrorRegroup{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -168,7 +168,7 @@ func TestListMirrorSectionPagesByKeyset(t *testing.T) {
 	var after MirrorRowKey
 	var all []string
 	for pageNo, wantMore := range []bool{true, true, false} {
-		page, err := s.ListMirrorSection(root, "10", MirrorSection{Kind: MirrorSectionBacklog}, after)
+		page, err := s.ListMirrorSection(root, "10", MirrorRegroup{}, MirrorSection{Kind: MirrorSectionBacklog}, after)
 		if err != nil || page.More != wantMore {
 			t.Fatalf("page %d: more %v, %v; want %v", pageNo, page.More, err, wantMore)
 		}
@@ -259,7 +259,7 @@ func TestMirrorSectionContinuationIsRefusedAfterAChange(t *testing.T) {
 		mustReplaceStructure(t, s, root, other, true)
 		mustWriteRowPage(t, s, root, webPage("10", sectionRow("10001", "a", "1", -1, "21"), sectionRow("10002", "b", "1", -1), sectionRow("10003", "c", "1", -1)), nil)
 		column := MirrorSection{Kind: MirrorSectionColumn, Column: 0}
-		first, err := s.ListMirrorSection(root, "10", column, MirrorRowKey{})
+		first, err := s.ListMirrorSection(root, "10", MirrorRegroup{}, column, MirrorRowKey{})
 		if err != nil || sectionIDs(first) != "10001,10002,10003" {
 			t.Fatalf("%s: first page = %s, %v", tc.name, sectionIDs(first), err)
 		}
@@ -267,11 +267,11 @@ func TestMirrorSectionContinuationIsRefusedAfterAChange(t *testing.T) {
 		if err := tc.change(s, root); err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
-		_, err = s.ListMirrorSection(root, "10", column, after)
+		_, err = s.ListMirrorSection(root, "10", MirrorRegroup{}, column, after)
 		if stale := errors.Is(err, ErrTrackerCacheStale); stale != tc.stale || (err != nil && !stale) {
 			t.Errorf("%s: continuation: %v; want stale %v", tc.name, err, tc.stale)
 		}
-		if again, err := s.ListMirrorSection(root, "10", column, MirrorRowKey{}); err != nil || (again.Revision == first.Revision) == tc.stale {
+		if again, err := s.ListMirrorSection(root, "10", MirrorRegroup{}, column, MirrorRowKey{}); err != nil || (again.Revision == first.Revision) == tc.stale {
 			t.Errorf("%s: start at revision %d after %d, %v", tc.name, again.Revision, first.Revision, err)
 		}
 	}
@@ -283,15 +283,15 @@ func TestMirrorSectionOfAnUnshownBoard(t *testing.T) {
 	t.Parallel()
 	s, jira, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
-	first, err := s.ListMirrorSection(root, "10", MirrorSection{Kind: MirrorSectionBacklog}, MirrorRowKey{})
+	first, err := s.ListMirrorSection(root, "10", MirrorRegroup{}, MirrorSection{Kind: MirrorSectionBacklog}, MirrorRowKey{})
 	if err != nil || sectionIDs(first) != "10001" {
 		t.Fatalf("first page = %s, %v", sectionIDs(first), err)
 	}
 	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "11")
-	if _, err := s.ListMirrorSection(root, "10", MirrorSection{Kind: MirrorSectionBacklog}, first.Next); !errors.Is(err, ErrTrackerCacheStale) {
+	if _, err := s.ListMirrorSection(root, "10", MirrorRegroup{}, MirrorSection{Kind: MirrorSectionBacklog}, first.Next); !errors.Is(err, ErrTrackerCacheStale) {
 		t.Fatalf("continuation of an unlisted board: %v", err)
 	}
-	if page, err := s.ListMirrorSection(root, "10", MirrorSection{Kind: MirrorSectionBacklog}, MirrorRowKey{}); err != nil || len(page.Rows) != 0 {
+	if page, err := s.ListMirrorSection(root, "10", MirrorRegroup{}, MirrorSection{Kind: MirrorSectionBacklog}, MirrorRowKey{}); err != nil || len(page.Rows) != 0 {
 		t.Fatalf("start of an unlisted board = %+v, %v", page, err)
 	}
 }
@@ -426,7 +426,7 @@ func TestMirrorListReadsTakeEachIDOnce(t *testing.T) {
 		read func(ids []string) (any, error)
 	}{
 		{"ReadMirrorBoardPatch", func(ids []string) (any, error) {
-			patch, _, err := s.ReadMirrorBoardPatch(root, "10", patchSections, ids, MirrorTotalsAt{})
+			patch, _, err := s.ReadMirrorBoardPatch(root, "10", MirrorRegroup{}, patchSections, ids, MirrorTotalsAt{})
 			return patch, err
 		}},
 		{"ListMirrorIssueBoards", func(ids []string) (any, error) { return s.ListMirrorIssueBoards(root, ids, ids) }},

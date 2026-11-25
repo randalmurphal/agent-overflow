@@ -112,7 +112,7 @@ func (s *fakeScenario) compare(t *testing.T, scope Scope, want []issueCard) {
 	t.Helper()
 	var got []issueCard
 	for _, sec := range []Section{{Kind: SectionColumn, Column: 0}, {Kind: SectionColumn, Column: 1}, {Kind: SectionColumn, Column: 2}, {Kind: SectionColumn, Column: 3}} {
-		page := must[SectionPage](t)(s.svc.SectionRows(scope, sec, nil))
+		page := must[SectionPage](t)(s.svc.SectionRows(scope, StatusGroups{}, sec, nil))
 		for _, r := range page.Rows {
 			got = append(got, issueCard{ID: r.Card.ID, Key: r.Card.Key, Title: r.Card.Title, Status: r.Card.Status.ID})
 		}
@@ -189,7 +189,7 @@ func TestFakeJiraScenario(t *testing.T) {
 		t.Fatalf("first sync %+v", first)
 	}
 	s.compare(t, scope, s.jiraCards())
-	v := must[BoardView](t)(s.svc.Board(scope, []Section{{Kind: SectionSprint, Sprint: "1"}}))
+	v := must[BoardView](t)(s.svc.Board(scope, StatusGroups{}, []Section{{Kind: SectionSprint, Sprint: "1"}}))
 	if len(v.Sprints) != 2 || v.Sprints[0].Total.Rows != 2 || v.Columns[1].Statuses[0].Name == "" || len(v.Sections[0].Rows) != 2 {
 		t.Fatalf("board %+v", v)
 	}
@@ -217,7 +217,7 @@ func TestFakeJiraScenario(t *testing.T) {
 		t.Fatalf("second sync cards %v, want %v", second.Cards, want)
 	}
 	s.compare(t, scope, s.jiraCards())
-	v = must[BoardView](t)(s.svc.Board(scope, []Section{{Kind: SectionSprint, Sprint: "2"}}))
+	v = must[BoardView](t)(s.svc.Board(scope, StatusGroups{}, []Section{{Kind: SectionSprint, Sprint: "2"}}))
 	if got := rowIssues(v.Sections[0].Rows); !slices.Equal(got, []string{"10103"}) {
 		t.Fatalf("sprint 2 holds %v", got)
 	}
@@ -354,7 +354,7 @@ func TestFakeLinearScenario(t *testing.T) {
 		t.Fatalf("first sync %+v", first)
 	}
 	s.compare(t, scope, s.linearCards())
-	v := must[BoardView](t)(s.svc.Board(scope, []Section{{Kind: SectionSprint, Sprint: lid(31)}}))
+	v := must[BoardView](t)(s.svc.Board(scope, StatusGroups{}, []Section{{Kind: SectionSprint, Sprint: lid(31)}}))
 	if len(v.Columns) != 4 || v.Columns[0].Statuses[0].Name != "Backlog" || len(v.Sections[0].Rows) != 1 {
 		t.Fatalf("board %+v", v)
 	}

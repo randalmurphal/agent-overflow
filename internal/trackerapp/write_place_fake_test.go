@@ -35,7 +35,7 @@ func (s *fakeScenario) boardRowIDs(t *testing.T, scope Scope) []string {
 	t.Helper()
 	var out []string
 	for col := range 4 {
-		page := must[SectionPage](t)(s.svc.SectionRows(scope, Section{Kind: SectionColumn, Column: col}, nil))
+		page := must[SectionPage](t)(s.svc.SectionRows(scope, StatusGroups{}, Section{Kind: SectionColumn, Column: col}, nil))
 		for _, r := range page.Rows {
 			out = append(out, r.Card.ID)
 		}

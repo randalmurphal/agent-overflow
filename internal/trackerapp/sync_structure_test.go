@@ -114,7 +114,7 @@ func TestReconcileCascadesToTheStructure(t *testing.T) {
 		}
 	})
 	must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background))
-	v := must[BoardView](t)(m.svc.Board(m.scope(), nil))
+	v := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, nil))
 	if m.structureReads() != 2 || !slices.ContainsFunc(v.Sprints, func(s SprintView) bool { return s.ID == "3" }) {
 		t.Fatalf("%d structure reads, %d sprints", m.structureReads(), len(v.Sprints))
 	}

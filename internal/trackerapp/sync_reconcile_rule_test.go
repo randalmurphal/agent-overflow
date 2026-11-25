@@ -206,7 +206,7 @@ func TestAReopenOrARestartInsideTheWaitListsNothing(t *testing.T) {
 				t.Fatalf("a reopen: %+v, %d listings, shown %+v; want none, the refusal at %d", res, n, shown(reopened), at)
 			}
 			// The board's view, which a pane opens with, shows it too.
-			if v := must[BoardView](t)(m.svc.Board(m.scope(), nil)); v.Sync.Failure == nil || v.Sync.Failure.At != at {
+			if v := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, nil)); v.Sync.Failure == nil || v.Sync.Failure.At != at {
 				t.Fatalf("the board's view shows %+v; want the refusal at %d", v.Sync.Failure, at)
 			}
 			m.restart(t)

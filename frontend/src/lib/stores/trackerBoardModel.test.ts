@@ -111,7 +111,9 @@ describe('the patch rule, replayed from the Go model', () => {
 
   it('names the totals it holds and refuses a patch of other sections', () => {
     const held = heldFromView(structuredClone(recorded.view), createRowInterner());
-    expect(heldTotalsAt(held)).toEqual({ lifetime: recorded.view.lifetime, revision: recorded.view.totals_revision });
+    expect(heldTotalsAt(held)).toEqual({ lifetime: recorded.view.lifetime, revision: recorded.view.totals_revision, groups: '' });
+    const regrouped = heldFromView({ ...structuredClone(recorded.view), groups: 'g1' }, createRowInterner());
+    expect(heldTotalsAt(regrouped).groups).toBe('g1');
     const patch = structuredClone(recorded.steps.find((s) => s.patch)!.patch!);
     patch.sections = patch.sections.slice(1);
     expect(() => applyBoardPatch(held, [], patch, createRowInterner())).toThrow(/answered 5 sections for the 6 asked/);

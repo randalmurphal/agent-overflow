@@ -14,10 +14,10 @@
   import { compactColumn, setCompactColumn, type CardField } from '../../stores/issuesPane.svelte';
   import { loadMoreOfSection, setTrackerBoardFiltered, type TrackerBoardRef } from '../../stores/trackerBoard.svelte';
   import {
-    cardMatches,
     filtering,
     screenColumns,
     sectionKey,
+    shownColumn,
     type CardFilter,
     type HeldBoard,
     type ScreenColumn,
@@ -48,9 +48,11 @@
     return next;
   });
   const filtered = $derived(filtering(filter));
-  const shownRows = $derived(columns.map((col) => (filtered ? col.rows.filter((r) => cardMatches(r.card, filter)) : col.rows)));
+  const visible = $derived(columns.map((col) => shownColumn(held, col, filter)));
   const now = $derived(getMinuteNow());
   const unit = $derived(held.shape.unit);
+  // One header count per column, for the strip and the column's header.
+  const counts = $derived(columns.map((col, i) => columnCount(col, visible[i], filtered, unit)));
   const noSprint = $derived(held.shape.plansSprints && !held.shape.sprints.some((sp) => sp.state === 'active'));
 
   // A filter reads the rest of every column while it is on.
@@ -108,7 +110,7 @@
         >
           <StatusMark group={col.statusGroups[0]} />
           <span class="truncate">{col.name}</span>
-          <span class="shrink-0 tabular-nums text-fg-muted">{columnCount(col, shownRows[i].length, filtered, unit)}</span>
+          <span class="shrink-0 tabular-nums text-fg-muted">{counts[i]}</span>
         </button>
       {/each}
     </div>
@@ -116,7 +118,8 @@
       <div class="flex min-h-0 flex-1 px-2 pt-2">
         <BoardColumn
           column={columns[picked]}
-          rows={shownRows[picked]}
+          rows={visible[picked].rows}
+          count={counts[picked]}
           {filtered}
           {unit}
           {hidden}
@@ -134,7 +137,8 @@
       {#each columns as col, i (i)}
         <BoardColumn
           column={col}
-          rows={shownRows[i]}
+          rows={visible[i].rows}
+          count={counts[i]}
           {filtered}
           {unit}
           {hidden}

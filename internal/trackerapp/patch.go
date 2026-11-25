@@ -41,10 +41,13 @@ type BoardTotals struct {
 
 // TotalsAt names the totals a client holds: those of the board's Lifetime
 // at its totals Revision (BoardView.TotalsRevision, BoardTotals.Revision).
-// The zero value holds none.
+// The zero value holds none. Groups is the version of the status groups
+// the client's sections and totals were read with (BoardView.Groups),
+// which it sends whether it holds totals or not.
 type TotalsAt struct {
-	Lifetime int64 `json:"lifetime"`
-	Revision int64 `json:"revision"`
+	Lifetime int64  `json:"lifetime"`
+	Revision int64  `json:"revision"`
+	Groups   string `json:"groups,omitempty"`
 }
 
 // SprintTotal is a sprint's total in a patch.
@@ -70,16 +73,21 @@ type PatchSection struct {
 // BoardPatch reads scope's board's patch for issues (at most
 // maxEventIssues) in sections (at most store.MirrorMaxViewSections, every
 // section a board can have, since a patch reads only the named issues'
-// rows of each), with the totals unless held names the ones the board has
-// now. It fails with
-// ErrNotMirrored for a board the mirror does not show: the client reads
-// the board view again.
-func (s *Service) BoardPatch(scope Scope, sections []Section, issues []tracker.IssueID, held TotalsAt) (BoardPatch, error) {
+// rows of each), read with groups, with the totals unless held names the
+// ones the board has now. It fails with ErrNotMirrored for a board the
+// mirror does not show, and with ErrStalePage when the client's sections
+// were read with other status groups (held.Groups): the client reads the
+// board view again.
+func (s *Service) BoardPatch(scope Scope, groups StatusGroups, sections []Section, issues []tracker.IssueID, held TotalsAt) (BoardPatch, error) {
 	if err := scope.boardOnly(); err != nil {
 		return BoardPatch{}, err
 	}
 	if len(sections) > store.MirrorMaxViewSections || len(issues) > maxEventIssues {
 		return BoardPatch{}, fmt.Errorf("%w: a patch reads at most %d sections and %d issues", ErrInvalidRequest, store.MirrorMaxViewSections, maxEventIssues)
+	}
+	if held.Groups != groups.version {
+		return BoardPatch{}, fmt.Errorf("%w: board %s: the sections were read with status groups %q, and the project's are %q now",
+			ErrStalePage, scope.Board, held.Groups, groups.version)
 	}
 	asked := make([]store.MirrorSection, len(sections))
 	for i, sec := range sections {
@@ -94,7 +102,8 @@ func (s *Service) BoardPatch(scope Scope, sections []Section, issues []tracker.I
 		return BoardPatch{}, err
 	}
 	defer s.leave()
-	snap, ok, err := s.store.ReadMirrorBoardPatch(root, string(scope.Board), asked, idStrings(issues), store.MirrorTotalsAt(held))
+	snap, ok, err := s.store.ReadMirrorBoardPatch(root, string(scope.Board), groups.regroup, asked, idStrings(issues),
+		store.MirrorTotalsAt{Lifetime: held.Lifetime, Revision: held.Revision})
 	if err != nil {
 		return BoardPatch{}, fmt.Errorf("trackerapp: read a patch of board %s: %w", scope.Board, err)
 	}
@@ -107,7 +116,7 @@ func (s *Service) BoardPatch(scope Scope, sections []Section, issues []tracker.I
 	}
 	cards := make([][]shownCard, len(sections))
 	for i, rows := range snap.Sections {
-		page, shown := sectionOf(sections[i], store.MirrorSectionPage{Rows: rows})
+		page, shown := sectionOf(sections[i], store.MirrorSectionPage{Rows: rows}, groups.version)
 		out.Sections[i] = PatchSection{Section: page.Section, Rows: page.Rows, Stale: page.Stale}
 		cards[i] = shown
 	}

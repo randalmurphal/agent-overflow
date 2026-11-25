@@ -295,10 +295,15 @@ const (
 // TrackerIssueUpdated is trackerapp.IssueEvent: a subscribed ticket that
 // changed (read it through TrackerTicket), a failure of its reads that
 // started, changed or cleared, or its end.
+//
+// TrackerSetupUpdated is a payload-less refetch nudge sent after a
+// project's tracker setup changed as it is stored. Receivers read again,
+// through ProjectTrackerSetup, the setups they hold.
 const (
 	TrackerConnectionsUpdated Channel = "tracker:connections_updated"
 	TrackerBoardUpdated       Channel = "tracker:board_updated"
 	TrackerIssueUpdated       Channel = "tracker:issue_updated"
+	TrackerSetupUpdated       Channel = "tracker:setup_updated"
 )
 
 // terminal:* — local PTY session bytes and lifecycle.

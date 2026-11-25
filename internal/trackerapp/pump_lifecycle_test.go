@@ -399,7 +399,7 @@ func TestSubscribeAnswerOrdersWithEvents(t *testing.T) {
 	// Applying it to the answer is harmless: the patch gives the state the
 	// answer shows.
 	held := heldFromView(*third.View, []Section{{Kind: SectionBacklog}})
-	patch := must[BoardPatch](t)(m.svc.BoardPatch(m.scope(), held.sectionList(), last.Changed, held.held()))
+	patch := must[BoardPatch](t)(m.svc.BoardPatch(m.scope(), StatusGroups{}, held.sectionList(), last.Changed, held.held()))
 	patched := applyPatch(held, last.Changed, patch)
 	if !patched.sameRows(held) {
 		t.Fatalf("an event the answer covers changed it:\n%v\n%v", patched.describe(), held.describe())
@@ -418,9 +418,9 @@ type readHook struct {
 	before func()
 }
 
-func (h *readHook) ReadMirrorBoardView(root int64, board string, sections func(store.MirrorStructure) []store.MirrorSection) (store.MirrorBoardView, bool, error) {
+func (h *readHook) ReadMirrorBoardView(root int64, board string, regroup store.MirrorRegroup, sections func(store.MirrorStructure) []store.MirrorSection) (store.MirrorBoardView, bool, error) {
 	h.once.Do(h.before)
-	return h.Store.ReadMirrorBoardView(root, board, sections)
+	return h.Store.ReadMirrorBoardView(root, board, regroup, sections)
 }
 
 func hasRow(v *BoardView, id string) bool {

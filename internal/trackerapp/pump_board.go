@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"agent-overflow/internal/pump"
@@ -89,12 +88,16 @@ type BoardSubscription struct {
 
 // SubscribeBoard subscribes to scope's board for project projectID, which
 // must list it (ErrNotListed), with the first page of each of sections in
-// the answer (none asks for the Board screen's, as Board reads them). The
-// handle starts with visible as its vote (SetSubscriptionVisible). The
-// answer comes from the mirror alone; the board's pump, made on the first
-// handle, reads the tracker after it, its first tick interactive, once a
-// handle shows it (pump.Core.AwaitShown). A connection turned off or removed is refused (ErrDisabled,
-// ErrNotFound), as is a subscribe over the cap (ErrTooManySubscriptions).
+// the answer (none asks for the Board screen's, as Board reads them),
+// read with the status groups the project gives the board's site
+// (StatusGroups), which the handle's later reads apply too. The handle
+// starts with visible as its vote (SetSubscriptionVisible). The answer
+// comes from the mirror alone; the board's pump, made on the first handle,
+// reads the tracker after it, its first tick interactive, once a handle
+// shows it (pump.Core.AwaitShown). A connection turned off or removed is
+// refused (ErrDisabled, ErrNotFound), as is a subscribe over the cap
+// (ErrTooManySubscriptions) and one whose project's setup file cannot be
+// read (ErrSetupUnreadable).
 // tie ties the handle to its client before any pump is made for it; its
 // refusal is the subscribe's.
 func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Section, visible bool, tie Tie) (BoardSubscription, error) {
@@ -116,21 +119,23 @@ func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Secti
 		return BoardSubscription{}, err
 	}
 	defer s.leave()
-	listed, err := s.store.ListProjectTrackerBoards(projectID)
-	if err != nil {
+	slug, listed, err := s.store.ProjectTrackerBoardListed(projectID, scope.Connection, string(scope.Board))
+	switch {
+	case err != nil:
 		return BoardSubscription{}, fmt.Errorf("trackerapp: read the boards of project %s: %w", projectID, err)
-	}
-	if !slices.ContainsFunc(listed, func(b store.ProjectTrackerBoard) bool {
-		return b.ConnectionID == scope.Connection && b.BoardID == string(scope.Board)
-	}) {
+	case !listed:
 		return BoardSubscription{}, fmt.Errorf("%w: project %s, board %s of %s", ErrNotListed, projectID, scope.Board, scope.Connection)
 	}
-	id, p, start, seq, told, err := s.takeBoardHandle(scope, visible, tie)
+	id, p, start, seq, told, key, err := s.takeBoardHandle(scope, slug, visible, tie)
 	if err != nil {
 		return BoardSubscription{}, err
 	}
 	answer := BoardSubscription{ID: id, Seq: seq, PollEvery: p.every.Milliseconds()}
-	view, err := s.Board(scope, sections)
+	var view BoardView
+	groups, err := s.boardStatusGroups(key)
+	if err == nil {
+		view, err = s.Board(scope, groups, sections)
+	}
 	switch {
 	case err == nil:
 		answer.Loaded, answer.View = true, &view
@@ -162,46 +167,48 @@ func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Secti
 	return answer, nil
 }
 
-// takeBoardHandle takes a handle on scope's pump, tied by tie and voting
-// visible, making the pump when there is none; start reports that the
-// caller launches it. seq
-// is the answer's sequence number, and told the board's sync state as the
-// pump's subscribers were last told of it then. The connection is read
-// under opMu, so a turn off orders entirely before (refused) or after (the
-// pump ends).
-func (s *Service) takeBoardHandle(scope Scope, visible bool, tie Tie) (id string, p *boardPump, start bool, seq uint64, told SyncView, err error) {
+// takeBoardHandle takes a handle on scope's pump for the project slug
+// names, tied by tie and voting visible, making the pump when there is
+// none; start reports that the caller launches it. seq is the answer's
+// sequence number, told the board's sync state as the pump's subscribers
+// were last told of it then, and key the status groups the handle reads
+// with. The connection is read under opMu, so a turn off orders entirely
+// before (refused) or after (the pump ends).
+func (s *Service) takeBoardHandle(scope Scope, slug string, visible bool, tie Tie) (id string, p *boardPump, start bool, seq uint64,
+	told SyncView, key setupKey, err error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
-	kind, err := s.subscribableLocked(scope.Connection)
+	row, err := s.subscribableLocked(scope.Connection)
 	if err != nil {
-		return "", nil, false, 0, SyncView{}, err
+		return "", nil, false, 0, SyncView{}, setupKey{}, err
 	}
+	key = setupKey{slug: slug, site: siteKey{row.Kind, row.Site}}
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	switch {
 	case s.subs.halted:
-		return "", nil, false, 0, SyncView{}, ErrStopped
+		return "", nil, false, 0, SyncView{}, setupKey{}, ErrStopped
 	case s.subs.boardHandles >= maxBoardSubscriptions:
-		return "", nil, false, 0, SyncView{}, fmt.Errorf("%w: %d board subscriptions", ErrTooManySubscriptions, maxBoardSubscriptions)
+		return "", nil, false, 0, SyncView{}, setupKey{}, fmt.Errorf("%w: %d board subscriptions", ErrTooManySubscriptions, maxBoardSubscriptions)
 	}
 	id = newHandleID()
 	untie, err := tie(id)
 	if err != nil {
-		return "", nil, false, 0, SyncView{}, err
+		return "", nil, false, 0, SyncView{}, setupKey{}, err
 	}
 	p = s.subs.boards[scope]
 	if p == nil {
 		if s.subs.boards == nil {
 			s.subs.boards = map[Scope]*boardPump{}
 		}
-		p = &boardPump{core: s.newCore(), scope: scope, gen: s.genLocked(scope.Connection), every: s.cadence.delta(kind), exited: make(chan struct{})}
+		p = &boardPump{core: s.newCore(), scope: scope, gen: s.genLocked(scope.Connection), every: s.cadence.delta(row.Kind), exited: make(chan struct{})}
 		s.subs.boards[scope] = p
 		start = true
 	}
-	h := &handle{board: p, untie: untie}
+	h := &handle{board: p, untie: untie, setup: key}
 	s.takeHandleLocked(id, h, &p.core)
 	h.ref.VoteLocked(visible)
-	return id, p, start, s.nextSeqLocked(), p.toldLocked(), nil
+	return id, p, start, s.nextSeqLocked(), p.toldLocked(), key, nil
 }
 
 // toldLocked is p's sync view as its subscribers were last told of it:
@@ -215,21 +222,21 @@ func (p *boardPump) toldLocked() SyncView {
 	return v
 }
 
-// subscribableLocked is the kind of connection id, refusing a subscribe
-// when it is turned off, removed or a Tempo connection. A connection a tick holds is
+// subscribableLocked is connection id's row, refusing a subscribe when it
+// is turned off, removed or a Tempo connection. A connection a tick holds is
 // on: any change to it drops the hold. The caller holds opMu.
-func (s *Service) subscribableLocked(id string) (kind string, err error) {
+func (s *Service) subscribableLocked(id string) (store.TrackerConnection, error) {
 	if h := s.heldLocked(id); h != nil {
-		return h.row.Kind, nil
+		return h.row, nil
 	}
 	row, err := s.get(id)
 	if err == nil {
 		err = usable(row)
 	}
 	if err != nil {
-		return "", err
+		return store.TrackerConnection{}, err
 	}
-	return row.Kind, nil
+	return row, nil
 }
 
 // RefreshSubscription has handle id's pump read now, as a person's
