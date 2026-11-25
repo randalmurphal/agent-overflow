@@ -7,7 +7,8 @@
   // the rail of fields on the right; narrower, one row of status,
   // assignee, priority and points sits over the content and Details
   // slides the rail over it. The content is the description, the other
-  // long text fields in one line that names them until opened, and the
+  // long text fields in one line that names them until opened, the linked
+  // tickets by relation, each opening in this ticket's place, and the
   // activity: comments and history.
   //
   // What it draws is the ticket's subscription (`attachment`): until its
@@ -66,7 +67,7 @@
     refreshTrackerTicket,
     type TrackerTicketAttachment,
   } from '../../stores/trackerTicket.svelte';
-  import { fieldText, isFilled, moreFields, sectionFields, ticketRow } from '../../stores/trackerTicketModel';
+  import { fieldText, isFilled, linkGroups, moreFields, sectionFields, ticketRow } from '../../stores/trackerTicketModel';
   import {
     assignableUsers,
     editTicketFields,
@@ -271,6 +272,7 @@
   }
 
   const sections = $derived(detail ? sectionFields(detail.fields) : []);
+  const links = $derived(detail ? linkGroups(detail.links ?? []) : []);
   const moreOpen = $derived(ticketSectionOpen(section('more-sections'), false));
   const fieldsOpen = $derived(ticketSectionOpen(section('more-fields'), false));
   let fieldFind = $state('');
@@ -492,6 +494,30 @@
           {/each}
         {/if}
       </div>
+    {/if}
+    {#if links.length > 0}
+      <section class="flex flex-col gap-1.5" data-testid="ticket-links">
+        <span class="px-1 text-sm font-medium text-fg">Linked tickets</span>
+        {#each links as group (group.relation)}
+          <div class="flex flex-col" data-testid="ticket-link-group">
+            <span class="px-1 text-xs text-fg-muted" data-testid="ticket-link-relation">{group.relation}</span>
+            {#each group.links as link (link.id)}
+              {@const issue = link.issue}
+              <button
+                type="button"
+                class="flex min-w-0 items-center gap-1.5 rounded-[var(--radius-control)] px-1 py-0.5 text-left text-sm text-fg hover:bg-surface-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:min-h-9 compact:select-none"
+                title="Open {issue.key || issue.title}"
+                data-testid="ticket-link"
+                onclick={() => onOpenIssue(issue.id, { key: issue.key, title: issue.title, card: null })}
+              >
+                <StatusMark group={issue.status.group} />
+                <span class="shrink-0 tabular-nums text-fg-muted">{issue.key}</span>
+                <span class="min-w-0 truncate">{issue.title}</span>
+              </button>
+            {/each}
+          </div>
+        {/each}
+      </section>
     {/if}
     <section class="flex flex-col gap-2" data-testid="ticket-activity">
       <div class="flex items-center gap-2">

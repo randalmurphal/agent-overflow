@@ -1,8 +1,8 @@
 // The ticket screen's rules that hold no state (docs/specs/issues.md,
 // "Ticket"): what a write's answer means for the person, which comments
 // and changes are mounted, the order of the rail's fields, which fields
-// are sections, and the row of the board the ticket shows its points
-// from. The stores and the components call these; each rule is here once.
+// are sections, how linked tickets group, and the row of the board the
+// ticket shows its points from. The stores and the components call these; each rule is here once.
 
 import type {
   CommentView,
@@ -10,6 +10,7 @@ import type {
   EventView,
   FieldValueView,
   FieldView,
+  LinkView,
   RefusalView,
   TicketRowView,
   WriteView,
@@ -96,6 +97,18 @@ export function historyWindow(history: readonly EventView[], shown: number): { r
   const newest = [...history].sort((a, b) => b.at - a.at);
   const take = newest.slice(0, Math.max(0, shown));
   return { events: take, hidden: newest.length - take.length };
+}
+
+/** The ticket's links grouped by how the ticket relates to each issue,
+ * the groups in the order the tracker lists their first link. */
+export function linkGroups(links: readonly LinkView[]): readonly { readonly relation: string; readonly links: readonly LinkView[] }[] {
+  const groups = new Map<string, LinkView[]>();
+  for (const l of links) {
+    const group = groups.get(l.relation);
+    if (group) group.push(l);
+    else groups.set(l.relation, [l]);
+  }
+  return [...groups].map(([relation, of]) => ({ relation, links: of }));
 }
 
 /** Whether a field holds a value. */

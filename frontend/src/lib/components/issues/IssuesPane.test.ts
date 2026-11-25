@@ -1167,6 +1167,35 @@ describe('the ticket in the pane', () => {
     clearCommandRegistry();
   });
 
+  it('shows the linked tickets grouped by relation, each opening its ticket that Back returns from', async () => {
+    install();
+    const linked = (id: string, relation: string) => ({
+      id: `l${id}`, type: '10000', relation, issue: { id, key: `WEB-${id}`, title: `Issue ${id}`, status: { id: 's1', name: 'To Do', group: 'todo' } },
+    });
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      links: issue === '1' ? [linked('2', 'blocks'), linked('3', 'is blocked by'), linked('4', 'blocks')] : [],
+    }) as unknown as DetailView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const groups = await waitFor(() => {
+      const found = within(screen).getAllByTestId('ticket-link-group');
+      expect(found).toHaveLength(2);
+      return found;
+    });
+    expect(groups.map((g) => [
+      within(g).getByTestId('ticket-link-relation').textContent,
+      within(g).getAllByTestId('ticket-link').map((l) => l.textContent?.replace(/\s+/g, ' ').trim()),
+    ])).toEqual([
+      ['blocks', ['WEB-2 Issue 2', 'WEB-4 Issue 4']],
+      ['is blocked by', ['WEB-3 Issue 3']],
+    ]);
+    await fireEvent.click(within(groups[1]).getByTestId('ticket-link'));
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('3'));
+    await fireEvent.click(view.getByTestId('ticket-back'));
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('1'));
+  });
+
   it('mounts the newest five comments and the earlier ones 20 a press, reading the next page once the held ones run out', async () => {
     install();
     installTicket((issue) => ticketDetail(issue, { comments: 30, more: 'page-2' }));

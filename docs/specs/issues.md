@@ -311,11 +311,12 @@ typed values is shown, not edited); each long text field as a
 section that folds and is edited as Markdown, an image or attachment in
 its text shown as a chip naming the file; comments in either order
 with the control and the comment box, edited, deleted and copied from a
-comment's menu; history; the control that opens it in the tracker; and
-Back through the tickets opened from one another. Not built: pinning a
+comment's menu; history; linked tickets grouped by relation, each
+opening in the ticket's place; the control that opens it in the tracker;
+and Back through the tickets opened from one another. Not built: pinning a
 field or a section, the mark on a section holding the template text, Work,
-the thread an agent's comment came from, attachments, linked tickets, Log
-time, planning poker, and a ticket in a pane of its own.
+the thread an agent's comment came from, attachments, adding and removing
+links, Log time, planning poker, and a ticket in a pane of its own.
 
 - At 720 or wider the content is on the left and a rail on the right holds
   Fields, then Work. Narrower, the ticket shows the content only, with one
