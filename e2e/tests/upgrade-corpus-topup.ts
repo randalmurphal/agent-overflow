@@ -388,7 +388,8 @@ async function connectTrackers(harness: HarnessApp, projectId: string): Promise<
     boards: [{ id: 2, name: 'WEB kanban', type: 'kanban', project: 'WEB', columns: [{ name: 'To Do', statuses: ['10000'] }] }],
   });
   const connections = await harness.rpc<TrackerConnection[]>('TrackerConnections');
-  const jira = connections.find((c) => c.kind === 'jira' && c.site === JIRA_SITE && c.account === JIRA_ACCOUNT)
+  // A connection's site is the https origin the app made of the one given.
+  const jira = connections.find((c) => c.kind === 'jira' && c.site === `https://${JIRA_SITE}` && c.account === JIRA_ACCOUNT)
     ?? await harness.rpc<TrackerConnection>('AddTrackerConnection', { kind: 'jira', site: JIRA_SITE, account: JIRA_ACCOUNT });
   // The token a person would paste into the key file the app named.
   await writeFile(jira.keyFilePath, JIRA_TOKEN, { mode: 0o600 });
@@ -415,13 +416,24 @@ async function connectTrackers(harness: HarnessApp, projectId: string): Promise<
   // The scrum board read into the mirror as a client opening it reads it
   // (tracker-board-wire.spec.ts). A refresh returns once its read ran
   // (structure, delta, reconcile and history), so the rows the corpus
-  // keeps are written by answers, never by a tick's timing.
+  // keeps are written by answers, never by a tick's timing. A refresh the
+  // tracker refused also returns, over the rows an earlier run left, so
+  // the board's sync state is what says this read ran and was answered.
   const sprint = [{ kind: 'sprint', sprint: SPRINT_ID }];
   const sub = await harness.rpc<{ id: string }>('SubscribeTrackerBoard', projectId, jira.id, BOARD_ID, sprint);
+  const asked = Date.now();
   await harness.rpc('RefreshTrackerSubscription', sub.id);
-  const view = await harness.rpc<{ name: string; sections: Array<{ rows: unknown[] }> }>('TrackerBoard', sub.id, sprint);
-  if (view.name !== 'WEB board' || view.sections[0].rows.length === 0) throw new Error(`the fake Jira's board read as ${JSON.stringify(view)}`);
-  await harness.rpc('TrackerSectionRows', sub.id, { kind: 'backlog' }, null);
+  type Rows = { rows: Array<{ card: { key: string } }> };
+  const view = await harness.rpc<{ name: string; sync: { read_at?: number; failure?: unknown }; sections: Rows[] }>('TrackerBoard', sub.id, sprint);
+  const keys = (page: Rows) => page.rows.map((r) => r.card.key).sort();
+  if (view.sync.failure !== undefined || (view.sync.read_at ?? 0) < asked) {
+    throw new Error(`the fake Jira's board was not read: its sync state is ${JSON.stringify(view.sync)}`);
+  }
+  if (view.name !== 'WEB board' || keys(view.sections[0]).join() !== 'WEB-1,WEB-2') {
+    throw new Error(`the fake Jira's board read as ${view.name} with sprint rows ${keys(view.sections[0]).join()}`);
+  }
+  const backlog = await harness.rpc<Rows>('TrackerSectionRows', sub.id, { kind: 'backlog' }, null);
+  if (keys(backlog).join() !== 'WEB-3') throw new Error(`the fake Jira's backlog read as ${keys(backlog).join()}`);
   await harness.rpc('ReleaseTrackerSubscription', sub.id);
 }
 
