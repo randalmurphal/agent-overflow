@@ -50,6 +50,7 @@ import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { TransportError } from '../../transport/wsClient';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getToasts } from '../../stores/toast.svelte';
 
 // The project of the thread the pane was opened from (toolPanes owns it).
 const openedFrom = vi.hoisted(() => ({ project: null as string | null }));
@@ -984,6 +985,46 @@ describe('the ticket in the pane', () => {
     await fireEvent.keyDown(due, { key: 'Enter' });
     await waitFor(() => expect(edit).toHaveBeenCalledWith('c1', { issue: '1', fields: [{ field: 'due', typed: ['2026-02-03'] }], accept_loss: false }));
     expect(edit).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the ticket in the tracker in this browser when the page is not on the computer', async () => {
+    install();
+    installTicket();
+    const host = setBindingMock('OpenExternalURL', async () => undefined);
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    const page = window.location.href;
+    // A connected browser: the page is served to another machine.
+    (window as unknown as { happyDOM: { setURL(url: string): void } }).happyDOM.setURL('http://192.168.1.20:8123/');
+    try {
+      const view = mount();
+      const screen = await openCard(view, '1');
+      await fireEvent.click(await within(screen).findByTestId('ticket-open-tracker'));
+      await fireEvent.contextMenu(within(screen).getByTestId('ticket-header'));
+      await fireEvent.click(await within(document.body).findByTestId('ticket-menu-open-tracker'));
+      await waitFor(() => expect(open).toHaveBeenCalledTimes(2));
+      expect(open.mock.calls.map((c) => c[0])).toEqual(['https://example.atlassian.net/browse/WEB-1', 'https://example.atlassian.net/browse/WEB-1']);
+      expect(host).not.toHaveBeenCalled();
+    } finally {
+      (window as unknown as { happyDOM: { setURL(url: string): void } }).happyDOM.setURL(page);
+      open.mockRestore();
+    }
+  });
+
+  it('says a ticket link that is not a web address cannot be opened, and opens nothing', async () => {
+    install();
+    installTicket((issue) => ({ ...ticketDetail(issue), url: 'javascript:alert(1)' }) as DetailView);
+    const host = setBindingMock('OpenExternalURL', async () => undefined);
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    try {
+      const view = mount();
+      const screen = await openCard(view, '1');
+      await fireEvent.click(await within(screen).findByTestId('ticket-open-tracker'));
+      await waitFor(() => expect(getToasts().map((t) => t.message)).toContain('Could not open WEB-1 in the tracker: its link javascript:alert(1) is not a web address.'));
+      expect(host).not.toHaveBeenCalled();
+      expect(open).not.toHaveBeenCalled();
+    } finally {
+      open.mockRestore();
+    }
   });
 
   it('opens a card\'s ticket from the card\'s menu, and copies its key from it', async () => {

@@ -51,7 +51,6 @@
     FieldView,
     MoveView,
   } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
-  import { OpenExternalURL } from '../../stores/bindings';
   import { captureError, type CapturedError } from '../../stores/errorReports.svelte';
   import {
     setTicketCommentOrder,
@@ -61,7 +60,7 @@
     type TicketPlacement,
     type TicketSeed,
   } from '../../stores/issuesPane.svelte';
-  import { addErrorToast, addToast } from '../../stores/toast.svelte';
+  import { addToast } from '../../stores/toast.svelte';
   import {
     dismissTrackerTicketRefreshNotice,
     refreshTrackerTicket,
@@ -79,6 +78,7 @@
     type TicketWriteContext,
   } from '../../stores/trackerTicketWrites.svelte';
   import { copyToClipboard } from '../../utils/clipboard';
+  import { handleExternalURL } from '../../utils/externalLinks';
   import { relativeTime } from '../../utils/format';
 
   interface Props {
@@ -316,14 +316,11 @@
     comments?.focusBox();
   }
 
+  // The app's one opener of a web link: this browser for a page served
+  // to another machine, the computer's browser otherwise.
   async function openInTracker(): Promise<void> {
     const url = detail?.url;
-    if (!url) return;
-    try {
-      await OpenExternalURL(url);
-    } catch (err) {
-      addErrorToast(`Could not open ${ctx.label} in the tracker`, err);
-    }
+    if (url && !(await handleExternalURL(url))) addToast('error', `Could not open ${ctx.label} in the tracker: its link ${url} is not a web address.`);
   }
 
   async function copy(text: string, what: string): Promise<void> {
