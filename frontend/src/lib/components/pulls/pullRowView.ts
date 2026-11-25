@@ -3,6 +3,7 @@
 // row component renders text and tones only.
 
 import { formatCalendarDate, formatTimeOfDay } from '../../utils/format';
+import type { NamedTicket } from '../../stores/ticketOpen';
 import type { ReadinessTone } from '../../utils/reviewReadiness';
 
 export interface PullRowView {
@@ -34,6 +35,11 @@ export interface PullRowView {
   approvals: { given: number; required: number } | null;
   /** Unresolved review threads; null when unknown. */
   unresolved: number | null;
+  /** The project the PR is listed under, whose boards a ticket opens on. */
+  projectId: string;
+  /** The tickets of this computer's trackers the title and head branch
+   * name, each a chip that opens it. */
+  tickets: readonly NamedTicket[];
 }
 
 /** `#163` on GitHub, `!4323` on GitLab. */

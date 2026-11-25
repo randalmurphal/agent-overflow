@@ -4,7 +4,9 @@
 // through one stable dynamic import (architecture.test.ts, rule 4b).
 
 import { attachedBackendEntry, backendDisplayName } from './attachedBackends.svelte';
+import { TrackerLookup } from './bindings';
 import { addErrorToast, addToast } from './toast.svelte';
+import { withBackendTarget } from '../transport/backends';
 import { openTool } from './toolPanes.svelte';
 import { userFacingError } from '../utils/userFacingError';
 import { retryingLoad } from '../utils/retryingLoad';
@@ -24,6 +26,39 @@ export interface TicketToOpen {
   readonly title: string;
   readonly project: string | null;
   readonly of: string;
+}
+
+/** A ticket a pull request names (PRListItem.tickets): its key and
+ * connection, with its issue and title when the computer's mirror holds
+ * them. */
+export interface NamedTicket {
+  readonly key: string;
+  readonly connectionId: string;
+  readonly issueId?: string;
+  readonly title?: string;
+}
+
+/** Opens a ticket a pull request names, on `backend`; a key the mirror
+ * did not hold is looked up on the tracker first. */
+export async function openNamedTicket(backend: BackendKey, ticket: NamedTicket, project: string | null): Promise<void> {
+  let issue = ticket.issueId ?? '';
+  let title = ticket.title ?? '';
+  if (!issue) {
+    try {
+      const view = await withBackendTarget(backend, () => TrackerLookup(ticket.connectionId, [ticket.key]));
+      const card = view.found?.find((m) => m.key === ticket.key)?.card;
+      if (!card) {
+        addToast('error', `${ticket.key} cannot open: its tracker has no ticket with that key.`);
+        return;
+      }
+      issue = card.id;
+      title = card.title;
+    } catch (err) {
+      addErrorToast(`${ticket.key} cannot open: ${userFacingError(err)}`, err);
+      return;
+    }
+  }
+  await openTicketInIssues({ backend, connection: ticket.connectionId, issue, key: ticket.key, title, project, of: 'of its tracker' });
 }
 
 export function computerName(backend: BackendKey | null, fallback: string): string {

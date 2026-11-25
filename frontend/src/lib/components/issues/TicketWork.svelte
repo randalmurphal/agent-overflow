@@ -6,7 +6,7 @@
   // computer reads them (`stores/ticketWork.svelte.ts`); Ask and Start
   // work, and a Start work run's steps until it ends. Each row opens what
   // it names and has its menu on a right-click or long press.
-  import { untrack } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import Button from '../primitives/Button.svelte';
   import ContextMenu from '../primitives/ContextMenu.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
@@ -64,8 +64,10 @@
   const card = $derived(detail?.card ?? null);
   const ctx: TicketWriteContext = $derived({ key: attachment.key, ref: attachment.ref, label: card?.key || 'the ticket' });
 
-  $effect(() => acquireTrackerBoardChoices());
-  $effect(() => acquireTrackerConnections(ref.backend));
+  // The ticket's computer is fixed for the component's life: the pane
+  // mounts a new ticket screen per ticket.
+  onMount(() => acquireTrackerBoardChoices());
+  onMount(() => acquireTrackerConnections(attachment.ref.backend));
 
   // The board's project: the thread of an Ask or Start work is made in it,
   // and its setup holds the Start work defaults. A board two projects list

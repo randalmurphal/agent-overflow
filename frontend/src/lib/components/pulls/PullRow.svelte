@@ -6,6 +6,7 @@
   import { ciStatusDotClass, ciStatusText } from '../../utils/ciStatus';
   import type { ReadinessTone } from '../../utils/reviewReadiness';
   import { pullNumberLabel, type PullRowView } from './pullRowView';
+  import type { NamedTicket } from '../../stores/ticketOpen';
 
   // One merge request in the page's list, read top down: the project,
   // number and author with the age at the right; the title, up to two
@@ -13,7 +14,8 @@
   // tone (why the row is where it is), the approvals, the unresolved
   // threads and, on the reader's own MRs, CI. The state's tone also
   // colours the bar at the left. The row is a button so the list is one
-  // tab stop per MR; the menu lives on the trailing button the page adds.
+  // tab stop per MR; the menu lives on the trailing button the page adds,
+  // and each ticket the row names is a chip under it that opens the ticket.
 
   interface Props {
     row: PullRowView;
@@ -21,9 +23,11 @@
     onOpen: (row: PullRowView, event: MouseEvent | KeyboardEvent) => void;
     /** The page's row menu trigger (Open with agent, Open on forge, Copy URL). */
     onMenu?: (row: PullRowView, anchor: HTMLElement) => void;
+    /** Opens a ticket the row names, from its chip. */
+    onTicket?: (row: PullRowView, ticket: NamedTicket) => void;
   }
 
-  let { row, selected, onOpen, onMenu }: Props = $props();
+  let { row, selected, onOpen, onMenu, onTicket }: Props = $props();
 
   const TONE_TEXT: Record<ReadinessTone, string> = {
     accent: 'text-accent',
@@ -54,9 +58,10 @@
   data-selected={selected ? 'true' : undefined}
 >
   <span class="my-[7px] w-0.5 shrink-0 rounded-full {selected ? 'bg-accent' : TONE_BAR[row.tone]}" aria-hidden="true"></span>
+  <div class="flex min-w-0 flex-1 flex-col">
   <button
     type="button"
-    class="flex min-w-0 flex-1 flex-col gap-[3px] py-[7px] pr-3 pl-2.5 text-left compact:select-none compact:py-2.5
+    class="flex min-w-0 flex-col gap-[3px] py-[7px] pr-3 pl-2.5 text-left compact:select-none compact:py-2.5
       focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
     aria-current={selected ? 'true' : undefined}
     onclick={(event) => onOpen(row, event)}
@@ -96,6 +101,20 @@
       {/if}
     </span>
   </button>
+  {#if row.tickets.length > 0 && onTicket}
+    <span class="flex flex-wrap gap-1 pb-[7px] pl-2.5 pr-3 compact:pb-2.5" data-testid="pull-tickets">
+      {#each row.tickets as ticket (ticket.key)}
+        <button
+          type="button"
+          class="rounded-sm bg-accent/10 px-1.5 text-[0.6875rem] tabular-nums leading-4 text-accent hover:bg-accent/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:min-h-9 compact:select-none"
+          title={ticket.title ? `${ticket.key} ${ticket.title}` : `Open ${ticket.key}`}
+          data-testid="pull-ticket"
+          onclick={() => onTicket(row, ticket)}
+        >{ticket.key}</button>
+      {/each}
+    </span>
+  {/if}
+  </div>
   {#if onMenu}
     <button
       bind:this={menuEl}

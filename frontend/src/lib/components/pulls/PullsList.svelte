@@ -3,6 +3,7 @@
   import PullsListBody from './PullsListBody.svelte';
   import { pullsListItems, type PullsListProjectError } from './pullsListItems';
   import type { PullRowView } from './pullRowView';
+  import type { NamedTicket } from '../../stores/ticketOpen';
   import { pullGroupLabel } from '../../utils/pullsAttention';
   import type { PullsFilter } from '../../stores/pullsPageFilters.svelte';
 
@@ -26,10 +27,11 @@
     shown: boolean;
     onOpen: (row: PullRowView) => void;
     onMenu: (row: PullRowView, anchor: HTMLElement) => void;
+    onTicket: (row: PullRowView, ticket: NamedTicket) => void;
     onRetry: () => void;
   }
 
-  let { groups, projectErrors, selectedKey, filter, query, orderKey, noProjects, error, loading, retrying, shown, onOpen, onMenu, onRetry }: Props = $props();
+  let { groups, projectErrors, selectedKey, filter, query, orderKey, noProjects, error, loading, retrying, shown, onOpen, onMenu, onTicket, onRetry }: Props = $props();
 
   const items = $derived(
     pullsListItems(
@@ -73,7 +75,7 @@
 
 <PullsListBody bind:this={body} testid="pulls-list" {items} rowEstimatePx={84} {shown} {orderKey} {onRetry} {retrying}>
   {#snippet row(view: PullRowView)}
-    <PullRow row={view} selected={selectedKey === view.key} {onOpen} {onMenu} />
+    <PullRow row={view} selected={selectedKey === view.key} {onOpen} {onMenu} {onTicket} />
   {/snippet}
   {#snippet after()}
     {#if error}

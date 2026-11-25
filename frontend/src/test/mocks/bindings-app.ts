@@ -171,6 +171,10 @@ const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
   // person's time answers (trackerapp Service.Worklogs).
   TrackerWorklogs: async (_connection: string, _author: string, from: string, to: string) => ({ worklogs: [], unread: daysFromTo(from, to) }),
   RefreshTrackerWorklogs: async () => ({ worklogs: [] }),
+  // A ticket's Work, read when its rail shows (stores/ticketWork): no pull
+  // request or branch names it, as a computer with no stored pull requests
+  // and no branch of its key answers (app_ticket_work.go GetTicketWork).
+  GetTicketWork: async () => ({ key: '', pullRequests: [], branches: [], problems: [] }),
   // A thread the pane opens, as the backend holds an idle thread with no
   // history: resuming it does nothing (app_session_bindings.go), and its
   // ticks, plans, turns, tray tasks, wakes and pending requests are empty
@@ -377,6 +381,8 @@ export const RegenerateThreadTitle = dispatch('RegenerateThreadTitle');
 export const SetThreadTicket = dispatch('SetThreadTicket');
 export const ClearThreadTicket = dispatch('ClearThreadTicket');
 export const ThreadsForTicket = dispatch('ThreadsForTicket');
+export const GetTicketWork = dispatch('GetTicketWork');
+export const StartTicketThread = dispatch('StartTicketThread');
 export const SwitchThread = dispatch('SwitchThread');
 
 // Terminal operations (ThreadTerminalDrawer, TerminalBody, etc).
