@@ -134,6 +134,25 @@ type Setup struct {
 	TicketPins   []SitePins         `json:"ticket_pins"`
 }
 
+// UnmarshalJSON reads a replace's setup whole or refuses it: a JSON object
+// of the sections this build reads, each entry holding only its own
+// fields, as the file's reader refuses a field of a section it reads
+// (decodeStrict). Null, anything but an object, a section this build does
+// not read (a newer app's) and a field it does not know are refused, so a
+// setup is never saved as less than it says; {} is the empty setup.
+func (s *Setup) UnmarshalJSON(data []byte) error {
+	if trimmed := bytes.TrimSpace(data); len(trimmed) == 0 || trimmed[0] != '{' {
+		return errors.New("trackerapp: a tracker setup is a JSON object of its sections")
+	}
+	type fields Setup
+	var out fields
+	if err := decodeStrict(data, &out); err != nil {
+		return fmt.Errorf("trackerapp: read the tracker setup: %w", err)
+	}
+	*s = Setup(out)
+	return nil
+}
+
 // SiteStatusGroups is the group each status of one tracker site counts in
 // for the project, by status ID: backlog, todo, in_progress, done,
 // canceled, or left_out (out of counts: the status's rows show in their

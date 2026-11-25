@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/dispatchrefusal"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/project"
@@ -203,5 +205,53 @@ func TestATrackerSetupWriteThatMayHaveHappenedSaysSo(t *testing.T) {
 	got, err := f.a.ProjectTrackerSetup(ctx, f.project)
 	if err != nil || len(got.StatusGroups) != 1 || got.StatusGroups[0].Statuses["10001"] != "left_out" {
 		t.Fatalf("the setup after = %+v, %v; want the file's, which holds the change", got, err)
+	}
+}
+
+// A setup argument this computer cannot read whole is refused before the
+// method runs, as any argument it cannot read is: null, anything but an
+// object, a section this build does not read (a newer app's), and a field
+// it does not know. Nothing is written, and the stored setup is as it
+// was; {} is the empty setup, which removes the file.
+func TestASetupArgumentThisComputerCannotReadIsRefused(t *testing.T) {
+	t.Parallel()
+	f := newTrackerBoardFixture(t)
+	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
+	rpc := newAppDispatch(t, f.a)
+	path := f.setupPath(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A newer app saved card_marks, which this build keeps as it is.
+	file := `{"card_marks": {"version": 1, "marks": []}, "status_groups": {"version": 1, "sites": [{"tracker": "jira", "site": "` +
+		f.conn.Site + `", "statuses": {"10001": "done"}}]}}`
+	if err := os.WriteFile(path, []byte(file), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := f.a.ProjectTrackerSetup(ctx, f.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	site := `{"tracker": "jira", "site": "` + f.conn.Site + `", "statuses": {"10001": "todo"}`
+	for name, arg := range map[string]string{
+		"null":                     `null`,
+		"a list":                   `[]`,
+		"a string":                 `"status_groups"`,
+		"a section of a newer app": `{"card_marks": {"version": 1, "marks": ["x"]}, "status_groups": [` + site + `}]}`,
+		"an unknown field":         `{"status_groups": [` + site + `, "colour": "red"}]}`,
+	} {
+		_, frame := rpc.call("SetProjectTrackerSetup", f.project, stored.Revision, json.RawMessage(arg))
+		if frame == nil || frame.Code != transport.ErrCodeBadParams || frame.Message != dispatchrefusal.Unreadable {
+			t.Errorf("%s: answered %+v; want the refusal of an argument this computer cannot read", name, frame)
+		}
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != file {
+		t.Fatalf("the refused saves changed the file: %q, %v", data, err)
+	}
+	result, frame := rpc.call("SetProjectTrackerSetup", f.project, stored.Revision, json.RawMessage(`{}`))
+	var save trackerapp.SetupSave
+	if frame != nil || json.Unmarshal(result, &save) != nil || !save.Saved || len(save.Stored.StatusGroups) != 0 ||
+		!slices.Equal(save.Stored.Newer, []string{"card_marks"}) {
+		t.Fatalf("an empty setup = %s, %+v; want saved, keeping the newer app's section", result, frame)
 	}
 }
