@@ -28,32 +28,36 @@ type toolSpec struct {
 	// phase never had a channel for either beyond its envelope, so these are
 	// withheld from it whatever it was granted.
 	writes bool
-	schema func() map[string]any
+	schema func(maxWait int) map[string]any
 }
 
 // readGrants admit the reads of one run: a phase that started a run may read
 // it, and introspect widens that to the project.
 var readGrants = []def.Grant{def.GrantIntrospect, def.GrantStartRun}
 
+func staticSchema(fn func() map[string]any) func(int) map[string]any {
+	return func(int) map[string]any { return fn() }
+}
+
 // toolTable is every tool, in the order tools/list returns them.
 var toolTable = []toolSpec{
-	{name: "workflow_list", schema: workflowListSchema},
-	{name: "workflow_validate", schema: workflowValidateSchema},
-	{name: "workflow_schema", schema: workflowSchemaSchema},
-	{name: "workflow_new", writes: true, schema: workflowNewSchema},
+	{name: "workflow_list", schema: staticSchema(workflowListSchema)},
+	{name: "workflow_validate", schema: staticSchema(workflowValidateSchema)},
+	{name: "workflow_schema", schema: staticSchema(workflowSchemaSchema)},
+	{name: "workflow_new", writes: true, schema: staticSchema(workflowNewSchema)},
 	{name: "run_start", grants: []def.Grant{def.GrantStartRun}, schema: runStartSchema},
 	{name: "run_status", grants: readGrants, schema: runStatusSchema},
 	{name: "run_watch", grants: readGrants, schema: runWatchSchema},
-	{name: "run_output", grants: readGrants, schema: runOutputSchema},
-	{name: "run_inspect", grants: readGrants, schema: runInspectSchema},
-	{name: "run_narrative", grants: readGrants, schema: runNarrativeSchema},
-	{name: "run_list", grants: []def.Grant{def.GrantIntrospect}, schema: runListSchema},
-	{name: "run_control", grants: []def.Grant{def.GrantStartRun}, schema: runControlSchema},
-	{name: "run_amend", grants: []def.Grant{def.GrantStartRun}, schema: runAmendSchema},
-	{name: "run_guide", grants: []def.Grant{def.GrantStartRun}, schema: runGuideSchema},
-	{name: "run_resolve", grants: []def.Grant{def.GrantResolve}, schema: runResolveSchema},
-	{name: "memory_add", writes: true, schema: memoryAddSchema},
-	{name: "memory_list", schema: memoryListSchema},
+	{name: "run_output", grants: readGrants, schema: staticSchema(runOutputSchema)},
+	{name: "run_inspect", grants: readGrants, schema: staticSchema(runInspectSchema)},
+	{name: "run_narrative", grants: readGrants, schema: staticSchema(runNarrativeSchema)},
+	{name: "run_list", grants: []def.Grant{def.GrantIntrospect}, schema: staticSchema(runListSchema)},
+	{name: "run_control", grants: []def.Grant{def.GrantStartRun}, schema: staticSchema(runControlSchema)},
+	{name: "run_amend", grants: []def.Grant{def.GrantStartRun}, schema: staticSchema(runAmendSchema)},
+	{name: "run_guide", grants: []def.Grant{def.GrantStartRun}, schema: staticSchema(runGuideSchema)},
+	{name: "run_resolve", grants: []def.Grant{def.GrantResolve}, schema: staticSchema(runResolveSchema)},
+	{name: "memory_add", writes: true, schema: staticSchema(memoryAddSchema)},
+	{name: "memory_list", schema: staticSchema(memoryListSchema)},
 }
 
 // ToolNames is every tool, in table order.
@@ -98,13 +102,16 @@ func runIDProperty() map[string]any {
 	return stringProperty("The run's id, from run_start, run_list or a wake message.")
 }
 
-func waitProperties(properties map[string]any, what string) {
+func waitProperties(properties map[string]any, what string, maxWait int) {
+	if maxWait <= 0 || maxWait > MaxWaitSeconds {
+		maxWait = MaxWaitSeconds
+	}
 	properties["wait_seconds"] = map[string]any{
 		"type":        "integer",
 		"minimum":     0,
-		"maximum":     MaxWaitSeconds,
+		"maximum":     maxWait,
 		"default":     0,
-		"description": fmt.Sprintf("How long THIS CALL waits for %s, not how long the run may take. Zero answers now. A rest the call returns is delivered by the call and does not also arrive as a message. A wait that ends with the run still working returns outcome backgrounded and says whether its rest will reach you (see notify). Maximum %d.", what, MaxWaitSeconds),
+		"description": fmt.Sprintf("How long THIS CALL waits for %s, not how long the run may take. Zero answers now. A rest the call returns is delivered by the call and does not also arrive as a message. A wait that ends with the run still working returns outcome backgrounded and says whether its rest will reach you (see notify). Maximum %d.", what, maxWait),
 	}
 	properties["notify"] = map[string]any{
 		"type":    "boolean",
@@ -153,7 +160,7 @@ func workflowNewSchema() map[string]any {
 		}, "starter", "id", "scope")
 }
 
-func runStartSchema() map[string]any {
+func runStartSchema(maxWait int) map[string]any {
 	properties := map[string]any{
 		"workflow_id": stringProperty("The workflow to run, by id. A project definition wins over a shared one with the same id unless scope says otherwise."),
 		"scope": map[string]any{
@@ -173,21 +180,24 @@ func runStartSchema() map[string]any {
 			"description": "Pause at every gate decision.",
 		},
 	}
-	waitProperties(properties, "the run to come to rest")
+	waitProperties(properties, "the run to come to rest", maxWait)
 	return tool("run_start",
 		"Start a workflow run in this project and return its id. A run an interactive thread starts is bound to that thread: when it comes to rest (done, parked or failed) the thread receives a wake naming what to do next, unless this call waited and returned that rest. Once the run starts the answer names it: outcome unknown with readError means it started but could not be read back, so do not start it again. A workflow phase session starting a run with the same arguments twice gets the first run back with skipped true; nothing new starts.",
 		properties, "workflow_id")
 }
 
-func runStatusSchema() map[string]any {
+func runStatusSchema(maxWait int) map[string]any {
 	properties := map[string]any{"run_id": runIDProperty()}
-	waitProperties(properties, "the run to come to rest")
+	waitProperties(properties, "the run to come to rest", maxWait)
 	return tool("run_status",
 		"Read one run: its state and reason, current phase, the seeds it froze, its per-phase attempts, any failed units with the ids run_control retry_unit takes, its budget against its ceiling, and how many run_guide entries wait for it. With wait_seconds it blocks until the run comes to rest instead of polling, and a rest it returns does not also arrive as a message. outcome is resting, running, or backgrounded when a wait ended first; if whether the rest reaches you cannot be read, notify says so and the status still stands.",
 		properties, "run_id")
 }
 
-func runWatchSchema() map[string]any {
+func runWatchSchema(maxWait int) map[string]any {
+	if maxWait <= 0 || maxWait > MaxWaitSeconds {
+		maxWait = MaxWaitSeconds
+	}
 	return tool("run_watch",
 		"Wait for a run to change state and return every transition since cursor, with the run's current state. Nothing polls: the call returns as soon as the run moves, comes to rest, or wait_seconds passes. Pass the returned cursor to the next call; a first call with no cursor answers immediately with the current state. gap true means transitions between your cursor and the oldest kept one were lost: the state is current, continue from the returned cursor. A resting run carries repair, the sentence naming the call that settles its park.",
 		map[string]any{
@@ -205,9 +215,9 @@ func runWatchSchema() map[string]any {
 			"wait_seconds": map[string]any{
 				"type":        "integer",
 				"minimum":     0,
-				"maximum":     MaxWaitSeconds,
-				"default":     60,
-				"description": fmt.Sprintf("How long this call waits for a transition. Maximum %d.", MaxWaitSeconds),
+				"maximum":     maxWait,
+				"default":     min(60, maxWait),
+				"description": fmt.Sprintf("How long this call waits for a transition. Maximum %d.", maxWait),
 			},
 		}, "run_id")
 }

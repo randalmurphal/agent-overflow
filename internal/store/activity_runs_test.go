@@ -361,3 +361,71 @@ func assertVectorStub(
 			label("unshippedDigest"), got.UnshippedDigest, wantDigest, len(unshipped))
 	}
 }
+
+func TestActivityRunStubIgnoresSettledBackgroundLaunch(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	threadID := "t-settled-bg"
+	if err := s.CreateThread(makeThread(threadID, "agy")); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	// Background launch stays status='running' forever in history while its
+	// completion landed in a later activity run after a steered user message,
+	// stamping live_background_active=false on the launch row.
+	if err := s.InsertItem(Item{
+		ID:           "bg-launch-1",
+		ThreadID:     threadID,
+		TurnIndex:    0,
+		ItemIndex:    0,
+		Kind:         "tool_call",
+		Role:         "assistant",
+		Status:       "running",
+		IsBackground: true,
+		ToolName:     "Bash",
+		Meta:         `{"live_background_active":false}`,
+		CreatedAt:    1000,
+		UpdatedAt:    2000,
+	}); err != nil {
+		t.Fatalf("InsertItem settled launch: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID:           "bg-launch-2",
+		ThreadID:     threadID,
+		TurnIndex:    1,
+		ItemIndex:    0,
+		Kind:         "tool_call",
+		Role:         "assistant",
+		Status:       "running",
+		IsBackground: true,
+		ToolName:     "Bash",
+		Meta:         `{"live_background_active":true}`,
+		CreatedAt:    3000,
+		UpdatedAt:    3000,
+	}); err != nil {
+		t.Fatalf("InsertItem live launch: %v", err)
+	}
+
+	rows, err := queryActivityScanRows(s.reader(), threadID, 2, `SELECT id FROM items WHERE thread_id = ?`, threadID)
+	if err != nil {
+		t.Fatalf("queryActivityScanRows: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("len(rows) = %d, want 2", len(rows))
+	}
+	if !rows[0].BackgroundSettled || rows[0].isRunningStatus() {
+		t.Fatalf("settled launch row should have BackgroundSettled=true and isRunningStatus=false: %+v", rows[0])
+	}
+	if rows[1].BackgroundSettled || !rows[1].isRunningStatus() {
+		t.Fatalf("live launch row should have BackgroundSettled=false and isRunningStatus=true: %+v", rows[1])
+	}
+
+	stubSettled := buildActivityRunStub(rows[:1], 0, 0)
+	if stubSettled.RunningBefore != nil || stubSettled.RunningAfter != nil {
+		t.Fatalf("settled launch stub must report nil RunningBefore/After, got before=%+v after=%+v", stubSettled.RunningBefore, stubSettled.RunningAfter)
+	}
+	stubLive := buildActivityRunStub(rows[1:], 0, 0)
+	if stubLive.RunningBefore == nil || stubLive.RunningBefore.ToolName != "Bash" {
+		t.Fatalf("live launch stub must report RunningBefore=Bash, got %+v", stubLive.RunningBefore)
+	}
+}

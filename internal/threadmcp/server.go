@@ -249,7 +249,7 @@ func (s *Server[T]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		tools := []map[string]any{}
 		if s.enabled.Load() && s.ThreadEnabled(threadID) {
 			if available := s.tools(access); available != nil {
-				tools = available
+				tools = withAlwaysLoadMeta(available)
 			}
 		}
 		WriteResult(w, req.ID, map[string]any{"tools": tools})
@@ -276,6 +276,29 @@ func (s *Server[T]) disabledError() error {
 		return s.disabledErr
 	}
 	return fmt.Errorf("MCP tools are disabled")
+}
+
+// withAlwaysLoadMeta clones tool definitions and attaches Antigravity's
+// documented `_meta: {"antigravity/alwaysLoad": true}` extension so agy loads
+// AO's built-in tools directly instead of deferring/omitting larger schemas.
+func withAlwaysLoadMeta(tools []map[string]any) []map[string]any {
+	out := make([]map[string]any, len(tools))
+	for i, tool := range tools {
+		cloned := make(map[string]any, len(tool)+1)
+		for k, v := range tool {
+			cloned[k] = v
+		}
+		meta := map[string]any{"antigravity/alwaysLoad": true}
+		if existing, ok := tool["_meta"].(map[string]any); ok {
+			for k, v := range existing {
+				meta[k] = v
+			}
+			meta["antigravity/alwaysLoad"] = true
+		}
+		cloned["_meta"] = meta
+		out[i] = cloned
+	}
+	return out
 }
 
 // callKeepaliveInterval paces the comment lines a streamed call emits while

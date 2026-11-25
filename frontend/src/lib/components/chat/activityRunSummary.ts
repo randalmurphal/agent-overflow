@@ -15,6 +15,7 @@ import { classifyToolName, type ToolKindIcon } from './toolCardHeader';
 import { aoToolPresentation } from './aoTools';
 import { parseJsonObject } from '../../utils/parseJsonObject';
 import { completionEndsLaunch } from '../../utils/parkedStop';
+import { isSettledBackgroundLaunch } from './rowState';
 import type { ActivityRunStubFacts, ShedRow } from '../../stores/activityRunStubs';
 
 /** Shared empty list: most runs are held whole and shed nothing. */
@@ -304,7 +305,7 @@ export function activityRunSummary(
   for (const row of shed) {
     if (!completedCallIds.has(row.id)) {
       if (isFailedStatus(row.status as Item['status'])) hasFailure = true;
-      if (isRunningStatus(row.status as Item['status'])) {
+      if (isRunningStatus(row.status as Item['status']) && !row.settledBackground) {
         runningLabel = presentationForGroupKey(row, provider, presentationCache).label;
       }
     }
@@ -320,13 +321,14 @@ export function activityRunSummary(
 
   for (const item of items) {
     // An ending completion supersedes its immutable call record. Detached
-    // agent launches deliberately remain `running` forever in canonical
-    // history, so considering both statuses would keep a false running
-    // indicator after the completion landed.
+    // agent/background launches deliberately remain `running` forever in
+    // canonical history (with `live_background_active: false` once settled),
+    // so ignore settled launches even when their completion landed in a later
+    // activity run after prose or a steered user message.
     if (!completedCallIds.has(item.id)) {
       if (isFailedStatus(item.status)) hasFailure = true;
       // Last one wins: the newest active row is what the user wants named.
-      if (isRunningStatus(item.status)) {
+      if (isRunningStatus(item.status) && !isSettledBackgroundLaunch(item)) {
         runningLabel = activityRunPresentation(item, provider, presentationCache).label;
       }
     }

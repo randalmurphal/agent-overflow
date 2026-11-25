@@ -84,7 +84,8 @@ func probeRateLimitsAtEndpoints(
 	}
 
 	var lastNonAuthErr error
-	allUnauthorized := len(endpoints) > 0
+	sawUnauthorized := false
+	allAuthOrForbidden := len(endpoints) > 0
 	for _, base := range endpoints {
 		trimmedBase := strings.TrimRight(base, "/")
 		body, err := postQuotaJSON(ctx, client, trimmedBase+"/v1internal:retrieveUserQuotaSummary", cred.AccessToken)
@@ -94,12 +95,17 @@ func probeRateLimitsAtEndpoints(
 			if errors.As(err, &rl) {
 				return provider.RateLimitsSnapshot{}, err
 			}
-			if !errors.Is(err, ErrOAuthUnauthorized) {
-				allUnauthorized = false
+			switch {
+			case errors.Is(err, ErrOAuthUnauthorized):
+				sawUnauthorized = true
+			case errors.Is(err, errQuotaForbidden):
+				lastNonAuthErr = err
+			default:
+				allAuthOrForbidden = false
 				lastNonAuthErr = err
 			}
 		} else {
-			allUnauthorized = false
+			allAuthOrForbidden = false
 			limits, pErr := parseQuotaSummary(body, now)
 			if pErr == nil && len(limits) > 0 {
 				return provider.RateLimitsSnapshot{
@@ -122,8 +128,13 @@ func probeRateLimitsAtEndpoints(
 			if errors.As(mErr, &rl) {
 				return provider.RateLimitsSnapshot{}, mErr
 			}
-			if !errors.Is(mErr, ErrOAuthUnauthorized) {
-				allUnauthorized = false
+			switch {
+			case errors.Is(mErr, ErrOAuthUnauthorized):
+				sawUnauthorized = true
+			case errors.Is(mErr, errQuotaForbidden):
+				lastNonAuthErr = mErr
+			default:
+				allAuthOrForbidden = false
 				lastNonAuthErr = mErr
 			}
 			continue
@@ -137,14 +148,14 @@ func probeRateLimitsAtEndpoints(
 				Complete:  true,
 			}, nil
 		}
-		allUnauthorized = false
+		allAuthOrForbidden = false
 		if parseErr != nil {
 			lastNonAuthErr = parseErr
 		} else if mParseErr != nil {
 			lastNonAuthErr = mParseErr
 		}
 	}
-	if allUnauthorized {
+	if allAuthOrForbidden && sawUnauthorized {
 		return provider.RateLimitsSnapshot{}, ErrOAuthUnauthorized
 	}
 	if lastNonAuthErr != nil {
@@ -152,6 +163,8 @@ func probeRateLimitsAtEndpoints(
 	}
 	return provider.RateLimitsSnapshot{}, errors.New("agy: quota endpoint returned no usage buckets")
 }
+
+var errQuotaForbidden = errors.New("agy: quota endpoint forbidden (HTTP 403)")
 
 func postQuotaJSON(ctx context.Context, client *http.Client, endpoint, accessToken string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader([]byte("{}")))
@@ -173,8 +186,11 @@ func postQuotaJSON(ctx context.Context, client *http.Client, endpoint, accessTok
 	if readErr != nil {
 		return nil, fmt.Errorf("agy: read quota response: %w", readErr)
 	}
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, ErrOAuthUnauthorized
+	}
+	if resp.StatusCode == http.StatusForbidden {
+		return nil, errQuotaForbidden
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return nil, RateLimitedError{

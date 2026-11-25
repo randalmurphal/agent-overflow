@@ -246,6 +246,9 @@ func collectBrainTransferFiles(ctx context.Context, rootDir, sessionID string) (
 			return nil
 		}
 		if d.IsDir() {
+			if d.Name() == ".system_generated" {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if !d.Type().IsRegular() {

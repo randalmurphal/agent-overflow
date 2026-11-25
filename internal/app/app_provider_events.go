@@ -80,9 +80,15 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			strings.TrimSpace(evt.ParentToolUseID) == ""
 
 		// The CLI changed its permission mode on its own (it leaves auto
-		// on a model without it); the thread's runtime mode follows.
-		if evt.Kind == provider.EventPermissionModeChanged && providerType == string(provider.Claude) {
-			a.followClaudePermissionMode(threadID, sessionToken)
+		// on a model without it, or ACP reports current_mode_update); the
+		// thread's runtime/interaction mode follows.
+		if evt.Kind == provider.EventPermissionModeChanged {
+			switch providerType {
+			case string(provider.Claude):
+				a.followClaudePermissionMode(threadID, sessionToken)
+			case string(provider.Agy):
+				a.followAgyPermissionMode(threadID, sessionToken)
+			}
 		}
 
 		// Auto-reconnect makes one attempt per death and earns another only

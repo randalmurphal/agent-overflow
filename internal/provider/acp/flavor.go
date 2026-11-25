@@ -20,6 +20,8 @@ const (
 	PolicyPrompt PermissionPolicy = iota
 	// PolicyDenyMutating auto-denies mutating requests (RuntimeReadOnly).
 	PolicyDenyMutating
+	// PolicyAutoAcceptEdits auto-allows file edit requests (RuntimeAutoAcceptEdits).
+	PolicyAutoAcceptEdits
 	// PolicyAutoAllowNonQuestion auto-allows non-question requests (RuntimeFullAccess).
 	PolicyAutoAllowNonQuestion
 )
@@ -67,20 +69,23 @@ type FileDiffChange struct {
 // NormalizedToolComplete holds normalized outputs for EventToolComplete and
 // companion heavy payload events (EventDiff, EventCommandOutput, EventProposedPlan).
 type NormalizedToolComplete struct {
-	ToolName     string
-	ItemType     string
-	Content      string
-	IsError      bool
-	ExitCode     *int
-	DurationMs   *int
-	ItemStatus   string
-	DiffPatch    string
-	DiffFilePath string
-	DiffChanges  []FileDiffChange
-	CommandOut   string
-	CommandLine  string
-	ProposedPlan string
-	ExtraMeta    map[string]any
+	ToolName         string
+	ItemType         string
+	Content          string
+	IsError          bool
+	IsBackground     bool
+	BackgroundTaskID string
+	OutputFile       string
+	ExitCode         *int
+	DurationMs       *int
+	ItemStatus       string
+	DiffPatch        string
+	DiffFilePath     string
+	DiffChanges      []FileDiffChange
+	CommandOut       string
+	CommandLine      string
+	ProposedPlan     string
+	ExtraMeta        map[string]any
 }
 
 // PromptOutcomeOverride lets a flavor override a prompt's stop outcome when a
@@ -92,17 +97,37 @@ type PromptOutcomeOverride struct {
 	Failure      *provider.FailureMeta
 }
 
+// CompactionEvent describes a detected context compaction boundary.
+type CompactionEvent struct {
+	ItemID    string
+	Trigger   string // "auto" or "manual"
+	PreTokens int
+	Summary   string
+}
+
 // SubagentLaunchContext carries the parent session context for a flavor that
-// tracks an asynchronous subagent out of band (for example, agy writing child
-// transcript.jsonl files outside the parent ACP stream).
+// tracks an asynchronous subagent out of band.
 type SubagentLaunchContext struct {
-	SessionID  string
-	ThreadID   string
-	TurnID     string
-	ToolCallID string
-	RawInput   json.RawMessage
-	Started    NormalizedToolStart
-	Emit       func(provider.ProviderEvent)
+	SessionID           string
+	ThreadID            string
+	TurnID              string
+	ToolCallID          string
+	RawLaunchToolCallID string
+	ParentToolUseID     string
+	RawInput            json.RawMessage
+	Started             NormalizedToolStart
+	ParentModel         string
+	ParentEffort        string
+	Emit                func(provider.ProviderEvent)
+	OnChildDiscovered   func(childConversationID string)
+}
+
+// BackgroundCommandInfo describes an in-flight command_execution step that the
+// provider transitioned into a detached background task (with its task id and
+// live log file path).
+type BackgroundCommandInfo struct {
+	TaskID     string
+	OutputFile string
 }
 
 // Flavor isolates provider-specific ACP conventions (metadata extensions,
@@ -117,11 +142,19 @@ type Flavor interface {
 	NormalizeToolComplete(u *ToolCallUpdate, started NormalizedToolStart) NormalizedToolComplete
 	ClassifyPermission(threadID, turnID, requestID string, req RequestPermissionParams, policy PermissionPolicy) PermissionClassification
 	ExtractPendingQuestion(u *ToolCallUpdate) ([]provider.UserInputQuestion, bool)
+	ExtractTodoUpdate(u *ToolCallUpdate) (entries []PlanEntry, isTodoTool bool)
 	BeforePrompt(ctx context.Context, sessionID string) any
+	ResolvePromptStepAnchor(ctx context.Context, sessionID, content string, beforeToken any) string
 	AfterPrompt(ctx context.Context, sessionID string, stopReason string, beforeToken any) *PromptOutcomeOverride
 	ShouldHoldSpontaneousWakeClose(ctx context.Context, sessionID string) bool
 	CanTrackSubagent(sessionID string) bool
 	WatchSubagent(ctx context.Context, launch SubagentLaunchContext)
+	ResolveSubagentLaunch(ctx context.Context, sessionID, childConversationID string) (string, bool)
+	LookupSubagentParent(ctx context.Context, childConversationID string) (ownerConvID, launchToolCallID string, handled bool)
+	CanLookupBackgroundCommands(sessionID string) bool
+	LookupBackgroundCommands(ctx context.Context, sessionID string, toolCallIDs []string, includeCompleted bool, minStepIdx int) map[string]BackgroundCommandInfo
+	InitCompactionCursor(ctx context.Context, sessionID string) int
+	DetectCompaction(ctx context.Context, sessionID string, afterIdx int) (nextIdx int, ev *CompactionEvent)
 }
 
 // DefaultFlavor implements spec-standard ACP v1 behavior for all Flavor hooks.
@@ -165,7 +198,7 @@ func (DefaultFlavor) MapRuntimeMode(rt provider.RuntimeMode, im provider.Interac
 	case provider.RuntimeApprovalRequired:
 		return pickMode(available, "default", "ask"), PolicyPrompt
 	case provider.RuntimeAutoAcceptEdits:
-		return pickMode(available, "accept-edits", "default", "ask"), PolicyPrompt
+		return pickMode(available, "accept-edits", "default", "ask"), PolicyAutoAcceptEdits
 	case provider.RuntimeAuto:
 		return pickMode(available, "auto", "default", "ask"), PolicyPrompt
 	case provider.RuntimeFullAccess:
@@ -273,7 +306,7 @@ func (DefaultFlavor) NormalizeToolComplete(u *ToolCallUpdate, started Normalized
 						Kind: "delete",
 						Diff: item.OldText,
 					})
-				} else if hunks := stripUnifiedDiffHeader(patch); hunks != "" {
+				} else if hunks := StripUnifiedDiffHeader(patch); hunks != "" {
 					out.DiffChanges = append(out.DiffChanges, FileDiffChange{
 						Path: item.Path,
 						Kind: "update",
@@ -349,7 +382,13 @@ func (DefaultFlavor) ClassifyPermission(threadID, turnID, requestID string, req 
 	denyOpt := findPermissionOption(req.Options, "reject_once", "reject_always")
 
 	// interaction_* requests are structured user questions, never silently auto-approved.
-	if strings.HasPrefix(req.ToolCall.ToolCallID, "interaction_") && len(req.Options) > 0 {
+	// Strip any "<childConversationUuid>:" prefix so forwarded subagent questions
+	// are classified as user input rather than auto-approved under Full Access.
+	baseToolCallID := req.ToolCall.ToolCallID
+	if colon := strings.IndexByte(baseToolCallID, ':'); colon > 0 && looksLikeUUID(baseToolCallID[:colon]) {
+		baseToolCallID = baseToolCallID[colon+1:]
+	}
+	if strings.HasPrefix(baseToolCallID, "interaction_") && len(req.Options) > 0 {
 		opts := make([]provider.UserInputQuestionOption, 0, len(req.Options))
 		byKey := make(map[string]string, len(req.Options)*2)
 		for _, opt := range req.Options {
@@ -387,6 +426,10 @@ func (DefaultFlavor) ClassifyPermission(threadID, turnID, requestID string, req 
 	switch policy {
 	case PolicyAutoAllowNonQuestion:
 		if allowAnyOpt != "" {
+			return PermissionClassification{Action: PermissionAutoAllow, OptionID: allowAnyOpt}
+		}
+	case PolicyAutoAcceptEdits:
+		if isEditToolKind(req.ToolCall.Kind, req.ToolCall.Name) && allowAnyOpt != "" {
 			return PermissionClassification{Action: PermissionAutoAllow, OptionID: allowAnyOpt}
 		}
 	case PolicyDenyMutating:
@@ -584,6 +627,10 @@ func (DefaultFlavor) BeforePrompt(context.Context, string) any {
 	return nil
 }
 
+func (DefaultFlavor) ResolvePromptStepAnchor(context.Context, string, string, any) string {
+	return ""
+}
+
 func (DefaultFlavor) AfterPrompt(context.Context, string, string, any) *PromptOutcomeOverride {
 	return nil
 }
@@ -597,6 +644,47 @@ func (DefaultFlavor) CanTrackSubagent(string) bool {
 }
 
 func (DefaultFlavor) WatchSubagent(context.Context, SubagentLaunchContext) {}
+
+func (DefaultFlavor) ResolveSubagentLaunch(context.Context, string, string) (string, bool) {
+	return "", false
+}
+
+func (DefaultFlavor) LookupSubagentParent(context.Context, string) (string, string, bool) {
+	return "", "", false
+}
+
+func (DefaultFlavor) CanLookupBackgroundCommands(string) bool {
+	return false
+}
+
+func (DefaultFlavor) LookupBackgroundCommands(context.Context, string, []string, bool, int) map[string]BackgroundCommandInfo {
+	return nil
+}
+
+func (DefaultFlavor) InitCompactionCursor(context.Context, string) int {
+	return -1
+}
+
+func (DefaultFlavor) DetectCompaction(context.Context, string, int) (int, *CompactionEvent) {
+	return -1, nil
+}
+
+func (DefaultFlavor) ExtractTodoUpdate(*ToolCallUpdate) ([]PlanEntry, bool) {
+	return nil, false
+}
+
+func isEditToolKind(kind, name string) bool {
+	if strings.EqualFold(strings.TrimSpace(kind), "edit") {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "edit", "write", "edit_file", "write_file", "write_to_file",
+		"replace_file_content", "multi_replace_file_content", "notebook_edit":
+		return true
+	default:
+		return false
+	}
+}
 
 func findPermissionOption(options []PermissionOption, preferredKind, fallbackKind string) string {
 	for _, opt := range options {
@@ -666,9 +754,9 @@ func extractCommandLine(inputs ...json.RawMessage) string {
 	return ""
 }
 
-// stripUnifiedDiffHeader removes the leading `--- ...` and `+++ ...` lines from
+// StripUnifiedDiffHeader removes the leading `--- ...` and `+++ ...` lines from
 // a patch produced by BuildUnifiedDiff so callers do not compute the diff twice.
-func stripUnifiedDiffHeader(patch string) string {
+func StripUnifiedDiffHeader(patch string) string {
 	idx := strings.Index(patch, "@@")
 	if idx < 0 {
 		return ""

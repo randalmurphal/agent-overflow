@@ -33,6 +33,7 @@ import {
 import { fileChangeDisplayRowCount } from '../utils/fileChangeRows';
 import { parseJsonObject } from '../utils/parseJsonObject';
 import { completionEndsLaunch } from '../utils/parkedStop';
+import { isSettledBackgroundLaunch } from '../components/chat/rowState';
 import { windowDigestRowHash } from './threadWindowDigest';
 import type { ActivityRunSpan } from '../utils/activityRunSpans';
 
@@ -56,11 +57,13 @@ export interface ShedRow {
   completionOf: string;
   mcp: string;
   fileRows: number;
+  /** True when a backgrounded tool_call has live_background_active === false. */
+  settledBackground?: boolean;
 }
 
 /** Narrow a loaded member into the copy a shed row keeps. */
 export function shedRowOf(item: Item): ShedRow {
-  return {
+  const row: ShedRow = {
     id: item.id,
     rev: item.rev,
     kind: item.kind,
@@ -70,6 +73,8 @@ export function shedRowOf(item: Item): ShedRow {
     mcp: mcpTextOf(item),
     fileRows: fileChangeDisplayRowCount(item),
   };
+  if (isSettledBackgroundLaunch(item)) row.settledBackground = true;
+  return row;
 }
 
 /** `json_extract(items.meta, '$.mcp')` as the client can read it. */
@@ -565,7 +570,7 @@ export function foldedStub(
     }
     if (!completedByMember.has(row.id)) {
       if (row.status === 'errored' || row.status === 'killed') unshippedFailed = true;
-      if (row.status === 'running' || row.status === 'streaming') {
+      if ((row.status === 'running' || row.status === 'streaming') && !row.settledBackground) {
         runningBefore = { kind: row.kind, toolName: row.toolName, mcp: row.mcp };
       }
     }

@@ -15,19 +15,18 @@ import (
 )
 
 func TestParseAgyTranscriptModel(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		raw        string
 		wantModel  string
 		wantEffort string
 	}{
 		{"gemini-4-hydrogen-tiered-high", "gemini-4-hydrogen", "high"},
-		{"gemini-4-neon-tiered-xhigh", "gemini-4-neon", "xhigh"},
-		{"gemini-4-hydrogen-minimal", "gemini-4-hydrogen", "minimal"},
+		{"gemini-4-neon-xhigh", "gemini-4-neon", "xhigh"},
 		{"claude-sonnet-4-6-medium", "claude-sonnet-4-6", "medium"},
-		{"claude-opus-4-6-thinking-low", "claude-opus-4-6-thinking", "low"},
 		{"gpt-oss-120b-medium", "gpt-oss-120b-medium", ""},
-		{"gemini-4-neon", "gemini-4-neon", ""},
-		{"  ", "", ""},
+		{"gemini-pro-orchestrator", "gemini-pro-orchestrator", ""},
+		{"", "", ""},
 	}
 	for _, tc := range cases {
 		gotModel, gotEffort := ParseAgyTranscriptModel(tc.raw)
@@ -38,568 +37,954 @@ func TestParseAgyTranscriptModel(t *testing.T) {
 	}
 }
 
-func writeJSONL(t *testing.T, path string, lines ...string) {
+func writeJSONFile(t *testing.T, path string, v any) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("mkdir %s: %v", path, err)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	raw, err := json.Marshal(v)
 	if err != nil {
-		t.Fatalf("open %s: %v", path, err)
+		t.Fatalf("marshal %s: %v", path, err)
 	}
-	defer func() { _ = f.Close() }()
-	for _, line := range lines {
-		if _, err := f.WriteString(line + "\n"); err != nil {
-			t.Fatalf("write %s: %v", path, err)
-		}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
 }
 
-func TestWatchSubagentLiveTranscriptEndToEnd(t *testing.T) {
+func TestWatchSubagentCorrelatesByInboxToolCallIDAndSettlesFromParentInbox(t *testing.T) {
+	t.Parallel()
 	appDataDir := t.TempDir()
-	parentID := "parent-sess-1"
-	childID := "child-sess-1"
-	parentLog := transcriptPathForSession(appDataDir, parentID)
-	childLog := transcriptPathForSession(appDataDir, childID)
+	parentID := "4d5f2b49-97b2-49e7-a214-7aff00575443"
+	child1 := "8d1d87ec-d2f0-472e-8626-2c83eefc2bc1"
+	child2 := "7e836975-0d1f-4944-a41f-9940e16715d1"
+
+	// Two parallel subagents launched simultaneously — exact toolCall.id in
+	// each child's inbox uniquely identifies them without touching transcript.jsonl.
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "subagents", child1+".json"), map[string]any{
+		"conversationId": child1,
+		"state":          "SUBAGENT_STATE_ALIVE",
+	})
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "subagents", child2+".json"), map[string]any{
+		"conversationId": child2,
+		"state":          "SUBAGENT_STATE_ALIVE",
+	})
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", child1, ".system_generated", "messages", "launch-1.json"), map[string]any{
+		"sender": parentID,
+		"sourceMetadata": map[string]any{
+			"tool": map[string]any{
+				"conversationId": parentID,
+				"toolCall":       map[string]any{"id": "call_sub_1", "name": "invoke_subagent"},
+			},
+		},
+	})
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", child2, ".system_generated", "messages", "launch-2.json"), map[string]any{
+		"sender": parentID,
+		"sourceMetadata": map[string]any{
+			"tool": map[string]any{
+				"conversationId": parentID,
+				"toolCall":       map[string]any{"id": "call_sub_2", "name": "invoke_subagent"},
+			},
+		},
+	})
 
 	flavor := NewFlavor(appDataDir)
 	flavor.subagentPollInterval = 10 * time.Millisecond
 	flavor.subagentDiscoveryTimeout = 2 * time.Second
-	flavor.subagentSettleGrace = 30 * time.Millisecond
+
+	// Live ResolveSubagentLaunch maps child conversation UUID -> parent launch ID.
+	if gotLaunch, ok := flavor.ResolveSubagentLaunch(context.Background(), parentID, child2); !ok || gotLaunch != "call_sub_2" {
+		t.Fatalf("ResolveSubagentLaunch(child2) = (%q, %v), want (call_sub_2, true)", gotLaunch, ok)
+	}
 
 	var mu sync.Mutex
 	var events []provider.ProviderEvent
-	emit := func(evt provider.ProviderEvent) {
+	var discovered string
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		flavor.WatchSubagent(context.Background(), acp.SubagentLaunchContext{
+			SessionID:    parentID,
+			ThreadID:     "t1",
+			TurnID:       "turn-1",
+			ToolCallID:   "call_sub_1",
+			RawInput:     json.RawMessage(`{"TypeName":"research","Role":"Queue Auditor","Model":"inherit"}`),
+			Started:      acp.NormalizedToolStart{SubagentType: "research", Description: "Queue Auditor"},
+			ParentModel:  "gemini-4-neon",
+			ParentEffort: "high",
+			Emit: func(evt provider.ProviderEvent) {
+				mu.Lock()
+				events = append(events, evt)
+				mu.Unlock()
+			},
+			OnChildDiscovered: func(id string) {
+				mu.Lock()
+				discovered = id
+				mu.Unlock()
+			},
+		})
+	}()
+
+	// Wait for discovery callback, then deliver child1's report into parent inbox.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
 		mu.Lock()
-		events = append(events, evt)
+		got := discovered
 		mu.Unlock()
+		if got == child1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for child discovery, got %q", got)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
-	rawIn := json.RawMessage(`{"Model":"flash","Role":"Note Reader","TypeName":"research","Prompt":"Read /tmp/note.txt"}`)
-	started := flavor.NormalizeToolStart(&acp.ToolCallUpdate{
-		ToolCallID: "tool-sub-1",
-		Name:       "invoke_subagent",
-		RawInput:   rawIn,
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "messages", "report-1.json"), map[string]any{
+		"sender":   child1,
+		"priority": "MESSAGE_PRIORITY_HIGH",
+		"content":  "Found 7 queue bugs.",
 	})
 
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WatchSubagent did not settle after parent inbox report arrived")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var sawIdentity, sawCompleted bool
+	for _, ev := range events {
+		if ev.Kind == provider.EventToolStart && ev.ItemID == "call_sub_1" {
+			var m map[string]any
+			_ = json.Unmarshal(ev.Meta, &m)
+			if m["agent_id"] == child1 && m["subagent_model"] == "gemini-4-neon" && m["run_effort"] == "high" {
+				sawIdentity = true
+			}
+		}
+		if ev.Kind == provider.EventBackgroundTaskNotification && ev.ItemID == "call_sub_1" {
+			var m map[string]any
+			_ = json.Unmarshal(ev.Meta, &m)
+			if m["status"] == "completed" && ev.Content == "Found 7 queue bugs." {
+				sawCompleted = true
+			}
+		}
+	}
+	if !sawIdentity {
+		t.Fatalf("missing identity meta stamp (agent_id + inherited parent model/effort); events=%+v", events)
+	}
+	if !sawCompleted {
+		t.Fatalf("missing completed background task notification with inbox report; events=%+v", events)
+	}
+}
+
+func TestWatchSubagentSettlesKilledFromSubagentRecord(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	parentID := "4d5f2b49-97b2-49e7-a214-7aff00575443"
+	childID := "2893f594-c39d-4623-b8af-0d15a65a717e"
+
+	recPath := filepath.Join(appDataDir, "brain", parentID, ".system_generated", "subagents", childID+".json")
+	writeJSONFile(t, recPath, map[string]any{
+		"conversationId": childID,
+		"state":          "SUBAGENT_STATE_ALIVE",
+	})
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", childID, ".system_generated", "messages", "launch.json"), map[string]any{
+		"sender": parentID,
+		"sourceMetadata": map[string]any{
+			"tool": map[string]any{
+				"conversationId": parentID,
+				"toolCall":       map[string]any{"id": "call_kill_1", "name": "invoke_subagent"},
+			},
+		},
+	})
+
+	flavor := NewFlavor(appDataDir)
+	flavor.subagentPollInterval = 10 * time.Millisecond
+	flavor.subagentDiscoveryTimeout = 2 * time.Second
+
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		flavor.WatchSubagent(context.Background(), acp.SubagentLaunchContext{
 			SessionID:  parentID,
-			ThreadID:   "thread-1",
+			ThreadID:   "t1",
 			TurnID:     "turn-1",
-			ToolCallID: "tool-sub-1",
-			RawInput:   rawIn,
-			Started:    started,
-			Emit:       emit,
+			ToolCallID: "call_kill_1",
+			Started:    acp.NormalizedToolStart{SubagentType: "research"},
+			Emit: func(evt provider.ProviderEvent) {
+				mu.Lock()
+				events = append(events, evt)
+				mu.Unlock()
+			},
 		})
 	}()
 
-	// Write parent transcript spawn + child transcript steps incrementally.
-	createdPayload, _ := json.Marshal(map[string]any{
-		"step_index": 2,
-		"source":     "MODEL",
-		"type":       "GENERIC",
-		"status":     "DONE",
-		"content": "Created the following subagent:\n{\n" +
-			`  "conversationId": "` + childID + `",` + "\n" +
-			`  "logAbsoluteUri": "file://` + filepath.ToSlash(childLog) + `"` + "\n" +
-			"}",
+	time.Sleep(30 * time.Millisecond)
+	writeJSONFile(t, recPath, map[string]any{
+		"conversationId": childID,
+		"state":          "SUBAGENT_STATE_KILLED",
 	})
-	writeJSONL(t, parentLog,
-		`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"invoke_subagent","args":{"Model":"\"flash\"","Role":"\"Note Reader\"","TypeName":"\"research\"","Prompt":"\"Read /tmp/note.txt\""}}]}`,
-		string(createdPayload),
-	)
-
-	time.Sleep(25 * time.Millisecond)
-
-	// Child step 1: thinking + read_file tool call + model & tokens.
-	writeJSONL(t, childLog,
-		`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-22T18:22:57Z","model":"gemini-4-hydrogen-tiered-high","input_tokens":5543,"cache_read_tokens":0,"output_tokens":269,"thinking":"Let me read note.txt","tool_calls":[{"name":"read_file","args":{"Path":"\"/tmp/note.txt\""}}]}`,
-		`{"step_index":2,"source":"MODEL","type":"GENERIC","status":"DONE","created_at":"2026-11-22T18:22:58Z","content":"1: SECRET_VALUE=42"}`,
-	)
-
-	time.Sleep(25 * time.Millisecond)
-
-	// Child step 3: send_message + final response; parent receives SYSTEM_MESSAGE.
-	writeJSONL(t, childLog,
-		`{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-22T18:23:00Z","model":"gemini-4-hydrogen-tiered-high","input_tokens":2441,"cache_read_tokens":3494,"output_tokens":231,"tool_calls":[{"name":"send_message","args":{"Recipient":"\"parent-sess-1\"","Message":"\"SECRET_VALUE is 42.\""}}]}`,
-		`{"step_index":4,"source":"MODEL","type":"GENERIC","status":"DONE","created_at":"2026-11-22T18:23:01Z","content":"Message sent."}`,
-		`{"step_index":5,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-22T18:23:02Z","model":"gemini-4-hydrogen-tiered-high","input_tokens":100,"cache_read_tokens":3800,"output_tokens":50,"content":"Sent the result back to parent."}`,
-	)
-	writeJSONL(t, parentLog,
-		`{"step_index":4,"source":"SYSTEM","type":"SYSTEM_MESSAGE","status":"DONE","content":"<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-22T18:23:01Z sender=child-sess-1 priority=MESSAGE_PRIORITY_HIGH content=SECRET_VALUE is 42.\n</SYSTEM_MESSAGE>"}`,
-	)
 
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("WatchSubagent did not finish in time")
+	case <-time.After(2 * time.Second):
+		t.Fatal("WatchSubagent did not settle on SUBAGENT_STATE_KILLED")
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-
-	var (
-		gotModel       string
-		gotEffort      string
-		gotTaskID      string
-		gotThinking    bool
-		gotChildRead   bool
-		gotChildReadOK bool
-		gotChildText   bool
-		gotProgress    provider.SubagentProgressMeta
-		gotNotif       *provider.ProviderEvent
-	)
-	for i := range events {
-		evt := events[i]
-		//exhaustive:ignore test inspects only the subagent lifecycle event kinds it asserts
-		switch evt.Kind {
-		case provider.EventToolStart:
-			if evt.ItemID == "tool-sub-1" && evt.ParentToolUseID == "" {
-				var m map[string]any
-				_ = json.Unmarshal(evt.Meta, &m)
-				if v, _ := m["subagent_model"].(string); v != "" {
-					gotModel = v
-				}
-				if v, _ := m["run_effort"].(string); v != "" {
-					gotEffort = v
-				}
-				if v, _ := m["task_id"].(string); v != "" {
-					gotTaskID = v
-				}
-			} else if evt.ParentToolUseID == "tool-sub-1" && evt.ItemType == "Read" {
-				gotChildRead = true
+	for _, ev := range events {
+		if ev.Kind == provider.EventBackgroundTaskNotification {
+			var m map[string]any
+			_ = json.Unmarshal(ev.Meta, &m)
+			if m["status"] == "killed" {
+				return
 			}
-		case provider.EventToolComplete:
-			if evt.ParentToolUseID == "tool-sub-1" && evt.ItemType == "Read" && strings.Contains(evt.Content, "SECRET_VALUE=42") {
-				gotChildReadOK = true
-			}
-		case provider.EventThinking:
-			if evt.ParentToolUseID == "tool-sub-1" && strings.Contains(evt.Content, "read note.txt") {
-				gotThinking = true
-			}
-		case provider.EventTextDelta:
-			if evt.ParentToolUseID == "tool-sub-1" && strings.Contains(evt.Content, "Sent the result") {
-				gotChildText = true
-			}
-		case provider.EventSubagentProgress:
-			if evt.ItemID == "tool-sub-1" {
-				_ = json.Unmarshal(evt.Meta, &gotProgress)
-			}
-		case provider.EventBackgroundTaskNotification:
-			copyEvt := evt
-			gotNotif = &copyEvt
-		default:
 		}
 	}
-
-	if gotTaskID != childID {
-		t.Errorf("task_id = %q, want %q", gotTaskID, childID)
-	}
-	if gotModel != "gemini-4-hydrogen" || gotEffort != "high" {
-		t.Errorf("subagent model/effort = (%q, %q), want (gemini-4-hydrogen, high)", gotModel, gotEffort)
-	}
-	if !gotThinking || !gotChildRead || !gotChildReadOK || !gotChildText {
-		t.Errorf("child events missing: thinking=%v read=%v readComplete=%v text=%v",
-			gotThinking, gotChildRead, gotChildReadOK, gotChildText)
-	}
-	// Fresh spend = (5543+269) + (2441+231) + (100+50) = 8634 (excludes cache_read_tokens!).
-	const wantTokens int64 = (5543 + 269) + (2441 + 231) + (100 + 50)
-	if gotProgress.TotalTokens != wantTokens {
-		t.Errorf("TotalTokens = %d, want %d", gotProgress.TotalTokens, wantTokens)
-	}
-	if gotProgress.ToolUses != 2 {
-		t.Errorf("ToolUses = %d, want 2", gotProgress.ToolUses)
-	}
-	if gotNotif == nil {
-		t.Fatal("missing EventBackgroundTaskNotification")
-	}
-	if gotNotif.Content != "SECRET_VALUE is 42." {
-		t.Errorf("notification report = %q, want %q", gotNotif.Content, "SECRET_VALUE is 42.")
-	}
-	var notifMeta struct {
-		TaskID string                        `json:"task_id"`
-		Status string                        `json:"status"`
-		Usage  provider.SubagentProgressMeta `json:"usage"`
-	}
-	if err := json.Unmarshal(gotNotif.Meta, &notifMeta); err != nil {
-		t.Fatalf("unmarshal notif meta: %v", err)
-	}
-	if notifMeta.TaskID != childID || notifMeta.Status != "completed" || notifMeta.Usage.TotalTokens != wantTokens {
-		t.Errorf("notifMeta = %+v, want task=%s status=completed tokens=%d", notifMeta, childID, wantTokens)
-	}
+	t.Fatalf("expected killed notification, got events=%+v", events)
 }
 
-func TestWatchSubagentParallelAndResumedSession(t *testing.T) {
-	appDataDir := t.TempDir()
-	parentID := "parent-par"
-	parentLog := transcriptPathForSession(appDataDir, parentID)
-
-	// Historical subagent from an earlier turn before session resume.
-	writeJSONL(t, parentLog,
-		`{"step_index":1,"source":"MODEL","type":"GENERIC","status":"DONE","content":"Created the following subagent:\n{\"conversationId\":\"old-child-0\"}"}`,
-	)
-
-	flavor := NewFlavor(appDataDir)
-	flavor.subagentPollInterval = 10 * time.Millisecond
-	flavor.subagentDiscoveryTimeout = 2 * time.Second
-	flavor.subagentSettleGrace = 20 * time.Millisecond
-
-	// BeforePrompt seeds pre-existing subagents so old-child-0 is skipped.
-	flavor.BeforePrompt(context.Background(), parentID)
-
-	// New turn spawns two parallel subagents.
-	childA := "child-A"
-	childB := "child-B"
-	childALog := transcriptPathForSession(appDataDir, childA)
-	childBLog := transcriptPathForSession(appDataDir, childB)
-	createdA, _ := json.Marshal(map[string]any{
-		"step_index": 3, "source": "MODEL", "type": "GENERIC", "status": "DONE",
-		"content": "Created the following subagent:\n{\"conversationId\":\"" + childA + "\",\"logAbsoluteUri\":\"file://" + filepath.ToSlash(childALog) + "\"}",
-	})
-	createdB, _ := json.Marshal(map[string]any{
-		"step_index": 4, "source": "MODEL", "type": "GENERIC", "status": "DONE",
-		"content": "Created the following subagent:\n{\"conversationId\":\"" + childB + "\",\"logAbsoluteUri\":\"file://" + filepath.ToSlash(childBLog) + "\"}",
-	})
-	writeJSONL(t, parentLog,
-		`{"step_index":2,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"invoke_subagent","args":{"Role":"\"Alpha\"","TypeName":"\"research\"","Prompt":"\"Task A\""}},{"name":"invoke_subagent","args":{"Role":"\"Beta\"","TypeName":"\"research\"","Prompt":"\"Task B\""}}]}`,
-		string(createdA),
-		string(createdB),
-	)
-	writeJSONL(t, childALog,
-		`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","model":"gemini-4-neon-tiered-high","input_tokens":100,"output_tokens":20,"content":"Alpha done"}`,
-	)
-	writeJSONL(t, childBLog,
-		`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","model":"gemini-4-hydrogen-tiered-low","input_tokens":50,"output_tokens":20,"content":"Beta done"}`,
-	)
-
-	var mu sync.Mutex
-	taskByLaunch := map[string]string{}
-	recordEmit := func(evt provider.ProviderEvent) {
-		if evt.Kind != provider.EventBackgroundTaskNotification {
-			return
-		}
-		var m struct {
-			TaskID string `json:"task_id"`
-		}
-		_ = json.Unmarshal(evt.Meta, &m)
-		mu.Lock()
-		taskByLaunch[evt.ItemID] = m.TaskID
-		mu.Unlock()
-	}
-
-	var wg sync.WaitGroup
-	for _, item := range []struct {
-		id   string
-		role string
-	}{
-		{"launch-A", "Alpha"},
-		{"launch-B", "Beta"},
-	} {
-		rawIn, _ := json.Marshal(map[string]string{"Role": item.role, "TypeName": "research"})
-		wg.Add(1)
-		go func(id string, in json.RawMessage) {
-			defer wg.Done()
-			flavor.WatchSubagent(context.Background(), acp.SubagentLaunchContext{
-				SessionID:  parentID,
-				ThreadID:   "t1",
-				TurnID:     "turn-2",
-				ToolCallID: id,
-				RawInput:   in,
-				Emit:       recordEmit,
-			})
-		}(item.id, rawIn)
-	}
-	wg.Wait()
-
-	if taskByLaunch["launch-A"] != childA || taskByLaunch["launch-B"] != childB {
-		t.Fatalf("parallel correlation = %+v, want launch-A->%s launch-B->%s", taskByLaunch, childA, childB)
-	}
-}
-
-func TestWatchSubagentDiscoveryTimeoutSettlesAsFailed(t *testing.T) {
+func TestWatchSubagentDiscoveryTimeoutDoesNotEmitFakeFailure(t *testing.T) {
+	t.Parallel()
 	flavor := NewFlavor(t.TempDir())
 	flavor.subagentPollInterval = 10 * time.Millisecond
 	flavor.subagentDiscoveryTimeout = 40 * time.Millisecond
 
-	var gotStatus string
+	var events []provider.ProviderEvent
 	flavor.WatchSubagent(context.Background(), acp.SubagentLaunchContext{
-		SessionID:  "missing-session",
+		SessionID:  "4d5f2b49-97b2-49e7-a214-7aff00575443",
 		ThreadID:   "t1",
 		TurnID:     "turn-1",
-		ToolCallID: "launch-timeout",
+		ToolCallID: "call_missing",
 		Emit: func(evt provider.ProviderEvent) {
-			if evt.Kind == provider.EventBackgroundTaskNotification && evt.ItemID == "launch-timeout" {
-				var m struct {
-					Status string `json:"status"`
-				}
-				_ = json.Unmarshal(evt.Meta, &m)
-				gotStatus = m.Status
-			}
+			events = append(events, evt)
 		},
 	})
-	if gotStatus != "failed" {
-		t.Fatalf("discovery timeout status = %q, want failed", gotStatus)
+	if len(events) != 0 {
+		t.Fatalf("discovery timeout must not emit fake failed agent notification, got %+v", events)
 	}
 }
 
-func TestSubagentPathContainmentAndClaimRoleMismatch(t *testing.T) {
-	// Traversal conversationId is rejected outright.
-	if isSafeConversationID("../other-conv") || isSafeConversationID("a/b") || isSafeConversationID("") {
-		t.Fatal("expected unsafe conversation IDs to be rejected")
-	}
-	if convID, _ := parseCreatedSubagentResult(`{"conversationId":"../escape","logAbsoluteUri":"file:///etc/passwd"}`, t.TempDir()); convID != "" {
-		t.Fatalf("unsafe conversationId accepted: %q", convID)
-	}
-
-	// Symlink escaping child brain dir (both file symlink and redirected child
-	// brain/<id> directory symlink) is refused by openContainedTranscript.
+func TestWatchSubagentWorksPast256InboxFiles(t *testing.T) {
+	t.Parallel()
 	appDataDir := t.TempDir()
-	brainDir := filepath.Join(appDataDir, "brain")
-	outsideDir := t.TempDir()
-	outsideFile := filepath.Join(outsideDir, "secret.jsonl")
-	if err := os.WriteFile(outsideFile, []byte(`{"step_index":1}`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	childRoot := filepath.Join(brainDir, "child-sym")
-	childLog := filepath.Join(childRoot, ".system_generated", "logs", "transcript.jsonl")
-	if err := os.MkdirAll(filepath.Dir(childLog), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outsideFile, childLog); err == nil {
-		var off int64
-		var rem string
-		if lines := readNewJSONLLinesContained(brainDir, "child-sym", childLog, &off, &rem); len(lines) != 0 {
-			t.Fatalf("symlink file escape read lines: %v", lines)
-		}
-	}
-	outsideLog := filepath.Join(outsideDir, ".system_generated", "logs", "transcript.jsonl")
-	if err := os.MkdirAll(filepath.Dir(outsideLog), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(outsideLog, []byte(`{"step_index":2}`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outsideDir, filepath.Join(brainDir, "child-dir-sym")); err == nil {
-		var off int64
-		var rem string
-		redirectedLog := filepath.Join(brainDir, "child-dir-sym", ".system_generated", "logs", "transcript.jsonl")
-		if lines := readNewJSONLLinesContained(brainDir, "child-dir-sym", redirectedLog, &off, &rem); len(lines) != 0 {
-			t.Fatalf("redirected brain/<id> symlink escape read lines: %v", lines)
-		}
-	}
+	parentID := "4d5f2b49-97b2-49e7-a214-7aff00575443"
+	childID := "9d5f2b49-97b2-49e7-a214-7aff00575499"
 
-	// Relative symlink pointing to a SIBLING conversation inside brain/ must ALSO be rejected.
-	siblingLog := filepath.Join(brainDir, "sibling-secret", ".system_generated", "logs", "transcript.jsonl")
-	if err := os.MkdirAll(filepath.Dir(siblingLog), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(siblingLog, []byte(`{"step_index":1,"content":"SIBLING_SECRET"}`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("sibling-secret", filepath.Join(brainDir, "child-sibling-sym")); err == nil {
-		var off int64
-		var rem string
-		sibRedirectedLog := filepath.Join(brainDir, "child-sibling-sym", ".system_generated", "logs", "transcript.jsonl")
-		if lines := readNewJSONLLinesContained(brainDir, "child-sibling-sym", sibRedirectedLog, &off, &rem); len(lines) != 0 {
-			t.Fatalf("sibling brain/<id> symlink escape read lines: %v", lines)
-		}
-	}
-
-	// Parallel claim must not steal a child whose role OR prompt conflicts,
-	// and an exact prompt match must beat an earlier shorter prefix match.
-	coord := &parentSubagentCoordinator{
-		discovered: []*discoveredSubagent{
-			{conversationID: "child-prefix", role: "Alpha", typeName: "research", prompt: "Inspect"},
-			{conversationID: "child-alpha", role: "Alpha", typeName: "research", prompt: "Inspect billing"},
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "subagents", childID+".json"), map[string]any{
+		"conversationId": childID,
+		"state":          "SUBAGENT_STATE_ALIVE",
+	})
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", childID, ".system_generated", "messages", "0001.json"), map[string]any{
+		"sender": parentID,
+		"sourceMetadata": map[string]any{
+			"tool": map[string]any{
+				"conversationId": parentID,
+				"toolCall": map[string]any{
+					"id":   "call_past_256",
+					"name": "invoke_subagent",
+				},
+			},
 		},
+	})
+	msgDir := filepath.Join(appDataDir, "brain", parentID, ".system_generated", "messages")
+	for i := 0; i < 270; i++ {
+		name := "0" + string(rune('a'+(i/26)%26)) + string(rune('a'+i%26)) + "_" + time.Now().Format("150405") + "_" + string(rune('0'+(i/100)%10)) + string(rune('0'+(i/10)%10)) + string(rune('0'+i%10)) + ".json"
+		writeJSONFile(t, filepath.Join(msgDir, name), map[string]any{
+			"sender":  "other-sender",
+			"content": "filler",
+		})
 	}
-	if stolen := coord.claim("", "Beta", "research", "Task B"); stolen != nil {
-		t.Fatalf("watcher Beta stole child with conflicting role Alpha: %+v", stolen)
-	}
-	if stolenPrompt := coord.claim("", "Alpha", "research", "Different prompt"); stolenPrompt != nil {
-		t.Fatalf("watcher with conflicting prompt stole child: %+v", stolenPrompt)
-	}
-	if matched := coord.claim("", "Alpha", "research", "Inspect billing"); matched == nil || matched.conversationID != "child-alpha" {
-		t.Fatalf("exact prompt match lost to prefix match: got %+v, want child-alpha", matched)
-	}
+	writeJSONFile(t, filepath.Join(msgDir, "zzz_report.json"), map[string]any{
+		"sender":  childID,
+		"content": "Final report past 256 messages",
+	})
 
-	// Unrelated GENERIC JSON mentioning conversationId/subagent/logAbsoluteUri
-	// WITHOUT agy's "Created the following subagent:" banner must be ignored.
-	for _, bogus := range []string{
-		`{"conversationId":"unrelated-conv-99","status":"ok"}`,
-		`{"note":"subagent check","conversationId":"unrelated-conv-99","logAbsoluteUri":"file:///tmp/x"}`,
-		"Created the following subagent:\n{\"conversationId\":\"no-uri-conv\"}",
-	} {
-		if cid, _ := parseCreatedSubagentResult(bogus, appDataDir); cid != "" {
-			t.Fatalf("unrelated GENERIC payload %q was admitted: %q", bogus, cid)
+	flavor := NewFlavor(appDataDir)
+	flavor.subagentPollInterval = 10 * time.Millisecond
+	var events []provider.ProviderEvent
+	flavor.WatchSubagent(context.Background(), acp.SubagentLaunchContext{
+		SessionID:  parentID,
+		ThreadID:   "t1",
+		TurnID:     "turn-1",
+		ToolCallID: "call_past_256",
+		Started:    acp.NormalizedToolStart{SubagentType: "research"},
+		Emit: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	})
+	for _, ev := range events {
+		if ev.Kind == provider.EventBackgroundTaskNotification && ev.Content == "Final report past 256 messages" {
+			return
 		}
 	}
+	t.Fatalf("expected settlement past 256 inbox files, got %+v", events)
+}
 
-	// Reversed parallel same-role launches: B's GENERIC creation arrives BEFORE A's,
-	// and child transcripts identify their own USER_INPUT prompts.
-	revParentLog := transcriptPathForSession(appDataDir, "parent-rev")
-	childALog := transcriptPathForSession(appDataDir, "child-rev-a")
-	childBLog := transcriptPathForSession(appDataDir, "child-rev-b")
-	writeJSONL(t, childALog, `{"step_index":0,"source":"USER","type":"USER_INPUT","content":"Audit billing"}`)
-	writeJSONL(t, childBLog, `{"step_index":0,"source":"USER","type":"USER_INPUT","content":"Audit auth"}`)
-	createdB, _ := json.Marshal(map[string]any{
-		"step_index": 2, "type": "GENERIC",
-		"content": "Created the following subagent:\n{\"conversationId\":\"child-rev-b\",\"logAbsoluteUri\":\"file://" + filepath.ToSlash(childBLog) + "\"}",
-	})
-	createdA, _ := json.Marshal(map[string]any{
-		"step_index": 3, "type": "GENERIC",
-		"content": "Created the following subagent:\n{\"conversationId\":\"child-rev-a\",\"logAbsoluteUri\":\"file://" + filepath.ToSlash(childALog) + "\"}",
-	})
-	writeJSONL(t, revParentLog,
-		`{"step_index":1,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"invoke_subagent","args":{"Role":"\"Worker\"","TypeName":"\"research\"","Prompt":"\"Audit billing\""}},{"name":"invoke_subagent","args":{"Role":"\"Worker\"","TypeName":"\"research\"","Prompt":"\"Audit auth\""}}]}`,
-		string(createdB),
-		string(createdA),
-	)
-	revCoord := &parentSubagentCoordinator{
-		path:       revParentLog,
-		seenConvID: map[string]bool{},
-		reports:    map[string]string{},
-	}
-	revCoord.refresh(appDataDir)
-	gotA := revCoord.claim("", "Worker", "research", "Audit billing")
-	gotB := revCoord.claim("", "Worker", "research", "Audit auth")
-	if gotA == nil || gotA.conversationID != "child-rev-a" {
-		t.Fatalf("reversed parallel claim A = %+v, want child-rev-a", gotA)
-	}
-	if gotB == nil || gotB.conversationID != "child-rev-b" {
-		t.Fatalf("reversed parallel claim B = %+v, want child-rev-b", gotB)
-	}
+func TestWatchSubagentSettlesOnParentInboxSystemError(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	parentID := "4d5f2b49-97b2-49e7-a214-7aff00575443"
+	childID := "33333333-3333-3333-3333-333333333333"
 
-	// Identical parallel launches (same role, same type, SAME prompt) resolved
-	// deterministically via child inbox sourceMetadata.tool.toolCall.id even when
-	// child-id-b arrives before child-id-a.
-	idParentLog := transcriptPathForSession(appDataDir, "parent-toolid")
-	idChildALog := transcriptPathForSession(appDataDir, "child-id-a")
-	idChildBLog := transcriptPathForSession(appDataDir, "child-id-b")
-	for cid, callID := range map[string]string{
-		"child-id-a": "call-sub-A",
-		"child-id-b": "call-sub-B",
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "subagents", childID+".json"), map[string]any{
+		"conversationId": childID,
+		"state":          "SUBAGENT_STATE_ALIVE",
+	})
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", childID, ".system_generated", "messages", "0001.json"), map[string]any{
+		"sender": parentID,
+		"sourceMetadata": map[string]any{
+			"tool": map[string]any{
+				"conversationId": parentID,
+				"toolCall":       map[string]any{"id": "call_crash", "name": "invoke_subagent"},
+			},
+		},
+	})
+	errMsg := `The subagent research with id "` + childID + `" encountered an error and has either stopped or failed to start execution: RESOURCE_EXHAUSTED`
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "messages", "0002_err.json"), map[string]any{
+		"sender":    "system",
+		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
+		"content":   errMsg,
+	})
+
+	flavor := NewFlavor(appDataDir)
+	flavor.subagentPollInterval = 10 * time.Millisecond
+	var events []provider.ProviderEvent
+	flavor.WatchSubagent(context.Background(), acp.SubagentLaunchContext{
+		SessionID:  parentID,
+		ThreadID:   "t1",
+		TurnID:     "turn-1",
+		ToolCallID: "call_crash",
+		Started:    acp.NormalizedToolStart{SubagentType: "research"},
+		Emit: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	})
+	for _, ev := range events {
+		if ev.Kind == provider.EventBackgroundTaskNotification {
+			var m map[string]any
+			_ = json.Unmarshal(ev.Meta, &m)
+			if m["status"] == "failed" && ev.Content == errMsg {
+				return
+			}
+		}
+	}
+	t.Fatalf("expected failed settlement from parent inbox system error, got %+v", events)
+}
+
+func TestWatchSubagentSettlesOnParentInboxIdleGuard(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	parentID := "4d5f2b49-97b2-49e7-a214-7aff00575443"
+	childID := "55555555-5555-5555-5555-555555555555"
+
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "subagents", childID+".json"), map[string]any{
+		"conversationId": childID,
+		"state":          "SUBAGENT_STATE_ALIVE",
+	})
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", childID, ".system_generated", "messages", "0001.json"), map[string]any{
+		"sender": parentID,
+		"sourceMetadata": map[string]any{
+			"tool": map[string]any{
+				"conversationId": parentID,
+				"toolCall":       map[string]any{"id": "call_idle", "name": "invoke_subagent"},
+			},
+		},
+	})
+	idleMsg := "Subagent " + childID + " has gone idle. This was the subagent's most recent response: done"
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "messages", "0002_idle.json"), map[string]any{
+		"sender":    "system",
+		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
+		"content":   idleMsg,
+	})
+
+	flavor := NewFlavor(appDataDir)
+	flavor.subagentPollInterval = 10 * time.Millisecond
+	var events []provider.ProviderEvent
+	flavor.WatchSubagent(context.Background(), acp.SubagentLaunchContext{
+		SessionID:  parentID,
+		ThreadID:   "t1",
+		TurnID:     "turn-1",
+		ToolCallID: "call_idle",
+		Started:    acp.NormalizedToolStart{SubagentType: "research"},
+		Emit: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	})
+	for _, ev := range events {
+		if ev.Kind == provider.EventBackgroundTaskNotification {
+			var m map[string]any
+			_ = json.Unmarshal(ev.Meta, &m)
+			if m["status"] == "completed" && ev.Content == idleMsg {
+				return
+			}
+		}
+	}
+	t.Fatalf("expected completed settlement from parent inbox idle guard, got %+v", events)
+}
+
+func TestLookupBackgroundCommandsCorrelatesConcurrentCommands(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	sessionID := "4d5f2b49-97b2-49e7-a214-7aff00575443"
+
+	db := createTestConvDB(t, appDataDir, sessionID)
+	defer func() { _ = db.Close() }()
+	for _, stmt := range []string{
+		`ALTER TABLE steps ADD COLUMN status INTEGER NOT NULL DEFAULT 3`,
+		`ALTER TABLE steps ADD COLUMN metadata BLOB`,
+		`ALTER TABLE steps ADD COLUMN task_details BLOB`,
 	} {
-		msgPath := filepath.Join(brainDir, cid, ".system_generated", "messages", "msg-1.json")
-		if err := os.MkdirAll(filepath.Dir(msgPath), 0o755); err != nil {
+		if _, err := db.Exec(stmt); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(msgPath, []byte(`{"sourceMetadata":{"tool":{"toolCall":{"id":"`+callID+`"}}}}`), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	createdIDB, _ := json.Marshal(map[string]any{
-		"step_index": 2, "type": "GENERIC",
-		"content": "Created the following subagent:\n{\"conversationId\":\"child-id-b\",\"logAbsoluteUri\":\"file://" + filepath.ToSlash(idChildBLog) + "\"}",
-	})
-	createdIDA, _ := json.Marshal(map[string]any{
-		"step_index": 3, "type": "GENERIC",
-		"content": "Created the following subagent:\n{\"conversationId\":\"child-id-a\",\"logAbsoluteUri\":\"file://" + filepath.ToSlash(idChildALog) + "\"}",
-	})
-	writeJSONL(t, idParentLog,
-		`{"step_index":1,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"invoke_subagent","args":{"Role":"\"Worker\"","TypeName":"\"research\"","Prompt":"\"Same prompt\""}},{"name":"invoke_subagent","args":{"Role":"\"Worker\"","TypeName":"\"research\"","Prompt":"\"Same prompt\""}}]}`,
-		string(createdIDB),
-		string(createdIDA),
-	)
-	idCoord := &parentSubagentCoordinator{
-		path:       idParentLog,
-		seenConvID: map[string]bool{},
-		reports:    map[string]string{},
-	}
-	idCoord.refresh(appDataDir)
-	// Claim A first even though B appeared first in GENERIC!
-	gotIDA := idCoord.claim("call-sub-A", "Worker", "research", "Same prompt")
-	gotIDB := idCoord.claim("call-sub-B", "Worker", "research", "Same prompt")
-	if gotIDA == nil || gotIDA.conversationID != "child-id-a" {
-		t.Fatalf("toolCallID claim A = %+v, want child-id-a", gotIDA)
-	}
-	if gotIDB == nil || gotIDB.conversationID != "child-id-b" {
-		t.Fatalf("toolCallID claim B = %+v, want child-id-b", gotIDB)
 	}
 
-	// GENERIC output with a conversationId when NO invoke_subagent is pending must not be admitted.
-	parentLog := filepath.Join(brainDir, "parent-no-spawn", ".system_generated", "logs", "transcript.jsonl")
-	if err := os.MkdirAll(filepath.Dir(parentLog), 0o755); err != nil {
+	logPath := filepath.Join(appDataDir, "brain", sessionID, ".system_generated", "tasks", "task-12.log")
+	taskBlob := []byte("\x0a." + sessionID + "/task-12\x12|file://" + filepath.ToSlash(logPath) + "\x1a\x04logs")
+	// Step 11: inline running command (no task_details).
+	if _, err := db.Exec(
+		`INSERT INTO steps (idx, step_type, status, metadata, task_details, error_details, step_payload) VALUES (11, 132, ?, ?, NULL, X'', X'')`,
+		cortexStepStatusRunning, []byte("\x0a\x09call_1234\x12\x0brun_command"),
+	); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(parentLog, []byte(`{"step_index":1,"type":"GENERIC","content":"{\"conversationId\":\"other-conv-123\"}"}`+"\n"), 0o644); err != nil {
+	// Step 12: backgrounded running command (task_details populated).
+	if _, err := db.Exec(
+		`INSERT INTO steps (idx, step_type, status, metadata, task_details, error_details, step_payload) VALUES (12, 132, ?, ?, ?, X'', X'')`,
+		cortexStepStatusRunning, []byte("\x0a\x08call_123\x12\x0brun_command"), taskBlob,
+	); err != nil {
 		t.Fatal(err)
 	}
-	noSpawnCoord := &parentSubagentCoordinator{
-		path:       parentLog,
-		seenConvID: map[string]bool{},
-		reports:    map[string]string{},
+
+	flavor := NewFlavor(appDataDir)
+	// Querying call_12 (prefix of call_123), call_123 (backgrounded), and call_1234 (inline):
+	// ONLY call_123 must match!
+	got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_12", "call_123", "call_1234"}, false, -1)
+	if len(got) != 1 {
+		t.Fatalf("LookupBackgroundCommands = %+v, want only call_123", got)
 	}
-	noSpawnCoord.refresh(appDataDir)
-	if len(noSpawnCoord.discovered) != 0 {
-		t.Fatalf("GENERIC without pending invoke_subagent admitted foreign conversation: %+v", noSpawnCoord.discovered)
+	info, ok := got["call_123"]
+	if !ok {
+		t.Fatalf("missing call_123 in %+v", got)
+	}
+	if info.TaskID != sessionID+"/task-12" {
+		t.Fatalf("TaskID = %q, want %q", info.TaskID, sessionID+"/task-12")
+	}
+	if info.OutputFile != filepath.Clean(logPath) {
+		t.Fatalf("OutputFile = %q, want %q", info.OutputFile, filepath.Clean(logPath))
 	}
 }
 
-func TestFlavorMultiReplaceGenerateImageAndBuiltins(t *testing.T) {
-	f := NewFlavor("")
+func TestLookupBackgroundCommandsStatGateSkipsUnchangedDB(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	sessionID := "5d5f2b49-97b2-49e7-a214-7aff00575444"
 
-	// 1. multi_replace_file_content produces normalized input + fallback diff hunks.
-	multiIn := json.RawMessage(`{
-		"TargetFile": "/repo/app.go",
-		"ReplacementChunks": [
-			{"TargetContent": "oldA", "ReplacementContent": "newA"},
-			{"TargetContent": "oldB", "ReplacementContent": "newB"}
-		]
-	}`)
-	u := &acp.ToolCallUpdate{
-		ToolCallID: "edit-multi",
-		Name:       "multi_replace_file_content",
-		Status:     "completed",
-		RawInput:   multiIn,
+	db := createTestConvDB(t, appDataDir, sessionID)
+	defer func() { _ = db.Close() }()
+	for _, stmt := range []string{
+		`PRAGMA journal_mode=WAL`,
+		`ALTER TABLE steps ADD COLUMN status INTEGER NOT NULL DEFAULT 3`,
+		`ALTER TABLE steps ADD COLUMN metadata BLOB`,
+		`ALTER TABLE steps ADD COLUMN task_details BLOB`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
 	}
-	st := f.NormalizeToolStart(u)
-	if st.ToolName != "Edit" || st.ItemType != "file_change" {
-		t.Fatalf("multi_replace start = %+v", st)
-	}
-	done := f.NormalizeToolComplete(u, st)
-	if len(done.DiffChanges) != 1 || !strings.Contains(done.DiffChanges[0].Diff, "-oldA") || !strings.Contains(done.DiffChanges[0].Diff, "+newB") {
-		t.Fatalf("multi_replace diff changes = %+v", done.DiffChanges)
-	}
-
-	// 2. generate_image extracts saved path from output text when input only had ImageName.
-	imgU := &acp.ToolCallUpdate{
-		ToolCallID: "gen-img-1",
-		Name:       "generate_image",
-		Status:     "completed",
-		RawInput:   json.RawMessage(`{"Prompt":"A glowing nebula","ImageName":"nebula"}`),
-		Content: []acp.ToolContentItem{{
-			Type:    "content",
-			Content: &acp.ContentBlock{Type: "text", Text: "Saved generated image to /home/u/.gemini/antigravity-cli/brain/s1/nebula.png"},
-		}},
-	}
-	imgStart := f.NormalizeToolStart(imgU)
-	imgDone := f.NormalizeToolComplete(imgU, imgStart)
-	inputMap, _ := imgDone.ExtraMeta["input"].(map[string]any)
-	if inputMap["path"] != "/home/u/.gemini/antigravity-cli/brain/s1/nebula.png" || inputMap["prompt"] != "A glowing nebula" {
-		t.Fatalf("generate_image complete ExtraMeta[input] = %+v", inputMap)
+	// Step 1: inline running command (no task_details yet).
+	if _, err := db.Exec(
+		`INSERT INTO steps (idx, step_type, status, metadata, task_details, error_details, step_payload) VALUES (1, 132, ?, ?, NULL, X'', X'')`,
+		cortexStepStatusRunning, []byte("\x0a\x07call_bg\x12\x0brun_command"),
+	); err != nil {
+		t.Fatal(err)
 	}
 
-	// 3. Cancelled ACP tool maps to killed status (never completed).
-	cancelDone := f.NormalizeToolComplete(&acp.ToolCallUpdate{
-		ToolCallID: "bash-1",
-		Name:       "run_command",
-		Status:     "cancelled",
-	}, acp.NormalizedToolStart{ToolName: "Bash", ItemType: "command_execution"})
-	if cancelDone.ItemStatus != "killed" {
-		t.Fatalf("cancelled ItemStatus = %q, want killed", cancelDone.ItemStatus)
+	flavor := NewFlavor(appDataDir)
+	var opens int
+	flavor.bgLookupOpenHook = func() { opens++ }
+
+	// 1st live call: opens DB, finds nothing, caches negative result for current DB/WAL stat.
+	if got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg"}, false, -1); len(got) != 0 {
+		t.Fatalf("1st lookup = %+v, want empty", got)
+	}
+	if opens != 1 {
+		t.Fatalf("opens after 1st call = %d, want 1", opens)
 	}
 
-	// 4. Built-in tool summaries populate description cleanly.
-	schedStart := f.NormalizeToolStart(&acp.ToolCallUpdate{
-		ToolCallID: "sched-1",
-		Name:       "schedule",
-		RawInput:   json.RawMessage(`{"DurationSeconds":60,"Prompt":"Check CI status"}`),
+	// 2nd live call with unchanged DB/WAL and same IDs: skipped without opening SQLite.
+	if got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg"}, false, -1); len(got) != 0 {
+		t.Fatalf("2nd lookup = %+v, want empty", got)
+	}
+	if opens != 1 {
+		t.Fatalf("opens after unchanged 2nd call = %d, want 1", opens)
+	}
+
+	// 3rd live call with an unchecked ID: must open SQLite.
+	if got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg", "call_new"}, false, -1); len(got) != 0 {
+		t.Fatalf("3rd lookup = %+v, want empty", got)
+	}
+	if opens != 2 {
+		t.Fatalf("opens after new-ID 3rd call = %d, want 2", opens)
+	}
+
+	// Completion-time check (includeCompleted=true) must always bypass the live cache.
+	if got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg"}, true, -1); len(got) != 0 {
+		t.Fatalf("includeCompleted lookup = %+v, want empty", got)
+	}
+	if opens != 3 {
+		t.Fatalf("opens after includeCompleted call = %d, want 3", opens)
+	}
+
+	// Writing task_details modifies the WAL/DB and invalidates the stat gate.
+	logPath := filepath.Join(appDataDir, "brain", sessionID, ".system_generated", "tasks", "task-1.log")
+	taskBlob := []byte("\x0a." + sessionID + "/task-1\x12|file://" + filepath.ToSlash(logPath) + "\x1a\x04logs")
+	if _, err := db.Exec(`UPDATE steps SET task_details = ? WHERE idx = 1`, taskBlob); err != nil {
+		t.Fatal(err)
+	}
+	// minStepIdx == 1 excludes idx <= 1 via PRIMARY KEY range scan.
+	if got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg"}, true, 1); len(got) != 0 {
+		t.Fatalf("bounded lookup(minStepIdx=1) = %+v, want empty", got)
+	}
+	got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg"}, false, 0)
+	if opens != 5 {
+		t.Fatalf("opens after DB write + bounded check = %d, want 5", opens)
+	}
+	info, ok := got["call_bg"]
+	if !ok || info.TaskID != sessionID+"/task-1" || info.OutputFile != filepath.Clean(logPath) {
+		t.Fatalf("lookup after DB write = %+v, want call_bg with task-1", got)
+	}
+}
+
+func TestDecodeTranscriptToolArgsPreservesNativeStringsInFullTranscript(t *testing.T) {
+	t.Parallel()
+	args := map[string]json.RawMessage{
+		"Path":        json.RawMessage(`"/tmp/cfg.json"`),
+		"Content":     json.RawMessage(`"{\"enabled\":true}"`),
+		"Target":      json.RawMessage(`"42"`),
+		"Replacement": json.RawMessage(`"true"`),
+		"StartLine":   json.RawMessage(`10`),
+	}
+	// Full transcript must keep JSON/numeric/boolean string literals as strings.
+	fullRaw := decodeTranscriptToolArgs(args, false)
+	var full map[string]any
+	if err := json.Unmarshal(fullRaw, &full); err != nil {
+		t.Fatalf("unmarshal full args: %v", err)
+	}
+	if s, ok := full["Content"].(string); !ok || s != `{"enabled":true}` {
+		t.Fatalf("full Content = %#v, want string {\"enabled\":true}", full["Content"])
+	}
+	if s, ok := full["Target"].(string); !ok || s != "42" {
+		t.Fatalf("full Target = %#v, want string 42", full["Target"])
+	}
+	if s, ok := full["Replacement"].(string); !ok || s != "true" {
+		t.Fatalf("full Replacement = %#v, want string true", full["Replacement"])
+	}
+	if n, ok := full["StartLine"].(float64); !ok || n != 10 {
+		t.Fatalf("full StartLine = %#v, want number 10", full["StartLine"])
+	}
+
+	// Compact transcript unwraps string-encoded JSON values.
+	compactRaw := decodeTranscriptToolArgs(map[string]json.RawMessage{
+		"Path":      json.RawMessage(`"\"/tmp/cfg.json\""`),
+		"StartLine": json.RawMessage(`"10"`),
+	}, true)
+	var compact map[string]any
+	if err := json.Unmarshal(compactRaw, &compact); err != nil {
+		t.Fatalf("unmarshal compact args: %v", err)
+	}
+	if s, ok := compact["Path"].(string); !ok || s != "/tmp/cfg.json" {
+		t.Fatalf("compact Path = %#v, want /tmp/cfg.json", compact["Path"])
+	}
+	if n, ok := compact["StartLine"].(float64); !ok || n != 10 {
+		t.Fatalf("compact StartLine = %#v, want 10", compact["StartLine"])
+	}
+}
+
+func TestDetectCompactionAdvancesCursorWithoutCheckpoint(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	sid := "sess-compact-cursor"
+	dbPath := seedRichConversationDB(t, appDataDir, sid, []testStepRow{
+		{idx: 0, stepType: cortexStepTypeUserInput, payload: encodeTestUserInputStep("u0", "h0", 1000, false, false)},
+		{idx: 5, stepType: cortexStepTypePlannerResponse, payload: []byte("r0")},
 	})
-	if !strings.Contains(string(schedStart.Input), "60s Check CI status") {
-		t.Fatalf("schedule normalized input = %s", string(schedStart.Input))
+	f := NewFlavor(appDataDir)
+	cursor := f.InitCompactionCursor(context.Background(), sid)
+	if cursor != 5 {
+		t.Fatalf("InitCompactionCursor = %d, want 5 (O(1) MAX(idx))", cursor)
+	}
+	// Append non-checkpoint steps: DetectCompaction must advance nextIdx to 12.
+	appendTestStepRows(t, dbPath, []testStepRow{
+		{idx: 10, stepType: cortexStepTypeUserInput, payload: encodeTestUserInputStep("u1", "h1", 2000, false, false)},
+		{idx: 12, stepType: cortexStepTypePlannerResponse, payload: []byte("r1")},
+	})
+	nextIdx, ev := f.DetectCompaction(context.Background(), sid, cursor)
+	if ev != nil || nextIdx != 12 {
+		t.Fatalf("DetectCompaction(no checkpoint) = (%d, %+v), want (12, nil)", nextIdx, ev)
+	}
+	// Append a real checkpoint at idx 15: must detect and advance cursor.
+	appendTestStepRows(t, dbPath, []testStepRow{
+		{idx: 15, stepType: cortexStepTypeCheckpoint, payload: []byte("cp")},
+		{idx: 16, stepType: cortexStepTypePlannerResponse, payload: []byte("r2")},
+	})
+	nextIdx, ev = f.DetectCompaction(context.Background(), sid, nextIdx)
+	if ev == nil || ev.ItemID != "agy-compact-15" || nextIdx != 16 {
+		t.Fatalf("DetectCompaction(with checkpoint) = (%d, %+v), want (16, agy-compact-15)", nextIdx, ev)
+	}
+}
+
+func TestWatchSubagentSettlesOnParentSystemStopNoticeAfterLaunch(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	parentID := "4d5f2b49-97b2-49e7-a214-7aff00575443"
+	childID := "44444444-4444-4444-4444-444444444444"
+
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "subagents", childID+".json"), map[string]any{
+		"conversationId": childID,
+		"state":          "SUBAGENT_STATE_ALIVE",
+	})
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", childID, ".system_generated", "messages", "0001.json"), map[string]any{
+		"sender": parentID,
+		"sourceMetadata": map[string]any{
+			"tool": map[string]any{
+				"conversationId": parentID,
+				"toolCall":       map[string]any{"id": "call_sys_stop", "name": "invoke_subagent"},
+			},
+		},
+	})
+	msgDir := filepath.Join(appDataDir, "brain", parentID, ".system_generated", "messages")
+	// An older system stop notice from 10 minutes ago must NOT prematurely kill this subagent.
+	writeJSONFile(t, filepath.Join(msgDir, "0001_old_stop.json"), map[string]any{
+		"sender":    "system",
+		"timestamp": time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339Nano),
+		"content":   "[Notice] All your subagents and background tasks have been stopped due to server restart.",
+	})
+
+	flavor := NewFlavor(appDataDir)
+	flavor.subagentPollInterval = 10 * time.Millisecond
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		flavor.WatchSubagent(context.Background(), acp.SubagentLaunchContext{
+			SessionID:  parentID,
+			ThreadID:   "t1",
+			TurnID:     "turn-1",
+			ToolCallID: "call_sys_stop",
+			Started:    acp.NormalizedToolStart{SubagentType: "research"},
+			Emit: func(evt provider.ProviderEvent) {
+				mu.Lock()
+				events = append(events, evt)
+				mu.Unlock()
+			},
+		})
+	}()
+
+	time.Sleep(35 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("stale system stop notice from before launch prematurely settled subagent")
+	default:
+	}
+
+	writeJSONFile(t, filepath.Join(msgDir, "0002_new_stop.json"), map[string]any{
+		"sender":    "system",
+		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
+		"content":   "[Notice] All your subagents and background tasks have been stopped due to user force cancellation.",
+	})
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WatchSubagent did not settle on post-launch system stop notice")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range events {
+		if ev.Kind == provider.EventBackgroundTaskNotification {
+			var m map[string]any
+			_ = json.Unmarshal(ev.Meta, &m)
+			if m["status"] == "killed" {
+				return
+			}
+		}
+	}
+	t.Fatalf("expected killed settlement on post-launch system stop notice, got %+v", events)
+}
+
+func appendJSONLLine(t *testing.T, path string, v any) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal %s: %v", path, err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.Write(append(raw, '\n')); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func TestWatchSubagentTailsFullTranscriptAndStampsResolvedModelEffort(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	parentID := "4d5f2b49-97b2-49e7-a214-7aff00575443"
+	childID := "66666666-6666-6666-6666-666666666666"
+
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "subagents", childID+".json"), map[string]any{
+		"conversationId": childID,
+		"state":          "SUBAGENT_STATE_ALIVE",
+	})
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", childID, ".system_generated", "messages", "0001.json"), map[string]any{
+		"sender": parentID,
+		"sourceMetadata": map[string]any{
+			"tool": map[string]any{
+				"conversationId": parentID,
+				"toolCall":       map[string]any{"id": "call_full_1", "name": "invoke_subagent"},
+			},
+		},
+	})
+
+	// Populate both compact transcript.jsonl (truncated) and transcript_full.jsonl (full);
+	// WatchSubagent must prefer transcript_full.jsonl.
+	compactPath := filepath.Join(appDataDir, "brain", childID, ".system_generated", "logs", "transcript.jsonl")
+	fullPath := filepath.Join(appDataDir, "brain", childID, ".system_generated", "logs", "transcript_full.jsonl")
+
+	appendJSONLLine(t, compactPath, map[string]any{
+		"step_index": 1, "type": "PLANNER_RESPONSE", "status": "DONE",
+		"model": "gemini-4-hydrogen-tiered-high", "input_tokens": 1000, "output_tokens": 50,
+		"tool_calls": []map[string]any{{"name": "read_file", "args": map[string]string{"Path": `"/repo/a.go"`}}},
+	})
+	appendJSONLLine(t, compactPath, map[string]any{
+		"step_index": 2, "type": "GENERIC", "status": "DONE",
+		"content": "COMPACT_TRUNCATED_ONLY",
+	})
+
+	appendJSONLLine(t, fullPath, map[string]any{
+		"step_index": 1, "type": "PLANNER_RESPONSE", "status": "DONE",
+		"created_at": "2026-11-24T19:54:26Z",
+		"model":      "gemini-4-hydrogen-tiered-high", "input_tokens": 5781, "output_tokens": 88,
+		"thinking": "Checking capabilities.go for MaxMCPWaitSeconds.",
+		// Real transcript_full.jsonl writes native typed JSON values (numbers,
+		// booleans, plain strings) rather than string-encoded values.
+		"tool_calls": []map[string]any{
+			{"name": "read_file", "args": map[string]any{"Path": "/repo/capabilities.go", "StartLine": 1, "EndLine": 30}},
+			{"name": "run_command", "args": map[string]any{"CommandLine": "echo ok", "WaitMsBeforeAsync": 5000, "IsDaemon": false}},
+		},
+	})
+	appendJSONLLine(t, fullPath, map[string]any{
+		"step_index": 2, "type": "GENERIC", "status": "DONE",
+		"created_at": "2026-11-24T19:54:28Z",
+		"content":    "FULL_UNTRUNCATED_FILE_OUTPUT_LINE_206_MAX_150",
+	})
+	appendJSONLLine(t, fullPath, map[string]any{
+		"step_index": 3, "type": "GENERIC", "status": "DONE",
+		"created_at": "2026-11-24T19:54:29Z",
+		"content":    "Command exited with code 0.\n\nCommand output:\nok\n",
+	})
+
+	flavor := NewFlavor(appDataDir)
+	flavor.subagentPollInterval = 10 * time.Millisecond
+	var openMu sync.Mutex
+	var openCount int
+	flavor.subagentTranscriptOpenHook = func() {
+		openMu.Lock()
+		openCount++
+		openMu.Unlock()
+	}
+
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		flavor.WatchSubagent(context.Background(), acp.SubagentLaunchContext{
+			SessionID:    parentID,
+			ThreadID:     "t1",
+			TurnID:       "turn-1",
+			ToolCallID:   "call_full_1",
+			RawInput:     json.RawMessage(`{"TypeName":"research","Role":"Capabilities Checker","Model":"flash"}`),
+			Started:      acp.NormalizedToolStart{SubagentType: "research", Description: "Capabilities Checker"},
+			ParentModel:  "gemini-4-neon",
+			ParentEffort: "high",
+			Emit: func(evt provider.ProviderEvent) {
+				mu.Lock()
+				events = append(events, evt)
+				mu.Unlock()
+			},
+		})
+	}()
+
+	// Wait until the first two transcript steps have been read and projected.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		sawReadDone := false
+		for _, ev := range events {
+			if ev.Kind == provider.EventToolComplete && ev.ParentToolUseID == "call_full_1" {
+				sawReadDone = true
+				break
+			}
+		}
+		mu.Unlock()
+		if sawReadDone {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for transcript_full.jsonl tool completion")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Across several idle ticks at EOF, the os.Stat size gate must prevent reopening the file.
+	openMu.Lock()
+	opensAtEOF := openCount
+	openMu.Unlock()
+	time.Sleep(60 * time.Millisecond)
+	openMu.Lock()
+	opensAfterIdle := openCount
+	openMu.Unlock()
+	if opensAfterIdle != opensAtEOF {
+		t.Fatalf("expected 0 transcript opens while idle at EOF, went from %d to %d", opensAtEOF, opensAfterIdle)
+	}
+
+	// Append final PLANNER_RESPONSE and deliver parent inbox report to settle.
+	appendJSONLLine(t, fullPath, map[string]any{
+		"step_index": 4, "type": "PLANNER_RESPONSE", "status": "DONE",
+		"created_at": "2026-11-24T19:54:30Z",
+		"model":      "gemini-4-hydrogen-tiered-high", "input_tokens": 1200, "output_tokens": 30,
+		"content": "Reported MaxMCPWaitSeconds = 150.",
+	})
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "messages", "report.json"), map[string]any{
+		"sender":  childID,
+		"content": "MaxMCPWaitSeconds is 150.",
+	})
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WatchSubagent did not settle after parent inbox report")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var sawResolvedModel, sawThinking, sawFullRead, sawBashStart, sawChildText, sawProgress, sawSettled bool
+	for _, ev := range events {
+		if ev.Kind == provider.EventToolStart && ev.ItemID == "call_full_1" {
+			var m map[string]any
+			_ = json.Unmarshal(ev.Meta, &m)
+			if m["subagent_model"] == "flash" {
+				t.Fatalf("must not prematurely stamp tier alias 'flash' as subagent_model: %+v", m)
+			}
+			if m["subagent_model"] == "gemini-4-hydrogen" && m["run_effort"] == "high" && m["agent_id"] == childID {
+				sawResolvedModel = true
+			}
+		}
+		if ev.Kind == provider.EventToolStart && ev.ParentToolUseID == "call_full_1" && ev.ItemType == "command_execution" {
+			sawBashStart = true
+		}
+		if ev.Kind == provider.EventThinking && ev.ParentToolUseID == "call_full_1" && strings.Contains(ev.Content, "MaxMCPWaitSeconds") {
+			sawThinking = true
+		}
+		if ev.Kind == provider.EventToolComplete && ev.ParentToolUseID == "call_full_1" && strings.Contains(ev.Content, "FULL_UNTRUNCATED_FILE_OUTPUT_LINE_206_MAX_150") {
+			sawFullRead = true
+		}
+		if ev.Kind == provider.EventTextDelta && ev.ParentToolUseID == "call_full_1" && strings.Contains(ev.Content, "Reported MaxMCPWaitSeconds = 150.") {
+			sawChildText = true
+		}
+		if ev.Kind == provider.EventSubagentProgress && ev.ItemID == "call_full_1" {
+			var p provider.SubagentProgressMeta
+			if json.Unmarshal(ev.Meta, &p) == nil && p.ToolUses == 2 && p.TotalTokens == 5781+88+1200+30 {
+				sawProgress = true
+			}
+		}
+		if ev.Kind == provider.EventBackgroundTaskNotification && ev.ItemID == "call_full_1" && ev.Content == "MaxMCPWaitSeconds is 150." {
+			sawSettled = true
+		}
+	}
+	if !sawResolvedModel || !sawThinking || !sawFullRead || !sawBashStart || !sawChildText || !sawProgress || !sawSettled {
+		t.Fatalf("missing expected events: resolvedModel=%v thinking=%v fullRead=%v bashStart=%v childText=%v progress=%v settled=%v",
+			sawResolvedModel, sawThinking, sawFullRead, sawBashStart, sawChildText, sawProgress, sawSettled)
+	}
+}
+
+func TestWatchSubagentFallsBackToCompactTranscriptAndEmitsReportInPane(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	parentID := "4d5f2b49-97b2-49e7-a214-7aff00575443"
+	childID := "77777777-7777-7777-7777-777777777777"
+
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "subagents", childID+".json"), map[string]any{
+		"conversationId": childID,
+		"state":          "SUBAGENT_STATE_ALIVE",
+	})
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", childID, ".system_generated", "messages", "0001.json"), map[string]any{
+		"sender": parentID,
+		"sourceMetadata": map[string]any{
+			"tool": map[string]any{
+				"conversationId": parentID,
+				"toolCall":       map[string]any{"id": "call_compact_1", "name": "invoke_subagent"},
+			},
+		},
+	})
+	// Only compact transcript.jsonl exists, with no assistant text block before reporting.
+	compactPath := filepath.Join(appDataDir, "brain", childID, ".system_generated", "logs", "transcript.jsonl")
+	appendJSONLLine(t, compactPath, map[string]any{
+		"step_index": 1, "type": "PLANNER_RESPONSE", "status": "DONE",
+		"model": "gemini-4-neon-medium", "input_tokens": 500, "output_tokens": 40,
+		"tool_calls": []map[string]any{{"name": "send_message", "args": map[string]string{"Message": `"Done!"`}}},
+	})
+	appendJSONLLine(t, compactPath, map[string]any{
+		"step_index": 2, "type": "GENERIC", "status": "DONE",
+		"content": "Message sent.",
+	})
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "messages", "report.json"), map[string]any{
+		"sender":  childID,
+		"content": "Done!",
+	})
+
+	flavor := NewFlavor(appDataDir)
+	flavor.subagentPollInterval = 10 * time.Millisecond
+	var events []provider.ProviderEvent
+	flavor.WatchSubagent(context.Background(), acp.SubagentLaunchContext{
+		SessionID:  parentID,
+		ThreadID:   "t1",
+		TurnID:     "turn-1",
+		ToolCallID: "call_compact_1",
+		RawInput:   json.RawMessage(`{"TypeName":"research","Role":"Quick Check","Model":"pro"}`),
+		Started:    acp.NormalizedToolStart{SubagentType: "research"},
+		Emit: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	})
+
+	var sawModel, sawReportText bool
+	for _, ev := range events {
+		if ev.Kind == provider.EventToolStart && ev.ItemID == "call_compact_1" {
+			var m map[string]any
+			_ = json.Unmarshal(ev.Meta, &m)
+			if m["subagent_model"] == "gemini-4-neon" && m["run_effort"] == "medium" {
+				sawModel = true
+			}
+		}
+		if ev.Kind == provider.EventTextDelta && ev.ParentToolUseID == "call_compact_1" && ev.Content == "Done!" {
+			sawReportText = true
+		}
+	}
+	if !sawModel || !sawReportText {
+		t.Fatalf("expected compact fallback model=%v and reportText=%v; events=%+v", sawModel, sawReportText, events)
 	}
 }

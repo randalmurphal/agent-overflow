@@ -76,7 +76,7 @@ func (a *App) resolveUserMessagePlacement(thread store.Thread, intent userMessag
 		}
 		return userMessagePlacement{queue: true}, nil
 	}
-	if intent == messageFlush && found && thread.Provider == string(provider.Codex) {
+	if intent == messageFlush && found && (thread.Provider == string(provider.Codex) || thread.Provider == string(provider.Agy)) {
 		return userMessagePlacement{displayTurn: active.TurnIndex, responseTurn: active.TurnIndex, persistence: messageDeferUntilEcho, joinsActiveTurn: true}, nil
 	}
 	next, err := a.nextSendTurnIndex(thread.ID)

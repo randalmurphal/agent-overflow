@@ -736,12 +736,12 @@ func (a *App) sendMessageLocked(
 	// at the real transcript uuid from the moment of persist — no dependency
 	// on the replay echo. This closes the fast send→escape race: a revert
 	// firing before the echo arrives still finds a stable id and takes the
-	// UUID-keyed slice instead of the ordinal-walk fallback. Gated on Claude:
-	// Codex assigns its own item ids and ignores a supplied uuid, so stamping
-	// a fabricated id there would only mis-seed the row and trip the
-	// echo-time drift log on every send.
+	// UUID-keyed slice instead of the ordinal-walk fallback. Gated on Claude
+	// and Antigravity (ACP): Codex assigns its own item ids and ignores a
+	// supplied uuid, whereas ACP sessions echo UserMessageUUID back as the
+	// synthetic transcript confirmation so triage clears pending sends.
 	var sendUUID string
-	if thread.Provider == string(provider.Claude) {
+	if thread.Provider == string(provider.Claude) || thread.Provider == string(provider.Agy) {
 		sendUUID = uuid.NewString()
 		userMeta, err = usermessage.MergeProviderItemID(userMeta, sendUUID)
 		if err != nil {

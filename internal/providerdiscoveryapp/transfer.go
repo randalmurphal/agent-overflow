@@ -49,11 +49,8 @@ func (s *Service) CheckTransferReadiness(ctx context.Context, name, minimumCodex
 	if name == string(provider.Codex) && s.deps.CheckCodexTransferAccount != nil {
 		return s.deps.CheckCodexTransferAccount(ctx, binary)
 	}
-	if name == string(provider.Agy) {
-		if s.deps.CheckAgyTransferAccount != nil {
-			return s.deps.CheckAgyTransferAccount(ctx, binary)
-		}
-		return nil
+	if name == string(provider.Agy) && s.deps.CheckAgyTransferAccount != nil {
+		return s.deps.CheckAgyTransferAccount(ctx, binary)
 	}
 	return errors.New("Provider account checks are unavailable while this computer is starting.")
 }

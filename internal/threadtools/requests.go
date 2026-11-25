@@ -123,7 +123,7 @@ func (c *session) status(ctx context.Context, raw json.RawMessage) (any, error) 
 	if len(args.Tokens) > MaxStatusTokens || len(args.ThreadIDs) > MaxStatusTokens {
 		return nil, invalidf("At most %d tokens or thread ids per call.", MaxStatusTokens)
 	}
-	wait, err := waitSeconds(args.WaitSeconds, 0)
+	wait, err := c.waitSeconds(args.WaitSeconds, 0)
 	if err != nil {
 		return nil, err
 	}

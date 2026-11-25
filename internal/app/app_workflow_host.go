@@ -247,6 +247,7 @@ func (a *App) workflowComposerBlock(threadID string) (string, error) {
 			})
 		}
 	}
+	context.MaxWaitSeconds = provider.CapabilitiesForProvider(thread.Provider).EffectiveMaxMCPWaitSeconds(workflowtools.MaxWaitSeconds)
 	return workflowtools.RenderComposerContext(context), nil
 }
 

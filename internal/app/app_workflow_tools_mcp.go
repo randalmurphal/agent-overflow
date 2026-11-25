@@ -97,7 +97,8 @@ func workflowCaller(thread store.Thread, scope transport.CallerScope) workflowto
 		ThreadID: thread.ID, Phase: scope.IsPhase(), Grants: scope.Grants,
 		// The access the phase or unit froze, not the session's runtime mode:
 		// the mode can be changed on a live thread, the declaration cannot.
-		ReadOnly: scope.IsPhase() && def.Access(scope.Access) != def.AccessWrite,
+		ReadOnly:       scope.IsPhase() && def.Access(scope.Access) != def.AccessWrite,
+		MaxWaitSeconds: provider.CapabilitiesForProvider(thread.Provider).EffectiveMaxMCPWaitSeconds(workflowtools.MaxWaitSeconds),
 	}
 }
 

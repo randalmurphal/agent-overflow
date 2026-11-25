@@ -367,8 +367,8 @@ func (a *App) startSessionNow(threadID string) error {
 	}
 	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, browserServers, agent, mem, place, onEvent)
 	if err != nil {
-		if codex.IsThreadNotFound(err) && agent.Block != "" {
-			// An assistant's Codex thread the provider no longer has.
+		if (codex.IsThreadNotFound(err) || acp.IsSessionNotFound(err)) && agent.Block != "" {
+			// An assistant's provider session the runtime no longer has.
 			err = errors.Join(errAssistantSessionGone, err)
 		}
 		a.emitProviderStatusOnSessionStartError(t.Provider)
@@ -500,6 +500,9 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 
 	err := a.closeProviderSession(threadID, existing)
 	if a.triage != nil {
+		if _, settleErr := a.triage.SettleBackgroundLaunchesForSessionEnd(threadID); settleErr != nil {
+			log.Printf("app: settle background launches on replaced session for %s: %v", threadID, settleErr)
+		}
 		a.triage.EndReplacedSessionTurn(threadID)
 	}
 	// The close processed the old CLI's final frames, including the sends
@@ -1218,6 +1221,15 @@ func (a *App) interruptTurnHoldingLock(threadID string, expectTurnIndex int, sto
 			log.Printf("app: interrupt turn: mark interrupt: %v", err)
 			a.emitErrorToThread(threadID, fmt.Sprintf("The turn stopped, but recording the stop failed: %v", err))
 		}
+		if sess.ACP != nil {
+			// Drain queued provider events (confirmations + EventTurnComplete)
+			// emitted during sess.ACP.Interrupt before clearing cancelled
+			// unconfirmed sends or eagerly persisting/resending steered items.
+			if drainErr := a.providerEvents.drain(threadID); drainErr != nil {
+				log.Printf("app: interrupt turn: drain provider events for %s: %v", threadID, drainErr)
+			}
+			a.triage.ClearCancelledACPDirectSends(threadID, stampToken)
+		}
 		a.eagerPersistFlushSendsOnInterrupt(threadID, sess, interruptedTurn, stampToken)
 	}
 	if discardsMessage {
@@ -1258,15 +1270,24 @@ func (a *App) eagerPersistFlushSendsOnInterrupt(threadID string, sess session, i
 	// review, CT4-1).
 	a.triage.PromoteQuietFlushSends(threadID, stampToken)
 
-	if sess.Codex == nil {
+	if sess.Codex == nil && sess.ACP == nil {
 		a.triage.EagerPersistDeferredFlushSends(threadID, interruptedTurn, stampToken)
 		return
 	}
 	var persisted []triage.EagerPersistedFlush
+	var clearTurnInputIDs []string
 	for _, flush := range a.triage.EagerPersistDeferredFlushSends(threadID, interruptedTurn, stampToken) {
 		if !flush.TurnInput {
 			persisted = append(persisted, flush)
+		} else if sess.ACP != nil {
+			// On ACP, session/cancel cancels the idle-queued prompt itself
+			// without sending a confirmation echo; clear its now-orphaned
+			// pending entry after eager persistence places the row in timeline.
+			clearTurnInputIDs = append(clearTurnInputIDs, flush.UserItemID)
 		}
+	}
+	if len(clearTurnInputIDs) > 0 {
+		a.triage.ClearPendingSendsByItemIDs(threadID, clearTurnInputIDs)
 	}
 	if len(persisted) == 0 {
 		return
@@ -1360,16 +1381,21 @@ func (a *App) codexResendAfterInterrupt(
 	// The merged re-send is correlated to the FIRST item's row, which is
 	// the row the pending entry below is registered for. Items 2+ share
 	// that correlation, exactly as they share the turn.
-	resendClientID, resendExpect := providerSendIdentity(sess, persisted[0].UserItemID, persisted[0].Meta, "")
+	resendUUID := ""
+	if sess.ACP != nil {
+		resendUUID = uuid.NewString()
+	}
+	resendClientID, resendExpect := providerSendIdentity(sess, persisted[0].UserItemID, persisted[0].Meta, resendUUID)
 	sendOpts := provider.SendOptions{
 		InteractionMode:     provider.NormalizeInteractionMode(thread.Mode),
 		Attachments:         attachments.images,
+		UserMessageUUID:     resendUUID,
 		ClientUserMessageID: resendClientID,
 	}
 
 	turnIndex, err := a.nextSendTurnIndex(threadID)
 	if err != nil {
-		log.Printf("app: codex interrupt re-send: resolve turn index for %s: %v", threadID, err)
+		log.Printf("app: interrupt re-send: resolve turn index for %s: %v", threadID, err)
 		a.restoreEagerPersistedFlushesToDraft(threadID, persisted)
 		return
 	}
@@ -1385,23 +1411,28 @@ func (a *App) codexResendAfterInterrupt(
 	a.triage.MarkPendingSendAnchoredAtInterrupt(threadID, persisted[0].UserItemID)
 	sess.Liveness.BumpActivity(time.Now())
 
-	if sendErr := sess.Codex.Send(context.Background(), merged, sendOpts); sendErr != nil {
-		if codex.IsAmbiguousTurnStartTimeout(sendErr) {
+	var sendErr error
+	if sess.Codex != nil {
+		sendErr = sess.Codex.Send(context.Background(), merged, sendOpts)
+	} else if sess.ACP != nil {
+		sendErr = sess.ACP.Send(context.Background(), merged, sendOpts)
+	}
+	if sendErr != nil {
+		if sess.Codex != nil && codex.IsAmbiguousTurnStartTimeout(sendErr) {
 			// The turn/start was written; the turn — and its echo — may
 			// already be running. Requeueing would re-send content Codex
 			// may have consumed (round-14, D14-2). Keep the pending entry:
 			// a late echo settles it normally, and if the turn truly never
 			// started the session-death drain recovers the rows.
-			log.Printf("app: codex interrupt re-send for thread %s timed out after write; leaving pending confirmation for provider echo", threadID)
+			log.Printf("app: interrupt re-send for thread %s timed out after write; leaving pending confirmation for provider echo", threadID)
 			return
 		}
-		log.Printf("app: codex interrupt re-send for thread %s: %v", threadID, sendErr)
+		log.Printf("app: interrupt re-send for thread %s: %v", threadID, sendErr)
 		a.triage.ClearPendingSendForFailure(threadID, persisted[0].UserItemID)
-		// Codex discarded the queued input at turn/interrupt and this
+		// The provider discarded the queued input on interrupt and this
 		// resend was its only delivery — the rows would sit in the
 		// timeline looking sent. Delete them and hand the content back
-		// to the composer, the same recovery the Codex TUI applies to
-		// unconsumed input.
+		// to the composer.
 		a.restoreEagerPersistedFlushesToDraft(threadID, persisted)
 	}
 }

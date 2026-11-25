@@ -147,7 +147,9 @@ func readOnlyEffect(shape Shape) string {
 // at rest. A session at the sub-thread limit has no thread_spawn and reads
 // none of that (instructionsStarting).
 func instructionsWaiting(shape Shape) string {
-	text := "Waiting. Spawn and send return at once unless you pass `wait_seconds` (up to 900); ask waits 300 seconds. `wait_seconds` is how long this call waits, not how long the work may run. If the answer arrives in time it is in the reply, with its kind: `reply` means the other thread called `thread_reply`; `final` means it ended without replying and this is its last message, which may not be the answer you asked for."
+	maxWait := shape.maxWaitSeconds()
+	askWait := min(DefaultAskWaitSeconds, maxWait)
+	text := fmt.Sprintf("Waiting. Spawn and send return at once unless you pass `wait_seconds` (up to %d); ask waits %d seconds. `wait_seconds` is how long this call waits, not how long the work may run. If the answer arrives in time it is in the reply, with its kind: `reply` means the other thread called `thread_reply`; `final` means it ended without replying and this is its last message, which may not be the answer you asked for.", maxWait, askWait)
 	if shape.Spawn.CanSpawn() {
 		text += " A thread you spawned, and a send to it, end only when it has nothing left running: no background work, loop, watch or reminder, and no thread it started still working; until then `thread_status` reports it running, with what it waits on in `waiting_on`, and a loop or watch it keeps armed holds it until you stop it with `thread_cancel` on its thread id. On a paired computer running an older version they end with its turn instead, and `thread_status` marks that answer `rest_unreported`."
 	}

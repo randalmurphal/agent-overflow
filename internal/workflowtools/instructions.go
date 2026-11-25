@@ -25,7 +25,7 @@ func (s *Server) Instructions(caller Caller) string {
 
 	if has("run_start") {
 		paragraphs = append(paragraphs, fmt.Sprintf(
-			"Starting and waiting. `run_start` returns the run id at once. A run an interactive thread starts is bound to it: when the run comes to rest (done, parked or failed) a message naming the next step arrives in the thread, so you never need to poll it. `wait_seconds` (at most %d) on `run_start` or `run_status` makes the call wait for the rest instead, and a rest the call returns is not also sent as a message. A wait that ends first returns outcome `backgrounded` with `notify` saying whether the rest will reach you as a message. Outcome `unknown` means the run started but could not be read back: the start still names it, so do not start it again. A phase that starts a run with the same arguments twice gets the first run back with `skipped`.", MaxWaitSeconds))
+			"Starting and waiting. `run_start` returns the run id at once. A run an interactive thread starts is bound to it: when the run comes to rest (done, parked or failed) a message naming the next step arrives in the thread, so you never need to poll it. `wait_seconds` (at most %d) on `run_start` or `run_status` makes the call wait for the rest instead, and a rest the call returns is not also sent as a message. A wait that ends first returns outcome `backgrounded` with `notify` saying whether the rest will reach you as a message. Outcome `unknown` means the run started but could not be read back: the start still names it, so do not start it again. A phase that starts a run with the same arguments twice gets the first run back with `skipped`.", caller.maxWaitSeconds()))
 	}
 	if has("run_status") {
 		paragraphs = append(paragraphs,

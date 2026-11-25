@@ -168,6 +168,57 @@ func (s *Store) ListTurnSummaryOnlyDiffItems(threadID string, turnIndex int) ([]
 	return items, nil
 }
 
+// ListTopLevelAgyPromptItems returns top-level user_text and AskUserQuestion
+// rows for threadID in timeline order without hydrating assistant text,
+// thinking, tool outputs, or subagent child rows. Used by Antigravity fork and
+// rollback slicing so long threads do not hydrate tens of thousands of
+// non-prompt rows.
+func (s *Store) ListTopLevelAgyPromptItems(threadID string) ([]Item, error) {
+	selection, args, err := timelineIDSelection(s.reader(), threadID, timelineSelection{
+		Where: mainTimelineFilterFor("items.") + ` AND (
+			(items.kind = 'user_text' AND items.role = 'user')
+			OR (items.kind = 'tool_call' AND items.tool_name = 'AskUserQuestion')
+		)`,
+		OrderBy: "turn_index ASC, item_index ASC",
+	})
+	if err != nil {
+		return nil, err
+	}
+	items, err := queryHydratedTimelineItems(s.reader(), threadID, selection, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list top-level agy prompt items for thread %s: %w", threadID, err)
+	}
+	return items, nil
+}
+
+// HasTopLevelAgyPromptBefore reports whether threadID contains at least one
+// completed top-level visible user_text row or prompt-dispatched
+// AskUserQuestion strictly before (beforeTurn, beforeItem) in timeline order.
+// Uses Limit 1 on the top-level timeline indexes so anchored Antigravity
+// rollbacks and forks avoid scanning thread history.
+func (s *Store) HasTopLevelAgyPromptBefore(threadID string, beforeTurn, beforeItem int) (bool, error) {
+	selection, args, err := timelineIDSelection(s.reader(), threadID, timelineSelection{
+		Where: mainTimelineFilterFor("items.") + ` AND (
+			(items.kind = 'user_text' AND items.role = 'user'
+				AND (items.status = '' OR items.status = 'completed')
+				AND NOT (json_valid(items.meta) AND COALESCE(json_extract(items.meta, '$.wire_only'), 0) = 1))
+			OR (items.kind = 'tool_call' AND items.tool_name = 'AskUserQuestion'
+				AND json_valid(items.meta) AND COALESCE(json_extract(items.meta, '$.prompt_dispatched'), 0) = 1)
+		) AND (items.turn_index < ? OR (items.turn_index = ? AND items.item_index < ?))`,
+		WhereArgs: []any{beforeTurn, beforeTurn, beforeItem},
+		OrderBy:   "turn_index ASC, item_index ASC",
+		Limit:     1,
+	})
+	if err != nil {
+		return false, err
+	}
+	_, found, err := queryOneHydratedTimelineItem(s.reader(), threadID, selection, args...)
+	if err != nil {
+		return false, fmt.Errorf("store: check prior agy prompt for thread %s: %w", threadID, err)
+	}
+	return found, nil
+}
+
 // ListItems returns every logical row of the thread. It reads the whole
 // history, so it takes a history read slot.
 func (s *Store) ListItems(threadID string) ([]Item, error) {

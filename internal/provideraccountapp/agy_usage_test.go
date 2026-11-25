@@ -231,9 +231,11 @@ func (r agyReadingRig) slot(t *testing.T, accountID string) string {
 
 // The agy CLI refreshes its access token in the canonical home and keeps the
 // refresh token. A manual reading of the selected account afterwards lands,
-// with the slot and the record on the refreshed login.
+// with the slot and the record on the refreshed login, without advancing the
+// provider generation (which would treat an hourly refresh as an account switch).
 func TestASelectedAgyReadingAfterTheCLIRefreshedItsTokenLands(t *testing.T) {
 	rig := newAgyReadingRig(t)
+	genBefore := rig.manager.store.Generation(string(provider.Agy))
 	refreshed := agyCredential("dev-new", "dev@example.com")
 	rig.canonical(t, refreshed)
 
@@ -247,8 +249,22 @@ func TestASelectedAgyReadingAfterTheCLIRefreshedItsTokenLands(t *testing.T) {
 	if recorded, _ := rig.manager.CredentialFingerprintForTest(string(provider.Agy)); recorded != sha256.Sum256(refreshed) {
 		t.Fatal("the record is not on the refreshed login")
 	}
+	if genAfter := rig.manager.store.Generation(string(provider.Agy)); genAfter != genBefore {
+		t.Fatalf("same-account agy token refresh advanced Generation %d -> %d", genBefore, genAfter)
+	}
 	if len(*rig.published) != 1 || (*rig.published)[0].AccountID != rig.devID {
 		t.Fatalf("published readings = %+v, want dev's", *rig.published)
+	}
+
+	// A fresh login with a DIFFERENT refresh token for the same email must
+	// still advance Generation so auth-caching sessions pick up the new login.
+	relogged := agyCredential("freshlogin-1", "dev@example.com")
+	rig.canonical(t, relogged)
+	if err := rig.manager.ReconcileBeforeSend(string(provider.Agy)); err != nil {
+		t.Fatalf("ReconcileBeforeSend after new refresh token: %v", err)
+	}
+	if genAfter := rig.manager.store.Generation(string(provider.Agy)); genAfter <= genBefore {
+		t.Fatalf("new refresh token did not advance Generation: got %d, want > %d", genAfter, genBefore)
 	}
 }
 

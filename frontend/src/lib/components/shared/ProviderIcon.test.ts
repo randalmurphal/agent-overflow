@@ -40,4 +40,12 @@ describe('<ProviderIcon>', () => {
     expect(container.querySelector('.lucide-claude')).toBeNull();
     expect(container.querySelector('.lucide-openai')).not.toBeNull();
   });
+
+  it('renders the full-color Antigravity mark image for agy', () => {
+    const { container } = render(ProviderIcon, { props: { provider: 'agy' } });
+    const glyph = container.querySelector('img.lucide-antigravity');
+    expect(glyph).not.toBeNull();
+    expect(glyph?.getAttribute('src')).toBeTruthy();
+    expect((glyph?.getAttribute('class') ?? '').split(/\s+/)).not.toContain('mask-icon');
+  });
 });

@@ -164,7 +164,9 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 	// truth about whether the file can still move.
 	live := active
 	if !live {
-		_, live = a.activeClaudeSession(sourceThreadID)
+		if sess, ok := a.sessionManager().get(sourceThreadID); ok && (sess.Claude != nil || sess.ACP != nil) {
+			live = true
+		}
 	}
 	if active && atTurnIndex != nil && *atTurnIndex == activeTurn.TurnIndex {
 		// "Keep through the running turn" IS the mid-turn tail fork: the
@@ -196,7 +198,7 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 	// is reachable (ensureThreadCanFork already refused anything above).
 	// Codex keeps its anchor: it has no lazy path, and the anchored call
 	// verifies the fork's tail against the anchor, which nil would skip.
-	if atTurnIndex != nil && source.Provider == string(provider.Claude) {
+	if atTurnIndex != nil && (source.Provider == string(provider.Claude) || source.Provider == string(provider.Agy)) {
 		lastTurn, err := a.store.LastTurnIndex(source.ID)
 		if err != nil {
 			return store.Thread{}, fmt.Errorf("fork thread: load source last turn index: %w", err)
@@ -402,7 +404,9 @@ func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, 
 	// stream (background-task re-invocations) with the turn row closed.
 	live := active
 	if !live {
-		_, live = a.activeClaudeSession(sourceThreadID)
+		if sess, ok := a.sessionManager().get(sourceThreadID); ok && (sess.Claude != nil || sess.ACP != nil) {
+			live = true
+		}
 	}
 	timing.next("flush")
 	if live && a.triage != nil {
