@@ -35,7 +35,9 @@ import (
 //
 // A section this build does not know, or one at a version newer than it
 // reads, is kept byte for byte and written back unchanged by a replace,
-// which may not change it (ErrSetupNewer). The revision is the SHA-256 of
+// which may not change it (ErrSetupNewer); a replace's setup argument
+// that names one is refused as unreadable (Setup.UnmarshalJSON). A site
+// is held as its connection names it (checkSite). The revision is the SHA-256 of
 // the file's bytes, empty while there is no file; a replace names the
 // revision it was built from and is refused, with what is stored now, when
 // the stored one differs. A file that cannot be read or does not validate

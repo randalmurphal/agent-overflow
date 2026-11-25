@@ -334,6 +334,21 @@ no step runs at root creation, restore or start.
   Linear site pins no fields). A section this build does not know, or one
   at a newer version, is kept byte for byte by a replace and named in the
   read's `newer`; a replace that sets it is refused.
+- **A site** is named as its connection names it, by the rules a
+  connection's site is read by (`jiraSite`, `linearSite`): a read and a
+  save store `https://example.atlassian.net` for `Example.atlassian.net/`
+  and `example` for `https://linear.app/example/`, so the entry is found
+  by the board handles of every connection to the site. A site that
+  neither rule accepts, or one an entry names twice in any spelling, is
+  refused, and a file holding one cannot be read. A file written by hand
+  in another spelling keeps the revision of its bytes; the next save
+  writes the site as its connection names it.
+- **A replace's setup argument** is read whole or refused (`Setup`'s
+  `UnmarshalJSON`): null, anything but an object, a section this build
+  does not read and a field it does not know are refused as an argument
+  the computer cannot read (`bad_params`, before the method runs), as the
+  file's reader refuses a field of a section it reads; `{}` is the empty
+  setup.
 - **A replace** names the revision it was built from, the SHA-256 of the
   file's bytes (empty for no file). When the file moved since, nothing is
   written and the answer carries the setup stored now. An empty setup
