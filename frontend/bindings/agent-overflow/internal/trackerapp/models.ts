@@ -1840,11 +1840,12 @@ export class PokerView {
 
 /**
  * PokerVoteRequest is a vote on an issue: a number from tracker's
- * MinPokerVote to MaxPokerVote.
+ * MinPokerVote to MaxPokerVote. A request with no vote, or a null one,
+ * is refused (PokerVote); zero is a vote.
  */
 export class PokerVoteRequest {
     "issue": string;
-    "vote": number;
+    "vote": number | null;
 
     /** Creates a new PokerVoteRequest instance. */
     constructor($$source: Partial<PokerVoteRequest> = {}) {
@@ -1852,7 +1853,7 @@ export class PokerVoteRequest {
             this["issue"] = "";
         }
         if (!("vote" in $$source)) {
-            this["vote"] = 0;
+            this["vote"] = null;
         }
 
         Object.assign(this, $$source);
