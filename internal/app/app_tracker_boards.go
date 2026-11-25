@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/pump"
@@ -13,31 +14,31 @@ import (
 	"agent-overflow/internal/transport"
 )
 
-// A project's tracker boards and board subscriptions. trackerapp owns
-// both; these are their bound methods. A board subscription belongs to
-// the client connection that made it: its handle is tied to that
-// connection, whose end releases it (trackerSubscriptionTie). The reads
-// that follow a subscribe name its handle, which a client pins to the
-// computer that answered the subscribe (methodFamilies.ts, family
+// A project's tracker boards and the board and ticket subscriptions.
+// trackerapp owns them; these are their bound methods. A subscription
+// belongs to the client connection that made it: its handle is tied to
+// that connection, whose end releases it (trackerSubscriptionTie). The
+// reads that follow a subscribe name its handle, which a client pins to
+// the computer that answered the subscribe (methodFamilies.ts, family
 // "subscription"). The wire shapes are trackerapp's own.
 
 // TrackerProjects lists the tracker projects (Linear teams) the
 // connection's user can see, for choosing a project's boards. It asks
 // the tracker, a page at a time, and the whole walk ends at the method's
-// budget (trackerCatalogRun). Its context reaches the network, so it is
+// budget (trackerRun). Its context reaches the network, so it is
 // not caller-bound.
 //
 //ao:scope tracker:read
-//ao:route selected
+//ao:route home
 func (a *App) TrackerProjects(ctx context.Context, connectionID string) ([]trackerapp.ProjectView, error) {
 	svc, err := a.trackerService()
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := a.trackerCatalogRun(ctx, "TrackerProjects", "Listing the tracker's projects")
+	ctx, cancel := a.trackerRun(ctx, "TrackerProjects", "Listing the tracker's projects", trackerSlow)
 	defer cancel()
 	out, err := svc.Projects(ctx, connectionID)
-	return out, trackerCatalogError(ctx, err)
+	return out, trackerRunError(ctx, err)
 }
 
 // TrackerBoards lists a tracker project's boards (a Linear team's one),
@@ -45,33 +46,38 @@ func (a *App) TrackerProjects(ctx context.Context, connectionID string) ([]track
 // TrackerProjects is.
 //
 //ao:scope tracker:read
-//ao:route selected
+//ao:route home
 func (a *App) TrackerBoards(ctx context.Context, connectionID, project string) ([]trackerapp.BoardInfoView, error) {
 	svc, err := a.trackerService()
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := a.trackerCatalogRun(ctx, "TrackerBoards", "Listing the project's boards")
+	ctx, cancel := a.trackerRun(ctx, "TrackerBoards", "Listing the project's boards", trackerSlow)
 	defer cancel()
 	out, err := svc.Boards(ctx, connectionID, project)
-	return out, trackerCatalogError(ctx, err)
+	return out, trackerRunError(ctx, err)
 }
 
-// trackerCatalogRun bounds a picker's walk of the tracker's pages, each
-// of which the tracker client bounds alone, by the method's budget, so
-// the server answers before its client stops waiting
-// (transport.ClientWait).
-func (a *App) trackerCatalogRun(ctx context.Context, method, doing string) (context.Context, context.CancelFunc) {
+// trackerRun bounds a method's run of tracker requests (a form read, a
+// picker's walk of pages, a write and its refresh), each of which the
+// tracker client bounds alone, by the method's budget, so the server
+// answers before its client stops waiting (transport.ClientWait). then
+// says what the person does when the budget cuts it.
+func (a *App) trackerRun(ctx context.Context, method, doing, then string) (context.Context, context.CancelFunc) {
 	budget := transport.MethodBudget(method)
-	if a.trackerPickerBudget > 0 {
-		budget = a.trackerPickerBudget
+	if a.trackerBudget > 0 {
+		budget = a.trackerBudget
 	}
-	return withinBudget(ctx, budgetExceeded{doing: doing, budget: budget, then: "the tracker was too slow, so try again"})
+	return withinBudget(ctx, budgetExceeded{doing: doing, budget: budget, then: then})
 }
 
-// trackerCatalogError is the budget's own error once ctx ended at it,
-// and otherwise err with its refusal's sentence (trackerError).
-func trackerCatalogError(ctx context.Context, err error) error {
+// trackerSlow is a form read's advice when its budget cut it.
+const trackerSlow = "the tracker was too slow, so try again"
+
+// trackerRunError is the budget's own error once ctx, a method's run
+// bounded by its budget, ended at it, and otherwise err with its
+// refusal's sentence (trackerError).
+func trackerRunError(ctx context.Context, err error) error {
 	if cut := budgetError(ctx, err); cut != err {
 		return cut
 	}
@@ -211,7 +217,7 @@ func (a *App) trackerSubscriptionBoard(subscriptionID string) (*trackerapp.Servi
 }
 
 // SetTrackerSubscriptionVisible records whether the client shows what it
-// subscribed to; a board nobody shows is not read.
+// subscribed to; a board or ticket nobody shows is not read.
 //
 //ao:scope tracker:read
 //ao:route home
@@ -223,13 +229,13 @@ func (a *App) SetTrackerSubscriptionVisible(ctx context.Context, subscriptionID 
 	return trackerError(svc.SetSubscriptionVisible(subscriptionID, visible))
 }
 
-// RefreshTrackerSubscription reads the subscribed board from the tracker
-// now, as the person's action, and returns when the read ran. What it
-// found, a failure of the tracker included, arrives as events. The wait
-// is bounded by the method's budget. If the board's pump was still in a
-// read of its own all that time, this refresh never ran and the answer
-// says to refresh again; if this refresh's own read is long, it goes on
-// after the answer, its events arriving as they land.
+// RefreshTrackerSubscription reads the subscribed board or ticket from
+// the tracker now, as the person's action, and returns when the read ran.
+// What it found, a failure of the tracker included, arrives as events.
+// The wait is bounded by the method's budget. If the subscription's pump
+// was still in a read of its own all that time, this refresh never ran
+// and the answer says to refresh again; if this refresh's own read is
+// long, it goes on after the answer, its events arriving as they land.
 //
 //ao:scope tracker:read
 //ao:route home
@@ -244,9 +250,9 @@ func (a *App) RefreshTrackerSubscription(ctx context.Context, subscriptionID str
 	switch {
 	case err == nil || !errors.Is(context.Cause(ctx), errTrackerRefreshWait):
 	case errors.Is(err, pump.ErrNotTaken):
-		return errorsx.Public("tracker_refresh_not_run", "the board was busy with an earlier read from the tracker, so this refresh did not run; refresh again", err)
+		return errorsx.Public("tracker_refresh_not_run", "this view was busy with an earlier read from the tracker, so this refresh did not run; refresh again", err)
 	default:
-		return errorsx.Public("tracker_refresh_waiting", "the board is still reading from the tracker; it updates as each read finishes, so refresh again if what you expect does not appear", err)
+		return errorsx.Public("tracker_refresh_waiting", "this view is still reading from the tracker; it updates as each read finishes, so refresh again if what you expect does not appear", err)
 	}
 	return trackerError(err)
 }
@@ -284,9 +290,12 @@ func trackerError(err error) error {
 }
 
 // trackerRefusal is err's code and sentence, none for an error that is no
-// refusal of the trackers'.
+// refusal of the trackers'. A tracker call that failed is told by its
+// kind (tracker_failed_<kind>) with trackerapp's sentence for it, unless
+// it refused the input or the request before sending it.
 func trackerRefusal(err error) (code, message string) {
 	var invalid *trackerapp.InvalidError
+	failed, isCall := errors.AsType[*trackerapp.CallFailure](err)
 	switch {
 	case err == nil:
 		return "", ""
@@ -294,18 +303,24 @@ func trackerRefusal(err error) (code, message string) {
 		return "tracker_connection_invalid", invalid.Reason
 	case errors.Is(err, store.ErrTrackerConnectionExists):
 		return "tracker_connection_exists", "this computer already has that connection (the same Jira site and email, the same Linear workspace, or Tempo for that Jira connection); use the one listed"
+	case errors.Is(err, tracker.ErrUnsupported):
+		return "tracker_unsupported", "this tracker does not support that"
+	case errors.Is(err, trackerapp.ErrInvalidRequest), errors.Is(err, tracker.ErrInvalidInput):
+		return "tracker_request_invalid", "nothing was sent: " + refusedInput(err)
+	case isCall:
+		return "tracker_failed_" + string(failed.Failure.Kind), failed.Failure.Message
 	case errors.Is(err, trackerapp.ErrUnknownSubscription):
-		return "tracker_subscription_unknown", "this board view is no longer open on this computer (released, or its connection or board went away); open the board again"
+		return "tracker_subscription_unknown", "this board or ticket view is no longer open on this computer (released, or its connection, board or ticket went away); open it again"
 	case errors.Is(err, trackerapp.ErrSubscriptionEnded):
-		return "tracker_subscription_ended", "this board view closed before the board was read: its connection was turned off or removed, or no project lists the board any more; open the board again"
+		return "tracker_subscription_ended", "this view closed before it was read: its connection was turned off or removed, or no project lists its board any more; open it again"
 	case errors.Is(err, trackerapp.ErrTooManySubscriptions):
-		return "tracker_subscriptions_full", "this computer already has 64 boards open across its windows and browsers; close a board, then open this one"
+		return "tracker_subscriptions_full", "this computer already has 64 boards or 64 tickets open across its windows and browsers; close one, then open this one"
 	case errors.Is(err, trackerapp.ErrDisabled):
 		return "tracker_connection_off", "this tracker connection is turned off; turn it on in the Issues settings, then try again"
 	case errors.Is(err, trackerapp.ErrNotFound):
-		return "tracker_connection_missing", "this tracker connection was removed from this computer; add it again in the Issues settings, or choose another board"
+		return "tracker_connection_missing", "this tracker connection was removed from this computer; add it again in the Issues settings, or choose another"
 	case errors.Is(err, trackerapp.ErrNoProvider):
-		return "tracker_connection_tempo", "a Tempo connection has no projects or boards; choose its Jira connection instead"
+		return "tracker_connection_tempo", "a Tempo connection holds no projects, boards or tickets; choose its Jira connection instead"
 	case errors.Is(err, trackerapp.ErrNotListed):
 		return "tracker_board_not_listed", "this project does not list that board; add it to the project's boards, or choose one it lists"
 	case errors.Is(err, trackerapp.ErrNotMirrored):
@@ -318,6 +333,21 @@ func trackerRefusal(err error) (code, message string) {
 		return "tracker_boards_changed", "this project's boards changed after this list was read; the list shown now is the saved one, so make the change again"
 	case errors.Is(err, trackerapp.ErrInvalidBoards):
 		return "tracker_boards_refused", "this board list cannot be saved; fix what the detail names and save again"
+	case errors.Is(err, trackerapp.ErrUnknownAttachment):
+		return "tracker_attachment_unknown", "this ticket no longer shows that attachment; look at the ticket again"
 	}
 	return "", ""
+}
+
+// refusedInput is what an input refusal says was wrong: its text after
+// the sentinel it wraps, which the conversion and the providers write and
+// which quotes only the request.
+func refusedInput(err error) string {
+	text := err.Error()
+	for _, sentinel := range []error{trackerapp.ErrInvalidRequest, tracker.ErrInvalidInput} {
+		if i := strings.LastIndex(text, sentinel.Error()+": "); i >= 0 {
+			return text[i+len(sentinel.Error())+2:]
+		}
+	}
+	return text
 }

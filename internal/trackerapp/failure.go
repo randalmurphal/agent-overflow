@@ -40,6 +40,10 @@ const (
 	// FailureNotFound is an open ticket the tracker did not return: deleted,
 	// moved out of reach, or not visible to the token's user.
 	FailureNotFound FailureKind = "not_found"
+	// FailureUpload is a file that stopped arriving from the client
+	// uploading it before its end, so the tracker got nothing complete:
+	// nothing the tracker or the connection did.
+	FailureUpload FailureKind = "upload"
 	// FailureInternal is a read or write of this computer's copy of the
 	// tracker that failed: nothing the tracker or the person did.
 	FailureInternal FailureKind = "internal"
@@ -64,6 +68,23 @@ func notFoundFailure(kind string, at int64) *FailureView {
 type Failure struct {
 	Kind    FailureKind
 	Message string
+}
+
+// CallFailure is a tracker call of a form read, a download or a write's
+// start that failed, with the Failure a person reads. It unwraps to the
+// call's error.
+type CallFailure struct {
+	Failure Failure
+	Err     error
+}
+
+func (e *CallFailure) Error() string { return e.Err.Error() }
+func (e *CallFailure) Unwrap() error { return e.Err }
+
+// callFailure is err, a failed call to a connection of kind, as a
+// CallFailure.
+func callFailure(kind string, err error) error {
+	return &CallFailure{Failure: ClassifyFailure(kind, err), Err: err}
 }
 
 // KeyFileError is a key file that could not give a credential: missing,
@@ -120,7 +141,13 @@ func ClassifyFailure(kind string, err error) Failure {
 	var tooLarge *trackerapi.BodyTooLargeError
 	var transient *trackerapi.TransientError
 	var notSent *trackerapi.NotSentError
+	var source *trackerapi.SourceError
+	var cut *trackerapi.CutError
 	switch {
+	case errors.As(err, &source):
+		return Failure{Kind: FailureUpload, Message: "the file stopped arriving before its end, so " + name + " stored none of it; attach it again"}
+	case errors.As(err, &cut):
+		return Failure{Kind: FailureTransient, Message: "sending the file to " + name + " stopped before it finished, so nothing was attached; attach it again"}
 	case errors.As(err, &keyErr):
 		return Failure{Kind: FailureSetup, Message: keyErr.Error()}
 	case errors.As(err, &wrong):
@@ -130,16 +157,7 @@ func ClassifyFailure(kind string, err error) Failure {
 	case errors.As(err, &limited):
 		return Failure{Kind: FailureRateLimited, Message: fmt.Sprintf("%s is limiting requests until %s", name, limited.Until.UTC().Format(time.RFC3339))}
 	case errors.As(err, &auth):
-		msg := name + " refused the token in the key file; put a valid token in it"
-		if kind == store.TrackerKindJira {
-			// A scoped token answers only through Atlassian's gateway, and the
-			// client calls the site (tracker-api-measurements.md).
-			msg += ". A token made with Create API token with scopes cannot reach the Jira site: make one with Create API token"
-		}
-		if kind == store.TrackerKindTempo {
-			msg += ", and check that the region is the one the site's Tempo data is in"
-		}
-		return Failure{Kind: FailureSetup, Message: msg}
+		return Failure{Kind: FailureSetup, Message: refusedToken(kind, auth.Tracker)}
 	case errors.As(err, &status) && status.Status == http.StatusForbidden:
 		return Failure{Kind: FailureForbidden, Message: name + " refused access (HTTP 403): the token may not make this request"}
 	case errors.As(err, &status) && errors.Is(err, tracker.ErrRuleRefused):
@@ -161,6 +179,30 @@ func ClassifyFailure(kind string, err error) Failure {
 		return Failure{Kind: FailureTransient, Message: name + " could not be reached; try again"}
 	}
 	return Failure{Kind: FailureTracker, Message: name + " answered in a way Agent Overflow could not use"}
+}
+
+// refusedToken is the sentence of a token refused by refuser, the name of
+// the client that sent it (a store.TrackerKind*: each client is named by
+// its kind), on a connection of kind. A Jira connection's time goes to
+// its linked Tempo connection, whose own key file holds that token.
+func refusedToken(kind, refuser string) string {
+	if refuser == "" {
+		refuser = kind
+	}
+	file := "the key file"
+	if refuser != kind {
+		file = "the key file of the linked " + trackerName(refuser) + " connection"
+	}
+	msg := trackerName(refuser) + " refused the token in " + file + "; put a valid token in it"
+	if refuser == store.TrackerKindJira {
+		// A scoped token answers only through Atlassian's gateway, and the
+		// client calls the site (tracker-api-measurements.md).
+		msg += ". A token made with Create API token with scopes cannot reach the Jira site: make one with Create API token"
+	}
+	if refuser == store.TrackerKindTempo {
+		msg += ", and check that the region is the one the site's Tempo data is in"
+	}
+	return msg
 }
 
 // trackerName is how messages name a tracker kind.

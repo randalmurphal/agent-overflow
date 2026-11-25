@@ -286,7 +286,7 @@ func TestRemoteMCPToolErrorsNeverLeakPrivateCauses(t *testing.T) {
 		t.Fatal(err)
 	}
 	thread, token := remoteMCPThread(t, a, string(provider.Codex))
-	configs, err := a.remoteMCPServer().RegisterThread(thread.ID, token, remoteMCPAccess{thread.ID, token})
+	configs, err := a.remoteMCPServer().RegisterThread(thread.ID, token, remoteMCPAccess{ThreadID: thread.ID, SessionToken: token})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +375,7 @@ func TestRemoteMCPRefreshesLiveProvidersAndKeepsThreadDisable(t *testing.T) {
 			a.appCtx = ctx
 			t.Cleanup(func() { cancel(); a.remoteMCP.wg.Wait(); _ = a.remoteMCPServer().Close() })
 			thread, token := remoteMCPThread(t, a, name)
-			if _, err := a.remoteMCPServer().RegisterThread(thread.ID, token, remoteMCPAccess{thread.ID, token}); err != nil {
+			if _, err := a.remoteMCPServer().RegisterThread(thread.ID, token, remoteMCPAccess{ThreadID: thread.ID, SessionToken: token}); err != nil {
 				t.Fatal(err)
 			}
 			capture := t.TempDir()
@@ -490,5 +490,36 @@ func TestRemoteMCPRequiresEnabledPairedComputer(t *testing.T) {
 			}
 			checkOff()
 		})
+	}
+}
+
+func TestAgyRemoteMCPMaxWaitSecondsCap(t *testing.T) {
+	t.Parallel()
+	capSec := provider.CapabilitiesForProvider(string(provider.Agy)).EffectiveMaxMCPWaitSeconds(maxRemoteWaitSeconds)
+	if capSec != 150 {
+		t.Fatalf("agy EffectiveMaxMCPWaitSeconds = %d, want 150", capSec)
+	}
+	defs := remoteToolDefinitionsFor(capSec)
+	for _, tool := range defs {
+		name, _ := tool["name"].(string)
+		if name != "remote_run" && name != "remote_status" && name != "remote_cancel" {
+			continue
+		}
+		props := tool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+		waitProp := props["wait_seconds"].(map[string]any)
+		if waitProp["maximum"] != 150 {
+			t.Errorf("%s wait_seconds maximum = %v, want 150", name, waitProp["maximum"])
+		}
+		if name == "remote_run" && waitProp["default"] != 150 {
+			t.Errorf("remote_run default wait_seconds = %v, want 150", waitProp["default"])
+		}
+	}
+	over := 151.0
+	if err := (remoteResultOptions{WaitSeconds: &over}).validateWithMaxWait(capSec); err == nil {
+		t.Fatal("validateWithMaxWait accepted wait_seconds > 150")
+	}
+	atCap := 150.0
+	if err := (remoteResultOptions{WaitSeconds: &atCap}).validateWithMaxWait(capSec); err != nil {
+		t.Fatalf("validateWithMaxWait rejected wait_seconds == 150: %v", err)
 	}
 }

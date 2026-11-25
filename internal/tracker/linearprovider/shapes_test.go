@@ -205,7 +205,7 @@ func TestWriteInputShapes(t *testing.T) {
 			"1:comment:applied"},
 		{"duplicate link", p.Link(ctx, tracker.LinkInput{Type: "duplicate", Outward: id, Inward: tracker.IssueID(issueID(2))}), "1:link:applied"},
 		{"related link", p.Link(ctx, tracker.LinkInput{Type: "related", Outward: id, Inward: tracker.IssueID(issueID(2))}), "1:link:applied"},
-		{"two files", p.Attach(ctx, tracker.AttachInput{Issue: id, Files: []tracker.File{{Name: "a", Content: strings.NewReader("a")}, {Name: "b", Content: strings.NewReader("b")}}}),
+		{"two files", p.Attach(ctx, tracker.AttachInput{Issue: id, Files: []tracker.File{{Name: "a", Content: strings.NewReader("a"), Size: 1}, {Name: "b", Content: strings.NewReader("b"), Size: 1}}}),
 			"1:upload:refused(unsupported)"},
 		{"sprint without dates", p.CreateSprint(ctx, tracker.SprintInput{Board: web, Name: "Next"}), "-:sprint:refused(unsupported)"},
 		{"completion into a sprint", p.CompleteSprint(ctx, tracker.SprintCompletion{Board: web, Sprint: "c1", MoveTo: "c2"}), "-:sprint:refused(unsupported)"},

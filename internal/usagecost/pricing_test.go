@@ -50,6 +50,34 @@ func TestPublishedRateChanges(t *testing.T) {
 	}
 }
 
+func TestPublishedGeminiRates(t *testing.T) {
+	nov24 := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	dec1 := time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
+	jan1 := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	for _, c := range []struct {
+		model string
+		at    time.Time
+		want  float64
+	}{
+		{"gemini-4-neon", nov24, 18.15},
+		{"gemini-4-hydrogen", nov24, 9.075},
+		{"gemini-4-carbon", nov24, 12.1},
+		{"gemini-4-carbon", dec1, 24.2},
+		{"gemini-4-argon", nov24, 12.1},
+		{"gemini-4-argon", dec1, 24.2},
+		{"gemini-3.8-flash", nov24, 4.575},
+		{"gemini-3.8-flash", jan1, 9.15},
+		{"gemini-4-neon-high", nov24, 18.15},
+		{"gemini-4-hydrogen-tiered-xhigh", nov24, 9.075},
+	} {
+		got, ok := Price(c.model, c.at, 1_000_000, 1_000_000, 1_000_000, 0)
+		if !ok || !almostEqual(got, c.want, 0.000001) {
+			t.Errorf("%s on %s: %v, %v; want %v", c.model, c.at.Format(dateLayout), got, ok, c.want)
+		}
+	}
+}
+
 func TestOlderModelsInputOutputAndCacheRead(t *testing.T) {
 	for model, want := range map[string]float64{
 		"gpt-5.3-codex": 15.925, "gpt-5.2-codex": 15.925,
@@ -156,5 +184,17 @@ func TestLoadCatalogRejectsMisorderedOrMalformedEntries(t *testing.T) {
 			}()
 			loadCatalog([]byte(body))
 		})
+	}
+}
+
+func TestPriceStripsClaudeOnAgyEffortSuffix(t *testing.T) {
+	now := time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)
+	base, baseOK := Price("claude-sonnet-4-6", now, 1_000_000, 1_000_000, 0, 0)
+	if !baseOK {
+		t.Fatal("expected claude-sonnet-4-6 to be priced")
+	}
+	got, ok := Price("claude-sonnet-4-6-medium", now, 1_000_000, 1_000_000, 0, 0)
+	if !ok || got != base {
+		t.Fatalf("Price(claude-sonnet-4-6-medium) = (%v, %v), want (%v, true)", got, ok, base)
 	}
 }

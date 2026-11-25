@@ -147,7 +147,7 @@ func patchedFields(vs []Value, ids map[string]string, onlyImages bool) (map[stri
 func (c *Client) uploadImages(ctx context.Context, issue string, imgs []*Image, held map[*Image][]byte, done *[]Attachment, next Step) (map[string]string, error) {
 	ids := map[string]string{}
 	for _, img := range imgs {
-		stored, err := c.attach(ctx, issue, File{Name: img.Name, Content: bytes.NewReader(held[img])})
+		stored, err := c.attach(ctx, issue, File{Name: img.Name, Content: bytes.NewReader(held[img]), Size: int64(len(held[img]))})
 		*done = append(*done, stored...)
 		if err != nil && !answerApplied(err) {
 			return ids, &StepError{Step: StepUpload, Err: err}

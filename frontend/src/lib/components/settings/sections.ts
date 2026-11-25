@@ -162,7 +162,7 @@ export const SETTINGS_SECTIONS = [
     label: 'Memory',
     group: 'Agents',
     description:
-      'What Claude and Codex keep across conversations: the memory this app shares between conversations, and each provider\'s own.',
+      'What your providers keep across conversations: the memory this app shares between conversations, and each provider\'s own.',
   },
   {
     id: 'projects',

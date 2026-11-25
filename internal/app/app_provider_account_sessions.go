@@ -98,7 +98,7 @@ func (a *App) ensureProviderAccountSelectionReadyForSendLocked(
 		if running {
 			return fmt.Errorf("%s account switch is pending for this thread until its background work finishes", label)
 		}
-		if err := a.reconnectSessionLocked(context.Background(), thread.ID); err != nil {
+		if err := a.reconnectSessionPreservingQueueLocked(context.Background(), thread.ID); err != nil {
 			return fmt.Errorf("switch %s account for this thread: %w", label, err)
 		}
 		current, exists := a.sessionManager().get(thread.ID)

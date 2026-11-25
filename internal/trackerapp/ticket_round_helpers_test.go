@@ -191,7 +191,7 @@ func newRoundFixtureThen(t *testing.T, n int, jira bool, beforeOpen func(*mirror
 	beforeOpen(m)
 	var subs []TicketSubscription
 	for i, id := range issues {
-		sub, err := m.svc.SubscribeTicket(m.conn.ID, id)
+		sub, err := m.svc.SubscribeTicket(m.conn.ID, id, untied)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -137,7 +137,7 @@ func TestNoShownTimeIsAheadOfTheClockAfterAStepBack(t *testing.T) {
 	if res := tick("the first tick", false); res.failed {
 		t.Fatal("the first tick failed")
 	}
-	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001"))
+	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001", untied))
 	quiet(t, m.svc)
 	m.pass(-2 * time.Hour)
 	if res := tick("the tick after the step", false); res.failed {

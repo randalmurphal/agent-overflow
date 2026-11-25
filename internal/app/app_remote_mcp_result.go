@@ -32,9 +32,12 @@ type remoteResultOptions struct {
 	WaitSeconds    *float64 `json:"wait_seconds"`
 }
 
-func (o remoteResultOptions) validate() error {
-	if o.WaitSeconds != nil && (*o.WaitSeconds < 0 || *o.WaitSeconds > maxRemoteWaitSeconds) {
-		return fmt.Errorf("wait_seconds must be between 0 and %d", maxRemoteWaitSeconds)
+func (o remoteResultOptions) validateWithMaxWait(maxWait int) error {
+	if maxWait <= 0 || maxWait > maxRemoteWaitSeconds {
+		maxWait = maxRemoteWaitSeconds
+	}
+	if o.WaitSeconds != nil && (*o.WaitSeconds < 0 || *o.WaitSeconds > float64(maxWait)) {
+		return fmt.Errorf("wait_seconds must be between 0 and %d", maxWait)
 	}
 	if o.MaxOutputBytes != nil && (*o.MaxOutputBytes < 0 || *o.MaxOutputBytes > store.RemoteJobOutputLimit) {
 		return errors.New("max_output_bytes must be between 0 and 131072")

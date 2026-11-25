@@ -205,7 +205,7 @@ func (c *Client) checkTransition(ctx context.Context, in TransitionInput) (*tran
 	if tp.t, err = c.pickTransition(ctx, in.Issue, in.Transition); err != nil {
 		return nil, err
 	}
-	b := &builder{c: c, opts: ValueOptions{Issue: in.Issue, ImageDir: in.ImageDir}, stage: newImageStage(in.ImageDir, c.maxUpload)}
+	b := &builder{c: c, opts: ValueOptions{Issue: in.Issue, ImageDir: in.ImageDir}, stage: newImageStage(in.ImageDir, c.maxImages)}
 	if tp.values, err = c.screenValues(ctx, b, in.Issue, tp.t.Fields, in.Fields, in.AcceptLoss); err != nil {
 		return nil, err
 	}

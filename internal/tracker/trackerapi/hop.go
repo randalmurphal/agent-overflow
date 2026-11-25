@@ -51,6 +51,9 @@ type exchange struct {
 	st *stall
 	// cancel ends the hop's request and its body read.
 	cancel context.CancelFunc
+	// endUpload closes, once, an upload content the hop did not read to
+	// its end (Part); nil for a hop with no upload.
+	endUpload func()
 	// trace tells connected once the transport holds a connection for
 	// the request.
 	trace     httptrace.ClientTrace
@@ -65,6 +68,14 @@ func (x *exchange) gotConn(httptrace.GotConnInfo) { x.connected.Store(true) }
 // connection reusable.
 func (x *exchange) close() {
 	_ = x.resp.Body.Close()
+	x.end()
+}
+
+// end ends the hop's request, its timers and its upload's read.
+func (x *exchange) end() {
+	if x.endUpload != nil {
+		x.endUpload()
+	}
 	x.cancel()
 	x.st.stop()
 }
@@ -120,19 +131,31 @@ func (c *Client) hop(ctx context.Context, k *call, state *retries, target *url.U
 	}
 	x := &exchange{}
 	if k.transfer {
-		x.st = newStall(ctx, len(k.body) > 0)
+		x.st = newStall(ctx, k.sending())
 	}
 	hopCtx, cancel := context.WithCancel(x.st.context(ctx))
 	x.cancel = cancel
 	fail := func(err error) (*exchange, error) {
-		cancel()
-		x.st.stop()
+		x.end()
 		return nil, err
 	}
 	x.trace.GotConn = x.gotConn
-	req, err := k.request(httptrace.WithClientTrace(hopCtx, &x.trace), target, x.st, c.userAgent)
+	req, sent, err := k.request(httptrace.WithClientTrace(hopCtx, &x.trace), target, x.st, c.userAgent)
 	if err != nil {
 		return fail(&NotSentError{Err: fmt.Errorf("%s: %w", c.where(k.method, target), c.cause(sentWith{}, err))})
+	}
+	if sent != nil {
+		// However the attempt ends, a content it did not read to its end
+		// is closed (Part): net/http's HTTP/1 transport neither closes a
+		// body on a cancel nor returns before its write loop stops reading
+		// it. A context that ends during the round trip closes it at once;
+		// the hop's own end closes it before returning.
+		stop := context.AfterFunc(hopCtx, sent.abort)
+		x.endUpload = func() {
+			if stop() {
+				sent.abort()
+			}
+		}
 	}
 	if originOf(target) == c.origin {
 		c.credMu.RLock()
@@ -142,8 +165,17 @@ func (c *Client) hop(ctx context.Context, k *call, state *retries, target *url.U
 	resp, err := c.conns.transport.RoundTrip(req)
 	if err != nil {
 		failure := c.sendError(ctx, c.where(k.method, target), x.st, x.sent, err)
-		if !x.connected.Load() {
+		switch source := sent.sourceFailure(); {
+		case !x.connected.Load():
 			failure = &NotSentError{Err: failure}
+		case source != nil:
+			// The body stopped short of the length it declared, so the
+			// tracker never had the whole request to act on.
+			failure = &SourceError{Err: fmt.Errorf("%s: %w", c.where(k.method, target), source)}
+		case !sent.handedOver():
+			// So did this one, though its content did not fail: the
+			// connection broke, or the call ended, while it went out.
+			failure = &CutError{Err: failure}
 		}
 		return fail(failure)
 	}

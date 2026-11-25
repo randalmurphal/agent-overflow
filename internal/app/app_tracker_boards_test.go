@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -34,8 +36,8 @@ func TestTrackerBoardMethodsCarryTheirScopeAndRoute(t *testing.T) {
 	}
 	read, operate := transport.ScopeTrackerRead, transport.ScopeTrackerOperate
 	for name, w := range map[string]want{
-		"TrackerProjects":               {read, transport.RouteSelected, false},
-		"TrackerBoards":                 {read, transport.RouteSelected, false},
+		"TrackerProjects":               {read, transport.RouteHome, false},
+		"TrackerBoards":                 {read, transport.RouteHome, false},
 		"ProjectTrackerBoards":          {read, transport.RouteProject, false},
 		"SetProjectTrackerBoards":       {operate, transport.RouteProject, false},
 		"SubscribeTrackerBoard":         {read, transport.RouteProject, true},
@@ -62,7 +64,7 @@ func TestTrackerBoardMethodsCarryTheirScopeAndRoute(t *testing.T) {
 // ends at its method's own deadline, the caller setting none: the walk
 // is cut while its second page is held, and the answer says the tracker
 // was too slow and to try again, leaving the connection without a
-// problem. The deadline is shortened here (trackerPickerBudget); without
+// problem. The deadline is shortened here (trackerBudget); without
 // one the call stays held and the test's own bound fails it.
 func TestTrackerPickerListsEndAtTheirOwnDeadline(t *testing.T) {
 	t.Parallel()
@@ -92,7 +94,7 @@ func TestTrackerPickerListsEndAtTheirOwnDeadline(t *testing.T) {
 			var e *trackerfake.Engine
 			var armed, heldOnce sync.Once
 			held := make(chan struct{})
-			f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: site, pickerBudget: 2 * time.Second, engine: trackerfake.Options{OnRequest: func(r trackerfake.Request) {
+			f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: site, budget: 2 * time.Second, engine: trackerfake.Options{OnRequest: func(r trackerfake.Request) {
 				switch {
 				case r.Route != tc.route:
 				case r.Held:
@@ -143,13 +145,13 @@ func TestTrackerPickerListsEndAtTheirOwnDeadline(t *testing.T) {
 	}
 }
 
-// The picker's lists end at their methods' budgets unless a test
-// shortens them.
-func TestTrackerPickerListsEndAtTheirMethodsBudgets(t *testing.T) {
+// The tracker's form reads and writes end at their methods' budgets
+// unless a test shortens them.
+func TestTrackerRunsEndAtTheirMethodsBudgets(t *testing.T) {
 	t.Parallel()
 	a := &App{}
-	for _, method := range []string{"TrackerProjects", "TrackerBoards"} {
-		ctx, cancel := a.trackerCatalogRun(context.Background(), method, "Listing")
+	for _, method := range []string{"TrackerProjects", "TrackerBoards", "TrackerMoves", "AddTrackerComment"} {
+		ctx, cancel := a.trackerRun(context.Background(), method, "Listing", "")
 		deadline, ok := ctx.Deadline()
 		cancel()
 		if budget := transport.MethodBudget(method); !ok || time.Until(deadline) > budget || time.Until(deadline) < budget-time.Second {
@@ -200,12 +202,15 @@ func newTrackerBoardFixture(t *testing.T) *trackerBoardFixture {
 // trackerBoardSetup is what a board test changes of the fixture: the
 // engine's options, the site, whose every board of project WEB the
 // project lists, board 1 first and opening first, the service's sync
-// intervals, and the picker lists' deadline.
+// intervals, and the deadline of the tracker's form reads and writes.
 type trackerBoardSetup struct {
-	engine       trackerfake.Options
-	site         trackerfake.JiraSite
-	cadence      trackerapp.Cadence
-	pickerBudget time.Duration
+	engine  trackerfake.Options
+	site    trackerfake.JiraSite
+	cadence trackerapp.Cadence
+	budget  time.Duration
+	// arrive, when set, sees each request to the Jira site as it arrives,
+	// before its body is read.
+	arrive func(*http.Request)
 }
 
 func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoardFixture {
@@ -221,6 +226,19 @@ func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoa
 		t.Fatal(err)
 	}
 	t.Cleanup(srv.Close)
+	jiraURL := srv.JiraURL("example.atlassian.net")
+	if setup.arrive != nil {
+		h, err := e.Handler(trackerBoardOrigin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			setup.arrive(r)
+			h.ServeHTTP(w, r)
+		}))
+		t.Cleanup(seen.Close)
+		jiraURL = seen.URL
+	}
 	t.Cleanup(func() {
 		for _, r := range e.Unhandled() {
 			t.Errorf("unhandled request %s %s: %s", r.Method, r.Path, r.Detail)
@@ -228,10 +246,13 @@ func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoa
 	})
 	a := newTrackerTestApp(t, func(a *App) {
 		ConfigureIsolation(a, IsolationConfig{TrackerOrigin: func(_, site string) (string, error) {
+			if strings.TrimPrefix(site, "https://") == "example.atlassian.net" {
+				return jiraURL, nil
+			}
 			return srv.JiraURL(strings.TrimPrefix(site, "https://")), nil
 		}})
 		a.trackerCadence = setup.cadence
-		a.trackerPickerBudget = setup.pickerBudget
+		a.trackerBudget = setup.budget
 	})
 	bus := transport.NewEventBus(64)
 	t.Cleanup(bus.Close)
@@ -325,7 +346,7 @@ func (f *trackerBoardFixture) boardEvent(t *testing.T, what string, ok func(trac
 // boardHandles is how many board handles the service holds and how many
 // board pumps run.
 func (f *trackerBoardFixture) boardHandles() (handles, pumps int) {
-	handles, _, pumps = f.a.trackers.SubscriptionCountsForTesting()
+	handles, _, pumps, _ = f.a.trackers.SubscriptionCountsForTesting()
 	return handles, pumps
 }
 

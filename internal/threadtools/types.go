@@ -31,6 +31,17 @@ type Shape struct {
 	// session has no tool, parameter or sentence of the guide that is about
 	// assistants (docs/specs/standing-agents.md, "Turning assistants off").
 	AssistantsOff bool
+	// MaxWaitSeconds caps wait_seconds advertised in schemas and instructions
+	// when the calling session's provider enforces a shorter MCP call timeout
+	// than MaxWaitSeconds. Zero uses MaxWaitSeconds.
+	MaxWaitSeconds int
+}
+
+func (s Shape) maxWaitSeconds() int {
+	if s.MaxWaitSeconds > 0 && s.MaxWaitSeconds < MaxWaitSeconds {
+		return s.MaxWaitSeconds
+	}
+	return MaxWaitSeconds
 }
 
 // SpawnShape is what the guide and the tool list say about spawning in one
@@ -79,6 +90,16 @@ type Caller struct {
 	// the call starts is that session's alone: it is refused once the
 	// session has ended. It never leaves this computer.
 	Session string `json:"-"`
+	// MaxWaitSeconds caps wait_seconds accepted from this caller when its
+	// provider enforces a shorter MCP call timeout. Zero uses MaxWaitSeconds.
+	MaxWaitSeconds int `json:"-"`
+}
+
+func (c Caller) maxWaitSeconds() int {
+	if c.MaxWaitSeconds > 0 && c.MaxWaitSeconds < MaxWaitSeconds {
+		return c.MaxWaitSeconds
+	}
+	return MaxWaitSeconds
 }
 
 // Thread is the App's row for one thread, including the derived columns

@@ -195,7 +195,7 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 	if call.WorktreeBranch == "" && (call.WorktreeBase != "" || call.WorktreeBaseLocal) {
 		return nil, invalidf("base and base_local describe the worktree that worktree cuts, so pass worktree with them.")
 	}
-	wait, err := waitSeconds(args.WaitSeconds, 0)
+	wait, err := c.waitSeconds(args.WaitSeconds, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -310,7 +310,7 @@ func (c *session) send(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	wait, err := waitSeconds(args.WaitSeconds, 0)
+	wait, err := c.waitSeconds(args.WaitSeconds, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -340,7 +340,7 @@ func (c *session) ask(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err := checkText(question, "question"); err != nil {
 		return nil, err
 	}
-	wait, err := waitSeconds(args.WaitSeconds, DefaultAskWaitSeconds)
+	wait, err := c.waitSeconds(args.WaitSeconds, DefaultAskWaitSeconds)
 	if err != nil {
 		return nil, err
 	}
@@ -400,12 +400,13 @@ func checkText(text, field string) error {
 	return nil
 }
 
-func waitSeconds(value *int, fallback int) (int, error) {
+func (c *session) waitSeconds(value *int, fallback int) (int, error) {
+	maxWait := c.caller.maxWaitSeconds()
 	if value == nil {
-		return fallback, nil
+		return min(fallback, maxWait), nil
 	}
-	if *value < 0 || *value > MaxWaitSeconds {
-		return 0, invalidf("wait_seconds must be between 0 and %d. It is how long this call waits, not how long the work may run.", MaxWaitSeconds)
+	if *value < 0 || *value > maxWait {
+		return 0, invalidf("wait_seconds must be between 0 and %d. It is how long this call waits, not how long the work may run.", maxWait)
 	}
 	return *value, nil
 }

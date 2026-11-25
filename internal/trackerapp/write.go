@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // Writes. Every edit goes to the tracker first, through one path
@@ -165,7 +166,7 @@ func (s *Service) interact(ctx context.Context, id string) (*run, error) {
 		r.finish()
 		var c *callError
 		errors.As(r.startErr, &c)
-		return nil, errors.Join(c.err, settleErr)
+		return nil, errors.Join(callFailure(r.row.Kind, c.err), settleErr)
 	}
 	return r, nil
 }
@@ -212,10 +213,14 @@ func happened(res tracker.Result) bool {
 }
 
 // sentNothing reports a result every part of which was refused before
-// anything was sent: input the provider's checks refused, or a write the
-// tracker cannot make. Such a write says nothing of the connection.
+// anything was sent (input the provider's checks refused, or a write the
+// tracker cannot make) or stopped by its own file, which ended before the
+// tracker had it whole. Such a write says nothing of the connection.
 func sentNothing(res tracker.Result) bool {
 	for _, p := range res.Parts {
+		if _, cut := errors.AsType[*trackerapi.SourceError](p.Outcome.Err()); cut && p.Outcome.State() == tracker.StateNotSent {
+			continue
+		}
 		r, ok := p.Outcome.Refusal()
 		if !ok || r.Reason != tracker.ReasonInvalid && r.Reason != tracker.ReasonUnsupported {
 			return false
@@ -237,9 +242,10 @@ func writeProblem(kind string, res tracker.Result) error {
 		switch ClassifyFailure(kind, err).Kind {
 		case FailureSetup, FailureTransient, FailureRateLimited:
 			return err
-		case FailureForbidden, FailureTracker, FailureNotFound, FailureInternal:
-			// Forbidden and tracker are the tracker judging the write.
-			// ClassifyFailure gives neither not found nor internal.
+		case FailureForbidden, FailureTracker, FailureNotFound, FailureInternal, FailureUpload:
+			// Forbidden and tracker are the tracker judging the write, and
+			// upload the client that sent the file. ClassifyFailure gives
+			// neither not found nor internal.
 		}
 	}
 	return nil

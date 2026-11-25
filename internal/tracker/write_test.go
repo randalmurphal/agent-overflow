@@ -110,11 +110,12 @@ func TestInputChecks(t *testing.T) {
 			"no inward":  LinkInput{Type: "t", Outward: "1"},
 			"to itself":  LinkInput{Type: "t", Outward: "1", Inward: "1"},
 		}},
-		{AttachInput{Issue: "i", Files: []File{{Name: "a.png", Content: strings.NewReader("x")}}}, map[string]checker{
-			"no issue":   AttachInput{Files: []File{{Name: "a.png", Content: strings.NewReader("x")}}},
-			"no files":   AttachInput{Issue: "i"},
-			"no name":    AttachInput{Issue: "i", Files: []File{{Content: strings.NewReader("x")}}},
-			"no content": AttachInput{Issue: "i", Files: []File{{Name: "a.png"}}},
+		{AttachInput{Issue: "i", Files: []File{{Name: "a.png", Content: strings.NewReader("x"), Size: 1}}}, map[string]checker{
+			"no issue":      AttachInput{Files: []File{{Name: "a.png", Content: strings.NewReader("x"), Size: 1}}},
+			"no files":      AttachInput{Issue: "i"},
+			"no name":       AttachInput{Issue: "i", Files: []File{{Content: strings.NewReader("x"), Size: 1}}},
+			"no content":    AttachInput{Issue: "i", Files: []File{{Name: "a.png"}}},
+			"negative size": AttachInput{Issue: "i", Files: []File{{Name: "a.png", Content: strings.NewReader("x"), Size: -1}}},
 		}},
 		{WorklogQuery{Author: "acc-user1", From: day, To: day}, map[string]checker{
 			"no author": WorklogQuery{From: day, To: day},

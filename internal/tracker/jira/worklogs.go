@@ -332,7 +332,7 @@ func checkTimeSpent(d time.Duration) error {
 // Mentions resolve against the issue; local images are refused, since a
 // worklog write is one request.
 func (c *Client) worklogDoc(ctx context.Context, issue, md string, base *adf.Node) (*adf.Node, []adf.Warning, error) {
-	b := &builder{c: c, opts: ValueOptions{Issue: issue}, stage: newImageStage("", c.maxUpload)}
+	b := &builder{c: c, opts: ValueOptions{Issue: issue}, stage: newImageStage("", c.maxImages)}
 	return b.markdown(ctx, md, base)
 }
 

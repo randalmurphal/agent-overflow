@@ -2,7 +2,9 @@ package trackerfake
 
 import (
 	"context"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +73,32 @@ func TestOffline(t *testing.T) {
 	}
 	if got := <-w.comment(context.Background()); got.err != nil || got.r.status != 201 {
 		t.Fatalf("back online: %+v", got)
+	}
+}
+
+// A comment whose body stops before its declared length applies nothing
+// and is logged as cut short, not as a request the fake lacks.
+func TestABodyCutShortAppliesNothing(t *testing.T) {
+	w := newWorld(t)
+	body := `{"body":` + testDoc + `}`
+	conn, err := net.Dial("tcp", strings.TrimPrefix(w.srv.JiraURL(testSite), "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := "POST /rest/api/3/issue/WEB-1/comment HTTP/1.1\r\nHost: " + testSite + "\r\nAuthorization: " + basic(testJiraToken)["Authorization"] +
+		"\r\nContent-Type: application/json\r\nContent-Length: " + strconv.Itoa(len(body)) + "\r\n\r\n"
+	if _, err := conn.Write([]byte(head + body[:len(body)/2])); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got := w.await(t, func(r Request) bool { return r.Path == "/rest/api/3/issue/WEB-1/comment" })
+	if got.Route != "cut short" || got.Unhandled || got.Status != 0 {
+		t.Fatalf("logged %+v", got)
+	}
+	if w.comments(t) != 0 {
+		t.Fatal("a body cut short applied a write")
 	}
 }
 

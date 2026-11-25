@@ -148,7 +148,7 @@ func TestConnectionChangesEndSubscriptions(t *testing.T) {
 			m.events.boardEvents(t, 1)
 			arrived := make(chan struct{}, 4)
 			heldCalls(m.p, arrived, "ChangedRows", "Details")
-			ticket, err := m.svc.SubscribeTicket(m.conn.ID, "10001")
+			ticket, err := m.svc.SubscribeTicket(m.conn.ID, "10001", untied)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -212,7 +212,7 @@ func TestConnectionChangesEndSubscriptions(t *testing.T) {
 		if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, untied); !errors.Is(err, ErrDisabled) {
 			t.Fatalf("a board of a connection turned off: %v", err)
 		}
-		if _, err := m.svc.SubscribeTicket(m.conn.ID, "10001"); !errors.Is(err, ErrDisabled) {
+		if _, err := m.svc.SubscribeTicket(m.conn.ID, "10001", untied); !errors.Is(err, ErrDisabled) {
 			t.Fatalf("a ticket of a connection turned off: %v", err)
 		}
 	})
@@ -249,7 +249,7 @@ func TestAChangedCardWakesTheOpenTicket(t *testing.T) {
 	})
 	board := m.subscribe(t, testBoard)
 	m.events.boardEvents(t, 1)
-	ticket, err := m.svc.SubscribeTicket(m.conn.ID, "10001")
+	ticket, err := m.svc.SubscribeTicket(m.conn.ID, "10001", untied)
 	if err != nil || ticket.Loaded {
 		t.Fatalf("ticket answer %+v, %v", ticket, err)
 	}
@@ -307,7 +307,7 @@ func TestAnOpenTicketPicksUpANewComment(t *testing.T) {
 					return d, nil
 				}
 			})
-			sub, err := m.svc.SubscribeTicket(m.conn.ID, issue)
+			sub, err := m.svc.SubscribeTicket(m.conn.ID, issue, untied)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -451,7 +451,7 @@ func TestStopJoinsPumpsAndLoop(t *testing.T) {
 	answerCardsFromDetails(m.p)
 	m.subscribe(t, testBoard)
 	m.subscribe(t, "2")
-	if _, err := m.svc.SubscribeTicket(m.conn.ID, "10001"); err != nil {
+	if _, err := m.svc.SubscribeTicket(m.conn.ID, "10001", untied); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.svc.StartLinkedSync(); err != nil {

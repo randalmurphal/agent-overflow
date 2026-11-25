@@ -335,7 +335,7 @@ var issueCases = map[string]func(t *testing.T, f *fakeEnv){
 		}
 	},
 	"Attach": func(t *testing.T, f *fakeEnv) {
-		as := got(f.c.Attach(f.ctx, "WEB-2", File{Name: "a.txt", Content: strings.NewReader("data")})).must(t)
+		as := got(f.c.Attach(f.ctx, "WEB-2", File{Name: "a.txt", Content: strings.NewReader("data"), Size: 4})).must(t)
 		if len(as) != 1 || len(f.issueOf(t, "WEB-2").Attachments) != 1 {
 			t.Fatalf("attached %+v", as)
 		}

@@ -57,7 +57,7 @@ func (s *Server) Tools(shape Shape) []map[string]any {
 		sendSchema(shape),
 		askSchema(shape),
 		replySchema(),
-		statusSchema(),
+		statusSchema(shape),
 		cancelSchema(shape),
 		updateSchema(shape),
 		groupSchema(shape),
@@ -99,13 +99,19 @@ func computerIDProperty(shape Shape, properties map[string]any, what string) {
 	}
 }
 
-func waitProperties(properties map[string]any, defaultWait int, what string) {
+func waitProperties(properties map[string]any, defaultWait, maxWait int, what string) {
+	if maxWait <= 0 || maxWait > MaxWaitSeconds {
+		maxWait = MaxWaitSeconds
+	}
+	if defaultWait > maxWait {
+		defaultWait = maxWait
+	}
 	properties["wait_seconds"] = map[string]any{
 		"type":        "integer",
 		"minimum":     0,
-		"maximum":     MaxWaitSeconds,
+		"maximum":     maxWait,
 		"default":     defaultWait,
-		"description": fmt.Sprintf("How long THIS CALL waits for %s, not how long the work may run. Zero returns as soon as the request is accepted. A wait that ends before the answer returns outcome backgrounded (still working) or blocked (the thread is waiting on the user for an approval or a question), arms notify, and the answer then arrives in this thread as a message at your next turn boundary. Maximum %d.", what, MaxWaitSeconds),
+		"description": fmt.Sprintf("How long THIS CALL waits for %s, not how long the work may run. Zero returns as soon as the request is accepted. A wait that ends before the answer returns outcome backgrounded (still working) or blocked (the thread is waiting on the user for an approval or a question), arms notify, and the answer then arrives in this thread as a message at your next turn boundary. Maximum %d.", what, maxWait),
 	}
 	properties["notify"] = map[string]any{
 		"type":        "boolean",

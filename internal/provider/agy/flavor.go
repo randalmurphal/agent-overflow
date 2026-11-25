@@ -27,8 +27,10 @@ type Flavor struct {
 	// out-of-band subagent transcript tracking.
 	AppDataDir string
 
-	subagentMu      sync.Mutex
-	subagentParents map[string]*parentSubagentCoordinator
+	subagentMu            sync.Mutex
+	subagentLaunchByChild map[string]string
+	subagentChildByLaunch map[string]string
+	subagentParentByChild map[string]subagentParentSource
 
 	// mcpTrustMu guards session-registered AO server membership and whether
 	// any colliding third-party MCP server name exists (in session config or
@@ -39,10 +41,28 @@ type Flavor struct {
 	registeredAOMCP        map[string]bool
 	collidingThirdPartyMCP bool
 
+	// bgLookupMu guards negative stat-based caching of empty live
+	// LookupBackgroundCommands results so unchanged conversation DB/WAL files
+	// avoid redundant SQLite opens.
+	bgLookupMu    sync.Mutex
+	bgLookupCache map[string]bgLookupSnapshot
+
+	// compactionMu guards stat-based caching of clean compaction checks so
+	// unchanged conversation DB/WAL files avoid opening SQLite on every tool.
+	compactionMu    sync.Mutex
+	compactionCache map[string]compactionCheckSnapshot
+
+	// stepAnchorMu guards per-session monotonic step indices resolved by
+	// ResolvePromptStepAnchor so back-to-back steered prompts sharing a
+	// beforeToken never claim the same native USER_INPUT step.
+	stepAnchorMu            sync.Mutex
+	lastResolvedUserStepIdx map[string]int
+
 	// Optional overrides for deterministic unit tests (zero uses defaults).
-	subagentPollInterval     time.Duration
-	subagentDiscoveryTimeout time.Duration
-	subagentSettleGrace      time.Duration
+	subagentPollInterval       time.Duration
+	subagentDiscoveryTimeout   time.Duration
+	bgLookupOpenHook           func()
+	subagentTranscriptOpenHook func()
 }
 
 // NewFlavor constructs an Antigravity ACP flavor bound to appDataDir.
@@ -542,15 +562,23 @@ func (f *Flavor) NormalizeToolStart(u *acp.ToolCallUpdate) acp.NormalizedToolSta
 func (f *Flavor) NormalizeToolComplete(u *acp.ToolCallUpdate, started acp.NormalizedToolStart) acp.NormalizedToolComplete {
 	norm := f.DefaultFlavor.NormalizeToolComplete(u, started)
 	rawName := strings.ToLower(strings.TrimSpace(u.Name))
+	if rawName == "" {
+		rawName = strings.ToLower(strings.TrimSpace(started.ToolName))
+	}
 	rawIn := u.EffectiveInput()
+	if len(rawIn) == 0 {
+		rawIn = started.Input
+	}
 
 	// Plan-mode artifact write_file/edit_file carries ArtifactMetadata.RequestFeedback=true,
 	// and edit/write/replace tools get a fallback inline diff when ACP omitted content[{type:"diff"}].
 	if rawName == "write_file" || rawName == "write_to_file" || rawName == "edit_file" ||
-		rawName == "replace_file_content" || rawName == "multi_replace_file_content" {
+		rawName == "replace_file_content" || rawName == "multi_replace_file_content" ||
+		started.ItemType == "file_change" {
 		var params struct {
 			Path               string `json:"Path"`
 			TargetFile         string `json:"TargetFile"`
+			FilePath           string `json:"file_path"`
 			Content            string `json:"Content"`
 			CodeContent        string `json:"CodeContent"`
 			Target             string `json:"Target"`
@@ -567,46 +595,65 @@ func (f *Flavor) NormalizeToolComplete(u *acp.ToolCallUpdate, started acp.Normal
 			} `json:"ArtifactMetadata"`
 		}
 		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil {
-			body := firstNonEmpty(params.Content, params.CodeContent, params.Replacement, params.ReplacementContent)
-			if params.ArtifactMetadata != nil && params.ArtifactMetadata.RequestFeedback && strings.TrimSpace(body) != "" {
-				norm.ProposedPlan = body
+			path := extractLocationOrInputPath(u, rawIn, "Path", "TargetFile", "file_path", "path")
+			if params.ArtifactMetadata != nil && params.ArtifactMetadata.RequestFeedback {
+				body := firstNonEmpty(params.Content, params.CodeContent)
+				// For edit_file / replace_file_content / multi_replace_file_content,
+				// read the full updated artifact file from disk so ProposedPlan is
+				// never truncated to a single hunk or dropped on multi-chunk edits.
+				if body == "" && path != "" && filepath.IsAbs(path) {
+					if data, ok := readRegularFileBounded(path, 512*1024); ok && len(data) > 0 {
+						body = string(data)
+					}
+				}
+				if body == "" {
+					body = firstNonEmpty(params.Replacement, params.ReplacementContent)
+				}
+				if strings.TrimSpace(body) != "" {
+					norm.ProposedPlan = body
+				}
 			}
 			// Fallback inline diff when an ACP update omitted content[{type:"diff"}].
+			const maxInlineFallbackDiffBytes = 256 * 1024
 			if len(norm.DiffChanges) == 0 && norm.ItemType == "file_change" {
-				path := extractLocationOrInputPath(u, rawIn, "Path", "TargetFile", "file_path", "path")
 				if path != "" {
 					switch rawName {
-					case "write_file", "write_to_file":
-						if content := firstNonEmpty(params.Content, params.CodeContent); content != "" {
+					case "write_file", "write_to_file", "write":
+						if content := firstNonEmpty(params.Content, params.CodeContent); content != "" && len(content) <= maxInlineFallbackDiffBytes {
 							if patch := acp.BuildUnifiedDiff(path, "", content); patch != "" {
 								norm.DiffPatch = patch
 								norm.DiffFilePath = path
 								norm.DiffChanges = []acp.FileDiffChange{{Path: path, Kind: "add", Diff: content}}
 							}
 						}
-					case "edit_file", "replace_file_content":
+					case "edit_file", "replace_file_content", "edit":
 						oldStr := firstNonEmpty(params.Target, params.TargetContent)
 						newStr := firstNonEmpty(params.Replacement, params.ReplacementContent)
-						if oldStr != "" || newStr != "" {
+						if (oldStr != "" || newStr != "") && len(oldStr)+len(newStr) <= maxInlineFallbackDiffBytes {
 							if patch := acp.BuildUnifiedDiff(path, oldStr, newStr); patch != "" {
 								norm.DiffPatch = patch
 								norm.DiffFilePath = path
-								if hunks := acp.BuildUnifiedDiffHunks(oldStr, newStr); hunks != "" {
+								if hunks := acp.StripUnifiedDiffHeader(patch); hunks != "" {
 									norm.DiffChanges = []acp.FileDiffChange{{Path: path, Kind: "update", Diff: hunks}}
 								}
 							}
 						}
 					case "multi_replace_file_content":
 						var patchParts, hunkParts []string
+						totalBytes := 0
 						for _, ch := range params.ReplacementChunks {
 							if ch.TargetContent == "" && ch.ReplacementContent == "" {
 								continue
 							}
+							totalBytes += len(ch.TargetContent) + len(ch.ReplacementContent)
+							if totalBytes > maxInlineFallbackDiffBytes {
+								break
+							}
 							if p := acp.BuildUnifiedDiff(path, ch.TargetContent, ch.ReplacementContent); p != "" {
 								patchParts = append(patchParts, p)
-							}
-							if h := acp.BuildUnifiedDiffHunks(ch.TargetContent, ch.ReplacementContent); h != "" {
-								hunkParts = append(hunkParts, h)
+								if h := acp.StripUnifiedDiffHeader(p); h != "" {
+									hunkParts = append(hunkParts, h)
+								}
 							}
 						}
 						if len(patchParts) > 0 {
@@ -651,7 +698,50 @@ func (f *Flavor) NormalizeToolComplete(u *acp.ToolCallUpdate, started acp.Normal
 		}
 	}
 
+	// Detect run_command transitioning to an asynchronous background task after
+	// WaitMsBeforeAsync expires (or IsDaemon: true) so AO adds it to the
+	// background tray and tails its task log file while it runs. Only mark
+	// in_progress frames as backgrounded; marking a completed frame would leave
+	// the launch row permanently running because run_command settles via
+	// tool_call_update(completed) rather than a separate terminal event.
+	if u.Status == "in_progress" && (rawName == "run_command" || started.ItemType == "command_execution") {
+		if taskID, logPath, ok := parseAgyBackgroundTaskOutput(firstNonEmpty(norm.CommandOut, norm.Content)); ok {
+			norm.IsBackground = true
+			norm.BackgroundTaskID = taskID
+			norm.OutputFile = logPath
+		}
+	}
+
 	return norm
+}
+
+func parseAgyBackgroundTaskOutput(text string) (taskID, logPath string, ok bool) {
+	const taskPrefix = "Tool is running as a background task with task id:"
+	idx := strings.Index(text, taskPrefix)
+	if idx < 0 {
+		return "", "", false
+	}
+	rest := text[idx+len(taskPrefix):]
+	if nl := strings.IndexAny(rest, "\r\n"); nl >= 0 {
+		rest = rest[:nl]
+	}
+	taskID = strings.TrimSpace(rest)
+
+	const logPrefix = "Task logs are available at:"
+	if logIdx := strings.Index(text, logPrefix); logIdx >= 0 {
+		rawLog := text[logIdx+len(logPrefix):]
+		if nl := strings.IndexAny(rawLog, "\r\n"); nl >= 0 {
+			rawLog = rawLog[:nl]
+		}
+		rawLog = strings.TrimSpace(rawLog)
+		if strings.HasPrefix(rawLog, "file://") {
+			rawLog = resolveTranscriptURI(rawLog, "")
+		}
+		if filepath.IsAbs(rawLog) {
+			logPath = filepath.Clean(rawLog)
+		}
+	}
+	return taskID, logPath, true
 }
 
 func normalizeMCPPrefix(name string) string {
@@ -769,7 +859,13 @@ func (f *Flavor) ClassifyPermission(threadID, turnID, requestID string, req acp.
 			}
 		}
 	}
-	cls := f.DefaultFlavor.ClassifyPermission(threadID, turnID, requestID, req, policy)
+	effectivePolicy := policy
+	if effectivePolicy == acp.PolicyAutoAcceptEdits && hasAgySecurityWarning(req.Options) {
+		// Security-warned edits (e.g. paths outside the workspace) must never
+		// be silently auto-approved in Auto-accept edits mode.
+		effectivePolicy = acp.PolicyPrompt
+	}
+	cls := f.DefaultFlavor.ClassifyPermission(threadID, turnID, requestID, req, effectivePolicy)
 	if cls.Action == acp.PermissionAskUser {
 		// Normalize tool name and input into AO's canonical shapes (Bash/Edit/Write/MCP)
 		// so approval cards display command previews and file paths cleanly.
@@ -810,10 +906,83 @@ func (f *Flavor) ClassifyPermission(threadID, turnID, requestID string, req acp.
 	return cls
 }
 
+// ExtractTodoUpdate intercepts Antigravity's update_steps checklist tool and
+// normalizes its step list into ACP PlanEntry items so acp.Session routes it
+// to AO's live composer todo rail (EventTodoUpdate) without cluttering the
+// timeline with raw update_steps tool rows.
+func (f *Flavor) ExtractTodoUpdate(u *acp.ToolCallUpdate) ([]acp.PlanEntry, bool) {
+	if u == nil {
+		return nil, false
+	}
+	name := strings.TrimSpace(firstNonEmpty(u.Name, u.Title))
+	if !strings.EqualFold(name, "update_steps") {
+		return nil, false
+	}
+	rawIn := u.EffectiveInput()
+	if len(rawIn) == 0 {
+		return nil, true
+	}
+	var payload struct {
+		Steps []struct {
+			Title   string `json:"title"`
+			Content string `json:"content"`
+			Step    string `json:"step"`
+			Status  string `json:"status"`
+		} `json:"steps"`
+	}
+	if json.Unmarshal(rawIn, &payload) != nil || len(payload.Steps) == 0 {
+		return nil, true
+	}
+	entries := make([]acp.PlanEntry, 0, len(payload.Steps))
+	for _, s := range payload.Steps {
+		text := strings.TrimSpace(firstNonEmpty(s.Title, s.Content, s.Step))
+		if text == "" {
+			continue
+		}
+		entries = append(entries, acp.PlanEntry{
+			Content: text,
+			Status:  normalizeAgyTodoStatus(s.Status),
+		})
+	}
+	return entries, true
+}
+
+func normalizeAgyTodoStatus(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "in_progress", "inprogress":
+		return "inProgress"
+	case "done", "completed", "skipped":
+		return "completed"
+	default:
+		return "pending"
+	}
+}
+
+// hasAgySecurityWarning reports whether any permission option carries
+// `_meta["agy.security.warning"]`.
+func hasAgySecurityWarning(options []acp.PermissionOption) bool {
+	for _, opt := range options {
+		if len(opt.Meta) == 0 {
+			continue
+		}
+		var meta map[string]json.RawMessage
+		if json.Unmarshal(opt.Meta, &meta) != nil {
+			continue
+		}
+		if warnRaw, ok := meta["agy.security.warning"]; ok && len(warnRaw) > 0 && string(warnRaw) != "null" {
+			return true
+		}
+	}
+	return false
+}
+
 // ExtractPendingQuestion extracts structured ask_question prompts when the tool
-// transitions to status="pending".
+// transitions to status="pending". Accepts both raw ACP `ask_question` payloads
+// (options: []string) and already-normalized `AskUserQuestion` payloads
+// (options: [{"label": ...}]) from two-step tool_call -> tool_call_update flows.
 func (f *Flavor) ExtractPendingQuestion(u *acp.ToolCallUpdate) ([]provider.UserInputQuestion, bool) {
-	if !strings.EqualFold(strings.TrimSpace(u.Name), "ask_question") {
+	name := strings.TrimSpace(u.Name)
+	if !strings.EqualFold(name, "ask_question") && !strings.EqualFold(name, "AskUserQuestion") {
 		return nil, false
 	}
 	raw := u.EffectiveInput()
@@ -822,9 +991,12 @@ func (f *Flavor) ExtractPendingQuestion(u *acp.ToolCallUpdate) ([]provider.UserI
 	}
 	var payload struct {
 		Questions []struct {
-			Question      string   `json:"question"`
-			Options       []string `json:"options"`
-			IsMultiSelect bool     `json:"is_multi_select"`
+			ID            string            `json:"id"`
+			Header        string            `json:"header"`
+			Question      string            `json:"question"`
+			Options       []json.RawMessage `json:"options"`
+			IsMultiSelect bool              `json:"is_multi_select"`
+			MultiSelect   bool              `json:"multiSelect"`
 		} `json:"questions"`
 	}
 	if json.Unmarshal(raw, &payload) != nil || len(payload.Questions) == 0 {
@@ -836,13 +1008,31 @@ func (f *Flavor) ExtractPendingQuestion(u *acp.ToolCallUpdate) ([]provider.UserI
 			continue
 		}
 		opts := make([]provider.UserInputQuestionOption, 0, len(q.Options))
-		for _, opt := range q.Options {
-			opts = append(opts, provider.UserInputQuestionOption{Label: opt})
+		for _, rawOpt := range q.Options {
+			var label string
+			if json.Unmarshal(rawOpt, &label) == nil {
+				if strings.TrimSpace(label) != "" {
+					opts = append(opts, provider.UserInputQuestionOption{Label: label})
+				}
+				continue
+			}
+			var obj struct {
+				Label       string `json:"label"`
+				Description string `json:"description"`
+			}
+			if json.Unmarshal(rawOpt, &obj) == nil && strings.TrimSpace(obj.Label) != "" {
+				opts = append(opts, provider.UserInputQuestionOption{
+					Label:       obj.Label,
+					Description: obj.Description,
+				})
+			}
 		}
 		questions = append(questions, provider.UserInputQuestion{
+			ID:          q.ID,
+			Header:      q.Header,
 			Question:    q.Question,
 			Options:     opts,
-			MultiSelect: q.IsMultiSelect,
+			MultiSelect: q.IsMultiSelect || q.MultiSelect,
 		})
 	}
 	if len(questions) == 0 {
@@ -851,19 +1041,47 @@ func (f *Flavor) ExtractPendingQuestion(u *acp.ToolCallUpdate) ([]provider.UserI
 	return questions, true
 }
 
-func (f *Flavor) BeforePrompt(_ context.Context, sessionID string) any {
+func (f *Flavor) BeforePrompt(ctx context.Context, sessionID string) any {
 	if f.AppDataDir == "" || sessionID == "" {
 		return nil
 	}
-	f.seedExistingSubagents(sessionID)
-	maxIdx, ok := readMaxStepIndex(f.AppDataDir, sessionID)
+	maxIdx, ok := readMaxStepIndex(ctx, f.AppDataDir, sessionID)
 	if !ok {
 		return nil
 	}
 	return maxIdx
 }
 
-func (f *Flavor) AfterPrompt(_ context.Context, sessionID string, stopReason string, beforeToken any) *acp.PromptOutcomeOverride {
+func (f *Flavor) ResolvePromptStepAnchor(_ context.Context, sessionID, content string, beforeToken any) string {
+	if f.AppDataDir == "" || sessionID == "" {
+		return ""
+	}
+	sinceIdx, ok := beforeToken.(int)
+	if !ok {
+		return ""
+	}
+	f.stepAnchorMu.Lock()
+	if last, hasLast := f.lastResolvedUserStepIdx[sessionID]; hasLast && last > sinceIdx {
+		sinceIdx = last
+	}
+	f.stepAnchorMu.Unlock()
+
+	resolvedIdx, anchor := lookupUserPromptAnchor(f.AppDataDir, sessionID, content, sinceIdx)
+	if anchor == "" {
+		return ""
+	}
+	f.stepAnchorMu.Lock()
+	if f.lastResolvedUserStepIdx == nil || len(f.lastResolvedUserStepIdx) >= 64 {
+		f.lastResolvedUserStepIdx = make(map[string]int)
+	}
+	if prev, hasPrev := f.lastResolvedUserStepIdx[sessionID]; !hasPrev || resolvedIdx > prev {
+		f.lastResolvedUserStepIdx[sessionID] = resolvedIdx
+	}
+	f.stepAnchorMu.Unlock()
+	return anchor
+}
+
+func (f *Flavor) AfterPrompt(ctx context.Context, sessionID string, stopReason string, beforeToken any) *acp.PromptOutcomeOverride {
 	if f.AppDataDir == "" || sessionID == "" || stopReason == "cancelled" {
 		return nil
 	}
@@ -873,22 +1091,37 @@ func (f *Flavor) AfterPrompt(_ context.Context, sessionID string, stopReason str
 		// rather than risking misattributing an older turn's error step.
 		return nil
 	}
-	return inspectTurnErrorStep(f.AppDataDir, sessionID, sinceIdx)
+	return inspectTurnErrorStep(ctx, f.AppDataDir, sessionID, sinceIdx)
+}
+
+func (f *Flavor) InitCompactionCursor(ctx context.Context, sessionID string) int {
+	if f.AppDataDir == "" || sessionID == "" {
+		return -1
+	}
+	return readMaxCheckpointIndex(ctx, f.AppDataDir, sessionID)
+}
+
+func (f *Flavor) DetectCompaction(ctx context.Context, sessionID string, afterIdx int) (int, *acp.CompactionEvent) {
+	if f.AppDataDir == "" || sessionID == "" {
+		return afterIdx, nil
+	}
+	return f.detectNewCheckpoint(ctx, sessionID, afterIdx)
 }
 
 // ShouldHoldSpontaneousWakeClose checks `<appDataDir>/brain/<sessionId>/.system_generated/messages/`
 // for unread MESSAGE_PRIORITY_HIGH wake messages queued behind the current wake.
-func (f *Flavor) ShouldHoldSpontaneousWakeClose(_ context.Context, sessionID string) bool {
-	if f.AppDataDir == "" || sessionID == "" {
+func (f *Flavor) ShouldHoldSpontaneousWakeClose(ctx context.Context, sessionID string) bool {
+	if f.AppDataDir == "" || validateConversationSessionID(sessionID) != nil {
 		return false
 	}
-	msgDir := filepath.Join(f.AppDataDir, "brain", sessionID, ".system_generated", "messages")
+	brainDir := filepath.Join(f.AppDataDir, "brain")
+	msgDir := filepath.Join(brainDir, sessionID, ".system_generated", "messages")
 	entries, err := os.ReadDir(msgDir)
 	if err != nil || len(entries) == 0 {
 		return false
 	}
 	readSet := map[string]bool{}
-	if raw, err := os.ReadFile(filepath.Join(msgDir, "read.json")); err == nil {
+	if raw, ok := readContainedSmallFile(brainDir, sessionID, filepath.Join(msgDir, "read.json")); ok {
 		var ids []string
 		if json.Unmarshal(raw, &ids) == nil {
 			for _, id := range ids {
@@ -909,7 +1142,11 @@ func (f *Flavor) ShouldHoldSpontaneousWakeClose(_ context.Context, sessionID str
 			}
 		}
 	}
-	for _, entry := range entries {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if ctx != nil && ctx.Err() != nil {
+			return false
+		}
+		entry := entries[i]
 		name := entry.Name()
 		if entry.IsDir() || name == "read.json" || !strings.HasSuffix(name, ".json") {
 			continue
@@ -918,8 +1155,8 @@ func (f *Flavor) ShouldHoldSpontaneousWakeClose(_ context.Context, sessionID str
 		if readSet[id] {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(msgDir, name))
-		if err != nil {
+		data, ok := readContainedSmallFile(brainDir, sessionID, filepath.Join(msgDir, name))
+		if !ok {
 			continue
 		}
 		var msg struct {
@@ -1115,7 +1352,21 @@ func extractConversationID(rawOut json.RawMessage, content string) string {
 	return ""
 }
 
-var imageFilePathRe = regexp.MustCompile(`(?i)(?:file://)?((?:/|[A-Za-z]:[\\/])[^\s"'` + "`" + `<>)\]]+\.(?:png|jpe?g|webp|gif))`)
+var (
+	imageFilePathQuotedRe = regexp.MustCompile(`(?i)["'` + "`" + `](?:file://)?((?:/|[A-Za-z]:[\\/])[^"'` + "`" + `\r\n<>]+\.(?:png|jpe?g|webp|gif))["'` + "`" + `]`)
+	imageFilePathRe       = regexp.MustCompile(`(?i)(?:file://)?((?:/|[A-Za-z]:[\\/])[^\s"'` + "`" + `<>)\]]+\.(?:png|jpe?g|webp|gif))`)
+)
+
+func normalizeImagePath(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(raw), "file://") {
+		return resolveTranscriptURI(raw, "")
+	}
+	return raw
+}
 
 func extractGeneratedImageFields(rawIn, startedIn, rawOut json.RawMessage, content string) (path, prompt string) {
 	readInput := func(raw json.RawMessage) (p, pr string) {
@@ -1154,7 +1405,7 @@ func extractGeneratedImageFields(rawIn, startedIn, rawOut json.RawMessage, conte
 				"image_path", "imagePath",
 			} {
 				if s, ok := obj[k].(string); ok && strings.TrimSpace(s) != "" {
-					path = strings.TrimSpace(s)
+					path = normalizeImagePath(s)
 					break
 				}
 			}
@@ -1162,7 +1413,7 @@ func extractGeneratedImageFields(rawIn, startedIn, rawOut json.RawMessage, conte
 				for _, k := range []string{"paths", "saved_paths", "savedPaths"} {
 					if arr, ok := obj[k].([]any); ok && len(arr) > 0 {
 						if s, ok := arr[0].(string); ok && strings.TrimSpace(s) != "" {
-							path = strings.TrimSpace(s)
+							path = normalizeImagePath(s)
 							break
 						}
 					}
@@ -1171,12 +1422,14 @@ func extractGeneratedImageFields(rawIn, startedIn, rawOut json.RawMessage, conte
 		}
 	}
 	if path == "" && content != "" {
-		if m := imageFilePathRe.FindStringSubmatch(content); len(m) > 1 {
-			path = strings.TrimSpace(m[1])
+		if m := imageFilePathQuotedRe.FindStringSubmatch(content); len(m) > 1 {
+			path = normalizeImagePath(m[1])
+		} else if m := imageFilePathRe.FindStringSubmatch(content); len(m) > 1 {
+			path = normalizeImagePath(m[1])
 		}
 	}
 	if path == "" {
-		path = firstNonEmpty(inPath, stPath)
+		path = normalizeImagePath(firstNonEmpty(inPath, stPath))
 	}
 	return path, prompt
 }

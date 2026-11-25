@@ -288,4 +288,16 @@ func TestProbeRateLimitsEnterpriseFallbackAfterConsumer403And404(t *testing.T) {
 	if err == nil || errors.Is(err, ErrOAuthUnauthorized) {
 		t.Fatalf("mixed 200-empty+403 err = %v, want non-unauthorized error", err)
 	}
+
+	// 6. All endpoints returning 403 (with zero 401s) must NOT return ErrOAuthUnauthorized.
+	_, err = probeRateLimitsAtEndpoints(
+		context.Background(),
+		consumer403.Client(),
+		[]string{consumer403.URL, consumer403.URL},
+		credBytes,
+		time.Now(),
+	)
+	if err == nil || errors.Is(err, ErrOAuthUnauthorized) {
+		t.Fatalf("all-403 err = %v, want non-unauthorized forbidden error", err)
+	}
 }

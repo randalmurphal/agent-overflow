@@ -1,9 +1,12 @@
 package triage
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
@@ -506,5 +509,107 @@ func TestConsumeMatchingPendingSend_HeadWithoutExpectedID_FIFOPop(t *testing.T) 
 	got, ok := router.consumeMatchingPendingSend("t1", "codex_item_7", "")
 	if !ok || got.AOItemID != "user:0" {
 		t.Fatalf("FIFO pop for id-less head: got ok=%v entry=%+v", ok, got)
+	}
+}
+
+func TestHandleErrorClearsPendingSendByFailedProviderItemID(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{ProviderItemID: "uuid-fail"})
+	router.RegisterPendingSendWithExpectation("t1", "user:2", 2, PendingSendExpectation{ProviderItemID: "uuid-keep"})
+
+	errMeta, err := json.Marshal(map[string]any{
+		"failed_provider_item_id": "uuid-fail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventError,
+		ThreadID:  "t1",
+		Content:   "request failed",
+		Meta:      errMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle(EventError): %v", err)
+	}
+
+	got, ok := router.consumeMatchingPendingSend("t1", "uuid-keep", "")
+	if !ok || got.AOItemID != "user:2" {
+		t.Fatalf("remaining pending send = ok:%v %+v, want user:2", ok, got)
+	}
+	if router.HasPendingSendForThread("t1") {
+		t.Fatal("failed pending send uuid-fail should have been cleared by EventError")
+	}
+}
+
+func TestRetireFailedPendingSendByProviderItemIDRestoresFlushSend(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	var notified bool
+	router.SetSendUndeliveredHook(func(threadID string) {
+		if threadID == "t1" {
+			notified = true
+		}
+	})
+	router.RegisterPendingFlushSendWithExpectation("t1", "q-1", store.Item{
+		ID:        "user:1:flush:1",
+		ThreadID:  "t1",
+		TurnIndex: 1,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "steer msg",
+	}, 100, PendingSendExpectation{ProviderItemID: "uuid-flush-fail"})
+
+	errMeta, _ := json.Marshal(map[string]any{"failed_provider_item_id": "uuid-flush-fail"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventError,
+		ThreadID:  "t1",
+		Content:   "rpc error",
+		Meta:      errMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle(EventError): %v", err)
+	}
+	if router.HasPendingSendForThread("t1") {
+		t.Fatal("failed flush send should be removed from pendingSends")
+	}
+	if !notified {
+		t.Fatal("expected sendUndelivered hook to fire for failed unrun flush send")
+	}
+	undelivered := router.DrainUndeliveredSends("t1")
+	if len(undelivered) != 1 || undelivered[0].QueueItemID != "q-1" {
+		t.Fatalf("DrainUndeliveredSends = %+v, want q-1", undelivered)
+	}
+}
+
+func TestClearCancelledACPDirectSendsKeepsDeferredFlushes(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{ProviderItemID: "uuid-direct"})
+	router.RegisterPendingFlushSendWithExpectation("t1", "q-2", store.Item{
+		ID:        "user:1:flush:1",
+		ThreadID:  "t1",
+		TurnIndex: 1,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "steered",
+	}, 200, PendingSendExpectation{ProviderItemID: "uuid-steer"})
+
+	tok := router.MarkFlushSendsInterrupted("t1", 1)
+	router.ClearCancelledACPDirectSends("t1", tok)
+
+	// Direct send must be cleared; deferred flush send must remain for eager persist + resend.
+	if _, ok := router.consumeMatchingPendingSend("t1", "uuid-direct", ""); ok {
+		t.Fatal("direct pending send should have been cleared")
+	}
+	got, ok := router.consumeMatchingPendingSend("t1", "uuid-steer", "")
+	if !ok || got.AOItemID != "user:1:flush:1" {
+		t.Fatalf("deferred flush send = ok:%v %+v, want user:1:flush:1", ok, got)
 	}
 }

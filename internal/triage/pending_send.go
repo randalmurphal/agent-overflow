@@ -8,6 +8,7 @@ import (
 
 	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/itemmeta"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
 )
@@ -810,6 +811,97 @@ func (r *Router) ClearPendingSendForFailure(threadID, aoItemID string) {
 		r.noteSendsPendingLocked(threadID)
 		return
 	}
+}
+
+// RetireFailedPendingSendByProviderItemID settles a single unconfirmed pending
+// send keyed by ExpectedProviderItemID when an async provider RPC rejects a
+// prompt after Send returned nil (e.g. ACP session/prompt JSON-RPC error).
+// Unrun flush sends route through retireUnrunSend so their content returns to
+// the composer draft and diff review claims release; direct sends (whose row is
+// already visible in the timeline above the error) are cleared from pendingSends.
+func (r *Router) RetireFailedPendingSendByProviderItemID(threadID, providerItemID string) error {
+	if threadID == "" || providerItemID == "" {
+		return nil
+	}
+	anchor := r.flushAnchor(threadID)
+	anchor.Lock()
+	defer anchor.Unlock()
+	r.mu.Lock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil || len(st.pendingSends) == 0 {
+		r.mu.Unlock()
+		return nil
+	}
+	var matched pendingSend
+	matchedIdx := -1
+	for i, entry := range st.pendingSends {
+		if entry.ExpectedProviderItemID == providerItemID {
+			matched = entry
+			matchedIdx = i
+			break
+		}
+	}
+	if matchedIdx < 0 {
+		r.mu.Unlock()
+		return nil
+	}
+	if matched.Shape == sendShapeFlush && !matched.Started && !matched.EchoConsumed {
+		r.mu.Unlock()
+		return r.retireUnrunSend(threadID, matched, provider.CommandCancelled)
+	}
+	queue := st.pendingSends
+	nextLen := len(queue) - 1
+	if nextLen == 0 {
+		st.pendingSends = nil
+	} else {
+		next := make([]pendingSend, 0, nextLen)
+		next = append(next, queue[:matchedIdx]...)
+		next = append(next, queue[matchedIdx+1:]...)
+		st.pendingSends = next
+	}
+	r.noteSendsPendingLocked(threadID)
+	r.mu.Unlock()
+	return nil
+}
+
+// ClearCancelledACPDirectSends clears unconfirmed direct sends and already-visible
+// non-steered sends (including TurnInput flush rows and post-interrupt resends)
+// after an ACP session/cancel settles before any provider update arrived.
+// Steered flush sends (DeferredItem != nil && !TurnInput) are left for
+// EagerPersistDeferredFlushSends + resend. Fenced by tok.threadEpoch.
+func (r *Router) ClearCancelledACPDirectSends(threadID string, tok FlushStampToken) {
+	if threadID == "" {
+		return
+	}
+	anchor := r.flushAnchor(threadID)
+	anchor.Lock()
+	defer anchor.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.identity(threadID).epoch != tok.threadEpoch {
+		return
+	}
+	st := r.threadStateIfPresent(threadID)
+	if st == nil || len(st.pendingSends) == 0 {
+		return
+	}
+	filtered := make([]pendingSend, 0, len(st.pendingSends))
+	for _, entry := range st.pendingSends {
+		// Keep still-deferred flush sends (both TurnInput and steered);
+		// EagerPersistDeferredFlushSends will persist them into the timeline
+		// and eagerPersistFlushSendsOnInterrupt clears TurnInput entries while
+		// codexResendAfterInterrupt clears and re-sends steered entries.
+		if entry.Shape == sendShapeFlush && entry.DeferredItem != nil {
+			filtered = append(filtered, entry)
+			continue
+		}
+	}
+	if len(filtered) == 0 {
+		st.pendingSends = nil
+	} else {
+		st.pendingSends = filtered
+	}
+	r.noteSendsPendingLocked(threadID)
 }
 
 // MaxPendingSendTurnIndex returns the highest TurnIndex across all

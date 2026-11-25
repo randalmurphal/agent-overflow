@@ -254,7 +254,7 @@ const STATIC_FIELDS = [
     section: 'sidebar',
     label: 'Show provider icons',
     hint: 'Show the provider beside each thread title.',
-    keywords: ['claude', 'codex', 'logo'],
+    keywords: ['claude', 'codex', 'agy', 'antigravity', 'logo'],
   },
   {
     id: 'sidebar.auto-pin',
@@ -1132,7 +1132,7 @@ export const SETTINGS_FIELDS: readonly SettingsFieldDef[] = [
       heading: f.heading,
       label: f.label,
       hint: 'hint' in f ? f.hint : undefined,
-      keywords: [...f.keywords, PROVIDER_LABELS[provider]],
+      keywords: [...f.keywords, provider, PROVIDER_LABELS[provider]],
     })),
     ...STATIC_FIELDS.filter((f) => f.section === provider),
   ]),

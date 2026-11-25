@@ -117,16 +117,26 @@ func seedFakeConversationDB(t *testing.T, appDataDir, sessionID string) string {
 		`CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)`,
 		`CREATE TABLE executor_metadata (idx INTEGER PRIMARY KEY, data BLOB)`,
 		`INSERT INTO trajectory_meta (trajectory_id, cascade_id) VALUES ('orig-traj', '` + sessionID + `')`,
-		`INSERT INTO steps (idx, step_type, step_payload) VALUES (0, 14, 'turn 0 user')`,
-		`INSERT INTO steps (idx, step_type, step_payload) VALUES (1, 15, 'turn 0 reply')`,
-		`INSERT INTO steps (idx, step_type, step_payload) VALUES (2, 14, 'turn 1 user')`,
-		`INSERT INTO steps (idx, step_type, step_payload) VALUES (3, 15, 'turn 1 reply')`,
 		`INSERT INTO gen_metadata (idx, data) VALUES (1, 'g1'), (3, 'g3')`,
 		`INSERT INTO executor_metadata (idx, data) VALUES (1, 'e1'), (3, 'e3')`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
 			t.Fatalf("exec %s: %v", s, err)
+		}
+	}
+	for _, row := range []struct {
+		idx      int
+		stepType int
+		payload  []byte
+	}{
+		{0, 14, encodeTestUserInputStep("turn 0 user", "h0", 1000, false, false)},
+		{1, 15, []byte("turn 0 reply")},
+		{2, 14, encodeTestUserInputStep("turn 1 user", "h2", 2000, false, false)},
+		{3, 15, []byte("turn 1 reply")},
+	} {
+		if _, err := db.Exec(`INSERT INTO steps (idx, step_type, step_payload) VALUES (?, ?, ?)`, row.idx, row.stepType, row.payload); err != nil {
+			t.Fatalf("insert step %d: %v", row.idx, err)
 		}
 	}
 	return path
@@ -169,14 +179,14 @@ func TestForkConversationSlicesAndVerifiesSchema(t *testing.T) {
 	srcID := "sess-src-1"
 	seedFakeConversationDB(t, appDataDir, srcID)
 
-	cutIdx, hasPrefix, err := FindCutIndexBeforeUserTurn(appDataDir, srcID, 1)
-	if err != nil || !hasPrefix || cutIdx != 1 {
-		t.Fatalf("FindCutIndexBeforeUserTurn = (%d, %v, %v), want (1, true, nil)", cutIdx, hasPrefix, err)
-	}
-
-	dstID, cleanup, err := ForkConversation(appDataDir, srcID, cutIdx)
+	dstID, cleanup, err := ForkConversationBeforeTarget(appDataDir, srcID, UserPromptCutTarget{
+		Target:        UserPromptHint{Text: "turn 1 user", CreatedAtMs: 2000},
+		Prev:          &UserPromptHint{Text: "turn 0 user", CreatedAtMs: 1000},
+		PromptsBefore: 1,
+		PromptsAfter:  0,
+	})
 	if err != nil {
-		t.Fatalf("ForkConversation: %v", err)
+		t.Fatalf("ForkConversationBeforeTarget: %v", err)
 	}
 	defer func() { _ = cleanup() }()
 
@@ -955,5 +965,85 @@ func TestCatalogCacheGetOrProbeCoalescesConcurrentMisses(t *testing.T) {
 	<-staleDone
 	if freshErr != nil || len(freshModels) != 1 || freshModels[0].Slug != "fresh-model" {
 		t.Fatalf("post-Clear caller got (%+v, %v), want fresh-model", freshModels, freshErr)
+	}
+}
+
+func TestNormalizeToolCompleteDetectsBackgroundCommand(t *testing.T) {
+	t.Parallel()
+	f := NewFlavor("")
+	started := f.NormalizeToolStart(&acp.ToolCallUpdate{
+		ToolCallID: "call-bg-1",
+		Name:       "run_command",
+		Kind:       "execute",
+		RawInput:   json.RawMessage(`{"CommandLine":"make go-test","WaitMsBeforeAsync":10000}`),
+	})
+	if started.IsBackground {
+		t.Fatal("foreground WaitMsBeforeAsync command should not start as is_background")
+	}
+
+	logPath := filepath.Join(t.TempDir(), "brain", "sess-1", ".system_generated", "tasks", "task-42.log")
+	rawOut, _ := json.Marshal(map[string]any{
+		"output": "Tool is running as a background task with task id: sess-1/task-42\n" +
+			"Task logs are available at: file://" + filepath.ToSlash(logPath) + "\nLog output:\nstarting\n",
+	})
+	inProg := f.NormalizeToolComplete(&acp.ToolCallUpdate{
+		ToolCallID: "call-bg-1",
+		Name:       "run_command",
+		Kind:       "execute",
+		Status:     "in_progress",
+		RawOutput:  rawOut,
+	}, started)
+	if !inProg.IsBackground {
+		t.Fatal("expected in_progress backgrounded run_command to set IsBackground=true")
+	}
+	if inProg.BackgroundTaskID != "sess-1/task-42" {
+		t.Fatalf("BackgroundTaskID = %q, want sess-1/task-42", inProg.BackgroundTaskID)
+	}
+	if inProg.OutputFile != filepath.Clean(logPath) {
+		t.Fatalf("OutputFile = %q, want %q", inProg.OutputFile, filepath.Clean(logPath))
+	}
+}
+
+func TestAgyExtractTodoUpdate(t *testing.T) {
+	t.Parallel()
+	f := NewFlavor("")
+
+	if entries, ok := f.ExtractTodoUpdate(&acp.ToolCallUpdate{Name: "read_file"}); ok || len(entries) != 0 {
+		t.Fatalf("read_file should not be a todo tool: entries=%+v ok=%v", entries, ok)
+	}
+	if entries, ok := f.ExtractTodoUpdate(&acp.ToolCallUpdate{Title: "update_steps", RawInput: json.RawMessage(`{"steps":[{"title":"Via title","status":"done"}]}`)}); !ok || len(entries) != 1 || entries[0].Content != "Via title" || entries[0].Status != "completed" {
+		t.Fatalf("title-only update_steps failed: entries=%+v ok=%v", entries, ok)
+	}
+	if entries, ok := f.ExtractTodoUpdate(&acp.ToolCallUpdate{Name: "update_steps", RawInput: json.RawMessage(`{"steps":[]}`)}); !ok || len(entries) != 0 {
+		t.Fatalf("empty update_steps should still be recognized as todo tool: entries=%+v ok=%v", entries, ok)
+	}
+
+	entries, ok := f.ExtractTodoUpdate(&acp.ToolCallUpdate{
+		Name: "update_steps",
+		RawInput: json.RawMessage(`{"steps":[
+			{"title":"First","status":"done"},
+			{"title":"Second","status":"in_progress"},
+			{"title":"Third","status":"pending"},
+			{"title":"Fourth","status":"skipped"},
+			{"title":"Fifth","status":"failed"}
+		]}`),
+	})
+	if !ok {
+		t.Fatal("expected update_steps to be recognized as todo tool")
+	}
+	want := []acp.PlanEntry{
+		{Content: "First", Status: "completed"},
+		{Content: "Second", Status: "inProgress"},
+		{Content: "Third", Status: "pending"},
+		{Content: "Fourth", Status: "completed"},
+		{Content: "Fifth", Status: "pending"},
+	}
+	if len(entries) != len(want) {
+		t.Fatalf("len(entries) = %d, want %d: %+v", len(entries), len(want), entries)
+	}
+	for i := range want {
+		if entries[i] != want[i] {
+			t.Errorf("entries[%d] = %+v, want %+v", i, entries[i], want[i])
+		}
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/flushqueue"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/acp"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
@@ -898,6 +899,34 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 			for _, unattempted := range groups[i+1:] {
 				back = append(back, unattempted...)
 			}
+			if _, hasSession := a.sessionManager().get(threadID); !hasSession {
+				if errors.Is(err, ErrShuttingDown) || a.lifeCtx().Err() != nil ||
+					errors.Is(err, store.ErrThreadDeleting) || errors.Is(err, store.ErrThreadDeleteClaimed) {
+					// Preserve durable queue rows for next boot or let deletion
+					// clean them up without emitting a spurious error row.
+					a.finishFlushGroup(threadID, generation, back)
+					a.noteFlushDispatchGroupSettled(threadID, back)
+					return
+				}
+				// No live session remains (for example, pre-send account switch
+				// reconnect stopped the old session and failed to start the new
+				// one). Restore the batch to the composer with a visible error
+				// instead of silently stranding it in Zone 1.
+				a.emitErrorToThread(threadID, err.Error())
+				a.finishFlushGroup(threadID, generation, back)
+				a.noteFlushDispatchGroupSettled(threadID, back)
+				drained := make([]triage.UnconfirmedFlushItem, 0, len(back))
+				for _, item := range back {
+					drained = append(drained, unconfirmedFromQueued(item))
+				}
+				if slices.ContainsFunc(drained, func(item triage.UnconfirmedFlushItem) bool {
+					return slices.ContainsFunc(unconfirmedMembersOf(item).ids, appWrittenSendID)
+				}) {
+					a.noteAgentNoticeStartFailed(threadID)
+				}
+				a.restoreFlushItemsToDraftLocked(threadID, drained, queueRestoredReasonSessionDied)
+				return
+			}
 			a.finishFlushGroup(threadID, generation, back)
 			a.requeueWantedFlushItems(threadID, back)
 			a.noteFlushDispatchGroupSettled(threadID, back)
@@ -1499,7 +1528,9 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 				threadID, flushGroupIDs(group), dispatchErr)
 			return nil, eagerPersist, requeue, "", unclaim(dispatchErr)
 		}
-		if sess.Codex != nil && codex.IsNoActiveTurnRace(dispatchErr) {
+		isNoActiveTurn := (sess.Codex != nil && codex.IsNoActiveTurnRace(dispatchErr)) ||
+			(sess.ACP != nil && errors.Is(dispatchErr, acp.ErrNoActiveTurn))
+		if isNoActiveTurn {
 			a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 			fallback, allocErr := a.resolveUserMessagePlacement(thread, messageFlushFallback)
 			if allocErr != nil {
@@ -1526,7 +1557,15 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 			// wire stamp and expectation together; identified client sends
 			// preserve both across this placement-only fallback.
 			var refreshExpect triage.PendingSendExpectation
-			sendOpts.ClientUserMessageID, refreshExpect = providerSendIdentity(sess, userItem.ID, userItem.Meta, "")
+			fallbackUUID := ""
+			if sess.ACP != nil {
+				fallbackUUID = sendUUID
+				if fallbackUUID == "" {
+					fallbackUUID = uuid.NewString()
+				}
+				sendOpts.UserMessageUUID = fallbackUUID
+			}
+			sendOpts.ClientUserMessageID, refreshExpect = providerSendIdentity(sess, userItem.ID, userItem.Meta, fallbackUUID)
 			refreshExpect.JoinedParts = joined.parts
 			refreshExpect.QueueMembers = sendExpect.QueueMembers
 			// The message is now the fresh turn's input, which a Stop does
@@ -1534,8 +1573,14 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 			a.triage.RegisterPendingFlushTurnStartWithExpectation(
 				threadID, leadQueueItemID, userItem, leadEnqueuedAt, refreshExpect)
 			sess.Liveness.BumpActivity(time.Now())
-			if sendErr := sess.Codex.Send(context.Background(), joined.providerContent, sendOpts); sendErr != nil {
-				if codex.IsAmbiguousTurnStartTimeout(sendErr) {
+			var sendErr error
+			if sess.Codex != nil {
+				sendErr = sess.Codex.Send(context.Background(), joined.providerContent, sendOpts)
+			} else if sess.ACP != nil {
+				sendErr = sess.ACP.Send(context.Background(), joined.providerContent, sendOpts)
+			}
+			if sendErr != nil {
+				if sess.Codex != nil && codex.IsAmbiguousTurnStartTimeout(sendErr) {
 					// Same ambiguity as the steer timeout above: the
 					// turn/start was written and the echo may already be
 					// coming. A requeue would double-send (round-14,
@@ -1638,6 +1683,9 @@ func (a *App) dispatchFlushToProvider(sess session, content string, opts provide
 	sess.Liveness.BumpActivity(time.Now())
 	if sess.Codex != nil {
 		return sess.Codex.Steer(context.Background(), content, opts)
+	}
+	if sess.ACP != nil {
+		return sess.ACP.Steer(context.Background(), content, opts)
 	}
 	providerSess := sess.ProviderSession()
 	if providerSess == nil {

@@ -86,7 +86,7 @@ func (s *fakeScenario) kept(t *testing.T, conn Connection, issue tracker.IssueID
 // openTicket subscribes to issue's ticket and waits for its first read.
 func (s *fakeScenario) openTicket(t *testing.T, conn Connection, issue tracker.IssueID) TicketSubscription {
 	t.Helper()
-	sub := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, issue))
+	sub := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, issue, untied))
 	settled(t, s.svc)
 	return sub
 }
@@ -410,7 +410,7 @@ func TestAFailedDeleteOfTheEarlierRowsIsRetried(t *testing.T) {
 	s.earlierRows(t, conn, "10105", 1)
 	drops := &earlierDrops{Store: s.st, fail: 1}
 	s.svc.store = drops
-	if _, err := s.svc.SubscribeTicket(conn.ID, "10105"); err == nil || !strings.Contains(err.Error(), "the store refused the delete") {
+	if _, err := s.svc.SubscribeTicket(conn.ID, "10105", untied); err == nil || !strings.Contains(err.Error(), "the store refused the delete") {
 		t.Fatalf("an opening whose delete failed: %v; want the delete's failure", err)
 	}
 	sub := s.openTicket(t, conn, "10105")

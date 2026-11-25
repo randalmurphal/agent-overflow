@@ -527,14 +527,25 @@ func poolOrder(prov, strategy string, accounts []candidate, now time.Time) []int
 
 // longestWindowReset is the reset time of the provider-wide entry with the
 // largest window, or 0 when that window has not started or has reset.
+// For Antigravity (whose buckets are scoped by family rather than provider-wide),
+// it selects the earliest active reset among entries with the largest window.
 func longestWindowReset(prov string, limits []provider.RateLimitEntry, now time.Time) int64 {
 	var longest provider.RateLimitEntry
 	found := false
 	for _, e := range limits {
-		if !providerWide(prov, e) {
+		if prov != providerAgy {
+			if !providerWide(prov, e) {
+				continue
+			}
+			if !found || e.WindowMins > longest.WindowMins {
+				longest, found = e, true
+			}
 			continue
 		}
-		if !found || e.WindowMins > longest.WindowMins {
+		if e.ResetsAt <= 0 || expired(e, now) {
+			continue
+		}
+		if !found || e.WindowMins > longest.WindowMins || (e.WindowMins == longest.WindowMins && e.ResetsAt < longest.ResetsAt) {
 			longest, found = e, true
 		}
 	}

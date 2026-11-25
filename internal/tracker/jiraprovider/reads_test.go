@@ -1,6 +1,7 @@
 package jiraprovider
 
 import (
+	"agent-overflow/internal/tracker/jira"
 	"errors"
 	"net/http"
 	"slices"
@@ -30,7 +31,7 @@ func TestNewChecksOptions(t *testing.T) {
 	if _, ok := p.Time().(*jiraTime); !ok {
 		t.Errorf("without Tempo, Time is %T", p.Time())
 	}
-	if c := p.Capabilities(); !c.IssueTypes || !c.CustomFields || !c.MoveFields || !c.SprintWrites || !c.Attachments || !c.DetailMovesUpdated {
+	if c := p.Capabilities(); !c.IssueTypes || !c.CustomFields || !c.MoveFields || !c.SprintWrites || c.MaxAttachmentBytes != jira.MaxAttachmentBytes || !c.DetailMovesUpdated {
 		t.Errorf("capabilities %+v", c)
 	}
 }

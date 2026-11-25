@@ -88,7 +88,7 @@ func spawnSchema(shape Shape) map[string]any {
 	if !shape.AssistantsOff {
 		properties["home_files"] = homeFilesProperty("prompt")
 	}
-	waitProperties(properties, 0, "the new thread to answer")
+	waitProperties(properties, 0, shape.maxWaitSeconds(), "the new thread to answer")
 	computerIDProperty(shape, properties, "the project the thread should run in")
 	description := "Open a new thread, your worker, send prompt as its first user message, start its turn, and return the thread id and a request token. It inherits your project, workspace, provider, model, effort, mode and runtime mode unless you override them. By default it has no sidebar row: the user reaches it from your thread, and its questions and approvals come to you. A thread meant for the user to read or continue themselves gets a sidebar row: pass placement standalone, or group to file it in a group. Use your own subagents for pieces of your current task; use this " + spawnWhen(shape) + "."
 	if shape.Paired() {
@@ -136,7 +136,7 @@ func sendSchema(shape Shape) map[string]any {
 	if !shape.AssistantsOff {
 		properties["home_files"] = homeFilesProperty("message")
 	}
-	waitProperties(properties, 0, "that thread to answer")
+	waitProperties(properties, 0, shape.maxWaitSeconds(), "that thread to answer")
 	computerIDProperty(shape, properties, "the thread")
 	description := "Continue an existing thread as if the user had typed message there. A thread mid-turn queues it for the turn boundary with the user's draft preserved; an idle thread receives it now and its session starts lazily. Works across projects" + pairedSuffix(shape, " and computers") + ". Returns a request token. Use send to give a thread work; use thread_ask to consult one without touching it."
 	return tool("thread_send", description, properties, "thread_id", "message")
@@ -147,9 +147,11 @@ func askSchema(shape Shape) map[string]any {
 		"thread_id": map[string]any{"type": "string", "description": "The thread whose context you want to consult. Full id, or an unambiguous prefix of at least 6 characters. You cannot ask your own thread."},
 		"question":  map[string]any{"type": "string", "minLength": 1, "description": "The question. Ask for exactly what you need: the copy answers once and is then gone, so a clarifying question back costs you another call."},
 	}
-	waitProperties(properties, DefaultAskWaitSeconds, "the answer")
+	maxWait := shape.maxWaitSeconds()
+	defaultWait := min(DefaultAskWaitSeconds, maxWait)
+	waitProperties(properties, defaultWait, maxWait, "the answer")
 	computerIDProperty(shape, properties, "the thread")
-	description := fmt.Sprintf("Ask a one-shot question of a thread's context. The target is forked at its tail, in-flight turn included, into a hidden throwaway copy forced to the read-only runtime mode whatever the source runs; the question goes there and the copy is deleted as soon as its answer is stored. The real thread is never touched and never sees the question. Read-only means the copy refuses writes and mutating commands immediately rather than waiting on a person, so it always comes back; if it needed a write to answer it says so. Waits %d seconds by default. If the answer is a clarifying question, ask again or switch to thread_send on the real thread.", DefaultAskWaitSeconds)
+	description := fmt.Sprintf("Ask a one-shot question of a thread's context. The target is forked at its tail, in-flight turn included, into a hidden throwaway copy forced to the read-only runtime mode whatever the source runs; the question goes there and the copy is deleted as soon as its answer is stored. The real thread is never touched and never sees the question. Read-only means the copy refuses writes and mutating commands immediately rather than waiting on a person, so it always comes back; if it needed a write to answer it says so. Waits %d seconds by default. If the answer is a clarifying question, ask again or switch to thread_send on the real thread.", defaultWait)
 	if shape.Paired() {
 		description += " A thread on another computer is forked and answered there; only the answer crosses."
 	}
@@ -177,7 +179,8 @@ func replySchema() map[string]any {
 	return tool("thread_reply", description, properties, "token", "text")
 }
 
-func statusSchema() map[string]any {
+func statusSchema(shape Shape) map[string]any {
+	maxWait := shape.maxWaitSeconds()
 	properties := map[string]any{
 		"tokens": map[string]any{
 			"type":        "array",
@@ -196,9 +199,9 @@ func statusSchema() map[string]any {
 		"wait_seconds": map[string]any{
 			"type":        "integer",
 			"minimum":     0,
-			"maximum":     MaxWaitSeconds,
+			"maximum":     maxWait,
 			"default":     0,
-			"description": fmt.Sprintf("Wait up to this long, returning as soon as ANY listed request settles, any listed thread rests (nothing it started still running), or any target becomes blocked on a person, with the request still open. Zero reads the current state and returns. Maximum %d.", MaxWaitSeconds),
+			"description": fmt.Sprintf("Wait up to this long, returning as soon as ANY listed request settles, any listed thread rests (nothing it started still running), or any target becomes blocked on a person, with the request still open. Zero reads the current state and returns. Maximum %d.", maxWait),
 		},
 		"after_revision": map[string]any{
 			"type":        "integer",

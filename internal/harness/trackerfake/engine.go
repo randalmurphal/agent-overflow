@@ -206,11 +206,18 @@ func (e *Engine) Handler(o Origin) (http.Handler, error) {
 	}), nil
 }
 
-// readBody reads r's body up to maxRequestBody; over it is an error.
+// errBodyCutShort is a request body that stopped before its end: its
+// client left or closed the connection. As at any HTTP server, the
+// tracker never sees the request whole, so it applies nothing and nobody
+// is left to answer.
+var errBodyCutShort = errors.New("the request body stopped before its end")
+
+// readBody reads r's body up to maxRequestBody; over it is an error, and
+// a body that stops early is errBodyCutShort.
 func readBody(r *http.Request) ([]byte, error) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody+1))
 	if err != nil {
-		return nil, fmt.Errorf("read the request body: %w", err)
+		return nil, fmt.Errorf("%w: %w", errBodyCutShort, err)
 	}
 	if len(body) > maxRequestBody {
 		return nil, fmt.Errorf("the request body is over %d bytes", maxRequestBody)

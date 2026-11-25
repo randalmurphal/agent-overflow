@@ -1212,6 +1212,8 @@ func TestAttachmentPrefixCoversTheTransportRoutes(t *testing.T) {
 		transport.LocalImageDownloadPath,
 		transport.DictationUploadPath,
 		transport.SpeechDownloadPath,
+		transport.TrackerUploadPath,
+		transport.TrackerDownloadPath,
 	} {
 		path := pattern
 		if space := strings.IndexByte(pattern, ' '); space >= 0 {

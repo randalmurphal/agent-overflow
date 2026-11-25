@@ -53,6 +53,17 @@ type Caller struct {
 	// or campaign memory are withheld from it: such a phase records memory in
 	// its envelope instead.
 	ReadOnly bool
+	// MaxWaitSeconds caps wait_seconds advertised and accepted for this caller
+	// when its provider enforces a shorter MCP call timeout. Zero uses
+	// MaxWaitSeconds.
+	MaxWaitSeconds int
+}
+
+func (c Caller) maxWaitSeconds() int {
+	if c.MaxWaitSeconds > 0 && c.MaxWaitSeconds < MaxWaitSeconds {
+		return c.MaxWaitSeconds
+	}
+	return MaxWaitSeconds
 }
 
 // Allows reports whether caller may see and call the named tool.
@@ -105,10 +116,11 @@ func New(app App) *Server { return &Server{app: app, now: time.Now} }
 // Tools returns the schemas caller may see, in table order. A phase sees only
 // the tools its grants and access admit; an interactive caller sees all.
 func (s *Server) Tools(caller Caller) []map[string]any {
+	maxWait := caller.maxWaitSeconds()
 	tools := make([]map[string]any, 0, len(toolTable))
 	for _, spec := range toolTable {
 		if caller.refusal(spec) == nil {
-			tools = append(tools, spec.schema())
+			tools = append(tools, spec.schema(maxWait))
 		}
 	}
 	return tools

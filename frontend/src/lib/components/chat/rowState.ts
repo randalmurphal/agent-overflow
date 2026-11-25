@@ -51,6 +51,12 @@ export function indicatorStateForItem(
   return deriveCompletionStatus(item, { meta: options.payloadMeta }) === 'failure' ? 'error' : null;
 }
 
+export function isSettledBackgroundLaunch(
+  item: Pick<Item, 'kind' | 'isBackground' | 'meta'>,
+): boolean {
+  return item.kind === 'tool_call' && item.isBackground === true && backgroundLaunchSettled(item);
+}
+
 function backgroundLaunchSettled(item: Pick<Item, 'meta'>): boolean {
   return parseJsonObject(item.meta)?.live_background_active === false;
 }

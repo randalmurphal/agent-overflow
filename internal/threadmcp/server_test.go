@@ -211,7 +211,7 @@ func postRequest(t *testing.T, url, body string) map[string]json.RawMessage {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var reply map[string]json.RawMessage
 	if err := json.NewDecoder(resp.Body).Decode(&reply); err != nil {
 		t.Fatal(err)
@@ -666,5 +666,49 @@ func TestRegisteringStoresNoToggle(t *testing.T) {
 	defer server.mu.Unlock()
 	if len(server.threadEnabled) != 0 {
 		t.Fatalf("toggles held for threads nobody switched: %v", server.threadEnabled)
+	}
+}
+
+func TestToolsListIncludesAntigravityAlwaysLoadMeta(t *testing.T) {
+	orig := map[string]any{
+		"name":        "thread_spawn",
+		"description": "Spawn a thread",
+	}
+	server := New("ao-thread-tools", "", func(string) []map[string]any {
+		return []map[string]any{orig}
+	}, nil)
+	t.Cleanup(func() { _ = server.Close() })
+	entry, err := server.RegisterThread("thread-1", "sess-1", "access")
+	if err != nil {
+		t.Fatal(err)
+	}
+	url := entry["ao-thread-tools"].(map[string]any)["url"].(string)
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var body struct {
+		Result struct {
+			Tools []map[string]any `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Result.Tools) != 1 {
+		t.Fatalf("tools len = %d, want 1", len(body.Result.Tools))
+	}
+	meta, _ := body.Result.Tools[0]["_meta"].(map[string]any)
+	if meta["antigravity/alwaysLoad"] != true {
+		t.Fatalf("_meta = %v, want antigravity/alwaysLoad=true", meta)
+	}
+	if _, mutated := orig["_meta"]; mutated {
+		t.Fatal("tools/list mutated caller's tool definition map")
 	}
 }

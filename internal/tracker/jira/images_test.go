@@ -264,7 +264,7 @@ func TestPlanImageChecks(t *testing.T) {
 		"big.png":   append(append([]byte(nil), pngBytes...), make([]byte, 8<<10)...),
 		"h1.png":    half, "h2.png": half,
 	})
-	c.maxUpload = 4<<10 + uploadFraming
+	c.maxImages = 4 << 10
 	for name, md := range map[string]string{
 		"not an image":                 "![n](notes.txt)",
 		"missing":                      "![m](nowhere.png)",

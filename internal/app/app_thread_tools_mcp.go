@@ -98,6 +98,7 @@ func (a *App) threadToolsShape(threadID string, place subThreadPlace) threadtool
 		Mode:        thread.Mode,
 		RuntimeMode: thread.RuntimeMode,
 	}
+	shape.MaxWaitSeconds = provider.CapabilitiesForProvider(thread.Provider).EffectiveMaxMCPWaitSeconds(threadtools.MaxWaitSeconds)
 	shape.Spawn = a.spawnShape(threadID, place, shape.Defaults)
 	return shape
 }
@@ -311,10 +312,11 @@ func (a *App) threadToolsCaller(threadID string) (threadtools.Caller, error) {
 	}
 	backendID, _ := a.backendIdentity()
 	return threadtools.Caller{
-		ThreadID:     thread.ID,
-		Title:        thread.Title,
-		ComputerID:   backendID,
-		ComputerName: a.backendDisplayName(),
+		ThreadID:       thread.ID,
+		Title:          thread.Title,
+		ComputerID:     backendID,
+		ComputerName:   a.backendDisplayName(),
+		MaxWaitSeconds: provider.CapabilitiesForProvider(thread.Provider).EffectiveMaxMCPWaitSeconds(threadtools.MaxWaitSeconds),
 	}, nil
 }
 
@@ -413,6 +415,8 @@ func (a *App) refreshThreadMCPOnWake(threadID string, live session) {
 	case live.Codex != nil:
 		err = a.mcpService().ApplyManagedServerEnabled(threadID, threadMCPName, true)
 	default:
+		// Upstream ACP v1 (agy 1.5.16) has no reconnect_mcp_server RPC;
+		// paired-computer tool list updates apply on next session open.
 		return
 	}
 	if err != nil && a.lifeCtx().Err() == nil {
