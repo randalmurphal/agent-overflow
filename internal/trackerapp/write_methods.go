@@ -169,12 +169,15 @@ func (s *Service) DeleteWorklog(ctx context.Context, id string, in WorklogDelete
 }
 
 // WorklogDays is an author's worklogs of a range of days, by day and ID,
-// as the mirror holds them; More reports that the range holds more than
-// one read returns. Unread are the days of the range, sorted, whose
-// worklogs of the author this computer has never read: a screen shows no
-// total for them, and every other day of the range was read, so one with
-// no worklogs is 0h. Failure is why a refresh could not read them from
-// the tracker: they are then as the mirror held them before.
+// as the mirror holds them, at most 1,000. Unread are the days of the
+// range, sorted, whose worklogs of the author this computer has never
+// read: a screen shows no total for them. Without More every other day
+// was read, so one with no worklogs is 0h. More reports that the range
+// holds more worklogs than the answer: only the days before the last
+// worklog's day are then whole, and the last worklog's day and every
+// later read day are read again from that day before they are totaled.
+// Failure is why a refresh could not read them from the tracker: they
+// are then as the mirror held them before.
 type WorklogDays struct {
 	Worklogs []WorklogView `json:"worklogs"`
 	More     bool          `json:"more,omitempty"`

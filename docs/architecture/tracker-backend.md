@@ -1251,7 +1251,11 @@ selected computer.
   answers at most 366 days from the mirror with no tracker call, with
   `unread`, the days of the range no read replaced; the connection's row,
   its root, the read days and the worklogs are read in one snapshot (four
-  statements, at most 366 day rows and 1,001 worklog rows). It refuses
+  statements, at most 366 day rows and 1,001 worklog rows). A read day
+  with no worklogs is 0h only without `more`: with it, the answer holds
+  the first 1,000 worklogs by day and ID, so the last worklog's day and
+  the days after it are read again from that day before a screen totals
+  them. It refuses
   what the refresh refuses: a Tempo connection, one turned off or
   removed, and a tracker with no time tracking (Linear, decided by kind,
   which `TestTheMirrorReadOfWorklogsRefusesWhatTheRefreshRefuses` holds

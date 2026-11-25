@@ -182,6 +182,19 @@ func TestMirrorWorklogsAreBounded(t *testing.T) {
 	if err != nil || !more || len(got) != mirrorWorklogLimit {
 		t.Fatalf("read = %d, %v, %v", len(got), more, err)
 	}
+	// The days before the last worklog's day are whole; that day is not,
+	// and a read from it holds the rest (the WorklogDays contract).
+	last := got[len(got)-1].Day
+	perDay := map[string]int{}
+	for _, w := range got {
+		perDay[w.Day]++
+	}
+	if last != "2026-01-07" || perDay["2026-01-05"] != 400 || perDay["2026-01-06"] != 400 || perDay[last] != 200 {
+		t.Fatalf("a read past its bound holds %v, its last worklog on %s", perDay, last)
+	}
+	if rest, more, err := readWorklogs(s, c.ID, last, "2026-01-07"); err != nil || more || len(rest) != 201 {
+		t.Fatalf("a read from the last worklog's day = %d, %v, %v", len(rest), more, err)
+	}
 	got, more, err = s.ListMirrorIssueWorklogs(root, "10001")
 	if err != nil || !more || len(got) != mirrorWorklogLimit {
 		t.Fatalf("issue read = %d, %v, %v", len(got), more, err)

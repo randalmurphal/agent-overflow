@@ -108,6 +108,57 @@ func (s *timeScenario) days() []string {
 	return []string{s.from, first.AddDate(0, 0, 1).Format(time.DateOnly), s.to}
 }
 
+// gateWait bounds each wait of refreshAcross, so a regression fails the
+// test instead of hanging it.
+const gateWait = 30 * time.Second
+
+// refreshAcross refreshes the range with its store held between the
+// tracker's answer and the replace, runs change while it is held, and
+// returns what the refresh answered. A refresh that never reaches the
+// replace, or never returns, fails the test after gateWait; the hold is
+// released when the test ends, whatever happened, before the service
+// stops (cleanups run last registered first).
+func (s *timeScenario) refreshAcross(t *testing.T, change func()) WorklogDays {
+	t.Helper()
+	arrived, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	let := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(let)
+	s.gate.mu.Lock()
+	s.gate.gate = func() {
+		close(arrived)
+		select {
+		case <-release:
+		case <-time.After(gateWait):
+		}
+	}
+	s.gate.mu.Unlock()
+	done := make(chan WorklogDays, 1)
+	go func() {
+		got, err := s.svc.RefreshWorklogs(t.Context(), s.conn.ID, "acc-user1", s.from, s.to)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- got
+	}()
+	select {
+	case <-arrived:
+	case got := <-done:
+		t.Fatalf("the refresh answered %+v before it reached the replace", got)
+	case <-time.After(gateWait):
+		t.Fatal("the refresh never reached the replace")
+	}
+	change()
+	let()
+	select {
+	case got := <-done:
+		return got
+	case <-time.After(gateWait):
+		t.Fatal("the refresh never returned after its replace was released")
+	}
+	return WorklogDays{}
+}
+
 func (s *timeScenario) addTempoOn(t *testing.T) Connection {
 	t.Helper()
 	tempo := s.addTempo(s.conn.ID)
@@ -209,25 +260,7 @@ func TestALateWorklogReplaceFromAnEarlierSourceIsRefused(t *testing.T) {
 			s := newTimeScenario(t)
 			change := tc.before(t, s)
 			s.refreshed(t, "before the change", tc.late)
-			arrived, release := make(chan struct{}), make(chan struct{})
-			s.gate.mu.Lock()
-			s.gate.gate = func() {
-				close(arrived)
-				<-release
-			}
-			s.gate.mu.Unlock()
-			done := make(chan WorklogDays, 1)
-			go func() {
-				got, err := s.svc.RefreshWorklogs(t.Context(), s.conn.ID, "acc-user1", s.from, s.to)
-				if err != nil {
-					t.Error(err)
-				}
-				done <- got
-			}()
-			<-arrived
-			change()
-			close(release)
-			got := <-done
+			got := s.refreshAcross(t, change)
 			if got.Failure == nil || got.Failure.Kind != string(FailureTransient) || got.Failure.Message != timeSourceChanged || len(got.Worklogs) != 0 {
 				t.Fatalf("the late refresh answered %+v", got)
 			}
