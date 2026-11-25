@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -253,5 +254,98 @@ func BenchmarkListThreadsJoinedInGo(b *testing.B) {
 			b.ReportMetric(100*(float64(with)/float64(null)-1), "column-added-%")
 			b.ReportMetric(100*(float64(inGo)/float64(null)-1), "go-join-added-%")
 		})
+	}
+}
+
+// Temporary: the opcodes of the guarded link column.
+func TestExplainLinkGuardTmp(t *testing.T) {
+	s := newTestStore(t)
+	dump := func(q string, around bool) {
+		rows, err := s.db.Query(`EXPLAIN ` + q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		type op struct {
+			addr       int
+			code       string
+			p1, p2, p3 int
+			p4         sql.NullString
+			p5         int
+			comment    sql.NullString
+		}
+		var ops []op
+		for rows.Next() {
+			var o op
+			if err := rows.Scan(&o.addr, &o.code, &o.p1, &o.p2, &o.p3, &o.p4, &o.p5, &o.comment); err != nil {
+				t.Fatal(err)
+			}
+			ops = append(ops, o)
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+		for _, o := range ops {
+			t.Logf("%4d %-14s %4d %4d %4d %s", o.addr, o.code, o.p1, o.p2, o.p3, o.p4.String)
+		}
+	}
+	dump(`SELECT `+threadTicketLinkColumn+` FROM threads`, false)
+	full, fullArgs := listThreadsWithItemsQuery()
+	var pages []int
+	prow, err := s.db.Query(`SELECT rootpage FROM sqlite_schema WHERE tbl_name = 'thread_tickets'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for prow.Next() {
+		var p int
+		if err := prow.Scan(&p); err != nil {
+			t.Fatal(err)
+		}
+		pages = append(pages, p)
+	}
+	if err := prow.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("thread_tickets pages %v", pages)
+	rows, err := s.db.Query(`EXPLAIN `+full, fullArgs...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	var hits []int
+	for rows.Next() {
+		var addr, p1, p2, p3, p5 int
+		var code string
+		var p4, comment sql.NullString
+		if err := rows.Scan(&addr, &code, &p1, &p2, &p3, &p4, &p5, &comment); err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, fmt.Sprintf("%5d %-12s %5d %5d %5d %s", addr, code, p1, p2, p3, p4.String))
+		if code == "OpenRead" && slices.Contains(pages, p2) {
+			hits = append(hits, addr)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hits {
+		for i := max(0, h-6); i <= h+1 && i < len(lines); i++ {
+			t.Logf("full %s", lines[i])
+		}
+		t.Logf("full ---")
+	}
+	plan, err := s.db.Query(`EXPLAIN QUERY PLAN SELECT ` + threadTicketLinkColumn + ` FROM threads`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for plan.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := plan.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("plan %d %d %s", id, parent, detail)
+	}
+	if err := plan.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

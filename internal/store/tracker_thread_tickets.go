@@ -92,7 +92,7 @@ type ThreadTicketLink struct {
 // connections of its site. The copy is current while seen_root names a
 // root that is attached; a root's ID is never reused, so a detached,
 // removed or emptied mirror's copy is not.
-const threadTicketLinkColumn = `(SELECT json_object(
+const threadTicketLinkColumn = `CASE WHEN EXISTS (SELECT 1 FROM thread_tickets) THEN (SELECT json_object(
         'kind', tt.kind, 'site', tt.site, 'issueId', tt.issue_id, 'key', tt.issue_key, 'title', tt.issue_title,
         'statusId', tt.status_id, 'statusName', tt.status_name, 'statusGroup', tt.status_group,
         'origin', tt.origin, 'linkedAt', tt.linked_at,
@@ -100,10 +100,10 @@ const threadTicketLinkColumn = `(SELECT json_object(
           ELSE CASE (SELECT MAX(c.enabled) FROM tracker_connections c
                       WHERE c.kind = tt.kind AND c.site = tt.site AND c.parent_id IS NULL)
             WHEN 1 THEN 'not_checked' WHEN 0 THEN 'turned_off' ELSE 'no_connection' END END,
-        'connectionId', COALESCE(seen.connection_id, (SELECT c.id FROM tracker_connections c
-          WHERE c.kind = tt.kind AND c.site = tt.site AND c.parent_id IS NULL AND c.enabled = 1 ORDER BY c.id LIMIT 1), ''))
+        'connectionId', COALESCE(seen.connection_id, (SELECT MIN(c.id) FROM tracker_connections c
+          WHERE c.kind = tt.kind AND c.site = tt.site AND c.parent_id IS NULL AND c.enabled = 1), ''))
       FROM thread_tickets tt LEFT JOIN tracker_cache_roots seen ON seen.id = tt.seen_root
-     WHERE tt.thread_id = threads.id)`
+     WHERE tt.thread_id = threads.id) END`
 
 func scanThreadTicket(scan func(...any) error) (ThreadTicket, error) {
 	var t ThreadTicket
