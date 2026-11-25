@@ -105,6 +105,17 @@
   // after a read or a save failed until a read answers.
   let locked = $derived(operateReason !== '' || (boards?.saving ?? false) || !(boards?.current ?? false));
 
+  // What the page did after a failed save. Only the typed refusal proves
+  // nothing was saved: after any other failure the change may be in the
+  // list, and making it again would make it twice.
+  let rereadNote = $derived(
+    !(boards?.current ?? false)
+      ? 'Reading the saved list…'
+      : isTrackerBoardsChangedRefusal(saveError)
+        ? 'The list shown is the saved one; make the change again.'
+        : 'The list shown is the saved one; the change may already be in it.',
+  );
+
   async function save(edit: BoardListEdit): Promise<boolean> {
     const id = selectedId;
     saveError = null;
@@ -254,18 +265,9 @@
         {/if}
         {#if saveError !== null}
           <p class="text-[0.75rem] text-error" role="alert" data-testid="settings-tracker-boards-save-error">{userFacingError(saveError)}</p>
-          <!-- A failed save reads the list again; a read that fails says so above.
-               Only the typed refusal proves nothing was saved: after any
-               other failure the change may be in the list, and making it
-               again would make it twice. -->
+          <!-- A failed save reads the list again; a read that fails says so above. -->
           {#if boards.error === null}
-            <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-boards-reread">
-              {!boards.current
-                ? 'Reading the saved list…'
-                : isTrackerBoardsChangedRefusal(saveError)
-                  ? 'The list shown is the saved one; make the change again.'
-                  : 'The list shown is the saved one; the change may already be in it.'}
-            </p>
+            <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-boards-reread">{rereadNote}</p>
           {/if}
         {/if}
         {#if connectionsView.error !== null}
