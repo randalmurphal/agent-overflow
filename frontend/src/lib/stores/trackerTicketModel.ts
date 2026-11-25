@@ -1,8 +1,9 @@
 // The ticket screen's rules that hold no state (docs/specs/issues.md,
-// "Ticket"): what a write's answer means for the person, which comments
-// and changes are mounted, the order of the rail's fields, which fields
-// are sections, how linked tickets group, and the row of the board the
-// ticket shows its points from. The stores and the components call these; each rule is here once.
+// "Ticket"): which comments and changes are mounted, the order of the
+// rail's fields, which fields are sections, how linked tickets group, and
+// the row of the board the ticket shows its points from. What a write's
+// answer means is trackerWriteOutcome.ts's. The stores and the components
+// call these; each rule is here once.
 
 import type {
   CommentView,
@@ -11,54 +12,8 @@ import type {
   FieldValueView,
   FieldView,
   LinkView,
-  RefusalView,
   TicketRowView,
-  WriteView,
 } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-
-/** What became of a write, as the person reads it. */
-export type WriteOutcome =
-  /** Made. `note` says what the ticket does not show yet, or null. */
-  | { readonly kind: 'applied'; readonly note: string | null }
-  /** The tracker, or the computer before sending, refused a part. */
-  | { readonly kind: 'refused'; readonly refusal: RefusalView }
-  /** A part was sent and not answered in full (`unknown`), or was not
-   * sent; `message` says which and where to look. */
-  | { readonly kind: 'unknown' | 'not_sent'; readonly message: string }
-  /** The call failed: its error says why and what to do. */
-  | { readonly kind: 'failed'; readonly error: unknown }
-  /** The connection to the ticket's computer dropped before the answer. */
-  | { readonly kind: 'lost'; readonly message: string };
-
-/** A write's answer as its outcome: the first part that was not applied
- * decides; with every part applied, what the mirror could not show yet is
- * its note. */
-export function writeOutcome(view: WriteView): WriteOutcome {
-  for (const part of view.parts ?? []) {
-    if (part.state === 'applied') continue;
-    if (part.state === 'refused' && part.refusal) return { kind: 'refused', refusal: part.refusal };
-    const kind = part.state === 'not_sent' ? 'not_sent' : 'unknown';
-    return { kind, message: part.failure?.message ?? 'The tracker did not say what became of this change; look at the ticket before you try again.' };
-  }
-  if (view.ended) return { kind: 'applied', note: 'Saved. Its connection was turned off or removed while saving, so this ticket no longer follows it.' };
-  const stale = view.stale?.[0];
-  if (stale) return { kind: 'applied', note: `Saved. The ticket shows it after its next read: ${stale.failure.message}` };
-  return { kind: 'applied', note: null };
-}
-
-/** The sentence of a write whose answer a dropped connection lost. */
-export function lostWriteSentence(computer: string): string {
-  return `${computer}: the connection dropped before the answer, so the change may or may not have been made; look at the ticket before you try again.`;
-}
-
-/** A refusal as one sentence, with what the tracker said of each field,
- * named by `fieldName`. */
-export function refusalSentence(refusal: RefusalView, fieldName: (id: string) => string): string {
-  const fields = (refusal.fields ?? []).map((f) => `${fieldName(f.field)}: ${f.message}`);
-  const lost = refusal.reason === 'loss' && refusal.lost?.length ? ` It would lose: ${refusal.lost.join(', ')}.` : '';
-  const said = refusal.message || 'The tracker refused this change.';
-  return fields.length > 0 ? `${said} ${fields.join('; ')}${lost}` : `${said}${lost}`;
-}
 
 /** Comments shown on open, and how many more each press of the control
  * mounts. */

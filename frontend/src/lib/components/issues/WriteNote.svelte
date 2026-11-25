@@ -21,18 +21,20 @@
     text: string;
     onDismiss: () => void;
     testId: string;
+    /** The control's target, as `data-target`. */
+    target?: string;
   }
 
-  let { write, pendingText, text, onDismiss, testId }: Props = $props();
+  let { write, pendingText, text, onDismiss, testId, target }: Props = $props();
 
   const outcome = $derived(write?.outcome ?? null);
   const tone = $derived(outcome?.kind === 'applied' ? 'text-fg-muted' : 'text-error');
 </script>
 
 {#if write?.pending}
-  <p class="text-xs text-fg-muted" role="status" data-testid="{testId}-pending">{pendingText}</p>
+  <p class="text-xs text-fg-muted" role="status" data-testid="{testId}-pending" data-target={target}>{pendingText}</p>
 {:else if outcome && text}
-  <div class="flex items-start gap-1.5 text-xs {tone}" role={outcome.kind === 'applied' ? 'status' : 'alert'} data-testid="{testId}-outcome" data-kind={outcome.kind}>
+  <div class="flex items-start gap-1.5 text-xs {tone}" role={outcome.kind === 'applied' ? 'status' : 'alert'} data-testid="{testId}-outcome" data-target={target} data-kind={outcome.kind}>
     <span class="min-w-0 flex-1 break-words">{text}</span>
     {#if write?.saveAnyway}
       {@const again = write.saveAnyway}
