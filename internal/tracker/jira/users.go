@@ -104,23 +104,7 @@ func (c *Client) Me(ctx context.Context) (User, error) {
 // User returns the user with accountID, from the client's cache when it
 // holds it. A missing user is an error matching trackerapi.ErrNotFound.
 func (c *Client) User(ctx context.Context, accountID string) (User, error) {
-	if err := c.admit(ctx); err != nil {
-		return User{}, err
-	}
-	if accountID == "" {
-		return User{}, notSent("an account ID is required")
-	}
-	if u, ok := c.users.get(ctx, accountID); ok {
-		return u, nil
-	}
-	epoch := c.users.epoch()
-	var u userJSON
-	resp, err := c.call(ctx, trackerapi.Request{Path: apiPath + "user", Query: url.Values{"accountId": {accountID}}}, &u)
-	if err != nil {
-		return User{}, fmt.Errorf("jira: user %s: %w", accountID, err)
-	}
-	c.keepUsers(epoch, resp.CredentialMark(), u.user())
-	return u.user(), nil
+	return c.lookUpUser(ctx, accountID, false)
 }
 
 // ErrUserWithheld is matched by the error of a poker voter's lookup Jira
@@ -131,21 +115,48 @@ var ErrUserWithheld = errors.New("jira: Jira does not show this user")
 
 // PokerVoter is User for a planning poker voter, whose votes are read
 // every few seconds: a lookup Jira withheld matches ErrUserWithheld and
-// is kept as long as a user is, so the poll asks again only then. Every
-// other caller uses User, which asks each time.
+// is remembered as long as a user is kept, so the poll asks again only
+// then. Every other caller uses User, which asks each time.
 func (c *Client) PokerVoter(ctx context.Context, accountID string) (User, error) {
-	if err, ok := c.voterMisses.get(ctx, accountID); ok {
+	return c.lookUpUser(ctx, accountID, true)
+}
+
+// lookUpUser is User, and PokerVoter when voter is set. The withheld
+// voter memory (voterMisses) keeps four rules, each in one place: a call
+// is admitted before any answer, remembered or not (first); a user the
+// client knows wins over a remembered refusal (the user cache is read
+// before it); a refusal is remembered for a voter lookup only (put, here);
+// and a user learned by any lookup removes the refusal of its account
+// (keepUsers).
+func (c *Client) lookUpUser(ctx context.Context, accountID string, voter bool) (User, error) {
+	if err := c.admit(ctx); err != nil {
 		return User{}, err
 	}
-	// Taken before the lookup: put drops the answer when the credential
-	// changed meanwhile.
-	epoch, mark := c.voterMisses.epoch(), c.api.CredentialMark()
-	u, err := c.User(ctx, accountID)
-	if withheld(err) {
-		err = fmt.Errorf("%w: %w", ErrUserWithheld, err)
-		c.voterMisses.put(epoch, mark, accountID, err)
+	if accountID == "" {
+		return User{}, notSent("an account ID is required")
 	}
-	return u, err
+	if u, ok := c.users.get(ctx, accountID); ok {
+		return u, nil
+	}
+	if voter {
+		if err, ok := c.voterMisses.get(ctx, accountID); ok {
+			return User{}, err
+		}
+	}
+	// Both taken before the request: a store is dropped when the cache was
+	// fenced or the credential changed meanwhile.
+	epoch, missEpoch, mark := c.users.epoch(), c.voterMisses.epoch(), c.api.CredentialMark()
+	var u userJSON
+	resp, err := c.call(ctx, trackerapi.Request{Path: apiPath + "user", Query: url.Values{"accountId": {accountID}}}, &u)
+	if err != nil {
+		if voter && withheld(err) {
+			err = fmt.Errorf("%w: %w", ErrUserWithheld, err)
+			c.voterMisses.put(missEpoch, mark, accountID, err)
+		}
+		return User{}, fmt.Errorf("jira: user %s: %w", accountID, err)
+	}
+	c.keepUsers(epoch, resp.CredentialMark(), u.user())
+	return u.user(), nil
 }
 
 // withheld reports a user lookup's error that is Jira withholding the
@@ -155,11 +166,15 @@ func withheld(err error) bool {
 	return errors.Is(err, trackerapi.ErrNotFound) || ok && se.Status == http.StatusForbidden
 }
 
-// keepUsers caches us under epoch, drawn under the credential read mark.
+// keepUsers caches us under epoch, drawn under the credential read mark,
+// and forgets any refusal remembered for them (lookUpUser).
 func (c *Client) keepUsers(epoch uint64, mark trackerapi.CredentialMark, us ...User) {
 	for _, u := range us {
 		if u.AccountID != "" {
 			c.users.put(epoch, mark, u.AccountID, u)
+			// A user Jira showed is no longer withheld: its remembered
+			// refusal goes, and one in flight is not stored (drop fences).
+			c.voterMisses.drop(u.AccountID)
 		}
 	}
 }

@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -48,6 +49,99 @@ func TestUserAsksAgainAfterAWithheldAnswer(t *testing.T) {
 				t.Fatalf("%d lookups, want 3", n)
 			}
 		})
+	}
+}
+
+// voterSite is a site whose user lookup refuses acc-user2 with a 403
+// while *refused is set, and answers every other account, and acc-user2
+// once granted, as itself.
+func voterSite(t *testing.T, refused *bool) (*Client, *jiratest.Server) {
+	t.Helper()
+	f := jiratest.NewServer(t)
+	c := newTestClient(t, f)
+	f.On("GET", "/rest/api/3/user", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		id := r.URL.Query().Get("accountId")
+		if *refused && id == "acc-user2" {
+			jiratest.Reply(http.StatusForbidden, `{"errorMessages":["no"],"errors":{}}`)(w, r, b)
+			return
+		}
+		jiratest.Reply(200, strings.ReplaceAll(userOneJSON, "acc-user1", id))(w, r, b)
+	})
+	// A credential already in use: its first answer was a user.
+	if _, err := c.User(t.Context(), "acc-user1"); err != nil {
+		t.Fatal(err)
+	}
+	return c, f
+}
+
+// A voter the client learned after its lookup was refused is named: a
+// user the client knows wins over the remembered refusal, and learning
+// the user removes that refusal.
+func TestPokerVoterKnownUserWinsOverARefusal(t *testing.T) {
+	refused := true
+	c, _ := voterSite(t, &refused)
+	if _, err := c.PokerVoter(t.Context(), "acc-user2"); !errors.Is(err, ErrUserWithheld) {
+		t.Fatalf("the refused voter: %v", err)
+	}
+	refused = false
+	if _, err := c.User(t.Context(), "acc-user2"); err != nil {
+		t.Fatal(err)
+	}
+	if u, err := c.PokerVoter(t.Context(), "acc-user2"); err != nil || u.AccountID != "acc-user2" {
+		t.Fatalf("the voter after the grant: %+v, %v", u, err)
+	}
+	if _, ok := c.voterMisses.get(t.Context(), "acc-user2"); ok {
+		t.Fatal("the refusal is still remembered for a user the client learned")
+	}
+}
+
+// A refusal remembered while the client knows the user, as one stored
+// in the moment between the user's arrival and the voter's lookup, does
+// not hide the user.
+func TestPokerVoterPrefersTheKnownUser(t *testing.T) {
+	refused := false
+	c, _ := voterSite(t, &refused)
+	if _, err := c.User(t.Context(), "acc-user2"); err != nil {
+		t.Fatal(err)
+	}
+	c.voterMisses.put(c.voterMisses.epoch(), c.api.CredentialMark(), "acc-user2", ErrUserWithheld)
+	if u, err := c.PokerVoter(t.Context(), "acc-user2"); err != nil || u.AccountID != "acc-user2" {
+		t.Fatalf("the known voter: %+v, %v", u, err)
+	}
+}
+
+// A refusal of another caller's lookup is not remembered for voters: once
+// the permission is granted, the voter's lookup asks and names the user.
+func TestPokerVoterAsksAfterAnotherCallersRefusal(t *testing.T) {
+	refused := true
+	c, f := voterSite(t, &refused)
+	if _, err := c.User(t.Context(), "acc-user2"); err == nil {
+		t.Fatal("the refused lookup succeeded")
+	}
+	refused = false
+	if u, err := c.PokerVoter(t.Context(), "acc-user2"); err != nil || u.AccountID != "acc-user2" {
+		t.Fatalf("the voter after the grant: %+v, %v", u, err)
+	}
+	if n := f.Count("GET", "/rest/api/3/user"); n != 3 {
+		t.Fatalf("%d lookups, want 3", n)
+	}
+}
+
+// A voter lookup on an ended call, or a closed client, is refused before
+// any remembered answer: it is never a withheld voter.
+func TestPokerVoterIsAdmittedFirst(t *testing.T) {
+	refused := true
+	c, f := voterSite(t, &refused)
+	if _, err := c.PokerVoter(t.Context(), "acc-user2"); !errors.Is(err, ErrUserWithheld) {
+		t.Fatalf("the refused voter: %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := c.PokerVoter(ctx, "acc-user2"); errors.Is(err, ErrUserWithheld) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("an ended call answered %v", err)
+	}
+	if n := f.Count("GET", "/rest/api/3/user"); n != 2 {
+		t.Fatalf("%d lookups, want 2", n)
 	}
 }
 
