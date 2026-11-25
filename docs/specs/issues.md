@@ -260,6 +260,19 @@ Widths are CSS pixels of the pane, not the window.
 - The split between list and ticket is dragged, starts at half, is
   remembered per screen and resets on double-click. The ticket keeps at
   least 380 and the list at least 520.
+- A card, a linked ticket or the parent pressed with Ctrl or Cmd, or
+  Open in its own pane in their menus, opens the ticket in a pane of its
+  own right of the focused pane, at the average pane width, and focuses
+  it; a ticket that already has one is focused there instead. In its own
+  pane in a ticket's menu moves the ticket into one, with what is being
+  written on it, and the Issues pane shows the list again. The pane's
+  header is the ticket's, with the pane's close, and its key moves the
+  pane. A linked ticket opened in it takes its place, with Back, as in
+  the Issues pane. Escape closes the Details rail, then steps back, and
+  never closes the pane. A thread opened while the pane is focused takes
+  its slot, as it does a tool pane's. After a reload the pane shows the
+  ticket it showed, without its Back trail; one whose ticket cannot be
+  read back says so until it is closed.
 
 ### Board
 
@@ -307,7 +320,7 @@ avatar.
 ### Ticket
 
 Status: built: a ticket opened from a card, or from a thread's linked
-ticket, over or beside the board, the choice remembered, with the split between them; the wide and narrow
+ticket, over or beside the board, the choice remembered, with the split between them, or in a pane of its own; the wide and narrow
 layouts with the rail and Details; status, assignee, priority, points and
 type changed in place, a move whose screen takes fields through their form, and the other fields with allowed values or one
 typed value behind the control with its find box (a field of several
@@ -328,8 +341,7 @@ its result in the section or the ticket's menu; on Jira, the
 estimate in the header and Log time; the control that opens it in the
 tracker; and Back through the tickets opened from one another. Not built:
 pinning a field or a section, the mark on a section holding the template
-text, Work, the thread an agent's comment came from, and a ticket in a
-pane of its own.
+text, Work, and the thread an agent's comment came from.
 
 - At 720 or wider the content is on the left and a rail on the right holds
   Fields, then Work. Narrower, the ticket shows the content only, with one
@@ -502,7 +514,7 @@ window 640 wide or narrower. On top of those rules:
 - A backlog row is two lines: the title, then type, key, epic, priority,
   points and assignee. Labels show on the ticket only.
 - A ticket takes the whole pane in its narrow form. Back closes the fields
-  rail, then the ticket.
+  rail, then the ticket. A ticket does not open in a pane of its own.
 - Dashboard widgets stack, number tiles two to a row. A tile shows How this
   is counted and any control that is switched on; the limit and the board
   pin show while the dashboard is being edited. A ticket list shows its

@@ -219,6 +219,6 @@ export function restoreTicketPane(paneId: string, carrier: TicketPaneCarrier): v
 }
 
 export function resetTicketPanesForTest(): void {
-  for (const paneId of [...records.keys()]) drop(paneId);
+  for (const paneId of records.keys()) drop(paneId);
   handoffs.clear();
 }

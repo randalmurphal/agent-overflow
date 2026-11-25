@@ -1946,7 +1946,8 @@ the `bindings.ts` wrappers of the connection methods, the two picker lists,
 `stores/trackerProjectBoards.svelte.ts`), and the Issues pane's Board
 screen, with the `bindings.ts` wrappers of `TrackerBoardChoices` and the
 board subscription's methods and `tracker:board_updated`'s TypeScript
-type, and its ticket screen, with the wrappers of the ticket
+type, and its ticket screen, in the Issues pane or a pane of its own,
+with the wrappers of the ticket
 subscription's methods, `TrackerComments`, the issue and comment writes,
 `TrackerAssignableUsers` and `TrackerChoices`, and
 `tracker:issue_updated`'s TypeScript type, and the ticket's attachments,
@@ -1966,7 +1967,6 @@ are outside the tracker (a store error, the cleanup), and a tracker
 failure of the loop's sync shows on its connection's row as its problem.
 Not built, owed by the app layer:
 
-- A ticket in a pane of its own.
 - A sprint edit on the Backlog screen: the `bindings.ts` wrapper of
   `EditTrackerSprint` ships with it.
 - The rest of the project's tracker setup, each a section of its file:

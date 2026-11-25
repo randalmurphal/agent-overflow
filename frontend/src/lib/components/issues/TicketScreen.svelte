@@ -710,8 +710,8 @@
         <!-- The pane's drag handle, as a tool pane's title is. -->
         <button
           type="button"
-          draggable={pane.onDragStart != null && !compact}
-          ondragstart={(event) => pane.onDragStart?.(event)}
+          draggable={pane?.onDragStart != null && !compact}
+          ondragstart={(event) => pane?.onDragStart?.(event)}
           class="shrink-0 cursor-grab rounded-[var(--radius-control)] text-sm tabular-nums text-fg-muted hover:bg-surface-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 active:cursor-grabbing"
           title="Drag to move the pane"
           data-testid="ticket-key"

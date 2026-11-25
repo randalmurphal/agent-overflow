@@ -66,10 +66,12 @@ through `assignThread`, which refreshes transport watches and saves the pane
 layout before any load the change starts. Use `revealPane` for actions that
 expose a pane so compact layout moves to the thread screen.
 
-Tool panes are layout items only (`toolPanes.svelte.ts`), one per kind. A
+Tool panes are layout items only (`toolPanes.svelte.ts`), one per kind.
+A ticket pane is a layout item and a record (`ticketPanes.svelte.ts`),
+which owns the ticket it shows and is dropped with its item. A
 thread open that names no pane resolves through
-`panes.svelte#focusedOpenTargetPane`, which gives a focused tool pane's slot
-to the thread; do not pass `getFocusedPaneOrNull() ?? ensureMainPane()` as a
+`panes.svelte#focusedOpenTargetPane`, which gives a focused tool or ticket
+pane's slot to the thread; do not pass `getFocusedPaneOrNull() ?? ensureMainPane()` as a
 target, which bypasses it. A tool's open that answers after an await goes
 through `mountThreadForToolPane` with the tool pane, or null once the
 surface that asked is gone, so it never lands in a pane that gained focus
