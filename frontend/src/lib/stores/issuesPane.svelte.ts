@@ -401,11 +401,11 @@ export interface BoardSelection {
   readonly ticketAttachment: TrackerTicketAttachment | null;
   /** The open ticket's project, which its Ask and Start work make their
    * thread in and whose setup holds its Start work defaults: the one the
-   * person picked for it, else the one its opener named, else the
-   * board's. Null with no ticket. Reactive. */
+   * person picked for it, else the one its last opener that named a
+   * project named, else the board's. Null with no ticket. Reactive. */
   readonly ticketProject: string | null;
   /** The person picked `project` for the open ticket; it holds while that
-   * ticket stays open. */
+   * ticket stays open, over any later opener's. */
   setTicketProject(project: string): void;
   /** The screen the pane shows: the Board or Time. Reactive. */
   readonly screen: IssuesScreen;
@@ -436,7 +436,9 @@ export interface BoardSelection {
    * connection, else over the board `boardForTicket` picks once that
    * computer's boards are read, which it shows without saving it as the
    * person's pick. A pane on Time switches to the Board without saving
-   * that either. No such board runs the request's `unplaced`. */
+   * that either. No such board runs the request's `unplaced`. The ticket
+   * already open stays open, and the project the request names becomes
+   * its project unless the person picked one (`ticketProject`). */
   openRequested(request: TicketOpenRequest): void;
   /** Back: the ticket this one was opened from, else closes it. */
   stepBack(): void;
@@ -499,10 +501,18 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
   const computer = $derived(board ? boardComputer(board.backend) : 'waiting');
   let ticket = $state.raw<OpenTicket | null>(null);
   let trail = $state.raw<readonly OpenTicket[]>([]);
-  // The project the person picked for an open ticket, by the open it
-  // belongs to, so Back and a new open fall back to their own.
-  let projectPick = $state.raw<{ readonly open: OpenTicket; readonly project: string } | null>(null);
-  const ticketProject = $derived(!ticket ? null : projectPick?.open === ticket ? projectPick.project : ticket.project ?? board?.projectId ?? null);
+  // The open ticket's project keeps these true. Three words name it, and
+  // the first that holds wins: the project the person picked in Work's
+  // picker for this open; else the one the last opener that named a
+  // project named (its OpenTicket's, or a later opener's that asked for
+  // the ticket already open); else the board's. A pick holds while its
+  // open is the one shown: no later opener replaces it. An opener that
+  // names no project leaves the word before it. A later opener's word
+  // changes only this: the open, its subscription and its screen stay.
+  // The word belongs to the open it was given for, so a new open, Back
+  // and Close fall back to their own.
+  let projectWord = $state.raw<{ readonly open: OpenTicket; readonly project: string; readonly picked: boolean } | null>(null);
+  const ticketProject = $derived(!ticket ? null : projectWord?.open === ticket ? projectWord.project : ticket.project ?? board?.projectId ?? null);
   let ticketAttachment = $state.raw<TrackerTicketAttachment | null>(null);
   // A ticket asked for from outside the pane, while it waits on its
   // computer's boards (openRequested).
@@ -630,8 +640,14 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
           requested = null;
           screen = 'board';
           trail = [];
-          const held = ticket?.ref;
-          if (held?.backend !== ref.backend || held.connection !== ref.connection || held.issue !== ref.issue) ticket = open;
+          const held = ticket;
+          if (!held || held.ref.backend !== ref.backend || held.ref.connection !== ref.connection || held.ref.issue !== ref.issue) {
+            ticket = open;
+            return;
+          }
+          if (request.project !== null && !(projectWord?.open === held && projectWord.picked)) {
+            projectWord = { open: held, project: request.project, picked: false };
+          }
         });
         return;
       }
@@ -679,7 +695,7 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
     get ticketAttachment() { return ticketAttachment; },
     get ticketProject() { return ticketProject; },
     setTicketProject(project) {
-      if (ticket) projectPick = { open: ticket, project };
+      if (ticket) projectWord = { open: ticket, project, picked: true };
     },
     get screen() { return screen; },
     get placement() { return placement; },
