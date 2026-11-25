@@ -26,6 +26,8 @@ import {
 } from '../../stores/threadGroups.svelte';
 import type { Thread } from '../../types/models';
 import type { Settings } from '../../types/settings';
+import type { ThreadTicketLink } from '../../../../bindings/agent-overflow/internal/store/models';
+import { takeTicketOpenRequest } from '../../stores/issuesPane.svelte';
 import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { entryRecordForTest, setEntryExpanded } from '../../stores/sidebarEntryContinuity.svelte';
 
@@ -1251,5 +1253,61 @@ describe('<ThreadContextMenu> standing agent', () => {
     // has read the thread's own rail preferences.
     await waitFor(() => expect(pane.activityRailBackgroundOpen).toBe(true));
     expect(pane.threadId).toBe('thread-1');
+  });
+});
+
+describe('<ThreadContextMenu> the linked ticket', () => {
+  const ticketLink: ThreadTicketLink = {
+    kind: 'jira', site: 'https://example.atlassian.net', issueId: '10001', key: 'WEB-1', title: 'Retry cursor returns no rows',
+    statusId: '3', statusName: 'In Progress', statusGroup: 'in_progress', origin: 'manual', linkedAt: 1,
+    state: 'current', connectionId: 'conn-1',
+  };
+
+  beforeEach(() => {
+    clearThreadSelection();
+  });
+
+  afterEach(() => {
+    takeTicketOpenRequest();
+    resetToLocalPage();
+  });
+
+  function row(el: HTMLElement, testId: string): HTMLElement {
+    const node = el.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+    if (!node) throw new Error(`${testId} not rendered`);
+    return node;
+  }
+
+  it('offers Open Ticket and Remove Ticket Link before Fork, and neither for a thread with no link', () => {
+    const linked = renderMenu(makeThread({ ticketLink }));
+    const labels = visibleLabels(linked.baseElement);
+    expect(labels.slice(labels.indexOf('Open Ticket WEB-1'), labels.indexOf('Fork Thread') + 1)).toEqual(['Open Ticket WEB-1', 'Remove Ticket Link', 'Fork Thread']);
+    linked.unmount();
+    const bare = renderMenu(makeThread());
+    expect(visibleLabels(bare.baseElement).filter((label) => /Ticket/.test(label))).toEqual([]);
+  });
+
+  it('opens the ticket in the Issues pane', async () => {
+    const { baseElement } = renderMenu(makeThread({ ticketLink, projectId: 'project-1' }));
+    await fireEvent.click(row(baseElement, 'thread-menu-ticket-open'));
+    await waitFor(() => expect(takeTicketOpenRequest()?.ref).toMatchObject({ connection: 'conn-1', issue: '10001' }));
+  });
+
+  it('removes the link and applies the row the computer answers', async () => {
+    const thread = makeThread({ ticketLink });
+    replaceAllThreads([thread]);
+    const clear = setBindingMock('ClearThreadTicket', async () => ({ ...thread, ticketLink: null }));
+    const { baseElement } = renderMenu(thread);
+    await fireEvent.click(row(baseElement, 'thread-menu-ticket-remove'));
+    await waitFor(() => expect(getThreadById('thread-1')?.ticketLink).toBeNull());
+    expect(clear).toHaveBeenCalledWith('thread-1');
+  });
+
+  it('holds Remove Ticket Link inert without threads:operate, and Open Ticket live', async () => {
+    await pairViewOnly();
+    const { baseElement } = renderMenu(makeThread({ ticketLink }));
+    expect(row(baseElement, 'thread-menu-ticket-remove').getAttribute('aria-disabled')).toBe('true');
+    expect(row(baseElement, 'thread-menu-ticket-remove').getAttribute('title')).toBe('Not granted to this device');
+    expect(row(baseElement, 'thread-menu-ticket-open').getAttribute('aria-disabled')).not.toBe('true');
   });
 });

@@ -7,7 +7,9 @@ import { applySettingsSnapshot } from '../../stores/settings.svelte';
 import { makeSettings } from '../../../test/helpers/settings';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
-import { setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
+import { getPaneLayoutItems, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
+import { takeTicketOpenRequest } from '../../stores/issuesPane.svelte';
+import type { ThreadTicketLink } from '../../../../bindings/agent-overflow/internal/store/models';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { applyBrowserCompanionState } from '../../stores/browserCompanion.svelte';
@@ -635,5 +637,116 @@ describe('<ChatHeaderActions> browser toggle', () => {
     setCompactLayoutForTest(false);
     await flush();
     expect(companionForSource('main', 'browser')).not.toBeNull();
+  });
+});
+
+describe('<ChatHeaderActions> the linked ticket', () => {
+  // The desktop header shows the thread's ticket as a button before the
+  // pull request; compact makes it the menu's row above the pull request
+  // (docs/specs/issues.md, "Thread link").
+  const ticketLink = (overrides: Partial<ThreadTicketLink> = {}): ThreadTicketLink => ({
+    kind: 'jira', site: 'https://example.atlassian.net', issueId: '10001', key: 'WEB-1', title: 'Retry cursor returns no rows',
+    statusId: '3', statusName: 'In Progress', statusGroup: 'in_progress', origin: 'manual', linkedAt: 1,
+    state: 'current', connectionId: 'conn-1',
+    ...overrides,
+  });
+
+  beforeEach(async () => {
+    setBindingMock('GetSettings', async () => null);
+    setBindingMock('GetProviderStatuses', async () => []);
+    setBindingMock('UpdateThreadBranch', async () => []);
+    setBindingMock('ListAvailableEditors', async () => []);
+    setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
+    await loadSettings();
+    installSubscribeMock(status({ openPrUrl: 'https://github.com/o/r/pull/7', openPrNumber: 7 }));
+  });
+
+  afterEach(() => {
+    takeTicketOpenRequest();
+    setCompactLayoutForTest(false);
+    resetToLocalPage();
+  });
+
+  async function linkedPane(link: ThreadTicketLink | null = ticketLink()) {
+    const pane = await buildPane(makeThread({ ticketLink: link }));
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
+    return pane;
+  }
+
+  const menuRowTexts = (): string[] =>
+    [...document.body.querySelectorAll('[data-menuitem]')].map((row) => row.querySelector('.truncate')?.textContent?.trim() ?? '');
+
+  it('shows the key before the pull request on the desktop, and nothing for a thread with no link', async () => {
+    const view = render(ChatHeaderActions, { props: { pane: await linkedPane() } });
+    await flush();
+    const button = view.getByTestId('chat-header-ticket');
+    expect(button.textContent?.trim()).toBe('WEB-1');
+    expect(button.title).toBe('WEB-1 · Retry cursor returns no rows\nOpen it in Issues');
+    expect(button.querySelector('[data-status-group]')?.getAttribute('data-status-group')).toBe('in_progress');
+    expect(button.compareDocumentPosition(view.getByTestId('chat-header-pr-badge')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    view.unmount();
+
+    const bare = render(ChatHeaderActions, { props: { pane: await linkedPane(null) } });
+    await flush();
+    expect(bare.queryByTestId('chat-header-ticket')).toBeNull();
+  });
+
+  it('opens the ticket in the Issues pane beside the thread on a click', async () => {
+    const view = render(ChatHeaderActions, { props: { pane: await linkedPane() } });
+    await flush();
+    await fireEvent.click(view.getByTestId('chat-header-ticket'));
+    await vi.waitFor(() => expect(getPaneLayoutItems().map((item) => item.kind)).toEqual(['thread', 'issues']));
+    expect(takeTicketOpenRequest()?.ref).toMatchObject({ connection: 'conn-1', issue: '10001' });
+  });
+
+  it('says in its title that a link was not read here yet, and dims its mark', async () => {
+    const view = render(ChatHeaderActions, { props: { pane: await linkedPane(ticketLink({ state: 'not_checked' })) } });
+    await flush();
+    const button = view.getByTestId('chat-header-ticket');
+    expect(button.dataset.linkState).toBe('not_checked');
+    expect(button.title).toBe('WEB-1 · Retry cursor returns no rows\nNot read on this computer yet.\nOpen it in Issues');
+    expect(button.querySelector('.opacity-50 [data-status-group]')).not.toBeNull();
+  });
+
+  it('removes the link from its right-click menu, and the button goes with the row the computer answers', async () => {
+    const pane = await linkedPane();
+    const clear = setBindingMock('ClearThreadTicket', async () => ({ ...pane.thread!, ticketLink: null }));
+    const view = render(ChatHeaderActions, { props: { pane } });
+    await flush();
+    await fireEvent.contextMenu(view.getByTestId('chat-header-ticket'));
+    await flush();
+    expect(menuRowTexts()).toEqual(['Open ticket', 'Copy key', 'Remove link']);
+    await fireEvent.click(within(document.body).getByTestId('chat-header-ticket-remove'));
+    await vi.waitFor(() => expect(view.queryByTestId('chat-header-ticket')).toBeNull());
+    expect(clear).toHaveBeenCalledWith(pane.threadId);
+  });
+
+  it('holds Remove inert on a page that may not operate threads, on the button and in the Thread actions menu', async () => {
+    await pairWithScopes(OBSERVE_SCOPES);
+    const view = render(ChatHeaderActions, { props: { pane: await linkedPane() } });
+    await flush();
+    await fireEvent.contextMenu(view.getByTestId('chat-header-ticket'));
+    await flush();
+    expect(within(document.body).getByTestId('chat-header-ticket-remove')).toHaveAttribute('aria-disabled', 'true');
+    await fireEvent.keyDown(document.body, { key: 'Escape' });
+    await flush();
+    await fireEvent.click(view.getByTestId('chat-header-more'));
+    await flush();
+    expect(within(document.body).getByTestId('chat-header-menu-ticket-remove')).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it("is the compact menu's row above the pull request, and opens the ticket", async () => {
+    setCompactLayoutForTest(true);
+    const view = render(ChatHeaderActions, { props: { pane: await linkedPane() } });
+    await flush();
+    expect(view.queryByTestId('chat-header-ticket')).toBeNull();
+    await fireEvent.click(view.getByTestId('chat-header-more'));
+    await flush();
+    const rows = menuRowTexts();
+    expect(rows.slice(0, 3)).toEqual(['Review changes', 'WEB-1', 'PR #7']);
+    expect(rows).toContain('Remove ticket link');
+    expect(within(document.body).getByTestId('chat-header-menu-ticket').textContent).toContain('Retry cursor returns no rows');
+    await fireEvent.click(within(document.body).getByTestId('chat-header-menu-ticket'));
+    await vi.waitFor(() => expect(takeTicketOpenRequest()?.ref).toMatchObject({ connection: 'conn-1', issue: '10001' }));
   });
 });
