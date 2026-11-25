@@ -140,10 +140,12 @@ func TestLosingCompletionReadProbesTheCompletionIndex(t *testing.T) {
 				t.Errorf("%s sorts: %s\n%s", c.name, row.detail, text)
 			}
 		}
-		// G reads itself, F and S: three local arms and three imported.
+		// G reads itself and, through one pair of lineage arms, F and S:
+		// two local arms and two imported, each with the probe a pair per
+		// level made.
 		for index, want := range map[string]int{
-			"SEARCH items USING INDEX idx_items_completion_of (thread_id=? AND completion_of=?)":    3,
-			"SEARCH items USING INDEX idx_import_history_items_completion_lookup (completion_of=?)": 3,
+			"SEARCH items USING INDEX idx_items_completion_of (thread_id=? AND completion_of=?)":    2,
+			"SEARCH items USING INDEX idx_import_history_items_completion_lookup (completion_of=?)": 2,
 		} {
 			if n := strings.Count(text, index); n != want {
 				t.Errorf("%s probes %s %d times, want %d\n%s", c.name, index, n, want, text)

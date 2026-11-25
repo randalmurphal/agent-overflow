@@ -344,7 +344,7 @@ func (s *Store) SetThreadTicket(w ThreadTicketWrite) (set ThreadTicketSet, err e
 		var reader bool
 		if err := tx.QueryRow(`SELECT c.kind, c.site, c.id IS `+ticketSiteReaderSQL("c.kind", "c.site")+`
 			FROM tracker_cache_roots r JOIN tracker_connections c ON c.id = r.connection_id
-			WHERE r.id = ?`, w.Root).Scan(&ref.Kind, &ref.Site, &reader); err != nil {
+			WHERE r.id = `+boundInt, w.Root).Scan(&ref.Kind, &ref.Site, &reader); err != nil {
 			return fmt.Errorf("read the mirror's connection: %w", err)
 		}
 		if !reader {
@@ -419,7 +419,7 @@ func readMirrorIssueHeldTx(tx *sql.Tx, root int64, issue string, seen *ThreadTic
 	var held bool
 	var key, title, status sql.NullString
 	err := tx.QueryRow(`SELECT `+mirrorIssueHeldSQL+`, i.issue_key, i.title, i.status_id FROM tracker_cache_roots r
-		`+mirrorIssueHeldJoinSQL("r.id", "?2")+` WHERE r.id = ?1`, root, issue).Scan(&held, &key, &title, &status)
+		`+mirrorIssueHeldJoinSQL("r.id", "?2")+` WHERE r.id = CAST(?1 AS INTEGER)`, root, issue).Scan(&held, &key, &title, &status)
 	if err != nil {
 		return false, fmt.Errorf("read the mirror's card of issue %s: %w", issue, err)
 	}
@@ -459,7 +459,7 @@ const sameTicketSQL = `(kind = excluded.kind AND site = excluded.site AND issue_
 var mirrorReaderIssuesSQL = `json_each(CASE WHEN EXISTS (SELECT 1 FROM tracker_cache_roots gr
 	  JOIN tracker_connections gc ON gc.id = gr.connection_id
 	  JOIN thread_tickets gt ON gt.kind = gc.kind AND gt.site = gc.site
-	 WHERE gr.id = ?1 AND gc.id = ` + ticketSiteReaderSQL("gc.kind", "gc.site") + `) THEN ?2 ELSE '[]' END)`
+	 WHERE gr.id = CAST(?1 AS INTEGER) AND gc.id = ` + ticketSiteReaderSQL("gc.kind", "gc.site") + `) THEN ?2 ELSE '[]' END)`
 
 // linkCopySQL is the one writer of the links' last-seen copy: for root ?1
 // of its site's link reader, each link of that site to an issue the
@@ -473,12 +473,12 @@ func linkCopySQL(with, from, on, where string) string {
 	return with + `UPDATE thread_tickets SET (issue_key, issue_title, status_id, status_name, status_group) =
 	  (SELECT i.issue_key, i.title, i.status_id, COALESCE(st.name, ''), COALESCE(st.status_group, 0)
 	     FROM tracker_cache_issues i LEFT JOIN tracker_cache_statuses st ON st.root_id = i.root_id AND st.status_id = i.status_id
-	    WHERE i.root_id = ?1 AND i.issue_id = thread_tickets.issue_id)
+	    WHERE i.root_id = CAST(?1 AS INTEGER) AND i.issue_id = thread_tickets.issue_id)
 	WHERE thread_tickets.rowid IN (SELECT tt.rowid FROM ` + from + `tracker_cache_roots r
 	    JOIN tracker_connections conn ON conn.id = r.connection_id
 	    CROSS JOIN thread_tickets tt ON tt.kind = conn.kind AND tt.site = conn.site` + on + `
 	    CROSS JOIN tracker_cache_issues i ON i.root_id = r.id AND i.issue_id = tt.issue_id
-	   WHERE r.id = ?1 AND conn.id = ` + ticketSiteReaderSQL("conn.kind", "conn.site") + where + `)
+	   WHERE r.id = CAST(?1 AS INTEGER) AND conn.id = ` + ticketSiteReaderSQL("conn.kind", "conn.site") + where + `)
 	  AND ` + ticketThreadWritableSQL + `
 	RETURNING thread_tickets.thread_id`
 }
@@ -503,9 +503,9 @@ var (
 // returns their issues: those whose link the write makes current again.
 // A root with no absence reads no bound list.
 const mirrorAbsencesClearSQL = `WITH c AS MATERIALIZED (SELECT value FROM json_each(?2)
-	  WHERE EXISTS (SELECT 1 FROM tracker_cache_issue_missing g WHERE g.root_id = ?1))
-	DELETE FROM tracker_cache_issue_missing WHERE root_id = ?1 AND issue_id IN (SELECT value FROM c)
-	  AND read_at < (SELECT i.read_at FROM tracker_cache_issues i WHERE i.root_id = ?1 AND i.issue_id = tracker_cache_issue_missing.issue_id)
+	  WHERE EXISTS (SELECT 1 FROM tracker_cache_issue_missing g WHERE g.root_id = CAST(?1 AS INTEGER)))
+	DELETE FROM tracker_cache_issue_missing WHERE root_id = CAST(?1 AS INTEGER) AND issue_id IN (SELECT value FROM c)
+	  AND read_at < (SELECT i.read_at FROM tracker_cache_issues i WHERE i.root_id = CAST(?1 AS INTEGER) AND i.issue_id = tracker_cache_issue_missing.issue_id)
 	RETURNING issue_id`
 
 // The statements of MarkMirrorIssuesMissing, of ?1 root, ?2 the issues
@@ -520,11 +520,11 @@ var (
 	  JOIN tracker_connections conn ON conn.id = r.connection_id
 	  CROSS JOIN thread_tickets tt ON tt.kind = conn.kind AND tt.site = conn.site AND tt.issue_id = c.value
 	  ` + mirrorIssueHeldJoinSQL("r.id", "c.value") + `
-	 WHERE r.id = ?1 AND EXISTS (SELECT 1 FROM owned_threads o WHERE o.id = tt.thread_id)
+	 WHERE r.id = CAST(?1 AS INTEGER) AND EXISTS (SELECT 1 FROM owned_threads o WHERE o.id = tt.thread_id)
 	   AND NOT ` + mirrorIssueGoneSQL + ` AND COALESCE(i.read_at, 0) <= ?3`
 	mirrorMissingMarkSQL = `INSERT INTO tracker_cache_issue_missing(root_id, issue_id, read_at)
 	SELECT ?1, c.value, ?3 FROM json_each(?2) c
-	 WHERE NOT EXISTS (SELECT 1 FROM tracker_cache_issues i WHERE i.root_id = ?1 AND i.issue_id = c.value AND i.read_at > ?3)
+	 WHERE NOT EXISTS (SELECT 1 FROM tracker_cache_issues i WHERE i.root_id = CAST(?1 AS INTEGER) AND i.issue_id = c.value AND i.read_at > ?3)
 	ON CONFLICT(root_id, issue_id) DO UPDATE SET read_at = excluded.read_at WHERE excluded.read_at > read_at`
 )
 

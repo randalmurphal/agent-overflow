@@ -1324,8 +1324,8 @@ func subagentExecutionToolCalls(q sqlQueryer, threadID, launchID, executionTurnI
 	source, args, err := timelineArms(q, threadID, timelineSelection{
 		Columns:  func(string, string) string { return "items.item_index AS item_index" },
 		KeyFirst: true,
-		Where: `items.parent_id <> '' AND items.parent_id = ` + boundText + ` AND items.turn_index = ?
-		   AND items.item_index > ? AND items.item_index <= ? AND items.kind = 'tool_call'
+		Where: `items.parent_id <> '' AND items.parent_id = ` + boundText + ` AND items.turn_index = ` + boundInt + `
+		   AND items.item_index > ` + boundInt + ` AND items.item_index <= ` + boundInt + ` AND items.kind = 'tool_call'
 		   AND ` + codexExecutionMemberSQL("items."),
 		WhereArgs: []any{launchID, turnIndex, afterIndex, throughIndex, executionTurnID, executionTurnID},
 	})

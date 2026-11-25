@@ -205,7 +205,7 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			return err
 		},
 		"ReplaceMirrorWorklogs": func(root int64) error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-06", mirrorReadOf(root, 1), nil)
+			_, err := s.ReplaceMirrorWorklogs(root, 0, "acc-user1", "2026-01-05", "2026-01-06", mirrorReadOf(root, 1), nil)
 			return err
 		},
 		"RecordMirrorSyncAttempt": func(root int64) error {
@@ -240,10 +240,10 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 // the cleanup and the reads.
 var mirrorNonWriters = []string{
 	"GetOrCreateMirrorRoot", "GetMirrorRoot", "DetachMirror", "FinishMirrorCleanup",
-	"GetMirrorSync", "ListMirrorHistoryDue", "ListMirrorBodies", "ListMirrorWorklogs", "ListMirrorIssueWorklogs",
+	"GetMirrorSync", "ListMirrorHistoryDue", "ListMirrorBodies", "ListMirrorIssueWorklogs",
 	"GetMirrorBoard", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorIssueRows", "ListMirrorTicketRows", "ListMirrorSection", "CountMirrorSections",
 	"ListMirrorOffBoardLinkedIssues", "ReadMirrorBoardView", "ReadMirrorBoardPatch", "ListMirrorIssueBoards",
-	"ReadMirrorRefreshTargets",
+	"ReadMirrorRefreshTargets", "ReadMirrorWorklogDays",
 	// An open ticket's row goes by its pump, whatever became of its root.
 	"DropMirrorTicket", "DropMirrorTicketsOfOtherSessions",
 	// A read's clock, which stores its lease only when a read passes it

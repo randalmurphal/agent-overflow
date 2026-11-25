@@ -132,12 +132,29 @@ func compareResources(a, b tracker.Resource) int {
 // read, which settles the connection's problem; nil when none failed.
 func (f *refreshed) lastCallError() error { return f.callErr }
 
+// requestRefused is a read the tracker refused for what it asked, not
+// for the connection: a person it would not look up, days it refused, or
+// more worklogs than one read stores. f is its sentence.
+type requestRefused struct {
+	f   Failure
+	err error
+}
+
+func (e *requestRefused) Error() string { return e.f.Message }
+func (e *requestRefused) Unwrap() error { return e.err }
+
 // failedRead accounts for res, the resources that owed the read that
 // failed with err, and returns why the refresh stops: the mirror ended
 // (f.ended), or the write's context did. It returns nil when the refresh
 // goes on. A resource already reported stale is not reported again; the
 // tracker's failure is kept for the problem either way. A board retired
 // during its read is the caller's to sort first (retired).
+//
+// The connection's problem is settled from the tracker's failures about
+// the connection (a refused token, a rate limit, the network, a 5xx).
+// A refusal of the request itself (requestRefused) is the read's failure
+// only, never the connection's problem: the tracker answered it, so the
+// connection reached the tracker.
 func (r *run) failedRead(f *refreshed, err error, res ...tracker.Resource) error {
 	if errors.Is(err, store.ErrTrackerCacheGone) {
 		f.ended = true

@@ -2680,6 +2680,39 @@ export class SprintCompleteRequest {
 }
 
 /**
+ * SprintEditRequest changes the members of a sprint of Board that are
+ * set; Start and End are Unix milliseconds.
+ */
+export class SprintEditRequest {
+    "board": string;
+    "sprint": string;
+    "name"?: string | null;
+    "goal"?: string | null;
+    "start"?: number | null;
+    "end"?: number | null;
+
+    /** Creates a new SprintEditRequest instance. */
+    constructor($$source: Partial<SprintEditRequest> = {}) {
+        if (!("board" in $$source)) {
+            this["board"] = "";
+        }
+        if (!("sprint" in $$source)) {
+            this["sprint"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SprintEditRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SprintEditRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SprintEditRequest($$parsedSource as Partial<SprintEditRequest>);
+    }
+}
+
+/**
  * SprintMoveRequest moves Issues into Sprint, an open sprint of Board, or
  * to the board's backlog when Sprint is empty.
  */
@@ -3198,6 +3231,115 @@ export class UserView {
 }
 
 /**
+ * WorklogDays is an author's worklogs of a range of days, by day and ID,
+ * as the mirror holds them, at most 1,000. Unread are the days of the
+ * range, sorted, whose worklogs of the author this computer has never
+ * read: a screen shows no total for them. Without More every other day
+ * was read, so one with no worklogs is 0h. More reports that the range
+ * holds more worklogs than the answer: only the days before the last
+ * worklog's day are then whole, and the last worklog's day and every
+ * later read day are read again from that day before they are totaled.
+ * Failure is why a refresh could not read them from the tracker: they
+ * are then as the mirror held them before.
+ */
+export class WorklogDays {
+    "worklogs": WorklogView[];
+    "more"?: boolean;
+    "unread"?: string[];
+    "failure"?: FailureView | null;
+
+    /** Creates a new WorklogDays instance. */
+    constructor($$source: Partial<WorklogDays> = {}) {
+        if (!("worklogs" in $$source)) {
+            this["worklogs"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorklogDays instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorklogDays {
+        const $$createField0_0 = $$createType88;
+        const $$createField2_0 = $$createType14;
+        const $$createField3_0 = $$createType8;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("worklogs" in $$parsedSource) {
+            $$parsedSource["worklogs"] = $$createField0_0($$parsedSource["worklogs"]);
+        }
+        if ("unread" in $$parsedSource) {
+            $$parsedSource["unread"] = $$createField2_0($$parsedSource["unread"]);
+        }
+        if ("failure" in $$parsedSource) {
+            $$parsedSource["failure"] = $$createField3_0($$parsedSource["failure"]);
+        }
+        return new WorklogDays($$parsedSource as Partial<WorklogDays>);
+    }
+}
+
+/**
+ * WorklogDeleteRequest deletes From, the worklog as read.
+ */
+export class WorklogDeleteRequest {
+    "from": WorklogView;
+
+    /** Creates a new WorklogDeleteRequest instance. */
+    constructor($$source: Partial<WorklogDeleteRequest> = {}) {
+        if (!("from" in $$source)) {
+            this["from"] = (new WorklogView());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorklogDeleteRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorklogDeleteRequest {
+        const $$createField0_0 = $$createType87;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("from" in $$parsedSource) {
+            $$parsedSource["from"] = $$createField0_0($$parsedSource["from"]);
+        }
+        return new WorklogDeleteRequest($$parsedSource as Partial<WorklogDeleteRequest>);
+    }
+}
+
+/**
+ * WorklogEditRequest changes the members of From, the worklog as read,
+ * that are set.
+ */
+export class WorklogEditRequest {
+    "from": WorklogView;
+    "day"?: string | null;
+    "spent_seconds"?: number | null;
+    "description"?: string | null;
+    "accept_loss"?: boolean;
+
+    /** Creates a new WorklogEditRequest instance. */
+    constructor($$source: Partial<WorklogEditRequest> = {}) {
+        if (!("from" in $$source)) {
+            this["from"] = (new WorklogView());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorklogEditRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorklogEditRequest {
+        const $$createField0_0 = $$createType87;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("from" in $$parsedSource) {
+            $$parsedSource["from"] = $$createField0_0($$parsedSource["from"]);
+        }
+        return new WorklogEditRequest($$parsedSource as Partial<WorklogEditRequest>);
+    }
+}
+
+/**
  * WorklogRequest is a new worklog of the credential's own user.
  */
 export class WorklogRequest {
@@ -3227,6 +3369,51 @@ export class WorklogRequest {
     static createFrom($$source: any = {}): WorklogRequest {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new WorklogRequest($$parsedSource as Partial<WorklogRequest>);
+    }
+}
+
+/**
+ * WorklogView is time logged on an issue: Day is YYYY-MM-DD in the
+ * author's own zone, Updated the tracker's revision in Unix milliseconds.
+ * A worklog edit or delete names the worklog as read, Updated included: a
+ * worklog whose revision moved since is refused as stale.
+ */
+export class WorklogView {
+    "id": string;
+    "issue": string;
+    "author": string;
+    "day": string;
+    "spent_seconds": number;
+    "description"?: string;
+    "updated"?: number;
+
+    /** Creates a new WorklogView instance. */
+    constructor($$source: Partial<WorklogView> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("issue" in $$source)) {
+            this["issue"] = "";
+        }
+        if (!("author" in $$source)) {
+            this["author"] = "";
+        }
+        if (!("day" in $$source)) {
+            this["day"] = "";
+        }
+        if (!("spent_seconds" in $$source)) {
+            this["spent_seconds"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorklogView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorklogView {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorklogView($$parsedSource as Partial<WorklogView>);
     }
 }
 
@@ -3291,8 +3478,8 @@ export class WriteView {
      * Creates a new WriteView instance from a string or object.
      */
     static createFrom($$source: any = {}): WriteView {
-        const $$createField0_0 = $$createType88;
-        const $$createField4_0 = $$createType90;
+        const $$createField0_0 = $$createType90;
+        const $$createField4_0 = $$createType92;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("parts" in $$parsedSource) {
             $$parsedSource["parts"] = $$createField0_0($$parsedSource["parts"]);
@@ -3392,7 +3579,9 @@ const $$createType83 = $Create.Array($$createType82);
 const $$createType84 = DetailView.createFrom;
 const $$createType85 = $Create.Nullable($$createType84);
 const $$createType86 = $Create.Array($$createType0);
-const $$createType87 = PartView.createFrom;
+const $$createType87 = WorklogView.createFrom;
 const $$createType88 = $Create.Array($$createType87);
-const $$createType89 = StaleView.createFrom;
+const $$createType89 = PartView.createFrom;
 const $$createType90 = $Create.Array($$createType89);
+const $$createType91 = StaleView.createFrom;
+const $$createType92 = $Create.Array($$createType91);

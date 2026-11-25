@@ -141,7 +141,20 @@ this is its shape.
 - Time: a time tracker with worklogs by author and day and worklog add,
   edit and delete, or none for a tracker with no time tracking. A Jira
   connection's is Tempo while its Tempo connection is on, and Jira's own
-  worklogs otherwise, a Tempo connection turned off included.
+  worklogs otherwise, a Tempo connection turned off included. The mirror
+  keeps the worklogs of one source. A change of source (the Tempo
+  connection added while on, turned on or off, or removed while on)
+  advances the Jira row's `time_source_gen` and empties its worklogs and
+  read days in the same transaction (store triggers, v168); adding or
+  removing a Tempo connection that is off changes nothing. A run captures
+  the generation with the row its provider is built from
+  (`providerLocked`), and a replace under an earlier generation is
+  refused in its transaction, however many changes came between, so the
+  refresh answers that the time tracking changed and to refresh again.
+  An edit or a delete is sent only while the worklog is the copy the
+  caller read, at the tracker revision the copy carries (`updated`,
+  compared at the millisecond); one that changed since, in a field the
+  copy shows or not, is refused as stale with nothing sent.
 - Planning poker: whether the site has the add-on, an issue's votes, and
   vote, reveal and clear (`tracker.Poker`), or none for a tracker that
   cannot have it (Linear). See [Planning poker](#planning-poker).
@@ -1274,10 +1287,7 @@ changed, `tracker:board_updated` (`trackerapp.BoardEvent`),
 `tracker:issue_updated` (`trackerapp.IssueEvent`) and
 `tracker:setup_updated`, a latest-only nudge with no payload sent when a
 project's stored setup changed, after which a client reads again the
-setups it holds, all at `tracker:read`. `EditSprint`,
-`EditWorklog`, `DeleteWorklog`, `Worklogs` and `RefreshWorklogs` are
-`trackerapp.Service` methods that no bound method wraps yet (see
-[Build order](#build-order)).
+setups it holds, all at `tracker:read`.
 
 A connection ID is minted on one computer. Every method whose first
 argument is one is generated with the route home and routed by its client
@@ -1308,7 +1318,9 @@ selected computer.
 | `MintTrackerAttachmentUploadTicket(connectionID, issue, filename, size)` | `AttachmentCeiling`, then the upload route's `Attach` | operate | connection |
 | `MintTrackerAttachmentDownloadTicket(subscriptionID, attachmentID)` | `TicketAttachment`, then the download route's `Download` | read | home |
 | `TrackerIssueTypes`, `TrackerCreateFields`, `TrackerMoves`, `TrackerAssignableUsers`, `TrackerChoices`, `TrackerLinkTypes`, `TrackerLookup`, `TrackerSearch`, `TrackerComments` | the form reads of the same names | read | connection |
-| `CreateTrackerIssue`, `EditTrackerIssue`, `MoveTrackerIssue`, `SetTrackerEstimate`, `RankTrackerIssues`, `MoveTrackerIssuesToSprint`, `CreateTrackerSprint`, `StartTrackerSprint`, `CompleteTrackerSprint`, `AddTrackerComment`, `EditTrackerComment`, `DeleteTrackerComment`, `LinkTrackerIssues`, `UnlinkTrackerIssues`, `AddTrackerWorklog` | `Create`, `Edit`, `Move`, `SetEstimate`, `Rank`, `MoveToSprint`, `CreateSprint`, `StartSprint`, `CompleteSprint`, `AddComment`, `EditComment`, `DeleteComment`, `Link`, `Unlink`, `AddWorklog` | operate | connection, budget 3m |
+| `CreateTrackerIssue`, `EditTrackerIssue`, `MoveTrackerIssue`, `SetTrackerEstimate`, `RankTrackerIssues`, `MoveTrackerIssuesToSprint`, `CreateTrackerSprint`, `StartTrackerSprint`, `CompleteTrackerSprint`, `EditTrackerSprint`, `AddTrackerComment`, `EditTrackerComment`, `DeleteTrackerComment`, `LinkTrackerIssues`, `UnlinkTrackerIssues`, `AddTrackerWorklog`, `EditTrackerWorklog`, `DeleteTrackerWorklog` | `Create`, `Edit`, `Move`, `SetEstimate`, `Rank`, `MoveToSprint`, `CreateSprint`, `StartSprint`, `CompleteSprint`, `EditSprint`, `AddComment`, `EditComment`, `DeleteComment`, `Link`, `Unlink`, `AddWorklog`, `EditWorklog`, `DeleteWorklog` | operate | connection, budget 3m |
+| `TrackerWorklogs(connectionID, author, from, to)` | `Worklogs` | read | connection |
+| `RefreshTrackerWorklogs(connectionID, author, from, to)` | `RefreshWorklogs` | read | connection |
 | `TrackerPokerSupport(connectionID)` | `PokerSupport` | read | connection |
 | `FollowTrackerPoker(subscriptionID, follow)` | `FollowPoker` | read | home |
 | `TrackerPoker(subscriptionID)` | `Poker` | read | home |
@@ -1340,6 +1352,49 @@ selected computer.
   result the provider may not give (`tracker_write_unclear`) say the
   same. A part refused for its credential says what the connection's
   problem says. A write's context is the server's, not the caller's.
+- **The worklog reads** take the author's account ID (a screen reads its
+  own from the connection's `verifiedAccountId`). `TrackerWorklogs`
+  answers at most 366 days from the mirror with no tracker call, with
+  `unread`, the days of the range no read replaced; the connection's row,
+  its root, the read days and the worklogs are read in one snapshot (four
+  statements, at most 366 day rows and 1,001 worklog rows). A read day
+  with no worklogs is 0h only without `more`: with it, the answer holds
+  the first 1,000 worklogs by day and ID, so the last worklog's day and
+  the days after it are read again from that day before a screen totals
+  them. It refuses
+  what the refresh refuses: a Tempo connection, one turned off or
+  removed, and a tracker with no time tracking (Linear, decided by kind,
+  which `TestTheMirrorReadOfWorklogsRefusesWhatTheRefreshRefuses` holds
+  to the providers' answer). `RefreshTrackerWorklogs` reads at most 31
+  days at the default budget, as a form read does. Its requests grow with
+  the time logged: Tempo answers in pages; Jira looks the author up
+  unless its client has the user cached, pages the issues the author
+  logged time on with the worklogs each embeds (up to 20), and reads an
+  issue with more in pages of its own. On `jiraprovider`'s cost fixture, a
+  month of 20 worklogs on 20 issues, that is 1 Tempo request of about
+  11.8 KB or 2 Jira requests of about 28.0 KB (`TestRequestCost`,
+  `TestRequestCostJiraWorklogs`). A longer range is
+  `tracker_request_invalid` before anything is sent, a tracker with no
+  time tracking is `tracker_unsupported` ("this tracker has no time
+  tracking"), and a read the tracker fails is the answer's `failure`,
+  beside the worklogs as the mirror held them.
+- **A worklog read the tracker refused for what it asked** is the
+  answer's failure with a sentence that names the tracker, what it
+  refused and what to do: a person Jira does not have or will not show
+  (its 404 for the author's lookup), a lookup refused (403, the Browse
+  users and groups permission), a person whose profile hides the time
+  zone that places their time on days (`tracker.ErrNoTimeZone`, which Jira
+  answers with 200), Jira's 400 for the account ID or for the search
+  (the provider marks the step, `tracker.ErrWorklogAuthor` and
+  `ErrWorklogSearch`, and the lookup's refusal wins over a search
+  refused at the same time; a 400 for an issue's own worklogs is no
+  refusal of the person or the days), Tempo's 403
+  for another person's time and its 400, and more than 500 worklogs in
+  the range, more than one read stores. Such a refusal is never the
+  connection's problem, since the tracker answered (`failedRead`); a
+  refused token, a rate limit, the network and a 5xx still are. A Tempo
+  that answers another person's worklogs with an empty list rather than
+  403 cannot be told apart from no time logged.
 - **A ticket subscription** belongs to its client connection as a
   board's does: `SubscribeTrackerTicket` ties its handle inside the
   service's publication, and the board's visibility, refresh and release
@@ -1594,7 +1649,8 @@ and refuses a value its kind cannot hold. A worklog write on a tracker
 with no time tracking is a refused part.
 
 `Worklogs(connection, author, from, to)` answers an author's days from
-the mirror with no tracker call. `RefreshWorklogs` reads at most 31 days
+the mirror with no tracker call, and the days no read replaced
+(`Unread`). `RefreshWorklogs` reads at most 31 days
 from the time tracker through the worklogs resource first, on the write
 path with no write.
 
@@ -1856,7 +1912,7 @@ guide and each read tool say so.
 Built: `internal/tracker` and the two providers, `internal/keyfile`, the
 tracker tables and their accessors, `trackerfake`, and `trackerapp` with
 its sync, pumps, reads and writes; the connection, board, ticket, write,
-form-read and planning poker bound methods, the ticket file routes,
+form-read, worklog and planning poker bound methods, the ticket file routes,
 `tracker:board_updated` and `tracker:issue_updated`, the app's calls at
 start, the harness's fake trackers (`HarnessTrackerSeed`), the project
 setup file with its status groups and ticket pins, its two bound methods
@@ -1883,9 +1939,9 @@ Not built, owed by the app layer:
   attachment mints, `TrackerLinkTypes`, `TrackerLookup`, `TrackerSearch`,
   `LinkTrackerIssues`, `UnlinkTrackerIssues`, `AddTrackerWorklog` and the
   planning poker methods ship with them.
-- The Time screen's bound methods: `Worklogs`, `RefreshWorklogs`,
-  `EditWorklog` and `DeleteWorklog`. `EditSprint` is bound when a screen
-  edits a sprint.
+- The Time screen and a sprint edit on the Backlog screen: the
+  `bindings.ts` wrappers of the worklog methods and `EditTrackerSprint`
+  ship with them.
 - Sidebar search by a linked ticket's key and title: the frontend's
   `threadMatchesQuery` (`components/sidebar/threadSearch.ts`) adds
   `ticketLink.key` and `ticketLink.title` to what it matches.

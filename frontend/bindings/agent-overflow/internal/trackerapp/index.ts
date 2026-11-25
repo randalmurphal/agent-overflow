@@ -69,6 +69,7 @@ export {
     SitePins,
     SiteStatusGroups,
     SprintCompleteRequest,
+    SprintEditRequest,
     SprintMoveRequest,
     SprintRequest,
     SprintStartRequest,
@@ -84,6 +85,10 @@ export {
     UnlinkRequest,
     UserListView,
     UserView,
+    WorklogDays,
+    WorklogDeleteRequest,
+    WorklogEditRequest,
     WorklogRequest,
+    WorklogView,
     WriteView
 } from "./models.js";

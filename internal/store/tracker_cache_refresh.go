@@ -61,23 +61,23 @@ const mirrorShownBoardRow = `bl.retired = 0 AND bl.read_at > 0 AND EXISTS (SELEC
 // board's lifetime (each issue probed by its key prefix), the cards kept,
 // the bodies stored, and the boards shown with their lifetimes.
 var mirrorRefreshTargetsSQL = `SELECT 0, '', '', r.sweep FROM tracker_cache_roots r
-	WHERE r.id = ?1 AND r.connection_id IS NOT NULL
+	WHERE r.id = CAST(?1 AS INTEGER) AND r.connection_id IS NOT NULL
 	UNION ALL
 	SELECT 1, b.issue_id, b.board_id, bl.lifetime FROM json_each(?2) l
-	CROSS JOIN tracker_cache_board_issues b ON b.root_id = ?1 AND b.issue_id = l.value
+	CROSS JOIN tracker_cache_board_issues b ON b.root_id = CAST(?1 AS INTEGER) AND b.issue_id = l.value
 	CROSS JOIN tracker_cache_boards bl ON bl.root_id = b.root_id AND bl.board_id = b.board_id
 	WHERE ` + mirrorShownBoardRow + `
 	UNION ALL
 	SELECT 2, i.issue_id, '', 0 FROM json_each(?2) l
-	CROSS JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = l.value
+	CROSS JOIN tracker_cache_issues i ON i.root_id = CAST(?1 AS INTEGER) AND i.issue_id = l.value
 	WHERE ` + mirrorIssueKept("i.root_id", "i.issue_id") + `
 	UNION ALL
 	SELECT 3, i.issue_id, '', 0 FROM json_each(?3) l
-	CROSS JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = l.value
+	CROSS JOIN tracker_cache_issues i ON i.root_id = CAST(?1 AS INTEGER) AND i.issue_id = l.value
 	WHERE i.body_read_at > 0 AND ` + mirrorIssueKept("i.root_id", "i.issue_id") + `
 	UNION ALL
 	SELECT 4, '', bl.board_id, bl.lifetime FROM json_each(?4) l
-	CROSS JOIN tracker_cache_boards bl ON bl.root_id = ?1 AND bl.board_id = l.value
+	CROSS JOIN tracker_cache_boards bl ON bl.root_id = CAST(?1 AS INTEGER) AND bl.board_id = l.value
 	WHERE ` + mirrorShownBoardRow
 
 // ReadMirrorRefreshTargets reads, in one statement, where the mirror holds

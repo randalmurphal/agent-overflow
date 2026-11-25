@@ -118,7 +118,7 @@ func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) (
 	var deleted int
 	var stamp HistoryStamp
 	err := s.writeItems(threadID, nil, "delete conversation from turn", func(tx *sql.Tx, w *cardWrite) error {
-		if err := cutAsyncQuestionsTx(tx, threadID, fromTurnIndex, "turn_index >= ?", []any{fromTurnIndex}); err != nil {
+		if err := cutAsyncQuestionsTx(tx, threadID, fromTurnIndex, "turn_index >= "+boundInt, []any{fromTurnIndex}); err != nil {
 			return err
 		}
 		// The rows a fork of this thread shows move to a holder first; the
@@ -130,21 +130,21 @@ func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) (
 		if err != nil {
 			return err
 		}
-		sharedDeleted, err := deleteSharedHistoryFromTurnTx(tx, w, threadID, fromTurnIndex, "turn_index >= ?", []any{fromTurnIndex})
+		sharedDeleted, err := deleteSharedHistoryFromTurnTx(tx, w, threadID, fromTurnIndex, "turn_index >= "+boundInt, []any{fromTurnIndex})
 		if err != nil {
 			return err
 		}
-		n, err := deleteItemRowsTx(tx, w, `turn_index >= ?`, []any{fromTurnIndex},
+		n, err := deleteItemRowsTx(tx, w, `turn_index >= `+boundInt, []any{fromTurnIndex},
 			fmt.Sprintf("store: delete items from turn for thread %s", threadID))
 		if err != nil {
 			return err
 		}
 		deleted = int(n+sharedDeleted) + taken
-		if err := retractInheritedTx(tx, w, threadID, fromTurnIndex, "turn_index >= ?", []any{fromTurnIndex}, keep); err != nil {
+		if err := retractInheritedTx(tx, w, threadID, fromTurnIndex, "turn_index >= "+boundInt, []any{fromTurnIndex}, keep); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(
-			`DELETE FROM turns WHERE thread_id = ? AND turn_index >= ?`,
+			`DELETE FROM turns WHERE thread_id = ? AND turn_index >= `+boundInt,
 			threadID, fromTurnIndex,
 		); err != nil {
 			return fmt.Errorf("store: delete turns from turn for thread %s: %w", threadID, err)
@@ -250,7 +250,7 @@ func deleteConversationFromItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID str
 	// trim below. Computed BEFORE the delete removes the evidence.
 	contentPredicate := ""
 	contentArgs := []any{}
-	itemPredicate := `turn_index > ? OR (turn_index = ? AND item_index >= ?)`
+	itemPredicate := `turn_index > ` + boundInt + ` OR (turn_index = ` + boundInt + ` AND item_index >= ` + boundInt + `)`
 	itemArgs := []any{threadID, turnIndex, turnIndex, itemIndex}
 	if promotion.Promoted {
 		// Same-turn successors up to the echo boundary that are not
@@ -262,22 +262,22 @@ func deleteConversationFromItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID str
 		// queued rows and go. Past the boundary (stamped when the CLI
 		// consumed the message mid-loop), everything else is the response,
 		// provider-order AFTER the message, and goes with it.
-		itemPredicate = `turn_index > ? OR (turn_index = ? AND item_index >= ? AND role = 'user' AND parent_id = '')`
+		itemPredicate = `turn_index > ` + boundInt + ` OR (turn_index = ` + boundInt + ` AND item_index >= ` + boundInt + ` AND role = 'user' AND parent_id = '')`
 		if promotion.HasEchoBoundary {
-			itemPredicate += ` OR (turn_index = ? AND item_index > ? AND (role != 'user' OR parent_id != ''))`
+			itemPredicate += ` OR (turn_index = ` + boundInt + ` AND item_index > ` + boundInt + ` AND (role != 'user' OR parent_id != ''))`
 			itemArgs = append(itemArgs, turnIndex, promotion.EchoBoundary)
-			contentPredicate = `items.item_index > ?`
+			contentPredicate = `items.item_index > ` + boundInt
 			contentArgs = []any{promotion.EchoBoundary}
 		}
 	} else {
-		contentPredicate = `items.item_index > ?`
+		contentPredicate = `items.item_index > ` + boundInt
 		contentArgs = []any{itemIndex}
 	}
 	deletedTurnContent := false
 	if contentPredicate != "" {
 		contentQuery, args, err := timelineArms(tx, threadID, timelineSelection{
 			Columns:   func(string, string) string { return "1" },
-			Turn:      "?",
+			Turn:      boundInt,
 			TurnArgs:  []any{turnIndex},
 			Where:     `(items.role != 'user' OR items.parent_id != '') AND ` + contentPredicate,
 			WhereArgs: contentArgs,
@@ -316,7 +316,7 @@ func deleteConversationFromItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID str
 	}
 	// Every reverted row sits at or after the anchor turn; the bound keeps
 	// the delete on the turn range of the thread's index.
-	if _, err := deleteItemRowsTx(tx, w, `turn_index >= ? AND (`+itemPredicate+`)`, append([]any{turnIndex}, itemArgs[1:]...),
+	if _, err := deleteItemRowsTx(tx, w, `turn_index >= `+boundInt+` AND (`+itemPredicate+`)`, append([]any{turnIndex}, itemArgs[1:]...),
 		fmt.Sprintf("store: delete items from item for thread %s", threadID)); err != nil {
 		return nil, HistoryStamp{}, err
 	}
@@ -342,7 +342,7 @@ func deleteConversationFromItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID str
 	}
 	if _, err := tx.Exec(
 		`DELETE FROM turns WHERE thread_id = ?
-		 AND turn_index >= ?
+		 AND turn_index >= `+boundInt+`
 		 AND NOT EXISTS (`+survivors+`)`,
 		append([]any{threadID, turnIndex}, survivorArgs...)...,
 	); err != nil {
@@ -384,11 +384,11 @@ func deleteConversationFromItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID str
 // listTurnTimelineItemIDs returns the ids of one turn's timeline rows,
 // mutable and imported, in item order.
 func listTurnTimelineItemIDs(q sqlQueryer, threadID string, turnIndex int) ([]string, error) {
-	query, args, err := timelineIDSelection(q, threadID, timelineSelection{Turn: "?", TurnArgs: []any{turnIndex}, OrderBy: "turn_index, item_index"})
+	selection, err := timelineIDSelection(q, threadID, timelineSelection{Turn: boundInt, TurnArgs: []any{turnIndex}, OrderBy: "turn_index, item_index"})
 	if err != nil {
 		return nil, err
 	}
-	rows, err := q.Query(query, args...)
+	rows, err := q.Query(selection.sql, selection.args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list turn %d items for thread %s: %w", turnIndex, threadID, err)
 	}
@@ -418,7 +418,7 @@ func trimTurnSettleToSurvivorsTx(tx *sql.Tx, threadID string, turnIndex int) err
 	var lastKept sql.NullInt64
 	query, args, err := timelineArms(tx, threadID, timelineSelection{
 		Columns:  func(string, string) string { return "items.created_at AS created_at" },
-		Turn:     "?",
+		Turn:     boundInt,
 		TurnArgs: []any{turnIndex},
 	})
 	if err != nil {
@@ -432,7 +432,7 @@ func trimTurnSettleToSurvivorsTx(tx *sql.Tx, threadID string, turnIndex int) err
 	}
 	if _, err := tx.Exec(
 		`UPDATE turns SET completed_at = MIN(completed_at, ?), assistant_message_id = ''
-		 WHERE thread_id = ? AND turn_index = ? AND completed_at IS NOT NULL`,
+		 WHERE thread_id = ? AND turn_index = `+boundInt+` AND completed_at IS NOT NULL`,
 		lastKept.Int64, threadID, turnIndex,
 	); err != nil {
 		return fmt.Errorf("store: trim anchor turn settle for thread %s: %w", threadID, err)

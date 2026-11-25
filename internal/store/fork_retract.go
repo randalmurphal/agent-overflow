@@ -36,7 +36,7 @@ func retractInheritedTx(tx *sql.Tx, w *cardWrite, threadID string, fromTurn int,
 	}
 	query, queryArgs := inheritedTimelineArms(threadID, allLevels, timelineSelection{
 		Columns: timelineIDColumns,
-		Turn:    "?", TurnArgs: []any{fromTurn}, FromTurn: true,
+		Turn:    boundInt, TurnArgs: []any{fromTurn}, FromTurn: true,
 		Where: "(" + predicate + ")", WhereArgs: args,
 		OrderBy: "turn_index, item_index",
 		Limit:   1,
@@ -57,7 +57,7 @@ func retractInheritedTx(tx *sql.Tx, w *cardWrite, threadID string, fromTurn int,
 		return err
 	}
 	survivors, err := queryInheritedRows(tx, threadID, timelineSelection{
-		Turn: "?", TurnArgs: []any{first.turn}, FromTurn: true,
+		Turn: boundInt, TurnArgs: []any{first.turn}, FromTurn: true,
 		Where:     "(items.turn_index, items.item_index) > (?, ?) AND NOT (" + predicate + ")",
 		WhereArgs: append([]any{first.turn, first.item}, args...),
 	})
