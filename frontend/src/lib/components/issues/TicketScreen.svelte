@@ -731,6 +731,9 @@
       <MenuItem label="Link" testId="ticket-menu-copy-link" onSelect={() => run(() => copy(url, 'link'))} />
     {/if}
     <MenuDivider />
-    <MenuItem label={trail > 0 ? 'Back' : 'Close'} testId="ticket-menu-close" onSelect={() => run(trail > 0 ? onBack : onClose)} />
+    {#if trail > 0}
+      <MenuItem label="Back" testId="ticket-menu-back" onSelect={() => run(onBack)} />
+    {/if}
+    <MenuItem label="Close" testId="ticket-menu-close" onSelect={() => run(onClose)} />
   </ContextMenu>
 {/if}

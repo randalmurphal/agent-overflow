@@ -1155,6 +1155,32 @@ describe('the ticket in the pane', () => {
     await waitFor(() => expect(edit).toHaveBeenCalledWith('c1', { issue: '1', fields: [{ field: 'type', value: { kind: 'option', choices: [{ id: 't2' }] } }], accept_loss: false }));
   });
 
+  it('steps back or closes the whole trail from the ticket\'s menu', async () => {
+    install();
+    installTicket((issue) => ticketDetail(issue, { parent: String(Number(issue) + 1) }));
+    const view = mount();
+    await openCard(view, '1');
+    for (const next of ['2', '3']) {
+      await fireEvent.click(await view.findByTestId('ticket-parent'));
+      await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe(next));
+    }
+    const openMenu = async () => {
+      await fireEvent.contextMenu(view.getByTestId('ticket-header'));
+      return within(document.body);
+    };
+    await fireEvent.click(await (await openMenu()).findByTestId('ticket-menu-back'));
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('2'));
+    const items = await openMenu();
+    expect(await items.findByTestId('ticket-menu-back')).toBeInTheDocument();
+    await fireEvent.click(items.getByTestId('ticket-menu-close'));
+    await waitFor(() => expect(view.queryByTestId('ticket-screen')).toBeNull());
+    // With no trail the menu closes and has no Back.
+    await openCard(view, '1');
+    const first = await openMenu();
+    await first.findByTestId('ticket-menu-close');
+    expect(first.queryByTestId('ticket-menu-back')).toBeNull();
+  });
+
   it('opens a card\'s ticket from the card\'s menu, and copies its key from it', async () => {
     install();
     installTicket();
