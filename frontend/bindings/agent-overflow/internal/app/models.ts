@@ -7868,6 +7868,46 @@ export class StartTerminalOptions {
 }
 
 /**
+ * StartTicketThreadRequest is a ticket's Ask or Start work: the ticket, by
+ * the connection that reads it and its issue ID, and the branch a Start
+ * work thread runs on. Ask names no branch: its thread runs in the
+ * project's checkout.
+ */
+export class StartTicketThreadRequest {
+    "connectionId": string;
+    "issueId": string;
+
+    /**
+     * Origin is ask or start_work.
+     */
+    "origin": string;
+    "branch"?: string;
+
+    /** Creates a new StartTicketThreadRequest instance. */
+    constructor($$source: Partial<StartTicketThreadRequest> = {}) {
+        if (!("connectionId" in $$source)) {
+            this["connectionId"] = "";
+        }
+        if (!("issueId" in $$source)) {
+            this["issueId"] = "";
+        }
+        if (!("origin" in $$source)) {
+            this["origin"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new StartTicketThreadRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): StartTicketThreadRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new StartTicketThreadRequest($$parsedSource as Partial<StartTicketThreadRequest>);
+    }
+}
+
+/**
  * SubmitPRReviewDrafts selects the drafts a review posts: a thread's own
  * (ThreadID set) or the PR's (ThreadID empty), of the PR's pr-scope source.
  */

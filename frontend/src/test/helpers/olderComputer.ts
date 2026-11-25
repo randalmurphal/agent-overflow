@@ -32,7 +32,7 @@ export const METHODS_AFTER_V0_0_19 = [
   'EditTrackerIssue', 'MoveTrackerIssue', 'SetTrackerEstimate', 'AddTrackerComment', 'EditTrackerComment',
   'DeleteTrackerComment',
   'EditTrackerSprint', 'EditTrackerWorklog', 'DeleteTrackerWorklog', 'TrackerWorklogs', 'RefreshTrackerWorklogs',
-  'SetThreadTicket', 'ClearThreadTicket', 'ThreadsForTicket',
+  'SetThreadTicket', 'ClearThreadTicket', 'ThreadsForTicket', 'GetTicketWork', 'StartTicketThread',
 ] as const;
 
 /**

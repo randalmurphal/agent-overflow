@@ -177,6 +177,7 @@ export {
     SourceProposedPlan,
     StandingAgentWakes,
     StartTerminalOptions,
+    StartTicketThreadRequest,
     SubmitPRReviewDrafts,
     SubmitPRReviewRequest,
     SubmitPRReviewResult,

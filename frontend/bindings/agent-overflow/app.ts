@@ -6453,6 +6453,27 @@ export function StartTerminal(opts: app$0.StartTerminalOptions): $CancellablePro
 }
 
 /**
+ * StartTicketThread makes the thread of a ticket's Ask or Start work in
+ * projectID and answers its row: titled with the ticket's key and title,
+ * linked to the ticket with the request's origin, with the ticket file
+ * (trackerapp.TicketFileText, KEY.md) attached to its draft, unsent, and,
+ * for Start work, the draft's text "Work on KEY: title." and a worktree on
+ * the branch: the worktree that already has the branch checked out, else
+ * a new one on the branch, made from the project's current branch when the
+ * branch does not exist. The ticket is read before anything is made (from
+ * the mirror, or once from the tracker when it holds no body); a failure
+ * at any later step deletes the thread, which ends its link and tells the
+ * views that showed the ticket as kept by it, and takes back the worktree
+ * and branch the call cut while they are still its own. Nothing is written
+ * to the tracker.
+ */
+export function StartTicketThread(projectID: string, req: app$0.StartTicketThreadRequest): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(2291054583, projectID, req).then(($result: any) => {
+        return $$createType12($result);
+    });
+}
+
+/**
  * StartTrackerSprint starts a future sprint.
  */
 export function StartTrackerSprint(connectionID: string, $in: trackerapp$0.SprintStartRequest): $CancellablePromise<trackerapp$0.WriteView> {
