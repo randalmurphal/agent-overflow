@@ -301,17 +301,16 @@
   }
 
   // Planning poker, on a Jira site that has it: the store's poker support
-  // rules decide when it is asked. The ticket asks when it shows its body,
-  // and again when its computer connected again (`unasked`).
+  // rules decide when it is asked. The ticket asks when it shows its body;
+  // a reconnect drops the body and the store's answer, so the body's return
+  // asks again.
   const hasDetail = $derived(!!detail);
   const pokerSupport = $derived(linear ? null : trackerPokerSupport(attachment.ref.backend, attachment.ref.connection));
-  const pokerUnasked = $derived(pokerSupport === 'unasked');
   function askPokerSupport(): void {
     askTrackerPokerSupport(attachment.ref.backend, attachment.ref.connection);
   }
   $effect(() => {
     if (linear || !hasDetail) return;
-    void pokerUnasked;
     untrack(askPokerSupport);
   });
   const pokerOffered = $derived(hasDetail && pokerSupport !== null && typeof pokerSupport === 'object' && 'available' in pokerSupport && pokerSupport.available);
