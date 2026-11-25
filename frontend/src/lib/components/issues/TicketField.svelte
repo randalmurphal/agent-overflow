@@ -6,7 +6,6 @@
     | {
       readonly kind: 'pick';
       readonly load: (text: string) => Promise<PickList>;
-      readonly searchable: boolean;
       readonly checked: ReadonlySet<string>;
       readonly clearLabel?: string;
       readonly multi?: boolean;
@@ -150,7 +149,6 @@
     open={picking}
     {label}
     load={editor.load}
-    searchable={editor.searchable}
     checked={editor.checked}
     clearLabel={editor.clearLabel}
     multi={editor.multi}

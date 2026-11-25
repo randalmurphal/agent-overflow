@@ -160,7 +160,6 @@
   let moveForm = $state<{ move: MoveView; values: Map<string, FieldEditInput> } | null>(null);
   const statusEditor: FieldEditor | null = $derived(detail ? {
     kind: 'pick',
-    searchable: false,
     checked: new Set<string>(),
     load: async () => ({
       items: detail.moves.map((m) => ({ id: m.id, name: m.to.name || m.name, description: m.name && m.name !== m.to.name ? m.name : undefined })),
@@ -183,7 +182,6 @@
 
   const assigneeEditor: FieldEditor | null = $derived(detail ? {
     kind: 'pick',
-    searchable: true,
     clearLabel: 'Unassigned',
     checked: new Set(card?.assignee ? [card.assignee.id] : []),
     load: async (text: string) => {
@@ -193,10 +191,9 @@
     onPick: (item: PickItem | null) => editField('assignee', { field: 'assignee', value: pickValue('user', item ? [item] : []) }),
   } : null);
 
-  function choiceEditor(field: string, current: readonly { id: string }[], opts: { clear?: string; multi?: boolean; kindName: string; searchable?: boolean }): FieldEditor {
+  function choiceEditor(field: string, current: readonly { id: string }[], opts: { clear?: string; multi?: boolean; kindName: string }): FieldEditor {
     return {
       kind: 'pick',
-      searchable: opts.searchable ?? false,
       clearLabel: opts.clear,
       multi: opts.multi,
       checked: new Set(current.map((c) => c.id)),
@@ -236,7 +233,7 @@
     switch (f.kind) {
       case 'option':
       case 'user':
-        return choiceEditor(f.id, f.value.choices ?? [], { kindName: f.kind, multi: f.list, clear: f.required ? undefined : 'None', searchable: f.kind === 'user' });
+        return choiceEditor(f.id, f.value.choices ?? [], { kindName: f.kind, multi: f.list, clear: f.required ? undefined : 'None' });
       case 'text':
       case 'number':
       case 'date':

@@ -16,11 +16,14 @@
 
 <script lang="ts">
   // A ticket value's pick list, at its control: the values a read answers
-  // (a move list held by the view, or a form read of the tracker), typed
-  // text narrowing them with one read per pause in typing, and one row
-  // that clears the value where the field may be empty. A read's failure
-  // shows its sentence in the list. The values a field holds now are
-  // checked; a pick closes the list unless the field holds several.
+  // (a move list held by the view, or a form read of the tracker), and one
+  // row that clears the value where the field may be empty. Typed text
+  // narrows a whole list here; when the first answer says the tracker
+  // holds more matches, each pause in typing reads the matches for the
+  // text, and until that answer lands the last list shows narrowed here.
+  // An answer that lands after a later read was asked is dropped. A read's failure shows
+  // its sentence in the list. The values a field holds now are checked; a
+  // pick closes the list unless the field holds several.
   import Menu from '../primitives/Menu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import Popover from '../primitives/Popover.svelte';
@@ -34,9 +37,6 @@
     label: string;
     /** Reads the values matching `text`. */
     load: (text: string) => Promise<PickList>;
-    /** Typed text asks the tracker again; without it the list is filtered
-     * here. */
-    searchable: boolean;
     /** The IDs the field holds now. */
     checked: ReadonlySet<string>;
     /** The row that clears the value ("Unassigned"); none for a field
@@ -49,12 +49,16 @@
     onClose: () => void;
   }
 
-  let { anchor, open, label, load, searchable, checked, clearLabel, multi = false, onPick, onClose }: Props = $props();
+  let { anchor, open, label, load, checked, clearLabel, multi = false, onPick, onClose }: Props = $props();
 
   const PAUSE_MS = 250;
 
   let text = $state('');
   let list = $state.raw<PickList | null>(null);
+  // The text `list` answers.
+  let listFor = $state('');
+  // The first answer said the tracker holds more than it listed.
+  let remote = $state(false);
   let failure = $state<string | null>(null);
   let reading = $state(false);
   // Only the last read asked lands.
@@ -67,7 +71,10 @@
     failure = null;
     try {
       const got = await load(query);
-      if (mine === asked) list = got;
+      if (mine !== asked) return;
+      list = got;
+      listFor = query;
+      if (query === '') remote = got.more;
     } catch (err) {
       if (mine === asked) failure = errString(err);
     } finally {
@@ -79,6 +86,8 @@
     if (!open) return;
     text = '';
     list = null;
+    listFor = '';
+    remote = false;
     void read('');
     return () => {
       asked += 1;
@@ -88,7 +97,7 @@
   });
 
   function onInput(): void {
-    if (!searchable) return;
+    if (!remote) return;
     if (timer) clearTimeout(timer);
     const query = text;
     timer = setTimeout(() => {
@@ -99,7 +108,7 @@
 
   const shown = $derived.by(() => {
     const items = list?.items ?? [];
-    if (searchable) return items;
+    if (remote && listFor === text) return items;
     const words = text.trim().toLowerCase();
     return words ? items.filter((i) => i.name.toLowerCase().includes(words)) : items;
   });

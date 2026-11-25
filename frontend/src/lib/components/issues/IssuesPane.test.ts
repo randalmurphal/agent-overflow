@@ -1027,6 +1027,54 @@ describe('the ticket in the pane', () => {
     }
   });
 
+  it('asks the tracker for typed text when its list holds more matches, once per pause, showing only the answer for the latest text', async () => {
+    install();
+    installTicket();
+    const answers = new Map<string, (list: { choices: { id: string; name: string }[]; more?: boolean }) => void>();
+    const choices = setBindingMock('TrackerChoices', (_c: string, _s: unknown, _f: string, text: string) => new Promise((resolve) => {
+      if (text === '') {
+        resolve({ choices: Array.from({ length: 50 }, (_, i) => ({ id: `o${i}`, name: `Option ${i}` })), more: true });
+        return;
+      }
+      answers.set(text, resolve);
+    }));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const priority = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'priority')!;
+    await fireEvent.click(within(priority).getByTestId('ticket-field-value'));
+    await waitFor(() => expect(within(menu()).getAllByTestId('ticket-picker-item')).toHaveLength(50));
+    const find = within(document.body).getByTestId('ticket-picker-find');
+    for (const text of ['R', 'Re']) await fireEvent.input(find, { target: { value: text } });
+    await waitFor(() => expect(answers.has('Re')).toBe(true));
+    expect(choices.mock.calls.map((c) => c[3])).toEqual(['', 'Re']);
+    // The person types on; the answer for "Re" lands after the one for
+    // "Rel" and is not shown.
+    await fireEvent.input(find, { target: { value: 'Rel' } });
+    await waitFor(() => expect(answers.has('Rel')).toBe(true));
+    const items = () => within(menu()).queryAllByTestId('ticket-picker-item').map((i) => i.textContent?.trim());
+    answers.get('Rel')!({ choices: [{ id: 'r1', name: 'Release 1' }, { id: 'r9', name: 'Release 9' }] });
+    await waitFor(() => expect(items()).toEqual(['Release 1', 'Release 9']));
+    answers.get('Re')!({ choices: [{ id: 'r1', name: 'Release 1' }, { id: 'r2', name: 'Reopened' }] });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(items()).toEqual(['Release 1', 'Release 9']);
+    expect(choices.mock.calls.map((c) => c[3])).toEqual(['', 'Re', 'Rel']);
+  });
+
+  it('filters a whole list of values as the person types, asking nothing more', async () => {
+    install();
+    installTicket();
+    const choices = setBindingMock('TrackerChoices', async () => ({ choices: [{ id: '1', name: 'Highest' }, { id: '3', name: 'Low' }, { id: '4', name: 'Lowest' }] }));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const priority = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'priority')!;
+    await fireEvent.click(within(priority).getByTestId('ticket-field-value'));
+    await waitFor(() => expect(within(menu()).getAllByTestId('ticket-picker-item')).toHaveLength(3));
+    await fireEvent.input(within(document.body).getByTestId('ticket-picker-find'), { target: { value: 'low' } });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(within(menu()).getAllByTestId('ticket-picker-item').map((i) => i.textContent?.trim())).toEqual(['Low', 'Lowest']);
+    expect(choices).toHaveBeenCalledTimes(1);
+  });
+
   it('opens a card\'s ticket from the card\'s menu, and copies its key from it', async () => {
     install();
     installTicket();
