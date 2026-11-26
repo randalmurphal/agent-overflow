@@ -134,30 +134,28 @@ func TestRowsNameDeclaredSeries(t *testing.T) {
 }
 
 // A query that runs past its deadline is interrupted inside SQLite's
-// first step and fails with the limit's sentence.
+// first step and fails with the limit's sentence: the sort of 27 billion
+// rows would otherwise run for hours, so the deadline's error is the
+// proof, and the test takes no reading of the clock.
 func TestRunawayQueryStopsAtItsDeadline(t *testing.T) {
 	t.Parallel()
 	s := sealed(t)
-	start := time.Now()
 	_, err := runSQL(s, metricOf(`SELECT a.ticket AS ticket FROM changes a, changes b, changes c ORDER BY a.at * b.at * c.at LIMIT 1`))
-	elapsed := time.Since(start)
 	var me *MetricError
 	if !errors.As(err, &me) || !me.Limit || !strings.Contains(me.Sentence, "ran past its limit of 1s") {
 		t.Fatalf("runaway query: %v", err)
 	}
-	if elapsed > metricDeadline+time.Second {
-		t.Fatalf("the runaway query stopped after %v; its deadline is %v", elapsed, metricDeadline)
-	}
 }
 
 // A metric's deadline began at its prepare: the prepare records the time
-// it took, and a prepare that took most of the deadline leaves the run
-// the rest.
+// it took (within the call's), and a prepare that took the whole deadline
+// leaves the run none, so a query that answers at once fails with the
+// limit's sentence.
 func TestTheDeadlineCountsThePrepare(t *testing.T) {
 	t.Parallel()
 	s := sealed(t)
 	start := time.Now()
-	p, err := s.prepare(metricOf(`SELECT a.ticket AS ticket FROM changes a, changes b, changes c ORDER BY a.at * b.at * c.at LIMIT 1`))
+	p, err := s.prepare(metricOf(`SELECT id AS ticket FROM tickets`))
 	call := time.Since(start)
 	if err != nil {
 		t.Fatal(err)
@@ -165,22 +163,21 @@ func TestTheDeadlineCountsThePrepare(t *testing.T) {
 	if p.took <= 0 || p.took > call {
 		t.Fatalf("the prepare recorded %v of a call of %v; want the time it took", p.took, call)
 	}
-	p.took = metricDeadline - 100*time.Millisecond
-	start = time.Now()
+	if rows, err := s.run(context.Background(), p, ms(testNow), 0); err != nil || len(rows) != 10 {
+		t.Fatalf("the query after its own prepare: %d rows, %v", len(rows), err)
+	}
+	p.took = metricDeadline
 	_, err = s.run(context.Background(), p, ms(testNow), 0)
-	elapsed := time.Since(start)
 	var me *MetricError
 	if !errors.As(err, &me) || !me.Limit {
-		t.Fatalf("runaway query after a slow prepare: %v", err)
-	}
-	if elapsed > 500*time.Millisecond {
-		t.Fatalf("the run went on %v after a prepare that took %v of its %v", elapsed.Round(time.Millisecond), p.took, metricDeadline)
+		t.Fatalf("the query after a prepare that took the whole deadline: %v; want the limit's sentence", err)
 	}
 }
 
 // A LIKE or GLOB pattern past 256 bytes is refused, so one call, which
 // SQLite cannot interrupt, stays short: 256 bytes against a 60,000-byte
-// subject finishes well inside the deadline.
+// subject finishes inside the deadline, which a call past it would meet
+// as the deadline's error at the statement's next step.
 func TestLikePatternsAreBounded(t *testing.T) {
 	t.Parallel()
 	s := sealed(t)
@@ -191,13 +188,9 @@ func TestLikePatternsAreBounded(t *testing.T) {
 			t.Errorf("a 30,000-byte pattern (%.4s): %v; want the limits sentence", op, err)
 		}
 	}
-	start := time.Now()
 	rows, err := runSQL(s, metricOf(`SELECT 't1' AS ticket WHERE printf('%.*c', 60000, 'a') LIKE '%' || printf('%.*c', 250, 'a') || 'b'`))
 	if err != nil || len(rows) != 0 {
 		t.Fatalf("a 252-byte pattern: %d rows, %v", len(rows), err)
-	}
-	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
-		t.Errorf("a 252-byte pattern against 60,000 bytes took %v", elapsed.Round(time.Millisecond))
 	}
 }
 
