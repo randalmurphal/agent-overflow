@@ -48,6 +48,12 @@ const MOVE_ROUTE = 'POST rest/api/3/issue/{issue}/transitions';
 /** A parked call's bound: above the time the person takes to answer. */
 const PARKED_MS = 180_000;
 
+/** The tracker tools' answer to the next call of `tool` in cwd, as the model received it. */
+async function trackerAnswer(harness: HarnessApp, tool: string, cwd: string): Promise<{ isError: boolean; text: string }> {
+  const event = await harness.awaitMcpResult({ server: TRACKER_TOOLS_SERVER, tool, cwd, timeoutMs: 60_000 });
+  return { isError: Boolean(event.report.isError), text: event.report.result ?? '' };
+}
+
 /** A project whose board is the fake site's, with one thread on provider per title. */
 async function seedWriters(
   harness: HarnessApp,
@@ -102,7 +108,7 @@ export function registerTrackerAgentWritesFlow({ compact }: TrackerWritesSurface
         turns: [{ steps: [{ call: { server: TRACKER_TOOLS_SERVER, tool: 'ticket_update', args: { keys: ['web-1'], set: { Status: 'done' }, comment: 'Released in 1.4.' } } }], text: 'Done.' }],
       }));
       await harness.send(threadIds[0], 'close WEB-1');
-      const answer = await awaitToolAnswer(harness, { tool: 'ticket_update', cwd: path, timeoutMs: 60_000 });
+      const answer = await trackerAnswer(harness, 'ticket_update', path);
       expect(answer.isError, answer.text).toBe(false);
       expect(JSON.parse(answer.text)).toEqual({ tickets: [{ key: 'WEB-1', applied: ['Status', 'comment'] }] });
       expect((await trackerRequests(harness, MOVE_ROUTE, ['WEB-1', '10101'])).map((r) => r.status)).toEqual([204]);
@@ -141,8 +147,9 @@ export function registerTrackerAgentWritesFlow({ compact }: TrackerWritesSurface
       ],
       afterTurns: 'silent',
     }));
-    await openThread(harness, page, title, compact);
+    // A seeded thread is listed once it has a message.
     await harness.send(threadIds[0], 'pick up the three tickets');
+    await openThread(harness, page, title, compact);
     let prompt = await writePrompt(page);
     expect(await promptTickets(prompt)).toEqual([
       // WEB-1 is in progress already: it gets the comment alone.
@@ -154,7 +161,7 @@ export function registerTrackerAgentWritesFlow({ compact }: TrackerWritesSurface
     await expect(prompt.getByTestId('approval-allow-session')).toHaveCount(0);
     expect(await trackerRequests(harness, COMMENT_ROUTE)).toHaveLength(0);
     await press(prompt.getByTestId('approval-allow'), compact);
-    const approved = await awaitToolAnswer(harness, { tool: 'ticket_update', cwd: path, timeoutMs: 60_000 });
+    const approved = await trackerAnswer(harness, 'ticket_update', path);
     expect(approved.isError, approved.text).toBe(false);
     expect(JSON.parse(approved.text)).toEqual({ tickets: [
       { key: 'WEB-1', applied: ['status', 'comment'] },
@@ -171,7 +178,7 @@ export function registerTrackerAgentWritesFlow({ compact }: TrackerWritesSurface
     await harness.send(threadIds[0], 'and tell two of them no');
     prompt = await writePrompt(page);
     await press(prompt.getByTestId('approval-deny'), compact);
-    const denied = await awaitToolAnswer(harness, { tool: 'ticket_update', cwd: path, timeoutMs: 60_000 });
+    const denied = await trackerAnswer(harness, 'ticket_update', path);
     expect(denied).toMatchObject({ isError: true, text: '[tracker_write_denied] The user denied this change; nothing was sent.' });
     await expect(page.getByTestId('composer-pending-approval')).toHaveCount(0);
     expect(await trackerRequests(harness, COMMENT_ROUTE)).toHaveLength(3);
@@ -187,7 +194,7 @@ export function registerTrackerAgentWritesFlow({ compact }: TrackerWritesSurface
       turns: [{ steps: [{ call: { server: TRACKER_TOOLS_SERVER, tool: 'ticket_update', args: { keys: ['WEB-1'], comment: 'Hello.' } } }], text: 'Tried.' }],
     }));
     await harness.send(threadIds[0], 'comment on WEB-1');
-    const answer = await awaitToolAnswer(harness, { tool: 'ticket_update', cwd: path, timeoutMs: 60_000 });
+    const answer = await trackerAnswer(harness, 'ticket_update', path);
     expect(answer).toMatchObject({ isError: true, text: '[tracker_read_only] This thread is read-only, so it cannot change tickets; ask the user to change its access.' });
     expect(await trackerRequests(harness, COMMENT_ROUTE)).toHaveLength(0);
     await openThread(harness, page, title, compact);
@@ -228,7 +235,7 @@ export function registerTrackerAgentWritesFlow({ compact }: TrackerWritesSurface
     expect(await promptTickets(prompt)).toEqual([['WEB-1 First story', []], ['WEB-2 Second task', []]]);
     await expect(prompt.getByTestId('tracker-write-approval-comment')).toContainText('Checked by the worker.');
     await press(prompt.getByTestId('approval-allow'), compact);
-    const answer = await awaitToolAnswer(harness, { tool: 'ticket_update', cwd: workerProject.path, timeoutMs: 60_000 });
+    const answer = await trackerAnswer(harness, 'ticket_update', workerProject.path);
     expect(answer.isError, answer.text).toBe(false);
     expect(await trackerRequests(harness, COMMENT_ROUTE)).toHaveLength(2);
   });
@@ -242,6 +249,7 @@ export function registerTrackerAgentWritesFlow({ compact }: TrackerWritesSurface
       name: 'tracker-writes-browser', provider: 'claude',
       turns: [{ steps: [{ call: { server: TRACKER_TOOLS_SERVER, tool: 'ticket_update', timeoutMs: PARKED_MS, args: { keys: ['WEB-2', 'WEB-3'], comment: 'From the browser.' } } }], text: 'Done.' }],
     }));
+    await harness.send(threadIds[0], 'comment on both');
     await openThread(harness, page, title, false);
     const context = await browser.newContext();
     try {
@@ -250,13 +258,12 @@ export function registerTrackerAgentWritesFlow({ compact }: TrackerWritesSurface
       const code = await redeemOnScreen(device, invite, 'Tracker browser');
       await confirmOnHost(harness, code);
       await device.getByText(title, { exact: true }).click({ timeout: 30_000 });
-      await harness.send(threadIds[0], 'comment on both');
       const onDevice = await writePrompt(device);
       // The backend's own screen shows the same prompt.
       await writePrompt(page);
       expect(await promptTickets(onDevice)).toEqual([['WEB-2 Second task', []], ['WEB-3 Backlog task', []]]);
       await onDevice.getByTestId('approval-allow').click();
-      const answer = await awaitToolAnswer(harness, { tool: 'ticket_update', cwd: path, timeoutMs: 60_000 });
+      const answer = await trackerAnswer(harness, 'ticket_update', path);
       expect(answer.isError, answer.text).toBe(false);
       // Answered there, the prompt leaves every screen.
       await expect(device.getByTestId('composer-pending-approval')).toHaveCount(0);
