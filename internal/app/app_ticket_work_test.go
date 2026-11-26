@@ -100,3 +100,25 @@ func TestTicketWorkListsThePullRequestsAndBranchesThatNameItsKey(t *testing.T) {
 		t.Errorf("Work of a ticket the mirror does not hold = %v; want the ticket not read", err)
 	}
 }
+
+// A stored list of a project that was removed, kept until the Pull
+// requests page's next read prunes it, is not Work's: its pull requests
+// are not listed and its project is not read.
+func TestTicketWorkLeavesOutTheStoredListOfARemovedProject(t *testing.T) {
+	t.Parallel()
+	f := newTrackerBoardFixture(t)
+	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
+	f.subscribe(t, ctx)
+	f.boardEvent(t, "for the first read", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10101") })
+	storePRList(t, f.a, "p-removed", prListRepoB, []gitops.PRListRow{
+		prListRow(prListRepoB, 7, func(r *gitops.PRListRow) { r.Title = "WEB-1 Retry cursor" }),
+	}, time.Minute)
+
+	work, err := f.a.GetTicketWork(ctx, f.conn.ID, "10101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(work.PullRequests) != 0 || slices.ContainsFunc(work.Problems, func(p TicketWorkProblem) bool { return p.ProjectID == "p-removed" }) {
+		t.Errorf("pull requests = %+v, problems %+v; want neither of the removed project", work.PullRequests, work.Problems)
+	}
+}

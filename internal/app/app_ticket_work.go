@@ -296,7 +296,9 @@ type storedPRList struct {
 // storedTicketPullRequests lists the stored open pull requests whose title
 // or head branch names key. A repository's read is decoded only when its
 // bytes hold the key in any case, so a ticket's open costs one scan of the
-// stored lists and a decode of the repositories that name it.
+// stored lists and a decode of the repositories that name it. The read of
+// a project that was removed is left out: it stays stored only until the
+// Pull requests page's next read prunes it.
 func (a *App) storedTicketPullRequests(key string) ([]TicketPullRequest, error) {
 	records, err := a.store.ListPRListProjects()
 	if err != nil {
@@ -315,6 +317,11 @@ func (a *App) storedTicketPullRequests(key string) ([]TicketPullRequest, error) 
 		}
 		var list storedPRList
 		if err := json.Unmarshal(blob, &list); err != nil {
+			return nil, fmt.Errorf("read the stored pull requests of %s: %w", repoKey, err)
+		}
+		if _, err := a.store.GetProject(list.ProjectID); errors.Is(err, sql.ErrNoRows) {
+			continue
+		} else if err != nil {
 			return nil, fmt.Errorf("read the stored pull requests of %s: %w", repoKey, err)
 		}
 		for _, row := range list.Rows {

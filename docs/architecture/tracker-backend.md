@@ -2021,7 +2021,8 @@ delete is refused and the links the delete read are the ones it ends.
 - **`GetTicketWork`** (home route, `git:operate` and `tracker:read`)
   answers a ticket's open pull requests from the stored lists, scanning
   each stored list's bytes for the key and decoding only the lists that
-  hold it; the merged and closed pull requests its linked threads were
+  hold it, less the list of a removed project (kept until the Pull
+  requests page's next read prunes it); the merged and closed pull requests its linked threads were
   last seen with; and the branches that name the key in the projects
   listing the connection's boards, the pull requests' projects and the
   linked threads' projects, a branch a listed pull request names folded
