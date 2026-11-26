@@ -15,15 +15,24 @@
     timeScreen ??= import('./TimeScreen.svelte');
     return timeScreen;
   }
+
+  // The Backlog screen loads on its first switch to Backlog, once per page.
+  let backlogScreen: Promise<typeof import('./BacklogScreen.svelte')> | null = null;
+  function loadBacklogScreen(): Promise<typeof import('./BacklogScreen.svelte')> {
+    backlogScreen ??= import('./BacklogScreen.svelte');
+    return backlogScreen;
+  }
 </script>
 
 <script lang="ts">
-  // The Issues tool pane (docs/specs/issues.md, "Pane", "Board" and
-  // "Time"): one app-wide pane over every project's boards on every
-  // attached computer. The header holds the board picker, the screens
-  // (Board and Time, folded into one picker in a narrow pane and under
-  // compact), and on the Board Only mine, Display and Search, and Refresh;
-  // under compact Only mine moves into the Display menu. Time shows the
+  // The Issues tool pane (docs/specs/issues.md, "Pane", "Board", "Backlog
+  // and sprint planning" and "Time"): one app-wide pane over every
+  // project's boards on every attached computer. The header holds the
+  // board picker, the screens (Board, Backlog and Time, folded into one
+  // picker in a narrow pane and under compact), and on the Board and the
+  // Backlog Only mine, Display and Search, and Refresh; under compact Only
+  // mine moves into the Display menu. Backlog (BacklogScreen, loaded on the
+  // first switch to it) shows the same board's sprints and backlog. Time shows the
   // person's logged time on the board's connection (TimeScreen, loaded on
   // the first switch to it); while it shows, the board is not mounted and
   // its subscription is voted hidden, and Refresh reads the week. Notices
@@ -86,8 +95,10 @@
     savedOnlyMine,
     setCardFieldShown,
     setTicketPlacement,
+    showsBoard,
     takeTicketOpenRequest,
     ticketOpenRequested,
+    type IssuesScreen,
   } from '../../stores/issuesPane.svelte';
   import { dismissTrackerRefreshNotice, refreshTrackerBoard } from '../../stores/trackerBoard.svelte';
   import {
@@ -97,6 +108,7 @@
     trackerBoardChoices,
   } from '../../stores/trackerBoardChoices.svelte';
   import { cardMatches, filtering, screenColumns, searchWords, type CardFilter } from '../../stores/trackerBoardModel';
+  import { backlogSections } from '../../stores/trackerBacklogModel';
   import { timeOfflineText } from '../../stores/trackerTimeModel';
   import { relativeTime } from '../../utils/format';
 
@@ -116,11 +128,14 @@
   // each screen's split; its width also decides whether a ticket fits
   // beside and whether the tabs fold.
   let paneWidth = $state(0);
-  const splits = { board: new SplitWidth('issuesTicketSplit:board', TICKET_SPLIT), time: new SplitWidth('issuesTicketSplit:time', TICKET_SPLIT) };
+  const splits: Record<IssuesScreen, SplitWidth> = {
+    board: new SplitWidth('issuesTicketSplit:board', TICKET_SPLIT),
+    backlog: new SplitWidth('issuesTicketSplit:backlog', TICKET_SPLIT),
+    time: new SplitWidth('issuesTicketSplit:time', TICKET_SPLIT),
+  };
   function measure(width: number): void {
     paneWidth = width;
-    splits.board.paneWidth = width;
-    splits.time.paneWidth = width;
+    for (const split of Object.values(splits)) split.paneWidth = width;
   }
   const besideFits = $derived(!compact && paneWidth >= BESIDE_MIN_PX);
   const selection = createBoardSelection({ openedFromProject: openedFrom, shown: () => shown, besideFits: () => besideFits });
@@ -226,9 +241,10 @@
   }
   const filter: CardFilter = $derived({ mine: onlyMine ? me : null, words: searchWords(query) });
   const matchCount = $derived.by(() => {
-    if (screen !== 'board' || !held || !filtering(filter)) return 0;
+    if (!showsBoard(screen) || !held || !filtering(filter)) return 0;
     let n = 0;
-    for (const col of screenColumns(held)) for (const r of col.rows) if (cardMatches(r.card, filter)) n += 1;
+    const lists = screen === 'board' ? screenColumns(held) : backlogSections(held);
+    for (const list of lists) for (const r of list.rows) if (cardMatches(r.card, filter)) n += 1;
     return n;
   });
   // A tool pane's id is fixed for its life (`tool-issues`).
@@ -339,7 +355,7 @@
       />
       <IssuesTabs current={screen} folded={compact || paneWidth < TABS_MIN_PX} onPick={(next) => selection.setScreen(next)} />
       <span class="flex-1"></span>
-      {#if !compact && screen === 'board'}
+      {#if !compact && showsBoard(screen)}
         <button
           type="button"
           class="inline-flex h-6 shrink-0 items-center gap-1 rounded-[var(--radius-control)] px-2 text-[0.75rem] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 {onlyMine ? 'bg-accent/15 text-accent' : 'text-fg-muted hover:bg-surface-1 hover:text-fg'}"
@@ -351,14 +367,14 @@
           <span>Only mine</span>
         </button>
       {/if}
-      {#if board && screen === 'board'}
+      {#if board && showsBoard(screen)}
         <DisplayMenu
           {hidden}
           onField={(field, on) => setCardFieldShown(board, field, on)}
           onlyMine={compact ? { on: onlyMine, set: setOnlyMine } : undefined}
         />
       {/if}
-      {#if screen === 'board'}
+      {#if showsBoard(screen)}
         <PaneHeaderIconButton label="Search" testId="issues-search" onclick={() => openPaneFind(paneId, { returnFocus: document.activeElement as HTMLElement | null })}>
           <Icon icon={Search} size={14} strokeWidth={2} />
         </PaneHeaderIconButton>
@@ -384,7 +400,7 @@
       />
     {/if}
   {/each}
-  {#if !boardCovered && screen === 'board'}
+  {#if !boardCovered && showsBoard(screen)}
   {#if attachment?.error}
     <p class="border-b border-error/30 bg-error/10 px-3 py-1.5 text-xs text-error" role="alert" data-testid="issues-subscribe-error">Could not open this board: {attachment.error}</p>
   {/if}
@@ -445,7 +461,7 @@
     data-testid="issues-board-region"
     data-screen={screen}
   >
-    <RenderBoundary label={screen === 'time' ? 'Time' : 'The board'} testId="issues-board-render-error">
+    <RenderBoundary label={screen === 'time' ? 'Time' : screen === 'backlog' ? 'The backlog' : 'The board'} testId="issues-board-render-error">
       {#if !board}
         <div class="flex flex-col items-start gap-2 px-4 py-6 text-sm text-fg-muted" data-testid="issues-empty">
           {#if pending}
@@ -505,6 +521,29 @@
             <p class="px-4 py-6 text-sm text-error" role="alert" data-testid="time-load-error">The Time screen could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</p>
           {/await}
         {/if}
+      {:else if held && attachment && screen === 'backlog'}
+        {@const backlogBoard = board}
+        {#await loadBacklogScreen()}
+          <p class="px-4 py-6 text-sm text-fg-muted" data-testid="backlog-loading">Opening the backlog…</p>
+        {:then mod}
+          <mod.default
+            boardKey={attachment.key}
+            boardRef={backlogBoard}
+            {held}
+            paging={boardState!.paging}
+            sectionErrors={boardState!.sectionErrors}
+            {filter}
+            {hidden}
+            {compact}
+            shown={selection.boardShown}
+            openIssue={ticket?.ref.issue ?? null}
+            kind={boardKind}
+            onOpenCard={openCard}
+            onMoveWithFields={moveWithFields}
+          />
+        {:catch err}
+          <p class="px-4 py-6 text-sm text-error" role="alert" data-testid="backlog-load-error">The Backlog screen could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</p>
+        {/await}
       {:else if held && attachment}
         <BoardScreen
           boardKey={attachment.key}

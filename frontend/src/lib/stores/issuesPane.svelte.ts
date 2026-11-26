@@ -1,12 +1,14 @@
 // The Issues pane's view state (docs/specs/issues.md, "The Issues pane"):
 // the board a pane shows and the ticket open over or beside it
 // (`createBoardSelection`), which card fields each board shows (Display),
-// Only mine, the column a compact screen shows, and the ticket's
-// remembered choices: over or beside, which sections are open, and the
-// comment order. The board a person picked last and Only mine are saved
-// for this client (frontendStorage) and seed the next pane that opens;
-// Display follows another window of the client as it changes; the compact
-// column lasts while the app runs. No computer is asked for any of it. The
+// Only mine, the column a compact screen shows, which Backlog sections are
+// folded, what a new ticket was last made with on each board, and the
+// ticket's remembered choices: over or beside, which sections are open,
+// and the comment order. The board a person picked last and Only mine are
+// saved for this client (frontendStorage) and seed the next pane that
+// opens; Display and the folds follow another window of the client as
+// they change; the compact column and a new ticket's choices last while
+// the app runs. No computer is asked for any of it. The
 // subscriptions themselves are trackerBoard.svelte.ts's and
 // trackerTicket.svelte.ts's, the boards to pick from
 // trackerBoardChoices.svelte.ts's.
@@ -17,6 +19,7 @@ import { getAttachedBackends } from './attachedBackends.svelte';
 import { onFrontendValueChanged, readFrontendValue, writeFrontendValue } from './frontendStorage';
 import {
   attachTrackerBoard,
+  holdTrackerBoardPlan,
   renewEndedTrackerBoard,
   setTrackerBoardShown,
   trackerBoardOnComputer,
@@ -64,6 +67,7 @@ const ONLY_MINE_KEY = 'issues-only-mine';
 const PLACEMENT_KEY = 'issues-ticket-placement';
 const SCREEN_KEY = 'issues-screen';
 const SECTIONS_KEY = 'issues-ticket-folds';
+const BACKLOG_FOLDS_KEY = 'issues-backlog-folds';
 const COMMENT_ORDER_KEY = 'issues-ticket-comment-order';
 const TIME_LAYOUT_KEY = 'issues-time-layout';
 // Boards whose Display was changed, newest last; the oldest goes past this.
@@ -168,16 +172,23 @@ export function setCompactColumn(ref: TrackerBoardRef, column: number): void {
   compactColumns.set(trackerBoardOnComputer(ref), column);
 }
 
-/** The pane's screens: the tabs of its top bar. */
-export type IssuesScreen = 'board' | 'time';
+/** The pane's screens: the tabs of its top bar. Board and Backlog show
+ * the board; Time shows the person's week. */
+export type IssuesScreen = 'board' | 'backlog' | 'time';
 
 export const ISSUES_SCREENS: readonly { readonly screen: IssuesScreen; readonly label: string }[] = [
   { screen: 'board', label: 'Board' },
+  { screen: 'backlog', label: 'Backlog' },
   { screen: 'time', label: 'Time' },
 ];
 
 function isScreen(v: unknown): v is IssuesScreen {
-  return v === 'board' || v === 'time';
+  return v === 'board' || v === 'backlog' || v === 'time';
+}
+
+/** Whether a screen shows the board. */
+export function showsBoard(screen: IssuesScreen): boolean {
+  return screen === 'board' || screen === 'backlog';
 }
 
 /** The screen this client last switched to: what a pane opens on. */
@@ -207,7 +218,7 @@ function readPlacements(): Partial<Record<IssuesScreen, TicketPlacement>> {
 let placements = $state.raw(readPlacements());
 
 // A ticket opens over the board and beside every list (docs/specs/issues.md, "Pane").
-const DEFAULT_PLACEMENT: Readonly<Record<IssuesScreen, TicketPlacement>> = { board: 'over', time: 'beside' };
+const DEFAULT_PLACEMENT: Readonly<Record<IssuesScreen, TicketPlacement>> = { board: 'over', backlog: 'beside', time: 'beside' };
 
 /** Where the screen shows a ticket when the pane is wide enough for
  * beside; the screen's default until the person chose. Reactive. */
@@ -261,6 +272,61 @@ export function setTicketSectionOpen(s: TicketSection, open: boolean): void {
   next.set(key, open);
   while (next.size > MAX_SECTIONS_REMEMBERED) next.delete(next.keys().next().value!);
   if (writeFrontendValue(SECTIONS_KEY, [...next])) sections = next;
+}
+
+/** Each Backlog section's fold as the person set it, by board on its
+ * computer and list (`trackerBoardModel.ts#sectionList`), oldest first. */
+function readBacklogFolds(): ReadonlyMap<string, boolean> {
+  const v = readFrontendValue(BACKLOG_FOLDS_KEY);
+  if (!Array.isArray(v)) return new Map();
+  const out = new Map<string, boolean>();
+  for (const entry of v.slice(-MAX_SECTIONS_REMEMBERED)) {
+    if (Array.isArray(entry) && entry.length === 2 && isString(entry[0]) && typeof entry[1] === 'boolean') out.set(entry[0], entry[1]);
+  }
+  return out;
+}
+
+let backlogFolds = $state.raw(readBacklogFolds());
+onFrontendValueChanged(BACKLOG_FOLDS_KEY, () => { backlogFolds = readBacklogFolds(); });
+
+function backlogFoldKey(ref: TrackerBoardRef, list: string): string {
+  return `${trackerBoardOnComputer(ref)}\n${list}`;
+}
+
+/** Whether a Backlog section of the board is open: as the person left it,
+ * else `opens` (an active sprint opens folded). Reactive. */
+export function backlogSectionOpen(ref: TrackerBoardRef, list: string, opens: boolean): boolean {
+  return backlogFolds.get(backlogFoldKey(ref, list)) ?? opens;
+}
+
+export function setBacklogSectionOpen(ref: TrackerBoardRef, list: string, open: boolean): void {
+  const key = backlogFoldKey(ref, list);
+  const next = new Map(backlogFolds);
+  // Re-inserted so the section changed last is kept longest.
+  next.delete(key);
+  next.set(key, open);
+  while (next.size > MAX_SECTIONS_REMEMBERED) next.delete(next.keys().next().value!);
+  if (writeFrontendValue(BACKLOG_FOLDS_KEY, [...next])) backlogFolds = next;
+}
+
+/** What a new ticket was last made with on a board this session: its
+ * project (on a board of several) and its type. */
+export interface CreateChoice {
+  readonly project?: string;
+  readonly type?: string;
+}
+
+const createChoices = new SvelteMap<string, CreateChoice>();
+
+/** What the person last made a ticket with on the board this session;
+ * reactive. */
+export function lastCreateChoice(ref: TrackerBoardRef): CreateChoice {
+  return createChoices.get(trackerBoardOnComputer(ref)) ?? {};
+}
+
+export function setLastCreateChoice(ref: TrackerBoardRef, choice: CreateChoice): void {
+  const key = trackerBoardOnComputer(ref);
+  createChoices.set(key, { ...createChoices.get(key), ...choice });
 }
 
 let commentOrder = $state<CommentOrder>(readFrontendValue(COMMENT_ORDER_KEY) === 'newest' ? 'newest' : 'oldest');
@@ -402,14 +468,14 @@ export interface BoardSelection {
   readonly tickets: TicketTrail;
   /** The ticket open over or beside the board; null for none. Reactive. */
   readonly ticket: OpenTicket | null;
-  /** The screen the pane shows: the Board or Time. Reactive. */
+  /** The screen the pane shows: the Board, the Backlog or Time. Reactive. */
   readonly screen: IssuesScreen;
   /** Where the ticket shows now: beside only when the pane fits it and the
    * screen's placement is beside. Reactive. */
   readonly placement: TicketPlacement;
   /** Whether the person sees the board: the pane is on screen, shows the
-   * Board and no ticket covers it. The board's subscription votes this.
-   * Reactive. */
+   * Board or the Backlog and no ticket covers it. The board's subscription
+   * votes this. Reactive. */
   readonly boardShown: boolean;
   /** Whether the person sees the Time screen, by the same rule. Its week
    * is read only while it is. Reactive. */
@@ -424,8 +490,8 @@ export interface BoardSelection {
    * screen's list, or from the ticket open now, which Back then returns
    * to. */
   openTicket(issue: string, seed: TicketSeed, from: 'list' | 'ticket'): void;
-  /** Opens a ticket asked for from outside the pane, on the Board screen:
-   * over the board shown when it is of the ticket's computer and
+  /** Opens a ticket asked for from outside the pane, on the Board or
+   * Backlog screen, whichever shows: over the board shown when it is of the ticket's computer and
    * connection, else over the board `boardForTicket` picks once that
    * computer's boards are read, which it shows without saving it as the
    * person's pick. A pane on Time switches to the Board without saving
@@ -726,7 +792,7 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
   // The one rule for whether a screen is seen: the pane on screen, showing
   // it, and no ticket over it.
   const listShown = $derived(opts.shown() && !(ticket && placement === 'over'));
-  const boardShown = $derived(listShown && screen === 'board');
+  const boardShown = $derived(listShown && showsBoard(screen));
   const timeShown = $derived(listShown && screen === 'time');
   // The board on its computer: the ticket and its trail go when it changes,
   // and stay when only the project listing it does.
@@ -758,6 +824,14 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
       const key = attachment?.key;
       const shown = boardShown;
       if (key) untrack(() => setTrackerBoardShown(key, shown));
+    });
+
+    // The Backlog's sections are held while the pane is on Backlog, shown
+    // or not, so a ticket opened over it and closed reads none again.
+    $effect(() => {
+      const key = attachment?.key;
+      if (!key || screen !== 'backlog') return;
+      return untrack(() => holdTrackerBoardPlan(key));
     });
 
     $effect.pre(() => {
@@ -806,7 +880,7 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
       untrack(() => renewEndedTrackerBoard(held.key));
     });
 
-    // A requested ticket opens on the Board screen, over the board shown
+    // A requested ticket opens on the Board or Backlog screen, over the board shown
     // when that board is of its computer and connection; otherwise, once
     // that computer's boards are known, the board switches to
     // boardForTicket's and the ticket opens with it (`arriving`, which the
@@ -821,7 +895,7 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
       if (shown && shown.backend === ref.backend && shown.connection === ref.connection) {
         untrack(() => {
           requested = null;
-          screen = 'board';
+          if (!showsBoard(screen)) screen = 'board';
           tickets.show(open);
         });
         return;
@@ -838,7 +912,7 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
           return;
         }
         unconfirmed = false;
-        screen = 'board';
+        if (!showsBoard(screen)) screen = 'board';
         arriving = open;
         board = next;
       });
@@ -915,6 +989,8 @@ export function resetIssuesPaneForTest(): void {
   compactColumns.clear();
   placements = {};
   sections = new Map();
+  backlogFolds = new Map();
+  createChoices.clear();
   commentOrder = 'oldest';
   ticketOpenRequest = null;
 }

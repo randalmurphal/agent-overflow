@@ -1,5 +1,6 @@
 <script lang="ts">
-  // A Board card's menu (docs/specs/issues.md, "Board"), drawn by the
+  // A Board card's and a Backlog row's menu (docs/specs/issues.md,
+  // "Board" and "Backlog and sprint planning"), drawn by the
   // shared ActionMenu under the name `issues-card`: Open, Open in its own
   // pane (where ticket panes are offered) and Open in the tracker; Move to…, Move to sprint… (a board that plans sprints),
   // Assignee…, Priority…, Points… (a board with an estimate) and Type…
@@ -49,10 +50,12 @@
   /** Shown at once until the person chooses. */
   const DEFAULTS = ['open', 'move', 'assignee', 'copy-key'];
 
-  // The sprints it can move to: the board's active and future ones but
-  // its own, and the backlog when it is in a sprint.
-  const sprints = $derived(shape.plansSprints ? shape.sprints.filter((sp) => (sp.state === 'active' || sp.state === 'future') && !row.card.sprints?.includes(sp.id)) : []);
-  const inSprint = $derived((row.card.sprints?.length ?? 0) > 0);
+  // The sprints it can move to: the board's open (active and future) ones
+  // but its own, and the backlog when it is in one of them. A card also
+  // names the closed sprints it was in, which leave it in the backlog.
+  const open = $derived(shape.plansSprints ? shape.sprints.filter((sp) => sp.state === 'active' || sp.state === 'future') : []);
+  const sprints = $derived(open.filter((sp) => !row.card.sprints?.includes(sp.id)));
+  const inSprint = $derived(open.some((sp) => row.card.sprints?.includes(sp.id)));
   // A row whose write is out waits for it; the store would send nothing.
   const pending = (target: string) => ticketWrite(ctx.key, target)?.pending ?? false;
 

@@ -4,6 +4,7 @@
 
 import type { ChoiceView, IssueTypeView, SectionTotal } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import type { ScreenColumn, ShownColumn } from '../../stores/trackerBoardModel';
+import type { SectionNumbers } from '../../stores/trackerBacklogModel';
 
 const DAY_MS = 86_400_000;
 
@@ -72,4 +73,59 @@ const PRIORITY_NAMES: Readonly<Record<string, PriorityMark>> = {
 export function priorityMark(priority: ChoiceView | null | undefined): PriorityMark {
   if (!priority) return 'none';
   return PRIORITY_NAMES[(priority.name ?? '').trim().toLowerCase()] ?? 'other';
+}
+
+/** A part of a Backlog section's numbers line: plain, what a moved row
+ * makes it (`to`, after an arrow), or a warning. */
+export interface LinePart {
+  readonly text: string;
+  readonly tone?: 'to' | 'warn';
+}
+
+/** A Backlog section's numbers line (`SectionNumbers`), in the board's
+ * measure: its points or time, else its tickets. An active sprint says how
+ * much is done once it is read; a future sprint its total of about the
+ * pace, and how far over; the backlog its tickets, points and tickets with
+ * no estimate. A moved row shows as the number before, an arrow and the
+ * number it makes. */
+export function sectionLine(kind: 'active' | 'future' | 'backlog', n: SectionNumbers, unit: string): LinePart[] {
+  const estimated = unit === 'points' || unit === 'time';
+  const measure = (t: { rows: number; estimate: number }) => (estimated ? t.estimate : t.rows);
+  const bare = (v: number) => (estimated ? (formatEstimate(v, unit) ?? '0') : trim(v));
+  const word = (v: number) => (unit === 'points' ? (v === 1 ? ' point' : ' points') : unit === 'time' ? '' : v === 1 ? ' ticket' : ' tickets');
+  const tickets = (v: number) => (v === 1 ? ' ticket' : ' tickets');
+  const parts: LinePart[] = [];
+  /** `now`, after `was` and an arrow when a moved row changes it. */
+  const moving = (was: number | null, now: number, after: string) => {
+    if (was !== null && was !== now) parts.push({ text: `${bare(was)} ` }, { text: `→ ${bare(now)}${after}`, tone: 'to' });
+    else parts.push({ text: `${bare(now)}${after}` });
+  };
+  const now = measure(n.total);
+  const was = n.before ? measure(n.before) : null;
+  if (kind === 'active') {
+    if (n.done) parts.push({ text: `${bare(measure(n.done))} of ` });
+    moving(was, now, `${word(now)}${n.done ? ' done' : ''}`);
+    return parts;
+  }
+  if (kind === 'future') {
+    if (!n.pace) {
+      moving(was, now, word(now));
+      return parts;
+    }
+    const pace = measure(n.pace);
+    moving(was, now, '');
+    const last = n.pace.sprints === 1 ? 'the last sprint' : `the last ${n.pace.sprints} sprints' average`;
+    parts.push({ text: ` of about ${bare(Math.round(pace * 10) / 10)}${word(pace)}, ${last}` });
+    if (n.over > 0) parts.push({ text: ' · ' }, { text: `${bare(Math.round(n.over * 10) / 10)} over`, tone: 'warn' });
+    return parts;
+  }
+  const wasRows = n.before ? n.before.rows : null;
+  if (wasRows !== null && wasRows !== n.total.rows) parts.push({ text: `${wasRows} ` }, { text: `→ ${n.total.rows}${tickets(n.total.rows)}`, tone: 'to' });
+  else parts.push({ text: `${n.total.rows}${tickets(n.total.rows)}` });
+  if (!estimated) return parts;
+  parts.push({ text: ' · ' });
+  moving(n.before ? n.before.estimate : null, n.total.estimate, word(n.total.estimate));
+  const none = n.total.unestimated ?? 0;
+  if (none > 0) parts.push({ text: ' · ' }, { text: `${none} without an estimate`, tone: 'warn' });
+  return parts;
 }
