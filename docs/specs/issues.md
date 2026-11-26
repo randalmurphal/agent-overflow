@@ -6,8 +6,10 @@ the connections and a project's board list, in Settings > Issues
 screens, opened from the tool row's Issues entry, and the Ticket screen,
 opened from a card or a row, from a thread's linked ticket or from a pull
 request's ticket chip; a thread's ticket link, in the sidebar and the
-thread header. The other screens are not built; the [Board](#board),
+thread header, and the Dashboards screen. The other screens are not
+built; the [Board](#board),
 [Backlog](#backlog-and-sprint-planning), [Ticket](#ticket),
+[Dashboards](#dashboards),
 [Tickets, pull requests and branches](#tickets-pull-requests-and-branches)
 and [Thread link](#thread-link) sections say what of them is. A
 project's status groups are set in Settings > Issues > Status groups, its
@@ -584,6 +586,14 @@ sidebar and the thread header, on desktop and on a phone.
 - Sidebar search also matches a thread by its ticket's key and title.
 
 ### Dashboards
+
+Status: built: Overview, the dashboards a project keeps and the picker,
+Team or Mine, the range, Ask your agent, edit mode, and the widget an
+agent proposes, which the person keeps or dismisses; a number, bar or
+cell's tickets, a number's change and trend, and narrowing to a person or
+an epic. A query reads the board's tickets only: pull requests, threads
+and logged time are not built, nor the credit rules in How this is
+counted, selecting rows in a ticket list, or a number tile's limit.
 
 - Every board has a built-in dashboard, Overview: its usual pace, days
   from start to done, the tickets stuck now, what was finished per sprint

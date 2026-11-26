@@ -361,7 +361,10 @@ no step runs at root creation, restore or start.
   tracker project, named by its key prefix, `WEB`: the status Start work
   moves to, whether it assigns, the branch template with `{key}` and
   `{title}`, and the repository, an app project of this computer; each
-  field optional, and an entry that sets nothing dropped). A section this build does not know, or one
+  field optional, and an entry that sets nothing dropped). Beside them,
+  `dashboards` (by tracker site and board, the dashboards the project
+  keeps) is written only by its own edits ([Own dashboards and
+  proposals](#own-dashboards-and-proposals)); a replace keeps it. A section this build does not know, or one
   at a newer version, is kept byte for byte by a replace and named in the
   read's `newer`; a replace that sets it is refused.
 - **A site** is named as its connection names it, by the rules a
@@ -2141,8 +2144,39 @@ closes a database of its own.
 | Which rows a board's export holds, the regrouping, the pace's done-at-completion rule | `store` (`tracker_cache_export.go`; the pace's fragment is shared with `tracker_cache_pace.go`) |
 | The sandbox, the metric contract and its validator, the reductions, ranges, narrowing, drills and the built-in dashboard | `trackerdash` (its package comment is the sandbox's contract) |
 | The board, its status groups and the viewer of an evaluation | `trackerapp` |
+| The dashboards a project keeps (the setup file's `dashboards` section) and the widgets agents proposed | `trackerapp` (`dashboard_setup.go`, `dashboards.go`) |
 | Bound methods, scopes and the older-computer surface | `app` (`app_tracker_dashboards.go`) |
-| The answer on screen, when it is counted again, the range, Team or Mine and the drill | `frontend/src/lib/stores/trackerDashboard.svelte.ts` |
+| The answer on screen, when it is counted again, the dashboard picked, the range, Team or Mine and the drill | `frontend/src/lib/stores/trackerDashboard.svelte.ts` |
+
+### Own dashboards and proposals
+
+A board lists its built-in dashboard first, then the dashboards its
+project keeps, in the order they were made. A kept dashboard is a title
+and its widgets; each widget carries its own metric (no metric is shared
+between widgets), checked when it is counted, so a widget whose metric no
+longer validates shows its failure and the rest of the file stays
+readable. They live in the project's setup file, section `dashboards`, by
+tracker site and board ([Project setup](#project-setup)). The section is
+not part of `Setup`: a save of the setup screen keeps it as held, so a
+paired computer on an older release cannot delete it, and only its own
+edits write it, under the setup's lock, reading the file again first. A
+Keep that would take the file past its 256 KiB bound is refused, saying
+to remove a widget or a dashboard.
+
+A proposal is a widget an agent showed on a board (`dashboard_widget`
+with `show`, [Agent tools](#dashboards-by-agents)). It is held in memory
+by project and board, at most 5, and is gone when the app stops. Every
+evaluation of any of the board's dashboards counts the proposals beside
+it, and the screen shows them above the grid with Keep and Dismiss.
+Keep moves a proposal onto a kept dashboard or a new one, Dismiss drops
+it; nothing joins a dashboard without Keep, and the built-in dashboard
+never takes a widget. Edit mode on a kept dashboard removes widgets and
+deletes the dashboard. Keep, Dismiss, Remove and Delete
+(`KeepTrackerWidget`, `DismissTrackerWidget`, `RemoveTrackerWidget`,
+`DeleteTrackerDashboard`) need `tracker:operate`, run on the board's
+computer and are not caller-bound. Each change, from any client, emits
+the payload-less `tracker:dashboards_updated`, on which an open screen of
+that computer lists the board's dashboards and counts again.
 
 ### The export
 
@@ -2247,9 +2281,9 @@ are in [Tracker API measurements](../references/tracker-api-measurements.md#the-
 
 ## Agent tools
 
-Status: built: `ticket_find`, `ticket_read`, `ticket_create` and
-`ticket_update` on the `ao-tracker-tools` server, with the read-only
-refusal, the approval and the timeline row ([Writes by
+Status: built: `ticket_find`, `ticket_read`, `ticket_create`,
+`ticket_update` and `dashboard_widget` on the `ao-tracker-tools` server,
+with the read-only refusal, the approval and the timeline row ([Writes by
 agents](#writes-by-agents)). The worklog tools are not built.
 
 **Who has them.** A session gets the server when its thread belongs to a
@@ -2425,6 +2459,30 @@ on the agent's call. No tool reaches the provider's worklog write or
 
 Ticket text in a tool result is data: results are JSON, and the server's
 guide says so once.
+
+### Dashboards by agents
+
+`dashboard_widget` counts a widget on a board of the thread's project
+(`board`, by name or ID; the project's one board when it lists one) as
+the board's dashboards count it, over the board's default range, and
+answers its numbers, how many rows its query returned and the first 5.
+With `show` the widget is then proposed on the board ([Own dashboards
+and proposals](#own-dashboards-and-proposals)). Called with no `widget`
+it answers the rules (`trackerdash.Rules`, 4,291 bytes): the widget's
+fields, the query's contract and the export's relations with what each
+column holds, so only a thread that writes a widget reads them. A query
+runs under the same sandbox and bounds as a built-in metric, and a
+refusal is `dashboard_widget_refused` with the sentence the widget would
+show. Proposing changes nothing until the person keeps it, so it needs no
+approval and a read-only thread may propose. Ask your agent on the
+Dashboards screen opens a new thread in the board's project with an
+unsent draft naming the board.
+
+The tool is listed in every session that has the tracker tools. Listing
+it only in a thread Ask your agent started would need a mark on the
+thread kept across restarts, and would leave a person asking in any other
+thread without it. Its definition adds 304 bytes: the tool list and guide
+grew from 2,046 to 2,350 bytes.
 
 ### Writes by agents
 
@@ -2753,10 +2811,13 @@ Issues > Status groups, the ticket's pins and the Start work defaults,
 with the wrappers of `ProjectTrackerSetup`, `SetProjectTrackerSetup`,
 `ProjectTrackerStatuses` and `tracker:setup_updated`
 (`stores/trackerSetup.svelte.ts`, the one holder of a project's setup
-and statuses in a window), and a board's built-in dashboard on the
-Dashboards screen ([Dashboards](#dashboards)), with the wrappers of
-`TrackerDashboards`, `EvaluateTrackerDashboard` and
-`TrackerDashboardDrill` (`stores/trackerDashboard.svelte.ts`).
+and statuses in a window), and a board's dashboards on the Dashboards
+screen ([Dashboards](#dashboards)): the built-in, the ones its project
+keeps and the widgets agents propose, with the wrappers of
+`TrackerDashboards`, `EvaluateTrackerDashboard`, `TrackerDashboardDrill`,
+`KeepTrackerWidget`, `DismissTrackerWidget`, `RemoveTrackerWidget`,
+`DeleteTrackerDashboard` and `tracker:dashboards_updated`
+(`stores/trackerDashboard.svelte.ts`).
 A failure of the linked-issues
 loop after boot reaches only the log (`Deps.LoopFailed`): its failures
 are outside the tracker (a store error, the cleanup), and a tracker
