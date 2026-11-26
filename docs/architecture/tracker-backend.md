@@ -426,7 +426,7 @@ no step runs at root creation, restore or start.
   shows, and the listed boards the mirror has not read, by name. Names
   come from the root's catalog, looked up 500 at a time. With 20 boards of
   12 columns of 5 statuses, a catalog of 1,000 statuses and 30 regrouped,
-  one read takes about 2.4 ms and 1 MB
+  one read took 2.1 to 2.5 ms and 1 MB over five runs
   (`BenchmarkProjectStatuses20Boards`). A client reads it only while the
   page shows a project: on the page's show, after `tracker:setup_updated`,
   on reconnect and on Check again.
