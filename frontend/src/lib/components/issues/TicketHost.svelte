@@ -24,20 +24,38 @@
   // wears the pane's header (ToolPaneHeader), the ticket's own included.
   // A link opened with Ctrl or Cmd, or "Open in its own pane" on a linked
   // ticket, opens it in a pane of its own (stores/ticketPanes.svelte.ts);
-  // a plain open shows it here, with Back to this one. A pull request a
-  // Work row opens (`TicketTrail.pullRequest`) shows over the ticket
-  // (TicketReview), which stays mounted under it, inert, keeping its
-  // scroll, its Work read and its Details; Back steps out of what is open
-  // in the review, then shows the ticket.
+  // a plain open shows it here, with Back to this one.
+  //
+  // A pull request a Work row opens (`TicketTrail.pullRequest`) shows in
+  // the ticket's place. Must keep true while it shows: only the review
+  // paints and takes the focus; the ticket stays mounted with its scroll,
+  // its Work read and its Details, hidden (`invisible`, which keeps its
+  // layout and scroll) and inert, so nothing of it paints, is focused or
+  // is reached by the pane's focus moves (`paneComposerFocus.ts` skips an
+  // inert scroller); and Back and the forge link are there whether or not
+  // the review loads. The host owns the bar (Back, the number, Open on
+  // GitHub/GitLab; in a ticket's own pane the pane's header); the review
+  // body (TicketReview) loads on the first open. Under compact the pane's
+  // header holds the one Back, so the bar has none. Back steps out of
+  // what is open in the review, then shows the ticket.
+  import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+  import ExternalLink from '@lucide/svelte/icons/external-link';
+  import Button from '../primitives/Button.svelte';
+  import Icon from '../primitives/Icon.svelte';
+  import IconButton from '../primitives/IconButton.svelte';
   import RenderBoundary from '../shared/RenderBoundary.svelte';
   import ToolPaneHeader from '../panes/ToolPaneHeader.svelte';
+  import { pullNumberLabel } from '../pulls/pullRowView';
+  import { openPullOnForge } from './ticketPullOnForge';
   import type TicketScreen from './TicketScreen.svelte';
   import { attachedBackendEntry, backendDisplayName } from '../../stores/attachedBackends.svelte';
-  import type { TicketPlacement, TicketSeed, TicketTrail } from '../../stores/issuesPane.svelte';
+  import type { TicketPlacement, TicketPullRequestOpen, TicketSeed, TicketTrail } from '../../stores/issuesPane.svelte';
   import { stepPaneBack } from '../../stores/paneBackSteps';
   import { openTicketPane } from '../../stores/ticketPanes.svelte';
   import { getTransportStatusFor } from '../../stores/transportStatus.svelte';
   import { isTransportOutage } from '../../transport/wsClient';
+  import { forgeLabels } from '../../utils/forgeLabels';
+  import { prKey } from '../../utils/prReference';
 
   interface Props {
     trail: TicketTrail;
@@ -94,6 +112,32 @@
   }
 </script>
 
+{#snippet reviewBar(review: TicketPullRequestOpen)}
+  {@const number = pullNumberLabel(review.pr.forge, review.pr.number)}
+  {@const onBack = () => { stepBack(); }}
+  {#snippet forge()}
+    <Button size="xs" variant="ghost" testId="ticket-review-forge" onclick={() => { void openPullOnForge(review.pr.forge, review.pr.number, review.url); }}>
+      {#snippet leading()}<Icon icon={ExternalLink} size={12} strokeWidth={2} />{/snippet}
+      <span class="whitespace-nowrap">Open on {forgeLabels(review.pr.forge).name}</span>
+    </Button>
+  {/snippet}
+  {#if pane}
+    <ToolPaneHeader paneId={pane.id} title={number} titleTestId="ticket-review-number" onPaneDragStart={pane.onDragStart} onBack={compact ? undefined : onBack} backTestId="ticket-review-back">
+      <div class="flex min-w-0 flex-1 items-center justify-end gap-1.5">{@render forge()}</div>
+    </ToolPaneHeader>
+  {:else}
+    <div class="flex min-w-0 shrink-0 items-center gap-1.5 border-b border-border-subtle px-3 py-1.5" data-testid="ticket-review-bar">
+      {#if !compact}
+        <IconButton label="Back to the ticket" size="sm" testId="ticket-review-back" onClick={onBack}>
+          {#snippet children()}<Icon icon={ArrowLeft} size={14} strokeWidth={2} />{/snippet}
+        </IconButton>
+      {/if}
+      <span class="min-w-0 flex-1 truncate text-sm tabular-nums text-fg-muted" data-testid="ticket-review-number">{number}</span>
+      {@render forge()}
+    </div>
+  {/if}
+{/snippet}
+
 {#snippet state(testId: string, sentence: string, alert = false)}
   {#if pane}
     <ToolPaneHeader paneId={pane.id} title={trail.ticket?.seed.key || 'Ticket'} titleTestId="ticket-key" onPaneDragStart={pane.onDragStart} />
@@ -112,7 +156,7 @@
     {@const shown = view}
     {@const review = trail.pullRequest}
     <div class="relative flex h-full min-h-0 min-w-0 flex-col">
-    <div class="flex h-full min-h-0 min-w-0 flex-col" inert={review !== null} aria-hidden={review ? 'true' : undefined} data-testid="ticket-under-review" data-covered={review ? '' : undefined}>
+    <div class="flex h-full min-h-0 min-w-0 flex-col" class:invisible={review !== null} inert={review !== null} data-testid="ticket-under-review" data-covered={review ? '' : undefined}>
     {#await loadTicketScreen()}
       {@render state('ticket-loading', 'Opening the ticket…')}
     {:then mod}
@@ -147,13 +191,14 @@
     {/await}
     </div>
     {#if review}
-      <div class="absolute inset-0 z-[4] flex min-h-0 flex-col bg-surface-0">
+      <div class="absolute inset-0 flex min-h-0 flex-col bg-surface-0" data-testid="ticket-review" data-pr={prKey(review.pr)}>
+        {@render reviewBar(review)}
         {#await loadTicketReview()}
-          {@render state('ticket-review-loading', 'Opening the pull request…')}
+          <p class="px-4 py-6 text-sm text-fg-muted" role="status" data-testid="ticket-review-loading">Opening the pull request…</p>
         {:then mod}
-          <mod.default open={review} backend={shown.open.ref.backend} {hostPaneId} {compact} {pane} onBack={() => { stepBack(); }} />
+          <mod.default open={review} backend={shown.open.ref.backend} {hostPaneId} {compact} />
         {:catch err}
-          {@render state('ticket-review-load-error', `The review could not load: ${err instanceof Error ? err.message : String(err)}. Reload the window to try again.`, true)}
+          <p class="px-4 py-6 text-sm text-error" role="alert" data-testid="ticket-review-load-error">The review could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again, or open it on the forge.</p>
         {/await}
       </div>
     {/if}

@@ -81,6 +81,28 @@ describe('paneComposerFocus', () => {
     expect(section.hasAttribute('tabindex')).toBe(false);
   });
 
+  // A ticket a pull request's review covers keeps its scroller, inert and
+  // ahead of the review's: the review's takes the caret.
+  it('carries the caret past a scroller inside an inert subtree', () => {
+    const target = mountPaneComposer('right');
+    target.disabled = true;
+    const section = target.parentElement!;
+    const covered = document.createElement('div');
+    covered.inert = true;
+    covered.setAttribute('inert', '');
+    const hidden = document.createElement('div');
+    hidden.tabIndex = -1;
+    hidden.setAttribute('data-pane-scroller', '');
+    covered.appendChild(hidden);
+    const shown = document.createElement('div');
+    shown.tabIndex = -1;
+    shown.setAttribute('data-pane-scroller', '');
+    section.append(covered, shown);
+    mountPaneComposer('left').focus();
+    carryCaretIntoPane('right');
+    expect(document.activeElement).toBe(shown);
+  });
+
   // A pane still loading takes the caret on its section; what the choice
   // prefers takes it once it mounts, unless the focus went elsewhere.
   it('hands the section\'s focus to the scroller or composer that mounts while it holds it, and to nothing once it moved', async () => {

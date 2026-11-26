@@ -1358,16 +1358,21 @@ describe('the ticket in the pane', () => {
       await fireEvent.click(await workRow(view));
       const shown = await view.findByTestId('ticket-review');
       expect(shown).toHaveAttribute('data-pr', prKey(PR));
+      // The bar holds Back, the number and the forge link; the title is the
+      // review's own.
       expect(within(shown).getByTestId('ticket-review-number')).toHaveTextContent('#9');
-      expect(within(shown).getByTestId('ticket-review-title')).toHaveTextContent('WEB-1 Docs');
+      expect(within(shown).getByTestId('ticket-review-back')).toBeTruthy();
       expect(within(shown).getByTestId('ticket-review-forge')).toHaveTextContent('Open on GitHub');
+      expect(within(shown).queryByTestId('ticket-review-title')).toBeNull();
       await waitFor(() => expect(review.subscribe).toHaveBeenCalledTimes(1));
       expect(within(shown).getByTestId('review-pane')).toBeTruthy();
-      // The ticket stays mounted under it, inert, and votes hidden.
+      // The ticket stays mounted under it, hidden and inert, and votes
+      // hidden.
       expect(view.getByTestId('ticket-under-review')).toHaveAttribute('inert');
+      expect(view.getByTestId('ticket-under-review')).toHaveClass('invisible');
       expect(view.getByTestId('ticket-screen')).toBeTruthy();
       await waitFor(() => expect(votes(ticketVotes, 'ticket-1')).toEqual([false]));
-      expect(document.activeElement).toBe(shown);
+      expect(document.activeElement).toBe(within(shown).getByTestId('ticket-review-body'));
       // mod+f searches the review the person is in, with its own provider;
       // a press back on the pane's header gives it to the board's cards.
       const reviewFind = paneFindRegionKey(PANE, 'pull-request');
@@ -1383,6 +1388,7 @@ describe('the ticket in the pane', () => {
       back();
       await waitFor(() => expect(view.queryByTestId('ticket-review')).toBeNull());
       expect(view.getByTestId('ticket-under-review')).not.toHaveAttribute('inert');
+      expect(view.getByTestId('ticket-under-review')).not.toHaveClass('invisible');
       await waitFor(() => expect(votes(ticketVotes, 'ticket-1')).toEqual([false, true]));
       await waitFor(() => expect(review.unsubscribe).toHaveBeenCalledWith('pr-sub-9'));
       expect(paneFindTarget(PANE)).toBe(PANE);
