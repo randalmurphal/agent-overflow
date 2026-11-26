@@ -18,6 +18,7 @@ import {
   pokerResult,
   sectionFields,
   previewsInApp,
+  sprintNames,
   ticketRow,
 } from './trackerTicketModel';
 
@@ -115,5 +116,14 @@ describe('files in the text', () => {
     expect(previewsInApp(file('1', 'a.png', 'image/png', PREVIEW_MAX_BYTES))).toBe(true);
     expect(previewsInApp(file('1', 'a.png', 'image/png', PREVIEW_MAX_BYTES + 1))).toBe(false);
     expect(previewsInApp(file('1', 'a.pdf', 'application/pdf', 10))).toBe(false);
+  });
+});
+
+describe('sprint names', () => {
+  it('names the sprints the boards hold and says the others in words, after them', () => {
+    expect(sprintNames([])).toBe('');
+    expect(sprintNames([{ id: '8', name: 'Sprint 8', state: 'active' }])).toBe('Sprint 8');
+    expect(sprintNames([{ id: '8', name: 'Sprint 8', state: 'active' }, { id: '9', name: 'Sprint 9', state: 'future' }, { id: '90' }])).toBe('Sprint 8, Sprint 9, a sprint on another board');
+    expect(sprintNames([{ id: '90' }, { id: '91' }])).toBe('2 sprints on other boards');
   });
 });

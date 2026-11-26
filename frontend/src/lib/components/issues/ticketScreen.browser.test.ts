@@ -27,6 +27,7 @@ const DETAIL = {
   },
   url: 'https://example.atlassian.net/browse/WEB-1', description: 'The description', fields: [], comments: [], links: [], attachments: [], history: [],
   rows: [{ board: '1', estimate: 3, unit: 'points' }], moves: [],
+  sprints: [{ id: '8', name: 'Sprint 8', state: 'active' }, { id: '90' }, { id: '91' }],
 } as unknown as DetailView;
 
 function mountTicket(width: number) {
@@ -65,4 +66,17 @@ describe('the narrow ticket', () => {
       expect(fields.map((f) => f.querySelector('[data-testid="ticket-field-value"]')?.textContent?.trim())).toEqual(['In Progress', 'User 1', 'High', '3']);
     });
   }
+});
+
+describe('the ticket\'s sprints', () => {
+  it('names each sprint, and those no board of the ticket holds in words, never by ID', async () => {
+    // Narrow: the Sprint field is in the Details rail it opens.
+    const host = mountTicket(600);
+    const details = () => host.querySelector<HTMLElement>('[data-testid="ticket-details"]');
+    await waitFor(() => details() !== null, 'the Details control');
+    details()!.click();
+    const field = () => host.querySelector<HTMLElement>('[data-testid="ticket-rail"] [data-testid="ticket-field"][data-field="sprint"] [data-testid="ticket-field-value"]');
+    await waitFor(() => !!field()?.textContent?.trim(), 'the Sprint field');
+    expect(field()!.textContent?.trim()).toBe('Sprint 8, 2 sprints on other boards');
+  });
 });

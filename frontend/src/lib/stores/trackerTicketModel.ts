@@ -3,8 +3,8 @@
 // rail's fields, which fields are sections, how linked tickets group and
 // which side a new link sends, what a poker round's votes add up to,
 // which attachment a file in the text names and which the app previews,
-// and the row of the board the
-// ticket shows its points from. What a write's answer means is
+// the row of the board the ticket shows its points from, and how its
+// sprints are named. What a write's answer means is
 // trackerWriteOutcome.ts's. The stores and the components call these;
 // each rule is here once.
 
@@ -20,6 +20,7 @@ import type {
   LinkView,
   PokerVoteView,
   TicketRowView,
+  TicketSprintView,
 } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 
 /** Comments shown on open, and how many more each press of the control
@@ -234,4 +235,16 @@ export function fieldText(value: FieldValueView): string {
 export function ticketRow(rows: readonly TicketRowView[] | null | undefined, board: string | null): TicketRowView | null {
   if (!rows || rows.length === 0) return null;
   return rows.find((r) => r.board === board) ?? rows[0];
+}
+
+/** The ticket's sprints as its Sprint field says them: each by name, in
+ * the order the view gives (`DetailView.sprints`: active, future, closed,
+ * then those no board of the ticket holds), the last said in words, since
+ * a sprint's ID means nothing to a person. */
+export function sprintNames(sprints: readonly TicketSprintView[]): string {
+  const named = sprints.filter((sp) => sp.name).map((sp) => sp.name!);
+  const other = sprints.length - named.length;
+  if (other === 1) named.push('a sprint on another board');
+  else if (other > 1) named.push(`${other} sprints on other boards`);
+  return named.join(', ');
 }

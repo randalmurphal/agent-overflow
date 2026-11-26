@@ -106,7 +106,7 @@
     trackerPokerSupport,
     type TrackerTicketAttachment,
   } from '../../stores/trackerTicket.svelte';
-  import { fieldText, isFilled, moreFields, pokerEstimateChoice, pokerResult, sectionFields, shownText, ticketRow } from '../../stores/trackerTicketModel';
+  import { fieldText, isFilled, moreFields, pokerEstimateChoice, pokerResult, sectionFields, shownText, sprintNames, ticketRow } from '../../stores/trackerTicketModel';
   import { localDay } from '../../stores/trackerTimeModel';
   import {
     attachTicketFiles,
@@ -504,8 +504,8 @@
       </TicketField>
     {/if}
     {@render cardFields(true)}
-    {#if card?.sprints?.length}
-      <TicketField label="Sprint" field="sprint" value={card.sprints.join(', ')} editor={null} ticketKey={ctx.key} target="sprint" {fieldName} />
+    {#if detail?.sprints.length}
+      <TicketField label="Sprint" field="sprint" value={sprintNames(detail.sprints)} editor={null} ticketKey={ctx.key} target="sprint" {fieldName} />
     {/if}
     {#if card?.parent}
       <TicketField label="Parent" field="parent" value={card.parent.key ? `${card.parent.key} ${card.parent.title ?? ''}` : card.parent.title ?? ''} editor={null} ticketKey={ctx.key} target="parent" {fieldName} />
