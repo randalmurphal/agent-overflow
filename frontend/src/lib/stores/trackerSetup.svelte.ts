@@ -107,10 +107,24 @@ class HeldSetup extends HeldRead<SetupView> {
 
   async save(edit: SetupEdit): Promise<SetupSaveOutcome> {
     if (this.saving) throw new Error("The project's tracker setup is still saving; try again once it has saved.");
-    if (!this.current) await (this.reading ?? this.read());
-    const view = this.value;
-    if (!this.current || !view) throw this.error ?? new Error("The project's tracker setup could not be read; try again once it shows.");
+    // Reserved before the first await: a second save waiting on the same
+    // read would otherwise send too.
     this.saving = true;
+    try {
+      if (!this.current) await (this.reading ?? this.read());
+      const view = this.value;
+      if (!this.current || !view) throw this.error ?? new Error("The project's tracker setup could not be read; try again once it shows.");
+      return await this.send(view, edit);
+    } finally {
+      this.saving = false;
+      if (this.readOwed) {
+        this.readOwed = false;
+        void this.read();
+      }
+    }
+  }
+
+  private async send(view: SetupView, edit: SetupEdit): Promise<SetupSaveOutcome> {
     const generation = ++this.generation;
     try {
       const answer = await SetProjectTrackerSetup(this.project, view.revision, edit(view.setup));
@@ -125,12 +139,6 @@ class HeldSetup extends HeldRead<SetupView> {
         this.readOwed = true;
       }
       throw err;
-    } finally {
-      this.saving = false;
-      if (this.readOwed) {
-        this.readOwed = false;
-        void this.read();
-      }
     }
   }
 }

@@ -138,6 +138,19 @@ describe('the tracker setup store', () => {
     release();
   });
 
+  it('runs one save at a time while the setup it is built from is still being read', async () => {
+    let answerRead!: () => void;
+    setBindingMock('ProjectTrackerSetup', () => new Promise((resolve) => { answerRead = () => resolve(view('r1')); }));
+    const save = setBindingMock('SetProjectTrackerSetup', async () => ({ saved: true, stored: view('r2') }));
+    const first = editTrackerSetup('p1', (setup) => setup);
+    const second = editTrackerSetup('p1', (setup) => setup);
+    await flush();
+    answerRead();
+    await expect(first).resolves.toEqual({ kind: 'saved' });
+    await expect(second).rejects.toThrow(/still saving/);
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
   it('reads the setup first for a save no surface holds, and holds nothing after it', async () => {
     const reads = setBindingMock('ProjectTrackerSetup', async () => view('r5'));
     const save = setBindingMock('SetProjectTrackerSetup', async () => ({ saved: true, stored: view('r6') }));
