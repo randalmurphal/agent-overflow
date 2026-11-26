@@ -9,12 +9,18 @@
 // opening the screen reads nothing from Jira, the active sprint starts
 // folded, and a fold outlasts a reload; Search and Only mine filter the
 // rows, Display hides a mark and Refresh reads the board again; a
-// ticket made at a section's foot asks its required fields, reads what a
-// ticket takes once, and lands in that sprint; a sprint is created (a
-// refusal staying under its form), changed, completed with its
-// unfinished tickets moved to the next one, and started; the row's menu
-// is the card's and moves a row to a sprint, offering no Backlog to a row
-// in the backlog whose card names a closed sprint. On desktop: a row's marks
+// ticket made at a section's foot is a Story by default in the board's
+// location, picked from the projects the board shows, offers what Jira
+// fills (a Story's priority) and asks what it requires (a Task's), reads
+// the board's projects, the types and each type's fields once for the
+// form, and lands in that sprint; one Jira made but did not move into its
+// sprint is not made again, says so, and moves on request; a sprint is
+// created (a refusal staying under its form), changed, refused a clearing
+// of its dates, completed with its unfinished tickets moved to the
+// destination it shows, and started; the row's menu is the card's and
+// moves a row to a sprint, offering no Backlog to a row in the backlog
+// whose card names a closed sprint, and holds its Move to sprint back
+// while the row's move is out. On desktop: a row's marks
 // change its type, priority, points and assignee; a carried row ranks in
 // its section, moves into another at its place while both headers say
 // what their numbers become, and back to the backlog; a row whose move is
@@ -43,6 +49,7 @@ const NEW_SPRINT_ROUTE = 'POST rest/agile/1.0/sprint';
 const SPRINT_ROUTE = 'POST rest/agile/1.0/sprint/{sprint}';
 const TYPES_ROUTE = 'GET rest/api/3/issue/createmeta/{project}/issuetypes';
 const FIELDS_ROUTE = 'GET rest/api/3/issue/createmeta/{project}/issuetypes/{type}';
+const BOARD_PROJECTS_ROUTE = 'GET rest/agile/1.0/board/{board}/project';
 
 const DAY = 24 * 3600_000;
 const iso = (offset: number) => new Date(Date.now() + offset).toISOString();
@@ -53,7 +60,8 @@ const POINTS = 'customfield_10016';
 // holds WEB-8 (3 points, User 1) and WEB-9 (5 points, nobody's). Sprint 0
 // finished with WEB-10 done (4 points): the pace. The backlog holds the
 // seed's WEB-3 (no estimate) and WEB-11 (1 point). A Task takes a
-// priority to be made.
+// priority to be made; a Story's is required with a default, which Jira
+// fills.
 const BACKLOG: ExtraJira = {
   projects: [],
   boards: [],
@@ -63,12 +71,12 @@ const BACKLOG: ExtraJira = {
     { id: POINTS, name: 'Story Points', schema: { type: 'number', custom: 'com.atlassian.jira.plugin.system.customfieldtypes:float', customId: 10016 } },
   ],
   issueTypes: [
-    { id: '10000', name: 'Epic', hierarchyLevel: 1 }, { id: '10001', name: 'Story' }, { id: '10002', name: 'Task', priorityRequired: true }, { id: '10003', name: 'Bug' },
-  ].map(({ priorityRequired, ...t }) => ({
+    { id: '10000', name: 'Epic', hierarchyLevel: 1 }, { id: '10001', name: 'Story', priorityDefaulted: true }, { id: '10002', name: 'Task', priorityRequired: true }, { id: '10003', name: 'Bug' },
+  ].map(({ priorityRequired, priorityDefaulted, ...t }) => ({
     ...t,
     screen: [
       { field: 'summary', required: true },
-      { field: 'priority', ...(priorityRequired ? { required: true } : {}) },
+      { field: 'priority', ...(priorityRequired ? { required: true } : priorityDefaulted ? { required: true, hasDefault: true } : {}) },
       ...['issuetype', 'description', 'assignee', 'labels', POINTS, 'customfield_10020'].map((field) => ({ field })),
     ],
   })),
@@ -104,7 +112,7 @@ async function sectionLists(pane: Locator): Promise<string[]> {
 }
 
 /** Switches the pane to Backlog: its tab, or the folded picker. */
-async function openBacklog(page: Page, pane: Locator, compact: boolean): Promise<Locator> {
+export async function openBacklog(page: Page, pane: Locator, compact: boolean): Promise<Locator> {
   const picker = pane.getByTestId('issues-tabs-picker');
   if (await picker.isVisible()) {
     await press(picker, compact);
@@ -291,9 +299,10 @@ export function registerBacklogFlow({ compact }: BacklogSurface): void {
     await expect(row(backlog, '10111')).toHaveCount(0);
   });
 
-  test('a ticket made at a section\'s foot asks what Jira requires and lands in that sprint', async ({ harness, page }) => {
-    test.setTimeout(120_000);
-    const { backlog } = await openBoardBacklog(harness, page, name('create'), compact);
+  test('a ticket made at a section\'s foot is a Story in the board\'s project by default, asks only what Jira requires, and lands in that sprint', async ({ harness, page }) => {
+    test.setTimeout(150_000);
+    // The board's filter also shows APP's tickets.
+    const { backlog } = await openBoardBacklog(harness, page, name('create'), compact, { ...BACKLOG, projects: [{ id: '10001', key: 'APP', name: 'App' }], boardAlso: ['APP'] });
     const foot = backlog.locator('[data-testid="issues-backlog-foot"][data-list="sprint:2"]');
     await press(foot.getByTestId('issues-backlog-new'), compact);
     const form = foot.getByTestId('issues-backlog-create');
@@ -301,53 +310,114 @@ export function registerBacklogFlow({ compact }: BacklogSurface): void {
     await expect(title).toBeFocused();
     await title.fill('Made in Sprint 2');
 
-    // The type, then the priority a Task requires.
+    // The board's location, named from the board's projects; the first type
+    // at the standard level, not the Epic Jira lists first; a Story's
+    // priority, which Jira fills, offered and not asked.
     const items = page.getByTestId('ticket-picker-item');
+    const projectField = form.locator('[data-testid="ticket-field"][data-field="project"]');
+    await expect(projectField.getByTestId('ticket-field-value')).toHaveText('Web', { timeout: 15_000 });
     const typeField = form.locator('[data-testid="ticket-field"][data-field="type"]');
-    await expect(typeField.getByTestId('ticket-field-value')).not.toHaveText('', { timeout: 15_000 });
+    await expect(typeField.getByTestId('ticket-field-value')).toHaveText('Story', { timeout: 15_000 });
+    const priority = form.locator('[data-testid="ticket-field"][data-field="priority"]');
+    await expect(priority.getByTestId('ticket-field-value')).toHaveText('The tracker\'s default', { timeout: 15_000 });
+    await expect(priority).not.toContainText('(required)');
+    await expect(form.getByTestId('issues-backlog-create-missing')).toHaveCount(0);
+    await press(form.getByTestId('issues-backlog-create-submit'), compact);
+
+    // Made: the title clears for the next, and the ticket is in Sprint 2.
+    await expect(title).toHaveValue('', { timeout: 15_000 });
+    let made = (await trackerRequests(harness, CREATE_ROUTE)).map((r) => r.body as { fields: Record<string, unknown> });
+    expect(made).toHaveLength(1);
+    expect(made[0].fields).toMatchObject({ project: { id: '10000' }, issuetype: { id: '10001' }, summary: 'Made in Sprint 2' });
+    expect(made[0].fields).not.toHaveProperty('priority');
+    await expect(backlog.getByTestId('issues-backlog-row').filter({ hasText: 'Made in Sprint 2' })).toBeVisible({ timeout: 15_000 });
+    const madeId = await backlog.getByTestId('issues-backlog-row').filter({ hasText: 'Made in Sprint 2' }).getAttribute('data-issue');
+    expect(await sectionRows(backlog, 'sprint:2')).toContain(madeId);
+
+    // The project picker offers the projects the board shows.
+    await press(projectField.getByTestId('ticket-field-value'), compact);
+    await expect(items).toHaveCount(2);
+    await expect(items.nth(0)).toContainText('Web (WEB)');
+    await expect(items.nth(1)).toContainText('App (APP)');
+    await page.keyboard.press('Escape');
+    await expect(items).toHaveCount(0);
+
+    // A Task requires its priority.
     await press(typeField.getByTestId('ticket-field-value'), compact);
     await press(items.filter({ hasText: 'Task' }), compact);
     await expect(typeField.getByTestId('ticket-field-value')).toHaveText('Task');
-    const priority = form.locator('[data-testid="ticket-field"][data-field="priority"]');
     await expect(priority).toContainText('Priority (required)', { timeout: 15_000 });
     await expect(form.getByTestId('issues-backlog-create-missing')).toHaveText('Needs Priority');
     await expect(form.getByTestId('issues-backlog-create-submit')).toBeDisabled();
     await press(priority.getByTestId('ticket-field-value'), compact);
     await press(items.filter({ hasText: 'High' }).filter({ hasNotText: 'Highest' }), compact);
     await expect(priority.getByTestId('ticket-field-value')).toHaveText('High');
+    await title.fill('A task in Sprint 2');
     await press(form.getByTestId('issues-backlog-create-submit'), compact);
-
-    // Made: the title clears for the next, and the ticket is in Sprint 2.
     await expect(title).toHaveValue('', { timeout: 15_000 });
-    const made = (await trackerRequests(harness, CREATE_ROUTE)).map((r) => r.body as { fields: Record<string, unknown> });
-    expect(made).toHaveLength(1);
-    expect(made[0].fields).toMatchObject({ project: { id: '10000' }, issuetype: { id: '10002' }, summary: 'Made in Sprint 2', priority: { id: '2' } });
-    await expect(backlog.getByTestId('issues-backlog-row').filter({ hasText: 'Made in Sprint 2' })).toBeVisible({ timeout: 15_000 });
-    const madeId = await backlog.getByTestId('issues-backlog-row').filter({ hasText: 'Made in Sprint 2' }).getAttribute('data-issue');
-    expect(await sectionRows(backlog, 'sprint:2')).toContain(madeId);
+    made = (await trackerRequests(harness, CREATE_ROUTE)).map((r) => r.body as { fields: Record<string, unknown> });
+    expect(made).toHaveLength(2);
+    expect(made[1].fields).toMatchObject({ project: { id: '10000' }, issuetype: { id: '10002' }, summary: 'A task in Sprint 2', priority: { id: '2' } });
 
-    // The reads a ticket made here costs Jira: on the form's first open the
-    // types and the first type's fields (an Epic's), the Task's fields
-    // when it was picked, again when its priority's choices were asked,
-    // and once more when Add sent it (the backend checks the values). A
-    // second open reads nothing.
-    const types = (await trackerRequests(harness, TYPES_ROUTE)).length;
-    expect(types).toBe(1);
+    // What the form read from Jira: the board's projects and the types once,
+    // and each type's fields once for the form, then once more for each Add
+    // (the backend checks the values against the screen). A second open
+    // reads nothing.
+    expect(await trackerRequests(harness, BOARD_PROJECTS_ROUTE)).toHaveLength(1);
+    expect(await trackerRequests(harness, TYPES_ROUTE)).toHaveLength(1);
     const fieldReads = (await trackerRequests(harness, FIELDS_ROUTE)).map((r) => r.path.split('/').pop());
-    expect(fieldReads).toEqual(['10000', '10002', '10002', '10002']);
-    const fields = fieldReads.length;
+    expect(fieldReads).toEqual(['10001', '10001', '10002', '10002']);
     await press(form.getByTestId('issues-backlog-create-cancel'), compact);
     await press(foot.getByTestId('issues-backlog-new'), compact);
     await expect(form.getByTestId('issues-backlog-create-title')).toBeVisible();
-    expect((await trackerRequests(harness, TYPES_ROUTE)).length).toBe(types);
-    expect((await trackerRequests(harness, FIELDS_ROUTE)).length).toBe(fields);
     // The type picked last on the board is the next one's.
-    await expect(form.locator('[data-testid="ticket-field"][data-field="type"]').getByTestId('ticket-field-value')).toHaveText('Task');
+    await expect(typeField.getByTestId('ticket-field-value')).toHaveText('Task');
+    await expect(priority).toContainText('Priority (required)');
+    expect(await trackerRequests(harness, BOARD_PROJECTS_ROUTE)).toHaveLength(1);
+    expect(await trackerRequests(harness, TYPES_ROUTE)).toHaveLength(1);
+    expect(await trackerRequests(harness, FIELDS_ROUTE)).toHaveLength(fieldReads.length);
     await form.getByTestId('issues-backlog-create-title').press('Escape');
     await expect(form).toHaveCount(0);
   });
 
-  test('a sprint is created, changed, completed with its unfinished tickets moved, and started', async ({ harness, page }) => {
+  test('a ticket Jira made but did not move into its sprint is not made again, says so, and moves on request', async ({ harness, page }) => {
+    test.setTimeout(120_000);
+    const { backlog } = await openBoardBacklog(harness, page, name('unplaced'), compact);
+    await harness.rpc('HarnessTrackerFault', {
+      origin: JIRA, route: TO_SPRINT_ROUTE, kind: 'refuse', times: 1,
+      status: 400, body: { errorMessages: ['Sprint 2 takes no more tickets now.'] },
+    });
+    const foot = backlog.locator('[data-testid="issues-backlog-foot"][data-list="sprint:2"]');
+    await press(foot.getByTestId('issues-backlog-new'), compact);
+    const form = foot.getByTestId('issues-backlog-create');
+    const title = form.getByTestId('issues-backlog-create-title');
+    await title.fill('Made but not moved');
+    await expect(form.locator('[data-testid="ticket-field"][data-field="type"]').getByTestId('ticket-field-value')).toHaveText('Story', { timeout: 15_000 });
+    await press(form.getByTestId('issues-backlog-create-submit'), compact);
+
+    // Made: the title is done with, the note names the ticket and what did
+    // not happen, and Add cannot send it again.
+    await expect(title).toHaveValue('', { timeout: 15_000 });
+    const note = form.getByTestId('ticket-write-outcome');
+    await expect(note).toContainText(/Created WEB-\d+, but it was not moved into its sprint: .*Sprint 2 takes no more tickets now\./, { timeout: 15_000 });
+    await expect(form.getByTestId('issues-backlog-create-submit')).toBeDisabled();
+    expect(await trackerRequests(harness, CREATE_ROUTE)).toHaveLength(1);
+    const key = /Created (WEB-\d+)/.exec((await note.textContent()) ?? '')![1];
+    const madeId = await backlog.getByTestId('issues-backlog-row').filter({ hasText: 'Made but not moved' }).getAttribute('data-issue', { timeout: 15_000 });
+    expect(await sectionRows(backlog, 'backlog')).toContain(madeId);
+
+    // The step that did not happen, for that ticket.
+    const move = form.getByTestId('issues-backlog-create-move');
+    await expect(move).toHaveText(`Move ${key} into Sprint 2`);
+    await press(move, compact);
+    await expect.poll(() => sectionRows(backlog, 'sprint:2'), { timeout: 15_000 }).toContain(madeId);
+    expect((await trackerRequests(harness, TO_SPRINT_ROUTE)).filter((r) => r.path.endsWith('/sprint/2/issue')).map((r) => r.body)).toEqual([
+      { issues: [madeId] }, { issues: [madeId] },
+    ]);
+    expect(await trackerRequests(harness, CREATE_ROUTE)).toHaveLength(1);
+  });
+
+  test('a sprint is created, changed, refused a clearing of its dates, completed with its unfinished tickets moved, and started', async ({ harness, page }) => {
     test.setTimeout(150_000);
     const { backlog } = await openBoardBacklog(harness, page, name('sprints'), compact);
     const sprintForm = page.getByTestId('sprint-form');
@@ -378,9 +448,17 @@ export function registerBacklogFlow({ compact }: BacklogSurface): void {
     await expect(made).toContainText('Sprint 3');
     await expect(made).toHaveAttribute('data-kind', 'future');
 
-    // Change Sprint 2's goal: only the goal is sent.
+    // Change Sprint 2's goal: only the goal is sent. Clearing its dates is
+    // refused in the form, which Jira's sprint update cannot carry.
     await press(section(backlog, 'sprint:2').getByTestId('issues-backlog-sprint-edit'), compact);
     await expect(sprintForm).toHaveAttribute('data-mode', 'edit');
+    const startDate = await sprintForm.getByTestId('sprint-form-start').inputValue();
+    expect(startDate).not.toBe('');
+    await sprintForm.getByTestId('sprint-form-start').fill('');
+    await expect(sprintForm.getByTestId('sprint-form-problem')).toHaveText('The app cannot clear a sprint\'s dates: change them, or clear them in the tracker.');
+    await expect(sprintForm.getByTestId('sprint-form-submit')).toBeDisabled();
+    await sprintForm.getByTestId('sprint-form-start').fill(startDate);
+    await expect(sprintForm.getByTestId('sprint-form-problem')).toHaveCount(0);
     await sprintForm.getByTestId('sprint-form-goal').fill('Ship the widget');
     await press(sprintForm.getByTestId('sprint-form-submit'), compact);
     await expect(sprintForm).toHaveCount(0, { timeout: 15_000 });
@@ -442,11 +520,20 @@ export function registerBacklogFlow({ compact }: BacklogSurface): void {
     await expect.poll(async () => (await trackerRequests(harness, TO_SPRINT_ROUTE)).map((r) => r.body)).toEqual([{ issues: ['10111'] }]);
     await expect(section(backlog, 'sprint:2').getByTestId('issues-backlog-numbers')).toHaveText('9 of about 4 points, the last sprint · 5 over', { timeout: 15_000 });
 
-    // Back to the backlog from the menu.
+    // Back to the backlog from the menu. While that move is out, the menu
+    // holds Move to sprint back, as a carry is.
+    await harness.rpc('HarnessTrackerFault', { origin: JIRA, route: TO_BACKLOG_ROUTE, kind: 'hold', times: 1 });
     menu = await rowMenu(page, backlog, '10111', 'WEB-11', compact);
     await press(menu.getByTestId('action-menu-more'), compact);
     await press(menu.getByTestId('issues-card-menu-sprint'), compact);
     await press(menu.getByTestId('issues-card-sprint').filter({ hasText: 'Backlog' }), compact);
+    await expect.poll(async () => (await trackerRequests(harness, TO_BACKLOG_ROUTE)).some((r) => r.held)).toBe(true);
+    menu = await rowMenu(page, backlog, '10111', 'WEB-11', compact);
+    await press(menu.getByTestId('action-menu-more'), compact);
+    await expect(menu.getByTestId('issues-card-menu-sprint')).toHaveAttribute('aria-disabled', 'true');
+    await page.keyboard.press('Escape');
+    await expect(menu).toHaveCount(0);
+    await harness.rpc('HarnessTrackerRelease', { origin: JIRA, route: TO_BACKLOG_ROUTE });
     await expect.poll(() => sectionRows(backlog, 'backlog'), { timeout: 15_000 }).toContain('10111');
     await expect.poll(async () => (await trackerRequests(harness, TO_BACKLOG_ROUTE)).map((r) => r.body)).toEqual([{ issues: ['10111'] }]);
 
