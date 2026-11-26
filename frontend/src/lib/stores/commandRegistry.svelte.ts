@@ -75,16 +75,16 @@ export interface CommandFlags {
   /** True while the raw focused pane is a tool pane (Pull requests, Workflows). */
   toolPaneFocused: boolean;
   /**
-   * True while the focused tool pane has a detail step open above its list
-   * (toolPanes.svelte#focusedToolDetailOpen). A tool's surface-dismissal
-   * command gates on it so Back steps to the list before leaving the pane.
+   * True while the focused tool or ticket pane has a detail step open
+   * (toolPanes.svelte#focusedPaneDetailOpen). Its surface-dismissal command
+   * gates on it so Back steps back before leaving the pane.
    */
   toolDetailOpen: boolean;
   /** True while the raw focused pane is the workflows pane. */
   workflowsPaneFocused: boolean;
   /** True while the raw focused pane is the Pull requests pane. */
   pullsPaneFocused: boolean;
-  /** True while the raw focused pane is the Issues pane. */
+  /** True while the raw focused pane is the Issues pane or a ticket pane. */
   issuesPaneFocused: boolean;
   /** True while the raw focused pane is a browser companion pane that compact does not hide. */
   browserPaneFocused: boolean;

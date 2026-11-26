@@ -51,13 +51,16 @@
     /** The tickets the finder offers before anything is typed, when
      * `ticket` is null. */
     candidates?: readonly WorklogTicket[];
+    /** Why nothing can be sent now; the form keeps what was typed and
+     * sends once it is cleared. */
+    waiting?: string;
     /** A write was made that put time on `day`. */
     onSaved?: (day: string) => void;
     /** The form is done: its write was made, or the person closed it. */
     onDone: () => void;
   }
 
-  let { ctx, ticket, day, worklog, confirmDelete = false, candidates = [], onSaved, onDone }: Props = $props();
+  let { ctx, ticket, day, worklog, confirmDelete = false, candidates = [], waiting, onSaved, onDone }: Props = $props();
 
   // The form's own values, seeded from what it was opened with. `seed` is
   // what each input started from: a change sends only the inputs the
@@ -92,10 +95,11 @@
   // form closes or moves to another target, so Save anyway goes with it.
   $effect(() => {
     const held = target;
+    const on = ctx;
     if (!held) return;
-    const release = holdTimeWriteTarget(ctx, held);
+    const release = holdTimeWriteTarget(on, held);
     return () => {
-      reviseTimeDraft(ctx, held);
+      reviseTimeDraft(on, held);
       release();
     };
   });
@@ -105,6 +109,7 @@
   }
   const write = $derived(target ? timeWrite(ctx, target) : null);
   const pending = $derived(write?.pending ?? false);
+  const blocked = $derived(pending || !!waiting);
   const pendingText = $derived(write?.kind === 'delete' ? 'Deleting…' : write?.kind === 'add' ? 'Logging…' : 'Saving…');
 
   // The entry as the week now shows it: once no write of it is out, the
@@ -132,7 +137,7 @@
   const noteWrite = $derived.by(() => {
     if (!write) return null;
     const again = write.saveAnyway;
-    return { ...write, saveAnyway: again ? async () => finish(await again(), sentDay) : null };
+    return { ...write, saveAnyway: again && !waiting ? async () => finish(await again(), sentDay) : null };
   });
 
   function finish(outcome: WriteOutcome | null, savedDay: string | null): void {
@@ -143,7 +148,7 @@
 
   async function submit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
-    if (pending) return;
+    if (blocked) return;
     problem = '';
     if (!picked) {
       problem = 'Pick the ticket to log time on.';
@@ -183,7 +188,7 @@
   }
 
   async function remove(): Promise<void> {
-    if (!base || pending) return;
+    if (!base || blocked) return;
     sentDay = null;
     finish(await deleteWorklog(ctx, base), null);
   }
@@ -236,6 +241,9 @@
   {#if problem}
     <p class="text-xs text-error" role="alert" data-testid="worklog-form-problem">{problem}</p>
   {/if}
+  {#if waiting}
+    <p class="text-xs text-fg-muted" role="status" data-testid="worklog-form-waiting">{waiting}</p>
+  {/if}
   <WriteNote
     write={noteWrite}
     {pendingText}
@@ -246,12 +254,12 @@
   {#if confirming && base}
     <div class="flex flex-wrap items-center gap-1.5 text-xs" data-testid="worklog-form-confirm-delete">
       <span class="text-fg">Delete this entry from the tracker?</span>
-      <Button size="xs" variant="danger" disabled={pending} testId="worklog-form-delete-confirm" onclick={() => { void remove(); }}>Delete</Button>
+      <Button size="xs" variant="danger" disabled={blocked} testId="worklog-form-delete-confirm" onclick={() => { void remove(); }}>Delete</Button>
       <Button size="xs" variant="ghost" disabled={pending} testId="worklog-form-delete-keep" onclick={() => { confirming = false; }}>Keep</Button>
     </div>
   {/if}
   <div class="flex items-center gap-1.5">
-    <Button type="submit" size="sm" variant="primary" disabled={pending} testId="worklog-form-save">{base ? 'Save' : 'Log'}</Button>
+    <Button type="submit" size="sm" variant="primary" disabled={blocked} testId="worklog-form-save">{base ? 'Save' : 'Log'}</Button>
     <Button size="sm" variant="ghost" testId="worklog-form-cancel" onclick={onDone}>Cancel</Button>
     <span class="flex-1"></span>
     {#if base && !confirming}

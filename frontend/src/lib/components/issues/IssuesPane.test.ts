@@ -8,7 +8,7 @@
 
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   BoardChoice,
   BoardPatch,
@@ -45,7 +45,12 @@ import {
   requestedTrackerBoardsProject,
 } from '../../stores/settingsOverlay.svelte';
 import { addProjectLocal } from '../../stores/projects.svelte';
-import { demotePane, promotePane, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
+import { demotePane, getPaneLayoutItems, getPromotedPaneId, promotePane, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
+import { focusPane, getFocusedPaneId } from '../../stores/panes.svelte';
+import TicketPane from '../panes/TicketPane.svelte';
+import { closeTicketPane, openTicketPane, restoreTicketPane, ticketPaneCarrier, ticketPaneRecord } from '../../stores/ticketPanes.svelte';
+import { makeCommandContext } from '../../stores/builtinCommands.svelte';
+import { SCOPES_AT_V0_0_19 } from '../../../test/helpers/olderComputer';
 import { noteProject } from '../../transport/entityIndex';
 import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { HOME_BACKEND } from '../../transport/backendKey';
@@ -166,6 +171,14 @@ function project(id: string, name: string, sortPosition: number, updatedAt = 1):
 
 function mount() {
   return render(IssuesPane, { paneId: PANE });
+}
+
+// Escape acts on the focused pane: the Issues pane is placed and focused,
+// and the command runs as its chord does.
+function focusIssuesPane(): () => void {
+  setPaneLayoutItemsForTest([{ id: PANE, paneId: PANE, kind: 'issues', widthPx: 600 }]);
+  focusPane(PANE);
+  return () => runCommand('issues.escape', { pane: null, paneId: null, flags: { issuesPaneFocused: true, toolDetailOpen: true } } as unknown as CommandContext);
 }
 
 function columns(view: ReturnType<typeof mount>): Array<{ name: string; count: string; cards: string[] }> {
@@ -1197,13 +1210,22 @@ function ticketDetail(id: string, opts: { parent?: string; comments?: number; mo
   } as unknown as DetailView;
 }
 
-function installTicket(detailOf: (issue: string) => DetailView = (issue) => ticketDetail(issue)) {
+/** The tracker a ticket's subscription names: its connection's kind and
+ * the person's account there. */
+interface TicketTracker {
+  kind: 'jira' | 'linear';
+  account: string;
+}
+
+const JIRA_USER1: TicketTracker = { kind: 'jira', account: 'acc-user1' };
+
+function installTicket(detailOf: (issue: string) => DetailView = (issue) => ticketDetail(issue), tracker: TicketTracker = JIRA_USER1) {
   let n = 0;
   const subscribe = setBindingMock('SubscribeTrackerTicket', async (_c: string, issue: string): Promise<TicketSubscription> => {
     n += 1;
-    return { id: `ticket-${issue}-${n}`, seq: 10, poll_every: 10_000, loaded: true, detail: detailOf(issue), read_at: Date.now() } as TicketSubscription;
+    return { id: `ticket-${issue}-${n}`, seq: 10, poll_every: 10_000, ...tracker, loaded: true, detail: detailOf(issue), read_at: Date.now() } as TicketSubscription;
   });
-  const read = setBindingMock('TrackerTicket', async () => ({ loaded: true, detail: ticketDetail('1', { status: 's2' }) }));
+  const read = setBindingMock('TrackerTicket', async () => ({ loaded: true, detail: ticketDetail('1', { status: 's2' }), account: tracker.account }));
   return { subscribe, read };
 }
 
@@ -2070,7 +2092,7 @@ describe('the ticket in the pane', () => {
     const ticket = installTicket((issue) => ticketDetail(issue, { parent: String(Number(issue) + 1) }));
     clearCommandRegistry();
     registerIssuesCommands();
-    const escape = () => runCommand('issues.escape', { pane: null, paneId: null, flags: { issuesPaneFocused: true, toolDetailOpen: true } } as unknown as CommandContext);
+    const escape = focusIssuesPane();
     const view = mount();
     await openCard(view, '1');
     for (let i = 2; i <= 23; i += 1) {
@@ -2506,11 +2528,12 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
     installTicket();
     clearCommandRegistry();
     registerIssuesCommands();
+    const escape = focusIssuesPane();
     const view = mount();
     await view.findAllByTestId('issues-card');
     const start = document.activeElement;
     clickCardNow(view, '1');
-    runCommand('issues.escape', { pane: null, paneId: null, flags: { issuesPaneFocused: true, toolDetailOpen: true } } as unknown as CommandContext);
+    escape();
     await tick();
     expect(view.queryByTestId('ticket-screen')).toBeNull();
     requestTicketOpen({ ref: { backend: HOME_BACKEND, connection: 'c1', issue: '1' }, seed: { key: 'WEB-1', title: 'Linked', card: null }, project: 'p1', unplaced: vi.fn() });
@@ -2521,8 +2544,8 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
   });
 
   it('takes no drop or paste of files on a Linear ticket, and offers it no Attach', async () => {
-    install({ choices: [choice('1', { opens_first: true, connection_kind: 'linear' })] });
-    installTicket();
+    install();
+    installTicket(undefined, { kind: 'linear', account: 'user-1' });
     const names = installUploads();
     try {
       const view = mount();
@@ -2836,9 +2859,71 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
     expect(within(form).queryByTestId('worklog-form-find')).toBeNull();
   });
 
-  it('offers no Log time while the app does not know whose time it logs', async () => {
-    install({ choices: [choice('1', { opens_first: true, verified_account: '' })] });
+  it('keeps an open Log time with what was typed through a reconnect that answers the same account, and sends nothing until that answer', async () => {
+    install();
     installTicket();
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await within(screen).findByTestId('ticket-comment-input');
+    await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+    await fireEvent.click(await within(document.body).findByTestId('ticket-menu-log-time'));
+    const form = await within(document.body).findByTestId('worklog-form');
+    await fireEvent.input(within(form).getByTestId('worklog-form-day'), { target: { value: '2026-11-20' } });
+    await fireEvent.input(within(form).getByTestId('worklog-form-time'), { target: { value: '1h 30m' } });
+    await fireEvent.input(within(form).getByTestId('worklog-form-description'), { target: { value: 'Wrote the report' } });
+    const log = setBindingMock('AddTrackerWorklog', async (): Promise<WriteView> => ({ parts: [{ step: 'add', state: 'applied' }] }) as WriteView);
+    let answer: ((sub: TicketSubscription) => void) | undefined;
+    setBindingMock('SubscribeTrackerTicket', () => new Promise<TicketSubscription>((resolve) => { answer = resolve; }));
+
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null });
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+    await waitFor(() => expect(answer).toBeDefined());
+    // Not answered yet: the form, what was typed and the Jira mark stay,
+    // and nothing is sent as an account not confirmed.
+    const kept = within(document.body).getByTestId('worklog-form');
+    expect(kept).toBe(form);
+    expect(within(kept).getByTestId('worklog-form-day')).toHaveValue('2026-11-20');
+    expect(within(kept).getByTestId('worklog-form-time')).toHaveValue('1h 30m');
+    expect(within(kept).getByTestId('worklog-form-description')).toHaveValue('Wrote the report');
+    expect(within(screen).getByTestId('ticket-type-mark')).toBeInTheDocument();
+    expect(within(kept).getByTestId('worklog-form-save')).toBeDisabled();
+    await fireEvent.submit(kept);
+    await tick();
+    expect(log).not.toHaveBeenCalled();
+
+    answer!({ id: 'ticket-1-2', seq: 20, poll_every: 10_000, ...JIRA_USER1, loaded: true, detail: ticketDetail('1'), read_at: Date.now() } as TicketSubscription);
+    await waitFor(() => expect(within(kept).getByTestId('worklog-form-save')).not.toBeDisabled());
+    expect(within(kept).getByTestId('worklog-form-description')).toHaveValue('Wrote the report');
+    await fireEvent.click(within(kept).getByTestId('worklog-form-save'));
+    await waitFor(() => expect(log).toHaveBeenCalledWith('c1', { issue: '1', day: '2026-11-20', spent_seconds: 5400, description: 'Wrote the report' }));
+  });
+
+  it('closes an open Log time for good when an answer after a reconnect says there is no account', async () => {
+    install();
+    installTicket();
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await within(screen).findByTestId('ticket-comment-input');
+    await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+    await fireEvent.click(await within(document.body).findByTestId('ticket-menu-log-time'));
+    await within(document.body).findByTestId('worklog-form');
+    const reconnectAnswering = async (account: string, id: string) => {
+      setBindingMock('SubscribeTrackerTicket', async (): Promise<TicketSubscription> =>
+        ({ id, seq: 20, poll_every: 10_000, kind: 'jira', account, loaded: true, detail: ticketDetail('1'), read_at: Date.now() }) as TicketSubscription);
+      __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null });
+      __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+      await waitFor(() => expect(within(screen).getByTestId('ticket-comment-input')).toBeInTheDocument());
+      await tick();
+    };
+    await reconnectAnswering('', 'ticket-1-2');
+    expect(within(document.body).queryByTestId('worklog-form')).toBeNull();
+    await reconnectAnswering('acc-user1', 'ticket-1-3');
+    expect(within(document.body).queryByTestId('worklog-form')).toBeNull();
+  });
+
+  it('offers no Log time while the app does not know whose time it logs', async () => {
+    install();
+    installTicket(undefined, { kind: 'jira', account: '' });
     const view = mount();
     const screen = await openCard(view, '1');
     await within(screen).findByTestId('ticket-comment-input');
@@ -2982,5 +3067,536 @@ describe('the Time screen in the pane', () => {
     expect(await view.findByTestId('time-board-gone')).toHaveTextContent('No project lists this board any more, or its connection was removed. Pick another board to see your time.');
     expect(view.queryByTestId('issues-time-listing')).toBeNull();
     view.unmount();
+  });
+});
+
+describe('a ticket in a pane of its own', () => {
+  beforeAll(async () => {
+    await import('./TicketScreen.svelte');
+    await import('./TicketPaneBody.svelte');
+  });
+  beforeEach(() => {
+    setPaneLayoutItemsForTest([]);
+  });
+
+  function placeIssuesPane(): void {
+    setCompactLayoutForTest(false);
+    setPaneLayoutItemsForTest([{ id: PANE, paneId: PANE, kind: 'issues', widthPx: 600 }]);
+    focusPane(PANE);
+  }
+
+  function ticketPaneIds(): string[] {
+    return getPaneLayoutItems().filter((item) => item.kind === 'ticket').map((item) => item.paneId);
+  }
+
+  /** The ticket pane `paneId` as PaneHost mounts it. */
+  function mountTicketPane(paneId: string) {
+    return render(TicketPane, { paneId });
+  }
+
+  // Each render's queries are the whole body's: these read one pane's.
+  async function paneScreen(pane: ReturnType<typeof mountTicketPane>, issue: string): Promise<HTMLElement> {
+    return waitFor(() => {
+      const screen = within(pane.container).getByTestId('ticket-screen');
+      expect(screen.dataset.issue).toBe(issue);
+      return screen;
+    });
+  }
+
+  function ticketReleases(mocks: ReturnType<typeof install>): string[] {
+    return mocks.release.mock.calls.map((c) => String(c[0])).filter((id) => id.startsWith('ticket-'));
+  }
+
+  function card(view: ReturnType<typeof mount>, issue: string): HTMLElement {
+    return within(view.container).getAllByTestId('issues-card').find((c) => c.dataset.issue === issue)!;
+  }
+
+  /** The Issues pane's own ticket, null for none. */
+  function issuesTicket(view: ReturnType<typeof mount>): HTMLElement | null {
+    return within(view.container).queryByTestId('ticket-screen');
+  }
+
+  async function openHere(view: ReturnType<typeof mount>, issue: string): Promise<HTMLElement> {
+    await within(view.container).findAllByTestId('issues-card');
+    await fireEvent.click(within(card(view, issue)).getByTestId('issues-card-open'));
+    return waitFor(() => {
+      const screen = issuesTicket(view)!;
+      expect(screen.dataset.issue).toBe(issue);
+      return screen;
+    });
+  }
+
+  it('opens a card\'s ticket in a pane of its own on Ctrl or Cmd+click and from the card\'s menu, which takes the focus; a plain click opens it here', async () => {
+    placeIssuesPane();
+    install();
+    const ticket = installTicket();
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+
+    await fireEvent.click(within(card(view, '1')).getByTestId('issues-card-open'), { ctrlKey: true });
+    expect(ticketPaneIds()).toHaveLength(1);
+    const first = ticketPaneIds()[0];
+    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual([PANE, first]);
+    expect(getFocusedPaneId()).toBe(first);
+    expect(issuesTicket(view)).toBeNull();
+    const pane = mountTicketPane(first);
+    const screen = await paneScreen(pane, '1');
+    await waitFor(() => expect(document.activeElement).toBe(screen));
+    // The pane's header is the ticket's: its key moves the pane, its close
+    // is the pane's.
+    expect(within(screen).getByTestId('ticket-key').tagName).toBe('BUTTON');
+    expect(within(screen).queryByTestId('ticket-back')).toBeNull();
+
+    // Cmd on macOS opens the same way; the ticket a pane shows is not
+    // opened twice.
+    focusPane(PANE);
+    await fireEvent.click(within(card(view, '1')).getByTestId('issues-card-open'), { metaKey: true });
+    expect(ticketPaneIds()).toEqual([first]);
+    expect(getFocusedPaneId()).toBe(first);
+    await fireEvent.click(within(card(view, '2')).getByTestId('issues-card-open'), { metaKey: true });
+    expect(ticketPaneIds()).toHaveLength(2);
+
+    // The card's one menu has it behind Show more.
+    await fireEvent.contextMenu(card(view, '2'));
+    await fireEvent.click(await within(document.body).findByTestId('action-menu-more'));
+    expect((await within(document.body).findByTestId('issues-card-menu-own-pane'))).toHaveTextContent('Open in its own pane');
+    await fireEvent.click((await within(document.body).findByTestId('issues-card-menu-own-pane')));
+    expect(ticketPaneIds()).toHaveLength(2);
+
+    await fireEvent.click(within(card(view, '2')).getByTestId('issues-card-open'));
+    await waitFor(() => expect(issuesTicket(view)?.dataset.issue).toBe('2'));
+    expect(ticketPaneIds()).toHaveLength(2);
+    expect(ticket.subscribe.mock.calls.filter((c) => c[1] === '1')).toHaveLength(1);
+  });
+
+  it('offers no pane of its own under the compact layout: Ctrl+click opens the ticket here and no menu names a pane', async () => {
+    setCompactLayoutForTest(true);
+    install();
+    installTicket();
+    const view = mount();
+    const first = (await within(view.container).findAllByTestId('issues-card'))[0];
+    await fireEvent.contextMenu(first);
+    await fireEvent.click(await within(document.body).findByTestId('action-menu-more'));
+    await within(document.body).findByTestId('issues-card-menu-priority');
+    expect(within(document.body).queryByTestId('issues-card-menu-own-pane')).toBeNull();
+    await fireEvent.click(within(document.body).getByTestId('issues-card-menu-open'));
+    await waitFor(() => expect(issuesTicket(view)).not.toBeNull());
+    await fireEvent.click(within(view.container).getByTestId('issues-back'));
+    await waitFor(() => expect(issuesTicket(view)).toBeNull());
+    await fireEvent.click(within(first).getByTestId('issues-card-open'), { ctrlKey: true });
+    const screen = await waitFor(() => issuesTicket(view)!);
+    expect(ticketPaneIds()).toEqual([]);
+    await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+    await within(document.body).findByTestId('ticket-menu-status');
+    expect(within(document.body).queryByTestId('ticket-menu-own-pane')).toBeNull();
+    setCompactLayoutForTest(false);
+  });
+
+  it('opens a linked ticket and the parent in a pane of their own on Ctrl+click or the link\'s menu, and in place on a plain click', async () => {
+    placeIssuesPane();
+    install();
+    const linked = (id: string) => ({ id: `l${id}`, type: '10000', relation: 'blocks', issue: { id, key: `WEB-${id}`, title: `Issue ${id}`, status: { id: 's1', name: 'To Do', group: 'todo' } } });
+    installTicket((issue) => ({ ...ticketDetail(issue, { parent: '9' }), links: issue === '1' ? [linked('3'), linked('4')] : [] }) as unknown as DetailView);
+    const view = mount();
+    const screen = await openHere(view, '1');
+    const links = () => within(screen).getAllByTestId('ticket-link');
+
+    await waitFor(() => expect(links()).toHaveLength(2));
+    await fireEvent.click(links()[0], { ctrlKey: true });
+    expect(ticketPaneIds().map((id) => ticketPaneRecord(id)!.ticket.ref.issue)).toEqual(['3']);
+    expect(issuesTicket(view)?.dataset.issue).toBe('1');
+
+    await fireEvent.click(within(screen).getAllByTestId('ticket-link-menu')[1]);
+    await fireEvent.click((await within(document.body).findByTestId('ticket-link-menu-own-pane')));
+    await fireEvent.click(within(screen).getByTestId('ticket-parent'), { ctrlKey: true });
+    expect(ticketPaneIds().map((id) => ticketPaneRecord(id)!.ticket.ref.issue)).toEqual(['3', '4', '9']);
+    // Each keeps the board it was opened from.
+    expect(ticketPaneRecord(ticketPaneIds()[2])).toMatchObject({ board: '1' });
+
+    await fireEvent.click(links()[0]);
+    await waitFor(() => expect(issuesTicket(view)?.dataset.issue).toBe('3'));
+    expect(ticketPaneIds()).toHaveLength(3);
+  });
+
+  it('moves the ticket open here into a pane of its own with its draft and subscription, and the board shows here; the pane\'s close lets both go', async () => {
+    placeIssuesPane();
+    const mocks = install();
+    const ticket = installTicket();
+    const view = mount();
+    const screen = await openHere(view, '1');
+    const key = trackerTicketKey({ backend: HOME_BACKEND, connection: 'c1', issue: '1' });
+    await fireEvent.input(await within(screen).findByTestId('ticket-comment-input'), { target: { value: 'Unsent on WEB-1' } });
+    expect(ticketDraft(key, 'new-comment')?.text).toBe('Unsent on WEB-1');
+
+    await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+    await fireEvent.click((await within(document.body).findByTestId('ticket-menu-own-pane')));
+    await waitFor(() => expect(issuesTicket(view)).toBeNull());
+    expect(within(view.container).getAllByTestId('issues-card')).toHaveLength(2);
+    const [paneId] = ticketPaneIds();
+    expect(getFocusedPaneId()).toBe(paneId);
+    // Held through the move: nothing let go before the pane's body holds it.
+    await tick();
+    expect(ticketDraft(key, 'new-comment')?.text).toBe('Unsent on WEB-1');
+    expect(ticketReleases(mocks)).toEqual([]);
+
+    const pane = mountTicketPane(paneId);
+    const moved = await paneScreen(pane, '1');
+    expect(await within(moved).findByTestId('ticket-comment-input')).toHaveValue('Unsent on WEB-1');
+    await waitFor(() => expect(document.activeElement).toBe(moved));
+    expect(ticket.subscribe).toHaveBeenCalledTimes(1);
+    expect(ticketReleases(mocks)).toEqual([]);
+
+    await fireEvent.click(within(pane.container).getByTestId('pane-close'));
+    expect(ticketPaneIds()).toEqual([]);
+    await waitFor(() => expect(ticketReleases(mocks)).toEqual(['ticket-1-1']));
+    expect(ticketDraft(key, 'new-comment')).toBeNull();
+    pane.unmount();
+  });
+
+  it('lets go of a moved ticket\'s subscription when its pane closes before its body ever held it', async () => {
+    placeIssuesPane();
+    const mocks = install();
+    installTicket();
+    const view = mount();
+    const screen = await openHere(view, '1');
+    await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+    await fireEvent.click((await within(document.body).findByTestId('ticket-menu-own-pane')));
+    await waitFor(() => expect(issuesTicket(view)).toBeNull());
+    expect(ticketReleases(mocks)).toEqual([]);
+    closeTicketPane(ticketPaneIds()[0]);
+    await waitFor(() => expect(ticketReleases(mocks)).toEqual(['ticket-1-1']));
+  });
+
+  it('shows one ticket\'s state in every pane showing it: one subscription, one draft, one write', async () => {
+    placeIssuesPane();
+    const mocks = install();
+    const ticket = installTicket();
+    let answer: ((view: WriteView) => void) | undefined;
+    setBindingMock('EditTrackerIssue', () => new Promise<WriteView>((resolve) => { answer = resolve; }));
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await fireEvent.click(within(card(view, '1')).getByTestId('issues-card-open'), { ctrlKey: true });
+    const pane = mountTicketPane(ticketPaneIds()[0]);
+    const inPane = await paneScreen(pane, '1');
+    const here = await openHere(view, '1');
+    expect(ticket.subscribe).toHaveBeenCalledTimes(1);
+
+    const description = (root: HTMLElement) => within(root).getAllByTestId('ticket-section').find((s) => s.dataset.field === 'description')!;
+    await fireEvent.click(within(description(inPane)).getByTestId('ticket-section-edit'));
+    await fireEvent.input(within(description(inPane)).getByTestId('ticket-section-editor'), { target: { value: 'Draft B' } });
+    await waitFor(() => expect(within(description(here)).getByTestId('ticket-section-editor')).toHaveValue('Draft B'));
+    await fireEvent.click(within(description(here)).getByTestId('ticket-section-save'));
+    await waitFor(() => expect(answer).toBeDefined());
+    await waitFor(() => expect(within(description(inPane)).getByTestId('ticket-section-save')).toBeDisabled());
+
+    // The Issues pane lets go of it; the pane still shows it.
+    await fireEvent.click(within(view.container).getByTestId('ticket-close'));
+    await waitFor(() => expect(issuesTicket(view)).toBeNull());
+    expect(ticketReleases(mocks)).toEqual([]);
+    answer!({ parts: [{ step: 'edit', state: 'applied' }] } as WriteView);
+    pane.unmount();
+    closeTicketPane(ticketPaneIds()[0]);
+    await waitFor(() => expect(ticketReleases(mocks)).toEqual(['ticket-1-1']));
+  });
+
+  it('keeps a refusal under its control while the ticket pane is on screen, and says it in a toast while the pane is off screen', async () => {
+    setCompactLayoutForTest(false);
+    install();
+    installTicket();
+    setBindingMock('TrackerChoices', async () => ({ choices: [{ id: '3', name: 'Low' }] }));
+    const answers: ((view: WriteView) => void)[] = [];
+    setBindingMock('EditTrackerIssue', () => new Promise<WriteView>((resolve) => answers.push(resolve)));
+    const refused = { parts: [{ step: 'edit', state: 'refused', refusal: { reason: 'tracker', message: 'Priority is not on the edit screen' } }] } as WriteView;
+    const toasts = () => getToasts().map((t) => t.message);
+    // No board draws the ticket: only the ticket pane's controls do.
+    setPaneLayoutItemsForTest([{ id: 'thread-1', paneId: 'thread-1', kind: 'thread', widthPx: 600 }]);
+    focusPane('thread-1');
+    openTicketPane({ ref: { backend: HOME_BACKEND, connection: 'c1', issue: '1' }, seed: { key: 'WEB-1', title: 'Issue 1', card: null } }, { board: '1' });
+    const paneId = ticketPaneIds()[0];
+    const pane = mountTicketPane(paneId);
+    const screen = await paneScreen(pane, '1');
+    const priority = () => within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'priority')!;
+    const pickLow = async () => {
+      await fireEvent.click(within(priority()).getByTestId('ticket-field-value'));
+      await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-item')));
+    };
+    const before = toasts().length;
+    await pickLow();
+    await waitFor(() => expect(answers).toHaveLength(1));
+    answers[0](refused);
+    await waitFor(() => expect(within(priority()).getByTestId('ticket-write-outcome')).toHaveTextContent('Priority is not on the edit screen'));
+    expect(toasts().length).toBe(before);
+
+    await pickLow();
+    await waitFor(() => expect(answers).toHaveLength(2));
+    // The thread pane fills the window: the ticket pane is off screen.
+    expect(promotePane('thread-1')).toBe(true);
+    answers[1](refused);
+    await waitFor(() => expect(toasts().slice(before)).toEqual(['The tracker refused the change to WEB-1: Priority is not on the edit screen']));
+    demotePane();
+    expect(within(priority()).queryByTestId('ticket-write-outcome')).toBeNull();
+  });
+
+  it('steps back on Escape through the tickets the pane opened, and never closes the pane', async () => {
+    placeIssuesPane();
+    install();
+    installTicket((issue) => ticketDetail(issue, { parent: String(Number(issue) + 1) }));
+    clearCommandRegistry();
+    registerIssuesCommands();
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await fireEvent.click(within(card(view, '1')).getByTestId('issues-card-open'), { ctrlKey: true });
+    const paneId = ticketPaneIds()[0];
+    const pane = mountTicketPane(paneId);
+    await fireEvent.click(within(await paneScreen(pane, '1')).getByTestId('ticket-parent'));
+    const second = await paneScreen(pane, '2');
+    await waitFor(() => expect(document.activeElement).toBe(second));
+    expect(getFocusedPaneId()).toBe(paneId);
+    const escape = () => runCommand('issues.escape', makeCommandContext(null, {}));
+    const flags = () => makeCommandContext(null, {}).flags;
+    expect(flags()).toMatchObject({ issuesPaneFocused: true, toolDetailOpen: true });
+
+    escape();
+    const first = await paneScreen(pane, '1');
+    await waitFor(() => expect(document.activeElement).toBe(first));
+    expect(flags()).toMatchObject({ issuesPaneFocused: true, toolDetailOpen: false });
+    escape();
+    await tick();
+    expect(ticketPaneIds()).toEqual([paneId]);
+    expect(within(pane.container).getByTestId('ticket-screen').dataset.issue).toBe('1');
+    clearCommandRegistry();
+  });
+
+  it('comes back after a reload on its ticket without taking the focus', async () => {
+    placeIssuesPane();
+    install();
+    installTicket();
+    restoreTicketPane('ticket-r', { backend: HOME_BACKEND, connection: 'c1', issue: '5' });
+    setPaneLayoutItemsForTest([
+      { id: PANE, paneId: PANE, kind: 'issues', widthPx: 600 },
+      { id: 'ticket-r', paneId: 'ticket-r', kind: 'ticket', widthPx: 600 },
+    ]);
+    const start = document.activeElement;
+    const pane = mountTicketPane('ticket-r');
+    await paneScreen(pane, '5');
+    await tick();
+    expect(document.activeElement).toBe(start);
+  });
+
+  it('says so when its saved ticket did not read back, and closes', async () => {
+    setPaneLayoutItemsForTest([{ id: 'ticket-x', paneId: 'ticket-x', kind: 'ticket', widthPx: 600 }]);
+    const pane = mountTicketPane('ticket-x');
+    expect(within(pane.container).getByTestId('ticket-pane-unknown')).toHaveTextContent('could not be read back');
+    await fireEvent.click(within(pane.container).getByRole('button', { name: /close/i }));
+    expect(ticketPaneIds()).toEqual([]);
+  });
+
+  it('says so when the connection it names is gone', async () => {
+    install();
+    setBindingMock('SubscribeTrackerTicket', async () => { throw new TransportError('tracker_connection_missing', 'The tracker connection c9 was removed.'); });
+    restoreTicketPane('ticket-c', { backend: HOME_BACKEND, connection: 'c9', issue: '5' });
+    setPaneLayoutItemsForTest([{ id: 'ticket-c', paneId: 'ticket-c', kind: 'ticket', widthPx: 600 }]);
+    const pane = mountTicketPane('ticket-c');
+    expect(await within(pane.container).findByTestId('ticket-ended-empty')).toHaveTextContent('its connection was turned off or removed');
+  });
+
+  it('says in a sentence that a computer gone from the window, or too old to read trackers, cannot show it', async () => {
+    install();
+    const ticket = installTicket();
+    restoreTicketPane('ticket-g', { backend: 'remote-gone', connection: 'c1', issue: '5' });
+    setPaneLayoutItemsForTest([{ id: 'ticket-g', paneId: 'ticket-g', kind: 'ticket', widthPx: 600 }]);
+    const gone = mountTicketPane('ticket-g');
+    expect(await within(gone.container).findByTestId('ticket-computer-gone')).toHaveTextContent('cannot be shown');
+    gone.unmount();
+
+    await pairWithScopes([...SCOPES_AT_V0_0_19]);
+    try {
+      restoreTicketPane('ticket-o', { backend: HOME_BACKEND, connection: 'c1', issue: '5' });
+      setPaneLayoutItemsForTest([{ id: 'ticket-o', paneId: 'ticket-o', kind: 'ticket', widthPx: 600 }]);
+      const older = mountTicketPane('ticket-o');
+      expect(await within(older.container).findByTestId('ticket-computer-gone')).toHaveTextContent('does not let it read issue trackers');
+      expect(ticket.subscribe).not.toHaveBeenCalled();
+    } finally {
+      resetToLocalPage();
+    }
+  });
+
+  it('keeps the pane\'s header and its close in every state of its body: a computer gone, too old, or not connected while its grants are pending', async () => {
+    install();
+    const ticket = installTicket();
+    const closes = async (paneId: string, sentence: string) => {
+      setPaneLayoutItemsForTest([{ id: paneId, paneId, kind: 'ticket', widthPx: 600 }]);
+      const pane = mountTicketPane(paneId);
+      expect(await within(pane.container).findByTestId(sentence)).toBeInTheDocument();
+      expect(within(pane.container).getByTestId('tool-pane-header')).toBeInTheDocument();
+      expect(within(pane.container).getByTestId('pane-promote')).toBeInTheDocument();
+      await fireEvent.click(within(pane.container).getByTestId('pane-close'));
+      expect(ticketPaneIds()).toEqual([]);
+      pane.unmount();
+    };
+
+    restoreTicketPane('ticket-g', { backend: 'remote-gone', connection: 'c1', issue: '5' });
+    await closes('ticket-g', 'ticket-computer-gone');
+
+    stageBackend({ status: 'reconnecting' });
+    try {
+      restoreTicketPane('ticket-w', { backend: 'laptop', connection: 'c1', issue: '5' });
+      await closes('ticket-w', 'ticket-computer-offline');
+    } finally {
+      resetStagedBackends();
+    }
+
+    await pairWithScopes([...SCOPES_AT_V0_0_19]);
+    try {
+      restoreTicketPane('ticket-o', { backend: HOME_BACKEND, connection: 'c1', issue: '5' });
+      await closes('ticket-o', 'ticket-computer-gone');
+    } finally {
+      resetToLocalPage();
+    }
+    expect(ticket.subscribe).not.toHaveBeenCalled();
+  });
+
+  it('says so in the pane when its computer is not connected, and not that the ticket is opening', async () => {
+    install();
+    installTicket();
+    stageBackend({ status: 'reconnecting' });
+    try {
+      restoreTicketPane('ticket-w', { backend: 'laptop', connection: 'c1', issue: '5' });
+      setPaneLayoutItemsForTest([{ id: 'ticket-w', paneId: 'ticket-w', kind: 'ticket', widthPx: 600 }]);
+      const pane = mountTicketPane('ticket-w');
+      expect(await within(pane.container).findByTestId('ticket-computer-offline')).toHaveTextContent('Laptop is not connected');
+      expect(within(pane.container).queryByText(/Opening the ticket/)).toBeNull();
+    } finally {
+      resetStagedBackends();
+    }
+  });
+
+  it('maximizes from its header: the shared control, and a double-click on its key', async () => {
+    placeIssuesPane();
+    install();
+    installTicket();
+    const view = mount();
+    await within(view.container).findAllByTestId('issues-card');
+    await fireEvent.click(within(card(view, '1')).getByTestId('issues-card-open'), { ctrlKey: true });
+    const [paneId] = ticketPaneIds();
+    const pane = mountTicketPane(paneId);
+    const screen = await paneScreen(pane, '1');
+    await fireEvent.click(within(pane.container).getByTestId('pane-promote'));
+    expect(getPromotedPaneId()).toBe(paneId);
+    await fireEvent.click(within(pane.container).getByTestId('pane-promote'));
+    expect(getPromotedPaneId()).toBeNull();
+    await fireEvent.dblClick(within(screen).getByTestId('ticket-key'));
+    expect(getPromotedPaneId()).toBe(paneId);
+    await fireEvent.dblClick(within(screen).getByTestId('ticket-key'));
+    expect(getPromotedPaneId()).toBeNull();
+  });
+
+  it('reads its tracker and account from its subscription: none of its own controls before it answers, all of them after, with the connections read failed and the board list unanswered', async () => {
+    placeIssuesPane();
+    writeFromAnotherWindow(BOARD_KEY, boardRef('1'));
+    install();
+    installTicket();
+    setBindingMock('TrackerBoardChoices', () => new Promise<BoardChoice[]>(() => {}));
+    setBindingMock('TrackerConnections', async () => { throw new TransportError('internal', 'The connections could not be read.'); });
+    let answer: ((sub: TicketSubscription) => void) | undefined;
+    setBindingMock('SubscribeTrackerTicket', () => new Promise<TicketSubscription>((resolve) => { answer = resolve; }));
+    const view = mount();
+    await within(view.container).findAllByTestId('issues-card');
+    await fireEvent.click(within(card(view, '1')).getByTestId('issues-card-open'), { ctrlKey: true });
+    const [paneId] = ticketPaneIds();
+    const pane = mountTicketPane(paneId);
+    const screen = await paneScreen(pane, '1');
+    await waitFor(() => expect(answer).toBeDefined());
+    // Not answered yet: neither tracker's own controls.
+    expect(within(screen).queryByTestId('ticket-type-mark')).toBeNull();
+    expect(within(screen).queryByTestId('ticket-estimate')).toBeNull();
+    answer!({ id: 'ticket-1-1', seq: 10, poll_every: 10_000, ...JIRA_USER1, loaded: true, detail: ticketDetail('1'), read_at: Date.now() } as TicketSubscription);
+    // With the ticket's answer, at once: the Jira controls and Log time.
+    await waitFor(() => expect(within(screen).getByTestId('ticket-type-mark')).toBeInTheDocument());
+    expect(within(screen).getByTestId('ticket-estimate')).toBeInTheDocument();
+    await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+    expect(await within(document.body).findByTestId('ticket-menu-log-time')).not.toHaveAttribute('aria-disabled', 'true');
+    expect(within(document.body).getByTestId('ticket-menu-attach')).toBeInTheDocument();
+    // Nothing of the tracker is kept with the pane.
+    expect(ticketPaneCarrier(paneId)).toEqual({ backend: HOME_BACKEND, connection: 'c1', issue: '1' });
+  });
+
+  it('shows a restored pane\'s key and title once its subscription answers, and names it Ticket before', async () => {
+    install();
+    let answer: ((sub: TicketSubscription) => void) | undefined;
+    setBindingMock('SubscribeTrackerTicket', () => new Promise<TicketSubscription>((resolve) => { answer = resolve; }));
+    restoreTicketPane('ticket-r', { backend: HOME_BACKEND, connection: 'c1', issue: '5' });
+    setPaneLayoutItemsForTest([{ id: 'ticket-r', paneId: 'ticket-r', kind: 'ticket', widthPx: 600 }]);
+    const pane = mountTicketPane('ticket-r');
+    const screen = await paneScreen(pane, '5');
+    expect(within(screen).getByTestId('ticket-key')).toHaveTextContent('Ticket');
+    expect(within(screen).getByTestId('ticket-title')).toHaveTextContent('');
+    await waitFor(() => expect(answer).toBeDefined());
+    answer!({ id: 'ticket-5-1', seq: 10, poll_every: 10_000, ...JIRA_USER1, loaded: true, detail: ticketDetail('5'), read_at: Date.now() } as TicketSubscription);
+    await waitFor(() => expect(within(screen).getByTestId('ticket-key')).toHaveTextContent('WEB-5'));
+    expect(within(screen).getByTestId('ticket-title')).toHaveTextContent('Issue 5');
+  });
+
+  it('copies no key on a restored pane before its ticket is read, and copies its key once it is', async () => {
+    install();
+    let answer: ((sub: TicketSubscription) => void) | undefined;
+    setBindingMock('SubscribeTrackerTicket', () => new Promise<TicketSubscription>((resolve) => { answer = resolve; }));
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined);
+    try {
+      restoreTicketPane('ticket-r', { backend: HOME_BACKEND, connection: 'c1', issue: '5' });
+      setPaneLayoutItemsForTest([{ id: 'ticket-r', paneId: 'ticket-r', kind: 'ticket', widthPx: 600 }]);
+      const pane = mountTicketPane('ticket-r');
+      const screen = await paneScreen(pane, '5');
+      await waitFor(() => expect(answer).toBeDefined());
+      await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+      const copyKey = await within(document.body).findByTestId('ticket-menu-copy-key');
+      expect(copyKey).toHaveAttribute('aria-disabled', 'true');
+      await fireEvent.click(copyKey);
+      await tick();
+      expect(writeText).not.toHaveBeenCalled();
+      await fireEvent.keyDown(document.body, { key: 'Escape' });
+      await waitFor(() => expect(within(document.body).queryByTestId('ticket-menu-copy-key')).toBeNull());
+
+      // Answered, but not read yet: still no key.
+      answer!({ id: 'ticket-5-1', seq: 10, poll_every: 10_000, ...JIRA_USER1, loaded: false, read_at: 0 } as unknown as TicketSubscription);
+      await waitFor(() => expect(within(screen).getByTestId('ticket-type-mark')).toBeInTheDocument());
+      await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+      expect(await within(document.body).findByTestId('ticket-menu-copy-key')).toHaveAttribute('aria-disabled', 'true');
+      await fireEvent.keyDown(document.body, { key: 'Escape' });
+      await waitFor(() => expect(within(document.body).queryByTestId('ticket-menu-copy-key')).toBeNull());
+
+      // Read: its key copies.
+      setBindingMock('TrackerTicket', async () => ({ loaded: true, detail: ticketDetail('5'), account: JIRA_USER1.account }));
+      trackerIssueUpdated({ connection: 'c1', issue: '5', seq: 11, changed: true }, HOME_BACKEND);
+      await waitFor(() => expect(within(screen).getByTestId('ticket-key')).toHaveTextContent('WEB-5'));
+      await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+      await fireEvent.click(await within(document.body).findByTestId('ticket-menu-copy-key'));
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith('WEB-5'));
+      expect(writeText).toHaveBeenCalledTimes(1);
+    } finally {
+      writeText.mockRestore();
+    }
+  });
+
+  it('offers the parent\'s own actions on a right-click of it, in the Issues pane and in a ticket pane, never the ticket that shows it', async () => {
+    placeIssuesPane();
+    install();
+    installTicket((issue) => ticketDetail(issue, { parent: String(Number(issue) + 10) }));
+    const view = mount();
+    const here = await openHere(view, '1');
+    await fireEvent.contextMenu(within(here).getByTestId('ticket-parent'));
+    expect(within(document.body).queryByTestId('ticket-menu-own-pane')).toBeNull();
+    expect(await within(document.body).findByTestId('ticket-parent-menu-copy-key')).toHaveTextContent('Copy key');
+    await fireEvent.click(within(document.body).getByTestId('ticket-parent-menu-own-pane'));
+    expect(ticketPaneIds().map((id) => ticketPaneRecord(id)!.ticket.ref.issue)).toEqual(['11']);
+    expect(issuesTicket(view)?.dataset.issue).toBe('1');
+
+    const pane = mountTicketPane(ticketPaneIds()[0]);
+    const inPane = await paneScreen(pane, '11');
+    await fireEvent.contextMenu(within(inPane).getByTestId('ticket-parent'));
+    await fireEvent.click(await within(document.body).findByTestId('ticket-parent-menu-open'));
+    await paneScreen(pane, '21');
+    expect(ticketPaneIds()).toHaveLength(1);
+    expect(issuesTicket(view)?.dataset.issue).toBe('1');
   });
 });

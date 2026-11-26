@@ -1,7 +1,7 @@
 <script lang="ts">
   // A Board card's menu (docs/specs/issues.md, "Board"), drawn by the
-  // shared ActionMenu under the name `issues-card`: Open and Open in the
-  // tracker; Move to…, Move to sprint… (a board that plans sprints),
+  // shared ActionMenu under the name `issues-card`: Open, Open in its own
+  // pane (where ticket panes are offered) and Open in the tracker; Move to…, Move to sprint… (a board that plans sprints),
   // Assignee…, Priority…, Points… (a board with an estimate) and Type…
   // (a tracker with issue types); Copy key and Copy link. Opening it sends
   // nothing: Move to… reads the ticket's moves when its page opens, and a
@@ -13,6 +13,7 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import type { MoveView, RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import type { BoardShape } from '../../stores/trackerBoardModel';
+  import { ticketPanesOffered } from '../../stores/ticketPanes.svelte';
   import { fieldTarget, ticketWrite, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
   import type { CardEditField } from './ticketEditors';
 
@@ -33,6 +34,8 @@
     /** Opens at Move to…. */
     atMove?: boolean;
     onOpen: () => void;
+    /** Opens its ticket in a pane of its own. */
+    onOwnPane: () => void;
     onOpenURL: () => void;
     onCopy: (text: string, what: string) => void;
     onEdit: (field: CardEditField) => void;
@@ -41,7 +44,7 @@
     onDismiss: () => void;
   }
 
-  let { x, y, row, ctx, shape, from, typed, url, moving, atMove = false, onOpen, onOpenURL, onCopy, onEdit, onMove, onSprint, onDismiss }: Props = $props();
+  let { x, y, row, ctx, shape, from, typed, url, moving, atMove = false, onOpen, onOwnPane, onOpenURL, onCopy, onEdit, onMove, onSprint, onDismiss }: Props = $props();
 
   /** Shown at once until the person chooses. */
   const DEFAULTS = ['open', 'move', 'assignee', 'copy-key'];
@@ -58,6 +61,7 @@
       label: 'Open',
       actions: [
         { id: 'open', label: 'Open', testId: 'issues-card-menu-open', run: onOpen },
+        ...(ticketPanesOffered() ? [{ id: 'own-pane', label: 'Open in its own pane', testId: 'issues-card-menu-own-pane', run: onOwnPane }] : []),
         ...(url ? [{ id: 'open-tracker', label: 'Open in the tracker', testId: 'issues-card-menu-open-tracker', run: onOpenURL }] : []),
       ],
     },

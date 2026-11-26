@@ -3,14 +3,14 @@ import {
   activeToolKind,
   addToolPaneClosedObserver,
   closeToolPane,
-  focusedToolDetailOpen,
+  focusedPaneDetailOpen,
   focusedToolKind,
   installToolPanes,
   isToolOpen,
   lastToolKind,
   noteToolUsed,
   openTool,
-  registerToolDetailProbe,
+  registerPaneDetailProbe,
   resetToolPanesForTest,
   syncToolPanesFromAppStorage,
   toggleTool,
@@ -54,6 +54,7 @@ import { openDraftThreadForProject } from './threadCreation.svelte';
 import { addProjectLocal, resetProjectsForTest } from './projects.svelte';
 import { openWorkflowThreadById } from './workflowThreads';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { openTicketPane, ticketPaneRecord } from './ticketPanes.svelte';
 import type { Project, Thread } from '../types/models';
 
 function threadItem(paneId: string, widthPx = 560): PaneLayoutItem {
@@ -392,6 +393,22 @@ describe('a thread opened while a tool pane is focused', () => {
     off();
   });
 
+  it('takes a focused ticket pane\'s place the same way, and the ticket pane\'s record goes with it', async () => {
+    const closed = vi.fn();
+    const off = addToolPaneClosedObserver(closed);
+    threadLayout([threadItem('left'), threadItem('right')], 'left');
+    const ticketPane = openTicketPane({ ref: { backend: '', connection: 'c1', issue: '1' }, seed: { key: 'WEB-1', title: 'Issue 1', card: null } }, { board: '1' });
+    ticketPaneRecord(ticketPane)!.focus.end();
+    const width = getPaneLayoutItems()[1].widthPx;
+    const pane = await openThreadInPane(makeThread({ id: 't-new' }));
+    expect(layoutIds()).toEqual(['left', pane.paneId, 'right']);
+    expect(getPaneLayoutItems()[1].widthPx).toBe(width);
+    expect(getFocusedPaneId()).toBe(pane.paneId);
+    expect(ticketPaneRecord(ticketPane)).toBeNull();
+    expect(closed).not.toHaveBeenCalled();
+    off();
+  });
+
   it('does the same for a navigation open (sidebar row, thread jump, palette)', async () => {
     threadLayout([toolItem('pulls'), threadItem('right')], 'tool-pulls');
     const pane = await openThreadFromNavigation(makeThread({ id: 't-nav' }));
@@ -545,27 +562,27 @@ describe('focus and the active tool', () => {
     expect(lastToolKind()).toBe('pulls');
   });
 
-  it('reports the focused tool\'s detail step through its probe', () => {
+  it('reports the focused pane\'s detail step through its probe', () => {
     let open = false;
-    const restore = registerToolDetailProbe('pulls', () => open);
+    const restore = registerPaneDetailProbe('tool-pulls', () => open);
     threadLayout([threadItem('left'), toolItem('pulls')], 'left');
     open = true;
-    expect(focusedToolDetailOpen()).toBe(false);
+    expect(focusedPaneDetailOpen()).toBe(false);
     focusPane('tool-pulls');
-    expect(focusedToolDetailOpen()).toBe(true);
+    expect(focusedPaneDetailOpen()).toBe(true);
     open = false;
-    expect(focusedToolDetailOpen()).toBe(false);
+    expect(focusedPaneDetailOpen()).toBe(false);
     restore();
   });
 
   it('restores the probe a registration replaced when it is disposed', () => {
     threadLayout([toolItem('pulls')], 'tool-pulls');
-    const restoreFirst = registerToolDetailProbe('pulls', () => true);
-    const restoreSecond = registerToolDetailProbe('pulls', () => false);
-    expect(focusedToolDetailOpen()).toBe(false);
+    const restoreFirst = registerPaneDetailProbe('tool-pulls', () => true);
+    const restoreSecond = registerPaneDetailProbe('tool-pulls', () => false);
+    expect(focusedPaneDetailOpen()).toBe(false);
     restoreSecond();
-    expect(focusedToolDetailOpen()).toBe(true);
+    expect(focusedPaneDetailOpen()).toBe(true);
     restoreFirst();
-    expect(focusedToolDetailOpen()).toBe(false);
+    expect(focusedPaneDetailOpen()).toBe(false);
   });
 });

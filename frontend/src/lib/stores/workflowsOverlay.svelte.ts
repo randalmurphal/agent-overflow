@@ -12,11 +12,12 @@
 // restart, not just a reload, and reopening the pane restores where you were.
 
 import { appStorageGet, appStorageSet } from './appStorage';
+import { toolPaneIdFor } from './paneLayout.svelte';
 import {
   addToolPaneClosedObserver,
   focusedToolKind,
   openTool,
-  registerToolDetailProbe,
+  registerPaneDetailProbe,
   toggleTool,
   type OpenToolOptions,
 } from './toolPanes.svelte';
@@ -146,7 +147,7 @@ addToolPaneClosedObserver((kind) => {
   if (kind === 'workflows') clearTransient();
 });
 
-registerToolDetailProbe('workflows', isWorkflowsDetailOpen);
+registerPaneDetailProbe(toolPaneIdFor('workflows'), isWorkflowsDetailOpen);
 
 export function pushWorkflowRunDetail(itemId: string, options: { sweep?: boolean; sweepIndex?: number } = {}): void {
   if (!itemId) return;

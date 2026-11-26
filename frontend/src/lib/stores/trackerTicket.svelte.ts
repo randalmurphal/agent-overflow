@@ -177,6 +177,18 @@ interface Live {
   pokerApplied: number;
 }
 
+/** A ticket's tracker as its computer answered for it. */
+export interface TicketTracker {
+  /** Its connection's tracker: jira or linear. */
+  readonly kind: string;
+  /** The person's account on the connection; null when the answer named
+   * none, as when no verification recorded one. */
+  readonly account: string | null;
+  /** The ticket's current subscription gave these values or a later read;
+   * false from a re-subscribe until its answer. */
+  readonly confirmed: boolean;
+}
+
 const NO_EARLIER: EarlierComments = { pages: [], next: null, loading: false, error: null };
 
 const FIRST_STATE: TrackerTicketState = {
@@ -202,6 +214,18 @@ let nextSurface = 0;
 // The earlier comment pages each held ticket's surfaces loaded; kept
 // across a re-subscribe, dropped with the last surface.
 const earlierByKey = new Map<string, HeldPages>();
+// Each held ticket's tracker. What must keep true:
+// - Not answered yet (no record) and answered with no account (`account`
+//   null) are different states: only an answer says there is no account.
+// - What an answer for this open ticket gave (the subscribe's, or a read's
+//   account) holds until a later answer says otherwise. A re-subscribe
+//   (a reconnect, a subscription the computer lost) keeps it and marks it
+//   unconfirmed until its own answer, so nothing it gates leaves and
+//   returns; nothing is sent as an unconfirmed account (WorklogForm's
+//   `waiting`).
+// - It is this store's alone: written by the subscribe and its reads,
+//   kept across re-subscribes, dropped with the ticket's last surface.
+const trackers = new SvelteMap<string, TicketTracker>();
 // The change to each ticket's held pages last queued (`onPages`).
 const pageWork = new Map<string, Promise<void>>();
 const closedListeners = new Set<(key: string) => void>();
@@ -238,6 +262,8 @@ type SourceArgs = Parameters<Parameters<typeof createEntityStore<TrackerTicketSt
 async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<() => Promise<void>> {
   const ref = getCtx();
   const held = earlierByKey.get(key);
+  const told = trackers.get(key);
+  if (told?.confirmed) trackers.set(key, { ...told, confirmed: false });
   const live: Live = {
     key, ref, id: '', seq: 0, joining: [], apply, aborted: false,
     state: { ...FIRST_STATE, earlier: { ...NO_EARLIER, pages: held?.pages ?? [], next: held?.next ?? null } },
@@ -274,6 +300,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
   live.id = id;
   live.seq = answer.seq;
   live.state = { ...live.state, ...viewState(answer) };
+  trackers.set(key, { kind: answer.kind, account: answer.account || null, confirmed: true });
   const early = live.joining ?? [];
   live.joining = null;
   for (const event of early) fold(live, event);
@@ -386,6 +413,9 @@ async function run(live: Live): Promise<void> {
     }
     if (live.aborted) return;
     const read = viewState(view);
+    const told = trackers.get(live.key);
+    const account = view.account || null;
+    if (told && told.account !== account) trackers.set(live.key, { ...told, account });
     update(live, {
       detail: read.detail,
       readAt: read.readAt || live.state.readAt,
@@ -769,6 +799,9 @@ export interface TrackerTicketAttachment {
   readonly current: TrackerTicketState | null;
   /** Reactive: the subscribe failed and is retrying; null when healthy. */
   readonly error: string | null;
+  /** Reactive: the ticket's tracker; null until its computer answers
+   * (see `trackers`). */
+  readonly tracker: TicketTracker | null;
   /** Whether this surface shows the ticket now. */
   setShown(shown: boolean): void;
   /** Whether this surface's poker part is open and on screen. */
@@ -808,6 +841,9 @@ export function attachTrackerTicket(ref: TrackerTicketRef, shown: boolean): Trac
     get error() {
       return handle.error;
     },
+    get tracker() {
+      return trackers.get(key) ?? null;
+    },
     setShown(next) {
       if (released || mine.shown === next) return;
       mine.shown = next;
@@ -827,6 +863,7 @@ export function attachTrackerTicket(ref: TrackerTicketRef, shown: boolean): Trac
       if (last) {
         surfaces.delete(key);
         earlierByKey.delete(key);
+        trackers.delete(key);
         pageWork.delete(key);
       } else {
         restate();
@@ -843,6 +880,7 @@ export function resetTrackerTicketsForTest(): void {
   lives.clear();
   surfaces.clear();
   earlierByKey.clear();
+  trackers.clear();
   pokerSupport.clear();
   pageWork.clear();
   votes.resetForTest();

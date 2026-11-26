@@ -56,9 +56,20 @@ board methods, events and the patch read in
   board and the week are shown (`boardShown`, `timeShown`: the pane is on
   screen on that screen and no ticket covers it), which are their votes.
   The ticket's placement per screen, its folds, the comment order and
-  the Time layout are remembered here too.
+  the Time layout are remembered here too. `createTicketTrail` is the one
+  owner of a pane's open ticket, its subscription and Back trail, for the
+  Issues pane and a ticket pane alike; `TicketHost.svelte` mounts what a
+  trail shows.
+- `stores/ticketPanes.svelte.ts` (in the startup graph) owns ticket panes:
+  which ticket each shows, the Ctrl or Cmd rule for opening one
+  (`opensTicketPane`), the move's hold on the subscription until the
+  pane's body holds it, and what the layout saves. Its header says who
+  owns the ticket while running, saving and restoring.
 - `stores/trackerTicket.svelte.ts` holds each open ticket's subscription,
-  one per ticket for every surface showing it: subscribe with the vote,
+  one per ticket for every surface showing it, with its connection's
+  kind and the person's account there as the subscription tells them
+  (the ticket reads no connection list), held through a re-subscribe
+  until its answer (the rules are written beside them): subscribe with the vote,
   the `tracker:issue_updated` fold, the one view read in flight, the gap
   read, Refresh and the earlier comments held by page with the token that
   read each. The rules those pages keep ("Held comment pages") are written
@@ -76,7 +87,8 @@ board methods, events and the patch read in
   base, or a move's form with the base of each long field, which the
   editors and the form show, so a draft outlives its editor; a pane's
   selection holds the drafts of its open ticket and Back trail
-  (`holdTicketDrafts`). Files are attached through it one at a time per
+  (`holdTicketDrafts`), and a ticket pane's record holds those of its
+  ticket and trail. Files are attached through it one at a time per
   ticket, each its own `attach:` write; it holds a connection's link
   types for the link form.
 - `stores/trackerTicketModel.ts` is the pure part: the comment and
@@ -110,8 +122,10 @@ board methods, events and the patch read in
   text shows in place, held in the media cache until the ticket's last
   surface goes.
 
-These stores load with the pane (`ToolPane.svelte` imports it on demand),
-`TicketScreen.svelte` loads on the first open of a ticket and
+These stores load with the pane (`ToolPane.svelte` imports it on demand)
+or the first ticket pane (`panes/TicketPane.svelte` imports
+`TicketPaneBody.svelte` on demand), `TicketScreen.svelte` loads on the
+first open of a ticket (`TicketHost.svelte`) and
 `TimeScreen.svelte` on the first switch to Time.
 The always-loaded stores reach them only through
 `stores/trackerBoardEvents.ts`, where the board and ticket stores take

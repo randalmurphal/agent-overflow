@@ -192,7 +192,8 @@ export function trackerReadGate(view: TrackerConnectionsView): 'older' | 'refuse
 
 /**
  * Hold `backend`'s connections while the caller shows them, reading them
- * now; the returned function releases the hold. Call it from an effect.
+ * now; the returned function releases the hold. Call it when the surface
+ * mounts.
  */
 export function acquireTrackerConnections(backend: BackendKey): () => void {
   let entry = held.get(backend);

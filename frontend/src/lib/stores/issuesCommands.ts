@@ -1,28 +1,37 @@
 // The Issues pane's commands: open or reveal the pane, or close it when it
 // is focused, while this window may use the pane (`trackerRead`), with no
 // default chord; and Escape (and the phone's Back) out of an open ticket,
-// which the pane, loaded on demand, hands its step to.
+// in the Issues pane or in a ticket's own pane, which the pane, loaded on
+// demand, hands its step to.
 
 import { registerCommand } from './commandRegistry.svelte';
+import { paneLayoutKindOf } from './paneLayout.svelte';
+import { getFocusedPaneId } from './panes.svelte';
 import { focusedToolKind, toggleTool } from './toolPanes.svelte';
 
-let backHandler: (() => boolean) | null = null;
+// Each pane's step back, by layout pane id.
+const backHandlers = new Map<string, () => void>();
 
 /**
- * The pane's step back out of its open ticket. Returns whether it stepped.
- * The returned disposer restores the previous handler, so a pane that goes
- * while another is mounted leaves that one's handler in place.
+ * The step back out of the ticket the pane `paneId` shows. The returned
+ * disposer restores the handler it replaced, so a body that remounts while
+ * the old one is still mounted leaves that one's handler in place.
  */
-export function registerIssuesBackHandler(handler: () => boolean): () => void {
-  const previous = backHandler;
-  backHandler = handler;
+export function registerIssuesBackHandler(paneId: string, handler: () => void): () => void {
+  const previous = backHandlers.get(paneId);
+  backHandlers.set(paneId, handler);
   return () => {
-    if (backHandler === handler) backHandler = previous;
+    if (backHandlers.get(paneId) !== handler) return;
+    if (previous) backHandlers.set(paneId, previous);
+    else backHandlers.delete(paneId);
   };
 }
 
+/** The focused pane is the Issues pane or a ticket's own pane. */
 export function isIssuesPaneFocused(): boolean {
-  return focusedToolKind() === 'issues';
+  if (focusedToolKind() === 'issues') return true;
+  const paneId = getFocusedPaneId();
+  return paneId !== null && paneLayoutKindOf(paneId) === 'ticket';
 }
 
 export function registerIssuesCommands(): void {
@@ -35,20 +44,23 @@ export function registerIssuesCommands(): void {
     run: () => toggleTool('issues'),
   });
 
-  // Gated on `toolDetailOpen` (a ticket is open) as well as focus, as
-  // pulls.escape is, so Back leaves the pane once no ticket is open.
+  // Gated on `toolDetailOpen` as well as focus, as pulls.escape is: in the
+  // Issues pane a ticket is open, so Back leaves the pane once none is; in
+  // a ticket's own pane its Details rail or Back trail is, so Back never
+  // closes that pane.
   registerCommand({
     id: 'issues.escape',
     dismissesSurface: true,
     label: 'Issues: Back',
-    description: 'Close the details over a narrow ticket, else go back to the ticket this one was opened from, else close it and show the board.',
+    description: 'Close the details over a narrow ticket, else go back to the ticket this one was opened from; in the Issues pane, else close the ticket and show the board.',
     when: 'issuesPaneFocused && toolDetailOpen && !overlayOpen && !paneFindOpen',
     run: () => {
-      backHandler?.();
+      const paneId = getFocusedPaneId();
+      if (paneId) backHandlers.get(paneId)?.();
     },
   });
 }
 
 export function resetIssuesCommandsForTest(): void {
-  backHandler = null;
+  backHandlers.clear();
 }

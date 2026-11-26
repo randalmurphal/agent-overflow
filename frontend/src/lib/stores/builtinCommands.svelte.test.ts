@@ -77,7 +77,7 @@ import {
   getWorkflowsOverlayTop,
   pushWorkflowRunDetail,
 } from './workflowsOverlay.svelte';
-import { isToolOpen, openTool, registerToolDetailProbe } from './toolPanes.svelte';
+import { isToolOpen, openTool, registerPaneDetailProbe } from './toolPanes.svelte';
 import { registerPullsBackHandler } from './pullsCommands.svelte';
 import {
   getSettingsSection,
@@ -1425,7 +1425,7 @@ describe('find.in-pane over pane regions', () => {
     registerFixtureCommands(pane);
     const back = vi.fn(() => true);
     releases.push(registerPullsBackHandler(back));
-    releases.push(registerToolDetailProbe('pulls', () => true));
+    releases.push(registerPaneDetailProbe(PULLS, () => true));
     releases.push(declarePaneFindRegions(PULLS, { initial: PANE_FIND_LIST_REGION }));
     const list = paneFindListKey(PULLS);
     const detail = paneFindDetailKey(PULLS);

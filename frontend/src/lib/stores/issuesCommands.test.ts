@@ -52,9 +52,11 @@ describe('issues commands', () => {
     expect(escape?.key).toBe('esc');
     expect(escape?.when).toBe('issuesPaneFocused && toolDetailOpen');
 
+    setPaneLayoutItemsForTest([{ id: 'tool-issues', paneId: 'tool-issues', kind: 'issues', widthPx: 400 }]);
+    focusPane('tool-issues');
     const steps: string[] = [];
-    const first = registerIssuesBackHandler(() => { steps.push('first'); return true; });
-    const second = registerIssuesBackHandler(() => { steps.push('second'); return true; });
+    const first = registerIssuesBackHandler('tool-issues', () => { steps.push('first'); });
+    const second = registerIssuesBackHandler('tool-issues', () => { steps.push('second'); });
     runCommand('issues.escape', ctx());
     second();
     runCommand('issues.escape', ctx());
@@ -63,10 +65,33 @@ describe('issues commands', () => {
     expect(steps).toEqual(['second', 'first']);
   });
 
-  it('knows when the Issues pane is the focused pane', () => {
-    setPaneLayoutItemsForTest([{ id: 'tool-issues', paneId: 'tool-issues', kind: 'issues', widthPx: 400 }]);
+  it('steps back in the focused pane only: the Issues pane or a ticket pane', () => {
+    setPaneLayoutItemsForTest([
+      { id: 'tool-issues', paneId: 'tool-issues', kind: 'issues', widthPx: 400 },
+      { id: 'ticket-a', paneId: 'ticket-a', kind: 'ticket', widthPx: 400 },
+    ]);
+    const steps: string[] = [];
+    const disposers = [
+      registerIssuesBackHandler('tool-issues', () => { steps.push('issues'); }),
+      registerIssuesBackHandler('ticket-a', () => { steps.push('ticket'); }),
+    ];
+    focusPane('ticket-a');
+    runCommand('issues.escape', ctx());
+    focusPane('tool-issues');
+    runCommand('issues.escape', ctx());
+    expect(steps).toEqual(['ticket', 'issues']);
+    for (const dispose of disposers) dispose();
+  });
+
+  it('knows when the Issues pane or a ticket pane is the focused pane', () => {
+    setPaneLayoutItemsForTest([
+      { id: 'tool-issues', paneId: 'tool-issues', kind: 'issues', widthPx: 400 },
+      { id: 'ticket-a', paneId: 'ticket-a', kind: 'ticket', widthPx: 400 },
+    ]);
     expect(isIssuesPaneFocused()).toBe(false);
     focusPane('tool-issues');
+    expect(isIssuesPaneFocused()).toBe(true);
+    focusPane('ticket-a');
     expect(isIssuesPaneFocused()).toBe(true);
   });
 });

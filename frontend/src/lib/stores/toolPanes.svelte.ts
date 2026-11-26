@@ -39,7 +39,7 @@ import {
   getFocusedPaneId,
   getFocusedPaneOrNull,
   getPane,
-  removeToolPaneFromLayout,
+  removeSurfacePaneFromLayout,
   resolveNewPaneInsertIndex,
   revealPane,
 } from './panes.svelte';
@@ -151,27 +151,28 @@ function notifyToolPaneClosed(kind: ToolPaneKind): void {
   for (const observe of closedObservers) observe(kind);
 }
 
-// Each tool reports whether a detail step is open above its list, so the
-// `toolDetailOpen` command flag can gate the tool's surface-dismissal command:
-// Escape and the phone's Back step back to the list before they leave the
-// pane. A tool with no probe has no detail step.
-const detailProbes = new Map<ToolPaneKind, () => boolean>();
+// Each tool pane and ticket pane reports whether a detail step is open in
+// it (a tool's detail above its list, a ticket's Details rail or Back
+// trail), so the `toolDetailOpen` command flag can gate its surface-dismissal
+// command: Escape and the phone's Back step back before they leave the pane.
+// Keyed by layout pane id; a pane with no probe has no detail step.
+const detailProbes = new Map<string, () => boolean>();
 
-/** Register a tool's probe. Returns a disposer that restores the previous one. */
-export function registerToolDetailProbe(kind: ToolPaneKind, isOpen: () => boolean): () => void {
-  const previous = detailProbes.get(kind);
-  detailProbes.set(kind, isOpen);
+/** Register a pane's probe. Returns a disposer that restores the previous one. */
+export function registerPaneDetailProbe(paneId: string, isOpen: () => boolean): () => void {
+  const previous = detailProbes.get(paneId);
+  detailProbes.set(paneId, isOpen);
   return () => {
-    if (detailProbes.get(kind) !== isOpen) return;
-    if (previous) detailProbes.set(kind, previous);
-    else detailProbes.delete(kind);
+    if (detailProbes.get(paneId) !== isOpen) return;
+    if (previous) detailProbes.set(paneId, previous);
+    else detailProbes.delete(paneId);
   };
 }
 
-/** The focused tool pane has a detail step open above its list. */
-export function focusedToolDetailOpen(): boolean {
-  const kind = focusedToolKind();
-  return kind !== null && (detailProbes.get(kind)?.() ?? false);
+/** The focused pane has a detail step open. */
+export function focusedPaneDetailOpen(): boolean {
+  const paneId = getFocusedPaneId();
+  return paneId !== null && (detailProbes.get(paneId)?.() ?? false);
 }
 
 let unsubscribeReplaced: (() => void) | null = null;
@@ -302,7 +303,7 @@ function replaceLead(leadPaneId: string): void {
 export function closeToolPane(paneId: string): void {
   const kind = toolKindOf(paneId);
   if (!kind) return;
-  if (removeToolPaneFromLayout(paneId)) notifyToolPaneClosed(kind);
+  if (removeSurfacePaneFromLayout(paneId)) notifyToolPaneClosed(kind);
 }
 
 /** `workflows.toggle` and its kin: open or reveal, or close when focused. */

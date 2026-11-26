@@ -70,7 +70,7 @@
     /** The drop slot in the carried card's own column (an index into
      * `rows`), null for none. */
     slot: number | null;
-    onOpenCard: (row: RowView) => void;
+    onOpenCard: (row: RowView, ownPane: boolean) => void;
     onCardMenu: (row: RowView, event: MouseEvent) => void;
     onEditCard: (row: RowView, field: CardEditField | null) => void;
     onMoveCard: (row: RowView, anchor: HTMLElement) => void;
