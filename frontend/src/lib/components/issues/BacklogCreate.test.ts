@@ -19,6 +19,7 @@ import BacklogCreate, { type CreateDraft } from './BacklogCreate.svelte';
 import { ticketWriteSurfaceContext } from './ticketWriteSurface';
 import type { BacklogSection } from '../../stores/trackerBacklogModel';
 import { boardWriteContext } from '../../stores/trackerTicketWrites.svelte';
+import { setLastCreateChoice } from '../../stores/issuesPane.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 
@@ -144,6 +145,70 @@ describe('New ticket', () => {
     await fireEvent.click(within(view.getByTestId('issues-backlog-create-read-error')).getByText('Retry'));
     await waitFor(() => expect(value(view.container, 'project')).toBe('Web'));
     expect(projects).toHaveBeenCalledTimes(2);
+    view.unmount();
+  });
+
+  it('makes the ticket in the board\'s only project when its location is not among the board\'s projects', async () => {
+    setBindingMock('TrackerBoardProjects', async () => [PROJECTS[1]]);
+    const types = setBindingMock('TrackerIssueTypes', async () => TYPES);
+    setBindingMock('TrackerCreateFields', async () => []);
+    const created = setBindingMock('CreateTrackerIssue', async () => ({ parts: [{ step: 'create', state: 'applied' }] }) as WriteView);
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(value(view.container, 'project')).toBe('App'));
+    await waitFor(() => expect(types.mock.calls).toContainEqual(['c1', '10001']));
+    const title = view.getByTestId('issues-backlog-create-title') as HTMLInputElement;
+    await fireEvent.input(title, { target: { value: 'In the board\'s project' } });
+    await waitFor(() => expect((view.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
+    expect(created.mock.calls[0][1]).toMatchObject({ project: '10001', type: '6' });
+    view.unmount();
+  });
+
+  it('asks for a project when neither the one picked last nor the location is among several the board shows', async () => {
+    setBindingMock('TrackerBoardProjects', async () => [PROJECTS[1], { id: '10002', key: 'OPS', name: 'Ops' }] as ProjectView[]);
+    setBindingMock('TrackerIssueTypes', async () => TYPES);
+    setBindingMock('TrackerCreateFields', async () => []);
+    const created = setBindingMock('CreateTrackerIssue', async () => ({ parts: [{ step: 'create', state: 'applied' }] }) as WriteView);
+    // Picked last on this board, and since gone from its filter.
+    setLastCreateChoice(REF, { project: { id: '10009', name: 'Gone' }, type: '6' });
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(view.getByTestId('issues-backlog-create-pick-project')).toBeTruthy());
+    const title = view.getByTestId('issues-backlog-create-title') as HTMLInputElement;
+    await fireEvent.input(title, { target: { value: 'Somewhere' } });
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    expect((view.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(true);
+    expect(created).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it('makes the ticket in the location while the board\'s projects are being read, and after that read failed', async () => {
+    let answer: () => void = () => {};
+    let fail = false;
+    setBindingMock('TrackerBoardProjects', () => new Promise<ProjectView[]>((resolve, reject) => {
+      answer = () => (fail ? reject(new Error('Jira did not answer')) : resolve(PROJECTS));
+    }));
+    setBindingMock('TrackerIssueTypes', async () => TYPES);
+    setBindingMock('TrackerCreateFields', async () => []);
+    const created = setBindingMock('CreateTrackerIssue', async () => ({ parts: [{ step: 'create', state: 'applied' }] }) as WriteView);
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    const title = view.getByTestId('issues-backlog-create-title') as HTMLInputElement;
+    await fireEvent.input(title, { target: { value: 'While reading' } });
+    await waitFor(() => expect((view.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
+    expect(created.mock.calls[0][1]).toMatchObject({ project: '10000' });
+    fail = true;
+    answer();
+    await waitFor(() => expect(view.getByTestId('issues-backlog-create-read-error')).toBeTruthy());
+    await waitFor(() => expect(title.value).toBe(''));
+    await fireEvent.input(title, { target: { value: 'After it failed' } });
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(created).toHaveBeenCalledTimes(2));
+    expect(created.mock.calls[1][1]).toMatchObject({ project: '10000' });
     view.unmount();
   });
 

@@ -47,7 +47,9 @@
   // section: its sprint, or the backlog. On Jira it shows the project, from
   // the board's projects (`TrackerBoardProjects`, which also names the
   // board's location), the one picked last on the board this session
-  // first, else the board's location; the type is the one picked last on
+  // first, else the board's location; once the board's projects are read,
+  // one of them (the only one when neither is listed, else none, which
+  // asks); the type is the one picked last on
   // the board this session, else the project's first at the standard level,
   // else its first that is not a sub-task. What it reads is read on the
   // form's first open, held as the form reads say
@@ -119,8 +121,19 @@
   let input: HTMLInputElement | undefined = $state();
 
   const projects = $derived(typed ? boardProjects(b) : null);
-  const projectID = $derived(typed ? (draft?.project?.id ?? '') : project);
-  const projectName = $derived(draft?.project?.name || projects?.value?.find((p) => p.id === projectID)?.name || '');
+  // The project it makes the ticket in: once the board's projects are
+  // read, one of them (the one picked, else the only one, else none, which
+  // asks); while that read is out or failed, the one picked or the board's
+  // location.
+  const projectID = $derived.by(() => {
+    if (!typed) return project;
+    const chosen = draft?.project?.id ?? '';
+    const listed = projects?.value;
+    if (!listed) return chosen;
+    if (listed.some((p) => p.id === chosen)) return chosen;
+    return listed.length === 1 ? listed[0].id : '';
+  });
+  const projectName = $derived(projects?.value?.find((p) => p.id === projectID)?.name || (draft?.project?.id === projectID ? draft.project.name : '') || '');
   const types = $derived(typed && projectID ? issueTypes(b.backend, b.connection, projectID) : null);
   const typeID = $derived.by(() => {
     if (!typed) return '';
@@ -139,7 +152,12 @@
   // Each read on a person's act: the form's open, a project or type
   // picked. Started outside any reactive read of them.
   function read(): void {
-    if (typed) void loadBoardProjects(b);
+    // The board's projects may name another project than the one read
+    // now: its types are read once they are in.
+    if (typed) void loadBoardProjects(b).then(readTypes);
+    readTypes();
+  }
+  function readTypes(): void {
     if (!projectID) return;
     if (typed) {
       void loadIssueTypes(b.backend, b.connection, projectID).then(readFields);
