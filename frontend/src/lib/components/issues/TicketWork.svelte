@@ -21,7 +21,7 @@
   import { getProjectLabelText } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import type { TrackerTicketAttachment } from '../../stores/trackerTicket.svelte';
-  import { fieldTarget, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
+  import type { TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
   import {
     askAboutTicket,
@@ -166,12 +166,11 @@
     defaults: 'Save the defaults',
   };
 
-  // The write target of a step that is a tracker write. Its row is no
-  // control of that target: the Status and Assignee fields are, and say
-  // what became of the write by the store's rule. The row names the kind
-  // and shows the write its run sent while that write is the target's
-  // latest (TicketWriteNote's `only`).
-  const WRITE_TARGETS: Partial<Record<StartWorkStep, string>> = { move: 'status', assign: fieldTarget('assignee') };
+  // A step that was a tracker write: its row is no control of the write's
+  // target. The Status and Assignee fields are, and say what became of the
+  // write by the store's rule; the row names the kind and shows the write
+  // its run sent while the store keeps its outcome (TicketWriteNote's
+  // `only`).
 
   const DOING: Readonly<Record<StepActivity, string>> = { reading: 'Reading the ticket…', saving: 'Saving…', making: 'Making the thread…' };
 
@@ -220,19 +219,22 @@
   const asking = $derived(ticketAskPending(attachment.key));
   const gate = $derived(workGate(ref.backend, project));
   const askBlocked = $derived(gate.ask);
-  const startBlocked = $derived(gate.start);
   const grantNote = $derived(gate.note);
+  // Why Start work cannot run now, '' when it can: the one answer its
+  // button, a branch's row and menu, and a Start work asked for go by.
+  const startBlocked = $derived(gate.start || (run?.running ? `Start work is already running on ${card?.key || 'this ticket'}.` : ''));
 
   // The open shown asked for its Start work form (a Board card's Start
-  // work): taken once the ticket is read, and opened when Start work can
-  // run now; Work's button says why when it cannot.
+  // work): taken once the ticket is read, and the form opened when Start
+  // work can run now. When it cannot, Work shows why: the run going on,
+  // or the button whose title says it.
+  let runBox: HTMLElement | undefined = $state();
   $effect(() => {
     if (!startWorkAsked || !detail) return;
     untrack(() => {
       onStartWorkTaken();
-      if (startBlocked || run?.running) return;
-      startButton?.scrollIntoView({ block: 'nearest' });
-      openForm(null);
+      (run?.running ? runBox : startButton)?.scrollIntoView({ block: 'nearest' });
+      if (!startBlocked) openForm(null);
     });
   });
 </script>
@@ -243,7 +245,7 @@
     <span class="flex-1"></span>
     <Button size="xs" variant="secondary" disabled={!detail || !!askBlocked || asking} loading={asking} title={askBlocked || 'A thread with this ticket attached; nothing on the ticket changes'} testId="ticket-work-ask" onclick={() => { void askAboutTicket(ctx, project); }}>Ask</Button>
     <span bind:this={startButton} class="inline-flex">
-      <Button size="xs" variant="primary" disabled={!detail || !!startBlocked || (run?.running ?? false)} title={startBlocked || undefined} testId="ticket-work-start" onclick={() => openForm(null)}>Start work</Button>
+      <Button size="xs" variant="primary" disabled={!detail || !!startBlocked} title={startBlocked || undefined} testId="ticket-work-start" onclick={() => openForm(null)}>Start work</Button>
     </span>
   </div>
   <label class="flex items-center gap-2 px-1 text-xs text-fg-muted">
@@ -260,16 +262,15 @@
   {/if}
 
   {#if run}
-    <div class="flex flex-col gap-1 rounded-[var(--radius-field)] border border-border-subtle bg-surface-1 px-2 py-1.5 text-xs" data-testid="start-work-run" data-running={run.running ? '' : undefined}>
+    <div class="flex flex-col gap-1 rounded-[var(--radius-field)] border border-border-subtle bg-surface-1 px-2 py-1.5 text-xs" bind:this={runBox} data-testid="start-work-run" data-running={run.running ? '' : undefined}>
       {#each Object.entries(run.steps) as [step, outcome] (step)}
         {#if outcome.kind !== 'skipped'}
-          {@const target = WRITE_TARGETS[step as StartWorkStep]}
-          {@const held = 'written' in outcome ? outcome.written?.held : null}
+          {@const written = 'written' in outcome ? outcome.written : undefined}
           <div class="flex flex-col" data-testid="start-work-step" data-step={step} data-outcome={outcome.kind}>
             <span class="font-medium text-fg">{STEP_NAMES[step as StartWorkStep]}{step === 'move' && run.plan.status ? ` to ${run.plan.status.name}` : ''}{step === 'thread' ? ` in ${getProjectLabelText(run.plan.repository)} on ${run.plan.branch}` : ''}</span>
             <span class={STEP_TONE[outcome.kind]}>{stepText(outcome)}</span>
-            {#if target && held}
-              <TicketWriteNote ticketKey={attachment.key} {target} fieldName={(id) => id} only={held} />
+            {#if written}
+              <TicketWriteNote ticketKey={attachment.key} target={written.target} fieldName={(id) => id} only={written.outcome} />
             {/if}
           </div>
         {/if}
@@ -350,7 +351,7 @@
       {@const holder = threadOf(b)}
       {@const where = b.worktreePath ? (holder ? `in ${holder.title || 'a thread'}` : `checked out at ${pathBasename(b.worktreePath)}`) : ''}
       {@const drift = [b.aheadCount ? `${b.aheadCount} ahead` : '', b.behindCount ? `${b.behindCount} behind` : ''].filter(Boolean).join(', ')}
-      {@const startable = !!detail && !startBlocked && !(run?.running ?? false)}
+      {@const startable = !!detail && !startBlocked}
       <button
         type="button"
         class="flex min-w-0 flex-col rounded-[var(--radius-control)] px-1 py-0.5 text-left hover:bg-surface-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-default disabled:hover:bg-transparent compact:min-h-9 compact:select-none"
@@ -419,7 +420,7 @@
       {/if}
       <MenuItem label="Copy name" testId="ticket-work-menu-copy-branch" onSelect={() => act(() => copy(of.branch.name, 'branch name'))} />
       <MenuDivider />
-      <MenuItem label="Start work on this branch" disabled={!detail || !!startBlocked || (run?.running ?? false)} testId="ticket-work-menu-start-branch" onSelect={() => act(() => openForm({ name: of.branch.name, projectId: of.branch.projectId }))} />
+      <MenuItem label="Start work on this branch" disabled={!detail || !!startBlocked} testId="ticket-work-menu-start-branch" onSelect={() => act(() => openForm({ name: of.branch.name, projectId: of.branch.projectId }))} />
     {/if}
   </ContextMenu>
 {/if}

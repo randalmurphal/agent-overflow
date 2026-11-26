@@ -27,7 +27,7 @@ import IssuesPane from './IssuesPane.svelte';
 import { trackerBoardUpdated as applyTrackerBoardEvent, trackerIssueUpdated } from '../../stores/trackerBoardEvents';
 import { registerIssuesCommands } from '../../stores/issuesCommands';
 import { clearCommandRegistry, runCommand, type CommandContext } from '../../stores/commandRegistry.svelte';
-import { hiddenCardFields, requestTicketOpen, takeTicketOpenRequest } from '../../stores/issuesPane.svelte';
+import { hiddenCardFields, requestTicketOpen, setTicketPlacement, takeTicketOpenRequest } from '../../stores/issuesPane.svelte';
 import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
 import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
@@ -1482,34 +1482,121 @@ describe('the ticket in the pane', () => {
       view.unmount();
     });
 
-    it('Start work opens no form over a run of the ticket that is still running', async () => {
+    it('Start work opens no form over a run of the ticket that is still running, and shows the run and says why', async () => {
+      // A pane wide enough for the ticket beside the board, which it is
+      // shown beside: the card stays in reach while the run goes on.
+      const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1400);
+      const scrolled = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(() => {});
+      try {
+        setTicketPlacement('board', 'beside');
+        project('p1', 'alpha', 1);
+        install();
+        installTicket();
+        setBindingMock('ProjectTrackerSetup', async () => ({
+          revision: 'r1',
+          setup: { status_groups: [], ticket_pins: [], start_work: [{ tracker: 'jira', site: JIRA_USER1.site, project: 'WEB', assign: false, branch: 'feature/{key}' }] },
+        }));
+        // The thread is still being made.
+        const start = setBindingMock('StartTicketThread', () => new Promise(() => {}));
+        const view = mount();
+        await fireEvent.click(within(await cardMenuMore(view, '2')).getByTestId('issues-card-menu-start-work'));
+        await waitFor(() => expect(view.getByTestId('issues-ticket')).toHaveAttribute('data-placement', 'beside'));
+        const go = await waitFor(() => {
+          const found = document.querySelector<HTMLButtonElement>('[data-testid="start-work-form"] [data-testid="start-work-go"]');
+          expect(found?.disabled).toBe(false);
+          return found!;
+        });
+        await fireEvent.click(go);
+        await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+        const screen = view.getByTestId('ticket-screen');
+        const run = await waitFor(() => {
+          const found = within(screen).getByTestId('start-work-run');
+          expect(found).toHaveAttribute('data-running', '');
+          return found;
+        });
+        await waitFor(() => expect(document.querySelector('[data-testid="start-work-form"]')).toBeNull());
+        scrolled.mockClear();
+
+        await fireEvent.click(within(await cardMenuMore(view, '2')).getByTestId('issues-card-menu-start-work'));
+        await waitFor(() => expect(scrolled.mock.contexts).toContain(run));
+        expect(document.querySelector('[data-testid="start-work-form"]')).toBeNull();
+        const button = within(screen).getByTestId('ticket-work-start') as HTMLButtonElement;
+        expect(button.disabled).toBe(true);
+        expect(button).toHaveAttribute('title', 'Start work is already running on WEB-2.');
+        view.unmount();
+      } finally {
+        width.mockRestore();
+        scrolled.mockRestore();
+      }
+    });
+
+    it('Ask sends nothing while an Ask of the ticket is still out, even after its ticket closed', async () => {
       project('p1', 'alpha', 1);
       install();
       installTicket();
+      let answer: (() => void) | null = null;
+      const start = setBindingMock('StartTicketThread', () => new Promise((_resolve, reject) => {
+        answer = () => reject(new Error('stop here'));
+      }));
+      const view = mount();
+      const screen = await openCard(view, '1');
+      const ask = await waitFor(() => {
+        const found = within(screen).getByTestId('ticket-work-ask') as HTMLButtonElement;
+        expect(found.disabled).toBe(false);
+        return found;
+      });
+      await fireEvent.click(ask);
+      await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+      await fireEvent.click(within(screen).getByTestId('ticket-close'));
+      await waitFor(() => expect(view.queryByTestId('ticket-screen')).toBeNull());
+      await fireEvent.click(within(await cardMenuMore(view, '1')).getByTestId('issues-card-menu-ask'));
+      // An Ask as the ticket's button sends it, after the card's: neither
+      // is sent.
+      await (await import('../../stores/ticketWork.svelte')).askAboutTicket({ key: trackerTicketKey({ backend: HOME_BACKEND, connection: 'c1', issue: '1' }), ref: { backend: HOME_BACKEND, connection: 'c1', issue: '1' }, label: 'WEB-1' }, 'p1');
+      expect(start).toHaveBeenCalledTimes(1);
+      // Once the first settles, an Ask is sent again.
+      answer!();
+      await waitFor(() => expect(getToasts().some((t) => /stop here/i.test(t.message))).toBe(true));
+      await fireEvent.click(within(await cardMenuMore(view, '1')).getByTestId('issues-card-menu-ask'));
+      await waitFor(() => expect(start).toHaveBeenCalledTimes(2));
+      view.unmount();
+    });
+
+    it('Start work\'s form does not come back after the person left its ticket while it was being read', async () => {
+      project('p1', 'alpha', 1);
+      install({ view: kanban({ rows: [row('1', 'a', 's1', { parent: { id: '9', key: 'WEB-9', title: 'Issue 9' } })] }, { rows: [] }) });
       setBindingMock('ProjectTrackerSetup', async () => ({
         revision: 'r1',
         setup: { status_groups: [], ticket_pins: [], start_work: [{ tracker: 'jira', site: JIRA_USER1.site, project: 'WEB', assign: false, branch: 'feature/{key}' }] },
       }));
-      // The thread is still being made.
-      const start = setBindingMock('StartTicketThread', () => new Promise(() => {}));
-      const view = mount();
-      await fireEvent.click(within(await cardMenuMore(view, '2')).getByTestId('issues-card-menu-start-work'));
-      const go = await waitFor(() => {
-        const found = document.querySelector<HTMLButtonElement>('[data-testid="start-work-form"] [data-testid="start-work-go"]');
-        expect(found?.disabled).toBe(false);
-        return found!;
+      // The child's first read never answers; once the person is back on
+      // it, it is read.
+      let childReads = 0;
+      setBindingMock('SubscribeTrackerTicket', (_c: string, issue: string): Promise<TicketSubscription> => {
+        if (issue === '1' && ++childReads === 1) return new Promise(() => {});
+        return Promise.resolve({ id: `ticket-${issue}-${childReads}`, seq: 10, poll_every: 10_000, ...JIRA_USER1, loaded: true, detail: ticketDetail(issue), read_at: Date.now() } as TicketSubscription);
       });
-      await fireEvent.click(go);
-      await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
-      const screen = view.getByTestId('ticket-screen');
-      await waitFor(() => expect(within(screen).getByTestId('start-work-run')).toHaveAttribute('data-running', ''));
-      await waitFor(() => expect(document.querySelector('[data-testid="start-work-form"]')).toBeNull());
-
-      await fireEvent.click(within(await cardMenuMore(view, '2')).getByTestId('issues-card-menu-start-work'));
-      await tick();
+      setBindingMock('TrackerTicket', async () => ({ loaded: true, detail: ticketDetail('1'), account: JIRA_USER1.account }));
+      const view = mount();
+      await fireEvent.click(within(await cardMenuMore(view, '1')).getByTestId('issues-card-menu-start-work'));
+      const screen = await waitFor(() => {
+        const found = view.getByTestId('ticket-screen');
+        expect(found.dataset.issue).toBe('1');
+        return found;
+      });
+      // From the seed, before the child is read: its parent, then Back.
+      await fireEvent.click(await within(screen).findByTestId('ticket-parent'));
+      await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('9'));
+      await waitFor(() => expect(within(view.getByTestId('ticket-screen')).getByTestId('ticket-title')).toHaveTextContent('Issue 9'));
+      await fireEvent.click(within(view.getByTestId('ticket-screen')).getByTestId('ticket-back'));
+      const back = await waitFor(() => {
+        const found = view.getByTestId('ticket-screen');
+        expect(found.dataset.issue).toBe('1');
+        return found;
+      });
+      await waitFor(() => expect(within(back).getByTestId('ticket-work-start')).not.toBeDisabled());
       await tick();
       expect(document.querySelector('[data-testid="start-work-form"]')).toBeNull();
-      expect((within(screen).getByTestId('ticket-work-start') as HTMLButtonElement).disabled).toBe(true);
       view.unmount();
     });
 

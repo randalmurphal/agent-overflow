@@ -506,15 +506,16 @@ export interface TicketTrail {
   /** The project `ref`'s Ask and Start work use from here: `project` when
    * `ref` is the ticket shown, else the default's. Reactive. */
   projectFor(ref: TrackerTicketRef): string | null;
-  /** Whether the open shown asked for its Start work form and its Work has
-   * not taken the ask. The ask belongs to that open: it is gone once
-   * another shows. Reactive. */
+  /** Whether the open shown asked for its Start work form and nothing
+   * ended the ask. The ask belongs to that open and ends when another open
+   * replaces it, so Back to it later asks nothing. Reactive. */
   readonly startWorkAsked: boolean;
   /** The person asks for the Start work form of the ticket shown (a Board
    * card's Start work, after its open). */
   askStartWork(): void;
-  /** Work took the ask. */
-  startWorkTaken(): void;
+  /** The ask ends: Work took it, or the person closed the Details it
+   * opened. */
+  endStartWorkAsk(): void;
   /** Whether the open shown asked for the focus and nothing ended the
    * ask (utils/openFocusRequest.svelte.ts). Reactive. */
   readonly focusAsked: boolean;
@@ -651,7 +652,7 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
     askStartWork() {
       startAsk = state.ticket;
     },
-    startWorkTaken() {
+    endStartWorkAsk() {
       startAsk = null;
     },
     get held() { return state.ticket ? [...state.trail, state.ticket] : state.trail; },
@@ -665,6 +666,9 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
         state.focus.ask(current);
         return;
       }
+      // The open shown may go on the trail, and Back would bring it back:
+      // its ask ends here.
+      startAsk = null;
       const next: OpenTicket = { ref, seed, project: null };
       state.set(next, from === 'ticket' && current ? [...state.trail, current].slice(-MAX_TICKET_TRAIL) : []);
       state.focus.ask(next);

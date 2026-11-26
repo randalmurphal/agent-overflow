@@ -17,8 +17,10 @@
 // and nothing under the Start work row; while the run's move is out, its
 // row says Saving…, the assignment's says Waiting., and the thread's names
 // the project; a card's menu has Ask, which makes the thread in the
-// board's project, and Start work…, which opens the ticket with its form,
-// whose run shows in the ticket's Work.
+// board's project and loads Work's store only when chosen, and Start
+// work…, which opens the ticket with its form, whose run shows in the
+// ticket's Work, also when the ticket was read before it opens (on compact
+// in the Details it opens).
 
 import type { Locator, Page } from '@playwright/test';
 
@@ -26,9 +28,31 @@ import type { HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
 import { publishPullRequest, type ForgeRepo } from './forge-helpers.js';
 import { launchPullsHarness, openPage, pickFilter, row as pullRow } from './pulls-page-flow.js';
+import { methodIdByName } from './offhost-helpers.js';
 import { longPress } from './touch-helpers.js';
 import { harnessGit } from './worktree-removal-helpers.js';
 import { BOARD_ID, JIRA_SITE, connectFakeJira, connectFakeJiraBoard, openIssuesPane, press, seedFakeJira, trackerRequests } from './tracker-helpers.js';
+
+/** Settles when this page's next socket has an answer to a
+ * `SubscribeTrackerTicket` it sent. */
+function subscribeAnswered(page: Page): Promise<void> {
+  const method = methodIdByName('SubscribeTrackerTicket');
+  return new Promise((resolve) => {
+    page.once('websocket', (socket) => {
+      const asked = new Set<string>();
+      socket.on('framesent', ({ payload }) => {
+        if (typeof payload !== 'string' || !payload.startsWith('{"type":"rpc"')) return;
+        const frame = JSON.parse(payload) as { id?: string; methodId?: number };
+        if (frame.methodId === method && frame.id) asked.add(frame.id);
+      });
+      socket.on('framereceived', ({ payload }) => {
+        if (typeof payload !== 'string' || !payload.startsWith('{"type":"rpc"')) return;
+        const frame = JSON.parse(payload) as { id?: string; result?: { detail?: unknown } };
+        if (frame.id && asked.has(frame.id) && frame.result?.detail) resolve();
+      });
+    });
+  });
+}
 
 export interface WorkSurface {
   compact: boolean;
@@ -369,8 +393,13 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
     await harness.open(page);
     const pane = await openIssuesPane(page, compact);
     await showColumn(pane, 'To Do', compact);
+    // Work's store loads when Ask is chosen, not when the menu opens.
+    const workChunk: string[] = [];
+    page.on('request', (r) => { if (/\/ticketWork\.svelte-[^/]*\.js$/.test(r.url())) workChunk.push(r.url()); });
     const menu = await cardMenuMore(page, pane, WEB2, 'WEB-2', compact);
+    expect(workChunk).toEqual([]);
     await press(menu.getByTestId('issues-card-menu-ask'), compact);
+    await expect.poll(() => workChunk.length).toBe(1);
 
     await expectThreadShown(page, 'WEB-2 Second task', compact);
     await expect(page.getByTestId('attachment-file-chip')).toContainText('WEB-2.md');
@@ -410,5 +439,41 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
     await expect(step(work, 'thread')).toContainText(`Make the thread in ${name} on WEB-2-second-task`);
     const [made] = await threadRows(harness);
     expect(made).toMatchObject({ title: 'WEB-2 Second task', ticketLink: { key: 'WEB-2', origin: 'start_work' } });
+  });
+
+  test('a card\'s Start work… shows its form in Work when the ticket was read before', async ({ harness, page }) => {
+    test.setTimeout(150_000);
+    await connectFakeJiraBoard(harness, compact ? 'compact-card-start-work-read' : 'card-start-work-read');
+    await harness.open(page);
+    const pane = await openIssuesPane(page, compact);
+    await showColumn(pane, 'To Do', compact);
+    // Read once, so this computer holds the ticket when it opens again.
+    await press(card(pane, WEB2).getByTestId('issues-card-open'), compact);
+    const ticket = pane.getByTestId('ticket-screen');
+    await expect(ticket.getByTestId('ticket-title')).toHaveText('Second task', { timeout: 30_000 });
+    await press(pane.getByTestId(compact ? 'issues-back' : 'ticket-close'), compact);
+    await expect(ticket).toHaveCount(0);
+
+    // After a reload the ticket screen's code loads again, held until the
+    // ticket's subscribe has answered with that read, so the screen mounts
+    // with the ticket's detail before it has measured itself.
+    const subscribed = subscribeAnswered(page);
+    await page.reload();
+    let releaseScreen!: () => void;
+    const screenHeld = new Promise<void>((resolve) => { releaseScreen = resolve; });
+    await page.route(/\/TicketScreen-[^/]*\.js$/, async (route) => {
+      await screenHeld;
+      await route.continue();
+    });
+    await openIssuesPane(page, compact);
+    await showColumn(pane, 'To Do', compact);
+    const menu = await cardMenuMore(page, pane, WEB2, 'WEB-2', compact);
+    await press(menu.getByTestId('issues-card-menu-start-work'), compact);
+    await subscribed;
+    releaseScreen();
+    const form = page.getByTestId('start-work-form');
+    await expect(form).toBeVisible({ timeout: 30_000 });
+    await expect(form.getByTestId('start-work-branch')).toHaveValue('WEB-2-second-task');
+    await expect(ticket.getByTestId('ticket-rail').getByTestId('ticket-work')).toBeVisible();
   });
 }

@@ -21,7 +21,7 @@ import { makeThread } from '../../../test/helpers/chat';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { getToasts } from '../../stores/toast.svelte';
 import { ticketWriteSurfaceContext } from './ticketWriteSurface';
-import { drawTicketWrite, moveTicket, ticketWrite } from '../../stores/trackerTicketWrites.svelte';
+import { drawTicketWrite, fieldTarget, moveTicket, ticketWrite } from '../../stores/trackerTicketWrites.svelte';
 
 const SITE = 'https://example.atlassian.net';
 
@@ -293,6 +293,49 @@ describe('Work', () => {
     // Every step applied: the run ends and opens its thread.
     const opened = setBindingMock('SwitchThread', async () => makeThread({ id: 't-made', projectId: 'p1' }));
     assigned.answer({ parts: [{ step: 'edit', state: 'applied' }] });
+    await waitFor(() => expect(opened).toHaveBeenCalledWith('t-made'));
+    view.unmount();
+  });
+
+  it('says an assignment with no move reads, then saves, and the defaults save', async () => {
+    setBindingMock('ProjectTrackerSetup', async () => ({
+      revision: 'r1',
+      setup: { status_groups: [], ticket_pins: [], start_work: [{ tracker: 'jira', site: SITE, project: 'WEB', assign: true, branch: 'WEB-1-retry' }] },
+    } as SetupView));
+    setBindingMock('StartTicketThread', async () => makeThread({ id: 't-made', projectId: 'p1', title: 'WEB-1 Retry cursor', ticketLink: link('10101') }));
+    const held = <T,>() => {
+      let answer: (value: T) => void = () => {};
+      const promise = new Promise<T>((resolve) => { answer = resolve; });
+      return { promise, answer: (value: T) => answer(value) };
+    };
+    const refresh = held<void>();
+    setBindingMock('RefreshTrackerSubscription', () => refresh.promise.then(() => {
+      trackerIssueUpdated({ connection: 'c1', issue: '10101', seq: 5, changed: true }, HOME_BACKEND);
+    }));
+    const assigned = held<unknown>();
+    setBindingMock('EditTrackerIssue', () => assigned.promise);
+    const saved = held<unknown>();
+    setBindingMock('SetProjectTrackerSetup', () => saved.promise);
+    const view = await mountWork();
+    statusField = drawTicketWrite(ticket!.key, fieldTarget('assignee'), () => true);
+    await waitFor(() => expect((view.getByTestId('ticket-work-start') as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(view.getByTestId('ticket-work-start'));
+    const form = await waitFor(formOf);
+    const save = form.querySelector('[data-testid="start-work-save"]') as HTMLInputElement;
+    await waitFor(() => expect(save.disabled).toBe(false));
+    await fireEvent.click(save);
+    await fireEvent.click(form.querySelector('[data-testid="start-work-go"]') as HTMLButtonElement);
+    const said = (step: string) => view.getAllByTestId('start-work-step').find((s) => s.dataset.step === step)!.children[1].textContent;
+
+    await waitFor(() => expect(said('assign')).toBe('Reading the ticket…'));
+    expect(said('defaults')).toBe('Waiting.');
+    refresh.answer();
+    await waitFor(() => expect(said('assign')).toBe('Saving…'));
+    assigned.answer({ parts: [{ step: 'edit', state: 'applied' }] });
+    await waitFor(() => expect(said('defaults')).toBe('Saving…'));
+    expect(said('assign')).toBe('Done.');
+    const opened = setBindingMock('SwitchThread', async () => makeThread({ id: 't-made', projectId: 'p1' }));
+    saved.answer({ saved: true, stored: { revision: 'r2', setup: { status_groups: [], ticket_pins: [], start_work: [] } } });
     await waitFor(() => expect(opened).toHaveBeenCalledWith('t-made'));
     view.unmount();
   });

@@ -158,7 +158,9 @@
     /** Whether the open this ticket shows asked for its Start work form
      * (`TicketTrail.startWorkAsked`), which Work opens. Reactive. */
     startWorkAsked: boolean;
-    onStartWorkTaken: () => void;
+    /** The ask ended: Work took it, or the person closed the Details it
+     * opened. */
+    onStartWorkEnded: () => void;
     onBack: () => void;
     onClose: () => void;
     /** Moves the ticket into a pane of its own; omitted where it is one. */
@@ -168,7 +170,7 @@
     onOpenIssue: (issue: string, seed: TicketSeed, ownPane: boolean) => void;
   }
 
-  let { attachment, seed, board, computerName, project, onProject, offline, compact, shown, trail, placement, pane, focusAsked, onFocusTaken, startWorkAsked, onStartWorkTaken, onBack, onClose, onOwnPane, onOpenIssue }: Props = $props();
+  let { attachment, seed, board, computerName, project, onProject, offline, compact, shown, trail, placement, pane, focusAsked, onFocusTaken, startWorkAsked, onStartWorkEnded, onBack, onClose, onOwnPane, onOpenIssue }: Props = $props();
   setTicketWriteSurface(() => shown);
 
   // The ticket a person opened takes the focus, so a key or a paste of
@@ -202,16 +204,27 @@
   // The targets of the narrow row's fields, whose notes the row shows.
   const CARD_TARGETS = ['status', fieldTarget('assignee'), fieldTarget('priority'), 'points'] as const;
 
-  let width = $state(0);
-  const narrow = $derived(width > 0 && width < NARROW_PX);
+  // Undefined until the screen measured itself: until then it lays out
+  // wide whatever its width.
+  let width = $state<number | undefined>();
+  const narrow = $derived(width !== undefined && width > 0 && width < NARROW_PX);
   let railOpen = $state(false);
   $effect(() => {
     if (!narrow) railOpen = false;
   });
-  // Work is in the Details rail: a Start work asked for shows it.
+  // A Start work asked for goes to the Work of the layout the screen
+  // settles on, so not before it measured itself: the rail's, or over a
+  // narrow ticket the Details rail's, which opens for it (the narrow
+  // content holds no Work). Closing those Details ends the ask
+  // (`closeDetails`).
   $effect(() => {
     if (narrow && startWorkAsked) railOpen = true;
   });
+  const workAsked = $derived(startWorkAsked && width !== undefined);
+  function closeDetails(): void {
+    railOpen = false;
+    if (startWorkAsked) onStartWorkEnded();
+  }
 
   // The parent's own menu, on a right-click or long press of its chip:
   // what it opens is the parent, never this ticket.
@@ -233,7 +246,7 @@
    * ticket closes. False when there is none, and the pane steps on. */
   export function stepBack(): boolean {
     if (!railOpen) return false;
-    railOpen = false;
+    closeDetails();
     return true;
   }
 
@@ -548,7 +561,7 @@
       {/if}
     {/if}
   </div>
-  <TicketWork {attachment} {project} {onProject} me={account} {startWorkAsked} {onStartWorkTaken} />
+  <TicketWork {attachment} {project} {onProject} me={account} startWorkAsked={workAsked} onStartWorkTaken={onStartWorkEnded} />
 {/snippet}
 
 {#snippet content()}
@@ -810,7 +823,7 @@
     {/if}
     <h2 class="text-base font-medium leading-snug text-fg [overflow-wrap:anywhere]" data-testid="ticket-title">{card?.title || seed.title}</h2>
     {#if narrow && detail}
-      <button type="button" class="inline-flex items-center gap-1 self-start rounded-[var(--radius-control)] px-1.5 text-xs text-fg-muted hover:bg-surface-1 hover:text-fg compact:min-h-9 compact:select-none" aria-expanded={railOpen} data-testid="ticket-details" onclick={() => { railOpen = !railOpen; }}>
+      <button type="button" class="inline-flex items-center gap-1 self-start rounded-[var(--radius-control)] px-1.5 text-xs text-fg-muted hover:bg-surface-1 hover:text-fg compact:min-h-9 compact:select-none" aria-expanded={railOpen} data-testid="ticket-details" onclick={() => { if (railOpen) closeDetails(); else railOpen = true; }}>
         <Icon icon={PanelRight} size={12} strokeWidth={2} />Details
       </button>
     {/if}
@@ -870,7 +883,7 @@
         <div class="mb-1 flex items-center">
           <span class="text-sm font-medium text-fg">Details</span>
           <span class="flex-1"></span>
-          <IconButton label="Close the details" size="sm" testId="ticket-details-close" onClick={() => { railOpen = false; }}>
+          <IconButton label="Close the details" size="sm" testId="ticket-details-close" onClick={closeDetails}>
             {#snippet children()}<Icon icon={X} size={14} strokeWidth={2} />{/snippet}
           </IconButton>
         </div>

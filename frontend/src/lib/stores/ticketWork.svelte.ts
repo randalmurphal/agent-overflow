@@ -1,7 +1,9 @@
 // A ticket's Work (docs/specs/issues.md, "Ticket"): its pull requests and
 // branches as its computer reads them, the thread of an Ask, and a Start
 // work run. Everything here is held by the ticket's key and goes when the
-// ticket's last surface lets it go (`onTrackerTicketClosed`).
+// ticket's last surface lets it go (`onTrackerTicketClosed`), but an Ask
+// in flight: its guard is its request's from send to settle, so a second
+// Ask of the ticket from any surface sends nothing meanwhile.
 //
 // The Work read is the ticket's computer's answer, newest read wins; it is
 // read when Work shows, on the ticket's Refresh and after a Start work
@@ -37,7 +39,7 @@ import { threadRowFrameMark } from './threadRowFrames';
 import { prependThreadReply } from './threads.svelte';
 import { addErrorToast } from './toast.svelte';
 import { onTrackerTicketClosed, refreshTrackerTicket, trackerTicketSettled, type TrackerTicketRef, type TrackerTicketState } from './trackerTicket.svelte';
-import { editTicketFields, fieldTarget, moveTicket, ticketWrite, type TicketWrite, type TicketWriteContext } from './trackerTicketWrites.svelte';
+import { editTicketFields, fieldTarget, moveTicket, type TicketWriteContext } from './trackerTicketWrites.svelte';
 import { refusalSentence, type WriteOutcome } from './trackerWriteOutcome';
 import type { TrackerRefreshNotice } from './trackerBoard.svelte';
 import { hasScope } from '../transport/scopes';
@@ -191,11 +193,10 @@ export type StartWorkStep = 'thread' | 'move' | 'assign' | 'defaults';
 /** Set on the outcome of a step that was a tracker write: the write store
  * shows what became of it (under its target's controls on a shown
  * surface, else in a toast), so the step's own `text` is not shown.
- * `held` is the write the store kept for those controls when the step's
- * write settled; null when it kept none (said in a toast, or a plain
- * success). */
+ * `target` is the write's, and `outcome` the one its call answered: the
+ * store holds that object as long as it keeps this write's outcome. */
 interface Written {
-  readonly written?: { readonly held: TicketWrite | null };
+  readonly written?: { readonly target: string; readonly outcome: WriteOutcome };
 }
 
 /** What a running step is doing: reading the ticket it decides from, or
@@ -252,12 +253,11 @@ function setStep(key: string, step: StartWorkStep, outcome: StepOutcome): void {
   if (run) setRun(key, { ...run, steps: { ...run.steps, [step]: outcome } });
 }
 
-/** The outcome as a step's of a tracker write to `target` that settled
- * with `outcome`, read as the write's call answers: the store holds this
- * write's outcome for the target then, or none. */
+/** The outcome as a step's of a tracker write to `target` whose call
+ * answered `outcome`. */
 function writeStep(t: TicketWriteContext, target: string, outcome: WriteOutcome | null, what: string): StepOutcome {
   if (outcome === null) return { kind: 'not_sent', text: `A change of ${t.label}'s ${what} is already being saved; try again once it ends.` };
-  const written = { held: ticketWrite(t.key, target) };
+  const written = { target, outcome };
   switch (outcome.kind) {
     case 'applied':
       return { kind: 'applied', note: outcome.note, written };
@@ -464,7 +464,6 @@ export async function openTicketThread(thread: Thread): Promise<void> {
 
 onTrackerTicketClosed((key) => {
   reads.delete(key);
-  asking.delete(key);
   defaultsReads.delete(key);
   runs.delete(key);
 });

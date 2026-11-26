@@ -307,7 +307,10 @@ work among the rest until the person chooses), the set shown at once
 chosen in the menu and kept on the device. Ask and Start work do what
 the ticket's Work does, in the project its Work would use there: Ask
 starts the thread at once, and Start work opens the ticket with its
-Start work form, so the run's steps show in the ticket's Work. A dropped card waits where it was
+Start work form, so the run's steps show in the ticket's Work (on a
+narrow ticket, in the Details it opens). While a Start work of the ticket
+is running, it opens no form: Work shows the run's rows and its Start
+work button says the run is going. A dropped card waits where it was
 dropped, dimmed, until its write settles, and is not moved again until
 then. A refusal shows under the card or the ticket when one is in view,
 else in a toast. Not built: the summary row. A sprint on the board is read whole, and while Only mine
