@@ -6,6 +6,7 @@
   // rows.
   import type { BucketValue } from '../../../../../bindings/agent-overflow/internal/trackerdash/models';
   import { formatNum, numValue, type DashboardUnit, type Num } from '../../../stores/trackerDashboardModel';
+  import { isLocalEnter } from '../../../utils/localEnter';
   import { labelEvery, SERIES_COLORS, valueScale } from './chartScale';
 
   interface Props {
@@ -56,8 +57,14 @@
   function cellText(b: BucketValue, s: number): string {
     return `${b.label}, ${named ? `${series[s]}: ` : ''}${formatNum(b.cells[s] as Num, unit, estimates)}${b.partial ? ' (so far)' : ''}`;
   }
+  // The hovered point's words and where its tip stands, one value the tip
+  // reads, so a hover that outlives its bucket draws nothing.
+  const tip = $derived.by(() => {
+    const b = hovered ? buckets[hovered.b] : undefined;
+    return hovered && b ? { text: cellText(b, hovered.s), left: x(hovered.b) } : null;
+  });
   function key(event: KeyboardEvent, b: BucketValue, s: number): void {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
+    if (!isLocalEnter(event) && event.key !== ' ') return;
     event.preventDefault();
     onPick(b, named ? series[s] : '');
   }
@@ -108,14 +115,14 @@
         {/if}
       {/each}
     </svg>
-    {#if hovered}
+    {#if tip}
       <div
         class="pointer-events-none absolute z-[2] -translate-x-1/2 rounded-[var(--radius-control)] border border-border-subtle bg-surface-2 px-2 py-1 text-[0.6875rem] text-fg shadow"
-        style:left="{x(hovered.b)}px"
+        style:left="{tip.left}px"
         style:top="0px"
         role="status"
         data-testid="dashboard-hover"
-      >{cellText(buckets[hovered.b], hovered.s)}</div>
+      >{tip.text}</div>
     {/if}
   {/if}
 </div>

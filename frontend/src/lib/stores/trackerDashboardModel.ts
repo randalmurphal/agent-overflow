@@ -15,8 +15,6 @@ export interface Num {
 
 /** A metric's unit, as trackerdash.Unit. */
 export type DashboardUnit = 'tickets' | 'estimate' | 'days';
-/** A board's estimate, as trackerdash.Answer.estimates. */
-export type DashboardEstimates = 'points' | 'time' | 'none';
 
 /** What a gap says, in the hover value and the drill. */
 export const GAP_TEXT = 'No data';
@@ -91,9 +89,4 @@ export function changeMark(
   const amount = formatAmount(Math.abs(delta), unit, estimates);
   const word = unitWord(Math.abs(delta), unit, estimates);
   return { kind: 'change', direction, tone, text: `${direction === 'up' ? 'Up' : 'Down'} ${amount}${word ? ` ${word}` : ''} from ${formatAmount(p, unit, estimates)}` };
-}
-
-/** A range's widget is in it: "Last 5 sprints" reads "the last 5 sprints". */
-export function lowerFirst(s: string): string {
-  return s ? s[0].toLowerCase() + s.slice(1) : s;
 }

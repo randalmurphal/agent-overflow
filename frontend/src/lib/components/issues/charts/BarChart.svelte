@@ -6,6 +6,7 @@
   // on hover and focus; a press or Enter opens its rows.
   import type { BucketValue } from '../../../../../bindings/agent-overflow/internal/trackerdash/models';
   import { formatNum, numValue, type DashboardUnit, type Num } from '../../../stores/trackerDashboardModel';
+  import { isLocalEnter } from '../../../utils/localEnter';
   import { band, labelEvery, SERIES_COLORS, valueScale } from './chartScale';
 
   interface Props {
@@ -44,6 +45,16 @@
     return `${b.label}, ${name}${formatNum(b.cells[s] as Num, unit, estimates)}`;
   }
 
+  // The hovered bar's words and where its tip stands, one value the tip
+  // reads, so a hover that outlives its bucket draws nothing.
+  const tip = $derived.by(() => {
+    const b = hovered ? buckets[hovered.b] : undefined;
+    if (!hovered || !b) return null;
+    const outer = band(hovered.b, buckets.length, plotW, 8);
+    const plain = cellText(b, hovered.s);
+    return { plain, text: `${plain}${b.partial ? ' (so far)' : ''}`, left: V_LEFT + outer.start + outer.size / 2 };
+  });
+
   /** A bar's path from the baseline, its far end rounded. */
   function vBar(x: number, w: number, h: number): string {
     const r = Math.min(4, w / 2, h);
@@ -58,7 +69,7 @@
   }
 
   function key(event: KeyboardEvent, b: BucketValue, s: number): void {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
+    if (!isLocalEnter(event) && event.key !== ' ') return;
     event.preventDefault();
     onPick(b, named ? series[s] : '');
   }
@@ -114,16 +125,14 @@
         {/each}
       </g>
     </svg>
-    {#if hovered}
-      {@const b = buckets[hovered.b]}
-      {@const outer = band(hovered.b, buckets.length, plotW, 8)}
+    {#if tip}
       <div
         class="pointer-events-none absolute z-[2] -translate-x-1/2 rounded-[var(--radius-control)] border border-border-subtle bg-surface-2 px-2 py-1 text-[0.6875rem] text-fg shadow"
-        style:left="{V_LEFT + outer.start + outer.size / 2}px"
+        style:left="{tip.left}px"
         style:top="0px"
         role="status"
         data-testid="dashboard-hover"
-      >{cellText(b, hovered.s)}{b.partial ? ' (so far)' : ''}</div>
+      >{tip.text}</div>
     {/if}
   {:else if width > 0}
     <div class="flex flex-col gap-1">
@@ -164,7 +173,7 @@
       {/each}
       <!-- The hovered bar's value, on a line of its own that is always there,
            so nothing moves when a bar is hovered. -->
-      <div class="h-4 truncate text-[0.6875rem] text-fg" role="status" data-testid="dashboard-hover">{hovered ? cellText(buckets[hovered.b], hovered.s) : ''}</div>
+      <div class="h-4 truncate text-[0.6875rem] text-fg" role="status" data-testid="dashboard-hover">{tip?.plain ?? ''}</div>
     </div>
   {/if}
 </div>

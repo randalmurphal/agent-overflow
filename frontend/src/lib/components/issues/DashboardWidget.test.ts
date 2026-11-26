@@ -12,7 +12,7 @@ import DashboardWidget from './DashboardWidget.svelte';
 const HOW = { words: ['The estimate of the tickets finished in each sprint, averaged.'], counts: 'The points of each sprint added up', range: 'It counts the range\'s sprints.', rules: 'none', sql: 'SELECT 1', reads: ['tickets'] };
 const RANGE = { id: 'sprints_5', label: 'Last 5 sprints', periods: [], previous: 'the 5 sprints before' } as unknown as RangeView;
 
-function view(over: Partial<WidgetView>): WidgetView {
+function view(over: Record<string, unknown>): WidgetView {
   return { id: 'pace', title: 'Usual pace', form: 'number', width: 4, unit: 'estimate', good: 'up', how: HOW, ...over } as unknown as WidgetView;
 }
 

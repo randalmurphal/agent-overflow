@@ -27,6 +27,9 @@
 
   const answer = $derived(drill.answer);
   const unit = $derived((answer?.unit ?? 'tickets') as DashboardUnit);
+  const valueText = $derived(answer ? formatNum(answer.value as Num, unit, answer.estimates) : '');
+  const atFirst = $derived(drill.loading || !answer || answer.page === 0);
+  const atLast = $derived(drill.loading || !answer || answer.page >= answer.pages - 1);
   // Captured once per failure, so Details and copy describe the one shown.
   let failure: CapturedError | null = $state(null);
   let failureOf: unknown = null;
@@ -51,7 +54,7 @@
     {/if}
     {#if answer}
       <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-border-subtle px-5 py-3">
-        <span class="text-xl font-semibold tabular-nums text-fg" data-testid="dashboard-drill-value">{formatNum(answer.value as Num, unit, answer.estimates)}</span>
+        <span class="text-xl font-semibold tabular-nums text-fg" data-testid="dashboard-drill-value">{valueText}</span>
         <span class="text-[0.75rem] text-fg-muted" data-testid="dashboard-drill-count">
           {answer.count === 1 ? '1 ticket' : `${answer.count} tickets`}{answer.counted !== answer.count ? `, ${answer.counted} counted` : ''}
         </span>
@@ -86,11 +89,11 @@
       </ul>
       {#if answer.pages > 1}
         <div class="flex items-center gap-2 border-t border-border-subtle px-5 py-2 text-[0.75rem] text-fg-muted">
-          <Button variant="ghost" size="sm" disabled={drill.loading || answer.page === 0} onclick={() => onPage(answer.page - 1)} testId="dashboard-drill-prev">
+          <Button variant="ghost" size="sm" disabled={atFirst} onclick={() => answer && onPage(answer.page - 1)} testId="dashboard-drill-prev">
             <Icon icon={ChevronLeft} size={13} strokeWidth={2} /> Previous
           </Button>
           <span class="flex-1 text-center" data-testid="dashboard-drill-page">Page {answer.page + 1} of {answer.pages}</span>
-          <Button variant="ghost" size="sm" disabled={drill.loading || answer.page >= answer.pages - 1} onclick={() => onPage(answer.page + 1)} testId="dashboard-drill-next">
+          <Button variant="ghost" size="sm" disabled={atLast} onclick={() => answer && onPage(answer.page + 1)} testId="dashboard-drill-next">
             Next <Icon icon={ChevronRight} size={13} strokeWidth={2} />
           </Button>
         </div>
