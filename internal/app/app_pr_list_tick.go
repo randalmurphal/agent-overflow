@@ -205,6 +205,13 @@ func (a *App) pollPRList(ctx context.Context, pump *prListPump) (bool, time.Time
 func (a *App) landPRListRead(pump *prListPump, read prListRepoRead) bool {
 	var detailErr *gitops.PRListDetailError
 	listed := read.err == nil || errors.As(read.err, &detailErr)
+	var tickets [][]store.KeyedTicket
+	if listed {
+		a.prUpdates.mu.Lock()
+		projectID, _ := pump.projectNamingLocked(read.repo)
+		a.prUpdates.mu.Unlock()
+		tickets = a.prRowTickets(read.key, projectID, read.rows)
+	}
 	a.prUpdates.mu.Lock()
 	if pump.DeadLocked() {
 		a.prUpdates.mu.Unlock()
@@ -229,7 +236,7 @@ func (a *App) landPRListRead(pump *prListPump, read prListRepoRead) bool {
 			log.Printf("pr list: detail of %s failed (id: %s): %v", read.key, fail.correlationID, read.err)
 		}
 		projectID, name := pump.projectNamingLocked(read.repo)
-		nextList := prListReadOf(projectID, name, read.repo, read.rows, readAt, state.detailFail.wire)
+		nextList := prListReadOf(projectID, name, read.repo, read.rows, tickets, readAt, state.detailFail.wire)
 		semantic := nextList
 		semantic.ReadAt = ""
 		semanticJSON, semErr := json.Marshal(semantic)
@@ -287,13 +294,18 @@ func (a *App) landPRListRead(pump *prListPump, read prListRepoRead) bool {
 
 // prListReadOf is a repository's landed read as the list publishes and
 // stores it: each row with its attention, sorted.
-func prListReadOf(projectID, name string, repo gitops.RepoReference, rows []gitops.PRListRow, readAt time.Time, detailError string) ProjectPRList {
+// tickets holds each row's tickets (prRowTickets), nil for none.
+func prListReadOf(projectID, name string, repo gitops.RepoReference, rows []gitops.PRListRow, tickets [][]store.KeyedTicket, readAt time.Time, detailError string) ProjectPRList {
 	list := ProjectPRList{
 		ProjectID: projectID, Name: name, Repo: repo, Rows: make([]PRListItem, 0, len(rows)),
 		ReadAt: readAt.UTC().Format(time.RFC3339), DetailError: detailError,
 	}
-	for _, row := range rows {
-		list.Rows = append(list.Rows, prListItemOf(row))
+	for i, row := range rows {
+		item := prListItemOf(row)
+		if i < len(tickets) {
+			item.Tickets = tickets[i]
+		}
+		list.Rows = append(list.Rows, item)
 	}
 	sortPRListItems(list.Rows)
 	return list

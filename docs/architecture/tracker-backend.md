@@ -342,9 +342,13 @@ no step runs at root creation, restore or start.
 
 - **Sections** are the keys of one JSON object, each with its own
   `version`: `status_groups` (by tracker site, the group a status counts
-  in: one of the five tracker groups, or `left_out`) and `ticket_pins` (by
+  in: one of the five tracker groups, or `left_out`), `ticket_pins` (by
   tracker site, the fields and the sections a ticket shows first; a
-  Linear site pins no fields). A section this build does not know, or one
+  Linear site pins no fields) and `start_work` (by tracker site and
+  tracker project, named by its key prefix, `WEB`: the status Start work
+  moves to, whether it assigns, the branch template with `{key}` and
+  `{title}`, and the repository, an app project of this computer; each
+  field optional, and an entry that sets nothing dropped). A section this build does not know, or one
   at a newer version, is kept byte for byte by a replace and named in the
   read's `newer`; a replace that sets it is refused.
 - **A site** is named as its connection names it, by the rules a
@@ -1899,6 +1903,75 @@ A delete claims its family before it reads the family's links, and every
 link write checks the claim in its transaction, so a link set during a
 delete is refused and the links the delete read are the ones it ends.
 
+### Ticket keys, Work, Ask and Start work
+
+- **A key** is `[A-Z][A-Z0-9_]+-[1-9][0-9]*`, matched ASCII
+  case-insensitively and bounded by a character that is not a letter or
+  digit (`trackerapp.TicketKeys`), in a pull request's title and head
+  branch and in a branch's name. It counts when this computer's mirror
+  of an enabled connection holds an issue of its project
+  (`store.TicketsByKey`, one statement for any number of keys, on the
+  partial index `idx_tracker_cache_issues_key`), which also answers the
+  issue ID and title it holds. Which mirrors hold a project is read once
+  per project, and a key is looked up only in those, each one seek of
+  one root: 200 keys over a 20,000-issue mirror cost about 21,700 SQLite
+  VM steps with one connection and with a second
+  (`TestTicketsByKeyCostsTheSameWithASecondConnection`). When two sites'
+  mirrors hold a key, the one holding the issue answers, then a
+  connection whose boards the asker's project lists, then the lowest
+  connection ID.
+- **The pull request rows' tickets** (`PRListItem.Tickets`) are read when
+  a repository's list lands, before it is stored and published, and on the
+  stored list's prefetch (`prRowTickets`): one statement per landing, and
+  one read of the boards of the project the list is under, whose
+  connections pick between two sites. A connection added or turned off
+  shows in the chips at the next read of each repository.
+- **`GetTicketWork`** (home route, `git:operate` and `tracker:read`)
+  answers a ticket's open pull requests from the stored lists, scanning
+  each stored list's bytes for the key and decoding only the lists that
+  hold it; the merged and closed pull requests its linked threads were
+  last seen with; and the branches that name the key in the projects
+  listing the connection's boards, the pull requests' projects and the
+  linked threads' projects, a branch a listed pull request names folded
+  into it. A repository whose
+  branches cannot be read is a problem beside the rest. At 2,000 stored
+  rows over 10 repositories and a 500-branch project it costs 18 ms and
+  4 MB an open, 23 ms and 5 MB when every list names the key
+  (`TestTicketWorkCostAtRealSize`); a 200-row landing's tickets cost
+  0.5 ms.
+- **`StartTicketThread`** (project route, `threads:operate`, plus
+  `tracker:read`, and `git:operate` for Start work) makes the thread of
+  an Ask or a Start work in one rollback: the thread titled with the key
+  and title, for Start work in a worktree on exactly the branch named
+  (the worktree that has it checked out, else a new one; a name only a
+  tag has makes a branch of that name and checks it out, never the tag;
+  never a name git's tidying changed; the project's own checkout and an
+  empty name are refused), the link with its origin, the
+  ticket file `KEY.md` attached to the unsent draft, and for Start work
+  the draft's text. A failure removes what it made, ends the link and
+  tells the tracker service. A Start work for a ticket, project and
+  branch that has a Start work thread not archived answers that thread
+  and makes nothing, and one ticket's Start works in a project run one
+  at a time, so a call repeated after a lost reply, or two at once, make
+  one thread. The
+  ticket file (`trackerapp.TicketFileText`, from the stored body, else
+  one ticket read) says first that it is the tracker's copy and data,
+  holds the ticket's facts, long texts and newest 10 comments, and is cut
+  at 200 KB at a line saying where the rest is: about 125 tokens for a
+  typical ticket, about 51,000 at the bound.
+- **The move and the assignment** of Start work are the ticket screen's
+  writes (`stores/trackerTicketWrites.svelte.ts`); the run's order (the
+  move, then the assignment decided from the ticket as the move left it),
+  "already", which rests on a read that succeeded after the step before
+  it, the assignment left to Try again after a move whose outcome is
+  unknown, and Try again are `stores/ticketWork.svelte.ts`'s. A call that
+  timed out counts as one whose answer was lost, for the thread and for
+  each write: it may have been made.
+- **A setup section a newer version saved** is never replaced by a save:
+  the encoder refuses to write any section named in `Newer`
+  (`ErrSetupNewer`), whatever its name, so Save as defaults over a newer
+  `start_work` saves nothing.
+
 ## Agent tools
 
 Status: built: `ticket_find` and `ticket_read` on the `ao-tracker-tools`
@@ -2107,7 +2180,12 @@ with the wrappers of `TrackerWorklogs`, `RefreshTrackerWorklogs`,
 and the thread link's screens: the header's ticket, its menus, the
 sidebar row's line and search, and Link and Change ticket through the
 ticket finder, with the `SetThreadTicket` and `ClearThreadTicket`
-wrappers (`stores/threadTicketLinks.svelte.ts`).
+wrappers (`stores/threadTicketLinks.svelte.ts`), and the ticket's Work
+with Ask and Start work and the pull request rows' ticket chips
+([Ticket keys, Work, Ask and Start work](#ticket-keys-work-ask-and-start-work)),
+with the wrappers of `GetTicketWork`, `StartTicketThread`,
+`ProjectTrackerSetup` and `SetProjectTrackerSetup`
+(`stores/ticketWork.svelte.ts`).
 A failure of the linked-issues
 loop after boot reaches only the log (`Deps.LoopFailed`): its failures
 are outside the tracker (a store error, the cleanup), and a tracker
@@ -2117,11 +2195,11 @@ Not built, owed by the app layer:
 - A sprint edit on the Backlog screen: the `bindings.ts` wrapper of
   `EditTrackerSprint` ships with it.
 - The rest of the project's tracker setup, each a section of its file:
-  card marks, Start work defaults, draft settings and what agents may do;
-  and the `bindings.ts` wrappers of the setup methods, which ship with the
-  first screen that reads them. A query that needs part of the setup
-  takes it as a bound argument, as the status groups are; nothing of the
-  file is copied into the mirror.
+  card marks, draft settings and what agents may do, and the Setup pages
+  that edit the sections, Start work defaults among them. A query that
+  needs part of the setup takes it as a bound argument, as the status
+  groups are; nothing of the file is copied into the mirror.
 - The time-draft posting path (Agent tools).
-- Start work, and the agent tools' writes with their three mechanisms
+- The agent tools' writes with their three mechanisms
   ([Agent tools](#agent-tools)).
+- Searching the forge by key for a pull request outside the stored list.

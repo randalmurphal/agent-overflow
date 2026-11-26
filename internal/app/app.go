@@ -619,7 +619,10 @@ type App struct {
 	prUpdates appPRUpdateState
 	// prManage runs one PR's management writes one at a time
 	// (app_pr_manage.go).
-	prManage prManageLocks
+	prManage keyedLocks
+	// startWork runs one ticket's Start work in one project at a time, so
+	// a second finds the thread the first made (app_ticket_threads.go).
+	startWork keyedLocks
 	// mergedPRs removes a thread's worktree once its pull request merges
 	// (`app_worktree_merge_cleanup.go`).
 	mergedPRs mergedPRCleanupState

@@ -235,12 +235,12 @@ func (a *App) OpenPRThread(ctx context.Context, req OpenPRThreadRequest) (OpenPR
 	})
 	if err != nil {
 		cause := fmt.Errorf("open PR thread: record the pull request: %w", err)
-		return OpenPRThreadResult{}, errors.Join(cause, a.rollBackPRThread(project, thread, cut))
+		return OpenPRThreadResult{}, errors.Join(cause, a.rollBackCreatedThread("open PR thread", project, thread, cut))
 	}
 	if seed := strings.TrimSpace(req.Seed); seed != "" {
 		if err := a.SaveDraft(ctx, thread.ID, seed, nil, nil, nil); err != nil {
 			cause := fmt.Errorf("open PR thread: seed the draft: %w", err)
-			return OpenPRThreadResult{}, errors.Join(cause, a.rollBackPRThread(project, thread, cut))
+			return OpenPRThreadResult{}, errors.Join(cause, a.rollBackCreatedThread("open PR thread", project, thread, cut))
 		}
 	}
 	return OpenPRThreadResult{ThreadID: thread.ID, WorktreePath: thread.WorktreePath, Branch: thread.Branch}, nil
@@ -268,13 +268,15 @@ func validateOpenPRThread(req OpenPRThreadRequest) error {
 	return nil
 }
 
-// rollBackPRThread undoes a thread OpenPRThread created: the thread (its
-// setup stopped and joined), then the worktree it cut and a local branch
-// the call made, as far as both are still the cut's alone
+// rollBackCreatedThread undoes a thread a call created (OpenPRThread,
+// StartTicketThread) when a later step of the call failed: the thread, by
+// the family delete (its setup stopped and joined, its link ended and the
+// tracker service told), then the worktree it cut and a local branch the
+// call made, as far as both are still the cut's alone
 // (gitops.Core.UndoCut). A checkout or branch kept because it holds work
 // that is not the cut's is named in the error with why. Every step runs;
-// their failures are returned together.
-func (a *App) rollBackPRThread(project store.Project, thread store.Thread, cut threadapp.CutWorktree) error {
+// their failures are returned together, and logged under op.
+func (a *App) rollBackCreatedThread(op string, project store.Project, thread store.Thread, cut threadapp.CutWorktree) error {
 	var errs []error
 	if err := a.deleteThread(thread.ID); err != nil {
 		errs = append(errs, fmt.Errorf("delete thread %s: %w", thread.ID, err))
@@ -284,7 +286,7 @@ func (a *App) rollBackPRThread(project store.Project, thread store.Thread, cut t
 	}
 	err := errors.Join(errs...)
 	if err != nil {
-		log.Printf("open PR thread: roll back thread %s: %v", thread.ID, err)
+		log.Printf("%s: roll back thread %s: %v", op, thread.ID, err)
 	}
 	return err
 }

@@ -77,6 +77,7 @@ export {
     SprintTotal,
     SprintView,
     StaleView,
+    StartWorkDefaults,
     StatusView,
     SyncView,
     TicketRowView,

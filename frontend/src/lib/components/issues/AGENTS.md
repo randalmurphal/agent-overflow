@@ -57,9 +57,12 @@ board methods, events and the patch read in
   screen on that screen and no ticket covers it), which are their votes.
   The ticket's placement per screen, its folds, the comment order and
   the Time layout are remembered here too. `createTicketTrail` is the one
-  owner of a pane's open ticket, its subscription and Back trail, for the
-  Issues pane and a ticket pane alike; `TicketHost.svelte` mounts what a
-  trail shows.
+  owner of a pane's open ticket, its subscription, its project
+  (`TicketTrail.project`: the person's pick, else the last opener's that
+  named one, an opener of the ticket already shown included, else the
+  Issues pane's board's; Ask and Start work use it) and Back trail, for
+  the Issues pane and a ticket pane alike; `TicketHost.svelte` mounts
+  what a trail shows.
 - `stores/ticketPanes.svelte.ts` (in the startup graph) owns ticket panes:
   which ticket each shows, the Ctrl or Cmd rule for opening one
   (`opensTicketPane`), the move's hold on the subscription until the
@@ -121,6 +124,17 @@ board methods, events and the patch read in
   browser downloads it up to 256 MB), its bytes, and the images a ticket's
   text shows in place, held in the media cache until the ticket's last
   surface goes.
+- `stores/ticketWork.svelte.ts` holds a ticket's Work read, its Ask in
+  flight and its Start work run: the plan, the thread it made and each
+  step's outcome, with the rules that keep a retry from doing anything
+  twice written at the top. `TicketWork.svelte` is the rail's Work
+  section, mounted by one line at the end of the rail, and
+  `StartWorkForm.svelte` the form it opens; the threads it lists are the
+  client's catalog filtered by link, with no call.
+- `stores/ticketOpen.ts` is the one opener of a ticket from outside the
+  pane (a thread's linked ticket, a pull request's ticket chip); it is in
+  the startup graph and reaches the pane's stores through one dynamic
+  import.
 
 These stores load with the pane (`ToolPane.svelte` imports it on demand)
 or the first ticket pane (`panes/TicketPane.svelte` imports

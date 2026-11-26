@@ -9,6 +9,7 @@ import (
 	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/pump"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 )
 
@@ -77,6 +78,10 @@ type PRListItem struct {
 	Approvals  *PRApprovals `json:"approvals"`
 	Unresolved *int         `json:"unresolved"`
 	CI         string       `json:"ci"`
+	// Tickets are the tickets of this computer's trackers that the title
+	// and head branch name, as the read that landed the row found them
+	// (prRowTickets).
+	Tickets []store.KeyedTicket `json:"tickets,omitempty"`
 }
 
 // PRApprovals is a row's approvals standing and the approvals its base

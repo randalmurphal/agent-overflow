@@ -184,6 +184,7 @@ var frozenMigrationSQL = map[int]string{
 	167: "734cab4086e78491702c134c24a91a65287832c0f8753ef1289f6b2a048f79c2",
 	168: "4bac1f66c023582ae48b0ce45e82723a0ff0409daa88fbd1bcf7456f6e5bdb1e",
 	169: "2a172f1d4c370bf59810297f632478025c059d120a14d943d620793da849a2e6",
+	170: "555c345b007bc8bd1ed9f5148c65a13c4f24e4203c264c55155fd4f96d91c4d5",
 }
 
 // frozenMigrationText is what a migration's frozen hash covers. A deferred
