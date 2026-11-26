@@ -101,6 +101,14 @@ export async function connectFakeJiraBoard(
   const jiraURL = await seedFakeJira(harness, extra);
   const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name, repo: {}, threads }] });
   const { projectId, threadIds } = seed.projects[0];
+  return { ...await connectFakeJira(harness, projectId), threadIds, jiraURL };
+}
+
+/**
+ * Adds and verifies a Jira connection to the seeded fake site (seedFakeJira)
+ * and lists its board on `projectId`.
+ */
+export async function connectFakeJira(harness: HarnessApp, projectId: string): Promise<{ projectId: string; connectionId: string; site: string }> {
   const added = await harness.rpc<TrackerConnection>('AddTrackerConnection', { kind: 'jira', site: JIRA_SITE, account: JIRA_ACCOUNT });
   // The token a person would paste into the key file the app named.
   await writeFile(added.keyFilePath, JIRA_TOKEN, { mode: 0o600 });
@@ -109,7 +117,7 @@ export async function connectFakeJiraBoard(
   // As the board picker sends it: built from the project's empty list,
   // with the name and project it showed.
   await harness.rpc('SetProjectTrackerBoards', projectId, [], [{ connection: added.id, board: BOARD_ID, opens_first: true, name: 'WEB board', tracker_project: 'WEB' }]);
-  return { projectId, threadIds, connectionId: added.id, site: verified.site, jiraURL };
+  return { projectId, connectionId: added.id, site: verified.site };
 }
 
 /**

@@ -31,7 +31,9 @@ import (
 //     tracker group or left out of counts, which the board's sections and
 //     totals take (StatusGroups);
 //   - ticket_pins: by tracker site, the fields and the sections a ticket
-//     shows first.
+//     shows first;
+//   - start_work: by tracker site and tracker project, what Start work
+//     does to a ticket and where its thread runs (StartWorkDefaults).
 //
 // A section this build does not know, or one at a version newer than it
 // reads, is kept byte for byte and written back unchanged by a replace,
@@ -60,11 +62,16 @@ const (
 	setupMaxStatuses = 1000
 	setupMaxFields   = 200
 	setupMaxSections = 100
+	// setupMaxStartWork bounds the start_work entries, and
+	// setupMaxBranchTemplate a branch template.
+	setupMaxStartWork      = 200
+	setupMaxBranchTemplate = 100
 	// setupMaxID bounds a site, a status, a field or a section ID.
 	setupMaxID = 255
 	// The sections this build reads, and the version of each it writes.
 	sectionStatusGroups = "status_groups"
 	sectionTicketPins   = "ticket_pins"
+	sectionStartWork    = "start_work"
 	setupSectionVersion = 1
 )
 
@@ -132,8 +139,9 @@ func invalidSetup(format string, args ...any) error {
 // sections a replace gives and a read answers. A site with no entry in a
 // section has nothing set there.
 type Setup struct {
-	StatusGroups []SiteStatusGroups `json:"status_groups"`
-	TicketPins   []SitePins         `json:"ticket_pins"`
+	StatusGroups []SiteStatusGroups  `json:"status_groups"`
+	TicketPins   []SitePins          `json:"ticket_pins"`
+	StartWork    []StartWorkDefaults `json:"start_work"`
 }
 
 // UnmarshalJSON reads a replace's setup whole or refuses it: a JSON object
@@ -177,6 +185,27 @@ type SitePins struct {
 	Site     string    `json:"site"`
 	Fields   *[]string `json:"fields,omitempty"`
 	Sections *[]string `json:"sections,omitempty"`
+}
+
+// StartWorkDefaults is what Start work does for the project to a ticket of
+// one tracker project (Project, its key's prefix: WEB of WEB-1, a Linear
+// team's key) of one tracker site, each absent field meaning its built-in
+// default: Status, the status the ticket moves to (absent: it does not
+// move); Assign, whether the ticket is assigned to the connection's
+// account (absent: it is); Branch, the template of the branch's name,
+// whose {key} is the ticket's key and {title} its title made a branch
+// name (absent: {key}-{title}); Repository, the app project the thread
+// runs in (absent: this project). The tracker project is the one identity
+// Jira and Linear share that a ticket carries, and a status belongs to a
+// project's workflow or a team, so the entry is per tracker project.
+type StartWorkDefaults struct {
+	Tracker    string `json:"tracker"`
+	Site       string `json:"site"`
+	Project    string `json:"project"`
+	Status     string `json:"status,omitempty"`
+	Assign     *bool  `json:"assign,omitempty"`
+	Branch     string `json:"branch,omitempty"`
+	Repository string `json:"repository,omitempty"`
 }
 
 // SetupView is a project's tracker setup as it is stored: the revision a
@@ -338,12 +367,7 @@ func (s *Service) replaceSetup(slug, revision string, setup Setup) (save SetupSa
 	if after.view.Revision != revision {
 		return SetupSave{Refused: setupChangedSentence, Stored: after.view}, before, after, nil
 	}
-	for _, name := range after.view.Newer {
-		if (name == sectionStatusGroups && len(setup.StatusGroups) > 0) || (name == sectionTicketPins && len(setup.TicketPins) > 0) {
-			return SetupSave{}, before, after, fmt.Errorf("%w: section %s", ErrSetupNewer, name)
-		}
-	}
-	data, err := encodeSetup(setup, after.raw)
+	data, err := encodeSetup(setup, after.raw, after.view.Newer)
 	if err != nil {
 		return SetupSave{}, before, after, err
 	}
@@ -488,6 +512,10 @@ type (
 		Version int        `json:"version"`
 		Sites   []SitePins `json:"sites"`
 	}
+	startWorkV1 struct {
+		Version  int                 `json:"version"`
+		Projects []StartWorkDefaults `json:"projects"`
+	}
 )
 
 // decodeSetup is the setup data holds, every section this build does not
@@ -511,7 +539,7 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 	}
 	for _, name := range slices.Sorted(maps.Keys(sections)) {
 		section := sections[name]
-		if name != sectionStatusGroups && name != sectionTicketPins {
+		if name != sectionStatusGroups && name != sectionTicketPins && name != sectionStartWork {
 			keep(name, section)
 			continue
 		}
@@ -536,6 +564,10 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 			var s ticketPinsV1
 			err = decodeStrict(section, &s)
 			setup.TicketPins = s.Sites
+		case sectionStartWork:
+			var s startWorkV1
+			err = decodeStrict(section, &s)
+			setup.StartWork = s.Projects
 		}
 		if err != nil {
 			return nil, fmt.Errorf("section %s: %w", name, err)
@@ -561,13 +593,19 @@ func decodeStrict(data []byte, v any) error {
 
 // encodeSetup is the file of setup and the sections raw keeps: a JSON
 // object of the sections in name order, each kept section as its bytes;
-// nil when it holds no section, which is no file.
-func encodeSetup(setup Setup, raw map[string]json.RawMessage) ([]byte, error) {
+// nil when it holds no section, which is no file. A section of setup that
+// would replace one a newer version saved (newer, SetupView.Newer) is
+// ErrSetupNewer: this is the one place a section is written, so every
+// section, one added later included, keeps that rule.
+func encodeSetup(setup Setup, raw map[string]json.RawMessage, newer []string) ([]byte, error) {
 	sections := map[string]json.RawMessage{}
 	for name, section := range raw {
 		sections[name] = section
 	}
 	add := func(name string, v any) error {
+		if slices.Contains(newer, name) {
+			return fmt.Errorf("%w: section %s", ErrSetupNewer, name)
+		}
 		encoded, err := json.MarshalIndent(v, "  ", "  ")
 		if err != nil {
 			return fmt.Errorf("trackerapp: encode the tracker setup's %s: %w", name, err)
@@ -582,6 +620,11 @@ func encodeSetup(setup Setup, raw map[string]json.RawMessage) ([]byte, error) {
 	}
 	if len(setup.TicketPins) > 0 {
 		if err := add(sectionTicketPins, ticketPinsV1{Version: setupSectionVersion, Sites: setup.TicketPins}); err != nil {
+			return nil, err
+		}
+	}
+	if len(setup.StartWork) > 0 {
+		if err := add(sectionStartWork, startWorkV1{Version: setupSectionVersion, Projects: setup.StartWork}); err != nil {
 			return nil, err
 		}
 	}
@@ -624,7 +667,7 @@ func setupRevision(data []byte) string {
 // keeps (named by newer) and the revision of its file.
 func heldOf(setup Setup, raw map[string]json.RawMessage, newer []string, revision string) (*heldSetup, error) {
 	held := &heldSetup{
-		view: SetupView{Revision: revision, Setup: Setup{StatusGroups: slicesx.OrEmpty(setup.StatusGroups), TicketPins: slicesx.OrEmpty(setup.TicketPins)}, Newer: newer},
+		view: SetupView{Revision: revision, Setup: Setup{StatusGroups: slicesx.OrEmpty(setup.StatusGroups), TicketPins: slicesx.OrEmpty(setup.TicketPins), StartWork: slicesx.OrEmpty(setup.StartWork)}, Newer: newer},
 		raw:  raw, groups: map[siteKey]StatusGroups{},
 	}
 	for _, site := range setup.StatusGroups {
@@ -701,6 +744,25 @@ func validateSetup(setup Setup) (Setup, error) {
 			out.TicketPins = append(out.TicketPins, site)
 		}
 	}
+	if len(setup.StartWork) > setupMaxStartWork {
+		return Setup{}, invalidSetup("%s has %d entries, over %d", sectionStartWork, len(setup.StartWork), setupMaxStartWork)
+	}
+	seenProjects := map[startWorkKey]bool{}
+	for _, entry := range setup.StartWork {
+		valid, set, err := checkStartWork(entry, seenProjects)
+		if err != nil {
+			return Setup{}, err
+		}
+		if set {
+			out.StartWork = append(out.StartWork, valid)
+		}
+	}
+	slices.SortFunc(out.StartWork, func(a, b StartWorkDefaults) int {
+		if c := compareSites(a.Tracker, a.Site, b.Tracker, b.Site); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Project, b.Project)
+	})
 	slices.SortFunc(out.StatusGroups, func(a, b SiteStatusGroups) int { return compareSites(a.Tracker, a.Site, b.Tracker, b.Site) })
 	slices.SortFunc(out.TicketPins, func(a, b SitePins) int { return compareSites(a.Tracker, a.Site, b.Tracker, b.Site) })
 	return out, nil
@@ -747,6 +809,69 @@ func checkSite(tracker, site, section string, seen map[siteKey]bool) (siteKey, e
 	}
 	seen[key] = true
 	return key, nil
+}
+
+// startWorkKey names a start_work entry: its site and tracker project.
+type startWorkKey struct {
+	site    siteKey
+	project string
+}
+
+// checkStartWork checks a start_work entry and returns it with its site as
+// its connection names it; set is false for an entry that sets nothing.
+// The tracker project is a key's prefix (TicketKeys), once per site; a
+// branch template is at most setupMaxBranchTemplate bytes and holds no
+// token but {key} and {title}.
+func checkStartWork(entry StartWorkDefaults, seen map[startWorkKey]bool) (StartWorkDefaults, bool, error) {
+	key, err := checkSite(entry.Tracker, entry.Site, sectionStartWork, map[siteKey]bool{})
+	if err != nil {
+		return StartWorkDefaults{}, false, err
+	}
+	entry.Site = key.site
+	if !isTicketProject(entry.Project) {
+		return StartWorkDefaults{}, false, invalidSetup("%s names tracker project %q of %s %s, which is not a key's prefix (WEB of WEB-1)",
+			sectionStartWork, truncateID(entry.Project), key.tracker, key.site)
+	}
+	project := startWorkKey{key, entry.Project}
+	if seen[project] {
+		return StartWorkDefaults{}, false, invalidSetup("%s names %s of %s %s twice", sectionStartWork, entry.Project, key.tracker, key.site)
+	}
+	seen[project] = true
+	if entry.Status != "" {
+		if err := checkSetupID("status", entry.Status); err != nil {
+			return StartWorkDefaults{}, false, err
+		}
+	}
+	if entry.Repository != "" {
+		if err := checkSetupID("repository", entry.Repository); err != nil {
+			return StartWorkDefaults{}, false, err
+		}
+	}
+	if len(entry.Branch) > setupMaxBranchTemplate {
+		return StartWorkDefaults{}, false, invalidSetup("the branch template of %s is over %d bytes", entry.Project, setupMaxBranchTemplate)
+	}
+	rest := strings.NewReplacer("{key}", "", "{title}", "").Replace(entry.Branch)
+	if strings.ContainsAny(rest, "{}") {
+		return StartWorkDefaults{}, false, invalidSetup("the branch template of %s is %q; its only tokens are {key} and {title}", entry.Project, entry.Branch)
+	}
+	set := entry.Status != "" || entry.Assign != nil || entry.Branch != "" || entry.Repository != ""
+	return entry, set, nil
+}
+
+// isTicketProject is whether project is a ticket key's project, as
+// TicketKeys spells it: a capital letter, then one or more capitals,
+// digits or underscores.
+func isTicketProject(project string) bool {
+	if len(project) < 2 || len(project) > setupMaxID || project[0] < 'A' || project[0] > 'Z' {
+		return false
+	}
+	for i := 1; i < len(project); i++ {
+		c := project[i]
+		if (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 // checkSetupID checks a status, field or section ID.

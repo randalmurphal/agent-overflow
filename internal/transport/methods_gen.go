@@ -272,6 +272,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetThreadWakeDetail", ID: 3375683118, Scope: "threads:read", Route: "thread"},                                                    // main.App.GetThreadWakeDetail
 	{Name: "GetThreadWorkerSummary", ID: 2442730827, Scope: "threads:read", Route: "thread"},                                                 // main.App.GetThreadWorkerSummary
 	{Name: "GetThreadWorktreeSetup", ID: 49371251, Scope: "terminal:operate", Route: "thread"},                                               // main.App.GetThreadWorktreeSetup
+	{Name: "GetTicketWork", ID: 1106773146, Scope: "git:operate", Route: "home"},                                                             // main.App.GetTicketWork
 	{Name: "GetTimelineUserMessageTicks", ID: 3815301456, Scope: "threads:read", Route: "thread"},                                            // main.App.GetTimelineUserMessageTicks
 	{Name: "GetUIState", ID: 3380106838, Scope: "session", Route: "home"},                                                                    // main.App.GetUIState
 	{Name: "GetUsageStats", ID: 3135466533, Scope: "threads:read", Route: "all"},                                                             // main.App.GetUsageStats
@@ -557,6 +558,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "StartSSHComputer", ID: 531852766, Scope: "host", Route: "home", Remote: true},                                                    // main.App.StartSSHComputer
 	{Name: "StartSSHConnection", ID: 2623175319, Scope: "host", Route: "home", Remote: true},                                                 // main.App.StartSSHConnection
 	{Name: "StartTerminal", ID: 3009548683, Scope: "terminal:operate", Route: "selected"},                                                    // main.App.StartTerminal
+	{Name: "StartTicketThread", ID: 2291054583, Scope: "threads:operate", Route: "project", Budget: 12 * time.Minute},                        // main.App.StartTicketThread
 	{Name: "StartTrackerSprint", ID: 1961738625, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                           // main.App.StartTrackerSprint
 	{Name: "StopBackgroundTasks", ID: 2580445357, Scope: "threads:operate", Route: "thread"},                                                 // main.App.StopBackgroundTasks
 	{Name: "StopClaudeTask", ID: 536320598, Scope: "threads:operate", Route: "thread"},                                                       // main.App.StopClaudeTask

@@ -72,6 +72,7 @@
   import TicketHistory from './TicketHistory.svelte';
   import TicketLinks from './TicketLinks.svelte';
   import TicketText from './TicketText.svelte';
+  import TicketWork from './TicketWork.svelte';
   import Popover from '../primitives/Popover.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
   import { setTicketWriteSurface } from './ticketWriteSurface';
@@ -132,6 +133,10 @@
      * null shows the first board's the ticket is on. */
     board: string | null;
     computerName: string;
+    /** The ticket's project, which Work's Ask and Start work use
+     * (`TicketTrail.project`), and the person's pick of another. */
+    project: string | null;
+    onProject: (project: string) => void;
     /** The ticket's computer is not connected now. */
     offline: boolean;
     compact: boolean;
@@ -159,7 +164,7 @@
     onOpenIssue: (issue: string, seed: TicketSeed, ownPane: boolean) => void;
   }
 
-  let { attachment, seed, board, computerName, offline, compact, shown, trail, placement, pane, focusAsked, onFocusTaken, onBack, onClose, onOwnPane, onOpenIssue }: Props = $props();
+  let { attachment, seed, board, computerName, project, onProject, offline, compact, shown, trail, placement, pane, focusAsked, onFocusTaken, onBack, onClose, onOwnPane, onOpenIssue }: Props = $props();
   setTicketWriteSurface(() => shown);
 
   // The ticket a person opened takes the focus, so a key or a paste of
@@ -535,6 +540,7 @@
       {/if}
     {/if}
   </div>
+  <TicketWork {attachment} {project} {onProject} me={account} />
 {/snippet}
 
 {#snippet content()}

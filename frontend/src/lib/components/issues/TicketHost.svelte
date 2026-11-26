@@ -57,7 +57,7 @@
     const shown = trail.ticket;
     if (!shown) return;
     const ref = { backend: shown.ref.backend, connection: shown.ref.connection, issue };
-    if (ownPane) openTicketPane({ ref, seed }, { board });
+    if (ownPane) openTicketPane({ ref, seed, project: null }, { board });
     else trail.open(ref, seed, 'ticket');
   }
 
@@ -100,6 +100,8 @@
           seed={shown.open.seed}
           {board}
           {computerName}
+          project={trail.project}
+          onProject={(p) => trail.setProject(p)}
           {offline}
           {compact}
           shown={trail.shown}

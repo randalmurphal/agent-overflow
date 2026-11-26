@@ -61,6 +61,9 @@ import { getToasts } from '../../stores/toast.svelte';
 import { trackerTicketKey } from '../../stores/trackerTicket.svelte';
 import { ticketDraft } from '../../stores/trackerTicketWrites.svelte';
 import { localDay, mondayOf } from '../../stores/trackerTimeModel';
+import { openNamedTicket } from '../../stores/ticketOpen';
+import { openLinkedTicket } from '../../stores/threadTicketLinks.svelte';
+import { makeThread } from '../../../test/helpers/chat';
 
 // The project of the thread the pane was opened from (toolPanes owns it).
 const openedFrom = vi.hoisted(() => ({ project: null as string | null }));
@@ -1267,6 +1270,128 @@ describe('the ticket in the pane', () => {
     await waitFor(() => expect(votes(mocks.visible, 'sub-')).toEqual([false, true]));
     expect(view.queryByTestId('ticket-screen')).toBeNull();
     await waitFor(() => expect(mocks.release).toHaveBeenCalledWith('ticket-1-1'));
+  });
+
+  describe('the project a ticket\'s Ask and Start work use', () => {
+    function work(view: ReturnType<typeof mount>) {
+      return waitFor(() => {
+        const found = within(view.getByTestId('ticket-screen')).getByTestId('ticket-work');
+        expect((within(found).getByTestId('ticket-work-ask') as HTMLButtonElement).disabled).toBe(false);
+        return found;
+      });
+    }
+
+    it('is the project the board was opened under when two projects list the board, and the person can pick another', async () => {
+      project('p1', 'alpha', 1);
+      project('p2', 'beta', 2);
+      setBindingMock('TrackerConnections', async () => [{ id: 'c1', kind: 'jira', site: 'https://example.atlassian.net', label: 'Work', enabled: true, account: 'User 1' }]);
+      install({ choices: [choice('1', { project: 'p1' }), choice('1', { project: 'p2', opens_first: true })] });
+      installTicket();
+      const start = setBindingMock('StartTicketThread', async () => { throw new Error('stop here'); });
+      openedFrom.project = 'p2';
+      try {
+        const view = mount();
+        await openCard(view, '1');
+        const section = await work(view);
+        await fireEvent.click(within(section).getByTestId('ticket-work-ask'));
+        await waitFor(() => expect(start).toHaveBeenCalledWith('p2', expect.objectContaining({ origin: 'ask' })));
+        expect((within(section).getByTestId('ticket-work-project') as HTMLSelectElement).value).toBe('p2');
+
+        await fireEvent.change(within(section).getByTestId('ticket-work-project'), { target: { value: 'p1' } });
+        await waitFor(() => expect((within(section).getByTestId('ticket-work-project') as HTMLSelectElement).value).toBe('p1'));
+        await fireEvent.click(within(section).getByTestId('ticket-work-ask'));
+        await waitFor(() => expect(start).toHaveBeenLastCalledWith('p1', expect.objectContaining({ origin: 'ask' })));
+        view.unmount();
+      } finally {
+        openedFrom.project = null;
+      }
+    });
+
+    it('is the project the opener named for a ticket asked for from outside, shown before anything is made', async () => {
+      project('p1', 'alpha', 1);
+      project('p2', 'beta', 2);
+      setBindingMock('TrackerConnections', async () => [{ id: 'c1', kind: 'jira', site: 'https://example.atlassian.net', label: 'Work', enabled: true, account: 'User 1' }]);
+      install({ choices: [choice('1', { project: 'p1', opens_first: true })] });
+      installTicket();
+      const start = setBindingMock('StartTicketThread', async () => { throw new Error('stop here'); });
+      const view = mount();
+      await view.findAllByTestId('issues-card');
+      requestTicketOpen({ ref: { backend: HOME_BACKEND, connection: 'c1', issue: '77' }, seed: { key: 'WEB-77', title: 'Linked', card: null }, project: 'p2', unplaced: vi.fn() });
+      const section = await work(view);
+      expect((within(section).getByTestId('ticket-work-project') as HTMLSelectElement).value).toBe('p2');
+      await fireEvent.click(within(section).getByTestId('ticket-work-ask'));
+      await waitFor(() => expect(start).toHaveBeenCalledWith('p2', expect.anything()));
+      view.unmount();
+    });
+
+    /** Two projects list board 1; the pane shows it under p1. */
+    function twoProjects() {
+      project('p1', 'alpha', 1);
+      project('p2', 'beta', 2);
+      setBindingMock('TrackerConnections', async () => [{ id: 'c1', kind: 'jira', site: 'https://example.atlassian.net', label: 'Work', enabled: true, account: 'User 1' }]);
+      install({ choices: [choice('1', { project: 'p1', opens_first: true }), choice('1', { project: 'p2' })] });
+      const ticket = installTicket();
+      const start = setBindingMock('StartTicketThread', async () => { throw new Error('stop here'); });
+      return { ticket, start };
+    }
+
+    function linkedFrom(projectId: string) {
+      return makeThread({
+        id: `thread-${projectId}`, projectId,
+        ticketLink: {
+          kind: 'jira', site: 'https://example.atlassian.net', issueId: '1', key: 'WEB-1', title: 'Issue 1', statusId: 's1', statusName: 'To Do',
+          statusGroup: 'todo', origin: 'manual', linkedAt: 1, state: 'current', connectionId: 'c1',
+        },
+      });
+    }
+
+    const chosen = (section: HTMLElement) => (within(section).getByTestId('ticket-work-project') as HTMLSelectElement).value;
+
+    it('is the project of a pull request whose chip opens the ticket already open, which stays open', async () => {
+      const { ticket, start } = twoProjects();
+      const view = mount();
+      await openCard(view, '1');
+      const section = await work(view);
+      expect(chosen(section)).toBe('p1');
+
+      await openNamedTicket(HOME_BACKEND, { key: 'WEB-1', connectionId: 'c1', issueId: '1', title: 'Issue 1' }, 'p2');
+      await waitFor(() => expect(chosen(section)).toBe('p2'));
+      await fireEvent.click(within(section).getByTestId('ticket-work-ask'));
+      await waitFor(() => expect(start).toHaveBeenCalledWith('p2', expect.objectContaining({ origin: 'ask' })));
+      // The open is the same: not subscribed again, its Work not mounted again.
+      expect(ticket.subscribe).toHaveBeenCalledTimes(1);
+      expect(within(view.getByTestId('ticket-screen')).getByTestId('ticket-work')).toBe(section);
+
+      // A chip of a pull request with no project names none: p2 stays.
+      await openNamedTicket(HOME_BACKEND, { key: 'WEB-1', connectionId: 'c1', issueId: '1', title: 'Issue 1' }, null);
+      await tick();
+      expect(chosen(section)).toBe('p2');
+      view.unmount();
+    });
+
+    it('is the project of a thread whose row opens the ticket already open, unless the person picked one', async () => {
+      const { ticket, start } = twoProjects();
+      const view = mount();
+      await view.findAllByTestId('issues-card');
+      await openLinkedTicket(linkedFrom('p1'));
+      const section = await work(view);
+      expect(chosen(section)).toBe('p1');
+
+      await openLinkedTicket(linkedFrom('p2'));
+      await waitFor(() => expect(chosen(section)).toBe('p2'));
+      expect(ticket.subscribe).toHaveBeenCalledTimes(1);
+
+      // The person's pick holds over a later opener.
+      await fireEvent.change(within(section).getByTestId('ticket-work-project'), { target: { value: 'p1' } });
+      await waitFor(() => expect(chosen(section)).toBe('p1'));
+      await openLinkedTicket(linkedFrom('p2'));
+      await tick();
+      expect(chosen(section)).toBe('p1');
+      await fireEvent.click(within(section).getByTestId('ticket-work-ask'));
+      await waitFor(() => expect(start).toHaveBeenCalledWith('p1', expect.objectContaining({ origin: 'ask' })));
+      expect(ticket.subscribe).toHaveBeenCalledTimes(1);
+      view.unmount();
+    });
   });
 
   describe('a ticket asked for from outside the pane', () => {
@@ -3253,6 +3378,51 @@ describe('a ticket in a pane of its own', () => {
     pane.unmount();
   });
 
+  it('gives Work the project the ticket had: a moved ticket keeps the one picked, a card takes its board\'s, a restored pane none until the person picks', async () => {
+    placeIssuesPane();
+    project('p1', 'alpha', 1);
+    project('p2', 'beta', 2);
+    setBindingMock('TrackerConnections', async () => [{ id: 'c1', kind: 'jira', site: 'https://example.atlassian.net', label: 'Work', enabled: true, account: 'User 1' }]);
+    install({ choices: [choice('1', { project: 'p1', opens_first: true }), choice('1', { project: 'p2' })] });
+    installTicket();
+    const workOf = (root: HTMLElement) => waitFor(() => within(root).getByTestId('ticket-work'));
+    const picked = (work: HTMLElement) => (within(work).getByTestId('ticket-work-project') as HTMLSelectElement).value;
+    const view = mount();
+
+    // Opened here under p1's board, the person picks p2, then moves it.
+    const screen = await openHere(view, '1');
+    const work = await workOf(screen);
+    await waitFor(() => expect(picked(work)).toBe('p1'));
+    await fireEvent.change(within(work).getByTestId('ticket-work-project'), { target: { value: 'p2' } });
+    await waitFor(() => expect(picked(work)).toBe('p2'));
+    await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+    await fireEvent.click((await within(document.body).findByTestId('ticket-menu-own-pane')));
+    await waitFor(() => expect(issuesTicket(view)).toBeNull());
+    const [movedId] = ticketPaneIds();
+    const moved = mountTicketPane(movedId);
+    const movedWork = await workOf(await paneScreen(moved, '1'));
+    await waitFor(() => expect(picked(movedWork)).toBe('p2'));
+
+    // A card opened in a pane of its own: the board's project.
+    focusPane(PANE);
+    await fireEvent.click(within(card(view, '2')).getByTestId('issues-card-open'), { ctrlKey: true });
+    const second = mountTicketPane(ticketPaneIds().find((id) => id !== movedId)!);
+    const secondWork = await workOf(await paneScreen(second, '2'));
+    await waitFor(() => expect(picked(secondWork)).toBe('p1'));
+
+    // A pane restored after a reload saved no project: Ask waits for a pick.
+    restoreTicketPane('ticket-restored', { backend: HOME_BACKEND, connection: 'c1', issue: '1' });
+    setPaneLayoutItemsForTest([...getPaneLayoutItems(), { id: 'ticket-restored', paneId: 'ticket-restored', kind: 'ticket', widthPx: 600 }]);
+    const restored = mountTicketPane('ticket-restored');
+    const restoredWork = await workOf(await paneScreen(restored, '1'));
+    await waitFor(() => expect(within(restoredWork).getByTestId('ticket-work-ask')).toBeDisabled());
+    expect(picked(restoredWork)).toBe('');
+    expect(within(restoredWork).getByTestId('ticket-work-ask')).toHaveAttribute('title', 'Pick the project its thread goes in.');
+    await fireEvent.change(within(restoredWork).getByTestId('ticket-work-project'), { target: { value: 'p1' } });
+    await waitFor(() => expect(within(restoredWork).getByTestId('ticket-work-ask')).not.toBeDisabled());
+    for (const pane of [moved, second, restored]) pane.unmount();
+  });
+
   it('lets go of a moved ticket\'s subscription when its pane closes before its body ever held it', async () => {
     placeIssuesPane();
     const mocks = install();
@@ -3311,7 +3481,7 @@ describe('a ticket in a pane of its own', () => {
     // No board draws the ticket: only the ticket pane's controls do.
     setPaneLayoutItemsForTest([{ id: 'thread-1', paneId: 'thread-1', kind: 'thread', widthPx: 600 }]);
     focusPane('thread-1');
-    openTicketPane({ ref: { backend: HOME_BACKEND, connection: 'c1', issue: '1' }, seed: { key: 'WEB-1', title: 'Issue 1', card: null } }, { board: '1' });
+    openTicketPane({ ref: { backend: HOME_BACKEND, connection: 'c1', issue: '1' }, seed: { key: 'WEB-1', title: 'Issue 1', card: null }, project: null }, { board: '1' });
     const paneId = ticketPaneIds()[0];
     const pane = mountTicketPane(paneId);
     const screen = await paneScreen(pane, '1');

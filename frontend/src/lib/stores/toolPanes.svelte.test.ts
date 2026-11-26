@@ -397,7 +397,7 @@ describe('a thread opened while a tool pane is focused', () => {
     const closed = vi.fn();
     const off = addToolPaneClosedObserver(closed);
     threadLayout([threadItem('left'), threadItem('right')], 'left');
-    const ticketPane = openTicketPane({ ref: { backend: '', connection: 'c1', issue: '1' }, seed: { key: 'WEB-1', title: 'Issue 1', card: null } }, { board: '1' });
+    const ticketPane = openTicketPane({ ref: { backend: '', connection: 'c1', issue: '1' }, seed: { key: 'WEB-1', title: 'Issue 1', card: null }, project: null }, { board: '1' });
     ticketPaneRecord(ticketPane)!.focus.end();
     const width = getPaneLayoutItems()[1].widthPx;
     const pane = await openThreadInPane(makeThread({ id: 't-new' }));

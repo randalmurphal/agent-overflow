@@ -112,7 +112,7 @@ func overlappingDescriptionEdits(t *testing.T, firstPR, secondPR gitops.PRRefere
 // caller's context, and forgets a PR nobody holds.
 func TestPRManageLocks(t *testing.T) {
 	t.Parallel()
-	var locks prManageLocks
+	var locks keyedLocks
 	release, err := locks.acquire(context.Background(), "a")
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +149,7 @@ func TestPRManageLocks(t *testing.T) {
 // is forgotten.
 func TestPRManageLocksRefuseAnEndedContext(t *testing.T) {
 	t.Parallel()
-	var locks prManageLocks
+	var locks keyedLocks
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	// It never enters the wait, so it can never take the slot.
@@ -202,7 +202,7 @@ func TestPRManageLocksRefuseAnEndedContext(t *testing.T) {
 }
 
 // users is how many callers hold or await key's lock.
-func (l *prManageLocks) users(key string) int {
+func (l *keyedLocks) users(key string) int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if entry := l.entries[key]; entry != nil {
@@ -212,7 +212,7 @@ func (l *prManageLocks) users(key string) int {
 }
 
 // size is the number of PRs with a held or awaited lock.
-func (l *prManageLocks) size() int {
+func (l *keyedLocks) size() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return len(l.entries)

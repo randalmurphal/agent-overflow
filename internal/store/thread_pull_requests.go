@@ -149,6 +149,35 @@ func (s *Store) ListThreadPullRequestsForPR(forge, host, project string, number 
 	return out, nil
 }
 
+// ListTicketThreadPullRequests lists the pull requests that the threads
+// linked to ticket were last seen with, merged and closed ones included,
+// in thread order: the ones a ticket's Work lists beside the stored open
+// list, which holds open pull requests only. One seek of
+// idx_thread_tickets_issue, then one primary-key probe per linked thread.
+func (s *Store) ListTicketThreadPullRequests(ticket TicketRef) ([]ThreadPullRequest, error) {
+	if err := ticket.validate(); err != nil {
+		return nil, err
+	}
+	rows, err := s.reader().QueryContext(context.Background(), `SELECT `+threadPullRequestColumns+`
+		FROM thread_pull_requests WHERE thread_id IN (SELECT thread_id FROM thread_tickets WHERE kind = ? AND site = ? AND issue_id = ?)
+		ORDER BY thread_id`, ticket.Kind, ticket.Site, ticket.IssueID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list the pull requests of %s ticket %s: %w", ticket.Kind, ticket.IssueID, err)
+	}
+	var out []ThreadPullRequest
+	for rows.Next() {
+		pr, err := scanThreadPullRequest(rows.Scan)
+		if err != nil {
+			return nil, errors.Join(fmt.Errorf("store: scan thread pull request: %w", err), rows.Close())
+		}
+		out = append(out, pr)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: list the pull requests of %s ticket %s: %w", ticket.Kind, ticket.IssueID, err)
+	}
+	return out, nil
+}
+
 // MarkThreadPullRequestsMerged records mergedAt on every unhandled row that
 // tracks the pull request (forge, host, project, number) and does not know
 // the merge yet, and returns how many rows changed.

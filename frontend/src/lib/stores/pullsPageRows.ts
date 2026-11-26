@@ -287,6 +287,8 @@ export function projectPullRow(row: PullsListedRow, backend: BackendKey, sortKey
     ci: item.ci,
     approvals: item.approvals && item.approvals.required > 0 ? { given: item.approvals.given, required: item.approvals.required } : null,
     unresolved: item.unresolved,
+    projectId: project.projectId,
+    tickets: item.tickets ?? [],
   };
 }
 

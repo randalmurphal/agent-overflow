@@ -130,18 +130,19 @@ func (a *App) runPRManage(ctx context.Context, pr gitops.PRReference, action git
 	return a.settlePRAction(ctx, pr, action, err)
 }
 
-// prManageLocks is one lock per PR for its management writes. A caller
-// waits for the holder, bounded by its context; an entry lives while it
-// is held or awaited.
-type prManageLocks struct {
+// keyedLocks is one lock per key: a PR's management writes
+// (App.prManage), a ticket's Start work in a project (App.startWork). A
+// caller waits for the holder, bounded by its context; an entry lives
+// while it is held or awaited.
+type keyedLocks struct {
 	mu      sync.Mutex
-	entries map[string]*prManageLock
+	entries map[string]*keyedLock
 	// woke, when set, runs once a caller's wait ended, before its context
 	// is checked again: a test's way to end the context at that moment.
 	woke func()
 }
 
-type prManageLock struct {
+type keyedLock struct {
 	slot  chan struct{}
 	users int
 }
@@ -150,17 +151,17 @@ type prManageLock struct {
 // back and forgets the entry once nobody holds or awaits it. A context
 // that ended takes no lock, also when it ended as the slot came free:
 // the wait can wake on either, so the context is checked after it too.
-func (l *prManageLocks) acquire(ctx context.Context, key string) (release func(), err error) {
+func (l *keyedLocks) acquire(ctx context.Context, key string) (release func(), err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	l.mu.Lock()
 	if l.entries == nil {
-		l.entries = map[string]*prManageLock{}
+		l.entries = map[string]*keyedLock{}
 	}
 	entry := l.entries[key]
 	if entry == nil {
-		entry = &prManageLock{slot: make(chan struct{}, 1)}
+		entry = &keyedLock{slot: make(chan struct{}, 1)}
 		l.entries[key] = entry
 	}
 	entry.users++

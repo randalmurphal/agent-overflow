@@ -17,7 +17,7 @@ import {
 import { HOME_BACKEND } from '../transport/backendKey';
 
 function ticket(issue: string): OpenTicket {
-  return { ref: { backend: HOME_BACKEND, connection: 'c1', issue }, seed: { key: `WEB-${issue}`, title: `Issue ${issue}`, card: null } };
+  return { ref: { backend: HOME_BACKEND, connection: 'c1', issue }, seed: { key: `WEB-${issue}`, title: `Issue ${issue}`, card: null }, project: null };
 }
 
 const OPTIONS = { board: '1' };
@@ -122,8 +122,9 @@ describe('ticket panes', () => {
   it('restores a pane on its saved ticket with no trail, asking no focus', () => {
     restoreTicketPane('ticket-a', { backend: HOME_BACKEND, connection: 'c1', issue: '7' });
     const record = ticketPaneRecord('ticket-a')!;
-    // Its key and title come with its subscription's first answer.
-    expect(record.ticket).toEqual({ ref: { backend: HOME_BACKEND, connection: 'c1', issue: '7' }, seed: { key: '', title: '', card: null } });
+    // Its key and title come with its subscription's first answer; no
+    // project is saved, so Work asks the person for one.
+    expect(record.ticket).toEqual({ ref: { backend: HOME_BACKEND, connection: 'c1', issue: '7' }, seed: { key: '', title: '', card: null }, project: null });
     expect(record.board).toBeNull();
     expect(record.focus.askedFor(record.ticket)).toBe(false);
   });

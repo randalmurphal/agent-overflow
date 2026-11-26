@@ -287,6 +287,9 @@ export interface TicketSeed {
 export interface OpenTicket {
   readonly ref: TrackerTicketRef;
   readonly seed: TicketSeed;
+  /** The project the opener named (a thread's, a pull request's); null
+   * for a ticket opened from the board, whose project is the board's. */
+  readonly project: string | null;
 }
 
 /** A ticket a surface outside the pane asked it to open (a thread's
@@ -426,7 +429,9 @@ export interface BoardSelection {
    * connection, else over the board `boardForTicket` picks once that
    * computer's boards are read, which it shows without saving it as the
    * person's pick. A pane on Time switches to the Board without saving
-   * that either. No such board runs the request's `unplaced`. */
+   * that either. No such board runs the request's `unplaced`. The ticket
+   * already open stays open, and the project the request names becomes
+   * its project unless the person picked one (`TicketTrail.project`). */
   openRequested(request: TicketOpenRequest): void;
   /** Back: the ticket this one was opened from, else closes it. */
   stepBack(): void;
@@ -489,6 +494,15 @@ export interface TicketTrail {
   /** The pane is on screen now, so the person sees the ticket it shows
    * (`TicketTrailOptions.shown`). Reactive. */
   readonly shown: boolean;
+  /** The project of the ticket shown, which its Ask and Start work make
+   * their thread in and whose setup holds its Start work defaults: the
+   * one the person picked for it, else the one its last opener that named
+   * a project named, else `TicketTrailOptions.defaultProject`'s. Null with
+   * no ticket or none known. Reactive. */
+  readonly project: string | null;
+  /** The person picked `project` for the ticket shown; it holds while that
+   * open is shown, over any later opener's. */
+  setProject(project: string): void;
   /** Whether the open shown asked for the focus and nothing ended the
    * ask (utils/openFocusRequest.svelte.ts). Reactive. */
   readonly focusAsked: boolean;
@@ -500,7 +514,8 @@ export interface TicketTrail {
   open(ref: TrackerTicketRef, seed: TicketSeed, from: 'list' | 'ticket'): void;
   /** Shows `open`, or nothing, with no trail and asking no focus: an open
    * no person made here (a thread's link, a board change). The ticket
-   * shown stays when it is the same ticket. */
+   * shown stays when it is the same ticket, and takes the project `open`
+   * names (`project`). */
   show(open: OpenTicket | null): void;
   /** A person's Back to the ticket this one was opened from, which asks
    * for the focus. False when the trail is empty. */
@@ -554,16 +569,33 @@ export interface TicketTrailOptions {
   readonly state: TicketTrailState;
   /** Whether the pane is on screen now; reactive. */
   readonly shown: () => boolean;
+  /** The project of a ticket no word names (`TicketTrail.project`): the
+   * Issues pane's board's. A ticket pane has none: a ticket moved there
+   * carries the project it had, and one opened there with none is the
+   * person's to pick. Reactive. */
+  readonly defaultProject?: () => string | null;
 }
 
 /** Holds the subscription of the ticket `state` shows until `destroy`;
  * create it in a component's setup. */
-export function createTicketTrail({ state, shown }: TicketTrailOptions): TicketTrail {
+export function createTicketTrail({ state, shown, defaultProject = () => null }: TicketTrailOptions): TicketTrail {
   let view = $state.raw<TicketTrail['view']>(null);
   // An unchanged ticket stops here, so a record replaced for its trail
   // alone subscribes nothing again.
   const ticket = $derived(state.ticket);
   const computer = $derived(ticket ? trackerComputer(ticket.ref.backend) : null);
+  // The ticket's project keeps these true. Three words name it, and the
+  // first that holds wins: the project the person picked in Work's picker
+  // for this open; else the one the last opener that named a project
+  // named (its OpenTicket's, or a later opener's that asked for the ticket
+  // already shown); else the default. A pick holds while its open is the
+  // one shown: no later opener replaces it. An opener that names no
+  // project leaves the word before it. A later opener's word changes only
+  // this: the open, its subscription and its screen stay. The word
+  // belongs to the open it was given for, so a new open, Back and Close
+  // fall back to their own.
+  let projectWord = $state.raw<{ readonly open: OpenTicket; readonly project: string; readonly picked: boolean } | null>(null);
+  const project = $derived(!ticket ? null : projectWord?.open === ticket ? projectWord.project : ticket.project ?? defaultProject());
 
   const stop = $effect.root(() => {
     $effect(() => {
@@ -594,6 +626,10 @@ export function createTicketTrail({ state, shown }: TicketTrailOptions): TicketT
     get computer() { return computer; },
     get depth() { return state.trail.length; },
     get shown() { return shown(); },
+    get project() { return project; },
+    setProject(next) {
+      if (ticket) projectWord = { open: ticket, project: next, picked: true };
+    },
     get held() { return state.ticket ? [...state.trail, state.ticket] : state.trail; },
     get focusAsked() { return state.focus.askedFor(view?.open ?? null); },
     focusTaken() {
@@ -605,15 +641,25 @@ export function createTicketTrail({ state, shown }: TicketTrailOptions): TicketT
         state.focus.ask(current);
         return;
       }
-      const next: OpenTicket = { ref, seed };
+      const next: OpenTicket = { ref, seed, project: null };
       state.set(next, from === 'ticket' && current ? [...state.trail, current].slice(-MAX_TICKET_TRAIL) : []);
       state.focus.ask(next);
     },
     show(open) {
       state.focus.end();
       const current = state.ticket;
-      if (!open) state.close();
-      else state.set(current && sameTicketRef(current.ref, open.ref) ? current : open, []);
+      if (!open) {
+        state.close();
+        return;
+      }
+      if (!current || !sameTicketRef(current.ref, open.ref)) {
+        state.set(open, []);
+        return;
+      }
+      state.set(current, []);
+      if (open.project !== null && !(projectWord?.open === current && projectWord.picked)) {
+        projectWord = { open: current, project: open.project, picked: false };
+      }
     },
     stepBack() {
       const trail = state.trail;
@@ -667,7 +713,7 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
   // only an answer read after it moves the board to another listing.
   let attachedAfter = 0;
   const computer = $derived(board ? trackerComputer(board.backend) : 'waiting');
-  const tickets = createTicketTrail({ state: localTicketTrailState(), shown: opts.shown });
+  const tickets = createTicketTrail({ state: localTicketTrailState(), shown: opts.shown, defaultProject: () => board?.projectId ?? null });
   const ticket = $derived(tickets.ticket);
   // A ticket asked for from outside the pane, while it waits on its
   // computer's boards (openRequested).
@@ -770,7 +816,7 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
       const request = requested;
       if (!request) return;
       const { ref } = request;
-      const open: OpenTicket = { ref, seed: request.seed };
+      const open: OpenTicket = { ref, seed: request.seed, project: request.project };
       const shown = board;
       if (shown && shown.backend === ref.backend && shown.connection === ref.connection) {
         untrack(() => {

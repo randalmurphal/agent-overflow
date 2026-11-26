@@ -165,7 +165,8 @@
       return;
     }
     if (!board) return;
-    openTicketPane({ ref: { backend: board.backend, connection: board.connection, issue: row.card.id }, seed }, { board: board.board });
+    // The pane has no board to fall back on: the card takes the board's project.
+    openTicketPane({ ref: { backend: board.backend, connection: board.connection, issue: row.card.id }, seed, project: board.projectId }, { board: board.board });
   }
 
   // The ticket open here moves into a pane of its own, which takes the
@@ -178,7 +179,9 @@
     const open = selection.ticket;
     if (!open || !board) return;
     const bridge = attachTrackerTicket(open.ref, false);
-    openTicketPane(open, { board: board.board, handoff: () => bridge.release() });
+    // The ticket keeps the project it has here: a ticket pane has no board
+    // to fall back on.
+    openTicketPane({ ...open, project: selection.tickets.project }, { board: board.board, handoff: () => bridge.release() });
     selection.tickets.close();
   }
 

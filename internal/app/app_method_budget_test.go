@@ -63,6 +63,9 @@ var methodServerBounds = map[string]time.Duration{
 	"CreateThread": hooked + 2*transport.DefaultMethodBudget,
 	// The pull request's head fetch, then its worktree's add.
 	"OpenPRThread": hooked + 2*transport.DefaultMethodBudget,
+	// The ticket's read, bounded by the default budget, then the
+	// worktree's add.
+	"StartTicketThread": hooked + 2*transport.DefaultMethodBudget,
 	// The primary provider, then the fallback, after the diff reads.
 	"GenerateCommitMessage": 2*commitmsg.Timeout + transport.DefaultMethodBudget,
 	"FinishDictation":       dictation.TranscribeBudget,

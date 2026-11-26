@@ -12,7 +12,7 @@ import type { PullRowView } from './pullRowView';
 const PULL: PullRowView = {
   key: 'k5', forge: 'github', number: 5, title: 'Add feature', url: '', state: 'pipeline_failed', group: 'needs_you',
   label: 'Pipeline failed', tone: 'error', projectName: 'Repo', author: 'you', viewerIsAuthor: true, age: '2h', times: '', draft: false,
-  crossRepository: false, ci: 'failed', approvals: null, unresolved: null,
+  crossRepository: false, ci: 'failed', approvals: null, unresolved: null, projectId: 'p1', tickets: [],
 };
 
 const PIPELINE: PipelineRowView = {

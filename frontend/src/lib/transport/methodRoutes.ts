@@ -220,6 +220,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3375683118: 'thread', // GetThreadWakeDetail
 	2442730827: 'thread', // GetThreadWorkerSummary
 	49371251: 'thread', // GetThreadWorktreeSetup
+	1106773146: 'home', // GetTicketWork
 	3815301456: 'thread', // GetTimelineUserMessageTicks
 	3380106838: 'home', // GetUIState
 	3135466533: 'all', // GetUsageStats
@@ -505,6 +506,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	531852766: 'home', // StartSSHComputer
 	2623175319: 'home', // StartSSHConnection
 	3009548683: 'selected', // StartTerminal
+	2291054583: 'project', // StartTicketThread
 	1961738625: 'home', // StartTrackerSprint
 	2580445357: 'thread', // StopBackgroundTasks
 	536320598: 'thread', // StopClaudeTask
@@ -684,6 +686,7 @@ export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
 	1443136041: 1800000, // SaveTrackerAttachment
 	2301582015: 180000, // SetTrackerEstimate
 	1201673152: 60000, // SpendProviderAccountReset
+	2291054583: 720000, // StartTicketThread
 	1961738625: 180000, // StartTrackerSprint
 	2692607191: 600000, // SubmitPRReview
 	3558393553: 60000, // ThreadOwnerChanges

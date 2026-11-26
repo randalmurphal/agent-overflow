@@ -52,6 +52,8 @@ function pullRow(index: number, group: string): PullRowView {
     ci: 'success',
     approvals: null,
     unresolved: null,
+    projectId: 'p1',
+    tickets: [],
   };
 }
 
@@ -87,6 +89,7 @@ function mountPulls() {
     shown: true,
     onOpen: () => {},
     onMenu: () => {},
+    onTicket: () => {},
     onRetry: () => {},
   });
   const app = mount(PullsList, { target: host, props });

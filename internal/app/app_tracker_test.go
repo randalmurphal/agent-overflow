@@ -29,7 +29,14 @@ import (
 // is built.
 func newTrackerTestApp(t *testing.T, configure func(*App)) *App {
 	t.Helper()
-	a := &App{store: storetest.Clone(t), configDir: t.TempDir(), version: "1.2.3", appCtx: t.Context()}
+	return newTrackerTestAppOn(t, storetest.Clone(t), configure)
+}
+
+// newTrackerTestAppOn is newTrackerTestApp over st, for a test that also
+// opens st's file.
+func newTrackerTestAppOn(t *testing.T, st *store.Store, configure func(*App)) *App {
+	t.Helper()
+	a := &App{store: st, configDir: t.TempDir(), version: "1.2.3", appCtx: t.Context()}
 	if configure != nil {
 		configure(a)
 	}

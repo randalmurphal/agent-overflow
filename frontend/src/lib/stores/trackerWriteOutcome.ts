@@ -1,14 +1,14 @@
 // What a tracker write's answer means for the person, for every screen
 // that writes (docs/architecture/tracker-backend.md, "Writes"): the write
 // is sent once, pinned to the computer that holds its connection, and its
-// answer, or the connection dropping before it, becomes one outcome. Each
+// answer, or no answer coming, becomes one outcome. Each
 // screen keeps its own pending writes and what an outcome does to what it
 // shows; the sentences differ only in what the person looks at to learn
 // what became of the write (`WriteSubject`).
 
 import type { RefusalView, ResourceView, WriteView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import { withBackendTarget } from '../transport/backends';
-import { DisconnectedError } from '../transport/wsClient';
+import { isTransportClassError } from './transportStatus.svelte';
 
 /** What became of a write, as the person reads it. */
 export type WriteOutcome =
@@ -21,7 +21,8 @@ export type WriteOutcome =
   | { readonly kind: 'unknown' | 'not_sent'; readonly message: string }
   /** The call failed: its error says why and what to do. */
   | { readonly kind: 'failed'; readonly error: unknown }
-  /** The connection to the computer dropped before the answer. */
+  /** No answer came: the connection to the computer dropped, or the call
+   * timed out while the computer may still hold it. */
   | { readonly kind: 'lost'; readonly message: string };
 
 /** What a screen's write sentences name. */
@@ -61,9 +62,9 @@ export function writeOutcome(view: WriteView, subject: WriteSubject): WriteOutco
   return { kind: 'applied', note: null };
 }
 
-/** The sentence of a write whose answer a dropped connection lost. */
+/** The sentence of a write whose answer never came. */
 export function lostWriteSentence(computer: string, subject: WriteSubject): string {
-  return `${computer}: the connection dropped before the answer, so the change may or may not have been made; look at ${subject.look} before you try again.`;
+  return `${computer}: no answer came back, so the change may or may not have been made; look at ${subject.look} before you try again.`;
 }
 
 /** A refusal as one sentence, with what the tracker said of each field,
@@ -135,7 +136,7 @@ export class LossConsent {
 
 /** Sends a write once on `backend`, the computer holding its connection,
  * and answers its outcome; `computer` names that computer in the sentence
- * of an answer the connection lost. A write sent other than as one call
+ * of an answer that never came. A write sent other than as one call
  * (an upload's bytes) says what its own failures mean through `failure`,
  * which answers null for one it does not know. Nothing retries. */
 export async function sendWrite(
@@ -150,7 +151,7 @@ export async function sendWrite(
   } catch (err) {
     const known = failure?.(err);
     if (known) return known;
-    return err instanceof DisconnectedError
+    return isTransportClassError(err)
       ? { kind: 'lost', message: lostWriteSentence(computer, subject) }
       : { kind: 'failed', error: err };
   }

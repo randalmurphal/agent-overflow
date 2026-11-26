@@ -94,6 +94,7 @@
   import type { CapturedError } from '../../stores/errorReports.svelte';
   import { currentPinnedReviewState } from '../../stores/reviewPanePinned.svelte';
   import { stepPaneBack } from '../../stores/paneBackSteps';
+  import { openNamedTicket } from '../../stores/ticketOpen';
   import { selectedBackend } from '../../stores/selectedBackend.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { paneFindDetailKey } from '../../stores/paneFind.svelte';
@@ -366,6 +367,7 @@
           shown={!(compact && detailShown)}
           onOpen={openRow}
           onMenu={openRowMenu}
+          onTicket={(row, ticket) => { void openNamedTicket(backend, ticket, row.projectId); }}
           onRetry={refresh}
         />
       {:else}

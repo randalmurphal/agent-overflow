@@ -222,6 +222,8 @@ export function restoreTicketPane(paneId: string, carrier: TicketPaneCarrier): v
   const ticket: OpenTicket = {
     ref: { backend: carrier.backend, connection: carrier.connection, issue: carrier.issue },
     seed: { key: '', title: '', card: null },
+    // The layout saves no project: Work asks the person for one.
+    project: null,
   };
   records.get(paneId)?.focus.end();
   records.set(paneId, { ticket, trail: [], board: null, focus: createOpenFocusRequest<OpenTicket>() });

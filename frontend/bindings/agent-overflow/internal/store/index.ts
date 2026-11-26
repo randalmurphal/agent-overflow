@@ -21,6 +21,7 @@ export {
     DiffReviewThreadContext,
     HeldWindow,
     Item,
+    KeyedTicket,
     PagedItems,
     PastAgentRowsCursor,
     PastThreadsCursor,
