@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+
+	sqlite "modernc.org/sqlite"
 )
 
 // sealed is a session filled with teamBoard and 3,000 changes, gated,
@@ -153,6 +155,32 @@ func TestGateRefusesAConnectionHoldingAnotherDatabase(t *testing.T) {
 	// Both sessions closed: the slots are free for two evaluations at once.
 	if len(e.slots) != 0 {
 		t.Fatalf("%d slots held after the refusals", len(e.slots))
+	}
+}
+
+// The gate's seals hold beneath the authorizer: with it taken off a
+// sealed connection, an ATTACH passes the attached-database limit of 0,
+// a write meets query_only, and every lowered limit reads back as set.
+func TestGateSealsHoldWithoutTheAuthorizer(t *testing.T) {
+	t.Parallel()
+	s := sealed(t)
+	ctx := context.Background()
+	err := s.conn.Raw(func(dc any) error {
+		return dc.(sqlite.AuthorizerRegisterer).RegisterAuthorizer(nil)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.conn.ExecContext(ctx, `ATTACH 'file::memory:' AS x`); err == nil || !strings.Contains(err.Error(), "too many attached databases") {
+		t.Errorf("ATTACH without the authorizer = %v; want the attached-database limit's refusal", err)
+	}
+	if _, err := s.conn.ExecContext(ctx, `INSERT INTO people VALUES ('x', 'y')`); err == nil || !strings.Contains(err.Error(), "readonly") {
+		t.Errorf("INSERT without the authorizer = %v; want query_only's refusal", err)
+	}
+	for _, l := range limits {
+		if n, err := sqlite.Limit(s.conn, l.id, -1); err != nil || n != l.value {
+			t.Errorf("limit %s = %d, %v; want %d", l.name, n, err, l.value)
+		}
 	}
 }
 
