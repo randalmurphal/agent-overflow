@@ -4,33 +4,55 @@ import (
 	"context"
 	"errors"
 	"log"
-	"net/url"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/tracker"
-	"agent-overflow/internal/tracker/trackerapi"
+	"agent-overflow/internal/trackerapp"
 )
+
+// ticketDevelopmentWait bounds how long Work's search waits for the
+// tracker's development data: as long as an interactive tracker call
+// waits for a closed rate gate (trackerapi's interactiveGateWait), so an
+// endpoint that fails or stalls holds the forge's rows back no longer.
+// Within it the transport still retries a 503 or a 429 it may.
+const ticketDevelopmentWait = 10 * time.Second
 
 // ticketDevelopment is a ticket's pull requests as the tracker's forge
 // integrations link them (trackerapp.Service.IssuePullRequests, Jira's
-// development data), read beside the forge search.
+// development data), read beside the forge search: the rows read, each
+// read that failed, the hold's error, and the wait when it passed first.
 type ticketDevelopment struct {
-	prs []tracker.LinkedPullRequest
-	err error
+	prs      []tracker.LinkedPullRequest
+	failures []trackerapp.DevelopmentFailure
+	err      error
+	timedOut time.Duration
 }
 
 // readTicketDevelopment reads what the tracker's forge integrations link
-// to issueID: on Jira one summary request, then one detail request per
+// to issueID, for at most ticketDevelopmentWait (the tracker budget in
+// tests): on Jira one summary request, then one detail request per
 // integration that links a pull request; on Linear none.
 func (a *App) readTicketDevelopment(ctx context.Context, connectionID, issueID string) ticketDevelopment {
+	wait := ticketDevelopmentWait
+	if a.trackerBudget > 0 {
+		wait = a.trackerBudget
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
 	svc, err := a.trackerService()
 	if err != nil {
 		return ticketDevelopment{err: err}
 	}
-	prs, err := svc.IssuePullRequests(ctx, connectionID, issueID)
-	return ticketDevelopment{prs: prs, err: err}
+	prs, failures, err := svc.IssuePullRequests(waitCtx, connectionID, issueID)
+	dev := ticketDevelopment{prs: prs, failures: failures, err: err}
+	if errors.Is(waitCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+		dev.timedOut = wait
+	}
+	return dev
 }
 
 // addDevelopment lists the pull requests the tracker links to the ticket
@@ -43,10 +65,7 @@ func (a *App) readTicketDevelopment(ctx context.Context, connectionID, issueID s
 // request the app can address is left out and counted. A failure is
 // said in DevelopmentProblem beside the other rows.
 func (r *ticketWorkRead) addDevelopment(dev ticketDevelopment) {
-	if dev.err != nil {
-		r.work.DevelopmentProblem = developmentProblem(dev.err)
-		return
-	}
+	r.work.DevelopmentProblem = developmentProblem(dev)
 	for _, linked := range dev.prs {
 		ref, err := gitops.ParsePRURL(linked.URL)
 		if err != nil {
@@ -83,20 +102,52 @@ func developmentState(pr tracker.LinkedPullRequest) string {
 	return pr.Status
 }
 
-// developmentProblem is why the tracker's development data could not be
-// read, as Work says it: the tracker's sentence for the failure, with the
-// endpoint that answered when one did.
-func developmentProblem(err error) string {
-	where := ""
-	if status, ok := errors.AsType[*trackerapi.StatusError](err); ok {
-		if u, perr := url.Parse(status.URL); perr == nil && u.Path != "" {
-			where = " (" + strings.TrimPrefix(u.Path, "/") + ")"
+// developmentProblem is what Work says of a development read that did
+// not answer whole, empty when it did: that it did not answer within its
+// wait, the hold's failure, or each failed read with where it was and
+// the status its message does not say.
+func developmentProblem(dev ticketDevelopment) string {
+	const failed = "Jira's development data could not be read"
+	switch {
+	case dev.timedOut > 0:
+		return "Jira's development data did not answer within " + waitText(dev.timedOut) + "; Refresh reads it again"
+	case dev.err != nil:
+		_, message := trackerRefusal(dev.err)
+		if message == "" {
+			log.Printf("ticket work: development data: %v", dev.err)
+			message = "the app's log has the cause"
 		}
+		return failed + ": " + message
+	case len(dev.failures) == 0:
+		return ""
 	}
-	_, message := trackerRefusal(err)
-	if message == "" {
-		log.Printf("ticket work: development data: %v", err)
-		message = "the app's log has the cause"
+	text := failed
+	for i, f := range dev.failures {
+		where := f.Where
+		if f.Status != 0 {
+			where = strings.TrimPrefix(where+", HTTP "+strconv.Itoa(f.Status), ", ")
+		}
+		switch {
+		case i > 0:
+			text += "; "
+		case where == "":
+			text += ": "
+		default:
+			text += " "
+		}
+		if where != "" {
+			text += "(" + where + "): "
+		}
+		text += f.Failure.Message
 	}
-	return "Jira's development data could not be read" + where + ": " + message
+	return text
+}
+
+// waitText is a wait as a person reads it: whole seconds in words, a
+// shorter wait (a test's) as Go writes it.
+func waitText(d time.Duration) string {
+	if d%time.Second == 0 {
+		return strconv.Itoa(int(d/time.Second)) + " seconds"
+	}
+	return d.String()
 }

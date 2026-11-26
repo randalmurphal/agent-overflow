@@ -12,8 +12,8 @@ import (
 // summary answers 200 with errors, configErrors and
 // summary.pullrequest.{overall.count, byInstanceType.<type>.count}, the
 // count 0 and byInstanceType empty for an issue with no pull request; the
-// detail answers 200 with errors and detail[].pullRequests[], the same
-// body for dataType pullrequest and branch. The fake answers the keys the
+// detail answers 200 with errors and detail[].pullRequests[] for dataType
+// pullrequest, the one the app reads. The fake answers the keys the
 // app reads; the other measured keys hold values it does not model and
 // are left out. Unmeasured, and unhandled here: an issue the site lacks
 // or the caller may not see, a detail for an instance type that links no
@@ -53,8 +53,7 @@ func devDetail(c *jiraCall) answer {
 	if is == nil || is.ID != c.query.Get("issueId") {
 		return unhandledf("dev-status detail of %q: an issue the site lacks is unmeasured", c.query.Get("issueId"))
 	}
-	// Measured: dataType branch answers the same body as pullrequest.
-	if dt := c.query.Get("dataType"); dt != "pullrequest" && dt != "branch" {
+	if dt := c.query.Get("dataType"); dt != "pullrequest" {
 		return unhandledf("dev-status detail dataType=%q", dt)
 	}
 	kind := c.query.Get("applicationType")

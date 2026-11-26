@@ -151,8 +151,11 @@ type Provider interface {
 	Details(ctx context.Context, issues []IssueID) (Details, error)
 	// PullRequests are the pull requests the tracker's forge
 	// integrations link to issue, from Jira's development panel, whose
-	// endpoints are undocumented. Linear fails wrapping ErrUnsupported
-	// before any request.
+	// endpoints are undocumented. It reads each integration apart: the
+	// rows read are returned beside errors.Join of each failed read's
+	// error, so one integration's failure leaves the others' rows. A site
+	// that keeps no such data fails wrapping ErrNoDevelopmentData; Linear
+	// fails wrapping ErrUnsupported before any request.
 	PullRequests(ctx context.Context, issue IssueID) ([]LinkedPullRequest, error)
 	// Comments is a page of issue's comments, newest first.
 	Comments(ctx context.Context, issue IssueID, page PageToken) (CommentPage, error)

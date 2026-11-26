@@ -75,13 +75,10 @@ func TestDevSummaryOfAnIssueWithNoPullRequestIsEmpty(t *testing.T) {
 func TestDevStatusAnswersNotAsMeasuredFail(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct{ path, body string }{
-		"summary without a summary":                   {devSummaryURL, `{"errors":[],"configErrors":[]}`},
-		"summary without its pull request part":       {devSummaryURL, `{"errors":[],"configErrors":[],"summary":{"branch":{}}}`},
-		"summary without its integrations":            {devSummaryURL, `{"errors":[],"configErrors":[],"summary":{"pullrequest":{"overall":{"count":0}}}}`},
-		"summary with an integration and no count":    {devSummaryURL, `{"errors":[],"configErrors":[],"summary":{"pullrequest":{"overall":{"count":1},"byInstanceType":{"x":{"name":"X"}}}}}`},
-		"detail without a detail list":                {devDetailURL, `{"errors":[]}`},
-		"detail without a pull request list":          {devDetailURL, `{"errors":[],"detail":[{"branches":[]}]}`},
-		"detail with a pull request that has no link": {devDetailURL, `{"errors":[],"detail":[{"pullRequests":[{"id":"a!1","status":"OPEN"}]}]}`},
+		"summary without its integrations":         {devSummaryURL, `{"errors":[],"configErrors":[],"summary":{"pullrequest":{"overall":{"count":0}}}}`},
+		"summary with an integration and no count": {devSummaryURL, `{"errors":[],"configErrors":[],"summary":{"pullrequest":{"overall":{"count":1},"byInstanceType":{"x":{"name":"X"}}}}}`},
+		"detail without a detail list":             {devDetailURL, `{"errors":[]}`},
+		"detail without a pull request list":       {devDetailURL, `{"errors":[],"detail":[{"branches":[]}]}`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -95,32 +92,94 @@ func TestDevStatusAnswersNotAsMeasuredFail(t *testing.T) {
 				_, err = c.DevPullRequests(t.Context(), "10101", gitlabType)
 			}
 			var shape *DevShapeError
-			if !errors.As(err, &shape) || !strings.Contains(err.Error(), "rest/dev-status/latest/issue/") || !strings.Contains(err.Error(), "undocumented and may have changed") {
-				t.Fatalf("err = %v; want a DevShapeError naming the endpoint and that it is undocumented", err)
+			call, _ := errors.AsType[*DevCallError](err)
+			if !errors.As(err, &shape) || call == nil || "/"+call.Path != tc.path || !strings.Contains(err.Error(), "undocumented and may have changed") {
+				t.Fatalf("err = %v; want a DevShapeError of the endpoint that says it is undocumented", err)
 			}
 		})
 	}
 }
 
+// A summary that says the site keeps no development data (unmeasured: a
+// site with no forge integration may answer so) is a *DevAbsentError:
+// a 404 the sign-in check confirms, an answer with no summary, and one
+// with no pull request part. A 404 the credential caused is not one.
+func TestDevSummaryOfASiteWithNoDataIsAbsent(t *testing.T) {
+	t.Parallel()
+	for name, reply := range map[string]jiratest.Handler{
+		"a 404 of the account": jiratest.Reply(404, `{"errorMessages":["Not found"]}`),
+		"no summary":           jiratest.Reply(200, `{"errors":[],"configErrors":[]}`),
+		"no pull request part": jiratest.Reply(200, `{"errors":[],"configErrors":[],"summary":{"branch":{}}}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := jiratest.NewServer(t)
+			c := newTestClient(t, f)
+			f.On("GET", devSummaryURL, reply)
+			_, err := c.DevSummary(t.Context(), "10101")
+			if _, ok := errors.AsType[*DevAbsentError](err); !ok {
+				t.Fatalf("err = %#v; want a DevAbsentError", err)
+			}
+			if _, ok := errors.AsType[*DevCallError](err); !ok {
+				t.Fatalf("err = %#v; want it of the summary", err)
+			}
+		})
+	}
+	f := jiratest.NewServer(t)
+	c := newTestClient(t, f)
+	f.SetAccount("")
+	f.On("GET", devSummaryURL, jiratest.Reply(404, `{"errorMessages":["Not found"]}`))
+	f.On("GET", "/rest/api/3/myself", jiratest.Reply(401, `{}`))
+	_, err := c.DevSummary(t.Context(), "10101")
+	if _, absent := errors.AsType[*DevAbsentError](err); absent {
+		t.Fatalf("a 404 the credential caused: %v", err)
+	}
+	if _, refused := errors.AsType[*trackerapi.AuthError](err); !refused {
+		t.Fatalf("a 404 the credential caused: %v; want the refusal", err)
+	}
+}
+
 // An element in errors or configErrors fails the read with the element
-// as given, cut short, since no element's fields have been measured.
+// as given, cut short, since no element's fields have been measured; the
+// first three are quoted and the rest counted.
 func TestDevStatusErrorsFailWithTheElementCutShort(t *testing.T) {
 	t.Parallel()
 	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	long := strings.Repeat("x", 400)
 	f.On("GET", devSummaryURL, jiratest.Reply(200, `{"errors":[],"configErrors":[{"message":"`+long+`"}],"summary":{"pullrequest":{"overall":{"count":0},"byInstanceType":{}}}}`))
-	f.On("GET", devDetailURL, jiratest.Reply(200, `{"errors":["the integration is down"],"detail":[]}`))
+	f.On("GET", devDetailURL, jiratest.Reply(200, `{"errors":["the integration is down","a","b","c","d"],"detail":[]}`))
 	_, err := c.DevSummary(t.Context(), "10101")
 	var dev *DevStatusError
-	if !errors.As(err, &dev) || dev.Path != "rest/dev-status/latest/issue/summary" || len(dev.Errors) != 1 ||
+	if !errors.As(err, &dev) || len(dev.Errors) != 1 || dev.More != 0 ||
 		dev.Errors[0] != (`{"message":"` + long)[:devStatusErrorBytes]+"…" {
 		t.Fatalf("summary err = %#v", err)
 	}
 	_, err = c.DevPullRequests(t.Context(), "10101", gitlabType)
-	if !errors.As(err, &dev) || !slices.Equal(dev.Errors, []string{`"the integration is down"`}) ||
-		err.Error() != `jira: rest/dev-status/latest/issue/detail answered errors: "the integration is down"` {
+	if !errors.As(err, &dev) || !slices.Equal(dev.Errors, []string{`"the integration is down"`, `"a"`, `"b"`}) || dev.More != 2 ||
+		err.Error() != `jira: rest/dev-status/latest/issue/detail for `+gitlabType+`: answered errors: "the integration is down"; "a"; "b" (and 2 more)` {
 		t.Fatalf("detail err = %v", err)
+	}
+}
+
+// A pull request with no link or no status is returned as given beside
+// the others of its answer, for the caller to judge.
+func TestDevPullRequestsReturnsAPullRequestWithNoLink(t *testing.T) {
+	t.Parallel()
+	f := jiratest.NewServer(t)
+	c := newTestClient(t, f)
+	f.On("GET", devDetailURL, jiratest.Reply(200, `{"errors":[],"detail":[{"pullRequests":[
+		{"name":"No link","status":"OPEN"},
+		{"name":"Fix","url":"https://gitlab.com/example/web/-/merge_requests/7","status":"MERGED"},
+		{"name":"No status","url":"https://gitlab.com/example/web/-/merge_requests/8"}]}]}`))
+	prs, err := c.DevPullRequests(t.Context(), "10101", gitlabType)
+	want := []DevPullRequest{
+		{Name: "No link", Status: "OPEN"},
+		{Name: "Fix", URL: "https://gitlab.com/example/web/-/merge_requests/7", Status: "MERGED"},
+		{Name: "No status", URL: "https://gitlab.com/example/web/-/merge_requests/8"},
+	}
+	if err != nil || !slices.Equal(prs, want) {
+		t.Fatalf("pull requests = %+v, %v", prs, err)
 	}
 }
 
@@ -133,7 +192,8 @@ func TestDevStatusRefusalSaysItsStatusAndEndpoint(t *testing.T) {
 	f.On("GET", devSummaryURL, jiratest.Reply(403, `{"errorMessages":["You do not have the permission to see the specified issue."]}`))
 	_, err := c.DevSummary(t.Context(), "10101")
 	var status *trackerapi.StatusError
-	if !errors.As(err, &status) || status.Status != 403 || !strings.Contains(status.URL, "rest/dev-status/latest/issue/summary") {
+	call, _ := errors.AsType[*DevCallError](err)
+	if !errors.As(err, &status) || status.Status != 403 || call == nil || call.Path != "rest/dev-status/latest/issue/summary" {
 		t.Fatalf("err = %#v", err)
 	}
 }
@@ -153,8 +213,8 @@ func TestDevPullRequestsReadsEachPullRequestAndNoBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []DevPullRequest{
-		{ID: "example/web!7", Name: "Fix the cache", URL: "https://gitlab.com/example/web/-/merge_requests/7", Status: "MERGED", Author: "User 1", Branch: "WEB-1-fix"},
-		{ID: "example/sub/api!12", Name: "Draft the index", URL: "https://gitlab.com/example/sub/api/-/merge_requests/12", Status: "OPEN", Author: "User 2", Branch: "index"},
+		{Name: "Fix the cache", URL: "https://gitlab.com/example/web/-/merge_requests/7", Status: "MERGED", Author: "User 1", Branch: "WEB-1-fix"},
+		{Name: "Draft the index", URL: "https://gitlab.com/example/sub/api/-/merge_requests/12", Status: "OPEN", Author: "User 2", Branch: "index"},
 	}
 	if !slices.Equal(prs, want) {
 		t.Fatalf("pull requests = %+v", prs)
@@ -199,8 +259,8 @@ var devCases = map[string]func(t *testing.T, f *fakeEnv){
 		seedPullRequests(t, f)
 		prs := got(f.c.DevPullRequests(f.ctx, "10101", gitlabType)).must(t)
 		want := []DevPullRequest{
-			{ID: "example/web!7", Name: "Fix the cache", URL: "https://gitlab.com/example/web/-/merge_requests/7", Status: "MERGED", Author: "User 1", Branch: "WEB-1-fix"},
-			{ID: "example/web!9", Name: "Undo the cache", URL: "https://gitlab.com/example/web/-/merge_requests/9", Status: "DECLINED", Branch: "WEB-1-undo"},
+			{Name: "Fix the cache", URL: "https://gitlab.com/example/web/-/merge_requests/7", Status: "MERGED", Author: "User 1", Branch: "WEB-1-fix"},
+			{Name: "Undo the cache", URL: "https://gitlab.com/example/web/-/merge_requests/9", Status: "DECLINED", Branch: "WEB-1-undo"},
 		}
 		if !slices.Equal(prs, want) {
 			t.Fatalf("pull requests of WEB-1 = %+v", prs)

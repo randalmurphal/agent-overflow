@@ -245,10 +245,14 @@ func ClassifyFailure(kind string, err error) Failure {
 	case errors.As(err, &status):
 		return Failure{Kind: FailureTracker, Message: fmt.Sprintf("%s answered HTTP %d", answered(status.Tracker), status.Status)}
 	case errors.As(err, &devShape):
-		return Failure{Kind: FailureTracker, Message: "Jira's development data answered in a form Agent Overflow does not know (" + devShape.Why +
+		return Failure{Kind: FailureTracker, Message: "Jira answered in a form Agent Overflow does not know (" + devShape.Why +
 			"); Jira does not document these endpoints, and they may have changed"}
 	case errors.As(err, &devErrors):
-		return Failure{Kind: FailureTracker, Message: "Jira's development data reported errors from its forge integration: " + strings.Join(devErrors.Errors, "; ")}
+		message := "Jira reported errors: " + strings.Join(devErrors.Errors, "; ")
+		if devErrors.More > 0 {
+			message += fmt.Sprintf(" (and %d more)", devErrors.More)
+		}
+		return Failure{Kind: FailureTracker, Message: message}
 	case errors.As(err, &tooLarge):
 		return Failure{Kind: FailureTracker, Message: answered(tooLarge.Tracker) + " sent an answer larger than Agent Overflow reads"}
 	case errors.Is(err, trackerapi.ErrCredentialChanged):

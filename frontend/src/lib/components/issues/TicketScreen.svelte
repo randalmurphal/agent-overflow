@@ -226,9 +226,11 @@
   const CARD_TARGETS = ['status', fieldTarget('assignee'), fieldTarget('priority'), 'points'] as const;
 
   // Undefined until the screen measured itself: until then it lays out
-  // wide whatever its width.
+  // wide whatever its width, without Work, whose mount reads the ticket's
+  // pull requests and which a narrow screen would unmount at once.
   let width = $state<number | undefined>();
-  const narrow = $derived(width !== undefined && width > 0 && width < NARROW_PX);
+  const measured = $derived(width !== undefined);
+  const narrow = $derived(measured && width! > 0 && width! < NARROW_PX);
   let railOpen = $state(false);
   $effect(() => {
     if (!narrow) railOpen = false;
@@ -241,7 +243,7 @@
   $effect(() => {
     if (narrow && startWorkAsked) railOpen = true;
   });
-  const workAsked = $derived(startWorkAsked && width !== undefined);
+  const workAsked = $derived(startWorkAsked && measured);
   function closeDetails(): void {
     railOpen = false;
     if (startWorkAsked) onStartWorkEnded();
@@ -730,7 +732,9 @@
       {/if}
     {/if}
   </div>
-  <TicketWork {attachment} {project} {onProject} me={account} startWorkAsked={workAsked} onStartWorkTaken={onStartWorkEnded} />
+  {#if measured}
+    <TicketWork {attachment} {project} {onProject} me={account} startWorkAsked={workAsked} onStartWorkTaken={onStartWorkEnded} />
+  {/if}
 {/snippet}
 
 {#snippet content()}

@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/harness/forgefake"
@@ -62,7 +64,7 @@ func lastTrackerSeq(f workSearchFixture) int {
 // request; GetTicketWork asks Jira nothing.
 func TestSearchTicketWorkListsJirasDevelopmentData(t *testing.T) {
 	t.Parallel()
-	f := newWorkSearchFixtureOn(t, devSite(t,
+	f := newWorkSearchFixtureOn(t, trackerBoardSetup{site: devSite(t,
 		trackerfake.JiraPullRequest{InstanceType: devInstance, ID: "example/ops!4", Name: "Rework the cache", URL: "https://gitlab.com/example/ops/-/merge_requests/4",
 			Status: "MERGED", Author: "User 1", Branch: "web-1-cache"},
 		trackerfake.JiraPullRequest{InstanceType: devInstance, ID: "example/web!1", Name: "Jira's title", URL: "https://github.com/example/web/pull/1", Status: "OPEN"},
@@ -70,7 +72,7 @@ func TestSearchTicketWorkListsJirasDevelopmentData(t *testing.T) {
 			Status: "MERGED", Author: "User 1"},
 		trackerfake.JiraPullRequest{InstanceType: devInstance, ID: "example/sub/api!5", Name: "Spike", URL: "https://gitlab.com/example/sub/api/-/merge_requests/5", Status: "UNKNOWN"},
 		trackerfake.JiraPullRequest{InstanceType: devInstance, ID: "x", Name: "Elsewhere", URL: "https://bitbucket.org/example/web/pull-requests/3", Status: "OPEN"},
-	), forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: []forgefake.Pull{
+	)}, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: []forgefake.Pull{
 		{Number: 1, Title: "WEB-1 Fix the login", HeadRef: "fix-login", Author: "user1", AuthorName: "User 1"},
 	}}}})
 	// One linked thread was last seen with 1, which the forge finds, and
@@ -195,4 +197,84 @@ func TestSearchTicketWorkOfALinearTicketSaysNoDevelopmentData(t *testing.T) {
 		t.Errorf("a Linear ticket's Work asked the trackers %d times: %+v", len(got), got)
 	}
 
+}
+
+// devGitHub is a second integration's instance type.
+const devGitHub = "github-integration"
+
+// One integration's failure leaves what another integration answered.
+func TestSearchTicketWorkKeepsWhatOneIntegrationAnsweredBesideAnotherFailure(t *testing.T) {
+	t.Parallel()
+	f := newWorkSearchFixtureOn(t, trackerBoardSetup{site: devSite(t,
+		trackerfake.JiraPullRequest{InstanceType: devInstance, ID: "example/ops!4", Name: "Rework the cache", URL: "https://gitlab.com/example/ops/-/merge_requests/4", Status: "MERGED"},
+		trackerfake.JiraPullRequest{InstanceType: devGitHub, ID: "example/api#9", Name: "Elsewhere", URL: "https://github.com/example/api/pull/9", Status: "OPEN"},
+	)}, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web"}}})
+	if err := f.e.AddFault(trackerfake.Fault{Origin: trackerBoardOrigin, Route: "GET rest/dev-status/latest/issue/detail", Query: map[string]string{"applicationType": devGitHub},
+		Kind: trackerfake.FaultRefuse, Status: 403, Body: json.RawMessage(`{"errorMessages":["no"]}`)}); err != nil {
+		t.Fatal(err)
+	}
+	work, err := f.a.SearchTicketWork(f.ctx, f.conn.ID, "10101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(work.PullRequests) != 1 || work.PullRequests[0].URL != "https://gitlab.com/example/ops/-/merge_requests/4" {
+		t.Errorf("rows %+v; want the GitLab merge request", work.PullRequests)
+	}
+	if want := "Jira's development data could not be read (rest/dev-status/latest/issue/detail for " + devGitHub + "): Jira refused access (HTTP 403): the token may not make this request"; work.DevelopmentProblem != want {
+		t.Errorf("problem = %q\nwant %q", work.DevelopmentProblem, want)
+	}
+}
+
+// Jira's development data that does not answer holds the forge's rows
+// back for a bounded time, and Work says it did not answer.
+func TestSearchTicketWorkWaitsABoundedTimeForJirasDevelopmentData(t *testing.T) {
+	t.Parallel()
+	f := newWorkSearchFixtureOn(t, trackerBoardSetup{site: trackerBoardSite(), budget: 300 * time.Millisecond}, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: []forgefake.Pull{
+		{Number: 1, Title: "WEB-1 Fix the login", HeadRef: "fix-login"},
+	}}}})
+	if err := f.e.AddFault(trackerfake.Fault{Origin: trackerBoardOrigin, Route: "GET rest/dev-status/latest/issue/summary", Kind: trackerfake.FaultHold}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.e.ClearFaults(trackerBoardOrigin, "") })
+	work, err := f.a.SearchTicketWork(f.ctx, f.conn.ID, "10101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(work.PullRequests) != 1 || work.PullRequests[0].Ref != workSearchPR(1) {
+		t.Errorf("the forge's rows: %+v", work.PullRequests)
+	}
+	if want := "Jira's development data did not answer within 300ms; Refresh reads it again"; work.DevelopmentProblem != want {
+		t.Errorf("problem = %q\nwant %q", work.DevelopmentProblem, want)
+	}
+}
+
+// A refusal of the credential and a rate limit are said with their HTTP
+// status and the endpoint, and a site that answers the summary 404 (as
+// one with no forge integration may; unmeasured) says nothing.
+func TestSearchTicketWorkSaysEachRefusalWithItsStatus(t *testing.T) {
+	t.Parallel()
+	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web"}}})
+	for _, tc := range []struct {
+		name  string
+		fault trackerfake.Fault
+		want  string
+	}{
+		{"a 404", trackerfake.Fault{Kind: trackerfake.FaultRefuse, Status: 404, Body: json.RawMessage(`{"errorMessages":["Not found"]}`), Times: 1}, ""},
+		{"a refused token", trackerfake.Fault{Kind: trackerfake.FaultRefuse, Status: 401, Body: json.RawMessage(`{"errorMessages":["no"]}`), Times: 1},
+			"Jira's development data could not be read (rest/dev-status/latest/issue/summary, HTTP 401): "},
+		{"a rate limit", trackerfake.Fault{Kind: trackerfake.FaultRateLimit, RetryAfter: 3600, Times: 1},
+			"Jira's development data could not be read (rest/dev-status/latest/issue/summary, HTTP 429): Jira is limiting requests until "},
+	} {
+		tc.fault.Origin, tc.fault.Route = trackerBoardOrigin, "GET rest/dev-status/latest/issue/summary"
+		if err := f.e.AddFault(tc.fault); err != nil {
+			t.Fatal(err)
+		}
+		work, err := f.a.SearchTicketWork(f.ctx, f.conn.ID, "10101")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.want == "" && work.DevelopmentProblem != "" || !strings.HasPrefix(work.DevelopmentProblem, tc.want) {
+			t.Errorf("%s: problem = %q\nwant it to start %q", tc.name, work.DevelopmentProblem, tc.want)
+		}
+	}
 }
