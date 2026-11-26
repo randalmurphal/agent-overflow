@@ -5,14 +5,12 @@
   // the review pinned to the pull request, the Pull requests page's
   // (`ReviewPane`). Under compact the pane's header holds the one Back, so
   // the views the review hosts (a CI log, the conflicts) drop theirs. The
-  // review's find is a surface nested in the pane (`paneFindSurface`), so
-  // mod+f searches it while the person is in it, the board's or no find
-  // otherwise. The host pane owns the review's states
+  // review's find (`findKey`) is the surface the host declares over the
+  // bar and this. The host pane owns the review's states
   // (`reviewStateForPR`), disposed when this goes, so nothing polls the
   // pull request once it is off screen.
   import { onDestroy, onMount } from 'svelte';
   import { provideHostedBack } from '../panes/hostedBack';
-  import { paneFindSurface } from '../panes/paneFindRegion';
   import ReviewPane from '../review/ReviewPane.svelte';
   import type { TicketPullRequestOpen } from '../../stores/issuesPane.svelte';
   import { paneFindRegionKey } from '../../stores/paneFind.svelte';
@@ -50,7 +48,6 @@
   class="flex min-h-0 min-w-0 flex-1 flex-col focus:outline-none"
   tabindex="-1"
   data-testid="ticket-review-body"
-  {@attach paneFindSurface(hostPaneId, () => findKey)}
 >
   {#key prKey(open.pr)}
     <ReviewPane pr={subject} userInitiated={true} {findKey} />

@@ -3,16 +3,20 @@
 // projects, through the shipped UI, the real backend, the fake Jira and the
 // fake forge. Covered: a merged pull request whose repository a project
 // here has as its origin opens its review in the ticket's place, with its
-// diff, its state and its number and title over it, the ticket inert under
-// it; Open on GitHub opens its page; on desktop mod+f searches the review
+// diff, its state and its title, its number in the bar over it, the ticket
+// hidden and inert under it; Open on GitHub opens its page; on desktop
+// mod+f searches the review
 // and Escape closes that find first; Back (Escape on desktop, the browser's
 // Back on the phone, the same ladder as Android's) closes a CI log open in
 // the review, then the review, and the ticket shows as it was with its
 // Work not read again; the bar's Back on desktop and the header's on the
 // phone do the same; a pull request of a fork's parent, which the fork's
-// checkout cannot show, opens on the forge; and on desktop the review
+// checkout cannot show, opens on the forge; a review whose code fails to
+// load keeps its bar, Back and Open on GitHub; on desktop the review
 // beside the Backlog at 380 px keeps its bar and title bar inside the
-// ticket's column.
+// ticket's column; and on desktop, in the ticket's own pane, the review's
+// bar is the pane's header, painted over nothing of the ticket's, and the
+// pane-navigation chord puts the keyboard in the review.
 
 import type { Locator, Page } from '@playwright/test';
 
@@ -89,9 +93,10 @@ export function registerTicketWorkReviewFlow({ compact }: WorkSurface): void {
     await openRow(work, compact);
     const { shown, review } = await shownReview(pane);
     await expect(shown.getByTestId('ticket-review-number')).toHaveText('#801');
-    await expect(shown.getByTestId('ticket-review-title')).toHaveText(TITLE);
+    await expect(review.getByTestId('review-pr-title')).toHaveAttribute('title', TITLE);
     await expect(review.getByTestId('review-pr-state')).toHaveText(/merged/i);
     await expect(under).toHaveAttribute('inert', '');
+    await expect(under).toBeHidden();
     // The phone's header holds the one Back.
     await expect(shown.getByTestId('ticket-review-back')).toHaveCount(compact ? 0 : 1);
     if (compact) await expect(pane.getByTestId('issues-back')).toBeVisible();
@@ -127,6 +132,7 @@ export function registerTicketWorkReviewFlow({ compact }: WorkSurface): void {
     else await press(shown.getByTestId('ticket-review-back'), compact);
     await expect(shown).toHaveCount(0);
     await expect(under).not.toHaveAttribute('inert');
+    await expect(under).toBeVisible();
     await expect(ticket).toHaveAttribute('data-issue', WEB1);
     await expect(work).toBeVisible();
     expect(await forgeOps(harness, 'PullsByKey')).toHaveLength(searches);
@@ -167,7 +173,69 @@ export function registerTicketWorkReviewFlow({ compact }: WorkSurface): void {
     await expect(page.getByTestId('ticket-review')).toHaveCount(0);
   });
 
+  test('a review whose code fails to load keeps its bar, Back and the forge link', async ({ harness, page }) => {
+    test.setTimeout(150_000);
+    const { repo } = await reviewProject(harness, compact ? 'compact-work-review-fail' : 'work-review-fail');
+    const opens = hostOpens(page);
+    await harness.open(page);
+    const { work } = await openWork(page, WEB1, compact);
+    await page.route(/\/TicketReview-[^/]*\.js(\?|$)/, (route) => route.abort());
+    await openRow(work, compact);
+    const pane = page.getByTestId('issues-pane');
+    const shown = pane.getByTestId('ticket-review');
+    await expect(shown.getByTestId('ticket-review-load-error')).toBeVisible({ timeout: 30_000 });
+    await expect(shown.getByTestId('ticket-review-number')).toHaveText('#801');
+    await press(shown.getByTestId('ticket-review-forge'), compact);
+    await expect.poll(opens).toEqual([`https://github.com/${repo}/pull/801`]);
+    if (compact) await press(pane.getByTestId('issues-back'), true);
+    else await press(shown.getByTestId('ticket-review-back'), false);
+    await expect(shown).toHaveCount(0);
+    await expect(work).toBeVisible();
+  });
+
   if (!compact) {
+    test('in the ticket\'s own pane the review\'s bar is the pane\'s header over nothing of the ticket\'s, and a pane move puts the keyboard in the review', async ({ harness, page }) => {
+      test.setTimeout(180_000);
+      await page.setViewportSize({ width: 1800, height: 900 });
+      await reviewProject(harness, 'work-review-own');
+      await harness.open(page);
+      const issues = await openIssuesPane(page, false);
+      const card = issues.locator(`[data-testid="issues-card"][data-issue="${WEB1}"]`);
+      await expect(card).toBeVisible({ timeout: 30_000 });
+      await card.getByTestId('issues-card-open').click({ modifiers: ['ControlOrMeta'] });
+      const own = page.locator('section[data-pane-kind="ticket"]');
+      const ticket = own.getByTestId('ticket-screen');
+      await expect(ticket).toHaveAttribute('data-issue', WEB1);
+      await openRow(await workOf(ticket, false), false);
+      const { shown } = await shownReview(own);
+
+      // What paints at the bar's number and Back is the review's, not the
+      // ticket's header under it.
+      for (const part of [shown.getByTestId('ticket-review-number'), shown.getByTestId('ticket-review-back'), shown.getByTestId('ticket-review-forge')]) {
+        await expect(part).toBeVisible();
+        const box = (await part.boundingBox())!;
+        const hit = await page.evaluate(([x, y]) => {
+          const el = document.elementFromPoint(x, y);
+          return el?.closest('[data-testid="ticket-review"]') ? 'review' : el?.closest('[data-testid="ticket-under-review"]') ? 'ticket' : String(el?.tagName);
+        }, [box.x + box.width / 2, box.y + box.height / 2]);
+        expect(hit, `${await part.getAttribute('data-testid')} is painted by`).toBe('review');
+      }
+      await expect(own.getByTestId('ticket-key')).toBeHidden();
+
+      // Out to the Issues pane and back by the chord: the keyboard lands in
+      // the review's diff, and what is typed after it reaches no other pane.
+      await page.keyboard.press('Alt+h');
+      await expect(page.locator('section[data-pane-kind="issues"]')).toHaveAttribute('data-pane-focused', 'true');
+      await page.keyboard.press('Alt+l');
+      await expect(own).toHaveAttribute('data-pane-focused', 'true');
+      await expect.poll(() => page.evaluate(() => {
+        const active = document.activeElement;
+        if (!active || active === document.body) return 'body';
+        if (active.closest('[data-testid="ticket-under-review"]')) return 'ticket';
+        return active.closest('[data-testid="ticket-review"]') && active.hasAttribute('data-pane-scroller') ? 'review scroller' : active.getAttribute('data-testid') ?? active.tagName;
+      })).toBe('review scroller');
+    });
+
     test('the review beside the Backlog at 380 px keeps its bar and title bar inside the ticket\'s column', async ({ harness, page }, testInfo) => {
       test.setTimeout(180_000);
       await page.setViewportSize({ width: 1600, height: 900 });

@@ -544,7 +544,9 @@ most 500 matches of each kind and says so when there were more.
 - A pull request row opens its review in the ticket's place, the one the
   Pull requests page shows, in any state: over the board or beside the
   list, in the ticket's own pane, full screen on the phone. A bar over it
-  holds Back, the number and title, and Open on GitHub or GitLab. Find
+  holds Back, the number and Open on GitHub or GitLab, and stays when the
+  review cannot load. Nothing of the ticket shows or takes the keyboard
+  under it. Find
   searches the review while the person is in it. Back closes what is open
   in the review (a CI log, the conflicts, the phone's file list), then
   shows the ticket as it was. A row opens on the forge instead when no

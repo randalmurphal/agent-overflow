@@ -2098,22 +2098,31 @@ delete is refused and the links the delete read are the ones it ends.
   hold it; the merged and closed pull requests its linked threads were
   last seen with; and the branches that name the key in the projects
   listing the connection's boards, the pull requests' projects and the
-  linked threads' projects, a branch a listed pull request names folded
-  into it. A stored list's project that was removed since (the list
+  linked threads' projects. A row names the project it was listed
+  under: the stored list's, the linked thread's, or the one whose branch
+  the forge's lookup found it by. A branch folds into a listed pull
+  request whose head it is: one listed under the branch's project, or
+  one listed under no project whose repository is the branch's
+  project's origin, since one ticket's branches can share a name across
+  repositories. A stored list's project that was removed since (the list
   stays until the Pull requests page's next read prunes it) keeps its
-  rows, which name no project, as a linked thread's do, and has no
-  branches read. Each pull request names the project that can show it in
-  the app (`ReviewProjectID`): one of those projects whose origin is the
-  pull request's repository, its own project first, since a review
+  rows, which name no project, and has no branches read. Each pull
+  request names the project that can show it in the app
+  (`ReviewProjectID`): one of the computer's projects whose origin is
+  the pull request's repository, its own project first, since a review
   fetches the pull request's refs from origin
   (`git.Core.EnsurePRObjects`), so a fork's checkout cannot show its
   parent's pull request; none when no project can, and the row opens on
-  the forge. A repository whose
-  branches cannot be read is a problem beside the rest. At 2,000 stored
-  rows over 10 repositories and a 500-branch project it costs 18 ms and
-  4 MB an open, 23 ms and 5 MB when every list names the key
-  (`TestTicketWorkCostAtRealSize`); a 200-row landing's tickets cost
-  0.5 ms. It sends no forge or tracker request.
+  the forge. Every project's origin is read for that only when the
+  answer lists a pull request. A repository whose branches cannot be
+  read is a problem beside the rest. At 2,000 stored rows over 10
+  repositories, a 500-branch project and 30 other projects it costs
+  about 29 ms and 4 MB an open, 32 ms and 5 MB when every list names the
+  key, the origins cached (3 ms and 90 KB of that are the 31 origins; the
+  first read in five minutes runs one git process per project, 136 ms
+  for 31); an open that lists no pull request reads no other project's
+  origin (`TestTicketWorkCostAtRealSize`); a 200-row landing's tickets
+  cost 0.7 ms. It sends no forge or tracker request.
 - **`SearchTicketWork`** (home route, the same scopes, budget 2m15s from
   entry: every forge request runs within it, and no project's local read
   starts after it) is

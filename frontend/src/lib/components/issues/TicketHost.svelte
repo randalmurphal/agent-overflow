@@ -35,7 +35,11 @@
   // inert scroller); and Back and the forge link are there whether or not
   // the review loads. The host owns the bar (Back, the number, Open on
   // GitHub/GitLab; in a ticket's own pane the pane's header); the review
-  // body (TicketReview) loads on the first open. Under compact the pane's
+  // body (TicketReview) loads on the first open. The review's find is a
+  // surface nested in the pane over the bar and the body
+  // (`paneFindSurface`), once the review provides it, so mod+f searches it
+  // while the person is in it, the board's or no find otherwise. Under
+  // compact the pane's
   // header holds the one Back, so the bar has none. Back steps out of
   // what is open in the review, then shows the ticket.
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
@@ -45,12 +49,14 @@
   import IconButton from '../primitives/IconButton.svelte';
   import RenderBoundary from '../shared/RenderBoundary.svelte';
   import ToolPaneHeader from '../panes/ToolPaneHeader.svelte';
+  import { paneFindSurface } from '../panes/paneFindRegion';
   import { pullNumberLabel } from '../pulls/pullRowView';
   import { openPullOnForge } from './ticketPullOnForge';
   import type TicketScreen from './TicketScreen.svelte';
   import { attachedBackendEntry, backendDisplayName } from '../../stores/attachedBackends.svelte';
   import type { TicketPlacement, TicketPullRequestOpen, TicketSeed, TicketTrail } from '../../stores/issuesPane.svelte';
   import { stepPaneBack } from '../../stores/paneBackSteps';
+  import { hasPaneFindProvider, paneFindRegionKey } from '../../stores/paneFind.svelte';
   import { openTicketPane } from '../../stores/ticketPanes.svelte';
   import { getTransportStatusFor } from '../../stores/transportStatus.svelte';
   import { isTransportOutage } from '../../transport/wsClient';
@@ -77,6 +83,8 @@
   let { trail, board, compact, placement, onOwnPane, pane, hostPaneId }: Props = $props();
 
   const view = $derived(trail.view);
+  // The find of the review shown in the ticket's place (TicketReview's).
+  const reviewFindKey = $derived(paneFindRegionKey(hostPaneId, 'pull-request'));
   // The home computer's key is the empty string.
   const backend = $derived(trail.ticket?.ref.backend ?? null);
   const computerName = $derived.by(() => {
@@ -191,7 +199,7 @@
     {/await}
     </div>
     {#if review}
-      <div class="absolute inset-0 flex min-h-0 flex-col bg-surface-0" data-testid="ticket-review" data-pr={prKey(review.pr)}>
+      <div class="absolute inset-0 flex min-h-0 flex-col bg-surface-0" data-testid="ticket-review" data-pr={prKey(review.pr)} {@attach paneFindSurface(hostPaneId, () => hasPaneFindProvider(reviewFindKey) ? reviewFindKey : null)}>
         {@render reviewBar(review)}
         {#await loadTicketReview()}
           <p class="px-4 py-6 text-sm text-fg-muted" role="status" data-testid="ticket-review-loading">Opening the pull request…</p>
