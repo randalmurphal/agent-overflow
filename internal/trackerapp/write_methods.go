@@ -210,13 +210,14 @@ func (s *Service) DeleteWorklog(ctx context.Context, id string, in WorklogDelete
 // Failure is why a refresh could not read them from the tracker: they
 // are then as the mirror held them before.
 // Drafted are the author's time draft entries of the range (time_draft.go),
-// every state, read in the same snapshot.
+// every state, read in the same snapshot; a computer from before the time
+// draft answers none.
 type WorklogDays struct {
 	Worklogs []WorklogView   `json:"worklogs"`
 	More     bool            `json:"more,omitempty"`
 	Unread   []string        `json:"unread,omitempty"`
 	Failure  *FailureView    `json:"failure,omitempty"`
-	Drafted  []TimeEntryView `json:"drafted"`
+	Drafted  []TimeEntryView `json:"drafted,omitempty"`
 	// readAt is when each read day was last read, Unix milliseconds.
 	readAt map[string]int64
 }

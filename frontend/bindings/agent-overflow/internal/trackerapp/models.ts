@@ -2472,8 +2472,9 @@ export class SearchPageView {
  * sprint (tracker.SearchQuery); Page is the token the previous page
  * returned, empty for the first, and Limit the most cards a page holds
  * (0: the most there are). Status is a status's name; Group a status
- * group by the name a status view gives it (StatusView.Group), or "open"
- * for every group but done and canceled; at most one of the two.
+ * group by the name a status view gives it (StatusView.Group), or
+ * GroupNotDone for every group but done and canceled (SearchGroups); at
+ * most one of the two.
  */
 export class SearchRequest {
     "text"?: string;
@@ -3794,22 +3795,20 @@ export class UserView {
  * Failure is why a refresh could not read them from the tracker: they
  * are then as the mirror held them before.
  * Drafted are the author's time draft entries of the range (time_draft.go),
- * every state, read in the same snapshot.
+ * every state, read in the same snapshot; a computer from before the time
+ * draft answers none.
  */
 export class WorklogDays {
     "worklogs": WorklogView[];
     "more"?: boolean;
     "unread"?: string[];
     "failure"?: FailureView | null;
-    "drafted": TimeEntryView[];
+    "drafted"?: TimeEntryView[];
 
     /** Creates a new WorklogDays instance. */
     constructor($$source: Partial<WorklogDays> = {}) {
         if (!("worklogs" in $$source)) {
             this["worklogs"] = [];
-        }
-        if (!("drafted" in $$source)) {
-            this["drafted"] = [];
         }
 
         Object.assign(this, $$source);
