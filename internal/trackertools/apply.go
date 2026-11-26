@@ -142,12 +142,12 @@ func (s *Server) apply(ctx context.Context, caller Caller, plans []*planned) ([]
 // wroteTexts marks p's edited texts the session's own at the version its
 // writes left; every other text of the ticket is unread there.
 func (s *Server) wroteTexts(caller Caller, p *planned) {
-	card, ok, err := s.t.MirrorCard(p.t.connection, p.d.Card.ID)
+	v, ok, err := s.t.MirrorIssue(p.t.connection, p.d.Card.ID)
 	switch {
 	case err != nil:
 		s.logf("tracker tools: read %s after its write: %v", p.key, err)
 	case ok:
-		s.marks.wrote(caller, markKey{p.t.connection, p.d.Card.ID}, p.d.Card.Updated, card.Updated, p.texts)
+		s.marks.wrote(caller, markKey{p.t.connection, p.d.Card.ID}, p.d.Card.Updated, v.Card.Updated, p.texts)
 	}
 }
 

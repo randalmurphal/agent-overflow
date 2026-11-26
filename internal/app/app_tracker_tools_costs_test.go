@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/harness/trackerfake"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/transport"
 )
@@ -113,8 +114,18 @@ func costLinear(n int) trackerfake.LinearWorkspace {
 // lists the board of kind's tracker, read once, and a thread that writes.
 func costFixture(t *testing.T, linear bool, n int) (*trackerBoardFixture, string, string) {
 	t.Helper()
-	ws := costLinear(n)
-	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: costSite(n), linear: &ws})
+	return costFixtureWith(t, linear, n, nil)
+}
+
+// costFixtureWith is costFixture with edit, when set, run on the trackers
+// before the fixture's board read.
+func costFixtureWith(t *testing.T, linear bool, n int, edit func(*trackerfake.JiraSite, *trackerfake.LinearWorkspace)) (*trackerBoardFixture, string, string) {
+	t.Helper()
+	ws, site := costLinear(n), costSite(n)
+	if edit != nil {
+		edit(&site, &ws)
+	}
+	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: site, linear: &ws})
 	t.Cleanup(func() { _ = f.a.trackerMCPServer().Close() })
 	if !linear {
 		thread, endpoint := trackerWriteThread(t, f, provider.RuntimeAuto)
@@ -204,8 +215,10 @@ func costNames(routes []string) string {
 
 // TestTrackerToolRequestCounts pins the requests of each call shape. The
 // read after an approval (planCall.recheck) is the bulkfetch or Issues a
-// call of three tickets with set makes after its plan's reads; a call of
-// one ticket or a comment alone waits for no approval or judges nothing.
+// call of three tickets with set makes after its plan's reads, or for a
+// call that sets an estimate the rows read of its board (rows, Issues),
+// which serves the cards' check too; a call of one ticket or a comment
+// alone waits for no approval or judges nothing.
 // A Jira comment's lookup (Server.readAudience) is the bulkfetch just
 // before the comments, after every other write.
 func TestTrackerToolRequestCounts(t *testing.T) {
@@ -363,9 +376,12 @@ func createdTitles(f *trackerBoardFixture, linear bool) []string {
 // costPins are TestTrackerToolRequestCounts' pins, by tracker, shape,
 // temperature and number of tickets. A Jira status planned cold takes
 // its moves from the detail read (no transitions read); warm, the plan
-// reads the cards, which keep no read, so the move reads them. An
-// estimate reads the board's rows to check the issue is on it first.
-// Every write ends with one refresh (rows, Issues). A read is one read
+// reads the cards, which keep no read, so the move reads them. A call
+// that sets an estimate reads its tickets through their rows on its
+// board (rows, Issues); a Jira estimate takes that read as its check that
+// the board lists the issue, and checks again after a status move, and a
+// Linear estimate reads the issue's team first (IssueTeam). Every write
+// ends with one refresh (rows, Issues). A read is one read
 // and then the same read again, after "|"; a create followed by a create
 // of another ticket on the same client is the two creates.
 var costPins = map[string]string{
@@ -389,14 +405,14 @@ var costPins = map[string]string{
 	"jira/title/cold/3":                    "bulkfetch×2 issue edit issue edit issue edit rows",
 	"jira/title/warm/1":                    "bulkfetch issue edit rows",
 	"jira/title/warm/3":                    "bulkfetch×2 issue edit issue edit issue edit rows",
-	"jira/estimate/cold/1":                 "bulkfetch rows estimate rows",
-	"jira/estimate/cold/3":                 "bulkfetch×2 rows estimate rows estimate rows estimate rows",
-	"jira/estimate/warm/1":                 "bulkfetch rows estimate rows",
-	"jira/estimate/warm/3":                 "bulkfetch×2 rows estimate rows estimate rows estimate rows",
+	"jira/estimate/cold/1":                 "rows estimate rows",
+	"jira/estimate/cold/3":                 "rows×2 estimate×3 rows",
+	"jira/estimate/warm/1":                 "rows estimate rows",
+	"jira/estimate/warm/3":                 "rows×2 estimate×3 rows",
 	"jira/mixed/cold/1":                    "comments issue transition issue edit rows estimate rows sprints to-sprint bulkfetch comment rows",
-	"jira/mixed/cold/3":                    "bulkfetch comments×3 issue×3 transition×3 issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint bulkfetch comment×3 rows",
+	"jira/mixed/cold/3":                    "comments×3 issue×3 rows transition×3 issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint bulkfetch comment×3 rows",
 	"jira/mixed/warm/1":                    "bulkfetch transitions transition issue edit rows estimate rows sprints to-sprint bulkfetch comment rows",
-	"jira/mixed/warm/3":                    "bulkfetch×2 transitions transition transitions transition transitions transition issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint bulkfetch comment×3 rows",
+	"jira/mixed/warm/3":                    "bulkfetch rows transitions transition transitions transition transitions transition issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint bulkfetch comment×3 rows",
 	"jira/create":                          "screen types create bulkfetch match",
 	"jira/create, then another":            "screen types create bulkfetch match | types create bulkfetch match",
 	"jira/create with status and sprint":   "screen types create bulkfetch comments issue match transition rows sprints to-sprint rows",
@@ -506,6 +522,48 @@ func TestTrackerToolUpdatesAsManyTicketsAsItTakes(t *testing.T) {
 				t.Fatalf("ticket_update = %s", text)
 			}
 			if got := costCounts(routes); got != c.want {
+				t.Errorf("%d requests: %s\nwant %s", len(routes), got, c.want)
+			}
+		})
+	}
+}
+
+// A person's estimate makes the requests it made before the agent's took
+// the plan's rows read: it has no write session, so its provider checks
+// that the board lists the issue (Jira's rows read, Linear's IssueTeam)
+// before it sends, then the write's refresh reads the row again.
+func TestTrackerPersonsEstimateRequests(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name   string
+		linear bool
+		want   string
+	}{
+		{"jira", false, "rows estimate rows"},
+		{"linear", true, "IssueTeam UpdateIssue Issues"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			f, _, _ := costFixture(t, c.linear, 3)
+			conn, board, issue := f.conn.ID, "1", "10101"
+			if c.linear {
+				ws := costLinear(3)
+				conns, err := f.a.TrackerConnections(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				i := slices.IndexFunc(conns, func(c TrackerConnection) bool { return c.Kind == store.TrackerKindLinear })
+				conn, board, issue = conns[i].ID, ws.Teams[0].ID, ws.Issues[0].ID
+			}
+			since := f.e.Requests(0).Requests
+			if _, err := f.a.SetTrackerEstimate(t.Context(), conn, trackerapp.EstimateRequest{Board: board, Issue: issue, Value: number(3)}); err != nil {
+				t.Fatal(err)
+			}
+			var routes []string
+			for _, r := range f.e.Requests(since[len(since)-1].Seq).Requests {
+				routes = append(routes, r.Route)
+			}
+			if got := costNames(routes); got != c.want {
 				t.Errorf("%d requests: %s\nwant %s", len(routes), got, c.want)
 			}
 		})

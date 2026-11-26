@@ -40,7 +40,10 @@ type fakeTracker struct {
 	// boardReads counts the board reads, by connection/board.
 	boardReads map[string]int
 	cards      map[string]trackerapp.CardView
-	// mirrorCards counts the mirror's card reads (MirrorCard).
+	// offBoard are the rows, by connection/issue/board, a rows read no
+	// longer finds (IssueRows), though the mirror still holds them.
+	offBoard map[string]bool
+	// mirrorCards counts the mirror's card reads (MirrorIssue).
 	mirrorCards int
 	types       []trackerapp.IssueTypeView
 	fields      []trackerapp.FieldView
@@ -69,10 +72,16 @@ func (f *fakeTracker) BoardSummary(connection, board string) (trackerapp.BoardSu
 	return b, nil
 }
 
-func (f *fakeTracker) MirrorCard(connection, issue string) (trackerapp.CardView, bool, error) {
+// MirrorIssue answers the mirror's card, with the boards of the issue's
+// detail's rows.
+func (f *fakeTracker) MirrorIssue(connection, issue string) (trackerapp.IssueView, bool, error) {
 	f.mirrorCards++
 	c, ok := f.cards[connection+"/"+issue]
-	return c, ok, nil
+	v := trackerapp.IssueView{Card: c}
+	for _, r := range f.details[connection+"/"+issue].Rows {
+		v.Boards = append(v.Boards, trackerapp.IssueRowView{Board: r.Board, Estimate: r.Estimate})
+	}
+	return v, ok, nil
 }
 
 func (f *fakeTracker) IssueTypes(_ context.Context, connection, project string) ([]trackerapp.IssueTypeView, error) {
@@ -233,6 +242,27 @@ func (f *fakeTracker) IssueCards(_ context.Context, connection string, issues []
 			continue
 		}
 		out[i].View = trackerapp.TicketCardView{Card: d.Card, Rows: d.Rows}
+	}
+	return out, nil
+}
+
+// IssueRows answers as IssueCards does, asked as "rows connection issue
+// board", and fails one whose detail has no row on its board with
+// trackerapp.ErrNotOnBoard.
+func (f *fakeTracker) IssueRows(ctx context.Context, connection string, rows []trackerapp.IssueRow) ([]trackerapp.TicketCardRead, error) {
+	out := make([]trackerapp.TicketCardRead, len(rows))
+	for i, row := range rows {
+		n := len(f.asked)
+		got, err := f.IssueCards(ctx, connection, []string{string(row.Issue)})
+		if err != nil {
+			return nil, err
+		}
+		f.asked[n] = "rows" + strings.TrimPrefix(f.asked[n], "card") + " " + string(row.Board)
+		out[i] = got[0]
+		on := slices.ContainsFunc(got[0].View.Rows, func(r trackerapp.TicketRowView) bool { return r.Board == string(row.Board) })
+		if got[0].Err == nil && (!on || f.offBoard[connection+"/"+string(row.Issue)+"/"+string(row.Board)]) {
+			out[i] = trackerapp.TicketCardRead{Err: fmt.Errorf("%w: issue %s on board %s", trackerapp.ErrNotOnBoard, row.Issue, row.Board)}
+		}
 	}
 	return out, nil
 }

@@ -18,6 +18,10 @@
 // in the pane that the computer is not connected, and the ticket reads
 // again when the computer is back with the comment typed before it went.
 //
+// A ticket opened shows the points its own read found, 1.25, in the points
+// row and in its board's estimate field alike, with the same digits, while
+// the board's card keeps the board's last read.
+//
 // Fields in place: points typed, cleared and refused as a typo; a list of
 // texts shown with no editor; a due date typed; an option past the first
 // 50 found by typing, which asks the tracker, also when the text was
@@ -46,12 +50,12 @@ import { join } from 'node:path';
 
 import type { Locator, Page } from '@playwright/test';
 
-import { launchHarness, type HarnessApp } from '../src/harness.js';
+import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test } from './fixtures.js';
 import { pairOwnDevice } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { longPress } from './touch-helpers.js';
-import { JIRA_SITE, connectFakeJiraBoard, openIssuesPane as openPane, press, seedFakeJira, trackerRequests, type ExtraJira } from './tracker-helpers.js';
+import { JIRA_SITE, connectFakeJiraBoard, editJiraIssue, openIssuesPane as openPane, press, seedFakeJira, trackerRequests, type ExtraJira } from './tracker-helpers.js';
 
 export interface TicketSurface {
   compact: boolean;
@@ -364,6 +368,30 @@ export function registerIssuesTicketFlow({ compact }: TicketSurface): void {
       await expect(placed).toHaveAttribute('data-placement', 'beside');
     });
   }
+
+  test('a ticket opened shows the points its own read found, in the points row and its board\'s field alike, while the board keeps its last read', async ({ page }) => {
+    test.setTimeout(90_000);
+    // No poll runs within the test: the board holds 3 until it reads again.
+    const harness = await launchHarness({ env: harnessTiming({ 'tracker-poll': '10m' }) });
+    try {
+      const board = await connectFakeJiraBoard(harness, compact ? 'compact-issues-ticket-points' : 'issues-ticket-points', EDITED);
+      await harness.open(page);
+      const pane = await openPane(page, compact);
+      await expect(card(pane, '10105').getByTestId('issues-card-estimate')).toHaveText('3', { timeout: 30_000 });
+      // A value with two decimals, which the points row prints with every
+      // digit as the field does.
+      await editJiraIssue(board, 'WEB-5', { customfield_10016: 1.25 });
+
+      const ticket = await openTicket(pane, '10105', compact);
+      await expect(cardField(ticket, 'points').getByTestId('ticket-field-value')).toHaveText('1.25', { timeout: 30_000 });
+      const shown = await rail(ticket, compact);
+      await press(shown.getByTestId('ticket-more-fields'), compact);
+      await expect(field(shown, 'customfield_10016').getByTestId('ticket-field-value')).toHaveText('1.25');
+      await expect(card(pane, '10105').getByTestId('issues-card-estimate')).toHaveText('3');
+    } finally {
+      await harness.close();
+    }
+  });
 
   test('a ticket\'s own fields change in place: points typed and cleared, a due date, an option past the first 50 and the type from its mark', async ({ harness, page }) => {
     test.setTimeout(120_000);

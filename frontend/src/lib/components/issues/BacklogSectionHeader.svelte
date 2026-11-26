@@ -13,7 +13,7 @@
   import ReviewAvatar from '../review/ReviewAvatar.svelte';
   import type { BacklogSection, SectionNumbers } from '../../stores/trackerBacklogModel';
   import { measureOf } from '../../stores/trackerBacklogModel';
-  import { formatEstimate, sectionLine } from './boardFormat';
+  import { formatEstimateSum, sectionLine } from './boardFormat';
 
   interface Props {
     sec: BacklogSection;
@@ -52,11 +52,11 @@
   /** A measure as the board words it: points or time, else tickets. */
   function amount(n: number): string {
     if (!estimated) return `${n} ${n === 1 ? 'ticket' : 'tickets'}`;
-    const v = formatEstimate(n, unit) ?? '0';
+    const v = formatEstimateSum(n, unit) ?? '0';
     return unit === 'points' ? `${v} ${n === 1 ? 'point' : 'points'}` : v;
   }
   function bare(n: number): string {
-    return estimated ? (formatEstimate(n, unit) ?? '0') : String(n);
+    return estimated ? (formatEstimateSum(n, unit) ?? '0') : String(n);
   }
 
   const line = $derived(sectionLine(sec.kind, numbers, unit));

@@ -70,6 +70,7 @@ func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID, rule tr
 			if err != nil {
 				return out, found, unsettled(), fmt.Errorf("trackerapp: read %d rows of board %s: %w", len(left), board, call(err))
 			}
+			sessionOf(r.ctx).keepRows(r.row.ID, board, rows)
 			page, err := mirrorRows(board, rows.Rows, rows.Missing, rows.Catalog, read)
 			if err != nil {
 				return out, found, unsettled(), err

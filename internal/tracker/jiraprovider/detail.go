@@ -149,6 +149,7 @@ func (p *Provider) detailOf(s site, issue tracker.IssueID, read issueRead) (trac
 		d.HistoryTo = full.Date.Add(-historySettle)
 	}
 	d.Moves = movesOf(full.Transitions, cat)
+	d.Estimates = estimatesOf(s, is)
 	d.Catalog = cat.out
 	d.Read = &currentRead{issue: issue, full: jira.IssueDetail{Issue: full.Issue, Edit: full.Edit, Transitions: full.Transitions}}
 	return d, nil
@@ -213,6 +214,34 @@ func (p *Provider) Details(ctx context.Context, issues []tracker.IssueID) (track
 		out.Details = append(out.Details, d)
 	}
 	return out, nil
+}
+
+// estimatesOf are is's values of every number field the read returned,
+// null included, as a board estimating by the field reads them
+// (jira.Issue.Estimate): measured, a number field in the issue's context
+// comes as null when unset, and one outside it is left out, so the
+// issue's boards that estimate by it keep their own read's value
+// (tracker.Detail.EstimateBy). A value that is not a number is left out
+// too; the field shows read-only (detailFields), and the board's read of
+// it fails.
+func estimatesOf(s site, is *jira.Issue) []tracker.FieldEstimate {
+	var out []tracker.FieldEstimate
+	for id := range is.Raw {
+		if f, ok := s.field(id); !ok || f.Schema.Type != "number" {
+			continue
+		}
+		v, set, err := is.Estimate(id)
+		if err != nil {
+			continue
+		}
+		fe := tracker.FieldEstimate{Field: id}
+		if set {
+			fe.Value = &v
+		}
+		out = append(out, fe)
+	}
+	slices.SortFunc(out, func(a, b tracker.FieldEstimate) int { return cmp.Compare(a.Field, b.Field) })
+	return out
 }
 
 // detailFields are is's fields other than those detailSkipped names and

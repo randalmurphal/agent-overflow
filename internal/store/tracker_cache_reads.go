@@ -385,19 +385,20 @@ func (s *Store) ListMirrorIssueRows(rootID int64, issueID, afterBoard string) (r
 }
 
 // MirrorTicketRow is an issue's row on a board the mirror shows, with the
-// board's estimate unit (MirrorEstimateNone, Points or Time): what an
-// open ticket shows of its estimates.
+// board's estimate unit (MirrorEstimateNone, Points or Time) and field
+// (tracker.Estimate.Field): what an open ticket shows of its estimates.
 type MirrorTicketRow struct {
 	IssueID, BoardID string
 	Estimate         *float64
 	EstimateUnit     int
+	EstimateField    string
 }
 
 // mirrorTicketRowsSQL reads the rows of the issues of the JSON list ?2 on
 // the boards the mirror shows, by issue and then board: each issue a seek
 // of the primary key, each row its board by its unique key. A row read no
 // later than its board's estimate definition last changed has no estimate.
-var mirrorTicketRowsSQL = `SELECT b.issue_id, b.board_id, ` + mirrorRowEstimate("r.estimate_reset_at") + `, r.estimate_unit
+var mirrorTicketRowsSQL = `SELECT b.issue_id, b.board_id, ` + mirrorRowEstimate("r.estimate_reset_at") + `, r.estimate_unit, r.estimate_field
 	FROM tracker_cache_board_issues b
 	JOIN tracker_cache_boards r ON r.root_id = b.root_id AND r.board_id = b.board_id
 	WHERE b.root_id = ` + intParam("?1") + ` AND b.issue_id IN (SELECT value FROM json_each(?2)) AND ` + mirrorBoardShown("b.root_id", "b.board_id") + `
@@ -422,7 +423,7 @@ func (s *Store) ListMirrorTicketRows(rootID int64, issueIDs []string) ([]MirrorT
 	var rows []MirrorTicketRow
 	err = scanMirrorRows(s.reader(), mirrorTicketRowsSQL, []any{rootID, encoded}, func(r rowScanner) error {
 		var row MirrorTicketRow
-		err := r.Scan(&row.IssueID, &row.BoardID, &row.Estimate, &row.EstimateUnit)
+		err := r.Scan(&row.IssueID, &row.BoardID, &row.Estimate, &row.EstimateUnit, &row.EstimateField)
 		rows = append(rows, row)
 		return err
 	})
