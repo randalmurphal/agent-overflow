@@ -161,7 +161,7 @@ func TestKeepMovesAProposalOntoAKeptDashboard(t *testing.T) {
 	}
 	third := m.propose(t, openTickets())
 	if _, err := m.svc.KeepProposal(sub, third, KeepTarget{Dashboard: "d_0123"}); refusalCode(err) != "dashboard_gone" {
-		t.Fatalf("a Keep onto a deleted dashboard: %v", err)
+		t.Fatalf("a Keep onto a dashboard that is gone: %v", err)
 	}
 	told = m.events.dashboards.Load()
 	if err := m.svc.DismissProposal(sub, third); err != nil {
@@ -180,8 +180,8 @@ func TestKeepMovesAProposalOntoAKeptDashboard(t *testing.T) {
 
 // The kept dashboards are the setup file's: a restart keeps them and
 // drops what was proposed; a save of the setup screen keeps them, an
-// empty one included; Remove and Delete change them, and again change
-// nothing and tell nothing.
+// empty one included; Remove of a dashboard's last widget removes the
+// dashboard, and again changes nothing and tells nothing.
 func TestKeptDashboardsLiveInTheSetupFile(t *testing.T) {
 	t.Parallel()
 	m, sub := dashboardFixture(t)
