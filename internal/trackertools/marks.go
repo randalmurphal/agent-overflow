@@ -167,7 +167,8 @@ func (m *marks) wrote(caller Caller, k markKey, from, updated int64, texts []str
 
 // partOf reports whether a read of ticket k at update time updated gave
 // the session some of field's values (texts, as the ticket holds them now)
-// and not all of them whole: a value cut, or one after the read's cut.
+// and not all of them whole: a value cut, one after the read's cut, or
+// one of a field the read left out.
 func (m *marks) partOf(session string, k markKey, updated int64, field string, texts []string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()

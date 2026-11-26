@@ -19,9 +19,9 @@ import (
 // thread's mode is read again before anything is sent. Each ticket's steps
 // run in order (apply.go), status, fields, estimate, sprint, comment, and
 // the first refused or unknown stops that ticket: what came after it is
-// not sent. A step the ticket already holds, or a comment an earlier call
-// of the thread added (trackerapp's repeat record), is already: nothing is
-// sent for it, so the same call again makes only what was not.
+// not sent. A step the ticket already holds, an edit the tracker answers
+// as changing nothing, or a comment an earlier call of the thread added
+// (trackerapp's repeat record), is already: it changed nothing.
 
 type updateArgs struct {
 	Keys    []string                   `json:"keys"`

@@ -246,12 +246,13 @@ func typedOf(kind string, v setValue) []string {
 	return out
 }
 
-// parentKeys is v as the parent of a ticket on site, named of in a
-// refusal: each value a key in the forms a key parameter takes (KEY,
+// parentKeys is v as the parent of a ticket on a tracker of kind at site,
+// named of in a refusal: each value a key of that tracker
+// (trackerapp.IsTicketKey) in the forms a key parameter takes (KEY,
 // site/KEY), with the title a read prints after it or not, on site; a key
 // on another site is refused. Any other text is passed on for the tracker
 // to resolve.
-func parentKeys(v setValue, site, of string) ([]string, error) {
+func parentKeys(v setValue, kind, site, of string) ([]string, error) {
 	out := make([]string, len(v.texts))
 	for i, t := range v.texts {
 		t = strings.TrimSpace(t)
@@ -260,7 +261,7 @@ func parentKeys(v setValue, site, of string) ([]string, error) {
 		if !qualified {
 			key = head
 		}
-		if keys := trackerapp.TicketKeys(key); len(keys) != 1 || !strings.EqualFold(keys[0], key) {
+		if !trackerapp.IsTicketKey(kind, key) {
 			out[i] = t
 			continue
 		}

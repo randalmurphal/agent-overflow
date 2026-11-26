@@ -205,13 +205,16 @@ func (s Step) String() string {
 // reads again those of a part that is applied or unknown. Comment is the
 // comment an applied AddComment part made, as the tracker named it, and
 // Key the key the tracker gave the issue an applied create made.
+// Unchanged reports an applied part that sent nothing because the tracker
+// already held every value; it changed nothing, so it names no resources.
 type Part struct {
-	Issue   IssueID
-	Step    Step
-	Outcome Outcome
-	Changed []Resource
-	Comment CommentID
-	Key     string
+	Issue     IssueID
+	Step      Step
+	Outcome   Outcome
+	Changed   []Resource
+	Comment   CommentID
+	Key       string
+	Unchanged bool
 }
 
 // Result is every part of one write, in the order they were sent or
@@ -388,6 +391,12 @@ func (p Part) check() error {
 	}
 	if p.Key != "" && (p.Step != StepCreate || state != StateApplied) {
 		return fmt.Errorf("a %s part that is %s names key %q", p.Step, state, p.Key)
+	}
+	if p.Unchanged {
+		if state != StateApplied || len(p.Changed) > 0 {
+			return fmt.Errorf("a %s part that is %s and unchanged names %d resources", p.Step, state, len(p.Changed))
+		}
+		return nil
 	}
 	lostCreate := p.Step == StepCreate && state == StateUnknown
 	if (state != StateApplied && state != StateUnknown) || lostCreate {

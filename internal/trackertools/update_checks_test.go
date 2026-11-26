@@ -38,7 +38,7 @@ func TestRefusalsQuoteTheTrackersNames(t *testing.T) {
 		}}}}, nil
 	}
 	answer, err = w.update(t, map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"priority": "Urgent"}})
-	if want := `{"tickets":[{"key":"WEB-12","refused":"priority: no Priority value matches; it takes \"High\\nest\" or \"Low\"."}]}`; err != nil || answer != want {
+	if want := `{"tickets":[{"key":"WEB-12","refused":"priority: no value matches; it takes \"High\\nest\" or \"Low\"."}]}`; err != nil || answer != want {
 		t.Fatalf("a value refused = %s, %v\nwant %s", answer, err, want)
 	}
 }

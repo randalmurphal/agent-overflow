@@ -45,7 +45,7 @@ type Store interface {
 	ClaimAgentWrite(w store.AgentWrite, since int64) (store.AgentWrite, bool, error)
 	ResendAgentWrite(id, sent int64) error
 	RecordAgentWrites(sent int64, ws []store.AgentWrite) error
-	SettleAgentWrite(id int64, issue, comment string) error
+	SettleAgentWrite(id int64, issue, key, comment string) error
 	AgentWritesOf(ticket store.TicketRef) ([]store.AgentWriteMark, error)
 }
 

@@ -245,7 +245,7 @@ func (c *Client) pickTransition(ctx context.Context, issue, want string) (Transi
 	}
 	i := slices.IndexFunc(ts, func(t Transition) bool { return t.ID == hit.ID })
 	if !ts[i].Available {
-		return Transition{}, notSent("%s cannot make the %s transition now", issue, ts[i].Name)
+		return Transition{}, notSent("%s cannot make the %q transition now", issue, ts[i].Name)
 	}
 	return ts[i], nil
 }
@@ -313,7 +313,7 @@ func (c *Client) screenValues(ctx context.Context, b *builder, issue string, scr
 			return nil, notSentErr(err)
 		}
 		if slices.ContainsFunc(metas[:i], func(m FieldMeta) bool { return m.ID == f.ID }) {
-			return nil, notSent("%s is set twice", f.Name)
+			return nil, notSent("%q is set twice", f.Name)
 		}
 		metas[i] = f
 	}

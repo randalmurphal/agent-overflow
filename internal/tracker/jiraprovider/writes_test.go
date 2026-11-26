@@ -241,6 +241,55 @@ func TestEmptiedTextIsAClearFromWhatItReplaced(t *testing.T) {
 	jiratest.WantJSON(t, []byte(bodies[0]), `{"fields":{"description":null}}`)
 }
 
+// TestAnEmptiedLayoutNeedsItsLossAccepted proves a person's emptied
+// description keeps the loss consent an edit has: a document holding what
+// Markdown cannot show is refused for that loss, and sent once the loss
+// is accepted.
+func TestAnEmptiedLayoutNeedsItsLossAccepted(t *testing.T) {
+	f, p := editSite(t, storedDesc(layoutDoc()))
+	f.On("PUT", issuePath, func(w http.ResponseWriter, r *http.Request, b []byte) { w.WriteHeader(http.StatusNoContent) })
+	clear := func(accept bool) tracker.Result {
+		return checked(t, p.Edit(t.Context(), tracker.EditInput{Issue: "10001", AcceptLoss: accept,
+			Fields: []tracker.FieldEdit{{Field: "description", Value: tracker.MarkdownEdit("", adf.ToMarkdown(layoutDoc()))}}}))
+	}
+	if res := clear(false); reason(res, 0) != tracker.ReasonLoss || f.Count("PUT", issuePath) != 0 {
+		t.Fatalf("an emptied layout: %s, %d writes", states(res), f.Count("PUT", issuePath))
+	}
+	if res := clear(true); states(res) != "edit:applied" || f.Count("PUT", issuePath) != 1 {
+		t.Fatalf("an emptied layout with its loss accepted: %s", states(res))
+	}
+}
+
+// An edit whose every value the issue already holds sends nothing, and
+// its part is applied, unchanged and names nothing to read again.
+func TestAnEditThatChangesNothingIsUnchanged(t *testing.T) {
+	doc := adf.Doc(para("same"))
+	f, p := editSite(t, storedDesc(doc))
+	f.On("PUT", issuePath, func(w http.ResponseWriter, r *http.Request, b []byte) { w.WriteHeader(http.StatusNoContent) })
+	md := adf.ToMarkdown(doc)
+	res := checked(t, p.Edit(t.Context(), tracker.EditInput{Issue: "10001",
+		Fields: []tracker.FieldEdit{{Field: "description", Value: tracker.MarkdownEdit(md, md)}}}))
+	if states(res) != "edit:applied" || !res.Parts[0].Unchanged || len(res.Parts[0].Changed) != 0 || f.Count("PUT", issuePath) != 0 {
+		t.Fatalf("an edit to what is stored: %s, %+v, %d writes", states(res), res.Parts, f.Count("PUT", issuePath))
+	}
+	res = checked(t, p.Edit(t.Context(), tracker.EditInput{Issue: "10001",
+		Fields: []tracker.FieldEdit{{Field: "description", Value: tracker.MarkdownEdit("other", md)}}}))
+	if states(res) != "edit:applied" || res.Parts[0].Unchanged || f.Count("PUT", issuePath) != 1 {
+		t.Fatalf("an edit that changes the text: %s, %+v", states(res), res.Parts)
+	}
+}
+
+// A refusal names the field by its name quoted.
+func TestAnEditRefusalQuotesTheFieldsName(t *testing.T) {
+	_, p := editSite(t, storedDesc(adf.Doc(para("old"))))
+	res := checked(t, p.Edit(t.Context(), tracker.EditInput{Issue: "10001",
+		Fields: []tracker.FieldEdit{{Field: "priority", Value: tracker.MarkdownEdit("High", "")}}}))
+	r, _ := res.Parts[0].Outcome.Refusal()
+	if want := `"Priority" is not rich text`; !strings.Contains(r.Message, want) {
+		t.Fatalf("a Markdown edit of a priority: %+v, want %s", r, want)
+	}
+}
+
 // TestEditOfAReplacedPlainText proves a plain text edit written from
 // texts reaches Jira's plan, which compares them with the stored text,
 // and that one of any other kind is refused before anything is read.

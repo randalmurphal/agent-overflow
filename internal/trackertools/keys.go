@@ -19,21 +19,25 @@ import (
 // project two sites' mirrors hold is refused as two sites' tickets, and a
 // key one site's mirror holds the issue of resolves there, both with no
 // request; a key one site's mirror holds the project of is looked up on
-// that site first, and on the others when that site does not have it.
+// that site first, and on the others when that site answers that it does
+// not have it: a site that could not answer may have it, so its failure
+// is the call's.
 // The keys of one call that the mirrors do not answer are looked up
 // together: one request per connection and round (resolveKeys).
 
 // keyQuery is one key of a call as resolveKeys works it out: the key
 // asked, the ticket once found, the connections each round asks, the hits
-// so far, and the first refusal a connection gave.
+// so far, whether a connection answered, and the first refusal a
+// connection gave.
 type keyQuery struct {
-	bare   string
-	t      ticket
-	done   bool
-	rounds [][]trackerapp.TicketSource
-	asked  []trackerapp.TicketSource
-	hits   []ticket
-	failed error
+	bare     string
+	t        ticket
+	done     bool
+	rounds   [][]trackerapp.TicketSource
+	asked    []trackerapp.TicketSource
+	hits     []ticket
+	answered bool
+	failed   error
 }
 
 // keyParam is the argument a call names its keys with, as a refusal of
@@ -165,9 +169,9 @@ func (s *Server) resolveKeys(ctx context.Context, threadID string, keys []string
 // answer, round by round: in each round every connection, in order, is
 // asked once for every key whose round names it and whose site has not
 // found it, so two accounts on one site reaching a key reach one ticket.
-// A key found in a round is not asked in the next. A refusal the model
-// can read leaves the other sources asked, as ticket_find does; anything
-// else fails the call.
+// A key found in a round, or that no connection of the round answered
+// for, is not asked in the next. A refusal the model can read leaves the
+// other sources asked, as ticket_find does; anything else fails the call.
 func (s *Server) lookUp(ctx context.Context, sources []trackerapp.TicketSource, queries []*keyQuery) error {
 	for round := 0; ; round++ {
 		any := false
@@ -175,7 +179,7 @@ func (s *Server) lookUp(ctx context.Context, sources []trackerapp.TicketSource, 
 			var asking []*keyQuery
 			var keys []string
 			for _, q := range queries {
-				if q.done || round >= len(q.rounds) || round > 0 && len(q.hits) > 0 ||
+				if q.done || round >= len(q.rounds) || round > 0 && (len(q.hits) > 0 || !q.answered) ||
 					!slices.ContainsFunc(q.rounds[round], func(r trackerapp.TicketSource) bool { return r.ID == src.ID }) ||
 					slices.ContainsFunc(q.hits, func(h ticket) bool { return h.site == src.Site }) {
 					continue
@@ -205,6 +209,7 @@ func (s *Server) lookUp(ctx context.Context, sources []trackerapp.TicketSource, 
 				continue
 			}
 			for _, q := range asking {
+				q.answered = true
 				i := slices.IndexFunc(found.Found, func(m trackerapp.KeyMatchView) bool { return strings.EqualFold(m.Key, q.bare) })
 				if i >= 0 {
 					c := found.Found[i].Card

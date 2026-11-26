@@ -3,7 +3,26 @@ package trackerapp
 import (
 	"slices"
 	"strings"
+
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/tracker/jira"
+	"agent-overflow/internal/tracker/linear"
 )
+
+// IsTicketKey reports whether s is one ticket key as a tracker of kind
+// writes it, by the provider's own parser: a Jira issue key such as WEB-12,
+// or a Linear identifier such as R-12, whose team key may be one letter.
+// Case does not matter.
+func IsTicketKey(kind, s string) bool {
+	switch kind {
+	case store.TrackerKindJira:
+		return jira.IsIssueKey(strings.ToUpper(s))
+	case store.TrackerKindLinear:
+		_, _, ok := linear.ParseIdentifier(s)
+		return ok
+	}
+	return false
+}
 
 // TicketKeys is the one rule for which ticket keys a text names (a pull
 // request's title, a branch's name), in the order they first appear, each

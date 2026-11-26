@@ -22,7 +22,8 @@ const (
 // AgentWrite is one part of a tracker write an agent made (migration
 // v171): the ticket it touched as a TicketRef keys one (the issue empty
 // for a create the tracker did not confirm, Project then naming where it
-// was made), the account the tracker records as its author, the thread and
+// was made), the key a create made (Key, empty for any other step), the
+// account the tracker records as its author, the thread and
 // the call, the step, its state, the digest of what a comment or a create
 // adds, the comment an applied comment made, the card's tracker update
 // time before the write and after its refresh (0 when not read), when this
@@ -30,6 +31,7 @@ const (
 type AgentWrite struct {
 	ID       int64
 	Ticket   TicketRef
+	Key      string
 	Project  string
 	Account  string
 	ThreadID string
@@ -52,6 +54,8 @@ func (w AgentWrite) check() error {
 		return fmt.Errorf("%w: a write needs its site, thread, call and times", ErrInvalidAgentWrite)
 	case w.Ticket.IssueID == "" && w.Step != "create":
 		return fmt.Errorf("%w: a %s needs its issue", ErrInvalidAgentWrite, w.Step)
+	case w.Key != "" && w.Step != "create":
+		return fmt.Errorf("%w: only a create names the key it made", ErrInvalidAgentWrite)
 	}
 	switch w.State {
 	case AgentWriteSent, AgentWriteApplied, AgentWriteUnknown:
@@ -61,11 +65,11 @@ func (w AgentWrite) check() error {
 	return nil
 }
 
-const agentWriteColumns = `id, kind, site, issue_id, project, account, thread_id, call_id, step, state, digest, comment_id, before_ms, after_ms, sent_ms, at_ms`
+const agentWriteColumns = `id, kind, site, issue_id, issue_key, project, account, thread_id, call_id, step, state, digest, comment_id, before_ms, after_ms, sent_ms, at_ms`
 
 func scanAgentWrite(row interface{ Scan(...any) error }) (AgentWrite, error) {
 	var w AgentWrite
-	err := row.Scan(&w.ID, &w.Ticket.Kind, &w.Ticket.Site, &w.Ticket.IssueID, &w.Project, &w.Account, &w.ThreadID, &w.CallID,
+	err := row.Scan(&w.ID, &w.Ticket.Kind, &w.Ticket.Site, &w.Ticket.IssueID, &w.Key, &w.Project, &w.Account, &w.ThreadID, &w.CallID,
 		&w.Step, &w.State, &w.Digest, &w.Comment, &w.Before, &w.After, &w.Sent, &w.At)
 	return w, err
 }
@@ -74,9 +78,9 @@ func insertAgentWriteTx(tx *sql.Tx, w AgentWrite) (int64, error) {
 	if err := w.check(); err != nil {
 		return 0, err
 	}
-	res, err := tx.Exec(`INSERT INTO tracker_agent_writes(kind, site, issue_id, project, account, thread_id, call_id, step, state, digest, comment_id, before_ms, after_ms, sent_ms, at_ms)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)`,
-		w.Ticket.Kind, w.Ticket.Site, w.Ticket.IssueID, w.Project, w.Account, w.ThreadID, w.CallID, w.Step, w.State, w.Digest, w.Comment, w.Before, w.After, w.Sent, w.At)
+	res, err := tx.Exec(`INSERT INTO tracker_agent_writes(kind, site, issue_id, issue_key, project, account, thread_id, call_id, step, state, digest, comment_id, before_ms, after_ms, sent_ms, at_ms)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)`,
+		w.Ticket.Kind, w.Ticket.Site, w.Ticket.IssueID, w.Key, w.Project, w.Account, w.ThreadID, w.CallID, w.Step, w.State, w.Digest, w.Comment, w.Before, w.After, w.Sent, w.At)
 	if err != nil {
 		return 0, err
 	}
@@ -157,10 +161,10 @@ func (s *Store) RecordAgentWrites(sent int64, ws []AgentWrite) error {
 
 // SettleAgentWrite records that the write of row id, sent or of unknown
 // outcome, was found made on the tracker, as comment when it made one, or
-// on issue when it was a create.
-func (s *Store) SettleAgentWrite(id int64, issue, comment string) error {
-	_, err := s.db.Exec(`UPDATE tracker_agent_writes SET state = 'applied',
-		issue_id = iif(?2 <> '', ?2, issue_id), comment_id = iif(?3 <> '', ?3, comment_id) WHERE id = `+intParam("?1"), id, issue, comment)
+// as issue and its key when it was a create.
+func (s *Store) SettleAgentWrite(id int64, issue, key, comment string) error {
+	_, err := s.db.Exec(`UPDATE tracker_agent_writes SET state = 'applied', issue_id = iif(?2 <> '', ?2, issue_id),
+		issue_key = iif(?3 <> '', ?3, issue_key), comment_id = iif(?4 <> '', ?4, comment_id) WHERE id = `+intParam("?1"), id, issue, key, comment)
 	if err != nil {
 		return fmt.Errorf("store: settle agent write %d: %w", id, err)
 	}
@@ -177,7 +181,7 @@ type AgentWriteMark struct {
 	ThreadTitle string
 }
 
-var agentWritesOfIssueSQL = `SELECT w.id, w.kind, w.site, w.issue_id, w.project, w.account, w.thread_id, w.call_id, w.step, w.state,
+var agentWritesOfIssueSQL = `SELECT w.id, w.kind, w.site, w.issue_id, w.issue_key, w.project, w.account, w.thread_id, w.call_id, w.step, w.state,
 	w.digest, w.comment_id, w.before_ms, w.after_ms, w.sent_ms, w.at_ms, COALESCE(t.title, '')
 	FROM tracker_agent_writes w LEFT JOIN threads t ON t.id = w.thread_id
 	WHERE w.kind = ?1 AND w.site = ?2 AND w.issue_id = ?3 AND w.state <> 'sent'
@@ -194,7 +198,7 @@ func (s *Store) AgentWritesOf(ticket TicketRef) ([]AgentWriteMark, error) {
 	var out []AgentWriteMark
 	for rows.Next() {
 		var m AgentWriteMark
-		if err := rows.Scan(&m.ID, &m.Ticket.Kind, &m.Ticket.Site, &m.Ticket.IssueID, &m.Project, &m.Account, &m.ThreadID, &m.CallID,
+		if err := rows.Scan(&m.ID, &m.Ticket.Kind, &m.Ticket.Site, &m.Ticket.IssueID, &m.Key, &m.Project, &m.Account, &m.ThreadID, &m.CallID,
 			&m.Step, &m.State, &m.Digest, &m.Comment, &m.Before, &m.After, &m.Sent, &m.At, &m.ThreadTitle); err != nil {
 			return nil, fmt.Errorf("store: agent writes of %s: %w", ticket.IssueID, err)
 		}

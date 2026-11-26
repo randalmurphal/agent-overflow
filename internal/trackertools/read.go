@@ -656,6 +656,15 @@ func (sh *sheet) fieldsFrom(index, item, from, allow, end, each int) int {
 		}
 		if i > index && left < head+min(minPiece, least) {
 			sh.rest(fmt.Sprintf("%d more fields", len(sh.fields)-i), moreCursor{Part: partFields, Index: i})
+			// The texts left out are part of the ticket the session read
+			// none of (marks.partOf).
+			for _, f := range sh.fields[i:] {
+				for j, v := range f.values {
+					if text, ok := v.(string); ok {
+						sh.given = append(sh.given, givenText{text: fieldText(f.id, j), length: len(text)})
+					}
+				}
+			}
 			break
 		}
 		start, at := 0, 0
@@ -711,9 +720,7 @@ func (sh *sheet) fieldValue(i, item, from, allow int) (json.RawMessage, int) {
 			break
 		}
 		shown, used = append(shown, piece), used+len(mustJSON(piece))+comma
-		if piece != "" {
-			sh.given = append(sh.given, givenText{text: fieldText(f.id, j), from: start, to: next, length: len(text)})
-		}
+		sh.given = append(sh.given, givenText{text: fieldText(f.id, j), from: start, to: next, length: len(text)})
 		if next < len(text) {
 			sh.fieldRest(i, j, next, len(text)-next)
 			break

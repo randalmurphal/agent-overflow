@@ -100,7 +100,7 @@ func (s *Server) create(ctx context.Context, caller Caller, raw json.RawMessage)
 	case errors.Is(err, trackerapp.ErrAgentWriteInFlight):
 		return nil, invalidf("The same ticket is still being created by an earlier call, so it was not created again; call again once that call has answered.")
 	case errors.Is(err, trackerapp.ErrAgentRepeatUnchecked):
-		return nil, errorsx.Public(CodeUnknown, "An earlier call may have created this ticket, and the tracker could not be searched to see, so nothing was created; the same call again tries again.", err)
+		return nil, errorsx.Public(CodeUnknown, uncheckedSentence("An earlier call may have created this ticket", "the tracker could not be searched to check", "created", err), err)
 	case err != nil:
 		if _, msg, ok := errorsx.PublicDetails(err); ok && strings.Contains(msg, "may or may not") {
 			return nil, createUnknown(tg.src.Kind)
@@ -112,10 +112,7 @@ func (s *Server) create(ctx context.Context, caller Caller, raw json.RawMessage)
 	written := WrittenTicket{Connection: tg.src.ID, Title: title}
 	var issue, key string
 	if v.Repeat != nil {
-		issue, out.Note = v.Repeat.Issue, "Your earlier call created it; it was not created again."
-		if key, err = s.keyOf(ctx, tg, issue); err != nil {
-			return nil, err
-		}
+		issue, key, out.Note = v.Repeat.Issue, v.Repeat.Key, "Your earlier call created it; it was not created again."
 	} else {
 		if v.CreateUnknown || v.Created == "" && slices.ContainsFunc(v.Parts, func(p trackerapp.PartView) bool { return p.State == "unknown" }) {
 			return nil, createUnknown(tg.src.Kind)
@@ -139,7 +136,7 @@ func (s *Server) create(ctx context.Context, caller Caller, raw json.RawMessage)
 		out.Refused, stopped = sentence, true
 	}
 	if len(after) > 0 {
-		s.createSteps(ctx, wctx, caller, tg, ticket{connection: tg.src.ID, site: tg.src.Site, issue: issue, key: key}, after, stopped, &out, &written)
+		s.createSteps(wctx, caller, tg, ticket{connection: tg.src.ID, site: tg.src.Site, issue: issue, key: key}, after, stopped, &out, &written)
 	}
 	if len(written.Applied) > 0 {
 		s.h.Wrote(caller.Thread, WriteRow{ID: id, Created: v.Repeat == nil, Tickets: []WrittenTicket{written}})
@@ -150,7 +147,7 @@ func (s *Server) create(ctx context.Context, caller Caller, raw json.RawMessage)
 // createSteps plans and sends the steps after the create, after, on t,
 // the ticket made; stopped reports a part of the create refused, which
 // sends none of them.
-func (s *Server) createSteps(ctx, wctx context.Context, caller Caller, tg createTarget, t ticket, after []namedValue, stopped bool, out *createAnswer, written *WrittenTicket) {
+func (s *Server) createSteps(wctx context.Context, caller Caller, tg createTarget, t ticket, after []namedValue, stopped bool, out *createAnswer, written *WrittenTicket) {
 	names := func(from int) []string {
 		var ns []string
 		for _, nv := range after[from:] {
@@ -162,7 +159,9 @@ func (s *Server) createSteps(ctx, wctx context.Context, caller Caller, tg create
 		out.NotSent = names(0)
 		return
 	}
-	d, err := s.detailOf(ctx, t)
+	// On wctx, as the steps are: a caller gone after the create was sent
+	// still has the steps after it sent.
+	d, err := s.detailOf(wctx, t)
 	if err != nil {
 		s.logf("tracker tools: read %s after its create: %v", t.key, err)
 		out.NotSent = names(0)
@@ -174,7 +173,8 @@ func (s *Server) createSteps(ctx, wctx context.Context, caller Caller, tg create
 	for i, nv := range after {
 		if err := pc.planStep(p, nv); err != nil {
 			_, msg, _ := errorsx.PublicDetails(err)
-			out.Refused, out.NotSent = strings.TrimSpace(nv.name)+": "+cmpOr(msg, "it could not be set."), names(i+1)
+			// Nothing is sent: every step but the one refused is not sent.
+			out.Refused, out.NotSent = strings.TrimSpace(nv.name)+": "+cmpOr(msg, "it could not be set."), slices.Delete(names(0), i, i+1)
 			return
 		}
 	}
@@ -189,7 +189,7 @@ func (s *Server) createSteps(ctx, wctx context.Context, caller Caller, tg create
 }
 
 func createUnknown(kind string) error {
-	return errorsx.Public(CodeUnknown, trackerNameOf(kind)+"'s answer never came, so the ticket may or may not have been created; the same call again creates it only if it was not.", nil)
+	return errorsx.Public(CodeUnknown, trackerNameOf(kind)+"'s answer never came, so the ticket may or may not have been created; the same call again looks for it first.", nil)
 }
 
 // createRefused is a create the tracker made nothing of, as the tool's
@@ -399,22 +399,11 @@ func createEdit(f trackerapp.FieldView, given string, v setValue, tg createTarge
 		edit.Field = f.ID
 		return edit, nil
 	case f.ID == string(tracker.FieldParent):
-		typed, err := parentKeys(v, tg.src.Site, "project "+tg.key)
+		typed, err := parentKeys(v, tg.src.Kind, tg.src.Site, "project "+tg.key)
 		if err != nil {
 			return trackerapp.FieldEditInput{}, err
 		}
 		return trackerapp.FieldEditInput{Field: f.ID, Typed: typed}, nil
 	}
 	return trackerapp.FieldEditInput{Field: f.ID, Typed: typedOf(f.Kind, v)}, nil
-}
-
-// keyOf is issue's key on tg's connection as answers write it: from the
-// mirror, else read.
-func (s *Server) keyOf(ctx context.Context, tg createTarget, issue string) (string, error) {
-	q := qualifier(tg.sources, tg.src.Site)
-	if card, ok, err := s.t.MirrorCard(tg.src.ID, issue); err != nil || ok {
-		return q(card.Key), err
-	}
-	d, err := s.t.IssueDetail(ctx, tg.src.ID, issue)
-	return q(d.Card.Key), err
 }

@@ -47,10 +47,10 @@ func (p *Provider) fieldInputs(ctx context.Context, issue tracker.IssueID, edits
 		out[i].Field = id
 		switch form := e.Value.Form(); {
 		case kind == tracker.KindReadOnly:
-			return nil, invalidf("%s is not editable here", f.Name)
+			return nil, invalidf("%q is not editable here", f.Name)
 		case form == tracker.EditMarkdown:
 			if kind != tracker.KindRichText {
-				return nil, invalidf("%s is not rich text; give its value by ID or as typed text", f.Name)
+				return nil, invalidf("%q is not rich text; give its value by ID or as typed text", f.Name)
 			}
 			md, from := e.Value.Markdown()
 			switch {
@@ -65,12 +65,12 @@ func (p *Provider) fieldInputs(ctx context.Context, issue tracker.IssueID, edits
 		case form == tracker.EditClear:
 			out[i].Value = jira.Clear()
 		case kind == tracker.KindRichText:
-			return nil, invalidf("%s is rich text; edit it as Markdown", f.Name)
+			return nil, invalidf("%q is rich text; edit it as Markdown", f.Name)
 		default:
 			vals := e.Value.Values()
 			switch {
 			case !list && len(vals) != 1:
-				return nil, invalidf("%s takes one value, not %d", f.Name, len(vals))
+				return nil, invalidf("%q takes one value, not %d", f.Name, len(vals))
 			case form == tracker.EditPick:
 				out[i].Value = jira.IDs(vals...)
 			case list:
@@ -81,7 +81,7 @@ func (p *Provider) fieldInputs(ctx context.Context, issue tracker.IssueID, edits
 		}
 		if replaced, ok := e.Value.Replaces(); ok {
 			if kind != tracker.KindText || issue == "" {
-				return nil, invalidf("%s: only an edit of plain text is compared with what it replaces", f.Name)
+				return nil, invalidf("%q: only an edit of plain text is compared with what it replaces", f.Name)
 			}
 			out[i].Value = out[i].Value.Replacing(replaced...)
 		}

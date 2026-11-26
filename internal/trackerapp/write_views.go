@@ -47,14 +47,17 @@ type WriteView struct {
 // PartView is one part of a write. Step is create, upload, edit, move,
 // estimate, rank, sprint_move, sprint, comment, link or worklog; State is
 // applied, refused, unknown (sent and not answered in full: it may have
-// happened) or not_sent. Refusal is why a refused part was refused, and
-// Failure why an unknown or unsent part is so, as a person reads it.
+// happened) or not_sent. Unchanged reports an applied part that sent
+// nothing: the tracker already held every value. Refusal is why a
+// refused part was refused, and Failure why an unknown or unsent part is
+// so, as a person reads it.
 type PartView struct {
-	Issue   string       `json:"issue,omitempty"`
-	Step    string       `json:"step"`
-	State   string       `json:"state"`
-	Refusal *RefusalView `json:"refusal,omitempty"`
-	Failure *FailureView `json:"failure,omitempty"`
+	Issue     string       `json:"issue,omitempty"`
+	Step      string       `json:"step"`
+	State     string       `json:"state"`
+	Unchanged bool         `json:"unchanged,omitempty"`
+	Refusal   *RefusalView `json:"refusal,omitempty"`
+	Failure   *FailureView `json:"failure,omitempty"`
 }
 
 // RefusalView is why a part was refused. Reason is tracker (the tracker
@@ -130,7 +133,7 @@ func partViews(kind string, res tracker.Result, at int64) []PartView {
 	out := make([]PartView, len(res.Parts))
 	for i, p := range res.Parts {
 		state := p.Outcome.State()
-		v := PartView{Issue: string(p.Issue), Step: nameOf(stepNames[:], p.Step), State: nameOf(stateNames[:], state)}
+		v := PartView{Issue: string(p.Issue), Step: nameOf(stepNames[:], p.Step), State: nameOf(stateNames[:], state), Unchanged: p.Unchanged}
 		r, refused := p.Outcome.Refusal()
 		err := p.Outcome.Err()
 		switch {

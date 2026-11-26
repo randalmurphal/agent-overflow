@@ -356,8 +356,9 @@ func (c *Client) CreateIssueTypes(ctx context.Context, project string) ([]IssueT
 
 // CreateMeta returns the create screen of a project and issue type ID.
 // A screen read is kept for createScreenAge, so a create planned after
-// its form, or a tool, read the screen reads it once. The value is the
-// caller's own.
+// its form, or a tool, read the screen reads it once, until a create
+// refuses a field on it (forgetCreateScreen). The value is the caller's
+// own.
 func (c *Client) CreateMeta(ctx context.Context, project, issueTypeID string) (Screen, error) {
 	if err := c.admit(ctx); err != nil {
 		return Screen{}, err
@@ -387,6 +388,13 @@ func (c *Client) CreateMeta(ctx context.Context, project, issueTypeID string) (S
 	}
 	c.createScreens.put(epoch, mark, key, s)
 	return s, nil
+}
+
+// forgetCreateScreen drops the kept create screen of a project and issue
+// type ID after a create that refused a field on it, which the screen
+// may have changed under: the next read of it is Jira's.
+func (c *Client) forgetCreateScreen(project, issueTypeID string) {
+	c.createScreens.drop([2]string{project, issueTypeID})
 }
 
 // createScreenAge is how long a create screen is kept. Jira sends no

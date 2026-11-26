@@ -109,14 +109,19 @@ func TestAgentWritesOutcomeIsOneTransaction(t *testing.T) {
 	if _, _, err := s.ClaimAgentWrite(edit, 0); !errors.Is(err, ErrInvalidAgentWrite) {
 		t.Fatalf("an edit without its issue = %v, want ErrInvalidAgentWrite", err)
 	}
+	keyed := agentComment("t1", "c2", 1)
+	keyed.State, keyed.Key = AgentWriteApplied, "WEB-1"
+	if err := s.RecordAgentWrites(0, []AgentWrite{keyed}); !errors.Is(err, ErrInvalidAgentWrite) {
+		t.Fatalf("a comment naming a key = %v, want ErrInvalidAgentWrite", err)
+	}
 	if err := s.ResendAgentWrite(sent, 0); !errors.Is(err, ErrInvalidAgentWrite) {
 		t.Fatalf("a resend with no time = %v, want ErrInvalidAgentWrite", err)
 	}
 }
 
 // A create sent again is measured from its new send time; one of unknown
-// outcome that a later read finds is settled applied with the issue it
-// made, and then marks that ticket.
+// outcome that a later read finds is settled applied with the issue and
+// key it made, and then marks that ticket.
 func TestAgentWriteSettleNamesTheIssue(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
@@ -129,11 +134,11 @@ func TestAgentWriteSettleNamesTheIssue(t *testing.T) {
 	if got, claimed := claim(t, s, create, 1_500); claimed || got.Sent != 2_000 || got.State != AgentWriteSent {
 		t.Fatalf("a claim after the resend = %+v, %v; want the row sent at 2000", got, claimed)
 	}
-	if err := s.SettleAgentWrite(first.ID, "10042", ""); err != nil {
+	if err := s.SettleAgentWrite(first.ID, "10042", "WEB-42", ""); err != nil {
 		t.Fatal(err)
 	}
 	marks, err := s.AgentWritesOf(TicketRef{Kind: "jira", Site: "https://example.atlassian.net", IssueID: "10042"})
-	if err != nil || len(marks) != 1 || marks[0].State != AgentWriteApplied || marks[0].Step != "create" {
+	if err != nil || len(marks) != 1 || marks[0].State != AgentWriteApplied || marks[0].Step != "create" || marks[0].Key != "WEB-42" {
 		t.Fatalf("marks of the settled create = %+v, %v", marks, err)
 	}
 }
@@ -156,5 +161,20 @@ func TestAgentWritesOfIsBounded(t *testing.T) {
 	}
 	if marks[0].At != int64(len(ws)) || marks[len(marks)-1].At != 6 {
 		t.Fatalf("marks run from %d to %d, want %d to 6", marks[0].At, marks[len(marks)-1].At, len(ws))
+	}
+}
+
+// A claim's ID is never one an earlier row had: a refused write's row goes,
+// and the next claim, which a sender may still hold the earlier ID beside,
+// gets an ID of its own.
+func TestAnAgentWriteClaimsIDIsNeverReused(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	first, _ := claim(t, s, agentComment("t1", "c1", 1_000), 0)
+	if err := s.RecordAgentWrites(first.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if next, claimed := claim(t, s, agentComment("t1", "c2", 1_000), 0); !claimed || next.ID == first.ID {
+		t.Fatalf("the claim after a refused write = %+v, %v; want an ID other than %d", next, claimed, first.ID)
 	}
 }

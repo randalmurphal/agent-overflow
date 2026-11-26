@@ -24,7 +24,7 @@ func buildText(_ context.Context, _ *builder, _ FieldMeta, in Input, v *Value) (
 func buildNumber(_ context.Context, _ *builder, f FieldMeta, in Input, v *Value) (any, error) {
 	n, err := strconv.ParseFloat(strings.TrimSpace(in.texts[0]), 64)
 	if err != nil || math.IsInf(n, 0) || math.IsNaN(n) {
-		return nil, fmt.Errorf("jira: %s takes a number, not %q", f.Name, in.texts[0])
+		return nil, fmt.Errorf("jira: %q takes a number, not %q", f.Name, in.texts[0])
 	}
 	v.Display = strconv.FormatFloat(n, 'f', -1, 64)
 	return n, nil
@@ -33,7 +33,7 @@ func buildNumber(_ context.Context, _ *builder, f FieldMeta, in Input, v *Value)
 func buildDate(_ context.Context, _ *builder, f FieldMeta, in Input, v *Value) (any, error) {
 	d, err := ParseDate(in.texts[0])
 	if err != nil {
-		return nil, fmt.Errorf("jira: %s: %w", f.Name, err)
+		return nil, fmt.Errorf("jira: %q: %w", f.Name, err)
 	}
 	v.Display = d.String()
 	return d.String(), nil
@@ -42,7 +42,7 @@ func buildDate(_ context.Context, _ *builder, f FieldMeta, in Input, v *Value) (
 func buildDateTime(_ context.Context, _ *builder, f FieldMeta, in Input, v *Value) (any, error) {
 	t, err := time.Parse(time.RFC3339, strings.TrimSpace(in.texts[0]))
 	if err != nil {
-		return nil, fmt.Errorf("jira: %s takes an RFC 3339 time like 2026-11-16T14:30:00+01:00, not %q", f.Name, in.texts[0])
+		return nil, fmt.Errorf("jira: %q takes an RFC 3339 time like 2026-11-16T14:30:00+01:00, not %q", f.Name, in.texts[0])
 	}
 	v.Display = t.Format(time.RFC3339)
 	return t.Format(jiraTimeLayout), nil
@@ -94,7 +94,7 @@ func (b *builder) user(ctx context.Context, f FieldMeta, who string, picked bool
 func buildLabels(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value) (any, error) {
 	for _, l := range in.texts {
 		if strings.ContainsFunc(l, unicode.IsSpace) {
-			return nil, fmt.Errorf("jira: %s: the label %q holds a space, which Jira refuses", f.Name, l)
+			return nil, fmt.Errorf("jira: %q: the label %q holds a space, which Jira refuses", f.Name, l)
 		}
 	}
 	return buildStrings(ctx, b, f, in, v)
@@ -259,7 +259,7 @@ func buildIssue(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value
 		return nil, &MatchError{What: f.Name + " issue", Input: ref, Picked: true}
 	}
 	if err != nil {
-		return nil, fmt.Errorf("jira: %s: %w", f.Name, err)
+		return nil, fmt.Errorf("jira: %q: %w", f.Name, err)
 	}
 	if !isNumeric(is.ID) {
 		return nil, &AnswerError{Message: fmt.Sprintf("issue %s came without its numeric ID", ref)}
@@ -291,19 +291,19 @@ func (b *builder) sprintByName(ctx context.Context, f FieldMeta, text string, v 
 	if b.opts.Issue != "" {
 		is, err := b.c.GetIssue(ctx, b.opts.Issue, "project")
 		if err != nil {
-			return nil, fmt.Errorf("jira: %s: %w", f.Name, err)
+			return nil, fmt.Errorf("jira: %q: %w", f.Name, err)
 		}
 		if is.Project == nil {
-			return nil, fmt.Errorf("jira: %s: cannot tell which project %s is in, so not which sprints it can join", f.Name, b.opts.Issue)
+			return nil, fmt.Errorf("jira: %q: cannot tell which project %s is in, so not which sprints it can join", f.Name, b.opts.Issue)
 		}
 		project = is.Project.Key
 	}
 	if project == "" {
-		return nil, fmt.Errorf("jira: %s: a sprint named %q needs the issue or project it is for", f.Name, text)
+		return nil, fmt.Errorf("jira: %q: a sprint named %q needs the issue or project it is for", f.Name, text)
 	}
 	s, err := b.c.openSprintNamed(ctx, project, text)
 	if err != nil {
-		return nil, fmt.Errorf("jira: %s: %w", f.Name, err)
+		return nil, fmt.Errorf("jira: %q: %w", f.Name, err)
 	}
 	v.Display = s.Name + " (sprint " + strconv.FormatInt(s.ID, 10) + ")"
 	return s.ID, nil

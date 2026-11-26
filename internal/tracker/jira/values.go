@@ -143,7 +143,7 @@ func (b *builder) rawRich(f FieldMeta, raw json.RawMessage, v Value) (Value, err
 	v.rich, v.base = true, b.opts.Base
 	if isNull(raw) {
 		if f.Required {
-			return v, fmt.Errorf("jira: %s is required and cannot be cleared", f.Name)
+			return v, fmt.Errorf("jira: %q is required and cannot be cleared", f.Name)
 		}
 		v.Fields, v.Display = json.RawMessage(`null`), "(none)"
 		v.Unchanged = v.base == nil
@@ -152,15 +152,15 @@ func (b *builder) rawRich(f FieldMeta, raw json.RawMessage, v Value) (Value, err
 	}
 	var doc *adf.Node
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return v, fmt.Errorf("jira: %s: the raw value is not a document: %w", f.Name, err)
+		return v, fmt.Errorf("jira: %q: the raw value is not a document: %w", f.Name, err)
 	}
 	if err := adf.Validate(doc); err != nil {
-		return v, fmt.Errorf("jira: %s: the raw value is not a valid document: %w", f.Name, err)
+		return v, fmt.Errorf("jira: %q: the raw value is not a valid document: %w", f.Name, err)
 	}
 	// Emptiness is the content's, as for Markdown (see markdown): a
 	// document showing nothing empties a required field as a null would.
 	if f.Required && adf.Blank(doc) {
-		return v, fmt.Errorf("jira: %s is required and the raw document shows nothing", f.Name)
+		return v, fmt.Errorf("jira: %q is required and the raw document shows nothing", f.Name)
 	}
 	v.doc, v.Fields, v.Display = doc, raw, adf.ToMarkdown(doc)
 	v.Unchanged = v.base != nil && adf.Equal(doc, v.base)
@@ -217,20 +217,20 @@ func (b *builder) build(ctx context.Context, f FieldMeta, in Input) (Value, erro
 	k := kindOf(f.Schema)
 	r := rules[k]
 	if in.from != nil && (k != kindRich || in.kind != inputText && in.kind != inputClear) {
-		return v, fmt.Errorf("jira: %s: EditedFrom applies to Markdown and clears of rich text", f.Name)
+		return v, fmt.Errorf("jira: %q: EditedFrom applies to Markdown and clears of rich text", f.Name)
 	}
 	if in.replaces != nil && (k != kindText && k != kindStrings || in.kind != inputText && in.kind != inputTexts && in.kind != inputClear) {
-		return v, fmt.Errorf("jira: %s: Replacing applies to typed text and clears of plain text", f.Name)
+		return v, fmt.Errorf("jira: %q: Replacing applies to typed text and clears of plain text", f.Name)
 	}
 	if len(f.Operations) > 0 && !slices.Contains(f.Operations, "set") {
-		return v, fmt.Errorf("jira: %s cannot be set here (it takes %s)", f.Name, strings.Join(f.Operations, ", "))
+		return v, fmt.Errorf("jira: %q cannot be set here (it takes %s)", f.Name, strings.Join(f.Operations, ", "))
 	}
 	switch in.kind {
 	case inputNone:
-		return v, fmt.Errorf("jira: %s: no value given", f.Name)
+		return v, fmt.Errorf("jira: %q: no value given", f.Name)
 	case inputClear:
 		if f.Required {
-			return v, fmt.Errorf("jira: %s is required and cannot be cleared", f.Name)
+			return v, fmt.Errorf("jira: %q is required and cannot be cleared", f.Name)
 		}
 		v.Fields, v.Update, v.Display = clearValue(f, r)
 		if k == kindRich {
@@ -238,20 +238,28 @@ func (b *builder) build(ctx context.Context, f FieldMeta, in Input) (Value, erro
 				return v, &StaleError{Issue: b.opts.Issue, What: f.Name}
 			}
 			// A clear replaces the stored document as an edit does, so a
-			// plan rechecks it the same way.
+			// plan rechecks it the same way, and CheckLoss refuses it until
+			// its loss is accepted when the document holds content Markdown
+			// shows only simplified.
 			v.rich, v.base = true, b.opts.Base
 			v.Unchanged = v.base == nil
+			if v.base != nil {
+				v.edits = adf.ClearLoss(v.base)
+				for _, w := range v.edits {
+					v.Warnings = append(v.Warnings, f.Name+": "+w.String())
+				}
+			}
 		}
 		return v, nil
 	case inputRaw:
 		if !json.Valid(in.raw) {
-			return v, fmt.Errorf("jira: %s: the raw value is not JSON", f.Name)
+			return v, fmt.Errorf("jira: %q: the raw value is not JSON", f.Name)
 		}
 		if k == kindRich {
 			return b.rawRich(f, in.raw, v)
 		}
 		if f.Required && emptyValue(in.raw) {
-			return v, fmt.Errorf("jira: %s is required and cannot be cleared", f.Name)
+			return v, fmt.Errorf("jira: %q is required and cannot be cleared", f.Name)
 		}
 		v.Fields, v.Display = in.raw, string(in.raw)
 		return v, nil
@@ -261,17 +269,17 @@ func (b *builder) build(ctx context.Context, f FieldMeta, in Input) (Value, erro
 	texts := in.texts
 	switch {
 	case k == kindUnknown:
-		return v, fmt.Errorf("jira: %s has type %s, which takes RawJSON only", f.Name, schemaName(f.Schema))
+		return v, fmt.Errorf("jira: %q has type %s, which takes RawJSON only", f.Name, schemaName(f.Schema))
 	case in.kind == inputIDs && !r.picked:
-		return v, fmt.Errorf("jira: %s takes %s, which has no IDs to pick", f.Name, r.what)
+		return v, fmt.Errorf("jira: %q takes %s, which has no IDs to pick", f.Name, r.what)
 	case len(texts) == 0:
-		return v, fmt.Errorf("jira: %s: no values given; Clear empties it", f.Name)
+		return v, fmt.Errorf("jira: %q: no values given; Clear empties it", f.Name)
 	case r.max > 0 && len(texts) > r.max:
-		return v, fmt.Errorf("jira: %s takes %s, not %d values", f.Name, r.what, len(texts))
+		return v, fmt.Errorf("jira: %q takes %s, not %d values", f.Name, r.what, len(texts))
 	}
 	for _, t := range texts {
 		if strings.TrimSpace(t) == "" {
-			return v, fmt.Errorf("jira: %s: an empty value; Clear empties it", f.Name)
+			return v, fmt.Errorf("jira: %q: an empty value; Clear empties it", f.Name)
 		}
 	}
 	out, err := r.build(ctx, b, f, in, &v)
@@ -280,7 +288,7 @@ func (b *builder) build(ctx context.Context, f FieldMeta, in Input) (Value, erro
 	}
 	if v.Fields == nil {
 		if v.Fields, err = json.Marshal(out); err != nil {
-			return v, fmt.Errorf("jira: %s: encode the value: %w", f.Name, err)
+			return v, fmt.Errorf("jira: %q: encode the value: %w", f.Name, err)
 		}
 	}
 	return v, nil

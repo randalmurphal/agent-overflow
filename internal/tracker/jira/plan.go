@@ -141,14 +141,14 @@ func (c *Client) PlanCreate(ctx context.Context, in CreateInput) (*CreatePlan, e
 			return nil, notSentErr(err)
 		}
 		if slices.Contains(reserved, f.ID) {
-			return nil, notSent("%s is set by the create input, not as a field", f.Name)
+			return nil, notSent("%q is set by the create input, not as a field", f.Name)
 		}
 		if set[f.ID] {
-			return nil, notSent("%s is set twice", f.Name)
+			return nil, notSent("%q is set twice", f.Name)
 		}
 		set[f.ID] = true
 		if fi.Value.replaces != nil || fi.Value.from != nil {
-			return nil, notSent("%s: a create's value replaces nothing", f.Name)
+			return nil, notSent("%q: a create's value replaces nothing", f.Name)
 		}
 		v, err := b.build(ctx, f, fi.Value)
 		if err != nil {
@@ -164,6 +164,7 @@ func (c *Client) PlanCreate(ctx context.Context, in CreateInput) (*CreatePlan, e
 		}
 	}
 	if len(missing) > 0 {
+		c.forgetCreateScreen(in.Project, p.issueType.ID)
 		return nil, notSentErr(&MissingFieldsError{Fields: missing})
 	}
 	p.images = imagesOf(p.values)
@@ -300,7 +301,7 @@ func (c *Client) PlanEdit(ctx context.Context, in EditInput) (*EditPlan, error) 
 			return nil, notSentErr(err)
 		}
 		if slices.ContainsFunc(metas[:i], func(m FieldMeta) bool { return m.ID == metas[i].ID }) {
-			return nil, notSent("%s is set twice", metas[i].Name)
+			return nil, notSent("%q is set twice", metas[i].Name)
 		}
 	}
 	if richNotAsked(asked, metas) || replacedNotAsked(asked, metas, in.Fields) {
@@ -330,7 +331,7 @@ func (c *Client) PlanEdit(ctx context.Context, in EditInput) (*EditPlan, error) 
 			return nil, notSentErr(err)
 		}
 		if err := v.CheckLoss(in.AcceptLoss); err != nil {
-			return nil, notSentErr(fmt.Errorf("jira: %s: %w", f.Name, err))
+			return nil, notSentErr(fmt.Errorf("jira: %q: %w", f.Name, err))
 		}
 		if v.Unchanged {
 			p.unchanged = append(p.unchanged, f.Name)
@@ -426,12 +427,12 @@ func checkReplaced(is *Issue, f FieldMeta, in Input) error {
 	case v.Null():
 	case kindOf(f.Schema) == kindStrings:
 		if err := v.decode(&stored); err != nil {
-			return fmt.Errorf("jira: the stored %s is not a list of texts: %w", f.Name, err)
+			return fmt.Errorf("jira: the stored %q is not a list of texts: %w", f.Name, err)
 		}
 	default:
 		text, err := v.Text()
 		if err != nil {
-			return fmt.Errorf("jira: the stored %s is not text: %w", f.Name, err)
+			return fmt.Errorf("jira: the stored %q is not text: %w", f.Name, err)
 		}
 		if text != "" {
 			stored = []string{text}
@@ -447,7 +448,7 @@ func checkReplaced(is *Issue, f FieldMeta, in Input) error {
 func storedDoc(is *Issue, f FieldMeta) (*adf.Node, error) {
 	if f.ID == "description" {
 		if err := problemIn(is.Problems, f.ID); err != nil {
-			return nil, fmt.Errorf("jira: the stored %s is not a document, so it cannot be edited as Markdown: %w", f.Name, err)
+			return nil, fmt.Errorf("jira: the stored %q is not a document, so it cannot be edited as Markdown: %w", f.Name, err)
 		}
 		return is.Description, nil
 	}
@@ -456,7 +457,7 @@ func storedDoc(is *Issue, f FieldMeta) (*adf.Node, error) {
 	case errors.Is(err, ErrNoValue):
 		return nil, nil
 	case err != nil:
-		return nil, fmt.Errorf("jira: the stored %s is not a document, so it cannot be edited as Markdown: %w", f.Name, err)
+		return nil, fmt.Errorf("jira: the stored %q is not a document, so it cannot be edited as Markdown: %w", f.Name, err)
 	}
 	return doc, nil
 }

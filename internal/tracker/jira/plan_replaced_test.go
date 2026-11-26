@@ -3,11 +3,13 @@ package jira
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	"agent-overflow/internal/tracker/adf"
 	"agent-overflow/internal/tracker/jira/jiratest"
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // notesSite serves WEB-1 with a plain text field, Notes, whose stored value
@@ -81,9 +83,49 @@ func TestAClearOfRichTextFromMarkdownIsCompared(t *testing.T) {
 // A create's value replaces nothing.
 func TestACreateValueReplacesNothing(t *testing.T) {
 	_, c := createSite(t)
-	for _, in := range []Input{Text("x").Replacing("y"), Text("x").EditedFrom("y")} {
-		if _, err := c.PlanCreate(t.Context(), CreateInput{Project: "WEB", IssueType: "1", Fields: []FieldInput{{Field: "summary", Value: Text("S")}, {Field: "description", Value: in}}}); err == nil {
-			t.Fatal("a create's value written from something was planned")
+	for _, fi := range []FieldInput{
+		{Field: "summary", Value: Text("S").Replacing("y")},
+		{Field: "description", Value: Text("x").EditedFrom("")},
+	} {
+		fields := []FieldInput{fi}
+		if fi.Field != "summary" {
+			fields = append(fields, FieldInput{Field: "summary", Value: Text("S")})
 		}
+		_, err := c.PlanCreate(t.Context(), CreateInput{Project: "WEB", IssueType: "1", Fields: fields})
+		if err == nil || !strings.Contains(err.Error(), "a create's value replaces nothing") || !trackerapi.WriteNotApplied(err) {
+			t.Fatalf("a create's %s written from something = %v, want it refused as replacing nothing", fi.Field, err)
+		}
+	}
+}
+
+// A clear of rich text is an edit of it: a document holding what Markdown
+// cannot show is refused for that loss until the loss is accepted, on an
+// edit and on a transition's screen.
+func TestAClearOfRichTextNeedsItsLossAccepted(t *testing.T) {
+	desc := storedDesc(t, layoutDoc())
+	_, c := editSite(t, desc)
+	shown := adf.ToMarkdown(layoutDoc())
+	in := EditInput{Issue: "WEB-1", Fields: []FieldInput{{Field: "description", Value: Clear().EditedFrom(shown)}}}
+	if _, err := c.PlanEdit(t.Context(), in); !errors.As(err, new(*adf.LossError)) || !trackerapi.WriteNotApplied(err) {
+		t.Fatalf("a clear of a layout = %v, want a loss refusal", err)
+	}
+	in.AcceptLoss = true
+	if _, err := c.PlanEdit(t.Context(), in); err != nil {
+		t.Fatalf("a clear with its loss accepted: %v", err)
+	}
+
+	f := jiratest.NewServer(t)
+	c = newTestClient(t, f)
+	f.On("GET", "/rest/api/3/issue/WEB-1/transitions", jiratest.Reply(200, `{"transitions":[{"id":"31","name":"Resolve","isAvailable":true,"fields":{
+		"description":{"key":"description","name":"Description","schema":{"type":"string","system":"description"},"operations":["set"]}}}]}`))
+	f.On("GET", "/rest/api/3/issue/WEB-1", jiratest.Reply(200, `{"id":"10001","key":"WEB-1","fields":{"description":`+docJSON(t, layoutDoc())+`}}`))
+	f.On("POST", "/rest/api/3/issue/WEB-1/transitions", func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(204) })
+	move := TransitionInput{Issue: "WEB-1", Transition: "Resolve", Fields: []FieldInput{{Field: "description", Value: Clear().EditedFrom(shown)}}}
+	if _, err := c.Transition(t.Context(), move); !errors.As(err, new(*adf.LossError)) || f.Count("POST", "/rest/api/3/issue/WEB-1/transitions") != 0 {
+		t.Fatalf("a transition clearing a layout = %v, want a loss refusal and no move", err)
+	}
+	move.AcceptLoss = true
+	if res, err := c.Transition(t.Context(), move); err != nil || !res.Moved {
+		t.Fatalf("a transition clearing with its loss accepted: %+v, %v", res, err)
 	}
 }

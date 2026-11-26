@@ -201,3 +201,38 @@ func TestACreateReadsItsScreenOnce(t *testing.T) {
 		t.Errorf("a screen %v old was read %d times in all, want again", createScreenAge, n)
 	}
 }
+
+// A create the tracker refuses for a named field, or the plan refuses for
+// a required field left unset, drops its screen, so the next read of it
+// is Jira's: the form reads its fields again after such a refusal. A
+// refusal that names no field keeps the screen.
+func TestARefusedCreateDropsItsScreen(t *testing.T) {
+	f, c := createSite(t)
+	screen := func() int { return f.Count("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes/1") }
+	in := CreateInput{Project: "WEB", IssueType: "1", Fields: []FieldInput{{Field: "Summary", Value: Text("x")}}}
+	refusedWith := func(body string) {
+		t.Helper()
+		f.On("POST", "/rest/api/3/issue", jiratest.Reply(400, body))
+		plan, err := c.PlanCreate(t.Context(), in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.ApplyCreate(t.Context(), plan); !trackerapi.WriteNotApplied(err) {
+			t.Fatalf("a refused create = %v", err)
+		}
+	}
+	refusedWith(`{"errorMessages":["The project is archived."],"errors":{}}`)
+	if _, err := c.CreateMeta(t.Context(), "WEB", "1"); err != nil || screen() != 1 {
+		t.Fatalf("after a refusal naming no field the screen was read %d times, %v; want once", screen(), err)
+	}
+	refusedWith(`{"errorMessages":[],"errors":{"customfield_10050":"Field 'customfield_10050' cannot be set. It is not on the appropriate screen, or unknown."}}`)
+	if _, err := c.CreateMeta(t.Context(), "WEB", "1"); err != nil || screen() != 2 {
+		t.Fatalf("after a refusal naming a field the screen was read %d times, %v; want twice", screen(), err)
+	}
+	if _, err := c.PlanCreate(t.Context(), CreateInput{Project: "WEB", IssueType: "1", Fields: []FieldInput{{Field: "Priority", Value: Text("High")}}}); !errors.As(err, new(*MissingFieldsError)) {
+		t.Fatalf("a create without its summary = %v", err)
+	}
+	if _, err := c.CreateMeta(t.Context(), "WEB", "1"); err != nil || screen() != 3 {
+		t.Fatalf("after a required field left unset the screen was read %d times, %v; want three", screen(), err)
+	}
+}

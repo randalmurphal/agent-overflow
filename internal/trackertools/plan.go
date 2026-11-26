@@ -282,7 +282,7 @@ func (pc *planCall) planField(p *planned, given string, f trackerapp.FieldView, 
 		edit = userValue(v, p.src.Account)
 		edit.Field = f.ID
 	case id == tracker.FieldParent:
-		typed, err := parentKeys(v, p.t.site, p.key)
+		typed, err := parentKeys(v, p.src.Kind, p.t.site, p.key)
 		if err != nil {
 			return err
 		}

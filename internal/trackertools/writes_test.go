@@ -339,14 +339,14 @@ func TestUpdateStopsAtTheFirstStepNotMade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"tickets":[{"key":"WEB-12","refused":"priority: no Priority value matches \"Urgent\"; it takes \"Highest\", \"High\", or \"Medium\".","not_sent":["comment"]}]}`; answer != want {
+	if want := `{"tickets":[{"key":"WEB-12","refused":"priority: no value matches; it takes \"Highest\", \"High\", or \"Medium\".","not_sent":["comment"]}]}`; answer != want {
 		t.Fatalf("answer = %s\nwant %s", answer, want)
 	}
 	answer, err = w.update(t, map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"status": "Done"}, "comment": "Done."})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"tickets":[{"key":"WEB-12","unknown":"status: Jira's answer never came, so the move may or may not have been made; the same call again makes only what was not.","not_sent":["comment"]}]}`; answer != want {
+	if want := `{"tickets":[{"key":"WEB-12","unknown":"status: Jira's answer never came, so the move may or may not have been made; read the ticket to see before you call again.","not_sent":["comment"]}]}`; answer != want {
 		t.Fatalf("answer = %s\nwant %s", answer, want)
 	}
 	if len(w.h.rows) != 0 {
@@ -391,8 +391,15 @@ func TestUpdateDoesNotAddACommentTwice(t *testing.T) {
 		return trackerapp.WriteView{}, fmt.Errorf("%w: down", trackerapp.ErrAgentRepeatUnchecked)
 	}
 	answer, err = w.update(t, args)
-	if want := `{"tickets":[{"key":"WEB-12","refused":"comment: an earlier call's comment may have been added, and the ticket's comments could not be read to see, so it was not sent; the same call again tries again."}]}`; err != nil || answer != want {
+	if want := `{"tickets":[{"key":"WEB-12","refused":"comment: an earlier call's comment may have been added, and the ticket's comments could not be read to check, so it was not sent again; call again to check again."}]}`; err != nil || answer != want {
 		t.Fatalf("a comment whose earlier attempt was not checked = %s, %v\nwant %s", answer, err, want)
+	}
+	w.f.write = func(string, any) (trackerapp.WriteView, error) {
+		return trackerapp.WriteView{}, fmt.Errorf("%w: %w", trackerapp.ErrAgentRepeatUnchecked, trackerapp.ErrAgentAccountUnknown)
+	}
+	answer, err = w.update(t, args)
+	if want := `{"tickets":[{"key":"WEB-12","refused":"comment: an earlier call's comment may have been added, and it cannot be checked: the connection's account was not known when it was sent. It was not sent again; ask the user to check the connection in Settings, Issues, then call again."}]}`; err != nil || answer != want {
+		t.Fatalf("a comment of an unknown account = %s, %v\nwant %s", answer, err, want)
 	}
 	if len(w.h.rows) != 0 {
 		t.Fatalf("calls that added nothing wrote rows %+v", w.h.rows)
@@ -495,7 +502,7 @@ func TestCreate(t *testing.T) {
 		return trackerapp.WriteView{Parts: []trackerapp.PartView{{Step: "create", State: "unknown"}}, CreateUnknown: true}, nil
 	}
 	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "Fourth"})
-	refused(t, err, CodeUnknown, "Jira's answer never came, so the ticket may or may not have been created; the same call again creates it only if it was not.")
+	refused(t, err, CodeUnknown, "Jira's answer never came, so the ticket may or may not have been created; the same call again looks for it first.")
 
 	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "OPS", "title": "Elsewhere"})
 	refused(t, err, CodeNotFound, "No board of project OPS is on this computer; ask the user to add one in Settings, Issues.")
@@ -519,7 +526,7 @@ func TestCreateIsNotMadeTwice(t *testing.T) {
 	w.f.details["conn-jira/10042"] = writableDetail("WEB-42", "10042")
 	w.f.write = func(name string, _ any) (trackerapp.WriteView, error) {
 		if name == "create" {
-			return trackerapp.WriteView{Parts: []trackerapp.PartView{}, Repeat: &trackerapp.RepeatView{Issue: "10042"}}, nil
+			return trackerapp.WriteView{Parts: []trackerapp.PartView{}, Repeat: &trackerapp.RepeatView{Issue: "10042", Key: "WEB-42"}}, nil
 		}
 		return trackerapp.WriteView{Parts: []trackerapp.PartView{{Step: name, State: "applied"}}}, nil
 	}
@@ -544,7 +551,12 @@ func TestCreateIsNotMadeTwice(t *testing.T) {
 		return trackerapp.WriteView{}, fmt.Errorf("%w: down", trackerapp.ErrAgentRepeatUnchecked)
 	}
 	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "Login fails"})
-	refused(t, err, CodeUnknown, "An earlier call may have created this ticket, and the tracker could not be searched to see, so nothing was created; the same call again tries again.")
+	refused(t, err, CodeUnknown, "An earlier call may have created this ticket, and the tracker could not be searched to check, so it was not created again; call again to check again.")
+	w.f.write = func(string, any) (trackerapp.WriteView, error) {
+		return trackerapp.WriteView{}, fmt.Errorf("%w: %w", trackerapp.ErrAgentRepeatUnchecked, trackerapp.ErrAgentAccountUnknown)
+	}
+	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "Login fails"})
+	refused(t, err, CodeUnknown, "An earlier call may have created this ticket, and it cannot be checked: the connection's account was not known when it was sent. It was not created again; ask the user to check the connection in Settings, Issues, then call again.")
 }
 
 // A confirmed create answers the key its own answer gave and writes its

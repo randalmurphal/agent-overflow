@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
@@ -68,6 +69,10 @@ var ErrAgentWriteInFlight = errors.New("trackerapp: an earlier call is sending t
 // sent.
 var ErrAgentRepeatUnchecked = errors.New("trackerapp: an earlier attempt of the write could not be looked for")
 
+// ErrAgentAccountUnknown is why an earlier attempt could not be looked
+// for: the connection's account was not verified when it was sent.
+var ErrAgentAccountUnknown = errors.New("trackerapp: the connection's account was not checked when the earlier attempt was sent")
+
 // agentRepeatWindow is how long a recorded comment or create answers a
 // repeat of it.
 const agentRepeatWindow = time.Hour
@@ -84,14 +89,14 @@ const (
 // create, with the issue it is on (none for a create), the project a
 // create is made in, the digest of what it adds on a tracker of kind at
 // site, and the lookup of an earlier attempt sent at sent by account:
-// what it made (a comment's ID, a create's issue), ok false when the
-// tracker shows none.
+// what it made (a comment's ID, a create's issue and key), ok false when
+// the tracker shows none.
 type additive struct {
 	step    tracker.Step
 	issue   tracker.IssueID
 	project string
 	digest  func(kind, site string) (string, error)
-	find    func(ctx context.Context, p tracker.Provider, sent time.Time, account string) (made string, ok bool, err error)
+	find    func(ctx context.Context, p tracker.Provider, sent time.Time, account string) (made RepeatView, ok bool, err error)
 }
 
 // agentSends are the rows of the comments and creates this process is
@@ -109,25 +114,25 @@ func commentOf(issue tracker.IssueID, markdown string) *additive {
 		digest: func(kind, site string) (string, error) {
 			return digestOf("comment", kind, site, string(issue), markdown), nil
 		},
-		find: func(ctx context.Context, p tracker.Provider, sent time.Time, account string) (string, bool, error) {
+		find: func(ctx context.Context, p tracker.Provider, sent time.Time, account string) (RepeatView, bool, error) {
 			from, to := sent.Add(-repeatBefore), sent.Add(repeatAfter)
 			page := tracker.PageToken("")
 			for {
 				got, err := p.Comments(ctx, issue, page)
 				if err != nil {
-					return "", false, err
+					return RepeatView{}, false, err
 				}
 				for _, c := range got.Comments {
 					if c.Created.Before(from) {
 						// Newest first: every later comment is older still.
-						return "", false, nil
+						return RepeatView{}, false, nil
 					}
-					if account != "" && string(c.Author) == account && !c.Created.After(to) && sameText(c.Body, markdown) {
-						return string(c.ID), true, nil
+					if string(c.Author) == account && !c.Created.After(to) && sameText(c.Body, markdown) {
+						return RepeatView{Issue: string(issue), Comment: string(c.ID)}, true, nil
 					}
 				}
 				if got.Next == "" {
-					return "", false, nil
+					return RepeatView{}, false, nil
 				}
 				page = got.Next
 			}
@@ -140,24 +145,28 @@ func createOf(in CreateRequest) *additive {
 	return &additive{
 		step: tracker.StepCreate, project: in.Project,
 		digest: func(kind, site string) (string, error) {
-			fields, err := json.Marshal(in.Fields)
+			// By the field each value sets, so the same create in another
+			// order is the same create; each field's values keep their order.
+			byField := slices.Clone(in.Fields)
+			slices.SortStableFunc(byField, func(a, b FieldEditInput) int { return strings.Compare(a.Field, b.Field) })
+			fields, err := json.Marshal(byField)
 			if err != nil {
 				return "", fmt.Errorf("trackerapp: the digest of a create: %w", err)
 			}
 			return digestOf("create", kind, site, in.Project, in.Type, in.Title, string(fields)), nil
 		},
-		find: func(ctx context.Context, p tracker.Provider, sent time.Time, _ string) (string, bool, error) {
+		find: func(ctx context.Context, p tracker.Provider, sent time.Time, _ string) (RepeatView, bool, error) {
 			from, to := sent.Add(-repeatBefore), sent.Add(repeatAfter)
 			page, err := p.Search(ctx, tracker.SearchQuery{Text: in.Title, Project: tracker.ProjectID(in.Project), Limit: repeatSearch})
 			if err != nil {
-				return "", false, err
+				return RepeatView{}, false, err
 			}
 			for _, c := range page.Cards {
 				if c.Title == in.Title && !c.Created.Before(from) && !c.Created.After(to) {
-					return string(c.ID), true, nil
+					return RepeatView{Issue: string(c.ID), Key: c.Key}, true, nil
 				}
 			}
-			return "", false, nil
+			return RepeatView{}, false, nil
 		},
 	}
 }
@@ -165,20 +174,47 @@ func createOf(in CreateRequest) *additive {
 // repeatSearch is the most cards a create's lookup reads: one page.
 const repeatSearch = 20
 
-// sameText reports whether two bodies hold the same letters and digits:
-// the tracker rewrites a comment's Markdown as it stores it.
+// sameText reports whether two bodies hold the same letters and digits
+// outside their mentions: the tracker rewrites a comment's Markdown as it
+// stores it, and a mention written as @[me] or an ID comes back as
+// @[Name].
 func sameText(a, b string) bool {
 	return textKey(a) == textKey(b)
 }
 
 func textKey(s string) string {
 	var b strings.Builder
-	for _, r := range s {
+	for i := 0; i < len(s); {
+		if n := mentionLen(s[i:]); n > 0 {
+			i += n
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			b.WriteRune(r)
 		}
+		i += size
 	}
 	return b.String()
+}
+
+// mentionLen is the length of the mention s starts with, @[...] on one
+// line with backslash escapes inside, and 0 when it starts with none.
+func mentionLen(s string) int {
+	if !strings.HasPrefix(s, "@[") {
+		return 0
+	}
+	for i := 2; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			i++
+		case '\n':
+			return 0
+		case ']':
+			return i + 1
+		}
+	}
+	return 0
 }
 
 func digestOf(parts ...string) string {
@@ -264,32 +300,31 @@ func (s *Service) claimAgentWrite(r *run, rec *agentRecord) (*RepeatView, error)
 		rec.claim = got.ID
 		return nil, nil
 	case got.State == store.AgentWriteApplied:
-		return &RepeatView{Issue: got.Ticket.IssueID, Comment: got.Comment}, nil
+		return &RepeatView{Issue: got.Ticket.IssueID, Key: got.Key, Comment: got.Comment}, nil
 	case sending:
 		return nil, ErrAgentWriteInFlight
 	}
-	// Interrupted: the claim is this caller's, which looks for it.
+	// Interrupted: the claim is this caller's, which looks for it. With no
+	// account recorded, the lookup cannot tell the agent's write from a
+	// person's, so nothing is looked for and nothing is sent.
 	rec.claim = got.ID
+	if got.Account == "" {
+		s.endAgentWrite(rec)
+		return nil, fmt.Errorf("%w: %w", ErrAgentRepeatUnchecked, ErrAgentAccountUnknown)
+	}
 	made, found, err := rec.add.find(r.ctx, r.p, time.UnixMilli(got.Sent), got.Account)
 	if err != nil {
 		s.endAgentWrite(rec)
 		return nil, fmt.Errorf("%w: %w", ErrAgentRepeatUnchecked, err)
 	}
 	if found {
-		issue, comment := "", made
-		if rec.add.step == tracker.StepCreate {
-			issue, comment = made, ""
-		}
-		err := s.store.SettleAgentWrite(got.ID, issue, comment)
+		err := s.store.SettleAgentWrite(got.ID, made.Issue, made.Key, made.Comment)
 		s.endAgentWrite(rec)
 		if err != nil {
 			// What it made is there; a later repeat looks for it again.
 			s.logf("trackerapp: record the agent's %s found made: %v", step, err)
 		}
-		if issue == "" {
-			issue = got.Ticket.IssueID
-		}
-		return &RepeatView{Issue: issue, Comment: comment}, nil
+		return &made, nil
 	}
 	if err := s.store.ResendAgentWrite(got.ID, rec.sent); err != nil {
 		s.endAgentWrite(rec)
@@ -348,7 +383,8 @@ func partIssues(res tracker.Result) []tracker.IssueID {
 }
 
 // finishAgentWrite records res, the write's outcome, replacing the sent row:
-// each part of a recorded step that was applied or may have been, with
+// each part of a recorded step that was applied or may have been, and
+// changed something or may have, with
 // the cards' update times before the write and after (0 when the mirror
 // does not keep the card). A record that fails is logged: the write
 // stands, and only its mark and a repeat's check of it are lost.
@@ -361,11 +397,11 @@ func (s *Service) finishAgentWrite(rec *agentRecord, res tracker.Result, after m
 	for _, p := range res.Parts {
 		step := nameOf(agentStepNames[:], p.Step)
 		state := p.Outcome.State()
-		if step == "" || state != tracker.StateApplied && state != tracker.StateUnknown {
+		if step == "" || p.Unchanged || state != tracker.StateApplied && state != tracker.StateUnknown {
 			continue
 		}
 		w := store.AgentWrite{
-			Ticket:  store.TicketRef{Kind: rec.row.Kind, Site: rec.row.Site, IssueID: string(p.Issue)},
+			Ticket: store.TicketRef{Kind: rec.row.Kind, Site: rec.row.Site, IssueID: string(p.Issue)}, Key: p.Key,
 			Account: rec.row.VerifiedAccountID, ThreadID: rec.who.thread, CallID: rec.who.call, Step: step,
 			State: store.AgentWriteApplied, Comment: string(p.Comment), Before: rec.before[p.Issue], After: after[p.Issue], Sent: rec.sent, At: at,
 		}
@@ -384,10 +420,12 @@ func (s *Service) finishAgentWrite(rec *agentRecord, res tracker.Result, after m
 
 // RepeatView is what an earlier attempt of an agent's comment or create
 // made, which its repeat answered with nothing sent: the issue it is on or
-// made, and the comment, for a comment found by its ID (empty when the
-// tracker did not name it).
+// made, the key a create made as the tracker answered it, and the
+// comment, for a comment found by its ID (empty when the tracker did not
+// name it).
 type RepeatView struct {
 	Issue   string
+	Key     string
 	Comment string
 }
 

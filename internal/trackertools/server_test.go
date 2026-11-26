@@ -23,9 +23,12 @@ type fakeTracker struct {
 	search    func(connection string, in trackerapp.SearchRequest) (trackerapp.SearchPageView, error)
 	lookup    map[string]map[string]string // connection, key: issue
 	lookupErr map[string]error
-	details   map[string]trackerapp.DetailView // connection/issue
-	comments  func(connection, issue, page string) (trackerapp.CommentPageView, error)
-	asked     []string
+	// honorCtx, when set, makes a detail read fail on an ended context, as
+	// the service's does.
+	honorCtx bool
+	details  map[string]trackerapp.DetailView // connection/issue
+	comments func(connection, issue, page string) (trackerapp.CommentPageView, error)
+	asked    []string
 
 	// keyed are the tickets the mirrors hold of a key; boards the
 	// mirrors' boards, by connection/board; cards the mirrors' cards, by
@@ -184,8 +187,11 @@ func (f *fakeTracker) Search(_ context.Context, connection string, in trackerapp
 	return f.search(connection, in)
 }
 
-func (f *fakeTracker) IssueDetail(_ context.Context, connection, issue string) (trackerapp.DetailView, error) {
+func (f *fakeTracker) IssueDetail(ctx context.Context, connection, issue string) (trackerapp.DetailView, error) {
 	f.asked = append(f.asked, "detail "+connection+" "+issue)
+	if err := ctx.Err(); f.honorCtx && err != nil {
+		return trackerapp.DetailView{}, err
+	}
 	d, ok := f.details[connection+"/"+issue]
 	if !ok {
 		return trackerapp.DetailView{}, fmt.Errorf("%w: issue %s", trackerapp.ErrIssueNotFound, issue)

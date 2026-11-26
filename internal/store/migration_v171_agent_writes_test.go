@@ -17,6 +17,10 @@ func TestAgentWritesMigration(t *testing.T) {
 	if _, err := db.Exec(insert, "linear", "example", "", "t1", "c2", "create", "sent", 1, 1); err != nil {
 		t.Fatalf("a create sent before its issue exists: %v", err)
 	}
+	if _, err := db.Exec(`INSERT INTO tracker_agent_writes(kind, site, issue_id, issue_key, thread_id, call_id, step, state, sent_ms, at_ms)
+		VALUES ('jira', 's', '1', 'WEB-1', 't1', 'c', 'edit', 'applied', 1, 1)`); err == nil || !strings.Contains(err.Error(), "CHECK") {
+		t.Errorf("an edit naming a key: %v, want a CHECK failure", err)
+	}
 	for _, bad := range []struct {
 		name string
 		args []any

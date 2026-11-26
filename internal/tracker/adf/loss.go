@@ -1,6 +1,9 @@
 package adf
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // LossKind is a way the Markdown writes content it cannot express. It
 // decides how an edit keeps that content.
@@ -125,6 +128,31 @@ func nodeLoss(n *Node) LossSet {
 		}
 	})
 	return s
+}
+
+// ClearLoss is what a clear of doc loses that Markdown shows only
+// simplified: one warning naming the rich nodes doc holds, which loses
+// their content (see nodeLoss), so CheckLoss refuses the clear until the
+// loss is accepted. A clear removes every node's Markdown, which explains
+// no loss here: the person or agent that empties a field sees only what
+// Markdown shows of it. It is nil when doc holds nothing Markdown shows
+// only simplified, or only dress.
+func ClearLoss(doc *Node) []Warning {
+	loses := nodeLoss(doc)
+	if loses == 0 {
+		return nil
+	}
+	var names []string
+	for _, r := range inventory(doc) {
+		if !r.cosmetic && !slices.Contains(names, r.label) {
+			names = append(names, r.label)
+		}
+	}
+	msg := "the clear removes content Markdown shows only simplified"
+	if len(names) > 0 {
+		msg += ": " + strings.Join(names, ", ")
+	}
+	return []Warning{{Msg: msg, Loses: loses}}
 }
 
 // richLoss is the loss of r, a rich node an edit drops: none for dress,

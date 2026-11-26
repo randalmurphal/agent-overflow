@@ -128,6 +128,7 @@ func TestResultCheck(t *testing.T) {
 		part("10001", StepCreate, Applied(), CardOf("10001"), DetailOf("10001")),
 		part("10001", StepUpload, NotSent(nil)),
 		part("", StepSprint, Refused(Refusal{Reason: ReasonUnsupported})),
+		{Issue: "10001", Step: StepEdit, Outcome: Applied(), Unchanged: true},
 	}}
 	if err := good.Check(); err != nil {
 		t.Fatalf("a good result fails Check: %v", err)
@@ -149,6 +150,8 @@ func TestResultCheck(t *testing.T) {
 		"card without issue":   {Parts: []Part{part("1", StepEdit, Applied(), CardOf("1"), DetailOf("1"), CardOf(""))}},
 		"structure no board":   {Parts: []Part{part("", StepSprint, Applied(), StructureOf(""))}},
 		"worklogs without day": {Parts: []Part{part("1", StepWorklog, Applied(), WorklogsOf("acc-user1", Date{}))}},
+		"unchanged unknown":    {Parts: []Part{{Issue: "1", Step: StepEdit, Outcome: Unknown(nil), Unchanged: true}}},
+		"unchanged changed":    {Parts: []Part{{Issue: "1", Step: StepEdit, Outcome: Applied(), Changed: []Resource{CardOf("1")}, Unchanged: true}}},
 	}
 	for name, r := range bad {
 		if err := r.Check(); err == nil {

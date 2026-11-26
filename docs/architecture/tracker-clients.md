@@ -249,8 +249,11 @@ Markdown cannot show (a macro, a panel, a mention, a merged cell) survives
 when the user did not touch it. `adf.CheckLoss` turns the warnings of an
 edit that would lose such content into a `*LossError` that names what would
 be lost and how to keep it. A caller passes the user's explicit acceptance
-to apply the edit anyway. Jira's edit and comment calls run the check; no
-caller writes rich text without it.
+to apply the edit anyway. A clear of rich text, which removes every node's
+Markdown, is checked against what Markdown shows only simplified
+(`adf.ClearLoss`): a document holding such content is refused for it until
+the loss is accepted. Jira's edit, transition and comment calls run the
+check; no caller writes rich text without it.
 
 ## Jira
 
@@ -311,7 +314,9 @@ problem on that record, which stays usable.
   field catalog, which no read drops and Jira changes with no signal, are
   read again once 30 minutes old. A create screen is kept for one minute,
   so a create planned after its form or a tool call read the screen reads
-  it once.
+  it once. A create Jira refuses with a 400 that names a field, or a plan
+  that leaves a required field unset, drops it: the screen may have
+  changed under the refusal, and the next read is Jira's.
 - **Write answers.** A write is applied only on a success its spec
   documents that names what was written, by the rule in `jira/writes.go`;
   any other 2xx is an unknown outcome. An edit that asks for nothing is

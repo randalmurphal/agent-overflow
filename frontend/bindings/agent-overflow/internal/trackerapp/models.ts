@@ -1843,13 +1843,16 @@ export class ParentView {
  * PartView is one part of a write. Step is create, upload, edit, move,
  * estimate, rank, sprint_move, sprint, comment, link or worklog; State is
  * applied, refused, unknown (sent and not answered in full: it may have
- * happened) or not_sent. Refusal is why a refused part was refused, and
- * Failure why an unknown or unsent part is so, as a person reads it.
+ * happened) or not_sent. Unchanged reports an applied part that sent
+ * nothing: the tracker already held every value. Refusal is why a
+ * refused part was refused, and Failure why an unknown or unsent part is
+ * so, as a person reads it.
  */
 export class PartView {
     "issue"?: string;
     "step": string;
     "state": string;
+    "unchanged"?: boolean;
     "refusal"?: RefusalView | null;
     "failure"?: FailureView | null;
 
@@ -1869,14 +1872,14 @@ export class PartView {
      * Creates a new PartView instance from a string or object.
      */
     static createFrom($$source: any = {}): PartView {
-        const $$createField3_0 = $$createType67;
-        const $$createField4_0 = $$createType8;
+        const $$createField4_0 = $$createType67;
+        const $$createField5_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("refusal" in $$parsedSource) {
-            $$parsedSource["refusal"] = $$createField3_0($$parsedSource["refusal"]);
+            $$parsedSource["refusal"] = $$createField4_0($$parsedSource["refusal"]);
         }
         if ("failure" in $$parsedSource) {
-            $$parsedSource["failure"] = $$createField4_0($$parsedSource["failure"]);
+            $$parsedSource["failure"] = $$createField5_0($$parsedSource["failure"]);
         }
         return new PartView($$parsedSource as Partial<PartView>);
     }

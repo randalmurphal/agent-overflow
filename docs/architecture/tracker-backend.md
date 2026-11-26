@@ -1281,7 +1281,9 @@ create is written in state `sent` before the provider call, with a digest
 of its content, and every step's outcome (`applied` or `unknown`) with the
 card's update times before and after is written after the refresh and
 before the views are built, so the view the change funnel's event builds
-already carries the mark. A refused step leaves no row. A ticket's detail
+already carries the mark, a create's with the key the tracker gave it. A
+refused step, and an edit the tracker answers as changing nothing,
+leave no row. A ticket's detail
 marks a comment whose ID a row holds with its thread (`CommentView.Thread`)
 and a history event by the writing connection's account inside a row's
 window (`EventView.Agent`); the newest 200 rows of an issue are read. The
@@ -2231,19 +2233,24 @@ sent, in one store transaction under one lock
 (`store.ClaimAgentWrite`): within an hour, one caller of a thread
 holds the right to send a given digest at a time. The digest is the
 comment's Markdown on the issue, or what the create request sends (the
-tracker, site, project, type, title and every field), never the steps
-made after a create, so a call again after one of those was refused finds
-the ticket. A later call whose digest is applied sends nothing and puts
-the step in `already` with a note, the create naming its key; one whose
-digest an earlier call is still sending is refused saying to call again
-once that call has answered. One whose earlier send was interrupted (its
-answer never came, or the app stopped) reads the tracker first: the
-issue's comments by the writing account from a minute before the send to
-two minutes after, compared on letters and digits, or a search for the
-title in the project in that window. What it finds settles the earlier
-row and is the answer; nothing found sends under the same claim; a read
-that fails sends nothing and is refused saying the same call again tries
-again.
+tracker, site, project, type, title and every field, by field ID in any
+order), never the steps made after a create, so a call again after one of
+those was refused finds the ticket. A later call whose digest is applied
+sends nothing and puts the step in `already` with a note, the create
+naming the key its row kept; one whose digest an earlier call is still
+sending is refused saying to call again once that call has answered. One
+whose earlier send was interrupted (its answer never came, or the app
+stopped) reads the tracker first: the issue's comments by the writing
+account from a minute before the send to two minutes after, compared on
+letters and digits outside mentions, or a search for the title in the
+project in that window. What it finds settles the earlier row and is the
+answer; nothing found sends under the same claim; a read that fails sends
+nothing and is refused saying it could not be checked and to call again
+to check. A row sent before the connection's account was verified cannot
+tell the agent's write from a person's, so nothing is read or sent and
+the refusal says to check the connection. A claim's row ID is never
+reused (`AUTOINCREMENT`), so a caller holding a refused claim's ID never
+settles another write's row.
 
 **Creates.** A create goes through one board, chosen over every
 connection's listings of the project: a board read here that the
@@ -2251,7 +2258,7 @@ thread's project lists, else any board read here. None is refused saying
 to add one, and only unread ones are refused saying to open one. Boards
 of the project on two sites are refused naming both. The create screen
 is read once for the call: the Jira client keeps a create screen for a
-minute. Jira takes the type by name (Task, else the first type that
+minute, and drops it when a create is refused for a field on it. Jira takes the type by name (Task, else the first type that
 is not a subtask, when none is given); Linear has none and refuses one.
 Every field of `set` is resolved before the create request, so a value
 refused there creates nothing; status, sprint and estimate are set after
