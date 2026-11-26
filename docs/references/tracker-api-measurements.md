@@ -81,6 +81,16 @@ Fields and search:
   Administer Jira, so a normal user's options come from `allowedValues`.
 - Transitions with their screen fields come from
   `GET /issue/{key}/transitions?expand=transitions.fields`.
+- Measured 2026-11-26 on one throwaway issue, deleted after.
+  `POST /issue/{id}/transitions` with a transition ID the issue does not
+  offer answers 400 with `errorMessages` `["Transition id '999999' is not
+  valid for this issue."]` and an empty `errors`. The site's workflow
+  offered every move from every status (10 before a move and 10 after), so
+  a move offered before and not after could not be tried; the providers
+  and the fake take it to answer the same until it is measured. Not
+  measured: the sentence for a user whose Jira language is not English,
+  which `jira.UnofferedError` would then not recognize, leaving Jira's own
+  refusal.
 - A rejected write returns `errorMessages` plus an `errors` map of field to
   message. Field errors are kept per field.
 - Rich text in v3 is Atlassian Document Format.

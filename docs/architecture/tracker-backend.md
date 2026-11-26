@@ -2280,11 +2280,60 @@ does on a team with estimation off (one with it on is not measured), and
 a comment does not; a cycle change is not measured, which the sprint
 comparison covers ([measured](../references/tracker-api-measurements.md)). A lookup that
 fails sends nothing and is the call's error. A comment alone judges
-nothing but that the ticket exists and is not read again, and a call
-naming one ticket does not wait. After the read, in the seconds the
-earlier tickets' sends take, a change is caught only where a write
-compares at send: a text an edit replaces whole, a move Jira no longer
-offers the ticket, and a status its Linear team no longer has.
+nothing but that the ticket exists, and a call naming one ticket does not
+wait. After the read, in the seconds the earlier tickets' sends take, a
+change is caught only where a write compares at send: a text an edit
+replaces whole. A move the ticket's workflow no longer offers, or a status
+its Linear team no longer has, is sent as the plan's read found it, and
+the tracker's refusal, which the provider maps to a stale refusal
+(`jira.UnofferedError`, Linear's refusal naming `stateId`), stops it: the
+agent is told the ticket changed and to read it again, as a person's
+Board move is.
+
+**A Jira comment's audience.** Who a Jira comment reaches is judged on the
+project the ticket is in when the comment is sent: a ticket moved into a
+service desk project would otherwise get a public comment, which emails
+the customer. A call that comments on Jira tickets reads their cards with
+the same key lookup per connection after the approval, or just before the
+sends when it waits for nobody, and each comment is judged on the project
+that read found (`trackerapp`'s write session keeps it,
+`tracker.CommentInput.Project`). The Jira client keeps each project's
+type by ID for 30 minutes, from the projects a bulk fetch's issues name
+(`projectTypeKey`) or a read of the project; only a comment's audience
+reads it there. The tools name no audience, so a comment on a service
+desk ticket is refused. A read that fails sends nothing; a project whose
+type cannot be read sends no comment to that ticket. A person's comment
+reads the issue's project with the comment, as before.
+
+**Requests.** What each call shape costs on the fake, cold (the mirror
+holds the tickets' cards and rows) and warm (the agent read the tickets
+first), pinned by `TestTrackerToolRequestCounts`
+(`internal/app/app_tracker_tools_costs_test.go`), every request of the
+call included, its refresh too. A call of three tickets waits for the
+person and reads its cards again after the approval; a call of one does
+not.
+
+| Shape | Jira, 1 | Jira, 3 | Linear, 1 | Linear, 3 |
+|---|---|---|---|---|
+| Comment | 2 | 4 | 1 | 3 |
+| Status, cold | 4 | 11 | 3 | 6 |
+| Status, warm | 4 | 9 | 3 | 6 |
+| Sprint | 5 | 6 | 4 | 5 |
+| Backlog | 4 | 5 | 4 | 5 |
+| Title | 4 | 9 | 3 | 6 |
+| Estimate | 4 | 9 | 4 | 9 |
+| Status, title, estimate, sprint and comment, cold | 13 | 29 | 9 | 20 |
+| The same, warm | 13 | 27 | 9 | 20 |
+
+A cold status takes its moves from the plan's detail read; a warm one is
+planned on the cards, which keep no read, so the move reads its moves.
+An estimate reads the board's rows first to check the ticket is on the
+board, so it costs two requests per ticket. A create costs 5 on Jira
+(the types, the create screen, the create, the match and the refresh) and
+2 on Linear; a create that also sets the status and the sprint costs 12
+and 6. A read costs 2 on Jira (the issue and its comments) and 1 on
+Linear; the same read again costs 1 on each. A find costs one search on
+each connection.
 
 **Read-only threads.** A writing call is refused when the calling
 thread's runtime mode is read-only, before anything is read or sent, and

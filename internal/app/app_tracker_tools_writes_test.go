@@ -299,3 +299,72 @@ func TestTrackerWriteCreatesThroughAReadBoardAfterAnUnreadOne(t *testing.T) {
 		t.Fatalf("ticket_create = %s (error %v)", text, isError)
 	}
 }
+
+// The read marks hold through a call's write and its refresh: after a
+// read, an edit of the description, and a second edit in a later call
+// with no read between, are both sent; once a person changes the ticket,
+// the agent's next edit is refused until it reads the ticket again. Each
+// call sends to the ticket before the refresh, which no longer reads the
+// detail of a ticket no screen has open, so the mark follows the card the
+// refresh reads.
+func TestTrackerWriteReadMarksHoldAcrossTheAgentsOwnEdits(t *testing.T) {
+	t.Parallel()
+	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: describedSite()})
+	t.Cleanup(func() { _ = f.a.trackerMCPServer().Close() })
+	_, endpoint := trackerWriteThread(t, f, provider.RuntimeAuto)
+	readBoard(t, f, f.conn.ID, "1", []trackerapp.Section{{Kind: trackerapp.SectionSprint, Sprint: "1"}, {Kind: trackerapp.SectionBacklog}})
+	if text, isError := trackerMCPStreamedCall(t, f.a, endpoint, "ticket_read", map[string]any{"key": "WEB-1"}); isError {
+		t.Fatalf("read = %s", text)
+	}
+	edit := func(text string) string {
+		t.Helper()
+		answer, _ := trackerMCPStreamedCall(t, f.a, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-1"}, "set": map[string]any{"description": text}})
+		return answer
+	}
+	const applied = `{"tickets":[{"key":"WEB-1","applied":["description"]}]}`
+	for _, text := range []string{"The agent's first text.", "The agent's second text."} {
+		if got := edit(text); got != applied {
+			t.Fatalf("edit to %q = %s", text, got)
+		}
+	}
+	if v, err := f.a.EditTrackerIssue(t.Context(), f.conn.ID, trackerapp.EditRequest{Issue: "10101", Fields: []trackerapp.FieldEditInput{
+		{Field: "description", Markdown: &trackerapp.MarkdownEditInput{Markdown: "The person's text.", From: "The agent's second text.\n"}},
+	}}); err != nil || v.Parts[0].State != "applied" {
+		t.Fatalf("the person's edit = %+v, %v", v, err)
+	}
+	if got := edit("The agent's third text."); !strings.Contains(got, "WEB-1 changed since you read it") {
+		t.Fatalf("an edit after the person's = %s; want it refused as changed since read", got)
+	}
+}
+
+// A ticket of a board this computer read, which an agent changed while a
+// screen had it open, shows its stored body, with the change, the next
+// time a screen opens it: the body the refresh after the write stored
+// reads back (the provider's kept read is not encoded in it).
+func TestTrackerWriteStoredBodyOfATicketTheAgentChangedOpens(t *testing.T) {
+	t.Parallel()
+	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: describedSite()})
+	t.Cleanup(func() { _ = f.a.trackerMCPServer().Close() })
+	_, endpoint := trackerWriteThread(t, f, provider.RuntimeAuto)
+	readBoard(t, f, f.conn.ID, "1", []trackerapp.Section{{Kind: trackerapp.SectionSprint, Sprint: "1"}, {Kind: trackerapp.SectionBacklog}})
+	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
+	sub, err := f.a.SubscribeTrackerTicket(ctx, f.conn.ID, "10101", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.ticketShows(t, ctx, sub.ID, "its title", func(d *trackerapp.DetailView) bool { return d.Card.Title == "First story" })
+	if text, _ := trackerMCPStreamedCall(t, f.a, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-1"}, "set": map[string]any{"title": "The agent's title"}}); text != `{"tickets":[{"key":"WEB-1","applied":["title"]}]}` {
+		t.Fatalf("ticket_update = %s", text)
+	}
+	f.ticketShows(t, ctx, sub.ID, "the agent's title", func(d *trackerapp.DetailView) bool { return d.Card.Title == "The agent's title" })
+	if err := f.a.ReleaseTrackerSubscription(ctx, sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	again, err := f.a.SubscribeTrackerTicket(ctx, f.conn.ID, "10101", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.Loaded || again.Detail == nil || again.Detail.Card.Title != "The agent's title" || !strings.Contains(again.Detail.Description, "The first old text.") {
+		t.Fatalf("the ticket opened again from the mirror = %+v", again.TicketView)
+	}
+}
