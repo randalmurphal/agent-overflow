@@ -146,12 +146,14 @@ func TestOnlyAParentsNameTellsTheBoardsOfItsChildren(t *testing.T) {
 		t.Errorf("the parent's own rename told the child's ticket %v, which names %+v; want told, Payments", was, parent)
 	}
 	// A read holding the parent's own card names it by that card, whatever
-	// its children of the same read say.
+	// its children of the same read say: no card and no name changes. (The
+	// cards are not changed, so the child's open ticket is not read again:
+	// its read, of the child alone, would name the parent as the child
+	// does.)
 	for i := range ranked[1:] {
 		ranked[1+i].Card.ParentName = &tracker.ParentName{Key: "WEB-1", Title: "Billing", Level: 1}
 	}
-	ranked[1].Card.Updated = ranked[1].Card.Updated.Add(time.Minute)
-	told("children naming their parent otherwise beside the parent's own card", m.scope(), ranked, both("10002"))
+	told("children naming their parent otherwise beside the parent's own card", m.scope(), ranked, map[tracker.BoardID][]tracker.IssueID{})
 	ranked[1].Card.Updated = ranked[1].Card.Updated.Add(time.Minute)
 	told("the parent renamed through a child's read", m.scope(), ranked[1:], both("10002", "10003", "10004"))
 	v := must[BoardView](t)(m.svc.Board(other, StatusGroups{}, []Section{{Kind: SectionBacklog}}))
