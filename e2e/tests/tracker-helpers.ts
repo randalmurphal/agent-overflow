@@ -44,7 +44,7 @@ export interface ConnectedBoard {
 /**
  * More for the fake Jira site, in its fixture shape: projects, boards and
  * issues (trackerfake.JiraProject, JiraBoard and JiraIssue) beside the
- * seed's own, where an issue's created and updated times are the seed's,
+ * seed's own, where an issue's created time is the seed's unless it names one,
  * and `poker` for the planning poker add-on (trackerfake.JiraPoker).
  */
 export interface ExtraJira {
@@ -55,6 +55,9 @@ export interface ExtraJira {
     /** When it was made and resolved, as ISO strings; made two days ago
      * when left out. */
     created?: string;
+    /** When it was last changed, as an ISO string; its creation when left
+     * out. Jira's is never before the issue's last change. */
+    updated?: string;
     resolved?: string;
     /** An Atlassian document. */
     description?: unknown;
@@ -158,7 +161,7 @@ export async function seedFakeJira(harness: HarnessApp, extra?: ExtraJira): Prom
         { id: '10101', key: 'WEB-1', project: 'WEB', type: '10001', summary: 'First story', sprints: [1], status: '10001', created: day, updated: day },
         { id: '10102', key: 'WEB-2', project: 'WEB', type: '10002', summary: 'Second task', sprints: [1], status: '10000', created: day, updated: day },
         { id: '10103', key: 'WEB-3', project: 'WEB', type: '10002', summary: 'Backlog task', status: '10000', created: day, updated: day },
-        ...(extra?.issues ?? []).map((issue) => ({ ...issue, created: issue.created ?? day, updated: issue.created ?? day })),
+        ...(extra?.issues ?? []).map((issue) => ({ ...issue, created: issue.created ?? day, updated: issue.updated ?? issue.created ?? day })),
       ],
       ...(extra?.poker ? { poker: extra.poker } : {}),
     }],

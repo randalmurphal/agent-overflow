@@ -79,7 +79,7 @@
               <span class="shrink-0 font-mono text-[0.6875rem] text-fg-muted">{row.key}</span>
               <!-- Under compact the note goes under the title, which keeps its width. -->
               <span class="flex min-w-0 flex-1 items-baseline gap-2 compact:flex-col compact:items-start compact:gap-0">
-                <span class="w-full min-w-0 flex-1 truncate {row.counted ? 'text-fg' : 'text-fg-muted'}">{row.title}</span>
+                <span class="w-full min-w-0 flex-1 truncate {row.counted ? 'text-fg' : 'text-fg-muted'}" data-testid="dashboard-drill-title">{row.title}</span>
                 {#if !row.counted}
                   <span class="max-w-[16rem] shrink-0 truncate text-[0.6875rem] text-fg-muted compact:max-w-full" data-testid="dashboard-drill-not-counted">Not counted{row.note ? `: ${row.note}` : ''}</span>
                 {:else if row.note}

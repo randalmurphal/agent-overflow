@@ -13,21 +13,36 @@
 // with a chip that clears; a ticket's history reaches the count; a
 // change made in Jira reaches the open dashboard with no Refresh; a
 // chart's value shows on hover (on compact, on focus); the grid lays out
-// again when the pane is resized; a listed ticket opens. On desktop: four
-// opens and closes of the screen leave the page's heap and DOM as they
-// were.
+// again when the pane is resized; a listed ticket opens; a number that
+// counted nothing is not known, with its tickets not counted, on the tile
+// and in its drill; a drill's rows carry a count's no value, the period a
+// row counts in and its note beside the title (under it on compact);
+// Unassigned's cell and No epic's bar open their tickets; while a
+// range is counted the grid takes no click; the board's first read not
+// finished is said on the screen and in a drill until its reconcile
+// completes. On desktop: four opens and closes of the screen leave the
+// page's heap and DOM as they were.
 
 import type { Locator, Page } from '@playwright/test';
 
 import type { HarnessApp } from '../src/harness.js';
-import { expect, test } from './fixtures.js';
-import { connectFakeJiraBoard, openIssuesPane, press, renameJiraIssue, type ConnectedBoard, type ExtraJira } from './tracker-helpers.js';
+import { expect, test, type SeedResult } from './fixtures.js';
+import {
+  connectFakeJira, connectFakeJiraBoard, JIRA_SITE, openIssuesPane, press, renameJiraIssue, seedFakeJira, type ConnectedBoard, type ExtraJira,
+} from './tracker-helpers.js';
 
 export interface DashboardsSurface {
   compact: boolean;
 }
 
 const DAY = 24 * 3600_000;
+const JIRA = { tracker: 'jira', site: JIRA_SITE };
+/** The board's ticket listing, which the first read's walk reads with
+ * the tickets' fields and its reconcile by ID alone (fields=id). */
+const BOARD_ISSUES = 'GET rest/software/1.0/board/{board}/issue';
+/** EvaluateTrackerDashboard's method ID on the wire. */
+const EVALUATE_TRACKER_DASHBOARD = 2206254666;
+const FIRST_READ = "This board's first read has not finished: these numbers count the tickets read so far.";
 const iso = (offset: number) => new Date(Date.now() + offset).toISOString();
 const POINTS = 'customfield_10016';
 
@@ -76,11 +91,11 @@ const DASHBOARDS: ExtraJira = {
     })),
     {
       id: '10120', key: 'WEB-20', project: 'WEB', type: '10002', status: '10001', summary: 'Stuck in progress', sprints: [1],
-      assignee: 'acc-user2', created: iso(-10 * DAY), values: { [POINTS]: 3 }, changelog: [status(-6 * DAY, TODO, DOING)],
+      assignee: 'acc-user2', created: iso(-10 * DAY), updated: iso(-6 * DAY), values: { [POINTS]: 3 }, changelog: [status(-6 * DAY, TODO, DOING)],
     },
     {
       id: '10121', key: 'WEB-21', project: 'WEB', type: '10002', status: '10002', summary: 'Done yesterday', sprints: [1],
-      assignee: 'acc-user1', created: iso(-10 * DAY), values: { [POINTS]: 2 },
+      assignee: 'acc-user1', created: iso(-10 * DAY), updated: iso(-1 * DAY), values: { [POINTS]: 2 },
       changelog: [status(-5 * DAY, TODO, DOING), status(-1 * DAY, DOING, DONE)],
     },
     {
@@ -300,5 +315,129 @@ export function registerDashboardsFlow({ compact }: DashboardsSurface): void {
       expect(narrower.finished).toBe(12);
       expect([6, 8, 12]).toContain(narrower.pace);
     }
+  });
+
+  test('Dashboards lists what it did not count, opens the rows of Unassigned and No epic, and takes no click while it counts', async ({ harness, page }) => {
+    test.setTimeout(180_000);
+    // Every count of This sprint waits while `holding`, as on a slow computer.
+    let holding = false;
+    const held: Array<() => void> = [];
+    await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+      const server = socket.connectToServer();
+      socket.onMessage((message) => {
+        const frame = JSON.parse(String(message));
+        if (holding && frame.type === 'rpc' && frame.methodId === EVALUATE_TRACKER_DASHBOARD && frame.params?.[1]?.range === 'this_sprint') {
+          held.push(() => server.send(message));
+          return;
+        }
+        server.send(message);
+      });
+      server.onMessage((message) => socket.send(message));
+    });
+    const { screen } = await openBoardDashboards(harness, page, name('not-counted'), compact);
+    const drill = page.getByTestId('dashboard-drill');
+    const closeDrill = async () => {
+      await page.keyboard.press('Escape');
+      await expect(drill).toHaveCount(0);
+    };
+
+    // No ticket the range finished shows when it finished, so start to
+    // done is not known, in the same words on the tile and in its drill.
+    const startToDone = widget(screen, 'start_to_done');
+    await expect(startToDone.getByTestId('dashboard-number-value')).toHaveText('Not known');
+    await expect(startToDone.getByTestId('dashboard-number-not-counted')).toHaveText('105 not counted');
+    await expect(startToDone.getByTestId('dashboard-change')).toHaveCount(0);
+    await press(startToDone.getByTestId('dashboard-number'), compact);
+    await expect(drill.getByTestId('dashboard-drill-value')).toHaveText('Not known');
+    await expect(drill.getByTestId('dashboard-drill-value-not-counted')).toHaveText('105 not counted');
+    await expect(drill.getByTestId('dashboard-drill-not-counted').first()).toHaveText('Not counted: when it finished is not known');
+    await closeDrill();
+
+    // A count's rows carry no value; the note sits beside the title, and
+    // under it on compact. WEB-20's history has reached the copy once the
+    // list says when it moved to In Progress.
+    const STUCK_NOTE = 'in In Progress for 6 days';
+    await expect(widget(screen, 'stuck_list').getByTestId('dashboard-list-note')).toHaveText(STUCK_NOTE, { timeout: 30_000 });
+    await press(widget(screen, 'stuck').getByTestId('dashboard-number'), compact);
+    const stuckRow = drill.getByTestId('dashboard-drill-row');
+    await expect(stuckRow).toHaveCount(1);
+    await expect(stuckRow).toContainText('WEB-20');
+    await expect(stuckRow.getByTestId('dashboard-drill-note')).toHaveText(STUCK_NOTE);
+    await expect(drill.getByTestId('dashboard-drill-row-value')).toHaveCount(0);
+    const title = (await stuckRow.getByTestId('dashboard-drill-title').boundingBox())!;
+    const note = (await stuckRow.getByTestId('dashboard-drill-note').boundingBox())!;
+    if (compact) expect(note.y).toBeGreaterThanOrEqual(title.y + title.height - 1);
+    else expect(note.y).toBeLessThan(title.y + title.height);
+    await closeDrill();
+
+    // The pace's rows each name the sprint they count in, with their points.
+    await press(widget(screen, 'pace').getByTestId('dashboard-number'), compact);
+    await expect(drill.getByTestId('dashboard-drill-count')).toHaveText('109 tickets');
+    await expect(drill.getByTestId('dashboard-drill-period')).toHaveCount(100);
+    await expect(drill.getByTestId('dashboard-drill-row').filter({ hasText: 'WEB-411' }).getByTestId('dashboard-drill-period')).toHaveText('Sprint A');
+    await expect(drill.getByTestId('dashboard-drill-row').filter({ hasText: 'WEB-411' }).getByTestId('dashboard-drill-row-value')).toHaveText('4 points');
+    await closeDrill();
+
+    // Unassigned's Doing cell lists the unassigned ticket in progress.
+    const unassigned = widget(screen, 'carrying').locator('[data-testid="dashboard-table-row"][data-bucket=""]');
+    await press(unassigned.getByTestId('dashboard-cell').nth(1), compact);
+    await expect(drill.getByTestId('dashboard-drill-row')).toHaveText([/WEB-1\s*First story/]);
+    await closeDrill();
+
+    // No epic's bar lists the open tickets in no epic: on a scrum board
+    // every one, since the board's copy keeps no epic.
+    const noEpic = widget(screen, 'open_by_epic').locator('[data-testid="dashboard-bar"][data-bucket=""]');
+    await press(noEpic, compact);
+    await expect(drill.getByTestId('dashboard-drill-row').first()).toBeVisible();
+    const noEpicKeys = await drill.getByTestId('dashboard-drill-row').locator('span.font-mono').allTextContents();
+    expect(noEpicKeys.sort()).toEqual(['WEB-1', 'WEB-2', 'WEB-20', 'WEB-22']);
+    await closeDrill();
+
+    // While This sprint is counted, the grid shows the last 5 sprints'
+    // numbers and takes no click: a click on Sprint E's bar opens nothing.
+    holding = true;
+    await press(screen.getByTestId('dashboard-range'), compact);
+    await press(page.getByTestId('dashboard-range-this_sprint'), compact);
+    await expect.poll(() => held.length).toBe(1);
+    await expect(screen.getByTestId('dashboard-counting')).toBeVisible();
+    await expect(screen.getByTestId('dashboard-grid')).toHaveAttribute('inert', '');
+    const bar = (await widget(screen, 'finished').locator(`[data-testid="dashboard-bar"][data-bucket="sprint:${SPRINT_E}"]`).boundingBox())!;
+    if (compact) await page.touchscreen.tap(bar.x + bar.width / 2, bar.y + bar.height / 2);
+    else await page.mouse.click(bar.x + bar.width / 2, bar.y + bar.height / 2);
+    // A drill opens on the click, before its rows are read: once This
+    // sprint is counted, none has.
+    holding = false;
+    for (const send of held.splice(0)) send();
+    await expect(screen.getByTestId('dashboard-counting')).toHaveCount(0, { timeout: 15_000 });
+    await expect(widget(screen, 'pace').getByTestId('dashboard-number-value')).toHaveText('2');
+    await expect(drill).toHaveCount(0);
+    await expect(screen.getByTestId('dashboard-grid')).not.toHaveAttribute('inert', '');
+  });
+
+  test('Dashboards says the board\'s first read has not finished, on the screen and in a drill, until it has', async ({ harness, page }) => {
+    test.setTimeout(180_000);
+    await seedFakeJira(harness, DASHBOARDS);
+    // The first read's reconcile, which lists the board's tickets by ID
+    // alone, fails, and its retry waits; the walk, which lists them with
+    // their fields, reads. The board shows once its first sync ends.
+    const reconcile = { origin: JIRA, route: BOARD_ISSUES, query: { fields: 'id' } };
+    await harness.rpc('HarnessTrackerFault', { ...reconcile, kind: 'refuse', times: 1, status: 500, body: { errorMessages: ['Internal server error'], errors: {} } });
+    await harness.rpc('HarnessTrackerFault', { ...reconcile, kind: 'hold' });
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name: name('first-read'), repo: {}, threads: [] }] });
+    await connectFakeJira(harness, seed.projects[0].projectId);
+    await harness.open(page);
+    const pane = await openIssuesPane(page, compact);
+    const screen = await openDashboards(page, pane, compact);
+    const reading = screen.getByTestId('dashboard-reading');
+    await expect(reading).toHaveText(FIRST_READ, { timeout: 30_000 });
+    await press(widget(screen, 'pace').getByTestId('dashboard-number'), compact);
+    const drill = page.getByTestId('dashboard-drill');
+    await expect(drill.getByTestId('dashboard-drill-reading')).toHaveText(FIRST_READ);
+    await page.keyboard.press('Escape');
+    await expect(drill).toHaveCount(0);
+
+    await harness.rpc('HarnessTrackerRelease', { origin: JIRA, route: BOARD_ISSUES });
+    await expect(widget(screen, 'pace').getByTestId('dashboard-number-value')).toHaveText('24.2', { timeout: 60_000 });
+    await expect(reading).toHaveCount(0, { timeout: 30_000 });
   });
 }
