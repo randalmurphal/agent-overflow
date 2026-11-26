@@ -2798,14 +2798,14 @@ reader sees an interrupted send as one that may have happened. A question answer
 ticket that has a drafted entry that day is added to that entry in one
 transaction (`store.EditTimeEntry`): its time is added, the entry's
 reason ends with ", plus " and the question's, and the question is
-deleted. An answer onto an entry being posted or of unknown outcome is
-refused, since its time may be logged, as is moving an entry onto a
-ticket that has one that day.
+deleted. An answer onto an entry being posted is refused, and onto one of
+unknown outcome with the sentence a post gives it, as is moving an entry
+onto a ticket that has one that day.
 
 **Posting.** `PostTimeEntries` (`trackerapp/time_post.go`) is the one
 path that sends a draft's time, and only the person's approval reaches it
 (`PostTrackerTimeEntries`). A request names each entry once, at the
-revision read; logging alone names exactly one. It posts the entries for
+revision read; logging alone names exactly one. It posts the drafted entries for
 the connection's verified account, in one batch through the time source
 (`TimeTracker.AddWorklogs`, which names the worklog each made). Each entry
 is marked `sent`, with the time, in one transaction after the connection
@@ -2822,20 +2822,17 @@ worklog's ID. Approving a day or the whole draft:
 The check reads the days in the send's own hold of the connection, on the
 provider and time source that then send, and stores them in the mirror as
 a refresh does; a day that cannot be read sends nothing of it. A worklog
-logged by hand between that read and the POST is not seen.
+logged by hand between that read and the POST is not seen, nor, on Jira's
+own worklogs, one logged so shortly before that the issue search the
+check reads does not list it yet.
 
 An entry whose post may have happened (`unknown`, after a lost answer, a
 dropped request, or a send an earlier process did not settle) is never
-sent by a day's or the whole draft's approval, and no tool reaches it:
-the approval says it may have been logged, to check the day and then
-remove it or log it alone, and posts the day's other entries. Logging it
-alone sends it only when its day holds no worklog of its ticket created
-since it was first sent; otherwise it sends nothing and says to remove
-the entry if that worklog is it, or to log the time by hand. A worklog
-the person logged by hand since then refuses the resend too. The time it
-was first sent (`sent_ms`) stays through the recovery and through a retry
-the tracker refused or that was not sent, which leaves the entry
-`unknown`, never back in the draft. The answer is built after the post from the entries
+sent again, since no read the app can make proves the first send did not
+land: logging it alone or approving its day names it, sends nothing of
+it, and says that the time may already be logged, to look at the day's
+logged time, and to remove the entry if the time is there or to log the
+time by hand and then remove it; the day's other entries post. The answer is built after the post from the entries
 as they are then, names every entry, says in one sentence each one not
 posted, with the tracker's refusal, and names the days whose worklogs
 could not be read back after the post, which show the posted time after
@@ -2843,9 +2840,8 @@ their next read. One day's approval of three entries is 3 POSTs and 2
 reads on Jira's own worklogs (the day before the post, for time logged
 since, and after it); on Tempo it is 3 POSTs, 2 reads of the worklogs and
 2 of the Jira issues they name, the timesheet approvals and, once per
-connection, the work attributes. Logging a drafted entry alone skips the
-read before; logging an unknown entry alone makes it
-(`TestAWeeksDraftCostsBoundedRequests`). A week of 25 entries is 27
+connection, the work attributes. Logging an entry alone skips the read
+before (`TestAWeeksDraftCostsBoundedRequests`). A week of 25 entries is 27
 requests on Tempo (2 reads that check the batch, then a POST each) and 25
 on Jira's own worklogs, with the account read before (`jiraprovider` cost
 tests).
