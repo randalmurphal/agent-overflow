@@ -242,8 +242,9 @@ func TestTrackerToolRequestCounts(t *testing.T) {
 			return m
 		}},
 	}
-	// want is each pin, by tracker, shape, temperature and N.
-	want := costPins
+	// want is each pin, by tracker, shape, temperature and N; ran is
+	// each pin's name a case ran.
+	want, ran := costPins, map[string]bool{}
 	for _, linear := range []bool{false, true} {
 		tracker, keys := "jira", []string{"WEB-1", "WEB-2", "WEB-3"}
 		if linear {
@@ -257,6 +258,7 @@ func TestTrackerToolRequestCounts(t *testing.T) {
 				}
 				for _, n := range []int{1, 3} {
 					name := fmt.Sprintf("%s/%s/%s/%d", tracker, sh.name, temp, n)
+					ran[name] = true
 					t.Run(name, func(t *testing.T) {
 						t.Parallel()
 						f, thread, endpoint := costFixture(t, linear, 3)
@@ -288,35 +290,74 @@ func TestTrackerToolRequestCounts(t *testing.T) {
 			name string
 			tool string
 			args map[string]any
+			// again is the call made after it on the same client, if any.
+			again map[string]any
 		}{
-			{"create", "ticket_create", map[string]any{"project": project, "title": "New page"}},
-			{"create with status and sprint", "ticket_create", map[string]any{"project": project, "title": "New page", "set": func() map[string]any {
+			{name: "create", tool: "ticket_create", args: map[string]any{"project": project, "title": "New page"}},
+			{name: "create, then another", tool: "ticket_create", args: map[string]any{"project": project, "title": "New page"},
+				again: map[string]any{"project": project, "title": "Another page"}},
+			{name: "create with status and sprint", tool: "ticket_create", args: map[string]any{"project": project, "title": "New page", "set": func() map[string]any {
 				m := status(linear)
 				maps.Copy(m, sprint(linear))
 				return m
 			}()}},
-			{"read", "ticket_read", map[string]any{"key": keys[0]}},
-			{"find", "ticket_find", map[string]any{"text": "story"}},
+			// The same read again: the body the first stored, checked.
+			{name: "read", tool: "ticket_read", args: map[string]any{"key": keys[0]}, again: map[string]any{"key": keys[0]}},
+			{name: "find", tool: "ticket_find", args: map[string]any{"text": "story"}},
 		} {
 			name := tracker + "/" + c.name
+			ran[name] = true
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				f, thread, endpoint := costFixture(t, linear, 3)
 				_, routes := toolRoutes(t, f, thread, endpoint, c.tool, c.args)
 				got := costNames(routes)
-				if c.tool == "ticket_read" || c.name == "create, then another" {
-					// The same call again on the same client: a read checks
-					// the body the first stored, and a create takes the
-					// create screen the first read.
-					_, again := toolRoutes(t, f, thread, endpoint, c.tool, c.args)
+				if c.again != nil {
+					_, again := toolRoutes(t, f, thread, endpoint, c.tool, c.again)
 					got += " | " + costNames(again)
 				}
 				if got != want[name] {
 					t.Errorf("%s\nwant %s", got, want[name])
 				}
+				if c.tool == "ticket_create" {
+					var titles []string
+					for _, title := range []any{c.args["title"], c.again["title"]} {
+						if title != nil {
+							titles = append(titles, title.(string))
+						}
+					}
+					if got := createdTitles(f, linear); !slices.Equal(got, titles) {
+						t.Errorf("the tracker holds the created tickets %q; want %q", got, titles)
+					}
+				}
 			})
 		}
 	}
+	// A pin no case names would pass unrun.
+	t.Cleanup(func() {
+		for _, name := range slices.Sorted(maps.Keys(want)) {
+			if !ran[name] {
+				t.Errorf("pin %s names no case", name)
+			}
+		}
+	})
+}
+
+// createdTitles are the titles of the tickets on f's tracker past the
+// three costFixture seeds, in the order they were created.
+func createdTitles(f *trackerBoardFixture, linear bool) []string {
+	world := f.e.Snapshot()
+	var out []string
+	if linear {
+		for _, is := range world.Linear[0].Issues[3:] {
+			out = append(out, is.Title)
+		}
+		return out
+	}
+	for _, is := range world.Jira[0].Issues[3:] {
+		out = append(out, is.Summary)
+	}
+	return out
 }
 
 // costPins are TestTrackerToolRequestCounts' pins, by tracker, shape,
@@ -325,8 +366,8 @@ func TestTrackerToolRequestCounts(t *testing.T) {
 // reads the cards, which keep no read, so the move reads them. An
 // estimate reads the board's rows to check the issue is on it first.
 // Every write ends with one refresh (rows, Issues). A read is one read
-// and then the same read again, after "|", and so is a create followed
-// by another on the same client.
+// and then the same read again, after "|"; a create followed by a create
+// of another ticket on the same client is the two creates.
 var costPins = map[string]string{
 	"jira/comment/cold/1":                  "bulkfetch comment",
 	"jira/comment/cold/3":                  "bulkfetch comment×3",
