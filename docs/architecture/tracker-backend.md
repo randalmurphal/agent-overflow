@@ -2196,7 +2196,7 @@ not part of `Setup`: a save of the setup screen keeps it as held, so a
 paired computer on an older release cannot delete it, and only its own
 edits write it, under the setup's lock, reading the file again first. A
 Keep that would take the file past its 256 KiB bound is refused, saying
-to remove a widget or a dashboard.
+to remove a widget.
 
 A proposal is a widget an agent showed on a board (`dashboard_widget`
 with `show`, [Agent tools](#dashboards-by-agents)). It is held in memory
