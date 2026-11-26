@@ -64,14 +64,17 @@ var limits = []struct {
 
 // allowedFunctions are the functions a metric may call: SQLite's
 // deterministic core, aggregate and window functions, and the app's
-// (funcs.go) but bounded_rows, which only the wrapper calls. SQLite's date and time functions, random, randomblob,
-// zeroblob, load_extension, the JSON functions and every function not
-// listed are denied.
+// (funcs.go) but bounded_rows, which only the wrapper calls. SQLite's
+// date and time functions, random, randomblob, zeroblob, load_extension,
+// the JSON functions and every function not listed are denied, trim,
+// ltrim and rtrim among them: one call with a list of characters to cut
+// is one step the deadline cannot interrupt, its cost the subject's
+// length times the list's.
 var allowedFunctions = map[string]bool{}
 
 func init() {
 	for _, name := range strings.Fields(`abs coalesce ifnull iif if nullif min max round length lower upper
-		substr substring trim ltrim rtrim replace instr printf format typeof like glob concat concat_ws
+		substr substring replace instr printf format typeof like glob concat concat_ws
 		octet_length likely unlikely likelihood hex unicode char quote sign
 		count sum total avg group_concat string_agg
 		row_number rank dense_rank percent_rank cume_dist ntile lag lead first_value last_value nth_value
