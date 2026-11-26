@@ -2,17 +2,22 @@ package app
 
 import (
 	"context"
+	"database/sql/driver"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"modernc.org/sqlite"
 
 	attachmentstore "agent-overflow/internal/attachment"
 	"agent-overflow/internal/entityid"
 	gitops "agent-overflow/internal/git"
-	"agent-overflow/internal/harness/trackerfake"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/trackerapp"
@@ -22,7 +27,8 @@ import (
 // ticketThreadFixture is a board fixture whose project is a git checkout
 // and whose App stores attachments, over a store file the test can open:
 // what StartTicketThread makes a thread with. Its site adds OPS-1, the
-// parent of board 1's row 10102.
+// parent of board 1's row 10102 and WEB-1's linked ticket
+// (withParentTicket).
 type ticketThreadFixture struct {
 	*trackerBoardFixture
 	ctx    context.Context
@@ -32,12 +38,7 @@ type ticketThreadFixture struct {
 
 func newTicketThreadFixture(t *testing.T) *ticketThreadFixture {
 	t.Helper()
-	site := trackerBoardSite()
-	site.Projects = append(site.Projects, trackerfake.JiraProject{ID: "10001", Key: "OPS", Name: "Ops"})
-	day := site.Issues[0].Created
-	site.Issues = append(site.Issues, trackerfake.JiraIssue{ID: "20001", Key: "OPS-1", Project: "OPS", Type: "10000", Summary: "The epic",
-		Status: "10000", Created: day, Updated: day})
-	site.Issues[1].Parent = "20001"
+	site := withParentTicket(trackerBoardSite())
 	path := storetest.ClonePath(t)
 	st, err := store.New(path)
 	if err != nil {
@@ -158,13 +159,28 @@ func TestStartWorkUsesTheWorktreeThatHasTheBranch(t *testing.T) {
 
 // A step that fails after the thread is linked deletes the thread, which
 // ends its link, and takes back the worktree and the branch the call cut;
-// the board whose row has the ticket as parent still names it.
+// the board whose row has the ticket as parent still names it, and the
+// open ticket that shows it as a linked ticket, which showed the card the
+// link kept, shows it as its own read gave it once the link ended.
 func TestStartTicketThreadThatFailsLeavesNothing(t *testing.T) {
 	t.Parallel()
 	f := newTicketThreadFixture(t)
-	execOnStore(t, f.dbPath, `CREATE TRIGGER refuse BEFORE INSERT ON thread_drafts BEGIN SELECT RAISE(ABORT, 'injected failure'); END`)
+	linking := f.openLinkingTicket(t, f.ctx)
+	hold := sqlHold(t)
+	execOnStore(t, f.dbPath, `CREATE TRIGGER refuse BEFORE INSERT ON thread_drafts BEGIN SELECT ao_test_hold('`+hold.name+`'); SELECT RAISE(ABORT, 'injected failure'); END`)
 
-	_, err := f.a.StartTicketThread(f.ctx, f.project, StartTicketThreadRequest{ConnectionID: f.conn.ID, IssueID: "20001", Origin: store.TicketOriginStartWork, Branch: "OPS-1-the-epic"})
+	started := make(chan error, 1)
+	go func() {
+		_, err := f.a.StartTicketThread(f.ctx, f.project, StartTicketThreadRequest{ConnectionID: f.conn.ID, IssueID: "20001", Origin: store.TicketOriginStartWork, Branch: "OPS-1-the-epic"})
+		started <- err
+	}()
+	// The draft's write, the step that fails, waits until the open ticket
+	// shows the card the link kept.
+	hold.reached(t)
+	f.linkShows(t, f.ctx, linking, "while the start's link keeps OPS-1", linkKept)
+	hold.release()
+	err := <-started
+	f.linkShows(t, f.ctx, linking, "after the failed start", linkUnkept)
 	if err == nil || !strings.Contains(err.Error(), "injected failure") || strings.Contains(err.Error(), "delete branch") || strings.Contains(err.Error(), "undo the worktree") {
 		t.Fatalf("StartTicketThread = %v; want the draft's failure, rolled back", err)
 	}
@@ -325,3 +341,57 @@ func samePathForTest(a, b string) bool {
 	rb, errB := filepath.EvalSymlinks(b)
 	return errA == nil && errB == nil && ra == rb
 }
+
+// sqlHolds are the holds of ao_test_hold, by name.
+var sqlHolds sync.Map
+
+// sqlHoldOf is a hold a test's trigger waits on: ao_test_hold(name)
+// closes reached and waits for release.
+type sqlHoldOf struct {
+	name      string
+	reach     chan struct{}
+	open      chan struct{}
+	reachOnce sync.Once
+	openOnce  sync.Once
+}
+
+func init() {
+	sqlite.MustRegisterFunction("ao_test_hold", &sqlite.FunctionImpl{
+		NArgs: 1,
+		Scalar: func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+			name, _ := args[0].(string)
+			h, ok := sqlHolds.Load(name)
+			if !ok {
+				return nil, fmt.Errorf("ao_test_hold: no hold %q", name)
+			}
+			hold := h.(*sqlHoldOf)
+			hold.reachOnce.Do(func() { close(hold.reach) })
+			<-hold.open
+			return nil, nil
+		},
+	})
+}
+
+// sqlHold makes a hold, released when the test ends at the latest.
+func sqlHold(t *testing.T) *sqlHoldOf {
+	t.Helper()
+	h := &sqlHoldOf{name: uuid.NewString(), reach: make(chan struct{}), open: make(chan struct{})}
+	sqlHolds.Store(h.name, h)
+	t.Cleanup(func() {
+		h.release()
+		sqlHolds.Delete(h.name)
+	})
+	return h
+}
+
+// reached waits until a statement waits on h.
+func (h *sqlHoldOf) reached(t *testing.T) {
+	t.Helper()
+	select {
+	case <-h.reach:
+	case <-time.After(20 * time.Second):
+		t.Fatal("no statement reached the hold")
+	}
+}
+
+func (h *sqlHoldOf) release() { h.openOnce.Do(func() { close(h.open) }) }

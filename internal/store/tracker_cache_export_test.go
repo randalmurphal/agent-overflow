@@ -403,8 +403,9 @@ func TestMirrorExportReadsEachRowOnce(t *testing.T) {
 // TestMirrorExportFillsAtScale measures each fill of an export of one
 // board of each size AO_TRACKER_SCALE names (comma-separated, each at
 // least 100), parented as a scrum board's (benchParented): its VM steps
-// and the best of five runs' time. It checks that each sub-task counts
-// under its story's epic. Skipped without AO_TRACKER_SCALE.
+// and the best of five runs' time. It checks how many tickets count under
+// an epic, each sub-task under its story's, and how many epics there are.
+// Skipped without AO_TRACKER_SCALE.
 func TestMirrorExportFillsAtScale(t *testing.T) {
 	env := os.Getenv("AO_TRACKER_SCALE")
 	if env == "" {
@@ -464,9 +465,24 @@ func exportFillsAtScale(t *testing.T, n int) {
 	for _, fill := range mirrorExportFills {
 		t.Logf("%d issues, %-26s %10d steps, %5d a row, best %v", n, fill.name, steps[fill.name], steps[fill.name]/n, best[fill.name].Round(time.Microsecond))
 	}
-	// Of every 20 issues, 5 are sub-tasks and 12 the stories of the 15
-	// others under epics: the sub-tasks under the 4 of 5 stories with an
-	// epic count under it too.
+	// A ticket's epic is its parent when the fixture names the parent an
+	// epic, else its parent's epic: a sub-task counts under its story's.
+	epicOf := map[string]string{}
+	epics := map[string]bool{}
+	under := 0
+	for i := range n {
+		c := benchParented(benchRow(0, i, 0), 0, i).Card
+		epic := epicOf[c.ParentID]
+		if c.ParentName != nil && c.ParentName.TypeLevel == 1 {
+			epic = c.ParentID
+		}
+		if epic != "" {
+			epicOf[c.IssueID], epics[epic] = epic, true
+			under++
+		}
+	}
 	got := exportRows(t, conn, `SELECT (SELECT count(*) FROM tickets WHERE epic IS NOT NULL) || '|' || (SELECT count(*) FROM epics)`)
-	t.Logf("%d issues: tickets under an epic|epics = %s", n, got[0])
+	if want := fmt.Sprintf("%d|%d", under, len(epics)); got[0] != want {
+		t.Errorf("%d issues: tickets under an epic|epics = %s; want %s", n, got[0], want)
+	}
 }

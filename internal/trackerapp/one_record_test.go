@@ -865,8 +865,9 @@ func TestARenameWithNoIssueUpdateShowsOnTheOpenTicket(t *testing.T) {
 // A board read that reparents the ticket's issue after the ticket's body
 // read (the body names the old parent, the record's newer card the new
 // one): the ticket's view shows the record's card with its new parent's
-// key and title, the parent whose name its pump follows
-// (affectsLocked), and shows no parent from a card.
+// key and title, or by ID alone when no name of it is stored, never the
+// body's old parent's name; the parent whose name its pump follows
+// (affectsLocked) is the new one, and it follows no parent's card.
 func TestAReparentAfterTheBodyReadShowsAndFollowsTheNewParent(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour, RetryBase: time.Hour})
@@ -892,7 +893,27 @@ func TestAReparentAfterTheBodyReadShowsAndFollowsTheNewParent(t *testing.T) {
 	if !views[0].BodyBehind {
 		t.Fatal("the ticket's body is of an older version than its card and is not marked behind")
 	}
+	// With no name stored of the new parent, the view shows it by ID alone,
+	// not with the name the body's read gave its old parent.
+	m.sqlOnStore(t, `DELETE FROM tracker_cache_parents WHERE root_id = ? AND issue_id = '10003'`, m.root())
+	unnamed, _, err := m.svc.detailViews(m.root(), row, []ticketDoc{{d: detailOfCard(read), version: read.Updated.UnixMilli()}}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := unnamed[0].Card.Parent; p == nil || *p != (ParentView{ID: "10003"}) {
+		t.Fatalf("with no name of the new parent the ticket shows its parent %+v; want 10003 by ID alone", p)
+	}
 	if slices.Contains(shows[0], "10003") || slices.Contains(shows[0], "10004") {
 		t.Fatalf("the ticket follows the cards of %v; want neither parent's", shows[0])
+	}
+	// A later change of a parent's name tells the ticket of the new parent's
+	// alone.
+	tp := &ticketPump{key: ticketKey{connection: m.conn.ID, issue: read.ID}}
+	tp.view.detail, tp.view.shows = &views[0], shows[0]
+	if !affectsLocked(tp, Changes{Parents: ids("10003")}) {
+		t.Error("the new parent's name changed and the ticket is not told")
+	}
+	if affectsLocked(tp, Changes{Parents: ids("10004")}) {
+		t.Error("the old parent's name changed and the ticket is told")
 	}
 }
