@@ -50,6 +50,7 @@ const EFFORT = 'customfield_10050';
 const ROOT_CAUSE = 'customfield_10095';
 const PINNED_ID = '10104';
 const OTHER_ID = '10105';
+const DONE_ID = '10106';
 
 function doc(text: string) {
   return { type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] };
@@ -57,7 +58,7 @@ function doc(text: string) {
 
 // The seed's WEB-1 (In Progress) and WEB-2 (To Do) in Sprint 1, WEB-3
 // (To Do) in the backlog; WEB-4 and WEB-5 in Sprint 1 with an Effort and
-// a Root cause, the fields a ticket pins.
+// a Root cause, the fields a ticket pins, and WEB-6 done in Sprint 1.
 const SETUP: ExtraJira = {
   projects: [],
   boards: [],
@@ -72,6 +73,7 @@ const SETUP: ExtraJira = {
   issues: [
     { id: PINNED_ID, key: 'WEB-4', project: 'WEB', type: '10002', status: '10001', summary: 'Ticket to pin from', sprints: [1], description: doc('What to do'), values: { [EFFORT]: 3, [ROOT_CAUSE]: doc('A stale cache key') } },
     { id: OTHER_ID, key: 'WEB-5', project: 'WEB', type: '10002', status: '10001', summary: 'Another ticket', sprints: [1], description: doc('More to do'), values: { [EFFORT]: 5, [ROOT_CAUSE]: doc('A missing index') } },
+    { id: DONE_ID, key: 'WEB-6', project: 'WEB', type: '10002', status: '10002', summary: 'Finished ticket', sprints: [1] },
   ],
 };
 
@@ -131,6 +133,20 @@ function groupOf(screen: Locator, status: string): Locator {
 
 function backlogRow(pane: Locator, issueId: string): Locator {
   return pane.locator(`[data-list="backlog"] [data-testid="issues-backlog-row"][data-issue="${issueId}"]`);
+}
+
+/** The active sprint's numbers on the Backlog screen. */
+function sprintNumbers(backlog: Locator): Locator {
+  return backlog.locator('[data-testid="issues-backlog-section"][data-list="sprint:1"]').getByTestId('issues-backlog-numbers');
+}
+
+/** A Board column's count: its header's, or its tab's on compact. */
+async function expectColumnCount(pane: Locator, name: string, count: string, compact: boolean): Promise<void> {
+  if (compact) {
+    await expect(pane.getByTestId('issues-column-tab').filter({ hasText: name })).toHaveText(new RegExp(`${name}\\s*${count}$`), { timeout: 15_000 });
+  } else {
+    await expect(pane.locator(`[data-testid="issues-column"][data-column="${name}"]`).getByTestId('issues-column-count')).toHaveText(count, { timeout: 15_000 });
+  }
 }
 
 function card(pane: Locator, issueId: string): Locator {
@@ -215,10 +231,11 @@ async function openBoard(harness: HarnessApp, page: Page, name: string, compact:
 }
 
 export function registerIssuesSetupFlow({ compact }: SetupSurface): void {
-  test('a status put in another group saves at once, and the Backlog and the Board follow it without a reload until it is put back', async ({ harness, page }) => {
+  test('a status put in another group saves at once, and the Backlog, its sprint\'s done count and the Board follow it without a reload until it is put back', async ({ harness, page }) => {
     const { board, pane, file } = await openBoard(harness, page, 'setup-groups', compact);
     const backlog = await openBacklog(page, pane, compact);
     await expect(backlogRow(backlog, '10103')).toBeVisible({ timeout: 15_000 });
+    await expect(sprintNumbers(backlog), 'WEB-6 is done, by Jira\'s group').toHaveText('1 of 5 tickets done');
 
     const screen = await openStatusGroups(page, compact);
     await expect(screen.getByTestId('tracker-status-name')).toHaveText(['To Do', 'In Progress', 'Done'], { timeout: 15_000 });
@@ -230,16 +247,16 @@ export function registerIssuesSetupFlow({ compact }: SetupSurface): void {
     await expect(groupOf(screen, '10001')).toHaveValue('left_out');
     expect(await storedSetup(file)).toEqual({ status_groups: { version: 1, sites: [{ tracker: 'jira', site: board.site, statuses: { 10000: 'done', 10001: 'left_out' } }] } });
 
-    // To Do counts done, so WEB-3 is in no backlog.
+    // To Do counts done, so WEB-3 is in no backlog and WEB-2 is done in
+    // the sprint, whose In Progress tickets count for nothing.
     await closeSettings(page, compact);
     await openIssuesPane(page, compact);
     await expect(backlogRow(backlog, '10103')).toHaveCount(0, { timeout: 15_000 });
+    await expect(sprintNumbers(backlog)).toHaveText('2 of 2 tickets done', { timeout: 15_000 });
     // In Progress is left out of counts: its cards show, and its count is none of them.
     await openBoardScreen(page, pane, compact);
     await expect(card(pane, PINNED_ID)).toBeVisible({ timeout: 15_000 });
-    if (!compact) {
-      await expect(pane.locator('[data-testid="issues-column"][data-column="In Progress"]').getByTestId('issues-column-count')).toHaveText('0');
-    }
+    await expectColumnCount(pane, 'In Progress', '0', compact);
 
     // Put back: the tracker's group again, and the file holds nothing.
     const again = await openStatusGroups(page, compact);
@@ -250,11 +267,18 @@ export function registerIssuesSetupFlow({ compact }: SetupSurface): void {
     await expect.poll(async () => readFile(file, 'utf8').then(() => 'present', () => 'removed')).toBe('removed');
     await closeSettings(page, compact);
     await openIssuesPane(page, compact);
-    if (!compact) {
-      await expect(pane.locator('[data-testid="issues-column"][data-column="In Progress"]').getByTestId('issues-column-count')).toHaveText('3', { timeout: 15_000 });
-    }
+    await expectColumnCount(pane, 'In Progress', '3', compact);
     const backlogAgain = await openBacklog(page, pane, compact);
     await expect(backlogRow(backlogAgain, '10103')).toBeVisible({ timeout: 15_000 });
+    await expect(sprintNumbers(backlogAgain)).toHaveText('1 of 5 tickets done', { timeout: 15_000 });
+
+    // Done counted as In progress: the sprint has nothing done.
+    const third = await openStatusGroups(page, compact);
+    await groupOf(third, '10002').selectOption('in_progress');
+    await expect(statusRow(third, '10002').getByTestId('tracker-status-changed')).toBeVisible();
+    await closeSettings(page, compact);
+    await openIssuesPane(page, compact);
+    await expect(sprintNumbers(backlogAgain)).toHaveText('0 of 5 tickets done', { timeout: 15_000 });
   });
 
   test('a save that lost to a hand edit of the file says so in words, shows what is stored, and keeps the hand edit', async ({ harness, page }) => {
