@@ -15,6 +15,7 @@
 // cannot set says to make the ticket in the tracker.
 
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
+import { flushSync } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FieldView, IssueTypeView, ProjectView, RowView, WriteView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
@@ -832,6 +833,7 @@ describe('a form offers what the tracker offers now', () => {
     expect(r.count()).toBe(3);
     // A ticket covers the screen; the form stays mounted under it.
     view.props.visible = false;
+    flushSync();
     vi.advanceTimersByTime(FORM_READ_AGE_MS);
     r.answer([TEAM(['Red', 'Blue'])]);
     refreshFormReads(B.backend, B.connection);
@@ -839,11 +841,16 @@ describe('a form offers what the tracker offers now', () => {
     expect(r.count()).toBe(3);
     // The ticket closes: the form is shown again and reads.
     view.props.visible = true;
+    flushSync();
     await waitFor(() => expect(r.count()).toBe(6));
     await waitFor(async () => expect(await listed(view.container, 'customfield_3')).toEqual(['Red', 'Blue']));
-    // Hidden and shown again within the age: nothing read.
+    // Hidden and shown again within the age: the form sees itself shown
+    // again and reads nothing.
     view.props.visible = false;
+    flushSync();
+    vi.advanceTimersByTime(FORM_READ_AGE_MS - 1);
     view.props.visible = true;
+    flushSync();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(r.count()).toBe(6);
     view.unmount();
