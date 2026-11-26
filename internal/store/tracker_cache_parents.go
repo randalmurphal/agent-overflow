@@ -11,8 +11,9 @@ import (
 
 // A parent's name: tracker_cache_parents holds one row per parent a stored
 // issue names, whether or not the mirror keeps the parent, and it is the
-// only source of a parent's name for every view (a board's cards, a
-// ticket's parent, the dashboard export).
+// source of a parent's name for every view (a board's cards, a ticket's
+// parent, the dashboard export); a ticket's view whose parent has no row
+// shows the name its own read gave (trackerapp detailViews).
 //
 // What must hold:
 //   - One writer: the card write (storeMirrorCardsTx), in the cards'
@@ -38,6 +39,12 @@ import (
 //   - A row no stored issue names is deleted by FinishMirrorCleanup, a
 //     chunk a transaction (mirrorParentsSweepSQL), and a detached root's
 //     with its drain (mirrorTableKeys).
+//   - A root v172 upgraded owes the names its stored issues' parents had
+//     before any read kept them (tracker_cache_roots.names_after, NULL on
+//     every root made since): ListMirrorUnnamedParents lists them in ID
+//     order after the cursor, the caller reads their cards through the
+//     card write, PassMirrorUnnamedParents moves the cursor past each
+//     batch and EndMirrorUnnamedParents ends the worklist.
 
 // MirrorParentName is a parent's name as a card's read gave it: its key,
 // title and type level (MirrorCard.TypeLevel).

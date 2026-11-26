@@ -602,7 +602,8 @@ check's write commits before the lookup, so a checked read shows the card
 the check stored. An open ticket's view, built from the record, takes its
 own card from the statement that read its body. A linked issue the mirror
 keeps no card of shows as the body holds it, at most 30 minutes old; a
-parent no read named shows its ID alone. A failed check leaves the
+parent with no stored name shows the name the document's read gave, and
+its ID alone when that read named it by ID alone. A failed check leaves the
 stored body as it is. An open ticket's first paint is its view built
 from the record with no tracker call, before its first read answers; it
 records no opening, which the read's keep and write do.
@@ -622,17 +623,38 @@ transaction; the next cleanup finishes it. No caller prunes.
 A parent's name, its key, title and type level, has one owner:
 `tracker_cache_parents`, one row per parent a stored card names, whether
 or not the mirror keeps the parent. A board's cards, a ticket's parent,
-`ticket_read` and the dashboard export's epics all read it. The card
-write writes it in the transaction of the cards: a card whose read named its parent
-writes the parent's row, and a card of an issue that has a row writes its
-own name there. The newest read wins, and a read that names what the row
-holds writes nothing. Jira's board lists, searches and bulk reads and
-Linear's pages, searches and details name the parent
+`ticket_read` and the dashboard export's epics all read it; a ticket's
+view whose parent has no row shows the name its own read gave. The card
+write writes it in the transaction of the cards, from every card it is
+given, whether or not the mirror keeps the issue: each card names its
+own issue, and a card whose read named its parent names the parent. One
+write names an issue once, by its own card when it holds one, else by
+the first child's naming, and writes a row only for an issue a stored
+issue names as parent. The newest read wins, a later write of the same
+read with other content corrects it, and a read that names what the row
+holds writes nothing. A kept parent's own card and its name are written
+together by a read that carries both; a child's later read can name the
+parent otherwise, and the two differ until the parent's own next read.
+Jira's board lists, searches and bulk reads and Linear's pages, searches
+and details name the parent
 ([measurements](../references/tracker-api-measurements.md)); a card that
 names its parent by ID alone writes no row and leaves the one there. A
 renamed parent shows its old name until one of its children or the parent
 itself is read again. `FinishMirrorCleanup` deletes a row no stored issue
 names, a chunk a transaction, after the sweep of unkept issues.
+
+A mirror that v172 upgraded holds issues whose parents no read named:
+before it, no row kept a parent the mirror did not keep. Such a root owes
+those names (`tracker_cache_roots.names_after`, a cursor from the first
+parent ID); a root made since names its parents with the cards it stores
+and owes nothing. The linked tick's names unit reads the owed parents by
+their own cards, by ID, 100 a read (`ListMirrorUnnamedParents`, one walk
+of `idx_tracker_cache_issues_parent` per batch in a read slot), and
+passes the cursor after each read is stored, so a parent the tracker does
+not return is asked for once; the worklist ends at the last parent. A
+tracker failure leaves the cursor, and the next tick asks again. The
+names owed after an upgrade are read while a client is connected, as
+every tick is.
 
 An open ticket keeps its issue through one row of
 `tracker_cache_open_tickets` per ticket pump, whatever brought the person
@@ -1004,7 +1026,11 @@ and writes share:
   pump is not over, not paused while hidden and tells no failure. It takes
   the polled boards again for each page, so an issue of a board whose pump
   stops, pauses or starts failing is read by the round it happens in, from
-  the next page on, or the next round, `Cadence.Linked` later.
+  the next page on, or the next round, `Cadence.Linked` later. A linked
+  tick runs the cards unit, then the names unit of an upgraded mirror
+  (above), then the history unit; the names unit makes at most 10 reads a
+  tick, so the linked issues' cards and history keep their tick, and the
+  loop ticks again until the worklist ends.
 - **A tick's record.** A tick's successes and the failure that followed
   them are recorded by one `RecordMirrorSyncAttempt` upsert, after the
   root and board lifetime check every board write makes, and the upsert

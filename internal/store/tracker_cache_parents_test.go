@@ -312,7 +312,7 @@ func TestMirrorExportNamesEpicsFromTheParents(t *testing.T) {
 // parent the mirror keeps, as a view named it before: a parent on a shown
 // board, and one a link keeps. A parent the mirror stores but does not
 // keep, and one it does not hold, stay unnamed. Every live root owes the
-// names of the rest from the first parent (names_after ”), a detached
+// names of the rest from the first parent (names_after the empty string), a detached
 // root none, and no board's sync state moves. The table refuses a row
 // with no key or no read.
 func TestTrackerParentsMigrationNamesTheKeptParents(t *testing.T) {

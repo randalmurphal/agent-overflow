@@ -73,7 +73,6 @@ export const migrationExceptions: MigrationException[] = [
   { version: 168, table: 'tracker_cache_worklogs', rowsMayShrink: true, reason: 'v168 deletes logged time read before it, since nothing records which time source read it; a refresh reads it again' },
   { version: 169, table: 'tracker_cache_worklog_days', rowsMayShrink: true, reason: 'v169 deletes logged time read before it, which holds no ticket names; a refresh reads it again' },
   { version: 169, table: 'tracker_cache_worklogs', rowsMayShrink: true, reason: 'v169 deletes logged time read before it, which holds no ticket names; a refresh reads it again' },
-  { version: 172, table: 'tracker_cache_sync', columns: ['cursor'], reason: "v172 forgets every board's poll cursor, so the next poll reads every row once and names the parents the mirror does not keep" },
 ];
 
 /**
@@ -959,6 +958,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   // The top-up reads the fake Jira's scrum board into the mirror through a
   // board subscription (connectTrackers); what that read leaves empty:
   { table: 'tracker_cache_roots', columns: ['sweep'], reason: 'a mirror root\'s sweep counter (v162), which a cleanup sweep that deletes an issue or a board moves; nothing the top-up reads leaves the mirror' },
+  { table: 'tracker_cache_roots', columns: ['names_after'], reason: 'the cursor of the parents a root upgraded by v172 owes names (v172); only v172 sets it, and a root made after it, as every root of the corpus and the top-up is, owes none' },
   { table: 'tracker_cache_users', reason: 'a user a board\'s catalog names (v162); the fake board\'s issues name no assignee, so its read stores none' },
   {
     table: 'tracker_cache_boards',

@@ -68,9 +68,10 @@ type MirrorCard struct {
 	// the card's content.
 	Title string
 	// ParentName is the parent's name as the card's read gave it, nil when
-	// the read named the parent by ID alone; a write stores it as the
-	// parent's name (tracker_cache_parents), not as the card's content.
-	// Reads leave it nil: a parent's name is read with ListMirrorParents.
+	// the read named the parent by ID alone; a write takes it as an
+	// observation of the parent's name (tracker_cache_parents), not as the
+	// card's content. Reads leave it nil: a parent's name is read with
+	// ListMirrorParents.
 	ParentName *MirrorParentName
 }
 

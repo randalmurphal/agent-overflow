@@ -407,20 +407,35 @@ func TestARestartBetweenNameBatchesAsksForTheRestAlone(t *testing.T) {
 	}
 }
 
-// A mirror made after v172 (a new connection's, or one made again after a
-// reset or a restore) owes no names: its linked tick asks for no parent.
+// A mirror made after v172 owes no names: a new connection's, one made
+// again after the connection was turned off and on, and one made after a
+// restore, which empties the mirror's tables. Its linked tick asks for no
+// parent.
 func TestANewMirrorOwesNoNames(t *testing.T) {
 	t.Parallel()
 	c := upgradeCases[0]
 	s, conn, scope := c.scenario(t)
-	s.syncBoard(t, scope)
-	root := must[int64](t)(rootOf(s, conn))
-	if owed := must[store.MirrorUnnamedParents](t)(s.st.ListMirrorUnnamedParents(root)); owed.Owed {
-		t.Fatalf("a new mirror owes %+v", owed)
+	owesNothing := func(what string) {
+		t.Helper()
+		s.syncBoard(t, scope)
+		root := must[int64](t)(rootOf(s, conn))
+		if owed := must[store.MirrorUnnamedParents](t)(s.st.ListMirrorUnnamedParents(root)); owed.Owed {
+			t.Fatalf("%s: the mirror owes %+v", what, owed)
+		}
+		since := s.lastSeq()
+		out := must[Outcome](t)(s.svc.SyncLinked(t.Context(), conn.ID, LinkedDue{Names: true}, Background))
+		if n := len(s.e.Requests(since).Requests); out.Failure != nil || out.More() || n > 0 {
+			t.Fatalf("%s: the names tick %+v made %d requests", what, out, n)
+		}
 	}
-	since := s.lastSeq()
-	out := must[Outcome](t)(s.svc.SyncLinked(t.Context(), conn.ID, LinkedDue{Names: true}, Background))
-	if out.Failure != nil || out.More() || slices.ContainsFunc(s.e.Requests(since).Requests, func(trackerfake.Request) bool { return true }) {
-		t.Fatalf("a new mirror's names tick %+v made %d requests", out, len(s.e.Requests(since).Requests))
+	owesNothing("a new connection")
+	old := must[int64](t)(rootOf(s, conn))
+	must[Connection](t)(s.svc.SetEnabled(conn.ID, false))
+	must[Connection](t)(s.svc.SetEnabled(conn.ID, true))
+	owesNothing("turned off and on")
+	if root := must[int64](t)(rootOf(s, conn)); root == old {
+		t.Fatalf("turned off and on, the connection kept its root %d", root)
 	}
+	s.sqlOnStore(t, `DELETE FROM tracker_cache_roots`)
+	owesNothing("after a restore")
 }
