@@ -685,10 +685,12 @@ export {
   ClearThreadTicket,
   SetThreadTicket,
   // A ticket's Work: its pull requests and branches, and the threads of
-  // its Ask and Start work, and the project's setup file that holds the
-  // Start work defaults (stores/ticketWork.svelte.ts).
+  // its Ask and Start work (stores/ticketWork.svelte.ts).
   GetTicketWork,
+  // A project's tracker setup file and its statuses by site
+  // (stores/trackerSetup.svelte.ts).
   ProjectTrackerSetup,
+  ProjectTrackerStatuses,
   SetProjectTrackerSetup,
   // A person's logged time and its writes (stores/trackerTime.svelte.ts,
   // stores/trackerTimeWrites.svelte.ts).

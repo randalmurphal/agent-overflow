@@ -16,6 +16,7 @@
   // removal sends at once, with no question, since Add link puts it back,
   // and the row says so until the ticket's view drops it. Add link opens
   // the link form at the section's header.
+  import TicketPin, { type PinControl } from './TicketPin.svelte';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
   import Link from '@lucide/svelte/icons/link';
   import X from '@lucide/svelte/icons/x';
@@ -37,9 +38,11 @@
     ctx: TicketWriteContext;
     links: readonly LinkView[];
     onOpenIssue: (issue: string, seed: TicketSeed, ownPane: boolean) => void;
+    /** The section's pin for the ticket's project; absent where it takes none. */
+    pin?: PinControl;
   }
 
-  let { ctx, links, onOpenIssue }: Props = $props();
+  let { ctx, links, onOpenIssue, pin }: Props = $props();
 
   const groups = $derived(linkGroups(links));
   let addButton = $state<HTMLElement | undefined>();
@@ -76,8 +79,9 @@
 </script>
 
 <section class="flex flex-col gap-1.5" data-testid="ticket-links">
-  <div class="flex items-center gap-1">
+  <div class="group/pin flex items-center gap-1">
     <span class="px-1 text-sm font-medium text-fg">Linked tickets</span>
+    {#if pin}<TicketPin {pin} testId="ticket-links-pin" />{/if}
     <span class="flex-1"></span>
     <span bind:this={addButton} class="inline-flex">
       <IconButton label="Add link" size="sm" testId="ticket-link-add" onClick={() => { adding = true; }}>

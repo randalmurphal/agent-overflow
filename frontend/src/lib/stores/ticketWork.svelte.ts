@@ -31,8 +31,9 @@
 // so a later write of the target by anything else never shows there.
 
 import { SvelteMap } from 'svelte/reactivity';
-import type { FieldValueView, Setup, SetupView, StartWorkDefaults } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-import { GetTicketWork, ProjectTrackerSetup, SetProjectTrackerSetup, StartTicketThread, type TicketWork } from './bindings';
+import type { FieldValueView, Setup, StartWorkDefaults } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import { GetTicketWork, StartTicketThread, type TicketWork } from './bindings';
+import { editTrackerSetup } from './trackerSetup.svelte';
 import { mountThreadForToolPane } from './panes.svelte';
 import { revealProject } from './sidebarEntryContinuity.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
@@ -139,33 +140,6 @@ export function keyPrefix(key: string): string {
 /** The entry of the setup for `place`, if any. */
 export function defaultsAt(setup: Setup, place: DefaultsPlace): StartWorkDefaults | null {
   return (setup.start_work ?? []).find((d) => d.tracker === place.tracker && d.site === place.site && d.project === place.project) ?? null;
-}
-
-interface DefaultsRead {
-  readonly project: string;
-  readonly view: SetupView | null;
-  readonly loading: boolean;
-  readonly error: unknown;
-}
-
-const defaultsReads = new SvelteMap<string, DefaultsRead>();
-
-/** The setup file of the project the ticket's Start work defaults are in,
- * as the form read it; reactive. */
-export function startWorkDefaults(key: string): DefaultsRead | null {
-  return defaultsReads.get(key) ?? null;
-}
-
-/** Reads `project`'s setup file for the ticket's Start work form. */
-export async function loadStartWorkDefaults(key: string, project: string): Promise<void> {
-  defaultsReads.set(key, { project, view: defaultsReads.get(key)?.view ?? null, loading: true, error: null });
-  let next: DefaultsRead;
-  try {
-    next = { project, view: await ProjectTrackerSetup(project), loading: false, error: null };
-  } catch (err) {
-    next = { project, view: null, loading: false, error: err };
-  }
-  if (defaultsReads.get(key)?.project === project) defaultsReads.set(key, next);
 }
 
 /** What Start work does, as the form showed it. */
@@ -295,25 +269,30 @@ async function assignStep(t: TicketWriteContext, plan: StartWorkPlan, state: Tra
   return writeStep(t, target, await editTicketFields(t, target, [{ field: 'assignee', value }]), 'assignee');
 }
 
-async function defaultsStep(key: string, plan: StartWorkPlan): Promise<StepOutcome> {
+/** The setup with the Start work defaults of `plan` saved at its place:
+ * the other entries kept, and the branch template kept when the plan's
+ * branch names none. */
+function withStartWorkDefaults(setup: Setup, plan: StartWorkPlan): Setup {
+  const save = plan.save;
+  if (!save) return setup;
+  const kept = defaultsAt(setup, save.place);
+  const entry: StartWorkDefaults = {
+    ...save.place,
+    status: plan.status?.id,
+    assign: plan.assign,
+    branch: save.branchTemplate ?? kept?.branch,
+    repository: plan.repository === save.project ? undefined : plan.repository,
+  };
+  const others = (setup.start_work ?? []).filter((d) => d !== kept);
+  return { ...setup, start_work: [...others, entry] };
+}
+
+async function defaultsStep(plan: StartWorkPlan): Promise<StepOutcome> {
   const save = plan.save;
   if (!save) return { kind: 'skipped' };
-  // The setup as the form read it, or as the last refusal answered it.
-  let view = defaultsReads.get(key)?.project === save.project ? defaultsReads.get(key)?.view ?? null : null;
   try {
-    view ??= await ProjectTrackerSetup(save.project);
-    const kept = defaultsAt(view.setup, save.place);
-    const entry: StartWorkDefaults = {
-      ...save.place,
-      status: plan.status?.id,
-      assign: plan.assign,
-      branch: save.branchTemplate ?? kept?.branch,
-      repository: plan.repository === save.project ? undefined : plan.repository,
-    };
-    const others = (view.setup.start_work ?? []).filter((d) => d !== kept);
-    const answer = await SetProjectTrackerSetup(save.project, view.revision, { ...view.setup, start_work: [...others, entry] } as Setup);
-    defaultsReads.set(key, { project: save.project, view: answer.stored, loading: false, error: null });
-    if (!answer.saved) return { kind: 'refused', text: `The defaults were not saved: ${answer.refused ?? 'the setup refused them'}.` };
+    const answer = await editTrackerSetup(save.project, (setup) => withStartWorkDefaults(setup, plan));
+    if (answer.kind === 'refused') return { kind: 'refused', text: `The defaults were not saved: ${answer.sentence}.` };
     return { kind: 'applied', note: save.branchTemplate === null ? 'The branch name does not hold the ticket\'s key, so the branch pattern saved before stays.' : null };
   } catch (err) {
     return { kind: 'failed', text: userFacingError(err), error: err };
@@ -439,7 +418,7 @@ async function runSteps(t: TicketWriteContext, read: () => TrackerTicketState | 
   }
   if (owed('defaults')) {
     setStep(key, 'defaults', { kind: 'running', doing: 'saving' });
-    const saved = await defaultsStep(key, plan);
+    const saved = await defaultsStep(plan);
     if (!mine()) return;
     setStep(key, 'defaults', saved);
   }
@@ -464,14 +443,12 @@ export async function openTicketThread(thread: Thread): Promise<void> {
 
 onTrackerTicketClosed((key) => {
   reads.delete(key);
-  defaultsReads.delete(key);
   runs.delete(key);
 });
 
 export function resetTicketWorkForTest(): void {
   reads.clear();
   asking.clear();
-  defaultsReads.clear();
   runs.clear();
   nextRequest = 0;
 }

@@ -158,6 +158,9 @@ func TestUnlistedBoardIsRetiredThenDrained(t *testing.T) {
 	if _, ok, err := s.GetMirrorBoard(root, "10"); err != nil || ok {
 		t.Errorf("retired board reads: %v, %v", ok, err)
 	}
+	if _, ok, err := s.GetMirrorBoardStatuses(root, "10"); err != nil || ok {
+		t.Errorf("retired board's statuses read: %v, %v", ok, err)
+	}
 	if page, err := s.ListMirrorSection(root, "10", MirrorRegroup{}, MirrorSection{Kind: MirrorSectionBacklog}, MirrorRowKey{}); err != nil || len(page.Rows) != 0 {
 		t.Errorf("retired board's backlog = %d rows, %v", len(page.Rows), err)
 	}

@@ -5,12 +5,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/project"
 	"agent-overflow/internal/store"
@@ -242,6 +244,9 @@ func TestAnUnreadableSetupRefusesItsProjectOnly(t *testing.T) {
 			if _, err := m.svc.ProjectSetup(m.project()); !errors.Is(err, ErrSetupUnreadable) || !strings.Contains(err.Error(), path) {
 				t.Fatalf("the read of an unreadable setup: %v", err)
 			}
+			if _, err := m.svc.ProjectStatuses(m.project()); !errors.Is(err, ErrSetupUnreadable) {
+				t.Fatalf("the statuses of a project whose setup is unreadable: %v", err)
+			}
 			if _, err := m.svc.SetProjectSetup(m.project(), "", Setup{}); !errors.Is(err, ErrSetupUnreadable) {
 				t.Fatalf("a save over an unreadable setup: %v", err)
 			}
@@ -403,8 +408,8 @@ func TestProjectSetupValidates(t *testing.T) {
 		t.Fatalf("the sites as stored: %+v; want %s and %s", got, m.conn.Site, linear.Site)
 	}
 	sub := m.subscribeShown(t, m.project())
-	if v := m.viewOf(t, sub.ID); v.Groups == "" || !slices.Equal(v.LeftOut, []string{"s1"}) {
-		t.Fatalf("the Jira connection's board reads with groups %q, left out %v; want the entry saved as %s", v.Groups, v.LeftOut, jiraSiteIn)
+	if v := m.viewOf(t, sub.ID); v.Groups == "" || !maps.Equal(v.Regrouped, map[string]string{"s1": "left_out"}) {
+		t.Fatalf("the Jira connection's board reads with groups %q, regrouped %v; want the entry saved as %s", v.Groups, v.Regrouped, jiraSiteIn)
 	}
 	p, err := m.st.GetProject(m.project())
 	if err != nil {
@@ -433,8 +438,8 @@ func TestAHandWrittenSiteIsReadAsItsConnectionNamesIt(t *testing.T) {
 		t.Fatalf("the hand-written setup = %+v; want site %s at the revision of its bytes", got, m.conn.Site)
 	}
 	sub := m.subscribeShown(t, m.project())
-	if v := m.viewOf(t, sub.ID); !slices.Equal(v.LeftOut, []string{"s1"}) {
-		t.Fatalf("the board under the hand-written setup leaves out %v; want s1", v.LeftOut)
+	if v := m.viewOf(t, sub.ID); !maps.Equal(v.Regrouped, map[string]string{"s1": "left_out"}) {
+		t.Fatalf("the board under the hand-written setup regroups %v; want s1 left out", v.Regrouped)
 	}
 
 	other := newMirrorFixture(t)
@@ -467,13 +472,12 @@ func TestStatusGroupsSetChangedAndCleared(t *testing.T) {
 		groups  map[string]string
 		backlog []string
 		all     int
-		leftOut []string
 	}{
 		// To Do counts as done: no To Do row is in the backlog.
-		{"set", map[string]string{"s1": "done"}, nil, 4, nil},
+		{"set", map[string]string{"s1": "done"}, nil, 4},
 		// To Do is left out: its rows are in no backlog and no total.
-		{"changed", map[string]string{"s1": "left_out"}, nil, 1, []string{"s1"}},
-		{"cleared", nil, []string{"10002", "10004"}, 4, nil},
+		{"changed", map[string]string{"s1": "left_out"}, nil, 1},
+		{"cleared", nil, []string{"10002", "10004"}, 4},
 	} {
 		n := m.boardEventCount()
 		setup := Setup{}
@@ -488,8 +492,10 @@ func TestStatusGroupsSetChangedAndCleared(t *testing.T) {
 		if got := rowIssues(v.Sections[0].Rows); !slices.Equal(got, step.backlog) || v.All.Rows != step.all || v.Backlog.Rows != len(step.backlog) {
 			t.Fatalf("%s: backlog %v, all %+v, backlog total %+v", step.name, got, v.All, v.Backlog)
 		}
-		if (v.Groups == "") != (step.groups == nil) || !slices.Equal(v.LeftOut, step.leftOut) {
-			t.Fatalf("%s: groups version %q, left out %v", step.name, v.Groups, v.LeftOut)
+		// The view names the groups it was read with, for the counts the
+		// client makes.
+		if (v.Groups == "") != (step.groups == nil) || !maps.Equal(v.Regrouped, step.groups) {
+			t.Fatalf("%s: groups version %q, regrouped %v", step.name, v.Groups, v.Regrouped)
 		}
 	}
 	n := m.boardEventCount()
@@ -527,8 +533,8 @@ func TestALeftOutStatusShowsItsCardsAndCountsNothing(t *testing.T) {
 	if len(v.Sections[0].Rows) != 4 || v.Sprints[0].Total != nine || v.All != nine || v.Columns[0].Total != nine {
 		t.Fatalf("the sprint shows %d cards; sprint %+v, all %+v, columns %+v", len(v.Sections[0].Rows), v.Sprints[0].Total, v.All, v.Columns)
 	}
-	if !slices.Equal(v.LeftOut, []string{"s2"}) {
-		t.Fatalf("the view names %v as left out, want s2", v.LeftOut)
+	if !maps.Equal(v.Regrouped, map[string]string{"s2": "left_out"}) {
+		t.Fatalf("the view regroups %v, want s2 left out", v.Regrouped)
 	}
 	if got := rowIssues(v.Sections[1].Rows); !slices.Equal(got, []string{"10004"}) || v.Columns[1].Total != (SectionTotal{}) {
 		t.Fatalf("the left-out column shows %v and counts %+v", got, v.Columns[1].Total)
@@ -676,8 +682,8 @@ func TestASaveThatFindsTheFileUnreadableHoldsNoSetup(t *testing.T) {
 	if got := must[SetupView](t)(m.svc.ProjectSetup(m.project())); got.Revision != hex.EncodeToString(sum[:]) {
 		t.Fatalf("the mended file's setup = %+v", got)
 	}
-	if v := m.viewOf(t, sub.ID); v.Groups == "" || v.Groups == held || !slices.Equal(v.LeftOut, []string{"s1"}) {
-		t.Fatalf("the open board after the file was mended: groups %q (held %q), left out %v", v.Groups, held, v.LeftOut)
+	if v := m.viewOf(t, sub.ID); v.Groups == "" || v.Groups == held || !maps.Equal(v.Regrouped, map[string]string{"s1": "left_out"}) {
+		t.Fatalf("the open board after the file was mended: groups %q (held %q), regrouped %v", v.Groups, held, v.Regrouped)
 	}
 }
 
@@ -713,8 +719,8 @@ func TestASaveWhoseSyncFailedHoldsWhatTheFileHolds(t *testing.T) {
 	if got.Revision != hex.EncodeToString(sum[:]) || got.Revision == save.Stored.Revision {
 		t.Fatalf("the setup after = %+v; want the file's, revision %x", got, sum)
 	}
-	if v := m.viewOf(t, sub.ID); v.Groups == held || !slices.Equal(v.LeftOut, []string{"s1"}) {
-		t.Fatalf("the open board after: groups %q (held %q), left out %v", v.Groups, held, v.LeftOut)
+	if v := m.viewOf(t, sub.ID); v.Groups == held || !maps.Equal(v.Regrouped, map[string]string{"s1": "left_out"}) {
+		t.Fatalf("the open board after: groups %q (held %q), regrouped %v", v.Groups, held, v.Regrouped)
 	}
 
 	n, told = m.boardEventCount(), m.events.setups.Load()
@@ -893,5 +899,93 @@ func TestStartWorkDefaultsAreSavedPerTrackerProject(t *testing.T) {
 	}}
 	if _, err := m.svc.SetProjectSetup(m.project(), save.Stored.Revision, twice); !errors.Is(err, ErrInvalidSetup) || !strings.Contains(err.Error(), "twice") {
 		t.Errorf("a project twice: %v", err)
+	}
+}
+
+// A project's statuses are its listed boards' columns as this computer
+// read them, once each in picker and column order with the tracker's
+// group, one site for two connections to it; a board not read yet is
+// named, not guessed; and a status the setup regroups that no listed
+// board shows is listed apart, so it can be put back.
+func TestProjectStatusesListTheBoardsStatuses(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
+	unread := func(boards ...string) []UnreadBoard {
+		out := make([]UnreadBoard, len(boards))
+		for i, b := range boards {
+			out[i] = UnreadBoard{Board: b}
+		}
+		return out
+	}
+	site := func() SiteStatuses {
+		t.Helper()
+		got := must[[]SiteStatuses](t)(m.svc.ProjectStatuses(m.project()))
+		if len(got) != 1 || got[0].Tracker != store.TrackerKindJira || got[0].Site != m.conn.Site {
+			t.Fatalf("the sites: %+v", got)
+		}
+		return got[0]
+	}
+	if got := site(); len(got.Statuses) != 0 || !reflect.DeepEqual(got.Unread, unread("1", "2", "7", "9")) {
+		t.Fatalf("before any board was read: %+v", got)
+	}
+	m.subscribeShown(t, m.project())
+	columns := []StatusView{{ID: "s1", Name: "To Do", Group: "todo"}, {ID: "s2", Name: "In Progress", Group: "in_progress"}, {ID: "s3", Name: "Done", Group: "done"}}
+	if got := site(); !reflect.DeepEqual(got.Statuses, columns) || !reflect.DeepEqual(got.Unread, unread("2", "7", "9")) || got.Elsewhere != nil {
+		t.Fatalf("with board 1 read: %+v", got)
+	}
+
+	// A second connection to the site lists a board whose columns hold s2
+	// again and s4: one site, s2 once.
+	second := m.add(NewConnection{Kind: store.TrackerKindJira, Site: jiraSiteIn, Account: "user2@example.com"})
+	if _, err := saveFromStored(m, []ProjectBoard{{Connection: m.conn.ID, Board: "1", OpensFirst: true}, {Connection: second.ID, Board: "5"}}); err != nil {
+		t.Fatal(err)
+	}
+	statusReview := tracker.Status{ID: "s4", Name: "Review", Group: tracker.GroupInProgress}
+	m.p.set(func(s *scripted) {
+		s.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) {
+			st := webStructure(b)
+			if b == "5" {
+				st.Columns = []tracker.Column{{Name: "Doing", Statuses: []tracker.StatusID{"s2", "s4"}}}
+				st.Statuses = append(st.Statuses, statusReview)
+			}
+			return st, nil
+		}
+	})
+	scope := Scope{Connection: second.ID, Board: "5"}
+	if _, err := m.svc.SubscribeBoard(m.project(), scope, []Section{{Kind: SectionBacklog}}, true, untied); err != nil {
+		t.Fatal(err)
+	}
+	m.events.waitFor(t, "the second connection's board read", func(boards []BoardEvent, _ []IssueEvent, _ []error) bool {
+		return slices.ContainsFunc(boards, func(e BoardEvent) bool { return e.Scope == scope && e.ReadAgain })
+	})
+	both := append(slices.Clone(columns), StatusView{ID: "s4", Name: "Review", Group: "in_progress"})
+	if got := site(); !reflect.DeepEqual(got.Statuses, both) || got.Unread != nil {
+		t.Fatalf("with two connections to the site: %+v", got)
+	}
+
+	// The setup regroups s2, which a board shows, and s9, which none does.
+	m.saveSetup(t, m.project(), m.regrouped(map[string]string{"s2": "done", "s9": "left_out"}))
+	if got := site(); !reflect.DeepEqual(got.Statuses, both) || !reflect.DeepEqual(got.Elsewhere, []StatusView{{ID: "s9"}}) {
+		t.Fatalf("with s9 regrouped off the boards: %+v", got)
+	}
+}
+
+// The statuses read takes a read board's column statuses alone, never its
+// whole structure (GetMirrorBoard: its data, columns and sprints).
+func TestProjectStatusesReadNoBoardStructure(t *testing.T) {
+	t.Parallel()
+	svc, _, scope := benchService(t)
+	if out, err := svc.syncTick(t.Context(), scope, BoardDue{Structure: true}, Background); err != nil || out.Failure != nil || out.Ended {
+		t.Fatalf("the board's read: %+v, %v", out, err)
+	}
+	cs := newCountingStore(svc.store.(*store.Store))
+	svc.store = cs
+	sites, err := svc.ProjectStatuses("boards-" + scope.Connection)
+	if err != nil || len(sites) != 1 || len(sites[0].Statuses) == 0 || len(sites[0].Unread) != 0 {
+		t.Fatalf("statuses: %+v, %v", sites, err)
+	}
+	if n := cs.take()["GetMirrorBoard"]; n != 0 {
+		t.Errorf("the read took the board's whole structure %d times", n)
 	}
 }

@@ -403,12 +403,13 @@ export function registerIssuesTicketFlow({ compact }: TicketSurface): void {
     expect(await estimations()).toHaveLength(2);
     await pointsInput.press('Escape');
 
-    // A list of texts shows as it is and takes no editor; a due date is typed.
+    // A list of texts shows as it is and takes no editor, only its pin; a
+    // due date is typed.
     const fields = await rail(ticket, compact);
     await press(fields.getByTestId('ticket-more-fields'), compact);
     const tags = field(fields, 'customfield_10070');
     await expect(tags.getByTestId('ticket-field-value')).toHaveText('A, B');
-    await expect(tags.locator('button, input')).toHaveCount(0);
+    await expect(tags.locator('button:not([data-testid="ticket-field-pin"]), input')).toHaveCount(0);
     const due = field(fields, 'duedate');
     await expect(due.getByTestId('ticket-field-value')).toHaveText('2026-01-02');
     await press(due.getByTestId('ticket-field-value'), compact);

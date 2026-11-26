@@ -8,6 +8,7 @@
   // one and its place ("Uploading report.pdf (4.1 MB)… 2 of 3"), and each
   // file that was not attached plainly keeps what became of it until
   // dismissed. A tracker that stores no files (Linear) offers no Attach.
+  import TicketPin, { type PinControl } from './TicketPin.svelte';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
@@ -53,9 +54,11 @@
     canAttach: boolean;
     open: boolean;
     onFold: (open: boolean) => void;
+    /** The section's pin for the ticket's project; absent where it takes none. */
+    pin?: PinControl;
   }
 
-  let { ctx, ticket, attachments, canAttach, open, onFold }: Props = $props();
+  let { ctx, ticket, attachments, canAttach, open, onFold, pin }: Props = $props();
 
   const newest = $derived([...attachments].sort((a, b) => b.created - a.created));
   const uploading = $derived(ticketUploads(ctx.key));
@@ -137,7 +140,7 @@
 </script>
 
 <section class="flex flex-col gap-1.5" data-testid="ticket-attachments">
-  <div class="flex items-center gap-1">
+  <div class="group/pin flex items-center gap-1">
     <button
       type="button"
       class="inline-flex min-w-0 items-center gap-1 rounded-[var(--radius-control)] px-1 text-sm font-medium text-fg hover:bg-surface-1 compact:min-h-9 compact:select-none"
@@ -149,6 +152,7 @@
       Attachments
       {#if attachments.length > 0}<span class="text-xs font-normal text-fg-muted">{attachments.length}</span>{/if}
     </button>
+    {#if pin}<TicketPin {pin} testId="ticket-attachments-pin" />{/if}
     <span class="flex-1"></span>
     {#if canAttach}
       <IconButton label="Attach files" size="sm" testId="ticket-attach" onClick={pick}>
