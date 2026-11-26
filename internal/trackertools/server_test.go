@@ -29,6 +29,8 @@ type fakeTracker struct {
 	// the service's does.
 	honorCtx bool
 	details  map[string]trackerapp.DetailView // connection/issue
+	// onDetail, when set, runs as each detail read starts.
+	onDetail func()
 	comments func(connection, issue, page string) (trackerapp.CommentPageView, error)
 	asked    []string
 
@@ -146,14 +148,12 @@ type fakeHost struct {
 	ended map[string]bool
 }
 
-func (h *fakeHost) Writable(string) error {
+func (h *fakeHost) WritePolicy(string) (WritePolicy, error) {
 	if h.readOnly {
-		return errorsx.Public("tracker_read_only", "This thread is read-only, so it cannot change tickets; ask the user to change its access.", nil)
+		return WritePolicy{}, errorsx.Public("tracker_read_only", "This thread is read-only, so it cannot change tickets; ask the user to change its access.", nil)
 	}
-	return nil
+	return WritePolicy{AskSeveral: !h.noAsk}, nil
 }
-
-func (h *fakeHost) AsksBeforeSeveral(string) (bool, error) { return !h.noAsk, nil }
 
 func (h *fakeHost) Approve(_ context.Context, _ string, a Approval) error {
 	h.approvals = append(h.approvals, a)
@@ -213,6 +213,9 @@ func (f *fakeTracker) Search(_ context.Context, connection string, in trackerapp
 
 func (f *fakeTracker) IssueDetail(ctx context.Context, connection, issue string) (trackerapp.DetailView, error) {
 	f.asked = append(f.asked, "detail "+connection+" "+issue)
+	if f.onDetail != nil {
+		f.onDetail()
+	}
 	if err := ctx.Err(); f.honorCtx && err != nil {
 		return trackerapp.DetailView{}, err
 	}

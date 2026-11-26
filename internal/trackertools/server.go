@@ -56,6 +56,10 @@ const (
 	// CodeUnknown is a create whose answer never came: it may have been
 	// made, and the same call again finds it.
 	CodeUnknown = "tracker_outcome_unknown"
+	// CodeRulesChanged is a change to several tickets planned while its
+	// project let it go unasked, whose project asks by the time it would
+	// be sent: nothing was sent.
+	CodeRulesChanged = "tracker_rules_changed"
 )
 
 // Tracker is what the tools read and write through: this computer's
@@ -103,16 +107,20 @@ type Tracker interface {
 	EndWrites(ctx context.Context) error
 }
 
+// WritePolicy is what a thread's change of tickets may do.
+type WritePolicy struct {
+	// AskSeveral: a change to more than one ticket waits for the
+	// person's approval (Host.Approve).
+	AskSeveral bool
+}
+
 // Host is what the writing tools ask the app about the calling thread.
 type Host interface {
-	// Writable refuses, with a public error, a thread that may not change
-	// tickets: a read-only thread, or one whose project's Agents settings
-	// turn off changes.
-	Writable(threadID string) error
-	// AsksBeforeSeveral reports whether a change of the thread's to more
-	// than one ticket waits for the person's approval (Approve), as its
-	// project's Agents settings say; an error refuses the change.
-	AsksBeforeSeveral(threadID string) (bool, error)
+	// WritePolicy is what a change of tickets by the thread may do now,
+	// read again at each moment a writing tool decides by it. A public
+	// error refuses any change: a read-only thread, or one whose
+	// project's Agents settings turn off changes or cannot be read.
+	WritePolicy(threadID string) (WritePolicy, error)
 	// Approve asks the person to approve a change and returns when they
 	// answer: nil when they approve, a public error when they deny or do
 	// not answer in time, and ctx's error when the call ends first.

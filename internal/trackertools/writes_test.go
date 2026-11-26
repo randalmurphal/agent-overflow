@@ -194,6 +194,22 @@ func TestUpdateOfSeveralTicketsGoesWhenTheProjectDoesNotAsk(t *testing.T) {
 	}
 }
 
+// A project that turns asking back on while a change to several tickets
+// is being planned sends nothing without the person's approval.
+func TestUpdateOfSeveralTicketsAsksWhenAskingTurnsOnWhilePlanned(t *testing.T) {
+	t.Parallel()
+	w := newWriteFixture(t)
+	w.h.noAsk = true
+	w.f.onDetail = func() { w.h.noAsk = false }
+	_, err := w.update(t, map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "set": map[string]any{"status": "In Review"}, "comment": "Both in this sprint."})
+	if len(w.f.writes) != 0 || len(w.h.approvals) != 0 {
+		t.Fatalf("sent %q, asked %+v after asking was turned on", w.f.writes, w.h.approvals)
+	}
+	if code, _, _ := errorsx.PublicDetails(err); code != CodeRulesChanged {
+		t.Fatalf("err = %v; want %s", err, CodeRulesChanged)
+	}
+}
+
 // A status the ticket cannot move to, or a sprint that is not open, is
 // that ticket's refusal, and nothing is sent for any ticket.
 func TestUpdateRefusedByTheTicketSendsNothing(t *testing.T) {

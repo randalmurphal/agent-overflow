@@ -1,6 +1,7 @@
 package trackertools
 
 import (
+	"agent-overflow/internal/errorsx"
 	"context"
 	"encoding/json"
 	"slices"
@@ -114,15 +115,11 @@ func (s *Server) update(ctx context.Context, caller Caller, raw json.RawMessage)
 	if args.Comment != nil {
 		comment = *args.Comment
 	}
-	if err := s.h.Writable(caller.Thread); err != nil {
+	policy, err := s.h.WritePolicy(caller.Thread)
+	if err != nil {
 		return nil, err
 	}
-	asks := false
-	if len(args.Keys) > 1 {
-		if asks, err = s.h.AsksBeforeSeveral(caller.Thread); err != nil {
-			return nil, err
-		}
-	}
+	asks := len(args.Keys) > 1 && policy.AskSeveral
 	if asks && approvalBytes(set, comment) > maxApprovalBytes {
 		return nil, invalidf("set and comment together hold more than %d KiB, more than an approval shows the person; change fewer or shorter values in each call.", maxApprovalBytes>>10)
 	}
@@ -179,10 +176,15 @@ func (s *Server) update(ctx context.Context, caller Caller, raw json.RawMessage)
 			return nil, err
 		}
 	}
-	// The writes are admitted now: a thread made read-only while the call
-	// planned or waited sends nothing.
-	if err := s.h.Writable(caller.Thread); err != nil {
+	// The writes are admitted now, by the policy as it is now: a thread
+	// made read-only, or whose project turned off changes, while the call
+	// planned or waited sends nothing, and neither does a change to
+	// several tickets that went unasked while its project now asks.
+	if policy, err = s.h.WritePolicy(caller.Thread); err != nil {
 		return nil, err
+	}
+	if !approved && len(plans) > 1 && policy.AskSeveral {
+		return nil, errorsx.Public(CodeRulesChanged, "This project's Agents settings changed while this change was planned and now ask the user to approve a change to several tickets; nothing was sent. Make the call again.", nil)
 	}
 	// What was admitted is sent whole: the call's end no longer stops it,
 	// and each write keeps its own bound.

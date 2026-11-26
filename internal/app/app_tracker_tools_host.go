@@ -112,38 +112,27 @@ func (t *trackerApprovals) waitFor() time.Duration {
 
 type trackerToolsHost struct{ a *App }
 
-// Writable refuses a read-only thread, and a thread whose project's
-// Agents settings turn off Change tickets (trackerapp.AgentRules).
-func (h trackerToolsHost) Writable(threadID string) error {
+// WritePolicy refuses a read-only thread, and a thread whose project's
+// Agents settings turn off Change tickets or cannot be read
+// (trackerapp.AgentRules); otherwise it says whether a change to several
+// tickets waits for the person, as those settings say. Every writing tool
+// reads it, at its start and again just before it sends.
+func (h trackerToolsHost) WritePolicy(threadID string) (trackertools.WritePolicy, error) {
 	thread, err := h.a.store.GetThread(threadID)
 	if err != nil {
-		return fmt.Errorf("tracker tools: read thread %s: %w", threadID, err)
+		return trackertools.WritePolicy{}, fmt.Errorf("tracker tools: read thread %s: %w", threadID, err)
 	}
 	if provider.RuntimeMode(thread.RuntimeMode) == provider.RuntimeReadOnly {
-		return errorsx.Public(codeTrackerReadOnly, "This thread is read-only, so it cannot change tickets; ask the user to change its access.", nil)
+		return trackertools.WritePolicy{}, errorsx.Public(codeTrackerReadOnly, "This thread is read-only, so it cannot change tickets; ask the user to change its access.", nil)
 	}
 	rules, err := h.agentRules(thread)
 	if err != nil {
-		return err
+		return trackertools.WritePolicy{}, err
 	}
 	if !rules.Changes() {
-		return errorsx.Public(codeTrackerChangesOff, "This project's Agents settings do not let its threads change tickets, so nothing was sent; ask the user to turn on Change tickets in Settings > Issues > Agents if this change is wanted.", nil)
+		return trackertools.WritePolicy{}, errorsx.Public(codeTrackerChangesOff, "This project's Agents settings do not let its threads change tickets, so nothing was sent; ask the user to turn on Change tickets in Settings > Issues > Agents if this change is wanted.", nil)
 	}
-	return nil
-}
-
-// AsksBeforeSeveral is whether a change of thread's to several tickets
-// waits for the person: its project's Agents settings say.
-func (h trackerToolsHost) AsksBeforeSeveral(threadID string) (bool, error) {
-	thread, err := h.a.store.GetThread(threadID)
-	if err != nil {
-		return false, fmt.Errorf("tracker tools: read thread %s: %w", threadID, err)
-	}
-	rules, err := h.agentRules(thread)
-	if err != nil {
-		return false, err
-	}
-	return rules.Asks(), nil
+	return trackertools.WritePolicy{AskSeveral: rules.Asks()}, nil
 }
 
 // agentRules are the Agents settings of thread's project; a thread of no
