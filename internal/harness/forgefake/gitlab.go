@@ -507,11 +507,12 @@ func gitlabNote(comment Comment, extra map[string]any) map[string]any {
 	return note
 }
 
-// glabMRList answers the three merge request lists the app makes, of the
-// project the path names: the open MRs from a source branch name (a
-// fork's included, as source_branch matches them), recently merged MRs,
-// and named MRs in any state (iids[] with state=all). Items are the full
-// view; a state list answers its X-Total.
+// glabMRList answers the merge request lists the app makes, of the
+// project the path names: the MRs from a source branch name, open or in
+// any state (a fork's included, as source_branch matches them), recently
+// merged MRs, the MRs in any state a title search finds, and named MRs in
+// any state (iids[] with state=all). Items are the full view; a state
+// list answers its X-Total.
 func glabMRList(e *Engine, c *call, m []string) response {
 	r, fail, ok := e.glabProject(c, m[1])
 	if !ok {

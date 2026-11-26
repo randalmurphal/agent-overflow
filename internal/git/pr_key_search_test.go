@@ -38,9 +38,8 @@ func foundNumbers(rows []PRFound) []int {
 }
 
 // GitHub's key search is one request of two aliased searches: the title
-// by the key's words and the head branch by its prefix. A pull request
-// both find is one row; each row carries its state, draft, author and
-// branch. What the search finds is looser than the key rule (WEB-12), so
+// by the key's words and the head branch by its prefix. Each row carries
+// its state, draft, author and branch. What the search finds is looser than the key rule (WEB-12), so
 // the caller filters.
 func TestGitHubKeySearchReadsTitleAndHeadInOneRequest(t *testing.T) {
 	t.Parallel()

@@ -2030,7 +2030,25 @@ delete is refused and the links the delete read are the ones it ends.
   rows over 10 repositories and a 500-branch project it costs 18 ms and
   4 MB an open, 23 ms and 5 MB when every list names the key
   (`TestTicketWorkCostAtRealSize`); a 200-row landing's tickets cost
-  0.5 ms.
+  0.5 ms. It sends no forge or tracker request.
+- **`SearchTicketWork`** (home route, the same scopes, budget 2m15s) is
+  `GetTicketWork`'s answer with the forge searched by the key
+  ([Ticket Work search](forge-transport.md#ticket-work-search)): once per
+  distinct repository the projects above clone, then a lookup by name of
+  each of the ticket's branches no listed pull request names. A found
+  pull request counts only when its title or branch names the key by the
+  same rule (`namesTicketKey`). It is listed once
+  (`ticketWorkRead.addFound`): a stored row stays while the forge
+  answers its state, since it carries CI, and a linked thread's record,
+  or a stored row whose state the forge answers otherwise (a stored list
+  is as old as its last read, which runs only while the Pull requests
+  page is open or at boot), gives way to the forge's answer. A
+  repository's failure is a `TicketForgeProblem` carrying the fields a
+  Pull requests page project carries for a failed read
+  (`newRepoForgeFailure`), and a full page is named in `SearchFull`. The
+  client calls both methods at once and shows the stored answer until
+  the search's lands (`stores/ticketWork.svelte.ts`); nothing is stored.
+  It repeats `GetTicketWork`'s local read, the 18 ms above.
 - **`StartTicketThread`** (project route, `threads:operate`, plus
   `tracker:read`, and `git:operate` for Start work) makes the thread of
   an Ask or a Start work in one rollback: the thread titled with the key
@@ -2654,7 +2672,7 @@ ticket finder, with the `SetThreadTicket` and `ClearThreadTicket`
 wrappers (`stores/threadTicketLinks.svelte.ts`), and the ticket's Work
 with Ask and Start work and the pull request rows' ticket chips
 ([Ticket keys, Work, Ask and Start work](#ticket-keys-work-ask-and-start-work)),
-with the wrappers of `GetTicketWork` and `StartTicketThread`
+with the wrappers of `GetTicketWork`, `SearchTicketWork` and `StartTicketThread`
 (`stores/ticketWork.svelte.ts`), the project's setup: Settings >
 Issues > Status groups, the ticket's pins and the Start work defaults,
 with the wrappers of `ProjectTrackerSetup`, `SetProjectTrackerSetup`,

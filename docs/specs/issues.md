@@ -508,21 +508,35 @@ holding the template text.
 
 ### Tickets, pull requests and branches
 
-Status: built: every bullet below but the forge search. A key matches when
-this computer's copy of an enabled connection holds an issue of its
-project. A ticket's Work reads the stored list of open pull requests, the
-pull requests its linked threads were last seen with (merged and closed
-among them) and the branches of the projects that list its connection's
-boards; it is read when Work shows and on the ticket's Refresh. Not built:
-searching the forge by key, and Jira's development data.
+Status: built: every bullet below but Jira's development data. A key
+matches when this computer's copy of an enabled connection holds an issue
+of its project. A ticket's Work reads the stored list of open pull
+requests, the pull requests its linked threads were last seen with
+(merged and closed among them) and the branches of the projects that list
+its connection's boards, and searches the forge of each of those
+projects' repositories once. It is read when Work shows and on the
+ticket's Refresh, never on a timer. The rows Work stores show at once,
+with "Searching the forge…" until the search answers; a search that fails
+is said in Work in the Pull requests page's words, beside the rest. A pull
+request found by the search shows its state and author and no CI. Not
+built: Jira's development data.
+
+The search finds a pull request by its title in any state, and on GitHub
+also by a branch name that begins with the key. A pull request whose key
+is only in its branch name and not at its start (`feature/WEB-1-…`), or
+on GitLab only in its branch name, is found only when this computer has
+that branch, local or fetched: a branch deleted after its merge and never
+fetched here leaves its pull request out of Work. Each repository's
+search reads at most 100 pull requests and says so when there were more.
 
 - Ticket keys are found in branch names and pull request titles. Only the
   keys of connected tracker projects match.
 - The match is used in both directions: the Pull requests page shows a chip
   per ticket that opens it, and a ticket's Work lists its pull requests and
   branches.
-- The forge is searched by key for a pull request outside the stored list.
-  Jira's own
+- The forge is searched by key for a pull request outside the stored list,
+  and a match counts only when its title or branch names the key by the
+  same rule. Jira's own
   [development data](../references/tracker-api-measurements.md#jira-cloud)
   is a fallback only, because its endpoints are undocumented.
 

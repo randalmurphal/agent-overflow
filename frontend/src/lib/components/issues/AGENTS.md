@@ -165,12 +165,14 @@ board methods, events and the patch read in
   browser downloads it up to 256 MB), its bytes, and the images a ticket's
   text shows in place, held in the media cache until the ticket's last
   surface goes.
-- `stores/ticketWork.svelte.ts` holds a ticket's Work read, its Ask in
+- `stores/ticketWork.svelte.ts` holds a ticket's Work read (the stored
+  sources' answer at once, then the forge search's in its place), its Ask in
   flight and its Start work run: the plan, the thread it made and each
   step's outcome, with the rules that keep a retry from doing anything
   twice written at the top. `TicketWork.svelte` is the rail's Work
   section, mounted by one line at the end of the rail, and
-  `StartWorkForm.svelte` the form it opens; the threads it lists are the
+  `StartWorkForm.svelte` the form it opens; a failed search shows the
+  Pull requests page's `PullsProjectError`; the threads it lists are the
   client's catalog filtered by the link's tracker kind, site and issue,
   which the ticket's subscription names, with no call. A step's row is no
   control of the write it sent: it shows that write only while it is its

@@ -162,6 +162,35 @@ whose last page names no next is complete to the after date. Stopping at
 the first short page read one comments page, reaching back 12 days
 (2026-10-09). The feed's `after` semantics were not probed.
 
+## Ticket key search
+
+Measured on github.com on 2026-11-26, read-only, against this project's
+own public repository through GraphQL `search(type: ISSUE)`, a handful of
+queries: enough to design on, not a proof of every tokenizer case.
+
+- `head:` is a prefix match on the branch name: for a pull request from
+  branch `issues-find-filters`, `head:issues-find-filters`,
+  `head:issues-find` and `head:issues-fin` each matched it, and
+  `head:find`, `head:filters` and `head:find-filters` matched nothing.
+  Whether the prefix ignores case was not measured.
+- A quoted title term matches whole tokens in order, case ignored: for
+  titles holding an ID of the shape `XX-YYYY-NNNN`, the quoted full ID
+  matched its one pull request, the quoted `XX-YYYY` matched both pull
+  requests whose IDs begin that way, and the quoted `XX-YYYY-NN` (a token
+  cut short) matched none. The unquoted full ID matched the same one.
+- `(in:title "..." OR head:...)` in one query matched nothing, though
+  each half alone matched one.
+- Two aliased `search` fields in one request both answered, and
+  `rateLimit { cost }` for that request was 1.
+
+GitLab's merge request list documentation (read the same day) says
+`search` matches "against their `title` and `description`", narrowed by
+`in` (`title`, `description`, or both joined with a comma), that
+`source_branch` "Returns merge requests with the given source branch."
+(it does not say exact), and that `state` defaults to `all`. Nothing was
+probed on GitLab, and which rate-limit pool its search uses was not
+measured.
+
 ## List page sizes
 
 Read-only GETs on 2026-11-11 (`gh api` on randalmurphal/agent-overflow,
