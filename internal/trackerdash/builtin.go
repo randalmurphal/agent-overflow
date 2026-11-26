@@ -34,15 +34,15 @@ var cycleMetric = Metric{
 	Title: "Days from start to done",
 	Words: []string{
 		"The working days from a ticket's first move into an in-progress status to its last move into a done status, for the tickets finished in the range.",
-		"A ticket whose history does not reach back to its start, or whose finish time is not known, is listed and not counted.",
+		"A ticket whose history does not show its start (it was in progress when its history begins), or whose finish time is not known, is listed and not counted.",
 	},
 	SQL: `SELECT t.id AS ticket,
-  iif(t.history_from IS NULL OR t.history_from > t.created_at OR t.started_at IS NULL OR t.done_at IS NULL OR t.started_at > t.done_at,
+  iif(t.history_from IS NULL OR t.started_known = 0 OR t.started_at IS NULL OR t.done_at IS NULL OR t.started_at > t.done_at,
       NULL, working_days(t.started_at, t.done_at)) AS value,
   ` + finishedAt + ` AS at,
   CASE WHEN ` + finishedAt + ` IS NULL THEN ` + finishUnknown + `
        WHEN t.history_from IS NULL THEN 'not counted: its history is not read yet'
-       WHEN t.history_from > t.created_at THEN 'not counted: its history starts on ' || day(t.history_from)
+       WHEN t.started_known = 0 THEN 'not counted: it was in progress before its history begins'
        WHEN t.started_at IS NULL THEN 'not counted: it was never in progress'
        WHEN t.done_at IS NULL THEN 'not counted: its move to done is not in its history'
        WHEN t.started_at > t.done_at THEN 'not counted: it moved to done before it was started' END AS note

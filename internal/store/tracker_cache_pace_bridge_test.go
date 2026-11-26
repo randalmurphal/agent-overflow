@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"testing"
+	"time"
 )
 
 // PaceFixtureForTest and PaceForTest hand the pace's fixture and the
@@ -69,4 +70,44 @@ func atoi(t *testing.T, s string) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// DashboardHistoryFixtureForTest is a board without sprints (11) of three
+// done tickets created at created, with histories as each tracker writes
+// them, a day being day: WEB-21 a Linear history, complete from 3 minutes
+// after creation, moved from To Do into progress a day after creation
+// and done two days later; WEB-22 a Linear one whose first change, two
+// days after creation, is from In Progress into done (it was made in
+// progress within the fold); WEB-23 a Jira one, complete from creation,
+// into progress after a day and done the next.
+func DashboardHistoryFixtureForTest(t *testing.T, created, day int64) (*Store, int64) {
+	t.Helper()
+	s, _, root := newMirror(t)
+	weeks := webStructure()
+	weeks.Board.ID, weeks.Board.PlansSprints, weeks.Sprints = "11", false, nil
+	mustReplaceStructure(t, s, root, weeks, true)
+	var rows []MirrorRow
+	for _, id := range []string{"21", "22", "23"} {
+		r := sectionRow(id, id, "10001", 1)
+		r.Card.CreatedAt, r.Card.UpdatedAt = created, created+3*day
+		rows = append(rows, r)
+	}
+	mustWriteRowPage(t, s, root, webPage("11", rows...), nil)
+	linear := created + int64(3*time.Minute/time.Millisecond)
+	histories := []MirrorHistory{
+		{IssueID: "21", CompleteFrom: linear, Changes: []MirrorChange{
+			{Kind: MirrorChangeStatus, At: created + day, From: "1", To: "3"},
+			{Kind: MirrorChangeStatus, At: created + 3*day, From: "3", To: "10001"},
+		}},
+		{IssueID: "22", CompleteFrom: linear, Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: created + 2*day, From: "3", To: "10001"}}},
+		{IssueID: "23", Changes: []MirrorChange{
+			{Kind: MirrorChangeStatus, At: created + day, From: "1", To: "3"},
+			{Kind: MirrorChangeStatus, At: created + 2*day, From: "3", To: "10001"},
+		}},
+	}
+	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, histories), MirrorCatalog{},
+		mirrorReadOf(root, 10)); err != nil {
+		t.Fatal(err)
+	}
+	return s, root
 }

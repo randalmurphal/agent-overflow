@@ -18,7 +18,7 @@ import (
 //	WEB-3  in progress 5 days, 2 points, User 1, in s6 (not done) and s7; epic WEB-100
 //	WEB-4  in progress since an unknown time, 1 point, User 2, in s7
 //	WEB-5  in progress 1 day, User 1
-//	WEB-6  done, 8 points, User 1, finished in s4; its history starts after it was created
+//	WEB-6  done, 8 points, User 1, finished in s4; it was in progress when its history begins
 //	WEB-7  done, 2 points, finished in s1
 //	WEB-8  done, 4 points, finished in s2
 //	WEB-9  to do, 3 points, User 1, in s7; epic WEB-100
@@ -31,7 +31,7 @@ func teamBoard() *fixture {
 		member("s6", "t3", false).member("s7", "t3", false)
 	f.ticket(ticket{id: "t4", key: "WEB-4", status: "3", group: "in_progress", assignee: "u2", points: "1", created: ago(20)}).member("s7", "t4", false)
 	f.ticket(ticket{id: "t5", key: "WEB-5", status: "3", group: "in_progress", assignee: "u1", created: ago(20), since: ago(1)})
-	f.ticket(ticket{id: "t6", key: "WEB-6", status: "5", group: "done", assignee: "u1", points: "8", created: ago(60), historyFrom: ago(30), started: ago(20), done: ago(16)}).member("s4", "t6", true)
+	f.ticket(ticket{id: "t6", key: "WEB-6", status: "5", group: "done", assignee: "u1", points: "8", created: ago(60), historyFrom: ago(30), started: ago(20), done: ago(16), startUnknown: true}).member("s4", "t6", true)
 	f.ticket(ticket{id: "t7", key: "WEB-7", status: "5", group: "done", points: "2", created: ago(60), done: ago(37)}).member("s1", "t7", true)
 	f.ticket(ticket{id: "t8", key: "WEB-8", status: "5", group: "done", points: "4", created: ago(60), done: ago(30)}).member("s2", "t8", true)
 	f.ticket(ticket{id: "t9", key: "WEB-9", status: "1", group: "todo", assignee: "u1", epic: "e1", points: "3", created: ago(20)}).member("s7", "t9", false)
@@ -449,8 +449,8 @@ func TestAnUnknownFinishIsListedNotDropped(t *testing.T) {
 func TestRangeMetricsReadOnlyTheRange(t *testing.T) {
 	t.Parallel()
 	f := teamBoard().exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 25000)
-		INSERT INTO tickets(id, key, title, type_level, status, status_group, created_at, updated_at, resolved_at, status_since, points, done_at, open, counts)
-		SELECT 'old' || i, 'OLD-' || i, 'Old', 0, '5', 'done', %d, 0, %d, 0, 1, %d, 0, 1 FROM n`, ago(400), ago(390), ago(390))
+		INSERT INTO tickets(id, key, title, type_level, status, status_group, created_at, updated_at, resolved_at, status_since, points, done_at, started_known, open, counts)
+		SELECT 'old' || i, 'OLD-' || i, 'Old', 0, '5', 'done', %d, 0, %d, 0, 1, %d, 0, 0, 1 FROM n`, ago(400), ago(390), ago(390))
 	a := mustEvaluate(t, evaluator(), f.board(), utcSprints3)
 	for _, id := range []string{"created_finished", "start_to_done"} {
 		if w := widgetOf(t, a, id); w.Error != "" {
@@ -458,8 +458,8 @@ func TestRangeMetricsReadOnlyTheRange(t *testing.T) {
 		}
 	}
 	w := mustEvaluate(t, evaluator(), newFixture(false, "none").status("5", "Done", "done").exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 25000)
-		INSERT INTO tickets(id, key, title, type_level, status, status_group, created_at, updated_at, resolved_at, status_since, done_at, open, counts)
-		SELECT 'old' || i, 'OLD-' || i, 'Old', 0, '5', 'done', %d, 0, %d, 0, %d, 0, 1 FROM n`, ago(400), ago(390), ago(390)).board(),
+		INSERT INTO tickets(id, key, title, type_level, status, status_group, created_at, updated_at, resolved_at, status_since, done_at, started_known, open, counts)
+		SELECT 'old' || i, 'OLD-' || i, 'Old', 0, '5', 'done', %d, 0, %d, 0, %d, 0, 0, 1 FROM n`, ago(400), ago(390), ago(390)).board(),
 		Request{Dashboard: builtinWeeksID, Range: RangeWeeks12, TimeZone: "UTC"})
 	for _, id := range []string{"pace", "created_finished", "start_to_done"} {
 		if v := widgetOf(t, w, id); v.Error != "" {
@@ -474,8 +474,8 @@ func TestRangeMetricsReadOnlyTheRange(t *testing.T) {
 func TestATableMakesTheCellsItShows(t *testing.T) {
 	t.Parallel()
 	f := teamBoard().exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 19900)
-		INSERT INTO tickets(id, key, title, type_level, status, status_group, assignee, created_at, updated_at, status_since, points, open, counts)
-		SELECT 'p' || i, 'WEB-' || (5000 + i), 'T', 0, '1', 'todo', 'person' || i, %d, 0, 0, 1, 1, 1 FROM n`, ago(5)).
+		INSERT INTO tickets(id, key, title, type_level, status, status_group, assignee, created_at, updated_at, status_since, points, started_known, open, counts)
+		SELECT 'p' || i, 'WEB-' || (5000 + i), 'T', 0, '1', 'todo', 'person' || i, %d, 0, 0, 1, 0, 1, 1 FROM n`, ago(5)).
 		exec(`INSERT INTO sprint_tickets SELECT 's7', id FROM tickets WHERE id LIKE 'p%%'`)
 	e := evaluator()
 	o, err := e.begin(context.Background(), f.board(), utcSprints3)

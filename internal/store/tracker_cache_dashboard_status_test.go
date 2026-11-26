@@ -79,3 +79,37 @@ func TestDashboardCountsStatusesAsTheSectionsDo(t *testing.T) {
 		t.Fatalf("created = %v; want every ticket but WEB-13, whose status is left out of counts", created)
 	}
 }
+
+// Start to done counts what a ticket's history shows, through a real
+// export: a Linear ticket whose history begins as To Do shows its start,
+// though its history begins minutes after its creation; one made in
+// progress before its history begins does not, and is listed as not
+// counted; a Jira history, which begins at creation, shows its start.
+func TestStartToDoneCountsWhatTheHistoryShows(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	day := int64(24 * time.Hour / time.Millisecond)
+	// Monday 16 November, noon: WEB-21 is in progress Tuesday to Thursday,
+	// WEB-23 Tuesday to Wednesday.
+	s, root := store.DashboardHistoryFixtureForTest(t, time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC).UnixMilli(), day)
+	b := trackerdash.Board{Fill: func(ctx context.Context, conn *sql.Conn) (store.MirrorExport, bool, error) {
+		return s.ExportMirrorBoard(ctx, conn, root, "11", store.MirrorRegroup{})
+	}}
+	r := trackerdash.Request{Dashboard: "overview_weeks", Range: trackerdash.RangeWeeks2, TimeZone: "UTC"}
+	d, err := trackerdash.NewEvaluator(func() time.Time { return now }).Drill(context.Background(), b, trackerdash.DrillRequest{Request: r, Widget: "start_to_done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []string
+	for _, row := range d.Rows {
+		v := "-"
+		if row.Value != nil {
+			v = fmt.Sprint(*row.Value)
+		}
+		rows = append(rows, fmt.Sprintf("%s %s %s", row.Key, v, row.Note))
+	}
+	want := []string{"WEB-21 2 ", "WEB-23 1 ", "WEB-22 - not counted: it was in progress before its history begins"}
+	if d.Value.V == nil || *d.Value.V != 1.5 || d.Value.NC != 1 || !reflect.DeepEqual(rows, want) {
+		t.Fatalf("start to done = %+v with rows %q; want the median 1.5 of WEB-21 and WEB-23, WEB-22 not counted: %q", d.Value, rows, want)
+	}
+}

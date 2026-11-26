@@ -41,9 +41,14 @@ var MirrorExportTables = []string{"board", "tickets", "statuses", "people", "epi
 // MirrorExportSchema is the export's relations. Times are milliseconds;
 // a time the mirror does not hold is NULL. tickets.history_from is when
 // the ticket's changes are complete from, NULL while its history is not
-// read; started_at is its first change into an in_progress status, and
-// done_at, for a ticket whose status counts as done, its last change into
-// a done status, each NULL when its changes hold none. tickets.open is 1
+// read. started_known is 1 when its history shows when it started: the
+// status it had when its history begins (what its first status change
+// left, else its status now) was in neither an in-progress nor a done
+// group, so a move into progress is in the history (mirrorExportStartKnownSQL).
+// started_at is then its first change into an in-progress status, and
+// NULL otherwise. done_at, for a ticket whose status counts as done, is
+// its last change into a done status, NULL when its changes hold none.
+// Groups are the regrouping's over the root's catalog. tickets.open is 1
 // for a ticket the board's sections count as not done (mirrorRegroupedNotDone:
 // not done, canceled or left out, an unclassified status open), and
 // tickets.counts 0 for one whose status the regrouping leaves out of
@@ -58,7 +63,7 @@ CREATE TABLE main.board(name TEXT NOT NULL, plans_sprints INTEGER NOT NULL, esti
 CREATE TABLE main.statuses(id TEXT PRIMARY KEY, name TEXT NOT NULL, status_group TEXT) WITHOUT ROWID;
 CREATE TABLE main.tickets(id TEXT PRIMARY KEY, key TEXT NOT NULL, title TEXT NOT NULL, type_level INTEGER NOT NULL,
   status TEXT, status_group TEXT, assignee TEXT, parent TEXT, epic TEXT, created_at INTEGER, updated_at INTEGER, resolved_at INTEGER,
-  status_since INTEGER, points REAL, history_from INTEGER, started_at INTEGER, done_at INTEGER,
+  status_since INTEGER, points REAL, history_from INTEGER, started_known INTEGER NOT NULL, started_at INTEGER, done_at INTEGER,
   open INTEGER NOT NULL, counts INTEGER NOT NULL) WITHOUT ROWID;
 CREATE TABLE main.epics(id TEXT PRIMARY KEY, key TEXT NOT NULL, title TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE main.sprints(id TEXT PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, start_at INTEGER, end_at INTEGER,
@@ -77,6 +82,25 @@ const mirrorExportSchemaName = "mirror_file"
 var mirrorExportBoardSQL = `SELECT b.name, b.plans_sprints, b.estimate_unit, b.estimate_reset_at FROM tracker_cache_boards b
 	WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND ` + mirrorBoardShown(intParam("?1"), "?2")
 
+// mirrorExportStatusChangeSQL is the changes into a status of list of
+// issue i's current history generation, by key: agg(c.at) of them.
+func mirrorExportStatusChangeSQL(agg, list string) string {
+	return `(SELECT ` + agg + `(c.at) FROM tracker_cache_changes c
+	      WHERE c.root_id = i.root_id AND c.issue_id = i.issue_id AND c.gen = i.history_gen AND c.kind = 1
+	        AND c.to_value IN (` + list + `))`
+}
+
+// mirrorExportStartKnownSQL holds for issue i when its read history shows
+// its start: the status it had when the history begins, what its first
+// status change left or else its status now, was in neither an
+// in-progress nor a done group under the regrouping ?3. A Jira history
+// begins at creation; a Linear one minutes after (its creation fold), so
+// an issue made in progress then is not one whose start it shows.
+var mirrorExportStartKnownSQL = `(i.history_for > 0 AND coalesce(
+	    (SELECT c.from_value FROM tracker_cache_changes c
+	      WHERE c.root_id = i.root_id AND c.issue_id = i.issue_id AND c.gen = i.history_gen AND c.kind = 1 ORDER BY c.seq LIMIT 1),
+	    i.status_id) NOT IN (` + mirrorGroupStatusesSQL("?3", MirrorGroupInProgress) + ` UNION ALL ` + mirrorDoneStatusesSQL("?3") + `))`
+
 // mirrorExportFills are the fill statements in order: ?1 root, ?2 board,
 // ?3 the regrouping (a JSON object, '{}' for none), ?4 the board's
 // estimate reset, ?5 whether the board has an estimate (0 or 1). Each
@@ -91,7 +115,7 @@ var mirrorExportFills = []struct{ table, sql string }{
 	  SELECT st.status_id, st.name, ` + mirrorRegroupedGroupNameSQL(`coalesce((SELECT o.value FROM json_each(?3) o WHERE o.key = st.status_id), st.status_group)`) + `
 	  FROM tracker_cache_statuses st WHERE st.root_id = CAST(?1 AS INTEGER)`},
 	{"tickets", `INSERT INTO main.tickets(id, key, title, type_level, status, status_group, assignee, parent, epic,
-	    created_at, updated_at, resolved_at, status_since, points, history_from, open, counts)
+	    created_at, updated_at, resolved_at, status_since, points, history_from, started_known, started_at, done_at, open, counts)
 	  SELECT i.issue_id, i.issue_key, i.title, i.type_level, nullif(i.status_id, ''),
 	    coalesce((SELECT ms.status_group FROM main.statuses ms WHERE ms.id = i.status_id),
 	      ` + mirrorRegroupedGroupNameSQL(`(SELECT o.value FROM json_each(?3) o WHERE o.key = i.status_id)`) + `),
@@ -100,6 +124,9 @@ var mirrorExportFills = []struct{ table, sql string }{
 	    nullif(i.created_at, 0), i.updated_at, nullif(i.resolved_at, 0), nullif(i.status_since, 0),
 	    iif(CAST(?5 AS INTEGER) = 1, ` + mirrorRowEstimate("CAST(?4 AS INTEGER)") + `, NULL),
 	    iif(i.history_for > 0, iif(i.history_from > 0, i.history_from, i.created_at), NULL),
+	    iif(` + mirrorExportStartKnownSQL + `, 1, 0),
+	    iif(` + mirrorExportStartKnownSQL + `, ` + mirrorExportStatusChangeSQL("min", mirrorGroupStatusesSQL("?3", MirrorGroupInProgress)) + `, NULL),
+	    iif(i.status_id IN (` + mirrorDoneStatusesSQL("?3") + `), ` + mirrorExportStatusChangeSQL("max", mirrorDoneStatusesSQL("?3")) + `, NULL),
 	    iif(` + mirrorRegroupedNotDone("?3") + `, 1, 0), iif(` + mirrorLeftOut("?3") + `, 0, 1)
 	  FROM tracker_cache_board_issues b
 	  CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
@@ -136,11 +163,6 @@ var mirrorExportFills = []struct{ table, sql string }{
 	  CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = CAST(?1 AS INTEGER) AND m.sprint_id = l.sprint_id
 	  CROSS JOIN tracker_cache_board_issues b ON b.root_id = m.root_id AND b.board_id = ?2 AND b.issue_id = m.issue_id
 	  CROSS JOIN tracker_cache_issues i ON i.root_id = m.root_id AND i.issue_id = m.issue_id`},
-	{"ticket times", `UPDATE main.tickets SET
-	    started_at = (SELECT min(c.at) FROM main.changes c JOIN main.statuses st ON st.id = c.to_value AND st.status_group = 'in_progress'
-	      WHERE c.ticket = main.tickets.id AND c.kind = 'status'),
-	    done_at = iif(status_group = 'done', (SELECT max(c.at) FROM main.changes c JOIN main.statuses st ON st.id = c.to_value AND st.status_group = 'done'
-	      WHERE c.ticket = main.tickets.id AND c.kind = 'status'), NULL)`},
 	{"active sprints' members", `INSERT INTO main.sprint_finished(sprint, ticket, done)
 	  SELECT sprint_tickets.sprint, sprint_tickets.ticket, coalesce(tickets.status_group = 'done', 0)
 	  FROM main.sprints JOIN main.sprint_tickets ON sprint_tickets.sprint = sprints.id
