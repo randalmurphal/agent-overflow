@@ -114,7 +114,7 @@ func TestDevStatusErrorsFailWithTheElementCutShort(t *testing.T) {
 	_, err := c.DevSummary(t.Context(), "10101")
 	var dev *DevStatusError
 	if !errors.As(err, &dev) || dev.Path != "rest/dev-status/latest/issue/summary" || len(dev.Errors) != 1 ||
-		dev.Errors[0] != (`{"message":"`+long)[:devStatusErrorBytes]+"…" {
+		dev.Errors[0] != (`{"message":"` + long)[:devStatusErrorBytes]+"…" {
 		t.Fatalf("summary err = %#v", err)
 	}
 	_, err = c.DevPullRequests(t.Context(), "10101", gitlabType)
