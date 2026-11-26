@@ -704,7 +704,7 @@ what it left. So an issue may have two rows, a closed ticket's owed row
 beside the reopened ticket's, and what bounds the table is that cleanup,
 not the cap of open tickets (64). Rows a process left when it ended
 without deleting them are deleted by this process's first run
-(`trackerapp.dropEarlierTickets`): every run passes that step as it
+(`trackerapp.recoverEarlier`): every run passes that step as it
 starts and every keep is made in a run, a view read included, so the
 delete completes before any row of this process is written; a delete that
 fails fails its run, and the next run tries it again. The cleanup then
@@ -2692,8 +2692,10 @@ key for a question, whose reason says what the time was and whose
 `offer` names up to 5 keys. A call holds 1 to 250 entries over at most
 31 days, on one Jira connection; a call with more entries or offers is
 refused before any key is looked up. Each key resolves as the ticket tools' do, a Linear key
-is refused, and so are keys of two sites. A day holds at most 24 hours, a
-ticket once a day, and no day is in the future. A read-only thread is
+is refused, and so are keys of two sites. A day's entries not yet logged
+hold at most 24 hours, whichever threads drafted them and whoever changed
+them (`store.TimeDayOverError`, checked in the write's transaction); a
+ticket is drafted once a day, and no day is in the future. A read-only thread is
 refused (`Host.Writable`). The draft replaces the drafted entries that
 the calling thread drafted on each day the call names; another thread's
 entries, the person's, and entries sent, posted or of unknown outcome
@@ -2701,7 +2703,9 @@ stay, and a new entry for a ticket that has one not yet logged that day
 is skipped. The answer is by day: the ID and key of each entry made, the
 IDs of the questions, the hours of the day's other entries not yet
 logged, the keys skipped, the hours already logged as this computer last
-read them, and that nothing is logged until the user approves it;
+read them, and that nothing is logged until the user approves it; with
+more than one connection on, the site is named once and the keys are
+bare;
 `time_read` shows the entries whole. No tool reaches a posting path.
 
 **The draft.** There is no draft object: the entries of a connection's
@@ -2710,7 +2714,11 @@ the thread and call that drafted it. Every change is conditional on the
 entry's revision as the caller read it (`trackerapp/time_draft.go`) and
 to the connection's verified account: the person's edit makes the entry
 theirs, and a remove deletes entries drafted, of unknown outcome or left
-out. A question answered with a
+out, sending nothing. `sent` means this process is sending the entry:
+nothing changes or removes it until its settle. The once-per-process
+recovery (`trackerapp.recoverEarlier`) makes an earlier process's `sent`
+entries `unknown` before this process reads or writes any entry, so every
+reader sees an interrupted send as one that may have happened. A question answered with a
 ticket that has a drafted entry that day is added to that entry in one
 transaction (`store.EditTimeEntry`): its time is added, the entry's
 reason ends with ", plus " and the question's, and the question is
@@ -2729,18 +2737,29 @@ is held and before any request; an entry another window is posting, or
 that changed since it was read, is not sent and is said so. An entry is
 posted only when the time source answered that it applied it, with the
 worklog's ID. Approving a day or the whole draft:
-- skips an entry whose ticket and day have a worklog logged or changed
-  since the entry was drafted (a worklog carries only its update time;
-  the comparison allows a minute of clock difference), and says so;
+- skips an entry whose ticket and day have a worklog created since the
+  entry was drafted (the comparison allows a minute of clock difference;
+  a worklog changed since but created before is no reason), and says so;
   logging that entry alone posts it;
 - posts a day's entries and leaves its open questions open.
 
-An entry whose post may have happened (`unknown`, after a lost answer or
-a dropped request, or left `sent` by an earlier run) is never sent again
-by a day's or the whole draft's approval, and no tool reaches it: the
-approval says it may have been logged, to check the day and then remove
-it or log it alone, and posts the day's other entries. Logging it alone
-sends it once more. The answer is built after the post from the entries
+The check reads the days in the send's own hold of the connection, on the
+provider and time source that then send, and stores them in the mirror as
+a refresh does; a day that cannot be read sends nothing of it. A worklog
+logged by hand between that read and the POST is not seen.
+
+An entry whose post may have happened (`unknown`, after a lost answer, a
+dropped request, or a send an earlier process did not settle) is never
+sent by a day's or the whole draft's approval, and no tool reaches it:
+the approval says it may have been logged, to check the day and then
+remove it or log it alone, and posts the day's other entries. Logging it
+alone sends it only when its day holds no worklog of its ticket created
+since it was first sent; otherwise it sends nothing and says to remove
+the entry if that worklog is it, or to log the time by hand. A worklog
+the person logged by hand since then refuses the resend too. The time it
+was first sent (`sent_ms`) stays through the recovery and through a retry
+the tracker refused or that was not sent, which leaves the entry
+`unknown`, never back in the draft. The answer is built after the post from the entries
 as they are then, names every entry, says in one sentence each one not
 posted, with the tracker's refusal, and names the days whose worklogs
 could not be read back after the post, which show the posted time after
@@ -2748,8 +2767,9 @@ their next read. One day's approval of three entries is 3 POSTs and 2
 reads on Jira's own worklogs (the day before the post, for time logged
 since, and after it); on Tempo it is 3 POSTs, 2 reads of the worklogs and
 2 of the Jira issues they name, the timesheet approvals and, once per
-connection, the work attributes. Logging one entry alone skips the read
-before (`TestAWeeksDraftCostsBoundedRequests`). A week of 25 entries is 27
+connection, the work attributes. Logging a drafted entry alone skips the
+read before; logging an unknown entry alone makes it
+(`TestAWeeksDraftCostsBoundedRequests`). A week of 25 entries is 27
 requests on Tempo (2 reads that check the batch, then a POST each) and 25
 on Jira's own worklogs, with the account read before (`jiraprovider` cost
 tests).

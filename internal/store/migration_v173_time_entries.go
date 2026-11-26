@@ -6,9 +6,10 @@ package store
 // for a question the person answers; source says whether an agent or the
 // person last wrote it, thread_id and call_id the agent call that drafted
 // it (kept when the person changes it). state is drafted, sent (marked in
-// its own transaction before its request, so a crash leaves a post that
-// may have happened marked), posted, unknown (sent, outcome not known) or
-// left_out (a question the person closed). revision moves on every
+// its own transaction before its request, by the process sending it; the
+// next process makes one it finds unknown), posted, unknown (sent,
+// outcome not known; sent_ms is when that send began) or left_out (a
+// question the person closed). revision moves on every
 // change; a screen sends it back. A ticket has at most one entry a day that is not posted or left
 // out (idx_tracker_time_entries_open), so an entry sent back to drafted
 // never meets another. The ID is AUTOINCREMENT, never reused, so an ID a screen holds

@@ -2,6 +2,7 @@ package trackerapp
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"agent-overflow/internal/harness/trackerfake"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/tracker"
 )
 
 // An entry whose post may have happened (unknown), as every path sees it:
@@ -243,5 +245,81 @@ func TestADayHoldsAtMost24Hours(t *testing.T) {
 	_ = web1
 	if !slices.ContainsFunc(must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1")), func(e TimeEntryView) bool { return e.Minutes == 14*60 }) {
 		t.Fatal("thread-1's 14h is gone")
+	}
+}
+
+// Every read or change of entries that starts no run recovers an earlier
+// run's sends first: called first on the next run, each sees the entry the
+// run before left sent as unknown. q is a question of the same day.
+func TestEveryEntryPathRecoversAnEarlierRunsSends(t *testing.T) {
+	t.Parallel()
+	for name, sees := range map[string]func(t *testing.T, d *draftScenario, left, q TimeEntryView) string{
+		"the thread's entries": func(t *testing.T, d *draftScenario, _, _ TimeEntryView) string {
+			return must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1"))[0].State
+		},
+		"the mirror read": func(t *testing.T, d *draftScenario, _, _ TimeEntryView) string {
+			return must[WorklogDays](t)(d.svc.Worklogs(d.conn.ID, "acc-user1", d.day, d.day)).Drafted[0].State
+		},
+		"a draft of the day": func(t *testing.T, d *draftScenario, _, _ TimeEntryView) string {
+			return d.draft(t, d.on("WEB-3", 0.5, "Triaged the backlog")).Kept[0].State
+		},
+		"a remove at the recovered revision": func(t *testing.T, d *draftScenario, left, _ TimeEntryView) string {
+			if gone := must[[]TimeEntryView](t)(d.svc.RemoveTimeEntries(d.conn.ID, []TimeEntryRefView{{ID: left.ID, Revision: left.Revision + 1}})); len(gone) == 1 {
+				return gone[0].State
+			}
+			return "kept"
+		},
+		"an answer onto its ticket": func(t *testing.T, d *draftScenario, _, q TimeEntryView) string {
+			web2 := draftTickets["WEB-2"]
+			_, err := d.svc.EditTimeEntry(d.conn.ID, entryRefs(q)[0], TimeEntryEdit{Ticket: &web2})
+			if err != nil && strings.HasSuffix(err.Error(), "may already be logged; post or remove it first") {
+				return store.TimeEntryUnknown
+			}
+			return fmt.Sprint(err)
+		},
+		"a day's approval": func(t *testing.T, d *draftScenario, left, _ TimeEntryView) string {
+			got, _ := d.post(t, false, TimeEntryRefView{ID: left.ID, Revision: left.Revision + 1})
+			if strings.HasSuffix(got.Sentence, mayHave) {
+				return store.TimeEntryUnknown
+			}
+			return got.Sentence
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			d := newDraftScenario(t, "jira")
+			v := d.draft(t, d.on("WEB-2", 1, "Reviewed the pull request"), TimeDraftEntry{Day: d.day, Hours: 0.5, Reason: "Standup"})
+			d.crashAfterSend(t, entryRefs(v.Made[0])...)
+			left := timeEntryViews([]store.TimeEntry{d.entry(t, v.Made[0].ID)})[0]
+			d.restart()
+			if got := sees(t, d, left, v.Made[1]); got != store.TimeEntryUnknown {
+				t.Fatalf("%s, first on the next run, sees %s; want unknown", name, got)
+			}
+		})
+	}
+}
+
+// A worklog whose creation time the tracker did not give counts as made
+// since: the check errs toward a skip the person sees.
+func TestAWorklogWithNoCreationTimeCountsAsLoggedSince(t *testing.T) {
+	t.Parallel()
+	day, err := tracker.ParseDate("2026-11-24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := store.TimeEntry{IssueID: "10102", Day: "2026-11-24"}
+	since := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC).UnixMilli()
+	for _, tc := range []struct {
+		name    string
+		created time.Time
+		want    bool
+	}{
+		{"no creation time", time.Time{}, true},
+		{"created before, past the slack", time.UnixMilli(since - clockSlack - 1), false},
+		{"created within the slack", time.UnixMilli(since - clockSlack), true},
+	} {
+		if got := loggedSince(e, since, []tracker.Worklog{{Issue: "10102", Day: day, Created: tc.created}}); got != tc.want {
+			t.Errorf("%s: %v; want %v", tc.name, got, tc.want)
+		}
 	}
 }
