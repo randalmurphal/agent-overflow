@@ -84,8 +84,10 @@ type issueRead struct {
 	comments tracker.CommentPage
 }
 
-// currentRead is a detail's tracker.IssueRead: the issue read, which the
-// first write after it takes as current (Move, Edit).
+// currentRead is a detail's tracker.IssueRead: what the first write
+// after the read takes as current (Move, Edit), the issue, its edit
+// screen and its moves. A write session keeps it through an approval
+// wait, so it holds nothing else of the read: no changelog.
 type currentRead struct {
 	issue tracker.IssueID
 	full  jira.IssueDetail
@@ -148,7 +150,7 @@ func (p *Provider) detailOf(s site, issue tracker.IssueID, read issueRead) (trac
 	}
 	d.Moves = movesOf(full.Transitions, cat)
 	d.Catalog = cat.out
-	d.Read = &currentRead{issue: issue, full: full}
+	d.Read = &currentRead{issue: issue, full: jira.IssueDetail{Issue: full.Issue, Edit: full.Edit, Transitions: full.Transitions}}
 	return d, nil
 }
 
