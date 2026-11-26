@@ -1536,6 +1536,30 @@ export class IssueTypeView {
 }
 
 /**
+ * KeepTarget is where Keep puts a proposed widget: at the end of the
+ * project's dashboard Dashboard, or of a new dashboard titled Title; one
+ * of the two.
+ */
+export class KeepTarget {
+    "dashboard"?: string;
+    "title"?: string;
+
+    /** Creates a new KeepTarget instance. */
+    constructor($$source: Partial<KeepTarget> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new KeepTarget instance from a string or object.
+     */
+    static createFrom($$source: any = {}): KeepTarget {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new KeepTarget($$parsedSource as Partial<KeepTarget>);
+    }
+}
+
+/**
  * KeyMatchView is a key and the issue it names; Card.Key differs from Key
  * when the issue had that key before it moved.
  */

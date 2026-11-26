@@ -1193,6 +1193,14 @@ export function DeleteTrackerComment(connectionID: string, $in: trackerapp$0.Com
 }
 
 /**
+ * DeleteTrackerDashboard deletes a dashboard a subscribed board's project
+ * keeps, with its widgets.
+ */
+export function DeleteTrackerDashboard(subscriptionID: string, dashboard: string): $CancellablePromise<void> {
+    return $Call.ByID(316926314, subscriptionID, dashboard);
+}
+
+/**
  * DeleteTrackerWorklog deletes a worklog, as read.
  */
 export function DeleteTrackerWorklog(connectionID: string, $in: trackerapp$0.WorklogDeleteRequest): $CancellablePromise<trackerapp$0.WriteView> {
@@ -1279,6 +1287,14 @@ export function DismissSessionBanner(threadID: string, kind: string): $Cancellab
  */
 export function DismissThreadWorktreeSetup(threadID: string): $CancellablePromise<void> {
     return $Call.ByID(41472159, threadID);
+}
+
+/**
+ * DismissTrackerWidget drops a widget an agent proposed on a subscribed
+ * board.
+ */
+export function DismissTrackerWidget(subscriptionID: string, proposal: string): $CancellablePromise<void> {
+    return $Call.ByID(350315805, subscriptionID, proposal);
 }
 
 /**
@@ -1399,7 +1415,8 @@ export function EditTrackerWorklog(connectionID: string, $in: trackerapp$0.Workl
 
 /**
  * EvaluateTrackerDashboard counts one dashboard of a subscribed board over
- * a range, narrowed to a person or an epic.
+ * a range, narrowed to a person or an epic, with the widgets proposed on
+ * the board.
  */
 export function EvaluateTrackerDashboard(subscriptionID: string, request: trackerdash$0.Request): $CancellablePromise<trackerdash$0.Answer> {
     return $Call.ByID(2206254666, subscriptionID, request).then(($result: any) => {
@@ -3286,6 +3303,15 @@ export function IsWSL(): $CancellablePromise<boolean> {
 }
 
 /**
+ * KeepTrackerWidget keeps a widget an agent proposed on a subscribed
+ * board on one of the dashboards its project keeps, or on a new one, and
+ * answers that dashboard's ID.
+ */
+export function KeepTrackerWidget(subscriptionID: string, proposal: string, to: trackerapp$0.KeepTarget): $CancellablePromise<string> {
+    return $Call.ByID(2951524960, subscriptionID, proposal, to);
+}
+
+/**
  * LinkTrackerIssues links two issues.
  */
 export function LinkTrackerIssues(connectionID: string, $in: trackerapp$0.LinkRequest): $CancellablePromise<trackerapp$0.WriteView> {
@@ -5148,6 +5174,14 @@ export function RemoveProviderAccount(providerName: string, accountID: string): 
  */
 export function RemoveTrackerConnection(connectionID: string): $CancellablePromise<void> {
     return $Call.ByID(21628411, connectionID);
+}
+
+/**
+ * RemoveTrackerWidget removes a widget from a dashboard a subscribed
+ * board's project keeps.
+ */
+export function RemoveTrackerWidget(subscriptionID: string, dashboard: string, widget: string): $CancellablePromise<void> {
+    return $Call.ByID(446977083, subscriptionID, dashboard, widget);
 }
 
 /**
@@ -7074,8 +7108,9 @@ export function TrackerDashboardDrill(subscriptionID: string, request: trackerda
 }
 
 /**
- * TrackerDashboards lists the dashboards a subscribed board offers, each
- * with its ranges and its widgets' layout and How this is counted.
+ * TrackerDashboards lists the dashboards a subscribed board offers, the
+ * built-in first, each with its ranges and its widgets' layout and How
+ * this is counted.
  */
 export function TrackerDashboards(subscriptionID: string): $CancellablePromise<trackerdash$0.DashboardView[]> {
     return $Call.ByID(3554577306, subscriptionID).then(($result: any) => {

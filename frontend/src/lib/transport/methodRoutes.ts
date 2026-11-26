@@ -110,6 +110,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	4104302889: 'home', // DeleteThreadGroup
 	362983967: 'home', // DeleteThreads
 	1742610839: 'home', // DeleteTrackerComment
+	316926314: 'home', // DeleteTrackerDashboard
 	2679403039: 'home', // DeleteTrackerWorklog
 	604263015: 'home', // DevicePairingStatus
 	1721991996: 'selected', // DictationSources
@@ -119,6 +120,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1185171749: 'selected', // DismissPRReview
 	1317713039: 'thread', // DismissSessionBanner
 	41472159: 'thread', // DismissThreadWorktreeSetup
+	350315805: 'home', // DismissTrackerWidget
 	1456387330: 'thread', // DismissUnsavedThreadRows
 	115027584: 'home', // DownloadUpdate
 	1579042384: 'selected', // EditOpenAIKeyFile
@@ -258,6 +260,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	850013031: 'thread', // InterruptTurn
 	2219602920: 'home', // IntroduceOwnDevice
 	2789068977: 'home', // IsWSL
+	2951524960: 'home', // KeepTrackerWidget
 	4036611847: 'home', // LinkTrackerIssues
 	1602023272: 'thread', // ListActivityRunMembers
 	2526318276: 'selected', // ListAgentComputers
@@ -409,6 +412,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2899196344: 'workspace', // RemoveOtherWorktree
 	684418419: 'home', // RemoveProviderAccount
 	21628411: 'home', // RemoveTrackerConnection
+	446977083: 'home', // RemoveTrackerWidget
 	1528076361: 'home', // RenameBackend
 	3728890856: 'project', // RenameProject
 	727416435: 'thread', // RenameThread
