@@ -296,6 +296,11 @@ const (
 // changed (read it through TrackerTicket), a failure of its reads that
 // started, changed or cleared, or its end.
 //
+// TrackerTimeEntriesUpdated is trackerapp.TimeEntriesEvent: the time
+// draft entries of a connection's author changed on days, drafted by
+// threads among others. Receivers read the days again (TrackerWorklogs'
+// drafted) or a thread's entries (ThreadTimeEntries).
+//
 // TrackerSetupUpdated is a payload-less refetch nudge sent after a
 // project's tracker setup changed as it is stored. Receivers read again,
 // through ProjectTrackerSetup, the setups they hold.
@@ -310,6 +315,7 @@ const (
 	TrackerIssueUpdated       Channel = "tracker:issue_updated"
 	TrackerSetupUpdated       Channel = "tracker:setup_updated"
 	TrackerDashboardsUpdated  Channel = "tracker:dashboards_updated"
+	TrackerTimeEntriesUpdated Channel = "tracker:time_entries_updated"
 )
 
 // terminal:* — local PTY session bytes and lifecycle.

@@ -129,6 +129,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2133356294: 'home', // EditTrackerIssue
 	1347598600: 'home', // EditTrackerKeyFile
 	3891799979: 'home', // EditTrackerSprint
+	3741061790: 'home', // EditTrackerTimeEntry
 	670991272: 'home', // EditTrackerWorklog
 	2206254666: 'home', // EvaluateTrackerDashboard
 	1594348919: 'selected', // FetchForgeAttachment
@@ -357,6 +358,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1748405812: 'thread', // PinThread
 	3141095494: 'selected', // PostPRComment
 	1583250136: 'selected', // PostPRLineComment
+	4218259664: 'home', // PostTrackerTimeEntries
 	2870364785: 'thread', // PrepareThreadWorktree
 	2105157519: 'home', // PreviewNotificationSound
 	2575010484: 'project', // ProjectDeletionPreview
@@ -412,6 +414,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2899196344: 'workspace', // RemoveOtherWorktree
 	684418419: 'home', // RemoveProviderAccount
 	21628411: 'home', // RemoveTrackerConnection
+	2493130714: 'home', // RemoveTrackerTimeEntries
 	446977083: 'home', // RemoveTrackerWidget
 	1528076361: 'home', // RenameBackend
 	3728890856: 'project', // RenameProject
@@ -538,6 +541,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	870653875: 'thread', // TerminateCodexBackgroundTerminal
 	3558393553: 'selected', // ThreadOwnerChanges
 	3143780103: 'selected', // ThreadOwnerRecovery
+	2477644032: 'thread', // ThreadTimeEntries
 	894716875: 'selected', // ThreadToolCall
 	1295284198: 'selected', // ThreadToolExportChunk
 	2624544009: 'selected', // ThreadToolQuery
@@ -687,6 +691,7 @@ export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
 	3688074763: 180000, // MoveTrackerIssue
 	3001763889: 180000, // MoveTrackerIssuesToSprint
 	2660387675: 720000, // OpenPRThread
+	4218259664: 180000, // PostTrackerTimeEntries
 	2870364785: 720000, // PrepareThreadWorktree
 	4067581165: 180000, // RankTrackerIssues
 	3151648721: 180000, // RevealTrackerPoker

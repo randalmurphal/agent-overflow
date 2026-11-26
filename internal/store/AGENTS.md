@@ -27,7 +27,7 @@ them. This includes account and credential records, personal membership,
 accepted messages awaiting dispatch, transfer ownership and recovery state,
 remote command acceptance, remote completion notification ownership, and
 agent thread requests with the receipts that answer them and the owner
-operations owed for them. Never
+operations owed for them, and the user's time draft. Never
 apply generic history retention or cleanup logic to these tables. Snapshot
 restore must handle each authoritative family deliberately rather than treating
 it as disposable provider history.

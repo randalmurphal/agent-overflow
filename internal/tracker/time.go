@@ -3,6 +3,7 @@ package tracker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -10,12 +11,18 @@ import (
 // Tempo's when the Jira connection has a Tempo connection. Provider.Time
 // returns it, or nil for a tracker with no time tracking (Linear).
 // Writes are those the caller's posting path sends; each returns one
-// StepWorklog part.
+// StepWorklog part per worklog.
 type TimeTracker interface {
 	// Worklogs are one author's worklogs whose day is From to To, both
 	// included.
 	Worklogs(ctx context.Context, q WorklogQuery) ([]Worklog, error)
-	AddWorklog(ctx context.Context, in WorklogInput) Result
+	// AddWorklogs logs each of ins, in order, as the credential's own
+	// user: one part each, in ins's order, an applied one naming the
+	// worklog it made (Part.Worklog). The checks and reads the batch
+	// needs run once for it, and one input refused does not stop the
+	// others. Inputs that CheckWorklogInputs refuses are refused whole,
+	// with nothing sent.
+	AddWorklogs(ctx context.Context, ins []WorklogInput) Result
 	// EditWorklog and DeleteWorklog act on a worklog that still holds
 	// what From says (issue, author, day, time and description) at the
 	// tracker revision From carries (Updated); one that changed since it
@@ -56,7 +63,10 @@ type Worklog struct {
 	Day         Date
 	Spent       time.Duration
 	Description string
-	Updated     time.Time
+	// Created is when the worklog was made, zero when the tracker did not
+	// say; Updated is its last change.
+	Created time.Time
+	Updated time.Time
 }
 
 // ErrWorklogNames is matched by the error of a worklog read whose request
@@ -102,6 +112,33 @@ func (in WorklogInput) Check() error {
 		return invalidf("a worklog needs an issue and a day")
 	}
 	return checkSpent(in.Spent)
+}
+
+// MaxWorklogInputs is the most worklogs one AddWorklogs logs.
+const MaxWorklogInputs = 250
+
+// CheckWorklogInputs refuses a batch with no input, more than
+// MaxWorklogInputs, or an input its Check refuses, naming its place.
+func CheckWorklogInputs(ins []WorklogInput) error {
+	if len(ins) == 0 || len(ins) > MaxWorklogInputs {
+		return invalidf("a worklog batch holds 1 to %d worklogs, not %d", MaxWorklogInputs, len(ins))
+	}
+	for i, in := range ins {
+		if err := in.Check(); err != nil {
+			return fmt.Errorf("worklog %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// InvalidWorklogs is the result of a batch refused whole by its checks
+// before anything was sent: one part per input, each about its issue.
+func InvalidWorklogs(ins []WorklogInput, err error) Result {
+	issues := make([]IssueID, len(ins))
+	for i, in := range ins {
+		issues[i] = in.Issue
+	}
+	return Invalid(StepWorklog, err, issues...)
 }
 
 // WorklogEdit changes the members of a worklog that are set. From is the

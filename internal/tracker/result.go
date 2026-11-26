@@ -204,8 +204,9 @@ func (s Step) String() string {
 // (a sprint) and for a create the tracker did not confirm. Changed are the
 // resources the part may have changed whatever its outcome; the caller
 // reads again those of a part that is applied or unknown. Comment is the
-// comment an applied AddComment part made, as the tracker named it, and
-// Key the key the tracker gave the issue an applied create made.
+// comment an applied AddComment part made, as the tracker named it,
+// Worklog the worklog an applied AddWorklogs part made, and Key the key
+// the tracker gave the issue an applied create made.
 // Unchanged reports an applied part that sent nothing because the tracker
 // already held every value; it changed nothing, so it names no resources.
 type Part struct {
@@ -214,6 +215,7 @@ type Part struct {
 	Outcome   Outcome
 	Changed   []Resource
 	Comment   CommentID
+	Worklog   WorklogID
 	Key       string
 	Unchanged bool
 }
@@ -389,6 +391,9 @@ func (p Part) check() error {
 	}
 	if p.Comment != "" && (p.Step != StepComment || state != StateApplied) {
 		return fmt.Errorf("a %s part that is %s names comment %q", p.Step, state, p.Comment)
+	}
+	if p.Worklog != "" && (p.Step != StepWorklog || state != StateApplied) {
+		return fmt.Errorf("a %s part that is %s names worklog %q", p.Step, state, p.Worklog)
 	}
 	if p.Key != "" && (p.Step != StepCreate || state != StateApplied) {
 		return fmt.Errorf("a %s part that is %s names key %q", p.Step, state, p.Key)

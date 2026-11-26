@@ -148,7 +148,7 @@ func TestTrackerMCPRegistersOnlyWithATicketSource(t *testing.T) {
 		if endpoint == "" {
 			t.Fatalf("a %s project session has no tracker tools", name)
 		}
-		if got := workflowMCPToolNames(t, endpoint); !slices.Equal(got, trackertools.ToolNames()) {
+		if got := workflowMCPToolNames(t, endpoint); !slices.Equal(got, trackertools.ToolNames(true)) {
 			t.Fatalf("%s sees %v", name, got)
 		}
 	}
@@ -394,10 +394,12 @@ func TestStartSession_CodexCarriesTheTrackerToolsEntryAndGuide(t *testing.T) {
 // The tool list and guide are what every session with the server reads
 // before it calls anything, so their size is a decision. This measures them
 // as a client receives them through the transport, and fails past the bound
-// saying the sizes it found.
+// saying the sizes it found. The session has a Jira connection, so its list
+// carries the time tools, 881 of its bytes (268 and 611, and the commas
+// that join them); dashboard_widget is 304.
 func TestTrackerMCPToolListAndGuideStayWithinTheirBound(t *testing.T) {
 	t.Parallel()
-	const bound = 2_350
+	const bound = 3_235
 	app := newTestAppWithStore(t)
 	t.Cleanup(func() { _ = app.trackerMCPServer().Close() })
 	withTicketSource(t, app)
@@ -433,7 +435,7 @@ func TestTrackerMCPToolListAndGuideStayWithinTheirBound(t *testing.T) {
 
 // trackerToolListSum is the sha256 of the tracker tools' tools/list
 // result followed by their guide.
-const trackerToolListSum = "1ce3128191d8200b0c93f57099039d41a135252fdb93b46ffb2d7be58a9a1b0d"
+const trackerToolListSum = "bb20c17711cb95ef4a4261dfd5dc09d7c3c50add06bf4741380ab4df95b641c0"
 
 // brokenPhaseThread is a workflow phase thread whose session scope cannot
 // be resolved: its attempt row names a phase its run's snapshot does not
@@ -482,7 +484,7 @@ func TestTrackerToolsLookForAConnectionBeforeTheSessionScope(t *testing.T) {
 	app := newTestAppWithStore(t)
 	withTrackerService(t, app)
 	phase := brokenPhaseThread(t, app)
-	if ok, err := app.trackerToolsFor(phase, func() (transport.CallerScope, bool, error) {
+	if ok, _, err := app.trackerToolsFor(phase, func() (transport.CallerScope, bool, error) {
 		t.Fatal("the session scope was resolved with no connection on")
 		return transport.CallerScope{}, false, nil
 	}); err != nil || ok {

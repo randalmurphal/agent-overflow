@@ -1394,6 +1394,18 @@ var channelPolicies = []ChannelPolicy{
 			"tracker connections.",
 	},
 	{
+		Channel:   eventchan.TrackerTimeEntriesUpdated,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeTrackerRead,
+		Why: "A time draft's change nudge (trackerapp.TimeEntriesEvent): " +
+			"the connection, the author, the days and the drafting threads, " +
+			"never an entry. Every frame names its own days, so a reconnect " +
+			"replays them all: never latest-only. Unkeyed by thread: the Time " +
+			"screen holds days, not threads. Scope: its pull halves, " +
+			"TrackerWorklogs and ThreadTimeEntries, are tracker:read.",
+	},
+	{
 		Channel:   eventchan.TerminalEndFailed,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

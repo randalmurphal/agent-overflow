@@ -221,7 +221,7 @@ func TestJiraWorklogWrites(t *testing.T) {
 		jiratest.Reply(201, jiraWorklog("303", user1JSON, "2026-11-10T09:00:00.000-0500", 5400, "New"))(w, r, b)
 	})
 	d := day(t, 2026, 11, 10)
-	res := checked(t, tt.AddWorklog(t.Context(), tracker.WorklogInput{Issue: "10001", Day: d, Spent: 90 * time.Minute, Description: "New"}))
+	res := checked(t, tt.AddWorklogs(t.Context(), []tracker.WorklogInput{{Issue: "10001", Day: d, Spent: 90 * time.Minute, Description: "New"}}))
 	want := []tracker.Resource{tracker.DetailOf("10001"), tracker.WorklogsOf("acc-user1", d)}
 	if states(res) != "worklog:applied" || !slices.Equal(res.Parts[0].Changed, want) {
 		t.Errorf("add: %s %+v %v", states(res), res.Parts[0].Changed, res.Parts[0].Outcome.Err())
@@ -260,7 +260,7 @@ func TestJiraWorklogWrites(t *testing.T) {
 		t.Errorf("a worklog that is not an ID: %s", states(res))
 	}
 	f.On("POST", worklogsPath, jiratest.Reply(500, `{}`))
-	if res := checked(t, tt.AddWorklog(t.Context(), tracker.WorklogInput{Issue: "10001", Day: d, Spent: time.Hour})); states(res) != "worklog:unknown" {
+	if res := checked(t, tt.AddWorklogs(t.Context(), []tracker.WorklogInput{{Issue: "10001", Day: d, Spent: time.Hour}})); states(res) != "worklog:unknown" {
 		t.Errorf("an unanswered add: %s", states(res))
 	}
 }
@@ -421,7 +421,7 @@ func TestATempoAddSaysJiraFailedToSayWhoLogs(t *testing.T) {
 	t.Parallel()
 	f, _, p := tempoSite(t)
 	f.On("GET", myselfPath, jiratest.Reply(400, `{"errorMessages":["refused"],"errors":{}}`))
-	res := checked(t, p.Time().AddWorklog(t.Context(), tracker.WorklogInput{Issue: "10001", Day: day(t, 2026, 11, 10), Spent: time.Hour}))
+	res := checked(t, p.Time().AddWorklogs(t.Context(), []tracker.WorklogInput{{Issue: "10001", Day: day(t, 2026, 11, 10), Spent: time.Hour}}))
 	if err := res.Parts[0].Outcome.Err(); states(res) != "worklog:refused" || !errors.Is(err, tracker.ErrWorklogJira) {
 		t.Fatalf("a refused read of who logs the time: %s, %v", states(res), err)
 	}
@@ -440,7 +440,7 @@ func TestTempoWorklogWrites(t *testing.T) {
 	}
 	ts.On("POST", "/4/worklogs", nil, `{"authorAccountId":"acc-user1","issueId":10001,"startDate":"2026-11-10","timeSpentSeconds":5400,"description":"Review","attributes":[]}`,
 		200, tempoWL(72, 10001, "2026-11-10", "00:00:00", 5400, "Review"))
-	res := checked(t, tt.AddWorklog(t.Context(), tracker.WorklogInput{Issue: "10001", Day: d, Spent: 90 * time.Minute, Description: "Review"}))
+	res := checked(t, tt.AddWorklogs(t.Context(), []tracker.WorklogInput{{Issue: "10001", Day: d, Spent: 90 * time.Minute, Description: "Review"}}))
 	if states(res) != "worklog:applied" || !slices.Equal(res.Parts[0].Changed, []tracker.Resource{tracker.DetailOf("10001"), tracker.WorklogsOf("acc-user1", d)}) {
 		t.Errorf("add: %s %v", states(res), res.Parts[0].Outcome.Err())
 	}
@@ -464,7 +464,7 @@ func TestTempoWorklogWrites(t *testing.T) {
 	if res := checked(t, tt.DeleteWorklog(t.Context(), tracker.WorklogDelete{From: from})); states(res) != "worklog:applied" {
 		t.Errorf("delete: %s %v", states(res), res.Parts[0].Outcome.Err())
 	}
-	if res := checked(t, tt.AddWorklog(t.Context(), tracker.WorklogInput{Issue: "WEB-1", Day: d, Spent: time.Hour})); reason(res, 0) != tracker.ReasonInvalid {
+	if res := checked(t, tt.AddWorklogs(t.Context(), []tracker.WorklogInput{{Issue: "WEB-1", Day: d, Spent: time.Hour}})); reason(res, 0) != tracker.ReasonInvalid {
 		t.Errorf("a key for an ID: %s", states(res))
 	}
 }
@@ -499,7 +499,7 @@ func TestATempoRefusalAfterJiraNamesTempo(t *testing.T) {
 	refused := `{"errors":[{"message":"invalid token"}]}`
 	ts.On("GET", "/4/work-attributes", values("offset", "0", "limit", "1000"), "", 401, refused).Repeat = true
 	ts.On("GET", "/4/timesheet-approvals/user/acc-user1", values("from", "2026-11-10", "to", "2026-11-10"), "", 401, refused).Repeat = true
-	res := checked(t, p.Time().AddWorklog(t.Context(), tracker.WorklogInput{Issue: "10001", Day: day(t, 2026, 11, 10), Spent: time.Hour}))
+	res := checked(t, p.Time().AddWorklogs(t.Context(), []tracker.WorklogInput{{Issue: "10001", Day: day(t, 2026, 11, 10), Spent: time.Hour}}))
 	auth, ok := errors.AsType[*trackerapi.AuthError](res.Parts[0].Outcome.Err())
 	if reason(res, 0) != tracker.ReasonTracker || !ok || auth.Tracker != "tempo" {
 		t.Fatalf("a Tempo refusal: %s, %v", states(res), res.Parts[0].Outcome.Err())

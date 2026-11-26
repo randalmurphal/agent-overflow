@@ -1,6 +1,7 @@
 // Package trackertools is the ao-tracker-tools contract: the tools an agent
 // in a thread uses to find, read, create and change tickets in the user's
-// issue tracker, their schemas, argument validation, how a ticket key
+// issue tracker and to read and draft the user's time (time.go), their
+// schemas, argument validation, how a ticket key
 // names an issue on this computer's connections, what a write checks
 // before it sends anything, the shape of each answer, and the guide the
 // model reads. The product contract is
@@ -24,6 +25,7 @@ import (
 	"log"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -95,6 +97,12 @@ type Tracker interface {
 	IssueCards(ctx context.Context, connection string, issues []string) ([]trackerapp.TicketCardRead, error)
 	IssueRows(ctx context.Context, connection string, rows []trackerapp.IssueRow) ([]trackerapp.TicketCardRead, error)
 	Comments(ctx context.Context, connection, issue, page string) (trackerapp.CommentPageView, error)
+	// ReadTime is the time of Jira connection's verified account from day
+	// from to day to, both included (trackerapp.Service.ReadTime).
+	ReadTime(ctx context.Context, connection, from, to string) (trackerapp.WorklogDays, error)
+	// DraftTime stores an agent call's draft of that account's time
+	// (trackerapp.Service.DraftTime); it sends nothing.
+	DraftTime(connection string, in trackerapp.TimeDraftRequest) (trackerapp.TimeDraftView, error)
 	IssueTypes(ctx context.Context, connection, project string) ([]trackerapp.IssueTypeView, error)
 	CreateFields(ctx context.Context, connection, project, issueType string) ([]trackerapp.FieldView, error)
 
@@ -130,7 +138,9 @@ type Host interface {
 	// decide whether the change waits for the person (Approve) and to
 	// bound what that approval carries; and just before the first write,
 	// to send nothing the policy no longer allows, including a change
-	// that went unasked while the policy now asks.
+	// that went unasked while the policy now asks. time_draft, which sends
+	// nothing to a tracker, reads it at admission and just before its
+	// store write.
 	WritePolicy(threadID string) (WritePolicy, error)
 	// Approve asks the person to approve a change and returns when they
 	// answer: nil when they approve, a public error when they deny or do
@@ -139,6 +149,9 @@ type Host interface {
 	// Wrote puts the row of a call that changed or created tickets in the
 	// thread's timeline.
 	Wrote(threadID string, row WriteRow)
+	// Drafted puts the row of a time_draft call that changed the draft in
+	// the thread's timeline.
+	Drafted(threadID string, row TimeRow)
 	// Boards are the boards the projects of this computer list, on every
 	// connection, each marked when the thread's project lists it, in the
 	// order the listings are, and the thread's project ("" for none).
@@ -213,10 +226,12 @@ type WrittenTicket struct {
 }
 
 // Caller is who calls a tool: the thread, and the provider session its
-// capability was issued to, which the read marks are kept for.
+// capability was issued to, which the read marks are kept for; Time is a
+// session given the time tools (Tools).
 type Caller struct {
 	Thread  string
 	Session string
+	Time    bool
 }
 
 // Server is the ao-tracker-tools contract bound to one Tracker and Host.
@@ -228,11 +243,13 @@ type Server struct {
 	newID func() string
 	// logf records what fails after the call's outcome is decided.
 	logf func(format string, args ...any)
+	// now is this computer's clock, whose date is today.
+	now func() time.Time
 }
 
 // New returns a server over t and h.
 func New(t Tracker, h Host) *Server {
-	s := &Server{t: t, h: h, newID: func() string { return uuid.NewString() }, logf: log.Printf}
+	s := &Server{t: t, h: h, newID: func() string { return uuid.NewString() }, logf: log.Printf, now: time.Now}
 	s.marks.live = func(c Caller) bool { return h.Live(c.Thread, c.Session) }
 	return s
 }
@@ -250,11 +267,11 @@ func (s *Server) Call(ctx context.Context, caller Caller, name string, args json
 		return nil, invalidf("The tracker tools could not tell which thread called them.")
 	}
 	for _, spec := range toolTable {
-		if spec.name == name {
+		if spec.name == name && (caller.Time || !spec.time) {
 			return spec.call(s, ctx, caller, args)
 		}
 	}
-	return nil, invalidf("There is no tool named %q. The tracker tools are: %s.", name, strings.Join(ToolNames(), ", "))
+	return nil, invalidf("There is no tool named %q. The tracker tools are: %s.", name, strings.Join(ToolNames(caller.Time), ", "))
 }
 
 func invalidf(format string, args ...any) error {
