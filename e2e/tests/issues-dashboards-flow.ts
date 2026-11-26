@@ -19,7 +19,10 @@
 // "not counted" that opens the whole chart; a drill's rows carry a
 // count's no value, the period a row counts in and its note beside the
 // title (under it on compact); Unassigned's cell and No epic's bar open
-// their tickets; while a range is counted the grid takes no click; the
+// their tickets; an epic the scrum board does not list counts its child's
+// open work, its label narrows the page, and the child's card, backlog row
+// and ticket name it, the ticket opening it; while a range is counted the
+// grid takes no click; the
 // board's first read not finished is said on the screen and in a drill
 // until its reconcile completes; on a kanban board with more epics and
 // people than its bars and table show, More opens the rows of the epics
@@ -31,6 +34,7 @@ import type { Locator, Page } from '@playwright/test';
 
 import type { HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
+import { openBacklog } from './issues-backlog-flow.js';
 import {
   connectFakeJira, connectFakeJiraBoard, JIRA_SITE, openIssuesPane, press, renameJiraIssue, seedFakeJira, type ConnectedBoard, type ExtraJira,
 } from './tracker-helpers.js';
@@ -67,7 +71,8 @@ const DONE: [string, string] = ['10002', 'Done'];
 // 2's 52 / 5 = 10.4. Sprint 1 holds the seed's WEB-1 and WEB-2 (no
 // estimate, nobody's), WEB-20 (User 2, 3 points, in progress for 6
 // days: stuck), WEB-21 (User 1, 2 points, done yesterday) and WEB-22
-// (User 1, 5 points, to do): This sprint's pace is 2 points, down 103
+// (User 1, 5 points, to do, under the epic WEB-30 "Checkout", which the
+// scrum board does not list): This sprint's pace is 2 points, down 103
 // from Sprint E's 105.
 const SPRINT_E = 15;
 const DASHBOARDS: ExtraJira = {
@@ -104,8 +109,9 @@ const DASHBOARDS: ExtraJira = {
     },
     {
       id: '10122', key: 'WEB-22', project: 'WEB', type: '10002', status: '10000', summary: 'Waiting for User 1', sprints: [1],
-      assignee: 'acc-user1', created: iso(-10 * DAY), values: { [POINTS]: 5 },
+      assignee: 'acc-user1', created: iso(-10 * DAY), values: { [POINTS]: 5 }, parent: '10130',
     },
+    { id: '10130', key: 'WEB-30', project: 'WEB', type: '10000', status: '10000', summary: 'Checkout', created: iso(-20 * DAY) },
   ],
 };
 
@@ -421,13 +427,13 @@ export function registerDashboardsFlow({ compact }: DashboardsSurface): void {
     await expect(drill.getByTestId('dashboard-drill-row')).toHaveText([/WEB-1\s*First story/]);
     await closeDrill();
 
-    // No epic's bar lists the open tickets in no epic: on a scrum board
-    // every one, since the board's copy keeps no epic.
+    // No epic's bar lists the open tickets in no epic: every one but
+    // WEB-22, whose epic the scrum board does not list.
     const noEpic = widget(screen, 'open_by_epic').locator('[data-testid="dashboard-bar"][data-bucket=""]');
     await press(noEpic, compact);
     await expect(drill.getByTestId('dashboard-drill-row').first()).toBeVisible();
     const noEpicKeys = await drill.getByTestId('dashboard-drill-row').locator('span.font-mono').allTextContents();
-    expect(noEpicKeys.sort()).toEqual(['WEB-1', 'WEB-2', 'WEB-20', 'WEB-22']);
+    expect(noEpicKeys.sort()).toEqual(['WEB-1', 'WEB-2', 'WEB-20']);
     await closeDrill();
 
     // While This sprint is counted, the grid shows the last 5 sprints'
@@ -449,6 +455,64 @@ export function registerDashboardsFlow({ compact }: DashboardsSurface): void {
     await expect(widget(screen, 'pace').getByTestId('dashboard-number-value')).toHaveText('2');
     await expect(drill).toHaveCount(0);
     await expect(screen.getByTestId('dashboard-grid')).not.toHaveAttribute('inert', '');
+  });
+
+  test('An epic no board row holds counts its open work, narrows the page, and names its child on the board, the backlog and the ticket', async ({ harness, page }) => {
+    test.setTimeout(180_000);
+    const { pane, screen } = await openBoardDashboards(harness, page, name('epic'), compact);
+    const drill = page.getByTestId('dashboard-drill');
+    const keys = async () => {
+      await expect(drill.getByTestId('dashboard-drill-row').first()).toBeVisible();
+      const got = (await drill.getByTestId('dashboard-drill-row').locator('span.font-mono').allTextContents()).sort();
+      await page.keyboard.press('Escape');
+      await expect(drill).toHaveCount(0);
+      return got;
+    };
+
+    // WEB-30's bar holds WEB-22 alone, and No epic the rest.
+    const epics = widget(screen, 'open_by_epic');
+    const checkout = epics.locator('[data-testid="dashboard-bar"][data-bucket="10130"]');
+    await expect(checkout).toHaveCount(1, { timeout: 30_000 });
+    await press(checkout, compact);
+    await expect(page.getByRole('dialog', { name: 'Open work by epic, WEB-30 Checkout' })).toBeVisible();
+    expect(await keys()).toEqual(['WEB-22']);
+    await press(epics.locator('[data-testid="dashboard-bar"][data-bucket=""]'), compact);
+    expect(await keys()).toEqual(['WEB-1', 'WEB-2', 'WEB-20']);
+
+    // Its label narrows the page to the epic: WEB-20, stuck, is not in it.
+    await press(epics.getByTestId('dashboard-bar-label').filter({ hasText: 'WEB-30 Checkout' }), compact);
+    const chip = screen.getByTestId('dashboard-chip');
+    await expect(chip).toHaveText('WEB-30 Checkout');
+    await expect(widget(screen, 'stuck').getByTestId('dashboard-number-value')).toHaveText('0', { timeout: 15_000 });
+    await expect(epics.getByTestId('dashboard-bar')).toHaveCount(1);
+    await press(chip.getByTestId('dashboard-chip-clear'), compact);
+    await expect(widget(screen, 'stuck').getByTestId('dashboard-number-value')).toHaveText('1', { timeout: 15_000 });
+
+    // The backlog's row and the board's card name the epic by its title.
+    const backlog = await openBacklog(page, pane, compact);
+    const sprint = backlog.locator('[data-testid="issues-backlog-section"][data-list="sprint:1"]');
+    if ((await sprint.getAttribute('data-open')) === null) await press(sprint.getByTestId('issues-backlog-fold'), compact);
+    await expect(backlog.locator('[data-testid="issues-backlog-row"][data-issue="10122"]').getByTestId('issues-card-parent')).toHaveText('Checkout', { timeout: 15_000 });
+    const picker = pane.getByTestId('issues-tabs-picker');
+    if (await picker.isVisible()) {
+      await press(picker, compact);
+      await press(page.getByTestId('issues-tab-option').filter({ hasText: /^\s*Board\s*$/ }), compact);
+    } else {
+      await press(pane.locator('[data-testid="issues-tab"][data-screen="board"]'), compact);
+    }
+    // On compact the board shows one column: WEB-22 is in To Do.
+    if (compact) await press(pane.getByRole('tablist', { name: 'Columns' }).getByRole('tab', { name: /^To Do/ }), compact);
+    const card = pane.locator('[data-testid="issues-card"][data-issue="10122"]');
+    await expect(card.getByTestId('issues-card-parent')).toHaveText('Checkout', { timeout: 15_000 });
+
+    // The ticket names its parent, which opens though no board keeps it.
+    await press(card.getByTestId('issues-card-open'), compact);
+    const ticket = pane.getByTestId('ticket-screen');
+    await expect(ticket).toHaveAttribute('data-issue', '10122', { timeout: 15_000 });
+    await expect(ticket.getByTestId('ticket-parent')).toHaveText('WEB-30 Checkout');
+    await press(ticket.getByTestId('ticket-parent'), compact);
+    await expect(ticket).toHaveAttribute('data-issue', '10130', { timeout: 15_000 });
+    await expect(ticket.getByTestId('ticket-title')).toHaveText('Checkout', { timeout: 15_000 });
   });
 
   test('Dashboards opens the epics and people a chart and a table left out from their More', async ({ harness, page }) => {

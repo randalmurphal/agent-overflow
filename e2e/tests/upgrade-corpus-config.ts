@@ -73,6 +73,7 @@ export const migrationExceptions: MigrationException[] = [
   { version: 168, table: 'tracker_cache_worklogs', rowsMayShrink: true, reason: 'v168 deletes logged time read before it, since nothing records which time source read it; a refresh reads it again' },
   { version: 169, table: 'tracker_cache_worklog_days', rowsMayShrink: true, reason: 'v169 deletes logged time read before it, which holds no ticket names; a refresh reads it again' },
   { version: 169, table: 'tracker_cache_worklogs', rowsMayShrink: true, reason: 'v169 deletes logged time read before it, which holds no ticket names; a refresh reads it again' },
+  { version: 172, table: 'tracker_cache_sync', columns: ['cursor'], reason: "v172 forgets every board's poll cursor, so the next poll reads every row once and names the parents the mirror does not keep" },
 ];
 
 /**
@@ -983,6 +984,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   },
   { table: 'tracker_cache_open_tickets', reason: 'a tracker ticket a person has open, which keeps its issue in the mirror (v165); the top-up opens no ticket' },
   { table: 'tracker_cache_issue_missing', reason: 'a read that did not return a linked issue (v167); no step of the top-up links a thread' },
+  { table: 'tracker_cache_parents', reason: 'the name of a parent a card names (v172); the fake board\'s issues name no parent' },
   { table: 'tracker_agent_writes', reason: 'a tracker write an agent made through the tracker tools (v171); no step of the top-up runs an agent that writes a ticket' },
   { table: 'chat_model_profiles', values: { reasoning_effort: ['none', 'minimal', 'low', 'xhigh'], runtime_mode: ['read-only', 'approval-required', 'auto-accept-edits'] }, reason: 'one remembered profile per provider and model holds the settings used last' },
 
