@@ -1,0 +1,305 @@
+package trackerdash
+
+import (
+	"database/sql/driver"
+	"errors"
+	"fmt"
+	"strconv"
+	"time"
+	"unicode/utf8"
+
+	sqlite "modernc.org/sqlite"
+)
+
+// registerFunctions registers the app's functions on d, so they reach only
+// the connections d opens: bounded_rows, the wrapper's aggregate into
+// sink, and the time functions in loc.
+//
+//   - days(a, b): the days from instant a to instant b (milliseconds), with
+//     a fraction; NULL when either is NULL.
+//   - working_days(a, b): the same, Saturdays and Sundays in loc left out.
+//   - day(a): instant a's date in loc, as YYYY-MM-DD.
+func registerFunctions(d *sqlite.Driver, loc *time.Location, sink *rowSink) error {
+	err := d.RegisterFunction("bounded_rows", &sqlite.FunctionImpl{NArgs: -1, MakeAggregate: func(sqlite.FunctionContext) (sqlite.AggregateFunction, error) {
+		return sinkStep{sink}, nil
+	}})
+	if err != nil {
+		return fmt.Errorf("register bounded_rows: %w", err)
+	}
+	for name, fn := range map[string]func(args []driver.Value) (driver.Value, error){
+		"days": func(args []driver.Value) (driver.Value, error) {
+			a, b, ok, err := instants("days", args)
+			if !ok || err != nil {
+				return nil, err
+			}
+			return float64(b-a) / float64(24*time.Hour/time.Millisecond), nil
+		},
+		"working_days": func(args []driver.Value) (driver.Value, error) {
+			a, b, ok, err := instants("working_days", args)
+			if !ok || err != nil {
+				return nil, err
+			}
+			return workingDays(a, b, loc), nil
+		},
+	} {
+		if err := d.RegisterDeterministicScalarFunction(name, 2, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+			return fn(args)
+		}); err != nil {
+			return fmt.Errorf("register %s: %w", name, err)
+		}
+	}
+	err = d.RegisterDeterministicScalarFunction("day", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil {
+			return nil, nil
+		}
+		a, err := instant("day", args[0])
+		if err != nil {
+			return nil, err
+		}
+		return time.UnixMilli(a).In(loc).Format(time.DateOnly), nil
+	})
+	if err != nil {
+		return fmt.Errorf("register day: %w", err)
+	}
+	return nil
+}
+
+// maxInstant bounds the instants the time functions take: milliseconds
+// before the year 2286.
+const maxInstant = 10_000_000_000_000
+
+func instants(name string, args []driver.Value) (a, b int64, ok bool, err error) {
+	if args[0] == nil || args[1] == nil {
+		return 0, 0, false, nil
+	}
+	if a, err = instant(name, args[0]); err != nil {
+		return 0, 0, false, err
+	}
+	if b, err = instant(name, args[1]); err != nil {
+		return 0, 0, false, err
+	}
+	return a, b, true, nil
+}
+
+func instant(name string, v driver.Value) (int64, error) {
+	var ms int64
+	switch x := v.(type) {
+	case int64:
+		ms = x
+	case float64:
+		ms = int64(x)
+	default:
+		return 0, fmt.Errorf("%s takes instants in milliseconds, not %T", name, v)
+	}
+	if ms < 0 || ms > maxInstant {
+		return 0, fmt.Errorf("%s takes instants in milliseconds since 1970, not %d", name, ms)
+	}
+	return ms, nil
+}
+
+// workingDays is the days from a to b with Saturdays and Sundays in loc
+// left out, a part of a day counted as its share of that day's length
+// (which a change of clocks makes 23 or 25 hours); negative when b is
+// before a.
+func workingDays(a, b int64, loc *time.Location) float64 {
+	if b < a {
+		return -workingDays(b, a, loc)
+	}
+	ta, tb := time.UnixMilli(a).In(loc), time.UnixMilli(b).In(loc)
+	da, db := midnight(ta), midnight(tb)
+	if da.Equal(db) {
+		if !working(da) {
+			return 0
+		}
+		return float64(b-a) / float64(dayLength(da))
+	}
+	total := 0.0
+	if working(da) {
+		next := da.AddDate(0, 0, 1)
+		total += float64(next.UnixMilli()-a) / float64(dayLength(da))
+	}
+	if working(db) {
+		total += float64(b-db.UnixMilli()) / float64(dayLength(db))
+	}
+	// The whole days between: civil dates, counted in weeks of five and
+	// the rest one by one.
+	first := da.AddDate(0, 0, 1)
+	whole := civilDays(first, db)
+	total += float64(whole / 7 * 5)
+	for d, i := first.AddDate(0, 0, whole/7*7), 0; i < whole%7; d, i = d.AddDate(0, 0, 1), i+1 {
+		if working(d) {
+			total++
+		}
+	}
+	return total
+}
+
+func midnight(t time.Time) time.Time {
+	y, m, d := t.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, t.Location())
+}
+
+func working(day time.Time) bool {
+	return day.Weekday() != time.Saturday && day.Weekday() != time.Sunday
+}
+
+// dayLength is the milliseconds of the day starting at midnight m.
+func dayLength(m time.Time) int64 { return m.AddDate(0, 0, 1).UnixMilli() - m.UnixMilli() }
+
+// civilDays is the calendar days from midnight a to midnight b.
+func civilDays(a, b time.Time) int {
+	ua := time.Date(a.Year(), a.Month(), a.Day(), 0, 0, 0, 0, time.UTC)
+	ub := time.Date(b.Year(), b.Month(), b.Day(), 0, 0, 0, 0, time.UTC)
+	return int(ub.Sub(ua) / (24 * time.Hour))
+}
+
+// contribution is one row of a metric, read by its columns.
+type contribution struct {
+	ticket  string
+	value   float64
+	counted bool
+	bucket  string
+	series  string
+	person  string
+	epic    string
+	at      int64
+	hasAt   bool
+	note    string
+}
+
+// rowSink gathers the rows of the metric that runs, charged against the
+// byte budget. One metric runs at a time on a session.
+type rowSink struct {
+	cols  columns
+	rows  []contribution
+	bytes int
+	err   error
+}
+
+func (s *rowSink) reset(cols columns) {
+	s.cols, s.rows, s.bytes, s.err = cols, nil, 0, nil
+}
+
+func (s *rowSink) take() []contribution {
+	rows := s.rows
+	s.rows = nil
+	return rows
+}
+
+// errBytes is the budget's failure.
+var errBytes = &MetricError{Sentence: fmt.Sprintf("This widget's rows passed %d MiB, their limit. Pick a shorter range.", maxRowBytes>>20), Limit: true}
+
+const maxNote = 80
+
+// add reads one row into a contribution.
+func (s *rowSink) add(args []driver.Value) error {
+	if s.err != nil {
+		return s.err
+	}
+	if len(args) != s.cols.n {
+		s.err = fmt.Errorf("bounded_rows takes the metric's %d columns, not %d", s.cols.n, len(args))
+		return s.err
+	}
+	var c contribution
+	var err error
+	at := func(name string) driver.Value { return args[s.cols.index[name]] }
+	if c.ticket, err = text(ColumnTicket, at(ColumnTicket)); err == nil && c.ticket == "" {
+		err = errors.New("a row's ticket is empty or NULL; each row names the ticket it counts")
+	}
+	c.value, c.counted = 1, true
+	if err == nil && s.cols.has(ColumnValue) {
+		c.value, c.counted, err = number(ColumnValue, at(ColumnValue))
+	}
+	for _, f := range []struct {
+		name string
+		to   *string
+	}{{ColumnBucket, &c.bucket}, {ColumnSeries, &c.series}, {ColumnPerson, &c.person}, {ColumnEpic, &c.epic}, {ColumnNote, &c.note}} {
+		if err == nil && s.cols.has(f.name) {
+			*f.to, err = text(f.name, at(f.name))
+		}
+	}
+	if err == nil && s.cols.has(ColumnAt) {
+		var v float64
+		v, c.hasAt, err = number(ColumnAt, at(ColumnAt))
+		c.at = int64(v)
+	}
+	if err != nil {
+		s.err = &MetricError{Sentence: "This widget's query returned a row it cannot count: " + err.Error() + ". Change its query."}
+		return s.err
+	}
+	if len(c.note) > maxNote {
+		cut := maxNote
+		for cut > 0 && !utf8.RuneStart(c.note[cut]) {
+			cut--
+		}
+		c.note = c.note[:cut] + "…"
+	}
+	s.bytes += 96 + len(c.ticket) + len(c.bucket) + len(c.series) + len(c.person) + len(c.epic) + len(c.note)
+	if s.bytes > maxRowBytes {
+		s.err = errBytes
+		return s.err
+	}
+	s.rows = append(s.rows, c)
+	return nil
+}
+
+func text(name string, v driver.Value) (string, error) {
+	switch x := v.(type) {
+	case nil:
+		return "", nil
+	case string:
+		return x, nil
+	case []byte:
+		return "", fmt.Errorf("column %s holds a blob", name)
+	case int64:
+		return strconv.FormatInt(x, 10), nil
+	case float64:
+		return strconv.FormatFloat(x, 'g', -1, 64), nil
+	default:
+		return fmt.Sprint(x), nil
+	}
+}
+
+// number is a numeric column's value; ok is false for NULL.
+func number(name string, v driver.Value) (float64, bool, error) {
+	switch x := v.(type) {
+	case nil:
+		return 0, false, nil
+	case int64:
+		return float64(x), true, nil
+	case float64:
+		return x, true, nil
+	default:
+		return 0, false, fmt.Errorf("column %s holds %s, not a number", name, typeName(v))
+	}
+}
+
+func typeName(v driver.Value) string {
+	switch v.(type) {
+	case string:
+		return "text"
+	case []byte:
+		return "a blob"
+	default:
+		return fmt.Sprintf("%T", v)
+	}
+}
+
+// sinkStep is bounded_rows: each step is a row into the sink, the result
+// the number of rows.
+type sinkStep struct{ sink *rowSink }
+
+func (a sinkStep) Step(_ *sqlite.FunctionContext, args []driver.Value) error { return a.sink.add(args) }
+
+func (a sinkStep) WindowInverse(*sqlite.FunctionContext, []driver.Value) error {
+	return errors.New("bounded_rows is not a window function")
+}
+
+func (a sinkStep) WindowValue(*sqlite.FunctionContext) (driver.Value, error) {
+	if a.sink.err != nil {
+		return nil, a.sink.err
+	}
+	return int64(len(a.sink.rows)), nil
+}
+
+func (a sinkStep) Final(*sqlite.FunctionContext) {}

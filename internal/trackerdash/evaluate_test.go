@@ -1,0 +1,278 @@
+package trackerdash
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+// teamBoard is sprintBoard with its tickets:
+//
+//	WEB-1  done, 3 points, User 1, finished in s6; started 5 days ago, done 2 days ago
+//	WEB-2  done, 5 points, User 2, finished in s5; started 12 days ago, done 9 days ago
+//	WEB-3  in progress 5 days, 2 points, User 1, in s6 (not done) and s7; epic WEB-100
+//	WEB-4  in progress since an unknown time, 1 point, User 2, in s7
+//	WEB-5  in progress 1 day, User 1
+//	WEB-6  done, 8 points, User 1, finished in s4; its history starts after it was created
+//	WEB-7  done, 2 points, finished in s1
+//	WEB-8  done, 4 points, finished in s2
+//	WEB-9  to do, 3 points, User 1, in s7; epic WEB-100
+//	WEB-10 done, 2 points, User 2, in s7, done now
+func teamBoard() *fixture {
+	f := sprintBoard()
+	f.ticket(ticket{id: "t1", key: "WEB-1", status: "5", group: "done", assignee: "u1", points: "3", created: ago(20), historyFrom: ago(20), started: ago(5), done: ago(2)}).member("s6", "t1", true)
+	f.ticket(ticket{id: "t2", key: "WEB-2", status: "5", group: "done", assignee: "u2", points: "5", created: ago(20), historyFrom: ago(20), started: ago(12), done: ago(9)}).member("s5", "t2", true)
+	f.ticket(ticket{id: "t3", key: "WEB-3", status: "3", group: "in_progress", assignee: "u1", epic: "e1", points: "2", created: ago(20), historyFrom: ago(20), since: ago(5)}).
+		member("s6", "t3", false).member("s7", "t3", false)
+	f.ticket(ticket{id: "t4", key: "WEB-4", status: "3", group: "in_progress", assignee: "u2", points: "1", created: ago(20)}).member("s7", "t4", false)
+	f.ticket(ticket{id: "t5", key: "WEB-5", status: "3", group: "in_progress", assignee: "u1", created: ago(20), since: ago(1)})
+	f.ticket(ticket{id: "t6", key: "WEB-6", status: "5", group: "done", assignee: "u1", points: "8", created: ago(60), historyFrom: ago(30), started: ago(20), done: ago(16)}).member("s4", "t6", true)
+	f.ticket(ticket{id: "t7", key: "WEB-7", status: "5", group: "done", points: "2", created: ago(60), done: ago(37)}).member("s1", "t7", true)
+	f.ticket(ticket{id: "t8", key: "WEB-8", status: "5", group: "done", points: "4", created: ago(60), done: ago(30)}).member("s2", "t8", true)
+	f.ticket(ticket{id: "t9", key: "WEB-9", status: "1", group: "todo", assignee: "u1", epic: "e1", points: "3", created: ago(20)}).member("s7", "t9", false)
+	f.ticket(ticket{id: "t10", key: "WEB-10", status: "5", group: "done", assignee: "u2", points: "2", created: ago(20)}).member("s7", "t10", true)
+	return f
+}
+
+var utcSprints3 = Request{Dashboard: builtinSprintsID, Range: RangeSprints3, TimeZone: "UTC"}
+
+// A sprint board's built-in dashboard counts its sprints: the pace is the
+// average of what each of the range's sprints finished, with the sprints
+// before it as the previous value and one trend point a sprint; the bars
+// are the same sums; a "now" widget counts the tickets stuck today.
+func TestEvaluateCountsTheBuiltInDashboard(t *testing.T) {
+	t.Parallel()
+	a := mustEvaluate(t, evaluator(), teamBoard().board(), utcSprints3)
+	if a.Estimates != "points" || a.Range.ID != RangeSprints3 || len(a.Range.Periods) != 3 || a.Range.Periods[0].Label != "WEB Sprint 4" {
+		t.Fatalf("range = %+v, estimates %s; want sprints 4 to 6 of a points board", a.Range, a.Estimates)
+	}
+	pace := widgetOf(t, a, "pace")
+	if got := []string{num(pace.Value), num(pace.Previous), num(&pace.Trend[0]), num(&pace.Trend[1]), num(&pace.Trend[2])}; !reflect.DeepEqual(got, []string{"5.333333333333333", "2", "8", "5", "3"}) {
+		t.Fatalf("pace value, previous and trend = %v; want 16/3 over sprints 4 to 6 (8, 5, 3) against 6/3 over 1 to 3", got)
+	}
+	bars := widgetOf(t, a, "finished")
+	var totals []string
+	for _, b := range bars.Buckets {
+		totals = append(totals, b.Label+"="+num(&b.Total))
+	}
+	if !reflect.DeepEqual(totals, []string{"WEB Sprint 4=8", "WEB Sprint 5=5", "WEB Sprint 6=3"}) {
+		t.Fatalf("finished bars = %v", totals)
+	}
+	stuck := widgetOf(t, a, "stuck")
+	if num(stuck.Value) != "1" {
+		t.Fatalf("stuck = %s; want WEB-3 alone (WEB-4's time in its status is unknown, WEB-5 moved a day ago)", num(stuck.Value))
+	}
+	list := widgetOf(t, a, "stuck_list")
+	if len(list.Tickets) != 1 || list.Tickets[0].Key != "WEB-3" || list.Tickets[0].Note != "in In Progress for 5 days" || list.NotCounted != 1 {
+		t.Fatalf("stuck list = %+v, %d not counted; want WEB-3 in progress for 5 days and WEB-4 not counted", list.Tickets, list.NotCounted)
+	}
+	cycle := widgetOf(t, a, "start_to_done")
+	if num(cycle.Value) == "none" || num(cycle.Value) == "absent" {
+		t.Fatalf("start to done = %s", num(cycle.Value))
+	}
+	carrying := widgetOf(t, a, "carrying")
+	if !reflect.DeepEqual(carrying.Series, []string{"To do", "Doing", "Done"}) {
+		t.Fatalf("carrying series = %v", carrying.Series)
+	}
+	var rows []string
+	for _, b := range carrying.Buckets {
+		cells := []string{b.Label}
+		for i := range b.Cells {
+			cells = append(cells, num(&b.Cells[i]))
+		}
+		rows = append(rows, strings.Join(cells, " "))
+	}
+	if !reflect.DeepEqual(rows, []string{"User 1 3 2 0", "User 2 0 1 2"}) {
+		t.Fatalf("carrying = %v; want User 1 with 3 to do and 2 doing, User 2 with 1 doing and 2 done", rows)
+	}
+	epics := widgetOf(t, a, "open_by_epic")
+	if len(epics.Buckets) != 2 || epics.Buckets[0].Label != "WEB-100 Checkout" || num(&epics.Buckets[0].Total) != "5" || epics.Buckets[1].Label != "No epic" {
+		t.Fatalf("open by epic = %+v", epics.Buckets)
+	}
+	for _, w := range a.Widgets {
+		if w.Error != "" {
+			t.Errorf("widget %s failed: %s", w.ID, w.Error)
+		}
+	}
+	if _, err := json.Marshal(a); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A widget whose metric counts now has no previous value and no trend,
+// so the screen can draw no change mark for it; its view says it counts
+// now. A metric of the range has both.
+func TestNowMetricHasNoChangeMark(t *testing.T) {
+	t.Parallel()
+	a := mustEvaluate(t, evaluator(), teamBoard().board(), utcSprints3)
+	views := map[string]WidgetView{}
+	for _, v := range a.Dashboard.Widgets {
+		views[v.ID] = v
+	}
+	stuck := widgetOf(t, a, "stuck")
+	if !views["stuck"].Now || stuck.Previous != nil || stuck.Trend != nil {
+		t.Fatalf("stuck: now %v, previous %s, trend %v; want a now widget with neither", views["stuck"].Now, num(stuck.Previous), stuck.Trend)
+	}
+	if !strings.Contains(views["stuck"].How.Range, "true now") {
+		t.Fatalf("stuck's How says %q of the range", views["stuck"].How.Range)
+	}
+	pace := widgetOf(t, a, "pace")
+	if views["pace"].Now || pace.Previous == nil || len(pace.Trend) != 3 {
+		t.Fatalf("pace: now %v, previous %s, trend %v; want both", views["pace"].Now, num(pace.Previous), pace.Trend)
+	}
+}
+
+// The previous range is a gap when the mirror holds fewer sprints than
+// the range has: five sprints back from the last five reach sprint 1
+// alone.
+func TestPreviousRangeIsAGapWhenTheMirrorHoldsTooFewSprints(t *testing.T) {
+	t.Parallel()
+	a := mustEvaluate(t, evaluator(), teamBoard().board(), Request{Dashboard: builtinSprintsID, Range: RangeSprints5, TimeZone: "UTC"})
+	pace := widgetOf(t, a, "pace")
+	if a.Range.PreviousGap != "This computer keeps fewer than 5 finished sprints before these to compare with." || !pace.Previous.Gap {
+		t.Fatalf("previous = %s, range %+v; want a gap", num(pace.Previous), a.Range)
+	}
+	b, err := json.Marshal(pace.Previous)
+	if err != nil || string(b) != `{"gap":true}` {
+		t.Fatalf("a gap on the wire = %s, %v", b, err)
+	}
+}
+
+// Narrowing keeps the rows of one person (the ticket's assignee) or one
+// epic before the reduction; Mine is the viewer's account.
+func TestNarrowingKeepsOnePersonsRows(t *testing.T) {
+	t.Parallel()
+	e := evaluator()
+	mine := mustEvaluate(t, e, teamBoard().board(), Request{Dashboard: builtinSprintsID, Range: RangeSprints3, TimeZone: "UTC", Mine: true})
+	if mine.Person == nil || mine.Person.Label != "User 1" {
+		t.Fatalf("Mine narrowed to %+v; want User 1", mine.Person)
+	}
+	if got := num(widgetOf(t, mine, "pace").Value); got != "3.6666666666666665" {
+		t.Fatalf("User 1's pace = %s; want (8 + 0 + 3) / 3", got)
+	}
+	carrying := widgetOf(t, mine, "carrying")
+	if len(carrying.Buckets) != 1 || carrying.Buckets[0].Label != "User 1" {
+		t.Fatalf("User 1's carrying = %+v", carrying.Buckets)
+	}
+	epic := mustEvaluate(t, e, teamBoard().board(), Request{Dashboard: builtinSprintsID, Range: RangeSprints3, TimeZone: "UTC", Epic: "e1"})
+	if epic.Epic == nil || epic.Epic.Label != "WEB-100 Checkout" || num(widgetOf(t, epic, "stuck").Value) != "1" || num(widgetOf(t, epic, "pace").Value) != "0" {
+		t.Fatalf("epic WEB-100: %+v, stuck %s, pace %s", epic.Epic, num(widgetOf(t, epic, "stuck").Value), num(widgetOf(t, epic, "pace").Value))
+	}
+	_, err := e.Evaluate(context.Background(), teamBoard().board(), Request{Dashboard: builtinSprintsID, TimeZone: "UTC", Mine: true, Person: "u2"})
+	var r *Refusal
+	if !errors.As(err, &r) || r.Code != "dashboard_request_invalid" {
+		t.Fatalf("Mine and a person = %v; want a refusal", err)
+	}
+}
+
+// A drill answers the number of its cell with the rows behind it, from
+// the same evaluation: the widget's number, a bar's sum, or a bar's
+// series. Rows the metric does not count are listed after those it does.
+func TestDrillAnswersTheCellsNumberWithItsRows(t *testing.T) {
+	t.Parallel()
+	e := evaluator()
+	b := teamBoard().board()
+	a := mustEvaluate(t, e, b, utcSprints3)
+	drill := func(widget, bucket, series string) DrillAnswer {
+		t.Helper()
+		d, err := e.Drill(context.Background(), b, DrillRequest{Request: utcSprints3, Widget: widget, Bucket: bucket, Series: series})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	pace := drill("pace", "", "")
+	if num(&pace.Value) != num(widgetOf(t, a, "pace").Value) || pace.Count != 3 {
+		t.Fatalf("pace drill = %s with %d rows; the widget shows %s over 3 tickets", num(&pace.Value), pace.Count, num(widgetOf(t, a, "pace").Value))
+	}
+	bar := drill("finished", "sprint:s4", "")
+	if num(&bar.Value) != "8" || len(bar.Rows) != 1 || bar.Rows[0].Key != "WEB-6" || bar.Title != "Finished per sprint, WEB Sprint 4" {
+		t.Fatalf("sprint 4's bar = %+v", bar)
+	}
+	cell := drill("carrying", "u1", "To do")
+	if num(&cell.Value) != "3" || len(cell.Rows) != 1 || cell.Rows[0].Key != "WEB-9" {
+		t.Fatalf("User 1's to do = %+v", cell)
+	}
+	stuck := drill("stuck_list", "", "")
+	if stuck.Count != 2 || stuck.Counted != 1 || stuck.Rows[0].Key != "WEB-3" || stuck.Rows[1].Counted || !strings.HasPrefix(stuck.Rows[1].Note, "not counted") {
+		t.Fatalf("stuck drill = %+v", stuck)
+	}
+}
+
+// A page after the first that finds a different count starts again at
+// the first page with the new number.
+func TestDrillStartsAgainWhenTheCountMoved(t *testing.T) {
+	t.Parallel()
+	e := evaluator()
+	b := teamBoard().board()
+	d, err := e.Drill(context.Background(), b, DrillRequest{Request: utcSprints3, Widget: "stuck_list", Page: 1, Count: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Restarted || d.Page != 0 || d.Count != 2 || len(d.Rows) != 2 {
+		t.Fatalf("drill page 1 after the count moved = %+v; want page 0 again with the 2 rows", d)
+	}
+}
+
+// Every kind of board offers its built-in dashboard, every metric valid
+// and prepared, every widget drawable: the epic widget only where the
+// tracker has epics, and the ranges of the board's kind.
+func TestEveryKindOffersItsBuiltInDashboard(t *testing.T) {
+	t.Parallel()
+	for _, k := range []Kind{{true, true}, {true, false}, {false, true}, {false, false}} {
+		views, err := evaluator().Dashboards(context.Background(), k)
+		if err != nil {
+			t.Fatalf("%+v: %v", k, err)
+		}
+		v := views[0]
+		width, epics := 0, false
+		for _, w := range v.Widgets {
+			width += w.Width
+			epics = epics || w.ID == "open_by_epic"
+			if len(w.How.Reads) == 0 || w.How.SQL == "" || w.How.Counts == "" {
+				t.Errorf("%+v %s: How = %+v", k, w.ID, w.How)
+			}
+		}
+		if width%12 != 0 || epics != k.Epics || (v.DefaultRange == RangeSprints5) != k.PlansSprints {
+			t.Errorf("%+v: widths add to %d, epics %v, default range %s", k, width, epics, v.DefaultRange)
+		}
+	}
+}
+
+// A board without sprints counts by week: what was finished each week by
+// its last move into done (else its resolution), the current week to now,
+// tickets counted where the board has no estimates.
+func TestWeekBoardCountsByWeek(t *testing.T) {
+	t.Parallel()
+	f := newFixture(false, "none").person("u1", "User 1").
+		status("1", "To Do", "todo").status("3", "In Progress", "in_progress").status("5", "Done", "done")
+	// testNow is Wednesday 25 November: this week from Monday the 23rd.
+	f.ticket(ticket{id: "t1", key: "WEB-1", status: "5", group: "done", assignee: "u1", created: ago(30), historyFrom: ago(30), started: ago(4), done: ago(1)})
+	f.ticket(ticket{id: "t2", key: "WEB-2", status: "5", group: "done", created: ago(30), res: ago(8)})
+	f.ticket(ticket{id: "t3", key: "WEB-3", status: "5", group: "done", created: ago(30), historyFrom: ago(30), started: ago(10), done: ago(9)})
+	f.ticket(ticket{id: "t4", key: "WEB-4", status: "5", group: "done", created: ago(30), done: ago(20)})
+	f.ticket(ticket{id: "t5", key: "WEB-5", status: "3", group: "in_progress", assignee: "u1", created: ago(3)})
+	a := mustEvaluate(t, evaluator(), f.board(), Request{Dashboard: builtinWeeksID, Range: RangeWeeks2, TimeZone: "UTC"})
+	if len(a.Range.Periods) != 2 || a.Range.Periods[0].ID != "week:2026-11-16" || !a.Range.Periods[1].Partial || a.Estimates != "none" {
+		t.Fatalf("range = %+v, estimates %s", a.Range, a.Estimates)
+	}
+	pace := widgetOf(t, a, "pace")
+	if num(pace.Value) != "1.5" || num(pace.Previous) != "0.5" {
+		t.Fatalf("weekly pace = %s against %s; want (2 + 1) / 2 against (0 + 1) / 2", num(pace.Value), num(pace.Previous))
+	}
+	cf := widgetOf(t, a, "created_finished")
+	var cells []string
+	for _, b := range cf.Buckets {
+		cells = append(cells, b.Label+" "+num(&b.Cells[0])+" "+num(&b.Cells[1]))
+	}
+	if !reflect.DeepEqual(cells, []string{"Nov 16 1 2", "Nov 23 0 1"}) {
+		t.Fatalf("created and finished = %v; want WEB-5 created last week (Sunday), WEB-2 and WEB-3 finished then, WEB-1 this week", cells)
+	}
+	carrying := widgetOf(t, a, "carrying")
+	if !reflect.DeepEqual(carrying.Series, []string{"To do", "Doing"}) || len(carrying.Buckets) != 1 || num(&carrying.Buckets[0].Cells[1]) != "1" {
+		t.Fatalf("carrying = %v %+v", carrying.Series, carrying.Buckets)
+	}
+}

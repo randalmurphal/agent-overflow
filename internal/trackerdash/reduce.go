@@ -1,0 +1,218 @@
+package trackerdash
+
+import (
+	"cmp"
+	"encoding/json"
+	"slices"
+	"strings"
+)
+
+// Num is one number a widget shows: a value, none (nothing to reduce:
+// the median of no rows), or a gap (the mirror cannot answer: a previous
+// range it holds too few sprints for). On the wire: {"v":3}, {} or
+// {"gap":true}.
+type Num struct {
+	V   *float64 `json:"v,omitempty"`
+	Gap bool     `json:"gap,omitempty"`
+}
+
+func value(v float64) Num { return Num{V: &v} }
+
+var gapNum = Num{Gap: true}
+
+// MarshalJSON writes a Num as its wire form; a gap carries no value.
+func (n Num) MarshalJSON() ([]byte, error) {
+	type wire Num
+	if n.Gap {
+		return []byte(`{"gap":true}`), nil
+	}
+	return json.Marshal(wire(n))
+}
+
+// reduceRows is the metric's reduction of rows within one cell: a bar, a
+// table cell or a period. A sum of periods is a sum within one.
+func reduceRows(r Reducer, rows []contribution) Num {
+	var values []float64
+	tickets := map[string]bool{}
+	for _, c := range rows {
+		if c.counted {
+			values = append(values, c.value)
+			tickets[c.ticket] = true
+		}
+	}
+	switch r {
+	case ReduceCount:
+		return value(float64(len(tickets)))
+	case ReduceSum, ReduceAverageOfPeriodSums:
+		total := 0.0
+		for _, v := range values {
+			total += v
+		}
+		return value(total)
+	case ReduceAverage:
+		if len(values) == 0 {
+			return Num{}
+		}
+		total := 0.0
+		for _, v := range values {
+			total += v
+		}
+		return value(total / float64(len(values)))
+	default: // ReduceMedian
+		if len(values) == 0 {
+			return Num{}
+		}
+		slices.Sort(values)
+		mid := len(values) / 2
+		if len(values)%2 == 1 {
+			return value(values[mid])
+		}
+		return value((values[mid-1] + values[mid]) / 2)
+	}
+}
+
+// reduceRange is the metric's number over a range's periods. An average
+// of period sums averages over the periods, a period with no rows as
+// zero; any other reducer reduces the range's rows as one. A range of no
+// periods has none.
+func reduceRange(r Reducer, periods []period, placed map[string][]contribution) Num {
+	var rows []contribution
+	sums := 0.0
+	for _, p := range periods {
+		rows = append(rows, placed[p.id]...)
+		if r == ReduceAverageOfPeriodSums {
+			sums += *reduceRows(ReduceSum, placed[p.id]).V
+		}
+	}
+	switch {
+	case len(periods) == 0:
+		return Num{}
+	case r == ReduceAverageOfPeriodSums:
+		return value(sums / float64(len(periods)))
+	}
+	return reduceRows(r, rows)
+}
+
+// place sorts a period-bound metric's rows into the periods of cur and
+// prev by period ID: by the sprint its bucket names for a metric grouped
+// by sprint, else by its at. A row that falls in no period is out of the
+// range.
+func place(m Metric, rows []contribution, periods ...[]period) map[string][]contribution {
+	out := map[string][]contribution{}
+	bySprint := map[string]string{}
+	var all []period
+	for _, ps := range periods {
+		for _, p := range ps {
+			all = append(all, p)
+			for _, s := range p.sprints {
+				bySprint[s] = p.id
+			}
+		}
+	}
+	for _, c := range rows {
+		if m.Bucket == BucketSprint {
+			if id, ok := bySprint[c.bucket]; ok {
+				out[id] = append(out[id], c)
+			}
+			continue
+		}
+		if !c.hasAt {
+			continue
+		}
+		for _, p := range all {
+			if p.holds(c.at) {
+				out[p.id] = append(out[p.id], c)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// seriesOf is the series rows name, in the metric's declared order and
+// then in text order; one unnamed series when the metric names none.
+func seriesOf(m Metric, cols columns, rows []contribution) []string {
+	if !cols.has(ColumnSeries) {
+		return []string{""}
+	}
+	out := slices.Clone(m.Series)
+	var rest []string
+	for _, c := range rows {
+		if !slices.Contains(out, c.series) && !slices.Contains(rest, c.series) {
+			rest = append(rest, c.series)
+		}
+	}
+	slices.Sort(rest)
+	return append(out, rest...)
+}
+
+// group is rows by bucket key, the keys in first-seen order.
+func group(rows []contribution, key func(contribution) string) ([]string, map[string][]contribution) {
+	var keys []string
+	out := map[string][]contribution{}
+	for _, c := range rows {
+		k := key(c)
+		if _, ok := out[k]; !ok {
+			keys = append(keys, k)
+		}
+		out[k] = append(out[k], c)
+	}
+	return keys, out
+}
+
+// bySeries is the rows of series s; all of them for the unnamed one.
+func bySeries(rows []contribution, s string, named bool) []contribution {
+	if !named {
+		return rows
+	}
+	var out []contribution
+	for _, c := range rows {
+		if c.series == s {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// sortDrill orders a cell's rows as the drill and the ticket list show
+// them: counted rows by value, largest first, then by ticket key; then the
+// rows the metric does not count, by key.
+func sortDrill(rows []contribution, keyOf func(string) string) {
+	slices.SortStableFunc(rows, func(a, b contribution) int {
+		if a.counted != b.counted {
+			if a.counted {
+				return -1
+			}
+			return 1
+		}
+		if a.counted && a.value != b.value {
+			return cmp.Compare(b.value, a.value)
+		}
+		return compareKeys(keyOf(a.ticket), keyOf(b.ticket))
+	})
+}
+
+// compareKeys orders ticket keys as people read them: WEB-9 before WEB-10.
+func compareKeys(a, b string) int {
+	pa, na, oka := splitKey(a)
+	pb, nb, okb := splitKey(b)
+	if oka && okb && pa == pb {
+		return cmp.Compare(na, nb)
+	}
+	return strings.Compare(a, b)
+}
+
+func splitKey(k string) (string, int, bool) {
+	i := strings.LastIndexByte(k, '-')
+	if i < 0 {
+		return "", 0, false
+	}
+	n := 0
+	for _, r := range k[i+1:] {
+		if r < '0' || r > '9' || n > 1e9 {
+			return "", 0, false
+		}
+		n = n*10 + int(r-'0')
+	}
+	return k[:i], n, i+1 < len(k)
+}
