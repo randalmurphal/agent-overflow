@@ -378,8 +378,9 @@ func createdTitles(f *trackerBoardFixture, linear bool) []string {
 // its moves from the detail read (no transitions read); warm, the plan
 // reads the cards, which keep no read, so the move reads them. A call
 // that sets an estimate reads its tickets through their rows on its
-// board (rows, Issues), which the estimate takes as its check that the
-// board lists the issue; after a status move it checks again. Every write
+// board (rows, Issues); a Jira estimate takes that read as its check that
+// the board lists the issue, and checks again after a status move, and a
+// Linear estimate reads the issue's team first (IssueTeam). Every write
 // ends with one refresh (rows, Issues). A read is one read
 // and then the same read again, after "|"; a create followed by a create
 // of another ticket on the same client is the two creates.
@@ -437,10 +438,10 @@ var costPins = map[string]string{
 	"linear/title/cold/3":                  "Issues×2 UpdateIssue×3 Issues",
 	"linear/title/warm/1":                  "Issues UpdateIssue Issues",
 	"linear/title/warm/3":                  "Issues×2 UpdateIssue×3 Issues",
-	"linear/estimate/cold/1":               "Issues UpdateIssue Issues",
-	"linear/estimate/cold/3":               "Issues×2 UpdateIssue×3 Issues",
-	"linear/estimate/warm/1":               "Issues UpdateIssue Issues",
-	"linear/estimate/warm/3":               "Issues×2 UpdateIssue×3 Issues",
+	"linear/estimate/cold/1":               "IssueTeam Issues UpdateIssue Issues",
+	"linear/estimate/cold/3":               "IssueTeam Issues×2 UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue Issues",
+	"linear/estimate/warm/1":               "IssueTeam Issues UpdateIssue Issues",
+	"linear/estimate/warm/3":               "IssueTeam Issues×2 UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue Issues",
 	"linear/mixed/cold/1":                  "IssueDetails UpdateIssue×2 IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment Issues",
 	"linear/mixed/cold/3":                  "IssueDetails Issues UpdateIssue×6 IssueTeam UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment×3 Issues",
 	"linear/mixed/warm/1":                  "IssueDetails UpdateIssue×2 IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment Issues",

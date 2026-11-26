@@ -22,7 +22,7 @@ func TestListIssuesVariables(t *testing.T) {
 	ctx := context.Background()
 	p, err := c.ListIssues(ctx, IssueQuery{Filter: IssueFilter{Teams: []string{"team-web"}, States: []string{"state-todo"}}}, "")
 	if err != nil || len(p.Items) != 1 || !p.HasNextPage || p.EndCursor != "c1" || p.Items[0].ProjectID != "project-1" ||
-		p.Items[0].TeamID != "team-web" || p.Items[0].TeamEstimateScale.Scale != EstimateFibonacci ||
+		p.Items[0].TeamID != "team-web" || p.Items[0].TeamEstimateScale != EstimateFibonacci ||
 		len(p.Items[0].Labels) != 1 || p.Items[0].Labels[0] != (LabelRef{ID: "label-bug", Name: "Bug"}) {
 		t.Fatalf("page %+v %v", p, err)
 	}

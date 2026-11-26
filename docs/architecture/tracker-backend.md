@@ -2390,18 +2390,20 @@ A person's estimate costs what it did: a rows read (Jira) or `IssueTeam`
 | Sprint | 5 | 6 | 4 | 5 |
 | Backlog | 4 | 5 | 4 | 5 |
 | Title | 4 | 9 | 3 | 6 |
-| Estimate | 3 | 6 | 3 | 6 |
+| Estimate | 3 | 6 | 4 | 9 |
 | Status, title, estimate, sprint and comment, cold | 13 | 30 | 9 | 20 |
 | The same, warm | 13 | 28 | 9 | 20 |
 
 A cold status takes its moves from the plan's detail read; a warm one is
 planned on the cards, which keep no read, so the move reads its moves.
-An estimate takes the rows read its call made, after the approval the
-second one, as its check that the board lists the ticket (`tracker
+A Jira estimate takes the rows read its call made, after the approval
+the second one, as its check that the board lists the ticket (`tracker
 RowsRead`, kept by the write session until something is sent to the
-ticket), so it sends with no read of its own: one request per ticket.
-After a status move to the same ticket it checks again, a rows read on
-Jira and `IssueTeam` on Linear, as before. A Jira ticket on two boards
+ticket), so it sends with no read of its own: one request per ticket;
+after a status move to the same ticket it checks again with a rows read.
+A Linear estimate reads the issue's team and its scale (`IssueTeam`)
+before each send, as a person's does: the rows read selects no team
+scale, which only this check would use. A Jira ticket on two boards
 costs 4 for a new estimate (its board's rows, the estimate, and the
 refresh of both boards) and 1 for one it holds already
 (`TestTrackerAgentEstimateOnTwoBoardsRequests`). A create costs 5 on Jira

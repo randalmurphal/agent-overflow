@@ -209,9 +209,9 @@ type Issue struct {
 	SubIssueSortOrder *float64
 	TeamID            string
 	// TeamEstimateScale is the team's estimate scale as of the read, so
-	// a list can tell an estimate the team counts, and a write the values
-	// it takes, without reading the team; its Default is not read.
-	TeamEstimateScale Estimation
+	// a list can tell an estimate the team counts without reading the
+	// team.
+	TeamEstimateScale EstimateScale
 	StateID           string
 	AssigneeID        string
 	CreatorID         string

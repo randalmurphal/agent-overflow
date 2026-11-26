@@ -39,7 +39,7 @@ func TestRowsAllocations(t *testing.T) {
 	for i := range issues {
 		issues[i] = linear.Issue{
 			ID: issueID(i + 1), Identifier: fmt.Sprintf("WEB-%d", i+1), Title: fmt.Sprintf("Issue %d", i+1), Priority: 2, Estimate: &three,
-			SortOrder: float64(i), TeamID: web, TeamEstimateScale: linear.Estimation{Scale: "fibonacci"}, StateID: "state-todo", AssigneeID: "user-1", CycleID: "cycle-1",
+			SortOrder: float64(i), TeamID: web, TeamEstimateScale: "fibonacci", StateID: "state-todo", AssigneeID: "user-1", CycleID: "cycle-1",
 			LabelIDs: []string{"label-bug", "label-ui"}, Labels: []linear.LabelRef{{ID: "label-bug", Name: "Bug"}, {ID: "label-ui", Name: "UI"}},
 			CreatedAt: at, UpdatedAt: at,
 		}

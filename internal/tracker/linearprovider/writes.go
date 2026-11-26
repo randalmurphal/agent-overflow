@@ -187,7 +187,7 @@ func (p *Provider) SetEstimate(ctx context.Context, in tracker.EstimateInput) tr
 	if !linear.IsIssueID(string(in.Issue)) {
 		return notIssueID(step, in.Issue, in.Issue)
 	}
-	team, err := p.estimateTeam(ctx, in)
+	it, err := p.c.IssueTeam(ctx, string(in.Issue))
 	switch {
 	case errors.Is(err, trackerapi.ErrNotFound):
 		r := notOnBoard(in.Issue, in.Board)
@@ -195,12 +195,12 @@ func (p *Provider) SetEstimate(ctx context.Context, in tracker.EstimateInput) tr
 		return tracker.Refuse(step, r, in.Issue)
 	case err != nil:
 		return beforeWrite(step, fmt.Errorf("linearprovider: read issue %s with its team: %w", in.Issue, err), in.Issue)
-	case team.ID != string(in.Board):
+	case it.Archived || it.Team.ID != string(in.Board):
 		return tracker.Refuse(step, notOnBoard(in.Issue, in.Board), in.Issue)
 	}
 	value := linear.Null[int]()
 	if in.Value != nil {
-		v, ok := onScale(estimate(team.Estimation), *in.Value)
+		v, ok := onScale(estimate(it.Team.Estimation), *in.Value)
 		if !ok {
 			return refuse(step, tracker.Refusal{Reason: tracker.ReasonInvalid, Message: fmt.Sprintf("%v is not an estimate on board %s", *in.Value, in.Board)}, in.Issue)
 		}
@@ -208,46 +208,6 @@ func (p *Provider) SetEstimate(ctx context.Context, in tracker.EstimateInput) tr
 	}
 	_, err = p.c.UpdateIssue(ctx, string(in.Issue), linear.UpdateIssueInput{Estimate: value})
 	return one(in.Issue, step, err, tracker.RowOf(in.Board, in.Issue), tracker.CardOf(in.Issue), tracker.DetailOf(in.Issue))
-}
-
-// teamRows is a rows read's tracker.RowsRead: the issues read, which the
-// rows read lists only while unarchived on board's team.
-type teamRows struct {
-	board  tracker.BoardID
-	issues []linear.Issue
-}
-
-func (r teamRows) RowRead(issue tracker.IssueID) tracker.IssueRead {
-	i := slices.IndexFunc(r.issues, func(is linear.Issue) bool { return is.ID == string(issue) && is.TeamID == string(r.board) })
-	if i < 0 {
-		return nil
-	}
-	is := r.issues[i]
-	return &teamRead{issue: issue, team: is.TeamID, estimation: is.TeamEstimateScale}
-}
-
-// teamRead is a row's tracker.IssueRead: the issue's team, which held it
-// unarchived, and the team's estimate scale at the read.
-type teamRead struct {
-	issue      tracker.IssueID
-	team       string
-	estimation linear.Estimation
-}
-
-func (r *teamRead) ReadIssue() tracker.IssueID { return r.issue }
-
-// estimateTeam is the team of in's issue with its scale, from in.Read
-// when it is a read of the issue, else read now (IssueTeam); an archived
-// issue is on no team's board.
-func (p *Provider) estimateTeam(ctx context.Context, in tracker.EstimateInput) (linear.Team, error) {
-	if r, ok := in.Read.(*teamRead); ok && r.issue == in.Issue {
-		return linear.Team{ID: r.team, Estimation: r.estimation}, nil
-	}
-	it, err := p.c.IssueTeam(ctx, string(in.Issue))
-	if err != nil || it.Archived {
-		return linear.Team{}, err
-	}
-	return it.Team, nil
 }
 
 // onScale is v as Linear's whole-number estimate when the board takes
