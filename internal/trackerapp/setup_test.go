@@ -902,6 +902,68 @@ func TestStartWorkDefaultsAreSavedPerTrackerProject(t *testing.T) {
 	}
 }
 
+// A project's agent rules are its threads' built-in ones (changes allowed,
+// several tickets asked) until set; each rule set off is kept apart from
+// one not set and read back after a restart; a Start work entry that only
+// turns off naming the branch is kept; and the rules of a setup that
+// cannot be read, or whose agents section a newer version saved, are
+// refused rather than taken as the built-in ones.
+func TestAgentRulesAreSavedWithTheirDefaults(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	rules, err := m.svc.ProjectAgentRules(m.project())
+	if err != nil || !rules.Changes() || !rules.Asks() {
+		t.Fatalf("the rules of a project with no setup = %+v, %v; want changes and asks", rules, err)
+	}
+	off := false
+	save := m.saveSetup(t, m.project(), Setup{
+		Agents:    AgentRules{ChangeTickets: &off},
+		StartWork: []StartWorkDefaults{{Tracker: "jira", Site: m.conn.Site, Project: "WEB", NameBranch: &off}},
+	})
+	if a := save.Stored.Setup.Agents; a.ChangeTickets == nil || *a.ChangeTickets || a.AskSeveral != nil {
+		t.Fatalf("the rules as stored: %+v", a)
+	}
+	if sw := save.Stored.Setup.StartWork; len(sw) != 1 || sw[0].NameBranch == nil || *sw[0].NameBranch {
+		t.Fatalf("a Start work entry that only turns off naming the branch: %+v", sw)
+	}
+	data, err := os.ReadFile(m.setupPathOf(t, m.project()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"agents": {`) || !strings.Contains(string(data), `"change_tickets": false`) ||
+		strings.Contains(string(data), "ask_several") || !strings.Contains(string(data), `"name_branch": false`) {
+		t.Fatalf("the file:\n%s", data)
+	}
+	m.restart(t)
+	rules, err = m.svc.ProjectAgentRules(m.project())
+	if err != nil || rules.Changes() || !rules.Asks() {
+		t.Fatalf("the rules after a restart = %+v, %v; want no changes, asks", rules, err)
+	}
+	stored := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
+	cleared := m.saveSetup(t, m.project(), Setup{StartWork: stored.Setup.StartWork})
+	if cleared.Stored.Setup.Agents.set() {
+		t.Fatalf("rules cleared are stored as %+v", cleared.Stored.Setup.Agents)
+	}
+	if after, _ := os.ReadFile(m.setupPathOf(t, m.project())); strings.Contains(string(after), `"agents"`) {
+		t.Fatalf("rules cleared left their section:\n%s", after)
+	}
+
+	m.writeSetupFile(t, m.project(), `{"agents": {"version": 2, "rules": ["any"]}}`)
+	m.restart(t)
+	if _, err := m.svc.ProjectAgentRules(m.project()); !errors.Is(err, ErrSetupNewer) {
+		t.Fatalf("the rules a newer version saved: %v; want ErrSetupNewer", err)
+	}
+	newer := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
+	if _, err := m.svc.SetProjectSetup(m.project(), newer.Revision, Setup{Agents: AgentRules{AskSeveral: &off}}); !errors.Is(err, ErrSetupNewer) {
+		t.Fatalf("rules saved over a newer agents section: %v", err)
+	}
+	m.writeSetupFile(t, m.project(), `{"agents": {"version": 1, "change_tickets": "no"}}`)
+	m.restart(t)
+	if _, err := m.svc.ProjectAgentRules(m.project()); !errors.Is(err, ErrSetupUnreadable) {
+		t.Fatalf("the rules of an unreadable setup: %v; want ErrSetupUnreadable", err)
+	}
+}
+
 // A project's statuses are its listed boards' columns as this computer
 // read them, once each in picker and column order with the tracker's
 // group, one site for two connections to it; a board not read yet is
