@@ -3,7 +3,9 @@
 // holds the rows near the viewport; while a row is carried nothing
 // renders but the gap's slide and the headers' numbers; a drop into the
 // active sprint places the row before the one after the gap; and a row
-// whose move is out takes no second carry. It also measures the screen
+// whose move is out takes no second carry; a ticket made at a sprint's
+// foot whose move into it failed is offered that move until the board
+// shows it there, placed through the row's menu. It also measures the screen
 // against the Board's 2,000-card column in the same run (mount, scroll,
 // the menu's open, a carry's start and its frames) and logs both.
 
@@ -247,6 +249,62 @@ function watchRows(host: HTMLElement): { changes: () => string[]; stop: () => vo
   observer.observe(host.querySelector('[data-testid="issues-backlog"]')!, { subtree: true, childList: true, attributes: true, characterData: true });
   return { changes: () => seen, stop: () => observer.disconnect() };
 }
+
+describe('a ticket made at a sprint\'s foot', () => {
+  it('is offered its move into the sprint until the board shows it there, and the row\'s menu placing it ends the offer', async () => {
+    const made = { order: 'k00003', estimate: 0, card: { id: '9001', key: 'WEB-9001', title: 'Made here', status: { id: 's1', name: 's1', group: 'todo' }, created: 0, updated: 0 } } as RowView;
+    const view = backlogBoard();
+    const small = { ...view, project: '10000', backlog: { rows: 2, estimate: 4 }, sections: [view.sections[0], { section: { kind: 'backlog' }, rows: MANY.slice(0, 2), next: null }] } as unknown as BoardView;
+    const patches: ((p: BoardPatch) => void)[] = [];
+    setBindingMock('TrackerBoardPatch', () => new Promise<BoardPatch>((resolve) => { patches.push(resolve); }));
+    setBindingMock('TrackerBoardProjects', async () => [{ id: '10000', key: 'WEB', name: 'Web' }]);
+    setBindingMock('TrackerIssueTypes', async () => [{ id: '6', name: 'Task', level: 0 }]);
+    setBindingMock('TrackerCreateFields', async () => []);
+    setBindingMock('CreateTrackerIssue', async () => ({
+      parts: [{ step: 'create', state: 'applied', issue: '9001' }, { step: 'sprint_move', state: 'refused', issue: '9001', refusal: { reason: 'tracker', message: 'Sprint 8 is full.' } }],
+      created: '9001', created_key: 'WEB-9001',
+    }) as WriteView);
+    const moved = setBindingMock('MoveTrackerIssuesToSprint', async () => ({ parts: [{ step: 'sprint_move', state: 'applied', issue: '9001' }] }) as WriteView);
+    const { host } = await mountBacklog('jira', small);
+    const foot = () => host.querySelector<HTMLElement>('[data-testid="issues-backlog-foot"][data-list="sprint:8"]')!;
+    await waitFor(() => foot()?.querySelector('[data-testid="issues-backlog-new"]') != null, 'the sprint\'s New ticket');
+    foot().querySelector<HTMLElement>('[data-testid="issues-backlog-new"]')!.click();
+    await waitFor(() => foot().querySelector('[data-testid="issues-backlog-create-title"]') !== null, 'the form');
+    const title = foot().querySelector<HTMLInputElement>('[data-testid="issues-backlog-create-title"]')!;
+    title.value = 'Made here';
+    title.dispatchEvent(new Event('input', { bubbles: true }));
+    await waitFor(() => !foot().querySelector<HTMLButtonElement>('[data-testid="issues-backlog-create-submit"]')!.disabled, 'Add ready');
+    foot().querySelector<HTMLButtonElement>('[data-testid="issues-backlog-create-submit"]')!.click();
+    const offer = () => foot().querySelector('[data-testid="issues-backlog-create-unplaced"]');
+    await waitFor(() => offer() !== null, 'the offer');
+    expect(offer()!.querySelector('[data-testid="issues-backlog-create-unplaced-said"]')!.textContent).toBe('Created WEB-9001, but it was not moved into its sprint: Sprint 8 is full.');
+
+    // The board's next read shows the ticket in the backlog.
+    trackerBoardUpdated({ scope: { connection: 'c1', board: '1' }, seq: 11, changed: ['9001'] }, HOME_BACKEND);
+    await waitFor(() => patches.length === 1, 'the patch read');
+    patches[0]({ lifetime: 1, revision: 2, sections: [{ rows: [] }, { rows: [made] }] } as unknown as BoardPatch);
+    await waitFor(() => rowEl(host, '9001') !== null, 'the made row in the backlog');
+    expect(offer()).not.toBeNull();
+
+    // Its row's menu moves it into Sprint 8; the board's read after shows
+    // it there, and the offer is gone with nothing sent from it.
+    const r = rowEl(host, '9001')!.getBoundingClientRect();
+    rowEl(host, '9001')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 40, clientY: r.top + 10 }));
+    await waitFor(() => document.querySelector('[data-testid="issues-card-menu-sprint"]') !== null || document.querySelector('[data-testid="action-menu-more"]') !== null, 'the menu');
+    document.querySelector<HTMLElement>('[data-testid="action-menu-more"]')?.click();
+    await waitFor(() => document.querySelector('[data-testid="issues-card-menu-sprint"]') !== null, 'Move to sprint…');
+    document.querySelector<HTMLElement>('[data-testid="issues-card-menu-sprint"]')!.click();
+    await waitFor(() => document.querySelector('[data-testid="issues-card-sprint"]') !== null, 'the sprints');
+    [...document.querySelectorAll<HTMLElement>('[data-testid="issues-card-sprint"]')].find((el) => el.textContent?.includes('Sprint 8'))!.click();
+    await waitFor(() => moved.mock.calls.length === 1, 'the menu\'s move');
+    expect(moved.mock.calls[0][1]).toMatchObject({ board: '1', sprint: '8', issues: ['9001'] });
+    trackerBoardUpdated({ scope: { connection: 'c1', board: '1' }, seq: 12, changed: ['9001'] }, HOME_BACKEND);
+    await waitFor(() => patches.length === 2, 'the second patch read');
+    patches[1]({ lifetime: 1, revision: 3, sections: [{ rows: [made] }, { rows: [] }] } as unknown as BoardPatch);
+    await waitFor(() => offer() === null, 'the offer gone');
+    expect(moved).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('the Backlog screen over 2,000 rows', () => {
   it('mounts the rows near the viewport, slides them aside for a carry with nothing else rendering, and places a drop before the row after the gap', async () => {

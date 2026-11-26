@@ -17,7 +17,7 @@
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { describe, expect, it } from 'vitest';
-import type { FieldView, IssueTypeView, ProjectView, WriteView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { FieldView, IssueTypeView, ProjectView, RowView, WriteView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import BacklogCreate, { type CreateDraft } from './BacklogCreate.svelte';
 import { ticketWriteSurfaceContext } from './ticketWriteSurface';
 import { PICK_LIMIT } from './ticketEditors';
@@ -27,6 +27,7 @@ import { setLastCreateChoice } from '../../stores/issuesPane.svelte';
 import { getToasts } from '../../stores/toast.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { rawProps } from '../../../test/helpers/rawProps.svelte';
 
 const REF = { backend: HOME_BACKEND, projectId: 'p1', connection: 'c1', board: '1' };
 const B = boardWriteContext(REF);
@@ -62,10 +63,14 @@ async function pick(container: HTMLElement, id: string, name: string): Promise<v
 }
 
 function open(project: string, opts: { drafts?: SvelteMap<string, CreateDraft>; sec?: BacklogSection } = {}) {
-  return render(BacklogCreate, {
-    context: ticketWriteSurfaceContext(() => true),
-    props: { b: B, boardKey: 'board-key', boardRef: REF, sec: opts.sec ?? SPRINT, project, typed: true, drafts: opts.drafts ?? new SvelteMap() },
-  });
+  const props = rawProps({ b: B, boardKey: 'board-key', boardRef: REF, sec: opts.sec ?? SPRINT, project, typed: true, drafts: opts.drafts ?? new SvelteMap<string, CreateDraft>() });
+  return Object.assign(render(BacklogCreate, { context: ticketWriteSurfaceContext(() => true), props }), { props });
+}
+
+/** The section as the board shows it holding `ids`, as its read after a
+ * move into it does. */
+function holding(sec: BacklogSection, ...ids: string[]): BacklogSection {
+  return { ...sec, rows: ids.map((id) => ({ order: id, card: { id, key: `WEB-${Number(id) - 10000}` } }) as RowView) };
 }
 
 describe('New ticket', () => {
@@ -420,7 +425,9 @@ describe('New ticket', () => {
     await fireEvent.input(title, { target: { value: 'Made once' } });
     await waitFor(() => expect((view.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(false));
     await fireEvent.keyDown(title, { key: 'Enter' });
-    await waitFor(() => expect(view.getByTestId('ticket-write-outcome').textContent).toContain('Created WEB-12, but it was not moved into its sprint: Sprint 9 is closed.'));
+    await waitFor(() => expect(view.getByTestId('issues-backlog-create-unplaced-said').textContent).toBe('Created WEB-12, but it was not moved into its sprint: Sprint 9 is closed.'));
+    // The offer says it: no note beside it says it again.
+    expect(view.queryByTestId('ticket-write-outcome')).toBeNull();
     // The title went with the made ticket: Add sends nothing more.
     await waitFor(() => expect(title.value).toBe(''));
     expect((view.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(true);
@@ -429,6 +436,9 @@ describe('New ticket', () => {
     await fireEvent.click(view.getByTestId('issues-backlog-create-move'));
     await waitFor(() => expect(moved).toHaveBeenCalledTimes(1));
     expect(moved.mock.calls[0]).toEqual(['c1', { board: '1', sprint: '9', issues: ['10012'], prev: undefined, next: undefined }]);
+    // Applied, and offered until the board shows it in the sprint.
+    await waitFor(() => expect((view.getByTestId('issues-backlog-create-move') as HTMLButtonElement).disabled).toBe(false));
+    view.props.sec = holding(SPRINT, '10012');
     await waitFor(() => expect(view.queryByTestId('issues-backlog-create-move')).toBeNull());
     view.unmount();
   });
@@ -487,10 +497,12 @@ describe('New ticket', () => {
     answer({ parts: [{ step: 'sprint_move', state: 'refused', issue: '10012', refusal: { reason: 'tracker', message: 'Sprint 9 is closed.' } }] } as WriteView);
     await waitFor(() => expect(move12().disabled).toBe(false));
     expect(offers()).toEqual(['Move WEB-12 into Sprint 9', 'Move WEB-13 into Sprint 9']);
-    // Placed: no longer offered.
+    // Placed, once the board shows it in the sprint: no longer offered.
     await fireEvent.click(move12());
     await waitFor(() => expect(moved).toHaveBeenCalledTimes(2));
     answer({ parts: [{ step: 'sprint_move', state: 'applied', issue: '10012' }] } as WriteView);
+    await waitFor(() => expect(move12().disabled).toBe(false));
+    view.props.sec = holding(SPRINT, '10012');
     await waitFor(() => expect(offers()).toEqual(['Move WEB-13 into Sprint 9']));
     // Dismissed: no longer offered, and nothing sent.
     await fireEvent.click(view.getByTestId('issues-backlog-create-move-dismiss'));
@@ -499,25 +511,44 @@ describe('New ticket', () => {
     view.unmount();
   });
 
-  it('says it may not be in its sprint when the move\'s answer was lost, and does not make it again', async () => {
+  it('says it may not be in its sprint when the move\'s answer was lost, also after its foot comes back and another ticket is made, does not make it again, and stops offering the move once the board shows it there', async () => {
     setBindingMock('TrackerBoardProjects', async () => PROJECTS);
     setBindingMock('TrackerIssueTypes', async () => TYPES);
     setBindingMock('TrackerCreateFields', async () => []);
-    const created = setBindingMock('CreateTrackerIssue', async () => ({
+    let makes = 0;
+    const created = setBindingMock('CreateTrackerIssue', async () => (makes++ === 0 ? {
       parts: [{ step: 'create', state: 'applied', issue: '10012' }, { step: 'sprint_move', state: 'unknown', issue: '10012', failure: { kind: 'transient', message: 'Jira did not answer in full.', at: 1 } }],
       created: '10012',
-    }) as WriteView);
-    const view = open('10000');
+    } : { parts: [{ step: 'create', state: 'applied', issue: '10013' }, { step: 'sprint_move', state: 'applied', issue: '10013' }], created: '10013', created_key: 'WEB-13' }) as WriteView);
+    const drafts = new SvelteMap<string, CreateDraft>();
+    const view = open('10000', { drafts });
     await fireEvent.click(view.getByTestId('issues-backlog-new'));
     const title = view.getByTestId('issues-backlog-create-title') as HTMLInputElement;
     await fireEvent.input(title, { target: { value: 'Made once' } });
     await waitFor(() => expect((view.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(false));
     await fireEvent.click(view.getByTestId('issues-backlog-create-submit'));
-    await waitFor(() => expect(view.getByTestId('ticket-write-outcome').textContent).toContain('Created the ticket; it may not be in its sprint: Jira did not answer in full.'));
+    const said = 'Created the ticket; it may not be in its sprint: Jira did not answer in full.';
+    await waitFor(() => expect(view.getByTestId('issues-backlog-create-unplaced-said').textContent).toBe(said));
     await waitFor(() => expect(title.value).toBe(''));
     expect(view.getByTestId('issues-backlog-create-move').textContent).toBe('Move it into Sprint 9');
     expect(created).toHaveBeenCalledTimes(1);
     view.unmount();
+    // The foot back, and another ticket made: the offer still says what is
+    // known of the first move.
+    const again = open('10000', { drafts });
+    const next = again.getByTestId('issues-backlog-create-title') as HTMLInputElement;
+    await fireEvent.input(next, { target: { value: 'Made next' } });
+    await waitFor(() => expect((again.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.keyDown(next, { key: 'Enter' });
+    await waitFor(() => expect(created).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(next.value).toBe(''));
+    expect(again.getByTestId('issues-backlog-create-unplaced-said').textContent).toBe(said);
+    expect(again.getByTestId('issues-backlog-create-move').textContent).toBe('Move it into Sprint 9');
+    // Placed another way (the row's menu, another screen): the board shows
+    // it in the sprint, and the offer is gone with no move from here.
+    again.props.sec = holding(SPRINT, '10012');
+    await waitFor(() => expect(again.queryByTestId('issues-backlog-create-unplaced')).toBeNull());
+    again.unmount();
   });
 
   it('offers a field the tracker fills when none is given, sends it only when picked, and leaves one it cannot set to the tracker', async () => {
