@@ -131,7 +131,8 @@ type Refusal struct {
 	Fields     []FieldMessage
 	Candidates []Choice
 	// Lost names, one sentence each, the content a rich text edit would
-	// lose, with how to keep it.
+	// lose, then for an edit how to keep it; a clear names only what it
+	// erases.
 	Lost []string
 	// Err is the failure the refusal was read from; Outcome.Err returns
 	// it.

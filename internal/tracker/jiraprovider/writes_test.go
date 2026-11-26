@@ -252,8 +252,13 @@ func TestAnEmptiedLayoutNeedsItsLossAccepted(t *testing.T) {
 		return checked(t, p.Edit(t.Context(), tracker.EditInput{Issue: "10001", AcceptLoss: accept,
 			Fields: []tracker.FieldEdit{{Field: "description", Value: tracker.MarkdownEdit("", adf.ToMarkdown(layoutDoc()))}}}))
 	}
-	if res := clear(false); reason(res, 0) != tracker.ReasonLoss || f.Count("PUT", issuePath) != 0 {
+	res := clear(false)
+	if reason(res, 0) != tracker.ReasonLoss || f.Count("PUT", issuePath) != 0 {
 		t.Fatalf("an emptied layout: %s, %d writes", states(res), f.Count("PUT", issuePath))
+	}
+	// The refusal names what the clear erases and no way to keep it.
+	if r, _ := res.Parts[0].Outcome.Refusal(); !slices.Equal(r.Lost, []string{"the clear removes content Markdown shows only simplified: the column layout, the column column 50%"}) {
+		t.Errorf("an emptied layout's loss = %q", r.Lost)
 	}
 	if res := clear(true); states(res) != "edit:applied" || f.Count("PUT", issuePath) != 1 {
 		t.Fatalf("an emptied layout with its loss accepted: %s", states(res))

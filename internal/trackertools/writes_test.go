@@ -398,7 +398,7 @@ func TestUpdateDoesNotAddACommentTwice(t *testing.T) {
 		return trackerapp.WriteView{}, fmt.Errorf("%w: %w", trackerapp.ErrAgentRepeatUnchecked, trackerapp.ErrAgentAccountUnknown)
 	}
 	answer, err = w.update(t, args)
-	if want := `{"tickets":[{"key":"WEB-12","refused":"comment: an earlier call's comment may have been added, and it cannot be checked: the connection's account was not known when it was sent. It was not sent again; ask the user to check the connection in Settings, Issues, then call again."}]}`; err != nil || answer != want {
+	if want := `{"tickets":[{"key":"WEB-12","refused":"comment: an earlier call's comment may have been added, and it cannot be checked: the connection's account was not known when it was sent. It was not sent again, and a call again within an hour of that attempt is refused the same way; read the ticket to see whether the comment is there."}]}`; err != nil || answer != want {
 		t.Fatalf("a comment of an unknown account = %s, %v\nwant %s", answer, err, want)
 	}
 	if len(w.h.rows) != 0 {
@@ -556,7 +556,7 @@ func TestCreateIsNotMadeTwice(t *testing.T) {
 		return trackerapp.WriteView{}, fmt.Errorf("%w: %w", trackerapp.ErrAgentRepeatUnchecked, trackerapp.ErrAgentAccountUnknown)
 	}
 	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "Login fails"})
-	refused(t, err, CodeUnknown, "An earlier call may have created this ticket, and it cannot be checked: the connection's account was not known when it was sent. It was not created again; ask the user to check the connection in Settings, Issues, then call again.")
+	refused(t, err, CodeUnknown, "An earlier call may have created this ticket, and it cannot be checked: the connection's account was not known when it was sent. It was not created again, and a call again within an hour of that attempt is refused the same way; find the ticket by its title to see whether it is there.")
 }
 
 // A confirmed create answers the key its own answer gave and writes its

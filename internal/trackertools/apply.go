@@ -81,7 +81,7 @@ func (s *Server) apply(ctx context.Context, caller Caller, p *planned) (ticketAn
 			out.Refused, stopped = st.names[0]+": the same "+st.what+" is still being sent by an earlier call, so it was not sent again; call again once that call has answered.", true
 			continue
 		case errors.Is(err, trackerapp.ErrAgentRepeatUnchecked):
-			out.Refused, stopped = st.names[0]+": "+uncheckedSentence("an earlier call's "+st.what+" may have been added", "the ticket's comments could not be read to check", "sent", err), true
+			out.Refused, stopped = st.names[0]+": "+uncheckedSentence("an earlier call's "+st.what+" may have been added", "the ticket's comments could not be read to check", "sent", "read the ticket to see whether the comment is there", err), true
 			continue
 		case err == nil && v.Repeat != nil:
 			out.Already, out.Note = append(out.Already, st.names...), repeatedComment
@@ -161,7 +161,7 @@ func judge(kind, names, what string, v trackerapp.WriteView, err error) (tracker
 		return state, unknownSentence(kind, names, what)
 	case tracker.StateRefused:
 		if refusal != nil {
-			return state, names + ": " + refusalText(refusal)
+			return state, names + ": " + refusalText(kind, refusal)
 		}
 	case tracker.StateNotSent:
 		// Its failure says why, below.
@@ -184,11 +184,14 @@ func unknownSentence(kind, names, what string) string {
 // been made (maybe) and could not be looked for (err, a
 // trackerapp.ErrAgentRepeatUnchecked): the lookup failed (failed says
 // how), or the connection's account was not known when it was sent.
-// Nothing was sent; done says so ("sent", "created").
-func uncheckedSentence(maybe, failed, done string, err error) string {
+// Nothing was sent; done says so ("sent", "created"). A call again
+// cannot check an attempt sent with no account, and is refused the same
+// way while that attempt answers repeats, so its sentence says where to
+// look (look) instead.
+func uncheckedSentence(maybe, failed, done, look string, err error) string {
 	if errors.Is(err, trackerapp.ErrAgentAccountUnknown) {
 		return maybe + ", and it cannot be checked: the connection's account was not known when it was sent. It was not " + done +
-			" again; ask the user to check the connection in Settings, Issues, then call again."
+			" again, and a call again within an hour of that attempt is refused the same way; " + look + "."
 	}
 	return maybe + ", and " + failed + ", so it was not " + done + " again; call again to check again."
 }
@@ -204,12 +207,16 @@ func trackerNameOf(kind string) string {
 	return "The tracker"
 }
 
-// refusalText is a refusal as a model reads it: the provider's sentence
-// without its package prefix, or for a refusal whose sentence would carry
-// the tracker's names bare (a value matching several, a value matching
-// none, a field changed since it was read) a sentence of the tool's own
-// with each name quoted.
-func refusalText(r *trackerapp.RefusalView) string {
+// refusalText is a refusal on a tracker of kind as a model reads it: the
+// provider's sentence without its package prefix, or for a refusal whose
+// sentence would carry the tracker's names bare (a value matching
+// several, a value matching none, a field changed since it was read) a
+// sentence of the tool's own with each name quoted. A value matching
+// several says what tells them apart in the text this tool sends: Jira
+// takes a value by its ID, Linear only by name, and a person also by
+// email (linearprovider's matchOne), so one Linear values share may be
+// left for the person to pick.
+func refusalText(kind string, r *trackerapp.RefusalView) string {
 	msg := strings.TrimSpace(r.Message)
 	for _, prefix := range []string{"jira: ", "linear: ", "linearprovider: ", "jiraprovider: ", "tracker: "} {
 		msg = strings.TrimPrefix(msg, prefix)
@@ -233,6 +240,8 @@ func refusalText(r *trackerapp.RefusalView) string {
 		return sayList(names, "or")
 	}
 	switch {
+	case r.Reason == "ambiguous" && len(r.Candidates) > 0 && kind == "linear":
+		msg = "it matches more than one value: " + candidates(false) + "; Linear matches it by name, and a person also by email: give a name or an email only one of them has, or ask the user to pick one on the ticket"
 	case r.Reason == "ambiguous" && len(r.Candidates) > 0:
 		msg = "it matches more than one value: " + candidates(true) + "; give one by its ID"
 	case r.Reason == "no_match" && len(r.Candidates) > 0:

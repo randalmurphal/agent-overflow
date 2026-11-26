@@ -100,7 +100,7 @@ func (s *Server) create(ctx context.Context, caller Caller, raw json.RawMessage)
 	case errors.Is(err, trackerapp.ErrAgentWriteInFlight):
 		return nil, invalidf("The same ticket is still being created by an earlier call, so it was not created again; call again once that call has answered.")
 	case errors.Is(err, trackerapp.ErrAgentRepeatUnchecked):
-		return nil, errorsx.Public(CodeUnknown, uncheckedSentence("An earlier call may have created this ticket", "the tracker could not be searched to check", "created", err), err)
+		return nil, errorsx.Public(CodeUnknown, uncheckedSentence("An earlier call may have created this ticket", "the tracker could not be searched to check", "created", "find the ticket by its title to see whether it is there", err), err)
 	case err != nil:
 		if _, msg, ok := errorsx.PublicDetails(err); ok && strings.Contains(msg, "may or may not") {
 			return nil, createUnknown(tg.src.Kind)
@@ -208,7 +208,7 @@ func createRefused(tg createTarget, v trackerapp.WriteView) error {
 			}
 			return invalidf("%s needs %s to create a ticket; give them in set.", tg.key, sayList(names, "and"))
 		default:
-			return invalidf("The ticket was not created: %s", refusalText(r))
+			return invalidf("The ticket was not created: %s", refusalText(tg.src.Kind, r))
 		}
 	}
 	return invalidf("The ticket was not created; the tracker gave no reason.")

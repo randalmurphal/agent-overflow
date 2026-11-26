@@ -85,6 +85,18 @@ func TestLossKindKeep(t *testing.T) {
 	}
 }
 
+// TestAClearsLossNamesOnlyWhatItErases proves a clear of a document
+// holding a layout is refused for that loss, names the layout, and says
+// no way to keep it: the clear removes it on purpose.
+func TestAClearsLossNamesOnlyWhatItErases(t *testing.T) {
+	col := &Node{Type: "layoutColumn", Attrs: map[string]any{"width": 100.0}, Content: []*Node{para("left")}}
+	err := CheckLoss(ClearLoss(Doc(&Node{Type: "layoutSection", Content: []*Node{col}})), false)
+	var le *LossError
+	if !errors.As(err, &le) || len(le.Lost) != 1 || !strings.Contains(le.Lost[0].Msg, "the column layout") || len(le.Kinds) != 0 {
+		t.Fatalf("a clear of a layout: %#v", err)
+	}
+}
+
 // TestCheckLossPasses proves an edit that flattens nothing, or whose loss
 // the user accepted, passes.
 func TestCheckLossPasses(t *testing.T) {

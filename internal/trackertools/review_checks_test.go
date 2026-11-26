@@ -61,6 +61,30 @@ func TestAnAmbiguousOrStaleRefusalQuotesTheTrackersText(t *testing.T) {
 	}
 }
 
+// Linear takes a typed value by name, and a person also by email, never
+// by ID: a value matching several says to give one of those or to leave
+// the pick to the person, and lists no ID.
+func TestAnAmbiguousLinearValueNamesWhatLinearTakes(t *testing.T) {
+	t.Parallel()
+	w := newWriteFixture(t)
+	linear := linearSource
+	linear.Kind = "linear"
+	w.f.sources = []trackerapp.TicketSource{linear}
+	w.f.lookup["conn-linear"] = map[string]string{"ENG-1": "lin-1"}
+	w.f.details["conn-linear/lin-1"] = writableDetail("ENG-1", "lin-1")
+	w.f.write = func(name string, _ any) (trackerapp.WriteView, error) {
+		return trackerapp.WriteView{Parts: []trackerapp.PartView{{Step: name, State: "refused", Refusal: &trackerapp.RefusalView{
+			Reason:     "ambiguous",
+			Message:    `"Alex" names 2 values of Assignee; pick one by ID`,
+			Candidates: []trackerapp.ChoiceView{{ID: "lin-u1", Name: "Alex"}, {ID: "lin-u2", Name: "Alex"}},
+		}}}}, nil
+	}
+	answer, err := w.update(t, map[string]any{"keys": []string{"ENG-1"}, "set": map[string]any{"assignee": "Alex"}})
+	if want := `{"tickets":[{"key":"ENG-1","refused":"assignee: it matches more than one value: \"Alex\" or \"Alex\"; Linear matches it by name, and a person also by email: give a name or an email only one of them has, or ask the user to pick one on the ticket."}]}`; err != nil || answer != want {
+		t.Fatalf("an ambiguous Linear value = %s, %v\nwant %s", answer, err, want)
+	}
+}
+
 // A parent key takes the forms a ticket key takes on its tracker: a
 // one-letter Linear team, site-qualified with its title.
 func TestAParentKeyOfALinearTeamOfOneLetter(t *testing.T) {

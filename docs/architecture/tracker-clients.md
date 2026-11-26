@@ -252,7 +252,8 @@ be lost and how to keep it. A caller passes the user's explicit acceptance
 to apply the edit anyway. A clear of rich text, which removes every node's
 Markdown, is checked against what Markdown shows only simplified
 (`adf.ClearLoss`): a document holding such content is refused for it until
-the loss is accepted. Jira's edit, transition and comment calls run the
+the loss is accepted, and the refusal names what the clear erases with no
+way to keep it. Jira's edit, transition and comment calls run the
 check; no caller writes rich text without it.
 
 ## Jira
