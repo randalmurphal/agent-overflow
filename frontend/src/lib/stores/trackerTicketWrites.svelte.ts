@@ -125,7 +125,7 @@ import {
   TrackerIssueTypes,
   TrackerLinkTypes,
   TrackerMoves,
-  TrackerProjects,
+  TrackerBoardProjects,
   UnlinkTrackerIssues,
   VoteTrackerPoker,
 } from './bindings';
@@ -809,11 +809,12 @@ export interface HeldRead<T> {
   readonly error: unknown;
 }
 
-// A form read (a connection's link types for the link form; its projects,
-// a project's issue types and a type's create fields for a ticket made on
-// the Backlog) must keep true:
+// A form read (a connection's link types for the link form; a board's
+// projects, a project's issue types and a type's create fields for a
+// ticket made on the Backlog) must keep true:
 // - Only a person's act reads it: its form opening, a pick that needs it,
-//   or its Retry. Nothing reads it again because a read settled, so a
+//   its Retry, or Add refused for fields the screen now requires
+//   (`reloadCreateFields`). Nothing reads it again because a read settled, so a
 //   caller starts the read outside any reactive scope that reads it.
 // - A refusal stays held with its error, shown by the form, until the
 //   person retries or opens the form again.
@@ -861,14 +862,14 @@ export function loadTicketLinkTypes(backend: BackendKey, connection: string): Pr
   return loadHeldRead(backend, readKey(backend, 'links', connection), () => TrackerLinkTypes(connection));
 }
 
-/** The projects of the connection, for a ticket made on a board of
- * several; null before `loadTrackerProjects`. */
-export function trackerProjects(backend: BackendKey, connection: string): HeldRead<ProjectView[]> | null {
-  return heldRead(readKey(backend, 'projects', connection));
+/** The projects the board shows, which a ticket made on it is made in;
+ * null before `loadBoardProjects`. */
+export function boardProjects(b: BoardWriteContext): HeldRead<ProjectView[]> | null {
+  return heldRead(readKey(b.backend, 'projects', b.connection, b.board));
 }
 
-export function loadTrackerProjects(backend: BackendKey, connection: string): Promise<void> {
-  return loadHeldRead(backend, readKey(backend, 'projects', connection), () => TrackerProjects(connection));
+export function loadBoardProjects(b: BoardWriteContext): Promise<void> {
+  return loadHeldRead(b.backend, readKey(b.backend, 'projects', b.connection, b.board), () => TrackerBoardProjects(b.connection, b.board));
 }
 
 /** The types a ticket can be made with in `project`; null before
@@ -889,6 +890,14 @@ export function createFields(backend: BackendKey, connection: string, project: s
 
 export function loadCreateFields(backend: BackendKey, connection: string, project: string, type: string): Promise<void> {
   return loadHeldRead(backend, readKey(backend, 'fields', connection, project, type), () => TrackerCreateFields(connection, project, type));
+}
+
+/** Reads the create fields again: the person's act after the tracker
+ * refused a create for fields it requires, since its screen changed. */
+export function reloadCreateFields(backend: BackendKey, connection: string, project: string, type: string): Promise<void> {
+  const key = readKey(backend, 'fields', connection, project, type);
+  if (!heldReads.get(key)?.loading) heldReads.delete(key);
+  return loadCreateFields(backend, connection, project, type);
 }
 
 /** The values `field` allows on a ticket of `type` made in `project` whose

@@ -33,7 +33,8 @@
   // between the sprints and the backlog.
   import { tick, untrack } from 'svelte';
   import LongListVirtualizer, { type LongListHandle } from '../virtual/LongListVirtualizer.svelte';
-  import BacklogCreate from './BacklogCreate.svelte';
+  import { SvelteMap } from 'svelte/reactivity';
+  import BacklogCreate, { type CreateDraft } from './BacklogCreate.svelte';
   import BacklogRow from './BacklogRow.svelte';
   import BacklogSectionHeader from './BacklogSectionHeader.svelte';
   import BoardCardMenu from './BoardCardMenu.svelte';
@@ -102,6 +103,9 @@
   // Linear has no issue types, and runs its cycles from the team's
   // settings: it takes no sprint write.
   const typed = $derived(kind !== 'linear');
+  // The open New ticket forms by board and section list, kept across the
+  // virtual window and dropped with the screen.
+  const createDrafts = new SvelteMap<string, CreateDraft>();
   const sprintWrites = $derived(kind === 'jira' && held.shape.plansSprints);
   // The board's sprints and the tickets made on it are its own writes.
   const b = $derived(boardWriteContext(boardRef));
@@ -484,7 +488,7 @@
                   {filtered ? (sec.more ? 'No matching tickets among those loaded' : 'No matching tickets') : compact ? 'No tickets' : 'Drop tickets here'}
                 </p>
               {/if}
-              <BacklogCreate {b} {boardKey} {boardRef} {sec} project={held.shape.project} {typed} />
+              <BacklogCreate {b} {boardKey} {boardRef} {sec} project={held.shape.project} {typed} drafts={createDrafts} />
             </div>
           {/if}
           {#snippet sprintControls()}

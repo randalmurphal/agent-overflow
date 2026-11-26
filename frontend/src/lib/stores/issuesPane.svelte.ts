@@ -312,7 +312,9 @@ export function setBacklogSectionOpen(ref: TrackerBoardRef, list: string, open: 
 /** What a new ticket was last made with on a board this session: its
  * project (on a board of several) and its type. */
 export interface CreateChoice {
-  readonly project?: string;
+  /** The project, as its form named it, so a later form names it with no
+   * read. */
+  readonly project?: { readonly id: string; readonly name: string };
   readonly type?: string;
 }
 

@@ -1,15 +1,20 @@
 // New ticket at a Backlog section's foot, as rendered: it reads nothing
-// until it opens; on a board of several projects it asks which, from the
-// connection's projects, read once; a project's types and a type's fields
-// are read once each and its required fields asked; Add makes the ticket
-// in the section's sprint, and the next form on the board starts from the
-// project and type picked; a required field the app cannot set says to
-// make the ticket in the tracker.
+// until it opens; on Jira it shows the project, from the board's projects
+// read once, its location's first; a project's types and a type's fields
+// are read once each and the fields the person must supply asked, a field
+// whose screen lists its values picked from that list; Add makes the
+// ticket in the section's sprint, and the next form on the board starts
+// from the project and type picked, while a form already open keeps its
+// own; what was typed outlives the form's foot going; a create refused for
+// fields reads them again; a ticket made whose move into the sprint failed
+// is not made again; a required field the app cannot set says to make the
+// ticket in the tracker.
 
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
+import { SvelteMap } from 'svelte/reactivity';
 import { describe, expect, it } from 'vitest';
 import type { FieldView, IssueTypeView, ProjectView, WriteView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
-import BacklogCreate from './BacklogCreate.svelte';
+import BacklogCreate, { type CreateDraft } from './BacklogCreate.svelte';
 import { ticketWriteSurfaceContext } from './ticketWriteSurface';
 import type { BacklogSection } from '../../stores/trackerBacklogModel';
 import { boardWriteContext } from '../../stores/trackerTicketWrites.svelte';
@@ -23,9 +28,12 @@ const SPRINT: BacklogSection = {
   sprint: { id: '9', name: 'Sprint 9', state: 'future', total: { rows: 0, estimate: 0 } },
   rows: [], unread: false, more: false, total: { rows: 0, estimate: 0 },
 } as unknown as BacklogSection;
+const BACKLOG: BacklogSection = { ...SPRINT, list: 'backlog', kind: 'backlog', section: { kind: 'backlog' }, sprint: null } as unknown as BacklogSection;
 
 const PROJECTS = [{ id: '10000', key: 'WEB', name: 'Web' }, { id: '10001', key: 'APP', name: 'App' }] as ProjectView[];
-const TYPES = [{ id: '5', name: 'Sub-task', level: -1 }, { id: '6', name: 'Task', level: 0 }, { id: '7', name: 'Bug', level: 0 }] as IssueTypeView[];
+// An epic first, as a Jira project lists its types: the default is the
+// first at the standard level.
+const TYPES = [{ id: '4', name: 'Epic', level: 1 }, { id: '5', name: 'Sub-task', level: -1 }, { id: '6', name: 'Task', level: 0 }, { id: '7', name: 'Bug', level: 0 }] as IssueTypeView[];
 const PRIORITY = { id: 'priority', name: 'Priority', kind: 'option', required: true, editable: true } as FieldView;
 
 function menu(): HTMLElement {
@@ -36,19 +44,26 @@ function field(container: HTMLElement, id: string): HTMLElement {
   return container.querySelector<HTMLElement>(`[data-testid="ticket-field"][data-field="${id}"]`)!;
 }
 
+function value(container: HTMLElement, id: string): string | undefined {
+  return within(field(container, id)).getByTestId('ticket-field-value').textContent?.trim();
+}
+
 async function pick(container: HTMLElement, id: string, name: string): Promise<void> {
   await fireEvent.click(within(field(container, id)).getByTestId('ticket-field-value'));
   const item = await waitFor(() => within(menu()).getAllByTestId('ticket-picker-item').find((el) => el.textContent?.includes(name))!);
   await fireEvent.click(item);
 }
 
-function open(project: string) {
-  return render(BacklogCreate, { context: ticketWriteSurfaceContext(() => true), props: { b: B, boardKey: 'board-key', boardRef: REF, sec: SPRINT, project, typed: true } });
+function open(project: string, opts: { drafts?: SvelteMap<string, CreateDraft>; sec?: BacklogSection } = {}) {
+  return render(BacklogCreate, {
+    context: ticketWriteSurfaceContext(() => true),
+    props: { b: B, boardKey: 'board-key', boardRef: REF, sec: opts.sec ?? SPRINT, project, typed: true, drafts: opts.drafts ?? new SvelteMap() },
+  });
 }
 
 describe('New ticket', () => {
-  it('on a board of several projects asks which, reading the projects, types and fields once each, and makes the ticket in the sprint', async () => {
-    const projects = setBindingMock('TrackerProjects', async () => PROJECTS);
+  it('on a board located in no project asks which, from the board\'s projects, reading them, the types and the fields once each, and makes the ticket in the sprint', async () => {
+    const projects = setBindingMock('TrackerBoardProjects', async () => PROJECTS);
     const types = setBindingMock('TrackerIssueTypes', async () => TYPES);
     const fields = setBindingMock('TrackerCreateFields', async () => [PRIORITY]);
     setBindingMock('TrackerChoices', async () => ({ choices: [{ id: '2', name: 'High' }], more: false }));
@@ -57,12 +72,12 @@ describe('New ticket', () => {
     expect(projects).not.toHaveBeenCalled();
     await fireEvent.click(first.getByTestId('issues-backlog-new'));
     await waitFor(() => expect(first.getByTestId('issues-backlog-create-pick-project')).toBeTruthy());
-    expect(projects).toHaveBeenCalledTimes(1);
+    expect(projects.mock.calls).toEqual([['c1', '1']]);
     expect(types).not.toHaveBeenCalled();
 
     await pick(first.container, 'project', 'App');
-    // The project's first type that is not a sub-task.
-    await waitFor(() => expect(within(field(first.container, 'type')).getByTestId('ticket-field-value').textContent?.trim()).toBe('Task'));
+    // The project's first type at the standard level, not its epic.
+    await waitFor(() => expect(value(first.container, 'type')).toBe('Task'));
     expect(types.mock.calls).toEqual([['c1', '10001']]);
     expect(fields.mock.calls).toEqual([['c1', '10001', '6']]);
     await pick(first.container, 'type', 'Bug');
@@ -84,15 +99,128 @@ describe('New ticket', () => {
     // it holds.
     const next = open('');
     await fireEvent.click(next.getByTestId('issues-backlog-new'));
-    await waitFor(() => expect(within(field(next.container, 'project')).getByTestId('ticket-field-value').textContent?.trim()).toBe('App'));
-    expect(within(field(next.container, 'type')).getByTestId('ticket-field-value').textContent?.trim()).toBe('Bug');
+    await waitFor(() => expect(value(next.container, 'project')).toBe('App'));
+    expect(value(next.container, 'type')).toBe('Bug');
     expect(projects).toHaveBeenCalledTimes(1);
     expect(types).toHaveBeenCalledTimes(1);
     expect(fields).toHaveBeenCalledTimes(2);
     next.unmount();
   });
 
+  it('on a board located in one project shows that project, named by the board\'s projects, and makes the ticket in another the board shows', async () => {
+    const projects = setBindingMock('TrackerBoardProjects', async () => PROJECTS);
+    setBindingMock('TrackerIssueTypes', async () => TYPES);
+    setBindingMock('TrackerCreateFields', async () => []);
+    const created = setBindingMock('CreateTrackerIssue', async () => ({ parts: [{ step: 'create', state: 'applied' }] }) as WriteView);
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(value(view.container, 'project')).toBe('Web'));
+    expect(projects).toHaveBeenCalledTimes(1);
+    await pick(view.container, 'project', 'App');
+    await waitFor(() => expect(value(view.container, 'type')).toBe('Task'));
+    const title = view.getByTestId('issues-backlog-create-title') as HTMLInputElement;
+    await fireEvent.input(title, { target: { value: 'In the other project' } });
+    await waitFor(() => expect((view.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
+    expect(created.mock.calls[0][1]).toMatchObject({ project: '10001', type: '6' });
+    expect(projects).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+
+  it('says a failed read of the board\'s projects, with Retry', async () => {
+    let fail = true;
+    const projects = setBindingMock('TrackerBoardProjects', async () => {
+      if (fail) throw new Error('Jira did not answer');
+      return PROJECTS;
+    });
+    setBindingMock('TrackerIssueTypes', async () => TYPES);
+    setBindingMock('TrackerCreateFields', async () => []);
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(view.getByTestId('issues-backlog-create-read-error').textContent).toContain('Jira did not answer'));
+    fail = false;
+    await fireEvent.click(within(view.getByTestId('issues-backlog-create-read-error')).getByText('Retry'));
+    await waitFor(() => expect(value(view.container, 'project')).toBe('Web'));
+    expect(projects).toHaveBeenCalledTimes(2);
+    view.unmount();
+  });
+
+  it('picks a field from the values its screen lists, reading nothing more', async () => {
+    setBindingMock('TrackerBoardProjects', async () => PROJECTS);
+    setBindingMock('TrackerIssueTypes', async () => TYPES);
+    const fields = setBindingMock('TrackerCreateFields', async () => [{ ...PRIORITY, allowed: [{ id: '2', name: 'High' }, { id: '3', name: 'Medium' }] }]);
+    const choices = setBindingMock('TrackerChoices', async () => ({ choices: [], more: false }));
+    const created = setBindingMock('CreateTrackerIssue', async () => ({ parts: [{ step: 'create', state: 'applied' }] }) as WriteView);
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(view.getByTestId('issues-backlog-create-missing')).toBeTruthy());
+    await pick(view.container, 'priority', 'Medium');
+    const title = view.getByTestId('issues-backlog-create-title') as HTMLInputElement;
+    await fireEvent.input(title, { target: { value: 'Medium one' } });
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
+    expect(created.mock.calls[0][1]).toMatchObject({ fields: [{ field: 'priority', value: { kind: 'option', choices: [{ id: '3' }] } }] });
+    expect(choices).not.toHaveBeenCalled();
+    expect(fields).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+
+  it('reads the fields again when the tracker refuses the create for fields it requires', async () => {
+    setBindingMock('TrackerBoardProjects', async () => PROJECTS);
+    setBindingMock('TrackerIssueTypes', async () => TYPES);
+    const screens = [[], [{ ...PRIORITY, name: 'Team', id: 'customfield_1' }]];
+    const fields = setBindingMock('TrackerCreateFields', async () => screens.shift()!);
+    setBindingMock('CreateTrackerIssue', async () => ({
+      parts: [{ step: 'create', state: 'refused', refusal: { reason: 'missing', message: 'Team is required.', fields: [{ field: 'customfield_1', message: 'required' }] } }],
+    }) as WriteView);
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    const title = view.getByTestId('issues-backlog-create-title') as HTMLInputElement;
+    await fireEvent.input(title, { target: { value: 'Needs a team now' } });
+    await waitFor(() => expect((view.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(view.getByTestId('issues-backlog-create-missing').textContent).toBe('Needs Team'));
+    expect(fields).toHaveBeenCalledTimes(2);
+    expect(title.value).toBe('Needs a team now');
+    view.unmount();
+  });
+
+  it('keeps what was typed when its foot leaves the virtual window, and each open form its own type', async () => {
+    setBindingMock('TrackerBoardProjects', async () => PROJECTS);
+    setBindingMock('TrackerIssueTypes', async () => TYPES);
+    setBindingMock('TrackerCreateFields', async () => []);
+    const created = setBindingMock('CreateTrackerIssue', async () => ({ parts: [{ step: 'create', state: 'applied' }] }) as WriteView);
+    const drafts = new SvelteMap<string, CreateDraft>();
+    const sprint = open('10000', { drafts });
+    await fireEvent.click(sprint.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(value(sprint.container, 'type')).toBe('Task'));
+    await fireEvent.input(sprint.getByTestId('issues-backlog-create-title'), { target: { value: 'Half typed' } });
+    sprint.unmount();
+
+    // Another section's form makes a Bug, which the board remembers.
+    const backlog = open('10000', { drafts, sec: BACKLOG });
+    await fireEvent.click(backlog.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(value(backlog.container, 'type')).toBe('Task'));
+    await pick(backlog.container, 'type', 'Bug');
+    const title = backlog.getByTestId('issues-backlog-create-title') as HTMLInputElement;
+    await fireEvent.input(title, { target: { value: 'A bug' } });
+    await waitFor(() => expect((backlog.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
+    backlog.unmount();
+
+    // The sprint's form, mounted again, holds what was typed and its Task.
+    const again = open('10000', { drafts });
+    expect((again.getByTestId('issues-backlog-create-title') as HTMLInputElement).value).toBe('Half typed');
+    expect(value(again.container, 'type')).toBe('Task');
+    await fireEvent.click(again.getByTestId('issues-backlog-create-cancel'));
+    expect(drafts.size).toBe(1);
+    again.unmount();
+  });
+
   it('once the tracker made the ticket, is done with its title even when its move into the sprint failed, and offers that move', async () => {
+    setBindingMock('TrackerBoardProjects', async () => PROJECTS);
     setBindingMock('TrackerIssueTypes', async () => TYPES);
     setBindingMock('TrackerCreateFields', async () => []);
     const created = setBindingMock('CreateTrackerIssue', async () => ({
@@ -121,6 +249,7 @@ describe('New ticket', () => {
   });
 
   it('says it may not be in its sprint when the move\'s answer was lost, and does not make it again', async () => {
+    setBindingMock('TrackerBoardProjects', async () => PROJECTS);
     setBindingMock('TrackerIssueTypes', async () => TYPES);
     setBindingMock('TrackerCreateFields', async () => []);
     const created = setBindingMock('CreateTrackerIssue', async () => ({
@@ -141,14 +270,13 @@ describe('New ticket', () => {
   });
 
   it('says to make the ticket in the tracker when it requires a field the app cannot set', async () => {
+    setBindingMock('TrackerBoardProjects', async () => PROJECTS);
     setBindingMock('TrackerIssueTypes', async () => TYPES);
     setBindingMock('TrackerCreateFields', async () => [{ id: 'customfield_1', name: 'Team', kind: 'cascading', required: true, editable: true } as FieldView]);
     const view = open('10000');
     await fireEvent.click(view.getByTestId('issues-backlog-new'));
-    await waitFor(() => expect(view.getByTestId('issues-backlog-create-unsettable').textContent).toBe('A Task needs Team, which the app cannot set. Make it in the tracker.'));
+    await waitFor(() => expect(view.getByTestId('issues-backlog-create-unsettable').textContent).toBe('A Task in Web needs Team, which the app cannot set. Make it in the tracker.'));
     expect((view.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(true);
-    // A board of one project asks none.
-    expect(field(view.container, 'project')).toBeNull();
     view.unmount();
   });
 });
