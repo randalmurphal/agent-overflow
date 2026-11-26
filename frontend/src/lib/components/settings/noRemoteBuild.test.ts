@@ -66,10 +66,10 @@ for (const variant of variants) {
 
     it('moves keyboard focus through the pages the rail shows', async () => {
       const view = render(SettingsView, { onClose: vi.fn() });
-      // Boards is the last page before Remote access.
-      const boards = view.getByRole('tab', { name: 'Boards' });
-      await fireEvent.click(boards);
-      await fireEvent.keyDown(view.getByRole('tab', { name: 'Boards' }), { key: 'ArrowDown' });
+      // Status groups is the last page before Remote access.
+      const last = view.getByRole('tab', { name: 'Status groups' });
+      await fireEvent.click(last);
+      await fireEvent.keyDown(view.getByRole('tab', { name: 'Status groups' }), { key: 'ArrowDown' });
       const next = variant.remote ? 'Connect to a computer' : 'Observability';
       expect(view.getByRole('tab', { name: next })).toHaveAttribute('aria-selected', 'true');
     });

@@ -14,6 +14,7 @@
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
   import TicketMarkdown from './TicketMarkdown.svelte';
+  import TicketPin, { type PinControl } from './TicketPin.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
   import { isEnterKey } from '../../utils/localEnter';
   import { isImeComposingEvent } from '../../utils/imeComposition';
@@ -33,9 +34,11 @@
     ticketKey: string;
     target: string;
     fieldName: (id: string) => string;
+    /** The section's pin for the ticket's project; absent where it takes none. */
+    pin?: PinControl;
   }
 
-  let { field, title, markdown, editable, open, onFold, onSave, ticketKey, target, fieldName }: Props = $props();
+  let { field, title, markdown, editable, open, onFold, onSave, ticketKey, target, fieldName, pin }: Props = $props();
 
   const pending = $derived(ticketWrite(ticketKey, target)?.pending ?? false);
   const draft = $derived(ticketDraft(ticketKey, target));
@@ -73,7 +76,7 @@
 </script>
 
 <section class="flex flex-col gap-1.5" data-testid="ticket-section" data-field={field}>
-  <header class="flex min-w-0 items-center gap-1 text-sm font-medium text-fg">
+  <header class="group/pin flex min-w-0 items-center gap-1 text-sm font-medium text-fg">
     {#if open !== null}
       <button
         type="button"
@@ -88,6 +91,7 @@
     {:else}
       <span class="truncate px-1">{title}</span>
     {/if}
+    {#if pin}<TicketPin {pin} testId="ticket-section-pin" />{/if}
     <span class="flex-1"></span>
     {#if editable && !draft && open !== false}
       <button type="button" class="shrink-0 rounded-[var(--radius-control)] px-1.5 text-xs text-fg-muted hover:bg-surface-1 hover:text-fg compact:min-h-9 compact:select-none" data-testid="ticket-section-edit" onclick={edit}>Edit</button>

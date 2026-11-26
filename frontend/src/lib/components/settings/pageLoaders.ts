@@ -41,6 +41,7 @@ export const SETTINGS_PAGE_LOADERS: Record<SettingsSection, CachedComponentLoade
   editor: createCachedComponentLoader(() => import('./EditorSection.svelte')),
   'tracker-connections': createCachedComponentLoader(() => import('./TrackerConnectionsSettings.svelte')),
   'tracker-boards': createCachedComponentLoader(() => import('./TrackerBoardsSettings.svelte')),
+  'tracker-statuses': createCachedComponentLoader(() => import('./TrackerStatusesSettings.svelte')),
   remote: createCachedComponentLoader(() => import('./RemoteAccessSettings.svelte')),
   systems: createCachedComponentLoader(() => import('./SystemsSection.svelte')),
   'agent-access': createCachedComponentLoader(() => import('./AgentAccessSettings.svelte')),

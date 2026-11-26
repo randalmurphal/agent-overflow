@@ -25,6 +25,28 @@ func assertMirrorBoard(t *testing.T, s *Store, root int64, want MirrorStructure)
 	}
 }
 
+// A shown board's column statuses read in board order, each column's in
+// rank order; a board the mirror does not hold reads as not shown, and a
+// shown board with no columns as shown with none.
+func TestTheBoardStatusesReadTheColumnsInOrder(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	st := webStructure()
+	st.Columns[2].Statuses = []string{"6", "10001"}
+	mustReplaceStructure(t, s, root, st, true)
+	if ids, ok, err := s.GetMirrorBoardStatuses(root, "10"); err != nil || !ok || !reflect.DeepEqual(ids, []string{"1", "3", "6", "10001"}) {
+		t.Fatalf("board 10's statuses = %v, %v, %v; want 1, 3, 6, 10001", ids, ok, err)
+	}
+	if ids, ok, err := s.GetMirrorBoardStatuses(root, "99"); err != nil || ok || ids != nil {
+		t.Fatalf("a board the mirror does not hold = %v, %v, %v", ids, ok, err)
+	}
+	st.Columns = nil
+	mustReplaceStructure(t, s, root, st, true)
+	if ids, ok, err := s.GetMirrorBoardStatuses(root, "10"); err != nil || !ok || ids != nil {
+		t.Fatalf("a shown board with no columns = %v, %v, %v; want shown with none", ids, ok, err)
+	}
+}
+
 // A structure read stores whole, reads back as written, and a read
 // identical to the stored one changes nothing. Each part that differs
 // reports a change on its own.
