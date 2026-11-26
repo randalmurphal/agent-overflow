@@ -108,6 +108,9 @@ func (s *Server) apply(ctx context.Context, caller Caller, plans []*planned) ([]
 			written: WrittenTicket{Connection: p.t.connection, Issue: p.d.Card.ID, Key: p.key, Title: p.d.Card.Title}}
 	}
 	for _, kind := range stepOrder {
+		if kind == stepComment {
+			s.readAudience(ctx, all)
+		}
 		var moves []*sprintGroup
 		for _, t := range all {
 			st, ok := t.step(kind)
@@ -156,6 +159,59 @@ func (s *Server) wroteTexts(caller Caller, p *planned) {
 	case ok:
 		s.marks.wrote(caller, markKey{p.t.connection, p.d.Card.ID}, p.d.Card.Updated, card.Updated, p.texts)
 	}
+}
+
+// readAudience looks up, once per Jira connection, the tickets of all
+// that still have a comment to send, at the start of the comment phase:
+// after every other write of the call, so the project the call's write
+// session keeps from it, which each comment's audience is judged on, is
+// the ticket's after those writes (trackerapp's projectFor). A ticket the
+// lookup does not find, or whose lookup fails, is sent no comment, and
+// its answer says why; its other steps keep theirs.
+func (s *Server) readAudience(ctx context.Context, all []*sending) {
+	owed := func(t *sending) bool {
+		st, ok := t.step(stepComment)
+		return ok && !st.same && !t.stopped && t.p.src.Kind == "jira"
+	}
+	var conns []string
+	for _, t := range all {
+		if owed(t) && !slices.Contains(conns, t.p.t.connection) {
+			conns = append(conns, t.p.t.connection)
+		}
+	}
+	for _, conn := range conns {
+		var on []*sending
+		var keys []string
+		for _, t := range all {
+			if owed(t) && t.p.t.connection == conn {
+				on, keys = append(on, t), append(keys, t.p.d.Card.Key)
+			}
+		}
+		found, err := s.t.Lookup(ctx, conn, keys)
+		if err != nil {
+			s.logf("tracker tools: look up %d tickets on %s before their comments: %v", len(keys), conn, err)
+		}
+		for _, t := range on {
+			st, _ := t.step(stepComment)
+			switch {
+			case err != nil:
+				why := "it could not be read"
+				if _, msg, ok := errorsx.PublicDetails(err); ok {
+					why = t.p.t.site + ": " + msg
+				}
+				t.refuse(st, fmt.Sprintf("%s could not be read again just before its comment, so the comment was not added. %s", t.p.key, why))
+			case !slices.ContainsFunc(found.Found, func(m trackerapp.KeyMatchView) bool { return m.Card.ID == t.p.d.Card.ID }):
+				t.refuse(st, goneSentence(t.p, "the comment was not added"))
+			}
+		}
+	}
+}
+
+// refuse answers t's step st as refused before it was sent, for
+// sentence, which stops t: the step is answered, and no longer sent.
+func (t *sending) refuse(st sendStep, sentence string) {
+	t.out.Refused, t.stopped = st.names[0]+": "+sentence, true
+	t.steps = slices.DeleteFunc(t.steps, func(s sendStep) bool { return s.kind == st.kind })
 }
 
 // answer records what became of t's step st: its write's view v or its

@@ -604,9 +604,9 @@ func TestCreateTargets(t *testing.T) {
 // the wait, each alone, or that is gone, is sent nothing and said as
 // refused, and the other goes on. A read that fails sends nothing. A
 // single ticket reads nothing again: its key is looked up once, to
-// resolve it. A Jira comment, alone or on one ticket, is read again, for
-// the project its audience is judged on (TestTrackerAgentCommentAudience
-// IsReadAfterTheWait), and a read that fails sends nothing.
+// resolve it. A Jira comment, alone or on one ticket, is looked up again
+// at the start of the comment phase, for the project its audience is
+// judged on (TestTrackerAgentCommentAudienceIsReadAfterTheCallsOtherWrites).
 func TestUpdateSendsNothingToATicketThatMovedWhileWaiting(t *testing.T) {
 	t.Parallel()
 	args := map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "set": map[string]any{"sprint": "Sprint 15"}}
@@ -679,15 +679,47 @@ func TestUpdateSendsNothingToATicketThatMovedWhileWaiting(t *testing.T) {
 			}
 		}
 	})
-	t.Run("read before a comment fails", func(t *testing.T) {
+	// The lookup a Jira comment's audience is judged on is made after the
+	// call's other writes: when it fails, the comment is not sent and says
+	// why, and the steps sent before it keep their answers.
+	for _, c := range []struct {
+		name   string
+		args   map[string]any
+		want   string
+		writes int
+	}{
+		{"read before a comment alone fails", map[string]any{"keys": []string{"WEB-12"}, "comment": "Checked."},
+			`{"tickets":[{"key":"WEB-12","refused":"comment: WEB-12 could not be read again just before its comment, so the comment was not added. ` + jiraSource.Site + `: Jira did not answer."}]}`, 0},
+		{"read after a title, before its comment, fails", map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"title": "Renamed"}, "comment": "Checked."},
+			`{"tickets":[{"key":"WEB-12","applied":["title"],"refused":"comment: WEB-12 could not be read again just before its comment, so the comment was not added. ` + jiraSource.Site + `: Jira did not answer."}]}`, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			w := newWriteFixture(t)
+			w.f.lookupErrAfter = 1
+			w.f.lookupErr = map[string]error{jiraSource.ID: errorsx.Public(CodeFailed, "Jira did not answer.", nil)}
+			answer, err := w.update(t, c.args)
+			if err != nil || answer != c.want {
+				t.Fatalf("answer = %s, %v\nwant %s", answer, err, c.want)
+			}
+			if len(w.f.writes) != c.writes || slices.ContainsFunc(w.f.writes, func(wr string) bool { return strings.Contains(wr, "comment") }) {
+				t.Fatalf("writes %q; want %d and no comment", w.f.writes, c.writes)
+			}
+		})
+	}
+	// A ticket gone from Jira by the comment phase's lookup is sent no
+	// comment, after an approval with no set to judge as with one.
+	t.Run("gone before its comment", func(t *testing.T) {
 		t.Parallel()
 		w := newWriteFixture(t)
-		w.f.lookupErrAfter = 1
-		w.f.lookupErr = map[string]error{jiraSource.ID: errorsx.Public(CodeFailed, "Jira did not answer.", nil)}
-		_, err := w.update(t, map[string]any{"keys": []string{"WEB-12"}, "comment": "Checked."})
-		refused(t, err, CodeFailed, "Nothing was sent: the tickets could not be read again before anything was sent. "+jiraSource.Site+": Jira did not answer.")
-		if len(w.f.writes) != 0 {
-			t.Fatalf("writes %q", w.f.writes)
+		w.h.approve = func(Approval) error {
+			delete(w.f.lookup[jiraSource.ID], "WEB-12")
+			return nil
+		}
+		answer, err := w.update(t, map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "comment": "Checked."})
+		want := `{"tickets":[{"key":"WEB-12","refused":"comment: WEB-12 is not on Jira any more, or the user's account cannot see it, so the comment was not added."},{"key":"WEB-18","applied":["comment"]}]}`
+		if err != nil || answer != want {
+			t.Fatalf("answer = %s, %v\nwant %s", answer, err, want)
 		}
 	})
 }

@@ -171,6 +171,8 @@ func costNames(routes []string) string {
 // read after an approval (planCall.recheck) is the bulkfetch or Issues a
 // call of three tickets with set makes after its plan's reads; a call of
 // one ticket or a comment alone waits for no approval or judges nothing.
+// A Jira comment's lookup (Server.readAudience) is the bulkfetch just
+// before the comments, after every other write.
 func TestTrackerToolRequestCounts(t *testing.T) {
 	t.Parallel()
 	type shape struct {
@@ -312,10 +314,10 @@ var costPins = map[string]string{
 	"jira/estimate/cold/3":                 "bulkfetch bulkfetch rows estimate rows estimate rows estimate rows",
 	"jira/estimate/warm/1":                 "bulkfetch rows estimate rows",
 	"jira/estimate/warm/3":                 "bulkfetch bulkfetch rows estimate rows estimate rows estimate rows",
-	"jira/mixed/cold/1":                    "issue comments bulkfetch transition issue edit rows estimate rows sprints to-sprint comment rows",
-	"jira/mixed/cold/3":                    "issue issue issue comments comments comments bulkfetch transition transition transition issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint comment comment comment rows",
-	"jira/mixed/warm/1":                    "bulkfetch bulkfetch transitions transition issue edit rows estimate rows sprints to-sprint comment rows",
-	"jira/mixed/warm/3":                    "bulkfetch bulkfetch transitions transition transitions transition transitions transition issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint comment comment comment rows",
+	"jira/mixed/cold/1":                    "issue comments transition issue edit rows estimate rows sprints to-sprint bulkfetch comment rows",
+	"jira/mixed/cold/3":                    "issue issue issue comments comments comments bulkfetch transition transition transition issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint bulkfetch comment comment comment rows",
+	"jira/mixed/warm/1":                    "bulkfetch transitions transition issue edit rows estimate rows sprints to-sprint bulkfetch comment rows",
+	"jira/mixed/warm/3":                    "bulkfetch bulkfetch transitions transition transitions transition transitions transition issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint bulkfetch comment comment comment rows",
 	"jira/create":                          "types screen create match bulkfetch",
 	"jira/create with status and sprint":   "types screen create match bulkfetch issue comments transition rows sprints to-sprint rows",
 	"jira/read":                            "issue comments | bulkfetch",

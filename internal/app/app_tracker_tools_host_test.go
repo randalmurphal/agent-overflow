@@ -360,8 +360,8 @@ func TestTrackerWriteRequestsOfAMoveAndAComment(t *testing.T) {
 		"POST rest/api/3/issue/bulkfetch",      // the key, which no mirror holds
 		"GET rest/api/3/issue/{issue}",         // the ticket as it is now, with its moves, which the move takes
 		"GET rest/api/3/issue/{issue}/comment", // with its latest comments
-		"POST rest/api/3/issue/bulkfetch",      // the card just before the sends: the comment's project
 		"POST rest/api/3/issue/{issue}/transitions",
+		"POST rest/api/3/issue/bulkfetch", // the card after the move, just before the comment: its project
 		"POST rest/api/3/issue/{issue}/comment",
 	}
 	if !slices.Equal(routes, want) {

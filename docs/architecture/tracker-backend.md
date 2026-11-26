@@ -2279,9 +2279,10 @@ title, assignee, priority and status change move it, an estimate change
 does on a team with estimation off (one with it on is not measured), and
 a comment does not; a cycle change is not measured, which the sprint
 comparison covers ([measured](../references/tracker-api-measurements.md)). A lookup that
-fails sends nothing and is the call's error. A comment alone judges
-nothing but that the ticket exists, and a call naming one ticket does not
-wait. After the read, in the seconds the earlier tickets' sends take, a
+fails sends nothing and is the call's error. A comment alone is not read
+again after the approval: its ticket is looked up just before its
+comment, and one the lookup no longer finds is sent none. A call naming
+one ticket does not wait. After the read, in the seconds the earlier tickets' sends take, a
 change is caught only where a write compares at send: a text an edit
 replaces whole. A move the ticket's workflow no longer offers, or a status
 its Linear team no longer has, is sent as the plan's read found it, and
@@ -2293,11 +2294,17 @@ Board move is.
 **A Jira comment's audience.** Who a Jira comment reaches is judged on the
 project the ticket is in when the comment is sent: a ticket moved into a
 service desk project would otherwise get a public comment, which emails
-the customer. A call that comments on Jira tickets reads their cards with
-the same key lookup per connection after the approval, or just before the
-sends when it waits for nobody, and each comment is judged on the project
-that read found (`trackerapp`'s write session keeps it,
-`tracker.CommentInput.Project`). The Jira client keeps each project's
+the customer. Nothing the call sends, other than its own comments, goes
+out on the connection between the read a comment's audience is judged on
+and that comment. A call that comments on Jira tickets looks them up with
+one key lookup per connection at the start of its comment phase, after
+its other writes, and each comment is judged on the project that lookup
+found (`trackerapp`'s write session keeps it,
+`tracker.CommentInput.Project`). The session gives a comment that
+project only while it sent no write but comments on the connection since
+the lookup; otherwise the comment reads the issue's project itself, just
+before it is posted. A ticket the lookup no longer finds is sent no
+comment. The Jira client keeps each project's
 type by ID for 30 minutes, from the projects a bulk fetch's issues name
 (`projectTypeKey`, which the bulk fetch carries as measured in
 [tracker API measurements](../references/tracker-api-measurements.md#jira-cloud))
@@ -2305,8 +2312,9 @@ or a read of the project; only a comment's audience reads it there. A
 bulk fetch whose project has no `projectTypeKey` keeps nothing, and the
 comment reads the project (`GET project/{id}`) before it is sent. The
 tools name no audience, so a comment on a service desk ticket is
-refused. A read that fails sends nothing; a project whose type cannot be
-read, by either read, sends no comment to that ticket. A person's comment
+refused. A lookup that fails sends none of its tickets' comments, and
+the steps the call sent before them keep their answers; a project whose
+type cannot be read, by either read, sends no comment to that ticket. A person's comment
 reads the issue's project with the comment, as before.
 
 **Requests.** What each call shape costs on the fake, cold (the mirror
@@ -2314,8 +2322,9 @@ holds the tickets' cards and rows) and warm (the agent read the tickets
 first), pinned by `TestTrackerToolRequestCounts`
 (`internal/app/app_tracker_tools_costs_test.go`), every request of the
 call included, its refresh too. A call of three tickets waits for the
-person and reads its cards again after the approval; a call of one does
-not.
+person and reads its cards again after the approval when it sets
+anything; a call of one does not. A Jira comment's lookup is one more
+read, just before the comments.
 
 | Shape | Jira, 1 | Jira, 3 | Linear, 1 | Linear, 3 |
 |---|---|---|---|---|
@@ -2326,8 +2335,8 @@ not.
 | Backlog | 4 | 5 | 4 | 5 |
 | Title | 4 | 9 | 3 | 6 |
 | Estimate | 4 | 9 | 4 | 9 |
-| Status, title, estimate, sprint and comment, cold | 13 | 29 | 9 | 20 |
-| The same, warm | 13 | 27 | 9 | 20 |
+| Status, title, estimate, sprint and comment, cold | 13 | 30 | 9 | 20 |
+| The same, warm | 13 | 28 | 9 | 20 |
 
 A cold status takes its moves from the plan's detail read; a warm one is
 planned on the cards, which keep no read, so the move reads its moves.

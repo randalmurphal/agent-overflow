@@ -19,9 +19,9 @@ import (
 // set changes them, their cards are then read again (planCall.recheck): a
 // ticket that changed during the wait, by its update time, status or
 // sprints, is refused and sent nothing, and the others go on. A call that
-// comments on Jira tickets reads them then too, after the wait or with
-// none, and each comment's audience is judged on the project that read
-// finds. What a person changes after that read, in the seconds the earlier
+// comments on Jira tickets looks them up again at the start of the
+// comment phase, after its other writes, and each comment's audience is
+// judged on the project that lookup finds (apply.go). What a person changes after that read, in the seconds the earlier
 // tickets' sends take, is caught only where a write compares when it is
 // sent: a text an edit replaces whole (planField). A move the ticket's
 // workflow stopped offering, or a status its Linear team no longer has,
@@ -166,10 +166,12 @@ func (s *Server) update(ctx context.Context, caller Caller, raw json.RawMessage)
 		}
 	}
 	// What set changes was judged on the tickets as they were before the
-	// wait; a comment alone judges nothing but that they exist, and a Jira
-	// comment's audience is judged on this read.
-	if err := pc.recheck(ctx, plans, approved, approved && len(set) > 0); err != nil {
-		return nil, err
+	// wait; a comment alone judges nothing, and is looked up just before
+	// it is sent (apply.go).
+	if approved && len(set) > 0 {
+		if err := pc.recheck(ctx, plans); err != nil {
+			return nil, err
+		}
 	}
 	// The writes are admitted now: a thread made read-only while the call
 	// planned or waited sends nothing.

@@ -117,22 +117,19 @@ func (pc *planCall) readTickets(ctx context.Context, tickets []ticket, set []nam
 }
 
 // recheck reads the cards of plans again, once per connection, after the
-// person approved them (approved), or just before the sends of a call
-// that waits for nobody. It reads the connections whose tickets set
-// changes after an approval (judge), and Jira's when the call comments,
-// since who a Jira comment reaches is judged on the project this read
-// finds the ticket in (trackerapp's write session keeps it), never on a
-// read made before the wait. A ticket the read no longer finds is sent
-// nothing (planned.changed). When judge is set, so is one whose card
-// moved since its plan read it: a write sent now would be judged on a
-// ticket the person did not see. A card moved when its update time did,
-// or the status or sprints the plan judged on, which a tracker might
-// change without moving the update time. A read that fails is the
-// call's error, nothing sent.
-func (pc *planCall) recheck(ctx context.Context, plans []*planned, approved, judge bool) error {
+// person approved what set changes. A ticket the read no longer finds,
+// or whose card moved since its plan read it, is sent nothing
+// (planned.changed): a write sent now would be judged on a ticket the
+// person did not see. A card moved when its update time did, or the
+// status or sprints the plan judged on, which a tracker might change
+// without moving the update time. A read that fails is the call's error,
+// nothing sent. A comment's audience is not judged on this read: the
+// comment phase looks its tickets up after the call's other writes
+// (Server.readAudience).
+func (pc *planCall) recheck(ctx context.Context, plans []*planned) error {
 	var conns []string
 	for _, p := range plans {
-		if (judge || p.comment != "" && p.src.Kind == "jira") && !slices.Contains(conns, p.t.connection) {
+		if !slices.Contains(conns, p.t.connection) {
 			conns = append(conns, p.t.connection)
 		}
 	}
@@ -146,28 +143,29 @@ func (pc *planCall) recheck(ctx context.Context, plans []*planned, approved, jud
 		}
 		found, err := pc.s.t.Lookup(ctx, conn, keys)
 		if err != nil {
-			when := "before anything was sent"
-			if approved {
-				when = "after the user approved"
-			}
 			site := on[0].t.site
 			if code, msg, ok := errorsx.PublicDetails(err); ok {
-				return errorsx.Public(code, "Nothing was sent: the tickets could not be read again "+when+". "+site+": "+msg, err)
+				return errorsx.Public(code, "Nothing was sent: the tickets could not be read again after the user approved. "+site+": "+msg, err)
 			}
-			return fmt.Errorf("nothing was sent: read the tickets again %s: %s: %w", when, site, err)
+			return fmt.Errorf("nothing was sent: read the tickets again after the user approved: %s: %w", site, err)
 		}
 		for _, p := range on {
-			name := trackerNameOf(p.src.Kind)
 			i := slices.IndexFunc(found.Found, func(m trackerapp.KeyMatchView) bool { return m.Card.ID == p.d.Card.ID })
 			switch {
 			case i < 0:
-				p.changed = fmt.Sprintf("%s is not on %s any more, or the user's account cannot see it, so nothing was sent to it.", p.key, name)
-			case judge && cardMoved(p.d.Card, found.Found[i].Card):
-				p.changed = fmt.Sprintf("%s changed on %s while the user was deciding, so nothing was sent to it; read it again and call again for it.", p.key, name)
+				p.changed = goneSentence(p, "nothing was sent to it")
+			case cardMoved(p.d.Card, found.Found[i].Card):
+				p.changed = fmt.Sprintf("%s changed on %s while the user was deciding, so nothing was sent to it; read it again and call again for it.", p.key, trackerNameOf(p.src.Kind))
 			}
 		}
 	}
 	return nil
+}
+
+// goneSentence is the sentence of p's ticket a read made after its plan
+// no longer finds: so it was sent what (so).
+func goneSentence(p *planned, so string) string {
+	return fmt.Sprintf("%s is not on %s any more, or the user's account cannot see it, so %s.", p.key, trackerNameOf(p.src.Kind), so)
 }
 
 // cardMoved reports whether now is not the card was: its update time,
