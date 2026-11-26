@@ -2,6 +2,7 @@ package trackerapp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -31,7 +32,7 @@ type SiteFields struct {
 
 // ErrNoSiteConnection is a site the project's setup pins fields of that
 // no connection of this computer reaches.
-var ErrNoSiteConnection = fmt.Errorf("trackerapp: no connection of this computer reaches the site")
+var ErrNoSiteConnection = errors.New("trackerapp: no connection of this computer reaches the site")
 
 // ProjectFields are projectID's fields to pin, by tracker site, in site
 // order: every Jira site of a board the project lists, and every one its
