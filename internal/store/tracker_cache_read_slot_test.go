@@ -163,7 +163,7 @@ func TestMirrorReadsTakeAHistoryReadSlot(t *testing.T) {
 		read{"ListMirrorOffBoardLinkedIssues", func() error { _, _, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10"}); return err }},
 		read{"FinishMirrorCleanup", func() error { return s.FinishMirrorCleanup(context.Background(), nil) }},
 		read{"ExportMirrorBoard", func() error {
-			_, _, err := s.ExportMirrorBoard(context.Background(), export, root, "10", MirrorRegroup{})
+			_, _, err := s.ExportMirrorBoard(context.Background(), export, root, "10", MirrorRegroup{}, MirrorExportTables)
 			return err
 		}},
 	)

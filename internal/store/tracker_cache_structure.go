@@ -37,15 +37,20 @@ var MirrorGroupNames = [...]string{
 
 // mirrorGroupNameSQL is the name of the status group expr (an SQL
 // expression of its number) by MirrorGroupNames, ” for none.
-func mirrorGroupNameSQL(expr string) string {
+func mirrorGroupNameSQL(expr string) string { return mirrorGroupCaseSQL(expr, "", "''") }
+
+// mirrorGroupCaseSQL names group expr by MirrorGroupNames, with the WHEN
+// arms extra before them and otherwise for a number none names; expr is
+// evaluated once.
+func mirrorGroupCaseSQL(expr, extra, otherwise string) string {
 	var b strings.Builder
-	b.WriteString("CASE " + expr)
+	b.WriteString("CASE " + expr + extra)
 	for n, name := range MirrorGroupNames {
 		if name != "" {
 			fmt.Fprintf(&b, " WHEN %d THEN '%s'", n, name)
 		}
 	}
-	b.WriteString(" ELSE '' END")
+	b.WriteString(" ELSE " + otherwise + " END")
 	return b.String()
 }
 

@@ -68,7 +68,8 @@ func TestEvaluateCountsTheBuiltInDashboard(t *testing.T) {
 		t.Fatalf("stuck = %s; want WEB-3 alone (WEB-4's time in its status is unknown, WEB-5 moved a day ago)", num(stuck.Value))
 	}
 	list := widgetOf(t, a, "stuck_list")
-	if len(list.Tickets) != 1 || list.Tickets[0].Key != "WEB-3" || list.Tickets[0].Note != "in In Progress for 5 days" || list.NotCounted != 1 {
+	if len(list.Tickets) != 1 || list.Tickets[0].Key != "WEB-3" || list.Tickets[0].Title != "Title of WEB-3" || list.Tickets[0].Assignee != "User 1" ||
+		list.Tickets[0].Note != "in In Progress for 5 days" || list.NotCounted != 1 {
 		t.Fatalf("stuck list = %+v, %d not counted; want WEB-3 in progress for 5 days and WEB-4 not counted", list.Tickets, list.NotCounted)
 	}
 	cycle := widgetOf(t, a, "start_to_done")
@@ -261,8 +262,8 @@ func TestDrillRowsReadAsTheMetricCounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r := stuck.Rows[0]; r.Key != "WEB-3" || r.Value != nil || r.Note != "in In Progress for 5 days" {
-		t.Fatalf("stuck's first row = %+v; want WEB-3 with its days in the note and no value", r)
+	if r := stuck.Rows[0]; r.Key != "WEB-3" || r.Value != nil || r.Note != "in In Progress for 5 days" || r.Title != "Title of WEB-3" || r.Status != "In Progress" || r.Points == nil || *r.Points != 2 {
+		t.Fatalf("stuck's first row = %+v; want WEB-3, its title, status and points, with its days in the note and no value", r)
 	}
 	pace, err := e.Drill(context.Background(), b, DrillRequest{Request: utcSprints3, Widget: "pace"})
 	if err != nil {
@@ -498,7 +499,7 @@ func TestATableMakesTheCellsItShows(t *testing.T) {
 		SELECT 'p' || i, 'WEB-' || (5000 + i), 'T', 0, '1', 'todo', 'person' || i, %d, 0, 0, 1, 0, 1, 1 FROM n`, ago(5)).
 		exec(`INSERT INTO sprint_tickets SELECT 's7', id FROM tickets WHERE id LIKE 'p%%'`)
 	e := evaluator()
-	o, err := e.begin(context.Background(), f.board(), utcSprints3)
+	o, err := e.begin(context.Background(), f.board(), utcSprints3, func(Widget) bool { return true })
 	if err != nil {
 		t.Fatal(err)
 	}

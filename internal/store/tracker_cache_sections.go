@@ -141,7 +141,7 @@ const MirrorGroupLeftOut = 6
 // and MirrorGroupLeftOut as "left_out", the one group no status view
 // names; NULL for none.
 func mirrorRegroupedGroupNameSQL(expr string) string {
-	return `iif(` + expr + ` = ` + strconv.Itoa(MirrorGroupLeftOut) + `, 'left_out', nullif(` + mirrorGroupNameSQL(expr) + `, ''))`
+	return mirrorGroupCaseSQL(expr, ` WHEN `+strconv.Itoa(MirrorGroupLeftOut)+` THEN 'left_out'`, "NULL")
 }
 
 // MirrorRegroup is a project's regrouping of one tracker site's statuses,

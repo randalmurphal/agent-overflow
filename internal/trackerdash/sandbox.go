@@ -18,10 +18,10 @@ import (
 )
 
 // Fill fills the empty main database of conn with a board's export
-// (store.ExportMirrorBoard bound to the board): ok is false for a board
-// the mirror does not show. The fill must leave conn holding its main
-// database alone; the gate checks it.
-type Fill func(ctx context.Context, conn *sql.Conn) (export store.MirrorExport, ok bool, err error)
+// (store.ExportMirrorBoard bound to the board) of relations, the ones the
+// count reads: ok is false for a board the mirror does not show. The fill
+// must leave conn holding its main database alone; the gate checks it.
+type Fill func(ctx context.Context, conn *sql.Conn, relations []string) (export store.MirrorExport, ok bool, err error)
 
 // snapshotDSN is the export's database: private and in memory, a sort or
 // a materialized subquery that outgrows the 4 MiB page cache spilling to
@@ -35,6 +35,11 @@ const (
 	metricDeadline = time.Second
 )
 
+// maxParams is the parameters one statement on a sealed session binds: a
+// metric binds :now and :since, and the app's reads of a page's titles
+// bind as many IDs a statement.
+const maxParams = 8
+
 // limits are the connection's SQLite limits once the gate closes, by
 // SQLITE_LIMIT_*. The attached-database limit is the gate's own.
 var limits = []struct {
@@ -47,7 +52,7 @@ var limits = []struct {
 	{sqlite3.SQLITE_LIMIT_EXPR_DEPTH, "expression depth", 100},
 	{sqlite3.SQLITE_LIMIT_COMPOUND_SELECT, "compound terms", 8},
 	{sqlite3.SQLITE_LIMIT_COLUMN, "columns", 32},
-	{sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, "parameters", 8},
+	{sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, "parameters", maxParams},
 	{sqlite3.SQLITE_LIMIT_VDBE_OP, "statement size", 25_000},
 	{sqlite3.SQLITE_LIMIT_FUNCTION_ARG, "function arguments", 16},
 	{sqlite3.SQLITE_LIMIT_WORKER_THREADS, "worker threads", 0},

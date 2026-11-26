@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -21,19 +22,27 @@ import (
 //   - Every row the export writes is the board's: its board rows, their
 //     issues, memberships of the board's sprints, the changes of the
 //     issues' current history generation (an estimate change only of this
-//     board), and the statuses, people and epics those name. A board the
-//     mirror does not show (mirrorBoardShown) exports nothing.
+//     board), and the statuses (and the board's columns'), people and epics
+//     those name. A board the mirror does not show (mirrorBoardShown)
+//     exports nothing.
+//   - It fills the relations the caller asks for, what their fills read of
+//     the copy, and the board and its sprints; the rest stay empty. So a
+//     count whose metrics read no changes copies none, and its people are
+//     the assignees alone.
 //   - Each statement searches the mirror by the board's keys, root and
 //     board first, then each row's issue: its cost follows the board, never
-//     the mirror's or the file's size (TestMirrorExportSearchesByTheBoard).
+//     the mirror's or the file's size (TestMirrorExportSearchesByTheBoard),
+//     and what it reads per board row does not grow with the board's
+//     sprints (TestMirrorExportReadsEachRowOnce).
 //   - Status groups are the project's regrouping over the root's catalog,
 //     as the board's sections count them, and a sprint member counted done
 //     at the sprint's completion by the pace's rule (mirrorStatusAtCompletionSQL,
 //     mirrorDoneStatusesSQL), so the pace a dashboard shows is the Backlog's.
 //   - The whole fill is one read transaction of the file: one state of the
 //     mirror, whose first-read fact (MirrorExport.FirstReadDone) it reads
-//     in the same transaction. The file is detached before the export returns, whatever it
-//     returns; a detach that fails is the export's error.
+//     in the same transaction. The file is detached before the export
+//     returns, whatever it returns; a detach that fails is the export's
+//     error.
 
 // MirrorExportTables are the relations the export writes, the only tables
 // of the database it fills.
@@ -107,24 +116,41 @@ var mirrorExportStartKnownSQL = `(i.history_for > 0 AND coalesce(
 	      WHERE c.root_id = i.root_id AND c.issue_id = i.issue_id AND c.gen = i.history_gen AND c.kind = 1 ORDER BY c.seq LIMIT 1),
 	    i.status_id) NOT IN (` + mirrorGroupStatusesSQL("?3", MirrorGroupInProgress) + ` UNION ALL ` + mirrorDoneStatusesSQL("?3") + `))`
 
+// mirrorExportStatusesSQL copies the statuses of root ?1 that the list x
+// (a subquery of one column, id) names, each with its group under the
+// regrouping ?3; or, as the statement does, ignores one already copied.
+func mirrorExportStatusesSQL(insert, x string) string {
+	return insert + ` INTO main.statuses(id, name, status_group)
+	  SELECT st.status_id, st.name, ` + mirrorRegroupedGroupNameSQL(`coalesce((SELECT o.value FROM json_each(?3) o WHERE o.key = st.status_id), st.status_group)`) + `
+	  FROM (` + x + `) x
+	  CROSS JOIN tracker_cache_statuses st ON st.root_id = CAST(?1 AS INTEGER) AND st.status_id = x.id`
+}
+
+// mirrorExportFill is one statement of the export: the relation it fills
+// (a fill of another relation's rows is that relation's, as the statuses
+// and people its changes name are the changes'), and the relations of the
+// copy it reads, which the export fills first.
+type mirrorExportFill struct {
+	relation, name, sql string
+	needs               []string
+}
+
 // mirrorExportFills are the fill statements in order: ?1 root, ?2 board,
 // ?3 the regrouping (a JSON object, '{}' for none), ?4 the board's
 // estimate reset, ?5 whether the board has an estimate (0 or 1). Each
 // names the snapshot's tables by main and the file's unqualified: the
-// snapshot names none of the file's tables.
-var mirrorExportFills = []struct{ table, sql string }{
-	{"board", `INSERT INTO main.board(name, plans_sprints, estimates)
+// snapshot names none of the file's tables. An export runs those of the
+// relations asked for and the relations they need (mirrorExportRelations).
+var mirrorExportFills = []mirrorExportFill{
+	{relation: "board", name: "board", sql: `INSERT INTO main.board(name, plans_sprints, estimates)
 	  SELECT b.name, b.plans_sprints, CASE b.estimate_unit WHEN ` + strconv.Itoa(MirrorEstimatePoints) + ` THEN 'points' WHEN ` +
 		strconv.Itoa(MirrorEstimateTime) + ` THEN 'time' ELSE 'none' END
 	  FROM tracker_cache_boards b WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2`},
-	{"statuses", `INSERT INTO main.statuses(id, name, status_group)
-	  SELECT st.status_id, st.name, ` + mirrorRegroupedGroupNameSQL(`coalesce((SELECT o.value FROM json_each(?3) o WHERE o.key = st.status_id), st.status_group)`) + `
-	  FROM tracker_cache_statuses st WHERE st.root_id = CAST(?1 AS INTEGER)`},
-	{"tickets", `INSERT INTO main.tickets(id, key, title, type_level, status, status_group, assignee, parent, epic,
+	{relation: "tickets", name: "tickets", sql: `INSERT INTO main.tickets(id, key, title, type_level, status, status_group, assignee, parent, epic,
 	    created_at, updated_at, resolved_at, status_since, points, history_from, started_known, started_at, done_at, open, counts)
 	  SELECT i.issue_id, i.issue_key, i.title, i.type_level, nullif(i.status_id, ''),
-	    coalesce((SELECT ms.status_group FROM main.statuses ms WHERE ms.id = i.status_id),
-	      ` + mirrorRegroupedGroupNameSQL(`(SELECT o.value FROM json_each(?3) o WHERE o.key = i.status_id)`) + `),
+	    ` + mirrorRegroupedGroupNameSQL(`coalesce((SELECT o.value FROM json_each(?3) o WHERE o.key = i.status_id),
+	      (SELECT st.status_group FROM tracker_cache_statuses st WHERE st.root_id = i.root_id AND st.status_id = i.status_id))`) + `,
 	    nullif(i.assignee_id, ''), nullif(i.parent_id, ''),
 	    CASE WHEN p.type_level = 1 THEN p.issue_id WHEN gp.type_level = 1 THEN gp.issue_id END,
 	    nullif(i.created_at, 0), i.updated_at, nullif(i.resolved_at, 0), nullif(i.status_since, 0),
@@ -141,26 +167,34 @@ var mirrorExportFills = []struct{ table, sql string }{
 	  LEFT JOIN tracker_cache_issues gp ON gp.root_id = p.root_id AND gp.issue_id = p.parent_id AND p.parent_id <> ''
 	    AND ` + mirrorIssueKept("gp.root_id", "gp.issue_id") + `
 	  WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2`},
-	{"epics", `INSERT INTO main.epics(id, key, title)
+	{relation: "statuses", name: "statuses", needs: []string{"tickets"}, sql: mirrorExportStatusesSQL("INSERT",
+		`SELECT c.status_id AS id FROM tracker_cache_board_column_statuses c WHERE c.root_id = CAST(?1 AS INTEGER) AND c.board_id = ?2
+		 UNION SELECT status FROM main.tickets WHERE status IS NOT NULL`)},
+	{relation: "epics", name: "epics", needs: []string{"tickets"}, sql: `INSERT INTO main.epics(id, key, title)
 	  SELECT e.issue_id, e.issue_key, e.title FROM (SELECT DISTINCT epic FROM main.tickets WHERE epic IS NOT NULL) x
 	  CROSS JOIN tracker_cache_issues e ON e.root_id = CAST(?1 AS INTEGER) AND e.issue_id = x.epic`},
-	{"sprints", `INSERT INTO main.sprints(id, name, state, start_at, end_at, completed_at, position)
+	{relation: "sprints", name: "sprints", sql: `INSERT INTO main.sprints(id, name, state, start_at, end_at, completed_at, position)
 	  SELECT sp.sprint_id, sp.name, CASE sp.state WHEN ` + strconv.Itoa(MirrorSprintFuture) + ` THEN 'future' WHEN ` +
 		strconv.Itoa(MirrorSprintActive) + ` THEN 'active' ELSE 'closed' END,
 	    nullif(sp.start_at, 0), nullif(sp.end_at, 0), nullif(sp.completed_at, 0), sp.position
 	  FROM tracker_cache_sprints sp WHERE sp.root_id = CAST(?1 AS INTEGER) AND sp.board_id = ?2`},
-	{"sprint_tickets", `INSERT INTO main.sprint_tickets(sprint, ticket)
+	// The membership is read by each ticket's key; +m.sprint_id keeps the
+	// planner from probing it once per board sprint for every ticket.
+	{relation: "sprint_tickets", name: "sprint_tickets", needs: []string{"sprints"}, sql: `INSERT INTO main.sprint_tickets(sprint, ticket)
 	  SELECT m.sprint_id, m.issue_id FROM tracker_cache_board_issues b
 	  CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = b.root_id AND m.issue_id = b.issue_id
-	  WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND m.sprint_id IN (SELECT id FROM main.sprints)`},
-	{"changes", `INSERT INTO main.changes(ticket, kind, seq, at, author, from_value, to_value, from_number, to_number)
+	  WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND +m.sprint_id IN (SELECT id FROM main.sprints)`},
+	{relation: "changes", name: "changes", sql: `INSERT INTO main.changes(ticket, kind, seq, at, author, from_value, to_value, from_number, to_number)
 	  SELECT c.issue_id, CASE c.kind WHEN 1 THEN 'status' WHEN 2 THEN 'sprint' WHEN 3 THEN 'estimate' ELSE 'assignee' END,
 	    c.seq, c.at, nullif(c.author_id, ''), nullif(c.from_value, ''), nullif(c.to_value, ''), c.from_number, c.to_number
 	  FROM tracker_cache_board_issues b
 	  CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
 	  CROSS JOIN tracker_cache_changes c ON c.root_id = i.root_id AND c.issue_id = i.issue_id AND c.gen = i.history_gen
 	  WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND (c.kind <> 3 OR c.board_id = ?2)`},
-	{"sprint_finished", `WITH l AS MATERIALIZED (
+	{relation: "changes", name: "statuses its changes name", needs: []string{"statuses"}, sql: mirrorExportStatusesSQL("INSERT OR IGNORE",
+		`SELECT to_value AS id FROM main.changes WHERE kind = 'status' AND to_value IS NOT NULL
+		 UNION SELECT from_value FROM main.changes WHERE kind = 'status' AND from_value IS NOT NULL`)},
+	{relation: "sprint_finished", name: "closed sprints' members", needs: []string{"sprints"}, sql: `WITH l AS MATERIALIZED (
 	    SELECT sprint_id, completed_at FROM tracker_cache_sprints
 	     WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND state = ` + strconv.Itoa(MirrorSprintClosed) + ` AND completed_at > 0)
 	  INSERT INTO main.sprint_finished(sprint, ticket, done)
@@ -169,17 +203,49 @@ var mirrorExportFills = []struct{ table, sql string }{
 	  CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = CAST(?1 AS INTEGER) AND m.sprint_id = l.sprint_id
 	  CROSS JOIN tracker_cache_board_issues b ON b.root_id = m.root_id AND b.board_id = ?2 AND b.issue_id = m.issue_id
 	  CROSS JOIN tracker_cache_issues i ON i.root_id = m.root_id AND i.issue_id = m.issue_id`},
-	{"active sprints' members", `INSERT INTO main.sprint_finished(sprint, ticket, done)
+	{relation: "sprint_finished", name: "active sprints' members", needs: []string{"sprints", "sprint_tickets", "tickets"}, sql: `INSERT INTO main.sprint_finished(sprint, ticket, done)
 	  SELECT sprint_tickets.sprint, sprint_tickets.ticket, coalesce(tickets.status_group = 'done', 0)
 	  FROM main.sprints JOIN main.sprint_tickets ON sprint_tickets.sprint = sprints.id
 	  JOIN main.tickets ON tickets.id = sprint_tickets.ticket WHERE sprints.state = 'active'`},
-	{"people", `INSERT INTO main.people(id, name)
+	{relation: "people", name: "people", needs: []string{"tickets"}, sql: `INSERT INTO main.people(id, name)
+	  SELECT u.user_id, u.name FROM (SELECT DISTINCT assignee AS id FROM main.tickets WHERE assignee IS NOT NULL) x
+	  CROSS JOIN tracker_cache_users u ON u.root_id = CAST(?1 AS INTEGER) AND u.user_id = x.id`},
+	{relation: "changes", name: "people its changes name", needs: []string{"people"}, sql: `INSERT OR IGNORE INTO main.people(id, name)
 	  SELECT u.user_id, u.name FROM (
-	    SELECT assignee AS id FROM main.tickets WHERE assignee IS NOT NULL
-	    UNION SELECT author FROM main.changes WHERE author IS NOT NULL
+	    SELECT author AS id FROM main.changes WHERE author IS NOT NULL
 	    UNION SELECT from_value FROM main.changes WHERE kind = 'assignee' AND from_value IS NOT NULL
 	    UNION SELECT to_value FROM main.changes WHERE kind = 'assignee' AND to_value IS NOT NULL) x
 	  CROSS JOIN tracker_cache_users u ON u.root_id = CAST(?1 AS INTEGER) AND u.user_id = x.id`},
+}
+
+// mirrorExportAlways are the relations every export fills: what a range
+// is resolved against.
+var mirrorExportAlways = []string{"board", "sprints"}
+
+// mirrorExportRelations is the set of relations an export of relations
+// fills: those, the ones every export fills, and what each of their fills
+// needs, through every fill. A name that is not an export relation is the
+// caller's error.
+func mirrorExportRelations(relations []string) (map[string]bool, error) {
+	set := map[string]bool{}
+	queue := slices.Concat(mirrorExportAlways, relations)
+	for len(queue) > 0 {
+		r := queue[0]
+		queue = queue[1:]
+		if set[r] {
+			continue
+		}
+		if !slices.Contains(MirrorExportTables, r) {
+			return nil, fmt.Errorf("store: %q is not one of the export's relations (%s)", r, strings.Join(MirrorExportTables, ", "))
+		}
+		set[r] = true
+		for _, f := range mirrorExportFills {
+			if f.relation == r {
+				queue = append(queue, f.needs...)
+			}
+		}
+	}
+	return set, nil
 }
 
 // MirrorExport is what ExportMirrorBoard says of the board it exported.
@@ -200,14 +266,20 @@ var ErrMirrorExportUnsupported = errors.New("store: this store has no database f
 
 // ExportMirrorBoard fills the main database of conn, which must be empty,
 // with board boardID of root rootID as the export's relations hold it
-// (MirrorExportTables), read with regroup in one read transaction of this
+// (MirrorExportTables): relations, what their fills need and the ones
+// every export fills (mirrorExportRelations), the others left empty. It
+// reads with regroup in one read transaction of this
 // store's file, attached to conn read-only for the fill and detached
 // before it returns. ok is false, with nothing filled, for a board the
 // mirror does not show. It takes a history read slot, as every read that
 // walks a board does; ctx bounds the wait for it and every statement.
-func (s *Store) ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup) (export MirrorExport, ok bool, err error) {
+func (s *Store) ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, relations []string) (export MirrorExport, ok bool, err error) {
 	if s.path == "" || s.path == ":memory:" || strings.Contains(s.path, "mode=memory") {
 		return MirrorExport{}, false, ErrMirrorExportUnsupported
+	}
+	set, err := mirrorExportRelations(relations)
+	if err != nil {
+		return MirrorExport{}, false, err
 	}
 	release, err := s.historyReads.acquire(ctx)
 	if err != nil {
@@ -233,13 +305,13 @@ func (s *Store) ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID in
 			ok = false
 		}
 	}()
-	export, ok, err = exportMirrorBoardTx(ctx, conn, rootID, boardID, regroup)
+	export, ok, err = exportMirrorBoardTx(ctx, conn, rootID, boardID, regroup, set)
 	return export, ok, err
 }
 
 // exportMirrorBoardTx runs the fill in one transaction on conn, the file
 // attached.
-func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup) (MirrorExport, bool, error) {
+func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, relations map[string]bool) (MirrorExport, bool, error) {
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return MirrorExport{}, false, fmt.Errorf("store: begin the export of board %s: %w", boardID, err)
@@ -268,8 +340,11 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 		estimated = 1
 	}
 	for _, fill := range mirrorExportFills {
+		if !relations[fill.relation] {
+			continue
+		}
 		if _, err := tx.ExecContext(ctx, fill.sql, rootID, boardID, groups, resetAt, estimated); err != nil {
-			return MirrorExport{}, false, fmt.Errorf("store: export board %s's %s: %w", boardID, fill.table, err)
+			return MirrorExport{}, false, fmt.Errorf("store: export board %s's %s: %w", boardID, fill.name, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {

@@ -99,7 +99,7 @@ func quote(s string) string {
 
 // fill is the fixture as a Fill.
 func (f *fixture) fill() Fill {
-	return func(ctx context.Context, conn *sql.Conn) (store.MirrorExport, bool, error) {
+	return func(ctx context.Context, conn *sql.Conn, _ []string) (store.MirrorExport, bool, error) {
 		if _, err := conn.ExecContext(ctx, store.MirrorExportSchema); err != nil {
 			return store.MirrorExport{}, false, err
 		}

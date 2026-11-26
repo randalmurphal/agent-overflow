@@ -73,8 +73,8 @@ func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.
 		s.leave()
 		return trackerdash.Board{}, fmt.Errorf("trackerapp: read connection %s: %w", scope.Connection, err)
 	}
-	fill := func(ctx context.Context, conn *sql.Conn) (store.MirrorExport, bool, error) {
-		return s.store.ExportMirrorBoard(ctx, conn, root, string(scope.Board), groups.regroup)
+	fill := func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
+		return s.store.ExportMirrorBoard(ctx, conn, root, string(scope.Board), groups.regroup, relations)
 	}
 	return trackerdash.Board{Fill: fill, Epics: hasEpics(row.Kind), Viewer: row.VerifiedAccountID}, nil
 }

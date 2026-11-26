@@ -45,9 +45,9 @@ func TestDashboardAtScale(t *testing.T) {
 func dashboardAtScale(t *testing.T, n int) {
 	s, root, board := store.ScaleMirrorForTest(t, n)
 	var fills []time.Duration
-	fill := func(ctx context.Context, conn *sql.Conn) (store.MirrorExport, bool, error) {
+	fill := func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
 		start := time.Now()
-		export, ok, err := s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{})
+		export, ok, err := s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{}, relations)
 		fills = append(fills, time.Since(start))
 		return export, ok, err
 	}
@@ -140,8 +140,8 @@ func TestDashboardMemoryAfterClose(t *testing.T) {
 
 func dashboardMemory(t *testing.T, n int) {
 	s, root, board := store.ScaleMirrorForTest(t, n)
-	fill := func(ctx context.Context, conn *sql.Conn) (store.MirrorExport, bool, error) {
-		return s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{})
+	fill := func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
+		return s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{}, relations)
 	}
 	b := trackerdash.Board{Fill: fill, Epics: true, Viewer: "acc-user1"}
 	e := trackerdash.NewEvaluator(time.Now)

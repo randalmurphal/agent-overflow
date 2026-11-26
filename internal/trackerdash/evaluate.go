@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/store"
@@ -46,15 +47,21 @@ func refuse(code, sentence string, err error) *Refusal {
 
 // Evaluator evaluates dashboards, at most maxEvaluations at once; a
 // further one waits up to busyWait for a turn and is refused as busy
-// after it. It retains nothing between calls.
+// after it. It retains nothing of a board between calls: only the
+// relations each kind's built-in metrics read, which are fixed.
 type Evaluator struct {
 	slots chan struct{}
 	now   func() time.Time
+
+	readsMu sync.Mutex
+	// reads is, by kind, each built-in metric's relations, from its prepare
+	// on an empty sealed session (metricReads).
+	reads map[Kind]map[string][]string
 }
 
 // NewEvaluator is an evaluator reading the time from now.
 func NewEvaluator(now func() time.Time) *Evaluator {
-	return &Evaluator{slots: make(chan struct{}, maxEvaluations), now: now}
+	return &Evaluator{slots: make(chan struct{}, maxEvaluations), now: now, reads: map[Kind]map[string][]string{}}
 }
 
 func (e *Evaluator) acquire(ctx context.Context) (func(), error) {
@@ -222,31 +229,69 @@ func (e *Evaluator) Dashboards(ctx context.Context, k Kind) ([]DashboardView, er
 		return nil, err
 	}
 	defer release()
-	s, err := openSession(ctx, time.UTC)
+	v, _, err := emptyView(ctx, k)
 	if err != nil {
 		return nil, err
 	}
-	views, err := func() ([]DashboardView, error) {
+	return []DashboardView{v}, nil
+}
+
+// emptyView is the built-in dashboard of kind k with its metrics prepared
+// on a session of the export's empty relations, sealed as a count's is.
+// A built-in metric that does not prepare is this package's defect.
+func emptyView(ctx context.Context, k Kind) (DashboardView, map[string]prepResult, error) {
+	s, err := openSession(ctx, time.UTC)
+	if err != nil {
+		return DashboardView{}, nil, err
+	}
+	v, preps, err := func() (DashboardView, map[string]prepResult, error) {
 		if _, err := s.conn.ExecContext(ctx, store.MirrorExportSchema); err != nil {
-			return nil, fmt.Errorf("create the export's relations: %w", err)
+			return DashboardView{}, nil, fmt.Errorf("create the export's relations: %w", err)
 		}
 		if err := s.gate(ctx); err != nil {
-			return nil, refuse("dashboard_unsealed", "the dashboard was not counted, because its copy of the board could not be sealed", err)
+			return DashboardView{}, nil, refuse("dashboard_unsealed", "the dashboard was not counted, because its copy of the board could not be sealed", err)
 		}
 		d, metrics := builtin(k)
 		v, preps := s.view(d, metrics, "points")
 		for name, pr := range preps {
 			if pr.err != nil {
-				return nil, fmt.Errorf("built-in metric %s: %w", name, pr.err)
+				return DashboardView{}, nil, fmt.Errorf("built-in metric %s: %w", name, pr.err)
 			}
 		}
-		return []DashboardView{v}, nil
+		return v, preps, nil
 	}()
 	if closeErr := s.close(); closeErr != nil {
-		return nil, errors.Join(err, closeErr)
+		return DashboardView{}, nil, errors.Join(err, closeErr)
 	}
-	return views, err
+	return v, preps, err
 }
+
+// metricReads is the relations each built-in metric of kind k reads, by
+// metric name, worked out on the kind's first count and kept: the
+// built-ins are fixed, so their prepares read the same relations every
+// time. A count fills only these and what the board's labels need
+// (boardRelations).
+func (e *Evaluator) metricReads(ctx context.Context, k Kind) (map[string][]string, error) {
+	e.readsMu.Lock()
+	defer e.readsMu.Unlock()
+	if r, ok := e.reads[k]; ok {
+		return r, nil
+	}
+	_, preps, err := emptyView(ctx, k)
+	if err != nil {
+		return nil, err
+	}
+	r := map[string][]string{}
+	for name, pr := range preps {
+		r[name] = pr.p.reads
+	}
+	e.reads[k] = r
+	return r, nil
+}
+
+// boardRelations are the relations every count fills beside its metrics':
+// what readBoard and the rows' labels read.
+var boardRelations = []string{"tickets", "statuses", "people", "epics"}
 
 // prepResult is a metric prepared, or the sentence of why it did not.
 type prepResult struct {
@@ -337,7 +382,10 @@ func how(m Metric, p prepared, plansSprints bool, estimates string) How {
 }
 
 // evaluation is one opened, filled and sealed session with the board's
-// rows the app reads beside the metrics.
+// rows the app reads beside the metrics: each ticket's key, assignee and
+// epic, which the narrowing and the order of rows read for every row; a
+// shown row's title, status and estimate are read with its page
+// (titles).
 type evaluation struct {
 	s         *session
 	export    store.MirrorExport
@@ -349,19 +397,18 @@ type evaluation struct {
 }
 
 type ticketRow struct {
-	key, title, status, assignee, epic string
-	points                             *float64
+	key, assignee, epic string
 }
 
-// open opens a session, fills it with b's export and seals it, then
-// reads the rows every widget names.
-func (e *Evaluator) open(ctx context.Context, b Board, loc *time.Location) (*evaluation, error) {
+// open opens a session, fills it with b's export of relations and seals
+// it, then reads the rows every widget names.
+func (e *Evaluator) open(ctx context.Context, b Board, loc *time.Location, relations []string) (*evaluation, error) {
 	s, err := openSession(ctx, loc)
 	if err != nil {
 		return nil, err
 	}
 	ev := &evaluation{s: s}
-	if err := ev.fill(ctx, b); err != nil {
+	if err := ev.fill(ctx, b, relations); err != nil {
 		if closeErr := s.close(); closeErr != nil {
 			err = errors.Join(err, closeErr)
 		}
@@ -370,8 +417,8 @@ func (e *Evaluator) open(ctx context.Context, b Board, loc *time.Location) (*eva
 	return ev, nil
 }
 
-func (ev *evaluation) fill(ctx context.Context, b Board) error {
-	export, ok, err := b.Fill(ctx, ev.s.conn)
+func (ev *evaluation) fill(ctx context.Context, b Board, relations []string) error {
+	export, ok, err := b.Fill(ctx, ev.s.conn, relations)
 	switch {
 	case err != nil:
 		return tooSlow(ctx, fmt.Errorf("copy the board for its dashboard: %w", err))
@@ -412,11 +459,10 @@ func (ev *evaluation) readBoard(ctx context.Context) error {
 		return err
 	})
 	if err == nil {
-		err = ev.query(ctx, `SELECT t.id, t.key, t.title, coalesce(s.name, ''), coalesce(t.assignee, ''), coalesce(t.epic, ''), t.points
-			FROM tickets t LEFT JOIN statuses s ON s.id = t.status`, func(r *sql.Rows) error {
+		err = ev.query(ctx, `SELECT id, key, coalesce(assignee, ''), coalesce(epic, '') FROM tickets`, func(r *sql.Rows) error {
 			var id string
 			var t ticketRow
-			err := r.Scan(&id, &t.key, &t.title, &t.status, &t.assignee, &t.epic, &t.points)
+			err := r.Scan(&id, &t.key, &t.assignee, &t.epic)
 			ev.tickets[id] = t
 			return err
 		})
@@ -443,8 +489,8 @@ func (ev *evaluation) readBoard(ctx context.Context) error {
 	return nil
 }
 
-func (ev *evaluation) query(ctx context.Context, q string, scan func(*sql.Rows) error) (err error) {
-	rows, err := ev.s.conn.QueryContext(ctx, q)
+func (ev *evaluation) query(ctx context.Context, q string, scan func(*sql.Rows) error, args ...any) (err error) {
+	rows, err := ev.s.conn.QueryContext(ctx, q, args...)
 	if err != nil {
 		return err
 	}
@@ -458,6 +504,39 @@ func (ev *evaluation) query(ctx context.Context, q string, scan func(*sql.Rows) 
 }
 
 func (ev *evaluation) close() error { return ev.s.close() }
+
+// titles fills each of rows (a list's or a drill page's, at most
+// drillPage) with its ticket's title, status and estimate, read by ID,
+// maxParams IDs a statement.
+func (ev *evaluation) titles(ctx context.Context, rows []*TicketRow) error {
+	byID := map[string][]*TicketRow{}
+	var ids []any
+	for _, r := range rows {
+		if _, ok := byID[r.ID]; !ok {
+			ids = append(ids, r.ID)
+		}
+		byID[r.ID] = append(byID[r.ID], r)
+	}
+	for chunk := range slices.Chunk(ids, maxParams) {
+		q := `SELECT t.id, t.title, coalesce(s.name, ''), t.points FROM tickets t LEFT JOIN statuses s ON s.id = t.status
+			WHERE t.id IN (?` + strings.Repeat(", ?", len(chunk)-1) + `)`
+		err := ev.query(ctx, q, func(r *sql.Rows) error {
+			var id, title, status string
+			var points *float64
+			if err := r.Scan(&id, &title, &status, &points); err != nil {
+				return err
+			}
+			for _, row := range byID[id] {
+				row.Title, row.Status, row.Points = title, status, points
+			}
+			return nil
+		}, chunk...)
+		if err != nil {
+			return tooSlow(ctx, fmt.Errorf("read the shown tickets' titles: %w", err))
+		}
+	}
+	return nil
+}
 
 // narrowing is the person and epic r narrows the page to.
 type narrowing struct {
@@ -564,18 +643,36 @@ type opened struct {
 }
 
 // begin is the common start of an evaluation and a drill: a slot, the
-// deadline, the session, and the dashboard with its range and narrowing.
-func (e *Evaluator) begin(ctx context.Context, b Board, r Request) (*opened, error) {
+// deadline, the session filled with what the metrics of the dashboard's
+// widgets that counts keeps read, and the dashboard with its range and
+// narrowing. The request's dashboard names the board's kind: one that
+// names neither built-in is refused before anything is copied.
+func (e *Evaluator) begin(ctx context.Context, b Board, r Request, counts func(Widget) bool) (*opened, error) {
 	loc, err := location(r.TimeZone)
 	if err != nil {
 		return nil, err
+	}
+	kind, err := requestKind(r, b)
+	if err != nil {
+		return nil, err
+	}
+	d, metrics := builtin(kind)
+	var names []string
+	for _, w := range d.Widgets {
+		if counts(w) {
+			names = append(names, w.Metric)
+		}
 	}
 	release, err := e.acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, evaluationDeadline)
-	ev, err := e.open(ctx, b, loc)
+	relations, err := e.relationsOf(ctx, kind, metrics, names)
+	var ev *evaluation
+	if err == nil {
+		ev, err = e.open(ctx, b, loc, relations)
+	}
 	if err != nil {
 		cancel()
 		release()
@@ -600,7 +697,7 @@ func (o *opened) resolve(b Board, r Request, loc *time.Location) error {
 	plansSprints := o.ev.export.PlansSprints
 	o.d, o.metrics = builtin(Kind{PlansSprints: plansSprints, Epics: b.Epics})
 	if r.Dashboard != o.d.ID {
-		return refuse("dashboard_unknown", fmt.Sprintf("this board has no dashboard %q; pick one from the list", truncate(r.Dashboard, 64)), nil)
+		return unknownDashboard(r.Dashboard)
 	}
 	rng := r.Range
 	if rng == "" {
@@ -620,6 +717,34 @@ func (o *opened) resolve(b Board, r Request, loc *time.Location) error {
 	return nil
 }
 
+// requestKind is the kind of board r's dashboard is the built-in of; the
+// board's own kind is checked against it once its copy is read (resolve).
+func requestKind(r Request, b Board) (Kind, error) {
+	if r.Dashboard != builtinSprintsID && r.Dashboard != builtinWeeksID {
+		return Kind{}, unknownDashboard(r.Dashboard)
+	}
+	return Kind{PlansSprints: r.Dashboard == builtinSprintsID, Epics: b.Epics}, nil
+}
+
+func unknownDashboard(id string) *Refusal {
+	return refuse("dashboard_unknown", fmt.Sprintf("this board has no dashboard %q; pick one from the list", truncate(id, 64)), nil)
+}
+
+// relationsOf is what a count of the named metrics of kind k fills: the
+// relations their prepares read and boardRelations, in order.
+func (e *Evaluator) relationsOf(ctx context.Context, k Kind, metrics map[string]Metric, names []string) ([]string, error) {
+	reads, err := e.metricReads(ctx, k)
+	if err != nil {
+		return nil, err
+	}
+	out := slices.Clone(boardRelations)
+	for _, n := range names {
+		out = append(out, reads[metrics[n].Name]...)
+	}
+	slices.Sort(out)
+	return slices.Compact(out), nil
+}
+
 // count runs metric m once, its prepared statement from the view.
 func (o *opened) count(m Metric) (counted, error) {
 	pr := o.preps[m.Name]
@@ -632,7 +757,7 @@ func (o *opened) count(m Metric) (counted, error) {
 
 // Evaluate counts dashboard r.Dashboard of board b.
 func (e *Evaluator) Evaluate(ctx context.Context, b Board, r Request) (_ Answer, err error) {
-	o, err := e.begin(ctx, b, r)
+	o, err := e.begin(ctx, b, r, func(Widget) bool { return true })
 	if err != nil {
 		return Answer{}, err
 	}
@@ -653,6 +778,15 @@ func (e *Evaluator) Evaluate(ctx context.Context, b Board, r Request) (_ Answer,
 			runs[m.Name] = c
 		}
 		a.Widgets = append(a.Widgets, o.ev.widget(w, m, c, o.sp))
+	}
+	var shown []*TicketRow
+	for i := range a.Widgets {
+		for j := range a.Widgets[i].Tickets {
+			shown = append(shown, &a.Widgets[i].Tickets[j])
+		}
+	}
+	if err := o.ev.titles(o.ctx, shown); err != nil {
+		return Answer{}, err
 	}
 	return a, nil
 }
@@ -812,7 +946,7 @@ func (ev *evaluation) ticket(c contribution, m Metric, cols columns, i int) Tick
 	t, ok := ev.tickets[c.ticket]
 	r := TicketRow{Row: i, ID: c.ticket, Key: c.ticket, Counted: c.counted, Period: c.period, Note: c.note}
 	if ok {
-		r.Key, r.Title, r.Status, r.Points = t.key, t.title, t.status, t.points
+		r.Key = t.key
 		if t.assignee != "" {
 			r.Assignee = cmpOr(ev.people[t.assignee], t.assignee)
 		}
@@ -870,7 +1004,15 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 	if r.Page < 0 {
 		return DrillAnswer{}, refuse("dashboard_request_invalid", "a drill's page is 0 or more", nil)
 	}
-	o, err := e.begin(ctx, b, r.Request)
+	kind, err := requestKind(r.Request, b)
+	if err != nil {
+		return DrillAnswer{}, err
+	}
+	d, _ := builtin(kind)
+	if !slices.ContainsFunc(d.Widgets, func(w Widget) bool { return w.ID == r.Widget }) {
+		return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("this dashboard has no widget %q", truncate(r.Widget, 64)), nil)
+	}
+	o, err := e.begin(ctx, b, r.Request, func(w Widget) bool { return w.ID == r.Widget })
 	if err != nil {
 		return DrillAnswer{}, err
 	}
@@ -879,11 +1021,8 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	i := slices.IndexFunc(o.d.Widgets, func(w Widget) bool { return w.ID == r.Widget })
-	if i < 0 {
-		return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("this dashboard has no widget %q", truncate(r.Widget, 64)), nil)
-	}
-	w := o.d.Widgets[i]
+	// begin's dashboard is the one checked above: the request's kind.
+	w := o.d.Widgets[slices.IndexFunc(o.d.Widgets, func(w Widget) bool { return w.ID == r.Widget })]
 	m := o.metrics[w.Metric]
 	c, err := o.count(m)
 	if err != nil {
@@ -953,6 +1092,13 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 	from := min(len(rows), out.Page*drillPage)
 	for i, row := range rows[from:min(len(rows), (out.Page+1)*drillPage)] {
 		out.Rows = append(out.Rows, ev.ticket(row, m, c.p.cols, from+i))
+	}
+	shown := make([]*TicketRow, len(out.Rows))
+	for i := range out.Rows {
+		shown[i] = &out.Rows[i]
+	}
+	if err := ev.titles(o.ctx, shown); err != nil {
+		return DrillAnswer{}, err
 	}
 	return out, nil
 }

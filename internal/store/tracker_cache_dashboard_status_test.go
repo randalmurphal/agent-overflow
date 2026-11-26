@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -24,8 +25,8 @@ func TestDashboardCountsStatusesAsTheSectionsDo(t *testing.T) {
 	e := trackerdash.NewEvaluator(func() time.Time { return now })
 	evaluate := func(board, dashboard, rng string) trackerdash.Answer {
 		t.Helper()
-		fill := func(ctx context.Context, conn *sql.Conn) (store.MirrorExport, bool, error) {
-			return s.ExportMirrorBoard(ctx, conn, root, board, regroup)
+		fill := func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
+			return s.ExportMirrorBoard(ctx, conn, root, board, regroup, relations)
 		}
 		a, err := e.Evaluate(context.Background(), trackerdash.Board{Fill: fill, Epics: true},
 			trackerdash.Request{Dashboard: dashboard, Range: rng, TimeZone: "UTC"})
@@ -92,8 +93,8 @@ func TestStartToDoneCountsWhatTheHistoryShows(t *testing.T) {
 	// Monday 16 November, noon: WEB-21 is in progress Tuesday to Thursday,
 	// WEB-23 Tuesday to Wednesday.
 	s, root := store.DashboardHistoryFixtureForTest(t, time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC).UnixMilli(), day)
-	b := trackerdash.Board{Fill: func(ctx context.Context, conn *sql.Conn) (store.MirrorExport, bool, error) {
-		return s.ExportMirrorBoard(ctx, conn, root, "11", store.MirrorRegroup{})
+	b := trackerdash.Board{Fill: func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
+		return s.ExportMirrorBoard(ctx, conn, root, "11", store.MirrorRegroup{}, relations)
 	}}
 	r := trackerdash.Request{Dashboard: "overview_weeks", Range: trackerdash.RangeWeeks2, TimeZone: "UTC"}
 	d, err := trackerdash.NewEvaluator(func() time.Time { return now }).Drill(context.Background(), b, trackerdash.DrillRequest{Request: r, Widget: "start_to_done"})
@@ -111,5 +112,40 @@ func TestStartToDoneCountsWhatTheHistoryShows(t *testing.T) {
 	want := []string{"WEB-21 2 ", "WEB-23 1 ", "WEB-22 - not counted: it was in progress before its history begins"}
 	if d.Value.V == nil || *d.Value.V != 1.5 || d.Value.NC != 1 || !reflect.DeepEqual(rows, want) {
 		t.Fatalf("start to done = %+v with rows %q; want the median 1.5 of WEB-21 and WEB-23, WEB-22 not counted: %q", d.Value, rows, want)
+	}
+}
+
+// A count copies what its metrics read, through a real export of a board
+// whose tickets have changes: no built-in reads the changes, so neither
+// the Overview's copy nor a Stuck drill's holds any, and the drill asks
+// for the relations its metric and the rows' labels read, no sprint's.
+func TestACountCopiesWhatItsMetricsRead(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	s, root := store.DashboardHistoryFixtureForTest(t, time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC).UnixMilli(), int64(24*time.Hour/time.Millisecond))
+	var asked [][]string
+	var changes []int
+	b := trackerdash.Board{Fill: func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
+		export, ok, err := s.ExportMirrorBoard(ctx, conn, root, "11", store.MirrorRegroup{}, relations)
+		var n int
+		if err == nil {
+			err = conn.QueryRowContext(ctx, `SELECT count(*) FROM changes`).Scan(&n)
+		}
+		asked, changes = append(asked, relations), append(changes, n)
+		return export, ok, err
+	}}
+	e := trackerdash.NewEvaluator(func() time.Time { return now })
+	r := trackerdash.Request{Dashboard: "overview_weeks", Range: trackerdash.RangeWeeks2, TimeZone: "UTC"}
+	if _, err := e.Evaluate(context.Background(), b, r); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Drill(context.Background(), b, trackerdash.DrillRequest{Request: r, Widget: "stuck"}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(changes, []int{0, 0}) || slices.Contains(asked[0], "changes") {
+		t.Fatalf("the copies held %v changes, the Overview asked for %v; want none copied", changes, asked[0])
+	}
+	if want := []string{"epics", "people", "statuses", "tickets"}; !reflect.DeepEqual(asked[1], want) {
+		t.Fatalf("the Stuck drill asked for %v; want %v", asked[1], want)
 	}
 }
