@@ -435,6 +435,8 @@ const ISSUES_LAZY_MODULES = [
   'lib/stores/trackerTimeWrites.svelte.ts',
   'lib/stores/trackerWriteOutcome.ts',
   'lib/stores/ticketWork.svelte.ts',
+  'lib/stores/trackerDashboard.svelte.ts',
+  'lib/stores/trackerDashboardModel.ts',
   'lib/stores/trackerSetup.svelte.ts',
   'lib/utils/timeSpent.ts',
   'lib/utils/ticketBranch.ts',
@@ -1229,6 +1231,21 @@ describe('architecture', () => {
     expect(
       work.filter(graph.reached).map(graph.chain),
       'Work\'s code is in the board\'s chunk. The card menu says why Ask and Start work cannot run through ticketWorkGate.ts and loads Work with a dynamic import when one is chosen.',
+    ).toEqual([]);
+  });
+
+  it('keeps the Dashboards screen out of the board\'s chunk: it loads on the first switch to Dashboards', () => {
+    const graph = staticGraph(join(SRC_ROOT, 'lib', 'components', 'issues', 'IssuesPane.svelte'));
+    expect(graph.reached('lib/components/issues/BoardScreen.svelte'), 'the walk reaches the board').toBe(true);
+    const dashboards = [
+      'lib/components/issues/DashboardScreen.svelte',
+      'lib/stores/trackerDashboard.svelte.ts',
+      'lib/stores/trackerDashboardModel.ts',
+      'lib/components/issues/charts/BarChart.svelte',
+    ];
+    expect(
+      dashboards.filter(graph.reached).map(graph.chain),
+      'The Dashboards screen is in the board\'s chunk. IssuesPane.svelte loads it with a dynamic import on the first switch to Dashboards.',
     ).toEqual([]);
   });
 

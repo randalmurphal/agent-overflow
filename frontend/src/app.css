@@ -81,6 +81,13 @@
      identical in both themes and deliberately given no light override — a
      brand mark that shifts with the theme stops being the brand mark. */
   --provider-claude: #d97757;
+  /* A chart's series, in this order (charts/chartScale.ts): blue, orange,
+     aqua. One set for both modes: each clears 3:1 on the dark and the
+     light ground, and adjacent pairs stay apart for every color vision
+     (checked with the data-viz palette validator). */
+  --chart-series-1: #3987e5;
+  --chart-series-2: #d95926;
+  --chart-series-3: #199e70;
   /* Terminal-green identity for the claude-tui provider — the phosphor green of
      a CRT terminal. Drives the provider badge, the take-control button glyph,
      and the shared pairing border. Bright here so it reads against dark

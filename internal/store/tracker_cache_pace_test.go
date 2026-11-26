@@ -20,19 +20,11 @@ func paceOf(t *testing.T, s *Store, root int64, board string, regroup MirrorRegr
 	return pace
 }
 
-// A board's pace is its last MirrorPaceSprints closed sprints by
-// completion, a closed sprint with no completion time left out and one
-// with no member on the board counted as zero. Each counts its members the
-// board holds and those whose status when the sprint was completed was
-// done: the last status change at or before the completion, else what the
-// first change after it left, else the status now when the issue's
-// history was read (it never changed) or this is the latest sprint, closed
-// or open, the issue is in; a member carried on from the sprint whose
-// history is unread is not done. A done member with no estimate counts
-// and adds nothing; a board with no estimate unit sums to zero. A
-// regrouping decides what counted as done, as it does for the sections.
-func TestMirrorPaceCountsTheStatusAtEachCompletion(t *testing.T) {
-	t.Parallel()
+// paceFixture is a mirror whose board 10 has six closed sprints (41 to
+// 46) and whose board 11 has a closed sprint with no completion time, with
+// members whose status at each completion the pace's rule decides.
+func paceFixture(t *testing.T) (*Store, int64) {
+	t.Helper()
 	s, _, root := newMirror(t)
 	st := webStructure()
 	closed := func(id string, completed int64) MirrorSprint {
@@ -83,6 +75,23 @@ func TestMirrorPaceCountsTheStatusAtEachCompletion(t *testing.T) {
 		mirrorReadOf(root, 10)); err != nil {
 		t.Fatal(err)
 	}
+	return s, root
+}
+
+// A board's pace is its last MirrorPaceSprints closed sprints by
+// completion, a closed sprint with no completion time left out and one
+// with no member on the board counted as zero. Each counts its members the
+// board holds and those whose status when the sprint was completed was
+// done: the last status change at or before the completion, else what the
+// first change after it left, else the status now when the issue's
+// history was read (it never changed) or this is the latest sprint, closed
+// or open, the issue is in; a member carried on from the sprint whose
+// history is unread is not done. A done member with no estimate counts
+// and adds nothing; a board with no estimate unit sums to zero. A
+// regrouping decides what counted as done, as it does for the sections.
+func TestMirrorPaceCountsTheStatusAtEachCompletion(t *testing.T) {
+	t.Parallel()
+	s, root := paceFixture(t)
 
 	plain := []MirrorSprintFinished{{SprintID: "20"}, {SprintID: "43"}, {SprintID: "44", Members: 2, Done: 1, Estimate: 1},
 		{SprintID: "45", Members: 3, Done: 1, Estimate: 1}, {SprintID: "46", Members: 5, Done: 4, Estimate: 6}}

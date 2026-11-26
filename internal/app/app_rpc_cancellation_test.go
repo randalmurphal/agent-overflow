@@ -22,6 +22,9 @@ import (
 // method runs until it returns or the server stops (internal/app/AGENTS.md
 // § Authorization and caller state).
 var callerBoundMethods = map[string]string{
+	"TrackerDashboards":         "store read and a private in-memory database",
+	"EvaluateTrackerDashboard":  "store read into a private in-memory database",
+	"TrackerDashboardDrill":     "store read into a private in-memory database",
 	"ListActivityRunMembers":    "store read",
 	"GetPRReviewSubmitOutcome":  "in-memory attempt record",
 	"GetGitActionOutcome":       "in-memory attempt record",

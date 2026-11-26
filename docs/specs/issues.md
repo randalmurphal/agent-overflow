@@ -558,6 +558,11 @@ sidebar and the thread header, on desktop and on a phone.
 
 ### Dashboards
 
+- Every board has a built-in dashboard, Overview: its usual pace, days
+  from start to done, the tickets stuck now, what was finished per sprint
+  or week, who is carrying what, what was created and finished, and on
+  Jira open work by epic, counted from the computer's copy of the board,
+  which keeps syncing while the dashboard shows.
 - A dashboard is a twelve-column grid of widgets with a toolbar: dashboard
   picker, Team or Mine, the range, Ask your agent, and an edit mode that
   removes widgets.
@@ -567,7 +572,26 @@ sidebar and the thread header, on desktop and on a phone.
   reads, the query, and its sources.
 - A number tile shows its change against the previous range and a trend
   line. The arrow gives the direction and its color says whether that
-  direction is good.
+  direction is good. When the range before left tickets out, the change
+  says how many ("Up 0.5 tickets from 0.5, the 2 weeks before, 2 not
+  counted then").
+- A number says how many tickets it could not count beside it ("2 not
+  counted"), and reads "Not known" with no change mark when it counted
+  none. A drill's header gives its number and its rows and tickets ("6
+  rows, 5 tickets" when a ticket counts in two sprints); each row names
+  the period it counts in, and a row not counted says "Not counted" and
+  why.
+- A chart lists the tickets it draws in no bar or point (a finish whose
+  time is not known) in a "not counted" that opens the whole chart. A
+  chart or table that shows only its first 12 bars or 50 rows says how
+  many more ("2 more epics"), which opens the tickets of the ones left
+  out.
+- Until the board's first read has finished, the dashboard and each
+  drill say "This board's first read has not finished: these numbers
+  count the tickets read so far.", and nothing is compared.
+- While a new range or narrowing is counted, the last answer stays
+  dimmed and takes no click. A count that fails says "Not counted again"
+  and why beside the last answer.
 - Clicking a person or an epic narrows every widget on the page to it. A
   chip in the toolbar clears it.
 - Rows in a ticket-list widget can be selected, then moved, assigned or
@@ -578,7 +602,7 @@ sidebar and the thread header, on desktop and on a phone.
   the dashboard and on the board's summary row.
 - Charts are drawn to the widget's width and have hover values. The three
   series colors were checked for contrast and color-blind separation on the
-  dark surface only.
+  dark and light surfaces.
 
 ### Credit
 

@@ -760,6 +760,105 @@ The aggregate receives a BLOB as Go `[]byte` whatever its bytes hold, so it
 encodes BLOBs by SQL type without the `iif`: it wrote `x'00ff'` as
 `["00FF"]` and `jsonb('[1,2]')` as `["4B13311332"]`.
 
+### The built-in dashboard
+
+Measured on this branch with modernc.org/sqlite v1.63.0 under WSL2 on a
+developer machine, each figure the median and spread of 5 runs. The
+board is the store's scale fixture: one board of n issues with 10
+changes each (20,000 at 2,000 issues), 100 sprints and 20 people
+(`TestDashboardAtScale` in `internal/store`, run with
+`AO_TRACKER_SCALE=2000,20000`).
+
+| Path | 2,000 issues | 20,000 issues |
+|---|---|---|
+| Evaluation, last 5 sprints | 40 ms (33 to 52) | 304 ms (298 to 331) |
+| of which the store's fill | 30 ms (27 to 44) | 249 ms (244 to 277) |
+| Evaluation, this sprint | 38 ms (36 to 56) | 335 ms (309 to 370) |
+| Drill of the stuck tickets, first page of 100 rows | 23 ms (22 to 25) | 146 ms (142 to 158) |
+| Answer as JSON | 12,516 bytes | 12,518 bytes |
+| Drill page as JSON | 17,924 bytes | 17,928 bytes |
+| Go allocations of one evaluation, last 5 sprints | 2.8 MB in 37,639 | 30.2 MB in 351,076 |
+
+A count copies only the relations its metrics read. Each fill
+statement timed alone on the same fixture (the median of 5 runs, with a
+timing harness kept out of the repository), before that change (every
+relation, for every count) and after it:
+
+| Fill | Before, 2,000 | After, 2,000 | Before, 20,000 | After, 20,000 | Rows at 20,000 |
+|---|---|---|---|---|---|
+| tickets, with their start and finish | 8.5 ms (two fills) | 11.1 ms | 82.4 ms (two fills) | 118.3 ms | 20,000 |
+| sprint_tickets | 41.9 ms | 1.8 ms | 566.0 ms | 24.8 ms | 20,000 |
+| sprint_finished, closed sprints | 5.4 ms | 4.5 ms | 97.6 ms | 99.9 ms | 19,800 |
+| sprint_finished, active sprints | 0.8 ms | 0.8 ms | 9.4 ms | 9.5 ms | 200 |
+| people | 8.5 ms | 0.2 ms | 114.6 ms | 1.9 ms | 20 |
+| statuses | 0.1 ms | 0.6 ms | 0.1 ms | 4.6 ms | 5 |
+| epics, sprints, board, board state | 0.4 ms | 0.3 ms | 1.6 ms | 1.4 ms | |
+| reading tickets back into Go | 0.2 ms | 0.1 ms | 1.7 ms | 0.2 ms | |
+| **an Overview's copy** | **83.9 ms** | **19.3 ms** | **1,058 ms** | **260.5 ms** | |
+| changes, copied only for a metric that reads them | 18.2 ms | 17.6 ms | 184.3 ms | 195.7 ms | 200,000 |
+| the people and statuses the changes name | in people | 14.7 ms | in people | 179.3 ms | |
+
+The rest of an Overview's copy at 20,000 issues is the tickets fill,
+which reads each ticket's first move to in progress and last move to
+done from its stored changes by key (about 36 ms over the two fills it
+replaced), and what each closed sprint finished, the pace's
+done-at-completion rule the Board's sprint sections share. A Stuck drill
+copies the tickets and their statuses, so the tickets fill is most of
+its 146 ms.
+
+The fill is still most of an evaluation and grows with the board; the
+metrics and the reduction take about 10 ms at 2,000 issues and 55 ms at
+20,000. An open dashboard counts again at most once every 5 s while its
+board changes, so at 20,000 issues a board that changes constantly
+costs about a sixteenth of one core while the screen shows.
+
+While the Dashboards screen shows, the board's subscription stays voted
+shown so the copy keeps syncing, and the client reads the board's patch
+on each change as the Board screen does. At 2,000 issues (the store's
+`TestMirrorAtScale/1x2000`) a patch read costs 62 µs for one changed row
+with the totals held, 0.73 ms for 100, and 3.6 to 4.4 ms when the totals
+moved; the pump's idle tick costs 129 µs.
+
+A hostile metric's temporary files, measured with
+`TestHostileQuerySpill` in `internal/trackerdash` (a cross join of
+3,000 changes, three ways, grouped; two runs of the test): the 1 s
+deadline stopped it at 1.003 to 1.011 s, by when its temporary files
+had reached 62.5 to 66.3 MB, and all were closed after it. The same join
+made distinct stopped at the 20,000-row cap in 16 to 29 ms with no
+temporary file.
+Sorted with a `LIMIT`, SQLite keeps only the top rows and writes none.
+
+The Dashboards screen opened and closed four times in the desktop
+harness (`issues-dashboards.spec.ts`, heap snapshots after a forced
+collection, compiled code left out): the page held 14,086 KB with the
+Board shown, 14,761 to 14,927 KB with the dashboard open, and 14,234 KB
+after the fourth close; the pane strip's DOM went from 163 elements to
+277 and back to 163.
+
+The Go side holds nothing between calls: each evaluation and drill opens
+its session and closes it before it answers, and the screen's only
+other Go state is the board's subscription, which the Board screen
+shares. Measured with `TestDashboardMemoryAfterClose` in
+`internal/store` (20 evaluations alternating the last 5 sprints and
+this sprint, and 20 drills, heap read after a forced collection):
+
+| Moment | 2,000 issues | 20,000 issues |
+|---|---|---|
+| Before the first evaluation | 4.7 MB, 7 goroutines, 15 files | 4.6 MB, 7 goroutines, 15 files |
+| After the first | 4.6 MB, 7 goroutines, 16 files | 4.6 MB, 7 goroutines, 16 files |
+| After 20 of each, not collected | 5.5 MB, 7 goroutines, 16 files | 9.7 MB, 7 goroutines, 16 files |
+| After 20 of each, collected | 4.7 MB, 7 goroutines, 16 files | 4.6 MB, 7 goroutines, 16 files |
+
+The one file the first evaluation leaves open is a descriptor of the app
+database: SQLite's unix VFS does not close a file whose inode another
+connection of the process still locks (the store's own), and reuses that
+descriptor at the next attach, so the count stays at one and closes with
+the store. A hostile metric's session (`TestHostileQuerySpill`, its
+temporary files at 62.5 to 65.0 MB while it ran) left nothing once
+closed: 3.2 MB in use, 2 goroutines and 8 open files before it opened,
+8.7 MB and 3 goroutines with its four queries stopped, and 3.3 MB, 2
+goroutines and the same 8 files after it closed.
+
 ## Planning poker add-on
 
 Applies only to a site with Easy Agile TeamRhythm installed

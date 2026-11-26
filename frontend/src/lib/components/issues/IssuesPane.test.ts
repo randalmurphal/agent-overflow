@@ -50,7 +50,7 @@ import { focusPane, getFocusedPaneId } from '../../stores/panes.svelte';
 import TicketPane from '../panes/TicketPane.svelte';
 import { closeTicketPane, openTicketPane, restoreTicketPane, ticketPaneCarrier, ticketPaneRecord } from '../../stores/ticketPanes.svelte';
 import { makeCommandContext } from '../../stores/builtinCommands.svelte';
-import { SCOPES_AT_V0_0_19 } from '../../../test/helpers/olderComputer';
+import { methodNotFound, SCOPES_AT_V0_0_19 } from '../../../test/helpers/olderComputer';
 import { noteProject } from '../../transport/entityIndex';
 import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { HOME_BACKEND } from '../../transport/backendKey';
@@ -3496,7 +3496,7 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
 
 /** Switches the pane to `label` through its folded tab picker (jsdom
  * measures the pane 0 wide). */
-async function switchTo(view: ReturnType<typeof mount>, label: 'Board' | 'Time'): Promise<void> {
+async function switchTo(view: ReturnType<typeof mount>, label: 'Board' | 'Dashboards' | 'Time'): Promise<void> {
   await fireEvent.click(await view.findByTestId('issues-tabs-picker'));
   const option = within(menu()).getAllByTestId('issues-tab-option').find((o) => o.textContent?.includes(label))!;
   await fireEvent.click(option);
@@ -3628,6 +3628,105 @@ describe('the Time screen in the pane', () => {
     applyTrackerConnectionsChanged(HOME_BACKEND);
     expect(await view.findByTestId('time-board-gone')).toHaveTextContent('No project lists this board any more, or its connection was removed. Pick another board to see your time.');
     expect(view.queryByTestId('issues-time-listing')).toBeNull();
+    view.unmount();
+  });
+});
+
+describe('the Dashboards screen in the pane', () => {
+  beforeAll(async () => {
+    await import('./DashboardScreen.svelte');
+    await import('./TicketScreen.svelte');
+  });
+
+  const DASHBOARD = {
+    id: 'overview_sprints', title: 'Overview', default_range: 'sprints_5',
+    ranges: [{ id: 'this_sprint', label: 'This sprint' }, { id: 'sprints_5', label: 'Last 5 sprints' }],
+    widgets: [{ id: 'stuck_list', title: 'Stuck tickets', form: 'list', width: 12, unit: 'tickets', now: true, how: { words: [], counts: '', range: '', rules: 'none', sql: '', reads: [] } }],
+  };
+  function answer(): unknown {
+    return {
+      dashboard: DASHBOARD, range: { id: 'sprints_5', label: 'Last 5 sprints', periods: [], previous: '' }, estimates: 'points', at: 1,
+      widgets: [{ id: 'stuck_list', tickets: [{ row: 0, id: '1', key: 'WEB-1', title: 'Issue 1', status: 'In Progress', counted: true }] }],
+    };
+  }
+
+  it('counts the board its subscription names, keeps the board voted shown under it, and opens a listed ticket beside it', async () => {
+    const mocks = install();
+    installTicket();
+    const list = setBindingMock('TrackerDashboards', async () => [DASHBOARD]);
+    const evaluate = setBindingMock('EvaluateTrackerDashboard', async () => answer());
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await switchTo(view, 'Dashboards');
+    await view.findByTestId('dashboard-screen');
+    await waitFor(() => expect(evaluate).toHaveBeenCalled());
+    expect(list).toHaveBeenCalledWith('sub-1-1');
+    expect(evaluate.mock.calls[0][0]).toBe('sub-1-1');
+    expect(evaluate.mock.calls[0][1]).toMatchObject({ dashboard: 'overview_sprints', range: 'sprints_5' });
+    // The board is not mounted, and its subscription stays voted shown, so it keeps syncing.
+    expect(view.queryAllByTestId('issues-card')).toHaveLength(0);
+    expect(votes(mocks.visible, 'sub-')).toEqual([]);
+    expect(view.queryByTestId('issues-only-mine')).toBeNull();
+    await fireEvent.click(await view.findByTestId('dashboard-list-row'));
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('1'));
+    expect(view.getByTestId('issues-tabs-picker')).toHaveTextContent('Dashboards');
+    await switchTo(view, 'Time');
+    await waitFor(() => expect(votes(mocks.visible, 'sub-')).toEqual([false]));
+    view.unmount();
+  });
+
+  it("says the board's first read has not finished while its answer says so, and not once it does not", async () => {
+    install();
+    setBindingMock('TrackerDashboards', async () => [DASHBOARD]);
+    let reading = true;
+    setBindingMock('EvaluateTrackerDashboard', async () => ({ ...(answer() as object), reading }));
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await switchTo(view, 'Dashboards');
+    expect(await view.findByTestId('dashboard-reading')).toHaveTextContent("This board's first read has not finished: these numbers count the tickets read so far.");
+    reading = false;
+    await fireEvent.click(view.getByTestId('dashboard-range'));
+    await fireEvent.click(await view.findByTestId('dashboard-range-this_sprint'));
+    await waitFor(() => expect(view.queryByTestId('dashboard-reading')).toBeNull());
+    view.unmount();
+  });
+
+  it('takes no click on an answer to what is no longer asked, and says a failed count beside it', async () => {
+    install();
+    setBindingMock('TrackerDashboards', async () => [DASHBOARD]);
+    let fail: ((err: Error) => void) | null = null;
+    const evaluate = setBindingMock('EvaluateTrackerDashboard', async () => {
+      if (evaluate.mock.calls.length === 1) return answer();
+      return new Promise((_, reject) => { fail = reject; });
+    });
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await switchTo(view, 'Dashboards');
+    await view.findByTestId('dashboard-list-row');
+    expect(view.getByTestId('dashboard-grid').hasAttribute('inert')).toBe(false);
+    await fireEvent.click(view.getByTestId('dashboard-range'));
+    await fireEvent.click(await view.findByTestId('dashboard-range-this_sprint'));
+    await waitFor(() => expect(evaluate).toHaveBeenCalledTimes(2));
+    const grid = view.getByTestId('dashboard-grid');
+    expect(grid.hasAttribute('inert')).toBe(true);
+    expect(grid.dataset.stale).toBe('true');
+    expect(view.getByTestId('dashboard-counting')).toBeTruthy();
+    fail!(new Error('counting this dashboard took longer than 4s and stopped'));
+    await waitFor(() => expect(view.queryByTestId('dashboard-counting')).toBeNull());
+    expect(view.getByTestId('dashboard-error')).toHaveTextContent('Not counted again: Counting this dashboard took longer than 4s and stopped.');
+    expect(view.getByTestId('dashboard-grid').hasAttribute('inert')).toBe(true);
+    view.unmount();
+  });
+
+  it("says that the board's computer's version has no dashboards, and counts nothing", async () => {
+    install();
+    // A release before dashboards has no such method.
+    setBindingMock('TrackerDashboards', async () => { throw methodNotFound(); });
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await switchTo(view, 'Dashboards');
+    expect(await view.findByTestId('dashboard-older')).toHaveTextContent("This computer's version of the app has no dashboards.");
+    expect(getBindingMock('EvaluateTrackerDashboard')?.mock.calls ?? []).toHaveLength(0);
     view.unmount();
   });
 });

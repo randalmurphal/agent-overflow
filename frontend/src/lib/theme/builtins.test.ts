@@ -274,6 +274,12 @@ describe('curated built-in themes', () => {
  * exactly what High Contrast does and why it states all four.
  */
 const OPTIONAL_KEYS = new Set<string>([
+  // The chart series are one categorical set validated for color-blind
+  // separation in both modes, as identity colors are; a palette restates
+  // them only to replace the whole set.
+  'chart-series-1',
+  'chart-series-2',
+  'chart-series-3',
   'provider-codex',
   'provider-claude',
   'provider-claude-tui',

@@ -173,6 +173,20 @@ func TestHoldAndRelease(t *testing.T) {
 	}
 }
 
+// A fault with a query takes only the requests that carry it: a read of
+// the issue's status is refused, one of its summary is answered.
+func TestFaultMatchesQuery(t *testing.T) {
+	w := newWorld(t)
+	route := "GET rest/api/3/issue/{issue}"
+	w.arm(t, Fault{Origin: jiraOrigin, Route: route, Query: map[string]string{"fields": "status"}, Kind: FaultRefuse, Status: 503})
+	if r := w.jira(t, "GET", "/rest/api/3/issue/WEB-1?fields=summary", ""); r.status != 200 {
+		t.Fatalf("a read without the fault's query answered %d", r.status)
+	}
+	if r := w.jira(t, "GET", "/rest/api/3/issue/WEB-1?fields=status", ""); r.status != 503 {
+		t.Fatalf("a read with the fault's query answered %d", r.status)
+	}
+}
+
 // A dropped hold fails its request without applying the write; cleared
 // faults let it through. TestEveryWorldEndMeetsEveryRequestState covers a
 // hold that a reset or close ends.
@@ -258,6 +272,7 @@ func TestFaultChecks(t *testing.T) {
 		"negative times":    {Origin: jiraOrigin, Kind: FaultHold, Times: -1},
 		"unknown kind":      {Origin: jiraOrigin, Kind: "slow"},
 		"offline via fault": {Origin: jiraOrigin, Kind: FaultOffline},
+		"linear query":      {Origin: linearOrigin, Query: map[string]string{"a": "b"}, Kind: FaultHold},
 	} {
 		if err := e.AddFault(f); err == nil {
 			t.Errorf("%s: armed %+v", name, f)

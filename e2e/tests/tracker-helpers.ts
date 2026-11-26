@@ -44,7 +44,7 @@ export interface ConnectedBoard {
 /**
  * More for the fake Jira site, in its fixture shape: projects, boards and
  * issues (trackerfake.JiraProject, JiraBoard and JiraIssue) beside the
- * seed's own, where an issue's created and updated times are the seed's,
+ * seed's own, where an issue's created time is the seed's unless it names one,
  * and `poker` for the planning poker add-on (trackerfake.JiraPoker).
  */
 export interface ExtraJira {
@@ -52,6 +52,15 @@ export interface ExtraJira {
   boards: Array<{ id: number; name: string; type: 'scrum' | 'kanban'; project: string; columns: Array<{ name: string; statuses: string[] }> }>;
   issues?: Array<{
     id: string; key: string; project: string; type: string; status: string; summary: string; sprints?: number[]; assignee?: string;
+    /** The parent issue's ID. */
+    parent?: string;
+    /** When it was made and resolved, as ISO strings; made two days ago
+     * when left out. */
+    created?: string;
+    /** When it was last changed, as an ISO string; its creation when left
+     * out. Jira's is never before the issue's last change. */
+    updated?: string;
+    resolved?: string;
     /** An Atlassian document. */
     description?: unknown;
     comments?: Array<{ id: string; author: string; body: unknown; created: string }>;
@@ -115,9 +124,9 @@ export async function connectFakeJiraBoard(
 
 /**
  * Adds and verifies a Jira connection to the seeded fake site (seedFakeJira)
- * and lists its board on `projectId`.
+ * and lists `board` (the seed's scrum board when left out) on `projectId`.
  */
-export async function connectFakeJira(harness: HarnessApp, projectId: string): Promise<{ projectId: string; connectionId: string; site: string }> {
+export async function connectFakeJira(harness: HarnessApp, projectId: string, board = BOARD_ID): Promise<{ projectId: string; connectionId: string; site: string }> {
   const added = await harness.rpc<TrackerConnection>('AddTrackerConnection', { kind: 'jira', site: JIRA_SITE, account: JIRA_ACCOUNT });
   // The token a person would paste into the key file the app named.
   await writeFile(added.keyFilePath, JIRA_TOKEN, { mode: 0o600 });
@@ -125,7 +134,7 @@ export async function connectFakeJira(harness: HarnessApp, projectId: string): P
   if (verified.problem) throw new Error(`the fake Jira refused the connection: ${JSON.stringify(verified.problem)}`);
   // As the board picker sends it: built from the project's empty list,
   // with the name and project it showed.
-  await harness.rpc('SetProjectTrackerBoards', projectId, [], [{ connection: added.id, board: BOARD_ID, opens_first: true, name: 'WEB board', tracker_project: 'WEB' }]);
+  await harness.rpc('SetProjectTrackerBoards', projectId, [], [{ connection: added.id, board, opens_first: true, name: 'WEB board', tracker_project: 'WEB' }]);
   return { projectId, connectionId: added.id, site: verified.site };
 }
 
@@ -160,7 +169,7 @@ export async function seedFakeJira(harness: HarnessApp, extra?: ExtraJira): Prom
         { id: '10101', key: 'WEB-1', project: 'WEB', type: '10001', summary: 'First story', sprints: [1], status: '10001', created: day, updated: day },
         { id: '10102', key: 'WEB-2', project: 'WEB', type: '10002', summary: 'Second task', sprints: [1], status: '10000', created: day, updated: day },
         { id: '10103', key: 'WEB-3', project: 'WEB', type: '10002', summary: 'Backlog task', status: '10000', created: day, updated: day },
-        ...(extra?.issues ?? []).map((issue) => ({ ...issue, created: day, updated: day })),
+        ...(extra?.issues ?? []).map((issue) => ({ ...issue, created: issue.created ?? day, updated: issue.updated ?? issue.created ?? day })),
       ],
       ...(extra?.poker ? { poker: extra.poker } : {}),
     }],

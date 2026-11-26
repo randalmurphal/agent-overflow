@@ -103,11 +103,11 @@ describe('token registry', () => {
   it('holds the section counts the format documents', () => {
     // Pinned so a deletion is loud: the schema, TOKENS.md and every theme file
     // on disk are written against these key spaces.
-    expect(tokensInSection('colors')).toHaveLength(49);
+    expect(tokensInSection('colors')).toHaveLength(52);
     expect(tokensInSection('syntax')).toHaveLength(21);
     expect(tokensInSection('ansi')).toHaveLength(16);
     expect(tokensInSection('code')).toHaveLength(2);
-    expect(TOKEN_REGISTRY).toHaveLength(88);
+    expect(TOKEN_REGISTRY).toHaveLength(91);
   });
 
   it('keeps entries well-formed', () => {
@@ -151,6 +151,9 @@ describe('token registry', () => {
     // new stranded token — is a decision someone makes on purpose.
     expect(expected).toEqual([
       'accent-fg',
+      'chart-series-1',
+      'chart-series-2',
+      'chart-series-3',
       'provider-claude',
       'scrim',
       'scrim-fg',

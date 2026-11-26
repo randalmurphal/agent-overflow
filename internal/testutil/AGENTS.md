@@ -63,6 +63,11 @@ packages. Test-specific setup stays beside the test that owns it.
   binary is killed or times out, and its temporary files land in its test's
   directory. A helper never blocks on `select {}`, and a test sets no
   temporary directory for one itself. Standard library only.
+- `procstate/` reads the test process's heap in use, goroutines and open
+  files, and the bytes of the deleted files it holds open (SQLite's
+  temporary files), for a measurement of what work leaves behind; a test
+  that reads them is skipped without `/proc/self/fd`. Standard library
+  only, so a package's internal tests can use it.
 - `deadline.go` is a context whose deadline the test ends at a chosen
   moment, for code that acts on a deadline without racing a real clock.
 - `waitbudget.go` is the one budget for a test's wait on work the code under
