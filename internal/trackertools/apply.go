@@ -29,51 +29,41 @@ import (
 // repeatedComment is the note of a comment an earlier call added.
 const repeatedComment = "Your earlier call added this comment; it was not added again."
 
-// stepOrder is the order the steps are sent in.
-var stepOrder = [...]stepKind{stepMove, stepEdit, stepEstimate, stepSprint, stepComment}
-
 // sendStep is one step of a ticket's change as apply runs it: send makes
 // its write; a sprint move's is made with the others bound for its sprint
 // (sprint).
 type sendStep struct {
-	kind   stepKind
-	names  []string
-	same   bool
+	step
 	send   func() (trackerapp.WriteView, error)
 	sprint *trackerapp.SprintMoveRequest
-	// what names the change in an unknown outcome's sentence.
-	what string
 }
 
-// stepsOf are p's steps, on ctx, which carries the agent and the call's
-// write session.
+// stepsOf are p's steps (planned.steps) with their writes, on ctx, which
+// carries the agent and the call's write session.
 func (s *Server) stepsOf(ctx context.Context, p *planned) []sendStep {
 	conn := p.t.connection
-	var steps []sendStep
-	if p.move != nil || p.moveSame {
-		steps = append(steps, sendStep{kind: stepMove, names: []string{p.moveName}, same: p.moveSame, what: "move",
-			send: func() (trackerapp.WriteView, error) { return s.t.Move(ctx, conn, *p.move) }})
-	}
-	if len(p.edits) > 0 {
-		steps = append(steps, sendStep{kind: stepEdit, names: p.editNames, what: "change",
-			send: func() (trackerapp.WriteView, error) {
+	var out []sendStep
+	for _, st := range p.steps() {
+		ss := sendStep{step: st}
+		switch st.kind {
+		case stepMove:
+			ss.send = func() (trackerapp.WriteView, error) { return s.t.Move(ctx, conn, *p.move) }
+		case stepEdit:
+			ss.send = func() (trackerapp.WriteView, error) {
 				return s.t.Edit(ctx, conn, trackerapp.EditRequest{Issue: p.d.Card.ID, Fields: p.edits})
-			}})
-	}
-	if p.estimate != nil {
-		steps = append(steps, sendStep{kind: stepEstimate, names: []string{p.estimateName}, same: p.estimateSame, what: "estimate",
-			send: func() (trackerapp.WriteView, error) { return s.t.SetEstimate(ctx, conn, *p.estimate) }})
-	}
-	if p.sprint != nil {
-		steps = append(steps, sendStep{kind: stepSprint, names: []string{p.sprintName}, same: p.sprintSame, what: "sprint move", sprint: p.sprint})
-	}
-	if p.comment != "" {
-		steps = append(steps, sendStep{kind: stepComment, names: []string{setComment}, what: "comment",
-			send: func() (trackerapp.WriteView, error) {
+			}
+		case stepEstimate:
+			ss.send = func() (trackerapp.WriteView, error) { return s.t.SetEstimate(ctx, conn, *p.estimate) }
+		case stepSprint:
+			ss.sprint = p.sprint
+		case stepComment:
+			ss.send = func() (trackerapp.WriteView, error) {
 				return s.t.AddComment(ctx, conn, trackerapp.CommentRequest{Issue: p.d.Card.ID, Markdown: p.comment})
-			}})
+			}
+		}
+		out = append(out, ss)
 	}
-	return steps
+	return out
 }
 
 // sending is one ticket's change as apply sends it: its plan and steps,

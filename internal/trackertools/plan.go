@@ -293,6 +293,19 @@ const (
 	stepComment
 )
 
+// stepOrder is the order the steps are sent in.
+var stepOrder = [...]stepKind{stepMove, stepEdit, stepEstimate, stepSprint, stepComment}
+
+// step is one step of a ticket's change as the call named it: its kind,
+// the names the call gave it, whether the ticket holds it already, and
+// what an unknown outcome's sentence calls it.
+type step struct {
+	kind  stepKind
+	names []string
+	same  bool
+	what  string
+}
+
 // planned is one ticket's change as the call sends it, checked against
 // the ticket as it is now (d; only its card for a comment alone).
 type planned struct {
@@ -332,33 +345,36 @@ type planned struct {
 	changes []ApprovalChange
 }
 
+// steps are p's steps the call named, in the order they are sent, a
+// step the plan refused included: the one account of them, which the
+// sends (Server.stepsOf) and every answer of what was not sent
+// (stepNames) read.
+func (p *planned) steps() []step {
+	var out []step
+	for _, k := range stepOrder {
+		switch {
+		case k == stepMove && p.moveName != "":
+			out = append(out, step{kind: k, names: []string{p.moveName}, same: p.moveSame, what: "move"})
+		case k == stepEdit && len(p.editNames) > 0:
+			out = append(out, step{kind: k, names: p.editNames, what: "change"})
+		case k == stepEstimate && p.estimateName != "":
+			out = append(out, step{kind: k, names: []string{p.estimateName}, same: p.estimateSame, what: "estimate"})
+		case k == stepSprint && p.sprintName != "":
+			out = append(out, step{kind: k, names: []string{p.sprintName}, same: p.sprintSame, what: "sprint move"})
+		case k == stepComment && p.comment != "":
+			out = append(out, step{kind: k, names: []string{setComment}, what: "comment"})
+		}
+	}
+	return out
+}
+
 // stepNames are the names of p's steps, in order, but the one of kind
 // when except is set: what a call that sends nothing did not send.
 func (p *planned) stepNames(except bool, kind stepKind) []string {
 	var out []string
-	for _, k := range []stepKind{stepMove, stepEdit, stepEstimate, stepSprint, stepComment} {
-		if except && k == kind {
-			continue
-		}
-		switch k {
-		case stepMove:
-			if p.moveName != "" {
-				out = append(out, p.moveName)
-			}
-		case stepEdit:
-			out = append(out, p.editNames...)
-		case stepEstimate:
-			if p.estimateName != "" {
-				out = append(out, p.estimateName)
-			}
-		case stepSprint:
-			if p.sprintName != "" {
-				out = append(out, p.sprintName)
-			}
-		case stepComment:
-			if p.comment != "" {
-				out = append(out, setComment)
-			}
+	for _, st := range p.steps() {
+		if !except || st.kind != kind {
+			out = append(out, st.names...)
 		}
 	}
 	return out

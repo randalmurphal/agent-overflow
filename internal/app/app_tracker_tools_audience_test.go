@@ -25,35 +25,20 @@ func TestTrackerAgentCommentAudienceIsReadAfterTheWait(t *testing.T) {
 	for _, n := range []int{1, 3} {
 		t.Run(fmt.Sprintf("%d tickets", n), func(t *testing.T) {
 			t.Parallel()
-			site := trackerBoardSite()
-			site.Projects = append(site.Projects, trackerfake.JiraProject{ID: "10010", Key: "SD", Name: "Service", TypeKey: "service_desk"})
-			f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: site})
+			f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: audienceSite()})
 			t.Cleanup(func() { _ = f.a.trackerMCPServer().Close() })
 			thread, endpoint := trackerWriteThread(t, f, provider.RuntimeAuto)
 			readBoard(t, f, f.conn.ID, "1", []trackerapp.Section{{Kind: trackerapp.SectionSprint, Sprint: "1"}, {Kind: trackerapp.SectionBacklog}})
-			moveIntoServiceDesk := func() {
-				world := f.e.Snapshot()
-				s := &world.Jira[0]
-				s.Token = trackerTestToken
-				for i := range s.Issues {
-					if is := &s.Issues[i]; is.ID == "10103" {
-						is.Project, is.Key, is.FormerKeys = "SD", "SD-1", []string{"WEB-3"}
-					}
-				}
-				if err := f.e.Seed(world); err != nil {
-					t.Fatal(err)
-				}
-			}
 			keys := []string{"WEB-1", "WEB-2", "WEB-3"}[3-n:]
 			args := map[string]any{"keys": keys, "comment": "Checked."}
 			var result [2]any
 			if n == 1 {
-				moveIntoServiceDesk()
+				moveIntoServiceDesk(t, f, "10103")
 				result = <-trackerWriteCall(t, f.a, endpoint, "ticket_update", args)
 			} else {
 				done := trackerWriteCall(t, f.a, endpoint, "ticket_update", args)
 				open, _ := trackerWritePrompt(t, f.a, thread.ID)
-				moveIntoServiceDesk()
+				moveIntoServiceDesk(t, f, "10103")
 				if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); err != nil {
 					t.Fatal(err)
 				}
@@ -86,6 +71,14 @@ func audienceSite() trackerfake.JiraSite {
 // key SD-1, keeping its former key.
 func moveIntoServiceDesk(t *testing.T, f *trackerBoardFixture, id string) {
 	t.Helper()
+	if err := serviceDeskMove(f, id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// serviceDeskMove is moveIntoServiceDesk for a goroutine other than the
+// test's, which reports its failure.
+func serviceDeskMove(f *trackerBoardFixture, id string) error {
 	world := f.e.Snapshot()
 	s := &world.Jira[0]
 	s.Token = trackerTestToken
@@ -95,8 +88,9 @@ func moveIntoServiceDesk(t *testing.T, f *trackerBoardFixture, id string) {
 		}
 	}
 	if err := f.e.Seed(world); err != nil {
-		t.Fatal(err)
+		return fmt.Errorf("move %s into SD: %w", id, err)
 	}
+	return nil
 }
 
 // A write session judges a comment on the project its key lookup found,
@@ -184,7 +178,11 @@ func TestTrackerAgentCommentAudienceIsReadAfterTheCallsOtherWrites(t *testing.T)
 				f := armed
 				mu.Unlock()
 				if f != nil && r.Method == c.method && strings.HasSuffix(r.URL.Path, c.path) {
-					once.Do(func() { moveIntoServiceDeskOn(t, f, "10103") })
+					once.Do(func() {
+						if err := serviceDeskMove(f, "10103"); err != nil {
+							t.Error(err)
+						}
+					})
 				}
 			}})
 			t.Cleanup(func() { _ = f.a.trackerMCPServer().Close() })
@@ -206,21 +204,5 @@ func TestTrackerAgentCommentAudienceIsReadAfterTheCallsOtherWrites(t *testing.T)
 				t.Errorf("ticket_update = %s; want WEB-3's %s applied and its comment refused for its service desk project", text, c.applied)
 			}
 		})
-	}
-}
-
-// moveIntoServiceDeskOn is moveIntoServiceDesk from a goroutine other
-// than the test's, failing the test without stopping it.
-func moveIntoServiceDeskOn(t *testing.T, f *trackerBoardFixture, id string) {
-	world := f.e.Snapshot()
-	s := &world.Jira[0]
-	s.Token = trackerTestToken
-	for i := range s.Issues {
-		if is := &s.Issues[i]; is.ID == id {
-			is.Project, is.Key, is.FormerKeys = "SD", "SD-1", append(is.FormerKeys, is.Key)
-		}
-	}
-	if err := f.e.Seed(world); err != nil {
-		t.Errorf("move %s into SD: %v", id, err)
 	}
 }
