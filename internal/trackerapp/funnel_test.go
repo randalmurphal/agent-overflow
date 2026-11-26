@@ -197,3 +197,65 @@ func TestABoardReadsTheHistoryDue(t *testing.T) {
 		t.Fatalf("the history was read %d times after it caught up", n-read-1)
 	}
 }
+
+// A tick's writes reach every other subscribed board in one event at the
+// tick's end, as its own board's do: a history read of several batches
+// moves another board's totals once, so its client reads one patch.
+func TestATicksBatchesReachAnotherBoardOnce(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour})
+	var clock atomic.Int64
+	clock.Store(m.now().UnixMilli())
+	m.svc.now = func() time.Time { return time.UnixMilli(clock.Load()) }
+	m.p.set(func(p *scripted) {
+		p.history = func(q tracker.HistoryQuery) (tracker.History, error) {
+			var h tracker.History
+			for _, id := range q.Issues {
+				h.Issues = append(h.Issues, tracker.IssueHistory{Issue: id, CompleteTo: time.UnixMilli(clock.Load()),
+					Status: statusChanges(time.UnixMilli(1_799_000_000_000), 2)})
+			}
+			return h, nil
+		}
+	})
+	var rows []tracker.Row
+	for i := range 2 * historyBatch {
+		id := fmt.Sprintf("%05d", 30000+i)
+		rows = append(rows, row(id, 1_799_000_000_000, id))
+	}
+	m.tracks(rows)
+	m.subscribe(t, testBoard)
+	m.subscribe(t, "2")
+	m.events.boardEvents(t, 2)
+	other := Scope{Connection: m.conn.ID, Board: "2"}
+	waitCalls(t, m.p, "History", 1)
+
+	// Each card changed after the history read covered, so the history of
+	// every issue is due: two batches.
+	for i := range rows {
+		rows[i].Card.Updated = time.UnixMilli(clock.Load()).Add(time.Minute)
+	}
+	clock.Add(2 * time.Minute.Milliseconds())
+	m.tracks(rows)
+	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+	reads := m.p.count("History")
+	before := countBoard(m, other)
+	out := must[Outcome](t)(m.svc.tickHistory(t.Context(), m.scope(), Background))
+	if n := m.p.count("History") - reads; n != 2 || len(out.Changes().History) != len(rows) {
+		t.Fatalf("the history tick made %d reads and stored %d issues; want 2 and %d", n, len(out.Changes().History), len(rows))
+	}
+	if n := countBoard(m, other) - before; n != 1 {
+		t.Fatalf("board 2 was told %d times by one tick's history; want once", n)
+	}
+}
+
+// countBoard is how many events scope's board was sent so far.
+func countBoard(m *mirrorFixture, scope Scope) int {
+	b, _, _ := m.events.snapshot()
+	n := 0
+	for _, e := range b {
+		if e.Scope == scope {
+			n++
+		}
+	}
+	return n
+}

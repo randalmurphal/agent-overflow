@@ -52,8 +52,9 @@ func ownOf(scope Scope, ch Changes) []boardChanges {
 //     (tellTicketLocked): its view is built again from the record.
 //
 // What changes the origin pump's own scope is left pending for that pump,
-// which sends it with its failure in one event; every other board is sent
-// its event here. A read of tickets is told its own changes as any other,
+// which sends it with its failure in one event; every other board's is
+// sent as the tick ends (tickOrigin.others), and a write's refresh, which
+// no tick runs, sends each board its event here. A read of tickets is told its own changes as any other,
 // and builds their views as it settles them (settleTickets). root is the connection's mirror root the
 // change was stored under, as the run that stored it held it, and gen its
 // generation: only the pumps of that generation show that mirror, so only
@@ -116,8 +117,14 @@ func (s *Service) publish(root int64, gen uint64, conn string, ch Changes, own [
 			readAgain = readAgain || o.Structure
 		}
 		p.pending.add(changed, removed, readAgain)
-		if origin == nil || origin.board != p {
+		switch {
+		case origin == nil:
 			s.flushBoardLocked(p)
+		case origin.board != p:
+			if origin.others == nil {
+				origin.others = map[*boardPump]struct{}{}
+			}
+			origin.others[p] = struct{}{}
 		}
 	}
 	for _, tp := range tickets {

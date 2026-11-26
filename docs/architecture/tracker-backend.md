@@ -1663,7 +1663,12 @@ funnel (`trackerapp/funnel.go`):
   history and structure, a write's refresh, a ticket's read and a Jira
   round's check alike, so a later failure holds back no committed change.
   A shown board adds one lookup of the changed cards' boards per write
-  that changed any (`ListMirrorIssueBoards`).
+  that changed any (`ListMirrorIssueBoards`). An open ticket is told at
+  each write; a board is sent one event per tick, whatever the tick's
+  writes: its own board's with the tick's failure, every other board's
+  as the tick ends (`tickOrigin.others`), so a history read of several
+  batches moves another board's totals once. A write's refresh, which
+  no tick runs, sends each board its event as it is published.
 - The root a change is published under is the one the run that stored it
   held, so a connection change during the read cannot lose it. A change
   reaches only the subscriptions of that mirror: the connection's mirror
