@@ -17,7 +17,9 @@ import (
 )
 
 // An upgrade to v172 left a mirror whose stored issues name parents by ID
-// alone: no read before it kept a parent's name. The stories here are
+// alone: no read before it kept a parent's name. The scenarios make that
+// mirror as an upgrade does: the store's file, its board read, is made
+// the v171 database it would have been and opened again, which runs v172. The stories here are
 // open, untouched for longer than the history window, so no delta reads
 // them again, and their epics are in a project no board lists. The
 // linked tick, run to its end as the linked loop runs it, reads each
@@ -45,14 +47,43 @@ func (f *fixture) sqlOnStore(t *testing.T, stmt string, args ...any) {
 	}
 }
 
-// upgradedFrom171 puts conn's mirror in the state v172 leaves a v171
-// mirror in: no parent's name, and the worklist owed from its start.
-func (s *fakeScenario) upgradedFrom171(t *testing.T, conn Connection) int64 {
+// reopen stops the service, closes the store, runs between on its file,
+// and opens the file again, as a quit and a start of the app do: the open
+// applies every migration the file has not had. A new service runs over
+// the store it opened.
+func (f *fixture) reopen(t *testing.T, between func()) {
 	t.Helper()
-	root := must[int64](t)(rootOf(s, conn))
-	s.sqlOnStore(t, `DELETE FROM tracker_cache_parents WHERE root_id = ?`, root)
-	s.sqlOnStore(t, `UPDATE tracker_cache_roots SET names_after = '' WHERE id = ?`, root)
-	return root
+	f.svc.Stop()
+	if err := f.st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if between != nil {
+		between()
+	}
+	st, err := store.New(f.file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	f.st, f.deps.Store = st, st
+	f.restart(t)
+}
+
+// upgradedFrom171 makes the store's file the v171 database its mirror
+// would have been, v172's table, column and record taken out, and opens
+// it again, so v172 runs on it as it runs on an upgrade.
+func (s *fakeScenario) upgradedFrom171(t *testing.T) {
+	t.Helper()
+	s.reopen(t, func() {
+		s.sqlOnStore(t, `DROP TABLE tracker_cache_parents`)
+		s.sqlOnStore(t, `ALTER TABLE tracker_cache_roots DROP COLUMN names_after`)
+		s.sqlOnStore(t, `DELETE FROM migration_versions WHERE version = 172`)
+	})
+	s.svc.now = time.Now
 }
 
 // runLinked runs the linked loop's work for conn to its end, as the loop
@@ -294,7 +325,10 @@ func (c upgradeCase) upgraded(t *testing.T) (*fakeScenario, Connection, Scope) {
 	s, conn, scope := c.scenario(t)
 	s.syncBoard(t, scope)
 	s.deleteParent(t, c.parent(1))
-	s.upgradedFrom171(t, conn)
+	s.upgradedFrom171(t)
+	if owed := must[store.MirrorUnnamedParents](t)(s.st.ListMirrorUnnamedParents(must[int64](t)(rootOf(s, conn)))); !owed.Owed {
+		t.Fatalf("the upgraded mirror owes no names: %+v", owed)
+	}
 	if p := s.boardParents(t, scope); p[c.child(2)].Title != "" {
 		t.Fatalf("the upgraded mirror names %s's parent %+v", c.child(2), p[c.child(2)])
 	}
@@ -351,7 +385,7 @@ func TestTheLinkedTickNamesTheParentsAnUpgradeOwes(t *testing.T) {
 			// interval or a restart, asks for no parent.
 			since = s.lastSeq()
 			s.runLinked(t, conn)
-			s.restart(t)
+			s.reopen(t, nil)
 			s.svc.now = time.Now
 			s.runLinked(t, conn)
 			if n := s.askedFor(since, c.parent(1)); n != 0 {
@@ -375,9 +409,9 @@ func (c *listsCut) ListMirrorUnnamedParents(rootID int64) (store.MirrorUnnamedPa
 	return c.Store.ListMirrorUnnamedParents(rootID)
 }
 
-// A restart between the worklist's two batches asks for the second
-// batch's parents alone: the first batch's cursor was passed as its read
-// was stored.
+// A restart between the worklist's two batches, the store closed and
+// opened again, asks for the second batch's parents alone: the first
+// batch's cursor was passed as its read was stored.
 func TestARestartBetweenNameBatchesAsksForTheRestAlone(t *testing.T) {
 	t.Parallel()
 	for _, c := range upgradeCases {
@@ -393,7 +427,7 @@ func TestARestartBetweenNameBatchesAsksForTheRestAlone(t *testing.T) {
 			if p := s.boardParents(t, scope); p[c.child(2)].Title != c.parentAs(2) {
 				t.Fatalf("after the first batch %s names its parent %+v", c.child(2), p[c.child(2)])
 			}
-			s.restart(t)
+			s.reopen(t, nil)
 			s.svc.now = time.Now
 			since := s.lastSeq()
 			s.runLinked(t, conn)
