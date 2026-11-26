@@ -1482,6 +1482,37 @@ describe('the ticket in the pane', () => {
       view.unmount();
     });
 
+    it('Start work opens no form over a run of the ticket that is still running', async () => {
+      project('p1', 'alpha', 1);
+      install();
+      installTicket();
+      setBindingMock('ProjectTrackerSetup', async () => ({
+        revision: 'r1',
+        setup: { status_groups: [], ticket_pins: [], start_work: [{ tracker: 'jira', site: JIRA_USER1.site, project: 'WEB', assign: false, branch: 'feature/{key}' }] },
+      }));
+      // The thread is still being made.
+      const start = setBindingMock('StartTicketThread', () => new Promise(() => {}));
+      const view = mount();
+      await fireEvent.click(within(await cardMenuMore(view, '2')).getByTestId('issues-card-menu-start-work'));
+      const go = await waitFor(() => {
+        const found = document.querySelector<HTMLButtonElement>('[data-testid="start-work-form"] [data-testid="start-work-go"]');
+        expect(found?.disabled).toBe(false);
+        return found!;
+      });
+      await fireEvent.click(go);
+      await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+      const screen = view.getByTestId('ticket-screen');
+      await waitFor(() => expect(within(screen).getByTestId('start-work-run')).toHaveAttribute('data-running', ''));
+      await waitFor(() => expect(document.querySelector('[data-testid="start-work-form"]')).toBeNull());
+
+      await fireEvent.click(within(await cardMenuMore(view, '2')).getByTestId('issues-card-menu-start-work'));
+      await tick();
+      await tick();
+      expect(document.querySelector('[data-testid="start-work-form"]')).toBeNull();
+      expect((within(screen).getByTestId('ticket-work-start') as HTMLButtonElement).disabled).toBe(true);
+      view.unmount();
+    });
+
     it('say why they cannot run as the ticket\'s Work does, on a device that may not start threads there', async () => {
       await pairWithScopes(['threads:read', 'tracker:read']);
       try {
