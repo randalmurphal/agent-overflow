@@ -118,7 +118,8 @@ type githubFoundSearchRaw struct {
 }
 
 // SearchPRsByKey searches repo's pull requests by title and by head
-// branch in one GraphQL request; a pull request both find is one row.
+// branch in one GraphQL request. A pull request both find is a row of
+// each; the caller lists a pull request once.
 func (f *githubForge) SearchPRsByKey(ctx context.Context, repo RepoReference, key string) (PRKeySearch, error) {
 	if _, _, err := splitGitHubProject(repo.Project()); err != nil {
 		return PRKeySearch{}, err
@@ -140,15 +141,13 @@ func (f *githubForge) SearchPRsByKey(ctx context.Context, repo RepoReference, ke
 		return PRKeySearch{}, fmt.Errorf("GitHub answered no search for %s on %s", repo.Project(), repo.Host)
 	}
 	var out PRKeySearch
-	seen := map[int]bool{}
 	for _, search := range []*githubFoundSearchRaw{raw.ByTitle, raw.ByHead} {
 		out.Full = out.Full || search.IssueCount > len(search.Nodes)
 		for _, node := range search.Nodes {
 			// A search result that is not a pull request has no number.
-			if node.Number <= 0 || seen[node.Number] {
+			if node.Number <= 0 {
 				continue
 			}
-			seen[node.Number] = true
 			row, err := prFound(node.URL, node.Title, node.State, node.IsDraft, PRListAuthor{Login: node.Author.Login, Name: node.Author.Name}, node.HeadRefName)
 			if err != nil {
 				return PRKeySearch{}, err

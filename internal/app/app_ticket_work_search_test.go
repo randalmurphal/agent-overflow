@@ -92,7 +92,8 @@ func workSearchPR(number int) gitops.PRReference {
 // SearchTicketWork lists, beside what GetTicketWork lists, the pull
 // requests the forge finds for the key: by title, by a branch that begins
 // with it, and by a branch of the ticket's that names it later in its
-// name. A pull request listed already is listed once: the stored row
+// name. A pull request listed already, or found by both searches, is
+// listed once: the stored row
 // stays while the forge answers its state, and a linked thread's record,
 // or a stored row whose state the forge answers otherwise, gives way to
 // the forge's answer. A found pull request that does not name the key
@@ -110,6 +111,8 @@ func TestSearchTicketWorkListsWhatTheForgeFindsByTheKey(t *testing.T) {
 		{Number: 6, Title: "Unrelated", Body: "Follows WEB-1.", HeadRef: "unrelated"},
 		{Number: 7, Title: "WEB-1 Old cursor", HeadRef: "old-cursor", State: "merged", Author: "user1", AuthorName: "User 1"},
 		{Number: 8, Title: "WEB-1 Docs", HeadRef: "docs", State: "merged", Author: "user1", AuthorName: "User 1"},
+		// Found by both searches.
+		{Number: 9, Title: "WEB-1 Both", HeadRef: "WEB-1-both", Draft: true, Author: "user1"},
 	}}}})
 	for _, branch := range []string{"WEB-1-cache", "feature/WEB-1-host", "web-1-new"} {
 		runGit(t, f.dir, "branch", branch)
@@ -151,6 +154,7 @@ func TestSearchTicketWorkListsWhatTheForgeFindsByTheKey(t *testing.T) {
 		{Ref: workSearchPR(7), URL: url(7), Title: "WEB-1 Old cursor", Author: "User 1", State: TicketPRMerged, Branch: "old-cursor", ProjectID: f.project},
 		{Ref: workSearchPR(1), Title: "WEB-1 Fix the login", Author: "User 1", State: TicketPROpen, CI: "success", Branch: "fix-login", ProjectID: f.project},
 		{Ref: workSearchPR(8), URL: url(8), Title: "WEB-1 Docs", Author: "User 1", State: TicketPRMerged, Branch: "docs", ProjectID: f.project},
+		{Ref: workSearchPR(9), URL: url(9), Title: "WEB-1 Both", Author: "user1", State: TicketPRDraft, Branch: "WEB-1-both", ProjectID: f.project},
 		{Ref: workSearchPR(2), URL: url(2), Title: "Cache the session", Author: "user1", State: TicketPRMerged, Branch: "WEB-1-cache", ProjectID: f.project},
 		{Ref: workSearchPR(3), URL: url(3), Title: "Move the host", Author: "ao-author", State: TicketPRClosed, Branch: "feature/WEB-1-host", ProjectID: f.project},
 	}
