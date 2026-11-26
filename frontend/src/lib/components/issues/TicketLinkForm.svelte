@@ -39,7 +39,7 @@
     untrack(readTypes);
   });
   const types = $derived(ticketLinkTypes(ctx.ref.backend, ctx.ref.connection));
-  const relations = $derived(types?.types ? linkRelations(types.types) : []);
+  const relations = $derived(types?.value ? linkRelations(types.value) : []);
   const typesError = $derived(types?.error ? errString(types.error) : '');
 
   let relationIndex = $state(0);
@@ -77,7 +77,7 @@
       <span class="text-error" role="alert" data-testid="ticket-link-form-types-error">Could not read how tickets can relate: {typesError}</span>
       <button type="button" class="text-accent hover:underline" data-testid="ticket-link-form-types-retry" onclick={readTypes}>Retry</button>
     </div>
-  {:else if !types?.types}
+  {:else if !types?.value}
     <span class="text-xs text-fg-muted" data-testid="ticket-link-form-types-loading">Reading how tickets can relate…</span>
   {:else}
     <label class="flex flex-col gap-1 text-xs text-fg-muted">
@@ -115,7 +115,7 @@
   {/if}
   <TicketWriteNote ticketKey={ctx.key} target="new-link" fieldName={(id) => id} />
   <div class="flex items-center gap-1.5">
-    <Button type="submit" size="sm" variant="primary" disabled={pending || !types?.types} testId="ticket-link-form-save">{pending ? 'Linking…' : 'Link'}</Button>
+    <Button type="submit" size="sm" variant="primary" disabled={pending || !types?.value} testId="ticket-link-form-save">{pending ? 'Linking…' : 'Link'}</Button>
     <Button size="sm" variant="ghost" testId="ticket-link-form-cancel" onclick={onDone}>Cancel</Button>
   </div>
 </form>

@@ -53,6 +53,8 @@ export interface HeldTotals {
 export interface BoardShape {
   readonly id: string;
   readonly name: string;
+  /** The tracker project the board shows; empty for a board of several. */
+  readonly project: string;
   readonly plansSprints: boolean;
   /** none, points, or time (seconds). */
   readonly unit: string;
@@ -107,6 +109,7 @@ export function heldFromView(view: BoardView, intern: (row: RowView) => RowView,
     shape: {
       id: view.id,
       name: view.name,
+      project: view.project ?? '',
       plansSprints: view.plans_sprints,
       unit: view.estimate.unit,
       columns: view.columns,

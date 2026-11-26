@@ -33,9 +33,11 @@
   // between the sprints and the backlog.
   import { tick, untrack } from 'svelte';
   import LongListVirtualizer, { type LongListHandle } from '../virtual/LongListVirtualizer.svelte';
+  import BacklogCreate from './BacklogCreate.svelte';
   import BacklogRow from './BacklogRow.svelte';
   import BacklogSectionHeader from './BacklogSectionHeader.svelte';
   import BoardCardMenu from './BoardCardMenu.svelte';
+  import SprintControls from './SprintControls.svelte';
   import { setTicketWriteSurface } from './ticketWriteSurface';
   import type { Carry, CarryHost, CarryLayout, CarrySpot } from './listCarry';
   import type { CardEditField } from './ticketEditors';
@@ -43,7 +45,7 @@
   import { backlogSectionOpen, setBacklogSectionOpen, type CardField } from '../../stores/issuesPane.svelte';
   import { loadMoreOfSection, setTrackerBoardFiltered, type TrackerBoardRef } from '../../stores/trackerBoard.svelte';
   import { cardBusy, cardWriteContext, placeCard, rankCard, waitingCards } from '../../stores/trackerBoardCarry.svelte';
-  import { moveTicket, moveTicketToSprint, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
+  import { boardWriteContext, moveTicket, moveTicketToSprint, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import type { MoveView, RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import { cardURL, filtering, sectionKey, type CardFilter, type HeldBoard } from '../../stores/trackerBoardModel';
@@ -100,6 +102,9 @@
   // Linear has no issue types, and runs its cycles from the team's
   // settings: it takes no sprint write.
   const typed = $derived(kind !== 'linear');
+  const sprintWrites = $derived(kind === 'jira' && held.shape.plansSprints);
+  // The board's sprints and the tickets made on it are its own writes.
+  const b = $derived(boardWriteContext(boardRef));
   const unit = $derived(held.shape.unit);
   const now = $derived(getMinuteNow());
   const filtered = $derived(filtering(filter));
@@ -416,6 +421,9 @@
   data-carrying={carrying ? '' : undefined}
   onpointerdown={onPointerDown}
 >
+  {#if kind === 'linear' && held.shape.plansSprints}
+    <p class="px-3 pt-2 text-xs text-fg-muted" data-testid="issues-backlog-cycles">Linear runs this team's cycles from its settings: they start and end there.</p>
+  {/if}
   {#if sections.length === 0}
     <p class="px-3 py-2 text-sm text-fg-muted" data-testid="issues-backlog-none">This board has no backlog.</p>
   {:else}
@@ -446,6 +454,7 @@
               {now}
               {target}
               onFold={(open) => setBacklogSectionOpen(boardRef, sec.list, open)}
+              controls={sprintWrites ? sprintControls : undefined}
             />
           {:else if item.kind === 'row'}
             <div class={carrying?.spot && carrying.row.card.id === item.row.card.id ? 'opacity-0' : ''}>
@@ -474,8 +483,12 @@
                   {filtered ? (sec.more ? 'No matching tickets among those loaded' : 'No matching tickets') : compact ? 'No tickets' : 'Drop tickets here'}
                 </p>
               {/if}
+              <BacklogCreate {b} {boardRef} {sec} project={held.shape.project} {typed} />
             </div>
           {/if}
+          {#snippet sprintControls()}
+            <SprintControls {b} {sec} numbers={numbers[item.section]} {unit} sprints={held.shape.sprints} />
+          {/snippet}
         </div>
       {/snippet}
     </LongListVirtualizer>

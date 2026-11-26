@@ -975,7 +975,7 @@ describe('links and poker writes', () => {
     await Promise.all([loadTicketLinkTypes(HOME_BACKEND, 'c1'), loadTicketLinkTypes(HOME_BACKEND, 'c1')]);
     await loadTicketLinkTypes(HOME_BACKEND, 'c1');
     expect(types).toHaveBeenCalledTimes(1);
-    expect(ticketLinkTypes(HOME_BACKEND, 'c1')?.types?.map((t) => t.name)).toEqual(['Blocks']);
+    expect(ticketLinkTypes(HOME_BACKEND, 'c1')?.value?.map((t) => t.name)).toEqual(['Blocks']);
     __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
     __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
     expect(ticketLinkTypes(HOME_BACKEND, 'c1')).toBeNull();
@@ -994,10 +994,10 @@ describe('links and poker writes', () => {
     const after = loadTicketLinkTypes(HOME_BACKEND, 'c1');
     answers[0]!(['Old']);
     await before;
-    expect(ticketLinkTypes(HOME_BACKEND, 'c1')).toEqual({ types: null, loading: true, error: null });
+    expect(ticketLinkTypes(HOME_BACKEND, 'c1')).toEqual({ value: null, loading: true, error: null });
     answers[1]!(['New']);
     await after;
-    expect(ticketLinkTypes(HOME_BACKEND, 'c1')?.types?.map((t) => t.name)).toEqual(['New']);
+    expect(ticketLinkTypes(HOME_BACKEND, 'c1')?.value?.map((t) => t.name)).toEqual(['New']);
   });
 });
 

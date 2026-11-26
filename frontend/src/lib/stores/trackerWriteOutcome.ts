@@ -57,6 +57,7 @@ export function writeOutcome(view: WriteView, subject: WriteSubject): WriteOutco
     return { kind, message: part.failure?.message ?? `The tracker did not say what became of this change; look at ${subject.look} before you try again.` };
   }
   if (view.ended) return { kind: 'applied', note: `Saved. Its connection was turned off or removed while saving, so ${subject.ended}.` };
+  if (view.not_on_board) return { kind: 'applied', note: 'Created, but this board does not show it: its filter or its columns leave the new ticket out.' };
   const stale = view.stale?.find((s) => s.resources.some(subject.reads));
   if (stale) return { kind: 'applied', note: `Saved. ${subject.shows} shows it after its next read: ${stale.failure.message}` };
   return { kind: 'applied', note: null };

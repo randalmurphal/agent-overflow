@@ -221,3 +221,33 @@ export function gapItem(items: readonly BacklogItem[], sections: readonly Backlo
   if (row >= 0) return row;
   return items.findIndex((it) => it.section === section && it.kind === 'foot');
 }
+
+/** The name a new sprint is offered: the last sprint's with its trailing
+ * number one more ("Sprint 41" after "Sprint 40"), else empty. */
+export function nextSprintName(sprints: readonly SprintView[]): string {
+  for (let i = sprints.length - 1; i >= 0; i -= 1) {
+    const m = /^(.*?)(\d+)$/.exec(sprints[i].name.trim());
+    if (m) return `${m[1]}${Number(m[2]) + 1}`;
+  }
+  return '';
+}
+
+/** A day as a date input holds it (YYYY-MM-DD), in this computer's zone. */
+export function dayValue(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** The start (00:00) or the end (23:59) of a date input's day in this
+ * computer's zone, in Unix ms; null for no day. */
+export function dayAt(value: string, end: boolean): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), end ? 23 : 0, end ? 59 : 0).getTime();
+}
+
+/** An active sprint's rows that are not finished (in no done or canceled
+ * status), which its completion moves. */
+export function unfinishedOf(sec: BacklogSection): readonly RowView[] {
+  return sec.rows.filter((r) => r.card.status.group !== 'done' && r.card.status.group !== 'canceled');
+}
