@@ -53,6 +53,14 @@ type boardPending struct {
 	due bool
 }
 
+// overflows reports that adding changed and removed would pass an
+// event's bound while it already holds rows, so what it holds is to be
+// sent first and the event stays one a patch reads.
+func (b *boardPending) overflows(changed, removed []tracker.IssueID) bool {
+	held := len(b.changed) + len(b.removed)
+	return !b.truncated && held > 0 && len(unite(b.changed, changed))+len(unite(b.removed, removed)) > maxEventIssues
+}
+
 // add merges changed and removed rows of the board, and readAgain.
 func (b *boardPending) add(changed, removed []tracker.IssueID, readAgain bool) {
 	if len(changed)+len(removed) == 0 && !readAgain {
