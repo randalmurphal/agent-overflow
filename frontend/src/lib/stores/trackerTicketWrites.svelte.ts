@@ -825,7 +825,7 @@ export interface HeldRead<T> {
 //   reconnect settles nothing.
 const heldReads = new SvelteMap<string, HeldRead<unknown>>();
 // The read out for each key, so a second ask waits for the same answer.
-const heldReadsOut = new Map<string, Promise<void>>();
+const heldReadsOut = new Map<string, { readonly reading: HeldRead<unknown>; readonly settled: Promise<void> }>();
 
 function heldRead<T>(key: string): HeldRead<T> | null {
   return (heldReads.get(key) as HeldRead<T> | undefined) ?? null;
@@ -838,7 +838,7 @@ function loadHeldRead<T>(backend: BackendKey, key: string, read: () => Promise<T
   const held = untrack(() => heldReads.get(key));
   if (held?.value != null) return Promise.resolve();
   const out = heldReadsOut.get(key);
-  if (held?.loading && out) return out;
+  if (held?.loading && out?.reading === held) return out.settled;
   const reading: HeldRead<T> = { value: null, loading: true, error: null };
   heldReads.set(key, reading);
   const settled = (async () => {
@@ -848,10 +848,10 @@ function loadHeldRead<T>(backend: BackendKey, key: string, read: () => Promise<T
     } catch (err) {
       if (heldReads.get(key) === reading) heldReads.set(key, { value: null, loading: false, error: err });
     } finally {
-      if (heldReadsOut.get(key) === settled) heldReadsOut.delete(key);
+      if (heldReadsOut.get(key)?.reading === reading) heldReadsOut.delete(key);
     }
   })();
-  heldReadsOut.set(key, settled);
+  heldReadsOut.set(key, { reading, settled });
   return settled;
 }
 
