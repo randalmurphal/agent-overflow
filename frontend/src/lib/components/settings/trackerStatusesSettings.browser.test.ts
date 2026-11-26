@@ -10,6 +10,7 @@ import type { Setup, SetupView } from '../../../../bindings/agent-overflow/inter
 import TrackerStatusesSettings from './TrackerStatusesSettings.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { readSidebarCatalogs } from '../../../test/helpers/sidebarCatalogs';
+import { raf } from '../../../test/helpers/browserFrames';
 import { trackerConnection } from '../../../test/helpers/trackerConnections';
 import { noteProject } from '../../transport/entityIndex';
 import { addProjectLocal } from '../../stores/projects.svelte';
@@ -54,14 +55,26 @@ async function shown(): Promise<void> {
   await waitFor(() => expect(select('10000').disabled).toBe(false));
 }
 
-it('keeps the focus on a select whose change saved, and changes the next from there', async () => {
+it('keeps the focus on a select while its change saves and after, and changes the next from there', async () => {
   await shown();
+  // The first save is held, so the page shows it saving.
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const answer = setBindingMock('SetProjectTrackerSetup', async (_project: string, revision: string, setup: Setup) => {
+    saves.push({ revision, setup });
+    if (saves.length === 1) await held;
+    stored = { revision: `r${saves.length}`, setup } as SetupView;
+    return { saved: true, stored };
+  });
   select('10000').focus();
   await userEvent.keyboard('{ArrowDown}');
   await waitFor(() => expect(saves).toHaveLength(1));
-  await waitFor(() => expect(select('10000').disabled).toBe(false));
+  await raf();
+  expect(document.activeElement, 'the focus stays while it saves').toBe(select('10000'));
+  release();
+  await waitFor(() => expect(answer).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(select('10000').value).toBe('backlog'));
   expect(document.activeElement, 'the focus stays on the select that saved').toBe(select('10000'));
-  expect(select('10000').value).toBe('backlog');
 
   await userEvent.keyboard('{Tab}');
   expect(document.activeElement).toBe(select('10001'));
@@ -69,7 +82,7 @@ it('keeps the focus on a select whose change saved, and changes the next from th
   await waitFor(() => expect(saves).toHaveLength(2));
   expect(saves[1].revision).toBe('r1');
   expect(saves[1].setup.status_groups).toEqual([{ tracker: 'jira', site: SITE, statuses: { 10000: 'backlog', 10001: 'backlog' } }]);
-  await waitFor(() => expect(select('10001').disabled).toBe(false));
+  await waitFor(() => expect(select('10001').value).toBe('backlog'));
   expect(document.activeElement).toBe(select('10001'));
 });
 
