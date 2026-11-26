@@ -47,15 +47,13 @@
   // step back through the tickets opened from one another, then close the
   // ticket.
   import { onDestroy, untrack } from 'svelte';
-  import ContextMenu from '../primitives/ContextMenu.svelte';
-  import MenuItem from '../primitives/MenuItem.svelte';
   import SplitResizer from '../shared/SplitResizer.svelte';
   import { SplitWidth } from '../shared/splitWidth.svelte';
-  import type { RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+  import type { MoveView, RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+  import { trackerTicketKey } from '../../stores/trackerTicket.svelte';
+  import { openTicketMove } from '../../stores/trackerTicketWrites.svelte';
   import { registerIssuesBackHandler } from '../../stores/issuesCommands';
   import { registerToolDetailProbe } from '../../stores/toolPanes.svelte';
-  import { addToast } from '../../stores/toast.svelte';
-  import { copyToClipboard } from '../../utils/clipboard';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Search from '@lucide/svelte/icons/search';
   import UserRound from '@lucide/svelte/icons/user-round';
@@ -211,19 +209,12 @@
     showTicket(() => selection.openTicket(row.card.id, { key: row.card.key, title: row.card.title, card: row.card }, 'list'));
   }
 
-  let cardMenu = $state<{ x: number; y: number; row: RowView } | null>(null);
-  function openCardMenu(row: RowView, event: MouseEvent): void {
-    cardMenu = { x: event.clientX, y: event.clientY, row };
-  }
-  // A menu row acts on the card the menu was opened on, taken before the
-  // menu closes.
-  function fromCardMenu(action: (row: RowView) => void): void {
-    const open = cardMenu;
-    cardMenu = null;
-    if (open) action(open.row);
-  }
-  async function copyKey(key: string): Promise<void> {
-    if (!(await copyToClipboard(key))) addToast('error', 'Could not copy the key.');
+  // A move from the board whose screen takes fields: the ticket opens with
+  // that move's form.
+  function moveWithFields(row: RowView, move: MoveView): void {
+    if (!board) return;
+    openCard(row);
+    openTicketMove(trackerTicketKey({ backend: board.backend, connection: board.connection, issue: row.card.id }), move);
   }
 
   const choices = $derived(trackerBoardChoices());
@@ -345,6 +336,8 @@
   }
 
   // The board's listing: its connection's kind, whether it may be opened.
+  // The board's tracker, jira or linear; empty until a listing names it.
+  const boardKind = $derived(board ? choices.find((c) => c.backend === board.backend && c.choice.connection === board.connection)?.choice.connection_kind ?? '' : '');
   const boardChoice = $derived(board ? choices.find((c) => c.backend === board.backend && c.choice.connection === board.connection && c.choice.board === board.board)?.choice ?? null : null);
 
   function lastRead(at: number): string {
@@ -546,8 +539,9 @@
           {compact}
           shown={selection.boardShown}
           openIssue={ticket?.ref.issue ?? null}
+          typed={boardKind !== 'linear'}
           onOpenCard={openCard}
-          onCardMenu={openCardMenu}
+          onMoveWithFields={moveWithFields}
         />
       {:else if boardState && !boardState.ended}
         <p class="px-4 py-6 text-sm text-fg-muted" data-testid="issues-not-read">This computer has not read the board yet. It appears here once it has.</p>
@@ -578,13 +572,14 @@
               attachment={held}
               seed={open.seed}
               board={openBoard.board}
-              kind={choices.find((c) => c.backend === openBoard.backend && c.choice.connection === openBoard.connection)?.choice.connection_kind ?? ''}
+              kind={boardKind}
               computerName={computerName(openBoard.backend)}
               account={me}
               project={selection.ticketProject}
               onProject={(p) => selection.setTicketProject(p)}
               offline={boardOffline}
               {compact}
+              {shown}
               trail={selection.trail}
               placement={selection.placement}
               {besideFits}
@@ -603,10 +598,3 @@
   {/if}
   </div>
 </div>
-
-{#if cardMenu}
-  <ContextMenu x={cardMenu.x} y={cardMenu.y} ariaLabel="Card actions" onDismiss={() => { cardMenu = null; }}>
-    <MenuItem label="Open" testId="issues-card-menu-open" onSelect={() => fromCardMenu(openCard)} />
-    <MenuItem label="Copy key" testId="issues-card-menu-copy-key" onSelect={() => fromCardMenu((row) => { void copyKey(row.card.key); })} />
-  </ContextMenu>
-{/if}

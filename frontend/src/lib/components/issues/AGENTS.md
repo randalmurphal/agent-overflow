@@ -14,11 +14,29 @@ board methods, events and the patch read in
   actions and read `attachTrackerBoard(...).current`; none calls a board
   binding. Which sections the Board screen reads is the board's computer's
   (`BoardView.screen`); the store asks for no sections and holds what it
-  answers.
+  answers. A write waits on `trackerBoardsSettled` (its end cases are
+  written beside it) before its "Saving" ends.
 - `stores/trackerBoardModel.ts` is the pure part: the patch rule (replayed
   in Vitest from `internal/trackerapp/testdata/board_patch_cases.json`, which
   the Go model writes), the grouping of sprint rows into columns
-  (`screenColumns`) and the Only mine and Search match (`cardMatches`).
+  (`screenColumns`), the Only mine and Search match (`cardMatches`), a
+  card's web address (`cardURL`, the one rule), the columns a ticket's
+  moves reach (`columnsReached`), and the waiting cards drawn and counted
+  where they wait (`withWaiting`, `columnWith`).
+- `stores/trackerBoardCarry.svelte.ts` holds the cards waiting where they
+  were dropped while their move or rank is out, a picture that never
+  changes what the board holds, and makes those writes (`moveCard`,
+  `rankCard`) through the ticket's write store: one drop per card from
+  its release, held by the Board screen that accepted it until the
+  screen decides it or goes (`dropOwner`, `cardBusy`), and the ranks of
+  a column one at a time, each naming the neighbors the board holds when
+  it is sent. A card writes under its ticket's key (`cardWriteContext`),
+  so the card and the ticket screen show one write.
+- `components/shared/ActionMenu.svelte` draws the card's menu
+  (`BoardCardMenu.svelte`): the actions shown at once, the rest behind
+  Show more, and pages such as Move to… (`CardMovePage.svelte`), with the
+  shown set kept per menu name in `stores/menuShownActions.svelte.ts`. A
+  new card action is one entry in `BoardCardMenu`'s groups.
 - `stores/trackerBoardChoices.svelte.ts` lists the boards to pick from, one
   `TrackerBoardChoices` answer per computer with its state (reading,
   answered, offline, failed), held while a pane shows it. It starts its own
@@ -53,7 +71,10 @@ board methods, events and the patch read in
 - `stores/trackerTicketWrites.svelte.ts` makes every write and picker read
   of the ticket screen and holds each write's outcome by ticket and target:
   one pending write per target, Save anyway as the person's second press,
-  and a toast for a write that settles after its ticket closed. It also
+  and each outcome kept under a control the person sees or said in a
+  toast, never both (its rules at the top; a control registers through
+  `ticketWriteSurface.ts`). Each ticket's writes are one box, so a write
+  wakes that ticket's readers only. It also
   holds what is being written to each target (the drafts): a text with its
   base, or a move's form with the base of each long field, which the
   editors and the form show, so a draft outlives its editor; a pane's
@@ -131,6 +152,15 @@ by name or level in `boardFormat.ts`; a board fetches no tracker image.
 editor in place and what a pick or a typed value sends; the ticket saves
 each edit at once, and `TicketMoveForm.svelte` collects them for a move
 whose screen takes fields, its pickers asking that move's values.
+A card's marks open the same editors (`cardEditor`, in
+`CardFieldEditor.svelte`, loaded on the first edit from a card), and a
+typed value is `TicketTypedValue.svelte` on both. A mouse or pen carries
+a card (`boardCarry.ts`, loaded on the first press of a card; its physics
+in `boardCarryPhysics.ts`): per frame it writes one transform on a copy
+of the card on `document.body`, and tells `BoardScreen` only when the
+column under it or the drop slot changes, so no card renders while it is
+carried (`boardCarry.browser.test.ts`). Under compact a card has no
+carry: its status mark opens Move to….
 
 A ticket's Log time opens the Time screen's `WorklogForm.svelte` with the
 ticket and today, and the link form (`TicketLinkForm.svelte`) finds the

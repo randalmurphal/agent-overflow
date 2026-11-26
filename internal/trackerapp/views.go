@@ -55,11 +55,14 @@ type ParentView struct {
 
 // CardView is an issue as a board or backlog row draws it. Times are Unix
 // milliseconds, 0 for none; StatusSince is when the issue entered its
-// current status, from its stored history, 0 while that is unknown.
+// current status, from its stored history, 0 while that is unknown. URL
+// is the address the tracker gave the issue (Linear's), empty for a Jira
+// card, whose address is its board's IssueURL with its key.
 type CardView struct {
 	ID       string         `json:"id"`
 	Key      string         `json:"key"`
 	Title    string         `json:"title"`
+	URL      string         `json:"url,omitempty"`
 	Type     *IssueTypeView `json:"type,omitempty"`
 	Status   StatusView     `json:"status"`
 	Assignee *UserView      `json:"assignee,omitempty"`
@@ -235,7 +238,7 @@ func cardViewsOf(cards []shownCard, names catalogNames, parentOf map[string]trac
 
 func cardView(c tracker.Card, names catalogNames) CardView {
 	v := CardView{
-		ID: string(c.ID), Key: c.Key, Title: c.Title, Status: names.status(string(c.Status)),
+		ID: string(c.ID), Key: c.Key, Title: c.Title, URL: c.URL, Status: names.status(string(c.Status)),
 		Created: millis(c.Created), Updated: millis(c.Updated), Resolved: millis(c.Resolved),
 		Sprints: idStrings(c.Sprints),
 	}

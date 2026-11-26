@@ -6,9 +6,12 @@
   // of a write that was made. A refusal for what a rich text edit would
   // lose offers Save anyway, which sends the same write accepting the
   // loss; once it is made, the write store drops the editor's draft, which
-  // closes it. Nothing shows once a plain success settled.
+  // closes it. Nothing shows once a plain success settled. While mounted
+  // it is a control that draws its target's outcome
+  // (`trackerTicketWrites.svelte.ts`, where an outcome shows).
   import WriteNote from './WriteNote.svelte';
-  import { dismissTicketWrite, ticketWrite } from '../../stores/trackerTicketWrites.svelte';
+  import { ticketWriteSurface } from './ticketWriteSurface';
+  import { dismissTicketWrite, drawTicketWrite, ticketWrite } from '../../stores/trackerTicketWrites.svelte';
   import { refusalSentence } from '../../stores/trackerWriteOutcome';
   import { errString } from '../../utils/errors';
 
@@ -20,6 +23,9 @@
   }
 
   let { ticketKey, target, fieldName }: Props = $props();
+
+  const shown = ticketWriteSurface();
+  $effect(() => drawTicketWrite(ticketKey, target, shown));
 
   const write = $derived(ticketWrite(ticketKey, target));
   const text = $derived.by(() => {

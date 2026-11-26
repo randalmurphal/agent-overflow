@@ -157,6 +157,11 @@ interface Live {
   running: Promise<void> | null;
   /** The visibility this handle last voted, the subscribe's first. */
   voted: boolean;
+  /** Those waiting for the full and patch reads owed now
+   * (`trackerBoardsSettled`). */
+  settled: Array<() => void>;
+  /** A full or patch read is out. */
+  reading: boolean;
 }
 
 /** Event IDs past which a patch is not read (trackerapp maxEventIssues). */
@@ -209,7 +214,10 @@ const store = createEntityStore<TrackerBoardState, TrackerBoardRef>({
   source: subscribe,
   onDrop: (key) => {
     const live = lives.get(key);
-    if (live) live.aborted = true;
+    if (live) {
+      live.aborted = true;
+      settleWaiters(live);
+    }
     lives.delete(key);
     shownByKey.delete(key);
     filteredByKey.delete(key);
@@ -224,11 +232,12 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
     key, ref, id: '', seq: 0, joining: [], apply, aborted: false,
     state: FIRST_STATE,
     pending: new Set(), readAgain: false, retryHeld: false, wantPage: new Set(), staleAt: -1,
-    intern: createRowInterner(), running: null, voted: visibleOf(key),
+    intern: createRowInterner(), running: null, voted: visibleOf(key), settled: [], reading: false,
   };
   lives.set(key, live);
   signal.addEventListener('abort', () => {
     live.aborted = true;
+    settleWaiters(live);
     if (lives.get(key) === live) lives.delete(key);
   }, { once: true });
   let answer: BoardSubscription;
@@ -293,6 +302,8 @@ function fold(live: Live, event: TrackerBoardEvent): void {
     live.pending.clear();
     live.readAgain = false;
     update(live, next);
+    // A read still out reads a subscription that ended: no write waits on it.
+    settleWaiters(live);
     return;
   }
   const ids = [...(event.changed ?? []), ...(event.removed ?? [])];
@@ -345,8 +356,22 @@ function drain(live: Live): Promise<void> {
   if (!live.id || live.aborted || live.state.ended) return Promise.resolve();
   live.running = run(live).finally(() => {
     live.running = null;
+    settleWaiters(live);
   });
   return live.running;
+}
+
+/** Whether a full or a patch read is out or owed: what the board was
+ * told that it does not show yet. */
+function readOwed(live: Live): boolean {
+  return live.reading || live.readAgain || (live.state.held !== null && live.pending.size > 0);
+}
+
+function settleWaiters(live: Live): void {
+  if (live.settled.length === 0) return;
+  const waiting = live.settled;
+  live.settled = [];
+  for (const settle of waiting) settle();
 }
 
 /** A recovery trigger: the next drain reads every failed read again, the
@@ -362,12 +387,17 @@ async function run(live: Live): Promise<void> {
     const held = live.state.held;
     // A failed full or patch read waits for a recovery trigger, and every
     // page read waits behind it.
-    if (live.retryHeld && (live.readAgain || (held && live.pending.size > 0))) return;
+    if (live.retryHeld && readOwed(live)) return;
+    // What the board was told is shown: a page read does not hold a
+    // write's "Saving".
+    if (!readOwed(live)) settleWaiters(live);
     try {
       if (live.readAgain) {
-        await readWhole(live);
+        live.reading = true;
+        await readWhole(live).finally(() => { live.reading = false; });
       } else if (held && live.pending.size > 0) {
-        await readPatch(live, held);
+        live.reading = true;
+        await readPatch(live, held).finally(() => { live.reading = false; });
       } else {
         const at = held ? pageWanted(live, held) : -1;
         if (at < 0) return;
@@ -526,6 +556,37 @@ function withoutKey(errors: ReadonlyMap<string, unknown>, k: string): ReadonlyMa
   return out.size === 0 ? NO_SECTION_ERRORS : out;
 }
 
+/**
+ * Settles once each held board of `connection` on `backend` shows what its
+ * computer last told it: the full or patch read owed when this is called,
+ * and any owed by an event that arrives meanwhile, have landed or failed.
+ * A write waits on it before its control stops saying "Saving", as it
+ * waits on the ticket's view (`trackerTicketSettled`), since the write's
+ * refresh tells the board's event before the write's answer arrives.
+ * What ends the wait for a board, in every case: no full or patch read is
+ * owed (a page read running then is not waited for); a full or patch read
+ * failed (the board shows its failure and holds the read for a recovery
+ * trigger); the board is released or its subscription ends; the
+ * connection to its computer drops (the read in flight fails with it).
+ * A board not subscribed yet, or not running a read, adds no wait. Every
+ * read it waits for is of the computer's copy, never the tracker.
+ */
+export function trackerBoardsSettled(backend: BackendKey, connection: string): Promise<void> {
+  const waits: Promise<void>[] = [];
+  for (const live of lives.values()) {
+    if (live.ref.backend !== backend || live.ref.connection !== connection) continue;
+    if (!live.running || live.aborted || live.state.ended || !readOwed(live)) continue;
+    waits.push(new Promise((resolve) => live.settled.push(resolve)));
+  }
+  return waits.length === 0 ? Promise.resolve() : Promise.all(waits).then(() => undefined);
+}
+
+/** The board `key` (trackerBoardKey) holds now; null when it is not held
+ * or not read. Not reactive: for a write deciding what it sends. */
+export function heldTrackerBoard(key: string): HeldBoard | null {
+  return lives.get(key)?.state.held ?? null;
+}
+
 /** Asks for the next page of a held section, once: a demand trigger. A
  * failed read stays for a recovery trigger (`run`), so a column nearing
  * its end, which asks again as soon as it stops loading, never retries
@@ -657,7 +718,10 @@ export function attachTrackerBoard(ref: TrackerBoardRef, shown: boolean): Tracke
 
 export function resetTrackerBoardsForTest(): void {
   store.resetForTest();
-  for (const live of lives.values()) live.aborted = true;
+  for (const live of lives.values()) {
+    live.aborted = true;
+    settleWaiters(live);
+  }
   lives.clear();
   shownByKey.clear();
   filteredByKey.clear();

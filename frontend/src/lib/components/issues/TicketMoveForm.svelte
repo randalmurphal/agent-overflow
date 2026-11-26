@@ -7,7 +7,7 @@
   // move's own (`TrackerChoices` with the move in its scope), a field of
   // several values takes each pick as one more, and a long text field is
   // written as Markdown from the text the ticket showed when the form
-  // opened, its edit base. Move sends the move once with what the form
+  // first had the ticket's detail, its edit base. Move sends the move once with what the form
   // holds; while it is out, every input takes no change and an open picker
   // closes, so the move made is what the form shows. A refusal, under the
   // status, leaves what was filled. A required
@@ -31,13 +31,15 @@
   interface Props {
     ctx: TicketWriteContext;
     form: TicketMoveDraft;
+    /** Each long field's edit base (`form.bases`, once it is set). */
+    bases: ReadonlyMap<string, string>;
     /** The ticket's own fields: the values a move's field holds now. */
     fields: readonly FieldView[];
     fieldName: (id: string) => string;
     onOpenTracker: () => void;
   }
 
-  let { ctx, form, fields, fieldName, onOpenTracker }: Props = $props();
+  let { ctx, form, bases, fields, fieldName, onOpenTracker }: Props = $props();
 
   const move = $derived(form.move);
   const pending = $derived(ticketWrite(ctx.key, 'status')?.pending ?? false);
@@ -71,11 +73,11 @@
   }
 
   function longText(f: FieldView): string {
-    return form.fields.get(f.id)?.text ?? form.bases.get(f.id) ?? '';
+    return form.fields.get(f.id)?.text ?? bases.get(f.id) ?? '';
   }
 
   function writeText(f: FieldView, markdown: string): void {
-    setTicketMoveField(ctx.key, f.id, { edit: { field: f.id, markdown: { markdown, from: form.bases.get(f.id) ?? '' } }, picked: [], text: markdown });
+    setTicketMoveField(ctx.key, f.id, { edit: { field: f.id, markdown: { markdown, from: bases.get(f.id) ?? '' } }, picked: [], text: markdown });
   }
 
   // An applied move drops the draft, which closes the form.

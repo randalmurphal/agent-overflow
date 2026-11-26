@@ -26,6 +26,8 @@
      * tighter value so the popup doesn't look balloon-wide.
      */
     minWidthClass?: string;
+    /** The most it may stand, in px; past it its rows scroll inside it. */
+    maxHeight?: number;
   }
 
   let {
@@ -33,6 +35,7 @@
     children,
     onClose,
     minWidthClass = 'min-w-[200px]',
+    maxHeight,
   }: Props = $props();
 
   let containerEl: HTMLDivElement | undefined = $state(undefined);
@@ -164,7 +167,8 @@
   aria-orientation="vertical"
   aria-label={ariaLabel}
   onkeydown={handleKeydown}
-  class="bg-surface-1 border border-border-subtle rounded-[var(--radius-control)] shadow-menu py-1 {minWidthClass} focus-visible:outline-none compact:w-full compact:max-w-none compact:rounded-b-none compact:border-x-0 compact:border-b-0"
+  style:max-height={maxHeight === undefined ? undefined : `${maxHeight}px`}
+  class="{maxHeight === undefined ? '' : 'overflow-y-auto overscroll-contain'} bg-surface-1 border border-border-subtle rounded-[var(--radius-control)] shadow-menu py-1 {minWidthClass} focus-visible:outline-none compact:w-full compact:max-w-none compact:rounded-b-none compact:border-x-0 compact:border-b-0"
   data-menu
 >
   {@render children()}
