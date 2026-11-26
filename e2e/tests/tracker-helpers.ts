@@ -105,6 +105,9 @@ export interface ExtraJira {
   sprints?: Array<{ id: number; board?: number; name: string; state: 'future' | 'active' | 'closed'; goal?: string; start?: string; end?: string; complete?: string }>;
   /** The add-on, with the votes already cast (trackerfake.JiraPoker). */
   poker?: { rounds?: Array<{ issue: string; revealed?: boolean; votes?: Array<{ id: string; account: string; vote: number; created: string }> }> };
+  /** More Jira sites served beside this one, whole (trackerfake.JiraSite):
+   * the servers serve only the sites the first seed after a reset names. */
+  sites?: Array<Record<string, unknown>>;
 }
 
 /**
@@ -176,7 +179,7 @@ export async function seedFakeJira(harness: HarnessApp, extra?: ExtraJira): Prom
         ...(extra?.issues ?? []).map((issue) => ({ ...issue, created: issue.created ?? day, updated: issue.updated ?? issue.created ?? day })),
       ],
       ...(extra?.poker ? { poker: extra.poker } : {}),
-    }],
+    }, ...(extra?.sites ?? [])],
   });
   const jiraURL = origins.jira[JIRA_SITE];
   if (!jiraURL) throw new Error(`HarnessTrackerSeed served no ${JIRA_SITE}: ${JSON.stringify(origins)}`);

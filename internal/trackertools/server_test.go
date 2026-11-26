@@ -29,6 +29,8 @@ type fakeTracker struct {
 	// the service's does.
 	honorCtx bool
 	details  map[string]trackerapp.DetailView // connection/issue
+	// onDetail, when set, runs as each detail read starts.
+	onDetail func()
 	comments func(connection, issue, page string) (trackerapp.CommentPageView, error)
 	asked    []string
 
@@ -131,6 +133,12 @@ func (f *fakeTracker) AddComment(ctx context.Context, connection string, in trac
 // fakeHost answers the writing tools' questions about the thread.
 type fakeHost struct {
 	readOnly bool
+	// noAsk is a project whose Agents settings let a change to several
+	// tickets go without the person's approval.
+	noAsk bool
+	// onPolicy runs before each WritePolicy read with its count, from 1.
+	onPolicy func(n int)
+	policies int
 	// approve answers an approval; nil approves.
 	approve   func(Approval) error
 	approvals []Approval
@@ -143,11 +151,15 @@ type fakeHost struct {
 	ended map[string]bool
 }
 
-func (h *fakeHost) Writable(string) error {
-	if h.readOnly {
-		return errorsx.Public("tracker_read_only", "This thread is read-only, so it cannot change tickets; ask the user to change its access.", nil)
+func (h *fakeHost) WritePolicy(string) (WritePolicy, error) {
+	h.policies++
+	if h.onPolicy != nil {
+		h.onPolicy(h.policies)
 	}
-	return nil
+	if h.readOnly {
+		return WritePolicy{}, errorsx.Public("tracker_read_only", "This thread is read-only, so it cannot change tickets; ask the user to change its access.", nil)
+	}
+	return WritePolicy{AskSeveral: !h.noAsk}, nil
 }
 
 func (h *fakeHost) Approve(_ context.Context, _ string, a Approval) error {
@@ -208,6 +220,9 @@ func (f *fakeTracker) Search(_ context.Context, connection string, in trackerapp
 
 func (f *fakeTracker) IssueDetail(ctx context.Context, connection, issue string) (trackerapp.DetailView, error) {
 	f.asked = append(f.asked, "detail "+connection+" "+issue)
+	if f.onDetail != nil {
+		f.onDetail()
+	}
 	if err := ctx.Err(); f.honorCtx && err != nil {
 		return trackerapp.DetailView{}, err
 	}

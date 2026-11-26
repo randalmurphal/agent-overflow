@@ -30,6 +30,7 @@ type scripted struct {
 	history     func(tracker.HistoryQuery) (tracker.History, error)
 	detail      func(tracker.IssueID) (tracker.Detail, error)
 	structure   func(tracker.BoardID, time.Time) (tracker.Structure, error)
+	fields      func() ([]tracker.Field, error)
 	// detailReads are the issues of each Details call.
 	detailReads [][]tracker.IssueID
 	// caps are the tracker's capabilities; none unless a test sets them.
@@ -286,6 +287,19 @@ func (p *scripted) Structure(ctx context.Context, b tracker.BoardID, window time
 		return zero, err
 	}
 	return h(b, window)
+}
+
+func (p *scripted) Fields(ctx context.Context) ([]tracker.Field, error) {
+	p.mu.Lock()
+	h := p.fields
+	p.mu.Unlock()
+	if !p.called(ctx, "Fields", func() bool { return h != nil }) {
+		return nil, errUnscripted
+	}
+	if err := p.wait(ctx, "Fields"); err != nil {
+		return nil, err
+	}
+	return h()
 }
 
 // syncTick runs one tick of scope's board as its pump does (syncBoard),
