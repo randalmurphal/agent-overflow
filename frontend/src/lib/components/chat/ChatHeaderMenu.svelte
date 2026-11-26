@@ -46,6 +46,7 @@
   import Popover from '../primitives/Popover.svelte';
   import { runTerminalToggle } from '../terminal/terminalToggle';
   import StatusMark from '../issues/StatusMark.svelte';
+  import { holdThreadLinkProject, linkMarkGroup } from '../../stores/threadLinkMarks.svelte';
   import { findThreadTicket, linkedTicketStateNote, openLinkedTicket, removeThreadTicketLink, threadTicketLinkGrant } from '../../stores/threadTicketLinks.svelte';
   import { openPrReview, takeControlState, terminalGrant, toggleTakeControl, toggleWorkspaceReview } from './headerPaneActions';
 
@@ -201,6 +202,9 @@
   );
   let diffSuffix = $derived(`+${gitStatus?.insertions ?? 0} −${gitStatus?.deletions ?? 0}`);
   let ticketLink = $derived(pane.thread?.ticketLink ?? null);
+  // The mark reads the thread's project's status groups, held while the
+  // link shows.
+  $effect(() => holdThreadLinkProject(ticketLink ? pane.thread?.projectId : null));
   // ClearThreadTicket rides threads:operate on the thread's computer.
   let ticketGrant = $derived(threadScopeGrant('threads:operate', pane.threadId, pane.thread?.projectId));
   let prHref = $derived(safeExternalURL(gitStatus?.openPrUrl));
@@ -256,7 +260,7 @@
           testId="chat-header-menu-ticket"
           onSelect={() => pick(() => void openLinkedTicket(thread))}
         >
-          {#snippet icon()}<span class={ticketLink.state === 'current' ? '' : 'opacity-50'}><StatusMark group={ticketLink.statusGroup} size={11} /></span>{/snippet}
+          {#snippet icon()}<span class={ticketLink.state === 'current' ? '' : 'opacity-50'}><StatusMark group={linkMarkGroup(thread)} size={11} /></span>{/snippet}
         </MenuItem>
       {/if}
       {#if compact && prHref}

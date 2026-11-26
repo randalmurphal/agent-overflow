@@ -3,7 +3,9 @@
   // ring to do, a half-filled ring in progress, a check done, a dashed ring
   // in the backlog, a struck ring canceled.
   interface Props {
-    /** backlog, todo, in_progress, done or canceled. */
+    /** backlog, todo, in_progress, done or canceled: the group the
+     * project puts the status in (`stores/statusMarkGroup.ts#markGroup`),
+     * never a status's own group read directly. */
     group: string | undefined;
     size?: number;
   }
