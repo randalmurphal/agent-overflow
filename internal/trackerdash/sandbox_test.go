@@ -439,8 +439,16 @@ func TestASessionThatCannotConnectLeavesNothing(t *testing.T) {
 			t.Errorf("%d session sinks left in the registry after the session failed to open", left)
 		}
 		synctest.Wait()
+		// The bubble's own goroutines: an earlier test's closed database
+		// can still be ending its opener outside it.
 		buf := make([]byte, 1<<20)
-		if n := strings.Count(string(buf[:runtime.Stack(buf, true)]), "database/sql.(*DB).connectionOpener"); n != 0 {
+		n := 0
+		for _, g := range strings.Split(string(buf[:runtime.Stack(buf, true)]), "\n\n") {
+			if strings.Contains(g, "synctest bubble") && strings.Contains(g, "database/sql.(*DB).connectionOpener") {
+				n++
+			}
+		}
+		if n != 0 {
 			t.Errorf("%d database connection openers run after the session failed to open; its database was not closed", n)
 		}
 	})
