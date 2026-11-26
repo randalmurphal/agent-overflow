@@ -422,7 +422,9 @@ var boardCases = map[string]func(t *testing.T, f *fakeEnv){
 	},
 	"StartSprint": func(t *testing.T, f *fakeEnv) {
 		now := f.clock.Now()
-		if s := got(f.c.StartSprint(f.ctx, SprintStart{ID: 2, Start: now, End: now.Add(7 * 24 * time.Hour)})).must(t); s.State != SprintActive {
+		name, goal := "Sprint B", "Ship"
+		s := got(f.c.StartSprint(f.ctx, SprintStart{ID: 2, Start: now, End: now.Add(7 * 24 * time.Hour), Name: &name, Goal: &goal})).must(t)
+		if s.State != SprintActive || s.Name != name || s.Goal != goal {
 			t.Fatalf("started %+v", s)
 		}
 	},

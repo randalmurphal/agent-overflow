@@ -210,6 +210,10 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		func() error { _, err := s.ListMirrorCards(root, []string{"10001"}); return err },
 		func() error { _, _, err := s.ListMirrorIssueRows(root, "10001", ""); return err },
 		func() error { _, err := s.ListMirrorTicketRows(root, []string{"10001", "10002"}); return err },
+		func() error {
+			_, err := s.ListMirrorSprintNames(root, []string{"10", "11"}, []string{"20", "21"})
+			return err
+		},
 		func() error { _, _, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10"}); return err },
 		func() error { _, err := s.CountMirrorSections(root, "10", MirrorRegroup{}); return err },
 		func() error {

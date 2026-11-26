@@ -150,13 +150,15 @@ func fieldEdits(ins []FieldEditInput) ([]tracker.FieldEdit, error) {
 // CreateRequest makes an issue from a section of Board: an issue made is
 // read through that board, and a create of unknown outcome runs the
 // board's tick at once. Type is the issue type, empty on a tracker
-// without issue types.
+// without issue types. Sprint, when set, is the open sprint of Board the
+// issue is made in; with none it lands in the backlog.
 type CreateRequest struct {
 	Board   string           `json:"board"`
 	Project string           `json:"project"`
 	Type    string           `json:"type,omitempty"`
 	Title   string           `json:"title"`
 	Fields  []FieldEditInput `json:"fields,omitempty"`
+	Sprint  string           `json:"sprint,omitempty"`
 }
 
 func (in CreateRequest) model() (tracker.CreateInput, error) {
@@ -164,7 +166,8 @@ func (in CreateRequest) model() (tracker.CreateInput, error) {
 		return tracker.CreateInput{}, fmt.Errorf("%w: a create names the board it is made from", ErrInvalidRequest)
 	}
 	fields, err := fieldEdits(in.Fields)
-	return tracker.CreateInput{Project: tracker.ProjectID(in.Project), Type: tracker.IssueTypeID(in.Type), Title: in.Title, Fields: fields}, err
+	return tracker.CreateInput{Project: tracker.ProjectID(in.Project), Type: tracker.IssueTypeID(in.Type), Title: in.Title, Fields: fields,
+		Board: tracker.BoardID(in.Board), Sprint: tracker.SprintID(in.Sprint)}, err
 }
 
 // EditRequest changes fields of an issue. AcceptLoss is the person's
@@ -223,15 +226,19 @@ func (in RankRequest) model() tracker.RankInput {
 }
 
 // SprintMoveRequest moves Issues into Sprint, an open sprint of Board, or
-// to the board's backlog when Sprint is empty.
+// to the board's backlog when Sprint is empty, placed between Prev and
+// Next as a RankRequest places them when either is set.
 type SprintMoveRequest struct {
 	Board  string   `json:"board"`
 	Sprint string   `json:"sprint,omitempty"`
 	Issues []string `json:"issues"`
+	Prev   string   `json:"prev,omitempty"`
+	Next   string   `json:"next,omitempty"`
 }
 
 func (in SprintMoveRequest) model() tracker.SprintMoveInput {
-	return tracker.SprintMoveInput{Board: tracker.BoardID(in.Board), Sprint: tracker.SprintID(in.Sprint), Issues: issueIDsInOrder(in.Issues)}
+	return tracker.SprintMoveInput{Board: tracker.BoardID(in.Board), Sprint: tracker.SprintID(in.Sprint), Issues: issueIDsInOrder(in.Issues),
+		Prev: tracker.IssueID(in.Prev), Next: tracker.IssueID(in.Next)}
 }
 
 // SprintRequest is a new future sprint of Board. Start and End are Unix
@@ -251,14 +258,17 @@ func (in SprintRequest) model() tracker.SprintInput {
 // SprintStartRequest starts a future sprint of Board, Start to End in Unix
 // milliseconds.
 type SprintStartRequest struct {
-	Board  string `json:"board"`
-	Sprint string `json:"sprint"`
-	Start  int64  `json:"start"`
-	End    int64  `json:"end"`
+	Board  string  `json:"board"`
+	Sprint string  `json:"sprint"`
+	Start  int64   `json:"start"`
+	End    int64   `json:"end"`
+	Name   *string `json:"name,omitempty"`
+	Goal   *string `json:"goal,omitempty"`
 }
 
 func (in SprintStartRequest) model() tracker.SprintStart {
-	return tracker.SprintStart{Board: tracker.BoardID(in.Board), Sprint: tracker.SprintID(in.Sprint), Start: timeOf(in.Start), End: timeOf(in.End)}
+	return tracker.SprintStart{Board: tracker.BoardID(in.Board), Sprint: tracker.SprintID(in.Sprint), Start: timeOf(in.Start), End: timeOf(in.End),
+		Name: in.Name, Goal: in.Goal}
 }
 
 // SprintCompleteRequest closes an active sprint of Board once its

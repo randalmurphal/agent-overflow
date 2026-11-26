@@ -127,3 +127,22 @@ func TestWriteInputRefusals(t *testing.T) {
 		t.Fatalf("refused inputs called the tracker: %v", got)
 	}
 }
+
+// A create names its sprint and board, a sprint move its place, and a
+// sprint start its name and goal, as the provider's inputs carry them.
+func TestPlanningRequestsReachTheirInputs(t *testing.T) {
+	t.Parallel()
+	create, err := CreateRequest{Board: "1", Project: "10000", Title: "New", Sprint: "2"}.model()
+	if err != nil || create.Board != "1" || create.Sprint != "2" {
+		t.Errorf("create %+v, %v", create, err)
+	}
+	move := SprintMoveRequest{Board: "1", Sprint: "2", Issues: []string{"10001"}, Prev: "10002", Next: "10003"}.model()
+	if rank, placed := move.Rank(); !placed || rank.Prev != "10002" || rank.Next != "10003" {
+		t.Errorf("sprint move %+v", move)
+	}
+	name, goal := "Sprint 2", ""
+	start := SprintStartRequest{Board: "1", Sprint: "2", Start: 1, End: 2, Name: &name, Goal: &goal}.model()
+	if start.Name != &name || start.Goal != &goal {
+		t.Errorf("sprint start %+v", start)
+	}
+}

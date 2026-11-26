@@ -77,7 +77,12 @@ func stepParts(issue tracker.IssueID, step tracker.Step, stored []jira.Attachmen
 }
 
 // Create makes an issue: the create, then, when its Markdown embeds local
-// images, their upload to the new issue and the edit that writes them in.
+// images, their upload to the new issue and the edit that writes them in,
+// then, when the input names a sprint, the issue's move into it. The
+// sprint is checked as an open sprint of the board before the create, so
+// a create refused for its sprint makes nothing; the move is a separate
+// write after it, its part the client's outcome, and a new issue ranks
+// last, so it lands at the sprint's foot.
 func (p *Provider) Create(ctx context.Context, in tracker.CreateInput) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepCreate, err)
@@ -88,9 +93,22 @@ func (p *Provider) Create(ctx context.Context, in tracker.CreateInput) tracker.R
 	if _, err := numericID("issue type", string(in.Type)); err != nil {
 		return tracker.Invalid(tracker.StepCreate, err)
 	}
+	if in.Sprint != "" {
+		if err := checkSprintIDs(in.Board, in.Sprint); err != nil {
+			return tracker.Invalid(tracker.StepCreate, err)
+		}
+	}
 	inputs, err := p.fieldInputs(ctx, "", in.Fields)
 	if err != nil {
 		return tracker.Result{Parts: []tracker.Part{{Step: tracker.StepCreate, Outcome: beforeSend(err)}}}
+	}
+	// The sprint's listing is the last read before its move: the client
+	// takes it as read.
+	var sprint *jira.Sprint
+	if in.Sprint != "" {
+		if sprint, err = p.boardSprint(ctx, in.Board, in.Sprint, jira.SprintActive, jira.SprintFuture); err != nil {
+			return tracker.Result{Parts: []tracker.Part{{Step: tracker.StepCreate, Outcome: beforeSend(err)}}}
+		}
 	}
 	inputs = append([]jira.FieldInput{{Field: jiraSummary, Value: jira.Text(in.Title)}}, inputs...)
 	plan, err := p.jira.PlanCreate(ctx, jira.CreateInput{
@@ -100,7 +118,14 @@ func (p *Provider) Create(ctx context.Context, in tracker.CreateInput) tracker.R
 		return tracker.Result{Parts: []tracker.Part{{Step: tracker.StepCreate, Outcome: beforeSend(err)}}}
 	}
 	res, err := p.jira.ApplyCreate(ctx, plan)
-	return createParts(res, len(plan.Preview().Images) > 0, err)
+	out := createParts(res, len(plan.Preview().Images) > 0, err)
+	if sprint == nil || res.ID == "" {
+		return out
+	}
+	id := tracker.IssueID(res.ID)
+	moved, err := p.jira.MoveToSprint(ctx, jira.SprintMove{Sprint: sprint.ID, Issues: []string{res.ID}, Current: sprint})
+	out.Parts = append(out.Parts, batchParts(in.Board, tracker.StepSprintMove, []tracker.IssueID{id}, moved, err).Parts...)
+	return out
 }
 
 // createParts are a create's parts from ApplyCreate's result: the
@@ -234,23 +259,33 @@ func (p *Provider) Rank(ctx context.Context, in tracker.RankInput) tracker.Resul
 	if err != nil {
 		return batchParts(in.Board, tracker.StepRank, in.Issues, jira.BatchResult{}, err)
 	}
-	anchor, after := in.Anchor()
-	neighbors := slices.DeleteFunc([]tracker.IssueID{in.Prev, in.Next}, func(id tracker.IssueID) bool { return id == "" })
-	listed, err := p.onBoard(ctx, b, append(neighbors, in.Issues...), b.rank)
+	listed, err := p.onBoard(ctx, b, append(neighborsOf(in), in.Issues...), b.rank)
 	if err == nil {
 		err = neighborsStand(in, b, listed)
 	}
 	if err != nil {
 		return batchParts(in.Board, tracker.StepRank, in.Issues, jira.BatchResult{}, err)
 	}
-	pos := jira.RankBefore(string(anchor))
-	if after {
-		pos = jira.RankAfter(string(anchor))
-	}
+	pos := positionOf(in)
 	return boardParts(in.Board, tracker.StepRank, in.Issues, listed, func(send []tracker.IssueID) tracker.Result {
 		res, err := p.jira.Rank(ctx, jira.RankInput{Issues: refs(send), Position: pos, RankFieldID: b.cfg.RankFieldID})
 		return batchParts(in.Board, tracker.StepRank, send, res, err)
 	})
+}
+
+// neighborsOf is the neighbors a rank names.
+func neighborsOf(in tracker.RankInput) []tracker.IssueID {
+	return slices.DeleteFunc([]tracker.IssueID{in.Prev, in.Next}, func(id tracker.IssueID) bool { return id == "" })
+}
+
+// positionOf is the place a rank puts its issues: just after its Prev,
+// or just before its Next when there is no Prev (RankInput.Anchor).
+func positionOf(in tracker.RankInput) jira.RankPosition {
+	anchor, after := in.Anchor()
+	if after {
+		return jira.RankAfter(string(anchor))
+	}
+	return jira.RankBefore(string(anchor))
 }
 
 // neighborsStand refuses a rank whose neighbors board b does not list
@@ -298,13 +333,16 @@ func rankChecks(in tracker.RankInput) error {
 // MoveToSprint moves issues into an active or future sprint the board
 // lists, or to the board's backlog when the input names no sprint. A
 // sprint the board does not list open refuses the move; an issue the
-// board does not list is refused and the others are moved. Each issue's
+// board does not list is refused and the others are moved. A move that
+// names a place ranks the issues there in the same requests, its
+// neighbors checked as Rank checks them (neighborsStand). Each issue's
 // outcome is the one the client's batch reports for it.
 func (p *Provider) MoveToSprint(ctx context.Context, in tracker.SprintMoveInput) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepSprintMove, err, in.Issues...)
 	}
-	if err := checkIssues(in.Issues); err != nil {
+	rank, placed := in.Rank()
+	if err := rankChecks(rank); err != nil {
 		return tracker.Invalid(tracker.StepSprintMove, err, in.Issues...)
 	}
 	board, err := boardNumber(in.Board)
@@ -321,7 +359,20 @@ func (p *Provider) MoveToSprint(ctx context.Context, in tracker.SprintMoveInput)
 	if err != nil {
 		return notSent(err)
 	}
-	listed, err := p.onBoard(ctx, b, in.Issues)
+	// A place is a position and the board's rank field; the client takes
+	// neither without the other.
+	var pos jira.RankPosition
+	var field int64
+	var listed map[tracker.IssueID]*jira.Issue
+	if placed {
+		listed, err = p.onBoard(ctx, b, append(neighborsOf(rank), in.Issues...), b.rank)
+		if err == nil {
+			err = neighborsStand(rank, b, listed)
+		}
+		pos, field = positionOf(rank), b.cfg.RankFieldID
+	} else {
+		listed, err = p.onBoard(ctx, b, in.Issues)
+	}
 	if err != nil {
 		return notSent(err)
 	}
@@ -336,9 +387,9 @@ func (p *Provider) MoveToSprint(ctx context.Context, in tracker.SprintMoveInput)
 		var res jira.BatchResult
 		var err error
 		if sprint == nil {
-			res, err = p.jira.MoveToBacklog(ctx, jira.BacklogMove{Board: board, Issues: refs(send)})
+			res, err = p.jira.MoveToBacklog(ctx, jira.BacklogMove{Board: board, Issues: refs(send), Position: pos, RankFieldID: field})
 		} else {
-			res, err = p.jira.MoveToSprint(ctx, jira.SprintMove{Sprint: sprint.ID, Issues: refs(send), Current: sprint})
+			res, err = p.jira.MoveToSprint(ctx, jira.SprintMove{Sprint: sprint.ID, Issues: refs(send), Position: pos, RankFieldID: field, Current: sprint})
 		}
 		return batchParts(in.Board, tracker.StepSprintMove, send, res, err)
 	})

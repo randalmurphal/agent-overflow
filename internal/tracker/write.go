@@ -18,20 +18,27 @@ import (
 // CreateInput is an issue to create. Type is required with
 // Capabilities.IssueTypes and must be empty without it. Fields set every
 // field but the title; a rich text edit there gives "" as its from.
+// Sprint, when set, is an open sprint of Board the issue is made in; with
+// none it lands in the backlog.
 type CreateInput struct {
 	Project  ProjectID
 	Type     IssueTypeID
 	Title    string
 	Fields   []FieldEdit
 	ImageDir string
+	Board    BoardID
+	Sprint   SprintID
 }
 
-// Check refuses a create with no project or title, with a field edited
-// twice or the title among its fields, or with rich text written from
-// anything but an empty field.
+// Check refuses a create with no project or title, a sprint with no
+// board, a field edited twice or the title among its fields, or rich text
+// written from anything but an empty field.
 func (in CreateInput) Check() error {
 	if in.Project == "" || in.Title == "" {
 		return invalidf("a create needs a project and a title")
+	}
+	if in.Sprint != "" && in.Board == "" {
+		return invalidf("a create in a sprint names the sprint's board")
 	}
 	if err := checkEdits(in.Fields); err != nil {
 		return err
@@ -154,17 +161,32 @@ func (in RankInput) Check() error {
 }
 
 // SprintMoveInput moves Issues into Sprint, or to the backlog of Board
-// when Sprint is empty. The sprint must be open.
+// when Sprint is empty. The sprint must be open. Prev and Next, when
+// either is set, place the issues where they land on Board as a
+// RankInput's do (Rank); with neither they land where the tracker puts
+// them.
 type SprintMoveInput struct {
 	Board  BoardID
 	Sprint SprintID
 	Issues []IssueID
+	Prev   IssueID
+	Next   IssueID
 }
 
-// Check refuses a move that names no board or issue, or an issue twice.
+// Rank is the rank that places the moved issues, and whether the move
+// names a place.
+func (in SprintMoveInput) Rank() (RankInput, bool) {
+	return RankInput{Board: in.Board, Issues: in.Issues, Prev: in.Prev, Next: in.Next}, in.Prev != "" || in.Next != ""
+}
+
+// Check refuses a move that names no board or issue, an issue twice, or
+// a place a rank refuses (RankInput.Check).
 func (in SprintMoveInput) Check() error {
 	if in.Board == "" {
 		return invalidf("a sprint move needs a board")
+	}
+	if rank, placed := in.Rank(); placed {
+		return rank.Check()
 	}
 	return checkIssues(in.Issues)
 }
@@ -190,18 +212,23 @@ func (in SprintInput) Check() error {
 	return checkSpan(in.Start, in.End)
 }
 
-// SprintStart starts a future sprint of Board with its dates.
+// SprintStart starts a future sprint of Board with its dates, and sets
+// its Name and Goal in the same write when they are set.
 type SprintStart struct {
 	Board      BoardID
 	Sprint     SprintID
 	Start, End time.Time
+	Name, Goal *string
 }
 
-// Check refuses a start that names no board or sprint, or dates that are
-// not a start before an end.
+// Check refuses a start that names no board or sprint, empties the name,
+// or has dates that are not a start before an end.
 func (in SprintStart) Check() error {
 	if in.Board == "" || in.Sprint == "" || in.Start.IsZero() || in.End.IsZero() {
 		return invalidf("a sprint start needs a board, a sprint, a start and an end")
+	}
+	if in.Name != nil && *in.Name == "" {
+		return invalidf("a sprint's name cannot be emptied")
 	}
 	return checkSpan(in.Start, in.End)
 }

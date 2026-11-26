@@ -362,12 +362,14 @@ func (c *Client) UpdateSprint(ctx context.Context, in SprintUpdate) (Sprint, err
 }
 
 // SprintStart starts a future sprint. A zero Start or End keeps the date
-// the sprint has; it needs both. Current is as for SprintUpdate.
+// the sprint has; it needs both. Name and Goal, when set, change in the
+// same request. Current is as for SprintUpdate.
 type SprintStart struct {
-	ID      int64
-	Start   time.Time
-	End     time.Time
-	Current *Sprint
+	ID         int64
+	Start      time.Time
+	End        time.Time
+	Name, Goal *string
+	Current    *Sprint
 }
 
 // StartSprint makes a future sprint active with its start and end dates.
@@ -380,6 +382,9 @@ func (c *Client) StartSprint(ctx context.Context, in SprintStart) (Sprint, error
 	path, err := sprintPath(in.ID)
 	if err != nil {
 		return Sprint{}, err
+	}
+	if in.Name != nil && strings.TrimSpace(*in.Name) == "" {
+		return Sprint{}, notSent("start sprint %d: an empty name", in.ID)
 	}
 	cur, err := c.sprintOr(ctx, in.ID, in.Current)
 	if err != nil {
@@ -403,6 +408,12 @@ func (c *Client) StartSprint(ctx context.Context, in SprintStart) (Sprint, error
 	}
 	body := map[string]any{"state": SprintActive}
 	putDates(body, start, end)
+	if in.Name != nil {
+		body["name"] = *in.Name
+	}
+	if in.Goal != nil {
+		body["goal"] = *in.Goal
+	}
 	s, err := c.writeSprint(ctx, http.MethodPost, path, in.ID, body)
 	if err != nil {
 		return s, fmt.Errorf("jira: start sprint %d: %w", in.ID, err)

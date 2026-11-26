@@ -42,13 +42,7 @@ func (p *Provider) Rank(ctx context.Context, in tracker.RankInput) tracker.Resul
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(step, err, in.Issues...)
 	}
-	named := slices.Clone(in.Issues)
-	for _, n := range []tracker.IssueID{in.Prev, in.Next} {
-		if n != "" {
-			named = append(named, n)
-		}
-	}
-	read, bad := issueIDs(named)
+	read, bad := issueIDs(append(slices.Clone(in.Issues), neighborsOf(in)...))
 	if len(bad) > 0 {
 		return notIssueID(step, bad[0], in.Issues...)
 	}
@@ -87,6 +81,11 @@ func (p *Provider) Rank(ctx context.Context, in tracker.RankInput) tracker.Resul
 	ranked := p.rankOnBoard(ctx, in, moving, before, after)
 	out.Parts = append(out.Parts, ranked.Parts...)
 	return out
+}
+
+// neighborsOf is the neighbors a rank names.
+func neighborsOf(in tracker.RankInput) []tracker.IssueID {
+	return slices.DeleteFunc([]tracker.IssueID{in.Prev, in.Next}, func(id tracker.IssueID) bool { return id == "" })
 }
 
 // rankOnBoard ranks moving, every one on in.Board, between before and

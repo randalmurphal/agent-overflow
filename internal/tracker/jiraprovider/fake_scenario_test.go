@@ -136,6 +136,19 @@ func TestFakeScenario(t *testing.T) {
 	if c := s.row(t, "10103").Card; !slices.Equal(c.Sprints, []tracker.SprintID{"2"}) {
 		t.Fatalf("sprint move %+v", c)
 	}
+	// A create in a sprint: the create, then its move into the sprint.
+	inSprint := allApplied(t, "create in a sprint", s.p.Create(s.ctx, tracker.CreateInput{Project: "10000", Type: "10002", Title: "Sprint task",
+		Board: "1", Sprint: "2"}))
+	sprintID, _ := inSprint.Created()
+	if len(inSprint.Parts) != 2 || inSprint.Parts[1].Step != tracker.StepSprintMove || !slices.Equal(s.row(t, sprintID).Card.Sprints, []tracker.SprintID{"2"}) {
+		t.Fatalf("created in a sprint: %+v", inSprint.Parts)
+	}
+	// A move to a place: out to the backlog just before 10101, in one
+	// request.
+	allApplied(t, "placed sprint move", s.p.MoveToSprint(s.ctx, tracker.SprintMoveInput{Board: "1", Issues: []tracker.IssueID{sprintID}, Next: "10101"}))
+	if r, r1 := s.row(t, sprintID), s.row(t, "10101"); len(r.Card.Sprints) != 0 || r.Order >= r1.Order {
+		t.Fatalf("placed %s not before %s, sprints %v", r.Order, r1.Order, r.Card.Sprints)
+	}
 
 	allApplied(t, "comment", s.p.AddComment(s.ctx, tracker.CommentInput{Issue: "10102", Markdown: "New comment"}))
 	cs := scenarioMust[tracker.CommentPage](t)(s.p.Comments(s.ctx, "10102", ""))
@@ -187,11 +200,16 @@ func TestFakeScenario(t *testing.T) {
 		t.Fatalf("an unfinished issue did not move: %+v", c)
 	}
 	start := s.clock.Now()
-	allApplied(t, "sprint start", s.p.StartSprint(s.ctx, tracker.SprintStart{Board: "1", Sprint: sprint3, Start: start, End: start.Add(14 * 24 * time.Hour)}))
+	name3, goal3 := "Sprint 3, started", "Ship it"
+	allApplied(t, "sprint start", s.p.StartSprint(s.ctx, tracker.SprintStart{Board: "1", Sprint: sprint3, Start: start, End: start.Add(14 * 24 * time.Hour),
+		Name: &name3, Goal: &goal3}))
 	st = scenarioMust[tracker.Structure](t)(s.p.Structure(s.ctx, "1", window))
 	states := map[tracker.SprintID]tracker.SprintState{}
 	for _, sp := range st.Sprints {
 		states[sp.ID] = sp.State
+		if sp.ID == sprint3 && (sp.Name != name3 || sp.Goal != goal3) {
+			t.Fatalf("started sprint %+v", sp)
+		}
 	}
 	if states["1"] != tracker.SprintClosed || states[sprint3] != tracker.SprintActive {
 		t.Fatalf("sprints %+v", st.Sprints)
@@ -232,7 +250,7 @@ func TestFakeScenario(t *testing.T) {
 	// The delta from the first walk's cursor is exactly the issues the
 	// writes changed.
 	delta, _ := s.drain(t, cursor, window)
-	want := []tracker.IssueID{"10101", "10102", "10103", newID}
+	want := []tracker.IssueID{"10101", "10102", "10103", newID, sprintID}
 	slices.Sort(want)
 	if !slices.Equal(rowIDs(delta), want) {
 		t.Fatalf("delta %v, want %v", rowIDs(delta), want)

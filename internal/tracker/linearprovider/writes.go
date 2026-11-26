@@ -51,10 +51,11 @@ func editRefusal(step tracker.Step, err error, issues ...tracker.IssueID) tracke
 	return beforeWrite(step, err, issues...)
 }
 
-// Create creates an issue in the team in.Project. A confirmed create
-// names the new issue and may have changed its card, its row on the
-// team's board and its detail; a lost answer is a create part of unknown
-// outcome naming no issue.
+// Create creates an issue in the team in.Project, in the cycle in.Sprint
+// when it names one, in the same request (Linear refuses another team's
+// cycle). A confirmed create names the new issue and may have changed its
+// card, its row on the team's board and its detail; a lost answer is a
+// create part of unknown outcome naming no issue.
 func (p *Provider) Create(ctx context.Context, in tracker.CreateInput) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepCreate, err)
@@ -70,7 +71,11 @@ func (p *Provider) Create(ctx context.Context, in tracker.CreateInput) tracker.R
 	if err != nil {
 		return editRefusal(tracker.StepCreate, err)
 	}
-	is, err := p.c.CreateIssue(ctx, ch.create(in.Project, in.Title))
+	create := ch.create(in.Project, in.Title)
+	if in.Sprint != "" {
+		create.CycleID = linear.Set(string(in.Sprint))
+	}
+	is, err := p.c.CreateIssue(ctx, create)
 	if err != nil {
 		return one("", tracker.StepCreate, err)
 	}
@@ -182,14 +187,19 @@ func onScale(e tracker.Estimate, v float64) (int, bool) {
 // not the board's or is closed refuses the move, and an issue not on the
 // board is refused while the others proceed. Each part is the client's
 // outcome for its issue, settled by a read after a failed request; the
-// issues after a request with a part not applied are not sent.
+// issues after a request with a part not applied are not sent. A move
+// that names a place then ranks the issues it moved there (Rank), each
+// with a rank part after its move part: a cycle has no order of its own,
+// and the team's manual order is the one every board view shares.
 func (p *Provider) MoveToSprint(ctx context.Context, in tracker.SprintMoveInput) tracker.Result {
 	step := tracker.StepSprintMove
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(step, err, in.Issues...)
 	}
+	rank, placed := in.Rank()
 	ids, bad := issueIDs(in.Issues)
-	if len(bad) > 0 {
+	_, badNeighbors := issueIDs(neighborsOf(rank))
+	if bad = append(bad, badNeighbors...); len(bad) > 0 {
 		return notIssueID(step, bad[0], in.Issues...)
 	}
 	on, err := p.cycleAndBoard(ctx, in.Board, in.Sprint, ids)
@@ -212,9 +222,17 @@ func (p *Provider) MoveToSprint(ctx context.Context, in tracker.SprintMoveInput)
 	if err != nil {
 		return tracker.Invalid(step, err, in.Issues...)
 	}
+	var moved []tracker.IssueID
 	for _, w := range written {
 		id := tracker.IssueID(w.IssueID)
 		out.Parts = append(out.Parts, part(id, step, w.Err, tracker.RowOf(in.Board, id), tracker.CardOf(id), tracker.DetailOf(id)))
+		if w.Err == nil {
+			moved = append(moved, id)
+		}
+	}
+	if placed && len(moved) > 0 {
+		rank.Issues = moved
+		out.Parts = append(out.Parts, p.Rank(ctx, rank).Parts...)
 	}
 	return out
 }

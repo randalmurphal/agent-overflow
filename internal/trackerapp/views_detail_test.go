@@ -162,6 +162,31 @@ func TestIssueDetail(t *testing.T) {
 	}
 }
 
+// A ticket names the sprints its card does from the boards its rows are
+// on, the active first, then the future, then one no such board holds,
+// which shows by ID alone.
+func TestATicketNamesItsSprints(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.seedBoard(t)
+	c := seededCard()
+	c.Updated, c.Sprints = c.Updated.Add(time.Millisecond), []tracker.SprintID{"77", "2", "1"}
+	m.p.detail = func(id tracker.IssueID) (tracker.Detail, error) { return detailOfCard(c), nil }
+	v, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
+	want := []TicketSprintView{{ID: "1", Name: "Sprint 1", State: "active"}, {ID: "2", Name: "Sprint 2", State: "future"}, {ID: "77"}}
+	if err != nil || !slices.Equal(v.Sprints, want) {
+		t.Fatalf("sprints %+v, %v; want %+v", v.Sprints, err, want)
+	}
+	other := card("10009", 1_799_000_000_000)
+	other.Sprints = []tracker.SprintID{"1"}
+	m.p.set(func(p *scripted) {
+		p.detail = func(tracker.IssueID) (tracker.Detail, error) { return detailOfCard(other), nil }
+	})
+	if v, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10009", Interactive); err != nil || !slices.Equal(v.Sprints, []TicketSprintView{{ID: "1"}}) {
+		t.Fatalf("a ticket on no board: sprints %+v, %v", v.Sprints, err)
+	}
+}
+
 // On a tracker whose update time does not move with its detail (Linear: a
 // comment leaves it), every open reads the detail: a comment added since
 // the last open shows though the card did not move, and an identical

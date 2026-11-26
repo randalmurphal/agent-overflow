@@ -269,8 +269,15 @@ func TestFakeScenario(t *testing.T) {
 	if !ok {
 		t.Fatal("create named no issue")
 	}
-	if d := s.detail(t, string(newID)); d.Card.Title != "New page" || d.Card.Key != "WEB-4" || strings.TrimSpace(d.Description) != "Body text" {
+	if d := s.detail(t, string(newID)); d.Card.Title != "New page" || d.Card.Key != "WEB-4" || strings.TrimSpace(d.Description) != "Body text" ||
+		len(d.Card.Sprints) != 0 {
 		t.Fatalf("created %+v", d.Card)
+	}
+	inCycle := allApplied(t, "create in a cycle", s.p.Create(s.ctx, tracker.CreateInput{Project: tracker.ProjectID(scTeam), Title: "Cycle page",
+		Board: board, Sprint: tracker.SprintID(scUpcoming)}))
+	cycleID, _ := inCycle.Created()
+	if len(inCycle.Parts) != 1 || !slices.Equal(s.detail(t, string(cycleID)).Card.Sprints, []tracker.SprintID{tracker.SprintID(scUpcoming)}) {
+		t.Fatalf("created in a cycle: %+v", inCycle.Parts)
 	}
 
 	allApplied(t, "edit", s.p.Edit(s.ctx, tracker.EditInput{Issue: tracker.IssueID(scIssue2), Fields: []tracker.FieldEdit{
@@ -301,6 +308,16 @@ func TestFakeScenario(t *testing.T) {
 	allApplied(t, "sprint move", s.p.MoveToSprint(s.ctx, tracker.SprintMoveInput{Board: board, Sprint: tracker.SprintID(scUpcoming), Issues: []tracker.IssueID{tracker.IssueID(scIssue3)}}))
 	if c := s.row(t, scIssue3).Card; !slices.Equal(c.Sprints, []tracker.SprintID{tracker.SprintID(scUpcoming)}) {
 		t.Fatalf("sprint move %+v", c)
+	}
+	// A move to a place: the cycle, then the rank between its neighbors.
+	placed := allApplied(t, "placed sprint move", s.p.MoveToSprint(s.ctx, tracker.SprintMoveInput{Board: board, Sprint: tracker.SprintID(scUpcoming),
+		Issues: []tracker.IssueID{tracker.IssueID(scIssue2)}, Prev: tracker.IssueID(scIssue3), Next: tracker.IssueID(scIssue1)}))
+	if got := len(placed.Parts); got != 2 || placed.Parts[0].Step != tracker.StepSprintMove || placed.Parts[1].Step != tracker.StepRank {
+		t.Fatalf("placed sprint move parts %+v", placed.Parts)
+	}
+	if r3, r2, r1 := s.row(t, scIssue3), s.row(t, scIssue2), s.row(t, scIssue1); !slices.Equal(r2.Card.Sprints, []tracker.SprintID{tracker.SprintID(scUpcoming)}) ||
+		r3.Order >= r2.Order || r2.Order >= r1.Order {
+		t.Fatalf("placed %s between %s and %s, sprints %v", r2.Order, r3.Order, r1.Order, r2.Card.Sprints)
 	}
 
 	allApplied(t, "comment", s.p.AddComment(s.ctx, tracker.CommentInput{Issue: tracker.IssueID(scIssue2), Markdown: "New comment"}))
@@ -363,7 +380,7 @@ func TestFakeScenario(t *testing.T) {
 	// The delta from the first walk's cursor is exactly the issues the
 	// writes changed.
 	delta, _ := s.drain(t, cursor, window)
-	want := []tracker.IssueID{tracker.IssueID(scIssue1), tracker.IssueID(scIssue2), tracker.IssueID(scIssue3), newID}
+	want := []tracker.IssueID{tracker.IssueID(scIssue1), tracker.IssueID(scIssue2), tracker.IssueID(scIssue3), newID, cycleID}
 	slices.Sort(want)
 	if !slices.Equal(rowIDs(delta), want) {
 		t.Fatalf("delta %v, want %v", rowIDs(delta), want)

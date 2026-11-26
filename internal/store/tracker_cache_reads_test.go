@@ -356,6 +356,36 @@ func TestListMirrorTicketRows(t *testing.T) {
 	}
 }
 
+// The sprints named are each read once, from whichever of the boards
+// named holds it; one only another board holds, or none holds, is left
+// out.
+func TestListMirrorSprintNames(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	other := webStructure()
+	other.Board.ID = "11"
+	other.Sprints = append(other.Sprints, MirrorSprint{ID: "31", OriginBoardID: "11", Name: "APP Sprint 1", State: MirrorSprintActive})
+	mustReplaceStructure(t, s, root, other, true)
+	third := webStructure()
+	third.Board.ID = "12"
+	third.Sprints = []MirrorSprint{{ID: "41", OriginBoardID: "12", Name: "Old Sprint", State: MirrorSprintFuture}}
+	mustReplaceStructure(t, s, root, third, true)
+	names, err := s.ListMirrorSprintNames(root, []string{"10", "11"}, []string{"21", "31", "41", "99", "20"})
+	slices.SortFunc(names, func(a, b MirrorSprintName) int { return strings.Compare(a.SprintID, b.SprintID) })
+	want := []MirrorSprintName{
+		{SprintID: "20", Name: "WEB Sprint 1", State: MirrorSprintClosed},
+		{SprintID: "21", Name: "WEB Sprint 2", State: MirrorSprintActive},
+		{SprintID: "31", Name: "APP Sprint 1", State: MirrorSprintActive},
+	}
+	if err != nil || !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %+v, %v", names, err)
+	}
+	if _, err := s.ListMirrorSprintNames(root, []string{"10"}, make([]string, mirrorMaxLookup+1)); !errors.Is(err, ErrInvalidTrackerCache) {
+		t.Fatalf("a read of more sprints than a lookup takes: %v", err)
+	}
+}
+
 // The linked issues no polled shown board has a row of read a page at a
 // time, each once however many threads link it; one with a row on a
 // polled shown board is left out, and one whose only row is on a board
