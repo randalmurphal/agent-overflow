@@ -43,17 +43,23 @@ var MirrorExportTables = []string{"board", "tickets", "statuses", "people", "epi
 // the ticket's changes are complete from, NULL while its history is not
 // read; started_at is its first change into an in_progress status, and
 // done_at, for a ticket whose status counts as done, its last change into
-// a done status, each NULL when its changes hold none. sprint_finished
-// holds each member of a closed sprint, done when its status at the
-// sprint's completion counted as done (the pace's rule), and each member
-// of an active sprint, done when its status counts as done now. A status
-// group is named as the project setup names it.
+// a done status, each NULL when its changes hold none. tickets.open is 1
+// for a ticket the board's sections count as not done (mirrorRegroupedNotDone:
+// not done, canceled or left out, an unclassified status open), and
+// tickets.counts 0 for one whose status the regrouping leaves out of
+// counts (mirrorLeftOut). sprint_finished holds each member of a closed
+// sprint, done when its status at the sprint's completion counted as done
+// (the pace's rule), and each member of an active sprint, done when its
+// status counts as done now. A status group is named as the project setup
+// names it (mirrorRegroupedGroupNameSQL), NULL for a status the mirror does
+// not know.
 const MirrorExportSchema = `
 CREATE TABLE main.board(name TEXT NOT NULL, plans_sprints INTEGER NOT NULL, estimates TEXT NOT NULL);
 CREATE TABLE main.statuses(id TEXT PRIMARY KEY, name TEXT NOT NULL, status_group TEXT) WITHOUT ROWID;
 CREATE TABLE main.tickets(id TEXT PRIMARY KEY, key TEXT NOT NULL, title TEXT NOT NULL, type_level INTEGER NOT NULL,
   status TEXT, status_group TEXT, assignee TEXT, parent TEXT, epic TEXT, created_at INTEGER, updated_at INTEGER, resolved_at INTEGER,
-  status_since INTEGER, points REAL, history_from INTEGER, started_at INTEGER, done_at INTEGER) WITHOUT ROWID;
+  status_since INTEGER, points REAL, history_from INTEGER, started_at INTEGER, done_at INTEGER,
+  open INTEGER NOT NULL, counts INTEGER NOT NULL) WITHOUT ROWID;
 CREATE TABLE main.epics(id TEXT PRIMARY KEY, key TEXT NOT NULL, title TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE main.sprints(id TEXT PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, start_at INTEGER, end_at INTEGER,
   completed_at INTEGER, position INTEGER NOT NULL) WITHOUT ROWID;
@@ -71,13 +77,6 @@ const mirrorExportSchemaName = "mirror_file"
 var mirrorExportBoardSQL = `SELECT b.name, b.plans_sprints, b.estimate_unit, b.estimate_reset_at FROM tracker_cache_boards b
 	WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND ` + mirrorBoardShown(intParam("?1"), "?2")
 
-// mirrorExportGroupName names a group number as the setup names it.
-func mirrorExportGroupName(expr string) string {
-	return `CASE ` + expr + ` WHEN ` + strconv.Itoa(MirrorGroupBacklog) + ` THEN 'backlog' WHEN ` + strconv.Itoa(MirrorGroupToDo) + ` THEN 'todo'
-	  WHEN ` + strconv.Itoa(MirrorGroupInProgress) + ` THEN 'in_progress' WHEN ` + strconv.Itoa(MirrorGroupDone) + ` THEN 'done'
-	  WHEN ` + strconv.Itoa(MirrorGroupCanceled) + ` THEN 'canceled' WHEN ` + strconv.Itoa(MirrorGroupLeftOut) + ` THEN 'left_out' END`
-}
-
 // mirrorExportFills are the fill statements in order: ?1 root, ?2 board,
 // ?3 the regrouping (a JSON object, '{}' for none), ?4 the board's
 // estimate reset, ?5 whether the board has an estimate (0 or 1). Each
@@ -89,18 +88,19 @@ var mirrorExportFills = []struct{ table, sql string }{
 		strconv.Itoa(MirrorEstimateTime) + ` THEN 'time' ELSE 'none' END
 	  FROM tracker_cache_boards b WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2`},
 	{"statuses", `INSERT INTO main.statuses(id, name, status_group)
-	  SELECT st.status_id, st.name, ` + mirrorExportGroupName(`coalesce((SELECT o.value FROM json_each(?3) o WHERE o.key = st.status_id), st.status_group)`) + `
+	  SELECT st.status_id, st.name, ` + mirrorRegroupedGroupNameSQL(`coalesce((SELECT o.value FROM json_each(?3) o WHERE o.key = st.status_id), st.status_group)`) + `
 	  FROM tracker_cache_statuses st WHERE st.root_id = CAST(?1 AS INTEGER)`},
 	{"tickets", `INSERT INTO main.tickets(id, key, title, type_level, status, status_group, assignee, parent, epic,
-	    created_at, updated_at, resolved_at, status_since, points, history_from)
+	    created_at, updated_at, resolved_at, status_since, points, history_from, open, counts)
 	  SELECT i.issue_id, i.issue_key, i.title, i.type_level, nullif(i.status_id, ''),
 	    coalesce((SELECT ms.status_group FROM main.statuses ms WHERE ms.id = i.status_id),
-	      ` + mirrorExportGroupName(`(SELECT o.value FROM json_each(?3) o WHERE o.key = i.status_id)`) + `),
+	      ` + mirrorRegroupedGroupNameSQL(`(SELECT o.value FROM json_each(?3) o WHERE o.key = i.status_id)`) + `),
 	    nullif(i.assignee_id, ''), nullif(i.parent_id, ''),
 	    CASE WHEN p.type_level = 1 THEN p.issue_id WHEN gp.type_level = 1 THEN gp.issue_id END,
 	    nullif(i.created_at, 0), i.updated_at, nullif(i.resolved_at, 0), nullif(i.status_since, 0),
 	    iif(CAST(?5 AS INTEGER) = 1, ` + mirrorRowEstimate("CAST(?4 AS INTEGER)") + `, NULL),
-	    iif(i.history_for > 0, iif(i.history_from > 0, i.history_from, i.created_at), NULL)
+	    iif(i.history_for > 0, iif(i.history_from > 0, i.history_from, i.created_at), NULL),
+	    iif(` + mirrorRegroupedNotDone("?3") + `, 1, 0), iif(` + mirrorLeftOut("?3") + `, 0, 1)
 	  FROM tracker_cache_board_issues b
 	  CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
 	  LEFT JOIN tracker_cache_issues p ON p.root_id = i.root_id AND p.issue_id = i.parent_id AND i.parent_id <> ''

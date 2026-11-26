@@ -53,6 +53,8 @@ func (f *fixture) sprint(id, name, state string, start, completed int64, positio
 // ticket is one ticket; fields beyond the key name columns as SQL
 // literals: status, status_group, assignee, epic, created_at, updated_at,
 // points, history_from, started_at, done_at, status_since, resolved_at.
+// open and counts follow the group as the store's rules set them: open
+// unless done, canceled or left out; counted unless left out.
 type ticket struct {
 	id, key, status, group, assignee, epic                   string
 	created, updated, historyFrom, started, done, since, res int64
@@ -64,10 +66,11 @@ func (f *fixture) ticket(t ticket) *fixture {
 		t.points = "NULL"
 	}
 	return f.exec(`INSERT INTO tickets(id, key, title, type_level, status, status_group, assignee, parent, epic, created_at, updated_at,
-		resolved_at, status_since, points, history_from, started_at, done_at)
-		VALUES ('%s', '%s', 'Title of %s', 0, '%s', '%s', %s, NULL, %s, %s, %d, %s, %d, %s, %s, %s, %s)`,
+		resolved_at, status_since, points, history_from, started_at, done_at, open, counts)
+		VALUES ('%s', '%s', 'Title of %s', 0, '%s', '%s', %s, NULL, %s, %s, %d, %s, %d, %s, %s, %s, %s, %d, %d)`,
 		t.id, t.key, t.key, t.status, t.group, quote(t.assignee), quote(t.epic), nullable(t.created), t.updated, nullable(t.res), t.since, t.points,
-		nullable(t.historyFrom), nullable(t.started), nullable(t.done))
+		nullable(t.historyFrom), nullable(t.started), nullable(t.done),
+		map[bool]int{true: 1}[t.group != "done" && t.group != "canceled" && t.group != "left_out"], map[bool]int{true: 1}[t.group != "left_out"])
 }
 
 func (f *fixture) member(sprint, ticket string, done bool) *fixture {

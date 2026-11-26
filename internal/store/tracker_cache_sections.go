@@ -136,6 +136,14 @@ const (
 // tracker status is in it.
 const MirrorGroupLeftOut = 6
 
+// mirrorRegroupedGroupNameSQL names the group expr (an SQL expression of
+// its number) as a regrouping can place a status: by MirrorGroupNames,
+// and MirrorGroupLeftOut as "left_out", the one group no status view
+// names; NULL for none.
+func mirrorRegroupedGroupNameSQL(expr string) string {
+	return `iif(` + expr + ` = ` + strconv.Itoa(MirrorGroupLeftOut) + `, 'left_out', nullif(` + mirrorGroupNameSQL(expr) + `, ''))`
+}
+
 // MirrorRegroup is a project's regrouping of one tracker site's statuses,
 // which a board read applies: by status ID, the group the status counts
 // in (MirrorGroupBacklog to MirrorGroupCanceled, or MirrorGroupLeftOut).

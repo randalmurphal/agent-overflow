@@ -95,12 +95,17 @@ var mirrorStatusAtCompletionSQL = `coalesce(
 
 // mirrorDoneStatusesSQL lists the statuses of root ?1 that count as done
 // under the regrouping g binds (a JSON object): the catalog's done
-// statuses g does not regroup, and those g puts in done. It is one
-// uncorrelated subquery, built once a statement.
-func mirrorDoneStatusesSQL(g string) string {
+// statuses g does not regroup, and those g puts in done.
+func mirrorDoneStatusesSQL(g string) string { return mirrorGroupStatusesSQL(g, MirrorGroupDone) }
+
+// mirrorGroupStatusesSQL lists the statuses of root ?1 in group under the
+// regrouping g binds (a JSON object): the catalog's statuses of the group
+// that g does not regroup, and those g puts in it. It is one uncorrelated
+// subquery, built once a statement.
+func mirrorGroupStatusesSQL(g string, group int) string {
 	return `SELECT st.status_id FROM tracker_cache_statuses st
-	   WHERE st.root_id = CAST(?1 AS INTEGER) AND st.status_group = ` + strconv.Itoa(MirrorGroupDone) + ` AND st.status_id NOT IN (SELECT o.key FROM json_each(` + g + `) o)
-	   UNION ALL SELECT o.key FROM json_each(` + g + `) o WHERE o.value = ` + strconv.Itoa(MirrorGroupDone)
+	   WHERE st.root_id = CAST(?1 AS INTEGER) AND st.status_group = ` + strconv.Itoa(group) + ` AND st.status_id NOT IN (SELECT o.key FROM json_each(` + g + `) o)
+	   UNION ALL SELECT o.key FROM json_each(` + g + `) o WHERE o.value = ` + strconv.Itoa(group)
 }
 
 // mirrorPaceAdvanceSQL advances the totals revision of each board of root

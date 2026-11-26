@@ -71,10 +71,10 @@ var createdFinishedMetric = Metric{
 	Name:  "created_finished",
 	Title: "Created and finished",
 	Words: []string{
-		"The tickets on this board created in each period, and those finished in it: moved into a done status for the last time, or resolved.",
+		"The tickets on this board created in each period, and those finished in it: moved into a done status for the last time, or resolved. A ticket in a status the project leaves out of counts is not counted.",
 		"A done ticket whose finish time is not known is listed and not counted.",
 	},
-	SQL: `SELECT t.id AS ticket, 1 AS value, t.created_at AS at, 'Created' AS series, NULL AS note FROM tickets t WHERE t.created_at > :since
+	SQL: `SELECT t.id AS ticket, 1 AS value, t.created_at AS at, 'Created' AS series, NULL AS note FROM tickets t WHERE t.created_at > :since AND t.counts = 1
 UNION ALL
 SELECT t.id, iif(` + finishedAt + ` IS NULL, NULL, 1), ` + finishedAt + `, 'Finished', iif(` + finishedAt + ` IS NULL, ` + finishUnknown + `, NULL)
 FROM tickets t WHERE ` + finishedInRange,
@@ -102,18 +102,18 @@ FROM sprint_finished f JOIN tickets t ON t.id = f.ticket WHERE f.done = 1`,
 		carrying = Metric{
 			Name:  "carrying",
 			Title: "Who is carrying what",
-			Words: []string{"The estimate of the active sprint's tickets by assignee, split into to do, doing and done."},
+			Words: []string{"The estimate of the active sprint's tickets by assignee, split into to do, doing and done: its open tickets (Backlog, To do and an unclassified status as To do) and its done ones."},
 			SQL: `SELECT t.id AS ticket, ` + weight + ` AS value, t.assignee AS bucket,
-  CASE t.status_group WHEN 'done' THEN 'Done' WHEN 'in_progress' THEN 'Doing' ELSE 'To do' END AS series
-FROM tickets t WHERE t.id IN ` + activeMembers + ` AND t.status_group NOT IN ('canceled', 'left_out')`,
+  CASE WHEN t.open = 0 THEN 'Done' WHEN t.status_group = 'in_progress' THEN 'Doing' ELSE 'To do' END AS series
+FROM tickets t WHERE t.id IN ` + activeMembers + ` AND (t.open = 1 OR t.status_group = 'done')`,
 			Reduce: ReduceSum, Unit: UnitEstimate, Bucket: BucketPerson, Series: []string{"To do", "Doing", "Done"},
 		}
 		epics = Metric{
 			Name:  "open_by_epic",
 			Title: "Open work by epic",
-			Words: []string{"The estimate of the active sprint's tickets that are not done, by their epic."},
+			Words: []string{"The estimate of the active sprint's open tickets (not done, canceled or left out of counts), by their epic."},
 			SQL: `SELECT t.id AS ticket, ` + weight + ` AS value, t.epic AS bucket
-FROM tickets t WHERE t.id IN ` + activeMembers + ` AND t.status_group NOT IN ('done', 'canceled', 'left_out')`,
+FROM tickets t WHERE t.id IN ` + activeMembers + ` AND t.open = 1`,
 			Reduce: ReduceSum, Unit: UnitEstimate, Bucket: BucketEpic,
 		}
 	} else {
@@ -133,18 +133,18 @@ FROM tickets t WHERE ` + finishedInRange,
 		carrying = Metric{
 			Name:  "carrying",
 			Title: "Who is carrying what",
-			Words: []string{"The estimate of the open tickets by assignee, split into to do and doing."},
+			Words: []string{"The estimate of the open tickets by assignee (Backlog, To do and an unclassified status as To do), split into to do and doing."},
 			SQL: `SELECT t.id AS ticket, ` + weight + ` AS value, t.assignee AS bucket,
   iif(t.status_group = 'in_progress', 'Doing', 'To do') AS series
-FROM tickets t WHERE t.status_group IN ('todo', 'in_progress')`,
+FROM tickets t WHERE t.open = 1`,
 			Reduce: ReduceSum, Unit: UnitEstimate, Bucket: BucketPerson, Series: []string{"To do", "Doing"},
 		}
 		epics = Metric{
 			Name:  "open_by_epic",
 			Title: "Open work by epic",
-			Words: []string{"The estimate of the open tickets, by their epic."},
+			Words: []string{"The estimate of the open tickets (not done, canceled or left out of counts), by their epic."},
 			SQL: `SELECT t.id AS ticket, ` + weight + ` AS value, t.epic AS bucket
-FROM tickets t WHERE t.status_group IN ('todo', 'in_progress')`,
+FROM tickets t WHERE t.open = 1`,
 			Reduce: ReduceSum, Unit: UnitEstimate, Bucket: BucketEpic,
 		}
 	}

@@ -449,8 +449,8 @@ func TestAnUnknownFinishIsListedNotDropped(t *testing.T) {
 func TestRangeMetricsReadOnlyTheRange(t *testing.T) {
 	t.Parallel()
 	f := teamBoard().exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 25000)
-		INSERT INTO tickets(id, key, title, type_level, status, status_group, created_at, updated_at, resolved_at, status_since, points, done_at)
-		SELECT 'old' || i, 'OLD-' || i, 'Old', 0, '5', 'done', %d, 0, %d, 0, 1, %d FROM n`, ago(400), ago(390), ago(390))
+		INSERT INTO tickets(id, key, title, type_level, status, status_group, created_at, updated_at, resolved_at, status_since, points, done_at, open, counts)
+		SELECT 'old' || i, 'OLD-' || i, 'Old', 0, '5', 'done', %d, 0, %d, 0, 1, %d, 0, 1 FROM n`, ago(400), ago(390), ago(390))
 	a := mustEvaluate(t, evaluator(), f.board(), utcSprints3)
 	for _, id := range []string{"created_finished", "start_to_done"} {
 		if w := widgetOf(t, a, id); w.Error != "" {
@@ -458,8 +458,8 @@ func TestRangeMetricsReadOnlyTheRange(t *testing.T) {
 		}
 	}
 	w := mustEvaluate(t, evaluator(), newFixture(false, "none").status("5", "Done", "done").exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 25000)
-		INSERT INTO tickets(id, key, title, type_level, status, status_group, created_at, updated_at, resolved_at, status_since, done_at)
-		SELECT 'old' || i, 'OLD-' || i, 'Old', 0, '5', 'done', %d, 0, %d, 0, %d FROM n`, ago(400), ago(390), ago(390)).board(),
+		INSERT INTO tickets(id, key, title, type_level, status, status_group, created_at, updated_at, resolved_at, status_since, done_at, open, counts)
+		SELECT 'old' || i, 'OLD-' || i, 'Old', 0, '5', 'done', %d, 0, %d, 0, %d, 0, 1 FROM n`, ago(400), ago(390), ago(390)).board(),
 		Request{Dashboard: builtinWeeksID, Range: RangeWeeks12, TimeZone: "UTC"})
 	for _, id := range []string{"pace", "created_finished", "start_to_done"} {
 		if v := widgetOf(t, w, id); v.Error != "" {
@@ -474,8 +474,8 @@ func TestRangeMetricsReadOnlyTheRange(t *testing.T) {
 func TestATableMakesTheCellsItShows(t *testing.T) {
 	t.Parallel()
 	f := teamBoard().exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 19900)
-		INSERT INTO tickets(id, key, title, type_level, status, status_group, assignee, created_at, updated_at, status_since, points)
-		SELECT 'p' || i, 'WEB-' || (5000 + i), 'T', 0, '1', 'todo', 'person' || i, %d, 0, 0, 1 FROM n`, ago(5)).
+		INSERT INTO tickets(id, key, title, type_level, status, status_group, assignee, created_at, updated_at, status_since, points, open, counts)
+		SELECT 'p' || i, 'WEB-' || (5000 + i), 'T', 0, '1', 'todo', 'person' || i, %d, 0, 0, 1, 1, 1 FROM n`, ago(5)).
 		exec(`INSERT INTO sprint_tickets SELECT 's7', id FROM tickets WHERE id LIKE 'p%%'`)
 	e := evaluator()
 	o, err := e.begin(context.Background(), f.board(), utcSprints3)

@@ -1,6 +1,10 @@
 package store
 
-import "testing"
+import (
+	"fmt"
+	"strconv"
+	"testing"
+)
 
 // PaceFixtureForTest and PaceForTest hand the pace's fixture and the
 // Backlog's reading of it to the external test that holds the dashboard's
@@ -19,4 +23,50 @@ func PaceForTest(t *testing.T, s *Store, root int64, board string, regroup Mirro
 func ScaleMirrorForTest(tb testing.TB, issues int) (*Store, int64, string) {
 	s, root, _ := openSizedMirror(tb, benchMirrorSize{boards: 1, issues: issues})
 	return s, root, benchBoardID(0)
+}
+
+// DashboardStatusFixtureForTest is a sprint board (10, its active sprint
+// 21) and a board without sprints (11), each holding one ticket of every
+// kind of status a count tells apart, created at created: Backlog (status
+// 2), unclassified (99, which the catalog does not hold), left out by the
+// regrouping it returns (7, In Review, in progress in the catalog), in
+// progress, done and canceled. Board 10's are WEB-1 to WEB-6 in that order,
+// board 11's WEB-11 to WEB-16, the estimate of each its number in the list.
+func DashboardStatusFixtureForTest(t *testing.T, created int64) (*Store, int64, MirrorRegroup) {
+	t.Helper()
+	s, _, root := newMirror(t)
+	st := webStructure()
+	st.Catalog.Statuses = append(st.Catalog.Statuses,
+		MirrorStatus{ID: "2", Name: "Backlog", Group: MirrorGroupBacklog}, MirrorStatus{ID: "7", Name: "In Review", Group: MirrorGroupInProgress})
+	mustReplaceStructure(t, s, root, st, true)
+	weeks := webStructure()
+	weeks.Board.ID, weeks.Board.PlansSprints, weeks.Sprints = "11", false, nil
+	mustReplaceStructure(t, s, root, weeks, true)
+	for _, b := range []struct{ board, first string }{{"10", "1"}, {"11", "11"}} {
+		var rows []MirrorRow
+		for i, status := range []string{"2", "99", "7", "3", "10001", "6"} {
+			id := fmt.Sprint(atoi(t, b.first) + i)
+			r := sectionRow(id, id, status, float64(i+1), "21")
+			if b.board == "11" {
+				r.Card.Sprints = nil
+			}
+			r.Card.CreatedAt = created
+			rows = append(rows, r)
+		}
+		mustWriteRowPage(t, s, root, webPage(b.board, rows...), nil)
+	}
+	regroup, err := NewMirrorRegroup(map[string]int{"7": MirrorGroupLeftOut})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, root, regroup
+}
+
+func atoi(t *testing.T, s string) int {
+	t.Helper()
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
