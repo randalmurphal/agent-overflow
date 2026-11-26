@@ -593,9 +593,10 @@ sidebar and the thread header, on desktop and on a phone.
 ### Dashboards
 
 Status: built: Overview, the dashboards a project keeps and the picker,
-Team or Mine, the range, Ask your agent, edit mode, and the widget an
-agent proposes, which the person keeps or dismisses; a number, bar or
-cell's tickets, a number's change and trend, and narrowing to a person or
+Team or Mine, the range, Ask your agent, edit mode, which removes
+widgets and removes the dashboard with its last one (there is no
+Delete), and the widget an agent proposes, which the person keeps or
+dismisses; a number, bar or cell's tickets, a number's change and trend, and narrowing to a person or
 an epic. A query reads the board's tickets only: pull requests, threads
 and logged time are not built, nor the credit rules in How this is
 counted, selecting rows in a ticket list, or a number tile's limit.

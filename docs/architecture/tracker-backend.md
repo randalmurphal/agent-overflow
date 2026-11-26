@@ -2205,13 +2205,17 @@ evaluation of any of the board's dashboards counts the proposals beside
 it, and the screen shows them above the grid with Keep and Dismiss.
 Keep moves a proposal onto a kept dashboard or a new one, Dismiss drops
 it; nothing joins a dashboard without Keep, and the built-in dashboard
-never takes a widget. Edit mode on a kept dashboard removes widgets and
-deletes the dashboard. Keep, Dismiss, Remove and Delete
-(`KeepTrackerWidget`, `DismissTrackerWidget`, `RemoveTrackerWidget`,
-`DeleteTrackerDashboard`) need `tracker:operate`, run on the board's
-computer and are not caller-bound. Each change, from any client, emits
-the payload-less `tracker:dashboards_updated`, on which an open screen of
-that computer lists the board's dashboards and counts again.
+never takes a widget. Edit mode on a kept dashboard removes widgets, and
+the dashboard goes with its last one. Keep, Dismiss and Remove
+(`KeepTrackerWidget`, `DismissTrackerWidget`, `RemoveTrackerWidget`)
+need `tracker:operate`, run on the board's computer and are not
+caller-bound. A Keep finds the proposal, writes the setup file and drops
+the proposal under the proposals' lock, so a reader sees the widget
+proposed or kept and never both, and a failed write leaves it proposed.
+Each change, from any client, emits the payload-less
+`tracker:dashboards_updated` once, on which an open screen of that
+computer lists the board's dashboards and counts again; a hidden screen
+lists them when it shows.
 
 ### The export
 
@@ -2297,8 +2301,11 @@ statement.
   parameters, with LIKE and GLOB patterns of at most 256 bytes. It runs
   inside a wrapper that produces the whole result in SQLite's first
   step, under a 1 s deadline counted from before its prepare, at most
-  20,000 rows and 4 MiB of encoded rows. An evaluation has 4 s. Two run
-  at once on a computer; a third waits up to 2 s and is refused as busy.
+  20,000 rows and 4 MiB of encoded rows. An evaluation has 4 s: the
+  dashboard's own widgets count first, then the board's proposals in the
+  time they leave, and a proposal the deadline stops, or leaves no time
+  for, fails in its own place, saying so. Two run at once on a
+  computer; a third waits up to 2 s and is refused as busy.
 - The app's functions (`days`, `working_days`, `day` and the wrapper's
   `bounded_rows`) are registered once per time zone a count names, on a
   driver of that zone the process keeps (`trackerdash/funcs.go`): one
@@ -2498,20 +2505,29 @@ guide says so once.
 ### Dashboards by agents
 
 `dashboard_widget` counts a widget on a board of the thread's project
-(`board`, by name or ID; the project's one board when it lists one) as
-the board's dashboards count it, over the board's default range, and
-answers its numbers, how many rows its query returned and the first 5.
+(`board`, by name, ID or site/ID; the project's one board when it lists
+one; a name or ID that more than one board answers to is refused naming
+each by its site/ID) as the board's dashboards count it, over the
+board's default range, and answers its numbers in their unit (`unit`:
+tickets, points, seconds for a time board's estimates, or days), the
+tickets each number could not count, how many rows its query returned
+and the first 5.
 With `show` the widget is then proposed on the board ([Own dashboards
 and proposals](#own-dashboards-and-proposals)). Called with no `widget`
-it answers the rules (`trackerdash.Rules`, 4,291 bytes): the widget's
+it answers the rules (`trackerdash.Rules`, 4,316 bytes): the widget's
 fields, the query's contract and the export's relations with what each
 column holds, so only a thread that writes a widget reads them. A query
 runs under the same sandbox and bounds as a built-in metric, and a
 refusal is `dashboard_widget_refused` with the sentence the widget would
 show. Proposing changes nothing until the person keeps it, so it needs no
 approval and a read-only thread may propose. Ask your agent on the
-Dashboards screen opens a new thread in the board's project with an
-unsent draft naming the board.
+Dashboards screen opens a new thread in the board's project itself (a
+checkout remembered for new threads does not redirect it) with an
+unsent draft naming the board, on a provider whose agents get the
+tracker tools: the default when it has them, else Claude, else Codex
+(`frontend/src/lib/providers/trackerTools.ts`, which
+`internal/provider` pins to `SupportsTrackerMCP`). With neither turned
+on, Ask is disabled and says which to turn on.
 
 The tool is listed in every session that has the tracker tools. Listing
 it only in a thread Ask your agent started would need a mark on the
@@ -2866,8 +2882,8 @@ and statuses in a window), and a board's dashboards on the Dashboards
 screen ([Dashboards](#dashboards)): the built-in, the ones its project
 keeps and the widgets agents propose, with the wrappers of
 `TrackerDashboards`, `EvaluateTrackerDashboard`, `TrackerDashboardDrill`,
-`KeepTrackerWidget`, `DismissTrackerWidget`, `RemoveTrackerWidget`,
-`DeleteTrackerDashboard` and `tracker:dashboards_updated`
+`KeepTrackerWidget`, `DismissTrackerWidget`, `RemoveTrackerWidget`
+and `tracker:dashboards_updated`
 (`stores/trackerDashboard.svelte.ts`).
 A failure of the linked-issues
 loop after boot reaches only the log (`Deps.LoopFailed`): its failures
