@@ -21,7 +21,9 @@ board methods, events and the patch read in
   in Vitest from `internal/trackerapp/testdata/board_patch_cases.json`, which
   the Go model writes), the grouping of sprint rows into columns
   (`screenColumns`), the group a count puts a row in, by the project's
-  status groups or the tracker's (`groupOf`, the one rule), the Only mine
+  status groups (`groupOf`, the one rule; what a status mark draws is
+  `stores/statusMarkGroup.ts#markGroup`, which every surface with a mark
+  calls), the Only mine
   and Search match (`cardMatches`), a
   card's web address (`cardURL`, the one rule), the columns a ticket's
   moves reach (`columnsReached`), the lists a carry and a write name
@@ -29,8 +31,10 @@ board methods, events and the patch read in
   and the waiting cards drawn and counted where they wait (`withWaiting`,
   `columnWith`). `stores/trackerBacklogModel.ts` is the Backlog screen's
   pure part: its sections in the plan's order, each header's numbers with
-  the moved rows counted where they go (`sectionNumbers`), the one list
-  its virtualizer shows and where a carried row lands in it.
+  the moved rows counted where they go (`sectionNumbers`), what Complete
+  sprint counts by Jira's rule (`completionNumbers`, over
+  `finishedStatuses`), the one list its virtualizer shows and where a
+  carried row lands in it.
 - `stores/trackerBoardCarry.svelte.ts` holds the cards waiting where they
   were dropped while their move or rank is out, a picture that never
   changes what the board holds, and makes those writes (`moveCard`,

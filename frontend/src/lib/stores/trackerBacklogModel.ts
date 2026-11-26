@@ -13,7 +13,7 @@
 // is known once it is read; until then only the board's totals are.
 
 import type { PaceView, RowView, Section, SectionTotal, SprintView, UserView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-import { cardMatches, counts, filtering, groupOf, rowOf, sectionKey, sectionList, totalOf, withRow, withWaiting, type CardFilter, type Grouping, type HeldBoard, type WaitingCard } from './trackerBoardModel';
+import { cardMatches, counts, filtering, groupOf, rowOf, sectionKey, sectionList, totalOf, withRow, withWaiting, type CardFilter, type HeldBoard, type WaitingCard } from './trackerBoardModel';
 
 export type BacklogKind = 'active' | 'future' | 'backlog';
 
@@ -117,18 +117,70 @@ export function measureOf(total: { readonly rows: number; readonly estimate: num
   return unit === 'points' || unit === 'time' ? total.estimate : total.rows;
 }
 
-/** The numbers of `sec` counted by `grouping`'s status groups, with
- * `moved` counted where they go. The header counts by the project's; the
- * Complete sprint form by the tracker's. The board's total is the
- * project's, so a whole section's total by the tracker's is its rows'. */
-export function sectionNumbers(held: HeldBoard, sec: BacklogSection, moved: readonly MovedRow[], grouping: Grouping): SectionNumbers {
+/** The numbers of `sec`'s header, counted by the project's status groups,
+ * with `moved` counted where they go. */
+export function sectionNumbers(held: HeldBoard, sec: BacklogSection, moved: readonly MovedRow[]): SectionNumbers {
   const whole = !sec.unread && !sec.more;
-  const start = grouping === 'tracker' && whole ? sec.rows.reduce((t, r) => withRow(t, r, 1), NO_ROWS) : sec.total;
+  const { total, rows, changed } = withMoved(sec, moved, sec.total, (r) => counts(held, r));
+  const pace = sec.kind === 'future' ? held.totals.pace : null;
+  return {
+    total,
+    before: changed ? sec.total : null,
+    done: sec.kind === 'active' && whole ? sumWhere(rows, (r) => groupOf(held, r) === 'done') : null,
+    load: sec.kind === 'future' && whole ? loadOf(held, rows) : null,
+    pace,
+    over: pace ? Math.max(0, measureOf(total, held.shape.unit) - measureOf(pace, held.shape.unit)) : 0,
+  };
+}
+
+/** What the Complete sprint form says of `sec`, an active sprint, with
+ * `moved` counted where they go: its tickets and those Jira's completion
+ * counts finished (`numbers`, as its header's line reads them), and how
+ * many it does not, which the completion moves (`unfinished`). Jira
+ * leaves no ticket out, so a whole sprint's total is its rows'; until the
+ * sprint is read whole its total is the board's and nothing else is
+ * counted (null). */
+export interface Completion {
+  readonly numbers: SectionNumbers;
+  readonly unfinished: number | null;
+}
+
+export function completionNumbers(held: HeldBoard, sec: BacklogSection, moved: readonly MovedRow[]): Completion {
+  const whole = !sec.unread && !sec.more;
+  const start = whole ? sumWhere(sec.rows, () => true) : sec.total;
+  const { total, rows, changed } = withMoved(sec, moved, start, () => true);
+  const finished = finishedStatuses(held.shape.columns);
+  const done = whole ? sumWhere(rows, (r) => finished.has(r.card.status.id)) : null;
+  return {
+    numbers: { total, before: changed ? start : null, done, load: null, pace: null, over: 0 },
+    unfinished: done ? rows.length - done.rows : null,
+  };
+}
+
+/** The statuses Jira counts finished when it completes a sprint of the
+ * board whose columns are `columns`: those of its last column that has
+ * any, as the completion's write does (`BoardConfig.DoneStatusIDs` in
+ * internal/tracker/jira). None when no column has a status, a board Jira
+ * refuses to complete a sprint of. The board's columns are as this
+ * computer last read them for the board; the write takes the
+ * configuration its Jira client holds (`Client.boardConfig`, kept from
+ * its last read), which can be another read. */
+export function finishedStatuses(columns: readonly { readonly statuses: readonly { readonly id: string }[] }[]): ReadonlySet<string> {
+  for (let i = columns.length - 1; i >= 0; i -= 1) {
+    if (columns[i].statuses.length > 0) return new Set(columns[i].statuses.map((st) => st.id));
+  }
+  return new Set();
+}
+
+/** `sec`'s total from `start` and its rows, with each of `moved` that
+ * `counted` counts taken out of the section it leaves and added to the
+ * one it goes to; `changed` when one moved in or out. */
+function withMoved(sec: BacklogSection, moved: readonly MovedRow[], start: SectionTotal, counted: (row: RowView) => boolean): { total: SectionTotal; rows: RowView[]; changed: boolean } {
   let total = start;
   const rows = sec.rows.slice();
   let changed = false;
   for (const m of moved) {
-    if (m.from === m.to || !counts(held, m.row, grouping)) continue;
+    if (m.from === m.to || !counted(m.row)) continue;
     if (m.from === sec.list) {
       total = withRow(total, m.row, -1);
       const at = rows.findIndex((r) => r.card.id === m.row.card.id);
@@ -140,34 +192,22 @@ export function sectionNumbers(held: HeldBoard, sec: BacklogSection, moved: read
       changed = true;
     }
   }
-  const pace = sec.kind === 'future' ? held.totals.pace : null;
-  return {
-    total,
-    before: changed ? start : null,
-    done: sec.kind === 'active' && whole ? doneOf(held, rows, grouping) : null,
-    load: sec.kind === 'future' && whole ? loadOf(held, rows, grouping) : null,
-    pace,
-    over: pace ? Math.max(0, measureOf(total, held.shape.unit) - measureOf(pace, held.shape.unit)) : 0,
-  };
+  return { total, rows, changed };
 }
 
 const NO_ROWS: SectionTotal = { rows: 0, estimate: 0, unestimated: 0 };
 
-function doneOf(held: HeldBoard, rows: readonly RowView[], grouping: Grouping): SectionTotal {
-  let n = 0;
-  let estimate = 0;
-  for (const r of rows) {
-    if (groupOf(held, r, grouping) !== 'done') continue;
-    n += 1;
-    estimate += r.estimate ?? 0;
-  }
-  return { rows: n, estimate };
+/** The rows of `rows` that `where` keeps, added up. */
+function sumWhere(rows: readonly RowView[], where: (row: RowView) => boolean): SectionTotal {
+  let total = NO_ROWS;
+  for (const r of rows) if (where(r)) total = withRow(total, r, 1);
+  return total;
 }
 
-function loadOf(held: HeldBoard, rows: readonly RowView[], grouping: Grouping): PersonLoad[] {
+function loadOf(held: HeldBoard, rows: readonly RowView[]): PersonLoad[] {
   const by = new Map<string, { person: UserView | null; rows: number; estimate: number }>();
   for (const r of rows) {
-    if (!counts(held, r, grouping)) continue;
+    if (!counts(held, r)) continue;
     const id = r.card.assignee?.id ?? '';
     let load = by.get(id);
     if (!load) by.set(id, (load = { person: r.card.assignee ?? null, rows: 0, estimate: 0 }));
@@ -246,13 +286,4 @@ export function dayAt(value: string, end: boolean): number | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (!m) return null;
   return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), end ? 23 : 0, end ? 59 : 0).getTime();
-}
-
-/** An active sprint's rows that are not finished (in no done or canceled
- * status of the tracker's groups), which its completion moves. */
-export function unfinishedOf(held: HeldBoard, sec: BacklogSection): readonly RowView[] {
-  return sec.rows.filter((r) => {
-    const group = groupOf(held, r, 'tracker');
-    return group !== 'done' && group !== 'canceled';
-  });
 }

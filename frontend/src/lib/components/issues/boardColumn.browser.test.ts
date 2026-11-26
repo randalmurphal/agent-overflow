@@ -64,6 +64,7 @@ function mountColumn(rows: RowView[], more: boolean) {
     shown: true,
     openIssue: null,
     boardRef: { backend: HOME_BACKEND, projectId: 'p1', connection: 'c1', board: 'b1' },
+    regroups: new Map<string, string>(),
     typed: true,
     compact: false,
     carriedIssue: null as string | null,

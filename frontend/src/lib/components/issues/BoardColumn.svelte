@@ -21,6 +21,7 @@
   import StatusMark from './StatusMark.svelte';
   import type { RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import type { ScreenColumn } from '../../stores/trackerBoardModel';
+  import { markGroup, type Regroups } from '../../stores/statusMarkGroup';
   import type { CardField } from '../../stores/issuesPane.svelte';
   import type { TrackerBoardRef } from '../../stores/trackerBoard.svelte';
   import type { CardEditField } from './ticketEditors';
@@ -59,6 +60,9 @@
     /** The issue whose ticket is open, null for none. */
     openIssue: string | null;
     boardRef: TrackerBoardRef;
+    /** The statuses the project regroups (`HeldBoard.regrouped`), which
+     * each card's mark draws. */
+    regroups: Regroups;
     /** The tracker has issue types (not Linear). */
     typed: boolean;
     compact: boolean;
@@ -80,7 +84,7 @@
 
   let {
     column, list, rows, count, filtered, unit, hidden, now, paging, failed, onNearEnd, shown, wide = false, openIssue,
-    boardRef, typed, compact, carriedIssue, editing, dropNote, slot, onOpenCard, onCardMenu, onEditCard, onMoveCard,
+    boardRef, regroups, typed, compact, carriedIssue, editing, dropNote, slot, onOpenCard, onCardMenu, onEditCard, onMoveCard,
   }: Props = $props();
 
   const estimate: RowEstimate = { at: () => CARD_ESTIMATE_PX, isExact: () => false };
@@ -208,6 +212,7 @@
         {#snippet children(row: RowView)}
           <BoardCard
             {row}
+            mark={markGroup(regroups, row.card.status)}
             {boardRef}
             {hidden}
             {unit}

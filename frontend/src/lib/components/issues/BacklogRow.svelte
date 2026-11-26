@@ -28,6 +28,8 @@
 
   interface Props {
     row: RowView;
+    /** The group its status mark draws (`markGroup`). */
+    mark: string | undefined;
     boardRef: TrackerBoardRef;
     hidden: ReadonlySet<CardField>;
     unit: string;
@@ -44,7 +46,7 @@
     onEdit: (row: RowView, field: CardEditField | null) => void;
   }
 
-  let { row, boardRef, hidden, unit, typed, compact, open, carried, editing, onOpen, onMenu, onEdit }: Props = $props();
+  let { row, mark, boardRef, hidden, unit, typed, compact, open, carried, editing, onOpen, onMenu, onEdit }: Props = $props();
 
   const card = $derived(row.card);
   const ticketKey = $derived(trackerTicketKey({ backend: boardRef.backend, connection: boardRef.connection, issue: card.id }));
@@ -123,7 +125,7 @@
     </div>
   {:else}
     <div class="flex h-9 min-w-0 items-center gap-2 text-[0.75rem] text-fg-muted">
-      <StatusMark group={card.status.group} />
+      <StatusMark group={mark} />
       <CardMarks {row} fields={['type']} {hidden} {unit} {typed} editable {writes} bind:els={markEls} onEdit={(field) => onEdit(row, field)} />
       {#if !hidden.has('key')}<span class="w-16 shrink-0 truncate tabular-nums" data-testid="issues-card-key">{card.key}</span>{/if}
       <span class="min-w-0 flex-1 truncate text-sm text-fg" title={card.title} data-testid="issues-card-title">{card.title}</span>
