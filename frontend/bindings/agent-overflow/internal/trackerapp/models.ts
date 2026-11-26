@@ -927,7 +927,8 @@ export class CreateRequest {
  * first page, newest first; MoreComments is the token of the next page,
  * empty when there is none. History is complete from HistoryFrom (Unix
  * milliseconds, 0 for from creation). Rows are the issue's rows on the
- * boards the mirror shows, by board ID, as the mirror holds them now.
+ * boards the mirror shows, by board ID, each with the estimate the
+ * ticket's own read found when it carried the board's field (issueRows).
  * BodyBehind reports a body read for
  * an older version of the issue than its card: a read of the card found a
  * change the body does not show yet, and the next read of the ticket
