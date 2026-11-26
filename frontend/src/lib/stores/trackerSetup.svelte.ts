@@ -209,6 +209,23 @@ export async function editTrackerSetup(project: string, edit: SetupEdit): Promis
   }
 }
 
+/** The groups a status may be put in, as the setup names them. */
+export const STATUS_GROUPS = ['backlog', 'todo', 'in_progress', 'done', 'canceled', 'left_out'] as const;
+export type StatusGroup = (typeof STATUS_GROUPS)[number];
+
+/** `setup` with status `status` of a site in `group`, or back in the
+ * tracker's group (its entry removed) for null; a site left regrouping
+ * nothing is dropped. */
+export function withStatusGroup(setup: Setup, tracker: string, site: string, status: string, group: StatusGroup | null): Setup {
+  const entries = setup.status_groups ?? [];
+  const at = entries.findIndex((e) => e.tracker === tracker && e.site === site);
+  const statuses: { [id: string]: string | undefined } = { ...(at >= 0 ? entries[at].statuses : {}) };
+  if (group === null) delete statuses[status];
+  else statuses[status] = group;
+  const others = entries.filter((_, i) => i !== at);
+  return { ...setup, status_groups: Object.keys(statuses).length > 0 ? [...others, { tracker, site, statuses }] : others };
+}
+
 /** A project's statuses as the Status groups page shows them. */
 export interface TrackerStatusesState {
   readonly sites: readonly SiteStatuses[] | null;

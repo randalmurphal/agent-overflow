@@ -31,6 +31,7 @@ import GitSettings from './GitSettings.svelte';
 import EditorSection from './EditorSection.svelte';
 import TrackerConnectionsSettings from './TrackerConnectionsSettings.svelte';
 import TrackerBoardsSettings from './TrackerBoardsSettings.svelte';
+import TrackerStatusesSettings from './TrackerStatusesSettings.svelte';
 import RemoteAccessSettings from './RemoteAccessSettings.svelte';
 import SystemsSection from './SystemsSection.svelte';
 import AgentAccessSettings from './AgentAccessSettings.svelte';
@@ -64,6 +65,7 @@ export const SETTINGS_PAGES: Record<SettingsSection, Component> = {
   editor: EditorSection,
   'tracker-connections': TrackerConnectionsSettings,
   'tracker-boards': TrackerBoardsSettings,
+  'tracker-statuses': TrackerStatusesSettings,
   remote: RemoteAccessSettings,
   systems: SystemsSection,
   'agent-access': AgentAccessSettings,
