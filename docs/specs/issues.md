@@ -135,8 +135,7 @@ All dated 2026-11-15.
   activity and meetings, never from how long a thread ran. The agent
   decides how a day splits between tickets and records its reason on each
   entry. What it cannot decide becomes a question. Nothing is posted until
-  the user approves a day or the whole draft; a per-project setting can
-  post the days that have no open question.
+  the user approves a day or the whole draft.
 - **Calendar and call-duration reading are per-project settings, off by
   default.** A source that is off is never started.
 - **Time logging is Tempo plus Jira native worklogs, on Jira only.** Linear

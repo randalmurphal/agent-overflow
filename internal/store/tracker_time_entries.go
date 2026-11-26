@@ -31,11 +31,6 @@ const (
 	TimeSourcePerson = "person"
 )
 
-// timeEntryRetentionDays is how long a posted or left-out entry is kept
-// after its day: the draft write of the same author deletes older ones,
-// so the table stays bounded with no sweep.
-const timeEntryRetentionDays = 62
-
 // TimeOffer is a ticket a question offers.
 type TimeOffer struct {
 	Issue string `json:"issue"`
@@ -64,7 +59,6 @@ type TimeEntry struct {
 	Revision   int64
 	Refusal    string
 	SentMs     int64
-	SentTo     string
 	WorklogID  string
 	PostedMs   int64
 	CreatedMs  int64
@@ -78,13 +72,13 @@ type TimeEntryRef struct {
 }
 
 const timeEntryColumns = `id, connection_id, author_id, day, issue_id, issue_key, issue_title, seconds, reason, offers, source,
- thread_id, call_id, state, revision, refusal, sent_ms, sent_to, worklog_id, posted_ms, created_ms, updated_ms`
+ thread_id, call_id, state, revision, refusal, sent_ms, worklog_id, posted_ms, created_ms, updated_ms`
 
 func scanTimeEntry(row interface{ Scan(...any) error }) (TimeEntry, error) {
 	var e TimeEntry
 	var offers string
 	err := row.Scan(&e.ID, &e.Connection, &e.Author, &e.Day, &e.IssueID, &e.IssueKey, &e.IssueTitle, &e.Seconds, &e.Reason, &offers,
-		&e.Source, &e.ThreadID, &e.CallID, &e.State, &e.Revision, &e.Refusal, &e.SentMs, &e.SentTo, &e.WorklogID, &e.PostedMs,
+		&e.Source, &e.ThreadID, &e.CallID, &e.State, &e.Revision, &e.Refusal, &e.SentMs, &e.WorklogID, &e.PostedMs,
 		&e.CreatedMs, &e.UpdatedMs)
 	if err != nil {
 		return TimeEntry{}, err
@@ -118,7 +112,7 @@ func isOpenConflict(err error) bool {
 }
 
 // TimeDraftWrite is what a draft write did to its days: the entries it
-// made, the agent entries it replaced (whichever thread wrote them), and
+// made, the drafted entries of its thread it replaced, and
 // the entries it kept: every entry of those days it did not replace,
 // those of the person, those sent or posted, and those for a ticket that
 // already had an open entry that day, in place of the new one.
@@ -134,21 +128,28 @@ type TimeDraftWrite struct {
 // Changed reports whether the write changed any row.
 func (w TimeDraftWrite) Changed() bool { return len(w.Made)+len(w.Replaced) > 0 }
 
-// ReplaceAgentTimeDays replaces the agent's drafted entries of days (each
-// a day some entry of entries names) of author on connection with
-// entries, in one transaction: an agent entry still drafted is deleted,
-// whichever thread wrote it, and every other entry stays. A new entry
-// whose ticket already has an open entry that day is skipped. Entries
-// carry their day, ticket, seconds, reason, offers, thread and call; the
-// rest is set here. Posted and left-out entries of author older than
-// timeEntryRetentionDays before today are deleted with it.
-func (s *Store) ReplaceAgentTimeDays(connection, author, today string, entries []TimeEntry, now int64) (TimeDraftWrite, error) {
+// ReplaceAgentTimeDays replaces the drafted entries one thread drafted
+// on days (each a day some entry of entries names) of author on
+// connection with entries, all of that thread, in one transaction: the
+// thread's entries still drafted and still the agent's are deleted, and
+// every other entry stays, another thread's, the person's and those sent
+// or settled. A new entry whose ticket already has an open entry that
+// day is skipped. Entries carry their day, ticket, seconds, reason,
+// offers, thread and call; the rest is set here.
+func (s *Store) ReplaceAgentTimeDays(connection, author string, entries []TimeEntry, now int64) (TimeDraftWrite, error) {
 	var out TimeDraftWrite
 	days := map[string]bool{}
 	var order []string
+	thread := ""
+	if len(entries) > 0 {
+		thread = entries[0].ThreadID
+	}
 	for _, e := range entries {
 		if e.ThreadID == "" || e.CallID == "" || e.Seconds <= 0 || e.Reason == "" {
 			return out, fmt.Errorf("%w: an agent entry needs its thread, call, time and reason", ErrInvalidTimeEntry)
+		}
+		if e.ThreadID != thread {
+			return out, fmt.Errorf("%w: one draft is of one thread, not %s and %s", ErrInvalidTimeEntry, thread, e.ThreadID)
 		}
 		if !days[e.Day] {
 			days[e.Day] = true
@@ -162,8 +163,8 @@ func (s *Store) ReplaceAgentTimeDays(connection, author, today string, entries [
 	defer func() { _ = tx.Rollback() }()
 	for _, day := range order {
 		replaced, err := scanTimeEntries(tx.Query(`DELETE FROM tracker_time_entries
- WHERE connection_id = ?1 AND author_id = ?2 AND day = ?3 AND source = 'agent' AND state = 'drafted'
- RETURNING `+timeEntryColumns, connection, author, day))
+ WHERE connection_id = ?1 AND author_id = ?2 AND day = ?3 AND thread_id = ?4 AND source = 'agent' AND state = 'drafted'
+ RETURNING `+timeEntryColumns, connection, author, day, thread))
 		if err != nil {
 			return out, fmt.Errorf("store: draft time: replace %s: %w", day, err)
 		}
@@ -197,10 +198,6 @@ func (s *Store) ReplaceAgentTimeDays(connection, author, today string, entries [
 			return out, fmt.Errorf("store: draft time: read %s: %w", day, err)
 		}
 		out.Kept = append(out.Kept, kept...)
-	}
-	if _, err := tx.Exec(`DELETE FROM tracker_time_entries WHERE connection_id = ?1 AND author_id = ?2
- AND state IN ('posted', 'left_out') AND day < date(?3, '-`+strconv.Itoa(timeEntryRetentionDays)+` days')`, connection, author, today); err != nil {
-		return out, fmt.Errorf("store: draft time: retention: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return out, fmt.Errorf("store: draft time: commit: %w", err)
@@ -254,18 +251,22 @@ func (s *Store) ThreadTimeEntries(thread string) ([]TimeEntry, error) {
 	return out, nil
 }
 
-// TimeEntry is entry id on connection; false when there is none.
-func (s *Store) TimeEntry(connection string, id int64) (TimeEntry, bool, error) {
-	e, err := scanTimeEntry(s.reader().QueryRow(`SELECT `+timeEntryColumns+` FROM tracker_time_entries
- WHERE id = `+intParam("?1")+` AND connection_id = ?2`, id, connection))
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return TimeEntry{}, false, nil
-	case err != nil:
-		return TimeEntry{}, false, fmt.Errorf("store: time entry %d: %w", id, err)
+// TimeEntriesByID are the entries ids name on connection that exist, in
+// one read, by ID.
+func (s *Store) TimeEntriesByID(connection string, ids []int64) ([]TimeEntry, error) {
+	list, err := json.Marshal(ids)
+	if err != nil {
+		return nil, fmt.Errorf("store: time entries: %w", err)
 	}
-	return e, true, nil
+	out, err := scanTimeEntries(s.reader().Query(timeEntriesByIDSQL, connection, string(list)))
+	if err != nil {
+		return nil, fmt.Errorf("store: time entries: %w", err)
+	}
+	return out, nil
 }
+
+var timeEntriesByIDSQL = `SELECT ` + timeEntryColumns + ` FROM tracker_time_entries
+ WHERE id IN (SELECT value FROM json_each(?2)) AND connection_id = ?1 ORDER BY id`
 
 // TimeEntryChange is the person's change of a drafted entry: the members
 // set change, and LeaveOut closes a question with nothing posted. The
@@ -314,8 +315,8 @@ var editTimeEntrySQL = `UPDATE tracker_time_entries SET
  WHERE id = ` + intParam("?2") + ` AND connection_id = ?1 AND revision = ` + intParam("?3") + ` AND state = 'drafted'
  RETURNING ` + timeEntryColumns
 
-// EditTimeEntry applies ch to entry ref on connection when it is drafted
-// at ref's revision, in one transaction, and returns it as stored. false
+// EditTimeEntry applies ch to author's entry ref on connection when it
+// is drafted at ref's revision, in one transaction, and returns it as stored. false
 // is a lost race: the entry moved on or is gone. A question answered with
 // a ticket that has a drafted entry that day merges into that entry: its
 // time is added, its reason ends the entry's as ", plus <reason>", the
@@ -323,14 +324,14 @@ var editTimeEntrySQL = `UPDATE tracker_time_entries SET
 // onto a ticket with an open entry that day fails with a
 // TimeEntryOpenError, and a merge past a day or MaxTimeEntryReason with
 // ErrTimeEntryMergeOver.
-func (s *Store) EditTimeEntry(connection string, ref TimeEntryRef, ch TimeEntryChange, now int64) (TimeEntryEdited, bool, error) {
+func (s *Store) EditTimeEntry(connection, author string, ref TimeEntryRef, ch TimeEntryChange, now int64) (TimeEntryEdited, bool, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return TimeEntryEdited{}, false, fmt.Errorf("store: edit time entry %d: begin: %w", ref.ID, err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	cur, err := scanTimeEntry(tx.QueryRow(`SELECT `+timeEntryColumns+` FROM tracker_time_entries
- WHERE id = `+intParam("?2")+` AND connection_id = ?1 AND revision = `+intParam("?3")+` AND state = 'drafted'`, connection, ref.ID, ref.Revision))
+ WHERE id = `+intParam("?2")+` AND connection_id = ?1 AND author_id = ?4 AND revision = `+intParam("?3")+` AND state = 'drafted'`, connection, ref.ID, ref.Revision, author))
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return TimeEntryEdited{}, false, nil
@@ -413,18 +414,31 @@ func mergeQuestionTx(tx *sql.Tx, q, into TimeEntry, ch TimeEntryChange, now int6
 	return TimeEntryEdited{Entry: merged, Merged: &gone}, nil
 }
 
-// RemoveTimeEntries deletes the entries refs name on connection that are
-// drafted, unknown or left out at their revision, and returns those it
+// refRows reads ?2, a JSON list of [ID, revision] pairs, as rows r.
+const refRows = `WITH r AS MATERIALIZED (SELECT json_extract(value, '$[0]') AS id, json_extract(value, '$[1]') AS revision FROM json_each(?2))`
+
+// A statement that finds its rows by ID (id IN r) writes +connection_id
+// and +author_id, so the planner reads the IDs by primary key instead of
+// the connection's whole day index.
+
+// atRefRevision is a statement's test that its row is at the revision r
+// names for it, after the row was found by ID (id IN r).
+const atRefRevision = `revision = (SELECT r.revision FROM r WHERE r.id = tracker_time_entries.id)`
+
+var removeTimeEntriesSQL = refRows + `
+ DELETE FROM tracker_time_entries WHERE id IN (SELECT id FROM r) AND +connection_id = ?1 AND +author_id = ?3
+ AND state IN ('drafted', 'unknown', 'left_out') AND ` + atRefRevision + `
+ RETURNING ` + timeEntryColumns
+
+// RemoveTimeEntries deletes author's entries refs name on connection that
+// are drafted, unknown or left out at their revision, and returns those it
 // deleted. An entry being sent or posted stays.
-func (s *Store) RemoveTimeEntries(connection string, refs []TimeEntryRef) ([]TimeEntry, error) {
+func (s *Store) RemoveTimeEntries(connection, author string, refs []TimeEntryRef) ([]TimeEntry, error) {
 	list, err := refList(refs)
 	if err != nil {
 		return nil, err
 	}
-	out, err := scanTimeEntries(s.db.Query(`WITH r AS MATERIALIZED (SELECT json_extract(value, '$[0]') AS id, json_extract(value, '$[1]') AS revision FROM json_each(?2))
- DELETE FROM tracker_time_entries WHERE connection_id = ?1 AND state IN ('drafted', 'unknown', 'left_out')
- AND EXISTS (SELECT 1 FROM r WHERE r.id = tracker_time_entries.id AND r.revision = tracker_time_entries.revision)
- RETURNING `+timeEntryColumns, connection, list))
+	out, err := scanTimeEntries(s.db.Query(removeTimeEntriesSQL, connection, list, author))
 	if err != nil {
 		return nil, fmt.Errorf("store: remove time entries: %w", err)
 	}
@@ -443,27 +457,29 @@ func refList(refs []TimeEntryRef) (string, error) {
 	return string(b), nil
 }
 
+var markTimeEntriesSentSQL = refRows + `
+ UPDATE tracker_time_entries SET state = 'sent', sent_ms = ` + intParam("?3") + `, refusal = '', revision = revision + 1,
+ updated_ms = ` + intParam("?3") + `
+ WHERE id IN (SELECT id FROM r) AND +connection_id = ?1 AND issue_id <> ''
+ AND (state IN ('drafted', 'unknown') OR (state = 'sent' AND sent_ms < ` + intParam("?4") + `)) AND ` + atRefRevision + `
+ RETURNING ` + timeEntryColumns
+
 // MarkTimeEntriesSent marks the entries refs name on connection, each
 // with a ticket and at its revision, drafted or unknown, or sent before
 // running (sent_ms before running: a post this process did not make), as
-// sent to sentTo at now, in one transaction before anything is sent, and
-// returns those it marked. An entry another post marked since is left
-// out.
-func (s *Store) MarkTimeEntriesSent(connection string, refs []TimeEntryRef, sentTo string, now, running int64) ([]TimeEntry, error) {
-	if sentTo == "" || now <= 0 {
-		return nil, fmt.Errorf("%w: a mark needs where and when it is sent", ErrInvalidTimeEntry)
+// sent at now, in one statement before anything is sent, and returns
+// those it marked. An entry another post marked since is left out. Which
+// of them a post may send is the caller's rule (trackerapp's
+// PostTimeEntries).
+func (s *Store) MarkTimeEntriesSent(connection string, refs []TimeEntryRef, now, running int64) ([]TimeEntry, error) {
+	if now <= 0 {
+		return nil, fmt.Errorf("%w: a mark needs when it is sent", ErrInvalidTimeEntry)
 	}
 	list, err := refList(refs)
 	if err != nil {
 		return nil, err
 	}
-	out, err := scanTimeEntries(s.db.Query(`WITH r AS MATERIALIZED (SELECT json_extract(value, '$[0]') AS id, json_extract(value, '$[1]') AS revision FROM json_each(?2))
- UPDATE tracker_time_entries SET state = 'sent', sent_ms = `+intParam("?4")+`, sent_to = ?3, refusal = '', revision = revision + 1,
- updated_ms = `+intParam("?4")+`
- WHERE connection_id = ?1 AND issue_id <> ''
- AND (state IN ('drafted', 'unknown') OR (state = 'sent' AND sent_ms < `+intParam("?5")+`))
- AND EXISTS (SELECT 1 FROM r WHERE r.id = tracker_time_entries.id AND r.revision = tracker_time_entries.revision)
- RETURNING `+timeEntryColumns, connection, list, sentTo, now, running))
+	out, err := scanTimeEntries(s.db.Query(markTimeEntriesSentSQL, connection, list, now, running))
 	if err != nil {
 		return nil, fmt.Errorf("store: mark time entries sent: %w", err)
 	}
@@ -495,7 +511,7 @@ func (s *Store) SettleTimeEntries(connection string, sentMs int64, outcomes []Ti
 			return nil, fmt.Errorf("%w: settle %d as %q", ErrInvalidTimeEntry, o.ID, o.State)
 		}
 		e, err := scanTimeEntry(tx.QueryRow(`UPDATE tracker_time_entries SET state = ?3,
- sent_ms = iif(?3 = 'drafted', 0, sent_ms), sent_to = iif(?3 = 'drafted', '', sent_to),
+ sent_ms = iif(?3 = 'drafted', 0, sent_ms),
  worklog_id = iif(?3 = 'posted', ?4, ''), posted_ms = iif(?3 = 'posted', `+intParam("?6")+`, 0), refusal = ?5,
  revision = revision + 1, updated_ms = `+intParam("?6")+`
  WHERE id = `+intParam("?2")+` AND connection_id = ?1 AND state = 'sent' AND sent_ms = `+intParam("?7")+`

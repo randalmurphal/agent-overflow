@@ -2195,8 +2195,8 @@ Status: built: `ticket_find`, `ticket_read`, `ticket_create` and
 `ticket_update` on the `ao-tracker-tools` server, with the read-only
 refusal, the approval and the timeline row ([Writes by
 agents](#writes-by-agents)); `time_read` and `time_draft`, with logged
-time and the draft ([Time](#time)). An agent's post of drafted time and
-the setting that posts a settled day are not built.
+time and the draft ([Time](#time)). An agent's post of drafted time is
+not built.
 
 **Who has them.** A session gets the server when its thread belongs to a
 project, its provider is Claude or Codex, and the computer has a Jira or
@@ -2629,8 +2629,9 @@ issue, key, title and applied steps; each key opens the ticket.
 **Who has them.** A session is given `time_read` and `time_draft` when a
 Jira connection is on as it starts (`trackerMCPAccess.Time`); a session
 with only Linear gets the four ticket tools, and a call of a time tool
-from it is refused as no such tool. Their two definitions are 864 bytes
-of the tool list (`TestTheTimeToolsAreGivenWithAJiraConnection`). The time
+from it is refused as no such tool. Their two definitions are 268 and
+611 bytes, 881 of the tool list with the commas that join them
+(`TestTheTimeToolsAreGivenWithAJiraConnection`). The time
 is the connection's verified account's: a connection with no verified
 account, or whose key file holds another token than the one verified, is
 refused saying to check it, since a post logs time as the token's owner.
@@ -2638,9 +2639,10 @@ refused saying to check it, since a post logs time as the token's owner.
 **`time_read`** takes `from` and `to` (YYYY-MM-DD), this week Monday to
 Sunday when neither is given and 7 days from the one given, at most 7.
 It reads each Jira connection on (`trackerapp.Service.ReadTime`): the
-days from the tracker first (`RefreshWorklogs`), unless every one of them
-was read within the last 60 seconds by any path, then the mirror. Each
-day answers its worklogs (`logged`), the draft's entries not yet logged
+days from the tracker first (`RefreshWorklogs`), then the mirror. A
+week's read is one request on Jira's own worklogs, and two on Tempo: its
+worklogs and the Jira issues they name
+(`TestAWeeksDraftCostsBoundedRequests`). Each day answers its worklogs (`logged`), the draft's entries not yet logged
 (`drafted`, by `agent` or `you`, in state drafted, sent or unknown) and
 its open questions. A connection whose read failed is named in `unread`
 with its sentence; the call fails only when every connection did.
@@ -2648,24 +2650,28 @@ with its sentence; the call fails only when every connection did.
 **`time_draft`** takes `entries`, each a `day`, `hours` (whole minutes),
 a `reason`, which becomes the worklog's description, and a `key`, or no
 key for a question, whose reason says what the time was and whose
-`offer` names up to 5 keys. A call holds 1 to 250 entries over at most 31 days, on one
-Jira connection: each key resolves as the ticket tools' do, a Linear key
+`offer` names up to 5 keys. A call holds 1 to 250 entries over at most
+31 days, on one Jira connection; a call with more entries or offers is
+refused before any key is looked up. Each key resolves as the ticket tools' do, a Linear key
 is refused, and so are keys of two sites. A day holds at most 24 hours, a
 ticket once a day, and no day is in the future. A read-only thread is
-refused (`Host.Writable`). The draft replaces the agents' drafted entries
-of each day the call names, whichever thread drafted them; the person's
-entries, and entries sent, posted or of unknown outcome, stay, and a new
-entry for a ticket that has one not yet logged that day is skipped. The
-answer is by day: the entries made, kept and skipped, the hours already
-logged as this computer last read them, and that nothing is logged until
-the user approves it. No tool reaches a posting path.
+refused (`Host.Writable`). The draft replaces the drafted entries that
+the calling thread drafted on each day the call names; another thread's
+entries, the person's, and entries sent, posted or of unknown outcome
+stay, and a new entry for a ticket that has one not yet logged that day
+is skipped. The answer is by day: the ID and key of each entry made, the
+IDs of the questions, the hours of the day's other entries not yet
+logged, the keys skipped, the hours already logged as this computer last
+read them, and that nothing is logged until the user approves it;
+`time_read` shows the entries whole. No tool reaches a posting path.
 
 **The draft.** There is no draft object: the entries of a connection's
 author by day (`tracker_time_entries`, [schema](schema.md)), each naming
 the thread and call that drafted it. Every change is conditional on the
-entry's revision as the caller read it (`trackerapp/time_draft.go`): the
-person's edit makes the entry theirs, and a remove deletes entries
-drafted, of unknown outcome or left out. A question answered with a
+entry's revision as the caller read it (`trackerapp/time_draft.go`) and
+to the connection's verified account: the person's edit makes the entry
+theirs, and a remove deletes entries drafted, of unknown outcome or left
+out. A question answered with a
 ticket that has a drafted entry that day is added to that entry in one
 transaction (`store.EditTimeEntry`): its time is added, the entry's
 reason ends with ", plus " and the question's, and the question is
@@ -2675,31 +2681,39 @@ ticket that has one that day.
 
 **Posting.** `PostTimeEntries` (`trackerapp/time_post.go`) is the one
 path that sends a draft's time, and only the person's approval reaches it
-(`PostTrackerTimeEntries`). It posts the entries named at the revisions
-read, for the connection's verified account, in one batch through the
-time source (`TimeTracker.AddWorklogs`, which names the worklog each
-made). Each entry is marked `sent`, with the time and the time source's
-connection, in one transaction after the connection is held and before
-any request; an entry another window is posting, or that changed since it
-was read, is not sent and is said so. Approving a day or the whole draft:
-- skips an entry whose ticket and day got time logged by hand since the
-  entry was drafted, and says so; logging that entry alone posts it;
+(`PostTrackerTimeEntries`). A request names each entry once, at the
+revision read; logging alone names exactly one. It posts the entries for
+the connection's verified account, in one batch through the time source
+(`TimeTracker.AddWorklogs`, which names the worklog each made). Each entry
+is marked `sent`, with the time, in one transaction after the connection
+is held and before any request; an entry another window is posting, or
+that changed since it was read, is not sent and is said so. An entry is
+posted only when the time source answered that it applied it, with the
+worklog's ID. Approving a day or the whole draft:
+- skips an entry whose ticket and day have a worklog logged or changed
+  since the entry was drafted (a worklog carries only its update time;
+  the comparison allows a minute of clock difference), and says so;
+  logging that entry alone posts it;
 - posts a day's entries and leaves its open questions open.
 
-An entry whose post may have happened (a lost answer, or left `sent` by an
-earlier run) is sent again only after a read of its day under the same
-time source finds no worklog it made: the same ticket, day and seconds,
-updated no earlier than a minute before it was sent, named by no other
-entry, with its description as the time source stores it (Jira's through
-the converter's round trip; Tempo's as written, not checked against
-Tempo). A worklog found settles the entry as posted and sends nothing. An
-entry sent under the time source used before is not sent again on a day's
-approval, and logging it alone posts it to the current one. The answer
-names every entry and says in one sentence each one not posted, with the
-tracker's refusal, and the days whose read-back after the post failed,
-which show the posted time after their next read. A week of 25 entries is 27 requests on Tempo (2
-reads that check the batch, then a POST each) and 25 on Jira's own
-worklogs, with the account read before (`jiraprovider` cost tests).
+An entry whose post may have happened (`unknown`, after a lost answer or
+a dropped request, or left `sent` by an earlier run) is never sent again
+by a day's or the whole draft's approval, and no tool reaches it: the
+approval says it may have been logged, to check the day and then remove
+it or log it alone, and posts the day's other entries. Logging it alone
+sends it once more. The answer is built after the post from the entries
+as they are then, names every entry, says in one sentence each one not
+posted, with the tracker's refusal, and names the days whose worklogs
+could not be read back after the post, which show the posted time after
+their next read. One day's approval of three entries is 3 POSTs and 2
+reads on Jira's own worklogs (the day before the post, for time logged
+since, and after it); on Tempo it is 3 POSTs, 2 reads of the worklogs and
+2 of the Jira issues they name, the timesheet approvals and, once per
+connection, the work attributes. Logging one entry alone skips the read
+before (`TestAWeeksDraftCostsBoundedRequests`). A week of 25 entries is 27
+requests on Tempo (2 reads that check the batch, then a POST each) and 25
+on Jira's own worklogs, with the account read before (`jiraprovider` cost
+tests).
 
 **Timeline.** A `time_draft` call that changed the draft adds one
 notification row of kind `time_draft` (`Drafted time for Tue Nov 24`),
@@ -2789,7 +2803,6 @@ Not built, owed by the app layer:
   needs part of the setup takes it as a bound argument, as the status
   groups are; nothing of the file is copied into the mirror.
 - An agent's post of drafted time after the person approves it in the
-  thread, and the setting that posts a settled day's draft
-  ([Time](#time)).
+  thread ([Time](#time)).
 - The Time screen's drafted entries and the `time_draft` row's card.
 - Searching the forge by key for a pull request outside the stored list.

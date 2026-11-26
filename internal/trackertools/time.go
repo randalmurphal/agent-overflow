@@ -294,16 +294,26 @@ type TimeRow struct {
 	Days       []string `json:"days"`
 }
 
-// draftDay is one day of a draft's answer: the entries made and kept,
-// the open questions, the tickets skipped, and the hours already logged
-// as this computer last read them, absent when it never read the day.
+// draftDay is one day of a draft's answer, a receipt of the call: the
+// entries it made on tickets, by ID and key in the order given, the IDs
+// of the questions it made, the hours of the day's other entries not yet
+// logged (another thread's, the person's, and those being posted), the
+// tickets it skipped, and the hours already logged as this computer last
+// read them, absent when it never read the day. Nothing the agent sent is
+// echoed, so the answer of the most entries a call takes stays within
+// answerBudget; time_read shows the entries whole.
 type draftDay struct {
-	Day       string         `json:"day"`
-	Drafted   []draftedTime  `json:"drafted,omitempty"`
-	Questions []timeQuestion `json:"questions,omitempty"`
-	Kept      []draftedTime  `json:"kept,omitempty"`
-	Skipped   []string       `json:"skipped,omitempty"`
-	Logged    *float64       `json:"logged_hours,omitempty"`
+	Day        string      `json:"day"`
+	Made       []madeEntry `json:"made,omitempty"`
+	Questions  []int64     `json:"questions,omitempty"`
+	OtherHours float64     `json:"other_hours,omitempty"`
+	Skipped    []string    `json:"skipped,omitempty"`
+	Logged     *float64    `json:"logged_hours,omitempty"`
+}
+
+type madeEntry struct {
+	ID  int64  `json:"id"`
+	Key string `json:"key"`
 }
 
 type draftAnswer struct {
@@ -321,7 +331,11 @@ func (s *Server) timeDraft(ctx context.Context, caller Caller, raw json.RawMessa
 	if err := decode(raw, &args); err != nil {
 		return nil, err
 	}
-	if err := trackerapp.CheckDraftSize(len(args.Entries)); err != nil {
+	offers := make([]int, len(args.Entries))
+	for i, e := range args.Entries {
+		offers[i] = len(e.Offer)
+	}
+	if err := trackerapp.CheckDraftShape(offers); err != nil {
 		return nil, invalidf("%s", draftRefusal(err))
 	}
 	if err := s.h.Writable(caller.Thread); err != nil {
@@ -472,22 +486,18 @@ func draftAnswerOf(v trackerapp.TimeDraftView, key func(string) string) draftAns
 	for _, e := range v.Made {
 		d := day(e.Day)
 		if e.Key == "" {
-			q := timeQuestion{ID: e.ID, Hours: float64(e.Minutes) / 60, Reason: e.Reason}
-			for _, o := range e.Offers {
-				q.Offer = append(q.Offer, key(o.Key))
-			}
-			d.Questions = append(d.Questions, q)
+			d.Questions = append(d.Questions, e.ID)
 			continue
 		}
-		d.Drafted = append(d.Drafted, draftedTime{ID: e.ID, Key: key(e.Key), Hours: float64(e.Minutes) / 60})
+		d.Made = append(d.Made, madeEntry{ID: e.ID, Key: key(e.Key)})
 	}
 	for _, e := range v.Kept {
-		d := day(e.Day)
-		if e.Key == "" {
-			d.Questions = append(d.Questions, timeQuestion{ID: e.ID, Hours: float64(e.Minutes) / 60, Reason: e.Reason})
+		if e.State == "posted" || e.State == "left_out" {
+			// A posted entry is among the logged hours; a left-out one is
+			// no time.
 			continue
 		}
-		d.Kept = append(d.Kept, draftedTime{ID: e.ID, Key: key(e.Key), Hours: float64(e.Minutes) / 60, By: byName(e.By), State: e.State})
+		day(e.Day).OtherHours += float64(e.Minutes) / 60
 	}
 	for _, e := range v.Skipped {
 		day(e.Day).Skipped = append(day(e.Day).Skipped, key(e.Key))

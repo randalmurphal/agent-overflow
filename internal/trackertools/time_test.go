@@ -2,6 +2,7 @@ package trackertools
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -177,8 +178,7 @@ func TestTimeDraftResolvesItsKeys(t *testing.T) {
 		{"day": "2026-11-24", "hours": 0.5, "reason": "Standup", "offer": []string{"WEB-3"}},
 		{"day": "2026-11-24", "key": "WEB-2", "hours": 1, "reason": "Reviewed"},
 	}})
-	want := `{"days":[{"day":"2026-11-24","drafted":[{"id":7,"key":"WEB-1","hours":1.5}],"questions":[{"id":8,"hours":0.5,"reason":"Standup","offer":["WEB-3"]}],` +
-		`"kept":[{"id":2,"key":"WEB-2","hours":0.5,"by":"you","state":"drafted"}],"skipped":["WEB-2"],"logged_hours":1}],` +
+	want := `{"days":[{"day":"2026-11-24","made":[{"id":7,"key":"WEB-1"}],"questions":[8],"other_hours":0.5,"skipped":["WEB-2"],"logged_hours":1}],` +
 		`"note":"Nothing is logged until the user approves it. A skipped key already has an entry of that day not yet logged; time_read shows it."}`
 	if err != nil || answer != want {
 		t.Fatalf("time_draft = %s, %v\nwant %s", answer, err, want)
@@ -235,6 +235,8 @@ func TestTimeDraftRefusals(t *testing.T) {
 		{"an empty offer", []trackerapp.TicketSource{timeJira}, false, []map[string]any{{"day": "2026-11-24", "hours": 1, "reason": "Which?", "offer": []string{" "}}}, CodeInvalidRequest,
 			"entries[0].offer holds an empty key."},
 		{"an unknown key", []trackerapp.TicketSource{timeJira}, false, []map[string]any{entry("WEB-99")}, CodeNotFound, "No ticket WEB-99 on example.atlassian.net."},
+		{"six offers", []trackerapp.TicketSource{timeJira}, false, []map[string]any{{"day": "2026-11-24", "hours": 1, "reason": "Call",
+			"offer": []string{"WEB-1", "WEB-2", "WEB-3", "WEB-4", "WEB-5", "WEB-6"}}}, CodeInvalidRequest, "entries[0].offer holds at most 5 keys."},
 	} {
 		f := &fakeTracker{sources: tc.sources, lookup: map[string]map[string]string{
 			timeJira.ID: {"WEB-1": "10101"}, timeLinear.ID: {"ENG-4": "lin-4"}, timeJira2.ID: {"OPS-1": "20101"}}}
@@ -245,6 +247,9 @@ func TestTimeDraftRefusals(t *testing.T) {
 		}
 		if len(f.drafts) != 0 {
 			t.Errorf("%s reached the draft: %v", tc.name, f.drafts)
+		}
+		if tc.name == "six offers" && len(f.asked) != 0 {
+			t.Errorf("six offers were looked up before the refusal: %v", f.asked)
 		}
 	}
 	// The thread's linked ticket on a connection no longer on.
@@ -257,4 +262,39 @@ func TestTimeDraftRefusals(t *testing.T) {
 	}}
 	_, err = timeCall(t, timeServer(f, &fakeHost{}), "time_draft", map[string]any{"entries": []map[string]any{{"day": "2026-11-24", "hours": 0, "reason": "Which?"}}})
 	refused(t, err, CodeInvalidRequest, "entries[0].hours must be more than 0.")
+}
+
+// A draft's answer is a receipt: the IDs it made by day, with no text the
+// agent sent echoed back, and no entry it did not make listed, so it stays
+// within the answer budget at the most entries a call takes; the hours
+// the day's other open entries hold are summed.
+func TestTimeDraftAnswersWithAReceipt(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("x", 1024)
+	offers := []trackerapp.TimeOfferView{}
+	for i := range 5 {
+		key := fmt.Sprintf("example.atlassian.net/LONGPROJECT-%d", 100000+i)
+		offers = append(offers, trackerapp.TimeOfferView{Issue: key, Key: key})
+	}
+	v := trackerapp.TimeDraftView{}
+	for i := range 250 {
+		v.Made = append(v.Made, trackerapp.TimeEntryView{ID: int64(1_000_000 + i), Day: "2026-11-24", Minutes: 1, Reason: long, Offers: offers, State: "drafted"})
+	}
+	v.Kept = []trackerapp.TimeEntryView{
+		{ID: 7, Day: "2026-11-24", Minutes: 30, Reason: long, State: "left_out"},
+		{ID: 8, Day: "2026-11-24", Key: "WEB-1", Minutes: 90, Reason: long, State: "drafted", By: "person"},
+		{ID: 9, Day: "2026-11-24", Key: "WEB-2", Minutes: 60, Reason: long, State: "posted"},
+	}
+	got := draftAnswerOf(v, func(k string) string { return k })
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > answerBudget || strings.Contains(string(raw), long) {
+		t.Fatalf("the answer is %d bytes, over %d or echoing the reasons", len(raw), answerBudget)
+	}
+	if strings.Contains(string(raw), `"id":7`) || strings.Contains(string(raw), `"id":9`) {
+		t.Fatalf("the answer lists entries the call did not make: %s", raw)
+	}
+	t.Logf("the answer of 250 questions is %d bytes", len(raw))
 }

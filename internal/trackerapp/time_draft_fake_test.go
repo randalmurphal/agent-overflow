@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -31,7 +32,7 @@ type markGateStore struct {
 	gate func()
 }
 
-func (g *markGateStore) MarkTimeEntriesSent(connection string, refs []store.TimeEntryRef, sentTo string, now, running int64) ([]store.TimeEntry, error) {
+func (g *markGateStore) MarkTimeEntriesSent(connection string, refs []store.TimeEntryRef, now, running int64) ([]store.TimeEntry, error) {
 	g.mu.Lock()
 	gate := g.gate
 	g.gate = nil
@@ -39,7 +40,7 @@ func (g *markGateStore) MarkTimeEntriesSent(connection string, refs []store.Time
 	if gate != nil {
 		gate()
 	}
-	return g.worklogGateStore.MarkTimeEntriesSent(connection, refs, sentTo, now, running)
+	return g.worklogGateStore.MarkTimeEntriesSent(connection, refs, now, running)
 }
 
 // aheadOfTracker is how far this computer's clock is ahead of the
@@ -141,11 +142,11 @@ func (d *draftScenario) posted(t *testing.T, what string, got PostTimeView, post
 // entry is entry id as stored now.
 func (d *draftScenario) entry(t *testing.T, id int64) store.TimeEntry {
 	t.Helper()
-	e, ok, err := d.st.TimeEntry(d.conn.ID, id)
-	if err != nil || !ok {
-		t.Fatalf("entry %d: %v, %v", id, ok, err)
+	got, err := d.st.TimeEntriesByID(d.conn.ID, []int64{id})
+	if err != nil || len(got) != 1 {
+		t.Fatalf("entry %d: %v, %v", id, got, err)
 	}
-	return e
+	return got[0]
 }
 
 // logsOn are the worklogs of key's issue on the day, read from the
@@ -281,7 +282,7 @@ func TestAnAnsweredQuestionIsAddedToItsTicketsEntry(t *testing.T) {
 		}
 	}
 	refused("moving WEB-3's entry onto WEB-1", web3, "WEB-1", "WEB-1 already has an entry not yet posted that day; change that entry's hours instead")
-	sent := must[[]store.TimeEntry](t)(d.st.MarkTimeEntriesSent(d.conn.ID, []store.TimeEntryRef{{ID: web2.ID, Revision: web2.Revision}}, d.conn.ID, millis(d.svc.now()), d.svc.steadyFrom))
+	sent := must[[]store.TimeEntry](t)(d.st.MarkTimeEntriesSent(d.conn.ID, []store.TimeEntryRef{{ID: web2.ID, Revision: web2.Revision}}, millis(d.svc.now()), d.svc.steadyFrom))
 	refused("answering with WEB-2, being posted", standup, "WEB-2", "WEB-2's entry that day is being posted; try again once it is posted")
 	must[[]store.TimeEntry](t)(d.st.SettleTimeEntries(d.conn.ID, sent[0].SentMs, []store.TimeEntrySettle{{ID: web2.ID, State: store.TimeEntryUnknown}}, millis(d.svc.now())))
 	refused("answering with WEB-2, maybe logged", standup, "WEB-2", "WEB-2's entry that day may already be logged; post or remove it first")
@@ -306,8 +307,9 @@ func TestAnAnsweredQuestionIsAddedToItsTicketsEntry(t *testing.T) {
 	}
 }
 
-// A later draft of a day replaces the agents' drafted entries of that day
-// (D6) and keeps the person's; a ticket with an open entry that day is
+// A later draft of a day by the same thread replaces that thread's
+// drafted entries of the day (D6) and keeps the person's and another
+// thread's; a ticket with an open entry that day is
 // skipped. Each draft that changed anything is told once, with its days
 // and threads; one that changed nothing is not told.
 func TestADraftReplacesTheAgentsEntriesOfItsDays(t *testing.T) {
@@ -359,6 +361,15 @@ func TestADraftReplacesTheAgentsEntriesOfItsDays(t *testing.T) {
 	got := must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1"))
 	if len(got) != 1 || got[0].ID != edited.ID {
 		t.Fatalf("the thread's entries are %+v; want the person's WEB-2", got)
+	}
+	// Another thread's draft of the day replaces none of this thread's.
+	mine := d.draft(t, d.on("WEB-3", 0.25, "Triaged the backlog"))
+	theirs := must[TimeDraftView](t)(d.svc.DraftTime(d.conn.ID, TimeDraftRequest{Thread: "thread-2", Call: "call-b", Entries: []TimeDraftEntry{d.on("WEB-1", 1, "Built the form")}}))
+	if len(theirs.Replaced) != 0 || len(theirs.Made) != 1 {
+		t.Fatalf("thread-2's draft answered %+v; want WEB-1 made and nothing of thread-1's replaced", theirs)
+	}
+	if got := must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1")); len(got) != 2 || got[1].ID != mine.Made[0].ID {
+		t.Fatalf("thread-1's entries after thread-2's draft are %+v", got)
 	}
 }
 
@@ -441,7 +452,7 @@ func TestAPartlyFailedPostSaysWhatWasNotPosted(t *testing.T) {
 		d.fault(t, trackerfake.Fault{Kind: trackerfake.FaultFailAfterApply, Times: 1})
 		got, posts := d.post(t, false, entryRefs(v.Made...)...)
 		d.posted(t, "the post", got, posts, "Posted 1 of 3 entries for "+d.label+". WEB-1, 1h, was refused: Worklog is closed for this period."+
-			" WEB-2, 30m, may have been logged; posting it again checks the day first.", 3)
+			" WEB-2, 30m, "+mayHave, 3)
 		if e := d.entry(t, v.Made[0].ID); e.Refusal != "Worklog is closed for this period." {
 			t.Fatalf("WEB-1 is %+v; want the tracker's refusal kept on it", e)
 		}
@@ -455,28 +466,38 @@ func TestAPartlyFailedPostSaysWhatWasNotPosted(t *testing.T) {
 	})
 }
 
-// An entry whose post may have happened is posted again only after a read
-// of its day under the same time source finds no worklog it made: a lost
-// answer whose worklog landed settles with that worklog and sends nothing;
-// one that never landed is sent once.
-func TestAnUnknownPostIsCheckedBeforeItIsSentAgain(t *testing.T) {
+// mayHave is what an approval says of an entry whose post may have
+// happened.
+const mayHave = "may have been logged; check the day, then remove it or log it alone."
+
+// An entry whose post may have happened is never sent or settled by a
+// day's approval: not after a lost answer whose worklog landed, and not
+// after a dropped request beside a matching worklog logged by hand. The
+// approval names it, its mark stays, and the day's other entries post.
+// Logging it alone sends it once more, as the person chose.
+func TestAnEntryWhosePostMayHaveHappenedIsLeftToThePerson(t *testing.T) {
 	t.Parallel()
 	bothSources(t, func(t *testing.T, d *draftScenario) {
-		v := d.draft(t, d.on("WEB-2", 1, "Reviewed the **pull request**"))
+		v := d.draft(t, d.on("WEB-2", 1, "Reviewed the pull request"))
 		d.fault(t, trackerfake.Fault{Kind: trackerfake.FaultFailAfterApply, Times: 1})
 		got, posts := d.post(t, false, entryRefs(v.Made...)...)
-		d.posted(t, "the lost answer", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-2, 1h, may have been logged; posting it again checks the day first.", 1)
-		landed := d.logsOn(t, "WEB-2")
-		if len(landed) != 1 {
-			t.Fatalf("the lost answer's worklogs are %+v; want the one that landed", landed)
+		d.posted(t, "the lost answer", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-2, 1h, "+mayHave, 1)
+		lost := d.entry(t, v.Made[0].ID)
+		w := d.draft(t, d.on("WEB-3", 0.5, "Triaged the backlog"))
+		got, posts = d.post(t, false, entryRefs(got.Entries[0], w.Made[0])...)
+		d.posted(t, "the lost answer's day approved", got, posts, "Posted 1 of 2 entries for "+d.label+". WEB-2, 1h, "+mayHave, 1)
+		if e := d.entry(t, lost.ID); e.State != store.TimeEntryUnknown || e.SentMs != lost.SentMs || e.Revision != lost.Revision {
+			t.Fatalf("WEB-2 is %+v after its day's approval; want it as the lost answer left it, %+v", e, lost)
 		}
-		got, posts = d.post(t, false, entryRefs(got.Entries...)...)
-		d.posted(t, "the landed post approved again", got, posts, "Posted 1 of 1 entries for "+d.label+".", 0)
-		if got.Entries[0].Worklog != landed[0].ID {
-			t.Fatalf("the entry settled as %+v; want worklog %s", got.Entries[0], landed[0].ID)
+		got, posts = d.post(t, true, entryRefs(got.Entries[0])...)
+		d.posted(t, "WEB-2 logged alone", got, posts, "Posted 1 of 1 entries for "+d.label+".", 1)
+		if logs := d.logsOn(t, "WEB-2"); len(logs) != 2 {
+			t.Fatalf("WEB-2's worklogs are %+v; want the one that landed and the one logged alone", logs)
 		}
 
-		v = d.draft(t, d.on("WEB-3", 0.5, "Triaged the backlog"))
+		// A dropped request, and a worklog the person logged by hand that
+		// reads like it.
+		v = d.draft(t, d.on("WEB-1", 0.25, "Planned the sprint"))
 		d.fault(t, trackerfake.Fault{Kind: trackerfake.FaultHold, Times: 1})
 		done := make(chan PostTimeView, 1)
 		go func() {
@@ -486,58 +507,109 @@ func TestAnUnknownPostIsCheckedBeforeItIsSentAgain(t *testing.T) {
 			}
 			done <- got
 		}()
-		route := jiraWorklogPost
+		route, origin := jiraWorklogPost, trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: "example.atlassian.net"}
 		if d.tempo {
-			route = tempoWorklogPost
+			route, origin = tempoWorklogPost, trackerfake.Origin{Tracker: trackerfake.TrackerTempo}
 		}
 		waitHeld(t, d.e, route)
-		origin := trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: "example.atlassian.net"}
-		if d.tempo {
-			origin = trackerfake.Origin{Tracker: trackerfake.TrackerTempo}
-		}
 		if err := d.e.Release(origin, route, true); err != nil {
 			t.Fatal(err)
 		}
 		got = <-done
-		if got.Entries[0].State != store.TimeEntryUnknown || len(d.logsOn(t, "WEB-3")) != 0 {
-			t.Fatalf("the dropped post answered %+v; want it unknown with nothing logged", got)
+		if got.Entries[0].State != store.TimeEntryUnknown {
+			t.Fatalf("the dropped post answered %+v; want it unknown", got)
 		}
+		must[WriteView](t)(d.svc.AddWorklog(t.Context(), d.conn.ID, WorklogRequest{Issue: "10101", Day: d.day, SpentSeconds: 900, Description: "Planned the sprint"}))
 		got, posts = d.post(t, false, entryRefs(got.Entries...)...)
-		d.posted(t, "the dropped post approved again", got, posts, "Posted 1 of 1 entries for "+d.label+".", 1)
-		if logs := d.logsOn(t, "WEB-3"); len(logs) != 1 || logs[0].ID != got.Entries[0].Worklog {
-			t.Fatalf("WEB-3's worklogs are %+v; want the one entry %+v made", logs, got.Entries[0])
+		d.posted(t, "the dropped post approved again", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-1, 15m, "+mayHave, 0)
+		if e := d.entry(t, v.Made[0].ID); e.State != store.TimeEntryUnknown || e.WorklogID != "" {
+			t.Fatalf("WEB-1 is %+v; want it unknown, claiming no worklog", e)
 		}
 	})
 }
 
 // An entry marked sent by this run is being posted, and nothing sends it
 // again; one marked by a run that ended before its answer was stored is
-// checked on the next run's approval: settled with the worklog it made, or
-// sent when it made none.
-func TestAnEntrySentByAnEarlierRunIsChecked(t *testing.T) {
+// left to the person on the next run's approval, and logging it alone
+// sends it.
+func TestAnEntrySentByAnEarlierRunIsLeftToThePerson(t *testing.T) {
 	t.Parallel()
 	d := newDraftScenario(t, "jira")
-	v := d.draft(t, d.on("WEB-2", 1, "Reviewed the pull request"), d.on("WEB-3", 0.5, "Triaged the backlog"))
-	marked := must[[]store.TimeEntry](t)(d.st.MarkTimeEntriesSent(d.conn.ID, []store.TimeEntryRef{{ID: v.Made[0].ID, Revision: v.Made[0].Revision},
-		{ID: v.Made[1].ID, Revision: v.Made[1].Revision}}, d.conn.ID, millis(d.svc.now()), d.svc.steadyFrom))
-	refs := make([]TimeEntryRefView, len(marked))
-	for i, e := range marked {
-		refs[i] = TimeEntryRefView{ID: e.ID, Revision: e.Revision}
-	}
-	slices.SortFunc(refs, func(a, b TimeEntryRefView) int { return int(a.ID - b.ID) })
+	v := d.draft(t, d.on("WEB-2", 1, "Reviewed the pull request"))
+	marked := must[[]store.TimeEntry](t)(d.st.MarkTimeEntriesSent(d.conn.ID, []store.TimeEntryRef{{ID: v.Made[0].ID, Revision: v.Made[0].Revision}},
+		millis(d.svc.now()), d.svc.steadyFrom))
+	refs := entryRefs(timeEntryViews(marked)...)
 	got, posts := d.post(t, false, refs...)
-	d.posted(t, "in the same run", got, posts, "Posted 0 of 2 entries for "+d.label+". WEB-2, 1h, is being posted from another window. WEB-3, 30m, is being posted from another window.", 0)
-	// WEB-2's worklog landed before the run ended; WEB-3's did not.
-	must[WriteView](t)(d.svc.AddWorklog(t.Context(), d.conn.ID, WorklogRequest{Issue: "10102", Day: d.day, SpentSeconds: 3600, Description: "Reviewed the pull request"}))
+	d.posted(t, "in the same run", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-2, 1h, is being posted from another window.", 0)
 	d.clock.advance(time.Second)
 	d.svc.steadyFrom = millis(d.svc.now())
 	got, posts = d.post(t, false, refs...)
-	d.posted(t, "on the next run", got, posts, "Posted 2 of 2 entries for "+d.label+".", 1)
-	logs := d.logsOn(t, "WEB-2")
-	if len(logs) != 1 || got.Entries[0].Worklog != logs[0].ID {
-		t.Fatalf("WEB-2 settled as %+v; its worklogs are %+v", got.Entries[0], logs)
+	d.posted(t, "on the next run", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-2, 1h, "+mayHave, 0)
+	got, posts = d.post(t, true, refs...)
+	d.posted(t, "logged alone on the next run", got, posts, "Posted 1 of 1 entries for "+d.label+".", 1)
+}
+
+// A post names each entry once and logs alone exactly one: a repeated
+// entry, or two logged alone, are refused before anything is read or sent.
+func TestAPostNamesEachEntryOnce(t *testing.T) {
+	t.Parallel()
+	d := newDraftScenario(t, "jira")
+	v := d.draft(t, d.on("WEB-2", 1, "Reviewed the pull request"), d.on("WEB-3", 0.5, "Triaged the backlog"))
+	for _, tc := range []struct {
+		name string
+		in   PostTimeRequest
+	}{
+		{"an entry twice", PostTimeRequest{Entries: append(entryRefs(v.Made[0]), entryRefs(v.Made[0])...)}},
+		{"two alone", PostTimeRequest{Entries: entryRefs(v.Made...), Alone: true}},
+	} {
+		var err error
+		reqs := d.requestsOf(t, func() { _, err = d.svc.PostTimeEntries(t.Context(), d.conn.ID, tc.in) })
+		if !errors.Is(err, ErrInvalidRequest) || len(reqs) != 0 {
+			t.Errorf("%s: %v with requests %v; want it refused with none", tc.name, err, reqs)
+		}
+	}
+	if e := d.entry(t, v.Made[0].ID); e.State != store.TimeEntryDrafted {
+		t.Fatalf("WEB-2 is %+v after the refused posts", e)
 	}
 }
+
+// The person's edit and remove are of the connection's verified account's
+// entries: after the connection is verified as another account, a screen
+// still holding the first account's entries changes none of them.
+func TestAnotherAccountsEntriesAreNotChanged(t *testing.T) {
+	t.Parallel()
+	d := newDraftScenario(t, "jira")
+	v := d.draft(t, d.on("WEB-2", 1, "Reviewed the pull request"))
+	row := d.row(d.conn.ID)
+	if _, _, err := d.st.RecordTrackerConnectionVerification(d.conn.ID, store.TrackerVerification{AccountID: "acc-user2", Name: "User 2",
+		VerifiedAt: millis(d.clock.Now()), Token: row.VerifiedToken}); err != nil {
+		t.Fatal(err)
+	}
+	reason := "Reviewed it as user 2"
+	if _, err := d.svc.EditTimeEntry(d.conn.ID, entryRefs(v.Made...)[0], TimeEntryEdit{Reason: &reason}); !errors.Is(err, ErrTimeEntryStale) {
+		t.Errorf("user 2's edit of user 1's entry: %v; want it stale", err)
+	}
+	if gone := must[[]TimeEntryView](t)(d.svc.RemoveTimeEntries(d.conn.ID, entryRefs(v.Made...))); len(gone) != 0 {
+		t.Errorf("user 2's remove of user 1's entry removed %+v", gone)
+	}
+	if e := d.entry(t, v.Made[0].ID); e.Reason != "Reviewed the pull request" || e.Author != "acc-user1" {
+		t.Fatalf("user 1's entry is %+v", e)
+	}
+}
+
+// A post's answer names only worklog days as not read back: a ticket
+// detail the refresh could not read is not a day.
+func TestAPostNamesOnlyWorklogDaysAsNotReadBack(t *testing.T) {
+	t.Parallel()
+	stale := []StaleView{{Resources: []ResourceView{{Kind: "detail", Issue: "10102"}}, Failure: FailureView{Message: "Jira did not answer"}}}
+	got := postView(nil, nil, nil, nil, stale)
+	if strings.Contains(got.Sentence, "shows on") {
+		t.Fatalf("a failed detail read answered %q", got.Sentence)
+	}
+}
+
+// skippedSince is what a day's approval says of an entry it skips (D4).
+const skippedSince = "was not posted: time on it that day was logged or changed since it was drafted; log it alone to post it."
 
 // D4: approving a day skips an entry whose ticket and day got time logged
 // by hand since it was drafted, and says so; logging the entry alone
@@ -551,34 +623,20 @@ func TestApprovingADaySkipsTimeLoggedByHand(t *testing.T) {
 		must[WriteView](t)(d.svc.AddWorklog(t.Context(), d.conn.ID, WorklogRequest{Issue: "10102", Day: d.day, SpentSeconds: 900, Description: "Standup about it"}))
 		got, posts := d.post(t, false, entryRefs(v.Made...)...)
 		d.posted(t, "the day", got, posts, "Posted 1 of 2 entries for "+d.label+
-			". WEB-2, 1h, was not posted: time was logged on it by hand that day since it was drafted; log it alone to post it.", 1)
+			". WEB-2, 1h, "+skippedSince, 1)
 		got, posts = d.post(t, true, entryRefs(got.Entries[0])...)
 		d.posted(t, "WEB-2 alone", got, posts, "Posted 1 of 1 entries for "+d.label+".", 1)
-	})
-}
 
-// An entry whose post may have happened under the time source used before
-// is not sent blind under the new one: approving its day says to check,
-// and logging it alone posts it to the new source.
-func TestAChangedTimeSourceIsNotResentBlind(t *testing.T) {
-	t.Parallel()
-	d := newDraftScenario(t, "jira")
-	v := d.draft(t, d.on("WEB-2", 1, "Reviewed the pull request"))
-	d.fault(t, trackerfake.Fault{Kind: trackerfake.FaultFailAfterApply, Times: 1})
-	got, _ := d.post(t, false, entryRefs(v.Made...)...)
-	if got.Entries[0].State != store.TimeEntryUnknown {
-		t.Fatalf("the lost answer left %+v", got.Entries[0])
-	}
-	d.addTempoOn(t)
-	got, posts := d.post(t, false, entryRefs(got.Entries...)...)
-	d.posted(t, "with Tempo added", got, posts, "Posted 0 of 1 entries for "+d.label+
-		". WEB-2, 1h, may already be logged in the time source used before; check that day, then remove it or log it alone.", 0)
-	reqs := d.requestsOf(t, func() {
-		got = must[PostTimeView](t)(d.svc.PostTimeEntries(t.Context(), d.conn.ID, PostTimeRequest{Entries: entryRefs(got.Entries...), Alone: true}))
+		// An edit of the entry after the hand log is no reason to post it
+		// beside that log.
+		w := d.draft(t, d.on("WEB-1", 0.5, "Planned the sprint"))
+		must[WriteView](t)(d.svc.AddWorklog(t.Context(), d.conn.ID, WorklogRequest{Issue: "10101", Day: d.day, SpentSeconds: 600, Description: "Sprint planning"}))
+		d.clock.advance(3 * clockSlack * time.Millisecond)
+		reason := "Planned the sprint with the team"
+		edited := must[TimeEntryView](t)(d.svc.EditTimeEntry(d.conn.ID, entryRefs(w.Made[0])[0], TimeEntryEdit{Reason: &reason}))
+		got, posts = d.post(t, false, entryRefs(edited)...)
+		d.posted(t, "the edited entry's day", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-1, 30m, "+skippedSince, 0)
 	})
-	if got.Sentence != "Posted 1 of 1 entries for "+d.label+"." || reqs[tempoWorklogPost] != 1 || reqs[jiraWorklogPost] != 0 {
-		t.Fatalf("WEB-2 alone answered %q with requests %v; want one Tempo post", got.Sentence, reqs)
-	}
 }
 
 // An entry drafted for the account the connection was verified as before
@@ -638,11 +696,15 @@ func TestTwoWindowsApprovingTheSameEntryPostItOnce(t *testing.T) {
 	if second.Sentence != "Posted 1 of 1 entries for "+d.label+"." || first.Sentence != "Posted 0 of 1 entries for "+d.label+". WEB-2, 1h, is logged already." || reqs[jiraWorklogPost] != 1 {
 		t.Fatalf("the windows answered %q and %q with %d posts; want one post", second.Sentence, first.Sentence, reqs[jiraWorklogPost])
 	}
+	if first.Entries[0].State != store.TimeEntryPosted || first.Entries[0].Worklog != second.Entries[0].Worklog {
+		t.Fatalf("the window that lost answered the entry as %+v; want it posted, as the other window left it", first.Entries[0])
+	}
 }
 
-// A post across its connection turned off and on logs the entry once:
-// whatever the post answered, the next approval settles or sends it so
-// that one worklog holds it.
+// A post across its connection turned off and on logs the entry at most
+// once: the turn off may close the request before or after the tracker
+// applies it, and a day's approval after the connection is on again
+// sends nothing either way.
 func TestAPostAcrossTheConnectionTurnedOffLogsItOnce(t *testing.T) {
 	t.Parallel()
 	d := newDraftScenario(t, "jira")
@@ -669,44 +731,28 @@ func TestAPostAcrossTheConnectionTurnedOffLogsItOnce(t *testing.T) {
 	t.Logf("the post across the turn off answered %q, %v", a.v.Sentence, a.err)
 	must[Connection](t)(d.svc.SetEnabled(d.conn.ID, true))
 	e := d.entry(t, v.Made[0].ID)
-	if e.State != store.TimeEntryPosted {
-		got, _ := d.post(t, false, TimeEntryRefView{ID: e.ID, Revision: e.Revision})
-		if got.Posted != 1 {
-			t.Fatalf("the approval after the turn off answered %q", got.Sentence)
-		}
-		e = d.entry(t, e.ID)
+	got, posts := d.post(t, false, TimeEntryRefView{ID: e.ID, Revision: e.Revision})
+	if posts != 0 {
+		t.Fatalf("the approval after the turn off answered %q with %d posts", got.Sentence, posts)
 	}
-	if logs := d.logsOn(t, "WEB-2"); len(logs) != 1 || logs[0].ID != e.WorklogID {
-		t.Fatalf("WEB-2's worklogs are %+v; want the one entry %+v made", logs, e)
+	logs := d.logsOn(t, "WEB-2")
+	if e = d.entry(t, e.ID); len(logs) > 1 || e.State == store.TimeEntryPosted && (len(logs) != 1 || logs[0].ID != e.WorklogID) {
+		t.Fatalf("WEB-2's worklogs are %+v with the entry %+v; want at most one, the entry's when it is posted", logs, e)
 	}
 }
 
-// ReadTime reads the days from the tracker unless every one was read
-// within timeReadFresh, and answers the drafted entries with them.
-func TestReadTimeSkipsADayReadMomentsAgo(t *testing.T) {
+// ReadTime reads the days from the tracker on every call, and answers
+// the drafted entries with them.
+func TestReadTimeReadsTheTrackerEachTime(t *testing.T) {
 	t.Parallel()
 	d := newDraftScenario(t, "jira")
 	d.draft(t, d.on("WEB-2", 1, "Reviewed the pull request"))
-	read := func() (WorklogDays, int) {
+	for i := range 2 {
 		var got WorklogDays
 		reqs := d.requestsOf(t, func() { got = must[WorklogDays](t)(d.svc.ReadTime(t.Context(), d.conn.ID, d.from, d.to)) })
-		n := 0
-		for _, c := range reqs {
-			n += c
+		if total(reqs) == 0 || len(got.Worklogs) != 1 || len(got.Drafted) != 1 || got.Drafted[0].Key != "WEB-2" {
+			t.Fatalf("read %d made requests %v and answered %+v", i+1, reqs, got)
 		}
-		return got, n
-	}
-	got, n := read()
-	if n == 0 || len(got.Worklogs) != 1 || len(got.Drafted) != 1 || got.Drafted[0].Key != "WEB-2" {
-		t.Fatalf("the first read made %d requests and answered %+v", n, got)
-	}
-	d.clock.advance(timeReadFresh - time.Second)
-	if _, n := read(); n != 0 {
-		t.Fatalf("a read %s later made %d requests", timeReadFresh-time.Second, n)
-	}
-	d.clock.advance(2 * time.Second)
-	if _, n := read(); n == 0 {
-		t.Fatal("a read past timeReadFresh made no request")
 	}
 }
 
@@ -754,4 +800,71 @@ func TestAnEntryEditedDuringItsApprovalIsNotPosted(t *testing.T) {
 	if e := d.entry(t, v.Made[0].ID); e.State != store.TimeEntryDrafted || e.Reason != reason {
 		t.Fatalf("the entry is %+v; want the person's edit, drafted", e)
 	}
+	if got.Entries[0].Reason != reason {
+		t.Fatalf("the approval answered the entry as %+v; want it as the person's edit left it", got.Entries[0])
+	}
+}
+
+// What a week's draft costs in tracker requests: one read of the week,
+// the approval of one day of three entries, and one entry logged alone.
+// A cost that grows with the entries, such as a read per entry, fails
+// here.
+func TestAWeeksDraftCostsBoundedRequests(t *testing.T) {
+	t.Parallel()
+	bothSources(t, func(t *testing.T, d *draftScenario) {
+		last, err := time.Parse(time.DateOnly, d.day)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var entries []TimeDraftEntry
+		days := make([]string, 7)
+		for i := range days {
+			days[i] = last.AddDate(0, 0, i-6).Format(time.DateOnly)
+			for _, key := range []string{"WEB-1", "WEB-2", "WEB-3"} {
+				e := d.on(key, 0.5, "Worked on "+key)
+				e.Day = days[i]
+				entries = append(entries, e)
+			}
+		}
+		v := d.draft(t, entries...)
+		read := d.requestsOf(t, func() { must[WorklogDays](t)(d.svc.ReadTime(t.Context(), d.conn.ID, days[0], days[6])) })
+		var day []TimeEntryView
+		for _, e := range v.Made {
+			if e.Day == days[6] {
+				day = append(day, e)
+			}
+		}
+		var got PostTimeView
+		approval := d.requestsOf(t, func() {
+			got = must[PostTimeView](t)(d.svc.PostTimeEntries(t.Context(), d.conn.ID, PostTimeRequest{Entries: entryRefs(day...)}))
+		})
+		if got.Posted != 3 {
+			t.Fatalf("the day's approval answered %q", got.Sentence)
+		}
+		alone := d.requestsOf(t, func() {
+			got = must[PostTimeView](t)(d.svc.PostTimeEntries(t.Context(), d.conn.ID, PostTimeRequest{Entries: entryRefs(v.Made[0]), Alone: true}))
+		})
+		if got.Posted != 1 {
+			t.Fatalf("the entry logged alone answered %q", got.Sentence)
+		}
+		want := [3]map[string]int{
+			{"POST rest/api/3/search/jql": 1},
+			{"POST rest/api/3/search/jql": 2, jiraWorklogPost: 3},
+			{"POST rest/api/3/search/jql": 1, jiraWorklogPost: 1},
+		}
+		if d.tempo {
+			// The work attributes are read once and kept; the approvals
+			// read tells whether a day's timesheet is still open.
+			want = [3]map[string]int{
+				{"GET 4/worklogs/user/{account}": 1, "POST rest/api/3/issue/bulkfetch": 1},
+				{"GET 4/worklogs/user/{account}": 2, "POST rest/api/3/issue/bulkfetch": 2, "GET 4/timesheet-approvals/user/{account}": 1, "GET 4/work-attributes": 1, tempoWorklogPost: 3},
+				{"GET 4/worklogs/user/{account}": 1, "POST rest/api/3/issue/bulkfetch": 1, "GET 4/timesheet-approvals/user/{account}": 1, tempoWorklogPost: 1},
+			}
+		}
+		for i, got := range [3]map[string]int{read, approval, alone} {
+			if !maps.Equal(got, want[i]) {
+				t.Errorf("%s made %v; want %v", [3]string{"the week's time_read", "one day's approval", "one entry logged alone"}[i], got, want[i])
+			}
+		}
+	})
 }

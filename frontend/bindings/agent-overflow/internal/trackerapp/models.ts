@@ -2147,9 +2147,10 @@ export class PokerVoteView {
 
 /**
  * PostTimeRequest is the person's approval of time entries, each as they
- * read it. Alone is an entry logged by itself; otherwise the request
- * approves a day or the whole draft, and an entry whose ticket and day
- * got time logged by hand since it was drafted is skipped (skipLoggedByHand).
+ * read it, each named once. Alone is one entry logged by itself; otherwise
+ * the request approves a day or the whole draft, and an entry whose
+ * ticket and day got time logged since it was drafted is skipped
+ * (skipLoggedByHand).
  */
 export class PostTimeRequest {
     "entries": TimeEntryRefView[];

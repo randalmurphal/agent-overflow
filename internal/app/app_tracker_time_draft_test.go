@@ -82,7 +82,7 @@ func TestAnAgentsTimeDraftPostsOnlyOnTheApproval(t *testing.T) {
 		{"day": day, "key": "WEB-1", "hours": 1, "reason": "Built the form"},
 		{"day": day, "hours": 0.5, "reason": "Which ticket was the standup?", "offer": []string{"WEB-3"}},
 	}})
-	if isError || !strings.Contains(text, `"note":"Nothing is logged until the user approves it."`) || !strings.Contains(text, `"key":"WEB-1","hours":1`) {
+	if isError || !strings.Contains(text, `"note":"Nothing is logged until the user approves it."`) || !strings.Contains(text, `"key":"WEB-1"}],"questions":[`) {
 		t.Fatalf("time_draft = %s (error %v)", text, isError)
 	}
 	if n := posts(); n != 0 {

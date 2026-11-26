@@ -261,13 +261,11 @@ type MirrorWorklogDays struct {
 	Found      bool
 	// Logs are the author's worklogs of the range by day and ID, at most
 	// mirrorWorklogLimit, and More reports that the range holds more;
-	// ReadDays are the days of the range a read replaced, sorted, and
-	// ReadAt when each was last read (Unix milliseconds). A connection
-	// with no mirror root has none of them.
+	// ReadDays are the days of the range a read replaced, sorted. A
+	// connection with no mirror root has neither.
 	Logs     []MirrorWorklog
 	More     bool
 	ReadDays []string
-	ReadAt   []int64
 	// Entries are the author's time entries of the range on the
 	// connection (migration v173), by day and ID.
 	Entries []TimeEntry
@@ -300,16 +298,8 @@ func (s *Store) ReadMirrorWorklogDays(connectionID, authorID, fromDay, toDay str
 		case err != nil:
 			return out, fmt.Errorf("read the mirror root: %w", err)
 		}
-		err = scanMirrorRows(q, `SELECT day, read_at FROM tracker_cache_worklog_days
-			WHERE root_id = CAST(?1 AS INTEGER) AND author_id = ?2 AND day BETWEEN ?3 AND ?4 ORDER BY day`, []any{root, authorID, fromDay, toDay},
-			func(r rowScanner) error {
-				var day string
-				var at int64
-				err := r.Scan(&day, &at)
-				out.ReadDays, out.ReadAt = append(out.ReadDays, day), append(out.ReadAt, at)
-				return err
-			})
-		if err != nil {
+		if out.ReadDays, err = queryIDs(q, `SELECT day FROM tracker_cache_worklog_days
+			WHERE root_id = CAST(?1 AS INTEGER) AND author_id = ?2 AND day BETWEEN ?3 AND ?4 ORDER BY day`, root, authorID, fromDay, toDay); err != nil {
 			return out, fmt.Errorf("read the days read: %w", err)
 		}
 		if out.Logs, out.More, err = queryMirrorWorklogs(q, mirrorAuthorWorklogsSQL, root, authorID, fromDay, toDay); err != nil {

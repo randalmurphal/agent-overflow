@@ -6,12 +6,10 @@ package store
 // for a question the person answers; source says whether an agent or the
 // person last wrote it, thread_id and call_id the agent call that drafted
 // it (kept when the person changes it). state is drafted, sent (marked in
-// its own transaction before its request, so a crash leaves it to be
-// checked, never sent blind), posted, unknown (sent, outcome not known) or
-// left_out (a question the person closed). sent_to is the time source it
-// was sent to: the Tempo connection's ID, or the Jira connection's for
-// Jira's own worklogs. revision moves on every change; a screen sends it
-// back. A ticket has at most one entry a day that is not posted or left
+// its own transaction before its request, so a crash leaves a post that
+// may have happened marked), posted, unknown (sent, outcome not known) or
+// left_out (a question the person closed). revision moves on every
+// change; a screen sends it back. A ticket has at most one entry a day that is not posted or left
 // out (idx_tracker_time_entries_open), so an entry sent back to drafted
 // never meets another. The ID is AUTOINCREMENT, never reused, so an ID a screen holds
 // never names another entry. No foreign key to threads: a deleted
@@ -36,7 +34,6 @@ CREATE TABLE tracker_time_entries (
  revision INTEGER NOT NULL CHECK(revision > 0),
  refusal TEXT NOT NULL DEFAULT '',
  sent_ms INTEGER NOT NULL DEFAULT 0,
- sent_to TEXT NOT NULL DEFAULT '',
  worklog_id TEXT NOT NULL DEFAULT '',
  posted_ms INTEGER NOT NULL DEFAULT 0,
  created_ms INTEGER NOT NULL CHECK(created_ms > 0),
@@ -44,7 +41,7 @@ CREATE TABLE tracker_time_entries (
  CHECK((issue_id = '') = (issue_key = '')),
  CHECK(issue_id <> '' OR state IN ('drafted', 'left_out')),
  CHECK(issue_id = '' OR offers = '[]'),
- CHECK((state IN ('sent', 'posted', 'unknown')) = (sent_ms > 0 AND sent_to <> '')),
+ CHECK((state IN ('sent', 'posted', 'unknown')) = (sent_ms > 0)),
  CHECK((state = 'posted') = (posted_ms > 0)),
  CHECK(worklog_id = '' OR state = 'posted'),
  CHECK(source = 'person' OR thread_id <> '')

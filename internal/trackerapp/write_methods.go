@@ -218,8 +218,6 @@ type WorklogDays struct {
 	Unread   []string        `json:"unread,omitempty"`
 	Failure  *FailureView    `json:"failure,omitempty"`
 	Drafted  []TimeEntryView `json:"drafted,omitempty"`
-	// readAt is when each read day was last read, Unix milliseconds.
-	readAt map[string]int64
 }
 
 // worklogReadSpan is the most days one mirror read of worklogs covers: a
@@ -261,11 +259,7 @@ func (s *Service) Worklogs(id, author, from, to string) (WorklogDays, error) {
 	if !hasTimeTracking(snap.Connection.Kind) {
 		return WorklogDays{}, fmt.Errorf("trackerapp: connection %s has no time tracking: %w", id, tracker.ErrUnsupported)
 	}
-	out := WorklogDays{Worklogs: make([]WorklogView, 0, len(snap.Logs)), More: snap.More, Drafted: timeEntryViews(snap.Entries),
-		readAt: make(map[string]int64, len(snap.ReadDays))}
-	for i, d := range snap.ReadDays {
-		out.readAt[d] = snap.ReadAt[i]
-	}
+	out := WorklogDays{Worklogs: make([]WorklogView, 0, len(snap.Logs)), More: snap.More, Drafted: timeEntryViews(snap.Entries)}
 	for _, m := range snap.Logs {
 		w, err := worklogOf(m)
 		if err != nil {

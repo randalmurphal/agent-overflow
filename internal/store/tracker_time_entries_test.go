@@ -16,37 +16,36 @@ func TestTimeEntriesMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	insert := `INSERT INTO tracker_time_entries(connection_id, author_id, day, issue_id, issue_key, seconds, reason, offers, source, thread_id,
-		state, revision, sent_ms, sent_to, worklog_id, posted_ms, created_ms, updated_ms) VALUES ('j1', 'acc-user1', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 1, 1)`
+		state, revision, sent_ms, worklog_id, posted_ms, created_ms, updated_ms) VALUES ('j1', 'acc-user1', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 1, 1)`
 	good := [][]any{
-		{"2026-11-23", "10001", "WEB-1", 3600, "Review", "[]", "agent", "t1", "drafted", 0, "", "", 0},
-		{"2026-11-23", "", "", 1800, "Which ticket?", `[{"issue":"10002","key":"WEB-2","title":"Two"}]`, "agent", "t1", "drafted", 0, "", "", 0},
-		{"2026-11-23", "10001", "WEB-1", 600, "Earlier", "[]", "person", "", "posted", 5, "j1", "300", 6},
+		{"2026-11-23", "10001", "WEB-1", 3600, "Review", "[]", "agent", "t1", "drafted", 0, "", 0},
+		{"2026-11-23", "", "", 1800, "Which ticket?", `[{"issue":"10002","key":"WEB-2","title":"Two"}]`, "agent", "t1", "drafted", 0, "", 0},
+		{"2026-11-23", "10001", "WEB-1", 600, "Earlier", "[]", "person", "", "posted", 5, "300", 6},
 	}
 	for _, args := range good {
 		if _, err := db.Exec(insert, args...); err != nil {
 			t.Fatalf("%v: %v", args, err)
 		}
 	}
-	if _, err := db.Exec(insert, "2026-11-23", "10001", "WEB-1", 60, "Again", "[]", "person", "", "drafted", 0, "", "", 0); err == nil || !strings.Contains(err.Error(), "UNIQUE") {
+	if _, err := db.Exec(insert, "2026-11-23", "10001", "WEB-1", 60, "Again", "[]", "person", "", "drafted", 0, "", 0); err == nil || !strings.Contains(err.Error(), "UNIQUE") {
 		t.Errorf("a second open entry for WEB-1 that day: %v, want a UNIQUE failure", err)
 	}
 	for _, bad := range []struct {
 		name string
 		args []any
 	}{
-		{"a day that is no date", []any{"Nov 23", "10003", "WEB-3", 60, "r", "[]", "agent", "t1", "drafted", 0, "", "", 0}},
-		{"seconds not whole minutes", []any{"2026-11-23", "10003", "WEB-3", 61, "r", "[]", "agent", "t1", "drafted", 0, "", "", 0}},
-		{"over a day", []any{"2026-11-23", "10003", "WEB-3", 86460, "r", "[]", "agent", "t1", "drafted", 0, "", "", 0}},
-		{"no reason", []any{"2026-11-23", "10003", "WEB-3", 60, "", "[]", "agent", "t1", "drafted", 0, "", "", 0}},
-		{"an agent entry with no thread", []any{"2026-11-23", "10003", "WEB-3", 60, "r", "[]", "agent", "", "drafted", 0, "", "", 0}},
-		{"a question sent", []any{"2026-11-23", "", "", 60, "r", "[]", "agent", "t1", "sent", 5, "j1", "", 0}},
-		{"a ticket with offers", []any{"2026-11-23", "10003", "WEB-3", 60, "r", `[{"issue":"1"}]`, "agent", "t1", "drafted", 0, "", "", 0}},
-		{"sent with no time", []any{"2026-11-23", "10003", "WEB-3", 60, "r", "[]", "agent", "t1", "sent", 0, "j1", "", 0}},
-		{"sent nowhere", []any{"2026-11-23", "10003", "WEB-3", 60, "r", "[]", "agent", "t1", "sent", 5, "", "", 0}},
-		{"posted with no time", []any{"2026-11-23", "10003", "WEB-3", 60, "r", "[]", "agent", "t1", "posted", 5, "j1", "1", 0}},
-		{"a drafted entry naming a worklog", []any{"2026-11-23", "10003", "WEB-3", 60, "r", "[]", "agent", "t1", "drafted", 0, "", "1", 0}},
-		{"an unknown state", []any{"2026-11-23", "10003", "WEB-3", 60, "r", "[]", "agent", "t1", "approved", 0, "", "", 0}},
-		{"offers not a list", []any{"2026-11-23", "", "", 60, "r", "{}", "agent", "t1", "drafted", 0, "", "", 0}},
+		{"a day that is no date", []any{"Nov 23", "10003", "WEB-3", 60, "r", "[]", "agent", "t1", "drafted", 0, "", 0}},
+		{"seconds not whole minutes", []any{"2026-11-23", "10003", "WEB-3", 61, "r", "[]", "agent", "t1", "drafted", 0, "", 0}},
+		{"over a day", []any{"2026-11-23", "10003", "WEB-3", 86460, "r", "[]", "agent", "t1", "drafted", 0, "", 0}},
+		{"no reason", []any{"2026-11-23", "10003", "WEB-3", 60, "", "[]", "agent", "t1", "drafted", 0, "", 0}},
+		{"an agent entry with no thread", []any{"2026-11-23", "10003", "WEB-3", 60, "r", "[]", "agent", "", "drafted", 0, "", 0}},
+		{"a question sent", []any{"2026-11-23", "", "", 60, "r", "[]", "agent", "t1", "sent", 5, "", 0}},
+		{"a ticket with offers", []any{"2026-11-23", "10003", "WEB-3", 60, "r", `[{"issue":"1"}]`, "agent", "t1", "drafted", 0, "", 0}},
+		{"sent with no time", []any{"2026-11-23", "10003", "WEB-3", 60, "r", "[]", "agent", "t1", "sent", 0, "", 0}},
+		{"posted with no time", []any{"2026-11-23", "10003", "WEB-3", 60, "r", "[]", "agent", "t1", "posted", 5, "1", 0}},
+		{"a drafted entry naming a worklog", []any{"2026-11-23", "10003", "WEB-3", 60, "r", "[]", "agent", "t1", "drafted", 0, "1", 0}},
+		{"an unknown state", []any{"2026-11-23", "10003", "WEB-3", 60, "r", "[]", "agent", "t1", "approved", 0, "", 0}},
+		{"offers not a list", []any{"2026-11-23", "", "", 60, "r", "{}", "agent", "t1", "drafted", 0, "", 0}},
 	} {
 		if _, err := db.Exec(insert, bad.args...); err == nil || !strings.Contains(err.Error(), "CHECK") {
 			t.Errorf("%s: %v, want a CHECK failure", bad.name, err)
@@ -78,13 +77,13 @@ func agentEntry(day, issue, key string, seconds int64, reason, thread string) Ti
 	return TimeEntry{Day: day, IssueID: issue, IssueKey: key, Seconds: seconds, Reason: reason, ThreadID: thread, CallID: "call-" + thread}
 }
 
-// A draft replaces the agent's drafted entries of the days it names,
-// whichever thread wrote them, keeps the person's and the sent ones, and
-// skips a ticket that already has an open entry that day.
+// A draft replaces its own thread's drafted entries of the days it names
+// and nothing else: another thread's, the person's and the sent ones stay,
+// and a ticket that already has an open entry that day is skipped.
 func TestReplaceAgentTimeDays(t *testing.T) {
 	t.Parallel()
 	s, conn := timeStore(t)
-	first, err := s.ReplaceAgentTimeDays(conn, "acc-user1", "2026-11-26", []TimeEntry{
+	first, err := s.ReplaceAgentTimeDays(conn, "acc-user1", []TimeEntry{
 		agentEntry("2026-11-23", "10001", "WEB-1", 3600, "Review", "t1"),
 		agentEntry("2026-11-23", "10002", "WEB-2", 1800, "Fix", "t1"),
 		agentEntry("2026-11-24", "10001", "WEB-1", 1800, "More review", "t1"),
@@ -92,63 +91,83 @@ func TestReplaceAgentTimeDays(t *testing.T) {
 	if err != nil || len(first.Made) != 3 || !first.Changed() {
 		t.Fatalf("first draft %+v %v", first, err)
 	}
-	two := first.Made[1]
+	one, two := first.Made[0], first.Made[1]
 	reason := "Fixed the login"
-	if _, ok, err := s.EditTimeEntry(conn, TimeEntryRef{two.ID, two.Revision}, TimeEntryChange{Reason: &reason}, 11); !ok || err != nil {
+	if _, ok, err := s.EditTimeEntry(conn, "acc-user1", TimeEntryRef{two.ID, two.Revision}, TimeEntryChange{Reason: &reason}, 11); !ok || err != nil {
 		t.Fatalf("the person's edit: %v %v", ok, err)
 	}
-	again, err := s.ReplaceAgentTimeDays(conn, "acc-user1", "2026-11-26", []TimeEntry{
+	other, err := s.ReplaceAgentTimeDays(conn, "acc-user1", []TimeEntry{
 		agentEntry("2026-11-23", "10003", "WEB-3", 900, "Standup", "t2"),
 		agentEntry("2026-11-23", "10002", "WEB-2", 600, "Fix again", "t2"),
 	}, 20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(again.Replaced) != 1 || again.Replaced[0].IssueKey != "WEB-1" || again.Replaced[0].ThreadID != "t1" {
-		t.Errorf("replaced %+v, want t1's WEB-1 of the 23rd", again.Replaced)
+	if len(other.Replaced) != 0 {
+		t.Errorf("t2's draft replaced %+v, want nothing of t1's", other.Replaced)
 	}
-	if len(again.Made) != 1 || again.Made[0].IssueKey != "WEB-3" || len(again.Skipped) != 1 || again.Skipped[0].IssueKey != "WEB-2" {
-		t.Errorf("made %+v skipped %+v, want WEB-3 made and WEB-2 skipped", again.Made, again.Skipped)
+	if len(other.Made) != 1 || other.Made[0].IssueKey != "WEB-3" || len(other.Skipped) != 1 || other.Skipped[0].IssueKey != "WEB-2" {
+		t.Errorf("made %+v skipped %+v, want WEB-3 made and WEB-2 skipped", other.Made, other.Skipped)
 	}
-	if len(again.Kept) != 1 || again.Kept[0].ID != two.ID || again.Kept[0].Source != TimeSourcePerson || again.Kept[0].Reason != reason {
-		t.Errorf("kept %+v, want the person's WEB-2", again.Kept)
+	if len(other.Kept) != 2 || other.Kept[0].ID != one.ID || other.Kept[1].ID != two.ID || other.Kept[1].Reason != reason {
+		t.Errorf("kept %+v, want t1's WEB-1 and the person's WEB-2", other.Kept)
+	}
+	again, err := s.ReplaceAgentTimeDays(conn, "acc-user1", []TimeEntry{agentEntry("2026-11-23", "10004", "WEB-4", 600, "Docs", "t1")}, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Replaced) != 1 || again.Replaced[0].ID != one.ID {
+		t.Errorf("t1's second draft replaced %+v, want its own WEB-1 of the 23rd", again.Replaced)
 	}
 	days, err := s.TimeEntriesOf(conn, "acc-user1", "2026-11-23", "2026-11-24")
-	if err != nil || len(days) != 3 {
+	if err != nil || len(days) != 4 {
 		t.Fatalf("entries %+v %v", days, err)
 	}
-	if days[2].Day != "2026-11-24" || days[2].IssueKey != "WEB-1" {
-		t.Errorf("the 24th, not named, changed: %+v", days[2])
+	if days[3].Day != "2026-11-24" || days[3].IssueKey != "WEB-1" {
+		t.Errorf("the 24th, not named, changed: %+v", days[3])
 	}
 }
 
-// A posted or left-out entry is kept 62 days after its day; the draft
-// write of its author deletes it after that.
-func TestTimeEntryRetention(t *testing.T) {
+// A draft deletes nothing it did not replace: a posted entry and a
+// left-out question of a day long past stay, whatever day the draft is
+// for.
+func TestADraftDeletesNoSettledEntry(t *testing.T) {
 	t.Parallel()
 	s, conn := timeStore(t)
-	old, err := s.ReplaceAgentTimeDays(conn, "acc-user1", "2026-09-01", []TimeEntry{
+	old, err := s.ReplaceAgentTimeDays(conn, "acc-user1", []TimeEntry{
 		agentEntry("2026-09-01", "", "", 600, "Which?", "t1"), agentEntry("2026-09-01", "10001", "WEB-1", 600, "Keep", "t1"),
 	}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	q := old.Made[0]
-	if _, ok, err := s.EditTimeEntry(conn, TimeEntryRef{q.ID, q.Revision}, TimeEntryChange{LeaveOut: true}, 2); !ok || err != nil {
+	if _, ok, err := s.EditTimeEntry(conn, "acc-user1", TimeEntryRef{q.ID, q.Revision}, TimeEntryChange{LeaveOut: true}, 2); !ok || err != nil {
 		t.Fatalf("leave out: %v %v", ok, err)
 	}
-	if _, err := s.ReplaceAgentTimeDays(conn, "acc-user1", "2026-11-02", []TimeEntry{agentEntry("2026-11-02", "10002", "WEB-2", 600, "x", "t1")}, 3); err != nil {
+	if _, err := s.ReplaceAgentTimeDays(conn, "acc-user1", []TimeEntry{agentEntry("2027-03-01", "10002", "WEB-2", 600, "x", "t2")}, 4); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := s.TimeEntriesOf(conn, "acc-user1", "2026-09-01", "2026-09-01"); len(got) != 2 {
-		t.Fatalf("61 days later %d entries, want both", len(got))
+	if got, _ := s.TimeEntriesOf(conn, "acc-user1", "2026-09-01", "2026-09-01"); len(got) != 2 || got[0].State != TimeEntryLeftOut {
+		t.Errorf("after a later draft %+v, want the left-out question and the drafted entry kept", got)
 	}
-	if _, err := s.ReplaceAgentTimeDays(conn, "acc-user1", "2026-11-03", []TimeEntry{agentEntry("2026-11-03", "10002", "WEB-2", 600, "x", "t1")}, 4); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := s.TimeEntriesOf(conn, "acc-user1", "2026-09-01", "2026-09-01")
-	if len(got) != 1 || got[0].State != TimeEntryDrafted {
-		t.Errorf("63 days later %+v, want the left-out question gone and the drafted entry kept", got)
+}
+
+// A mark and a remove start from the entries named: their cost does not
+// grow with the connection's other entries.
+func TestMarkAndRemoveReadTheNamedEntriesOnly(t *testing.T) {
+	t.Parallel()
+	s, conn := timeStore(t)
+	for name, q := range map[string]struct {
+		sql  string
+		args []any
+	}{
+		"mark":   {markTimeEntriesSentSQL, []any{conn, "[[1,1]]", 5, 1}},
+		"remove": {removeTimeEntriesSQL, []any{conn, "[[1,1]]", "acc-user1"}},
+	} {
+		plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+q.sql, q.args...)
+		if !strings.Contains(plan, "tracker_time_entries USING INTEGER PRIMARY KEY") || strings.Contains(plan, "idx_tracker_time_entries_day") {
+			t.Errorf("%s plans %s; want it driven by the named IDs", name, plan)
+		}
 	}
 }
 
@@ -158,7 +177,7 @@ func TestTimeEntryRetention(t *testing.T) {
 func TestTimeEntryTransitions(t *testing.T) {
 	t.Parallel()
 	s, conn := timeStore(t)
-	w, err := s.ReplaceAgentTimeDays(conn, "acc-user1", "2026-11-26", []TimeEntry{
+	w, err := s.ReplaceAgentTimeDays(conn, "acc-user1", []TimeEntry{
 		agentEntry("2026-11-23", "10001", "WEB-1", 3600, "Review", "t1"),
 		agentEntry("2026-11-23", "10002", "WEB-2", 1800, "Fix", "t1"),
 		agentEntry("2026-11-23", "", "", 600, "Which?", "t1"),
@@ -168,23 +187,23 @@ func TestTimeEntryTransitions(t *testing.T) {
 	}
 	one, two, q := w.Made[0], w.Made[1], w.Made[2]
 	ref := func(e TimeEntry) TimeEntryRef { return TimeEntryRef{e.ID, e.Revision} }
-	marked, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(one), ref(two), ref(q)}, "tempo-1", 100, 50)
+	marked, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(one), ref(two), ref(q)}, 100, 50)
 	if err != nil || len(marked) != 2 {
 		t.Fatalf("marked %+v %v, want the two tickets and not the question", marked, err)
 	}
-	if again, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(one)}, "tempo-1", 101, 50); err != nil || len(again) != 0 {
+	if again, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(one)}, 101, 50); err != nil || len(again) != 0 {
 		t.Errorf("a second window's mark %+v %v, want nothing", again, err)
 	}
-	if again, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(marked[0])}, "tempo-1", 101, 50); err != nil || len(again) != 0 {
+	if again, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(marked[0])}, 101, 50); err != nil || len(again) != 0 {
 		t.Errorf("a mark of an entry this run is sending %+v %v, want nothing", again, err)
 	}
-	if again, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(marked[0])}, "tempo-1", 300, 200); err != nil || len(again) != 1 {
+	if again, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(marked[0])}, 300, 200); err != nil || len(again) != 1 {
 		t.Errorf("a mark of an entry an earlier run left sent %+v %v, want it marked", again, err)
 	}
-	if _, ok, _ := s.EditTimeEntry(conn, ref(one), TimeEntryChange{LeaveOut: true}, 102); ok {
+	if _, ok, _ := s.EditTimeEntry(conn, "acc-user1", ref(one), TimeEntryChange{LeaveOut: true}, 102); ok {
 		t.Error("an edit of an entry being sent was applied")
 	}
-	if removed, _ := s.RemoveTimeEntries(conn, []TimeEntryRef{ref(marked[1])}); len(removed) != 0 {
+	if removed, _ := s.RemoveTimeEntries(conn, "acc-user1", []TimeEntryRef{ref(marked[1])}); len(removed) != 0 {
 		t.Error("a remove of an entry being sent was applied")
 	}
 	settled, err := s.SettleTimeEntries(conn, 100, []TimeEntrySettle{
@@ -198,20 +217,20 @@ func TestTimeEntryTransitions(t *testing.T) {
 		t.Fatalf("posted %+v %v", settled, err)
 	}
 	stale := TimeEntryRef{q.ID, q.Revision + 1}
-	if _, ok, err := s.EditTimeEntry(conn, stale, TimeEntryChange{LeaveOut: true}, 104); ok || err != nil {
+	if _, ok, err := s.EditTimeEntry(conn, "acc-user1", stale, TimeEntryChange{LeaveOut: true}, 104); ok || err != nil {
 		t.Errorf("an edit at a revision never read: %v %v", ok, err)
 	}
 	answer := TimeOffer{Issue: "10001", Key: "WEB-1", Title: "One"}
-	edited, ok, err := s.EditTimeEntry(conn, ref(q), TimeEntryChange{Issue: &answer}, 105)
+	edited, ok, err := s.EditTimeEntry(conn, "acc-user1", ref(q), TimeEntryChange{Issue: &answer}, 105)
 	got := edited.Entry
 	if !ok || err != nil || got.ID != q.ID || edited.Merged != nil || got.IssueKey != "WEB-1" || got.Source != TimeSourcePerson || len(got.Offers) != 0 {
 		t.Fatalf("answering the question with WEB-1, posted already: %+v %v %v", edited, ok, err)
 	}
 	other := TimeOffer{Issue: "10002", Key: "WEB-2", Title: "Two"}
-	if _, _, err := s.EditTimeEntry(conn, ref(got), TimeEntryChange{Issue: &other}, 106); !errors.Is(err, ErrTimeEntryOpen) {
+	if _, _, err := s.EditTimeEntry(conn, "acc-user1", ref(got), TimeEntryChange{Issue: &other}, 106); !errors.Is(err, ErrTimeEntryOpen) {
 		t.Errorf("moving it to WEB-2, drafted that day already: %v, want ErrTimeEntryOpen", err)
 	}
-	if removed, err := s.RemoveTimeEntries(conn, []TimeEntryRef{ref(got)}); err != nil || len(removed) != 1 {
+	if removed, err := s.RemoveTimeEntries(conn, "acc-user1", []TimeEntryRef{ref(got)}); err != nil || len(removed) != 1 {
 		t.Errorf("removed %+v %v", removed, err)
 	}
 }
@@ -225,10 +244,15 @@ func TestTimeEntryTransitions(t *testing.T) {
 func TestAnAnsweredQuestionMergesIntoItsTicketsEntry(t *testing.T) {
 	t.Parallel()
 	s, conn := timeStore(t)
-	w, err := s.ReplaceAgentTimeDays(conn, "acc-user1", "2026-11-26", []TimeEntry{
+	w, err := s.ReplaceAgentTimeDays(conn, "acc-user1", []TimeEntry{
 		agentEntry("2026-11-23", "10001", "WEB-1", 3600, "Built the form.", "t1"),
 		agentEntry("2026-11-23", "10002", "WEB-2", 1800, "Fix", "t1"),
 		agentEntry("2026-11-23", "10003", "WEB-3", 600, "Triage", "t1"),
+	}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := s.ReplaceAgentTimeDays(conn, "acc-user1", []TimeEntry{
 		agentEntry("2026-11-23", "", "", 1500, "25 minute call at 14:05", "t2"),
 		agentEntry("2026-11-23", "", "", 600, "Standup", "t2"),
 		agentEntry("2026-11-23", "", "", 82800, "Offsite", "t2"),
@@ -236,52 +260,52 @@ func TestAnAnsweredQuestionMergesIntoItsTicketsEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	web1, web2, web3, call, standup, offsite := w.Made[0], w.Made[1], w.Made[2], w.Made[3], w.Made[4], w.Made[5]
+	web1, web2, web3, call, standup, offsite := w.Made[0], w.Made[1], w.Made[2], q.Made[0], q.Made[1], q.Made[2]
 	ref := func(e TimeEntry) TimeEntryRef { return TimeEntryRef{e.ID, e.Revision} }
-	if _, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(web2)}, "tempo-1", 20, 5); err != nil {
+	if _, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(web2)}, 20, 5); err != nil {
 		t.Fatal(err)
 	}
 	ticket := func(e TimeEntry) *TimeOffer { return &TimeOffer{Issue: e.IssueID, Key: e.IssueKey, Title: "T"} }
 	unchanged := func(what string, es ...TimeEntry) {
 		t.Helper()
 		for _, e := range es {
-			now, ok, err := s.TimeEntry(conn, e.ID)
+			now, ok, err := timeEntryOf(s, conn, e.ID)
 			if err != nil || !ok || now.Revision != e.Revision {
 				t.Fatalf("%s changed entry %d: %+v %v %v", what, e.ID, now, ok, err)
 			}
 		}
 	}
 
-	edited, ok, err := s.EditTimeEntry(conn, ref(call), TimeEntryChange{Issue: ticket(web1)}, 30)
+	edited, ok, err := s.EditTimeEntry(conn, "acc-user1", ref(call), TimeEntryChange{Issue: ticket(web1)}, 30)
 	m := edited.Entry
 	if err != nil || !ok || m.ID != web1.ID || m.Seconds != 5100 || m.Reason != "Built the form, plus 25 minute call at 14:05" ||
 		m.Source != TimeSourcePerson || m.Revision != web1.Revision+1 || m.ThreadID != "t1" || edited.Merged == nil || edited.Merged.ID != call.ID {
 		t.Fatalf("answering the call with WEB-1: %+v %v %v", edited, ok, err)
 	}
-	if _, found, err := s.TimeEntry(conn, call.ID); found || err != nil {
+	if _, found, err := timeEntryOf(s, conn, call.ID); found || err != nil {
 		t.Fatalf("the merged question is still stored: %v %v", found, err)
 	}
-	if _, ok, err := s.EditTimeEntry(conn, ref(call), TimeEntryChange{Issue: ticket(web1)}, 31); ok || err != nil {
+	if _, ok, err := s.EditTimeEntry(conn, "acc-user1", ref(call), TimeEntryChange{Issue: ticket(web1)}, 31); ok || err != nil {
 		t.Fatalf("answering the merged question again: %v %v", ok, err)
 	}
 
 	var open *TimeEntryOpenError
-	if _, _, err := s.EditTimeEntry(conn, ref(standup), TimeEntryChange{Issue: ticket(web2)}, 32); !errors.As(err, &open) ||
+	if _, _, err := s.EditTimeEntry(conn, "acc-user1", ref(standup), TimeEntryChange{Issue: ticket(web2)}, 32); !errors.As(err, &open) ||
 		!errors.Is(err, ErrTimeEntryOpen) || open.Open.ID != web2.ID || open.Open.State != TimeEntrySent {
 		t.Fatalf("answering with WEB-2, being sent: %v", err)
 	}
-	if _, _, err := s.EditTimeEntry(conn, ref(web3), TimeEntryChange{Issue: ticket(web1)}, 33); !errors.As(err, &open) || open.Open.ID != web1.ID {
+	if _, _, err := s.EditTimeEntry(conn, "acc-user1", ref(web3), TimeEntryChange{Issue: ticket(web1)}, 33); !errors.As(err, &open) || open.Open.ID != web1.ID {
 		t.Fatalf("moving WEB-3's entry onto WEB-1's: %v", err)
 	}
-	if _, _, err := s.EditTimeEntry(conn, ref(offsite), TimeEntryChange{Issue: ticket(m)}, 34); !errors.Is(err, ErrTimeEntryMergeOver) {
+	if _, _, err := s.EditTimeEntry(conn, "acc-user1", ref(offsite), TimeEntryChange{Issue: ticket(m)}, 34); !errors.Is(err, ErrTimeEntryMergeOver) {
 		t.Fatalf("a merge past a day: %v", err)
 	}
 	long := strings.Repeat("x", MaxTimeEntryReason-len(", plus Standup")+1)
-	if _, _, err := s.EditTimeEntry(conn, ref(m), TimeEntryChange{Reason: &long}, 35); err != nil {
+	if _, _, err := s.EditTimeEntry(conn, "acc-user1", ref(m), TimeEntryChange{Reason: &long}, 35); err != nil {
 		t.Fatal(err)
 	}
-	m, _, _ = s.TimeEntry(conn, m.ID)
-	if _, _, err := s.EditTimeEntry(conn, ref(standup), TimeEntryChange{Issue: ticket(m)}, 36); !errors.Is(err, ErrTimeEntryMergeOver) {
+	m, _, _ = timeEntryOf(s, conn, m.ID)
+	if _, _, err := s.EditTimeEntry(conn, "acc-user1", ref(standup), TimeEntryChange{Issue: ticket(m)}, 36); !errors.Is(err, ErrTimeEntryMergeOver) {
 		t.Fatalf("a merge past the longest reason: %v", err)
 	}
 	unchanged("the refused edits", m, standup, web3, offsite)
@@ -300,18 +324,18 @@ func TestRestoreKeepsTheTimeDraft(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := s.ReplaceAgentTimeDays(conn, "acc-user1", "2026-11-26", []TimeEntry{agentEntry("2026-11-23", "10001", "WEB-1", 3600, "Review", "t1")}, 10)
+	w, err := s.ReplaceAgentTimeDays(conn, "acc-user1", []TimeEntry{agentEntry("2026-11-23", "10001", "WEB-1", 3600, "Review", "t1")}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	e := w.Made[0]
-	if _, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{{e.ID, e.Revision}}, conn, 20, 5); err != nil {
+	if _, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{{e.ID, e.Revision}}, 20, 5); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.SettleTimeEntries(conn, 20, []TimeEntrySettle{{ID: e.ID, State: TimeEntryPosted, WorklogID: "300"}}, 21); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ReplaceAgentTimeDays(later.ID, "acc-user1", "2026-11-26", []TimeEntry{agentEntry("2026-11-23", "10001", "WEB-1", 600, "x", "t1")}, 30); err != nil {
+	if _, err := s.ReplaceAgentTimeDays(later.ID, "acc-user1", []TimeEntry{agentEntry("2026-11-23", "10001", "WEB-1", 600, "x", "t1")}, 30); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.RestoreFrom(path); err != nil {
@@ -324,8 +348,17 @@ func TestRestoreKeepsTheTimeDraft(t *testing.T) {
 	if gone, _ := s.TimeEntriesOf(later.ID, "acc-user1", "2026-11-23", "2026-11-23"); len(gone) != 0 {
 		t.Errorf("the entries of a connection the snapshot lacks stayed: %+v", gone)
 	}
-	next, err := s.ReplaceAgentTimeDays(conn, "acc-user1", "2026-11-26", []TimeEntry{agentEntry("2026-11-24", "10001", "WEB-1", 600, "y", "t1")}, 40)
+	next, err := s.ReplaceAgentTimeDays(conn, "acc-user1", []TimeEntry{agentEntry("2026-11-24", "10001", "WEB-1", 600, "y", "t1")}, 40)
 	if err != nil || next.Made[0].ID <= e.ID+1 {
 		t.Errorf("an entry made after the restore has ID %v (%v); want past every ID given before it", next.Made, err)
 	}
+}
+
+// timeEntryOf is entry id on connection; false when there is none.
+func timeEntryOf(s *Store, connection string, id int64) (TimeEntry, bool, error) {
+	got, err := s.TimeEntriesByID(connection, []int64{id})
+	if err != nil || len(got) == 0 {
+		return TimeEntry{}, false, err
+	}
+	return got[0], true, nil
 }

@@ -53,16 +53,12 @@ for (const provider of PROVIDERS) {
     await harness.send(threadId, 'draft my time for that day');
     const event = await harness.awaitMcpResult({ server: TRACKER_TOOLS_SERVER, tool: 'time_draft', cwd: project.path, timeoutMs: 60_000 });
     expect(event.report.isError, event.report.result).toBeFalsy();
-    const answer = JSON.parse(event.report.result ?? '{}') as { days: Array<{ day: string; drafted?: unknown[]; questions?: unknown[] }>; note: string };
+    const answer = JSON.parse(event.report.result ?? '{}') as { days: Array<{ day: string; made?: Array<{ id: number; key: string }>; questions?: number[] }>; note: string };
     expect(answer.note).toBe('Nothing is logged until the user approves it.');
-    expect(answer.days).toEqual([expect.objectContaining({
-      day,
-      drafted: [expect.objectContaining({ key: 'WEB-1', hours: 1.5 })],
-      questions: [expect.objectContaining({ hours: 0.5, reason: 'Standup', offer: ['WEB-2'] })],
-    })]);
     expect(await trackerRequests(harness, WORKLOG_ROUTE), 'the draft logged time').toHaveLength(0);
 
     const entries = await harness.rpc<TimeEntry[]>('ThreadTimeEntries', threadId);
+    expect(answer.days).toEqual([{ day, made: [{ id: entries[0].id, key: 'WEB-1' }], questions: [entries[1].id] }]);
     expect(entries).toEqual([
       expect.objectContaining({ day, key: 'WEB-1', minutes: 90, reason: 'Built the login form', by: 'agent', state: 'drafted', connection: connectionId }),
       expect.objectContaining({ day, minutes: 30, reason: 'Standup', by: 'agent', state: 'drafted', offers: [expect.objectContaining({ key: 'WEB-2' })] }),

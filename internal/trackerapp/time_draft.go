@@ -182,11 +182,17 @@ func invalidDraft(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalidRequest, fmt.Sprintf(format, args...))
 }
 
-// CheckDraftSize refuses a draft of n entries that no call may make: the
-// tools check it before they resolve the entries' keys.
-func CheckDraftSize(n int) error {
-	if n == 0 || n > tracker.MaxWorklogInputs {
+// CheckDraftShape refuses a draft that no call may make by its shape:
+// how many entries it has, and offers, how many tickets each entry offers.
+// The tools check it before they resolve the entries' keys.
+func CheckDraftShape(offers []int) error {
+	if n := len(offers); n == 0 || n > tracker.MaxWorklogInputs {
 		return invalidDraft("time_draft takes 1 to %d entries a call.", tracker.MaxWorklogInputs)
+	}
+	for i, n := range offers {
+		if n > maxDraftOffers {
+			return invalidDraft("entries[%d].offer holds at most %d keys.", i, maxDraftOffers)
+		}
 	}
 	return nil
 }
@@ -197,7 +203,11 @@ func (s *Service) checkDraft(in TimeDraftRequest) ([]store.TimeEntry, error) {
 	if in.Thread == "" || in.Call == "" {
 		return nil, invalidDraft("a draft names its thread and call")
 	}
-	if err := CheckDraftSize(len(in.Entries)); err != nil {
+	offers := make([]int, len(in.Entries))
+	for i, e := range in.Entries {
+		offers[i] = len(e.Offers)
+	}
+	if err := CheckDraftShape(offers); err != nil {
 		return nil, err
 	}
 	today := s.today()
@@ -229,8 +239,6 @@ func (s *Service) checkDraft(in TimeDraftRequest) ([]store.TimeEntry, error) {
 			return nil, invalidDraft("%s.reason is over 1 KiB.", at)
 		case e.Ticket != nil && len(e.Offers) > 0:
 			return nil, invalidDraft("%s.offer is for an entry with no key.", at)
-		case len(e.Offers) > maxDraftOffers:
-			return nil, invalidDraft("%s.offer holds at most %d keys.", at, maxDraftOffers)
 		}
 		entry := store.TimeEntry{Day: e.Day, Seconds: minutes * 60, Reason: e.Reason, ThreadID: in.Thread, CallID: in.Call}
 		if t := e.Ticket; t != nil {
@@ -267,10 +275,10 @@ func (s *Service) checkDraft(in TimeDraftRequest) ([]store.TimeEntry, error) {
 	return out, nil
 }
 
-// DraftTime replaces the agent-drafted entries of each day in's entries
-// name, on Jira connection id, with them: the time of the connection's
-// verified account. Entries the person made or changed stay, and so do
-// those sent or posted; a new entry for a ticket that already has one
+// DraftTime replaces the drafted entries in's thread drafted on each day
+// in's entries name, on Jira connection id, with them: the time of the
+// connection's verified account. Other threads' entries and those the
+// person made or changed stay, and so do those sent or posted; a new entry for a ticket that already has one
 // not yet posted that day is skipped. Nothing is sent to the tracker.
 func (s *Service) DraftTime(id string, in TimeDraftRequest) (TimeDraftView, error) {
 	if err := s.enter(); err != nil {
@@ -285,7 +293,7 @@ func (s *Service) DraftTime(id string, in TimeDraftRequest) (TimeDraftView, erro
 	if err != nil {
 		return TimeDraftView{}, err
 	}
-	w, err := s.store.ReplaceAgentTimeDays(id, author, s.today(), entries, millis(s.now()))
+	w, err := s.store.ReplaceAgentTimeDays(id, author, entries, millis(s.now()))
 	if err != nil {
 		return TimeDraftView{}, fmt.Errorf("trackerapp: draft time on %s: %w", id, err)
 	}
@@ -414,7 +422,7 @@ func (s *Service) EditTimeEntry(id string, ref TimeEntryRefView, in TimeEntryEdi
 		}
 		ch.Reason = r
 	}
-	got, ok, err := s.store.EditTimeEntry(id, store.TimeEntryRef{ID: ref.ID, Revision: ref.Revision}, ch, millis(s.now()))
+	got, ok, err := s.store.EditTimeEntry(id, author, store.TimeEntryRef{ID: ref.ID, Revision: ref.Revision}, ch, millis(s.now()))
 	var open *store.TimeEntryOpenError
 	switch {
 	case errors.As(err, &open) && open.Open.State == store.TimeEntrySent:
@@ -453,7 +461,7 @@ func (s *Service) RemoveTimeEntries(id string, refs []TimeEntryRefView) ([]TimeE
 	if len(refs) == 0 || len(refs) > tracker.MaxWorklogInputs {
 		return nil, invalidDraft("a remove names 1 to %d entries", tracker.MaxWorklogInputs)
 	}
-	gone, err := s.store.RemoveTimeEntries(id, storeRefs(refs))
+	gone, err := s.store.RemoveTimeEntries(id, author, storeRefs(refs))
 	if err != nil {
 		return nil, fmt.Errorf("trackerapp: %w", err)
 	}
@@ -469,14 +477,8 @@ func storeRefs(refs []TimeEntryRefView) []store.TimeEntryRef {
 	return out
 }
 
-// timeReadFresh is how recently a day's worklogs were read for ReadTime
-// to answer them with no refresh: a second read in the same turn, or one
-// moments after the Time screen's, costs no request.
-const timeReadFresh = 60 * time.Second
-
 // ReadTime is the time of Jira connection id's verified account from day
-// from to day to, as Worklogs answers it, read from the tracker first
-// unless every day was read within timeReadFresh by any path.
+// from to day to, read from the tracker as RefreshWorklogs reads it.
 func (s *Service) ReadTime(ctx context.Context, id, from, to string) (WorklogDays, error) {
 	if err := s.enter(); err != nil {
 		return WorklogDays{}, err
@@ -485,20 +487,6 @@ func (s *Service) ReadTime(ctx context.Context, id, from, to string) (WorklogDay
 	s.leave()
 	if err != nil {
 		return WorklogDays{}, err
-	}
-	days, err := s.Worklogs(id, author, from, to)
-	if err != nil {
-		return WorklogDays{}, err
-	}
-	fresh := len(days.Unread) == 0 && !days.More
-	since := millis(s.now().Add(-timeReadFresh))
-	for _, at := range days.readAt {
-		if at < since {
-			fresh = false
-		}
-	}
-	if fresh {
-		return days, nil
 	}
 	return s.RefreshWorklogs(ctx, id, author, from, to)
 }
