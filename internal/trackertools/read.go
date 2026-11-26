@@ -398,8 +398,12 @@ type section struct {
 func (sh *sheet) first(history bool) (readAnswer, error) {
 	d, c := sh.d, sh.d.Card
 	sh.out = readAnswer{
-		Key: sh.key(c.Key), Status: name(c.Status.Name), URL: d.URL, Estimate: estimate(d.Rows),
+		Key: sh.key(c.Key), Status: name(c.Status.Name), URL: d.URL,
 		Created: stampIf(c.Created), Updated: stampIf(c.Updated), Resolved: stampIf(c.Resolved),
+	}
+	var err error
+	if sh.out.Estimate, err = sh.estimate(); err != nil {
+		return readAnswer{}, err
 	}
 	sh.out.Title, _ = textClip(c.Title, 0, titleCut)
 	if c.Type != nil {
@@ -829,36 +833,44 @@ func (sh *sheet) items(part string) ([]any, string) {
 	return out, "older changes"
 }
 
-// estimate is the ticket's estimate as its screen shows it with no board
-// in view: the first board row's, in points with every digit they hold,
-// the shortest that reads back as the same number, as the screen prints
-// them (boardFormat.ts formatEstimate), so the text passed back is the
-// estimate held; or as a time in minutes under an hour and hours from
-// one.
-func estimate(rows []trackerapp.TicketRowView) string {
-	if len(rows) == 0 || rows[0].Estimate == nil {
-		return ""
+// estimate is the ticket's estimate on the board an estimate set by
+// `estimate` is judged on (estimateTarget), as estimateText prints it;
+// empty when no board of the ticket has estimates or the ticket has none
+// there.
+func (sh *sheet) estimate() (string, error) {
+	on, ok, err := newPlanCall(sh.s, Caller{}, nil).estimateTarget(sh.connection, rowBoards(sh.d.Rows), "")
+	if err != nil || !ok {
+		return "", err
 	}
-	v := *rows[0].Estimate
-	switch rows[0].Unit {
-	case "points":
-		return strconv.FormatFloat(v, 'f', -1, 64) + " points"
-	case "time":
-		if v < 3600 {
-			return strconv.Itoa(int(math.Round(v/60))) + "m"
-		}
-		return trimNumber(v/3600) + "h"
+	row := sh.d.Rows[slices.IndexFunc(sh.d.Rows, func(r trackerapp.TicketRowView) bool { return r.Board == on.board })]
+	if row.Estimate == nil {
+		return "", nil
 	}
-	return ""
+	return estimateText(*row.Estimate, row.Unit), nil
 }
 
-// trimNumber is n as the ticket screen writes hours: whole, or to one
-// decimal place.
-func trimNumber(n float64) string {
-	if n == math.Trunc(n) {
-		return strconv.FormatFloat(n, 'f', -1, 64)
+// estimateText is n in unit as a read and an approval print it, in a form
+// the estimate's parser (estimateValue) reads back to n: points with every
+// digit they hold, the shortest that reads back as the same number, as
+// the screen prints them (boardFormat.ts formatEstimate); time, in
+// seconds, as whole hours and the minutes left, a minute's part included
+// (1h 15m, 2h, 45m, 1.5m).
+func estimateText(n float64, unit string) string {
+	switch unit {
+	case "points":
+		return strconv.FormatFloat(n, 'f', -1, 64) + " points"
+	case "time":
+		hours := math.Floor(n / 3600)
+		minutes := strconv.FormatFloat((n-hours*3600)/60, 'f', -1, 64)
+		switch {
+		case hours == 0:
+			return minutes + "m"
+		case minutes == "0":
+			return strconv.FormatFloat(hours, 'f', -1, 64) + "h"
+		}
+		return strconv.FormatFloat(hours, 'f', -1, 64) + "h " + minutes + "m"
 	}
-	return strings.TrimSuffix(strconv.FormatFloat(n, 'f', 1, 64), ".0")
+	return ""
 }
 
 func mustJSON(v any) []byte {

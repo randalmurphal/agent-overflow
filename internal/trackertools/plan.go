@@ -856,8 +856,13 @@ func (pc *planCall) planSprint(p *planned, given string, v setValue) error {
 }
 
 // planEstimate plans the estimate v gives on board on, one of the
-// ticket's rows (estimateTarget), in its unit.
+// ticket's rows (estimateTarget), in its unit, and refuses a second entry
+// of set that names the ticket's estimate.
 func (pc *planCall) planEstimate(p *planned, given string, v setValue, on estimateOn) error {
+	if p.estimateName != "" {
+		// One estimate a ticket: a second entry naming it is not dropped.
+		return invalidf("%s and %s both set %s's estimate; set one estimate per call.", quoteName(p.estimateName), quoteName(given), p.key)
+	}
 	p.estimateName = given
 	row := p.d.Rows[slices.IndexFunc(p.d.Rows, func(r trackerapp.TicketRowView) bool { return r.Board == on.board })]
 	b := on.b

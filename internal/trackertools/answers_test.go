@@ -68,6 +68,8 @@ func TestReadCarriesTheEstimateAndTimes(t *testing.T) {
 		sources: []trackerapp.TicketSource{jiraSource},
 		lookup:  map[string]map[string]string{"conn-jira": {"WEB-12": "10012"}},
 		details: map[string]trackerapp.DetailView{"conn-jira/10012": d},
+		// The mirror holds the board of every row it holds.
+		boards: map[string]trackerapp.BoardSummary{"conn-jira/1": {Name: "Web Team", Unit: "points"}},
 	}
 	read, err := call(t, f, "ticket_read", map[string]any{"key": "WEB-12"})
 	if err != nil {
