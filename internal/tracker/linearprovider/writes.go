@@ -133,7 +133,13 @@ func (p *Provider) Edit(ctx context.Context, in tracker.EditInput) tracker.Resul
 			return unsupported(tracker.StepEdit, "comparing "+string(e.Field)+" with what it replaces", in.Issue)
 		}
 	}
-	if needsTeam(in.Fields) || slices.ContainsFunc(in.Fields, func(e tracker.FieldEdit) bool { return e.Value.Form() == tracker.EditMarkdown }) {
+	markdown := slices.ContainsFunc(in.Fields, func(e tracker.FieldEdit) bool { return e.Value.Form() == tracker.EditMarkdown })
+	switch cur := currentOf(in.Read, in.Issue); {
+	case cur != nil && !markdown:
+		// The team as the caller just read it; a description is compared
+		// with the issue as it is now, so a Markdown edit reads it.
+		r.team = cur.issue.TeamID
+	case needsTeam(in.Fields) || markdown:
 		is, err := p.summary(ctx, in.Issue)
 		if err != nil {
 			return beforeWrite(tracker.StepEdit, err, in.Issue)
@@ -152,8 +158,8 @@ func (p *Provider) Edit(ctx context.Context, in tracker.EditInput) tracker.Resul
 }
 
 // Move sets an issue's workflow state, the move's ID. Linear's moves take
-// no fields. It reads the issue and its team's states first and refuses
-// a state of another team.
+// no fields. It reads the issue and its team's states first, or takes them
+// from in.Read, and refuses a state of another team.
 func (p *Provider) Move(ctx context.Context, in tracker.MoveInput) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepMove, err, in.Issue)
@@ -161,7 +167,7 @@ func (p *Provider) Move(ctx context.Context, in tracker.MoveInput) tracker.Resul
 	if len(in.Fields) > 0 || in.ImageDir != "" {
 		return unsupported(tracker.StepMove, "fields on a move", in.Issue)
 	}
-	if err := p.teamState(ctx, in.Issue, in.Move); err != nil {
+	if err := p.teamState(ctx, in.Issue, in.Move, currentOf(in.Read, in.Issue)); err != nil {
 		return editRefusal(tracker.StepMove, err, in.Issue)
 	}
 	_, err := p.c.UpdateIssue(ctx, string(in.Issue), linear.UpdateIssueInput{StateID: linear.Set(string(in.Move))})

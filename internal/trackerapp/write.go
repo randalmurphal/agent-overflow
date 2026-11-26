@@ -20,14 +20,18 @@ import (
 //     attempt made, with nothing sent, when it was made (agent_writes.go);
 //   - the provider's write, and tracker.Result.Check before anything acts
 //     on its result;
+//   - a comment's or a create's record settled with its outcome, as the
+//     send returns;
 //   - the refresh: every resource a part that is applied or unknown names
 //     is read again through the read sync uses and stored, under the root
-//     and the fences the hold captured (write_refresh.go);
+//     and the fences the hold captured (write_refresh.go); a write in a
+//     session (write_session.go) owes it to the session's end instead,
+//     and settles the connection's problem by its own outcome;
 //   - the settlement of the connection's problem by the last tracker call
 //     made;
-//   - an agent's record of what was applied or may have been, with the
-//     cards' update times before and after, so the views below carry
-//     its marks;
+//   - an agent's record of any other write's outcome, with the cards'
+//     update times before and after, so the views below carry its
+//     marks;
 //   - the change funnel, so a subscriber hears of a write as of a sync,
 //     and the settlement of the open tickets the refresh read, whose
 //     views are built before the write returns;
@@ -94,10 +98,19 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 	}
 	// Released after the outcome replaced the claimed row, on every path.
 	defer s.endAgentWrite(rec)
+	sess := sessionOf(ctx)
+	if op.call != nil {
+		sess.sending(id, op)
+	}
+	if op.board != "" {
+		// A create's placement is read with its own refresh.
+		sess = nil
+	}
 	var res tracker.Result
 	resources := op.also
 	if op.call != nil {
 		res = op.call(r)
+		sess.sent(id, res)
 		if err := res.Check(); err != nil {
 			// The sent row stays: the write may have happened.
 			return WriteView{}, fmt.Errorf("%w: %w", ErrBadResult, err)
@@ -116,16 +129,32 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 			resources = append(resources, tracker.RowOf(op.board, created))
 		}
 	}
+	// A comment's or a create's record settles as its send returns, before
+	// anything else of the call runs; any other waits on the refreshed
+	// cards (later).
+	later := rec
+	if rec != nil && rec.add != nil {
+		s.finishAgentWrite(rec, res, nil)
+		later = nil
+	}
 	view := WriteView{Parts: partViews(r.row.Kind, res, millis(s.now())), CreateUnknown: res.CreateUnknown()}
 	if created, key, ok := res.Created(); ok {
 		view.Created, view.CreatedKey = string(created), key
 	}
 	if !r.inUse() {
-		s.finishAgentWrite(rec, res, nil)
+		s.finishAgentWrite(later, res, nil)
 		if !happened(res) {
 			return WriteView{}, s.endedNow(id)
 		}
 		view.Ended = true
+		return view, nil
+	}
+	if sess != nil {
+		if r.ctx.Err() == nil {
+			// A settlement Stop overtook changes nothing: the outcome stands.
+			_ = r.settleCalls(writeProblem(r.row.Kind, res))
+		}
+		sess.owe(id, resources, later, res)
 		return view, nil
 	}
 	writeCalls := r.calls
@@ -134,8 +163,8 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 		created = newIssue{issue: id, board: op.board}
 	}
 	f := r.refresh(resources, created)
-	if rec != nil {
-		s.finishAgentWrite(rec, res, s.cardTimes(r.root, partIssues(res)))
+	if later != nil {
+		s.finishAgentWrite(later, res, s.cardTimes(r.root, partIssues(res)))
 	}
 	// The mirror ended with the connection: what the refresh stored before
 	// was told as it was stored (run.told), as a tick's is, and the

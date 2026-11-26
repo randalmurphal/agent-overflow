@@ -316,6 +316,7 @@ func (c *Client) bulkFetch(ctx context.Context, refs, fields []string, byID bool
 			body["fields"] = fields
 		}
 		var v bulkAnswer
+		epoch := c.projects.epoch()
 		resp, err := c.call(ctx, trackerapi.Request{
 			Method: http.MethodPost, Path: apiPath + "issue/bulkfetch", Body: body, ReadOnly: true,
 		}, &v)
@@ -336,6 +337,9 @@ func (c *Client) bulkFetch(ctx context.Context, refs, fields []string, byID bool
 		}
 		for _, is := range issues {
 			got := is.decode()
+			if got.Project != nil {
+				c.keepProjects(epoch, resp.CredentialMark(), *got.Project)
+			}
 			if got.ID == "" || !returned[got.ID] {
 				returned[got.ID] = true
 				out.Issues = append(out.Issues, got)

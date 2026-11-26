@@ -102,6 +102,10 @@ type Client struct {
 	// sprintLists are the boards' sprint listings, kept and dropped
 	// with their configurations.
 	sprintLists *cache[int64, SprintList]
+	// projects are projects by ID as an issue answer or a project read
+	// named them, for the audience of a comment that names its issue's
+	// project (CommentInput.Project); a project's IssueTypes are not kept.
+	projects *cache[string, Project]
 	// me is who the credential belongs to (Me).
 	me *cache[struct{}, User]
 	// voterMisses are the poker voter lookups Jira withheld (PokerVoter),
@@ -158,6 +162,7 @@ func New(opts Options) (*Client, error) {
 		configs:       newCache[int64, BoardConfig](boardConfigCacheSize, 0, cloneBoardConfig, api.CredentialMark),
 		createScreens: newCache[[2]string, Screen](createScreenCacheSize, createScreenAge, cloneScreen, api.CredentialMark),
 		sprintLists:   newCache[int64, SprintList](boardConfigCacheSize, 0, cloneSprintList, api.CredentialMark),
+		projects:      newCache[string, Project](projectCacheSize, siteAge, nil, api.CredentialMark),
 		me:            newCache[struct{}, User](1, 0, nil, api.CredentialMark),
 		cloudID:       newCache[struct{}, string](1, 0, nil, api.CredentialMark),
 		poker:         newCache[struct{}, pokerApp](1, siteAge, nil, api.CredentialMark),

@@ -64,7 +64,8 @@ func TestAKeyMissingOnItsHintedSiteIsLookedUpElsewhere(t *testing.T) {
 }
 
 // The keys of one call that no mirror answers are looked up together: one
-// request per connection.
+// request per connection, and once more together after the approval, for
+// the project each Jira comment's audience is judged on.
 func TestTheKeysOfACallAreLookedUpTogether(t *testing.T) {
 	t.Parallel()
 	w := newWriteFixture(t)
@@ -81,7 +82,7 @@ func TestTheKeysOfACallAreLookedUpTogether(t *testing.T) {
 			lookups = append(lookups, a)
 		}
 	}
-	if want := []string{"lookup conn-jira WEB-25,WEB-26,WEB-27"}; !slices.Equal(lookups, want) {
+	if want := []string{"lookup conn-jira WEB-25,WEB-26,WEB-27", "lookup conn-jira WEB-25,WEB-26,WEB-27"}; !slices.Equal(lookups, want) {
 		t.Fatalf("lookups %q\nwant %q", lookups, want)
 	}
 }

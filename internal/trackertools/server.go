@@ -77,6 +77,11 @@ type Tracker interface {
 	Lookup(ctx context.Context, connection string, keys []string) (trackerapp.LookupView, error)
 	Search(ctx context.Context, connection string, in trackerapp.SearchRequest) (trackerapp.SearchPageView, error)
 	IssueDetail(ctx context.Context, connection, issue string) (trackerapp.DetailView, error)
+	// IssueDetails and IssueCards read several tickets of connection at
+	// once, each answered in order with its own failure; ctx's write
+	// session (trackerapp.WithWrites) keeps what they read for the writes.
+	IssueDetails(ctx context.Context, connection string, issues []string) ([]trackerapp.TicketRead, error)
+	IssueCards(ctx context.Context, connection string, issues []string) ([]trackerapp.TicketCardRead, error)
 	Comments(ctx context.Context, connection, issue, page string) (trackerapp.CommentPageView, error)
 	IssueTypes(ctx context.Context, connection, project string) ([]trackerapp.IssueTypeView, error)
 	CreateFields(ctx context.Context, connection, project, issueType string) ([]trackerapp.FieldView, error)
@@ -87,6 +92,9 @@ type Tracker interface {
 	SetEstimate(ctx context.Context, connection string, in trackerapp.EstimateRequest) (trackerapp.WriteView, error)
 	MoveToSprint(ctx context.Context, connection string, in trackerapp.SprintMoveRequest) (trackerapp.WriteView, error)
 	AddComment(ctx context.Context, connection string, in trackerapp.CommentRequest) (trackerapp.WriteView, error)
+	// EndWrites refreshes what ctx's write session's writes changed
+	// (trackerapp.Service.EndWrites).
+	EndWrites(ctx context.Context) error
 }
 
 // Host is what the writing tools ask the app about the calling thread.

@@ -26,7 +26,7 @@ func (r *run) linkedPages(log *changeLog) error {
 		if err != nil {
 			return fmt.Errorf("trackerapp: list the linked issues of %s: %w", r.row.ID, err)
 		}
-		ch, _, err := r.cards(issueIDsInOrder(ids))
+		ch, _, _, err := r.cards(issueIDsInOrder(ids))
 		log.add(ch)
 		if err != nil || !more || len(ids) == 0 {
 			return err

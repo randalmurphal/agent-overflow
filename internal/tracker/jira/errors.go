@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -118,6 +119,36 @@ func (e *StaleError) Error() string {
 		return fmt.Sprintf("jira: %s changed since the write was planned; plan it again", e.What)
 	}
 	return fmt.Sprintf("jira: %s on %s changed since the write was planned; plan it again", e.What, e.Issue)
+}
+
+// UnofferedError is a transition the issue does not offer now: by ID,
+// none of the moves it lists (read, or as TransitionInput.Current listed
+// them) is the one asked, or Jira refused the move it was sent as not
+// valid for the issue (Err, Jira's answer). Either way the moves were
+// read before they changed; nothing was applied. Offered are the moves
+// listed, empty when Jira's refusal said it.
+type UnofferedError struct {
+	Issue      string
+	Transition string
+	Offered    []Candidate
+	Err        error
+}
+
+func (e *UnofferedError) Error() string {
+	return fmt.Sprintf("jira: %s does not offer transition %s now; read its moves again", e.Issue, e.Transition)
+}
+
+func (e *UnofferedError) Unwrap() error { return e.Err }
+
+// unofferedAnswer reports Jira's answer to a transition sent by id that
+// the issue does not offer (measured: 400, errorMessages holding only
+// this sentence, errors empty). Jira may word it in the user's language,
+// which is not measured: an answer in other words reads as Jira's own
+// refusal.
+func unofferedAnswer(err error, id string) bool {
+	se, ok := errors.AsType[*trackerapi.StatusError](err)
+	return ok && se.Status == http.StatusBadRequest && len(se.Fields) == 0 &&
+		se.Message == fmt.Sprintf("Transition id '%s' is not valid for this issue.", id)
 }
 
 // MissingFieldsError is a create that leaves required fields unset.

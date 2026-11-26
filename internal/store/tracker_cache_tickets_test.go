@@ -144,6 +144,35 @@ func TestTheBodyCapKeepsTheOpenTicketsAndTheMostRecentlyOpened(t *testing.T) {
 	checkBodiesHeld(t, s, "the cap")
 }
 
+// A write's refresh drops the bodies of the issues it names that no open
+// ticket keeps, bookkeeping and bytes together, and leaves an open
+// ticket's and those it does not name; an issue with no body is not
+// reported.
+func TestDropMirrorBodiesLeavesTheOpenTickets(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	writeMirrorBoard(t, s, root, "10", mirrorRows(10000, 4, "a"))
+	sweep := currentSweep(s, root)
+	for _, id := range []string{"10000", "10001", "10002"} {
+		if _, err := storeTicket(t, s, root, sweep, id, 10, 10, []byte(`{"v":"1"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := s.KeepMirrorTicket(root, "10001", 1, 1, mirrorReadAt(20)); err != nil {
+		t.Fatal(err)
+	}
+	dropped, err := s.DropMirrorBodies(root, []string{"10000", "10001", "10003"})
+	if err != nil || !reflect.DeepEqual(dropped, []string{"10000"}) {
+		t.Fatalf("dropped %v, %v; want 10000 alone", dropped, err)
+	}
+	for id, want := range map[string]bool{"10000": false, "10001": true, "10002": true} {
+		if held := bodyOf(t, s, root, id) != "none"; held != want {
+			t.Errorf("%s holds a body: %v, want %v", id, held, want)
+		}
+	}
+	checkBodiesHeld(t, s, "the drop")
+}
+
 // heldBody is the body the record of issue holds, failing when it holds
 // none.
 func heldBody(t *testing.T, s *Store, root int64, issue string) MirrorBody {

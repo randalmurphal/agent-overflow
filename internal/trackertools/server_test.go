@@ -23,6 +23,8 @@ type fakeTracker struct {
 	search    func(connection string, in trackerapp.SearchRequest) (trackerapp.SearchPageView, error)
 	lookup    map[string]map[string]string // connection, key: issue
 	lookupErr map[string]error
+	// lookupErrAfter is how many lookups answer before lookupErr does.
+	lookupErrAfter int
 	// honorCtx, when set, makes a detail read fail on an ended context, as
 	// the service's does.
 	honorCtx bool
@@ -38,13 +40,17 @@ type fakeTracker struct {
 	// boardReads counts the board reads, by connection/board.
 	boardReads map[string]int
 	cards      map[string]trackerapp.CardView
-	types      []trackerapp.IssueTypeView
-	fields     []trackerapp.FieldView
+	// mirrorCards counts the mirror's card reads (MirrorCard).
+	mirrorCards int
+	types       []trackerapp.IssueTypeView
+	fields      []trackerapp.FieldView
 	// write answers each write; writes are those made, as name connection
 	// input, and agents the agent each carried.
 	write  func(name string, in any) (trackerapp.WriteView, error)
 	writes []string
 	agents []context.Context
+	// ends counts the write sessions ended.
+	ends int
 }
 
 func (f *fakeTracker) TicketsOfKey(key string) ([]trackerapp.KeyedTicket, error) {
@@ -64,6 +70,7 @@ func (f *fakeTracker) BoardSummary(connection, board string) (trackerapp.BoardSu
 }
 
 func (f *fakeTracker) MirrorCard(connection, issue string) (trackerapp.CardView, bool, error) {
+	f.mirrorCards++
 	c, ok := f.cards[connection+"/"+issue]
 	return c, ok, nil
 }
@@ -167,9 +174,10 @@ func (f *fakeTracker) LinkedTicket(string) (trackerapp.LinkedTicket, bool, error
 
 func (f *fakeTracker) Lookup(_ context.Context, connection string, keys []string) (trackerapp.LookupView, error) {
 	f.asked = append(f.asked, "lookup "+connection+" "+strings.Join(keys, ","))
-	if err := f.lookupErr[connection]; err != nil {
+	if err := f.lookupErr[connection]; err != nil && f.lookupErrAfter == 0 {
 		return trackerapp.LookupView{}, err
 	}
+	f.lookupErrAfter = max(f.lookupErrAfter-1, 0)
 	var out trackerapp.LookupView
 	for _, k := range keys {
 		if issue, ok := f.lookup[connection][k]; ok {
@@ -199,6 +207,40 @@ func (f *fakeTracker) IssueDetail(ctx context.Context, connection, issue string)
 		return trackerapp.DetailView{}, fmt.Errorf("%w: issue %s", trackerapp.ErrIssueNotFound, issue)
 	}
 	return d, nil
+}
+
+// IssueDetails asks each issue's detail as IssueDetail does.
+func (f *fakeTracker) IssueDetails(ctx context.Context, connection string, issues []string) ([]trackerapp.TicketRead, error) {
+	out := make([]trackerapp.TicketRead, len(issues))
+	for i, issue := range issues {
+		out[i].View, out[i].Err = f.IssueDetail(ctx, connection, issue)
+		if err := ctx.Err(); f.honorCtx && err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// IssueCards answers each issue's card and rows from its detail, asked as
+// "card connection issue".
+func (f *fakeTracker) IssueCards(_ context.Context, connection string, issues []string) ([]trackerapp.TicketCardRead, error) {
+	out := make([]trackerapp.TicketCardRead, len(issues))
+	for i, issue := range issues {
+		f.asked = append(f.asked, "card "+connection+" "+issue)
+		d, ok := f.details[connection+"/"+issue]
+		if !ok {
+			out[i].Err = fmt.Errorf("%w: issue %s", trackerapp.ErrIssueNotFound, issue)
+			continue
+		}
+		out[i].View = trackerapp.TicketCardView{Card: d.Card, Rows: d.Rows}
+	}
+	return out, nil
+}
+
+// EndWrites counts the sessions ended.
+func (f *fakeTracker) EndWrites(context.Context) error {
+	f.ends++
+	return nil
 }
 
 func (f *fakeTracker) Comments(_ context.Context, connection, issue, page string) (trackerapp.CommentPageView, error) {

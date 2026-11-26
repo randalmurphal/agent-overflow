@@ -329,6 +329,17 @@ func (s *jiraSite) seedIssues(e *Engine) error {
 			return fmt.Errorf("issue %s %s repeats an ID or key", is.ID, is.Key)
 		}
 		seen[is.ID], seen[is.Key] = true, true
+		for _, k := range is.FormerKeys {
+			// A key is not given again: a project's next number passes its
+			// former keys too.
+			prefix, num, _ := strings.Cut(k, "-")
+			n, err := strconv.Atoi(num)
+			if seen[k] || prefix == "" || err != nil || n <= 0 {
+				return fmt.Errorf("issue %s: former key %q repeats a key or is not <project>-<n>", is.Key, k)
+			}
+			seen[k] = true
+			s.nextKey[prefix] = max(s.nextKey[prefix], n+1)
+		}
 		if err := s.completeIssue(e, is, p); err != nil {
 			return fmt.Errorf("issue %s: %w", is.Key, err)
 		}
