@@ -253,6 +253,15 @@ func TestAnAgentsPostLogsOnlyWhatThePersonSaw(t *testing.T) {
 	if len(rows) != 1 || rows[0].Summary != "Logged 0 of 2 entries for "+dayLabel || rows[0].ID != open.RequestID {
 		t.Fatalf("time post rows %+v", rows)
 	}
+	var meta struct {
+		Kind, Call        string
+		Connections, Days []string
+		Posted, Of        int
+	}
+	if err := json.Unmarshal([]byte(rows[0].Meta), &meta); err != nil || meta.Kind != "time_post" || "tracker:"+meta.Call != open.RequestID ||
+		!slices.Equal(meta.Connections, []string{f.conn.ID}) || !slices.Equal(meta.Days, []string{day}) || meta.Posted != 0 || meta.Of != 2 {
+		t.Fatalf("the row's meta %s: %v", rows[0].Meta, err)
+	}
 
 	// Asked again, the prompt shows the day as it is now, and the approval
 	// logs both entries.
