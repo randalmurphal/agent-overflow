@@ -2261,9 +2261,14 @@ server's context to their end.
 
 **Changed while waiting.** What `set` changes was judged on the tickets
 as they were before the prompt, so after the person approves, the call's
-cards are read again, once per connection, with the key lookup
-(`planCall.recheck`; one `issue/bulkfetch` on Jira, one `issues` list on
-Linear). A ticket whose update time, status or sprints differ from what
+cards are read again, one key lookup per connection (`planCall.recheck`).
+On Jira that is one `issue/bulkfetch`, and one more `GET issue` for each
+key the fetch did not answer under that key (a ticket moved to another
+key, or gone), four at a time; the field catalog is read again too when
+the client's copy is older than 30 minutes. On Linear it is one `issues`
+list, one `IssueSummary` for each key the list did not find, and one
+read of label names when an issue holds labels the list left unnamed. A
+ticket whose update time, status or sprints differ from what
 its plan read, or that the lookup no longer finds, is sent nothing: its
 `refused` says it changed on the tracker while the user was deciding,
 every step is in `not_sent`, and the call's other tickets go on. The

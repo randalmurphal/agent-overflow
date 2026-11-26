@@ -161,7 +161,7 @@ func judge(kind, names, what string, v trackerapp.WriteView, err error) (tracker
 		return state, unknownSentence(kind, names, what)
 	case tracker.StateRefused:
 		if refusal != nil {
-			return state, names + ": " + refusalText(kind, refusal)
+			return state, names + ": " + refusalText(kind, refusal, false)
 		}
 	case tracker.StateNotSent:
 		// Its failure says why, below.
@@ -215,8 +215,9 @@ func trackerNameOf(kind string) string {
 // several says what tells them apart in the text this tool sends: Jira
 // takes a value by its ID, Linear only by name, and a person also by
 // email (linearprovider's matchOne), so one Linear values share may be
-// left for the person to pick.
-func refusalText(kind string, r *trackerapp.RefusalView) string {
+// left for the person to pick on the ticket, or, for a create (creating),
+// set after it.
+func refusalText(kind string, r *trackerapp.RefusalView, creating bool) string {
 	msg := strings.TrimSpace(r.Message)
 	for _, prefix := range []string{"jira: ", "linear: ", "linearprovider: ", "jiraprovider: ", "tracker: "} {
 		msg = strings.TrimPrefix(msg, prefix)
@@ -241,7 +242,11 @@ func refusalText(kind string, r *trackerapp.RefusalView) string {
 	}
 	switch {
 	case r.Reason == "ambiguous" && len(r.Candidates) > 0 && kind == "linear":
-		msg = "it matches more than one value: " + candidates(false) + "; Linear matches it by name, and a person also by email: give a name or an email only one of them has, or ask the user to pick one on the ticket"
+		other := "ask the user to pick one on the ticket"
+		if creating {
+			other = "leave it out of the create, if the ticket can be made without it, and ask the user to set it on the new ticket"
+		}
+		msg = "it matches more than one value: " + candidates(false) + "; Linear matches it by name, and a person also by email: give a name or an email only one of them has, or " + other
 	case r.Reason == "ambiguous" && len(r.Candidates) > 0:
 		msg = "it matches more than one value: " + candidates(true) + "; give one by its ID"
 	case r.Reason == "no_match" && len(r.Candidates) > 0:
