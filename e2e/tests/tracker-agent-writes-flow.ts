@@ -114,10 +114,11 @@ export function registerTrackerAgentWritesFlow({ compact }: TrackerWritesSurface
       expect((await trackerRequests(harness, MOVE_ROUTE, ['WEB-1', '10101'])).map((r) => r.status)).toEqual([204]);
 
       await openThread(harness, page, title, compact);
+      // The row is in the turn's activity run, with the tool row.
+      await expandActivityRuns(page);
       const row = writeRow(page);
       await expect(row).toContainText('Changed WEB-1', { timeout: 30_000 });
       await expect(row.getByTestId('tracker-write-ticket')).toHaveText(/WEB-1\s*First story\s*· Status, comment/);
-      await expandActivityRuns(page);
       const tool = toolRow(page, 'update', 'WEB-1');
       await expandRow(tool);
       await expect(tool.getByTestId('tool-call-card-ao-outcome')).toHaveText('1 ticket changed');
