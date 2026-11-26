@@ -217,6 +217,10 @@
           <span class="shrink-0" title={new Date(c.created).toLocaleString()}>{relativeTime(c.created, 'locale', ctx.ref.backend)}</span>
           {#if c.updated && c.updated !== c.created}<span class="shrink-0">edited</span>{/if}
           {#if c.internal}<span class="shrink-0 rounded-sm bg-warning/15 px-1 text-warning">Internal</span>{/if}
+          {#if c.thread}
+            <!-- An agent of a thread on this computer added it (its title is gone with a deleted thread). -->
+            <span class="min-w-0 truncate rounded-sm bg-accent/10 px-1 text-accent" data-testid="ticket-comment-agent">{c.thread.title ? `From thread ${c.thread.title}` : 'From a deleted thread'}</span>
+          {/if}
         </div>
         {#if editDraft}
           {@const pending = ticketWrite(ctx.key, commentTarget(c.id))?.pending ?? false}

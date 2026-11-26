@@ -496,6 +496,33 @@ describe('workflow_schema', () => {
   });
 });
 
+describe('tracker tool write results', () => {
+  it('reads an update as what became of each ticket, with the sentence of a step not made', () => {
+    const view = aoResultView(TRACKER_TOOLS_SERVER, 'ticket_update', json({
+      tickets: [
+        { key: 'WEB-12', applied: ['status', 'comment'] },
+        { key: 'WEB-18', applied: ['status'], refused: 'priority: no Priority value matches "Urgent"; it takes Highest, High, or Medium.', not_sent: ['comment'] },
+        { key: 'WEB-27', applied: ['comment'], note: 'Your earlier call added this comment; it was not added again.' },
+      ],
+    }), {}, names)!;
+    expect(view.outcome).toBe('2 of 3 tickets changed');
+    expect(view.lines.map((l) => [l.title, l.detail, l.text])).toEqual([
+      ['WEB-12', 'status, comment', ''],
+      ['WEB-18', 'status · refused · not sent: comment', 'priority: no Priority value matches "Urgent"; it takes Highest, High, or Medium.'],
+      ['WEB-27', 'comment', 'Your earlier call added this comment; it was not added again.'],
+    ]);
+    // A page of found tickets is not read as an update.
+    expect(aoResultView(TRACKER_TOOLS_SERVER, 'ticket_update', json({ tickets: [{ key: 'WEB-1', applied: ['status'] }] }), {}, names)!.outcome).toBe('1 ticket changed');
+  });
+
+  it('reads a create as its key, and a create that stopped part way as incomplete with its sentence', () => {
+    expect(aoResultView(TRACKER_TOOLS_SERVER, 'ticket_create', json({ key: 'WEB-42' }), {}, names)).toMatchObject({ outcome: 'created WEB-42', note: '' });
+    expect(aoResultView(TRACKER_TOOLS_SERVER, 'ticket_create', json({
+      key: 'WEB-42', refused: 'WEB-42 was created, but status was not set: WEB-42 cannot move to Shipped.',
+    }), {}, names)).toMatchObject({ outcome: 'created WEB-42 · incomplete', note: 'WEB-42 was created, but status was not set: WEB-42 cannot move to Shipped.' });
+  });
+});
+
 describe('tracker tool results', () => {
   it('lists the tickets a search found, says when there are more, and names a connection it could not search', () => {
     const view = trackerResultView(json({

@@ -111,6 +111,9 @@ func TestTrackerWriteOfSeveralTicketsWaitsForThePerson(t *testing.T) {
 		approval.Tickets[1].Key != "WEB-2" || approval.Comment != "Checked on Safari." {
 		t.Fatalf("approval %+v", approval)
 	}
+	if open.AvailableDecisions == nil || len(*open.AvailableDecisions) != 2 || string((*open.AvailableDecisions)[0]) != `"accept"` || string((*open.AvailableDecisions)[1]) != `"decline"` {
+		t.Fatalf("the approval offers %v, want accept and decline alone", open.AvailableDecisions)
+	}
 	if got := fakeComments(t, f, "10101"); len(got) != 0 {
 		t.Fatalf("a comment was sent before the approval: %q", got)
 	}

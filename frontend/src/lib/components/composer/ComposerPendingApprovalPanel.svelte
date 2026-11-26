@@ -7,6 +7,7 @@
   import ToolApprovalPanel from './approval/ToolApprovalPanel.svelte';
   import PermissionPanel from './approval/PermissionPanel.svelte';
   import McpElicitationPanel from './approval/McpElicitationPanel.svelte';
+  import TrackerWriteChanges from './approval/TrackerWriteChanges.svelte';
 
   interface Props {
     approval: ApprovalRequest;
@@ -73,6 +74,9 @@
   {:else if approval.kind === 'mcp-elicitation' && approval.elicitation}
     <McpElicitationPanel {approval} onResolve={resolve} onError={onError} responding={responding} {access} />
   {:else}
+    {#if approval.kind === 'tracker-write'}
+      <TrackerWriteChanges {approval} />
+    {/if}
     <ToolApprovalPanel {approval} onResolve={resolve} {responding} {access} />
   {/if}
 </section>

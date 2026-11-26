@@ -103,6 +103,32 @@ export async function openLinkedTicket(thread: Thread): Promise<void> {
   });
 }
 
+/** A ticket a thread's agent created or changed, as its timeline row names
+ * it (`trackertools.WrittenTicket`). */
+export interface WrittenTicket {
+  readonly connection: string;
+  readonly issue: string;
+  readonly key: string;
+  readonly title: string;
+}
+
+/**
+ * Opens a ticket the thread's agent wrote, from its timeline row, on the
+ * computer the thread verifiably runs on, over a board of the thread's
+ * project first.
+ */
+export async function openWrittenTicket(threadId: string, projectId: string | null, ticket: WrittenTicket): Promise<void> {
+  const backend = verifiedThreadMachine(threadId);
+  if (backend === null) {
+    addToast('error', `${UNOWNED}, so ${ticket.key} cannot open.`);
+    return;
+  }
+  await openTicketInIssues({
+    backend, connection: ticket.connection, issue: ticket.issue, key: ticket.key, title: ticket.title,
+    project: projectId, of: 'of its tracker',
+  });
+}
+
 /** Copies the linked ticket's key. */
 export async function copyLinkedTicketKey(thread: Thread): Promise<void> {
   const key = thread.ticketLink?.key;

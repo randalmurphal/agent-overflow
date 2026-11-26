@@ -283,6 +283,9 @@ describe('AO tool presentation', () => {
       ['ticket_read', { key: 'WEB-12' }, 'read', 'WEB-12'],
       ['ticket_read', { key: 'WEB-12', history: true }, 'read', 'WEB-12 with history'],
       ['ticket_read', { more: 'eyJjIjoiYSJ9' }, 'read', 'more of a ticket'],
+      ['ticket_create', { project: 'WEB', title: 'Login fails on Safari' }, 'create', 'WEB "Login fails on Safari"'],
+      ['ticket_update', { keys: ['WEB-12', 'WEB-18'], comment: 'Ready.' }, 'update', 'WEB-12, WEB-18'],
+      ['ticket_update', { keys: ['WEB-1', 'WEB-2', 'WEB-3', 'WEB-4', 'WEB-5'] }, 'update', 'WEB-1, WEB-2, WEB-3 and 2 more'],
     ])('%s %j', (tool, input, label, what) => {
       const p = aoToolPresentation(meta(TRACKER_TOOLS_SERVER, tool, input))!;
       expect(p).toMatchObject({ icon: 'file', label, what, headerLabel: `Ticket ${label}` });

@@ -121,9 +121,12 @@ func (h trackerToolsHost) Approve(ctx context.Context, threadID string, approval
 	if err != nil {
 		return fmt.Errorf("tracker tools: encode the approval: %w", err)
 	}
+	// The person approves or declines; nothing else (a session-wide
+	// allow, a cancel of the turn) applies to a tracker write.
+	decisions := []json.RawMessage{json.RawMessage(`"accept"`), json.RawMessage(`"decline"`)}
 	meta, err := json.Marshal(provider.ApprovalRequest{
 		RequestID: id, ThreadID: threadID, Kind: triage.ApprovalKindTrackerWrite, ToolName: "ticket_update",
-		Title: fmt.Sprintf("Change %d tickets", len(approval.Tickets)), Input: input,
+		Title: fmt.Sprintf("Change %d tickets", len(approval.Tickets)), Input: input, AvailableDecisions: &decisions,
 	})
 	if err != nil {
 		return fmt.Errorf("tracker tools: encode the approval: %w", err)
