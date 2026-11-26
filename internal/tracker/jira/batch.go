@@ -22,7 +22,8 @@ const (
 	// OutcomeDone is an issue Jira ranked or moved.
 	OutcomeDone
 	// OutcomeRefused is an issue Jira did not rank or move; Reason says
-	// why.
+	// why when Jira's per-issue answer did, and is empty when Jira refused
+	// the whole request, whose error the batch returns.
 	OutcomeRefused
 	// OutcomeUnknown is an issue whose request was sent but not answered
 	// in full: read it before offering the write again.
@@ -44,7 +45,8 @@ func (o Outcome) String() string {
 }
 
 // IssueOutcome is one issue of a batch write: the reference the caller
-// gave, what happened, and Jira's reason for a refusal.
+// gave, what happened, and Jira's reason for a refusal its per-issue
+// answer gave.
 type IssueOutcome struct {
 	Issue   string
 	Outcome Outcome
@@ -230,7 +232,9 @@ func (c *Client) sendGroup(ctx context.Context, w batchWrite, pos RankPosition, 
 		case trackerapi.WriteNotApplied(err):
 			outcome = OutcomeRefused
 		}
-		setOutcome(group, outcome, err.Error())
+		// The error is the whole request's answer; it carries the request,
+		// which no issue's reason repeats.
+		setOutcome(group, outcome, "")
 		return err
 	}
 	switch {

@@ -97,6 +97,13 @@ Fields and search:
 - Search is `/rest/api/3/search/jql`: bounded queries only, token paging, no
   total. `POST /issue/bulkfetch` returns up to 100 issues, or 1000 with
   explicit fields.
+- Measured 2026-11-26, read-only, on one issue of one site:
+  `POST /issue/bulkfetch` with `fields: ["project"]` answers the issue's
+  `fields.project` with `avatarUrls`, `id`, `key`, `name`,
+  `projectTypeKey`, `self` and `simplified`, and `projectTypeKey` held
+  one of the documented project type values. A Jira comment's audience
+  is judged on it
+  ([tracker backend](../architecture/tracker-backend.md#agent-tools)).
 - JQL date literals have minute precision and are read in the user's time
   zone
   ([JQL fields](https://support.atlassian.com/jira-software-cloud/docs/jql-fields/)).

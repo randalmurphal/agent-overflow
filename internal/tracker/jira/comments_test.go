@@ -340,6 +340,20 @@ func TestAddCommentOnANamedProject(t *testing.T) {
 		t.Errorf("after a bulk fetch: %v, requests %v", err, f.Requests())
 	}
 
+	// A bulk fetch's project without its type keeps nothing: the comment
+	// reads the project.
+	f = jiratest.NewServer(t)
+	c = signedIn(t, f)
+	f.On("POST", "/rest/api/3/issue/bulkfetch", jiratest.Reply(200, `{"issues":[{"id":"10001","key":"WEB-1","fields":{"project":{"id":"10010","key":"SD"}}}],"issueErrors":[]}`))
+	f.On("GET", "/rest/api/3/project/10010", jiratest.Reply(200, `{"id":"10010","key":"SD","name":"Service","projectTypeKey":"service_desk"}`))
+	post(f)
+	if _, err := c.BulkFetch(t.Context(), []string{"WEB-1"}, "project"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.AddComment(t.Context(), in); err != nil || f.Count("GET", "/rest/api/3/project/10010") != 1 {
+		t.Errorf("after a bulk fetch without the type: %v, requests %v", err, f.Requests())
+	}
+
 	// Fails closed.
 	for name, h := range map[string]jiratest.Handler{
 		"a failed read":    jiratest.Reply(500, `{"errorMessages":["down"]}`),

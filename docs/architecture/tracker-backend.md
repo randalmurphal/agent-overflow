@@ -2299,10 +2299,14 @@ sends when it waits for nobody, and each comment is judged on the project
 that read found (`trackerapp`'s write session keeps it,
 `tracker.CommentInput.Project`). The Jira client keeps each project's
 type by ID for 30 minutes, from the projects a bulk fetch's issues name
-(`projectTypeKey`) or a read of the project; only a comment's audience
-reads it there. The tools name no audience, so a comment on a service
-desk ticket is refused. A read that fails sends nothing; a project whose
-type cannot be read sends no comment to that ticket. A person's comment
+(`projectTypeKey`, which the bulk fetch carries as measured in
+[tracker API measurements](../references/tracker-api-measurements.md#jira-cloud))
+or a read of the project; only a comment's audience reads it there. A
+bulk fetch whose project has no `projectTypeKey` keeps nothing, and the
+comment reads the project (`GET project/{id}`) before it is sent. The
+tools name no audience, so a comment on a service desk ticket is
+refused. A read that fails sends nothing; a project whose type cannot be
+read, by either read, sends no comment to that ticket. A person's comment
 reads the issue's project with the comment, as before.
 
 **Requests.** What each call shape costs on the fake, cold (the mirror

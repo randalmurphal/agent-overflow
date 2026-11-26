@@ -413,8 +413,9 @@ func boardResources(step tracker.Step, board tracker.BoardID, issue tracker.Issu
 }
 
 // batchParts are one part per issue of a batch: the client's outcome for
-// each issue it reports, and for a batch refused before any group was
-// sent the outcome of that refusal for every issue. Each part names
+// each issue it reports, with Jira's refusal of a whole request read from
+// err as every other write's (refusal), and for a batch refused before
+// any group was sent the outcome of that refusal for every issue. Each part names
 // boardResources.
 func batchParts(board tracker.BoardID, step tracker.Step, issues []tracker.IssueID, res jira.BatchResult, err error) tracker.Result {
 	parts := make([]tracker.Part, len(issues))
@@ -435,7 +436,12 @@ func batchParts(board tracker.BoardID, step tracker.Step, issues []tracker.Issue
 		case jira.OutcomeDone:
 			parts[i].Outcome = tracker.Applied()
 		case jira.OutcomeRefused:
-			parts[i].Outcome = tracker.Refused(tracker.Refusal{Reason: tracker.ReasonTracker, Message: o.Reason, Err: err})
+			r := tracker.Refusal{Reason: tracker.ReasonTracker, Message: o.Reason, Err: err}
+			if o.Reason == "" {
+				// Jira refused the whole request: what it said is err's.
+				r = refusal(err)
+			}
+			parts[i].Outcome = tracker.Refused(r)
 		case jira.OutcomeUnknown:
 			parts[i].Outcome = tracker.Unknown(err)
 		case jira.OutcomeNotSent:
