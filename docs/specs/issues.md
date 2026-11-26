@@ -2,7 +2,8 @@
 
 Status: product rulings and screen designs recorded 2026-11-15. Built:
 the connections and a project's board list, in Settings > Issues
-(Connections, Boards, Status groups), and the Issues pane with its Board and Backlog
+(Connections, Boards, Status groups, Fields, Starting work, Agents),
+and the Issues pane with its Board and Backlog
 screens, opened from the tool row's Issues entry, and the Ticket screen,
 opened from a card or a row, from a thread's linked ticket or from a pull
 request's ticket chip; a thread's ticket link, in the sidebar and the
@@ -11,10 +12,12 @@ thread header. The other screens are not built; the [Board](#board),
 [Tickets, pull requests and branches](#tickets-pull-requests-and-branches)
 and [Thread link](#thread-link) sections say what of them is. A
 project's status groups are set in Settings > Issues > Status groups, its
-ticket pins on the ticket, and its Start work defaults from the Start work
-form. Agents can find, read, create and change tickets, a change of
-several tickets waiting for the person's approval; their worklog tools
-are not built ([Agent tools](../architecture/tracker-backend.md#agent-tools)).
+ticket pins in Settings > Issues > Fields or on the ticket, its Start work
+defaults in Settings > Issues > Starting work or from the Start work form,
+and what its threads may do to tickets in Settings > Issues > Agents.
+Agents can find, read, create and change tickets, a change of several
+tickets waiting for the person's approval unless the project turned that
+off; their worklog tools are not built ([Agent tools](../architecture/tracker-backend.md#agent-tools)).
 
 ## Goal
 
@@ -668,11 +671,43 @@ sidebar and the thread header, on desktop and on a phone.
   is unknown says so in the computer's words and reads the setup again.
   A setup that cannot be read is said with its file and Try again; one a
   newer version saved is said, with no change offered.
+- Fields, Starting work and Agents are per project and behave as Status
+  groups does: each change saves at once, and a save that lost, a save
+  whose outcome is unknown, a setup that cannot be read and a section a
+  newer version saved are said the same way.
+- Fields lists, per Jira site of the project's boards, the fields on top
+  of every ticket and the sections open on every ticket, the same pins as
+  the pin on a ticket. What is pinned shows at once; a field or section
+  that is not pinned is found by typing its name, and at most 20 matches
+  show. A site's fields are its whole field catalog, several hundred on a
+  real site. A project with only Linear boards says it has nothing to pin:
+  a Linear ticket's fields are fixed, and its sections are pinned on the
+  ticket.
+- Starting work lists each tracker project of the project's boards, and
+  any that already has defaults, with what Start work does: move the
+  ticket (off, or on to a status, the first one counted in progress when
+  turned on), assign it to the person, name the branch after the ticket,
+  and the project the thread runs in. With naming off, the Start work form
+  opens with an empty branch box for the person to name. The form's Save
+  as defaults writes the same defaults, so each shows what the other
+  saved.
+- Agents has three rows: Read tickets, always on; Change tickets, on
+  unless turned off; and Ask before changing several at once, on unless
+  turned off. With Change tickets off, a thread of the project that
+  creates or changes a ticket is refused at the call with a sentence that
+  tells the agent to ask the person to turn it on here. With Ask before
+  changing several at once off, a change to several tickets is sent
+  without waiting for approval, an exception to the approval ruling that
+  the project chooses. A setup that cannot be read, or an agents section a
+  newer version saved, refuses every ticket change of the project's
+  threads until it is fixed.
 - The rest is per project: which boards the picker lists and which opens
   first; which group each status belongs to, including left out of counts;
-  pinned fields, pinned sections and card marks; Start work defaults; the
-  estimate field, poker and credit rules; the meetings and time-off
-  tickets, draft approval and draft sources; and what agents may do.
+  pinned fields and pinned sections; Start work defaults; the estimate
+  field, poker and credit rules; the meetings and time-off tickets, draft
+  approval and draft sources; and what agents may do. Card marks are
+  chosen with Display on the board, per board, and kept by the app or
+  browser they were chosen in, not in Setup.
 - A Linear project has no fields, credit or time settings.
 
 ### Compact layout

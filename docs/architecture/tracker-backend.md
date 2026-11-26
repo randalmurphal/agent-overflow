@@ -357,11 +357,15 @@ no step runs at root creation, restore or start.
   `version`: `status_groups` (by tracker site, the group a status counts
   in: one of the five tracker groups, or `left_out`), `ticket_pins` (by
   tracker site, the fields and the sections a ticket shows first; a
-  Linear site pins no fields) and `start_work` (by tracker site and
+  Linear site pins no fields), `start_work` (by tracker site and
   tracker project, named by its key prefix, `WEB`: the status Start work
   moves to, whether it assigns, the branch template with `{key}` and
-  `{title}`, and the repository, an app project of this computer; each
-  field optional, and an entry that sets nothing dropped). A section this build does not know, or one
+  `{title}`, whether the branch is named after the ticket
+  (`name_branch`, false for an empty branch box), and the repository, an
+  app project of this computer; each field optional, and an entry that
+  sets nothing dropped) and `agents` (`change_tickets` and `ask_several`,
+  each true when absent, and the section dropped when it sets neither;
+  [Writes by agents](#writes-by-agents)). A section this build does not know, or one
   at a newer version, is kept byte for byte by a replace and named in the
   read's `newer`; a replace that sets it is refused.
 - **A site** is named as its connection names it, by the rules a
@@ -444,6 +448,16 @@ no step runs at root creation, restore or start.
   (`BenchmarkProjectStatuses20Boards`). A client reads it only while the
   page shows a project: on the page's show, after `tracker:setup_updated`,
   on reconnect and on Check again.
+- **The fields the Fields page lists** (`ProjectFields`,
+  `trackerapp/project_fields.go`) are each Jira site's of the project's
+  boards, read through the first connection to the site that is on, else
+  the first: the
+  provider's `Fields`, the site's field catalog by the rule a ticket's
+  detail lists fields by (`jiraprovider` `site.listed`), which the client
+  holds after its first read. A Linear site lists none. A real site's
+  catalog holds several hundred fields; the page draws the pinned ones
+  and at most 20 matches of a typed name. A client reads it only while the
+  page shows a project: on the page's show, on reconnect and on Try again.
 
 ## Tables
 
@@ -2443,7 +2457,9 @@ again makes only what was not. The boards a call judges are read once
 each per call.
 
 **Approval.** A call that names more than one ticket waits for the
-person. The app raises a prompt of kind `tracker-write` in the thread
+person, unless the project's setup turned off asking (`agents`
+`ask_several` false, Settings > Issues > Agents): then it is sent as one
+ticket's call is (`Host.AsksBeforeSeveral`). The app raises a prompt of kind `tracker-write` in the thread
 (`provider.EventApprovalRequest` through triage, decisions accept and
 decline only) showing each ticket's changes and the comment. The prompt
 carries each value of `set` whole, and a change line that shows a value
@@ -2575,10 +2591,17 @@ Linear; the same read again costs 1 on each. A find costs one search on
 each connection.
 
 **Read-only threads.** A writing call is refused when the calling
-thread's runtime mode is read-only, before anything is read or sent, and
-the mode is read again before the first write is sent, after the
-approval when there is one. The provider cannot enforce it, because app
-tools are admitted in every mode.
+thread's runtime mode is read-only, or its project's setup turned off
+Change tickets (`agents` `change_tickets` false, code
+`tracker_changes_off`, whose sentence tells the agent to ask the person
+to turn it on in Settings > Issues > Agents), before anything is read or
+sent, and both are read again before the first write is sent, after the
+approval when there is one (`Host.Writable`). A project whose setup
+cannot be read, or whose `agents` section a newer version saved, has
+every writing call refused (`tracker_setup_unreadable`,
+`tracker_setup_newer`): this build cannot tell what the project allows.
+A thread with no project writes by the built-in rules. The provider
+cannot enforce either, because app tools are admitted in every mode.
 
 **Nothing made twice.** A comment or a create is claimed before it is
 sent, in one store transaction under one lock

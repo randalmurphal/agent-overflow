@@ -126,11 +126,11 @@ board methods, events and the patch read in
   connects again. New
   ticket's draft, one per section, is held by the Backlog screen
   (`BacklogScreen.svelte` `createDrafts`), so it outlives the form.
-- `stores/trackerSetup.svelte.ts` holds a project's tracker setup and
-  its statuses in this window, one read for every surface that holds
-  them (the ticket's pins, the Start work form and defaults, Settings >
-  Issues > Status groups), read again on `tracker:setup_updated` and on
-  reconnect only while held; `editTrackerSetup` is the one save, one at a
+- `stores/trackerSetup.svelte.ts` holds a project's tracker setup, its
+  statuses and its fields in this window, one read for every surface that
+  holds them (the ticket's pins, the Start work form and defaults, the
+  Settings > Issues pages), read again, only while held, on reconnect
+  and, for the setup and the statuses, on `tracker:setup_updated`; `editTrackerSetup` is the one save, one at a
   time per project, built from the held setup under its revision, and
   what it settles to is what the computer stored. `TicketPin.svelte` is
   the pin a ticket's field row and section header show.
@@ -170,7 +170,10 @@ board methods, events and the patch read in
   step's outcome, with the rules that keep a retry from doing anything
   twice written at the top. `TicketWork.svelte` is the rail's Work
   section, mounted by one line at the end of the rail, and
-  `StartWorkForm.svelte` the form it opens; the threads it lists are the
+  `StartWorkForm.svelte` the form it opens; which defaults apply to a
+  ticket and how a change of them is stored is
+  `stores/startWorkDefaults.ts`, which Settings > Issues > Starting work
+  shares; the threads it lists are the
   client's catalog filtered by the link's tracker kind, site and issue,
   which the ticket's subscription names, with no call. A step's row is no
   control of the write it sent: it shows that write only while it is its
