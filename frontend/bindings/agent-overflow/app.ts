@@ -6972,13 +6972,23 @@ export function TrackerBoardPatch(subscriptionID: string, sections: trackerapp$0
 }
 
 /**
+ * TrackerBoardProjects lists the projects a board shows, which its
+ * create form offers.
+ */
+export function TrackerBoardProjects(connectionID: string, board: string): $CancellablePromise<trackerapp$0.ProjectView[]> {
+    return $Call.ByID(2859662243, connectionID, board).then(($result: any) => {
+        return $$createType275($result);
+    });
+}
+
+/**
  * TrackerBoards lists a tracker project's boards (a Linear team's one),
  * for choosing a project's boards. It asks the tracker, bounded as
  * TrackerProjects is.
  */
 export function TrackerBoards(connectionID: string, project: string): $CancellablePromise<trackerapp$0.BoardInfoView[]> {
     return $Call.ByID(2450480430, connectionID, project).then(($result: any) => {
-        return $$createType275($result);
+        return $$createType277($result);
     });
 }
 
@@ -6988,7 +6998,7 @@ export function TrackerBoards(connectionID: string, project: string): $Cancellab
  */
 export function TrackerChoices(connectionID: string, scope: trackerapp$0.FieldScopeInput, field: string, text: string): $CancellablePromise<trackerapp$0.ChoiceListView> {
     return $Call.ByID(1109598697, connectionID, scope, field, text).then(($result: any) => {
-        return $$createType276($result);
+        return $$createType278($result);
     });
 }
 
@@ -6998,7 +7008,7 @@ export function TrackerChoices(connectionID: string, scope: trackerapp$0.FieldSc
  */
 export function TrackerComments(connectionID: string, issue: string, page: string): $CancellablePromise<trackerapp$0.CommentPageView> {
     return $Call.ByID(1808895141, connectionID, issue, page).then(($result: any) => {
-        return $$createType277($result);
+        return $$createType279($result);
     });
 }
 
@@ -7009,7 +7019,7 @@ export function TrackerComments(connectionID: string, issue: string, page: strin
  */
 export function TrackerConnections(): $CancellablePromise<app$0.TrackerConnection[]> {
     return $Call.ByID(1356803888).then(($result: any) => {
-        return $$createType278($result);
+        return $$createType280($result);
     });
 }
 
@@ -7019,7 +7029,7 @@ export function TrackerConnections(): $CancellablePromise<app$0.TrackerConnectio
  */
 export function TrackerCreateFields(connectionID: string, project: string, issueType: string): $CancellablePromise<trackerapp$0.FieldView[]> {
     return $Call.ByID(440800234, connectionID, project, issueType).then(($result: any) => {
-        return $$createType280($result);
+        return $$createType282($result);
     });
 }
 
@@ -7028,7 +7038,7 @@ export function TrackerCreateFields(connectionID: string, project: string, issue
  */
 export function TrackerIssueTypes(connectionID: string, project: string): $CancellablePromise<trackerapp$0.IssueTypeView[]> {
     return $Call.ByID(2749961211, connectionID, project).then(($result: any) => {
-        return $$createType282($result);
+        return $$createType284($result);
     });
 }
 
@@ -7037,7 +7047,7 @@ export function TrackerIssueTypes(connectionID: string, project: string): $Cance
  */
 export function TrackerLinkTypes(connectionID: string): $CancellablePromise<trackerapp$0.LinkTypeView[]> {
     return $Call.ByID(2754714292, connectionID).then(($result: any) => {
-        return $$createType284($result);
+        return $$createType286($result);
     });
 }
 
@@ -7046,7 +7056,7 @@ export function TrackerLinkTypes(connectionID: string): $CancellablePromise<trac
  */
 export function TrackerLookup(connectionID: string, keys: string[]): $CancellablePromise<trackerapp$0.LookupView> {
     return $Call.ByID(2194444141, connectionID, keys).then(($result: any) => {
-        return $$createType285($result);
+        return $$createType287($result);
     });
 }
 
@@ -7056,7 +7066,7 @@ export function TrackerLookup(connectionID: string, keys: string[]): $Cancellabl
  */
 export function TrackerMoves(connectionID: string, issue: string): $CancellablePromise<trackerapp$0.MoveView[]> {
     return $Call.ByID(3632796459, connectionID, issue).then(($result: any) => {
-        return $$createType287($result);
+        return $$createType289($result);
     });
 }
 
@@ -7078,7 +7088,7 @@ export function TrackerPoker(subscriptionID: string): $CancellablePromise<tracke
  */
 export function TrackerPokerSupport(connectionID: string): $CancellablePromise<trackerapp$0.PokerSupport> {
     return $Call.ByID(4253452655, connectionID).then(($result: any) => {
-        return $$createType288($result);
+        return $$createType290($result);
     });
 }
 
@@ -7091,7 +7101,7 @@ export function TrackerPokerSupport(connectionID: string): $CancellablePromise<t
  */
 export function TrackerProjects(connectionID: string): $CancellablePromise<trackerapp$0.ProjectView[]> {
     return $Call.ByID(2816087609, connectionID).then(($result: any) => {
-        return $$createType290($result);
+        return $$createType275($result);
     });
 }
 
@@ -8257,23 +8267,23 @@ const $$createType270 = threadtools$0.Resolution.createFrom;
 const $$createType271 = trackerapp$0.UserListView.createFrom;
 const $$createType272 = trackerapp$0.BoardView.createFrom;
 const $$createType273 = trackerapp$0.BoardPatch.createFrom;
-const $$createType274 = trackerapp$0.BoardInfoView.createFrom;
+const $$createType274 = trackerapp$0.ProjectView.createFrom;
 const $$createType275 = $Create.Array($$createType274);
-const $$createType276 = trackerapp$0.ChoiceListView.createFrom;
-const $$createType277 = trackerapp$0.CommentPageView.createFrom;
-const $$createType278 = $Create.Array($$createType2);
-const $$createType279 = trackerapp$0.FieldView.createFrom;
-const $$createType280 = $Create.Array($$createType279);
-const $$createType281 = trackerapp$0.IssueTypeView.createFrom;
+const $$createType276 = trackerapp$0.BoardInfoView.createFrom;
+const $$createType277 = $Create.Array($$createType276);
+const $$createType278 = trackerapp$0.ChoiceListView.createFrom;
+const $$createType279 = trackerapp$0.CommentPageView.createFrom;
+const $$createType280 = $Create.Array($$createType2);
+const $$createType281 = trackerapp$0.FieldView.createFrom;
 const $$createType282 = $Create.Array($$createType281);
-const $$createType283 = trackerapp$0.LinkTypeView.createFrom;
+const $$createType283 = trackerapp$0.IssueTypeView.createFrom;
 const $$createType284 = $Create.Array($$createType283);
-const $$createType285 = trackerapp$0.LookupView.createFrom;
-const $$createType286 = trackerapp$0.MoveView.createFrom;
-const $$createType287 = $Create.Array($$createType286);
-const $$createType288 = trackerapp$0.PokerSupport.createFrom;
-const $$createType289 = trackerapp$0.ProjectView.createFrom;
-const $$createType290 = $Create.Array($$createType289);
+const $$createType285 = trackerapp$0.LinkTypeView.createFrom;
+const $$createType286 = $Create.Array($$createType285);
+const $$createType287 = trackerapp$0.LookupView.createFrom;
+const $$createType288 = trackerapp$0.MoveView.createFrom;
+const $$createType289 = $Create.Array($$createType288);
+const $$createType290 = trackerapp$0.PokerSupport.createFrom;
 const $$createType291 = trackerapp$0.SearchPageView.createFrom;
 const $$createType292 = trackerapp$0.SectionPage.createFrom;
 const $$createType293 = trackerapp$0.TicketView.createFrom;

@@ -46,6 +46,7 @@ func TestTrackerTicketMethodsCarryTheirScopeAndRoute(t *testing.T) {
 		"MintTrackerAttachmentUploadTicket":   {operate, transport.RouteHome, false, 0},
 		"MintTrackerAttachmentDownloadTicket": {read, transport.RouteHome, false, 0},
 		"SaveTrackerAttachment":               {operate, transport.RouteHome, false, 30 * time.Minute},
+		"TrackerBoardProjects":                form,
 		"TrackerIssueTypes":                   form,
 		"TrackerCreateFields":                 form,
 		"TrackerMoves":                        form,

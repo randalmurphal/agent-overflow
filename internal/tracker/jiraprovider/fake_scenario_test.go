@@ -366,3 +366,29 @@ wait:
 		t.Errorf("the card has the update time the comment moved it to, and the comments lack it: %+v", got.d.Comments.Comments)
 	}
 }
+
+// A board whose saved filter names two projects lists the issues of
+// both, and its projects are the two, its location's first: what New
+// ticket offers on it.
+func TestFakeBoardOfTwoProjects(t *testing.T) {
+	s := newEditedScenario(t, nil, func(site *trackerfake.JiraSite) {
+		site.Tempo = nil
+		site.Projects = append(site.Projects, trackerfake.JiraProject{ID: "10010", Key: "APP", Name: "App"})
+		site.Boards[0].Also = []string{"APP"}
+		app := site.Issues[0]
+		app.ID, app.Key, app.Project, app.Sprints, app.Parent = "10150", "APP-1", "APP", nil, ""
+		site.Issues = append(site.Issues, app)
+	})
+	ps := scenarioMust[[]tracker.Project](t)(s.p.BoardProjects(s.ctx, "1"))
+	if len(ps) != 2 || ps[0].Key != "WEB" || ps[0].Name != "Web" || ps[1].ID != "10010" || ps[1].Key != "APP" {
+		t.Fatalf("board projects %+v", ps)
+	}
+	listing := scenarioMust[tracker.Listing](t)(s.p.BoardIssues(s.ctx, "1", s.clock.Now().Add(-30*24*time.Hour)))
+	if !slices.Contains(listing.IDs, "10150") {
+		t.Fatalf("listing %v lacks the APP issue", listing.IDs)
+	}
+	rows := scenarioMust[tracker.Rows](t)(s.p.BoardRows(s.ctx, "1", []tracker.IssueID{"10150"}, listing.Rule))
+	if len(rows.Rows) != 1 || len(rows.Missing) != 0 {
+		t.Fatalf("the APP issue's row %+v", rows)
+	}
+}

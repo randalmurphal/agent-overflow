@@ -75,6 +75,24 @@ func listBoards(c *jiraCall) answer {
 	return jsonAnswer(http.StatusOK, offsetPage(values, start, size))
 }
 
+// boardProjects answers the projects a board's filter names, as Jira's
+// board/{id}/project lists the projects associated with a board.
+func boardProjects(c *jiraCall) answer {
+	b, nf := c.foundBoard()
+	if nf != nil {
+		return *nf
+	}
+	start, size, err := c.pageWindow(50, 50)
+	if err != nil {
+		return unhandledf("%v", err)
+	}
+	var values []any
+	for _, p := range c.s.boardProjects(b) {
+		values = append(values, c.s.projectJSON(p))
+	}
+	return jsonAnswer(http.StatusOK, offsetPage(values, start, size))
+}
+
 func getBoard(c *jiraCall) answer {
 	b, nf := c.foundBoard()
 	if nf != nil {

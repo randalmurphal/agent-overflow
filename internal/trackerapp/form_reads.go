@@ -71,12 +71,25 @@ type ProjectView struct {
 func (s *Service) Projects(ctx context.Context, id string) ([]ProjectView, error) {
 	return ask(s, ctx, id, func(r *run) ([]ProjectView, error) {
 		ps, err := r.p.Projects(r.ctx)
-		out := make([]ProjectView, len(ps))
-		for i, p := range ps {
-			out[i] = ProjectView{ID: string(p.ID), Key: p.Key, Name: p.Name, ChoosesAudience: p.ChoosesAudience}
-		}
-		return out, call(err)
+		return projectViews(ps), call(err)
 	})
+}
+
+// BoardProjects are the projects board shows, which a ticket made from it
+// can be made in.
+func (s *Service) BoardProjects(ctx context.Context, id, board string) ([]ProjectView, error) {
+	return ask(s, ctx, id, func(r *run) ([]ProjectView, error) {
+		ps, err := r.p.BoardProjects(r.ctx, tracker.BoardID(board))
+		return projectViews(ps), call(err)
+	})
+}
+
+func projectViews(ps []tracker.Project) []ProjectView {
+	out := make([]ProjectView, len(ps))
+	for i, p := range ps {
+		out[i] = ProjectView{ID: string(p.ID), Key: p.Key, Name: p.Name, ChoosesAudience: p.ChoosesAudience}
+	}
+	return out
 }
 
 // IssueTypes are the types an issue can be created with in project; none

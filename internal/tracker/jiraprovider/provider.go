@@ -141,6 +141,24 @@ func (p *Provider) Projects(ctx context.Context) ([]tracker.Project, error) {
 	return out, nil
 }
 
+// BoardProjects are the projects Jira associates with board: those its
+// filter names and those an issue on it belongs to.
+func (p *Provider) BoardProjects(ctx context.Context, board tracker.BoardID) ([]tracker.Project, error) {
+	n, err := boardNumber(board)
+	if err != nil {
+		return nil, err
+	}
+	list, err := p.jira.BoardProjects(ctx, n)
+	if err != nil {
+		return nil, fmt.Errorf("jiraprovider: projects of board %s: %w", board, err)
+	}
+	out := make([]tracker.Project, len(list))
+	for i, pr := range list {
+		out[i] = tracker.Project{ID: tracker.ProjectID(pr.ID), Key: pr.Key, Name: pr.Name, ChoosesAudience: pr.ServiceDesk()}
+	}
+	return out, nil
+}
+
 // IssueTypes are the types the user can create in project.
 func (p *Provider) IssueTypes(ctx context.Context, project tracker.ProjectID) ([]tracker.IssueType, error) {
 	if err := checkProject(project); err != nil {

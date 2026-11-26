@@ -168,14 +168,17 @@ type JiraTransition struct {
 	Screen []JiraScreenField `json:"screen,omitempty"`
 }
 
-// JiraBoard is a Jira Software board. It lists the issues of its
-// Project whose status a column maps, ranked by the site's rank field;
-// Estimation is the field it estimates in ("" estimates by issue count).
+// JiraBoard is a Jira Software board, located in Project. Its saved
+// filter selects the issues of Project and of Also, the other projects it
+// names; it lists those whose status a column maps, ranked by the site's
+// rank field. Estimation is the field it estimates in ("" estimates by
+// issue count).
 type JiraBoard struct {
 	ID         int64        `json:"id"`
 	Name       string       `json:"name"`
 	Type       string       `json:"type"`
 	Project    string       `json:"project"`
+	Also       []string     `json:"also,omitempty"`
 	Columns    []JiraColumn `json:"columns"`
 	Estimation string       `json:"estimation,omitempty"`
 	FilterID   string       `json:"filterId,omitempty"`

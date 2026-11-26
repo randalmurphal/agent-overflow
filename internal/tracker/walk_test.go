@@ -124,6 +124,10 @@ func (f *probedProvider) Boards(ctx context.Context, _ ProjectID) ([]Board, erro
 	f.see(ctx)
 	return nil, nil
 }
+func (f *probedProvider) BoardProjects(ctx context.Context, _ BoardID) ([]Project, error) {
+	f.see(ctx)
+	return nil, nil
+}
 func (f *probedProvider) IssueTypes(ctx context.Context, _ ProjectID) ([]IssueType, error) {
 	f.see(ctx)
 	return nil, nil

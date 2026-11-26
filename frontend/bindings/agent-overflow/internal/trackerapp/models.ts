@@ -1431,6 +1431,12 @@ export class FieldView {
     "editable"?: boolean;
     "value": FieldValueView;
 
+    /**
+     * Allowed are the values a create screen lists for the field, which
+     * its picker offers with no read; absent when the screen lists none.
+     */
+    "allowed"?: ChoiceView[];
+
     /** Creates a new FieldView instance. */
     constructor($$source: Partial<FieldView> = {}) {
         if (!("id" in $$source)) {
@@ -1454,9 +1460,13 @@ export class FieldView {
      */
     static createFrom($$source: any = {}): FieldView {
         const $$createField6_0 = $$createType58;
+        const $$createField7_0 = $$createType33;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("value" in $$parsedSource) {
             $$parsedSource["value"] = $$createField6_0($$parsedSource["value"]);
+        }
+        if ("allowed" in $$parsedSource) {
+            $$parsedSource["allowed"] = $$createField7_0($$parsedSource["allowed"]);
         }
         return new FieldView($$parsedSource as Partial<FieldView>);
     }

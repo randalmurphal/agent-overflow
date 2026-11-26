@@ -15,9 +15,12 @@ var (
 
 type fakeProvider struct{}
 
-func (fakeProvider) Capabilities() Capabilities                         { return Capabilities{} }
-func (fakeProvider) Identity(context.Context) (User, error)             { return User{}, nil }
-func (fakeProvider) Projects(context.Context) ([]Project, error)        { return nil, nil }
+func (fakeProvider) Capabilities() Capabilities                  { return Capabilities{} }
+func (fakeProvider) Identity(context.Context) (User, error)      { return User{}, nil }
+func (fakeProvider) Projects(context.Context) ([]Project, error) { return nil, nil }
+func (fakeProvider) BoardProjects(context.Context, BoardID) ([]Project, error) {
+	return nil, nil
+}
 func (fakeProvider) LinkTypes(context.Context) ([]LinkType, error)      { return nil, nil }
 func (fakeProvider) Boards(context.Context, ProjectID) ([]Board, error) { return nil, nil }
 func (fakeProvider) IssueTypes(context.Context, ProjectID) ([]IssueType, error) {

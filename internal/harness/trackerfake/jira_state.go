@@ -175,15 +175,29 @@ func (s *jiraSite) boardIssues(b *JiraBoard) []*JiraIssue {
 		sub = q.where
 	}
 	var out []*JiraIssue
-	p := s.project(b.Project)
 	for i := range s.Issues {
 		is := &s.Issues[i]
-		if is.Project == p.Key && slices.Contains(mapped, is.Status) && (b.Type != "scrum" || s.level(is) != 1) && sub(s, is) {
+		if s.filters(b, is) && slices.Contains(mapped, is.Status) && (b.Type != "scrum" || s.level(is) != 1) && sub(s, is) {
 			out = append(out, is)
 		}
 	}
 	sortByRank(out)
 	return out
+}
+
+// boardProjects are the projects b's saved filter names: its location's
+// first, then Also.
+func (s *jiraSite) boardProjects(b *JiraBoard) []*JiraProject {
+	out := []*JiraProject{s.project(b.Project)}
+	for _, ref := range b.Also {
+		out = append(out, s.project(ref))
+	}
+	return out
+}
+
+// filters reports an issue b's saved filter selects: one of its projects.
+func (s *jiraSite) filters(b *JiraBoard, is *JiraIssue) bool {
+	return slices.ContainsFunc(s.boardProjects(b), func(p *JiraProject) bool { return p.Key == is.Project })
 }
 
 // boardOfFilter is the first board whose saved filter is id; nil for

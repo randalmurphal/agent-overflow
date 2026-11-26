@@ -100,6 +100,9 @@ type Provider interface {
 
 	// Projects are the projects the user can see.
 	Projects(ctx context.Context) ([]Project, error)
+	// BoardProjects are the projects board shows: those a ticket made
+	// from it can be made in.
+	BoardProjects(ctx context.Context, board BoardID) ([]Project, error)
 	// IssueTypes are the types an issue can be created with in project;
 	// none without Capabilities.IssueTypes.
 	IssueTypes(ctx context.Context, project ProjectID) ([]IssueType, error)

@@ -430,7 +430,7 @@ func olderComputerSurface() (absent map[string]bool, reshape map[string]func(jso
 		"SubscribeTrackerTicket", "TrackerTicket", "TrackerComments", "TrackerAssignableUsers", "TrackerChoices",
 		"EditTrackerIssue", "MoveTrackerIssue", "SetTrackerEstimate", "AddTrackerComment", "EditTrackerComment",
 		"DeleteTrackerComment", "TrackerMoves", "RankTrackerIssues", "MoveTrackerIssuesToSprint",
-		"CreateTrackerIssue", "TrackerIssueTypes", "TrackerCreateFields", "CreateTrackerSprint", "StartTrackerSprint", "CompleteTrackerSprint",
+		"CreateTrackerIssue", "TrackerBoardProjects", "TrackerIssueTypes", "TrackerCreateFields", "CreateTrackerSprint", "StartTrackerSprint", "CompleteTrackerSprint",
 		"EditTrackerSprint", "EditTrackerWorklog", "DeleteTrackerWorklog", "TrackerWorklogs", "RefreshTrackerWorklogs",
 		"MintTrackerAttachmentUploadTicket", "MintTrackerAttachmentDownloadTicket",
 		"SaveTrackerAttachment", "TrackerLinkTypes", "LinkTrackerIssues", "UnlinkTrackerIssues", "TrackerPokerSupport",

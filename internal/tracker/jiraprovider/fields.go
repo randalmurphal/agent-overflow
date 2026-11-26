@@ -60,11 +60,11 @@ func kindOf(s jira.Schema) (tracker.Kind, bool) {
 }
 
 // metaField is a field a screen offers, with no value: a create's or a
-// move's.
+// move's. It is required when the person must supply it (Demanded).
 func metaField(f jira.FieldMeta) tracker.Field {
 	kind, list := kindOf(f.Schema)
 	return tracker.Field{
-		ID: neutralField(f.ID), Name: f.Name, Kind: kind, List: list, Required: f.Required,
+		ID: neutralField(f.ID), Name: f.Name, Kind: kind, List: list, Required: f.Demanded(),
 		Editable: settable(f, kind),
 	}
 }

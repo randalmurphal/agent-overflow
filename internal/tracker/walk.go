@@ -42,6 +42,10 @@ func (o oneCredential) Projects(ctx context.Context) ([]Project, error) {
 	return trackerapi.Walk(ctx, o.p.Projects)
 }
 
+func (o oneCredential) BoardProjects(ctx context.Context, board BoardID) ([]Project, error) {
+	return trackerapi.Walk(ctx, func(ctx context.Context) ([]Project, error) { return o.p.BoardProjects(ctx, board) })
+}
+
 func (o oneCredential) IssueTypes(ctx context.Context, project ProjectID) ([]IssueType, error) {
 	return trackerapi.Walk(ctx, func(ctx context.Context) ([]IssueType, error) { return o.p.IssueTypes(ctx, project) })
 }

@@ -43,7 +43,15 @@ func (p *Provider) CreateFields(ctx context.Context, project tracker.ProjectID, 
 		if slices.Contains(createSkipped, f.ID) || f.ID == s.sprint || f.Schema.Custom == rankType {
 			continue
 		}
-		out = append(out, metaField(f))
+		fd := metaField(f)
+		if fd.Kind == tracker.KindOption {
+			for _, a := range f.Allowed {
+				if !a.Disabled {
+					fd.Allowed = append(fd.Allowed, tracker.Choice{ID: a.ID, Name: a.Name})
+				}
+			}
+		}
+		out = append(out, fd)
 	}
 	return out, nil
 }

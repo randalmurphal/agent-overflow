@@ -202,6 +202,12 @@ type FieldMeta struct {
 	AutoCompleteURL string
 }
 
+// Demanded reports a field a create or a move must be given a value of:
+// required by its screen, with no default Jira fills in. It is the one
+// rule for what a person must supply (PlanCreate, a move's check, and
+// what the provider says is required).
+func (f FieldMeta) Demanded() bool { return f.Required && !f.HasDefault }
+
 // AllowedValue is one value a field takes: an option, priority,
 // component, version, issue type or resolution. Raw is the value as Jira
 // sent it, for the details this type does not name.

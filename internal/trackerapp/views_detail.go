@@ -33,6 +33,9 @@ type FieldView struct {
 	Required bool           `json:"required,omitempty"`
 	Editable bool           `json:"editable,omitempty"`
 	Value    FieldValueView `json:"value"`
+	// Allowed are the values a create screen lists for the field, which
+	// its picker offers with no read; absent when the screen lists none.
+	Allowed []ChoiceView `json:"allowed,omitempty"`
 }
 
 // CommentView is a comment, its body as Markdown.
@@ -589,10 +592,14 @@ func (sd shownDetail) view(mirrored catalogNames, row store.TrackerConnection) D
 func fieldViews(fields []tracker.Field) []FieldView {
 	out := make([]FieldView, 0, len(fields))
 	for _, f := range fields {
-		out = append(out, FieldView{
+		v := FieldView{
 			ID: string(f.ID), Name: f.Name, Kind: f.Kind.String(), List: f.List, Required: f.Required, Editable: f.Editable,
 			Value: fieldValueView(f.Value),
-		})
+		}
+		for _, c := range f.Allowed {
+			v.Allowed = append(v.Allowed, ChoiceView{ID: c.ID, Name: c.Name})
+		}
+		out = append(out, v)
 	}
 	return out
 }
