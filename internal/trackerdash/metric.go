@@ -143,8 +143,8 @@ func (m Metric) Validate() error {
 	case len(m.Series) > maxSeries:
 		return fmt.Errorf("metric %s names %d series, over %d", m.Name, len(m.Series), maxSeries)
 	}
-	for _, name := range m.Series {
-		if strings.TrimSpace(name) == "" || len(name) > maxTitle || slices.Contains(m.Series[:slices.Index(m.Series, name)], name) {
+	for i, name := range m.Series {
+		if strings.TrimSpace(name) == "" || len(name) > maxTitle || slices.Contains(m.Series[:i], name) {
 			return fmt.Errorf("a series of metric %s is empty, over %d bytes or named twice", m.Name, maxTitle)
 		}
 	}
