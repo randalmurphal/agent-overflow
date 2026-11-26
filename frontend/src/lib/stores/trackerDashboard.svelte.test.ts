@@ -16,6 +16,7 @@ import {
 import { getPinnedBackend } from '../transport/backends';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { readFrontendValue } from './frontendStorage';
+import { trackerDashboardsUpdated } from './trackerBoardEvents';
 
 const VIEW = {
   id: 'overview_sprints',
@@ -322,5 +323,103 @@ describe('the drill', () => {
     await flush();
     s.setRange('this_sprint');
     expect(s.drill).toBeNull();
+  });
+});
+
+const MINE_VIEW = { ...VIEW, id: 'd_1', title: 'Bugs' } as unknown as DashboardView;
+const NEW_VIEW = { ...VIEW, id: 'd_2', title: 'New' } as unknown as DashboardView;
+
+describe('the board\'s own dashboards', () => {
+  it('shows the one picked last for the board, and another board starts on the built-in', async () => {
+    const list = held<DashboardView[] | null>('TrackerDashboards');
+    held<Answer>('EvaluateTrackerDashboard');
+    const s = open();
+    list.answer([VIEW, MINE_VIEW]);
+    await flush();
+    expect(s.dashboard?.id).toBe('overview_sprints');
+    expect(s.ownShown).toBe(false);
+    s.pick('d_1');
+    flushSync();
+    expect(s.dashboard?.id).toBe('d_1');
+    expect(s.ownShown).toBe(true);
+    s.destroy();
+
+    const again = open();
+    list.answer([VIEW, MINE_VIEW]);
+    await flush();
+    expect(again.dashboard?.id).toBe('d_1');
+    again.destroy();
+
+    source = { backend: 'peer-1', board: { ...testBoard, board: '2' }, subscription: 'sub-2', changes: 0 };
+    const other = open();
+    list.answer([VIEW, MINE_VIEW]);
+    await flush();
+    expect(other.dashboard?.id).toBe('overview_sprints');
+  });
+
+  it('lists and counts again on a change from the board\'s computer only', async () => {
+    const list = held<DashboardView[] | null>('TrackerDashboards');
+    const evaluate = held<Answer>('EvaluateTrackerDashboard');
+    open();
+    list.answer([VIEW]);
+    await flush();
+    evaluate.answer(answerFor('sprints_5'));
+    await flush();
+    trackerDashboardsUpdated('home');
+    await flush();
+    expect(list.calls).toHaveLength(1);
+    expect(evaluate.calls).toHaveLength(1);
+    trackerDashboardsUpdated('peer-1');
+    await flush();
+    expect(list.calls).toHaveLength(2);
+    expect(evaluate.calls).toHaveLength(2);
+  });
+
+  it('shows a new dashboard a Keep made once it is listed, and reads busy meanwhile', async () => {
+    const list = held<DashboardView[] | null>('TrackerDashboards');
+    held<Answer>('EvaluateTrackerDashboard');
+    const keep = held<string>('KeepTrackerWidget');
+    const s = open();
+    list.answer([VIEW]);
+    await flush();
+    const kept = s.keep('w_1', { title: 'New' });
+    expect(s.busy.has('w_1')).toBe(true);
+    expect(keep.calls).toEqual([['sub-1', 'w_1', { title: 'New' }]]);
+    expect(keep.pins).toEqual(['peer-1']);
+    keep.answer('d_2');
+    await flush();
+    expect(s.busy.has('w_1')).toBe(false);
+    expect(list.calls).toHaveLength(2);
+    list.answer([VIEW, NEW_VIEW]);
+    await kept;
+    flushSync();
+    expect(s.dashboard?.id).toBe('d_2');
+  });
+
+  it('removes a widget from and deletes only a dashboard the project keeps', async () => {
+    const list = held<DashboardView[] | null>('TrackerDashboards');
+    held<Answer>('EvaluateTrackerDashboard');
+    const remove = held<void>('RemoveTrackerWidget');
+    const del = held<void>('DeleteTrackerDashboard');
+    const dismiss = held<void>('DismissTrackerWidget');
+    const s = open();
+    list.answer([VIEW, MINE_VIEW]);
+    await flush();
+    void s.removeWidget('w_1');
+    void s.deleteDashboard();
+    expect(remove.calls).toEqual([]);
+    expect(del.calls).toEqual([]);
+    s.pick('d_1');
+    flushSync();
+    void s.removeWidget('w_1');
+    void s.deleteDashboard();
+    void s.dismiss('w_9');
+    expect(remove.calls).toEqual([['sub-1', 'd_1', 'w_1']]);
+    expect(del.calls).toEqual([['sub-1', 'd_1']]);
+    expect(dismiss.calls).toEqual([['sub-1', 'w_9']]);
+    remove.answer();
+    del.answer();
+    dismiss.answer();
+    await flush();
   });
 });
