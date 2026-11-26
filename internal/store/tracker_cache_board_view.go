@@ -16,14 +16,12 @@ const MirrorMaxViewSections = mirrorMaxSprints + 1 + mirrorMaxColumns
 // page's Next names the snapshot's lifetime and revision, so a later page
 // continues it or fails with ErrTrackerCacheStale. Names are what every
 // page's cards and the columns name, from the same snapshot; the pages'
-// own Names are empty. Pace is what the board's last finished sprints
-// finished (MirrorSprintFinished), read for a board that plans sprints.
+// own Names are empty.
 type MirrorBoardView struct {
 	Structure MirrorStructure
 	Counts    MirrorSectionCounts
 	Pages     []MirrorSectionPage
 	Names     MirrorNames
-	Pace      []MirrorSprintFinished
 }
 
 // mirrorBoardViewSQL reads a shown board's own fields and what its rows'
@@ -34,8 +32,7 @@ var mirrorBoardViewSQL = `SELECT b.board_id, b.project_id, b.name, b.plans_sprin
 
 // ReadMirrorBoardView reads, in one snapshot (mirrorReadSnapshot), a
 // board's structure (as GetMirrorBoard), its section totals (as
-// CountMirrorSections), its pace when it plans sprints (mirrorPaceSQL),
-// the first page of each section pick names from that structure (as
+// CountMirrorSections, its pace with them), the first page of each section pick names from that structure (as
 // ListMirrorSection) and what they name (MirrorNames), each read with
 // regroup: one statement per part, the board's columns and
 // their statuses read once for the structure and the totals. pick runs
@@ -58,7 +55,7 @@ func (s *Store) ReadMirrorBoardView(rootID int64, boardID string, regroup Mirror
 			return MirrorBoardView{}, err
 		}
 		ok = true
-		st.Lifetime, board.unit = board.lifetime, b.EstimateUnit
+		st.Lifetime, board.unit, board.plansSprints = board.lifetime, b.EstimateUnit, b.PlansSprints
 		if st.Columns, err = readMirrorColumnsTx(tx, rootID, boardID); err != nil {
 			return MirrorBoardView{}, err
 		}
@@ -73,11 +70,6 @@ func (s *Store) ReadMirrorBoardView(rootID int64, boardID string, regroup Mirror
 		}
 		if v.Counts, err = countMirrorSectionsTx(tx, rootID, boardID, board, regroup, columns); err != nil {
 			return MirrorBoardView{}, err
-		}
-		if b.PlansSprints {
-			if v.Pace, err = readMirrorPaceTx(tx, rootID, boardID, board, regroup); err != nil {
-				return MirrorBoardView{}, fmt.Errorf("pace: %w", err)
-			}
 		}
 		sections := pick(*st)
 		if len(sections) > MirrorMaxViewSections {

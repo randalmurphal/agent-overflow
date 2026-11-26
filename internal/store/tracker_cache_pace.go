@@ -1,6 +1,10 @@
 package store
 
-import "strconv"
+import (
+	"database/sql"
+	"fmt"
+	"strconv"
+)
 
 // MirrorPaceSprints is how many finished sprints a board's pace averages:
 // its last ones by completion.
@@ -10,7 +14,9 @@ const MirrorPaceSprints = 5
 // members on the board, those whose status when the sprint was completed
 // counted as done, and the sum of the board's estimates of those, as the
 // board holds them now (a row with no estimate, or one read no later than
-// the estimate definition last changed, adds nothing).
+// the estimate definition last changed, adds nothing). A sprint none of
+// whose members the board holds finished nothing: the mirror keeps a
+// board's closed sprints with their members for the history window.
 type MirrorSprintFinished struct {
 	SprintID string
 	Members  int
@@ -18,21 +24,38 @@ type MirrorSprintFinished struct {
 	Estimate float64
 }
 
-// mirrorPaceSQL reads, for the last MirrorPaceSprints closed sprints of
-// board ?2 of root ?1 by completion, each member's status when its sprint
-// was completed and its estimate, and counts and sums those whose status
-// then counted as done by the regrouping ?4 (a JSON object, '{}' for none)
-// over the catalog's groups: the list of done statuses is one uncorrelated
-// subquery, built once a statement, as mirrorRegroupedNotDone's is. The
-// status then is the last status change at or before the completion,
-// else the first change after it is from, else the issue's status now (an
-// issue whose status never changed); each is read in the changes' key
-// order, which is each kind's oldest first (MirrorHistory), at the issue's
-// current history generation. A sprint none of whose members the board
-// holds has no row. ?3 is the board's estimate reset.
-var mirrorPaceSQL = `WITH last AS (
+// The pace of a board, what must hold:
+//   - It averages the last MirrorPaceSprints closed sprints of the board by
+//     completion, every one of them, a sprint with no member on the board
+//     as zero.
+//   - A member counts as done when its status at the sprint's completion
+//     counted as done by the regrouping over the catalog's groups. That
+//     status is the last status change at or before the completion, else
+//     the first change after it is from, both of the issue's current
+//     history generation; with no such change, it is the status now only
+//     when the issue's history was read for its current version
+//     (history_for > 0: the status never changed) or this sprint is the
+//     latest sprint of the board, closed or open, the issue is in (it was
+//     carried nowhere after it). Otherwise the member is not done: an
+//     issue carried on from the sprint, its history unread, finished in a
+//     later sprint if at all.
+//   - It is part of the section totals (countMirrorSectionsTx), so it is
+//     stale exactly when they are: the board's totals_revision advances on
+//     every change of its inputs, rows, members, sprints and their states,
+//     estimates, statuses and their groups by trigger, and a history write
+//     of an issue on the board that is in one of its closed sprints by
+//     advanceMirrorPaceTx.
+//
+// mirrorPaceSQL reads those sprints of board ?2 of root ?1, each member's
+// status at its completion and its estimate, and counts and sums those
+// done by the regrouping ?4 (a JSON object, '{}' for none): the list of
+// done statuses is one uncorrelated subquery, built once a statement, as
+// mirrorRegroupedNotDone's is. Each change is read in the changes' key
+// order, which is each kind's oldest first (MirrorHistory). ?3 is the
+// board's estimate reset.
+var mirrorPaceSQL = `WITH last AS MATERIALIZED (
 	  SELECT sprint_id, completed_at FROM tracker_cache_sprints
-	   WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND state = 3 AND completed_at > 0
+	   WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND state = ` + strconv.Itoa(MirrorSprintClosed) + ` AND completed_at > 0
 	   ORDER BY completed_at DESC, position DESC LIMIT ` + strconv.Itoa(MirrorPaceSprints) + `),
 	members AS (
 	  SELECT l.sprint_id, ` + mirrorRowEstimate("?3") + ` AS estimate, coalesce(
@@ -42,17 +65,48 @@ var mirrorPaceSQL = `WITH last AS (
 	    (SELECT c.from_value FROM tracker_cache_changes c
 	      WHERE c.root_id = i.root_id AND c.issue_id = i.issue_id AND c.gen = i.history_gen AND c.kind = 1 AND c.at > l.completed_at
 	      ORDER BY c.seq LIMIT 1),
-	    i.status_id) AS status
+	    iif(i.history_for > 0 OR NOT EXISTS (SELECT 1 FROM tracker_cache_issue_sprints later
+	        CROSS JOIN tracker_cache_sprints sp ON sp.root_id = later.root_id AND sp.board_id = ?2 AND sp.sprint_id = later.sprint_id
+	       WHERE later.root_id = i.root_id AND later.issue_id = i.issue_id AND later.sprint_id <> l.sprint_id
+	         AND (sp.state IN (` + strconv.Itoa(MirrorSprintActive) + `, ` + strconv.Itoa(MirrorSprintFuture) + `) OR sp.completed_at > l.completed_at)),
+	      i.status_id, NULL)) AS status
 	  FROM last l
 	  CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = CAST(?1 AS INTEGER) AND m.sprint_id = l.sprint_id
 	  CROSS JOIN tracker_cache_board_issues b ON b.root_id = m.root_id AND b.board_id = ?2 AND b.issue_id = m.issue_id
-	  CROSS JOIN tracker_cache_issues i ON i.root_id = m.root_id AND i.issue_id = m.issue_id)
-	SELECT sprint_id, count(*), total(done), total(iif(done, estimate, 0)) FROM (
-	  SELECT sprint_id, estimate, status IN (SELECT st.status_id FROM tracker_cache_statuses st
-	     WHERE st.root_id = CAST(?1 AS INTEGER) AND st.status_group = ` + strconv.Itoa(MirrorGroupDone) + ` AND st.status_id NOT IN (SELECT o.key FROM json_each(?4) o)
-	     UNION ALL SELECT o.key FROM json_each(?4) o WHERE o.value = ` + strconv.Itoa(MirrorGroupDone) + `) AS done
-	  FROM members)
-	GROUP BY sprint_id`
+	  CROSS JOIN tracker_cache_issues i ON i.root_id = m.root_id AND i.issue_id = m.issue_id),
+	finished AS (
+	  SELECT sprint_id, count(*) AS members, total(done) AS done, total(iif(done, estimate, 0)) AS estimate FROM (
+	    SELECT sprint_id, estimate, coalesce(status IN (SELECT st.status_id FROM tracker_cache_statuses st
+	       WHERE st.root_id = CAST(?1 AS INTEGER) AND st.status_group = ` + strconv.Itoa(MirrorGroupDone) + ` AND st.status_id NOT IN (SELECT o.key FROM json_each(?4) o)
+	       UNION ALL SELECT o.key FROM json_each(?4) o WHERE o.value = ` + strconv.Itoa(MirrorGroupDone) + `), 0) AS done
+	    FROM members)
+	  GROUP BY sprint_id)
+	SELECT l.sprint_id, coalesce(f.members, 0), coalesce(f.done, 0), coalesce(f.estimate, 0)
+	FROM last l LEFT JOIN finished f ON f.sprint_id = l.sprint_id`
+
+// mirrorPaceAdvanceSQL advances the totals revision of each board of root
+// ?1 that holds a row of an issue of the JSON list ?2 that is in one of the
+// board's closed sprints, each row and membership found by key.
+var mirrorPaceAdvanceSQL = `UPDATE tracker_cache_boards SET totals_revision = totals_revision + 1
+	WHERE root_id = CAST(?1 AS INTEGER) AND board_id IN (
+	  SELECT b.board_id FROM json_each(?2) l
+	  CROSS JOIN tracker_cache_board_issues b ON b.root_id = CAST(?1 AS INTEGER) AND b.issue_id = l.value
+	  WHERE EXISTS (SELECT 1 FROM tracker_cache_issue_sprints m
+	    CROSS JOIN tracker_cache_sprints sp ON sp.root_id = m.root_id AND sp.board_id = b.board_id AND sp.sprint_id = m.sprint_id
+	   WHERE m.root_id = b.root_id AND m.issue_id = b.issue_id AND sp.state = ` + strconv.Itoa(MirrorSprintClosed) + `))`
+
+// advanceMirrorPaceTx tells the boards whose pace a history write of
+// issues may have moved (mirrorPaceAdvanceSQL), in the write's
+// transaction; issues is a JSON list, empty for none.
+func advanceMirrorPaceTx(tx *sql.Tx, rootID int64, issues string) error {
+	if issues == "" {
+		return nil
+	}
+	if _, err := tx.Exec(mirrorPaceAdvanceSQL, rootID, issues); err != nil {
+		return fmt.Errorf("advance the totals of the boards whose pace the history moved: %w", err)
+	}
+	return nil
+}
 
 // readMirrorPaceTx reads what each of the last finished sprints of a board
 // finished (mirrorPaceSQL), in no order.

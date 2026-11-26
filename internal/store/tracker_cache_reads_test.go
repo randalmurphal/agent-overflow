@@ -84,7 +84,8 @@ func TestListMirrorSectionSelectsItsRows(t *testing.T) {
 	want := MirrorSectionCounts{Revision: page.Revision, TotalsRevision: currentTotalsRevision(s, root, "10"),
 		All: MirrorSectionTotal{8, 17, 4}, Backlog: MirrorSectionTotal{3, 9, 2},
 		Sprints: map[string]MirrorSectionTotal{"20": {2, 5, 1}, "21": {2, 6, 0}, "22": {1, 2, 0}},
-		Columns: map[int]MirrorSectionTotal{0: {2, 1, 1}, 1: {3, 7, 1}, 2: {2, 0, 2}}}
+		Columns: map[int]MirrorSectionTotal{0: {2, 1, 1}, 1: {3, 7, 1}, 2: {2, 0, 2}},
+		Pace:    []MirrorSprintFinished{{SprintID: "20", Members: 2}}}
 	if err != nil || page.Revision == 0 || !reflect.DeepEqual(counts, want) {
 		t.Fatalf("counts = %+v, %v\nwant %+v", counts, err, want)
 	}

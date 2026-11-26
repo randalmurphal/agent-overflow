@@ -346,7 +346,7 @@ describe('the Backlog screen\'s sections', () => {
     const keys = (h: HeldBoard) => h.sections.map((s) => `${sectionList(s.section)}${s.unread ? ' unread' : ''}`);
     const plain = planBoard({ '8': [row('1', 'a', 's1')] }, false);
     expect(keys(plain)).toEqual(['sprint:8']);
-    expect(plain.pace).toEqual({ sprints: 3, rows: 4, estimate: 10 });
+    expect(plain.totals.pace).toEqual({ sprints: 3, rows: 4, estimate: 10 });
     const planned = withPlan(plain, true);
     expect(keys(planned)).toEqual(['sprint:8', 'sprint:9 unread', 'backlog unread']);
     // The active sprint's rows are the Board screen's, kept as they are.
@@ -360,6 +360,16 @@ describe('the Backlog screen\'s sections', () => {
     expect(keys(off)).toEqual(['sprint:8']);
     expect(off.sections[0]).toBe(read.sections[0]);
     expect(withPlan(off, false)).toBe(off);
+  });
+
+  it('takes the pace with the totals a patch carries, and keeps it when the patch carries none', () => {
+    const held = planBoard({ '8': [row('1', 'a', 's1')] }, false);
+    const pace = { sprints: 3, rows: 5, estimate: 12 };
+    const zero = { rows: 0, estimate: 0, unestimated: 0 };
+    const moved = applyBoardPatch(held, [], { lifetime: 1, revision: 2, totals: { revision: 2, all: zero, backlog: zero, pace }, sections: [{ rows: [] }] } as unknown as BoardPatch, (r) => r);
+    expect(moved.totals.pace).toEqual(pace);
+    const kept = applyBoardPatch(moved, [], { lifetime: 1, revision: 3, sections: [{ rows: [] }] } as unknown as BoardPatch, (r) => r);
+    expect(kept.totals.pace).toEqual(pace);
   });
 
   it('keeps a planned sprint\'s rows off the Board screen\'s columns', () => {

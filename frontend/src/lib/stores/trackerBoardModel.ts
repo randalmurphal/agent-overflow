@@ -39,14 +39,16 @@ export interface HeldSection {
   readonly unread?: true;
 }
 
-/** Every section's total at the board's totals revision. A sprint or
- * column a map lacks holds no row. */
+/** Every section's total at the board's totals revision, and its
+ * finished sprints' pace at it (null for none). A sprint or column a map
+ * lacks holds no row. */
 export interface HeldTotals {
   readonly revision: number;
   readonly all: SectionTotal;
   readonly backlog: SectionTotal;
   readonly sprints: ReadonlyMap<string, SectionTotal>;
   readonly columns: ReadonlyMap<number, SectionTotal>;
+  readonly pace: PaceView | null;
 }
 
 /** The board's structure as the screen draws it. */
@@ -67,11 +69,10 @@ export interface BoardShape {
 
 /** What the client holds of a board: its shape, lifetime and revision,
  * the version of the project's status groups it was read with (empty for
- * none) and the statuses those groups leave out of counts, the totals, the
- * sections the Board and Backlog screens show (`screen`, `plan`), its
- * finished sprints' pace as the last full read counted it (null for none),
- * and the sections it reads: the Board screen's, and the Backlog screen's
- * while a pane shows Backlog. */
+ * none) and the statuses those groups leave out of counts, the totals with
+ * the pace, the sections the Board and Backlog screens show (`screen`,
+ * `plan`), and the sections it reads: the Board screen's, and the Backlog
+ * screen's while a pane shows Backlog. */
 export interface HeldBoard {
   readonly shape: BoardShape;
   readonly lifetime: number;
@@ -81,7 +82,6 @@ export interface HeldBoard {
   readonly totals: HeldTotals;
   readonly screen: readonly Section[];
   readonly plan: readonly Section[];
-  readonly pace: PaceView | null;
   readonly sections: readonly HeldSection[];
 }
 
@@ -120,10 +120,9 @@ export function heldFromView(view: BoardView, intern: (row: RowView) => RowView,
     revision: view.revision,
     groups: view.groups ?? '',
     leftOut: new Set(view.left_out ?? []),
-    totals: { revision: view.totals_revision, all: view.all, backlog: view.backlog, sprints, columns },
+    totals: { revision: view.totals_revision, all: view.all, backlog: view.backlog, sprints, columns, pace: view.pace ?? null },
     screen: view.screen,
     plan: view.plan,
-    pace: view.pace ?? null,
     sections: withUnread(
       view.sections.map((page) => ({ section: page.section, rows: (page.rows ?? []).map(intern), next: page.next ?? null })),
       planning ? [...view.screen, ...view.plan] : view.screen,
@@ -177,6 +176,7 @@ function totalsOf(t: BoardTotals): HeldTotals {
     backlog: t.backlog,
     sprints: new Map((t.sprints ?? []).map((s) => [s.sprint, s.total])),
     columns: new Map((t.columns ?? []).map((c) => [c.column, c.total])),
+    pace: t.pace ?? null,
   };
 }
 

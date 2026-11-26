@@ -97,8 +97,9 @@ func requireCountsMatchPagesWith(t *testing.T, s *Store, root int64, board strin
 		t.Fatalf("board %s: %v, %v", board, ok, err)
 	}
 	estimated := st.Board.EstimateUnit != MirrorEstimateNone
+	// The pages show no pace; its own tests check it (tracker_cache_pace_test.go).
 	want := MirrorSectionCounts{Revision: counts.Revision, TotalsRevision: currentTotalsRevision(s, root, board),
-		Sprints: map[string]MirrorSectionTotal{}, Columns: map[int]MirrorSectionTotal{}}
+		Sprints: map[string]MirrorSectionTotal{}, Columns: map[int]MirrorSectionTotal{}, Pace: counts.Pace}
 	want.Backlog = pagedTotals(t, s, root, board, rg, MirrorSection{Kind: MirrorSectionBacklog}, estimated)
 	for _, sp := range st.Sprints {
 		if total := pagedTotals(t, s, root, board, rg, MirrorSection{Kind: MirrorSectionSprint, SprintID: sp.ID}, estimated); total.Rows > 0 {

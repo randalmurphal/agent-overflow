@@ -6,7 +6,7 @@
 //
 // A section's numbers: an active sprint's points done of its points; a
 // future sprint's points against the board's pace (the average of its last
-// finished sprints, `BoardView.pace`), each person's load and how far it
+// finished sprints, held with the totals), each person's load and how far it
 // is over; the backlog's tickets, points and tickets with no estimate. A
 // board without estimates counts tickets where it would add points. A
 // sprint is read whole as soon as it is held, so what its rows add up to
@@ -140,7 +140,7 @@ export function sectionNumbers(held: HeldBoard, sec: BacklogSection, moved: read
     }
   }
   const whole = !sec.unread && !sec.more;
-  const pace = sec.kind === 'future' ? held.pace : null;
+  const pace = sec.kind === 'future' ? held.totals.pace : null;
   return {
     total,
     before: changed ? sec.total : null,

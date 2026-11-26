@@ -29,14 +29,16 @@ type BoardPatch struct {
 	Sections []PatchSection `json:"sections"`
 }
 
-// BoardTotals is every section's total at the board's totals Revision; a
-// sprint or column absent from Sprints or Columns holds no row.
+// BoardTotals is every section's total at the board's totals Revision, and
+// the board's pace at it (nil for none, as BoardView.Pace); a sprint or
+// column absent from Sprints or Columns holds no row.
 type BoardTotals struct {
 	Revision int64         `json:"revision"`
 	All      SectionTotal  `json:"all"`
 	Backlog  SectionTotal  `json:"backlog"`
 	Sprints  []SprintTotal `json:"sprints,omitempty"`
 	Columns  []ColumnTotal `json:"columns,omitempty"`
+	Pace     *PaceView     `json:"pace,omitempty"`
 }
 
 // TotalsAt names the totals a client holds: those of the board's Lifetime
@@ -131,7 +133,7 @@ func (s *Service) BoardPatch(scope Scope, groups StatusGroups, sections []Sectio
 
 // totalsOf is c as a patch's totals, sprints and columns in order.
 func totalsOf(c store.MirrorSectionCounts) *BoardTotals {
-	out := &BoardTotals{Revision: c.TotalsRevision, All: totalOf(c.All), Backlog: totalOf(c.Backlog)}
+	out := &BoardTotals{Revision: c.TotalsRevision, All: totalOf(c.All), Backlog: totalOf(c.Backlog), Pace: paceOf(c.Pace)}
 	for id, t := range c.Sprints {
 		out.Sprints = append(out.Sprints, SprintTotal{Sprint: id, Total: totalOf(t)})
 	}

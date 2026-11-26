@@ -171,10 +171,11 @@ type BoardView struct {
 }
 
 // PaceView is what a board's last finished sprints (at most
-// store.MirrorPaceSprints, those with a member the board holds) finished on
-// average: how many sprints it averages, the tickets whose status counted
-// as done when their sprint was completed, and the sum of their estimates
-// as the board holds them now. No credit rule is applied.
+// store.MirrorPaceSprints, one with no member on the board as zero)
+// finished on average: how many sprints it averages, the tickets whose
+// status counted as done when their sprint was completed, and the sum of
+// their estimates as the board holds them now. No credit rule is applied.
+// It is part of the section totals (BoardTotals), read with them.
 type PaceView struct {
 	Sprints  int     `json:"sprints"`
 	Rows     float64 `json:"rows"`
@@ -327,7 +328,7 @@ func (s *Service) Board(scope Scope, groups StatusGroups, sections []Section) (B
 		return BoardView{}, fmt.Errorf("trackerapp: read the sync state of board %s: %w", scope.Board, err)
 	}
 	v.Sync = syncViewOf(sync.MirrorSyncOutcome)
-	v.Screen, v.Plan, v.Pace = screen, plan, paceOf(snap.Pace)
+	v.Screen, v.Plan, v.Pace = screen, plan, paceOf(snap.Counts.Pace)
 	v.Sections = pages
 	row, err := s.viewRow(scope.Connection)
 	if err != nil {

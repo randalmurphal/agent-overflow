@@ -111,14 +111,26 @@ func TestBoardPace(t *testing.T) {
 		r.Card.Status, r.Card.Sprints, r.Estimate = tracker.StatusID(status), []tracker.SprintID{sprint}, estimate
 		return r
 	}
-	m.p.changedRows = pagedDelta(t, []tracker.Row{
+	first := []tracker.Row{
 		member("10001", "s3", &three, "9"), member("10002", "s1", &one, "9"), member("10003", "s3", nil, "9"),
 		member("10004", "s3", &one, "8"),
-	})
+	}
+	m.p.changedRows = pagedDelta(t, first)
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
 	v := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, nil))
 	if v.Pace == nil || *v.Pace != (PaceView{Sprints: 2, Rows: 1.5, Estimate: 2}) {
 		t.Fatalf("pace %+v; want 2 sprints averaging 1.5 tickets and 2 points", v.Pace)
+	}
+	// The pace rides on the totals: a patch after a member finished carries
+	// it with them.
+	r := member("10002", "s3", &one, "9")
+	r.Card.Updated = r.Card.Updated.Add(time.Second)
+	m.p.changedRows = pagedDelta(t, first, []tracker.Row{r})
+	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+	held := TotalsAt{Lifetime: v.Lifetime, Revision: v.TotalsRevision, Groups: v.Groups}
+	patch := must[BoardPatch](t)(m.svc.BoardPatch(m.scope(), StatusGroups{}, nil, ids("10002"), held))
+	if patch.Totals == nil || patch.Totals.Pace == nil || *patch.Totals.Pace != (PaceView{Sprints: 2, Rows: 2, Estimate: 2.5}) {
+		t.Fatalf("patch totals %+v; want a pace of 2 sprints averaging 2 tickets and 2.5 points", patch.Totals)
 	}
 }
 

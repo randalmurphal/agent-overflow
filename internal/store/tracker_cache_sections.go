@@ -224,20 +224,21 @@ var (
 
 // mirrorShownBoardSQL reads the lifetime, revisions, estimate unit and
 // estimate reset of a board the mirror shows.
-var mirrorShownBoardSQL = `SELECT b.lifetime, b.revision, b.totals_revision, b.estimate_unit, b.estimate_reset_at FROM tracker_cache_boards b
+var mirrorShownBoardSQL = `SELECT b.lifetime, b.revision, b.totals_revision, b.estimate_unit, b.estimate_reset_at, b.plans_sprints FROM tracker_cache_boards b
 	WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND ` + mirrorBoardShown(intParam("?1"), "?2")
 
 // mirrorShownBoard is a shown board's state as a read of its rows needs it.
 type mirrorShownBoard struct {
 	lifetime, revision, totalsRevision, estimateResetAt int64
 	unit                                                int
+	plansSprints                                        bool
 }
 
 // readMirrorShownBoardTx reads a shown board's lifetime, revisions and
 // estimate unit; ok is false for a board the mirror does not show.
 func readMirrorShownBoardTx(tx sqlQueryer, rootID int64, boardID string) (board mirrorShownBoard, ok bool, err error) {
 	err = tx.QueryRow(mirrorShownBoardSQL, rootID, boardID).Scan(&board.lifetime, &board.revision, &board.totalsRevision, &board.unit,
-		&board.estimateResetAt)
+		&board.estimateResetAt, &board.plansSprints)
 	if errors.Is(err, sql.ErrNoRows) {
 		return mirrorShownBoard{}, false, nil
 	}
@@ -351,11 +352,15 @@ type MirrorSectionTotal struct {
 
 // MirrorSectionCounts are the totals of each section of a board at its
 // Revision and TotalsRevision. A sprint or column with no rows is absent.
+// Pace is what the board's last finished sprints finished
+// (MirrorSprintFinished, mirrorPaceSQL), in no order, read for a board that
+// plans sprints.
 type MirrorSectionCounts struct {
 	Revision, TotalsRevision int64
 	All, Backlog             MirrorSectionTotal
 	Sprints                  map[string]MirrorSectionTotal
 	Columns                  map[int]MirrorSectionTotal
+	Pace                     []MirrorSprintFinished
 }
 
 // The count statements read no issue's table row and sort nothing.
@@ -498,6 +503,11 @@ func countMirrorSectionsTx(tx sqlQueryer, rootID int64, boardID string, board mi
 	})
 	if err != nil {
 		return MirrorSectionCounts{}, fmt.Errorf("sprints: %w", err)
+	}
+	if board.plansSprints {
+		if counts.Pace, err = readMirrorPaceTx(tx, rootID, boardID, board, regroup); err != nil {
+			return MirrorSectionCounts{}, fmt.Errorf("pace: %w", err)
+		}
 	}
 	return counts, nil
 }
