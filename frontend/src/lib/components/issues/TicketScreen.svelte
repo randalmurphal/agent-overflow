@@ -15,10 +15,15 @@
 
 <script lang="ts">
   // One ticket (docs/specs/issues.md, "Ticket"), loaded on its first open
-  // in its own chunk. The header holds the type mark (which changes the
-  // type), key, parent and title, with Back or Close, over or beside at
-  // 900 or wider, Open in the tracker, Refresh and the ticket's menu (also
-  // on a right-click or long press of the header). At 720 or wider the content is on the left and
+  // in its own chunk and mounted by `TicketHost.svelte`, in the Issues
+  // pane or in a pane of its own. The header holds the type mark (which
+  // changes the type), key, parent and title, with Back or Close, over or
+  // beside where the Issues pane fits it, Open in the tracker, Refresh and
+  // the ticket's menu (also on a right-click or long press of the header).
+  // In a pane of its own the header is the pane's: its focus line, the key
+  // as its drag handle and the pane's close. A linked ticket or the parent
+  // pressed with Ctrl or Cmd opens in a pane of its own, and the menu's
+  // "In its own pane" moves the ticket into one. At 720 or wider the content is on the left and
   // the rail of fields on the right; narrower, one row of status,
   // assignee, priority and points sits over the content and Details
   // slides the rail over it. The content is the description, the other
@@ -56,6 +61,8 @@
   import Segmented from '../primitives/Segmented.svelte';
   import ErrorNotice from '../shared/ErrorNotice.svelte';
   import RenderBoundary from '../shared/RenderBoundary.svelte';
+  import ToolPaneHeader from '../panes/ToolPaneHeader.svelte';
+  import TicketRefMenu from './TicketRefMenu.svelte';
   import PriorityIcon from './PriorityIcon.svelte';
   import StatusMark from './StatusMark.svelte';
   import TicketAttachments from './TicketAttachments.svelte';
@@ -88,6 +95,7 @@
     type TicketPlacement,
     type TicketSeed,
   } from '../../stores/issuesPane.svelte';
+  import { opensTicketPane, ticketPanesOffered } from '../../stores/ticketPanes.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import {
@@ -120,55 +128,66 @@
   interface Props {
     attachment: TrackerTicketAttachment;
     seed: TicketSeed;
-    /** The board the ticket was opened from: its points are that row's. */
-    board: string;
-    /** The connection's tracker: jira or linear. */
-    kind: string;
+    /** The board the ticket was opened from: its points are that row's;
+     * null shows the first board's the ticket is on. */
+    board: string | null;
     computerName: string;
-    /** The person's account on the connection; null when it was never
-     * verified, and Log time cannot say whose time it logs. */
-    account: string | null;
     /** The ticket's computer is not connected now. */
     offline: boolean;
     compact: boolean;
     /** The person sees the ticket now (its pane is on screen): what its
      * controls draw counts as shown (`ticketWriteSurface.ts`). */
     shown: boolean;
-    /** Tickets Back steps through before it closes this one. */
+    /** Tickets Back steps through. */
     trail: number;
-    placement: TicketPlacement;
-    /** The pane fits the ticket beside the board. */
-    besideFits: boolean;
-    onPlacement: (placement: TicketPlacement) => void;
-    /** Whether the open this ticket mounts for asked for the focus, which
-     * it then takes (IssuesPane `focusRequest`); answers true once. */
-    takeFocus: () => boolean;
+    /** Over or beside the board, offered where the pane fits the ticket
+     * beside it; omitted elsewhere. */
+    placement?: { readonly value: TicketPlacement; readonly set: (placement: TicketPlacement) => void };
+    /** The ticket is a pane of its own: its header is the pane's, with the
+     * pane's focus line, its key the drag handle and its close the pane's. */
+    pane?: { readonly id: string; readonly onDragStart?: (event: DragEvent) => void };
+    /** Whether the open this ticket shows asked for the focus, which it
+     * then takes (utils/openFocusRequest.svelte.ts). Reactive. */
+    focusAsked: boolean;
+    onFocusTaken: () => void;
     onBack: () => void;
     onClose: () => void;
-    /** Opens another issue of the connection from this ticket. */
-    onOpenIssue: (issue: string, seed: TicketSeed) => void;
+    /** Moves the ticket into a pane of its own; omitted where it is one. */
+    onOwnPane?: () => void;
+    /** Opens another issue of the connection from this ticket: here, or in
+     * a pane of its own. */
+    onOpenIssue: (issue: string, seed: TicketSeed, ownPane: boolean) => void;
   }
 
-  let { attachment, seed, board, kind, computerName, account, offline, compact, shown, trail, placement, besideFits, onPlacement, takeFocus, onBack, onClose, onOpenIssue }: Props = $props();
+  let { attachment, seed, board, computerName, offline, compact, shown, trail, placement, pane, focusAsked, onFocusTaken, onBack, onClose, onOwnPane, onOpenIssue }: Props = $props();
   setTicketWriteSurface(() => shown);
 
   // The ticket a person opened takes the focus, so a key or a paste of
-  // files goes to it (IssuesPane `showTicket`).
+  // files goes to it; an open of the ticket shown asks again.
   let root: HTMLElement | undefined = $state();
-  export function focus(): void {
-    root?.focus({ preventScroll: true });
-  }
   $effect(() => {
-    if (root && untrack(takeFocus)) focus();
+    if (!root || !focusAsked) return;
+    untrack(onFocusTaken);
+    root.focus({ preventScroll: true });
   });
+  const ownPaneOffered = $derived(!!onOwnPane && ticketPanesOffered());
 
   const NARROW_PX = 720;
 
   const ticketState = $derived(attachment.current);
   const detail = $derived(ticketState?.detail ?? null);
   const card: CardView | null = $derived(detail?.card ?? seed.card);
-  const linear = $derived(kind === 'linear');
-  const ctx: TicketWriteContext = $derived({ key: attachment.key, ref: attachment.ref, label: card?.key || seed.key });
+  // The ticket's tracker, held through a reconnect until an answer says
+  // otherwise (stores/trackerTicket.svelte.ts, `trackers`). Jira's own
+  // controls (the type, the estimate, poker, attachments, Log time) show
+  // on a Jira ticket only, never before its computer first answers.
+  const tracker = $derived(attachment.tracker);
+  const jira = $derived(tracker?.kind === 'jira');
+  // The ticket's key, empty until a pane restored with none reads it:
+  // Copy key waits for it. (The commands that write the ticket, Log time
+  // among them, show only with its detail, which names its key.)
+  const ticketKey = $derived(card?.key || seed.key);
+  const ctx: TicketWriteContext = $derived({ key: attachment.key, ref: attachment.ref, label: ticketKey || 'this ticket' });
   const section = (id: string) => ({ backend: attachment.ref.backend, connection: attachment.ref.connection, section: id });
 
   // The targets of the narrow row's fields, whose notes the row shows.
@@ -181,12 +200,33 @@
     if (!narrow) railOpen = false;
   });
 
+  // The parent's own menu, on a right-click or long press of its chip:
+  // what it opens is the parent, never this ticket.
+  // What it names outlives the menu's close, which runs before its row acts.
+  let parentMenu = $state<{ x: number; y: number; parent: NonNullable<CardView['parent']> } | null>(null);
+  let parentMenuOpen = $state(false);
+  function parentSeed(parent: NonNullable<CardView['parent']>): TicketSeed {
+    return { key: parent.key ?? '', title: parent.title ?? '', card: null };
+  }
+  function openParentMenu(event: MouseEvent, parent: NonNullable<CardView['parent']>): void {
+    event.preventDefault();
+    event.stopPropagation();
+    parentMenu = { x: event.clientX, y: event.clientY, parent };
+    parentMenuOpen = true;
+  }
+  const keyText = $derived(ticketKey || 'Ticket');
+
   /** One step back inside the ticket: the Details rail over a narrow
    * ticket closes. False when there is none, and the pane steps on. */
   export function stepBack(): boolean {
     if (!railOpen) return false;
     railOpen = false;
     return true;
+  }
+
+  /** Whether `stepBack` has a step to take; reactive. */
+  export function hasStepBack(): boolean {
+    return railOpen;
   }
 
   // The names fields go by, for a refusal naming them.
@@ -225,9 +265,9 @@
   }
 
   // The card's four fields, edited as a Board card edits them.
-  const assigneeEditor: FieldEditor | null = $derived(detail ? cardEditor(ctx, detail.card, 'assignee', null, !linear) : null);
-  const priorityEditor: FieldEditor | null = $derived(detail ? cardEditor(ctx, detail.card, 'priority', null, !linear) : null);
-  const typeEditor: FieldEditor | null = $derived(detail ? cardEditor(ctx, detail.card, 'type', null, !linear) : null);
+  const assigneeEditor: FieldEditor | null = $derived(detail ? cardEditor(ctx, detail.card, 'assignee', null, jira) : null);
+  const priorityEditor: FieldEditor | null = $derived(detail ? cardEditor(ctx, detail.card, 'priority', null, jira) : null);
+  const typeEditor: FieldEditor | null = $derived(detail ? cardEditor(ctx, detail.card, 'type', null, jira) : null);
   // The header's type mark opens the same picker as the rail's Type row.
   let typeMarkButton: HTMLButtonElement | undefined = $state();
   let typeMarkPicking = $state(false);
@@ -239,7 +279,7 @@
   // board that estimates in time (the tracker takes seconds).
   const estimateRow = $derived(row && row.unit !== 'none' ? row : null);
   const pointsName = $derived(pointsLabel(row?.unit ?? ''));
-  const pointsEditor: FieldEditor | null = $derived(detail && estimateRow ? cardEditor(ctx, detail.card, 'points', estimateRow, !linear) : null);
+  const pointsEditor: FieldEditor | null = $derived(detail && estimateRow ? cardEditor(ctx, detail.card, 'points', estimateRow, jira) : null);
   const pointsText = $derived(row ? formatEstimate(row.estimate, row.unit) ?? '' : '');
   const pointsPending = $derived(ticketWrite(ctx.key, 'points')?.pending ?? false);
 
@@ -250,7 +290,7 @@
   setContext(TRACKER_MEDIA_CONTEXT, trackerMediaReader(() => (detail ? { ticket: mediaTicket, attachments: detail.attachments ?? [] } : null)));
 
   // A tracker that stores files takes them: a pick, a drop or a paste.
-  const canAttach = $derived(!linear && !!detail);
+  const canAttach = $derived(jira && !!detail);
   const attachmentsOpen = $derived(ticketSectionOpen(section('attachments'), true));
   let attachmentsSection: TicketAttachments | undefined = $state();
   function attach(files: readonly File[]): void {
@@ -289,12 +329,12 @@
   // a reconnect drops the body and the store's answer, so the body's return
   // asks again.
   const hasDetail = $derived(!!detail);
-  const pokerSupport = $derived(linear ? null : trackerPokerSupport(attachment.ref.backend, attachment.ref.connection));
+  const pokerSupport = $derived(!jira ? null : trackerPokerSupport(attachment.ref.backend, attachment.ref.connection));
   function askPokerSupport(): void {
     askTrackerPokerSupport(attachment.ref.backend, attachment.ref.connection);
   }
   $effect(() => {
-    if (linear || !hasDetail) return;
+    if (!jira || !hasDetail) return;
     untrack(askPokerSupport);
   });
   const pokerOffered = $derived(hasDetail && pokerSupport !== null && typeof pokerSupport === 'object' && 'available' in pokerSupport && pokerSupport.available);
@@ -322,9 +362,17 @@
     void revealTicketPoker(ctx);
   }
 
-  // Log time: the Time screen's form, filled with this ticket and today.
+  // Log time: the Time screen's form, filled with this ticket and today,
+  // as the person's account on the connection. While a re-subscribe has
+  // not confirmed that account, the form stays with what was typed and
+  // sends nothing; an answer with no account closes it for good.
   let logging = $state(false);
+  const account = $derived(tracker?.account ?? null);
   const timeCtx = $derived(account ? { backend: attachment.ref.backend, connection: attachment.ref.connection, author: account, computer: computerName } : null);
+  const timeWaiting = $derived(tracker && !tracker.confirmed ? `Waiting for ${computerName} to confirm your account.` : undefined);
+  $effect(() => {
+    if (logging && !timeCtx) logging = false;
+  });
 
   // A field of the ticket's own, changed in place.
   const editorOf = (f: FieldView): FieldEditor | null => fieldEditor(f, targetOf(f.id, f.value));
@@ -445,7 +493,7 @@
 
 {#snippet railBody()}
   <div class="flex flex-col gap-0.5" data-testid="ticket-fields">
-    {#if !linear}
+    {#if jira}
       <TicketField bind:this={typeField} label="Type" field="type" value={card?.type?.name ?? ''} editor={typeEditor} ticketKey={ctx.key} target={fieldTarget('type')} {fieldName}>
         {#snippet mark()}<TypeIcon type={card?.type} testId="ticket-type-mark-rail" />{/snippet}
       </TicketField>
@@ -548,7 +596,7 @@
       </div>
     {/if}
     <TicketLinks bind:this={linksSection} {ctx} links={detail.links ?? []} {onOpenIssue} />
-    {#if !linear || (detail.attachments?.length ?? 0) > 0}
+    {#if jira || (detail.attachments?.length ?? 0) > 0}
       <TicketAttachments
         bind:this={attachmentsSection}
         {ctx}
@@ -634,15 +682,8 @@
       Drop the files to attach them to {ctx.label}
     </div>
   {/if}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <header class="flex flex-col gap-1 border-b border-border-subtle px-3 py-2" oncontextmenu={openMenu} data-testid="ticket-header">
-    <div class="flex min-w-0 items-center gap-1.5">
-      {#if backShown}
-        <IconButton label="Back" size="sm" testId="ticket-back" onClick={onBack}>
-          {#snippet children()}<Icon icon={ArrowLeft} size={14} strokeWidth={2} />{/snippet}
-        </IconButton>
-      {/if}
-      {#if !linear}
+  {#snippet typeMark()}
+      {#if jira}
         <button
           bind:this={typeMarkButton}
           type="button"
@@ -668,7 +709,8 @@
           />
         {/if}
       {/if}
-      <span class="shrink-0 text-sm tabular-nums text-fg-muted" data-testid="ticket-key">{card?.key || seed.key}</span>
+  {/snippet}
+  {#snippet headerControls()}
       {#if card?.parent}
         {@const parent = card.parent}
         <button
@@ -676,20 +718,21 @@
           class="min-w-0 truncate rounded-sm bg-accent/10 px-1.5 text-[0.6875rem] text-accent hover:bg-accent/20 compact:min-h-9 compact:select-none"
           title="Open {parent.key || 'the parent'}"
           data-testid="ticket-parent"
-          onclick={() => onOpenIssue(parent.id, { key: parent.key ?? '', title: parent.title ?? '', card: null })}
+          onclick={(event) => onOpenIssue(parent.id, parentSeed(parent), opensTicketPane(event))}
+          oncontextmenu={(event) => openParentMenu(event, parent)}
         >{parent.key ? `${parent.key} ${parent.title ?? ''}` : parent.title}</button>
       {/if}
       <span class="flex-1"></span>
-      {#if besideFits}
+      {#if placement}
         <Segmented
           ariaLabel="Show the ticket"
           size="sm"
-          value={placement}
-          onChange={onPlacement}
+          value={placement.value}
+          onChange={placement.set}
           options={[{ value: 'over', label: 'Over' }, { value: 'beside', label: 'Beside' }]}
         />
       {/if}
-      {#if !linear && estimateRow}
+      {#if jira && estimateRow}
         <button
           type="button"
           class="inline-flex shrink-0 items-center gap-1 rounded-[var(--radius-control)] border border-border-subtle px-1.5 text-xs text-fg-muted hover:bg-surface-1 hover:text-fg disabled:opacity-60 compact:min-h-9 compact:select-none"
@@ -713,12 +756,44 @@
           {#snippet children()}<Icon icon={Ellipsis} size={14} strokeWidth={2} />{/snippet}
         </IconButton>
       </span>
-      {#if !compact}
-        <IconButton label="Close the ticket" size="sm" testId="ticket-close" onClick={onClose}>
-          {#snippet children()}<Icon icon={X} size={14} strokeWidth={2} />{/snippet}
+  {/snippet}
+  {#if pane}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div oncontextmenu={openMenu}>
+      <ToolPaneHeader
+        paneId={pane.id}
+        title={keyText}
+        titleTestId="ticket-key"
+        onPaneDragStart={pane.onDragStart}
+        onBack={backShown ? onBack : undefined}
+        backTestId="ticket-back"
+      >
+        <div class="flex min-w-0 flex-1 items-center gap-1.5">
+          {@render typeMark()}
+          {@render headerControls()}
+        </div>
+      </ToolPaneHeader>
+    </div>
+  {/if}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <header class="relative flex flex-col gap-1 border-b border-border-subtle px-3 py-2" oncontextmenu={openMenu} data-testid="ticket-header">
+    {#if !pane}
+      <div class="flex min-w-0 items-center gap-1.5">
+      {#if backShown}
+        <IconButton label="Back" size="sm" testId="ticket-back" onClick={onBack}>
+          {#snippet children()}<Icon icon={ArrowLeft} size={14} strokeWidth={2} />{/snippet}
         </IconButton>
       {/if}
-    </div>
+        {@render typeMark()}
+        <span class="shrink-0 text-sm tabular-nums text-fg-muted" data-testid="ticket-key">{keyText}</span>
+        {@render headerControls()}
+        {#if !compact}
+          <IconButton label="Close the ticket" size="sm" testId="ticket-close" onClick={onClose}>
+            {#snippet children()}<Icon icon={X} size={14} strokeWidth={2} />{/snippet}
+          </IconButton>
+        {/if}
+      </div>
+    {/if}
     <h2 class="text-base font-medium leading-snug text-fg [overflow-wrap:anywhere]" data-testid="ticket-title">{card?.title || seed.title}</h2>
     {#if narrow && detail}
       <button type="button" class="inline-flex items-center gap-1 self-start rounded-[var(--radius-control)] px-1.5 text-xs text-fg-muted hover:bg-surface-1 hover:text-fg compact:min-h-9 compact:select-none" aria-expanded={railOpen} data-testid="ticket-details" onclick={() => { railOpen = !railOpen; }}>
@@ -754,7 +829,7 @@
   {/if}
 
   <div class="relative flex min-h-0 flex-1">
-    <div class="pane-scroll-surface min-h-0 min-w-0 flex-1 overflow-y-auto" data-pane-scroller data-testid="ticket-content">
+    <div class="pane-scroll-surface min-h-0 min-w-0 flex-1 overflow-y-auto focus:outline-none" tabindex="-1" data-pane-scroller data-testid="ticket-content">
       <RenderBoundary label="The ticket" testId="ticket-render-error">
         <div class="flex flex-col gap-4 px-3 py-3">
           {#if !detail && notFound}
@@ -791,6 +866,19 @@
   </div>
 </div>
 
+{#if parentMenuOpen && parentMenu}
+  {@const parent = parentMenu.parent}
+  <TicketRefMenu
+    x={parentMenu.x}
+    y={parentMenu.y}
+    ariaLabel="Actions for {parent.key || parent.title || 'the parent'}"
+    ticketKey={parent.key ?? ''}
+    testIdPrefix="ticket-parent-menu"
+    onOpen={(ownPane) => onOpenIssue(parent.id, parentSeed(parent), ownPane)}
+    onDismiss={() => { parentMenuOpen = false; }}
+  />
+{/if}
+
 {#if menu}
   <ContextMenu x={menu.x} y={menu.y} ariaLabel="Ticket actions" onDismiss={() => { menu = null; }}>
     {#if detail}
@@ -801,7 +889,7 @@
       {#if row && row.unit !== 'none'}
         <MenuItem label="{pointsName}…" testId="ticket-menu-points" onSelect={() => run(() => change('points'))} />
       {/if}
-      {#if !linear}
+      {#if jira}
         <MenuItem label="Type…" testId="ticket-menu-type" onSelect={() => run(() => change('type'))} />
       {/if}
       <MenuItem label="Description…" testId="ticket-menu-description" onSelect={() => run(() => descriptionText?.edit())} />
@@ -812,7 +900,7 @@
         <MenuItem label="Attachment…" testId="ticket-menu-attach" onSelect={() => run(() => attachmentsSection?.pick())} />
       {/if}
       <MenuItem label="Link…" testId="ticket-menu-link" onSelect={() => run(() => linksSection?.add())} />
-      {#if !linear}
+      {#if jira}
         <MenuItem
           label="Log time…"
           description={timeCtx ? undefined : 'The app does not know your account on this connection'}
@@ -837,21 +925,32 @@
         <MenuDivider />
       {/if}
     {/if}
-    {#if trackerURL || besideFits}
+    {#if trackerURL || placement || ownPaneOffered}
       <MenuSectionHeader label="Open" />
       {#if trackerURL}
         <MenuItem label="In the tracker" testId="ticket-menu-open-tracker" onSelect={() => run(openInTracker)} />
       {/if}
-      {#if besideFits}
-        <MenuItem label="Over the board" checked={placement === 'over'} onSelect={() => run(() => onPlacement('over'))} />
-        <MenuItem label="Beside the board" checked={placement === 'beside'} onSelect={() => run(() => onPlacement('beside'))} />
+      {#if ownPaneOffered && onOwnPane}
+        {@const move = onOwnPane}
+        <MenuItem label="In its own pane" testId="ticket-menu-own-pane" onSelect={() => run(move)} />
+      {/if}
+      {#if placement}
+        {@const at = placement}
+        <MenuItem label="Over the board" checked={at.value === 'over'} onSelect={() => run(() => at.set('over'))} />
+        <MenuItem label="Beside the board" checked={at.value === 'beside'} onSelect={() => run(() => at.set('beside'))} />
       {/if}
       <MenuDivider />
     {/if}
     <MenuItem label="Refresh" testId="ticket-menu-refresh" disabled={!ticketState || ticketState.ended} onSelect={() => run(refresh)} />
     <MenuDivider />
     <MenuSectionHeader label="Copy" />
-    <MenuItem label="Key" testId="ticket-menu-copy-key" onSelect={() => run(() => copy(ctx.label, 'key'))} />
+    <MenuItem
+      label="Key"
+      description={ticketKey ? undefined : 'The key shows once the ticket is read'}
+      disabled={!ticketKey}
+      testId="ticket-menu-copy-key"
+      onSelect={() => run(() => copy(ticketKey, 'key'))}
+    />
     {#if trackerURL}
       {@const url = trackerURL}
       <MenuItem label="Link" testId="ticket-menu-copy-link" onSelect={() => run(() => copy(url, 'link'))} />
@@ -871,8 +970,9 @@
     {:then mod}
       <mod.default
         ctx={timeCtx}
-        ticket={{ issue: attachment.ref.issue, key: card?.key || seed.key, title: card?.title || seed.title }}
+        ticket={{ issue: attachment.ref.issue, key: ticketKey, title: card?.title || seed.title }}
         day={localDay(new Date())}
+        waiting={timeWaiting}
         onDone={() => { logging = false; }}
       />
     {:catch err}

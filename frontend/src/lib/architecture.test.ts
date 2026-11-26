@@ -414,7 +414,8 @@ const HARNESS_STATIC_IMPORT_ALLOWLIST: Record<string, string> = {};
 // writes hold visibility and connection listeners, a pump-vote queue and
 // every rule of the board, the ticket and logged time, which a person who
 // never opens Issues has no use for. The pane is the
-// dynamic `import('../issues/IssuesPane.svelte')` in ToolPane.svelte, and
+// dynamic `import('../issues/IssuesPane.svelte')` in ToolPane.svelte, a
+// ticket pane's body the dynamic import in TicketPane.svelte, and
 // the always-loaded stores reach those stores only through
 // `stores/trackerBoardEvents.ts`, where they register when they load. A
 // static import of one of them from anything the entry reaches folds it into
@@ -438,7 +439,7 @@ const ISSUES_LAZY_MODULES = [
 
 // Rule 4c — the ticket's parts used by few load on first use: planning
 // poker when its section opens, the link form and the Log time form when
-// they open. The ticket is its own chunk (IssuesPane.svelte's dynamic
+// they open. The ticket is its own chunk (TicketHost.svelte's dynamic
 // import), and a static import from anything it reaches folds the part in.
 const TICKET_SCREEN = join(SRC_ROOT, 'lib', 'components', 'issues', 'TicketScreen.svelte');
 const TICKET_FIRST_USE_MODULES = [

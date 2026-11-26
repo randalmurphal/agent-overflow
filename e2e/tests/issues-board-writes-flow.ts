@@ -141,6 +141,8 @@ export function registerBoardWritesFlow({ compact }: BoardWritesSurface): void {
     await press(menu.getByTestId('action-menu-more'), compact);
     expect(await rows(menu)).toEqual([
       'Open', 'Move to…', 'Assignee…', 'Copy key',
+      // Ticket panes are offered off the compact layout only.
+      ...(compact ? [] : ['Open in its own pane']),
       'Open in the tracker', 'Move to sprint…', 'Priority…', 'Points…', 'Type…', 'Copy link',
       'Choose what shows first…',
     ]);

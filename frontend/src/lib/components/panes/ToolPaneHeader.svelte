@@ -1,9 +1,11 @@
 <script lang="ts">
-  // The header strip every tool pane wears: the status line, a Back control,
-  // the tool's title as the pane drag handle, the tool's own segments, and
-  // the close control. A tool body renders it as its first row so the body
-  // can fill the segments (a breadcrumb, a filter summary); ToolPane renders
-  // it bare while the body chunk loads.
+  // The header strip every tool pane and ticket pane wears: the status
+  // line, a Back control, the pane's title as its drag handle (a double-click
+  // maximizes it, as the maximize control does), the body's own segments,
+  // and the maximize and close controls. A body renders it as its first row
+  // so it can fill the segments (a breadcrumb, a filter summary, a ticket's
+  // controls); ToolPane and TicketPane render it bare while the body chunk
+  // loads. A tool's title is its kind's; a ticket pane passes its own.
   //
   // Back has one meaning at a time. With a detail step open the tool passes
   // `onBack` and the control steps back to its list; otherwise the compact
@@ -24,20 +26,22 @@
   import type { ToolPaneKind } from '../../stores/paneLayout.svelte';
   import { toolPaneMeta } from './toolPaneMeta';
 
-  interface Props {
+  type Props = {
     paneId: string;
-    kind: ToolPaneKind;
     onPaneDragStart?: (event: DragEvent) => void;
     /** Step back out of the tool's detail. Omit at the tool's list. */
     onBack?: () => void;
     backLabel?: string;
     backTestId?: string;
+    titleTestId?: string;
     children?: Snippet;
-  }
+  } & ({ kind: ToolPaneKind; title?: never } | { kind?: never; title: string });
 
   let {
     paneId,
     kind,
+    title: ownTitle,
+    titleTestId = 'tool-pane-title',
     onPaneDragStart,
     onBack,
     backLabel = 'Back',
@@ -46,7 +50,7 @@
   }: Props = $props();
 
   let compact = $derived(isCompactLayout());
-  let title = $derived(toolPaneMeta(kind).title);
+  let title = $derived(ownTitle ?? toolPaneMeta(kind!).title);
 </script>
 
 <div
@@ -70,7 +74,7 @@
     draggable={onPaneDragStart != null && !compact}
     ondragstart={(event) => onPaneDragStart?.(event)}
     ondblclick={() => { if (!compact) togglePanePromotion(paneId); }}
-    data-testid="tool-pane-title"
+    data-testid={titleTestId}
     class={[
       'shrink-0 truncate rounded-[var(--radius-field)] border-none bg-transparent px-1.5 py-0.5 text-left text-sm font-medium text-fg transition-colors hover:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:select-none compact:py-1.5 compact:text-base',
       onPaneDragStart && !compact ? 'cursor-grab active:cursor-grabbing' : 'cursor-default',

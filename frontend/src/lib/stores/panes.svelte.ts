@@ -9,6 +9,7 @@ import {
   demotePane,
   getPaneLayoutItems,
   getPromotedPaneId,
+  isSurfaceKind,
   isToolKind,
   movePaneLayoutItem,
   notePaneLayoutMutation,
@@ -227,12 +228,12 @@ function orderedPaneIds(): string[] {
     .filter((paneId) => panes.has(paneId));
 }
 
-// The panes focus can land on after a close: thread panes and tool panes, in
-// layout order. Companions are skipped; their own close hands focus back to
-// their source.
+// The panes focus can land on after a close: thread panes, tool panes and
+// ticket panes, in layout order. Companions are skipped; their own close
+// hands focus back to their source.
 function focusablePaneIds(): string[] {
   return getPaneLayoutItems()
-    .filter((item) => panes.has(item.paneId) || isToolKind(item.kind))
+    .filter((item) => panes.has(item.paneId) || isSurfaceKind(item.kind))
     .map((item) => item.paneId);
 }
 
@@ -509,14 +510,14 @@ export function destroyPane(id: string): void {
 }
 
 /**
- * Remove a tool pane's layout item and move focus to the adjacent pane, the
- * way `destroyPane` does for a thread pane. Returns false when `paneId` is not
- * a tool pane. The tool store (toolPanes.svelte.ts) is the caller; focus is
- * this store's, so the removal lives here.
+ * Remove a tool or ticket pane's layout item and move focus to the adjacent
+ * pane, the way `destroyPane` does for a thread pane. Returns false when
+ * `paneId` is neither. The tool and ticket pane stores are the callers;
+ * focus is this store's, so the removal lives here.
  */
-export function removeToolPaneFromLayout(paneId: string): boolean {
+export function removeSurfacePaneFromLayout(paneId: string): boolean {
   const item = getPaneLayoutItems().find((candidate) => candidate.paneId === paneId);
-  if (!item || !isToolKind(item.kind)) return false;
+  if (!item || !isSurfaceKind(item.kind)) return false;
   const order = focusablePaneIds();
   const removedIndex = order.indexOf(paneId);
   const nextFocusId = removedIndex > 0
@@ -843,35 +844,40 @@ function revealThreadIfOpen(threadId: string, activation: PaneActivation): Threa
 }
 
 /**
- * A tool pane gives its layout slot to a new thread pane: the tool item is
- * removed, the thread pane takes its index and width, and focus moves to
- * it. Null when `toolPaneId` names no tool item in the layout. Layout-level,
- * so it needs nothing from the tool store.
+ * A tool or ticket pane gives its layout slot to a new thread pane: its item
+ * is removed, the thread pane takes its index and width, and focus moves to
+ * it. Null when `surfacePaneId` names no such item in the layout.
+ * Layout-level, so it needs nothing from the tool or ticket pane store; a
+ * ticket pane's store drops its record as the item leaves the layout.
  */
-function replaceToolPane(toolPaneId: string | null): ThreadPane | null {
+function replaceSurfacePane(surfacePaneId: string | null): ThreadPane | null {
   const items = getPaneLayoutItems();
-  const index = toolPaneId ? items.findIndex((item) => item.paneId === toolPaneId) : -1;
-  const tool = items[index];
-  if (!tool || !isToolKind(tool.kind)) return null;
+  const index = surfacePaneId ? items.findIndex((item) => item.paneId === surfacePaneId) : -1;
+  const surface = items[index];
+  if (!surface || !isSurfaceKind(surface.kind)) return null;
   const paneId = nextPaneId();
   const pane = createPane(paneId);
   notePaneLayoutMutation();
-  removePaneLayoutItem(tool.paneId, { persist: false });
-  addPaneLayoutItem({ id: paneId, paneId, kind: 'thread', widthPx: tool.widthPx }, index, { persist: false });
+  removePaneLayoutItem(surface.paneId, { persist: false });
+  addPaneLayoutItem({ id: paneId, paneId, kind: 'thread', widthPx: surface.widthPx }, index, { persist: false });
   focusedPaneId = paneId;
-  for (const observer of toolPaneReplacedObservers) observer(tool.paneId, tool.kind);
+  if (isToolKind(surface.kind)) {
+    const kind = surface.kind;
+    for (const observer of toolPaneReplacedObservers) observer(surface.paneId, kind);
+  }
   return pane;
 }
 
 /**
  * The thread pane an open or a new draft lands in when the caller names no
  * pane: the focused thread pane (a focused companion resolves to its source),
- * else a new thread pane in place of a focused tool pane, else main. Every
- * path that opens "in the focused pane" resolves here, so a tool pane is
- * replaced the same way from the sidebar, a shortcut, a deep link or a drop.
+ * else a new thread pane in place of a focused tool or ticket pane, else
+ * main. Every path that opens "in the focused pane" resolves here, so a tool
+ * or ticket pane is replaced the same way from the sidebar, a shortcut, a
+ * deep link or a drop.
  */
 export function focusedOpenTargetPane(): ThreadPane {
-  return getFocusedPaneOrNull() ?? replaceToolPane(focusedPaneId) ?? ensureMainPane();
+  return getFocusedPaneOrNull() ?? replaceSurfacePane(focusedPaneId) ?? ensureMainPane();
 }
 
 function resolveOpenTargetPane(targetPane?: string | ThreadPane | null): string | ThreadPane {
@@ -929,7 +935,7 @@ export async function mountThreadForToolPane(thread: Thread, toolPaneId: string 
   // must not cost the tool its pane.
   const existing = revealThreadIfOpen(thread.id, 'committed');
   if (existing) return existing;
-  const slot = replaceToolPane(toolPaneId);
+  const slot = replaceSurfacePane(toolPaneId);
   return slot ? mountThreadInPane(thread, slot) : openThreadInNewPane(thread);
 }
 
