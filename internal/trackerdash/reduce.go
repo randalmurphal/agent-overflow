@@ -109,15 +109,16 @@ func reduceCounted(r Reducer, rows []contribution) Num {
 	panic(fmt.Sprintf("trackerdash: reducer %q reached a reduction without validation", r))
 }
 
-// reduceRange is the metric's number over a range's periods. An average
-// of period sums averages over the periods, a period with no counted rows
-// as zero; any other reducer reduces the range's rows as one. A range of
-// no periods has none.
-func reduceRange(r Reducer, periods []period, placed map[string][]contribution) Num {
+// reduceRange is the metric's number over a range's periods and the
+// range's unplaced rows (not counted, in no period). An average of period
+// sums averages over the periods, a period with no counted rows as zero;
+// any other reducer reduces the range's rows as one. A range of no
+// periods has none.
+func reduceRange(r Reducer, periods []period, placed map[string][]contribution, unplaced []contribution) Num {
 	if len(periods) == 0 {
 		return Num{}
 	}
-	var rows []contribution
+	rows := slices.Clone(unplaced)
 	for _, p := range periods {
 		rows = append(rows, placed[p.id]...)
 	}
@@ -131,9 +132,12 @@ func reduceRange(r Reducer, periods []period, placed map[string][]contribution) 
 // place sorts a period-bound metric's rows into the periods of cur and
 // prev by period ID: by the sprint its bucket names for a metric grouped
 // by sprint, else by its at. A row that falls in no period is out of the
-// range.
-func place(m Metric, rows []contribution, periods ...[]period) map[string][]contribution {
+// range. A row with no at belongs to no period: it is unplaced, and not
+// counted whatever its value, since the metric cannot say when it
+// happened.
+func place(m Metric, rows []contribution, periods ...[]period) (map[string][]contribution, []contribution) {
 	out := map[string][]contribution{}
+	var unplaced []contribution
 	bySprint := map[string]string{}
 	var all []period
 	for _, ps := range periods {
@@ -152,6 +156,8 @@ func place(m Metric, rows []contribution, periods ...[]period) map[string][]cont
 			continue
 		}
 		if !c.hasAt {
+			c.counted = false
+			unplaced = append(unplaced, c)
 			continue
 		}
 		for _, p := range all {
@@ -161,7 +167,7 @@ func place(m Metric, rows []contribution, periods ...[]period) map[string][]cont
 			}
 		}
 	}
-	return out
+	return out, unplaced
 }
 
 // seriesOf is the series a widget's cells follow: the metric's declared

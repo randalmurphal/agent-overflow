@@ -648,18 +648,19 @@ func rangeView(sp span) RangeView {
 	return v
 }
 
-// inRange is c's rows placed in the range's periods, and the placement;
-// all of them for a metric that counts now.
-func inRange(m Metric, c counted, sp span) ([]contribution, map[string][]contribution) {
+// inRange is c's rows placed in the range's periods, the placement, and
+// the rows that name no instant (unplaced: the range's, not counted, in no
+// period); all of c's rows for a metric that counts now.
+func inRange(m Metric, c counted, sp span) ([]contribution, map[string][]contribution, []contribution) {
 	if !c.p.cols.periodBound(m) {
-		return c.rows, nil
+		return c.rows, nil, nil
 	}
-	placed := place(m, c.rows, sp.periods, sp.previous)
+	placed, unplaced := place(m, c.rows, sp.periods, sp.previous)
 	var rows []contribution
 	for _, p := range sp.periods {
 		rows = append(rows, placed[p.id]...)
 	}
-	return rows, placed
+	return rows, placed, unplaced
 }
 
 // widget is w's numbers from its metric's rows.
@@ -669,7 +670,7 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 		out.Error = c.err.Sentence
 		return out
 	}
-	rows, placed := inRange(m, c, sp)
+	rows, placed, unplaced := inRange(m, c, sp)
 	switch w.Form {
 	case FormNumber:
 		if placed == nil {
@@ -677,16 +678,17 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 			out.Value = &v
 			return out
 		}
-		v := reduceRange(m.Reduce, sp.periods, placed)
+		v := reduceRange(m.Reduce, sp.periods, placed, unplaced)
 		prev := gapNum
 		if sp.previousGap == "" {
-			prev = reduceRange(m.Reduce, sp.previous, placed)
+			prev = reduceRange(m.Reduce, sp.previous, placed, nil)
 		}
 		out.Value, out.Previous = &v, &prev
 		for _, p := range sp.periods {
 			out.Trend = append(out.Trend, reduceRows(m.Reduce, placed[p.id]))
 		}
 	case FormList:
+		rows = append(slices.Clone(rows), unplaced...)
 		rowsCopy := slices.Clone(rows)
 		sortDrill(rowsCopy, ev.keyOf)
 		out.NotCounted = notCounted(rows)
@@ -872,7 +874,7 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 	}
 	ev, sp := o.ev, o.sp
 	out := DrillAnswer{Title: cmpOr(w.Title, m.Title), Unit: m.Unit, Estimates: ev.estimates, Page: r.Page, At: o.now.UnixMilli(), Rows: []TicketRow{}}
-	rows, placed := inRange(m, c, sp)
+	rows, placed, unplaced := inRange(m, c, sp)
 	whole := w.Form == FormNumber || w.Form == FormList
 	switch {
 	case whole && r.Cell != nil:
@@ -882,8 +884,9 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 	case whole && placed == nil:
 		out.Value = reduceRows(m.Reduce, rows)
 	case whole:
-		out.Value = reduceRange(m.Reduce, sp.periods, placed)
+		out.Value = reduceRange(m.Reduce, sp.periods, placed, unplaced)
 		out.Title += ", " + strings.ToLower(sp.label[:1]) + sp.label[1:]
+		rows = append(rows, unplaced...)
 	case m.Bucket == BucketPeriod || m.Bucket == BucketSprint:
 		j := slices.IndexFunc(sp.periods, func(p period) bool { return p.id == r.Cell.Bucket })
 		if j < 0 {

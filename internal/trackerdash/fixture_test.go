@@ -51,12 +51,12 @@ func (f *fixture) sprint(id, name, state string, start, completed int64, positio
 }
 
 // ticket is one ticket; fields beyond the key name columns as SQL
-// literals: status, status_group, assignee, epic, created_at, points,
-// history_from, started_at, done_at, status_since, resolved_at.
+// literals: status, status_group, assignee, epic, created_at, updated_at,
+// points, history_from, started_at, done_at, status_since, resolved_at.
 type ticket struct {
-	id, key, status, group, assignee, epic          string
-	created, historyFrom, started, done, since, res int64
-	points                                          string
+	id, key, status, group, assignee, epic                   string
+	created, updated, historyFrom, started, done, since, res int64
+	points                                                   string
 }
 
 func (f *fixture) ticket(t ticket) *fixture {
@@ -65,8 +65,8 @@ func (f *fixture) ticket(t ticket) *fixture {
 	}
 	return f.exec(`INSERT INTO tickets(id, key, title, type_level, status, status_group, assignee, parent, epic, created_at, updated_at,
 		resolved_at, status_since, points, history_from, started_at, done_at)
-		VALUES ('%s', '%s', 'Title of %s', 0, '%s', '%s', %s, NULL, %s, %s, 0, %s, %d, %s, %s, %s, %s)`,
-		t.id, t.key, t.key, t.status, t.group, quote(t.assignee), quote(t.epic), nullable(t.created), nullable(t.res), t.since, t.points,
+		VALUES ('%s', '%s', 'Title of %s', 0, '%s', '%s', %s, NULL, %s, %s, %d, %s, %d, %s, %s, %s, %s)`,
+		t.id, t.key, t.key, t.status, t.group, quote(t.assignee), quote(t.epic), nullable(t.created), t.updated, nullable(t.res), t.since, t.points,
 		nullable(t.historyFrom), nullable(t.started), nullable(t.done))
 }
 

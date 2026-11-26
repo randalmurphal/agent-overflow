@@ -20,23 +20,33 @@ const activeMembers = `(SELECT m.ticket FROM sprint_tickets m JOIN sprints s ON 
 // else the tracker's resolution time.
 const finishedAt = `coalesce(t.done_at, t.resolved_at)`
 
+// finishedInRange is the done tickets that can have finished in the range
+// or the one before. A ticket's finish is one of its updates, so a done
+// ticket with no known finish time is one only when it was updated since
+// the range began; it is listed as not counted, and an older one stays out.
+const finishedInRange = `t.status_group = 'done' AND (` + finishedAt + ` > :since OR (` + finishedAt + ` IS NULL AND t.updated_at > :since))`
+
+// finishUnknown is a done ticket's note when when it finished is not known.
+const finishUnknown = `'not counted: when it finished is not known'`
+
 var cycleMetric = Metric{
 	Name:  "start_to_done",
 	Title: "Days from start to done",
 	Words: []string{
 		"The working days from a ticket's first move into an in-progress status to its last move into a done status, for the tickets finished in the range.",
-		"A ticket whose history does not reach back to its start is not counted.",
+		"A ticket whose history does not reach back to its start, or whose finish time is not known, is listed and not counted.",
 	},
 	SQL: `SELECT t.id AS ticket,
   iif(t.history_from IS NULL OR t.history_from > t.created_at OR t.started_at IS NULL OR t.done_at IS NULL OR t.started_at > t.done_at,
       NULL, working_days(t.started_at, t.done_at)) AS value,
   ` + finishedAt + ` AS at,
-  CASE WHEN t.history_from IS NULL THEN 'not counted: its history is not read yet'
+  CASE WHEN ` + finishedAt + ` IS NULL THEN ` + finishUnknown + `
+       WHEN t.history_from IS NULL THEN 'not counted: its history is not read yet'
        WHEN t.history_from > t.created_at THEN 'not counted: its history starts on ' || day(t.history_from)
        WHEN t.started_at IS NULL THEN 'not counted: it was never in progress'
        WHEN t.done_at IS NULL THEN 'not counted: its move to done is not in its history'
        WHEN t.started_at > t.done_at THEN 'not counted: it moved to done before it was started' END AS note
-FROM tickets t WHERE t.status_group = 'done' AND ` + finishedAt + ` > :since`,
+FROM tickets t WHERE ` + finishedInRange,
 	Reduce: ReduceMedian, Unit: UnitDays, Good: GoodDown, Bucket: BucketPeriod,
 }
 
@@ -62,10 +72,12 @@ var createdFinishedMetric = Metric{
 	Title: "Created and finished",
 	Words: []string{
 		"The tickets on this board created in each period, and those finished in it: moved into a done status for the last time, or resolved.",
+		"A done ticket whose finish time is not known is listed and not counted.",
 	},
-	SQL: `SELECT t.id AS ticket, t.created_at AS at, 'Created' AS series FROM tickets t WHERE t.created_at > :since
+	SQL: `SELECT t.id AS ticket, 1 AS value, t.created_at AS at, 'Created' AS series, NULL AS note FROM tickets t WHERE t.created_at > :since
 UNION ALL
-SELECT t.id, ` + finishedAt + `, 'Finished' FROM tickets t WHERE t.status_group = 'done' AND ` + finishedAt + ` > :since`,
+SELECT t.id, iif(` + finishedAt + ` IS NULL, NULL, 1), ` + finishedAt + `, 'Finished', iif(` + finishedAt + ` IS NULL, ` + finishUnknown + `, NULL)
+FROM tickets t WHERE ` + finishedInRange,
 	Reduce: ReduceCount, Unit: UnitTickets, Bucket: BucketPeriod, Series: []string{"Created", "Finished"},
 }
 
@@ -111,9 +123,11 @@ FROM tickets t WHERE t.id IN ` + activeMembers + ` AND t.status_group NOT IN ('d
 			Title: "Usual pace",
 			Words: []string{
 				"The estimate of the tickets finished each week (moved into a done status for the last time, or resolved), by the board's estimates now; a board without estimates counts the tickets.",
+				"A done ticket whose finish time is not known is listed and not counted.",
 			},
-			SQL: `SELECT t.id AS ticket, ` + weight + ` AS value, ` + finishedAt + ` AS at
-FROM tickets t WHERE t.status_group = 'done' AND ` + finishedAt + ` > :since`,
+			SQL: `SELECT t.id AS ticket, iif(` + finishedAt + ` IS NULL, NULL, ` + weight + `) AS value, ` + finishedAt + ` AS at,
+  iif(` + finishedAt + ` IS NULL, ` + finishUnknown + `, NULL) AS note
+FROM tickets t WHERE ` + finishedInRange,
 			Reduce: ReduceAverageOfPeriodSums, Unit: UnitEstimate, Good: GoodUp, Bucket: BucketPeriod,
 		}
 		carrying = Metric{

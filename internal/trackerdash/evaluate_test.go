@@ -375,6 +375,44 @@ func TestWeekBoardCountsByWeek(t *testing.T) {
 	}
 }
 
+// A done ticket whose finish time is not known is listed as not counted
+// by the metrics of finishing when it was updated since the range began,
+// and left out when it was not: WEB-6 was updated 3 days ago, WEB-7 two
+// months ago. It is in the range's number and its drill, in no bar.
+func TestAnUnknownFinishIsListedNotDropped(t *testing.T) {
+	t.Parallel()
+	f := newFixture(false, "none").status("5", "Done", "done")
+	f.ticket(ticket{id: "t1", key: "WEB-1", status: "5", group: "done", created: ago(30), historyFrom: ago(30), started: ago(4), done: ago(1)})
+	f.ticket(ticket{id: "t6", key: "WEB-6", status: "5", group: "done", created: ago(30), updated: ago(3)})
+	f.ticket(ticket{id: "t7", key: "WEB-7", status: "5", group: "done", created: ago(90), updated: ago(60)})
+	r := Request{Dashboard: builtinWeeksID, Range: RangeWeeks2, TimeZone: "UTC"}
+	a := mustEvaluate(t, evaluator(), f.board(), r)
+	if got := num(widgetOf(t, a, "pace").Value); got != "0.5, 1 not counted" {
+		t.Fatalf("weekly pace = %s; want WEB-1 over 2 weeks, WEB-6 not counted", got)
+	}
+	if got := num(widgetOf(t, a, "start_to_done").Value); got != "1.5, 1 not counted" {
+		t.Fatalf("start to done = %s; want WEB-1's 1.5 working days (Saturday noon to Tuesday noon), WEB-6 not counted", got)
+	}
+	var finished []string
+	for _, b := range widgetOf(t, a, "created_finished").Buckets {
+		finished = append(finished, num(&b.Cells[1]))
+	}
+	if !reflect.DeepEqual(finished, []string{"0", "1"}) {
+		t.Fatalf("finished by week = %v; want WEB-1 alone, this week, and no bar for WEB-6", finished)
+	}
+	d, err := evaluator().Drill(context.Background(), f.board(), DrillRequest{Request: r, Widget: "pace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []string
+	for _, row := range d.Rows {
+		rows = append(rows, fmt.Sprintf("%s %v %s", row.Key, row.Counted, row.Note))
+	}
+	if !reflect.DeepEqual(rows, []string{"WEB-1 true ", "WEB-6 false not counted: when it finished is not known"}) || num(&d.Value) != "0.5, 1 not counted" {
+		t.Fatalf("pace drill = %s %v; want the tile's number, WEB-1 counted and WEB-6 listed", num(&d.Value), rows)
+	}
+}
+
 // A metric of the range reads only the rows that can fall in it: a board
 // whose 25,000 tickets were made and finished before its range counts
 // its range, where reading every ticket would pass the row cap.
