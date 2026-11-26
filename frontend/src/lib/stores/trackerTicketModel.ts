@@ -1,6 +1,7 @@
 // The ticket screen's rules that hold no state (docs/specs/issues.md,
 // "Ticket"): which comments and changes are mounted, the order of the
-// rail's fields, which fields are sections, how linked tickets group and
+// rail's fields and of the sections by the project's pins and how a pin
+// changes them, which fields are sections, how linked tickets group and
 // which side a new link sends, what a poker round's votes add up to,
 // which attachment a file in the text names and which the app previews,
 // the row of the board the ticket shows its points from, and how its
@@ -19,6 +20,8 @@ import type {
   LinkTypeView,
   LinkView,
   PokerVoteView,
+  Setup,
+  SitePins,
   TicketRowView,
   TicketSprintView,
 } from '../../../bindings/agent-overflow/internal/trackerapp/models';
@@ -183,21 +186,82 @@ export function isSection(field: FieldView): boolean {
   return field.kind === 'rich_text';
 }
 
-/** The rail's further fields (behind its control): every field that is not
- * a section, filled first, each group in the tracker's order, narrowed to
- * those whose name holds `find`. Pins plug in here: a project's pinned
- * fields will leave this list for the rail's first group. */
-export function moreFields(fields: readonly FieldView[], find: string): readonly FieldView[] {
-  const words = find.trim().toLowerCase();
-  const rows = fields.filter((f) => !isSection(f) && (!words || f.name.toLowerCase().includes(words)));
-  return [...rows.filter((f) => isFilled(f.value)), ...rows.filter((f) => !isFilled(f.value))];
+/** What a ticket of one tracker site shows first for the project, as its
+ * setup holds it: each list null while it is not set. */
+export interface TicketPins {
+  readonly fields: readonly string[] | null;
+  readonly sections: readonly string[] | null;
 }
 
-/** The ticket's long text sections besides the description, in the
- * tracker's order. Pins plug in here: a project's pinned sections will
- * show open, the rest in the one line that names them. */
-export function sectionFields(fields: readonly FieldView[]): readonly FieldView[] {
-  return fields.filter(isSection);
+/** The pins `setup` holds for a ticket of `tracker` `site`. */
+export function ticketPinsOf(setup: Setup | null | undefined, tracker: string, site: string): TicketPins {
+  const entry = setup?.ticket_pins?.find((p) => p.tracker === tracker && p.site === site);
+  return { fields: entry?.fields ?? null, sections: entry?.sections ?? null };
+}
+
+/** The sections a ticket shows open while its project pins none: today's
+ * ticket, every other long text field in the line that names them. */
+export const DEFAULT_PINNED_SECTIONS: readonly string[] = ['description', 'links', 'attachments'];
+
+/** The sections every ticket has a place for, besides its long text
+ * fields. */
+const BUILT_IN_SECTIONS: ReadonlySet<string> = new Set(DEFAULT_PINNED_SECTIONS);
+
+/** The rail's fields past the card's: those the project pins, in pin
+ * order, and the rest behind its control (every field that is not a
+ * section, filled first, each group in the tracker's order, narrowed to
+ * those whose name holds `find`); `missing` is the pinned IDs this ticket
+ * has no field of, which the control lists so they can be unpinned. */
+export function railFields(fields: readonly FieldView[], pinned: readonly string[] | null, find: string): {
+  readonly pinned: readonly FieldView[];
+  readonly more: readonly FieldView[];
+  readonly missing: readonly string[];
+} {
+  const pins = new Set(pinned ?? []);
+  const byId = new Map(fields.filter((f) => !isSection(f)).map((f) => [f.id, f]));
+  const shown = (pinned ?? []).flatMap((id) => byId.get(id) ?? []);
+  const words = find.trim().toLowerCase();
+  const rows = fields.filter((f) => !isSection(f) && !pins.has(f.id) && (!words || f.name.toLowerCase().includes(words)));
+  return {
+    pinned: shown,
+    more: [...rows.filter((f) => isFilled(f.value)), ...rows.filter((f) => !isFilled(f.value))],
+    missing: (pinned ?? []).filter((id) => !byId.has(id)),
+  };
+}
+
+/** The ticket's sections by the project's pins: `shown` open, in pin
+ * order; `folded` in the one line that names them, in the ticket's order
+ * (description, its long text fields in the tracker's order, linked
+ * tickets, attachments where the ticket has them: `attachments`);
+ * `missing` the pinned long text fields this ticket has none of. Unset
+ * pins pin DEFAULT_PINNED_SECTIONS. */
+export function ticketSections(fields: readonly FieldView[], pinned: readonly string[] | null, attachments: boolean): {
+  readonly shown: readonly string[];
+  readonly folded: readonly string[];
+  readonly missing: readonly string[];
+} {
+  const order = ['description', ...fields.filter(isSection).map((f) => f.id), 'links', ...(attachments ? ['attachments'] : [])];
+  const has = new Set(order);
+  const pins = pinned ?? DEFAULT_PINNED_SECTIONS;
+  const pinnedSet = new Set(pins);
+  return {
+    shown: pins.filter((id) => has.has(id)),
+    folded: order.filter((id) => !pinnedSet.has(id)),
+    missing: pins.filter((id) => !has.has(id) && !BUILT_IN_SECTIONS.has(id)),
+  };
+}
+
+/** `setup` with `id` pinned or unpinned in the `kind` list of `tracker`
+ * `site`: a pin goes last, and a list not set starts from what the ticket
+ * shows unpinned (no fields; DEFAULT_PINNED_SECTIONS). */
+export function withTicketPin(setup: Setup, tracker: string, site: string, kind: 'fields' | 'sections', id: string, pin: boolean): Setup {
+  const entries = setup.ticket_pins ?? [];
+  const at = entries.findIndex((p) => p.tracker === tracker && p.site === site);
+  const entry: SitePins = at >= 0 ? entries[at] : { tracker, site };
+  const list = entry[kind] ?? (kind === 'sections' ? DEFAULT_PINNED_SECTIONS : []);
+  const next = pin ? (list.includes(id) ? [...list] : [...list, id]) : list.filter((p) => p !== id);
+  const others = entries.filter((_, i) => i !== at);
+  return { ...setup, ticket_pins: [...others, { ...entry, [kind]: next }] };
 }
 
 /** The long text the ticket shows for field `id`, as Markdown: the

@@ -75,6 +75,7 @@
   import TicketWork from './TicketWork.svelte';
   import Popover from '../primitives/Popover.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
+  import TicketPin, { type PinControl } from './TicketPin.svelte';
   import { setTicketWriteSurface } from './ticketWriteSurface';
   import TypeIcon from './TypeIcon.svelte';
   import TicketMoveForm from './TicketMoveForm.svelte';
@@ -97,7 +98,12 @@
     type TicketSeed,
   } from '../../stores/issuesPane.svelte';
   import { opensTicketPane, ticketPanesOffered } from '../../stores/ticketPanes.svelte';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
+  import { getProjectLabelText } from '../../stores/projects.svelte';
+  import { acquireTrackerSetup, editTrackerSetup, trackerSetupOf } from '../../stores/trackerSetup.svelte';
+  import { projectBackend } from '../../transport/entityIndex';
+  import { hasScope } from '../../transport/scopes';
+  import { asSentence, userFacingError } from '../../utils/userFacingError';
   import { errString } from '../../utils/errors';
   import {
     askTrackerPokerSupport,
@@ -106,7 +112,20 @@
     trackerPokerSupport,
     type TrackerTicketAttachment,
   } from '../../stores/trackerTicket.svelte';
-  import { fieldText, isFilled, moreFields, pokerEstimateChoice, pokerResult, sectionFields, shownText, sprintNames, ticketRow } from '../../stores/trackerTicketModel';
+  import {
+    fieldText,
+    isFilled,
+    pokerEstimateChoice,
+    pokerResult,
+    railFields,
+    shownText,
+    sprintNames,
+    ticketPinsOf,
+    ticketRow,
+    ticketSections,
+    withTicketPin,
+    type TicketPins,
+  } from '../../stores/trackerTicketModel';
   import { localDay } from '../../stores/trackerTimeModel';
   import {
     attachTicketFiles,
@@ -322,6 +341,7 @@
   let attachmentsSection: TicketAttachments | undefined = $state();
   function attach(files: readonly File[]): void {
     if (files.length === 0) return;
+    void reveal('attachments');
     setTicketSectionOpen(section('attachments'), true);
     attachTicketFiles(ctx, files);
   }
@@ -404,13 +424,80 @@
   // A field of the ticket's own, changed in place.
   const editorOf = (f: FieldView): FieldEditor | null => fieldEditor(f, targetOf(f.id, f.value));
 
-  const sections = $derived(detail ? sectionFields(detail.fields) : []);
+  // The project's pins (docs/specs/issues.md, "Ticket"): the setup of the
+  // ticket's project, held while the ticket shows (stores/trackerSetup),
+  // orders the rail's fields and the sections, on every ticket of the
+  // project at once. A ticket with no project, a setup not read and pins
+  // a newer build saved show the ticket's default and offer no pin.
+  $effect(() => {
+    const p = project;
+    if (!p) return;
+    return untrack(() => acquireTrackerSetup(p));
+  });
+  const setupState = $derived(project ? trackerSetupOf(project) : null);
+  const pinsNewer = $derived(setupState?.view?.newer?.includes('ticket_pins') ?? false);
+  const NO_PINS: TicketPins = { fields: null, sections: null };
+  const pins = $derived(tracker && !pinsNewer ? ticketPinsOf(setupState?.view?.setup, tracker.kind, tracker.site) : NO_PINS);
+  const projectName = $derived(project ? getProjectLabelText(project) || 'this project' : '');
+  const pinsUnreadable = $derived(setupState && setupState.view === null && setupState.error !== null ? userFacingError(setupState.error) : null);
+  // Why a pin takes no press now: undefined when it does, null when no pin
+  // is offered.
+  const pinBlocked = $derived.by((): string | undefined | null => {
+    if (!project || !tracker || !setupState?.view || pinsNewer) return null;
+    const backend = projectBackend(project);
+    if (backend !== undefined && !hasScope('tracker:operate', backend)) return `This device may not change the pins of ${projectName}.`;
+    if (setupState.saving) return `Saving the pins of ${projectName}…`;
+    if (!setupState.current) return `Reading the pins of ${projectName}…`;
+    return undefined;
+  });
+
+  /** The pin of a field or a section, by ID and name; none on a Linear
+   * ticket's fields, whose list is fixed. */
+  function pinOf(kind: 'fields' | 'sections', id: string, name: string, pinned: boolean): PinControl | undefined {
+    if (pinBlocked === null || (kind === 'fields' && !jira)) return undefined;
+    return { pinned, label: `${pinned ? 'Unpin' : 'Pin'} ${name} for ${projectName}`, blocked: pinBlocked, toggle: () => void togglePin(kind, id, name, !pinned) };
+  }
+
+  // A pin is the project's: every open ticket of it shows the setup as
+  // stored after the save, refused or not, and a refusal or failure is
+  // said in a toast, since the control may be gone when it answers.
+  async function togglePin(kind: 'fields' | 'sections', id: string, name: string, pin: boolean): Promise<void> {
+    const p = project;
+    const t = tracker;
+    if (!p || !t) return;
+    const what = `${name} for ${getProjectLabelText(p) || 'this project'}`;
+    try {
+      const outcome = await editTrackerSetup(p, (setup) => withTicketPin(setup, t.kind, t.site, kind, id, pin));
+      if (outcome.kind === 'refused') addToast('error', `${what} was not ${pin ? 'pinned' : 'unpinned'}. ${asSentence(outcome.sentence)}`);
+    } catch (err) {
+      addErrorToast(`Could not ${pin ? 'pin' : 'unpin'} ${what}: ${userFacingError(err)}`, err);
+    }
+  }
+
+  const hasAttachments = $derived(jira || (detail?.attachments?.length ?? 0) > 0);
+  const layout = $derived(detail ? ticketSections(detail.fields, pins.sections, hasAttachments) : null);
+  function sectionName(id: string): string {
+    if (id === 'description') return 'Description';
+    if (id === 'links') return 'Linked tickets';
+    if (id === 'attachments') return 'Attachments';
+    return detail?.fields.find((f) => f.id === id)?.name ?? id;
+  }
   const moreOpen = $derived(ticketSectionOpen(section('more-sections'), false));
+  /** Opens the line of unpinned sections when section `id` is in it, so
+   * a menu row or a drop reaches the section. */
+  async function reveal(id: string): Promise<void> {
+    if (moreOpen || !layout?.folded.includes(id)) return;
+    setTicketSectionOpen(section('more-sections'), true);
+    await tick();
+  }
   const fieldsOpen = $derived(ticketSectionOpen(section('more-fields'), false));
   let fieldFind = $state('');
-  const others = $derived(detail ? moreFields(detail.fields, fieldFind) : []);
-  const otherCount = $derived(detail ? moreFields(detail.fields, '').length : 0);
-  const filledCount = $derived(detail ? moreFields(detail.fields, '').filter((f) => isFilled(f.value)).length : 0);
+  const rail = $derived(detail ? railFields(detail.fields, jira ? pins.fields : null, fieldFind) : null);
+  const railAll = $derived(detail ? railFields(detail.fields, jira ? pins.fields : null, '') : null);
+  const otherCount = $derived(railAll?.more.length ?? 0);
+  const filledCount = $derived(railAll?.more.filter((f) => isFilled(f.value)).length ?? 0);
+  const missingFields = $derived(pinBlocked === null ? [] : railAll?.missing ?? []);
+  const missingSections = $derived(pinBlocked === null ? [] : layout?.missing ?? []);
 
   function saveText(field: string) {
     return (markdown: string, from: string) => editTicketFields(ctx, fieldTarget(field), [{ field, markdown: { markdown, from } }]);
@@ -519,7 +606,75 @@
   {/if}
 {/snippet}
 
+{#snippet ticketSection(id: string, pinned: boolean)}
+  {#if detail}
+    {@const pin = pinOf('sections', id, sectionName(id), pinned)}
+    {#if id === 'description'}
+      <TicketText
+        bind:this={descriptionText}
+        field="description"
+        title="Description"
+        markdown={shownText(detail, 'description')}
+        editable={true}
+        open={null}
+        onSave={saveText('description')}
+        ticketKey={ctx.key}
+        target={fieldTarget('description')}
+        {fieldName}
+        {pin}
+      />
+    {:else if id === 'links'}
+      <TicketLinks bind:this={linksSection} {ctx} links={detail.links ?? []} {onOpenIssue} {pin} />
+    {:else if id === 'attachments'}
+      <TicketAttachments
+        bind:this={attachmentsSection}
+        {ctx}
+        ticket={mediaTicket}
+        attachments={detail.attachments ?? []}
+        {canAttach}
+        open={attachmentsOpen}
+        onFold={(open) => setTicketSectionOpen(section('attachments'), open)}
+        {pin}
+      />
+    {:else}
+      {@const f = detail.fields.find((o) => o.id === id)}
+      {#if f}
+        {@const sid = section(f.id)}
+        <TicketText
+          field={f.id}
+          title={f.name}
+          markdown={shownText(detail, f.id)}
+          editable={f.editable ?? false}
+          open={ticketSectionOpen(sid, true)}
+          onFold={(open) => setTicketSectionOpen(sid, open)}
+          onSave={saveText(f.id)}
+          ticketKey={ctx.key}
+          target={fieldTarget(f.id)}
+          {fieldName}
+          {pin}
+        />
+      {/if}
+    {/if}
+  {/if}
+{/snippet}
+
+{#snippet pinMissing(kind: 'fields' | 'sections', id: string)}
+  {@const pin = pinOf(kind, id, id, true)}
+  {#if pin}
+    <div class="group/pin flex min-w-0 items-center gap-2 py-1 text-sm" data-testid="ticket-pin-missing" data-kind={kind} data-id={id}>
+      <span class="min-w-0 truncate text-xs text-fg-muted">{id}</span>
+      <span class="flex-1 text-xs text-fg-muted">Pinned for {projectName}, not on this ticket</span>
+      <TicketPin {pin} testId="ticket-pin-missing-unpin" />
+    </div>
+  {/if}
+{/snippet}
+
 {#snippet railBody()}
+  {#if pinsUnreadable}
+    <p class="mb-1 text-xs text-error" role="alert" data-testid="ticket-pins-error">The pins of {projectName} cannot be read: {pinsUnreadable}</p>
+  {:else if pinsNewer}
+    <p class="mb-1 text-xs text-warning" data-testid="ticket-pins-newer">A newer version of Agent Overflow saved the pins of {projectName}, so this ticket shows its default order. Update the app on this computer to change them here.</p>
+  {/if}
   <div class="flex flex-col gap-0.5" data-testid="ticket-fields">
     {#if jira}
       <TicketField bind:this={typeField} label="Type" field="type" value={card?.type?.name ?? ''} editor={typeEditor} ticketKey={ctx.key} target={fieldTarget('type')} {fieldName}>
@@ -536,7 +691,10 @@
     {#if card?.labels?.length}
       <TicketField label="Labels" field="labels" value={card.labels.map((l) => l.name || l.id).join(', ')} editor={null} ticketKey={ctx.key} target="labels" {fieldName} />
     {/if}
-    {#if detail && otherCount > 0}
+    {#each rail?.pinned ?? [] as f (f.id)}
+      <TicketField label={f.name} field={f.id} value={fieldText(f.value)} editor={editorOf(f)} ticketKey={ctx.key} target={fieldTarget(f.id)} {fieldName} pin={pinOf('fields', f.id, f.name, true)} />
+    {/each}
+    {#if detail && (otherCount > 0 || missingFields.length > 0)}
       <button
         type="button"
         class="mt-2 inline-flex items-center gap-1 self-start rounded-[var(--radius-control)] px-1 text-xs text-fg-muted hover:bg-surface-1 hover:text-fg compact:min-h-9 compact:select-none"
@@ -545,7 +703,7 @@
         onclick={() => setTicketSectionOpen(section('more-fields'), !fieldsOpen)}
       >
         <Icon icon={fieldsOpen ? ChevronDown : ChevronRight} size={12} strokeWidth={2} />
-        {otherCount} more {otherCount === 1 ? 'field' : 'fields'}, {filledCount} filled
+        {#if otherCount > 0}{otherCount} more {otherCount === 1 ? 'field' : 'fields'}, {filledCount} filled{:else}{missingFields.length} pinned, not on this ticket{/if}
       </button>
       {#if fieldsOpen}
         <input
@@ -555,10 +713,13 @@
           data-testid="ticket-field-find"
           bind:value={fieldFind}
         />
-        {#each others as f (f.id)}
-          <TicketField label={f.name} field={f.id} value={fieldText(f.value)} editor={editorOf(f)} ticketKey={ctx.key} target={fieldTarget(f.id)} {fieldName} />
+        {#each rail?.more ?? [] as f (f.id)}
+          <TicketField label={f.name} field={f.id} value={fieldText(f.value)} editor={editorOf(f)} ticketKey={ctx.key} target={fieldTarget(f.id)} {fieldName} pin={pinOf('fields', f.id, f.name, false)} />
         {:else}
           <p class="text-xs text-fg-muted">No field matches.</p>
+        {/each}
+        {#each missingFields as id (id)}
+          {@render pinMissing('fields', id)}
         {/each}
       {/if}
     {/if}
@@ -581,19 +742,10 @@
     </div>
   {/if}
   {#if detail}
-    <TicketText
-      bind:this={descriptionText}
-      field="description"
-      title="Description"
-      markdown={shownText(detail, 'description')}
-      editable={true}
-      open={null}
-      onSave={saveText('description')}
-      ticketKey={ctx.key}
-      target={fieldTarget('description')}
-      {fieldName}
-    />
-    {#if sections.length > 0}
+    {#each layout?.shown ?? [] as id (id)}
+      {@render ticketSection(id, true)}
+    {/each}
+    {#if layout && (layout.folded.length > 0 || missingSections.length > 0)}
       <div class="flex flex-col gap-3">
         <button
           type="button"
@@ -603,38 +755,21 @@
           onclick={() => setTicketSectionOpen(section('more-sections'), !moreOpen)}
         >
           <Icon icon={moreOpen ? ChevronDown : ChevronRight} size={13} strokeWidth={2} />
-          <span class="truncate">{sections.length} more {sections.length === 1 ? 'section' : 'sections'}: {sections.map((f) => f.name).join(', ')}</span>
+          {#if layout.folded.length > 0}
+            <span class="truncate">{layout.folded.length} more {layout.folded.length === 1 ? 'section' : 'sections'}: {layout.folded.map(sectionName).join(', ')}</span>
+          {:else}
+            <span class="truncate">{missingSections.length} pinned, not on this ticket</span>
+          {/if}
         </button>
         {#if moreOpen}
-          {#each sections as f (f.id)}
-            {@const id = section(f.id)}
-            <TicketText
-              field={f.id}
-              title={f.name}
-              markdown={shownText(detail, f.id)}
-              editable={f.editable ?? false}
-              open={ticketSectionOpen(id, true)}
-              onFold={(open) => setTicketSectionOpen(id, open)}
-              onSave={saveText(f.id)}
-              ticketKey={ctx.key}
-              target={fieldTarget(f.id)}
-              {fieldName}
-            />
+          {#each layout.folded as id (id)}
+            {@render ticketSection(id, false)}
+          {/each}
+          {#each missingSections as id (id)}
+            {@render pinMissing('sections', id)}
           {/each}
         {/if}
       </div>
-    {/if}
-    <TicketLinks bind:this={linksSection} {ctx} links={detail.links ?? []} {onOpenIssue} />
-    {#if jira || (detail.attachments?.length ?? 0) > 0}
-      <TicketAttachments
-        bind:this={attachmentsSection}
-        {ctx}
-        ticket={mediaTicket}
-        attachments={detail.attachments ?? []}
-        {canAttach}
-        open={attachmentsOpen}
-        onFold={(open) => setTicketSectionOpen(section('attachments'), open)}
-      />
     {/if}
     {#if pokerOffered}
       <section class="flex flex-col gap-1.5" data-testid="ticket-poker-section">
@@ -921,14 +1056,14 @@
       {#if jira}
         <MenuItem label="Type…" testId="ticket-menu-type" onSelect={() => run(() => change('type'))} />
       {/if}
-      <MenuItem label="Description…" testId="ticket-menu-description" onSelect={() => run(() => descriptionText?.edit())} />
+      <MenuItem label="Description…" testId="ticket-menu-description" onSelect={() => run(async () => { await reveal('description'); descriptionText?.edit(); })} />
       <MenuDivider />
       <MenuSectionHeader label="Add" />
       <MenuItem label="Comment" testId="ticket-menu-comment" onSelect={() => run(addComment)} />
       {#if canAttach}
-        <MenuItem label="Attachment…" testId="ticket-menu-attach" onSelect={() => run(() => attachmentsSection?.pick())} />
+        <MenuItem label="Attachment…" testId="ticket-menu-attach" onSelect={() => run(async () => { await reveal('attachments'); attachmentsSection?.pick(); })} />
       {/if}
-      <MenuItem label="Link…" testId="ticket-menu-link" onSelect={() => run(() => linksSection?.add())} />
+      <MenuItem label="Link…" testId="ticket-menu-link" onSelect={() => run(async () => { await reveal('links'); linksSection?.add(); })} />
       {#if jira}
         <MenuItem
           label="Log time…"
