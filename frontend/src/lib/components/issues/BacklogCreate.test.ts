@@ -492,14 +492,14 @@ describe('New ticket', () => {
     await fireEvent.click(view.getByTestId('issues-backlog-create-move'));
     await waitFor(() => expect(moved).toHaveBeenCalledTimes(1));
     expect(moved.mock.calls[0]).toEqual(['c1', { board: '1', sprint: '9', issues: ['10012'], prev: undefined, next: undefined }]);
-    // Applied, and offered until the board shows it in the sprint.
-    await waitFor(() => expect((view.getByTestId('issues-backlog-create-move') as HTMLButtonElement).disabled).toBe(false));
-    view.props.sec = holding(SPRINT, '10012');
+    // Applied: the offer ends, before the board shows the ticket there
+    // (its read after the move may fail), so nothing sends it twice.
     await waitFor(() => expect(view.queryByTestId('issues-backlog-create-move')).toBeNull());
+    expect(moved).toHaveBeenCalledTimes(1);
     view.unmount();
   });
 
-  it('keeps the move of a made ticket with the section\'s form until it is placed or dismissed: across its foot leaving, a press that sends nothing, and a refused move', async () => {
+  it('keeps the move of a made ticket with the section\'s form until its move applies or it is dismissed: across its foot leaving, a press that sends nothing, a refused move and one not known to have applied', async () => {
     setBindingMock('TrackerBoardProjects', async () => PROJECTS);
     setBindingMock('TrackerIssueTypes', async () => TYPES);
     setBindingMock('TrackerCreateFields', async () => []);
@@ -553,17 +553,21 @@ describe('New ticket', () => {
     answer({ parts: [{ step: 'sprint_move', state: 'refused', issue: '10012', refusal: { reason: 'tracker', message: 'Sprint 9 is closed.' } }] } as WriteView);
     await waitFor(() => expect(move12().disabled).toBe(false));
     expect(offers()).toEqual(['Move WEB-12 into Sprint 9', 'Move WEB-13 into Sprint 9']);
-    // Placed, once the board shows it in the sprint: no longer offered.
+    // Not known whether it applied: still offered, saying so where a move does.
     await fireEvent.click(move12());
     await waitFor(() => expect(moved).toHaveBeenCalledTimes(2));
-    answer({ parts: [{ step: 'sprint_move', state: 'applied', issue: '10012' }] } as WriteView);
+    answer({ parts: [{ step: 'sprint_move', state: 'unknown', issue: '10012', failure: { kind: 'transient', message: 'Jira did not answer in full.', at: 1 } }] } as WriteView);
     await waitFor(() => expect(move12().disabled).toBe(false));
-    view.props.sec = holding(SPRINT, '10012');
+    expect(offers()).toEqual(['Move WEB-12 into Sprint 9', 'Move WEB-13 into Sprint 9']);
+    // Applied: no longer offered, though the board does not show it there yet.
+    await fireEvent.click(move12());
+    await waitFor(() => expect(moved).toHaveBeenCalledTimes(3));
+    answer({ parts: [{ step: 'sprint_move', state: 'applied', issue: '10012' }] } as WriteView);
     await waitFor(() => expect(offers()).toEqual(['Move WEB-13 into Sprint 9']));
     // Dismissed: no longer offered, and nothing sent.
     await fireEvent.click(view.getByTestId('issues-backlog-create-move-dismiss'));
     expect(view.queryByTestId('issues-backlog-create-move')).toBeNull();
-    expect(moved).toHaveBeenCalledTimes(2);
+    expect(moved).toHaveBeenCalledTimes(3);
     view.unmount();
   });
 

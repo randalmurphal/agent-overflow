@@ -367,9 +367,9 @@ project and type it shows, and coming back to one, by a pick or by the
 board's projects, shows what was given for it. What was typed in the form, a
 field being typed in included, outlives the form scrolling out of view. A ticket the tracker
 made stays made: when its move into the sprint failed, or may have, the
-form says so with the ticket's key and offers that move until the board
-shows the ticket in that sprint, however it got there, or the person
-dismisses it. On Linear a new ticket lands after the section's last row. New
+form says so with the ticket's key and offers that move until that move
+applies, the board shows the ticket in that sprint however it got there,
+or the person dismisses it. On Linear a new ticket lands after the section's last row. New
 sprint, a sprint's Change (which cannot clear a sprint's dates, and says
 so), Start sprint (today for as long as it was planned, else two weeks)
 and Complete sprint, which always asks where the tickets the tracker

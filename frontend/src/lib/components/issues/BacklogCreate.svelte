@@ -54,12 +54,13 @@
     // clears them all (`clearValues`).
     #values = $state.raw<ReadonlyMap<string, { readonly filled: ReadonlyMap<string, FilledField>; readonly typing: ReadonlyMap<string, string> }>>(new Map());
     // What must hold: a ticket made for the sprint and not in it is
-    // offered that move until the board shows the ticket in that sprint,
-    // however it got there, or the person dismisses it; the offer says
-    // what is known of the first move. This holds the tickets owed a
-    // place, written by Add whether or not the form is on screen when the
-    // tracker answers and dropped by Dismiss; whether one is still offered
-    // is the sprint's rows' to say (`owed`), never a record of a move.
+    // offered that move until its own move applies, the board shows the
+    // ticket in that sprint however it got there, or the person dismisses
+    // it; the offer says what is known of the first move. This holds the
+    // tickets owed a place, written by Add whether or not the form is on
+    // screen when the tracker answers, and dropped by an applied move from
+    // the offer or by Dismiss; while one is held, whether it is offered is
+    // the sprint's rows' to say (`owed`).
     unplaced = $state.raw<readonly UnplacedTicket[]>([]);
 
     constructor(project: PickItem | null, type: string) {
@@ -360,11 +361,16 @@
   // The made tickets the sprint's rows do not show.
   const owed = $derived((draft?.unplaced ?? []).filter((t) => !sec.rows.some((r) => r.card.id === t.issue)));
 
-  // The made ticket's move into the sprint, the menu's; its outcome is
-  // said where a ticket's move says it, and a press that sent nothing
-  // (the ticket's other move is out) changes nothing.
-  function moveUnplaced(t: UnplacedTicket): void {
-    if (sec.sprint) void moveCardToSprint(boardKey, issueWriteContext(boardRef, t.issue, t.key), b.board, sec.sprint.id);
+  // The made ticket's move into the sprint, the menu's: applied, the
+  // ticket is owed nothing, whether or not the board's read after it
+  // shows it there yet; refused, not known to have applied, or not sent,
+  // it stays offered, its outcome said where a ticket's move says it. A
+  // press that sent nothing (the ticket's other move is out) changes
+  // nothing.
+  async function moveUnplaced(d: CreateDraft, t: UnplacedTicket): Promise<void> {
+    if (!sec.sprint) return;
+    const outcome = await moveCardToSprint(boardKey, issueWriteContext(boardRef, t.issue, t.key), b.board, sec.sprint.id);
+    if (outcome?.kind === 'applied') dismiss(d, t);
   }
 
   function dismiss(d: CreateDraft, t: UnplacedTicket): void {
@@ -439,7 +445,7 @@
         {@const d = draft}
         <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs" role="status" data-testid="issues-backlog-create-unplaced" data-issue={t.issue}>
           <span class="text-fg" data-testid="issues-backlog-create-unplaced-said">{t.said}</span>
-          <button type="button" class="text-accent hover:underline disabled:opacity-60" data-testid="issues-backlog-create-move" disabled={cardBusy(boardKey, issueWriteContext(boardRef, t.issue, t.key))} onclick={() => moveUnplaced(t)}>Move {t.key || 'it'} into {sec.sprint.name}</button>
+          <button type="button" class="text-accent hover:underline disabled:opacity-60" data-testid="issues-backlog-create-move" disabled={cardBusy(boardKey, issueWriteContext(boardRef, t.issue, t.key))} onclick={() => { void moveUnplaced(d, t); }}>Move {t.key || 'it'} into {sec.sprint.name}</button>
           <button type="button" class="text-fg-muted hover:underline" data-testid="issues-backlog-create-move-dismiss" aria-label="Leave {t.key || 'the ticket'} out of {sec.sprint.name}" onclick={() => dismiss(d, t)}>Dismiss</button>
         </div>
       {/each}
