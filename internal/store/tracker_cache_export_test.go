@@ -317,6 +317,15 @@ func TestMirrorExportCopiesTheStatusesItsBoardNames(t *testing.T) {
 			t.Errorf("%s: %s changes; want %s", c.name, got[0], c.changes)
 		}
 	}
+	// An export of the epics fills the tickets their fill reads, and no
+	// relation nobody asked for.
+	conn := exportConn(t)
+	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"epics"}); err != nil || !ok {
+		t.Fatalf("export of the epics = %v, %v", ok, err)
+	}
+	if got := exportRows(t, conn, `SELECT (SELECT count(*) FROM tickets) || '|' || (SELECT count(*) FROM statuses) || '|' || (SELECT count(*) FROM sprints)`); got[0] != "1|0|3" {
+		t.Fatalf("an export of the epics holds tickets|statuses|sprints %s; want the one ticket, no status, the board's 3 sprints", got[0])
+	}
 	if _, _, err := s.ExportMirrorBoard(context.Background(), exportConn(t), root, "10", MirrorRegroup{}, []string{"labels"}); err == nil ||
 		!strings.Contains(err.Error(), `"labels" is not one of the export's relations`) {
 		t.Fatalf("an export of an unknown relation = %v", err)
