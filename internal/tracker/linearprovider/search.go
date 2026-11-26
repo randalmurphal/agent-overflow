@@ -56,9 +56,12 @@ func decodeSearchToken(b tracker.PageToken, team string, text bool) (searchToken
 
 // Search is one page of the cards q matches, archived issues left out:
 // Linear's full-text search of q.Text in its order of relevance, within
-// q.Project when set; or, with no text, q.Project's issues most recently
-// updated first. The text is passed to Linear as a value, never as a
-// query language.
+// q.Project when set; or, with no text, the issues of q.Project (every
+// team when empty) most recently updated first. Either is narrowed by
+// q's filters (searchFilter). The text and the filters are passed to
+// Linear as values, never as a query language.
+// Either names the states and assignees of its cards in the page's
+// catalog.
 //
 // The listing pages by position (linear.RecentIssues), never by Linear's
 // cursor, which follows its issue: an issue updated between pages moves
@@ -83,39 +86,60 @@ func (p *Provider) Search(ctx context.Context, q tracker.SearchQuery) (tracker.S
 		}
 	}
 	next := searchToken{Team: team}
-	var page linear.Page[linear.Issue]
-	var catalog tracker.Catalog
+	filter := searchFilter(q)
+	var hits linear.Page[linear.SearchHit]
 	var err error
 	if text != "" {
-		var hits linear.Page[linear.SearchHit]
-		hits, err = p.c.SearchIssues(ctx, linear.SearchQuery{Term: text, TeamID: team, Limit: limit}, from.After)
-		next.After, page.HasNextPage = hits.EndCursor, hits.HasNextPage
-		for _, h := range hits.Items {
-			page.Items = append(page.Items, h.Issue)
-		}
-		if err == nil {
-			catalog, err = hitsCatalog(hits.Items)
-		}
+		hits, err = p.c.SearchIssues(ctx, linear.SearchQuery{Term: text, TeamID: team, Filter: filter, Limit: limit}, from.After)
+		next.After = hits.EndCursor
 	} else {
 		var recent linear.RecentPage
-		recent, err = p.c.RecentIssues(ctx, linear.RecentQuery{Filter: linear.IssueFilter{Teams: []string{team}}, Limit: limit,
-			From: from.position()})
-		page, next.positionJSON = recent.Page, positionOf(recent.Next)
+		if team != "" {
+			filter.Teams = []string{team}
+		}
+		recent, err = p.c.RecentIssues(ctx, linear.RecentQuery{Filter: filter, Limit: limit, From: from.position()})
+		hits, next.positionJSON = recent.Page, positionOf(recent.Next)
 	}
 	if err != nil {
 		return tracker.SearchPage{}, fmt.Errorf("linearprovider: search: %w", err)
 	}
-	cards, err := p.cards(ctx, page.Items)
+	catalog, err := hitsCatalog(hits.Items)
+	if err != nil {
+		return tracker.SearchPage{}, err
+	}
+	issues := make([]linear.Issue, len(hits.Items))
+	for i, h := range hits.Items {
+		issues[i] = h.Issue
+	}
+	cards, err := p.cards(ctx, issues)
 	if err != nil {
 		return tracker.SearchPage{}, err
 	}
 	out := tracker.SearchPage{Cards: cards, Catalog: catalog}
-	if page.HasNextPage {
+	if hits.HasNextPage {
 		if out.Next, err = encodeSearchToken(next); err != nil {
 			return tracker.SearchPage{}, err
 		}
 	}
 	return out, nil
+}
+
+// searchFilter is q's filters as Linear's: the viewer's issues, a state
+// by name or the state types of a group (stateTypes) or of open work
+// (openStateTypes), and a cycle in progress.
+func searchFilter(q tracker.SearchQuery) linear.IssueFilter {
+	f := linear.IssueFilter{AssignedToMe: q.Mine, StateName: q.Status.Name, ActiveCycle: q.ActiveSprint}
+	switch {
+	case q.Status.Open:
+		f.StateTypes = openStateTypes
+	case q.Status.Group != 0:
+		for _, k := range stateTypes {
+			if k.group == q.Status.Group {
+				f.StateTypes = append(f.StateTypes, k.t)
+			}
+		}
+	}
+	return f
 }
 
 // hitsCatalog is the states and assignees hits name, each once.

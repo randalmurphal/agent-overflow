@@ -350,6 +350,11 @@ var linearCases = map[string]func(t *testing.T, f *conformanceEnv){
 		want(t, slices.Equal(identifiers(first.Items), []string{"WEB-1", "WEB-2"}) && first.HasNextPage &&
 			first.Next.Bound.Equal(f.issue(t, cfIssue2).UpdatedAt) && slices.Equal(first.Next.At, []string{cfIssue2}),
 			"first page %v next %+v", identifiers(first.Items), first.Next)
+		// Each issue comes with its state and assignee whole; WEB-2 has none.
+		hit := first.Items[0]
+		want(t, hit.State != nil && hit.State.ID == cfTodo && hit.State.Name == "Todo" && hit.State.Type == StateUnstarted &&
+			hit.Assignee != nil && hit.Assignee.ID == cfUser1 && hit.Assignee.Name == "User 1" && first.Items[1].Assignee == nil,
+			"first hit's state %+v assignee %+v", hit.State, hit.Assignee)
 		// The page's last issue is updated between pages: it moves to the
 		// front, behind the walk, and the issue after it is neither
 		// skipped nor joined by one delivered already.
