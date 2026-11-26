@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"errors"
+	"log"
 
 	"agent-overflow/internal/trackerapp"
 )
@@ -45,14 +47,34 @@ func (a *App) ProjectTrackerStatuses(ctx context.Context, projectID string) ([]t
 
 // ProjectTrackerFields are the fields the project's tickets can pin, by
 // tracker site, as its Fields page lists them: each site of its boards
-// whose tickets take pinned fields, read from the tracker's field
-// catalog, which the computer caches.
+// whose tickets take pinned fields, and each its setup pins, read from
+// the tracker's field catalog, which the computer caches. A site that
+// could not be read says why in its Error, beside the others.
 //
 //ao:scope tracker:read
 func (a *App) ProjectTrackerFields(ctx context.Context, projectID string) ([]trackerapp.SiteFields, error) {
 	return trackerFormRead(a, ctx, "ProjectTrackerFields", "Listing the project's fields", func(ctx context.Context, svc *trackerapp.Service) ([]trackerapp.SiteFields, error) {
-		return svc.ProjectFields(ctx, projectID)
+		sites, err := svc.ProjectFields(ctx, projectID)
+		for i := range sites {
+			if sites[i].Err != nil {
+				sites[i].Error = siteFieldsError(sites[i].Site, sites[i].Err)
+			}
+		}
+		return sites, err
 	})
+}
+
+// siteFieldsError is why a site's fields could not be read, as the
+// Fields page says it beside the site.
+func siteFieldsError(site string, err error) string {
+	if errors.Is(err, trackerapp.ErrNoSiteConnection) {
+		return "no tracker connection of this computer reaches " + site + "; add one in Settings > Issues > Connections to find its fields, or take its pins off here"
+	}
+	if _, message := trackerRefusal(err); message != "" {
+		return message
+	}
+	log.Printf("tracker: read the fields of %s: %v", site, err)
+	return "its fields could not be read; the app's log has the cause"
 }
 
 // SetProjectTrackerSetup replaces the project's tracker setup with setup,

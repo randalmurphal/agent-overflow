@@ -20,7 +20,11 @@ import (
 //   - the statuses the setup regroups that no listed board's columns show
 //     (Elsewhere), by ID, so a person can put each back;
 //   - the listed boards whose structure the mirror has not read yet
-//     (Unread), whose statuses it cannot list until a client opens them.
+//     (Unread), whose statuses it cannot list until a client opens them;
+//   - each listed board the mirror has read, with the tracker project its
+//     listing names and its column statuses (Boards), so a picker for one
+//     tracker project offers only its boards' statuses: a Linear team's
+//     states are its own, and two teams' are on one site.
 
 // SiteStatuses is one tracker site's statuses for a project.
 type SiteStatuses struct {
@@ -29,13 +33,25 @@ type SiteStatuses struct {
 	Statuses  []StatusView  `json:"statuses"`
 	Elsewhere []StatusView  `json:"elsewhere,omitempty"`
 	Unread    []UnreadBoard `json:"unread,omitempty"`
+	Boards    []BoardStatus `json:"boards"`
 }
 
 // UnreadBoard is a listed board whose structure the mirror has not read:
-// its ID and the name its listing holds (BoardChoice.Name).
+// its ID, and the name and tracker project its listing holds
+// (BoardChoice.Name, TrackerProject).
 type UnreadBoard struct {
-	Board string `json:"board"`
-	Name  string `json:"name"`
+	Board   string `json:"board"`
+	Name    string `json:"name"`
+	Project string `json:"project"`
+}
+
+// BoardStatus is a listed board the mirror has read: its ID, the tracker
+// project its listing names (BoardChoice.TrackerProject) and its column
+// statuses' IDs in column order.
+type BoardStatus struct {
+	Board    string   `json:"board"`
+	Project  string   `json:"project"`
+	Statuses []string `json:"statuses"`
 }
 
 // statusSite is SiteStatuses being gathered: the roots of the site's
@@ -73,7 +89,7 @@ func (s *Service) ProjectStatuses(projectID string) ([]SiteStatuses, error) {
 	siteOf := func(key siteKey) *statusSite {
 		site := sites[key]
 		if site == nil {
-			site = &statusSite{out: SiteStatuses{Tracker: key.tracker, Site: key.site, Statuses: []StatusView{}}, seen: map[string]bool{}}
+			site = &statusSite{out: SiteStatuses{Tracker: key.tracker, Site: key.site, Statuses: []StatusView{}, Boards: []BoardStatus{}}, seen: map[string]bool{}}
 			sites[key] = site
 		}
 		return site
@@ -101,7 +117,7 @@ func (s *Service) ProjectStatuses(projectID string) ([]SiteStatuses, error) {
 			}
 			connections[choice.Connection] = conn
 		}
-		unread := UnreadBoard{Board: choice.Board, Name: choice.Name}
+		unread := UnreadBoard{Board: choice.Board, Name: choice.Name, Project: choice.TrackerProject}
 		if !conn.ok {
 			conn.site.out.Unread = append(conn.site.out.Unread, unread)
 			continue
@@ -114,6 +130,7 @@ func (s *Service) ProjectStatuses(projectID string) ([]SiteStatuses, error) {
 			conn.site.out.Unread = append(conn.site.out.Unread, unread)
 			continue
 		}
+		conn.site.out.Boards = append(conn.site.out.Boards, BoardStatus{Board: choice.Board, Project: choice.TrackerProject, Statuses: ids})
 		for _, id := range ids {
 			if !conn.site.seen[id] {
 				conn.site.seen[id] = true

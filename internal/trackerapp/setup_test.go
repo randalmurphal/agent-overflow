@@ -1014,6 +1014,18 @@ func TestProjectStatusesListTheBoardsStatuses(t *testing.T) {
 	if got := site(); !reflect.DeepEqual(got.Statuses, columns) || !reflect.DeepEqual(got.Unread, unread("2", "7", "9")) || got.Elsewhere != nil {
 		t.Fatalf("with board 1 read: %+v", got)
 	}
+	// Each read board names its own statuses, so a picker for one tracker
+	// project offers only its boards'.
+	boardStatuses := func(got SiteStatuses) map[string][]string {
+		out := map[string][]string{}
+		for _, b := range got.Boards {
+			out[b.Board] = b.Statuses
+		}
+		return out
+	}
+	if got := boardStatuses(site()); !reflect.DeepEqual(got, map[string][]string{"1": {"s1", "s2", "s3"}}) {
+		t.Fatalf("board 1's statuses: %v", got)
+	}
 
 	// A second connection to the site lists a board whose columns hold s2
 	// again and s4: one site, s2 once.
@@ -1042,6 +1054,9 @@ func TestProjectStatusesListTheBoardsStatuses(t *testing.T) {
 	both := append(slices.Clone(columns), StatusView{ID: "s4", Name: "Review", Group: "in_progress"})
 	if got := site(); !reflect.DeepEqual(got.Statuses, both) || got.Unread != nil {
 		t.Fatalf("with two connections to the site: %+v", got)
+	}
+	if got := boardStatuses(site()); !reflect.DeepEqual(got, map[string][]string{"1": {"s1", "s2", "s3"}, "5": {"s2", "s4"}}) {
+		t.Fatalf("the two boards' statuses: %v", got)
 	}
 
 	// The setup regroups s2, which a board shows, and s9, which none does.

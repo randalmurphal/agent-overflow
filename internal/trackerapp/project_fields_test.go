@@ -9,12 +9,13 @@ import (
 	"agent-overflow/internal/tracker"
 )
 
-// A project's fields are read once for each site of its boards whose
-// tickets take pins: a Linear board's site is not read, two connections
-// to one site read it once through the one that is on, a site whose
-// only connection is off fails as it does, and a project that lists no
-// board reads nothing.
-func TestProjectFieldsReadEachJiraSiteOfTheBoardsOnce(t *testing.T) {
+// A project's fields are read once for each Jira site of its boards and
+// of its pins: a Linear board's site is not read, two connections to one
+// site read it once through the one that is on, a site whose only
+// connection is off says so beside the others, a site the setup pins but
+// no board lists is read through another connection to it, and one no
+// connection reaches is listed with why.
+func TestProjectFieldsReadEachJiraSiteOnceAndSayEachSitesFailure(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
 	notes := tracker.Field{ID: "customfield_10040", Name: "Notes", Kind: tracker.KindRichText}
@@ -24,32 +25,63 @@ func TestProjectFieldsReadEachJiraSiteOfTheBoardsOnce(t *testing.T) {
 	if _, err := m.svc.SetEnabled(m.conn.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	const project = "fields-project"
-	if _, err := m.st.CreateProject(store.Project{ID: project, Path: "/tmp/" + project, Name: project, CreatedAt: 1, UpdatedAt: 1}); err != nil {
-		t.Fatal(err)
+	project := func(id string, boards ...store.ProjectTrackerBoard) string {
+		t.Helper()
+		if _, err := m.st.CreateProject(store.Project{ID: id, Path: "/tmp/" + id, Name: id, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := m.st.ReplaceProjectTrackerBoards(id, nil, boards); err != nil {
+			t.Fatal(err)
+		}
+		return id
 	}
-	if _, _, err := m.st.ReplaceProjectTrackerBoards(project, nil, []store.ProjectTrackerBoard{
-		{ConnectionID: linear.ID, BoardID: "team-1"}, {ConnectionID: m.conn.ID, BoardID: string(testBoard)}, {ConnectionID: second.ID, BoardID: "2"},
-	}); err != nil {
-		t.Fatal(err)
+	read := func(id string) []SiteFields {
+		t.Helper()
+		got, err := m.svc.ProjectFields(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
 	}
-	got, err := m.svc.ProjectFields(t.Context(), project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 || got[0].Tracker != store.TrackerKindJira || got[0].Site != m.conn.Site || len(got[0].Fields) != 1 ||
-		got[0].Fields[0].ID != "customfield_10040" || got[0].Fields[0].Kind != "rich_text" {
+	both := project("fields-both", store.ProjectTrackerBoard{ConnectionID: linear.ID, BoardID: "team-1"},
+		store.ProjectTrackerBoard{ConnectionID: m.conn.ID, BoardID: string(testBoard)}, store.ProjectTrackerBoard{ConnectionID: second.ID, BoardID: "2"})
+	got := read(both)
+	if len(got) != 1 || got[0].Tracker != store.TrackerKindJira || got[0].Site != m.conn.Site || got[0].Err != nil ||
+		!slices.Equal(got[0].Fields, []PinField{{ID: "customfield_10040", Name: "Notes", Kind: "rich_text"}}) {
 		t.Fatalf("the project's fields = %+v", got)
 	}
 	if n := countOf(m.p.callsInOrder(), "Fields"); n != 1 {
 		t.Fatalf("%d fields reads, want one for the one Jira site", n)
 	}
-	// A site whose only connection is off fails as that connection does.
-	if got, err := m.svc.ProjectFields(t.Context(), m.project()); !errors.Is(err, ErrDisabled) {
-		t.Fatalf("a site whose connection is off = %+v, %v; want ErrDisabled", got, err)
+
+	// The fixture's project lists a board of the connection that is off:
+	// its site is read through the other connection to it.
+	if got := read(m.project()); len(got) != 1 || got[0].Err != nil || len(got[0].Fields) != 1 {
+		t.Fatalf("a site whose board's connection is off, with another on = %+v", got)
 	}
-	if _, err := m.svc.ProjectFields(t.Context(), "no-such-project"); err != nil {
-		t.Fatalf("a project that lists no board = %v", err)
+	if _, err := m.svc.SetEnabled(second.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(m.project()); len(got) != 1 || !errors.Is(got[0].Err, ErrDisabled) || len(got[0].Fields) != 0 {
+		t.Fatalf("a site whose connections are all off = %+v; want ErrDisabled", got)
+	}
+	if _, err := m.svc.SetEnabled(second.ID, true); err != nil {
+		t.Fatal(err)
+	}
+
+	// No board, and pins of this site and of one no connection reaches.
+	pinned := project("fields-pinned")
+	m.saveSetup(t, pinned, Setup{TicketPins: []SitePins{
+		{Tracker: "jira", Site: m.conn.Site, Fields: &[]string{"customfield_10040"}},
+		{Tracker: "jira", Site: "https://other.atlassian.net", Fields: &[]string{"customfield_1"}},
+	}})
+	got = read(pinned)
+	if len(got) != 2 || got[0].Site != m.conn.Site || got[0].Err != nil || len(got[0].Fields) != 1 ||
+		got[1].Site != "https://other.atlassian.net" || !errors.Is(got[1].Err, ErrNoSiteConnection) {
+		t.Fatalf("the sites of a project's pins = %+v", got)
+	}
+	if got := read(project("fields-none")); len(got) != 0 {
+		t.Fatalf("a project that lists no board and pins nothing = %+v", got)
 	}
 	if _, err := m.svc.ProjectFields(t.Context(), ""); !errors.Is(err, ErrProjectNotFound) {
 		t.Fatalf("no project = %v", err)

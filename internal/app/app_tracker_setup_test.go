@@ -356,4 +356,28 @@ func TestProjectTrackerFieldsListWhatATicketCanPin(t *testing.T) {
 			t.Errorf("%s is not offered to pin: %+v", id, got[0].Fields)
 		}
 	}
+
+	// A site the setup pins that no connection reaches is listed with
+	// the sentence that says so, and the cause stays off the wire.
+	other := "https://other.example.atlassian.net"
+	if save, err := f.a.SetProjectTrackerSetup(t.Context(), f.project, "", trackerapp.Setup{TicketPins: []trackerapp.SitePins{
+		{Tracker: store.TrackerKindJira, Site: other, Fields: &[]string{"customfield_1"}},
+	}}); err != nil || !save.Saved {
+		t.Fatalf("SetProjectTrackerSetup = %+v, %v", save, err)
+	}
+	got, err = f.a.ProjectTrackerFields(t.Context(), f.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Error != "" || got[1].Site != other || len(got[1].Fields) != 0 ||
+		got[1].Error != "no tracker connection of this computer reaches "+other+"; add one in Settings > Issues > Connections to find its fields, or take its pins off here" {
+		t.Fatalf("the project's fields with a pin no connection reaches = %+v", got)
+	}
+	wire, err := json.Marshal(got[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(wire), "trackerapp:") {
+		t.Fatalf("a site's cause reached the wire: %s", wire)
+	}
 }
