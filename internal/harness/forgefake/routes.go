@@ -89,6 +89,7 @@ var gitlabAPI = []apiRoute{
 	{name: "glab api delete discussion note", method: "DELETE", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions/([^/?]+)/notes/(\d+)$`), flags: []string{"hostname"}, run: glabDeleteDiscussionNote},
 	{name: "glab api create note", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/notes$`), flags: []string{"hostname"}, run: glabCreateNote},
 	{name: "glab api merge request list", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests(?:\?(.*))?$`), flags: []string{"hostname", "if-none-match"}, run: glabMRList},
+	{name: "glab api branch list", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/repository/branches(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabBranchList},
 	{name: "glab api pipelines", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/pipelines(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabPipelines},
 	{name: "glab api pipeline", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/pipelines/(\d+)$`), flags: []string{"hostname"}, run: glabPipeline},
 	{name: "glab api job trace", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/jobs/(\d+)/trace$`), flags: []string{"hostname", "if-none-match", "range"}, run: glabJobTrace},

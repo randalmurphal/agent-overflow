@@ -563,6 +563,36 @@ func glabMRList(e *Engine, c *call, m []string) response {
 	return glabOK(jsonResponse(items), "X-Next-Page: "+next, "X-Total: "+strconv.Itoa(len(matches)))
 }
 
+// glabBranchList answers the project's branches (Repo.branchNames) whose
+// name holds search, case ignored, as GitLab's Branches API matches it
+// (measured), in pages with X-Next-Page. Each carries the name, the one
+// field the app reads. GitLab's ^ and $ anchors are not implemented.
+func glabBranchList(e *Engine, c *call, m []string) response {
+	r, fail, ok := e.glabProject(c, m[1])
+	if !ok {
+		return fail
+	}
+	query, perPage, page, err := glabPage(m[2], "search")
+	if err != nil {
+		return unhandled("%v", err)
+	}
+	search := query.Get("search")
+	if strings.HasPrefix(search, "^") || strings.HasSuffix(search, "$") {
+		return unhandled("branch search %q: anchors are not implemented", search)
+	}
+	var matches []map[string]any
+	for _, branch := range r.branchNames() {
+		if strings.Contains(strings.ToLower(branch), strings.ToLower(search)) {
+			matches = append(matches, map[string]any{"name": branch})
+		}
+	}
+	items, next := paginate(matches, perPage, page)
+	if items == nil {
+		items = []map[string]any{}
+	}
+	return glabOK(jsonResponse(items), "X-Next-Page: "+next, "X-Page: "+strconv.Itoa(page))
+}
+
 // glabMRsByIID answers the merge requests iids names, in any state, newest
 // first. An iid the project does not have is absent, as GitLab answers it.
 func (e *Engine) glabMRsByIID(r *Repo, query url.Values, iids []string, perPage, page int) response {

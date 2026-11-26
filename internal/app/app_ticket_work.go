@@ -112,7 +112,7 @@ func (a *App) GetTicketWork(ctx context.Context, connectionID, issueID string) (
 	if err := a.requireScope(ctx, transport.ScopeTrackerRead, "GetTicketWork reads the ticket's key"); err != nil {
 		return TicketWork{}, err
 	}
-	read, err := a.readTicketWork(connectionID, issueID)
+	read, err := a.readTicketWork(ctx, connectionID, issueID)
 	if err != nil {
 		return TicketWork{}, err
 	}
@@ -123,14 +123,11 @@ func (a *App) GetTicketWork(ctx context.Context, connectionID, issueID string) (
 // the ticket's key, for the pull requests the stored sources do not hold
 // (a merged one, one opened where this computer never read the list):
 // once per repository the Work's projects clone, and once per branch of
-// the ticket that no pull request listed by then names
-// (searchTicketForge). Each repository's failure is its ForgeProblem, and
-// the rest of the answer stands beside it. A client shows GetTicketWork's
-// answer first and this one when it lands, so a slow forge holds no row
-// of the stored sources back. The budget is GetTicketWork's read, which
-// the default budget bounds, and two rounds of forge requests, each
-// request within the forge read timeout (the default budget too); the
-// search is cut at the default budget before the declared one.
+// the ticket that search did not read whole (searchTicketForge). Each
+// repository's failure is its ForgeProblem, and the rest of the answer
+// stands beside it. A client shows GetTicketWork's answer first and this
+// one when it lands, so a slow forge holds no row of the stored sources
+// back. The whole run, the local read included, ends at the budget.
 //
 //ao:scope git:operate
 //ao:route home
@@ -139,12 +136,12 @@ func (a *App) SearchTicketWork(ctx context.Context, connectionID, issueID string
 	if err := a.requireScope(ctx, transport.ScopeTrackerRead, "SearchTicketWork reads the ticket's key"); err != nil {
 		return TicketWork{}, err
 	}
-	read, err := a.readTicketWork(connectionID, issueID)
-	if err != nil {
-		return TicketWork{}, err
-	}
-	ctx, cancel := withinMethodBudgetFinishing(forgeapi.WithInteractive(ctx), "SearchTicketWork", "Searching the forge for the ticket's pull requests", transport.DefaultMethodBudget)
+	ctx, cancel := withinMethodBudget(forgeapi.WithInteractive(ctx), "SearchTicketWork", "Searching the forge for the ticket's pull requests")
 	defer cancel()
+	read, err := a.readTicketWork(ctx, connectionID, issueID)
+	if err != nil {
+		return TicketWork{}, budgetError(ctx, err)
+	}
 	if err := a.searchTicketForge(ctx, &read); err != nil {
 		return TicketWork{}, budgetError(ctx, err)
 	}
@@ -164,7 +161,7 @@ type ticketWorkRead struct {
 
 // readTicketWork is the read from what this computer stores and git's
 // refs that both Work methods start from (GetTicketWork's sources).
-func (a *App) readTicketWork(connectionID, issueID string) (ticketWorkRead, error) {
+func (a *App) readTicketWork(ctx context.Context, connectionID, issueID string) (ticketWorkRead, error) {
 	svc, err := a.trackerService()
 	if err != nil {
 		return ticketWorkRead{}, err
@@ -229,7 +226,10 @@ func (a *App) readTicketWork(connectionID, issueID string) (ticketWorkRead, erro
 		}
 	}
 	for _, projectID := range read.projects {
-		branches, err := a.ticketBranches(projectID, key)
+		branches, err := a.ticketBranches(ctx, projectID, key)
+		if ctx.Err() != nil {
+			return ticketWorkRead{}, ctx.Err()
+		}
 		if err != nil {
 			read.work.Problems = append(read.work.Problems, TicketWorkProblem{ProjectID: projectID, Error: err.Error()})
 			continue
@@ -355,12 +355,12 @@ func recordedTicketPullRequest(pr store.ThreadPullRequest) (TicketPullRequest, b
 }
 
 // ticketBranches lists the branches of projectID whose name names key.
-func (a *App) ticketBranches(projectID, key string) ([]TicketBranch, error) {
+func (a *App) ticketBranches(ctx context.Context, projectID, key string) ([]TicketBranch, error) {
 	project, err := a.store.GetProject(projectID)
 	if err != nil {
 		return nil, err
 	}
-	branches, err := a.gitCore().ListBranches(project.Path)
+	branches, err := a.gitCore().ListBranchesContext(ctx, project.Path)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -49,18 +50,29 @@ func (c *Core) BranchIsDefault(cwd, branch string) bool {
 // refname:short, which spells a branch that shares its name with a tag
 // "heads/<name>".
 func (c *Core) ListBranches(cwd string) ([]GitBranch, error) {
-	result, err := c.run(cwd, "for-each-ref", "--sort=-committerdate",
+	return c.ListBranchesContext(context.Background(), cwd)
+}
+
+// ListBranchesContext is ListBranches for a caller that bounds the whole
+// read: the listing and the remotes' read end with ctx. The default
+// branch's read is cached per repository (defaultBranchName) and bounded
+// by the git timeout alone.
+func (c *Core) ListBranchesContext(ctx context.Context, cwd string) ([]GitBranch, error) {
+	result, err := c.runSpec(commandSpec{ctx: ctx, binary: "git", cwd: cwd, args: []string{"for-each-ref", "--sort=-committerdate",
 		"--format=%(refname:lstrip=2)|%(HEAD)|%(worktreepath)|%(upstream:track,nobracket)|%(committerdate:unix)",
-		"refs/heads", "refs/remotes")
+		"refs/heads", "refs/remotes"}})
 	if err != nil {
 		return nil, err
 	}
 	if result.exitCode != 0 {
 		return nil, fmt.Errorf("git for-each-ref branches failed: %s", strings.TrimSpace(result.stderr))
 	}
-
+	remotes, err := c.listRemoteNamesContext(ctx, cwd)
+	if err != nil {
+		return nil, err
+	}
 	defaultBranch, _ := c.defaultBranchName(cwd)
-	return parseBranchList(result.stdout, defaultBranch, c.listRemoteNames(cwd)), nil
+	return parseBranchList(result.stdout, defaultBranch, remotes), nil
 }
 
 func parseBranchList(stdout, defaultBranch string, remoteNames []string) []GitBranch {
@@ -223,9 +235,19 @@ func (c *Core) originRemoteExists(cwd string) bool {
 }
 
 func (c *Core) listRemoteNames(cwd string) []string {
-	result, err := c.run(cwd, "remote")
+	names, _ := c.listRemoteNamesContext(context.Background(), cwd)
+	return names
+}
+
+// listRemoteNamesContext is cwd's remotes' names; a failed read is none,
+// but a read ctx ended is ctx's error.
+func (c *Core) listRemoteNamesContext(ctx context.Context, cwd string) ([]string, error) {
+	result, err := c.runSpec(commandSpec{ctx: ctx, binary: "git", cwd: cwd, args: []string{"remote"}})
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if err != nil || result.exitCode != 0 {
-		return nil
+		return nil, nil
 	}
 
 	var names []string
@@ -235,7 +257,7 @@ func (c *Core) listRemoteNames(cwd string) []string {
 			names = append(names, name)
 		}
 	}
-	return names
+	return names, nil
 }
 
 func isRemoteBranchName(name string, remoteNames []string) bool {

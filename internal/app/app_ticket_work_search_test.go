@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -93,13 +94,12 @@ func workSearchPR(number int) gitops.PRReference {
 // requests the forge finds for the key: by title, by a branch that begins
 // with it, and by a branch of the ticket's that names it later in its
 // name. A pull request listed already, or found by both searches, is
-// listed once: the stored row
-// stays while the forge answers its state, and a linked thread's record,
-// or a stored row whose state the forge answers otherwise, gives way to
-// the forge's answer. A found pull request that does not name the key
-// (WEB-12, "web 1", the key in its body) is not listed, and a branch a
-// listed pull request names is folded into it. GetTicketWork asks the
-// forge nothing.
+// listed once: a stored row stays, with its CI, and takes the state the
+// forge answers; a linked thread's record gives way to the forge's
+// answer. A found pull request that does not name the key (WEB-12,
+// "web 1", the key in its body) is not listed, and a branch a listed
+// pull request names is folded into it. GetTicketWork asks the forge
+// nothing.
 func TestSearchTicketWorkListsWhatTheForgeFindsByTheKey(t *testing.T) {
 	t.Parallel()
 	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: []forgefake.Pull{
@@ -151,7 +151,7 @@ func TestSearchTicketWorkListsWhatTheForgeFindsByTheKey(t *testing.T) {
 	}
 	url := func(n int) string { return "https://github.com/example/web/pull/" + strconv.Itoa(n) }
 	want := []TicketPullRequest{
-		{Ref: workSearchPR(7), URL: url(7), Title: "WEB-1 Old cursor", Author: "User 1", State: TicketPRMerged, Branch: "old-cursor", ProjectID: f.project},
+		{Ref: workSearchPR(7), Title: "WEB-1 Old cursor", State: TicketPRMerged, CI: "failed", Branch: "old-cursor", ProjectID: f.project},
 		{Ref: workSearchPR(1), Title: "WEB-1 Fix the login", Author: "User 1", State: TicketPROpen, CI: "success", Branch: "fix-login", ProjectID: f.project},
 		{Ref: workSearchPR(8), URL: url(8), Title: "WEB-1 Docs", Author: "User 1", State: TicketPRMerged, Branch: "docs", ProjectID: f.project},
 		{Ref: workSearchPR(9), URL: url(9), Title: "WEB-1 Both", Author: "user1", State: TicketPRDraft, Branch: "WEB-1-both", ProjectID: f.project},
@@ -169,10 +169,12 @@ func TestSearchTicketWorkListsWhatTheForgeFindsByTheKey(t *testing.T) {
 	if !slices.Equal(branches, []string{"web-1-new"}) || len(work.ForgeProblems) != 0 || len(work.SearchFull) != 0 {
 		t.Errorf("branches = %v, problems %+v, full %v; want web-1-new alone, the rest folded into their pull requests", branches, work.ForgeProblems, work.SearchFull)
 	}
-	// One key search, then a lookup of each branch no pull request names
-	// by then: WEB-1-cache's pull request the head search found.
-	if ops, _ := f.forgeOps(0); !slices.Equal(ops, []string{"gh graphql PullsByKey", "gh graphql PRsByHead", "gh graphql PRsByHead"}) {
-		t.Errorf("forge requests = %v; want one key search and the lookups of feature/WEB-1-host and web-1-new", ops)
+	// One key search, then a lookup of each branch of the ticket, on the
+	// forge or here, whose pull requests the search did not read whole:
+	// the head search read every branch that begins with the key, in any
+	// case, so only feature/WEB-1-host is looked up.
+	if ops, _ := f.forgeOps(0); !slices.Equal(ops, []string{"gh graphql PullsByKey", "gh graphql PRsByHead"}) {
+		t.Errorf("forge requests = %v; want one key search and the lookup of feature/WEB-1-host", ops)
 	}
 }
 
@@ -208,8 +210,9 @@ func TestSearchTicketWorkSearchesEachRepositoryOnce(t *testing.T) {
 		t.Errorf("pull requests = %v, problems %+v; want 1 under the first project that clones example/web, and 2", found, work.ForgeProblems)
 	}
 	ops, _ := f.forgeOps(mark)
-	if slices.Index(ops, "gh graphql PullsByKey") < 0 || slices.Index(ops, "glab api merge request list") < 0 || len(ops) != 2 {
-		t.Errorf("forge requests = %v; want one search of each repository", ops)
+	slices.Sort(ops)
+	if !slices.Equal(ops, []string{"gh graphql PullsByKey", "glab api branch list", "glab api merge request list"}) {
+		t.Errorf("forge requests = %v; want one search of each repository, GitLab's of its titles and its branches", ops)
 	}
 }
 
@@ -276,5 +279,144 @@ func TestSearchTicketWorkSaysAFailedSearchBesideTheRest(t *testing.T) {
 	other := map[string]string{"gitlab:grp/web": "gitlab:grp/docs:3", "gitlab:grp/docs": "gitlab:grp/web:2"}[refused.Repo.Key()]
 	if !slices.Equal(listed, []string{"github:example/web:1", other}) {
 		t.Errorf("pull requests = %v; want the stored one and the one the other GitLab search found (%s)", listed, other)
+	}
+}
+
+// workPulls is each pull request's key and state, as Work lists them.
+func workPulls(work TicketWork) []string {
+	var out []string
+	for _, pr := range work.PullRequests {
+		out = append(out, pr.Ref.Key()+" "+pr.State)
+	}
+	return out
+}
+
+// A pull request whose key is only in its branch name, at the start or
+// later, in any case, is found though this computer has no such branch,
+// on both forges, while its branch is on the forge. One whose branch the
+// forge deleted is not: the forges cannot search a deleted branch's name
+// but by its start (GitHub's head search).
+func TestSearchTicketWorkFindsBranchOnlyPullRequestsThisComputerLacks(t *testing.T) {
+	t.Parallel()
+	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "example/web", Pulls: []forgefake.Pull{
+			{Number: 1, Title: "Fix the cursor", HeadRef: "feature/WEB-1-cursor"},
+			{Number: 2, Title: "Fix the scroll", HeadRef: "fix/web-1-scroll", State: "merged"},
+			{Number: 3, Title: "Start the docs", HeadRef: "WEB-1-docs", State: "merged"},
+			{Number: 4, Title: "Gone", HeadRef: "feature/WEB-1-gone", State: "merged"},
+		}, DeletedBranches: []string{"WEB-1-docs", "feature/WEB-1-gone"}},
+		{Forge: "gitlab", Project: "grp/web", Pulls: []forgefake.Pull{
+			{Number: 5, Title: "Fix the API", HeadRef: "WEB-1-api", State: "merged"},
+			{Number: 6, Title: "Fix the client", HeadRef: "feature/web-1-client", State: "closed"},
+			{Number: 7, Title: "Gone", HeadRef: "feature/WEB-1-gone", State: "merged"},
+		}, DeletedBranches: []string{"feature/WEB-1-gone"}},
+	}})
+	gitlab := forgeProjectRepo(t, f.a, "https://gitlab.com/grp/web.git")
+	p, err := f.a.store.GetProject(gitlab)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.linkThread(t, "t-gitlab", gitlab, p.Path)
+
+	work, err := f.a.SearchTicketWork(f.ctx, f.conn.ID, "10101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := workPulls(work)
+	slices.Sort(got)
+	want := []string{"github:example/web:1 open", "github:example/web:2 merged", "github:example/web:3 merged",
+		"gitlab:grp/web:5 merged", "gitlab:grp/web:6 closed"}
+	if !slices.Equal(got, want) || len(work.ForgeProblems) != 0 {
+		t.Errorf("pull requests = %v, problems %+v\nwant %v", got, work.ForgeProblems, want)
+	}
+}
+
+// Every branch of the ticket is looked up whatever Work lists already: a
+// stored open pull request does not hide the closed one from the same
+// branch, nor a linked thread's record a pull request of another
+// repository from a branch of the same name.
+func TestSearchTicketWorkLooksUpEveryBranchWhateverIsListed(t *testing.T) {
+	t.Parallel()
+	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "example/web", Pulls: []forgefake.Pull{
+			{Number: 1, Title: "First try", HeadRef: "feature/WEB-1-cursor", State: "closed"},
+			{Number: 2, Title: "Second try", HeadRef: "feature/WEB-1-cursor"},
+			{Number: 5, Title: "Into the release", HeadRef: "feature/WEB-1-cursor", BaseRef: "release"},
+		}, DeletedBranches: []string{"feature/WEB-1-cursor"}},
+		{Forge: "github", Project: "example/api", Pulls: []forgefake.Pull{
+			{Number: 3, Title: "API side", HeadRef: "feature/WEB-1-cursor", State: "merged"},
+		}, DeletedBranches: []string{"feature/WEB-1-cursor"}},
+	}})
+	runGit(t, f.dir, "branch", "feature/WEB-1-cursor")
+	api := forgeProjectRepo(t, f.a, "https://github.com/example/api.git")
+	p, err := f.a.store.GetProject(api)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, p.Path, "branch", "feature/WEB-1-cursor")
+	f.linkThread(t, "t-api", api, p.Path)
+	storePRList(t, f.a, f.project, workSearchRepo, []gitops.PRListRow{
+		prListRow(workSearchRepo, 2, func(r *gitops.PRListRow) { r.Title, r.HeadRefName = "Second try", "feature/WEB-1-cursor" }),
+	}, time.Minute)
+	// The linked thread was last seen with 5, a record of no project.
+	if _, err := f.a.store.RecordOpenThreadPullRequest(store.ThreadPullRequest{ThreadID: "t-api", Forge: "github", Host: "github.com",
+		Project: "example/web", Number: 5, URL: "https://github.com/example/web/pull/5", Branch: "feature/WEB-1-cursor", WorktreePath: p.Path, SeenOpenAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	work, err := f.a.SearchTicketWork(f.ctx, f.conn.ID, "10101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := workPulls(work)
+	slices.Sort(got)
+	want := []string{"github:example/api:3 merged", "github:example/web:1 closed", "github:example/web:2 open", "github:example/web:5 open"}
+	if !slices.Equal(got, want) || len(work.ForgeProblems) != 0 {
+		t.Errorf("pull requests = %v, problems %+v\nwant %v", got, work.ForgeProblems, want)
+	}
+}
+
+// A GitLab fork's branch is looked up in the fork and in the project it
+// was forked from, both: the fork's own old merge request does not hide
+// the one opened into the parent.
+func TestSearchTicketWorkReadsAForksBranchInBothProjects(t *testing.T) {
+	t.Parallel()
+	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "example/web"},
+		{Forge: "gitlab", Project: "grp/up", Pulls: []forgefake.Pull{
+			{Number: 2, Title: "Fix it", HeadRef: "WEB-1", HeadRepo: "alice/up"},
+		}},
+		{Forge: "gitlab", Project: "alice/up", Parent: "grp/up", Pulls: []forgefake.Pull{
+			{Number: 1, Title: "Try it", HeadRef: "WEB-1", State: "closed"},
+		}},
+	}})
+	fork := forgeProjectRepo(t, f.a, "https://gitlab.com/alice/up.git")
+	p, err := f.a.store.GetProject(fork)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, p.Path, "branch", "WEB-1")
+	f.linkThread(t, "t-fork", fork, p.Path)
+
+	work, err := f.a.SearchTicketWork(f.ctx, f.conn.ID, "10101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := workPulls(work)
+	slices.Sort(got)
+	if want := []string{"gitlab:alice/up:1 closed", "gitlab:grp/up:2 open"}; !slices.Equal(got, want) || len(work.ForgeProblems) != 0 {
+		t.Errorf("pull requests = %v, problems %+v\nwant %v", got, work.ForgeProblems, want)
+	}
+}
+
+// The local read is bounded by the method's context: GetTicketWork,
+// whose read SearchTicketWork shares, stops when it ends.
+func TestTicketWorkLocalReadStopsWithItsContext(t *testing.T) {
+	t.Parallel()
+	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web"}}})
+	ctx, cancel := context.WithCancel(f.ctx)
+	cancel()
+	if _, err := f.a.GetTicketWork(ctx, f.conn.ID, "10101"); !errors.Is(err, context.Canceled) {
+		t.Errorf("GetTicketWork with its context ended = %v; want it stopped", err)
 	}
 }

@@ -51,7 +51,7 @@ var githubGraphQL = []graphQLOp{
 	{kind: "query", name: "ThreadOwner", required: []string{"id"}, run: ghThreadOwner},
 	{kind: "mutation", name: "SetThreadResolved", required: []string{"threadID", "resolved"}, run: ghSetThreadResolved},
 	{kind: "query", name: "PullsSearch", required: []string{"query", "wantChecks"}, optional: []string{"after"}, run: ghPullsSearch},
-	{kind: "query", name: "PullsByKey", required: []string{"title", "head"}, run: ghPullsByKey},
+	{kind: "query", name: "PullsByKey", required: []string{"owner", "name", "title", "head", "key", "wantTitle", "wantHead", "wantBranches"}, optional: []string{"titleAfter", "headAfter", "branchesAfter"}, run: ghPullsByKey},
 	{kind: "query", name: "PRsByHead", required: []string{"owner", "name", "head", "states"}, optional: []string{"after"}, run: ghPRsByHead},
 	{kind: "query", name: "MergedPRs", required: []string{"owner", "name", "first"}, optional: []string{"after"}, run: ghMergedPRs},
 	{kind: "query", name: "PRStates", required: []string{"ids"}, run: ghPRStates},
@@ -1541,13 +1541,28 @@ func ghMarkPRReady(e *Engine, c *call, v graphQLVars) response {
 	return graphQLData(map[string]any{field: map[string]any{"pullRequest": map[string]any{"isDraft": p.Draft}}})
 }
 
-// branchExists is whether a pull names branch as its head or base and it
-// has not been deleted.
+// branchExists is whether branch is one of the repository's branches.
 func (r *Repo) branchExists(branch string) bool {
-	if slices.Contains(r.DeletedBranches, branch) {
-		return false
+	return slices.Contains(r.branchNames(), branch)
+}
+
+// branchNames are the repository's branches: the heads of its own pulls
+// (a fork's pull's head lives in the fork) and every pull's base, less
+// the deleted ones, each once, in the order the pulls name them.
+func (r *Repo) branchNames() []string {
+	var names []string
+	add := func(branch string) {
+		if branch != "" && !slices.Contains(names, branch) && !slices.Contains(r.DeletedBranches, branch) {
+			names = append(names, branch)
+		}
 	}
-	return slices.ContainsFunc(r.Pulls, func(p Pull) bool { return p.HeadRef == branch || p.BaseRef == branch })
+	for _, p := range r.Pulls {
+		if p.HeadRepo == "" {
+			add(p.HeadRef)
+		}
+		add(p.BaseRef)
+	}
+	return names
 }
 
 func (r *Repo) deleteBranch(branch string) {

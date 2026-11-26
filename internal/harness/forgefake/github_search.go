@@ -216,36 +216,60 @@ func (p *Pull) normalizeList() error {
 // branch begins with a prefix.
 var githubKeySearch = regexp.MustCompile(`^repo:([^\s/]+/[^\s/]+) is:pr (?:in:title "([^"]+)"|head:(\S+))$`)
 
-// ghPullsByKey answers the two aliased searches of PullsByKey, byTitle
-// and byHead, each the repository's matching pulls newest first, the
-// first 100 with their issueCount. A title matches when its words (runs
-// of letters and digits, case ignored) hold the phrase's words in order,
-// as GitHub's search matched in the measurement; a head matches when its
-// name begins with the prefix, case kept (GitHub's case rule was not
-// measured). A repository not on the host answers GitHub's search
-// refusal for both.
+// ghPullsByKey answers PullsByKey's three parts, each while its want
+// variable is set and from its own after cursor, a page of 100:
+//
+//   - byTitle, the pulls whose title's words (runs of letters and digits,
+//     case ignored) hold the phrase's words in order;
+//   - byHead, the pulls whose head branch begins with the prefix, case
+//     ignored;
+//   - repository.refs, the repository's branches (Repo.branchNames) whose
+//     name holds key, case ignored;
+//
+// the pulls in any state, newest first, as GitHub matched them in the
+// measurements. A repository not on the host answers GitHub's search
+// refusal and a null repository for the parts asked.
 func ghPullsByKey(e *Engine, c *call, v graphQLVars) response {
-	title, err1 := v.str("title")
-	head, err2 := v.str("head")
-	if err := firstErr(err1, err2); err != nil {
+	owner, err1 := v.str("owner")
+	name, err2 := v.str("name")
+	title, err3 := v.str("title")
+	head, err4 := v.str("head")
+	key, err5 := v.str("key")
+	wantTitle, err6 := v.boolean("wantTitle")
+	wantHead, err7 := v.boolean("wantHead")
+	wantBranches, err8 := v.boolean("wantBranches")
+	titleAfter, err9 := v.cursor("titleAfter")
+	headAfter, err10 := v.cursor("headAfter")
+	branchesAfter, err11 := v.cursor("branchesAfter")
+	if err := firstErr(err1, err2, err3, err4, err5, err6, err7, err8, err9, err10, err11); err != nil {
 		return unhandled("PullsByKey: %v", err)
 	}
+	project := owner + "/" + name
 	byTitle, byHead := githubKeySearch.FindStringSubmatch(title), githubKeySearch.FindStringSubmatch(head)
-	if byTitle == nil || byTitle[2] == "" || byHead == nil || byHead[3] == "" || byTitle[1] != byHead[1] {
-		return unhandled("PullsByKey queries %q and %q are not a title phrase and a head prefix of one repository", title, head)
+	if byTitle == nil || byTitle[2] == "" || byHead == nil || byHead[3] == "" || byTitle[1] != project || byHead[1] != project {
+		return unhandled("PullsByKey queries %q and %q are not a title phrase and a head prefix of %s", title, head, project)
 	}
-	r := e.repoOn("github", c.http.host, byTitle[1])
+	data := map[string]any{}
+	r := e.repoOn("github", c.http.host, project)
 	if r == nil {
-		return jsonResponse(map[string]any{
-			"data": map[string]any{"byTitle": nil, "byHead": nil},
-			"errors": []map[string]any{
-				{"path": []string{"byTitle"}, "message": githubSearchNotVisible},
-				{"path": []string{"byHead"}, "message": githubSearchNotVisible},
-			},
-		})
+		var errs []map[string]any
+		for _, part := range []struct {
+			want    bool
+			path    string
+			message string
+		}{
+			{wantTitle, "byTitle", githubSearchNotVisible},
+			{wantHead, "byHead", githubSearchNotVisible},
+			{wantBranches, "repository", fmt.Sprintf("Could not resolve to a Repository with the name '%s'.", project)},
+		} {
+			if part.want {
+				data[part.path] = nil
+				errs = append(errs, map[string]any{"path": []string{part.path}, "message": part.message})
+			}
+		}
+		return jsonResponse(map[string]any{"data": data, "errors": errs})
 	}
-	phrase := searchWords(byTitle[2])
-	search := func(match func(p *Pull) bool) map[string]any {
+	search := func(match func(p *Pull) bool, offset int) map[string]any {
 		nodes := []map[string]any{}
 		for i := len(r.Pulls) - 1; i >= 0; i-- {
 			if p := &r.Pulls[i]; match(p) {
@@ -255,13 +279,26 @@ func ghPullsByKey(e *Engine, c *call, v graphQLVars) response {
 				})
 			}
 		}
-		count := len(nodes)
-		return map[string]any{"issueCount": count, "nodes": nodes[:min(count, githubGraphQLPageSize)]}
+		return graphQLConnection(nodes, offset, githubGraphQLPageSize)
 	}
-	return graphQLData(map[string]any{
-		"byTitle": search(func(p *Pull) bool { return containsWords(searchWords(p.Title), phrase) }),
-		"byHead":  search(func(p *Pull) bool { return strings.HasPrefix(p.HeadRef, byHead[3]) }),
-	})
+	if wantTitle {
+		phrase := searchWords(byTitle[2])
+		data["byTitle"] = search(func(p *Pull) bool { return containsWords(searchWords(p.Title), phrase) }, titleAfter)
+	}
+	if wantHead {
+		prefix := strings.ToLower(byHead[3])
+		data["byHead"] = search(func(p *Pull) bool { return strings.HasPrefix(strings.ToLower(p.HeadRef), prefix) }, headAfter)
+	}
+	if wantBranches {
+		refs := []map[string]any{}
+		for _, branch := range r.branchNames() {
+			if strings.Contains(strings.ToLower(branch), strings.ToLower(key)) {
+				refs = append(refs, map[string]any{"name": branch})
+			}
+		}
+		data["repository"] = map[string]any{"refs": graphQLConnection(refs, branchesAfter, githubGraphQLPageSize)}
+	}
+	return graphQLData(data)
 }
 
 // searchWords is text's runs of ASCII letters and digits, lower case.

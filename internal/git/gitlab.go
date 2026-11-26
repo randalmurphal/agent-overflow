@@ -178,14 +178,15 @@ func (f *gitlabForge) ListPRsByHead(ctx context.Context, cwd, head string) ([]PR
 
 // gitlabMRsByHead returns the merge requests in state whose source is the
 // given branch of cwd's origin project itself: those opened in the origin
-// from its own branch, else, when the origin is a fork, those opened in
+// from its own branch, and, when the origin is a fork, those opened in
 // the project it was forked from (projectSettings, cached) from the
 // fork's branch. The source_branch filter also matches another fork's
 // branch of the same name, which is someone else's work: a merge request
 // counts only when its source project is the origin. GitLab keeps one
-// open merge request per source branch and target, so each read stops at
-// the first page that holds one. The full view is read because the
-// simple one carries no source_project_id.
+// open merge request per source branch and target, so a read of the open
+// ones stops at the first that holds one, the origin's before the
+// parent's; a read of every state reads both. The full view is read
+// because the simple one carries no source_project_id.
 func (f *gitlabForge) gitlabMRsByHead(ctx context.Context, cwd, head, state string) ([]gitlabHeadMRRaw, error) {
 	sourceBranch := strings.TrimSpace(head)
 	if sourceBranch == "" {
@@ -196,7 +197,7 @@ func (f *gitlabForge) gitlabMRsByHead(ctx context.Context, cwd, head, state stri
 		return nil, err
 	}
 	pulls, err := gitlabMRsByHeadIn(ctx, client, gitlabProjectPath(origin.Project()), sourceBranch, state, func(source, target int64) bool { return source == target })
-	if err != nil || len(pulls) > 0 {
+	if err != nil || (state == "opened" && len(pulls) > 0) {
 		return pulls, err
 	}
 	settings, err := f.projectSettings(ctx, client, origin)
@@ -206,12 +207,17 @@ func (f *gitlabForge) gitlabMRsByHead(ctx context.Context, cwd, head, state stri
 	if settings.ForkedFrom == nil || settings.ForkedFrom.ID == 0 || settings.ID == 0 {
 		return pulls, nil
 	}
-	return gitlabMRsByHeadIn(ctx, client, gitlabProjectPath(strconv.FormatInt(settings.ForkedFrom.ID, 10)), sourceBranch, state, func(source, _ int64) bool { return source == settings.ID })
+	upstream, err := gitlabMRsByHeadIn(ctx, client, gitlabProjectPath(strconv.FormatInt(settings.ForkedFrom.ID, 10)), sourceBranch, state, func(source, _ int64) bool { return source == settings.ID })
+	if err != nil {
+		return nil, err
+	}
+	return append(pulls, upstream...), nil
 }
 
 // gitlabMRsByHeadIn reads project's merge requests in state from a source
-// branch named sourceBranch until a page holds one keep accepts by its
-// source and target project ids, at most gitlabOpenMRsMaxPages pages.
+// branch named sourceBranch that keep accepts by their source and target
+// project ids, at most gitlabOpenMRsMaxPages pages: of the open ones,
+// until a page holds one.
 func gitlabMRsByHeadIn(ctx context.Context, client *forgeapi.Client, project, sourceBranch, state string, keep func(source, target int64) bool) ([]gitlabHeadMRRaw, error) {
 	request := forgeapi.Request{
 		Path:         project + "/merge_requests",
@@ -231,7 +237,7 @@ func gitlabMRsByHeadIn(ctx context.Context, client *forgeapi.Client, project, so
 			}
 		}
 		pages++
-		return len(pulls) == 0 && pages < gitlabOpenMRsMaxPages && len(raw) == gitlabPageSize && advanceGitLabPage(resp, &page), nil
+		return (state != "opened" || len(pulls) == 0) && pages < gitlabOpenMRsMaxPages && len(raw) == gitlabPageSize && advanceGitLabPage(resp, &page), nil
 	})
 	if err != nil {
 		return nil, err

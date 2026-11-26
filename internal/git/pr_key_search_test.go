@@ -37,11 +37,14 @@ func foundNumbers(rows []PRFound) []int {
 	return out
 }
 
-// GitHub's key search is one request of two aliased searches: the title
-// by the key's words and the head branch by its prefix. Each row carries
-// its state, draft, author and branch. What the search finds is looser than the key rule (WEB-12), so
-// the caller filters.
-func TestGitHubKeySearchReadsTitleAndHeadInOneRequest(t *testing.T) {
+// GitHub's key search is one request of three aliased searches: the
+// title by the key's words, the head branch by its prefix and the
+// repository's branches by a substring of their name, the last leaving out
+// a fork's branch. Each row carries its state, draft, author and branch.
+// What the search finds is looser than the key rule (WEB-12), so the
+// caller filters. Having read the head search whole, it covers every
+// branch that begins with the key, in any case, and no other.
+func TestGitHubKeySearchReadsTitleHeadAndBranchesInOneRequest(t *testing.T) {
 	t.Parallel()
 	f := newFactsForge(t, keySearchFixture())
 	repo := RepoReference{Forge: "github", Host: "github.com", Namespace: "example", Repo: "web"}
@@ -61,12 +64,20 @@ func TestGitHubKeySearchReadsTitleAndHeadInOneRequest(t *testing.T) {
 	if got.Rows[1].State != "merged" || got.Rows[1].HeadRefName != "WEB-1-cache" {
 		t.Errorf("merged row = %+v", got.Rows[1])
 	}
+	if !slices.Equal(got.Branches, []string{"WEB-1-cache", "feature/WEB-1-host"}) {
+		t.Errorf("branches = %v; want the repository's two that hold WEB-1", got.Branches)
+	}
+	if !got.Covers("web-1-cache") || !got.Covers("WEB-1") || got.Covers("feature/WEB-1-host") || got.Covers("WEB") {
+		t.Errorf("covers with head prefix %q is wrong", got.HeadPrefix)
+	}
 	if f.seen["PullsByKey"] != 1 || len(f.seen) != 1 {
 		t.Errorf("requests = %v; want one PullsByKey", f.seen)
 	}
 }
 
-// GitLab's key search is one list request of the title in every state.
+// GitLab's key search is two requests: a list of the merge requests in
+// every state by title, and the branches by name. GitLab searches no head
+// branch, so it covers none.
 func TestGitLabKeySearchReadsTitlesInEveryState(t *testing.T) {
 	t.Parallel()
 	f := newFactsForge(t, keySearchFixture())
@@ -89,16 +100,49 @@ func TestGitLabKeySearchReadsTitlesInEveryState(t *testing.T) {
 	for _, inv := range f.engine.Invocations(0).Invocations {
 		paths = append(paths, inv.Path)
 	}
-	if len(paths) != 1 || !strings.Contains(paths[0], "search=WEB-1") || !strings.Contains(paths[0], "in=title") || !strings.Contains(paths[0], "state=all") {
-		t.Errorf("requests = %v; want one title search in every state", paths)
+	slices.Sort(paths)
+	if len(paths) != 2 || paths[0] != "projects/grp%2Fweb/merge_requests?in=title&per_page=100&search=WEB-1&state=all" ||
+		paths[1] != "projects/grp%2Fweb/repository/branches?per_page=100&search=WEB-1" {
+		t.Errorf("requests = %v; want one title search in every state and one branch search", paths)
+	}
+	if !slices.Equal(got.Branches, []string{"feature/WEB-1-host"}) || got.Covers("WEB-1-x") {
+		t.Errorf("branches = %v, head prefix %q; want feature/WEB-1-host and no prefix", got.Branches, got.HeadPrefix)
 	}
 }
 
-// A search past its one page of 100 says so on both forges.
-func TestKeySearchSaysWhenItsPageIsFull(t *testing.T) {
+// A search reads on past a page of matches that only look like the key
+// (WEB-1000 for WEB-1) to the ones that name it, on both forges: an
+// older pull request behind 120 newer loose matches is found.
+func TestKeySearchReadsPastLooseMatches(t *testing.T) {
 	t.Parallel()
 	var github, gitlab []forgefake.Pull
-	for i := 1; i <= 101; i++ {
+	github = append(github, forgefake.Pull{Number: 1, Title: "Old work", HeadRef: "WEB-1-old"})
+	gitlab = append(gitlab, forgefake.Pull{Number: 1, Title: "WEB-1 Old work", HeadRef: "old"})
+	for i := 2; i <= 121; i++ {
+		github = append(github, forgefake.Pull{Number: i, Title: fmt.Sprintf("Part %d", i), HeadRef: fmt.Sprintf("WEB-1%03d-part", i)})
+		gitlab = append(gitlab, forgefake.Pull{Number: i, Title: fmt.Sprintf("WEB-1%03d part", i), HeadRef: fmt.Sprintf("part-%d", i)})
+	}
+	f := newFactsForge(t, forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "example/many", Pulls: github},
+		{Forge: "gitlab", Project: "grp/many", Pulls: gitlab},
+	}})
+	for _, repo := range []RepoReference{
+		{Forge: "github", Host: "github.com", Namespace: "example", Repo: "many"},
+		{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "many"},
+	} {
+		got, err := f.core.SearchPRsByKey(t.Context(), repo, "WEB-1")
+		if err != nil || !slices.Contains(foundNumbers(got.Rows), 1) || got.Full {
+			t.Errorf("%s: %d rows, 1 among them %v, full %v, %v; want the old one found and the search whole", repo.Forge, len(got.Rows),
+				slices.Contains(foundNumbers(got.Rows), 1), got.Full, err)
+		}
+	}
+}
+
+// A search stops after keySearchMaxPages pages and says so on both forges.
+func TestKeySearchSaysWhenItStoppedShort(t *testing.T) {
+	t.Parallel()
+	var github, gitlab []forgefake.Pull
+	for i := 1; i <= keySearchMaxPages*100+1; i++ {
 		github = append(github, forgefake.Pull{Number: i, Title: fmt.Sprintf("WEB-1 part %d", i), HeadRef: fmt.Sprintf("part-%d", i)})
 		gitlab = append(gitlab, forgefake.Pull{Number: i, Title: fmt.Sprintf("WEB-1 part %d", i), HeadRef: fmt.Sprintf("part-%d", i)})
 	}
@@ -111,8 +155,8 @@ func TestKeySearchSaysWhenItsPageIsFull(t *testing.T) {
 		{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "many"},
 	} {
 		got, err := f.core.SearchPRsByKey(t.Context(), repo, "WEB-1")
-		if err != nil || len(got.Rows) != 100 || !got.Full {
-			t.Errorf("%s: %d rows, full %v, %v; want the first 100 and full", repo.Forge, len(got.Rows), got.Full, err)
+		if err != nil || len(got.Rows) != keySearchMaxPages*100 || !got.Full {
+			t.Errorf("%s: %d rows, full %v, %v; want %d and full", repo.Forge, len(got.Rows), got.Full, err, keySearchMaxPages*100)
 		}
 	}
 }
