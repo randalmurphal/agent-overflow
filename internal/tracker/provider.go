@@ -150,7 +150,7 @@ type Provider interface {
 	// CreateFields are the fields a create in project with issueType takes
 	// besides the title, those it requires marked Required, each with an
 	// empty Value: a field left unset takes the tracker's default.
-	CreateFields(ctx context.Context, project ProjectID, issueType IssueTypeID) ([]CreateField, error)
+	CreateFields(ctx context.Context, project ProjectID, issueType IssueTypeID) ([]ScreenField, error)
 	// AssignableUsers are the users who can be assigned in scope whose
 	// name or email starts with text. Empty text returns those the
 	// tracker offers unasked, which may be none.

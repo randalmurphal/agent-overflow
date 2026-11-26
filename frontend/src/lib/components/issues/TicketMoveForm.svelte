@@ -15,7 +15,7 @@
   // tracker, and offers no Move.
   import Button from '../primitives/Button.svelte';
   import TicketField from './TicketField.svelte';
-  import { fieldEditor, pickedOf, type EditorTarget } from './ticketEditors';
+  import { fieldEditor, mustSupply, pickedOf, type EditorTarget } from './ticketEditors';
   import type { FieldView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import { fieldText } from '../../stores/trackerTicketModel';
   import {
@@ -64,7 +64,7 @@
     long: f.kind === 'rich_text' && f.editable,
     editor: f.kind === 'rich_text' ? null : fieldEditor(f, targetOf(f)),
   })));
-  const unsettable = $derived(rows.filter((r) => r.f.required && !r.long && !r.editor).map((r) => r.f.name));
+  const unsettable = $derived(rows.filter((r) => mustSupply(r.f) && !r.long && !r.editor).map((r) => r.f.name));
 
   function shown(f: FieldView): string {
     const got = form.fields.get(f.id);
@@ -92,7 +92,7 @@
   {#each rows as { f, long, editor } (f.id)}
     {#if long}
       <label class="flex flex-col gap-1 py-1 text-xs text-fg-muted" data-testid="ticket-move-text-field" data-field={f.id}>
-        {f.required ? `${f.name} (required)` : f.name}
+        {mustSupply(f) ? `${f.name} (required)` : f.name}
         <textarea
           rows="4"
           class="w-full resize-y rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1.5 font-mono text-[0.8125rem] text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
@@ -103,7 +103,7 @@
         ></textarea>
       </label>
     {:else}
-      <TicketField label={f.required ? `${f.name} (required)` : f.name} field={f.id} value={shown(f)} {editor} ticketKey={ctx.key} target="move-form" {fieldName} disabled={pending} />
+      <TicketField label={mustSupply(f) ? `${f.name} (required)` : f.name} field={f.id} value={shown(f)} {editor} ticketKey={ctx.key} target="move-form" {fieldName} disabled={pending} />
     {/if}
   {/each}
   {#if unsettable.length > 0}

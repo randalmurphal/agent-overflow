@@ -287,9 +287,26 @@ func TestMovesAndScreens(t *testing.T) {
 	}
 }
 
-// A create field is required of the person only when Jira would not fill
-// it: required with a default (Priority, commonly) is not, as the
-// create's planner reads it.
+// A move's field is required as its screen says, a default or not, so the
+// move's form offers no clear of a field Jira requires; one Jira fills is
+// defaulted, so the person need not supply it.
+func TestMoveFieldsRequiredAsTheScreenSays(t *testing.T) {
+	f, p := detailSite(t, 0)
+	f.On("GET", "/rest/api/3/issue/10001/transitions", jiratest.Reply(200, `{"transitions":[
+		{"id":"31","name":"Resolve","to":{"id":"10002","name":"Done","statusCategory":{"key":"done"}},"hasScreen":true,"isAvailable":true,"fields":{
+		 "priority":{"key":"priority","name":"Priority","required":true,"hasDefaultValue":true,"schema":{"type":"priority","system":"priority"},"operations":["set"]}}}]}`))
+	moves, err := p.Moves(t.Context(), "10001")
+	if err != nil || len(moves) != 1 || len(moves[0].Fields) != 1 {
+		t.Fatalf("moves %+v %v; want one move with one field", moves, err)
+	}
+	if f := moves[0].Fields[0]; !f.Required || !f.Defaulted {
+		t.Errorf("priority %+v; want it required, defaulted, and not the person's to supply", f)
+	}
+}
+
+// A create field Jira requires is required as its screen says; the person
+// must supply it only when Jira would not fill it: required with a default
+// (Priority, commonly) is not, as the create's planner reads it.
 func TestCreateFieldsRequireWhatHasNoDefault(t *testing.T) {
 	f, p := detailSite(t, 0)
 	fields := []string{
@@ -302,13 +319,13 @@ func TestCreateFieldsRequireWhatHasNoDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	byID := map[tracker.FieldID]tracker.CreateField{}
+	byID := map[tracker.FieldID]tracker.ScreenField{}
 	for _, fd := range got {
 		byID[fd.ID] = fd
 	}
 	priority, team := byID["priority"], byID["customfield_10050"]
-	if priority.Required || !team.Required || !priority.Defaulted || team.Defaulted {
-		t.Errorf("priority %+v, team %+v; want priority defaulted and not required, and the team required", priority, team)
+	if !priority.Required || !priority.Defaulted || !team.Required || team.Defaulted {
+		t.Errorf("priority %+v, team %+v; want both required and only priority defaulted", priority, team)
 	}
 	// The screen's listed values ride with the field, so its picker reads
 	// nothing; a field the screen lists none for has none.

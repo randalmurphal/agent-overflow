@@ -102,7 +102,9 @@ func (t *sending) step(kind stepKind) (sendStep, bool) {
 func (s *Server) apply(ctx context.Context, caller Caller, plans []*planned) ([]ticketAnswer, []WrittenTicket) {
 	all := make([]*sending, len(plans))
 	for i, p := range plans {
-		all[i] = &sending{p: p, steps: s.stepsOf(ctx, p), out: ticketAnswer{Key: p.key},
+		// A ticket the read after the approval found changed is sent
+		// nothing: each of its steps is not sent.
+		all[i] = &sending{p: p, steps: s.stepsOf(ctx, p), out: ticketAnswer{Key: p.key, Refused: p.changed}, stopped: p.changed != "",
 			written: WrittenTicket{Connection: p.t.connection, Issue: p.d.Card.ID, Key: p.key, Title: p.d.Card.Title}}
 	}
 	for _, kind := range stepOrder {

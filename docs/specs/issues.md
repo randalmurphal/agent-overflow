@@ -356,18 +356,27 @@ counts as zero, and a ticket whose history the app has not read yet
 counts as done only in the last sprint it is in. The backlog says its
 tickets, its points and how many have no estimate. New ticket at a
 section's foot asks the fields the tracker requires the person to give
-and offers those it fills itself; on Jira it shows the project, picked
-from the projects the board shows, the one picked last on that board
-this session first, else the board's location, and the type, the one
+and offers those it fills itself, sending nothing for one put back to
+none; on Jira it shows the project, one of the projects the board shows
+(the one picked last on that board this session, else the board's
+location, else the only one, else it asks; while that list is being
+read, or could not be, the board's location), and the type, the one
 picked last on the board this session, else the project's first at the
-standard level. A ticket the tracker made stays made: when its move into
-the sprint failed, the form says so with the ticket's key and offers that
-move. On Linear a new ticket lands after the section's last row. New
+standard level. The values given in the form are kept for each project
+and type: the form shows, and Add sends, only those given for the
+project and type it shows, and coming back to one, by a pick or by the
+board's projects, shows what was given for it. What was typed in the form, a
+field being typed in included, outlives the form scrolling out of view. A ticket the tracker
+made stays made: when its move into the sprint failed, or may have, the
+form says so with the ticket's key and offers that move until that move
+applies, the board shows the ticket in that sprint however it got there,
+or the person dismisses it. On Linear a new ticket lands after the section's last row. New
 sprint, a sprint's Change (which cannot clear a sprint's dates, and says
 so), Start sprint (today for as long as it was planned, else two weeks)
 and Complete sprint, which always asks where the tickets the tracker
 counts unfinished go: an open sprint of the board, the first future one
-at first, or the backlog. A ticket opens beside the list, and in its own
+at first, or the backlog; a sprint that left the list while the form was
+open is not sent. A ticket opens beside the list, and in its own
 pane with Ctrl or Cmd or the menu; the row's menu has Ask and Start
 work…. Not built: the pace counted with credit (it counts the tickets
 whose status counted as done when their sprint was completed, by their
@@ -395,7 +404,7 @@ first refusal, not how many tickets moved.
 Status: built: a ticket opened from a card, from a thread's linked
 ticket or from a pull request's ticket chip, over or beside the board, the choice remembered, with the split between them, or in a pane of its own; the wide and narrow
 layouts with the rail and Details; status, assignee, priority, points and
-type changed in place, a move whose screen takes fields through their form, and the other fields with allowed values or one
+type changed in place, a move whose screen takes fields through their form (which asks for those the tracker requires the person to give, and offers no None for a field the tracker requires, a field of several keeping its last value), and the other fields with allowed values or one
 typed value behind the control with its find box (a field of several
 typed values is shown, not edited); each long text field as a
 section that folds and is edited as Markdown, an image or attachment in

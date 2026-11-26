@@ -14,8 +14,8 @@
 // fills (a Story's priority) and asks what it requires (a Task's), reads
 // the board's projects, the types and each type's fields once for the
 // form, and lands in that sprint; one Jira made but did not move into its
-// sprint is not made again, says so, and moves on request; a sprint is
-// created (a refusal staying under its form), changed, refused a clearing
+// sprint is not made again, says so, and moves on request, the offer
+// ending once the board shows it there; a sprint is created (a refusal staying under its form), changed, refused a clearing
 // of its dates, completed with its unfinished tickets moved to the
 // destination it shows, and started; the row's menu is the card's and
 // moves a row to a sprint, offering no Backlog to a row in the backlog
@@ -395,10 +395,10 @@ export function registerBacklogFlow({ compact }: BacklogSurface): void {
     await expect(form.locator('[data-testid="ticket-field"][data-field="type"]').getByTestId('ticket-field-value')).toHaveText('Story', { timeout: 15_000 });
     await press(form.getByTestId('issues-backlog-create-submit'), compact);
 
-    // Made: the title is done with, the note names the ticket and what did
+    // Made: the title is done with, the offer names the ticket and what did
     // not happen, and Add cannot send it again.
     await expect(title).toHaveValue('', { timeout: 15_000 });
-    const note = form.getByTestId('ticket-write-outcome');
+    const note = form.getByTestId('issues-backlog-create-unplaced-said');
     await expect(note).toContainText(/Created WEB-\d+, but it was not moved into its sprint: .*Sprint 2 takes no more tickets now\./, { timeout: 15_000 });
     await expect(form.getByTestId('issues-backlog-create-submit')).toBeDisabled();
     expect(await trackerRequests(harness, CREATE_ROUTE)).toHaveLength(1);
@@ -411,6 +411,8 @@ export function registerBacklogFlow({ compact }: BacklogSurface): void {
     await expect(move).toHaveText(`Move ${key} into Sprint 2`);
     await press(move, compact);
     await expect.poll(() => sectionRows(backlog, 'sprint:2'), { timeout: 15_000 }).toContain(madeId);
+    // The board shows it in the sprint: the offer is gone.
+    await expect(form.getByTestId('issues-backlog-create-unplaced')).toHaveCount(0);
     expect((await trackerRequests(harness, TO_SPRINT_ROUTE)).filter((r) => r.path.endsWith('/sprint/2/issue')).map((r) => r.body)).toEqual([
       { issues: [madeId] }, { issues: [madeId] },
     ]);

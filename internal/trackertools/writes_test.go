@@ -597,3 +597,79 @@ func TestCreateTargets(t *testing.T) {
 	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "New"})
 	refused(t, err, CodeAmbiguous, "WEB is a project on example.atlassian.net and example; write it as example.atlassian.net/WEB or example/WEB.")
 }
+
+// After the person approves, the call's cards are read again once per
+// connection: a ticket whose update time, status or sprints moved during
+// the wait, each alone, or that is gone, is sent nothing and said as
+// refused, and the other goes on. A read that fails sends nothing. A
+// comment alone, and a single ticket, read nothing again: their keys are
+// looked up once, to resolve them.
+func TestUpdateSendsNothingToATicketThatMovedWhileWaiting(t *testing.T) {
+	t.Parallel()
+	args := map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "set": map[string]any{"sprint": "Sprint 15"}}
+	const moved = `{"key":"WEB-12","refused":"WEB-12 changed on Jira while the user was deciding, so nothing was sent to it; read it again and call again for it.","not_sent":["sprint"]}`
+	const other = `{"key":"WEB-18","applied":["sprint"]}`
+	for _, tc := range []struct {
+		name   string
+		change func(d *trackerapp.DetailView, f *fakeTracker)
+		want   string
+	}{
+		{"update time", func(d *trackerapp.DetailView, _ *fakeTracker) { d.Card.Updated++ }, moved},
+		{"status alone", func(d *trackerapp.DetailView, _ *fakeTracker) {
+			d.Card.Status = trackerapp.StatusView{ID: "5", Name: "Done"}
+		}, moved},
+		{"sprints alone", func(d *trackerapp.DetailView, _ *fakeTracker) { d.Card.Sprints = []string{"14"} }, moved},
+		{"gone", func(_ *trackerapp.DetailView, f *fakeTracker) { delete(f.lookup[jiraSource.ID], "WEB-12") },
+			`{"key":"WEB-12","refused":"WEB-12 is not on Jira any more, or the user's account cannot see it, so nothing was sent to it.","not_sent":["sprint"]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			w := newWriteFixture(t)
+			w.h.approve = func(Approval) error {
+				k := jiraSource.ID + "/10012"
+				d := w.f.details[k]
+				tc.change(&d, w.f)
+				w.f.details[k] = d
+				return nil
+			}
+			answer, err := w.update(t, args)
+			if err != nil || answer != `{"tickets":[`+tc.want+`,`+other+`]}` {
+				t.Fatalf("answer = %s, %v", answer, err)
+			}
+			if len(w.f.writes) != 1 || !strings.Contains(w.f.writes[0], `"issues":["10018"]`) {
+				t.Fatalf("writes %q, want WEB-18's alone", w.f.writes)
+			}
+		})
+	}
+	t.Run("read fails", func(t *testing.T) {
+		t.Parallel()
+		w := newWriteFixture(t)
+		w.h.approve = func(Approval) error {
+			w.f.lookupErr = map[string]error{jiraSource.ID: errorsx.Public(CodeFailed, "Jira did not answer.", nil)}
+			return nil
+		}
+		_, err := w.update(t, args)
+		refused(t, err, CodeFailed, "Nothing was sent: the tickets could not be read again after the user approved. "+jiraSource.Site+": Jira did not answer.")
+		if len(w.f.writes) != 0 {
+			t.Fatalf("writes %q", w.f.writes)
+		}
+	})
+	t.Run("no read again", func(t *testing.T) {
+		t.Parallel()
+		w := newWriteFixture(t)
+		for _, args := range []map[string]any{
+			{"keys": []string{"WEB-12", "WEB-18"}, "comment": "Checked."},
+			{"keys": []string{"WEB-12"}, "set": map[string]any{"sprint": "Sprint 15"}},
+		} {
+			w.f.asked = nil
+			if _, err := w.update(t, args); err != nil {
+				t.Fatal(err)
+			}
+			// The one lookup is the keys' resolution.
+			lookups := slices.DeleteFunc(slices.Clone(w.f.asked), func(a string) bool { return !strings.HasPrefix(a, "lookup ") })
+			if len(lookups) != 1 {
+				t.Errorf("%v read %q, want the keys looked up once", args, w.f.asked)
+			}
+		}
+	})
+}

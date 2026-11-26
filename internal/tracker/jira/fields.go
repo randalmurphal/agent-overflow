@@ -206,7 +206,7 @@ type FieldMeta struct {
 // Demanded reports a field a create or a move must be given a value of:
 // required by its screen, with no default Jira fills in. It is the one
 // rule for what a person must supply (PlanCreate, a move's check, and
-// what the provider says is required).
+// tracker.ScreenField: Required and not Defaulted).
 func (f FieldMeta) Demanded() bool { return f.Required && !f.HasDefault }
 
 // AllowedValue is one value a field takes: an option, priority,

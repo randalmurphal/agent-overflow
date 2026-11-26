@@ -430,7 +430,7 @@ func movesOf(ts []jira.Transition, cat *catalog) []tracker.Move {
 		m := tracker.Move{ID: tracker.MoveID(t.ID), Name: t.Name, To: tracker.StatusID(t.To.ID)}
 		cat.status(&t.To)
 		for _, f := range t.Fields.Fields {
-			m.Fields = append(m.Fields, metaField(f))
+			m.Fields = append(m.Fields, offeredField(f))
 		}
 		out = append(out, m)
 	}

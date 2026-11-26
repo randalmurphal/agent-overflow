@@ -95,6 +95,13 @@ func TestTrackerWriteRequestsOnJira(t *testing.T) {
 		issue, // the project, whose comment audience the comment takes
 		"POST rest/api/3/issue/{issue}/comment",
 	})
+	// Several tickets' comment alone waits for the approval and reads
+	// nothing again after it: a comment judges nothing on the ticket.
+	_, routes = toolRoutes(t, f, thread.ID, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-1", "WEB-2"}, "comment": "Checked again."})
+	pinned(t, "a comment alone on two tickets", routes, []string{
+		issue, "POST rest/api/3/issue/{issue}/comment", // each ticket's project, then its comment
+		issue, "POST rest/api/3/issue/{issue}/comment",
+	})
 	_, routes = toolRoutes(t, f, thread.ID, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-2"}, "set": map[string]any{"status": "Done"}})
 	pinned(t, "a status change", routes, []string{
 		issue, comments, // the ticket's detail, which the plan judges the status on
@@ -106,6 +113,7 @@ func TestTrackerWriteRequestsOnJira(t *testing.T) {
 		issue, comments, // WEB-1's detail
 		bulkfetch,       // WEB-2's: the body the status change read, checked by its update time
 		issue, comments, // WEB-3's detail: in no sprint, it is already in the backlog
+		bulkfetch,                                              // the three cards read again after the approval
 		boardRows, "POST rest/agile/1.0/backlog/{board}/issue", // WEB-1's move, from its sprint
 		boardRows, issue, comments, // WEB-1 read again
 		boardRows, "POST rest/agile/1.0/backlog/{board}/issue", // WEB-2's
@@ -164,6 +172,9 @@ func TestTrackerWriteRequestsOnLinear(t *testing.T) {
 
 	_, routes := toolRoutes(t, f, thread.ID, endpoint, "ticket_update", map[string]any{"keys": []string{"example/ENG-1"}, "comment": "Checked."})
 	pinned(t, "a comment alone", routes, []string{"CreateComment"})
+	// Several tickets' comment alone reads nothing again after the approval.
+	_, routes = toolRoutes(t, f, thread.ID, endpoint, "ticket_update", map[string]any{"keys": []string{"example/ENG-1", "example/ENG-2"}, "comment": "Checked again."})
+	pinned(t, "a comment alone on two tickets", routes, []string{"CreateComment", "CreateComment"})
 	_, routes = toolRoutes(t, f, thread.ID, endpoint, "ticket_update", map[string]any{"keys": []string{"example/ENG-1"}, "set": map[string]any{"status": "Backlog"}})
 	pinned(t, "a status change", routes, []string{
 		"IssueDetails",               // the ticket's detail, which the plan judges the status on
@@ -171,7 +182,8 @@ func TestTrackerWriteRequestsOnLinear(t *testing.T) {
 		"Issues", "IssueDetails", // the ticket's row and detail read again after the write
 	})
 	_, routes = toolRoutes(t, f, thread.ID, endpoint, "ticket_update", map[string]any{"keys": []string{"example/ENG-1", "example/ENG-2", "example/ENG-3"}, "set": map[string]any{"sprint": "backlog"}})
-	out := []string{"IssueDetails", "IssueDetails", "IssueDetails"} // each ticket's detail
+	out := []string{"IssueDetails", "IssueDetails", "IssueDetails", // each ticket's detail
+		"Issues"} // the three cards read again after the approval
 	for range 3 {
 		// Each ticket's move out of its cycle: the positions it is placed
 		// by, the move, and its row and detail read again.

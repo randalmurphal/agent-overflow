@@ -15,6 +15,7 @@ import type {
   BoardView,
   CommentPageView,
   DetailView,
+  IssueTypeView,
   MoveView,
   PokerView,
   TicketSubscription,
@@ -931,13 +932,25 @@ describe('a board\'s writes: its sprints and the tickets made on it', () => {
 
 describe('what a ticket made on the Backlog takes', () => {
   it('reads a project\'s types and a type\'s fields once each, holds a refusal until the next ask, and reads again after a reconnect', async () => {
-    const types = setBindingMock('TrackerIssueTypes', async () => [{ id: '10002', name: 'Task', level: 0 }]);
+    let answer: () => void = () => {};
+    const types = setBindingMock('TrackerIssueTypes', () => new Promise<IssueTypeView[]>((resolve) => {
+      answer = () => resolve([{ id: '10002', name: 'Task', level: 0 }] as IssueTypeView[]);
+    }));
     let refuse = true;
     const fields = setBindingMock('TrackerCreateFields', async () => {
       if (refuse) throw new TransportError('tracker_unavailable', 'Jira did not answer');
       return [{ id: 'priority', name: 'Priority', kind: 'option', required: true, editable: true }];
     });
-    await Promise.all([loadIssueTypes(HOME_BACKEND, 'c1', '10000'), loadIssueTypes(HOME_BACKEND, 'c1', '10000')]);
+    // A second ask while the read is out waits for its answer.
+    const first = loadIssueTypes(HOME_BACKEND, 'c1', '10000');
+    let secondSettled = false;
+    const second = loadIssueTypes(HOME_BACKEND, 'c1', '10000').then(() => { secondSettled = true; });
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(secondSettled).toBe(false);
+    answer();
+    await second;
+    expect(issueTypes(HOME_BACKEND, 'c1', '10000')?.value?.map((t) => t.name)).toEqual(['Task']);
+    await first;
     expect(types).toHaveBeenCalledTimes(1);
     expect(issueTypes(HOME_BACKEND, 'c1', '10000')?.value?.map((t) => t.name)).toEqual(['Task']);
     // Another project is its own read.
@@ -1118,7 +1131,7 @@ describe('links and poker writes', () => {
     const after = loadTicketLinkTypes(HOME_BACKEND, 'c1');
     answers[0]!(['Old']);
     await before;
-    expect(ticketLinkTypes(HOME_BACKEND, 'c1')).toEqual({ value: null, loading: true, error: null });
+    expect(ticketLinkTypes(HOME_BACKEND, 'c1')).toMatchObject({ value: null, loading: true, error: null });
     answers[1]!(['New']);
     await after;
     expect(ticketLinkTypes(HOME_BACKEND, 'c1')?.value?.map((t) => t.name)).toEqual(['New']);

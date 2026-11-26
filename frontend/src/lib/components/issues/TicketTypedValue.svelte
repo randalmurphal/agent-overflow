@@ -1,7 +1,10 @@
 <script lang="ts">
   // A ticket value typed in place: Enter saves the trimmed text when it
   // changed (empty clears the field), Escape and leaving put it back
-  // (`onDone`). A number or date input whose text is not a number or not a
+  // (`onDone`); going with the field (an unmount) is not leaving, so a
+  // holder of the text (`onTyped`) keeps it. It takes focus when a person
+  // opened it; typing resumed with its field (`resumed`) brings the text
+  // back and leaves focus where it is. A number or date input whose text is not a number or not a
   // whole date holds an empty value, as a cleared one does; Enter on it
   // saves nothing and says what the field takes (`invalid`), so a typo
   // never clears the field. The ticket's field rows and a Board card's
@@ -20,22 +23,39 @@
     /** What the field takes, after Enter on text it cannot hold; empty
      * otherwise. */
     invalid?: string;
+    /** The text typed so far when typing resumes (`TypingHold`). */
+    typed?: string;
+    /** Each change of the text typed, for its holder. */
+    onTyped?: (text: string) => void;
+    /** Typing resumed as its field came back, not opened by a person. */
+    resumed?: boolean;
   }
 
-  let { label, input, text, onSave, onDone, invalid = $bindable('') }: Props = $props();
+  let { label, input, text, onSave, onDone, invalid = $bindable(''), typed, onTyped, resumed = false }: Props = $props();
 
   // svelte-ignore state_referenced_locally
-  let draft = $state(text);
+  let draft = $state(typed ?? text);
   let el: HTMLInputElement | undefined = $state();
+  // svelte-ignore state_referenced_locally
+  const opened = !resumed;
   $effect(() => {
     invalid = '';
-    el?.focus();
+    if (opened) el?.focus();
   });
 
   const TAKES: Readonly<Record<'number' | 'date', string>> = {
     number: 'Type a number, or clear the field.',
     date: 'Pick a whole date, or clear the field.',
   };
+
+  // Chromium blurs a focused input as it is removed, with the input still
+  // connected: only a blur that leaves it on the page is leaving.
+  function left(): void {
+    const input = el;
+    queueMicrotask(() => {
+      if (input?.isConnected) onDone();
+    });
+  }
 
   function onKeydown(event: KeyboardEvent): void {
     if (isImeComposingEvent(event)) return;
@@ -67,7 +87,7 @@
   aria-label={label}
   data-testid="ticket-field-input"
   aria-invalid={invalid ? true : undefined}
-  oninput={(event) => { draft = event.currentTarget.value; invalid = ''; }}
+  oninput={(event) => { draft = event.currentTarget.value; invalid = ''; onTyped?.(draft); }}
   onkeydown={onKeydown}
-  onblur={onDone}
+  onblur={left}
 />

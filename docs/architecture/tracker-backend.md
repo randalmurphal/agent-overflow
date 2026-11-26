@@ -1676,7 +1676,23 @@ funnel (`trackerapp/funnel.go`):
   history and structure, a write's refresh, a ticket's read and a Jira
   round's check alike, so a later failure holds back no committed change.
   A shown board adds one lookup of the changed cards' boards per write
-  that changed any (`ListMirrorIssueBoards`).
+  that changed any (`ListMirrorIssueBoards`). An open ticket is told at
+  each write. The tick's own board is sent one event, with the tick's
+  failure, and every other board one event as the tick ends
+  (`tickOrigin.others`). Another sender of a board's event during the
+  tick sends what the tick left pending for it sooner: a write's
+  refresh, the board's own tick, or a setup change that has the board
+  read again (`readBoardsAgain`). An event names at most 100 rows. The
+  tick's own board past that bound is sent an event that names none and
+  says to read the board again (`boardPending.add`). Another board is
+  sent what it holds before a write would take its event past the bound
+  (`boardPending.overflows`), so of the bound only a single write of
+  more than 100 of its rows makes its event say to read again. A catalog
+  change, a structure change of the board, or a failed lookup of the
+  changed issues' boards says to read again whatever the count. So a
+  history read of several batches moves another board's totals once per
+  event a patch reads. A write's refresh, which no tick runs, sends each
+  board its event as it is published.
 - The root a change is published under is the one the run that stored it
   held, so a connection change during the read cannot lose it. A change
   reaches only the subscriptions of that mirror: the connection's mirror
@@ -1713,9 +1729,9 @@ The reads a write form needs go to the tracker, interactive, and settle
 the connection's problem with their outcome (`form_reads.go`): `Projects`,
 `IssueTypes`, `Boards`, `BoardProjects` (the projects a board's filter
 shows; a Linear team's own), `CreateFields` (each field with the values
-its screen lists and whether the tracker fills it, `tracker.CreateField`;
-a Jira screen read within the minute is the client's kept one, so the
-create it plans reads it once),
+its screen lists and whether the tracker fills it, `tracker.ScreenField`,
+as a move's fields are; a Jira screen read within the minute is the
+client's kept one, so the create it plans reads it once),
 `Moves`, `AssignableUsers`,
 `Choices`, `LinkTypes`, `Lookup`, `Search`, `Comments` (a later page) and
 `Download`. The mirror holds none of them: configuration it never reads,
@@ -2242,6 +2258,28 @@ triage does not keep, because the session no longer holds the thread,
 ends the call at once. Nothing is persisted: an app that stops ends the
 call, and nothing was sent. The writes after an approval run on the
 server's context to their end.
+
+**Changed while waiting.** What `set` changes was judged on the tickets
+as they were before the prompt, so after the person approves, the call's
+cards are read again, once per connection, with the key lookup
+(`planCall.recheck`; one `issue/bulkfetch` on Jira, one `issues` list on
+Linear). A ticket whose update time, status or sprints differ from what
+its plan read, or that the lookup no longer finds, is sent nothing: its
+`refused` says it changed on the tracker while the user was deciding,
+every step is in `not_sent`, and the call's other tickets go on. The
+update time covers every value the plan judged on Jira, where a field
+change, a comment, a link, an attachment and a worklog each move it, so a
+teammate's comment during the wait refuses the ticket too. On Linear a
+title, assignee, priority and status change move it, an estimate change
+does on a team with estimation off (one with it on is not measured), and
+a comment does not; a cycle change is not measured, which the sprint
+comparison covers ([measured](../references/tracker-api-measurements.md)). A lookup that
+fails sends nothing and is the call's error. A comment alone judges
+nothing but that the ticket exists and is not read again, and a call
+naming one ticket does not wait. After the read, in the seconds the
+earlier tickets' sends take, a change is caught only where a write
+compares at send: a text an edit replaces whole, a move Jira no longer
+offers the ticket, and a status its Linear team no longer has.
 
 **Read-only threads.** A writing call is refused when the calling
 thread's runtime mode is read-only, before anything is read or sent, and

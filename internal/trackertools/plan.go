@@ -116,6 +116,61 @@ func (pc *planCall) readTickets(ctx context.Context, tickets []ticket, set []nam
 	return plans, errs, nil
 }
 
+// recheck reads the cards of plans again, once per connection, after the
+// person approved them. A ticket whose card moved since its plan read it,
+// or that the read no longer finds, is sent nothing (planned.changed): a
+// write sent now would be judged on a ticket the person did not see. A
+// card moved when its update time did, or the status or sprints the plan
+// judged on, which a tracker might change without moving the update time.
+// A read that fails is the call's error, nothing sent.
+func (pc *planCall) recheck(ctx context.Context, plans []*planned) error {
+	var conns []string
+	for _, p := range plans {
+		if !slices.Contains(conns, p.t.connection) {
+			conns = append(conns, p.t.connection)
+		}
+	}
+	for _, conn := range conns {
+		var on []*planned
+		var keys []string
+		for _, p := range plans {
+			if p.t.connection == conn {
+				on, keys = append(on, p), append(keys, p.d.Card.Key)
+			}
+		}
+		found, err := pc.s.t.Lookup(ctx, conn, keys)
+		if err != nil {
+			site := on[0].t.site
+			if code, msg, ok := errorsx.PublicDetails(err); ok {
+				return errorsx.Public(code, "Nothing was sent: the tickets could not be read again after the user approved. "+site+": "+msg, err)
+			}
+			return fmt.Errorf("nothing was sent: read the tickets again after the approval: %s: %w", site, err)
+		}
+		for _, p := range on {
+			name := trackerNameOf(p.src.Kind)
+			i := slices.IndexFunc(found.Found, func(m trackerapp.KeyMatchView) bool { return m.Card.ID == p.d.Card.ID })
+			switch {
+			case i < 0:
+				p.changed = fmt.Sprintf("%s is not on %s any more, or the user's account cannot see it, so nothing was sent to it.", p.key, name)
+			case cardMoved(p.d.Card, found.Found[i].Card):
+				p.changed = fmt.Sprintf("%s changed on %s while the user was deciding, so nothing was sent to it; read it again and call again for it.", p.key, name)
+			}
+		}
+	}
+	return nil
+}
+
+// cardMoved reports whether now is not the card was: its update time,
+// status or sprints differ.
+func cardMoved(was, now trackerapp.CardView) bool {
+	sorted := func(s []string) []string {
+		s = slices.Clone(s)
+		slices.Sort(s)
+		return s
+	}
+	return was.Updated != now.Updated || was.Status.ID != now.Status.ID || !slices.Equal(sorted(was.Sprints), sorted(now.Sprints))
+}
+
 // heldCard is t's ID, key and title with no request: from the lookup that
 // found it, else the mirror; held is false when neither has it.
 func (s *Server) heldCard(t ticket) (card trackerapp.CardView, held bool, _ error) {
@@ -258,6 +313,9 @@ type planned struct {
 	// fails, refusedStep the step it refuses.
 	refused     string
 	refusedStep stepKind
+	// changed is why the ticket is sent nothing though the person approved
+	// it: the read after the approval found it moved or gone (recheck).
+	changed string
 
 	// changes are the lines an approval shows.
 	changes []ApprovalChange
@@ -358,8 +416,10 @@ func standardKind(id tracker.FieldID) string {
 // planField plans an edit of field f, which set names given, to nv's
 // value. An edit that replaces a text whole, a rich text or a plain text
 // the session must hold whole (marks.go), carries what it replaces, which
-// the tracker compares: a text a person changed while the call planned
-// or waited is refused as stale, not overwritten.
+// the tracker compares when the edit is sent: a text a person changed
+// after the plan read it is refused as stale, not overwritten. Every other
+// value is checked only as the whole ticket is, by the read after an
+// approval (recheck).
 func (pc *planCall) planField(p *planned, given string, f trackerapp.FieldView, nv namedValue) error {
 	v := nv.value
 	edit := trackerapp.FieldEditInput{Field: f.ID}
