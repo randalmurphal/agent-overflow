@@ -432,7 +432,7 @@ func (s *Service) postView(id string, read, sent []store.TimeEntry, notes []post
 	out.Posted, out.Of = len(posted), len(attempted)
 	var b strings.Builder
 	if out.Of > 0 {
-		fmt.Fprintf(&b, "Posted %d of %d entries for %s.", out.Posted, out.Of, dayRange(days))
+		fmt.Fprintf(&b, "Posted %d of %d entries for %s.", out.Posted, out.Of, DayRange(days))
 	}
 	questions := map[string]int{}
 	for _, n := range notes {
@@ -479,7 +479,9 @@ func dayLabel(day string) string {
 	return t.Format("Mon Jan 2")
 }
 
-func dayRange(days []string) string {
+// DayRange is days, sorted YYYY-MM-DD, as a sentence or a title writes
+// them: "Tue Nov 24", or "Mon Nov 23 to Fri Nov 27".
+func DayRange(days []string) string {
 	switch len(days) {
 	case 0:
 		return "no day"

@@ -148,7 +148,7 @@ func TestTrackerMCPRegistersOnlyWithATicketSource(t *testing.T) {
 		if endpoint == "" {
 			t.Fatalf("a %s project session has no tracker tools", name)
 		}
-		if got := workflowMCPToolNames(t, endpoint); !slices.Equal(got, trackertools.ToolNames()) {
+		if got := workflowMCPToolNames(t, endpoint); !slices.Equal(got, trackertools.ToolNames(true)) {
 			t.Fatalf("%s sees %v", name, got)
 		}
 	}
@@ -457,7 +457,7 @@ func TestTrackerToolsLookForAConnectionBeforeTheSessionScope(t *testing.T) {
 	app := newTestAppWithStore(t)
 	withTrackerService(t, app)
 	phase := brokenPhaseThread(t, app)
-	if ok, err := app.trackerToolsFor(phase, func() (transport.CallerScope, bool, error) {
+	if ok, _, err := app.trackerToolsFor(phase, func() (transport.CallerScope, bool, error) {
 		t.Fatal("the session scope was resolved with no connection on")
 		return transport.CallerScope{}, false, nil
 	}); err != nil || ok {

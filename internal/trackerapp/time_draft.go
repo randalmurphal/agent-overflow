@@ -180,14 +180,23 @@ func invalidDraft(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalidRequest, fmt.Sprintf(format, args...))
 }
 
+// CheckDraftSize refuses a draft of n entries that no call may make: the
+// tools check it before they resolve the entries' keys.
+func CheckDraftSize(n int) error {
+	if n == 0 || n > tracker.MaxWorklogInputs {
+		return invalidDraft("time_draft takes 1 to %d entries a call.", tracker.MaxWorklogInputs)
+	}
+	return nil
+}
+
 // checkDraft refuses a draft no rule lets stand, naming the entry by its
 // place in in.Entries, and returns its entries as stored.
 func (s *Service) checkDraft(in TimeDraftRequest) ([]store.TimeEntry, error) {
 	if in.Thread == "" || in.Call == "" {
 		return nil, invalidDraft("a draft names its thread and call")
 	}
-	if len(in.Entries) == 0 || len(in.Entries) > tracker.MaxWorklogInputs {
-		return nil, invalidDraft("time_draft takes 1 to %d entries a call.", tracker.MaxWorklogInputs)
+	if err := CheckDraftSize(len(in.Entries)); err != nil {
+		return nil, err
 	}
 	today := s.today()
 	out := make([]store.TimeEntry, len(in.Entries))

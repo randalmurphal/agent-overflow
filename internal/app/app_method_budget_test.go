@@ -127,6 +127,7 @@ var methodServerBounds = map[string]time.Duration{
 	"EditTrackerSprint":         transport.MethodBudget("EditTrackerSprint"),
 	"EditTrackerWorklog":        transport.MethodBudget("EditTrackerWorklog"),
 	"DeleteTrackerWorklog":      transport.MethodBudget("DeleteTrackerWorklog"),
+	"PostTrackerTimeEntries":    transport.MethodBudget("PostTrackerTimeEntries"),
 	"VoteTrackerPoker":          transport.MethodBudget("VoteTrackerPoker"),
 	"RevealTrackerPoker":        transport.MethodBudget("RevealTrackerPoker"),
 	"ClearTrackerPokerVotes":    transport.MethodBudget("ClearTrackerPokerVotes"),
