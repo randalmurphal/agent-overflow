@@ -107,14 +107,14 @@ const COMMON = {
   onOpenCard: () => {}, onMoveWithFields: () => {},
 };
 
-async function mountBacklog(): Promise<{ host: HTMLElement; mountMs: number }> {
+async function mountBacklog(kind = 'jira'): Promise<{ host: HTMLElement; mountMs: number }> {
   const held = await holdBoard(backlogBoard(), true);
   await waitFor(() => held.current!.held!.sections.length === 2, 'the backlog held');
   const host = hostEl();
   const t0 = performance.now();
   const app = mount(BacklogScreen, {
     target: host,
-    props: { ...COMMON, boardKey: held.key, boardRef: REF, get held() { return held.current!.held!; }, kind: 'jira' },
+    props: { ...COMMON, boardKey: held.key, boardRef: REF, get held() { return held.current!.held!; }, kind },
   });
   flushSync();
   void host.offsetHeight;
@@ -286,6 +286,36 @@ describe('the Backlog screen over 2,000 rows', () => {
     await waitFor(() => moved.mock.calls.length === 1, 'the move');
     expect(moved.mock.calls[0]).toEqual(['c1', { board: '1', sprint: '8', issues: ['0'], prev: '5001', next: '5002' }]);
     await waitFor(() => document.querySelector('[data-testid="issues-card-carried"]') === null, 'the copy gone');
+  });
+
+  it('on Linear, under the cycles notice, places a drop by the half of the row the pointer is in', async () => {
+    const moved = setBindingMock('MoveTrackerIssuesToSprint', async () => ({ parts: [{ step: 'sprint', state: 'applied' }] }));
+    const { host } = await mountBacklog('linear');
+    expect(host.querySelector('[data-testid="issues-backlog-cycles"]')).not.toBeNull();
+    await waitFor(() => rowEl(host, '5003') !== null && rowEl(host, '0') !== null, 'the rows');
+    // A drop at `dy` below the top of row 5002, which is `h` high.
+    const dropAt = async (dy: (h: number) => number) => {
+      const r = rowEl(host, '0')!.getBoundingClientRect();
+      const t = rowEl(host, '5002')!.getBoundingClientRect();
+      const x = r.left + r.width / 2;
+      const y = t.top + dy(t.height);
+      pointer('pointerdown', rowEl(host, '0')!.querySelector('[data-testid="issues-card-title"]')!, x, r.top + 10);
+      for (let k = 1; k <= 8; k += 1) {
+        pointer('pointermove', window, x, r.top + 10 + (y - r.top - 10) * k / 8);
+        await frames(1);
+      }
+      pointer('pointerup', window, x, y);
+      await waitFor(() => document.querySelector('[data-testid="issues-card-carried"]') === null, 'the copy landed');
+    };
+    // The upper half: before the row.
+    await dropAt(() => 4);
+    await waitFor(() => moved.mock.calls.length === 1, 'the first move');
+    expect(moved.mock.calls[0][1]).toEqual({ board: '1', sprint: '8', issues: ['0'], prev: '5001', next: '5002' });
+    await frames(3);
+    // The lower half: after it.
+    await dropAt((h) => h - 6);
+    await waitFor(() => moved.mock.calls.length === 2, 'the second move');
+    expect(moved.mock.calls[1][1]).toEqual({ board: '1', sprint: '8', issues: ['0'], prev: '5002', next: '5003' });
   });
 
   it('takes no second carry of a row whose move is out: two quick drops send one move', async () => {

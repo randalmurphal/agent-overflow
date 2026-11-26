@@ -3,7 +3,7 @@
   // sprint planning"): create a future sprint, change a sprint's name,
   // dates and goal, or start a future sprint, which takes its dates and may
   // change its name and goal in the same request. A change sends only the
-  // members changed. The write is the board's (`trackerTicketWrites`,
+  // members changed, and dates once set are changed, not cleared. The write is the board's (`trackerTicketWrites`,
   // `sprintTarget`): while it is out the form takes no change; a refusal
   // stays under it with what was filled; a made write closes it.
   import Button from '../primitives/Button.svelte';
@@ -56,6 +56,9 @@
   const problem = $derived.by(() => {
     if (!name.trim()) return 'A sprint needs a name.';
     if (mode === 'start' && (startAt === null || endAt === null)) return 'Starting a sprint takes its start and end.';
+    // A change sends no date it does not set (SprintEditRequest), so a
+    // date once set is changed, never cleared, from here.
+    if (mode === 'edit' && ((from.start && startAt === null) || (from.end && endAt === null))) return 'The app cannot clear a sprint\'s dates: change them, or clear them in the tracker.';
     if ((startAt === null) !== (endAt === null)) return 'Give both dates, or neither.';
     if (startAt !== null && endAt !== null && endAt <= startAt) return 'The end comes after the start.';
     return '';

@@ -414,6 +414,11 @@
   }
 </script>
 
+<!-- Outside the scroller, whose top is the virtual list's origin, which
+     the carry measures from (`backlogLayout`). -->
+{#if kind === 'linear' && held.shape.plansSprints}
+  <p class="shrink-0 px-3 pt-2 text-xs text-fg-muted" data-testid="issues-backlog-cycles">Linear runs this team's cycles from its settings: they start and end there.</p>
+{/if}
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   bind:this={scrollEl}
@@ -426,9 +431,6 @@
   data-carrying={carrying ? '' : undefined}
   onpointerdown={onPointerDown}
 >
-  {#if kind === 'linear' && held.shape.plansSprints}
-    <p class="px-3 pt-2 text-xs text-fg-muted" data-testid="issues-backlog-cycles">Linear runs this team's cycles from its settings: they start and end there.</p>
-  {/if}
   {#if sections.length === 0}
     <p class="px-3 py-2 text-sm text-fg-muted" data-testid="issues-backlog-none">This board has no backlog.</p>
   {:else}
