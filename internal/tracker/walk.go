@@ -58,6 +58,10 @@ func (o oneCredential) Structure(ctx context.Context, board BoardID, window time
 	return trackerapi.Walk(ctx, func(ctx context.Context) (Structure, error) { return o.p.Structure(ctx, board, window) })
 }
 
+func (o oneCredential) PullRequests(ctx context.Context, issue IssueID) ([]LinkedPullRequest, error) {
+	return trackerapi.Walk(ctx, func(ctx context.Context) ([]LinkedPullRequest, error) { return o.p.PullRequests(ctx, issue) })
+}
+
 func (o oneCredential) LinkTypes(ctx context.Context) ([]LinkType, error) {
 	return trackerapi.Walk(ctx, o.p.LinkTypes)
 }

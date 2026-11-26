@@ -143,6 +143,11 @@ type Provider interface {
 	// failing the read, and any other failure fails the whole read. Each
 	// issue is named once.
 	Details(ctx context.Context, issues []IssueID) (Details, error)
+	// PullRequests are the pull requests the tracker's forge
+	// integrations link to issue, from Jira's development panel, whose
+	// endpoints are undocumented. Linear fails wrapping ErrUnsupported
+	// before any request.
+	PullRequests(ctx context.Context, issue IssueID) ([]LinkedPullRequest, error)
 	// Comments is a page of issue's comments, newest first.
 	Comments(ctx context.Context, issue IssueID, page PageToken) (CommentPage, error)
 	// Moves are the moves issue's workflow allows now.

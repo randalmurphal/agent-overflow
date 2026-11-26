@@ -250,6 +250,31 @@ type IssueRef struct {
 	Status StatusID
 }
 
+// PullRequestState is a linked pull request's state: open, merged or
+// closed (declined, or closed without a merge).
+type PullRequestState string
+
+// The states of a linked pull request.
+const (
+	PullRequestOpen   PullRequestState = "open"
+	PullRequestMerged PullRequestState = "merged"
+	PullRequestClosed PullRequestState = "closed"
+)
+
+// LinkedPullRequest is a pull request the tracker links to an issue
+// through a forge integration (Jira's development panel). State is empty
+// when the tracker's word for it, Status, is not one this app knows.
+// Author is the author's name, empty when the integration gives none.
+// Branch is its source branch.
+type LinkedPullRequest struct {
+	URL    string
+	Title  string
+	Author string
+	Branch string
+	State  PullRequestState
+	Status string
+}
+
 // LinkType is a kind of link between two issues: the outward issue
 // relates to the inward one by Outward ("blocks"), the inward to the
 // outward by Inward ("is blocked by").
