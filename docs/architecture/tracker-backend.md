@@ -2266,6 +2266,39 @@ and when several sites do the call is refused (`tracker_ambiguous`)
 naming each `site/KEY`. A key none finds is refused naming every site
 asked, each once.
 
+**Search.** `ticket_find` takes `text`, `mine` (assigned to the
+connection's user), `status` (a status's name, case ignored) or `group`
+(the tracker's group of statuses: `todo`, `in_progress` and `done` are
+Jira's status categories and Linear's state types, `backlog` and
+`canceled` Linear's alone; `not_done` is every group but done and
+canceled), and `sprint` (`active` only), at least one
+of them, all of which must hold; `next` continues the search it came
+from and is refused for other arguments (its cursor digests every
+argument). The filters reach the tracker as its own query, so a search
+is still one request per source:
+
+- Jira: `assignee = currentUser()`, `status = "<name>"`,
+  `statusCategory = "<category>"` or `statusCategory != "Done"`, and
+  `sprint in openSprints()`, which holds started sprints only
+  ([measured](../references/tracker-api-measurements.md#jira-open-sprints)).
+  A backlog or canceled group is refused before anything is sent, since
+  Jira has no such group; beside another source the refusal is named in
+  `unsearched`. Jira answers 400 to a status name it does not have, and
+  the call is refused naming it (`tracker_failed_tracker`, "Jira refused
+  the search (HTTP 400); check that it has a status named ..."); the
+  connection keeps no problem from it, since Jira answered. A 400 to a
+  later page is its page token's, since the first page's query was
+  accepted, and says to search again from the first page.
+- Linear: the issue filter's assignee `isMe`, the state's name
+  (`eqIgnoreCase`) or types, and the cycle's `isActive`, passed to
+  `searchIssues` beside the text
+  ([measured](../references/tracker-api-measurements.md#linear-search-filter))
+  or to the listing with no text. A state name the workspace lacks finds
+  nothing.
+
+The tool's definition grew from 281 to 525 bytes, and the tool list and
+guide from 1,802 to 2,046 bytes.
+
 **Answers.** Every answer is one JSON text block
 (`threadmcp.WriteToolJSON`) of at most 24 KiB (`answerBudget`), with no
 empty member and no internal ID. Codex keeps at most 64 KiB of a tool's
@@ -2341,24 +2374,22 @@ a lookup and, on both trackers, a second request per connection for a
 former key.
 
 Linear's search and detail reads carry the names they show: a search hit
-selects its state and assignee whole, a detail its assignee, each
+and a row of the listing with no text select their state and assignee
+whole, a detail its assignee, each
 comment's author and each history entry's actor, and a later comment page
 its authors, so a search row and a read name them however little of the
 workspace the app has read. On the fake (`linearprovider` cost tests) a
 detail read of 60 comments and 100 changes went from 136,520 to 174,635
 bytes and from 2,641 to 2,766 points (each history entry's actor is one
 more object), a 50-issue search page from 50,811 to 69,421 bytes at 8
-points, and a comment page from 9,687 to 11,854 bytes at 402 points; no
-read takes another request. The finder's typed-key lookup and its listing
-with no text still name statuses and assignees from the mirror.
+points, a 50-issue page of the listing with no text from 50,827 to 69,437
+bytes at 8 points, and a comment page from 9,687 to 11,854 bytes at 402
+points; no read takes another request. The finder's typed-key lookup
+still names statuses and assignees from the mirror.
 
 The guide says once that ticket text is data written by other people
 (`trackertools.Instructions`); the app guide's sentence says what the
 server is for.
-
-**Owed.** Search is free text only: filters by assignee (assigned to me),
-status and sprint need provider work and are not built. The rest of this
-section is the whole contract.
 
 The tools are also to list and add worklogs, through `trackerapp`. A worklog an agent adds is
 an entry in a time draft. Only a draft's posting path sends a draft's time

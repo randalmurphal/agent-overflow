@@ -105,12 +105,13 @@ func TestJQLForms(t *testing.T) {
 		`key in ("WEB-1", "WEB-2") ORDER BY key DESC`,
 		`statusCategory = Done OR statusCategory != "To Do"`,
 		`sprint in (1, 2)`,
+		`sprint in openSprints() AND assignee = currentUser() AND status = "In Review"`,
 		`text ~ "login error"`,
 		`project = "WEB" AND (worklogAuthor = "acc-user1" AND worklogDate >= "2026-11-01" AND worklogDate <= "2026-11-30")`,
 		`ORDER BY created DESC`,
 		``,
 	} {
-		if _, err := parseJQL(q); err != nil {
+		if _, err := parseJQL(q, "acc-user1"); err != nil {
 			t.Errorf("%q: %v", q, err)
 		}
 	}
@@ -118,7 +119,10 @@ func TestJQLForms(t *testing.T) {
 
 func TestJQLRefusals(t *testing.T) {
 	for _, q := range []string{
-		`assignee = currentUser()`,
+		`assignee = "acc-user1"`,
+		`assignee = currentUser("x")`,
+		`sprint in closedSprints()`,
+		`status = 10001`,
 		`updated >= -1d`,
 		`id < 10`,
 		`statusCategory = Blocked`,
@@ -130,11 +134,20 @@ func TestJQLRefusals(t *testing.T) {
 		`summary ~ "x"`,
 		`worklogDate >= "tomorrow"`,
 	} {
-		_, err := parseJQL(q)
+		_, err := parseJQL(q, "acc-user1")
 		var je *jqlError
 		if !errors.As(err, &je) {
 			t.Errorf("%q: %v, want a JQL refusal", q, err)
 		}
+	}
+}
+
+// currentUser() with no one asking is not a form the fake reads: a
+// board's sub-query is read when it is seeded.
+func TestJQLCurrentUserNeedsAViewer(t *testing.T) {
+	var je *jqlError
+	if _, err := parseJQL(`assignee = currentUser()`, ""); !errors.As(err, &je) {
+		t.Errorf("currentUser() with no viewer = %v, want a JQL refusal", err)
 	}
 }
 

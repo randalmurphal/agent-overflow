@@ -29,7 +29,7 @@ func TestAdvanceStartsTheDrain(t *testing.T) {
 	spare := cohort[:maxCohort]
 	spare[maxCohort-1] = "spare"
 	from := Position{Bound: at, At: cohort}
-	next, n, err := from.advance(oldestFirst, tieIssues(3, at))
+	next, n, err := advance(opIssues, from, oldestFirst, tieIssues(3, at))
 	if err != nil || n != 1 || next.Drain == nil || *next.Drain != "" || len(next.At) != maxCohort || next.At[maxCohort-1] != "issue-0000" {
 		t.Fatalf("next %d left out, drain %v, %d delivered, %v", len(next.At), next.Drain, n, err)
 	}
@@ -38,7 +38,7 @@ func TestAdvanceStartsTheDrain(t *testing.T) {
 	}
 	// A newer issue first starts a new tie, which fits.
 	later := append([]Issue{{ID: "newer", UpdatedAt: at.Add(time.Second)}}, tieIssues(2, at.Add(time.Second))...)
-	next, n, err = from.advance(oldestFirst, later)
+	next, n, err = advance(opIssues, from, oldestFirst, later)
 	if err != nil || n != 3 || next.Drain != nil || !next.Bound.Equal(at.Add(time.Second)) || len(next.At) != 3 {
 		t.Errorf("a new tie: %+v, %d delivered, %v", next, n, err)
 	}
@@ -52,24 +52,24 @@ func TestDrained(t *testing.T) {
 	start := ""
 	from := Position{Bound: at, At: []string{"held"}, Drain: &start}
 	page := Page[Issue]{Items: tieIssues(2, at), HasNextPage: true, EndCursor: "c1"}
-	next, err := from.drained(page)
+	next, err := drained(opIssues, from, page)
 	if err != nil || next.Drain == nil || *next.Drain != "c1" || !slices.Equal(next.At, []string{"held"}) || next.Past {
 		t.Fatalf("drain goes on: %+v %v", next, err)
 	}
 	page.HasNextPage = false
-	if next, err = from.drained(page); err != nil || next.Drain != nil || next.At != nil || !next.Past || !next.Bound.Equal(at) {
+	if next, err = drained(opIssues, from, page); err != nil || next.Drain != nil || next.At != nil || !next.Past || !next.Bound.Equal(at) {
 		t.Fatalf("drain ends: %+v %v", next, err)
 	}
 	for name, items := range map[string][]Issue{
 		"outside the tie": {{ID: "x", UpdatedAt: at.Add(time.Millisecond)}},
 		"left out":        {{ID: "held", UpdatedAt: at}},
 	} {
-		if _, err := from.drained(Page[Issue]{Items: items}); err == nil {
+		if _, err := drained(opIssues, from, Page[Issue]{Items: items}); err == nil {
 			t.Errorf("an issue %s: no error", name)
 		}
 	}
 	// Past the bound, an issue at it breaks the order.
-	if _, _, err := (Position{Bound: at, Past: true}).advance(oldestFirst, tieIssues(1, at)); err == nil {
+	if _, _, err := advance(opIssues, Position{Bound: at, Past: true}, oldestFirst, tieIssues(1, at)); err == nil {
 		t.Error("an issue at the bound of a walk past it: no error")
 	}
 }
@@ -88,7 +88,7 @@ func TestAdvanceAllocations(t *testing.T) {
 	}
 	for name, items := range map[string][]Issue{"a tie": tie, "distinct times": spread} {
 		allocs := testing.AllocsPerRun(20, func() {
-			if _, _, err := from.advance(oldestFirst, items); err != nil {
+			if _, _, err := advance(opIssues, from, oldestFirst, items); err != nil {
 				t.Fatal(err)
 			}
 		})

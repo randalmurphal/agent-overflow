@@ -369,6 +369,11 @@ Other:
   `updated`. A board configuration's `location.id` is a string. An
   embedded changelog with fewer than 100 entries reports `maxResults`
   equal to the number embedded (20 of 20).
+- <a id="jira-open-sprints"></a>Measured on 2026-11-26, counts only,
+  through `search/approximate-count`. `sprint in openSprints()` and
+  `sprint in futureSprints()` each matched issues, and both together
+  matched none. So `openSprints()` holds started sprints only, not future
+  ones, and `sprint in openSprints()` alone is the active sprint.
 - Mentions of the user are found with `comment ~ currentUser()`
   ([JRACLOUD-27594](https://jira.atlassian.com/browse/JRACLOUD-27594)).
   Neither spec has a notification inbox endpoint.
@@ -626,6 +631,15 @@ Source for schema facts: the
   after it. So a nested history entity is still answered for a trashed
   issue; other kinds (an archived label, cycle, project or team, a
   deactivated user) were not measured.
+- <a id="linear-search-filter"></a>Measured on 2026-11-26 with two
+  throwaway issues sharing one word, one assigned to the key's user.
+  `searchIssues(term:, filter:)` accepted `assignee: {isMe: {eq: true}}`,
+  `assignee: {null: true}`, `state: {type: {nin: [...]}}`,
+  `state: {type: {in: [...]}}` and `cycle: {isActive: {eq: true}}` with no
+  error, and returned the found issue only when it matched the filter. The
+  search with no filter returned only one of the two issues after two
+  minutes of polling, in both runs, so a fresh issue is not always found
+  by text.
 
 ## Tempo
 
