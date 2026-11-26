@@ -339,6 +339,33 @@ func TestApprovingADayPostsItsEntries(t *testing.T) {
 	})
 }
 
+// A post whose read-back failed says which days do not show the posted
+// time yet and why: the entry left the draft and its worklog is not in
+// the mirror until the next read.
+func TestAPostSaysTheDaysItCouldNotReadBack(t *testing.T) {
+	t.Parallel()
+	bothSources(t, func(t *testing.T, d *draftScenario) {
+		v := d.draft(t, d.on("WEB-2", 1, "Reviewed the pull request"))
+		f := trackerfake.Fault{Kind: trackerfake.FaultRefuse, Status: 403, Times: 1,
+			Origin: trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: "example.atlassian.net"}, Route: "POST rest/api/3/search/jql",
+			Body: json.RawMessage(`{"errorMessages":["You do not have permission to read this."],"errors":{}}`)}
+		if d.tempo {
+			f.Origin, f.Route, f.Body = trackerfake.Origin{Tracker: trackerfake.TrackerTempo}, "GET 4/worklogs/user/{account}", json.RawMessage(`{"errors":[{"message":"No access."}]}`)
+		}
+		if err := d.e.AddFault(f); err != nil {
+			t.Fatal(err)
+		}
+		got, posts := d.post(t, true, entryRefs(v.Made...)...)
+		if posts != 1 || got.Posted != 1 || len(got.Stale) != 1 || got.Stale[0].Resources[0].Day != d.day {
+			t.Fatalf("the post answered %+v with %d worklog posts", got, posts)
+		}
+		want := "Posted 1 of 1 entries for " + d.label + ". The posted time shows on " + d.label + " after the next read: " + got.Stale[0].Failure.Message + "."
+		if got.Stale[0].Failure.Message == "" || got.Sentence != want {
+			t.Fatalf("the post answered %q; want %q", got.Sentence, want)
+		}
+	})
+}
+
 // An entry the tracker refused goes back to the draft with the refusal,
 // one whose answer was lost is unknown, and the others post; the sentence
 // says each.

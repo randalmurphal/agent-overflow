@@ -23,12 +23,16 @@ type PostTimeRequest struct {
 }
 
 // PostTimeView is what a post did: each entry named as it is now, how
-// many it posted of those it could, and the sentence that says it.
+// many it posted of those it could, and the sentence that says it. Stale
+// is the read-back of the posted days that failed, as a write's
+// (WriteView.Stale): those days do not show the posted time until their
+// next read.
 type PostTimeView struct {
 	Entries  []TimeEntryView `json:"entries"`
 	Posted   int             `json:"posted"`
 	Of       int             `json:"of"`
 	Sentence string          `json:"sentence"`
+	Stale    []StaleView     `json:"stale,omitempty"`
 }
 
 // A post's notes, one per entry it did not post, in the sentence.
@@ -140,14 +144,14 @@ func (s *Service) PostTimeEntries(ctx context.Context, id string, in PostTimeReq
 	if err != nil {
 		return PostTimeView{}, err
 	}
-	stale := map[int64]bool{}
+	noted := map[int64]bool{}
 	for _, n := range notes {
-		stale[n.e.ID] = true
+		noted[n.e.ID] = true
 	}
 	var send, check []store.TimeEntry
 	for _, e := range entries {
 		switch {
-		case stale[e.ID]:
+		case noted[e.ID]:
 		case e.IssueID == "" && e.State == store.TimeEntryDrafted:
 			notes = append(notes, postNote{e: e, open: true})
 		case e.State == store.TimeEntryPosted || e.State == store.TimeEntryLeftOut ||
@@ -205,15 +209,16 @@ func (s *Service) PostTimeEntries(ctx context.Context, id string, in PostTimeReq
 		}
 	}
 	var res []store.TimeEntry
+	var unread []StaleView
 	if len(send) > 0 {
-		res, notes, err = s.sendTimeEntries(ctx, id, sentTo, send, found, notes)
+		res, notes, unread, err = s.sendTimeEntries(ctx, id, sentTo, send, found, notes)
 		// Entries a failed post settled changed all the same.
 		s.timeEntriesChanged(id, author, res)
 		if err != nil {
 			return PostTimeView{}, err
 		}
 	}
-	return s.postView(id, entries, res, notes)
+	return s.postView(entries, res, notes, unread), nil
 }
 
 // movedOn says why entry e, read again, is not the one the person
@@ -281,10 +286,11 @@ var errTimeSourceMoved = errors.New("the connection's time source changed; appro
 // sendTimeEntries marks entries sent to sentTo once the connection is
 // held, settles those found already made (found), sends the rest as one
 // batch, settles each with its outcome, and returns the entries as
-// stored, with notes for those not posted. A store write that fails
+// stored, with notes for those not posted and the read-back that failed
+// (WriteView.Stale). A store write that fails
 // after the send fails the post: its entries stay sent, and this run
 // shows them as being posted until the app starts again.
-func (s *Service) sendTimeEntries(ctx context.Context, id, sentTo string, entries []store.TimeEntry, found []store.TimeEntrySettle, notes []postNote) ([]store.TimeEntry, []postNote, error) {
+func (s *Service) sendTimeEntries(ctx context.Context, id, sentTo string, entries []store.TimeEntry, found []store.TimeEntrySettle, notes []postNote) ([]store.TimeEntry, []postNote, []StaleView, error) {
 	refs := make([]store.TimeEntryRef, len(entries))
 	issues := make([]tracker.IssueID, len(entries))
 	for i, e := range entries {
@@ -297,7 +303,7 @@ func (s *Service) sendTimeEntries(ctx context.Context, id, sentTo string, entrie
 	}
 	var stored []store.TimeEntry
 	var storeErr error
-	_, err := s.write(ctx, id, writeOp{unable: func(p tracker.Provider) error {
+	view, err := s.write(ctx, id, writeOp{unable: func(p tracker.Provider) error {
 		if p.Time() == nil {
 			return fmt.Errorf("trackerapp: connection %s has no time tracking: %w", id, tracker.ErrUnsupported)
 		}
@@ -381,7 +387,7 @@ func (s *Service) sendTimeEntries(ctx context.Context, id, sentTo string, entrie
 				refusal, _ := o.Refusal()
 				settles = append(settles, store.TimeEntrySettle{ID: m.ID, State: store.TimeEntryDrafted, Refusal: refusal.Message})
 				notes = append(notes, postNote{e: m, why: "was refused: " + refusal.Message})
-			default:
+			case tracker.StateNotSent:
 				why := "it was not sent"
 				if err := o.Err(); err != nil {
 					why = err.Error()
@@ -398,12 +404,12 @@ func (s *Service) sendTimeEntries(ctx context.Context, id, sentTo string, entrie
 	if err == nil {
 		err = storeErr
 	}
-	return stored, notes, err
+	return stored, notes, view.Stale, err
 }
 
 // postView builds the answer from entries as read, the entries a send
-// stored after, and the notes.
-func (s *Service) postView(id string, read, sent []store.TimeEntry, notes []postNote) (PostTimeView, error) {
+// stored after, the notes, and the read-back that failed.
+func (s *Service) postView(read, sent []store.TimeEntry, notes []postNote, stale []StaleView) PostTimeView {
 	now := map[int64]store.TimeEntry{}
 	for _, e := range read {
 		now[e.ID] = e
@@ -411,7 +417,7 @@ func (s *Service) postView(id string, read, sent []store.TimeEntry, notes []post
 	for _, e := range sent {
 		now[e.ID] = e
 	}
-	out := PostTimeView{Entries: []TimeEntryView{}}
+	out := PostTimeView{Entries: []TimeEntryView{}, Stale: stale}
 	var days []string
 	var posted, attempted []store.TimeEntry
 	for _, e := range read {
@@ -449,8 +455,18 @@ func (s *Service) postView(id string, read, sent []store.TimeEntry, notes []post
 			fmt.Fprintf(&b, " %d questions for %s are still open.", questions[d], dayLabel(d))
 		}
 	}
+	for _, st := range stale {
+		var unread []string
+		for _, r := range st.Resources {
+			if r.Day != "" && !slices.Contains(unread, r.Day) {
+				unread = append(unread, r.Day)
+			}
+		}
+		slices.Sort(unread)
+		fmt.Fprintf(&b, " The posted time shows on %s after the next read: %s.", DayRange(unread), strings.TrimSuffix(st.Failure.Message, "."))
+	}
 	out.Sentence = strings.TrimPrefix(b.String(), " ")
-	return out, nil
+	return out
 }
 
 func sortedKeys(m map[string]int) []string {
