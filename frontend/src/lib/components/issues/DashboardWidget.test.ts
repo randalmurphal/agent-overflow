@@ -7,6 +7,8 @@
 import { fireEvent, render, within } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
 import type { RangeView, WidgetValue, WidgetView } from '../../../../bindings/agent-overflow/internal/trackerdash/models';
+import type { DrillState } from '../../stores/trackerDashboard.svelte';
+import DashboardDrill from './DashboardDrill.svelte';
 import DashboardWidget from './DashboardWidget.svelte';
 
 const HOW = { words: ['The estimate of the tickets finished in each sprint, averaged.'], counts: 'The points of each sprint added up', range: 'It counts the range\'s sprints.', rules: 'none', sql: 'SELECT 1', reads: ['tickets'] };
@@ -48,6 +50,53 @@ describe('a number', () => {
     expect(getByTestId('dashboard-now')).toBeTruthy();
     expect(queryByTestId('dashboard-change')).toBeNull();
     expect(queryByTestId('dashboard-change-gap')).toBeNull();
+  });
+});
+
+describe('a number with tickets not counted', () => {
+  function drill(value: object) {
+    const state = {
+      target: { widget: 'stuck' },
+      page: 0,
+      loading: false,
+      error: null,
+      answer: { title: 'Stuck', value, unit: 'tickets', estimates: 'points', count: 0, counted: 0, page: 0, pages: 1, rows: [], at: 0 },
+    } as unknown as DrillState;
+    return render(DashboardDrill, { props: { drill: state, onPage: vi.fn(), onTicket: vi.fn(), onClose: vi.fn() } });
+  }
+
+  it('reads in the same words on the tile, a cell\'s tip, the list and the drill', () => {
+    const n = { v: 3, nc: 2 };
+    const tile = draw(view({ id: 'stuck', unit: 'tickets', now: true }), { id: 'stuck', value: n } as unknown as WidgetValue);
+    expect(tile.getByTestId('dashboard-number-value').textContent).toBe('3');
+    expect(tile.getByTestId('dashboard-number-not-counted').textContent).toBe('2 not counted');
+    expect(tile.getByTestId('dashboard-number').getAttribute('aria-label')).toBe('Usual pace: 3 tickets, 2 not counted. Show its tickets');
+    tile.unmount();
+
+    const table = draw(view({ id: 'carrying', form: 'table', unit: 'tickets', bucket: 'person', series: ['To do'] }), {
+      id: 'carrying', series: ['To do'], buckets: [{ key: 'acct-1', label: 'User 1', cells: [n], total: n }],
+    } as unknown as WidgetValue);
+    expect(table.getByTestId('dashboard-cell').getAttribute('title')).toBe('User 1, To do: 3 tickets, 2 not counted');
+    table.unmount();
+
+    const list = draw(view({ id: 'stuck_list', form: 'list', unit: 'tickets', now: true }), { id: 'stuck_list', tickets: [], not_counted: 2 } as unknown as WidgetValue);
+    expect(list.getByTestId('dashboard-not-counted').textContent).toBe('2 not counted');
+    list.unmount();
+
+    const d = drill(n);
+    expect(d.getByTestId('dashboard-drill-value').textContent).toBe('3 tickets');
+    expect(d.getByTestId('dashboard-drill-value-not-counted').textContent).toBe('2 not counted');
+  });
+
+  it('is not known when it counted nothing, with no change mark, on the tile and in the drill', () => {
+    const tile = draw(view({ unit: 'tickets' }), { id: 'pace', value: { nc: 2 }, previous: { v: 1 } } as unknown as WidgetValue);
+    expect(tile.getByTestId('dashboard-number-value').textContent).toBe('Not known');
+    expect(tile.getByTestId('dashboard-number-not-counted').textContent).toBe('2 not counted');
+    expect(tile.queryByTestId('dashboard-change')).toBeNull();
+    tile.unmount();
+    const d = drill({ nc: 2 });
+    expect(d.getByTestId('dashboard-drill-value').textContent).toBe('Not known');
+    expect(d.getByTestId('dashboard-drill-value-not-counted').textContent).toBe('2 not counted');
   });
 });
 

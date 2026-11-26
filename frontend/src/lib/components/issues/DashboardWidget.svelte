@@ -23,8 +23,9 @@
     changeMark,
     formatAmount,
     formatNum,
+    notCountedWords,
     numValue,
-    unitWord,
+    numWords,
     type DashboardUnit,
     type Num,
   } from '../../stores/trackerDashboardModel';
@@ -58,11 +59,7 @@
   const mark = $derived(
     view.now || !value ? null : changeMark(value.value as Num | undefined, value.previous as Num | undefined, view.good ?? '', unit, estimates, range?.previous_gap ?? ''),
   );
-  const amount = $derived.by(() => {
-    const v = numValue(value?.value as Num | undefined);
-    if (v === null) return { text: formatNum(value?.value as Num | undefined, unit, estimates), word: '' };
-    return { text: formatAmount(v, unit, estimates), word: unitWord(v, unit, estimates) };
-  });
+  const amount = $derived(numWords(value?.value as Num | undefined, unit, estimates));
 
   function pick(bucket: BucketValue, s: string): void {
     onDrill({ widget: view.id, cell: { bucket: bucket.key, series: s } });
@@ -121,9 +118,12 @@
       onclick={() => onDrill({ widget: view.id })}
     >
       <span class="flex items-baseline gap-1">
-        <span class="text-2xl font-semibold tabular-nums text-fg" data-testid="dashboard-number-value">{amount.text}</span>
+        <span class="text-2xl font-semibold tabular-nums text-fg" data-testid="dashboard-number-value">{amount.amount}</span>
         {#if amount.word}<span class="text-[0.75rem] text-fg-muted">{amount.word}</span>{/if}
       </span>
+      {#if amount.notCounted}
+        <span class="text-[0.6875rem] text-fg-muted" data-testid="dashboard-number-not-counted">{amount.notCounted}</span>
+      {/if}
       {#if mark?.kind === 'change'}
         <span
           class="inline-flex items-center gap-1 text-[0.6875rem] {mark.tone === 'good' ? 'text-success' : mark.tone === 'bad' ? 'text-error' : 'text-fg-muted'}"
@@ -176,7 +176,7 @@
                 </td>
                 {#each series as name, s (name)}
                   <td class="px-1 py-0.5 text-right">
-                    <button type="button" class="rounded px-1 tabular-nums text-fg hover:bg-surface-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" aria-label="{cellLabel(b, s)}. Show its tickets" data-testid="dashboard-cell" onclick={() => pick(b, named ? name : '')}>{numValue(b.cells[s] as Num) === null ? '–' : formatAmount(numValue(b.cells[s] as Num)!, unit, estimates)}</button>
+                    <button type="button" class="rounded px-1 tabular-nums text-fg hover:bg-surface-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" aria-label="{cellLabel(b, s)}. Show its tickets" title={cellLabel(b, s)} data-testid="dashboard-cell" onclick={() => pick(b, named ? name : '')}>{numValue(b.cells[s] as Num) === null ? '–' : formatAmount(numValue(b.cells[s] as Num)!, unit, estimates)}</button>
                   </td>
                 {/each}
                 {#if named}
@@ -215,7 +215,7 @@
         <button type="button" class="text-accent hover:underline" data-testid="dashboard-more" onclick={() => onDrill({ widget: view.id })}>{value.more} {view.form === 'list' ? 'more' : moreWord === 'more' ? 'more' : `more ${moreWord}`}</button>
       {/if}
       {#if value.not_counted}
-        <button type="button" class="text-accent hover:underline" data-testid="dashboard-not-counted" onclick={() => onDrill({ widget: view.id })}>{value.not_counted} not counted</button>
+        <button type="button" class="text-accent hover:underline" data-testid="dashboard-not-counted" onclick={() => onDrill({ widget: view.id })}>{notCountedWords(value.not_counted)}</button>
       {/if}
     </div>
   {/if}

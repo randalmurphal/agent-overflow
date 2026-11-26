@@ -178,16 +178,18 @@ type TicketRow struct {
 
 // WidgetValue is a widget's numbers, or the sentence of its failure.
 type WidgetValue struct {
-	ID         string        `json:"id"`
-	Error      string        `json:"error,omitempty"`
-	Value      *Num          `json:"value,omitempty"`
-	Previous   *Num          `json:"previous,omitempty"`
-	Trend      []Num         `json:"trend,omitempty"`
-	Series     []string      `json:"series,omitempty"`
-	Buckets    []BucketValue `json:"buckets,omitempty"`
-	Tickets    []TicketRow   `json:"tickets,omitempty"`
-	More       int           `json:"more,omitempty"`
-	NotCounted int           `json:"not_counted,omitempty"`
+	ID       string        `json:"id"`
+	Error    string        `json:"error,omitempty"`
+	Value    *Num          `json:"value,omitempty"`
+	Previous *Num          `json:"previous,omitempty"`
+	Trend    []Num         `json:"trend,omitempty"`
+	Series   []string      `json:"series,omitempty"`
+	Buckets  []BucketValue `json:"buckets,omitempty"`
+	Tickets  []TicketRow   `json:"tickets,omitempty"`
+	More     int           `json:"more,omitempty"`
+	// NotCounted is a list's tickets that its metric could not count, by
+	// the rule every number's NC follows.
+	NotCounted int `json:"not_counted,omitempty"`
 }
 
 // Answer is one evaluation of a dashboard.
@@ -687,9 +689,9 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 	case FormList:
 		rowsCopy := slices.Clone(rows)
 		sortDrill(rowsCopy, ev.keyOf)
+		out.NotCounted = notCounted(rows)
 		for _, r := range rowsCopy {
 			if !r.counted {
-				out.NotCounted++
 				continue
 			}
 			if len(out.Tickets) == maxListRows {

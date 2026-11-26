@@ -14,7 +14,7 @@
   import ErrorNotice from '../shared/ErrorNotice.svelte';
   import { captureError, type CapturedError } from '../../stores/errorReports.svelte';
   import type { DrillState } from '../../stores/trackerDashboard.svelte';
-  import { formatAmount, formatNum, unitWord, type DashboardUnit, type Num } from '../../stores/trackerDashboardModel';
+  import { formatAmount, numWords, unitWord, type DashboardUnit, type Num } from '../../stores/trackerDashboardModel';
 
   interface Props {
     drill: DrillState;
@@ -27,7 +27,7 @@
 
   const answer = $derived(drill.answer);
   const unit = $derived((answer?.unit ?? 'tickets') as DashboardUnit);
-  const valueText = $derived(answer ? formatNum(answer.value as Num, unit, answer.estimates) : '');
+  const valueWords = $derived(answer ? numWords(answer.value as Num, unit, answer.estimates) : null);
   const atFirst = $derived(drill.loading || !answer || answer.page === 0);
   const atLast = $derived(drill.loading || !answer || answer.page >= answer.pages - 1);
   // Captured once per failure, so Details and copy describe the one shown.
@@ -54,7 +54,10 @@
     {/if}
     {#if answer}
       <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-border-subtle px-5 py-3">
-        <span class="text-xl font-semibold tabular-nums text-fg" data-testid="dashboard-drill-value">{valueText}</span>
+        <span class="text-xl font-semibold tabular-nums text-fg" data-testid="dashboard-drill-value">{valueWords?.value}</span>
+        {#if valueWords?.notCounted}
+          <span class="text-[0.75rem] text-fg-muted" data-testid="dashboard-drill-value-not-counted">{valueWords.notCounted}</span>
+        {/if}
         <span class="text-[0.75rem] text-fg-muted" data-testid="dashboard-drill-count">
           {answer.count === 1 ? '1 ticket' : `${answer.count} tickets`}{answer.counted !== answer.count ? `, ${answer.counted} counted` : ''}
         </span>

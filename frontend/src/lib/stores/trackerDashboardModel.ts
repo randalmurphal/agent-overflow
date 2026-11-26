@@ -7,9 +7,12 @@
 import { formatEstimate } from '../components/issues/boardFormat';
 
 /** One number of a dashboard (trackerdash.Num, which the bindings type
- * as any for its own JSON form): a value, none ({}), or a gap. */
+ * as any for its own JSON form): a value, none ({}), not known (no `v`
+ * and `nc` tickets not counted), or a gap; `nc` beside a value is the
+ * tickets the metric could not count. */
 export interface Num {
   readonly v?: number;
+  readonly nc?: number;
   readonly gap?: boolean;
 }
 
@@ -47,14 +50,43 @@ export function unitWord(v: number, unit: DashboardUnit, estimates: string): str
   return v === 1 ? 'point' : 'points';
 }
 
-/** A number as a person reads it: "3 points", "None", or GAP_TEXT. */
-export function formatNum(n: Num | null | undefined, unit: DashboardUnit, estimates: string): string {
-  if (!n) return 'None';
-  if (n.gap) return GAP_TEXT;
+/** What a number of tickets not counted says: "3 not counted"; empty
+ * for none. */
+export function notCountedWords(nc: number | null | undefined): string {
+  return nc ? `${nc} not counted` : '';
+}
+
+/** A number's words, in the parts a tile lays out: its amount and the
+ * unit's word ("3", "points"), the two as one (`value`: "3 points",
+ * "None", "Not known" or GAP_TEXT), and its tickets not counted. */
+export interface NumWords {
+  readonly amount: string;
+  readonly word: string;
+  readonly value: string;
+  readonly notCounted: string;
+}
+
+/** The one reading of a number into words; every surface that shows a
+ * number takes its words from here. */
+export function numWords(n: Num | null | undefined, unit: DashboardUnit, estimates: string): NumWords {
+  const words = (amount: string, word = ''): NumWords => ({
+    amount,
+    word,
+    value: word ? `${amount} ${word}` : amount,
+    notCounted: n?.gap ? '' : notCountedWords(n?.nc),
+  });
+  if (!n) return words('None');
+  if (n.gap) return words(GAP_TEXT);
   const v = numValue(n);
-  if (v === null) return 'None';
-  const word = unitWord(v, unit, estimates);
-  return word ? `${formatAmount(v, unit, estimates)} ${word}` : formatAmount(v, unit, estimates);
+  if (v === null) return words(n.nc ? 'Not known' : 'None');
+  return words(formatAmount(v, unit, estimates), unitWord(v, unit, estimates));
+}
+
+/** A number as one line of words: "3 points", "3 points, 2 not counted",
+ * "Not known, 2 not counted", "None" or GAP_TEXT. */
+export function formatNum(n: Num | null | undefined, unit: DashboardUnit, estimates: string): string {
+  const w = numWords(n, unit, estimates);
+  return w.notCounted ? `${w.value}, ${w.notCounted}` : w.value;
 }
 
 /** The change of a number against the range before it. */

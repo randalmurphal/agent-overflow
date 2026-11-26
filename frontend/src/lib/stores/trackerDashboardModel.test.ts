@@ -3,7 +3,7 @@
 // and the tone by the metric's good direction.
 
 import { describe, expect, it } from 'vitest';
-import { changeMark, formatNum, GAP_TEXT, numValue } from './trackerDashboardModel';
+import { changeMark, formatNum, GAP_TEXT, numValue, numWords } from './trackerDashboardModel';
 import { band, labelEvery, valueScale } from '../components/issues/charts/chartScale';
 
 describe('a number', () => {
@@ -19,6 +19,14 @@ describe('a number', () => {
     expect(numValue({ gap: true })).toBeNull();
     expect(numValue({ v: 0 })).toBe(0);
   });
+
+  it('says what it could not count beside it, and is not known when it counted nothing', () => {
+    expect(formatNum({ v: 12, nc: 3 }, 'days', 'points')).toBe('12 days, 3 not counted');
+    expect(formatNum({ nc: 2 }, 'tickets', 'points')).toBe('Not known, 2 not counted');
+    expect(numWords({ nc: 2 }, 'tickets', 'points')).toEqual({ amount: 'Not known', word: '', value: 'Not known', notCounted: '2 not counted' });
+    expect(numWords({ v: 1, nc: 1 }, 'tickets', 'points')).toEqual({ amount: '1', word: 'ticket', value: '1 ticket', notCounted: '1 not counted' });
+    expect(numValue({ nc: 2 })).toBeNull();
+  });
 });
 
 describe('the change mark', () => {
@@ -29,6 +37,12 @@ describe('the change mark', () => {
 
   it('is none for a number without a value', () => {
     expect(changeMark({}, { v: 2 }, 'up', 'tickets', 'points', '')).toBeNull();
+  });
+
+  it('is none when either range is not known, and stands beside what was not counted', () => {
+    expect(changeMark({ nc: 2 }, { v: 2 }, 'up', 'tickets', 'points', '')).toBeNull();
+    expect(changeMark({ v: 3 }, { nc: 1 }, 'up', 'tickets', 'points', '')).toBeNull();
+    expect(changeMark({ v: 3, nc: 1 }, { v: 2 }, 'up', 'tickets', 'points', '')).toMatchObject({ kind: 'change', direction: 'up' });
   });
 
   it('says why when the range before is a gap', () => {

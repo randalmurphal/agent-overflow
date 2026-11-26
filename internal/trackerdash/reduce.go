@@ -9,15 +9,40 @@ import (
 )
 
 // Num is one number a widget shows: a value, none (nothing to reduce:
-// the median of no rows), or a gap (the mirror cannot answer: a previous
-// range it holds too few sprints for). On the wire: {"v":3}, {} or
-// {"gap":true}.
+// the median of no rows), not known (no row counted and NC rows not
+// counted), or a gap (the mirror cannot answer: a previous range it holds
+// too few sprints for). NC is the tickets the metric could not count
+// beside the value. On the wire: {"v":3}, {"v":3,"nc":2}, {}, {"nc":2}
+// or {"gap":true}.
 type Num struct {
 	V   *float64 `json:"v,omitempty"`
+	NC  int      `json:"nc,omitempty"`
 	Gap bool     `json:"gap,omitempty"`
 }
 
 func value(v float64) Num { return Num{V: &v} }
+
+// notCounted is the tickets of rows that are not counted and that no
+// counted row of rows counts.
+func notCounted(rows []contribution) int {
+	if !slices.ContainsFunc(rows, func(c contribution) bool { return !c.counted }) {
+		return 0
+	}
+	seen := map[string]bool{}
+	for _, c := range rows {
+		if c.counted {
+			seen[c.ticket] = true
+		}
+	}
+	n := 0
+	for _, c := range rows {
+		if !c.counted && !seen[c.ticket] {
+			seen[c.ticket] = true
+			n++
+		}
+	}
+	return n
+}
 
 var gapNum = Num{Gap: true}
 
@@ -31,8 +56,19 @@ func (n Num) MarshalJSON() ([]byte, error) {
 }
 
 // reduceRows is the metric's reduction of rows within one cell: a bar, a
-// table cell or a period. A sum of periods is a sum within one.
+// table cell or a period, with the tickets it could not count. A sum of
+// periods is a sum within one. When no row is counted and some are not,
+// the number is not known: a zero would say what the rows do not.
 func reduceRows(r Reducer, rows []contribution) Num {
+	n := reduceCounted(r, rows)
+	n.NC = notCounted(rows)
+	if n.NC > 0 && !slices.ContainsFunc(rows, func(c contribution) bool { return c.counted }) {
+		n.V = nil
+	}
+	return n
+}
+
+func reduceCounted(r Reducer, rows []contribution) Num {
 	var values []float64
 	tickets := map[string]bool{}
 	for _, c := range rows {
@@ -74,25 +110,22 @@ func reduceRows(r Reducer, rows []contribution) Num {
 }
 
 // reduceRange is the metric's number over a range's periods. An average
-// of period sums averages over the periods, a period with no rows as
-// zero; any other reducer reduces the range's rows as one. A range of no
-// periods has none.
+// of period sums averages over the periods, a period with no counted rows
+// as zero; any other reducer reduces the range's rows as one. A range of
+// no periods has none.
 func reduceRange(r Reducer, periods []period, placed map[string][]contribution) Num {
+	if len(periods) == 0 {
+		return Num{}
+	}
 	var rows []contribution
-	sums := 0.0
 	for _, p := range periods {
 		rows = append(rows, placed[p.id]...)
-		if r == ReduceAverageOfPeriodSums {
-			sums += *reduceRows(ReduceSum, placed[p.id]).V
-		}
 	}
-	switch {
-	case len(periods) == 0:
-		return Num{}
-	case r == ReduceAverageOfPeriodSums:
-		return value(sums / float64(len(periods)))
+	n := reduceRows(r, rows)
+	if r == ReduceAverageOfPeriodSums && n.V != nil {
+		*n.V /= float64(len(periods))
 	}
-	return reduceRows(r, rows)
+	return n
 }
 
 // place sorts a period-bound metric's rows into the periods of cur and

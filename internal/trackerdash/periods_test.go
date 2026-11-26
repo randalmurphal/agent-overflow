@@ -101,14 +101,18 @@ func TestWorkingDaysLeaveOutTheWeekend(t *testing.T) {
 
 // The reducers: count is distinct counted tickets, sum is zero for no
 // rows, median and average are none, and an average of period sums is
-// the mean over the range's periods, an empty one as zero.
+// the mean over the range's periods, an empty one as zero. Each number
+// carries the tickets it could not count, a ticket another of its rows
+// counts not among them; with none counted and some not, the number is
+// not known rather than zero.
 func TestReducers(t *testing.T) {
 	t.Parallel()
 	rows := []contribution{
 		{ticket: "a", value: 1, counted: true}, {ticket: "a", value: 3, counted: true},
 		{ticket: "b", value: 10, counted: true}, {ticket: "c", counted: false},
+		{ticket: "c", counted: false}, {ticket: "b", counted: false},
 	}
-	for r, want := range map[Reducer]string{ReduceCount: "2", ReduceSum: "14", ReduceMedian: "3", ReduceAverage: "4.666666666666667", ReduceAverageOfPeriodSums: "14"} {
+	for r, want := range map[Reducer]string{ReduceCount: "2, 1 not counted", ReduceSum: "14, 1 not counted", ReduceMedian: "3, 1 not counted", ReduceAverage: "4.666666666666667, 1 not counted", ReduceAverageOfPeriodSums: "14, 1 not counted"} {
 		got := reduceRows(r, rows)
 		if num(&got) != want {
 			t.Errorf("%s = %s; want %s", r, num(&got), want)
@@ -124,8 +128,16 @@ func TestReducers(t *testing.T) {
 			t.Errorf("%s of nothing = %s; want %s", r, num(&got), want)
 		}
 	}
+	for _, r := range []Reducer{ReduceCount, ReduceSum, ReduceMedian, ReduceAverage, ReduceAverageOfPeriodSums} {
+		if got := reduceRows(r, rows[3:5]); num(&got) != "not known, 1 not counted" {
+			t.Errorf("%s of one ticket not counted = %s; want not known", r, num(&got))
+		}
+	}
 	periods := []period{{id: "1"}, {id: "2"}, {id: "4"}}
 	placed := map[string][]contribution{"1": rows[:2], "4": rows[2:3], "3": {{ticket: "z", value: 100, counted: true}}}
+	if got := reduceRange(ReduceAverageOfPeriodSums, periods, map[string][]contribution{"2": rows[3:5]}); num(&got) != "not known, 1 not counted" {
+		t.Errorf("average of period sums with nothing counted = %s; want not known", num(&got))
+	}
 	if got := reduceRange(ReduceAverageOfPeriodSums, periods, placed); num(&got) != "4.666666666666667" {
 		t.Errorf("average of period sums = %s; want (4 + 0 + 10) / 3, period 3 outside the range", num(&got))
 	}

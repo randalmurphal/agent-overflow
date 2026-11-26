@@ -64,7 +64,7 @@ func TestEvaluateCountsTheBuiltInDashboard(t *testing.T) {
 		t.Fatalf("finished bars = %v", totals)
 	}
 	stuck := widgetOf(t, a, "stuck")
-	if num(stuck.Value) != "1" {
+	if num(stuck.Value) != "1, 1 not counted" {
 		t.Fatalf("stuck = %s; want WEB-3 alone (WEB-4's time in its status is unknown, WEB-5 moved a day ago)", num(stuck.Value))
 	}
 	list := widgetOf(t, a, "stuck_list")
@@ -101,6 +101,30 @@ func TestEvaluateCountsTheBuiltInDashboard(t *testing.T) {
 	}
 	if _, err := json.Marshal(a); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A number with nothing counted and a ticket not counted is not known,
+// not zero, on the tile and in its drill: the board's only ticket in
+// progress has no known time in its status.
+func TestANumberOfNothingCountedIsNotKnown(t *testing.T) {
+	t.Parallel()
+	f := sprintBoard()
+	f.ticket(ticket{id: "t4", key: "WEB-4", status: "3", group: "in_progress", assignee: "u2", points: "1", created: ago(20)})
+	a := mustEvaluate(t, evaluator(), f.board(), utcSprints3)
+	stuck := widgetOf(t, a, "stuck")
+	if num(stuck.Value) != "not known, 1 not counted" {
+		t.Fatalf("stuck = %s; want not known, WEB-4 not counted", num(stuck.Value))
+	}
+	if b, err := json.Marshal(stuck.Value); err != nil || string(b) != `{"nc":1}` {
+		t.Fatalf("stuck on the wire = %s, %v", b, err)
+	}
+	d, err := evaluator().Drill(context.Background(), f.board(), DrillRequest{Request: utcSprints3, Widget: "stuck"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if num(&d.Value) != "not known, 1 not counted" {
+		t.Fatalf("stuck's drill = %s; want the tile's number", num(&d.Value))
 	}
 }
 

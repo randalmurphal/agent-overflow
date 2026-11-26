@@ -459,9 +459,11 @@ export class Name {
 
 /**
  * Num is one number a widget shows: a value, none (nothing to reduce:
- * the median of no rows), or a gap (the mirror cannot answer: a previous
- * range it holds too few sprints for). On the wire: {"v":3}, {} or
- * {"gap":true}.
+ * the median of no rows), not known (no row counted and NC rows not
+ * counted), or a gap (the mirror cannot answer: a previous range it holds
+ * too few sprints for). NC is the tickets the metric could not count
+ * beside the value. On the wire: {"v":3}, {"v":3,"nc":2}, {}, {"nc":2}
+ * or {"gap":true}.
  */
 export type Num = any;
 
@@ -680,6 +682,11 @@ export class WidgetValue {
     "buckets"?: BucketValue[];
     "tickets"?: TicketRow[];
     "more"?: number;
+
+    /**
+     * NotCounted is a list's tickets that its metric could not count, by
+     * the rule every number's NC follows.
+     */
     "not_counted"?: number;
 
     /** Creates a new WidgetValue instance. */

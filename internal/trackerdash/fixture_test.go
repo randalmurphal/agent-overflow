@@ -152,8 +152,12 @@ func num(n *Num) string {
 		return "absent"
 	case n.Gap:
 		return "gap"
+	case n.V == nil && n.NC > 0:
+		return fmt.Sprintf("not known, %d not counted", n.NC)
 	case n.V == nil:
 		return "none"
+	case n.NC > 0:
+		return fmt.Sprintf("%g, %d not counted", *n.V, n.NC)
 	}
 	return fmt.Sprintf("%g", *n.V)
 }
