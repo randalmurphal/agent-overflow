@@ -8,7 +8,7 @@
   // setup and statuses are the setup store's (stores/trackerSetup), read
   // while this page shows them and again when the setup changes as stored
   // or the page is shown again.
-  import { onMount, untrack } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import type { SiteStatuses, StatusView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { isLoaded } from '../../stores/projects.svelte';
@@ -69,20 +69,24 @@
         ? "This device may not change a project's status groups on this computer."
         : (grantBlockedTitle(operateGrant) ?? ''),
   );
-  // A change is built only from the stored setup, one save at a time.
-  let locked = $derived(operateReason !== '' || !setup?.current || setup.saving);
+  // A control is never disabled for a save or a read in flight, which
+  // would take the keyboard's focus from it: the store builds each change
+  // from the stored setup, reading it first when it must, and refuses a
+  // second save while one runs, which the page says.
+  let locked = $derived(operateReason !== '');
 
   // What the last save said, for the project it was made for: the
-  // computer's refusal or failure. Bumped `attempt` redraws the selects
-  // from what is stored after every save.
+  // computer's refusal or failure.
   let saveNote = $state<{ kind: 'refused'; text: string } | { kind: 'failed'; error: unknown } | null>(null);
-  let attempt = $state(0);
   $effect(() => {
     void selectedId;
     saveNote = null;
   });
 
-  async function setGroup(site: SiteStatuses, status: string, group: StatusGroup | null): Promise<void> {
+  /** Saves the group `control` picked, then shows in it what is stored:
+   * a refused or failed pick leaves the stored setup unchanged, so no
+   * value of the page moves to set the control back. */
+  async function setGroup(control: HTMLSelectElement | null, site: SiteStatuses, status: string, group: StatusGroup | null): Promise<void> {
     const project = selectedId;
     saveNote = null;
     try {
@@ -91,8 +95,17 @@
     } catch (err) {
       if (project === selectedId) saveNote = { kind: 'failed', error: err };
     } finally {
-      attempt++;
+      await tick();
+      if (control?.isConnected && project === selectedId) control.value = shownGroup(site, status);
     }
+  }
+
+  /** The value a status's select shows: the group the setup puts it in,
+   * or '' (the tracker's) when it puts it in none or in the tracker's. */
+  function shownGroup(site: SiteStatuses, status: string): string {
+    const stored = storedGroup(site, status);
+    const own = site.statuses.find((st) => st.id === status)?.group || undefined;
+    return stored !== undefined && stored !== own ? stored : '';
   }
 
   /** The group the setup puts `status` of `site` in; undefined for none. */
@@ -181,47 +194,45 @@
             This project lists no boards. Add one in Boards to set how its statuses count.
           </p>
         {:else}
-          {#key `${setup.view.revision}\u0000${attempt}`}
-            {#each statuses.sites as site (`${site.tracker}\u0000${site.site}`)}
-              <section class="flex flex-col gap-2" data-testid="tracker-status-site" data-site={site.site}>
-                <p class="text-[0.75rem] font-medium text-fg-muted">{siteName(site)}</p>
-                {#if site.statuses.length > 0}
-                  <ul class="flex flex-col gap-2">
-                    {#each site.statuses as status (status.id)}
-                      {@render statusRow(site, status)}
-                    {/each}
-                  </ul>
-                {/if}
-                {#each site.unread ?? [] as board (board.board)}
-                  <div class="flex flex-wrap items-center gap-2" data-testid="tracker-status-unread">
-                    <p class="text-[0.75rem] text-fg-muted">
-                      {board.name || `Board ${board.board}`} has not been read on this computer yet. Open it once in the Issues pane to list its statuses.
-                    </p>
-                    <button type="button" class={GHOST_BUTTON_CLASS} onclick={() => void refreshTrackerStatuses(selectedId)} data-testid="tracker-status-unread-retry">Check again</button>
-                  </div>
-                {/each}
-                {#if (site.elsewhere?.length ?? 0) > 0}
-                  <p class="text-[0.75rem] text-fg-muted">Regrouped, and on none of the project's boards now:</p>
-                  <ul class="flex flex-col gap-2">
-                    {#each site.elsewhere ?? [] as status (status.id)}
-                      <li class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1" data-testid="tracker-status-elsewhere" data-status={status.id}>
-                        <span class="min-w-0 truncate text-[0.8125rem] text-fg">{status.name || status.id}</span>
-                        <span class="text-[0.71875rem] text-fg-hint">{groupName(storedGroup(site, status.id))}</span>
-                        <button
-                          type="button"
-                          class={GHOST_BUTTON_CLASS}
-                          disabled={locked}
-                          title={operateReason || undefined}
-                          onclick={() => void setGroup(site, status.id, null)}
-                          data-testid="tracker-status-put-back"
-                        >Put back</button>
-                      </li>
-                    {/each}
-                  </ul>
-                {/if}
-              </section>
-            {/each}
-          {/key}
+          {#each statuses.sites as site (`${site.tracker}\u0000${site.site}`)}
+            <section class="flex flex-col gap-2" data-testid="tracker-status-site" data-site={site.site}>
+              <p class="text-[0.75rem] font-medium text-fg-muted">{siteName(site)}</p>
+              {#if site.statuses.length > 0}
+                <ul class="flex flex-col gap-2">
+                  {#each site.statuses as status (status.id)}
+                    {@render statusRow(site, status)}
+                  {/each}
+                </ul>
+              {/if}
+              {#each site.unread ?? [] as board (board.board)}
+                <div class="flex flex-wrap items-center gap-2" data-testid="tracker-status-unread">
+                  <p class="text-[0.75rem] text-fg-muted">
+                    {board.name || `Board ${board.board}`} has not been read on this computer yet. Open it once in the Issues pane to list its statuses.
+                  </p>
+                  <button type="button" class={GHOST_BUTTON_CLASS} onclick={() => void refreshTrackerStatuses(selectedId)} data-testid="tracker-status-unread-retry">Check again</button>
+                </div>
+              {/each}
+              {#if (site.elsewhere?.length ?? 0) > 0}
+                <p class="text-[0.75rem] text-fg-muted">Regrouped, and on none of the project's boards now:</p>
+                <ul class="flex flex-col gap-2">
+                  {#each site.elsewhere ?? [] as status (status.id)}
+                    <li class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1" data-testid="tracker-status-elsewhere" data-status={status.id}>
+                      <span class="min-w-0 truncate text-[0.8125rem] text-fg">{status.name || status.id}</span>
+                      <span class="text-[0.71875rem] text-fg-hint">{groupName(storedGroup(site, status.id))}</span>
+                      <button
+                        type="button"
+                        class={GHOST_BUTTON_CLASS}
+                        disabled={locked}
+                        title={operateReason || undefined}
+                        onclick={() => void setGroup(null, site, status.id, null)}
+                        data-testid="tracker-status-put-back"
+                      >Put back</button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </section>
+          {/each}
         {/if}
         {#if saveNote}
           <p class="text-[0.75rem] text-error" role="alert" data-testid="settings-tracker-statuses-save-note">
@@ -234,9 +245,9 @@
 </div>
 
 {#snippet statusRow(site: SiteStatuses, status: StatusView)}
-  {@const stored = storedGroup(site, status.id)}
+  {@const shown = shownGroup(site, status.id)}
   {@const own = status.group || undefined}
-  {@const changed = stored !== undefined && stored !== own}
+  {@const changed = shown !== ''}
   {@const tracker = trackerKindName(site.tracker)}
   <li class="flex min-w-0 gap-x-3 gap-y-1 {compact ? 'flex-col' : 'flex-wrap items-center'}" data-testid="tracker-status-row" data-status={status.id}>
     <div class="flex min-w-0 flex-1 flex-col">
@@ -249,12 +260,12 @@
     <select
       class={SELECT_CLASS}
       aria-label="Group of {status.name || status.id}"
-      value={changed ? stored : ''}
+      value={shown}
       disabled={locked}
       title={operateReason || undefined}
       onchange={(e) => {
-        const value = (e.target as HTMLSelectElement).value;
-        void setGroup(site, status.id, value === '' ? null : (value as StatusGroup));
+        const control = e.currentTarget as HTMLSelectElement;
+        void setGroup(control, site, status.id, control.value === '' ? null : (control.value as StatusGroup));
       }}
       data-testid="tracker-status-group"
     >

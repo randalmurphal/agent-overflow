@@ -116,7 +116,7 @@ describe('<TrackerStatusesSettings>', () => {
     await fireEvent.change(groupOf('10001'), { target: { value: 'done' } });
     const note = await screen.findByTestId('settings-tracker-statuses-save-note');
     expect(note.textContent?.trim()).toBe("This change was not saved: the project's tracker setup changed after it was read; it is shown as it is now. Make the change again.");
-    expect(groupOf('10001').value, 'the pick is not shown as made').toBe('');
+    await waitFor(() => expect(groupOf('10001').value, 'the pick is not shown as made').toBe(''));
     expect(groupOf('10002').value).toBe('canceled');
     expect(within(row('10002')).queryByTestId('tracker-status-changed')).not.toBeNull();
   });
