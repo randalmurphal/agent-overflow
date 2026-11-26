@@ -4,7 +4,7 @@
      Source: frontend/src/lib/theme/tokenRegistry.ts + the app stylesheets.
      Regenerate: cd frontend && node scripts/generate-theme-reference.mjs -->
 
-Every color this app paints, and the name a theme file calls it by. 88 tokens: 49 in `colors`, 21 in `syntax`, 16 in `ansi`, 2 in `code`.
+Every color this app paints, and the name a theme file calls it by. 91 tokens: 52 in `colors`, 21 in `syntax`, 16 in `ansi`, 2 in `code`.
 
 ## Where theme files live
 
@@ -138,6 +138,9 @@ whatever base the mode has).
 | `error` | Failure status: errors, removed lines, refusals. | `oklch(0.63 0.2 25)` | `oklch(0.5 0.18 27)` |
 | `warning` | Attention status: a human is blocked (approvals, pending input). | `oklch(0.75 0.15 75)` | `oklch(0.6 0.16 78)` |
 | `provider-codex` | Codex provider identity. Brand-locked by default. | `oklch(0.72 0.15 55)` | `oklch(0.58 0.16 55)` |
+| `chart-series-1` | A chart's first series. One value for both modes by default. | `#3987e5` | — |
+| `chart-series-2` | A chart's second series. One value for both modes by default. | `#d95926` | — |
+| `chart-series-3` | A chart's third series. One value for both modes by default. | `#199e70` | — |
 | `provider-claude` | Claude provider identity. Brand-locked by default, with no separate light value. | `#d97757` | — |
 | `provider-claude-tui` | claude-tui provider identity: the phosphor green of a CRT terminal. | `oklch(0.82 0.2 145)` | `oklch(0.55 0.16 145)` |
 | `provider-agy` | Antigravity provider identity. | `oklch(0.72 0.16 255)` | `oklch(0.52 0.17 255)` |

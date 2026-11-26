@@ -415,6 +415,12 @@ func (s *Service) boardTick(p *boardPump, refresh bool, u Urgency) tickResult {
 		return res
 	}
 	if recorded != nil {
+		// Every subscriber of a board is told once when its first reconcile
+		// is recorded, whether or not a row changed: until then a dashboard
+		// says the board's first read has not finished.
+		if p.sync.ReconciledAt == 0 && recorded.ReconciledAt != 0 {
+			p.pending.due = true
+		}
 		p.sync = *recorded
 	}
 	switch {

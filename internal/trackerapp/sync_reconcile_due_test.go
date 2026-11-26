@@ -153,3 +153,36 @@ func TestARefreshsReconcileWaitingOnTheWalkRunsAtTheNextTick(t *testing.T) {
 		t.Fatalf("20001's rows %+v, %v after %d listings; want the board listed by the next tick", rows, err, m.p.count("BoardIssues"))
 	}
 }
+
+// A board's subscribers are told once when its first reconcile is
+// recorded, though the reconcile changed no row and cleared no failure:
+// the delta stored the board's one row, and the pump's tick reconciles
+// what it already holds. A later reconcile, which changes nothing, tells
+// nothing.
+func TestTheFirstReconcileIsToldThoughNoRowChanged(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	board := []tracker.Row{row("10001", 1_799_000_000_000, "a")}
+	m.p.changedRows = pagedDelta(t, board)
+	m.p.boardIssues = listing(true, "10001")
+	m.p.boardRows = boardOf(board...)
+	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+	if st := m.sync(testBoard); st.ReadAt == 0 || st.ReconciledAt != 0 {
+		t.Fatalf("after the delta: %+v; want the board read and never reconciled", st)
+	}
+	p := idlePump(m)
+	before := len(boardEventsOf(m, m.scope()))
+	if res := m.svc.boardTick(p, false, Background); res.failed || res.more || m.sync(testBoard).ReconciledAt == 0 {
+		t.Fatalf("the tick %+v; reconciled at %d", res, m.sync(testBoard).ReconciledAt)
+	}
+	told := boardEventsOf(m, m.scope())[before:]
+	if len(told) != 1 || told[0].Sync.ReconciledAt == 0 || len(told[0].Changed) != 0 || len(told[0].Removed) != 0 {
+		t.Fatalf("the first reconcile told %+v; want one event that carries the reconcile and names no row", told)
+	}
+	if res := m.svc.boardTick(p, true, Interactive); res.failed || res.more {
+		t.Fatalf("the refresh %+v", res)
+	}
+	if again := boardEventsOf(m, m.scope())[before+1:]; len(again) != 0 {
+		t.Fatalf("a reconcile that changed nothing told %+v; want nothing", again)
+	}
+}

@@ -97,7 +97,8 @@ client contract it answers is
   refuses two tenants sharing one. `SetToken` rotates a credential.
 - A fault matches by origin and route name (`Request.Route`: `"GET
   rest/api/3/issue/{issue}"`, `"GET 4/worklogs/{id}"`, or a Linear
-  operation name). Faults apply after the credential and route checks.
+  operation name), and on Jira and Tempo by query parameters too
+  (`Fault.Query`). Faults apply after the credential and route checks.
 - `Reset`, `Close` and a `Seed` that replaces a tenant end the world
   through `endWorld`: every held request ends with its connection
   closed and nothing applied, including one a release already let go,

@@ -133,6 +133,14 @@ export interface TrackerBoardState {
   /** A full or patch read of this computer's copy that failed, until one
    * succeeds. */
   readonly readError: unknown;
+  /** The subscription's handle, which the board's other reads name (a
+   * dashboard's); empty until the subscribe answers. */
+  readonly subscription: string;
+  /** How many times the board changed since the subscribe answered: an
+   * event that named rows, said to read again or told the board's first
+   * reconcile, or a gap. A surface that reads the board its own way (a
+   * dashboard) reads again when it moves. */
+  readonly changes: number;
 }
 
 interface Live {
@@ -170,6 +178,9 @@ interface Live {
   settled: Array<() => void>;
   /** A full or patch read is out. */
   reading: boolean;
+  /** A sync told has carried the board's reconcile: its first read has
+   * finished. */
+  reconciled: boolean;
 }
 
 /** Event IDs past which a patch is not read (trackerapp maxEventIssues). */
@@ -180,7 +191,7 @@ const NO_SECTION_ERRORS: ReadonlyMap<string, unknown> = new Map();
 
 const FIRST_STATE: TrackerBoardState = {
   held: null, failure: null, readAt: 0, ended: false, paging: NO_SECTIONS, sectionErrors: NO_SECTION_ERRORS,
-  refreshing: false, refreshNotice: null, readError: null,
+  refreshing: false, refreshNotice: null, readError: null, subscription: '', changes: 0,
 };
 
 // The subscribe refusals that hold until the board's lists change: the
@@ -246,7 +257,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
     key, ref, id: '', seq: 0, joining: [], apply, aborted: false,
     state: FIRST_STATE,
     pending: new Set(), readAgain: false, retryHeld: false, wantPage: new Set(), staleAt: -1,
-    intern: createRowInterner(), running: null, voted: visibleOf(key), settled: [], reading: false,
+    intern: createRowInterner(), running: null, voted: visibleOf(key), settled: [], reading: false, reconciled: false,
   };
   lives.set(key, live);
   signal.addEventListener('abort', () => {
@@ -279,12 +290,14 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
   const view = answer.view ?? null;
   live.id = id;
   live.seq = answer.seq;
+  live.reconciled = Boolean(view?.sync.reconciled_at);
   const held = view ? heldFromView(view, live.intern, planning(key)) : null;
   live.state = {
     ...live.state,
     held,
     failure: answer.failure ?? null,
     readAt: view?.sync.read_at ?? 0,
+    subscription: id,
   };
   const early = live.joining ?? [];
   live.joining = null;
@@ -310,6 +323,12 @@ function fold(live: Live, event: TrackerBoardEvent): void {
   if (event.sync) {
     next.failure = event.sync.failure ?? null;
     if (event.sync.read_at) next.readAt = event.sync.read_at;
+    // The board's first read finished: a dashboard that said it had not
+    // reads again, though the frame may name no row.
+    if (event.sync.reconciled_at && !live.reconciled) {
+      live.reconciled = true;
+      next.changes = live.state.changes + 1;
+    }
   }
   if (event.ended) {
     next.ended = true;
@@ -322,6 +341,7 @@ function fold(live: Live, event: TrackerBoardEvent): void {
   }
   const ids = [...(event.changed ?? []), ...(event.removed ?? [])];
   if (event.read_again || event.truncated) live.readAgain = true;
+  if (ids.length > 0 || event.read_again || event.truncated) next.changes = live.state.changes + 1;
   releaseRetries(live, next);
   for (const id of ids) live.pending.add(id);
   if (live.pending.size > MAX_PATCH_IDS) {
@@ -355,7 +375,7 @@ function resyncTrackerBoardsAfterGap(backend: BackendKey): Promise<void> | undef
   for (const live of lives.values()) {
     if (live.ref.backend !== backend || !live.id || live.state.ended) continue;
     live.readAgain = true;
-    const next: StateChange = {};
+    const next: StateChange = { changes: live.state.changes + 1 };
     releaseRetries(live, next);
     update(live, next);
     runs.push(drain(live));

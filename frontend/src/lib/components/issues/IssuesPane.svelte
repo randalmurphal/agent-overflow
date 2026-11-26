@@ -22,17 +22,27 @@
     backlogScreen ??= import('./BacklogScreen.svelte');
     return backlogScreen;
   }
+
+  // The Dashboards screen loads on its first switch to Dashboards, once per page.
+  let dashboardScreen: Promise<typeof import('./DashboardScreen.svelte')> | null = null;
+  function loadDashboardScreen(): Promise<typeof import('./DashboardScreen.svelte')> {
+    dashboardScreen ??= import('./DashboardScreen.svelte');
+    return dashboardScreen;
+  }
 </script>
 
 <script lang="ts">
   // The Issues tool pane (docs/specs/issues.md, "Pane", "Board", "Backlog
   // and sprint planning" and "Time"): one app-wide pane over every
   // project's boards on every attached computer. The header holds the
-  // board picker, the screens (Board, Backlog and Time, folded into one
-  // picker in a narrow pane and under compact), and on the Board and the
-  // Backlog Only mine, Display and Search, and Refresh; under compact Only
-  // mine moves into the Display menu. Backlog (BacklogScreen, loaded on the
-  // first switch to it) shows the same board's sprints and backlog. Time shows the
+  // board picker, the screens (Board, Backlog, Dashboards and Time, folded
+  // into one picker in a narrow pane and under compact), and on the Board
+  // and the Backlog Only mine, Display and Search, and Refresh; under
+  // compact Only mine moves into the Display menu. Backlog (BacklogScreen,
+  // loaded on the first switch to it) shows the same board's sprints and
+  // backlog. Dashboards (DashboardScreen, loaded likewise) counts the
+  // board's copy; the board's subscription stays voted shown under it, so
+  // the copy keeps syncing, and Refresh reads the board and counts again. Time shows the
   // person's logged time on the board's connection (TimeScreen, loaded on
   // the first switch to it); while it shows, the board is not mounted and
   // its subscription is voted hidden, and Refresh reads the week. Notices
@@ -131,6 +141,7 @@
   const splits: Record<IssuesScreen, SplitWidth> = {
     board: new SplitWidth('issuesTicketSplit:board', TICKET_SPLIT),
     backlog: new SplitWidth('issuesTicketSplit:backlog', TICKET_SPLIT),
+    dashboards: new SplitWidth('issuesTicketSplit:dashboards', TICKET_SPLIT),
     time: new SplitWidth('issuesTicketSplit:time', TICKET_SPLIT),
   };
   function measure(width: number): void {
@@ -145,6 +156,9 @@
   // The Time screen open now, for Refresh, and whether its refresh is out.
   let timeView: { refresh(): void } | undefined = $state();
   let timeRefreshing = $state(false);
+  // The Dashboards screen open now, for Refresh, and whether it is counting.
+  let dashboardView: { refresh(): void } | undefined = $state();
+  let dashboardCounting = $state(false);
   // A ticket another surface asked for (a thread's link) opens here.
   $effect(() => {
     if (!ticketOpenRequested()) return;
@@ -333,12 +347,22 @@
   const endedTarget = $derived(boardState?.ended && board ? boardsSettingsFor(board.projectId, board.backend) : null);
 
   function refresh(): void {
-    if (screen === 'time') timeView?.refresh();
-    else if (attachment && board) {
+    if (screen === 'time') {
+      timeView?.refresh();
+      return;
+    }
+    if (attachment && board) {
       void refreshTrackerBoard(attachment.key);
       refreshFormReads(board.backend, board.connection);
     }
+    if (screen === 'dashboards') dashboardView?.refresh();
   }
+
+  // The board a dashboard counts: its subscription once the subscribe
+  // answered, and how many times the board changed since.
+  const dashboardSource = $derived(
+    board && boardState?.subscription ? { backend: board.backend, subscription: boardState.subscription, changes: boardState.changes } : null,
+  );
 
   // The board's listing: its connection's kind, whether it may be opened.
   // The board's tracker, jira or linear; empty until a listing names it.
@@ -392,6 +416,10 @@
         <PaneHeaderIconButton label="Refresh the board" testId="issues-refresh" disabled={!boardState || boardState.ended} onclick={refresh}>
           <Icon icon={RefreshCw} size={13} strokeWidth={1.75} class={boardState?.refreshing ? 'animate-spin' : ''} />
         </PaneHeaderIconButton>
+      {:else if screen === 'dashboards'}
+        <PaneHeaderIconButton label="Refresh the dashboard" testId="issues-refresh" disabled={!boardState || boardState.ended} onclick={refresh}>
+          <Icon icon={RefreshCw} size={13} strokeWidth={1.75} class={boardState?.refreshing || dashboardCounting ? 'animate-spin' : ''} />
+        </PaneHeaderIconButton>
       {:else}
         <PaneHeaderIconButton label="Refresh the week" testId="issues-refresh" disabled={!timeView} onclick={refresh}>
           <Icon icon={RefreshCw} size={13} strokeWidth={1.75} class={timeRefreshing ? 'animate-spin' : ''} />
@@ -411,7 +439,7 @@
       />
     {/if}
   {/each}
-  {#if !boardCovered && showsBoard(screen)}
+  {#if !boardCovered && (showsBoard(screen) || screen === 'dashboards')}
   {#if attachment?.error}
     <p class="border-b border-error/30 bg-error/10 px-3 py-1.5 text-xs text-error" role="alert" data-testid="issues-subscribe-error">Could not open this board: {attachment.error}</p>
   {/if}
@@ -456,7 +484,7 @@
   {#if board && boardOffline && !boardState?.ended}
     <p class="border-b border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg-muted" role="status" data-testid="issues-board-offline">{computerName(board.backend)} is not connected. The board shows when it connects.</p>
   {/if}
-  {#if onlyMine && boardComputerAnswered && !me}
+  {#if showsBoard(screen) && onlyMine && boardComputerAnswered && !me}
     <p class="border-b border-border-subtle px-3 py-1.5 text-xs text-fg-muted" data-testid="issues-only-mine-unknown">Only mine shows every card: the app does not know which account is yours on this board's connection.</p>
   {/if}
   {/if}
@@ -472,7 +500,7 @@
     data-testid="issues-board-region"
     data-screen={screen}
   >
-    <RenderBoundary label={screen === 'time' ? 'Time' : screen === 'backlog' ? 'The backlog' : 'The board'} testId="issues-board-render-error">
+    <RenderBoundary label={screen === 'time' ? 'Time' : screen === 'backlog' ? 'The backlog' : screen === 'dashboards' ? 'The dashboard' : 'The board'} testId="issues-board-render-error">
       {#if !board}
         <div class="flex flex-col items-start gap-2 px-4 py-6 text-sm text-fg-muted" data-testid="issues-empty">
           {#if pending}
@@ -557,7 +585,24 @@
         {:catch err}
           <p class="px-4 py-6 text-sm text-error" role="alert" data-testid="backlog-load-error">The Backlog screen could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</p>
         {/await}
-      {:else if held && attachment}
+      {:else if held && dashboardSource && screen === 'dashboards'}
+        {@const dashboardBoard = board}
+        {#await loadDashboardScreen()}
+          <p class="px-4 py-6 text-sm text-fg-muted" data-testid="dashboard-loading">Opening the dashboard…</p>
+        {:then mod}
+          <mod.default
+            bind:this={dashboardView}
+            bind:counting={dashboardCounting}
+            source={dashboardSource}
+            shown={selection.dashboardsShown}
+            {compact}
+            computerName={computerName(dashboardBoard.backend)}
+            onOpenTicket={(row) => selection.openTicket(row.id, { key: row.key, title: row.title, card: null }, 'list')}
+          />
+        {:catch err}
+          <p class="px-4 py-6 text-sm text-error" role="alert" data-testid="dashboard-load-error">The Dashboards screen could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</p>
+        {/await}
+      {:else if held && attachment && screen !== 'dashboards'}
         <BoardScreen
           boardKey={attachment.key}
           boardRef={board}

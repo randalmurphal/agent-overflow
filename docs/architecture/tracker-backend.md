@@ -22,6 +22,7 @@ mirror, sync, the application service and what agent tools need from it.
 | `internal/store` | The tracker tables and their accessors. |
 | `internal/app` (`app_tracker*.go`) | Bound methods and wire DTOs that call `trackerapp`. No tracker state. |
 | `internal/trackertools` | The agent tool contract, served through `internal/threadmcp`. |
+| `internal/trackerdash` | A board's dashboards: the metric contract, the sandboxed evaluation over the board's export, the reductions, ranges and drills, and the built-in dashboard ([Dashboards](#dashboards)). |
 | `internal/harness/trackerfake` | Stateful Jira, Tempo and Linear fakes for app tests, the harness and browser tests. |
 
 Imports point one way: `trackerapp` imports `tracker`, the two provider
@@ -2057,6 +2058,125 @@ delete is refused and the links the delete read are the ones it ends.
   (`ErrSetupNewer`), whatever its name, so Save as defaults over a newer
   `start_work` saves nothing.
 
+## Dashboards
+
+A dashboard counts one board from the computer's copy of it. Each call
+(`TrackerDashboards`, `EvaluateTrackerDashboard`,
+`TrackerDashboardDrill`) names the board's subscription, so a dashboard
+reads the board its pane shows, with the project's status groups and
+the connection's verified account (`trackerapp/dashboards.go`). Nothing
+is retained between calls: each one opens, fills, seals, counts and
+closes a database of its own.
+
+| Rule or state | Owner |
+|---|---|
+| Which rows a board's export holds, the regrouping, the pace's done-at-completion rule | `store` (`tracker_cache_export.go`; the pace's fragment is shared with `tracker_cache_pace.go`) |
+| The sandbox, the metric contract and its validator, the reductions, ranges, narrowing, drills and the built-in dashboard | `trackerdash` (its package comment is the sandbox's contract) |
+| The board, its status groups and the viewer of an evaluation | `trackerapp` |
+| Bound methods, scopes and the older-computer surface | `app` (`app_tracker_dashboards.go`) |
+| The answer on screen, when it is counted again, the range, Team or Mine and the drill | `frontend/src/lib/stores/trackerDashboard.svelte.ts` |
+
+### The export
+
+`store.ExportMirrorBoard` fills a private in-memory database with the
+relations of one board a count reads (`MirrorExportSchema`,
+`MirrorExportTables`): the board, its tickets (each one's start and
+finish from its stored changes, whether its history shows its start,
+whether it is open and whether it counts, by the project's status
+groups), the statuses its columns, tickets and copied changes name,
+people (the assignees, and the people the changes name when those are
+copied), epics, sprints and their members, the tickets' changes and what
+each sprint finished. A count names the relations it reads, and each
+fill names the relations it reads from the copy, so a fill's needs are
+filled first; `board` and `sprints` are always filled, since the range
+reads them, and an unknown relation is an error. It attaches the app
+file read-only, reads by the board's keys
+(`TestMirrorExportSearchesByTheBoard` holds each statement's query plan
+to that, and `TestMirrorExportReadsEachRowOnce` the steps it takes per
+row it copies), and detaches before it returns. Only the store knows the
+app file's path and its pragmas. `MirrorExport.FirstReadDone` says
+whether the board's first sync has reconciled
+(`tracker_cache_sync.reconciled_at`): until it has, the answer and every
+drill carry `reading`, and the range before is not compared. A board
+unlisted and listed again starts over.
+
+The relations a count reads are its metrics': each metric's prepare
+records the relations it reads (`How.Reads`), once per dashboard kind
+on an empty sealed session, and a count asks for those of the widgets it
+counts and the tickets, statuses, people and epics its answer names. No
+built-in metric reads `changes`, so none copies them.
+
+### Metrics
+
+A metric is one SELECT over the export whose rows are contributions:
+a `ticket` and any of `value`, `bucket`, `series`, `person`, `epic`, `at`
+and `note` (`trackerdash/metric.go`). Each row is checked as it comes
+in: its ticket is in the copy, its series is one the metric names, its
+value is finite and within ±1e12, and its `at` is an instant before the
+year 2286. The app does the rest: it places rows in the range's periods
+by `at` (or by the sprint a `bucket` names), reduces them (count, sum,
+median, average, or the average of the periods' sums), narrows them to
+a person or an epic, and lists them in a drill. A row whose value is
+NULL is not counted: a number says how many tickets it could not count
+(`Num.NC`, which leaves out a ticket another row of its series counts),
+and a number that counted nothing is not known (`V` absent) rather than
+zero. A row of a range metric with no `at` could have happened from its
+ticket's creation to its last update: it belongs to each range that
+span meets, the range before included, is counted in none and in no
+period, and the range lists it in its numbers, their drills and a
+chart's not counted. A row not counted is listed as "Not counted: " and its note, so
+a note says only why. A metric with `at` or a sprint bucket counts the
+range and is compared with the range before; any other counts now and
+has no change mark. The host binds `:now` and `:since` (where the
+range's periods, the previous range's included, begin), so a metric of
+the range reads only the rows it can place; a done ticket whose finish
+is not known is read when it changed since `:since`.
+
+A drill names its widget and one of three targets
+(`trackerdash.DrillRequest`), and any other is refused: the whole widget
+(what a number, a list's More and a chart's not counted open); a bar,
+point or table cell, by its bucket's key (empty for Unassigned and No
+epic) and its series (empty for the whole bucket); or the rest, the
+buckets a bars or table widget of people, epics or text left out past
+its 12 bars or 50 rows (what its More opens), ranked by the same
+function as the widget. It evaluates its metric again, so
+a number and its rows always come from one evaluation, and lists one
+row per contribution, with the period it counts in, its value (none for
+a count) and the drill's count of rows and of tickets. A later page that
+finds a different count starts again at the first. A list and a drill
+page read their tickets' titles, statuses and points by ID, eight to a
+statement.
+
+### Bounds
+
+- The gate: after the fill, the connection must list only `main` and
+  `temp`, its attached-database limit is set to 0 and read back, and
+  `query_only`, the limits and the authorizer go on. A failure closes the
+  connection and fails the evaluation.
+- The authorizer allows a SELECT, reads of the export's relations and
+  the allowed functions; it denies the rest and the widget names what it
+  tried.
+- A metric is one statement of at most 16 KiB, binding at most 8
+  parameters, with LIKE and GLOB patterns of at most 256 bytes. It runs
+  inside a wrapper that produces the whole result in SQLite's first
+  step, under a 1 s deadline counted from before its prepare, at most
+  20,000 rows and 4 MiB of encoded rows. An evaluation has 4 s. Two run
+  at once on a computer; a third waits up to 2 s and is refused as busy.
+- The app's functions (`days`, `working_days`, `day` and the wrapper's
+  `bounded_rows`) are registered once per time zone a count names, on a
+  driver of that zone the process keeps (`trackerdash/funcs.go`): one
+  per zone name the computer's time zone database loads, as the request
+  spells it, and at most 32 per process; a count that names a 33rd is
+  refused until the app restarts. The
+  wrapper finds its session's rows by a random key it writes into its
+  own text; a key that is not an open session's fails the statement, and
+  a session removes its key when it closes or fails to open.
+- A widget's failure is a sentence in the widget's place; the others
+  show their numbers.
+
+Costs at 2,000 and 20,000 issues, and a hostile query's temporary files,
+are in [Tracker API measurements](../references/tracker-api-measurements.md#the-built-in-dashboard).
+
 ## Agent tools
 
 Status: built: `ticket_find`, `ticket_read`, `ticket_create` and
@@ -2526,12 +2646,15 @@ wrappers (`stores/threadTicketLinks.svelte.ts`), and the ticket's Work
 with Ask and Start work and the pull request rows' ticket chips
 ([Ticket keys, Work, Ask and Start work](#ticket-keys-work-ask-and-start-work)),
 with the wrappers of `GetTicketWork` and `StartTicketThread`
-(`stores/ticketWork.svelte.ts`), and the project's setup: Settings >
+(`stores/ticketWork.svelte.ts`), the project's setup: Settings >
 Issues > Status groups, the ticket's pins and the Start work defaults,
 with the wrappers of `ProjectTrackerSetup`, `SetProjectTrackerSetup`,
 `ProjectTrackerStatuses` and `tracker:setup_updated`
 (`stores/trackerSetup.svelte.ts`, the one holder of a project's setup
-and statuses in a window).
+and statuses in a window), and a board's built-in dashboard on the
+Dashboards screen ([Dashboards](#dashboards)), with the wrappers of
+`TrackerDashboards`, `EvaluateTrackerDashboard` and
+`TrackerDashboardDrill` (`stores/trackerDashboard.svelte.ts`).
 A failure of the linked-issues
 loop after boot reaches only the log (`Deps.LoopFailed`): its failures
 are outside the tracker (a store error, the cleanup), and a tracker

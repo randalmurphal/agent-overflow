@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/keyfile"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/trackerdash"
 )
 
 // Store is the tracker connection and mirror accessors the service uses.
@@ -201,6 +202,8 @@ type Service struct {
 	loopFailed      func(error)
 	linksChanged    func([]string)
 	cadence         Cadence
+	// dash evaluates the boards' dashboards (dashboards.go).
+	dash *trackerdash.Evaluator
 	// digestSeed keys the digests an open ticket keeps of the view it last
 	// published (ticketPump.digest).
 	digestSeed maphash.Seed
@@ -267,6 +270,7 @@ func New(deps Deps) (*Service, error) {
 		emitBoard: deps.EmitBoard, emitIssue: deps.EmitIssue, settled: deps.Settled,
 		clientConnected: deps.ClientConnected, loopFailed: deps.LoopFailed, linksChanged: deps.LinksChanged, cadence: deps.Cadence.withDefaults(),
 		digestSeed: maphash.MakeSeed(), session: int64(binary.LittleEndian.Uint64(session[:]) >> 1),
+		dash: trackerdash.NewEvaluator(deps.Now),
 	}
 	s.makeProvider = func(row store.TrackerConnection, c, tempo *clients) (tracker.Provider, error) {
 		return buildProvider(row, c, tempo, s.window)

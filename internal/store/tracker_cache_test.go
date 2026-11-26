@@ -248,6 +248,9 @@ var mirrorNonWriters = []string{
 	"GetMirrorBoard", "GetMirrorBoardStatuses", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorIssueRows", "ListMirrorTicketRows", "ListMirrorSection", "CountMirrorSections",
 	"ListMirrorOffBoardLinkedIssues", "ReadMirrorBoardView", "ReadMirrorBoardPatch", "ListMirrorIssueBoards", "ListMirrorSprintNames", "LastMirrorPlanRow",
 	"ReadMirrorRefreshTargets", "ReadMirrorWorklogDays",
+	// A board's rows copied into a dashboard's own database: a read of the
+	// file, attached read-only.
+	"ExportMirrorBoard",
 	// An open ticket's row goes by its pump, whatever became of its root.
 	"DropMirrorTicket", "DropMirrorTicketsOfOtherSessions",
 	// A read's clock, which stores its lease only when a read passes it
