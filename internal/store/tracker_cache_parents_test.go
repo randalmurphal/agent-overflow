@@ -39,8 +39,9 @@ func writeParentPage(t *testing.T, s *Store, root, readAt int64, rows ...MirrorR
 // whose card is admitted for its later update leaves it. A card naming
 // its parent by ID alone writes no row and leaves the one there. The
 // parent's own card writes its row, in the transaction that stores the
-// card, so the kept parent's record and its name agree. A card the write
-// does not store (unkept, or older than the stored one) writes no name.
+// card, so the kept parent's record and its name agree. A later read
+// names the parent though the store keeps its older card of the child,
+// and a card naming a parent no stored issue names writes nothing.
 func TestMirrorParentNamesTakeTheNewestRead(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
@@ -90,20 +91,84 @@ func TestMirrorParentNamesTakeTheNewestRead(t *testing.T) {
 	if !reflect.DeepEqual(ch.Superseded, []string{"1"}) {
 		t.Fatalf("an older card = %+v; want it superseded", ch)
 	}
-	step("a superseded card", ch, nil, "30:WEB-30:Renamed:1@8")
+	step("a superseded card of a later read", ch, []string{"30"}, "30:WEB-30:Stale:1@9")
 	unkept := webCard("99", 5)
 	unkept.ParentID, unkept.ParentName = "50", &MirrorParentName{Key: "WEB-50", Title: "Unkept's parent"}
 	ch, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{unkept}, MirrorCatalog{}, mirrorReadAt(10))
 	if err != nil || !reflect.DeepEqual(ch.Unkept, []string{"99"}) {
 		t.Fatalf("an unkept card = %+v, %v; want it unkept", ch, err)
 	}
-	step("a card the mirror does not keep", ch, nil, "30:WEB-30:Renamed:1@8")
+	step("a card naming a parent no stored issue names", ch, nil, "30:WEB-30:Stale:1@9")
 
 	nameless := webCard("98", 5)
 	nameless.ParentName = &MirrorParentName{Key: "WEB-50"}
 	if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{nameless}, MirrorCatalog{}, mirrorReadAt(11)); !errors.Is(err, ErrInvalidTrackerCache) {
 		t.Fatalf("a parent's name without the parent: %v; want it refused", err)
 	}
+}
+
+// Every card a write is given observes names, kept or not: its own,
+// which wins over a child's naming of it in the same write, and its
+// parent's, one observation a parent however many children name it. Only
+// an issue some stored issue names as parent is written, and a later
+// write of the same read with other content corrects the name.
+func TestMirrorNameObservations(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	step := func(name string, ch MirrorChanges, parents []string, names string) {
+		t.Helper()
+		if !reflect.DeepEqual(ch.Parents, parents) {
+			t.Errorf("%s: changed parents %v; want %v", name, ch.Parents, parents)
+		}
+		assertRows(t, s.db, mirrorParentNamesSQL, names)
+	}
+	cards := func(readAt int64, cards ...MirrorCard) MirrorChanges {
+		t.Helper()
+		ch, err := s.UpsertMirrorCards(root, currentSweep(s, root), cards, MirrorCatalog{}, mirrorReadAt(readAt))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ch
+	}
+	epic := func(id, title string, updated int64) MirrorCard {
+		c := webCard(id, updated)
+		c.Key, c.Title, c.TypeLevel = "WEB-"+id, title, 1
+		return c
+	}
+
+	// 500 children of one epic: one observation, one row, the parent once.
+	var page []MirrorRow
+	for i := range 500 {
+		page = append(page, namedChildRow(strconv.Itoa(1000+i), 5, "60", "Checkout", 1))
+	}
+	step("a page of 500 children of one epic", writeParentPage(t, s, root, 2, page...), []string{"60"}, "60:WEB-60:Checkout:1@2")
+	// The epic no board lists, read directly: the mirror does not keep its
+	// card, and its own name replaces the one its children gave.
+	ch := cards(3, epic("60", "Payments", 6))
+	if !reflect.DeepEqual(ch.Unkept, []string{"60"}) {
+		t.Fatalf("the epic's own card = %+v; want it unkept", ch)
+	}
+	step("a direct read of an unkept epic", ch, []string{"60"}, "60:WEB-60:Payments:1@3")
+
+	// A child that names its epic by ID alone, then the epic read alone.
+	byID := webRow("2000", 5, "b2000")
+	byID.Card.ParentID = "70"
+	step("a child naming its epic by ID alone", writeParentPage(t, s, root, 4, byID), nil, "60:WEB-60:Payments:1@3")
+	step("the epic read alone", cards(5, epic("70", "Search", 5)), []string{"70"}, "60:WEB-60:Payments:1@3,70:WEB-70:Search:1@5")
+
+	// One write holding the epic's own card and a child naming it otherwise:
+	// the own card wins.
+	own := webRow("80", 5, "c80")
+	own.Card.Key, own.Card.Title, own.Card.TypeLevel = "WEB-80", "Own", 1
+	step("the own card beside a child's naming", writeParentPage(t, s, root, 6, namedChildRow("2001", 5, "80", "Child's", 1), own),
+		[]string{"80"}, "60:WEB-60:Payments:1@3,70:WEB-70:Search:1@5,80:WEB-80:Own:1@6")
+	// A later write of the same read with other content corrects the name.
+	step("the same read, other content", cards(6, epic("80", "Corrected", 6)), []string{"80"},
+		"60:WEB-60:Payments:1@3,70:WEB-70:Search:1@5,80:WEB-80:Corrected:1@6")
+	// An issue no stored issue names as parent: nothing is written.
+	step("an issue nobody names", cards(7, epic("90", "Alone", 5)), nil,
+		"60:WEB-60:Payments:1@3,70:WEB-70:Search:1@5,80:WEB-80:Corrected:1@6")
 }
 
 // The cleanup deletes each parent's name no stored issue names, after the
@@ -150,7 +215,7 @@ func TestMirrorCleanupDeletesTheNamesNoIssueNames(t *testing.T) {
 }
 
 // The statements that read a parent's name find it by key: the names read,
-// the card write's probe of the parent's own row, and the export's
+// the name write's probe of a stored child, and the export's
 // tickets and epics fills.
 func TestMirrorParentNamesAreReadByKey(t *testing.T) {
 	t.Parallel()
@@ -165,7 +230,7 @@ func TestMirrorParentNamesAreReadByKey(t *testing.T) {
 		}
 	}
 	byKey("the names read", mirrorParentsSQL, "SEARCH n USING PRIMARY KEY (root_id=? AND issue_id=?)")
-	byKey("the card write", mirrorLinkedCards.parents, "SEARCH n EXISTS USING PRIMARY KEY (root_id=? AND issue_id=?)")
+	byKey("the name write", mirrorParentsWriteSQL, "SEARCH c EXISTS USING COVERING INDEX idx_tracker_cache_issues_parent (root_id=? AND parent_id=?)")
 	byKey("the name sweep's probe", mirrorParentsSweepSQL, "SEARCH c USING COVERING INDEX idx_tracker_cache_issues_parent (root_id=? AND parent_id=?)")
 
 	conn := exportConn(t)
@@ -246,16 +311,17 @@ func TestMirrorExportNamesEpicsFromTheParents(t *testing.T) {
 // v172 makes tracker_cache_parents and names, from the stored cards, each
 // parent the mirror keeps, as a view named it before: a parent on a shown
 // board, and one a link keeps. A parent the mirror stores but does not
-// keep, and one it does not hold, stay unnamed. Every board's cursor is
-// forgotten, and nothing else of its sync state moves. The table refuses
-// a row with no key or no read.
+// keep, and one it does not hold, stay unnamed. Every live root owes the
+// names of the rest from the first parent (names_after ”), a detached
+// root none, and no board's sync state moves. The table refuses a row
+// with no key or no read.
 func TestTrackerParentsMigrationNamesTheKeptParents(t *testing.T) {
 	t.Parallel()
 	db := migrateThrough(t, trackerParentsMigrationVersion-1)
 	mustExec(t, db, `INSERT INTO projects(id, path, name, created_at, updated_at) VALUES ('p', '/p', 'p', 1, 1)`)
 	mustExec(t, db, `INSERT INTO tracker_connections(id, kind, site, account, created_at) VALUES ('c', 'jira', 'https://example.atlassian.net', 'user1@example.com', 1)`)
 	mustExec(t, db, `INSERT INTO project_tracker_boards(project_id, connection_id, board_id, position) VALUES ('p', 'c', '10', 0)`)
-	mustExec(t, db, `INSERT INTO tracker_cache_roots(id, connection_id, created_at) VALUES (1, 'c', 1)`)
+	mustExec(t, db, `INSERT INTO tracker_cache_roots(id, connection_id, created_at) VALUES (1, 'c', 1), (2, NULL, 1)`)
 	mustExec(t, db, `INSERT INTO tracker_cache_boards(root_id, board_id, name, read_at) VALUES (1, '10', 'WEB board', 5), (1, '11', 'Unlisted', 5)`)
 	mustExec(t, db, `INSERT INTO tracker_cache_sync(root_id, board_id, cursor, cursor_read_at, read_at, reconciled_at) VALUES
 		(1, '10', x'01', 4, 5, 6), (1, '11', NULL, 0, 5, 0)`)
@@ -280,7 +346,8 @@ func TestTrackerParentsMigrationNamesTheKeptParents(t *testing.T) {
 
 	assertRows(t, db, mirrorParentNamesSQL, "30:WEB-30:Checkout:1@3,31:WEB-31:Linked epic:1@3")
 	assertRows(t, db, `SELECT board_id || ':' || iif(cursor IS NULL, '-', hex(cursor)) || ':' || cursor_read_at || ':' || read_at || ':' || reconciled_at
-		FROM tracker_cache_sync ORDER BY board_id`, "10:-:4:5:6,11:-:0:5:0")
+		FROM tracker_cache_sync ORDER BY board_id`, "10:01:4:5:6,11:-:0:5:0")
+	assertRows(t, db, `SELECT id || ':' || coalesce(names_after, '-') FROM tracker_cache_roots ORDER BY id`, "1:,2:-")
 	for _, bad := range []string{
 		`INSERT INTO tracker_cache_parents(root_id, issue_id, issue_key, title, type_level, read_at) VALUES (1, '40', '', 't', 0, 1)`,
 		`INSERT INTO tracker_cache_parents(root_id, issue_id, issue_key, title, type_level, read_at) VALUES (1, '40', 'WEB-40', 't', 0, 0)`,
@@ -389,6 +456,132 @@ func TestMirrorParentSweepAtScale(t *testing.T) {
 			}
 			t.Logf("%d names, none named: the sweep deletes them in %d transactions, %v", n, transactions, time.Since(start).Round(time.Microsecond))
 			assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_parents`, "0")
+		})
+	}
+}
+
+// A root owes names only while its worklist is open (v172 opens it on
+// every live root; a root made after owes none): ListMirrorUnnamedParents
+// answers the parents a stored issue names and no name row names, after
+// the cursor, in ID order, a batch at a time; passing a parent moves the
+// cursor past it, so a parent no read named is answered once, and ending
+// the worklist owes nothing more. The walk follows the parent index from
+// the cursor and probes each name by key.
+func TestMirrorUnnamedParentsWorklist(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	child := func(id, parent string) MirrorRow {
+		r := webRow(id, 5, "a"+id)
+		r.Card.ParentID = parent
+		return r
+	}
+	rows := []MirrorRow{child("1", "p030"), child("2", "p030"), child("3", "p031"), namedChildRow("4", 5, "p032", "Named", 1)}
+	for i := range 150 {
+		rows = append(rows, child(fmt.Sprint(100+i), fmt.Sprintf("q%03d", i)))
+	}
+	writeParentPage(t, s, root, 2, rows...)
+	list := func(name string, want []string, wantMore bool) {
+		t.Helper()
+		got, err := s.ListMirrorUnnamedParents(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got.Parents, want) || got.More != wantMore {
+			t.Fatalf("%s: unnamed parents %v (more %v); want %v (more %v)", name, got.Parents, got.More, want, wantMore)
+		}
+	}
+	if got, err := s.ListMirrorUnnamedParents(root); err != nil || got.Owed || len(got.Parents) > 0 {
+		t.Fatalf("a root made after v172 owes %+v, %v; want nothing", got, err)
+	}
+
+	mustExec(t, s.db, `UPDATE tracker_cache_roots SET names_after = '' WHERE id = ?`, root)
+	var first []string
+	first = append(first, "p030", "p031")
+	for i := range 98 {
+		first = append(first, fmt.Sprintf("q%03d", i))
+	}
+	list("the first batch", first, true)
+	if err := s.PassMirrorUnnamedParents(root, first[len(first)-1]); err != nil {
+		t.Fatal(err)
+	}
+	var rest []string
+	for i := 98; i < 150; i++ {
+		rest = append(rest, fmt.Sprintf("q%03d", i))
+	}
+	list("after the first batch", rest, false)
+	if err := s.PassMirrorUnnamedParents(root, "q000"); err != nil {
+		t.Fatal(err)
+	}
+	list("a pass behind the cursor", rest, false)
+	if err := s.PassMirrorUnnamedParents(root, rest[len(rest)-1]); err != nil {
+		t.Fatal(err)
+	}
+	list("past every parent", nil, false)
+	if err := s.EndMirrorUnnamedParents(root); err != nil {
+		t.Fatal(err)
+	}
+	assertRows(t, s.db, `SELECT coalesce(names_after, '-') FROM tracker_cache_roots`, "-")
+	if got, err := s.ListMirrorUnnamedParents(root); err != nil || got.Owed {
+		t.Fatalf("an ended worklist owes %+v, %v; want nothing", got, err)
+	}
+	mustExec(t, s.db, `UPDATE tracker_cache_roots SET names_after = '' WHERE id = ?`, root)
+	list("an ended worklist opened again", first, true)
+
+	plan := explainMirror(t, s, mirrorUnnamedParentsSQL)
+	for _, want := range []string{"SEARCH r USING INTEGER PRIMARY KEY (rowid=?)",
+		"SEARCH c USING COVERING INDEX idx_tracker_cache_issues_parent (root_id=? AND parent_id>?)",
+		"SEARCH n USING PRIMARY KEY (root_id=? AND issue_id=?)"} {
+		if !strings.Contains(plan, want) {
+			t.Errorf("the worklist's walk:\n%s\nwant %q", plan, want)
+		}
+	}
+	if strings.Contains(plan, "TEMP B-TREE") {
+		t.Errorf("the worklist's walk sorts:\n%s", plan)
+	}
+}
+
+// TestMirrorUnnamedParentsAtScale measures the worklist's walk at each
+// size of AO_TRACKER_SCALE: an upgraded mirror whose issues, one in 50 a
+// parent named by ID alone by the 49 after it, owe every name, each batch's
+// walk and the final empty one.
+func TestMirrorUnnamedParentsAtScale(t *testing.T) {
+	env := os.Getenv("AO_TRACKER_SCALE")
+	if env == "" {
+		t.Skip("AO_TRACKER_SCALE names no sizes")
+	}
+	for field := range strings.SplitSeq(env, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(field))
+		if err != nil || n < 100 {
+			t.Fatalf("AO_TRACKER_SCALE=%q: each size is a whole number of at least 100", env)
+		}
+		t.Run(fmt.Sprint(n), func(t *testing.T) {
+			s, _, root := newMirror(t)
+			mustExec(t, s.db, `WITH RECURSIVE k(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM k WHERE i < ? - 1)
+				INSERT INTO tracker_cache_issues(root_id, issue_id, issue_key, parent_id, updated_at, read_at, title, data)
+				SELECT ?, printf('%06d', i), 'WEB-' || i, iif(i % 50 = 0, '', printf('%06d', i - i % 50)), 1, 1, 'Issue', x'' FROM k`, n, root)
+			mustExec(t, s.db, `UPDATE tracker_cache_roots SET names_after = '' WHERE id = ?`, root)
+			parents, batches := 0, 0
+			for {
+				start := time.Now()
+				steps := statementVMSteps(t, s, mirrorUnnamedParentsSQL, root)
+				batch, err := s.ListMirrorUnnamedParents(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := batch.Parents
+				t.Logf("%d issues: a walk answering %d parents takes %d VM steps, %v with the steps' run", n, len(got), steps, time.Since(start).Round(time.Microsecond))
+				if len(got) == 0 {
+					break
+				}
+				parents, batches = parents+len(got), batches+1
+				if err := s.PassMirrorUnnamedParents(root, got[len(got)-1]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if parents != n/50 {
+				t.Fatalf("the worklist answered %d parents in %d batches; want %d", parents, batches, n/50)
+			}
 		})
 	}
 }

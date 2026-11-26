@@ -6,9 +6,14 @@ package store
 // is the one source of a parent's name for every view (storeMirrorCardsTx
 // writes it; FinishMirrorCleanup deletes a row no stored issue names). The
 // backfill names each parent the mirror keeps from its stored card, which
-// is what a view named it from before; an unkept parent stays unnamed.
-// Every board's cursor is forgotten, so its next poll reads every row
-// once and names the parents it does not keep.
+// is what a view named it from before, so an upgraded mirror shows what it
+// showed until the linked-issues tick reads the rest.
+// tracker_cache_roots.names_after is each root's worklist of the parents a
+// stored issue names and no name row names, read by their own cards in
+// parent ID order: NULL when nothing is owed, ” from the first, else the
+// last parent the tick asked for (store ListMirrorUnnamedParents). v172
+// sets it to ” on every live root, the one place work is owed: every
+// root made after names its parents with the cards it stores.
 const trackerParentsV172SQL = `
 CREATE TABLE tracker_cache_parents (
  root_id INTEGER NOT NULL REFERENCES tracker_cache_roots(id) ON DELETE CASCADE,
@@ -43,7 +48,8 @@ SELECT p.root_id, p.issue_id, p.issue_key, p.title, p.type_level, p.read_at FROM
           JOIN tracker_cache_roots open_root ON open_root.id = kept_open.root_id AND open_root.connection_id IS NOT NULL
          WHERE kept_open.root_id = p.root_id AND kept_open.issue_id = p.issue_id));
 
-UPDATE tracker_cache_sync SET cursor = NULL WHERE cursor IS NOT NULL;
+ALTER TABLE tracker_cache_roots ADD COLUMN names_after TEXT;
+UPDATE tracker_cache_roots SET names_after = '' WHERE connection_id IS NOT NULL;
 `
 
 const trackerParentsMigrationVersion = 172

@@ -147,9 +147,10 @@ type mirrorCardRow struct {
 	Sprints    []string `json:"-"`
 	OrderKey   string   `json:"o"`
 	Estimate   *float64 `json:"e"`
-	// ParentName is the parent's name the card's read gave
-	// (mirrorParentsWriteSQL), absent for none.
-	ParentName *mirrorParentRow `json:"q,omitempty"`
+	// ParentName is the parent's name the card's read gave, nil for
+	// none: the name write's observation (mirrorNameObservations), not
+	// read by the card statements.
+	ParentName *MirrorParentName `json:"-"`
 }
 
 func newMirrorCardRow(c MirrorCard) mirrorCardRow {
@@ -157,7 +158,7 @@ func newMirrorCardRow(c MirrorCard) mirrorCardRow {
 		Status: c.StatusID, Assignee: c.AssigneeID, Priority: c.PriorityID, Parent: c.ParentID,
 		CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, ResolvedAt: c.ResolvedAt,
 		Data: hex.EncodeToString(c.Data), Title: c.Title, SprintSet: mirrorSprintSet(c.Sprints), Sprints: c.Sprints,
-		ParentName: newMirrorParentRow(c.ParentName)}
+		ParentName: c.ParentName}
 }
 
 func (c MirrorCard) check() error {
@@ -469,20 +470,17 @@ const mirrorCardReadSQL = `UPDATE tracker_cache_issues SET read_at = ?3
 	WHERE root_id = CAST(?1 AS INTEGER) AND issue_id IN (SELECT value FROM json_each(?2)) AND read_at < ?3`
 
 // mirrorCardStatements are the statements that store cards, for one
-// filter of the cards they take: the card, the names of the parents the
-// cards name and of the cards' issues that are parents
-// (mirrorParentsWriteSQL), and the marks of the references it names that
+// filter of the cards they take: the card and the marks of the references it names that
 // the mirror lacks (mirrorCardMarkSQL), on the boards the issue has rows
 // on and those the boards select adds (a compound SELECT arm, or
 // nothing). The card's sprints follow the card
 // (replaceMirrorCardSprintsTx).
-type mirrorCardStatements struct{ upsert, parents, mark string }
+type mirrorCardStatements struct{ upsert, mark string }
 
 func newMirrorCardStatements(filter, boards string) mirrorCardStatements {
 	return mirrorCardStatements{
-		upsert:  mirrorCardUpsertSQL + filter + mirrorCardConflictSQL,
-		parents: mirrorParentsWriteSQL(filter),
-		mark:    mirrorCardMarkSQL(filter, boards),
+		upsert: mirrorCardUpsertSQL + filter + mirrorCardConflictSQL,
+		mark:   mirrorCardMarkSQL(filter, boards),
 	}
 }
 
@@ -498,8 +496,8 @@ var (
 )
 
 // mirrorCardsStored is what storeMirrorCardsTx did: the issues whose card
-// changed, each as the upsert left it (after), the parents whose name
-// changed (mirrorParentsWriteSQL), and the boards on which it marked a
+// changed, each as the upsert left it (after), the issues whose name
+// changed (writeMirrorNamesTx), and the boards on which it marked a
 // reference the mirror lacks (mirrorCardMarkSQL), each sorted.
 type mirrorCardsStored struct {
 	changed, parents, marked []string
@@ -527,9 +525,9 @@ type mirrorCardsStored struct {
 // issues of the stored cards and the cleared absences take the card the
 // mirror now holds (mirrorLinkCopySQL), so a link's copy changes in the
 // transaction that changes the card, and their threads are announced; a
-// write that stores and clears nothing runs neither. Then the parents'
-// names the admitted cards give are written (mirrorParentsWriteSQL), so a
-// kept parent's card and its name change in one transaction. Then the mark
+// write that stores and clears nothing runs neither. Then the names every
+// card given observes are written (writeMirrorNamesTx), so a kept
+// issue's card and its name change by one read in one transaction. Then the mark
 // statement, a chunk of references at a time, marks the references the
 // admitted cards name that the mirror lacks, on each board the issue has
 // a row on: every card writer calls this, so a card that moves an issue
@@ -560,11 +558,9 @@ func storeMirrorCardsTx(tx *sql.Tx, statements mirrorCardStatements, rootID int6
 	if out.threads, err = copyMirrorCardsToLinksTx(tx, rootID, stored, advancing); err != nil {
 		return mirrorCardsStored{}, err
 	}
-	if out.parents, err = queryIDs(tx, statements.parents, args...); err != nil {
-		return mirrorCardsStored{}, fmt.Errorf("write the parents' names: %w", err)
+	if out.parents, err = writeMirrorNamesTx(tx, rootID, cards, readAt); err != nil {
+		return mirrorCardsStored{}, fmt.Errorf("write the issues' names: %w", err)
 	}
-	slices.Sort(out.parents)
-	out.parents = slices.Compact(out.parents)
 	for refs := range slices.Chunk(mirrorCardRefsOf(cards), mirrorSprintChunk) {
 		if args[1], err = encodeMirrorJSON(refs); err != nil {
 			return mirrorCardsStored{}, err

@@ -67,6 +67,9 @@ type MirrorStore interface {
 	GetMirrorCatalog(rootID int64, users, statuses []string) (store.MirrorCatalog, error)
 	ListMirrorCards(rootID int64, issueIDs []string) ([]store.MirrorCard, error)
 	ListMirrorParents(rootID int64, parents []string) ([]store.MirrorParent, error)
+	ListMirrorUnnamedParents(rootID int64) (store.MirrorUnnamedParents, error)
+	PassMirrorUnnamedParents(rootID int64, through string) error
+	EndMirrorUnnamedParents(rootID int64) error
 	ListMirrorIssueRows(rootID int64, issueID, afterBoard string) ([]store.MirrorIssueRow, bool, error)
 	ListMirrorTicketRows(rootID int64, issueIDs []string) ([]store.MirrorTicketRow, error)
 	ListMirrorSprintNames(rootID int64, boardIDs, sprintIDs []string) ([]store.MirrorSprintName, error)
@@ -140,6 +143,9 @@ const (
 	UnitHistory Unit = "history"
 	// UnitCards reads the cards of a connection's linked issues.
 	UnitCards Unit = "cards"
+	// UnitNames reads the cards of the parents an upgraded mirror owes the
+	// names of.
+	UnitNames Unit = "names"
 )
 
 // BoardDue names the units a board's tick runs. They run in the order of
@@ -155,6 +161,7 @@ type BoardDue struct {
 // the order of the fields.
 type LinkedDue struct {
 	Cards   bool `json:"cards,omitempty"`
+	Names   bool `json:"names,omitempty"`
 	History bool `json:"history,omitempty"`
 }
 

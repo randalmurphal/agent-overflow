@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -60,9 +61,14 @@ func TestOnlyAParentsNameTellsTheBoardsOfItsChildren(t *testing.T) {
 	m.subscribe(t, testBoard)
 	m.subscribe(t, "2")
 	idleBoards(t, m.svc, m.p)
+	// The tracker's tickets are its rows as the latest tick read them.
+	var latest sync.Mutex
+	current := rows
 	m.p.set(func(p *scripted) {
 		p.detail = func(id tracker.IssueID) (tracker.Detail, error) {
-			return tracker.Detail{Card: rows[slices.IndexFunc(rows, func(r tracker.Row) bool { return r.Card.ID == id })].Card}, nil
+			latest.Lock()
+			defer latest.Unlock()
+			return tracker.Detail{Card: current[slices.IndexFunc(current, func(r tracker.Row) bool { return r.Card.ID == id })].Card}, nil
 		}
 	})
 	_, opened, _ := m.events.snapshot()
@@ -86,6 +92,9 @@ func TestOnlyAParentsNameTellsTheBoardsOfItsChildren(t *testing.T) {
 	told := func(what string, scope Scope, rows []tracker.Row, want map[tracker.BoardID][]tracker.IssueID) {
 		t.Helper()
 		before, _, _ := m.events.snapshot()
+		latest.Lock()
+		current = slices.Clone(rows)
+		latest.Unlock()
 		m.tracks(rows)
 		if _, err := m.svc.syncTick(t.Context(), scope, BoardDue{Delta: true}, Background); err != nil {
 			t.Fatal(err)
@@ -136,8 +145,15 @@ func TestOnlyAParentsNameTellsTheBoardsOfItsChildren(t *testing.T) {
 	if was, parent := childTold(len(renamedFrom)); !was || parent == nil || parent.Title != "Payments" {
 		t.Errorf("the parent's own rename told the child's ticket %v, which names %+v; want told, Payments", was, parent)
 	}
-	ranked[1].Card.Updated, ranked[1].Card.ParentName = ranked[1].Card.Updated.Add(time.Minute), &tracker.ParentName{Key: "WEB-1", Title: "Billing", Level: 1}
-	told("the parent renamed through a child's read", m.scope(), ranked, both("10002", "10003", "10004"))
+	// A read holding the parent's own card names it by that card, whatever
+	// its children of the same read say.
+	for i := range ranked[1:] {
+		ranked[1+i].Card.ParentName = &tracker.ParentName{Key: "WEB-1", Title: "Billing", Level: 1}
+	}
+	ranked[1].Card.Updated = ranked[1].Card.Updated.Add(time.Minute)
+	told("children naming their parent otherwise beside the parent's own card", m.scope(), ranked, both("10002"))
+	ranked[1].Card.Updated = ranked[1].Card.Updated.Add(time.Minute)
+	told("the parent renamed through a child's read", m.scope(), ranked[1:], both("10002", "10003", "10004"))
 	v := must[BoardView](t)(m.svc.Board(other, StatusGroups{}, []Section{{Kind: SectionBacklog}}))
 	for _, r := range v.Sections[0].Rows {
 		if r.Card.ID != "10001" && (r.Card.Parent == nil || r.Card.Parent.Title != "Billing") {
