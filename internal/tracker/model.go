@@ -219,6 +219,11 @@ type Card struct {
 	Labels   []Choice
 	// Parent is empty for a top-level issue.
 	Parent IssueID
+	// ParentName is the parent's name as the card's read gave it, nil when
+	// the read named the parent by ID alone. It is never encoded: the
+	// mirror keeps one name per parent, which every view reads (store
+	// tracker_cache_parents).
+	ParentName *ParentName `json:"-"`
 	// Sprints are the sprints the card read names: Jira every sprint the
 	// issue is or was in, Linear the cycle it is in now. Sprint changes in
 	// History complete the set.
@@ -240,6 +245,14 @@ type Row struct {
 	// Estimate is in the board's unit; nil when the issue has none or the
 	// board has no estimate.
 	Estimate *float64
+}
+
+// ParentName is a card's parent as the card's read names it: its key, its
+// title and its type's level (IssueType.Level; 0 on Linear, which has no
+// epics).
+type ParentName struct {
+	Key, Title string
+	Level      int
 }
 
 // IssueRef is another issue as an issue names it: a linked issue.

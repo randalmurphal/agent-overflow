@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"testing"
 
 	"agent-overflow/internal/store"
@@ -180,5 +181,96 @@ func TestCardsResourceStoresKeptIssues(t *testing.T) {
 	r.finish()
 	if _, ok := errors.AsType[*trackerapi.TransientError](err); !ok {
 		t.Fatalf("a failed card read: %v", err)
+	}
+}
+
+// A linked tick with every unit due runs the cards unit, then the names
+// unit, then the history unit. The names unit stops after namesBatches
+// reads, so a long worklist leaves the linked issues' history to this
+// tick, not to after the worklist ends; the linked loop reads the rest
+// of the worklist.
+func TestTheNamesUnitLeavesTheLinkedIssuesTheirTick(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	const parents = namesBatches*100 + 1
+	var page []tracker.Row
+	var pages [][]tracker.Row
+	for i := range parents {
+		r := row(fmt.Sprint(10001+i), 1_799_000_000_000, fmt.Sprintf("a%05d", i))
+		r.Card.Key = fmt.Sprintf("WEB-%d", 1+i)
+		r.Card.Parent = tracker.IssueID(fmt.Sprint(90001 + i))
+		if page = append(page, r); len(page) == 100 {
+			pages, page = append(pages, page), nil
+		}
+	}
+	pages = append(pages, page)
+	m.p.changedRows = pagedDelta(t, pages...)
+	for {
+		if out := must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background)); !out.More() {
+			break
+		}
+	}
+	// The board's history is read, so the linked issue's alone is due.
+	for {
+		if out := must[Outcome](t)(m.svc.tickHistory(t.Context(), m.scope(), Background)); !out.More() {
+			break
+		}
+	}
+	m.linkThread("thread-1", "50005")
+	m.sqlOnStore(t, `UPDATE tracker_cache_roots SET names_after = '' WHERE id = ?`, m.root())
+	var mu sync.Mutex
+	var order []string
+	m.p.set(func(p *scripted) {
+		p.cards = func(q []tracker.IssueID) (tracker.Cards, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if slices.Contains(q, "50005") {
+				order = append(order, "linked cards")
+				return tracker.Cards{Cards: []tracker.Card{card("50005", 1_799_000_000_000)}}, nil
+			}
+			order = append(order, fmt.Sprintf("names %d", len(q)))
+			return tracker.Cards{Missing: q}, nil
+		}
+		p.history = func(q tracker.HistoryQuery) (tracker.History, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if slices.Contains(q.Issues, "50005") {
+				order = append(order, "linked history")
+			}
+			return tracker.History{}, nil
+		}
+	})
+	out := must[Outcome](t)(m.svc.SyncLinked(t.Context(), m.conn.ID, LinkedDue{Cards: true, Names: true, History: true}, Background))
+	var ran []string
+	for _, u := range out.Ran {
+		ran = append(ran, fmt.Sprintf("%s more=%t", u.Unit, u.More))
+	}
+	if want := []string{"cards more=false", "names more=true", "history more=false"}; out.Failure != nil || !slices.Equal(ran, want) {
+		t.Fatalf("the tick ran %v (%+v); want %v", ran, out.Failure, want)
+	}
+	mu.Lock()
+	first := slices.Clone(order)
+	order = nil
+	mu.Unlock()
+	want := []string{"linked cards"}
+	for range namesBatches {
+		want = append(want, "names 100")
+	}
+	if want = append(want, "linked history"); !slices.Equal(first, want) {
+		t.Fatalf("the tick's reads %v; want %v", first, want)
+	}
+	// The linked loop, the worklist owed again from its start, runs its
+	// ticks until the worklist is done. Its first tick runs every unit;
+	// the linked issue's history, read, is not due again.
+	m.sqlOnStore(t, `UPDATE tracker_cache_roots SET names_after = '' WHERE id = ?`, m.root())
+	m.svc.linkedConnection(t.Context(), m.conn.ID)
+	mu.Lock()
+	rest := slices.Clone(order)
+	mu.Unlock()
+	if want = append(want[:len(want)-1], "names 1"); !slices.Equal(rest, want) {
+		t.Fatalf("the loop's reads %v", rest)
+	}
+	if owed := must[store.MirrorUnnamedParents](t)(m.st.ListMirrorUnnamedParents(m.root())); owed.Owed {
+		t.Fatalf("the worklist is owed %+v after the loop", owed)
 	}
 }

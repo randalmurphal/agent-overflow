@@ -100,10 +100,16 @@ type scenario struct {
 
 func newScenario(t *testing.T) *scenario {
 	t.Helper()
+	return newScenarioOf(t, scenarioWorkspace())
+}
+
+// newScenarioOf is newScenario over workspace ws.
+func newScenarioOf(t *testing.T, ws trackerfake.LinearWorkspace) *scenario {
+	t.Helper()
 	clock := &scenarioClock{now: scStart}
 	e := trackerfake.New(trackerfake.Options{Now: clock.Now})
 	t.Cleanup(e.Close)
-	if err := e.Seed(trackerfake.Fixture{Linear: []trackerfake.LinearWorkspace{scenarioWorkspace()}}); err != nil {
+	if err := e.Seed(trackerfake.Fixture{Linear: []trackerfake.LinearWorkspace{ws}}); err != nil {
 		t.Fatal(err)
 	}
 	srv, err := trackerfake.Serve(e)
@@ -425,4 +431,44 @@ func TestFakeScenario(t *testing.T) {
 func refusalReason(p tracker.Part) tracker.Reason {
 	r, _ := p.Outcome.Refusal()
 	return r.Reason
+}
+
+// A sub-issue's card names its parent with the parent's identifier and
+// title on a board row, a card read, a search hit and a detail, in the
+// read that reads the card (no request more); a top-level issue's names
+// none.
+func TestFakeCardsNameTheirParent(t *testing.T) {
+	ws := scenarioWorkspace()
+	ws.Issues[2].Parent = scIssue1
+	s := newScenarioOf(t, ws)
+	want := &tracker.ParentName{Key: "WEB-1", Title: "Fix login"}
+	named := func(what string, c tracker.Card) {
+		t.Helper()
+		switch {
+		case c.ID == tracker.IssueID(scIssue3) && (c.Parent != tracker.IssueID(scIssue1) || c.ParentName == nil || *c.ParentName != *want):
+			t.Errorf("%s: the sub-issue names its parent %q as %+v; want %+v", what, c.Parent, c.ParentName, want)
+		case c.ID != tracker.IssueID(scIssue3) && c.ParentName != nil:
+			t.Errorf("%s: top-level issue %s names a parent %+v", what, c.ID, c.ParentName)
+		}
+	}
+	rows := scenarioMust[tracker.Rows](t)(s.p.BoardRows(s.ctx, tracker.BoardID(scTeam),
+		[]tracker.IssueID{tracker.IssueID(scIssue1), tracker.IssueID(scIssue3)}, tracker.Eligibility{}))
+	if len(rows.Rows) != 2 {
+		t.Fatalf("rows %+v", rows)
+	}
+	for _, r := range rows.Rows {
+		named("a board row", r.Card)
+	}
+	for _, c := range scenarioMust[tracker.Cards](t)(s.p.Cards(s.ctx, []tracker.IssueID{tracker.IssueID(scIssue3)})).Cards {
+		named("a card read", c)
+	}
+	hits := scenarioMust[tracker.SearchPage](t)(s.p.Search(s.ctx, tracker.SearchQuery{Text: "Login tests", Project: tracker.ProjectID(scTeam)}))
+	if len(hits.Cards) == 0 {
+		t.Fatal("the search found no sub-issue")
+	}
+	for _, c := range hits.Cards {
+		named("a search hit", c)
+	}
+	named("a detail", s.detail(t, scIssue3).Card)
+	named("a top-level detail", s.detail(t, scIssue1).Card)
 }

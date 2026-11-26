@@ -190,7 +190,6 @@ func (s *Store) writeMirrorRows(rootID int64, page MirrorRowPage, withCursor boo
 		return MirrorChanges{}, err
 	}
 	slices.Sort(changes.Superseded)
-	slices.Sort(changes.Added)
 	slices.Sort(changes.Refused)
 	return changes, nil
 }
@@ -223,10 +222,7 @@ func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, readAt int6
 		if superseded.Bool {
 			changes.Superseded = append(changes.Superseded, id)
 		}
-		switch {
-		case fresh.Bool && addsRows:
-			changes.Added = append(changes.Added, id)
-		case fresh.Bool:
+		if fresh.Bool && !addsRows {
 			changes.Refused = append(changes.Refused, id)
 		}
 		write = write || writes.Bool
@@ -245,7 +241,7 @@ func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, readAt int6
 	if err != nil {
 		return err
 	}
-	changes.Cards, changes.Threads = stored.changed, unionSorted(changes.Threads, stored.threads)
+	changes.Cards, changes.Parents, changes.Threads = stored.changed, stored.parents, unionSorted(changes.Threads, stored.threads)
 	if write {
 		if changes.Rows, err = queryIDs(tx, mirrorRowsUpsertSQL, rootID, encoded, page.BoardID, readAt, addsRows); err != nil {
 			return fmt.Errorf("upsert rows: %w", err)

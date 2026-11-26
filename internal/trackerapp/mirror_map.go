@@ -99,8 +99,17 @@ func mirrorCard(c tracker.Card) (store.MirrorCard, error) {
 		StatusID: string(c.Status), AssigneeID: string(c.Assignee),
 		PriorityID: c.Priority.ID, ParentID: string(c.Parent),
 		CreatedAt: millis(c.Created), UpdatedAt: millis(c.Updated), ResolvedAt: millis(c.Resolved),
-		Sprints: sprints, Data: data,
+		Sprints: sprints, Data: data, ParentName: mirrorParentName(c),
 	}, nil
+}
+
+// mirrorParentName is the name of c's parent that c's read gave, as the
+// store holds it; nil when it gave none.
+func mirrorParentName(c tracker.Card) *store.MirrorParentName {
+	if c.Parent == "" || c.ParentName == nil {
+		return nil
+	}
+	return &store.MirrorParentName{Key: c.ParentName.Key, Title: c.ParentName.Title, TypeLevel: c.ParentName.Level}
 }
 
 // cardOf is the card m holds. ok is false when its blob is a miss: the

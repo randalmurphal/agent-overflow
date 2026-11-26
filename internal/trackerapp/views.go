@@ -194,34 +194,45 @@ func (s *Service) cardViews(root int64, cards []shownCard, also []string) ([]Car
 	if err != nil {
 		return nil, catalogNames{}, err
 	}
-	parentOf := make(map[string]tracker.Card, len(parents.ids))
-	for batch := range slices.Chunk(parents.ids, readBatch) {
-		parentCards, err := s.store.ListMirrorCards(root, batch)
-		if err != nil {
-			return nil, catalogNames{}, fmt.Errorf("trackerapp: read the parents of %d cards: %w", len(cards), err)
-		}
-		for _, m := range parentCards {
-			c, _ := cardOf(m)
-			parentOf[m.IssueID] = c
-		}
+	parentOf, err := s.parentNames(root, parents.ids)
+	if err != nil {
+		return nil, catalogNames{}, err
 	}
 	return cardViewsOf(cards, names, parentOf), names, nil
+}
+
+// parentNames are the names the mirror holds of parents, by ID, a store
+// lookup's bound at a time (store ListMirrorParents): the source of a
+// parent's key and title for every view. A detail view whose parent has
+// no name here shows the name its read gave (detailViews).
+func (s *Service) parentNames(root int64, parents []string) (map[string]store.MirrorParentName, error) {
+	out := make(map[string]store.MirrorParentName, len(parents))
+	for batch := range slices.Chunk(parents, readBatch) {
+		named, err := s.store.ListMirrorParents(root, batch)
+		if err != nil {
+			return nil, fmt.Errorf("trackerapp: read the names of %d parents: %w", len(parents), err)
+		}
+		for _, p := range named {
+			out[p.IssueID] = p.MirrorParentName
+		}
+	}
+	return out, nil
 }
 
 // namedCardViews is cards as views named by names, read with them, and
 // the names as catalogNames.
 func namedCardViews(cards []shownCard, names store.MirrorNames) ([]CardView, catalogNames) {
 	catalog := catalogNamesOf(names.Catalog)
-	parentOf := make(map[string]tracker.Card, len(names.Parents))
-	for _, m := range names.Parents {
-		c, _ := cardOf(m)
-		parentOf[m.IssueID] = c
+	parentOf := make(map[string]store.MirrorParentName, len(names.Parents))
+	for _, p := range names.Parents {
+		parentOf[p.IssueID] = p.MirrorParentName
 	}
 	return cardViewsOf(cards, catalog, parentOf), catalog
 }
 
-// cardViewsOf is cards as views, named by names and parentOf.
-func cardViewsOf(cards []shownCard, names catalogNames, parentOf map[string]tracker.Card) []CardView {
+// cardViewsOf is cards as views, named by names and parentOf. A parent
+// parentOf does not name is shown by its ID alone.
+func cardViewsOf(cards []shownCard, names catalogNames, parentOf map[string]store.MirrorParentName) []CardView {
 	out := make([]CardView, len(cards))
 	for i, sc := range cards {
 		c := sc.card

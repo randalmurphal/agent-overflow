@@ -185,6 +185,15 @@ const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
   // request or branch names it, as a computer with no stored pull requests
   // and no branch of its key answers (app_ticket_work.go GetTicketWork).
   GetTicketWork: async () => ({ key: '', pullRequests: [], branches: [], problems: [] }),
+  // The forge search beside it (SearchTicketWork): the forge finds nothing
+  // the stored sources lack, so it answers what the Work read's mock
+  // answers, with no forge problem. It runs that mock's implementation, so
+  // the Work read's own call count is the person's reads.
+  SearchTicketWork: async (...args: unknown[]) => {
+    const impl = bindingMockFor('GetTicketWork')?.getMockImplementation();
+    if (!impl) throw unansweredBinding('GetTicketWork');
+    return { forgeProblems: [], searchFull: [], ...((await impl(...args)) as object) };
+  },
   // A thread the pane opens, as the backend holds an idle thread with no
   // history: resuming it does nothing (app_session_bindings.go), and its
   // ticks, plans, turns, tray tasks, wakes and pending requests are empty
@@ -392,6 +401,7 @@ export const SetThreadTicket = dispatch('SetThreadTicket');
 export const ClearThreadTicket = dispatch('ClearThreadTicket');
 export const ThreadsForTicket = dispatch('ThreadsForTicket');
 export const GetTicketWork = dispatch('GetTicketWork');
+export const SearchTicketWork = dispatch('SearchTicketWork');
 export const StartTicketThread = dispatch('StartTicketThread');
 export const SwitchThread = dispatch('SwitchThread');
 

@@ -229,7 +229,7 @@ func (s *Service) UnlinkThread(threadID string) (ThreadLinkWrite, error) {
 // replaced, a thread deleted or moved away), the issues an attached
 // mirror of this computer holds and no longer keeps (store
 // ListUnkeptLinkedIssues) to the subscriptions of each one's connection
-// that show them as another's parent or link (Changes.Visibility), as the
+// that show them as another's link (Changes.Visibility), as the
 // drop of an open ticket's keep does. The root and its generation are
 // read together under opMu, so a turn off that detached the root since
 // reaches no subscription of a later mirror. A read that fails is logged:
@@ -259,7 +259,7 @@ func (s *Service) LinksEnded(tickets []store.TicketRef) {
 	}
 	s.opMu.Unlock()
 	if err != nil {
-		s.logf("trackerapp: read the issues %d ended links kept: %v; their parents' and links' views show them until their boards are read again", len(tickets), err)
+		s.logf("trackerapp: read the issues %d ended links kept: %v; the views that link them show them until their boards are read again", len(tickets), err)
 		return
 	}
 	for _, conn := range order {

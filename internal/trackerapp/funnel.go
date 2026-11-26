@@ -37,13 +37,12 @@ func ownOf(scope Scope, ch Changes) []boardChanges {
 //     removed rows: a board tick's cards are rows of its board;
 //   - every subscribed board of the connection gets its rows of the
 //     changed cards and histories (a history moves a card's status time)
-//     and its rows whose parent's card changed or whose parent may have
-//     started or stopped being kept (a row shows its parent's key and title
-//     while the mirror keeps the parent, so a parent's row added to or
-//     removed from any board, or its last open ticket closed, moves it; a
-//     changed order or estimate of a row the board held does not), from
-//     one indexed read of the issues' boards made only when a board of the
-//     connection is subscribed;
+//     and its rows whose parent's name changed (Changes.Parents: a row
+//     shows its parent's key and title from the parent's name, whether or
+//     not the mirror keeps the parent, so a parent kept or let go moves no
+//     row; a changed order or estimate of a row the board held does not
+//     either), from one indexed read of the issues' boards made only when
+//     a board of the connection is subscribed;
 //   - a change of the board's structure, or of the connection's users and
 //     statuses (a name, a status's group, Changes.Catalog), moves rows no
 //     ID names: the board is to be read again, as every board is when the
@@ -71,7 +70,7 @@ func (s *Service) publish(root int64, gen uint64, conn string, ch Changes, own [
 		return
 	}
 	cards := unite(slices.Clone(ch.Cards), ch.History)
-	parents := unite(unite(unite(slices.Clone(ch.Cards), ch.Added), ch.Removed), ch.Visibility)
+	parents := ch.Parents
 	s.subMu.Lock()
 	var boards []*boardPump
 	var tickets []*ticketPump

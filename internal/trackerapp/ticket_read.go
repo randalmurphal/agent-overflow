@@ -126,14 +126,12 @@ func (s *Service) readDetails(ctx context.Context, id string, reads []*ticketRea
 	return out, readErr
 }
 
-// showsOf are the other issues d's view shows from the mirror's cards:
-// its parent and the issues it links, d's card being the card the view
-// rendered (detailViews).
+// showsOf are the other issues d's view shows from the mirror's cards: the
+// issues it links, d's card being the card the view rendered
+// (detailViews). Its parent is shown from the parent's name, which no
+// card holds.
 func showsOf(d tracker.Detail) []tracker.IssueID {
 	var out []tracker.IssueID
-	if d.Card.Parent != "" {
-		out = append(out, d.Card.Parent)
-	}
 	for _, l := range d.Links {
 		if l.Issue.ID != "" && !slices.Contains(out, l.Issue.ID) {
 			out = append(out, l.Issue.ID)

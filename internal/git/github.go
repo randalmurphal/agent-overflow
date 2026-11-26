@@ -126,25 +126,68 @@ type githubHeadRepoRaw struct {
 	ID string `json:"id"`
 }
 
-// githubOpenPRsQuery finds open pull requests by head branch name. The
-// filter matches a fork's branch of the same name too, so each node says
-// whose repository its head is in.
-var githubOpenPRsQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query OpenPRsByHead($owner: String!, $name: String!, $head: String!, $after: String) {
+// githubPRsByHeadQuery finds pull requests by head branch name in the
+// states named. The filter matches a fork's branch of the same name too,
+// so each node says whose repository its head is in.
+var githubPRsByHeadQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query PRsByHead($owner: String!, $name: String!, $head: String!, $states: [PullRequestState!]!, $after: String) {
   repository(owner: $owner, name: $name) {
     id parent { owner { login } name }
-    pullRequests(headRefName: $head, states: [OPEN], first: 100, after: $after) {
+    pullRequests(headRefName: $head, states: $states, first: 100, after: $after) {
       pageInfo { hasNextPage endCursor }
-      nodes { id url number title state baseRefName isCrossRepository headRepository { id } }
+      nodes { id url number title state isDraft baseRefName headRefName isCrossRepository headRepository { id } `+githubActor+` }
     }
   }
 }`)
 
+// githubHeadPullRaw is one node of githubPRsByHeadQuery.
+type githubHeadPullRaw struct {
+	GitPR
+	IsDraft           bool               `json:"isDraft"`
+	HeadRefName       string             `json:"headRefName"`
+	Author            githubActorRaw     `json:"author"`
+	IsCrossRepository bool               `json:"isCrossRepository"`
+	HeadRepository    *githubHeadRepoRaw `json:"headRepository"`
+}
+
 // ListOpenPRs returns the open pull requests whose head is the given
-// branch of cwd's origin repository itself: those opened in the origin
-// from its own branch, and, when the origin is a fork, those opened in
-// its parent from the fork's branch. A pull request from another fork's
-// branch of the same name is not one: it is someone else's work.
+// branch of cwd's origin repository itself (githubPRsByHead).
 func (f *githubForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitPR, error) {
+	nodes, err := f.githubPRsByHead(ctx, cwd, head, []string{"OPEN"})
+	if err != nil {
+		return nil, err
+	}
+	pulls := make([]GitPR, 0, len(nodes))
+	for _, node := range nodes {
+		pulls = append(pulls, node.GitPR)
+	}
+	return pulls, nil
+}
+
+// ListPRsByHead returns the pull requests in any state whose head is the
+// given branch of cwd's origin repository itself (githubPRsByHead).
+func (f *githubForge) ListPRsByHead(ctx context.Context, cwd, head string) ([]PRFound, error) {
+	nodes, err := f.githubPRsByHead(ctx, cwd, head, []string{"OPEN", "CLOSED", "MERGED"})
+	if err != nil {
+		return nil, err
+	}
+	found := make([]PRFound, 0, len(nodes))
+	for _, node := range nodes {
+		row, err := prFound(node.URL, node.Title, node.State, node.IsDraft, PRListAuthor{Login: node.Author.Login, Name: node.Author.Name}, node.HeadRefName)
+		if err != nil {
+			return nil, err
+		}
+		found = append(found, row)
+	}
+	return found, nil
+}
+
+// githubPRsByHead reads the pull requests in states whose head is the
+// given branch of cwd's origin repository itself: those opened in the
+// origin from its own branch, and, when the origin is a fork, those
+// opened in its parent from the fork's branch. A pull request from
+// another fork's branch of the same name is not one: it is someone
+// else's work.
+func (f *githubForge) githubPRsByHead(ctx context.Context, cwd, head string, states []string) ([]githubHeadPullRaw, error) {
 	if strings.TrimSpace(head) == "" {
 		return nil, errors.New("pull request head branch is required")
 	}
@@ -152,41 +195,37 @@ func (f *githubForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitP
 	if err != nil {
 		return nil, err
 	}
-	origin, pulls, err := githubOpenPRsByHead(ctx, client, owner, repo, head, func(_ string, crossRepository bool) bool { return !crossRepository })
+	origin, pulls, err := githubPRsByHeadIn(ctx, client, owner, repo, head, states, func(_ string, crossRepository bool) bool { return !crossRepository })
 	if err != nil || origin.Parent == nil {
 		return pulls, err
 	}
-	_, upstream, err := githubOpenPRsByHead(ctx, client, origin.Parent.Owner.Login, origin.Parent.Name, head, func(headRepo string, _ bool) bool { return headRepo == origin.ID })
+	_, upstream, err := githubPRsByHeadIn(ctx, client, origin.Parent.Owner.Login, origin.Parent.Name, head, states, func(headRepo string, _ bool) bool { return headRepo == origin.ID })
 	if err != nil {
 		return nil, err
 	}
 	return append(pulls, upstream...), nil
 }
 
-// githubOpenPRsByHead reads owner/name's open pull requests from a head
-// branch named head, keeping those keep accepts by their head
+// githubPRsByHeadIn reads owner/name's pull requests in states from a
+// head branch named head, keeping those keep accepts by their head
 // repository's node id and whether it is another repository, beside the
-// repository's id and parent.
-func githubOpenPRsByHead(ctx context.Context, client *forgeapi.Client, owner, name, head string, keep func(headRepo string, crossRepository bool) bool) (githubRepoParentRaw, []GitPR, error) {
+// repository's id and parent. States are normalized (NormalizePRState).
+func githubPRsByHeadIn(ctx context.Context, client *forgeapi.Client, owner, name, head string, states []string, keep func(headRepo string, crossRepository bool) bool) (githubRepoParentRaw, []githubHeadPullRaw, error) {
 	var repository githubRepoParentRaw
-	pulls := []GitPR{}
+	pulls := []githubHeadPullRaw{}
 	var after any
 	for pages := 0; pages < githubReadMaxPages; pages++ {
 		var raw struct {
 			Repository *struct {
 				githubRepoParentRaw
 				PullRequests struct {
-					PageInfo githubPageInfo `json:"pageInfo"`
-					Nodes    []struct {
-						GitPR
-						IsCrossRepository bool               `json:"isCrossRepository"`
-						HeadRepository    *githubHeadRepoRaw `json:"headRepository"`
-					} `json:"nodes"`
+					PageInfo githubPageInfo      `json:"pageInfo"`
+					Nodes    []githubHeadPullRaw `json:"nodes"`
 				} `json:"pullRequests"`
 			} `json:"repository"`
 		}
-		vars := map[string]any{"owner": owner, "name": name, "head": head, "after": after}
-		if _, err := client.GraphQL(ctx, githubOpenPRsQuery, vars, &raw); err != nil {
+		vars := map[string]any{"owner": owner, "name": name, "head": head, "states": states, "after": after}
+		if _, err := client.GraphQL(ctx, githubPRsByHeadQuery, vars, &raw); err != nil {
 			return githubRepoParentRaw{}, nil, err
 		}
 		if raw.Repository == nil {
@@ -201,11 +240,10 @@ func githubOpenPRsByHead(ctx context.Context, client *forgeapi.Client, owner, na
 			if !keep(headRepo, node.IsCrossRepository) {
 				continue
 			}
-			pr := node.GitPR
 			// GitHub spells states uppercase ("OPEN"); callers read the
 			// canonical lowercase vocabulary.
-			pr.State = NormalizePRState(pr.State)
-			pulls = append(pulls, pr)
+			node.State = NormalizePRState(node.State)
+			pulls = append(pulls, node)
 		}
 		page := raw.Repository.PullRequests.PageInfo
 		if !page.HasNextPage || page.EndCursor == "" {
