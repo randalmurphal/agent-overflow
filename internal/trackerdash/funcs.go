@@ -33,9 +33,15 @@ import (
 //     out.
 //   - day(a): instant a's date in the zone, as YYYY-MM-DD.
 //
-// A process holds at most one driver for each zone name a count names
-// that time.LoadLocation loads (location refuses any other before a
-// driver is made): the zone names of this computer's time zone database.
+// A process holds one driver for each zone name a count names that
+// time.LoadLocation loads (location refuses any other before a driver is
+// made), as the count spells it: Europe/Paris and Europe/./Paris are two.
+// It holds at most maxZoneDrivers of them, which a driver cannot be given
+// back to bound: a count that names another is refused until the app
+// restarts.
+
+// maxZoneDrivers is how many zones' drivers a process holds.
+const maxZoneDrivers = 32
 
 // zoneDrivers is the driver of each zone a session opened in, by name,
 // and how many functions they registered, which a test reads.
@@ -51,6 +57,9 @@ func driverFor(loc *time.Location) (*sqlite.Driver, error) {
 	defer zoneDrivers.mu.Unlock()
 	if d, ok := zoneDrivers.m[loc.String()]; ok {
 		return d, nil
+	}
+	if len(zoneDrivers.m) >= maxZoneDrivers {
+		return nil, refuse("dashboard_too_many_zones", fmt.Sprintf("dashboards have been counted in %d time zones since the app started, as many as it keeps; restart the app to count in %s", maxZoneDrivers, truncate(loc.String(), 64)), nil)
 	}
 	d := &sqlite.Driver{}
 	register := func(name string, impl *sqlite.FunctionImpl) error {

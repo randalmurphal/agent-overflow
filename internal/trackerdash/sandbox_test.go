@@ -354,3 +354,63 @@ func TestSessionsLeaveNoRegistrationBehind(t *testing.T) {
 		t.Errorf("bounded_rows under a key no session holds = %d, %v", n, err)
 	}
 }
+
+// A process holds at most maxZoneDrivers zones' drivers, one a zone name
+// as the count spells it: Europe/Paris, Europe/./Paris and Europe//Paris
+// are three. A count that names one more is refused, saying that
+// restarting the app clears it, and a name already held still counts.
+// Not parallel: it fills the registry, and takes out what it added.
+func TestZoneDriversStopAtTheirBound(t *testing.T) {
+	ctx := context.Background()
+	zoneDrivers.mu.Lock()
+	before := map[string]bool{}
+	for name := range zoneDrivers.m {
+		before[name] = true
+	}
+	zoneDrivers.mu.Unlock()
+	t.Cleanup(func() {
+		zoneDrivers.mu.Lock()
+		defer zoneDrivers.mu.Unlock()
+		for name := range zoneDrivers.m {
+			if !before[name] {
+				delete(zoneDrivers.m, name)
+				zoneDrivers.registrations -= 4
+			}
+		}
+	})
+	held := func() int {
+		zoneDrivers.mu.Lock()
+		defer zoneDrivers.mu.Unlock()
+		return len(zoneDrivers.m)
+	}
+	e := evaluator()
+	count := func(zone string) error {
+		_, err := e.Evaluate(ctx, teamBoard().board(), Request{Dashboard: builtinSprintsID, Range: RangeSprints3, TimeZone: zone})
+		return err
+	}
+	n := held()
+	for _, zone := range []string{"Europe/Paris", "Europe/./Paris", "Europe//Paris"} {
+		if err := count(zone); err != nil {
+			t.Fatalf("%s: %v", zone, err)
+		}
+	}
+	if got := held() - n; got != 3 {
+		t.Fatalf("three spellings of Paris made %d drivers; each spelling is its own", got)
+	}
+	for i := 1; held() < maxZoneDrivers; i++ {
+		if err := count("Europe/" + strings.Repeat("./", i+1) + "Paris"); err != nil {
+			t.Fatalf("zone %d of %d: %v", held()+1, maxZoneDrivers, err)
+		}
+	}
+	err := count("Europe/Berlin")
+	var r *Refusal
+	if !errors.As(err, &r) || r.Code != "dashboard_too_many_zones" || !strings.Contains(r.Error(), "32 time zones") || !strings.Contains(r.Error(), "restart") {
+		t.Fatalf("a 33rd zone = %v; want the bound's refusal, which says restarting the app clears it", err)
+	}
+	if held() != maxZoneDrivers {
+		t.Fatalf("%d drivers after the refusal; want %d", held(), maxZoneDrivers)
+	}
+	if err := count("Europe//Paris"); err != nil {
+		t.Fatalf("a zone already held, after the bound: %v", err)
+	}
+}

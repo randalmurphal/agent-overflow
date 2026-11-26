@@ -2122,8 +2122,10 @@ statement.
   at once on a computer; a third waits up to 2 s and is refused as busy.
 - The app's functions (`days`, `working_days`, `day` and the wrapper's
   `bounded_rows`) are registered once per time zone a count names, on a
-  driver of that zone the process keeps (`trackerdash/funcs.go`): at
-  most one per zone name the computer's time zone database loads. The
+  driver of that zone the process keeps (`trackerdash/funcs.go`): one
+  per zone name the computer's time zone database loads, as the request
+  spells it, and at most 32 per process; a count that names a 33rd is
+  refused until the app restarts. The
   wrapper finds its session's rows by a random key it writes into its
   own text; a key that is not an open session's fails the statement, and
   a session removes its key when it closes or fails to open.
