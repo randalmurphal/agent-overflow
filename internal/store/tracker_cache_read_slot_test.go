@@ -27,7 +27,9 @@ var mirrorPoolReads = map[string]int{
 	"ListMirrorSprintNames":   1, // at most mirrorMaxLookup sprints on as many boards, each pair by key
 	"ListMirrorIssueWorklogs": 1, // a page of one issue's worklogs
 	"GetMirrorSync":           1, // one board's state
-	"ListMirrorBodies":        1, // at most MirrorMaxBodies bodies, each by key
+	// One board's column statuses, at most mirrorMaxColumnStatuses.
+	"GetMirrorBoardStatuses": 1,
+	"ListMirrorBodies":       1, // at most MirrorMaxBodies bodies, each by key
 	// At most mirrorMaxLookup cards, details and boards, each by key: the
 	// cards' rows (one per board holding the issue) and kept issues, the
 	// details, and the boards.

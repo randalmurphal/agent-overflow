@@ -217,11 +217,16 @@ export async function editJiraWorklog(jiraURL: string, key: string, id: string, 
 export const LINEAR_TEAM = '00000000-0000-4000-8000-00000000000a';
 
 /**
- * Seeds a fake Linear workspace with one team and its states, then seeds
- * a project, adds and verifies a Linear connection to it, and lists the
- * team's board on the project, opening first.
+ * Seeds a fake Linear workspace with one team, its states and `issues`
+ * (trackerfake.LinearIssue), then seeds a project, adds and verifies a
+ * Linear connection to it, and lists the team's board on the project,
+ * opening first.
  */
-export async function connectFakeLinearBoard(harness: HarnessApp, name: string): Promise<{ projectId: string; connectionId: string }> {
+export async function connectFakeLinearBoard(
+  harness: HarnessApp,
+  name: string,
+  issues: ReadonlyArray<Record<string, unknown>> = [],
+): Promise<{ projectId: string; connectionId: string }> {
   const viewer = '00000000-0000-4000-8000-000000000001';
   const apiKey = 'lin_api_fake_key_1';
   const state = (n: number, stateName: string, type: string) => ({ id: `00000000-0000-4000-8000-0000000000${20 + n}`, team: LINEAR_TEAM, name: stateName, type, position: n });
@@ -231,6 +236,7 @@ export async function connectFakeLinearBoard(harness: HarnessApp, name: string):
       users: [{ id: viewer, name: 'User 1', email: JIRA_ACCOUNT }],
       teams: [{ id: LINEAR_TEAM, key: 'WEB', name: 'Web', timezone: 'UTC', members: [viewer] }],
       states: [state(0, 'Todo', 'unstarted'), state(1, 'In Progress', 'started'), state(2, 'Done', 'completed')],
+      issues,
     }],
   });
   const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name, repo: {} }] });

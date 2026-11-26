@@ -9,10 +9,7 @@
   import ArrowUp from '@lucide/svelte/icons/arrow-up';
   import { settingsComputer } from './settingsComputer';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
-  import { HOME_BACKEND } from '../../transport/backendKey';
-  import { projectBackend } from '../../transport/entityIndex';
-  import { getProjects, isLoaded } from '../../stores/projects.svelte';
-  import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { isLoaded } from '../../stores/projects.svelte';
   import { acquireTrackerConnections, refreshTrackerConnections, trackerConnectionsOf, trackerReadGate } from '../../stores/trackerConnections.svelte';
   import {
     acquireTrackerProjectBoards,
@@ -31,40 +28,23 @@
     takeRequestedTrackerBoardsProject,
   } from '../../stores/settingsOverlay.svelte';
   import type { TrackerBoardChoice, TrackerConnection } from '../../stores/bindings';
-  import { disambiguatedPathLabels, formatPathLabel } from '../../utils/pathDisplay';
   import { userFacingError } from '../../utils/userFacingError';
   import IconButton from '../primitives/IconButton.svelte';
   import Icon from '../primitives/Icon.svelte';
-  import SettingsField from './SettingsField.svelte';
   import TrackerBoardAdd from './TrackerBoardAdd.svelte';
+  import TrackerProjectSelect, { computerProjects } from './TrackerProjectSelect.svelte';
   import SettingsOlderComputer from './SettingsOlderComputer.svelte';
-  import { GHOST_BUTTON_CLASS, SELECT_CLASS } from './styles';
+  import { GHOST_BUTTON_CLASS } from './styles';
   import { trackerConnectionName, trackerKindName } from './trackerConnectionStatus';
 
   const { backend, scopeGrant } = settingsComputer();
 
   onMount(() => acquireTrackerConnections(backend));
 
-  let projects = $derived(getProjects().filter((row) => (projectBackend(row.project.id) ?? HOME_BACKEND) === backend));
-  let labels = $derived(disambiguatedPathLabels(projects.map((row) => row.project)));
+  let projectCount = $derived(computerProjects(backend).length);
   let projectsLoaded = $derived(isLoaded());
+  // A deep link's project wins once it is listed (TrackerProjectSelect).
   let selectedId = $state('');
-
-  // A deep link's project wins once it is listed; otherwise keep the pick
-  // while it exists, or fall back to the first project.
-  $effect(() => {
-    const requested = requestedTrackerBoardsProject();
-    if (requested !== null && projects.some((p) => p.project.id === requested)) {
-      selectedId = requested;
-      takeRequestedTrackerBoardsProject();
-      return;
-    }
-    if (projects.length === 0) {
-      selectedId = '';
-      return;
-    }
-    if (!projects.some((p) => p.project.id === untrack(() => selectedId))) selectedId = projects[0].project.id;
-  });
 
   $effect(() => {
     const id = selectedId;
@@ -154,30 +134,20 @@
     <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-boards-waiting">Asking this computer about its trackers…</p>
   {:else if gate === 'failed'}
     {@render connectionsFailure()}
-  {:else if projectsLoaded && projects.length === 0}
+  {:else if projectsLoaded && projectCount === 0}
     <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-boards-no-projects">
       No projects yet. Add one from the sidebar first.
     </p>
   {:else}
-    <SettingsField
-      id="tracker-boards.project"
-      label="Project"
+    <TrackerProjectSelect
+      {backend}
+      field="tracker-boards.project"
+      testId="settings-tracker-boards-project"
       hint="Choose the project whose boards to list."
-      htmlFor="settings-tracker-boards-project"
-      stacked={isCompactLayout()}
-    >
-      <select
-        id="settings-tracker-boards-project"
-        data-testid="settings-tracker-boards-project"
-        class={SELECT_CLASS}
-        value={selectedId}
-        onchange={(e) => (selectedId = (e.target as HTMLSelectElement).value)}
-      >
-        {#each projects as entry (entry.project.id)}
-          <option value={entry.project.id}>{formatPathLabel(labels.get(entry.project.id)!)}</option>
-        {/each}
-      </select>
-    </SettingsField>
+      bind:selected={selectedId}
+      requested={requestedTrackerBoardsProject()}
+      onRequestTaken={takeRequestedTrackerBoardsProject}
+    />
 
     {#if boards}
       <div

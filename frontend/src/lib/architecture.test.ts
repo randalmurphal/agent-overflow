@@ -437,6 +437,7 @@ const ISSUES_LAZY_MODULES = [
   'lib/stores/ticketWork.svelte.ts',
   'lib/stores/trackerDashboard.svelte.ts',
   'lib/stores/trackerDashboardModel.ts',
+  'lib/stores/trackerSetup.svelte.ts',
   'lib/utils/timeSpent.ts',
   'lib/utils/ticketBranch.ts',
 ] as const;

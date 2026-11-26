@@ -245,7 +245,7 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 var mirrorNonWriters = []string{
 	"GetOrCreateMirrorRoot", "GetMirrorRoot", "DetachMirror", "FinishMirrorCleanup",
 	"GetMirrorSync", "ListMirrorHistoryDue", "ListMirrorBodies", "ListMirrorIssueWorklogs",
-	"GetMirrorBoard", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorIssueRows", "ListMirrorTicketRows", "ListMirrorSection", "CountMirrorSections",
+	"GetMirrorBoard", "GetMirrorBoardStatuses", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorIssueRows", "ListMirrorTicketRows", "ListMirrorSection", "CountMirrorSections",
 	"ListMirrorOffBoardLinkedIssues", "ReadMirrorBoardView", "ReadMirrorBoardPatch", "ListMirrorIssueBoards", "ListMirrorSprintNames", "LastMirrorPlanRow",
 	"ReadMirrorRefreshTargets", "ReadMirrorWorklogDays",
 	// A board's rows copied into a dashboard's own database: a read of the

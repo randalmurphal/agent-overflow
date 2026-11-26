@@ -11,9 +11,9 @@ import type { DetailView, SetupView, TicketSubscription, TicketView, WriteView }
 import { trackerIssueUpdated } from './trackerBoardEvents';
 import { attachTrackerTicket, type TrackerTicketRef } from './trackerTicket.svelte';
 import { ticketWrite, type TicketWriteContext } from './trackerTicketWrites.svelte';
+import { acquireTrackerSetup } from './trackerSetup.svelte';
 import {
   askAboutTicket,
-  loadStartWorkDefaults,
   loadTicketWork,
   retryStartWork,
   startWork,
@@ -379,15 +379,21 @@ describe('Start work', () => {
     ticket.release();
   });
 
-  it('saves the defaults under the revision the form read, and says when the setup moved', async () => {
+  it('saves the defaults under the revision the project\'s setup holds, and says when the setup moved', async () => {
     const { ticket, ctx, read } = await openTicket();
     held = detail({ id: 's2', name: 'In Progress' }, 'acc-1');
     const view = (revision: string): SetupView => ({ revision, setup: { status_groups: [], ticket_pins: [], start_work: [{ tracker: 'jira', site: 'https://example.atlassian.net', project: 'OPS', assign: false }] } } as SetupView);
-    setBindingMock('ProjectTrackerSetup', async () => view('r1'));
-    await loadStartWorkDefaults(ticket.key, 'p1');
+    let stored = view('r1');
+    const reads = setBindingMock('ProjectTrackerSetup', async () => stored);
+    // The form holds the project's setup while it is open.
+    const releaseSetup = acquireTrackerSetup('p1');
+    await flush();
     setBindingMock('StartTicketThread', async () => thread('t-defaults'));
     setBindingMock('GetTicketWork', async () => ({ key: 'WEB-1', pullRequests: [], branches: [], problems: [] }));
-    const save = setBindingMock('SetProjectTrackerSetup', async () => ({ saved: false, refused: 'this change was not saved: the project\'s tracker setup changed after it was read', stored: view('r2') }));
+    const save = setBindingMock('SetProjectTrackerSetup', async () => {
+      stored = view('r2');
+      return { saved: false, refused: 'this change was not saved: the project\'s tracker setup changed after it was read', stored };
+    });
     const place = { tracker: 'jira', site: 'https://example.atlassian.net', project: 'WEB' };
     await startWork(ctx, { ...PLAN, repository: 'p2', save: { project: 'p1', place, branchTemplate: 'feature/{key}' } }, read);
     expect(save).toHaveBeenCalledWith('p1', 'r1', expect.objectContaining({
@@ -397,11 +403,31 @@ describe('Start work', () => {
       ],
     }));
     expect(startWorkRun(ticket.key)?.steps.defaults).toMatchObject({ kind: 'refused', text: expect.stringContaining('changed after it was read') });
+    expect(reads, 'the refusal\'s stored setup is held, with no read').toHaveBeenCalledTimes(1);
 
     save.mockImplementation(async () => ({ saved: true, stored: view('r3') }));
     await retryStartWork(ctx, read);
     expect(save).toHaveBeenLastCalledWith('p1', 'r2', expect.anything());
     expect(startWorkRun(ticket.key)).toBeNull();
+    releaseSetup();
+    ticket.release();
+  });
+
+  it('reads the project\'s setup before saving the defaults when no surface holds it, and a failed save is not saved', async () => {
+    const { ticket, ctx, read } = await openTicket();
+    held = detail({ id: 's2', name: 'In Progress' }, 'acc-1');
+    setBindingMock('ProjectTrackerSetup', async () => ({ revision: 'r7', setup: { status_groups: [], ticket_pins: [], start_work: [] } }) as SetupView);
+    setBindingMock('StartTicketThread', async () => thread('t-defaults-unheld'));
+    setBindingMock('GetTicketWork', async () => ({ key: 'WEB-1', pullRequests: [], branches: [], problems: [] }));
+    // As the wire carries a public error: its sentence, and the detail of
+    // its causes.
+    const sentence = 'this change may or may not be stored: the computer that holds the project could not finish updating /x/tracker.json (sync failed); read the project\'s tracker setup again before you change it again';
+    const unsure = new TransportError('tracker_setup_unsure', sentence, { detail: { ref: 'r1', method: 'SetProjectTrackerSetup', at: 1, chain: [sentence] } });
+    const save = setBindingMock('SetProjectTrackerSetup', async () => { throw unsure; });
+    const place = { tracker: 'jira', site: 'https://example.atlassian.net', project: 'WEB' };
+    await startWork(ctx, { ...PLAN, save: { project: 'p1', place, branchTemplate: null } }, read);
+    expect(save).toHaveBeenCalledWith('p1', 'r7', expect.anything());
+    expect(startWorkRun(ticket.key)?.steps.defaults).toMatchObject({ kind: 'failed', text: expect.stringMatching(/^This change may or may not be stored: .*before you change it again\.$/) });
     ticket.release();
   });
 });

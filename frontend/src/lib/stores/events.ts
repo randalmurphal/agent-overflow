@@ -189,7 +189,7 @@ import {
 } from './threadTitleGeneration.svelte';
 import { applyPRReviewCILog, applyPRReviewCIUpdated, applyPRReviewUpdated } from './eventsPRReview';
 import { applyPipelineUpdated, applyPullsUpdated } from './eventsPulls';
-import { applyTrackerBoardUpdated, applyTrackerIssueUpdated } from './eventsTracker';
+import { applyTrackerBoardUpdated, applyTrackerIssueUpdated, applyTrackerSetupUpdated } from './eventsTracker';
 import { setupSessionImportEvents } from './eventsSessionImport';
 import {
   applyHighlightDiffSeed,
@@ -818,6 +818,9 @@ export function setupEventListeners(): () => void {
   // An open ticket of the Issues pane: its view changed, its reads failed
   // or recovered, or its subscription ended.
   const cancelTrackerIssueUpdated = wailsEventOn('tracker:issue_updated', applyTrackerIssueUpdated);
+  // A project's tracker setup changed as it is stored: the setups and
+  // statuses this window holds of that computer's projects read again.
+  const cancelTrackerSetupUpdated = wailsEventOn('tracker:setup_updated', applyTrackerSetupUpdated);
   // workflow:* — the typed run-record channel. Item/phase transitions keep
   // the overlay's run cache live (and the sidebar's needs-attention badge
   // authoritative) without polling; engine-state carries the one global pause
@@ -937,6 +940,7 @@ export function setupEventListeners(): () => void {
     cancelPipelineUpdated();
     cancelTrackerBoardUpdated();
     cancelTrackerIssueUpdated();
+    cancelTrackerSetupUpdated();
     cancelWorkflowError();
     cancelWorkflowItemState();
     cancelWorkflowPhaseState();

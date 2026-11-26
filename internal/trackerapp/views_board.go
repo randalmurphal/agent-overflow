@@ -140,34 +140,37 @@ type FailureView struct {
 // forward, BoardPatch). Groups is the version of the status groups the
 // project gives the board's site (StatusGroups), which the sections and
 // totals were read with: a client sends it back in its cursors and in the
-// totals it holds (TotalsAt). LeftOut is the statuses those groups leave
-// out of counts: a total the client adds up from rows it holds leaves out
-// the rows in them, as the view's totals do. Project is empty for a board
+// totals it holds (TotalsAt). Regrouped is those groups: each status the
+// project puts in a group other than the tracker's, with that group
+// (backlog, todo, in_progress, done, canceled, or left_out, out of
+// counts), by which a count the client makes of rows it holds counts each
+// row, as the view's totals do; a status it does not name counts in its
+// tracker group. Project is empty for a board
 // of no one project. IssueURL is the address of a card of the board less
 // its key, which completes it escaped as a path segment
 // (jiraprovider.IssueURLPrefix); empty on a tracker whose cards carry
 // their own (CardView.URL).
 type BoardView struct {
-	ID             string        `json:"id"`
-	Lifetime       int64         `json:"lifetime"`
-	Revision       int64         `json:"revision"`
-	TotalsRevision int64         `json:"totals_revision"`
-	Groups         string        `json:"groups,omitempty"`
-	LeftOut        []string      `json:"left_out,omitempty"`
-	Name           string        `json:"name"`
-	Project        string        `json:"project,omitempty"`
-	PlansSprints   bool          `json:"plans_sprints"`
-	Estimate       EstimateView  `json:"estimate"`
-	Columns        []ColumnView  `json:"columns"`
-	Sprints        []SprintView  `json:"sprints"`
-	All            SectionTotal  `json:"all"`
-	Backlog        SectionTotal  `json:"backlog"`
-	Sync           SyncView      `json:"sync"`
-	Screen         []Section     `json:"screen"`
-	Plan           []Section     `json:"plan"`
-	Pace           *PaceView     `json:"pace,omitempty"`
-	Sections       []SectionPage `json:"sections"`
-	IssueURL       string        `json:"issue_url,omitempty"`
+	ID             string            `json:"id"`
+	Lifetime       int64             `json:"lifetime"`
+	Revision       int64             `json:"revision"`
+	TotalsRevision int64             `json:"totals_revision"`
+	Groups         string            `json:"groups,omitempty"`
+	Regrouped      map[string]string `json:"regrouped,omitempty"`
+	Name           string            `json:"name"`
+	Project        string            `json:"project,omitempty"`
+	PlansSprints   bool              `json:"plans_sprints"`
+	Estimate       EstimateView      `json:"estimate"`
+	Columns        []ColumnView      `json:"columns"`
+	Sprints        []SprintView      `json:"sprints"`
+	All            SectionTotal      `json:"all"`
+	Backlog        SectionTotal      `json:"backlog"`
+	Sync           SyncView          `json:"sync"`
+	Screen         []Section         `json:"screen"`
+	Plan           []Section         `json:"plan"`
+	Pace           *PaceView         `json:"pace,omitempty"`
+	Sections       []SectionPage     `json:"sections"`
+	IssueURL       string            `json:"issue_url,omitempty"`
 }
 
 // PaceView is what a board's last finished sprints (at most
@@ -322,7 +325,7 @@ func (s *Service) Board(scope Scope, groups StatusGroups, sections []Section) (B
 	}
 	v := boardViewOf(snap.Structure, snap.Counts, names)
 	v.Lifetime, v.Revision, v.TotalsRevision = snap.Structure.Lifetime, snap.Counts.Revision, snap.Counts.TotalsRevision
-	v.Groups, v.LeftOut = groups.version, groups.leftOut
+	v.Groups, v.Regrouped = groups.version, groups.statuses
 	sync, _, err := s.store.GetMirrorSync(root, string(scope.Board), s.steady().UnixMilli())
 	if err != nil {
 		return BoardView{}, fmt.Errorf("trackerapp: read the sync state of board %s: %w", scope.Board, err)

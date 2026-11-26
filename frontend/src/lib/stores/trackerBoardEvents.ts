@@ -1,5 +1,6 @@
 // What the always-loaded stores tell the Issues stores, which load with the
-// Issues pane (`components/panes/ToolPane.svelte` imports it on demand): a
+// Issues pane (`components/panes/ToolPane.svelte` imports it on demand), and
+// the tracker setup store, which loads with a ticket or a Settings page: a
 // store there registers here when it loads. Until one has, no board or
 // ticket is held and no pane holds the board choices, so a frame is dropped
 // and a gap has nothing to read again. This module is all of the Issues pane the startup
@@ -43,6 +44,7 @@ interface TrackerChannel<E> {
 let boards: TrackerChannel<TrackerBoardEvent> | null = null;
 let tickets: TrackerChannel<TrackerIssueEvent> | null = null;
 const listsChanged = new Set<(backend: BackendKey) => void>();
+const setupUpdated = new Set<(backend: BackendKey) => void>();
 
 /** The board store takes the channel when it loads. */
 export function takeTrackerBoardChannel(channel: TrackerChannel<TrackerBoardEvent>): void {
@@ -85,4 +87,15 @@ export function onTrackerBoardListsChanged(listener: (backend: BackendKey) => vo
  * connections changed, or this window saved a project's boards. */
 export function trackerBoardListsChanged(backend: BackendKey): void {
   for (const listener of listsChanged) listener(backend);
+}
+
+/** Runs `listener` on every `tracker:setup_updated` from a computer: some
+ * project's tracker setup there changed as it is stored. */
+export function onTrackerSetupUpdated(listener: (backend: BackendKey) => void): void {
+  setupUpdated.add(listener);
+}
+
+/** A `tracker:setup_updated` frame from `backend`. */
+export function trackerSetupUpdated(backend: BackendKey): void {
+  for (const listener of setupUpdated) listener(backend);
 }

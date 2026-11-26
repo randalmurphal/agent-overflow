@@ -2,7 +2,7 @@
 
 Status: product rulings and screen designs recorded 2026-11-15. Built:
 the connections and a project's board list, in Settings > Issues
-(Connections, Boards), and the Issues pane with its Board and Backlog
+(Connections, Boards, Status groups), and the Issues pane with its Board and Backlog
 screens, opened from the tool row's Issues entry, and the Ticket screen,
 opened from a card or a row, from a thread's linked ticket or from a pull
 request's ticket chip; a thread's ticket link, in the sidebar and the
@@ -10,8 +10,8 @@ thread header. The other screens are not built; the [Board](#board),
 [Backlog](#backlog-and-sprint-planning), [Ticket](#ticket),
 [Tickets, pull requests and branches](#tickets-pull-requests-and-branches)
 and [Thread link](#thread-link) sections say what of them is. A
-project's status groups and ticket pins are built in the backend, and no
-screen sets them yet; its Start work defaults are set from the Start work
+project's status groups are set in Settings > Issues > Status groups, its
+ticket pins on the ticket, and its Start work defaults from the Start work
 form. Agents can find, read, create and change tickets, a change of
 several tickets waiting for the person's approval; their worklog tools
 are not built ([Agent tools](../architecture/tracker-backend.md#agent-tools)).
@@ -430,8 +430,9 @@ its result in the section or the ticket's menu; on Jira, the
 estimate in the header and Log time; the control that opens it in the
 tracker; Back through the tickets opened from one another; and Work, with
 Ask and Start work; and the thread an agent's comment or change came
-from, on the comment and in the history. Not built: pinning a field or a
-section, and the mark on a section holding the template text.
+from, on the comment and in the history; a field pinned for the project
+from its row, a section from its header. Not built: the mark on a section
+holding the template text.
 
 - At 720 or wider the content is on the left and a rail on the right holds
   Fields, then Work. Narrower, the ticket shows the content only, with one
@@ -442,16 +443,32 @@ section, and the mark on a section holding the template text.
   Close leaves at once. Picking another board drops them, and a reload
   does not remember them.
 - Fields pinned for the project show first on every ticket of that
-  project. The rest sit behind a control with a find box, filled fields
-  first. A field is pinned from its row. A field with allowed values is
+  project, after the card's own rows (type, status, assignee, priority,
+  points and sprint), which take no pin. The rest sit behind a control
+  with a find box, filled fields first. A field is pinned from its row,
+  by a pin that shows while it is pinned and on hover or focus of the row
+  otherwise (always under compact). A pinned field this ticket lacks is
+  listed behind the control, "Pinned for" the project, with its unpin, so
+  a pin no open ticket shows can be removed from any ticket of the
+  project on that site. A Linear ticket's fields take no pin. A field with allowed values is
   changed in place. Type is changed wherever its mark shows; the tracker
   may refuse a
   [type change](../references/tracker-api-measurements.md#jira-cloud), and
   the refusal is shown.
 - Each long text field is its own section. Sections fold, and fold state is
-  remembered. A section is pinned per project; unpinned sections collapse
-  into one line that names them. A section still holding the project's
+  remembered. A section is pinned per project from its header, the
+  description, linked tickets and attachments included; until the
+  project pins any, those three are pinned. Pinned sections show in the
+  order pinned, and unpinned ones collapse into one line that names them,
+  where a pinned long text field this ticket lacks is listed with its
+  unpin. A section still holding the project's
   template text is marked as not filled in.
+- A pin saves at once to the project's setup on its computer, and every
+  open ticket of the project lays out by it. A pin that lost to another
+  save, or whose save failed, is said in a toast naming the field or
+  section and the project, and the tickets show what is stored. A setup
+  that cannot be read is said on the rail, and the ticket shows its
+  default layout with no pins; one a newer version saved offers no pins.
 - Work lists the threads, pull requests and branches tied to the ticket,
   each with its state and owner. It offers Ask and Start work, and shows
   the project their thread goes in, which the person can change: the
@@ -623,6 +640,20 @@ sidebar and the thread header, on desktop and on a phone.
   and how long its token has left, and warns before the token lapses
   (two weeks before the date entered). Adding one walks the credential
   steps in the rulings. Tempo is added from its Jira connection.
+- Status groups lists, per tracker site, each status of the project's
+  boards as this computer last read them, with the tracker's own group,
+  and a pick of another group or left out of counts, saved at once. The
+  tracker's group picked again puts the status back. A status regrouped
+  that no board shows now is listed apart with Put back. A board this
+  computer has not read is named, with Check again; once it has been
+  read, Check again or the page shown again lists its statuses. The
+  Board, the Backlog and their counts follow a save without a reload;
+  Complete sprint counts by the tracker's groups, not the project's. A
+  save that lost to another, from another window or a hand edit of the
+  file, is said, and the page shows what is stored; a save whose outcome
+  is unknown says so in the computer's words and reads the setup again.
+  A setup that cannot be read is said with its file and Try again; one a
+  newer version saved is said, with no change offered.
 - The rest is per project: which boards the picker lists and which opens
   first; which group each status belongs to, including left out of counts;
   pinned fields, pinned sections and card marks; Start work defaults; the

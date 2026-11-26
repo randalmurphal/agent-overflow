@@ -13,13 +13,8 @@
   import type { DetailView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import type { TicketBranch } from '../../stores/bindings';
   import { getProjectLabelText } from '../../stores/projects.svelte';
-  import {
-    defaultsAt,
-    loadStartWorkDefaults,
-    startWorkDefaults,
-    type DefaultsPlace,
-    type StartWorkPlan,
-  } from '../../stores/ticketWork.svelte';
+  import { defaultsAt, type DefaultsPlace, type StartWorkPlan } from '../../stores/ticketWork.svelte';
+  import { acquireTrackerSetup, trackerSetupOf } from '../../stores/trackerSetup.svelte';
   import type { Project, Thread } from '../../types/models';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
@@ -29,8 +24,6 @@
   interface Props {
     anchor: HTMLElement | undefined;
     open: boolean;
-    /** The ticket's entry key (trackerTicketKey). */
-    ticket: string;
     detail: DetailView;
     /** The projects a thread of the ticket can be made in (Work's): the
      * picker lists them, and only one of them is submitted. */
@@ -55,16 +48,18 @@
     onClose: () => void;
   }
 
-  let { anchor, open, ticket, detail, projects, project, place, me, branches, started, branch: givenBranch, onStart, onOpenThread, onClose }: Props = $props();
+  let { anchor, open, detail, projects, project, place, me, branches, started, branch: givenBranch, onStart, onOpenThread, onClose }: Props = $props();
 
   const card = $derived(detail.card);
-  const defaults = $derived(startWorkDefaults(ticket));
-  const saved = $derived(defaults?.view && place ? defaultsAt(defaults.view.setup, place) : null);
+  // The project's setup as this window holds it while the form is open:
+  // read on the first hold, and read again when it changes as stored.
+  const defaults = $derived(trackerSetupOf(project));
+  const saved = $derived(defaults.view && place ? defaultsAt(defaults.view.setup, place) : null);
 
   $effect(() => {
     if (!open) return;
-    const at = { ticket, project };
-    untrack(() => loadStartWorkDefaults(at.ticket, at.project));
+    const at = project;
+    return untrack(() => acquireTrackerSetup(at));
   });
 
   // The rows as the person set them; null is "as the defaults say".
@@ -115,10 +110,10 @@
   const existing = $derived(branches.find((b) => b.projectId === chosenRepository && b.name === chosenBranch) ?? null);
 
   const projectName = $derived(getProjectLabelText(project));
-  const defaultsError = $derived(defaults?.error ? userFacingError(defaults.error) : null);
+  const defaultsError = $derived(defaults.error ? userFacingError(defaults.error) : null);
   // The form is confirmed only once the project's saved defaults have
   // answered (or failed, which it says), so what it shows is what they say.
-  const defaultsSettled = $derived(defaults?.project === project && !defaults.loading);
+  const defaultsSettled = $derived(defaults.view !== null || defaults.error !== null);
 
   function start(): void {
     if (!chosenBranch || !chosenRepository || !defaultsSettled) return;
@@ -198,12 +193,12 @@
     {/if}
 
     <label class="flex items-center gap-2 compact:min-h-9">
-      <input type="checkbox" bind:checked={save} disabled={!place || !defaults?.view} data-testid="start-work-save" />
+      <input type="checkbox" bind:checked={save} disabled={!place || !defaults.view} data-testid="start-work-save" />
       <span>Save as defaults for {projectName}</span>
     </label>
     {#if defaultsError}
       <span class="text-xs text-error" role="alert" data-testid="start-work-defaults-error">Could not read the saved defaults: {defaultsError}</span>
-    {:else if defaults?.loading && !defaults.view}
+    {:else if !defaults.view}
       <span class="text-xs text-fg-muted">Reading the saved defaults…</span>
     {/if}
 

@@ -84,6 +84,39 @@ func (s *Store) GetMirrorBoard(rootID int64, boardID string) (st MirrorStructure
 	return st, ok, nil
 }
 
+// GetMirrorBoardStatuses reads the status IDs of the columns of a board
+// the mirror shows, in board order (by column, each column's in rank
+// order; the mirror holds a status in one column of a board), in one
+// statement of at most mirrorMaxColumnStatuses rows. ok is false for a
+// board the mirror does not show (not read yet, retired or listed on no
+// project), which GetMirrorBoard does not answer either; a board shown
+// with no column statuses answers ok and none.
+func (s *Store) GetMirrorBoardStatuses(rootID int64, boardID string) (ids []string, ok bool, err error) {
+	err = scanMirrorRows(s.reader(), mirrorBoardStatusesSQL, []any{rootID, boardID}, func(r rowScanner) error {
+		var id sql.NullString
+		if err := r.Scan(&id); err != nil {
+			return err
+		}
+		ok = true
+		if id.Valid {
+			ids = append(ids, id.String)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("read tracker mirror %d board %s statuses: %w", rootID, boardID, err)
+	}
+	return ids, ok, nil
+}
+
+// mirrorBoardStatusesSQL is GetMirrorBoardStatuses's statement: the shown
+// board's row, joined to its column statuses in the columns' index order,
+// one row with no status for a board with none.
+var mirrorBoardStatusesSQL = `SELECT s.status_id FROM tracker_cache_boards b
+	LEFT JOIN tracker_cache_board_column_statuses s ON s.root_id = b.root_id AND s.board_id = b.board_id
+	WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND ` + mirrorBoardShown(intParam("?1"), "?2") + `
+	ORDER BY s.position, s.rank LIMIT ` + strconv.Itoa(mirrorMaxColumnStatuses)
+
 func readMirrorColumnsTx(tx sqlQueryer, rootID int64, boardID string) ([]MirrorColumn, error) {
 	names, err := queryIDs(tx, `SELECT name FROM tracker_cache_board_columns WHERE root_id = CAST(? AS INTEGER) AND board_id = ?
 		ORDER BY position LIMIT `+strconv.Itoa(mirrorMaxColumns), rootID, boardID)

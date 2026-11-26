@@ -158,6 +158,12 @@ const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
   // TrackerConnections, app_tracker_boards.go ProjectTrackerBoards).
   TrackerConnections: async () => [],
   ProjectTrackerBoards: async () => [],
+  // A project's tracker setup, read by a ticket of the project and the
+  // Status groups page (stores/trackerSetup): a project with no setup file
+  // answers no revision and every section empty, and one with no board no
+  // site (app_tracker_setup.go).
+  ProjectTrackerSetup: async () => ({ revision: '', setup: { status_groups: [], ticket_pins: [], start_work: [] } }),
+  ProjectTrackerStatuses: async () => [],
   // Custom notification sounds (stores/sounds).
   GetSoundFiles: async () => ({ dir: '/tmp/sounds', sounds: [], warnings: [] }),
   // Rate limit snapshots read on every hello (stores/eventsRateLimits).
@@ -1148,6 +1154,7 @@ export const ProjectTrackerBoards = dispatch('ProjectTrackerBoards');
 export const TrackerBoardChoices = dispatch('TrackerBoardChoices');
 export const SetProjectTrackerBoards = dispatch('SetProjectTrackerBoards');
 export const ProjectTrackerSetup = dispatch('ProjectTrackerSetup');
+export const ProjectTrackerStatuses = dispatch('ProjectTrackerStatuses');
 export const SetProjectTrackerSetup = dispatch('SetProjectTrackerSetup');
 export const SubscribeTrackerBoard = dispatch('SubscribeTrackerBoard');
 export const TrackerBoard = dispatch('TrackerBoard');
