@@ -46,6 +46,14 @@ type Store interface {
 	ClaimAgentWrite(w store.AgentWrite, since int64) (store.AgentWrite, bool, error)
 	ResendAgentWrite(id, sent int64) error
 	RecordAgentWrites(sent int64, ws []store.AgentWrite) error
+	// The time draft (store tracker_time_entries.go).
+	ReplaceAgentTimeDays(connection, author, today string, entries []store.TimeEntry, now int64) (store.TimeDraftWrite, error)
+	TimeEntry(connection string, id int64) (store.TimeEntry, bool, error)
+	ThreadTimeEntries(thread string) ([]store.TimeEntry, error)
+	EditTimeEntry(connection string, ref store.TimeEntryRef, ch store.TimeEntryChange, now int64) (store.TimeEntry, bool, error)
+	RemoveTimeEntries(connection string, refs []store.TimeEntryRef) ([]store.TimeEntry, error)
+	MarkTimeEntriesSent(connection string, refs []store.TimeEntryRef, sentTo string, now, running int64) ([]store.TimeEntry, error)
+	SettleTimeEntries(connection string, sentMs int64, outcomes []store.TimeEntrySettle, now int64) ([]store.TimeEntry, error)
 	SettleAgentWrite(id int64, issue, key, comment string) error
 	AgentWritesOf(ticket store.TicketRef) ([]store.AgentWriteMark, error)
 }
@@ -81,6 +89,9 @@ type Deps struct {
 	// subscription lock held: they must not block or call the service.
 	EmitBoard func(BoardEvent)
 	EmitIssue func(IssueEvent)
+	// TimeEntriesChanged is told each change of a time draft's entries
+	// (time_draft.go). It must not block or call the service.
+	TimeEntriesChanged func(TimeEntriesEvent)
 	// Settled waits until the first client's reads have settled, or ctx
 	// ends; the linked-issues loop waits for it before its first round.
 	Settled func(ctx context.Context) error
@@ -197,6 +208,7 @@ type Service struct {
 
 	emitBoard       func(BoardEvent)
 	emitIssue       func(IssueEvent)
+	emitTimeEntries func(TimeEntriesEvent)
 	settled         func(context.Context) error
 	clientConnected func() bool
 	loopFailed      func(error)
@@ -267,7 +279,7 @@ func New(deps Deps) (*Service, error) {
 		clients: map[string]*clients{}, problems: map[string]Problem{},
 		locks: map[lockKey]*scopeLock{}, holds: map[string]*connHold{},
 		logf:      log.Printf,
-		emitBoard: deps.EmitBoard, emitIssue: deps.EmitIssue, settled: deps.Settled,
+		emitBoard: deps.EmitBoard, emitIssue: deps.EmitIssue, emitTimeEntries: deps.TimeEntriesChanged, settled: deps.Settled,
 		clientConnected: deps.ClientConnected, loopFailed: deps.LoopFailed, linksChanged: deps.LinksChanged, cadence: deps.Cadence.withDefaults(),
 		digestSeed: maphash.MakeSeed(), session: int64(binary.LittleEndian.Uint64(session[:]) >> 1),
 		dash: trackerdash.NewEvaluator(deps.Now),

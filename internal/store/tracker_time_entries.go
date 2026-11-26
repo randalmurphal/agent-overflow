@@ -228,12 +228,15 @@ func insertTimeEntryTx(tx *sql.Tx, e TimeEntry) (TimeEntry, error) {
 // day's entries.
 const timeEntriesShown = 5000
 
+// timeEntriesOfSQL reads connection ?1's entries of author ?2 from day ?3
+// to ?4, by day and ID.
+var timeEntriesOfSQL = `SELECT ` + timeEntryColumns + ` FROM tracker_time_entries
+ WHERE connection_id = ?1 AND author_id = ?2 AND day >= ?3 AND day <= ?4 ORDER BY day, id LIMIT ` + strconv.Itoa(timeEntriesShown)
+
 // TimeEntriesOf are author's entries on connection whose day is from to
 // to, both YYYY-MM-DD and included, by day and ID.
 func (s *Store) TimeEntriesOf(connection, author, from, to string) ([]TimeEntry, error) {
-	out, err := scanTimeEntries(s.reader().Query(`SELECT `+timeEntryColumns+` FROM tracker_time_entries
- WHERE connection_id = ?1 AND author_id = ?2 AND day >= ?3 AND day <= ?4 ORDER BY day, id LIMIT `+strconv.Itoa(timeEntriesShown),
-		connection, author, from, to))
+	out, err := scanTimeEntries(s.reader().Query(timeEntriesOfSQL, connection, author, from, to))
 	if err != nil {
 		return nil, fmt.Errorf("store: time entries of %s: %w", author, err)
 	}
