@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"slices"
+	"strconv"
 	"testing"
 
 	gitops "agent-overflow/internal/git"
@@ -39,6 +40,8 @@ func devRoutes(f workSearchFixture, since int) []string {
 	return out
 }
 
+func workSearchPRURL(n int) string { return "https://github.com/example/web/pull/" + strconv.Itoa(n) }
+
 func lastTrackerSeq(f workSearchFixture) int {
 	reqs := f.e.Requests(0).Requests
 	if len(reqs) == 0 {
@@ -51,8 +54,9 @@ func lastTrackerSeq(f workSearchFixture) int {
 // to the ticket after the stored list and the forge's search: one no other
 // source holds is listed with the data's title, author, state and branch,
 // whether or not it names the key (a merged one whose branch is gone); one
-// the forge found stays as the forge answered it; one only a linked
-// thread recorded takes the data's title and author; a status that was not
+// the forge found stays as the forge answered it, a linked thread's
+// record of it too; one only a linked thread recorded takes the data's
+// title and author; a status that was not
 // measured shows as Jira's word; and a link the app cannot open as a pull
 // request is counted, not listed. It costs one summary and one detail
 // request; GetTicketWork asks Jira nothing.
@@ -69,11 +73,18 @@ func TestSearchTicketWorkListsJirasDevelopmentData(t *testing.T) {
 	), forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: []forgefake.Pull{
 		{Number: 1, Title: "WEB-1 Fix the login", HeadRef: "fix-login", Author: "user1", AuthorName: "User 1"},
 	}}}})
-	// A linked thread was last seen with 20, whose branch names no key.
-	f.linkThread(t, "t1", f.project, f.dir)
-	if _, err := f.a.store.RecordOpenThreadPullRequest(store.ThreadPullRequest{ThreadID: "t1", Forge: "github", Host: "github.com",
-		Project: "example/web", Number: 20, URL: "https://github.com/example/web/pull/20", Branch: "release-notes", WorktreePath: f.dir, SeenOpenAt: 1}); err != nil {
-		t.Fatal(err)
+	// One linked thread was last seen with 1, which the forge finds, and
+	// another with 20, whose branch names no key.
+	for _, pr := range []struct {
+		thread string
+		n      int
+		branch string
+	}{{"t1", 1, "fix-login"}, {"t2", 20, "release-notes"}} {
+		f.linkThread(t, pr.thread, f.project, f.dir)
+		if _, err := f.a.store.RecordOpenThreadPullRequest(store.ThreadPullRequest{ThreadID: pr.thread, Forge: "github", Host: "github.com",
+			Project: "example/web", Number: pr.n, URL: workSearchPRURL(pr.n), Branch: pr.branch, WorktreePath: f.dir, SeenOpenAt: 1}); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	since := lastTrackerSeq(f)
@@ -92,8 +103,8 @@ func TestSearchTicketWorkListsJirasDevelopmentData(t *testing.T) {
 		return gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: ns, Repo: repo, Number: n}
 	}
 	want := []TicketPullRequest{
-		{Ref: workSearchPR(20), URL: "https://github.com/example/web/pull/20", Title: "Release notes", Author: "User 1", State: TicketPRMerged, Branch: "release-notes"},
-		{Ref: workSearchPR(1), URL: "https://github.com/example/web/pull/1", Title: "WEB-1 Fix the login", Author: "User 1", State: TicketPROpen, Branch: "fix-login", ProjectID: f.project},
+		{Ref: workSearchPR(1), URL: workSearchPRURL(1), Title: "WEB-1 Fix the login", Author: "User 1", State: TicketPROpen, Branch: "fix-login", ProjectID: f.project},
+		{Ref: workSearchPR(20), URL: workSearchPRURL(20), Title: "Release notes", Author: "User 1", State: TicketPRMerged, Branch: "release-notes"},
 		{Ref: gitlab("example/ops", 4), URL: "https://gitlab.com/example/ops/-/merge_requests/4", Title: "Rework the cache", Author: "User 1", State: TicketPRMerged, Branch: "web-1-cache"},
 		{Ref: gitlab("example/sub/api", 5), URL: "https://gitlab.com/example/sub/api/-/merge_requests/5", Title: "Spike", State: "UNKNOWN"},
 	}
