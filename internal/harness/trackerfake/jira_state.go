@@ -171,7 +171,7 @@ func (s *jiraSite) boardIssues(b *JiraBoard) []*JiraIssue {
 	}
 	sub := func(*jiraSite, *JiraIssue) bool { return true }
 	if b.SubQuery != "" {
-		q, _ := parseJQL(b.SubQuery) // read when seeded
+		q, _ := parseJQL(b.SubQuery, "") // read when seeded
 		sub = q.where
 	}
 	var out []*JiraIssue

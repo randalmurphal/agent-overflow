@@ -35,19 +35,21 @@ func recentVars(limit int, ceiling string, at ...string) string {
 // wrote is refused.
 func TestSearch(t *testing.T) {
 	t.Parallel()
-	// A hit comes with its state and assignee whole (IssueSearchFields).
+	// A hit and a listed issue come with their state and assignee whole
+	// (IssueSearchFields, IssueNamedFields).
 	named := strings.NewReplacer(
 		`"state":{"id":"state-todo"}`, `"state":{"id":"state-todo","name":"Todo","color":"#e2e2e2","description":null,"type":"unstarted","position":1,"team":{"id":"team-web"},"archivedAt":null}`,
 		`"assignee":{"id":"user-1"}`, `"assignee":{"id":"user-1","name":"User 1","displayName":"user1","email":"user1@example.com","avatarUrl":"https://example.com/u1.png","active":true,"admin":false,"guest":false,"app":false,"isMe":true}`,
-	).Replace(issue(1, 1).JSON())
-	hit := `{"data":{"page":{"nodes":[` + named + `],"pageInfo":{"hasNextPage":true,"endCursor":"s2"}}}}`
-	more := lineartest.Data(lineartest.PageJSON([]string{issue(2, 1).JSON()}, true, "ignored"))
+	)
+	hit := `{"data":{"page":{"nodes":[` + named.Replace(issue(1, 1).JSON()) + `],"pageInfo":{"hasNextPage":true,"endCursor":"s2"}}}}`
+	more := lineartest.Data(lineartest.PageJSON([]string{named.Replace(issue(2, 1).JSON())}, true, "ignored"))
+	rest := lineartest.Data(lineartest.PageJSON([]string{named.Replace(issue(3, 1).JSON())}, false, ""))
 	p, _ := newProvider(t,
 		lineartest.Exchange{Op: "SearchIssues", Vars: `{"term":"login \"fails\" OR x","teamId":"` + web + `","first":50}`, Body: hit},
 		lineartest.Exchange{Op: "SearchIssues", Vars: `{"term":"login \"fails\" OR x","teamId":"` + web + `","first":50,"after":"s2"}`, Body: page()},
 		lineartest.Exchange{Op: "SearchIssues", Vars: `{"term":"login","first":5}`, Body: page()},
-		lineartest.Exchange{Op: "Issues", Vars: recentVars(50, ""), Body: more},
-		issuesX(recentVars(50, at, issueID(2)), issue(3, 1)),
+		lineartest.Exchange{Op: "RecentIssues", Vars: recentVars(50, ""), Body: more},
+		lineartest.Exchange{Op: "RecentIssues", Vars: recentVars(50, at, issueID(2)), Body: rest},
 	)
 	ctx := context.Background()
 	q := tracker.SearchQuery{Text: ` login "fails" OR x `, Project: web}
@@ -73,6 +75,9 @@ func TestSearch(t *testing.T) {
 	pg, err = p.Search(ctx, tracker.SearchQuery{Project: web})
 	if err != nil || pg.Cards[0].Key != "WEB-2" || pg.Next == "" {
 		t.Fatalf("project issues %+v %v", pg, err)
+	}
+	if !reflect.DeepEqual(pg.Catalog, wantCatalog) {
+		t.Fatalf("project issues catalog %+v; want the listed issue's state and assignee named", pg.Catalog)
 	}
 	listing := string(pg.Next)
 	if pg, err := p.Search(ctx, tracker.SearchQuery{Project: web, Page: pg.Next}); err != nil || pg.Cards[0].Key != "WEB-3" || pg.Next != "" {

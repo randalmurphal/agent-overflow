@@ -273,7 +273,7 @@ func (s *jiraSite) seedBoards(e *Engine) error {
 			if b.Type != "kanban" {
 				return fmt.Errorf("board %d has a sub-query and is not a kanban board", b.ID)
 			}
-			if _, err := parseJQL(b.SubQuery); err != nil {
+			if _, err := parseJQL(b.SubQuery, ""); err != nil {
 				return fmt.Errorf("board %d sub-query: %w", b.ID, err)
 			}
 		}

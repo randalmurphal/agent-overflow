@@ -1,9 +1,11 @@
 // The tracker tools (`ao-tracker-tools`, docs/architecture/tracker-backend.md,
 // "Agent tools") driven by mock provider sessions that make REAL MCP calls
 // against the app's server, on Claude and Codex, with the fake Jira site
-// behind a verified connection: a search finds the ticket, a read by key
-// reads it, and a read with no key from a thread linked to no ticket is
-// refused naming the fix. Everything past the mock's HTTP call is production
+// behind a verified connection: a search by text finds the ticket, a search
+// by filters (mine, in progress, the active sprint) finds it and not the
+// unassigned ticket beside it, a read by key reads it, and a read with no
+// key from a thread linked to no ticket is refused naming the fix.
+// Everything past the mock's HTTP call is production
 // code: session registration on a ticket source, the capability URL, the
 // tool contract and the tracker service. Each answer is asserted as the
 // model received it and as its timeline row shows it on the desktop;
@@ -21,6 +23,10 @@ for (const provider of PROVIDERS) {
     const run = await driveTrackerTools(harness, provider, provider);
     expect(run.find.isError, run.find.text).toBe(false);
     expect(JSON.parse(run.find.text)).toEqual({
+      tickets: [{ key: 'WEB-12', title: 'Login fails on Safari', status: 'In Progress', assignee: 'User 1' }],
+    });
+    expect(run.filtered.isError, run.filtered.text).toBe(false);
+    expect(JSON.parse(run.filtered.text)).toEqual({
       tickets: [{ key: 'WEB-12', title: 'Login fails on Safari', status: 'In Progress', assignee: 'User 1' }],
     });
     expect(run.read.isError, run.read.text).toBe(false);

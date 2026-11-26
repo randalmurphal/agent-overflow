@@ -56,9 +56,9 @@ func TestRecentIssuesPagesByPosition(t *testing.T) {
 	d := lineartest.NewIssue("issue-d", "WEB-4", at(1), 1)
 	two := base.Add(2 * time.Minute)
 	f := newFake(t,
-		lineartest.Exchange{Op: "Issues", Vars: recentVars(2, time.Time{}), Body: recentPage(true, a, b)},
-		lineartest.Exchange{Op: "Issues", Vars: recentVars(2, two, "issue-b"), Body: recentPage(true, c, d)},
-		lineartest.Exchange{Op: "Issues", Vars: recentVars(2, base.Add(time.Minute), "issue-d"), Body: recentPage(false)},
+		lineartest.Exchange{Op: "RecentIssues", Vars: recentVars(2, time.Time{}), Body: recentPage(true, a, b)},
+		lineartest.Exchange{Op: "RecentIssues", Vars: recentVars(2, two, "issue-b"), Body: recentPage(true, c, d)},
+		lineartest.Exchange{Op: "RecentIssues", Vars: recentVars(2, base.Add(time.Minute), "issue-d"), Body: recentPage(false)},
 	)
 	q := RecentQuery{Filter: IssueFilter{Teams: []string{"team-web"}}, Limit: 2}
 	var got []string
@@ -88,9 +88,9 @@ func TestRecentIssuesErrors(t *testing.T) {
 	again := lineartest.NewIssue("issue-a", "WEB-1", lineartest.FormatTime(ceiling), 1)
 	vars := recentVars(250, ceiling, "issue-a")
 	f := newFake(t,
-		lineartest.Exchange{Op: "Issues", Vars: vars, Body: recentPage(false, newer)},
-		lineartest.Exchange{Op: "Issues", Vars: vars, Body: recentPage(false, again)},
-		lineartest.Exchange{Op: "Issues", Vars: vars, Body: recentPage(true)},
+		lineartest.Exchange{Op: "RecentIssues", Vars: vars, Body: recentPage(false, newer)},
+		lineartest.Exchange{Op: "RecentIssues", Vars: vars, Body: recentPage(false, again)},
+		lineartest.Exchange{Op: "RecentIssues", Vars: vars, Body: recentPage(true)},
 	)
 	c := f.client(t)
 	q := RecentQuery{Filter: IssueFilter{Teams: []string{"team-web"}}, From: Position{Bound: ceiling, At: []string{"issue-a"}}}

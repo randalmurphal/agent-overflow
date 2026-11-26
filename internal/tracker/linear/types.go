@@ -306,8 +306,8 @@ type NamedComment struct {
 	User *User
 }
 
-// SearchHit is an issue as SearchIssues finds it, with its state and
-// assignee, nil when it has none or Linear answered null.
+// SearchHit is an issue as SearchIssues or RecentIssues finds it, with
+// its state and assignee, nil when it has none or Linear answered null.
 type SearchHit struct {
 	Issue
 	State    *WorkflowState

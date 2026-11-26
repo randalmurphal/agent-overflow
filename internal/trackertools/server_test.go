@@ -366,6 +366,57 @@ func TestToolSchemasAreClosed(t *testing.T) {
 
 // A search pages 20 at a time through next, which the answer carries
 // only while more exists, and which takes the same text again.
+// The filters reach every source's search as the tracker-neutral
+// request: a status as its name, whatever it reads, a group as the group,
+// not_done among them, and the next page with the same filters.
+func TestFindAsksEachSourceTheFilters(t *testing.T) {
+	t.Parallel()
+	var asked []trackerapp.SearchRequest
+	f := &fakeTracker{sources: []trackerapp.TicketSource{jiraSource}}
+	f.search = func(_ string, in trackerapp.SearchRequest) (trackerapp.SearchPageView, error) {
+		asked = append(asked, in)
+		if in.Page == "" {
+			return trackerapp.SearchPageView{Cards: cards("WEB", in.Limit), Next: "page-2"}, nil
+		}
+		return trackerapp.SearchPageView{Cards: cards("WEB", 1)}, nil
+	}
+	for _, c := range []struct {
+		args map[string]any
+		want trackerapp.SearchRequest
+	}{
+		{map[string]any{"mine": true}, trackerapp.SearchRequest{Mine: true, Limit: pageSize}},
+		{map[string]any{"status": " In Progress "}, trackerapp.SearchRequest{Status: "In Progress", Limit: pageSize}},
+		{map[string]any{"group": "in_progress", "sprint": "active"}, trackerapp.SearchRequest{Group: "in_progress", ActiveSprint: true, Limit: pageSize}},
+		{map[string]any{"group": "backlog"}, trackerapp.SearchRequest{Group: "backlog", Limit: pageSize}},
+		{map[string]any{"group": "not_done", "mine": true}, trackerapp.SearchRequest{Mine: true, Group: trackerapp.GroupNotDone, Limit: pageSize}},
+		{map[string]any{"status": "In Review", "text": " login "}, trackerapp.SearchRequest{Text: "login", Status: "In Review", Limit: pageSize}},
+	} {
+		asked = nil
+		answer, err := call(t, f, "ticket_find", c.args)
+		if err != nil {
+			t.Fatalf("ticket_find %v: %v", c.args, err)
+		}
+		next := c.args
+		next["next"] = decodeAs[findAnswer](t, answer).Next
+		if _, err := call(t, f, "ticket_find", next); err != nil {
+			t.Fatalf("ticket_find %v: %v", next, err)
+		}
+		page := c.want
+		page.Page = "page-2"
+		if want := []trackerapp.SearchRequest{c.want, page}; !slices.Equal(asked, want) {
+			t.Errorf("ticket_find %v asked %+v\nwant %+v", c.args, asked, want)
+		}
+	}
+	_, err := call(t, f, "ticket_find", map[string]any{"sprint": "Sprint 1"})
+	refused(t, err, CodeInvalidRequest, `sprint takes "active" only.`)
+	_, err = call(t, f, "ticket_find", map[string]any{"mine": false, "status": " "})
+	refused(t, err, CodeInvalidRequest, "Give text, mine, status, group or sprint.")
+	_, err = call(t, f, "ticket_find", map[string]any{"group": "in progress"})
+	refused(t, err, CodeInvalidRequest, "group takes backlog, todo, in_progress, done, canceled, not_done.")
+	_, err = call(t, f, "ticket_find", map[string]any{"status": "In Review", "group": "in_progress"})
+	refused(t, err, CodeInvalidRequest, "Give status or group, not both.")
+}
+
 func TestFindPagesThroughNext(t *testing.T) {
 	t.Parallel()
 	f := &fakeTracker{sources: []trackerapp.TicketSource{jiraSource}}
@@ -400,12 +451,22 @@ func TestFindPagesThroughNext(t *testing.T) {
 		t.Fatalf("asked %q\nwant %q", f.asked, want)
 	}
 
+	// A next is for the search that gave it: other text, or the same text
+	// with a filter more, is refused.
 	_, err = call(t, f, "ticket_find", map[string]any{"text": "another search", "next": first.Next})
-	refused(t, err, CodeInvalidRequest, "next is from a search for other text; leave it out to search for this text.")
+	refused(t, err, CodeInvalidRequest, "next is from another search; leave it out to search with these arguments.")
+	for _, other := range []map[string]any{
+		{"text": "safari login", "mine": true}, {"text": "safari login", "status": "Done"}, {"text": "safari login", "group": "done"},
+		{"text": "safari login", "sprint": "active"},
+	} {
+		other["next"] = first.Next
+		_, err = call(t, f, "ticket_find", other)
+		refused(t, err, CodeInvalidRequest, "next is from another search; leave it out to search with these arguments.")
+	}
 	_, err = call(t, f, "ticket_find", map[string]any{"text": "safari login", "next": "not-a-cursor"})
 	refused(t, err, CodeInvalidRequest, "next is not one these tools gave; leave it out to start again.")
 	_, err = call(t, f, "ticket_find", map[string]any{"text": "  "})
-	refused(t, err, CodeInvalidRequest, "text is required.")
+	refused(t, err, CodeInvalidRequest, "Give text, mine, status, group or sprint.")
 	if len(f.asked) != 2 {
 		t.Fatalf("refused calls asked the tracker: %q", f.asked)
 	}
