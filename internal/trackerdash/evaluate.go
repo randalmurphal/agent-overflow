@@ -53,6 +53,8 @@ func refuse(code, sentence string, err error) *Refusal {
 type Evaluator struct {
 	slots chan struct{}
 	now   func() time.Time
+	// deadline is how long one evaluation may take, evaluationDeadline.
+	deadline time.Duration
 
 	readsMu sync.Mutex
 	// reads is, by kind, each built-in metric's relations, from its prepare
@@ -62,7 +64,7 @@ type Evaluator struct {
 
 // NewEvaluator is an evaluator reading the time from now.
 func NewEvaluator(now func() time.Time) *Evaluator {
-	return &Evaluator{slots: make(chan struct{}, maxEvaluations), now: now, reads: map[Kind]map[string][]string{}}
+	return &Evaluator{slots: make(chan struct{}, maxEvaluations), now: now, deadline: evaluationDeadline, reads: map[Kind]map[string][]string{}}
 }
 
 func (e *Evaluator) acquire(ctx context.Context) (func(), error) {
@@ -760,7 +762,7 @@ func (e *Evaluator) begin(ctx context.Context, b Board, r Request, counts func(W
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, evaluationDeadline)
+	ctx, cancel := context.WithTimeout(ctx, e.deadline)
 	relations, err := e.relationsOf(ctx, o.kind, o.metrics, builtins, own)
 	var ev *evaluation
 	if err == nil {
@@ -874,7 +876,11 @@ func (o *opened) count(m Metric) (counted, error) {
 	return o.ev.run(o.ctx, m, pr.p, o.n, now, o.sp.since(now))
 }
 
-// Evaluate counts dashboard r.Dashboard of board b.
+// Evaluate counts dashboard r.Dashboard of board b. The dashboard's own
+// widgets count first, with their tickets' titles; the board's proposals
+// count in the time those leave, and a proposal the evaluation's deadline
+// stops, or that it leaves no time for, says so in its own place
+// (outOfTime) instead of failing the answer.
 func (e *Evaluator) Evaluate(ctx context.Context, b Board, r Request) (_ Answer, err error) {
 	o, err := e.begin(ctx, b, r, func(Widget) bool { return true })
 	if err != nil {
@@ -890,7 +896,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, b Board, r Request) (_ Answer,
 		a.Proposals = append(a.Proposals, ProposalView{View: v, Thread: o.threads[i]})
 	}
 	runs := map[string]counted{}
-	for _, w := range o.widgets() {
+	for _, w := range o.d.Widgets {
 		m := o.metrics[w.Metric]
 		c, ok := runs[m.Name]
 		if !ok {
@@ -901,16 +907,52 @@ func (e *Evaluator) Evaluate(ctx context.Context, b Board, r Request) (_ Answer,
 		}
 		a.Widgets = append(a.Widgets, o.ev.widget(w, m, c, o.sp))
 	}
-	var shown []*TicketRow
-	for i := range a.Widgets {
-		for j := range a.Widgets[i].Tickets {
-			shown = append(shown, &a.Widgets[i].Tickets[j])
-		}
-	}
-	if err := o.ev.titles(o.ctx, shown); err != nil {
+	if err := o.ev.titles(o.ctx, listed(a.Widgets)); err != nil {
 		return Answer{}, err
 	}
+	kept := len(a.Widgets)
+	for _, w := range o.proposals {
+		m := o.metrics[w.Metric]
+		c, ok := runs[m.Name]
+		if !ok {
+			if o.ctx.Err() != nil {
+				c = counted{err: outOfTime}
+			} else if c, err = o.count(m); err != nil {
+				if o.ctx.Err() == nil {
+					return Answer{}, err
+				}
+				c = counted{err: outOfTime}
+			}
+			runs[m.Name] = c
+		}
+		a.Widgets = append(a.Widgets, o.ev.widget(w, m, c, o.sp))
+	}
+	if err := o.ev.titles(o.ctx, listed(a.Widgets[kept:])); err != nil {
+		if o.ctx.Err() == nil {
+			return Answer{}, err
+		}
+		for i := kept; i < len(a.Widgets); i++ {
+			if len(a.Widgets[i].Tickets) > 0 {
+				a.Widgets[i] = WidgetValue{ID: a.Widgets[i].ID, Error: outOfTime.Sentence}
+			}
+		}
+	}
 	return a, nil
+}
+
+// outOfTime is a proposal's widget the evaluation's deadline stopped or
+// left no time for, whichever widgets took the time.
+var outOfTime = &MetricError{Sentence: fmt.Sprintf("Not counted: this dashboard's %v to count ran out before this widget was counted. Dismiss the proposals you do not need, or refresh.", evaluationDeadline), Limit: true}
+
+// listed is the rows the lists of ws show, whose titles are read.
+func listed(ws []WidgetValue) []*TicketRow {
+	var out []*TicketRow
+	for i := range ws {
+		for j := range ws[i].Tickets {
+			out = append(out, &ws[i].Tickets[j])
+		}
+	}
+	return out
 }
 
 func rangeView(sp span) RangeView {

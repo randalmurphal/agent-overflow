@@ -116,12 +116,12 @@ The query returns one row per ticket counted, with columns named from: ticket (r
 A query with no at column, and no sprint bucket, counts what is true now.
 :now is now and :since where the range's periods begin, in milliseconds. days(a, b) and working_days(a, b) are the days between two instants; day(a) is its date, YYYY-MM-DD. Date functions, random and JSON functions are not available, and only SELECT reads these tables. A count stops at %v or past %d rows.
 reduce: count (distinct tickets), sum, median, average, average_of_period_sums (bucket period or sprint).
-unit: tickets, estimate (the board's points or hours), days. good: up or down, the direction that is good news; omit for neither.
+unit: tickets, estimate (the board's points, or its time estimates in seconds), days. good: up or down, the direction that is good news; omit for neither.
 bucket: omit for none; period (needs at), sprint (a sprints.id), person (a people.id), epic (an epics.id), text.
 series: up to %d names, the series column's values; a chart draws up to %d.
 form: number, bars, line (bucket period or sprint), table (needs a bucket), list. width: 3, 4, 6, 8 or 12 of 12 columns.
 Ticket types, priorities and labels are not in the copy.
-`, maxWords, evaluationDeadline, maxRows, maxSeries, maxChartSeries)
+`, maxWords, metricDeadline, maxRows, maxSeries, maxChartSeries)
 	b.WriteString(store.MirrorExportSchema)
 	return b.String()
 }

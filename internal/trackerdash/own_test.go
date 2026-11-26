@@ -2,8 +2,11 @@ package trackerdash
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // inProgress is a metric a project keeps: the tickets in progress now, by
@@ -90,6 +93,33 @@ func TestTryCountsOneWidgetOrRefusesIt(t *testing.T) {
 	}
 }
 
+// Proposals count after the dashboard's own widgets, in the time those
+// leave: a proposal the evaluation's deadline stops, and each after it,
+// says so in its own place, and the dashboard's widgets keep their
+// numbers.
+func TestProposalsPastTheDeadlineFailInTheirOwnPlace(t *testing.T) {
+	t.Parallel()
+	e := evaluator()
+	e.deadline = 300 * time.Millisecond
+	b := keeping(teamBoard().board())
+	slow := b.Own.Metrics["w_2"]
+	slow.SQL = "SELECT a.id AS ticket, a.assignee AS bucket FROM tickets a, tickets b, tickets c, tickets d, tickets e, tickets f, tickets g, tickets h ORDER BY a.created_at * b.created_at * c.created_at * d.created_at * e.created_at * f.created_at * g.created_at * h.created_at LIMIT 1"
+	after := b.Own.Metrics["w_2"]
+	after.Name = "w_3"
+	b.Own.Metrics = maps.Clone(b.Own.Metrics)
+	b.Own.Metrics["w_2"], b.Own.Metrics["w_3"] = slow, after
+	b.Own.Proposals = append(slices.Clone(b.Own.Proposals), Proposal{Widget: Widget{ID: "w_3", Metric: "w_3", Form: FormNumber, Width: 3}, Thread: "thread-1"})
+	a := mustEvaluate(t, e, b, Request{Dashboard: "d_1", TimeZone: "UTC"})
+	if len(a.Widgets) != 3 || a.Widgets[0].Error != "" || len(a.Widgets[0].Buckets) != 2 {
+		t.Fatalf("the dashboard's widget = %+v", a.Widgets)
+	}
+	for _, w := range a.Widgets[1:] {
+		if !strings.Contains(w.Error, "ran out before this widget was counted") {
+			t.Errorf("proposal %s: %+v", w.ID, w)
+		}
+	}
+}
+
 // A tried widget says the unit its numbers are in: a count's tickets, a
 // time board's estimates in seconds, as the copy holds them.
 func TestTrySaysTheUnitOfItsNumbers(t *testing.T) {
@@ -120,7 +150,8 @@ func TestRulesNameTheFieldsAndTheRelations(t *testing.T) {
 	t.Parallel()
 	rules := Rules()
 	for _, want := range []string{"title;", "words", "sql;", "reduce:", "unit:", "good:", "bucket:", "series:", "form:", "width:",
-		"ticket (required", "CREATE TABLE main.tickets(", "-- status_group:", "Ticket types, priorities and labels are not in the copy."} {
+		"ticket (required", "CREATE TABLE main.tickets(", "-- status_group:", "Ticket types, priorities and labels are not in the copy.",
+		"A count stops at 1s", "time estimates in seconds"} {
 		if !strings.Contains(rules, want) {
 			t.Errorf("the rules lack %q", want)
 		}
