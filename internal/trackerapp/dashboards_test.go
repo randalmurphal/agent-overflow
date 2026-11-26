@@ -94,7 +94,7 @@ func TestATriedWidgetIsCountedAndShownOnlyWhenAsked(t *testing.T) {
 // A widget whose query does not run is refused with its widget's
 // sentence and proposes nothing; a board the project does not list is
 // refused before anything is read; a board holding maxProposals refuses
-// another before it is counted.
+// another show, and still counts a try.
 func TestATriedWidgetIsRefusedWithItsReason(t *testing.T) {
 	t.Parallel()
 	m, sub := dashboardFixture(t)

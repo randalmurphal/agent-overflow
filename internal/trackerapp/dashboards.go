@@ -285,8 +285,8 @@ func (s *Service) DeleteDashboard(subscription, dashboard string) error {
 // an agent of thread. With show it is then proposed on the board: it
 // shows on the board's dashboards for the person to keep or dismiss,
 // under a widget ID of its own, and the answer's view carries that ID.
-// The project must list the board (ErrNotListed), and a board that holds
-// maxProposals is refused before anything is counted.
+// The project must list the board (ErrNotListed), and a show on a board
+// that holds maxProposals is refused.
 func (s *Service) TryWidget(ctx context.Context, projectID string, scope Scope, w KeptWidget, thread string, show bool) (trackerdash.Tried, error) {
 	if err := scope.boardOnly(); err != nil {
 		return trackerdash.Tried{}, err
@@ -308,14 +308,6 @@ func (s *Service) TryWidget(ctx context.Context, projectID string, scope Scope, 
 	}
 	key := setupKey{slug: slug, site: siteKey{row.Kind, row.Site}}
 	pk := proposalKey{slug, key.site, scope.Board}
-	full := func() bool {
-		s.propMu.Lock()
-		defer s.propMu.Unlock()
-		return len(s.proposals[pk]) >= maxProposals
-	}
-	if show && full() {
-		return trackerdash.Tried{}, proposalsFull()
-	}
 	groups, err := s.boardStatusGroups(key)
 	if err != nil {
 		return trackerdash.Tried{}, err

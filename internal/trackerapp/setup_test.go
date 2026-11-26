@@ -234,6 +234,12 @@ func TestAnUnreadableSetupRefusesItsProjectOnly(t *testing.T) {
 		"a field of no name":   `{"ticket_pins": {"version": 1, "sites": [], "extra": true}}`,
 		"a version before one": `{"status_groups": {"version": 0, "sites": []}}`,
 		"over the bound":       `{"x": "` + strings.Repeat("a", setupMaxBytes) + `"}`,
+		"a built-in's name as a widget's": `{"dashboards": {"version": 1, "boards": [{"tracker": "jira", "site": "x", "board": "1", "dashboards": [` +
+			`{"id": "d_1", "title": "Mine", "widgets": [{"id": "stuck_list", "form": "list", "width": 6, "metric": {}}]}]}]}}`,
+		"a widget twice": `{"dashboards": {"version": 1, "boards": [{"tracker": "jira", "site": "x", "board": "1", "dashboards": [` +
+			`{"id": "d_1", "title": "Mine", "widgets": [{"id": "w_1", "form": "list", "width": 6, "metric": {}}]},` +
+			`{"id": "d_2", "title": "Yours", "widgets": [{"id": "w_1", "form": "list", "width": 6, "metric": {}}]}]}]}}`,
+		"a dashboard of no title": `{"dashboards": {"version": 1, "boards": [{"tracker": "jira", "site": "x", "board": "1", "dashboards": [{"id": "d_1", "title": " ", "widgets": []}]}]}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
