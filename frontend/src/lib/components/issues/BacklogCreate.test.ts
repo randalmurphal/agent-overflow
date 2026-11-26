@@ -285,6 +285,32 @@ describe('New ticket', () => {
     again.unmount();
   });
 
+  it('keeps the text being typed in a field when its foot leaves the virtual window, and saves it with Enter there', async () => {
+    setBindingMock('TrackerBoardProjects', async () => PROJECTS);
+    setBindingMock('TrackerIssueTypes', async () => TYPES);
+    setBindingMock('TrackerCreateFields', async () => [{ id: 'customfield_2', name: 'Team code', kind: 'text', required: true, editable: true } as FieldView]);
+    const created = setBindingMock('CreateTrackerIssue', async () => ({ parts: [{ step: 'create', state: 'applied' }] }) as WriteView);
+    const drafts = new SvelteMap<string, CreateDraft>();
+    const first = open('10000', { drafts });
+    await fireEvent.click(first.getByTestId('issues-backlog-new'));
+    await fireEvent.click(await waitFor(() => within(field(first.container, 'customfield_2')).getByTestId('ticket-field-value')));
+    await fireEvent.input(within(field(first.container, 'customfield_2')).getByTestId('ticket-field-input'), { target: { value: 'OPS-' } });
+    first.unmount();
+
+    const again = open('10000', { drafts });
+    const input = await waitFor(() => within(field(again.container, 'customfield_2')).getByTestId('ticket-field-input') as HTMLInputElement);
+    expect(input.value).toBe('OPS-');
+    await fireEvent.input(input, { target: { value: 'OPS-7' } });
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(value(again.container, 'customfield_2')).toBe('OPS-7'));
+    const title = again.getByTestId('issues-backlog-create-title') as HTMLInputElement;
+    await fireEvent.input(title, { target: { value: 'With its team' } });
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
+    expect(created.mock.calls[0][1]).toMatchObject({ fields: [{ field: 'customfield_2', typed: ['OPS-7'] }] });
+    again.unmount();
+  });
+
   it('once the tracker made the ticket, is done with its title even when its move into the sprint failed, and offers that move', async () => {
     setBindingMock('TrackerBoardProjects', async () => PROJECTS);
     setBindingMock('TrackerIssueTypes', async () => TYPES);

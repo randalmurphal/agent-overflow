@@ -21,7 +21,7 @@ import {
   setTicketPoints,
   type TicketWriteContext,
 } from '../../stores/trackerTicketWrites.svelte';
-import type { FieldEditor } from './TicketField.svelte';
+import type { FieldEditor, TypingHold } from './TicketField.svelte';
 import type { PickItem } from './TicketPicker.svelte';
 
 /** The fields a Board card changes from its marks. */
@@ -47,6 +47,9 @@ export interface EditorTarget {
   choices(text: string): Promise<ChoiceListView>;
   /** Takes an edit, with the values a pick leaves the field holding. */
   save(edit: FieldEditInput, picked: readonly PickItem[]): void;
+  /** Holds the text being typed in a typed field, for a form whose field
+   * may go before it is saved. */
+  readonly typing?: TypingHold;
 }
 
 /** A field's values as the items a picker shows. */
@@ -100,6 +103,7 @@ export function fieldEditor(f: FieldView, target: EditorTarget): FieldEditor | n
         input: f.kind,
         text: target.text,
         onSave: (text) => target.save(text ? { field: f.id, typed: [text] } : { field: f.id, value: {} as FieldValueView }, []),
+        typing: target.typing,
       };
     default:
       return null;

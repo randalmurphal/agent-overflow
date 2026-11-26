@@ -18,7 +18,18 @@
       readonly input: 'text' | 'number' | 'date';
       /** Saves `text`; empty clears the field. */
       readonly onSave: (text: string) => void;
+      /** Where the text being typed is held when it must outlive the field
+       * (a form's foot leaving the virtual window); absent, it lives with
+       * the field. */
+      readonly typing?: TypingHold;
     };
+
+  /** The text being typed in a field, held by its form: null while the
+   * field is not being typed in. */
+  export interface TypingHold {
+    readonly text: string | null;
+    set(text: string | null): void;
+  }
 </script>
 
 <script lang="ts">
@@ -36,7 +47,7 @@
   // `disabled` is a field of a form whose write is out (a move's form):
   // it takes no change, and an open picker or typed value closes, so what
   // the form shows is what was sent.
-  import type { Snippet } from 'svelte';
+  import { untrack, type Snippet } from 'svelte';
   import TicketPicker from './TicketPicker.svelte';
   import TicketTypedValue from './TicketTypedValue.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
@@ -64,19 +75,29 @@
   const pending = $derived(disabled || (ticketWrite(ticketKey, target)?.pending ?? false));
   let trigger: HTMLButtonElement | undefined = $state();
   let picking = $state(false);
-  let typing = $state(false);
+  // A field typed in when it went is typed in again where it was.
+  // svelte-ignore state_referenced_locally
+  let typing = $state(editor?.kind === 'type' && editor.typing?.text != null);
   let invalid = $state('');
   $effect(() => {
     if (!disabled) return;
     picking = false;
-    typing = false;
+    untrack(doneTyping);
   });
 
   /** Opens the field's editor, as its menu row does. */
   export function edit(): void {
     if (!editor || pending) return;
     if (editor.kind === 'pick') picking = true;
-    else typing = true;
+    else {
+      editor.typing?.set(editor.text);
+      typing = true;
+    }
+  }
+
+  function doneTyping(): void {
+    typing = false;
+    if (editor?.kind === 'type') editor.typing?.set(null);
   }
 </script>
 
@@ -86,7 +107,7 @@
       <span class="w-24 shrink-0 truncate text-xs text-fg-muted" title={label}>{label}</span>
     {/if}
     {#if typing && editor?.kind === 'type'}
-      <TicketTypedValue {label} input={editor.input} text={editor.text} onSave={editor.onSave} onDone={() => { typing = false; }} bind:invalid />
+      <TicketTypedValue {label} input={editor.input} text={editor.text} typed={editor.typing?.text ?? undefined} onTyped={editor.typing ? (t) => editor.typing?.set(t) : undefined} onSave={editor.onSave} onDone={doneTyping} bind:invalid />
     {:else if editor}
       <button
         bind:this={trigger}

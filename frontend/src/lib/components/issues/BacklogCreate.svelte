@@ -26,6 +26,8 @@
      * empty takes the project's default. */
     type = $state('');
     filled = $state.raw<ReadonlyMap<string, FilledField>>(new Map());
+    /** The text being typed in a field not saved yet, by field. */
+    typing = $state.raw<ReadonlyMap<string, string>>(new Map());
 
     constructor(project: PickItem | null, type: string) {
       this.project = project;
@@ -207,6 +209,7 @@
       draft.project = p ? { id: p.id, name: listed?.name ?? p.name } : null;
       draft.type = '';
       draft.filled = new Map();
+      draft.typing = new Map();
       read();
     },
   }));
@@ -222,6 +225,7 @@
       if (!draft) return;
       draft.type = picked[0]?.id ?? '';
       draft.filled = new Map();
+      draft.typing = new Map();
       readFields();
     },
   }));
@@ -237,6 +241,16 @@
         ? async (text) => ({ choices: f.allowed!.filter((c) => (c.name ?? '').toLowerCase().startsWith(text.toLowerCase())), more: false })
         : (text) => createChoices(b, projectID, typeID, f.id, text),
       save: (edit, picked) => { fill(f.id, picked.length || edit.typed?.length ? { edit, picked, text: edit.typed?.[0] ?? '' } : null); },
+      typing: {
+        text: draft?.typing.get(f.id) ?? null,
+        set: (text) => {
+          if (!draft) return;
+          const next = new Map(draft.typing);
+          if (text === null) next.delete(f.id);
+          else next.set(f.id, text);
+          draft.typing = next;
+        },
+      },
     };
   }
   // A defaulted field the app cannot set is left to the tracker, unshown.
@@ -269,6 +283,7 @@
     if (outcome?.kind === 'applied') {
       d.title = '';
       d.filled = new Map();
+      d.typing = new Map();
       queueMicrotask(() => input?.focus());
     } else if (outcome?.kind === 'refused' && outcome.refusal.reason === 'missing') {
       // The screen requires what the form did not ask: read it again.

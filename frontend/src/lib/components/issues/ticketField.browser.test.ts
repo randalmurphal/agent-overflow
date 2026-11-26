@@ -80,4 +80,27 @@ describe('a typed ticket field', () => {
     expect(saves).toEqual([]);
     expect(host.querySelector('[data-testid="ticket-field-invalid"]')?.textContent).toBe('Pick a whole date, or clear the field.');
   });
+
+  it('leaves the text being typed with its holder when the field goes while focused, and takes it up again', async () => {
+    const held: { text: string | null } = { text: null };
+    const editor: FieldEditor = { kind: 'type', input: 'text', text: '', onSave: () => {}, typing: { get text() { return held.text; }, set: (t) => { held.text = t; } } };
+    const props = { label: 'Team', field: 'team', value: '', editor, ticketKey: 'k', target: 'team', fieldName: (id: string) => id };
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const app = mount(TicketField, { target: host, context: ticketWriteSurfaceContext(() => true), props });
+    (host.querySelector('[data-testid="ticket-field-value"]') as HTMLElement).click();
+    await waitFor(() => host.querySelector('[data-testid="ticket-field-input"]') !== null, 'the field input');
+    const input = host.querySelector<HTMLInputElement>('[data-testid="ticket-field-input"]')!;
+    await userEvent.type(input, 'OPS');
+    expect(document.activeElement).toBe(input);
+    // The field goes as a virtual row does, its input focused.
+    unmount(app);
+    host.remove();
+    expect(held.text).toBe('OPS');
+    const again = document.createElement('div');
+    document.body.appendChild(again);
+    mounted.push({ app: mount(TicketField, { target: again, context: ticketWriteSurfaceContext(() => true), props }), host: again });
+    await waitFor(() => again.querySelector('[data-testid="ticket-field-input"]') !== null, 'the field input again');
+    expect(again.querySelector<HTMLInputElement>('[data-testid="ticket-field-input"]')!.value).toBe('OPS');
+  });
 });
