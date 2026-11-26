@@ -2064,12 +2064,35 @@ delete is refused and the links the delete read are the ones it ends.
   last seen with; and the branches that name the key in the projects
   listing the connection's boards, the pull requests' projects and the
   linked threads' projects, a branch a listed pull request names folded
-  into it. A repository whose
+  into it. A stored list's project that was removed since (the list
+  stays until the Pull requests page's next read prunes it) keeps its
+  rows and has no branches read. A repository whose
   branches cannot be read is a problem beside the rest. At 2,000 stored
   rows over 10 repositories and a 500-branch project it costs 18 ms and
   4 MB an open, 23 ms and 5 MB when every list names the key
   (`TestTicketWorkCostAtRealSize`); a 200-row landing's tickets cost
-  0.5 ms.
+  0.5 ms. It sends no forge or tracker request.
+- **`SearchTicketWork`** (home route, the same scopes, budget 2m15s from
+  entry: every forge request runs within it, and no project's local read
+  starts after it) is
+  `GetTicketWork`'s answer with the forge searched by the key
+  ([Ticket Work search](forge-transport.md#ticket-work-search)): once per
+  distinct repository the projects above clone, then a lookup by name, in
+  every state, of each branch of the ticket, the forge's or this
+  computer's. A found
+  pull request or branch counts only when its title or name names the key
+  by the same rule (`namesTicketKey`). A pull request is listed once
+  (`ticketWorkRead.addFound`): the forge's row, the newest read of it,
+  replaces a stored row or a linked thread's record and keeps only the
+  stored list's CI and project (a stored list is as old as its last
+  read, which runs only while the Pull requests page is open or at
+  boot). A repository's failure is a `TicketForgeProblem` carrying the
+  fields a Pull requests page project carries for a failed read
+  (`newRepoForgeFailure`), beside the rows its search read, and a search that stopped at its page bound is
+  named in `SearchFull`. The client calls both methods at once and shows
+  the stored answer until the search's lands (`stores/ticketWork.svelte.ts`);
+  a stored answer or failure after it is not shown; nothing is stored.
+  It repeats `GetTicketWork`'s local read, the 18 ms above.
 - **`StartTicketThread`** (project route, `threads:operate`, plus
   `tracker:read`, and `git:operate` for Start work) makes the thread of
   an Ask or a Start work in one rollback: the thread titled with the key
@@ -2724,7 +2747,7 @@ ticket finder, with the `SetThreadTicket` and `ClearThreadTicket`
 wrappers (`stores/threadTicketLinks.svelte.ts`), and the ticket's Work
 with Ask and Start work and the pull request rows' ticket chips
 ([Ticket keys, Work, Ask and Start work](#ticket-keys-work-ask-and-start-work)),
-with the wrappers of `GetTicketWork` and `StartTicketThread`
+with the wrappers of `GetTicketWork`, `SearchTicketWork` and `StartTicketThread`
 (`stores/ticketWork.svelte.ts`), the project's setup: Settings >
 Issues > Status groups, the ticket's pins and the Start work defaults,
 with the wrappers of `ProjectTrackerSetup`, `SetProjectTrackerSetup`,

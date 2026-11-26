@@ -31,7 +31,7 @@ func seedForgeCacheGitHubOrigin(t *testing.T, core *Core, cwd, originURL string)
 	}
 }
 
-// openPRForge is an httptest GitHub whose OpenPRsByHead answer is switched
+// openPRForge is an httptest GitHub whose PRsByHead answer is switched
 // by mode ("pr7", "pr8", "none", anything else fails with a 502) and which
 // counts the requests it serves.
 type openPRForge struct {
@@ -44,7 +44,7 @@ func newOpenPRCore(t *testing.T, mode string) (*Core, *openPRForge) {
 	forge := &openPRForge{}
 	forge.mode.Store(mode)
 	core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		if call.Op != "OpenPRsByHead" {
+		if call.Op != "PRsByHead" {
 			return forgeUnexpected(t, call)
 		}
 		forge.calls.Add(1)
@@ -110,7 +110,7 @@ func TestInvalidatePRCacheDiscardsALookupInFlight(t *testing.T) {
 	cwd := t.TempDir()
 	var calls atomic.Int32
 	core, _ = newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		if call.Op != "OpenPRsByHead" {
+		if call.Op != "PRsByHead" {
 			return forgeUnexpected(t, call)
 		}
 		if calls.Add(1) == 1 {
@@ -142,7 +142,7 @@ func TestInvalidatePRCacheKeepsAnotherWorkspacesLookupInFlight(t *testing.T) {
 	cwd, other := t.TempDir(), t.TempDir()
 	var calls atomic.Int32
 	core, _ = newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		if call.Op != "OpenPRsByHead" {
+		if call.Op != "PRsByHead" {
 			return forgeUnexpected(t, call)
 		}
 		if calls.Add(1) == 1 {
@@ -729,7 +729,7 @@ func TestLookupOpenPRTimesItsAnswerFromWhenTheForgeAnswered(t *testing.T) {
 	var mode atomic.Value
 	mode.Store("fail")
 	core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		if call.Op != "OpenPRsByHead" {
+		if call.Op != "PRsByHead" {
 			return forgeUnexpected(t, call)
 		}
 		clock.Add(int64(took))
