@@ -200,9 +200,12 @@ type WidgetValue struct {
 	Series   []string      `json:"series,omitempty"`
 	Buckets  []BucketValue `json:"buckets,omitempty"`
 	Tickets  []TicketRow   `json:"tickets,omitempty"`
-	More     int           `json:"more,omitempty"`
+	// More is a list's rows past those it shows, or the buckets a widget
+	// that ranks its buckets left out (DrillRequest.Rest opens them).
+	More int `json:"more,omitempty"`
 	// NotCounted is a list's tickets that its metric could not count, by
-	// the rule every number's NC follows.
+	// the rule every number's NC follows, or the tickets of a chart's or
+	// table's range that it places in no bucket (a row with no instant).
 	NotCounted int `json:"not_counted,omitempty"`
 }
 

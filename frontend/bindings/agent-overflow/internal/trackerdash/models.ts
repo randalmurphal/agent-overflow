@@ -703,11 +703,17 @@ export class WidgetValue {
     "series"?: string[];
     "buckets"?: BucketValue[];
     "tickets"?: TicketRow[];
+
+    /**
+     * More is a list's rows past those it shows, or the buckets a widget
+     * that ranks its buckets left out (DrillRequest.Rest opens them).
+     */
     "more"?: number;
 
     /**
      * NotCounted is a list's tickets that its metric could not count, by
-     * the rule every number's NC follows.
+     * the rule every number's NC follows, or the tickets of a chart's or
+     * table's range that it places in no bucket (a row with no instant).
      */
     "not_counted"?: number;
 
