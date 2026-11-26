@@ -530,9 +530,10 @@ func TestRangeMetricsReadOnlyTheRange(t *testing.T) {
 
 // A table of more people than it shows makes the cells of the people it
 // shows only: 19,900 people in the active sprint give 50 rows of three
-// cells, the rest counted in More, with no cell made for the others.
+// cells, the rest counted in More, with no cell made for the others. The
+// count of allocations is the process's, so the test runs alone: not in
+// parallel with the package's others.
 func TestATableMakesTheCellsItShows(t *testing.T) {
-	t.Parallel()
 	f := teamBoard().exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 19900)
 		INSERT INTO tickets(id, key, title, type_level, status, status_group, assignee, created_at, updated_at, status_since, points, started_known, open, counts)
 		SELECT 'p' || i, 'WEB-' || (5000 + i), 'T', 0, '1', 'todo', 'person' || i, %d, 0, 0, 1, 0, 1, 1 FROM n`, ago(5)).
