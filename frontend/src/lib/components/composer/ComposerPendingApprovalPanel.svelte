@@ -28,7 +28,12 @@
   let { approval, count, onResolve, onError, access = 'granted' }: Props = $props();
   let responding = $state(false);
 
-  const summary = $derived(approval.description || approval.title || approval.toolName || 'Approval required');
+  // A tracker write names its action in its title ("Log time for Tue Nov
+  // 24"), which heads the prompt; the list below it is the rest. Any other
+  // approval is headed by its tool and summed up by its description.
+  const trackerWrite = $derived(approval.kind === 'tracker-write');
+  const heading = $derived(trackerWrite ? approval.title || approval.toolName : approval.toolName || approval.title);
+  const summary = $derived(trackerWrite ? approval.description : approval.description || approval.title || approval.toolName || 'Approval required');
 
   async function resolve(response: ApprovalResponse): Promise<void> {
     if (responding || access !== 'granted') return;
@@ -64,8 +69,10 @@
           </span>
         {/if}
       </div>
-      <p class="mt-1 truncate text-sm font-semibold text-fg">{approval.toolName || approval.title}</p>
-      <p class="mt-0.5 line-clamp-2 text-xs text-fg-muted">{summary}</p>
+      <p class="mt-1 truncate text-sm font-semibold text-fg" data-testid="composer-pending-approval-heading">{heading}</p>
+      {#if summary}
+        <p class="mt-0.5 line-clamp-2 text-xs text-fg-muted">{summary}</p>
+      {/if}
     </div>
   </div>
 

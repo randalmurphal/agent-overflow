@@ -1,7 +1,9 @@
 <script lang="ts">
-  // What a tracker write that names several tickets will send, for the
-  // person to approve (internal/trackertools Approval): each ticket with
-  // its title and change lines, and the comment each gets. A line that
+  // What a tracker write will send, for the person to approve
+  // (internal/trackertools Approval): each ticket with its title and
+  // change lines (a time post's are its entries: day, time and whole
+  // description), the comment each gets, and the notes, lines that name
+  // no ticket (a time post's open questions). A line that
   // shows a value in part (a new text, a value cut) names the value, which
   // the approval carries whole; Show all opens it there, with nothing
   // fetched. The actions are the tool approval panel's.
@@ -45,6 +47,7 @@
     return out;
   });
   const comment = $derived(text(input, 'comment'));
+  const notes: string[] = $derived(Array.isArray(input.notes) ? input.notes.filter((n): n is string => typeof n === 'string' && n !== '') : []);
 
   // The lines whose whole value is open, by ticket and line.
   let open = $state<Set<string>>(new Set());
@@ -81,6 +84,13 @@
       </li>
     {/each}
   </ul>
+  {#if notes.length > 0}
+    <ul class="mt-1.5 space-y-0.5 border-t border-border pt-1.5 text-xs text-fg-muted">
+      {#each notes as note, i (i)}
+        <li class="break-words" data-testid="tracker-write-approval-note">{note}</li>
+      {/each}
+    </ul>
+  {/if}
   {#if comment}
     <div class="mt-1.5 border-t border-border pt-1.5" data-testid="tracker-write-approval-comment">
       <span class="mb-0.5 block text-[0.625rem] text-fg-subtle">Comment on each ticket</span>

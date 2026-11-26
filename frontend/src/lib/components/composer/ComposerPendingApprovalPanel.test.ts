@@ -64,6 +64,43 @@ describe('<ComposerPendingApprovalPanel> tracker write', () => {
     expect(queryByTestId('tracker-write-approval-value')).toBeNull();
   });
 
+  it('is headed by its title, not the tool, with no second line saying it again', () => {
+    const { getByTestId, getByText, queryAllByText } = render(ComposerPendingApprovalPanel, {
+      props: { approval: trackerWrite(), count: 1, onResolve: vi.fn(), onError: vi.fn() },
+    });
+    expect(getByTestId('composer-pending-approval-heading').textContent).toBe('Change 2 tickets');
+    expect(queryAllByText('ticket_update')).toHaveLength(0);
+    expect(getByText('Change 2 tickets')).toBe(getByTestId('composer-pending-approval-heading'));
+  });
+
+  it("shows a time post's entries under their tickets and its open questions as notes", () => {
+    const post = {
+      ...trackerWrite(),
+      toolName: 'time_draft',
+      title: 'Log time for Tue Nov 24',
+      input: {
+        id: 'call-2',
+        tickets: [
+          { key: 'WEB-1', title: 'Checkout form', changes: [{ line: 'Tue Nov 24, 1h 30m: Built the form' }] },
+          { key: 'WEB-3', changes: [{ line: 'Tue Nov 24, 1h: Triaged (not sent: it may already be logged)' }] },
+        ],
+        notes: ['Tue Nov 24, 15m: Standup (not posted: its ticket is not picked yet)'],
+      },
+    } as ApprovalRequest;
+    const { getByTestId, getAllByTestId, queryByTestId } = render(ComposerPendingApprovalPanel, {
+      props: { approval: post, count: 1, onResolve: vi.fn(), onError: vi.fn() },
+    });
+    expect(getByTestId('composer-pending-approval-heading').textContent).toBe('Log time for Tue Nov 24');
+    expect(getAllByTestId('tracker-write-approval-change').map((c) => c.textContent)).toEqual([
+      'Tue Nov 24, 1h 30m: Built the form',
+      'Tue Nov 24, 1h: Triaged (not sent: it may already be logged)',
+    ]);
+    expect(getAllByTestId('tracker-write-approval-note').map((n) => n.textContent)).toEqual([
+      'Tue Nov 24, 15m: Standup (not posted: its ticket is not picked yet)',
+    ]);
+    expect(queryByTestId('tracker-write-approval-comment')).toBeNull();
+  });
+
   it('declines', async () => {
     const onResolve = vi.fn<(r: ApprovalResponse) => Promise<void>>(async () => {});
     const { getByTestId } = render(ComposerPendingApprovalPanel, {
