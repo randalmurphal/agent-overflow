@@ -19,11 +19,13 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
+  import { ticketWriteSurface } from './ticketWriteSurface';
   import { openImageLightbox } from '../../stores/imageLightbox.svelte';
   import { previewsInApp } from '../../stores/trackerTicketModel';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import {
     attachTicketFiles,
+    drawTicketWrite,
     ticketAttachOutcomes,
     ticketUploads,
     type TicketWriteContext,
@@ -57,6 +59,12 @@
 
   const newest = $derived([...attachments].sort((a, b) => b.created - a.created));
   const uploading = $derived(ticketUploads(ctx.key));
+  // The row of the file being sent draws its write.
+  const shown = ticketWriteSurface();
+  $effect(() => {
+    const target = uploading?.target;
+    if (target) return drawTicketWrite(ctx.key, target, shown);
+  });
   const outcomes = $derived(ticketAttachOutcomes(ctx.key));
   const trackerURL = $derived(safeExternalURL(ticket.url));
 

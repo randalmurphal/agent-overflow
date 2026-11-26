@@ -43,7 +43,7 @@ function mountTicket(width: number) {
     target: host,
     props: {
       attachment, seed: { key: 'WEB-1', title: 'Issue 1', card: null }, board: '1', kind: 'jira', computerName: 'This computer', account: null,
-      offline: false, compact: false, trail: 0, placement: 'over', besideFits: false,
+      offline: false, compact: false, shown: true, trail: 0, placement: 'over', besideFits: false,
       onPlacement: () => {}, takeFocus: () => false, onBack: () => {}, onClose: () => {}, onOpenIssue: () => {},
     },
   });

@@ -352,7 +352,10 @@ export class BoardTotals {
  * totals it holds (TotalsAt). LeftOut is the statuses those groups leave
  * out of counts: a total the client adds up from rows it holds leaves out
  * the rows in them, as the view's totals do. Project is empty for a board
- * of no one project.
+ * of no one project. IssueURL is the address of a card of the board less
+ * its key, which completes it escaped as a path segment
+ * (jiraprovider.IssueURLPrefix); empty on a tracker whose cards carry
+ * their own (CardView.URL).
  */
 export class BoardView {
     "id": string;
@@ -372,6 +375,7 @@ export class BoardView {
     "sync": SyncView;
     "screen": Section[];
     "sections": SectionPage[];
+    "issue_url"?: string;
 
     /** Creates a new BoardView instance. */
     constructor($$source: Partial<BoardView> = {}) {
@@ -469,12 +473,15 @@ export class BoardView {
 /**
  * CardView is an issue as a board or backlog row draws it. Times are Unix
  * milliseconds, 0 for none; StatusSince is when the issue entered its
- * current status, from its stored history, 0 while that is unknown.
+ * current status, from its stored history, 0 while that is unknown. URL
+ * is the address the tracker gave the issue (Linear's), empty for a Jira
+ * card, whose address is its board's IssueURL with its key.
  */
 export class CardView {
     "id": string;
     "key": string;
     "title": string;
+    "url"?: string;
     "type"?: IssueTypeView | null;
     "status": StatusView;
     "assignee"?: UserView | null;
@@ -515,34 +522,34 @@ export class CardView {
      * Creates a new CardView instance from a string or object.
      */
     static createFrom($$source: any = {}): CardView {
-        const $$createField3_0 = $$createType26;
-        const $$createField4_0 = $$createType27;
-        const $$createField5_0 = $$createType28;
-        const $$createField6_0 = $$createType30;
-        const $$createField7_0 = $$createType31;
-        const $$createField8_0 = $$createType33;
-        const $$createField9_0 = $$createType14;
+        const $$createField4_0 = $$createType26;
+        const $$createField5_0 = $$createType27;
+        const $$createField6_0 = $$createType28;
+        const $$createField7_0 = $$createType30;
+        const $$createField8_0 = $$createType31;
+        const $$createField9_0 = $$createType33;
+        const $$createField10_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("type" in $$parsedSource) {
-            $$parsedSource["type"] = $$createField3_0($$parsedSource["type"]);
+            $$parsedSource["type"] = $$createField4_0($$parsedSource["type"]);
         }
         if ("status" in $$parsedSource) {
-            $$parsedSource["status"] = $$createField4_0($$parsedSource["status"]);
+            $$parsedSource["status"] = $$createField5_0($$parsedSource["status"]);
         }
         if ("assignee" in $$parsedSource) {
-            $$parsedSource["assignee"] = $$createField5_0($$parsedSource["assignee"]);
+            $$parsedSource["assignee"] = $$createField6_0($$parsedSource["assignee"]);
         }
         if ("priority" in $$parsedSource) {
-            $$parsedSource["priority"] = $$createField6_0($$parsedSource["priority"]);
+            $$parsedSource["priority"] = $$createField7_0($$parsedSource["priority"]);
         }
         if ("labels" in $$parsedSource) {
-            $$parsedSource["labels"] = $$createField7_0($$parsedSource["labels"]);
+            $$parsedSource["labels"] = $$createField8_0($$parsedSource["labels"]);
         }
         if ("parent" in $$parsedSource) {
-            $$parsedSource["parent"] = $$createField8_0($$parsedSource["parent"]);
+            $$parsedSource["parent"] = $$createField9_0($$parsedSource["parent"]);
         }
         if ("sprints" in $$parsedSource) {
-            $$parsedSource["sprints"] = $$createField9_0($$parsedSource["sprints"]);
+            $$parsedSource["sprints"] = $$createField10_0($$parsedSource["sprints"]);
         }
         return new CardView($$parsedSource as Partial<CardView>);
     }

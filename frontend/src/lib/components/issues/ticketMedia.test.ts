@@ -8,6 +8,7 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CommentView, DetailView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import TicketComments from './TicketComments.svelte';
+import { ticketWriteSurfaceContext } from './ticketWriteSurface';
 import TicketText from './TicketText.svelte';
 import { externalURLForEventTarget, installExternalLinkDelegate } from '../../utils/externalLinks';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
@@ -70,7 +71,7 @@ describe('Jira media in ticket text', () => {
   it('shows each image and attachment of a description as a chip naming it', async () => {
     uninstall = installExternalLinkDelegate();
     const { container } = render(TicketText, {
-      props: {
+      context: ticketWriteSurfaceContext(() => true), props: {
         field: 'description', title: 'Description', markdown: TEXT, editable: false, open: null,
         onSave: async () => null, ticketKey: 'ticket', target: 'field:description', fieldName: (id: string) => id,
       },
@@ -82,7 +83,7 @@ describe('Jira media in ticket text', () => {
     uninstall = installExternalLinkDelegate();
     const comment = { id: '7', author: { id: 'u1', name: 'User 1' }, body: TEXT, created: 1_000 } as CommentView;
     const { container } = render(TicketComments, {
-      props: {
+      context: ticketWriteSurfaceContext(() => true), props: {
         ctx: { key: 'ticket', ref: { backend: HOME_BACKEND, connection: 'c1', issue: '1' }, label: 'WEB-1' },
         detail: { comments: [comment] } as unknown as DetailView,
         earlier: { pages: [], next: null, loading: false, error: null },

@@ -9,6 +9,7 @@ import { mount, unmount } from 'svelte';
 import { userEvent } from 'vitest/browser';
 import '../../../app.css';
 import TicketField, { type FieldEditor } from './TicketField.svelte';
+import { ticketWriteSurfaceContext } from './ticketWriteSurface';
 import { waitFor } from '../../../test/helpers/browserFrames';
 
 const mounted: { app: object; host: HTMLElement }[] = [];
@@ -27,6 +28,7 @@ function mountField(input: 'number' | 'date', text: string) {
   const editor: FieldEditor = { kind: 'type', input, text, onSave: (t) => { saves.push(t); } };
   const app = mount(TicketField, {
     target: host,
+    context: ticketWriteSurfaceContext(() => true),
     props: { label: 'Points', field: 'points', value: text, editor, ticketKey: 'k', target: 'points', fieldName: (id: string) => id },
   });
   mounted.push({ app, host });

@@ -67,10 +67,11 @@
   import TicketText from './TicketText.svelte';
   import Popover from '../primitives/Popover.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
+  import { setTicketWriteSurface } from './ticketWriteSurface';
   import TypeIcon from './TypeIcon.svelte';
   import TicketMoveForm from './TicketMoveForm.svelte';
   import TicketPicker, { type PickItem } from './TicketPicker.svelte';
-  import { fieldEditor, pickEditor, ticketTarget, type EditorTarget } from './ticketEditors';
+  import { cardEditor, cardFieldName, fieldEditor, pointsLabel, saveEstimate, ticketTarget, type EditorTarget } from './ticketEditors';
   import { formatEstimate } from './boardFormat';
   import type {
     CardView,
@@ -99,7 +100,6 @@
   import { fieldText, isFilled, moreFields, pokerEstimateChoice, pokerResult, sectionFields, shownText, ticketRow } from '../../stores/trackerTicketModel';
   import { localDay } from '../../stores/trackerTimeModel';
   import {
-    assignableUsers,
     attachTicketFiles,
     editTicketFields,
     fieldChoices,
@@ -107,7 +107,6 @@
     moveTicket,
     openTicketMove,
     revealTicketPoker,
-    setTicketPoints,
     ticketMoveDraft,
     ticketWrite,
     type TicketWriteContext,
@@ -132,6 +131,9 @@
     /** The ticket's computer is not connected now. */
     offline: boolean;
     compact: boolean;
+    /** The person sees the ticket now (its pane is on screen): what its
+     * controls draw counts as shown (`ticketWriteSurface.ts`). */
+    shown: boolean;
     /** Tickets Back steps through before it closes this one. */
     trail: number;
     placement: TicketPlacement;
@@ -147,7 +149,8 @@
     onOpenIssue: (issue: string, seed: TicketSeed) => void;
   }
 
-  let { attachment, seed, board, kind, computerName, account, offline, compact, trail, placement, besideFits, onPlacement, takeFocus, onBack, onClose, onOpenIssue }: Props = $props();
+  let { attachment, seed, board, kind, computerName, account, offline, compact, shown, trail, placement, besideFits, onPlacement, takeFocus, onBack, onClose, onOpenIssue }: Props = $props();
+  setTicketWriteSurface(() => shown);
 
   // The ticket a person opened takes the focus, so a key or a paste of
   // files goes to it (IssuesPane `showTicket`).
@@ -187,11 +190,8 @@
   }
 
   // The names fields go by, for a refusal naming them.
-  const CARD_NAMES: Readonly<Record<string, string>> = {
-    status: 'Status', assignee: 'Assignee', priority: 'Priority', type: 'Type', points: 'Points', description: 'Description', title: 'Title',
-  };
   function fieldName(id: string): string {
-    return detail?.fields.find((f) => f.id === id)?.name ?? CARD_NAMES[id] ?? id;
+    return detail?.fields.find((f) => f.id === id)?.name ?? cardFieldName(id);
   }
 
   function editField(field: string, edit: FieldEditInput): void {
@@ -199,8 +199,7 @@
   }
 
   // The status: the moves the view holds, no tracker call. A move whose
-  // screen takes fields opens their form first, each long field starting
-  // from the text the ticket shows for it.
+  // screen takes fields opens their form first (`openTicketMove`).
   const moveForm = $derived(ticketMoveDraft(ctx.key));
   const statusEditor: FieldEditor | null = $derived(detail ? {
     kind: 'pick',
@@ -216,8 +215,7 @@
         void moveTicket(ctx, move.id);
         return;
       }
-      const long = move.fields.filter((f) => f.kind === 'rich_text' && f.editable);
-      openTicketMove(ctx.key, move, new Map(long.map((f) => [f.id, shownText(detail, f.id)])));
+      openTicketMove(ctx.key, move);
     },
   } : null);
 
@@ -225,17 +223,11 @@
   function targetOf(field: string, value: FieldValueView): EditorTarget {
     return ticketTarget(value, (text) => fieldChoices(ctx, field, text), (edit) => editField(field, edit));
   }
-  const choiceValue = (c: { id: string; name?: string } | null | undefined): FieldValueView => (c ? { kind: 'option', choices: [c] } : {}) as FieldValueView;
 
-  const assigneeEditor: FieldEditor | null = $derived(detail ? pickEditor('assignee', 'user', {
-    ...targetOf('assignee', choiceValue(card?.assignee)),
-    choices: async (text) => {
-      const got = await assignableUsers(ctx, text);
-      return { choices: (got.users ?? []).map((u) => ({ id: u.id, name: u.name })), more: got.more };
-    },
-  }, { clear: 'Unassigned' }) : null);
-  const priorityEditor: FieldEditor | null = $derived(detail ? pickEditor('priority', 'option', targetOf('priority', choiceValue(card?.priority))) : null);
-  const typeEditor: FieldEditor | null = $derived(detail && !linear ? pickEditor('type', 'option', targetOf('type', choiceValue(card?.type))) : null);
+  // The card's four fields, edited as a Board card edits them.
+  const assigneeEditor: FieldEditor | null = $derived(detail ? cardEditor(ctx, detail.card, 'assignee', null, !linear) : null);
+  const priorityEditor: FieldEditor | null = $derived(detail ? cardEditor(ctx, detail.card, 'priority', null, !linear) : null);
+  const typeEditor: FieldEditor | null = $derived(detail ? cardEditor(ctx, detail.card, 'type', null, !linear) : null);
   // The header's type mark opens the same picker as the rail's Type row.
   let typeMarkButton: HTMLButtonElement | undefined = $state();
   let typeMarkPicking = $state(false);
@@ -246,16 +238,8 @@
   // The row the ticket's estimate is set on: points, or hours typed for a
   // board that estimates in time (the tracker takes seconds).
   const estimateRow = $derived(row && row.unit !== 'none' ? row : null);
-  const pointsLabel = $derived(row?.unit === 'time' ? 'Estimate (hours)' : 'Points');
-  function setEstimate(on: NonNullable<typeof estimateRow>, value: number | null): void {
-    void setTicketPoints(ctx, on.board, value === null ? null : on.unit === 'time' ? Math.round(value * 3600) : value);
-  }
-  const pointsEditor: FieldEditor | null = $derived(estimateRow ? {
-    kind: 'type',
-    input: 'number',
-    text: estimateRow.estimate == null ? '' : String(estimateRow.unit === 'time' ? estimateRow.estimate / 3600 : estimateRow.estimate),
-    onSave: (text: string) => setEstimate(estimateRow, text === '' ? null : Number(text)),
-  } : null);
+  const pointsName = $derived(pointsLabel(row?.unit ?? ''));
+  const pointsEditor: FieldEditor | null = $derived(detail && estimateRow ? cardEditor(ctx, detail.card, 'points', estimateRow, !linear) : null);
   const pointsText = $derived(row ? formatEstimate(row.estimate, row.unit) ?? '' : '');
   const pointsPending = $derived(ticketWrite(ctx.key, 'points')?.pending ?? false);
 
@@ -455,7 +439,7 @@
     {#snippet mark()}<PriorityIcon priority={card?.priority} testId="ticket-priority-mark" />{/snippet}
   </TicketField>
   {#if row && row.unit !== 'none'}
-    <TicketField bind:this={() => (rail ? pointsField : pointsRow), (v) => { if (rail) pointsField = v; else pointsRow = v; }} label={pointsLabel} field="points" value={pointsText} editor={pointsEditor} ticketKey={ctx.key} target="points" {fieldName} inline={!rail} />
+    <TicketField bind:this={() => (rail ? pointsField : pointsRow), (v) => { if (rail) pointsField = v; else pointsRow = v; }} label={pointsName} field="points" value={pointsText} editor={pointsEditor} ticketKey={ctx.key} target="points" {fieldName} inline={!rail} />
   {/if}
 {/snippet}
 
@@ -506,8 +490,8 @@
 {/snippet}
 
 {#snippet content()}
-  {#if moveForm && detail}
-    <TicketMoveForm {ctx} form={moveForm} fields={detail.fields} {fieldName} onOpenTracker={() => { void openInTracker(); }} />
+  {#if moveForm?.bases && detail}
+    <TicketMoveForm {ctx} form={moveForm} bases={moveForm.bases} fields={detail.fields} {fieldName} onOpenTracker={() => { void openInTracker(); }} />
   {/if}
   {#if narrow}
     <div class="flex flex-col gap-0.5 border-b border-border-subtle pb-2" data-testid="ticket-narrow-row">
@@ -596,7 +580,7 @@
               {attachment}
               {ctx}
               poker={ticketState?.poker ?? null}
-              onSetEstimate={estimateRow ? (value) => { if (estimateRow) setEstimate(estimateRow, value); } : null}
+              onSetEstimate={estimateRow ? (value) => { if (estimateRow) saveEstimate(ctx, estimateRow, value); } : null}
               hours={estimateRow?.unit === 'time'}
             />
           {:catch err}
@@ -815,7 +799,7 @@
       <MenuItem label="Assignee…" testId="ticket-menu-assignee" onSelect={() => run(() => change('assignee'))} />
       <MenuItem label="Priority…" testId="ticket-menu-priority" onSelect={() => run(() => change('priority'))} />
       {#if row && row.unit !== 'none'}
-        <MenuItem label="{pointsLabel}…" testId="ticket-menu-points" onSelect={() => run(() => change('points'))} />
+        <MenuItem label="{pointsName}…" testId="ticket-menu-points" onSelect={() => run(() => change('points'))} />
       {/if}
       {#if !linear}
         <MenuItem label="Type…" testId="ticket-menu-type" onSelect={() => run(() => change('type'))} />
@@ -847,7 +831,7 @@
           {@const on = estimateRow}
           {#each pokerEstimates as r (r.value)}
             {@const choice = pokerEstimateChoice(r, on.unit === 'time')}
-            <MenuItem label="{choice.action} {choice.votes}" disabled={pointsPending} testId="ticket-menu-poker-estimate" onSelect={() => run(() => setEstimate(on, r.value))} />
+            <MenuItem label="{choice.action} {choice.votes}" disabled={pointsPending} testId="ticket-menu-poker-estimate" onSelect={() => run(() => saveEstimate(ctx, on, r.value))} />
           {/each}
         {/if}
         <MenuDivider />

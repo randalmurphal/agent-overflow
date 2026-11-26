@@ -1532,6 +1532,13 @@ board that plans sprints, else every column, chosen in the same snapshot
 as the structure, with the first page of the first 20 and the rest left
 to the client to read by page.
 
+A card's web address costs a Jira board one string: the board view
+carries the address its cards' keys complete (`BoardView.IssueURL`, from
+`jiraprovider.IssueURLPrefix`), and a Jira card carries none. A Linear
+card carries the address the API gave it (`CardView.URL`), since its path
+holds the workspace and the title's slug. The client answers a card's
+address in one place (`trackerBoardModel.ts#cardURL`).
+
 ### Subscriptions
 
 - `SubscribeBoard(projectID, scope, sections, visible, tie)` answers from
@@ -2082,7 +2089,10 @@ subscription's methods, `TrackerComments`, the issue and comment writes,
 `tracker:issue_updated`'s TypeScript type, and the ticket's attachments,
 links, planning poker and Log time, with the wrappers of the attachment
 mints, `SaveTrackerAttachment`, `TrackerLinkTypes`, `LinkTrackerIssues`,
-`UnlinkTrackerIssues` and the planning poker methods, its Time screen,
+`UnlinkTrackerIssues` and the planning poker methods, the Board
+screen's changes to a card (its fields, the carry, Move to… and Move to
+sprint…), with the wrappers of `TrackerMoves`, `RankTrackerIssues` and
+`MoveTrackerIssuesToSprint`, its Time screen,
 with the wrappers of `TrackerWorklogs`, `RefreshTrackerWorklogs`,
 `AddTrackerWorklog`, `EditTrackerWorklog`, `DeleteTrackerWorklog`,
 `TrackerLookup` and `TrackerSearch` (`components/issues/AGENTS.md`),

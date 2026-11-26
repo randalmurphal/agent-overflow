@@ -15,6 +15,7 @@ import type {
   BoardView,
   CardView,
   ColumnView,
+  MoveView,
   RowView,
   Section,
   SectionCursor,
@@ -54,6 +55,9 @@ export interface BoardShape {
   readonly unit: string;
   readonly columns: readonly ColumnView[];
   readonly sprints: readonly SprintView[];
+  /** A card's address less its key; empty when cards carry their own
+   * (`cardURL`). */
+  readonly issueURL: string;
 }
 
 /** What the client holds of a board: its shape, lifetime and revision,
@@ -97,6 +101,7 @@ export function heldFromView(view: BoardView, intern: (row: RowView) => RowView)
       unit: view.estimate.unit,
       columns: view.columns,
       sprints: view.sprints,
+      issueURL: view.issue_url ?? '',
     },
     lifetime: view.lifetime,
     revision: view.revision,
@@ -405,4 +410,87 @@ export function createRowInterner(): (row: RowView) => RowView {
     if (card.labels) card.labels = card.labels.map((l) => share('l', l) ?? l);
     return row;
   };
+}
+
+/** A card's address in the tracker: its own, else its board's with its
+ * key; empty when neither is known. The one rule every surface asks. */
+export function cardURL(shape: BoardShape, card: CardView): string {
+  if (card.url) return card.url;
+  return shape.issueURL ? shape.issueURL + encodeURIComponent(card.key) : '';
+}
+
+/** The moves of a ticket that reach each column, by column index: a move
+ * reaches a column whose statuses hold the status it leads to. A column
+ * no move reaches is absent. */
+export function columnsReached(columns: readonly ColumnView[], moves: readonly MoveView[]): Map<number, MoveView[]> {
+  const reached = new Map<number, MoveView[]>();
+  columns.forEach((col, i) => {
+    const into = moves.filter((m) => col.statuses.some((st) => st.id === m.to.id));
+    if (into.length > 0) reached.set(i, into);
+  });
+  return reached;
+}
+
+/** A card drawn somewhere else while its write is out: the card of
+ * `issue`, in `column`, before the card `before` names (null: at the end),
+ * or where its order places it when `before` is undefined; `status` is the
+ * status its move leads to. */
+export interface WaitingCard {
+  readonly issue: string;
+  readonly column: number;
+  readonly before?: string | null;
+  readonly status?: string;
+}
+
+/** The row of `issue` among the columns, and its column; null when the
+ * board holds none. */
+export function rowOf(columns: readonly ScreenColumn[], issue: string): { row: RowView; column: number } | null {
+  for (let i = 0; i < columns.length; i += 1) {
+    const row = columns[i].rows.find((r) => r.card.id === issue);
+    if (row) return { row, column: i };
+  }
+  return null;
+}
+
+/**
+ * The shown columns with each waiting card drawn where it waits: its row
+ * as the board holds it now (`columns`), taken out of the column it shows
+ * in and put in its own, before the card `before` names or where its
+ * order places it, unless it fails `filter`. A card the board no longer
+ * holds is not drawn. The rows only: the headers count a moved card by
+ * `columnWith`. Nothing the board holds changes, and a column no waiting
+ * card touches keeps its object.
+ */
+export function withWaiting(columns: readonly ScreenColumn[], shown: readonly ShownColumn[], waiting: Iterable<WaitingCard>, filter: CardFilter): readonly ShownColumn[] {
+  let out: ShownColumn[] | null = null;
+  for (const w of waiting) {
+    if (w.column < 0 || w.column >= shown.length) continue;
+    const at = rowOf(columns, w.issue);
+    if (!at) continue;
+    out ??= shown.slice();
+    for (let i = 0; i < out.length; i += 1) {
+      if (out[i].rows.some((r) => r.card.id === w.issue)) out[i] = { rows: out[i].rows.filter((r) => r.card.id !== w.issue), counted: out[i].counted };
+    }
+    if (!cardMatches(at.row.card, filter)) continue;
+    const rows = out[w.column].rows.slice();
+    const k = w.before === undefined ? insertionIndex(rows, at.row) : w.before === null ? -1 : rows.findIndex((r) => r.card.id === w.before);
+    rows.splice(k < 0 ? rows.length : k, 0, at.row);
+    out[w.column] = { rows, counted: out[w.column].counted };
+  }
+  return out ?? shown;
+}
+
+/** A column and its shown rows as their header counts them with `row`
+ * added (1) or taken out (-1): what the column becomes while a card is
+ * carried over it or waits in it. `statuses` are those the row has in
+ * this column: its own when it is taken out, the ones its move may lead
+ * to when it is added; it counts only when every one of them does.
+ * `inShown` is whether the row passes the filter, so the shown count
+ * changes too. */
+export function columnWith(
+  held: HeldBoard, col: ScreenColumn, shown: ShownColumn, row: RowView, sign: 1 | -1, statuses: readonly string[], inShown: boolean,
+): { col: ScreenColumn; shown: ShownColumn } {
+  if (statuses.some((id) => held.leftOut.has(id))) return { col, shown };
+  const total = col.total && { rows: col.total.rows + sign, estimate: col.total.estimate + sign * (row.estimate ?? 0) };
+  return { col: { ...col, total, counted: col.counted + sign }, shown: inShown ? { rows: shown.rows, counted: shown.counted + sign } : shown };
 }

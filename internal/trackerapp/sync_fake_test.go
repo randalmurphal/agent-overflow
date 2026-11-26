@@ -196,6 +196,11 @@ func TestFakeJiraScenario(t *testing.T) {
 	if a := v.Sections[0].Rows[0].Card.Assignee; a == nil || a.Name != "User 1" {
 		t.Fatalf("the sprint's first card %+v", v.Sections[0].Rows[0].Card)
 	}
+	// A Jira card's address is the board's with its key; the card carries
+	// none.
+	if c := v.Sections[0].Rows[0].Card; v.IssueURL != "https://example.atlassian.net/browse/" || c.URL != "" {
+		t.Fatalf("addresses: board %q, card %q", v.IssueURL, c.URL)
+	}
 
 	// A person edits, moves and plans through the tracker.
 	s.clock.advance(time.Minute)
@@ -361,6 +366,10 @@ func TestFakeLinearScenario(t *testing.T) {
 	// Linear names users by ID only: the name comes from the structure.
 	if a := v.Sections[0].Rows[0].Card.Assignee; a == nil || a.Name != "User 1" {
 		t.Fatalf("the cycle's card %+v", v.Sections[0].Rows[0].Card)
+	}
+	// A Linear card carries the address the API gave it; the board none.
+	if c := v.Sections[0].Rows[0].Card; v.IssueURL != "" || !strings.HasPrefix(c.URL, "https://linear.app/") || !strings.Contains(c.URL, "/issue/"+c.Key+"/") {
+		t.Fatalf("addresses: board %q, card %q (%s)", v.IssueURL, c.URL, c.Key)
 	}
 
 	s.clock.advance(time.Minute)
