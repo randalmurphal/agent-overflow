@@ -135,7 +135,8 @@ func TestUpdateAppliesStatusThenComment(t *testing.T) {
 }
 
 // A call naming several tickets waits for the person: a denial sends
-// nothing, an approval shows each ticket's changes and sends them all.
+// nothing, an approval shows each ticket's changes and sends them all,
+// the moves into one sprint as one write.
 func TestUpdateOfSeveralTicketsWaitsForApproval(t *testing.T) {
 	t.Parallel()
 	w := newWriteFixture(t)
@@ -160,7 +161,7 @@ func TestUpdateOfSeveralTicketsWaitsForApproval(t *testing.T) {
 	if want := `{"tickets":[{"key":"WEB-12","applied":["sprint"]},{"key":"WEB-18","applied":["sprint"]},{"key":"WEB-27","applied":["sprint"]}]}`; answer != want {
 		t.Fatalf("answer = %s\nwant %s", answer, want)
 	}
-	if len(w.f.writes) != 3 || !strings.Contains(w.f.writes[0], `{"board":"1","sprint":"15","issues":["10012"]}`) {
+	if want := []string{`sprint_move conn-jira {"board":"1","sprint":"15","issues":["10012","10018","10027"]}`}; !slices.Equal(w.f.writes, want) {
 		t.Fatalf("writes %q", w.f.writes)
 	}
 }

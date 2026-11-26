@@ -16,10 +16,10 @@ import (
 // sprint or estimate the ticket as it is now cannot take is said as that
 // ticket's refusal, and nothing is sent for any ticket. A call naming
 // several tickets then waits for the person's approval (Host.Approve). The
-// thread's mode is read again before anything is sent. Each ticket's steps
-// run in order (apply.go), status, fields, estimate, sprint, comment, and
-// the first refused or unknown stops that ticket: what came after it is
-// not sent. A step the ticket already holds, an edit the tracker answers
+// thread's mode is read again before anything is sent. The steps run in
+// order (apply.go), status, fields, estimate, sprint, comment, each for
+// every ticket before the next, and the first refused or unknown stops
+// that ticket alone: what came after it for that ticket is not sent. A step the ticket already holds, an edit the tracker answers
 // as changing nothing, or a comment an earlier call of the thread added
 // (trackerapp's repeat record), is already: it changed nothing.
 
@@ -116,17 +116,27 @@ func (s *Server) update(ctx context.Context, caller Caller, raw json.RawMessage)
 	if err != nil {
 		return nil, err
 	}
-	pc := newPlanCall(s, caller, sources)
-	var plans []*planned
-	for _, t := range tickets {
-		if slices.ContainsFunc(plans, func(q *planned) bool { return q.t.connection == t.connection && q.t.issue == t.issue }) {
+	for i, t := range tickets {
+		if slices.ContainsFunc(tickets[:i], func(q ticket) bool { return q.connection == t.connection && q.issue == t.issue }) {
 			return nil, invalidf("%s is named twice in keys.", qualifier(sources, t.site)(t.key))
 		}
-		p, err := pc.plan(ctx, t, set, comment)
-		if err != nil {
+	}
+	// The plan's reads and the writes share one session: the writes are
+	// refreshed once, at its end, and the first write to a ticket takes
+	// what its read found.
+	ctx = trackerapp.WithWrites(ctx)
+	pc := newPlanCall(s, caller, sources)
+	plans, errs, err := pc.readTickets(ctx, tickets, set, comment)
+	if err != nil {
+		return nil, err
+	}
+	for i, p := range plans {
+		if errs[i] != nil {
+			return nil, errs[i]
+		}
+		if err := pc.planSteps(p, set); err != nil {
 			return nil, err
 		}
-		plans = append(plans, p)
 	}
 	if slices.ContainsFunc(plans, func(p *planned) bool { return p.refused != "" }) {
 		// Nothing is sent: the call is the person's request as a whole.
@@ -150,13 +160,12 @@ func (s *Server) update(ctx context.Context, caller Caller, raw json.RawMessage)
 	// What was admitted is sent whole: the call's end no longer stops it,
 	// and each write keeps its own bound.
 	wctx := trackerapp.ByAgent(context.WithoutCancel(ctx), caller.Thread, id)
-	out := updateAnswer{}
+	answers, written := s.apply(wctx, caller, plans)
+	out := updateAnswer{Tickets: answers}
 	row := WriteRow{ID: id}
-	for _, p := range plans {
-		answer, written := s.apply(wctx, caller, p)
-		out.Tickets = append(out.Tickets, answer)
-		if len(written.Applied) > 0 {
-			row.Tickets = append(row.Tickets, written)
+	for _, w := range written {
+		if len(w.Applied) > 0 {
+			row.Tickets = append(row.Tickets, w)
 		}
 	}
 	if len(row.Tickets) > 0 {

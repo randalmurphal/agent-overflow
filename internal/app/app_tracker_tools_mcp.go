@@ -195,6 +195,27 @@ func (t trackerToolsAdapter) IssueDetail(ctx context.Context, connection, issue 
 	})
 }
 
+func (t trackerToolsAdapter) IssueDetails(ctx context.Context, connection string, issues []string) ([]trackerapp.TicketRead, error) {
+	return trackerFormRead(t.a, ctx, "ticket_read", "Reading the tickets", func(ctx context.Context, svc *trackerapp.Service) ([]trackerapp.TicketRead, error) {
+		return svc.UnmarkedIssueDetails(ctx, connection, issueIDsOf(issues), trackerapp.Interactive)
+	})
+}
+
+func (t trackerToolsAdapter) IssueCards(ctx context.Context, connection string, issues []string) ([]trackerapp.TicketCardRead, error) {
+	return trackerFormRead(t.a, ctx, "ticket_read", "Reading the tickets", func(ctx context.Context, svc *trackerapp.Service) ([]trackerapp.TicketCardRead, error) {
+		return svc.IssueCards(ctx, connection, issueIDsOf(issues), trackerapp.Interactive)
+	})
+}
+
+// issueIDsOf are ids as issue IDs.
+func issueIDsOf(ids []string) []tracker.IssueID {
+	out := make([]tracker.IssueID, len(ids))
+	for i, id := range ids {
+		out[i] = tracker.IssueID(id)
+	}
+	return out
+}
+
 func (t trackerToolsAdapter) TicketsOfKey(key string) ([]trackerapp.KeyedTicket, error) {
 	svc, err := t.a.trackerService()
 	if err != nil {
@@ -256,6 +277,22 @@ func (t trackerToolsAdapter) MoveToSprint(ctx context.Context, connection string
 
 func (t trackerToolsAdapter) AddComment(ctx context.Context, connection string, in trackerapp.CommentRequest) (trackerapp.WriteView, error) {
 	return t.a.AddTrackerComment(ctx, connection, in)
+}
+
+// EndWrites runs a call's refresh within a write's budget
+// (trackerWriteBudget), as each of its writes ran.
+func (t trackerToolsAdapter) EndWrites(ctx context.Context) error {
+	svc, err := t.a.trackerService()
+	if err != nil {
+		return err
+	}
+	budget := trackerWriteBudget
+	if t.a.trackerBudget > 0 {
+		budget = t.a.trackerBudget
+	}
+	ctx, cancel := withinBudget(ctx, budgetExceeded{doing: "Reading the changed tickets again", budget: budget, then: trackerSlow})
+	defer cancel()
+	return svc.EndWrites(ctx)
 }
 
 var _ trackertools.Tracker = trackerToolsAdapter{}

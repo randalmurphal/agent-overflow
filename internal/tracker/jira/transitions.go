@@ -91,6 +91,10 @@ type TransitionInput struct {
 	// AcceptLoss accepts that a rich text field's edit loses content
 	// Markdown cannot show.
 	AcceptLoss bool
+	// Current is the issue as the caller read it just now (IssueDetail),
+	// with nothing sent to it since: its transitions are taken in place of
+	// reading them again. nil reads them.
+	Current *IssueDetail
 }
 
 // TransitionResult is how far a transition got.
@@ -202,7 +206,7 @@ func (c *Client) checkTransition(ctx context.Context, in TransitionInput) (*tran
 		return nil, err
 	}
 	tp := &transitionPlan{path: path}
-	if tp.t, err = c.pickTransition(ctx, in.Issue, in.Transition); err != nil {
+	if tp.t, err = c.pickTransition(ctx, in.Issue, in.Transition, in.Current); err != nil {
 		return nil, err
 	}
 	b := &builder{c: c, opts: ValueOptions{Issue: in.Issue, ImageDir: in.ImageDir}, stage: newImageStage(in.ImageDir, c.maxImages)}
@@ -229,11 +233,16 @@ func (c *Client) checkTransition(ctx context.Context, in TransitionInput) (*tran
 }
 
 // pickTransition finds the transition named by name or ID among those the
-// issue can make now.
-func (c *Client) pickTransition(ctx context.Context, issue, want string) (Transition, error) {
-	ts, err := c.transitions(ctx, issue)
-	if err != nil {
-		return Transition{}, err
+// issue can make now: those current lists when it is set, else read.
+func (c *Client) pickTransition(ctx context.Context, issue, want string, current *IssueDetail) (Transition, error) {
+	var ts []Transition
+	if current != nil {
+		ts = current.Transitions
+	} else {
+		var err error
+		if ts, err = c.transitions(ctx, issue); err != nil {
+			return Transition{}, err
+		}
 	}
 	cands := make([]Candidate, len(ts))
 	for i, t := range ts {

@@ -125,8 +125,27 @@ func (p *Provider) details(ctx context.Context, ds []*linear.IssueDetail) ([]tra
 	out := make([]tracker.Detail, len(ds))
 	for i, d := range ds {
 		out[i] = n.detail(d, states[i], older[i], cardLabels)
+		out[i].Read = &currentRead{issue: d.DescribedIssue, states: states[i]}
 	}
 	return out, nil
+}
+
+// currentRead is a detail's tracker.IssueRead: the issue with its team
+// and description, and its team's states in board order, which the first
+// write after the read takes as current (Move, Edit).
+type currentRead struct {
+	issue  linear.DescribedIssue
+	states []linear.WorkflowState
+}
+
+func (r *currentRead) ReadIssue() tracker.IssueID { return tracker.IssueID(r.issue.ID) }
+
+// currentOf is read when it is one of this provider's of issue, else nil.
+func currentOf(read tracker.IssueRead, issue tracker.IssueID) *currentRead {
+	if r, ok := read.(*currentRead); ok && r.ReadIssue() == issue {
+		return r
+	}
+	return nil
 }
 
 // detail is d as its ticket shows it, with its team's states and its

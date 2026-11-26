@@ -45,6 +45,8 @@ type fakeTracker struct {
 	write  func(name string, in any) (trackerapp.WriteView, error)
 	writes []string
 	agents []context.Context
+	// ends counts the write sessions ended.
+	ends int
 }
 
 func (f *fakeTracker) TicketsOfKey(key string) ([]trackerapp.KeyedTicket, error) {
@@ -197,6 +199,40 @@ func (f *fakeTracker) IssueDetail(ctx context.Context, connection, issue string)
 		return trackerapp.DetailView{}, fmt.Errorf("%w: issue %s", trackerapp.ErrIssueNotFound, issue)
 	}
 	return d, nil
+}
+
+// IssueDetails asks each issue's detail as IssueDetail does.
+func (f *fakeTracker) IssueDetails(ctx context.Context, connection string, issues []string) ([]trackerapp.TicketRead, error) {
+	out := make([]trackerapp.TicketRead, len(issues))
+	for i, issue := range issues {
+		out[i].View, out[i].Err = f.IssueDetail(ctx, connection, issue)
+		if err := ctx.Err(); f.honorCtx && err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// IssueCards answers each issue's card and rows from its detail, asked as
+// "card connection issue".
+func (f *fakeTracker) IssueCards(_ context.Context, connection string, issues []string) ([]trackerapp.TicketCardRead, error) {
+	out := make([]trackerapp.TicketCardRead, len(issues))
+	for i, issue := range issues {
+		f.asked = append(f.asked, "card "+connection+" "+issue)
+		d, ok := f.details[connection+"/"+issue]
+		if !ok {
+			out[i].Err = fmt.Errorf("%w: issue %s", trackerapp.ErrIssueNotFound, issue)
+			continue
+		}
+		out[i].View = trackerapp.TicketCardView{Card: d.Card, Rows: d.Rows}
+	}
+	return out, nil
+}
+
+// EndWrites counts the sessions ended.
+func (f *fakeTracker) EndWrites(context.Context) error {
+	f.ends++
+	return nil
 }
 
 func (f *fakeTracker) Comments(_ context.Context, connection, issue, page string) (trackerapp.CommentPageView, error) {

@@ -172,7 +172,7 @@ func (p *Provider) Edit(ctx context.Context, in tracker.EditInput) tracker.Resul
 		return stepParts(in.Issue, tracker.StepEdit, nil, err)
 	}
 	plan, err := p.jira.PlanEdit(ctx, jira.EditInput{
-		Issue: string(in.Issue), Fields: inputs, ImageDir: in.ImageDir, AcceptLoss: in.AcceptLoss,
+		Issue: string(in.Issue), Fields: inputs, ImageDir: in.ImageDir, AcceptLoss: in.AcceptLoss, Current: currentOf(in.Read, in.Issue),
 	})
 	if err != nil {
 		return stepParts(in.Issue, tracker.StepEdit, nil, err)
@@ -202,6 +202,7 @@ func (p *Provider) Move(ctx context.Context, in tracker.MoveInput) tracker.Resul
 	}
 	res, err := p.jira.Transition(ctx, jira.TransitionInput{
 		Issue: string(in.Issue), Transition: string(in.Move), Fields: inputs, ImageDir: in.ImageDir, AcceptLoss: in.AcceptLoss,
+		Current: currentOf(in.Read, in.Issue),
 	})
 	return stepParts(in.Issue, tracker.StepMove, res.Uploaded, err)
 }

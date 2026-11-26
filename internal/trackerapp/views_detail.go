@@ -436,11 +436,17 @@ func (s *Service) ticketRows(root int64, docs []ticketDoc) (map[tracker.IssueID]
 	for i, doc := range docs {
 		ids[i] = string(doc.d.Card.ID)
 	}
+	return s.issueRows(root, ids)
+}
+
+// issueRows are the rows of issues ids on the boards the mirror shows, by
+// issue, in board order.
+func (s *Service) issueRows(root int64, ids []string) (map[tracker.IssueID][]TicketRowView, error) {
 	held, err := s.store.ListMirrorTicketRows(root, ids)
 	if err != nil {
-		return nil, fmt.Errorf("trackerapp: read the rows of %d tickets from the mirror: %w", len(docs), err)
+		return nil, fmt.Errorf("trackerapp: read the rows of %d tickets from the mirror: %w", len(ids), err)
 	}
-	out := make(map[tracker.IssueID][]TicketRowView, len(docs))
+	out := make(map[tracker.IssueID][]TicketRowView, len(ids))
 	for _, r := range held {
 		id := tracker.IssueID(r.IssueID)
 		out[id] = append(out[id], TicketRowView{

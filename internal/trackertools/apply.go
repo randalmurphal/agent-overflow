@@ -13,30 +13,41 @@ import (
 	"agent-overflow/internal/trackerapp"
 )
 
-// Sending. A ticket's steps run in order and the first refused or
-// unknown stops it (update.go). A step the ticket already holds is sent
-// no request, and a comment an earlier call of the thread added is not
-// added again (trackerapp's repeat record): both are said as already, not
-// applied, so the answer and the timeline row name only what this call
-// changed. The read marks follow the texts the tracker confirmed this
-// call wrote (marks.wrote).
+// Sending. The steps run in order, status, fields, estimate, sprint,
+// comment, each for every ticket before the next (update.go), and the
+// first refused or unknown stops its ticket alone. The sprint moves of
+// tickets bound for the same sprint of the same board are one write, whose
+// part for each ticket is that ticket's outcome. A step the ticket already
+// holds is sent no request, and a comment an earlier call of the thread
+// added is not added again (trackerapp's repeat record): both are said as
+// already, not applied, so the answer and the timeline row name only what
+// this call changed. Once every step is sent, the call's write session is
+// ended, which refreshes what the writes changed once
+// (trackerapp.Service.EndWrites), and the read marks follow the texts the
+// tracker confirmed this call wrote (marks.wrote).
 
 // repeatedComment is the note of a comment an earlier call added.
 const repeatedComment = "Your earlier call added this comment; it was not added again."
 
-// sendStep is one step of a ticket's change as apply runs it.
+// stepOrder is the order the steps are sent in.
+var stepOrder = [...]stepKind{stepMove, stepEdit, stepEstimate, stepSprint, stepComment}
+
+// sendStep is one step of a ticket's change as apply runs it: send makes
+// its write; a sprint move's is made with the others bound for its sprint
+// (sprint).
 type sendStep struct {
-	kind  stepKind
-	names []string
-	same  bool
-	send  func() (trackerapp.WriteView, error)
+	kind   stepKind
+	names  []string
+	same   bool
+	send   func() (trackerapp.WriteView, error)
+	sprint *trackerapp.SprintMoveRequest
 	// what names the change in an unknown outcome's sentence.
 	what string
 }
 
-// apply sends p's steps in order on ctx, which carries the agent, and
-// answers what became of each, and the ticket as the timeline shows it.
-func (s *Server) apply(ctx context.Context, caller Caller, p *planned) (ticketAnswer, WrittenTicket) {
+// stepsOf are p's steps, on ctx, which carries the agent and the call's
+// write session.
+func (s *Server) stepsOf(ctx context.Context, p *planned) []sendStep {
 	conn := p.t.connection
 	var steps []sendStep
 	if p.move != nil || p.moveSame {
@@ -54,8 +65,7 @@ func (s *Server) apply(ctx context.Context, caller Caller, p *planned) (ticketAn
 			send: func() (trackerapp.WriteView, error) { return s.t.SetEstimate(ctx, conn, *p.estimate) }})
 	}
 	if p.sprint != nil {
-		steps = append(steps, sendStep{kind: stepSprint, names: []string{p.sprintName}, same: p.sprintSame, what: "sprint move",
-			send: func() (trackerapp.WriteView, error) { return s.t.MoveToSprint(ctx, conn, *p.sprint) }})
+		steps = append(steps, sendStep{kind: stepSprint, names: []string{p.sprintName}, same: p.sprintSame, what: "sprint move", sprint: p.sprint})
 	}
 	if p.comment != "" {
 		steps = append(steps, sendStep{kind: stepComment, names: []string{setComment}, what: "comment",
@@ -63,57 +73,149 @@ func (s *Server) apply(ctx context.Context, caller Caller, p *planned) (ticketAn
 				return s.t.AddComment(ctx, conn, trackerapp.CommentRequest{Issue: p.d.Card.ID, Markdown: p.comment})
 			}})
 	}
-	out := ticketAnswer{Key: p.key}
-	written := WrittenTicket{Connection: conn, Issue: p.d.Card.ID, Key: p.key, Title: p.d.Card.Title}
-	stopped, edited := false, false
-	for _, st := range steps {
-		switch {
-		case stopped:
-			out.NotSent = append(out.NotSent, st.names...)
-			continue
-		case st.same:
-			out.Already = append(out.Already, st.names...)
-			continue
+	return steps
+}
+
+// sending is one ticket's change as apply sends it: its plan and steps,
+// what became of it, and whether a step stopped it.
+type sending struct {
+	p       *planned
+	steps   []sendStep
+	out     ticketAnswer
+	written WrittenTicket
+	stopped bool
+	edited  bool
+}
+
+// step is t's step of kind, and whether it has one.
+func (t *sending) step(kind stepKind) (sendStep, bool) {
+	i := slices.IndexFunc(t.steps, func(st sendStep) bool { return st.kind == kind })
+	if i < 0 {
+		return sendStep{}, false
+	}
+	return t.steps[i], true
+}
+
+// apply sends plans' steps on ctx, which carries the agent and the call's
+// write session, ends the session, and answers what became of each
+// ticket, and each ticket as the timeline shows it, in plans' order.
+func (s *Server) apply(ctx context.Context, caller Caller, plans []*planned) ([]ticketAnswer, []WrittenTicket) {
+	all := make([]*sending, len(plans))
+	for i, p := range plans {
+		all[i] = &sending{p: p, steps: s.stepsOf(ctx, p), out: ticketAnswer{Key: p.key},
+			written: WrittenTicket{Connection: p.t.connection, Issue: p.d.Card.ID, Key: p.key, Title: p.d.Card.Title}}
+	}
+	for _, kind := range stepOrder {
+		var moves []*sprintGroup
+		for _, t := range all {
+			st, ok := t.step(kind)
+			switch {
+			case !ok:
+			case t.stopped:
+				t.out.NotSent = append(t.out.NotSent, st.names...)
+			case st.same:
+				t.out.Already = append(t.out.Already, st.names...)
+			case st.sprint != nil:
+				moves = joinSprint(moves, t, *st.sprint)
+			default:
+				v, err := st.send()
+				t.answer(st, v, err)
+			}
 		}
-		v, err := st.send()
-		switch {
-		case errors.Is(err, trackerapp.ErrAgentWriteInFlight):
-			out.Refused, stopped = st.names[0]+": the same "+st.what+" is still being sent by an earlier call, so it was not sent again; call again once that call has answered.", true
-			continue
-		case errors.Is(err, trackerapp.ErrAgentRepeatUnchecked):
-			out.Refused, stopped = st.names[0]+": "+uncheckedSentence("an earlier call's "+st.what+" may have been added", "the ticket's comments could not be read to check", "sent", "read the ticket to see whether the comment is there", err), true
-			continue
-		case err == nil && v.Repeat != nil:
-			out.Already, out.Note = append(out.Already, st.names...), repeatedComment
-			continue
-		}
-		state, sentence := judge(p.src.Kind, strings.Join(st.names, ", "), st.what, v, err)
-		switch {
-		case state == tracker.StateApplied && unchanged(v):
-			// The ticket held it already: nothing was sent.
-			out.Already = append(out.Already, st.names...)
-		case state == tracker.StateApplied:
-			out.Applied = append(out.Applied, st.names...)
-			written.Applied = append(written.Applied, st.names...)
-			edited = edited || st.kind == stepEdit
-		case state == tracker.StateUnknown:
-			out.Unknown, stopped = sentence, true
-		case state == tracker.StateRefused, state == tracker.StateNotSent:
-			out.Refused, stopped = sentence, true
+		for _, g := range moves {
+			v, err := s.t.MoveToSprint(ctx, g.conn, g.req)
+			for _, t := range g.tickets {
+				st, _ := t.step(stepSprint)
+				t.answer(st, partsOf(v, t.p.d.Card.ID), err)
+			}
 		}
 	}
-	if edited && len(p.texts) > 0 {
-		// The edit's texts are the session's own at the version its write
-		// left; every other text of the ticket is unread there.
-		card, ok, err := s.t.MirrorCard(conn, p.d.Card.ID)
-		switch {
-		case err != nil:
-			s.logf("tracker tools: read %s after its write: %v", p.key, err)
-		case ok:
-			s.marks.wrote(caller, markKey{conn, p.d.Card.ID}, p.d.Card.Updated, card.Updated, p.texts)
+	if err := s.t.EndWrites(ctx); err != nil {
+		s.logf("tracker tools: refresh after the writes: %v", err)
+	}
+	answers := make([]ticketAnswer, len(all))
+	written := make([]WrittenTicket, len(all))
+	for i, t := range all {
+		if t.edited && len(t.p.texts) > 0 {
+			s.wroteTexts(caller, t.p)
+		}
+		answers[i], written[i] = t.out, t.written
+	}
+	return answers, written
+}
+
+// wroteTexts marks p's edited texts the session's own at the version its
+// writes left; every other text of the ticket is unread there.
+func (s *Server) wroteTexts(caller Caller, p *planned) {
+	card, ok, err := s.t.MirrorCard(p.t.connection, p.d.Card.ID)
+	switch {
+	case err != nil:
+		s.logf("tracker tools: read %s after its write: %v", p.key, err)
+	case ok:
+		s.marks.wrote(caller, markKey{p.t.connection, p.d.Card.ID}, p.d.Card.Updated, card.Updated, p.texts)
+	}
+}
+
+// answer records what became of t's step st: its write's view v or its
+// error. A step refused or of unknown outcome stops t.
+func (t *sending) answer(st sendStep, v trackerapp.WriteView, err error) {
+	out := &t.out
+	switch {
+	case errors.Is(err, trackerapp.ErrAgentWriteInFlight):
+		out.Refused, t.stopped = st.names[0]+": the same "+st.what+" is still being sent by an earlier call, so it was not sent again; call again once that call has answered.", true
+		return
+	case errors.Is(err, trackerapp.ErrAgentRepeatUnchecked):
+		out.Refused, t.stopped = st.names[0]+": "+uncheckedSentence("an earlier call's "+st.what+" may have been added", "the ticket's comments could not be read to check", "sent", "read the ticket to see whether the comment is there", err), true
+		return
+	case err == nil && v.Repeat != nil:
+		out.Already, out.Note = append(out.Already, st.names...), repeatedComment
+		return
+	}
+	state, sentence := judge(t.p.src.Kind, strings.Join(st.names, ", "), st.what, v, err)
+	switch {
+	case state == tracker.StateApplied && unchanged(v):
+		// The ticket held it already: nothing was sent.
+		out.Already = append(out.Already, st.names...)
+	case state == tracker.StateApplied:
+		out.Applied = append(out.Applied, st.names...)
+		t.written.Applied = append(t.written.Applied, st.names...)
+		t.edited = t.edited || st.kind == stepEdit
+	case state == tracker.StateUnknown:
+		out.Unknown, t.stopped = sentence, true
+	case state == tracker.StateRefused, state == tracker.StateNotSent:
+		out.Refused, t.stopped = sentence, true
+	}
+}
+
+// sprintGroup is one sprint move of several tickets: those bound for the
+// same sprint, or the backlog, of the same board of one connection.
+type sprintGroup struct {
+	conn    string
+	req     trackerapp.SprintMoveRequest
+	tickets []*sending
+}
+
+// joinSprint adds t's sprint move req to the group bound where it is, or
+// to a new one.
+func joinSprint(groups []*sprintGroup, t *sending, req trackerapp.SprintMoveRequest) []*sprintGroup {
+	conn := t.p.t.connection
+	for _, g := range groups {
+		if g.conn == conn && g.req.Board == req.Board && g.req.Sprint == req.Sprint {
+			g.req.Issues = append(g.req.Issues, req.Issues...)
+			g.tickets = append(g.tickets, t)
+			return groups
 		}
 	}
-	return out, written
+	req.Issues = slices.Clone(req.Issues)
+	return append(groups, &sprintGroup{conn: conn, req: req, tickets: []*sending{t}})
+}
+
+// partsOf is v as issue's own: its parts about issue, and those about no
+// issue, which are every issue's.
+func partsOf(v trackerapp.WriteView, issue string) trackerapp.WriteView {
+	out := v
+	out.Parts = slices.DeleteFunc(slices.Clone(v.Parts), func(p trackerapp.PartView) bool { return p.Issue != "" && p.Issue != issue })
+	return out
 }
 
 // unchanged reports a write whose every part is applied and sent
