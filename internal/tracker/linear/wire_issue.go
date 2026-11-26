@@ -75,34 +75,34 @@ func (w wireDescribed) typed() DescribedIssue {
 }
 
 type wireIssue struct {
-	ID                string     `json:"id"`
-	Identifier        string     `json:"identifier"`
-	Number            float64    `json:"number"`
-	Title             string     `json:"title"`
-	URL               string     `json:"url"`
-	BranchName        string     `json:"branchName"`
-	Priority          float64    `json:"priority"`
-	Estimate          *float64   `json:"estimate"`
-	SortOrder         float64    `json:"sortOrder"`
-	PrioritySortOrder float64    `json:"prioritySortOrder"`
-	SubIssueSortOrder *float64   `json:"subIssueSortOrder"`
-	Team              *issueTeam `json:"team"`
-	State             *ref       `json:"state"`
-	Assignee          *ref       `json:"assignee"`
-	Creator           *ref       `json:"creator"`
-	Cycle             *ref       `json:"cycle"`
-	Project           *ref       `json:"project"`
+	ID                string      `json:"id"`
+	Identifier        string      `json:"identifier"`
+	Number            float64     `json:"number"`
+	Title             string      `json:"title"`
+	URL               string      `json:"url"`
+	BranchName        string      `json:"branchName"`
+	Priority          float64     `json:"priority"`
+	Estimate          *float64    `json:"estimate"`
+	SortOrder         float64     `json:"sortOrder"`
+	PrioritySortOrder float64     `json:"prioritySortOrder"`
+	SubIssueSortOrder *float64    `json:"subIssueSortOrder"`
+	Team              *issueTeam  `json:"team"`
+	State             *ref        `json:"state"`
+	Assignee          *ref        `json:"assignee"`
+	Creator           *ref        `json:"creator"`
+	Cycle             *ref        `json:"cycle"`
+	Project           *ref        `json:"project"`
 	Parent            *wireParent `json:"parent"`
-	LabelIDs          []string   `json:"labelIds"`
-	Labels            labelRefs  `json:"labels"`
-	DueDate           Date       `json:"dueDate"`
-	CreatedAt         time.Time  `json:"createdAt"`
-	UpdatedAt         time.Time  `json:"updatedAt"`
-	StartedAt         *time.Time `json:"startedAt"`
-	CompletedAt       *time.Time `json:"completedAt"`
-	CanceledAt        *time.Time `json:"canceledAt"`
-	ArchivedAt        *time.Time `json:"archivedAt"`
-	Trashed           *bool      `json:"trashed"`
+	LabelIDs          []string    `json:"labelIds"`
+	Labels            labelRefs   `json:"labels"`
+	DueDate           Date        `json:"dueDate"`
+	CreatedAt         time.Time   `json:"createdAt"`
+	UpdatedAt         time.Time   `json:"updatedAt"`
+	StartedAt         *time.Time  `json:"startedAt"`
+	CompletedAt       *time.Time  `json:"completedAt"`
+	CanceledAt        *time.Time  `json:"canceledAt"`
+	ArchivedAt        *time.Time  `json:"archivedAt"`
+	Trashed           *bool       `json:"trashed"`
 }
 
 // wireParent is an issue's parent as issueSelection selects it.

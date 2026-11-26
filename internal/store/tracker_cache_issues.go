@@ -503,7 +503,7 @@ var (
 // reference the mirror lacks (mirrorCardMarkSQL), each sorted.
 type mirrorCardsStored struct {
 	changed, parents, marked []string
-	after           map[string]mirrorRecordAfter
+	after                    map[string]mirrorRecordAfter
 	// threads are the threads whose row the write moved
 	// (mirrorLinkCopySQL), sorted.
 	threads []string
