@@ -74,6 +74,11 @@
     /** The type picked in it, or the board's last one when it opened;
      * empty takes the project's default. */
     type = $state('');
+    /** The project and the type the person picked in this form, of those
+     * above; one it opened with is not. A pick the tracker no longer offers
+     * is said and asked again; one it opened with that is gone gives way to
+     * the board's (`projectID`, `typeID`). */
+    picked = $state.raw<{ readonly project?: PickItem; readonly type?: PickItem }>({});
     // What must hold: the values given for the fields and the text being
     // typed in one are kept for the project and type in effect when they
     // were given (`valuesOf`), each pair its own. The form shows, and Add
@@ -151,16 +156,19 @@
   // the board this session, else the project's first at the standard level,
   // else its first that is not a sub-task. What it reads is held as the
   // form reads say (`trackerTicketWrites.svelte.ts`, "A form read"): read
-  // on the form's open or its coming back into view when what is held is
-  // old, and on the screen's Refresh, and nothing is read on the screen's
-  // open; a create refused for fields the screen now requires reads them
-  // again. A value given that the screen as read now no longer offers is
-  // said and not sent (`stillOffered`). A made ticket clears the title and keeps
+  // on the form's open or its coming back into view (its foot back in the
+  // virtual window, or the screen shown again) when what is held is old,
+  // and on the screen's Refresh while it is shown, and nothing is read on
+  // the screen's open; a create refused for fields the screen now requires
+  // reads them again. A value given that the screen as read now no longer
+  // offers is said and not sent (`stillOffered`), and a project or type
+  // the person picked that it no longer offers is said and asked again
+  // (`picksWithdrawn`). A made ticket clears the title and keeps
   // the form open for the next; one made whose move into the sprint failed
   // says so and offers that move while the sprint's rows do not show it
   // (CreateDraft.unplaced); a refusal stays under it with what was filled.
   import Plus from '@lucide/svelte/icons/plus';
-  import { onMount } from 'svelte';
+  import { untrack } from 'svelte';
   import type { SvelteMap } from 'svelte/reactivity';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -202,11 +210,13 @@
     project: string;
     /** The tracker has issue types and projects to pick (Jira, not Linear). */
     typed: boolean;
+    /** The person sees the screen: the pane is on it and no ticket covers it. */
+    visible: boolean;
     /** The screen's open forms, by board key and section list. */
     drafts: SvelteMap<string, CreateDraft>;
   }
 
-  let { b, boardKey, boardRef, sec, project, typed, drafts }: Props = $props();
+  let { b, boardKey, boardRef, sec, project, typed, visible, drafts }: Props = $props();
 
   // What a field the tracker fills shows, and the row that leaves it to
   // the tracker.
@@ -230,8 +240,9 @@
 
   const projects = $derived(typed ? boardProjects(b) : null);
   // The project it makes the ticket in: once the board's projects are
-  // read, one of them (the one picked, else the only one, else none, which
-  // asks); while that read is out or failed, the one picked or the board's
+  // read, one of them (the one in effect, else, unless the person picked
+  // it, the board's location or the only one; else none, which asks);
+  // while that read is out or failed, the one in effect or the board's
   // location.
   const projectID = $derived.by(() => {
     if (!typed) return project;
@@ -239,6 +250,7 @@
     const listed = projects?.value;
     if (!listed) return chosen;
     if (listed.some((p) => p.id === chosen)) return chosen;
+    if (draft?.picked.project) return '';
     if (project && listed.some((p) => p.id === project)) return project;
     return listed.length === 1 ? listed[0].id : '';
   });
@@ -250,6 +262,7 @@
     if (!list) return '';
     const want = draft?.type;
     if (want && list.some((t) => t.id === want)) return want;
+    if (draft?.picked.type) return '';
     return (list.find((t) => t.level === 0) ?? list.find((t) => t.level >= 0))?.id ?? '';
   });
   const typeName = $derived(types?.value?.find((t) => t.id === typeID)?.name ?? '');
@@ -269,8 +282,9 @@
     if (typed) void loadBoardProjects(b).then(readTypes);
     readTypes();
   }
+  // A read goes on only while its form is open: Cancel ends it.
   function readTypes(): void {
-    if (!projectID) return;
+    if (!draft || !projectID) return;
     if (typed) {
       void loadIssueTypes(b.backend, b.connection, projectID).then(readFields);
       return;
@@ -278,7 +292,7 @@
     readFields();
   }
   function readFields(): void {
-    if (projectID && (!typed || typeID)) void loadCreateFields(b.backend, b.connection, projectID, typeID);
+    if (draft && projectID && (!typed || typeID)) void loadCreateFields(b.backend, b.connection, projectID, typeID);
   }
 
   function start(): void {
@@ -293,12 +307,14 @@
     drafts.delete(draftKey);
   }
 
-  // An open form back in view asks as its open did.
-  onMount(() => {
-    if (draft) read();
+  // An open form the person sees again (its foot back in the virtual
+  // window, or the screen shown again) asks as its open did, and one on
+  // screen follows the screen's Refresh.
+  $effect(() => {
+    if (visible) untrack(() => { if (draft) read(); });
   });
   readOnFormRefresh(() => b, () => {
-    if (draft) read();
+    if (draft && visible) read();
   });
 
   // The project and type the form's values are for (CreateDraft).
@@ -310,6 +326,19 @@
     return fields?.value ? stillOffered(given, fields.value) : { given, withdrawn: [] };
   });
   const filled = $derived(screenValues.given);
+  // A project or type the person picked that the tracker no longer offers,
+  // said with what was given; the form asks for another before Add.
+  const picksWithdrawn = $derived.by(() => {
+    const out: string[] = [];
+    const p = draft?.picked.project;
+    if (p && projects?.value && !projects.value.some((it) => it.id === p.id)) {
+      out.push(`Project: the board no longer offers ${p.name}, so pick another.`);
+      return out;
+    }
+    const t = draft?.picked.type;
+    if (t && types?.value && !types.value.some((it) => it.id === t.id)) out.push(`Type: ${projectName || 'the project'} no longer offers ${t.name}, so pick another.`);
+    return out;
+  });
 
   // A create sends a field only with a value: one picked or typed back to
   // none leaves the form, so the tracker fills it or the form asks again.
@@ -330,6 +359,7 @@
       const listed = p ? boardProjects(b)?.value?.find((it) => it.id === p.id) : undefined;
       draft.project = p ? { id: p.id, name: listed?.name ?? p.name } : null;
       draft.type = '';
+      draft.picked = draft.project ? { project: draft.project } : {};
       read();
     },
   }));
@@ -341,6 +371,7 @@
     save: (_edit, picked) => {
       if (!draft) return;
       draft.type = picked[0]?.id ?? '';
+      draft.picked = { project: draft.picked.project, type: picked[0] ? { id: picked[0].id, name: picked[0].name } : undefined };
       readFields();
     },
   }));
@@ -484,6 +515,8 @@
       <p class="text-xs text-error" role="alert" data-testid="issues-backlog-create-read-error">Could not read what a new ticket takes: {errString(readError)} <button type="button" class="text-accent hover:underline" onclick={read}>Retry</button></p>
     {:else if typed && !projectID}
       <p class="text-xs text-fg-muted" data-testid="issues-backlog-create-pick-project">Pick the new ticket's project.</p>
+    {:else if typed && projectID && types?.value && !typeID}
+      <p class="text-xs text-fg-muted" data-testid="issues-backlog-create-pick-type">Pick the new ticket's type.</p>
     {:else if projectID && !fields?.value}
       <p class="text-xs text-fg-muted" data-testid="issues-backlog-create-reading">Reading what a new ticket takes…</p>
     {:else if unsettable.length > 0}
@@ -500,7 +533,7 @@
         </div>
       {/each}
     {/if}
-    {#each screenValues.withdrawn as sentence (sentence)}
+    {#each [...picksWithdrawn, ...screenValues.withdrawn] as sentence (sentence)}
       <p class="text-xs text-fg" role="status" data-testid="issues-backlog-create-withdrawn">{sentence}</p>
     {/each}
     <div class="flex items-center gap-1.5">

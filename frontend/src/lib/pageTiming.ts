@@ -21,8 +21,9 @@ export const DRAFT_SAVE_DEBOUNCE_MS = 500;
 
 /**
  * The age past which a person's act reads a form's held read again
- * (stores/trackerTicketWrites.svelte.ts, "A form read"): the age the Jira
- * client keeps a create screen, so a read past it reaches Jira.
+ * (stores/trackerTicketWrites.svelte.ts, "A form read"): a form opened
+ * a minute or more after its last read offers what the tracker offers
+ * now, and one opened again within it reads nothing.
  */
 export const FORM_READ_AGE_MS = 60_000;
 
