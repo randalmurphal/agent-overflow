@@ -14,6 +14,7 @@ import {
   trackerSetupOf,
   trackerStatusesOf,
 } from './trackerSetup.svelte';
+import { __setBackendStatusForTest } from './transportStatus.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { TransportError } from '../transport/wsClient';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -144,6 +145,26 @@ describe('the tracker setup store', () => {
     expect(reads).toHaveBeenCalledTimes(1);
     expect(save).toHaveBeenCalledWith('p1', 'r5', expect.anything());
     expect(trackerSetupOf('p1').view).toBeNull();
+  });
+
+  it('reads the setup and the statuses again when their computer connects again, only while held', async () => {
+    const reads = setBindingMock('ProjectTrackerSetup', async () => view('r1'));
+    const statusReads = setBindingMock('ProjectTrackerStatuses', async () => []);
+    const releaseSetup = acquireTrackerSetup('p1');
+    const releaseStatuses = acquireTrackerStatuses('p1');
+    await flush();
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'disconnected', nextAttemptAt: null });
+    reads.mockImplementation(async () => view('r2'));
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+    await flush();
+    expect([reads.mock.calls.length, statusReads.mock.calls.length]).toEqual([2, 2]);
+    expect(trackerSetupOf('p1').view?.revision).toBe('r2');
+    releaseSetup();
+    releaseStatuses();
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'disconnected', nextAttemptAt: null });
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+    await flush();
+    expect([reads.mock.calls.length, statusReads.mock.calls.length]).toEqual([2, 2]);
   });
 
   it('holds the statuses while shown and reads them again on the event', async () => {

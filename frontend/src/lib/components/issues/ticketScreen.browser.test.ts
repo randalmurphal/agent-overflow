@@ -26,6 +26,8 @@ import { waitFor } from '../../../test/helpers/browserFrames';
 import type { Setup, SetupView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import { getToasts } from '../../stores/toast.svelte';
 import { TransportError } from '../../transport/wsClient';
+import { setCarriedSessionScopes } from '../../transport/scopes';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 
 const mounted: { app: object; host: HTMLElement }[] = [];
 
@@ -305,6 +307,33 @@ describe('the project\'s pins', () => {
     q(host, '[data-testid="ticket-pin-missing-unpin"]')!.click();
     await waitFor(() => q(host, '[data-testid="ticket-pin-missing"]') === null, 'the pin removed');
     expect(saves[0].ticket_pins).toEqual([{ tracker: 'jira', site: SITE, fields: ['customfield_1'] }]);
+  });
+
+  it('reaches an unpinned section from the menu: Description… opens its editor in the folded line', async () => {
+    project();
+    stored = { revision: 'r0', setup: { status_groups: [], ticket_pins: [{ tracker: 'jira', site: SITE, sections: ['links', 'attachments'] }], start_work: [] } } as SetupView;
+    const { host } = mountWith(900, { detail: ticket('1', 'WEB-1'), project: 'p1' });
+    await waitFor(() => q(host, '[data-testid="ticket-more-sections"]')?.textContent?.trim() === '2 more sections: Description, Acceptance', 'the folded description');
+    q(host, '[data-testid="ticket-menu-button"]')!.click();
+    await waitFor(() => document.querySelector('[data-testid="ticket-menu-description"]') !== null, 'the menu');
+    document.querySelector<HTMLElement>('[data-testid="ticket-menu-description"]')!.click();
+    await waitFor(() => q(host, '[data-testid="ticket-section"][data-field="description"] [data-testid="ticket-section-editor"]') !== null, 'the description editor');
+  });
+
+  it('offers a device that may not operate the project\'s trackers no pin press, and says why', async () => {
+    project();
+    stageBackend();
+    try {
+      noteProject('p1', 'laptop');
+      setCarriedSessionScopes('laptop', ['tracker:read']);
+      const { host } = mountWith(900, { detail: ticket('1', 'WEB-1'), project: 'p1' });
+      await waitFor(() => q(host, '[data-testid="ticket-section-pin"]') !== null, 'the pins');
+      const pin = q(host, '[data-testid="ticket-section-pin"]') as HTMLButtonElement;
+      expect(pin.disabled).toBe(true);
+      expect(pin.title).toBe('This device may not change the pins of alpha.');
+    } finally {
+      resetStagedBackends();
+    }
   });
 
   it('offers a Linear ticket\'s sections a pin and its fixed fields none', async () => {
