@@ -5819,11 +5819,12 @@ export function SearchThreadMessages(query: string, limit: number): $Cancellable
  * the ticket's key, for the pull requests the stored sources do not hold
  * (a merged one, one opened where this computer never read the list):
  * once per repository the Work's projects clone, and once per branch of
- * the ticket that search did not read whole (searchTicketForge). Each
- * repository's failure is its ForgeProblem, and the rest of the answer
- * stands beside it. A client shows GetTicketWork's answer first and this
- * one when it lands, so a slow forge holds no row of the stored sources
- * back. The whole run, the local read included, ends at the budget.
+ * the ticket (searchTicketForge). Each repository's failure is its
+ * ForgeProblem, and the rest of the answer stands beside it. A client
+ * shows GetTicketWork's answer first and this one when it lands, so a slow
+ * forge holds no row of the stored sources back. The budget runs from
+ * entry: every forge request runs within it, and no project's local read
+ * starts after it.
  */
 export function SearchTicketWork(connectionID: string, issueID: string): $CancellablePromise<app$0.TicketWork> {
     return $Call.ByID(859975236, connectionID, issueID).then(($result: any) => {
