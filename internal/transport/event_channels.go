@@ -1358,6 +1358,17 @@ var channelPolicies = []ChannelPolicy{
 			"Scope: ProjectTrackerSetup, the pull half, is tracker:read.",
 	},
 	{
+		Channel:   eventchan.TrackerDashboardsUpdated,
+		Audience:  AudienceAny,
+		Retention: RetentionLatestOnly,
+		Scope:     ScopeTrackerRead,
+		Why: "Payload-less refetch nudge for the boards' dashboards, the " +
+			"same shape as tracker:setup_updated: N retained frames would be " +
+			"N identical refetches of the dashboards a client shows. Scope: " +
+			"TrackerDashboards and EvaluateTrackerDashboard, the pull half, " +
+			"are tracker:read.",
+	},
+	{
 		Channel:   eventchan.TrackerBoardUpdated,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

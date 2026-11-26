@@ -78,6 +78,16 @@ var toolTable = []toolSpec{
 		},
 		call: (*Server).update,
 	},
+	{
+		name:        "dashboard_widget",
+		description: "Count a dashboard widget; show proposes it to the user. Call with no widget for the rules.",
+		properties: map[string]any{
+			"board":  property("string", ""),
+			"widget": property("object", ""),
+			"show":   property("boolean", ""),
+		},
+		call: (*Server).dashboardWidget,
+	},
 }
 
 // maxUpdateKeys is the most tickets one ticket_update changes.

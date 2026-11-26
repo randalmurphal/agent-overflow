@@ -397,7 +397,7 @@ func TestStartSession_CodexCarriesTheTrackerToolsEntryAndGuide(t *testing.T) {
 // saying the sizes it found.
 func TestTrackerMCPToolListAndGuideStayWithinTheirBound(t *testing.T) {
 	t.Parallel()
-	const bound = 2_050
+	const bound = 2_350
 	app := newTestAppWithStore(t)
 	t.Cleanup(func() { _ = app.trackerMCPServer().Close() })
 	withTicketSource(t, app)
@@ -433,7 +433,7 @@ func TestTrackerMCPToolListAndGuideStayWithinTheirBound(t *testing.T) {
 
 // trackerToolListSum is the sha256 of the tracker tools' tools/list
 // result followed by their guide.
-const trackerToolListSum = "6d7f7310903611b39943142dc9cb06b538adc14ffe85d1e2594b8ea8c6f6cfbd"
+const trackerToolListSum = "1ce3128191d8200b0c93f57099039d41a135252fdb93b46ffb2d7be58a9a1b0d"
 
 // brokenPhaseThread is a workflow phase thread whose session scope cannot
 // be resolved: its attempt row names a phase its run's snapshot does not

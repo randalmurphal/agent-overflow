@@ -377,7 +377,7 @@ func TestDrillStartsAgainWhenTheCountMoved(t *testing.T) {
 func TestEveryKindOffersItsBuiltInDashboard(t *testing.T) {
 	t.Parallel()
 	for _, k := range []Kind{{true, true}, {true, false}, {false, true}, {false, false}} {
-		views, err := evaluator().Dashboards(context.Background(), k)
+		views, err := evaluator().Dashboards(context.Background(), k, Own{})
 		if err != nil {
 			t.Fatalf("%+v: %v", k, err)
 		}

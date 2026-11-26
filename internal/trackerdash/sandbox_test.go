@@ -314,7 +314,7 @@ func TestSessionsLeaveNoRegistrationBehind(t *testing.T) {
 		if _, err := e.Drill(ctx, teamBoard().board(), DrillRequest{Request: utcSprints3, Widget: "stuck_list"}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := e.Dashboards(ctx, Kind{PlansSprints: true}); err != nil {
+		if _, err := e.Dashboards(ctx, Kind{PlansSprints: true}, Own{}); err != nil {
 			t.Fatal(err)
 		}
 	}

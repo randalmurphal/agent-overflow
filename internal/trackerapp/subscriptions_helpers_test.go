@@ -30,8 +30,9 @@ type eventLog struct {
 	// onEmit, when set, sees each event as it is emitted, before it is
 	// recorded.
 	onEmit atomic.Pointer[func(any)]
-	// setups counts the service's setup change nudges.
-	setups atomic.Int64
+	// setups counts the service's setup change nudges, and dashboards its
+	// dashboards' change nudges.
+	setups, dashboards atomic.Int64
 }
 
 func newEventLog() *eventLog {

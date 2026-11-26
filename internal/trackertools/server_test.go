@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/trackerapp"
+	"agent-overflow/internal/trackerdash"
 )
 
 // fakeTracker answers the tools' reads from what a test set, and records
@@ -54,6 +55,15 @@ type fakeTracker struct {
 	agents []context.Context
 	// ends counts the write sessions ended.
 	ends int
+	// try answers a widget's count; tries are those asked, as project
+	// connection/board width show thread.
+	try   func(w trackerapp.KeptWidget) (trackerdash.Tried, error)
+	tries []string
+}
+
+func (f *fakeTracker) TryWidget(_ context.Context, project, connection, board string, w trackerapp.KeptWidget, thread string, show bool) (trackerdash.Tried, error) {
+	f.tries = append(f.tries, fmt.Sprintf("%s %s/%s %d %v %s", project, connection, board, w.Width, show, thread))
+	return f.try(w)
 }
 
 func (f *fakeTracker) TicketsOfKey(key string) ([]trackerapp.KeyedTicket, error) {
@@ -137,8 +147,12 @@ type fakeHost struct {
 	rows      []WriteRow
 	// createBoards are the boards a create can go through, by project;
 	// readingProject, when set, runs as a create reads them.
-	createBoards   map[string][]CreateBoard
+	createBoards   map[string][]ListedBoard
 	readingProject func()
+	// project and boards are the thread's project and the boards it lists
+	// beside createBoards'.
+	project string
+	boards  []ListedBoard
 	// ended are the sessions the host no longer holds.
 	ended map[string]bool
 }
@@ -160,11 +174,18 @@ func (h *fakeHost) Approve(_ context.Context, _ string, a Approval) error {
 
 func (h *fakeHost) Wrote(_ string, row WriteRow) { h.rows = append(h.rows, row) }
 
-func (h *fakeHost) CreateBoards(_, project string) ([]CreateBoard, error) {
+func (h *fakeHost) Boards(string) (string, []ListedBoard, error) {
 	if h.readingProject != nil {
 		h.readingProject()
 	}
-	return h.createBoards[project], nil
+	var out []ListedBoard
+	for _, project := range slices.Sorted(maps.Keys(h.createBoards)) {
+		for _, b := range h.createBoards[project] {
+			b.TrackerProject = project
+			out = append(out, b)
+		}
+	}
+	return h.project, append(out, h.boards...), nil
 }
 
 func (h *fakeHost) Live(_, session string) bool { return !h.ended[session] }
@@ -347,7 +368,7 @@ func TestToolSchemasAreClosed(t *testing.T) {
 			t.Errorf("%s's required is %#v", tool["name"], schema["required"])
 		}
 	}
-	if !slices.Equal(names, []string{"ticket_find", "ticket_read", "ticket_create", "ticket_update"}) || !slices.Equal(names, ToolNames()) {
+	if !slices.Equal(names, []string{"ticket_find", "ticket_read", "ticket_create", "ticket_update", "dashboard_widget"}) || !slices.Equal(names, ToolNames()) {
 		t.Fatalf("tools = %v", names)
 	}
 	f := &fakeTracker{sources: []trackerapp.TicketSource{jiraSource}}
@@ -356,7 +377,7 @@ func TestToolSchemasAreClosed(t *testing.T) {
 		t.Fatalf("an unknown argument = %v", err)
 	}
 	_, err = call(t, f, "ticket_move", map[string]any{})
-	refused(t, err, CodeInvalidRequest, `There is no tool named "ticket_move". The tracker tools are: ticket_find, ticket_read, ticket_create, ticket_update.`)
+	refused(t, err, CodeInvalidRequest, `There is no tool named "ticket_move". The tracker tools are: ticket_find, ticket_read, ticket_create, ticket_update, dashboard_widget.`)
 }
 
 // A search pages 20 at a time through next, which the answer carries
