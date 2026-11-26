@@ -3,6 +3,7 @@ package linearprovider
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -34,7 +35,12 @@ func recentVars(limit int, ceiling string, at ...string) string {
 // wrote is refused.
 func TestSearch(t *testing.T) {
 	t.Parallel()
-	hit := `{"data":{"page":{"nodes":[` + issue(1, 1).JSON() + `],"pageInfo":{"hasNextPage":true,"endCursor":"s2"}}}}`
+	// A hit comes with its state and assignee whole (IssueSearchFields).
+	named := strings.NewReplacer(
+		`"state":{"id":"state-todo"}`, `"state":{"id":"state-todo","name":"Todo","color":"#e2e2e2","description":null,"type":"unstarted","position":1,"team":{"id":"team-web"},"archivedAt":null}`,
+		`"assignee":{"id":"user-1"}`, `"assignee":{"id":"user-1","name":"User 1","displayName":"user1","email":"user1@example.com","avatarUrl":"https://example.com/u1.png","active":true,"admin":false,"guest":false,"app":false,"isMe":true}`,
+	).Replace(issue(1, 1).JSON())
+	hit := `{"data":{"page":{"nodes":[` + named + `],"pageInfo":{"hasNextPage":true,"endCursor":"s2"}}}}`
 	more := lineartest.Data(lineartest.PageJSON([]string{issue(2, 1).JSON()}, true, "ignored"))
 	p, _ := newProvider(t,
 		lineartest.Exchange{Op: "SearchIssues", Vars: `{"term":"login \"fails\" OR x","teamId":"` + web + `","first":50}`, Body: hit},
@@ -48,6 +54,13 @@ func TestSearch(t *testing.T) {
 	pg, err := p.Search(ctx, q)
 	if err != nil || len(pg.Cards) != 1 || pg.Cards[0].Key != "WEB-1" || pg.Next == "" {
 		t.Fatalf("search %+v %v", pg, err)
+	}
+	wantCatalog := tracker.Catalog{
+		Users:    []tracker.User{{ID: "user-1", Name: "User 1", Email: "user1@example.com", AvatarURL: "https://example.com/u1.png", Active: true}},
+		Statuses: []tracker.Status{{ID: "state-todo", Name: "Todo", Group: tracker.GroupToDo}},
+	}
+	if pg.Cards[0].Status != "state-todo" || pg.Cards[0].Assignee != "user-1" || !reflect.DeepEqual(pg.Catalog, wantCatalog) {
+		t.Fatalf("search card %+v catalog %+v; want the hit's state and assignee named", pg.Cards[0], pg.Catalog)
 	}
 	textToken := pg.Next
 	q.Page = textToken

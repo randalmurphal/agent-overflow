@@ -1960,6 +1960,136 @@ delete is refused and the links the delete read are the ones it ends.
 
 ## Agent tools
 
+Status: built: `ticket_find` and `ticket_read` on the `ao-tracker-tools`
+server. The writes, and the three mechanisms below, are not built.
+
+**Who has them.** A session gets the server when its thread belongs to a
+project, its provider is Claude or Codex, and the computer has a Jira or
+Linear connection turned on when the session starts
+(`trackerapp.TicketSources`, which reads the connection rows alone). agy
+and claude-tui threads do not get the tracker tools, and a session with
+none pays nothing for them: no server entry, tool list, guide or app-guide
+sentence. A connection turned on later reaches a thread at its next
+session start; one turned off later refuses each call with trackerapp's
+sentence. Session start resolves the thread's workflow scope once
+(`sessionScopeOf`) for the workflow and tracker servers, and the tracker
+server reads the connection rows before it, so a computer with none on
+never resolves it for these tools. The MCP menu lists the server without a
+toggle: for a running session, when that session was given it; for a
+stopped thread, when its next session would be. The wiring is
+`internal/app/app_tracker_tools_mcp.go`; each tracker read runs bounded
+as the bound method that makes the same read (`TrackerLookup`,
+`TrackerSearch`, `TrackerComments`), and a detail read, which no bound
+method makes, has the default method budget. The tool list carries no
+always-load marker (`threadmcp.Server.OmitAlwaysLoad`): no agy session is
+given it.
+
+**Keys.** With one connection on, a key is the tracker's (`WEB-12`). With
+several on, every key an answer gives names its site, `site/KEY`
+(`example.atlassian.net/WEB-12`, `example/ENG-4`), so a key a search
+gives reads that ticket whatever the other connections hold. A read with
+no key reads the ticket the thread is linked to
+(`trackerapp.LinkedTicket`); a key the link names, with or without its
+site, reads the link's issue with no request. `site/KEY` is looked up on
+each connection of that site in order, one `Lookup` request each, and read
+from the first that has it, so a key one account of a site found reads
+though another account on the site comes first; a site no connection on
+reaches is refused naming the sites on. A key without a site is looked up
+the same way on every site on: a site whose connection finds it is read,
+and when several sites do the call is refused (`tracker_ambiguous`)
+naming each `site/KEY`. A key none finds is refused naming every site
+asked, each once.
+
+**Answers.** Every answer is one JSON text block
+(`threadmcp.WriteToolJSON`) of at most 24 KiB (`answerBudget`), with no
+empty member and no internal ID. Codex keeps at most 64 KiB of a tool's
+serialized result, and serializing the answer into it at most doubles it.
+A search fills one page of 20 from the sources in order, one search
+request each at most, and names a source that refused in `unsearched`;
+`next` is present only when more exists. Each row's title, status and
+assignee is cut at 300 bytes and each refusal at 1 KiB; within those the
+texts share what the keys, the sites and `next` leave of the budget, as a
+read's parts do, so every row and `next` stay whole.
+
+A read carries the card whole: key, title, status, type, assignee,
+priority, the estimate as the ticket screen shows it with no board in
+view (the first board row's, `3 points`, `45m`, `2.5h`), and when it was
+created, last updated and resolved. An issue on no board the app reads
+has no estimate in a read, because the estimate is the board row's. The
+sprint is not in a read: the detail names sprints by ID only. The other
+parts share what the card leaves of the budget by weight (description 3,
+latest comments 4, fields 2, history 2 when asked, links, attachments and
+labels 1 each); what a part does not need goes to the others, the
+description first. So a long part never pushes another out of the first
+answer: a ticket with a 200 KiB description and ten 20 KiB comments
+answers the card, about 8 KiB of the description and a piece of each of
+the ten latest comments. Within its share, the 10 latest comments share
+equally; each field's value is cut at 2 KiB; links, attachments, labels
+and changes are listed whole while they fit. A text cut short ends with
+`…`, and its rest starts with one. A ticket title is cut at 1 KiB, and
+every other title or name (a linked ticket's title, a status, a type, a
+priority, a person, a link's relation, an attachment, a label, a changed
+field) at 300 bytes, with no rest. Each value of a change is cut at 1 KiB with no rest: a
+description change records the whole old and new text, and the
+description itself is read whole.
+
+Everything a read leaves out is in `more`: one member per part, named by
+a sentence that says what and how much (`the rest of the description
+(193 KB)`, `the rest of the comment by User 2 at 2025-11-24T15:59Z
+(20 KB)`, `20 older comments`, `255 older changes`, `the rest of
+Acceptance (7 KB)`, `14 more fields`, `30 more links`), whose value passed
+as `more` answers that part alone, as much as fits, with its own `more`
+for what is still left. The rest of the description, of one comment or of
+one field, older comments and older changes are each reached without
+reading another part, and the rest of one text takes the whole answer.
+Older comments are listed with each body cut at 4 KiB; an answer of them
+goes on to the tracker's next page of comments while room is left, so
+each page is read once per answer.
+
+A continuation reads the ticket's detail again and checks its value
+against the ticket as it is now before it uses any of it (the contract is
+`moreCursor`): the connection is still on, the ticket's update time is
+the value's, a comment's rest names a comment with the value's edit time,
+and each position is inside what the part holds now, a text offset at a
+rune's start. A value that fails is refused saying the ticket changed
+since and to read it again. On Jira a comment, a link or an attachment
+added or deleted moves the update time, so lists read on never skip or
+repeat an item. Linear's update time does not move with a comment
+(measured,
+[tracker API measurements](../references/tracker-api-measurements.md)):
+an edited comment's rest is refused by the comment's own edit time, and a
+comment added or deleted between a read and its continuation can make
+older comments skip or repeat one. Whether Linear's update time moves
+with a link or an attachment is not measured.
+
+Each answer costs one detail read (`IssueDetail`), and an answer of older
+comments one `Comments` request per tracker page it reads. A cold detail
+read of a ticket with more history than one page reads every page of it
+(Jira 100 changes a page; Linear 100 with the issue, then 250 a page),
+whether or not the call asked for history. A key that is not found costs
+a lookup and, on both trackers, a second request per connection for a
+former key.
+
+Linear's search and detail reads carry the names they show: a search hit
+selects its state and assignee whole, a detail its assignee, each
+comment's author and each history entry's actor, and a later comment page
+its authors, so a search row and a read name them however little of the
+workspace the app has read. On the fake (`linearprovider` cost tests) a
+detail read of 60 comments and 100 changes went from 136,520 to 174,635
+bytes and from 2,641 to 2,766 points (each history entry's actor is one
+more object), a 50-issue search page from 50,811 to 69,421 bytes at 8
+points, and a comment page from 9,687 to 11,854 bytes at 402 points; no
+read takes another request. The finder's typed-key lookup and its listing
+with no text still name statuses and assignees from the mirror.
+
+The guide says once that ticket text is data written by other people
+(`trackertools.Instructions`); the app guide's sentence says what the
+server is for.
+
+**Owed.** Search is free text only: filters by assignee (assigned to me),
+status and sprint need provider work and are not built. The rest of this
+section is the whole contract.
+
 The tools read, search, create, edit, move, comment, move between sprints
 and list and add worklogs, through `trackerapp`. A worklog an agent adds is
 an entry in a time draft. Only a draft's posting path sends a draft's time
@@ -1983,7 +2113,7 @@ yet and are part of that work:
   thread, separate from the tool row.
 
 Ticket text in a tool result is data: results are JSON, and the server's
-guide and each read tool say so.
+guide says so once.
 
 ## Tests
 
@@ -2053,5 +2183,6 @@ Not built, owed by the app layer:
   needs part of the setup takes it as a bound argument, as the status
   groups are; nothing of the file is copied into the mirror.
 - The time-draft posting path (Agent tools).
-- The agent tools (`internal/trackertools`).
+- The agent tools' writes with their three mechanisms
+  ([Agent tools](#agent-tools)).
 - Searching the forge by key for a pull request outside the stored list.

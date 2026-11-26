@@ -46,8 +46,9 @@ type User struct {
 
 // Catalog is what a read learned about the users and statuses its
 // records name, from a tracker that sends them with the records (Jira
-// does; Linear names them by ID only, and Structure lists them). The
-// mirror stores them beside the records.
+// does; Linear's search, detail and comment reads do, its other reads
+// name them by ID only, and Structure lists them). The mirror stores them
+// beside the records.
 type Catalog struct {
 	Users    []User
 	Statuses []Status

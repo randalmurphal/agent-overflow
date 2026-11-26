@@ -37,9 +37,12 @@ type Server[T any] struct {
 	// this thread is switched off. Nil means the generic uncoded message;
 	// a server with a documented refusal code supplies its own.
 	disabledErr error
-	tools       func(T) []map[string]any
-	call        func(http.ResponseWriter, context.Context, Request, T)
-	enabled     atomic.Bool
+	// omitAlwaysLoad drops Antigravity's always-load marker from tools/list,
+	// for a server no Antigravity session is given.
+	omitAlwaysLoad bool
+	tools          func(T) []map[string]any
+	call           func(http.ResponseWriter, context.Context, Request, T)
+	enabled        atomic.Bool
 
 	mu            sync.Mutex
 	closed        bool
@@ -85,6 +88,11 @@ func (s *Server[T]) SetInstructionsFunc(fn func(T) string) { s.instructionsFunc 
 // server or the thread is off, so a documented public code reaches the model
 // instead of the generic message. Call it before the first registration.
 func (s *Server[T]) SetDisabledError(err error) { s.disabledErr = err }
+
+// OmitAlwaysLoad lists the tools as the caller defines them, without
+// Antigravity's always-load marker, for a server no Antigravity session is
+// given. Call it before the first RegisterThread.
+func (s *Server[T]) OmitAlwaysLoad() { s.omitAlwaysLoad = true }
 
 // RegisterThread issues the thread a capability URL for one provider
 // session, replacing the URL any earlier session held.
@@ -159,6 +167,15 @@ func (s *Server[T]) ThreadEnabled(threadID string) bool {
 	enabled, ok := s.threadEnabled[strings.TrimSpace(threadID)]
 	s.mu.Unlock()
 	return !ok || enabled
+}
+
+// HoldsSession reports whether session holds the thread's capability: it
+// was registered for that session and not revoked or replaced since.
+func (s *Server[T]) HoldsSession(threadID, session string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	granted, ok := s.capabilities[s.threadToToken[threadID]]
+	return ok && session != "" && granted.session == session
 }
 
 func (s *Server[T]) HasThread(threadID string) bool {
@@ -249,7 +266,10 @@ func (s *Server[T]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		tools := []map[string]any{}
 		if s.enabled.Load() && s.ThreadEnabled(threadID) {
 			if available := s.tools(access); available != nil {
-				tools = withAlwaysLoadMeta(available)
+				tools = available
+				if !s.omitAlwaysLoad {
+					tools = withAlwaysLoadMeta(available)
+				}
 			}
 		}
 		WriteResult(w, req.ID, map[string]any{"tools": tools})

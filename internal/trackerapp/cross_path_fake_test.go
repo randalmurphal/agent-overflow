@@ -12,14 +12,12 @@ import (
 )
 
 // crossPathTracker is one fake tracker for the cross-path tests: a board
-// whose issue has a comment by a user no card names (User 3), and whether
-// the tracker's detail names the comment's author (Jira's does; Linear's
-// reads the author's ID alone, its users coming with a structure read).
+// whose issue has a comment by a user no card names (User 3), whom each
+// tracker's detail names.
 type crossPathTracker struct {
-	open           func(t *testing.T) (*fakeScenario, Connection, Scope)
-	issue          tracker.IssueID
-	commenter      string
-	namesCommenter bool
+	open      func(t *testing.T) (*fakeScenario, Connection, Scope)
+	issue     tracker.IssueID
+	commenter string
 }
 
 func crossPathTrackers() map[string]crossPathTracker {
@@ -37,7 +35,7 @@ func crossPathTrackers() map[string]crossPathTracker {
 				s.writeToken(conn, "fake-jira-token-1")
 				return s, conn, Scope{Connection: conn.ID, Board: "1"}
 			},
-			issue: "10101", commenter: "acc-user3", namesCommenter: true,
+			issue: "10101", commenter: "acc-user3",
 		},
 		"linear": {
 			open: func(t *testing.T) (*fakeScenario, Connection, Scope) {
@@ -60,9 +58,8 @@ func crossPathTrackers() map[string]crossPathTracker {
 // A ticket's read through each real provider sends the shared catalog
 // only what its card names: the comment's author, whom no card names,
 // stays with the body, and the ticket shows the author's name the detail
-// read (Jira), or the author's ID when the detail names no author
-// (Linear). No board is read, whose structure may name every user
-// (Linear's does).
+// read. No board is read, whose structure may name every user (Linear's
+// does).
 func TestFakeTicketReadNamesOnlyItsCardInTheSharedCatalog(t *testing.T) {
 	t.Parallel()
 	for name, tc := range crossPathTrackers() {
@@ -75,20 +72,15 @@ func TestFakeTicketReadNamesOnlyItsCardInTheSharedCatalog(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := ""
-			if tc.namesCommenter {
-				want = "User 3"
-			}
-			if !slices.ContainsFunc(v.Comments, func(c CommentView) bool { return c.Author.ID == tc.commenter && c.Author.Name == want }) {
-				t.Fatalf("the ticket's comments %+v; want one by %s named %q", v.Comments, tc.commenter, want)
+			if !slices.ContainsFunc(v.Comments, func(c CommentView) bool { return c.Author.ID == tc.commenter && c.Author.Name == "User 3" }) {
+				t.Fatalf("the ticket's comments %+v; want one by %s named User 3", v.Comments, tc.commenter)
 			}
 			root := must[int64](t)(rootOf(s, conn))
 			catalog := must[store.MirrorCatalog](t)(s.st.GetMirrorCatalog(root, []string{tc.commenter, string(v.Card.Assignee.ID)}, nil))
-			// Jira's ticket read names its card's assignee there; Linear's
-			// names no user, its users coming with a structure read.
+			// The ticket read names its card's assignee there.
 			named := slices.ContainsFunc(catalog.Users, func(u store.MirrorUser) bool { return u.ID == v.Card.Assignee.ID })
-			if slices.ContainsFunc(catalog.Users, func(u store.MirrorUser) bool { return u.ID == tc.commenter }) || named != tc.namesCommenter {
-				t.Fatalf("the shared catalog names %+v; want the card's assignee %v and never the comment's author", catalog.Users, tc.namesCommenter)
+			if slices.ContainsFunc(catalog.Users, func(u store.MirrorUser) bool { return u.ID == tc.commenter }) || !named {
+				t.Fatalf("the shared catalog names %+v; want the card's assignee and never the comment's author", catalog.Users)
 			}
 		})
 	}

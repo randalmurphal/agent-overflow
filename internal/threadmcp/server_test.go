@@ -678,11 +678,38 @@ func TestToolsListIncludesAntigravityAlwaysLoadMeta(t *testing.T) {
 		return []map[string]any{orig}
 	}, nil)
 	t.Cleanup(func() { _ = server.Close() })
+	tools := listToolsOnce(t, server)
+	meta, _ := tools[0]["_meta"].(map[string]any)
+	if meta["antigravity/alwaysLoad"] != true {
+		t.Fatalf("_meta = %v, want antigravity/alwaysLoad=true", meta)
+	}
+	if _, mutated := orig["_meta"]; mutated {
+		t.Fatal("tools/list mutated caller's tool definition map")
+	}
+}
+
+// A server no Antigravity session is given lists its tools as defined.
+func TestToolsListOmitsTheAlwaysLoadMetaWhenAsked(t *testing.T) {
+	server := New("ao-tracker-tools", "", func(string) []map[string]any {
+		return []map[string]any{{"name": "ticket_find", "description": "Find"}}
+	}, nil)
+	server.OmitAlwaysLoad()
+	t.Cleanup(func() { _ = server.Close() })
+	tools := listToolsOnce(t, server)
+	if _, ok := tools[0]["_meta"]; ok || len(tools[0]) != 2 {
+		t.Fatalf("tool = %v, want it as defined", tools[0])
+	}
+}
+
+// listToolsOnce registers one session on server and answers its tools/list,
+// which must hold one tool.
+func listToolsOnce(t *testing.T, server *Server[string]) []map[string]any {
+	t.Helper()
 	entry, err := server.RegisterThread("thread-1", "sess-1", "access")
 	if err != nil {
 		t.Fatal(err)
 	}
-	url := entry["ao-thread-tools"].(map[string]any)["url"].(string)
+	url := entry[server.name].(map[string]any)["url"].(string)
 	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -704,11 +731,5 @@ func TestToolsListIncludesAntigravityAlwaysLoadMeta(t *testing.T) {
 	if len(body.Result.Tools) != 1 {
 		t.Fatalf("tools len = %d, want 1", len(body.Result.Tools))
 	}
-	meta, _ := body.Result.Tools[0]["_meta"].(map[string]any)
-	if meta["antigravity/alwaysLoad"] != true {
-		t.Fatalf("_meta = %v, want antigravity/alwaysLoad=true", meta)
-	}
-	if _, mutated := orig["_meta"]; mutated {
-		t.Fatal("tools/list mutated caller's tool definition map")
-	}
+	return body.Result.Tools
 }

@@ -35,6 +35,7 @@ type Store interface {
 	ReadyTrackerBoards(ctx context.Context, boards []store.TrackerBoardRef) error
 
 	TicketConnection(ticket store.TicketRef) (string, string, error)
+	GetThreadTicket(threadID string) (store.ThreadTicket, bool, error)
 	SetThreadTicket(w store.ThreadTicketWrite) (store.ThreadTicketSet, error)
 	ClearThreadTicket(threadID string) (store.ThreadTicketClear, error)
 	ListThreadsLinkedToSite(kind, site string) ([]string, error)

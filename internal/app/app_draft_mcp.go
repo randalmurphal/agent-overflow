@@ -21,6 +21,7 @@ func (a *App) draftMCPPreferences(threadID string) draftMCPPreferences {
 func (a *App) forgetThreadMCP(threadID string) {
 	a.threadMCPServer().UnregisterThread(threadID)
 	a.workflowMCPServer().UnregisterThread(threadID)
+	a.trackerMCPServer().UnregisterThread(threadID)
 	a.remoteMCPServer().UnregisterThread(threadID)
 	if a.browser.mcp != nil {
 		a.browser.mcp.UnregisterThread(threadID)

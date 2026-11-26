@@ -11,7 +11,8 @@ screens are not built; the [Board](#board), [Ticket](#ticket),
 and [Thread link](#thread-link) sections say what of them is. A
 project's status groups and ticket pins are built in the backend, and no
 screen sets them yet; its Start work defaults are set from the Start work
-form.
+form. Agents can find and read tickets; their writes are not built
+([Agent tools](../architecture/tracker-backend.md#agent-tools)).
 
 ## Goal
 

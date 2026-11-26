@@ -220,7 +220,7 @@ var opSearchIssues = newQuery("SearchIssues", "page", `query SearchIssues($term:
     nodes { ...IssueSearchFields } pageInfo { hasNextPage endCursor }
   }
 }
-`+issueSearchFields).withMaxBody(issueBodyBytes)
+`+issueSearchFields+stateFields+userFields).withMaxBody(issueBodyBytes)
 
 type searchVars struct {
 	pageVars
@@ -232,14 +232,14 @@ type searchVars struct {
 // SearchIssues returns the page of issues q's term matches that follows
 // after, in Linear's order of relevance; Linear's text-search syntax, if
 // any, is Linear's to read. Pass the same q for every page of one search.
-func (c *Client) SearchIssues(ctx context.Context, q SearchQuery, after string) (Page[Issue], error) {
+func (c *Client) SearchIssues(ctx context.Context, q SearchQuery, after string) (Page[SearchHit], error) {
 	if strings.TrimSpace(q.Term) == "" {
-		return Page[Issue]{}, invalid(opSearchIssues.name, "a search term is required")
+		return Page[SearchHit]{}, invalid(opSearchIssues.name, "a search term is required")
 	}
 	first, err := pageSize(q.Limit)
 	if err != nil {
-		return Page[Issue]{}, invalid(opSearchIssues.name, "%w", err)
+		return Page[SearchHit]{}, invalid(opSearchIssues.name, "%w", err)
 	}
 	vars := searchVars{pageVars{First: first, After: after}, q.Term, q.TeamID, q.IncludeArchived}
-	return fetchPage(ctx, c, opSearchIssues, vars, wireIssue.typed)
+	return fetchPage(ctx, c, opSearchIssues, vars, wireSearchIssue.typed)
 }
