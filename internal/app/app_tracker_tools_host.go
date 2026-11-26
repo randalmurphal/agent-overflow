@@ -13,6 +13,8 @@ import (
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/trackertools"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
@@ -58,6 +60,9 @@ const (
 	codeTrackerDenied   = "tracker_write_denied"
 	codeTrackerUnseen   = "tracker_write_unanswered"
 	codeTrackerReadOnly = "tracker_read_only"
+	// codeTrackerChangesOff is a write from a thread whose project's
+	// Agents settings turn off Change tickets.
+	codeTrackerChangesOff = "tracker_changes_off"
 )
 
 // trackerApprovals are the tracker writes waiting on the person, by
@@ -107,15 +112,51 @@ func (t *trackerApprovals) waitFor() time.Duration {
 
 type trackerToolsHost struct{ a *App }
 
-func (h trackerToolsHost) Writable(threadID string) error {
+// WritePolicy refuses a read-only thread, and a thread whose project's
+// Agents settings turn off Change tickets or cannot be read
+// (trackerapp.AgentRules); otherwise it says whether a change to several
+// tickets waits for the person, as those settings say. Every writing tool
+// reads it, at its start and again just before it sends.
+func (h trackerToolsHost) WritePolicy(threadID string) (trackertools.WritePolicy, error) {
 	thread, err := h.a.store.GetThread(threadID)
 	if err != nil {
-		return fmt.Errorf("tracker tools: read thread %s: %w", threadID, err)
+		return trackertools.WritePolicy{}, fmt.Errorf("tracker tools: read thread %s: %w", threadID, err)
 	}
 	if provider.RuntimeMode(thread.RuntimeMode) == provider.RuntimeReadOnly {
-		return errorsx.Public(codeTrackerReadOnly, "This thread is read-only, so it cannot change tickets; ask the user to change its access.", nil)
+		return trackertools.WritePolicy{}, errorsx.Public(codeTrackerReadOnly, "This thread is read-only, so it cannot change tickets; ask the user to change its access.", nil)
 	}
-	return nil
+	rules, err := h.agentRules(thread)
+	if err != nil {
+		return trackertools.WritePolicy{}, err
+	}
+	if !rules.Changes() {
+		return trackertools.WritePolicy{}, errorsx.Public(codeTrackerChangesOff, "This project's Agents settings do not let its threads change tickets, so nothing was sent; ask the user to turn on Change tickets in Settings > Issues > Agents if this change is wanted.", nil)
+	}
+	return trackertools.WritePolicy{AskSeveral: rules.Asks()}, nil
+}
+
+// agentRules are the Agents settings of thread's project; a thread of no
+// project has the built-in ones. Rules this build cannot read refuse the
+// write: applying the built-in ones could send what the person turned off.
+func (h trackerToolsHost) agentRules(thread store.Thread) (trackerapp.AgentRules, error) {
+	if thread.ProjectID == "" {
+		return trackerapp.AgentRules{}, nil
+	}
+	svc, err := h.a.trackerService()
+	if err != nil {
+		return trackerapp.AgentRules{}, err
+	}
+	rules, err := svc.ProjectAgentRules(thread.ProjectID)
+	var unreadable *trackerapp.SetupFileError
+	switch {
+	case err == nil:
+		return rules, nil
+	case errors.As(err, &unreadable):
+		return trackerapp.AgentRules{}, errorsx.Public("tracker_setup_unreadable", "Nothing was sent: this project's tracker setup cannot be read from "+unreadable.Path+" ("+unreadable.Reason+"), so what its Agents settings allow is not known; ask the user to fix or remove the file.", err)
+	case errors.Is(err, trackerapp.ErrSetupNewer):
+		return trackerapp.AgentRules{}, errorsx.Public("tracker_setup_newer", "Nothing was sent: a newer version of Agent Overflow saved this project's Agents settings, so this version cannot tell what they allow; ask the user to update the app.", err)
+	}
+	return trackerapp.AgentRules{}, fmt.Errorf("tracker tools: the Agents settings of project %s: %w", thread.ProjectID, err)
 }
 
 func (h trackerToolsHost) Approve(ctx context.Context, threadID string, approval trackertools.Approval) error {

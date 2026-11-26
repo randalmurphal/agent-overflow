@@ -160,7 +160,8 @@ func TestAnApprovalCarriesEveryValueWhole(t *testing.T) {
 		t.Fatalf("values %+v, comment %q", a.Values, a.Comment)
 	}
 
-	// At the bound: carried whole. Past it: refused, with nothing read.
+	// At the bound: carried whole. Past it: refused once the plan decides
+	// it asks, with nothing asked or sent.
 	quoted := len(`""`)
 	at := strings.Repeat("a", maxApprovalBytes-len("Done.")-len("priority")-quoted)
 	w.h.approvals, w.f.asked = nil, nil
@@ -170,11 +171,11 @@ func TestAnApprovalCarriesEveryValueWhole(t *testing.T) {
 	if v := w.h.approvals[0].Values; len(v) != 1 || v[0].Value != at {
 		t.Fatal("a value at the bound was not carried whole")
 	}
-	w.h.approvals, w.f.asked = nil, nil
+	w.h.approvals, w.f.writes = nil, nil
 	_, err := w.update(t, map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "set": map[string]any{"priority": at + "a"}, "comment": "Done."})
 	refused(t, err, CodeInvalidRequest, "set and comment together hold more than 256 KiB, more than an approval shows the person; change fewer or shorter values in each call.")
-	if len(w.h.approvals)+len(w.f.asked) != 0 {
-		t.Fatalf("a call past the bound asked %+v, read %q", w.h.approvals, w.f.asked)
+	if len(w.h.approvals)+len(w.f.writes) != 0 {
+		t.Fatalf("a call past the bound asked %+v, sent %q", w.h.approvals, w.f.writes)
 	}
 }
 

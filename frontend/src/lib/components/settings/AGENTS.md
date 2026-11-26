@@ -28,11 +28,17 @@ from layout or from another provider's fields.
 
 ## Issues pages
 
-A per-project Issues page picks its project with
-`TrackerProjectSelect.svelte` (the page's computer's projects). The
-project's tracker setup is `stores/trackerSetup.svelte.ts`'s:
-`TrackerStatusesSettings.svelte` (Status groups) holds the setup and the
-statuses while it shows a project and saves through `editTrackerSetup`.
+A per-project Issues page (Status groups, Fields, Starting work, Agents)
+is a body on `TrackerProjectSettings.svelte`, which picks the project
+(`TrackerProjectSelect.svelte`, the page's computer's projects), holds
+the project's tracker setup (`stores/trackerSetup.svelte.ts`) while it
+shows it, and says what every page says the same way: the tracker gate,
+a setup that cannot be read, a section a newer version saved, and a
+save that lost or failed. A page adds what else it holds (statuses,
+boards, fields) and saves through the frame's `save`, which goes through
+`editTrackerSetup`. A change a ticket or the Start work form also makes
+goes through their rule (`withTicketPin`,
+`stores/startWorkDefaults.ts#withStartWorkDefaults`), never a copy.
 
 ## Pairing and remote computers
 

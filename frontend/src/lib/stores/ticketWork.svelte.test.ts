@@ -468,7 +468,7 @@ describe('Start work', () => {
     expect(save).toHaveBeenCalledWith('p1', 'r1', expect.objectContaining({
       start_work: [
         { tracker: 'jira', site: 'https://example.atlassian.net', project: 'OPS', assign: false },
-        { ...place, status: 's2', assign: true, branch: 'feature/{key}', repository: 'p2' },
+        { ...place, status: 's2', assign: true, branch: 'feature/{key}', name_branch: true, repository: 'p2' },
       ],
     }));
     expect(startWorkRun(ticket.key)?.steps.defaults).toMatchObject({ kind: 'refused', text: expect.stringContaining('changed after it was read') });

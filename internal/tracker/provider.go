@@ -113,6 +113,12 @@ type Provider interface {
 	Structure(ctx context.Context, board BoardID, window time.Time) (Structure, error)
 	// LinkTypes are the kinds of link the tracker offers.
 	LinkTypes(ctx context.Context) ([]LinkType, error)
+	// Fields are the fields a project's setup can pin for the site's
+	// tickets: every field of the site that an issue's Detail lists, by
+	// the rule Detail lists them by, with its name and kind (no value);
+	// one of KindRichText is a section of the ticket. Refused wrapping
+	// ErrUnsupported without Capabilities.CustomFields.
+	Fields(ctx context.Context) ([]Field, error)
 
 	// ChangedRows is the next page of a board's changed rows.
 	ChangedRows(ctx context.Context, q DeltaQuery) (RowPage, error)

@@ -66,6 +66,10 @@ func (o oneCredential) LinkTypes(ctx context.Context) ([]LinkType, error) {
 	return trackerapi.Walk(ctx, o.p.LinkTypes)
 }
 
+func (o oneCredential) Fields(ctx context.Context) ([]Field, error) {
+	return trackerapi.Walk(ctx, o.p.Fields)
+}
+
 func (o oneCredential) ChangedRows(ctx context.Context, q DeltaQuery) (RowPage, error) {
 	return trackerapi.Walk(ctx, func(ctx context.Context) (RowPage, error) { return o.p.ChangedRows(ctx, q) })
 }

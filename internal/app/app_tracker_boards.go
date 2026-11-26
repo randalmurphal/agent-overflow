@@ -316,6 +316,7 @@ func trackerRefusal(err error) (code, message string) {
 	var unreadable *trackerapp.SetupFileError
 	var refusedSetup *trackerapp.SetupError
 	var unsureWrite *trackerapp.SetupWriteError
+	var noSite *trackerapp.NoSiteConnectionError
 	failed, isCall := errors.AsType[*trackerapp.CallFailure](err)
 	switch {
 	case err == nil:
@@ -348,6 +349,8 @@ func trackerRefusal(err error) (code, message string) {
 		return "tracker_board_not_read", "this computer has not read this board from the tracker yet; it shows once the first read finishes"
 	case errors.Is(err, trackerapp.ErrStalePage):
 		return "tracker_page_stale", "the board, or the project's status groups, changed since this section was read; read the section again from its start"
+	case errors.As(err, &noSite):
+		return "tracker_site_unreached", "no tracker connection of this computer reaches " + noSite.Site + "; add one in Settings > Issues > Connections to find its fields, or take its pins off here"
 	case errors.Is(err, trackerapp.ErrProjectNotFound):
 		return "tracker_project_missing", "this project no longer exists on this computer"
 	case errors.Is(err, trackerapp.ErrBoardsChanged):

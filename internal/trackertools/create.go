@@ -70,7 +70,7 @@ func (s *Server) create(ctx context.Context, caller Caller, raw json.RawMessage)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.h.Writable(caller.Thread); err != nil {
+	if _, err := s.h.WritePolicy(caller.Thread); err != nil {
 		return nil, err
 	}
 	tg, err := s.createTarget(caller.Thread, args.Project)
@@ -90,7 +90,7 @@ func (s *Server) create(ctx context.Context, caller Caller, raw json.RawMessage)
 	}
 	// The create is admitted now: a thread made read-only while the call
 	// read the project sends nothing.
-	if err := s.h.Writable(caller.Thread); err != nil {
+	if _, err := s.h.WritePolicy(caller.Thread); err != nil {
 		return nil, err
 	}
 	id := s.newID()

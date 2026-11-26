@@ -23,9 +23,10 @@ import (
 func TestTrackerSetupMethodsCarryTheirScopeAndRoute(t *testing.T) {
 	t.Parallel()
 	for name, scope := range map[string]transport.Scope{
-		"ProjectTrackerSetup":    transport.ScopeTrackerRead,
-		"ProjectTrackerStatuses": transport.ScopeTrackerRead,
-		"SetProjectTrackerSetup": transport.ScopeTrackerOperate,
+		"ProjectTrackerSetup":      transport.ScopeTrackerRead,
+		"ProjectTrackerStatuses":   transport.ScopeTrackerRead,
+		"ProjectTrackerSiteFields": transport.ScopeTrackerRead,
+		"SetProjectTrackerSetup":   transport.ScopeTrackerOperate,
 	} {
 		i := slices.IndexFunc(transport.GeneratedMethods, func(m transport.MethodMeta) bool { return m.Name == name })
 		if i < 0 {
@@ -325,5 +326,38 @@ func TestTheSetupAReadAnswersIsSavedBack(t *testing.T) {
 	var save trackerapp.SetupSave
 	if frame != nil || json.Unmarshal(result, &save) != nil || !save.Saved || save.Stored.Revision != read.Revision {
 		t.Fatalf("the read's setup saved back = %s, %+v; want it saved as it was (read %s)", result, frame, read.Setup)
+	}
+}
+
+// A site's fields to pin, on the fake Jira site, are the site's fields
+// a ticket's detail lists: none of the card's, the description, the
+// sprint or the rank. A site no connection reaches is refused with the
+// sentence that says so.
+func TestProjectTrackerSiteFieldsListWhatATicketCanPin(t *testing.T) {
+	t.Parallel()
+	f := newTrackerBoardFixture(t)
+	got, err := f.a.ProjectTrackerSiteFields(t.Context(), f.project, store.TrackerKindJira, f.conn.Site)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]bool{}
+	for _, field := range got {
+		ids[field.ID] = true
+	}
+	for _, id := range []string{"summary", "status", "assignee", "description", "customfield_10020", "customfield_10019"} {
+		if ids[id] {
+			t.Errorf("%s is offered to pin", id)
+		}
+	}
+	for _, id := range []string{"reporter", "duedate", "components"} {
+		if !ids[id] {
+			t.Errorf("%s is not offered to pin: %+v", id, got)
+		}
+	}
+	other := "https://other.example.atlassian.net"
+	_, err = f.a.ProjectTrackerSiteFields(t.Context(), f.project, store.TrackerKindJira, other)
+	if code, message, _ := errorsx.PublicDetails(err); code != "tracker_site_unreached" ||
+		message != "no tracker connection of this computer reaches "+other+"; add one in Settings > Issues > Connections to find its fields, or take its pins off here" {
+		t.Fatalf("a site no connection reaches = %v (code %q, %q)", err, code, message)
 	}
 }
