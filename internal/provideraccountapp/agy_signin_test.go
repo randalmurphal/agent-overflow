@@ -143,6 +143,11 @@ func TestAFailedSignInWhoseTeardownFailedSaysBoth(t *testing.T) {
 	rig.quota.answerUserinfo(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("userinfo unreachable for the test")
 	})
+	// A sign-in's temporary home is made in the temp directory, which every
+	// test process of a run shares: this one is the test's own to make
+	// read-only.
+	own := t.TempDir()
+	t.Setenv("TMPDIR", own)
 	attempt := completedAgyLogin(t, rig, agyCredential("dev-new", ""))
 	run := &loginRun{provider: string(provider.Agy), attempt: attempt, done: make(chan struct{}), cancel: func() {}}
 	rig.manager.registerLoginRun(run)
@@ -152,6 +157,9 @@ func TestAFailedSignInWhoseTeardownFailedSaysBoth(t *testing.T) {
 		t.Fatal("adoptLogin saved a sign-in nobody could identify")
 	}
 	parent := filepath.Dir(attempt.home.Path)
+	if parent != own {
+		t.Fatalf("the temporary home's parent is %s, not this test's %s: read-only, it would fail every other test's temporary directory", parent, own)
+	}
 	if err := os.Chmod(parent, 0o500); err != nil {
 		t.Fatal(err)
 	}
