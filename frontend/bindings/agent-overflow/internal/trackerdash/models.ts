@@ -6,11 +6,14 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 /**
- * Answer is one evaluation of a dashboard.
+ * Answer is one evaluation of a dashboard. Reading is whether the board's
+ * first read has not finished, so its numbers count the tickets read so
+ * far.
  */
 export class Answer {
     "dashboard": DashboardView;
     "range": RangeView;
+    "reading"?: boolean;
     "estimates": string;
     "person"?: Name | null;
     "epic"?: Name | null;
@@ -44,9 +47,9 @@ export class Answer {
     static createFrom($$source: any = {}): Answer {
         const $$createField0_0 = $$createType0;
         const $$createField1_0 = $$createType1;
-        const $$createField3_0 = $$createType3;
         const $$createField4_0 = $$createType3;
-        const $$createField6_0 = $$createType5;
+        const $$createField5_0 = $$createType3;
+        const $$createField7_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("dashboard" in $$parsedSource) {
             $$parsedSource["dashboard"] = $$createField0_0($$parsedSource["dashboard"]);
@@ -55,13 +58,13 @@ export class Answer {
             $$parsedSource["range"] = $$createField1_0($$parsedSource["range"]);
         }
         if ("person" in $$parsedSource) {
-            $$parsedSource["person"] = $$createField3_0($$parsedSource["person"]);
+            $$parsedSource["person"] = $$createField4_0($$parsedSource["person"]);
         }
         if ("epic" in $$parsedSource) {
-            $$parsedSource["epic"] = $$createField4_0($$parsedSource["epic"]);
+            $$parsedSource["epic"] = $$createField5_0($$parsedSource["epic"]);
         }
         if ("widgets" in $$parsedSource) {
-            $$parsedSource["widgets"] = $$createField6_0($$parsedSource["widgets"]);
+            $$parsedSource["widgets"] = $$createField7_0($$parsedSource["widgets"]);
         }
         return new Answer($$parsedSource as Partial<Answer>);
     }
@@ -195,9 +198,11 @@ export class DashboardView {
 /**
  * DrillAnswer is the number and one page of its rows, from one
  * evaluation: Count rows of Tickets tickets, Counted of the rows counted.
+ * Reading is as an Answer's.
  */
 export class DrillAnswer {
     "title": string;
+    "reading"?: boolean;
     "value": Num;
     "unit": Unit;
     "estimates": string;
@@ -253,10 +258,10 @@ export class DrillAnswer {
      * Creates a new DrillAnswer instance from a string or object.
      */
     static createFrom($$source: any = {}): DrillAnswer {
-        const $$createField10_0 = $$createType12;
+        const $$createField11_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("rows" in $$parsedSource) {
-            $$parsedSource["rows"] = $$createField10_0($$parsedSource["rows"]);
+            $$parsedSource["rows"] = $$createField11_0($$parsedSource["rows"]);
         }
         return new DrillAnswer($$parsedSource as Partial<DrillAnswer>);
     }

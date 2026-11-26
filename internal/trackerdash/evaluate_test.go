@@ -128,6 +128,26 @@ func TestANumberOfNothingCountedIsNotKnown(t *testing.T) {
 	}
 }
 
+// While a board's first read has not finished, the answer and a drill
+// say so, and the range before is not compared: what the copy holds of
+// either range is partial.
+func TestAFirstReadNotFinishedIsSaid(t *testing.T) {
+	t.Parallel()
+	f := teamBoard()
+	f.reading = true
+	a := mustEvaluate(t, evaluator(), f.board(), utcSprints3)
+	if !a.Reading || a.Range.PreviousGap != firstReadGap || num(widgetOf(t, a, "pace").Previous) != "gap" {
+		t.Fatalf("answer while reading: reading %v, previous gap %q, pace's previous %s", a.Reading, a.Range.PreviousGap, num(widgetOf(t, a, "pace").Previous))
+	}
+	d, err := evaluator().Drill(context.Background(), f.board(), DrillRequest{Request: utcSprints3, Widget: "pace"})
+	if err != nil || !d.Reading {
+		t.Fatalf("drill while reading = %v, %v; want reading", d.Reading, err)
+	}
+	if done := mustEvaluate(t, evaluator(), teamBoard().board(), utcSprints3); done.Reading || done.Range.PreviousGap != "" {
+		t.Fatalf("answer after the first read: reading %v, previous gap %q", done.Reading, done.Range.PreviousGap)
+	}
+}
+
 // A widget whose metric counts now has no previous value and no trend,
 // so the screen can draw no change mark for it; its view says it counts
 // now. A metric of the range has both.

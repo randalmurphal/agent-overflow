@@ -3626,6 +3626,22 @@ describe('the Dashboards screen in the pane', () => {
     view.unmount();
   });
 
+  it("says the board's first read has not finished while its answer says so, and not once it does not", async () => {
+    install();
+    setBindingMock('TrackerDashboards', async () => [DASHBOARD]);
+    let reading = true;
+    setBindingMock('EvaluateTrackerDashboard', async () => ({ ...(answer() as object), reading }));
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await switchTo(view, 'Dashboards');
+    expect(await view.findByTestId('dashboard-reading')).toHaveTextContent("This board's first read has not finished: these numbers count the tickets read so far.");
+    reading = false;
+    await fireEvent.click(view.getByTestId('dashboard-range'));
+    await fireEvent.click(await view.findByTestId('dashboard-range-this_sprint'));
+    await waitFor(() => expect(view.queryByTestId('dashboard-reading')).toBeNull());
+    view.unmount();
+  });
+
   it("says that the board's computer's version has no dashboards, and counts nothing", async () => {
     install();
     // A release before dashboards has no such method.

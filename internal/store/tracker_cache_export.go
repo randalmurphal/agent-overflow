@@ -31,7 +31,8 @@ import (
 //     at the sprint's completion by the pace's rule (mirrorStatusAtCompletionSQL,
 //     mirrorDoneStatusesSQL), so the pace a dashboard shows is the Backlog's.
 //   - The whole fill is one read transaction of the file: one state of the
-//     mirror. The file is detached before the export returns, whatever it
+//     mirror, whose first-read fact (MirrorExport.FirstReadDone) it reads
+//     in the same transaction. The file is detached before the export returns, whatever it
 //     returns; a detach that fails is the export's error.
 
 // MirrorExportTables are the relations the export writes, the only tables
@@ -78,8 +79,13 @@ CREATE TABLE main.people(id TEXT PRIMARY KEY, name TEXT NOT NULL) WITHOUT ROWID;
 // mirrorExportSchemaName is the attached file's schema name.
 const mirrorExportSchemaName = "mirror_file"
 
-// mirrorExportBoardSQL reads the board's state: ?1 root, ?2 board.
-var mirrorExportBoardSQL = `SELECT b.name, b.plans_sprints, b.estimate_unit, b.estimate_reset_at FROM tracker_cache_boards b
+// mirrorExportBoardSQL reads the board's state: ?1 root, ?2 board. Its
+// first read is done once a reconcile of it completed, which follows the
+// last page of the read before it; unlisting the board deletes its sync
+// row, so a board listed again reads first again.
+var mirrorExportBoardSQL = `SELECT b.name, b.plans_sprints, b.estimate_unit, b.estimate_reset_at,
+	  coalesce((SELECT sy.reconciled_at FROM tracker_cache_sync sy WHERE sy.root_id = b.root_id AND sy.board_id = b.board_id), 0) > 0
+	FROM tracker_cache_boards b
 	WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND ` + mirrorBoardShown(intParam("?1"), "?2")
 
 // mirrorExportStatusChangeSQL is the changes into a status of list of
@@ -183,6 +189,9 @@ type MirrorExport struct {
 	Name         string
 	EstimateUnit int
 	PlansSprints bool
+	// FirstReadDone is whether the board's first read has finished: until
+	// then the export holds the tickets read so far.
+	FirstReadDone bool
 }
 
 // ErrMirrorExportUnsupported is an export from a store with no database
@@ -243,7 +252,7 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 	}()
 	var export MirrorExport
 	var resetAt int64
-	err = tx.QueryRowContext(ctx, mirrorExportBoardSQL, rootID, boardID).Scan(&export.Name, &export.PlansSprints, &export.EstimateUnit, &resetAt)
+	err = tx.QueryRowContext(ctx, mirrorExportBoardSQL, rootID, boardID).Scan(&export.Name, &export.PlansSprints, &export.EstimateUnit, &resetAt, &export.FirstReadDone)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MirrorExport{}, false, nil
 	}

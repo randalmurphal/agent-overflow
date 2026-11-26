@@ -218,3 +218,45 @@ func TestMirrorExportSearchesByTheBoard(t *testing.T) {
 		}
 	}
 }
+
+// An export says the board's first read has finished only once a
+// reconcile of it completed: not while its pages are being stored, nor
+// after a read alone. A board unlisted and listed again reads first again
+// until its next reconcile completes.
+func TestMirrorExportSaysWhenTheFirstReadIsDone(t *testing.T) {
+	t.Parallel()
+	s, c, root := newMirror(t)
+	done := func(step string, want bool) {
+		t.Helper()
+		export, ok, err := s.ExportMirrorBoard(context.Background(), exportConn(t), root, "10", MirrorRegroup{})
+		if err != nil || !ok || export.FirstReadDone != want {
+			t.Fatalf("%s: export = %+v, %v, %v; want the first read done %v", step, export, ok, err, want)
+		}
+	}
+	record := func(step string, a MirrorSyncAttempt) {
+		t.Helper()
+		if _, _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", a)); err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+	}
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a")), []byte("c1"))
+	done("a page stored", false)
+	record("a read", MirrorSyncAttempt{ReadAt: mirrorReadAt(10)})
+	done("a read", false)
+	record("a reconcile", MirrorSyncAttempt{ReconciledAt: mirrorReadAt(20)})
+	done("a reconcile", true)
+
+	listMirrorBoards(t, s, defaultTestProjectID, c.ID, "11")
+	if _, ok, err := s.ExportMirrorBoard(context.Background(), exportConn(t), root, "10", MirrorRegroup{}); err != nil || ok {
+		t.Fatalf("export of the unlisted board = %v, %v; want nothing", ok, err)
+	}
+	listMirrorBoards(t, s, defaultTestProjectID, c.ID, "10")
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
+	done("listed again", false)
+	record("a reconcile after the listing", MirrorSyncAttempt{ReconciledAt: mirrorReadAt(40)})
+	done("a reconcile after the listing", true)
+}

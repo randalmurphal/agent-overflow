@@ -199,10 +199,13 @@ type WidgetValue struct {
 	NotCounted int `json:"not_counted,omitempty"`
 }
 
-// Answer is one evaluation of a dashboard.
+// Answer is one evaluation of a dashboard. Reading is whether the board's
+// first read has not finished, so its numbers count the tickets read so
+// far.
 type Answer struct {
 	Dashboard DashboardView `json:"dashboard"`
 	Range     RangeView     `json:"range"`
+	Reading   bool          `json:"reading,omitempty"`
 	Estimates string        `json:"estimates"`
 	Person    *Name         `json:"person,omitempty"`
 	Epic      *Name         `json:"epic,omitempty"`
@@ -385,6 +388,10 @@ func (ev *evaluation) fill(ctx context.Context, b Board) error {
 	}
 	return tooSlow(ctx, ev.readBoard(ctx))
 }
+
+// firstReadGap is the range before's gap while the board's first read has
+// not finished: what the copy holds of either range is partial.
+const firstReadGap = "This board's first read is not finished, so its numbers are not compared."
 
 // tooSlow is err, told as the evaluation's deadline when that ended it.
 func tooSlow(ctx context.Context, err error) error {
@@ -603,6 +610,9 @@ func (o *opened) resolve(b Board, r Request, loc *time.Location) error {
 	if o.sp, err = resolveSpan(rng, plansSprints, o.ev.sprints, o.now, loc); err != nil {
 		return refuse("dashboard_request_invalid", err.Error(), nil)
 	}
+	if !o.ev.export.FirstReadDone {
+		o.sp.previousGap = firstReadGap
+	}
 	if o.n, err = o.ev.narrowing(r, b.Viewer); err != nil {
 		return err
 	}
@@ -631,7 +641,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, b Board, r Request) (_ Answer,
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	a := Answer{Dashboard: o.view, Range: rangeView(o.sp), Estimates: o.ev.estimates, Person: o.n.person, Epic: o.n.epic, At: o.now.UnixMilli()}
+	a := Answer{Dashboard: o.view, Range: rangeView(o.sp), Reading: !o.ev.export.FirstReadDone, Estimates: o.ev.estimates, Person: o.n.person, Epic: o.n.epic, At: o.now.UnixMilli()}
 	runs := map[string]counted{}
 	for _, w := range o.d.Widgets {
 		m := o.metrics[w.Metric]
@@ -837,8 +847,10 @@ type DrillCell struct {
 
 // DrillAnswer is the number and one page of its rows, from one
 // evaluation: Count rows of Tickets tickets, Counted of the rows counted.
+// Reading is as an Answer's.
 type DrillAnswer struct {
 	Title     string      `json:"title"`
+	Reading   bool        `json:"reading,omitempty"`
 	Value     Num         `json:"value"`
 	Unit      Unit        `json:"unit"`
 	Estimates string      `json:"estimates"`
@@ -881,7 +893,7 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 		return DrillAnswer{}, refuse("dashboard_metric_failed", c.err.Sentence, nil)
 	}
 	ev, sp := o.ev, o.sp
-	out := DrillAnswer{Title: cmpOr(w.Title, m.Title), Unit: m.Unit, Estimates: ev.estimates, Page: r.Page, At: o.now.UnixMilli(), Rows: []TicketRow{}}
+	out := DrillAnswer{Title: cmpOr(w.Title, m.Title), Reading: !ev.export.FirstReadDone, Unit: m.Unit, Estimates: ev.estimates, Page: r.Page, At: o.now.UnixMilli(), Rows: []TicketRow{}}
 	rows, placed, unplaced := inRange(m, c, sp)
 	whole := w.Form == FormNumber || w.Form == FormList
 	switch {

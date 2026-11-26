@@ -27,6 +27,8 @@ type fixture struct {
 	plansSprints bool
 	estimates    string
 	stmts        []string
+	// reading is a board whose first read has not finished.
+	reading bool
 }
 
 func newFixture(plansSprints bool, estimates string) *fixture {
@@ -108,7 +110,7 @@ func (f *fixture) fill() Fill {
 				return store.MirrorExport{}, false, fmt.Errorf("%s: %w", s, err)
 			}
 		}
-		return store.MirrorExport{Name: "WEB board", EstimateUnit: unit, PlansSprints: f.plansSprints}, true, nil
+		return store.MirrorExport{Name: "WEB board", EstimateUnit: unit, PlansSprints: f.plansSprints, FirstReadDone: !f.reading}, true, nil
 	}
 }
 

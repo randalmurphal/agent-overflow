@@ -108,6 +108,13 @@ describe('a number with tickets not counted', () => {
     vi.unstubAllGlobals();
   });
 
+  it('says in the drill that the board\'s first read has not finished, from its answer', () => {
+    const d = drill({ v: 1 }, { reading: true });
+    expect(d.getByTestId('dashboard-drill-reading').textContent).toBe("This board's first read has not finished: these numbers count the tickets read so far.");
+    d.unmount();
+    expect(drill({ v: 1 }).queryByTestId('dashboard-drill-reading')).toBeNull();
+  });
+
   it('is not known when it counted nothing, with no change mark, on the tile and in the drill', () => {
     const tile = draw(view({ unit: 'tickets' }), { id: 'pace', value: { nc: 2 }, previous: { v: 1 } } as unknown as WidgetValue);
     expect(tile.getByTestId('dashboard-number-value').textContent).toBe('Not known');

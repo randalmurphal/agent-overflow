@@ -19,6 +19,10 @@ export interface Num {
 /** A metric's unit, as trackerdash.Unit. */
 export type DashboardUnit = 'tickets' | 'estimate' | 'days';
 
+/** What the screen and the drill say while the board's first read has
+ * not finished (an answer's `reading`). */
+export const FIRST_READ_TEXT = "This board's first read has not finished: these numbers count the tickets read so far.";
+
 /** What a gap says, in the hover value and the drill. */
 export const GAP_TEXT = 'No data';
 

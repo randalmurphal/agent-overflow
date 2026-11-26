@@ -21,6 +21,7 @@
   import ErrorNotice from '../shared/ErrorNotice.svelte';
   import { captureError, type CapturedError } from '../../stores/errorReports.svelte';
   import { createTrackerDashboard, type DashboardSource } from '../../stores/trackerDashboard.svelte';
+  import { FIRST_READ_TEXT } from '../../stores/trackerDashboardModel';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import DashboardDrill from './DashboardDrill.svelte';
   import DashboardWidget from './DashboardWidget.svelte';
@@ -163,6 +164,9 @@
     </div>
     {#if evalFailure}
       <ErrorNotice message="Could not count the dashboard: {evalFailure.report.reason}" captured={evalFailure} testId="dashboard-error" />
+    {/if}
+    {#if answer?.reading}
+      <p class="border-b border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg-muted" role="status" data-testid="dashboard-reading">{FIRST_READ_TEXT}</p>
     {/if}
     {#if answer?.range.note && !stale}
       <p class="border-b border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg-muted" role="status" data-testid="dashboard-range-note">{answer.range.note}</p>

@@ -14,7 +14,7 @@
   import ErrorNotice from '../shared/ErrorNotice.svelte';
   import { captureError, type CapturedError } from '../../stores/errorReports.svelte';
   import type { DrillState } from '../../stores/trackerDashboard.svelte';
-  import { drillCountWords, formatAmount, numWords, unitWord, type DashboardUnit, type Num } from '../../stores/trackerDashboardModel';
+  import { drillCountWords, FIRST_READ_TEXT, formatAmount, numWords, unitWord, type DashboardUnit, type Num } from '../../stores/trackerDashboardModel';
 
   interface Props {
     drill: DrillState;
@@ -60,6 +60,9 @@
         {/if}
         <span class="text-[0.75rem] text-fg-muted" data-testid="dashboard-drill-count">{drillCountWords(answer.count, answer.tickets)}</span>
       </div>
+      {#if answer.reading}
+        <p class="border-b border-border-subtle bg-surface-1 px-5 py-1.5 text-[0.75rem] text-fg-muted" role="status" data-testid="dashboard-drill-reading">{FIRST_READ_TEXT}</p>
+      {/if}
       {#if answer.restarted}
         <p class="border-b border-border-subtle bg-surface-1 px-5 py-1.5 text-[0.75rem] text-fg-muted" role="status" data-testid="dashboard-drill-restarted">The tickets changed while you paged, so this is the first page again, counted now.</p>
       {/if}
