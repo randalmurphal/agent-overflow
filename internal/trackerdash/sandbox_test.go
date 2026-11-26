@@ -11,26 +11,34 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// sealed is a session filled with teamBoard and 3,000 changes, gated.
+// sealed is a session filled with teamBoard and 3,000 changes, gated,
+// closed when the test ends.
 func sealed(t *testing.T) *session {
+	t.Helper()
+	s := sealedOpen(t)
+	t.Cleanup(func() {
+		if err := s.close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return s
+}
+
+// sealedOpen is sealed's session, which the caller closes.
+func sealedOpen(t *testing.T) *session {
 	t.Helper()
 	ctx := context.Background()
 	s, err := openSession(ctx, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if err := s.close(); err != nil {
-			t.Error(err)
-		}
-	})
 	f := teamBoard().exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3000)
 		INSERT INTO changes SELECT 't1', 'status', i, i, NULL, '1', '3', NULL, NULL FROM n`)
 	if _, _, err := f.fill()(ctx, s.conn); err != nil {
-		t.Fatal(err)
+		t.Fatal(errors.Join(err, s.close()))
 	}
 	if err := s.gate(ctx); err != nil {
-		t.Fatal(err)
+		t.Fatal(errors.Join(err, s.close()))
 	}
 	return s
 }

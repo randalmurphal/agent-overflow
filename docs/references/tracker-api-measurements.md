@@ -763,10 +763,11 @@ moved; the pump's idle tick costs 129 µs.
 
 A hostile metric's temporary files, measured with
 `TestHostileQuerySpill` in `internal/trackerdash` (a cross join of
-3,000 changes, three ways, grouped): the 1 s deadline stopped it at
-1.003 to 1.006 s, by when its temporary files had reached 65.0 and
-66.3 MB, and all were closed after it. The same join made distinct
-stopped at the 20,000-row cap in 16 to 24 ms with no temporary file.
+3,000 changes, three ways, grouped; two runs of the test): the 1 s
+deadline stopped it at 1.003 to 1.011 s, by when its temporary files
+had reached 62.5 to 66.3 MB, and all were closed after it. The same join
+made distinct stopped at the 20,000-row cap in 16 to 29 ms with no
+temporary file.
 Sorted with a `LIMIT`, SQLite keeps only the top rows and writes none.
 
 The Dashboards screen opened and closed four times in the desktop
@@ -775,6 +776,30 @@ collection, compiled code left out): the page held 14,163 KB with the
 Board shown, 14,895 to 14,967 KB with the dashboard open, and 14,181 KB
 after the fourth close; the pane strip's DOM went from 163 elements to
 275 and back to 163.
+
+The Go side holds nothing between calls: each evaluation and drill opens
+its session and closes it before it answers, and the screen's only
+other Go state is the board's subscription, which the Board screen
+shares. Measured with `TestDashboardMemoryAfterClose` in
+`internal/store` (20 evaluations alternating the last 5 sprints and
+this sprint, and 20 drills, heap read after a forced collection):
+
+| Moment | 2,000 issues | 20,000 issues |
+|---|---|---|
+| Before the first evaluation | 4.2 MB, 7 goroutines, 15 files | 4.6 MB, 7 goroutines, 15 files |
+| After the first | 4.2 MB, 7 goroutines, 16 files | 4.6 MB, 7 goroutines, 16 files |
+| After 20 of each, not collected | 5.9 MB, 7 goroutines, 16 files | 13.2 MB, 7 goroutines, 16 files |
+| After 20 of each, collected | 4.4 MB, 7 goroutines, 16 files | 4.7 MB, 7 goroutines, 16 files |
+
+The one file the first evaluation leaves open is a descriptor of the app
+database: SQLite's unix VFS does not close a file whose inode another
+connection of the process still locks (the store's own), and reuses that
+descriptor at the next attach, so the count stays at one and closes with
+the store. A hostile metric's session (`TestHostileQuerySpill`, its
+temporary files at 62.5 to 65.0 MB while it ran) left nothing once
+closed: 3.2 MB in use, 2 goroutines and 8 open files before it opened,
+8.7 MB and 3 goroutines with its four queries stopped, and 3.3 MB, 2
+goroutines and the same 8 files after it closed.
 
 ## Planning poker add-on
 
