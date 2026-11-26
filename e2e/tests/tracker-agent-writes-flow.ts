@@ -12,9 +12,11 @@
 // saying why; and a worker with no sidebar row that names two tickets asks
 // the person, not its spawner: its spawner's Agents row says it needs
 // approval, and the prompt is answered in the worker's composer, opened
-// from that row. On the desktop project, a connected browser shows the
-// prompt beside the backend's screen, and its answer sends the change and
-// takes the prompt off both.
+// from that row; a ticket renamed while the prompt is open is sent nothing
+// on Approve and said as changed, and the other ticket is sent. On the
+// desktop project, a connected browser shows the prompt beside the
+// backend's screen, and its answer sends the change and takes the prompt
+// off both.
 
 import { expect, type Locator, type Page } from '@playwright/test';
 
@@ -45,6 +47,7 @@ const SITE: ExtraJira = {
 
 const COMMENT_ROUTE = 'POST rest/api/3/issue/{issue}/comment';
 const MOVE_ROUTE = 'POST rest/api/3/issue/{issue}/transitions';
+const EDIT_ROUTE = 'PUT rest/api/3/issue/{issue}';
 /** A parked call's bound: above the time the person takes to answer. */
 const PARKED_MS = 180_000;
 
@@ -59,12 +62,12 @@ async function seedWriters(
   harness: HarnessApp,
   tag: string,
   threads: ReadonlyArray<{ title: string; provider: ProviderName; runtimeMode?: string }>,
-): Promise<{ path: string; projectId: string; threadIds: string[] }> {
+): Promise<{ path: string; projectId: string; threadIds: string[]; connectionId: string }> {
   await seedFakeJira(harness, SITE);
   const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name: `tracker-writes-${tag}`, repo: {}, threads }] });
   const project = seed.projects[0];
-  await connectFakeJira(harness, project.projectId);
-  return { path: project.path, projectId: project.projectId, threadIds: project.threadIds };
+  const { connectionId } = await connectFakeJira(harness, project.projectId);
+  return { path: project.path, projectId: project.projectId, threadIds: project.threadIds, connectionId };
 }
 
 /** Opens the page on the thread titled `title`, from the sidebar. */
@@ -185,6 +188,39 @@ export function registerTrackerAgentWritesFlow({ compact }: TrackerWritesSurface
     await expect(page.getByTestId('composer-pending-approval')).toHaveCount(0);
     expect(await trackerRequests(harness, COMMENT_ROUTE)).toHaveLength(3);
     await expect(writeRow(page)).toHaveCount(1);
+  });
+
+  test('a ticket renamed while the prompt is open is sent nothing, and the other ticket is', async ({ harness, page }) => {
+    test.setTimeout(300_000);
+    const title = 'Renaming planner';
+    const { path, threadIds, connectionId } = await seedWriters(harness, 'renamed', [{ title, provider: 'claude' }]);
+    await setScenario(harness, path, threadToolsScenario({
+      name: 'tracker-writes-renamed', provider: 'claude',
+      turns: [{ steps: [{ call: { server: TRACKER_TOOLS_SERVER, tool: 'ticket_update', timeoutMs: PARKED_MS, args: { keys: ['WEB-2', 'WEB-3'], set: { title: 'Planned title' } } } }], text: 'Renamed.' }],
+      afterTurns: 'silent',
+    }));
+    await harness.send(threadIds[0], 'rename the two tickets');
+    await openThread(harness, page, title, compact);
+    const prompt = await writePrompt(page);
+    expect((await promptTickets(prompt)).map(([ticket]) => ticket)).toEqual(['WEB-2 Second task', 'WEB-3 Backlog task']);
+    // Someone renames WEB-2 while the person reads the prompt.
+    const edit = await harness.rpc<{ parts: Array<{ state: string }> }>('EditTrackerIssue', connectionId, { issue: '10102', fields: [{ field: 'title', typed: ["A teammate's title"] }] });
+    expect(edit.parts.map((p) => p.state)).toEqual(['applied']);
+    await press(prompt.getByTestId('approval-allow'), compact);
+    const answer = await trackerAnswer(harness, 'ticket_update', path);
+    expect(answer.isError, answer.text).toBe(false);
+    expect(JSON.parse(answer.text)).toEqual({ tickets: [
+      { key: 'WEB-2', refused: 'WEB-2 changed on Jira while the user was deciding, so nothing was sent to it; read it again and call again for it.', not_sent: ['title'] },
+      { key: 'WEB-3', applied: ['title'] },
+    ] });
+    // The teammate's edit is WEB-2's only one; WEB-3 got the agent's.
+    expect(await trackerRequests(harness, EDIT_ROUTE, ['WEB-2', '10102'])).toHaveLength(1);
+    expect(await trackerRequests(harness, EDIT_ROUTE, ['WEB-3', '10103'])).toHaveLength(1);
+    await expect(page.getByTestId('composer-pending-approval')).toHaveCount(0);
+    await expandActivityRuns(page);
+    await expect(writeRow(page)).toContainText('Changed WEB-3', { timeout: 30_000 });
+    // The row names the ticket by the title the call read, and the change.
+    await expect(writeRow(page).getByTestId('tracker-write-ticket')).toHaveText([/WEB-3\s*Backlog task\s*· title/]);
   });
 
   test('a read-only thread is refused and its row says why', async ({ harness, page }) => {

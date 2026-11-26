@@ -2243,6 +2243,28 @@ ends the call at once. Nothing is persisted: an app that stops ends the
 call, and nothing was sent. The writes after an approval run on the
 server's context to their end.
 
+**Changed while waiting.** What `set` changes was judged on the tickets
+as they were before the prompt, so after the person approves, the call's
+cards are read again, once per connection, with the key lookup
+(`planCall.recheck`; one `issue/bulkfetch` on Jira, one `issues` list on
+Linear). A ticket whose update time, status or sprints differ from what
+its plan read, or that the lookup no longer finds, is sent nothing: its
+`refused` says it changed on the tracker while the user was deciding,
+every step is in `not_sent`, and the call's other tickets go on. The
+update time covers every value the plan judged on Jira, where a field
+change, a comment, a link, an attachment and a worklog each move it, so a
+teammate's comment during the wait refuses the ticket too. On Linear a
+title, assignee, priority and status change move it and a comment does
+not; a cycle change is not measured, which the sprint comparison covers,
+and an estimate change is shown only weakly
+([measured](../references/tracker-api-measurements.md)). A lookup that
+fails sends nothing and is the call's error. A comment alone judges
+nothing but that the ticket exists and is not read again, and a call
+naming one ticket does not wait. After the read, in the seconds the
+earlier tickets' sends take, a change is caught only where a write
+compares at send: a text an edit replaces whole, a move Jira no longer
+offers the ticket, and a status its Linear team no longer has.
+
 **Read-only threads.** A writing call is refused when the calling
 thread's runtime mode is read-only, before anything is read or sent, and
 the mode is read again before the first write is sent, after the

@@ -173,8 +173,10 @@ func (f *fakeTracker) Lookup(_ context.Context, connection string, keys []string
 	var out trackerapp.LookupView
 	for _, k := range keys {
 		if issue, ok := f.lookup[connection][k]; ok {
-			title := f.details[connection+"/"+issue].Card.Title
-			out.Found = append(out.Found, trackerapp.KeyMatchView{Key: k, Card: trackerapp.CardView{ID: issue, Key: k, Title: title}})
+			// The card as the tracker holds it now, as a detail read gives it.
+			card := f.details[connection+"/"+issue].Card
+			card.ID, card.Key = issue, cmpOr(card.Key, k)
+			out.Found = append(out.Found, trackerapp.KeyMatchView{Key: k, Card: card})
 		} else {
 			out.Unmatched = append(out.Unmatched, k)
 		}

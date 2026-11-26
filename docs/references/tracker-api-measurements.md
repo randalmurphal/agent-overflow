@@ -522,6 +522,16 @@ Source for schema facts: the
   `commentCreate` as before it, and `issues(filter: {updatedAt: {gte:
   <the comment's createdAt>}})` did not list the issue. An issue's
   `updatedAt` therefore does not say whether its comments changed.
+- Measured 2026-11-26 on two throwaway issues, deleted after, one trial
+  of each `issueUpdate`, on what moves `updatedAt`. A `title`, an
+  `assigneeId` and a `priority` change each moved it. A `stateId` change
+  moved it both times it was made (backlog to started, then started to
+  completed), with the state read back as the target each time. Two reads
+  with no write between returned the same `updatedAt`. `estimate: 2`
+  answered success and moved it, on a team whose `issueEstimationType` is
+  `notUsed`, with the stored estimate not read back: that does not show
+  an estimate change on a team that uses estimates. Not measured: a
+  `cycleId` change (the workspace had no cycle).
 - Measured the same day with ten throwaway issues, three of them
   commented. The ticket view's selection (the issue with its children,
   comments, attachments, relations both ways, history and its team's

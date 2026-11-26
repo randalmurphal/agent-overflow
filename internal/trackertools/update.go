@@ -15,11 +15,18 @@ import (
 // session was not given whole (marks.go), refuses the call; a status,
 // sprint or estimate the ticket as it is now cannot take is said as that
 // ticket's refusal, and nothing is sent for any ticket. A call naming
-// several tickets then waits for the person's approval (Host.Approve). The
-// thread's mode is read again before anything is sent. Each ticket's steps
-// run in order (apply.go), status, fields, estimate, sprint, comment, and
-// the first refused or unknown stops that ticket: what came after it is
-// not sent. A step the ticket already holds, an edit the tracker answers
+// several tickets then waits for the person's approval (Host.Approve). When
+// set changes them, their cards are then read again (planCall.recheck): a
+// ticket that changed during the wait, by its update time, status or
+// sprints, is refused and sent nothing, and the others go on. What a
+// person changes after that read, in the seconds the earlier tickets'
+// sends take, is caught only where a write compares when it is sent: a
+// text an edit replaces whole (planField), a move Jira no longer offers
+// the ticket, and a status its Linear team no longer has. The thread's
+// mode is read again before anything is sent. Each ticket's steps run in
+// order (apply.go), status, fields, estimate, sprint, comment, and the
+// first refused or unknown stops that ticket: what came after it is not
+// sent. A step the ticket already holds, an edit the tracker answers
 // as changing nothing, or a comment an earlier call of the thread added
 // (trackerapp's repeat record), is already: it changed nothing.
 
@@ -141,6 +148,13 @@ func (s *Server) update(ctx context.Context, caller Caller, raw json.RawMessage)
 		if err := s.h.Approve(ctx, caller.Thread, approvalOf(id, plans, set, comment)); err != nil {
 			return nil, err
 		}
+		// What set changes was judged on the tickets as they were before
+		// the wait; a comment alone judges nothing but that they exist.
+		if len(set) > 0 {
+			if err := pc.recheck(ctx, plans); err != nil {
+				return nil, err
+			}
+		}
 	}
 	// The writes are admitted now: a thread made read-only while the call
 	// planned or waited sends nothing.
@@ -153,6 +167,10 @@ func (s *Server) update(ctx context.Context, caller Caller, raw json.RawMessage)
 	out := updateAnswer{}
 	row := WriteRow{ID: id}
 	for _, p := range plans {
+		if p.changed != "" {
+			out.Tickets = append(out.Tickets, ticketAnswer{Key: p.key, Refused: p.changed, NotSent: p.stepNames(false, 0)})
+			continue
+		}
 		answer, written := s.apply(wctx, caller, p)
 		out.Tickets = append(out.Tickets, answer)
 		if len(written.Applied) > 0 {
