@@ -75,23 +75,22 @@
      * empty takes the project's default. */
     type = $state('');
     // What must hold: the values given for the fields and the text being
-    // typed in one belong to one project and type (`valuesOf`), the ones
-    // in effect when they were given. When the form's project or type
-    // changes, by a pick, by the board's projects arriving without the
-    // one it showed, or by a read answering again, they are gone: read
-    // for another project or type there are none, and the first value
-    // given for another replaces them. This is the only rule that drops
-    // them; a made ticket clears them (`clearValues`).
-    #values = $state.raw<{ readonly of: string; readonly filled: ReadonlyMap<string, FilledField>; readonly typing: ReadonlyMap<string, string> }>({
-      of: '', filled: NO_FILLED, typing: NO_TYPING,
-    });
+    // typed in one are kept for the project and type in effect when they
+    // were given (`valuesOf`), each pair its own. The form shows, and Add
+    // sends, only those of the project and type it shows; whatever changes
+    // them (a pick, the board's projects arriving without the one shown, a
+    // read answering again), coming back to a pair shows what was given
+    // for it, and nothing given for one replaces another's. A made ticket
+    // clears them all (`clearValues`).
+    #values = $state.raw<ReadonlyMap<string, { readonly filled: ReadonlyMap<string, FilledField>; readonly typing: ReadonlyMap<string, string> }>>(new Map());
     // What must hold: a ticket made for the sprint and not in it is
-    // offered that move until the board shows the ticket in that sprint,
-    // however it got there, or the person dismisses it; the offer says
-    // what is known of the first move. This holds the tickets owed a
-    // place, written by Add whether or not the form is on screen when the
-    // tracker answers and dropped by Dismiss; whether one is still offered
-    // is the sprint's rows' to say (`owed`), never a record of a move.
+    // offered that move until its own move applies, the board shows the
+    // ticket in that sprint however it got there, or the person dismisses
+    // it; the offer says what is known of the first move. This holds the
+    // tickets owed a place, written by Add whether or not the form is on
+    // screen when the tracker answers, and dropped by an applied move from
+    // the offer or by Dismiss; while one is held, whether it is offered is
+    // the sprint's rows' to say (`owed`).
     unplaced = $state.raw<readonly UnplacedTicket[]>([]);
 
     constructor(project: PickItem | null, type: string) {
@@ -101,27 +100,27 @@
 
     /** The fields filled for `of`, by field. */
     filled(of: string): ReadonlyMap<string, FilledField> {
-      return this.#values.of === of ? this.#values.filled : NO_FILLED;
+      return this.#values.get(of)?.filled ?? NO_FILLED;
     }
 
     /** The text being typed for `of` in a field not saved yet, by field. */
     typing(of: string): ReadonlyMap<string, string> {
-      return this.#values.of === of ? this.#values.typing : NO_TYPING;
+      return this.#values.get(of)?.typing ?? NO_TYPING;
     }
 
     /** Fills field `id` for `of`, or with null leaves it unfilled. */
     fill(of: string, id: string, field: FilledField | null): void {
-      this.#values = { of, filled: withEntry(this.filled(of), id, field), typing: this.typing(of) };
+      this.#values = withEntry(this.#values, of, { filled: withEntry(this.filled(of), id, field), typing: this.typing(of) });
     }
 
     /** Holds the text being typed for `of` in field `id`, or with null
      * lets it go. */
     hold(of: string, id: string, text: string | null): void {
-      this.#values = { of, filled: this.filled(of), typing: withEntry(this.typing(of), id, text) };
+      this.#values = withEntry(this.#values, of, { filled: this.filled(of), typing: withEntry(this.typing(of), id, text) });
     }
 
     clearValues(): void {
-      this.#values = { of: '', filled: NO_FILLED, typing: NO_TYPING };
+      this.#values = new Map();
     }
   }
 
@@ -412,11 +411,16 @@
   // The made tickets the sprint's rows do not show.
   const owed = $derived((draft?.unplaced ?? []).filter((t) => !sec.rows.some((r) => r.card.id === t.issue)));
 
-  // The made ticket's move into the sprint, the menu's; its outcome is
-  // said where a ticket's move says it, and a press that sent nothing
-  // (the ticket's other move is out) changes nothing.
-  function moveUnplaced(t: UnplacedTicket): void {
-    if (sec.sprint) void moveCardToSprint(boardKey, issueWriteContext(boardRef, t.issue, t.key), b.board, sec.sprint.id);
+  // The made ticket's move into the sprint, the menu's: applied, the
+  // ticket is owed nothing, whether or not the board's read after it
+  // shows it there yet; refused, not known to have applied, or not sent,
+  // it stays offered, its outcome said where a ticket's move says it. A
+  // press that sent nothing (the ticket's other move is out) changes
+  // nothing.
+  async function moveUnplaced(d: CreateDraft, t: UnplacedTicket): Promise<void> {
+    if (!sec.sprint) return;
+    const outcome = await moveCardToSprint(boardKey, issueWriteContext(boardRef, t.issue, t.key), b.board, sec.sprint.id);
+    if (outcome?.kind === 'applied') dismiss(d, t);
   }
 
   function dismiss(d: CreateDraft, t: UnplacedTicket): void {
@@ -491,7 +495,7 @@
         {@const d = draft}
         <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs" role="status" data-testid="issues-backlog-create-unplaced" data-issue={t.issue}>
           <span class="text-fg" data-testid="issues-backlog-create-unplaced-said">{t.said}</span>
-          <button type="button" class="text-accent hover:underline disabled:opacity-60" data-testid="issues-backlog-create-move" disabled={cardBusy(boardKey, issueWriteContext(boardRef, t.issue, t.key))} onclick={() => moveUnplaced(t)}>Move {t.key || 'it'} into {sec.sprint.name}</button>
+          <button type="button" class="text-accent hover:underline disabled:opacity-60" data-testid="issues-backlog-create-move" disabled={cardBusy(boardKey, issueWriteContext(boardRef, t.issue, t.key))} onclick={() => { void moveUnplaced(d, t); }}>Move {t.key || 'it'} into {sec.sprint.name}</button>
           <button type="button" class="text-fg-muted hover:underline" data-testid="issues-backlog-create-move-dismiss" aria-label="Leave {t.key || 'the ticket'} out of {sec.sprint.name}" onclick={() => dismiss(d, t)}>Dismiss</button>
         </div>
       {/each}

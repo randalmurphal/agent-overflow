@@ -361,9 +361,10 @@ none; on Jira it shows the project, one of the projects the board shows
 location, else the only one, else it asks; while that list is being
 read, or could not be, the board's location), and the type, the one
 picked last on the board this session, else the project's first at the
-standard level. The values given in the form belong to the project
-and type it shows: when either changes, by a pick or by the board's
-projects replacing the one shown, they go. The form offers what the
+standard level. The values given in the form are kept for each project
+and type: the form shows, and Add sends, only those given for the
+project and type it shows, and coming back to one, by a pick or by the
+board's projects, shows what was given for it. The form offers what the
 tracker offers now: opened, or back in view, more than a minute after it
 last read the projects, types and fields, it reads them again while it
 shows what it holds, and the screen's Refresh reads them again too; a
@@ -371,9 +372,9 @@ value given that the tracker no longer offers is said before Add and not
 sent. What was typed in the form, a
 field being typed in included, outlives the form scrolling out of view. A ticket the tracker
 made stays made: when its move into the sprint failed, or may have, the
-form says so with the ticket's key and offers that move until the board
-shows the ticket in that sprint, however it got there, or the person
-dismisses it. On Linear a new ticket lands after the section's last row. New
+form says so with the ticket's key and offers that move until that move
+applies, the board shows the ticket in that sprint however it got there,
+or the person dismisses it. On Linear a new ticket lands after the section's last row. New
 sprint, a sprint's Change (which cannot clear a sprint's dates, and says
 so), Start sprint (today for as long as it was planned, else two weeks)
 and Complete sprint, which always asks where the tickets the tracker

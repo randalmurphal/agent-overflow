@@ -172,6 +172,43 @@ func TestPendingBoardEventIsBounded(t *testing.T) {
 	}
 }
 
+// What another board holds is sent first only when an add would pass an
+// event's bound, and the check of two batches that fit by their counts
+// copies nothing, since it runs under the subscription's lock. Not
+// parallel: AllocsPerRun refuses a parallel test.
+func TestPendingBoardEventOverflows(t *testing.T) {
+	batch := func(from, n int) []tracker.IssueID {
+		out := make([]tracker.IssueID, n)
+		for i := range out {
+			out[i] = tracker.IssueID(fmt.Sprint(1000 + from + i))
+		}
+		return out
+	}
+	half := maxEventIssues / 2
+	var b boardPending
+	if b.overflows(batch(0, maxEventIssues+1), nil) {
+		t.Error("an empty event overflowed: nothing is held to send first")
+	}
+	b.add(batch(0, half), nil, false)
+	for _, c := range []struct {
+		name    string
+		changed []tracker.IssueID
+		want    bool
+	}{
+		{"fits by count", batch(half, maxEventIssues-half), false},
+		{"one past by count", batch(half, maxEventIssues-half+1), true},
+		{"past by count, not by union", batch(0, maxEventIssues), false},
+	} {
+		if got := b.overflows(c.changed, nil); got != c.want {
+			t.Errorf("%s: overflows %v, want %v", c.name, got, c.want)
+		}
+	}
+	next := batch(half, maxEventIssues-half)
+	if n := testing.AllocsPerRun(20, func() { b.overflows(next, nil) }); n != 0 {
+		t.Errorf("the check of batches that fit by count allocated %v times", n)
+	}
+}
+
 // A shown board's tick reads the history when an issue's history is
 // behind its card, and not again once it caught up.
 func TestABoardReadsTheHistoryDue(t *testing.T) {
@@ -255,9 +292,13 @@ func historyTickOnTwoBoards(t *testing.T, batches int) ([]tracker.Row, []BoardEv
 	m.tracks(rows)
 	m.subscribe(t, testBoard)
 	m.subscribe(t, "2")
-	m.events.boardEvents(t, 2)
+	// Each pump's first tick reads every unit, the history included, so
+	// the tick below counts its reads once both ended.
+	m.firstTicksEnded(t, testBoard, "2")
+	if due := m.due(); len(due) != 0 {
+		t.Fatalf("the first ticks left %d issues' history due", len(due))
+	}
 	other := Scope{Connection: m.conn.ID, Board: "2"}
-	waitCalls(t, m.p, "History", 1)
 
 	// Each card changed after the history read covered, so the history of
 	// every issue is due: two batches.
