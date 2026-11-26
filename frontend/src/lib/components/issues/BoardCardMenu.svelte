@@ -78,11 +78,14 @@
   // A row whose write is out waits for it; the store would send nothing.
   const pending = (target: string) => ticketWrite(ctx.key, target)?.pending ?? false;
 
-  // Ask: what the ticket's Ask does, once Work's store loads.
+  // Ask: what the ticket's Ask does, once Work's store loads. The ticket is
+  // taken at the press, since choosing an action closes the menu and its
+  // props go with it.
   function ask(project: string): void {
+    const t = ctx;
     void loadWork().then(
-      (work) => work.askAboutTicket(ctx, project),
-      (err: unknown) => addErrorToast(`Could not start a thread on ${ctx.label}: Work did not load. Reload the window to try again.`, err),
+      (work) => work.askAboutTicket(t, project),
+      (err: unknown) => addErrorToast(`Could not start a thread on ${t.label}: Work did not load. Reload the window to try again.`, err),
     );
   }
   const threadProject = $derived(workProject(workProjects(ctx.ref.backend, project), project));
