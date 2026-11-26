@@ -65,7 +65,7 @@
   });
 
   function pick(bucket: BucketValue, s: string): void {
-    onDrill({ widget: view.id, bucket: bucket.key, series: s });
+    onDrill({ widget: view.id, cell: { bucket: bucket.key, series: s } });
   }
 
   /** A bucket's label narrows the page to its person or epic. */

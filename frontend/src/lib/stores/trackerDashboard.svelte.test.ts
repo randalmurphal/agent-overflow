@@ -250,8 +250,8 @@ describe('the drill', () => {
   it('asks a later page with the count the first answered, and takes the page its answer starts again at', async () => {
     const { s } = await opened();
     const drill = held<DrillAnswer>('TrackerDashboardDrill');
-    s.openDrill({ widget: 'finished', bucket: 's7', series: '' });
-    expect(drill.calls[0]).toEqual(['sub-1', expect.objectContaining({ widget: 'finished', bucket: 's7', series: '', page: 0, count: 0, range: 'sprints_5' })]);
+    s.openDrill({ widget: 'finished', cell: { bucket: 's7', series: '' } });
+    expect(drill.calls[0]).toEqual(['sub-1', expect.objectContaining({ widget: 'finished', cell: { bucket: 's7', series: '' }, page: 0, count: 0, range: 'sprints_5' })]);
     drill.answer(drillAnswer(0, 250));
     await flush();
     s.drillPage(1);
@@ -267,6 +267,8 @@ describe('the drill', () => {
     const { s } = await opened();
     const drill = held<DrillAnswer>('TrackerDashboardDrill');
     s.openDrill({ widget: 'pace' });
+    // The widget's number names no cell.
+    expect(drill.calls[0][1]).toMatchObject({ widget: 'pace', cell: null });
     s.closeDrill();
     drill.answer(drillAnswer(0, 3));
     await flush();

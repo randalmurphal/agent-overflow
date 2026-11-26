@@ -803,18 +803,25 @@ func (ev *evaluation) ticket(c contribution, cols columns) TicketRow {
 	return r
 }
 
-// DrillRequest asks for the rows behind one number of a dashboard: the
-// widget's number (Bucket empty), or one bar, point or table cell (Bucket
-// its key, Series one of its series or empty for all of them). Page is
-// the page of drillPage rows; Count is the row count page 0 answered, so
-// a later page that finds a different count starts again at page 0.
+// DrillRequest asks for the rows behind one number of a dashboard: a
+// number or list widget's whole number (no Cell), or one bar, point or
+// table cell of a bars, line or table widget (Cell). Page is the page of
+// drillPage rows; Count is the row count page 0 answered, so a later page
+// that finds a different count starts again at page 0.
 type DrillRequest struct {
 	Request
-	Widget string `json:"widget"`
-	Bucket string `json:"bucket,omitempty"`
-	Series string `json:"series,omitempty"`
-	Page   int    `json:"page"`
-	Count  int    `json:"count,omitempty"`
+	Widget string     `json:"widget"`
+	Cell   *DrillCell `json:"cell,omitempty"`
+	Page   int        `json:"page"`
+	Count  int        `json:"count,omitempty"`
+}
+
+// DrillCell is one bar, point or table cell: its bucket's key, "" the
+// bucket of rows that name none (Unassigned, No epic), and one of the
+// metric's series, "" for all of the bucket's (a table's total).
+type DrillCell struct {
+	Bucket string `json:"bucket"`
+	Series string `json:"series"`
 }
 
 // DrillAnswer is the number and one page of its rows, from one
@@ -864,16 +871,19 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 	ev, sp := o.ev, o.sp
 	out := DrillAnswer{Title: cmpOr(w.Title, m.Title), Unit: m.Unit, Estimates: ev.estimates, Page: r.Page, At: o.now.UnixMilli(), Rows: []TicketRow{}}
 	rows, placed := inRange(m, c, sp)
+	whole := w.Form == FormNumber || w.Form == FormList
 	switch {
-	case r.Bucket == "":
-		if placed == nil {
-			out.Value = reduceRows(m.Reduce, rows)
-		} else {
-			out.Value = reduceRange(m.Reduce, sp.periods, placed)
-			out.Title += ", " + strings.ToLower(sp.label[:1]) + sp.label[1:]
-		}
+	case whole && r.Cell != nil:
+		return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("widget %q is one number; its drill names no bar or cell", truncate(w.ID, 64)), nil)
+	case !whole && r.Cell == nil:
+		return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("widget %q draws bars, points or cells; its drill names the one picked", truncate(w.ID, 64)), nil)
+	case whole && placed == nil:
+		out.Value = reduceRows(m.Reduce, rows)
+	case whole:
+		out.Value = reduceRange(m.Reduce, sp.periods, placed)
+		out.Title += ", " + strings.ToLower(sp.label[:1]) + sp.label[1:]
 	case m.Bucket == BucketPeriod || m.Bucket == BucketSprint:
-		j := slices.IndexFunc(sp.periods, func(p period) bool { return p.id == r.Bucket })
+		j := slices.IndexFunc(sp.periods, func(p period) bool { return p.id == r.Cell.Bucket })
 		if j < 0 {
 			return DrillAnswer{}, refuse("dashboard_request_invalid", "that bar is not in the range any more; read the dashboard again", nil)
 		}
@@ -883,17 +893,20 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 	default:
 		var cell []contribution
 		for _, row := range rows {
-			if row.bucket == r.Bucket {
+			if row.bucket == r.Cell.Bucket {
 				cell = append(cell, row)
 			}
 		}
 		rows = cell
-		out.Title += ", " + ev.label(m.Bucket, r.Bucket)
+		out.Title += ", " + ev.label(m.Bucket, r.Cell.Bucket)
 	}
-	if r.Bucket != "" {
-		if r.Series != "" {
-			rows = bySeries(rows, r.Series, c.p.cols.has(ColumnSeries))
-			out.Title += ", " + r.Series
+	if !whole {
+		if r.Cell.Series != "" {
+			if !slices.Contains(m.Series, r.Cell.Series) || !c.p.cols.has(ColumnSeries) {
+				return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("widget %q has no series %q", truncate(w.ID, 64), truncate(r.Cell.Series, 64)), nil)
+			}
+			rows = bySeries(rows, r.Cell.Series, true)
+			out.Title += ", " + r.Cell.Series
 		}
 		out.Value = reduceRows(m.Reduce, rows)
 	}

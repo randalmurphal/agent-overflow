@@ -7,6 +7,7 @@ export {
     BucketValue,
     DashboardView,
     DrillAnswer,
+    DrillCell,
     DrillRequest,
     Form,
     Good,

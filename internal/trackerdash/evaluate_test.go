@@ -178,29 +178,74 @@ func TestDrillAnswersTheCellsNumberWithItsRows(t *testing.T) {
 	e := evaluator()
 	b := teamBoard().board()
 	a := mustEvaluate(t, e, b, utcSprints3)
-	drill := func(widget, bucket, series string) DrillAnswer {
+	drill := func(widget string, cell *DrillCell) DrillAnswer {
 		t.Helper()
-		d, err := e.Drill(context.Background(), b, DrillRequest{Request: utcSprints3, Widget: widget, Bucket: bucket, Series: series})
+		d, err := e.Drill(context.Background(), b, DrillRequest{Request: utcSprints3, Widget: widget, Cell: cell})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return d
 	}
-	pace := drill("pace", "", "")
+	pace := drill("pace", nil)
 	if num(&pace.Value) != num(widgetOf(t, a, "pace").Value) || pace.Count != 3 {
 		t.Fatalf("pace drill = %s with %d rows; the widget shows %s over 3 tickets", num(&pace.Value), pace.Count, num(widgetOf(t, a, "pace").Value))
 	}
-	bar := drill("finished", "sprint:s4", "")
+	bar := drill("finished", &DrillCell{Bucket: "sprint:s4"})
 	if num(&bar.Value) != "8" || len(bar.Rows) != 1 || bar.Rows[0].Key != "WEB-6" || bar.Title != "Finished per sprint, WEB Sprint 4" {
 		t.Fatalf("sprint 4's bar = %+v", bar)
 	}
-	cell := drill("carrying", "u1", "To do")
+	cell := drill("carrying", &DrillCell{Bucket: "u1", Series: "To do"})
 	if num(&cell.Value) != "3" || len(cell.Rows) != 1 || cell.Rows[0].Key != "WEB-9" {
 		t.Fatalf("User 1's to do = %+v", cell)
 	}
-	stuck := drill("stuck_list", "", "")
+	stuck := drill("stuck_list", nil)
 	if stuck.Count != 2 || stuck.Counted != 1 || stuck.Rows[0].Key != "WEB-3" || stuck.Rows[1].Counted || !strings.HasPrefix(stuck.Rows[1].Note, "not counted") {
 		t.Fatalf("stuck drill = %+v", stuck)
+	}
+}
+
+// A cell whose bucket key is empty, Unassigned or No epic, opens its own
+// rows and its series alone, never the whole widget's; a drill's target
+// is checked against its widget's form.
+func TestEmptyKeyCellsOpenTheirOwnRows(t *testing.T) {
+	t.Parallel()
+	f := teamBoard()
+	f.ticket(ticket{id: "t11", key: "WEB-11", status: "1", group: "todo", points: "3", created: ago(5)}).member("s7", "t11", false)
+	f.ticket(ticket{id: "t12", key: "WEB-12", status: "3", group: "in_progress", points: "2", created: ago(5)}).member("s7", "t12", false)
+	e := evaluator()
+	b := f.board()
+	drill := func(r DrillRequest) (DrillAnswer, error) {
+		r.Request = utcSprints3
+		return e.Drill(context.Background(), b, r)
+	}
+	d, err := drill(DrillRequest{Widget: "carrying", Cell: &DrillCell{Bucket: "", Series: "To do"}})
+	if err != nil || num(&d.Value) != "3" || len(d.Rows) != 1 || d.Rows[0].Key != "WEB-11" || d.Title != "Who is carrying what, Unassigned, To do" {
+		t.Fatalf("Unassigned / To do = %+v, %v; want WEB-11 alone, 3", d, err)
+	}
+	d, err = drill(DrillRequest{Widget: "carrying", Cell: &DrillCell{Bucket: ""}})
+	if err != nil || num(&d.Value) != "5" || d.Count != 2 {
+		t.Fatalf("Unassigned's total = %+v, %v; want WEB-11 and WEB-12, 5", d, err)
+	}
+	d, err = drill(DrillRequest{Widget: "open_by_epic", Cell: &DrillCell{Bucket: ""}})
+	if err != nil || d.Title != "Open work by epic, No epic" {
+		t.Fatalf("No epic = %+v, %v", d, err)
+	}
+	for _, k := range d.Rows {
+		if k.Key == "WEB-3" || k.Key == "WEB-9" {
+			t.Errorf("No epic lists %s, which is in epic WEB-100", k.Key)
+		}
+	}
+	for _, c := range []struct {
+		r    DrillRequest
+		want string
+	}{
+		{DrillRequest{Widget: "pace", Cell: &DrillCell{Bucket: "sprint:s4"}}, `widget "pace" is one number`},
+		{DrillRequest{Widget: "carrying"}, `widget "carrying" draws bars, points or cells`},
+		{DrillRequest{Widget: "carrying", Cell: &DrillCell{Bucket: "u1", Series: "Blocked"}}, `widget "carrying" has no series "Blocked"`},
+	} {
+		if _, err := drill(c.r); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%+v: %v; want %q", c.r, err, c.want)
+		}
 	}
 }
 
@@ -217,7 +262,7 @@ func TestDrillStartsAgainWhenTheCountMoved(t *testing.T) {
 	}
 	e := evaluator()
 	b := f.board()
-	ask := DrillRequest{Request: utcSprints3, Widget: "carrying", Bucket: "u1"}
+	ask := DrillRequest{Request: utcSprints3, Widget: "carrying", Cell: &DrillCell{Bucket: "u1"}}
 	first, err := e.Drill(context.Background(), b, ask)
 	if err != nil {
 		t.Fatal(err)

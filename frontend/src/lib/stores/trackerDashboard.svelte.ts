@@ -55,12 +55,12 @@ export interface DashboardSource {
 }
 
 /** A number of a widget whose rows a drill lists: the widget's number
- * (no bucket), or a bar, point or table cell (its bucket's key, and a
- * series or none for the whole bucket). */
+ * (no cell), or the bar, point or table cell picked (its bucket's key,
+ * which is empty for Unassigned and No epic, and its series, empty for
+ * the whole bucket). */
 export interface DrillTarget {
   readonly widget: string;
-  readonly bucket?: string;
-  readonly series?: string;
+  readonly cell?: { readonly bucket: string; readonly series: string };
 }
 
 export interface DrillState {
@@ -230,7 +230,7 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
     drill = { target, page, answer: drill?.target === target ? drill.answer : null, loading: true, error: null };
     try {
       const a = await withBackendTarget(s.backend, () =>
-        TrackerDashboardDrill(s.subscription, { ...r, widget: target.widget, bucket: target.bucket ?? '', series: target.series ?? '', page, count }),
+        TrackerDashboardDrill(s.subscription, { ...r, widget: target.widget, cell: target.cell ? { ...target.cell } : null, page, count }),
       );
       if (gen !== drillGen) return;
       drill = { target, page: a.page, answer: a, loading: false, error: null };

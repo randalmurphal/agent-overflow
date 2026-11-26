@@ -259,11 +259,41 @@ export class DrillAnswer {
 }
 
 /**
- * DrillRequest asks for the rows behind one number of a dashboard: the
- * widget's number (Bucket empty), or one bar, point or table cell (Bucket
- * its key, Series one of its series or empty for all of them). Page is
- * the page of drillPage rows; Count is the row count page 0 answered, so
- * a later page that finds a different count starts again at page 0.
+ * DrillCell is one bar, point or table cell: its bucket's key, "" the
+ * bucket of rows that name none (Unassigned, No epic), and one of the
+ * metric's series, "" for all of the bucket's (a table's total).
+ */
+export class DrillCell {
+    "bucket": string;
+    "series": string;
+
+    /** Creates a new DrillCell instance. */
+    constructor($$source: Partial<DrillCell> = {}) {
+        if (!("bucket" in $$source)) {
+            this["bucket"] = "";
+        }
+        if (!("series" in $$source)) {
+            this["series"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DrillCell instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DrillCell {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DrillCell($$parsedSource as Partial<DrillCell>);
+    }
+}
+
+/**
+ * DrillRequest asks for the rows behind one number of a dashboard: a
+ * number or list widget's whole number (no Cell), or one bar, point or
+ * table cell of a bars, line or table widget (Cell). Page is the page of
+ * drillPage rows; Count is the row count page 0 answered, so a later page
+ * that finds a different count starts again at page 0.
  */
 export class DrillRequest {
     "dashboard": string;
@@ -273,8 +303,7 @@ export class DrillRequest {
     "epic"?: string;
     "time_zone": string;
     "widget": string;
-    "bucket"?: string;
-    "series"?: string;
+    "cell"?: DrillCell | null;
     "page": number;
     "count"?: number;
 
@@ -303,7 +332,11 @@ export class DrillRequest {
      * Creates a new DrillRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): DrillRequest {
+        const $$createField7_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("cell" in $$parsedSource) {
+            $$parsedSource["cell"] = $$createField7_0($$parsedSource["cell"]);
+        }
         return new DrillRequest($$parsedSource as Partial<DrillRequest>);
     }
 }
@@ -383,8 +416,8 @@ export class How {
      * Creates a new How instance from a string or object.
      */
     static createFrom($$source: any = {}): How {
-        const $$createField0_0 = $$createType13;
-        const $$createField5_0 = $$createType13;
+        const $$createField0_0 = $$createType15;
+        const $$createField5_0 = $$createType15;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("words" in $$parsedSource) {
             $$parsedSource["words"] = $$createField0_0($$parsedSource["words"]);
@@ -522,7 +555,7 @@ export class RangeView {
      * Creates a new RangeView instance from a string or object.
      */
     static createFrom($$source: any = {}): RangeView {
-        const $$createField2_0 = $$createType15;
+        const $$createField2_0 = $$createType17;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("periods" in $$parsedSource) {
             $$parsedSource["periods"] = $$createField2_0($$parsedSource["periods"]);
@@ -663,8 +696,8 @@ export class WidgetValue {
      */
     static createFrom($$source: any = {}): WidgetValue {
         const $$createField4_0 = $$createType6;
-        const $$createField5_0 = $$createType13;
-        const $$createField6_0 = $$createType17;
+        const $$createField5_0 = $$createType15;
+        const $$createField6_0 = $$createType19;
         const $$createField7_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("trend" in $$parsedSource) {
@@ -726,8 +759,8 @@ export class WidgetView {
      * Creates a new WidgetView instance from a string or object.
      */
     static createFrom($$source: any = {}): WidgetView {
-        const $$createField8_0 = $$createType13;
-        const $$createField9_0 = $$createType18;
+        const $$createField8_0 = $$createType15;
+        const $$createField9_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("series" in $$parsedSource) {
             $$parsedSource["series"] = $$createField8_0($$parsedSource["series"]);
@@ -753,9 +786,11 @@ const $$createType9 = WidgetView.createFrom;
 const $$createType10 = $Create.Array($$createType9);
 const $$createType11 = TicketRow.createFrom;
 const $$createType12 = $Create.Array($$createType11);
-const $$createType13 = $Create.Array($Create.Any);
-const $$createType14 = PeriodView.createFrom;
-const $$createType15 = $Create.Array($$createType14);
-const $$createType16 = BucketValue.createFrom;
+const $$createType13 = DrillCell.createFrom;
+const $$createType14 = $Create.Nullable($$createType13);
+const $$createType15 = $Create.Array($Create.Any);
+const $$createType16 = PeriodView.createFrom;
 const $$createType17 = $Create.Array($$createType16);
-const $$createType18 = How.createFrom;
+const $$createType18 = BucketValue.createFrom;
+const $$createType19 = $Create.Array($$createType18);
+const $$createType20 = How.createFrom;

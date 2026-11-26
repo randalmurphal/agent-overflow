@@ -82,10 +82,13 @@ it('narrows the page to a table\'s person and opens a cell\'s rows', async () =>
   await fireEvent.click(within(rows[0]).getByTestId('dashboard-table-label'));
   expect(onPerson).toHaveBeenCalledWith({ id: 'acct-1', label: 'User 1' });
   await fireEvent.click(within(rows[0]).getAllByTestId('dashboard-cell')[1]);
-  expect(onDrill).toHaveBeenCalledWith({ widget: 'carrying', bucket: 'acct-1', series: 'Doing' });
+  expect(onDrill).toHaveBeenCalledWith({ widget: 'carrying', cell: { bucket: 'acct-1', series: 'Doing' } });
   await fireEvent.click(within(rows[0]).getByTestId('dashboard-cell-total'));
-  expect(onDrill).toHaveBeenLastCalledWith({ widget: 'carrying', bucket: 'acct-1', series: '' });
+  expect(onDrill).toHaveBeenLastCalledWith({ widget: 'carrying', cell: { bucket: 'acct-1', series: '' } });
   expect(getByTestId('dashboard-more').textContent).toBe('2 more people');
+  // Unassigned's cell opens Unassigned's rows of its series, its key empty.
+  await fireEvent.click(within(rows[1]).getAllByTestId('dashboard-cell')[0]);
+  expect(onDrill).toHaveBeenLastCalledWith({ widget: 'carrying', cell: { bucket: '', series: 'To do' } });
 });
 
 it('opens a listed ticket, and the rest and the uncounted in the drill', async () => {
