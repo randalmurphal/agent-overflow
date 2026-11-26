@@ -2770,7 +2770,9 @@ is refused, and so are keys of two sites. A day's entries not yet logged
 hold at most 24 hours, whichever threads drafted them and whoever changed
 them (`store.TimeDayOverError`, checked in the write's transaction); a
 ticket is drafted once a day, and no day is in the future. A read-only thread is
-refused (`Host.Writable`). The draft replaces the drafted entries that
+refused (`Host.WritePolicy`, read at admission and again just before the
+store write, so a thread made read-only during the key lookup drafts
+nothing). The draft replaces the drafted entries that
 the calling thread drafted on each day the call names; another thread's
 entries, the person's, and entries sent, posted or of unknown outcome
 stay, and a new entry for a ticket that has one not yet logged that day
