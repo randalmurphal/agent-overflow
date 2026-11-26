@@ -56,7 +56,7 @@
   import { SplitWidth } from '../shared/splitWidth.svelte';
   import type { MoveView, RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import { attachTrackerTicket, trackerTicketKey } from '../../stores/trackerTicket.svelte';
-  import { openTicketMove } from '../../stores/trackerTicketWrites.svelte';
+  import { openTicketMove, refreshFormReads } from '../../stores/trackerTicketWrites.svelte';
   import { registerIssuesBackHandler } from '../../stores/issuesCommands';
   import { registerPaneDetailProbe } from '../../stores/toolPanes.svelte';
   import TicketHost from './TicketHost.svelte';
@@ -334,7 +334,10 @@
 
   function refresh(): void {
     if (screen === 'time') timeView?.refresh();
-    else if (attachment) void refreshTrackerBoard(attachment.key);
+    else if (attachment && board) {
+      void refreshTrackerBoard(attachment.key);
+      refreshFormReads(board.backend, board.connection);
+    }
   }
 
   // The board's listing: its connection's kind, whether it may be opened.
