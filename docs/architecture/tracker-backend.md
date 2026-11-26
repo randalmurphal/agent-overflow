@@ -2067,7 +2067,13 @@ delete is refused and the links the delete read are the ones it ends.
   into it. A stored list's project that was removed since (the list
   stays until the Pull requests page's next read prunes it) keeps its
   rows, which name no project, as a linked thread's do, and has no
-  branches read. A repository whose
+  branches read. Each pull request names the project that can show it in
+  the app (`ReviewProjectID`): one of those projects whose origin is the
+  pull request's repository, its own project first, since a review
+  fetches the pull request's refs from origin
+  (`git.Core.EnsurePRObjects`), so a fork's checkout cannot show its
+  parent's pull request; none when no project can, and the row opens on
+  the forge. A repository whose
   branches cannot be read is a problem beside the rest. At 2,000 stored
   rows over 10 repositories and a 500-branch project it costs 18 ms and
   4 MB an open, 23 ms and 5 MB when every list names the key

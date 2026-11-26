@@ -10486,6 +10486,13 @@ export class TicketPullRequest {
     "branch": string;
     "projectId"?: string;
 
+    /**
+     * ReviewProjectID is the project of Work's whose checkout can show
+     * the pull request in the app (ticketWorkRead.reviewProject); empty
+     * when none can, and the row opens on the forge.
+     */
+    "reviewProjectId"?: string;
+
     /** Creates a new TicketPullRequest instance. */
     constructor($$source: Partial<TicketPullRequest> = {}) {
         if (!("ref" in $$source)) {

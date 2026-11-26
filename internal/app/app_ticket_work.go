@@ -55,6 +55,10 @@ type TicketPullRequest struct {
 	CI        string `json:"ci,omitempty"`
 	Branch    string `json:"branch"`
 	ProjectID string `json:"projectId,omitempty"`
+	// ReviewProjectID is the project of Work's whose checkout can show
+	// the pull request in the app (ticketWorkRead.reviewProject); empty
+	// when none can, and the row opens on the forge.
+	ReviewProjectID string `json:"reviewProjectId,omitempty"`
 }
 
 // Ticket pull request states.
@@ -143,20 +147,27 @@ func (a *App) SearchTicketWork(ctx context.Context, connectionID, issueID string
 	if err != nil {
 		return TicketWork{}, budgetError(ctx, err)
 	}
-	if err := a.searchTicketForge(ctx, &read); err != nil {
-		return TicketWork{}, budgetError(ctx, err)
-	}
+	a.searchTicketForge(ctx, &read)
 	return read.answer(), nil
 }
 
 // ticketWorkRead is a ticket's Work as its reads gather it: the pull
-// requests listed so far, the projects Work covers and every branch of
-// theirs that names the key. answer folds a branch a listed pull request
-// names into it.
+// requests listed so far, the projects Work covers, the forge repository
+// each one's origin names and every branch of theirs that names the key.
+// answer folds a branch a listed pull request names into it.
 type ticketWorkRead struct {
 	work     TicketWork
 	projects []string
+	origins  []ticketProjectOrigin
 	branches []TicketBranch
+}
+
+// ticketProjectOrigin is a project of Work's whose origin names a forge
+// repository, as forgeProject reads it: Repo is zero, and Error set, when
+// git could not read the origin.
+type ticketProjectOrigin struct {
+	project store.Project
+	ForgeProject
 }
 
 // readTicketWork is the read from what this computer stores and git's
@@ -246,7 +257,19 @@ func (a *App) readTicketWork(ctx context.Context, connectionID, issueID string) 
 		if err := ctx.Err(); err != nil {
 			return ticketWorkRead{}, err
 		}
-		branches, err := a.ticketBranches(projectID, key)
+		project, err := a.store.GetProject(projectID)
+		if err != nil {
+			read.work.Problems = append(read.work.Problems, TicketWorkProblem{ProjectID: projectID, Error: err.Error()})
+			continue
+		}
+		origin, ok, err := a.forgeProject(ctx, project)
+		if err != nil {
+			return ticketWorkRead{}, err
+		}
+		if ok {
+			read.origins = append(read.origins, ticketProjectOrigin{project: project, ForgeProject: origin})
+		}
+		branches, err := a.ticketBranches(project, key)
 		if err != nil {
 			read.work.Problems = append(read.work.Problems, TicketWorkProblem{ProjectID: projectID, Error: err.Error()})
 			continue
@@ -256,10 +279,15 @@ func (a *App) readTicketWork(ctx context.Context, connectionID, issueID string) 
 	return read, nil
 }
 
-// answer is the Work answer: the pull requests listed, and the branches
-// no listed pull request of the branch's project names.
+// answer is the Work answer: the pull requests listed, each with the
+// project that can show it, and the branches no listed pull request of
+// the branch's project names.
 func (r ticketWorkRead) answer() TicketWork {
 	work := r.work
+	work.PullRequests = slices.Clone(r.work.PullRequests)
+	for i := range work.PullRequests {
+		work.PullRequests[i].ReviewProjectID = r.reviewProject(work.PullRequests[i])
+	}
 	work.Branches = []TicketBranch{}
 	for _, b := range r.branches {
 		if !branchNamedByPullRequest(b, work.PullRequests) {
@@ -267,6 +295,23 @@ func (r ticketWorkRead) answer() TicketWork {
 		}
 	}
 	return work
+}
+
+// reviewProject is the project of Work's whose checkout can show pr in
+// the app, pr's own project first: one whose origin is pr's repository,
+// since a review fetches the pull request's refs from origin
+// (gitops.Core.EnsurePRObjects), so a fork's checkout cannot show its
+// parent's pull request. Empty when no project can.
+func (r ticketWorkRead) reviewProject(pr TicketPullRequest) string {
+	repo := pr.Ref.Repository().Identity()
+	shows := func(o ticketProjectOrigin) bool { return o.Error == "" && o.Repo.Identity() == repo }
+	if at := slices.IndexFunc(r.origins, func(o ticketProjectOrigin) bool { return o.ProjectID == pr.ProjectID && shows(o) }); at >= 0 {
+		return pr.ProjectID
+	}
+	if at := slices.IndexFunc(r.origins, shows); at >= 0 {
+		return r.origins[at].ProjectID
+	}
+	return ""
 }
 
 // branchNamedByPullRequest reports whether one of prs has b as its head:
@@ -371,12 +416,8 @@ func recordedTicketPullRequest(pr store.ThreadPullRequest) (TicketPullRequest, b
 	return TicketPullRequest{Ref: ref, URL: pr.URL, State: state, Branch: pr.Branch}, true
 }
 
-// ticketBranches lists the branches of projectID whose name names key.
-func (a *App) ticketBranches(projectID, key string) ([]TicketBranch, error) {
-	project, err := a.store.GetProject(projectID)
-	if err != nil {
-		return nil, err
-	}
+// ticketBranches lists the branches of project whose name names key.
+func (a *App) ticketBranches(project store.Project, key string) ([]TicketBranch, error) {
 	branches, err := a.gitCore().ListBranches(project.Path)
 	if err != nil {
 		return nil, err
@@ -384,7 +425,7 @@ func (a *App) ticketBranches(projectID, key string) ([]TicketBranch, error) {
 	var out []TicketBranch
 	for _, b := range branches {
 		if slices.Contains(trackerapp.TicketKeys(b.Name), key) {
-			out = append(out, TicketBranch{ProjectID: projectID, GitBranch: b})
+			out = append(out, TicketBranch{ProjectID: project.ID, GitBranch: b})
 		}
 	}
 	return out, nil

@@ -49,36 +49,24 @@ type ticketHeadLookup struct {
 // A repository's failure is its one ForgeProblem, beside the rows its
 // search and lookups read before they failed; a failed search gets no
 // lookups. A project whose origin
-// names no forge repository is not searched. It fails only when ctx ends
-// before the repositories are known.
-func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead) error {
+// names no forge repository is not searched.
+func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead) {
 	var repos []*ticketSearchRepo
 	byKey := map[string]*ticketSearchRepo{}
-	for _, projectID := range read.projects {
-		project, err := a.store.GetProject(projectID)
-		if err != nil {
-			// The branches' read failed the same way: it is in Problems.
+	for _, origin := range read.origins {
+		if origin.Error != "" {
+			read.work.ForgeProblems = append(read.work.ForgeProblems, TicketForgeProblem{ProjectID: origin.ProjectID, Error: origin.Error, ErrorKind: forgeFailureForge})
 			continue
 		}
-		row, ok, err := a.forgeProject(ctx, project)
-		switch {
-		case err != nil:
-			return err
-		case !ok:
-			continue
-		case row.Error != "":
-			read.work.ForgeProblems = append(read.work.ForgeProblems, TicketForgeProblem{ProjectID: projectID, Error: row.Error, ErrorKind: forgeFailureForge})
-			continue
-		}
-		key := row.Repo.Identity()
+		key := origin.Repo.Identity()
 		repo := byKey[key]
 		if repo == nil {
-			repo = &ticketSearchRepo{repo: row.Repo, paths: map[string]string{}}
+			repo = &ticketSearchRepo{repo: origin.Repo, paths: map[string]string{}}
 			byKey[key] = repo
 			repos = append(repos, repo)
 		}
-		repo.projects = append(repo.projects, projectID)
-		repo.paths[projectID] = project.Path
+		repo.projects = append(repo.projects, origin.ProjectID)
+		repo.paths[origin.ProjectID] = origin.project.Path
 	}
 
 	ticketKey := read.work.Key
@@ -138,7 +126,6 @@ func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead) error
 			Reserve: fail.reserve, ResumeAt: fail.resumeAt,
 		})
 	}
-	return nil
 }
 
 // addFound lists a pull request the forge found for the key, of

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"testing"
@@ -155,6 +156,9 @@ func TestSearchTicketWorkListsWhatTheForgeFindsByTheKey(t *testing.T) {
 		{Ref: workSearchPR(9), URL: url(9), Title: "WEB-1 Both", Author: "user1", State: TicketPRDraft, Branch: "WEB-1-both", ProjectID: f.project},
 		{Ref: workSearchPR(2), URL: url(2), Title: "Cache the session", Author: "user1", State: TicketPRMerged, Branch: "WEB-1-cache", ProjectID: f.project},
 		{Ref: workSearchPR(3), URL: url(3), Title: "Move the host", Author: "ao-author", State: TicketPRClosed, Branch: "feature/WEB-1-host", ProjectID: f.project},
+	}
+	for i := range want {
+		want[i].ReviewProjectID = f.project
 	}
 	if !slices.Equal(work.PullRequests, want) {
 		got, _ := json.MarshalIndent(work.PullRequests, "", " ")
@@ -502,6 +506,70 @@ func TestSearchTicketWorkListsWhatALookupReadBeforeItFailed(t *testing.T) {
 	}
 	if got := workPulls(work); !slices.Equal(got, []string{"gitlab:alice/up:1 merged"}) || len(work.ForgeProblems) != 1 {
 		t.Errorf("pull requests = %v, problems %+v; want alice/up's 1 beside the parent's failure", got, work.ForgeProblems)
+	}
+}
+
+// Each row names the project whose checkout can show it, one whose origin
+// is the row's repository: a linked thread's record, which names no
+// project, takes the one cloning its repository; a fork's checkout cannot
+// show its parent's pull request, so the row names none until a project
+// clones the parent.
+func TestTicketWorkNamesTheProjectThatCanShowEachPullRequest(t *testing.T) {
+	t.Parallel()
+	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "example/web"},
+		{Forge: "github", Project: "team/up", Pulls: []forgefake.Pull{
+			{Number: 2, Title: "Fix login", HeadRef: "WEB-1-login", HeadRepo: "alice/up"},
+		}},
+		{Forge: "github", Project: "alice/up", Parent: "team/up"},
+	}})
+	f.linkThread(t, "t1", f.project, f.dir)
+	if _, err := f.a.store.RecordOpenThreadPullRequest(store.ThreadPullRequest{ThreadID: "t1", Forge: "github", Host: "github.com",
+		Project: "example/web", Number: 8, URL: "https://github.com/example/web/pull/8", Branch: "docs", WorktreePath: f.dir, SeenOpenAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	fork := forgeProjectRepo(t, f.a, "https://github.com/alice/up.git")
+	p, err := f.a.store.GetProject(fork)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, p.Path, "branch", "WEB-1-login")
+	f.linkThread(t, "t-fork", fork, p.Path)
+
+	shows := func(work TicketWork) map[string][2]string {
+		out := map[string][2]string{}
+		for _, pr := range work.PullRequests {
+			out[pr.Ref.Key()] = [2]string{pr.ProjectID, pr.ReviewProjectID}
+		}
+		return out
+	}
+	stored, err := f.a.GetTicketWork(f.ctx, f.conn.ID, "10101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := shows(stored), map[string][2]string{"github:example/web:8": {"", f.project}}; !maps.Equal(got, want) {
+		t.Errorf("stored: rows' projects and review projects = %v; want %v", got, want)
+	}
+	work, err := f.a.SearchTicketWork(f.ctx, f.conn.ID, "10101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := shows(work), map[string][2]string{"github:example/web:8": {"", f.project}, "github:team/up:2": {fork, ""}}; !maps.Equal(got, want) {
+		t.Errorf("searched: rows' projects and review projects = %v; want %v", got, want)
+	}
+
+	parent := forgeProjectRepo(t, f.a, "https://github.com/team/up.git")
+	pp, err := f.a.store.GetProject(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.linkThread(t, "t-parent", parent, pp.Path)
+	work, err = f.a.SearchTicketWork(f.ctx, f.conn.ID, "10101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := shows(work)["github:team/up:2"]; got[1] != parent {
+		t.Errorf("with the parent cloned: team/up's 2 has project and review project %v; want review project %s", got, parent)
 	}
 }
 
