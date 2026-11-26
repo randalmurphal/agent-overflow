@@ -296,9 +296,8 @@ func TestTimeDraftAnswersWithAReceipt(t *testing.T) {
 		v.Made = append(v.Made, trackerapp.TimeEntryView{ID: int64(1_000_000 + i), Day: "2026-11-24", Minutes: 1, Reason: long, Offers: offers, State: "drafted"})
 	}
 	v.Kept = []trackerapp.TimeEntryView{
-		{ID: 7, Day: "2026-11-24", Minutes: 30, Reason: long, State: "left_out"},
-		{ID: 8, Day: "2026-11-24", Key: "WEB-1", Minutes: 90, Reason: long, State: "drafted", By: "person"},
-		{ID: 9, Day: "2026-11-24", Key: "WEB-2", Minutes: 60, Reason: long, State: "posted"},
+		{ID: 8, Day: "2026-11-24", Key: "WEB-1", Minutes: 60, Reason: long, State: "drafted", By: "person"},
+		{ID: 9, Day: "2026-11-24", Key: "WEB-2", Minutes: 30, Reason: long, State: "unknown"},
 	}
 	got := draftAnswerOf(v, "")
 	raw, err := json.Marshal(got)
@@ -308,12 +307,12 @@ func TestTimeDraftAnswersWithAReceipt(t *testing.T) {
 	if len(raw) > answerBudget || strings.Contains(string(raw), long) {
 		t.Fatalf("the answer is %d bytes, over %d or echoing the reasons", len(raw), answerBudget)
 	}
-	if strings.Contains(string(raw), `"id":7`) || strings.Contains(string(raw), `"id":9`) {
+	if strings.Contains(string(raw), `"id":8`) || strings.Contains(string(raw), `"id":9`) {
 		t.Fatalf("the answer lists entries the call did not make: %s", raw)
 	}
 	t.Logf("the answer of 250 questions is %d bytes", len(raw))
 	if len(got.Days) != 1 || got.Days[0].OtherHours != 1.5 {
-		t.Fatalf("the day's other hours are %+v; want the person's 1.5, not the posted or left-out entries", got.Days)
+		t.Fatalf("the day's other hours are %+v; want the 1.5 of the entries not yet logged", got.Days)
 	}
 
 	// 250 entries on tickets over 25 days of a site with a long name, which

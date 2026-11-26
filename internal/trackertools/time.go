@@ -506,11 +506,6 @@ func draftAnswerOf(v trackerapp.TimeDraftView, site string) draftAnswer {
 		d.Made = append(d.Made, madeEntry{ID: e.ID, Key: e.Key})
 	}
 	for _, e := range v.Kept {
-		if e.State == "posted" || e.State == "left_out" {
-			// A posted entry is among the logged hours; a left-out one is
-			// no time.
-			continue
-		}
 		day(e.Day).OtherHours += float64(e.Minutes) / 60
 	}
 	for _, e := range v.Skipped {

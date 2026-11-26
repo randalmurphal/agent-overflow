@@ -112,10 +112,12 @@ func isOpenConflict(err error) bool {
 }
 
 // TimeDraftWrite is what a draft write did to its days: the entries it
-// made, the drafted entries of its thread it replaced, and
-// the entries it kept: every entry of those days it did not replace,
-// those of the person, those sent or posted, and those for a ticket that
-// already had an open entry that day, in place of the new one.
+// made, the drafted entries of its thread it replaced, and the entries
+// not yet logged it kept: every drafted, sent or unknown entry of those
+// days it did not make, another thread's, the person's, and those for a
+// ticket that already had an open entry that day, in place of the new one.
+// Posted and left-out entries are not read: a day's settled history does
+// not grow the write.
 type TimeDraftWrite struct {
 	Made     []TimeEntry
 	Replaced []TimeEntry
@@ -199,7 +201,8 @@ func (s *Store) ReplaceAgentTimeDays(connection, author string, entries []TimeEn
 	}
 	for _, day := range order {
 		kept, err := scanTimeEntries(tx.Query(`SELECT `+timeEntryColumns+` FROM tracker_time_entries
- WHERE connection_id = ?1 AND author_id = ?2 AND day = ?3 AND id NOT IN (SELECT value FROM json_each(?4))
+ WHERE connection_id = ?1 AND author_id = ?2 AND day = ?3 AND state IN ('drafted', 'sent', 'unknown')
+ AND id NOT IN (SELECT value FROM json_each(?4))
  ORDER BY id`, connection, author, day, string(made)))
 		if err != nil {
 			return out, fmt.Errorf("store: draft time: read %s: %w", day, err)
@@ -521,66 +524,31 @@ func refList(refs []TimeEntryRef) (string, error) {
 }
 
 var markTimeEntriesSentSQL = refRows + `
- UPDATE tracker_time_entries SET state = 'sent', sent_ms = iif(state = 'unknown', sent_ms, ` + intParam("?3") + `), refusal = '',
- revision = revision + 1, updated_ms = ` + intParam("?3") + `
- WHERE id IN (SELECT id FROM r) AND +connection_id = ?1 AND issue_id <> '' AND state IN ('drafted', 'unknown') AND ` + atRefRevision + `
+ UPDATE tracker_time_entries SET state = 'sent', sent_ms = ` + intParam("?3") + `, refusal = '', revision = revision + 1,
+ updated_ms = ` + intParam("?3") + `
+ WHERE id IN (SELECT id FROM r) AND +connection_id = ?1 AND issue_id <> '' AND state = 'drafted' AND ` + atRefRevision + `
  RETURNING ` + timeEntryColumns
 
-var unknownAtRefSQL = refRows + `
- SELECT id FROM tracker_time_entries WHERE id IN (SELECT id FROM r) AND +connection_id = ?1 AND state = 'unknown' AND ` + atRefRevision
-
-// TimeEntriesMarked is what MarkTimeEntriesSent marked: the entries as
-// stored, and those of them that were unknown, whose post may have
-// happened before.
-type TimeEntriesMarked struct {
-	Entries []TimeEntry
-	Unknown map[int64]bool
-}
-
 // MarkTimeEntriesSent marks the entries refs name on connection, each
-// with a ticket and drafted or unknown at its revision, as sent at now, in
-// one transaction before anything is sent, and returns those it marked.
-// sent means that this run is sending the entry: nothing else changes or
+// with a ticket and drafted at its revision, as sent at now, in one
+// statement before anything is sent, and returns those it marked. sent
+// means that this run is sending the entry: nothing else changes or
 // removes it until its settle (SettleTimeEntries), and an earlier run's
 // are unknown before this run reads any (RecoverEarlierTimeSends). An
-// unknown entry keeps the time it was first sent (sent_ms), which a settle
-// that did nothing keeps too. An entry another post marked since is left
-// out. Which of them a post may send is the caller's rule (trackerapp's
-// PostTimeEntries).
-func (s *Store) MarkTimeEntriesSent(connection string, refs []TimeEntryRef, now int64) (TimeEntriesMarked, error) {
+// unknown entry is never marked again: no read proves its first send did
+// not land. An entry another post marked since is left out. Which of them
+// a post may send is the caller's rule (trackerapp's PostTimeEntries).
+func (s *Store) MarkTimeEntriesSent(connection string, refs []TimeEntryRef, now int64) ([]TimeEntry, error) {
 	if now <= 0 {
-		return TimeEntriesMarked{}, fmt.Errorf("%w: a mark needs when it is sent", ErrInvalidTimeEntry)
+		return nil, fmt.Errorf("%w: a mark needs when it is sent", ErrInvalidTimeEntry)
 	}
 	list, err := refList(refs)
 	if err != nil {
-		return TimeEntriesMarked{}, err
+		return nil, err
 	}
-	tx, err := s.db.Begin()
+	out, err := scanTimeEntries(s.db.Query(markTimeEntriesSentSQL, connection, list, now))
 	if err != nil {
-		return TimeEntriesMarked{}, fmt.Errorf("store: mark time entries sent: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	out := TimeEntriesMarked{Unknown: map[int64]bool{}}
-	rows, err := tx.Query(unknownAtRefSQL, connection, list)
-	if err != nil {
-		return TimeEntriesMarked{}, fmt.Errorf("store: mark time entries sent: %w", err)
-	}
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			_ = rows.Close()
-			return TimeEntriesMarked{}, fmt.Errorf("store: mark time entries sent: %w", err)
-		}
-		out.Unknown[id] = true
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return TimeEntriesMarked{}, fmt.Errorf("store: mark time entries sent: %w", err)
-	}
-	if out.Entries, err = scanTimeEntries(tx.Query(markTimeEntriesSentSQL, connection, list, now)); err != nil {
-		return TimeEntriesMarked{}, fmt.Errorf("store: mark time entries sent: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return TimeEntriesMarked{}, fmt.Errorf("store: mark time entries sent: commit: %w", err)
+		return nil, fmt.Errorf("store: mark time entries sent: %w", err)
 	}
 	return out, nil
 }
@@ -590,9 +558,8 @@ func (s *Store) MarkTimeEntriesSent(connection string, refs []TimeEntryRef, now 
 type TimeEntrySettle struct {
 	ID       int64
 	Revision int64
-	// State is posted, unknown (the answer was lost), drafted (refused or
-	// not sent, and drafted before the mark), or unknown again for one
-	// refused or not sent that was unknown before it.
+	// State is posted, unknown (the answer was lost) or drafted (refused
+	// or not sent).
 	State     string
 	WorklogID string
 	Refusal   string
@@ -601,7 +568,7 @@ type TimeEntrySettle struct {
 // SettleTimeEntries settles each entry of outcomes on connection that is
 // still sent at the revision its mark left, in one transaction, and
 // returns them as stored. A posted or unknown entry keeps the time it was
-// first sent; a drafted one has none.
+// sent; a drafted one has none.
 func (s *Store) SettleTimeEntries(connection string, outcomes []TimeEntrySettle, now int64) ([]TimeEntry, error) {
 	tx, err := s.db.Begin()
 	if err != nil {

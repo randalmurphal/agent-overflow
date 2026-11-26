@@ -52,7 +52,7 @@ type Store interface {
 	ThreadTimeEntries(thread string) ([]store.TimeEntry, error)
 	EditTimeEntry(connection, author string, ref store.TimeEntryRef, ch store.TimeEntryChange, now int64) (store.TimeEntryEdited, bool, error)
 	RemoveTimeEntries(connection, author string, refs []store.TimeEntryRef) ([]store.TimeEntry, error)
-	MarkTimeEntriesSent(connection string, refs []store.TimeEntryRef, now int64) (store.TimeEntriesMarked, error)
+	MarkTimeEntriesSent(connection string, refs []store.TimeEntryRef, now int64) ([]store.TimeEntry, error)
 	SettleTimeEntries(connection string, outcomes []store.TimeEntrySettle, now int64) ([]store.TimeEntry, error)
 	RecoverEarlierTimeSends(now int64) ([]store.TimeEntry, error)
 	SettleAgentWrite(id int64, issue, key, comment string) error

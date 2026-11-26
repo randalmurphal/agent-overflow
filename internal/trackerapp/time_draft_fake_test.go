@@ -25,26 +25,13 @@ const (
 )
 
 // markGateStore runs gate, once, before the first MarkTimeEntriesSent
-// after it is set, and readGate before the first ReadMirrorWorklogDays;
-// settleErr fails the next SettleTimeEntries, as a run that stopped before
-// it stored the tracker's answer leaves its entries.
+// after it is set; settleErr fails the next SettleTimeEntries, as a run
+// that stopped before it stored the tracker's answer leaves its entries.
 type markGateStore struct {
 	*worklogGateStore
 	mu        sync.Mutex
 	gate      func()
-	readGate  func()
 	settleErr error
-}
-
-func (g *markGateStore) ReadMirrorWorklogDays(connection, author, from, to string) (store.MirrorWorklogDays, error) {
-	g.mu.Lock()
-	gate := g.readGate
-	g.readGate = nil
-	g.mu.Unlock()
-	if gate != nil {
-		gate()
-	}
-	return g.worklogGateStore.ReadMirrorWorklogDays(connection, author, from, to)
 }
 
 func (g *markGateStore) SettleTimeEntries(connection string, outcomes []store.TimeEntrySettle, now int64) ([]store.TimeEntry, error) {
@@ -58,7 +45,7 @@ func (g *markGateStore) SettleTimeEntries(connection string, outcomes []store.Ti
 	return g.worklogGateStore.SettleTimeEntries(connection, outcomes, now)
 }
 
-func (g *markGateStore) MarkTimeEntriesSent(connection string, refs []store.TimeEntryRef, now int64) (store.TimeEntriesMarked, error) {
+func (g *markGateStore) MarkTimeEntriesSent(connection string, refs []store.TimeEntryRef, now int64) ([]store.TimeEntry, error) {
 	g.mu.Lock()
 	gate := g.gate
 	g.gate = nil
@@ -80,18 +67,27 @@ const aheadOfTracker = 30 * time.Second
 // fixture's worklog of WEB-1 in both time sources.
 type draftScenario struct {
 	*timeScenario
-	marks  *markGateStore
-	day    string
-	label  string
-	tempo  bool
-	calls  int
-	mu     sync.Mutex
-	events []TimeEntriesEvent
+	marks *markGateStore
+	day   string
+	label string
+	tempo bool
+	// tempoConn is the Tempo connection a Tempo scenario added.
+	tempoConn Connection
+	calls     int
+	mu        sync.Mutex
+	events    []TimeEntriesEvent
 }
 
 func newDraftScenario(t *testing.T, source string) *draftScenario {
 	t.Helper()
-	s := newTimeScenario(t)
+	return newDraftScenarioWith(t, source, nil)
+}
+
+// newDraftScenarioWith is newDraftScenario over a Jira site edit changes
+// (newTimeScenarioWith).
+func newDraftScenarioWith(t *testing.T, source string, edit func(site *trackerfake.JiraSite, at time.Time)) *draftScenario {
+	t.Helper()
+	s := newTimeScenarioWith(t, edit)
 	// The fixture's worklogs were made before the draft, by more than
 	// the clock slack.
 	s.clock.advance(2 * clockSlack * time.Millisecond)
@@ -102,7 +98,7 @@ func newDraftScenario(t *testing.T, source string) *draftScenario {
 	d := &draftScenario{timeScenario: s, marks: marks, day: s.days()[1], tempo: source == "tempo"}
 	d.label = dayLabel(d.day)
 	if d.tempo {
-		s.addTempoOn(t)
+		d.tempoConn = s.addTempoOn(t)
 	}
 	s.svc.emitTimeEntries = func(e TimeEntriesEvent) {
 		d.mu.Lock()
@@ -307,10 +303,10 @@ func TestAnAnsweredQuestionIsAddedToItsTicketsEntry(t *testing.T) {
 		}
 	}
 	refused("moving WEB-3's entry onto WEB-1", web3, "WEB-1", "WEB-1 already has an entry not yet posted that day; change that entry's hours instead")
-	sent := must[store.TimeEntriesMarked](t)(d.st.MarkTimeEntriesSent(d.conn.ID, []store.TimeEntryRef{{ID: web2.ID, Revision: web2.Revision}}, millis(d.svc.now())))
+	sent := must[[]store.TimeEntry](t)(d.st.MarkTimeEntriesSent(d.conn.ID, []store.TimeEntryRef{{ID: web2.ID, Revision: web2.Revision}}, millis(d.svc.now())))
 	refused("answering with WEB-2, being posted", standup, "WEB-2", "WEB-2's entry that day is being posted; try again once it is posted")
-	must[[]store.TimeEntry](t)(d.st.SettleTimeEntries(d.conn.ID, []store.TimeEntrySettle{{ID: web2.ID, Revision: sent.Entries[0].Revision, State: store.TimeEntryUnknown}}, millis(d.svc.now())))
-	refused("answering with WEB-2, maybe logged", standup, "WEB-2", "WEB-2's entry that day may already be logged; post or remove it first")
+	must[[]store.TimeEntry](t)(d.st.SettleTimeEntries(d.conn.ID, []store.TimeEntrySettle{{ID: web2.ID, Revision: sent[0].Revision, State: store.TimeEntryUnknown}}, millis(d.svc.now())))
+	refused("answering with WEB-2, maybe logged", standup, "WEB-2", "WEB-2's entry that day "+mayHaveBeenLogged)
 	if ev := d.takeEvents(); len(ev) != 0 {
 		t.Fatalf("the refused edits told %+v", ev)
 	}
@@ -491,9 +487,8 @@ func TestAPartlyFailedPostSaysWhatWasNotPosted(t *testing.T) {
 	})
 }
 
-// mayHave is what an approval says of an entry whose post may have
-// happened.
-const mayHave = "may have been logged; check the day, then remove it or log it alone."
+// mayHave is what a post says of an entry whose post may have happened.
+const mayHave = "may already be logged, so it is not sent again; look at the day's logged time, and remove the entry if the time is there, or log the time by hand and then remove the entry."
 
 // An entry whose post may have happened is never sent or settled by a
 // day's approval: not after a lost answer whose worklog landed, and not
@@ -544,10 +539,8 @@ func TestAnEntryWhosePostMayHaveHappenedIsLeftToThePerson(t *testing.T) {
 		if e := d.entry(t, v.Made[0].ID); e.State != store.TimeEntryUnknown || e.WorklogID != "" {
 			t.Fatalf("WEB-1 is %+v; want it unknown, claiming no worklog", e)
 		}
-		// Logging it alone finds the hand log, made since the first send,
-		// and sends nothing: it may be the first send's.
 		got, posts = d.post(t, true, entryRefs(got.Entries...)...)
-		d.posted(t, "the dropped post logged alone beside the hand log", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-1, 15m, "+sentAgain, 0)
+		d.posted(t, "the dropped post logged alone", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-1, 15m, "+mayHave, 0)
 	})
 }
 
@@ -557,9 +550,9 @@ func TestAnEntryThisRunIsSendingIsLeftAlone(t *testing.T) {
 	t.Parallel()
 	d := newDraftScenario(t, "jira")
 	v := d.draft(t, d.on("WEB-2", 1, "Reviewed the pull request"))
-	marked := must[store.TimeEntriesMarked](t)(d.st.MarkTimeEntriesSent(d.conn.ID, []store.TimeEntryRef{{ID: v.Made[0].ID, Revision: v.Made[0].Revision}},
+	marked := must[[]store.TimeEntry](t)(d.st.MarkTimeEntriesSent(d.conn.ID, []store.TimeEntryRef{{ID: v.Made[0].ID, Revision: v.Made[0].Revision}},
 		millis(d.svc.now())))
-	refs := entryRefs(timeEntryViews(marked.Entries)...)
+	refs := entryRefs(timeEntryViews(marked)...)
 	for _, alone := range []bool{false, true} {
 		got, posts := d.post(t, alone, refs...)
 		d.posted(t, "in the same run", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-2, 1h, is being posted from another window.", 0)

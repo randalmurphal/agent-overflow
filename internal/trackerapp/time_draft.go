@@ -110,8 +110,8 @@ type TimeDraftRequest struct {
 }
 
 // TimeDraftView is what a draft did: the entries it made, the agent
-// entries of its days it replaced, the entries of those days it kept,
-// and the new entries it skipped because the ticket already had an
+// entries of its days it replaced, the entries of those days not yet
+// logged it kept, and the new entries it skipped because the ticket already had an
 // entry not yet posted that day; and each of its days' time already
 // logged, as this computer last read it.
 type TimeDraftView struct {
@@ -454,7 +454,7 @@ func (s *Service) EditTimeEntry(id string, ref TimeEntryRefView, in TimeEntryEdi
 	case errors.As(err, &open) && open.Open.State == store.TimeEntrySent:
 		return TimeEntryView{}, invalidDraft("%s's entry that day is being posted; try again once it is posted", open.Open.IssueKey)
 	case errors.As(err, &open) && open.Open.State == store.TimeEntryUnknown:
-		return TimeEntryView{}, invalidDraft("%s's entry that day may already be logged; post or remove it first", open.Open.IssueKey)
+		return TimeEntryView{}, invalidDraft("%s's entry that day %s", open.Open.IssueKey, mayHaveBeenLogged)
 	case errors.As(err, &open):
 		return TimeEntryView{}, invalidDraft("%s already has an entry not yet posted that day; change that entry's hours instead", open.Open.IssueKey)
 	case errors.Is(err, store.ErrTimeEntryMergeOver):

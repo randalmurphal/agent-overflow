@@ -17,10 +17,6 @@ import (
 // a run's read, remove, approval, log alone and settle, and the next run
 // after the app stopped between the tracker's answer and the store's.
 
-// sentAgain is what logging alone says of an unknown entry whose ticket
-// got time logged that day since it was first sent.
-const sentAgain = "was not sent again: time was logged on it that day since it was first sent; remove the entry if that worklog is it, or log the time by hand."
-
 // restart makes the scenario's service a later run of the app over the
 // same store: what the run before left is recovered before it reads or
 // writes an entry.
@@ -48,10 +44,9 @@ func (d *draftScenario) crashAfterSend(t *testing.T, refs ...TimeEntryRefView) i
 }
 
 // An entry a run left sent, whose worklog landed, is unknown to the next
-// run before it reads anything: its thread's entries show it unknown, a
-// day's approval leaves it, logging it alone finds the worklog its first
-// send made and sends nothing, and the person removes it at the revision
-// read, all with no further worklog posted.
+// run before it reads anything: its thread's entries show it unknown,
+// neither a day's approval nor logging it alone sends it, and the person
+// removes it at the revision read, all with no further worklog posted.
 func TestAnEntryARunLeftSentIsUnknownToTheNext(t *testing.T) {
 	t.Parallel()
 	bothSources(t, func(t *testing.T, d *draftScenario) {
@@ -67,9 +62,9 @@ func TestAnEntryARunLeftSentIsUnknownToTheNext(t *testing.T) {
 		got, posts := d.post(t, false, entryRefs(shown...)...)
 		d.posted(t, "the day approved on the next run", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-2, 1h, "+mayHave, 0)
 		got, posts = d.post(t, true, entryRefs(shown...)...)
-		d.posted(t, "WEB-2 logged alone on the next run", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-2, 1h, "+sentAgain, 0)
+		d.posted(t, "WEB-2 logged alone on the next run", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-2, 1h, "+mayHave, 0)
 		if e := d.entry(t, shown[0].ID); e.State != store.TimeEntryUnknown {
-			t.Fatalf("WEB-2 is %+v after logging it alone found its worklog; want it unknown", e)
+			t.Fatalf("WEB-2 is %+v after logging it alone; want it unknown", e)
 		}
 		gone := must[[]TimeEntryView](t)(d.svc.RemoveTimeEntries(d.conn.ID, entryRefs(got.Entries...)))
 		if len(gone) != 1 || gone[0].ID != shown[0].ID {
@@ -77,87 +72,6 @@ func TestAnEntryARunLeftSentIsUnknownToTheNext(t *testing.T) {
 		}
 		if logs := d.logsOn(t, "WEB-2"); len(logs) != 1 {
 			t.Fatalf("WEB-2's worklogs are %+v; want the one the first send made", logs)
-		}
-	})
-}
-
-// Logging alone an entry whose answer was lost sends nothing when its day
-// holds a worklog of its ticket created since it was first sent, the one
-// that landed: the entry stays unknown and the sentence says what to do.
-func TestLoggingAloneAfterALostAnswerSendsNothing(t *testing.T) {
-	t.Parallel()
-	bothSources(t, func(t *testing.T, d *draftScenario) {
-		v := d.draft(t, d.on("WEB-2", 1, "Reviewed the pull request"))
-		d.fault(t, trackerfake.Fault{Kind: trackerfake.FaultFailAfterApply, Times: 1})
-		got, posts := d.post(t, false, entryRefs(v.Made...)...)
-		d.posted(t, "the lost answer", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-2, 1h, "+mayHave, 1)
-		got, posts = d.post(t, true, entryRefs(got.Entries...)...)
-		d.posted(t, "WEB-2 logged alone after the lost answer", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-2, 1h, "+sentAgain, 0)
-		if e := d.entry(t, v.Made[0].ID); e.State != store.TimeEntryUnknown {
-			t.Fatalf("WEB-2 is %+v; want it unknown", e)
-		}
-		if logs := d.logsOn(t, "WEB-2"); len(logs) != 1 {
-			t.Fatalf("WEB-2's worklogs are %+v; want only the one that landed", logs)
-		}
-	})
-}
-
-// After a dropped request, which made no worklog, logging the entry alone
-// sends it. A retry the tracker refused did nothing: the entry stays
-// unknown with its first send's time, so a redraft of its day keeps it,
-// and logging it alone again posts it.
-func TestARefusedRetryKeepsTheEntryUnknown(t *testing.T) {
-	t.Parallel()
-	bothSources(t, func(t *testing.T, d *draftScenario) {
-		var got PostTimeView
-		var posts int
-		v := d.draft(t, d.on("WEB-1", 0.25, "Planned the sprint"))
-		d.fault(t, trackerfake.Fault{Kind: trackerfake.FaultHold, Times: 1})
-		done := make(chan PostTimeView, 1)
-		go func() {
-			got, err := d.svc.PostTimeEntries(t.Context(), d.conn.ID, PostTimeRequest{Entries: entryRefs(v.Made...)})
-			if err != nil {
-				t.Error(err)
-			}
-			done <- got
-		}()
-		route, origin := jiraWorklogPost, trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: "example.atlassian.net"}
-		if d.tempo {
-			route, origin = tempoWorklogPost, trackerfake.Origin{Tracker: trackerfake.TrackerTempo}
-		}
-		waitHeld(t, d.e, route)
-		if err := d.e.Release(origin, route, true); err != nil {
-			t.Fatal(err)
-		}
-		got = <-done
-		if got.Entries[0].State != store.TimeEntryUnknown {
-			t.Fatalf("the dropped post answered %+v; want it unknown", got)
-		}
-		dropped := d.entry(t, v.Made[0].ID)
-		before := len(d.logsOn(t, "WEB-1"))
-
-		// A retry the tracker refuses did nothing.
-		body := `{"errorMessages":["Worklog is closed for this period."],"errors":{}}`
-		if d.tempo {
-			body = `{"errors":[{"message":"Worklog is closed for this period."}]}`
-		}
-		d.clock.advance(3 * clockSlack * time.Millisecond)
-		d.fault(t, trackerfake.Fault{Kind: trackerfake.FaultRefuse, Times: 1, Status: 400, Body: []byte(body)})
-		got, posts = d.post(t, true, entryRefs(got.Entries...)...)
-		e := d.entry(t, dropped.ID)
-		if posts != 1 || e.State != store.TimeEntryUnknown || e.SentMs != dropped.SentMs {
-			t.Fatalf("WEB-1 is %+v after a refused retry (%q, %d posts); want it unknown, sent at %d", e, got.Sentence, posts, dropped.SentMs)
-		}
-		if w := d.draft(t, d.on("WEB-3", 0.5, "Triaged the backlog")); len(w.Replaced) != 0 {
-			t.Fatalf("a redraft of the day replaced %+v", w.Replaced)
-		}
-		if e = d.entry(t, dropped.ID); e.State != store.TimeEntryUnknown {
-			t.Fatalf("WEB-1 is %+v after a redraft of its day; want it unknown", e)
-		}
-		got, posts = d.post(t, true, TimeEntryRefView{ID: e.ID, Revision: e.Revision})
-		d.posted(t, "WEB-1 logged alone after the refused retry", got, posts, "Posted 1 of 1 entries for "+d.label+".", 1)
-		if logs := d.logsOn(t, "WEB-1"); len(logs) != before+1 || got.Entries[0].State != store.TimeEntryPosted {
-			t.Fatalf("WEB-1's worklogs are %+v and the entry %+v; want one more, the entry's", logs, got.Entries[0])
 		}
 	})
 }
@@ -182,9 +96,9 @@ func TestApprovingADayPostsBesideAnOlderWorklogChangedSince(t *testing.T) {
 }
 
 // A day's approval checks the day's worklogs and posts on one time
-// source: Tempo turned on from another window after the check is not
-// where the entry goes, and a switch during the check's read sends
-// nothing.
+// source: Tempo turned on from another window after the check, before the
+// entry is marked and sent, is not where the entry goes; and a switch
+// during the check's read sends nothing.
 func TestADayIsCheckedAndPostedOnOneTimeSource(t *testing.T) {
 	t.Parallel()
 	d := newDraftScenario(t, "jira")
@@ -192,17 +106,19 @@ func TestADayIsCheckedAndPostedOnOneTimeSource(t *testing.T) {
 	tempo := d.addTempoOn(t)
 	must[WriteView](t)(d.svc.AddWorklog(t.Context(), d.conn.ID, WorklogRequest{Issue: "10102", Day: d.day, SpentSeconds: 1800, Description: "Reviewed it by hand"}))
 	must[Connection](t)(d.svc.SetEnabled(tempo.ID, false))
+	switched := false
 	d.marks.mu.Lock()
-	d.marks.readGate = func() { must[Connection](t)(d.svc.SetEnabled(tempo.ID, true)) }
+	d.marks.gate = func() {
+		must[Connection](t)(d.svc.SetEnabled(tempo.ID, true))
+		switched = true
+	}
 	d.marks.mu.Unlock()
 	reqs := d.requestsOf(t, func() {
-		must[PostTimeView](t)(d.svc.PostTimeEntries(t.Context(), d.conn.ID, PostTimeRequest{Entries: entryRefs(v.Made...)}))
+		_, err := d.svc.PostTimeEntries(t.Context(), d.conn.ID, PostTimeRequest{Entries: entryRefs(v.Made...)})
+		t.Logf("the approval across the switch: %v", err)
 	})
-	d.marks.mu.Lock()
-	d.marks.readGate = nil
-	d.marks.mu.Unlock()
-	if reqs[tempoWorklogPost] != 0 {
-		t.Fatalf("the approval checked Jira and posted to Tempo, which holds time logged by hand on WEB-2: %v", reqs)
+	if !switched || reqs[tempoWorklogPost] != 0 || reqs[jiraWorklogPost] != 1 {
+		t.Fatalf("the approval across a switch after its check (switched %v) made %v; want one POST to Jira, which it checked, and none to Tempo, which holds time logged by hand on WEB-2", switched, reqs)
 	}
 
 	d = newDraftScenario(t, "jira")
@@ -272,7 +188,7 @@ func TestEveryEntryPathRecoversAnEarlierRunsSends(t *testing.T) {
 		"an answer onto its ticket": func(t *testing.T, d *draftScenario, _, q TimeEntryView) string {
 			web2 := draftTickets["WEB-2"]
 			_, err := d.svc.EditTimeEntry(d.conn.ID, entryRefs(q)[0], TimeEntryEdit{Ticket: &web2})
-			if err != nil && strings.HasSuffix(err.Error(), "may already be logged; post or remove it first") {
+			if err != nil && strings.HasSuffix(err.Error(), mayHaveBeenLogged) {
 				return store.TimeEntryUnknown
 			}
 			return fmt.Sprint(err)
@@ -307,8 +223,8 @@ func TestAWorklogWithNoCreationTimeCountsAsLoggedSince(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := store.TimeEntry{IssueID: "10102", Day: "2026-11-24"}
 	since := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC).UnixMilli()
+	e := store.TimeEntry{IssueID: "10102", Day: "2026-11-24", CreatedMs: since}
 	for _, tc := range []struct {
 		name    string
 		created time.Time
@@ -318,8 +234,61 @@ func TestAWorklogWithNoCreationTimeCountsAsLoggedSince(t *testing.T) {
 		{"created before, past the slack", time.UnixMilli(since - clockSlack - 1), false},
 		{"created within the slack", time.UnixMilli(since - clockSlack), true},
 	} {
-		if got := loggedSince(e, since, []tracker.Worklog{{Issue: "10102", Day: day, Created: tc.created}}); got != tc.want {
+		if got := loggedSince(e, []tracker.Worklog{{Issue: "10102", Day: day, Created: tc.created}}); got != tc.want {
 			t.Errorf("%s: %v; want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// An entry whose answer was lost is never sent again: no read here can
+// prove its first send did not land. Neither logging it alone nor
+// approving its day sends it, whether the day's read shows the worklog
+// that send made or cannot: Jira's search not yet showing it, or the time
+// source switched since. Each says what the person does instead.
+func TestAnEntryThatMayBeLoggedIsNeverSentAgain(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		source string
+		edit   func(site *trackerfake.JiraSite, at time.Time)
+		// after runs once the answer was lost.
+		after func(t *testing.T, d *draftScenario)
+	}{
+		{"the worklog shown", "jira", nil, func(*testing.T, *draftScenario) {}},
+		{"jira's search not showing the worklog", "jira", func(site *trackerfake.JiraSite, at time.Time) {
+			for i := range site.Issues {
+				if site.Issues[i].Key == "WEB-3" {
+					site.Issues[i].Indexed = at.Add(24 * time.Hour)
+				}
+			}
+		}, func(*testing.T, *draftScenario) {}},
+		{"tempo turned off since", "tempo", nil, func(t *testing.T, d *draftScenario) {
+			must[Connection](t)(d.svc.SetEnabled(d.tempoConn.ID, false))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			d := newDraftScenarioWith(t, tc.source, tc.edit)
+			v := d.draft(t, d.on("WEB-3", 1, "Triaged the backlog"))
+			d.fault(t, trackerfake.Fault{Kind: trackerfake.FaultFailAfterApply, Times: 1})
+			got, posts := d.post(t, false, entryRefs(v.Made...)...)
+			d.posted(t, "the lost answer", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-3, 1h, "+mayHave, 1)
+			tc.after(t, d)
+			for _, alone := range []bool{true, false} {
+				var reqs map[string]int
+				reqs = d.requestsOf(t, func() {
+					got = must[PostTimeView](t)(d.svc.PostTimeEntries(t.Context(), d.conn.ID, PostTimeRequest{Entries: entryRefs(got.Entries...), Alone: alone}))
+				})
+				if posts := reqs[jiraWorklogPost] + reqs[tempoWorklogPost]; posts != 0 || got.Sentence != "Posted 0 of 1 entries for "+d.label+". WEB-3, 1h, "+mayHave {
+					t.Fatalf("approving it again (alone %v) answered %q with requests %v; want nothing sent", alone, got.Sentence, reqs)
+				}
+			}
+			if e := d.entry(t, v.Made[0].ID); e.State != store.TimeEntryUnknown {
+				t.Fatalf("WEB-3 is %+v; want it unknown", e)
+			}
+			if gone := must[[]TimeEntryView](t)(d.svc.RemoveTimeEntries(d.conn.ID, entryRefs(got.Entries...))); len(gone) != 1 {
+				t.Fatalf("removing WEB-3 removed %+v", gone)
+			}
+		})
 	}
 }
