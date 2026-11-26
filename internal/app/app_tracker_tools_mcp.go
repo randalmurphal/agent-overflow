@@ -41,6 +41,8 @@ type appTrackerMCP struct {
 	once   sync.Once
 	server *threadmcp.Server[trackerMCPAccess]
 	tools  *trackertools.Server
+	// approvals are the tracker writes waiting on the person.
+	approvals trackerApprovals
 }
 
 // TrackerToolsAllowedTool is the Claude allowlist entry that admits every
@@ -49,7 +51,7 @@ const TrackerToolsAllowedTool = "mcp__" + trackerMCPName + "__*"
 
 func (a *App) trackerMCPServer() *threadmcp.Server[trackerMCPAccess] {
 	a.trackerMCP.once.Do(func() {
-		a.trackerMCP.tools = trackertools.New(trackerToolsAdapter{a})
+		a.trackerMCP.tools = trackertools.New(trackerToolsAdapter{a}, trackerToolsHost{a})
 		a.trackerMCP.server = threadmcp.New(trackerMCPName, trackertools.Instructions, func(trackerMCPAccess) []map[string]any {
 			return a.trackerMCP.tools.Tools()
 		}, a.callTrackerMCP)
@@ -100,7 +102,7 @@ func (a *App) callTrackerMCP(w http.ResponseWriter, ctx context.Context, req thr
 		threadmcp.WriteError(w, req.ID, http.StatusOK, -32602, "invalid tools/call params")
 		return
 	}
-	result, err := a.trackerMCP.tools.Call(ctx, access.ThreadID, call.Name, call.Arguments)
+	result, err := a.trackerMCP.tools.Call(ctx, trackertools.Caller{Thread: access.ThreadID, Session: access.SessionToken}, call.Name, call.Arguments)
 	if err != nil {
 		if _, _, public := errorsx.PublicDetails(err); !public {
 			log.Printf("tracker tools: %s on %s: %v", call.Name, access.ThreadID, err)
@@ -191,6 +193,85 @@ func (t trackerToolsAdapter) IssueDetail(ctx context.Context, connection, issue 
 		d, _, err := svc.IssueDetail(ctx, connection, tracker.IssueID(issue), trackerapp.Interactive)
 		return d, err
 	})
+}
+
+func (t trackerToolsAdapter) TicketsOfKey(key string) ([]trackerapp.KeyedTicket, error) {
+	svc, err := t.a.trackerService()
+	if err != nil {
+		return nil, err
+	}
+	return svc.TicketsOfKey(key)
+}
+
+func (t trackerToolsAdapter) BoardSummary(connection, board string) (trackerapp.BoardSummary, error) {
+	svc, err := t.a.trackerService()
+	if err != nil {
+		return trackerapp.BoardSummary{}, err
+	}
+	return svc.BoardSummaryOf(connection, board)
+}
+
+func (t trackerToolsAdapter) MirrorCard(connection, issue string) (trackerapp.CardView, bool, error) {
+	svc, err := t.a.trackerService()
+	if err != nil {
+		return trackerapp.CardView{}, false, err
+	}
+	v, err := svc.Issue(connection, tracker.IssueID(issue))
+	if errors.Is(err, trackerapp.ErrNotMirrored) {
+		return trackerapp.CardView{}, false, nil
+	}
+	return v.Card, err == nil, err
+}
+
+func (t trackerToolsAdapter) AgentRepeat(threadID, digest string) (trackerapp.AgentRepeat, bool, error) {
+	svc, err := t.a.trackerService()
+	if err != nil {
+		return trackerapp.AgentRepeat{}, false, err
+	}
+	return svc.AgentRepeatOf(threadID, digest)
+}
+
+func (t trackerToolsAdapter) SettleAgentRepeat(row int64, issue, comment string) error {
+	svc, err := t.a.trackerService()
+	if err != nil {
+		return err
+	}
+	return svc.SettleAgentRepeat(row, issue, comment)
+}
+
+func (t trackerToolsAdapter) IssueTypes(ctx context.Context, connection, project string) ([]trackerapp.IssueTypeView, error) {
+	return t.a.TrackerIssueTypes(ctx, connection, project)
+}
+
+func (t trackerToolsAdapter) CreateFields(ctx context.Context, connection, project, issueType string) ([]trackerapp.FieldView, error) {
+	return t.a.TrackerCreateFields(ctx, connection, project, issueType)
+}
+
+// The writes are bounded and worded as the bound methods making them are
+// (trackerWrite); ctx carries the agent (trackerapp.ByAgent).
+
+func (t trackerToolsAdapter) Create(ctx context.Context, connection string, in trackerapp.CreateRequest) (trackerapp.WriteView, error) {
+	return t.a.CreateTrackerIssue(ctx, connection, in)
+}
+
+func (t trackerToolsAdapter) Edit(ctx context.Context, connection string, in trackerapp.EditRequest) (trackerapp.WriteView, error) {
+	return t.a.EditTrackerIssue(ctx, connection, in)
+}
+
+func (t trackerToolsAdapter) Move(ctx context.Context, connection string, in trackerapp.MoveRequest) (trackerapp.WriteView, error) {
+	return t.a.MoveTrackerIssue(ctx, connection, in)
+}
+
+func (t trackerToolsAdapter) SetEstimate(ctx context.Context, connection string, in trackerapp.EstimateRequest) (trackerapp.WriteView, error) {
+	return t.a.SetTrackerEstimate(ctx, connection, in)
+}
+
+func (t trackerToolsAdapter) MoveToSprint(ctx context.Context, connection string, in trackerapp.SprintMoveRequest) (trackerapp.WriteView, error) {
+	return t.a.MoveTrackerIssuesToSprint(ctx, connection, in)
+}
+
+func (t trackerToolsAdapter) AddComment(ctx context.Context, connection string, in trackerapp.CommentRequest) (trackerapp.WriteView, error) {
+	return t.a.AddTrackerComment(ctx, connection, in)
 }
 
 var _ trackertools.Tracker = trackerToolsAdapter{}

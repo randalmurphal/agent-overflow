@@ -383,14 +383,15 @@ func sectionOf(section Section, page store.MirrorSectionPage, groups string) (Se
 
 // BoardSummary is a board as the mirror holds it, without its rows: its
 // name, its project (the tracker's ID), whether it plans sprints, its
-// estimate unit, and its sprints, those still open first as the board
-// lists them.
+// estimate unit and the field it estimates by (empty when the estimate
+// is no field of the ticket's), and its sprints as the board lists them.
 type BoardSummary struct {
-	Name         string
-	Project      string
-	PlansSprints bool
-	Unit         string
-	Sprints      []SprintView
+	Name          string
+	Project       string
+	PlansSprints  bool
+	Unit          string
+	EstimateField string
+	Sprints       []SprintView
 }
 
 // BoardSummaryOf is board of connection id as the mirror holds it, with
@@ -410,7 +411,8 @@ func (s *Service) BoardSummaryOf(id, board string) (BoardSummary, error) {
 		return BoardSummary{}, fmt.Errorf("%w: board %s", ErrNotMirrored, board)
 	}
 	st := structureOf(m, tracker.Catalog{})
-	out := BoardSummary{Name: st.Board.Name, Project: string(st.Board.Project), PlansSprints: st.Board.Sprints, Unit: nameOf(unitNames[:], st.Estimate.Unit)}
+	out := BoardSummary{Name: st.Board.Name, Project: string(st.Board.Project), PlansSprints: st.Board.Sprints,
+		Unit: nameOf(unitNames[:], st.Estimate.Unit), EstimateField: st.Estimate.Field}
 	for _, sp := range st.Sprints {
 		out.Sprints = append(out.Sprints, SprintView{ID: string(sp.ID), Name: sp.Name, State: nameOf(sprintNames[:], sp.State)})
 	}

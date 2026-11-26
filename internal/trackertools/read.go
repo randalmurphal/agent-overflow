@@ -183,7 +183,7 @@ type readAnswer struct {
 	More         map[string]string `json:"more,omitempty"`
 }
 
-func (s *Server) read(ctx context.Context, threadID string, raw json.RawMessage) (any, error) {
+func (s *Server) read(ctx context.Context, caller Caller, raw json.RawMessage) (any, error) {
 	var args readArgs
 	if err := decode(raw, &args); err != nil {
 		return nil, err
@@ -192,9 +192,9 @@ func (s *Server) read(ctx context.Context, threadID string, raw json.RawMessage)
 		if args.Key != "" || args.History {
 			return nil, invalidf("more answers that part alone; leave out key and history.")
 		}
-		return s.readMore(ctx, args.More)
+		return s.readMore(ctx, caller, args.More)
 	}
-	t, sources, err := s.resolve(ctx, threadID, args.Key)
+	t, sources, err := s.resolve(ctx, caller.Thread, args.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +209,11 @@ func (s *Server) read(ctx context.Context, threadID string, raw json.RawMessage)
 		return nil, err
 	}
 	sh := newSheet(s, t.connection, qualifier(sources, t.site), d)
-	return sh.first(args.History)
+	out, err := sh.first(args.History)
+	if err == nil {
+		s.marks.shown(caller.Session, markKey{t.connection, d.Card.ID}, d.Card.Updated, sh.given, true)
+	}
+	return out, err
 }
 
 // qualifier is how answers write the keys of site's tickets: as the
@@ -231,7 +235,11 @@ func qualifier(sources []trackerapp.TicketSource, site string) func(string) stri
 // with no key, the ticket the thread is linked to; a key the link names,
 // the link's (no request); site/KEY, that site's ticket; any other key,
 // the ticket of the one site whose tracker finds it, refused when several
-// sites do.
+// sites do. Before any tracker is asked, the mirrors answer
+// (Tracker.TicketsOfKey): a bare key whose project two sites' mirrors
+// hold is refused as two sites' tickets, and a key one site's mirror
+// holds the issue of resolves there, both with no request; a key one
+// site's mirror holds the project of is looked up on that site alone.
 func (s *Server) resolve(ctx context.Context, threadID, key string) (ticket, []trackerapp.TicketSource, error) {
 	key = strings.TrimSpace(key)
 	if len([]rune(key)) > maxKeyRunes {
@@ -276,6 +284,26 @@ func (s *Server) resolve(ctx context.Context, threadID, key string) (ticket, []t
 				"No connection on this computer reaches %s; the sites on are %s.", strings.TrimSpace(site), siteList(sources)), nil)
 		}
 	}
+	held, err := s.t.TicketsOfKey(bare)
+	if err != nil {
+		return ticket{}, nil, err
+	}
+	var mirrored []ticket
+	for _, h := range held {
+		i := slices.IndexFunc(asked, func(src trackerapp.TicketSource) bool { return src.ID == h.Connection })
+		if i >= 0 {
+			mirrored = append(mirrored, ticket{connection: h.Connection, site: asked[i].Site, issue: h.Issue, key: bare})
+		}
+	}
+	switch {
+	case len(mirrored) > 1:
+		return ticket{}, nil, ambiguous(sources, bare, mirrored)
+	case len(mirrored) == 1 && mirrored[0].issue != "":
+		return mirrored[0], sources, nil
+	case len(mirrored) == 1:
+		site := mirrored[0].site
+		asked = slices.DeleteFunc(slices.Clone(asked), func(src trackerapp.TicketSource) bool { return src.Site != site })
+	}
 	// One hit a site: the first of the site's connections, in order, that
 	// has the key. Two accounts on one site reaching a key reach one ticket.
 	var hits []ticket
@@ -304,11 +332,7 @@ func (s *Server) resolve(ctx context.Context, threadID, key string) (ticket, []t
 	case len(hits) == 1:
 		return hits[0], sources, nil
 	case len(hits) > 1:
-		sites, keys := make([]string, len(hits)), make([]string, len(hits))
-		for i, h := range hits {
-			sites[i], keys[i] = h.site, qualifier(sources, h.site)(h.key)
-		}
-		return ticket{}, nil, errorsx.Public(CodeAmbiguous, fmt.Sprintf("%s is on %s; name one: %s.", bare, sayList(sites, "and"), sayList(keys, "or")), nil)
+		return ticket{}, nil, ambiguous(sources, bare, hits)
 	case failed != nil:
 		// A source that could not answer may hold the key.
 		return ticket{}, nil, failed
@@ -316,9 +340,18 @@ func (s *Server) resolve(ctx context.Context, threadID, key string) (ticket, []t
 	return ticket{}, nil, errorsx.Public(CodeNotFound, fmt.Sprintf("No ticket %s on %s.", bare, siteList(asked)), nil)
 }
 
+// ambiguous refuses bare, a key that hits name on several sites.
+func ambiguous(sources []trackerapp.TicketSource, bare string, hits []ticket) error {
+	sites, keys := make([]string, len(hits)), make([]string, len(hits))
+	for i, h := range hits {
+		sites[i], keys[i] = h.site, qualifier(sources, h.site)(h.key)
+	}
+	return errorsx.Public(CodeAmbiguous, fmt.Sprintf("%s is on %s; name one: %s.", bare, sayList(sites, "and"), sayList(keys, "or")), nil)
+}
+
 // readMore answers the part a value of an earlier answer's more names,
 // when the ticket as it is now honors it (moreCursor).
-func (s *Server) readMore(ctx context.Context, text string) (any, error) {
+func (s *Server) readMore(ctx context.Context, caller Caller, text string) (any, error) {
 	var c moreCursor
 	if err := decodeCursor("more", text, &c); err != nil {
 		return nil, err
@@ -345,7 +378,11 @@ func (s *Server) readMore(ctx context.Context, text string) (any, error) {
 	if d.Card.Updated != c.Updated {
 		return nil, changedSince(sh.key(d.Card.Key))
 	}
-	return sh.continued(ctx, c)
+	out, err := sh.continued(ctx, c)
+	if err == nil {
+		s.marks.shown(caller.Session, markKey{c.Connection, d.Card.ID}, d.Card.Updated, sh.given, false)
+	}
+	return out, err
 }
 
 // sheet is one read of a ticket as its answers show it: the detail, its
@@ -360,11 +397,15 @@ type sheet struct {
 	history    []readChange
 	pages      map[string]trackerapp.CommentPageView
 	out        readAnswer
+	// given is what out shows of the texts the read marks follow
+	// (marks.go).
+	given []givenText
 }
 
 // shownField is a filled field: its name, told apart by its ID when two
 // share it, and its values, one of them for a field that holds one.
 type shownField struct {
+	id     string
 	name   string
 	values []any
 	scalar bool
@@ -387,7 +428,7 @@ func newSheet(s *Server, connection string, key func(string) string, d trackerap
 			name += " (" + f.ID + ")"
 		}
 		values := fieldValues(f.Value)
-		sh.fields = append(sh.fields, shownField{name: name, values: values, scalar: !f.List && len(values) == 1})
+		sh.fields = append(sh.fields, shownField{id: f.ID, name: name, values: values, scalar: !f.List && len(values) == 1})
 	}
 	changes := slices.Clone(d.History)
 	slices.SortStableFunc(changes, func(a, b trackerapp.EventView) int { return cmp.Compare(b.At, a.At) })
@@ -554,7 +595,7 @@ func (sh *sheet) continued(ctx context.Context, c moreCursor) (readAnswer, error
 // included, is over the budget.
 func (sh *sheet) fit(head readAnswer, fill func(pool int) error) (readAnswer, error) {
 	return fit(head.Key, answerBudget-sizeOf(head), func(pool int) (readAnswer, error) {
-		sh.out = head
+		sh.out, sh.given = head, nil
 		err := fill(pool)
 		return sh.out, err
 	})
@@ -583,6 +624,9 @@ func (sh *sheet) description(from, allow int) int {
 	}
 	shown, next := textClip(text, from, allow)
 	sh.out.Description = shown
+	if shown != "" {
+		sh.given = append(sh.given, givenText{text: textDescription, from: from, to: next, length: len(text)})
+	}
 	if next < len(text) {
 		label := "the rest of the description"
 		if shown == "" && from == 0 {
@@ -784,6 +828,9 @@ func (sh *sheet) fieldValue(i, item, from, allow int) (json.RawMessage, int) {
 			break
 		}
 		shown, used = append(shown, piece), used+len(mustJSON(piece))+comma
+		if piece != "" {
+			sh.given = append(sh.given, givenText{text: fieldText(f.id, j), from: start, to: next, length: len(text)})
+		}
 		if next < len(text) {
 			sh.fieldRest(i, j, next, len(text)-next)
 			break

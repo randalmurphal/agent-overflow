@@ -78,6 +78,8 @@ func (a *App) ListPendingInteractiveRequests(threadID string) (provider.PendingI
 }
 
 // RespondToApproval forwards an interactive response to the active provider session.
+// A tracker write's approval is the app's own, answered to the call that
+// waits on it (respondToTrackerWrite).
 //
 // Several clients render the same prompt, so two of them can answer it. The
 // router arbitrates: the loser gets transport.ErrAlreadyHandled and no
@@ -101,6 +103,9 @@ func (a *App) ListPendingInteractiveRequests(threadID string) (provider.PendingI
 //
 //ao:scope approvals:respond
 func (a *App) RespondToApproval(ctx context.Context, threadID string, response provider.ApprovalResponse) error {
+	if strings.HasPrefix(response.RequestID, trackerApprovalPrefix) {
+		return a.respondToTrackerWrite(threadID, response)
+	}
 	who := clientOf(ctx)
 	claim, claimed := a.claimPrompt(threadID, response.RequestID, response.Occurrence)
 	if !claimed {

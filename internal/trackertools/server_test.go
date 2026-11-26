@@ -26,6 +26,128 @@ type fakeTracker struct {
 	details   map[string]trackerapp.DetailView // connection/issue
 	comments  func(connection, issue, page string) (trackerapp.CommentPageView, error)
 	asked     []string
+
+	// keyed are the tickets the mirrors hold of a key; boards the
+	// mirrors' boards, by connection/board; cards the mirrors' cards, by
+	// connection/issue.
+	keyed  map[string][]trackerapp.KeyedTicket
+	boards map[string]trackerapp.BoardSummary
+	cards  map[string]trackerapp.CardView
+	// repeats are the agent's earlier writes by digest; settled the rows
+	// a check found made.
+	repeats map[string]trackerapp.AgentRepeat
+	settled []string
+	types   []trackerapp.IssueTypeView
+	fields  []trackerapp.FieldView
+	// write answers each write; writes are those made, as name connection
+	// input, and agents the agent each carried.
+	write  func(name string, in any) (trackerapp.WriteView, error)
+	writes []string
+	agents []context.Context
+}
+
+func (f *fakeTracker) TicketsOfKey(key string) ([]trackerapp.KeyedTicket, error) {
+	return f.keyed[key], nil
+}
+
+func (f *fakeTracker) BoardSummary(connection, board string) (trackerapp.BoardSummary, error) {
+	b, ok := f.boards[connection+"/"+board]
+	if !ok {
+		return b, fmt.Errorf("%w: board %s", trackerapp.ErrNotMirrored, board)
+	}
+	return b, nil
+}
+
+func (f *fakeTracker) MirrorCard(connection, issue string) (trackerapp.CardView, bool, error) {
+	c, ok := f.cards[connection+"/"+issue]
+	return c, ok, nil
+}
+
+func (f *fakeTracker) AgentRepeat(_, digest string) (trackerapp.AgentRepeat, bool, error) {
+	r, ok := f.repeats[digest]
+	return r, ok, nil
+}
+
+func (f *fakeTracker) SettleAgentRepeat(row int64, issue, comment string) error {
+	f.settled = append(f.settled, fmt.Sprintf("%d %s %s", row, issue, comment))
+	return nil
+}
+
+func (f *fakeTracker) IssueTypes(_ context.Context, connection, project string) ([]trackerapp.IssueTypeView, error) {
+	f.asked = append(f.asked, "types "+connection+" "+project)
+	return f.types, nil
+}
+
+func (f *fakeTracker) CreateFields(_ context.Context, connection, project, issueType string) ([]trackerapp.FieldView, error) {
+	f.asked = append(f.asked, "create fields "+connection+" "+project+" "+issueType)
+	return f.fields, nil
+}
+
+func (f *fakeTracker) written(ctx context.Context, name, connection string, in any) (trackerapp.WriteView, error) {
+	raw, _ := json.Marshal(in)
+	f.writes = append(f.writes, name+" "+connection+" "+string(raw))
+	f.agents = append(f.agents, ctx)
+	if f.write == nil {
+		return trackerapp.WriteView{Parts: []trackerapp.PartView{{Step: name, State: "applied"}}}, nil
+	}
+	return f.write(name, in)
+}
+
+func (f *fakeTracker) Create(ctx context.Context, connection string, in trackerapp.CreateRequest) (trackerapp.WriteView, error) {
+	return f.written(ctx, "create", connection, in)
+}
+
+func (f *fakeTracker) Edit(ctx context.Context, connection string, in trackerapp.EditRequest) (trackerapp.WriteView, error) {
+	return f.written(ctx, "edit", connection, in)
+}
+
+func (f *fakeTracker) Move(ctx context.Context, connection string, in trackerapp.MoveRequest) (trackerapp.WriteView, error) {
+	return f.written(ctx, "move", connection, in)
+}
+
+func (f *fakeTracker) SetEstimate(ctx context.Context, connection string, in trackerapp.EstimateRequest) (trackerapp.WriteView, error) {
+	return f.written(ctx, "estimate", connection, in)
+}
+
+func (f *fakeTracker) MoveToSprint(ctx context.Context, connection string, in trackerapp.SprintMoveRequest) (trackerapp.WriteView, error) {
+	return f.written(ctx, "sprint_move", connection, in)
+}
+
+func (f *fakeTracker) AddComment(ctx context.Context, connection string, in trackerapp.CommentRequest) (trackerapp.WriteView, error) {
+	return f.written(ctx, "comment", connection, in)
+}
+
+// fakeHost answers the writing tools' questions about the thread.
+type fakeHost struct {
+	readOnly bool
+	// approve answers an approval; nil approves.
+	approve   func(Approval) error
+	approvals []Approval
+	rows      []WriteRow
+	// createBoards are the boards a create goes through, by connection/project.
+	createBoards map[string]string
+}
+
+func (h *fakeHost) Writable(string) error {
+	if h.readOnly {
+		return errorsx.Public("tracker_read_only", "This thread is read-only, so it cannot change tickets; ask the user to change its access.", nil)
+	}
+	return nil
+}
+
+func (h *fakeHost) Approve(_ context.Context, _ string, a Approval) error {
+	h.approvals = append(h.approvals, a)
+	if h.approve == nil {
+		return nil
+	}
+	return h.approve(a)
+}
+
+func (h *fakeHost) Wrote(_ string, row WriteRow) { h.rows = append(h.rows, row) }
+
+func (h *fakeHost) CreateBoard(_, connection, project string) (string, bool, error) {
+	b, ok := h.createBoards[connection+"/"+project]
+	return b, ok, nil
 }
 
 func (f *fakeTracker) TicketSources() ([]trackerapp.TicketSource, error) { return f.sources, nil }
@@ -80,6 +202,9 @@ var (
 	linearSource = trackerapp.TicketSource{ID: "conn-linear", Site: "example"}
 )
 
+// testCaller is the thread and session every test calls as.
+var testCaller = Caller{Thread: "thread-1", Session: "session-1"}
+
 // call runs one tool as thread-1 and answers its result as the JSON the
 // transport sends, or its error.
 func call(t *testing.T, f *fakeTracker, name string, args any) (string, error) {
@@ -88,7 +213,7 @@ func call(t *testing.T, f *fakeTracker, name string, args any) (string, error) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := New(f).Call(t.Context(), "thread-1", name, raw)
+	out, err := New(f, &fakeHost{}).Call(t.Context(), testCaller, name, raw)
 	if err != nil {
 		return "", err
 	}
@@ -129,7 +254,7 @@ func cards(prefix string, n int) []trackerapp.CardView {
 // is a refusal the model reads, and the names are the table's.
 func TestToolSchemasAreClosed(t *testing.T) {
 	t.Parallel()
-	tools := New(nil).Tools()
+	tools := New(nil, nil).Tools()
 	var names []string
 	for _, tool := range tools {
 		names = append(names, tool["name"].(string))
@@ -141,7 +266,7 @@ func TestToolSchemasAreClosed(t *testing.T) {
 			t.Errorf("%s's required is %#v", tool["name"], schema["required"])
 		}
 	}
-	if !slices.Equal(names, []string{"ticket_find", "ticket_read"}) || !slices.Equal(names, ToolNames()) {
+	if !slices.Equal(names, []string{"ticket_find", "ticket_read", "ticket_create", "ticket_update"}) || !slices.Equal(names, ToolNames()) {
 		t.Fatalf("tools = %v", names)
 	}
 	f := &fakeTracker{sources: []trackerapp.TicketSource{jiraSource}}
@@ -150,7 +275,7 @@ func TestToolSchemasAreClosed(t *testing.T) {
 		t.Fatalf("an unknown argument = %v", err)
 	}
 	_, err = call(t, f, "ticket_move", map[string]any{})
-	refused(t, err, CodeInvalidRequest, `There is no tool named "ticket_move". The tracker tools are: ticket_find, ticket_read.`)
+	refused(t, err, CodeInvalidRequest, `There is no tool named "ticket_move". The tracker tools are: ticket_find, ticket_read, ticket_create, ticket_update.`)
 }
 
 // A search pages 20 at a time through next, which the answer carries

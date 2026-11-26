@@ -22,7 +22,7 @@ type toolSpec struct {
 	description string
 	properties  map[string]any
 	required    []string
-	call        func(s *Server, ctx context.Context, threadID string, args json.RawMessage) (any, error)
+	call        func(s *Server, ctx context.Context, caller Caller, args json.RawMessage) (any, error)
 }
 
 // toolTable is every tool, in the order tools/list returns them.
@@ -35,7 +35,7 @@ var toolTable = []toolSpec{
 			"next": property("string", "From the previous answer, for the next 20."),
 		},
 		required: []string{"text"},
-		call: func(s *Server, ctx context.Context, _ string, args json.RawMessage) (any, error) {
+		call: func(s *Server, ctx context.Context, _ Caller, args json.RawMessage) (any, error) {
 			return s.find(ctx, args)
 		},
 	},
@@ -49,7 +49,34 @@ var toolTable = []toolSpec{
 		},
 		call: (*Server).read,
 	},
+	{
+		name:        "ticket_create",
+		description: "Create a ticket; answers its key.",
+		properties: map[string]any{
+			"project":     property("string", "Project key: WEB for WEB-1."),
+			"title":       property("string", ""),
+			"type":        property("string", "Issue type, such as Bug."),
+			"description": property("string", "Markdown."),
+			"set":         property("object", "Other fields, as ticket_update sets them."),
+		},
+		required: []string{"project", "title"},
+		call:     (*Server).create,
+	},
+	{
+		name:        "ticket_update",
+		description: "Change tickets, then comment on them.",
+		properties: map[string]any{
+			"keys": map[string]any{"type": "array", "items": property("string", ""), "maxItems": maxUpdateKeys},
+			"set": property("object", "Fields by the names ticket_read shows, and sprint (a name, or backlog): text, a number, a list, or null to clear. "+
+				"A person by name, or me."),
+			"comment": property("string", "Markdown."),
+		},
+		call: (*Server).update,
+	},
 }
+
+// maxUpdateKeys is the most tickets one ticket_update changes.
+const maxUpdateKeys = 20
 
 // ToolNames is every tool, in table order.
 func ToolNames() []string {
