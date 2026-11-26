@@ -158,11 +158,46 @@ var costRoute = map[string]string{
 	"POST rest/api/3/search/jql":                                  "search",
 }
 
-// costNames are routes as costRoute names them, joined by spaces.
+// costWrites are the names of costRoute and Linear's operations that
+// change the tracker; every other request is a read.
+var costWrites = map[string]bool{
+	"comment": true, "transition": true, "edit": true, "to-sprint": true, "to-backlog": true, "estimate": true, "create": true,
+	"UpdateIssue": true, "UpdateIssues": true, "CreateComment": true, "CreateIssue": true,
+}
+
+// costNames are routes as costRoute names them, joined by spaces, with
+// only the order a call's correctness needs: its writes in the order they
+// are sent, and the reads between two writes counted, in name order, since
+// a call reads several tickets at once. A run of one name is counted:
+// "comments×3 issue×3 transition×3 rows".
 func costNames(routes []string) string {
-	out := make([]string, len(routes))
-	for i, r := range routes {
-		out[i] = cmp.Or(costRoute[r], r)
+	var names, reads []string
+	endReads := func() {
+		slices.Sort(reads)
+		names, reads = append(names, reads...), reads[:0]
+	}
+	for _, r := range routes {
+		name := cmp.Or(costRoute[r], r)
+		if !costWrites[name] {
+			reads = append(reads, name)
+			continue
+		}
+		endReads()
+		names = append(names, name)
+	}
+	endReads()
+	var out []string
+	for i := 0; i < len(names); {
+		n := 1
+		for i+n < len(names) && names[i+n] == names[i] {
+			n++
+		}
+		if n == 1 {
+			out = append(out, names[i])
+		} else {
+			out = append(out, fmt.Sprintf("%s×%d", names[i], n))
+		}
+		i += n
 	}
 	return strings.Join(out, " ")
 }
@@ -269,8 +304,10 @@ func TestTrackerToolRequestCounts(t *testing.T) {
 				f, thread, endpoint := costFixture(t, linear, 3)
 				_, routes := toolRoutes(t, f, thread, endpoint, c.tool, c.args)
 				got := costNames(routes)
-				if c.tool == "ticket_read" {
-					// The same read again: the body the first stored, checked.
+				if c.tool == "ticket_read" || c.name == "create, then another" {
+					// The same call again on the same client: a read checks
+					// the body the first stored, and a create takes the
+					// create screen the first read.
 					_, again := toolRoutes(t, f, thread, endpoint, c.tool, c.args)
 					got += " | " + costNames(again)
 				}
@@ -288,72 +325,75 @@ func TestTrackerToolRequestCounts(t *testing.T) {
 // reads the cards, which keep no read, so the move reads them. An
 // estimate reads the board's rows to check the issue is on it first.
 // Every write ends with one refresh (rows, Issues). A read is one read
-// and then the same read again, after "|".
+// and then the same read again, after "|", and so is a create followed
+// by another on the same client.
 var costPins = map[string]string{
 	"jira/comment/cold/1":                  "bulkfetch comment",
-	"jira/comment/cold/3":                  "bulkfetch comment comment comment",
+	"jira/comment/cold/3":                  "bulkfetch comment×3",
 	"jira/comment/warm/1":                  "bulkfetch comment",
-	"jira/comment/warm/3":                  "bulkfetch comment comment comment",
-	"jira/status/cold/1":                   "issue comments transition rows",
-	"jira/status/cold/3":                   "issue issue issue comments comments comments bulkfetch transition transition transition rows",
+	"jira/comment/warm/3":                  "bulkfetch comment×3",
+	"jira/status/cold/1":                   "comments issue transition rows",
+	"jira/status/cold/3":                   "bulkfetch comments×3 issue×3 transition×3 rows",
 	"jira/status/warm/1":                   "bulkfetch transitions transition rows",
-	"jira/status/warm/3":                   "bulkfetch bulkfetch transitions transition transitions transition transitions transition rows",
+	"jira/status/warm/3":                   "bulkfetch×2 transitions transition transitions transition transitions transition rows",
 	"jira/sprint/cold/1":                   "bulkfetch rows sprints to-sprint rows",
-	"jira/sprint/cold/3":                   "bulkfetch bulkfetch rows sprints to-sprint rows",
+	"jira/sprint/cold/3":                   "bulkfetch×2 rows sprints to-sprint rows",
 	"jira/sprint/warm/1":                   "bulkfetch rows sprints to-sprint rows",
-	"jira/sprint/warm/3":                   "bulkfetch bulkfetch rows sprints to-sprint rows",
+	"jira/sprint/warm/3":                   "bulkfetch×2 rows sprints to-sprint rows",
 	"jira/backlog/cold/1":                  "bulkfetch rows to-backlog rows",
-	"jira/backlog/cold/3":                  "bulkfetch bulkfetch rows to-backlog rows",
+	"jira/backlog/cold/3":                  "bulkfetch×2 rows to-backlog rows",
 	"jira/backlog/warm/1":                  "bulkfetch rows to-backlog rows",
-	"jira/backlog/warm/3":                  "bulkfetch bulkfetch rows to-backlog rows",
+	"jira/backlog/warm/3":                  "bulkfetch×2 rows to-backlog rows",
 	"jira/title/cold/1":                    "bulkfetch issue edit rows",
-	"jira/title/cold/3":                    "bulkfetch bulkfetch issue edit issue edit issue edit rows",
+	"jira/title/cold/3":                    "bulkfetch×2 issue edit issue edit issue edit rows",
 	"jira/title/warm/1":                    "bulkfetch issue edit rows",
-	"jira/title/warm/3":                    "bulkfetch bulkfetch issue edit issue edit issue edit rows",
+	"jira/title/warm/3":                    "bulkfetch×2 issue edit issue edit issue edit rows",
 	"jira/estimate/cold/1":                 "bulkfetch rows estimate rows",
-	"jira/estimate/cold/3":                 "bulkfetch bulkfetch rows estimate rows estimate rows estimate rows",
+	"jira/estimate/cold/3":                 "bulkfetch×2 rows estimate rows estimate rows estimate rows",
 	"jira/estimate/warm/1":                 "bulkfetch rows estimate rows",
-	"jira/estimate/warm/3":                 "bulkfetch bulkfetch rows estimate rows estimate rows estimate rows",
-	"jira/mixed/cold/1":                    "issue comments transition issue edit rows estimate rows sprints to-sprint bulkfetch comment rows",
-	"jira/mixed/cold/3":                    "issue issue issue comments comments comments bulkfetch transition transition transition issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint bulkfetch comment comment comment rows",
+	"jira/estimate/warm/3":                 "bulkfetch×2 rows estimate rows estimate rows estimate rows",
+	"jira/mixed/cold/1":                    "comments issue transition issue edit rows estimate rows sprints to-sprint bulkfetch comment rows",
+	"jira/mixed/cold/3":                    "bulkfetch comments×3 issue×3 transition×3 issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint bulkfetch comment×3 rows",
 	"jira/mixed/warm/1":                    "bulkfetch transitions transition issue edit rows estimate rows sprints to-sprint bulkfetch comment rows",
-	"jira/mixed/warm/3":                    "bulkfetch bulkfetch transitions transition transitions transition transitions transition issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint bulkfetch comment comment comment rows",
-	"jira/create":                          "types screen create match bulkfetch",
-	"jira/create with status and sprint":   "types screen create match bulkfetch issue comments transition rows sprints to-sprint rows",
-	"jira/read":                            "issue comments | bulkfetch",
+	"jira/mixed/warm/3":                    "bulkfetch×2 transitions transition transitions transition transitions transition issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint bulkfetch comment×3 rows",
+	"jira/create":                          "screen types create bulkfetch match",
+	"jira/create, then another":            "screen types create bulkfetch match | types create bulkfetch match",
+	"jira/create with status and sprint":   "screen types create bulkfetch comments issue match transition rows sprints to-sprint rows",
+	"jira/read":                            "comments issue | bulkfetch",
 	"jira/find":                            "search",
 	"linear/comment/cold/1":                "CreateComment",
-	"linear/comment/cold/3":                "CreateComment CreateComment CreateComment",
+	"linear/comment/cold/3":                "CreateComment×3",
 	"linear/comment/warm/1":                "CreateComment",
-	"linear/comment/warm/3":                "CreateComment CreateComment CreateComment",
+	"linear/comment/warm/3":                "CreateComment×3",
 	"linear/status/cold/1":                 "IssueDetails UpdateIssue Issues",
-	"linear/status/cold/3":                 "IssueDetails Issues UpdateIssue UpdateIssue UpdateIssue Issues",
+	"linear/status/cold/3":                 "IssueDetails Issues UpdateIssue×3 Issues",
 	"linear/status/warm/1":                 "IssueDetails UpdateIssue Issues",
-	"linear/status/warm/3":                 "IssueDetails Issues UpdateIssue UpdateIssue UpdateIssue Issues",
-	"linear/sprint/cold/1":                 "Issues CyclePositions UpdateIssues Issues",
-	"linear/sprint/cold/3":                 "Issues Issues CyclePositions UpdateIssues Issues",
-	"linear/sprint/warm/1":                 "Issues CyclePositions UpdateIssues Issues",
-	"linear/sprint/warm/3":                 "Issues Issues CyclePositions UpdateIssues Issues",
-	"linear/backlog/cold/1":                "Issues IssuePositions UpdateIssues Issues",
-	"linear/backlog/cold/3":                "Issues Issues IssuePositions UpdateIssues Issues",
-	"linear/backlog/warm/1":                "Issues IssuePositions UpdateIssues Issues",
-	"linear/backlog/warm/3":                "Issues Issues IssuePositions UpdateIssues Issues",
+	"linear/status/warm/3":                 "IssueDetails Issues UpdateIssue×3 Issues",
+	"linear/sprint/cold/1":                 "CyclePositions Issues UpdateIssues Issues",
+	"linear/sprint/cold/3":                 "CyclePositions Issues×2 UpdateIssues Issues",
+	"linear/sprint/warm/1":                 "CyclePositions Issues UpdateIssues Issues",
+	"linear/sprint/warm/3":                 "CyclePositions Issues×2 UpdateIssues Issues",
+	"linear/backlog/cold/1":                "IssuePositions Issues UpdateIssues Issues",
+	"linear/backlog/cold/3":                "IssuePositions Issues×2 UpdateIssues Issues",
+	"linear/backlog/warm/1":                "IssuePositions Issues UpdateIssues Issues",
+	"linear/backlog/warm/3":                "IssuePositions Issues×2 UpdateIssues Issues",
 	"linear/title/cold/1":                  "Issues UpdateIssue Issues",
-	"linear/title/cold/3":                  "Issues Issues UpdateIssue UpdateIssue UpdateIssue Issues",
+	"linear/title/cold/3":                  "Issues×2 UpdateIssue×3 Issues",
 	"linear/title/warm/1":                  "Issues UpdateIssue Issues",
-	"linear/title/warm/3":                  "Issues Issues UpdateIssue UpdateIssue UpdateIssue Issues",
-	"linear/estimate/cold/1":               "Issues IssueTeam UpdateIssue Issues",
-	"linear/estimate/cold/3":               "Issues Issues IssueTeam UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue Issues",
-	"linear/estimate/warm/1":               "Issues IssueTeam UpdateIssue Issues",
-	"linear/estimate/warm/3":               "Issues Issues IssueTeam UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue Issues",
-	"linear/mixed/cold/1":                  "IssueDetails UpdateIssue UpdateIssue IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment Issues",
-	"linear/mixed/cold/3":                  "IssueDetails Issues UpdateIssue UpdateIssue UpdateIssue UpdateIssue UpdateIssue UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment CreateComment CreateComment Issues",
-	"linear/mixed/warm/1":                  "IssueDetails UpdateIssue UpdateIssue IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment Issues",
-	"linear/mixed/warm/3":                  "IssueDetails Issues UpdateIssue UpdateIssue UpdateIssue UpdateIssue UpdateIssue UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment CreateComment CreateComment Issues",
+	"linear/title/warm/3":                  "Issues×2 UpdateIssue×3 Issues",
+	"linear/estimate/cold/1":               "IssueTeam Issues UpdateIssue Issues",
+	"linear/estimate/cold/3":               "IssueTeam Issues×2 UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue Issues",
+	"linear/estimate/warm/1":               "IssueTeam Issues UpdateIssue Issues",
+	"linear/estimate/warm/3":               "IssueTeam Issues×2 UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue Issues",
+	"linear/mixed/cold/1":                  "IssueDetails UpdateIssue×2 IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment Issues",
+	"linear/mixed/cold/3":                  "IssueDetails Issues UpdateIssue×6 IssueTeam UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment×3 Issues",
+	"linear/mixed/warm/1":                  "IssueDetails UpdateIssue×2 IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment Issues",
+	"linear/mixed/warm/3":                  "IssueDetails Issues UpdateIssue×6 IssueTeam UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment×3 Issues",
 	"linear/create":                        "CreateIssue Issues",
-	"linear/create with status and sprint": "CreateIssue Issues IssueDetails CyclePositions UpdateIssues Issues",
+	"linear/create, then another":          "CreateIssue Issues | CreateIssue Issues",
+	"linear/create with status and sprint": "CreateIssue CyclePositions IssueDetails Issues UpdateIssues Issues",
 	"linear/read":                          "IssueDetails | IssueDetails",
-	"linear/find":                          "fields search SearchIssues",
+	"linear/find":                          "SearchIssues fields search",
 }
 
 // trackerCostLinear is trackerToolsLinear with cycles on and three issues
