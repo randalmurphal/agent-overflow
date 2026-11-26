@@ -235,7 +235,7 @@ describe('a moved card on the Board screen', () => {
     ];
     const view = {
       id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'points' },
-      columns, sprints: [], all: { rows: 3, estimate: 6 }, backlog: { rows: 0, estimate: 0 }, sync: {}, left_out: leftOut,
+      columns, sprints: [], all: { rows: 3, estimate: 6 }, backlog: { rows: 0, estimate: 0 }, sync: {}, regrouped: Object.fromEntries(leftOut.map((s) => [s, 'left_out'])),
       screen: [0, 1, 2].map((column) => ({ kind: 'column', column })),
       sections: [
         { section: { kind: 'column', column: 0 }, rows: [row('1', 'a', 's1'), row('2', 'c', 's1')], next: null },

@@ -135,9 +135,14 @@ function backlogRow(pane: Locator, issueId: string): Locator {
   return pane.locator(`[data-list="backlog"] [data-testid="issues-backlog-row"][data-issue="${issueId}"]`);
 }
 
+/** The active sprint's header on the Backlog screen. */
+function activeSprint(backlog: Locator): Locator {
+  return backlog.locator('[data-testid="issues-backlog-section"][data-list="sprint:1"]');
+}
+
 /** The active sprint's numbers on the Backlog screen. */
 function sprintNumbers(backlog: Locator): Locator {
-  return backlog.locator('[data-testid="issues-backlog-section"][data-list="sprint:1"]').getByTestId('issues-backlog-numbers');
+  return activeSprint(backlog).getByTestId('issues-backlog-numbers');
 }
 
 /** A Board column's count: its header's, or its tab's on compact. */
@@ -253,6 +258,12 @@ export function registerIssuesSetupFlow({ compact }: SetupSurface): void {
     await openIssuesPane(page, compact);
     await expect(backlogRow(backlog, '10103')).toHaveCount(0, { timeout: 15_000 });
     await expect(sprintNumbers(backlog)).toHaveText('2 of 2 tickets done', { timeout: 15_000 });
+    // Completing the sprint says what Jira will count: its own groups.
+    await press(activeSprint(backlog).getByTestId('issues-backlog-sprint-complete'), compact);
+    const complete = page.getByTestId('sprint-complete-form');
+    await expect(complete.getByTestId('sprint-complete-summary')).toHaveText('1 of 5 tickets done. 4 of the tickets this board shows are not in a finished status.');
+    await press(complete.getByTestId('sprint-complete-cancel'), compact);
+    await expect(complete).toHaveCount(0);
     // In Progress is left out of counts: its cards show, and its count is none of them.
     await openBoardScreen(page, pane, compact);
     await expect(card(pane, PINNED_ID)).toBeVisible({ timeout: 15_000 });

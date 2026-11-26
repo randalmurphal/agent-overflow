@@ -20,7 +20,9 @@ board methods, events and the patch read in
 - `stores/trackerBoardModel.ts` is the pure part: the patch rule (replayed
   in Vitest from `internal/trackerapp/testdata/board_patch_cases.json`, which
   the Go model writes), the grouping of sprint rows into columns
-  (`screenColumns`), the Only mine and Search match (`cardMatches`), a
+  (`screenColumns`), the group a count puts a row in, by the project's
+  status groups or the tracker's (`groupOf`, the one rule), the Only mine
+  and Search match (`cardMatches`), a
   card's web address (`cardURL`, the one rule), the columns a ticket's
   moves reach (`columnsReached`), the lists a carry and a write name
   (`column:<i>`, `sprint:<id>`, `backlog`: `columnList`, `sectionList`),

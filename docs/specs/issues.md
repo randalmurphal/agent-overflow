@@ -623,7 +623,8 @@ sidebar and the thread header, on desktop and on a phone.
   that no board shows now is listed apart with Put back. A board this
   computer has not read is named, with Check again; once it has been
   read, Check again or the page shown again lists its statuses. The
-  Board, the Backlog and their counts follow a save without a reload. A
+  Board, the Backlog and their counts follow a save without a reload;
+  Complete sprint counts by the tracker's groups, as its completion does. A
   save that lost to another, from another window or a hand edit of the
   file, is said, and the page shows what is stored; a save whose outcome
   is unknown says so in the computer's words and reads the setup again.

@@ -69,7 +69,8 @@ export interface BoardShape {
 
 /** What the client holds of a board: its shape, lifetime and revision,
  * the version of the project's status groups it was read with (empty for
- * none) and the statuses those groups leave out of counts, the totals with
+ * none), each status those groups put in another group than the tracker's
+ * (`regrouped`) and those they leave out of counts, the totals with
  * the pace, the sections the Board and Backlog screens show (`screen`,
  * `plan`), and the sections it reads: the Board screen's, and the Backlog
  * screen's while a pane shows Backlog. */
@@ -78,6 +79,7 @@ export interface HeldBoard {
   readonly lifetime: number;
   readonly revision: number;
   readonly groups: string;
+  readonly regrouped: ReadonlyMap<string, string>;
   readonly leftOut: ReadonlySet<string>;
   readonly totals: HeldTotals;
   readonly screen: readonly Section[];
@@ -105,6 +107,12 @@ export function heldFromView(view: BoardView, intern: (row: RowView) => RowView,
   view.columns.forEach((col, i) => {
     if (col.total.rows > 0) columns.set(i, col.total);
   });
+  const regrouped = new Map<string, string>();
+  const leftOut = new Set<string>();
+  for (const [status, group] of Object.entries(view.regrouped ?? {}) as [string, string][]) {
+    regrouped.set(status, group);
+    if (group === 'left_out') leftOut.add(status);
+  }
   return {
     shape: {
       id: view.id,
@@ -119,7 +127,8 @@ export function heldFromView(view: BoardView, intern: (row: RowView) => RowView,
     lifetime: view.lifetime,
     revision: view.revision,
     groups: view.groups ?? '',
-    leftOut: new Set(view.left_out ?? []),
+    regrouped,
+    leftOut,
     totals: { revision: view.totals_revision, all: view.all, backlog: view.backlog, sprints, columns, pace: view.pace ?? null },
     screen: view.screen,
     plan: view.plan,
@@ -318,16 +327,26 @@ export interface ScreenColumn {
   readonly unread: boolean;
 }
 
-/** Whether a total counts the row: not when the project leaves its status
- * out of counts, as the backend's totals do (BoardView.left_out). */
-function counts(held: HeldBoard, row: RowView): boolean {
-  return !held.leftOut.has(row.card.status.id);
+/** Whose status groups a count follows: the project's, as the backend's
+ * totals do (BoardView.Regrouped), or the tracker's, which leave nothing
+ * out. */
+export type Grouping = 'project' | 'tracker';
+
+/** The group a count puts `row` in under `grouping`: the one rule for a
+ * row's counted group. */
+export function groupOf(held: HeldBoard, row: RowView, grouping: Grouping): string {
+  return (grouping === 'project' ? held.regrouped.get(row.card.status.id) : undefined) ?? row.card.status.group ?? '';
+}
+
+/** Whether a total under `grouping` counts the row. */
+export function counts(held: HeldBoard, row: RowView, grouping: Grouping): boolean {
+  return groupOf(held, row, grouping) !== 'left_out';
 }
 
 function countedOf(held: HeldBoard, rows: readonly RowView[]): number {
   if (held.leftOut.size === 0) return rows.length;
   let n = 0;
-  for (const r of rows) if (counts(held, r)) n += 1;
+  for (const r of rows) if (counts(held, r, 'project')) n += 1;
   return n;
 }
 
@@ -336,7 +355,7 @@ function sumOf(held: HeldBoard, rows: readonly RowView[]): SectionTotal {
   let estimate = 0;
   let unestimated = 0;
   for (const r of rows) {
-    if (!counts(held, r)) continue;
+    if (!counts(held, r, 'project')) continue;
     n += 1;
     if (r.estimate === undefined || r.estimate === null) unestimated += 1;
     else estimate += r.estimate;

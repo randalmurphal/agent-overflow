@@ -1,6 +1,7 @@
 // Real-Chromium suite for completing a sprint (SprintCompleteForm): the
 // form says how much is done and how many of the tickets the board shows
-// are not in a finished status, always shows where the tracker's
+// are not in a finished status, both by the tracker's status groups whatever
+// the project regroups, always shows where the tracker's
 // unfinished ones go, the first future sprint unless another is picked,
 // and before the sprint is read whole says it cannot count them yet; a
 // destination a refresh took from the list is not sent.
@@ -10,7 +11,8 @@ import { flushSync, mount, unmount } from 'svelte';
 import '../../../app.css';
 import SprintCompleteForm from './SprintCompleteForm.svelte';
 import type { RowView, SprintView, WriteView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
-import type { BacklogSection, SectionNumbers } from '../../stores/trackerBacklogModel';
+import type { BacklogSection } from '../../stores/trackerBacklogModel';
+import type { HeldBoard } from '../../stores/trackerBoardModel';
 import { ticketWriteSurfaceContext } from './ticketWriteSurface';
 import { boardWriteContext } from '../../stores/trackerTicketWrites.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
@@ -26,19 +28,21 @@ afterEach(() => {
 const B = boardWriteContext({ backend: HOME_BACKEND, connection: 'c1', board: '1' });
 const sprint = (id: string, name: string, state: string) => ({ id, name, state, total: { rows: 0, estimate: 0 } }) as SprintView;
 const row = (id: string, group: string) => ({ order: id, estimate: 1, card: { id, key: `WEB-${id}`, title: id, status: { id: group, group }, created: 0, updated: 0 } }) as RowView;
-const NUMBERS = { total: { rows: 3, estimate: 3 }, before: null, done: { rows: 1, estimate: 1 }, load: null, pace: null, over: 0 } as SectionNumbers;
+const TOTAL = { rows: 3, estimate: 3, unestimated: 0 };
+/** A board whose project puts `regrouped` statuses in other groups. */
+const held = (regrouped: Record<string, string> = {}) => ({ regrouped: new Map(Object.entries(regrouped)), leftOut: new Set() }) as unknown as HeldBoard;
 
 function section(extra: Partial<BacklogSection>): BacklogSection {
   return {
     list: 'sprint:8', kind: 'active', section: { kind: 'sprint', sprint: '8' }, sprint: sprint('8', 'Sprint 8', 'active'),
-    rows: [row('1', 'done'), row('2', 'todo'), row('3', 'in_progress')], unread: false, more: false, total: NUMBERS.total, ...extra,
+    rows: [row('1', 'done'), row('2', 'todo'), row('3', 'in_progress')], unread: false, more: false, total: TOTAL, ...extra,
   } as unknown as BacklogSection;
 }
 
-function open(sec: BacklogSection, into: SprintView[] = [sprint('7', 'Sprint 7', 'active'), sprint('9', 'Sprint 9', 'future')]): { into: SprintView[] } {
+function open(sec: BacklogSection, into: SprintView[] = [sprint('7', 'Sprint 7', 'active'), sprint('9', 'Sprint 9', 'future')], board = held()): { into: SprintView[] } {
   const anchor = document.createElement('button');
   document.body.appendChild(anchor);
-  const props = rawProps({ b: B, sec, numbers: NUMBERS, unit: 'points', into, anchor, onClose: () => {} });
+  const props = rawProps({ b: B, held: board, sec, moved: [], unit: 'points', into, anchor, onClose: () => {} });
   mounted.push(mount(SprintCompleteForm, { target: document.body, context: ticketWriteSurfaceContext(() => true), props }));
   flushSync();
   return props;
@@ -67,11 +71,17 @@ describe('completing a sprint', () => {
     const completed = setBindingMock('CompleteTrackerSprint', async () => ({ parts: [{ step: 'sprint', state: 'applied' }] }) as WriteView);
     open(section({ rows: [row('1', 'done')] }));
     await waitFor(() => document.querySelector('[data-testid="sprint-complete-form"]') !== null, 'the form');
-    expect(el('sprint-complete-summary').textContent?.replace(/\s+/g, ' ').trim()).toBe('1 of 3 points done. Every ticket this board shows is in a finished status.');
+    expect(el('sprint-complete-summary').textContent?.replace(/\s+/g, ' ').trim()).toBe('1 of 1 point done. Every ticket this board shows is in a finished status.');
     expect(el<HTMLSelectElement>('sprint-complete-into').value).toBe('9');
     el('sprint-complete-submit').click();
     await waitFor(() => completed.mock.calls.length === 1, 'the completion');
     expect(completed.mock.calls[0][1]).toEqual({ board: '1', sprint: '8', move_to: '9' });
+  });
+
+  it('counts by the tracker\'s status groups, not those the project regroups or leaves out', async () => {
+    open(section({}), undefined, held({ todo: 'done', in_progress: 'left_out' }));
+    await waitFor(() => document.querySelector('[data-testid="sprint-complete-form"]') !== null, 'the form');
+    expect(el('sprint-complete-summary').textContent?.replace(/\s+/g, ' ').trim()).toBe('1 of 3 points done. 2 of the tickets this board shows are not in a finished status.');
   });
 
   it('sends no destination a refresh took from the list, and asks for another', async () => {

@@ -414,10 +414,14 @@ no step runs at root creation, restore or start.
   version, which the board view, its section cursors and the totals a
   patch names carry: a page or a patch read with another version is
   refused as `ErrStalePage`, so no section mixes two versions. The board
-  view also names the statuses those groups leave out (`left_out`): a
-  total the client adds up from rows it holds, such as a sprint board's
-  columns (`screenColumns` in
-  `frontend/src/lib/stores/trackerBoardModel.ts`), skips the rows in them.
+  view also carries those groups (`regrouped`: each status the project
+  puts in another group than the tracker's, with that group). A count the
+  client makes from rows it holds, such as a sprint board's columns
+  (`screenColumns`) or an active sprint's done tickets
+  (`sectionNumbers`), takes each row's group from `groupOf` in
+  `frontend/src/lib/stores/trackerBoardModel.ts`: the project's, or the
+  tracker's for the Complete sprint form, which says what the tracker's
+  completion will count.
 - **The statuses the Status groups page lists** (`ProjectStatuses`,
   `trackerapp/setup_statuses.go`) are read from this computer's mirror
   and setup, with no tracker request: by tracker site, whatever
@@ -429,7 +433,7 @@ no step runs at root creation, restore or start.
   come from the root's catalog, looked up 500 at a time. With 20 boards of
   12 columns of 5 statuses and 250 sprints each, a catalog of 1,000
   statuses and 30 regrouped, one read took 1.2 to 1.5 ms, 0.8 MB and
-  11,700 allocations over three runs, against 10 ms, 4.9 MB and 82,300
+  11,700 allocations over three runs, against 10 to 24 ms, 4.9 MB and 82,300
   through the boards' whole structure
   (`BenchmarkProjectStatuses20Boards`). A client reads it only while the
   page shows a project: on the page's show, after `tracker:setup_updated`,

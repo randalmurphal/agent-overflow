@@ -13,7 +13,7 @@
 // is known once it is read; until then only the board's totals are.
 
 import type { PaceView, RowView, Section, SectionTotal, SprintView, UserView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-import { cardMatches, filtering, rowOf, sectionKey, sectionList, totalOf, withRow, withWaiting, type CardFilter, type HeldBoard, type WaitingCard } from './trackerBoardModel';
+import { cardMatches, counts, filtering, groupOf, rowOf, sectionKey, sectionList, totalOf, withRow, withWaiting, type CardFilter, type Grouping, type HeldBoard, type WaitingCard } from './trackerBoardModel';
 
 export type BacklogKind = 'active' | 'future' | 'backlog';
 
@@ -117,17 +117,19 @@ export function measureOf(total: { readonly rows: number; readonly estimate: num
   return unit === 'points' || unit === 'time' ? total.estimate : total.rows;
 }
 
-function counts(held: HeldBoard, row: RowView): boolean {
-  return !held.leftOut.has(row.card.status.id);
-}
-
-/** The numbers of `sec`'s header, with `moved` counted where they go. */
-export function sectionNumbers(held: HeldBoard, sec: BacklogSection, moved: readonly MovedRow[]): SectionNumbers {
-  let total = sec.total;
+/** The numbers of `sec` counted by `grouping`'s status groups, with
+ * `moved` counted where they go. The header counts by the project's; the
+ * Complete sprint form by the tracker's, as its completion will. The
+ * board's total is the project's, so a whole section's total by the
+ * tracker's is its rows'. */
+export function sectionNumbers(held: HeldBoard, sec: BacklogSection, moved: readonly MovedRow[], grouping: Grouping): SectionNumbers {
+  const whole = !sec.unread && !sec.more;
+  const start = grouping === 'tracker' && whole ? sec.rows.reduce((t, r) => withRow(t, r, 1), NO_ROWS) : sec.total;
+  let total = start;
   const rows = sec.rows.slice();
   let changed = false;
   for (const m of moved) {
-    if (m.from === m.to || !counts(held, m.row)) continue;
+    if (m.from === m.to || !counts(held, m.row, grouping)) continue;
     if (m.from === sec.list) {
       total = withRow(total, m.row, -1);
       const at = rows.findIndex((r) => r.card.id === m.row.card.id);
@@ -139,33 +141,34 @@ export function sectionNumbers(held: HeldBoard, sec: BacklogSection, moved: read
       changed = true;
     }
   }
-  const whole = !sec.unread && !sec.more;
   const pace = sec.kind === 'future' ? held.totals.pace : null;
   return {
     total,
-    before: changed ? sec.total : null,
-    done: sec.kind === 'active' && whole ? doneOf(held, rows) : null,
-    load: sec.kind === 'future' && whole ? loadOf(held, rows) : null,
+    before: changed ? start : null,
+    done: sec.kind === 'active' && whole ? doneOf(held, rows, grouping) : null,
+    load: sec.kind === 'future' && whole ? loadOf(held, rows, grouping) : null,
     pace,
     over: pace ? Math.max(0, measureOf(total, held.shape.unit) - measureOf(pace, held.shape.unit)) : 0,
   };
 }
 
-function doneOf(held: HeldBoard, rows: readonly RowView[]): SectionTotal {
+const NO_ROWS: SectionTotal = { rows: 0, estimate: 0, unestimated: 0 };
+
+function doneOf(held: HeldBoard, rows: readonly RowView[], grouping: Grouping): SectionTotal {
   let n = 0;
   let estimate = 0;
   for (const r of rows) {
-    if (!counts(held, r) || r.card.status.group !== 'done') continue;
+    if (groupOf(held, r, grouping) !== 'done') continue;
     n += 1;
     estimate += r.estimate ?? 0;
   }
   return { rows: n, estimate };
 }
 
-function loadOf(held: HeldBoard, rows: readonly RowView[]): PersonLoad[] {
+function loadOf(held: HeldBoard, rows: readonly RowView[], grouping: Grouping): PersonLoad[] {
   const by = new Map<string, { person: UserView | null; rows: number; estimate: number }>();
   for (const r of rows) {
-    if (!counts(held, r)) continue;
+    if (!counts(held, r, grouping)) continue;
     const id = r.card.assignee?.id ?? '';
     let load = by.get(id);
     if (!load) by.set(id, (load = { person: r.card.assignee ?? null, rows: 0, estimate: 0 }));
@@ -247,7 +250,10 @@ export function dayAt(value: string, end: boolean): number | null {
 }
 
 /** An active sprint's rows that are not finished (in no done or canceled
- * status), which its completion moves. */
-export function unfinishedOf(sec: BacklogSection): readonly RowView[] {
-  return sec.rows.filter((r) => r.card.status.group !== 'done' && r.card.status.group !== 'canceled');
+ * status of the tracker's groups), which its completion moves. */
+export function unfinishedOf(held: HeldBoard, sec: BacklogSection): readonly RowView[] {
+  return sec.rows.filter((r) => {
+    const group = groupOf(held, r, 'tracker');
+    return group !== 'done' && group !== 'canceled';
+  });
 }

@@ -30,7 +30,7 @@ interface BoardEvent {
 interface RowView { card: { id: string; key: string; title: string } }
 interface SectionPage { rows: RowView[] }
 interface BoardView {
-  name: string; lifetime: number; totals_revision: number; groups?: string; left_out?: string[]; sections: SectionPage[];
+  name: string; lifetime: number; totals_revision: number; groups?: string; regrouped?: Record<string, string>; sections: SectionPage[];
   sprints: Array<{ id: string; total: { rows: number } }>;
 }
 interface Setup { status_groups: { tracker: string; site: string; statuses: Record<string, string> }[]; ticket_pins: unknown[] }
@@ -109,7 +109,7 @@ test("a project's status groups reach its open board over the wire", async ({ ha
   expect(after.sections[0].rows.map((r) => r.card.key).sort(), 'a left-out card still shows').toEqual(['WEB-1', 'WEB-2']);
   expect(after.sprints[0].total.rows, 'and counts in no total').toBe(1);
   expect(after.groups).toBeTruthy();
-  expect(after.left_out, 'the view names what the pane must leave out of what it adds up').toEqual(['10001']);
+  expect(after.regrouped, 'the view names the group the pane must count each regrouped status in').toEqual({ '10001': 'left_out' });
   await expect(harness.rpc('TrackerBoardPatch', sub.id, sprint, ['10101'], {
     lifetime: before.lifetime, revision: before.totals_revision, groups: before.groups ?? '',
   })).rejects.toThrow(/^tracker_page_stale: /);

@@ -142,7 +142,7 @@
     if (c?.spot && c.spot.list !== c.from) out.push({ row: c.row, from: c.from, to: c.spot.list });
     return out;
   });
-  const numbers = $derived(sections.map((sec) => sectionNumbers(held, sec, moved)));
+  const numbers = $derived(sections.map((sec) => sectionNumbers(held, sec, moved, 'project')));
 
   // The gap a carry opens and the place it closes, as item indices; -1
   // for none. Outside every list neither shows.
@@ -413,7 +413,7 @@
             </div>
           {/if}
           {#snippet sprintControls()}
-            <SprintControls {b} {sec} numbers={numbers[item.section]} {unit} sprints={held.shape.sprints} />
+            <SprintControls {b} {held} {sec} {moved} {unit} sprints={held.shape.sprints} />
           {/snippet}
         </div>
       {/snippet}
