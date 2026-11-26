@@ -52,7 +52,6 @@ import type { BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
 import { createRefreshScheduler } from '../utils/refreshScheduler';
 import {
-  DeleteTrackerDashboard,
   DismissTrackerWidget,
   EvaluateTrackerDashboard,
   KeepTrackerWidget,
@@ -141,13 +140,12 @@ export interface TrackerDashboard {
   dismiss(proposal: string): Promise<void>;
   /** Removes a widget from the dashboard shown. */
   removeWidget(widget: string): Promise<void>;
-  /** Deletes the dashboard shown. */
-  deleteDashboard(): Promise<void>;
   setRange(range: string): void;
   setMine(mine: boolean): void;
   narrowPerson(person: Name | null): void;
   narrowEpic(epic: Name | null): void;
-  /** Evaluates now, as Refresh asks. */
+  /** Evaluates now, as Refresh asks, and lists the dashboards again when
+   * the last read of them failed. */
   refresh(): void;
   openDrill(target: DrillTarget): void;
   drillPage(page: number): void;
@@ -267,7 +265,7 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
     $effect(() => onTrackerDashboardsUpdated((backend) => {
       if (opts.source()?.backend !== backend) return;
       listGen += 1;
-      scheduler.request({ immediate: true });
+      if (opts.shown()) scheduler.request({ immediate: true });
     }));
 
     // What is counted changed, or the screen shows again: the evaluation
@@ -330,6 +328,7 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
   function pick(id: string): void {
     const s = opts.source();
     dashboardPick = id;
+    rangePick = '';
     if (s) writeFrontendValue(PICK_KEY, { ...savedPicks(), [boardKey(s.board)]: id });
     closeDrill();
   }
@@ -386,11 +385,6 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
       if (!d || !ownShown) return Promise.resolve();
       return change(widget, (s) => RemoveTrackerWidget(s.subscription, d.id, widget));
     },
-    deleteDashboard() {
-      const d = dashboard;
-      if (!d || !ownShown) return Promise.resolve();
-      return change(d.id, (s) => DeleteTrackerDashboard(s.subscription, d.id));
-    },
     get range() { return range; },
     get mine() { return mine; },
     get person() { return person; },
@@ -423,6 +417,7 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
       closeDrill();
     },
     refresh() {
+      if (dashboardsError !== null) listGen += 1;
       scheduler.reset();
       scheduler.request({ immediate: true });
     },

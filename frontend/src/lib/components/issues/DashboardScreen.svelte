@@ -4,7 +4,7 @@
   // board's computer from its copy of the board. A toolbar holds the
   // dashboard picker, its range, Team or Mine, the person or epic the page
   // is narrowed to, Ask your agent and, on a dashboard the project keeps,
-  // Edit, which removes widgets and deletes the dashboard. The widgets an
+  // Edit, which removes widgets; the dashboard goes with its last one. The widgets an
   // agent proposed on the board sit above the grid, each with Keep, Dismiss
   // and its thread; nothing joins a dashboard without Keep. Under the
   // widgets sit on a 12-column grid by the screen's width: their own
@@ -18,7 +18,6 @@
   import type { ProposalView, TicketRow, WidgetView } from '../../../../bindings/agent-overflow/internal/trackerdash/models';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
-  import MenuDivider from '../primitives/MenuDivider.svelte';
   import Menu from '../primitives/Menu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import Popover from '../primitives/Popover.svelte';
@@ -133,14 +132,12 @@
   }
 
   let editing = $state(false);
-  let confirmDelete = $state(false);
   // Edit mode is a dashboard's: another dashboard shows out of it. The
   // list is read again after every edit, so this follows the ID shown.
   const shownId = $derived(store.dashboard?.id);
   $effect(() => {
     void shownId;
     editing = false;
-    confirmDelete = false;
   });
 
   let asking = $state(false);
@@ -191,15 +188,6 @@
     const thread = getThreadById(id);
     if (!thread) return;
     void mountThreadForToolPane(thread, null).catch((err: unknown) => addErrorToast(`Could not open the thread: ${userFacingError(err)}`, err));
-  }
-
-  async function deleteShown(): Promise<void> {
-    if (!confirmDelete) {
-      confirmDelete = true;
-      return;
-    }
-    confirmDelete = false;
-    await act('delete the dashboard', () => store.deleteDashboard());
   }
 </script>
 
@@ -294,12 +282,7 @@
       {/each}
       <span class="flex-1"></span>
       {#if store.ownShown}
-        {#if editing}
-          <Button size="xs" variant="danger-ghost" testId="dashboard-delete" disabled={!!editBlocked || store.busy.has(d.id)} title={editBlocked} onclick={() => void deleteShown()}>
-            {confirmDelete ? `Delete ${d.title}?` : 'Delete dashboard'}
-          </Button>
-        {/if}
-        <Button size="xs" variant="ghost" testId="dashboard-edit" pressed={editing} disabled={!!editBlocked} title={editBlocked} onclick={() => { editing = !editing; confirmDelete = false; }}>
+        <Button size="xs" variant="ghost" testId="dashboard-edit" pressed={editing} disabled={!!editBlocked} title={editBlocked} onclick={() => { editing = !editing; }}>
           {editing ? 'Done' : 'Edit'}
         </Button>
       {/if}
@@ -310,6 +293,9 @@
         <span class="truncate text-fg-muted" data-testid="dashboard-periods">{periodsText()}</span>
       {/if}
     </div>
+    {#if listFailure}
+      <ErrorNotice message="Could not list this board's dashboards again: {listFailure.report.reason}" captured={listFailure} testId="dashboard-list-error" />
+    {/if}
     {#if evalFailure}
       <ErrorNotice message="{answer ? 'Not counted again' : 'Could not count the dashboard'}: {evalFailure.report.reason}" captured={evalFailure} testId="dashboard-error" />
     {/if}
@@ -334,7 +320,7 @@
           </div>
           {#each proposals as p (p.view.id)}
             {#snippet proposalActions()}
-              <span class="inline-flex shrink-0 items-center gap-1" data-testid="dashboard-proposal" data-proposal={p.view.id}>
+              <span class="inline-flex flex-wrap items-center gap-1" data-testid="dashboard-proposal" data-proposal={p.view.id}>
                 {#if getThreadById(p.thread)}
                   <Button size="xs" variant="ghost" testId="dashboard-proposal-thread" onclick={() => openThread(p.thread)}>Thread</Button>
                 {/if}
@@ -348,28 +334,29 @@
         {/if}
         {#each dashboard?.widgets ?? [] as w (w.id)}
           {#snippet editActions()}
-            {#if editing}
-              <Button size="xs" variant="danger-ghost" testId="dashboard-remove" disabled={!!editBlocked || store.busy.has(w.id)} title={editBlocked} onclick={() => void act('remove the widget', () => store.removeWidget(w.id))}>Remove</Button>
-            {/if}
+            <Button size="xs" variant="danger-ghost" testId="dashboard-remove" disabled={!!editBlocked || store.busy.has(w.id)} title={editBlocked} onclick={() => void act('remove the widget', () => store.removeWidget(w.id))}>Remove</Button>
           {/snippet}
-          {@render widgetCell(w, editActions)}
+          {@render widgetCell(w, editing ? editActions : undefined)}
         {/each}
-        {#if store.ownShown && (dashboard?.widgets ?? []).length === 0}
-          <p class="col-span-12 px-1 py-4 text-[0.75rem] text-fg-muted" data-testid="dashboard-empty">This dashboard has no widgets. Ask your agent for one, then keep it here.</p>
-        {/if}
       </div>
     </div>
   {/if}
 </div>
 <Popover anchor={keepAnchor} open={keepOf !== null} onClose={closeKeep} placement="bottom-end" ariaLabel="Keep on">
   {@const p = proposals.find((x) => x.view.id === keepOf)}
-  <Menu ariaLabel="Keep on" onClose={closeKeep} minWidthClass="min-w-[220px]">
-    {#each own as d (d.id)}
-      <MenuItem label="Keep on {d.title}" testId="dashboard-keep-on-{d.id}" onSelect={() => { if (p) keep(p, { dashboard: d.id }); }} />
-    {/each}
-    {#if own.length > 0}<MenuDivider />{/if}
+  <!-- The name field sits below the menu, not in it: the menu takes j, k
+       and the arrows from any descendant to move between its items. -->
+  <div class="flex min-w-[220px] flex-col gap-1 compact:w-full">
+    {#if own.length > 0}
+      <Menu ariaLabel="Keep on" onClose={closeKeep} minWidthClass="min-w-[220px]">
+        {#each own as d (d.id)}
+          <MenuItem label="Keep on {d.title}" testId="dashboard-keep-on-{d.id}" onSelect={() => { if (p) keep(p, { dashboard: d.id }); }} />
+        {/each}
+      </Menu>
+    {/if}
     <form
-      class="flex items-center gap-1.5 px-2 py-1.5"
+      class="flex items-center gap-1.5 rounded-[var(--radius-control)] border border-border-subtle bg-surface-1 px-2 py-1.5 shadow-menu compact:rounded-b-none compact:border-x-0 compact:border-b-0"
+      aria-label="Keep on a new dashboard"
       onsubmit={(e) => { e.preventDefault(); if (p && newTitle.trim()) keep(p, { title: newTitle.trim() }); }}
     >
       <input
@@ -382,7 +369,7 @@
       />
       <Button size="xs" variant="tinted" type="submit" testId="dashboard-keep-new" disabled={!newTitle.trim()}>Keep</Button>
     </form>
-  </Menu>
+  </div>
 </Popover>
 {#if store.drill}
   <DashboardDrill drill={store.drill} onPage={(p) => store.drillPage(p)} onTicket={openTicket} onClose={() => store.closeDrill()} />

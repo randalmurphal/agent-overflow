@@ -396,30 +396,98 @@ describe('the board\'s own dashboards', () => {
     expect(s.dashboard?.id).toBe('d_2');
   });
 
-  it('removes a widget from and deletes only a dashboard the project keeps', async () => {
+  it('removes a widget only from a dashboard the project keeps', async () => {
     const list = held<DashboardView[] | null>('TrackerDashboards');
     held<Answer>('EvaluateTrackerDashboard');
     const remove = held<void>('RemoveTrackerWidget');
-    const del = held<void>('DeleteTrackerDashboard');
     const dismiss = held<void>('DismissTrackerWidget');
     const s = open();
     list.answer([VIEW, MINE_VIEW]);
     await flush();
     void s.removeWidget('w_1');
-    void s.deleteDashboard();
     expect(remove.calls).toEqual([]);
-    expect(del.calls).toEqual([]);
     s.pick('d_1');
     flushSync();
     void s.removeWidget('w_1');
-    void s.deleteDashboard();
     void s.dismiss('w_9');
     expect(remove.calls).toEqual([['sub-1', 'd_1', 'w_1']]);
-    expect(del.calls).toEqual([['sub-1', 'd_1']]);
     expect(dismiss.calls).toEqual([['sub-1', 'w_9']]);
     remove.answer();
-    del.answer();
     dismiss.answer();
     await flush();
+  });
+
+  it('shows the built-in once the dashboard shown is gone', async () => {
+    const list = held<DashboardView[] | null>('TrackerDashboards');
+    held<Answer>('EvaluateTrackerDashboard');
+    const s = open();
+    list.answer([VIEW, MINE_VIEW]);
+    await flush();
+    s.pick('d_1');
+    flushSync();
+    trackerDashboardsUpdated('peer-1');
+    await flush();
+    list.answer([VIEW]);
+    await flush();
+    expect(s.dashboard?.id).toBe('overview_sprints');
+    expect(s.ownShown).toBe(false);
+  });
+
+  it('starts each dashboard picked on its own range, not the one picked on the last', async () => {
+    const list = held<DashboardView[] | null>('TrackerDashboards');
+    held<Answer>('EvaluateTrackerDashboard');
+    const s = open();
+    list.answer([VIEW, MINE_VIEW]);
+    await flush();
+    s.setRange('this_sprint');
+    flushSync();
+    s.pick('d_1');
+    flushSync();
+    expect(s.range).toBe('sprints_5');
+    s.pick('overview_sprints');
+    flushSync();
+    expect(s.range).toBe('this_sprint');
+  });
+
+  it('counts nothing for a change of the dashboards while hidden, and lists them again when it shows', async () => {
+    const list = held<DashboardView[] | null>('TrackerDashboards');
+    const evaluate = held<Answer>('EvaluateTrackerDashboard');
+    open();
+    list.answer([VIEW]);
+    await flush();
+    evaluate.answer(answerFor('sprints_5'));
+    await flush();
+    shown = false;
+    flushSync();
+    trackerDashboardsUpdated('peer-1');
+    await flush();
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS * 2);
+    await flush();
+    expect(list.calls).toHaveLength(1);
+    expect(evaluate.calls).toHaveLength(1);
+    shown = true;
+    flushSync();
+    expect(list.calls).toHaveLength(2);
+  });
+
+  it('keeps the list beside a failed read of it, and Refresh reads it again', async () => {
+    const list = held<DashboardView[] | null>('TrackerDashboards');
+    held<Answer>('EvaluateTrackerDashboard');
+    const s = open();
+    list.answer([VIEW, MINE_VIEW]);
+    await flush();
+    trackerDashboardsUpdated('peer-1');
+    await flush();
+    const failure = new Error('offline');
+    list.fail(failure);
+    await flush();
+    expect(s.dashboards).toEqual([VIEW, MINE_VIEW]);
+    expect(s.dashboardsError).toBe(failure);
+    s.refresh();
+    flushSync();
+    expect(list.calls).toHaveLength(3);
+    list.answer([VIEW]);
+    await flush();
+    expect(s.dashboardsError).toBeNull();
   });
 });

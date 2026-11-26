@@ -1193,14 +1193,6 @@ export function DeleteTrackerComment(connectionID: string, $in: trackerapp$0.Com
 }
 
 /**
- * DeleteTrackerDashboard deletes a dashboard a subscribed board's project
- * keeps, with its widgets.
- */
-export function DeleteTrackerDashboard(subscriptionID: string, dashboard: string): $CancellablePromise<void> {
-    return $Call.ByID(316926314, subscriptionID, dashboard);
-}
-
-/**
  * DeleteTrackerWorklog deletes a worklog, as read.
  */
 export function DeleteTrackerWorklog(connectionID: string, $in: trackerapp$0.WorklogDeleteRequest): $CancellablePromise<trackerapp$0.WriteView> {
@@ -5193,7 +5185,7 @@ export function RemoveTrackerConnection(connectionID: string): $CancellablePromi
 
 /**
  * RemoveTrackerWidget removes a widget from a dashboard a subscribed
- * board's project keeps.
+ * board's project keeps; the dashboard goes with its last widget.
  */
 export function RemoveTrackerWidget(subscriptionID: string, dashboard: string, widget: string): $CancellablePromise<void> {
     return $Call.ByID(446977083, subscriptionID, dashboard, widget);

@@ -643,7 +643,6 @@ export {
   KeepTrackerWidget,
   DismissTrackerWidget,
   RemoveTrackerWidget,
-  DeleteTrackerDashboard,
   // A ticket's subscription, its writes and the reads its pickers make
   // (stores/trackerTicket.svelte.ts, stores/trackerTicketWrites.svelte.ts).
   SubscribeTrackerTicket,

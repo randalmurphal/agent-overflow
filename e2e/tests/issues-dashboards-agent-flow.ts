@@ -10,8 +10,10 @@
 // their numbers and How this is counted, their query among it; Dismiss
 // drops one and Keep puts the other on a new dashboard, which the picker
 // lists after Overview and another browser shows; edit mode removes the
-// widget, live on the other browser too, and deletes the dashboard, which
-// takes both back to Overview. A board on a paired computer takes a
+// widget, and with it the dashboard, which takes both browsers back to
+// Overview. Number proposals two to a row keep their buttons inside their
+// cards, and Keep's new-dashboard name takes every key typed beside the
+// dashboards it lists. A board on a paired computer takes a
 // widget its agent proposed from this computer's screen, the kept
 // dashboard is still there after that computer restarts, and Ask your
 // agent from this computer's screen opens its thread on that computer.
@@ -207,17 +209,65 @@ export function registerDashboardAgentFlow({ compact }: DashboardAgentSurface): 
       await expect(kept(otherScreen, 'Open tickets').getByTestId('dashboard-number-value')).toHaveText('3', { timeout: 30_000 });
 
       await press(screen.getByTestId('dashboard-edit'), compact);
+      // Removing its last widget removes the dashboard.
       await press(kept(screen, 'Open tickets').getByTestId('dashboard-remove'), compact);
-      await expect(screen.getByTestId('dashboard-empty')).toBeVisible();
-      await expect(otherScreen.getByTestId('dashboard-empty')).toBeVisible({ timeout: 30_000 });
-      await press(screen.getByTestId('dashboard-delete'), compact);
-      await expect(screen.getByTestId('dashboard-delete')).toHaveText('Delete Agent widgets?');
-      await press(screen.getByTestId('dashboard-delete'), compact);
       await expect(screen.getByTestId('dashboard-title')).toHaveText('Overview', { timeout: 30_000 });
       await expect(otherScreen.getByTestId('dashboard-title')).toHaveText('Overview', { timeout: 30_000 });
     } finally {
       await other.close();
     }
+  });
+
+  test('number proposals side by side keep their buttons in their cards, and a new dashboard\'s name takes every key', async ({ harness, page }) => {
+    test.setTimeout(180_000);
+    const provider: ProviderName = 'claude';
+    const project = await boardProject(harness, name('numbers'), [{ title: 'Board questions', provider }]);
+    const numbers = [OPEN, { ...OPEN, title: 'Closed tickets', sql: 'SELECT id AS ticket FROM tickets WHERE open = 0' }, { ...OPEN, title: 'All tickets', sql: 'SELECT id AS ticket FROM tickets' }];
+    await setScenario(harness, project.path, threadToolsScenario({
+      name: name('numbers'),
+      provider,
+      turns: [{ steps: numbers.map((widget) => ({ call: { server: SERVER, tool: 'dashboard_widget', args: { widget, show: true } } })), text: 'Three numbers.' }],
+    }));
+    await harness.open(page);
+    const screen = await issuesDashboards(page, compact);
+    await harness.send(project.threadIds[0], 'three numbers');
+    for (const _ of numbers) {
+      const event = await harness.awaitMcpResult({ server: SERVER, tool: 'dashboard_widget', cwd: project.path, timeoutMs: 60_000 });
+      expect(event.report.isError, event.report.result).toBeFalsy();
+    }
+    await expect(proposal(screen, 'All tickets').getByTestId('dashboard-number-value')).toHaveText('3', { timeout: 30_000 });
+
+    // Each proposal's buttons sit inside its own card, two to a row on
+    // compact.
+    const cards = screen.locator('[data-testid="dashboard-widget"]').filter({ has: page.getByTestId('dashboard-proposal') });
+    await expect(cards).toHaveCount(3);
+    const boxes = [];
+    for (const card of await cards.all()) {
+      const box = (await card.boundingBox())!;
+      boxes.push(box);
+      for (const id of ['dashboard-proposal-thread', 'dashboard-dismiss', 'dashboard-keep', 'dashboard-how-toggle']) {
+        const b = (await card.getByTestId(id).boundingBox())!;
+        expect(b.x, `${id} starts inside its card`).toBeGreaterThanOrEqual(box.x);
+        expect(b.x + b.width, `${id} ends inside its card`).toBeLessThanOrEqual(box.x + box.width + 0.5);
+      }
+    }
+    if (compact) expect(Math.abs(boxes[0].y - boxes[1].y)).toBeLessThan(1);
+
+    // With a dashboard kept, Keep… from Overview lists it above the name
+    // field, and the name typed there takes every key.
+    await press(proposal(screen, 'Open tickets').getByTestId('dashboard-keep'), compact);
+    await page.getByTestId('dashboard-keep-new-title').fill('First');
+    await press(page.getByTestId('dashboard-keep-new'), compact);
+    await expect(screen.getByTestId('dashboard-title')).toHaveText('First', { timeout: 30_000 });
+    await pickDashboard(page, screen, 'Overview', compact);
+    await press(proposal(screen, 'Closed tickets').getByTestId('dashboard-keep'), compact);
+    await expect(page.getByRole('menuitem', { name: 'Keep on First' })).toBeVisible();
+    const title = page.getByTestId('dashboard-keep-new-title');
+    await press(title, compact);
+    await title.pressSequentially('Backlog jk');
+    await expect(title).toHaveValue('Backlog jk');
+    await title.press('Enter');
+    await expect(screen.getByTestId('dashboard-title')).toHaveText('Backlog jk', { timeout: 30_000 });
   });
 
   test('a paired computer\'s board takes the widget its agent proposed, and keeps it through that computer\'s restart', async ({ page }) => {

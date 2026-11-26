@@ -162,7 +162,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DeleteThreadGroup", ID: 4104302889, Scope: "threads:operate", Route: "home"},                                                     // main.App.DeleteThreadGroup
 	{Name: "DeleteThreads", ID: 362983967, Scope: "threads:operate", Route: "home"},                                                          // main.App.DeleteThreads
 	{Name: "DeleteTrackerComment", ID: 1742610839, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                         // main.App.DeleteTrackerComment
-	{Name: "DeleteTrackerDashboard", ID: 316926314, Scope: "tracker:operate", Route: "home"},                                                 // main.App.DeleteTrackerDashboard
 	{Name: "DeleteTrackerWorklog", ID: 2679403039, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                         // main.App.DeleteTrackerWorklog
 	{Name: "DevicePairingStatus", ID: 604263015, Scope: "access:admin", Route: "home"},                                                       // main.App.DevicePairingStatus
 	{Name: "DictationSources", ID: 1721991996, Scope: "threads:operate", Route: "selected"},                                                  // main.App.DictationSources

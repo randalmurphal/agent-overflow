@@ -110,7 +110,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	4104302889: 'home', // DeleteThreadGroup
 	362983967: 'home', // DeleteThreads
 	1742610839: 'home', // DeleteTrackerComment
-	316926314: 'home', // DeleteTrackerDashboard
 	2679403039: 'home', // DeleteTrackerWorklog
 	604263015: 'home', // DevicePairingStatus
 	1721991996: 'selected', // DictationSources
