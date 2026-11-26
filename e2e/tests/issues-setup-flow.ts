@@ -7,7 +7,11 @@
 // group, a pick saved at once to the project's tracker.json, the Backlog
 // and the Board following it without a reload (a status counted done
 // leaves the backlog, one left out of counts leaves its column's count
-// and keeps its card), and the tracker's group picked to put it back; a
+// and keeps its card, and the status marks of the sprint's rows, the
+// column, the card and the ticket draw the project's group, a left-out
+// status Jira's), and the tracker's group picked to put it back;
+// Complete sprint counting finished the tickets of the board's last
+// column that has statuses, the ones its completion keeps; a
 // save that lost to a hand edit of the file said in words, with what is
 // stored shown and the hand edit kept; a file that cannot be read said
 // with its path, and one a newer build saved said so, with no select; a
@@ -37,6 +41,7 @@ import {
   connectFakeLinearBoard,
   openIssuesPane,
   press,
+  trackerRequests,
   type ConnectedBoard,
   type ExtraJira,
   type TrackerConnection,
@@ -143,6 +148,22 @@ function activeSprint(backlog: Locator): Locator {
 /** The active sprint's numbers on the Backlog screen. */
 function sprintNumbers(backlog: Locator): Locator {
   return activeSprint(backlog).getByTestId('issues-backlog-numbers');
+}
+
+/** A row of the active sprint on the Backlog screen. */
+function sprintRow(backlog: Locator, issueId: string): Locator {
+  return backlog.locator(`[data-list="sprint:1"] [data-testid="issues-backlog-row"][data-issue="${issueId}"]`);
+}
+
+/** The status mark drawn in `within`. */
+function markOf(within: Locator): Locator {
+  return within.locator('[data-status-group]').first();
+}
+
+/** A Board column's mark: its header's, or its tab's on compact. */
+async function expectColumnMark(pane: Locator, name: string, group: string, compact: boolean): Promise<void> {
+  const head = compact ? pane.getByTestId('issues-column-tab').filter({ hasText: name }) : pane.locator(`[data-testid="issues-column"][data-column="${name}"] header`);
+  await expect(markOf(head)).toHaveAttribute('data-status-group', group, { timeout: 15_000 });
 }
 
 /** A Board column's count: its header's, or its tab's on compact. */
@@ -258,6 +279,15 @@ export function registerIssuesSetupFlow({ compact }: SetupSurface): void {
     await openIssuesPane(page, compact);
     await expect(backlogRow(backlog, '10103')).toHaveCount(0, { timeout: 15_000 });
     await expect(sprintNumbers(backlog)).toHaveText('2 of 2 tickets done', { timeout: 15_000 });
+    if (!compact) {
+      // The marks draw the project's groups: WEB-2's To Do as Done, and
+      // WEB-1's In Progress, left out of counts, as Jira's. A Backlog
+      // row's mark is on the desktop alone.
+      const fold = activeSprint(backlog).getByTestId('issues-backlog-fold');
+      if ((await fold.getAttribute('aria-expanded')) !== 'true') await press(fold, compact);
+      await expect(markOf(sprintRow(backlog, '10102'))).toHaveAttribute('data-status-group', 'done');
+      await expect(markOf(sprintRow(backlog, '10101'))).toHaveAttribute('data-status-group', 'in_progress');
+    }
     // The Complete sprint form counts by Jira's groups, not the project's.
     await press(activeSprint(backlog).getByTestId('issues-backlog-sprint-complete'), compact);
     const complete = page.getByTestId('sprint-complete-form');
@@ -268,6 +298,17 @@ export function registerIssuesSetupFlow({ compact }: SetupSurface): void {
     await openBoardScreen(page, pane, compact);
     await expect(card(pane, PINNED_ID)).toBeVisible({ timeout: 15_000 });
     await expectColumnCount(pane, 'In Progress', '0', compact);
+    await expectColumnMark(pane, 'To Do', 'done', compact);
+    await expectColumnMark(pane, 'In Progress', 'in_progress', compact);
+    if (compact) {
+      // A card's mark is on compact alone.
+      await expect(markOf(card(pane, PINNED_ID))).toHaveAttribute('data-status-group', 'in_progress');
+      await press(pane.getByTestId('issues-column-tab').filter({ hasText: 'To Do' }), true);
+      await expect(markOf(card(pane, '10102'))).toHaveAttribute('data-status-group', 'done');
+    }
+    const ticket = await openTicket(pane, '10102', compact);
+    await expect(markOf(ticket.locator('[data-testid="ticket-field"][data-field="status"]'))).toHaveAttribute('data-status-group', 'done');
+    await closeTicket(pane, compact);
 
     // Put back: the tracker's group again, and the file holds nothing.
     const again = await openStatusGroups(page, compact);
@@ -279,6 +320,7 @@ export function registerIssuesSetupFlow({ compact }: SetupSurface): void {
     await closeSettings(page, compact);
     await openIssuesPane(page, compact);
     await expectColumnCount(pane, 'In Progress', '3', compact);
+    await expectColumnMark(pane, 'To Do', 'todo', compact);
     const backlogAgain = await openBacklog(page, pane, compact);
     await expect(backlogRow(backlogAgain, '10103')).toBeVisible({ timeout: 15_000 });
     await expect(sprintNumbers(backlogAgain)).toHaveText('1 of 5 tickets done', { timeout: 15_000 });
@@ -290,6 +332,33 @@ export function registerIssuesSetupFlow({ compact }: SetupSurface): void {
     await closeSettings(page, compact);
     await openIssuesPane(page, compact);
     await expect(sprintNumbers(backlogAgain)).toHaveText('0 of 5 tickets done', { timeout: 15_000 });
+  });
+
+  test('Complete sprint counts finished the tickets of the board\'s last column that has statuses, and the completion moves the rest', async ({ harness, page }) => {
+    // Done sits in the first column beside To Do, so only In Progress,
+    // the last column, is finished: WEB-1 and WEB-7 stay, WEB-2 and WEB-6
+    // (Done by Jira's group) move.
+    await connectFakeJiraBoard(harness, 'setup-complete', {
+      projects: [], boards: [],
+      columns: [{ name: 'To Do', statuses: ['10000', '10002'] }, { name: 'In Progress', statuses: ['10001'] }],
+      issues: [
+        { id: DONE_ID, key: 'WEB-6', project: 'WEB', type: '10002', status: '10002', summary: 'Finished ticket', sprints: [1] },
+        { id: '10107', key: 'WEB-7', project: 'WEB', type: '10002', status: '10001', summary: 'Ticket in the last column', sprints: [1] },
+      ],
+    });
+    await harness.open(page);
+    const pane = await openIssuesPane(page, compact);
+    const backlog = await openBacklog(page, pane, compact);
+    await expect(sprintNumbers(backlog), 'the header counts WEB-6 done by its group').toHaveText('1 of 4 tickets done', { timeout: 30_000 });
+    await press(activeSprint(backlog).getByTestId('issues-backlog-sprint-complete'), compact);
+    const complete = page.getByTestId('sprint-complete-form');
+    await expect(complete.getByTestId('sprint-complete-summary')).toHaveText('2 of 4 tickets done. 2 of the tickets this board shows are not in a finished status.');
+    await expect(complete.getByTestId('sprint-complete-into')).toHaveValue('');
+    await press(complete.getByTestId('sprint-complete-submit'), compact);
+    await expect(complete).toHaveCount(0, { timeout: 15_000 });
+    const moved = (await trackerRequests(harness, 'POST rest/agile/1.0/backlog/issue')).map((r) => r.body as { issues: string[] });
+    expect(moved.flatMap((b) => b.issues).sort(), 'Jira moved the two the form counted unfinished').toEqual(['10102', DONE_ID]);
+    await expect(backlogRow(backlog, '10102')).toBeVisible({ timeout: 15_000 });
   });
 
   test('a save that lost to a hand edit of the file says so in words, shows what is stored, and keeps the hand edit', async ({ harness, page }) => {

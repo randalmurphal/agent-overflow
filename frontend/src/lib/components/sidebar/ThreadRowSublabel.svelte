@@ -20,6 +20,7 @@
   import Icon from '../primitives/Icon.svelte';
   import StatusMark from '../issues/StatusMark.svelte';
   import { linkedTicketStateNote } from '../../stores/threadTicketLinks.svelte';
+  import { linkMarkGroup } from '../../stores/threadLinkMarks.svelte';
 
   interface Props {
     thread: Thread;
@@ -101,7 +102,7 @@
         data-testid="thread-row-ticket"
         data-link-state={link.state}
       >
-        <span class={link.state === 'current' ? '' : 'opacity-50'}><StatusMark group={link.statusGroup} size={9} /></span>
+        <span class={link.state === 'current' ? '' : 'opacity-50'}><StatusMark group={linkMarkGroup(thread)} size={9} /></span>
         {link.key}
       </span>
     {/if}

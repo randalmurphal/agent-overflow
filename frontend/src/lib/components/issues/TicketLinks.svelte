@@ -26,6 +26,7 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import Popover from '../primitives/Popover.svelte';
   import StatusMark from './StatusMark.svelte';
+  import { markGroup, type Regroups } from '../../stores/statusMarkGroup';
   import TicketRefMenu from './TicketRefMenu.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
   import type { TicketSeed } from '../../stores/issuesPane.svelte';
@@ -37,12 +38,15 @@
   interface Props {
     ctx: TicketWriteContext;
     links: readonly LinkView[];
+    /** The statuses the ticket's project regroups, which the linked
+     * tickets' marks draw. */
+    regroups: Regroups | undefined;
     onOpenIssue: (issue: string, seed: TicketSeed, ownPane: boolean) => void;
     /** The section's pin for the ticket's project; absent where it takes none. */
     pin?: PinControl;
   }
 
-  let { ctx, links, onOpenIssue, pin }: Props = $props();
+  let { ctx, links, regroups, onOpenIssue, pin }: Props = $props();
 
   const groups = $derived(linkGroups(links));
   let addButton = $state<HTMLElement | undefined>();
@@ -107,7 +111,7 @@
             data-testid="ticket-link"
             onclick={(event) => open(link, opensTicketPane(event))}
           >
-            <StatusMark group={issue.status.group} />
+            <StatusMark group={markGroup(regroups, issue.status)} />
             <span class="shrink-0 tabular-nums text-fg-muted">{issue.key}</span>
             <span class="min-w-0 truncate">{issue.title}</span>
             {#if removing}<span class="shrink-0 text-xs text-fg-muted" data-testid="ticket-link-removing">Removing…</span>{/if}

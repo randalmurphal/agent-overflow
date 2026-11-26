@@ -1,24 +1,25 @@
 <script lang="ts">
   // Completing an active sprint (docs/specs/issues.md, "Backlog and sprint
   // planning"): the form says how much of it is done and how many of the
-  // tickets this board shows are not in a finished status, both by the
-  // tracker's status groups, not the project's the header counts by, and
-  // always asks where the unfinished ones go: an open sprint of the board
-  // (the first future one at first) or the backlog. Which tickets move is
-  // the tracker's rule over the whole sprint (Jira's: a status outside the
-  // board's last column), which the board's count can differ from, so the
-  // form claims nothing of what will move and sends no destination it did
-  // not show. The tracker answers a part per
-  // ticket moved and one for the close; a refusal, one of a close the
-  // tracker asks to make again since tickets joined the sprint among them,
-  // stays under it, and a made completion closes it.
+  // tickets this board shows are not in a finished status, both by Jira's
+  // rule for its completion (`trackerBacklogModel.ts#completionNumbers`: a
+  // status of the board's last column that has statuses is finished), not
+  // the project's status groups the header counts by, and always asks
+  // where the unfinished ones go: an open sprint of the board (the first
+  // future one at first) or the backlog. Jira applies that rule to the
+  // whole sprint, which can hold tickets this board does not show, with
+  // the board's configuration as the write holds it, so the form claims nothing of
+  // what will move and sends no destination it did not show. The tracker
+  // answers a part per ticket moved and one for the close; a refusal, one
+  // of a close the tracker asks to make again since tickets joined the
+  // sprint among them, stays under it, and a made completion closes it.
   import Button from '../primitives/Button.svelte';
   import Popover from '../primitives/Popover.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
   import { SELECT_CLASS } from '../settings/styles';
   import type { SprintView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
-  import { sectionNumbers, unfinishedOf, type BacklogSection, type MovedRow } from '../../stores/trackerBacklogModel';
+  import { completionNumbers, type BacklogSection, type MovedRow } from '../../stores/trackerBacklogModel';
   import type { HeldBoard } from '../../stores/trackerBoardModel';
   import { completeSprint, sprintTarget, ticketWrite, type BoardWriteContext } from '../../stores/trackerTicketWrites.svelte';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
@@ -42,9 +43,8 @@
   const sprint = $derived(sec.sprint!);
   const target = $derived(sprintTarget(sprint.id));
   const pending = $derived(ticketWrite(b.key, target)?.pending ?? false);
-  const unfinished = $derived(unfinishedOf(held, sec));
-  const whole = $derived(!sec.unread && !sec.more);
-  const done = $derived(sectionLine('active', sectionNumbers(held, sec, moved, 'tracker'), unit).map((p) => p.text).join(''));
+  const completion = $derived(completionNumbers(held, sec, moved));
+  const done = $derived(sectionLine('active', completion.numbers, unit).map((p) => p.text).join(''));
 
   // svelte-ignore state_referenced_locally
   let moveTo = $state(into.find((sp) => sp.state === 'future')?.id ?? '');
@@ -71,8 +71,9 @@
     <p class="font-medium text-fg">Complete {sprint.name}</p>
     <p class="text-fg-muted" data-testid="sprint-complete-summary">
       {done}.
-      {#if whole}
-        {unfinished.length === 0 ? 'Every ticket this board shows is in a finished status.' : `${unfinished.length} of the tickets this board shows ${unfinished.length === 1 ? 'is' : 'are'} not in a finished status.`}
+      {#if completion.unfinished !== null}
+        {@const unfinished = completion.unfinished}
+        {unfinished === 0 ? 'Every ticket this board shows is in a finished status.' : `${unfinished} of the tickets this board shows ${unfinished === 1 ? 'is' : 'are'} not in a finished status.`}
       {:else}
         The sprint is still being read, so its unfinished tickets are not counted yet.
       {/if}

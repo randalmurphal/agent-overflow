@@ -20,6 +20,7 @@
   import MenuDivider from '../primitives/MenuDivider.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import StatusMark from '../issues/StatusMark.svelte';
+  import { holdThreadLinkProject, linkMarkGroup } from '../../stores/threadLinkMarks.svelte';
 
   let { thread }: { thread: Thread } = $props();
 
@@ -29,6 +30,9 @@
   // ClearThreadTicket rides threads:operate on the thread's computer.
   const operateGrant = $derived(threadScopeGrant('threads:operate', thread.id, thread.projectId));
   const linkGrant = $derived(threadTicketLinkGrant(thread));
+  // The mark reads the thread's project's status groups, held while the
+  // link shows.
+  $effect(() => holdThreadLinkProject(link ? thread.projectId : null));
 
   let buttonEl: HTMLButtonElement | undefined = $state();
   let menu = $state<{ x: number; y: number } | null>(null);
@@ -54,7 +58,7 @@
     }}
     class={buttonClasses({ variant: 'secondary', size: 'xs', class: 'shrink-0 gap-1.5 px-2 font-mono text-[0.6875rem]' })}
   >
-    <span class={link.state === 'current' ? '' : 'opacity-50'}><StatusMark group={link.statusGroup} size={10} /></span>
+    <span class={link.state === 'current' ? '' : 'opacity-50'}><StatusMark group={linkMarkGroup(thread)} size={10} /></span>
     {link.key}
   </button>
 {/if}

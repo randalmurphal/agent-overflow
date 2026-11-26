@@ -420,8 +420,14 @@ no step runs at root creation, restore or start.
   client makes from rows it holds, such as a sprint board's columns
   (`screenColumns`) or an active sprint's done tickets
   (`sectionNumbers`), takes each row's group from `groupOf` in
-  `frontend/src/lib/stores/trackerBoardModel.ts`: the project's, or the
-  tracker's for the Complete sprint form.
+  `frontend/src/lib/stores/trackerBoardModel.ts`. A status mark draws
+  `markGroup` (`frontend/src/lib/stores/statusMarkGroup.ts`) over the same
+  `regrouped` on a board, and over the project's held setup elsewhere
+  (`trackerRegroupsOf`): no view carries a project's group for a status,
+  since a ticket's view is every subscriber's whatever its project, and a
+  thread's link is derived in SQL. The Complete sprint form counts by
+  Jira's rule for its completion instead (`completionNumbers`), over the
+  board view's columns.
 - **The statuses the Status groups page lists** (`ProjectStatuses`,
   `trackerapp/setup_statuses.go`) are read from this computer's mirror
   and setup, with no tracker request: by tracker site, whatever
