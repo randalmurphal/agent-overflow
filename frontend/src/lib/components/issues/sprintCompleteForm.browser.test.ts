@@ -1,0 +1,71 @@
+// Real-Chromium suite for completing a sprint (SprintCompleteForm): the
+// form says how much is done and how many tickets are unfinished, sends
+// them to the first future sprint unless the backlog is picked, and before
+// the sprint is read whole says it cannot count them yet and still asks.
+
+import { afterEach, describe, expect, it } from 'vitest';
+import { flushSync, mount, unmount } from 'svelte';
+import '../../../app.css';
+import SprintCompleteForm from './SprintCompleteForm.svelte';
+import type { RowView, SprintView, WriteView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { BacklogSection, SectionNumbers } from '../../stores/trackerBacklogModel';
+import { ticketWriteSurfaceContext } from './ticketWriteSurface';
+import { boardWriteContext } from '../../stores/trackerTicketWrites.svelte';
+import { HOME_BACKEND } from '../../transport/backendKey';
+import { waitFor } from '../../../test/helpers/browserFrames';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
+
+const mounted: object[] = [];
+afterEach(() => {
+  for (const app of mounted.splice(0)) unmount(app);
+});
+
+const B = boardWriteContext({ backend: HOME_BACKEND, connection: 'c1', board: '1' });
+const sprint = (id: string, name: string, state: string) => ({ id, name, state, total: { rows: 0, estimate: 0 } }) as SprintView;
+const row = (id: string, group: string) => ({ order: id, estimate: 1, card: { id, key: `WEB-${id}`, title: id, status: { id: group, group }, created: 0, updated: 0 } }) as RowView;
+const NUMBERS = { total: { rows: 3, estimate: 3 }, before: null, done: { rows: 1, estimate: 1 }, load: null, pace: null, over: 0 } as SectionNumbers;
+
+function section(extra: Partial<BacklogSection>): BacklogSection {
+  return {
+    list: 'sprint:8', kind: 'active', section: { kind: 'sprint', sprint: '8' }, sprint: sprint('8', 'Sprint 8', 'active'),
+    rows: [row('1', 'done'), row('2', 'todo'), row('3', 'in_progress')], unread: false, more: false, total: NUMBERS.total, ...extra,
+  } as unknown as BacklogSection;
+}
+
+function open(sec: BacklogSection): void {
+  const anchor = document.createElement('button');
+  document.body.appendChild(anchor);
+  mounted.push(mount(SprintCompleteForm, {
+    target: document.body,
+    context: ticketWriteSurfaceContext(() => true),
+    props: { b: B, sec, numbers: NUMBERS, unit: 'points', into: [sprint('7', 'Sprint 7', 'active'), sprint('9', 'Sprint 9', 'future')], anchor, onClose: () => {} },
+  }));
+  flushSync();
+}
+
+const el = <T extends HTMLElement>(id: string) => document.querySelector<T>(`[data-testid="${id}"]`)!;
+
+describe('completing a sprint', () => {
+  it('counts the unfinished tickets and sends them to the first future sprint unless the backlog is picked', async () => {
+    const completed = setBindingMock('CompleteTrackerSprint', async () => ({ parts: [{ step: 'sprint', state: 'applied' }] }) as WriteView);
+    open(section({}));
+    await waitFor(() => document.querySelector('[data-testid="sprint-complete-form"]') !== null, 'the form');
+    expect(el('sprint-complete-summary').textContent?.replace(/\s+/g, ' ').trim()).toBe('1 of 3 points done. 2 tickets are not finished.');
+    const into = el<HTMLSelectElement>('sprint-complete-into');
+    expect(into.value).toBe('9');
+    expect([...into.options].map((o) => o.text)).toEqual(['Sprint 7', 'Sprint 9', 'The backlog']);
+    into.value = '';
+    into.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync();
+    el('sprint-complete-submit').click();
+    await waitFor(() => completed.mock.calls.length === 1, 'the completion');
+    expect(completed.mock.calls[0][1]).toEqual({ board: '1', sprint: '8', move_to: undefined });
+  });
+
+  it('asks where the unfinished tickets go before the sprint is read whole, saying it cannot count them yet', async () => {
+    open(section({ rows: [row('1', 'done')], more: true }));
+    await waitFor(() => document.querySelector('[data-testid="sprint-complete-form"]') !== null, 'the form');
+    expect(el('sprint-complete-summary').textContent).toContain('The sprint is still being read, so its unfinished tickets are not counted yet.');
+    expect(document.querySelector('[data-testid="sprint-complete-into"]')).not.toBeNull();
+  });
+});
