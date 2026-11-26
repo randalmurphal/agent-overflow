@@ -260,16 +260,13 @@ func detailFields(s site, is *jira.Issue, screen jira.Screen, cat *catalog) []tr
 	}
 	var out []tracker.Field
 	for id := range ids {
-		if slices.Contains(cardFieldIDs, id) || slices.Contains(detailSkipped, id) || id == s.sprint {
-			continue
-		}
 		meta, onScreen := screenField(screen, id)
 		cf, inCatalog := s.field(id)
 		schema, name := cf.Schema, cf.Name
 		if !inCatalog {
 			schema, name = meta.Schema, cmp.Or(meta.Name, id)
 		}
-		if schema.Custom == rankType {
+		if !s.listed(id, schema) {
 			continue
 		}
 		kind, list := kindOf(schema)
@@ -287,6 +284,35 @@ func detailFields(s site, is *jira.Issue, screen jira.Screen, cat *catalog) []tr
 	}
 	slices.SortFunc(out, func(a, b tracker.Field) int { return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID)) })
 	return out
+}
+
+// listed reports whether a detail lists the field id of schema: every
+// field but the card's (cardFieldIDs), those detailSkipped names, and the
+// sprint and rank fields. Detail and Fields both list by it, so a field a
+// project pins from Settings is one its tickets can show.
+func (s site) listed(id string, schema jira.Schema) bool {
+	return !slices.Contains(cardFieldIDs, id) && !slices.Contains(detailSkipped, id) && id != s.sprint && schema.Custom != rankType
+}
+
+// Fields are the site's fields a detail lists (listed), from the field
+// catalog the client caches, each once, by name and then ID.
+func (p *Provider) Fields(ctx context.Context) ([]tracker.Field, error) {
+	s, err := p.site(ctx)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var out []tracker.Field
+	for f := range s.fields.All() {
+		if seen[f.ID] || !s.listed(f.ID, f.Schema) {
+			continue
+		}
+		seen[f.ID] = true
+		kind, list := kindOf(f.Schema)
+		out = append(out, tracker.Field{ID: neutralField(f.ID), Name: cmp.Or(f.Name, f.ID), Kind: kind, List: list})
+	}
+	slices.SortFunc(out, func(a, b tracker.Field) int { return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID)) })
+	return out, nil
 }
 
 // detailFieldIDs are the fields of is that hold a value and those screen

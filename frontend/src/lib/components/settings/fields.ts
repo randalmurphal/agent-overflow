@@ -707,6 +707,45 @@ const STATIC_FIELDS = [
     keywords: ['jira', 'linear', 'status', 'statuses', 'group', 'done', 'in progress', 'backlog', 'left out', 'counts', 'totals'],
     conditional: true,
   },
+  {
+    id: 'tracker-fields.project',
+    section: 'tracker-fields',
+    label: 'Project',
+    hint: 'Choose the project whose tickets to lay out.',
+  },
+  {
+    id: 'tracker-fields.pins',
+    section: 'tracker-fields',
+    label: 'Fields and sections',
+    keywords: ['jira', 'field', 'fields', 'section', 'sections', 'pin', 'pinned', 'ticket', 'layout', 'description'],
+    conditional: true,
+  },
+  {
+    id: 'tracker-start-work.project',
+    section: 'tracker-start-work',
+    label: 'Project',
+    hint: 'Choose the project whose Start work to set.',
+  },
+  {
+    id: 'tracker-start-work.defaults',
+    section: 'tracker-start-work',
+    label: 'Start work',
+    keywords: ['jira', 'linear', 'start work', 'branch', 'worktree', 'assign', 'status', 'move', 'repository', 'defaults'],
+    conditional: true,
+  },
+  {
+    id: 'tracker-agents.project',
+    section: 'tracker-agents',
+    label: 'Project',
+    hint: 'Choose the project whose threads these apply to.',
+  },
+  {
+    id: 'tracker-agents.rules',
+    section: 'tracker-agents',
+    label: 'What agents may do',
+    keywords: ['jira', 'linear', 'agent', 'agents', 'tools', 'change tickets', 'approval', 'approve', 'several', 'read-only'],
+    conditional: true,
+  },
 
   // --- Voice --------------------------------------------------------------
   {

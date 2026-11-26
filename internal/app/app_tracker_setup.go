@@ -26,21 +26,36 @@ func (a *App) ProjectTrackerSetup(ctx context.Context, projectID string) (tracke
 	return out, trackerError(err)
 }
 
-// ProjectTrackerStatuses is the project's statuses by tracker site, as its
-// Status groups page lists them: the statuses of its listed boards'
-// columns with the tracker's own group, the statuses its setup regroups
-// that no listed board shows, and the listed boards this computer has
-// not read yet. It reads this computer's copy and makes no tracker
-// request.
+// ProjectTrackerStatuses is the project's statuses, as its Status groups
+// and Starting work pages list them: by tracker site, the statuses of its
+// listed boards' columns with the tracker's own group, the statuses its
+// setup regroups that no listed board shows, and the listed boards this
+// computer has not read yet; and by place Starting work sets defaults
+// for, the statuses Move the ticket offers. It reads this computer's copy
+// and makes no tracker request.
 //
 //ao:scope tracker:read
-func (a *App) ProjectTrackerStatuses(ctx context.Context, projectID string) ([]trackerapp.SiteStatuses, error) {
+func (a *App) ProjectTrackerStatuses(ctx context.Context, projectID string) (trackerapp.ProjectStatuses, error) {
 	svc, err := a.trackerService()
 	if err != nil {
-		return nil, err
+		return trackerapp.ProjectStatuses{}, err
 	}
 	out, err := svc.ProjectStatuses(projectID)
 	return out, trackerError(err)
+}
+
+// ProjectTrackerSiteFields are the fields the tickets of a Jira site can
+// pin, as the project's Fields page lists them for each site its boards
+// or its pins name, read from the tracker's field catalog, which the
+// computer caches. projectID names the project whose computer answers.
+// Each site is its own call, so a site that fails or stalls holds up no
+// other.
+//
+//ao:scope tracker:read
+func (a *App) ProjectTrackerSiteFields(ctx context.Context, projectID, tracker, site string) ([]trackerapp.PinField, error) {
+	return trackerFormRead(a, ctx, "ProjectTrackerSiteFields", "Listing a site's fields", func(ctx context.Context, svc *trackerapp.Service) ([]trackerapp.PinField, error) {
+		return svc.SiteFields(ctx, tracker, site)
+	})
 }
 
 // SetProjectTrackerSetup replaces the project's tracker setup with setup,

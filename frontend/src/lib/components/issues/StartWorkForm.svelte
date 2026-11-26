@@ -13,7 +13,8 @@
   import type { DetailView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import type { TicketBranch } from '../../stores/bindings';
   import { getProjectLabelText } from '../../stores/projects.svelte';
-  import { defaultsAt, type DefaultsPlace, type StartWorkPlan } from '../../stores/ticketWork.svelte';
+  import type { StartWorkPlan } from '../../stores/ticketWork.svelte';
+  import { defaultsAt, type DefaultsPlace } from '../../stores/startWorkDefaults';
   import { acquireTrackerSetup, trackerSetupOf } from '../../stores/trackerSetup.svelte';
   import type { Project, Thread } from '../../types/models';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
@@ -99,7 +100,9 @@
   const chosenAssign = $derived(!me ? false : assign ?? (saved?.assign ?? true));
   const mine = $derived(!!me && card.assignee?.id === me);
 
-  const defaultBranch = $derived(givenBranch?.name ?? ticketBranchName(saved?.branch ?? '', card.key, card.title));
+  // A project that does not name the branch after the ticket opens the
+  // box empty, for the person to name it.
+  const defaultBranch = $derived(givenBranch?.name ?? (saved?.name_branch === false ? '' : ticketBranchName(saved?.branch ?? '', card.key, card.title)));
   const chosenBranch = $derived((branchName ?? defaultBranch).trim());
 
   const savedRepository = $derived(saved?.repository ?? '');

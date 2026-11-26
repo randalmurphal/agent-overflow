@@ -49,7 +49,7 @@ beforeEach(async () => {
   }];
   saves = [];
   setBindingMock('ProjectTrackerSetup', async () => stored);
-  setBindingMock('ProjectTrackerStatuses', async () => sites);
+  setBindingMock('ProjectTrackerStatuses', async () => ({ sites, places: [] }));
   setBindingMock('SetProjectTrackerSetup', async (_project: string, revision: string, setup: Setup) => {
     saves.push({ revision, setup });
     if (revision !== stored.revision) return { saved: false, refused: "this change was not saved: the project's tracker setup changed after it was read; it is shown as it is now", stored };

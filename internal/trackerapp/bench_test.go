@@ -238,7 +238,8 @@ func BenchmarkProjectStatuses20Boards(b *testing.B) {
 	}
 	b.ReportAllocs()
 	for b.Loop() {
-		sites, err := svc.ProjectStatuses(project)
+		view, err := svc.ProjectStatuses(project)
+		sites := view.Sites
 		if err != nil || len(sites) != 1 || len(sites[0].Statuses) == 0 || len(sites[0].Unread) != 0 {
 			b.Fatalf("statuses: %+v, %v", sites, err)
 		}

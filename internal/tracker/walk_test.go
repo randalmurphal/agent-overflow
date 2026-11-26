@@ -120,6 +120,10 @@ func (f *probedProvider) LinkTypes(ctx context.Context) ([]LinkType, error) {
 	f.see(ctx)
 	return nil, nil
 }
+func (f *probedProvider) Fields(ctx context.Context) ([]Field, error) {
+	f.see(ctx)
+	return nil, nil
+}
 func (f *probedProvider) Boards(ctx context.Context, _ ProjectID) ([]Board, error) {
 	f.see(ctx)
 	return nil, nil

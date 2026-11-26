@@ -75,7 +75,7 @@ describe('settings section map', () => {
       ['threads', 'performance', 'keybindings', 'notifications', 'voice', 'updates'],
       ['claude', 'codex', 'agy', 'commit-messages', 'browser', 'thread-tools', 'assistants', 'agent-profiles', 'agent-guide', 'memory'],
       ['projects', 'git', 'editor'],
-      ['tracker-connections', 'tracker-boards', 'tracker-statuses'],
+      ['tracker-connections', 'tracker-boards', 'tracker-statuses', 'tracker-fields', 'tracker-start-work', 'tracker-agents'],
       ['systems', 'remote', 'agent-access'],
       ['observability', 'storage'],
     ]);
@@ -99,13 +99,14 @@ describe('<SettingsView> tabs', () => {
   });
 
   it('renders every page as a tab plus a decorative group label', async () => {
-    const { getAllByRole, getByText } = render(SettingsView, { onClose: vi.fn() });
+    const { getAllByRole, getAllByText } = render(SettingsView, { onClose: vi.fn() });
     expect(getAllByRole('tab')).toHaveLength(settingsSectionIds().length);
     for (const group of settingsSectionGroups()) {
-      const label = getByText(group.label);
-      expect(label.getAttribute('aria-hidden')).toBe('true');
-      // Group labels must not be tabs, or roving focus would land on them.
-      expect(label.getAttribute('role')).toBeNull();
+      // A page may share its group's label's words (Issues > Agents and
+      // the Agents group): the label is the one that is not a tab.
+      const labels = getAllByText(group.label).filter((el) => el.getAttribute('role') !== 'tab' && !el.closest('[role="tab"]'));
+      expect(labels, group.label).toHaveLength(1);
+      expect(labels[0].getAttribute('aria-hidden')).toBe('true');
     }
   });
 
