@@ -365,7 +365,7 @@ export function registerTrackerAgentWritesFlow({ compact }: TrackerWritesSurface
     }));
     await harness.send(threadIds[0], 'comment on WEB-1');
     const answer = await trackerAnswer(harness, 'ticket_update', path);
-    expect(answer).toMatchObject({ isError: true, text: '[tracker_read_only] This thread is read-only, so it cannot change tickets; ask the user to change its access.' });
+    expect(answer).toMatchObject({ isError: true, text: '[tracker_read_only] This thread is read-only, so it cannot change tickets or log time; ask the user to change its access.' });
     expect(await trackerRequests(harness, COMMENT_ROUTE)).toHaveLength(0);
     await openThread(harness, page, title, compact);
     await expandActivityRuns(page);
