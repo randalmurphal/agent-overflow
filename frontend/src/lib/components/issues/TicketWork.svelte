@@ -386,7 +386,6 @@
   <StartWorkForm
     anchor={startButton}
     open={formOpen}
-    ticket={attachment.key}
     {detail}
     {projects}
     {project}
