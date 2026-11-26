@@ -9,6 +9,15 @@
     readonly text: string;
   }
 
+  /** The project and type a form's field values are given for: the
+   * project's ID and the type's, empty for a tracker without types. */
+  export function valuesOf(project: string, type: string): string {
+    return `${project}\n${type}`;
+  }
+
+  const NO_FILLED: ReadonlyMap<string, FilledField> = new Map();
+  const NO_TYPING: ReadonlyMap<string, string> = new Map();
+
   /** A ticket the form made that its move into the section's sprint did
    * not place. */
   export interface UnplacedTicket {
@@ -32,9 +41,17 @@
     /** The type picked in it, or the board's last one when it opened;
      * empty takes the project's default. */
     type = $state('');
-    filled = $state.raw<ReadonlyMap<string, FilledField>>(new Map());
-    /** The text being typed in a field not saved yet, by field. */
-    typing = $state.raw<ReadonlyMap<string, string>>(new Map());
+    // What must hold: the values given for the fields and the text being
+    // typed in one belong to one project and type (`valuesOf`), the ones
+    // in effect when they were given. When the form's project or type
+    // changes, by a pick, by the board's projects arriving without the
+    // one it showed, or by a read answering again, they are gone: read
+    // for another project or type there are none, and the first value
+    // given for another replaces them. This is the only rule that drops
+    // them; a made ticket clears them (`clearValues`).
+    #values = $state.raw<{ readonly of: string; readonly filled: ReadonlyMap<string, FilledField>; readonly typing: ReadonlyMap<string, string> }>({
+      of: '', filled: NO_FILLED, typing: NO_TYPING,
+    });
     /** The tickets it made that are not in the sprint yet, each offered
      * the move until it is placed or dismissed; written by Add alone,
      * whether or not the form is on screen when the tracker answers. */
@@ -44,6 +61,38 @@
       this.project = project;
       this.type = type;
     }
+
+    /** The fields filled for `of`, by field. */
+    filled(of: string): ReadonlyMap<string, FilledField> {
+      return this.#values.of === of ? this.#values.filled : NO_FILLED;
+    }
+
+    /** The text being typed for `of` in a field not saved yet, by field. */
+    typing(of: string): ReadonlyMap<string, string> {
+      return this.#values.of === of ? this.#values.typing : NO_TYPING;
+    }
+
+    /** Fills field `id` for `of`, or with null leaves it unfilled. */
+    fill(of: string, id: string, field: FilledField | null): void {
+      this.#values = { of, filled: withEntry(this.filled(of), id, field), typing: this.typing(of) };
+    }
+
+    /** Holds the text being typed for `of` in field `id`, or with null
+     * lets it go. */
+    hold(of: string, id: string, text: string | null): void {
+      this.#values = { of, filled: this.filled(of), typing: withEntry(this.typing(of), id, text) };
+    }
+
+    clearValues(): void {
+      this.#values = { of: '', filled: NO_FILLED, typing: NO_TYPING };
+    }
+  }
+
+  function withEntry<T>(m: ReadonlyMap<string, T>, id: string, v: T | null): ReadonlyMap<string, T> {
+    const next = new Map(m);
+    if (v === null) next.delete(id);
+    else next.set(id, v);
+    return next;
   }
 </script>
 
@@ -144,6 +193,7 @@
     const listed = projects?.value;
     if (!listed) return chosen;
     if (listed.some((p) => p.id === chosen)) return chosen;
+    if (project && listed.some((p) => p.id === project)) return project;
     return listed.length === 1 ? listed[0].id : '';
   });
   const projectName = $derived(projects?.value?.find((p) => p.id === projectID)?.name || (draft?.project?.id === projectID ? draft.project.name : '') || '');
@@ -195,14 +245,14 @@
     drafts.delete(draftKey);
   }
 
+  // The project and type the form's values are for (CreateDraft).
+  const of = $derived(valuesOf(projectID, typeID));
+  const filled = $derived(draft?.filled(of));
+
   // A create sends a field only with a value: one picked or typed back to
   // none leaves the form, so the tracker fills it or the form asks again.
   function fill(id: string, field: FilledField | null): void {
-    if (!draft) return;
-    const next = new Map(draft.filled);
-    if (field) next.set(id, field);
-    else next.delete(id);
-    draft.filled = next;
+    draft?.fill(of, id, field);
   }
 
   const projectEditor = $derived(pickEditor('project', 'option', {
@@ -220,8 +270,6 @@
       const listed = p ? boardProjects(b)?.value?.find((it) => it.id === p.id) : undefined;
       draft.project = p ? { id: p.id, name: listed?.name ?? p.name } : null;
       draft.type = '';
-      draft.filled = new Map();
-      draft.typing = new Map();
       read();
     },
   }));
@@ -236,14 +284,12 @@
     save: (_edit, picked) => {
       if (!draft) return;
       draft.type = picked[0]?.id ?? '';
-      draft.filled = new Map();
-      draft.typing = new Map();
       readFields();
     },
   }));
 
   function targetOf(f: FieldView): EditorTarget {
-    const got = draft?.filled.get(f.id);
+    const got = filled?.get(f.id);
     return {
       picked: got?.picked ?? [],
       text: got?.text ?? '',
@@ -256,14 +302,8 @@
       // A create sends no value for a field left to the tracker.
       unset: f.defaulted ? TRACKER_DEFAULT : undefined,
       typing: {
-        text: draft?.typing.get(f.id) ?? null,
-        set: (text) => {
-          if (!draft) return;
-          const next = new Map(draft.typing);
-          if (text === null) next.delete(f.id);
-          else next.set(f.id, text);
-          draft.typing = next;
-        },
+        text: draft?.typing(of).get(f.id) ?? null,
+        set: (text) => draft?.hold(of, f.id, text),
       },
     };
   }
@@ -272,12 +312,12 @@
     .map((f) => ({ f, long: f.kind === 'rich_text' && f.editable, editor: f.kind === 'rich_text' ? null : fieldEditor(f, targetOf(f)) }))
     .filter((r) => mustSupply(r.f) || r.long || r.editor));
   const unsettable = $derived(rows.filter((r) => !r.long && !r.editor).map((r) => r.f.name));
-  const missing = $derived(rows.filter((r) => mustSupply(r.f) && !draft?.filled.has(r.f.id)).map((r) => r.f.name));
+  const missing = $derived(rows.filter((r) => mustSupply(r.f) && !filled?.has(r.f.id)).map((r) => r.f.name));
   const readError = $derived(projects?.error ?? types?.error ?? fields?.error ?? null);
   const ready = $derived(!!projectID && (!typed || !!typeID) && !!fields?.value && unsettable.length === 0);
 
   function shown(f: FieldView): string {
-    const got = draft?.filled.get(f.id);
+    const got = filled?.get(f.id);
     return got ? (got.picked.length ? got.picked.map((p) => p.name).join(', ') : got.text) : '';
   }
 
@@ -286,20 +326,20 @@
     const text = d?.title.trim() ?? '';
     if (!d || !text || !ready || pending || missing.length > 0) return;
     const sent = { project: projectID, type: typeID };
+    const given = d.filled(of);
     setLastCreateChoice(boardRef, typed ? { project: { id: projectID, name: projectName }, type: typeID } : {});
     const outcome = await createTicket(b, sec.list, where, {
       project: sent.project,
       type: sent.type || undefined,
       title: text,
-      fields: [...d.filled.values()].map((f) => f.edit),
+      fields: [...given.values()].map((f) => f.edit),
       sprint: sec.sprint?.id,
     });
     if (outcome?.kind === 'applied') {
       const u = outcome.unplaced;
       if (u?.step === 'sprint_move' && u.issue && !d.unplaced.some((t) => t.issue === u.issue)) d.unplaced = [...d.unplaced, { issue: u.issue, key: u.key }];
       d.title = '';
-      d.filled = new Map();
-      d.typing = new Map();
+      d.clearValues();
       queueMicrotask(() => input?.focus());
     } else if (outcome?.kind === 'refused' && outcome.refusal.reason === 'missing') {
       // The screen requires what the form did not ask: read it again.
@@ -361,7 +401,7 @@
     {#if typed && projectID}
       <TicketField label="Type" field="type" value={typeName} editor={types?.value ? typeEditor : null} ticketKey={b.key} target="create-form" fieldName={cardFieldName} disabled={pending} />
     {/if}
-    {#each rows as { f, long, editor } (f.id)}
+    {#each rows as { f, long, editor } (`${of}\n${f.id}`)}
       {#if long}
         <label class="flex flex-col gap-1 py-1 text-xs text-fg-muted" data-testid="issues-backlog-create-text" data-field={f.id}>
           {mustSupply(f) ? `${f.name} (required)` : f.name}

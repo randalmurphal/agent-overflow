@@ -5,7 +5,10 @@
 // whose screen lists its values picked from that list; Add makes the
 // ticket in the section's sprint, and the next form on the board starts
 // from the project and type picked, while a form already open keeps its
-// own; what was typed outlives the form's foot going; a create refused for
+// own; what was given for one project and type goes when either changes,
+// the board's projects replacing the one shown included, and the
+// location is shown before the only one; what was typed outlives the
+// form's foot going; a create refused for
 // fields reads them again; a ticket made whose move into the sprint failed
 // is not made again; a field the tracker fills is offered, not asked, and
 // left to the tracker when the app cannot set it; a required field the app
@@ -165,6 +168,76 @@ describe('New ticket', () => {
     await fireEvent.keyDown(title, { key: 'Enter' });
     await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
     expect(created.mock.calls[0][1]).toMatchObject({ project: '10001', type: '6' });
+    view.unmount();
+  });
+
+  it('drops what was given for the project it showed when the board\'s projects replace it, so Add sends none of it for the one that replaces it', async () => {
+    let answer: () => void = () => {};
+    setBindingMock('TrackerBoardProjects', () => new Promise<ProjectView[]>((resolve) => { answer = () => resolve([PROJECTS[1]]); }));
+    setBindingMock('TrackerIssueTypes', async () => TYPES);
+    const team = { id: 'customfield_3', name: 'Team', kind: 'option', required: true, editable: true, allowed: [{ id: '1', name: 'Red' }] } as FieldView;
+    const code = { id: 'customfield_2', name: 'Team code', kind: 'text', required: true, editable: true } as FieldView;
+    // Web's screen asks a team and a code; App's asks only the code.
+    setBindingMock('TrackerCreateFields', async (_c: string, project: string) => (project === '10000' ? [team, code] : [code]));
+    const created = setBindingMock('CreateTrackerIssue', async () => ({ parts: [{ step: 'create', state: 'applied' }] }) as WriteView);
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    // While the board's projects are read, the form is Web's: a team picked
+    // and a code being typed.
+    await waitFor(() => expect(field(view.container, 'customfield_3')).toBeTruthy());
+    await pick(view.container, 'customfield_3', 'Red');
+    expect(value(view.container, 'customfield_3')).toBe('Red');
+    await fireEvent.click(within(field(view.container, 'customfield_2')).getByTestId('ticket-field-value'));
+    await fireEvent.input(within(field(view.container, 'customfield_2')).getByTestId('ticket-field-input'), { target: { value: 'WEB-' } });
+    // The board shows App alone: the form is App's, with nothing of Web's.
+    answer();
+    await waitFor(() => expect(value(view.container, 'project')).toBe('App'));
+    await waitFor(() => expect(field(view.container, 'customfield_3')).toBeNull());
+    const codeField = await waitFor(() => { const el = field(view.container, 'customfield_2'); expect(el).toBeTruthy(); return el; });
+    expect(within(codeField).queryByTestId('ticket-field-input')).toBeNull();
+    expect(value(view.container, 'customfield_2')).toBe('None');
+    await waitFor(() => expect(view.getByTestId('issues-backlog-create-missing').textContent).toBe('Needs Team code'));
+    await fireEvent.click(within(codeField).getByTestId('ticket-field-value'));
+    const input = within(codeField).getByTestId('ticket-field-input');
+    await fireEvent.input(input, { target: { value: 'APP-1' } });
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    const title = view.getByTestId('issues-backlog-create-title') as HTMLInputElement;
+    await fireEvent.input(title, { target: { value: 'In App' } });
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
+    expect(created.mock.calls[0][1]).toMatchObject({ project: '10001', fields: [{ field: 'customfield_2', typed: ['APP-1'] }] });
+    expect(created.mock.calls[0][1].fields).toHaveLength(1);
+    view.unmount();
+  });
+
+  it('drops what was given for one type when another is picked, and picking the first again brings none of it back', async () => {
+    setBindingMock('TrackerBoardProjects', async () => PROJECTS);
+    setBindingMock('TrackerIssueTypes', async () => TYPES);
+    setBindingMock('TrackerCreateFields', async () => [{ ...PRIORITY, allowed: [{ id: '2', name: 'High' }] }]);
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(value(view.container, 'type')).toBe('Task'));
+    await pick(view.container, 'priority', 'High');
+    expect(value(view.container, 'priority')).toBe('High');
+    await pick(view.container, 'type', 'Bug');
+    await waitFor(() => expect(value(view.container, 'type')).toBe('Bug'));
+    await waitFor(() => expect(value(view.container, 'priority')).toBe('None'));
+    await pick(view.container, 'priority', 'High');
+    await pick(view.container, 'type', 'Task');
+    await waitFor(() => expect(value(view.container, 'type')).toBe('Task'));
+    await waitFor(() => expect(value(view.container, 'priority')).toBe('None'));
+    view.unmount();
+  });
+
+  it('makes the ticket in the location when the one picked last is not among several the board shows and the location is', async () => {
+    setBindingMock('TrackerBoardProjects', async () => PROJECTS);
+    setBindingMock('TrackerIssueTypes', async () => TYPES);
+    setBindingMock('TrackerCreateFields', async () => []);
+    setLastCreateChoice(REF, { project: { id: '10009', name: 'Gone' }, type: '6' });
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(value(view.container, 'project')).toBe('Web'));
+    expect(view.queryByTestId('issues-backlog-create-pick-project')).toBeNull();
     view.unmount();
   });
 
