@@ -101,8 +101,8 @@
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { getProjectLabelText } from '../../stores/projects.svelte';
   import { acquireTrackerSetup, editTrackerSetup, trackerSetupOf } from '../../stores/trackerSetup.svelte';
-  import { projectBackend } from '../../transport/entityIndex';
-  import { hasScope } from '../../transport/scopes';
+  import { projectScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { asSentence, userFacingError } from '../../utils/userFacingError';
   import { errString } from '../../utils/errors';
   import {
@@ -442,10 +442,11 @@
   const pinsUnreadable = $derived(setupState && setupState.view === null && setupState.error !== null ? userFacingError(setupState.error) : null);
   // Why a pin takes no press now: undefined when it does, null when no pin
   // is offered.
+  const operateGrant = $derived(projectScopeGrant('tracker:operate', project));
   const pinBlocked = $derived.by((): string | undefined | null => {
     if (!project || !tracker || !setupState?.view || pinsNewer) return null;
-    const backend = projectBackend(project);
-    if (backend !== undefined && !hasScope('tracker:operate', backend)) return `This device may not change the pins of ${projectName}.`;
+    if (operateGrant === 'refused') return `This device may not change the pins of ${projectName}.`;
+    if (operateGrant !== 'granted') return grantBlockedTitle(operateGrant);
     if (setupState.saving) return `Saving the pins of ${projectName}…`;
     if (!setupState.current) return `Reading the pins of ${projectName}…`;
     return undefined;
