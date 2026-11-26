@@ -162,7 +162,7 @@ async function openBoardScreen(page: Page, pane: Locator, compact: boolean): Pro
   const picker = pane.getByTestId('issues-tabs-picker');
   if (await picker.isVisible()) {
     await press(picker, compact);
-    await press(page.getByTestId('issues-tab-option').filter({ hasText: 'Board' }), compact);
+    await press(page.getByTestId('issues-tab-option').filter({ hasText: /^\s*Board\s*$/ }), compact);
   } else {
     await press(pane.locator('[data-testid="issues-tab"][data-screen="board"]'), compact);
   }
