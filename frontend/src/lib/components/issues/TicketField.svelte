@@ -75,9 +75,12 @@
   const pending = $derived(disabled || (ticketWrite(ticketKey, target)?.pending ?? false));
   let trigger: HTMLButtonElement | undefined = $state();
   let picking = $state(false);
-  // A field typed in when it went is typed in again where it was.
+  // A field typed in when it went is typed in again where it was, taking
+  // no focus: focus follows a person's act to edit.
   // svelte-ignore state_referenced_locally
   let typing = $state(editor?.kind === 'type' && editor.typing?.text != null);
+  // svelte-ignore state_referenced_locally
+  let resumed = $state(typing);
   let invalid = $state('');
   $effect(() => {
     if (!disabled) return;
@@ -91,6 +94,7 @@
     if (editor.kind === 'pick') picking = true;
     else {
       editor.typing?.set(editor.text);
+      resumed = false;
       typing = true;
     }
   }
@@ -107,7 +111,7 @@
       <span class="w-24 shrink-0 truncate text-xs text-fg-muted" title={label}>{label}</span>
     {/if}
     {#if typing && editor?.kind === 'type'}
-      <TicketTypedValue {label} input={editor.input} text={editor.text} typed={editor.typing?.text ?? undefined} onTyped={editor.typing ? (t) => editor.typing?.set(t) : undefined} onSave={editor.onSave} onDone={doneTyping} bind:invalid />
+      <TicketTypedValue {label} input={editor.input} text={editor.text} typed={editor.typing?.text ?? undefined} onTyped={editor.typing ? (t) => editor.typing?.set(t) : undefined} {resumed} onSave={editor.onSave} onDone={doneTyping} bind:invalid />
     {:else if editor}
       <button
         bind:this={trigger}

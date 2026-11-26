@@ -2,7 +2,9 @@
   // A ticket value typed in place: Enter saves the trimmed text when it
   // changed (empty clears the field), Escape and leaving put it back
   // (`onDone`); going with the field (an unmount) is not leaving, so a
-  // holder of the text (`onTyped`) keeps it. A number or date input whose text is not a number or not a
+  // holder of the text (`onTyped`) keeps it. It takes focus when a person
+  // opened it; typing resumed with its field (`resumed`) brings the text
+  // back and leaves focus where it is. A number or date input whose text is not a number or not a
   // whole date holds an empty value, as a cleared one does; Enter on it
   // saves nothing and says what the field takes (`invalid`), so a typo
   // never clears the field. The ticket's field rows and a Board card's
@@ -25,16 +27,20 @@
     typed?: string;
     /** Each change of the text typed, for its holder. */
     onTyped?: (text: string) => void;
+    /** Typing resumed as its field came back, not opened by a person. */
+    resumed?: boolean;
   }
 
-  let { label, input, text, onSave, onDone, invalid = $bindable(''), typed, onTyped }: Props = $props();
+  let { label, input, text, onSave, onDone, invalid = $bindable(''), typed, onTyped, resumed = false }: Props = $props();
 
   // svelte-ignore state_referenced_locally
   let draft = $state(typed ?? text);
   let el: HTMLInputElement | undefined = $state();
+  // svelte-ignore state_referenced_locally
+  const opened = !resumed;
   $effect(() => {
     invalid = '';
-    el?.focus();
+    if (opened) el?.focus();
   });
 
   const TAKES: Readonly<Record<'number' | 'date', string>> = {
