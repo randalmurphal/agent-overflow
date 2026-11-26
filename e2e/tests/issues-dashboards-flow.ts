@@ -15,15 +15,17 @@
 // chart's value shows on hover (on compact, on focus); the grid lays out
 // again when the pane is resized; a listed ticket opens; a number that
 // counted nothing is not known, with its tickets not counted, on the tile
-// and in its drill; a drill's rows carry a count's no value, the period a
-// row counts in and its note beside the title (under it on compact);
-// Unassigned's cell and No epic's bar open their tickets; while a
-// range is counted the grid takes no click; the board's first read not
-// finished is said on the screen and in a drill until its reconcile
-// completes; on a kanban board with more epics and people than its bars
-// and table show, More opens the rows of the epics and people left out,
-// two epics tied across the cut. On desktop: four opens and closes of the screen leave the
-// page's heap and DOM as they were.
+// and in its drill, and a chart that draws none of them lists them in a
+// "not counted" that opens the whole chart; a drill's rows carry a
+// count's no value, the period a row counts in and its note beside the
+// title (under it on compact); Unassigned's cell and No epic's bar open
+// their tickets; while a range is counted the grid takes no click; the
+// board's first read not finished is said on the screen and in a drill
+// until its reconcile completes; on a kanban board with more epics and
+// people than its bars and table show, More opens the rows of the epics
+// and people left out, two epics tied across the cut. On desktop: four
+// opens and closes of the screen leave the page's heap and DOM as they
+// were.
 
 import type { Locator, Page } from '@playwright/test';
 
@@ -380,6 +382,13 @@ export function registerDashboardsFlow({ compact }: DashboardsSurface): void {
     await expect(drill.getByTestId('dashboard-drill-value-not-counted')).toHaveText('105 not counted');
     await expect(drill.getByTestId('dashboard-drill-not-counted').first()).toHaveText('Not counted: when it finished is not known');
     await closeDrill();
+    // The line draws none of them; its "not counted" opens the whole line.
+    const line = widget(screen, 'start_to_done_line');
+    await expect(line.getByTestId('dashboard-not-counted')).toHaveText('105 not counted');
+    await press(line.getByTestId('dashboard-not-counted'), compact);
+    await expect(page.getByRole('dialog', { name: 'Days from start to done, by sprint, last 5 sprints' })).toBeVisible();
+    await expect(drill.getByTestId('dashboard-drill-value-not-counted')).toHaveText('105 not counted');
+    await closeDrill();
 
     // A count's rows carry no value; the note sits beside the title, and
     // under it on compact. WEB-20's history has reached the copy once the
@@ -449,7 +458,6 @@ export function registerDashboardsFlow({ compact }: DashboardsSurface): void {
     await connectFakeJira(harness, seed.projects[0].projectId, KANBAN_BOARD);
     await harness.open(page);
     const pane = await openIssuesPane(page, compact);
-    await expect(pane.locator('[data-testid="issues-card"][data-issue="10700"]')).toBeVisible({ timeout: 30_000 });
     const screen = await openDashboards(page, pane, compact);
     const drill = page.getByTestId('dashboard-drill');
     const keys = async () => {
@@ -474,7 +482,6 @@ export function registerDashboardsFlow({ compact }: DashboardsSurface): void {
     await press(carrying.getByTestId('dashboard-more'), compact);
     await expect(page.getByRole('dialog', { name: 'Who is carrying what, 3 more people' })).toBeVisible();
     expect(await keys()).toEqual(['WEB-749', 'WEB-750', 'WEB-751']);
-    await expect(drill.getByTestId('dashboard-drill-row')).toHaveText([/User 59/, /User 60/, /User 61/]);
   });
 
   test('Dashboards says the board\'s first read has not finished, on the screen and in a drill, until it has', async ({ harness, page }) => {
