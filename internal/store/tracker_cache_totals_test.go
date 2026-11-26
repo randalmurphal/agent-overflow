@@ -59,8 +59,12 @@ func pagedTotals(t *testing.T, s *Store, root int64, board string, rg testRegrou
 				continue
 			}
 			total.Rows++
-			if estimated && row.Estimate != nil {
+			switch {
+			case !estimated:
+			case row.Estimate != nil:
 				total.Estimate += *row.Estimate
+			default:
+				total.Unestimated++
 			}
 		}
 		if !page.More {
@@ -118,6 +122,8 @@ func requireCountsMatchPagesWith(t *testing.T, s *Store, root int64, board strin
 			want.All.Rows++
 			if e != nil {
 				estimates = append(estimates, *e)
+			} else if estimated {
+				want.All.Unestimated++
 			}
 			return nil
 		})

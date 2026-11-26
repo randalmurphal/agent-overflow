@@ -304,13 +304,15 @@ func readMirrorSectionTx(tx sqlQueryer, rootID int64, boardID string, board mirr
 	return page, nil
 }
 
-// MirrorSectionTotal is how many rows a section holds and the sum of the
-// board's estimates of them; a row with no estimate, or one read no later
-// than the board's estimate definition last changed (unknown), adds nothing,
-// and a board with no estimate unit sums to zero.
+// MirrorSectionTotal is how many rows a section holds, the sum of the
+// board's estimates of them and how many of them have none; a row with no
+// estimate, or one read no later than the board's estimate definition last
+// changed (unknown), adds nothing to the sum and counts as having none, and
+// a board with no estimate unit sums to zero and counts none.
 type MirrorSectionTotal struct {
-	Rows     int
-	Estimate float64
+	Rows        int
+	Estimate    float64
+	Unestimated int
 }
 
 // MirrorSectionCounts are the totals of each section of a board at its
@@ -345,7 +347,8 @@ var (
 		mirrorCountRowsFromSQL
 	mirrorRegroupedCountRowsSQL = `SELECT ` + mirrorBacklog(mirrorInOpenSprintMembersSQL, mirrorRegroupedNotDone("?4")) + `, i.status_id, ` +
 		mirrorRowEstimate("?3") + `, iif(` + mirrorLeftOut("?4") + `, b.issue_id, NULL)` + mirrorCountRowsFromSQL
-	mirrorCountSprintsRowsSQL = `SELECT sp.sprint_id, count(*), total(` + mirrorRowEstimate("?3") + `) FROM tracker_cache_sprints sp
+	mirrorCountSprintsRowsSQL = `SELECT sp.sprint_id, count(*), total(` + mirrorRowEstimate("?3") + `), count(*) - count(` + mirrorRowEstimate("?3") + `)
+		  FROM tracker_cache_sprints sp
 		  CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = sp.root_id AND m.sprint_id = sp.sprint_id
 		  CROSS JOIN tracker_cache_board_issues b ON b.root_id = sp.root_id AND b.issue_id = m.issue_id AND b.board_id = sp.board_id
 		 WHERE sp.root_id = CAST(?1 AS INTEGER) AND sp.board_id = ?2`
@@ -405,6 +408,9 @@ func countMirrorSectionsTx(tx sqlQueryer, rootID int64, boardID string, board mi
 		t.Rows++
 		if estimated {
 			t.Estimate += estimate.Float64
+			if !estimate.Valid {
+				t.Unestimated++
+			}
 		}
 		return t
 	}
@@ -447,11 +453,11 @@ func countMirrorSectionsTx(tx sqlQueryer, rootID int64, boardID string, board mi
 	err = scanMirrorRows(tx, sprints, sprintArgs, func(r rowScanner) error {
 		var sprint string
 		var total MirrorSectionTotal
-		if err := r.Scan(&sprint, &total.Rows, &total.Estimate); err != nil {
+		if err := r.Scan(&sprint, &total.Rows, &total.Estimate, &total.Unestimated); err != nil {
 			return err
 		}
 		if !estimated {
-			total.Estimate = 0
+			total.Estimate, total.Unestimated = 0, 0
 		}
 		counts.Sprints[sprint] = total
 		return nil

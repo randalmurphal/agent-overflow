@@ -33,8 +33,8 @@ func sectionRow(id, order, status string, estimate float64, sprints ...string) M
 // the rows in no open sprint of the board (a closed one, or one only
 // another board shows, leaves them there) whose status is not done or
 // canceled, an unknown status counting as not done. The counts and their
-// estimate sums agree with the pages; a board with no estimate unit sums
-// to zero.
+// estimate sums and counts of rows with no estimate agree with the pages; a
+// board with no estimate unit sums and counts zero.
 func TestListMirrorSectionSelectsItsRows(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
@@ -82,9 +82,9 @@ func TestListMirrorSectionSelectsItsRows(t *testing.T) {
 
 	counts, err := s.CountMirrorSections(root, "10", MirrorRegroup{})
 	want := MirrorSectionCounts{Revision: page.Revision, TotalsRevision: currentTotalsRevision(s, root, "10"),
-		All: MirrorSectionTotal{8, 17}, Backlog: MirrorSectionTotal{3, 9},
-		Sprints: map[string]MirrorSectionTotal{"20": {2, 5}, "21": {2, 6}, "22": {1, 2}},
-		Columns: map[int]MirrorSectionTotal{0: {2, 1}, 1: {3, 7}, 2: {2, 0}}}
+		All: MirrorSectionTotal{8, 17, 4}, Backlog: MirrorSectionTotal{3, 9, 2},
+		Sprints: map[string]MirrorSectionTotal{"20": {2, 5, 1}, "21": {2, 6, 0}, "22": {1, 2, 0}},
+		Columns: map[int]MirrorSectionTotal{0: {2, 1, 1}, 1: {3, 7, 1}, 2: {2, 0, 2}}}
 	if err != nil || page.Revision == 0 || !reflect.DeepEqual(counts, want) {
 		t.Fatalf("counts = %+v, %v\nwant %+v", counts, err, want)
 	}

@@ -387,6 +387,19 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 			_, err := s.ListMirrorSection(root, board, regroup, MirrorSection{Kind: MirrorSectionBacklog}, MirrorRowKey{})
 			return err
 		})
+		out["pace, last 5 sprints"+regrouped.name] = measureScale(t, rec, nil, func(int) error {
+			pace, err := mirrorReadSnapshot(s, "pace", func(tx sqlQueryer) ([]MirrorSprintFinished, error) {
+				shown, _, err := readMirrorShownBoardTx(tx, root, board)
+				if err != nil {
+					return nil, err
+				}
+				return readMirrorPaceTx(tx, root, board, shown, regroup)
+			})
+			if err == nil && len(pace) != MirrorPaceSprints {
+				err = fmt.Errorf("pace of %d sprints, want %d", len(pace), MirrorPaceSprints)
+			}
+			return err
+		})
 		out["section counts"+regrouped.name] = measureScale(t, rec, nil, func(int) error {
 			_, err := s.CountMirrorSections(root, board, regroup)
 			return err

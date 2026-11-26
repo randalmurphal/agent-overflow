@@ -319,6 +319,11 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 		"the listed issues with no row, kept in listing order, the unlisted rows read within the settle window or never listed, " +
 			"and the listed rows no listing marked: a listing's misses, not the board"},
 	{"ORDER BY position, sprint_id LIMIT", "USE TEMP B-TREE FOR ORDER BY", "one board's sprints, at most mirrorMaxSprints"},
+	{"ORDER BY completed_at DESC, position DESC LIMIT", "USE TEMP B-TREE FOR ORDER BY", "one board's closed sprints, at most mirrorMaxSprints"},
+	{"ORDER BY completed_at DESC, position DESC LIMIT", "SCAN l", "the last MirrorPaceSprints closed sprints, which drive the members' lookups by key"},
+	{"ORDER BY completed_at DESC, position DESC LIMIT", "USE TEMP B-TREE FOR GROUP BY", "the members of the last MirrorPaceSprints sprints"},
+	{"WHERE st.root_id = CAST(?1 AS INTEGER) AND st.status_group = 4 AND st.status_id NOT IN (SELECT o.key FROM json_each(", "SEARCH st USING PRIMARY KEY (root_id=?)",
+		"the statuses that count as done when a sprint closed (mirrorPaceSQL) are listed once a statement from the root's catalog"},
 	{`DELETE FROM main."tracker_cache_`, "", "a restore empties each mirror table whole"},
 	{"SELECT max(0, (SELECT coalesce(max(read_at), 0) FROM tracker_cache_users WHERE root_id = CAST(?1 AS INTEGER))", "",
 		"the read clock's seed (mirrorReadSeedSQL) walks the root's rows of each table holding a read time, once per root per process, at its first read"},

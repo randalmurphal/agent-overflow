@@ -202,7 +202,7 @@ func TestARowEstimateShowsOnlyInItsOwnUnit(t *testing.T) {
 	})
 	must[Outcome](t)(m.svc.tickStructure(t.Context(), m.scope(), Background))
 	v := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, sprint))
-	if r := v.Sections[0].Rows[0]; v.Estimate.Unit != "time" || r.Estimate != nil || v.Sprints[0].Total != (SectionTotal{Rows: 1}) {
+	if r := v.Sections[0].Rows[0]; v.Estimate.Unit != "time" || r.Estimate != nil || v.Sprints[0].Total != (SectionTotal{Rows: 1, Unestimated: 1}) {
 		t.Fatalf("a row read in points shows %v in the board's unit %s; sprint total %+v", r.Estimate, v.Estimate.Unit, v.Sprints[0].Total)
 	}
 	if iv := must[IssueView](t)(m.svc.Issue(m.conn.ID, "10001")); iv.Boards[0].Estimate != nil {
