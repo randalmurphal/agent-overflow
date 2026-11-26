@@ -356,7 +356,7 @@ func TestListMirrorIssueRowsPages(t *testing.T) {
 }
 
 // The rows of several open tickets' issues read together, by issue and
-// then board, each with its estimate and its board's unit; a row on a board
+// then board, each with its estimate and its board's unit and field; a row on a board
 // no project lists any more is left out, and so is an issue the mirror has
 // no row of.
 func TestListMirrorTicketRows(t *testing.T) {
@@ -366,15 +366,20 @@ func TestListMirrorTicketRows(t *testing.T) {
 	five := 5.0
 	estimated := webRow("10001", 5, "a")
 	estimated.Estimate = &five
-	writeMirrorBoard(t, s, root, "10", []MirrorRow{estimated, webRow("10002", 5, "b")})
+	st := webStructure()
+	st.Board.ID, st.Board.EstimateField = "10", "customfield_10016"
+	if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st)); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteRowPage(t, s, root, webPage("10", estimated, webRow("10002", 5, "b")), nil)
 	writeMirrorBoard(t, s, root, "11", []MirrorRow{webRow("10001", 5, "a")})
 	writeMirrorBoard(t, s, root, "12", []MirrorRow{webRow("10001", 5, "a")})
 	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10", "11")
 	rows, err := s.ListMirrorTicketRows(root, []string{"10002", "10001", "10009"})
 	want := []MirrorTicketRow{
-		{IssueID: "10001", BoardID: "10", Estimate: &five, EstimateUnit: MirrorEstimatePoints},
+		{IssueID: "10001", BoardID: "10", Estimate: &five, EstimateUnit: MirrorEstimatePoints, EstimateField: "customfield_10016"},
 		{IssueID: "10001", BoardID: "11", EstimateUnit: MirrorEstimatePoints},
-		{IssueID: "10002", BoardID: "10", EstimateUnit: MirrorEstimatePoints},
+		{IssueID: "10002", BoardID: "10", EstimateUnit: MirrorEstimatePoints, EstimateField: "customfield_10016"},
 	}
 	if err != nil || !reflect.DeepEqual(rows, want) {
 		t.Fatalf("rows = %+v, %v", rows, err)

@@ -12,7 +12,11 @@
 // service that calls them is internal/trackerapp.
 package tracker
 
-import "time"
+import (
+	"slices"
+	"strings"
+	"time"
+)
 
 // IDs are the tracker's own identifiers as text, unique within one
 // connection. A key such as WEB-1 is display and lookup text and never
@@ -341,12 +345,43 @@ type Detail struct {
 	// status it went to; zero when it holds none.
 	StatusChanged StatusChange
 	Moves         []Move
+	// Estimates are the issue's values of each field a board may estimate
+	// by that the read returned, nil Value for one the issue has none in,
+	// by Estimate.Field, in Field order (EstimateBy).
+	Estimates []FieldEstimate
 	Catalog
 	// Read is the provider's own record of this read, which its first
 	// write to the issue after the read may take (IssueRead); nil when the
 	// provider keeps none. It is never encoded: a stored body
 	// (trackerapp's body blob) holds the rest of the detail.
 	Read IssueRead `json:"-"`
+}
+
+// FieldEstimate is an issue's value of a field a board may estimate by
+// (Estimate.Field), in that board's unit; nil for none.
+type FieldEstimate struct {
+	Field string
+	Value *float64
+}
+
+// EstimateBy is d's estimate on a board that estimates by e, when the
+// read carried e's field: carried is false for a board with no estimate
+// and for a field the read did not return, such as a Jira field outside
+// the issue's context, whose board's own read holds the value. The value
+// is the caller's own.
+func (d Detail) EstimateBy(e Estimate) (v *float64, carried bool) {
+	if e.Unit == UnitNone {
+		return nil, false
+	}
+	i, found := slices.BinarySearchFunc(d.Estimates, e.Field, func(fe FieldEstimate, field string) int { return strings.Compare(fe.Field, field) })
+	if !found {
+		return nil, false
+	}
+	if x := d.Estimates[i].Value; x != nil {
+		n := *x
+		v = &n
+	}
+	return v, true
 }
 
 // Details are the details of several issues read together (Provider.Details):

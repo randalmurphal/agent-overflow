@@ -16,6 +16,11 @@ import (
 //     first move or edit of the issue takes it (Move, Edit), so the
 //     provider does not read again what the call read; a later write
 //     reads as any write does;
+//   - each issue's row on each board as the session's rows reads found
+//     it (run.boardRows, tracker RowsRead), until the call sends anything
+//     to the issue: its first estimate on that board takes it
+//     (SetEstimate), so the provider does not check again that the
+//     board lists the issue;
 //   - the project a key lookup made in the session (Lookup) found each
 //     issue in, with how many writes other than comments the session had
 //     sent on the connection then: a comment the session adds to the
@@ -46,6 +51,7 @@ type sessionKey struct{}
 // owed, by connection in the order the writes were made.
 type writeSession struct {
 	reads    map[ticketKey]tracker.IssueRead
+	rowReads map[ticketKey]map[tracker.BoardID]tracker.IssueRead
 	projects map[ticketKey]keptProject
 	// others counts the writes other than comments the session sent, by
 	// connection.
@@ -77,7 +83,8 @@ func WithWrites(ctx context.Context) context.Context {
 		return ctx
 	}
 	return context.WithValue(ctx, sessionKey{}, &writeSession{
-		reads: map[ticketKey]tracker.IssueRead{}, projects: map[ticketKey]keptProject{}, others: map[string]int{},
+		reads: map[ticketKey]tracker.IssueRead{}, rowReads: map[ticketKey]map[tracker.BoardID]tracker.IssueRead{},
+		projects: map[ticketKey]keptProject{}, others: map[string]int{},
 		sentTo: map[ticketKey]bool{}, owed: map[string]*owedRefresh{},
 	})
 }
@@ -107,6 +114,35 @@ func (sess *writeSession) read(id string, issue tracker.IssueID) tracker.IssueRe
 		return nil
 	}
 	return sess.reads[ticketKey{connection: id, issue: issue}]
+}
+
+// keepRows keeps the read of each row of rows, on board of connection
+// id, for the issue's first estimate on the board, when ctx carries a
+// session and nothing was sent to the issue in it yet.
+func (sess *writeSession) keepRows(id string, board tracker.BoardID, rows tracker.Rows) {
+	if sess == nil || rows.Read == nil {
+		return
+	}
+	for _, row := range rows.Rows {
+		k := ticketKey{connection: id, issue: row.Card.ID}
+		read := rows.Read.RowRead(row.Card.ID)
+		if read == nil || sess.sentTo[k] {
+			continue
+		}
+		if sess.rowReads[k] == nil {
+			sess.rowReads[k] = map[tracker.BoardID]tracker.IssueRead{}
+		}
+		sess.rowReads[k][board] = read
+	}
+}
+
+// rowRead is the session's read of issue's row on board of connection
+// id, nil when it holds none or something was sent to the issue since.
+func (sess *writeSession) rowRead(id string, board tracker.BoardID, issue tracker.IssueID) tracker.IssueRead {
+	if sess == nil {
+		return nil
+	}
+	return sess.rowReads[ticketKey{connection: id, issue: issue}][board]
 }
 
 // keptProject is the project a key lookup found an issue in, and the
@@ -159,7 +195,7 @@ func (sess *writeSession) sending(id string, op writeOp) {
 }
 
 // sent records that res was sent on connection id: no later write takes
-// a read of the issues its parts name.
+// a read of the issues its parts name, of the issue or of its rows.
 func (sess *writeSession) sent(id string, res tracker.Result) {
 	if sess == nil {
 		return
@@ -168,6 +204,7 @@ func (sess *writeSession) sent(id string, res tracker.Result) {
 		k := ticketKey{connection: id, issue: issue}
 		sess.sentTo[k] = true
 		delete(sess.reads, k)
+		delete(sess.rowReads, k)
 	}
 }
 

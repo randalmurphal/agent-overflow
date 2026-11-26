@@ -8,15 +8,29 @@ import type { SectionNumbers } from '../../stores/trackerBacklogModel';
 
 const DAY_MS = 86_400_000;
 
-/** An estimate in the board's unit: points as they are, time (seconds) as
- * hours or minutes; null for a board without estimates or a row with none. */
+/** A row's estimate in the board's unit: points with every digit they
+ * hold, the shortest that reads back as the same number, as the ticket's
+ * field and an agent's read print them (Go's trackertools `estimate`), so
+ * a value passed back is the value held; time (seconds) as hours or
+ * minutes; null for a board without estimates or a row with none. */
 export function formatEstimate(value: number | null | undefined, unit: string): string | null {
+  return estimateIn(value, unit, String);
+}
+
+/** A sum of estimates, or an average of them, as `formatEstimate` words
+ * one but with points to one decimal: a sum of fractions prints no
+ * floating-point remainder. */
+export function formatEstimateSum(value: number | null | undefined, unit: string): string | null {
+  return estimateIn(value, unit, trim);
+}
+
+function estimateIn(value: number | null | undefined, unit: string, points: (n: number) => string): string | null {
   if (value == null || unit === 'none' || unit === '') return null;
   if (unit === 'time') {
     if (value < 3600) return `${Math.round(value / 60)}m`;
     return `${trim(value / 3600)}h`;
   }
-  return trim(value);
+  return points(value);
 }
 
 function trim(n: number): string {
@@ -25,7 +39,7 @@ function trim(n: number): string {
 
 /** A column's count and, for a board with estimates, its sum. */
 function formatTotal(total: SectionTotal, unit: string): string {
-  const sum = formatEstimate(total.estimate, unit);
+  const sum = formatEstimateSum(total.estimate, unit);
   return sum === null ? String(total.rows) : `${total.rows} · ${sum}${unit === 'points' ? ' pts' : ''}`;
 }
 
@@ -91,7 +105,7 @@ export interface LinePart {
 export function sectionLine(kind: 'active' | 'future' | 'backlog', n: SectionNumbers, unit: string): LinePart[] {
   const estimated = unit === 'points' || unit === 'time';
   const measure = (t: { rows: number; estimate: number }) => (estimated ? t.estimate : t.rows);
-  const bare = (v: number) => (estimated ? (formatEstimate(v, unit) ?? '0') : trim(v));
+  const bare = (v: number) => (estimated ? (formatEstimateSum(v, unit) ?? '0') : trim(v));
   const word = (v: number) => (unit === 'points' ? (v === 1 ? ' point' : ' points') : unit === 'time' ? '' : v === 1 ? ' ticket' : ' tickets');
   const tickets = (v: number) => (v === 1 ? ' ticket' : ' tickets');
   const parts: LinePart[] = [];

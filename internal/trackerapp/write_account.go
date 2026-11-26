@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 
@@ -126,6 +127,19 @@ func compareResources(a, b tracker.Resource) int {
 	bAuthor, bDay := b.Worklogs()
 	return cmp.Or(cmp.Compare(a.Kind(), b.Kind()), cmp.Compare(a.Board(), b.Board()), cmp.Compare(a.Issue(), b.Issue()),
 		cmp.Compare(aAuthor, bAuthor), aDay.Compare(bDay))
+}
+
+// readErr is why the refresh did not read every resource again, as a
+// read's failure: the mirror ending, or the first stale read's failure;
+// nil when it read them all.
+func (f *refreshed) readErr() error {
+	switch {
+	case f.ended:
+		return fmt.Errorf("trackerapp: read again: %w", store.ErrTrackerCacheGone)
+	case len(f.stale) > 0:
+		return f.stale[0].err
+	}
+	return nil
 }
 
 // lastCallError is the tracker's failure of the refresh's last failed

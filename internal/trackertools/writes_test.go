@@ -189,6 +189,64 @@ func TestUpdateRefusedByTheTicketSendsNothing(t *testing.T) {
 	}
 }
 
+// An estimate is read and checked on its board alone: a ticket that board
+// no longer lists is refused its estimate when the plan reads it, with no
+// other board tried, and is sent nothing when the read after the approval
+// finds it gone from the board, while the others are sent theirs.
+func TestAnEstimateIsReadOnItsBoardAlone(t *testing.T) {
+	t.Parallel()
+	w := newWriteFixture(t)
+	w.f.offBoard = map[string]bool{"conn-jira/10012/1": true}
+	answer, err := w.update(t, map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"estimate": 5}})
+	if want := `{"tickets":[{"key":"WEB-12","refused":"estimate: WEB-12 is not on board \"Web Team\" any more, or the user's account cannot see it; read it again and call again for it."}]}`; err != nil || answer != want {
+		t.Fatalf("answer = %s, %v\nwant %s", answer, err, want)
+	}
+	if want := []string{"lookup conn-jira WEB-12", "rows conn-jira 10012 1"}; !slices.Equal(w.f.asked, want) || len(w.f.writes) != 0 {
+		t.Fatalf("asked %q, writes %q; want %q and nothing sent", w.f.asked, w.f.writes, want)
+	}
+
+	w = newWriteFixture(t)
+	w.h.approve = func(Approval) error {
+		w.f.offBoard = map[string]bool{"conn-jira/10012/1": true}
+		return nil
+	}
+	answer, err = w.update(t, map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "set": map[string]any{"estimate": 5}})
+	if want := `{"tickets":[{"key":"WEB-12","refused":"WEB-12 is not on board \"Web Team\" any more, or the user's account cannot see it, so nothing was sent to it; read it again and call again for it.","not_sent":["estimate"]},{"key":"WEB-18","applied":["estimate"]}]}`; err != nil || answer != want {
+		t.Fatalf("answer = %s, %v\nwant %s", answer, err, want)
+	}
+	if want := []string{"lookup conn-jira WEB-12,WEB-18", "rows conn-jira 10012 1", "rows conn-jira 10018 1", "rows conn-jira 10012 1", "rows conn-jira 10018 1"}; !slices.Equal(w.f.asked, want) {
+		t.Fatalf("asked %q; want %q: the keys' lookup, then the rows reads alone", w.f.asked, want)
+	}
+	if want := []string{`estimate conn-jira {"board":"1","issue":"10018","value":5}`}; !slices.Equal(w.f.writes, want) {
+		t.Fatalf("writes %q; want %q", w.f.writes, want)
+	}
+}
+
+// A points estimate reads with every digit it holds, and the text a read
+// gives, passed back, is the estimate held: already, nothing sent.
+func TestAPointsEstimateReadsBackAsItIs(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		v    float64
+		want string
+	}{{1.25, "1.25 points"}, {0.125, "0.125 points"}, {2.5, "2.5 points"}, {13, "13 points"}} {
+		w := newWriteFixture(t)
+		d := w.f.details["conn-jira/10012"]
+		v := c.v
+		d.Rows = []trackerapp.TicketRowView{{Board: "1", Estimate: &v, Unit: "points"}}
+		w.f.details["conn-jira/10012"] = d
+		read, err := w.call(t, "session-1", "ticket_read", map[string]any{"key": "WEB-12"})
+		if err != nil || !strings.Contains(read, `"estimate":"`+c.want+`"`) {
+			t.Errorf("%v: ticket_read = %s, %v; want the estimate %q", c.v, read, err, c.want)
+			continue
+		}
+		answer, err := w.update(t, map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"estimate": c.want}})
+		if want := `{"tickets":[{"key":"WEB-12","already":["estimate"]}]}`; err != nil || answer != want || len(w.f.writes) != 0 {
+			t.Errorf("%v: the read's %q passed back = %s, %v, writes %q; want %s", c.v, c.want, answer, err, w.f.writes, want)
+		}
+	}
+}
+
 // Field names match without regard to case; a name no field has is
 // refused naming the ticket's fields, and so is a field no one can edit.
 // The estimate takes the form a read prints, and answers to the name of

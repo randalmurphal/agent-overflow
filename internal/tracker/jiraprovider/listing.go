@@ -201,6 +201,7 @@ func (p *Provider) boardRows(ctx context.Context, id tracker.BoardID, issues []t
 	}
 	out.Missing = missing(issues, found)
 	out.Catalog = cat.out
+	out.Read = listedRows{board: id, found: found}
 	return out, nil
 }
 

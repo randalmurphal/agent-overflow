@@ -78,9 +78,12 @@ func (s *Service) Move(ctx context.Context, id string, in MoveRequest) (WriteVie
 	return s.write(ctx, id, call1(m, tracker.Provider.Move))
 }
 
-// SetEstimate sets an issue's estimate on a board.
+// SetEstimate sets an issue's estimate on a board; the first write to the
+// issue in ctx's session takes the session's read of its row there.
 func (s *Service) SetEstimate(ctx context.Context, id string, in EstimateRequest) (WriteView, error) {
-	return s.write(ctx, id, call1(in.model(), tracker.Provider.SetEstimate))
+	m := in.model()
+	m.Read = sessionOf(ctx).rowRead(id, m.Board, m.Issue)
+	return s.write(ctx, id, call1(m, tracker.Provider.SetEstimate))
 }
 
 // Rank places issues between two neighbors on a board, a part per issue.

@@ -114,6 +114,10 @@ var (
 	// ErrIssueNotFound is an issue the tracker did not return: deleted, or
 	// not visible to the token's user.
 	ErrIssueNotFound = errors.New("trackerapp: the tracker did not return the issue")
+	// ErrNotOnBoard is an issue a rows read of a board did not return a
+	// row of: the board no longer lists it, or the tracker no longer shows
+	// it to the token's user.
+	ErrNotOnBoard = errors.New("trackerapp: the board no longer lists the issue")
 )
 
 // Service owns the tracker connections of this computer: their rows'

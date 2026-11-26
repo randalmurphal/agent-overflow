@@ -211,7 +211,8 @@ func (p *Provider) Move(ctx context.Context, in tracker.MoveInput) tracker.Resul
 // field, in the board's unit: points, or seconds for original time,
 // which Jira takes in whole minutes. Zero is an estimate of zero, as the
 // jira client writes it; a nil Value clears. An issue the board does not
-// list is refused before anything is sent.
+// list, as in.Read found it or as read now, is refused before anything is
+// sent.
 func (p *Provider) SetEstimate(ctx context.Context, in tracker.EstimateInput) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepEstimate, err, in.Issue)
@@ -237,7 +238,7 @@ func (p *Provider) SetEstimate(ctx context.Context, in tracker.EstimateInput) tr
 	default:
 		value = jira.Points(*v)
 	}
-	listed, err := p.onBoard(ctx, b, []tracker.IssueID{in.Issue})
+	listed, err := p.listedFor(ctx, b, in)
 	if err != nil {
 		return part(beforeSend(err))
 	}
@@ -245,6 +246,38 @@ func (p *Provider) SetEstimate(ctx context.Context, in tracker.EstimateInput) tr
 		_, _, err := p.jira.SetEstimate(ctx, jira.EstimateInput{Issue: string(in.Issue), Board: b.cfg.BoardID, Value: value})
 		return part(outcome(err))
 	})
+}
+
+// listedRows is a rows read's tracker.RowsRead: the board listed each
+// issue found at the read.
+type listedRows struct {
+	board tracker.BoardID
+	found map[tracker.IssueID]bool
+}
+
+func (r listedRows) RowRead(issue tracker.IssueID) tracker.IssueRead {
+	if !r.found[issue] {
+		return nil
+	}
+	return &listedRead{issue: issue, board: r.board}
+}
+
+// listedRead is a row's tracker.IssueRead: the board listed the issue
+// at the read.
+type listedRead struct {
+	issue tracker.IssueID
+	board tracker.BoardID
+}
+
+func (r *listedRead) ReadIssue() tracker.IssueID { return r.issue }
+
+// listedFor is whether b lists in's issue, from in.Read when it is a read
+// of the issue on b, else read now (onBoard).
+func (p *Provider) listedFor(ctx context.Context, b board, in tracker.EstimateInput) (map[tracker.IssueID]*jira.Issue, error) {
+	if r, ok := in.Read.(*listedRead); ok && r.issue == in.Issue && r.board == in.Board {
+		return map[tracker.IssueID]*jira.Issue{in.Issue: {ID: string(in.Issue)}}, nil
+	}
+	return p.onBoard(ctx, b, []tracker.IssueID{in.Issue})
 }
 
 // Rank places issues on a board next to the input's anchor, through the

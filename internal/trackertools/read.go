@@ -830,8 +830,11 @@ func (sh *sheet) items(part string) ([]any, string) {
 }
 
 // estimate is the ticket's estimate as its screen shows it with no board
-// in view: the first board row's, in points, or as a time in minutes
-// under an hour and hours from one.
+// in view: the first board row's, in points with every digit they hold,
+// the shortest that reads back as the same number, as the screen prints
+// them (boardFormat.ts formatEstimate), so the text passed back is the
+// estimate held; or as a time in minutes under an hour and hours from
+// one.
 func estimate(rows []trackerapp.TicketRowView) string {
 	if len(rows) == 0 || rows[0].Estimate == nil {
 		return ""
@@ -839,7 +842,7 @@ func estimate(rows []trackerapp.TicketRowView) string {
 	v := *rows[0].Estimate
 	switch rows[0].Unit {
 	case "points":
-		return trimNumber(v) + " points"
+		return strconv.FormatFloat(v, 'f', -1, 64) + " points"
 	case "time":
 		if v < 3600 {
 			return strconv.Itoa(int(math.Round(v/60))) + "m"
@@ -849,8 +852,8 @@ func estimate(rows []trackerapp.TicketRowView) string {
 	return ""
 }
 
-// trimNumber is n as the ticket screen writes an estimate: whole, or to
-// one decimal place.
+// trimNumber is n as the ticket screen writes hours: whole, or to one
+// decimal place.
 func trimNumber(n float64) string {
 	if n == math.Trunc(n) {
 		return strconv.FormatFloat(n, 'f', -1, 64)

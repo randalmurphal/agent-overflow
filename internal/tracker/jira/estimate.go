@@ -18,20 +18,26 @@ import (
 // estimates by original time; Jira keeps it in seconds.
 const timeEstimateField = "timeoriginalestimate"
 
-// Estimate reads is's estimate in the board's estimation field: points,
-// or seconds for the original time estimate. set is false when the
-// issue has none. The issue must have been read with the field
+// Estimate reads is's estimate in the board's estimation field (Issue
+// Estimate). The issue must have been read with the field
 // (Estimation.FieldID); a board that estimates by no field is an error.
 func (b BoardConfig) Estimate(is *Issue) (value float64, set bool, err error) {
 	if b.Estimation.Type != EstimateField || b.Estimation.FieldID == "" {
 		return 0, false, fmt.Errorf("jira: board %d estimates by %s, not by a field", b.BoardID, b.Estimation.Type)
 	}
-	n, err := is.Field(b.Estimation.FieldID).Number()
+	return is.Estimate(b.Estimation.FieldID)
+}
+
+// Estimate reads is's value of the number field id as an estimate:
+// points, or seconds for the original time estimate. set is false when
+// the issue has none.
+func (is *Issue) Estimate(id string) (value float64, set bool, err error) {
+	n, err := is.Field(id).Number()
 	if errors.Is(err, ErrNoValue) {
 		return 0, false, nil
 	}
 	if err != nil {
-		return 0, false, fmt.Errorf("jira: the estimate of %s: %w", is.Key, err)
+		return 0, false, fmt.Errorf("jira: %s of %s: %w", id, is.Key, err)
 	}
 	return n, true, nil
 }
