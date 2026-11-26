@@ -43,7 +43,11 @@
   });
 
   const read = $derived(trackerSiteFieldsOf(project, tracker, site, holds));
-  const catalog = $derived(catalogOf(read.fields ?? []));
+  // The catalog is built once per answer: `read` is a new object at each
+  // change of the props, its fields the same array until the site is read
+  // again.
+  const answered = $derived(read.fields);
+  const catalog = $derived(catalogOf(answered ?? []));
 
   // The name typed in each list's find box.
   let finds = $state({ fields: '', sections: '' });
@@ -57,11 +61,12 @@
   }
 
   /** A site's catalog as the page reads it: each field as a list shows
-   * it, by ID, and the fields that are not sections, which a ticket's rail
-   * lists. */
+   * it, by ID, the fields that are not sections, which a ticket's rail
+   * lists, and those that are. */
   interface Catalog {
     readonly items: ReadonlyMap<string, Item>;
     readonly rail: readonly PinField[];
+    readonly sections: readonly PinField[];
   }
 
   const BUILT_IN: Record<string, string> = { description: 'Description', links: 'Linked tickets', attachments: 'Attachments' };
@@ -71,7 +76,7 @@
     for (const f of fields) named.set(f.name, (named.get(f.name) ?? 0) + 1);
     const items = new Map<string, Item>(Object.entries(BUILT_IN).map(([id, n]) => [id, { id, name: n, shared: false }]));
     for (const f of fields) items.set(f.id, { id: f.id, name: f.name, shared: (named.get(f.name) ?? 0) > 1 });
-    return { items, rail: fields.filter((f) => !isSection(f)) };
+    return { items, rail: fields.filter((f) => !isSection(f)), sections: fields.filter(isSection) };
   }
 
   function itemOf(id: string): Item {
@@ -115,7 +120,7 @@
       rest = railIDs;
     } else {
       // Every Jira ticket has a place for attachments (TicketScreen).
-      const layout = ticketSections(read.fields ?? [], pins.sections, true);
+      const layout = ticketSections(catalog.sections, pins.sections, true);
       pinned = [...layout.shown, ...layout.missing];
       rest = () => layout.folded;
     }

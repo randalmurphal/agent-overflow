@@ -192,6 +192,23 @@ describe('<TrackerFieldsSettings>', () => {
     await screen.findByTestId('settings-tracker-fields-none');
   });
 
+  it('scans no field of the catalog for a pin made with nothing typed', async () => {
+    let touched = 0;
+    class Counted implements PinField {
+      constructor(private readonly i: number) {}
+      get id(): string { touched++; return `customfield_${10000 + this.i}`; }
+      get name(): string { touched++; return `Field ${this.i}`; }
+      get kind(): string { return 'text'; }
+    }
+    catalogs = { [SITE]: Array.from({ length: 400 }, (_, i) => new Counted(i + 1)) };
+    render(TrackerFieldsSettings);
+    await screen.findAllByTestId('tracker-fields-find');
+    touched = 0;
+    await fireEvent.click(within(list('fields')).getAllByTestId('tracker-fields-pinned')[0]);
+    await waitFor(() => expect(names(list('fields'), 'tracker-fields-pinned')).toEqual(['Field 3']));
+    expect(touched).toBe(0);
+  });
+
   it('reads a site again when the connections that reach it change, and only then', async () => {
     render(TrackerFieldsSettings);
     await screen.findAllByTestId('tracker-fields-find');
