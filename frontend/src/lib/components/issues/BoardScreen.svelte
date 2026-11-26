@@ -80,7 +80,9 @@
     openIssue: string | null;
     /** The tracker has issue types (not Linear). */
     typed: boolean;
-    onOpenCard: (row: RowView) => void;
+    /** Opens a card's ticket: over or beside the board, or in its own
+     * pane. */
+    onOpenCard: (row: RowView, ownPane: boolean) => void;
     /** A move whose screen takes fields: the ticket opens with its form. */
     onMoveWithFields: (row: RowView, move: MoveView) => void;
   }
@@ -580,7 +582,8 @@
       url={cardURL(held.shape, open.row.card)}
       moving={cardBusy(boardKey, ctx)}
       atMove={open.atMove}
-      onOpen={() => onOpenCard(open.row)}
+      onOpen={() => onOpenCard(open.row, false)}
+      onOwnPane={() => onOpenCard(open.row, true)}
       onOpenURL={() => { void handleExternalURL(cardURL(held.shape, open.row.card)); }}
       onCopy={(text, what) => { void copy(text, what); }}
       onEdit={(field) => onEditCard(open.row, field)}

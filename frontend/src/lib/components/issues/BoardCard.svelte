@@ -12,10 +12,11 @@
   // One card of the Board screen: the epic or parent, the title, labels,
   // then type, priority and key, the estimate and the assignee, and how
   // long the card has sat in its status. Display hides any of them but the
-  // title. A click opens its ticket, and its menu (right-click, the Menu
-  // key, or a long press under compact) lists what can be done with it;
-  // the open ticket's card is marked. The assignee is initials
-  // (ReviewAvatar); no avatar image is fetched.
+  // title. A click opens its ticket, with Ctrl or Cmd in a pane of its own
+  // (`opensTicketPane`), and its menu (right-click, the Menu key, or a
+  // long press under compact) lists what can be done with it; the open
+  // ticket's card is marked. The assignee is initials (ReviewAvatar); no
+  // avatar image is fetched.
   //
   // Changing it (docs/specs/issues.md, "Board"). On a pointer screen the
   // type, priority, estimate and assignee marks each open that field's
@@ -39,6 +40,7 @@
   import { BOARD_CARD_TARGETS, fieldTarget, ticketWrites } from '../../stores/trackerTicketWrites.svelte';
   import { cardFieldName, type CardEditField } from './ticketEditors';
   import { daysInStatus, formatEstimate } from './boardFormat';
+  import { opensTicketPane } from '../../stores/ticketPanes.svelte';
 
   interface Props {
     row: RowView;
@@ -58,7 +60,8 @@
     carried: boolean;
     /** The field whose editor is open on this card; null for none. */
     editing: CardEditField | null;
-    onOpen: (row: RowView) => void;
+    /** Opens its ticket: over or beside the board, or in its own pane. */
+    onOpen: (row: RowView, ownPane: boolean) => void;
     onMenu: (row: RowView, event: MouseEvent) => void;
     onEdit: (row: RowView, field: CardEditField | null) => void;
     /** Opens Move to… at `anchor` (compact's status mark). */
@@ -127,7 +130,7 @@
     aria-label="Open {card.key}: {card.title}"
     aria-current={open ? 'true' : undefined}
     data-testid="issues-card-open"
-    onclick={() => onOpen(row)}
+    onclick={(event) => onOpen(row, opensTicketPane(event))}
   ></button>
   {#if !compact}
     <span

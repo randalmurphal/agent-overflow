@@ -225,7 +225,7 @@ describe('the attachments section', () => {
 
 describe('the poker section', () => {
   const attachment = (onScreen: boolean[]): TrackerTicketAttachment =>
-    ({ key: CTX.key, ref: REF, current: null, error: null, setShown: () => {}, setPokerShown: (v: boolean) => onScreen.push(v), release: () => {} });
+    ({ key: CTX.key, ref: REF, current: null, error: null, tracker: null, setShown: () => {}, setPokerShown: (v: boolean) => onScreen.push(v), release: () => {} });
   const view = (revealed: boolean, votes: Array<[string, number | null, boolean?]>): PokerView => ({
     loaded: true, revealed, read_at: 0,
     votes: votes.map(([name, value, mine]) => ({ voter: { id: name, name }, value, mine })),

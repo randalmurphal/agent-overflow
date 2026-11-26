@@ -15,7 +15,9 @@
 // and a move's form (target `status`), with the text each long field of
 // it started from. A draft goes with Cancel, an applied write of its
 // target, or its ticket leaving every pane's open ticket and Back trail
-// (`holdTicketDrafts`): Close, another board, the trail's cap.
+// (`holdTicketDrafts`, and a ticket pane's record): Close, another board,
+// the trail's cap. A ticket moved into a pane of its own keeps its drafts:
+// the pane's record holds it before the Issues pane lets it go.
 //
 // Loss consent is `trackerWriteOutcome.ts#LossConsent`'s, for every write
 // a loss can refuse (a section's text, a comment's edit, a move's form):
@@ -105,12 +107,14 @@ import {
 } from './bindings';
 import { attachedBackendEntry, backendDisplayName } from './attachedBackends.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
+import { onTicketPanesChanged, ticketPaneRefs } from './ticketPanes.svelte';
 import { trackerBoardsSettled } from './trackerBoard.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import {
   onTrackerTicketDetail,
   refreshTrackerTicket,
   trackerTicketDetail,
+  trackerTicketKey,
   trackerTicketSettled,
   type CommentChange,
   type TrackerTicketRef,
@@ -345,25 +349,31 @@ export function setTicketMoveField(ticket: string, field: string, filled: MoveFi
   putDraft(writeKey(ticket, 'status'), { ...open, fields: new Map(open.fields).set(field, filled) });
 }
 
-/** One pane's hold on its tickets' drafts: `set` names the tickets it
- * holds open or on its Back trail, and a draft of a ticket no pane holds
- * goes. */
+// A draft of a ticket no pane holds goes: no Issues pane's hold names it
+// and no ticket pane shows it or has it on its Back trail.
+function pruneDrafts(): void {
+  const panes = new Set(ticketPaneRefs().map(trackerTicketKey));
+  for (const [k, { draft }] of drafts) {
+    if (panes.has(draft.ticket)) continue;
+    if (![...draftHolders.values()].some((held) => held.has(draft.ticket))) putDraft(k, null);
+  }
+}
+onTicketPanesChanged(pruneDrafts);
+
+/** One Issues pane's hold on its tickets' drafts: `set` names the tickets
+ * it holds open or on its Back trail. A ticket pane's tickets are held
+ * through its record (`stores/ticketPanes.svelte#ticketPaneRefs`). */
 export function holdTicketDrafts(): { set(tickets: readonly string[]): void; release(): void } {
   const id = nextDraftHolder++;
   draftHolders.set(id, new Set());
-  const prune = () => {
-    for (const [k, { draft }] of drafts) {
-      if (![...draftHolders.values()].some((held) => held.has(draft.ticket))) putDraft(k, null);
-    }
-  };
   return {
     set(tickets) {
       draftHolders.set(id, new Set(tickets));
-      prune();
+      pruneDrafts();
     },
     release() {
       draftHolders.delete(id);
-      prune();
+      pruneDrafts();
     },
   };
 }

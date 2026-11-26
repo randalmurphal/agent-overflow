@@ -263,6 +263,27 @@ Widths are CSS pixels of the pane, not the window.
 - The split between list and ticket is dragged, starts at half, is
   remembered per screen and resets on double-click. The ticket keeps at
   least 380 and the list at least 520.
+- A card, a linked ticket or the parent pressed with Ctrl or Cmd, or
+  Open in its own pane in their menus, opens the ticket in a pane of its
+  own right of the focused pane, at the average pane width, and focuses
+  it; a ticket that already has one is focused there instead. In its own
+  pane in a ticket's menu moves the ticket into one, with what is being
+  written on it, and the Issues pane shows the list again. The pane
+  wears a tool pane's header in every state, with maximize and close: its
+  title is the ticket's key (Ticket until the key is known), moves the
+  pane, and maximizes it on a double-click; the ticket's own controls sit
+  beside it. While the ticket's computer is not connected, the pane says
+  so and shows the ticket when it connects. A linked ticket opened in it
+  takes its place, with Back, as in the Issues pane. Escape closes the
+  Details rail, then steps back, and never closes the pane. A thread
+  opened while the pane is focused takes its slot, as it does a tool
+  pane's. A pane move by keyboard puts the keyboard in the ticket, so the
+  arrows and Page Down scroll it. The layout saves which ticket the pane
+  shows (its computer, connection and issue) and nothing the tracker
+  wrote: after a reload the pane shows that ticket without its Back trail,
+  titled Ticket with an empty title line until the ticket is read, and its
+  points are those of the first board the ticket is on. One whose ticket
+  cannot be read back says so until it is closed.
 
 ### Board
 
@@ -278,7 +299,8 @@ opens the ticket with its form; leaving the board before its moves are
 known moves nothing and leaves the card free), or within its column, which ranks it (a card let go anywhere
 but over a column's cards goes home and changes nothing; several cards
 ranked one after another in a column are sent in turn); under compact, the
-status mark's Move to…; and the card's menu: Open, Open in the tracker,
+status mark's Move to…; and the card's menu: Open, Open in its own pane
+(where ticket panes are offered), Open in the tracker,
 Move to…, Move to sprint…, the four fields, Copy key and Copy link, some
 at once and the rest behind Show more, the set shown at once chosen in
 the menu and kept on the device. A dropped card waits where it was
@@ -326,7 +348,7 @@ avatar.
 ### Ticket
 
 Status: built: a ticket opened from a card, from a thread's linked
-ticket or from a pull request's ticket chip, over or beside the board, the choice remembered, with the split between them; the wide and narrow
+ticket or from a pull request's ticket chip, over or beside the board, the choice remembered, with the split between them, or in a pane of its own; the wide and narrow
 layouts with the rail and Details; status, assignee, priority, points and
 type changed in place, a move whose screen takes fields through their form, and the other fields with allowed values or one
 typed value behind the control with its find box (a field of several
@@ -347,8 +369,8 @@ its result in the section or the ticket's menu; on Jira, the
 estimate in the header and Log time; the control that opens it in the
 tracker; Back through the tickets opened from one another; and Work, with
 Ask and Start work. Not built: pinning a field or a section, the mark on a
-section holding the template text, the thread an agent's comment came
-from, and a ticket in a pane of its own.
+section holding the template text, and the thread an agent's comment came
+from.
 
 - At 720 or wider the content is on the left and a rail on the right holds
   Fields, then Work. Narrower, the ticket shows the content only, with one
@@ -375,7 +397,10 @@ from, and a ticket in a pane of its own.
   project the board was opened under, or the one the opener named for a
   ticket opened from a thread or a pull request. Opening the ticket
   already shown from another thread or pull request takes that one's
-  project, unless the person picked one. There are no suggested prompts.
+  project, unless the person picked one. A ticket moved to a pane of its
+  own keeps the project it had; one opened there from a linked ticket, or
+  restored after a reload, has none until the person picks it. There are
+  no suggested prompts.
 - Comments can be read oldest or newest first, and the order is remembered.
   Past five, earlier comments sit behind a control. The comment box stays
   in view while comments are in view. A comment written by an agent names
@@ -384,7 +409,13 @@ from, and a ticket in a pane of its own.
   or pasting), linked tickets grouped by relation, and a control that opens
   it in the tracker. Jira tickets offer Estimate and Log time.
 - A Linear ticket has no type mark, a fixed field list, and no time or
-  poker controls.
+  poker controls. Until the ticket's computer answers its opening, it offers
+  neither tracker's own controls. They stay while the computer reconnects.
+  An open Log time keeps what was typed and logs once the computer confirms
+  the person's account again; it closes if the computer answers that it
+  knows no account there.
+- The parent's chip opens the parent; its right-click or long-press menu
+  opens it here or in a pane of its own and copies its key.
 
 ### Tickets, pull requests and branches
 
@@ -533,7 +564,7 @@ window 640 wide or narrower. On top of those rules:
 - A backlog row is two lines: the title, then type, key, epic, priority,
   points and assignee. Labels show on the ticket only.
 - A ticket takes the whole pane in its narrow form. Back closes the fields
-  rail, then the ticket.
+  rail, then the ticket. A ticket does not open in a pane of its own.
 - Dashboard widgets stack, number tiles two to a row. A tile shows How this
   is counted and any control that is switched on; the limit and the board
   pin show while the dashboard is being edited. A ticket list shows its

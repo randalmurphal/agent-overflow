@@ -14,6 +14,7 @@
   import ChatView from '../chat/ChatView.svelte';
   import CompanionPane from './CompanionPane.svelte';
   import ToolPane from './ToolPane.svelte';
+  import TicketPane from './TicketPane.svelte';
   import RenderBoundary from '../shared/RenderBoundary.svelte';
   import {
     focusPane,
@@ -26,6 +27,7 @@
     getPaneLayoutItems,
     getPromotedPaneId,
     isCompanionKind,
+    isSurfaceKind,
     isToolKind,
     paneItemMinWidthPx,
     type PaneLayoutItem,
@@ -540,9 +542,9 @@
         ></div>
       {/if}
       {@const companion = isCompanionKind(item.kind)}
-      {@const pane = companion || isToolKind(item.kind) ? undefined : getPane(item.paneId)}
+      {@const pane = companion || isSurfaceKind(item.kind) ? undefined : getPane(item.paneId)}
       {@const promoted = shownPromotedId === item.paneId}
-      {#if !companion && !isToolKind(item.kind) && !pane}
+      {#if !companion && !isSurfaceKind(item.kind) && !pane}
         <section
           style={sectionStyle(item)}
           style:clip-path={promotion.clipFor(item.paneId)}
@@ -554,7 +556,7 @@
           Pane unavailable.
         </section>
       {:else}
-        <!-- One section for every pane kind. Only a thread pane or a tool
+        <!-- One section for every pane kind. Only a thread, tool or ticket
              pane leads a layout block, so only they take reorder drops and
              show the drag states; a thread pane with a take-control
              terminal shares the top border that marks the pair on both
@@ -643,6 +645,10 @@
                  with no ThreadPane. ToolPane owns the render boundary. -->
             {@const toolKind = item.kind}
             <ToolPane paneId={item.paneId} kind={toolKind} {onPaneDragStart} />
+          {:else if item.kind === 'ticket'}
+            <!-- A ticket in a pane of its own, with no ThreadPane. TicketPane
+                 owns the render boundary. -->
+            <TicketPane paneId={item.paneId} {onPaneDragStart} />
           {:else if pane}
             <RenderBoundary label="This thread pane" testId="pane-render-error">
               <ChatView {pane} {onPaneDragStart} />

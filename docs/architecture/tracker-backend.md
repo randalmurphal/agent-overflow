@@ -1565,6 +1565,13 @@ address in one place (`trackerBoardModel.ts#cardURL`).
 - Both answers carry the failure the subscribers were last told, the
   tracker's or one outside it, so a subscriber that joins while reads fail
   shows the failure.
+- A ticket's answer names its connection's kind, and its view (the answer
+  and every `TicketDetail`) the person's account there as the
+  connection's row holds it, empty before a verification records one. A
+  verification that records another account tells each open ticket of
+  the connection as changed (`tellTicketAccount`); a pump made after it
+  starts from the new row. Both happen under `opMu`, so no ticket misses
+  the change.
 - `SetSubscriptionVisible`, `RefreshSubscription` and `ReleaseSubscription`
   take any handle; one the service does not hold fails a visibility change
   or a refresh with `ErrUnknownSubscription`. A refresh is a person's read: a board's four
@@ -2156,7 +2163,8 @@ the `bindings.ts` wrappers of the connection methods, the two picker lists,
 `stores/trackerProjectBoards.svelte.ts`), and the Issues pane's Board
 screen, with the `bindings.ts` wrappers of `TrackerBoardChoices` and the
 board subscription's methods and `tracker:board_updated`'s TypeScript
-type, and its ticket screen, with the wrappers of the ticket
+type, and its ticket screen, in the Issues pane or a pane of its own,
+with the wrappers of the ticket
 subscription's methods, `TrackerComments`, the issue and comment writes,
 `TrackerAssignableUsers` and `TrackerChoices`, and
 `tracker:issue_updated`'s TypeScript type, and the ticket's attachments,
@@ -2184,7 +2192,6 @@ are outside the tracker (a store error, the cleanup), and a tracker
 failure of the loop's sync shows on its connection's row as its problem.
 Not built, owed by the app layer:
 
-- A ticket in a pane of its own.
 - A sprint edit on the Backlog screen: the `bindings.ts` wrapper of
   `EditTrackerSprint` ships with it.
 - The rest of the project's tracker setup, each a section of its file:

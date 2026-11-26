@@ -4,6 +4,7 @@ import type {
   AgentPaneScopeSnapshot,
   PaneLayoutPersistedPane,
   PaneLayoutPersistedSettings,
+  PaneLayoutPersistedTicket,
 } from '../types/settings';
 import { debounce } from '../utils/debounce';
 import {
@@ -15,6 +16,7 @@ import {
 import { ListThreads } from './bindings';
 import {
   getPaneLayoutItems,
+  isSurfaceKind,
   isToolKind,
   paneLayoutMutationRevision,
   setPaneLayoutPersistenceHandlers,
@@ -26,6 +28,7 @@ import { getMinPaneWidth } from './paneDensity.svelte';
 import { FALLBACK_PANE_WIDTH_PX, normalizePaneWidthPx } from '../utils/paneWidths';
 import { restoreCompanion, type PersistedCompanionKind } from './companionPanes.svelte';
 import { agentScopeForPane, seedAgentStateForPane } from './agentPane.svelte';
+import { restoreTicketPane, ticketPaneCarrier } from './ticketPanes.svelte';
 import {
   focusPane,
   getAllPanes,
@@ -100,8 +103,9 @@ function isSafePersistedPaneId(paneId: string): boolean {
 // for a same-named source pane (companionPaneIdFor('main','plan') ===
 // 'plan-main'), so reject it at the parse edge. Real companion entries
 // keep the shape — this guard applies to thread panes only. Tool pane ids
-// (`tool-<kind>`) are reserved the same way.
-const COMPANION_SHAPED_PANE_ID = /^(?:plan|review|take-control|browser|agent|side-chat|tool)-/;
+// (`tool-<kind>`) and ticket pane ids (`ticket-<random>`) are reserved the
+// same way.
+const COMPANION_SHAPED_PANE_ID = /^(?:plan|review|take-control|browser|agent|side-chat|tool|ticket)-/;
 
 function isSafePersistedThreadPaneId(paneId: string): boolean {
   return isSafePersistedPaneId(paneId) && !COMPANION_SHAPED_PANE_ID.test(paneId);
@@ -151,6 +155,27 @@ export function parsePersistedAgentScope(value: unknown): AgentPaneScopeSnapshot
   // ancestry the pane is not actually showing.
   if (breadcrumb[breadcrumb.length - 1].itemId !== scopeItemId) return null;
   return { scopeItemId, breadcrumb };
+}
+
+function boundedString(value: unknown, max: number): value is string {
+  return typeof value === 'string' && value.length <= max;
+}
+
+/**
+ * Validate a ticket pane's saved ticket: its computer, connection and
+ * issue. Anything else answers null: the pane comes back with no ticket
+ * and says so (components/panes/TicketPane.svelte). A layout saved with
+ * the ticket's key, title, board and tracker (before they stopped being
+ * saved) reads the same; those are not kept.
+ */
+export function parsePersistedTicket(value: unknown): PaneLayoutPersistedTicket | null {
+  if (!value || typeof value !== 'object') return null;
+  const { backend, connection, issue } = value as Record<string, unknown>;
+  // The home computer's key is the empty string.
+  if (!boundedString(backend, MAX_ITEM_ID_LENGTH)) return null;
+  if (!boundedString(connection, MAX_ITEM_ID_LENGTH) || connection.length === 0) return null;
+  if (!boundedString(issue, MAX_ITEM_ID_LENGTH) || issue.length === 0) return null;
+  return { backend, connection, issue };
 }
 
 function companionPaneIdFor(sourcePaneId: string, kind: PersistedCompanionKind): string {
@@ -254,6 +279,13 @@ function parsePersistedLayout(raw: unknown): PersistedPaneLayout | null {
         kind: pane.kind,
         widthPx: persistedWidthFor(pane, record.version),
       });
+    } else if (pane.kind === 'ticket') {
+      // A ticket that does not read back keeps its pane, which says so
+      // until the person closes it.
+      if (!pane.paneId.startsWith('ticket-')) continue;
+      const ticket = parsePersistedTicket(pane.ticket);
+      seenPaneIds.add(pane.paneId);
+      panes.push({ paneId: pane.paneId, kind: 'ticket', ...(ticket ? { ticket } : {}), widthPx: persistedWidthFor(pane, record.version) });
     }
     if (panes.length >= MAX_RESTORED_PANES) break;
   }
@@ -314,10 +346,13 @@ function buildSnapshot(): PersistedPaneLayout {
         kind: item.kind,
         widthPx: normalizePersistedWidthPx(item.widthPx),
       });
+    } else if (item.kind === 'ticket') {
+      const ticket = ticketPaneCarrier(item.paneId);
+      panes.push({ paneId: item.paneId, kind: 'ticket', ...(ticket ? { ticket: { ...ticket } } : {}), widthPx: normalizePersistedWidthPx(item.widthPx) });
     }
   }
   // Focus persists as-is when the focused pane itself is in the snapshot
-  // (thread panes, panel companions and tool panes). A focused take-control pane is
+  // (thread panes, panel companions, tool panes and ticket panes). A focused take-control pane is
   // ephemeral — fall back to its source thread pane, then to the first pane.
   const focusedPaneId = getFocusedPaneId();
   const focusedThreadPaneId = getFocusedThreadPaneId();
@@ -386,13 +421,21 @@ export async function loadPersistedPaneLayout(
     const threadId = thread.id;
     if (neededThreadIds.has(threadId)) threadById.set(threadId, thread);
   }
-  // Thread and tool panes interleave in their saved order; companions are
-  // placed after their source below.
+  // Thread, tool and ticket panes interleave in their saved order;
+  // companions are placed after their source below.
   const layoutItems: PaneLayoutItem[] = [];
   const registryEntries: Array<{ paneId: string; thread: Thread }> = [];
   for (const pane of persisted.panes) {
     if (isToolKind(pane.kind)) {
       layoutItems.push({ id: pane.paneId, paneId: pane.paneId, kind: pane.kind, widthPx: pane.widthPx });
+      continue;
+    }
+    if (pane.kind === 'ticket') {
+      // The record is written before the layout takes its item, so the
+      // pane's first render reads it; a pane whose ticket did not read
+      // back has none and says so.
+      if (pane.ticket) restoreTicketPane(pane.paneId, pane.ticket);
+      layoutItems.push({ id: pane.paneId, paneId: pane.paneId, kind: 'ticket', widthPx: pane.widthPx });
       continue;
     }
     if (pane.kind !== 'thread' || !pane.threadId) continue;
@@ -416,7 +459,7 @@ export async function loadPersistedPaneLayout(
   if (paneLayoutMutationRevision() !== expectedRevision) return;
 
   const restoredLeadItems = layoutItems.filter(
-    (item) => isToolKind(item.kind) || getAllPanes().has(item.paneId),
+    (item) => isSurfaceKind(item.kind) || getAllPanes().has(item.paneId),
   );
   const companionsBySource = new Map<string, PaneLayoutItem[]>();
   for (const pane of companionPanes) {
@@ -452,7 +495,7 @@ export async function loadPersistedPaneLayout(
   }
   setPaneLayoutItems(restoredLayoutItems);
 
-  // A persisted focused COMPANION or TOOL id can only be honored now — the
+  // A persisted focused COMPANION, TOOL or TICKET id can only be honored now — the
   // hydrate above validated against thread panes and fell back to one of
   // those. Upgrade once its layout item exists.
   if (

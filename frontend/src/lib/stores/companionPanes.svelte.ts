@@ -23,6 +23,7 @@ import {
   getPaneLayoutItems,
   isCompanionKind,
   isThreadHostingPaneKind,
+  paneLayoutKindOf,
   removePaneLayoutItem,
   type CompanionPaneKind,
 } from './paneLayout.svelte';
@@ -39,6 +40,7 @@ import {
   revealPane,
 } from './panes.svelte';
 import { deleteSideChatThread } from './sideChatThread';
+import { closeTicketPane } from './ticketPanes.svelte';
 import { closeToolPane, toolKindOf } from './toolPanes.svelte';
 
 export type CompanionKind = CompanionPaneKind;
@@ -268,7 +270,8 @@ function takeDownCompanion(paneId: string, mode: 'close' | 'hide'): void {
 /**
  * Close one pane by id, whichever kind it is: a companion closes as a
  * companion (its registration dropped, its source refocused, a side chat's
- * thread deleted), a tool pane as a tool, a thread pane is destroyed. The
+ * thread deleted), a tool pane as a tool, a ticket pane as a ticket pane,
+ * a thread pane is destroyed. The
  * single owner of that branch; the pane-header close control and
  * `pane.close` (on its paneCommandTarget) route here. It lives in this store
  * because panes.svelte.ts must not depend on companion stores.
@@ -277,6 +280,7 @@ export function closePaneById(paneId: string): void {
   const companion = companionPanes.get(paneId);
   if (companion) closeCompanion(companion.paneId);
   else if (toolKindOf(paneId)) closeToolPane(paneId);
+  else if (paneLayoutKindOf(paneId) === 'ticket') closeTicketPane(paneId);
   else destroyPane(paneId);
 }
 
