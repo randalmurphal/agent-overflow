@@ -90,6 +90,7 @@ var methodServerBounds = map[string]time.Duration{
 	"FetchForgeAttachment":    gitops.ForgeAttachmentTimeout + transport.DefaultMethodBudget,
 	"SaveForgeAttachment":     gitops.ForgeAttachmentTimeout + transport.DefaultMethodBudget,
 	// withinMethodBudget.
+	"SearchTicketWork":         transport.MethodBudget("SearchTicketWork"),
 	"SaveCIArtifacts":          transport.MethodBudget("SaveCIArtifacts"),
 	"SavePRCIJobLog":           transport.MethodBudget("SavePRCIJobLog"),
 	"AgentRemoteFetchArtifact": transport.MethodBudget("AgentRemoteFetchArtifact"),

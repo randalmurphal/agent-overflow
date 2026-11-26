@@ -53,7 +53,7 @@ func TestGetGitStatusBypassesCachedPRLookupError(t *testing.T) {
 			return
 		}
 		req := readGitHubGraphQL(t, r)
-		if req == nil || req.OperationName != "OpenPRsByHead" {
+		if req == nil || req.OperationName != "PRsByHead" {
 			t.Errorf("unexpected forge request %s %s", r.Method, r.URL)
 			http.NotFound(w, r)
 			return
