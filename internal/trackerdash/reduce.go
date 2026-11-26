@@ -23,25 +23,26 @@ type Num struct {
 func value(v float64) Num { return Num{V: &v} }
 
 // notCounted is the tickets of rows that are not counted and that no
-// counted row of rows counts.
+// counted row of rows of the same series counts: a ticket created in the
+// range and finished at a time not known is not counted as finished.
 func notCounted(rows []contribution) int {
 	if !slices.ContainsFunc(rows, func(c contribution) bool { return !c.counted }) {
 		return 0
 	}
-	seen := map[string]bool{}
+	type key struct{ ticket, series string }
+	counts := map[key]bool{}
 	for _, c := range rows {
 		if c.counted {
-			seen[c.ticket] = true
+			counts[key{c.ticket, c.series}] = true
 		}
 	}
-	n := 0
+	tickets := map[string]bool{}
 	for _, c := range rows {
-		if !c.counted && !seen[c.ticket] {
-			seen[c.ticket] = true
-			n++
+		if !c.counted && !counts[key{c.ticket, c.series}] {
+			tickets[c.ticket] = true
 		}
 	}
-	return n
+	return len(tickets)
 }
 
 var gapNum = Num{Gap: true}
@@ -129,18 +130,23 @@ func reduceRange(r Reducer, periods []period, placed map[string][]contribution, 
 	return n
 }
 
-// place sorts a period-bound metric's rows into the periods of cur and
-// prev by period ID: by the sprint its bucket names for a metric grouped
-// by sprint, else by its at. A row that falls in no period is out of the
-// range. A row with no at belongs to no period: it is unplaced, and not
-// counted whatever its value, since the metric cannot say when it
-// happened.
-func place(m Metric, rows []contribution, periods ...[]period) (map[string][]contribution, []contribution) {
+// place sorts a period-bound metric's rows into the periods of ranges by
+// period ID: by the sprint its bucket names for a metric grouped by
+// sprint, else by its at. A row that falls in no period is out of the
+// ranges.
+//
+// A row with no instant (a finish time not known) could have happened
+// after its ticket's creation and at or before its last update. It
+// belongs to each range that span meets and to no other. It is counted in
+// none, and the current range lists it once on every widget (a number's
+// drill, a chart's "N not counted"). unplaced[i] is the rows of
+// ranges[i]; spanOf is a ticket's creation and last update.
+func place(m Metric, rows []contribution, spanOf func(ticket string) (from, to int64), ranges ...[]period) (map[string][]contribution, [][]contribution) {
 	out := map[string][]contribution{}
-	var unplaced []contribution
+	unplaced := make([][]contribution, len(ranges))
 	bySprint := map[string]period{}
 	var all []period
-	for _, ps := range periods {
+	for _, ps := range ranges {
 		for _, p := range ps {
 			all = append(all, p)
 			for _, s := range p.sprints {
@@ -158,7 +164,12 @@ func place(m Metric, rows []contribution, periods ...[]period) (map[string][]con
 		}
 		if !c.hasAt {
 			c.counted = false
-			unplaced = append(unplaced, c)
+			from, to := spanOf(c.ticket)
+			for i, ps := range ranges {
+				if slices.ContainsFunc(ps, func(p period) bool { return max(from, p.from) < min(to, p.to) }) {
+					unplaced[i] = append(unplaced[i], c)
+				}
+			}
 			continue
 		}
 		for _, p := range all {

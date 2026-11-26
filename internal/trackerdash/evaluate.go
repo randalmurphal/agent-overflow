@@ -382,10 +382,10 @@ func how(m Metric, p prepared, plansSprints bool, estimates string) How {
 }
 
 // evaluation is one opened, filled and sealed session with the board's
-// rows the app reads beside the metrics: each ticket's key, assignee and
-// epic, which the narrowing and the order of rows read for every row; a
-// shown row's title, status and estimate are read with its page
-// (titles).
+// rows the app reads beside the metrics: each ticket's key, assignee,
+// epic, creation and last update, which the narrowing, the order of rows
+// and the placement of a row with no instant read for every row; a shown
+// row's title, status and estimate are read with its page (titles).
 type evaluation struct {
 	s         *session
 	export    store.MirrorExport
@@ -398,6 +398,7 @@ type evaluation struct {
 
 type ticketRow struct {
 	key, assignee, epic string
+	created, updated    int64
 }
 
 // open opens a session, fills it with b's export of relations and seals
@@ -459,10 +460,14 @@ func (ev *evaluation) readBoard(ctx context.Context) error {
 		return err
 	})
 	if err == nil {
-		err = ev.query(ctx, `SELECT id, key, coalesce(assignee, ''), coalesce(epic, '') FROM tickets`, func(r *sql.Rows) error {
+		// The creation and last update are held for the evaluation's life
+		// alone, as the rest of the evaluation is: the span a row with no
+		// instant could have happened in (place). A creation not known is
+		// 0, any time before the update.
+		err = ev.query(ctx, `SELECT id, key, coalesce(assignee, ''), coalesce(epic, ''), coalesce(created_at, 0), coalesce(updated_at, 0) FROM tickets`, func(r *sql.Rows) error {
 			var id string
 			var t ticketRow
-			err := r.Scan(&id, &t.key, &t.assignee, &t.epic)
+			err := r.Scan(&id, &t.key, &t.assignee, &t.epic, &t.created, &t.updated)
 			ev.tickets[id] = t
 			return err
 		})
@@ -799,19 +804,83 @@ func rangeView(sp span) RangeView {
 	return v
 }
 
-// inRange is c's rows placed in the range's periods, the placement, and
-// the rows that name no instant (unplaced: the range's, not counted, in no
-// period); all of c's rows for a metric that counts now.
-func inRange(m Metric, c counted, sp span) ([]contribution, map[string][]contribution, []contribution) {
+// ranged is a metric's rows sorted into a range and the one before it
+// (inRange).
+type ranged struct {
+	// rows is the rows in the range's periods; all of the metric's rows
+	// for one that counts now.
+	rows []contribution
+	// placed is the rows of both ranges' periods by period ID; nil for a
+	// metric that counts now.
+	placed map[string][]contribution
+	// unplaced and unplacedBefore are the rows with no instant of the
+	// range and of the one before it: not counted, in no period (place).
+	unplaced, unplacedBefore []contribution
+}
+
+// inRange is c's rows sorted into the range sp and the one before it.
+func (ev *evaluation) inRange(m Metric, c counted, sp span) ranged {
 	if !c.p.cols.periodBound(m) {
-		return c.rows, nil, nil
+		return ranged{rows: c.rows}
 	}
-	placed, unplaced := place(m, c.rows, sp.periods, sp.previous)
-	var rows []contribution
+	spanOf := func(ticket string) (int64, int64) {
+		t := ev.tickets[ticket]
+		return t.created, t.updated
+	}
+	placed, unplaced := place(m, c.rows, spanOf, sp.periods, sp.previous)
+	g := ranged{placed: placed, unplaced: unplaced[0], unplacedBefore: unplaced[1]}
 	for _, p := range sp.periods {
-		rows = append(rows, placed[p.id]...)
+		g.rows = append(g.rows, placed[p.id]...)
 	}
-	return rows, placed, unplaced
+	return g
+}
+
+// ranks is whether a widget ranks its buckets and shows the first of
+// them: a bars or table widget whose buckets are not periods. Its drill
+// can name the rest (DrillRequest.Rest).
+func ranks(w Widget, m Metric) bool {
+	return (w.Form == FormBars || w.Form == FormTable) && m.Bucket != BucketPeriod && m.Bucket != BucketSprint
+}
+
+// ranked is a bucket of a widget that ranks its buckets, with its total.
+type ranked struct {
+	key, label string
+	total      Num
+}
+
+// rank is the buckets of rows as widget w shows them: by total, largest
+// first, then by label; the first limit shown, the rest left out. The
+// widget and its drill of the rest take them from here.
+func (ev *evaluation) rank(w Widget, m Metric, rows []contribution) (shown, rest []ranked, grouped map[string][]contribution) {
+	keys, grouped := group(rows, func(c contribution) string { return c.bucket })
+	all := make([]ranked, 0, len(keys))
+	for _, k := range keys {
+		all = append(all, ranked{key: k, label: ev.label(m.Bucket, k), total: reduceRows(m.Reduce, grouped[k])})
+	}
+	slices.SortStableFunc(all, func(a, b ranked) int {
+		av, bv := -1.0, -1.0
+		if a.total.V != nil {
+			av = *a.total.V
+		}
+		if b.total.V != nil {
+			bv = *b.total.V
+		}
+		if av != bv {
+			if av > bv {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a.label, b.label)
+	})
+	limit := maxBars
+	if w.Form == FormTable {
+		limit = maxTableRows
+	}
+	if len(all) <= limit {
+		return all, nil, grouped
+	}
+	return all[:limit], all[limit:], grouped
 }
 
 // widget is w's numbers from its metric's rows.
@@ -821,7 +890,8 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 		out.Error = c.err.Sentence
 		return out
 	}
-	rows, placed, unplaced := inRange(m, c, sp)
+	g := ev.inRange(m, c, sp)
+	rows, placed := g.rows, g.placed
 	switch w.Form {
 	case FormNumber:
 		if placed == nil {
@@ -829,17 +899,17 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 			out.Value = &v
 			return out
 		}
-		v := reduceRange(m.Reduce, sp.periods, placed, unplaced)
+		v := reduceRange(m.Reduce, sp.periods, placed, g.unplaced)
 		prev := gapNum
 		if sp.previousGap == "" {
-			prev = reduceRange(m.Reduce, sp.previous, placed, nil)
+			prev = reduceRange(m.Reduce, sp.previous, placed, g.unplacedBefore)
 		}
 		out.Value, out.Previous = &v, &prev
 		for _, p := range sp.periods {
 			out.Trend = append(out.Trend, reduceRows(m.Reduce, placed[p.id]))
 		}
 	case FormList:
-		rows = append(slices.Clone(rows), unplaced...)
+		rows = append(slices.Clone(rows), g.unplaced...)
 		rowsCopy := slices.Clone(rows)
 		sortDrill(rowsCopy, ev.keyOf)
 		out.NotCounted = notCounted(rows)
@@ -863,7 +933,10 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 			}
 			return b
 		}
-		if m.Bucket == BucketPeriod || m.Bucket == BucketSprint {
+		// The range's rows with no instant are in no bucket; its "not
+		// counted" lists them and opens the whole widget.
+		out.NotCounted = notCounted(g.unplaced)
+		if !ranks(w, m) {
 			for _, p := range sp.periods {
 				out.Buckets = append(out.Buckets, cell(p.id, p.label, p.partial, reduceRows(m.Reduce, placed[p.id]), placed[p.id]))
 			}
@@ -872,40 +945,9 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 		// The shown buckets are chosen by their totals before any of their
 		// cells is made, so an answer holds at most limit buckets of the
 		// declared series' cells however many buckets the rows name.
-		type ranked struct {
-			key, label string
-			total      Num
-		}
-		keys, grouped := group(rows, func(c contribution) string { return c.bucket })
-		all := make([]ranked, 0, len(keys))
-		for _, k := range keys {
-			all = append(all, ranked{key: k, label: ev.label(m.Bucket, k), total: reduceRows(m.Reduce, grouped[k])})
-		}
-		slices.SortStableFunc(all, func(a, b ranked) int {
-			av, bv := -1.0, -1.0
-			if a.total.V != nil {
-				av = *a.total.V
-			}
-			if b.total.V != nil {
-				bv = *b.total.V
-			}
-			if av != bv {
-				if av > bv {
-					return -1
-				}
-				return 1
-			}
-			return strings.Compare(a.label, b.label)
-		})
-		limit := maxBars
-		if w.Form == FormTable {
-			limit = maxTableRows
-		}
-		if len(all) > limit {
-			out.More = len(all) - limit
-			all = all[:limit]
-		}
-		for _, b := range all {
+		shown, rest, grouped := ev.rank(w, m, rows)
+		out.More = len(rest)
+		for _, b := range shown {
 			out.Buckets = append(out.Buckets, cell(b.key, b.label, false, b.total, grouped[b.key]))
 		}
 	}
@@ -958,15 +1000,18 @@ func (ev *evaluation) ticket(c contribution, m Metric, cols columns, i int) Tick
 	return r
 }
 
-// DrillRequest asks for the rows behind one number of a dashboard: a
-// number or list widget's whole number (no Cell), or one bar, point or
-// table cell of a bars, line or table widget (Cell). Page is the page of
-// drillPage rows; Count is the row count page 0 answered, so a later page
-// that finds a different count starts again at page 0.
+// DrillRequest asks for the rows behind one number of a dashboard, one
+// of three targets: the whole widget (no Cell, no Rest), one bar, point or
+// table cell of a bars, line or table widget (Cell), or the buckets a
+// widget that ranks its buckets left out (Rest, what its More opens).
+// Page is the page of drillPage rows; Count is the row count page 0
+// answered, so a later page that finds a different count starts again at
+// page 0.
 type DrillRequest struct {
 	Request
 	Widget string     `json:"widget"`
 	Cell   *DrillCell `json:"cell,omitempty"`
+	Rest   bool       `json:"rest,omitempty"`
 	Page   int        `json:"page"`
 	Count  int        `json:"count,omitempty"`
 }
@@ -1033,20 +1078,30 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 	}
 	ev, sp := o.ev, o.sp
 	out := DrillAnswer{Title: cmpOr(w.Title, m.Title), Reading: !ev.export.FirstReadDone, Unit: m.Unit, Estimates: ev.estimates, Page: r.Page, At: o.now.UnixMilli(), Rows: []TicketRow{}}
-	rows, placed, unplaced := inRange(m, c, sp)
-	whole := w.Form == FormNumber || w.Form == FormList
+	g := ev.inRange(m, c, sp)
+	rows, placed := g.rows, g.placed
 	switch {
-	case whole && r.Cell != nil:
+	case r.Cell != nil && r.Rest:
+		return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("a drill of widget %q names one cell or the rest, not both", truncate(w.ID, 64)), nil)
+	case r.Cell != nil && (w.Form == FormNumber || w.Form == FormList):
 		return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("widget %q is one number; its drill names no bar or cell", truncate(w.ID, 64)), nil)
-	case !whole && r.Cell == nil:
-		return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("widget %q draws bars, points or cells; its drill names the one picked", truncate(w.ID, 64)), nil)
-	case whole && placed == nil:
+	case r.Rest && !ranks(w, m):
+		return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("widget %q shows all it counts; its drill names no rest", truncate(w.ID, 64)), nil)
+	case r.Rest:
+		_, rest, grouped := ev.rank(w, m, rows)
+		rows = nil
+		for _, b := range rest {
+			rows = append(rows, grouped[b.key]...)
+		}
+		out.Title += fmt.Sprintf(", %d more%s", len(rest), map[Bucket]string{BucketPerson: " people", BucketEpic: " epics"}[m.Bucket])
 		out.Value = reduceRows(m.Reduce, rows)
-	case whole:
-		out.Value = reduceRange(m.Reduce, sp.periods, placed, unplaced)
+	case r.Cell == nil && placed == nil:
+		out.Value = reduceRows(m.Reduce, rows)
+	case r.Cell == nil:
+		out.Value = reduceRange(m.Reduce, sp.periods, placed, g.unplaced)
 		out.Title += ", " + strings.ToLower(sp.label[:1]) + sp.label[1:]
-		rows = append(rows, unplaced...)
-	case m.Bucket == BucketPeriod || m.Bucket == BucketSprint:
+		rows = append(rows, g.unplaced...)
+	case !ranks(w, m):
 		j := slices.IndexFunc(sp.periods, func(p period) bool { return p.id == r.Cell.Bucket })
 		if j < 0 {
 			return DrillAnswer{}, refuse("dashboard_request_invalid", "that bar is not in the range any more; read the dashboard again", nil)
@@ -1064,7 +1119,7 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 		rows = cell
 		out.Title += ", " + ev.label(m.Bucket, r.Cell.Bucket)
 	}
-	if !whole {
+	if r.Cell != nil {
 		if r.Cell.Series != "" {
 			if !slices.Contains(m.Series, r.Cell.Series) || !c.p.cols.has(ColumnSeries) {
 				return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("widget %q has no series %q", truncate(w.ID, 64), truncate(r.Cell.Series, 64)), nil)

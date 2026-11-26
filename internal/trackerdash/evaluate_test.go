@@ -281,7 +281,8 @@ func TestDrillRowsReadAsTheMetricCounts(t *testing.T) {
 
 // A cell whose bucket key is empty, Unassigned or No epic, opens its own
 // rows and its series alone, never the whole widget's; a drill's target
-// is checked against its widget's form.
+// is checked against its widget's form: a cell of a chart or table, the
+// rest of one that ranks its buckets, or the whole widget.
 func TestEmptyKeyCellsOpenTheirOwnRows(t *testing.T) {
 	t.Parallel()
 	f := teamBoard()
@@ -315,8 +316,12 @@ func TestEmptyKeyCellsOpenTheirOwnRows(t *testing.T) {
 		want string
 	}{
 		{DrillRequest{Widget: "pace", Cell: &DrillCell{Bucket: "sprint:s4"}}, `widget "pace" is one number`},
-		{DrillRequest{Widget: "carrying"}, `widget "carrying" draws bars, points or cells`},
+		{DrillRequest{Widget: "stuck_list", Cell: &DrillCell{Bucket: ""}}, `widget "stuck_list" is one number`},
 		{DrillRequest{Widget: "carrying", Cell: &DrillCell{Bucket: "u1", Series: "Blocked"}}, `widget "carrying" has no series "Blocked"`},
+		{DrillRequest{Widget: "carrying", Cell: &DrillCell{Bucket: "u1"}, Rest: true}, `names one cell or the rest, not both`},
+		{DrillRequest{Widget: "pace", Rest: true}, `widget "pace" shows all it counts`},
+		{DrillRequest{Widget: "stuck_list", Rest: true}, `widget "stuck_list" shows all it counts`},
+		{DrillRequest{Widget: "finished", Rest: true}, `widget "finished" shows all it counts`},
 	} {
 		if _, err := drill(c.r); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%+v: %v; want %q", c.r, err, c.want)
@@ -426,41 +431,72 @@ func TestWeekBoardCountsByWeek(t *testing.T) {
 	}
 }
 
-// A done ticket whose finish time is not known is listed as not counted
-// by the metrics of finishing when it was updated since the range began,
-// and left out when it was not: WEB-6 was updated 3 days ago, WEB-7 two
-// months ago. It is in the range's number and its drill, in no bar.
-func TestAnUnknownFinishIsListedNotDropped(t *testing.T) {
+// A done ticket whose finish time is not known finished after its
+// creation and at or before its last update. It belongs to each range
+// that span meets, is counted in none, and is listed by the range on
+// every widget: the numbers, their drills, and a chart's "not counted",
+// which opens the whole widget. testNow is Wednesday 25 November; the
+// last 2 weeks run from Monday the 16th, the 2 before from the 2nd.
+//
+//	WEB-1 finished yesterday: counted this range
+//	WEB-6 made 26 October, updated 22 November: either range
+//	WEB-7 updated two months ago: neither, and not read
+//	WEB-8 made in September, updated 8 November: the range before only
+//	WEB-9 made 20 November, updated 23 November: this range only
+func TestAnUnknownFinishBelongsToTheRangesItsTicketSpans(t *testing.T) {
 	t.Parallel()
 	f := newFixture(false, "none").status("5", "Done", "done")
 	f.ticket(ticket{id: "t1", key: "WEB-1", status: "5", group: "done", created: ago(30), historyFrom: ago(30), started: ago(4), done: ago(1)})
 	f.ticket(ticket{id: "t6", key: "WEB-6", status: "5", group: "done", created: ago(30), updated: ago(3)})
 	f.ticket(ticket{id: "t7", key: "WEB-7", status: "5", group: "done", created: ago(90), updated: ago(60)})
+	f.ticket(ticket{id: "t8", key: "WEB-8", status: "5", group: "done", created: ago(70), updated: ago(17)})
+	f.ticket(ticket{id: "t9", key: "WEB-9", status: "5", group: "done", created: ago(5), updated: ago(2)})
+	e := evaluator()
 	r := Request{Dashboard: builtinWeeksID, Range: RangeWeeks2, TimeZone: "UTC"}
-	a := mustEvaluate(t, evaluator(), f.board(), r)
-	if got := num(widgetOf(t, a, "pace").Value); got != "0.5, 1 not counted" {
-		t.Fatalf("weekly pace = %s; want WEB-1 over 2 weeks, WEB-6 not counted", got)
+	a := mustEvaluate(t, e, f.board(), r)
+	pace := widgetOf(t, a, "pace")
+	if got := num(pace.Value); got != "0.5, 2 not counted" {
+		t.Errorf("weekly pace = %s; want WEB-1 over 2 weeks, WEB-6 and WEB-9 not counted (WEB-8 was last updated before the range)", got)
 	}
-	if got := num(widgetOf(t, a, "start_to_done").Value); got != "1.5, 1 not counted" {
-		t.Fatalf("start to done = %s; want WEB-1's 1.5 working days (Saturday noon to Tuesday noon), WEB-6 not counted", got)
+	if got := num(pace.Previous); got != "not known, 2 not counted" {
+		t.Errorf("the pace before = %s; want WEB-6 and WEB-8 not counted, which could have finished then", got)
 	}
+	cycle := widgetOf(t, a, "start_to_done")
+	if got := num(cycle.Value) + " / " + num(cycle.Previous); got != "1.5, 2 not counted / not known, 2 not counted" {
+		t.Errorf("start to done now / before = %s; want WEB-1's 1.5 working days with WEB-6 and WEB-9 not counted, before WEB-6 and WEB-8", got)
+	}
+	cf := widgetOf(t, a, "created_finished")
 	var finished []string
-	for _, b := range widgetOf(t, a, "created_finished").Buckets {
+	for _, b := range cf.Buckets {
 		finished = append(finished, num(&b.Cells[1]))
 	}
-	if !reflect.DeepEqual(finished, []string{"0", "1"}) {
-		t.Fatalf("finished by week = %v; want WEB-1 alone, this week, and no bar for WEB-6", finished)
+	if !reflect.DeepEqual(finished, []string{"0", "1"}) || cf.NotCounted != 2 {
+		t.Errorf("finished by week = %v, %d not counted; want WEB-1 alone, this week, with WEB-6 and WEB-9 in no bar and not counted", finished, cf.NotCounted)
 	}
-	d, err := evaluator().Drill(context.Background(), f.board(), DrillRequest{Request: r, Widget: "pace"})
-	if err != nil {
-		t.Fatal(err)
+	for _, id := range []string{"finished", "start_to_done_line"} {
+		if w := widgetOf(t, a, id); w.NotCounted != 2 {
+			t.Errorf("%s lists %d not counted; want WEB-6 and WEB-9", id, w.NotCounted)
+		}
 	}
-	var rows []string
-	for _, row := range d.Rows {
-		rows = append(rows, fmt.Sprintf("%s %v %s", row.Key, row.Counted, row.Note))
+	rows := func(widget string) []string {
+		t.Helper()
+		d, err := e.Drill(context.Background(), f.board(), DrillRequest{Request: r, Widget: widget})
+		if err != nil {
+			t.Fatalf("%s drill: %v", widget, err)
+		}
+		var out []string
+		for _, row := range d.Rows {
+			out = append(out, fmt.Sprintf("%s %v %s", row.Key, row.Counted, row.Note))
+		}
+		return append(out, num(&d.Value))
 	}
-	if !reflect.DeepEqual(rows, []string{"WEB-1 true ", "WEB-6 false when it finished is not known"}) || num(&d.Value) != "0.5, 1 not counted" {
-		t.Fatalf("pace drill = %s %v; want the tile's number, WEB-1 counted and WEB-6 listed", num(&d.Value), rows)
+	if got, want := rows("pace"), []string{"WEB-1 true ", "WEB-6 false when it finished is not known", "WEB-9 false when it finished is not known", "0.5, 2 not counted"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("pace drill = %q; want %q", got, want)
+	}
+	// The chart's "2 not counted" opens the whole widget: WEB-9's creation
+	// is counted and its finish is not.
+	if got, want := rows("created_finished"), []string{"WEB-1 true ", "WEB-9 true ", "WEB-6 false when it finished is not known", "WEB-9 false when it finished is not known", "2, 2 not counted"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("created and finished drill = %q; want %q", got, want)
 	}
 }
 
@@ -525,5 +561,51 @@ func TestATableMakesTheCellsItShows(t *testing.T) {
 	// cells would cost more than twice that.
 	if mallocs := after.Mallocs - before.Mallocs; mallocs > 120_000 {
 		t.Errorf("the table allocated %d times; its shown cells are %d", mallocs, maxTableRows*3)
+	}
+}
+
+// More opens the rows of the buckets a widget left out, ranked once for
+// the widget and its drill: 50 people in the active sprint with one
+// point each, beside User 1's 5 and User 2's 3, tie across the table's
+// cut, and the drill lists exactly the two people the table does not
+// show. The whole table, which its "not counted" opens, lists every row.
+func TestMoreOpensTheBucketsTheWidgetLeftOut(t *testing.T) {
+	t.Parallel()
+	f := teamBoard()
+	for i := 1; i <= 50; i++ {
+		f.person(fmt.Sprintf("p%02d", i), fmt.Sprintf("User %d", 100+i))
+		f.ticket(ticket{id: fmt.Sprintf("tp%02d", i), key: fmt.Sprintf("WEB-%d", 500+i), status: "1", group: "todo", assignee: fmt.Sprintf("p%02d", i), points: "1", created: ago(5)}).
+			member("s7", fmt.Sprintf("tp%02d", i), false)
+	}
+	e := evaluator()
+	b := f.board()
+	table := widgetOf(t, mustEvaluate(t, e, b, utcSprints3), "carrying")
+	shown := map[string]bool{}
+	for _, bk := range table.Buckets {
+		shown[bk.Key] = true
+	}
+	if len(table.Buckets) != maxTableRows || table.More != 2 || num(&table.Buckets[maxTableRows-1].Total) != "1" {
+		t.Fatalf("table = %d rows, %d more, the last %s; want 50 shown and 2 more, tied at 1 point across the cut", len(table.Buckets), table.More, num(&table.Buckets[maxTableRows-1].Total))
+	}
+	var left []string
+	for i := 1; i <= 50; i++ {
+		if !shown[fmt.Sprintf("p%02d", i)] {
+			left = append(left, fmt.Sprintf("WEB-%d User %d", 500+i, 100+i))
+		}
+	}
+	d, err := e.Drill(context.Background(), b, DrillRequest{Request: utcSprints3, Widget: "carrying", Rest: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, row := range d.Rows {
+		got = append(got, row.Key+" "+row.Assignee)
+	}
+	if !reflect.DeepEqual(got, left) || num(&d.Value) != "2" || d.Title != "Who is carrying what, 2 more people" {
+		t.Fatalf("the rest = %q, %s, %q; want the people the table left out, %q, 2 points", got, num(&d.Value), d.Title, left)
+	}
+	whole, err := e.Drill(context.Background(), b, DrillRequest{Request: utcSprints3, Widget: "carrying"})
+	if err != nil || whole.Count != 54 || num(&whole.Value) != "58" || whole.Title != "Who is carrying what" {
+		t.Fatalf("the whole table = %+v, %v; want its 54 rows, 58 points", whole, err)
 	}
 }
