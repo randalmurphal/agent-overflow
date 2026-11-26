@@ -161,6 +161,7 @@ func (r *ticketWorkRead) addFound(found gitops.PRFound, projectID string) {
 		r.work.PullRequests = append(r.work.PullRequests, row)
 		return
 	}
+	delete(r.recorded, id)
 	listed := r.work.PullRequests[at]
 	row.CI = listed.CI
 	if listed.ProjectID != "" {

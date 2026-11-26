@@ -12,6 +12,7 @@ import (
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/harness/forgefake"
+	"agent-overflow/internal/harness/trackerfake"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/transport"
@@ -31,7 +32,13 @@ type workSearchFixture struct {
 
 func newWorkSearchFixture(t *testing.T, fixture forgefake.Fixture) workSearchFixture {
 	t.Helper()
-	f := newTrackerBoardFixture(t)
+	return newWorkSearchFixtureOn(t, trackerBoardSite(), fixture)
+}
+
+// newWorkSearchFixtureOn is newWorkSearchFixture with the Jira site site.
+func newWorkSearchFixtureOn(t *testing.T, site trackerfake.JiraSite, fixture forgefake.Fixture) workSearchFixture {
+	t.Helper()
+	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: site})
 	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
 	f.subscribe(t, ctx)
 	f.boardEvent(t, "for the first read", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10101") })
