@@ -17,8 +17,11 @@ import (
 // written from (EditedFrom): the client's plan reads the stored document
 // with the edit screen and refuses the edit as stale when the document no
 // longer renders to it, and again when it changes before the write is
-// sent. issue is empty for a create, whose Markdown is written from
-// nothing.
+// sent; an emptied one is a clear of the text it was written from. A
+// clear or typed text of a plain text field written from texts
+// (tracker.Edit.Replacing) carries them, and the plan refuses it as stale
+// when the field stores others. issue is empty for a create, whose
+// Markdown is written from nothing.
 //
 // An edit of a field the catalog does not list, a Markdown edit of a
 // field that is not rich text, a picked or typed one of a rich text
@@ -50,9 +53,14 @@ func (p *Provider) fieldInputs(ctx context.Context, issue tracker.IssueID, edits
 				return nil, invalidf("%s is not rich text; give its value by ID or as typed text", f.Name)
 			}
 			md, from := e.Value.Markdown()
-			out[i].Value = jira.Text(md)
-			if issue != "" {
-				out[i].Value = out[i].Value.EditedFrom(from)
+			switch {
+			case issue == "":
+				out[i].Value = jira.Text(md)
+			case md == "":
+				// Emptied: a clear of the text it was written from.
+				out[i].Value = jira.Clear().EditedFrom(from)
+			default:
+				out[i].Value = jira.Text(md).EditedFrom(from)
 			}
 		case form == tracker.EditClear:
 			out[i].Value = jira.Clear()
@@ -70,6 +78,12 @@ func (p *Provider) fieldInputs(ctx context.Context, issue tracker.IssueID, edits
 			default:
 				out[i].Value = jira.Text(vals[0])
 			}
+		}
+		if replaced, ok := e.Value.Replaces(); ok {
+			if kind != tracker.KindText || issue == "" {
+				return nil, invalidf("%s: only an edit of plain text is compared with what it replaces", f.Name)
+			}
+			out[i].Value = out[i].Value.Replacing(replaced...)
 		}
 	}
 	return out, nil

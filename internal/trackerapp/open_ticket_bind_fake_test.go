@@ -503,7 +503,7 @@ func TestADirectReadHeldAcrossACloseAndReopenIsOrderedByItsVersion(t *testing.T)
 	}
 	direct := make(chan error, 1)
 	go func() {
-		_, _, err := s.svc.issueDetail(t.Context(), conn.ID, "10101", Interactive, true)
+		_, _, err := s.svc.issueDetail(t.Context(), conn.ID, "10101", Interactive, true, true)
 		direct <- err
 	}()
 	waitHeld(t, s.e, route)

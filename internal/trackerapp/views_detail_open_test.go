@@ -339,7 +339,7 @@ func TestARefreshReadsTheDetail(t *testing.T) {
 	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) { return detailOfCard(c), nil }
 	m.p.updatedMovesWithDetail(cardsAnswering(&c))
 	m.openDetail(t, "10001")
-	if _, _, err := m.svc.issueDetail(t.Context(), m.conn.ID, "10001", Interactive, true); err != nil {
+	if _, _, err := m.svc.issueDetail(t.Context(), m.conn.ID, "10001", Interactive, true, true); err != nil {
 		t.Fatal(err)
 	}
 	if m.p.count("Cards") != 0 || m.p.count("Details") != 2 {
@@ -370,7 +370,7 @@ func TestADetailTheMirrorKnowsIsStaleIsRead(t *testing.T) {
 		t.Fatalf("a newer mirror card: updated %d, %d card reads, %d detail reads", v.Card.Updated, m.p.count("Cards"), m.p.count("Details"))
 	}
 	c.Updated = c.Updated.Add(time.Minute)
-	if _, _, err := m.svc.issueDetail(t.Context(), m.conn.ID, "10001", Interactive, true); err != nil {
+	if _, _, err := m.svc.issueDetail(t.Context(), m.conn.ID, "10001", Interactive, true, true); err != nil {
 		t.Fatal(err)
 	}
 	m.openDetail(t, "10001")

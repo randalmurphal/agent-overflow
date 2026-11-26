@@ -14,15 +14,17 @@ import (
 )
 
 // ticket_create makes one ticket, through a board of its project this
-// computer mirrors (Host.CreateBoard), so the new ticket is read into the
+// computer mirrors (createTarget), so the new ticket is read into the
 // board as a person's create is. Every field of set but the status, the
 // sprint and the estimate is part of the create, which both trackers
 // check before anything is made: a value refused there leaves nothing
 // created. The status, sprint and estimate are the ticket's own steps
-// after it exists (ticket_update's), and one refused says the ticket was
-// created. A create is recorded before it is sent (trackerapp.ByAgent),
-// so the same call after an answer that never came finds the ticket
-// rather than making a second.
+// after it exists (ticket_update's plan and apply). The key comes from
+// the create's own answer, so a confirmed create answers its key and
+// writes its row whatever a later read does. The create request is
+// recorded before it is sent (trackerapp's repeat record): the same call
+// again finds the ticket an earlier one made, sends nothing for it, and
+// sets only the steps after it that the ticket does not already hold.
 
 type createArgs struct {
 	Project     string                     `json:"project"`
@@ -32,11 +34,17 @@ type createArgs struct {
 	Set         map[string]json.RawMessage `json:"set"`
 }
 
+// createAnswer is what became of a create: the ticket's key, and of the
+// steps after it, those applied, those the ticket already held, the one
+// refused or unknown with its sentence, and those not sent after it.
 type createAnswer struct {
-	Key     string `json:"key"`
-	Note    string `json:"note,omitempty"`
-	Refused string `json:"refused,omitempty"`
-	Unknown string `json:"unknown,omitempty"`
+	Key     string   `json:"key"`
+	Applied []string `json:"applied,omitempty"`
+	Already []string `json:"already,omitempty"`
+	Refused string   `json:"refused,omitempty"`
+	Unknown string   `json:"unknown,omitempty"`
+	NotSent []string `json:"not_sent,omitempty"`
+	Note    string   `json:"note,omitempty"`
 }
 
 // createTarget is where a create goes: the connection, the board and
@@ -80,77 +88,104 @@ func (s *Server) create(ctx context.Context, caller Caller, raw json.RawMessage)
 	if args.Description != "" {
 		fields = append(fields, trackerapp.FieldEditInput{Field: string(tracker.FieldDescription), Markdown: &trackerapp.MarkdownEditInput{Markdown: args.Description}})
 	}
+	// The create is admitted now: a thread made read-only while the call
+	// read the project sends nothing.
+	if err := s.h.Writable(caller.Thread); err != nil {
+		return nil, err
+	}
 	id := s.newID()
 	wctx := trackerapp.ByAgent(context.WithoutCancel(ctx), caller.Thread, id)
-	if key, found, err := s.repeatCreate(wctx, caller, tg, typeID, title); err != nil || found {
-		if err != nil {
-			return nil, err
-		}
-		return createAnswer{Key: key, Note: "Your earlier call created it; it was not created again."}, nil
-	}
 	v, err := s.t.Create(wctx, tg.src.ID, trackerapp.CreateRequest{Board: tg.boardID, Project: tg.board.Project, Type: typeID, Title: title, Fields: fields})
-	if err != nil {
+	switch {
+	case errors.Is(err, trackerapp.ErrAgentWriteInFlight):
+		return nil, invalidf("The same ticket is still being created by an earlier call, so it was not created again; call again once that call has answered.")
+	case errors.Is(err, trackerapp.ErrAgentRepeatUnchecked):
+		return nil, errorsx.Public(CodeUnknown, "An earlier call may have created this ticket, and the tracker could not be searched to see, so nothing was created; the same call again tries again.", err)
+	case err != nil:
 		if _, msg, ok := errorsx.PublicDetails(err); ok && strings.Contains(msg, "may or may not") {
 			return nil, createUnknown(tg.src.Kind)
 		}
 		return nil, err
 	}
-	if v.CreateUnknown || v.Created == "" && slices.ContainsFunc(v.Parts, func(p trackerapp.PartView) bool { return p.State == "unknown" }) {
-		return nil, createUnknown(tg.src.Kind)
+	q := qualifier(tg.sources, tg.src.Site)
+	out := createAnswer{}
+	written := WrittenTicket{Connection: tg.src.ID, Title: title}
+	var issue, key string
+	if v.Repeat != nil {
+		issue, out.Note = v.Repeat.Issue, "Your earlier call created it; it was not created again."
+		if key, err = s.keyOf(ctx, tg, issue); err != nil {
+			return nil, err
+		}
+	} else {
+		if v.CreateUnknown || v.Created == "" && slices.ContainsFunc(v.Parts, func(p trackerapp.PartView) bool { return p.State == "unknown" }) {
+			return nil, createUnknown(tg.src.Kind)
+		}
+		if v.Created == "" {
+			return nil, createRefused(tg, v)
+		}
+		issue, key = v.Created, v.CreatedKey
+		written.Applied = []string{"created"}
+		if v.NotOnBoard != "" {
+			out.Note = fmt.Sprintf("Board %s does not show it: its filter leaves it out.", quoteName(tg.board.Name))
+		}
 	}
-	if v.Created == "" {
-		return nil, createRefused(tg, v)
-	}
-	d, err := s.t.IssueDetail(wctx, tg.src.ID, v.Created)
-	if err != nil {
-		return nil, fmt.Errorf("trackertools: read the ticket created as %s: %w", v.Created, err)
-	}
-	out := createAnswer{Key: qualifier(tg.sources, tg.src.Site)(d.Card.Key)}
-	if v.NotOnBoard != "" {
-		out.Note = fmt.Sprintf("Board %s does not show it: its filter leaves it out.", name(tg.board.Name))
-	}
-	written := WrittenTicket{Connection: tg.src.ID, Issue: d.Card.ID, Key: out.Key, Title: d.Card.Title, Applied: []string{"created"}}
+	out.Key = q(key)
+	written.Issue, written.Key = issue, out.Key
 	// A part after the create (an image the description embeds) is the
 	// created ticket's.
-	if state, sentence := judge(tg.src.Kind, "description", "change", trackerapp.WriteView{Parts: slices.DeleteFunc(slices.Clone(v.Parts),
+	var stopped bool
+	if state, sentence := judge(tg.src.Kind, setDescription, "change", trackerapp.WriteView{Parts: slices.DeleteFunc(slices.Clone(v.Parts),
 		func(p trackerapp.PartView) bool { return p.Step == "create" })}, nil); state != tracker.StateApplied {
-		out.Refused = createdBut(out.Key, sentence)
+		out.Refused, stopped = sentence, true
 	}
-	if len(after) > 0 && out.Refused == "" {
-		p := &planned{t: ticket{connection: tg.src.ID, site: tg.src.Site, issue: d.Card.ID, key: d.Card.Key}, key: out.Key, src: tg.src, d: d}
-		for _, nv := range after {
-			if err := s.planStep(caller, p, nv); err != nil {
-				_, msg, _ := errorsx.PublicDetails(err)
-				out.Refused = createdBut(out.Key, nv.name+": "+cmpOr(msg, "it could not be set."))
-				break
-			}
-		}
-		switch {
-		case out.Refused != "":
-		case p.refused != "":
-			out.Refused = createdBut(out.Key, p.refused)
-		default:
-			answer, w := s.apply(wctx, caller, p)
-			written.Applied = append(written.Applied, w.Applied...)
-			switch {
-			case answer.Refused != "":
-				out.Refused = createdBut(out.Key, answer.Refused)
-			case answer.Unknown != "":
-				out.Unknown = createdBut(out.Key, answer.Unknown)
-			}
-		}
+	if len(after) > 0 {
+		s.createSteps(ctx, wctx, caller, tg, ticket{connection: tg.src.ID, site: tg.src.Site, issue: issue, key: key}, after, stopped, &out, &written)
 	}
-	s.h.Wrote(caller.Thread, WriteRow{ID: id, Created: true, Tickets: []WrittenTicket{written}})
+	if len(written.Applied) > 0 {
+		s.h.Wrote(caller.Thread, WriteRow{ID: id, Created: v.Repeat == nil, Tickets: []WrittenTicket{written}})
+	}
 	return out, nil
 }
 
-// createdBut is a step's sentence after its ticket, key, was created.
-func createdBut(key, sentence string) string {
-	label, rest, ok := strings.Cut(sentence, ": ")
-	if !ok {
-		return key + " was created, but " + sentence
+// createSteps plans and sends the steps after the create, after, on t,
+// the ticket made; stopped reports a part of the create refused, which
+// sends none of them.
+func (s *Server) createSteps(ctx, wctx context.Context, caller Caller, tg createTarget, t ticket, after []namedValue, stopped bool, out *createAnswer, written *WrittenTicket) {
+	names := func(from int) []string {
+		var ns []string
+		for _, nv := range after[from:] {
+			ns = append(ns, strings.TrimSpace(nv.name))
+		}
+		return ns
 	}
-	return fmt.Sprintf("%s was created, but %s was not set: %s", key, label, rest)
+	if stopped {
+		out.NotSent = names(0)
+		return
+	}
+	d, err := s.detailOf(ctx, t)
+	if err != nil {
+		s.logf("tracker tools: read %s after its create: %v", t.key, err)
+		out.NotSent = names(0)
+		out.Note = strings.TrimSpace(out.Note + " " + out.Key + " could not be read to set " + sayList(out.NotSent, "and") + "; ticket_update sets them.")
+		return
+	}
+	pc := newPlanCall(s, caller, tg.sources)
+	p := &planned{t: t, key: out.Key, src: tg.src, d: d}
+	for i, nv := range after {
+		if err := pc.planStep(p, nv); err != nil {
+			_, msg, _ := errorsx.PublicDetails(err)
+			out.Refused, out.NotSent = strings.TrimSpace(nv.name)+": "+cmpOr(msg, "it could not be set."), names(i+1)
+			return
+		}
+	}
+	if p.refused != "" {
+		out.Refused, out.NotSent = p.refused, p.stepNames(true, p.refusedStep)
+		return
+	}
+	answer, w := s.apply(wctx, caller, p)
+	out.Applied, out.Already, out.NotSent = answer.Applied, answer.Already, answer.NotSent
+	out.Refused, out.Unknown = answer.Refused, answer.Unknown
+	written.Applied = append(written.Applied, w.Applied...)
 }
 
 func createUnknown(kind string) error {
@@ -169,7 +204,7 @@ func createRefused(tg createTarget, v trackerapp.WriteView) error {
 		case r.Reason == "missing" && len(r.Fields) > 0:
 			names := make([]string, len(r.Fields))
 			for i, f := range r.Fields {
-				names[i] = name(strings.TrimSuffix(f.Message, " is required"))
+				names[i] = quoteName(strings.TrimSuffix(f.Message, " is required"))
 			}
 			return invalidf("%s needs %s to create a ticket; give them in set.", tg.key, sayList(names, "and"))
 		default:
@@ -180,8 +215,12 @@ func createRefused(tg createTarget, v trackerapp.WriteView) error {
 }
 
 // createTarget is the connection and board a create in project (KEY or
-// site/KEY) goes through: the one site that has a board of the project
-// here (Host.CreateBoard).
+// site/KEY) goes through, chosen once over every board this computer
+// lists of that project (Host.CreateBoards) on the connections asked: a
+// board the mirror holds that the thread's project lists, else any board
+// the mirror holds. A project whose chosen boards are on two sites is
+// refused as ambiguous; one whose boards the mirror holds none of is
+// refused as not read yet.
 func (s *Server) createTarget(threadID, project string) (createTarget, error) {
 	project = strings.TrimSpace(project)
 	site, key, qualified := strings.Cut(project, "/")
@@ -204,42 +243,58 @@ func (s *Server) createTarget(threadID, project string) (createTarget, error) {
 				"No connection on this computer reaches %s; the sites on are %s.", strings.TrimSpace(site), siteList(sources)), nil)
 		}
 	}
-	var hits []createTarget
-	for _, src := range asked {
-		if slices.ContainsFunc(hits, func(h createTarget) bool { return h.src.Site == src.Site }) {
+	boards, err := s.h.CreateBoards(threadID, key)
+	if err != nil {
+		return createTarget{}, err
+	}
+	var thread, any []createTarget
+	unread := ""
+	for _, b := range boards {
+		i := slices.IndexFunc(asked, func(src trackerapp.TicketSource) bool { return src.ID == b.Connection })
+		if i < 0 {
 			continue
 		}
-		board, ok, err := s.h.CreateBoard(threadID, src.ID, key)
-		if err != nil {
-			return createTarget{}, err
-		}
-		if !ok {
-			continue
-		}
-		summary, err := s.t.BoardSummary(src.ID, board)
+		summary, err := s.t.BoardSummary(b.Connection, b.Board)
 		if errors.Is(err, trackerapp.ErrNotMirrored) {
 			// The board is listed, but no screen has shown it since it was,
 			// so its project and sprints are not here yet.
-			return createTarget{}, errorsx.Public(CodeNotFound, fmt.Sprintf(
-				"Project %s's board on %s has not been read on this computer yet; ask the user to open it in Issues, then call again.", key, src.Site), nil)
+			unread = cmpOr(unread, asked[i].Site)
+			continue
 		}
 		if err != nil {
 			return createTarget{}, err
 		}
-		hits = append(hits, createTarget{src: src, board: summary, boardID: board, key: key, sources: sources})
+		tg := createTarget{src: asked[i], board: summary, boardID: b.Board, key: key, sources: sources}
+		if b.Thread {
+			thread = append(thread, tg)
+		}
+		any = append(any, tg)
 	}
-	switch len(hits) {
-	case 0:
-		return createTarget{}, errorsx.Public(CodeNotFound, fmt.Sprintf(
-			"No board of project %s is on this computer; ask the user to add one in Settings, Issues.", key), nil)
-	case 1:
+	hits := thread
+	if len(hits) == 0 {
+		hits = any
+	}
+	var sites []string
+	for _, h := range hits {
+		if !slices.Contains(sites, h.src.Site) {
+			sites = append(sites, h.src.Site)
+		}
+	}
+	switch {
+	case len(sites) == 1:
 		return hits[0], nil
+	case len(sites) > 1:
+		keys := make([]string, len(sites))
+		for i, site := range sites {
+			keys[i] = site + "/" + key
+		}
+		return createTarget{}, errorsx.Public(CodeAmbiguous, fmt.Sprintf("%s is a project on %s; write it as %s.", key, sayList(sites, "and"), sayList(keys, "or")), nil)
+	case unread != "":
+		return createTarget{}, errorsx.Public(CodeNotFound, fmt.Sprintf(
+			"Project %s's board on %s has not been read on this computer yet; ask the user to open it in Issues, then call again.", key, unread), nil)
 	}
-	sites, keys := make([]string, len(hits)), make([]string, len(hits))
-	for i, h := range hits {
-		sites[i], keys[i] = h.src.Site, h.src.Site+"/"+key
-	}
-	return createTarget{}, errorsx.Public(CodeAmbiguous, fmt.Sprintf("%s is a project on %s; write it as %s.", key, sayList(sites, "and"), sayList(keys, "or")), nil)
+	return createTarget{}, errorsx.Public(CodeNotFound, fmt.Sprintf(
+		"No board of project %s is on this computer; ask the user to add one in Settings, Issues.", key), nil)
 }
 
 // issueType is the type a create in tg's project takes for given: on
@@ -266,7 +321,7 @@ func (s *Server) issueType(ctx context.Context, tg createTarget, given string) (
 		if strings.EqualFold(ty.Name, want) {
 			return ty.ID, nil
 		}
-		names = append(names, name(ty.Name))
+		names = append(names, quoteName(ty.Name))
 	}
 	if given == "" {
 		if i := slices.IndexFunc(types, func(ty trackerapp.IssueTypeView) bool { return ty.Level >= 0 }); i >= 0 {
@@ -293,7 +348,7 @@ func (s *Server) createFields(ctx context.Context, tg createTarget, typeID strin
 		case lower == setStatus || lower == setSprint || lower == setEstimate:
 			after = append(after, nv)
 			continue
-		case lower == setTitle || lower == setDescription || lower == setType || lower == "project":
+		case lower == setTitle || lower == setDescription || lower == setType || lower == "project" && tg.src.Kind != "linear":
 			return nil, nil, invalidf("Give %s as its own argument, not in set.", lower)
 		case readOnlyName(lower) || lower == setComment:
 			return nil, nil, invalidf("%s is not something a create sets.", quoteName(given))
@@ -314,7 +369,7 @@ func (s *Server) createFields(ctx context.Context, tg createTarget, typeID strin
 				return nil, nil, invalidf("A %s ticket has no field %s; it has %s.", tg.key, quoteName(given), fieldNames(offered, createTop))
 			}
 		}
-		edit, err := createEdit(f, given, nv.value, tg.src.Account)
+		edit, err := createEdit(f, given, nv.value, tg)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -327,8 +382,9 @@ func (s *Server) createFields(ctx context.Context, tg createTarget, typeID strin
 // first.
 var createTop = []string{setStatus, setSprint, setEstimate, setAssignee, setPriority, setLabels, setParent}
 
-// createEdit is v for field f of a create, which set names given.
-func createEdit(f trackerapp.FieldView, given string, v setValue, account string) (trackerapp.FieldEditInput, error) {
+// createEdit is v for field f of a create through tg, which set names
+// given.
+func createEdit(f trackerapp.FieldView, given string, v setValue, tg createTarget) (trackerapp.FieldEditInput, error) {
 	switch {
 	case v.null:
 		return trackerapp.FieldEditInput{Field: f.ID, Value: &trackerapp.FieldValueView{}}, nil
@@ -339,42 +395,17 @@ func createEdit(f trackerapp.FieldView, given string, v setValue, account string
 		}
 		return trackerapp.FieldEditInput{Field: f.ID, Markdown: &trackerapp.MarkdownEditInput{Markdown: md}}, nil
 	case f.Kind == tracker.KindUser.String():
-		edit := userValue(v, account)
+		edit := userValue(v, tg.src.Account)
 		edit.Field = f.ID
 		return edit, nil
-	}
-	return trackerapp.FieldEditInput{Field: f.ID, Typed: typedOf(f.Kind, tracker.FieldID(f.ID), v)}, nil
-}
-
-// repeatCreate checks a create of title against an earlier call's in the
-// last hour: one applied is the ticket it made, and one whose answer
-// never came is searched for in the project by its title, created near
-// the time it was sent. found reports the ticket, by its key as answers
-// write it.
-func (s *Server) repeatCreate(ctx context.Context, caller Caller, tg createTarget, typeID, title string) (string, bool, error) {
-	rep, ok, err := s.t.AgentRepeat(caller.Thread, trackerapp.CreateDigest(tg.src.ID, tg.board.Project, typeID, title))
-	if err != nil || !ok {
-		return "", false, err
-	}
-	issue := rep.Issue
-	if rep.State != "applied" || issue == "" {
-		page, err := s.t.Search(ctx, tg.src.ID, trackerapp.SearchRequest{Text: title, Project: tg.board.Project, Limit: pageSize})
+	case f.ID == string(tracker.FieldParent):
+		typed, err := parentKeys(v, tg.src.Site, "project "+tg.key)
 		if err != nil {
-			return "", false, errorsx.Public(CodeInvalidRequest, "An earlier call may have created this ticket, and the tracker could not be searched to see, so nothing was created; the same call again tries again.", err)
+			return trackerapp.FieldEditInput{}, err
 		}
-		i := slices.IndexFunc(page.Cards, func(c trackerapp.CardView) bool {
-			return c.Title == title && c.Created >= rep.At-repeatBefore && c.Created <= rep.At+repeatAfter
-		})
-		if i < 0 {
-			return "", false, nil
-		}
-		issue = page.Cards[i].ID
-		if err := s.t.SettleAgentRepeat(rep.Row, issue, ""); err != nil {
-			s.logf("tracker tools: record the ticket %s found created: %v", issue, err)
-		}
+		return trackerapp.FieldEditInput{Field: f.ID, Typed: typed}, nil
 	}
-	key, err := s.keyOf(ctx, tg, issue)
-	return key, err == nil, err
+	return trackerapp.FieldEditInput{Field: f.ID, Typed: typedOf(f.Kind, v)}, nil
 }
 
 // keyOf is issue's key on tg's connection as answers write it: from the

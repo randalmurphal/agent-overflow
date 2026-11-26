@@ -199,7 +199,7 @@ func (s *fakeScenario) detailCosts(t *testing.T, conn Connection, scope Scope, o
 	p := s.provider(conn.ID)
 	s.clock.advance(time.Minute)
 	for i := range 3 {
-		created, ok := applied(t, "create", p.Create(t.Context(), tracker.CreateInput{Project: project, Type: issueType, Title: fmt.Sprint("Linked task ", i)})).Created()
+		created, _, ok := applied(t, "create", p.Create(t.Context(), tracker.CreateInput{Project: project, Type: issueType, Title: fmt.Sprint("Linked task ", i)})).Created()
 		if !ok {
 			t.Fatal("the create named no issue")
 		}
@@ -238,7 +238,7 @@ func (s *fakeScenario) detailCosts(t *testing.T, conn Connection, scope Scope, o
 	s.measureTicks(t, []tickCost{
 		tc("detail, older than the age bound", func(t *testing.T) { open(t) }),
 		tc("detail, forced refresh", func(t *testing.T) {
-			if _, _, err := s.svc.issueDetail(t.Context(), conn.ID, one, Interactive, true); err != nil {
+			if _, _, err := s.svc.issueDetail(t.Context(), conn.ID, one, Interactive, true, true); err != nil {
 				t.Fatal(err)
 			}
 		}),

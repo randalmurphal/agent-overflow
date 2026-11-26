@@ -214,7 +214,7 @@ func (s *Service) recordViews(conn string, root int64, pumps []*ticketPump) ([]r
 		if len(docs) == 0 {
 			continue
 		}
-		views, shows, err := s.detailViews(root, row, docs)
+		views, shows, err := s.detailViews(root, row, docs, true)
 		if err != nil {
 			return nil, err
 		}

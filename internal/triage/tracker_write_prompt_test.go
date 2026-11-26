@@ -28,6 +28,16 @@ func TestATrackerWriteApprovalIsNeverRouted(t *testing.T) {
 	}
 	f.approval(t, "worker", "bash", "s1")
 	write, bash := f.open(t, "worker", "tracker:call-1"), f.open(t, "worker", "bash")
+	// A claim says which kind of prompt it answers, so the answer reaches
+	// the tracker write and not a provider.
+	if claim, ok := f.router.ClaimPrompt("worker", "tracker:call-1", write.Occurrence); !ok || claim.Kind != ApprovalKindTrackerWrite {
+		t.Fatalf("the tracker write's claim = %+v, %v", claim, ok)
+	}
+	f.router.ReleasePrompt(PromptClaim{Ref: write, SessionToken: "s1", Kind: ApprovalKindTrackerWrite})
+	if claim, ok := f.router.ClaimPrompt("worker", "bash", bash.Occurrence); !ok || claim.Kind == ApprovalKindTrackerWrite {
+		t.Fatalf("the provider's claim = %+v, %v", claim, ok)
+	}
+	f.router.ReleasePrompt(PromptClaim{Ref: bash, SessionToken: "s1"})
 	f.wantRoute(t, write, true, "")
 	f.wantRoute(t, bash, true, "lead")
 

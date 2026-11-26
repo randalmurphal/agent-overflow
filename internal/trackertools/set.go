@@ -136,8 +136,10 @@ func (v setValue) one(name string) (string, error) {
 	return v.texts[0], nil
 }
 
-// quoteName is a name as a refusal quotes it, cut at refCut.
-func quoteName(n string) string { return name(n) }
+// quoteName is a name the tracker or the call gave, cut at refCut, as a
+// sentence quotes it: as data, escaped so no newline or quote in it can
+// end the quotation.
+func quoteName(n string) string { return strconv.Quote(name(n)) }
 
 // fieldMatch is the ticket's field set's name names: by its name without
 // regard to case, or by the name and ID a read writes for two fields that
@@ -162,12 +164,12 @@ func fieldMatch(fields []trackerapp.FieldView, given string) (trackerapp.FieldVi
 
 // fieldNames lists, for a refusal of a name that matches none, the names
 // set takes: the read's top members and the fields', within the answer
-// a refusal is, each name cut at refCut.
+// a refusal is, each field's name quoted.
 func fieldNames(fields []trackerapp.FieldView, top []string) string {
-	names := slices.Clone(top)
+	names, seen := slices.Clone(top), slices.Clone(top)
 	for _, f := range fields {
-		if f.Editable && !slices.ContainsFunc(names, func(n string) bool { return strings.EqualFold(n, f.Name) }) {
-			names = append(names, name(f.Name))
+		if f.Editable && !slices.ContainsFunc(seen, func(n string) bool { return strings.EqualFold(n, f.Name) }) {
+			names, seen = append(names, quoteName(f.Name)), append(seen, f.Name)
 		}
 	}
 	const most = 40
@@ -199,16 +201,16 @@ func estimateValue(text, unit, board string) (float64, error) {
 				return n, nil
 			}
 		}
-		return 0, invalidf("Board %s estimates in points; give a number, such as 5 or \"5 points\".", name(board))
+		return 0, invalidf("Board %s estimates in points; give a number, such as 5 or \"5 points\".", quoteName(board))
 	case "time":
 		if m := timeForm().FindStringSubmatch(text); m != nil && (m[1] != "" || m[2] != "") {
 			hours, _ := strconv.ParseFloat(cmpOr(m[1], "0"), 64)
 			minutes, _ := strconv.ParseFloat(cmpOr(m[2], "0"), 64)
 			return math.Round(hours*3600 + minutes*60), nil
 		}
-		return 0, invalidf("Board %s estimates in time; give it as 45m, 2h or 1h 30m.", name(board))
+		return 0, invalidf("Board %s estimates in time; give it as 45m, 2h or 1h 30m.", quoteName(board))
 	}
-	return 0, invalidf("Board %s has no estimates.", name(board))
+	return 0, invalidf("Board %s has no estimates.", quoteName(board))
 }
 
 func cmpOr(a, b string) string {
@@ -229,20 +231,14 @@ func estimateText(n float64, unit string) string {
 const stampForm = "2006-01-02T15:04Z"
 
 // typedOf is v as typed text for a field of kind: a date-time a read
-// printed becomes RFC 3339, and a parent a read printed with its title
-// ("WEB-4 Login page") its key.
-func typedOf(kind string, field tracker.FieldID, v setValue) []string {
+// printed becomes RFC 3339.
+func typedOf(kind string, v setValue) []string {
 	out := slices.Clone(v.texts)
 	for i, t := range out {
 		t = strings.TrimSpace(t)
-		switch {
-		case kind == tracker.KindDateTime.String():
+		if kind == tracker.KindDateTime.String() {
 			if at, err := time.Parse(stampForm, t); err == nil {
 				t = at.Format(time.RFC3339)
-			}
-		case field == tracker.FieldParent:
-			if key, _, ok := strings.Cut(t, " "); ok && len(TicketKeysIn(key)) == 1 {
-				t = key
 			}
 		}
 		out[i] = t
@@ -250,8 +246,31 @@ func typedOf(kind string, field tracker.FieldID, v setValue) []string {
 	return out
 }
 
-// TicketKeysIn is the ticket keys text names (trackerapp.TicketKeys).
-func TicketKeysIn(text string) []string { return trackerapp.TicketKeys(text) }
+// parentKeys is v as the parent of a ticket on site, named of in a
+// refusal: each value a key in the forms a key parameter takes (KEY,
+// site/KEY), with the title a read prints after it or not, on site; a key
+// on another site is refused. Any other text is passed on for the tracker
+// to resolve.
+func parentKeys(v setValue, site, of string) ([]string, error) {
+	out := make([]string, len(v.texts))
+	for i, t := range v.texts {
+		t = strings.TrimSpace(t)
+		head, _, _ := strings.Cut(t, " ")
+		on, key, qualified := strings.Cut(head, "/")
+		if !qualified {
+			key = head
+		}
+		if keys := trackerapp.TicketKeys(key); len(keys) != 1 || !strings.EqualFold(keys[0], key) {
+			out[i] = t
+			continue
+		}
+		if qualified && !strings.EqualFold(strings.TrimSpace(on), site) {
+			return nil, invalidf("%s: %s is on another site than %s; give a ticket on %s.", setParent, head, of, site)
+		}
+		out[i] = strings.ToUpper(key)
+	}
+	return out, nil
+}
 
 // userValue is v for a person field on a connection whose account is
 // account: me is that account, picked by ID; any other is a name or an
@@ -263,15 +282,27 @@ func userValue(v setValue, account string) trackerapp.FieldEditInput {
 	return trackerapp.FieldEditInput{Typed: slices.Clone(v.texts)}
 }
 
-// shown is v as an approval shows it: each value, cut, or "nothing" for
-// a clear.
+// shownCut is the most of one value an approval's change line shows.
+const shownCut = 80
+
+// shown is v as an approval's change line shows it: each value, cut at
+// shownCut, or "nothing" for a clear.
 func (v setValue) shown() string {
 	if v.null {
 		return "nothing"
 	}
 	out := make([]string, len(v.texts))
 	for i, t := range v.texts {
-		out[i], _ = textClip(t, 0, 80)
+		out[i], _ = textClip(t, 0, shownCut)
 	}
 	return strings.Join(out, ", ")
 }
+
+// cut reports whether shown leaves part of v out.
+func (v setValue) cut() bool {
+	return slices.ContainsFunc(v.texts, func(t string) bool { _, next := textClip(t, 0, shownCut); return next < len(t) })
+}
+
+// whole is v as an approval carries it whole: each value, or nothing for
+// a clear.
+func (v setValue) whole() string { return strings.Join(v.texts, ", ") }

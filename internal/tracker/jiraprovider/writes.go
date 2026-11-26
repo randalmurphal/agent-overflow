@@ -123,7 +123,7 @@ func createParts(res jira.CreateResult, images bool, err error) tracker.Result {
 		return tracker.Result{Parts: []tracker.Part{{Step: tracker.StepCreate, Outcome: o}}}
 	}
 	id := tracker.IssueID(res.ID)
-	parts := []tracker.Part{{Issue: id, Step: tracker.StepCreate, Outcome: tracker.Applied(), Changed: issueResources(id)}}
+	parts := []tracker.Part{{Issue: id, Step: tracker.StepCreate, Outcome: tracker.Applied(), Changed: issueResources(id), Key: res.Key}}
 	if !images {
 		return tracker.Result{Parts: parts}
 	}

@@ -265,9 +265,9 @@ func TestFakeScenario(t *testing.T) {
 	// Writes, each read back.
 	created := allApplied(t, "create", s.p.Create(s.ctx, tracker.CreateInput{Project: tracker.ProjectID(scTeam), Title: "New page",
 		Fields: []tracker.FieldEdit{{Field: tracker.FieldDescription, Value: tracker.MarkdownEdit("Body text", "")}}}))
-	newID, ok := created.Created()
-	if !ok {
-		t.Fatal("create named no issue")
+	newID, newKey, ok := created.Created()
+	if !ok || newKey != "WEB-4" {
+		t.Fatalf("create named issue %v, key %q", ok, newKey)
 	}
 	if d := s.detail(t, string(newID)); d.Card.Title != "New page" || d.Card.Key != "WEB-4" || strings.TrimSpace(d.Description) != "Body text" {
 		t.Fatalf("created %+v", d.Card)

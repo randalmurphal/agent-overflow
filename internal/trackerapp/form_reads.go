@@ -309,7 +309,8 @@ type CommentPageView struct {
 }
 
 // Comments is the page of issue's comments that page, the token a
-// ticket's MoreComments or the previous page gave, names.
+// ticket's MoreComments or the previous page gave, names, each an agent
+// made marked with its thread as the ticket's view marks it.
 func (s *Service) Comments(ctx context.Context, id, issue, page string) (CommentPageView, error) {
 	return ask(s, ctx, id, func(r *run) (CommentPageView, error) {
 		p, err := r.p.Comments(r.ctx, tracker.IssueID(issue), tracker.PageToken(page))
@@ -326,6 +327,7 @@ func (s *Service) Comments(ctx context.Context, id, issue, page string) (Comment
 			out.Comments[i] = CommentView{ID: string(c.ID), Author: names.user(string(c.Author)), Body: c.Body,
 				Created: millis(c.Created), Updated: millis(c.Updated), Internal: c.Internal}
 		}
+		s.markCommentPage(r.row, issue, out.Comments)
 		return out, err
 	})
 }

@@ -165,7 +165,8 @@ export function registerTrackerAgentWritesFlow({ compact }: TrackerWritesSurface
     const approved = await trackerAnswer(harness, 'ticket_update', path);
     expect(approved.isError, approved.text).toBe(false);
     expect(JSON.parse(approved.text)).toEqual({ tickets: [
-      { key: 'WEB-1', applied: ['status', 'comment'] },
+      // WEB-1 was in progress already: that step is said as already, not applied.
+      { key: 'WEB-1', applied: ['comment'], already: ['status'] },
       { key: 'WEB-2', applied: ['status', 'comment'] },
       { key: 'WEB-3', applied: ['status', 'comment'] },
     ] });
@@ -275,4 +276,3 @@ export function registerTrackerAgentWritesFlow({ compact }: TrackerWritesSurface
     }
   });
 }
-

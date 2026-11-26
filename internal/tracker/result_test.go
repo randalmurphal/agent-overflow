@@ -107,18 +107,18 @@ func TestResultCreatedAndCreateUnknown(t *testing.T) {
 		part("10001", StepCreate, Applied(), CardOf("10001")),
 		part("10001", StepUpload, Unknown(nil), DetailOf("10001")),
 	}}
-	if id, ok := made.Created(); !ok || id != "10001" || made.CreateUnknown() {
+	if id, _, ok := made.Created(); !ok || id != "10001" || made.CreateUnknown() {
 		t.Fatalf("Created = %q, %v; CreateUnknown %v", id, ok, made.CreateUnknown())
 	}
 	lost := Result{Parts: []Part{part("", StepCreate, Unknown(errors.New("timeout")))}}
-	if _, ok := lost.Created(); ok || !lost.CreateUnknown() {
+	if _, _, ok := lost.Created(); ok || !lost.CreateUnknown() {
 		t.Fatal("a lost create reads as made or as not lost")
 	}
 	if err := lost.Check(); err != nil {
 		t.Fatalf("a lost create fails Check: %v", err)
 	}
 	refused := Refuse(StepCreate, Refusal{Reason: ReasonMissing})
-	if _, ok := refused.Created(); ok || refused.CreateUnknown() {
+	if _, _, ok := refused.Created(); ok || refused.CreateUnknown() {
 		t.Fatal("a refused create reads as made or lost")
 	}
 }

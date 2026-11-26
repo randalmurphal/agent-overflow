@@ -21,12 +21,15 @@ import (
 // shows one (FieldValueView), with Typed, to text a person or an agent
 // typed, which the tracker resolves by the field's kind, or with Markdown,
 // a rich text field's new Markdown and the Markdown it held when the edit
-// was written. Exactly one is set.
+// was written. Exactly one is set. Replaces, on a clear or typed text of
+// a plain text field, are the texts it held when the edit was written: the
+// tracker refuses the edit as stale when it holds others by then.
 type FieldEditInput struct {
 	Field    string             `json:"field"`
 	Value    *FieldValueView    `json:"value,omitempty"`
 	Typed    []string           `json:"typed,omitempty"`
 	Markdown *MarkdownEditInput `json:"markdown,omitempty"`
+	Replaces *[]string          `json:"replaces,omitempty"`
 }
 
 // MarkdownEditInput is a rich text field's new Markdown and From, the
@@ -67,6 +70,12 @@ func (in FieldEditInput) fieldEdit() (tracker.FieldEdit, error) {
 			return tracker.FieldEdit{}, fmt.Errorf("%w: field %s: %w", ErrInvalidRequest, in.Field, err)
 		}
 		out.Value = edit
+	}
+	if in.Replaces != nil {
+		if in.Markdown != nil {
+			return tracker.FieldEdit{}, fmt.Errorf("%w: field %s: a Markdown edit gives what it replaces as from", ErrInvalidRequest, in.Field)
+		}
+		out.Value = out.Value.Replacing(*in.Replaces...)
 	}
 	return out, nil
 }

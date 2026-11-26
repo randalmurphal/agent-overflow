@@ -18,8 +18,10 @@ type Input struct {
 	kind  inputKind
 	texts []string
 	raw   json.RawMessage
-	// from is the Markdown a rich text edit was written from.
+	// from is the Markdown a rich text edit or clear was written from.
 	from *string
+	// replaces are the texts a plain text edit or clear was written from.
+	replaces *[]string
 }
 
 type inputKind uint8
@@ -66,14 +68,25 @@ func RawJSON(v json.RawMessage) Input {
 	return Input{kind: inputRaw, raw: slices.Clone(v)}
 }
 
-// EditedFrom records the Markdown the Markdown of a rich text Text was
-// written from: the field as the writer saw it. A plan refuses with a
-// *StaleError when the stored document renders to other Markdown by
-// then, an empty field rendering to the empty string, so the edit never
-// undoes a change made meanwhile. Content Markdown cannot show is kept
-// whatever it holds, since the edit is applied to the stored document.
+// EditedFrom records the Markdown the Markdown of a rich text Text, or a
+// Clear of a rich text field, was written from: the field as the writer
+// saw it. A plan refuses with a *StaleError when the stored document
+// renders to other Markdown by then, an empty field rendering to the
+// empty string, so the edit never undoes a change made meanwhile. Content
+// Markdown cannot show is kept whatever it holds, since the edit is
+// applied to the stored document.
 func (in Input) EditedFrom(md string) Input {
 	in.from = &md
+	return in
+}
+
+// Replacing records the texts a Text, Texts or Clear of a plain text
+// field (one text or a list of them) was written from: a plan refuses
+// with a *StaleError when the field stores other texts by then, none
+// for an empty field.
+func (in Input) Replacing(texts ...string) Input {
+	t := slices.Clone(texts)
+	in.replaces = &t
 	return in
 }
 
@@ -203,8 +216,11 @@ func (b *builder) build(ctx context.Context, f FieldMeta, in Input) (Value, erro
 	v := Value{FieldID: f.ID, Name: f.Name}
 	k := kindOf(f.Schema)
 	r := rules[k]
-	if in.from != nil && (k != kindRich || in.kind != inputText) {
-		return v, fmt.Errorf("jira: %s: EditedFrom applies to Markdown for rich text", f.Name)
+	if in.from != nil && (k != kindRich || in.kind != inputText && in.kind != inputClear) {
+		return v, fmt.Errorf("jira: %s: EditedFrom applies to Markdown and clears of rich text", f.Name)
+	}
+	if in.replaces != nil && (k != kindText && k != kindStrings || in.kind != inputText && in.kind != inputTexts && in.kind != inputClear) {
+		return v, fmt.Errorf("jira: %s: Replacing applies to typed text and clears of plain text", f.Name)
 	}
 	if len(f.Operations) > 0 && !slices.Contains(f.Operations, "set") {
 		return v, fmt.Errorf("jira: %s cannot be set here (it takes %s)", f.Name, strings.Join(f.Operations, ", "))
@@ -218,6 +234,9 @@ func (b *builder) build(ctx context.Context, f FieldMeta, in Input) (Value, erro
 		}
 		v.Fields, v.Update, v.Display = clearValue(f, r)
 		if k == kindRich {
+			if in.from != nil && adf.ToMarkdown(b.opts.Base) != *in.from {
+				return v, &StaleError{Issue: b.opts.Issue, What: f.Name}
+			}
 			// A clear replaces the stored document as an edit does, so a
 			// plan rechecks it the same way.
 			v.rich, v.base = true, b.opts.Base

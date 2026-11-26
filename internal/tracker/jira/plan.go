@@ -147,6 +147,9 @@ func (c *Client) PlanCreate(ctx context.Context, in CreateInput) (*CreatePlan, e
 			return nil, notSent("%s is set twice", f.Name)
 		}
 		set[f.ID] = true
+		if fi.Value.replaces != nil || fi.Value.from != nil {
+			return nil, notSent("%s: a create's value replaces nothing", f.Name)
+		}
 		v, err := b.build(ctx, f, fi.Value)
 		if err != nil {
 			return nil, notSentErr(err)
@@ -300,10 +303,11 @@ func (c *Client) PlanEdit(ctx context.Context, in EditInput) (*EditPlan, error) 
 			return nil, notSent("%s is set twice", metas[i].Name)
 		}
 	}
-	if richNotAsked(asked, metas) {
-		// A rich text field named other than by its ID: its document
-		// was not asked for, so the documents are read again.
-		if is, err = c.GetIssue(ctx, in.Issue, richFieldIDs(metas)...); err != nil {
+	if richNotAsked(asked, metas) || replacedNotAsked(asked, metas, in.Fields) {
+		// A rich text field, or a plain text one an edit was written from,
+		// named other than by its ID: its value was not asked for, so the
+		// values are read again.
+		if is, err = c.GetIssue(ctx, in.Issue, comparedFieldIDs(metas, in.Fields)...); err != nil {
 			return nil, err
 		}
 	}
@@ -316,6 +320,9 @@ func (c *Client) PlanEdit(ctx context.Context, in EditInput) (*EditPlan, error) 
 			if opts.Base, err = storedDoc(is, f); err != nil {
 				return nil, notSentErr(err)
 			}
+		}
+		if err := checkReplaced(is, f, fi.Value); err != nil {
+			return nil, notSentErr(err)
 		}
 		b := &builder{c: c, opts: opts, stage: p.state.stage}
 		v, err := b.build(ctx, f, fi.Value)
@@ -374,12 +381,25 @@ func richNotAsked(asked []string, metas []FieldMeta) bool {
 	return slices.ContainsFunc(metas, func(f FieldMeta) bool { return kindOf(f.Schema) == kindRich && !slices.Contains(asked, f.ID) })
 }
 
-// richFieldIDs are the IDs of the rich text fields among metas, or
-// "summary" when there are none, so reading the issue stays small.
-func richFieldIDs(metas []FieldMeta) []string {
+// replacedNotAsked reports a plain text edit written from texts whose
+// field the edit read did not ask for by ID.
+func replacedNotAsked(asked []string, metas []FieldMeta, fields []FieldInput) bool {
+	for i, f := range metas {
+		if fields[i].Value.replaces != nil && !slices.Contains(asked, f.ID) {
+			return true
+		}
+	}
+	return false
+}
+
+// comparedFieldIDs are the IDs of the fields among metas whose stored
+// value an edit is compared with (rich text, and plain text written from
+// texts), or "summary" when there are none, so reading the issue stays
+// small.
+func comparedFieldIDs(metas []FieldMeta, fields []FieldInput) []string {
 	var ids []string
-	for _, f := range metas {
-		if kindOf(f.Schema) == kindRich {
+	for i, f := range metas {
+		if kindOf(f.Schema) == kindRich || fields[i].Value.replaces != nil {
 			ids = append(ids, f.ID)
 		}
 	}
@@ -387,6 +407,40 @@ func richFieldIDs(metas []FieldMeta) []string {
 		return []string{"summary"}
 	}
 	return ids
+}
+
+// checkReplaced refuses with a *StaleError a plain text edit written from
+// texts (Input.Replacing) the issue no longer stores in f.
+func checkReplaced(is *Issue, f FieldMeta, in Input) error {
+	if in.replaces == nil {
+		return nil
+	}
+	var stored []string
+	v := is.Field(f.ID)
+	switch {
+	case f.ID == "summary":
+		// A typed field, decoded out of Raw.
+		if is.Summary != "" {
+			stored = []string{is.Summary}
+		}
+	case v.Null():
+	case kindOf(f.Schema) == kindStrings:
+		if err := v.decode(&stored); err != nil {
+			return fmt.Errorf("jira: the stored %s is not a list of texts: %w", f.Name, err)
+		}
+	default:
+		text, err := v.Text()
+		if err != nil {
+			return fmt.Errorf("jira: the stored %s is not text: %w", f.Name, err)
+		}
+		if text != "" {
+			stored = []string{text}
+		}
+	}
+	if !slices.Equal(stored, *in.replaces) {
+		return &StaleError{Issue: is.Key, What: f.Name}
+	}
+	return nil
 }
 
 // storedDoc is the document field f holds on is; nil when it is empty.

@@ -1193,7 +1193,8 @@ export function trackerResultView(data: string): AoResultView | null {
 /**
  * Reads a tracker tools write's reply: a create's key, or what became of
  * each ticket of an update, with the sentence of a step refused or whose
- * outcome is unknown.
+ * outcome is unknown. A ticket counts as changed when this call applied a
+ * step to it; one the call found already as asked did not change.
  */
 export function trackerWriteResultView(tool: string, data: string): AoResultView | null {
   const reply = obj(parseFirstJson(data));
@@ -1208,13 +1209,19 @@ export function trackerWriteResultView(tool: string, data: string): AoResultView
   let done = 0;
   for (const ticket of list(reply.tickets)) {
     const applied = strings(ticket.applied);
+    const already = strings(ticket.already);
     const notSent = strings(ticket.not_sent);
     const stopped = str(ticket, 'refused') ? 'refused' : str(ticket, 'unknown') ? 'outcome unknown' : '';
-    if (!stopped) done += 1;
+    if (applied.length > 0) done += 1;
     view.lines.push({
       key: str(ticket, 'key'),
       title: str(ticket, 'key'),
-      detail: join(applied.length ? applied.join(', ') : '', stopped, notSent.length ? `not sent: ${notSent.join(', ')}` : ''),
+      detail: join(
+        applied.length ? applied.join(', ') : '',
+        already.length ? `already: ${already.join(', ')}` : '',
+        stopped,
+        notSent.length ? `not sent: ${notSent.join(', ')}` : '',
+      ),
       text: clipText(str(ticket, 'refused') || str(ticket, 'unknown') || str(ticket, 'note'), LINE_TEXT_MAX),
       link: null,
     });

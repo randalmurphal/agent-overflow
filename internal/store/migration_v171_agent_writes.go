@@ -4,9 +4,10 @@ package store
 // agent made through the tracker tools, by the ticket it touched (the
 // tracker kind, the site and the issue, keyed as thread_tickets is, so a
 // connection removed and added again keeps them), the thread whose agent
-// made it and the call it was part of. A comment or a create is written in
-// state sent before it is sent, with a digest of what it adds, and replaced
-// by its outcome, so a call repeated after a lost answer finds it. No
+// made it and the call it was part of, when it was sent (sent_ms) and when
+// its row was written (at_ms). A comment or a create is written in state
+// sent before it is sent, with a digest of what it adds, and replaced by
+// its outcome, so a call repeated after a lost answer finds it. No
 // foreign key to threads: a deleted thread's writes keep marking the
 // ticket, without a link.
 const agentWritesV171SQL = `
@@ -25,6 +26,7 @@ CREATE TABLE tracker_agent_writes (
  comment_id TEXT NOT NULL DEFAULT '',
  before_ms INTEGER NOT NULL DEFAULT 0,
  after_ms INTEGER NOT NULL DEFAULT 0,
+ sent_ms INTEGER NOT NULL CHECK(sent_ms > 0),
  at_ms INTEGER NOT NULL CHECK(at_ms > 0),
  CHECK(issue_id <> '' OR step = 'create')
 );

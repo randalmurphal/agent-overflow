@@ -55,7 +55,7 @@ var toolTable = []toolSpec{
 		properties: map[string]any{
 			"project":     property("string", "Project key: WEB for WEB-1."),
 			"title":       property("string", ""),
-			"type":        property("string", "Issue type, such as Bug."),
+			"type":        property("string", "Jira issue type, such as Bug."),
 			"description": property("string", "Markdown."),
 			"set":         property("object", "Other fields, as ticket_update sets them."),
 		},
@@ -64,7 +64,7 @@ var toolTable = []toolSpec{
 	},
 	{
 		name:        "ticket_update",
-		description: "Change tickets, then comment on them.",
+		description: "Change or comment on tickets.",
 		properties: map[string]any{
 			"keys": map[string]any{"type": "array", "items": property("string", ""), "maxItems": maxUpdateKeys},
 			"set": property("object", "Fields by the names ticket_read shows, and sprint (a name, or backlog): text, a number, a list, or null to clear. "+

@@ -143,7 +143,7 @@ func TestCreateImageUploadOutcomes(t *testing.T) {
 			if got := states(res); got != "create:applied, "+want {
 				t.Fatalf("got %s, want create:applied, %s", got, want)
 			}
-			if id, ok := res.Created(); !ok || id != "10001" {
+			if id, _, ok := res.Created(); !ok || id != "10001" {
 				t.Errorf("created %q %v", id, ok)
 			}
 			if n := f.Count("PUT", issuePath); (n == 1) != (second == secondStored) {

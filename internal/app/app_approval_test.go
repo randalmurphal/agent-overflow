@@ -59,6 +59,13 @@ func TestRespondToApprovalOnACodexSession(t *testing.T) {
 			t.Fatalf("RespondToApproval() error = %v, want stale interactive request", err)
 		}
 	})
+	t.Run("a request id that reads as a tracker write's", func(t *testing.T) {
+		// The path is the open prompt's kind, not the ID's text: the
+		// provider is answered, and refuses an ID it cannot parse.
+		if err := respond("tracker:42"); err == nil || !strings.Contains(err.Error(), "invalid approval request ID") {
+			t.Fatalf("RespondToApproval() error = %v, want the provider's refusal", err)
+		}
+	})
 	t.Run("provider error", func(t *testing.T) {
 		// Non-numeric request ID: codex.RespondToApproval must refuse.
 		err := respond("not-a-number")

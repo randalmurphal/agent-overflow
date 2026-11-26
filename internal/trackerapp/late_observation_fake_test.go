@@ -45,11 +45,11 @@ func TestALateIdenticalObservationReplacesNothing(t *testing.T) {
 			}
 			older := make(chan answer, 1)
 			go func() {
-				_, ch, err := s.svc.issueDetail(t.Context(), conn.ID, tc.issue, Interactive, true)
+				_, ch, err := s.svc.issueDetail(t.Context(), conn.ID, tc.issue, Interactive, true, true)
 				older <- answer{ch, err}
 			}()
 			waitHeld(t, s.e, route[name])
-			if _, _, err := s.svc.issueDetail(t.Context(), conn.ID, tc.issue, Interactive, true); err != nil {
+			if _, _, err := s.svc.issueDetail(t.Context(), conn.ID, tc.issue, Interactive, true, true); err != nil {
 				t.Fatal(err)
 			}
 			card := recordOfFake(t, s, conn, tc.issue)

@@ -3,7 +3,9 @@
 // content, at a phone's width as at a wider one; and a Start work asked for
 // (a Board card's) shows its form in the layout the ticket settles on,
 // narrow or wide, whether the ticket's detail is there when it mounts or
-// arrives after.
+// arrives after. And a description emptied in its editor is sent as a
+// clear from the text it was edited from, whose stale refusal keeps the
+// editor open with the tracker's sentence.
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { mount, unmount } from 'svelte';
@@ -130,5 +132,28 @@ describe('a Start work asked for', () => {
     await waitFor(() => rail()?.querySelector('[data-testid="ticket-work-start"]') != null, 'Work in Details');
     await waitFor(() => !(rail()!.querySelector<HTMLButtonElement>('[data-testid="ticket-work-start"]')!.disabled), 'Start work ready');
     expect(form()).toBeNull();
+  });
+});
+
+describe('a description emptied in its editor', () => {
+  it('is sent from the text it was edited from, and a stale refusal keeps the editor with its sentence', async () => {
+    const sent: unknown[] = [];
+    setBindingMock('EditTrackerIssue', async (connection: string, request: unknown) => {
+      sent.push([connection, request]);
+      return { parts: [{ issue: '1', step: 'edit', state: 'refused', refusal: { reason: 'stale', message: 'Description on WEB-1 changed since the write was planned; plan it again' } }] };
+    });
+    const { host } = mountTicket(900);
+    const section = () => host.querySelector<HTMLElement>('[data-testid="ticket-section"][data-field="description"]');
+    await waitFor(() => section()?.querySelector('[data-testid="ticket-section-edit"]') != null, 'the description\'s Edit');
+    section()!.querySelector<HTMLElement>('[data-testid="ticket-section-edit"]')!.click();
+    await waitFor(() => section()?.querySelector('[data-testid="ticket-section-editor"]') != null, 'the editor');
+    const editor = section()!.querySelector<HTMLTextAreaElement>('[data-testid="ticket-section-editor"]')!;
+    editor.value = '';
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    section()!.querySelector<HTMLElement>('[data-testid="ticket-section-save"]')!.click();
+    await waitFor(() => sent.length === 1, 'the clear sent');
+    expect(sent[0]).toEqual(['c1', { issue: '1', fields: [{ field: 'description', markdown: { markdown: '', from: 'The description' } }], accept_loss: false }]);
+    await waitFor(() => section()?.textContent?.includes('changed since the write was planned') === true, 'the stale refusal');
+    expect(section()!.querySelector('[data-testid="ticket-section-editor"]')).not.toBeNull();
   });
 });

@@ -501,25 +501,41 @@ describe('tracker tool write results', () => {
     const view = aoResultView(TRACKER_TOOLS_SERVER, 'ticket_update', json({
       tickets: [
         { key: 'WEB-12', applied: ['status', 'comment'] },
-        { key: 'WEB-18', applied: ['status'], refused: 'priority: no Priority value matches "Urgent"; it takes Highest, High, or Medium.', not_sent: ['comment'] },
-        { key: 'WEB-27', applied: ['comment'], note: 'Your earlier call added this comment; it was not added again.' },
+        { key: 'WEB-18', applied: ['status'], refused: 'priority: no Priority value matches "Urgent"; it takes "Highest", "High", or "Medium".', not_sent: ['comment'] },
+        { key: 'WEB-27', already: ['comment'], note: 'Your earlier call added this comment; it was not added again.' },
       ],
     }), {}, names)!;
     expect(view.outcome).toBe('2 of 3 tickets changed');
     expect(view.lines.map((l) => [l.title, l.detail, l.text])).toEqual([
       ['WEB-12', 'status, comment', ''],
-      ['WEB-18', 'status · refused · not sent: comment', 'priority: no Priority value matches "Urgent"; it takes Highest, High, or Medium.'],
-      ['WEB-27', 'comment', 'Your earlier call added this comment; it was not added again.'],
+      ['WEB-18', 'status · refused · not sent: comment', 'priority: no Priority value matches "Urgent"; it takes "Highest", "High", or "Medium".'],
+      ['WEB-27', 'already: comment', 'Your earlier call added this comment; it was not added again.'],
     ]);
-    // A page of found tickets is not read as an update.
     expect(aoResultView(TRACKER_TOOLS_SERVER, 'ticket_update', json({ tickets: [{ key: 'WEB-1', applied: ['status'] }] }), {}, names)!.outcome).toBe('1 ticket changed');
+  });
+
+  it('counts a ticket as changed only when this call applied a step to it', () => {
+    // Nothing was sent: one ticket refused its status, so the other's
+    // comment went too.
+    expect(aoResultView(TRACKER_TOOLS_SERVER, 'ticket_update', json({
+      tickets: [
+        { key: 'WEB-1', not_sent: ['comment'] },
+        { key: 'WEB-2', refused: 'status: WEB-2 cannot move to "Done".', not_sent: ['comment'] },
+      ],
+    }), {}, names)!.outcome).toBe('0 of 2 tickets changed');
+    expect(aoResultView(TRACKER_TOOLS_SERVER, 'ticket_update', json({
+      tickets: [{ key: 'WEB-1', applied: ['status'], refused: 'priority: no Priority value matches "Urgent".' }],
+    }), {}, names)!.outcome).toBe('1 ticket changed');
+    expect(aoResultView(TRACKER_TOOLS_SERVER, 'ticket_update', json({
+      tickets: [{ key: 'WEB-1', already: ['status'] }],
+    }), {}, names)!.outcome).toBe('0 of 1 ticket changed');
   });
 
   it('reads a create as its key, and a create that stopped part way as incomplete with its sentence', () => {
     expect(aoResultView(TRACKER_TOOLS_SERVER, 'ticket_create', json({ key: 'WEB-42' }), {}, names)).toMatchObject({ outcome: 'created WEB-42', note: '' });
     expect(aoResultView(TRACKER_TOOLS_SERVER, 'ticket_create', json({
-      key: 'WEB-42', refused: 'WEB-42 was created, but status was not set: WEB-42 cannot move to Shipped.',
-    }), {}, names)).toMatchObject({ outcome: 'created WEB-42 · incomplete', note: 'WEB-42 was created, but status was not set: WEB-42 cannot move to Shipped.' });
+      key: 'WEB-42', refused: 'status: WEB-42 cannot move to "Shipped".', not_sent: ['sprint'],
+    }), {}, names)).toMatchObject({ outcome: 'created WEB-42 · incomplete', note: 'status: WEB-42 cannot move to "Shipped".' });
   });
 });
 

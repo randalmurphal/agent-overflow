@@ -160,12 +160,19 @@ const detailMaxAge = 30 * time.Minute
 // typed error reachable through errors.As. A connection turned off or
 // removed fails wrapping ErrDisabled or ErrNotFound.
 func (s *Service) IssueDetail(ctx context.Context, id string, issue tracker.IssueID, u Urgency) (DetailView, Changes, error) {
-	return s.issueDetail(ctx, id, issue, u, false)
+	return s.issueDetail(ctx, id, issue, u, false, true)
+}
+
+// UnmarkedIssueDetail is IssueDetail without the agents' marks: what a
+// reader that shows none of them, the tracker tools, reads.
+func (s *Service) UnmarkedIssueDetail(ctx context.Context, id string, issue tracker.IssueID, u Urgency) (DetailView, Changes, error) {
+	return s.issueDetail(ctx, id, issue, u, false, false)
 }
 
 // issueDetail is IssueDetail, the detail read in full when full is set: a
-// read of one ticket no pump makes (readDetails).
-func (s *Service) issueDetail(ctx context.Context, id string, issue tracker.IssueID, u Urgency, full bool) (DetailView, Changes, error) {
+// read of one ticket no pump makes (readDetails), with the agents' marks
+// when marked is set.
+func (s *Service) issueDetail(ctx context.Context, id string, issue tracker.IssueID, u Urgency, full, marked bool) (DetailView, Changes, error) {
 	if issue == "" {
 		return DetailView{}, Changes{}, fmt.Errorf("%w: no issue named", ErrInvalidRequest)
 	}
@@ -186,7 +193,7 @@ func (s *Service) issueDetail(ctx context.Context, id string, issue tracker.Issu
 	if err != nil {
 		return DetailView{}, ch, err
 	}
-	v, _, err := s.detailView(res.root, row, *rd.detail)
+	v, _, err := s.detailView(res.root, row, *rd.detail, marked)
 	return v, ch, err
 }
 
@@ -239,8 +246,8 @@ func boardIssueURL(row store.TrackerConnection) string {
 
 // detailView is doc as a view of connection row, with the other issues
 // it shows (detailViews).
-func (s *Service) detailView(root int64, row store.TrackerConnection, doc ticketDoc) (DetailView, []tracker.IssueID, error) {
-	views, shows, err := s.detailViews(root, row, []ticketDoc{doc})
+func (s *Service) detailView(root int64, row store.TrackerConnection, doc ticketDoc, marked bool) (DetailView, []tracker.IssueID, error) {
+	views, shows, err := s.detailViews(root, row, []ticketDoc{doc}, marked)
 	if err != nil {
 		return DetailView{}, nil, err
 	}
@@ -264,11 +271,11 @@ func (s *Service) detailView(root int64, row store.TrackerConnection, doc ticket
 // time; a document linking more than that bound shows the rest as it has
 // them. Each view's rows on the boards are read with every document's in
 // one more statement (store.ListMirrorTicketRows), so docs holds at most
-// store.MirrorMaxBodies, and each view's agent marks in one statement of
-// its own (markAgentWrites). It returns each view with the other issues it
-// shows (showsOf of the card it rendered), the dependencies its pump
-// watches.
-func (s *Service) detailViews(root int64, row store.TrackerConnection, docs []ticketDoc) ([]DetailView, [][]tracker.IssueID, error) {
+// store.MirrorMaxBodies, and, when marked is set, each view's agent marks
+// in one statement of its own (markAgentWrites). It returns each view with
+// the other issues it shows (showsOf of the card it rendered), the
+// dependencies its pump watches.
+func (s *Service) detailViews(root int64, row store.TrackerConnection, docs []ticketDoc, marked bool) ([]DetailView, [][]tracker.IssueID, error) {
 	wants := make([][]string, len(docs))
 	var all idSet
 	for i, doc := range docs {
@@ -344,7 +351,9 @@ func (s *Service) detailViews(root int64, row store.TrackerConnection, docs []ti
 		if views[i].Rows == nil {
 			views[i].Rows = []TicketRowView{}
 		}
-		s.markAgentWrites(row, &views[i])
+		if marked {
+			s.markAgentWrites(root, row, &views[i])
+		}
 	}
 	return views, shows, nil
 }

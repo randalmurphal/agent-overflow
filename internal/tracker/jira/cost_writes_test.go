@@ -168,3 +168,36 @@ func TestAddCommentPublicReadsNoProject(t *testing.T) {
 		t.Errorf("requests %v", f.Requests())
 	}
 }
+
+// TestACreateReadsItsScreenOnce proves a create planned after its screen
+// was read reads the screen once, a screen older than its age is read
+// again, and the kept screen is no caller's to change.
+func TestACreateReadsItsScreenOnce(t *testing.T) {
+	f, c := createSite(t)
+	now := time.Unix(1_700_000_000, 0)
+	c.createScreens.clock = func() time.Time { return now }
+	first, err := c.CreateMeta(t.Context(), "WEB", "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The screen handed out is the caller's own.
+	i := slices.IndexFunc(first.Fields, func(f FieldMeta) bool { return f.ID == "priority" })
+	first.Fields[i].Allowed[0].Name = "Changed"
+	if again, err := c.CreateMeta(t.Context(), "WEB", "1"); err != nil || again.Fields[i].Allowed[0].Name != "High" {
+		t.Fatalf("the kept screen = %+v, %v", again.Fields[i], err)
+	}
+	in := CreateInput{Project: "WEB", IssueType: "Task", Fields: []FieldInput{{Field: "Summary", Value: Text("x")}}}
+	if _, err := c.PlanCreate(t.Context(), in); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.Count("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes/1"); n != 1 {
+		t.Errorf("the create screen was read %d times, want once", n)
+	}
+	now = now.Add(createScreenAge)
+	if _, err := c.PlanCreate(t.Context(), in); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.Count("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes/1"); n != 2 {
+		t.Errorf("a screen %v old was read %d times in all, want again", createScreenAge, n)
+	}
+}

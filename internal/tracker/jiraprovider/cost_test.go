@@ -267,7 +267,7 @@ func TestRequestCost(t *testing.T) {
 		"AssignableUsers": 1, "Choices (priority)": 1, "Lookup (10 keys, 3 missing)": 4, "Search": 1,
 		"ChangedRows board 2 (cold)": 2, "Structure board 1 (warm 2)": 3, "ChangedRows board 2 (after)": 1,
 		"NewRows (2 boards)": 2, "BoardRows (100, 1 not on the board)": 2,
-		"Create (two images)": 7, "Edit (title, assignee)": 3, "Move": 2, "SetEstimate": 2, "Rank (5)": 2,
+		"Create (two images)": 6, "Edit (title, assignee)": 3, "Move": 2, "SetEstimate": 2, "Rank (5)": 2,
 		"MoveToSprint (30)": 3, "MoveToSprint backlog (30)": 2, "AddComment": 2, "EditComment": 2, "DeleteComment": 2,
 		"Link": 1, "Unlink": 2, "Attach": 1, "Download": 2,
 		"CreateSprint": 1, "EditSprint": 2, "CompleteSprint (125 issues)": 7, "StartSprint": 2,

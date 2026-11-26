@@ -5,7 +5,6 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -33,6 +32,8 @@ const maxKeyRunes = 128
 // writes it, with no site.
 type ticket struct {
 	connection, site, issue, key string
+	// title is the ticket's title when the lookup that found it gave one.
+	title string
 	// linked is the thread's own ticket.
 	linked bool
 }
@@ -194,7 +195,7 @@ func (s *Server) read(ctx context.Context, caller Caller, raw json.RawMessage) (
 		}
 		return s.readMore(ctx, caller, args.More)
 	}
-	t, sources, err := s.resolve(ctx, caller.Thread, args.Key)
+	t, sources, err := s.resolve(ctx, caller.Thread, args.Key, keyArg)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +212,7 @@ func (s *Server) read(ctx context.Context, caller Caller, raw json.RawMessage) (
 	sh := newSheet(s, t.connection, qualifier(sources, t.site), d)
 	out, err := sh.first(args.History)
 	if err == nil {
-		s.marks.shown(caller.Session, markKey{t.connection, d.Card.ID}, d.Card.Updated, sh.given, true)
+		s.marks.shown(caller, markKey{t.connection, d.Card.ID}, d.Card.Updated, sh.given, true)
 	}
 	return out, err
 }
@@ -229,124 +230,6 @@ func qualifier(sources []trackerapp.TicketSource, site string) func(string) stri
 		}
 		return site + "/" + key
 	}
-}
-
-// resolve is the ticket key names for thread threadID, and the sources on:
-// with no key, the ticket the thread is linked to; a key the link names,
-// the link's (no request); site/KEY, that site's ticket; any other key,
-// the ticket of the one site whose tracker finds it, refused when several
-// sites do. Before any tracker is asked, the mirrors answer
-// (Tracker.TicketsOfKey): a bare key whose project two sites' mirrors
-// hold is refused as two sites' tickets, and a key one site's mirror
-// holds the issue of resolves there, both with no request; a key one
-// site's mirror holds the project of is looked up on that site alone.
-func (s *Server) resolve(ctx context.Context, threadID, key string) (ticket, []trackerapp.TicketSource, error) {
-	key = strings.TrimSpace(key)
-	if len([]rune(key)) > maxKeyRunes {
-		return ticket{}, nil, invalidf("key is longer than any ticket key.")
-	}
-	site, bare, qualified := strings.Cut(key, "/")
-	if !qualified {
-		site, bare = "", key
-	}
-	bare = strings.ToUpper(strings.TrimSpace(bare))
-	link, linked, err := s.t.LinkedTicket(threadID)
-	var refused *trackerapp.LinkRefusal
-	switch {
-	case key == "" && err != nil:
-		return ticket{}, nil, err
-	case key == "" && !linked:
-		return ticket{}, nil, errorsx.Public(CodeNoTicket, "This thread is not linked to a ticket; name one with key.", nil)
-	case errors.As(err, &refused):
-		// The thread's ticket cannot be read here, which says nothing of
-		// the ticket key names: the sources look for it.
-		linked = false
-	case err != nil:
-		return ticket{}, nil, err
-	}
-	sources, err := s.sources()
-	if err != nil {
-		return ticket{}, nil, err
-	}
-	linkTicket := ticket{connection: link.Connection, site: link.Site, issue: link.Issue, linked: true}
-	if key == "" || linked && strings.EqualFold(link.Key, bare) && (!qualified || strings.EqualFold(link.Site, strings.TrimSpace(site))) {
-		linkTicket.key = link.Key
-		return linkTicket, sources, nil
-	}
-	if bare == "" {
-		return ticket{}, nil, invalidf("key names a site and no ticket; write it as site/KEY.")
-	}
-	asked := sources
-	if qualified {
-		asked = slices.DeleteFunc(slices.Clone(sources), func(src trackerapp.TicketSource) bool { return !strings.EqualFold(src.Site, strings.TrimSpace(site)) })
-		if len(asked) == 0 {
-			return ticket{}, nil, errorsx.Public(CodeNotFound, fmt.Sprintf(
-				"No connection on this computer reaches %s; the sites on are %s.", strings.TrimSpace(site), siteList(sources)), nil)
-		}
-	}
-	held, err := s.t.TicketsOfKey(bare)
-	if err != nil {
-		return ticket{}, nil, err
-	}
-	var mirrored []ticket
-	for _, h := range held {
-		i := slices.IndexFunc(asked, func(src trackerapp.TicketSource) bool { return src.ID == h.Connection })
-		if i >= 0 {
-			mirrored = append(mirrored, ticket{connection: h.Connection, site: asked[i].Site, issue: h.Issue, key: bare})
-		}
-	}
-	switch {
-	case len(mirrored) > 1:
-		return ticket{}, nil, ambiguous(sources, bare, mirrored)
-	case len(mirrored) == 1 && mirrored[0].issue != "":
-		return mirrored[0], sources, nil
-	case len(mirrored) == 1:
-		site := mirrored[0].site
-		asked = slices.DeleteFunc(slices.Clone(asked), func(src trackerapp.TicketSource) bool { return src.Site != site })
-	}
-	// One hit a site: the first of the site's connections, in order, that
-	// has the key. Two accounts on one site reaching a key reach one ticket.
-	var hits []ticket
-	var failed error
-	for _, src := range asked {
-		if slices.ContainsFunc(hits, func(h ticket) bool { return h.site == src.Site }) {
-			continue
-		}
-		found, err := s.t.Lookup(ctx, src.ID, []string{bare})
-		if err != nil {
-			// As ticket_find: a refusal the model can read leaves the other
-			// sources asked; anything else fails the call.
-			if _, _, public := errorsx.PublicDetails(err); !public || ctx.Err() != nil {
-				return ticket{}, nil, onSite(src.Site, err)
-			}
-			if failed == nil {
-				failed = onSite(src.Site, err)
-			}
-			continue
-		}
-		if len(found.Found) > 0 {
-			hits = append(hits, ticket{connection: src.ID, site: src.Site, issue: found.Found[0].Card.ID, key: bare})
-		}
-	}
-	switch {
-	case len(hits) == 1:
-		return hits[0], sources, nil
-	case len(hits) > 1:
-		return ticket{}, nil, ambiguous(sources, bare, hits)
-	case failed != nil:
-		// A source that could not answer may hold the key.
-		return ticket{}, nil, failed
-	}
-	return ticket{}, nil, errorsx.Public(CodeNotFound, fmt.Sprintf("No ticket %s on %s.", bare, siteList(asked)), nil)
-}
-
-// ambiguous refuses bare, a key that hits name on several sites.
-func ambiguous(sources []trackerapp.TicketSource, bare string, hits []ticket) error {
-	sites, keys := make([]string, len(hits)), make([]string, len(hits))
-	for i, h := range hits {
-		sites[i], keys[i] = h.site, qualifier(sources, h.site)(h.key)
-	}
-	return errorsx.Public(CodeAmbiguous, fmt.Sprintf("%s is on %s; name one: %s.", bare, sayList(sites, "and"), sayList(keys, "or")), nil)
 }
 
 // readMore answers the part a value of an earlier answer's more names,
@@ -380,7 +263,7 @@ func (s *Server) readMore(ctx context.Context, caller Caller, text string) (any,
 	}
 	out, err := sh.continued(ctx, c)
 	if err == nil {
-		s.marks.shown(caller.Session, markKey{c.Connection, d.Card.ID}, d.Card.Updated, sh.given, false)
+		s.marks.shown(caller, markKey{c.Connection, d.Card.ID}, d.Card.Updated, sh.given, false)
 	}
 	return out, err
 }

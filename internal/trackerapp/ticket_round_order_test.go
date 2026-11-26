@@ -144,7 +144,7 @@ func TestOverlappingDetailReadsStoreTheLatestFullRead(t *testing.T) {
 				if first == "check" {
 					_, _, err = m.svc.IssueDetail(context.Background(), m.conn.ID, "10001", Interactive)
 				} else {
-					_, _, err = m.svc.issueDetail(context.Background(), m.conn.ID, "10001", Interactive, true)
+					_, _, err = m.svc.issueDetail(context.Background(), m.conn.ID, "10001", Interactive, true, true)
 				}
 				done <- err
 			}()

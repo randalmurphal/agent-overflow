@@ -12,7 +12,7 @@
 // concurrent use. It sends every request through its own
 // trackerapi.Client and imports nothing of the app but trackerapi and
 // adf. It caches users by account ID, the signed-in user, the field
-// catalog, board configurations and sprint lists, all in memory, bounded
+// catalog, create screens, board configurations and sprint lists, all in memory, bounded
 // and droppable (cache.go);
 // nothing is written to disk and nothing prints. Every exported call passes one admission guard
 // first (admit), so a closed client or an ended context fails it even
@@ -96,6 +96,9 @@ type Client struct {
 	users   *cache[string, User]
 	catalog *cache[struct{}, *Catalog]
 	configs *cache[int64, BoardConfig]
+	// createScreens are the create screens by project and issue type ID,
+	// kept for createScreenAge.
+	createScreens *cache[[2]string, Screen]
 	// sprintLists are the boards' sprint listings, kept and dropped
 	// with their configurations.
 	sprintLists *cache[int64, SprintList]
@@ -149,15 +152,16 @@ func New(opts Options) (*Client, error) {
 	}
 	c := &Client{
 		api: api, maxImages: opts.MaxImageBytes,
-		users:       newCache[string, User](userCacheSize, siteAge, nil, api.CredentialMark),
-		voterMisses: newCache[string, error](userCacheSize, siteAge, nil, api.CredentialMark),
-		catalog:     newCache[struct{}, *Catalog](1, siteAge, nil, api.CredentialMark),
-		configs:     newCache[int64, BoardConfig](boardConfigCacheSize, 0, cloneBoardConfig, api.CredentialMark),
-		sprintLists: newCache[int64, SprintList](boardConfigCacheSize, 0, cloneSprintList, api.CredentialMark),
-		me:          newCache[struct{}, User](1, 0, nil, api.CredentialMark),
-		cloudID:     newCache[struct{}, string](1, 0, nil, api.CredentialMark),
-		poker:       newCache[struct{}, pokerApp](1, siteAge, nil, api.CredentialMark),
-		pokerTokens: newCache[string, pokerToken](pokerTokenCacheSize, 0, nil, api.CredentialMark),
+		users:         newCache[string, User](userCacheSize, siteAge, nil, api.CredentialMark),
+		voterMisses:   newCache[string, error](userCacheSize, siteAge, nil, api.CredentialMark),
+		catalog:       newCache[struct{}, *Catalog](1, siteAge, nil, api.CredentialMark),
+		configs:       newCache[int64, BoardConfig](boardConfigCacheSize, 0, cloneBoardConfig, api.CredentialMark),
+		createScreens: newCache[[2]string, Screen](createScreenCacheSize, createScreenAge, cloneScreen, api.CredentialMark),
+		sprintLists:   newCache[int64, SprintList](boardConfigCacheSize, 0, cloneSprintList, api.CredentialMark),
+		me:            newCache[struct{}, User](1, 0, nil, api.CredentialMark),
+		cloudID:       newCache[struct{}, string](1, 0, nil, api.CredentialMark),
+		poker:         newCache[struct{}, pokerApp](1, siteAge, nil, api.CredentialMark),
+		pokerTokens:   newCache[string, pokerToken](pokerTokenCacheSize, 0, nil, api.CredentialMark),
 	}
 	if c.maxImages == 0 {
 		c.maxImages = defaultMaxImages

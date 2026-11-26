@@ -318,14 +318,19 @@ func (c *Client) screenValues(ctx context.Context, b *builder, issue string, scr
 		metas[i] = f
 	}
 	var stored *Issue
-	if slices.ContainsFunc(metas, func(f FieldMeta) bool { return kindOf(f.Schema) == kindRich }) {
+	if slices.ContainsFunc(metas, func(f FieldMeta) bool { return kindOf(f.Schema) == kindRich }) || replacedNotAsked(nil, metas, inputs) {
 		var err error
-		if stored, err = c.GetIssue(ctx, issue, richFieldIDs(metas)...); err != nil {
+		if stored, err = c.GetIssue(ctx, issue, comparedFieldIDs(metas, inputs)...); err != nil {
 			return nil, err
 		}
 	}
 	out := make([]Value, 0, len(inputs))
 	for i, fi := range inputs {
+		if stored != nil {
+			if err := checkReplaced(stored, metas[i], fi.Value); err != nil {
+				return nil, notSentErr(err)
+			}
+		}
 		b.opts.Base = nil
 		if stored != nil && kindOf(metas[i].Schema) == kindRich {
 			base, err := storedDoc(stored, metas[i])

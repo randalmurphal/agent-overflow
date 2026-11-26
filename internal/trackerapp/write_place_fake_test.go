@@ -129,7 +129,8 @@ func TestFakeJiraCreateWithNoMatch(t *testing.T) {
 // (its create metadata and the create), then one match and one bulk fetch
 // that place and read the new row, where the rows read through the board's
 // list was one request; with no match, the board's rows read follows and
-// confirms its miss with a match that fails too.
+// confirms its miss with a match that fails too. The second create reads
+// no create metadata: the client keeps the screen the first read.
 func TestFakeJiraCreateCosts(t *testing.T) {
 	t.Parallel()
 	s, scope := lagScenario(t)
@@ -144,5 +145,5 @@ func TestFakeJiraCreateCosts(t *testing.T) {
 		Body: json.RawMessage(`{"errorMessages":["The match is unavailable."]}`)}); err != nil {
 		t.Fatal(err)
 	}
-	s.measureTicks(t, []tickCost{{name: "create, no match", requests: 5, stmts: 1, run: create}})
+	s.measureTicks(t, []tickCost{{name: "create, no match", requests: 4, stmts: 1, run: create}})
 }

@@ -32,13 +32,11 @@ type fakeTracker struct {
 	// connection/issue.
 	keyed  map[string][]trackerapp.KeyedTicket
 	boards map[string]trackerapp.BoardSummary
-	cards  map[string]trackerapp.CardView
-	// repeats are the agent's earlier writes by digest; settled the rows
-	// a check found made.
-	repeats map[string]trackerapp.AgentRepeat
-	settled []string
-	types   []trackerapp.IssueTypeView
-	fields  []trackerapp.FieldView
+	// boardReads counts the board reads, by connection/board.
+	boardReads map[string]int
+	cards      map[string]trackerapp.CardView
+	types      []trackerapp.IssueTypeView
+	fields     []trackerapp.FieldView
 	// write answers each write; writes are those made, as name connection
 	// input, and agents the agent each carried.
 	write  func(name string, in any) (trackerapp.WriteView, error)
@@ -51,6 +49,10 @@ func (f *fakeTracker) TicketsOfKey(key string) ([]trackerapp.KeyedTicket, error)
 }
 
 func (f *fakeTracker) BoardSummary(connection, board string) (trackerapp.BoardSummary, error) {
+	if f.boardReads == nil {
+		f.boardReads = map[string]int{}
+	}
+	f.boardReads[connection+"/"+board]++
 	b, ok := f.boards[connection+"/"+board]
 	if !ok {
 		return b, fmt.Errorf("%w: board %s", trackerapp.ErrNotMirrored, board)
@@ -61,16 +63,6 @@ func (f *fakeTracker) BoardSummary(connection, board string) (trackerapp.BoardSu
 func (f *fakeTracker) MirrorCard(connection, issue string) (trackerapp.CardView, bool, error) {
 	c, ok := f.cards[connection+"/"+issue]
 	return c, ok, nil
-}
-
-func (f *fakeTracker) AgentRepeat(_, digest string) (trackerapp.AgentRepeat, bool, error) {
-	r, ok := f.repeats[digest]
-	return r, ok, nil
-}
-
-func (f *fakeTracker) SettleAgentRepeat(row int64, issue, comment string) error {
-	f.settled = append(f.settled, fmt.Sprintf("%d %s %s", row, issue, comment))
-	return nil
 }
 
 func (f *fakeTracker) IssueTypes(_ context.Context, connection, project string) ([]trackerapp.IssueTypeView, error) {
@@ -124,8 +116,12 @@ type fakeHost struct {
 	approve   func(Approval) error
 	approvals []Approval
 	rows      []WriteRow
-	// createBoards are the boards a create goes through, by connection/project.
-	createBoards map[string]string
+	// createBoards are the boards a create can go through, by project;
+	// readingProject, when set, runs as a create reads them.
+	createBoards   map[string][]CreateBoard
+	readingProject func()
+	// ended are the sessions the host no longer holds.
+	ended map[string]bool
 }
 
 func (h *fakeHost) Writable(string) error {
@@ -145,10 +141,14 @@ func (h *fakeHost) Approve(_ context.Context, _ string, a Approval) error {
 
 func (h *fakeHost) Wrote(_ string, row WriteRow) { h.rows = append(h.rows, row) }
 
-func (h *fakeHost) CreateBoard(_, connection, project string) (string, bool, error) {
-	b, ok := h.createBoards[connection+"/"+project]
-	return b, ok, nil
+func (h *fakeHost) CreateBoards(_, project string) ([]CreateBoard, error) {
+	if h.readingProject != nil {
+		h.readingProject()
+	}
+	return h.createBoards[project], nil
 }
+
+func (h *fakeHost) Live(_, session string) bool { return !h.ended[session] }
 
 func (f *fakeTracker) TicketSources() ([]trackerapp.TicketSource, error) { return f.sources, nil }
 
@@ -170,7 +170,8 @@ func (f *fakeTracker) Lookup(_ context.Context, connection string, keys []string
 	var out trackerapp.LookupView
 	for _, k := range keys {
 		if issue, ok := f.lookup[connection][k]; ok {
-			out.Found = append(out.Found, trackerapp.KeyMatchView{Key: k, Card: trackerapp.CardView{ID: issue, Key: k}})
+			title := f.details[connection+"/"+issue].Card.Title
+			out.Found = append(out.Found, trackerapp.KeyMatchView{Key: k, Card: trackerapp.CardView{ID: issue, Key: k, Title: title}})
 		} else {
 			out.Unmatched = append(out.Unmatched, k)
 		}

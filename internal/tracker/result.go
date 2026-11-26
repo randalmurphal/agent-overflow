@@ -203,13 +203,15 @@ func (s Step) String() string {
 // (a sprint) and for a create the tracker did not confirm. Changed are the
 // resources the part may have changed whatever its outcome; the caller
 // reads again those of a part that is applied or unknown. Comment is the
-// comment an applied AddComment part made, as the tracker named it.
+// comment an applied AddComment part made, as the tracker named it, and
+// Key the key the tracker gave the issue an applied create made.
 type Part struct {
 	Issue   IssueID
 	Step    Step
 	Outcome Outcome
 	Changed []Resource
 	Comment CommentID
+	Key     string
 }
 
 // Result is every part of one write, in the order they were sent or
@@ -287,14 +289,15 @@ func (r Result) Refresh() []Resource {
 	return out
 }
 
-// Created is the issue a create made, when the tracker confirmed it.
-func (r Result) Created() (IssueID, bool) {
+// Created is the issue a create made, when the tracker confirmed it, and
+// the key the tracker gave it ("" when its answer named none).
+func (r Result) Created() (IssueID, string, bool) {
 	for _, p := range r.Parts {
 		if p.Step == StepCreate && p.Outcome.State() == StateApplied {
-			return p.Issue, true
+			return p.Issue, p.Key, true
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 // CreateUnknown reports a create whose answer was lost: the tracker may
@@ -382,6 +385,9 @@ func (p Part) check() error {
 	}
 	if p.Comment != "" && (p.Step != StepComment || state != StateApplied) {
 		return fmt.Errorf("a %s part that is %s names comment %q", p.Step, state, p.Comment)
+	}
+	if p.Key != "" && (p.Step != StepCreate || state != StateApplied) {
+		return fmt.Errorf("a %s part that is %s names key %q", p.Step, state, p.Key)
 	}
 	lostCreate := p.Step == StepCreate && state == StateUnknown
 	if (state != StateApplied && state != StateUnknown) || lostCreate {

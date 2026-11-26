@@ -311,21 +311,26 @@ func TestTrackerWriteApprovalOfAnEndedSession(t *testing.T) {
 
 // A waiter settles once: an answer that comes after the wait ended, or a
 // second answer, finds nothing to settle, so the screen that sent it is
-// told it was already handled and no decision is announced for it.
+// told it was already handled and no decision is announced for it. A
+// waiter is its thread's: the same request ID on another thread finds
+// none.
 func TestTrackerApprovalWaiterSettlesOnce(t *testing.T) {
 	t.Parallel()
 	var w trackerApprovals
-	ch := w.open("tracker:call-1")
-	if !w.settle("tracker:call-1", false) {
+	ch := w.open("thread-1", "tracker:call-1")
+	if w.settle("thread-2", "tracker:call-1", true) {
+		t.Fatal("another thread's answer settled the waiter")
+	}
+	if !w.settle("thread-1", "tracker:call-1", false) {
 		t.Fatal("the first settlement lost")
 	}
-	if w.settle("tracker:call-1", true) {
+	if w.settle("thread-1", "tracker:call-1", true) {
 		t.Fatal("a second settlement won")
 	}
 	if got := <-ch; got {
 		t.Fatal("the waiter got the second settlement")
 	}
-	if w.settle("tracker:call-2", true) {
+	if w.settle("thread-1", "tracker:call-2", true) {
 		t.Fatal("a settlement of a waiter never opened won")
 	}
 }

@@ -18,6 +18,9 @@ type WriteView struct {
 	// Created is the issue a create made, when the tracker confirmed it,
 	// even when a later step of the create failed.
 	Created string `json:"created,omitempty"`
+	// CreatedKey is the key the tracker gave that issue in its answer to
+	// the create.
+	CreatedKey string `json:"created_key,omitempty"`
 	// CreateUnknown reports a create whose answer was lost: the tracker
 	// may hold a new issue nobody can name, and a second attempt may make
 	// a second one. Nothing retried it; the board's tick ran at once.
@@ -35,6 +38,10 @@ type WriteView struct {
 	// Ended reports a connection turned off or removed while the write was
 	// made: its mirror was cleared, so nothing was refreshed.
 	Ended bool `json:"ended,omitempty"`
+	// Repeat, on an agent's comment or create, is what an earlier attempt
+	// of the same write made: nothing was sent (agent_writes.go). Only an
+	// agent's write, which no screen receives, has one.
+	Repeat *RepeatView `json:"-"`
 }
 
 // PartView is one part of a write. Step is create, upload, edit, move,
@@ -42,14 +49,12 @@ type WriteView struct {
 // applied, refused, unknown (sent and not answered in full: it may have
 // happened) or not_sent. Refusal is why a refused part was refused, and
 // Failure why an unknown or unsent part is so, as a person reads it.
-// Comment is the comment an applied comment part made.
 type PartView struct {
 	Issue   string       `json:"issue,omitempty"`
 	Step    string       `json:"step"`
 	State   string       `json:"state"`
 	Refusal *RefusalView `json:"refusal,omitempty"`
 	Failure *FailureView `json:"failure,omitempty"`
-	Comment string       `json:"comment,omitempty"`
 }
 
 // RefusalView is why a part was refused. Reason is tracker (the tracker
@@ -125,7 +130,7 @@ func partViews(kind string, res tracker.Result, at int64) []PartView {
 	out := make([]PartView, len(res.Parts))
 	for i, p := range res.Parts {
 		state := p.Outcome.State()
-		v := PartView{Issue: string(p.Issue), Step: nameOf(stepNames[:], p.Step), State: nameOf(stateNames[:], state), Comment: string(p.Comment)}
+		v := PartView{Issue: string(p.Issue), Step: nameOf(stepNames[:], p.Step), State: nameOf(stateNames[:], state)}
 		r, refused := p.Outcome.Refusal()
 		err := p.Outcome.Err()
 		switch {

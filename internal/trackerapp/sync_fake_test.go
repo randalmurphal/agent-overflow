@@ -210,7 +210,7 @@ func TestFakeJiraScenario(t *testing.T) {
 	done := slices.IndexFunc(moves, func(m tracker.Move) bool { return m.To == "10002" })
 	applied(t, "move", p.Move(t.Context(), tracker.MoveInput{Issue: "10101", Move: moves[done].ID}))
 	applied(t, "sprint move", p.MoveToSprint(t.Context(), tracker.SprintMoveInput{Board: "1", Sprint: "2", Issues: ids("10103")}))
-	created, ok := applied(t, "create", p.Create(t.Context(), tracker.CreateInput{Project: "10000", Type: "10002", Title: "New task"})).Created()
+	created, _, ok := applied(t, "create", p.Create(t.Context(), tracker.CreateInput{Project: "10000", Type: "10002", Title: "New task"})).Created()
 	if !ok {
 		t.Fatal("the create named no issue")
 	}

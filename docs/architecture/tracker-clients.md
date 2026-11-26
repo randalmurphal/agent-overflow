@@ -302,14 +302,16 @@ problem on that record, which stays usable.
   write. A caller that passes a record as just read (`Current`) has sent
   nothing since reading it.
 - **Caches.** Every cached answer (users, the signed-in user, the field
-  catalog, board configurations, sprint lists) is kept with the
+  catalog, create screens, board configurations, sprint lists) is kept with the
   `CredentialMark` it was drawn under and is handed out only while the
   transport's own mark equals it, so a credential that is read again,
   forgotten or replaced retires them all, whichever call caused it. A
   board's configuration and sprint list are dropped by `ForgetBoard`,
   which the provider calls before each structure read. Users and the
   field catalog, which no read drops and Jira changes with no signal, are
-  read again once 30 minutes old.
+  read again once 30 minutes old. A create screen is kept for one minute,
+  so a create planned after its form or a tool call read the screen reads
+  it once.
 - **Write answers.** A write is applied only on a success its spec
   documents that names what was written, by the rule in `jira/writes.go`;
   any other 2xx is an unknown outcome. An edit that asks for nothing is

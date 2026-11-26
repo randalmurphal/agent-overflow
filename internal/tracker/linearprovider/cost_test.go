@@ -149,7 +149,7 @@ func TestRequestCost(t *testing.T) {
 		res := p.Create(ctx, tracker.CreateInput{Project: tracker.ProjectID(costTeam), Title: "Created",
 			Fields: []tracker.FieldEdit{{Field: tracker.FieldDescription, Value: tracker.MarkdownEdit("Body text", "")}}})
 		var ok bool
-		if created, ok = res.Created(); !ok {
+		if created, _, ok = res.Created(); !ok {
 			return fmt.Errorf("create named no issue: %+v", res)
 		}
 		return nil

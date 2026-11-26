@@ -65,6 +65,11 @@ func (p *Provider) Create(ctx context.Context, in tracker.CreateInput) tracker.R
 	if in.ImageDir != "" {
 		return unsupported(tracker.StepCreate, "local images in Markdown")
 	}
+	for _, e := range in.Fields {
+		if _, replaced := e.Value.Replaces(); replaced {
+			return refuse(tracker.StepCreate, tracker.Refusal{Reason: tracker.ReasonInvalid, Message: "a create's value replaces nothing"})
+		}
+	}
 	r := &resolver{p: p, team: string(in.Project)}
 	ch, err := r.resolve(ctx, in.Fields, true)
 	if err != nil {
@@ -75,13 +80,17 @@ func (p *Provider) Create(ctx context.Context, in tracker.CreateInput) tracker.R
 		return one("", tracker.StepCreate, err)
 	}
 	id := tracker.IssueID(is.ID)
-	return one(id, tracker.StepCreate, nil, tracker.CardOf(id), tracker.RowOf(tracker.BoardID(is.TeamID), id), tracker.DetailOf(id))
+	out := one(id, tracker.StepCreate, nil, tracker.CardOf(id), tracker.RowOf(tracker.BoardID(is.TeamID), id), tracker.DetailOf(id))
+	out.Parts[0].Key = is.Identifier
+	return out
 }
 
 // Edit changes fields of an issue with one update. A Markdown edit of the
-// description is refused as stale when the description Linear holds is
-// not the Markdown it was written from; the check reads the issue just
-// before the update and is not atomic with it.
+// description, an emptied one included, is refused as stale when the
+// description Linear holds is not the Markdown it was written from; the
+// check reads the issue just before the update and is not atomic with it.
+// Linear has no long plain text, so a plain edit written from texts
+// (tracker.Edit.Replacing) is refused as unsupported.
 func (p *Provider) Edit(ctx context.Context, in tracker.EditInput) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepEdit, err, in.Issue)
@@ -91,6 +100,11 @@ func (p *Provider) Edit(ctx context.Context, in tracker.EditInput) tracker.Resul
 	}
 	r := &resolver{p: p}
 	var current *linear.DescribedIssue
+	for _, e := range in.Fields {
+		if _, replaced := e.Value.Replaces(); replaced {
+			return unsupported(tracker.StepEdit, "comparing "+string(e.Field)+" with what it replaces", in.Issue)
+		}
+	}
 	if needsTeam(in.Fields) || slices.ContainsFunc(in.Fields, func(e tracker.FieldEdit) bool { return e.Value.Form() == tracker.EditMarkdown }) {
 		is, err := p.summary(ctx, in.Issue)
 		if err != nil {

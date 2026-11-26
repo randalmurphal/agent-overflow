@@ -190,7 +190,7 @@ func (t trackerToolsAdapter) Comments(ctx context.Context, connection, issue, pa
 
 func (t trackerToolsAdapter) IssueDetail(ctx context.Context, connection, issue string) (trackerapp.DetailView, error) {
 	return trackerFormRead(t.a, ctx, "ticket_read", "Reading the ticket", func(ctx context.Context, svc *trackerapp.Service) (trackerapp.DetailView, error) {
-		d, _, err := svc.IssueDetail(ctx, connection, tracker.IssueID(issue), trackerapp.Interactive)
+		d, _, err := svc.UnmarkedIssueDetail(ctx, connection, tracker.IssueID(issue), trackerapp.Interactive)
 		return d, err
 	})
 }
@@ -221,22 +221,6 @@ func (t trackerToolsAdapter) MirrorCard(connection, issue string) (trackerapp.Ca
 		return trackerapp.CardView{}, false, nil
 	}
 	return v.Card, err == nil, err
-}
-
-func (t trackerToolsAdapter) AgentRepeat(threadID, digest string) (trackerapp.AgentRepeat, bool, error) {
-	svc, err := t.a.trackerService()
-	if err != nil {
-		return trackerapp.AgentRepeat{}, false, err
-	}
-	return svc.AgentRepeatOf(threadID, digest)
-}
-
-func (t trackerToolsAdapter) SettleAgentRepeat(row int64, issue, comment string) error {
-	svc, err := t.a.trackerService()
-	if err != nil {
-		return err
-	}
-	return svc.SettleAgentRepeat(row, issue, comment)
 }
 
 func (t trackerToolsAdapter) IssueTypes(ctx context.Context, connection, project string) ([]trackerapp.IssueTypeView, error) {

@@ -55,14 +55,13 @@ func newWriteFixture(t *testing.T) *writeFixture {
 			EstimateField: "customfield_10016", Sprints: []trackerapp.SprintView{
 				{ID: "13", Name: "Sprint 13", State: "closed"}, {ID: "14", Name: "Sprint 14", State: "active"}, {ID: "15", Name: "Sprint 15", State: "future"},
 			}}},
-		cards:   map[string]trackerapp.CardView{},
-		repeats: map[string]trackerapp.AgentRepeat{},
+		cards: map[string]trackerapp.CardView{},
 	}
 	for key, issue := range f.lookup[src.ID] {
 		f.details[src.ID+"/"+issue] = writableDetail(key, issue)
 		f.cards[src.ID+"/"+issue] = trackerapp.CardView{ID: issue, Key: key, Updated: 2_000}
 	}
-	h := &fakeHost{createBoards: map[string]string{src.ID + "/WEB": "1"}}
+	h := &fakeHost{createBoards: map[string][]CreateBoard{"WEB": {{Connection: src.ID, Board: "1", Thread: true}}}}
 	srv := New(f, h)
 	srv.newID = func() string { return "call-1" }
 	return &writeFixture{f: f, h: h, srv: srv}
@@ -124,14 +123,14 @@ func TestUpdateAppliesStatusThenComment(t *testing.T) {
 		t.Fatalf("rows %+v", w.h.rows)
 	}
 	// The same call again: the ticket is in review, so the status is
-	// applied with no request.
+	// already there, with no request and no row.
 	d := w.f.details["conn-jira/10012"]
 	d.Card.Status = trackerapp.StatusView{ID: "4", Name: "In Review"}
 	w.f.details["conn-jira/10012"] = d
 	w.f.writes = nil
 	if answer, err := w.update(t, map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"status": "In Review"}}); err != nil ||
-		answer != `{"tickets":[{"key":"WEB-12","applied":["status"]}]}` || len(w.f.writes) != 0 {
-		t.Fatalf("a status the ticket has = %s, %v, writes %q", answer, err, w.f.writes)
+		answer != `{"tickets":[{"key":"WEB-12","already":["status"]}]}` || len(w.f.writes) != 0 || len(w.h.rows) != 1 {
+		t.Fatalf("a status the ticket has = %s, %v, writes %q, rows %+v", answer, err, w.f.writes, w.h.rows)
 	}
 }
 
@@ -150,7 +149,7 @@ func TestUpdateOfSeveralTicketsWaitsForApproval(t *testing.T) {
 	}
 	a := w.h.approvals[0]
 	if a.ID != "call-1" || len(a.Tickets) != 3 || a.Tickets[0].Key != "WEB-12" || a.Tickets[0].Title != "Login fails on Safari" ||
-		!slices.Equal(a.Tickets[0].Changes, []string{"Sprint → Sprint 15"}) {
+		!slices.Equal(a.Tickets[0].Changes, []ApprovalChange{{Line: "Sprint → Sprint 15"}}) {
 		t.Fatalf("approval %+v", a)
 	}
 	w.h.approve = nil
@@ -175,13 +174,13 @@ func TestUpdateRefusedByTheTicketSendsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"tickets":[{"key":"WEB-12","refused":"status: WEB-12 cannot move to Shipped; it can move to To Do, In Review, or Done.","not_sent":["comment"]},` +
-		`{"key":"WEB-18","refused":"status: WEB-18 cannot move to Shipped; it can move to To Do, In Review, or Done.","not_sent":["comment"]}]}`
+	want := `{"tickets":[{"key":"WEB-12","refused":"status: WEB-12 cannot move to \"Shipped\"; it can move to \"To Do\", \"In Review\", or \"Done\".","not_sent":["comment"]},` +
+		`{"key":"WEB-18","refused":"status: WEB-18 cannot move to \"Shipped\"; it can move to \"To Do\", \"In Review\", or \"Done\".","not_sent":["comment"]}]}`
 	if answer != want {
 		t.Fatalf("answer = %s\nwant %s", answer, want)
 	}
 	answer, err = w.update(t, map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"sprint": "Sprint 99"}})
-	if err != nil || answer != `{"tickets":[{"key":"WEB-12","refused":"sprint: board Web Team has no open sprint called Sprint 99; its open sprints are Sprint 14 and Sprint 15."}]}` {
+	if err != nil || answer != `{"tickets":[{"key":"WEB-12","refused":"sprint: board \"Web Team\" has no open sprint called \"Sprint 99\"; its open sprints are \"Sprint 14\" and \"Sprint 15\"."}]}` {
 		t.Fatalf("a sprint not open = %s, %v", answer, err)
 	}
 	if len(w.f.writes)+len(w.h.approvals) != 0 {
@@ -197,11 +196,11 @@ func TestUpdateNamesAndValues(t *testing.T) {
 	t.Parallel()
 	w := newWriteFixture(t)
 	_, err := w.update(t, map[string]any{"set": map[string]any{"Severity": "High"}, "keys": []string{"WEB-12"}})
-	refused(t, err, CodeInvalidRequest, "WEB-12 has no field Severity; it has status, sprint, estimate, title, assignee, priority, labels, parent, description, Story points, Notes, Component, and Due at.")
+	refused(t, err, CodeInvalidRequest, `WEB-12 has no field "Severity"; it has status, sprint, estimate, title, assignee, priority, labels, parent, description, "Story points", "Notes", "Component", and "Due at".`)
 	_, err = w.update(t, map[string]any{"set": map[string]any{"creator": "User 2"}, "keys": []string{"WEB-12"}})
-	refused(t, err, CodeInvalidRequest, "WEB-12's Creator cannot be changed here.")
+	refused(t, err, CodeInvalidRequest, `WEB-12's "Creator" cannot be changed here.`)
 	_, err = w.update(t, map[string]any{"set": map[string]any{"created": "2026-01-01"}, "keys": []string{"WEB-12"}})
-	refused(t, err, CodeInvalidRequest, "created is the tracker's own; no write sets it.")
+	refused(t, err, CodeInvalidRequest, `"created" is the tracker's own; no write sets it.`)
 
 	d := w.f.details["conn-jira/10012"]
 	d.Card.Sprints = []string{"14"}
@@ -229,7 +228,7 @@ func TestUpdateNamesAndValues(t *testing.T) {
 		t.Fatalf("the board's estimate field by name: %v, writes %q", err, w.f.writes)
 	}
 	_, err = w.update(t, map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"estimate": "two"}})
-	refused(t, err, CodeInvalidRequest, `Board Web Team estimates in points; give a number, such as 5 or "5 points".`)
+	refused(t, err, CodeInvalidRequest, `Board "Web Team" estimates in points; give a number, such as 5 or "5 points".`)
 	// A parent and a date-time as a read prints them, and a time estimate.
 	w.f.writes = nil
 	if _, err := w.update(t, map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"parent": "WEB-4 Login page", "due at": "2026-12-01T09:30Z"}}); err != nil ||
@@ -247,7 +246,7 @@ func TestUpdateNamesAndValues(t *testing.T) {
 		t.Fatalf("a time estimate as a read prints it: %v, writes %q", err, w.f.writes)
 	}
 	_, err = w.update(t, map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"estimate": "5 points"}})
-	refused(t, err, CodeInvalidRequest, "Board Web Team estimates in time; give it as 45m, 2h or 1h 30m.")
+	refused(t, err, CodeInvalidRequest, `Board "Web Team" estimates in time; give it as 45m, 2h or 1h 30m.`)
 	_, err = w.update(t, map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"title": nil}})
 	refused(t, err, CodeInvalidRequest, "The title cannot be cleared; give one.")
 	_, err = w.update(t, map[string]any{"keys": []string{"WEB-12"}})
@@ -290,7 +289,7 @@ func TestUpdateOfALongTextNeedsItWhole(t *testing.T) {
 	d.Card.Updated = 5_000
 	w.f.details["conn-jira/10018"] = d
 	_, err = w.update(t, map[string]any{"keys": []string{"WEB-18"}, "set": map[string]any{"Notes": "New notes."}})
-	refused(t, err, CodeInvalidRequest, "WEB-18 changed since you read it; read it again before you change its Notes.")
+	refused(t, err, CodeInvalidRequest, `WEB-18 changed since you read it; read it again before you change its "Notes".`)
 
 	// A description longer than the first read gives.
 	d = w.f.details["conn-jira/10027"]
@@ -340,7 +339,7 @@ func TestUpdateStopsAtTheFirstStepNotMade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"tickets":[{"key":"WEB-12","refused":"priority: no Priority value matches \"Urgent\"; it takes Highest, High, or Medium.","not_sent":["comment"]}]}`; answer != want {
+	if want := `{"tickets":[{"key":"WEB-12","refused":"priority: no Priority value matches \"Urgent\"; it takes \"Highest\", \"High\", or \"Medium\".","not_sent":["comment"]}]}`; answer != want {
 		t.Fatalf("answer = %s\nwant %s", answer, want)
 	}
 	answer, err = w.update(t, map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"status": "Done"}, "comment": "Done."})
@@ -355,38 +354,48 @@ func TestUpdateStopsAtTheFirstStepNotMade(t *testing.T) {
 	}
 }
 
-// A comment an earlier call of the thread added is not added again; one
-// whose answer never came is looked for among the ticket's comments by the
-// connection's account near when it was sent, and settled when found.
+// A comment alone reads the ticket's ID, key and title from its lookup,
+// with no detail read. A comment an earlier call of the thread added is
+// already, with no row; one an earlier call is still sending, or whose
+// earlier attempt could not be looked for, is refused, and the call says
+// why (trackerapp's repeat record).
 func TestUpdateDoesNotAddACommentTwice(t *testing.T) {
 	t.Parallel()
 	w := newWriteFixture(t)
-	digest := trackerapp.CommentDigest("conn-jira", "10012", "Ready.")
 	args := map[string]any{"keys": []string{"WEB-12"}, "comment": "Ready."}
-	w.f.repeats[digest] = trackerapp.AgentRepeat{Row: 7, State: "applied", Issue: "10012", Comment: "c-1", At: 100_000}
+	if answer, err := w.update(t, args); err != nil || answer != `{"tickets":[{"key":"WEB-12","applied":["comment"]}]}` {
+		t.Fatalf("a comment = %s, %v", answer, err)
+	}
+	if want := []string{"lookup conn-jira WEB-12"}; !slices.Equal(w.f.asked, want) {
+		t.Fatalf("a comment alone asked %q\nwant %q", w.f.asked, want)
+	}
+	if len(w.h.rows) != 1 || w.h.rows[0].Tickets[0].Title != "Login fails on Safari" {
+		t.Fatalf("rows %+v", w.h.rows)
+	}
+	w.h.rows = nil
+	w.f.write = func(string, any) (trackerapp.WriteView, error) {
+		return trackerapp.WriteView{Parts: []trackerapp.PartView{}, Repeat: &trackerapp.RepeatView{Issue: "10012", Comment: "c-1"}}, nil
+	}
 	answer, err := w.update(t, args)
-	if err != nil || answer != `{"tickets":[{"key":"WEB-12","applied":["comment"],"note":"Your earlier call added this comment; it was not added again."}]}` || len(w.f.writes) != 0 {
-		t.Fatalf("a repeat of an applied comment = %s, %v, writes %q", answer, err, w.f.writes)
+	if err != nil || answer != `{"tickets":[{"key":"WEB-12","already":["comment"],"note":"Your earlier call added this comment; it was not added again."}]}` || len(w.h.rows) != 0 {
+		t.Fatalf("a repeat of an added comment = %s, %v, rows %+v", answer, err, w.h.rows)
 	}
-
-	w.f.repeats[digest] = trackerapp.AgentRepeat{Row: 8, State: "unknown", Issue: "10012", At: 100_000}
-	w.f.comments = func(_, _, _ string) (trackerapp.CommentPageView, error) {
-		return trackerapp.CommentPageView{Comments: []trackerapp.CommentView{
-			{ID: "c-9", Author: trackerapp.UserView{ID: "acc-user2"}, Created: 100_500},
-			{ID: "c-8", Author: trackerapp.UserView{ID: "acc-user1"}, Created: 100_500},
-		}}, nil
+	w.f.write = func(string, any) (trackerapp.WriteView, error) {
+		return trackerapp.WriteView{}, fmt.Errorf("the write: %w", trackerapp.ErrAgentWriteInFlight)
 	}
 	answer, err = w.update(t, args)
-	if err != nil || !strings.Contains(answer, `"note":"Your earlier call added this comment`) || len(w.f.writes) != 0 || !slices.Equal(w.f.settled, []string{"8  c-8"}) {
-		t.Fatalf("a repeat of an unknown comment found = %s, %v, writes %q, settled %q", answer, err, w.f.writes, w.f.settled)
+	if want := `{"tickets":[{"key":"WEB-12","refused":"comment: the same comment is still being sent by an earlier call, so it was not sent again; call again once that call has answered."}]}`; err != nil || answer != want {
+		t.Fatalf("a comment in flight = %s, %v\nwant %s", answer, err, want)
 	}
-
-	w.f.comments = func(_, _, _ string) (trackerapp.CommentPageView, error) {
-		return trackerapp.CommentPageView{Comments: []trackerapp.CommentView{{ID: "c-1", Author: trackerapp.UserView{ID: "acc-user1"}, Created: 10_000}}}, nil
+	w.f.write = func(string, any) (trackerapp.WriteView, error) {
+		return trackerapp.WriteView{}, fmt.Errorf("%w: down", trackerapp.ErrAgentRepeatUnchecked)
 	}
 	answer, err = w.update(t, args)
-	if err != nil || answer != `{"tickets":[{"key":"WEB-12","applied":["comment"]}]}` || len(w.f.writes) != 1 {
-		t.Fatalf("a repeat of an unknown comment not found = %s, %v, writes %q", answer, err, w.f.writes)
+	if want := `{"tickets":[{"key":"WEB-12","refused":"comment: an earlier call's comment may have been added, and the ticket's comments could not be read to see, so it was not sent; the same call again tries again."}]}`; err != nil || answer != want {
+		t.Fatalf("a comment whose earlier attempt was not checked = %s, %v\nwant %s", answer, err, want)
+	}
+	if len(w.h.rows) != 0 {
+		t.Fatalf("calls that added nothing wrote rows %+v", w.h.rows)
 	}
 }
 
@@ -441,7 +450,7 @@ func TestCreate(t *testing.T) {
 	w.f.fields = []trackerapp.FieldView{{ID: "components", Name: "Component", Kind: "option", List: true, Editable: true}}
 	w.f.write = func(name string, _ any) (trackerapp.WriteView, error) {
 		if name == "create" {
-			return trackerapp.WriteView{Parts: []trackerapp.PartView{{Issue: "10042", Step: "create", State: "applied"}}, Created: "10042"}, nil
+			return trackerapp.WriteView{Parts: []trackerapp.PartView{{Issue: "10042", Step: "create", State: "applied"}}, Created: "10042", CreatedKey: "WEB-42"}, nil
 		}
 		return trackerapp.WriteView{Parts: []trackerapp.PartView{{Step: name, State: "applied"}}}, nil
 	}
@@ -451,7 +460,7 @@ func TestCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if answer != `{"key":"WEB-42"}` {
+	if answer != `{"key":"WEB-42","applied":["status"]}` {
 		t.Fatalf("answer = %s", answer)
 	}
 	want := []string{
@@ -467,7 +476,7 @@ func TestCreate(t *testing.T) {
 
 	w.f.writes = nil
 	answer, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "Second", "set": map[string]any{"status": "Shipped"}})
-	if err != nil || answer != `{"key":"WEB-42","refused":"WEB-42 was created, but status was not set: WEB-42 cannot move to Shipped; it can move to To Do, In Review, or Done."}` {
+	if err != nil || answer != `{"key":"WEB-42","refused":"status: WEB-42 cannot move to \"Shipped\"; it can move to \"To Do\", \"In Review\", or \"Done\"."}` {
 		t.Fatalf("a refused status after the create = %s, %v", answer, err)
 	}
 	if !strings.Contains(w.f.writes[0], `"type":"10002"`) {
@@ -481,7 +490,7 @@ func TestCreate(t *testing.T) {
 		}}}}, nil
 	}
 	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "Third"})
-	refused(t, err, CodeInvalidRequest, "WEB needs Component and Fix versions to create a ticket; give them in set.")
+	refused(t, err, CodeInvalidRequest, `WEB needs "Component" and "Fix versions" to create a ticket; give them in set.`)
 	w.f.write = func(string, any) (trackerapp.WriteView, error) {
 		return trackerapp.WriteView{Parts: []trackerapp.PartView{{Step: "create", State: "unknown"}}, CreateUnknown: true}, nil
 	}
@@ -490,29 +499,70 @@ func TestCreate(t *testing.T) {
 
 	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "OPS", "title": "Elsewhere"})
 	refused(t, err, CodeNotFound, "No board of project OPS is on this computer; ask the user to add one in Settings, Issues.")
-	w.h.createBoards["conn-jira/APP"] = "9"
+	w.h.createBoards["APP"] = []CreateBoard{{Connection: "conn-jira", Board: "9"}}
 	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "app", "title": "Unread"})
 	refused(t, err, CodeNotFound, "Project APP's board on example.atlassian.net has not been read on this computer yet; ask the user to open it in Issues, then call again.")
 	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "Typo", "type": "Bugg"})
-	refused(t, err, CodeInvalidRequest, "WEB has no issue type Bugg; it has Story, Task, and Bug.")
+	refused(t, err, CodeInvalidRequest, `WEB has no issue type "Bugg"; it has "Story", "Task", and "Bug".`)
 }
 
-// A create an earlier call made is not made again: an applied one answers
-// its key, one whose answer never came is searched for by its title near
-// when it was sent.
+// A create an earlier call made is not made again: its repeat answers the
+// key the mirror holds and sets only the steps after the create the
+// ticket does not hold, and its row is a change, not a create. One an
+// earlier call is still sending, or whose earlier attempt could not be
+// looked for, creates nothing and says why.
 func TestCreateIsNotMadeTwice(t *testing.T) {
 	t.Parallel()
 	w := newWriteFixture(t)
 	w.f.types = []trackerapp.IssueTypeView{{ID: "10002", Name: "Task"}}
 	w.f.cards["conn-jira/10042"] = trackerapp.CardView{ID: "10042", Key: "WEB-42"}
-	digest := trackerapp.CreateDigest("conn-jira", "10000", "10002", "Login fails")
-	w.f.repeats[digest] = trackerapp.AgentRepeat{Row: 3, State: "unknown", At: 100_000}
-	w.f.search = func(_ string, in trackerapp.SearchRequest) (trackerapp.SearchPageView, error) {
-		return trackerapp.SearchPageView{Cards: []trackerapp.CardView{{ID: "10041", Title: "Login fails", Created: 10_000}, {ID: "10042", Title: "Login fails", Created: 100_400}}}, nil
+	w.f.details["conn-jira/10042"] = writableDetail("WEB-42", "10042")
+	w.f.write = func(name string, _ any) (trackerapp.WriteView, error) {
+		if name == "create" {
+			return trackerapp.WriteView{Parts: []trackerapp.PartView{}, Repeat: &trackerapp.RepeatView{Issue: "10042"}}, nil
+		}
+		return trackerapp.WriteView{Parts: []trackerapp.PartView{{Step: name, State: "applied"}}}, nil
 	}
-	answer, err := w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "Login fails"})
-	if err != nil || answer != `{"key":"WEB-42","note":"Your earlier call created it; it was not created again."}` || len(w.f.writes) != 0 || !slices.Equal(w.f.settled, []string{"3 10042 "}) {
-		t.Fatalf("a repeat of an unknown create = %s, %v, writes %q, settled %q", answer, err, w.f.writes, w.f.settled)
+	answer, err := w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "Login fails", "set": map[string]any{"status": "Done"}})
+	if want := `{"key":"WEB-42","applied":["status"],"note":"Your earlier call created it; it was not created again."}`; err != nil || answer != want {
+		t.Fatalf("a repeat of a create = %s, %v\nwant %s", answer, err, want)
+	}
+	if len(w.h.rows) != 1 || w.h.rows[0].Created || !slices.Equal(w.h.rows[0].Tickets[0].Applied, []string{"status"}) {
+		t.Fatalf("rows %+v", w.h.rows)
+	}
+	w.h.rows = nil
+	answer, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "Login fails", "set": map[string]any{"status": "In Progress"}})
+	if want := `{"key":"WEB-42","already":["status"],"note":"Your earlier call created it; it was not created again."}`; err != nil || answer != want || len(w.h.rows) != 0 {
+		t.Fatalf("a repeat that changes nothing = %s, %v, rows %+v\nwant %s", answer, err, w.h.rows, want)
+	}
+	w.f.write = func(string, any) (trackerapp.WriteView, error) {
+		return trackerapp.WriteView{}, fmt.Errorf("the write: %w", trackerapp.ErrAgentWriteInFlight)
+	}
+	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "Login fails"})
+	refused(t, err, CodeInvalidRequest, "The same ticket is still being created by an earlier call, so it was not created again; call again once that call has answered.")
+	w.f.write = func(string, any) (trackerapp.WriteView, error) {
+		return trackerapp.WriteView{}, fmt.Errorf("%w: down", trackerapp.ErrAgentRepeatUnchecked)
+	}
+	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "Login fails"})
+	refused(t, err, CodeUnknown, "An earlier call may have created this ticket, and the tracker could not be searched to see, so nothing was created; the same call again tries again.")
+}
+
+// A confirmed create answers the key its own answer gave and writes its
+// row, though the ticket cannot be read to set the steps after it: those
+// are not sent, and the note says so.
+func TestCreateConfirmedWhoseReadFails(t *testing.T) {
+	t.Parallel()
+	w := newWriteFixture(t)
+	w.f.types = []trackerapp.IssueTypeView{{ID: "10002", Name: "Task"}}
+	w.f.write = func(string, any) (trackerapp.WriteView, error) {
+		return trackerapp.WriteView{Parts: []trackerapp.PartView{{Issue: "10042", Step: "create", State: "applied"}}, Created: "10042", CreatedKey: "WEB-42"}, nil
+	}
+	answer, err := w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "Login fails", "set": map[string]any{"status": "Done", "sprint": "Sprint 14"}})
+	if want := `{"key":"WEB-42","not_sent":["sprint","status"],"note":"WEB-42 could not be read to set sprint and status; ticket_update sets them."}`; err != nil || answer != want {
+		t.Fatalf("a create whose read failed = %s, %v\nwant %s", answer, err, want)
+	}
+	if len(w.h.rows) != 1 || !w.h.rows[0].Created || w.h.rows[0].Tickets[0].Key != "WEB-42" {
+		t.Fatalf("rows %+v", w.h.rows)
 	}
 }
 
@@ -525,7 +575,7 @@ func TestCreateTargets(t *testing.T) {
 	linear.Kind = "linear"
 	w.f.sources = []trackerapp.TicketSource{linear}
 	w.f.boards["conn-linear/team"] = trackerapp.BoardSummary{Name: "Web", Project: "team-id"}
-	w.h.createBoards["conn-linear/WEB"] = "team"
+	w.h.createBoards["WEB"] = append(w.h.createBoards["WEB"], CreateBoard{Connection: "conn-linear", Board: "team", Thread: true})
 	_, err := w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "New", "type": "Bug"})
 	refused(t, err, CodeInvalidRequest, "Linear has no issue types; leave out type.")
 	jira := jiraSource

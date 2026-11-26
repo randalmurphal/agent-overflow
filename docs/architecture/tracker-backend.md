@@ -2138,8 +2138,10 @@ and answers its key. Both go through `trackerapp`'s bound write methods
 as the agent's writes (`ByAgent`), so the screens learn of them as of a
 person's ([Writes](#writes)), with no saving state, note or toast, and a
 person's draft of the same field stays a draft. The code is
-`internal/trackertools/update.go`, `create.go`, `set.go` and `marks.go`;
-the app's side is `internal/app/app_tracker_tools_host.go`.
+`internal/trackertools/update.go` (the call), `keys.go`, `plan.go` (what
+each ticket's change is), `apply.go` (sending it), `create.go`, `set.go`
+and `marks.go`; the app's side is
+`internal/app/app_tracker_tools_host.go`.
 
 **What `set` takes.** A name matches without regard to case: the members
 a read writes at its top (status, sprint, estimate, title, assignee,
@@ -2167,8 +2169,19 @@ of the description or of a rich-text field, or of any text longer than a
 read gives at first, is refused when the session never read the ticket,
 when the ticket changed since, or when the session was not given the text
 whole ("You have read only part of WEB-12's description; read the rest of
-it through more before you change it."). The call's own writes move the
-mark to the refreshed time. The marks end with the session's capability.
+it through more before you change it."). A plain text field with several
+values is judged per value. An edit the tracker confirmed moves the mark
+to the refreshed time with the texts that edit wrote; the ticket's other
+texts are unread at that time, so an edit of one says the ticket changed
+since it was read. An edit that was refused or never answered moves
+nothing. A mark is recorded only while the app still holds the session,
+and the marks end with the session's capability.
+
+An edit that replaces a long plain text carries the text it replaces
+(`tracker.Edit.Replacing`), and an edit of rich text, a clear included,
+carries the Markdown it was written from. Jira compares either with what
+it stores before it writes and refuses a text that changed; Linear cannot
+compare a plain text and refuses one as unsupported.
 
 **Order and outcomes.** Every ticket is resolved and checked before
 anything is sent: names, values, the move and the sprint. A naming or
@@ -2178,13 +2191,23 @@ move, a sprint that is not open or a ticket on no board is that ticket's
 run in order (status, fields in one edit, estimate, sprint, comment); the
 first refused or unknown step stops the ticket, and the steps after it
 are in `not_sent`. A step the ticket already has (its status, its sprint)
-is applied with no request. An unknown outcome says the same call again
-makes only what was not.
+sends no request and is in `already`, not `applied`. Each ticket's answer
+is `applied`, `already`, `refused`, `unknown`, `not_sent` and a `note`,
+each only when it has something. An unknown outcome says the same call
+again makes only what was not. The boards a call judges are read once
+each per call.
 
 **Approval.** A call that names more than one ticket waits for the
 person. The app raises a prompt of kind `tracker-write` in the thread
 (`provider.EventApprovalRequest` through triage, decisions accept and
-decline only) showing each ticket's changes and the comment. Triage never
+decline only) showing each ticket's changes and the comment. The prompt
+carries each value of `set` whole, and a change line that shows a value
+in part names it, so the panel's Show all opens the whole value with
+nothing fetched. A call whose `set` and comment together pass 256 KiB is
+refused before any prompt, telling the model to make the change in
+smaller calls. The person's answer reaches the call by the kind of the
+prompt triage holds open (`triage.PromptClaim.Kind`), not by its request
+ID, and the waiter is keyed by thread and request ID. Triage never
 routes it to a spawner (`triage.promptRoutable`), so a worker's tracker
 write is the person's, which the worker's composer shows on every screen
 and its spawner's Agents row reaches like any prompt routed to nobody
@@ -2198,31 +2221,46 @@ call, and nothing was sent. The writes after an approval run on the
 server's context to their end.
 
 **Read-only threads.** A writing call is refused when the calling
-thread's runtime mode is read-only, before anything is read or sent. The
-provider cannot enforce it, because app tools are admitted in every mode.
+thread's runtime mode is read-only, before anything is read or sent, and
+the mode is read again before the first write is sent, after the
+approval when there is one. The provider cannot enforce it, because app
+tools are admitted in every mode.
 
-**Nothing made twice.** A comment or a create is recorded before it is
-sent. A later call of the thread with the same digest (the comment's
-Markdown on the issue, or the create's project, type and title) within an
-hour sends nothing when the earlier row is applied, and answers so, the
-create naming its key. When the earlier row is unknown, the call reads
-the tracker first: the issue's comments by the writing account from a
-minute before the row to two minutes after, or a search for the title in
-the project in that window; what it finds settles the row and is the
-answer, and otherwise the step is sent.
+**Nothing made twice.** A comment or a create is claimed before it is
+sent, in one store transaction under one lock
+(`store.ClaimAgentWrite`): within an hour, one caller of a thread
+holds the right to send a given digest at a time. The digest is the
+comment's Markdown on the issue, or what the create request sends (the
+tracker, site, project, type, title and every field), never the steps
+made after a create, so a call again after one of those was refused finds
+the ticket. A later call whose digest is applied sends nothing and puts
+the step in `already` with a note, the create naming its key; one whose
+digest an earlier call is still sending is refused saying to call again
+once that call has answered. One whose earlier send was interrupted (its
+answer never came, or the app stopped) reads the tracker first: the
+issue's comments by the writing account from a minute before the send to
+two minutes after, compared on letters and digits, or a search for the
+title in the project in that window. What it finds settles the earlier
+row and is the answer; nothing found sends under the same claim; a read
+that fails sends nothing and is refused saying the same call again tries
+again.
 
-**Creates.** A create goes through a board here of the key's project:
-the thread's project's board first, else any board of that project on
-the connection; none is refused saying to add one, and one no screen has
-read yet is refused saying to open it. A project on two sites is refused
-naming both. Jira takes the type by name (Task, else the first type that
+**Creates.** A create goes through one board, chosen over every
+connection's listings of the project: a board read here that the
+thread's project lists, else any board read here. None is refused saying
+to add one, and only unread ones are refused saying to open one. Boards
+of the project on two sites are refused naming both. The create screen
+is read once for the call: the Jira client keeps a create screen for a
+minute. Jira takes the type by name (Task, else the first type that
 is not a subtask, when none is given); Linear has none and refuses one.
 Every field of `set` is resolved before the create request, so a value
 refused there creates nothing; status, sprint and estimate are set after
 the create, and one refused there says the ticket was created ("WEB-42
-was created, but status was not set: ...").
+was created, but status was not set: ..."). A create that a later call
+finds made is answered with its key, and the steps after the create are
+set on it where it does not hold them already.
 
-**Timeline.** A call that applied anything adds one notification row of
+**Timeline.** A call that applied anything, and only then, adds one notification row of
 kind `tracker_write` to the thread at its current turn (`Created WEB-42`,
 `Changed WEB-12`, `Changed 3 tickets`), with each ticket's connection,
 issue, key, title and applied steps; each key opens the ticket.

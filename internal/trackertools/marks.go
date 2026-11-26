@@ -8,12 +8,20 @@ import (
 
 // Read marks. An edit that replaces a long text (a description, a rich
 // text field, a text a read cut) writes what the agent has of it back
-// whole, so it is made only from a read of the ticket as it is now that
-// gave the agent all of it. What this keeps true: no such edit is sent
-// when this session never read the ticket, when the ticket changed since
-// the read (another person's change would be overwritten), or when the
-// read gave part of the text and the agent did not read the rest through
-// more (the rest would be lost).
+// whole. What this keeps true: such an edit is sent only when the session
+// was given that text whole at the ticket's current version, or wrote it
+// itself in a write the tracker confirmed, and when the edit carries the
+// text it replaces, so the tracker refuses it as stale when the text
+// changed after the call planned (plan.go). A mark changes through two
+// events only: an answer the session was given (shown), and a write of
+// the session's call that the tracker confirmed (wrote). When a write
+// applies, the mark moves to the version the write's refresh read and
+// holds only the texts that write confirmed; every other text of the
+// ticket is unread at that version. A session that ended has no marks,
+// and nothing recreates them: a read records nothing for a session the
+// host no longer holds (Host.Live), checked under the lock that EndSession
+// takes after the host let the session go, and a write moves only a mark
+// that is there.
 //
 // The server owns the marks, in memory, per session (Caller.Session): for
 // each ticket, by connection and issue, the update time of the ticket the
@@ -23,9 +31,8 @@ import (
 // mark over; a continuation of the same version adds what it showed to
 // the text it continues. A session holds at most maxMarkedTickets, the
 // oldest read going first, and its marks go when its capability ends
-// (EndSession). The one check (textCheck) is made in a write's pre-read,
-// before anything is sent; the call's own edit of a text marks it whole
-// at the update time the write left.
+// (EndSession). The check (textCheck) is made in a write's plan, before
+// anything is sent.
 
 // maxMarkedTickets bounds the tickets one session's marks hold.
 const maxMarkedTickets = 256
@@ -51,6 +58,9 @@ func (m textMark) whole(length int) bool { return m.own || m.given >= m.length &
 type readMark struct {
 	updated int64
 	texts   map[string]textMark
+	// wrote reports a mark a write of the session moved (wrote): a text
+	// it does not hold changed under the session's read, not cut from it.
+	wrote bool
 }
 
 // givenText is a piece of a text an answer showed: the text, the bytes
@@ -69,6 +79,8 @@ type sessionMarks struct {
 type marks struct {
 	mu       sync.Mutex
 	sessions map[string]*sessionMarks
+	// live reports whether the host still holds a caller's session.
+	live func(Caller) bool
 }
 
 func (m *marks) end(session string) {
@@ -113,10 +125,13 @@ func (sm *sessionMarks) touch(k markKey, updated int64, start bool) *readMark {
 // gave: a first read (first) starts the mark over; a continuation adds
 // to the texts it continues. A piece that does not start where the
 // session's part of its text ends adds nothing.
-func (m *marks) shown(session string, k markKey, updated int64, given []givenText, first bool) {
+func (m *marks) shown(caller Caller, k markKey, updated int64, given []givenText, first bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	mk := m.session(session).touch(k, updated, first)
+	if !m.live(caller) {
+		return
+	}
+	mk := m.session(caller.Session).touch(k, updated, first)
 	for _, g := range given {
 		tm := mk.texts[g.text]
 		tm.length = g.length
@@ -127,21 +142,50 @@ func (m *marks) shown(session string, k markKey, updated int64, given []givenTex
 	}
 }
 
-// wrote records that the session's own write of texts left ticket k at
-// updated: a mark of the version the write was made from moves to it,
-// those texts whole, since the agent wrote them.
-func (m *marks) wrote(session string, k markKey, from, updated int64, texts []string) {
+// wrote records that a write of the session's call, which the tracker
+// confirmed, wrote texts whole and left ticket k at updated: a mark of
+// the version the call planned from moves to it, holding those texts
+// alone, since the agent wrote them and any other may have changed.
+func (m *marks) wrote(caller Caller, k markKey, from, updated int64, texts []string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	sm := m.session(session)
+	// Only a mark there moves: a session that ended has none.
+	sm := m.sessions[caller.Session]
+	if sm == nil {
+		return
+	}
 	mk := sm.marks[k]
 	if mk == nil || mk.updated != from {
 		return
 	}
-	mk.updated = updated
+	mk.updated, mk.wrote = updated, true
+	mk.texts = make(map[string]textMark, len(texts))
 	for _, t := range texts {
 		mk.texts[t] = textMark{own: true}
 	}
+}
+
+// partOf reports whether a read of ticket k at update time updated gave
+// the session some of field's values (texts, as the ticket holds them now)
+// and not all of them whole: a value cut, or one after the read's cut.
+func (m *marks) partOf(session string, k markKey, updated int64, field string, texts []string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sm := m.sessions[session]
+	if sm == nil {
+		return false
+	}
+	mk := sm.marks[k]
+	if mk == nil || mk.updated != updated {
+		return false
+	}
+	seen, all := false, true
+	for j, t := range texts {
+		tm, ok := mk.texts[fieldText(field, j)]
+		seen = seen || ok
+		all = all && ok && tm.whole(len(t))
+	}
+	return seen && !all
 }
 
 // textCheck refuses an edit of text (named to the model as what, such as
@@ -164,7 +208,11 @@ func (m *marks) textCheck(session string, k markKey, key string, updated int64, 
 	case mk.updated != updated:
 		return invalidf("%s changed since you read it; read it again before you change its %s.", key, what)
 	}
-	if tm, ok := mk.texts[text]; !ok || !tm.whole(length) {
+	tm, ok := mk.texts[text]
+	switch {
+	case !ok && mk.wrote:
+		return invalidf("%s changed since you read it; read it again before you change its %s.", key, what)
+	case !ok || !tm.whole(length):
 		return invalidf("You have read only part of %s's %s; read the rest of it through more before you change it.", key, what)
 	}
 	return nil

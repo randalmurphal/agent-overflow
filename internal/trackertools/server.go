@@ -60,18 +60,19 @@ const (
 
 // Tracker is what the tools read and write through: this computer's
 // ticket sources, a thread's linked ticket, a key's tickets and a board as
-// the mirrors hold them, an agent's earlier writes (trackerapp), and the
-// tracker reads and writes, each bounded by the app. connection is a
-// TicketSource's ID or a LinkedTicket's Connection; issue is the tracker's
-// issue ID. A write carries the agent that makes it (trackerapp.ByAgent).
+// the mirrors hold them, and the tracker reads and writes, each bounded by
+// the app. A detail read leaves out the agents' marks, which no answer
+// shows. connection is a TicketSource's ID or a LinkedTicket's Connection;
+// issue is the tracker's issue ID. A write carries the agent that makes it
+// (trackerapp.ByAgent), and an agent's comment or create answers an
+// earlier call's attempt of it (trackerapp.WriteView.Repeat,
+// trackerapp.ErrAgentWriteInFlight, trackerapp.ErrAgentRepeatUnchecked).
 type Tracker interface {
 	TicketSources() ([]trackerapp.TicketSource, error)
 	LinkedTicket(threadID string) (trackerapp.LinkedTicket, bool, error)
 	TicketsOfKey(key string) ([]trackerapp.KeyedTicket, error)
 	BoardSummary(connection, board string) (trackerapp.BoardSummary, error)
 	MirrorCard(connection, issue string) (trackerapp.CardView, bool, error)
-	AgentRepeat(threadID, digest string) (trackerapp.AgentRepeat, bool, error)
-	SettleAgentRepeat(row int64, issue, comment string) error
 
 	Lookup(ctx context.Context, connection string, keys []string) (trackerapp.LookupView, error)
 	Search(ctx context.Context, connection string, in trackerapp.SearchRequest) (trackerapp.SearchPageView, error)
@@ -100,26 +101,55 @@ type Host interface {
 	// Wrote puts the row of a call that changed or created tickets in the
 	// thread's timeline.
 	Wrote(threadID string, row WriteRow)
-	// CreateBoard is the board a create in project (its key) on connection
-	// goes through: one of the thread's project's boards of that project,
-	// else one any project lists; ok is false for none.
-	CreateBoard(threadID, connection, project string) (board string, ok bool, err error)
+	// CreateBoards are the boards any project of this computer lists of
+	// tracker project project (its key), on every connection, each marked
+	// when the thread's project lists it, in the order the listings are.
+	CreateBoards(threadID, project string) ([]CreateBoard, error)
+	// Live reports whether session is still thread's session with the
+	// tools: false once its capability was revoked.
+	Live(threadID, session string) bool
+}
+
+// CreateBoard is a board a create can go through: its connection and ID,
+// and whether the calling thread's project lists it.
+type CreateBoard struct {
+	Connection, Board string
+	Thread            bool
 }
 
 // Approval is a change the person approves before it is sent: the call's
-// ID, each ticket with the changes it gets, and the comment each gets.
+// ID, each ticket with the changes it gets, the comment each gets, and
+// each value of the call's set whole, which a change line shows in part.
+// Everything is carried whole: a call whose set and comment pass
+// maxApprovalBytes is refused before it asks.
 type Approval struct {
 	ID      string           `json:"id"`
 	Tickets []ApprovalTicket `json:"tickets"`
 	Comment string           `json:"comment,omitempty"`
+	Values  []ApprovalValue  `json:"values,omitempty"`
 }
 
 // ApprovalTicket is one ticket of an Approval: its key as answers write
-// it, its title, and each change as a person reads it ("Status → Done").
+// it, its title, and each change as a person reads it.
 type ApprovalTicket struct {
-	Key     string   `json:"key"`
-	Title   string   `json:"title,omitempty"`
-	Changes []string `json:"changes,omitempty"`
+	Key     string           `json:"key"`
+	Title   string           `json:"title,omitempty"`
+	Changes []ApprovalChange `json:"changes,omitempty"`
+}
+
+// ApprovalChange is one change line ("Status → Done"), and Value, the
+// name of the Values entry it shows in part (a new text, a value cut),
+// empty for a line that shows all of it.
+type ApprovalChange struct {
+	Line  string `json:"line"`
+	Value string `json:"value,omitempty"`
+}
+
+// ApprovalValue is one entry of the call's set as given, its values
+// whole.
+type ApprovalValue struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 // WriteRow is what one call changed, for the thread's timeline: the
@@ -162,10 +192,13 @@ type Server struct {
 
 // New returns a server over t and h.
 func New(t Tracker, h Host) *Server {
-	return &Server{t: t, h: h, newID: func() string { return uuid.NewString() }, logf: log.Printf}
+	s := &Server{t: t, h: h, newID: func() string { return uuid.NewString() }, logf: log.Printf}
+	s.marks.live = func(c Caller) bool { return h.Live(c.Thread, c.Session) }
+	return s
 }
 
-// EndSession forgets the read marks of session, whose capability ended.
+// EndSession forgets the read marks of session, whose capability ended:
+// the host revoked it first, so no later read or write records one.
 func (s *Server) EndSession(session string) { s.marks.end(session) }
 
 // Call runs one tool for caller and returns the value the transport

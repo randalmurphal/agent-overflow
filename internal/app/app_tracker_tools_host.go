@@ -33,14 +33,24 @@ import (
 // An answer that loses is refused as already handled; a wait that ends
 // first withdraws the prompt from every screen. Nothing is persisted: an
 // app that stops ends the call, and nothing was sent.
+//
+// What this keeps true: a tracker write's approval is answered only
+// through its own open prompt. RespondToApproval chooses the path by the
+// kind of the prompt triage holds open under that thread, request ID and
+// occurrence (triage.PromptClaim.Kind), never by the ID's text, and the
+// waiter is keyed by thread and request ID, so an answer naming another
+// thread finds no waiter. The person sees the whole of every value they
+// approve (trackertools.Approval). Approved writes are admitted only
+// while the thread is still writable: the tools read its mode again once
+// the approval returns (Writable).
 
 // trackerApprovalWait is how long a tracker write waits for the person.
 const trackerApprovalWait = 15 * time.Minute
 
 // trackerApprovalPrefix begins the request ID of a tracker write's
-// approval, which RespondToApproval answers here and not to a provider,
-// and the ID of a tracker write's timeline row; both end with the call's
-// ID.
+// approval and the ID of a tracker write's timeline row; both end with the
+// call's ID. It names them only: what answers an approval is its prompt's
+// kind.
 const trackerApprovalPrefix = "tracker:"
 
 // The refusals a tracker write's approval ends with.
@@ -51,36 +61,37 @@ const (
 )
 
 // trackerApprovals are the tracker writes waiting on the person, by
-// request ID.
+// thread and request ID.
 type trackerApprovals struct {
 	mu      sync.Mutex
-	waiting map[string]chan bool
+	waiting map[[2]string]chan bool
 	// wait, when set, replaces trackerApprovalWait (tests).
 	wait time.Duration
 }
 
-// open registers id's waiter.
-func (t *trackerApprovals) open(id string) chan bool {
+// open registers the waiter of thread's id.
+func (t *trackerApprovals) open(threadID, id string) chan bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.waiting == nil {
-		t.waiting = map[string]chan bool{}
+		t.waiting = map[[2]string]chan bool{}
 	}
 	ch := make(chan bool, 1)
-	t.waiting[id] = ch
+	t.waiting[[2]string{threadID, id}] = ch
 	return ch
 }
 
-// settle settles id's waiter with approved, reporting whether this was
-// its one settlement.
-func (t *trackerApprovals) settle(id string, approved bool) bool {
+// settle settles the waiter of thread's id with approved, reporting
+// whether this was its one settlement.
+func (t *trackerApprovals) settle(threadID, id string, approved bool) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	ch, ok := t.waiting[id]
+	k := [2]string{threadID, id}
+	ch, ok := t.waiting[k]
 	if !ok {
 		return false
 	}
-	delete(t.waiting, id)
+	delete(t.waiting, k)
 	ch <- approved
 	return true
 }
@@ -131,14 +142,14 @@ func (h trackerToolsHost) Approve(ctx context.Context, threadID string, approval
 	if err != nil {
 		return fmt.Errorf("tracker tools: encode the approval: %w", err)
 	}
-	waiter := a.trackerMCP.approvals.open(id)
+	waiter := a.trackerMCP.approvals.open(threadID, id)
 	if err := a.triage.HandleSynthetic(provider.ProviderEvent{
 		Kind: provider.EventApprovalRequest, ThreadID: threadID, ItemID: id, Meta: meta, Timestamp: time.Now(), SessionToken: sess.Token,
 	}); err != nil {
-		a.trackerMCP.approvals.settle(id, false)
+		a.trackerMCP.approvals.settle(threadID, id, false)
 		return fmt.Errorf("tracker tools: raise the approval: %w", err)
 	}
-	if !a.trackerApprovalOpen(threadID, id) && a.trackerMCP.approvals.settle(id, false) {
+	if !a.trackerApprovalOpen(threadID, id) && a.trackerMCP.approvals.settle(threadID, id, false) {
 		// Triage keeps no prompt of a session that no longer holds the
 		// thread: nobody could answer this one.
 		return errorsx.Public("tracker_session_inactive", "The agent session is no longer active. Resume the conversation before using the tracker tools.", nil)
@@ -157,7 +168,7 @@ func (h trackerToolsHost) Approve(ctx context.Context, threadID string, approval
 	case <-ctx.Done():
 		ended = ctx.Err()
 	}
-	if !a.trackerMCP.approvals.settle(id, false) {
+	if !a.trackerMCP.approvals.settle(threadID, id, false) {
 		// The person answered as the wait ended: their answer stands.
 		if <-waiter {
 			return nil
@@ -191,18 +202,15 @@ func (a *App) resolveTrackerApproval(threadID, id string, occurrence provider.Pr
 }
 
 // respondToTrackerWrite is the person's answer to a tracker write's
-// approval: it settles the waiting call, and no provider is written.
-func (a *App) respondToTrackerWrite(threadID string, response provider.ApprovalResponse) error {
-	claim, claimed := a.claimPrompt(threadID, response.RequestID, response.Occurrence)
-	if !claimed {
-		return fmt.Errorf("approval %s: %w", response.RequestID, transport.ErrAlreadyHandled)
-	}
+// approval, claim the claim of its open prompt: it settles the waiting
+// call, and no provider is written.
+func (a *App) respondToTrackerWrite(threadID string, claim triage.PromptClaim, response provider.ApprovalResponse) error {
 	decision := provider.NormalizeApprovalDecision(response)
 	if decision != "approved" && decision != "declined" {
 		a.releasePrompt(claim)
 		return fmt.Errorf("approval %s: a tracker write is approved or denied, not %q", response.RequestID, response.Decision)
 	}
-	if !a.trackerMCP.approvals.settle(response.RequestID, decision == "approved") {
+	if !a.trackerMCP.approvals.settle(threadID, response.RequestID, decision == "approved") {
 		// The call ended first, and withdraws the prompt.
 		a.releasePrompt(claim)
 		return fmt.Errorf("approval %s: %w", response.RequestID, transport.ErrAlreadyHandled)
@@ -240,33 +248,31 @@ func (h trackerToolsHost) Wrote(threadID string, row trackertools.WriteRow) {
 	}
 }
 
-func (h trackerToolsHost) CreateBoard(threadID, connection, project string) (string, bool, error) {
+func (h trackerToolsHost) CreateBoards(threadID, project string) ([]trackertools.CreateBoard, error) {
 	a := h.a
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
-		return "", false, fmt.Errorf("tracker tools: read thread %s: %w", threadID, err)
+		return nil, fmt.Errorf("tracker tools: read thread %s: %w", threadID, err)
 	}
 	svc, err := a.trackerService()
 	if err != nil {
-		return "", false, err
+		return nil, err
 	}
 	choices, err := svc.BoardChoices()
 	if err != nil {
-		return "", false, err
+		return nil, err
 	}
-	other := ""
+	var out []trackertools.CreateBoard
 	for _, c := range choices {
-		if c.Connection != connection || !strings.EqualFold(c.TrackerProject, project) {
-			continue
-		}
-		if c.Project == thread.ProjectID {
-			return c.Board, true, nil
-		}
-		if other == "" {
-			other = c.Board
+		if strings.EqualFold(c.TrackerProject, project) {
+			out = append(out, trackertools.CreateBoard{Connection: c.Connection, Board: c.Board, Thread: c.Project == thread.ProjectID})
 		}
 	}
-	return other, other != "", nil
+	return out, nil
+}
+
+func (h trackerToolsHost) Live(threadID, session string) bool {
+	return h.a.trackerMCPServer().HoldsSession(threadID, session)
 }
 
 var _ trackertools.Host = trackerToolsHost{}

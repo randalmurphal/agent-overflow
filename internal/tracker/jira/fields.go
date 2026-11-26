@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/tracker/trackerapi"
 )
@@ -340,7 +341,7 @@ func (c *Client) CreateIssueTypes(ctx context.Context, project string) ([]IssueT
 	}
 	path := "issue/createmeta/" + url.PathEscape(project) + "/issuetypes"
 	var out []IssueType
-	err := createMetaPages(ctx, c, path, func() { out = nil }, func(p createMetaPage) int {
+	_, err := createMetaPages(ctx, c, path, func() { out = nil }, func(p createMetaPage) int {
 		types := append(p.IssueTypes, p.IssueTypes2...)
 		for _, t := range types {
 			out = append(out, t.issueType())
@@ -354,6 +355,9 @@ func (c *Client) CreateIssueTypes(ctx context.Context, project string) ([]IssueT
 }
 
 // CreateMeta returns the create screen of a project and issue type ID.
+// A screen read is kept for createScreenAge, so a create planned after
+// its form, or a tool, read the screen reads it once. The value is the
+// caller's own.
 func (c *Client) CreateMeta(ctx context.Context, project, issueTypeID string) (Screen, error) {
 	if err := c.admit(ctx); err != nil {
 		return Screen{}, err
@@ -364,9 +368,14 @@ func (c *Client) CreateMeta(ctx context.Context, project, issueTypeID string) (S
 	if err := checkID("issue type", issueTypeID); err != nil {
 		return Screen{}, err
 	}
+	key := [2]string{project, issueTypeID}
+	if s, ok := c.createScreens.get(ctx, key); ok {
+		return s, nil
+	}
+	epoch := c.createScreens.epoch()
 	path := "issue/createmeta/" + url.PathEscape(project) + "/issuetypes/" + url.PathEscape(issueTypeID)
 	var s Screen
-	err := createMetaPages(ctx, c, path, func() { s = Screen{} }, func(p createMetaPage) int {
+	mark, err := createMetaPages(ctx, c, path, func() { s = Screen{} }, func(p createMetaPage) int {
 		fields := append(p.Fields, p.Results...)
 		for _, f := range fields {
 			s.Fields = append(s.Fields, f.meta(""))
@@ -376,35 +385,68 @@ func (c *Client) CreateMeta(ctx context.Context, project, issueTypeID string) (S
 	if err != nil {
 		return Screen{}, fmt.Errorf("jira: create screen of %s type %s: %w", project, issueTypeID, err)
 	}
+	c.createScreens.put(epoch, mark, key, s)
 	return s, nil
+}
+
+// createScreenAge is how long a create screen is kept. Jira sends no
+// signal when an administrator changes a screen, so it is kept no longer
+// than a create's form or a tool call takes to plan the create after
+// reading it.
+const createScreenAge = time.Minute
+
+// createScreenCacheSize is the most create screens kept, by project and
+// issue type.
+const createScreenCacheSize = 8
+
+func cloneScreen(s Screen) Screen {
+	s.Fields = slices.Clone(s.Fields)
+	for i := range s.Fields {
+		f := &s.Fields[i]
+		f.Operations = slices.Clone(f.Operations)
+		f.Allowed = cloneAllowed(f.Allowed)
+	}
+	return s
+}
+
+func cloneAllowed(vs []AllowedValue) []AllowedValue {
+	vs = slices.Clone(vs)
+	for i := range vs {
+		vs[i].Raw = slices.Clone(vs[i].Raw)
+		vs[i].Children = cloneAllowed(vs[i].Children)
+	}
+	return vs
 }
 
 // createMetaPages reads every page of path as one walk (walk.go),
 // handing each to take, which returns how many items it held; reset
-// drops what take kept before the walk starts again.
-func createMetaPages(ctx context.Context, c *Client, path string, reset func(), take func(createMetaPage) int) error {
-	_, err := trackerapi.Walk(ctx, func(ctx context.Context) (struct{}, error) {
+// drops what take kept before the walk starts again. It returns the
+// credential read the pages were drawn under.
+func createMetaPages(ctx context.Context, c *Client, path string, reset func(), take func(createMetaPage) int) (trackerapi.CredentialMark, error) {
+	return trackerapi.Walk(ctx, func(ctx context.Context) (trackerapi.CredentialMark, error) {
 		reset()
-		return struct{}{}, createMetaWalk(ctx, c, path, take)
+		return createMetaWalk(ctx, c, path, take)
 	})
-	return err
 }
 
 // createMetaWalk is one walk of createMetaPages.
-func createMetaWalk(ctx context.Context, c *Client, path string, take func(createMetaPage) int) error {
+func createMetaWalk(ctx context.Context, c *Client, path string, take func(createMetaPage) int) (trackerapi.CredentialMark, error) {
+	var mark trackerapi.CredentialMark
 	for start := 0; ; {
 		q := url.Values{"startAt": {strconv.Itoa(start)}, "maxResults": {strconv.Itoa(createMetaPageSize)}}
 		var page createMetaPage
-		if err := c.get(ctx, path, q, &page); err != nil {
-			return err
+		resp, err := c.call(ctx, trackerapi.Request{Path: apiPath + path, Query: q}, &page)
+		if err != nil {
+			return mark, err
 		}
+		mark = resp.CredentialMark()
 		n := take(page)
 		start += n
 		if start >= page.Total {
-			return nil
+			return mark, nil
 		}
 		if n == 0 {
-			return fmt.Errorf("an empty page at %d of %d", start, page.Total)
+			return mark, fmt.Errorf("an empty page at %d of %d", start, page.Total)
 		}
 	}
 }

@@ -25,8 +25,8 @@ const (
 // was made), the account the tracker records as its author, the thread and
 // the call, the step, its state, the digest of what a comment or a create
 // adds, the comment an applied comment made, the card's tracker update
-// time before the write and after its refresh (0 when not read), and when
-// this computer recorded it.
+// time before the write and after its refresh (0 when not read), when this
+// computer sent it (Sent) and when it recorded it (At), Unix milliseconds.
 type AgentWrite struct {
 	ID       int64
 	Ticket   TicketRef
@@ -40,6 +40,7 @@ type AgentWrite struct {
 	Comment  string
 	Before   int64
 	After    int64
+	Sent     int64
 	At       int64
 }
 
@@ -47,8 +48,8 @@ func (w AgentWrite) check() error {
 	switch {
 	case w.Ticket.Kind != "jira" && w.Ticket.Kind != "linear":
 		return fmt.Errorf("%w: kind %q", ErrInvalidAgentWrite, w.Ticket.Kind)
-	case w.Ticket.Site == "" || w.ThreadID == "" || w.CallID == "" || w.At <= 0:
-		return fmt.Errorf("%w: a write needs its site, thread, call and time", ErrInvalidAgentWrite)
+	case w.Ticket.Site == "" || w.ThreadID == "" || w.CallID == "" || w.Sent <= 0 || w.At <= 0:
+		return fmt.Errorf("%w: a write needs its site, thread, call and times", ErrInvalidAgentWrite)
 	case w.Ticket.IssueID == "" && w.Step != "create":
 		return fmt.Errorf("%w: a %s needs its issue", ErrInvalidAgentWrite, w.Step)
 	}
@@ -60,12 +61,12 @@ func (w AgentWrite) check() error {
 	return nil
 }
 
-const agentWriteColumns = `id, kind, site, issue_id, project, account, thread_id, call_id, step, state, digest, comment_id, before_ms, after_ms, at_ms`
+const agentWriteColumns = `id, kind, site, issue_id, project, account, thread_id, call_id, step, state, digest, comment_id, before_ms, after_ms, sent_ms, at_ms`
 
 func scanAgentWrite(row interface{ Scan(...any) error }) (AgentWrite, error) {
 	var w AgentWrite
 	err := row.Scan(&w.ID, &w.Ticket.Kind, &w.Ticket.Site, &w.Ticket.IssueID, &w.Project, &w.Account, &w.ThreadID, &w.CallID,
-		&w.Step, &w.State, &w.Digest, &w.Comment, &w.Before, &w.After, &w.At)
+		&w.Step, &w.State, &w.Digest, &w.Comment, &w.Before, &w.After, &w.Sent, &w.At)
 	return w, err
 }
 
@@ -73,33 +74,60 @@ func insertAgentWriteTx(tx *sql.Tx, w AgentWrite) (int64, error) {
 	if err := w.check(); err != nil {
 		return 0, err
 	}
-	res, err := tx.Exec(`INSERT INTO tracker_agent_writes(kind, site, issue_id, project, account, thread_id, call_id, step, state, digest, comment_id, before_ms, after_ms, at_ms)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)`,
-		w.Ticket.Kind, w.Ticket.Site, w.Ticket.IssueID, w.Project, w.Account, w.ThreadID, w.CallID, w.Step, w.State, w.Digest, w.Comment, w.Before, w.After, w.At)
+	res, err := tx.Exec(`INSERT INTO tracker_agent_writes(kind, site, issue_id, project, account, thread_id, call_id, step, state, digest, comment_id, before_ms, after_ms, sent_ms, at_ms)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)`,
+		w.Ticket.Kind, w.Ticket.Site, w.Ticket.IssueID, w.Project, w.Account, w.ThreadID, w.CallID, w.Step, w.State, w.Digest, w.Comment, w.Before, w.After, w.Sent, w.At)
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
 }
 
-// RecordAgentWriteSent records w, a comment or a create about to be sent,
-// in state sent, and answers its row, which RecordAgentWrites replaces with
-// the outcome.
-func (s *Store) RecordAgentWriteSent(w AgentWrite) (int64, error) {
+// ClaimAgentWrite is the claim of w, a comment or a create about to be
+// sent: in one transaction, the newest row of w's thread and digest sent at
+// since or later when there is one (claimed false), and otherwise w, inserted
+// in state sent (claimed true), which RecordAgentWrites replaces with the
+// outcome. The caller decides what an earlier row means
+// (trackerapp.Service.claimAgentWrite).
+func (s *Store) ClaimAgentWrite(w AgentWrite, since int64) (AgentWrite, bool, error) {
 	w.State = AgentWriteSent
+	if err := w.check(); err != nil {
+		return AgentWrite{}, false, err
+	}
+	if w.Digest == "" {
+		return AgentWrite{}, false, fmt.Errorf("%w: a claim needs its digest", ErrInvalidAgentWrite)
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
-		return 0, fmt.Errorf("store: record agent write sent: begin: %w", err)
+		return AgentWrite{}, false, fmt.Errorf("store: claim agent write: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	id, err := insertAgentWriteTx(tx, w)
-	if err != nil {
-		return 0, fmt.Errorf("store: record agent write sent: %w", err)
+	earlier, err := scanAgentWrite(tx.QueryRow(agentWriteRepeatSQL, w.ThreadID, w.Digest))
+	switch {
+	case err == nil && earlier.Sent >= since:
+		return earlier, false, nil
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
+		return AgentWrite{}, false, fmt.Errorf("store: claim agent write: %w", err)
+	}
+	if w.ID, err = insertAgentWriteTx(tx, w); err != nil {
+		return AgentWrite{}, false, fmt.Errorf("store: claim agent write: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("store: record agent write sent: commit: %w", err)
+		return AgentWrite{}, false, fmt.Errorf("store: claim agent write: commit: %w", err)
 	}
-	return id, nil
+	return w, true, nil
+}
+
+// ResendAgentWrite records that the write of row id, found not made, is
+// sent again at sent: state sent, measured from the new time.
+func (s *Store) ResendAgentWrite(id, sent int64) error {
+	if sent <= 0 {
+		return fmt.Errorf("%w: a resend needs its time", ErrInvalidAgentWrite)
+	}
+	if _, err := s.db.Exec(`UPDATE tracker_agent_writes SET state = 'sent', sent_ms = ?2, at_ms = ?2 WHERE id = `+intParam("?1"), id, sent); err != nil {
+		return fmt.Errorf("store: resend agent write %d: %w", id, err)
+	}
+	return nil
 }
 
 // RecordAgentWrites replaces the row sent (0 for none) with the parts ws
@@ -150,7 +178,7 @@ type AgentWriteMark struct {
 }
 
 var agentWritesOfIssueSQL = `SELECT w.id, w.kind, w.site, w.issue_id, w.project, w.account, w.thread_id, w.call_id, w.step, w.state,
-	w.digest, w.comment_id, w.before_ms, w.after_ms, w.at_ms, COALESCE(t.title, '')
+	w.digest, w.comment_id, w.before_ms, w.after_ms, w.sent_ms, w.at_ms, COALESCE(t.title, '')
 	FROM tracker_agent_writes w LEFT JOIN threads t ON t.id = w.thread_id
 	WHERE w.kind = ?1 AND w.site = ?2 AND w.issue_id = ?3 AND w.state <> 'sent'
 	ORDER BY w.id DESC LIMIT ` + strconv.Itoa(agentWritesShown)
@@ -167,7 +195,7 @@ func (s *Store) AgentWritesOf(ticket TicketRef) ([]AgentWriteMark, error) {
 	for rows.Next() {
 		var m AgentWriteMark
 		if err := rows.Scan(&m.ID, &m.Ticket.Kind, &m.Ticket.Site, &m.Ticket.IssueID, &m.Project, &m.Account, &m.ThreadID, &m.CallID,
-			&m.Step, &m.State, &m.Digest, &m.Comment, &m.Before, &m.After, &m.At, &m.ThreadTitle); err != nil {
+			&m.Step, &m.State, &m.Digest, &m.Comment, &m.Before, &m.After, &m.Sent, &m.At, &m.ThreadTitle); err != nil {
 			return nil, fmt.Errorf("store: agent writes of %s: %w", ticket.IssueID, err)
 		}
 		out = append(out, m)
@@ -178,18 +206,6 @@ func (s *Store) AgentWritesOf(ticket TicketRef) ([]AgentWriteMark, error) {
 	return out, nil
 }
 
+// agentWriteRepeatSQL is a thread's newest write with a digest.
 const agentWriteRepeatSQL = `SELECT ` + agentWriteColumns + ` FROM tracker_agent_writes
 	WHERE thread_id = ?1 AND digest = ?2 ORDER BY id DESC LIMIT 1`
-
-// AgentWriteRepeat is thread's newest write with digest, when it was
-// recorded at since or later.
-func (s *Store) AgentWriteRepeat(threadID, digest string, since int64) (AgentWrite, bool, error) {
-	w, err := scanAgentWrite(s.reader().QueryRow(agentWriteRepeatSQL, threadID, digest))
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return AgentWrite{}, false, nil
-	case err != nil:
-		return AgentWrite{}, false, fmt.Errorf("store: agent write repeat: %w", err)
-	}
-	return w, w.At >= since, nil
-}

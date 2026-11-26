@@ -178,7 +178,7 @@ func TestADirectReadOfAnOpenTicketReachesItThroughTheRecord(t *testing.T) {
 		f := newCrossFixture(t)
 		f.desc.Store("v2")
 		calls := len(f.p.callsInOrder())
-		v, ch, err := f.svc.issueDetail(t.Context(), f.conn.ID, "10001", Interactive, true)
+		v, ch, err := f.svc.issueDetail(t.Context(), f.conn.ID, "10001", Interactive, true, true)
 		if err != nil || v.Description != "v2" || !slices.Contains(ch.Details, tracker.IssueID("10001")) {
 			t.Fatalf("the read %+v, %+v, %v", v.Description, ch, err)
 		}
@@ -201,7 +201,7 @@ func TestADirectReadOfAnOpenTicketReachesItThroughTheRecord(t *testing.T) {
 		call := holdNext(f.p, "Details")
 		done := make(chan error, 1)
 		go func() {
-			_, _, err := f.svc.issueDetail(context.Background(), f.conn.ID, "10001", Interactive, true)
+			_, _, err := f.svc.issueDetail(context.Background(), f.conn.ID, "10001", Interactive, true, true)
 			done <- err
 		}()
 		waitClosed(t, "the held call", call.arrived)
@@ -388,7 +388,7 @@ func TestAChangeToldDuringAReadIsBuiltWhenTheReadEnds(t *testing.T) {
 	// read is in flight.
 	another := func(t *testing.T, m *mirrorFixture, st *trackerState, tp *ticketPump, body string) {
 		st.comment(tp.key.issue, body)
-		if _, _, err := m.svc.issueDetail(t.Context(), m.conn.ID, tp.key.issue, Interactive, true); err != nil {
+		if _, _, err := m.svc.issueDetail(t.Context(), m.conn.ID, tp.key.issue, Interactive, true, true); err != nil {
 			t.Fatal(err)
 		}
 		events := m.issueEventCount()

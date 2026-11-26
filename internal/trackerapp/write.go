@@ -16,7 +16,8 @@ import (
 //   - the hold of the connection, taken as a tick takes one (start),
 //     interactive: a person or an agent waits on every write;
 //   - for an agent's write (ByAgent), its record: a comment or a create
-//     recorded sent before it is sent (agent_writes.go);
+//     claimed before it is sent, and answered with what an earlier
+//     attempt made, with nothing sent, when it was made (agent_writes.go);
 //   - the provider's write, and tracker.Result.Check before anything acts
 //     on its result;
 //   - the refresh: every resource a part that is applied or unknown names
@@ -84,10 +85,15 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 			return WriteView{}, err
 		}
 	}
-	rec, err := s.beginAgentWrite(ctx, r, op)
-	if err != nil {
+	rec, repeat, err := s.beginAgentWrite(ctx, r, op)
+	switch {
+	case err != nil:
 		return WriteView{}, err
+	case repeat != nil:
+		return WriteView{Parts: []PartView{}, Repeat: repeat}, nil
 	}
+	// Released after the outcome replaced the claimed row, on every path.
+	defer s.endAgentWrite(rec)
 	var res tracker.Result
 	resources := op.also
 	if op.call != nil {
@@ -106,13 +112,13 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 			r.calls++
 		}
 		resources = slices.Concat(resources, res.Refresh())
-		if created, ok := res.Created(); ok && op.board != "" {
+		if created, _, ok := res.Created(); ok && op.board != "" {
 			resources = append(resources, tracker.RowOf(op.board, created))
 		}
 	}
 	view := WriteView{Parts: partViews(r.row.Kind, res, millis(s.now())), CreateUnknown: res.CreateUnknown()}
-	if created, ok := res.Created(); ok {
-		view.Created = string(created)
+	if created, key, ok := res.Created(); ok {
+		view.Created, view.CreatedKey = string(created), key
 	}
 	if !r.inUse() {
 		s.finishAgentWrite(rec, res, nil)
@@ -124,7 +130,7 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 	}
 	writeCalls := r.calls
 	var created newIssue
-	if id, ok := res.Created(); ok && op.board != "" {
+	if id, _, ok := res.Created(); ok && op.board != "" {
 		created = newIssue{issue: id, board: op.board}
 	}
 	f := r.refresh(resources, created)

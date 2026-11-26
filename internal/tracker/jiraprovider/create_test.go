@@ -26,7 +26,7 @@ func TestCreate(t *testing.T) {
 		{Field: "labels", Value: tracker.PickValues("ui", "web")},
 		{Field: "customfield_10050", Value: tracker.PickValues("22")},
 	}}))
-	if id, ok := res.Created(); !ok || id != "10001" || states(res) != "create:applied" {
+	if id, key, ok := res.Created(); !ok || id != "10001" || key != "WEB-1" || states(res) != "create:applied" {
 		t.Fatalf("got %s", states(res))
 	}
 	if !slices.Equal(res.Parts[0].Changed, []tracker.Resource{tracker.CardOf("10001"), tracker.DetailOf("10001")}) {
@@ -79,7 +79,7 @@ func TestCreateWithImage(t *testing.T) {
 			if got := states(res); got != tc.want {
 				t.Fatalf("got %s, want %s", got, tc.want)
 			}
-			if id, ok := res.Created(); !ok || id != "10001" || res.Parts[1].Issue != "10001" {
+			if id, _, ok := res.Created(); !ok || id != "10001" || res.Parts[1].Issue != "10001" {
 				t.Errorf("created %q %v", id, ok)
 			}
 			if n := f.Count("POST", createPath); n != 1 {

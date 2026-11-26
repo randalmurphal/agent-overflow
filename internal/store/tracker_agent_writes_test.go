@@ -13,31 +13,47 @@ func agentComment(thread, call string, at int64) AgentWrite {
 		CallID:   call,
 		Step:     "comment",
 		Digest:   "d1",
+		Sent:     at,
 		At:       at,
 	}
 }
 
-// A comment is recorded sent, found by a repeat of its call, replaced by
-// its outcome in one transaction, and then marks its ticket with the
-// thread's title, which a deleted thread leaves empty.
+// claim claims w since, failing the test on an error.
+func claim(t *testing.T, s *Store, w AgentWrite, since int64) (AgentWrite, bool) {
+	t.Helper()
+	got, claimed, err := s.ClaimAgentWrite(w, since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got, claimed
+}
+
+// A comment is claimed sent; a second claim of its thread and digest in
+// its window finds it, one after the window or from another thread
+// claims anew. Its outcome replaces it in one transaction, and then marks
+// its ticket with the thread's title, which a deleted thread leaves empty.
 func TestAgentWritesRecordAndMark(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	mustCreateThreadForSearch(t, s, "t1", "Fix the retry")
 	w := agentComment("t1", "c1", 1_000)
-	sent, err := s.RecordAgentWriteSent(w)
-	if err != nil {
+	first, claimed := claim(t, s, w, 0)
+	if !claimed || first.ID == 0 || first.State != AgentWriteSent {
+		t.Fatalf("the first claim = %+v, %v", first, claimed)
+	}
+	sent := first.ID
+	if got, claimed := claim(t, s, agentComment("t1", "c2", 1_050), 1_000); claimed || got.ID != sent || got.State != AgentWriteSent || got.Sent != 1_000 {
+		t.Fatalf("a second claim in the window = %+v, %v; want row %d sent at 1000", got, claimed, sent)
+	}
+	if got, claimed := claim(t, s, agentComment("t2", "c3", 1_050), 1_000); !claimed || got.ID == sent {
+		t.Fatalf("a claim from another thread = %+v, %v; want its own row", got, claimed)
+	}
+	later, claimed := claim(t, s, agentComment("t1", "c4", 5_000), 1_001)
+	if !claimed || later.ID == sent {
+		t.Fatalf("a claim after the window = %+v, %v; want its own row", later, claimed)
+	}
+	if err := s.RecordAgentWrites(later.ID, nil); err != nil {
 		t.Fatal(err)
-	}
-	got, ok, err := s.AgentWriteRepeat("t1", "d1", 1_000)
-	if err != nil || !ok || got.ID != sent || got.State != AgentWriteSent {
-		t.Fatalf("repeat of a sent comment = %+v, %v, %v; want row %d sent", got, ok, err, sent)
-	}
-	if _, ok, err := s.AgentWriteRepeat("t1", "d1", 1_001); err != nil || ok {
-		t.Fatalf("repeat after its window = %v, %v; want none", ok, err)
-	}
-	if _, ok, err := s.AgentWriteRepeat("t2", "d1", 0); err != nil || ok {
-		t.Fatalf("repeat from another thread = %v, %v; want none", ok, err)
 	}
 	if marks, err := s.AgentWritesOf(w.Ticket); err != nil || len(marks) != 0 {
 		t.Fatalf("marks while sent = %+v, %v; want none", marks, err)
@@ -55,8 +71,8 @@ func TestAgentWritesRecordAndMark(t *testing.T) {
 	if m := marks[0]; m.Comment != "c-100" || m.State != AgentWriteApplied || m.ThreadTitle != "Fix the retry" || m.Before != 900 || m.After != 1_100 {
 		t.Fatalf("mark = %+v", m)
 	}
-	if got, ok, err := s.AgentWriteRepeat("t1", "d1", 0); err != nil || !ok || got.State != AgentWriteApplied {
-		t.Fatalf("repeat after the outcome = %+v, %v, %v; want the applied row", got, ok, err)
+	if got, claimed := claim(t, s, agentComment("t1", "c5", 1_100), 0); claimed || got.State != AgentWriteApplied || got.Sent != 1_000 {
+		t.Fatalf("a claim after the outcome = %+v, %v; want the applied row", got, claimed)
 	}
 
 	if err := s.DeleteThread("t1"); err != nil {
@@ -72,43 +88,48 @@ func TestAgentWritesRecordAndMark(t *testing.T) {
 func TestAgentWritesOutcomeIsOneTransaction(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	sent, err := s.RecordAgentWriteSent(agentComment("t1", "c1", 1_000))
-	if err != nil {
-		t.Fatal(err)
-	}
+	first, _ := claim(t, s, agentComment("t1", "c1", 1_000), 0)
+	sent := first.ID
 	bad := agentComment("t1", "c1", 1_000)
 	bad.State = "refused"
 	if err := s.RecordAgentWrites(sent, []AgentWrite{bad}); !errors.Is(err, ErrInvalidAgentWrite) {
 		t.Fatalf("a refused state = %v, want ErrInvalidAgentWrite", err)
 	}
-	if got, ok, err := s.AgentWriteRepeat("t1", "d1", 0); err != nil || !ok || got.ID != sent {
-		t.Fatalf("after a refused outcome = %+v, %v, %v; want the sent row kept", got, ok, err)
+	if got, claimed := claim(t, s, agentComment("t1", "c2", 1_000), 0); claimed || got.ID != sent {
+		t.Fatalf("after a refused outcome = %+v, %v; want the sent row kept", got, claimed)
 	}
 	if err := s.RecordAgentWrites(sent, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := s.AgentWriteRepeat("t1", "d1", 0); err != nil || ok {
-		t.Fatalf("after a refused part = %v, %v; want no row", ok, err)
+	if got, claimed := claim(t, s, agentComment("t1", "c3", 1_000), 0); !claimed || got.CallID != "c3" {
+		t.Fatalf("after a refused part = %+v, %v; want a new claim", got, claimed)
 	}
 	edit := agentComment("t1", "c2", 1)
 	edit.Step, edit.Ticket.IssueID = "edit", ""
-	if _, err := s.RecordAgentWriteSent(edit); !errors.Is(err, ErrInvalidAgentWrite) {
+	if _, _, err := s.ClaimAgentWrite(edit, 0); !errors.Is(err, ErrInvalidAgentWrite) {
 		t.Fatalf("an edit without its issue = %v, want ErrInvalidAgentWrite", err)
+	}
+	if err := s.ResendAgentWrite(sent, 0); !errors.Is(err, ErrInvalidAgentWrite) {
+		t.Fatalf("a resend with no time = %v, want ErrInvalidAgentWrite", err)
 	}
 }
 
-// A create of unknown outcome that a later read finds is settled applied
-// with the issue it made, and then marks that ticket.
+// A create sent again is measured from its new send time; one of unknown
+// outcome that a later read finds is settled applied with the issue it
+// made, and then marks that ticket.
 func TestAgentWriteSettleNamesTheIssue(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	create := agentComment("t1", "c1", 1_000)
 	create.Step, create.Ticket.IssueID, create.Project = "create", "", "WEB"
-	sent, err := s.RecordAgentWriteSent(create)
-	if err != nil {
+	first, _ := claim(t, s, create, 0)
+	if err := s.ResendAgentWrite(first.ID, 2_000); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SettleAgentWrite(sent, "10042", ""); err != nil {
+	if got, claimed := claim(t, s, create, 1_500); claimed || got.Sent != 2_000 || got.State != AgentWriteSent {
+		t.Fatalf("a claim after the resend = %+v, %v; want the row sent at 2000", got, claimed)
+	}
+	if err := s.SettleAgentWrite(first.ID, "10042", ""); err != nil {
 		t.Fatal(err)
 	}
 	marks, err := s.AgentWritesOf(TicketRef{Kind: "jira", Site: "https://example.atlassian.net", IssueID: "10042"})

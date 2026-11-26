@@ -414,7 +414,7 @@ func TestATicketDoesNotShowAnEarlierStaysTime(t *testing.T) {
 			detail := m.svc.IssueDetail
 			if refresh {
 				detail = func(ctx context.Context, id string, issue tracker.IssueID, u Urgency) (DetailView, Changes, error) {
-					return m.svc.issueDetail(ctx, id, issue, u, true)
+					return m.svc.issueDetail(ctx, id, issue, u, true, true)
 				}
 			}
 			for i, status := range []tracker.StatusID{"s2", "s1"} {
