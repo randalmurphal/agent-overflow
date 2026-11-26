@@ -322,6 +322,18 @@ var walkCases = map[string]walkCase{
 			return ids(s.Fields, func(f FieldMeta) string { return f.ID }), err
 		}, "f201,f202",
 	},
+	"KeptCreateMeta": {
+		func(s *walkSite) {
+			s.route("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes/10002", func(u string, r *http.Request, _ []byte) string {
+				start, _ := strconv.Atoi(r.URL.Query().Get("startAt"))
+				return fmt.Sprintf(`{"fields":[{"fieldId":"f%d","name":"F","schema":{"type":"string"}}],"total":2}`, uid(u, start+1))
+			})
+		},
+		func(ctx context.Context, c *Client) (string, error) {
+			s, err := c.KeptCreateMeta(ctx, "WEB", "10002")
+			return ids(s.Fields, func(f FieldMeta) string { return f.ID }), err
+		}, "f201,f202",
+	},
 	"Worklogs": {
 		func(s *walkSite) {
 			s.route("GET", "/rest/api/3/issue/WEB-1/worklog", func(u string, r *http.Request, _ []byte) string {

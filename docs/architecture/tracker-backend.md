@@ -2321,8 +2321,9 @@ connection's listings of the project: a board read here that the
 thread's project lists, else any board read here. None is refused saying
 to add one, and only unread ones are refused saying to open one. Boards
 of the project on two sites are refused naming both. The create screen
-is read once for the call: the Jira client keeps a create screen for a
-minute, and drops it when a create is refused for a field on it. Jira takes the type by name (Task, else the first type that
+is read once for the call: the tool's read of the create fields asks
+Jira, and the create takes the screen the Jira client kept from it for a
+minute, which a create refused for a field on it drops. Jira takes the type by name (Task, else the first type that
 is not a subtask, when none is given); Linear has none and refuses one.
 Every field of `set` is resolved before the create request, so a value
 refused there creates nothing; status, sprint and estimate are set after

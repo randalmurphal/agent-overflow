@@ -313,9 +313,12 @@ problem on that record, which stays usable.
   board's configuration and sprint list are dropped by `ForgetBoard`,
   which the provider calls before each structure read. Users and the
   field catalog, which no read drops and Jira changes with no signal, are
-  read again once 30 minutes old. A create screen is kept for one minute,
-  so a create planned after its form or a tool call read the screen reads
-  it once. A create Jira refuses with a 400 that names a field, or a plan
+  read again once 30 minutes old. A create screen read to be shown
+  (`CreateMeta`: the create form's fields, a tool's read of them) asks
+  Jira every time and is kept for one minute; what follows it and shows
+  nothing (`KeptCreateMeta`: the create's plan, the form's choices search)
+  takes the kept screen, so a create planned after its form or a tool call
+  read the screen reads it once. A create Jira refuses with a 400 that names a field, or a plan
   that leaves a required field unset, drops it: the screen may have
   changed under the refusal, and the next read is Jira's.
 - **Write answers.** A write is applied only on a success its spec
