@@ -109,7 +109,7 @@ func TestStartToDoneCountsWhatTheHistoryShows(t *testing.T) {
 		}
 		rows = append(rows, fmt.Sprintf("%s %s %s", row.Key, v, row.Note))
 	}
-	want := []string{"WEB-21 2 ", "WEB-23 1 ", "WEB-22 - not counted: it was in progress before its history begins"}
+	want := []string{"WEB-21 2 ", "WEB-23 1 ", "WEB-22 - it was in progress before its history begins"}
 	if d.Value.V == nil || *d.Value.V != 1.5 || d.Value.NC != 1 || !reflect.DeepEqual(rows, want) {
 		t.Fatalf("start to done = %+v with rows %q; want the median 1.5 of WEB-21 and WEB-23, WEB-22 not counted: %q", d.Value, rows, want)
 	}

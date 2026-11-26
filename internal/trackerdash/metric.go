@@ -28,7 +28,8 @@ const (
 	// the range and its periods.
 	ColumnAt = "at"
 	// ColumnNote is a short text the ticket list and the drill show beside
-	// the row.
+	// the row. A row not counted is listed as "Not counted: " and its
+	// note, so its note says only why.
 	ColumnNote = "note"
 )
 

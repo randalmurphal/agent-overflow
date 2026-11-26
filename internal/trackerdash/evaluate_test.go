@@ -244,7 +244,7 @@ func TestDrillAnswersTheCellsNumberWithItsRows(t *testing.T) {
 		t.Fatalf("User 1's to do = %+v", cell)
 	}
 	stuck := drill("stuck_list", nil)
-	if stuck.Count != 2 || stuck.Counted != 1 || stuck.Rows[0].Key != "WEB-3" || stuck.Rows[1].Counted || !strings.HasPrefix(stuck.Rows[1].Note, "not counted") {
+	if stuck.Count != 2 || stuck.Counted != 1 || stuck.Rows[0].Key != "WEB-3" || stuck.Rows[1].Counted || stuck.Rows[1].Note != "how long it has been in In Progress is not known" {
 		t.Fatalf("stuck drill = %+v", stuck)
 	}
 }
@@ -459,7 +459,7 @@ func TestAnUnknownFinishIsListedNotDropped(t *testing.T) {
 	for _, row := range d.Rows {
 		rows = append(rows, fmt.Sprintf("%s %v %s", row.Key, row.Counted, row.Note))
 	}
-	if !reflect.DeepEqual(rows, []string{"WEB-1 true ", "WEB-6 false not counted: when it finished is not known"}) || num(&d.Value) != "0.5, 1 not counted" {
+	if !reflect.DeepEqual(rows, []string{"WEB-1 true ", "WEB-6 false when it finished is not known"}) || num(&d.Value) != "0.5, 1 not counted" {
 		t.Fatalf("pace drill = %s %v; want the tile's number, WEB-1 counted and WEB-6 listed", num(&d.Value), rows)
 	}
 }

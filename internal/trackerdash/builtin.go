@@ -27,7 +27,7 @@ const finishedAt = `coalesce(t.done_at, t.resolved_at)`
 const finishedInRange = `t.status_group = 'done' AND (` + finishedAt + ` > :since OR (` + finishedAt + ` IS NULL AND t.updated_at > :since))`
 
 // finishUnknown is a done ticket's note when when it finished is not known.
-const finishUnknown = `'not counted: when it finished is not known'`
+const finishUnknown = `'when it finished is not known'`
 
 var cycleMetric = Metric{
 	Name:  "start_to_done",
@@ -41,11 +41,11 @@ var cycleMetric = Metric{
       NULL, working_days(t.started_at, t.done_at)) AS value,
   ` + finishedAt + ` AS at,
   CASE WHEN ` + finishedAt + ` IS NULL THEN ` + finishUnknown + `
-       WHEN t.history_from IS NULL THEN 'not counted: its history is not read yet'
-       WHEN t.started_known = 0 THEN 'not counted: it was in progress before its history begins'
-       WHEN t.started_at IS NULL THEN 'not counted: it was never in progress'
-       WHEN t.done_at IS NULL THEN 'not counted: its move to done is not in its history'
-       WHEN t.started_at > t.done_at THEN 'not counted: it moved to done before it was started' END AS note
+       WHEN t.history_from IS NULL THEN 'its history is not read yet'
+       WHEN t.started_known = 0 THEN 'it was in progress before its history begins'
+       WHEN t.started_at IS NULL THEN 'it was never in progress'
+       WHEN t.done_at IS NULL THEN 'its move to done is not in its history'
+       WHEN t.started_at > t.done_at THEN 'it moved to done before it was started' END AS note
 FROM tickets t WHERE ` + finishedInRange,
 	Reduce: ReduceMedian, Unit: UnitDays, Good: GoodDown, Bucket: BucketPeriod,
 }
@@ -61,7 +61,7 @@ var stuckMetric = Metric{
   iif(coalesce(t.status_since, 0) > 0, days(t.status_since, :now), NULL) AS value,
   iif(coalesce(t.status_since, 0) > 0,
       'in ' || coalesce(s.name, t.status) || ' for ' || CAST(days(t.status_since, :now) AS INTEGER) || ' days',
-      'not counted: how long it has been in ' || coalesce(s.name, t.status) || ' is not known') AS note
+      'how long it has been in ' || coalesce(s.name, t.status) || ' is not known') AS note
 FROM tickets t LEFT JOIN statuses s ON s.id = t.status
 WHERE t.status_group = 'in_progress' AND (coalesce(t.status_since, 0) = 0 OR days(t.status_since, :now) > 3)`,
 	Reduce: ReduceCount, Unit: UnitTickets, Good: GoodDown,
