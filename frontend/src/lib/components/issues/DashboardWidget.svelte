@@ -215,7 +215,7 @@
   {#if value && !value.error && !showHow && view.form !== 'number' && (value.more || value.not_counted)}
     <div class="flex flex-wrap gap-3 text-[0.6875rem]">
       {#if value.more}
-        <button type="button" class="text-accent hover:underline" data-testid="dashboard-more" onclick={() => onDrill({ widget: view.id })}>{value.more} {view.form === 'list' ? 'more' : moreWord === 'more' ? 'more' : `more ${moreWord}`}</button>
+        <button type="button" class="text-accent hover:underline" data-testid="dashboard-more" onclick={() => onDrill(view.form === 'list' ? { widget: view.id } : { widget: view.id, rest: true })}>{value.more} {view.form === 'list' ? 'more' : moreWord === 'more' ? 'more' : `more ${moreWord}`}</button>
       {/if}
       {#if value.not_counted}
         <button type="button" class="text-accent hover:underline" data-testid="dashboard-not-counted" onclick={() => onDrill({ widget: view.id })}>{notCountedWords(value.not_counted)}</button>

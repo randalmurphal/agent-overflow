@@ -136,8 +136,9 @@ func reduceRange(r Reducer, periods []period, placed map[string][]contribution, 
 // ranges.
 //
 // A row with no instant (a finish time not known) could have happened
-// after its ticket's creation and at or before its last update. It
-// belongs to each range that span meets and to no other. It is counted in
+// at or after its ticket's creation and at or before its last update (a
+// ticket made in a done status finished when it was made). It belongs to
+// each range that span meets and to no other. It is counted in
 // none, and the current range lists it once on every widget (a number's
 // drill, a chart's "N not counted"). unplaced[i] is the rows of
 // ranges[i]; spanOf is a ticket's creation and last update.
@@ -166,7 +167,7 @@ func place(m Metric, rows []contribution, spanOf func(ticket string) (from, to i
 			c.counted = false
 			from, to := spanOf(c.ticket)
 			for i, ps := range ranges {
-				if slices.ContainsFunc(ps, func(p period) bool { return max(from, p.from) < min(to, p.to) }) {
+				if slices.ContainsFunc(ps, func(p period) bool { return from <= p.to && to > p.from }) {
 					unplaced[i] = append(unplaced[i], c)
 				}
 			}

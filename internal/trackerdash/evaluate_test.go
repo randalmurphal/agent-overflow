@@ -443,6 +443,7 @@ func TestWeekBoardCountsByWeek(t *testing.T) {
 //	WEB-7 updated two months ago: neither, and not read
 //	WEB-8 made in September, updated 8 November: the range before only
 //	WEB-9 made 20 November, updated 23 November: this range only
+//	WEB-10 made in a done status 21 November, never updated: this range
 func TestAnUnknownFinishBelongsToTheRangesItsTicketSpans(t *testing.T) {
 	t.Parallel()
 	f := newFixture(false, "none").status("5", "Done", "done")
@@ -451,31 +452,32 @@ func TestAnUnknownFinishBelongsToTheRangesItsTicketSpans(t *testing.T) {
 	f.ticket(ticket{id: "t7", key: "WEB-7", status: "5", group: "done", created: ago(90), updated: ago(60)})
 	f.ticket(ticket{id: "t8", key: "WEB-8", status: "5", group: "done", created: ago(70), updated: ago(17)})
 	f.ticket(ticket{id: "t9", key: "WEB-9", status: "5", group: "done", created: ago(5), updated: ago(2)})
+	f.ticket(ticket{id: "t10", key: "WEB-10", status: "5", group: "done", created: ago(4), updated: ago(4)})
 	e := evaluator()
 	r := Request{Dashboard: builtinWeeksID, Range: RangeWeeks2, TimeZone: "UTC"}
 	a := mustEvaluate(t, e, f.board(), r)
 	pace := widgetOf(t, a, "pace")
-	if got := num(pace.Value); got != "0.5, 2 not counted" {
-		t.Errorf("weekly pace = %s; want WEB-1 over 2 weeks, WEB-6 and WEB-9 not counted (WEB-8 was last updated before the range)", got)
+	if got := num(pace.Value); got != "0.5, 3 not counted" {
+		t.Errorf("weekly pace = %s; want WEB-1 over 2 weeks, WEB-6, WEB-9 and WEB-10 not counted (WEB-8 was last updated before the range)", got)
 	}
 	if got := num(pace.Previous); got != "not known, 2 not counted" {
 		t.Errorf("the pace before = %s; want WEB-6 and WEB-8 not counted, which could have finished then", got)
 	}
 	cycle := widgetOf(t, a, "start_to_done")
-	if got := num(cycle.Value) + " / " + num(cycle.Previous); got != "1.5, 2 not counted / not known, 2 not counted" {
-		t.Errorf("start to done now / before = %s; want WEB-1's 1.5 working days with WEB-6 and WEB-9 not counted, before WEB-6 and WEB-8", got)
+	if got := num(cycle.Value) + " / " + num(cycle.Previous); got != "1.5, 3 not counted / not known, 2 not counted" {
+		t.Errorf("start to done now / before = %s; want WEB-1's 1.5 working days with WEB-6, WEB-9 and WEB-10 not counted, before WEB-6 and WEB-8", got)
 	}
 	cf := widgetOf(t, a, "created_finished")
 	var finished []string
 	for _, b := range cf.Buckets {
 		finished = append(finished, num(&b.Cells[1]))
 	}
-	if !reflect.DeepEqual(finished, []string{"0", "1"}) || cf.NotCounted != 2 {
-		t.Errorf("finished by week = %v, %d not counted; want WEB-1 alone, this week, with WEB-6 and WEB-9 in no bar and not counted", finished, cf.NotCounted)
+	if !reflect.DeepEqual(finished, []string{"0", "1"}) || cf.NotCounted != 3 {
+		t.Errorf("finished by week = %v, %d not counted; want WEB-1 alone, this week, with WEB-6, WEB-9 and WEB-10 in no bar and not counted", finished, cf.NotCounted)
 	}
 	for _, id := range []string{"finished", "start_to_done_line"} {
-		if w := widgetOf(t, a, id); w.NotCounted != 2 {
-			t.Errorf("%s lists %d not counted; want WEB-6 and WEB-9", id, w.NotCounted)
+		if w := widgetOf(t, a, id); w.NotCounted != 3 {
+			t.Errorf("%s lists %d not counted; want WEB-6, WEB-9 and WEB-10", id, w.NotCounted)
 		}
 	}
 	rows := func(widget string) []string {
@@ -490,12 +492,13 @@ func TestAnUnknownFinishBelongsToTheRangesItsTicketSpans(t *testing.T) {
 		}
 		return append(out, num(&d.Value))
 	}
-	if got, want := rows("pace"), []string{"WEB-1 true ", "WEB-6 false when it finished is not known", "WEB-9 false when it finished is not known", "0.5, 2 not counted"}; !reflect.DeepEqual(got, want) {
+	if got, want := rows("pace"), []string{"WEB-1 true ", "WEB-6 false when it finished is not known", "WEB-9 false when it finished is not known", "WEB-10 false when it finished is not known", "0.5, 3 not counted"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("pace drill = %q; want %q", got, want)
 	}
-	// The chart's "2 not counted" opens the whole widget: WEB-9's creation
-	// is counted and its finish is not.
-	if got, want := rows("created_finished"), []string{"WEB-1 true ", "WEB-9 true ", "WEB-6 false when it finished is not known", "WEB-9 false when it finished is not known", "2, 2 not counted"}; !reflect.DeepEqual(got, want) {
+	// The chart's "3 not counted" opens the whole widget: WEB-9's and
+	// WEB-10's creations are counted and their finishes are not.
+	if got, want := rows("created_finished"), []string{"WEB-1 true ", "WEB-9 true ", "WEB-10 true ", "WEB-6 false when it finished is not known",
+		"WEB-9 false when it finished is not known", "WEB-10 false when it finished is not known", "3, 3 not counted"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("created and finished drill = %q; want %q", got, want)
 	}
 }

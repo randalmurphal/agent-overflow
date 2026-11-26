@@ -266,7 +266,7 @@ describe('the drill', () => {
     const { s } = await opened();
     const drill = held<DrillAnswer>('TrackerDashboardDrill');
     s.openDrill({ widget: 'finished', cell: { bucket: 's7', series: '' } });
-    expect(drill.calls[0]).toEqual(['sub-1', expect.objectContaining({ widget: 'finished', cell: { bucket: 's7', series: '' }, page: 0, count: 0, range: 'sprints_5' })]);
+    expect(drill.calls[0]).toEqual(['sub-1', expect.objectContaining({ widget: 'finished', cell: { bucket: 's7', series: '' }, rest: false, page: 0, count: 0, range: 'sprints_5' })]);
     drill.answer(drillAnswer(0, 250));
     await flush();
     s.drillPage(1);
@@ -304,6 +304,13 @@ describe('the drill', () => {
     drill.answer(drillAnswer(0, 3));
     await flush();
     expect(s.drill).toBeNull();
+  });
+
+  it('asks for the buckets a widget left out', async () => {
+    const { s } = await opened();
+    const drill = held<DrillAnswer>('TrackerDashboardDrill');
+    s.openDrill({ widget: 'carrying', rest: true });
+    expect(drill.calls[0][1]).toMatchObject({ widget: 'carrying', cell: null, rest: true });
   });
 
   it('closes when what is counted changes', async () => {

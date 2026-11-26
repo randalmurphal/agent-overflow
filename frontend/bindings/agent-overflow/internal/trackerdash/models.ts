@@ -298,11 +298,13 @@ export class DrillCell {
 }
 
 /**
- * DrillRequest asks for the rows behind one number of a dashboard: a
- * number or list widget's whole number (no Cell), or one bar, point or
- * table cell of a bars, line or table widget (Cell). Page is the page of
- * drillPage rows; Count is the row count page 0 answered, so a later page
- * that finds a different count starts again at page 0.
+ * DrillRequest asks for the rows behind one number of a dashboard, one
+ * of three targets: the whole widget (no Cell, no Rest), one bar, point or
+ * table cell of a bars, line or table widget (Cell), or the buckets a
+ * widget that ranks its buckets left out (Rest, what its More opens).
+ * Page is the page of drillPage rows; Count is the row count page 0
+ * answered, so a later page that finds a different count starts again at
+ * page 0.
  */
 export class DrillRequest {
     "dashboard": string;
@@ -313,6 +315,7 @@ export class DrillRequest {
     "time_zone": string;
     "widget": string;
     "cell"?: DrillCell | null;
+    "rest"?: boolean;
     "page": number;
     "count"?: number;
 

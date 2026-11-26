@@ -150,6 +150,7 @@ it('narrows the page to a table\'s person and opens a cell\'s rows', async () =>
     series: ['To do', 'Doing', 'Done'],
     buckets: [{ key: 'acct-1', label: 'User 1', cells: [{ v: 3 }, { v: 2 }, {}], total: { v: 5 } }, { key: '', label: 'Unassigned', cells: [{ v: 1 }, {}, {}], total: { v: 1 } }],
     more: 2,
+    not_counted: 1,
   } as unknown as WidgetValue;
   const { getAllByTestId, getByTestId, onPerson, onDrill } = draw(v, value);
   const rows = getAllByTestId('dashboard-table-row');
@@ -162,6 +163,12 @@ it('narrows the page to a table\'s person and opens a cell\'s rows', async () =>
   await fireEvent.click(within(rows[0]).getByTestId('dashboard-cell-total'));
   expect(onDrill).toHaveBeenLastCalledWith({ widget: 'carrying', cell: { bucket: 'acct-1', series: '' } });
   expect(getByTestId('dashboard-more').textContent).toBe('2 more people');
+  // More opens the rows of the people the table left out.
+  await fireEvent.click(getByTestId('dashboard-more'));
+  expect(onDrill).toHaveBeenLastCalledWith({ widget: 'carrying', rest: true });
+  // Its "not counted" opens the whole table.
+  await fireEvent.click(getByTestId('dashboard-not-counted'));
+  expect(onDrill).toHaveBeenLastCalledWith({ widget: 'carrying' });
   // Unassigned's cell opens Unassigned's rows of its series, its key empty.
   await fireEvent.click(within(rows[1]).getAllByTestId('dashboard-cell')[0]);
   expect(onDrill).toHaveBeenLastCalledWith({ widget: 'carrying', cell: { bucket: '', series: 'To do' } });
