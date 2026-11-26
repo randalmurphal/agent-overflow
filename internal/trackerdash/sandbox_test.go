@@ -122,6 +122,51 @@ func TestRunawayQueryStopsAtItsDeadline(t *testing.T) {
 	}
 }
 
+// A metric's deadline began at its prepare: a prepare that took most of
+// it leaves the run the rest.
+func TestTheDeadlineCountsThePrepare(t *testing.T) {
+	t.Parallel()
+	s := sealed(t)
+	p, err := s.prepare(metricOf(`SELECT a.ticket AS ticket FROM changes a, changes b, changes c ORDER BY a.at * b.at * c.at LIMIT 1`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.took = metricDeadline - 100*time.Millisecond
+	start := time.Now()
+	_, err = s.run(context.Background(), p, ms(testNow), 0)
+	elapsed := time.Since(start)
+	var me *MetricError
+	if !errors.As(err, &me) || !me.Limit {
+		t.Fatalf("runaway query after a slow prepare: %v", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("the run went on %v after a prepare that took %v of its %v", elapsed.Round(time.Millisecond), p.took, metricDeadline)
+	}
+}
+
+// A LIKE or GLOB pattern past 256 bytes is refused, so one call, which
+// SQLite cannot interrupt, stays short: 256 bytes against a 60,000-byte
+// subject finishes well inside the deadline.
+func TestLikePatternsAreBounded(t *testing.T) {
+	t.Parallel()
+	s := sealed(t)
+	for _, op := range []string{"LIKE '%' || printf('%.*c', 30000, 'a') || 'b'", "GLOB '*' || printf('%.*c', 30000, 'a') || 'b'"} {
+		_, err := runSQL(s, metricOf(`SELECT 't1' AS ticket WHERE printf('%.*c', 60000, 'a') `+op))
+		var me *MetricError
+		if !errors.As(err, &me) || !me.Limit || !strings.Contains(me.Sentence, "passed one of the limits") {
+			t.Errorf("a 30,000-byte pattern (%.4s): %v; want the limits sentence", op, err)
+		}
+	}
+	start := time.Now()
+	rows, err := runSQL(s, metricOf(`SELECT 't1' AS ticket WHERE printf('%.*c', 60000, 'a') LIKE '%' || printf('%.*c', 250, 'a') || 'b'`))
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("a 252-byte pattern: %d rows, %v", len(rows), err)
+	}
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Errorf("a 252-byte pattern against 60,000 bytes took %v", elapsed.Round(time.Millisecond))
+	}
+}
+
 // The gate fails closed: a fill that leaves another database attached
 // fails the evaluation with the gate's refusal and no answer, its session
 // closed and its slot given back; a fill whose detach failed fails with

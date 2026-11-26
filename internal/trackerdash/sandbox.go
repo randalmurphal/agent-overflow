@@ -51,6 +51,10 @@ var limits = []struct {
 	{sqlite3.SQLITE_LIMIT_VDBE_OP, "statement size", 25_000},
 	{sqlite3.SQLITE_LIMIT_FUNCTION_ARG, "function arguments", 16},
 	{sqlite3.SQLITE_LIMIT_WORKER_THREADS, "worker threads", 0},
+	// One LIKE or GLOB call cannot be interrupted, and its cost grows with
+	// its pattern times its subject: 30,000 bytes against 60,000 took
+	// 1.1 s. 256 bytes bounds a call at about 10 ms.
+	{sqlite3.SQLITE_LIMIT_LIKE_PATTERN_LENGTH, "LIKE and GLOB pattern length", 256},
 }
 
 // allowedFunctions are the functions a metric may call: SQLite's
@@ -283,11 +287,17 @@ type prepared struct {
 	names []string
 	cols  columns
 	reads []string
+	// took is how long the prepare took, which the metric's deadline
+	// counts: the driver's prepare watches no context, so it is timed,
+	// not interrupted. The limits bound it (0.65 ms for the slowest
+	// statement measured under them).
+	took time.Duration
 }
 
 // prepare checks a metric's SQL is one statement the authorizer allows,
 // and its columns against the contract.
 func (s *session) prepare(m Metric) (prepared, error) {
+	start := time.Now()
 	text, err := oneStatement(m.SQL)
 	if err != nil {
 		return prepared{}, &MetricError{Sentence: "This widget's query " + err.Error() + ". A metric is one SELECT; change its query."}
@@ -321,17 +331,18 @@ func (s *session) prepare(m Metric) (prepared, error) {
 		return prepared{}, &MetricError{Sentence: "This widget's query " + strings.TrimPrefix(err.Error(), "the query ") + "; change its query."}
 	}
 	slices.Sort(reads)
-	return prepared{sql: text, names: names, cols: cols, reads: reads}, nil
+	return prepared{sql: text, names: names, cols: cols, reads: reads, took: time.Since(start)}, nil
 }
 
-// run runs a prepared metric under its deadline, wrapped so SQLite
+// run runs a prepared metric under its deadline, which began when its
+// prepare did, wrapped so SQLite
 // produces the whole result in its first step and the rows go straight
 // to the sink, and answers its rows. The host binds :now, the
 // evaluation's instant, and :since, where the range's periods begin
 // (span.since), so a metric of the range reads only the rows it can
 // place.
 func (s *session) run(ctx context.Context, p prepared, now, since int64) ([]contribution, error) {
-	ctx, cancel := context.WithTimeout(ctx, metricDeadline)
+	ctx, cancel := context.WithTimeout(ctx, metricDeadline-p.took)
 	defer cancel()
 	s.sink.reset(p.cols)
 	defer s.sink.reset(columns{})
