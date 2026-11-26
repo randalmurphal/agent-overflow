@@ -446,7 +446,7 @@ func (s *Server) planSprint(p *planned, given string, v setValue) error {
 		return err
 	}
 	if !ok {
-		p.refuse(stepSprint, fmt.Sprintf("%s: %s is on no board here that plans sprints; ask the user to add its board in Settings, Issues.", given, p.key))
+		p.refuse(stepSprint, fmt.Sprintf("%s: %s is on no board read on this computer that plans sprints; ask the user to add its board in Settings, Issues, or open it there.", given, p.key))
 		return nil
 	}
 	var open []trackerapp.SprintView
@@ -491,7 +491,7 @@ func (s *Server) planEstimate(p *planned, given string, v setValue) error {
 		return err
 	}
 	if !ok {
-		p.refuse(stepEstimate, fmt.Sprintf("%s: %s is on no board here with estimates.", given, p.key))
+		p.refuse(stepEstimate, fmt.Sprintf("%s: %s is on no board read on this computer that has estimates; ask the user to add its board in Settings, Issues, or open it there.", given, p.key))
 		return nil
 	}
 	in := trackerapp.EstimateRequest{Board: row.Board, Issue: p.d.Card.ID}

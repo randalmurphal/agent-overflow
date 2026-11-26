@@ -470,6 +470,9 @@ func TestCreate(t *testing.T) {
 
 	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "OPS", "title": "Elsewhere"})
 	refused(t, err, CodeNotFound, "No board of project OPS is on this computer; ask the user to add one in Settings, Issues.")
+	w.h.createBoards["conn-jira/APP"] = "9"
+	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "app", "title": "Unread"})
+	refused(t, err, CodeNotFound, "Project APP's board on example.atlassian.net has not been read on this computer yet; ask the user to open it in Issues, then call again.")
 	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "Typo", "type": "Bugg"})
 	refused(t, err, CodeInvalidRequest, "WEB has no issue type Bugg; it has Story, Task, and Bug.")
 }

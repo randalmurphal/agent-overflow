@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -134,6 +135,11 @@ func (h trackerToolsHost) Approve(ctx context.Context, threadID string, approval
 		a.trackerMCP.approvals.settle(id, false)
 		return fmt.Errorf("tracker tools: raise the approval: %w", err)
 	}
+	if !a.trackerApprovalOpen(threadID, id) && a.trackerMCP.approvals.settle(id, false) {
+		// Triage keeps no prompt of a session that no longer holds the
+		// thread: nobody could answer this one.
+		return errorsx.Public("tracker_session_inactive", "The agent session is no longer active. Resume the conversation before using the tracker tools.", nil)
+	}
 	timer := time.NewTimer(a.trackerMCP.approvals.waitFor())
 	defer timer.Stop()
 	var ended error
@@ -158,6 +164,12 @@ func (h trackerToolsHost) Approve(ctx context.Context, threadID string, approval
 	// Withdrawn from every screen: no answer can reach it now.
 	a.resolveTrackerApproval(threadID, id, 0, "expired")
 	return ended
+}
+
+// trackerApprovalOpen reports whether the tracker write's prompt id is
+// open on thread, for a screen to answer.
+func (a *App) trackerApprovalOpen(threadID, id string) bool {
+	return slices.ContainsFunc(a.triage.PendingInteractiveRequests(threadID).Approvals, func(r provider.ApprovalRequest) bool { return r.RequestID == id })
 }
 
 // resolveTrackerApproval takes the tracker write's prompt id of thread out

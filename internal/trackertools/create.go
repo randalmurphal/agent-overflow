@@ -3,6 +3,7 @@ package trackertools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -216,6 +217,12 @@ func (s *Server) createTarget(threadID, project string) (createTarget, error) {
 			continue
 		}
 		summary, err := s.t.BoardSummary(src.ID, board)
+		if errors.Is(err, trackerapp.ErrNotMirrored) {
+			// The board is listed, but no screen has shown it since it was,
+			// so its project and sprints are not here yet.
+			return createTarget{}, errorsx.Public(CodeNotFound, fmt.Sprintf(
+				"Project %s's board on %s has not been read on this computer yet; ask the user to open it in Issues, then call again.", key, src.Site), nil)
+		}
 		if err != nil {
 			return createTarget{}, err
 		}
