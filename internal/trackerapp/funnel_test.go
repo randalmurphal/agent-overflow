@@ -42,11 +42,12 @@ func TestAChangedCardReachesEveryBoardShowingIt(t *testing.T) {
 // A row names its parent from the parent's name alone, so what moves the
 // parent's card or its keep and not its name (a rank, a status, its row
 // leaving a board and coming back) tells the boards showing its children
-// nothing of them, and a change of the name tells each board each child's
-// row once, whether the parent's own card or a child's read brought it.
+// nothing of them, nor a child's open ticket, and a change of the name
+// tells each board each child's row once, whether the parent's own card or
+// a child's read brought it, and the child's open ticket.
 func TestOnlyAParentsNameTellsTheBoardsOfItsChildren(t *testing.T) {
 	t.Parallel()
-	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour})
+	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
 	epic := row("10001", 1_799_000_000_000, "a")
 	epic.Card.Title, epic.Card.Type = "Checkout", tracker.IssueType{ID: "t1", Name: "Epic", Level: 1}
 	rows := []tracker.Row{epic}
@@ -59,6 +60,25 @@ func TestOnlyAParentsNameTellsTheBoardsOfItsChildren(t *testing.T) {
 	m.subscribe(t, testBoard)
 	m.subscribe(t, "2")
 	idleBoards(t, m.svc, m.p)
+	m.p.set(func(p *scripted) {
+		p.detail = func(id tracker.IssueID) (tracker.Detail, error) {
+			return tracker.Detail{Card: rows[slices.IndexFunc(rows, func(r tracker.Row) bool { return r.Card.ID == id })].Card}, nil
+		}
+	})
+	_, opened, _ := m.events.snapshot()
+	child := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10002", true, untied))
+	m.events.waitFor(t, "the child's ticket read", func(_ []BoardEvent, i []IssueEvent, _ []error) bool { return len(i) > len(opened) })
+	quiet(t, m.svc)
+	// childTold is whether the child's open ticket was told since issues
+	// events, and the parent its view names.
+	childTold := func(since int) (bool, *ParentView) {
+		t.Helper()
+		quiet(t, m.svc)
+		_, after, _ := m.events.snapshot()
+		v := must[TicketView](t)(m.svc.TicketDetail(child.ID))
+		return slices.ContainsFunc(after[since:], func(e IssueEvent) bool { return e.Issue == "10002" }), v.Detail.Card.Parent
+	}
+	_, quietFrom, _ := m.events.snapshot()
 	other := Scope{Connection: m.conn.ID, Board: "2"}
 	both := func(issues ...string) map[tracker.BoardID][]tracker.IssueID {
 		return map[tracker.BoardID][]tracker.IssueID{testBoard: ids(issues...), other.Board: ids(issues...)}
@@ -107,8 +127,15 @@ func TestOnlyAParentsNameTellsTheBoardsOfItsChildren(t *testing.T) {
 		t.Fatalf("the reconcile removed %v", out.Changes().Removed)
 	}
 	told("the parent's row added again", other, ranked, map[tracker.BoardID][]tracker.IssueID{other.Board: ids("10001")})
+	if was, _ := childTold(len(quietFrom)); was {
+		t.Error("the parent's rank, status and row told the child's ticket")
+	}
+	_, renamedFrom, _ := m.events.snapshot()
 	ranked[0].Card.Updated, ranked[0].Card.Title = ranked[0].Card.Updated.Add(time.Minute), "Payments"
 	told("the parent's own card renamed", m.scope(), ranked, both("10001", "10002", "10003", "10004"))
+	if was, parent := childTold(len(renamedFrom)); !was || parent == nil || parent.Title != "Payments" {
+		t.Errorf("the parent's own rename told the child's ticket %v, which names %+v; want told, Payments", was, parent)
+	}
 	ranked[1].Card.Updated, ranked[1].Card.ParentName = ranked[1].Card.Updated.Add(time.Minute), &tracker.ParentName{Key: "WEB-1", Title: "Billing", Level: 1}
 	told("the parent renamed through a child's read", m.scope(), ranked, both("10002", "10003", "10004"))
 	v := must[BoardView](t)(m.svc.Board(other, StatusGroups{}, []Section{{Kind: SectionBacklog}}))

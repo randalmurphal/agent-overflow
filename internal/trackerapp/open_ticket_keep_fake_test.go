@@ -788,11 +788,12 @@ func TestAScrumBoardNamesTheEpicsItDoesNotList(t *testing.T) {
 	if v := must[TicketView](t)(s.svc.TicketDetail(sub.ID)); v.Detail == nil || v.Detail.Card.Parent == nil || *v.Detail.Card.Parent != want {
 		t.Fatalf("the ticket names its parent %+v; want %+v", v.Detail, want)
 	}
+	// The epic renamed, and read alone: its own ticket opened, which keeps
+	// it. WEB-1's card does not change, and its ticket is told of the name.
 	p := s.provider(conn.ID)
 	applied(t, "rename the epic", p.Edit(t.Context(), tracker.EditInput{Issue: "10104", Fields: []tracker.FieldEdit{{Field: tracker.FieldTitle, Value: tracker.TypedValues("Checkout")}}}))
-	applied(t, "edit the story", p.Edit(t.Context(), tracker.EditInput{Issue: "10101", Fields: []tracker.FieldEdit{{Field: tracker.FieldLabels, Value: tracker.TypedValues("frontend")}}}))
 	_, told, _ := s.events.snapshot()
-	s.syncBoard(t, scope)
+	s.openTicket(t, conn, "10104")
 	quiet(t, s.svc)
 	want.Title = "Checkout"
 	if p := parentOf("after the rename"); p == nil || *p != want {
@@ -805,8 +806,15 @@ func TestAScrumBoardNamesTheEpicsItDoesNotList(t *testing.T) {
 	if v := must[TicketView](t)(s.svc.TicketDetail(sub.ID)); v.Detail == nil || v.Detail.Card.Parent == nil || *v.Detail.Card.Parent != want {
 		t.Fatalf("after the rename the ticket names its parent %+v; want %+v", v.Detail.Card.Parent, want)
 	}
-	// The agent tools' reads (ticket_read, one ticket and several) name it
-	// the same.
+	if c := must[IssueView](t)(s.svc.Issue(conn.ID, "10101")).Card; c.Parent == nil || *c.Parent != want {
+		t.Fatalf("the issue's card names its parent %+v; want %+v", c.Parent, want)
+	}
+	// The agent tools' reads (ticket_read, one ticket and several, and the
+	// cards of several) name it the same.
+	cards := must[[]TicketCardRead](t)(s.svc.IssueCards(t.Context(), conn.ID, []tracker.IssueID{"10101"}, Interactive))
+	if len(cards) != 1 || cards[0].Err != nil || cards[0].View.Card.Parent == nil || *cards[0].View.Card.Parent != want {
+		t.Fatalf("a tool's read of cards names the parent %+v; want %+v", cards, want)
+	}
 	if d, _, err := s.svc.UnmarkedIssueDetail(t.Context(), conn.ID, "10101", Interactive); err != nil || d.Card.Parent == nil || *d.Card.Parent != want {
 		t.Fatalf("a tool's read names the parent %+v, %v; want %+v", d.Card.Parent, err, want)
 	}

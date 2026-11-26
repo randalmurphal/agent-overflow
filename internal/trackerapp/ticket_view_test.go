@@ -332,3 +332,32 @@ func TestATellDuringAReadWakesNoBuild(t *testing.T) {
 		}
 	}
 }
+
+// An open ticket is told of its parent's name changing, and not of its
+// parent's card or keep: its view names the parent from the name alone.
+// While a build is in flight any name counts, since the view it builds
+// may name another parent.
+func TestAParentsNameTellsTheTicketsOfItsChildren(t *testing.T) {
+	t.Parallel()
+	tp := &ticketPump{key: ticketKey{connection: "c", issue: "10002"}}
+	tp.view.detail = &DetailView{Card: CardView{ID: "10002", Parent: &ParentView{ID: "10001", Key: "WEB-1", Title: "Checkout"}}}
+	for _, c := range []struct {
+		what string
+		ch   Changes
+		want bool
+	}{
+		{"the parent's card", Changes{Cards: ids("10001")}, false},
+		{"the parent's row", Changes{Rows: ids("10001"), Added: ids("10001")}, false},
+		{"the parent kept or let go", Changes{Visibility: ids("10001")}, false},
+		{"another parent's name", Changes{Parents: ids("10009")}, false},
+		{"the parent's name", Changes{Cards: ids("10001"), Parents: ids("10001")}, true},
+	} {
+		if got := affectsLocked(tp, c.ch); got != c.want {
+			t.Errorf("%s: told %v; want %v", c.what, got, c.want)
+		}
+	}
+	tp.building = 1
+	if !affectsLocked(tp, Changes{Parents: ids("10009")}) {
+		t.Error("a name changed while a build is in flight told nothing")
+	}
+}
