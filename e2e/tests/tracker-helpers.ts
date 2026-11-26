@@ -184,8 +184,13 @@ async function inJira(jiraURL: string, method: string, path: string, body: unkno
 
 /** Renames an issue in the fake Jira, as a person editing it there would. */
 export async function renameJiraIssue(board: ConnectedBoard, key: string, summary: string): Promise<void> {
-  const resp = await inJira(board.jiraURL, 'PUT', `issue/${key}`, { fields: { summary } });
-  if (resp.status !== 204) throw new Error(`the fake Jira refused the rename of ${key}: HTTP ${resp.status} ${await resp.text()}`);
+  await editJiraIssue(board, key, { summary });
+}
+
+/** Sets fields of an issue in the fake Jira, as a person editing it there would. */
+export async function editJiraIssue(board: ConnectedBoard, key: string, fields: Record<string, unknown>): Promise<void> {
+  const resp = await inJira(board.jiraURL, 'PUT', `issue/${key}`, { fields });
+  if (resp.status !== 204) throw new Error(`the fake Jira refused the edit of ${key}: HTTP ${resp.status} ${await resp.text()}`);
 }
 
 /**
