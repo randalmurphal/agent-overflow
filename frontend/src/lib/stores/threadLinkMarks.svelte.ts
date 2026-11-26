@@ -41,17 +41,20 @@ export function linkMarkGroup(thread: Thread): string | undefined {
 }
 
 /** Holds `project`'s setup while a thread header shows its thread's link;
- * the returned function releases it. No project holds nothing. */
+ * the returned function releases it. No project holds nothing. An effect
+ * may call it: it reads none of what it changes. */
 export function holdThreadLinkProject(project: string | null | undefined): () => void {
   if (!project) return () => {};
-  headerHolds.set(project, (headerHolds.get(project) ?? 0) + 1);
+  untrack(() => headerHolds.set(project, (headerHolds.get(project) ?? 0) + 1));
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    const n = (headerHolds.get(project) ?? 1) - 1;
-    if (n > 0) headerHolds.set(project, n);
-    else headerHolds.delete(project);
+    untrack(() => {
+      const n = (headerHolds.get(project) ?? 1) - 1;
+      if (n > 0) headerHolds.set(project, n);
+      else headerHolds.delete(project);
+    });
   };
 }
 

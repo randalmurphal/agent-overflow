@@ -41,6 +41,7 @@ import {
   connectFakeLinearBoard,
   openIssuesPane,
   press,
+  trackerRequests,
   type ConnectedBoard,
   type ExtraJira,
   type TrackerConnection,
@@ -278,10 +279,15 @@ export function registerIssuesSetupFlow({ compact }: SetupSurface): void {
     await openIssuesPane(page, compact);
     await expect(backlogRow(backlog, '10103')).toHaveCount(0, { timeout: 15_000 });
     await expect(sprintNumbers(backlog)).toHaveText('2 of 2 tickets done', { timeout: 15_000 });
-    // The marks draw the project's groups: WEB-2's To Do as Done, and
-    // WEB-1's In Progress, left out of counts, as Jira's.
-    await expect(markOf(sprintRow(backlog, '10102'))).toHaveAttribute('data-status-group', 'done');
-    await expect(markOf(sprintRow(backlog, '10101'))).toHaveAttribute('data-status-group', 'in_progress');
+    if (!compact) {
+      // The marks draw the project's groups: WEB-2's To Do as Done, and
+      // WEB-1's In Progress, left out of counts, as Jira's. A Backlog
+      // row's mark is on the desktop alone.
+      const fold = activeSprint(backlog).getByTestId('issues-backlog-fold');
+      if ((await fold.getAttribute('aria-expanded')) !== 'true') await press(fold, compact);
+      await expect(markOf(sprintRow(backlog, '10102'))).toHaveAttribute('data-status-group', 'done');
+      await expect(markOf(sprintRow(backlog, '10101'))).toHaveAttribute('data-status-group', 'in_progress');
+    }
     // The Complete sprint form counts by Jira's groups, not the project's.
     await press(activeSprint(backlog).getByTestId('issues-backlog-sprint-complete'), compact);
     const complete = page.getByTestId('sprint-complete-form');
@@ -350,8 +356,9 @@ export function registerIssuesSetupFlow({ compact }: SetupSurface): void {
     await expect(complete.getByTestId('sprint-complete-into')).toHaveValue('');
     await press(complete.getByTestId('sprint-complete-submit'), compact);
     await expect(complete).toHaveCount(0, { timeout: 15_000 });
-    for (const moved of ['10102', DONE_ID]) await expect(backlogRow(backlog, moved), 'an unfinished ticket moved to the backlog').toBeVisible({ timeout: 15_000 });
-    for (const kept of ['10101', '10107']) await expect(backlogRow(backlog, kept), 'a finished ticket stays out of the backlog').toHaveCount(0);
+    const moved = (await trackerRequests(harness, 'POST rest/agile/1.0/backlog/issue')).map((r) => r.body as { issues: string[] });
+    expect(moved.flatMap((b) => b.issues).sort(), 'Jira moved the two the form counted unfinished').toEqual(['10102', DONE_ID]);
+    await expect(backlogRow(backlog, '10102')).toBeVisible({ timeout: 15_000 });
   });
 
   test('a save that lost to a hand edit of the file says so in words, shows what is stored, and keeps the hand edit', async ({ harness, page }) => {

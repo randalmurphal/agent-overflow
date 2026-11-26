@@ -94,13 +94,22 @@ describe("a linked ticket's mark", () => {
     replaceAllThreads([]);
     keep();
     const shown = makeThread({ id: 't9', projectId: 'p9', ticketLink: link() });
-    const release = holdThreadLinkProject(shown.projectId);
+    // As a header holds it: from an effect, beside a second header.
+    let showing = $state(true);
+    const header = $effect.root(() => {
+      $effect(() => holdThreadLinkProject(showing ? shown.projectId : null));
+    });
+    const second = holdThreadLinkProject(shown.projectId);
     flushSync();
     await vi.waitFor(() => expect(linkMarkGroup(shown)).toBe('done'));
     expect(reads).toHaveBeenCalledTimes(1);
-    release();
+    showing = false;
+    flushSync();
+    expect(linkMarkGroup(shown), 'the second header still holds it').toBe('done');
+    second();
     flushSync();
     expect(linkMarkGroup(shown)).toBe('in_progress');
+    header();
   });
 
   it('reads each held project once when its computer connects again: three projects, three reads', async () => {
