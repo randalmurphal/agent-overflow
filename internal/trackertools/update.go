@@ -114,11 +114,17 @@ func (s *Server) update(ctx context.Context, caller Caller, raw json.RawMessage)
 	if args.Comment != nil {
 		comment = *args.Comment
 	}
-	if len(args.Keys) > 1 && approvalBytes(set, comment) > maxApprovalBytes {
-		return nil, invalidf("set and comment together hold more than %d KiB, more than an approval shows the person; change fewer or shorter values in each call.", maxApprovalBytes>>10)
-	}
 	if err := s.h.Writable(caller.Thread); err != nil {
 		return nil, err
+	}
+	asks := false
+	if len(args.Keys) > 1 {
+		if asks, err = s.h.AsksBeforeSeveral(caller.Thread); err != nil {
+			return nil, err
+		}
+	}
+	if asks && approvalBytes(set, comment) > maxApprovalBytes {
+		return nil, invalidf("set and comment together hold more than %d KiB, more than an approval shows the person; change fewer or shorter values in each call.", maxApprovalBytes>>10)
 	}
 	keys := args.Keys
 	if len(keys) == 0 {
@@ -159,7 +165,7 @@ func (s *Server) update(ctx context.Context, caller Caller, raw json.RawMessage)
 		return out, nil
 	}
 	id := s.newID()
-	approved := len(plans) > 1
+	approved := asks
 	if approved {
 		if err := s.h.Approve(ctx, caller.Thread, approvalOf(id, plans, set, comment)); err != nil {
 			return nil, err

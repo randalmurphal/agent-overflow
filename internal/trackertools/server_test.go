@@ -131,6 +131,9 @@ func (f *fakeTracker) AddComment(ctx context.Context, connection string, in trac
 // fakeHost answers the writing tools' questions about the thread.
 type fakeHost struct {
 	readOnly bool
+	// noAsk is a project whose Agents settings let a change to several
+	// tickets go without the person's approval.
+	noAsk bool
 	// approve answers an approval; nil approves.
 	approve   func(Approval) error
 	approvals []Approval
@@ -149,6 +152,8 @@ func (h *fakeHost) Writable(string) error {
 	}
 	return nil
 }
+
+func (h *fakeHost) AsksBeforeSeveral(string) (bool, error) { return !h.noAsk, nil }
 
 func (h *fakeHost) Approve(_ context.Context, _ string, a Approval) error {
 	h.approvals = append(h.approvals, a)

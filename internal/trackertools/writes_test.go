@@ -166,6 +166,34 @@ func TestUpdateOfSeveralTicketsWaitsForApproval(t *testing.T) {
 	}
 }
 
+// A call naming several tickets from a thread whose project does not ask
+// is sent with no approval and no read after one, and takes no bound of
+// what an approval would show.
+func TestUpdateOfSeveralTicketsGoesWhenTheProjectDoesNotAsk(t *testing.T) {
+	t.Parallel()
+	w := newWriteFixture(t)
+	w.h.noAsk = true
+	long := strings.Repeat("a", maxApprovalBytes)
+	answer, err := w.update(t, map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "set": map[string]any{"status": "In Review"}, "comment": long})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"tickets":[{"key":"WEB-12","applied":["status","comment"]},{"key":"WEB-18","applied":["status","comment"]}]}`; answer != want {
+		t.Fatalf("answer = %s\nwant %s", answer, want)
+	}
+	if len(w.h.approvals) != 0 {
+		t.Fatalf("a project that does not ask asked: %+v", w.h.approvals)
+	}
+	// The plan's reads and the comment's lookup before it is sent: no
+	// read of the cards after an approval.
+	if want := []string{"lookup conn-jira WEB-12,WEB-18", "detail conn-jira 10012", "detail conn-jira 10018", "lookup conn-jira WEB-12,WEB-18"}; !slices.Equal(w.f.asked, want) {
+		t.Fatalf("asked %q; want %q", w.f.asked, want)
+	}
+	if len(w.f.writes) != 4 || len(w.h.rows) != 1 || len(w.h.rows[0].Tickets) != 2 {
+		t.Fatalf("writes %q, rows %+v", w.f.writes, w.h.rows)
+	}
+}
+
 // A status the ticket cannot move to, or a sprint that is not open, is
 // that ticket's refusal, and nothing is sent for any ticket.
 func TestUpdateRefusedByTheTicketSendsNothing(t *testing.T) {
