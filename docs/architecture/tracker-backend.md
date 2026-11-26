@@ -2270,10 +2270,10 @@ every step is in `not_sent`, and the call's other tickets go on. The
 update time covers every value the plan judged on Jira, where a field
 change, a comment, a link, an attachment and a worklog each move it, so a
 teammate's comment during the wait refuses the ticket too. On Linear a
-title, assignee, priority and status change move it and a comment does
-not; a cycle change is not measured, which the sprint comparison covers,
-and an estimate change is shown only weakly
-([measured](../references/tracker-api-measurements.md)). A lookup that
+title, assignee, priority and status change move it, an estimate change
+does on a team with estimation off (one with it on is not measured), and
+a comment does not; a cycle change is not measured, which the sprint
+comparison covers ([measured](../references/tracker-api-measurements.md)). A lookup that
 fails sends nothing and is the call's error. A comment alone judges
 nothing but that the ticket exists and is not read again, and a call
 naming one ticket does not wait. After the read, in the seconds the

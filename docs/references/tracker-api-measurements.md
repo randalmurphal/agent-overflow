@@ -527,11 +527,15 @@ Source for schema facts: the
   `assigneeId` and a `priority` change each moved it. A `stateId` change
   moved it both times it was made (backlog to started, then started to
   completed), with the state read back as the target each time. Two reads
-  with no write between returned the same `updatedAt`. `estimate: 2`
-  answered success and moved it, on a team whose `issueEstimationType` is
-  `notUsed`, with the stored estimate not read back: that does not show
-  an estimate change on a team that uses estimates. Not measured: a
-  `cycleId` change (the workspace had no cycle).
+  with no write between returned the same `updatedAt`. Not measured: a
+  `cycleId` change (the workspace had no cycle); the tracker tools'
+  check after an approval compares a ticket's cycle by value, so it does
+  not depend on one.
+- Measured the same day on one throwaway issue, deleted after, on a team
+  whose `issueEstimationType` is `notUsed`. `issueUpdate` with
+  `estimate: 3` (from none), then `5`, then `null` each answered success,
+  the estimate read back as the value written, and `updatedAt` moved each
+  time. Not measured: a team with estimation on.
 - Measured the same day with ten throwaway issues, three of them
   commented. The ticket view's selection (the issue with its children,
   comments, attachments, relations both ways, history and its team's
