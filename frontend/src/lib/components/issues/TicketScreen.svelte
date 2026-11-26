@@ -468,7 +468,7 @@
     if (!p || !t) return;
     const what = `${name} for ${getProjectLabelText(p) || 'this project'}`;
     try {
-      const outcome = await editTrackerSetup(p, (setup) => withTicketPin(setup, t.kind, t.site, kind, id, pin));
+      const outcome = await editTrackerSetup(p, (setup) => withTicketPin(setup, t.kind, t.site, kind, id, pin, hasAttachments));
       if (outcome.kind === 'refused') addToast('error', `${what} was not ${pin ? 'pinned' : 'unpinned'}. ${asSentence(outcome.sentence)}`);
     } catch (err) {
       addErrorToast(`Could not ${pin ? 'pin' : 'unpin'} ${what}: ${userFacingError(err)}`, err);

@@ -89,18 +89,26 @@ describe('the rail', () => {
     expect(ticketSections(fields, ['attachments'], false), 'a pinned section the ticket has no place for is not missing').toEqual({ shown: [], folded: ['description', 'b', 'links'], missing: [] });
   });
 
+  it('starts an unset list from the sections this ticket has a place for, so a Linear ticket stores no attachments pin', () => {
+    const empty: Setup = { status_groups: [], ticket_pins: [], start_work: [] };
+    const once = withTicketPin(empty, 'linear', 'example', 'sections', 'description', false, false);
+    const twice = withTicketPin(once, 'linear', 'example', 'sections', 'links', false, false);
+    expect(twice.ticket_pins).toEqual([{ tracker: 'linear', site: 'example', sections: [] }]);
+    expect(ticketSections(fields, ticketPinsOf(twice, 'linear', 'example').sections, false).shown).toEqual([]);
+  });
+
   it('pins last, unpins, starts an unset list from what the ticket shows, and keeps the rest of the setup', () => {
     const site = 'https://example.atlassian.net';
     const base: Setup = { status_groups: [{ tracker: 'jira', site, statuses: { s1: 'done' } }], ticket_pins: [{ tracker: 'linear', site: 'example', sections: [] }], start_work: [] };
-    const field = withTicketPin(base, 'jira', site, 'fields', 'c', true);
+    const field = withTicketPin(base, 'jira', site, 'fields', 'c', true, true);
     expect(field.ticket_pins).toEqual([{ tracker: 'linear', site: 'example', sections: [] }, { tracker: 'jira', site, fields: ['c'] }]);
     expect(field.status_groups).toBe(base.status_groups);
-    const section = withTicketPin(field, 'jira', site, 'sections', 'b', true);
+    const section = withTicketPin(field, 'jira', site, 'sections', 'b', true, true);
     expect(ticketPinsOf(section, 'jira', site)).toEqual({ fields: ['c'], sections: ['description', 'links', 'attachments', 'b'] });
-    const unpinned = withTicketPin(withTicketPin(section, 'jira', site, 'sections', 'description', false), 'jira', site, 'fields', 'c', false);
+    const unpinned = withTicketPin(withTicketPin(section, 'jira', site, 'sections', 'description', false, true), 'jira', site, 'fields', 'c', false, true);
     expect(ticketPinsOf(unpinned, 'jira', site)).toEqual({ fields: [], sections: ['links', 'attachments', 'b'] });
-    expect(ticketPinsOf(withTicketPin(base, 'jira', site, 'fields', 'c', true), 'jira', site).sections, 'a list not touched stays unset').toBeNull();
-    expect(withTicketPin(field, 'jira', site, 'fields', 'c', true).ticket_pins?.[1].fields, 'pinned once').toEqual(['c']);
+    expect(ticketPinsOf(withTicketPin(base, 'jira', site, 'fields', 'c', true, true), 'jira', site).sections, 'a list not touched stays unset').toBeNull();
+    expect(withTicketPin(field, 'jira', site, 'fields', 'c', true, true).ticket_pins?.[1].fields, 'pinned once').toEqual(['c']);
   });
 
   it('shows the points of the board the ticket was opened from, else of the first board', () => {

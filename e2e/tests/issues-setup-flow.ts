@@ -354,9 +354,9 @@ export function registerIssuesSetupFlow({ compact }: SetupSurface): void {
     await expect.poll(() => railFields(reloaded, compact)).toContain(EFFORT);
   });
 
-  test('a Linear ticket\'s sections take a pin and its fields none', async ({ harness, page }) => {
+  test('a Linear ticket\'s sections take a pin and its fields none, and unpinning them all stores none', async ({ harness, page }) => {
     const issue = '00000000-0000-4000-8000-000000000101';
-    await connectFakeLinearBoard(harness, 'setup-linear', [
+    const linear = await connectFakeLinearBoard(harness, 'setup-linear', [
       { id: issue, team: LINEAR_TEAM, number: 1, title: 'Linear ticket', description: 'Some text', state: '00000000-0000-4000-8000-000000000021', dueDate: '2026-12-01' },
     ]);
     await harness.open(page);
@@ -368,6 +368,17 @@ export function registerIssuesSetupFlow({ compact }: SetupSurface): void {
     if (await more.isVisible()) await press(more, compact);
     await expect(rail.getByTestId('ticket-field').filter({ hasText: 'Due date' })).toBeVisible();
     await expect(ticket.getByTestId('ticket-field-pin')).toHaveCount(0);
+    await closeRail(ticket, compact);
+
+    // Unpinned, Description and Linked tickets fold, and the file holds
+    // no section this ticket has no place for.
+    const file = await setupFile(harness, linear.projectId);
+    await press(sectionPin(ticket, 'description'), compact);
+    await expect(ticket.getByTestId('ticket-more-sections')).toHaveText('1 more section: Description');
+    await press(ticket.getByTestId('ticket-links-pin'), compact);
+    await expect(ticket.getByTestId('ticket-more-sections')).toHaveText('2 more sections: Description, Linked tickets');
+    expect(await shownSections(ticket)).toEqual([]);
+    expect(await storedSetup(file)).toEqual({ ticket_pins: { version: 1, sites: [{ tracker: 'linear', site: 'example', sections: [] }] } });
   });
 
   if (!compact) {

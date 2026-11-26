@@ -199,13 +199,17 @@ export function ticketPinsOf(setup: Setup | null | undefined, tracker: string, s
   return { fields: entry?.fields ?? null, sections: entry?.sections ?? null };
 }
 
-/** The sections a ticket shows open while its project pins none: today's
- * ticket, every other long text field in the line that names them. */
-export const DEFAULT_PINNED_SECTIONS: readonly string[] = ['description', 'links', 'attachments'];
+/** The sections a ticket may have a place for besides its long text
+ * fields, in the ticket's order. */
+const BUILT_IN_SECTIONS: readonly string[] = ['description', 'links', 'attachments'];
 
-/** The sections every ticket has a place for, besides its long text
- * fields. */
-const BUILT_IN_SECTIONS: ReadonlySet<string> = new Set(DEFAULT_PINNED_SECTIONS);
+/** The sections a ticket shows open while its project pins none: those
+ * of BUILT_IN_SECTIONS it has a place for (`attachments`: a tracker that
+ * stores files, or a ticket that has some), every long text field in the
+ * line that names them. The layout and a first pin read this one list. */
+function defaultPinnedSections(attachments: boolean): readonly string[] {
+  return attachments ? BUILT_IN_SECTIONS : BUILT_IN_SECTIONS.filter((id) => id !== 'attachments');
+}
 
 /** The rail's fields past the card's: those the project pins, in pin
  * order, and the rest behind its control (every field that is not a
@@ -234,7 +238,7 @@ export function railFields(fields: readonly FieldView[], pinned: readonly string
  * (description, its long text fields in the tracker's order, linked
  * tickets, attachments where the ticket has them: `attachments`);
  * `missing` the pinned long text fields this ticket has none of. Unset
- * pins pin DEFAULT_PINNED_SECTIONS. */
+ * pins pin defaultPinnedSections. */
 export function ticketSections(fields: readonly FieldView[], pinned: readonly string[] | null, attachments: boolean): {
   readonly shown: readonly string[];
   readonly folded: readonly string[];
@@ -242,23 +246,24 @@ export function ticketSections(fields: readonly FieldView[], pinned: readonly st
 } {
   const order = ['description', ...fields.filter(isSection).map((f) => f.id), 'links', ...(attachments ? ['attachments'] : [])];
   const has = new Set(order);
-  const pins = pinned ?? DEFAULT_PINNED_SECTIONS;
+  const pins = pinned ?? defaultPinnedSections(attachments);
   const pinnedSet = new Set(pins);
   return {
     shown: pins.filter((id) => has.has(id)),
     folded: order.filter((id) => !pinnedSet.has(id)),
-    missing: pins.filter((id) => !has.has(id) && !BUILT_IN_SECTIONS.has(id)),
+    missing: pins.filter((id) => !has.has(id) && !BUILT_IN_SECTIONS.includes(id)),
   };
 }
 
 /** `setup` with `id` pinned or unpinned in the `kind` list of `tracker`
  * `site`: a pin goes last, and a list not set starts from what the ticket
- * shows unpinned (no fields; DEFAULT_PINNED_SECTIONS). */
-export function withTicketPin(setup: Setup, tracker: string, site: string, kind: 'fields' | 'sections', id: string, pin: boolean): Setup {
+ * shows unpinned (no fields; defaultPinnedSections, by whether it has a
+ * place for `attachments`). */
+export function withTicketPin(setup: Setup, tracker: string, site: string, kind: 'fields' | 'sections', id: string, pin: boolean, attachments: boolean): Setup {
   const entries = setup.ticket_pins ?? [];
   const at = entries.findIndex((p) => p.tracker === tracker && p.site === site);
   const entry: SitePins = at >= 0 ? entries[at] : { tracker, site };
-  const list = entry[kind] ?? (kind === 'sections' ? DEFAULT_PINNED_SECTIONS : []);
+  const list = entry[kind] ?? (kind === 'sections' ? defaultPinnedSections(attachments) : []);
   const next = pin ? (list.includes(id) ? [...list] : [...list, id]) : list.filter((p) => p !== id);
   const others = entries.filter((_, i) => i !== at);
   return { ...setup, ticket_pins: [...others, { ...entry, [kind]: next }] };
