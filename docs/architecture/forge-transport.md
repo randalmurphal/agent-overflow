@@ -454,16 +454,19 @@ unchanged one reads on the right from the removed line's old number, with
 `startSide` left.
 
 Git status looks up a branch's open PR (`lookupOpenPR`,
-`internal/git/status_pr_cache.go`). The forges' head-branch filters also
+`internal/git/status_pr_cache.go`). `ListOpenPRs` and a ticket's Work's
+`ListPRsByHead` are one read in the states asked (GitHub `PRsByHead`'s
+`$states`, GitLab's `state`): open for the first, every state for the
+second. The forges' head-branch filters also
 match a fork's PR from a branch of the same name, so `ListOpenPRs` keeps
 only PRs whose head is the origin repository: GitHub
-`OpenPRsByHead` nodes with `isCrossRepository` false (paged, at most
+`PRsByHead` nodes with `isCrossRepository` false (paged, at most
 `githubReadMaxPages` pages of 100), GitLab merge requests whose
 `source_project_id` is their `project_id` (the full view, since the simple
 one lacks it; paged by 100 until one is found, at most
 `gitlabOpenMRsMaxPages` pages). An origin that is a fork opens its PRs in
 its parent, so the lookup also reads the parent's: GitHub's
-`OpenPRsByHead` answer names the origin's `id` and `parent`, and the
+`PRsByHead` answer names the origin's `id` and `parent`, and the
 parent's nodes count when their `headRepository.id` is the origin's;
 GitLab reads the parent only when the origin has no merge request of its
 own, from `projects/P`'s `id` and `forked_from_project` (the merge
@@ -795,6 +798,70 @@ most 100 artifacts per save, each at most 1 GiB (a GitHub artifact the
 list sizes past it is refused before its request) within a 10-minute
 timeout, and the answer names the directory and files. Downloads are not
 pipeline actions and do not take the pending slot.
+
+### Ticket Work search
+
+A ticket's Work (`SearchTicketWork`,
+[tracker backend](tracker-backend.md#ticket-keys-work-ask-and-start-work))
+asks the forge for the pull requests of the ticket's key that the stored
+list and its linked threads do not hold. It runs when Work shows and on
+the ticket's Refresh (and after a Start work run, when Work reads again),
+never on a timer, and is interactive. It reads in two rounds, each over
+at most `prListReadConcurrency` (4) repositories or lookups at a time
+(GitLab's two searches of a repository run at once, so up to 8 requests,
+the host's limit), every request within the method's budget:
+
+- `Core.SearchPRsByKey(ctx, repo, key)` once per distinct repository the
+  Work's projects clone (the origin, as the project list reads it; a
+  fork's parent is not searched by key). GitHub: one GraphQL `PullsByKey`
+  a page, with two aliased `search(type: ISSUE, first: 100)` fields,
+  `repo:O/R is:pr in:title "KEY"` and `repo:O/R is:pr head:KEY`, and
+  `repository.refs(refPrefix: "refs/heads/", query: KEY, first: 100)`.
+  A quoted title term matches whole tokens in order, `head:` matches a
+  branch name by its prefix, and the refs `query` matches a substring of
+  the names of the branches that exist, each ignoring case; the two
+  searches cannot be joined with `OR` in one query (all measured in
+  [forge API measurements](../references/forge-api-measurements.md#ticket-key-search)).
+  Each part pages on its own cursor and is left out of the next request
+  (`@include`) once it has no page left. GitLab: two requests at once,
+  `GET projects/P/merge_requests?state=all&search=KEY&in=title&per_page=100`
+  and `GET projects/P/repository/branches?search=KEY&per_page=100` (a
+  substring of the name, case ignored, measured); GitLab's merge request
+  list has no search of source branch names. Each search reads up to
+  `keySearchMaxPages` (5) pages, since a loose match (`WEB-10` for `WEB-1`)
+  can fill a page ahead of the exact one; one with more is
+  `PRKeySearch.Full`. A search whose request fails answers the pages it
+  read beside the error.
+- `Core.ListPRsByHead(ctx, cwd, branch)` in every state, once for each
+  branch of the ticket in a repository whose search answered: the
+  repository's branches the search found and this computer's branches in
+  the projects that clone it, each kept only when its name holds the key
+  under the key rule. The lookup owns which repositories hold a branch's
+  pull requests (a fork's parent too), so no search answer stands in for
+  it, and what Work already lists proves nothing, since a branch can have
+  several pull requests. GitHub `PRsByHead`, GitLab `merge_requests?state=all&source_branch=B`,
+  each with the fork rules of `ListOpenPRs` above, except that GitLab
+  reads a fork's parent in every state even when the fork has merge
+  requests of its own.
+
+The forge's matches are looser than the key rule (a quoted GitHub term
+also matches a longer dashed ID it begins, as `WEB-1` would `WEB-1-2`;
+GitLab's search is a substring, so `WEB-1`
+matches `WEB-12`), so Work keeps a row or a branch only when its title or
+name names the key. A pull request whose key is in its branch name only,
+whose branch the forge has deleted, is found only through a branch this
+computer still has, or on GitHub when the branch name begins with the
+key.
+
+| Work read | GitHub | GitLab |
+|---|---|---|
+| Per distinct repository | 1 `PullsByKey` a page, up to 5 | 1 merge request list and 1 branch list, each a page, up to 5 each |
+| Per branch of the ticket | 1 `PRsByHead`, + 1 for a fork's parent | 1 merge request list, + 1 `projects/P` (cached) and 1 list of the parent for a fork |
+
+A failed repository is one `TicketForgeProblem`, classified and worded
+by `newRepoForgeFailure` as the Pull requests page's project failures
+are, beside the rows its search read; it gets no lookups. A rate limit is
+the transport's gate, as for any interactive request.
 
 ## Managing a PR
 

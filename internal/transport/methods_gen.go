@@ -512,6 +512,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SearchPRCandidates", ID: 173160885, Scope: "git:operate", Route: "selected"},                                                     // main.App.SearchPRCandidates
 	{Name: "SearchThreadItems", ID: 1414650511, Scope: "threads:read", Route: "thread", CallerBound: true},                                   // main.App.SearchThreadItems
 	{Name: "SearchThreadMessages", ID: 3644945077, Scope: "threads:read", Route: "all"},                                                      // main.App.SearchThreadMessages
+	{Name: "SearchTicketWork", ID: 859975236, Scope: "git:operate", Route: "home", Budget: 135 * time.Second},                                // main.App.SearchTicketWork
 	{Name: "SearchTimelineItems", ID: 1822896830, Scope: "threads:read", Route: "thread", CallerBound: true},                                 // main.App.SearchTimelineItems
 	{Name: "SearchWorkspaceFiles", ID: 3852272821, Scope: "files:read", Route: "workspace"},                                                  // main.App.SearchWorkspaceFiles
 	{Name: "SendDiffReviewComments", ID: 2317109106, Scope: "threads:operate", Route: "thread"},                                              // main.App.SendDiffReviewComments

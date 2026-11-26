@@ -460,6 +460,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	173160885: 'selected', // SearchPRCandidates
 	1414650511: 'thread', // SearchThreadItems
 	3644945077: 'all', // SearchThreadMessages
+	859975236: 'home', // SearchTicketWork
 	1822896830: 'thread', // SearchTimelineItems
 	3852272821: 'workspace', // SearchWorkspaceFiles
 	2317109106: 'thread', // SendDiffReviewComments
@@ -693,6 +694,7 @@ export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
 	2960563266: 660000, // SaveForgeAttachment
 	1537914193: 900000, // SavePRCIJobLog
 	1443136041: 1800000, // SaveTrackerAttachment
+	859975236: 135000, // SearchTicketWork
 	2301582015: 180000, // SetTrackerEstimate
 	1201673152: 60000, // SpendProviderAccountReset
 	2291054583: 720000, // StartTicketThread

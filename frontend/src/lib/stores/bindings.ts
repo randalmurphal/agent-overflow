@@ -1394,9 +1394,10 @@ import {
   TrackerConnections as TrackerConnectionsRaw,
   ProjectTrackerBoards as ProjectTrackerBoardsRaw,
   TrackerDashboards as TrackerDashboardsRaw,
+  SearchTicketWork as SearchTicketWorkRaw,
 } from '../../../bindings/agent-overflow/app.js';
 import type { DashboardView as TrackerDashboardRow } from '../../../bindings/agent-overflow/internal/trackerdash/models.js';
-import type { TrackerConnection as TrackerConnectionRow } from '../../../bindings/agent-overflow/internal/app/models.js';
+import type { TrackerConnection as TrackerConnectionRow, TicketWork as TicketWorkAnswer } from '../../../bindings/agent-overflow/internal/app/models.js';
 import type { BoardChoice as TrackerBoardChoiceRow } from '../../../bindings/agent-overflow/internal/trackerapp/models.js';
 
 export { ArchiveThreadResult, DeleteDependents, DeleteThreadResult };
@@ -1612,6 +1613,13 @@ export function TrackerConnections(): Promise<TrackerConnectionRow[] | null> {
  * release has no dashboards. */
 export function TrackerDashboards(subscriptionId: string): Promise<TrackerDashboardRow[] | null> {
   return orOlder(() => TrackerDashboardsRaw(subscriptionId), () => null);
+}
+
+/** A ticket's Work with the forge searched by its key
+ * (stores/ticketWork.svelte.ts); null on a computer without the search,
+ * whose Work read answers alone. */
+export function SearchTicketWork(connectionId: string, issueId: string): Promise<TicketWorkAnswer | null> {
+  return orOlder(() => SearchTicketWorkRaw(connectionId, issueId), () => null);
 }
 
 /** The boards a project lists; none on a computer without trackers. */

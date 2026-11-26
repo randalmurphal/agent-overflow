@@ -60,8 +60,9 @@ type Repo struct {
 	// lists answer both, newest (highest id) first.
 	Pipelines []Pipeline `json:"pipelines,omitempty"`
 	// DeletedBranches are head branches deleted from the repository
-	// (GitHub's branch delete after a merge); a branch exists while a
-	// pull names it as its head or base and it is not listed here.
+	// (GitHub's branch delete after a merge); a branch exists while the
+	// head of one of the repository's own pulls or the base of any pull
+	// names it and it is not listed here (Repo.branchNames).
 	DeletedBranches []string `json:"deletedBranches,omitempty"`
 	// EventsHidden makes the viewer's events on this GitLab project ones
 	// GitLab no longer shows the viewer: the events feed selects them

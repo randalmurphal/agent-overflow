@@ -162,6 +162,47 @@ whose last page names no next is complete to the after date. Stopping at
 the first short page read one comments page, reaching back 12 days
 (2026-10-09). The feed's `after` semantics were not probed.
 
+## Ticket key search
+
+Measured on github.com on 2026-11-26, read-only, against this project's
+own public repository through GraphQL `search(type: ISSUE)`, a handful of
+queries: enough to design on, not a proof of every tokenizer case.
+
+- `head:` is a prefix match on the branch name: for a pull request from
+  branch `issues-find-filters`, `head:issues-find-filters`,
+  `head:issues-find` and `head:issues-fin` each matched it, and
+  `head:find`, `head:filters` and `head:find-filters` matched nothing.
+  A second probe the same day: `head:ISSUES-FIND` matched the pull request
+  from `issues-find-filters`, so the prefix ignores case. It also matches
+  a closed pull request whose branch was deleted on the forge.
+- A quoted title term matches whole tokens in order, case ignored: for
+  titles holding an ID of the shape `XX-YYYY-NNNN`, the quoted full ID
+  matched its one pull request, the quoted `XX-YYYY` matched both pull
+  requests whose IDs begin that way, and the quoted `XX-YYYY-NN` (a token
+  cut short) matched none. The unquoted full ID matched the same one.
+- `(in:title "..." OR head:...)` in one query matched nothing, though
+  each half alone matched one.
+- Two aliased `search` fields in one request both answered, and
+  `rateLimit { cost }` for that request was 1.
+- `repository.refs(refPrefix: "refs/heads/", query: ...)` matches a
+  substring of a branch name, ignoring case: `query: "integration"` and
+  `query: "INTEGRATION"` each returned `issues-integration`. It lists
+  only branches that exist.
+
+GitLab's merge request list documentation (read the same day) says
+`search` matches "against their `title` and `description`", narrowed by
+`in` (`title`, `description`, or both joined with a comma), that
+`source_branch` "Returns merge requests with the given source branch."
+(it does not say exact), and that `state` defaults to `all`. Its Branches
+API documentation says `search` returns the branches "containing the
+search string", with `^term` and `term$` anchors. Probed on 2026-11-26,
+read-only and unauthenticated, on a public project on gitlab.com: the
+Branches API `search=MAIN` and `search=main` returned the same three
+branches (`main` and two whose names hold `main` in the middle), and
+likewise `STABLE` and `stable`, so it matches a substring and ignores
+case. A self-managed GitLab of another version was not measured, nor
+which rate-limit pool these searches use.
+
 ## List page sizes
 
 Read-only GETs on 2026-11-11 (`gh api` on randalmurphal/agent-overflow,
