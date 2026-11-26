@@ -380,10 +380,16 @@ applies, the board shows the ticket in that sprint however it got there,
 or the person dismisses it. On Linear a new ticket lands after the section's last row. New
 sprint, a sprint's Change (which cannot clear a sprint's dates, and says
 so), Start sprint (today for as long as it was planned, else two weeks)
-and Complete sprint, which always asks where the tickets the tracker
-counts unfinished go: an open sprint of the board, the first future one
-at first, or the backlog; a sprint that left the list while the form was
-open is not sent. A ticket opens beside the list, and in its own
+and Complete sprint, which says how many of the sprint's tickets are
+done and how many are not, as Jira's completion counts them (a ticket is
+finished when its status is in the board's last column that has
+statuses), and always asks where the tickets the tracker counts
+unfinished go: an open sprint of the board, the first future one at
+first, or the backlog; a sprint that left the list while the form was
+open is not sent. The form counts by the board's columns as this computer
+last read them for the board, and the completion by the board's
+configuration as this computer last read it for its writes, which can be
+another read. A ticket opens beside the list, and in its own
 pane with Ctrl or Cmd or the menu; the row's menu has Ask and Start
 work…. Not built: the pace counted with credit (it counts the tickets
 whose status counted as done when their sprint was completed, by their
@@ -652,8 +658,11 @@ sidebar and the thread header, on desktop and on a phone.
   that no board shows now is listed apart with Put back. A board this
   computer has not read is named, with Check again; once it has been
   read, Check again or the page shown again lists its statuses. The
-  Board, the Backlog and their counts follow a save without a reload;
-  Complete sprint counts by the tracker's groups, not the project's. A
+  Board, the Backlog, their counts and every status mark (a card, a
+  Backlog row, a column, a ticket and its linked tickets, a linked
+  thread's row and header, which follow the thread's project) follow a
+  save without a reload; a status left out of counts keeps the tracker's
+  mark, and a ticket shown with no project draws the tracker's groups. A
   save that lost to another, from another window or a hand edit of the
   file, is said, and the page shows what is stored; a save whose outcome
   is unknown says so in the computer's words and reads the setup again.

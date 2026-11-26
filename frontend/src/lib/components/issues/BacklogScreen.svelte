@@ -42,6 +42,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import type { MoveView, RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import { cardURL, filtering, sectionKey, type CardFilter, type HeldBoard } from '../../stores/trackerBoardModel';
+  import { markGroup } from '../../stores/statusMarkGroup';
   import {
     backlogItems,
     backlogSections,
@@ -142,7 +143,7 @@
     if (c?.spot && c.spot.list !== c.from) out.push({ row: c.row, from: c.from, to: c.spot.list });
     return out;
   });
-  const numbers = $derived(sections.map((sec) => sectionNumbers(held, sec, moved, 'project')));
+  const numbers = $derived(sections.map((sec) => sectionNumbers(held, sec, moved)));
 
   // The gap a carry opens and the place it closes, as item indices; -1
   // for none. Outside every list neither shows.
@@ -386,6 +387,7 @@
             <div class={carrying?.spot && carrying.row.card.id === item.row.card.id ? 'opacity-0' : ''}>
               <BacklogRow
                 row={item.row}
+                mark={markGroup(held.regrouped, item.row.card.status)}
                 {boardRef}
                 {hidden}
                 {unit}

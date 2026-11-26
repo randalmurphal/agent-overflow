@@ -445,6 +445,7 @@
           wide
           {openIssue}
           {boardRef}
+          regroups={held.regrouped}
           {typed}
           {compact}
           carriedIssue={null}
@@ -478,6 +479,7 @@
           {shown}
           {openIssue}
           {boardRef}
+          regroups={held.regrouped}
           {typed}
           {compact}
           {carriedIssue}

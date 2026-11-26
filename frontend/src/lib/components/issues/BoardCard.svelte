@@ -34,6 +34,8 @@
 
   interface Props {
     row: RowView;
+    /** The group its status mark draws (`markGroup`). */
+    mark: string | undefined;
     /** The board the card is on. */
     boardRef: TrackerBoardRef;
     hidden: ReadonlySet<CardField>;
@@ -58,7 +60,7 @@
     onMove: (row: RowView, anchor: HTMLElement) => void;
   }
 
-  let { row, boardRef, hidden, unit, typed, compact, now, open, carried, editing, onOpen, onMenu, onEdit, onMove }: Props = $props();
+  let { row, mark, boardRef, hidden, unit, typed, compact, now, open, carried, editing, onOpen, onMenu, onEdit, onMove }: Props = $props();
 
   const card = $derived(row.card);
   // The ticket's writes, one read for every target the card draws; under
@@ -139,7 +141,7 @@
         data-card-mark
         data-testid="issues-card-status"
         onclick={(event) => onMove(row, event.currentTarget)}
-      ><StatusMark group={card.status.group} /></button>
+      ><StatusMark group={mark} /></button>
     {/if}
     <CardMarks {row} fields={['type', 'priority']} {hidden} {unit} {typed} editable={marks} {writes} bind:els={markEls} onEdit={(field) => onEdit(row, field)} />
     {#if !hidden.has('key')}

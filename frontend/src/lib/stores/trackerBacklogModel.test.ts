@@ -1,7 +1,7 @@
 // What the Backlog screen draws of a held board: its sections, each
 // header's numbers with the moved rows counted where they go, the one
 // list its virtualizer shows and where a carried row lands in it, and
-// the sprint form's helpers. The header's words are boardFormat's
+// the sprint forms' helpers and what Complete sprint counts. The header's words are boardFormat's
 // sectionLine, tested beside it.
 
 import { describe, expect, it } from 'vitest';
@@ -17,7 +17,8 @@ import {
   sectionNumbers,
   shownSections,
   spotAt,
-  unfinishedOf,
+  completionNumbers,
+  finishedStatuses,
   waitingMoves,
   type BacklogSection,
 } from './trackerBacklogModel';
@@ -32,10 +33,11 @@ function row(id: string, status: string, estimate: number | null, extra: Partial
 const U1 = { id: 'u1', name: 'User 1' };
 const U2 = { id: 'u2', name: 'User 2' };
 
-/** Sprint 8 active, Sprint 9 future, the backlog; s3 is a status the
- * project leaves out of counts, and `regrouped` the statuses it puts in
- * other groups. */
-function board(rows: { '8': RowView[]; '9': RowView[]; backlog: RowView[] }, extra: { unit?: string; pace?: object | null; more?: boolean; regrouped?: Record<string, string> } = {}): HeldBoard {
+/** Sprint 8 active, Sprint 9 future, the backlog, on columns To Do (s1)
+ * and Done (s2) unless `columns` names each column's statuses; s3 is a
+ * status the project leaves out of counts, and `regrouped` the statuses
+ * it puts in other groups. */
+function board(rows: { '8': RowView[]; '9': RowView[]; backlog: RowView[] }, extra: { unit?: string; pace?: object | null; more?: boolean; regrouped?: Record<string, string>; columns?: string[][] } = {}): HeldBoard {
   const total = (held: RowView[]) => ({
     rows: held.filter((r) => r.card.status.id !== 's3').length,
     estimate: held.filter((r) => r.card.status.id !== 's3').reduce((n, r) => n + (r.estimate ?? 0), 0),
@@ -43,10 +45,7 @@ function board(rows: { '8': RowView[]; '9': RowView[]; backlog: RowView[] }, ext
   });
   const view = {
     id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: true, estimate: { unit: extra.unit ?? 'points' },
-    columns: [
-      { name: 'To Do', statuses: [{ id: 's1', group: 'todo' }], total: { rows: 0, estimate: 0 } },
-      { name: 'Done', statuses: [{ id: 's2', group: 'done' }], total: { rows: 0, estimate: 0 } },
-    ],
+    columns: (extra.columns ?? [['s1'], ['s2']]).map((statuses, i) => ({ name: `Column ${i}`, statuses: statuses.map((id) => ({ id, group: GROUPS[id] })), total: { rows: 0, estimate: 0 } })),
     sprints: [
       { id: '8', name: 'Sprint 8', state: 'active', total: total(rows['8']) },
       { id: '9', name: 'Sprint 9', state: 'future', total: total(rows['9']) },
@@ -92,32 +91,27 @@ describe('a header\'s numbers', () => {
   it('count an active sprint\'s done rows, leaving out the statuses the board does', () => {
     const held = board(ROWS);
     const [active] = backlogSections(held);
-    const n = sectionNumbers(held, active, [], 'project');
+    const n = sectionNumbers(held, active, []);
     expect(n.total).toEqual({ rows: 2, estimate: 5, unestimated: 0 });
-    expect(n.done).toEqual({ rows: 1, estimate: 3 });
+    expect(n.done).toEqual({ rows: 1, estimate: 3, unestimated: 0 });
     expect(n.before).toBeNull();
     expect(n.load).toBeNull();
     expect(n.pace).toBeNull();
     expect(sectionLine('active', n, 'points').map((p) => p.text).join('')).toBe('3 of 5 points done');
   });
 
-  it('count an active sprint\'s done rows by the project\'s status groups, and by the tracker\'s for its completion', () => {
+  it('count an active sprint\'s done rows by the project\'s status groups', () => {
     const regrouped = board(ROWS, { regrouped: { s1: 'done' } });
-    const [active] = backlogSections(regrouped);
-    const project = sectionNumbers(regrouped, active, [], 'project');
+    const project = sectionNumbers(regrouped, backlogSections(regrouped)[0], []);
     expect(sectionLine('active', project, 'points').map((p) => p.text).join(''), 'To Do counts as done').toBe('5 of 5 points done');
-    const tracker = sectionNumbers(regrouped, active, [], 'tracker');
-    expect(tracker.total, 'the left-out ticket counts too').toEqual({ rows: 3, estimate: 10, unestimated: 0 });
-    expect(sectionLine('active', tracker, 'points').map((p) => p.text).join('')).toBe('3 of 10 points done');
     const undone = board(ROWS, { regrouped: { s2: 'in_progress' } });
-    expect(sectionNumbers(undone, backlogSections(undone)[0], [], 'project').done, 'Done counts as in progress').toEqual({ rows: 0, estimate: 0 });
-    expect(sectionNumbers(undone, backlogSections(undone)[0], [], 'tracker').done).toEqual({ rows: 1, estimate: 3 });
+    expect(sectionNumbers(undone, backlogSections(undone)[0], []).done, 'Done counts as in progress').toEqual({ rows: 0, estimate: 0, unestimated: 0 });
   });
 
   it('weigh a future sprint against the pace, with each person\'s load, the most first and the unassigned last', () => {
     const held = board(ROWS);
     const future = backlogSections(held)[1];
-    const n = sectionNumbers(held, future, [], 'project');
+    const n = sectionNumbers(held, future, []);
     expect(n.total.estimate).toBe(7);
     expect(n.load?.map((l) => [l.person?.name ?? null, l.rows, l.estimate])).toEqual([['User 2', 1, 4], ['User 1', 2, 1], [null, 1, 2]]);
     expect(n.over).toBe(1);
@@ -125,14 +119,14 @@ describe('a header\'s numbers', () => {
     expect(line.map((p) => p.text).join('')).toBe('7 of about 6 points, the last 2 sprints\' average · 1 over');
     expect(line.filter((p) => p.tone === 'warn').map((p) => p.text)).toEqual(['1 over']);
     const one = board(ROWS, { pace: { sprints: 1, rows: 3, estimate: 7.25 } });
-    const level = sectionNumbers(one, backlogSections(one)[1], [], 'project');
+    const level = sectionNumbers(one, backlogSections(one)[1], []);
     expect(level.over).toBe(0);
     expect(sectionLine('future', level, 'points').map((p) => p.text).join('')).toBe('7 of about 7.3 points, the last sprint');
   });
 
   it('say a future sprint\'s points alone on a board that finished no sprint', () => {
     const held = board(ROWS, { pace: null });
-    const n = sectionNumbers(held, backlogSections(held)[1], [], 'project');
+    const n = sectionNumbers(held, backlogSections(held)[1], []);
     expect(n.pace).toBeNull();
     expect(n.over).toBe(0);
     expect(sectionLine('future', n, 'points').map((p) => p.text).join('')).toBe('7 points');
@@ -140,24 +134,24 @@ describe('a header\'s numbers', () => {
 
   it('count the backlog\'s tickets, points and those with no estimate', () => {
     const held = board(ROWS);
-    const n = sectionNumbers(held, backlogSections(held)[2], [], 'project');
+    const n = sectionNumbers(held, backlogSections(held)[2], []);
     expect(sectionLine('backlog', n, 'points').map((p) => p.text).join('')).toBe('2 tickets · 1 point · 1 without an estimate');
   });
 
   it('count tickets where points would be, on a board without estimates', () => {
     const held = board(ROWS, { unit: 'none', pace: { sprints: 2, rows: 3, estimate: 0 } });
     const sections = backlogSections(held);
-    const future = sectionNumbers(held, sections[1], [], 'project');
+    const future = sectionNumbers(held, sections[1], []);
     expect(future.over).toBe(1);
     expect(sectionLine('future', future, 'none').map((p) => p.text).join('')).toBe('4 of about 3 tickets, the last 2 sprints\' average · 1 over');
-    expect(sectionLine('backlog', sectionNumbers(held, sections[2], [], 'project'), 'none').map((p) => p.text).join('')).toBe('2 tickets');
+    expect(sectionLine('backlog', sectionNumbers(held, sections[2], []), 'none').map((p) => p.text).join('')).toBe('2 tickets');
   });
 
   it('count a row moving out of one section and into another where it goes, with what each was before', () => {
     const held = board(ROWS);
     const sections = backlogSections(held);
     const moved = [{ row: ROWS.backlog[1], from: 'backlog', to: 'sprint:9' }];
-    const into = sectionNumbers(held, sections[1], moved, 'project');
+    const into = sectionNumbers(held, sections[1], moved);
     expect(into.total.estimate).toBe(8);
     expect(into.before?.estimate).toBe(7);
     expect(into.over).toBe(2);
@@ -166,11 +160,11 @@ describe('a header\'s numbers', () => {
     const line = sectionLine('future', into, 'points');
     expect(line.map((p) => p.text).join('')).toBe('7 → 8 of about 6 points, the last 2 sprints\' average · 2 over');
     expect(line.filter((p) => p.tone === 'to').map((p) => p.text)).toEqual(['→ 8']);
-    const out = sectionNumbers(held, sections[2], moved, 'project');
+    const out = sectionNumbers(held, sections[2], moved);
     expect(out.total).toEqual({ rows: 1, estimate: 0, unestimated: 1 });
     expect(sectionLine('backlog', out, 'points').map((p) => p.text).join('')).toBe('2 → 1 ticket · 1 → 0 points · 1 without an estimate');
     // A row in a status left out of counts changes no number.
-    const left = sectionNumbers(held, sections[1], [{ row: ROWS['8'][2], from: 'sprint:8', to: 'sprint:9' }], 'project');
+    const left = sectionNumbers(held, sections[1], [{ row: ROWS['8'][2], from: 'sprint:8', to: 'sprint:9' }]);
     expect(left.before).toBeNull();
     expect(left.total.estimate).toBe(7);
   });
@@ -180,8 +174,8 @@ describe('a header\'s numbers', () => {
     const sections = backlogSections(held);
     expect(sections[2].more).toBe(true);
     const unread: BacklogSection = { ...sections[1], unread: true };
-    expect(sectionNumbers(held, unread, [], 'project').load).toBeNull();
-    expect(sectionNumbers(held, { ...sections[0], more: true }, [], 'project').done).toBeNull();
+    expect(sectionNumbers(held, unread, []).load).toBeNull();
+    expect(sectionNumbers(held, { ...sections[0], more: true }, []).done).toBeNull();
   });
 });
 
@@ -252,11 +246,55 @@ describe('the sprint forms', () => {
     expect(dayAt('9 March', false)).toBeNull();
   });
 
-  it('move only an active sprint\'s rows that are neither done nor canceled by the tracker\'s groups when it completes', () => {
-    const rows = { ...ROWS, '8': [row('1', 's2', 3), row('2', 's1', 2), row('3', 'sx', 1)] };
-    const held = board(rows);
-    expect(unfinishedOf(held, backlogSections(held)[0]).map((r) => r.card.id)).toEqual(['2']);
-    const regrouped = board(rows, { regrouped: { s1: 'done', s2: 'in_progress' } });
-    expect(unfinishedOf(regrouped, backlogSections(regrouped)[0]).map((r) => r.card.id), 'whatever the project regroups').toEqual(['2']);
+});
+
+describe('what Complete sprint counts', () => {
+  const line = (n: { numbers: Parameters<typeof sectionLine>[1] }) => sectionLine('active', n.numbers, 'points').map((p) => p.text).join('');
+
+  it('counts a ticket finished when its status is in the board\'s last column that has statuses, every ticket of the sprint, whatever the project regroups', () => {
+    for (const held of [board(ROWS), board(ROWS, { regrouped: { s1: 'done', s2: 'in_progress' } })]) {
+      const c = completionNumbers(held, backlogSections(held)[0], []);
+      // WEB-3 is in s3, which the project leaves out of its counts: Jira counts it.
+      expect(line(c)).toBe('3 of 10 points done');
+      expect(c.unfinished).toBe(2);
+    }
+  });
+
+  it('counts a done status of an earlier column unfinished, and another of the last column finished', () => {
+    const held = board(ROWS, { columns: [['s1', 's2'], ['s3']] });
+    const c = completionNumbers(held, backlogSections(held)[0], []);
+    expect(line(c), 'WEB-3, To Do in the last column, is finished; WEB-1, Done in the first, is not').toBe('5 of 10 points done');
+    expect(c.unfinished).toBe(2);
+  });
+
+  it('counts a row moving into the sprint, and one moving out, where they go', () => {
+    const held = board(ROWS);
+    const sections = backlogSections(held);
+    const c = completionNumbers(held, sections[0], [{ row: ROWS.backlog[1], from: 'backlog', to: 'sprint:8' }, { row: ROWS['8'][0], from: 'sprint:8', to: 'sprint:9' }]);
+    expect(line(c), 'WEB-11 in, WEB-1 out').toBe('0 of 10 → 8 points done');
+    expect(c.unfinished).toBe(3);
+  });
+
+  it('counts nothing until the sprint is read whole', () => {
+    const held = board(ROWS);
+    const c = completionNumbers(held, { ...backlogSections(held)[0], more: true }, []);
+    expect(c.numbers.done).toBeNull();
+    expect(c.unfinished).toBeNull();
+  });
+
+  it('takes the last column that has statuses, as Jira\'s DoneStatusIDs does', () => {
+    const cols = (...statuses: string[][]) => statuses.map((ids) => ({ statuses: ids.map((id) => ({ id })) }));
+    expect([...finishedStatuses(cols(['a'], ['b', 'c']))]).toEqual(['b', 'c']);
+    expect([...finishedStatuses(cols(['a'], ['b'], []))], 'the last column empty').toEqual(['b']);
+    expect([...finishedStatuses(cols(['a'], [], []))], 'statuses only in an earlier column').toEqual(['a']);
+    expect([...finishedStatuses(cols([], []))], 'no statuses at all').toEqual([]);
+    expect([...finishedStatuses([])]).toEqual([]);
+  });
+
+  it('counts every ticket unfinished on a board with no column statuses, which Jira refuses to complete', () => {
+    const held = board(ROWS, { columns: [[], []] });
+    const c = completionNumbers(held, backlogSections(held)[0], []);
+    expect(line(c)).toBe('0 of 10 points done');
+    expect(c.unfinished).toBe(3);
   });
 });

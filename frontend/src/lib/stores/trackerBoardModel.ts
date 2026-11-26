@@ -27,6 +27,7 @@ import type {
   SprintView,
   TotalsAt,
 } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import { markGroup } from './statusMarkGroup';
 
 /** A section as the client holds it: the rows of the pages it loaded, in
  * board order, and where the next page starts (null: loaded whole).
@@ -312,6 +313,8 @@ export function listRows(held: HeldBoard, list: string): { readonly name: string
  * them are still to load, and its total. */
 export interface ScreenColumn {
   readonly name: string;
+  /** The groups its statuses' marks draw (`markGroup`), each once, in
+   * its statuses' order. */
   readonly statusGroups: readonly string[];
   readonly rows: readonly RowView[];
   /** The held section whose next page holds more of this column; null
@@ -327,26 +330,23 @@ export interface ScreenColumn {
   readonly unread: boolean;
 }
 
-/** Whose status groups a count follows: the project's, as the backend's
- * totals do (BoardView.Regrouped), or the tracker's, which leave nothing
- * out. */
-export type Grouping = 'project' | 'tracker';
-
-/** The group a count puts `row` in under `grouping`: the one rule for a
- * row's counted group. */
-export function groupOf(held: HeldBoard, row: RowView, grouping: Grouping): string {
-  return (grouping === 'project' ? held.regrouped.get(row.card.status.id) : undefined) ?? row.card.status.group ?? '';
+/** The group a count puts `row` in: the one the project's status groups
+ * put its status in, as the backend's totals do (BoardView.Regrouped),
+ * left_out included; the one rule for a row's counted group. What its
+ * mark draws is `statusMarkGroup.ts#markGroup`. */
+export function groupOf(held: HeldBoard, row: RowView): string {
+  return held.regrouped.get(row.card.status.id) ?? row.card.status.group ?? '';
 }
 
-/** Whether a total under `grouping` counts the row. */
-export function counts(held: HeldBoard, row: RowView, grouping: Grouping): boolean {
-  return groupOf(held, row, grouping) !== 'left_out';
+/** Whether a total counts the row. */
+export function counts(held: HeldBoard, row: RowView): boolean {
+  return groupOf(held, row) !== 'left_out';
 }
 
 function countedOf(held: HeldBoard, rows: readonly RowView[]): number {
   if (held.leftOut.size === 0) return rows.length;
   let n = 0;
-  for (const r of rows) if (counts(held, r, 'project')) n += 1;
+  for (const r of rows) if (counts(held, r)) n += 1;
   return n;
 }
 
@@ -355,7 +355,7 @@ function sumOf(held: HeldBoard, rows: readonly RowView[]): SectionTotal {
   let estimate = 0;
   let unestimated = 0;
   for (const r of rows) {
-    if (!counts(held, r, 'project')) continue;
+    if (!counts(held, r)) continue;
     n += 1;
     if (r.estimate === undefined || r.estimate === null) unestimated += 1;
     else estimate += r.estimate;
@@ -373,7 +373,7 @@ function sumOf(held: HeldBoard, rows: readonly RowView[]): SectionTotal {
  */
 export function screenColumns(held: HeldBoard, previous: readonly ScreenColumn[] = []): ScreenColumn[] {
   const { columns } = held.shape;
-  const groups = (col: ColumnView) => [...new Set(col.statuses.map((s) => s.group ?? ''))];
+  const groups = (col: ColumnView) => [...new Set(col.statuses.map((s) => markGroup(held.regrouped, s) ?? ''))];
   if (!held.shape.plansSprints) {
     return columns.map((col, i): ScreenColumn => {
       const at = held.sections.findIndex((s) => s.section.kind === 'column' && (s.section.column ?? 0) === i);

@@ -93,6 +93,9 @@ export interface ExtraJira {
   transitions?: Array<{ id: string; name: string; to: string; from?: string[]; screen?: Array<{ field: string; required?: boolean; hasDefault?: boolean }> }>;
   /** The field WEB's board estimates in. */
   estimation?: string;
+  /** WEB's board's columns in place of the seed's To Do (10000), In
+   * Progress (10001) and Done (10002), each with the statuses it maps. */
+  columns?: Array<{ name: string; statuses: string[] }>;
   /** The accounts WEB's issues can be assigned (trackerfake.JiraProject.Assignable). */
   assignable?: string[];
   /** WEB's components (trackerfake.JiraProject.Components). */
@@ -158,7 +161,7 @@ export async function seedFakeJira(harness: HarnessApp, extra?: ExtraJira): Prom
         ...(extra?.assignable ? { assignable: extra.assignable } : {}),
         ...(extra?.components ? { components: extra.components } : {}),
       }, ...(extra?.projects ?? [])],
-      boards: [{ id: 1, name: 'WEB board', type: 'scrum', project: 'WEB', ...(extra?.estimation ? { estimation: extra.estimation } : {}), ...(extra?.boardAlso ? { also: extra.boardAlso } : {}), columns: [
+      boards: [{ id: 1, name: 'WEB board', type: 'scrum', project: 'WEB', ...(extra?.estimation ? { estimation: extra.estimation } : {}), ...(extra?.boardAlso ? { also: extra.boardAlso } : {}), columns: extra?.columns ?? [
         { name: 'To Do', statuses: ['10000'] }, { name: 'In Progress', statuses: ['10001'] }, { name: 'Done', statuses: ['10002'] },
       ] }, ...(extra?.boards ?? [])],
       ...(extra?.fields ? { fields: extra.fields } : {}),

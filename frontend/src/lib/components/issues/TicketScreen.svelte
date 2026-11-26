@@ -100,7 +100,8 @@
   import { opensTicketPane, ticketPanesOffered } from '../../stores/ticketPanes.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { getProjectLabelText } from '../../stores/projects.svelte';
-  import { acquireTrackerSetup, editTrackerSetup, trackerSetupOf } from '../../stores/trackerSetup.svelte';
+  import { acquireTrackerSetup, editTrackerSetup, trackerRegroupsOf, trackerSetupOf } from '../../stores/trackerSetup.svelte';
+  import { markGroup } from '../../stores/statusMarkGroup';
   import { projectScopeGrant } from '../../transport/entityScopes';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { asSentence, userFacingError } from '../../utils/userFacingError';
@@ -440,6 +441,9 @@
   const NO_PINS: TicketPins = { fields: null, sections: null };
   const pins = $derived(tracker && !pinsNewer ? ticketPinsOf(setupState?.view?.setup, tracker.kind, tracker.site) : NO_PINS);
   const projectName = $derived(project ? getProjectLabelText(project) || 'this project' : '');
+  // The statuses' marks draw the project's status groups; a ticket with
+  // no project draws the tracker's.
+  const regroups = $derived(project && tracker ? trackerRegroupsOf(project, tracker.kind, tracker.site) : undefined);
   const pinsUnreadable = $derived(setupState && setupState.view === null && setupState.error !== null ? userFacingError(setupState.error) : null);
   // Why a pin takes no press now: undefined when it does, null when no pin
   // is offered.
@@ -597,7 +601,7 @@
 
 {#snippet cardFields(rail: boolean)}
   <TicketField bind:this={() => (rail ? statusField : statusRow), (v) => { if (rail) statusField = v; else statusRow = v; }} label="Status" field="status" value={card?.status.name ?? ''} editor={statusEditor} ticketKey={ctx.key} target="status" {fieldName} inline={!rail}>
-    {#snippet mark()}<StatusMark group={card?.status.group} />{/snippet}
+    {#snippet mark()}<StatusMark group={card ? markGroup(regroups, card.status) : undefined} />{/snippet}
   </TicketField>
   <TicketField bind:this={() => (rail ? assigneeField : assigneeRow), (v) => { if (rail) assigneeField = v; else assigneeRow = v; }} label="Assignee" field="assignee" value={card?.assignee ? card.assignee.name || 'Unknown user' : ''} editor={assigneeEditor} ticketKey={ctx.key} target={fieldTarget('assignee')} {fieldName} inline={!rail} />
   <TicketField bind:this={() => (rail ? priorityField : priorityRow), (v) => { if (rail) priorityField = v; else priorityRow = v; }} label="Priority" field="priority" value={card?.priority?.name ?? ''} editor={priorityEditor} ticketKey={ctx.key} target={fieldTarget('priority')} {fieldName} inline={!rail}>
@@ -626,7 +630,7 @@
         {pin}
       />
     {:else if id === 'links'}
-      <TicketLinks bind:this={linksSection} {ctx} links={detail.links ?? []} {onOpenIssue} {pin} />
+      <TicketLinks bind:this={linksSection} {ctx} links={detail.links ?? []} {regroups} {onOpenIssue} {pin} />
     {:else if id === 'attachments'}
       <TicketAttachments
         bind:this={attachmentsSection}
