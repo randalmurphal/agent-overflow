@@ -355,18 +355,23 @@ counts as zero, and a ticket whose history the app has not read yet
 counts as done only in the last sprint it is in. The backlog says its
 tickets, its points and how many have no estimate. New ticket at a
 section's foot asks the fields the tracker requires the person to give
-and offers those it fills itself; on Jira it shows the project, picked
-from the projects the board shows, the one picked last on that board
-this session first, else the board's location, and the type, the one
+and offers those it fills itself, sending nothing for one put back to
+none; on Jira it shows the project, one of the projects the board shows
+(the one picked last on that board this session, else the board's
+location, else the only one, else it asks; while that list is being
+read, or could not be, the board's location), and the type, the one
 picked last on the board this session, else the project's first at the
-standard level. A ticket the tracker made stays made: when its move into
-the sprint failed, the form says so with the ticket's key and offers that
-move. On Linear a new ticket lands after the section's last row. New
+standard level. What was typed in the form, a field being typed in
+included, outlives the form scrolling out of view. A ticket the tracker
+made stays made: when its move into the sprint failed, the form says so
+with the ticket's key and offers that move, which stays offered until
+the ticket is placed or the person dismisses it. On Linear a new ticket lands after the section's last row. New
 sprint, a sprint's Change (which cannot clear a sprint's dates, and says
 so), Start sprint (today for as long as it was planned, else two weeks)
 and Complete sprint, which always asks where the tickets the tracker
 counts unfinished go: an open sprint of the board, the first future one
-at first, or the backlog. A ticket opens beside the list, and in its own
+at first, or the backlog; a sprint that left the list while the form was
+open is not sent. A ticket opens beside the list, and in its own
 pane with Ctrl or Cmd or the menu; the row's menu has Ask and Start
 work…. Not built: the pace counted with credit (it counts the tickets
 whose status counted as done when their sprint was completed, by their

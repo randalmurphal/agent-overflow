@@ -21,6 +21,7 @@ import { PICK_LIMIT } from './ticketEditors';
 import type { BacklogSection } from '../../stores/trackerBacklogModel';
 import { boardWriteContext } from '../../stores/trackerTicketWrites.svelte';
 import { setLastCreateChoice } from '../../stores/issuesPane.svelte';
+import { getToasts } from '../../stores/toast.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 
@@ -355,7 +356,73 @@ describe('New ticket', () => {
     await fireEvent.click(view.getByTestId('issues-backlog-create-move'));
     await waitFor(() => expect(moved).toHaveBeenCalledTimes(1));
     expect(moved.mock.calls[0]).toEqual(['c1', { board: '1', sprint: '9', issues: ['10012'], prev: undefined, next: undefined }]);
+    await waitFor(() => expect(view.queryByTestId('issues-backlog-create-move')).toBeNull());
+    view.unmount();
+  });
+
+  it('keeps the move of a made ticket with the section\'s form until it is placed or dismissed: across its foot leaving, a press that sends nothing, and a refused move', async () => {
+    setBindingMock('TrackerBoardProjects', async () => PROJECTS);
+    setBindingMock('TrackerIssueTypes', async () => TYPES);
+    setBindingMock('TrackerCreateFields', async () => []);
+    let made = 12;
+    let createdAnswer: () => void = () => {};
+    let gate: Promise<void> | null = new Promise<void>((resolve) => { createdAnswer = resolve; });
+    const creates = setBindingMock('CreateTrackerIssue', async () => {
+      if (gate) await gate;
+      gate = null;
+      const id = String(10000 + made);
+      const key = `WEB-${made++}`;
+      return {
+        parts: [{ step: 'create', state: 'applied', issue: id }, { step: 'sprint_move', state: 'refused', issue: id, refusal: { reason: 'tracker', message: 'Sprint 9 is closed.' } }],
+        created: id, created_key: key,
+      } as WriteView;
+    });
+    let answer: (v: WriteView) => void = () => {};
+    const moved = setBindingMock('MoveTrackerIssuesToSprint', () => new Promise<WriteView>((resolve) => { answer = resolve; }));
+    const drafts = new SvelteMap<string, CreateDraft>();
+    const first = open('10000', { drafts });
+    await fireEvent.click(first.getByTestId('issues-backlog-new'));
+    const title = first.getByTestId('issues-backlog-create-title') as HTMLInputElement;
+    await fireEvent.input(title, { target: { value: 'Made while away' } });
+    await waitFor(() => expect((first.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(false));
+    // Add, and the foot leaves the virtual window before the tracker answers.
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(creates).toHaveBeenCalledTimes(1));
+    first.unmount();
+    createdAnswer();
+    // Settled with no form on screen: said in a toast.
+    await waitFor(() => expect(getToasts().map((t) => t.message)).toContain('Creating a ticket in Sprint 9: Created WEB-12, but it was not moved into its sprint: Sprint 9 is closed.'));
+
+    const view = open('10000', { drafts });
+    const offers = () => view.queryAllByTestId('issues-backlog-create-move').map((el) => el.textContent?.trim());
+    expect(offers()).toEqual(['Move WEB-12 into Sprint 9']);
+    // A second ticket made here is offered its own move.
+    const again = view.getByTestId('issues-backlog-create-title') as HTMLInputElement;
+    await fireEvent.input(again, { target: { value: 'Made here' } });
+    await waitFor(() => expect((view.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.keyDown(again, { key: 'Enter' });
+    await waitFor(() => expect(offers()).toEqual(['Move WEB-12 into Sprint 9', 'Move WEB-13 into Sprint 9']));
+
+    // While WEB-12's move is out, a second press sends nothing and the offer stays.
+    const move12 = () => view.getAllByTestId('issues-backlog-create-move')[0] as HTMLButtonElement;
+    await fireEvent.click(move12());
+    await waitFor(() => expect(moved).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(move12().disabled).toBe(true));
+    await fireEvent.click(move12());
+    expect(moved).toHaveBeenCalledTimes(1);
+    // Refused: still offered.
+    answer({ parts: [{ step: 'sprint_move', state: 'refused', issue: '10012', refusal: { reason: 'tracker', message: 'Sprint 9 is closed.' } }] } as WriteView);
+    await waitFor(() => expect(move12().disabled).toBe(false));
+    expect(offers()).toEqual(['Move WEB-12 into Sprint 9', 'Move WEB-13 into Sprint 9']);
+    // Placed: no longer offered.
+    await fireEvent.click(move12());
+    await waitFor(() => expect(moved).toHaveBeenCalledTimes(2));
+    answer({ parts: [{ step: 'sprint_move', state: 'applied', issue: '10012' }] } as WriteView);
+    await waitFor(() => expect(offers()).toEqual(['Move WEB-13 into Sprint 9']));
+    // Dismissed: no longer offered, and nothing sent.
+    await fireEvent.click(view.getByTestId('issues-backlog-create-move-dismiss'));
     expect(view.queryByTestId('issues-backlog-create-move')).toBeNull();
+    expect(moved).toHaveBeenCalledTimes(2);
     view.unmount();
   });
 

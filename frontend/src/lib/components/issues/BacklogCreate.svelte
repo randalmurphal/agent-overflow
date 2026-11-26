@@ -9,6 +9,13 @@
     readonly text: string;
   }
 
+  /** A ticket the form made that its move into the section's sprint did
+   * not place. */
+  export interface UnplacedTicket {
+    readonly issue: string;
+    readonly key: string;
+  }
+
   /**
    * An open New ticket form of one section, held by its Backlog screen so
    * that what was typed outlives the form's foot leaving the virtual
@@ -28,6 +35,10 @@
     filled = $state.raw<ReadonlyMap<string, FilledField>>(new Map());
     /** The text being typed in a field not saved yet, by field. */
     typing = $state.raw<ReadonlyMap<string, string>>(new Map());
+    /** The tickets it made that are not in the sprint yet, each offered
+     * the move until it is placed or dismissed; written by Add alone,
+     * whether or not the form is on screen when the tracker answers. */
+    unplaced = $state.raw<readonly UnplacedTicket[]>([]);
 
     constructor(project: PickItem | null, type: string) {
       this.project = project;
@@ -87,7 +98,7 @@
     ticketWrite,
     type BoardWriteContext,
   } from '../../stores/trackerTicketWrites.svelte';
-  import { issueWriteContext, moveCardToSprint } from '../../stores/trackerBoardCarry.svelte';
+  import { cardBusy, issueWriteContext, moveCardToSprint } from '../../stores/trackerBoardCarry.svelte';
   import { errString } from '../../utils/errors';
   import { isLocalEnter } from '../../utils/localEnter';
   import { cardFieldName } from './ticketEditors';
@@ -113,9 +124,6 @@
   const held = $derived(ticketWrite(b.key, target));
   const pending = $derived(held?.pending ?? false);
   const where = $derived(sec.sprint?.name || 'the backlog');
-  // A ticket made here that was not moved into the sprint: offered the
-  // move, the menu's, for that ticket.
-  const unplaced = $derived(held?.outcome?.kind === 'applied' && held.outcome.unplaced?.step === 'sprint_move' ? held.outcome.unplaced : null);
 
   // A screen that shows another board keeps that board's forms apart.
   const draftKey = $derived(`${boardKey}\n${sec.list}`);
@@ -281,6 +289,8 @@
       sprint: sec.sprint?.id,
     });
     if (outcome?.kind === 'applied') {
+      const u = outcome.unplaced;
+      if (u?.step === 'sprint_move' && u.issue && !d.unplaced.some((t) => t.issue === u.issue)) d.unplaced = [...d.unplaced, { issue: u.issue, key: u.key }];
       d.title = '';
       d.filled = new Map();
       d.typing = new Map();
@@ -291,10 +301,21 @@
     }
   }
 
-  function moveUnplaced(): void {
-    if (!unplaced || !sec.sprint) return;
-    void moveCardToSprint(boardKey, issueWriteContext(boardRef, unplaced.issue, unplaced.key), b.board, sec.sprint.id);
-    dismissTicketWrite(b.key, target);
+  // The made ticket's move into the sprint, the menu's: placed, it is no
+  // longer offered; refused or unconfirmed, it stays offered, its outcome
+  // said where a ticket's move says it; a press that sent nothing (the
+  // ticket's other move is out) changes nothing.
+  async function moveUnplaced(d: CreateDraft, t: UnplacedTicket): Promise<void> {
+    if (!sec.sprint) return;
+    const outcome = await moveCardToSprint(boardKey, issueWriteContext(boardRef, t.issue, t.key), b.board, sec.sprint.id);
+    if (outcome?.kind === 'applied') forget(d, t);
+  }
+
+  // Drops the offer, and the create's note when it is that ticket's.
+  function forget(d: CreateDraft, t: UnplacedTicket): void {
+    d.unplaced = d.unplaced.filter((u) => u.issue !== t.issue);
+    const note = held?.outcome;
+    if (note?.kind === 'applied' && note.unplaced?.issue === t.issue) dismissTicketWrite(b.key, target);
   }
 
   function onKey(event: KeyboardEvent): void {
@@ -360,8 +381,14 @@
       <p class="text-xs text-fg" role="status" data-testid="issues-backlog-create-unsettable">A {typeName || 'ticket'}{typed && projectName ? ` in ${projectName}` : ''} needs {unsettable.join(', ')}, which the app cannot set. Make it in the tracker.</p>
     {/if}
     <TicketWriteNote ticketKey={b.key} {target} fieldName={cardFieldName} />
-    {#if unplaced && sec.sprint}
-      <button type="button" class="self-start text-xs text-accent hover:underline" data-testid="issues-backlog-create-move" onclick={moveUnplaced}>Move {unplaced.key || 'it'} into {sec.sprint.name}</button>
+    {#if sec.sprint}
+      {#each draft.unplaced as t (t.issue)}
+        {@const d = draft}
+        <div class="flex items-center gap-2 text-xs" data-testid="issues-backlog-create-unplaced" data-issue={t.issue}>
+          <button type="button" class="text-accent hover:underline disabled:opacity-60" data-testid="issues-backlog-create-move" disabled={cardBusy(boardKey, issueWriteContext(boardRef, t.issue, t.key))} onclick={() => { void moveUnplaced(d, t); }}>Move {t.key || 'it'} into {sec.sprint.name}</button>
+          <button type="button" class="text-fg-muted hover:underline" data-testid="issues-backlog-create-move-dismiss" aria-label="Leave {t.key || 'the ticket'} out of {sec.sprint.name}" onclick={() => forget(d, t)}>Dismiss</button>
+        </div>
+      {/each}
     {/if}
     <div class="flex items-center gap-1.5">
       <Button size="sm" variant="primary" disabled={pending || !ready || !draft?.title.trim() || missing.length > 0} testId="issues-backlog-create-submit" onclick={() => { void submit(); }}>{pending ? 'Adding…' : 'Add'}</Button>
