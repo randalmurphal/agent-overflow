@@ -420,7 +420,7 @@
       {/if}
       <MenuItem label="Copy name" testId="ticket-work-menu-copy-branch" onSelect={() => act(() => copy(of.branch.name, 'branch name'))} />
       <MenuDivider />
-      <MenuItem label="Start work on this branch" disabled={!detail || !!startBlocked} testId="ticket-work-menu-start-branch" onSelect={() => act(() => openForm({ name: of.branch.name, projectId: of.branch.projectId }))} />
+      <MenuItem label="Start work on this branch" disabled={!detail || !!startBlocked} description={startBlocked || undefined} testId="ticket-work-menu-start-branch" onSelect={() => act(() => openForm({ name: of.branch.name, projectId: of.branch.projectId }))} />
     {/if}
   </ContextMenu>
 {/if}

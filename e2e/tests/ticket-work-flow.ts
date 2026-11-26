@@ -33,9 +33,9 @@ import { longPress } from './touch-helpers.js';
 import { harnessGit } from './worktree-removal-helpers.js';
 import { BOARD_ID, JIRA_SITE, connectFakeJira, connectFakeJiraBoard, openIssuesPane, press, seedFakeJira, trackerRequests } from './tracker-helpers.js';
 
-/** Settles when this page's next socket has an answer to a
- * `SubscribeTrackerTicket` it sent. */
-function subscribeAnswered(page: Page): Promise<void> {
+/** Settles with whether the first answer to a `SubscribeTrackerTicket`
+ * on this page's next socket carried the ticket's detail. */
+function subscribeAnswered(page: Page): Promise<boolean> {
   const method = methodIdByName('SubscribeTrackerTicket');
   return new Promise((resolve) => {
     page.once('websocket', (socket) => {
@@ -48,7 +48,7 @@ function subscribeAnswered(page: Page): Promise<void> {
       socket.on('framereceived', ({ payload }) => {
         if (typeof payload !== 'string' || !payload.startsWith('{"type":"rpc"')) return;
         const frame = JSON.parse(payload) as { id?: string; result?: { detail?: unknown } };
-        if (frame.id && asked.has(frame.id) && frame.result?.detail) resolve();
+        if (frame.id && asked.has(frame.id)) resolve(!!frame.result?.detail);
       });
     });
   });
@@ -451,12 +451,14 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
     await press(card(pane, WEB2).getByTestId('issues-card-open'), compact);
     const ticket = pane.getByTestId('ticket-screen');
     await expect(ticket.getByTestId('ticket-title')).toHaveText('Second task', { timeout: 30_000 });
+    // The title can come from the board's card; the Description is the read's.
+    await expect(ticket.locator('[data-testid="ticket-section"][data-field="description"]')).toBeVisible({ timeout: 30_000 });
     await press(pane.getByTestId(compact ? 'issues-back' : 'ticket-close'), compact);
     await expect(ticket).toHaveCount(0);
 
     // After a reload the ticket screen's code loads again, held until the
-    // ticket's subscribe has answered with that read, so the screen mounts
-    // with the ticket's detail before it has measured itself.
+    // ticket's subscribe has answered, which carries that read, so the
+    // screen mounts with the ticket's detail before it has measured itself.
     const subscribed = subscribeAnswered(page);
     await page.reload();
     let releaseScreen!: () => void;
@@ -469,8 +471,9 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
     await showColumn(pane, 'To Do', compact);
     const menu = await cardMenuMore(page, pane, WEB2, 'WEB-2', compact);
     await press(menu.getByTestId('issues-card-menu-start-work'), compact);
-    await subscribed;
+    const withDetail = await subscribed;
     releaseScreen();
+    expect(withDetail, 'the reopened ticket\'s subscribe answered with the read its first open made').toBe(true);
     const form = page.getByTestId('start-work-form');
     await expect(form).toBeVisible({ timeout: 30_000 });
     await expect(form.getByTestId('start-work-branch')).toHaveValue('WEB-2-second-task');

@@ -1496,6 +1496,7 @@ describe('the ticket in the pane', () => {
           revision: 'r1',
           setup: { status_groups: [], ticket_pins: [], start_work: [{ tracker: 'jira', site: JIRA_USER1.site, project: 'WEB', assign: false, branch: 'feature/{key}' }] },
         }));
+        setBindingMock('GetTicketWork', async () => ({ key: 'WEB-2', pullRequests: [], problems: [], branches: [{ projectId: 'p1', name: 'web-2-spike', isCurrent: false, isDefault: false, aheadCount: 1 }] }));
         // The thread is still being made.
         const start = setBindingMock('StartTicketThread', () => new Promise(() => {}));
         const view = mount();
@@ -1523,6 +1524,11 @@ describe('the ticket in the pane', () => {
         const button = within(screen).getByTestId('ticket-work-start') as HTMLButtonElement;
         expect(button.disabled).toBe(true);
         expect(button).toHaveAttribute('title', 'Start work is already running on WEB-2.');
+        // A branch's menu says it too.
+        await fireEvent.contextMenu(within(screen).getByTestId('ticket-work-branch'));
+        const onBranch = await within(document.body).findByTestId('ticket-work-menu-start-branch');
+        expect(onBranch).toHaveAttribute('aria-disabled', 'true');
+        expect(onBranch).toHaveTextContent('Start work is already running on WEB-2.');
         view.unmount();
       } finally {
         width.mockRestore();
