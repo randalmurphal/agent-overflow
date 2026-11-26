@@ -3597,7 +3597,7 @@ describe('the Dashboards screen in the pane', () => {
   function answer(): unknown {
     return {
       dashboard: DASHBOARD, range: { id: 'sprints_5', label: 'Last 5 sprints', periods: [], previous: '' }, estimates: 'points', at: 1,
-      widgets: [{ id: 'stuck_list', tickets: [{ id: '1', key: 'WEB-1', title: 'Issue 1', status: 'In Progress', counted: true }] }],
+      widgets: [{ id: 'stuck_list', tickets: [{ row: 0, id: '1', key: 'WEB-1', title: 'Issue 1', status: 'In Progress', counted: true }] }],
     };
   }
 

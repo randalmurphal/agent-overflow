@@ -138,20 +138,21 @@ func reduceRange(r Reducer, periods []period, placed map[string][]contribution, 
 func place(m Metric, rows []contribution, periods ...[]period) (map[string][]contribution, []contribution) {
 	out := map[string][]contribution{}
 	var unplaced []contribution
-	bySprint := map[string]string{}
+	bySprint := map[string]period{}
 	var all []period
 	for _, ps := range periods {
 		for _, p := range ps {
 			all = append(all, p)
 			for _, s := range p.sprints {
-				bySprint[s] = p.id
+				bySprint[s] = p
 			}
 		}
 	}
 	for _, c := range rows {
 		if m.Bucket == BucketSprint {
-			if id, ok := bySprint[c.bucket]; ok {
-				out[id] = append(out[id], c)
+			if p, ok := bySprint[c.bucket]; ok {
+				c.period = p.label
+				out[p.id] = append(out[p.id], c)
 			}
 			continue
 		}
@@ -162,6 +163,7 @@ func place(m Metric, rows []contribution, periods ...[]period) (map[string][]con
 		}
 		for _, p := range all {
 			if p.holds(c.at) {
+				c.period = p.label
 				out[p.id] = append(out[p.id], c)
 				break
 			}

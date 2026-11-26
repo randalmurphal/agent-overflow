@@ -241,6 +241,8 @@ type contribution struct {
 	at      int64
 	hasAt   bool
 	note    string
+	// period is the label of the period place put the row in.
+	period string
 }
 
 // rowSink gathers the rows of the metric that runs, charged against the

@@ -54,13 +54,13 @@ describe('a number', () => {
 });
 
 describe('a number with tickets not counted', () => {
-  function drill(value: object) {
+  function drill(value: object, over: object = {}) {
     const state = {
       target: { widget: 'stuck' },
       page: 0,
       loading: false,
       error: null,
-      answer: { title: 'Stuck', value, unit: 'tickets', estimates: 'points', count: 0, counted: 0, page: 0, pages: 1, rows: [], at: 0 },
+      answer: { title: 'Stuck', value, unit: 'tickets', estimates: 'points', count: 0, tickets: 0, counted: 0, page: 0, pages: 1, rows: [], at: 0, ...over },
     } as unknown as DrillState;
     return render(DashboardDrill, { props: { drill: state, onPage: vi.fn(), onTicket: vi.fn(), onClose: vi.fn() } });
   }
@@ -86,6 +86,26 @@ describe('a number with tickets not counted', () => {
     const d = drill(n);
     expect(d.getByTestId('dashboard-drill-value').textContent).toBe('3 tickets');
     expect(d.getByTestId('dashboard-drill-value-not-counted').textContent).toBe('2 not counted');
+  });
+
+  it('lists a ticket that counts twice as two rows with their periods, and says so in its header', () => {
+    // A key that two rows share is repaired and reported, never drawn
+    // silently; each row has its own.
+    const reported = vi.fn();
+    vi.stubGlobal('reportError', reported);
+    const row = { id: '10002', key: 'WEB-2', title: 'Second story', status: 'Done', counted: true, value: 5 };
+    const d = drill({ v: 10 }, {
+      unit: 'estimate',
+      count: 2,
+      tickets: 1,
+      counted: 2,
+      rows: [{ ...row, row: 0, period: 'WEB Sprint 5' }, { ...row, row: 1, period: 'WEB Sprint 6' }],
+    });
+    expect(d.getByTestId('dashboard-drill-count').textContent).toBe('2 rows, 1 ticket');
+    expect(d.getAllByTestId('dashboard-drill-period').map((e) => e.textContent)).toEqual(['WEB Sprint 5', 'WEB Sprint 6']);
+    expect(d.getAllByTestId('dashboard-drill-row-value').map((e) => e.textContent)).toEqual(['5 points', '5 points']);
+    expect(reported).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 
   it('is not known when it counted nothing, with no change mark, on the tile and in the drill', () => {
@@ -144,7 +164,7 @@ it('opens a listed ticket, and the rest and the uncounted in the drill', async (
   const v = view({ id: 'stuck_list', title: 'Stuck tickets', form: 'list', now: true, unit: 'tickets' });
   const value = {
     id: 'stuck_list',
-    tickets: [{ id: '10001', key: 'WEB-1', title: 'First story', status: 'In Progress', counted: true, note: '9 days in In Progress' }],
+    tickets: [{ row: 0, id: '10001', key: 'WEB-1', title: 'First story', status: 'In Progress', counted: true, note: '9 days in In Progress' }],
     more: 3,
     not_counted: 1,
   } as unknown as WidgetValue;

@@ -89,6 +89,14 @@ export function formatNum(n: Num | null | undefined, unit: DashboardUnit, estima
   return w.notCounted ? `${w.value}, ${w.notCounted}` : w.value;
 }
 
+/** What a drill's header says of its rows: "5 tickets", or "6 rows, 5
+ * tickets" when a ticket counts in more than one row. */
+export function drillCountWords(rows: number, tickets: number): string {
+  const t = tickets === 1 ? '1 ticket' : `${tickets} tickets`;
+  if (rows === tickets) return t;
+  return `${rows === 1 ? '1 row' : `${rows} rows`}, ${t}`;
+}
+
 /** The change of a number against the range before it. */
 export type ChangeMark =
   | { kind: 'change'; direction: 'up' | 'down' | 'same'; tone: 'good' | 'bad' | 'neutral'; text: string }

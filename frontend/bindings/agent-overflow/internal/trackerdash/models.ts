@@ -194,7 +194,7 @@ export class DashboardView {
 
 /**
  * DrillAnswer is the number and one page of its rows, from one
- * evaluation.
+ * evaluation: Count rows of Tickets tickets, Counted of the rows counted.
  */
 export class DrillAnswer {
     "title": string;
@@ -202,6 +202,7 @@ export class DrillAnswer {
     "unit": Unit;
     "estimates": string;
     "count": number;
+    "tickets": number;
     "counted": number;
     "page": number;
     "pages": number;
@@ -226,6 +227,9 @@ export class DrillAnswer {
         if (!("count" in $$source)) {
             this["count"] = 0;
         }
+        if (!("tickets" in $$source)) {
+            this["tickets"] = 0;
+        }
         if (!("counted" in $$source)) {
             this["counted"] = 0;
         }
@@ -249,10 +253,10 @@ export class DrillAnswer {
      * Creates a new DrillAnswer instance from a string or object.
      */
     static createFrom($$source: any = {}): DrillAnswer {
-        const $$createField9_0 = $$createType12;
+        const $$createField10_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("rows" in $$parsedSource) {
-            $$parsedSource["rows"] = $$createField9_0($$parsedSource["rows"]);
+            $$parsedSource["rows"] = $$createField10_0($$parsedSource["rows"]);
         }
         return new DrillAnswer($$parsedSource as Partial<DrillAnswer>);
     }
@@ -604,9 +608,15 @@ export class Request {
 }
 
 /**
- * TicketRow is a ticket in a ticket list or a drill.
+ * TicketRow is one row of a metric in a ticket list or a drill: a ticket
+ * as one row counts it. Row is the row's place among the answer's rows,
+ * unique within it, since a ticket can count more than once (done in two
+ * sprints). Period is the sprint or week a row of the range falls in.
+ * Value is the row's number in the metric's unit, absent for a metric
+ * that counts tickets, whose rows' values are not what it counts.
  */
 export class TicketRow {
+    "row": number;
     "id": string;
     "key": string;
     "title": string;
@@ -615,10 +625,14 @@ export class TicketRow {
     "points"?: number | null;
     "value"?: number | null;
     "counted": boolean;
+    "period"?: string;
     "note"?: string;
 
     /** Creates a new TicketRow instance. */
     constructor($$source: Partial<TicketRow> = {}) {
+        if (!("row" in $$source)) {
+            this["row"] = 0;
+        }
         if (!("id" in $$source)) {
             this["id"] = "";
         }

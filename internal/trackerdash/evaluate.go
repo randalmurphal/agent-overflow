@@ -163,8 +163,14 @@ type BucketValue struct {
 	Total   Num    `json:"total"`
 }
 
-// TicketRow is a ticket in a ticket list or a drill.
+// TicketRow is one row of a metric in a ticket list or a drill: a ticket
+// as one row counts it. Row is the row's place among the answer's rows,
+// unique within it, since a ticket can count more than once (done in two
+// sprints). Period is the sprint or week a row of the range falls in.
+// Value is the row's number in the metric's unit, absent for a metric
+// that counts tickets, whose rows' values are not what it counts.
 type TicketRow struct {
+	Row      int      `json:"row"`
 	ID       string   `json:"id"`
 	Key      string   `json:"key"`
 	Title    string   `json:"title"`
@@ -173,6 +179,7 @@ type TicketRow struct {
 	Points   *float64 `json:"points,omitempty"`
 	Value    *float64 `json:"value,omitempty"`
 	Counted  bool     `json:"counted"`
+	Period   string   `json:"period,omitempty"`
 	Note     string   `json:"note,omitempty"`
 }
 
@@ -700,7 +707,7 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 				out.More++
 				continue
 			}
-			out.Tickets = append(out.Tickets, ev.ticket(r, c.p.cols))
+			out.Tickets = append(out.Tickets, ev.ticket(r, m, c.p.cols, len(out.Tickets)))
 		}
 	case FormBars, FormLine, FormTable:
 		out.Series = seriesOf(m, c.p.cols)
@@ -790,17 +797,17 @@ func (ev *evaluation) keyOf(ticket string) string {
 	return ticket
 }
 
-// ticket is row c's ticket as a list or a drill shows it.
-func (ev *evaluation) ticket(c contribution, cols columns) TicketRow {
+// ticket is row c, the answer's row i, as a list or a drill shows it.
+func (ev *evaluation) ticket(c contribution, m Metric, cols columns, i int) TicketRow {
 	t, ok := ev.tickets[c.ticket]
-	r := TicketRow{ID: c.ticket, Key: c.ticket, Counted: c.counted, Note: c.note}
+	r := TicketRow{Row: i, ID: c.ticket, Key: c.ticket, Counted: c.counted, Period: c.period, Note: c.note}
 	if ok {
 		r.Key, r.Title, r.Status, r.Points = t.key, t.title, t.status, t.points
 		if t.assignee != "" {
 			r.Assignee = cmpOr(ev.people[t.assignee], t.assignee)
 		}
 	}
-	if c.counted && cols.has(ColumnValue) {
+	if c.counted && cols.has(ColumnValue) && m.Reduce != ReduceCount {
 		v := c.value
 		r.Value = &v
 	}
@@ -829,13 +836,14 @@ type DrillCell struct {
 }
 
 // DrillAnswer is the number and one page of its rows, from one
-// evaluation.
+// evaluation: Count rows of Tickets tickets, Counted of the rows counted.
 type DrillAnswer struct {
 	Title     string      `json:"title"`
 	Value     Num         `json:"value"`
 	Unit      Unit        `json:"unit"`
 	Estimates string      `json:"estimates"`
 	Count     int         `json:"count"`
+	Tickets   int         `json:"tickets"`
 	Counted   int         `json:"counted"`
 	Page      int         `json:"page"`
 	Pages     int         `json:"pages"`
@@ -918,17 +926,21 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 	rows = slices.Clone(rows)
 	sortDrill(rows, ev.keyOf)
 	out.Count = len(rows)
+	tickets := map[string]bool{}
 	for _, row := range rows {
+		tickets[row.ticket] = true
 		if row.counted {
 			out.Counted++
 		}
 	}
+	out.Tickets = len(tickets)
 	out.Pages = max(1, (len(rows)+drillPage-1)/drillPage)
 	if r.Page > 0 && (r.Count != out.Count || r.Page >= out.Pages) {
 		out.Page, out.Restarted = 0, true
 	}
-	for _, row := range rows[min(len(rows), out.Page*drillPage):min(len(rows), (out.Page+1)*drillPage)] {
-		out.Rows = append(out.Rows, ev.ticket(row, c.p.cols))
+	from := min(len(rows), out.Page*drillPage)
+	for i, row := range rows[from:min(len(rows), (out.Page+1)*drillPage)] {
+		out.Rows = append(out.Rows, ev.ticket(row, m, c.p.cols, from+i))
 	}
 	return out, nil
 }

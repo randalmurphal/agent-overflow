@@ -14,7 +14,7 @@
   import ErrorNotice from '../shared/ErrorNotice.svelte';
   import { captureError, type CapturedError } from '../../stores/errorReports.svelte';
   import type { DrillState } from '../../stores/trackerDashboard.svelte';
-  import { formatAmount, numWords, unitWord, type DashboardUnit, type Num } from '../../stores/trackerDashboardModel';
+  import { drillCountWords, formatAmount, numWords, unitWord, type DashboardUnit, type Num } from '../../stores/trackerDashboardModel';
 
   interface Props {
     drill: DrillState;
@@ -58,15 +58,13 @@
         {#if valueWords?.notCounted}
           <span class="text-[0.75rem] text-fg-muted" data-testid="dashboard-drill-value-not-counted">{valueWords.notCounted}</span>
         {/if}
-        <span class="text-[0.75rem] text-fg-muted" data-testid="dashboard-drill-count">
-          {answer.count === 1 ? '1 ticket' : `${answer.count} tickets`}{answer.counted !== answer.count ? `, ${answer.counted} counted` : ''}
-        </span>
+        <span class="text-[0.75rem] text-fg-muted" data-testid="dashboard-drill-count">{drillCountWords(answer.count, answer.tickets)}</span>
       </div>
       {#if answer.restarted}
         <p class="border-b border-border-subtle bg-surface-1 px-5 py-1.5 text-[0.75rem] text-fg-muted" role="status" data-testid="dashboard-drill-restarted">The tickets changed while you paged, so this is the first page again, counted now.</p>
       {/if}
       <ul class="min-h-0 flex-1 overflow-y-auto" data-testid="dashboard-drill-rows">
-        {#each answer.rows as row (row.id)}
+        {#each answer.rows as row (row.row)}
           <li class="border-b border-border-subtle last:border-b-0">
             <button
               type="button"
@@ -76,13 +74,17 @@
               onclick={() => onTicket(row)}
             >
               <span class="shrink-0 font-mono text-[0.6875rem] text-fg-muted">{row.key}</span>
-              <span class="min-w-0 flex-1 truncate {row.counted ? 'text-fg' : 'text-fg-muted'}">{row.title}</span>
-              {#if !row.counted}
-                <span class="shrink-0 truncate text-[0.6875rem] text-fg-muted" data-testid="dashboard-drill-not-counted">Not counted{row.note ? `: ${row.note}` : ''}</span>
-              {:else}
-                {#if row.note}<span class="max-w-[12rem] shrink-0 truncate text-[0.6875rem] text-fg-muted">{row.note}</span>{/if}
-                {#if rowValue(row)}<span class="shrink-0 tabular-nums text-[0.6875rem] text-fg">{rowValue(row)}</span>{/if}
-              {/if}
+              <!-- Under compact the note goes under the title, which keeps its width. -->
+              <span class="flex min-w-0 flex-1 items-baseline gap-2 compact:flex-col compact:items-start compact:gap-0">
+                <span class="w-full min-w-0 flex-1 truncate {row.counted ? 'text-fg' : 'text-fg-muted'}">{row.title}</span>
+                {#if !row.counted}
+                  <span class="max-w-[16rem] shrink-0 truncate text-[0.6875rem] text-fg-muted compact:max-w-full" data-testid="dashboard-drill-not-counted">Not counted{row.note ? `: ${row.note}` : ''}</span>
+                {:else if row.note}
+                  <span class="max-w-[12rem] shrink-0 truncate text-[0.6875rem] text-fg-muted compact:max-w-full" data-testid="dashboard-drill-note">{row.note}</span>
+                {/if}
+              </span>
+              {#if row.period}<span class="max-w-[8rem] shrink-0 truncate text-[0.6875rem] text-fg-muted" data-testid="dashboard-drill-period">{row.period}</span>{/if}
+              {#if row.counted && rowValue(row)}<span class="shrink-0 tabular-nums text-[0.6875rem] text-fg" data-testid="dashboard-drill-row-value">{rowValue(row)}</span>{/if}
               <span class="max-w-[8rem] shrink-0 truncate text-[0.6875rem] text-fg-muted">{row.status}</span>
             </button>
           </li>

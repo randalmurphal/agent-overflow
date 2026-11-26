@@ -3,7 +3,7 @@
 // and the tone by the metric's good direction.
 
 import { describe, expect, it } from 'vitest';
-import { changeMark, formatNum, GAP_TEXT, numValue, numWords } from './trackerDashboardModel';
+import { changeMark, drillCountWords, formatNum, GAP_TEXT, numValue, numWords } from './trackerDashboardModel';
 import { band, labelEvery, valueScale } from '../components/issues/charts/chartScale';
 
 describe('a number', () => {
@@ -26,6 +26,15 @@ describe('a number', () => {
     expect(numWords({ nc: 2 }, 'tickets', 'points')).toEqual({ amount: 'Not known', word: '', value: 'Not known', notCounted: '2 not counted' });
     expect(numWords({ v: 1, nc: 1 }, 'tickets', 'points')).toEqual({ amount: '1', word: 'ticket', value: '1 ticket', notCounted: '1 not counted' });
     expect(numValue({ nc: 2 })).toBeNull();
+  });
+});
+
+describe('a drill\'s header', () => {
+  it('counts tickets, and rows beside them when a ticket counts more than once', () => {
+    expect(drillCountWords(5, 5)).toBe('5 tickets');
+    expect(drillCountWords(1, 1)).toBe('1 ticket');
+    expect(drillCountWords(6, 5)).toBe('6 rows, 5 tickets');
+    expect(drillCountWords(2, 1)).toBe('2 rows, 1 ticket');
   });
 });
 

@@ -244,7 +244,7 @@ describe('when the board changes', () => {
 
 describe('the drill', () => {
   function drillAnswer(page: number, count: number, restarted = false): DrillAnswer {
-    return { title: 'Finished', value: { v: 3 }, unit: 'estimate', estimates: 'points', count, counted: count, page, pages: 3, restarted, rows: [], at: 1 } as unknown as DrillAnswer;
+    return { title: 'Finished', value: { v: 3 }, unit: 'estimate', estimates: 'points', count, tickets: count, counted: count, page, pages: 3, restarted, rows: [], at: 1 } as unknown as DrillAnswer;
   }
 
   it('asks a later page with the count the first answered, and takes the page its answer starts again at', async () => {

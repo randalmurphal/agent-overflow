@@ -195,12 +195,15 @@
       <p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-empty">No tickets.</p>
     {:else}
       <ul class="flex flex-col" data-testid="dashboard-list">
-        {#each value.tickets ?? [] as row (row.id)}
+        {#each value.tickets ?? [] as row (row.row)}
           <li class="border-t border-border-subtle first:border-t-0">
             <button type="button" class="flex w-full min-w-0 items-baseline gap-2 py-1 text-left text-[0.75rem] hover:bg-surface-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" data-testid="dashboard-list-row" onclick={() => onTicket(row)}>
               <span class="shrink-0 font-mono text-[0.6875rem] text-fg-muted">{row.key}</span>
-              <span class="min-w-0 flex-1 truncate text-fg">{row.title}</span>
-              {#if row.note}<span class="shrink-0 truncate text-[0.6875rem] text-fg-muted">{row.note}</span>{/if}
+              <!-- Under compact the note goes under the title, which keeps its width. -->
+              <span class="flex min-w-0 flex-1 items-baseline gap-2 compact:flex-col compact:items-start compact:gap-0">
+                <span class="w-full min-w-0 flex-1 truncate text-fg">{row.title}</span>
+                {#if row.note}<span class="max-w-[50%] shrink-0 truncate text-[0.6875rem] text-fg-muted compact:max-w-full" data-testid="dashboard-list-note">{row.note}</span>{/if}
+              </span>
               {#if row.assignee}<span class="max-w-[8rem] shrink-0 truncate text-[0.6875rem] text-fg-muted">{row.assignee}</span>{/if}
             </button>
           </li>

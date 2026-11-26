@@ -228,6 +228,36 @@ func TestDrillAnswersTheCellsNumberWithItsRows(t *testing.T) {
 	}
 }
 
+// A drill's rows read as the metric counts them: a count's rows carry no
+// value, since the value is not what it counts (the note says it), and a
+// ticket finished in two sprints is two rows, each with its sprint and a
+// key of its own, of one ticket.
+func TestDrillRowsReadAsTheMetricCounts(t *testing.T) {
+	t.Parallel()
+	f := teamBoard().member("s6", "t2", true)
+	e := evaluator()
+	b := f.board()
+	stuck, err := e.Drill(context.Background(), b, DrillRequest{Request: utcSprints3, Widget: "stuck"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := stuck.Rows[0]; r.Key != "WEB-3" || r.Value != nil || r.Note != "in In Progress for 5 days" {
+		t.Fatalf("stuck's first row = %+v; want WEB-3 with its days in the note and no value", r)
+	}
+	pace, err := e.Drill(context.Background(), b, DrillRequest{Request: utcSprints3, Widget: "pace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []string
+	for _, r := range pace.Rows {
+		rows = append(rows, fmt.Sprintf("%d %s %s %g", r.Row, r.Key, r.Period, *r.Value))
+	}
+	want := []string{"0 WEB-6 WEB Sprint 4 8", "1 WEB-2 WEB Sprint 5 5", "2 WEB-2 WEB Sprint 6 5", "3 WEB-1 WEB Sprint 6 3"}
+	if !reflect.DeepEqual(rows, want) || pace.Count != 4 || pace.Tickets != 3 {
+		t.Fatalf("pace drill = %v, %d rows of %d tickets; want %v, 4 rows of 3 tickets", rows, pace.Count, pace.Tickets, want)
+	}
+}
+
 // A cell whose bucket key is empty, Unassigned or No epic, opens its own
 // rows and its series alone, never the whole widget's; a drill's target
 // is checked against its widget's form.
