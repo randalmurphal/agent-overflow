@@ -202,8 +202,9 @@ func (s *Service) cardViews(root int64, cards []shownCard, also []string) ([]Car
 }
 
 // parentNames are the names the mirror holds of parents, by ID, a store
-// lookup's bound at a time (store ListMirrorParents): the one source of a
-// parent's key and title for every view.
+// lookup's bound at a time (store ListMirrorParents): the source of a
+// parent's key and title for every view. A detail view whose parent has
+// no name here shows the name its read gave (detailViews).
 func (s *Service) parentNames(root int64, parents []string) (map[string]store.MirrorParentName, error) {
 	out := make(map[string]store.MirrorParentName, len(parents))
 	for batch := range slices.Chunk(parents, readBatch) {

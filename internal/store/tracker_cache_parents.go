@@ -66,15 +66,13 @@ type mirrorNameObservation struct {
 // of it, and each named parent's, the first card's naming winning.
 func mirrorNameObservations(cards []mirrorCardRow) []mirrorNameObservation {
 	byID := make(map[string]mirrorNameObservation, len(cards))
-	own := make(map[string]bool, len(cards))
 	for _, c := range cards {
-		byID[c.ID], own[c.ID] = mirrorNameObservation{ID: c.ID, Key: c.Key, Title: c.Title, Level: c.TypeLevel}, true
+		byID[c.ID] = mirrorNameObservation{ID: c.ID, Key: c.Key, Title: c.Title, Level: c.TypeLevel}
 	}
 	for _, c := range cards {
-		if p := c.ParentName; p != nil && !own[c.Parent] {
-			if _, named := byID[c.Parent]; !named {
-				byID[c.Parent] = mirrorNameObservation{ID: c.Parent, Key: p.Key, Title: p.Title, Level: p.TypeLevel}
-			}
+		if _, named := byID[c.Parent]; c.ParentName != nil && !named {
+			p := c.ParentName
+			byID[c.Parent] = mirrorNameObservation{ID: c.Parent, Key: p.Key, Title: p.Title, Level: p.TypeLevel}
 		}
 	}
 	out := make([]mirrorNameObservation, 0, len(byID))

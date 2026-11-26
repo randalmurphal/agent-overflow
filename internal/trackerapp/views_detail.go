@@ -281,8 +281,10 @@ func (s *Service) detailView(root int64, row store.TrackerConnection, doc ticket
 // are the mirror's shared catalog's and, for the IDs that leaves out (a
 // comment's author no card names), its own catalog's; its parent's key
 // and title from the parent's name the mirror holds (store
-// ListMirrorParents; none: the parent by ID alone), the parent being the
-// shown card's; and each linked issue's key, title and status, from the
+// ListMirrorParents), else from the name the document's read gave when
+// the shown card names the same parent (a read of an issue no stored
+// issue names the parent of keeps no name), else the parent by ID alone,
+// the parent being the shown card's; and each linked issue's key, title and status, from the
 // mirror's card of it when the mirror keeps one (else from the detail).
 // The cards of every document are read in one lookup, then the parents'
 // names of every document in one, and then the users and statuses of
@@ -340,8 +342,11 @@ func (s *Service) detailViews(root int64, row store.TrackerConnection, docs []ti
 		return nil, nil, err
 	}
 	for i := range shown {
-		if p, ok := named[string(shown[i].d.Card.Parent)]; ok {
+		parent := shown[i].d.Card.Parent
+		if p, ok := named[string(parent)]; ok {
 			shown[i].parent = &p
+		} else if read := docs[i].d.Card; read.Parent == parent {
+			shown[i].parent = mirrorParentName(read)
 		}
 	}
 	names, err := s.names(root, users.ids, statuses.ids)

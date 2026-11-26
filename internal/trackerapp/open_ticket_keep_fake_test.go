@@ -823,3 +823,85 @@ func TestAScrumBoardNamesTheEpicsItDoesNotList(t *testing.T) {
 		t.Fatalf("a tool's read of several names the parent %+v; want %+v", reads, want)
 	}
 }
+
+// A read of a ticket the mirror does not keep (OPS-1, which no board,
+// link or open ticket keeps) names its parent as the read gave it, the
+// ticket file too: before any board read, when no name is stored, and
+// after the parent's rename, over the older name a board read stored.
+func TestAReadOfAnUnkeptTicketNamesItsParent(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name                 string
+		scenario             func(t *testing.T) (*fakeScenario, Connection, Scope)
+		issue, parent, child string
+		parentKey, title     string
+	}{
+		{
+			name: "jira",
+			scenario: func(t *testing.T) (*fakeScenario, Connection, Scope) {
+				s := newFakeScenarioWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour}, func(at time.Time) trackerfake.Fixture {
+					site := keepSite(at)
+					site.Issues[4].Parent = "10104"
+					return trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}}
+				}, "example.atlassian.net")
+				conn := s.addJira()
+				s.writeToken(conn, "fake-jira-token-1")
+				return s, conn, Scope{Connection: conn.ID, Board: "1"}
+			},
+			issue: "10105", parent: "10104", child: "10101", parentKey: "WEB-4", title: "The epic",
+		},
+		{
+			name: "linear",
+			scenario: func(t *testing.T) (*fakeScenario, Connection, Scope) {
+				s := newFakeScenarioWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour}, func(at time.Time) trackerfake.Fixture {
+					ws := linearSeed(at)
+					ws.Teams = append(ws.Teams, trackerfake.LinearTeam{ID: lid(11), Key: "OPS", Name: "Ops", Timezone: "UTC", DefaultState: lid(25), Members: []string{lid(1)}})
+					ws.States = append(ws.States, trackerfake.LinearState{ID: lid(25), Team: lid(11), Name: "Todo", Type: "unstarted", Position: 0})
+					ws.Issues[1].Parent = lid(60)
+					ws.Issues = append(ws.Issues, trackerfake.LinearIssue{ID: lid(70), Team: lid(11), Number: 1, Title: "An ops task", State: lid(25),
+						Creator: lid(1), Parent: lid(60), SortOrder: 100, CreatedAt: at.Add(-48 * time.Hour), UpdatedAt: at.Add(-48 * time.Hour)})
+					return trackerfake.Fixture{Linear: []trackerfake.LinearWorkspace{ws}}
+				})
+				conn := s.addLinear()
+				s.writeToken(conn, "lin_api_fake00001")
+				return s, conn, Scope{Connection: conn.ID, Board: tracker.BoardID(lid(10))}
+			},
+			issue: lid(70), parent: lid(60), child: lid(61), parentKey: "WEB-1", title: "Fix login",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s, conn, scope := c.scenario(t)
+			s.listBoards(conn.ID, scope.Board)
+			issue := tracker.IssueID(c.issue)
+			check := func(what string, want ParentView) {
+				t.Helper()
+				d, _, err := s.svc.UnmarkedIssueDetail(t.Context(), conn.ID, issue, Interactive)
+				if err != nil || d.Card.Key != "OPS-1" || d.Card.Parent == nil || *d.Card.Parent != want {
+					t.Fatalf("%s: a tool's read of OPS-1 names its parent %+v, %v; want %+v", what, d.Card.Parent, err, want)
+				}
+				v, err := s.svc.DetailForThread(t.Context(), conn.ID, issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if line := "Parent: " + want.Key + " " + want.Title; !strings.Contains(TicketFileText(v), line+"\n") {
+					t.Fatalf("%s: OPS-1's ticket file\n%s\nwants %q", what, TicketFileText(v), line)
+				}
+				if card, _ := s.kept(t, conn, issue); card {
+					t.Fatalf("%s: the mirror keeps OPS-1", what)
+				}
+			}
+			check("before any board read", ParentView{ID: c.parent, Key: c.parentKey, Title: c.title})
+			s.syncBoard(t, scope)
+			p := s.provider(conn.ID)
+			applied(t, "rename the parent", p.Edit(t.Context(), tracker.EditInput{Issue: tracker.IssueID(c.parent), Fields: []tracker.FieldEdit{{Field: tracker.FieldTitle, Value: tracker.TypedValues("Checkout")}}}))
+			want := ParentView{ID: c.parent, Key: c.parentKey, Title: "Checkout"}
+			check("after the rename", want)
+			// The parent is a child's the board keeps: the read wrote its
+			// name, and the board's child shows the read's.
+			if got := s.boardParents(t, scope)[c.child]; got != want {
+				t.Fatalf("after the read the board's child names its parent %+v; want %+v", got, want)
+			}
+		})
+	}
+}
