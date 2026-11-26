@@ -24,6 +24,7 @@
   import ToolsRow from './ToolsRow.svelte';
   import SettingsFooter from './SettingsFooter.svelte';
   import SidebarResizer from './SidebarResizer.svelte';
+  import { keepLinkedThreadSetups, releaseLinkedThreadSetups } from '../../stores/threadLinkMarks.svelte';
 
   interface Props {
     pane: ThreadPane | null;
@@ -48,6 +49,9 @@
   // (HMR, tests) don't duplicate listeners.
   const releaseJumpHints = subscribeJumpHints();
   onDestroy(releaseJumpHints);
+  // The linked tickets' marks read their projects' status groups.
+  $effect(() => keepLinkedThreadSetups());
+  onDestroy(releaseLinkedThreadSetups);
 
   let compact = $derived(isCompactLayout());
   // Compact has no rail and no resizer: the list IS the root screen, so

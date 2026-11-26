@@ -1,7 +1,8 @@
 // Real-Chromium suite for completing a sprint (SprintCompleteForm): the
 // form says how much is done and how many of the tickets the board shows
-// are not in a finished status, both by the tracker's status groups whatever
-// the project regroups, always shows where the tracker's
+// are not in a finished status, both by Jira's rule for its completion (a
+// status of the board's last column that has statuses is finished)
+// whatever the project regroups, always shows where the tracker's
 // unfinished ones go, the first future sprint unless another is picked,
 // and before the sprint is read whole says it cannot count them yet; a
 // destination a refresh took from the list is not sent.
@@ -29,8 +30,12 @@ const B = boardWriteContext({ backend: HOME_BACKEND, connection: 'c1', board: '1
 const sprint = (id: string, name: string, state: string) => ({ id, name, state, total: { rows: 0, estimate: 0 } }) as SprintView;
 const row = (id: string, group: string) => ({ order: id, estimate: 1, card: { id, key: `WEB-${id}`, title: id, status: { id: group, group }, created: 0, updated: 0 } }) as RowView;
 const TOTAL = { rows: 3, estimate: 3, unestimated: 0 };
-/** A board whose project puts `regrouped` statuses in other groups. */
-const held = (regrouped: Record<string, string> = {}) => ({ regrouped: new Map(Object.entries(regrouped)), leftOut: new Set() }) as unknown as HeldBoard;
+/** A board whose columns hold `columns`' statuses (each row's status is
+ * named for its group), and whose project puts `regrouped` statuses in
+ * other groups. */
+const held = (regrouped: Record<string, string> = {}, columns = [['todo'], ['in_progress'], ['done']]) => ({
+  regrouped: new Map(Object.entries(regrouped)), leftOut: new Set(), shape: { columns: columns.map((ids) => ({ statuses: ids.map((id) => ({ id })) })) },
+}) as unknown as HeldBoard;
 
 function section(extra: Partial<BacklogSection>): BacklogSection {
   return {
@@ -78,11 +83,13 @@ describe('completing a sprint', () => {
     expect(completed.mock.calls[0][1]).toEqual({ board: '1', sprint: '8', move_to: '9' });
   });
 
-  it('counts by the tracker\'s status groups, not those the project regroups or leaves out', async () => {
+  it('counts by the board\'s last column that has statuses, not the project\'s status groups or the tracker\'s', async () => {
     // The board's total is the project's: In progress left out of it.
-    open(section({ total: { rows: 2, estimate: 2, unestimated: 0 } }), undefined, held({ todo: 'done', in_progress: 'left_out' }));
+    // Done sits in the first column, so only In progress is finished.
+    const rows = [row('1', 'done'), row('2', 'todo'), row('3', 'in_progress'), row('4', 'in_progress')];
+    open(section({ rows, total: { rows: 2, estimate: 2, unestimated: 0 } }), undefined, held({ todo: 'done', in_progress: 'left_out' }, [['todo', 'done'], ['in_progress'], []]));
     await waitFor(() => document.querySelector('[data-testid="sprint-complete-form"]') !== null, 'the form');
-    expect(el('sprint-complete-summary').textContent?.replace(/\s+/g, ' ').trim()).toBe('1 of 3 points done. 2 of the tickets this board shows are not in a finished status.');
+    expect(el('sprint-complete-summary').textContent?.replace(/\s+/g, ' ').trim()).toBe('2 of 4 points done. 2 of the tickets this board shows are not in a finished status.');
   });
 
   it('sends no destination a refresh took from the list, and asks for another', async () => {

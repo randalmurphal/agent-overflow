@@ -248,6 +248,11 @@ describe('a moved card on the Board screen', () => {
   const shownOf = (held: HeldBoard) => screenColumns(held).map((col) => shownColumn(held, col, { mine: null, words: [] }));
   const ids = (col: { rows: readonly RowView[] }) => col.rows.map((r) => r.card.id);
 
+  it('marks each column by the groups the project puts its statuses in, a left-out status by the tracker\'s', () => {
+    const held = { ...kanban(), regrouped: new Map([['s1', 'in_progress'], ['s2', 'left_out'], ['s9', 'done']]) };
+    expect(screenColumns(held).map((col) => col.statusGroups)).toEqual([['in_progress'], ['in_progress', 'done'], ['done']]);
+  });
+
   it('answers the columns a ticket\'s moves reach, each with its moves', () => {
     const held = kanban();
     const move = (id: string, to: string) => ({ id, name: id, to: { id: to } }) as never;

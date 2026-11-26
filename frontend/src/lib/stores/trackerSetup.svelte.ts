@@ -22,6 +22,10 @@
 // save runs at a time for a project. A save with no surface holding the
 // project holds it for the save's length.
 //
+// The status marks of the project's tickets read its status groups from
+// the held setup (`trackerRegroupsOf`): the ticket screen holds its
+// project's, the thread rows and header theirs (`threadLinkMarks`).
+//
 // The page's statuses (`ProjectTrackerStatuses`) are held the same way,
 // read on hold, on the event and on reconnect: the statuses the setup
 // regroups off the boards are part of their answer.
@@ -34,6 +38,7 @@ import { projectBackend } from '../transport/entityIndex';
 import { hasScope, pageGrantsResolved } from '../transport/scopes';
 import { onBackendStatusChange } from './transportStatus.svelte';
 import { onTrackerSetupUpdated } from './trackerBoardEvents';
+import type { Regroups } from './statusMarkGroup';
 
 /** A held read: its answer, whether it is the stored one, its failure. */
 abstract class HeldRead<T> {
@@ -98,6 +103,8 @@ abstract class HeldRead<T> {
 
 class HeldSetup extends HeldRead<SetupView> {
   saving = $state(false);
+  /** Each site's statuses the setup regroups, by `siteKey`. */
+  readonly regroups = $derived(regroupsOf(this.value));
   /** A change was told while a save ran: read once it has settled. */
   readOwed = false;
 
@@ -193,6 +200,25 @@ export function acquireTrackerSetup(project: string): () => void {
 export function trackerSetupOf(project: string): TrackerSetupState {
   const entry = setups.get(project);
   return entry ? { view: entry.value, current: entry.current, error: entry.error, saving: entry.saving } : NO_SETUP;
+}
+
+/** The statuses `project`'s setup puts in another group than the
+ * tracker's on `tracker`'s site `site`, while its setup is held and read;
+ * none otherwise. Reactive. */
+export function trackerRegroupsOf(project: string, tracker: string, site: string): Regroups | undefined {
+  return setups.get(project)?.regroups.get(siteKey(tracker, site));
+}
+
+function siteKey(tracker: string, site: string): string {
+  return `${tracker}\u0000${site}`;
+}
+
+function regroupsOf(view: SetupView | null): ReadonlyMap<string, Regroups> {
+  const out = new Map<string, Regroups>();
+  for (const entry of view?.setup.status_groups ?? []) {
+    out.set(siteKey(entry.tracker, entry.site), new Map(Object.entries(entry.statuses) as [string, string][]));
+  }
+  return out;
 }
 
 /** Reads `project`'s setup again if a surface holds it. */

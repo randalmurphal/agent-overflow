@@ -15,7 +15,9 @@
 // before anything is typed becomes a linked thread the sidebar lists; a
 // linked New thread whose text is erased keeps its link, and once the link
 // is removed it is deleted as an empty draft is, leaving a New thread with
-// no ticket.
+// no ticket. The mark on both surfaces draws the group the thread's
+// project puts the ticket's status in, a status left out of counts Jira's,
+// and follows a save of the project's setup without a reload.
 
 import type { Locator, Page } from '@playwright/test';
 
@@ -277,5 +279,48 @@ export function registerThreadTicketLinkFlow({ compact }: LinkSurface): void {
     await expect(shell(page, linked).getByTestId('thread-row-worktree')).toHaveCount(0);
     expect(await linkOf(harness, linked)).toBeNull();
   });
-}
 
+  test('a linked ticket\'s mark draws its thread\'s project\'s status groups in the sidebar and the header, and follows a save without a reload', async ({ harness, page }) => {
+    const board = await connectFakeJiraBoard(harness, compact ? 'compact-thread-link-groups' : 'thread-link-groups', undefined, [{
+      title: 'Linked thread', turns: [{ userText: 'Linked thread', items: [{ kind: 'assistant_text', summary: 'done' }] }],
+    }]);
+    const [linked] = board.threadIds;
+    await harness.rpc('SetThreadTicket', linked, { kind: 'jira', site: board.site, issueId: ISSUE_ID });
+    await harness.open(page);
+    const ticket = shell(page, linked).getByTestId('thread-row-ticket');
+    const mark = (within: Locator) => within.locator('[data-status-group]').first();
+    await expect(mark(ticket), 'WEB-1 is In Progress, by Jira').toHaveAttribute('data-status-group', 'in_progress', { timeout: 15_000 });
+    await openThread(page, linked, 'Linked thread', compact);
+    /** The header's mark: the button's, or the Thread actions menu's row on the phone. */
+    const expectHeaderMark = async (group: string) => {
+      if (!compact) {
+        await expect(mark(page.getByTestId('chat-header-ticket'))).toHaveAttribute('data-status-group', group, { timeout: 15_000 });
+        return;
+      }
+      await page.getByTestId('chat-header-more').tap();
+      await expect(mark(page.getByTestId('chat-header-menu-ticket'))).toHaveAttribute('data-status-group', group, { timeout: 15_000 });
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('chat-header-menu-ticket')).toHaveCount(0);
+    };
+    await expectHeaderMark('in_progress');
+
+    // The project counts In Progress as Done: both marks follow the save.
+    const save = async (statuses: Record<string, string>) => {
+      const { revision } = await harness.rpc<{ revision: string }>('ProjectTrackerSetup', board.projectId);
+      const answer = await harness.rpc<{ saved: boolean }>('SetProjectTrackerSetup', board.projectId, revision, {
+        status_groups: Object.keys(statuses).length > 0 ? [{ tracker: 'jira', site: board.site, statuses }] : [], ticket_pins: [],
+      });
+      expect(answer.saved).toBe(true);
+    };
+    await save({ 10001: 'done' });
+    await expectHeaderMark('done');
+    if (compact) await back(page, compact);
+    await expect(mark(ticket)).toHaveAttribute('data-status-group', 'done', { timeout: 15_000 });
+
+    // Left out of counts, it has no group of its own: Jira's mark again.
+    await save({ 10001: 'left_out' });
+    await expect(mark(ticket)).toHaveAttribute('data-status-group', 'in_progress', { timeout: 15_000 });
+    await save({ 10001: 'todo' });
+    await expect(mark(ticket)).toHaveAttribute('data-status-group', 'todo', { timeout: 15_000 });
+  });
+}
