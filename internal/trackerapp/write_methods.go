@@ -178,7 +178,7 @@ func (s *Service) AddWorklog(ctx context.Context, id string, in WorklogRequest) 
 	if err != nil {
 		return WriteView{}, err
 	}
-	return s.write(ctx, id, timeCall(m.Issue, m, tracker.TimeTracker.AddWorklog))
+	return s.write(ctx, id, timeCall(m.Issue, []tracker.WorklogInput{m}, tracker.TimeTracker.AddWorklogs))
 }
 
 // EditWorklog changes a worklog, as read, on its issue.
@@ -209,11 +209,15 @@ func (s *Service) DeleteWorklog(ctx context.Context, id string, in WorklogDelete
 // later read day are read again from that day before they are totaled.
 // Failure is why a refresh could not read them from the tracker: they
 // are then as the mirror held them before.
+// Drafted are the author's time draft entries of the range (time_draft.go),
+// every state, read in the same snapshot; a computer from before the time
+// draft answers none.
 type WorklogDays struct {
-	Worklogs []WorklogView `json:"worklogs"`
-	More     bool          `json:"more,omitempty"`
-	Unread   []string      `json:"unread,omitempty"`
-	Failure  *FailureView  `json:"failure,omitempty"`
+	Worklogs []WorklogView   `json:"worklogs"`
+	More     bool            `json:"more,omitempty"`
+	Unread   []string        `json:"unread,omitempty"`
+	Failure  *FailureView    `json:"failure,omitempty"`
+	Drafted  []TimeEntryView `json:"drafted,omitempty"`
 }
 
 // worklogReadSpan is the most days one mirror read of worklogs covers: a
@@ -238,7 +242,7 @@ func (s *Service) Worklogs(id, author, from, to string) (WorklogDays, error) {
 	if n > worklogReadSpan {
 		return WorklogDays{}, fmt.Errorf("%w: worklogs are read at most %d days at a time", ErrInvalidRequest, worklogReadSpan)
 	}
-	if err := s.enter(); err != nil {
+	if err := s.enterTime(); err != nil {
 		return WorklogDays{}, err
 	}
 	defer s.leave()
@@ -255,7 +259,7 @@ func (s *Service) Worklogs(id, author, from, to string) (WorklogDays, error) {
 	if !hasTimeTracking(snap.Connection.Kind) {
 		return WorklogDays{}, fmt.Errorf("trackerapp: connection %s has no time tracking: %w", id, tracker.ErrUnsupported)
 	}
-	out := WorklogDays{Worklogs: make([]WorklogView, 0, len(snap.Logs)), More: snap.More}
+	out := WorklogDays{Worklogs: make([]WorklogView, 0, len(snap.Logs)), More: snap.More, Drafted: timeEntryViews(snap.Entries)}
 	for _, m := range snap.Logs {
 		w, err := worklogOf(m)
 		if err != nil {

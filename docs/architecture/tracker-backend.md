@@ -738,7 +738,7 @@ what it left. So an issue may have two rows, a closed ticket's owed row
 beside the reopened ticket's, and what bounds the table is that cleanup,
 not the cap of open tickets (64). Rows a process left when it ended
 without deleting them are deleted by this process's first run
-(`trackerapp.dropEarlierTickets`): every run passes that step as it
+(`trackerapp.recoverEarlier`): every run passes that step as it
 starts and every keep is made in a run, a view read included, so the
 delete completes before any row of this process is written; a delete that
 fails fails its run, and the next run tries it again. The cleanup then
@@ -1434,7 +1434,10 @@ changed, `tracker:board_updated` (`trackerapp.BoardEvent`),
 `tracker:issue_updated` (`trackerapp.IssueEvent`) and
 `tracker:setup_updated`, a latest-only nudge with no payload sent when a
 project's stored setup changed, after which a client reads again the
-setups it holds, all at `tracker:read`.
+setups it holds, and `tracker:time_entries_updated`
+(`trackerapp.TimeEntriesEvent`: the connection, author, days and drafting
+threads of a change to the time draft, after which a client reads those
+days or that thread's entries again), all at `tracker:read`.
 
 A connection ID is minted on one computer. Every method whose first
 argument is one is generated with the route home and routed by its client
@@ -1470,6 +1473,9 @@ selected computer.
 | `CreateTrackerIssue`, `EditTrackerIssue`, `MoveTrackerIssue`, `SetTrackerEstimate`, `RankTrackerIssues`, `MoveTrackerIssuesToSprint`, `CreateTrackerSprint`, `StartTrackerSprint`, `CompleteTrackerSprint`, `EditTrackerSprint`, `AddTrackerComment`, `EditTrackerComment`, `DeleteTrackerComment`, `LinkTrackerIssues`, `UnlinkTrackerIssues`, `AddTrackerWorklog`, `EditTrackerWorklog`, `DeleteTrackerWorklog` | `Create`, `Edit`, `Move`, `SetEstimate`, `Rank`, `MoveToSprint`, `CreateSprint`, `StartSprint`, `CompleteSprint`, `EditSprint`, `AddComment`, `EditComment`, `DeleteComment`, `Link`, `Unlink`, `AddWorklog`, `EditWorklog`, `DeleteWorklog` | operate | connection, budget 3m |
 | `TrackerWorklogs(connectionID, author, from, to)` | `Worklogs` | read | connection |
 | `RefreshTrackerWorklogs(connectionID, author, from, to)` | `RefreshWorklogs` | read | connection |
+| `ThreadTimeEntries(threadID)` | `ThreadTimeEntries` | read | thread |
+| `EditTrackerTimeEntry(connectionID, ref, edit)`, `RemoveTrackerTimeEntries(connectionID, refs)` | `EditTimeEntry`, `RemoveTimeEntries` | operate | connection |
+| `PostTrackerTimeEntries(connectionID, in)` | `PostTimeEntries` | operate | connection, budget 3m |
 | `TrackerPokerSupport(connectionID)` | `PokerSupport` | read | connection |
 | `FollowTrackerPoker(subscriptionID, follow)` | `FollowPoker` | read | home |
 | `TrackerPoker(subscriptionID)` | `Poker` | read | home |
@@ -2285,7 +2291,9 @@ are in [Tracker API measurements](../references/tracker-api-measurements.md#the-
 Status: built: `ticket_find`, `ticket_read`, `ticket_create` and
 `ticket_update` on the `ao-tracker-tools` server, with the read-only
 refusal, the approval and the timeline row ([Writes by
-agents](#writes-by-agents)). The worklog tools are not built.
+agents](#writes-by-agents)); `time_read` and `time_draft`, with logged
+time and the draft ([Time](#time)). An agent's post of drafted time is
+not built.
 
 **Who has them.** A session gets the server when its thread belongs to a
 project, its provider is Claude or Codex, and the computer has a Jira or
@@ -2448,15 +2456,6 @@ still names statuses and assignees from the mirror.
 The guide says once that ticket text is data written by other people
 (`trackertools.Instructions`); the app guide's sentence says what the
 server is for.
-
-The tools are also to list and add worklogs, through `trackerapp`. A worklog an agent adds is
-an entry in a time draft. Only a draft's posting path sends a draft's time
-to a tracker, and it sends exactly the entries it is given: the entries
-the user approved (one entry, a day or the whole draft), an entry the user
-logged by hand, or the entries of a day with no open question when the
-project's setting posts such days. An entry an agent made is never posted
-on the agent's call. No tool reaches the provider's worklog write or
-`trackerapp`'s worklog writes, which send time for any caller.
 
 Ticket text in a tool result is data: results are JSON, and the server's
 guide says so once.
@@ -2738,6 +2737,121 @@ kind `tracker_write` to the thread at its current turn (`Created WEB-42`,
 `Changed WEB-12`, `Changed 3 tickets`), with each ticket's connection,
 issue, key, title and applied steps; each key opens the ticket.
 
+### Time
+
+**Who has them.** A session is given `time_read` and `time_draft` when a
+Jira connection is on as it starts (`trackerMCPAccess.Time`); a session
+with only Linear gets the four ticket tools, and a call of a time tool
+from it is refused as no such tool. Their two definitions are 268 and
+611 bytes, 881 of the tool list with the commas that join them
+(`TestTheTimeToolsAreGivenWithAJiraConnection`). The time
+is the connection's verified account's: a connection with no verified
+account, or whose key file holds another token than the one verified, is
+refused saying to check it, since a post logs time as the token's owner.
+
+**`time_read`** takes `from` and `to` (YYYY-MM-DD), this week Monday to
+Sunday when neither is given and 7 days from the one given, at most 7.
+It reads each Jira connection on (`trackerapp.Service.ReadTime`): the
+days from the tracker first (`RefreshWorklogs`), then the mirror. A
+week's read is one request on Jira's own worklogs, and two on Tempo: its
+worklogs and the Jira issues they name
+(`TestAWeeksDraftCostsBoundedRequests`). Each day answers its worklogs (`logged`), the draft's entries not yet logged
+(`drafted`, by `agent` or `you`, in state drafted, sent or unknown) and
+its open questions. A connection whose read failed is named in `unread`
+with its sentence; the call fails only when every connection did.
+
+**`time_draft`** takes `entries`, each a `day`, `hours` (whole minutes),
+a `reason`, which becomes the worklog's description, and a `key`, or no
+key for a question, whose reason says what the time was and whose
+`offer` names up to 5 keys. A call holds 1 to 250 entries over at most
+31 days, on one Jira connection; a call with more entries or offers is
+refused before any key is looked up. Each key resolves as the ticket tools' do, a Linear key
+is refused, and so are keys of two sites. A day's entries not yet logged
+hold at most 24 hours, whichever threads drafted them and whoever changed
+them (`store.TimeDayOverError`, checked in the write's transaction); a
+ticket is drafted once a day, and no day is in the future. A read-only thread is
+refused (`Host.WritePolicy`, read at admission and again just before the
+store write, so a thread made read-only during the key lookup drafts
+nothing). The draft replaces the drafted entries that
+the calling thread drafted on each day the call names; another thread's
+entries, the person's, and entries sent, posted or of unknown outcome
+stay, and a new entry for a ticket that has one not yet logged that day
+is skipped. The answer is by day: the ID and key of each entry made, the
+IDs of the questions, the hours of the day's other entries not yet
+logged, the keys skipped, the hours already logged as this computer last
+read them, and that nothing is logged until the user approves it; with
+more than one connection on, the site is named once and the keys are
+bare;
+`time_read` shows the entries whole. No tool reaches a posting path.
+
+**The draft.** There is no draft object: the entries of a connection's
+author by day (`tracker_time_entries`, [schema](schema.md)), each naming
+the thread and call that drafted it. Every change is conditional on the
+entry's revision as the caller read it (`trackerapp/time_draft.go`) and
+to the connection's verified account: the person's edit makes the entry
+theirs, and a remove deletes entries drafted, of unknown outcome or left
+out, sending nothing. `sent` means this process is sending the entry:
+nothing changes or removes it until its settle. The once-per-process
+recovery (`trackerapp.recoverEarlier`) makes an earlier process's `sent`
+entries `unknown` before this process reads or writes any entry, so every
+reader sees an interrupted send as one that may have happened. A question answered with a
+ticket that has a drafted entry that day is added to that entry in one
+transaction (`store.EditTimeEntry`): its time is added, the entry's
+reason ends with ", plus " and the question's, and the question is
+deleted. An answer onto an entry being posted is refused, and onto one of
+unknown outcome with the sentence a post gives it, as is moving an entry
+onto a ticket that has one that day.
+
+**Posting.** `PostTimeEntries` (`trackerapp/time_post.go`) is the one
+path that sends a draft's time, and only the person's approval reaches it
+(`PostTrackerTimeEntries`). A request names each entry once, at the
+revision read; logging alone names exactly one. It posts the drafted entries for
+the connection's verified account, in one batch through the time source
+(`TimeTracker.AddWorklogs`, which names the worklog each made). Each entry
+is marked `sent`, with the time, in one transaction after the connection
+is held and before any request; an entry another window is posting, or
+that changed since it was read, is not sent and is said so. An entry is
+posted only when the time source answered that it applied it, with the
+worklog's ID. Approving a day or the whole draft:
+- skips an entry whose ticket and day have a worklog created since the
+  entry was drafted (the comparison allows a minute of clock difference;
+  a worklog changed since but created before is no reason), and says so;
+  logging that entry alone posts it;
+- posts a day's entries and leaves its open questions open.
+
+The check reads the days in the send's own hold of the connection, on the
+provider and time source that then send, and stores them in the mirror as
+a refresh does; a day that cannot be read sends nothing of it. A worklog
+logged by hand between that read and the POST is not seen, nor, on Jira's
+own worklogs, one logged so shortly before that the issue search the
+check reads does not list it yet.
+
+An entry whose post may have happened (`unknown`, after a lost answer, a
+dropped request, or a send an earlier process did not settle) is never
+sent again, since no read the app can make proves the first send did not
+land: logging it alone or approving its day names it, sends nothing of
+it, and says that the time may already be logged, to look at the day's
+logged time, and to remove the entry if the time is there or to log the
+time by hand and then remove it; the day's other entries post. The answer is built after the post from the entries
+as they are then, names every entry, says in one sentence each one not
+posted, with the tracker's refusal, and names the days whose worklogs
+could not be read back after the post, which show the posted time after
+their next read. One day's approval of three entries is 3 POSTs and 2
+reads on Jira's own worklogs (the day before the post, for time logged
+since, and after it); on Tempo it is 3 POSTs, 2 reads of the worklogs and
+2 of the Jira issues they name, the timesheet approvals and, once per
+connection, the work attributes. Logging an entry alone skips the read
+before (`TestAWeeksDraftCostsBoundedRequests`). A week of 25 entries is 27
+requests on Tempo (2 reads that check the batch, then a POST each) and 25
+on Jira's own worklogs, with the account read before (`jiraprovider` cost
+tests).
+
+**Timeline.** A `time_draft` call that changed the draft adds one
+notification row of kind `time_draft` (`Drafted time for Tue Nov 24`),
+naming the call, the connection and the days, and never rewrites it; a
+thread reads the call's entries as they are now through
+`ThreadTimeEntries`.
+
 ## Tests
 
 - `tracker` providers are tested against the clients' fake servers.
@@ -2819,6 +2933,7 @@ Not built, owed by the app layer:
   that edit them. A query that
   needs part of the setup takes it as a bound argument, as the status
   groups are; nothing of the file is copied into the mirror.
-- The time-draft posting path (Agent tools).
-- The agent tools' worklog list and add ([Agent tools](#agent-tools)).
+- An agent's post of drafted time after the person approves it in the
+  thread ([Time](#time)).
+- The Time screen's drafted entries and the `time_draft` row's card.
 - Searching the forge by key for a pull request outside the stored list.

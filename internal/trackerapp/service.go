@@ -46,6 +46,15 @@ type Store interface {
 	ClaimAgentWrite(w store.AgentWrite, since int64) (store.AgentWrite, bool, error)
 	ResendAgentWrite(id, sent int64) error
 	RecordAgentWrites(sent int64, ws []store.AgentWrite) error
+	// The time draft (store tracker_time_entries.go).
+	ReplaceAgentTimeDays(connection, author string, entries []store.TimeEntry, now int64) (store.TimeDraftWrite, error)
+	TimeEntriesByID(connection string, ids []int64) ([]store.TimeEntry, error)
+	ThreadTimeEntries(thread string) ([]store.TimeEntry, error)
+	EditTimeEntry(connection, author string, ref store.TimeEntryRef, ch store.TimeEntryChange, now int64) (store.TimeEntryEdited, bool, error)
+	RemoveTimeEntries(connection, author string, refs []store.TimeEntryRef) ([]store.TimeEntry, error)
+	MarkTimeEntriesSent(connection string, refs []store.TimeEntryRef, now int64) ([]store.TimeEntry, error)
+	SettleTimeEntries(connection string, outcomes []store.TimeEntrySettle, now int64) ([]store.TimeEntry, error)
+	RecoverEarlierTimeSends(now int64) ([]store.TimeEntry, error)
 	SettleAgentWrite(id int64, issue, key, comment string) error
 	AgentWritesOf(ticket store.TicketRef) ([]store.AgentWriteMark, error)
 }
@@ -81,6 +90,9 @@ type Deps struct {
 	// subscription lock held: they must not block or call the service.
 	EmitBoard func(BoardEvent)
 	EmitIssue func(IssueEvent)
+	// TimeEntriesChanged is told each change of a time draft's entries
+	// (time_draft.go). It must not block or call the service.
+	TimeEntriesChanged func(TimeEntriesEvent)
 	// Settled waits until the first client's reads have settled, or ctx
 	// ends; the linked-issues loop waits for it before its first round.
 	Settled func(ctx context.Context) error
@@ -197,6 +209,7 @@ type Service struct {
 
 	emitBoard       func(BoardEvent)
 	emitIssue       func(IssueEvent)
+	emitTimeEntries func(TimeEntriesEvent)
 	settled         func(context.Context) error
 	clientConnected func() bool
 	loopFailed      func(error)
@@ -210,7 +223,8 @@ type Service struct {
 	// session names this service's open tickets in the mirror, each a
 	// pump of it (bindTickets): the rows of another session were left by
 	// a process that ended, and the first run drops them; earlier.done
-	// reports that delete made (dropEarlierTickets).
+	// reports that delete made, and the time sends that process left
+	// recovered (recoverEarlier).
 	session int64
 	earlier struct {
 		sync.Mutex
@@ -267,7 +281,7 @@ func New(deps Deps) (*Service, error) {
 		clients: map[string]*clients{}, problems: map[string]Problem{},
 		locks: map[lockKey]*scopeLock{}, holds: map[string]*connHold{},
 		logf:      log.Printf,
-		emitBoard: deps.EmitBoard, emitIssue: deps.EmitIssue, settled: deps.Settled,
+		emitBoard: deps.EmitBoard, emitIssue: deps.EmitIssue, emitTimeEntries: deps.TimeEntriesChanged, settled: deps.Settled,
 		clientConnected: deps.ClientConnected, loopFailed: deps.LoopFailed, linksChanged: deps.LinksChanged, cadence: deps.Cadence.withDefaults(),
 		digestSeed: maphash.MakeSeed(), session: int64(binary.LittleEndian.Uint64(session[:]) >> 1),
 		dash: trackerdash.NewEvaluator(deps.Now),

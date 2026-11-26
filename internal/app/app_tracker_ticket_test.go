@@ -76,6 +76,10 @@ func TestTrackerTicketMethodsCarryTheirScopeAndRoute(t *testing.T) {
 		"DeleteTrackerWorklog":                write,
 		"TrackerWorklogs":                     form,
 		"RefreshTrackerWorklogs":              form,
+		"EditTrackerTimeEntry":                {operate, transport.RouteHome, false, 0},
+		"RemoveTrackerTimeEntries":            {operate, transport.RouteHome, false, 0},
+		"PostTrackerTimeEntries":              write,
+		"ThreadTimeEntries":                   {read, transport.RouteThread, false, 0},
 	} {
 		i := slices.IndexFunc(transport.GeneratedMethods, func(m transport.MethodMeta) bool { return m.Name == name })
 		if i < 0 {

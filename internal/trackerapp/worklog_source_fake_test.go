@@ -51,6 +51,13 @@ const tempoTokenFake = "fake-tempo-token-1"
 
 func newTimeScenario(t *testing.T) *timeScenario {
 	t.Helper()
+	return newTimeScenarioWith(t, nil)
+}
+
+// newTimeScenarioWith is newTimeScenario with edit, when set, applied to
+// the Jira site's fixture, made at at.
+func newTimeScenarioWith(t *testing.T, edit func(site *trackerfake.JiraSite, at time.Time)) *timeScenario {
+	t.Helper()
 	var day time.Time
 	s := newFakeScenario(t, func(at time.Time) trackerfake.Fixture {
 		site := jiraSeed(at)
@@ -60,6 +67,9 @@ func newTimeScenario(t *testing.T) *timeScenario {
 		site.Issues[0].Worklogs = []trackerfake.JiraWorklog{{ID: "20001", Author: "acc-user1", Started: day.Add(9 * time.Hour), TimeSpent: 3600}}
 		site.Tempo = &trackerfake.TempoAccount{Token: tempoTokenFake, Worklogs: []trackerfake.TempoWorklog{
 			{ID: 7001, Issue: "10101", Author: "acc-user1", StartDate: day.Format(time.DateOnly), StartTime: "09:00:00", Spent: 1800}}}
+		if edit != nil {
+			edit(&site, at)
+		}
 		return trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}, Linear: []trackerfake.LinearWorkspace{linearSeed(at)}}
 	}, "example.atlassian.net")
 	gate := &worklogGateStore{Store: s.st}

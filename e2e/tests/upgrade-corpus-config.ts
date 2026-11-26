@@ -986,6 +986,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'tracker_cache_issue_missing', reason: 'a read that did not return a linked issue (v167); no step of the top-up links a thread' },
   { table: 'tracker_cache_parents', reason: 'the name of a parent a card names (v172); the fake board\'s issues name no parent' },
   { table: 'tracker_agent_writes', reason: 'a tracker write an agent made through the tracker tools (v171); no step of the top-up runs an agent that writes a ticket' },
+  { table: 'tracker_time_entries', reason: 'the user\'s time draft, which an agent writes through the time tools and the person approves (v173); no step of the top-up runs an agent that drafts time' },
   { table: 'chat_model_profiles', values: { reasoning_effort: ['none', 'minimal', 'low', 'xhigh'], runtime_mode: ['read-only', 'approval-required', 'auto-accept-edits'] }, reason: 'one remembered profile per provider and model holds the settings used last' },
 
   // Provider accounting the mock does not report.

@@ -122,19 +122,20 @@ func (a *App) trackerOrigin() trackerapp.Origin {
 // folder and the app's lifetime exist.
 func (a *App) initTrackers() error {
 	svc, err := trackerapp.New(trackerapp.Deps{
-		Store:          a.store,
-		Changed:        func() { a.emit(eventchan.TrackerConnectionsUpdated, nil) },
-		CredentialsDir: filepath.Join(a.configDir, keyfile.DirName),
-		ConfigDir:      a.configDir,
-		SetupChanged:   func() { a.emit(eventchan.TrackerSetupUpdated, nil) },
-		Origin:         a.trackerOrigin(),
-		Version:        a.version,
-		Now:            time.Now,
-		Life:           a.appCtx,
-		EmitBoard:      func(e trackerapp.BoardEvent) { a.emit(eventchan.TrackerBoardUpdated, e) },
-		EmitIssue:      func(e trackerapp.IssueEvent) { a.emit(eventchan.TrackerIssueUpdated, e) },
-		Settled:        a.awaitFirstReadsSettled,
-		Cadence:        a.trackerCadence,
+		Store:              a.store,
+		Changed:            func() { a.emit(eventchan.TrackerConnectionsUpdated, nil) },
+		CredentialsDir:     filepath.Join(a.configDir, keyfile.DirName),
+		ConfigDir:          a.configDir,
+		SetupChanged:       func() { a.emit(eventchan.TrackerSetupUpdated, nil) },
+		Origin:             a.trackerOrigin(),
+		Version:            a.version,
+		Now:                time.Now,
+		Life:               a.appCtx,
+		EmitBoard:          func(e trackerapp.BoardEvent) { a.emit(eventchan.TrackerBoardUpdated, e) },
+		EmitIssue:          func(e trackerapp.IssueEvent) { a.emit(eventchan.TrackerIssueUpdated, e) },
+		TimeEntriesChanged: a.emitTimeEntries,
+		Settled:            a.awaitFirstReadsSettled,
+		Cadence:            a.trackerCadence,
 		ClientConnected: func() bool {
 			bus := a.eventBus.Load()
 			return bus != nil && bus.SubscriberCount() > 0
