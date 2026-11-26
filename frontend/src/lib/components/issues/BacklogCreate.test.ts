@@ -211,7 +211,7 @@ describe('New ticket', () => {
     await fireEvent.keyDown(title, { key: 'Enter' });
     await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
     expect(created.mock.calls[0][1]).toMatchObject({ project: '10001', fields: [{ field: 'customfield_2', typed: ['APP-1'] }] });
-    expect(created.mock.calls[0][1].fields).toHaveLength(1);
+    expect((created.mock.calls[0][1] as { fields: unknown[] }).fields).toHaveLength(1);
     view.unmount();
   });
 

@@ -59,7 +59,7 @@ export interface EditorTarget {
  * fills no default for. Whether a field may be cleared is `required`
  * alone, which a defaulted field also is. */
 export function mustSupply(f: FieldView): boolean {
-  return f.required && !f.defaulted;
+  return !!f.required && !f.defaulted;
 }
 
 /** The most values a list held here answers at once, as a tracker's

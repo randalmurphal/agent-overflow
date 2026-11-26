@@ -182,7 +182,7 @@
   // The lists the form holds, as their pickers search and show them: a
   // project by its name or key, a type that is not a sub-task by its name.
   const PROJECT_LIST: HeldList<ProjectView> = { searched: [(p) => p.name, (p) => p.key], choice: (p) => ({ id: p.id, name: `${p.name} (${p.key})` }) };
-  const TYPE_LIST: HeldList<IssueTypeView> = { searched: [(t) => t.name], choice: (t) => ({ id: t.id, name: t.name || t.id }), offered: (t) => t.level >= 0 };
+  const TYPE_LIST: HeldList<IssueTypeView> = { searched: [(t) => t.name ?? ''], choice: (t) => ({ id: t.id, name: t.name || t.id }), offered: (t) => t.level >= 0 };
   const ALLOWED_LIST: HeldList<ChoiceView> = { searched: [(c) => c.name ?? ''], choice: (c) => ({ id: c.id, name: c.name ?? '' }) };
 
   const target = $derived(createTarget(sec.list));
