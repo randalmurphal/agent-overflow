@@ -401,7 +401,8 @@ func TestAnUpgradedMirrorNamesWhatItNamedBefore(t *testing.T) {
 		t.Fatalf("the old read named %+v; want the board's epic and the linked one", want)
 	}
 	mustExec(t, s.db, `DELETE FROM tracker_cache_parents`)
-	if _, err := s.db.Exec(trackerParentsV172SQL[strings.Index(trackerParentsV172SQL, "INSERT INTO"):]); err != nil {
+	backfill := trackerParentsV172SQL[strings.Index(trackerParentsV172SQL, "INSERT INTO"):strings.Index(trackerParentsV172SQL, "ALTER TABLE")]
+	if _, err := s.db.Exec(backfill); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.ListMirrorParents(root, parents)
