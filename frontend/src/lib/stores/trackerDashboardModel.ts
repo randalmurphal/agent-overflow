@@ -106,11 +106,19 @@ export type ChangeMark =
   | { kind: 'change'; direction: 'up' | 'down' | 'same'; tone: 'good' | 'bad' | 'neutral'; text: string }
   | { kind: 'gap'; text: string };
 
+/** The range before as a change mark names it: its label ("the last
+ * sprint") and, when it has none to compare with, why (RangeView). */
+export interface RangeBefore {
+  readonly previous?: string;
+  readonly previous_gap?: string;
+}
+
 /**
  * The change mark of a number: none for a widget that counts now (no
- * previous value) or one without a value; a gap with `gapText` (the
- * range's sentence) when the range before has no data; else the
- * difference, colored by the metric's good direction.
+ * previous value) or one without a value; a gap with the range's
+ * sentence when the range before has no data; else the difference,
+ * colored by the metric's good direction, with the range before's label
+ * and the tickets it did not count, which could turn the direction.
  */
 export function changeMark(
   value: Num | null | undefined,
@@ -118,19 +126,20 @@ export function changeMark(
   good: string,
   unit: DashboardUnit,
   estimates: string,
-  gapText: string,
+  before: RangeBefore | null | undefined,
 ): ChangeMark | null {
   if (!previous) return null;
   const v = numValue(value);
   if (v === null) return null;
-  if (previous.gap) return { kind: 'gap', text: gapText };
+  if (previous.gap) return { kind: 'gap', text: before?.previous_gap ?? '' };
   const p = numValue(previous);
   if (p === null) return null;
+  const then = [before?.previous ?? '', previous.nc ? `${notCountedWords(previous.nc)} then` : ''].filter(Boolean).map((part) => `, ${part}`).join('');
   const delta = v - p;
-  if (Math.abs(delta) < 0.05) return { kind: 'change', direction: 'same', tone: 'neutral', text: 'Same as before' };
+  if (Math.abs(delta) < 0.05) return { kind: 'change', direction: 'same', tone: 'neutral', text: `Same as before${then}` };
   const direction = delta > 0 ? 'up' : 'down';
   const tone = good === '' ? 'neutral' : good === direction ? 'good' : 'bad';
   const amount = formatAmount(Math.abs(delta), unit, estimates);
   const word = unitWord(Math.abs(delta), unit, estimates);
-  return { kind: 'change', direction, tone, text: `${direction === 'up' ? 'Up' : 'Down'} ${amount}${word ? ` ${word}` : ''} from ${formatAmount(p, unit, estimates)}` };
+  return { kind: 'change', direction, tone, text: `${direction === 'up' ? 'Up' : 'Down'} ${amount}${word ? ` ${word}` : ''} from ${formatAmount(p, unit, estimates)}${then}` };
 }

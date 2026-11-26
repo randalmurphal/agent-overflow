@@ -38,6 +38,11 @@ describe('a number', () => {
     expect(onDrill).toHaveBeenCalledWith({ widget: 'pace' });
   });
 
+  it('says how many tickets the range before did not count, which could turn its change', () => {
+    const { getByTestId } = draw(view({ unit: 'tickets' }), { id: 'pace', value: { v: 1 }, previous: { v: 0.5, nc: 2 } } as WidgetValue);
+    expect(getByTestId('dashboard-change').textContent?.trim()).toBe('Up 0.5 tickets from 0.5, the 5 sprints before, 2 not counted then');
+  });
+
   it('says why it is not compared when the range before is a gap', () => {
     const why = 'This computer keeps fewer than 5 finished sprints before these to compare with.';
     const { getByTestId, queryByTestId } = draw(view({}), { id: 'pace', value: { v: 12 }, previous: { gap: true } } as WidgetValue, { ...RANGE, previous_gap: why } as RangeView);

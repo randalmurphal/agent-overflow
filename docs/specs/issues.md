@@ -555,7 +555,9 @@ sidebar and the thread header, on desktop and on a phone.
   reads, the query, and its sources.
 - A number tile shows its change against the previous range and a trend
   line. The arrow gives the direction and its color says whether that
-  direction is good.
+  direction is good. When the range before left tickets out, the change
+  says how many ("Up 0.5 tickets from 0.5, the 2 weeks before, 2 not
+  counted then").
 - A number says how many tickets it could not count beside it ("2 not
   counted"), and reads "Not known" with no change mark when it counted
   none. A drill's header gives its number and its rows and tickets ("6

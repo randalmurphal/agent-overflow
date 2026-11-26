@@ -57,7 +57,7 @@
   // A widget that counts now has no earlier value to compare with, whatever
   // its answer holds.
   const mark = $derived(
-    view.now || !value ? null : changeMark(value.value as Num | undefined, value.previous as Num | undefined, view.good ?? '', unit, estimates, range?.previous_gap ?? ''),
+    view.now || !value ? null : changeMark(value.value as Num | undefined, value.previous as Num | undefined, view.good ?? '', unit, estimates, range),
   );
   const amount = $derived(numWords(value?.value as Num | undefined, unit, estimates));
 
@@ -132,7 +132,7 @@
           data-tone={mark.tone}
         >
           <Icon icon={mark.direction === 'up' ? ArrowUpRight : mark.direction === 'down' ? ArrowDownRight : Minus} size={12} strokeWidth={2.25} />
-          <span>{mark.text}{range?.previous ? `, ${range.previous}` : ''}</span>
+          <span>{mark.text}</span>
         </span>
       {:else if mark?.kind === 'gap'}
         <span class="text-[0.6875rem] text-fg-muted" data-testid="dashboard-change-gap">Not compared: {mark.text}</span>

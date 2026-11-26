@@ -40,31 +40,38 @@ describe('a drill\'s header', () => {
 
 describe('the change mark', () => {
   it('is none for a number with no earlier value, such as one that counts now', () => {
-    expect(changeMark({ v: 3 }, undefined, 'up', 'tickets', 'points', '')).toBeNull();
-    expect(changeMark({ v: 3 }, null, 'up', 'tickets', 'points', '')).toBeNull();
+    expect(changeMark({ v: 3 }, undefined, 'up', 'tickets', 'points', null)).toBeNull();
+    expect(changeMark({ v: 3 }, null, 'up', 'tickets', 'points', null)).toBeNull();
   });
 
   it('is none for a number without a value', () => {
-    expect(changeMark({}, { v: 2 }, 'up', 'tickets', 'points', '')).toBeNull();
+    expect(changeMark({}, { v: 2 }, 'up', 'tickets', 'points', null)).toBeNull();
   });
 
   it('is none when either range is not known, and stands beside what was not counted', () => {
-    expect(changeMark({ nc: 2 }, { v: 2 }, 'up', 'tickets', 'points', '')).toBeNull();
-    expect(changeMark({ v: 3 }, { nc: 1 }, 'up', 'tickets', 'points', '')).toBeNull();
-    expect(changeMark({ v: 3, nc: 1 }, { v: 2 }, 'up', 'tickets', 'points', '')).toMatchObject({ kind: 'change', direction: 'up' });
+    expect(changeMark({ nc: 2 }, { v: 2 }, 'up', 'tickets', 'points', null)).toBeNull();
+    expect(changeMark({ v: 3 }, { nc: 1 }, 'up', 'tickets', 'points', null)).toBeNull();
+    expect(changeMark({ v: 3, nc: 1 }, { v: 2 }, 'up', 'tickets', 'points', null)).toMatchObject({ kind: 'change', direction: 'up' });
+  });
+
+  it('names the range before and the tickets it did not count', () => {
+    const before = { previous: 'the 2 weeks before' };
+    expect(changeMark({ v: 1 }, { v: 0.5, nc: 2 }, 'up', 'tickets', 'points', before)).toMatchObject({ direction: 'up', text: 'Up 0.5 tickets from 0.5, the 2 weeks before, 2 not counted then' });
+    expect(changeMark({ v: 1 }, { v: 1, nc: 1 }, 'up', 'tickets', 'points', before)).toMatchObject({ direction: 'same', text: 'Same as before, the 2 weeks before, 1 not counted then' });
+    expect(changeMark({ v: 1 }, { v: 0.5 }, 'up', 'tickets', 'points', before)).toMatchObject({ text: 'Up 0.5 tickets from 0.5, the 2 weeks before' });
   });
 
   it('says why when the range before is a gap', () => {
     const why = 'This computer keeps fewer than 5 finished sprints before these to compare with.';
-    expect(changeMark({ v: 3 }, { gap: true }, 'up', 'tickets', 'points', why)).toEqual({ kind: 'gap', text: why });
+    expect(changeMark({ v: 3 }, { gap: true }, 'up', 'tickets', 'points', { previous_gap: why })).toEqual({ kind: 'gap', text: why });
   });
 
   it('is good, bad or neutral by the metric\'s good direction', () => {
-    expect(changeMark({ v: 12 }, { v: 9 }, 'up', 'estimate', 'points', '')).toEqual({ kind: 'change', direction: 'up', tone: 'good', text: 'Up 3 points from 9' });
-    expect(changeMark({ v: 12 }, { v: 9 }, 'down', 'estimate', 'points', '')).toMatchObject({ direction: 'up', tone: 'bad' });
-    expect(changeMark({ v: 2 }, { v: 4.5 }, 'down', 'days', 'points', '')).toEqual({ kind: 'change', direction: 'down', tone: 'good', text: 'Down 2.5 days from 4.5' });
-    expect(changeMark({ v: 2 }, { v: 4 }, '', 'tickets', 'points', '')).toMatchObject({ direction: 'down', tone: 'neutral' });
-    expect(changeMark({ v: 4 }, { v: 4 }, 'up', 'tickets', 'points', '')).toEqual({ kind: 'change', direction: 'same', tone: 'neutral', text: 'Same as before' });
+    expect(changeMark({ v: 12 }, { v: 9 }, 'up', 'estimate', 'points', null)).toEqual({ kind: 'change', direction: 'up', tone: 'good', text: 'Up 3 points from 9' });
+    expect(changeMark({ v: 12 }, { v: 9 }, 'down', 'estimate', 'points', null)).toMatchObject({ direction: 'up', tone: 'bad' });
+    expect(changeMark({ v: 2 }, { v: 4.5 }, 'down', 'days', 'points', null)).toEqual({ kind: 'change', direction: 'down', tone: 'good', text: 'Down 2.5 days from 4.5' });
+    expect(changeMark({ v: 2 }, { v: 4 }, '', 'tickets', 'points', null)).toMatchObject({ direction: 'down', tone: 'neutral' });
+    expect(changeMark({ v: 4 }, { v: 4 }, 'up', 'tickets', 'points', null)).toEqual({ kind: 'change', direction: 'same', tone: 'neutral', text: 'Same as before' });
   });
 });
 
