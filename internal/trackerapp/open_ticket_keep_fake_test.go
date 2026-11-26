@@ -754,3 +754,55 @@ func TestStopMakesALastTryOfAFailedDrop(t *testing.T) {
 		t.Fatalf("%d open-ticket rows after Stop", n)
 	}
 }
+
+// On a Jira scrum board, which lists no epics, a story's board card and
+// its ticket name its epic, which no board keeps, with the epic's key and
+// title. The epic renamed shows on both once a read of the story brings
+// the new name: the open ticket is told.
+func TestAScrumBoardNamesTheEpicsItDoesNotList(t *testing.T) {
+	t.Parallel()
+	s, conn, scope := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
+	s.syncBoard(t, scope)
+	if card, _ := s.kept(t, conn, "10104"); card {
+		t.Fatal("the board keeps the epic")
+	}
+	parentOf := func(what string) *ParentView {
+		t.Helper()
+		v := must[BoardView](t)(s.svc.Board(scope, StatusGroups{}, []Section{{Kind: SectionColumn}, {Kind: SectionColumn, Column: 1}, {Kind: SectionColumn, Column: 2}}))
+		for _, section := range v.Sections {
+			for _, r := range section.Rows {
+				if r.Card.ID == "10101" {
+					return r.Card.Parent
+				}
+			}
+		}
+		t.Fatalf("%s: the board shows no WEB-1", what)
+		return nil
+	}
+	want := ParentView{ID: "10104", Key: "WEB-4", Title: "The epic"}
+	if p := parentOf("first read"); p == nil || *p != want {
+		t.Fatalf("the board's WEB-1 names its parent %+v; want %+v", p, want)
+	}
+	sub := s.openTicket(t, conn, "10101")
+	quiet(t, s.svc)
+	if v := must[TicketView](t)(s.svc.TicketDetail(sub.ID)); v.Detail == nil || v.Detail.Card.Parent == nil || *v.Detail.Card.Parent != want {
+		t.Fatalf("the ticket names its parent %+v; want %+v", v.Detail, want)
+	}
+	p := s.provider(conn.ID)
+	applied(t, "rename the epic", p.Edit(t.Context(), tracker.EditInput{Issue: "10104", Fields: []tracker.FieldEdit{{Field: tracker.FieldTitle, Value: tracker.TypedValues("Checkout")}}}))
+	applied(t, "edit the story", p.Edit(t.Context(), tracker.EditInput{Issue: "10101", Fields: []tracker.FieldEdit{{Field: tracker.FieldLabels, Value: tracker.TypedValues("frontend")}}}))
+	_, told, _ := s.events.snapshot()
+	s.syncBoard(t, scope)
+	quiet(t, s.svc)
+	want.Title = "Checkout"
+	if p := parentOf("after the rename"); p == nil || *p != want {
+		t.Fatalf("after the rename the board's WEB-1 names its parent %+v; want %+v", p, want)
+	}
+	s.events.waitFor(t, "the ticket told of its parent's name", func(_ []BoardEvent, i []IssueEvent, _ []error) bool {
+		return slices.ContainsFunc(i[len(told):], func(e IssueEvent) bool { return e.Issue == "10101" && e.Changed })
+	})
+	quiet(t, s.svc)
+	if v := must[TicketView](t)(s.svc.TicketDetail(sub.ID)); v.Detail == nil || v.Detail.Card.Parent == nil || *v.Detail.Card.Parent != want {
+		t.Fatalf("after the rename the ticket names its parent %+v; want %+v", v.Detail.Card.Parent, want)
+	}
+}
