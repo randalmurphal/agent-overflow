@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -78,6 +79,8 @@ func TestTrackerWritesFollowTheProjectsAgentsSettings(t *testing.T) {
 
 	f.saveAgentRules(t, f.project, trackerapp.AgentRules{AskSeveral: &off})
 	thread, endpoint := trackerWriteThread(t, f, provider.RuntimeAuto)
+	// An approval nobody answers ends the call at once.
+	f.a.trackerMCP.approvals.wait = 200 * time.Millisecond
 	text, isError = trackerMCPStreamedCall(t, f.a, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-1", "WEB-2"}, "comment": "Both checked."})
 	if isError || !strings.Contains(text, `"applied":["comment"]`) {
 		t.Fatalf("two tickets with asking off = %s (error %v)", text, isError)
