@@ -305,3 +305,24 @@ func TestTrackerWriteApprovalOfAnEndedSession(t *testing.T) {
 		t.Fatalf("comments %q", got)
 	}
 }
+
+// A waiter settles once: an answer that comes after the wait ended, or a
+// second answer, finds nothing to settle, so the screen that sent it is
+// told it was already handled and no decision is announced for it.
+func TestTrackerApprovalWaiterSettlesOnce(t *testing.T) {
+	t.Parallel()
+	var w trackerApprovals
+	ch := w.open("tracker:call-1")
+	if !w.settle("tracker:call-1", false) {
+		t.Fatal("the first settlement lost")
+	}
+	if w.settle("tracker:call-1", true) {
+		t.Fatal("a second settlement won")
+	}
+	if got := <-ch; got {
+		t.Fatal("the waiter got the second settlement")
+	}
+	if w.settle("tracker:call-2", true) {
+		t.Fatal("a settlement of a waiter never opened won")
+	}
+}
