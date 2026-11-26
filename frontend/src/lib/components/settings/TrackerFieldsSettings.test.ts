@@ -1,13 +1,15 @@
 // Settings > Issues > Fields: the pinned fields and sections of the
 // project's Jira site at once, in pin order; a field or a section not
-// pinned found by name, at most 20 drawn; a pin or an unpin saved as the
-// ticket's pin saves it (withTicketPin); the sections a ticket opens
-// while none are pinned shown as pinned; and a Linear-only project, or one
-// with no boards, said.
+// pinned found by name, the exact name first, at most 20 drawn, two of one
+// name told apart by ID; a pin or an unpin saved as the ticket's pin
+// saves it (withTicketPin); the sections a ticket opens while none are
+// pinned shown as pinned; a site whose fields could not be read said,
+// with its pins by ID to take off; and a Linear-only project, or one with
+// no boards, said.
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
-import type { FieldView, Setup, SetupView, SiteFields } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { PinField, Setup, SetupView, SiteFields } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import TrackerFieldsSettings from './TrackerFieldsSettings.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { readSidebarCatalogs } from '../../../test/helpers/sidebarCatalogs';
@@ -20,11 +22,11 @@ const SITE = 'https://example.atlassian.net';
 
 /** A site's catalog of `n` fields, Field 1 to Field n, with two long
  * text fields. */
-function catalog(n: number): FieldView[] {
-  const out: FieldView[] = [];
-  for (let i = 1; i <= n; i++) out.push({ id: `customfield_${10000 + i}`, name: `Field ${i}`, kind: 'text', value: {} });
-  out.push({ id: 'customfield_20001', name: 'Acceptance criteria', kind: 'rich_text', value: {} });
-  out.push({ id: 'customfield_20002', name: 'Test plan', kind: 'rich_text', value: {} });
+function catalog(n: number): PinField[] {
+  const out: PinField[] = [];
+  for (let i = 1; i <= n; i++) out.push({ id: `customfield_${10000 + i}`, name: `Field ${i}`, kind: 'text' });
+  out.push({ id: 'customfield_20001', name: 'Acceptance criteria', kind: 'rich_text' });
+  out.push({ id: 'customfield_20002', name: 'Test plan', kind: 'rich_text' });
   return out;
 }
 
@@ -96,6 +98,44 @@ describe('<TrackerFieldsSettings>', () => {
     await fireEvent.click(within(list('sections')).getByTestId('tracker-fields-match'));
     await waitFor(() => expect(names(list('sections'), 'tracker-fields-pinned')).toEqual(['Description', 'Linked tickets', 'Attachments', 'Test plan']));
     expect(saves[1].ticket_pins).toEqual([{ tracker: 'jira', site: SITE, fields: ['customfield_10003'], sections: ['description', 'links', 'attachments', 'customfield_20002'] }]);
+  });
+
+  it('says why a site\'s fields could not be read, and still unpins its pins by ID', async () => {
+    setBindingMock('ProjectTrackerBoards', async () => []);
+    sites = [
+      { tracker: 'jira', site: SITE, fields: [], error: 'no tracker connection of this computer reaches it' },
+      { tracker: 'jira', site: 'https://other.atlassian.net', fields: catalog(3) },
+    ];
+    render(TrackerFieldsSettings);
+    const failed = await screen.findByTestId('tracker-fields-site-error');
+    expect(failed.textContent).toBe('Its fields could not be read: no tracker connection of this computer reaches it');
+    const site = screen.getAllByTestId('tracker-fields-site')[0];
+    const fields = within(site).getAllByTestId('tracker-fields-list').find((el) => el.dataset.kind === 'fields')!;
+    expect(names(fields, 'tracker-fields-pinned')).toEqual(['customfield_10007', 'customfield_10003']);
+    expect(within(site).queryAllByTestId('tracker-fields-find'), 'nothing to find without the catalog').toHaveLength(0);
+    expect(within(screen.getAllByTestId('tracker-fields-site')[1]).getAllByTestId('tracker-fields-find'), 'the other site').toHaveLength(2);
+    await fireEvent.click(within(fields).getAllByTestId('tracker-fields-pinned')[0]);
+    await waitFor(() => expect(saves).toHaveLength(1));
+    expect(saves[0].ticket_pins).toEqual([{ tracker: 'jira', site: SITE, fields: ['customfield_10003'] }]);
+  });
+
+  it('finds the field named exactly as typed among more than 20 that hold the name', async () => {
+    sites = [{ tracker: 'jira', site: SITE, fields: [...Array.from({ length: 25 }, (_, i) => ({ id: `customfield_${30000 + i}`, name: `Area owner ${i}`, kind: 'text' })), { id: 'customfield_39999', name: 'Owner', kind: 'text' }] }];
+    render(TrackerFieldsSettings);
+    await screen.findAllByTestId('tracker-fields-find');
+    await fireEvent.input(within(list('fields')).getByTestId('tracker-fields-find'), { target: { value: 'owner' } });
+    expect(names(list('fields'), 'tracker-fields-match')[0]).toBe('Owner');
+    expect(within(list('fields')).getByTestId('tracker-fields-more').textContent).toBe('6 more match; type more of the name.');
+  });
+
+  it('tells two fields of one name apart by their IDs', async () => {
+    sites = [{ tracker: 'jira', site: SITE, fields: [{ id: 'customfield_1', name: 'Team', kind: 'option' }, { id: 'customfield_2', name: 'Team', kind: 'text' }, { id: 'customfield_3', name: 'Teams', kind: 'text' }] }];
+    stored = { revision: 'r0', setup: { status_groups: [], ticket_pins: [{ tracker: 'jira', site: SITE, fields: ['customfield_1'] }], start_work: [] } } as SetupView;
+    render(TrackerFieldsSettings);
+    await screen.findAllByTestId('tracker-fields-pinned');
+    expect(names(list('fields'), 'tracker-fields-pinned')).toEqual(['Team (customfield_1)']);
+    await fireEvent.input(within(list('fields')).getByTestId('tracker-fields-find'), { target: { value: 'team' } });
+    expect(names(list('fields'), 'tracker-fields-match')).toEqual(['Team (customfield_2)', 'Teams']);
   });
 
   it('says a Linear-only project has no fields to pin, and a project with no boards that it has none', async () => {

@@ -675,18 +675,22 @@ sidebar and the thread header, on desktop and on a phone.
   groups does: each change saves at once, and a save that lost, a save
   whose outcome is unknown, a setup that cannot be read and a section a
   newer version saved are said the same way.
-- Fields lists, per Jira site of the project's boards, the fields on top
-  of every ticket and the sections open on every ticket, the same pins as
-  the pin on a ticket. What is pinned shows at once; a field or section
-  that is not pinned is found by typing its name, and at most 20 matches
-  show. A site's fields are its whole field catalog, several hundred on a
-  real site. A project with only Linear boards says it has nothing to pin:
+- Fields lists, per Jira site of the project's boards and per site its
+  pins name, the fields on top of every ticket and the sections open on
+  every ticket, the same pins as the pin on a ticket. What is pinned shows
+  at once; a field or section that is not pinned is found by typing its
+  name, the exact name first, and at most 20 matches show; two fields of
+  one name show their IDs. A site's fields are its whole field catalog,
+  several hundred on a real site. A site whose fields cannot be read says
+  why beside its pins, which show by ID and can be taken off. A project with only Linear boards says it has nothing to pin:
   a Linear ticket's fields are fixed, and its sections are pinned on the
   ticket.
 - Starting work lists each tracker project of the project's boards, and
   any that already has defaults, with what Start work does: move the
-  ticket (off, or on to a status, the first one counted in progress when
-  turned on), assign it to the person, name the branch after the ticket,
+  ticket (off, or on to a status of a board that lists that tracker
+  project, the first one counted in progress when turned on; a tracker
+  project no board lists, or whose boards this computer has not read,
+  says so instead), assign it to the person, name the branch after the ticket,
   and the project the thread runs in. With naming off, the Start work form
   opens with an empty branch box for the person to name. The form's Save
   as defaults writes the same defaults, so each shows what the other
@@ -703,11 +707,9 @@ sidebar and the thread header, on desktop and on a phone.
   threads until it is fixed.
 - The rest is per project: which boards the picker lists and which opens
   first; which group each status belongs to, including left out of counts;
-  pinned fields and pinned sections; Start work defaults; the estimate
-  field, poker and credit rules; the meetings and time-off tickets, draft
-  approval and draft sources; and what agents may do. Card marks are
-  chosen with Display on the board, per board, and kept by the app or
-  browser they were chosen in, not in Setup.
+  pinned fields, pinned sections and card marks; Start work defaults; the
+  estimate field, poker and credit rules; the meetings and time-off
+  tickets, draft approval and draft sources; and what agents may do.
 - A Linear project has no fields, credit or time settings.
 
 ### Compact layout

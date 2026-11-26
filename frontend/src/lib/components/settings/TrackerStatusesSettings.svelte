@@ -23,6 +23,7 @@
   } from '../../stores/trackerSetup.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import TrackerProjectSettings, { type TrackerProjectPage } from './TrackerProjectSettings.svelte';
+  import TrackerUnreadBoards from './TrackerUnreadBoards.svelte';
   import { settingsComputer } from './settingsComputer';
   import { GHOST_BUTTON_CLASS, SELECT_CLASS } from './styles';
   import { trackerConnectionName, trackerKindName } from './trackerConnectionStatus';
@@ -109,14 +110,7 @@
               {/each}
             </ul>
           {/if}
-          {#each site.unread ?? [] as board (board.board)}
-            <div class="flex flex-wrap items-center gap-2" data-testid="tracker-status-unread">
-              <p class="text-[0.75rem] text-fg-muted">
-                {board.name || `Board ${board.board}`} has not been read on this computer yet. Open it once in the Issues pane to list its statuses.
-              </p>
-              <button type="button" class={GHOST_BUTTON_CLASS} onclick={() => void refreshTrackerStatuses(page.project)} data-testid="tracker-status-unread-retry">Check again</button>
-            </div>
-          {/each}
+          <TrackerUnreadBoards boards={site.unread ?? []} project={page.project} />
           {#if (site.elsewhere?.length ?? 0) > 0}
             <p class="text-[0.75rem] text-fg-muted">Regrouped, and on none of the project's boards now:</p>
             <ul class="flex flex-col gap-2">

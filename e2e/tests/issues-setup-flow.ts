@@ -253,8 +253,8 @@ export function sectionPin(ticket: Locator, field: string): Locator {
   return ticket.locator(`[data-testid="ticket-section"][data-field="${field}"] [data-testid="ticket-section-pin"]`);
 }
 
-export async function openBoard(harness: HarnessApp, page: Page, name: string, compact: boolean): Promise<{ board: ConnectedBoard; pane: Locator; file: string }> {
-  const board = await connectFakeJiraBoard(harness, name, SETUP);
+export async function openBoard(harness: HarnessApp, page: Page, name: string, compact: boolean, setup: ExtraJira = SETUP): Promise<{ board: ConnectedBoard; pane: Locator; file: string }> {
+  const board = await connectFakeJiraBoard(harness, name, setup);
   const file = await setupFile(harness, board.projectId);
   await harness.open(page);
   const pane = await openIssuesPane(page, compact);

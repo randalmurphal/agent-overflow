@@ -9,7 +9,7 @@
   // (stores/startWorkDefaults), so the form opens with what the page
   // saved and the page shows what the form saved.
   import { tick } from 'svelte';
-  import type { Setup, SiteStatuses, StartWorkDefaults, StatusView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+  import type { Setup, StartWorkDefaults, StatusView, UnreadBoard } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import { getProjectLabelText } from '../../stores/projects.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { defaultsAt, withStartWorkDefaults, type DefaultsChange, type DefaultsPlace } from '../../stores/startWorkDefaults';
@@ -21,6 +21,7 @@
   import { workProjects } from '../issues/ticketWorkGate';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import TrackerProjectSettings, { type TrackerProjectPage } from './TrackerProjectSettings.svelte';
+  import TrackerUnreadBoards from './TrackerUnreadBoards.svelte';
   import { settingsComputer } from './settingsComputer';
   import { SELECT_CLASS } from './styles';
   import { trackerConnectionName } from './trackerConnectionStatus';
@@ -69,10 +70,17 @@
     return trackerConnectionName(connection ?? { label: '', kind: place.tracker, site: place.site });
   }
 
-  /** The site's statuses the picker lists, as the project's boards show
-   * them. */
-  function siteStatuses(project: string, place: DefaultsPlace): SiteStatuses | undefined {
-    return trackerStatusesOf(project).sites?.find((s) => s.tracker === place.tracker && s.site === place.site);
+  /** What the move picker of `place` offers: the statuses of the project's
+   * boards that list its tracker project, in the order the site lists
+   * them (a Linear team's states are its own, and two teams share a site),
+   * those boards this computer has not read yet, and whether any board
+   * lists it. */
+  function placeStatuses(project: string, place: DefaultsPlace): { statuses: StatusView[]; unread: UnreadBoard[]; listed: boolean } {
+    const site = trackerStatusesOf(project).sites?.find((s) => s.tracker === place.tracker && s.site === place.site);
+    const boards = (site?.boards ?? []).filter((b) => b.project === place.project);
+    const unread = (site?.unread ?? []).filter((b) => b.project === place.project);
+    const ids = new Set(boards.flatMap((b) => b.statuses));
+    return { statuses: (site?.statuses ?? []).filter((s) => ids.has(s.id)), unread, listed: boards.length + unread.length > 0 };
   }
 
   /** The status a move turns on with: the first the project counts in
@@ -130,7 +138,8 @@
 
 {#snippet placeRows(page: TrackerProjectPage, place: DefaultsPlace, entry: StartWorkDefaults | null)}
   {@const locked = page.lockReason !== ''}
-  {@const statuses = siteStatuses(page.project, place)?.statuses ?? []}
+  {@const offered = placeStatuses(page.project, place)}
+  {@const statuses = offered.statuses}
   {@const status = entry?.status ?? ''}
   {@const first = firstStatus(page.setup, place, statuses)}
   {@const projects = workProjects(backend, page.project)}
@@ -145,7 +154,7 @@
           checked={status !== ''}
           ariaLabel="Move the ticket"
           disabled={locked || (status === '' && !first)}
-          title={page.lockReason || (status === '' && !first ? 'No status of this tracker is listed yet: open a board of the project once in the Issues pane.' : undefined)}
+          title={page.lockReason || undefined}
           onToggle={(on) => void change(page, place, { status: on ? first?.id ?? null : null })}
         />
       </div>
@@ -171,6 +180,12 @@
         </select>
       {/if}
     </div>
+    {#if !offered.listed}
+      <p class="text-[0.75rem] text-fg-muted" data-testid="tracker-start-work-unlisted">
+        No board of this project lists {place.project} tickets, so there is no status to move them to. Add one in Boards.
+      </p>
+    {/if}
+    <TrackerUnreadBoards boards={offered.unread} project={page.project} />
     <div class="flex min-w-0 items-center gap-3" data-testid="tracker-start-work-assign">
       <span class="min-w-0 flex-1 text-[0.8125rem] text-fg">Assign it to me</span>
       <ToggleSwitch

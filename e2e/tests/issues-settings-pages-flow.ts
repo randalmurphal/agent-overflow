@@ -106,7 +106,16 @@ interface PageCase {
   control: (screen: Locator) => Locator;
   /** Expects the page to show the hand edit. */
   showsHandEdit: (screen: Locator) => Promise<void>;
+  /** Draws the page's widest content, for the compact width check. */
+  widest?: (screen: Locator) => Promise<void>;
 }
+
+/** A field whose name has no place to break, wider than a phone. */
+const LONG_FIELD = {
+  id: 'customfield_10777',
+  name: `Customer${'_impact'.repeat(16)}`,
+  schema: { type: 'string', custom: 'com.atlassian.jira.plugin.system.customfieldtypes:textfield', customId: 10777 },
+};
 
 const CASES: PageCase[] = [
   {
@@ -118,6 +127,10 @@ const CASES: PageCase[] = [
     handEdit: (site) => ({ ticket_pins: { version: 1, sites: [{ tracker: 'jira', site, fields: [EFFORT] }] } }),
     control: (screen) => pinList(screen, 'sections').locator('[data-testid="tracker-fields-pinned"][data-id="description"]'),
     showsHandEdit: (screen) => expect(pinList(screen, 'fields').getByTestId('tracker-fields-pinned')).toHaveText(['Effort']),
+    widest: async (screen) => {
+      await pinList(screen, 'fields').getByTestId('tracker-fields-find').fill('customer_impact');
+      await expect(pinList(screen, 'fields').getByTestId('tracker-fields-match')).toHaveText([LONG_FIELD.name]);
+    },
   },
   {
     name: 'Starting work',
@@ -312,11 +325,12 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
   for (const c of CASES) {
     test(`the ${c.name} page says a save that lost to a hand edit, one whose outcome is unknown, a file that cannot be read and a section a newer build saved`, async ({ harness, page }) => {
       test.setTimeout(180_000);
-      const { board, file } = await openBoard(harness, page, `settings-frame-${c.id}`, compact);
+      const { board, file } = await openBoard(harness, page, `settings-frame-${c.id}`, compact, { ...SETUP, fields: [...SETUP.fields!, LONG_FIELD] });
       let screen = await c.open(page, compact);
       await expect(c.control(screen)).toBeVisible({ timeout: 15_000 });
       if (compact) {
-        // Every control within the phone's width.
+        // Every control within the phone's width, the widest content drawn.
+        await c.widest?.(screen);
         const width = page.viewportSize()!.width;
         const outside = await screen.locator('button, input, select, [role="switch"]').evaluateAll(
           (els, w) => els.filter((el) => el.getBoundingClientRect().right > w).map((el) => el.outerHTML.slice(0, 80)),

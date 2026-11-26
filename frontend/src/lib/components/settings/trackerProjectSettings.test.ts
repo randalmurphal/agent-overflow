@@ -80,8 +80,8 @@ const CASES: PageCase[] = [
   },
 ];
 
-const FIELDS: SiteFields[] = [{ tracker: 'jira', site: SITE, fields: [{ id: 'reporter', name: 'Reporter', kind: 'user', value: {} }] }];
-const STATUSES: SiteStatuses[] = [{ tracker: 'jira', site: SITE, statuses: [{ id: '10001', name: 'In Progress', group: 'in_progress' }] }];
+const FIELDS: SiteFields[] = [{ tracker: 'jira', site: SITE, fields: [{ id: 'reporter', name: 'Reporter', kind: 'user' }] }];
+const STATUSES: SiteStatuses[] = [{ tracker: 'jira', site: SITE, statuses: [{ id: '10001', name: 'In Progress', group: 'in_progress' }], boards: [{ board: '1', project: 'WEB', statuses: ['10001'] }] }];
 
 let stored: SetupView;
 let saves: { revision: string; setup: Setup }[];

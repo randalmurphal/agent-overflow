@@ -181,7 +181,7 @@ describe('the tracker setup store', () => {
   });
 
   it('holds the statuses while shown and reads them again on the event', async () => {
-    const sites: SiteStatuses[] = [{ tracker: 'jira', site: SITE, statuses: [{ id: 's1', name: 'To Do', group: 'todo' }] }];
+    const sites: SiteStatuses[] = [{ tracker: 'jira', site: SITE, statuses: [{ id: 's1', name: 'To Do', group: 'todo' }], boards: [] }];
     const reads = setBindingMock('ProjectTrackerStatuses', async () => sites);
     const release = acquireTrackerStatuses('p1');
     await flush();

@@ -46,6 +46,7 @@ beforeEach(async () => {
   sites = [{
     tracker: 'jira', site: SITE,
     statuses: [{ id: '10000', name: 'To Do', group: 'todo' }, { id: '10001', name: 'In Progress', group: 'in_progress' }, { id: '10002', name: 'Done', group: 'done' }],
+    boards: [{ board: '1', project: 'WEB', statuses: ['10000', '10001', '10002'] }],
   }];
   saves = [];
   setBindingMock('ProjectTrackerSetup', async () => stored);
@@ -162,10 +163,10 @@ describe('<TrackerStatusesSettings>', () => {
   });
 
   it('names a board not read yet, and lists its statuses once it has been', async () => {
-    sites = [{ tracker: 'jira', site: SITE, statuses: [], unread: [{ board: '7', name: 'WEB board' }] }];
+    sites = [{ tracker: 'jira', site: SITE, statuses: [], boards: [], unread: [{ board: '7', name: 'WEB board', project: 'WEB' }] }];
     render(TrackerStatusesSettings);
     expect((await screen.findByTestId('tracker-status-unread')).textContent).toContain('WEB board has not been read on this computer yet. Open it once in the Issues pane');
-    sites = [{ tracker: 'jira', site: SITE, statuses: [{ id: '10000', name: 'To Do', group: 'todo' }] }];
+    sites = [{ tracker: 'jira', site: SITE, statuses: [{ id: '10000', name: 'To Do', group: 'todo' }], boards: [{ board: '7', project: 'WEB', statuses: ['10000'] }] }];
     await fireEvent.click(screen.getByTestId('tracker-status-unread-retry'));
     await screen.findAllByTestId('tracker-status-row');
     expect(screen.queryByTestId('tracker-status-unread')).toBeNull();
@@ -173,7 +174,7 @@ describe('<TrackerStatusesSettings>', () => {
 
   it('puts back a status regrouped that no board shows now', async () => {
     stored = setupWith({ 10009: 'done' }, 'r1');
-    sites = [{ tracker: 'jira', site: SITE, statuses: [], elsewhere: [{ id: '10009' }] }];
+    sites = [{ tracker: 'jira', site: SITE, statuses: [], elsewhere: [{ id: '10009' }], boards: [] }];
     render(TrackerStatusesSettings);
     const elsewhere = await screen.findByTestId('tracker-status-elsewhere');
     expect(elsewhere.textContent).toContain('10009');

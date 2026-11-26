@@ -4,8 +4,7 @@
 // named {key}-{title}, the thread in the project) until set, and each
 // change saves at once through the rule Start work's "Save as defaults"
 // writes by: the move turned on at the first status counted in progress,
-// the repository of the project itself stored as none, and naming the
-// branch turned back on stored as none.
+// the repository of the project itself stored as none.
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
@@ -35,6 +34,7 @@ beforeEach(async () => {
   statuses = [{
     tracker: 'jira', site: SITE,
     statuses: [{ id: '10000', name: 'To Do', group: 'todo' }, { id: '10001', name: 'In Progress', group: 'in_progress' }, { id: '10003', name: 'In Review', group: 'in_progress' }],
+    boards: [{ board: '1', project: 'WEB', statuses: ['10000', '10001', '10003'] }],
   }];
   setBindingMock('ProjectTrackerStatuses', async () => statuses);
   stored = { revision: 'r0', setup: { status_groups: [], ticket_pins: [], start_work: [{ tracker: 'jira', site: SITE, project: 'OPS', branch: 'ops/{key}' }] } } as SetupView;
@@ -105,7 +105,7 @@ describe('<TrackerStartWorkSettings>', () => {
     expect(w().getByTestId('tracker-start-work-branch-example').textContent?.trim()).toBe('Start work opens with the branch box empty, for you to name it.');
     await fireEvent.click(w().getByRole('switch', { name: 'Name the branch after the ticket' }));
     await waitFor(() => expect(saves).toHaveLength(3));
-    expect(JSON.parse(JSON.stringify(web(saves[2])))).toEqual({ tracker: 'jira', site: SITE, project: 'WEB', assign: false });
+    expect(JSON.parse(JSON.stringify(web(saves[2])))).toEqual({ tracker: 'jira', site: SITE, project: 'WEB', assign: false, name_branch: true });
     await fireEvent.change(w().getByTestId('tracker-start-work-repository'), { target: { value: 'p2' } });
     await waitFor(() => expect(web(stored.setup)?.repository).toBe('p2'));
     await fireEvent.change(w().getByTestId('tracker-start-work-repository'), { target: { value: 'p1' } });
@@ -113,12 +113,43 @@ describe('<TrackerStartWorkSettings>', () => {
     expect(web(saves[4])?.repository).toBeUndefined();
   });
 
-  it('offers no move while no status of the tracker is listed', async () => {
-    statuses = [];
+  it('moves a Linear team\'s tickets only to a state of that team', async () => {
+    const linear = { connection: 'lin-1', connection_kind: 'linear' };
+    setBindingMock('TrackerConnections', async () => [trackerConnection({ id: 'lin-1', kind: 'linear', site: 'example' })]);
+    setBindingMock('ProjectTrackerBoards', async () => [
+      trackerBoardChoice({ ...linear, board: 'team-a', name: 'Alpha', tracker_project: 'ALP' }),
+      trackerBoardChoice({ ...linear, board: 'team-b', name: 'Beta', tracker_project: 'BET' }),
+    ]);
+    // As the computer lists them: by site, Alpha's states first.
+    statuses = [{
+      tracker: 'linear', site: 'example',
+      statuses: [{ id: 'a-todo', name: 'Todo', group: 'todo' }, { id: 'a-doing', name: 'In Progress', group: 'in_progress' },
+        { id: 'b-todo', name: 'Todo', group: 'todo' }, { id: 'b-doing', name: 'In Progress', group: 'in_progress' }],
+    boards: [{ board: 'team-a', project: 'ALP', statuses: ['a-todo', 'a-doing'] }, { board: 'team-b', project: 'BET', statuses: ['b-todo', 'b-doing'] }],
+    }];
     await shown();
-    const move = within(place('WEB')).getByRole('switch', { name: 'Move the ticket' });
-    expect(move).toBeDisabled();
-    expect(move.title).toContain('No status of this tracker is listed yet');
+    await fireEvent.click(within(place('BET')).getByRole('switch', { name: 'Move the ticket' }));
+    await waitFor(() => expect(saves).toHaveLength(1));
+    expect(saves[0].start_work?.find((d) => d.project === 'BET')?.status).toBe('b-doing');
+  });
+
+  it('offers no move where no board of the tracker project is read, and says why on the page', async () => {
+    statuses = [{ tracker: 'jira', site: SITE, statuses: [], boards: [], unread: [{ board: '1', name: 'WEB board', project: 'WEB' }] }];
+    await shown();
+    const w = within(place('WEB'));
+    expect(w.getByRole('switch', { name: 'Move the ticket' })).toBeDisabled();
+    expect(w.getByTestId('tracker-status-unread').textContent).toContain('WEB board has not been read on this computer yet');
+    expect(w.queryByTestId('tracker-start-work-unlisted')).toBeNull();
+    const ops = within(place('OPS'));
+    expect(ops.getByRole('switch', { name: 'Move the ticket' })).toBeDisabled();
+    expect(ops.getByTestId('tracker-start-work-unlisted').textContent).toContain('No board of this project lists OPS tickets');
+    expect(ops.queryByTestId('tracker-status-unread')).toBeNull();
+
+    // Check again reads the statuses again, and the board read since offers its statuses.
+    statuses = [{ tracker: 'jira', site: SITE, statuses: [{ id: '10001', name: 'In Progress', group: 'in_progress' }], boards: [{ board: '1', project: 'WEB', statuses: ['10001'] }] }];
+    await fireEvent.click(w.getByTestId('tracker-status-unread-retry'));
+    await waitFor(() => expect(w.getByRole('switch', { name: 'Move the ticket' })).not.toBeDisabled());
+    expect(w.queryByTestId('tracker-status-unread')).toBeNull();
   });
 
   it('says a project with no boards and no defaults has nothing to set', async () => {

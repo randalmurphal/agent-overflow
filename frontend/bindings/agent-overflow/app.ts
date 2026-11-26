@@ -4529,8 +4529,9 @@ export function ProjectTrackerBoards(projectID: string): $CancellablePromise<tra
 /**
  * ProjectTrackerFields are the fields the project's tickets can pin, by
  * tracker site, as its Fields page lists them: each site of its boards
- * whose tickets take pinned fields, read from the tracker's field
- * catalog, which the computer caches.
+ * whose tickets take pinned fields, and each its setup pins, read from
+ * the tracker's field catalog, which the computer caches. A site that
+ * could not be read says why in its Error, beside the others.
  */
 export function ProjectTrackerFields(projectID: string): $CancellablePromise<trackerapp$0.SiteFields[]> {
     return $Call.ByID(2390490035, projectID).then(($result: any) => {

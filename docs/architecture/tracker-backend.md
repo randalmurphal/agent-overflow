@@ -361,11 +361,13 @@ no step runs at root creation, restore or start.
   tracker project, named by its key prefix, `WEB`: the status Start work
   moves to, whether it assigns, the branch template with `{key}` and
   `{title}`, whether the branch is named after the ticket
-  (`name_branch`, false for an empty branch box), and the repository, an
-  app project of this computer; each field optional, and an entry that
-  sets nothing dropped) and `agents` (`change_tickets` and `ask_several`,
-  each true when absent, and the section dropped when it sets neither;
-  [Writes by agents](#writes-by-agents)). A section this build does not know, or one
+  (`name_branch`, false for an empty branch box, stored only when
+  false), and the repository, an app project of this computer; each field
+  optional, and an entry that sets nothing dropped) and `agents`
+  (`change_tickets` and `ask_several`, each true when absent and stored
+  only when false, and the section dropped when it turns neither off;
+  [Writes by agents](#writes-by-agents)). The writer (`validateSetup`)
+  owns these defaults: a client sends the value it shows. A section this build does not know, or one
   at a newer version, is kept byte for byte by a replace and named in the
   read's `newer`; a replace that sets it is refused.
 - **A site** is named as its connection names it, by the rules a
@@ -437,7 +439,10 @@ no step runs at root creation, restore or start.
   and setup, with no tracker request: by tracker site, whatever
   connection reaches it, each listed board's column statuses in board
   order, each once, the statuses the setup regroups that no listed board
-  shows, and the listed boards the mirror has not read, by name. A board
+  shows, the listed boards the mirror has not read, by name and tracker
+  project, and each listed board read with its tracker project and its
+  column statuses' IDs, so Starting work offers a tracker project only
+  its boards' statuses (two Linear teams share a site). A board
   is one statement of its column statuses (`GetMirrorBoardStatuses`, at
   most 200 rows), not its structure: no sprints or board data. Names
   come from the root's catalog, looked up 500 at a time. With 20 boards of
@@ -450,9 +455,13 @@ no step runs at root creation, restore or start.
   on reconnect and on Check again.
 - **The fields the Fields page lists** (`ProjectFields`,
   `trackerapp/project_fields.go`) are each Jira site's of the project's
-  boards, read through the first connection to the site that is on, else
-  the first: the
-  provider's `Fields`, the site's field catalog by the rule a ticket's
+  boards and of its setup's `ticket_pins`, read through the first
+  connection to the site that is on, among those the boards name and
+  then the computer's others. A site whose read fails, or that no
+  connection reaches (`ErrNoSiteConnection`), carries its own `error`
+  beside the others and lists no fields; only the context's end or a
+  setup that cannot be read fails the call. A site's fields are the
+  provider's `Fields` as `{id, name, kind}`, the site's field catalog by the rule a ticket's
   detail lists fields by (`jiraprovider` `site.listed`), which the client
   holds after its first read. A Linear site lists none. A real site's
   catalog holds several hundred fields; the page draws the pinned ones
@@ -2459,7 +2468,11 @@ each per call.
 **Approval.** A call that names more than one ticket waits for the
 person, unless the project's setup turned off asking (`agents`
 `ask_several` false, Settings > Issues > Agents): then it is sent as one
-ticket's call is (`Host.AsksBeforeSeveral`). The app raises a prompt of kind `tracker-write` in the thread
+ticket's call is. The call reads the project's rules
+(`Host.WritePolicy`) when it starts and again before the first write; a
+call of several tickets that went unapproved and finds asking turned on
+by then is refused with nothing sent (`tracker_rules_changed`), telling
+the agent to make the call again. The app raises a prompt of kind `tracker-write` in the thread
 (`provider.EventApprovalRequest` through triage, decisions accept and
 decline only) showing each ticket's changes and the comment. The prompt
 carries each value of `set` whole, and a change line that shows a value
@@ -2596,7 +2609,7 @@ Change tickets (`agents` `change_tickets` false, code
 `tracker_changes_off`, whose sentence tells the agent to ask the person
 to turn it on in Settings > Issues > Agents), before anything is read or
 sent, and both are read again before the first write is sent, after the
-approval when there is one (`Host.Writable`). A project whose setup
+approval when there is one (`Host.WritePolicy`). A project whose setup
 cannot be read, or whose `agents` section a newer version saved, has
 every writing call refused (`tracker_setup_unreadable`,
 `tracker_setup_newer`): this build cannot tell what the project allows.
