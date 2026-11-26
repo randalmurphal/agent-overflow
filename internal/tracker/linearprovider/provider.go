@@ -142,6 +142,12 @@ var linkTypes = []tracker.LinkType{
 	{ID: tracker.LinkTypeID(linear.RelationRelated), Name: "Related", Outward: "relates to", Inward: "relates to"},
 }
 
+// Fields are refused: a Linear ticket's field list is fixed, and a
+// project pins none of it (no Capabilities.CustomFields).
+func (p *Provider) Fields(context.Context) ([]tracker.Field, error) {
+	return nil, fmt.Errorf("linearprovider: pinnable fields: %w", tracker.ErrUnsupported)
+}
+
 // LinkTypes are the relations Linear can create.
 func (p *Provider) LinkTypes(context.Context) ([]tracker.LinkType, error) {
 	return slices.Clone(linkTypes), nil

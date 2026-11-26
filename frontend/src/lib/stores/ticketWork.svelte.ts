@@ -37,9 +37,10 @@
 // so a later write of the target by anything else never shows there.
 
 import { SvelteMap } from 'svelte/reactivity';
-import type { FieldValueView, Setup, StartWorkDefaults } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { FieldValueView, Setup } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import { GetTicketWork, SearchTicketWork, StartTicketThread, type TicketWork } from './bindings';
 import { editTrackerSetup } from './trackerSetup.svelte';
+import { withStartWorkDefaults, type DefaultsPlace } from './startWorkDefaults';
 import { mountThreadForToolPane } from './panes.svelte';
 import { revealProject } from './sidebarEntryContinuity.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
@@ -141,23 +142,10 @@ export async function askAboutTicket(t: TicketWriteContext, project: string): Pr
 
 // ---- Start work ----
 
-/** The Start work defaults' place in a project's setup file: the tracker
- * site and the tracker project, named by the key's prefix. */
-export interface DefaultsPlace {
-  readonly tracker: string;
-  readonly site: string;
-  readonly project: string;
-}
-
 /** The prefix of a ticket key ("WEB" of "WEB-1"). */
 export function keyPrefix(key: string): string {
   const dash = key.lastIndexOf('-');
   return dash > 0 ? key.slice(0, dash) : key;
-}
-
-/** The entry of the setup for `place`, if any. */
-export function defaultsAt(setup: Setup, place: DefaultsPlace): StartWorkDefaults | null {
-  return (setup.start_work ?? []).find((d) => d.tracker === place.tracker && d.site === place.site && d.project === place.project) ?? null;
 }
 
 /** What Start work does, as the form showed it. */
@@ -288,28 +276,26 @@ async function assignStep(t: TicketWriteContext, plan: StartWorkPlan, state: Tra
 }
 
 /** The setup with the Start work defaults of `plan` saved at its place:
- * the other entries kept, and the branch template kept when the plan's
- * branch names none. */
-function withStartWorkDefaults(setup: Setup, plan: StartWorkPlan): Setup {
+ * the branch template kept when the plan's branch names none, and naming
+ * the branch after the ticket turned on when it names one. */
+function withPlanDefaults(setup: Setup, plan: StartWorkPlan): Setup {
   const save = plan.save;
   if (!save) return setup;
-  const kept = defaultsAt(setup, save.place);
-  const entry: StartWorkDefaults = {
-    ...save.place,
-    status: plan.status?.id,
+  const named = save.branchTemplate !== null;
+  return withStartWorkDefaults(setup, save.place, save.project, {
+    status: plan.status?.id ?? null,
     assign: plan.assign,
-    branch: save.branchTemplate ?? kept?.branch,
-    repository: plan.repository === save.project ? undefined : plan.repository,
-  };
-  const others = (setup.start_work ?? []).filter((d) => d !== kept);
-  return { ...setup, start_work: [...others, entry] };
+    branch: save.branchTemplate,
+    nameBranch: named ? true : undefined,
+    repository: plan.repository,
+  });
 }
 
 async function defaultsStep(plan: StartWorkPlan): Promise<StepOutcome> {
   const save = plan.save;
   if (!save) return { kind: 'skipped' };
   try {
-    const answer = await editTrackerSetup(save.project, (setup) => withStartWorkDefaults(setup, plan));
+    const answer = await editTrackerSetup(save.project, (setup) => withPlanDefaults(setup, plan));
     if (answer.kind === 'refused') return { kind: 'refused', text: `The defaults were not saved: ${answer.sentence}.` };
     return { kind: 'applied', note: save.branchTemplate === null ? 'The branch name does not hold the ticket\'s key, so the branch pattern saved before stays.' : null };
   } catch (err) {

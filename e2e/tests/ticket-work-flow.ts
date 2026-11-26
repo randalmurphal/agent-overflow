@@ -170,7 +170,7 @@ async function backlogRowMenuMore(harness: HarnessApp, page: Page, compact: bool
 }
 
 /** Shows column `name` on compact (the strip picks it); a no-op on desktop. */
-async function showColumn(pane: Locator, name: string, compact: boolean): Promise<void> {
+export async function showColumn(pane: Locator, name: string, compact: boolean): Promise<void> {
   if (!compact) return;
   const tab = pane.getByTestId('issues-column-tab').filter({ hasText: name });
   await expect(tab).toBeVisible({ timeout: 30_000 });
