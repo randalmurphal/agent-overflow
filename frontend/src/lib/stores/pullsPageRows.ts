@@ -12,7 +12,7 @@ import type { BackendKey } from '../transport/backendKey';
 import { TransportError } from '../transport/wsClient';
 import { ciStatusText } from '../utils/ciStatus';
 import { textsMatchNeedle } from '../utils/findMatch';
-import { forgeFailureFrom, type ForgeFailure } from '../utils/forgeFailure';
+import { forgeFailureFrom, forgeReadFailureCause, type ForgeFailure } from '../utils/forgeFailure';
 import { relativeTime } from '../utils/format';
 import { prKey, prRefFromWire, type PRRef } from '../utils/prReference';
 import { pullStateRank, pullStateText, pullStateTone, type PullGroup } from '../utils/pullsAttention';
@@ -317,9 +317,7 @@ export function projectErrors(snapshot: PRListSnapshot | null, projects: readonl
         failure: forgeFailureFrom(project),
         forge: project.repo.Forge,
         partial: false,
-        cause: project.errorDetails
-          ? new TransportError(`forge_${project.errorKind || 'forge'}`, project.error, { detail: project.errorDetails, backend })
-          : null,
+        cause: forgeReadFailureCause({ ...project, error: project.error }, backend),
       });
     } else if (project.detailError) {
       out.push({ projectId: project.projectId, name: project.name, message: project.detailError, failure: null, forge: project.repo.Forge, partial: true, cause: null });

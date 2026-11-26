@@ -3,6 +3,8 @@
 // pr:ci_log and the SubscribePRUpdates result). The kind picks the
 // surface; see docs/architecture/forge-transport.md#failure-presentation.
 
+import type { BackendKey } from '../transport/backendKey';
+import { TransportError } from '../transport/wsClient';
 import { formatTimeOfDay } from './format';
 import { forgeLabels } from './forgeLabels';
 
@@ -49,4 +51,19 @@ export function rateLimitMessage(forge: string | null | undefined, failure: Forg
     return `${name} rate limit nearly used up. Updates pause until ${at} so your own actions still go through.`;
   }
   return `${name} rate limit reached. Updates resume at ${at}.`;
+}
+
+/** A failed forge read as its wire carries it: the caller-safe sentence,
+ * its kind fields and the detail behind it (ProjectPRList,
+ * TicketForgeProblem). */
+export interface ForgeReadFailureWire extends ForgeFailureWire {
+  error: string;
+  errorDetails?: unknown;
+}
+
+/** The failure behind a failed forge read, for its Details and copy: an
+ * error carrying the read's detail as a failed call's does; null when the
+ * read carries none. */
+export function forgeReadFailureCause(wire: ForgeReadFailureWire, backend: BackendKey): TransportError | null {
+  return wire.errorDetails ? new TransportError(`forge_${wire.errorKind || 'forge'}`, wire.error, { detail: wire.errorDetails, backend }) : null;
 }

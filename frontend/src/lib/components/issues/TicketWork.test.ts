@@ -60,7 +60,7 @@ const WORK = {
   problems: [{ projectId: 'p2', error: 'git for-each-ref failed: not a git repository' }],
 };
 
-async function mountWork(opts: { backend?: string; first?: DetailView | null; work?: () => Promise<unknown>; archived?: boolean; shown?: () => boolean } = {}) {
+async function mountWork(opts: { backend?: string; first?: DetailView | null; work?: () => Promise<unknown>; search?: () => Promise<unknown>; archived?: boolean; shown?: () => boolean } = {}) {
   const backend = opts.backend ?? HOME_BACKEND;
   const first = opts.first === undefined ? DETAIL : opts.first;
   setBindingMock('SubscribeTrackerTicket', async () => ({ id: 'sub-1', seq: 1, poll_every: 10_000, kind: 'jira', site: SITE, loaded: first !== null, detail: first ?? undefined, read_at: first ? 1 : 0 } as TicketSubscription));
@@ -68,6 +68,7 @@ async function mountWork(opts: { backend?: string; first?: DetailView | null; wo
   setBindingMock('SetTrackerSubscriptionVisible', async () => {});
   setBindingMock('ReleaseTrackerSubscription', async () => {});
   const reads = setBindingMock('GetTicketWork', opts.work ?? (async () => WORK));
+  if (opts.search) setBindingMock('SearchTicketWork', opts.search);
   noteProject('p1', backend);
   addProjectLocal({ id: 'p1', path: '/tmp/widgets', name: 'widgets', archived: opts.archived ?? false } as never);
   listThread(makeThread({ id: 't-linked', projectId: 'p1', title: 'WEB-1 Retry cursor', ticketLink: link('10101') }));
@@ -91,6 +92,50 @@ function formOf(): HTMLElement {
 }
 
 describe('Work', () => {
+  it('says the forge is being searched until its search answers, then lists what it found', async () => {
+    let answer: (v: unknown) => void = () => {};
+    const found = { ...WORK, problems: [], forgeProblems: [], searchFull: [], pullRequests: [...WORK.pullRequests,
+      { ref: { Forge: 'github', Host: 'github.com', Namespace: 'example', Repo: 'widgets', Number: 9 }, url: 'https://github.com/example/widgets/pull/9', title: 'WEB-1 Docs', author: 'User 1', state: 'merged', branch: 'docs', projectId: 'p1' }] };
+    const view = await mountWork({ search: () => new Promise((resolve) => { answer = resolve; }) });
+    await waitFor(() => expect(view.getByTestId('ticket-work-searching').textContent).toBe('Searching the forge…'));
+    expect(view.getAllByTestId('ticket-work-pull')).toHaveLength(1);
+    answer(found);
+    await waitFor(() => expect(view.queryByTestId('ticket-work-searching')).toBeNull());
+    expect(view.getAllByTestId('ticket-work-pull-state').map((s) => s.textContent)).toEqual(['Open', 'Merged']);
+    expect(view.getAllByTestId('ticket-work-pull')[1].textContent).toContain('User 1');
+    view.unmount();
+  });
+
+  it('says each failed search in the Pull requests page\'s words beside the rows, and Retry reads again', async () => {
+    const resumeAt = '2026-11-26T18:30:00Z';
+    const view = await mountWork({
+      search: async () => ({ ...WORK, problems: [], searchFull: [{ Forge: 'gitlab', Host: 'gitlab.com', Namespace: 'grp', Repo: 'docs' }], forgeProblems: [
+        { projectId: 'p1', repo: { Forge: 'github', Host: 'github.com', Namespace: 'example', Repo: 'widgets' }, error: 'failed to refresh from the forge (id: r1)', errorKind: 'rate_limited', resumeAt, errorDetails: { ref: 'r1', method: 'repository read', at: 1 } },
+        { projectId: 'p1', repo: { Forge: 'gitlab', Host: 'gitlab.com', Namespace: 'grp', Repo: 'app' }, error: 'The GitLab login cannot see grp/app.', errorKind: 'forbidden' },
+        { projectId: 'p1', repo: { Forge: 'gitlab', Host: 'gitlab.com', Namespace: 'grp', Repo: 'api' }, error: 'Run glab auth login --hostname gitlab.com.', errorKind: 'setup' },
+        { projectId: 'p1', repo: { Forge: 'github', Host: 'github.com', Namespace: 'example', Repo: 'down' }, error: 'failed to refresh from the forge (id: r2)', errorKind: 'transient' },
+      ] }),
+    });
+    const problems = await waitFor(() => {
+      const shown = view.getAllByTestId('pulls-project-error');
+      expect(shown).toHaveLength(4);
+      return shown;
+    });
+    expect(problems.map((p) => p.dataset.errorKind)).toEqual(['rate_limited', 'forbidden', 'setup', 'transient']);
+    expect(problems[0].textContent?.trim()).toMatch(/^GitHub rate limit reached\. Updates resume at /);
+    expect(problems[1].textContent).toContain('Could not search grp/app: The GitLab login cannot see grp/app.');
+    expect(problems[2].textContent).toContain('Could not search grp/api: Run glab auth login --hostname gitlab.com.');
+    expect(problems[3].textContent).toContain('Could not search example/down: failed to refresh from the forge (id: r2)');
+    expect(view.getByTestId('ticket-work-search-full').textContent).toBe('The search of grp/docs found more than 100 pull requests, so these may not be all of them.');
+    // The rows from the stored sources still show.
+    expect(view.getAllByTestId('ticket-work-pull')).toHaveLength(1);
+    expect(view.getByTestId('ticket-work-branch').textContent).toContain('web-1-spike');
+    const before = view.reads.mock.calls.length;
+    await fireEvent.click(problems[3].querySelector('[data-testid="pulls-project-retry"]')!);
+    await waitFor(() => expect(view.reads.mock.calls.length).toBe(before + 1));
+    view.unmount();
+  });
+
   it('lists the threads linked to the ticket by the tracker its subscription named, and what its computer found, reading no connections', async () => {
     const connections = setBindingMock('TrackerConnections', async () => []);
     const view = await mountWork();
