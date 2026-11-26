@@ -1665,15 +1665,21 @@ funnel (`trackerapp/funnel.go`):
   A shown board adds one lookup of the changed cards' boards per write
   that changed any (`ListMirrorIssueBoards`). An open ticket is told at
   each write. The tick's own board is sent one event, with the tick's
-  failure; when the tick changes more than 100 of its rows, that event
-  names none and says to read the board again (`boardPending.add`).
-  Every other board is sent one event as the tick ends
-  (`tickOrigin.others`), and before a write that would take that event
-  past 100 rows, what it holds is sent first (`boardPending.overflows`):
-  only a single write of more than 100 of its rows makes it say to read
-  again. So a history read of several batches moves another board's
-  totals once per event a patch reads. A write's refresh, which no tick
-  runs, sends each board its event as it is published.
+  failure, and every other board one event as the tick ends
+  (`tickOrigin.others`). Another sender of a board's event during the
+  tick sends what the tick left pending for it sooner: a write's
+  refresh, the board's own tick, or a setup change that has the board
+  read again (`readBoardsAgain`). An event names at most 100 rows. The
+  tick's own board past that bound is sent an event that names none and
+  says to read the board again (`boardPending.add`). Another board is
+  sent what it holds before a write would take its event past the bound
+  (`boardPending.overflows`), so of the bound only a single write of
+  more than 100 of its rows makes its event say to read again. A catalog
+  change, a structure change of the board, or a failed lookup of the
+  changed issues' boards says to read again whatever the count. So a
+  history read of several batches moves another board's totals once per
+  event a patch reads. A write's refresh, which no tick runs, sends each
+  board its event as it is published.
 - The root a change is published under is the one the run that stored it
   held, so a connection change during the read cannot lose it. A change
   reaches only the subscriptions of that mirror: the connection's mirror
