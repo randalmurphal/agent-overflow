@@ -129,6 +129,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1347598600: 'home', // EditTrackerKeyFile
 	3891799979: 'home', // EditTrackerSprint
 	670991272: 'home', // EditTrackerWorklog
+	2206254666: 'home', // EvaluateTrackerDashboard
 	1594348919: 'selected', // FetchForgeAttachment
 	2178028847: 'selected', // FinishDictation
 	3774452621: 'selected', // FinishLiveDictation
@@ -548,6 +549,8 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1808895141: 'home', // TrackerComments
 	1356803888: 'selected', // TrackerConnections
 	440800234: 'home', // TrackerCreateFields
+	124644262: 'home', // TrackerDashboardDrill
+	3554577306: 'home', // TrackerDashboards
 	2749961211: 'home', // TrackerIssueTypes
 	2754714292: 'home', // TrackerLinkTypes
 	2194444141: 'home', // TrackerLookup

@@ -181,6 +181,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "EditTrackerKeyFile", ID: 1347598600, Scope: "host", Route: "home"},                                                               // main.App.EditTrackerKeyFile
 	{Name: "EditTrackerSprint", ID: 3891799979, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                            // main.App.EditTrackerSprint
 	{Name: "EditTrackerWorklog", ID: 670991272, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                            // main.App.EditTrackerWorklog
+	{Name: "EvaluateTrackerDashboard", ID: 2206254666, Scope: "tracker:read", Route: "home", CallerBound: true},                              // main.App.EvaluateTrackerDashboard
 	{Name: "FetchForgeAttachment", ID: 1594348919, Scope: "git:operate", Route: "selected", Budget: 11 * time.Minute},                        // main.App.FetchForgeAttachment
 	{Name: "FinishDictation", ID: 2178028847, Scope: "threads:operate", Route: "selected", Budget: 3 * time.Minute},                          // main.App.FinishDictation
 	{Name: "FinishLiveDictation", ID: 3774452621, Scope: "threads:operate", Route: "selected"},                                               // main.App.FinishLiveDictation
@@ -600,6 +601,8 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "TrackerComments", ID: 1808895141, Scope: "tracker:read", Route: "home"},                                                          // main.App.TrackerComments
 	{Name: "TrackerConnections", ID: 1356803888, Scope: "tracker:read", Route: "selected"},                                                   // main.App.TrackerConnections
 	{Name: "TrackerCreateFields", ID: 440800234, Scope: "tracker:read", Route: "home"},                                                       // main.App.TrackerCreateFields
+	{Name: "TrackerDashboardDrill", ID: 124644262, Scope: "tracker:read", Route: "home", CallerBound: true},                                  // main.App.TrackerDashboardDrill
+	{Name: "TrackerDashboards", ID: 3554577306, Scope: "tracker:read", Route: "home", CallerBound: true},                                     // main.App.TrackerDashboards
 	{Name: "TrackerIssueTypes", ID: 2749961211, Scope: "tracker:read", Route: "home"},                                                        // main.App.TrackerIssueTypes
 	{Name: "TrackerLinkTypes", ID: 2754714292, Scope: "tracker:read", Route: "home"},                                                         // main.App.TrackerLinkTypes
 	{Name: "TrackerLookup", ID: 2194444141, Scope: "tracker:read", Route: "home"},                                                            // main.App.TrackerLookup

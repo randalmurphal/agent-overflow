@@ -636,6 +636,10 @@ export {
   SetTrackerSubscriptionVisible,
   RefreshTrackerSubscription,
   ReleaseTrackerSubscription,
+  // A subscribed board's dashboards (stores/trackerDashboard.svelte.ts).
+  TrackerDashboards,
+  EvaluateTrackerDashboard,
+  TrackerDashboardDrill,
   // A ticket's subscription, its writes and the reads its pickers make
   // (stores/trackerTicket.svelte.ts, stores/trackerTicketWrites.svelte.ts).
   SubscribeTrackerTicket,

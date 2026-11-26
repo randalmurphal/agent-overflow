@@ -2,6 +2,7 @@ package trackerapp
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"slices"
@@ -77,6 +78,8 @@ type MirrorStore interface {
 
 	ReplaceMirrorWorklogs(rootID, sourceGen int64, authorID, fromDay, toDay string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error)
 	ReadMirrorWorklogDays(connectionID, authorID, fromDay, toDay string) (store.MirrorWorklogDays, error)
+
+	ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup store.MirrorRegroup) (store.MirrorExport, bool, error)
 }
 
 var (

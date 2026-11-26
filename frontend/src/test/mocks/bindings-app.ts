@@ -1156,6 +1156,9 @@ export const TrackerBoardPatch = dispatch('TrackerBoardPatch');
 export const SetTrackerSubscriptionVisible = dispatch('SetTrackerSubscriptionVisible');
 export const RefreshTrackerSubscription = dispatch('RefreshTrackerSubscription');
 export const ReleaseTrackerSubscription = dispatch('ReleaseTrackerSubscription');
+export const TrackerDashboards = dispatch('TrackerDashboards');
+export const EvaluateTrackerDashboard = dispatch('EvaluateTrackerDashboard');
+export const TrackerDashboardDrill = dispatch('TrackerDashboardDrill');
 
 export const SubscribeTrackerTicket = dispatch('SubscribeTrackerTicket');
 export const TrackerTicket = dispatch('TrackerTicket');
