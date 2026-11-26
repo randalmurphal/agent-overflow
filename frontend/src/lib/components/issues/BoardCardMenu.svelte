@@ -30,7 +30,8 @@
     typed: boolean;
     /** The card's address in the tracker (`cardURL`); empty when unknown. */
     url: string;
-    /** A move or rank of the card is out. */
+    /** The card is busy (`cardBusy`): a drop of it, or a move, rank or
+     * sprint move of it, is under way. */
     moving: boolean;
     /** Opens at Move to…. */
     atMove?: boolean;
@@ -72,7 +73,7 @@
       label: 'Change',
       actions: [
         { id: 'move', label: 'Move to…', testId: 'issues-card-menu-move', disabled: moving, page: movePage },
-        ...(shape.plansSprints ? [{ id: 'sprint', label: 'Move to sprint…', testId: 'issues-card-menu-sprint', disabled: pending('sprint'), page: sprintPage }] : []),
+        ...(shape.plansSprints ? [{ id: 'sprint', label: 'Move to sprint…', testId: 'issues-card-menu-sprint', disabled: moving, page: sprintPage }] : []),
         { id: 'assignee', label: 'Assignee…', testId: 'issues-card-menu-assignee', disabled: pending(fieldTarget('assignee')), run: () => onEdit('assignee') },
         { id: 'priority', label: 'Priority…', testId: 'issues-card-menu-priority', disabled: pending(fieldTarget('priority')), run: () => onEdit('priority') },
         ...(shape.unit !== 'none' && shape.unit !== '' ? [{ id: 'points', label: shape.unit === 'time' ? 'Estimate…' : 'Points…', testId: 'issues-card-menu-points', disabled: pending('points'), run: () => onEdit('points') }] : []),

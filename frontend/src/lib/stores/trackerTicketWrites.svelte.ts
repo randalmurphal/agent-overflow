@@ -515,6 +515,7 @@ function write(
 function toastUnshown(change: string, what: string, outcome: WriteOutcome): void {
   switch (outcome.kind) {
     case 'applied':
+      if (outcome.unplaced) addToast('error', `${what}: ${outcome.note}`);
       return;
     case 'refused':
       addToast('error', `The tracker refused ${change}: ${refusalSentence(outcome.refusal, (id) => id)}`);

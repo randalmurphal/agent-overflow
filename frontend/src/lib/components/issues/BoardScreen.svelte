@@ -39,8 +39,8 @@
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
   import { compactColumn, setCompactColumn, type CardField } from '../../stores/issuesPane.svelte';
   import { loadMoreOfSection, setTrackerBoardFiltered, type TrackerBoardRef } from '../../stores/trackerBoard.svelte';
-  import { cardBusy, cardWriteContext, dropOwner, moveCard, rankCard, waitingCards, type CardDrop, type DropOwner } from '../../stores/trackerBoardCarry.svelte';
-  import { moveTicketToSprint, ticketMoves, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
+  import { cardBusy, cardWriteContext, dropOwner, moveCard, moveCardToSprint, rankCard, waitingCards, type CardDrop, type DropOwner } from '../../stores/trackerBoardCarry.svelte';
+  import { ticketMoves, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import type { MoveView, RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import {
@@ -597,7 +597,7 @@
       onCopy={(text, what) => { void copy(text, what); }}
       onEdit={(field) => onEditCard(open.row, field)}
       onMove={(column, move) => moveTo(open.row, column, move)}
-      onSprint={(sprint) => { void moveTicketToSprint(ctx, boardRef.board, sprint); }}
+      onSprint={(sprint) => { void moveCardToSprint(boardKey, ctx, boardRef.board, sprint); }}
       onDismiss={() => { menu = null; }}
     />
   {/key}

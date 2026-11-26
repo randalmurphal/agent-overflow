@@ -3606,6 +3606,13 @@ export class WriteView {
     "created"?: string;
 
     /**
+     * CreatedKey is the key of the issue Created names when a later step
+     * of the create was not applied and the mirror holds its card after
+     * the write's reads; empty otherwise.
+     */
+    "created_key"?: string;
+
+    /**
      * CreateUnknown reports a create whose answer was lost: the tracker
      * may hold a new issue nobody can name, and a second attempt may make
      * a second one. Nothing retried it; the board's tick ran at once.
@@ -3648,13 +3655,13 @@ export class WriteView {
      */
     static createFrom($$source: any = {}): WriteView {
         const $$createField0_0 = $$createType96;
-        const $$createField4_0 = $$createType98;
+        const $$createField5_0 = $$createType98;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("parts" in $$parsedSource) {
             $$parsedSource["parts"] = $$createField0_0($$parsedSource["parts"]);
         }
         if ("stale" in $$parsedSource) {
-            $$parsedSource["stale"] = $$createField4_0($$parsedSource["stale"]);
+            $$parsedSource["stale"] = $$createField5_0($$parsedSource["stale"]);
         }
         return new WriteView($$parsedSource as Partial<WriteView>);
     }

@@ -44,8 +44,8 @@
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
   import { backlogSectionOpen, setBacklogSectionOpen, type CardField } from '../../stores/issuesPane.svelte';
   import { loadMoreOfSection, setTrackerBoardFiltered, type TrackerBoardRef } from '../../stores/trackerBoard.svelte';
-  import { cardBusy, cardWriteContext, placeCard, rankCard, waitingCards } from '../../stores/trackerBoardCarry.svelte';
-  import { boardWriteContext, moveTicket, moveTicketToSprint, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
+  import { cardBusy, cardWriteContext, moveCardToSprint, placeCard, rankCard, waitingCards } from '../../stores/trackerBoardCarry.svelte';
+  import { boardWriteContext, moveTicket, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import type { MoveView, RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import { cardURL, filtering, sectionKey, type CardFilter, type HeldBoard } from '../../stores/trackerBoardModel';
@@ -484,7 +484,7 @@
                   {filtered ? (sec.more ? 'No matching tickets among those loaded' : 'No matching tickets') : compact ? 'No tickets' : 'Drop tickets here'}
                 </p>
               {/if}
-              <BacklogCreate {b} {boardRef} {sec} project={held.shape.project} {typed} />
+              <BacklogCreate {b} {boardKey} {boardRef} {sec} project={held.shape.project} {typed} />
             </div>
           {/if}
           {#snippet sprintControls()}
@@ -516,7 +516,7 @@
       onCopy={(text, what) => { void copy(text, what); }}
       onEdit={(field) => onEditRow(open.row, field)}
       onMove={(_column, move) => moveBy(open.row, move)}
-      onSprint={(sprint) => { void moveTicketToSprint(ctx, boardRef.board, sprint); }}
+      onSprint={(sprint) => { void moveCardToSprint(boardKey, ctx, boardRef.board, sprint); }}
       onDismiss={() => { menu = null; }}
     />
   {/key}

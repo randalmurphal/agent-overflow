@@ -12,8 +12,11 @@ import { isTransportClassError } from './transportStatus.svelte';
 
 /** What became of a write, as the person reads it. */
 export type WriteOutcome =
-  /** Made. `note` says what the screen does not show yet, or null. */
-  | { readonly kind: 'applied'; readonly note: string | null }
+  /** Made. `note` says what the screen does not show yet, or null. A
+   * create the tracker confirmed is made whatever became of its later
+   * steps, so it is never sent again; `unplaced` is the first of those
+   * that was not applied. */
+  | { readonly kind: 'applied'; readonly note: string | null; readonly unplaced?: Unplaced }
   /** The tracker, or the computer before sending, refused a part. */
   | { readonly kind: 'refused'; readonly refusal: RefusalView }
   /** A part was sent and not answered in full (`unknown`), or was not
@@ -24,6 +27,16 @@ export type WriteOutcome =
   /** No answer came: the connection to the computer dropped, or the call
    * timed out while the computer may still hold it. */
   | { readonly kind: 'lost'; readonly message: string };
+
+/** A later step of a confirmed create that was not applied: the new
+ * ticket (`key` empty when the computer could not name it), the step
+ * (`PartView.step`), and why, as a sentence. */
+export interface Unplaced {
+  readonly issue: string;
+  readonly key: string;
+  readonly step: string;
+  readonly why: string;
+}
 
 /** What a screen's write sentences name. */
 export interface WriteSubject {
@@ -52,15 +65,29 @@ export const TICKET_SUBJECT: WriteSubject = {
 export function writeOutcome(view: WriteView, subject: WriteSubject): WriteOutcome {
   for (const part of view.parts ?? []) {
     if (part.state === 'applied') continue;
+    const unknown = `The tracker did not say what became of this change; look at ${subject.look} before you try again.`;
+    if (view.created) {
+      const why = part.state === 'refused' && part.refusal ? refusalSentence(part.refusal, (id) => id) : (part.failure?.message ?? unknown);
+      const unplaced = { issue: view.created, key: view.created_key ?? '', step: part.step, why };
+      return { kind: 'applied', note: unplacedSentence(unplaced, part.state === 'unknown'), unplaced };
+    }
     if (part.state === 'refused' && part.refusal) return { kind: 'refused', refusal: part.refusal };
     const kind = part.state === 'not_sent' ? 'not_sent' : 'unknown';
-    return { kind, message: part.failure?.message ?? `The tracker did not say what became of this change; look at ${subject.look} before you try again.` };
+    return { kind, message: part.failure?.message ?? unknown };
   }
   if (view.ended) return { kind: 'applied', note: `Saved. Its connection was turned off or removed while saving, so ${subject.ended}.` };
   if (view.not_on_board) return { kind: 'applied', note: 'Created, but this board does not show it: its filter or its columns leave the new ticket out.' };
   const stale = view.stale?.find((s) => s.resources.some(subject.reads));
   if (stale) return { kind: 'applied', note: `Saved. ${subject.shows} shows it after its next read: ${stale.failure.message}` };
   return { kind: 'applied', note: null };
+}
+
+/** What a create's step that was not applied left: the ticket stands,
+ * and the step did not happen, or may not have when its answer was lost
+ * (`unknown`). Only a move into the sprint follows a create. */
+function unplacedSentence(u: Unplaced, unknown: boolean): string {
+  const made = `Created ${u.key || 'the ticket'}`;
+  return unknown ? `${made}; it may not be in its sprint: ${u.why}` : `${made}, but it was not moved into its sprint: ${u.why}`;
 }
 
 /** The sentence of a write whose answer never came. */

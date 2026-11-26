@@ -136,6 +136,9 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 	}
 	view.Stale = s.staleViews(r.row.Kind, f.stale)
 	view.NotOnBoard = string(f.notOnBoard)
+	if view.Created != "" && !allApplied(res) {
+		view.CreatedKey = s.createdKey(r.root, view.Created)
+	}
 	finish()
 	if view.CreateUnknown && op.board != "" {
 		if err := s.tickNow(ctx, Scope{Connection: id, Board: op.board}); err != nil {
@@ -211,6 +214,27 @@ func (r *run) inUse() bool {
 func happened(res tracker.Result) bool {
 	t := res.Tally()
 	return t.Applied+t.Unknown > 0
+}
+
+// allApplied reports a result every part of which was applied.
+func allApplied(res tracker.Result) bool {
+	t := res.Tally()
+	return t.Applied == len(res.Parts)
+}
+
+// createdKey is the key of issue as the mirror holds it after a write's
+// reads, empty when it holds no card of it. A failed read is logged and
+// answers empty: the person is told of the issue without its key.
+func (s *Service) createdKey(root int64, issue string) string {
+	cards, err := s.store.ListMirrorCards(root, []string{issue})
+	if err != nil {
+		s.logf("trackerapp: read the key of the created issue %s: %v", issue, err)
+		return ""
+	}
+	if len(cards) == 0 {
+		return ""
+	}
+	return cards[0].Key
 }
 
 // sentNothing reports a result every part of which was refused before

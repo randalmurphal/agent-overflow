@@ -33,16 +33,20 @@
     loadCreateFields,
     loadIssueTypes,
     loadTrackerProjects,
+    dismissTicketWrite,
     ticketWrite,
     trackerProjects,
     type BoardWriteContext,
   } from '../../stores/trackerTicketWrites.svelte';
   import { errString } from '../../utils/errors';
   import { isLocalEnter } from '../../utils/localEnter';
+  import { issueWriteContext, moveCardToSprint } from '../../stores/trackerBoardCarry.svelte';
   import { cardFieldName } from './ticketEditors';
 
   interface Props {
     b: BoardWriteContext;
+    /** The board's key (`trackerBoardKey`), which its rows' moves are held under. */
+    boardKey: string;
     boardRef: TrackerBoardRef;
     sec: BacklogSection;
     /** The project the board shows; empty for a board of several. */
@@ -51,10 +55,14 @@
     typed: boolean;
   }
 
-  let { b, boardRef, sec, project, typed }: Props = $props();
+  let { b, boardKey, boardRef, sec, project, typed }: Props = $props();
 
   const target = $derived(createTarget(sec.list));
-  const pending = $derived(ticketWrite(b.key, target)?.pending ?? false);
+  const held = $derived(ticketWrite(b.key, target));
+  const pending = $derived(held?.pending ?? false);
+  // A ticket made here that was not moved into the sprint: offered the
+  // move, the menu's, for that ticket.
+  const unplaced = $derived(held?.outcome?.kind === 'applied' && held.outcome.unplaced?.step === 'sprint_move' ? held.outcome.unplaced : null);
   const where = $derived(sec.sprint?.name || 'the backlog');
 
   let open = $state(false);
@@ -178,6 +186,12 @@
     }
   }
 
+  function moveUnplaced(): void {
+    if (!unplaced || !sec.sprint) return;
+    void moveCardToSprint(boardKey, issueWriteContext(boardRef, unplaced.issue, unplaced.key), b.board, sec.sprint.id);
+    dismissTicketWrite(b.key, target);
+  }
+
   function onKey(event: KeyboardEvent): void {
     if (isLocalEnter(event)) {
       event.preventDefault();
@@ -241,6 +255,9 @@
       <p class="text-xs text-fg" role="status" data-testid="issues-backlog-create-unsettable">A {typeName || 'ticket'}{project ? '' : ` in ${projectName}`} needs {unsettable.join(', ')}, which the app cannot set. Make it in the tracker.</p>
     {/if}
     <TicketWriteNote ticketKey={b.key} {target} fieldName={cardFieldName} />
+    {#if unplaced && sec.sprint}
+      <button type="button" class="self-start text-xs text-accent hover:underline" data-testid="issues-backlog-create-move" onclick={moveUnplaced}>Move {unplaced.key || 'it'} into {sec.sprint.name}</button>
+    {/if}
     <div class="flex items-center gap-1.5">
       <Button size="sm" variant="primary" disabled={pending || !ready || !title.trim() || missing.length > 0} testId="issues-backlog-create-submit" onclick={() => { void submit(); }}>{pending ? 'Adding…' : 'Add'}</Button>
       <Button size="sm" variant="ghost" disabled={pending} testId="issues-backlog-create-cancel" onclick={cancel}>Cancel</Button>

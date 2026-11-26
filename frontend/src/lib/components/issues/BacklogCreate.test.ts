@@ -43,7 +43,7 @@ async function pick(container: HTMLElement, id: string, name: string): Promise<v
 }
 
 function open(project: string) {
-  return render(BacklogCreate, { context: ticketWriteSurfaceContext(() => true), props: { b: B, boardRef: REF, sec: SPRINT, project, typed: true } });
+  return render(BacklogCreate, { context: ticketWriteSurfaceContext(() => true), props: { b: B, boardKey: 'board-key', boardRef: REF, sec: SPRINT, project, typed: true } });
 }
 
 describe('New ticket', () => {
@@ -90,6 +90,54 @@ describe('New ticket', () => {
     expect(types).toHaveBeenCalledTimes(1);
     expect(fields).toHaveBeenCalledTimes(2);
     next.unmount();
+  });
+
+  it('once the tracker made the ticket, is done with its title even when its move into the sprint failed, and offers that move', async () => {
+    setBindingMock('TrackerIssueTypes', async () => TYPES);
+    setBindingMock('TrackerCreateFields', async () => []);
+    const created = setBindingMock('CreateTrackerIssue', async () => ({
+      parts: [{ step: 'create', state: 'applied', issue: '10012' }, { step: 'sprint_move', state: 'refused', issue: '10012', refusal: { reason: 'tracker', message: 'Sprint 9 is closed.' } }],
+      created: '10012', created_key: 'WEB-12',
+    }) as WriteView);
+    const moved = setBindingMock('MoveTrackerIssuesToSprint', async () => ({ parts: [{ step: 'sprint_move', state: 'applied', issue: '10012' }] }) as WriteView);
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    const title = view.getByTestId('issues-backlog-create-title') as HTMLInputElement;
+    await waitFor(() => expect((view.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(true));
+    await fireEvent.input(title, { target: { value: 'Made once' } });
+    await waitFor(() => expect((view.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(view.getByTestId('ticket-write-outcome').textContent).toContain('Created WEB-12, but it was not moved into its sprint: Sprint 9 is closed.'));
+    // The title went with the made ticket: Add sends nothing more.
+    await waitFor(() => expect(title.value).toBe(''));
+    expect((view.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    expect(created).toHaveBeenCalledTimes(1);
+    await fireEvent.click(view.getByTestId('issues-backlog-create-move'));
+    await waitFor(() => expect(moved).toHaveBeenCalledTimes(1));
+    expect(moved.mock.calls[0]).toEqual(['c1', { board: '1', sprint: '9', issues: ['10012'], prev: undefined, next: undefined }]);
+    expect(view.queryByTestId('issues-backlog-create-move')).toBeNull();
+    view.unmount();
+  });
+
+  it('says it may not be in its sprint when the move\'s answer was lost, and does not make it again', async () => {
+    setBindingMock('TrackerIssueTypes', async () => TYPES);
+    setBindingMock('TrackerCreateFields', async () => []);
+    const created = setBindingMock('CreateTrackerIssue', async () => ({
+      parts: [{ step: 'create', state: 'applied', issue: '10012' }, { step: 'sprint_move', state: 'unknown', issue: '10012', failure: { kind: 'transient', message: 'Jira did not answer in full.', at: 1 } }],
+      created: '10012',
+    }) as WriteView);
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    const title = view.getByTestId('issues-backlog-create-title') as HTMLInputElement;
+    await fireEvent.input(title, { target: { value: 'Made once' } });
+    await waitFor(() => expect((view.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(view.getByTestId('issues-backlog-create-submit'));
+    await waitFor(() => expect(view.getByTestId('ticket-write-outcome').textContent).toContain('Created the ticket; it may not be in its sprint: Jira did not answer in full.'));
+    await waitFor(() => expect(title.value).toBe(''));
+    expect(view.getByTestId('issues-backlog-create-move').textContent).toBe('Move it into Sprint 9');
+    expect(created).toHaveBeenCalledTimes(1);
+    view.unmount();
   });
 
   it('says to make the ticket in the tracker when it requires a field the app cannot set', async () => {

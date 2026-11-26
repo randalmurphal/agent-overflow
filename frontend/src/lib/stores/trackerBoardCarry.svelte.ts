@@ -51,8 +51,23 @@ function waitKey(board: string, issue: string): string {
 /** The write context of a card of `board`: the ticket screen's, so one
  * write shows on both. */
 export function cardWriteContext(board: TrackerBoardRef, row: RowView): TicketWriteContext {
-  const ref = { backend: board.backend, connection: board.connection, issue: row.card.id };
-  return { key: trackerTicketKey(ref), ref, label: row.card.key };
+  return issueWriteContext(board, row.card.id, row.card.key);
+}
+
+/** The write context of the issue `id`, keyed `key`, on `board`'s
+ * connection; `key` empty names it as "the ticket". */
+export function issueWriteContext(board: TrackerBoardRef, id: string, key: string): TicketWriteContext {
+  const ref = { backend: board.backend, connection: board.connection, issue: id };
+  return { key: trackerTicketKey(ref), ref, label: key || 'the ticket' };
+}
+
+/** Moves the card of `board` (trackerBoardKey) into `sprint` of the
+ * tracker board `trackerBoard`, or to its backlog with none, unless it is
+ * busy (`cardBusy`): the menu's Move to sprint… and a made ticket's move
+ * into its sprint, on every screen. */
+export function moveCardToSprint(board: string, ctx: TicketWriteContext, trackerBoard: string, sprint: string | null): Promise<WriteOutcome | null> {
+  if (cardBusy(board, ctx)) return Promise.resolve(null);
+  return moveTicketToSprint(ctx, trackerBoard, sprint);
 }
 
 /** The cards of the board (trackerBoardKey) waiting where they were
