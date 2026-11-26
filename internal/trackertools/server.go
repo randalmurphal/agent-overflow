@@ -1,6 +1,7 @@
 // Package trackertools is the ao-tracker-tools contract: the tools an agent
 // in a thread uses to find, read, create and change tickets in the user's
-// issue tracker, their schemas, argument validation, how a ticket key
+// issue tracker and to read and draft the user's time (time.go), their
+// schemas, argument validation, how a ticket key
 // names an issue on this computer's connections, what a write checks
 // before it sends anything, the shape of each answer, and the guide the
 // model reads. The product contract is
