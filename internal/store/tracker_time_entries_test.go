@@ -239,22 +239,19 @@ func TestTimeEntryTransitions(t *testing.T) {
 	if removed, err := s.RemoveTimeEntries(conn, "acc-user1", []TimeEntryRef{ref(unknown)}); err != nil || len(removed) != 1 {
 		t.Fatalf("removing the unknown entry: %+v %v", removed, err)
 	}
-	if _, err := s.ReplaceAgentTimeDays(conn, "acc-user1", []TimeEntry{agentEntry("2026-11-23", "10001", "WEB-1", 3600, "Review", "t2")}, 201); err != nil {
-		t.Fatal(err)
+	// Its ticket is drafted again, as a new entry, and that one posts.
+	redraft, err := s.ReplaceAgentTimeDays(conn, "acc-user1", []TimeEntry{agentEntry("2026-11-23", "10001", "WEB-1", 3600, "Review", "t2")}, 201)
+	if err != nil || len(redraft.Made) != 1 || redraft.Made[0].ID <= q.ID || redraft.Made[0].IssueKey != "WEB-1" {
+		t.Fatalf("the redraft made %+v %v, want one WEB-1 entry with a new ID", redraft.Made, err)
 	}
-	redrafted, _ := s.TimeEntriesOf(conn, "acc-user1", "2026-11-23", "2026-11-23")
-	for _, e := range redrafted {
-		if e.IssueKey != "WEB-1" {
-			continue
-		}
-		m, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(e)}, 300)
-		if err != nil || len(m) != 1 {
-			t.Fatalf("the second retry's mark %+v %v", m, err)
-		}
-		if posted, err := s.SettleTimeEntries(conn, []TimeEntrySettle{{ID: e.ID, Revision: m[0].Revision, State: TimeEntryPosted, WorklogID: "300"}}, 301); err != nil ||
-			len(posted) != 1 || posted[0].State != TimeEntryPosted || posted[0].WorklogID != "300" || posted[0].PostedMs != 301 {
-			t.Fatalf("posted %+v %v", posted, err)
-		}
+	e := redraft.Made[0]
+	m, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(e)}, 300)
+	if err != nil || len(m) != 1 || m[0].ID != e.ID {
+		t.Fatalf("the redraft's mark %+v %v", m, err)
+	}
+	if posted, err := s.SettleTimeEntries(conn, []TimeEntrySettle{{ID: e.ID, Revision: m[0].Revision, State: TimeEntryPosted, WorklogID: "300"}}, 301); err != nil ||
+		len(posted) != 1 || posted[0].State != TimeEntryPosted || posted[0].WorklogID != "300" || posted[0].PostedMs != 301 {
+		t.Fatalf("posted %+v %v", posted, err)
 	}
 	stale := TimeEntryRef{q.ID, q.Revision + 1}
 	if _, ok, err := s.EditTimeEntry(conn, "acc-user1", stale, TimeEntryChange{LeaveOut: true}, 104); ok || err != nil {
