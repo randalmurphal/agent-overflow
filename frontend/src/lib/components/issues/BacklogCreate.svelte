@@ -234,7 +234,7 @@
     const text = d?.title.trim() ?? '';
     if (!d || !text || !ready || pending || missing.length > 0) return;
     const sent = { project: projectID, type: typeID };
-    setLastCreateChoice(boardRef, { ...(typed ? { project: { id: projectID, name: projectName }, type: typeID } : {}) });
+    setLastCreateChoice(boardRef, typed ? { project: { id: projectID, name: projectName }, type: typeID } : {});
     const outcome = await createTicket(b, sec.list, where, {
       project: sent.project,
       type: sent.type || undefined,
@@ -325,7 +325,7 @@
       <button type="button" class="self-start text-xs text-accent hover:underline" data-testid="issues-backlog-create-move" onclick={moveUnplaced}>Move {unplaced.key || 'it'} into {sec.sprint.name}</button>
     {/if}
     <div class="flex items-center gap-1.5">
-      <Button size="sm" variant="primary" disabled={pending || !ready || !draft.title.trim() || missing.length > 0} testId="issues-backlog-create-submit" onclick={() => { void submit(); }}>{pending ? 'Adding…' : 'Add'}</Button>
+      <Button size="sm" variant="primary" disabled={pending || !ready || !draft?.title.trim() || missing.length > 0} testId="issues-backlog-create-submit" onclick={() => { void submit(); }}>{pending ? 'Adding…' : 'Add'}</Button>
       <Button size="sm" variant="ghost" disabled={pending} testId="issues-backlog-create-cancel" onclick={cancel}>Cancel</Button>
       {#if missing.length > 0 && ready}
         <span class="text-xs text-fg-muted" data-testid="issues-backlog-create-missing">Needs {missing.join(', ')}</span>
