@@ -531,6 +531,19 @@ describe('tracker tool write results', () => {
     }), {}, names)!.outcome).toBe('0 of 1 ticket changed');
   });
 
+  it('reads a widget call as the rules, or as its count on its board with its first rows', () => {
+    expect(aoResultView(TRACKER_TOOLS_SERVER, 'dashboard_widget', json('A widget is one SQLite SELECT.'), {}, names)).toMatchObject({ outcome: 'the widget rules' });
+    expect(aoResultView(TRACKER_TOOLS_SERVER, 'dashboard_widget', json({
+      board: 'Web Team', range: 'Last 5 sprints', counts: 'The number of tickets.', value: 3, rows: 3,
+      first_rows: [{ key: 'WEB-1', title: 'Login fails', counted: true }, { key: 'WEB-2', counted: false, note: 'no estimate' }],
+      shown: 'It is on the board\'s dashboards for the user to keep or dismiss.',
+    }), {}, names)).toMatchObject({
+      outcome: '3 · 3 rows · on Web Team',
+      note: 'It is on the board\'s dashboards for the user to keep or dismiss.',
+      lines: [{ key: 'WEB-1', title: 'WEB-1 · Login fails', detail: '' }, { key: 'WEB-2', title: 'WEB-2', detail: 'not counted', text: 'no estimate' }],
+    });
+  });
+
   it('reads a create as its key, and a create that stopped part way as incomplete with its sentence', () => {
     expect(aoResultView(TRACKER_TOOLS_SERVER, 'ticket_create', json({ key: 'WEB-42' }), {}, names)).toMatchObject({ outcome: 'created WEB-42', note: '' });
     expect(aoResultView(TRACKER_TOOLS_SERVER, 'ticket_create', json({

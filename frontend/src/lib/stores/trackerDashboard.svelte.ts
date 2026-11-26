@@ -452,7 +452,8 @@ export function dashboardAskSeed(boardName: string): string {
 }
 
 /** Ask your agent: a new thread in the board's project, opened in a pane
- * of its own, whose unsent draft names the board. The agent answers with
+ * of its own, whose unsent draft names the board and is saved as typed
+ * text is. The agent answers with
  * the tracker tools' dashboard_widget, whose proposals show on the
  * board's dashboards. */
 export async function askAgentAboutDashboards(projectId: string, boardName: string): Promise<void> {
@@ -462,5 +463,8 @@ export async function askAgentAboutDashboards(projectId: string, boardName: stri
   await tick();
   const draft = getComposerDraftForPane(pane.paneId);
   if (!draft) throw new Error('The new thread opened without its composer.');
-  if (!draft.content.trim()) draft.setContent(dashboardAskSeed(boardName));
+  if (draft.content.trim()) return;
+  // As typed text does: the draft makes the thread real, and is saved.
+  draft.setContent(dashboardAskSeed(boardName));
+  await pane.ensureMaterializedThread();
 }

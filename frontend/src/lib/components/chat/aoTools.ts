@@ -715,6 +715,17 @@ const TRACKER_TOOLS: Record<string, AoToolSpec> = {
     },
   },
   ticket_create: { label: 'create', what: (input) => `${str(input, 'project')} ${quoted(str(input, 'title'))}`.trim() },
+  // A widget's count names its title, and says when it was shown to the
+  // person; a call with no widget reads the rules.
+  dashboard_widget: {
+    label: 'widget',
+    what: (input) => {
+      const widget = input.widget && typeof input.widget === 'object' && !Array.isArray(input.widget) ? (input.widget as Input) : null;
+      if (!widget) return 'the rules';
+      const title = str(widget, 'title') ? quoted(str(widget, 'title')) : 'untitled';
+      return input.show === true ? `${title} · shown` : title;
+    },
+  },
   ticket_update: {
     label: 'update',
     what: (input) => {
@@ -936,6 +947,7 @@ const ALREADY_SHOWN: Record<string, ReadonlySet<string>> = {
   ticket_read: new Set(['key', 'history']),
   ticket_create: new Set(['project', 'title']),
   ticket_update: new Set(['keys']),
+  dashboard_widget: new Set(['widget', 'show']),
 };
 
 const FACT_LABELS: Record<string, string> = {
