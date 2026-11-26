@@ -237,7 +237,7 @@
     {:else if projectID && !fields?.value}
       <p class="text-xs text-fg-muted" data-testid="issues-backlog-create-reading">Reading what a new ticket takes…</p>
     {:else if unsettable.length > 0}
-      <p class="text-xs text-fg" role="status" data-testid="issues-backlog-create-unsettable">A {typeName || 'ticket'} in {projectName} needs {unsettable.join(', ')}, which the app cannot set. Make it in the tracker.</p>
+      <p class="text-xs text-fg" role="status" data-testid="issues-backlog-create-unsettable">A {typeName || 'ticket'}{project ? '' : ` in ${projectName}`} needs {unsettable.join(', ')}, which the app cannot set. Make it in the tracker.</p>
     {/if}
     <TicketWriteNote ticketKey={b.key} {target} fieldName={cardFieldName} />
     <div class="flex items-center gap-1.5">
