@@ -116,6 +116,27 @@ describe('the tracker setup store', () => {
     release();
   });
 
+  it('reads a change told while a save runs once the save has settled, and lands that read', async () => {
+    const reads = setBindingMock('ProjectTrackerSetup', async () => view('r1'));
+    const release = acquireTrackerSetup('p1');
+    await flush();
+    let answer!: () => void;
+    setBindingMock('SetProjectTrackerSetup', () => new Promise((resolve) => { answer = () => resolve({ saved: true, stored: view('r2', { s1: 'done' }) }); }));
+    const saving = editTrackerSetup('p1', (setup) => setup);
+    await flush();
+    // Another window saved after this save's write; its answer lacks that.
+    reads.mockImplementation(async () => view('r3', { s1: 'done', s2: 'left_out' }));
+    trackerSetupUpdated(HOME_BACKEND);
+    await flush();
+    expect(reads, 'no read beside the save').toHaveBeenCalledTimes(1);
+    answer();
+    await expect(saving).resolves.toEqual({ kind: 'saved' });
+    await flush();
+    expect(reads, 'one read once it settled').toHaveBeenCalledTimes(2);
+    expect(trackerSetupOf('p1')).toMatchObject({ view: { revision: 'r3' }, current: true });
+    release();
+  });
+
   it('reads the setup first for a save no surface holds, and holds nothing after it', async () => {
     const reads = setBindingMock('ProjectTrackerSetup', async () => view('r5'));
     const save = setBindingMock('SetProjectTrackerSetup', async () => ({ saved: true, stored: view('r6') }));

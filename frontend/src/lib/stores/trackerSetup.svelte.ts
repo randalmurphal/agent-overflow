@@ -6,8 +6,8 @@
 //
 // The held view is read when the first surface holds it, again on
 // `tracker:setup_updated` from the project's computer and when that
-// computer connects again, and is replaced by the `stored` of every save's
-// answer. An edit is built only from a view known to be the stored one
+// computer connects again (after the save, when a save is running), and is
+// replaced by the `stored` of every save's answer. An edit is built only from a view known to be the stored one
 // (`current`): one that a read or a save answered with no failure since.
 // A failed read keeps the view it had; a failed first read holds none.
 //
@@ -98,6 +98,8 @@ abstract class HeldRead<T> {
 
 class HeldSetup extends HeldRead<SetupView> {
   saving = $state(false);
+  /** A change was told while a save ran: read once it has settled. */
+  readOwed = false;
 
   protected call(): Promise<SetupView> {
     return ProjectTrackerSetup(this.project);
@@ -120,11 +122,15 @@ class HeldSetup extends HeldRead<SetupView> {
       // The file may hold the change or not: read what it holds.
       if (generation === this.generation) {
         this.current = false;
-        void this.read();
+        this.readOwed = true;
       }
       throw err;
     } finally {
       this.saving = false;
+      if (this.readOwed) {
+        this.readOwed = false;
+        void this.read();
+      }
     }
   }
 }
@@ -252,12 +258,16 @@ export function refreshTrackerStatuses(project: string): Promise<void> {
 }
 
 /** Reads again every held entry of a project on `backend`, or of a project
- * whose computer this window does not know. A setup being saved is not
- * read: its save's answer is newer than the change the event tells. */
+ * whose computer this window does not know. A setup being saved is read
+ * once its save settles: a read sent beside the save may answer the file
+ * before the save's write and land after its answer, and the change told
+ * may be one made after the save's write, which its answer lacks. */
 function readAgainOn(backend: BackendKey): void {
   for (const entry of setups.values()) {
     const owner = entry.backend();
-    if ((owner === undefined || owner === backend) && !entry.saving) void entry.read();
+    if (owner !== undefined && owner !== backend) continue;
+    if (entry.saving) entry.readOwed = true;
+    else void entry.read();
   }
   for (const entry of statuses.values()) {
     const owner = entry.backend();
