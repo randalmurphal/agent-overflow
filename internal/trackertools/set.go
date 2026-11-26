@@ -220,13 +220,6 @@ func cmpOr(a, b string) string {
 	return b
 }
 
-// estimateText is n in unit as a read prints it, for an approval.
-func estimateText(n float64, unit string) string {
-	v := n
-	rows := []trackerapp.TicketRowView{{Estimate: &v, Unit: unit}}
-	return estimate(rows)
-}
-
 // stampForm is a date-time as a read prints it (stamp).
 const stampForm = "2006-01-02T15:04Z"
 

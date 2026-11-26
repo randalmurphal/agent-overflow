@@ -61,7 +61,19 @@ func TestTrackerAgentEstimateIsTheTicketsOwnRead(t *testing.T) {
 // which board 1 estimates by, and 5 Team Points.
 func twoEstimateBoards(t *testing.T, n int) (*trackerBoardFixture, string, string) {
 	t.Helper()
+	return twoEstimateBoardsWith(t, n, nil)
+}
+
+// twoEstimateBoardsWith is twoEstimateBoards with edit, when set, run on
+// the site after the second board is added.
+func twoEstimateBoardsWith(t *testing.T, n int, edit func(*trackerfake.JiraSite)) (*trackerBoardFixture, string, string) {
+	t.Helper()
 	f, thread, endpoint := costFixtureWith(t, false, n, func(site *trackerfake.JiraSite, ws *trackerfake.LinearWorkspace) {
+		defer func() {
+			if edit != nil {
+				edit(site)
+			}
+		}()
 		site.Fields = append(site.Fields, trackerfake.JiraField{ID: "customfield_10026", Name: "Team Points",
 			Schema: trackerfake.JiraSchema{Type: "number", Custom: "com.atlassian.jira.plugin.system.customfieldtypes:float", CustomID: 10026}})
 		site.Boards = append(site.Boards, trackerfake.JiraBoard{ID: 2, Name: "WEB team", Type: "scrum", Project: "WEB", Columns: site.Boards[0].Columns, Estimation: "customfield_10026"})
@@ -175,6 +187,79 @@ func describeEstimate(v *float64) string {
 		return ""
 	}
 	return strconv.FormatFloat(*v, 'f', -1, 64)
+}
+
+// The estimate a read prints is the one an update of the estimate is
+// judged on: WEB-1's first board counts issues and its second estimates
+// by Team Points (5), so the read says 5 points and an estimate of 5 is
+// already set.
+func TestTrackerAgentReadsTheEstimateItsUpdateJudges(t *testing.T) {
+	t.Parallel()
+	f, thread, endpoint := twoEstimateBoardsWith(t, 3, func(site *trackerfake.JiraSite) { site.Boards[0].Estimation = "" })
+	text, _ := toolRoutes(t, f, thread, endpoint, "ticket_read", map[string]any{"key": "WEB-1"})
+	if !strings.Contains(text, `"estimate":"5 points"`) {
+		t.Errorf("ticket_read = %s; want the estimate of the board an update sets, 5 points", text)
+	}
+	text, _ = toolRoutes(t, f, thread, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-1"}, "set": map[string]any{"estimate": "5 points"}})
+	if !strings.Contains(text, `"already":["estimate"]`) {
+		t.Errorf("ticket_update = %s; want the read's estimate already set", text)
+	}
+}
+
+// Two entries of set that both name one ticket's estimate are refused,
+// and nothing is sent: each board's own field, and the estimate with the
+// field of the board it is set on.
+func TestTrackerAgentTwoEstimatesOfOneTicketAreRefused(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name string
+		set  map[string]any
+	}{
+		{"two boards' fields", map[string]any{"Story Points": 4, "Team Points": 8}},
+		{"the estimate and its board's field", map[string]any{"estimate": 4, "Story Points": 6}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			f, _, endpoint := twoEstimateBoards(t, 3)
+			log := f.e.Requests(0).Requests
+			text, isError := trackerMCPStreamedCall(t, f.a, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-1"}, "set": c.set})
+			for name := range c.set {
+				if !isError || !strings.Contains(text, name) || !strings.Contains(text, "one estimate per call") {
+					t.Errorf("ticket_update = %s (error %v); want it refused naming %q and the rule", text, isError, name)
+				}
+			}
+			for _, r := range f.e.Requests(log[len(log)-1].Seq).Requests {
+				if r.Route == "PUT rest/agile/1.0/issue/{issue}/estimation" {
+					t.Errorf("an estimate was sent (%s); want none", r.Path)
+				}
+			}
+			if got := fakeValues(f, "10101", "customfield_10016", "customfield_10026"); !slices.Equal(got, []string{"3", "5"}) {
+				t.Errorf("Story Points and Team Points = %v; want 3 and 5 as they were", got)
+			}
+		})
+	}
+}
+
+// A time estimate a read prints, passed back, is the estimate held: 4,500
+// seconds reads as 1h 15m and an update of 1h 15m is already set.
+func TestTrackerAgentTimeEstimateReadsBack(t *testing.T) {
+	t.Parallel()
+	f, thread, endpoint := costFixtureWith(t, false, 3, func(site *trackerfake.JiraSite, ws *trackerfake.LinearWorkspace) {
+		site.Boards[0].Estimation = "timeoriginalestimate"
+		seconds := int64(4500)
+		site.Issues[0].OriginalEstimate = &seconds
+	})
+	text, _ := toolRoutes(t, f, thread, endpoint, "ticket_read", map[string]any{"key": "WEB-1"})
+	if !strings.Contains(text, `"estimate":"1h 15m"`) {
+		t.Errorf("ticket_read = %s; want the estimate 1h 15m", text)
+	}
+	text, _ = toolRoutes(t, f, thread, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-1"}, "set": map[string]any{"estimate": "1h 15m"}})
+	if !strings.Contains(text, `"already":["estimate"]`) {
+		t.Errorf("ticket_update = %s; want 1h 15m already set", text)
+	}
+	if got := f.e.Snapshot().Jira[0].Issues[0].OriginalEstimate; got == nil || *got != 4500 {
+		t.Errorf("the original estimate = %v; want 4500 as it was", got)
+	}
 }
 
 // setCostEstimate sets the first issue's estimate on both trackers of a

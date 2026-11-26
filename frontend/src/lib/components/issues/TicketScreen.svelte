@@ -150,8 +150,8 @@
   interface Props {
     attachment: TrackerTicketAttachment;
     seed: TicketSeed;
-    /** The board the ticket was opened from: its points are that row's;
-     * null shows the first board's the ticket is on. */
+    /** The board the ticket was opened from: its points are that row's
+     * when it has estimates (`ticketRow`); null for none. */
     board: string | null;
     computerName: string;
     /** The ticket's project, which Work's Ask and Start work use
@@ -319,8 +319,9 @@
   let typeMarkButton: HTMLButtonElement | undefined = $state();
   let typeMarkPicking = $state(false);
 
-  // Points are the row of the board the ticket was opened from, else the
-  // first board the mirror shows it on.
+  // Points are the row of the board the ticket was opened from when that
+  // board has estimates, else of the first board that has them, as an
+  // agent reads them (`ticketRow`).
   const row = $derived(ticketRow(detail?.rows, board));
   // The row the ticket's estimate is set on: points, or hours typed for a
   // board that estimates in time (the tracker takes seconds).

@@ -749,20 +749,30 @@ func (pc *planCall) boardsOf(p *planned, ok func(boardOn) bool) ([]boardOn, erro
 // "" (set's estimate) the first that has estimates, in points or time.
 // ok is false when none does. It is the one rule of an estimate's board:
 // the plan judges the estimate on that board's row, the approval words it
-// in that board's unit, and the read after an approval and the send name
-// that board.
+// in that board's unit, the read after an approval and the send name that
+// board. ticket_read prints that board's estimate from the ticket's rows,
+// each carrying its board's unit (sheet.estimate), and the ticket screen
+// shows and sets the same board's points when it was opened from no
+// board with estimates (ticketRow in
+// frontend/src/lib/stores/trackerTicketModel.ts).
 func (pc *planCall) estimateTarget(connection string, boards []string, field string) (_ estimateOn, ok bool, _ error) {
 	for _, id := range boards {
 		b, held, err := pc.board(connection, id)
 		if err != nil {
 			return estimateOn{}, false, err
 		}
-		if !held || (field == "" && b.Unit != "points" && b.Unit != "time") || (field != "" && b.EstimateField != field) {
+		if !held || (field == "" && !hasEstimates(b.Unit)) || (field != "" && b.EstimateField != field) {
 			continue
 		}
 		return estimateOn{board: id, b: b}, true, nil
 	}
 	return estimateOn{}, false, nil
+}
+
+// hasEstimates reports whether a board of unit, or a ticket's row on it,
+// has estimates: in points or in time.
+func hasEstimates(unit string) bool {
+	return unit == "points" || unit == "time"
 }
 
 // estimateOn is the board an estimate is planned on (estimateTarget).
@@ -856,8 +866,13 @@ func (pc *planCall) planSprint(p *planned, given string, v setValue) error {
 }
 
 // planEstimate plans the estimate v gives on board on, one of the
-// ticket's rows (estimateTarget), in its unit.
+// ticket's rows (estimateTarget), in its unit, and refuses a second entry
+// of set that names the ticket's estimate.
 func (pc *planCall) planEstimate(p *planned, given string, v setValue, on estimateOn) error {
+	if p.estimateName != "" {
+		// One estimate a ticket: a second entry naming it is not dropped.
+		return invalidf("%s and %s both set %s's estimate; set one estimate per call.", quoteName(p.estimateName), quoteName(given), p.key)
+	}
 	p.estimateName = given
 	row := p.d.Rows[slices.IndexFunc(p.d.Rows, func(r trackerapp.TicketRowView) bool { return r.Board == on.board })]
 	b := on.b
