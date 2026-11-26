@@ -26,8 +26,8 @@ type KeyedTicket struct {
 // idx_tracker_cache_issues_key in one root (each probe states the index's
 // condition, a key that is not empty). A row per reader holding the
 // key's project, with the issue when it holds it (mirrorIssueHeldSQL);
-// the rows sort with the issue rows first, then the readers the JSON array
-// ?2 names, then by connection, so the first row of a key is its answer.
+// the rows of a key sort with the issue rows first, then the readers the
+// JSON array ?2 names, then by connection.
 var ticketsByKeySQL = `WITH k AS MATERIALIZED (SELECT DISTINCT value AS key,
 	    substr(value, 1, instr(value, '-')) AS low, substr(value, 1, instr(value, '-') - 1) || '.' AS high
 	  FROM json_each(?1) WHERE instr(value, '-') > 1),
@@ -46,13 +46,14 @@ var ticketsByKeySQL = `WITH k AS MATERIALIZED (SELECT DISTINCT value AS key,
 
 // TicketsByKey answers, for each of keys (capitals, as
 // trackerapp.TicketKeys gives them) whose project a Jira or Linear site's
-// link reader here mirrors, the ticket it names. A key no mirror holds a
-// project of is left out: it is not a ticket of this computer's trackers.
-// When two readers' mirrors hold a key, the one that holds the issue
-// answers, then one of prefer (the connections whose boards the asker's
-// project lists), then the lowest connection ID.
-func (s *Store) TicketsByKey(keys, prefer []string) (map[string]KeyedTicket, error) {
-	found := map[string]KeyedTicket{}
+// link reader here mirrors, the tickets it names, one per site whose
+// mirror holds its project. A key no mirror holds a project of is left
+// out: it is not a ticket of this computer's trackers. The first ticket of
+// a key is the one a reader of a single answer takes: a reader whose
+// mirror holds the issue, then one of prefer (the connections whose boards
+// the asker's project lists), then the lowest connection ID.
+func (s *Store) TicketsByKey(keys, prefer []string) (map[string][]KeyedTicket, error) {
+	found := map[string][]KeyedTicket{}
 	if len(keys) == 0 {
 		return found, nil
 	}
@@ -77,9 +78,7 @@ func (s *Store) TicketsByKey(keys, prefer []string) (map[string]KeyedTicket, err
 		if err := rows.Scan(&t.Key, &t.ConnectionID, &t.IssueID, &t.Title); err != nil {
 			return nil, fmt.Errorf("store: tickets by key: %w", err)
 		}
-		if _, ok := found[t.Key]; !ok {
-			found[t.Key] = t
-		}
+		found[t.Key] = append(found[t.Key], t)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: tickets by key: %w", err)

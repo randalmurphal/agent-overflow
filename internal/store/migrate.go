@@ -1785,6 +1785,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: worklogSourceMigrationVersion, Name: "worklog_source", SQL: worklogSourceV168SQL},
 	{Version: worklogNamesMigrationVersion, Name: "worklog_names", SQL: worklogNamesV169SQL},
 	{Version: issueKeysMigrationVersion, Name: "issue_keys", SQL: issueKeysV170SQL},
+	{Version: agentWritesMigrationVersion, Name: "agent_writes", SQL: agentWritesV171SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a
