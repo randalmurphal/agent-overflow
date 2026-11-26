@@ -207,9 +207,9 @@ func (t trackerToolsAdapter) IssueCards(ctx context.Context, connection string, 
 	})
 }
 
-func (t trackerToolsAdapter) IssueRows(ctx context.Context, connection string, issues []string) ([]trackerapp.TicketCardRead, error) {
+func (t trackerToolsAdapter) IssueRows(ctx context.Context, connection string, rows []trackerapp.IssueRow) ([]trackerapp.TicketCardRead, error) {
 	return trackerFormRead(t.a, ctx, "ticket_read", "Reading the tickets", func(ctx context.Context, svc *trackerapp.Service) ([]trackerapp.TicketCardRead, error) {
-		return svc.IssueRows(ctx, connection, issueIDsOf(issues), trackerapp.Interactive)
+		return svc.IssueRows(ctx, connection, rows, trackerapp.Interactive)
 	})
 }
 
@@ -238,16 +238,16 @@ func (t trackerToolsAdapter) BoardSummary(connection, board string) (trackerapp.
 	return svc.BoardSummaryOf(connection, board)
 }
 
-func (t trackerToolsAdapter) MirrorCard(connection, issue string) (trackerapp.CardView, bool, error) {
+func (t trackerToolsAdapter) MirrorIssue(connection, issue string) (trackerapp.IssueView, bool, error) {
 	svc, err := t.a.trackerService()
 	if err != nil {
-		return trackerapp.CardView{}, false, err
+		return trackerapp.IssueView{}, false, err
 	}
 	v, err := svc.Issue(connection, tracker.IssueID(issue))
 	if errors.Is(err, trackerapp.ErrNotMirrored) {
-		return trackerapp.CardView{}, false, nil
+		return trackerapp.IssueView{}, false, nil
 	}
-	return v.Card, err == nil, err
+	return v, err == nil, err
 }
 
 func (t trackerToolsAdapter) IssueTypes(ctx context.Context, connection, project string) ([]trackerapp.IssueTypeView, error) {

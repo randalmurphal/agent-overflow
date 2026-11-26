@@ -215,9 +215,10 @@ func costNames(routes []string) string {
 
 // TestTrackerToolRequestCounts pins the requests of each call shape. The
 // read after an approval (planCall.recheck) is the bulkfetch or Issues a
-// call of three tickets with set makes after its plan's reads, and the
-// rows read of those that set an estimate; a call of
-// one ticket or a comment alone waits for no approval or judges nothing.
+// call of three tickets with set makes after its plan's reads, or for a
+// call that sets an estimate the rows read of its board (rows, Issues),
+// which serves the cards' check too; a call of one ticket or a comment
+// alone waits for no approval or judges nothing.
 // A Jira comment's lookup (Server.readAudience) is the bulkfetch just
 // before the comments, after every other write.
 func TestTrackerToolRequestCounts(t *testing.T) {
@@ -376,9 +377,10 @@ func createdTitles(f *trackerBoardFixture, linear bool) []string {
 // temperature and number of tickets. A Jira status planned cold takes
 // its moves from the detail read (no transitions read); warm, the plan
 // reads the cards, which keep no read, so the move reads them. A call
-// that sets an estimate reads its tickets through their board's rows
-// (rows, Issues), which the estimate takes as its check that the board
-// lists the issue; after a status move it checks again. Every write ends with one refresh (rows, Issues). A read is one read
+// that sets an estimate reads its tickets through their rows on its
+// board (rows, Issues), which the estimate takes as its check that the
+// board lists the issue; after a status move it checks again. Every write
+// ends with one refresh (rows, Issues). A read is one read
 // and then the same read again, after "|"; a create followed by a create
 // of another ticket on the same client is the two creates.
 var costPins = map[string]string{
@@ -403,13 +405,13 @@ var costPins = map[string]string{
 	"jira/title/warm/1":                    "bulkfetch issue edit rows",
 	"jira/title/warm/3":                    "bulkfetch×2 issue edit issue edit issue edit rows",
 	"jira/estimate/cold/1":                 "rows estimate rows",
-	"jira/estimate/cold/3":                 "bulkfetch rows×2 estimate×3 rows",
+	"jira/estimate/cold/3":                 "rows×2 estimate×3 rows",
 	"jira/estimate/warm/1":                 "rows estimate rows",
-	"jira/estimate/warm/3":                 "bulkfetch rows×2 estimate×3 rows",
+	"jira/estimate/warm/3":                 "rows×2 estimate×3 rows",
 	"jira/mixed/cold/1":                    "comments issue transition issue edit rows estimate rows sprints to-sprint bulkfetch comment rows",
-	"jira/mixed/cold/3":                    "bulkfetch comments×3 issue×3 rows transition×3 issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint bulkfetch comment×3 rows",
+	"jira/mixed/cold/3":                    "comments×3 issue×3 rows transition×3 issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint bulkfetch comment×3 rows",
 	"jira/mixed/warm/1":                    "bulkfetch transitions transition issue edit rows estimate rows sprints to-sprint bulkfetch comment rows",
-	"jira/mixed/warm/3":                    "bulkfetch×2 rows transitions transition transitions transition transitions transition issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint bulkfetch comment×3 rows",
+	"jira/mixed/warm/3":                    "bulkfetch rows transitions transition transitions transition transitions transition issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint bulkfetch comment×3 rows",
 	"jira/create":                          "screen types create bulkfetch match",
 	"jira/create, then another":            "screen types create bulkfetch match | types create bulkfetch match",
 	"jira/create with status and sprint":   "screen types create bulkfetch comments issue match transition rows sprints to-sprint rows",
@@ -436,13 +438,13 @@ var costPins = map[string]string{
 	"linear/title/warm/1":                  "Issues UpdateIssue Issues",
 	"linear/title/warm/3":                  "Issues×2 UpdateIssue×3 Issues",
 	"linear/estimate/cold/1":               "Issues UpdateIssue Issues",
-	"linear/estimate/cold/3":               "Issues×3 UpdateIssue×3 Issues",
+	"linear/estimate/cold/3":               "Issues×2 UpdateIssue×3 Issues",
 	"linear/estimate/warm/1":               "Issues UpdateIssue Issues",
-	"linear/estimate/warm/3":               "Issues×3 UpdateIssue×3 Issues",
+	"linear/estimate/warm/3":               "Issues×2 UpdateIssue×3 Issues",
 	"linear/mixed/cold/1":                  "IssueDetails UpdateIssue×2 IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment Issues",
-	"linear/mixed/cold/3":                  "IssueDetails Issues×2 UpdateIssue×6 IssueTeam UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment×3 Issues",
+	"linear/mixed/cold/3":                  "IssueDetails Issues UpdateIssue×6 IssueTeam UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment×3 Issues",
 	"linear/mixed/warm/1":                  "IssueDetails UpdateIssue×2 IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment Issues",
-	"linear/mixed/warm/3":                  "IssueDetails Issues×2 UpdateIssue×6 IssueTeam UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment×3 Issues",
+	"linear/mixed/warm/3":                  "IssueDetails Issues UpdateIssue×6 IssueTeam UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment×3 Issues",
 	"linear/create":                        "CreateIssue Issues",
 	"linear/create, then another":          "CreateIssue Issues | CreateIssue Issues",
 	"linear/create with status and sprint": "CreateIssue CyclePositions IssueDetails Issues UpdateIssues Issues",

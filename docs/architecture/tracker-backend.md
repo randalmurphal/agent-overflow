@@ -2239,11 +2239,12 @@ move's target by name, refused naming the moves; a sprint is an open
 sprint of the ticket's board by name, refused naming the open sprints, and
 null or `backlog` is the backlog. A sprint or an estimate needs a board of
 the ticket the mirror holds, else it is refused saying to add or open the
-board. A call that sets an estimate reads its tickets through their rows
-on those boards (`trackerapp.Service.IssueRows`, one rows read per board,
-the way a write's refresh reads a card), so the estimate is judged on
-what the boards hold now: one a board no longer lists has no row there,
-and is refused before the approval.
+board. A call that sets `estimate` reads each ticket through its row on
+the estimate's board alone (`trackerapp.Service.IssueRows`, one rows read
+per board, the way a write's refresh reads a row), so the estimate is
+judged on what that board holds now; a ticket that board no longer lists
+is refused its estimate before the approval, with no other board tried.
+A field name is judged on the ticket's detail read.
 
 **Long texts.** The server remembers, per session (the capability's
 token), for each ticket the session read (at most 256, oldest out), the
@@ -2306,7 +2307,10 @@ server's context to their end.
 
 **Changed while waiting.** What `set` changes was judged on the tickets
 as they were before the prompt, so after the person approves, the call's
-cards are read again, one key lookup per connection (`planCall.recheck`).
+cards are read again (`planCall.recheck`): for a call that sets an
+estimate, through each ticket's row on its estimate's board, one rows
+read per board (`IssueRows`), which reads the card too; for any other,
+one key lookup per connection.
 On Jira that is one `issue/bulkfetch`, and one more `GET issue` for each
 key the fetch did not answer under that key (a ticket moved to another
 key, or gone), four at a time; the field catalog is read again too when
@@ -2314,10 +2318,9 @@ the client's copy is older than 30 minutes. On Linear it is one `issues`
 list, one `IssueSummary` for each key the list did not find, and one
 read of label names when an issue holds labels the list left unnamed. A
 ticket whose update time, status or sprints differ from what
-its plan read, or that the lookup no longer finds, is sent nothing, and so
-is one whose estimate on the board its plan judged moved, or that the
-board no longer lists, by a rows read of the tickets that set an estimate
-made beside the lookup: its
+its plan read, or that the read no longer finds, is sent nothing, and so
+is one whose estimate on its board moved, or that the board no longer
+lists: its
 `refused` says it changed on the tracker while the user was deciding,
 every step is in `not_sent`, and the call's other tickets go on. The
 update time covers every value the plan judged on Jira, where a field
@@ -2326,7 +2329,7 @@ teammate's comment during the wait refuses the ticket too. On Linear a
 title, assignee, priority and status change move it, an estimate change
 does on a team with estimation off (one with it on is not measured), and
 a comment does not; a cycle change is not measured, which the sprint
-comparison covers ([measured](../references/tracker-api-measurements.md)). A lookup that
+comparison covers ([measured](../references/tracker-api-measurements.md)). A read that
 fails sends nothing and is the call's error. A comment alone is not read
 again after the approval: its ticket is looked up just before its
 comment, and one the lookup no longer finds is sent none. A call naming
@@ -2373,8 +2376,8 @@ call included, its refresh too. A pin holds the writes in the order they
 are sent and counts the reads between two writes, which a call makes
 for several tickets at once. A call of three tickets waits for the
 person and reads its cards again after the approval when it sets
-anything, and the rows of those that set an estimate; a call of one does
-not. A Jira comment's lookup is one more read, just before the comments.
+anything, through the estimate's board's rows when it sets an estimate;
+a call of one does not. A Jira comment's lookup is one more read, just before the comments.
 A person's estimate costs what it did: a rows read (Jira) or `IssueTeam`
 (Linear) checks the board, then the estimate and the refresh, 3 requests
 (`TestTrackerPersonsEstimateRequests`).
@@ -2387,9 +2390,9 @@ A person's estimate costs what it did: a rows read (Jira) or `IssueTeam`
 | Sprint | 5 | 6 | 4 | 5 |
 | Backlog | 4 | 5 | 4 | 5 |
 | Title | 4 | 9 | 3 | 6 |
-| Estimate | 3 | 7 | 3 | 7 |
-| Status, title, estimate, sprint and comment, cold | 13 | 31 | 9 | 21 |
-| The same, warm | 13 | 29 | 9 | 21 |
+| Estimate | 3 | 6 | 3 | 6 |
+| Status, title, estimate, sprint and comment, cold | 13 | 30 | 9 | 20 |
+| The same, warm | 13 | 28 | 9 | 20 |
 
 A cold status takes its moves from the plan's detail read; a warm one is
 planned on the cards, which keep no read, so the move reads its moves.
@@ -2398,7 +2401,10 @@ second one, as its check that the board lists the ticket (`tracker
 RowsRead`, kept by the write session until something is sent to the
 ticket), so it sends with no read of its own: one request per ticket.
 After a status move to the same ticket it checks again, a rows read on
-Jira and `IssueTeam` on Linear, as before. A create costs 5 on Jira
+Jira and `IssueTeam` on Linear, as before. A Jira ticket on two boards
+costs 4 for a new estimate (its board's rows, the estimate, and the
+refresh of both boards) and 1 for one it holds already
+(`TestTrackerAgentEstimateOnTwoBoardsRequests`). A create costs 5 on Jira
 (the types, the create screen, the create, the match and the refresh) and
 2 on Linear; a second create within the minute the client keeps a create
 screen costs 4 on Jira; a create that also sets the status and the sprint costs 12

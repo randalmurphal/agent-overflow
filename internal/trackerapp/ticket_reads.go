@@ -2,6 +2,7 @@ package trackerapp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -113,26 +114,54 @@ func (s *Service) IssueCards(ctx context.Context, id string, issues []tracker.Is
 	return s.cardReads(id, root, issues, missing)
 }
 
-// IssueRows reads the cards of issues on connection id through their rows
-// on the boards the mirror shows them on, one rows read per board for all
-// of them, and through the cards read for those no board returned, as a
-// write's refresh reads a card again (run.refresh), and answers each as
-// IssueCards does: its card, and its rows with their estimates as the
-// boards hold them now. An issue a board no longer lists has no row on
-// it. A tracker failure of any of the reads is settled as the
-// connection's problem and returned.
-func (s *Service) IssueRows(ctx context.Context, id string, issues []tracker.IssueID, u Urgency) ([]TicketCardRead, error) {
+// IssueRow is an issue and the board IssueRows reads its row on.
+type IssueRow struct {
+	Issue tracker.IssueID
+	Board tracker.BoardID
+}
+
+// IssueRows reads each issue's row on its board, on connection id, one
+// rows read per board for all its issues, as a write's refresh reads a
+// row again (run.refresh), and answers each as IssueCards does: its card,
+// which the row's read stored, and its rows, the one read now and the
+// others as the mirror holds them. An issue its board did not return a
+// row of fails wrapping ErrNotOnBoard, whether the mirror still keeps its
+// card for another board or keeps it no longer: no other board is read
+// for it. Nothing else is read: a board the issue
+// is on that rows does not name is not asked, nor a card by itself. A
+// tracker failure of any of the reads is settled as the connection's
+// problem and returned.
+func (s *Service) IssueRows(ctx context.Context, id string, rows []IssueRow, u Urgency) ([]TicketCardRead, error) {
+	issues := make([]tracker.IssueID, len(rows))
+	resources := make([]tracker.Resource, len(rows))
+	for i, row := range rows {
+		if row.Board == "" {
+			return nil, fmt.Errorf("%w: issue %q names no board", ErrInvalidRequest, row.Issue)
+		}
+		issues[i], resources[i] = row.Issue, tracker.RowOf(row.Board, row.Issue)
+	}
 	if _, err := ticketReadsOf(issues); err != nil {
 		return nil, err
 	}
-	root, missing, err := s.readCards(ctx, id, u, func(r *run) ([]tracker.IssueID, error) {
-		f := r.refresh(cardResources(issues), newIssue{})
-		return f.missing, f.readErr()
+	root, _, err := s.readCards(ctx, id, u, func(r *run) ([]tracker.IssueID, error) {
+		return nil, r.refresh(resources, newIssue{}).readErr()
 	})
 	if err != nil {
 		return nil, err
 	}
-	return s.cardReads(id, root, issues, missing)
+	out, err := s.cardReads(id, root, issues, nil)
+	if err != nil {
+		return nil, err
+	}
+	for i, row := range rows {
+		// A card the mirror no longer keeps after its row's read lost the
+		// row that kept it: no shown board lists it now.
+		gone := errors.Is(out[i].Err, ErrNotMirrored)
+		if gone || out[i].Err == nil && !slices.ContainsFunc(out[i].View.Rows, func(v TicketRowView) bool { return v.Board == string(row.Board) }) {
+			out[i] = TicketCardRead{Err: fmt.Errorf("%w: issue %s of %s on board %s", ErrNotOnBoard, row.Issue, id, row.Board)}
+		}
+	}
+	return out, nil
 }
 
 // cardReads are issues as the mirror of root holds them after a read of

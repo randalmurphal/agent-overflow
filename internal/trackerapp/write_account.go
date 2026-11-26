@@ -62,9 +62,6 @@ type refreshed struct {
 	// notOnBoard is the board a create was made from when the tracker
 	// said it does not hold the new issue (write_place.go).
 	notOnBoard tracker.BoardID
-	// missing are the cards the cards read did not return: deleted, or
-	// not visible to the user.
-	missing []tracker.IssueID
 }
 
 // staleRead is resources a refresh did not read again, and why: the

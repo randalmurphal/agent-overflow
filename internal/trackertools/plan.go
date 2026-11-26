@@ -70,19 +70,23 @@ func needsDetail(name string) bool {
 }
 
 // readTickets reads tickets as far as set needs (a detail, else the card,
-// through the tickets' boards when set names the estimate), comment their
-// ticket alone, each connection's together, and answers each ticket's plan with its
-// card, or its read's failure, in tickets' order. A read of several that
-// fails as a whole fails the call.
+// through its estimate board's rows when set names the estimate), comment
+// their ticket alone, each connection's together, and answers each
+// ticket's plan with its card, or its read's failure, in tickets' order. A
+// ticket its estimate board no longer lists is refused its estimate. A
+// read of several that fails as a whole fails the call.
 func (pc *planCall) readTickets(ctx context.Context, tickets []ticket, set []namedValue, comment string) ([]*planned, []error, error) {
-	detail, card, rows := false, len(set) > 0, false
+	detail, card, estimate := false, len(set) > 0, ""
 	for _, nv := range set {
 		detail = detail || needsDetail(nv.name)
-		rows = rows || strings.EqualFold(strings.TrimSpace(nv.name), setEstimate)
+		if given := strings.TrimSpace(nv.name); strings.EqualFold(given, setEstimate) {
+			estimate = given
+		}
 	}
 	plans := make([]*planned, len(tickets))
 	errs := make([]error, len(tickets))
-	var details, cards []int
+	var details, cards, onRows []int
+	target := map[int]estimateOn{}
 	for i, t := range tickets {
 		j := slices.IndexFunc(pc.sources, func(src trackerapp.TicketSource) bool { return src.ID == t.connection })
 		if j < 0 {
@@ -93,6 +97,15 @@ func (pc *planCall) readTickets(ctx context.Context, tickets []ticket, set []nam
 		switch {
 		case detail:
 			details = append(details, i)
+		case card && estimate != "":
+			switch on, ok, err := pc.heldTarget(plans[i]); {
+			case err != nil:
+				errs[i] = err
+			case ok:
+				target[i], onRows = on, append(onRows, i)
+			default:
+				cards = append(cards, i)
+			}
 		case card:
 			cards = append(cards, i)
 		default:
@@ -106,37 +119,67 @@ func (pc *planCall) readTickets(ctx context.Context, tickets []ticket, set []nam
 			}
 		}
 	}
-	read := pc.s.t.IssueCards
-	if rows {
-		read = pc.s.t.IssueRows
-	}
-	unkept, err := pc.readCards(ctx, read, plans, cards, errs)
+	unkept, _, err := pc.readCards(ctx, plans, cards, errs, func(ctx context.Context, conn string, group []int) ([]trackerapp.TicketCardRead, error) {
+		return pc.s.t.IssueCards(ctx, conn, issuesOf(plans, group))
+	})
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := pc.readDetails(ctx, plans, append(details, unkept...), errs); err != nil {
+	unkeptRows, off, err := pc.readCards(ctx, plans, onRows, errs, func(ctx context.Context, conn string, group []int) ([]trackerapp.TicketCardRead, error) {
+		rows := make([]trackerapp.IssueRow, len(group))
+		for k, i := range group {
+			rows[k] = trackerapp.IssueRow{Issue: tracker.IssueID(plans[i].t.issue), Board: tracker.BoardID(target[i].board)}
+		}
+		return pc.s.t.IssueRows(ctx, conn, rows)
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := pc.readDetails(ctx, plans, slices.Sorted(slices.Values(slices.Concat(details, unkept, unkeptRows))), errs); err != nil {
 		return nil, nil, err
 	}
 	for i, p := range plans {
 		if p != nil && errs[i] == nil {
 			p.key = qualifier(pc.sources, p.t.site)(p.d.Card.Key)
 		}
+		if slices.Contains(off, i) {
+			p.estimateName = estimate
+			p.refuse(stepEstimate, fmt.Sprintf("%s: %s is not on board %s any more, or the user's account cannot see it; read it again and call again for it.", estimate, p.key, quoteName(target[i].b.Name)))
+		}
 	}
 	return plans, errs, nil
 }
 
+// heldTarget is the board p's ticket's estimate is planned on, of its
+// boards as the mirror holds them (estimateTarget), with p's card set to
+// the mirror's; ok is false when the mirror keeps no such board or no
+// card of the ticket.
+func (pc *planCall) heldTarget(p *planned) (estimateOn, bool, error) {
+	v, held, err := pc.s.t.MirrorIssue(p.t.connection, p.t.issue)
+	if err != nil || !held {
+		return estimateOn{}, false, err
+	}
+	boards := make([]string, len(v.Boards))
+	for i, b := range v.Boards {
+		boards[i] = b.Board
+	}
+	p.d.Card = v.Card
+	return pc.estimateTarget(p.t.connection, boards, "")
+}
+
 // recheck reads the cards of plans again, once per connection, after the
-// person approved what set changes, and the rows of those that set an
-// estimate on their boards (IssueRows), whose reads the estimates then
-// take. A ticket the read no longer finds, whose card moved since its
-// plan read it, or whose estimate on the board its plan judged moved, or
-// that board no longer lists, is sent nothing (planned.changed): a write
-// sent now would be judged on a ticket the person did not see. A card
-// moved when its update time did, or the status or sprints the plan
-// judged on, which a tracker might change without moving the update
-// time. A read that fails is the call's error, nothing sent. A comment's
-// audience is not judged on this read: the comment phase looks its
-// tickets up after the call's other writes (Server.readAudience).
+// person approved what set changes: those that set an estimate through
+// their row on its board (IssueRows), whose reads the estimates then
+// take, and the others by their keys (Lookup). A ticket the read no
+// longer finds, whose card moved since its plan read it, or whose
+// estimate on the board its plan judged moved, or that board no longer
+// lists, is sent nothing (planned.changed): a write sent now would be
+// judged on a ticket the person did not see. A card moved when its update
+// time did, or the status or sprints the plan judged on, which a tracker
+// might change without moving the update time. A read that fails is the
+// call's error, nothing sent. A comment's audience is not judged on this
+// read: the comment phase looks its tickets up after the call's other
+// writes (Server.readAudience).
 func (pc *planCall) recheck(ctx context.Context, plans []*planned) error {
 	var conns []string
 	for _, p := range plans {
@@ -145,12 +188,22 @@ func (pc *planCall) recheck(ctx context.Context, plans []*planned) error {
 		}
 	}
 	for _, conn := range conns {
-		var on []*planned
+		var on, est []*planned
 		var keys []string
 		for _, p := range plans {
-			if p.t.connection == conn {
+			switch {
+			case p.t.connection != conn:
+			case p.estimate != nil:
+				est = append(est, p)
+			default:
 				on, keys = append(on, p), append(keys, p.d.Card.Key)
 			}
+		}
+		if err := pc.recheckEstimates(ctx, conn, est); err != nil {
+			return err
+		}
+		if len(on) == 0 {
+			continue
 		}
 		found, err := pc.s.t.Lookup(ctx, conn, keys)
 		if err != nil {
@@ -169,9 +222,6 @@ func (pc *planCall) recheck(ctx context.Context, plans []*planned) error {
 				p.changed = changedSentence(p)
 			}
 		}
-		if err := pc.recheckEstimates(ctx, conn, on); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -181,22 +231,19 @@ func changedSentence(p *planned) string {
 	return fmt.Sprintf("%s changed on %s while the user was deciding, so nothing was sent to it; read it again and call again for it.", p.key, trackerNameOf(p.src.Kind))
 }
 
-// recheckEstimates reads the rows of on's plans that set an estimate and
-// are not changed yet, on connection conn, in one read (IssueRows): a
-// plan whose board no longer lists the ticket, or whose estimate there
-// moved, is changed.
-func (pc *planCall) recheckEstimates(ctx context.Context, conn string, on []*planned) error {
-	var est []*planned
-	var issues []string
-	for _, p := range on {
-		if p.estimate != nil && p.changed == "" {
-			est, issues = append(est, p), append(issues, p.d.Card.ID)
-		}
-	}
+// recheckEstimates reads est's plans, of connection conn, each setting an
+// estimate, through their rows on their estimates' boards, in one read
+// (IssueRows): a plan whose board no longer lists the ticket, whose card
+// moved, or whose estimate there moved, is changed.
+func (pc *planCall) recheckEstimates(ctx context.Context, conn string, est []*planned) error {
 	if len(est) == 0 {
 		return nil
 	}
-	got, err := pc.s.t.IssueRows(ctx, conn, issues)
+	rows := make([]trackerapp.IssueRow, len(est))
+	for k, p := range est {
+		rows[k] = trackerapp.IssueRow{Issue: tracker.IssueID(p.d.Card.ID), Board: tracker.BoardID(p.estimate.Board)}
+	}
+	got, err := pc.s.t.IssueRows(ctx, conn, rows)
 	if err != nil {
 		site := est[0].t.site
 		if code, msg, ok := errorsx.PublicDetails(err); ok {
@@ -208,14 +255,20 @@ func (pc *planCall) recheckEstimates(ctx context.Context, conn string, on []*pla
 		board := p.estimate.Board
 		was := slices.IndexFunc(p.d.Rows, func(r trackerapp.TicketRowView) bool { return r.Board == board })
 		switch r := got[k]; {
-		case notFound(r.Err):
-			p.changed = goneSentence(p, "nothing was sent to it")
+		case errors.Is(r.Err, trackerapp.ErrNotOnBoard):
+			name := board
+			if b, held, err := pc.board(conn, board); err == nil && held {
+				name = b.Name
+			}
+			p.changed = fmt.Sprintf("%s is not on board %s any more, or the user's account cannot see it, so nothing was sent to it; read it again and call again for it.", p.key, quoteName(name))
 		case r.Err != nil:
-			// Not kept by the mirror any more: read through no board.
-			p.changed = fmt.Sprintf("%s could not be read again on its boards after the user approved, so nothing was sent to it; read it again and call again for it.", p.key)
+			// Not kept by the mirror any more.
+			p.changed = fmt.Sprintf("%s could not be read again on its board after the user approved, so nothing was sent to it; read it again and call again for it.", p.key)
+		case cardMoved(p.d.Card, r.View.Card):
+			p.changed = changedSentence(p)
 		default:
 			now := slices.IndexFunc(r.View.Rows, func(r trackerapp.TicketRowView) bool { return r.Board == board })
-			if was < 0 || now < 0 || !sameNumber(p.d.Rows[was].Estimate, r.View.Rows[now].Estimate) {
+			if !sameNumber(p.d.Rows[was].Estimate, r.View.Rows[now].Estimate) {
 				p.changed = changedSentence(p)
 			}
 		}
@@ -251,7 +304,8 @@ func (s *Server) heldCard(t ticket) (card trackerapp.CardView, held bool, _ erro
 	if t.title != "" {
 		return trackerapp.CardView{ID: t.issue, Key: t.key, Title: t.title}, true, nil
 	}
-	return s.t.MirrorCard(t.connection, t.issue)
+	v, held, err := s.t.MirrorIssue(t.connection, t.issue)
+	return v.Card, held, err
 }
 
 // byConnection is at, indexes of plans, grouped by connection in the
@@ -279,21 +333,24 @@ func issuesOf(plans []*planned, at []int) []string {
 }
 
 // readCards reads the cards of plans at with read (IssueCards, or
-// IssueRows for a call that sets an estimate, which judges it on the
-// boards' rows as they are now), a connection's in one read, into each
-// plan's detail (its card and rows), or its failure into errs. It returns
-// those the mirror does not keep, whose detail is read instead.
-func (pc *planCall) readCards(ctx context.Context, read func(context.Context, string, []string) ([]trackerapp.TicketCardRead, error), plans []*planned, at []int, errs []error) ([]int, error) {
-	var unkept []int
+// IssueRows for a call that sets an estimate, which judges it on its
+// board's rows as they are now), a connection's group in one read, into
+// each plan's detail (its card and rows), or its failure into errs. It
+// returns those the mirror does not keep, whose detail is read instead,
+// and those the rows read found off their board (trackerapp
+// ErrNotOnBoard), which keep the card they had.
+func (pc *planCall) readCards(ctx context.Context, plans []*planned, at []int, errs []error, read func(ctx context.Context, conn string, group []int) ([]trackerapp.TicketCardRead, error)) (unkept, off []int, _ error) {
 	for _, group := range byConnection(plans, at) {
-		got, err := read(ctx, plans[group[0]].t.connection, issuesOf(plans, group))
+		got, err := read(ctx, plans[group[0]].t.connection, group)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for k, i := range group {
 			switch r := got[k]; {
 			case errors.Is(r.Err, trackerapp.ErrNotMirrored):
 				unkept = append(unkept, i)
+			case errors.Is(r.Err, trackerapp.ErrNotOnBoard):
+				off = append(off, i)
 			case r.Err != nil:
 				errs[i] = readFailure(plans[i].t, r.Err)
 			default:
@@ -301,8 +358,7 @@ func (pc *planCall) readCards(ctx context.Context, read func(context.Context, st
 			}
 		}
 	}
-	slices.Sort(unkept)
-	return unkept, nil
+	return unkept, off, nil
 }
 
 // readDetails reads the details of plans at as they are now, a

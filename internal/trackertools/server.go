@@ -72,7 +72,9 @@ type Tracker interface {
 	LinkedTicket(threadID string) (trackerapp.LinkedTicket, bool, error)
 	TicketsOfKey(key string) ([]trackerapp.KeyedTicket, error)
 	BoardSummary(connection, board string) (trackerapp.BoardSummary, error)
-	MirrorCard(connection, issue string) (trackerapp.CardView, bool, error)
+	// MirrorIssue is an issue's card and its rows as the mirror holds
+	// them, with no request; false when the mirror does not keep it.
+	MirrorIssue(connection, issue string) (trackerapp.IssueView, bool, error)
 
 	Lookup(ctx context.Context, connection string, keys []string) (trackerapp.LookupView, error)
 	Search(ctx context.Context, connection string, in trackerapp.SearchRequest) (trackerapp.SearchPageView, error)
@@ -80,11 +82,12 @@ type Tracker interface {
 	// IssueDetails, IssueCards and IssueRows read several tickets of
 	// connection at once, each answered in order with its own failure;
 	// ctx's write session (trackerapp.WithWrites) keeps what they read for
-	// the writes. IssueRows reads the cards through the tickets' boards,
-	// with the estimates those boards hold now.
+	// the writes. IssueRows reads each ticket's row on the board it names,
+	// and the card that read stores, with the estimate that board holds
+	// now.
 	IssueDetails(ctx context.Context, connection string, issues []string) ([]trackerapp.TicketRead, error)
 	IssueCards(ctx context.Context, connection string, issues []string) ([]trackerapp.TicketCardRead, error)
-	IssueRows(ctx context.Context, connection string, issues []string) ([]trackerapp.TicketCardRead, error)
+	IssueRows(ctx context.Context, connection string, rows []trackerapp.IssueRow) ([]trackerapp.TicketCardRead, error)
 	Comments(ctx context.Context, connection, issue, page string) (trackerapp.CommentPageView, error)
 	IssueTypes(ctx context.Context, connection, project string) ([]trackerapp.IssueTypeView, error)
 	CreateFields(ctx context.Context, connection, project, issueType string) ([]trackerapp.FieldView, error)

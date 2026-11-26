@@ -114,6 +114,59 @@ func TestTrackerAgentEstimateByAFieldIsWrittenOnItsBoard(t *testing.T) {
 	}
 }
 
+// An estimate of a ticket on two boards reads only the board it is set
+// on before its send: WEB-1's estimate set to 4 is one rows read, the
+// estimate, and the refresh of both boards; set to the 3 it holds, one
+// rows read and nothing sent.
+func TestTrackerAgentEstimateOnTwoBoardsRequests(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name string
+		v    float64
+		want string
+	}{
+		{"set", 4, "rows estimate rows×2"},
+		{"already", 3, "rows"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			f, thread, endpoint := twoEstimateBoards(t, 3)
+			_, routes := toolRoutes(t, f, thread, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-1"}, "set": map[string]any{"estimate": c.v}})
+			if got := costNames(routes); got != c.want {
+				t.Errorf("%d requests: %s\nwant %s", len(routes), got, c.want)
+			}
+		})
+	}
+}
+
+// An estimate on a board that no longer lists the ticket is refused, and
+// nothing is sent: WEB-1 moves to another project on the tracker, as
+// OPS-1, which takes it off board 1, and no board is read again before
+// the call, which names it by the key the mirror holds.
+func TestTrackerAgentEstimateOffItsBoardIsRefused(t *testing.T) {
+	t.Parallel()
+	f, thread, endpoint := costFixture(t, false, 3)
+	world := f.e.Snapshot()
+	world.Jira[0].Token, world.Linear[0].APIKey = trackerTestToken, costLinear(3).APIKey
+	world.Jira[0].Projects = append(world.Jira[0].Projects, trackerfake.JiraProject{ID: "10001", Key: "OPS", Name: "Ops"})
+	world.Jira[0].Issues[0].Project, world.Jira[0].Issues[0].Key = "OPS", "OPS-1"
+	if err := f.e.Seed(world); err != nil {
+		t.Fatal(err)
+	}
+	text, routes := toolRoutes(t, f, thread, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-1"}, "set": map[string]any{"estimate": 4}})
+	if !strings.Contains(text, `is not on board \"WEB board\" any more`) {
+		t.Errorf("ticket_update = %s; want the estimate refused, the ticket not on its board", text)
+	}
+	// The board's rows read confirms an issue its list left out with one
+	// membership match (jiraprovider BoardRows).
+	if got := costNames(routes); got != "match rows" {
+		t.Errorf("%d requests: %s; want the board's rows read alone", len(routes), got)
+	}
+	if got := fakeValues(f, "10101", "customfield_10016"); got[0] != "" {
+		t.Errorf("Story Points = %s; want nothing written", got[0])
+	}
+}
+
 // setCostEstimate sets the first issue's estimate on both trackers of a
 // costFixture to v, updated now.
 func setCostEstimate(site *trackerfake.JiraSite, ws *trackerfake.LinearWorkspace, v float64) {
