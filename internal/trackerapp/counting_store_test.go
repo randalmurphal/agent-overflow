@@ -15,6 +15,9 @@ type countingStore struct {
 	*store.Store
 	mu    sync.Mutex
 	calls map[string]int
+	// children is how many issues the change funnel asked the children's
+	// boards of (ListMirrorIssueBoards' parents), since the last take.
+	children int
 }
 
 func newCountingStore(st *store.Store) *countingStore {
@@ -33,7 +36,18 @@ func (c *countingStore) take() map[string]int {
 	defer c.mu.Unlock()
 	out := maps.Clone(c.calls)
 	clear(c.calls)
+	c.children = 0
 	return out
+}
+
+// takeChildren returns the issues whose children's boards were asked
+// since the last take, and starts that count again.
+func (c *countingStore) takeChildren() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := c.children
+	c.children = 0
+	return n
 }
 
 func (c *countingStore) GetOrCreateMirrorRoot(id string) (int64, bool, error) {
@@ -183,6 +197,9 @@ func (c *countingStore) ReadMirrorBoardPatch(root int64, board string, regroup s
 
 func (c *countingStore) ListMirrorIssueBoards(root int64, issues, parents []string) ([]store.MirrorIssueBoard, error) {
 	c.count("ListMirrorIssueBoards")
+	c.mu.Lock()
+	c.children += len(parents)
+	c.mu.Unlock()
 	return c.Store.ListMirrorIssueBoards(root, issues, parents)
 }
 
