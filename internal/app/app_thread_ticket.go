@@ -148,8 +148,8 @@ func (a *App) announceThreadLinks(threadIDs []string) {
 // threadLinksEnding reads the tickets of the links of threadIDs before a
 // write that ends them (a delete's commit, a move away), for
 // endThreadLinks after it. A read that fails is logged and ends none: the
-// views that show such a ticket as another's parent or link show its card
-// until their board is read again.
+// views that show such a ticket as another's link show its card until
+// their board is read again.
 func (a *App) threadLinksEnding(threadIDs []string) map[string]store.TicketRef {
 	if a.trackers == nil || len(threadIDs) == 0 {
 		return nil

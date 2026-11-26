@@ -34,14 +34,16 @@ func scaleSizes(t *testing.T) []int {
 }
 
 // scaleRow is issue n of a large board, a realisticRow placed as a real
-// board's rows are: one in 50 is an epic the next 49 name as parent, one
+// board's rows are: one in 50 is an epic the next 49 name as parent, by
+// its key and title as the epic was first read, one
 // in 10 is in the active sprint and one in 10 in the future sprint, the
 // rest in the backlog, and a third in each of the three statuses.
 func scaleRow(n int, updated time.Time) tracker.Row {
 	r := realisticRow(n, updated)
-	r.Card.Parent = tracker.IssueID(fmt.Sprint(30000 + n - n%50))
+	parent := realisticRow(n-n%50, updated).Card
+	r.Card.Parent, r.Card.ParentName = parent.ID, &tracker.ParentName{Key: parent.Key, Title: parent.Title}
 	if n%50 == 0 {
-		r.Card.Parent = ""
+		r.Card.Parent, r.Card.ParentName = "", nil
 	}
 	switch n % 10 {
 	case 0:

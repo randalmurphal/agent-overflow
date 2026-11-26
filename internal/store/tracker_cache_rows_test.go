@@ -40,7 +40,7 @@ func TestWriteMirrorRowPageReportsChanges(t *testing.T) {
 	page.Catalog = MirrorCatalog{Users: []MirrorUser{{ID: "acc-user2", Name: "User 2", Data: []byte(`{}`)}}}
 	got := mustWriteRowPage(t, s, root, page, []byte("c1"))
 	assertMirrorChanges(t, "first page", got, MirrorChanges{Cards: []string{"10001", "10002"}, Rows: []string{"10001", "10002"},
-		Added: []string{"10001", "10002"}, Catalog: true})
+		Catalog: true})
 	if cursor := mustMirrorCursor(t, s, root, "10"); string(cursor) != "c1" {
 		t.Fatalf("cursor = %q", cursor)
 	}
@@ -114,8 +114,7 @@ func TestMirrorRowsFollowTheirReadOrder(t *testing.T) {
 		Refused: []string{"10002", "10003"}, CursorRefused: true})
 	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_issues ORDER BY 1`, "10001,10002")
 	got = mustWriteRowPage(t, s, root, at(30, webRow("10002", 6, "b"), webRow("10003", 6, "c")), nil)
-	assertMirrorChanges(t, "read from the removal on", got, MirrorChanges{Cards: []string{"10002", "10003"}, Rows: []string{"10002", "10003"},
-		Added: []string{"10002", "10003"}})
+	assertMirrorChanges(t, "read from the removal on", got, MirrorChanges{Cards: []string{"10002", "10003"}, Rows: []string{"10002", "10003"}})
 
 	// A removal by a read that began before the latest removal keeps the
 	// latest removal's time.
@@ -355,7 +354,7 @@ func TestAFencedNewRowHoldsItsPagesCursor(t *testing.T) {
 	}
 	page.ReadAt = mirrorReadAt(31)
 	got = mustWriteRowPage(t, s, root, page, []byte("c2"))
-	if got.CursorRefused || !reflect.DeepEqual(got.Added, []string{"10003"}) || string(mustMirrorCursor(t, s, root, "10")) != "c2" {
-		t.Fatalf("the page read again = %+v, cursor %q; want 10003 added and c2 stored", got, mustMirrorCursor(t, s, root, "10"))
+	if got.CursorRefused || !slices.Contains(got.Rows, "10003") || len(got.Refused) > 0 || string(mustMirrorCursor(t, s, root, "10")) != "c2" {
+		t.Fatalf("the page read again = %+v, cursor %q; want 10003's row stored and c2", got, mustMirrorCursor(t, s, root, "10"))
 	}
 }

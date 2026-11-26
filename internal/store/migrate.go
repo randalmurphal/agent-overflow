@@ -1786,6 +1786,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: worklogNamesMigrationVersion, Name: "worklog_names", SQL: worklogNamesV169SQL},
 	{Version: issueKeysMigrationVersion, Name: "issue_keys", SQL: issueKeysV170SQL},
 	{Version: agentWritesMigrationVersion, Name: "agent_writes", SQL: agentWritesV171SQL},
+	{Version: trackerParentsMigrationVersion, Name: "tracker_parents", SQL: trackerParentsV172SQL},
 	{Version: timeEntriesMigrationVersion, Name: "time_entries", SQL: timeEntriesV173SQL},
 }
 

@@ -12,7 +12,7 @@ import (
 	"agent-overflow/internal/tracker"
 )
 
-// heldLookup is a mirror store that holds each read of the mirror's cards
+// heldLookup is a mirror store that holds each read of the parents' names
 // naming issue, after it read them, until the test releases every one held
 // and every later one (releaseAll).
 type heldLookup struct {
@@ -28,8 +28,8 @@ func newHeldLookup(s Store, issue string) *heldLookup {
 	return &heldLookup{Store: s, issue: issue, arrived: make(chan struct{}, 64)}
 }
 
-func (h *heldLookup) ListMirrorCards(root int64, ids []string) ([]store.MirrorCard, error) {
-	out, err := h.Store.ListMirrorCards(root, ids)
+func (h *heldLookup) ListMirrorParents(root int64, ids []string) ([]store.MirrorParent, error) {
+	out, err := h.Store.ListMirrorParents(root, ids)
 	if !slices.Contains(ids, h.issue) {
 		return out, err
 	}
@@ -68,7 +68,7 @@ func (h *heldLookup) releaseAll() {
 }
 
 // parentFixture is an open ticket of 10001 whose board also holds 10002,
-// with the mirror's reads of 10002's card held (lookups) and the ticket's
+// with the mirror's reads of 10002's name held (lookups) and the ticket's
 // reads waiting for reads to close.
 type parentFixture struct {
 	*mirrorFixture
@@ -120,17 +120,14 @@ func newParentFixture(t *testing.T) *parentFixture {
 // tick has a board read store the tracker's state.
 func (f *parentFixture) tick(t *testing.T) {
 	t.Helper()
-	f.st.mu.Lock()
-	rows := []tracker.Row{{Card: f.st.cards["10001"], Order: "a000"}, {Card: f.st.cards["10002"], Order: "a001"}}
-	f.st.mu.Unlock()
-	f.tracks(rows)
+	f.tracks([]tracker.Row{f.st.row("10001", "a000"), f.st.row("10002", "a001")})
 	must[Outcome](t)(f.svc.tickDelta(t.Context(), f.scope(), Background))
 }
 
 // titleGoesBackIsTold waits for the ticket's view to catch up with its
 // inputs, then sets the parent's title back to original: the ticket,
 // which shows the parent now, is told, and its subscribers too, unless
-// the view it installed was built from the parent's card before the
+// the view it installed was built from the parent's name before the
 // rename (the same view again).
 func (f *parentFixture) titleGoesBackIsTold(t *testing.T, original string) {
 	t.Helper()
@@ -152,7 +149,7 @@ func (f *parentFixture) titleGoesBackIsTold(t *testing.T, original string) {
 }
 
 // An open ticket whose issue was given a parent builds a view that shows
-// the parent's card, read from the mirror; the parent's title changes
+// the parent's name, read from the mirror; the parent's title changes
 // after that read and before the view and its dependencies are installed,
 // when the funnel judged the change by the ticket's old dependencies. The
 // ticket still comes to show the parent's new title.

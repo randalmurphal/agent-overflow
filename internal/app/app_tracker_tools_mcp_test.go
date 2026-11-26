@@ -285,6 +285,31 @@ func TestTrackerMCPReadsTheLinkedTicket(t *testing.T) {
 	}
 }
 
+// ticket_read by key of a ticket no board, link or open ticket keeps,
+// before any board read, names its parent as the read gave it.
+func TestTrackerMCPReadNamesTheParentOfAnUnkeptTicket(t *testing.T) {
+	t.Parallel()
+	site := trackerBoardSite()
+	site.Projects = append(site.Projects, trackerfake.JiraProject{ID: "10001", Key: "OPS", Name: "Ops"})
+	day := site.Issues[0].Created
+	site.Issues = append(site.Issues,
+		trackerfake.JiraIssue{ID: "10104", Key: "WEB-4", Project: "WEB", Type: "10000", Summary: "The epic", Status: "10000", Created: day, Updated: day},
+		trackerfake.JiraIssue{ID: "10105", Key: "OPS-1", Project: "OPS", Type: "10002", Summary: "An ops task", Parent: "10104", Status: "10000", Created: day, Updated: day})
+	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: site})
+	t.Cleanup(func() { _ = f.a.trackerMCPServer().Close() })
+	thread := store.Thread{ID: uuid.NewString(), ProjectID: f.project, Provider: string(provider.Codex), WorkspacePath: t.TempDir()}
+	if err := f.a.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	token := uuid.NewString()
+	f.a.sessionManager().put(thread.ID, session{Token: token, Provider: thread.Provider})
+	endpoint := trackerMCPEndpoint(t, f.a, thread, token)
+	read, isError := trackerMCPStreamedCall(t, f.a, endpoint, "ticket_read", map[string]any{"key": "OPS-1"})
+	if isError || !strings.HasPrefix(read, `{"key":"OPS-1","title":"An ops task",`) || !strings.Contains(read, `"parent":"WEB-4 The epic"`) {
+		t.Fatalf("ticket_read = %s (error %v)", read, isError)
+	}
+}
+
 // The Claude argv carries the server and its allowlist entry, and the app
 // guide names it; with no ticket source, neither.
 func TestStartSession_ClaudeAllowsTheTrackerToolsWithoutAPrompt(t *testing.T) {

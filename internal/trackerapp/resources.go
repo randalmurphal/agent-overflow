@@ -106,10 +106,13 @@ func (r *run) cards(issues []tracker.IssueID) (out Changes, missing, unread []tr
 	for i := 0; i < len(issues); i += readBatch {
 		batch := issues[i:min(i+readBatch, len(issues))]
 		err := r.againIfSwept(func() error {
-			ch, gone, err := r.cardsOf(batch)
+			ch, gone, began, err := r.cardsOf(batch)
 			out.add(ch)
 			missing = append(missing, gone...)
-			return err
+			if err != nil {
+				return err
+			}
+			return r.markMissing(began, gone)
 		})
 		if err != nil {
 			return out, missing, issues[i:], err
@@ -119,36 +122,36 @@ func (r *run) cards(issues []tracker.IssueID) (out Changes, missing, unread []tr
 }
 
 // cardsOf reads and stores the cards of one batch of issues, and answers
-// those the tracker did not return.
-func (r *run) cardsOf(batch []tracker.IssueID) (Changes, []tracker.IssueID, error) {
+// those the tracker did not return and the read it began.
+func (r *run) cardsOf(batch []tracker.IssueID) (Changes, []tracker.IssueID, store.MirrorRead, error) {
 	began, err := r.beginRead()
 	if err != nil {
-		return Changes{}, nil, err
+		return Changes{}, nil, began, err
 	}
 	r.calls++
 	read, err := r.p.Cards(r.ctx, batch)
 	if err != nil {
-		return Changes{}, nil, fmt.Errorf("trackerapp: read %d cards: %w", len(batch), call(err))
+		return Changes{}, nil, began, fmt.Errorf("trackerapp: read %d cards: %w", len(batch), call(err))
 	}
 	cards := make([]store.MirrorCard, 0, len(read.Cards))
 	for _, c := range read.Cards {
 		m, err := mirrorCard(c)
 		if err != nil {
-			return Changes{}, nil, err
+			return Changes{}, nil, began, err
 		}
 		cards = append(cards, m)
 	}
 	catalog, err := mirrorCatalog(read.Catalog)
 	if err != nil {
-		return Changes{}, nil, err
+		return Changes{}, nil, began, err
 	}
 	stored, err := r.s.store.UpsertMirrorCards(r.root, r.state.Sweep, cards, catalog, began)
 	if err != nil {
-		return Changes{}, nil, fmt.Errorf("trackerapp: store %d cards: %w", len(cards), err)
+		return Changes{}, nil, began, fmt.Errorf("trackerapp: store %d cards: %w", len(cards), err)
 	}
 	w := changesOf(stored)
 	r.told("", w)
-	return w.Changes, read.Missing, r.markMissing(began, read.Missing)
+	return w.Changes, read.Missing, began, nil
 }
 
 // markMissing records that the read begun at began did not return the

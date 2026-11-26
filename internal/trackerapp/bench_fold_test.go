@@ -107,7 +107,7 @@ func TestAChangeLogFoldsAsMergingDoes(t *testing.T) {
 	t.Parallel()
 	reads := []Changes{
 		{Cards: ids("10003", "10001"), Rows: ids("10001"), History: ids("10002")},
-		{Cards: ids("10002", "10001"), Added: ids("10004"), Removed: ids("10005"), Catalog: true},
+		{Cards: ids("10002", "10001"), Parents: ids("10004"), Removed: ids("10005"), Catalog: true},
 		{},
 		{Rows: ids("10001", "10000"), Details: ids("10007"), Dropped: ids("10006", "10006"), Structure: true},
 	}
@@ -115,7 +115,7 @@ func TestAChangeLogFoldsAsMergingDoes(t *testing.T) {
 	var merged Changes
 	for _, r := range reads {
 		log.add(r)
-		merged.add(Changes{Cards: ordered(slices.Clone(r.Cards)), Rows: ordered(slices.Clone(r.Rows)), Added: r.Added, Removed: r.Removed,
+		merged.add(Changes{Cards: ordered(slices.Clone(r.Cards)), Rows: ordered(slices.Clone(r.Rows)), Removed: r.Removed, Parents: r.Parents,
 			History: r.History, Details: r.Details, Dropped: ordered(slices.Clone(r.Dropped)), Catalog: r.Catalog, Structure: r.Structure})
 	}
 	if got := log.changes(); !reflect.DeepEqual(got, merged) {

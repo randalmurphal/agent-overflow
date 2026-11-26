@@ -958,6 +958,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   // The top-up reads the fake Jira's scrum board into the mirror through a
   // board subscription (connectTrackers); what that read leaves empty:
   { table: 'tracker_cache_roots', columns: ['sweep'], reason: 'a mirror root\'s sweep counter (v162), which a cleanup sweep that deletes an issue or a board moves; nothing the top-up reads leaves the mirror' },
+  { table: 'tracker_cache_roots', columns: ['names_after'], reason: 'the cursor of the parents a root upgraded by v172 owes names (v172); only v172 sets it, and a root made after it, as every root of the corpus and the top-up is, owes none' },
   { table: 'tracker_cache_users', reason: 'a user a board\'s catalog names (v162); the fake board\'s issues name no assignee, so its read stores none' },
   {
     table: 'tracker_cache_boards',
@@ -983,6 +984,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   },
   { table: 'tracker_cache_open_tickets', reason: 'a tracker ticket a person has open, which keeps its issue in the mirror (v165); the top-up opens no ticket' },
   { table: 'tracker_cache_issue_missing', reason: 'a read that did not return a linked issue (v167); no step of the top-up links a thread' },
+  { table: 'tracker_cache_parents', reason: 'the name of a parent a card names (v172); the fake board\'s issues name no parent' },
   { table: 'tracker_agent_writes', reason: 'a tracker write an agent made through the tracker tools (v171); no step of the top-up runs an agent that writes a ticket' },
   { table: 'tracker_time_entries', reason: 'the user\'s time draft, which an agent writes through the time tools and the person approves (v173); no step of the top-up runs an agent that drafts time' },
   { table: 'chat_model_profiles', values: { reasoning_effort: ['none', 'minimal', 'low', 'xhigh'], runtime_mode: ['read-only', 'approval-required', 'auto-accept-edits'] }, reason: 'one remembered profile per provider and model holds the settings used last' },

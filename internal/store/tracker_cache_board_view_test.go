@@ -44,7 +44,7 @@ func TestMirrorBoardViewIsOneSnapshot(t *testing.T) {
 	t.Cleanup(func() { cachedStmtRan = checked })
 	s, _, root = newMirror(t)
 	child := webRow("10001", 5, "a", "21")
-	child.Card.ParentID = "10002"
+	child.Card.ParentID, child.Card.ParentName = "10002", &MirrorParentName{Key: "WEB-10002", Title: "Issue 10002"}
 	writeMirrorBoard(t, s, root, "10", []MirrorRow{child, webRow("10002", 5, "b")})
 	lifetime = currentLifetime(s, root, "10")
 	sections := []MirrorSection{{Kind: MirrorSectionBacklog}, {Kind: MirrorSectionSprint, SprintID: "21"}, {Kind: MirrorSectionColumn}}

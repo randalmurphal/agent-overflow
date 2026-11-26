@@ -65,8 +65,8 @@ func TestAReconcileReadsARefusedRowAgain(t *testing.T) {
 	m.svc.store = &removalBeforeWrite{Store: m.svc.store, m: m, issue: "10009"}
 	reads := m.p.count("BoardRows")
 	out := must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background))
-	if got := m.rowIDs(testBoard); !slices.Equal(got, []string{"10001", "10002"}) || !slices.Equal(out.Changes().Added, ids("10002")) {
-		t.Fatalf("rows %v, added %v; want 10002 read again and stored", got, out.Changes().Added)
+	if got := m.rowIDs(testBoard); !slices.Equal(got, []string{"10001", "10002"}) || !slices.Contains(out.Changes().Rows, "10002") {
+		t.Fatalf("rows %v, stored %v; want 10002 read again and stored", got, out.Changes().Rows)
 	}
 	if n := m.p.count("BoardRows") - reads; n != 2 {
 		t.Fatalf("%d row reads; want the refused one again", n)
