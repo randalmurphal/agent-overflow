@@ -35,18 +35,31 @@ import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 import {
   addTicketComment,
   attachTicketFiles,
+  boardWriteContext,
   clearTicketPokerVotes,
+  completeSprint,
+  createChoices,
+  createFields,
+  createSprint,
+  createTarget,
+  createTicket,
   dismissTicketWrite,
   drawTicketWrite,
   editTicketComment,
+  editSprint,
   editTicketFields,
   fieldTarget,
+  issueTypes,
   linkTicket,
+  loadCreateFields,
+  loadIssueTypes,
   loadTicketLinkTypes,
   moveTicket,
   openTicketMove,
   rankTicket,
   revealTicketPoker,
+  sprintTarget,
+  startSprint,
   ticketAttachOutcomes,
   ticketLinkTypes,
   ticketMoveDraft,
@@ -72,7 +85,7 @@ function detail(title = 'First story', extra: Partial<DetailView> = {}): DetailV
   return {
     card: { id: '10101', key: 'WEB-1', title, status: { id: 's1', name: 'To Do' }, created: 0, updated: 0 },
     url: 'https://example.atlassian.net/browse/WEB-1', description: '', fields: [], comments: [], links: [], attachments: [],
-    history: [], moves: [], rows: [], ...extra,
+    history: [], moves: [], rows: [], sprints: [], ...extra,
   } as unknown as DetailView;
 }
 
@@ -841,6 +854,117 @@ describe('a write from a Board card', () => {
 
 });
 
+describe('a board\'s writes: its sprints and the tickets made on it', () => {
+  const BOARD = { backend: HOME_BACKEND, projectId: 'p1', connection: 'c1', board: '1' };
+  const B = boardWriteContext(BOARD);
+  const sprintPart = (state: string, extra: Record<string, unknown> = {}): WriteView => ({ parts: [{ step: 'sprint', state, ...extra }] }) as WriteView;
+
+  function boardView(): BoardView {
+    return {
+      id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: true, estimate: { unit: 'points' },
+      columns: [{ name: 'To Do', statuses: [{ id: 's1', group: 'todo' }], total: { rows: 0, estimate: 0 } }], sprints: [],
+      all: { rows: 0, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: { read_at: 100 }, screen: [], plan: [], sections: [],
+    } as unknown as BoardView;
+  }
+
+  it('are held apart from every ticket\'s, one pending per sprint, and wait for the board to show them', async () => {
+    // No ticket key of the connection is the board's.
+    expect(B.key).not.toBe(trackerTicketKey({ backend: HOME_BACKEND, connection: 'c1', issue: '1' }));
+    setBindingMock('SubscribeTrackerBoard', async () => ({ id: 'board-sub', seq: 10, loaded: true, view: boardView(), poll_every: 10_000 }));
+    setBindingMock('SetTrackerSubscriptionVisible', async () => {});
+    setBindingMock('ReleaseTrackerSubscription', async () => {});
+    const reads = held<BoardView>('TrackerBoard');
+    const starts = held<WriteView>('StartTrackerSprint');
+    const board = attachTrackerBoard(BOARD, true);
+    await flush();
+    const target = sprintTarget('8');
+    const release = drawTicketWrite(B.key, target, () => true);
+    const req = { sprint: '8', start: 1, end: 2 };
+    const first = startSprint(B, 'Sprint 8', req);
+    expect(await startSprint(B, 'Sprint 8', req)).toBeNull();
+    await flush();
+    expect(starts.calls).toEqual([['c1', { ...req, board: '1' }]]);
+    // The write's refresh tells the board's event before the answer.
+    trackerBoardUpdated({ scope: { connection: 'c1', board: '1' }, seq: 11, read_again: true }, HOME_BACKEND);
+    starts.answer(sprintPart('applied'));
+    await flush();
+    expect(ticketWrite(B.key, target)?.pending).toBe(true);
+    reads.answer(boardView());
+    expect(await first).toEqual({ kind: 'applied', note: null });
+    expect(ticketWrite(B.key, target)).toBeNull();
+    release();
+    board.release();
+  });
+
+  it('reach none of a ticket\'s rules: a stale refusal reads no ticket again, and a loss offers no Save anyway', async () => {
+    const mocks = install();
+    const ticket = attachTrackerTicket(REF, true);
+    await flush();
+    const target = sprintTarget('8');
+    const release = drawTicketWrite(B.key, target, () => true);
+    setBindingMock('CompleteTrackerSprint', async () => sprintPart('refused', { refusal: { reason: 'stale', message: '2 unfinished issues joined the sprint while it was completed; it stays open, so complete it again' } }));
+    expect((await completeSprint(B, 'Sprint 8', { sprint: '8', move_to: '9' }))?.kind).toBe('refused');
+    await flush();
+    expect(mocks.refresh).not.toHaveBeenCalled();
+    setBindingMock('EditTrackerSprint', async () => sprintPart('refused', { refusal: { reason: 'loss', message: 'This edit would lose formatting.', lost: ['a table'] } }));
+    expect((await editSprint(B, 'Sprint 8', { sprint: '8', goal: 'Ship it' }))?.kind).toBe('refused');
+    expect(ticketWrite(B.key, target)?.outcome?.kind).toBe('refused');
+    expect(ticketWrite(B.key, target)?.saveAnyway).toBeNull();
+    release();
+    ticket.release();
+  });
+
+  it('say a write that settles while no control of it shows in a toast that names it, and keep it nowhere', async () => {
+    setBindingMock('CreateTrackerSprint', async () => sprintPart('refused', { refusal: { reason: 'tracker', message: 'Sprints cannot be made on this board now.' } }));
+    setBindingMock('CreateTrackerIssue', async () => ({ parts: [{ step: 'create', state: 'unknown', failure: { kind: 'transient', message: 'Jira did not answer in time, so the ticket may or may not have been made; look at the board before you try again', at: 1 } }] }) as WriteView);
+    const before = getToasts().length;
+    await createSprint(B, { name: 'Sprint 9' });
+    await createTicket(B, 'backlog', 'the backlog', { project: '10000', type: '10002', title: 'New', fields: [] });
+    expect(getToasts().slice(before).map((t) => t.message)).toEqual([
+      'The tracker refused creating Sprint 9: Sprints cannot be made on this board now.',
+      'Creating a ticket in the backlog: Jira did not answer in time, so the ticket may or may not have been made; look at the board before you try again',
+    ]);
+    expect(ticketWrite(B.key, sprintTarget('new'))).toBeNull();
+    expect(ticketWrite(B.key, createTarget('backlog'))).toBeNull();
+  });
+});
+
+describe('what a ticket made on the Backlog takes', () => {
+  it('reads a project\'s types and a type\'s fields once each, holds a refusal until the next ask, and reads again after a reconnect', async () => {
+    const types = setBindingMock('TrackerIssueTypes', async () => [{ id: '10002', name: 'Task', level: 0 }]);
+    let refuse = true;
+    const fields = setBindingMock('TrackerCreateFields', async () => {
+      if (refuse) throw new TransportError('tracker_unavailable', 'Jira did not answer');
+      return [{ id: 'priority', name: 'Priority', kind: 'option', required: true, editable: true }];
+    });
+    await Promise.all([loadIssueTypes(HOME_BACKEND, 'c1', '10000'), loadIssueTypes(HOME_BACKEND, 'c1', '10000')]);
+    expect(types).toHaveBeenCalledTimes(1);
+    expect(issueTypes(HOME_BACKEND, 'c1', '10000')?.value?.map((t) => t.name)).toEqual(['Task']);
+    // Another project is its own read.
+    expect(issueTypes(HOME_BACKEND, 'c1', '10001')).toBeNull();
+
+    await loadCreateFields(HOME_BACKEND, 'c1', '10000', '10002');
+    expect(createFields(HOME_BACKEND, 'c1', '10000', '10002')?.error).toBeInstanceOf(TransportError);
+    refuse = false;
+    await loadCreateFields(HOME_BACKEND, 'c1', '10000', '10002');
+    await loadCreateFields(HOME_BACKEND, 'c1', '10000', '10002');
+    expect(fields).toHaveBeenCalledTimes(2);
+    expect(createFields(HOME_BACKEND, 'c1', '10000', '10002')?.value?.map((f) => f.name)).toEqual(['Priority']);
+
+    __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
+    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+    expect(issueTypes(HOME_BACKEND, 'c1', '10000')).toBeNull();
+    expect(createFields(HOME_BACKEND, 'c1', '10000', '10002')).toBeNull();
+  });
+
+  it('asks a create field\'s choices of the project and type, on the board\'s computer', async () => {
+    const choices = setBindingMock('TrackerChoices', async () => ({ choices: [{ id: '2', name: 'High' }], more: false }));
+    const B = boardWriteContext({ backend: HOME_BACKEND, connection: 'c1', board: '1' });
+    expect((await createChoices(B, '10000', '10002', 'priority', 'Hi')).choices.map((c) => c.name)).toEqual(['High']);
+    expect(choices).toHaveBeenCalledWith('c1', { project: '10000', type: '10002' }, 'priority', 'Hi');
+  });
+});
+
 describe('attaching files', () => {
   let realFetch: typeof globalThis.fetch;
   beforeEach(() => {
@@ -975,7 +1099,7 @@ describe('links and poker writes', () => {
     await Promise.all([loadTicketLinkTypes(HOME_BACKEND, 'c1'), loadTicketLinkTypes(HOME_BACKEND, 'c1')]);
     await loadTicketLinkTypes(HOME_BACKEND, 'c1');
     expect(types).toHaveBeenCalledTimes(1);
-    expect(ticketLinkTypes(HOME_BACKEND, 'c1')?.types?.map((t) => t.name)).toEqual(['Blocks']);
+    expect(ticketLinkTypes(HOME_BACKEND, 'c1')?.value?.map((t) => t.name)).toEqual(['Blocks']);
     __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
     __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
     expect(ticketLinkTypes(HOME_BACKEND, 'c1')).toBeNull();
@@ -994,10 +1118,10 @@ describe('links and poker writes', () => {
     const after = loadTicketLinkTypes(HOME_BACKEND, 'c1');
     answers[0]!(['Old']);
     await before;
-    expect(ticketLinkTypes(HOME_BACKEND, 'c1')).toEqual({ types: null, loading: true, error: null });
+    expect(ticketLinkTypes(HOME_BACKEND, 'c1')).toEqual({ value: null, loading: true, error: null });
     answers[1]!(['New']);
     await after;
-    expect(ticketLinkTypes(HOME_BACKEND, 'c1')?.types?.map((t) => t.name)).toEqual(['New']);
+    expect(ticketLinkTypes(HOME_BACKEND, 'c1')?.value?.map((t) => t.name)).toEqual(['New']);
   });
 });
 

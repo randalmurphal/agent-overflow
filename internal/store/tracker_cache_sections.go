@@ -224,20 +224,21 @@ var (
 
 // mirrorShownBoardSQL reads the lifetime, revisions, estimate unit and
 // estimate reset of a board the mirror shows.
-var mirrorShownBoardSQL = `SELECT b.lifetime, b.revision, b.totals_revision, b.estimate_unit, b.estimate_reset_at FROM tracker_cache_boards b
+var mirrorShownBoardSQL = `SELECT b.lifetime, b.revision, b.totals_revision, b.estimate_unit, b.estimate_reset_at, b.plans_sprints FROM tracker_cache_boards b
 	WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND ` + mirrorBoardShown(intParam("?1"), "?2")
 
 // mirrorShownBoard is a shown board's state as a read of its rows needs it.
 type mirrorShownBoard struct {
 	lifetime, revision, totalsRevision, estimateResetAt int64
 	unit                                                int
+	plansSprints                                        bool
 }
 
 // readMirrorShownBoardTx reads a shown board's lifetime, revisions and
 // estimate unit; ok is false for a board the mirror does not show.
 func readMirrorShownBoardTx(tx sqlQueryer, rootID int64, boardID string) (board mirrorShownBoard, ok bool, err error) {
 	err = tx.QueryRow(mirrorShownBoardSQL, rootID, boardID).Scan(&board.lifetime, &board.revision, &board.totalsRevision, &board.unit,
-		&board.estimateResetAt)
+		&board.estimateResetAt, &board.plansSprints)
 	if errors.Is(err, sql.ErrNoRows) {
 		return mirrorShownBoard{}, false, nil
 	}
@@ -304,22 +305,62 @@ func readMirrorSectionTx(tx sqlQueryer, rootID int64, boardID string, board mirr
 	return page, nil
 }
 
-// MirrorSectionTotal is how many rows a section holds and the sum of the
-// board's estimates of them; a row with no estimate, or one read no later
-// than the board's estimate definition last changed (unknown), adds nothing,
-// and a board with no estimate unit sums to zero.
+// mirrorLastPlanRowSQL reads the last row, in the board's order, of
+// board ?2 of root ?1 in sprint ?5 (mirrorLastSprintRowSQL) or in no open
+// sprint of the board (mirrorLastBacklogRowSQL), a superset of the
+// backlog under any regrouping. Each walks idx_tracker_cache_board_issues_order
+// backwards from the board's end to the first row that holds the rule,
+// with the rule in the form its section's page uses.
+var (
+	mirrorLastPlanRowSQL = `SELECT b.issue_id, b.order_key FROM tracker_cache_board_issues b
+	 WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND ` + mirrorBoardShown(intParam("?1"), "?2") + ` AND `
+	mirrorLastSprintRowSQL  = mirrorLastPlanRowSQL + mirrorInSprintMembersSQL + ` ORDER BY b.order_key DESC, b.issue_id DESC LIMIT 1`
+	mirrorLastBacklogRowSQL = mirrorLastPlanRowSQL + `NOT ` + mirrorInOpenSprintProbeSQL + ` ORDER BY b.order_key DESC, b.issue_id DESC LIMIT 1`
+)
+
+// LastMirrorPlanRow is the last row, in the board's order, of a board the
+// mirror shows in sprint sprintID, or in no open sprint of the board when
+// sprintID is empty: what a ticket made at that section's foot lands
+// after. ok is false when there is none.
+func (s *Store) LastMirrorPlanRow(rootID int64, boardID, sprintID string) (issueID, orderKey string, ok bool, err error) {
+	query, args := mirrorLastBacklogRowSQL, []any{rootID, boardID}
+	if sprintID != "" {
+		query, args = mirrorLastSprintRowSQL, []any{rootID, boardID, nil, nil, sprintID}
+	}
+	label := fmt.Sprintf("read the last row of tracker mirror %d board %s section %q", rootID, boardID, sprintID)
+	row, err := mirrorReadSnapshot(s, label, func(tx sqlQueryer) (MirrorRowKey, error) {
+		var row MirrorRowKey
+		err := tx.QueryRow(query, args...).Scan(&row.IssueID, &row.OrderKey)
+		if errors.Is(err, sql.ErrNoRows) {
+			return MirrorRowKey{}, nil
+		}
+		return row, err
+	})
+	return row.IssueID, row.OrderKey, row.IssueID != "", err
+}
+
+// MirrorSectionTotal is how many rows a section holds, the sum of the
+// board's estimates of them and how many of them have none; a row with no
+// estimate, or one read no later than the board's estimate definition last
+// changed (unknown), adds nothing to the sum and counts as having none, and
+// a board with no estimate unit sums to zero and counts none.
 type MirrorSectionTotal struct {
-	Rows     int
-	Estimate float64
+	Rows        int
+	Estimate    float64
+	Unestimated int
 }
 
 // MirrorSectionCounts are the totals of each section of a board at its
 // Revision and TotalsRevision. A sprint or column with no rows is absent.
+// Pace is what the board's last finished sprints finished
+// (MirrorSprintFinished, mirrorPaceSQL), in no order, read for a board that
+// plans sprints.
 type MirrorSectionCounts struct {
 	Revision, TotalsRevision int64
 	All, Backlog             MirrorSectionTotal
 	Sprints                  map[string]MirrorSectionTotal
 	Columns                  map[int]MirrorSectionTotal
+	Pace                     []MirrorSprintFinished
 }
 
 // The count statements read no issue's table row and sort nothing.
@@ -345,7 +386,8 @@ var (
 		mirrorCountRowsFromSQL
 	mirrorRegroupedCountRowsSQL = `SELECT ` + mirrorBacklog(mirrorInOpenSprintMembersSQL, mirrorRegroupedNotDone("?4")) + `, i.status_id, ` +
 		mirrorRowEstimate("?3") + `, iif(` + mirrorLeftOut("?4") + `, b.issue_id, NULL)` + mirrorCountRowsFromSQL
-	mirrorCountSprintsRowsSQL = `SELECT sp.sprint_id, count(*), total(` + mirrorRowEstimate("?3") + `) FROM tracker_cache_sprints sp
+	mirrorCountSprintsRowsSQL = `SELECT sp.sprint_id, count(*), total(` + mirrorRowEstimate("?3") + `), count(*) - count(` + mirrorRowEstimate("?3") + `)
+		  FROM tracker_cache_sprints sp
 		  CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = sp.root_id AND m.sprint_id = sp.sprint_id
 		  CROSS JOIN tracker_cache_board_issues b ON b.root_id = sp.root_id AND b.issue_id = m.issue_id AND b.board_id = sp.board_id
 		 WHERE sp.root_id = CAST(?1 AS INTEGER) AND sp.board_id = ?2`
@@ -405,6 +447,9 @@ func countMirrorSectionsTx(tx sqlQueryer, rootID int64, boardID string, board mi
 		t.Rows++
 		if estimated {
 			t.Estimate += estimate.Float64
+			if !estimate.Valid {
+				t.Unestimated++
+			}
 		}
 		return t
 	}
@@ -447,17 +492,22 @@ func countMirrorSectionsTx(tx sqlQueryer, rootID int64, boardID string, board mi
 	err = scanMirrorRows(tx, sprints, sprintArgs, func(r rowScanner) error {
 		var sprint string
 		var total MirrorSectionTotal
-		if err := r.Scan(&sprint, &total.Rows, &total.Estimate); err != nil {
+		if err := r.Scan(&sprint, &total.Rows, &total.Estimate, &total.Unestimated); err != nil {
 			return err
 		}
 		if !estimated {
-			total.Estimate = 0
+			total.Estimate, total.Unestimated = 0, 0
 		}
 		counts.Sprints[sprint] = total
 		return nil
 	})
 	if err != nil {
 		return MirrorSectionCounts{}, fmt.Errorf("sprints: %w", err)
+	}
+	if board.plansSprints {
+		if counts.Pace, err = readMirrorPaceTx(tx, rootID, boardID, board, regroup); err != nil {
+			return MirrorSectionCounts{}, fmt.Errorf("pace: %w", err)
+		}
 	}
 	return counts, nil
 }

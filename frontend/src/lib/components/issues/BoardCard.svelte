@@ -1,13 +1,3 @@
-<script lang="ts" module>
-  // The card's field editors load on the first change from a card, once
-  // per page.
-  let fieldEditor: Promise<typeof import('./CardFieldEditor.svelte')> | null = null;
-  function loadFieldEditor(): Promise<typeof import('./CardFieldEditor.svelte')> {
-    fieldEditor ??= import('./CardFieldEditor.svelte');
-    return fieldEditor;
-  }
-</script>
-
 <script lang="ts">
   // One card of the Board screen: the epic or parent, the title, labels,
   // then type, priority and key, the estimate and the assignee, and how
@@ -19,27 +9,27 @@
   // avatar image is fetched.
   //
   // Changing it (docs/specs/issues.md, "Board"). On a pointer screen the
-  // type, priority, estimate and assignee marks each open that field's
-  // editor at the mark (`CardFieldEditor`, the ticket's editors), and the
+  // type, priority, estimate and assignee marks (`CardMarks`, which a
+  // Backlog row shares) each open that field's editor at the mark
+  // (`CardEditor`, the ticket's editors), and the
   // grab bar at the top center carries the card level (BoardScreen owns
   // the carry). Under compact the marks only show, the status mark opens
   // Move to…, and the menu changes the fields. Each write is the ticket's
   // own (`stores/trackerTicketWrites.svelte.ts`), under the ticket's key,
   // so a mark waits while its write is out and its outcome shows under the
   // card, as on the ticket screen, which shows the same write.
-  import PriorityIcon from './PriorityIcon.svelte';
+  import CardEditor from './CardEditor.svelte';
+  import CardMarks from './CardMarks.svelte';
   import StatusMark from './StatusMark.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
-  import TypeIcon from './TypeIcon.svelte';
-  import ReviewAvatar from '../review/ReviewAvatar.svelte';
   import type { RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import type { CardField } from '../../stores/issuesPane.svelte';
   import type { TrackerBoardRef } from '../../stores/trackerBoard.svelte';
   import { cardWriteContext, movePending } from '../../stores/trackerBoardCarry.svelte';
   import { trackerTicketKey } from '../../stores/trackerTicket.svelte';
-  import { BOARD_CARD_TARGETS, fieldTarget, ticketWrites } from '../../stores/trackerTicketWrites.svelte';
+  import { BOARD_CARD_TARGETS, ticketWrites } from '../../stores/trackerTicketWrites.svelte';
   import { cardFieldName, type CardEditField } from './ticketEditors';
-  import { daysInStatus, formatEstimate } from './boardFormat';
+  import { daysInStatus } from './boardFormat';
   import { opensTicketPane } from '../../stores/ticketPanes.svelte';
 
   interface Props {
@@ -75,29 +65,19 @@
   // the ticket's own key, so a write shows on both surfaces.
   const ticketKey = $derived(trackerTicketKey({ backend: boardRef.backend, connection: boardRef.connection, issue: card.id }));
   const writes = $derived(ticketWrites(ticketKey));
-  const estimate = $derived(formatEstimate(row.estimate, unit));
   const days = $derived(daysInStatus(card.status_since, now));
   const parentText = $derived(card.parent ? card.parent.title || card.parent.key || '' : '');
-  const assigneeName = $derived(card.assignee ? card.assignee.name || 'Unknown user' : '');
   const moving = $derived(movePending(writes));
   const notes = $derived(writes.size === 0 ? [] : BOARD_CARD_TARGETS.filter((t) => writes.has(t)));
 
-  const TARGETS: Readonly<Record<CardEditField, string>> = {
-    type: fieldTarget('type'), priority: fieldTarget('priority'), points: 'points', assignee: fieldTarget('assignee'),
-  };
-  const pending = (field: CardEditField) => writes.get(TARGETS[field])?.pending ?? false;
   // Marks edit on a pointer screen; under compact the menu does.
   const marks = $derived(!compact);
 
   let cardEl: HTMLElement | undefined = $state();
-  const markEls: Partial<Record<CardEditField, HTMLElement>> = $state({});
+  let markEls: Partial<Record<CardEditField, HTMLElement>> = $state({});
   // An editor opened from the menu for a field whose mark is hidden opens
   // at the card.
   const anchor = $derived(editing ? (markEls[editing] ?? cardEl) : undefined);
-
-  function edit(field: CardEditField): void {
-    if (!pending(field)) onEdit(row, field);
-  }
 
   function onContextMenu(event: MouseEvent): void {
     event.preventDefault();
@@ -109,8 +89,6 @@
     }
     onMenu(row, event);
   }
-
-  const markClass = 'relative z-[1] inline-flex shrink-0 items-center rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50';
 </script>
 
 <article
@@ -163,50 +141,12 @@
         onclick={(event) => onMove(row, event.currentTarget)}
       ><StatusMark group={card.status.group} /></button>
     {/if}
-    {#if !hidden.has('type')}
-      {#if marks && typed}
-        <button bind:this={markEls.type} type="button" class={markClass} aria-label="Type: {card.type?.name ?? 'None'}" disabled={pending('type')} data-card-mark data-testid="issues-card-type-edit" onclick={() => edit('type')}>
-          <TypeIcon type={card.type} testId="issues-card-type" />
-        </button>
-      {:else}
-        <TypeIcon type={card.type} testId="issues-card-type" />
-      {/if}
-    {/if}
-    {#if !hidden.has('priority')}
-      {#if marks}
-        <button bind:this={markEls.priority} type="button" class="{markClass} {card.priority ? '' : 'h-3.5 w-3.5 opacity-0 group-hover:opacity-100 focus-visible:opacity-100'}" aria-label="Priority: {card.priority?.name ?? 'None'}" disabled={pending('priority')} data-card-mark data-testid="issues-card-priority-edit" onclick={() => edit('priority')}>
-          {#if card.priority}<PriorityIcon priority={card.priority} testId="issues-card-priority" />{:else}<span class="h-0.5 w-2.5 rounded-full bg-fg-muted"></span>{/if}
-        </button>
-      {:else}
-        <PriorityIcon priority={card.priority} testId="issues-card-priority" />
-      {/if}
-    {/if}
+    <CardMarks {row} fields={['type', 'priority']} {hidden} {unit} {typed} editable={marks} {writes} bind:els={markEls} onEdit={(field) => onEdit(row, field)} />
     {#if !hidden.has('key')}
       <span class="truncate tabular-nums" data-testid="issues-card-key">{card.key}</span>
     {/if}
     <span class="flex-1"></span>
-    {#if unit !== 'none' && unit !== '' && !hidden.has('estimate') && (estimate !== null || marks)}
-      {#if marks}
-        <button bind:this={markEls.points} type="button" class="{markClass} rounded-sm bg-surface-2 px-1.5 tabular-nums text-fg {estimate === null ? 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100' : ''}" aria-label="{unit === 'time' ? 'Estimate' : 'Points'}: {estimate ?? 'None'}" disabled={pending('points')} data-card-mark data-testid="issues-card-estimate-edit" onclick={() => edit('points')}>
-          {#if estimate !== null}<span data-testid="issues-card-estimate">{estimate}</span>{:else}–{/if}
-        </button>
-      {:else}
-        <span class="shrink-0 rounded-sm bg-surface-2 px-1.5 tabular-nums text-fg" title={unit === 'time' ? 'Estimate' : 'Points'} data-testid="issues-card-estimate">{estimate}</span>
-      {/if}
-    {/if}
-    {#if !hidden.has('assignee') && (card.assignee || marks)}
-      {#if marks}
-        <button bind:this={markEls.assignee} type="button" class="{markClass} rounded-full {card.assignee ? '' : 'h-5 w-5 justify-center border border-dashed border-border opacity-0 group-hover:opacity-100 focus-visible:opacity-100'}" aria-label="Assignee: {card.assignee ? assigneeName : 'Unassigned'}" disabled={pending('assignee')} data-card-mark data-testid="issues-card-assignee-edit" onclick={() => edit('assignee')}>
-          {#if card.assignee}
-            <span class="inline-flex" data-testid="issues-card-assignee"><ReviewAvatar login={card.assignee.id} name={card.assignee.name} title={assigneeName} size={20} /></span>
-          {/if}
-        </button>
-      {:else}
-        <span class="inline-flex" data-testid="issues-card-assignee">
-          <ReviewAvatar login={card.assignee!.id} name={card.assignee!.name} title={assigneeName} size={20} />
-        </span>
-      {/if}
-    {/if}
+    <CardMarks {row} fields={['points', 'assignee']} {hidden} {unit} {typed} editable={marks} {writes} bind:els={markEls} onEdit={(field) => onEdit(row, field)} />
   </div>
   {#if days > 0 && !hidden.has('days')}
     <span class="text-[0.6875rem] text-fg-muted" data-testid="issues-card-days">{days} {days === 1 ? 'day' : 'days'} in {card.status.name || 'this status'}</span>
@@ -220,9 +160,5 @@
   {/if}
 </article>
 {#if editing && anchor}
-  {#await loadFieldEditor() then mod}
-    <mod.default ctx={cardWriteContext(boardRef, row)} {row} field={editing} {unit} board={boardRef.board} {typed} {anchor} onClose={() => onEdit(row, null)} />
-  {:catch err}
-    <p class="text-xs text-error" role="alert" data-testid="issues-card-editor-error">The editor could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</p>
-  {/await}
+  <CardEditor ctx={cardWriteContext(boardRef, row)} {row} field={editing} {unit} board={boardRef.board} {typed} {anchor} onClose={() => onEdit(row, null)} />
 {/if}

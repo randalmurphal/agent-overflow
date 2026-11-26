@@ -1,7 +1,9 @@
 // What the client holds of a tracker board, and the pure rules that change
 // it: the patch rule, a further page, the grouping of a sprint's rows into
 // the board's columns, and the Only mine and Search match. Which sections
-// the Board screen reads is the board's computer's (`BoardView.screen`). No state lives here; the board store
+// the Board screen reads is the board's computer's (`BoardView.screen`),
+// and so are the Backlog screen's (`BoardView.plan`), held while a pane
+// shows Backlog (`withPlan`). No state lives here; the board store
 // (trackerBoard.svelte.ts) owns it and replaces a held board whole.
 //
 // The patch rule is the backend's (the `BoardPatch` comment in
@@ -16,6 +18,7 @@ import type {
   CardView,
   ColumnView,
   MoveView,
+  PaceView,
   RowView,
   Section,
   SectionCursor,
@@ -36,20 +39,24 @@ export interface HeldSection {
   readonly unread?: true;
 }
 
-/** Every section's total at the board's totals revision. A sprint or
- * column a map lacks holds no row. */
+/** Every section's total at the board's totals revision, and its
+ * finished sprints' pace at it (null for none). A sprint or column a map
+ * lacks holds no row. */
 export interface HeldTotals {
   readonly revision: number;
   readonly all: SectionTotal;
   readonly backlog: SectionTotal;
   readonly sprints: ReadonlyMap<string, SectionTotal>;
   readonly columns: ReadonlyMap<number, SectionTotal>;
+  readonly pace: PaceView | null;
 }
 
 /** The board's structure as the screen draws it. */
 export interface BoardShape {
   readonly id: string;
   readonly name: string;
+  /** The tracker project the board shows; empty for a board of several. */
+  readonly project: string;
   readonly plansSprints: boolean;
   /** none, points, or time (seconds). */
   readonly unit: string;
@@ -62,8 +69,10 @@ export interface BoardShape {
 
 /** What the client holds of a board: its shape, lifetime and revision,
  * the version of the project's status groups it was read with (empty for
- * none) and the statuses those groups leave out of counts, the totals, and
- * the sections it reads. */
+ * none) and the statuses those groups leave out of counts, the totals with
+ * the pace, the sections the Board and Backlog screens show (`screen`,
+ * `plan`), and the sections it reads: the Board screen's, and the Backlog
+ * screen's while a pane shows Backlog. */
 export interface HeldBoard {
   readonly shape: BoardShape;
   readonly lifetime: number;
@@ -71,10 +80,12 @@ export interface HeldBoard {
   readonly groups: string;
   readonly leftOut: ReadonlySet<string>;
   readonly totals: HeldTotals;
+  readonly screen: readonly Section[];
+  readonly plan: readonly Section[];
   readonly sections: readonly HeldSection[];
 }
 
-const NO_ROWS: SectionTotal = { rows: 0, estimate: 0 };
+const NO_ROWS: SectionTotal = { rows: 0, estimate: 0, unestimated: 0 };
 
 /** A total, none when the map lacks it. */
 export function totalOf<K>(map: ReadonlyMap<K, SectionTotal>, key: K): SectionTotal {
@@ -83,8 +94,9 @@ export function totalOf<K>(map: ReadonlyMap<K, SectionTotal>, key: K): SectionTo
 
 /** The board a full read answered, its pages interned through `intern`,
  * with each Board screen section it carried no page of held unread, in the
- * screen's order after those it carried. */
-export function heldFromView(view: BoardView, intern: (row: RowView) => RowView): HeldBoard {
+ * screen's order after those it carried, and the Backlog screen's after
+ * them when `planning` (`withPlan`). */
+export function heldFromView(view: BoardView, intern: (row: RowView) => RowView, planning: boolean): HeldBoard {
   const sprints = new Map<string, SectionTotal>();
   for (const sp of view.sprints) {
     if (sp.total.rows > 0) sprints.set(sp.id, sp.total);
@@ -97,6 +109,7 @@ export function heldFromView(view: BoardView, intern: (row: RowView) => RowView)
     shape: {
       id: view.id,
       name: view.name,
+      project: view.project ?? '',
       plansSprints: view.plans_sprints,
       unit: view.estimate.unit,
       columns: view.columns,
@@ -107,17 +120,41 @@ export function heldFromView(view: BoardView, intern: (row: RowView) => RowView)
     revision: view.revision,
     groups: view.groups ?? '',
     leftOut: new Set(view.left_out ?? []),
-    totals: { revision: view.totals_revision, all: view.all, backlog: view.backlog, sprints, columns },
-    sections: [
-      ...view.sections.map((page) => ({ section: page.section, rows: (page.rows ?? []).map(intern), next: page.next ?? null })),
-      ...unreadScreenSections(view),
-    ],
+    totals: { revision: view.totals_revision, all: view.all, backlog: view.backlog, sprints, columns, pace: view.pace ?? null },
+    screen: view.screen,
+    plan: view.plan,
+    sections: withUnread(
+      view.sections.map((page) => ({ section: page.section, rows: (page.rows ?? []).map(intern), next: page.next ?? null })),
+      planning ? [...view.screen, ...view.plan] : view.screen,
+    ),
   };
 }
 
-function unreadScreenSections(view: BoardView): HeldSection[] {
-  const carried = new Set(view.sections.map((page) => sectionKey(page.section)));
-  return view.screen.filter((s) => !carried.has(sectionKey(s))).map((section) => ({ section, rows: [], next: null, unread: true }));
+/** `held` after each of `wanted` it lacks, held unread in that order. */
+function withUnread(held: readonly HeldSection[], wanted: readonly Section[]): HeldSection[] {
+  const keys = new Set(held.map((s) => sectionKey(s.section)));
+  const out = held.slice();
+  for (const section of wanted) {
+    const k = sectionKey(section);
+    if (keys.has(k)) continue;
+    keys.add(k);
+    out.push({ section, rows: [], next: null, unread: true });
+  }
+  return out;
+}
+
+/** The board holding the Backlog screen's sections (`plan`) when
+ * `planning`, each it lacks unread after those it holds; and when not,
+ * none but the Board screen's, so their rows go. The board itself when
+ * nothing changes. */
+export function withPlan(held: HeldBoard, planning: boolean): HeldBoard {
+  if (planning) {
+    const sections = withUnread(held.sections, held.plan);
+    return sections.length === held.sections.length ? held : { ...held, sections };
+  }
+  const screen = new Set(held.screen.map(sectionKey));
+  const sections = held.sections.filter((s) => screen.has(sectionKey(s.section)));
+  return sections.length === held.sections.length ? held : { ...held, sections };
 }
 
 /** The totals the client holds and the status groups its sections were
@@ -139,6 +176,7 @@ function totalsOf(t: BoardTotals): HeldTotals {
     backlog: t.backlog,
     sprints: new Map((t.sprints ?? []).map((s) => [s.sprint, s.total])),
     columns: new Map((t.columns ?? []).map((c) => [c.column, c.total])),
+    pace: t.pace ?? null,
   };
 }
 
@@ -206,11 +244,9 @@ export function applyBoardPatch(held: HeldBoard, ids: readonly string[], patch: 
     return { section: sec.section, rows: rows ?? sec.rows, next };
   });
   return {
-    shape: held.shape,
+    ...held,
     lifetime: patch.lifetime,
     revision: patch.revision,
-    groups: held.groups,
-    leftOut: held.leftOut,
     totals: patch.totals ? totalsOf(patch.totals) : held.totals,
     sections,
   };
@@ -228,6 +264,39 @@ export function appendPage(held: HeldBoard, index: number, page: SectionPage, in
 /** One text per section, for keys and comparison. */
 export function sectionKey(s: Section): string {
   return `${s.kind}:${s.sprint ?? ''}:${s.column ?? 0}`;
+}
+
+/** A list a ticket is carried in, ranked in or moved into: a Board column
+ * (`column:<i>`), or a Backlog section (`sprint:<id>`, `backlog`). */
+export function columnList(column: number): string {
+  return `column:${column}`;
+}
+
+/** The list a Backlog section is. */
+export function sectionList(s: Section): string {
+  return s.kind === 'sprint' ? `sprint:${s.sprint ?? ''}` : s.kind === 'backlog' ? 'backlog' : columnList(s.column ?? 0);
+}
+
+/** The sprint a list moves a ticket into: its ID, null for the backlog,
+ * undefined for a Board column, which is no sprint. */
+export function listSprint(list: string): string | null | undefined {
+  if (list === 'backlog') return null;
+  return list.startsWith('sprint:') ? list.slice('sprint:'.length) : undefined;
+}
+
+/** A list's rows as the board holds them now, every one whatever the
+ * filter, and its name as a sentence says it; null when the board holds
+ * no such list. */
+export function listRows(held: HeldBoard, list: string): { readonly name: string; readonly rows: readonly RowView[] } | null {
+  if (list.startsWith('column:')) {
+    const col = screenColumns(held)[Number(list.slice('column:'.length))];
+    return col ? { name: col.name, rows: col.rows } : null;
+  }
+  const sec = held.sections.find((s) => sectionList(s.section) === list && s.section.kind !== 'column');
+  if (!sec) return null;
+  const sprint = listSprint(list);
+  const name = sprint ? (held.shape.sprints.find((sp) => sp.id === sprint)?.name || 'the sprint') : 'the backlog';
+  return { name, rows: sec.rows };
 }
 
 /** One column of the Board screen: its rows as held, whether more of
@@ -265,12 +334,14 @@ function countedOf(held: HeldBoard, rows: readonly RowView[]): number {
 function sumOf(held: HeldBoard, rows: readonly RowView[]): SectionTotal {
   let n = 0;
   let estimate = 0;
+  let unestimated = 0;
   for (const r of rows) {
     if (!counts(held, r)) continue;
     n += 1;
-    estimate += r.estimate ?? 0;
+    if (r.estimate === undefined || r.estimate === null) unestimated += 1;
+    else estimate += r.estimate;
   }
-  return { rows: n, estimate };
+  return { rows: n, estimate, unestimated };
 }
 
 /**
@@ -303,8 +374,12 @@ export function screenColumns(held: HeldBoard, previous: readonly ScreenColumn[]
   columns.forEach((col, i) => {
     for (const st of col.statuses) columnOf.set(st.id, i);
   });
-  const sprintSections = held.sections.filter((s) => s.section.kind === 'sprint');
-  const unfinished = held.sections.findIndex((s) => s.section.kind === 'sprint' && (s.next !== null || s.unread === true));
+  // The Board screen's sprints: the Backlog screen's future sprints, held
+  // beside them while a pane shows Backlog, are not on it.
+  const onScreen = new Set(held.screen.map(sectionKey));
+  const isScreenSprint = (s: HeldSection) => s.section.kind === 'sprint' && onScreen.has(sectionKey(s.section));
+  const sprintSections = held.sections.filter(isScreenSprint);
+  const unfinished = held.sections.findIndex((s) => isScreenSprint(s) && (s.next !== null || s.unread === true));
   const unread = sprintSections.length > 0 && sprintSections.every((s) => s.unread === true);
   const buckets: RowView[][] = columns.map(() => []);
   for (const sec of sprintSections) {
@@ -432,50 +507,53 @@ export function columnsReached(columns: readonly ColumnView[], moves: readonly M
 }
 
 /** A card drawn somewhere else while its write is out: the card of
- * `issue`, in `column`, before the card `before` names (null: at the end),
+ * `issue`, in `list`, before the card `before` names (null: at the end),
  * or where its order places it when `before` is undefined; `status` is the
  * status its move leads to. */
 export interface WaitingCard {
   readonly issue: string;
-  readonly column: number;
+  readonly list: string;
   readonly before?: string | null;
   readonly status?: string;
 }
 
-/** The row of `issue` among the columns, and its column; null when the
- * board holds none. */
-export function rowOf(columns: readonly ScreenColumn[], issue: string): { row: RowView; column: number } | null {
-  for (let i = 0; i < columns.length; i += 1) {
-    const row = columns[i].rows.find((r) => r.card.id === issue);
+/** The row of `issue` among the lists, and the index of its list; null
+ * when none holds it. */
+export function rowOf(lists: readonly { readonly rows: readonly RowView[] }[], issue: string): { row: RowView; column: number } | null {
+  for (let i = 0; i < lists.length; i += 1) {
+    const row = lists[i].rows.find((r) => r.card.id === issue);
     if (row) return { row, column: i };
   }
   return null;
 }
 
 /**
- * The shown columns with each waiting card drawn where it waits: its row
- * as the board holds it now (`columns`), taken out of the column it shows
- * in and put in its own, before the card `before` names or where its
- * order places it, unless it fails `filter`. A card the board no longer
- * holds is not drawn. The rows only: the headers count a moved card by
- * `columnWith`. Nothing the board holds changes, and a column no waiting
- * card touches keeps its object.
+ * The shown lists (named `keys`, held as `lists`) with each waiting card
+ * drawn where it waits: its row as the board holds it now, taken out of
+ * the list it shows in and put in its own, before the card `before` names
+ * or where its order places it, unless it fails `filter`. A card the board
+ * no longer holds, or waiting in a list not shown, is not drawn. The rows
+ * only: the headers count a moved card by `columnWith`. Nothing the board
+ * holds changes, and a list no waiting card touches keeps its object.
  */
-export function withWaiting(columns: readonly ScreenColumn[], shown: readonly ShownColumn[], waiting: Iterable<WaitingCard>, filter: CardFilter): readonly ShownColumn[] {
+export function withWaiting(
+  keys: readonly string[], lists: readonly { readonly rows: readonly RowView[] }[], shown: readonly ShownColumn[], waiting: Iterable<WaitingCard>, filter: CardFilter,
+): readonly ShownColumn[] {
   let out: ShownColumn[] | null = null;
   for (const w of waiting) {
-    if (w.column < 0 || w.column >= shown.length) continue;
-    const at = rowOf(columns, w.issue);
+    const into = keys.indexOf(w.list);
+    if (into < 0) continue;
+    const at = rowOf(lists, w.issue);
     if (!at) continue;
     out ??= shown.slice();
     for (let i = 0; i < out.length; i += 1) {
       if (out[i].rows.some((r) => r.card.id === w.issue)) out[i] = { rows: out[i].rows.filter((r) => r.card.id !== w.issue), counted: out[i].counted };
     }
     if (!cardMatches(at.row.card, filter)) continue;
-    const rows = out[w.column].rows.slice();
+    const rows = out[into].rows.slice();
     const k = w.before === undefined ? insertionIndex(rows, at.row) : w.before === null ? -1 : rows.findIndex((r) => r.card.id === w.before);
     rows.splice(k < 0 ? rows.length : k, 0, at.row);
-    out[w.column] = { rows, counted: out[w.column].counted };
+    out[into] = { rows, counted: out[into].counted };
   }
   return out ?? shown;
 }
@@ -491,6 +569,17 @@ export function columnWith(
   held: HeldBoard, col: ScreenColumn, shown: ShownColumn, row: RowView, sign: 1 | -1, statuses: readonly string[], inShown: boolean,
 ): { col: ScreenColumn; shown: ShownColumn } {
   if (statuses.some((id) => held.leftOut.has(id))) return { col, shown };
-  const total = col.total && { rows: col.total.rows + sign, estimate: col.total.estimate + sign * (row.estimate ?? 0) };
+  const total = col.total && withRow(col.total, row, sign);
   return { col: { ...col, total, counted: col.counted + sign }, shown: inShown ? { rows: shown.rows, counted: shown.counted + sign } : shown };
+}
+
+/** A total with `row` added (1) or taken out (-1): the one rule for what a
+ * header counts while a ticket is carried over it or waits in it. */
+export function withRow(total: SectionTotal, row: RowView, sign: 1 | -1): SectionTotal {
+  const none = row.estimate === undefined || row.estimate === null;
+  return {
+    rows: total.rows + sign,
+    estimate: total.estimate + (none ? 0 : sign * row.estimate!),
+    unestimated: (total.unestimated ?? 0) + (none ? sign : 0),
+  };
 }

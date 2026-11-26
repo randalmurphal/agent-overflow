@@ -42,6 +42,10 @@ func (o oneCredential) Projects(ctx context.Context) ([]Project, error) {
 	return trackerapi.Walk(ctx, o.p.Projects)
 }
 
+func (o oneCredential) BoardProjects(ctx context.Context, board BoardID) ([]Project, error) {
+	return trackerapi.Walk(ctx, func(ctx context.Context) ([]Project, error) { return o.p.BoardProjects(ctx, board) })
+}
+
 func (o oneCredential) IssueTypes(ctx context.Context, project ProjectID) ([]IssueType, error) {
 	return trackerapi.Walk(ctx, func(ctx context.Context) ([]IssueType, error) { return o.p.IssueTypes(ctx, project) })
 }
@@ -98,8 +102,8 @@ func (o oneCredential) Moves(ctx context.Context, issue IssueID) ([]Move, error)
 	return trackerapi.Walk(ctx, func(ctx context.Context) ([]Move, error) { return o.p.Moves(ctx, issue) })
 }
 
-func (o oneCredential) CreateFields(ctx context.Context, project ProjectID, issueType IssueTypeID) ([]Field, error) {
-	return trackerapi.Walk(ctx, func(ctx context.Context) ([]Field, error) { return o.p.CreateFields(ctx, project, issueType) })
+func (o oneCredential) CreateFields(ctx context.Context, project ProjectID, issueType IssueTypeID) ([]CreateField, error) {
+	return trackerapi.Walk(ctx, func(ctx context.Context) ([]CreateField, error) { return o.p.CreateFields(ctx, project, issueType) })
 }
 
 func (o oneCredential) AssignableUsers(ctx context.Context, scope FieldScope, text string) (UserList, error) {

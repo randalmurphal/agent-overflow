@@ -15,9 +15,12 @@ var (
 
 type fakeProvider struct{}
 
-func (fakeProvider) Capabilities() Capabilities                         { return Capabilities{} }
-func (fakeProvider) Identity(context.Context) (User, error)             { return User{}, nil }
-func (fakeProvider) Projects(context.Context) ([]Project, error)        { return nil, nil }
+func (fakeProvider) Capabilities() Capabilities                  { return Capabilities{} }
+func (fakeProvider) Identity(context.Context) (User, error)      { return User{}, nil }
+func (fakeProvider) Projects(context.Context) ([]Project, error) { return nil, nil }
+func (fakeProvider) BoardProjects(context.Context, BoardID) ([]Project, error) {
+	return nil, nil
+}
 func (fakeProvider) LinkTypes(context.Context) ([]LinkType, error)      { return nil, nil }
 func (fakeProvider) Boards(context.Context, ProjectID) ([]Board, error) { return nil, nil }
 func (fakeProvider) IssueTypes(context.Context, ProjectID) ([]IssueType, error) {
@@ -46,7 +49,7 @@ func (fakeProvider) Moves(context.Context, IssueID) ([]Move, error)         { re
 func (fakeProvider) Comments(context.Context, IssueID, PageToken) (CommentPage, error) {
 	return CommentPage{}, nil
 }
-func (fakeProvider) CreateFields(context.Context, ProjectID, IssueTypeID) ([]Field, error) {
+func (fakeProvider) CreateFields(context.Context, ProjectID, IssueTypeID) ([]CreateField, error) {
 	return nil, nil
 }
 func (fakeProvider) AssignableUsers(context.Context, FieldScope, string) (UserList, error) {

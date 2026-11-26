@@ -20,7 +20,8 @@
 // board's project and loads Work's store only when chosen, and Start
 // work…, which opens the ticket with its form, whose run shows in the
 // ticket's Work, also when the ticket was read before it opens (on compact
-// in the Details it opens).
+// in the Details it opens); a Backlog row's menu has the same Ask and
+// Start work….
 
 import type { Locator, Page } from '@playwright/test';
 
@@ -32,6 +33,7 @@ import { methodIdByName } from './offhost-helpers.js';
 import { longPress } from './touch-helpers.js';
 import { harnessGit } from './worktree-removal-helpers.js';
 import { BOARD_ID, JIRA_SITE, connectFakeJira, connectFakeJiraBoard, openIssuesPane, press, seedFakeJira, trackerRequests } from './tracker-helpers.js';
+import { openBacklog } from './issues-backlog-flow.js';
 
 /** Settles with whether the first answer to a `SubscribeTrackerTicket`
  * on this page's next socket carried the ticket's detail. */
@@ -120,6 +122,23 @@ async function cardMenuMore(page: Page, pane: Locator, issueId: string, key: str
   await expect(target).toBeVisible({ timeout: 30_000 });
   if (compact) await longPress(page, target, menu);
   else await target.click({ button: 'right' });
+  await expect(menu).toBeVisible();
+  await press(menu.getByTestId('action-menu-more'), compact);
+  return menu;
+}
+
+/** Opens the page on the Backlog screen and WEB-3's row menu (in the
+ * backlog: a right click, its menu button on the phone) and its Show more. */
+async function backlogRowMenuMore(harness: HarnessApp, page: Page, compact: boolean): Promise<Locator> {
+  await harness.open(page);
+  const pane = await openIssuesPane(page, compact);
+  await expect(pane.getByTestId('issues-card').first()).toBeVisible({ timeout: 30_000 });
+  const backlog = await openBacklog(page, pane, compact);
+  const target = backlog.locator('[data-testid="issues-backlog-row"][data-issue="10103"]');
+  await expect(target).toBeVisible({ timeout: 30_000 });
+  const menu = page.getByRole('menu', { name: 'Card actions for WEB-3' });
+  if (compact) await press(target.getByTestId('issues-backlog-row-menu'), true);
+  else await target.getByTestId('issues-backlog-row-open').click({ button: 'right' });
   await expect(menu).toBeVisible();
   await press(menu.getByTestId('action-menu-more'), compact);
   return menu;
@@ -408,6 +427,30 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
     expect(await trackerRequests(harness, MOVE_ROUTE)).toEqual([]);
     expect(await trackerRequests(harness, EDIT_ROUTE)).toEqual([]);
     await expect(errorToasts(page)).toHaveCount(0);
+  });
+
+  test('a Backlog row\'s Ask makes its thread in the board\'s project, with nothing on the tracker', async ({ harness, page }) => {
+    test.setTimeout(120_000);
+    const board = await connectFakeJiraBoard(harness, compact ? 'compact-backlog-row-ask' : 'backlog-row-ask');
+    const menu = await backlogRowMenuMore(harness, page, compact);
+    await press(menu.getByTestId('issues-card-menu-ask'), compact);
+    await expectThreadShown(page, 'WEB-3 Backlog task', compact);
+    await expect(page.getByTestId('attachment-file-chip')).toContainText('WEB-3.md');
+    const rows = await threadRows(harness);
+    expect(rows.map((r) => [r.projectId, r.ticketLink?.key, r.ticketLink?.origin])).toEqual([[board.projectId, 'WEB-3', 'ask']]);
+    expect(await trackerRequests(harness, MOVE_ROUTE)).toEqual([]);
+    expect(await trackerRequests(harness, EDIT_ROUTE)).toEqual([]);
+  });
+
+  test('a Backlog row\'s Start work… opens its ticket with the Start work form', async ({ harness, page }) => {
+    test.setTimeout(120_000);
+    await connectFakeJiraBoard(harness, compact ? 'compact-backlog-row-start' : 'backlog-row-start');
+    const menu = await backlogRowMenuMore(harness, page, compact);
+    await press(menu.getByTestId('issues-card-menu-start-work'), compact);
+    await expect(page.getByTestId('issues-pane').getByTestId('ticket-screen')).toHaveAttribute('data-issue', '10103', { timeout: 30_000 });
+    const form = page.getByTestId('start-work-form');
+    await expect(form).toBeVisible({ timeout: 30_000 });
+    await expect(form.getByTestId('start-work-branch')).toHaveValue('WEB-3-backlog-task');
   });
 
   test('a card\'s Start work… opens its ticket with the Start work form, and the run\'s rows show in the ticket\'s Work', async ({ harness, page }) => {

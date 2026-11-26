@@ -54,9 +54,11 @@ func (k Kind) String() string {
 }
 
 // Field is one field of an issue with its metadata and value. List
-// reports a field that holds several values of its kind. Editable is
-// false for a field the screen offers for reading only; a KindReadOnly
-// field is never editable.
+// reports a field that holds several values of its kind. Required, of a
+// field a create or a move offers, reports one the person must give a
+// value: the tracker fills no default for it. Editable is false for a
+// field the screen offers for reading only; a KindReadOnly field is never
+// editable.
 type Field struct {
 	ID       FieldID
 	Name     string
@@ -65,6 +67,16 @@ type Field struct {
 	Required bool
 	Editable bool
 	Value    Value
+}
+
+// CreateField is a field a create screen offers, with the values the
+// screen lists for it, in its order, when it lists them (nil otherwise).
+// Defaulted reports a field the screen requires that the tracker fills
+// when the create gives it none: offered, not demanded (Required false).
+type CreateField struct {
+	Field
+	Allowed   []Choice
+	Defaulted bool
 }
 
 // Value is a field's value as read: empty, or one or more values of one

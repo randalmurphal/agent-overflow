@@ -153,7 +153,7 @@ func createOf(in CreateRequest) *additive {
 			if err != nil {
 				return "", fmt.Errorf("trackerapp: the digest of a create: %w", err)
 			}
-			return digestOf("create", kind, site, in.Project, in.Type, in.Title, string(fields)), nil
+			return digestOf("create", kind, site, in.Project, in.Type, in.Title, string(fields), in.Sprint), nil
 		},
 		find: func(ctx context.Context, p tracker.Provider, sent time.Time, _ string) (RepeatView, bool, error) {
 			from, to := sent.Add(-repeatBefore), sent.Add(repeatAfter)

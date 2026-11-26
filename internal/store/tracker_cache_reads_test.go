@@ -33,8 +33,8 @@ func sectionRow(id, order, status string, estimate float64, sprints ...string) M
 // the rows in no open sprint of the board (a closed one, or one only
 // another board shows, leaves them there) whose status is not done or
 // canceled, an unknown status counting as not done. The counts and their
-// estimate sums agree with the pages; a board with no estimate unit sums
-// to zero.
+// estimate sums and counts of rows with no estimate agree with the pages; a
+// board with no estimate unit sums and counts zero.
 func TestListMirrorSectionSelectsItsRows(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
@@ -82,9 +82,10 @@ func TestListMirrorSectionSelectsItsRows(t *testing.T) {
 
 	counts, err := s.CountMirrorSections(root, "10", MirrorRegroup{})
 	want := MirrorSectionCounts{Revision: page.Revision, TotalsRevision: currentTotalsRevision(s, root, "10"),
-		All: MirrorSectionTotal{8, 17}, Backlog: MirrorSectionTotal{3, 9},
-		Sprints: map[string]MirrorSectionTotal{"20": {2, 5}, "21": {2, 6}, "22": {1, 2}},
-		Columns: map[int]MirrorSectionTotal{0: {2, 1}, 1: {3, 7}, 2: {2, 0}}}
+		All: MirrorSectionTotal{8, 17, 4}, Backlog: MirrorSectionTotal{3, 9, 2},
+		Sprints: map[string]MirrorSectionTotal{"20": {2, 5, 1}, "21": {2, 6, 0}, "22": {1, 2, 0}},
+		Columns: map[int]MirrorSectionTotal{0: {2, 1, 1}, 1: {3, 7, 1}, 2: {2, 0, 2}},
+		Pace:    []MirrorSprintFinished{{SprintID: "20", Members: 2}}}
 	if err != nil || page.Revision == 0 || !reflect.DeepEqual(counts, want) {
 		t.Fatalf("counts = %+v, %v\nwant %+v", counts, err, want)
 	}
@@ -95,6 +96,40 @@ func TestListMirrorSectionSelectsItsRows(t *testing.T) {
 	empty, err := s.CountMirrorSections(root, "12", MirrorRegroup{})
 	if err != nil || !reflect.DeepEqual(empty, MirrorSectionCounts{Sprints: map[string]MirrorSectionTotal{}, Columns: map[int]MirrorSectionTotal{}}) {
 		t.Fatalf("counts of no board = %+v, %v", empty, err)
+	}
+}
+
+// A section's last row is its last in the board's order: of a sprint's
+// members, or of the rows in no open sprint (the backlog, rows of a
+// closed sprint and done rows among them), and none for an empty section
+// or a board the mirror does not show.
+func TestLastMirrorPlanRow(t *testing.T) {
+	t.Parallel()
+	s, jira, root := newMirror(t)
+	writeMirrorBoard(t, s, root, "10", []MirrorRow{
+		webRow("10001", 5, "a", "21"),
+		webRow("10002", 5, "b"),
+		webRow("10003", 5, "c", "21"),
+		webRow("10004", 5, "d", "20"),
+		webRow("10005", 5, "e", "22"),
+	})
+	for _, tc := range []struct {
+		sprint, issue, order string
+		ok                   bool
+	}{
+		{"21", "10003", "c", true},
+		{"22", "10005", "e", true},
+		{"", "10004", "d", true},
+		{"99", "", "", false},
+	} {
+		issue, order, ok, err := s.LastMirrorPlanRow(root, "10", tc.sprint)
+		if err != nil || issue != tc.issue || order != tc.order || ok != tc.ok {
+			t.Errorf("sprint %q: %s %s %v, %v; want %s %s %v", tc.sprint, issue, order, ok, err, tc.issue, tc.order, tc.ok)
+		}
+	}
+	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "11")
+	if issue, _, ok, err := s.LastMirrorPlanRow(root, "10", ""); err != nil || ok {
+		t.Fatalf("an unshown board's backlog: %s %v, %v", issue, ok, err)
 	}
 }
 
@@ -353,6 +388,36 @@ func TestListMirrorTicketRows(t *testing.T) {
 		if _, err := s.ListMirrorTicketRows(other, []string{"10001"}); err != nil {
 			t.Fatalf("rows of root %d: %v", other, err)
 		}
+	}
+}
+
+// The sprints named are each read once, from whichever of the boards
+// named holds it; one only another board holds, or none holds, is left
+// out.
+func TestListMirrorSprintNames(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	other := webStructure()
+	other.Board.ID = "11"
+	other.Sprints = append(other.Sprints, MirrorSprint{ID: "31", OriginBoardID: "11", Name: "APP Sprint 1", State: MirrorSprintActive})
+	mustReplaceStructure(t, s, root, other, true)
+	third := webStructure()
+	third.Board.ID = "12"
+	third.Sprints = []MirrorSprint{{ID: "41", OriginBoardID: "12", Name: "Old Sprint", State: MirrorSprintFuture}}
+	mustReplaceStructure(t, s, root, third, true)
+	names, err := s.ListMirrorSprintNames(root, []string{"10", "11"}, []string{"21", "31", "41", "99", "20"})
+	slices.SortFunc(names, func(a, b MirrorSprintName) int { return strings.Compare(a.SprintID, b.SprintID) })
+	want := []MirrorSprintName{
+		{SprintID: "20", Name: "WEB Sprint 1", State: MirrorSprintClosed},
+		{SprintID: "21", Name: "WEB Sprint 2", State: MirrorSprintActive},
+		{SprintID: "31", Name: "APP Sprint 1", State: MirrorSprintActive},
+	}
+	if err != nil || !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %+v, %v", names, err)
+	}
+	if _, err := s.ListMirrorSprintNames(root, []string{"10"}, make([]string, mirrorMaxLookup+1)); !errors.Is(err, ErrInvalidTrackerCache) {
+		t.Fatalf("a read of more sprints than a lookup takes: %v", err)
 	}
 }
 

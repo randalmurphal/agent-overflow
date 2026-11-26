@@ -259,7 +259,7 @@ func (c *Client) checkRequired(ctx context.Context, issue string, t Transition, 
 	var open []FieldMeta
 	for _, f := range t.Fields.Fields {
 		given := slices.ContainsFunc(values, func(v Value) bool { return v.FieldID == f.ID })
-		if f.Required && !f.HasDefault && !given {
+		if f.Demanded() && !given {
 			open = append(open, f)
 		}
 	}

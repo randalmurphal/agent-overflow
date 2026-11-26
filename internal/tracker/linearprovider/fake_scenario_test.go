@@ -246,7 +246,7 @@ func TestFakeScenario(t *testing.T) {
 	if sp := scenarioMust[tracker.SearchPage](t)(s.p.Search(s.ctx, tracker.SearchQuery{Text: "login", Limit: 10})); len(sp.Cards) != 2 {
 		t.Fatalf("search %+v", sp)
 	}
-	if fs := scenarioMust[[]tracker.Field](t)(s.p.CreateFields(s.ctx, tracker.ProjectID(scTeam), "")); len(fs) == 0 {
+	if fs := scenarioMust[[]tracker.CreateField](t)(s.p.CreateFields(s.ctx, tracker.ProjectID(scTeam), "")); len(fs) == 0 {
 		t.Fatalf("create fields %+v", fs)
 	}
 	if us := scenarioMust[tracker.UserList](t)(s.p.AssignableUsers(s.ctx, tracker.OnIssue(tracker.IssueID(scIssue1)), "User")); len(us.Users) != 2 {
@@ -269,8 +269,32 @@ func TestFakeScenario(t *testing.T) {
 	if !ok || newKey != "WEB-4" {
 		t.Fatalf("create named issue %v, key %q", ok, newKey)
 	}
-	if d := s.detail(t, string(newID)); d.Card.Title != "New page" || d.Card.Key != "WEB-4" || strings.TrimSpace(d.Description) != "Body text" {
+	if d := s.detail(t, string(newID)); d.Card.Title != "New page" || d.Card.Key != "WEB-4" || strings.TrimSpace(d.Description) != "Body text" ||
+		len(d.Card.Sprints) != 0 {
 		t.Fatalf("created %+v", d.Card)
+	}
+	inCycle := allApplied(t, "create in a cycle", s.p.Create(s.ctx, tracker.CreateInput{Project: tracker.ProjectID(scTeam), Title: "Cycle page",
+		Board: board, Sprint: tracker.SprintID(scUpcoming)}))
+	cycleID, _, _ := inCycle.Created()
+	if len(inCycle.Parts) != 1 || !slices.Equal(s.detail(t, string(cycleID)).Card.Sprints, []tracker.SprintID{tracker.SprintID(scUpcoming)}) {
+		t.Fatalf("created in a cycle: %+v", inCycle.Parts)
+	}
+	// A create after a row lands just after it in the team's manual order,
+	// where Linear's default puts it above every issue (cycleID's).
+	foot := s.row(t, scIssue1)
+	atFoot := allApplied(t, "create at a cycle's foot", s.p.Create(s.ctx, tracker.CreateInput{Project: tracker.ProjectID(scTeam), Title: "Foot page",
+		Board: board, Sprint: tracker.SprintID(scActive), After: tracker.RowPlace{Issue: tracker.IssueID(scIssue1), Order: foot.Order}}))
+	footID, _, _ := atFoot.Created()
+	if got, next := s.row(t, string(footID)).Order, s.row(t, scIssue2).Order; got <= foot.Order || got >= next ||
+		s.row(t, string(cycleID)).Order >= foot.Order {
+		t.Fatalf("created after %s: %s, before %s; the default create %s", foot.Order, got, next, s.row(t, string(cycleID)).Order)
+	}
+	if res := s.p.Create(s.ctx, tracker.CreateInput{Project: tracker.ProjectID(scTeam), Title: "Bad", Board: board,
+		After: tracker.RowPlace{Issue: tracker.IssueID(scIssue1), Order: "0|i00000:"}}); len(res.Parts) != 1 || refusalReason(res.Parts[0]) != tracker.ReasonInvalid {
+		t.Fatalf("create after a rank Linear never made: %+v", res.Parts)
+	}
+	if sp := scenarioMust[tracker.SearchPage](t)(s.p.Search(s.ctx, tracker.SearchQuery{Text: "Bad", Limit: 10})); len(sp.Cards) != 0 {
+		t.Fatalf("the refused create made %+v", sp.Cards)
 	}
 
 	allApplied(t, "edit", s.p.Edit(s.ctx, tracker.EditInput{Issue: tracker.IssueID(scIssue2), Fields: []tracker.FieldEdit{
@@ -301,6 +325,28 @@ func TestFakeScenario(t *testing.T) {
 	allApplied(t, "sprint move", s.p.MoveToSprint(s.ctx, tracker.SprintMoveInput{Board: board, Sprint: tracker.SprintID(scUpcoming), Issues: []tracker.IssueID{tracker.IssueID(scIssue3)}}))
 	if c := s.row(t, scIssue3).Card; !slices.Equal(c.Sprints, []tracker.SprintID{tracker.SprintID(scUpcoming)}) {
 		t.Fatalf("sprint move %+v", c)
+	}
+	// A move to a place: the cycle and the place between its neighbors,
+	// in one update.
+	placed := allApplied(t, "placed sprint move", s.p.MoveToSprint(s.ctx, tracker.SprintMoveInput{Board: board, Sprint: tracker.SprintID(scUpcoming),
+		Issues: []tracker.IssueID{tracker.IssueID(scIssue2)}, Prev: tracker.IssueID(scIssue3), Next: tracker.IssueID(scIssue1)}))
+	if got := len(placed.Parts); got != 1 || placed.Parts[0].Step != tracker.StepSprintMove {
+		t.Fatalf("placed sprint move parts %+v", placed.Parts)
+	}
+	if r3, r2, r1 := s.row(t, scIssue3), s.row(t, scIssue2), s.row(t, scIssue1); !slices.Equal(r2.Card.Sprints, []tracker.SprintID{tracker.SprintID(scUpcoming)}) ||
+		r3.Order >= r2.Order || r2.Order >= r1.Order {
+		t.Fatalf("placed %s between %s and %s, sprints %v", r2.Order, r3.Order, r1.Order, r2.Card.Sprints)
+	}
+
+	// A place whose neighbors no longer stand in that order is refused
+	// before anything is written: the issue stays in its cycle.
+	stale := s.p.MoveToSprint(s.ctx, tracker.SprintMoveInput{Board: board, Sprint: tracker.SprintID(scActive),
+		Issues: []tracker.IssueID{tracker.IssueID(scIssue2)}, Prev: tracker.IssueID(scIssue1), Next: tracker.IssueID(scIssue3)})
+	if r, ok := stale.Parts[0].Outcome.Refusal(); len(stale.Parts) != 1 || !ok || r.Reason != tracker.ReasonStale {
+		t.Fatalf("stale placed move %+v", stale.Parts)
+	}
+	if c := s.row(t, scIssue2).Card; !slices.Equal(c.Sprints, []tracker.SprintID{tracker.SprintID(scUpcoming)}) {
+		t.Fatalf("a refused placed move changed the cycle: %v", c.Sprints)
 	}
 
 	added := s.p.AddComment(s.ctx, tracker.CommentInput{Issue: tracker.IssueID(scIssue2), Markdown: "New comment"})
@@ -368,9 +414,15 @@ func TestFakeScenario(t *testing.T) {
 	// The delta from the first walk's cursor is exactly the issues the
 	// writes changed.
 	delta, _ := s.drain(t, cursor, window)
-	want := []tracker.IssueID{tracker.IssueID(scIssue1), tracker.IssueID(scIssue2), tracker.IssueID(scIssue3), newID}
+	want := []tracker.IssueID{tracker.IssueID(scIssue1), tracker.IssueID(scIssue2), tracker.IssueID(scIssue3), newID, cycleID, footID}
 	slices.Sort(want)
 	if !slices.Equal(rowIDs(delta), want) {
 		t.Fatalf("delta %v, want %v", rowIDs(delta), want)
 	}
+}
+
+// refusalReason is a refused part's reason, or "" for any other part.
+func refusalReason(p tracker.Part) tracker.Reason {
+	r, _ := p.Outcome.Refusal()
+	return r.Reason
 }

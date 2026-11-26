@@ -45,9 +45,9 @@ var ErrBadResult = errors.New("trackerapp: the tracker's provider answered a wri
 
 // writeOp is one write as Service.write runs it.
 type writeOp struct {
-	// call is the provider's write; nil for a refresh alone
-	// (RefreshWorklogs).
-	call func(ctx context.Context, p tracker.Provider) tracker.Result
+	// call is the provider's write, made on the run's provider in its
+	// context; nil for a refresh alone (RefreshWorklogs).
+	call func(r *run) tracker.Result
 	// board is the board a create was made from: an issue the create made
 	// is read through it, and a create of unknown outcome runs its tick.
 	board tracker.BoardID
@@ -97,7 +97,7 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 	var res tracker.Result
 	resources := op.also
 	if op.call != nil {
-		res = op.call(r.ctx, r.p)
+		res = op.call(r)
 		if err := res.Check(); err != nil {
 			// The sent row stays: the write may have happened.
 			return WriteView{}, fmt.Errorf("%w: %w", ErrBadResult, err)

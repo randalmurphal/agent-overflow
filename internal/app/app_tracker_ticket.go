@@ -224,6 +224,17 @@ func (t trackerTransfer) DownloadTrackerAttachment(ctx context.Context, connecti
 // slow and to try again. Their context reaches the network, so none is
 // caller-bound.
 
+// TrackerBoardProjects lists the projects a board shows, which its
+// create form offers.
+//
+//ao:scope tracker:read
+//ao:route home
+func (a *App) TrackerBoardProjects(ctx context.Context, connectionID, board string) ([]trackerapp.ProjectView, error) {
+	return trackerFormRead(a, ctx, "TrackerBoardProjects", "Listing the board's projects", func(ctx context.Context, svc *trackerapp.Service) ([]trackerapp.ProjectView, error) {
+		return svc.BoardProjects(ctx, connectionID, board)
+	})
+}
+
 // TrackerIssueTypes lists the issue types a project's create form offers.
 //
 //ao:scope tracker:read

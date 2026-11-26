@@ -73,7 +73,7 @@ func TestFakeScenario(t *testing.T) {
 	if sp := scenarioMust[tracker.SearchPage](t)(s.p.Search(s.ctx, tracker.SearchQuery{Text: "task", Project: "10000"})); len(sp.Cards) != 2 {
 		t.Fatalf("search %+v", sp)
 	}
-	if fs := scenarioMust[[]tracker.Field](t)(s.p.CreateFields(s.ctx, "10000", "10001")); len(fs) == 0 {
+	if fs := scenarioMust[[]tracker.CreateField](t)(s.p.CreateFields(s.ctx, "10000", "10001")); len(fs) == 0 {
 		t.Fatalf("create fields %+v", fs)
 	}
 	if us := scenarioMust[tracker.UserList](t)(s.p.AssignableUsers(s.ctx, tracker.OnIssue("10101"), "User")); len(us.Users) != 2 {
@@ -136,6 +136,19 @@ func TestFakeScenario(t *testing.T) {
 	if c := s.row(t, "10103").Card; !slices.Equal(c.Sprints, []tracker.SprintID{"2"}) {
 		t.Fatalf("sprint move %+v", c)
 	}
+	// A create in a sprint: the create, then its move into the sprint.
+	inSprint := allApplied(t, "create in a sprint", s.p.Create(s.ctx, tracker.CreateInput{Project: "10000", Type: "10002", Title: "Sprint task",
+		Board: "1", Sprint: "2"}))
+	sprintID, _, _ := inSprint.Created()
+	if len(inSprint.Parts) != 2 || inSprint.Parts[1].Step != tracker.StepSprintMove || !slices.Equal(s.row(t, sprintID).Card.Sprints, []tracker.SprintID{"2"}) {
+		t.Fatalf("created in a sprint: %+v", inSprint.Parts)
+	}
+	// A move to a place: out to the backlog just before 10101, in one
+	// request.
+	allApplied(t, "placed sprint move", s.p.MoveToSprint(s.ctx, tracker.SprintMoveInput{Board: "1", Issues: []tracker.IssueID{sprintID}, Next: "10101"}))
+	if r, r1 := s.row(t, sprintID), s.row(t, "10101"); len(r.Card.Sprints) != 0 || r.Order >= r1.Order {
+		t.Fatalf("placed %s not before %s, sprints %v", r.Order, r1.Order, r.Card.Sprints)
+	}
 
 	added := s.p.AddComment(s.ctx, tracker.CommentInput{Issue: "10102", Markdown: "New comment"})
 	allApplied(t, "comment", added)
@@ -192,11 +205,16 @@ func TestFakeScenario(t *testing.T) {
 		t.Fatalf("an unfinished issue did not move: %+v", c)
 	}
 	start := s.clock.Now()
-	allApplied(t, "sprint start", s.p.StartSprint(s.ctx, tracker.SprintStart{Board: "1", Sprint: sprint3, Start: start, End: start.Add(14 * 24 * time.Hour)}))
+	name3, goal3 := "Sprint 3, started", "Ship it"
+	allApplied(t, "sprint start", s.p.StartSprint(s.ctx, tracker.SprintStart{Board: "1", Sprint: sprint3, Start: start, End: start.Add(14 * 24 * time.Hour),
+		Name: &name3, Goal: &goal3}))
 	st = scenarioMust[tracker.Structure](t)(s.p.Structure(s.ctx, "1", window))
 	states := map[tracker.SprintID]tracker.SprintState{}
 	for _, sp := range st.Sprints {
 		states[sp.ID] = sp.State
+		if sp.ID == sprint3 && (sp.Name != name3 || sp.Goal != goal3) {
+			t.Fatalf("started sprint %+v", sp)
+		}
 	}
 	if states["1"] != tracker.SprintClosed || states[sprint3] != tracker.SprintActive {
 		t.Fatalf("sprints %+v", st.Sprints)
@@ -237,7 +255,7 @@ func TestFakeScenario(t *testing.T) {
 	// The delta from the first walk's cursor is exactly the issues the
 	// writes changed.
 	delta, _ := s.drain(t, cursor, window)
-	want := []tracker.IssueID{"10101", "10102", "10103", newID}
+	want := []tracker.IssueID{"10101", "10102", "10103", newID, sprintID}
 	slices.Sort(want)
 	if !slices.Equal(rowIDs(delta), want) {
 		t.Fatalf("delta %v, want %v", rowIDs(delta), want)
@@ -351,5 +369,31 @@ wait:
 	}
 	if !slices.ContainsFunc(got.d.Comments.Comments, func(c tracker.Comment) bool { return strings.TrimSpace(c.Body) == "Added while read" }) {
 		t.Errorf("the card has the update time the comment moved it to, and the comments lack it: %+v", got.d.Comments.Comments)
+	}
+}
+
+// A board whose saved filter names two projects lists the issues of
+// both, and its projects are the two, its location's first: what New
+// ticket offers on it.
+func TestFakeBoardOfTwoProjects(t *testing.T) {
+	s := newEditedScenario(t, nil, func(site *trackerfake.JiraSite) {
+		site.Tempo = nil
+		site.Projects = append(site.Projects, trackerfake.JiraProject{ID: "10010", Key: "APP", Name: "App"})
+		site.Boards[0].Also = []string{"APP"}
+		app := site.Issues[0]
+		app.ID, app.Key, app.Project, app.Sprints, app.Parent = "10150", "APP-1", "APP", nil, ""
+		site.Issues = append(site.Issues, app)
+	})
+	ps := scenarioMust[[]tracker.Project](t)(s.p.BoardProjects(s.ctx, "1"))
+	if len(ps) != 2 || ps[0].Key != "WEB" || ps[0].Name != "Web" || ps[1].ID != "10010" || ps[1].Key != "APP" {
+		t.Fatalf("board projects %+v", ps)
+	}
+	listing := scenarioMust[tracker.Listing](t)(s.p.BoardIssues(s.ctx, "1", s.clock.Now().Add(-30*24*time.Hour)))
+	if !slices.Contains(listing.IDs, "10150") {
+		t.Fatalf("listing %v lacks the APP issue", listing.IDs)
+	}
+	rows := scenarioMust[tracker.Rows](t)(s.p.BoardRows(s.ctx, "1", []tracker.IssueID{"10150"}, listing.Rule))
+	if len(rows.Rows) != 1 || len(rows.Missing) != 0 {
+		t.Fatalf("the APP issue's row %+v", rows)
 	}
 }

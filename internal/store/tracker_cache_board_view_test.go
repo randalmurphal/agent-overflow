@@ -19,7 +19,8 @@ func theseSections(sections []MirrorSection) func(MirrorStructure) []MirrorSecti
 // names are those the rows had, and a page continued from it at the
 // revision it reported is stale once the board changed. It runs its reads
 // in one transaction, one statement per part (pinned for three sections
-// whose cards name a user, statuses and a parent). It runs alone: it
+// whose cards name a user, statuses and a parent, on a board that plans
+// sprints, so its pace is read). It runs alone: it
 // hooks the package's statement runs.
 func TestMirrorBoardViewIsOneSnapshot(t *testing.T) {
 	var armed atomic.Bool
@@ -51,8 +52,8 @@ func TestMirrorBoardViewIsOneSnapshot(t *testing.T) {
 	var ok bool
 	var err error
 	statements := countMirrorStatements(t, func() { view, ok, err = s.ReadMirrorBoardView(root, "10", MirrorRegroup{}, theseSections(sections)) })
-	if err != nil || !ok || statements != 11 {
-		t.Fatalf("view = %v, %v in %d statements; want 11", ok, err, statements)
+	if err != nil || !ok || statements != 12 {
+		t.Fatalf("view = %v, %v in %d statements; want 12", ok, err, statements)
 	}
 	armed.Store(true)
 	view, ok, err = s.ReadMirrorBoardView(root, "10", MirrorRegroup{}, theseSections(sections))

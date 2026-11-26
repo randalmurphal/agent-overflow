@@ -105,13 +105,16 @@ type aliasData map[string]*payload[wireIssue]
 func alias(i int) string { return "i" + strconv.Itoa(i) }
 
 // RenumberIssues writes Spread values of Field to the run, in the order
-// listed, between the neighbors of the run, maxBatch issues per request
-// as aliased updates. IssueIDs are issue IDs (Issue.ID, a lowercase
-// UUID), never identifiers such as WEB-1, so that each issue has one
-// spelling; any other form, an ID listed twice, an unknown Field and a
-// run with no room (ErrNoRoom) are refused before any request, with no
-// parts. Otherwise there is one part per issue, in order; the issues
-// after a request with a part not applied are not sent.
+// listed, between the neighbors of the run, and the cycle of its first
+// Moved issues when Into is set, maxBatch issues per request as aliased
+// updates. IssueIDs are issue IDs (Issue.ID, a lowercase UUID), never
+// identifiers such as WEB-1, so that each issue has one spelling; any
+// other form, an ID listed twice, an unknown Field, Moved past the run or
+// set without Into (or Into without Moved), and a run with no room
+// (ErrNoRoom) are refused before any request, with no parts.
+// Otherwise there is one part per issue, in order, applied when the issue
+// holds its value and its cycle; the issues after a request with a part
+// not applied are not sent.
 func (c *Client) RenumberIssues(ctx context.Context, in RenumberInput) ([]IssueWrite, error) {
 	if err := checkIssueIDs(in.IssueIDs); err != nil {
 		return nil, invalid(renumberFamily.name, "%w", err)
@@ -119,16 +122,29 @@ func (c *Client) RenumberIssues(ctx context.Context, in RenumberInput) ([]IssueW
 	if err := in.Field.set(&issueInput{}, 0); err != nil {
 		return nil, invalid(renumberFamily.name, "%w", err)
 	}
+	if in.Moved < 0 || in.Moved > len(in.IssueIDs) || (in.Into == nil) != (in.Moved == 0) {
+		return nil, invalid(renumberFamily.name, "%d issues moved into a cycle of a run of %d", in.Moved, len(in.IssueIDs))
+	}
 	values, err := Spread(in.Before, in.After, len(in.IssueIDs))
 	if err != nil {
 		return nil, invalid(renumberFamily.name, "%w", err)
 	}
-	holds := func(i int, is Issue) bool { return in.Field.of(is) == values[i] }
+	into := ""
+	if in.Into != nil {
+		into = *in.Into
+	}
+	holds := func(i int, is Issue) bool {
+		_, moved := in.cycle(i)
+		return in.Field.of(is) == values[i] && (!moved || is.CycleID == into)
+	}
 	return c.writeChunks(ctx, in.IssueIDs, holds, func(ctx context.Context, chunk []string, base int) (map[string]Issue, error) {
 		vars := make(map[string]any, 2*len(chunk))
 		for i, id := range chunk {
 			var w issueInput
 			_ = in.Field.set(&w, values[base+i]) // checked above
+			if cycle, moved := in.cycle(base + i); moved {
+				w.CycleID = cycle
+			}
 			vars["id"+strconv.Itoa(i)], vars["input"+strconv.Itoa(i)] = id, w
 		}
 		var data aliasData

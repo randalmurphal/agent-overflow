@@ -24,7 +24,7 @@
   import type { CardField } from '../../stores/issuesPane.svelte';
   import type { TrackerBoardRef } from '../../stores/trackerBoard.svelte';
   import type { CardEditField } from './ticketEditors';
-  import type { CarryColumn } from './boardCarry';
+  import type { CarryColumn } from './listCarry';
   import type { RowEstimate } from '../../utils/virtual/types';
 
   const IS_TEST = import.meta.env.MODE === 'test'
@@ -36,6 +36,8 @@
 
   interface Props {
     column: ScreenColumn;
+    /** The column as a carry names it (`columnList`). */
+    list: string;
     /** The cards shown: the column's rows, filtered. */
     rows: readonly RowView[];
     /** The header's count (`columnCount`). */
@@ -77,7 +79,7 @@
   }
 
   let {
-    column, rows, count, filtered, unit, hidden, now, paging, failed, onNearEnd, shown, wide = false, openIssue,
+    column, list, rows, count, filtered, unit, hidden, now, paging, failed, onNearEnd, shown, wide = false, openIssue,
     boardRef, typed, compact, carriedIssue, editing, dropNote, slot, onOpenCard, onCardMenu, onEditCard, onMoveCard,
   }: Props = $props();
 
@@ -101,10 +103,9 @@
 
   /** The column as a carry tests it, read once at pick-up. */
   export function carryColumn(): CarryColumn {
-    const cards = scrollEl!;
-    const cardsRect = cards.getBoundingClientRect();
+    const cardsRect = scrollEl!.getBoundingClientRect();
     return {
-      cards,
+      list,
       cardsRect,
       slotAt(clientY) {
         const ref = listRef;
@@ -191,6 +192,7 @@
     tabindex="-1"
     data-pane-scroller
     data-testid="issues-column-cards"
+    data-carry-list={list}
   >
     {#if rows.length > 0}
       <LongListVirtualizer

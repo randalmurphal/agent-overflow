@@ -287,6 +287,39 @@ func TestMovesAndScreens(t *testing.T) {
 	}
 }
 
+// A create field is required of the person only when Jira would not fill
+// it: required with a default (Priority, commonly) is not, as the
+// create's planner reads it.
+func TestCreateFieldsRequireWhatHasNoDefault(t *testing.T) {
+	f, p := detailSite(t, 0)
+	fields := []string{
+		`{"fieldId":"summary","key":"summary","name":"Summary","required":true,"schema":{"type":"string","system":"summary"},"operations":["set"]}`,
+		`{"fieldId":"priority","key":"priority","name":"Priority","required":true,"hasDefaultValue":true,"schema":{"type":"priority","system":"priority"},"operations":["set"]}`,
+		`{"fieldId":"customfield_10050","key":"customfield_10050","name":"Team","required":true,"schema":{"type":"option","custom":"com.atlassian.jira.plugin.system.customfieldtypes:select","customId":10050},"operations":["set"],"allowedValues":[{"id":"1","value":"Red"},{"id":"2","value":"Blue","disabled":true}]}`,
+	}
+	f.On("GET", "/rest/api/3/issue/createmeta/10000/issuetypes/10002", jiratest.Reply(200, `{"total":3,"fields":[`+strings.Join(fields, ",")+`]}`))
+	got, err := p.CreateFields(t.Context(), "10000", "10002")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[tracker.FieldID]tracker.CreateField{}
+	for _, fd := range got {
+		byID[fd.ID] = fd
+	}
+	priority, team := byID["priority"], byID["customfield_10050"]
+	if priority.Required || !team.Required || !priority.Defaulted || team.Defaulted {
+		t.Errorf("priority %+v, team %+v; want priority defaulted and not required, and the team required", priority, team)
+	}
+	// The screen's listed values ride with the field, so its picker reads
+	// nothing; a field the screen lists none for has none.
+	if !slices.Equal(team.Allowed, []tracker.Choice{{ID: "1", Name: "Red"}}) {
+		t.Errorf("team allowed %v", team.Allowed)
+	}
+	if priority.Allowed != nil {
+		t.Errorf("priority allowed %v, want none listed", priority.Allowed)
+	}
+}
+
 func TestChoices(t *testing.T) {
 	f, p := detailSite(t, 0)
 	f.On("GET", "/rest/api/3/issue/createmeta/10000/issuetypes/10002", jiratest.Reply(200, createMeta(false, "summary", "priority", "customfield_10050")))

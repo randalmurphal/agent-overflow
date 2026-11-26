@@ -51,10 +51,12 @@ func editRefusal(step tracker.Step, err error, issues ...tracker.IssueID) tracke
 	return beforeWrite(step, err, issues...)
 }
 
-// Create creates an issue in the team in.Project. A confirmed create
-// names the new issue and may have changed its card, its row on the
-// team's board and its detail; a lost answer is a create part of unknown
-// outcome naming no issue.
+// Create creates an issue in the team in.Project, in the cycle in.Sprint
+// when it names one, in the same request (Linear refuses another team's
+// cycle), and just after the row in.After in the team's manual order when
+// it names one (afterOrder), else where Linear's default puts it. A confirmed create names the new issue and may have changed its
+// card, its row on the team's board and its detail; a lost answer is a
+// create part of unknown outcome naming no issue.
 func (p *Provider) Create(ctx context.Context, in tracker.CreateInput) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepCreate, err)
@@ -75,7 +77,18 @@ func (p *Provider) Create(ctx context.Context, in tracker.CreateInput) tracker.R
 	if err != nil {
 		return editRefusal(tracker.StepCreate, err)
 	}
-	is, err := p.c.CreateIssue(ctx, ch.create(in.Project, in.Title))
+	create := ch.create(in.Project, in.Title)
+	if in.Sprint != "" {
+		create.CycleID = linear.Set(string(in.Sprint))
+	}
+	if in.After.Issue != "" {
+		order, err := afterOrder(in.After)
+		if err != nil {
+			return tracker.Invalid(tracker.StepCreate, err)
+		}
+		create.SortOrder = linear.Set(order)
+	}
+	is, err := p.c.CreateIssue(ctx, create)
 	if err != nil {
 		return one("", tracker.StepCreate, err)
 	}
@@ -83,6 +96,21 @@ func (p *Provider) Create(ctx context.Context, in tracker.CreateInput) tracker.R
 	out := one(id, tracker.StepCreate, nil, tracker.CardOf(id), tracker.RowOf(tracker.BoardID(is.TeamID), id), tracker.DetailOf(id))
 	out.Parts[0].Key = is.Identifier
 	return out
+}
+
+// afterOrder is a sortOrder just past the row's, read from its order key
+// as the mirror holds it: the issue lands after that row, and after any
+// row Linear has placed since between it and the value.
+func afterOrder(after tracker.RowPlace) (float64, error) {
+	v, err := after.Order.Float()
+	if err != nil {
+		return 0, fmt.Errorf("linearprovider: the order of issue %s: %w", after.Issue, err)
+	}
+	values, err := linear.Spread(&v, nil, 1)
+	if err != nil {
+		return 0, fmt.Errorf("linearprovider: an order after issue %s: %w", after.Issue, err)
+	}
+	return values[0], nil
 }
 
 // Edit changes fields of an issue with one update. A Markdown edit of the
@@ -190,36 +218,53 @@ func onScale(e tracker.Estimate, v float64) (int, bool) {
 }
 
 // MoveToSprint moves issues into the cycle in.Sprint, or out of any cycle
-// when it is empty, with one batch update per 50 issues, in order. It
-// reads the cycle and the issues within the board first, in one request
-// for up to 250 issues (cycleAndBoard): a cycle that is
-// not the board's or is closed refuses the move, and an issue not on the
-// board is refused while the others proceed. Each part is the client's
-// outcome for its issue, settled by a read after a failed request; the
-// issues after a request with a part not applied are not sent.
+// when it is empty. It reads the cycle and the issues within the board
+// first, the neighbors of a placed move with them, in one request for up
+// to 250 IDs (cycleAndBoard): a cycle that is not the board's or is
+// closed refuses the move, as does a place whose neighbors do not stand
+// (neighborValues), and an issue not on the board is refused while the
+// others proceed. A move with no place is one batch update per 50 issues
+// (SetCycle). A placed move writes each issue's cycle and its place in
+// the team's manual order, the one every board view shares, in the same
+// update (placeRun's run through RenumberIssues), so nothing is written
+// before every check: a cycle has no order of its own. Each part is the
+// client's outcome for its issue, settled by a read after a failed
+// request: a sprint move part per issue moved, then a rank part per
+// issue renumbered to make room; the issues after a request with a part
+// not applied are not sent.
 func (p *Provider) MoveToSprint(ctx context.Context, in tracker.SprintMoveInput) tracker.Result {
 	step := tracker.StepSprintMove
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(step, err, in.Issues...)
 	}
+	rank, placed := in.Rank()
 	ids, bad := issueIDs(in.Issues)
-	if len(bad) > 0 {
+	neighbors, badNeighbors := issueIDs(neighborsOf(rank))
+	if bad = append(bad, badNeighbors...); len(bad) > 0 {
 		return notIssueID(step, bad[0], in.Issues...)
 	}
-	on, err := p.cycleAndBoard(ctx, in.Board, in.Sprint, ids)
+	on, err := p.cycleAndBoard(ctx, in.Board, in.Sprint, append(slices.Clone(ids), neighbors...))
 	if err != nil {
 		return editRefusal(step, err, in.Issues...)
 	}
-	var out tracker.Result
-	var moving []string
-	for _, id := range ids {
-		if _, isOn := on[id]; isOn {
-			moving = append(moving, id)
-		} else {
-			out.Parts = append(out.Parts, tracker.Part{Issue: tracker.IssueID(id), Step: step, Outcome: tracker.Refused(notOnBoard(tracker.IssueID(id), in.Board))})
+	var before, after *float64
+	if placed {
+		if before, after, err = neighborValues(rank, on); err != nil {
+			return editRefusal(step, err, in.Issues...)
 		}
 	}
+	out, moving := onBoardOnly(step, in.Board, in.Issues, on)
 	if len(moving) == 0 {
+		return out
+	}
+	if placed {
+		run, lo, hi, fail := p.placeRun(ctx, step, rank, moving, before, after)
+		if fail != nil {
+			out.Parts = append(out.Parts, fail.Parts...)
+			return out
+		}
+		into := string(in.Sprint)
+		out.Parts = append(out.Parts, p.renumber(ctx, in.Board, run, lo, hi, &into, len(moving)).Parts...)
 		return out
 	}
 	written, err := p.c.SetCycle(ctx, moving, string(in.Sprint))

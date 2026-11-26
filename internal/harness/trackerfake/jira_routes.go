@@ -84,6 +84,7 @@ var jiraRoutes = []jiraRoute{
 	{method: "GET", pattern: agile + "board", query: with(window, "projectKeyOrId", "type", "name"), reads: true, handle: listBoards},
 	{method: "GET", pattern: agile + "board/{board}", reads: true, handle: getBoard},
 	{method: "GET", pattern: agile + "board/{board}/configuration", reads: true, handle: boardConfig},
+	{method: "GET", pattern: agile + "board/{board}/project", query: window, reads: true, handle: boardProjects},
 	{method: "GET", pattern: agile + "board/{board}/sprint", query: with(window, "state"), reads: true, handle: boardSprints},
 	{method: "GET", pattern: agile + "sprint/{sprint}", reads: true, handle: getSprint},
 	{method: "POST", pattern: agile + "sprint", handle: createSprint},

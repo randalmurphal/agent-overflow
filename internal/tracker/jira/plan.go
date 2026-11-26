@@ -159,7 +159,7 @@ func (c *Client) PlanCreate(ctx context.Context, in CreateInput) (*CreatePlan, e
 	}
 	var missing []FieldMeta
 	for _, f := range screen.Fields {
-		if f.Required && !f.HasDefault && !set[f.ID] && !slices.Contains(reserved, f.ID) {
+		if f.Demanded() && !set[f.ID] && !slices.Contains(reserved, f.ID) {
 			missing = append(missing, f)
 		}
 	}

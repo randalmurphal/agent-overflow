@@ -23,7 +23,8 @@ func (p *Provider) CreateSprint(ctx context.Context, in tracker.SprintInput) tra
 	return sprintPart(in.Board, outcome(err))
 }
 
-// StartSprint starts a future sprint of the board with its dates.
+// StartSprint starts a future sprint of the board with its dates, and its
+// name and goal when the input sets them, in one request.
 func (p *Provider) StartSprint(ctx context.Context, in tracker.SprintStart) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepSprint, err)
@@ -35,7 +36,7 @@ func (p *Provider) StartSprint(ctx context.Context, in tracker.SprintStart) trac
 	if err != nil {
 		return sprintPart(in.Board, beforeSend(err))
 	}
-	_, err = p.jira.StartSprint(ctx, jira.SprintStart{ID: sprint.ID, Start: in.Start, End: in.End, Current: sprint})
+	_, err = p.jira.StartSprint(ctx, jira.SprintStart{ID: sprint.ID, Start: in.Start, End: in.End, Name: in.Name, Goal: in.Goal, Current: sprint})
 	return sprintPart(in.Board, outcome(err))
 }
 

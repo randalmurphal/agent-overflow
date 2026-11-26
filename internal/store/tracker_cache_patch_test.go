@@ -237,9 +237,9 @@ func TestMirrorBoardPatchMatchesTheSections(t *testing.T) {
 }
 
 // The patch reads in one snapshot, one statement per part: the board, the
-// column statuses, the two count statements, a statement per section, and
-// the names (users and statuses, parents); for a caller holding the
-// totals, neither the column statuses nor the counts. It runs alone: it
+// column statuses, the two count statements and the pace, a statement per
+// section, and the names (users and statuses, parents); for a caller
+// holding the totals, neither the column statuses nor the counts. It runs alone: it
 // counts the package's statements.
 func TestMirrorBoardPatchStatements(t *testing.T) {
 	s, _, root := newMirror(t)
@@ -253,8 +253,9 @@ func TestMirrorBoardPatchStatements(t *testing.T) {
 			t.Fatalf("%v, %v", ok, err)
 		}
 	})
-	// board 1, column statuses 1, counts 2, sections 3, names 1 (no parent).
-	if want := 1 + 1 + 2 + len(sections) + 1; statements != want {
+	// board 1, column statuses 1, counts 2, pace 1, sections 3, names 1 (no
+	// parent).
+	if want := 1 + 1 + 2 + 1 + len(sections) + 1; statements != want {
 		t.Fatalf("a patch of one issue in %d sections ran %d statements; want %d", len(sections), statements, want)
 	}
 	held := MirrorTotalsAt{Lifetime: patch.Lifetime, Revision: patch.Counts.TotalsRevision}

@@ -603,6 +603,25 @@ describe('changing a card on the board', () => {
     return { calls, answer: (view) => waiting.shift()!(view) };
   }
 
+  it('holds back the menu\'s Move to sprint… while another move of the card is out', async () => {
+    const board = sprintBoard([row('1', 'a', 's1', { sprints: ['8'] })]);
+    install({ view: { ...board, columns: [
+      { name: 'To Do', statuses: [{ id: 's1', group: 'todo' }], total: { rows: 0, estimate: 0 } },
+      { name: 'In Progress', statuses: [{ id: 's2', group: 'in_progress' }], total: { rows: 0, estimate: 0 } },
+    ] } as BoardView });
+    setBindingMock('TrackerMoves', async () => [{ id: '21', name: 'Start', to: { id: 's2', name: 'In Progress' } }]);
+    const moves = heldMoves();
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await moveByMenu(view, '1');
+    await waitFor(() => expect(moves.calls).toHaveLength(1));
+    await fireEvent.contextMenu(view.getAllByTestId('issues-card').find((c) => c.dataset.issue === '1')!);
+    await fireEvent.click(await within(document.body).findByTestId('action-menu-more'));
+    const sprint = await within(document.body).findByTestId('issues-card-menu-sprint');
+    expect(sprint.getAttribute('aria-disabled')).toBe('true');
+    moves.answer({ parts: [{ step: 'move', state: 'applied' }] } as WriteView);
+  });
+
   it('counts a waiting card into its column by the status it moves to, and out of its own by the status it has', async () => {
     // In Progress's status is left out of counts.
     install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [row('2', 'b', 's2')] }, { groups: 'g1', left_out: ['s2'] } as Partial<BoardView>) });
@@ -1210,6 +1229,7 @@ function ticketDetail(id: string, opts: { parent?: string; comments?: number; mo
     },
     url: `https://example.atlassian.net/browse/WEB-${id}`, description: 'The description', fields: [], comments, more_comments: opts.more,
     links: [], attachments: [], history: [], rows: [{ board: '1', estimate: 2, unit: 'points' }],
+    sprints: [],
     moves: [{ id: '21', name: 'Start', to: { id: 's2', name: 'In Progress', group: 'in_progress' } }],
   } as unknown as DetailView;
 }

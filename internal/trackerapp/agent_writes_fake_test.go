@@ -228,6 +228,10 @@ func TestACreatesDigestIsItsFieldsWhateverTheirOrder(t *testing.T) {
 	if digest(labels("a", "b")) == digest(labels("b", "a")) {
 		t.Error("a field's values in another order are the same create")
 	}
+	inSprint, err := createOf(CreateRequest{Project: "10000", Type: "10002", Title: "New", Sprint: "2"}).digest("jira", "example.atlassian.net")
+	if err != nil || inSprint == digest() {
+		t.Errorf("a create into a sprint is the same create as one into the backlog (%v)", err)
+	}
 }
 
 // A comment's body is compared without its mentions, which the tracker

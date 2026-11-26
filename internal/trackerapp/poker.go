@@ -449,13 +449,13 @@ func (s *Service) ClearPoker(ctx context.Context, id, issue string) (WriteView, 
 // after a write that may have happened, the issue's following pump reads
 // the votes at once.
 func (s *Service) pokerWrite(ctx context.Context, id string, issue tracker.IssueID, w func(context.Context, tracker.Poker) tracker.Result) (WriteView, error) {
-	view, err := s.write(ctx, id, writeOp{call: func(ctx context.Context, p tracker.Provider) tracker.Result {
-		pk := p.Poker()
+	view, err := s.write(ctx, id, writeOp{call: func(r *run) tracker.Result {
+		pk := r.p.Poker()
 		if pk == nil {
 			return tracker.Refuse(tracker.StepPoker, tracker.Refusal{Reason: tracker.ReasonUnsupported,
 				Message: "this tracker has no planning poker", Err: tracker.ErrUnsupported}, issue)
 		}
-		return w(ctx, pk)
+		return w(r.ctx, pk)
 	}})
 	if err == nil && slices.ContainsFunc(view.Parts, func(p PartView) bool { return p.State != "refused" && p.State != "not_sent" }) {
 		s.readPokerNow(id, issue)

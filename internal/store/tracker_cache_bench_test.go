@@ -176,6 +176,21 @@ func BenchmarkMirrorSectionPage(b *testing.B) {
 	}
 }
 
+// A section's foot on a 1,000-row board: the active sprint's, whose last
+// row is the board's last; the backlog's; and a sprint with no rows, which
+// walks the whole board, the bound of any section's.
+func BenchmarkMirrorSectionFoot(b *testing.B) {
+	for name, sprint := range map[string]string{"active": strconv.Itoa(benchBoardSprints - 1), "backlog": "", "whole board": "none"} {
+		b.Run(name, func(b *testing.B) {
+			s, root := openBenchMirror(b)
+			measureMirror(b, func(int) error {
+				_, _, _, err := s.LastMirrorPlanRow(root, benchBoardID(0), sprint)
+				return err
+			})
+		})
+	}
+}
+
 // The section totals with estimate sums of a 1,000-row board.
 func BenchmarkMirrorCountSections(b *testing.B) {
 	s, root := openBenchMirror(b)

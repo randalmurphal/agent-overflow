@@ -382,6 +382,11 @@ var issueCases = map[string]func(t *testing.T, f *fakeEnv){
 // and of worklogs.
 var boardCases = map[string]func(t *testing.T, f *fakeEnv){
 	"Board": func(t *testing.T, f *fakeEnv) { got(f.c.Board(f.ctx, 1)).must(t) },
+	"BoardProjects": func(t *testing.T, f *fakeEnv) {
+		if ps := got(f.c.BoardProjects(f.ctx, 1)).must(t); len(ps) != 1 || ps[0].Key != "WEB" || ps[0].Name != "Web" {
+			t.Fatalf("board projects %+v", ps)
+		}
+	},
 	"BoardConfig": func(t *testing.T, f *fakeEnv) {
 		cfg := got(f.c.BoardConfig(f.ctx, 1)).must(t)
 		if cfg.Estimation.FieldID != "customfield_10016" || len(cfg.Columns) != 3 {
@@ -422,7 +427,9 @@ var boardCases = map[string]func(t *testing.T, f *fakeEnv){
 	},
 	"StartSprint": func(t *testing.T, f *fakeEnv) {
 		now := f.clock.Now()
-		if s := got(f.c.StartSprint(f.ctx, SprintStart{ID: 2, Start: now, End: now.Add(7 * 24 * time.Hour)})).must(t); s.State != SprintActive {
+		name, goal := "Sprint B", "Ship"
+		s := got(f.c.StartSprint(f.ctx, SprintStart{ID: 2, Start: now, End: now.Add(7 * 24 * time.Hour), Name: &name, Goal: &goal})).must(t)
+		if s.State != SprintActive || s.Name != name || s.Goal != goal {
 			t.Fatalf("started %+v", s)
 		}
 	},

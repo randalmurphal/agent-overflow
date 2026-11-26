@@ -210,6 +210,10 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		func() error { _, err := s.ListMirrorCards(root, []string{"10001"}); return err },
 		func() error { _, _, err := s.ListMirrorIssueRows(root, "10001", ""); return err },
 		func() error { _, err := s.ListMirrorTicketRows(root, []string{"10001", "10002"}); return err },
+		func() error {
+			_, err := s.ListMirrorSprintNames(root, []string{"10", "11"}, []string{"20", "21"})
+			return err
+		},
 		func() error { _, _, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10"}); return err },
 		func() error { _, err := s.CountMirrorSections(root, "10", MirrorRegroup{}); return err },
 		func() error {
@@ -233,6 +237,12 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 	for _, section := range []MirrorSection{{Kind: MirrorSectionSprint, SprintID: "21"}, {Kind: MirrorSectionBacklog}, {Kind: MirrorSectionColumn}} {
 		reads = append(reads, func() error {
 			_, err := s.ListMirrorSection(root, "10", MirrorRegroup{}, section, MirrorRowKey{})
+			return err
+		})
+	}
+	for _, sprint := range []string{"21", ""} {
+		reads = append(reads, func() error {
+			_, _, _, err := s.LastMirrorPlanRow(root, "10", sprint)
 			return err
 		})
 	}
@@ -319,6 +329,11 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 		"the listed issues with no row, kept in listing order, the unlisted rows read within the settle window or never listed, " +
 			"and the listed rows no listing marked: a listing's misses, not the board"},
 	{"ORDER BY position, sprint_id LIMIT", "USE TEMP B-TREE FOR ORDER BY", "one board's sprints, at most mirrorMaxSprints"},
+	{"ORDER BY completed_at DESC, position DESC LIMIT", "USE TEMP B-TREE FOR ORDER BY", "one board's closed sprints, at most mirrorMaxSprints"},
+	{"ORDER BY completed_at DESC, position DESC LIMIT", "SCAN l", "the last MirrorPaceSprints closed sprints, which drive the members' lookups by key"},
+	{"ORDER BY completed_at DESC, position DESC LIMIT", "USE TEMP B-TREE FOR GROUP BY", "the members of the last MirrorPaceSprints sprints"},
+	{"WHERE st.root_id = CAST(?1 AS INTEGER) AND st.status_group = 4 AND st.status_id NOT IN (SELECT o.key FROM json_each(", "SEARCH st USING PRIMARY KEY (root_id=?)",
+		"the statuses that count as done when a sprint closed (mirrorPaceSQL) are listed once a statement from the root's catalog"},
 	{`DELETE FROM main."tracker_cache_`, "", "a restore empties each mirror table whole"},
 	{"SELECT max(0, (SELECT coalesce(max(read_at), 0) FROM tracker_cache_users WHERE root_id = CAST(?1 AS INTEGER))", "",
 		"the read clock's seed (mirrorReadSeedSQL) walks the root's rows of each table holding a read time, once per root per process, at its first read"},
@@ -415,6 +430,15 @@ func TestMirrorReadsUseTheirIndexes(t *testing.T) {
 		if !strings.Contains(plan, "idx_tracker_cache_board_issues_order (root_id=? AND board_id=? AND (order_key,issue_id)>(?,?))") ||
 			strings.Contains(plan, "TEMP B-TREE") {
 			t.Errorf("section %d plan:\n%s\nwant a range of idx_tracker_cache_board_issues_order and no sort", kind, plan)
+		}
+	}
+	// A section's foot walks the board's order back from its end, so it
+	// costs the rows after the section's last, not the section.
+	for name, query := range map[string]string{"sprint foot": mirrorLastSprintRowSQL, "backlog foot": mirrorLastBacklogRowSQL} {
+		plan := explainMirror(t, s, query)
+		if !strings.Contains(plan, "SEARCH b USING COVERING INDEX idx_tracker_cache_board_issues_order (root_id=? AND board_id=?)") ||
+			strings.Contains(plan, "TEMP B-TREE") {
+			t.Errorf("%s plan:\n%s\nwant a walk of idx_tracker_cache_board_issues_order and no sort", name, plan)
 		}
 	}
 	for name, read := range map[string]struct{ query, index string }{

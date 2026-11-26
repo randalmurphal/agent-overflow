@@ -254,13 +254,18 @@ func (s *jiraSite) seedBoards(e *Engine) error {
 		case b.Estimation != "" && s.field(b.Estimation) == nil:
 			return fmt.Errorf("board %d estimates in %q, which is no field", b.ID, b.Estimation)
 		}
+		for _, ref := range b.Also {
+			if p := s.project(ref); p == nil || p == s.project(b.Project) {
+				return fmt.Errorf("board %d's filter also names %q, which is no other project of the site", b.ID, ref)
+			}
+		}
 		seen[b.ID] = true
 		e.reserveID(b.ID)
 		if b.FilterID == "" {
 			b.FilterID = strconv.FormatInt(10000+b.ID, 10)
 		}
-		// A saved filter selects its project's issues (filter = <n> in
-		// JQL), so the boards sharing one share the project.
+		// A saved filter selects its projects' issues (filter = <n> in
+		// JQL), so the boards sharing one share the location's project.
 		if other := s.boardOfFilter(b.FilterID); other != b && s.project(other.Project) != s.project(b.Project) {
 			return fmt.Errorf("board %d shares filter %s with board %d of another project", b.ID, b.FilterID, other.ID)
 		}

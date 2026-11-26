@@ -196,6 +196,58 @@ func TestMoveToSprintScope(t *testing.T) {
 	}
 }
 
+// TestCreateInASprintScope proves a create in a sprint that is not an
+// open sprint of the board is refused before anything is made.
+func TestCreateInASprintScope(t *testing.T) {
+	f, p := newSite(t)
+	sprintsOfBoard3(f)
+	for name, sprint := range map[string]tracker.SprintID{"another board's sprint": "99", "a closed sprint": "6"} {
+		res := checked(t, p.Create(t.Context(), tracker.CreateInput{Project: "10000", Type: "10002", Title: "T", Board: "3", Sprint: sprint}))
+		if states(res) != "create:refused" || reason(res, 0) != tracker.ReasonStale {
+			t.Errorf("%s: %s", name, states(res))
+		}
+	}
+	noWrites(t, f, "a create in a sprint off the board")
+}
+
+// TestMoveToSprintPlaced proves a sprint move that names a place ranks
+// the issues there in the move's own request, into a sprint or to the
+// backlog, against Prev when there is one and Next otherwise, and is
+// refused before sending when its neighbors no longer stand in order.
+func TestMoveToSprintPlaced(t *testing.T) {
+	for _, tc := range []struct {
+		name, sprint, path string
+		prev, next         tracker.IssueID
+		body               string
+	}{
+		{"into a sprint after prev", "7", "/rest/agile/1.0/sprint/7/issue", "10009", "10010", `{"issues":["10001"],"rankAfterIssue":"10009","rankCustomFieldId":10019}`},
+		{"to the backlog before next", "", "/rest/agile/1.0/backlog/3/issue", "", "10010", `{"issues":["10001"],"rankBeforeIssue":"10010","rankCustomFieldId":10019}`},
+		{"swapped neighbors", "7", "/rest/agile/1.0/sprint/7/issue", "10010", "10009", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, p := newSite(t)
+			sprintsOfBoard3(f)
+			listsIssues(t, f, board3Issues, "10001", "10009", "10010")
+			f.On("POST", tc.path, func(w http.ResponseWriter, r *http.Request, b []byte) {
+				jiratest.WantJSON(t, b, tc.body)
+				w.WriteHeader(http.StatusNoContent)
+			})
+			res := checked(t, p.MoveToSprint(t.Context(), tracker.SprintMoveInput{Board: "3", Sprint: tracker.SprintID(tc.sprint),
+				Issues: []tracker.IssueID{"10001"}, Prev: tc.prev, Next: tc.next}))
+			if tc.body == "" {
+				if states(res) != "sprint move:refused" || reason(res, 0) != tracker.ReasonStale {
+					t.Errorf("got %s", states(res))
+				}
+				noWrites(t, f, tc.name)
+				return
+			}
+			if states(res) != "sprint move:applied" || f.Count("POST", tc.path) != 1 {
+				t.Errorf("got %s %v", states(res), res.Parts[0].Outcome.Err())
+			}
+		})
+	}
+}
+
 // TestSetEstimateOffBoard proves an estimate of an issue the board does
 // not list is refused before sending.
 func TestSetEstimateOffBoard(t *testing.T) {

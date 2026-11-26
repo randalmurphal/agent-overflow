@@ -49,11 +49,13 @@ func TestBoardView(t *testing.T) {
 	if v.Name != "WEB board 1" || !v.PlansSprints || v.Estimate.Unit != "points" || v.All.Rows != 4 || v.Backlog.Rows != 2 || v.Sync.ReadAt == 0 {
 		t.Fatalf("board %+v", v)
 	}
-	// The totals sum the estimates the store holds: 10001's 5, in sprint 1
-	// and the first column.
-	if v.All.Estimate != 5 || v.Backlog.Estimate != 0 || v.Sprints[0].Total != (SectionTotal{Rows: 1, Estimate: 5}) ||
-		v.Columns[0].Total != (SectionTotal{Rows: 3, Estimate: 5}) || v.Columns[2].Total != (SectionTotal{Rows: 1}) {
-		t.Fatalf("totals: all %+v, backlog %+v, sprints %+v, columns %+v", v.All, v.Backlog, v.Sprints, v.Columns)
+	// The totals sum the estimates the store holds, 10001's 5, in sprint 1
+	// and the first column, and count the rows with none.
+	if v.All != (SectionTotal{Rows: 4, Estimate: 5, Unestimated: 3}) || v.Backlog != (SectionTotal{Rows: 2, Unestimated: 2}) ||
+		v.Sprints[0].Total != (SectionTotal{Rows: 1, Estimate: 5}) ||
+		v.Columns[0].Total != (SectionTotal{Rows: 3, Estimate: 5, Unestimated: 2}) || v.Columns[2].Total != (SectionTotal{Rows: 1, Unestimated: 1}) ||
+		v.Pace != nil {
+		t.Fatalf("totals: all %+v, backlog %+v, sprints %+v, columns %+v, pace %+v", v.All, v.Backlog, v.Sprints, v.Columns, v.Pace)
 	}
 	if len(v.Columns) != 3 || v.Columns[0].Total.Rows != 3 || v.Columns[2].Total.Rows != 1 || v.Columns[1].Statuses[0] != (StatusView{ID: "s2", Name: "In Progress", Group: "in_progress"}) {
 		t.Fatalf("columns %+v", v.Columns)
@@ -90,10 +92,54 @@ func TestBoardView(t *testing.T) {
 	}
 }
 
+// A board's pace averages what its last finished sprints finished: the
+// tickets done when each was completed, and their estimates.
+func TestBoardPace(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	completed := time.UnixMilli(1_799_000_000_000).UTC()
+	m.p.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) {
+		st := webStructure(b)
+		st.Sprints = append(st.Sprints,
+			tracker.Sprint{ID: "8", Board: b, Name: "Sprint 0", State: tracker.SprintClosed, Completed: completed.Add(-time.Hour)},
+			tracker.Sprint{ID: "9", Board: b, Name: "Sprint 1", State: tracker.SprintClosed, Completed: completed})
+		return st, nil
+	}
+	three, one := 3.0, 1.0
+	member := func(id, status string, estimate *float64, sprint tracker.SprintID) tracker.Row {
+		r := row(id, 1_799_000_000_000, id)
+		r.Card.Status, r.Card.Sprints, r.Estimate = tracker.StatusID(status), []tracker.SprintID{sprint}, estimate
+		return r
+	}
+	first := []tracker.Row{
+		member("10001", "s3", &three, "9"), member("10002", "s1", &one, "9"), member("10003", "s3", nil, "9"),
+		member("10004", "s3", &one, "8"),
+	}
+	m.p.changedRows = pagedDelta(t, first)
+	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+	v := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, nil))
+	if v.Pace == nil || *v.Pace != (PaceView{Sprints: 2, Rows: 1.5, Estimate: 2}) {
+		t.Fatalf("pace %+v; want 2 sprints averaging 1.5 tickets and 2 points", v.Pace)
+	}
+	// The pace rides on the totals: a patch after a member finished carries
+	// it with them.
+	r := member("10002", "s3", &one, "9")
+	r.Card.Updated = r.Card.Updated.Add(time.Second)
+	m.p.changedRows = pagedDelta(t, first, []tracker.Row{r})
+	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+	held := TotalsAt{Lifetime: v.Lifetime, Revision: v.TotalsRevision, Groups: v.Groups}
+	patch := must[BoardPatch](t)(m.svc.BoardPatch(m.scope(), StatusGroups{}, nil, ids("10002"), held))
+	if patch.Totals == nil || patch.Totals.Pace == nil || *patch.Totals.Pace != (PaceView{Sprints: 2, Rows: 2, Estimate: 2.5}) {
+		t.Fatalf("patch totals %+v; want a pace of 2 sprints averaging 2 tickets and 2.5 points", patch.Totals)
+	}
+}
+
 // No sections asks for the Board screen's, chosen from the structure the
 // view reads: a sprint board's active sprints, a board of no sprints its
 // columns, with pages of the first maxViewSections of them and the rest
-// listed for the client to read by page.
+// listed for the client to read by page. The Backlog screen's are listed
+// beside them: a sprint board's active sprints, its future ones and the
+// backlog, a board of no sprints the backlog alone.
 func TestBoardScreen(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
@@ -102,6 +148,9 @@ func TestBoardScreen(t *testing.T) {
 	if !slices.Equal(v.Screen, []Section{{Kind: SectionSprint, Sprint: "1"}}) || len(v.Sections) != 1 ||
 		v.Sections[0].Section != v.Screen[0] || !slices.Equal(rowIssues(v.Sections[0].Rows), []string{"10001"}) {
 		t.Fatalf("sprint board: screen %+v, sections %+v", v.Screen, v.Sections)
+	}
+	if want := []Section{{Kind: SectionSprint, Sprint: "1"}, {Kind: SectionSprint, Sprint: "2"}, {Kind: SectionBacklog}}; !slices.Equal(v.Plan, want) {
+		t.Fatalf("sprint board plan %+v; want %+v", v.Plan, want)
 	}
 	// Asked sections are read as asked, and the screen is listed beside them.
 	v = must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, []Section{{Kind: SectionBacklog}}))
@@ -112,7 +161,8 @@ func TestBoardScreen(t *testing.T) {
 	const columns = maxViewSections + 5
 	m.p.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) {
 		st := webStructure(b)
-		st.Board.Sprints, st.Sprints = false, nil
+		// A Linear team with cycles off still lists the cycles it had.
+		st.Board.Sprints = false
 		for i := len(st.Columns); i < columns; i++ {
 			st.Columns = append(st.Columns, tracker.Column{Name: fmt.Sprintf("Column %d", i)})
 		}
@@ -124,6 +174,9 @@ func TestBoardScreen(t *testing.T) {
 	v = must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, nil))
 	if len(v.Screen) != columns || len(v.Sections) != maxViewSections {
 		t.Fatalf("kanban board: %d screen sections, %d pages", len(v.Screen), len(v.Sections))
+	}
+	if !slices.Equal(v.Plan, []Section{{Kind: SectionBacklog}}) {
+		t.Fatalf("kanban board plan %+v; want the backlog", v.Plan)
 	}
 	for i, sec := range v.Screen {
 		if sec != (Section{Kind: SectionColumn, Column: i}) || (i < maxViewSections && v.Sections[i].Section != sec) {

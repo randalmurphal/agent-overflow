@@ -242,7 +242,7 @@ var mirrorNonWriters = []string{
 	"GetOrCreateMirrorRoot", "GetMirrorRoot", "DetachMirror", "FinishMirrorCleanup",
 	"GetMirrorSync", "ListMirrorHistoryDue", "ListMirrorBodies", "ListMirrorIssueWorklogs",
 	"GetMirrorBoard", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorIssueRows", "ListMirrorTicketRows", "ListMirrorSection", "CountMirrorSections",
-	"ListMirrorOffBoardLinkedIssues", "ReadMirrorBoardView", "ReadMirrorBoardPatch", "ListMirrorIssueBoards",
+	"ListMirrorOffBoardLinkedIssues", "ReadMirrorBoardView", "ReadMirrorBoardPatch", "ListMirrorIssueBoards", "ListMirrorSprintNames", "LastMirrorPlanRow",
 	"ReadMirrorRefreshTargets", "ReadMirrorWorklogDays",
 	// An open ticket's row goes by its pump, whatever became of its root.
 	"DropMirrorTicket", "DropMirrorTicketsOfOtherSessions",

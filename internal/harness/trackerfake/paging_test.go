@@ -34,6 +34,7 @@ func pagingFixture() Fixture {
 		s.Boards = append(s.Boards, JiraBoard{ID: i, Name: "Board " + strconv.FormatInt(i, 10), Type: "scrum", Project: "WEB", Columns: columns})
 		s.Sprints = append(s.Sprints, JiraSprint{ID: i, Board: 1, Name: "Sprint " + strconv.FormatInt(i, 10), State: "future"})
 	}
+	s.Boards[0].Also = []string{"APP", "OPS"}
 	s.Sprints[0].State, s.Sprints[0].Start, s.Sprints[0].End = "active", testStart, testStart.Add(14*24*time.Hour)
 	s.Issues = nil
 	for i := 1; i <= 7; i++ {
@@ -278,6 +279,7 @@ var pagedRows = map[string]pager{
 	"GET rest/api/3/issue/{issue}/worklog":                        offsetPager("/rest/api/3/issue/WEB-1/worklog?", "worklogs[].id"),
 	"GET rest/agile/1.0/board":                                    offsetPager("/rest/agile/1.0/board?", "values[].id"),
 	"GET rest/agile/1.0/board/{board}/sprint":                     offsetPager("/rest/agile/1.0/board/1/sprint?", "values[].id"),
+	"GET rest/agile/1.0/board/{board}/project":                    offsetPager("/rest/agile/1.0/board/1/project?", "values[].id"),
 	"POST rest/api/3/search/jql":                                  tokenPager("POST", "/rest/api/3/search/jql", `{"jql":"project = WEB ORDER BY key ASC","fields":["summary"]}`, "issues[].key"),
 	"POST rest/api/3/changelog/bulkfetch":                         tokenPager("POST", "/rest/api/3/changelog/bulkfetch", `{"issueIdsOrKeys":["WEB-1"]}`, "issueChangeLogs[].changeHistories[].id"),
 	"GET rest/software/1.0/board/{board}/issue":                   tokenPager("GET", "/rest/software/1.0/board/1/issue?", "", "issues[].key"),

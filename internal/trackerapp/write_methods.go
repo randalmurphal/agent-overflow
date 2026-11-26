@@ -21,11 +21,12 @@ import (
 
 // call1 is a writeOp of the provider write w with in.
 func call1[T any](in T, w func(tracker.Provider, context.Context, T) tracker.Result) writeOp {
-	return writeOp{call: func(ctx context.Context, p tracker.Provider) tracker.Result { return w(p, ctx, in) }}
+	return writeOp{call: func(r *run) tracker.Result { return w(r.p, r.ctx, in) }}
 }
 
-// Create makes an issue from a section of in.Board. The issue made is read
-// through that board; a create of unknown outcome is reported as that and
+// Create makes an issue from a section of in.Board, its sprint's or the
+// backlog's, landing after the section's last row as the mirror holds it
+// (sectionFoot). The issue made is read through that board; a create of unknown outcome is reported as that and
 // not retried, and the board's tick runs at once (through its pump when
 // one is live), since an issue it brings in is the only evidence.
 func (s *Service) Create(ctx context.Context, id string, in CreateRequest) (WriteView, error) {
@@ -33,10 +34,26 @@ func (s *Service) Create(ctx context.Context, id string, in CreateRequest) (Writ
 	if err != nil {
 		return WriteView{}, err
 	}
-	op := call1(m, tracker.Provider.Create)
-	op.board = tracker.BoardID(in.Board)
-	op.additive = createOf(in)
+	op := writeOp{board: m.Board, additive: createOf(in), call: func(r *run) tracker.Result {
+		after, err := s.sectionFoot(r.root, m.Board, m.Sprint)
+		if err != nil {
+			return tracker.Result{Parts: []tracker.Part{{Step: tracker.StepCreate, Outcome: tracker.NotSent(err)}}}
+		}
+		m.After = after
+		return r.p.Create(r.ctx, m)
+	}}
 	return s.write(ctx, id, op)
+}
+
+// sectionFoot is the row a ticket made in sprint of board (the backlog
+// for none) lands after: the section's last row as the mirror holds it,
+// with no tracker request; zero when the section holds none.
+func (s *Service) sectionFoot(root int64, board tracker.BoardID, sprint tracker.SprintID) (tracker.RowPlace, error) {
+	issue, order, ok, err := s.store.LastMirrorPlanRow(root, string(board), string(sprint))
+	if err != nil || !ok {
+		return tracker.RowPlace{}, err
+	}
+	return tracker.RowPlace{Issue: tracker.IssueID(issue), Order: tracker.OrderKey(order)}, nil
 }
 
 // Edit changes fields of an issue.
@@ -134,13 +151,13 @@ func (s *Service) Attach(ctx context.Context, id string, issue string, files []t
 // timeCall is a writeOp of the time tracker's write w about issue, refused
 // with ReasonUnsupported on a tracker with no time tracking.
 func timeCall[T any](issue tracker.IssueID, in T, w func(tracker.TimeTracker, context.Context, T) tracker.Result) writeOp {
-	return writeOp{call: func(ctx context.Context, p tracker.Provider) tracker.Result {
-		tt := p.Time()
+	return writeOp{call: func(r *run) tracker.Result {
+		tt := r.p.Time()
 		if tt == nil {
 			return tracker.Refuse(tracker.StepWorklog, tracker.Refusal{Reason: tracker.ReasonUnsupported,
 				Message: "this tracker has no time tracking", Err: tracker.ErrUnsupported}, issue)
 		}
-		return w(tt, ctx, in)
+		return w(tt, r.ctx, in)
 	}}
 }
 

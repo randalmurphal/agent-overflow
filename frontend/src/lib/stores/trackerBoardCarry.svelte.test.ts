@@ -9,6 +9,7 @@ import { tick } from 'svelte';
 import type { BoardView, MoveView, RowView, WriteView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import { cardBusy, cardWriteContext, dropOwner, moveCard, rankCard, waitingCards } from './trackerBoardCarry.svelte';
 import { attachTrackerBoard } from './trackerBoard.svelte';
+import { columnList } from './trackerBoardModel';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 
@@ -52,12 +53,12 @@ describe('a card waiting where it was dropped', () => {
     const move = setBindingMock('MoveTrackerIssue', () => answer.promise);
     const ctx = cardWriteContext(BOARD, ROW);
     const sent = moveCard('board', ctx, 1, MOVE);
-    expect(waitingCards('board')).toEqual([{ issue: '1', column: 1, status: 's2' }]);
+    expect(waitingCards('board')).toEqual([{ issue: '1', list: columnList(1), status: 's2' }]);
     expect(waitingCards('another board')).toEqual([]);
     expect(cardBusy('board', ctx)).toBe(true);
     // A second drop while it is out sends nothing.
     expect(await moveCard('board', ctx, 0, MOVE)).toBeNull();
-    expect(await rankCard('board', ctx, '1', 1, '2')).toBeNull();
+    expect(await rankCard('board', ctx, '1', columnList(1), '2')).toBeNull();
     expect(dropOwner('board').start(ctx)).toBeNull();
     expect(move).toHaveBeenCalledTimes(1);
     answer.resolve({ parts: [{ step: 'move', state: 'refused', refusal: { reason: 'tracker', message: 'No.' } }] } as WriteView);
@@ -118,10 +119,10 @@ describe('a card waiting where it was dropped', () => {
     const rank = setBindingMock('RankTrackerIssues', () => new Promise<WriteView>((resolve) => answers.push(resolve)));
     const four = cardWriteContext(BOARD, row('4', 'd'));
     const three = cardWriteContext(BOARD, row('3', 'c'));
-    const first = rankCard(board.key, four, '1', 0, '2');
-    const second = rankCard(board.key, three, '1', 0, '2');
+    const first = rankCard(board.key, four, '1', columnList(0), '2');
+    const second = rankCard(board.key, three, '1', columnList(0), '2');
     await flush();
-    expect(waitingCards(board.key)).toEqual([{ issue: '4', column: 0, before: '2' }, { issue: '3', column: 0, before: '2' }]);
+    expect(waitingCards(board.key)).toEqual([{ issue: '4', list: columnList(0), before: '2' }, { issue: '3', list: columnList(0), before: '2' }]);
     expect(rank.mock.calls).toEqual([['c1', { board: '1', issues: ['4'], prev: '1', next: '2' }]]);
     expect(cardBusy(board.key, three)).toBe(true);
     answers[0](applied('rank'));
@@ -131,7 +132,7 @@ describe('a card waiting where it was dropped', () => {
     answers[1](applied('rank'));
     expect((await second)?.kind).toBe('applied');
     // At the end: after the last card the board holds.
-    const end = rankCard(board.key, cardWriteContext(BOARD, row('1', 'a')), '1', 0, null);
+    const end = rankCard(board.key, cardWriteContext(BOARD, row('1', 'a')), '1', columnList(0), null);
     await flush();
     expect(rank.mock.calls[2]).toEqual(['c1', { board: '1', issues: ['1'], prev: '4', next: undefined }]);
     answers[2](applied('rank'));
@@ -143,10 +144,10 @@ describe('a card waiting where it was dropped', () => {
     const board = await heldBoard([row('1', 'a'), row('2', 'b')]);
     const rank = setBindingMock('RankTrackerIssues', async () => applied('rank'));
     const one = cardWriteContext(BOARD, row('1', 'a'));
-    expect(await rankCard(board.key, one, '1', 0, '9')).toEqual({ kind: 'not_sent', message: 'The card it was dropped before is no longer in To Do, so it was not ranked.' });
+    expect(await rankCard(board.key, one, '1', columnList(0), '9')).toEqual({ kind: 'not_sent', message: 'The card it was dropped before is no longer in To Do, so it was not ranked.' });
     board.release();
     await flush();
-    expect(await rankCard(board.key, one, '1', 0, '2')).toEqual({ kind: 'not_sent', message: 'The board was closed before the rank was sent, so it was not ranked.' });
+    expect(await rankCard(board.key, one, '1', columnList(0), '2')).toEqual({ kind: 'not_sent', message: 'The board was closed before the rank was sent, so it was not ranked.' });
     expect(rank).not.toHaveBeenCalled();
   });
 });

@@ -54,6 +54,7 @@ var readRows = map[string]call{
 	"GET rest/agile/1.0/board/{board}":                              jiraReq("GET", "/rest/agile/1.0/board/1", ""),
 	"GET rest/agile/1.0/board/{board}/configuration":                jiraReq("GET", "/rest/agile/1.0/board/1/configuration", ""),
 	"GET rest/agile/1.0/board/{board}/sprint":                       jiraReq("GET", "/rest/agile/1.0/board/1/sprint", ""),
+	"GET rest/agile/1.0/board/{board}/project":                      jiraReq("GET", "/rest/agile/1.0/board/1/project", ""),
 	"GET rest/agile/1.0/sprint/{sprint}":                            jiraReq("GET", "/rest/agile/1.0/sprint/1", ""),
 	"GET rest/software/1.0/board/{board}/issue":                     jiraReq("GET", "/rest/software/1.0/board/1/issue", ""),
 	"GET rest/software/1.0/board/{board}/backlog":                   jiraReq("GET", "/rest/software/1.0/board/1/backlog", ""),

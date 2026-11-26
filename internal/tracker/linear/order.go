@@ -231,11 +231,28 @@ func (c *Client) MoveIssue(ctx context.Context, in MoveInput) (*Issue, error) {
 // RenumberInput gives a run of issues new values of Field, in the order
 // listed, between the neighbors of the run: Before and After are the
 // values of the issues just outside it (nil is that end of the list).
+// Into, when set, also moves the first Moved issues of the run into the
+// cycle it names, or out of any cycle when it names none, in the same
+// update as their value: a placed move into a cycle is one write.
 type RenumberInput struct {
 	Field    OrderField
 	IssueIDs []string
 	Before   *float64
 	After    *float64
+	Into     *string
+	Moved    int
+}
+
+// cycle is the cycle the run's issue at index i is moved into, when it
+// is one of the Moved.
+func (in RenumberInput) cycle(i int) (Optional[string], bool) {
+	switch {
+	case in.Into == nil || i >= in.Moved:
+		return Optional[string]{}, false
+	case *in.Into == "":
+		return Null[string](), true
+	}
+	return Set(*in.Into), true
 }
 
 // of is the issue's value of f; f is one set accepts.

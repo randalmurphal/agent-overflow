@@ -145,8 +145,13 @@ func TestRequestCost(t *testing.T) {
 
 	clock.advance(time.Hour)
 	var created tracker.IssueID
+	afterFirst, err := tracker.FloatOrderKey(2000)
+	if err != nil {
+		t.Fatal(err)
+	}
 	r.measure("Create", func() error {
-		res := p.Create(ctx, tracker.CreateInput{Project: tracker.ProjectID(costTeam), Title: "Created",
+		res := p.Create(ctx, tracker.CreateInput{Project: tracker.ProjectID(costTeam), Title: "Created", Board: tracker.BoardID(costTeam),
+			After:  tracker.RowPlace{Issue: costIDs(1, 1)[0], Order: afterFirst},
 			Fields: []tracker.FieldEdit{{Field: tracker.FieldDescription, Value: tracker.MarkdownEdit("Body text", "")}}})
 		var ok bool
 		if created, _, ok = res.Created(); !ok {
@@ -173,6 +178,9 @@ func TestRequestCost(t *testing.T) {
 	})
 	r.result("MoveToSprint (30)", func() tracker.Result {
 		return p.MoveToSprint(ctx, tracker.SprintMoveInput{Board: board, Sprint: tracker.SprintID(costNext), Issues: costIDs(100, 30)})
+	})
+	r.result("MoveToSprint (1, placed)", func() tracker.Result {
+		return p.MoveToSprint(ctx, tracker.SprintMoveInput{Board: board, Sprint: tracker.SprintID(costNext), Issues: costIDs(140, 1), Prev: costIDs(100, 1)[0], Next: costIDs(101, 1)[0]})
 	})
 	r.result("AddComment", func() tracker.Result {
 		return p.AddComment(ctx, tracker.CommentInput{Issue: first, Markdown: "A new comment"})
@@ -207,6 +215,6 @@ func TestRequestCost(t *testing.T) {
 		"Moves": {1, 104}, "AssignableUsers": {1, 104}, "Choices (labels)": {1, 604},
 		"Lookup (10 keys, all found)": {1, 8}, "Lookup (10 keys, 3 missing)": {4, 47}, "Search": {1, 8}, "Search (no text, 2 pages of 50)": {2, 16},
 		"Create": {1, 3}, "Edit (title, assignee, label)": {1, 3}, "Move": {2, 107}, "SetEstimate": {2, 9}, "Rank (5)": {2, 15},
-		"MoveToSprint (30)": {2, 9}, "AddComment": {1, 3}, "EditComment": {2, 8}, "DeleteComment": {2, 8}, "Link": {1, 3}, "Unlink": {2, 9},
+		"MoveToSprint (30)": {2, 9}, "MoveToSprint (1, placed)": {2, 9}, "AddComment": {1, 3}, "EditComment": {2, 8}, "DeleteComment": {2, 8}, "Link": {1, 3}, "Unlink": {2, 9},
 	})
 }

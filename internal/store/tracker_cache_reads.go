@@ -399,6 +399,60 @@ func (s *Store) ListMirrorTicketRows(rootID int64, issueIDs []string) ([]MirrorT
 	return rows, nil
 }
 
+// MirrorSprintName is a sprint's name and state (MirrorSprintFuture,
+// Active or Closed) as a board of the mirror holds it.
+type MirrorSprintName struct {
+	SprintID, Name string
+	State          int
+}
+
+// mirrorSprintNamesSQL reads the sprints of the JSON list ?3 that the
+// boards of the JSON list ?2 of root ?1 hold: a seek of the sprints'
+// primary key per board and sprint. A sprint several boards hold (a Jira
+// sprint shows on every board holding its issues) has a row per board,
+// each of the one sprint's name and state.
+var mirrorSprintNamesSQL = `SELECT sprint_id, name, state FROM tracker_cache_sprints
+	WHERE root_id = ` + intParam("?1") + ` AND board_id IN (SELECT value FROM json_each(?2)) AND sprint_id IN (SELECT value FROM json_each(?3))`
+
+// ListMirrorSprintNames reads, in one statement, the names and states of
+// up to mirrorMaxLookup sprints of rootID that up to mirrorMaxLookup of
+// its boards hold (mirrorSprintNamesSQL), one each, in no order: what
+// open tickets show of the sprints their cards name, from the boards
+// their rows are on. A sprint none of the boards holds is left out.
+func (s *Store) ListMirrorSprintNames(rootID int64, boardIDs, sprintIDs []string) ([]MirrorSprintName, error) {
+	if len(boardIDs) == 0 || len(sprintIDs) == 0 {
+		return nil, nil
+	}
+	if len(boardIDs) > mirrorMaxLookup || len(sprintIDs) > mirrorMaxLookup {
+		return nil, fmt.Errorf("%w: %d boards and %d sprints, over %d", ErrInvalidTrackerCache, len(boardIDs), len(sprintIDs), mirrorMaxLookup)
+	}
+	boards, err := encodeMirrorIDs(boardIDs)
+	if err != nil {
+		return nil, err
+	}
+	sprints, err := encodeMirrorIDs(sprintIDs)
+	if err != nil {
+		return nil, err
+	}
+	var out []MirrorSprintName
+	seen := map[string]bool{}
+	err = scanMirrorRows(s.reader(), mirrorSprintNamesSQL, []any{rootID, boards, sprints}, func(r rowScanner) error {
+		var sp MirrorSprintName
+		if err := r.Scan(&sp.SprintID, &sp.Name, &sp.State); err != nil {
+			return err
+		}
+		if !seen[sp.SprintID] {
+			seen[sp.SprintID] = true
+			out = append(out, sp)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: read tracker mirror %d names of %d sprints: %w", rootID, len(sprintIDs), err)
+	}
+	return out, nil
+}
+
 // mirrorOffBoardLinkedSQL reads a page of the issues the links of a root
 // name (mirrorLinksSQL, the keep rule's own) that have no row on a board
 // of the JSON list ?3 the mirror shows, by issue ID after ?2: the

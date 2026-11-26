@@ -542,6 +542,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3524633257: 'home', // TrackerBoard
 	1666670763: 'all', // TrackerBoardChoices
 	2847247437: 'home', // TrackerBoardPatch
+	2859662243: 'home', // TrackerBoardProjects
 	2450480430: 'home', // TrackerBoards
 	1109598697: 'home', // TrackerChoices
 	1808895141: 'home', // TrackerComments
