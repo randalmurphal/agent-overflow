@@ -60,20 +60,33 @@ func genCrossing(t *testing.T, tick, rename bool) {
 		f.settledTickets(t)
 	}
 	done := make(chan struct{})
+	// After the run is released, a tracker call that is not the run's waits
+	// until the test has read what the run told (read): the new mirror's
+	// board 2 pump ticks as soon as the run ends, and its own read of 10001
+	// tells the open ticket too.
+	type ofRun struct{}
+	var released atomic.Bool
+	read := make(chan struct{})
+	readDone := sync.OnceFunc(func() { close(read) })
+	t.Cleanup(readDone)
 	if tick {
 		// The delta, which answers 10001's changed card, waits.
 		f.state.set("2", writeRow("10001", 5, "m"))
 		f.p.set(func(p *scripted) {
-			p.block = func(_ context.Context, name string) error {
+			p.block = func(c context.Context, name string) error {
 				if name == "ChangedRows" {
 					hold()
+				}
+				if released.Load() && c.Value(ofRun{}) == nil {
+					<-read
 				}
 				return nil
 			}
 		})
 		go func() {
 			defer close(done)
-			_, _ = f.svc.syncTick(context.WithoutCancel(ctx), Scope{Connection: f.conn.ID, Board: "2"}, BoardDue{Delta: true, Reconcile: true}, Background)
+			run := context.WithValue(context.WithoutCancel(ctx), ofRun{}, true)
+			_, _ = f.svc.syncTick(run, Scope{Connection: f.conn.ID, Board: "2"}, BoardDue{Delta: true, Reconcile: true}, Background)
 		}()
 	} else {
 		// The refresh's read of board 1, which no longer answers 10001's
@@ -127,12 +140,14 @@ func genCrossing(t *testing.T, tick, rename bool) {
 	f.svc.subMu.Unlock()
 	boards, _, _ := f.events.snapshot()
 	before := len(boards)
+	released.Store(true)
 	close(release)
 	<-done
 	f.svc.subMu.Lock()
 	moved := tp.dirty != dirty
 	f.svc.subMu.Unlock()
 	boards, _, _ = f.events.snapshot()
+	readDone()
 	var told []BoardEvent
 	for _, e := range boards[before:] {
 		// After a rename board 2's pump ticks the mirror the run stored
