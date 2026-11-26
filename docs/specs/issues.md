@@ -350,22 +350,30 @@ until its write settles and not moved again until then; under compact,
 Move to sprint… on the menu. A future sprint says its points against the
 average of the board's last finished sprints (at most five, worded as
 "the last sprint" or "the last N sprints' average"), each person's load,
-and how far it is over; the backlog says its tickets, its points and how
-many have no estimate. New ticket at a section's foot asks the type and
-the fields the tracker requires, and on a board of several projects the
-project, from the connection's projects, the one picked last on that
-board this session first; the type picked last on the board this session
-is the next one's. New sprint, a sprint's Change, Start sprint (today for
-as long as it was planned, else two weeks) and Complete sprint, which
-asks where its unfinished tickets go: an open sprint of the board, the
-first future one at first, or the backlog. A ticket opens beside the list,
-and in its own pane with Ctrl or Cmd or the menu. Not built: the pace
-counted with credit (it counts the tickets whose status counted as done
-when their sprint was completed, by their estimates now); support tickets
-are counted among those without an estimate; a Linear team's cycles are
-started and completed in Linear, which the screen says; a completion the
-tracker refuses part of says the first refusal, not how many tickets
-moved; the thread actions (Ask, Start work) on the row's menu.
+and how far it is over; a finished sprint with no ticket on the board
+counts as zero, and a ticket whose history the app has not read yet
+counts as done only in the last sprint it is in. The backlog says its
+tickets, its points and how many have no estimate. New ticket at a
+section's foot asks the fields the tracker requires the person to give
+and offers those it fills itself; on Jira it shows the project, picked
+from the projects the board shows, the one picked last on that board
+this session first, else the board's location, and the type, the one
+picked last on the board this session, else the project's first at the
+standard level. A ticket the tracker made stays made: when its move into
+the sprint failed, the form says so with the ticket's key and offers that
+move. On Linear a new ticket lands after the section's last row. New
+sprint, a sprint's Change (which cannot clear a sprint's dates, and says
+so), Start sprint (today for as long as it was planned, else two weeks)
+and Complete sprint, which always asks where the tickets the tracker
+counts unfinished go: an open sprint of the board, the first future one
+at first, or the backlog. A ticket opens beside the list, and in its own
+pane with Ctrl or Cmd or the menu; the row's menu has Ask and Start
+work…. Not built: the pace counted with credit (it counts the tickets
+whose status counted as done when their sprint was completed, by their
+estimates now); support tickets are counted among those without an
+estimate; a Linear team's cycles are started and completed in Linear,
+which the screen says; a completion the tracker refuses part of says the
+first refusal, not how many tickets moved.
 
 - Sections are the active sprint, the next sprint and the backlog. Fold
   state is remembered, and the active sprint starts folded.

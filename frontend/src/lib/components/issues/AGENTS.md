@@ -110,9 +110,11 @@ board methods, events and the patch read in
   (`holdTicketDrafts`), and a ticket pane's record holds those of its
   ticket and trail. Files are attached through it one at a time per
   ticket, each its own `attach:` write; it holds what a form reads (a
-  connection's link types for the link form; its projects, a project's
-  issue types and a type's create fields for New ticket), read on a
-  person's act and held until its computer connects again.
+  connection's link types for the link form; a board's projects, a
+  project's issue types and a type's create fields for New ticket), read
+  on a person's act and held until its computer connects again. New
+  ticket's draft, one per section, is held by the Backlog screen
+  (`BacklogScreen.svelte` `createDrafts`), so it outlives the form.
 - `stores/trackerTicketModel.ts` is the pure part: the comment and
   history windows, the rail's order, the side a new link sends, a poker
   round's result, the attachment a file in the text names, the board
