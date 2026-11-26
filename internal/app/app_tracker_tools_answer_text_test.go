@@ -13,7 +13,9 @@ import (
 
 // What an agent is told when Jira refuses or a read fails after the
 // approval is Jira's sentence or the app's, never the request: no
-// method, URL or status line; the URL names the site's host. Each
+// method, URL or status line; the URL names the site's host. A refusal
+// Jira says only of fields gives each field's sentence by the field's
+// name. Each
 // case arms its failure while the approval waits, so it meets the read
 // after the approval or the sends.
 func TestTrackerAgentAnswersNameNoRequest(t *testing.T) {
@@ -36,6 +38,12 @@ func TestTrackerAgentAnswersNameNoRequest(t *testing.T) {
 		{"Jira refuses the sprint move", sprint,
 			refuse("POST rest/agile/1.0/sprint/{sprint}/issue", 400, `{"errorMessages":["The sprint cannot take these issues."],"errors":{}}`),
 			`"refused":"sprint: The sprint cannot take these issues."`},
+		{"Jira refuses the sprint move by a field alone", sprint,
+			refuse("POST rest/agile/1.0/sprint/{sprint}/issue", 400, `{"errorMessages":[],"errors":{"issues":"These issues cannot be moved."}}`),
+			`"refused":"sprint: the tracker refused the write (HTTP 400); issues: These issues cannot be moved."`},
+		{"Jira refuses the title by its field alone", map[string]any{"keys": []string{"WEB-1", "WEB-2"}, "set": map[string]any{"title": "Renamed"}},
+			refuse("PUT rest/api/3/issue/{issue}", 400, `{"errorMessages":[],"errors":{"summary":"The summary is too long."}}`),
+			`"refused":"title: the tracker refused the write (HTTP 400); title: The summary is too long."`},
 		{"the read after the approval fails", sprint,
 			refuse("POST rest/api/3/issue/bulkfetch", 500, `{"errorMessages":["Internal server error"],"errors":{}}`),
 			"Nothing was sent: the tickets could not be read again after the user approved. example.atlassian.net: Jira answered HTTP 500"},

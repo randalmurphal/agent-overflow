@@ -296,22 +296,13 @@ type shownField struct {
 
 func newSheet(s *Server, connection string, key func(string) string, d trackerapp.DetailView) *sheet {
 	sh := &sheet{s: s, connection: connection, key: key, d: d, pages: map[string]trackerapp.CommentPageView{}}
-	names := map[string]int{}
-	for _, f := range d.Fields {
-		if f.Value.Kind != "" {
-			names[f.Name]++
-		}
-	}
+	names := shownFieldNames(d.Fields)
 	for _, f := range d.Fields {
 		if f.Value.Kind == "" {
 			continue
 		}
-		name := f.Name
-		if names[name] > 1 {
-			name += " (" + f.ID + ")"
-		}
 		values := fieldValues(f.Value)
-		sh.fields = append(sh.fields, shownField{id: f.ID, name: name, values: values, scalar: !f.List && len(values) == 1})
+		sh.fields = append(sh.fields, shownField{id: f.ID, name: names[f.ID], values: values, scalar: !f.List && len(values) == 1})
 	}
 	changes := slices.Clone(d.History)
 	slices.SortStableFunc(changes, func(a, b trackerapp.EventView) int { return cmp.Compare(b.At, a.At) })
@@ -325,6 +316,43 @@ func newSheet(s *Server, connection string, key func(string) string, d trackerap
 		sh.history = append(sh.history, ch)
 	}
 	return sh
+}
+
+// shownFieldNames are the names a read shows the fields of fields that
+// hold a value by, by ID: each field's name, followed by its ID when
+// another field shown has that name too.
+func shownFieldNames(fields []trackerapp.FieldView) map[string]string {
+	count := map[string]int{}
+	for _, f := range fields {
+		if f.Value.Kind != "" {
+			count[f.Name]++
+		}
+	}
+	out := map[string]string{}
+	for _, f := range fields {
+		if f.Value.Kind == "" {
+			continue
+		}
+		out[f.ID] = f.Name
+		if count[f.Name] > 1 {
+			out[f.ID] += " (" + f.ID + ")"
+		}
+	}
+	return out
+}
+
+// fieldNameIn is field id of fields as a model knows it: a field every
+// ticket has by its own name (title, assignee, ...), another by the name
+// a read of the ticket shows it by, or by its name there when the read
+// shows it no value, and by its ID when fields do not hold it.
+func fieldNameIn(fields []trackerapp.FieldView, id string) string {
+	if n, ok := shownFieldNames(fields)[id]; ok {
+		return n
+	}
+	if i := slices.IndexFunc(fields, func(f trackerapp.FieldView) bool { return f.ID == id }); i >= 0 && fields[i].Name != "" {
+		return fields[i].Name
+	}
+	return id
 }
 
 // name is a name or another ticket's title as answers show it, cut at

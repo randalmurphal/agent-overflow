@@ -749,3 +749,22 @@ func TestThePlanReadsTheMirrorsCardOnlyForACommentAlone(t *testing.T) {
 		}
 	}
 }
+
+// A tracker's refusal that it says only of fields reaches the agent with
+// each field's sentence, by the name a read of the ticket shows the field
+// by, after the refusal's own.
+func TestARefusalOfAFieldSaysItsSentenceByItsName(t *testing.T) {
+	t.Parallel()
+	w := newWriteFixture(t)
+	w.f.write = func(name string, _ any) (trackerapp.WriteView, error) {
+		return trackerapp.WriteView{Parts: []trackerapp.PartView{{Issue: "10012", Step: "edit", State: "refused", Refusal: &trackerapp.RefusalView{
+			Reason: "tracker", Message: "the tracker refused the write (HTTP 400)",
+			Fields: []trackerapp.FieldMessageView{{Field: "customfield_10030", Message: "The date is in the past."}},
+		}}}}, nil
+	}
+	answer, err := w.update(t, map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"Due at": "2026-12-01T10:00:00Z"}})
+	want := `{"tickets":[{"key":"WEB-12","refused":"Due at: the tracker refused the write (HTTP 400); Due at: The date is in the past."}]}`
+	if err != nil || answer != want {
+		t.Fatalf("answer = %s, %v\nwant %s", answer, err, want)
+	}
+}

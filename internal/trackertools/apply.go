@@ -229,7 +229,7 @@ func (t *sending) answer(st sendStep, v trackerapp.WriteView, err error) {
 		out.Already, out.Note = append(out.Already, st.names...), repeatedComment
 		return
 	}
-	state, sentence := judge(t.p.src.Kind, strings.Join(st.names, ", "), st.what, v, err)
+	state, sentence := judge(t.p.src.Kind, strings.Join(st.names, ", "), st.what, v, err, func(id string) string { return fieldNameIn(t.p.d.Fields, id) })
 	switch {
 	case state == tracker.StateApplied && unchanged(v):
 		// The ticket held it already: nothing was sent.
@@ -283,8 +283,9 @@ func unchanged(v trackerapp.WriteView) bool {
 }
 
 // judge is what became of one step, names (the call's names for it) on a
-// tracker of kind: its write's view v or its error.
-func judge(kind, names, what string, v trackerapp.WriteView, err error) (tracker.State, string) {
+// tracker of kind: its write's view v or its error. named is a field's
+// name by its ID, as a refusal's sentence names it (refusalText).
+func judge(kind, names, what string, v trackerapp.WriteView, err error, named func(string) string) (tracker.State, string) {
 	if err != nil {
 		if _, msg, ok := errorsx.PublicDetails(err); ok {
 			if strings.Contains(msg, "may or may not") {
@@ -321,7 +322,7 @@ func judge(kind, names, what string, v trackerapp.WriteView, err error) (tracker
 		return state, unknownSentence(kind, names, what)
 	case tracker.StateRefused:
 		if refusal != nil {
-			return state, names + ": " + refusalText(kind, refusal, false)
+			return state, names + ": " + refusalText(kind, refusal, false, named)
 		}
 	case tracker.StateNotSent:
 		// Its failure says why, below.
@@ -377,7 +378,7 @@ func trackerNameOf(kind string) string {
 // email (linearprovider's matchOne), so one Linear values share may be
 // left for the person to pick on the ticket, or, for a create (creating),
 // set after it.
-func refusalText(kind string, r *trackerapp.RefusalView, creating bool) string {
+func refusalText(kind string, r *trackerapp.RefusalView, creating bool, named func(string) string) string {
 	msg := strings.TrimSpace(r.Message)
 	for _, prefix := range []string{"jira: ", "linear: ", "linearprovider: ", "jiraprovider: ", "tracker: "} {
 		msg = strings.TrimPrefix(msg, prefix)
@@ -413,6 +414,18 @@ func refusalText(kind string, r *trackerapp.RefusalView, creating bool) string {
 		msg = "no value matches; it takes " + candidates(false)
 	case r.Reason == "stale":
 		msg = "it changed on the tracker after it was read; read the ticket again before you change it"
+	case r.Reason == "tracker" && len(r.Fields) > 0:
+		// The tracker's sentence of each field it refused, by the name a
+		// read shows the field by.
+		said := make([]string, len(r.Fields))
+		for i, f := range r.Fields {
+			name := f.Field
+			if named != nil {
+				name = named(f.Field)
+			}
+			said[i] = name + ": " + strings.TrimSuffix(strings.TrimSpace(f.Message), ".")
+		}
+		msg = strings.TrimSuffix(msg, ".") + "; " + strings.Join(said, "; ")
 	}
 	shown, _ := textClip(msg, 0, refusalCut)
 	return strings.TrimSuffix(shown, ".") + "."

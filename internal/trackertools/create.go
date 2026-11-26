@@ -132,7 +132,7 @@ func (s *Server) create(ctx context.Context, caller Caller, raw json.RawMessage)
 	// created ticket's.
 	var stopped bool
 	if state, sentence := judge(tg.src.Kind, setDescription, "change", trackerapp.WriteView{Parts: slices.DeleteFunc(slices.Clone(v.Parts),
-		func(p trackerapp.PartView) bool { return p.Step == "create" })}, nil); state != tracker.StateApplied {
+		func(p trackerapp.PartView) bool { return p.Step == "create" })}, nil, nil); state != tracker.StateApplied {
 		out.Refused, stopped = sentence, true
 	}
 	if len(after) > 0 {
@@ -215,7 +215,7 @@ func createRefused(tg createTarget, v trackerapp.WriteView) error {
 			}
 			return invalidf("%s needs %s to create a ticket; give them in set.", tg.key, sayList(names, "and"))
 		default:
-			return invalidf("The ticket was not created: %s", refusalText(tg.src.Kind, r, true))
+			return invalidf("The ticket was not created: %s", refusalText(tg.src.Kind, r, true, nil))
 		}
 	}
 	return invalidf("The ticket was not created; the tracker gave no reason.")
