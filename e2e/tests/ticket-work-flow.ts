@@ -99,7 +99,7 @@ async function openWork(page: Page, issueId: string, compact: boolean, column?: 
 /** The Work section on the ticket's rail; a narrow ticket (always on
  * compact, and on desktop beside a second pane) opens it from Details once
  * the ticket is read. */
-async function workOf(ticket: Locator, compact: boolean): Promise<Locator> {
+export async function workOf(ticket: Locator, compact: boolean): Promise<Locator> {
   const details = ticket.getByTestId('ticket-details');
   const work = ticket.getByTestId('ticket-rail').getByTestId('ticket-work');
   await expect(work.or(details).first()).toBeVisible({ timeout: 30_000 });
@@ -145,7 +145,7 @@ async function backlogRowMenuMore(harness: HarnessApp, page: Page, compact: bool
 }
 
 /** Shows column `name` on compact (the strip picks it); a no-op on desktop. */
-async function showColumn(pane: Locator, name: string, compact: boolean): Promise<void> {
+export async function showColumn(pane: Locator, name: string, compact: boolean): Promise<void> {
   if (!compact) return;
   const tab = pane.getByTestId('issues-column-tab').filter({ hasText: name });
   await expect(tab).toBeVisible({ timeout: 30_000 });
