@@ -55,10 +55,14 @@ type boardPending struct {
 
 // overflows reports that adding changed and removed would pass an
 // event's bound while it already holds rows, so what it holds is to be
-// sent first and the event stays one a patch reads.
+// sent first and the event stays one a patch reads. Rows that fit by
+// their counts fit; only past that are the unions counted.
 func (b *boardPending) overflows(changed, removed []tracker.IssueID) bool {
 	held := len(b.changed) + len(b.removed)
-	return !b.truncated && held > 0 && len(unite(b.changed, changed))+len(unite(b.removed, removed)) > maxEventIssues
+	if b.truncated || held == 0 || held+len(changed)+len(removed) <= maxEventIssues {
+		return false
+	}
+	return len(unite(b.changed, changed))+len(unite(b.removed, removed)) > maxEventIssues
 }
 
 // add merges changed and removed rows of the board, and readAgain.

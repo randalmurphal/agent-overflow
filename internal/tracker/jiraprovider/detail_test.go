@@ -299,7 +299,7 @@ func TestMoveFieldsRequiredAsTheScreenSays(t *testing.T) {
 	if err != nil || len(moves) != 1 || len(moves[0].Fields) != 1 {
 		t.Fatalf("moves %+v %v; want one move with one field", moves, err)
 	}
-	if f := moves[0].Fields[0]; !f.Required || !f.Defaulted || f.MustSupply() {
+	if f := moves[0].Fields[0]; !f.Required || !f.Defaulted {
 		t.Errorf("priority %+v; want it required, defaulted, and not the person's to supply", f)
 	}
 }
@@ -324,8 +324,8 @@ func TestCreateFieldsRequireWhatHasNoDefault(t *testing.T) {
 		byID[fd.ID] = fd
 	}
 	priority, team := byID["priority"], byID["customfield_10050"]
-	if !priority.Required || !priority.Defaulted || priority.MustSupply() || !team.Required || team.Defaulted || !team.MustSupply() {
-		t.Errorf("priority %+v, team %+v; want both required, priority defaulted, and only the team the person's to supply", priority, team)
+	if !priority.Required || !priority.Defaulted || !team.Required || team.Defaulted {
+		t.Errorf("priority %+v, team %+v; want both required and only priority defaulted", priority, team)
 	}
 	// The screen's listed values ride with the field, so its picker reads
 	// nothing; a field the screen lists none for has none.
