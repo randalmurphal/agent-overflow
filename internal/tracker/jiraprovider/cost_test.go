@@ -250,7 +250,10 @@ func TestRequestCost(t *testing.T) {
 		return err
 	})
 	r.result("Tempo AddWorklog", func() tracker.Result {
-		return tt.AddWorklog(ctx, tracker.WorklogInput{Issue: first, Day: to, Spent: 30 * time.Minute, Description: "Review"})
+		return tt.AddWorklogs(ctx, []tracker.WorklogInput{{Issue: first, Day: to, Spent: 30 * time.Minute, Description: "Review"}})
+	})
+	r.result("Tempo AddWorklogs (week, 25)", func() tracker.Result {
+		return namedWorklogs(tt.AddWorklogs(ctx, weekOfWorklogs(t, now)))
 	})
 	hour := 2 * time.Hour
 	r.result("Tempo EditWorklog", func() tracker.Result { return tt.EditWorklog(ctx, tracker.WorklogEdit{From: wls[0], Spent: &hour}) })
@@ -271,7 +274,7 @@ func TestRequestCost(t *testing.T) {
 		"MoveToSprint (30)": 3, "MoveToSprint backlog (30)": 2, "AddComment": 2, "EditComment": 2, "DeleteComment": 2,
 		"Link": 1, "Unlink": 2, "Attach": 1, "Download": 2,
 		"CreateSprint": 1, "EditSprint": 2, "CompleteSprint (125 issues)": 7, "StartSprint": 2,
-		"Tempo Worklogs (month)": 2, "Tempo AddWorklog": 3, "Tempo EditWorklog": 4, "Tempo DeleteWorklog": 2,
+		"Tempo Worklogs (month)": 2, "Tempo AddWorklog": 3, "Tempo AddWorklogs (week, 25)": 27, "Tempo EditWorklog": 4, "Tempo DeleteWorklog": 2,
 	})
 	// A full bulk fetch batch's answer fits the transport's pooled answer
 	// buffer (trackerapi's answerBufferKeep, 2 MiB), so reading it keeps the
@@ -318,13 +321,16 @@ func TestRequestCostJiraWorklogs(t *testing.T) {
 		return err
 	})
 	r.result("Jira AddWorklog", func() tracker.Result {
-		return tt.AddWorklog(ctx, tracker.WorklogInput{Issue: tracker.IssueID(costIssueID(0)), Day: to, Spent: 30 * time.Minute, Description: "Review"})
+		return tt.AddWorklogs(ctx, []tracker.WorklogInput{{Issue: tracker.IssueID(costIssueID(0)), Day: to, Spent: 30 * time.Minute, Description: "Review"}})
+	})
+	r.result("Jira AddWorklogs (week, 25)", func() tracker.Result {
+		return namedWorklogs(tt.AddWorklogs(ctx, weekOfWorklogs(t, now)))
 	})
 	hour := 2 * time.Hour
 	r.result("Jira EditWorklog", func() tracker.Result { return tt.EditWorklog(ctx, tracker.WorklogEdit{From: wls[0], Spent: &hour}) })
 	r.result("Jira DeleteWorklog", func() tracker.Result { return tt.DeleteWorklog(ctx, tracker.WorklogDelete{From: wls[1]}) })
 	r.log()
-	r.pin(map[string]int{"Jira Worklogs (month)": 2, "Jira AddWorklog": 2, "Jira EditWorklog": 2, "Jira DeleteWorklog": 2})
+	r.pin(map[string]int{"Jira Worklogs (month)": 2, "Jira AddWorklog": 2, "Jira AddWorklogs (week, 25)": 25, "Jira EditWorklog": 2, "Jira DeleteWorklog": 2})
 	// Measured 29075 bytes, the search carrying each issue's summary; bound as
 	// in TestRequestCost.
 	r.pinBytes(map[string]int{"Jira Worklogs (month)": 30530})
@@ -337,4 +343,28 @@ func mustDate(t *testing.T, at time.Time) tracker.Date {
 		t.Fatal(err)
 	}
 	return d
+}
+
+// weekOfWorklogs is a week's posting: five tickets on each of the five
+// days before now.
+func weekOfWorklogs(t *testing.T, now time.Time) []tracker.WorklogInput {
+	var out []tracker.WorklogInput
+	for d := 1; d <= 5; d++ {
+		for i := range 5 {
+			out = append(out, tracker.WorklogInput{Issue: tracker.IssueID(costIssueID(i)), Day: mustDate(t, now.AddDate(0, 0, -d)),
+				Spent: 45 * time.Minute, Description: fmt.Sprintf("Work %d", i)})
+		}
+	}
+	return out
+}
+
+// namedWorklogs is res with an applied part that names no worklog turned
+// into a refusal, so the cost run reports it.
+func namedWorklogs(res tracker.Result) tracker.Result {
+	for i, p := range res.Parts {
+		if p.Outcome.State() == tracker.StateApplied && p.Worklog == "" {
+			res.Parts[i].Outcome = tracker.Refused(tracker.Refusal{Reason: tracker.ReasonTracker, Message: "applied with no worklog ID"})
+		}
+	}
+	return res
 }

@@ -260,7 +260,7 @@ func TestWriteCosts(t *testing.T) {
 			func() (WriteView, error) {
 				return f.svc.AddWorklog(ctx, id, WorklogRequest{Issue: "10001", Day: "2026-11-02", SpentSeconds: 3600})
 			}),
-			costOf{map[string]int{"AddWorklog": 1, "Worklogs": 1}, map[string]int{"ReadMirrorRefreshTargets": 1, "ReplaceMirrorWorklogs": 1}}},
+			costOf{map[string]int{"AddWorklogs": 1, "Worklogs": 1}, map[string]int{"ReadMirrorRefreshTargets": 1, "ReplaceMirrorWorklogs": 1}}},
 		{"create", write(tracker.Result{Parts: []tracker.Part{appliedPart("10005", tracker.StepCreate, tracker.CardOf("10005"), tracker.DetailOf("10005"))}},
 			func() { f.state.set(testBoard, writeRow("10005", 1, "e")) },
 			func() (WriteView, error) {

@@ -178,7 +178,7 @@ func (s *Service) AddWorklog(ctx context.Context, id string, in WorklogRequest) 
 	if err != nil {
 		return WriteView{}, err
 	}
-	return s.write(ctx, id, timeCall(m.Issue, m, tracker.TimeTracker.AddWorklog))
+	return s.write(ctx, id, timeCall(m.Issue, []tracker.WorklogInput{m}, tracker.TimeTracker.AddWorklogs))
 }
 
 // EditWorklog changes a worklog, as read, on its issue.

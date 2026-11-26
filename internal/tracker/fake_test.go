@@ -85,6 +85,6 @@ func (fakeProvider) Poker() Poker                                  { return nil 
 type fakeTime struct{}
 
 func (fakeTime) Worklogs(context.Context, WorklogQuery) ([]Worklog, error) { return nil, nil }
-func (fakeTime) AddWorklog(context.Context, WorklogInput) Result           { return Result{} }
+func (fakeTime) AddWorklogs(context.Context, []WorklogInput) Result        { return Result{} }
 func (fakeTime) EditWorklog(context.Context, WorklogEdit) Result           { return Result{} }
 func (fakeTime) DeleteWorklog(context.Context, WorklogDelete) Result       { return Result{} }

@@ -73,24 +73,45 @@ func (t *tempoTime) name(ctx context.Context, logs []tracker.Worklog) error {
 	return nil
 }
 
-// AddWorklog logs time for the credential's own user.
-func (t *tempoTime) AddWorklog(ctx context.Context, in tracker.WorklogInput) tracker.Result {
-	if err := in.Check(); err != nil {
-		return tracker.Invalid(tracker.StepWorklog, err, in.Issue)
-	}
-	issue, err := numericID("issue", string(in.Issue))
-	if err != nil {
-		return tracker.Invalid(tracker.StepWorklog, err, in.Issue)
+// AddWorklogs logs each of ins for the credential's own user: one read
+// of who the user is from Jira, then one Tempo batch (tempo.Client.Apply),
+// whose checks run once for every worklog and which sends one request
+// per worklog, in order.
+func (t *tempoTime) AddWorklogs(ctx context.Context, ins []tracker.WorklogInput) tracker.Result {
+	if err := tracker.CheckWorklogInputs(ins); err != nil {
+		return tracker.InvalidWorklogs(ins, err)
 	}
 	me, err := t.jira.Me(ctx)
 	if err != nil {
-		return worklogResult(in.Issue, "", beforeSend(fmt.Errorf("jiraprovider: who logs the time: %w: %w", tracker.ErrWorklogJira, err)))
+		return worklogResults(ins, "", beforeSend(fmt.Errorf("jiraprovider: who logs the time: %w: %w", tracker.ErrWorklogJira, err)))
 	}
-	_, err = t.tempo.Create(ctx, tempo.Draft{
-		Issue: tempo.Issue{ID: issue}, Author: me.AccountID, Start: tempo.Start{Date: tempoDate(in.Day)},
-		Spent: in.Spent, Description: in.Description,
-	})
-	return worklogResult(in.Issue, tracker.UserID(me.AccountID), outcome(err), in.Day)
+	author := tracker.UserID(me.AccountID)
+	out := tracker.Result{Parts: make([]tracker.Part, len(ins))}
+	var ops []tempo.Op
+	var sent []int // the place in ins of each op
+	for i, in := range ins {
+		issue, err := numericID("issue", string(in.Issue))
+		if err != nil {
+			out.Parts[i] = worklogPart(in, author, tracker.Refused(refusal(err)), "")
+			continue
+		}
+		ops = append(ops, tempo.CreateOp(tempo.Draft{
+			Issue: tempo.Issue{ID: issue}, Author: me.AccountID, Start: tempo.Start{Date: tempoDate(in.Day)},
+			Spent: in.Spent, Description: in.Description,
+		}))
+		sent = append(sent, i)
+	}
+	if len(ops) == 0 {
+		return out
+	}
+	for j, o := range t.tempo.Apply(ctx, ops) {
+		var made tracker.WorklogID
+		if o.Status == tempo.Applied {
+			made = tracker.WorklogID(decimal(o.Stored.ID))
+		}
+		out.Parts[sent[j]] = worklogPart(ins[sent[j]], author, outcome(o.Err), made)
+	}
+	return out
 }
 
 // EditWorklog changes a Tempo worklog that still holds what From says;
@@ -180,6 +201,25 @@ func editDays(in tracker.WorklogEdit) []tracker.Date {
 		days = append(days, *in.Day)
 	}
 	return days
+}
+
+// worklogPart is the part of in, one worklog of a batch added for author
+// with outcome o; made names the worklog an applied add made.
+func worklogPart(in tracker.WorklogInput, author tracker.UserID, o tracker.Outcome, made tracker.WorklogID) tracker.Part {
+	p := worklogResult(in.Issue, author, o, in.Day).Parts[0]
+	if o.State() == tracker.StateApplied {
+		p.Worklog = made
+	}
+	return p
+}
+
+// worklogResults is a batch whose every input has outcome o.
+func worklogResults(ins []tracker.WorklogInput, author tracker.UserID, o tracker.Outcome) tracker.Result {
+	out := tracker.Result{Parts: make([]tracker.Part, len(ins))}
+	for i, in := range ins {
+		out.Parts[i] = worklogPart(in, author, o, "")
+	}
+	return out
 }
 
 // worklogResult is a worklog write's one part, which may change the
