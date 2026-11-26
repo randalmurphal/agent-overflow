@@ -1,12 +1,3 @@
-<script lang="ts" module>
-  // The carry loads on the first press of a card, once per page.
-  let carryModule: Promise<typeof import('./listCarry')> | null = null;
-  function loadCarry(): Promise<typeof import('./listCarry')> {
-    carryModule ??= import('./listCarry');
-    return carryModule;
-  }
-</script>
-
 <script lang="ts">
   // The Board screen: the board's columns side by side, the row scrolling
   // sideways when the pane is narrower than the columns. Under compact the
@@ -35,6 +26,7 @@
   import { columnCount } from './boardFormat';
   import { setTicketWriteSurface } from './ticketWriteSurface';
   import type { Carry, CarryColumn, CarryHost, CarrySpot } from './listCarry';
+  import { createListPress, type ListPress } from './listPress';
   import type { CardEditField } from './ticketEditors';
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
   import { compactColumn, setCompactColumn, type CardField } from '../../stores/issuesPane.svelte';
@@ -272,91 +264,39 @@
     };
   });
 
-  // A press on a card, until it moves far enough to pick the card up or
-  // ends as the click that opens the ticket.
-  interface Press {
-    readonly id: number;
-    readonly el: HTMLElement;
-    readonly row: RowView;
-    readonly from: number;
-    readonly level: boolean;
-    readonly sx: number;
-    readonly sy: number;
-    x: number;
-    y: number;
-    carry: Carry | null;
-    starting: boolean;
-  }
-  let press: Press | null = null;
   let columnsEl: HTMLElement | undefined = $state();
   const columnRefs: ({ carryColumn(): CarryColumn } | undefined)[] = $state([]);
 
-  function onPointerDown(event: PointerEvent): void {
-    if (compact || press || event.button !== 0 || (event.pointerType !== 'mouse' && event.pointerType !== 'pen')) return;
-    // A press with Ctrl or Cmd held is a click with its own meaning.
-    if (event.ctrlKey || event.metaKey) return;
-    const target = event.target instanceof Element ? event.target : null;
-    if (!target || target.closest('[data-card-mark]')) return;
-    const el = target.closest<HTMLElement>('[data-testid="issues-card"]');
-    const issue = el?.dataset.issue;
-    if (!el || !issue) return;
-    const from = columnShowing(issue);
-    const row = from >= 0 ? drawn[from].rows.find((r) => r.card.id === issue) : undefined;
-    if (!row || cardBusy(boardKey, cardWriteContext(boardRef, row))) return;
-    void loadCarry().catch(() => {});
-    press = { id: event.pointerId, el, row, from, level: target.closest('[data-grab]') !== null, sx: event.clientX, sy: event.clientY, x: event.clientX, y: event.clientY, carry: null, starting: false };
-    window.addEventListener('pointermove', onPressMove);
-    window.addEventListener('pointerup', onPressUp);
-    window.addEventListener('pointercancel', onPressCancel);
-  }
+  // A press on a card (listPress.ts), until it picks the card up or ends
+  // as the click that opens the ticket.
+  const press = createListPress<{ readonly row: RowView; readonly from: number }>({
+    off: () => compact,
+    pressed(target) {
+      const el = target.closest<HTMLElement>('[data-testid="issues-card"]');
+      const issue = el?.dataset.issue;
+      if (!el || !issue) return null;
+      const from = columnShowing(issue);
+      const row = from >= 0 ? drawn[from].rows.find((r) => r.card.id === issue) : undefined;
+      if (!row || cardBusy(boardKey, cardWriteContext(boardRef, row))) return null;
+      return { el, item: { row, from } };
+    },
+    pickUp,
+    loadFailed: 'Could not carry the card: the board\'s carry did not load. Reload the window to try again.',
+  });
+  $effect(() => () => press.destroy());
 
-  function endPress(): void {
-    window.removeEventListener('pointermove', onPressMove);
-    window.removeEventListener('pointerup', onPressUp);
-    window.removeEventListener('pointercancel', onPressCancel);
-    press = null;
-  }
-
-  function onPressMove(event: PointerEvent): void {
-    const p = press;
-    if (!p || event.pointerId !== p.id) return;
-    p.x = event.clientX;
-    p.y = event.clientY;
-    if (p.carry) {
-      p.carry.move(p.x, p.y);
-      return;
-    }
-    if (p.starting || Math.hypot(p.x - p.sx, p.y - p.sy) < PICK_UP_PX) return;
-    p.starting = true;
-    loadCarry().then(
-      (mod) => {
-        if (press !== p) return;
-        pickUp(mod, p);
-      },
-      (err: unknown) => {
-        if (press === p) endPress();
-        addErrorToast('Could not carry the card: the board\'s carry did not load. Reload the window to try again.', err);
-      },
-    );
-  }
-
-  // How far a press moves before it picks the card up.
-  const PICK_UP_PX = 5;
-
-  function pickUp(mod: typeof import('./listCarry'), p: Press): void {
+  function pickUp(mod: typeof import('./listCarry'), p: ListPress<{ readonly row: RowView; readonly from: number }>): Carry | null {
     const scroller = columnsEl;
     const geometry = columnRefs.map((ref) => ref?.carryColumn());
-    if (!scroller || geometry.some((g) => !g)) {
-      endPress();
-      return;
-    }
+    if (!scroller || geometry.some((g) => !g)) return null;
+    const { row, from: fromColumn } = p.item;
     editing = null;
     menu = null;
     movesRead = null;
-    const ctx = cardWriteContext(boardRef, p.row);
+    const ctx = cardWriteContext(boardRef, row);
     const id = ++carries;
-    carrying = { id, row: p.row, ctx, from: p.from, over: p.from, slot: null, moves: null };
-    const from = columnList(p.from);
+    carrying = { id, row, ctx, from: fromColumn, over: fromColumn, slot: null, moves: null };
+    const from = columnList(fromColumn);
     const columnOf = (spot: CarrySpot | null) => (spot ? lists.indexOf(spot.list) : -1);
     const host: CarryHost = {
       layout: mod.columnsLayout(scroller, geometry as CarryColumn[], from),
@@ -373,13 +313,13 @@
       },
       drop: (spot, at) => {
         const column = columnOf(spot);
-        return drop(p.row, p.from, column < 0 ? null : column, spot?.slot ?? null, at);
+        return drop(row, fromColumn, column < 0 ? null : column, spot?.slot ?? null, at);
       },
       end() {
         if (carrying?.id === id) carrying = null;
       },
     };
-    p.carry = mod.startCarry(p.el, p.sx, p.sy, p.x, p.y, { grab: p.level, flat: false }, host);
+    return mod.startCarry(p.el, p.sx, p.sy, p.x, p.y, { grab: p.level, flat: false }, host);
   }
 
   // The moves of the carried ticket, read once per carry when the card
@@ -456,34 +396,6 @@
     }
   }
 
-  function onPressUp(event: PointerEvent): void {
-    const p = press;
-    if (!p || event.pointerId !== p.id) return;
-    endPress();
-    if (!p.carry) return;
-    // The click a carry's release raises opens nothing.
-    const swallow = (e: MouseEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-    };
-    window.addEventListener('click', swallow, { capture: true, once: true });
-    setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 0);
-    p.carry.up(event.clientX, event.clientY);
-  }
-
-  function onPressCancel(event: PointerEvent): void {
-    const p = press;
-    if (!p || event.pointerId !== p.id) return;
-    endPress();
-    p.carry?.cancel();
-  }
-
-  $effect(() => () => {
-    const p = press;
-    endPress();
-    p?.carry?.cancel();
-  });
-
   const picked = $derived.by(() => {
     const chosen = compactColumn(boardRef);
     if (chosen !== null && chosen < columns.length) return chosen;
@@ -548,7 +460,7 @@
     {/key}
   {:else}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div bind:this={columnsEl} class="flex min-h-0 flex-1 gap-3 overflow-x-auto px-3 pt-3" data-testid="issues-columns" onpointerdown={onPointerDown}>
+    <div bind:this={columnsEl} class="flex min-h-0 flex-1 gap-3 overflow-x-auto px-3 pt-3" data-testid="issues-columns" onpointerdown={press.down}>
       {#each columns as col, i (i)}
         <BoardColumn
           bind:this={columnRefs[i]}

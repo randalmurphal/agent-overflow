@@ -306,7 +306,7 @@ type Move struct {
 	ID     MoveID
 	Name   string
 	To     StatusID
-	Fields []Field
+	Fields []ScreenField
 }
 
 // Event is one recorded change of an issue as the ticket's history shows

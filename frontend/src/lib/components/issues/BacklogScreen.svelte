@@ -1,13 +1,3 @@
-<script lang="ts" module>
-  // The carry loads on the first press of a row, once per page; it is the
-  // Board's (listCarry.ts).
-  let carryModule: Promise<typeof import('./listCarry')> | null = null;
-  function loadCarry(): Promise<typeof import('./listCarry')> {
-    carryModule ??= import('./listCarry');
-    return carryModule;
-  }
-</script>
-
 <script lang="ts">
   // The Backlog screen (docs/specs/issues.md, "Backlog and sprint
   // planning"): the board's open sprints, the active ones first, then the
@@ -41,6 +31,7 @@
   import SprintControls from './SprintControls.svelte';
   import { setTicketWriteSurface } from './ticketWriteSurface';
   import type { Carry, CarryHost, CarryLayout, CarrySpot } from './listCarry';
+  import { createListPress, type ListPress } from './listPress';
   import type { CardEditField } from './ticketEditors';
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
   import { backlogSectionOpen, setBacklogSectionOpen, type CardField } from '../../stores/issuesPane.svelte';
@@ -48,7 +39,7 @@
   import { cardBusy, cardWriteContext, moveCardToSprint, placeCard, rankCard, waitingCards } from '../../stores/trackerBoardCarry.svelte';
   import { boardWriteContext, moveTicket, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
   import type { TrackerTicketRef } from '../../stores/trackerTicket.svelte';
-  import { addErrorToast, addToast } from '../../stores/toast.svelte';
+  import { addToast } from '../../stores/toast.svelte';
   import type { MoveView, RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import { cardURL, filtering, sectionKey, type CardFilter, type HeldBoard } from '../../stores/trackerBoardModel';
   import {
@@ -71,8 +62,6 @@
 
   // Rows from a section's foot at which its next page is asked for.
   const NEAR_END_ROWS = 15;
-  // How far a press moves before it picks the row up.
-  const PICK_UP_PX = 5;
 
   interface Props {
     boardKey: string;
@@ -243,71 +232,25 @@
     if (!(await copyToClipboard(text))) addToast('error', `Could not copy the ${what}.`);
   }
 
-  // A press on a row, until it moves far enough to pick the row up or ends
-  // as the click that opens the ticket.
-  interface Press {
-    readonly id: number;
-    readonly el: HTMLElement;
-    readonly row: RowView;
-    readonly from: string;
-    readonly sx: number;
-    readonly sy: number;
-    x: number;
-    y: number;
-    carry: Carry | null;
-    starting: boolean;
-  }
-  let press: Press | null = null;
-
   function rowShowing(issue: string): { row: RowView; list: string } | null {
     for (const it of items) if (it.kind === 'row' && it.row.card.id === issue) return { row: it.row, list: sections[it.section].list };
     return null;
   }
 
-  function onPointerDown(event: PointerEvent): void {
-    if (compact || press || event.button !== 0 || (event.pointerType !== 'mouse' && event.pointerType !== 'pen')) return;
-    // A press with Ctrl or Cmd held is a click with its own meaning.
-    if (event.ctrlKey || event.metaKey) return;
-    const target = event.target instanceof Element ? event.target : null;
-    if (!target || target.closest('[data-card-mark]')) return;
-    const el = target.closest<HTMLElement>('[data-testid="issues-backlog-row"]');
-    const at = el?.dataset.issue ? rowShowing(el.dataset.issue) : null;
-    if (!el || !at || cardBusy(boardKey, cardWriteContext(boardRef, at.row))) return;
-    void loadCarry().catch(() => {});
-    press = { id: event.pointerId, el, row: at.row, from: at.list, sx: event.clientX, sy: event.clientY, x: event.clientX, y: event.clientY, carry: null, starting: false };
-    window.addEventListener('pointermove', onPressMove);
-    window.addEventListener('pointerup', onPressUp);
-    window.addEventListener('pointercancel', onPressCancel);
-  }
-
-  function endPress(): void {
-    window.removeEventListener('pointermove', onPressMove);
-    window.removeEventListener('pointerup', onPressUp);
-    window.removeEventListener('pointercancel', onPressCancel);
-    press = null;
-  }
-
-  function onPressMove(event: PointerEvent): void {
-    const p = press;
-    if (!p || event.pointerId !== p.id) return;
-    p.x = event.clientX;
-    p.y = event.clientY;
-    if (p.carry) {
-      p.carry.move(p.x, p.y);
-      return;
-    }
-    if (p.starting || Math.hypot(p.x - p.sx, p.y - p.sy) < PICK_UP_PX) return;
-    p.starting = true;
-    loadCarry().then(
-      (mod) => {
-        if (press === p) pickUp(mod, p);
-      },
-      (err: unknown) => {
-        if (press === p) endPress();
-        addErrorToast('Could not carry the ticket: the carry did not load. Reload the window to try again.', err);
-      },
-    );
-  }
+  // A press on a row (listPress.ts), until it picks the row up or ends as
+  // the click that opens the ticket.
+  const press = createListPress<{ readonly row: RowView; readonly list: string }>({
+    off: () => compact,
+    pressed(target) {
+      const el = target.closest<HTMLElement>('[data-testid="issues-backlog-row"]');
+      const at = el?.dataset.issue ? rowShowing(el.dataset.issue) : null;
+      if (!el || !at || cardBusy(boardKey, cardWriteContext(boardRef, at.row))) return null;
+      return { el, item: at };
+    },
+    pickUp,
+    loadFailed: 'Could not carry the ticket: the carry did not load. Reload the window to try again.',
+  });
+  $effect(() => () => press.destroy());
 
   /** The screen's one list as a carry tests it, read at pick-up: the item
    * under the pointer from the virtualizer's offsets, so a section partly
@@ -328,31 +271,29 @@
     };
   }
 
-  function pickUp(mod: typeof import('./listCarry'), p: Press): void {
+  function pickUp(mod: typeof import('./listCarry'), p: ListPress<{ readonly row: RowView; readonly list: string }>): Carry | null {
     const scroller = scrollEl;
     const ref = listRef;
-    if (!scroller || !ref) {
-      endPress();
-      return;
-    }
+    if (!scroller || !ref) return null;
+    const { row, list: from } = p.item;
     editing = null;
     menu = null;
-    const ctx = cardWriteContext(boardRef, p.row);
+    const ctx = cardWriteContext(boardRef, row);
     const id = ++carries;
-    carrying = { id, row: p.row, ctx, from: p.from, spot: { list: p.from, slot: null }, height: p.el.getBoundingClientRect().height };
+    carrying = { id, row, ctx, from, spot: { list: from, slot: null }, height: p.el.getBoundingClientRect().height };
     const host: CarryHost = {
       layout: backlogLayout(mod, scroller, ref),
-      from: p.from,
+      from,
       over(spot) {
         const c = carrying;
         if (c?.id === id) carrying = { ...c, spot };
       },
-      drop: (spot) => drop(p.row, p.from, spot),
+      drop: (spot) => drop(row, from, spot),
       end() {
         if (carrying?.id === id) carrying = null;
       },
     };
-    p.carry = mod.startCarry(p.el, p.sx, p.sy, p.x, p.y, { grab: false, flat: true }, host);
+    return mod.startCarry(p.el, p.sx, p.sy, p.x, p.y, { grab: false, flat: true }, host);
   }
 
   /** Where the row shows now, for the carried copy to glide to; null when
@@ -382,34 +323,6 @@
     return shownAt(issue);
   }
 
-  function onPressUp(event: PointerEvent): void {
-    const p = press;
-    if (!p || event.pointerId !== p.id) return;
-    endPress();
-    if (!p.carry) return;
-    // The click a carry's release raises opens nothing.
-    const swallow = (e: MouseEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-    };
-    window.addEventListener('click', swallow, { capture: true, once: true });
-    setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 0);
-    p.carry.up(event.clientX, event.clientY);
-  }
-
-  function onPressCancel(event: PointerEvent): void {
-    const p = press;
-    if (!p || event.pointerId !== p.id) return;
-    endPress();
-    p.carry?.cancel();
-  }
-
-  $effect(() => () => {
-    const p = press;
-    endPress();
-    p?.carry?.cancel();
-  });
-
   /** What a section's foot says while it is being read, failed or unread. */
   function footNote(sec: BacklogSection): string | null {
     const k = sectionKey(sec.section);
@@ -435,7 +348,7 @@
   data-testid="issues-backlog"
   data-carry-list=""
   data-carrying={carrying ? '' : undefined}
-  onpointerdown={onPointerDown}
+  onpointerdown={press.down}
 >
   {#if sections.length === 0}
     <p class="px-3 py-2 text-sm text-fg-muted" data-testid="issues-backlog-none">This board has no backlog.</p>

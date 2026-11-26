@@ -68,14 +68,14 @@ func detailFields(is linear.Issue, n names) []tracker.Field {
 
 // CreateFields are the fields a create takes besides the title, none
 // required. Linear has no issue types; one named is refused.
-func (p *Provider) CreateFields(_ context.Context, project tracker.ProjectID, issueType tracker.IssueTypeID) ([]tracker.CreateField, error) {
+func (p *Provider) CreateFields(_ context.Context, project tracker.ProjectID, issueType tracker.IssueTypeID) ([]tracker.ScreenField, error) {
 	if project == "" || issueType != "" {
 		return nil, fmt.Errorf("linearprovider: create fields: %w: a project and no issue type", tracker.ErrInvalidInput)
 	}
-	var out []tracker.CreateField
+	var out []tracker.ScreenField
 	for _, f := range editable {
 		if f.id != tracker.FieldTitle {
-			out = append(out, tracker.CreateField{Field: f.field(tracker.Value{})})
+			out = append(out, tracker.ScreenField{Field: f.field(tracker.Value{})})
 		}
 	}
 	return out, nil

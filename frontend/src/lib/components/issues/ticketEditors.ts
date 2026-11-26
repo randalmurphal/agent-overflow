@@ -21,7 +21,7 @@ import {
   setTicketPoints,
   type TicketWriteContext,
 } from '../../stores/trackerTicketWrites.svelte';
-import type { FieldEditor } from './TicketField.svelte';
+import type { FieldEditor, TypingHold } from './TicketField.svelte';
 import type { PickItem } from './TicketPicker.svelte';
 
 /** The fields a Board card changes from its marks. */
@@ -47,6 +47,55 @@ export interface EditorTarget {
   choices(text: string): Promise<ChoiceListView>;
   /** Takes an edit, with the values a pick leaves the field holding. */
   save(edit: FieldEditInput, picked: readonly PickItem[]): void;
+  /** Holds the text being typed in a typed field, for a form whose field
+   * may go before it is saved. */
+  readonly typing?: TypingHold;
+  /** The row that leaves a field the tracker requires to the tracker,
+   * where the target sends none for it (a create's defaulted field). */
+  readonly unset?: string;
+}
+
+/** A field the person must give a value: one the tracker requires and
+ * fills no default for. Whether a field may be cleared is `required`
+ * alone, which a defaulted field also is. */
+export function mustSupply(f: FieldView): boolean {
+  return !!f.required && !f.defaulted;
+}
+
+/** The most values a list held here answers at once, as a tracker's
+ * choices read answers (the providers' pickLimit): more say there are
+ * more, so the picker asks again with the text typed. */
+export const PICK_LIMIT = 50;
+
+/** How a list held here is searched and shown. */
+export interface HeldList<T> {
+  /** The texts of a value that typed text is found in. */
+  readonly searched: readonly ((v: T) => string)[];
+  /** The value as the picker shows it. */
+  readonly choice: (v: T) => { id: string; name: string };
+  /** Whether the value is offered at all. */
+  readonly offered?: (v: T) => boolean;
+}
+
+/** The values of a list held here one of whose texts holds `text`, in
+ * any case, as the picker's narrowing finds them (every value for no
+ * text): the first PICK_LIMIT, with `more` when there are others. The
+ * scan stops at the first match past the bound, and only the values
+ * answered are made into choices, so a long list costs a scan. */
+export function heldChoices<T>(values: readonly T[], text: string, list: HeldList<T>): ChoiceListView {
+  const want = text.trim().toLowerCase();
+  const found: T[] = [];
+  let more = false;
+  for (const v of values) {
+    if (list.offered && !list.offered(v)) continue;
+    if (want && !list.searched.some((s) => s(v).toLowerCase().includes(want))) continue;
+    if (found.length === PICK_LIMIT) {
+      more = true;
+      break;
+    }
+    found.push(v);
+  }
+  return { choices: found.map(list.choice), more };
 }
 
 /** A field's values as the items a picker shows. */
@@ -90,7 +139,7 @@ export function fieldEditor(f: FieldView, target: EditorTarget): FieldEditor | n
   switch (f.kind) {
     case 'option':
     case 'user':
-      return pickEditor(f.id, f.kind, target, { multi: f.list, clear: f.required ? undefined : 'None' });
+      return pickEditor(f.id, f.kind, target, { multi: f.list, clear: f.required ? target.unset : 'None' });
     case 'text':
     case 'number':
     case 'date':
@@ -100,6 +149,7 @@ export function fieldEditor(f: FieldView, target: EditorTarget): FieldEditor | n
         input: f.kind,
         text: target.text,
         onSave: (text) => target.save(text ? { field: f.id, typed: [text] } : { field: f.id, value: {} as FieldValueView }, []),
+        typing: target.typing,
       };
     default:
       return null;

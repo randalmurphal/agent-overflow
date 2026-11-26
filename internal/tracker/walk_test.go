@@ -176,7 +176,7 @@ func (f *probedProvider) Comments(ctx context.Context, _ IssueID, _ PageToken) (
 	f.see(ctx)
 	return CommentPage{}, nil
 }
-func (f *probedProvider) CreateFields(ctx context.Context, _ ProjectID, _ IssueTypeID) ([]CreateField, error) {
+func (f *probedProvider) CreateFields(ctx context.Context, _ ProjectID, _ IssueTypeID) ([]ScreenField, error) {
 	f.see(ctx)
 	return nil, nil
 }
