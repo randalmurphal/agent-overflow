@@ -40,6 +40,13 @@ type Store interface {
 	ClearThreadTicket(threadID string) (store.ThreadTicketClear, error)
 	ListThreadsLinkedToSite(kind, site string) ([]string, error)
 	ListUnkeptLinkedIssues(tickets []store.TicketRef) ([]store.MirrorIssueRef, error)
+	TicketsByKey(keys, prefer []string) (map[string][]store.KeyedTicket, error)
+
+	RecordAgentWriteSent(w store.AgentWrite) (int64, error)
+	RecordAgentWrites(sent int64, ws []store.AgentWrite) error
+	SettleAgentWrite(id int64, issue, comment string) error
+	AgentWritesOf(ticket store.TicketRef) ([]store.AgentWriteMark, error)
+	AgentWriteRepeat(threadID, digest string, since int64) (store.AgentWrite, bool, error)
 }
 
 // Deps are the service's capabilities. Every field is required but

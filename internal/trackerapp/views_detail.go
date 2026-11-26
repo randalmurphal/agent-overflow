@@ -35,14 +35,16 @@ type FieldView struct {
 	Value    FieldValueView `json:"value"`
 }
 
-// CommentView is a comment, its body as Markdown.
+// CommentView is a comment, its body as Markdown. Thread is the thread
+// whose agent wrote it through the tracker tools.
 type CommentView struct {
-	ID       string   `json:"id"`
-	Author   UserView `json:"author"`
-	Body     string   `json:"body"`
-	Created  int64    `json:"created"`
-	Updated  int64    `json:"updated,omitempty"`
-	Internal bool     `json:"internal,omitempty"`
+	ID       string          `json:"id"`
+	Author   UserView        `json:"author"`
+	Body     string          `json:"body"`
+	Created  int64           `json:"created"`
+	Updated  int64           `json:"updated,omitempty"`
+	Internal bool            `json:"internal,omitempty"`
+	Thread   *ThreadMarkView `json:"thread,omitempty"`
 }
 
 // LinkedIssueView is the other issue of a link.
@@ -74,13 +76,15 @@ type AttachmentView struct {
 }
 
 // EventView is one change in the ticket's history; Author is nil for a
-// change the tracker made itself.
+// change the tracker made itself. Agent is the thread whose agent made
+// it through the tracker tools.
 type EventView struct {
-	At     int64     `json:"at"`
-	Author *UserView `json:"author,omitempty"`
-	Field  string    `json:"field"`
-	From   string    `json:"from,omitempty"`
-	To     string    `json:"to,omitempty"`
+	At     int64           `json:"at"`
+	Author *UserView       `json:"author,omitempty"`
+	Field  string          `json:"field"`
+	From   string          `json:"from,omitempty"`
+	To     string          `json:"to,omitempty"`
+	Agent  *ThreadMarkView `json:"agent,omitempty"`
 }
 
 // TicketRowView is the ticket's issue on one board the mirror shows: its
@@ -260,7 +264,8 @@ func (s *Service) detailView(root int64, row store.TrackerConnection, doc ticket
 // time; a document linking more than that bound shows the rest as it has
 // them. Each view's rows on the boards are read with every document's in
 // one more statement (store.ListMirrorTicketRows), so docs holds at most
-// store.MirrorMaxBodies. It returns each view with the other issues it
+// store.MirrorMaxBodies, and each view's agent marks in one statement of
+// its own (markAgentWrites). It returns each view with the other issues it
 // shows (showsOf of the card it rendered), the dependencies its pump
 // watches.
 func (s *Service) detailViews(root int64, row store.TrackerConnection, docs []ticketDoc) ([]DetailView, [][]tracker.IssueID, error) {
@@ -339,6 +344,7 @@ func (s *Service) detailViews(root int64, row store.TrackerConnection, docs []ti
 		if views[i].Rows == nil {
 			views[i].Rows = []TicketRowView{}
 		}
+		s.markAgentWrites(row, &views[i])
 	}
 	return views, shows, nil
 }

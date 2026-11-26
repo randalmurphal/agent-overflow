@@ -15,6 +15,8 @@ import (
 //
 //   - the hold of the connection, taken as a tick takes one (start),
 //     interactive: a person or an agent waits on every write;
+//   - for an agent's write (ByAgent), its record: a comment or a create
+//     recorded sent before it is sent (agent_writes.go);
 //   - the provider's write, and tracker.Result.Check before anything acts
 //     on its result;
 //   - the refresh: every resource a part that is applied or unknown names
@@ -22,6 +24,9 @@ import (
 //     and the fences the hold captured (write_refresh.go);
 //   - the settlement of the connection's problem by the last tracker call
 //     made;
+//   - an agent's record of what was applied or may have been, with the
+//     cards' update times before and after, so the views below carry
+//     its marks;
 //   - the change funnel, so a subscriber hears of a write as of a sync,
 //     and the settlement of the open tickets the refresh read, whose
 //     views are built before the write returns;
@@ -50,6 +55,9 @@ type writeOp struct {
 	// unable, when set, refuses op on the provider the hold found, before
 	// anything is sent.
 	unable func(p tracker.Provider) error
+	// additive is a comment's or a create's step, which an agent's write
+	// records before it is sent (agent_writes.go); nil for any other.
+	additive *additive
 }
 
 // write makes op's write on connection id and refreshes what it may have
@@ -76,12 +84,22 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 			return WriteView{}, err
 		}
 	}
+	rec, err := s.beginAgentWrite(ctx, r, op)
+	if err != nil {
+		return WriteView{}, err
+	}
 	var res tracker.Result
 	resources := op.also
 	if op.call != nil {
 		res = op.call(r.ctx, r.p)
 		if err := res.Check(); err != nil {
+			// The sent row stays: the write may have happened.
 			return WriteView{}, fmt.Errorf("%w: %w", ErrBadResult, err)
+		}
+		if rec != nil {
+			// The refresh has not run: the mirror holds the cards as they
+			// were before the write.
+			rec.before = s.cardTimes(r.root, partIssues(res))
 		}
 		res = timeAnsweredParts(r.timeBy, res)
 		if !sentNothing(res) {
@@ -97,6 +115,7 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 		view.Created = string(created)
 	}
 	if !r.inUse() {
+		s.finishAgentWrite(rec, res, nil)
 		if !happened(res) {
 			return WriteView{}, s.endedNow(id)
 		}
@@ -109,6 +128,9 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 		created = newIssue{issue: id, board: op.board}
 	}
 	f := r.refresh(resources, created)
+	if rec != nil {
+		s.finishAgentWrite(rec, res, s.cardTimes(r.root, partIssues(res)))
+	}
 	// The mirror ended with the connection: what the refresh stored before
 	// was told as it was stored (run.told), as a tick's is, and the
 	// outcome answers for every resource (Ended).

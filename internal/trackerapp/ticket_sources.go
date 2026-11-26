@@ -8,10 +8,14 @@ import (
 
 // TicketSource is a connection of this computer that holds tickets and is
 // turned on: a Jira or Linear connection, never Tempo, which holds none.
-// Site is the site as a person names it.
+// Site is the site as a person names it, Kind the tracker's kind, and
+// Account the tracker's ID of the account the connection signed in as at
+// its last verification (empty before one).
 type TicketSource struct {
-	ID   string
-	Site string
+	ID      string
+	Site    string
+	Kind    string
+	Account string
 }
 
 // TicketSources lists the connections a ticket can be found or read
@@ -32,7 +36,36 @@ func (s *Service) TicketSources() ([]TicketSource, error) {
 		if !row.Enabled || (row.Kind != store.TrackerKindJira && row.Kind != store.TrackerKindLinear) {
 			continue
 		}
-		out = append(out, TicketSource{ID: row.ID, Site: siteName(row.Site)})
+		out = append(out, TicketSource{ID: row.ID, Site: siteName(row.Site), Kind: row.Kind, Account: row.VerifiedAccountID})
+	}
+	return out, nil
+}
+
+// KeyedTicket is a ticket key as one site's mirror knows it: the
+// connection that reads it there (the site's link reader) and the issue
+// when the mirror holds it, empty when it holds only other issues of the
+// key's project.
+type KeyedTicket struct {
+	Connection string
+	Issue      string
+}
+
+// TicketsOfKey is the tickets key (capitals) names on this computer's
+// sites, one per site whose mirror holds its project, with no tracker
+// request (store.TicketsByKey): a site whose mirror holds the issue
+// first. None is a key no mirror holds a project of.
+func (s *Service) TicketsOfKey(key string) ([]KeyedTicket, error) {
+	if err := s.enter(); err != nil {
+		return nil, err
+	}
+	defer s.leave()
+	found, err := s.store.TicketsByKey([]string{key}, nil)
+	if err != nil {
+		return nil, err
+	}
+	var out []KeyedTicket
+	for _, t := range found[key] {
+		out = append(out, KeyedTicket{Connection: t.ConnectionID, Issue: t.IssueID})
 	}
 	return out, nil
 }
