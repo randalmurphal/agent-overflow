@@ -149,6 +149,7 @@ func (s *Server) timeRead(ctx context.Context, _ Caller, raw json.RawMessage) (a
 		byDay[out.Days[i].Day] = &out.Days[i]
 	}
 	var failed error
+	failures := 0
 	for _, src := range jira {
 		got, err := s.t.ReadTime(ctx, src.ID, from, to)
 		if err != nil {
@@ -163,6 +164,7 @@ func (s *Server) timeRead(ctx context.Context, _ Caller, raw json.RawMessage) (a
 			if failed == nil {
 				failed = onSite(src.Site, err)
 			}
+			failures++
 			out.Unread = append(out.Unread, timeUnread{Site: src.Site, Error: message})
 			continue
 		}
@@ -196,7 +198,7 @@ func (s *Server) timeRead(ctx context.Context, _ Caller, raw json.RawMessage) (a
 			}
 		}
 	}
-	if len(out.Unread) == len(jira) && failed != nil {
+	if failures == len(jira) {
 		// Every connection failed: that is the answer.
 		return nil, failed
 	}
@@ -365,8 +367,12 @@ func (s *Server) timeDraft(ctx context.Context, caller Caller, raw json.RawMessa
 	}
 	connection, site := "", ""
 	for n, t := range found {
-		src := sources[slices.IndexFunc(sources, func(src trackerapp.TicketSource) bool { return src.ID == t.connection })]
-		switch {
+		i := slices.IndexFunc(sources, func(src trackerapp.TicketSource) bool { return src.ID == t.connection })
+		if i < 0 {
+			// The thread's linked ticket, on a connection no longer on.
+			return nil, invalidf("%s %s is on a connection that is not turned on.", name(at[n]), keys[n])
+		}
+		switch src := sources[i]; {
 		case src.Kind != jiraKind:
 			return nil, invalidf("%s %s is on %s, which has no time tracking.", name(at[n]), keys[n], kindName(src.Kind))
 		case connection == "":

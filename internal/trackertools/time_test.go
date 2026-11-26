@@ -139,6 +139,14 @@ func TestTimeReadAnswersEachDay(t *testing.T) {
 	if err != nil || answer != want {
 		t.Fatalf("time_read = %s, %v\nwant %s", answer, err, want)
 	}
+	// One connection refused and the other read from the mirror after its
+	// refresh failed: the answer holds the mirror's copy, naming both.
+	f.time[timeJira.ID] = trackerapp.WorklogDays{Worklogs: []trackerapp.WorklogView{}, Unread: []string{"2026-11-25"},
+		Failure: &trackerapp.FailureView{Kind: "tracker", Message: "Jira did not answer in time; try again"}}
+	answer, err = timeCall(t, s, "time_read", map[string]any{"from": "2026-11-24", "to": "2026-11-25"})
+	if err != nil || !strings.Contains(answer, `"unread":[{"site":"example.atlassian.net","error":"Jira did not answer in time; try again","days":["2026-11-25"]},{"site":"other.atlassian.net"`) {
+		t.Fatalf("time_read with one refusal and one failed refresh = %s, %v", answer, err)
+	}
 	delete(f.time, timeJira.ID)
 	_, err = timeCall(t, s, "time_read", map[string]any{})
 	refused(t, err, "tracker_connection_unverified", "example.atlassian.net: this connection has no verified account, so whose time it is is not known; check the connection in the Issues settings")
@@ -239,10 +247,14 @@ func TestTimeDraftRefusals(t *testing.T) {
 			t.Errorf("%s reached the draft: %v", tc.name, f.drafts)
 		}
 	}
+	// The thread's linked ticket on a connection no longer on.
+	gone := &fakeTracker{sources: []trackerapp.TicketSource{timeJira}, link: &trackerapp.LinkedTicket{Connection: "conn-gone", Site: "old.atlassian.net", Issue: "30101", Key: "OLD-1"}}
+	_, err := timeCall(t, timeServer(gone, &fakeHost{}), "time_draft", map[string]any{"entries": []map[string]any{entry("OLD-1")}})
+	refused(t, err, CodeInvalidRequest, "entries[0].key OLD-1 is on a connection that is not turned on.")
 	// A refusal of the draft's own rules is trackerapp's sentence, as is.
 	f := &fakeTracker{sources: []trackerapp.TicketSource{timeJira}, draft: func(string, trackerapp.TimeDraftRequest) (trackerapp.TimeDraftView, error) {
 		return trackerapp.TimeDraftView{}, errorsx.Public(CodeInvalidRequest, "entries[0].hours must be more than 0.", nil)
 	}}
-	_, err := timeCall(t, timeServer(f, &fakeHost{}), "time_draft", map[string]any{"entries": []map[string]any{{"day": "2026-11-24", "hours": 0, "reason": "Which?"}}})
+	_, err = timeCall(t, timeServer(f, &fakeHost{}), "time_draft", map[string]any{"entries": []map[string]any{{"day": "2026-11-24", "hours": 0, "reason": "Which?"}}})
 	refused(t, err, CodeInvalidRequest, "entries[0].hours must be more than 0.")
 }
