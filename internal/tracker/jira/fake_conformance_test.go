@@ -165,6 +165,7 @@ var conformanceCases = func() map[string]func(t *testing.T, f *fakeEnv) {
 	out := maps.Clone(issueCases)
 	maps.Copy(out, boardCases)
 	maps.Copy(out, pokerCases)
+	maps.Copy(out, devCases)
 	return out
 }()
 
