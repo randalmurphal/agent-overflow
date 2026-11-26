@@ -201,7 +201,7 @@ func BenchmarkProjectStatuses20Boards(b *testing.B) {
 			}
 			st.Columns[c] = col
 		}
-		st.Catalog.Statuses = statuses
+		st.Statuses = statuses
 		return st, nil
 	}
 	listBoards(b, svc.store.(*store.Store), scope.Connection, boards...)

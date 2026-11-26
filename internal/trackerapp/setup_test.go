@@ -945,7 +945,7 @@ func TestProjectStatusesListTheBoardsStatuses(t *testing.T) {
 			st := webStructure(b)
 			if b == "5" {
 				st.Columns = []tracker.Column{{Name: "Doing", Statuses: []tracker.StatusID{"s2", "s4"}}}
-				st.Catalog.Statuses = append(st.Catalog.Statuses, statusReview)
+				st.Statuses = append(st.Statuses, statusReview)
 			}
 			return st, nil
 		}
