@@ -798,6 +798,11 @@ func validateSetup(setup Setup) (Setup, error) {
 		if err := checkSetupList(key, "section", site.Sections, setupMaxSections); err != nil {
 			return Setup{}, err
 		}
+		// No field pinned is a ticket's default, and is stored as none; no
+		// section open is a choice of its own.
+		if site.Fields != nil && len(*site.Fields) == 0 {
+			site.Fields = nil
+		}
 		if site.Fields != nil || site.Sections != nil {
 			out.TicketPins = append(out.TicketPins, site)
 		}

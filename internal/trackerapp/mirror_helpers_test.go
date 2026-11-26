@@ -296,6 +296,9 @@ func (p *scripted) Fields(ctx context.Context) ([]tracker.Field, error) {
 	if !p.called(ctx, "Fields", func() bool { return h != nil }) {
 		return nil, errUnscripted
 	}
+	if err := p.wait(ctx, "Fields"); err != nil {
+		return nil, err
+	}
 	return h()
 }
 

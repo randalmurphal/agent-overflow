@@ -1,20 +1,21 @@
 <script lang="ts">
   // Settings > Issues > Starting work: what Start work on a ticket of the
   // project does (docs/specs/issues.md, "Start work applies per-project
-  // defaults"), for each tracker project its boards name (WEB of WEB-1)
-  // and each one the setup already holds defaults for: move the ticket to
+  // defaults"), for each place the computer lists (trackerapp's
+  // ProjectStatuses.places: each tracker project its boards name, WEB of
+  // WEB-1, and each one the setup holds defaults for, with the statuses
+  // Move the ticket offers it): move the ticket to
   // a status, assign it to the person, name the branch after the ticket,
   // and the project the thread runs in. Each change saves at once through
   // the rule Start work's "Save as defaults" writes by
   // (stores/startWorkDefaults), so the form opens with what the page
   // saved and the page shows what the form saved.
   import { tick } from 'svelte';
-  import type { Setup, StartWorkDefaults, StatusView, UnreadBoard } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+  import type { Setup, StartPlace, StartWorkDefaults, StatusView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import { getProjectLabelText } from '../../stores/projects.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { defaultsAt, withStartWorkDefaults, type DefaultsChange, type DefaultsPlace } from '../../stores/startWorkDefaults';
   import { trackerConnectionsOf } from '../../stores/trackerConnections.svelte';
-  import { acquireTrackerProjectBoards, refreshTrackerProjectBoards, trackerProjectBoardsOf } from '../../stores/trackerProjectBoards.svelte';
   import { acquireTrackerStatuses, refreshTrackerStatuses, trackerSetupOf, trackerStatusesOf } from '../../stores/trackerSetup.svelte';
   import { ticketBranchName } from '../../utils/ticketBranch';
   import { userFacingError } from '../../utils/userFacingError';
@@ -29,40 +30,9 @@
   const { backend } = settingsComputer();
   let connections = $derived(trackerConnectionsOf(backend).list);
 
-  function hold(project: string): () => void {
-    const boards = acquireTrackerProjectBoards(backend, project);
-    const statuses = acquireTrackerStatuses(project);
-    return () => {
-      boards();
-      statuses();
-    };
-  }
-
   function readError(project: string): string | null {
-    const boards = trackerProjectBoardsOf(backend, project).error;
-    if (boards !== null) return `The project's boards could not be read: ${userFacingError(boards)}`;
     const statuses = trackerStatusesOf(project).error;
     return statuses !== null ? `The project's statuses could not be read: ${userFacingError(statuses)}` : null;
-  }
-
-  /** A tracker project as a key's prefix spells it (trackerapp's
-   * isTicketProject): its defaults' place. */
-  const TICKET_PROJECT = /^[A-Z][A-Z0-9_]+$/;
-
-  /** The places the page offers: each tracker project a board of the
-   * project names, in picker order, then each one the setup holds
-   * defaults for that no board names. */
-  function placesOf(project: string, setup: Setup): DefaultsPlace[] {
-    const out: DefaultsPlace[] = [];
-    const add = (place: DefaultsPlace) => {
-      if (!out.some((p) => p.tracker === place.tracker && p.site === place.site && p.project === place.project)) out.push(place);
-    };
-    for (const board of trackerProjectBoardsOf(backend, project).list) {
-      const connection = connections.find((c) => c.id === board.connection);
-      if (connection && TICKET_PROJECT.test(board.tracker_project)) add({ tracker: connection.kind, site: connection.site, project: board.tracker_project });
-    }
-    for (const entry of setup.start_work ?? []) add({ tracker: entry.tracker, site: entry.site, project: entry.project });
-    return out;
   }
 
   function siteName(place: DefaultsPlace): string {
@@ -70,17 +40,12 @@
     return trackerConnectionName(connection ?? { label: '', kind: place.tracker, site: place.site });
   }
 
-  /** What the move picker of `place` offers: the statuses of the project's
-   * boards that list its tracker project, in the order the site lists
-   * them (a Linear team's states are its own, and two teams share a site),
-   * those boards this computer has not read yet, and whether any board
-   * lists it. */
-  function placeStatuses(project: string, place: DefaultsPlace): { statuses: StatusView[]; unread: UnreadBoard[]; listed: boolean } {
+  /** The statuses the move picker of `place` offers, as the site lists
+   * them. */
+  function placeStatuses(project: string, place: StartPlace): StatusView[] {
     const site = trackerStatusesOf(project).sites?.find((s) => s.tracker === place.tracker && s.site === place.site);
-    const boards = (site?.boards ?? []).filter((b) => b.project === place.project);
-    const unread = (site?.unread ?? []).filter((b) => b.project === place.project);
-    const ids = new Set(boards.flatMap((b) => b.statuses));
-    return { statuses: (site?.statuses ?? []).filter((s) => ids.has(s.id)), unread, listed: boards.length + unread.length > 0 };
+    const ids = new Set(place.statuses);
+    return (site?.statuses ?? []).filter((s) => ids.has(s.id));
   }
 
   /** The status a move turns on with: the first the project counts in
@@ -112,17 +77,14 @@
   hint="Choose the project whose Start work to set."
   what="Start work defaults"
   section="start_work"
-  {hold}
+  hold={acquireTrackerStatuses}
   {readError}
-  ready={(project) => trackerProjectBoardsOf(backend, project).loaded && trackerStatusesOf(project).sites !== null}
-  retry={(project) => {
-    void refreshTrackerProjectBoards(backend, project);
-    void refreshTrackerStatuses(project);
-  }}
+  ready={(project) => trackerStatusesOf(project).places !== null}
+  retry={(project) => void refreshTrackerStatuses(project)}
   reading="Reading the defaults…"
 >
   {#snippet body(page: TrackerProjectPage)}
-    {@const places = placesOf(page.project, page.setup)}
+    {@const places = trackerStatusesOf(page.project).places ?? []}
     {#if places.length === 0}
       <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-start-work-empty">
         This project lists no boards. Add one in Boards to set what Start work does on its tickets.
@@ -136,10 +98,9 @@
   {/snippet}
 </TrackerProjectSettings>
 
-{#snippet placeRows(page: TrackerProjectPage, place: DefaultsPlace, entry: StartWorkDefaults | null)}
+{#snippet placeRows(page: TrackerProjectPage, place: StartPlace, entry: StartWorkDefaults | null)}
   {@const locked = page.lockReason !== ''}
-  {@const offered = placeStatuses(page.project, place)}
-  {@const statuses = offered.statuses}
+  {@const statuses = placeStatuses(page.project, place)}
   {@const status = entry?.status ?? ''}
   {@const first = firstStatus(page.setup, place, statuses)}
   {@const projects = workProjects(backend, page.project)}
@@ -180,12 +141,12 @@
         </select>
       {/if}
     </div>
-    {#if !offered.listed}
+    {#if statuses.length === 0 && (place.unread ?? []).length === 0}
       <p class="text-[0.75rem] text-fg-muted" data-testid="tracker-start-work-unlisted">
         No board of this project lists {place.project} tickets, so there is no status to move them to. Add one in Boards.
       </p>
     {/if}
-    <TrackerUnreadBoards boards={offered.unread} project={page.project} />
+    <TrackerUnreadBoards boards={place.unread ?? []} project={page.project} />
     <div class="flex min-w-0 items-center gap-3" data-testid="tracker-start-work-assign">
       <span class="min-w-0 flex-1 text-[0.8125rem] text-fg">Assign it to me</span>
       <ToggleSwitch

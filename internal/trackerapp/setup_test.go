@@ -961,6 +961,17 @@ func TestAgentRulesAreSavedWithTheirDefaults(t *testing.T) {
 	if sw := resaved.Stored.Setup.StartWork; len(sw) != 0 {
 		t.Fatalf("an entry that only names the branch, as by default, is kept: %+v", sw)
 	}
+	// A site whose last field was unpinned, and that opens no sections of
+	// its own, pins nothing: it is stored as no entry. No section open is
+	// a choice, and is kept.
+	none := []string{}
+	unpinned := m.saveSetup(t, m.project(), Setup{TicketPins: []SitePins{
+		{Tracker: "jira", Site: m.conn.Site, Fields: &none},
+		{Tracker: "jira", Site: "https://other.atlassian.net", Fields: &none, Sections: &none},
+	}})
+	if tp := unpinned.Stored.Setup.TicketPins; len(tp) != 1 || tp[0].Site != "https://other.atlassian.net" || tp[0].Fields != nil || tp[0].Sections == nil || len(*tp[0].Sections) != 0 {
+		t.Fatalf("pins with no field left are stored as %+v", tp)
+	}
 	allOn := m.saveSetup(t, m.project(), Setup{Agents: &AgentRules{ChangeTickets: &on, AskSeveral: &on}})
 	if allOn.Stored.Setup.Agents != nil {
 		t.Fatalf("rules all on are stored as %+v", allOn.Stored.Setup.Agents)
@@ -1000,7 +1011,7 @@ func TestProjectStatusesListTheBoardsStatuses(t *testing.T) {
 	}
 	site := func() SiteStatuses {
 		t.Helper()
-		got := must[[]SiteStatuses](t)(m.svc.ProjectStatuses(m.project()))
+		got := must[ProjectStatuses](t)(m.svc.ProjectStatuses(m.project())).Sites
 		if len(got) != 1 || got[0].Tracker != store.TrackerKindJira || got[0].Site != m.conn.Site {
 			t.Fatalf("the sites: %+v", got)
 		}
@@ -1013,18 +1024,6 @@ func TestProjectStatusesListTheBoardsStatuses(t *testing.T) {
 	columns := []StatusView{{ID: "s1", Name: "To Do", Group: "todo"}, {ID: "s2", Name: "In Progress", Group: "in_progress"}, {ID: "s3", Name: "Done", Group: "done"}}
 	if got := site(); !reflect.DeepEqual(got.Statuses, columns) || !reflect.DeepEqual(got.Unread, unread("2", "7", "9")) || got.Elsewhere != nil {
 		t.Fatalf("with board 1 read: %+v", got)
-	}
-	// Each read board names its own statuses, so a picker for one tracker
-	// project offers only its boards'.
-	boardStatuses := func(got SiteStatuses) map[string][]string {
-		out := map[string][]string{}
-		for _, b := range got.Boards {
-			out[b.Board] = b.Statuses
-		}
-		return out
-	}
-	if got := boardStatuses(site()); !reflect.DeepEqual(got, map[string][]string{"1": {"s1", "s2", "s3"}}) {
-		t.Fatalf("board 1's statuses: %v", got)
 	}
 
 	// A second connection to the site lists a board whose columns hold s2
@@ -1055,14 +1054,88 @@ func TestProjectStatusesListTheBoardsStatuses(t *testing.T) {
 	if got := site(); !reflect.DeepEqual(got.Statuses, both) || got.Unread != nil {
 		t.Fatalf("with two connections to the site: %+v", got)
 	}
-	if got := boardStatuses(site()); !reflect.DeepEqual(got, map[string][]string{"1": {"s1", "s2", "s3"}, "5": {"s2", "s4"}}) {
-		t.Fatalf("the two boards' statuses: %v", got)
-	}
 
 	// The setup regroups s2, which a board shows, and s9, which none does.
 	m.saveSetup(t, m.project(), m.regrouped(map[string]string{"s2": "done", "s9": "left_out"}))
 	if got := site(); !reflect.DeepEqual(got.Statuses, both) || !reflect.DeepEqual(got.Elsewhere, []StatusView{{ID: "s9"}}) {
 		t.Fatalf("with s9 regrouped off the boards: %+v", got)
+	}
+}
+
+// Starting work's places are each tracker project a listed board names,
+// then each with saved defaults, each once. A Jira project offers every
+// status the project's boards on its site show, whichever project the
+// board was listed through, and the boards of the site not read yet; a
+// Linear team offers its own boards' statuses alone.
+func TestProjectStatusesOfferEachPlaceItsStatuses(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
+	linear := m.addLinear()
+	second := m.add(NewConnection{Kind: store.TrackerKindJira, Site: jiraSiteIn, Account: "user2@example.com"})
+	m.p.set(func(s *scripted) {
+		s.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) {
+			st := webStructure(b)
+			switch b {
+			case "team-a":
+				st.Columns = []tracker.Column{{Name: "Doing", Statuses: []tracker.StatusID{"a-doing"}}}
+				st.Catalog.Statuses = []tracker.Status{{ID: "a-doing", Name: "In Progress", Group: tracker.GroupInProgress}}
+			case "team-b":
+				st.Columns = []tracker.Column{{Name: "Doing", Statuses: []tracker.StatusID{"b-doing"}}}
+				st.Catalog.Statuses = []tracker.Status{{ID: "b-doing", Name: "In Progress", Group: tracker.GroupInProgress}}
+			}
+			return st, nil
+		}
+	})
+	listed := []store.ProjectTrackerBoard{
+		{ConnectionID: m.conn.ID, BoardID: string(testBoard), TrackerProject: "WEB"},
+		{ConnectionID: m.conn.ID, BoardID: "2", TrackerProject: "WEB"},
+		// The same board, not read yet, listed through a second account.
+		{ConnectionID: second.ID, BoardID: "2", TrackerProject: "WEB"},
+		{ConnectionID: linear.ID, BoardID: "team-a", TrackerProject: "ALP"},
+		{ConnectionID: linear.ID, BoardID: "team-b", TrackerProject: "BET"},
+	}
+	current, err := m.st.ListProjectTrackerBoards(m.project())
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := make([]store.HeldTrackerBoard, len(current))
+	for i, b := range current {
+		held[i] = store.HeldTrackerBoard{ConnectionID: b.ConnectionID, BoardID: b.BoardID, OpensFirst: b.OpensFirst}
+	}
+	// A board kept keeps the tracker project it was listed with: list
+	// them anew.
+	if _, _, err := m.st.ReplaceProjectTrackerBoards(m.project(), held, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.st.ReplaceProjectTrackerBoards(m.project(), nil, listed); err != nil {
+		t.Fatal(err)
+	}
+	m.saveSetup(t, m.project(), Setup{StartWork: []StartWorkDefaults{{Tracker: "jira", Site: m.conn.Site, Project: "OPS", Branch: "ops/{key}"}}})
+	m.subscribeShown(t, m.project())
+	for _, board := range []tracker.BoardID{"team-a", "team-b"} {
+		scope := Scope{Connection: linear.ID, Board: board}
+		if _, err := m.svc.SubscribeBoard(m.project(), scope, []Section{{Kind: SectionBacklog}}, true, untied); err != nil {
+			t.Fatal(err)
+		}
+		m.events.waitFor(t, "the read of "+string(board), func(boards []BoardEvent, _ []IssueEvent, _ []error) bool {
+			return slices.ContainsFunc(boards, func(e BoardEvent) bool { return e.Scope == scope && e.ReadAgain })
+		})
+	}
+	view := must[ProjectStatuses](t)(m.svc.ProjectStatuses(m.project()))
+	unread := []UnreadBoard{{Board: "2"}}
+	if jira := view.Sites[0]; jira.Tracker != "jira" || !reflect.DeepEqual(jira.Unread, unread) {
+		t.Fatalf("the Jira site's boards not read: %+v; want board 2 once", jira.Unread)
+	}
+	got := view.Places
+	want := []StartPlace{
+		{Tracker: "jira", Site: m.conn.Site, Project: "WEB", Statuses: []string{"s1", "s2", "s3"}, Unread: unread},
+		{Tracker: "linear", Site: linear.Site, Project: "ALP", Statuses: []string{"a-doing"}},
+		{Tracker: "linear", Site: linear.Site, Project: "BET", Statuses: []string{"b-doing"}},
+		{Tracker: "jira", Site: m.conn.Site, Project: "OPS", Statuses: []string{"s1", "s2", "s3"}, Unread: unread},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("the places:\n got %+v\nwant %+v", got, want)
 	}
 }
 
@@ -1076,7 +1149,8 @@ func TestProjectStatusesReadNoBoardStructure(t *testing.T) {
 	}
 	cs := newCountingStore(svc.store.(*store.Store))
 	svc.store = cs
-	sites, err := svc.ProjectStatuses("boards-" + scope.Connection)
+	view, err := svc.ProjectStatuses("boards-" + scope.Connection)
+	sites := view.Sites
 	if err != nil || len(sites) != 1 || len(sites[0].Statuses) == 0 || len(sites[0].Unread) != 0 {
 		t.Fatalf("statuses: %+v, %v", sites, err)
 	}

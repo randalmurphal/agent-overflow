@@ -23,10 +23,10 @@ import (
 func TestTrackerSetupMethodsCarryTheirScopeAndRoute(t *testing.T) {
 	t.Parallel()
 	for name, scope := range map[string]transport.Scope{
-		"ProjectTrackerSetup":    transport.ScopeTrackerRead,
-		"ProjectTrackerStatuses": transport.ScopeTrackerRead,
-		"ProjectTrackerFields":   transport.ScopeTrackerRead,
-		"SetProjectTrackerSetup": transport.ScopeTrackerOperate,
+		"ProjectTrackerSetup":      transport.ScopeTrackerRead,
+		"ProjectTrackerStatuses":   transport.ScopeTrackerRead,
+		"ProjectTrackerSiteFields": transport.ScopeTrackerRead,
+		"SetProjectTrackerSetup":   transport.ScopeTrackerOperate,
 	} {
 		i := slices.IndexFunc(transport.GeneratedMethods, func(m transport.MethodMeta) bool { return m.Name == name })
 		if i < 0 {
@@ -329,21 +329,19 @@ func TestTheSetupAReadAnswersIsSavedBack(t *testing.T) {
 	}
 }
 
-// A project's fields to pin, on the fake Jira site, are the site's fields
+// A site's fields to pin, on the fake Jira site, are the site's fields
 // a ticket's detail lists: none of the card's, the description, the
-// sprint or the rank.
-func TestProjectTrackerFieldsListWhatATicketCanPin(t *testing.T) {
+// sprint or the rank. A site no connection reaches is refused with the
+// sentence that says so.
+func TestProjectTrackerSiteFieldsListWhatATicketCanPin(t *testing.T) {
 	t.Parallel()
 	f := newTrackerBoardFixture(t)
-	got, err := f.a.ProjectTrackerFields(t.Context(), f.project)
+	got, err := f.a.ProjectTrackerSiteFields(t.Context(), f.project, store.TrackerKindJira, f.conn.Site)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Tracker != store.TrackerKindJira || got[0].Site != f.conn.Site {
-		t.Fatalf("the project's fields = %+v", got)
-	}
 	ids := map[string]bool{}
-	for _, field := range got[0].Fields {
+	for _, field := range got {
 		ids[field.ID] = true
 	}
 	for _, id := range []string{"summary", "status", "assignee", "description", "customfield_10020", "customfield_10019"} {
@@ -353,31 +351,13 @@ func TestProjectTrackerFieldsListWhatATicketCanPin(t *testing.T) {
 	}
 	for _, id := range []string{"reporter", "duedate", "components"} {
 		if !ids[id] {
-			t.Errorf("%s is not offered to pin: %+v", id, got[0].Fields)
+			t.Errorf("%s is not offered to pin: %+v", id, got)
 		}
 	}
-
-	// A site the setup pins that no connection reaches is listed with
-	// the sentence that says so, and the cause stays off the wire.
 	other := "https://other.example.atlassian.net"
-	if save, err := f.a.SetProjectTrackerSetup(t.Context(), f.project, "", trackerapp.Setup{TicketPins: []trackerapp.SitePins{
-		{Tracker: store.TrackerKindJira, Site: other, Fields: &[]string{"customfield_1"}},
-	}}); err != nil || !save.Saved {
-		t.Fatalf("SetProjectTrackerSetup = %+v, %v", save, err)
-	}
-	got, err = f.a.ProjectTrackerFields(t.Context(), f.project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 || got[0].Error != "" || got[1].Site != other || len(got[1].Fields) != 0 ||
-		got[1].Error != "no tracker connection of this computer reaches "+other+"; add one in Settings > Issues > Connections to find its fields, or take its pins off here" {
-		t.Fatalf("the project's fields with a pin no connection reaches = %+v", got)
-	}
-	wire, err := json.Marshal(got[1])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(wire), "trackerapp:") {
-		t.Fatalf("a site's cause reached the wire: %s", wire)
+	_, err = f.a.ProjectTrackerSiteFields(t.Context(), f.project, store.TrackerKindJira, other)
+	if code, message, _ := errorsx.PublicDetails(err); code != "tracker_site_unreached" ||
+		message != "no tracker connection of this computer reaches "+other+"; add one in Settings > Issues > Connections to find its fields, or take its pins off here" {
+		t.Fatalf("a site no connection reaches = %v (code %q, %q)", err, code, message)
 	}
 }

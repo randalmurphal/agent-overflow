@@ -695,7 +695,7 @@ export {
   // (stores/trackerSetup.svelte.ts).
   ProjectTrackerSetup,
   ProjectTrackerStatuses,
-  ProjectTrackerFields,
+  ProjectTrackerSiteFields,
   SetProjectTrackerSetup,
   // A person's logged time and its writes (stores/trackerTime.svelte.ts,
   // stores/trackerTimeWrites.svelte.ts).

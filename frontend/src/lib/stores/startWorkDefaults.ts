@@ -39,7 +39,9 @@ export interface DefaultsChange {
  * (trackerapp's validateSetup). */
 export function withStartWorkDefaults(setup: Setup, place: DefaultsPlace, project: string, change: DefaultsChange): Setup {
   const kept = defaultsAt(setup, place);
-  const entry: StartWorkDefaults = { ...(kept ?? place) };
+  // A new entry takes the place's identity alone: a place the page lists
+  // carries what it offers (StartPlace) as well.
+  const entry: StartWorkDefaults = kept ? { ...kept } : { tracker: place.tracker, site: place.site, project: place.project };
   if (change.status !== undefined) entry.status = change.status ?? undefined;
   if (change.assign !== undefined) entry.assign = change.assign;
   if (change.branch != null) entry.branch = change.branch;

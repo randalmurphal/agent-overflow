@@ -2,8 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
-	"log"
 
 	"agent-overflow/internal/trackerapp"
 )
@@ -28,53 +26,36 @@ func (a *App) ProjectTrackerSetup(ctx context.Context, projectID string) (tracke
 	return out, trackerError(err)
 }
 
-// ProjectTrackerStatuses is the project's statuses by tracker site, as its
-// Status groups page lists them: the statuses of its listed boards'
-// columns with the tracker's own group, the statuses its setup regroups
-// that no listed board shows, and the listed boards this computer has
-// not read yet. It reads this computer's copy and makes no tracker
-// request.
+// ProjectTrackerStatuses is the project's statuses, as its Status groups
+// and Starting work pages list them: by tracker site, the statuses of its
+// listed boards' columns with the tracker's own group, the statuses its
+// setup regroups that no listed board shows, and the listed boards this
+// computer has not read yet; and by place Starting work sets defaults
+// for, the statuses Move the ticket offers. It reads this computer's copy
+// and makes no tracker request.
 //
 //ao:scope tracker:read
-func (a *App) ProjectTrackerStatuses(ctx context.Context, projectID string) ([]trackerapp.SiteStatuses, error) {
+func (a *App) ProjectTrackerStatuses(ctx context.Context, projectID string) (trackerapp.ProjectStatuses, error) {
 	svc, err := a.trackerService()
 	if err != nil {
-		return nil, err
+		return trackerapp.ProjectStatuses{}, err
 	}
 	out, err := svc.ProjectStatuses(projectID)
 	return out, trackerError(err)
 }
 
-// ProjectTrackerFields are the fields the project's tickets can pin, by
-// tracker site, as its Fields page lists them: each site of its boards
-// whose tickets take pinned fields, and each its setup pins, read from
-// the tracker's field catalog, which the computer caches. A site that
-// could not be read says why in its Error, beside the others.
+// ProjectTrackerSiteFields are the fields the tickets of a Jira site can
+// pin, as the project's Fields page lists them for each site its boards
+// or its pins name, read from the tracker's field catalog, which the
+// computer caches. projectID names the project whose computer answers.
+// Each site is its own call, so a site that fails or stalls holds up no
+// other.
 //
 //ao:scope tracker:read
-func (a *App) ProjectTrackerFields(ctx context.Context, projectID string) ([]trackerapp.SiteFields, error) {
-	return trackerFormRead(a, ctx, "ProjectTrackerFields", "Listing the project's fields", func(ctx context.Context, svc *trackerapp.Service) ([]trackerapp.SiteFields, error) {
-		sites, err := svc.ProjectFields(ctx, projectID)
-		for i := range sites {
-			if sites[i].Err != nil {
-				sites[i].Error = siteFieldsError(sites[i].Site, sites[i].Err)
-			}
-		}
-		return sites, err
+func (a *App) ProjectTrackerSiteFields(ctx context.Context, projectID, tracker, site string) ([]trackerapp.PinField, error) {
+	return trackerFormRead(a, ctx, "ProjectTrackerSiteFields", "Listing a site's fields", func(ctx context.Context, svc *trackerapp.Service) ([]trackerapp.PinField, error) {
+		return svc.SiteFields(ctx, tracker, site)
 	})
-}
-
-// siteFieldsError is why a site's fields could not be read, as the
-// Fields page says it beside the site.
-func siteFieldsError(site string, err error) string {
-	if errors.Is(err, trackerapp.ErrNoSiteConnection) {
-		return "no tracker connection of this computer reaches " + site + "; add one in Settings > Issues > Connections to find its fields, or take its pins off here"
-	}
-	if _, message := trackerRefusal(err); message != "" {
-		return message
-	}
-	log.Printf("tracker: read the fields of %s: %v", site, err)
-	return "its fields could not be read; the app's log has the cause"
 }
 
 // SetProjectTrackerSetup replaces the project's tracker setup with setup,

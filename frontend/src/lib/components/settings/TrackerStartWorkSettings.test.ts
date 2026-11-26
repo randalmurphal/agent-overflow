@@ -1,5 +1,6 @@
-// Settings > Issues > Starting work: one block per tracker project the
-// project's boards name, and per one the setup holds defaults for; each
+// Settings > Issues > Starting work: one block per place the computer
+// lists (a tracker project the project's boards name, or one the setup
+// holds defaults for), offering the statuses the computer lists for it; each
 // row shows the defaults Start work reads (no move, assigned, the branch
 // named {key}-{title}, the thread in the project) until set, and each
 // change saves at once through the rule Start work's "Save as defaults"
@@ -8,11 +9,11 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
-import type { Setup, SetupView, SiteStatuses } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { ProjectStatuses, Setup, SetupView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import TrackerStartWorkSettings from './TrackerStartWorkSettings.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { readSidebarCatalogs } from '../../../test/helpers/sidebarCatalogs';
-import { trackerBoardChoice, trackerConnection } from '../../../test/helpers/trackerConnections';
+import { trackerConnection } from '../../../test/helpers/trackerConnections';
 import { noteProject } from '../../transport/entityIndex';
 import { addProjectLocal } from '../../stores/projects.svelte';
 
@@ -20,7 +21,7 @@ const SITE = 'https://example.atlassian.net';
 
 let stored: SetupView;
 let saves: Setup[];
-let statuses: SiteStatuses[];
+let statuses: ProjectStatuses;
 
 beforeEach(async () => {
   setBindingMock('ListProjects', async () => []);
@@ -30,12 +31,16 @@ beforeEach(async () => {
     addProjectLocal({ id, name, path: `/repos/${name}`, createdAt: 1, updatedAt: 1, sortPosition: 0, archived: false });
   }
   setBindingMock('TrackerConnections', async () => [trackerConnection()]);
-  setBindingMock('ProjectTrackerBoards', async () => [trackerBoardChoice()]);
-  statuses = [{
-    tracker: 'jira', site: SITE,
-    statuses: [{ id: '10000', name: 'To Do', group: 'todo' }, { id: '10001', name: 'In Progress', group: 'in_progress' }, { id: '10003', name: 'In Review', group: 'in_progress' }],
-    boards: [{ board: '1', project: 'WEB', statuses: ['10000', '10001', '10003'] }],
-  }];
+  // The board lists WEB and OPS tickets and was picked through WEB; OPS
+  // has saved defaults. A Jira project offers every status of the site's boards.
+  const all = ['10000', '10001', '10003'];
+  statuses = {
+    sites: [{
+      tracker: 'jira', site: SITE,
+      statuses: [{ id: '10000', name: 'To Do', group: 'todo' }, { id: '10001', name: 'In Progress', group: 'in_progress' }, { id: '10003', name: 'In Review', group: 'in_progress' }],
+    }],
+    places: [{ tracker: 'jira', site: SITE, project: 'WEB', statuses: all }, { tracker: 'jira', site: SITE, project: 'OPS', statuses: all }],
+  };
   setBindingMock('ProjectTrackerStatuses', async () => statuses);
   stored = { revision: 'r0', setup: { status_groups: [], ticket_pins: [], start_work: [{ tracker: 'jira', site: SITE, project: 'OPS', branch: 'ops/{key}' }] } } as SetupView;
   saves = [];
@@ -114,19 +119,16 @@ describe('<TrackerStartWorkSettings>', () => {
   });
 
   it('moves a Linear team\'s tickets only to a state of that team', async () => {
-    const linear = { connection: 'lin-1', connection_kind: 'linear' };
     setBindingMock('TrackerConnections', async () => [trackerConnection({ id: 'lin-1', kind: 'linear', site: 'example' })]);
-    setBindingMock('ProjectTrackerBoards', async () => [
-      trackerBoardChoice({ ...linear, board: 'team-a', name: 'Alpha', tracker_project: 'ALP' }),
-      trackerBoardChoice({ ...linear, board: 'team-b', name: 'Beta', tracker_project: 'BET' }),
-    ]);
     // As the computer lists them: by site, Alpha's states first.
-    statuses = [{
-      tracker: 'linear', site: 'example',
-      statuses: [{ id: 'a-todo', name: 'Todo', group: 'todo' }, { id: 'a-doing', name: 'In Progress', group: 'in_progress' },
-        { id: 'b-todo', name: 'Todo', group: 'todo' }, { id: 'b-doing', name: 'In Progress', group: 'in_progress' }],
-    boards: [{ board: 'team-a', project: 'ALP', statuses: ['a-todo', 'a-doing'] }, { board: 'team-b', project: 'BET', statuses: ['b-todo', 'b-doing'] }],
-    }];
+    statuses = {
+      sites: [{
+        tracker: 'linear', site: 'example',
+        statuses: [{ id: 'a-todo', name: 'Todo', group: 'todo' }, { id: 'a-doing', name: 'In Progress', group: 'in_progress' },
+          { id: 'b-todo', name: 'Todo', group: 'todo' }, { id: 'b-doing', name: 'In Progress', group: 'in_progress' }],
+      }],
+      places: [{ tracker: 'linear', site: 'example', project: 'ALP', statuses: ['a-todo', 'a-doing'] }, { tracker: 'linear', site: 'example', project: 'BET', statuses: ['b-todo', 'b-doing'] }],
+    };
     await shown();
     await fireEvent.click(within(place('BET')).getByRole('switch', { name: 'Move the ticket' }));
     await waitFor(() => expect(saves).toHaveLength(1));
@@ -134,7 +136,11 @@ describe('<TrackerStartWorkSettings>', () => {
   });
 
   it('offers no move where no board of the tracker project is read, and says why on the page', async () => {
-    statuses = [{ tracker: 'jira', site: SITE, statuses: [], boards: [], unread: [{ board: '1', name: 'WEB board', project: 'WEB' }] }];
+    const unread = [{ board: '1', name: 'WEB board' }];
+    statuses = {
+      sites: [{ tracker: 'jira', site: SITE, statuses: [], unread }],
+      places: [{ tracker: 'jira', site: SITE, project: 'WEB', statuses: [], unread }, { tracker: 'jira', site: 'https://other.atlassian.net', project: 'OPS', statuses: [] }],
+    };
     await shown();
     const w = within(place('WEB'));
     expect(w.getByRole('switch', { name: 'Move the ticket' })).toBeDisabled();
@@ -146,14 +152,27 @@ describe('<TrackerStartWorkSettings>', () => {
     expect(ops.queryByTestId('tracker-status-unread')).toBeNull();
 
     // Check again reads the statuses again, and the board read since offers its statuses.
-    statuses = [{ tracker: 'jira', site: SITE, statuses: [{ id: '10001', name: 'In Progress', group: 'in_progress' }], boards: [{ board: '1', project: 'WEB', statuses: ['10001'] }] }];
+    statuses = {
+      sites: [{ tracker: 'jira', site: SITE, statuses: [{ id: '10001', name: 'In Progress', group: 'in_progress' }] }],
+      places: [{ tracker: 'jira', site: SITE, project: 'WEB', statuses: ['10001'] }, { tracker: 'jira', site: 'https://other.atlassian.net', project: 'OPS', statuses: [] }],
+    };
     await fireEvent.click(w.getByTestId('tracker-status-unread-retry'));
     await waitFor(() => expect(w.getByRole('switch', { name: 'Move the ticket' })).not.toBeDisabled());
     expect(w.queryByTestId('tracker-status-unread')).toBeNull();
   });
 
+  it('offers a tracker project of a shared Jira board the statuses the computer lists for it', async () => {
+    await shown();
+    const move = within(place('OPS')).getByRole('switch', { name: 'Move the ticket' });
+    expect(move).not.toBeDisabled();
+    expect(within(place('OPS')).queryByTestId('tracker-start-work-unlisted')).toBeNull();
+    await fireEvent.click(move);
+    await waitFor(() => expect(saves).toHaveLength(1));
+    expect(saves[0].start_work?.find((d) => d.project === 'OPS')?.status).toBe('10001');
+  });
+
   it('says a project with no boards and no defaults has nothing to set', async () => {
-    setBindingMock('ProjectTrackerBoards', async () => []);
+    statuses = { sites: [], places: [] };
     stored = { revision: '', setup: { status_groups: [], ticket_pins: [], start_work: [] } } as SetupView;
     render(TrackerStartWorkSettings);
     await screen.findByTestId('settings-tracker-start-work-empty');

@@ -162,7 +162,7 @@ describe('the tracker setup store', () => {
 
   it('reads the setup and the statuses again when their computer connects again, only while held', async () => {
     const reads = setBindingMock('ProjectTrackerSetup', async () => view('r1'));
-    const statusReads = setBindingMock('ProjectTrackerStatuses', async () => []);
+    const statusReads = setBindingMock('ProjectTrackerStatuses', async () => ({ sites: [], places: [] }));
     const releaseSetup = acquireTrackerSetup('p1');
     const releaseStatuses = acquireTrackerStatuses('p1');
     await flush();
@@ -181,8 +181,8 @@ describe('the tracker setup store', () => {
   });
 
   it('holds the statuses while shown and reads them again on the event', async () => {
-    const sites: SiteStatuses[] = [{ tracker: 'jira', site: SITE, statuses: [{ id: 's1', name: 'To Do', group: 'todo' }], boards: [] }];
-    const reads = setBindingMock('ProjectTrackerStatuses', async () => sites);
+    const sites: SiteStatuses[] = [{ tracker: 'jira', site: SITE, statuses: [{ id: 's1', name: 'To Do', group: 'todo' }] }];
+    const reads = setBindingMock('ProjectTrackerStatuses', async () => ({ sites, places: [] }));
     const release = acquireTrackerStatuses('p1');
     await flush();
     expect(trackerStatusesOf('p1').sites).toEqual(sites);
