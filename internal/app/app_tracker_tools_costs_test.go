@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -67,14 +66,6 @@ func readBoard(t *testing.T, f *trackerBoardFixture, connection, board string, s
 	}
 	f.boardEvent(t, "for the board's first read", func(e trackerapp.BoardEvent) bool { return e.ReadAgain && e.Seq > sub.Seq })
 	state.RunCleanups()
-}
-
-// pinned fails what unless its routes are want.
-func pinned(t *testing.T, what string, routes, want []string) {
-	t.Helper()
-	if !slices.Equal(routes, want) {
-		t.Errorf("%s: %d requests %q\nwant %d: %q", what, len(routes), routes, len(want), want)
-	}
 }
 
 // costSite is the board site with story points the board estimates in, a
