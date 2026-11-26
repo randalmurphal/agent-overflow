@@ -44,6 +44,7 @@ import {
 import { pageGrantsKnownTracked, scopeGrant } from '../transport/scopes';
 import type { CapturedError } from './errorReports.svelte';
 import type { BoardChoice, CardView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { PRRef } from '../utils/prReference';
 
 /** A card field the Display menu turns on and off. Title always shows. */
 export type CardField = 'type' | 'key' | 'parent' | 'labels' | 'priority' | 'estimate' | 'assignee' | 'days';
@@ -361,6 +362,17 @@ export interface OpenTicket {
   readonly project: string | null;
 }
 
+/** A pull request a ticket's Work row shows in the ticket's place: its
+ * reference, the project of the ticket's computer whose checkout shows it
+ * (`TicketPullRequest.reviewProjectId`), and its link and title for the
+ * bar over the review. */
+export interface TicketPullRequestOpen {
+  readonly pr: PRRef;
+  readonly projectId: string;
+  readonly url: string;
+  readonly title: string;
+}
+
 /** A ticket a surface outside the pane asked it to open (a thread's
  * link): its ticket, what to draw until it is read, and the project the
  * ask came from, whose boards are tried first. `unplaced` runs when no
@@ -565,9 +577,19 @@ export interface TicketTrail {
   readonly depth: number;
   /** The ticket shown and those on the trail. Reactive. */
   readonly held: readonly OpenTicket[];
-  /** The pane is on screen now, so the person sees the ticket it shows
-   * (`TicketTrailOptions.shown`). Reactive. */
+  /** The person sees the ticket it shows: the pane is on screen
+   * (`TicketTrailOptions.shown`) and no pull request covers the ticket.
+   * The ticket's subscription votes this. Reactive. */
   readonly shown: boolean;
+  /** The pull request shown in the ticket's place, over the ticket, which
+   * stays mounted under it; null for none. It belongs to the open it was
+   * opened from: a new open, Back, Close and any open or show of the
+   * ticket itself end it. Reactive. */
+  readonly pullRequest: TicketPullRequestOpen | null;
+  /** A person opens `pr` from the ticket shown's Work. */
+  openPullRequest(pr: TicketPullRequestOpen): void;
+  /** Back from the pull request to the ticket, which asks for the focus. */
+  closePullRequest(): void;
   /** The project of the ticket shown, which its Ask and Start work make
    * their thread in and whose setup holds its Start work defaults: the
    * one the person picked for it, else the one its last opener that named
@@ -685,6 +707,11 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
   const project = $derived(!ticket ? null : projectWord?.open === ticket ? projectWord.project : ticket.project ?? defaultProject());
   // The open whose Start work form was asked for, until Work takes it.
   let startAsk = $state.raw<OpenTicket | null>(null);
+  // The pull request shown over the open it was opened from, so a new
+  // open, Back and Close end it with no write of their own.
+  let prShown = $state.raw<{ readonly open: OpenTicket; readonly pr: TicketPullRequestOpen } | null>(null);
+  const pullRequest = $derived(prShown && prShown.open === ticket ? prShown.pr : null);
+  const ticketShown = $derived(shown() && pullRequest === null);
 
   const stop = $effect.root(() => {
     $effect(() => {
@@ -696,7 +723,7 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
         if (computer === 'gone') untrack(() => state.takeHandoff()?.());
         return;
       }
-      const attachment = untrack(() => attachTrackerTicket(open.ref, shown()));
+      const attachment = untrack(() => attachTrackerTicket(open.ref, ticketShown));
       view = { open, attachment };
       untrack(() => state.takeHandoff()?.());
       return () => attachment.release();
@@ -704,7 +731,7 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
 
     $effect(() => {
       const held = view?.attachment;
-      const on = shown();
+      const on = ticketShown;
       if (held) untrack(() => held.setShown(on));
     });
   });
@@ -714,7 +741,17 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
     get view() { return view; },
     get computer() { return computer; },
     get depth() { return state.trail.length; },
-    get shown() { return shown(); },
+    get shown() { return ticketShown; },
+    get pullRequest() { return pullRequest; },
+    openPullRequest(pr) {
+      const open = state.ticket;
+      if (open) prShown = { open, pr };
+    },
+    closePullRequest() {
+      const open = state.ticket;
+      prShown = null;
+      if (open) state.focus.ask(open);
+    },
     get project() { return project; },
     setProject(next) {
       if (ticket) projectWord = { open: ticket, project: next, picked: true };
@@ -737,6 +774,8 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
     open(ref, seed, from) {
       const current = state.ticket;
       if (current && sameTicketRef(current.ref, ref)) {
+        // The person asked for the ticket: it shows, not its pull request.
+        prShown = null;
         state.focus.ask(current);
         return;
       }
@@ -758,6 +797,7 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
         state.set(open, []);
         return;
       }
+      prShown = null;
       state.set(current, []);
       if (open.project !== null && !(projectWord?.open === current && projectWord.picked)) {
         projectWord = { open: current, project: open.project, picked: false };

@@ -5,6 +5,12 @@
     ticketScreen ??= import('./TicketScreen.svelte');
     return ticketScreen;
   }
+  // The review a Work row opens loads on its first open, once per page.
+  let ticketReview: Promise<typeof import('./TicketReview.svelte')> | null = null;
+  function loadTicketReview(): Promise<typeof import('./TicketReview.svelte')> {
+    ticketReview ??= import('./TicketReview.svelte');
+    return ticketReview;
+  }
 </script>
 
 <script lang="ts">
@@ -18,12 +24,17 @@
   // wears the pane's header (ToolPaneHeader), the ticket's own included.
   // A link opened with Ctrl or Cmd, or "Open in its own pane" on a linked
   // ticket, opens it in a pane of its own (stores/ticketPanes.svelte.ts);
-  // a plain open shows it here, with Back to this one.
+  // a plain open shows it here, with Back to this one. A pull request a
+  // Work row opens (`TicketTrail.pullRequest`) shows over the ticket
+  // (TicketReview), which stays mounted under it, inert, keeping its
+  // scroll, its Work read and its Details; Back steps out of what is open
+  // in the review, then shows the ticket.
   import RenderBoundary from '../shared/RenderBoundary.svelte';
   import ToolPaneHeader from '../panes/ToolPaneHeader.svelte';
   import type TicketScreen from './TicketScreen.svelte';
   import { attachedBackendEntry, backendDisplayName } from '../../stores/attachedBackends.svelte';
   import type { TicketPlacement, TicketSeed, TicketTrail } from '../../stores/issuesPane.svelte';
+  import { stepPaneBack } from '../../stores/paneBackSteps';
   import { openTicketPane } from '../../stores/ticketPanes.svelte';
   import { getTransportStatusFor } from '../../stores/transportStatus.svelte';
   import { isTransportOutage } from '../../transport/wsClient';
@@ -40,9 +51,12 @@
     onOwnPane?: () => void;
     /** The ticket's own pane: its header is the pane's. */
     pane?: { readonly id: string; readonly onDragStart?: (event: DragEvent) => void };
+    /** The layout pane showing the ticket: the Issues pane or the
+     * ticket's own. A pull request's review is held under it. */
+    hostPaneId: string;
   }
 
-  let { trail, board, compact, placement, onOwnPane, pane }: Props = $props();
+  let { trail, board, compact, placement, onOwnPane, pane, hostPaneId }: Props = $props();
 
   const view = $derived(trail.view);
   // The home computer's key is the empty string.
@@ -63,14 +77,20 @@
 
   let screen: TicketScreen | undefined = $state();
 
-  /** One step back inside the ticket (its Details rail). */
+  /** One step back inside the ticket: over a pull request, what is open
+   * in its review (a CI log, the conflicts, the compact file rail), else
+   * the pull request; else the ticket's Details rail. */
   export function stepBack(): boolean {
+    if (trail.pullRequest) {
+      if (!stepPaneBack(hostPaneId)) trail.closePullRequest();
+      return true;
+    }
     return screen?.stepBack() ?? false;
   }
 
   /** Whether the ticket has a step of its own to go back from. */
   export function hasStepBack(): boolean {
-    return screen?.hasStepBack() ?? false;
+    return trail.pullRequest !== null || (screen?.hasStepBack() ?? false);
   }
 </script>
 
@@ -90,6 +110,9 @@
     {@render state('ticket-loading', 'Opening the ticket…')}
   {:else}
     {@const shown = view}
+    {@const review = trail.pullRequest}
+    <div class="relative flex h-full min-h-0 min-w-0 flex-col">
+    <div class="flex h-full min-h-0 min-w-0 flex-col" inert={review !== null} aria-hidden={review ? 'true' : undefined} data-testid="ticket-under-review" data-covered={review ? '' : undefined}>
     {#await loadTicketScreen()}
       {@render state('ticket-loading', 'Opening the ticket…')}
     {:then mod}
@@ -116,10 +139,24 @@
           onClose={() => trail.close()}
           {onOwnPane}
           onOpenIssue={openIssue}
+          onOpenPullRequest={(pr) => trail.openPullRequest(pr)}
         />
       {/key}
     {:catch err}
       {@render state('ticket-load-error', `The ticket screen could not load: ${err instanceof Error ? err.message : String(err)}. Reload the window to try again.`, true)}
     {/await}
+    </div>
+    {#if review}
+      <div class="absolute inset-0 z-[4] flex min-h-0 flex-col bg-surface-0">
+        {#await loadTicketReview()}
+          {@render state('ticket-review-loading', 'Opening the pull request…')}
+        {:then mod}
+          <mod.default open={review} backend={shown.open.ref.backend} {hostPaneId} {compact} {pane} onBack={() => { stepBack(); }} />
+        {:catch err}
+          {@render state('ticket-review-load-error', `The review could not load: ${err instanceof Error ? err.message : String(err)}. Reload the window to try again.`, true)}
+        {/await}
+      </div>
+    {/if}
+    </div>
   {/if}
 </RenderBoundary>

@@ -2,7 +2,7 @@
 // other, the pull requests and branches its computer found, each row's
 // menu, and the Start work form filled from the project's saved defaults.
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import TicketWork from './TicketWork.svelte';
@@ -23,6 +23,7 @@ import { getToasts } from '../../stores/toast.svelte';
 import { ticketWriteSurfaceContext } from './ticketWriteSurface';
 import { drawTicketWrite, fieldTarget, moveTicket, ticketWrite } from '../../stores/trackerTicketWrites.svelte';
 import { formatTimeOfDay } from '../../utils/format';
+import type { TicketPullRequestOpen } from '../../stores/issuesPane.svelte';
 
 const SITE = 'https://example.atlassian.net';
 
@@ -61,7 +62,7 @@ const WORK = {
   problems: [{ projectId: 'p2', error: 'git for-each-ref failed: not a git repository' }],
 };
 
-async function mountWork(opts: { backend?: string; first?: DetailView | null; work?: () => Promise<unknown>; search?: () => Promise<unknown>; archived?: boolean; shown?: () => boolean } = {}) {
+async function mountWork(opts: { backend?: string; first?: DetailView | null; work?: () => Promise<unknown>; search?: () => Promise<unknown>; archived?: boolean; shown?: () => boolean; onOpenPullRequest?: (pr: TicketPullRequestOpen) => void } = {}) {
   const backend = opts.backend ?? HOME_BACKEND;
   const first = opts.first === undefined ? DETAIL : opts.first;
   setBindingMock('SubscribeTrackerTicket', async () => ({ id: 'sub-1', seq: 1, poll_every: 10_000, kind: 'jira', site: SITE, loaded: first !== null, detail: first ?? undefined, read_at: first ? 1 : 0 } as TicketSubscription));
@@ -79,7 +80,7 @@ async function mountWork(opts: { backend?: string; first?: DetailView | null; wo
   await settle();
   // The ticket screen Work is under, shown unless the test says.
   const view = render(TicketWork, {
-    props: { attachment: ticket, project: 'p1', onProject: () => {}, me: 'acc-1', startWorkAsked: false, onStartWorkTaken: () => {} },
+    props: { attachment: ticket, project: 'p1', onProject: () => {}, me: 'acc-1', startWorkAsked: false, onStartWorkTaken: () => {}, onOpenPullRequest: opts.onOpenPullRequest ?? (() => {}) },
     context: ticketWriteSurfaceContext(opts.shown ?? (() => true)),
   });
   await settle();
@@ -160,6 +161,31 @@ describe('Work', () => {
     expect(branch.textContent).toContain('web-1-spike');
     expect(branch.textContent).toContain('2 ahead');
     expect(view.getByTestId('ticket-work-problem').textContent).toContain('git for-each-ref failed: not a git repository');
+    view.unmount();
+  });
+
+  it('opens a pull request in the ticket\'s place when its computer names a project that can show it, and on the forge otherwise', async () => {
+    const shown = { ref: { Forge: 'github', Host: 'github.com', Namespace: 'example', Repo: 'widgets', Number: 9 }, url: 'https://github.com/example/widgets/pull/9', title: 'WEB-1 Docs', state: 'merged', branch: 'docs', reviewProjectId: 'p1' };
+    const forgeOnly = { ref: { Forge: 'github', Host: 'github.com', Namespace: 'team', Repo: 'up', Number: 3 }, url: 'https://github.com/team/up/pull/3', title: '', state: 'open', branch: 'web-1-up' };
+    const opened = vi.fn();
+    const external = setBindingMock('OpenExternalURL', async () => undefined);
+    const view = await mountWork({ work: async () => ({ ...WORK, pullRequests: [shown, forgeOnly] }), onOpenPullRequest: opened });
+    const rows = await waitFor(() => {
+      const found = view.getAllByTestId('ticket-work-pull');
+      expect(found).toHaveLength(2);
+      return found;
+    });
+    expect(rows.map((r) => r.dataset.opens)).toEqual(['review', 'forge']);
+    await fireEvent.click(rows[0]);
+    expect(opened).toHaveBeenCalledWith({ pr: { forge: 'github', host: 'github.com', namespace: 'example', repo: 'widgets', number: 9 }, projectId: 'p1', url: shown.url, title: 'WEB-1 Docs' });
+    expect(external).not.toHaveBeenCalled();
+    await fireEvent.click(rows[1]);
+    await waitFor(() => expect(external).toHaveBeenCalledWith(forgeOnly.url));
+    expect(opened).toHaveBeenCalledTimes(1);
+    // The forge stays one press away on the row the app shows.
+    await fireEvent.contextMenu(rows[0]);
+    await fireEvent.click(document.querySelector('[data-testid="ticket-work-menu-forge"]')!);
+    await waitFor(() => expect(external).toHaveBeenCalledWith(shown.url));
     view.unmount();
   });
 

@@ -644,6 +644,7 @@
         {compact}
         placement={besideFits ? { value: selection.placement, set: (p) => setTicketPlacement(screen, p) } : undefined}
         onOwnPane={moveToOwnPane}
+        hostPaneId={paneId}
       />
     </div>
   {/if}

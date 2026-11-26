@@ -47,5 +47,6 @@
     board={record.board}
     {compact}
     pane={{ id, onDragStart: onPaneDragStart }}
+    hostPaneId={id}
   />
 {/if}
