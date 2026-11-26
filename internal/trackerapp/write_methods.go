@@ -116,13 +116,15 @@ func (s *Service) EditSprint(ctx context.Context, id string, in SprintEditReques
 }
 
 // AddComment adds a comment to an issue; in ctx's session it is judged on
-// the project the session's last key lookup found the issue in.
+// the project the session's last key lookup found the issue in while no
+// write but a comment was sent on the connection since (projectFor), and
+// otherwise on the issue's project the provider reads with it.
 func (s *Service) AddComment(ctx context.Context, id string, in CommentRequest) (WriteView, error) {
 	m, err := in.model()
 	if err != nil {
 		return WriteView{}, err
 	}
-	m.Project = sessionOf(ctx).project(id, m.Issue)
+	m.Project = sessionOf(ctx).projectFor(id, m.Issue)
 	op := call1(m, tracker.Provider.AddComment)
 	op.additive = commentOf(m.Issue, in.Markdown)
 	return s.write(ctx, id, op)

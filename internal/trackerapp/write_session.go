@@ -17,10 +17,13 @@ import (
 //     provider does not read again what the call read; a later write
 //     reads as any write does;
 //   - the project a key lookup made in the session (Lookup) found each
-//     issue in: a comment the session adds to the issue is judged on it
-//     (AddComment, tracker CommentInput.Project), so a caller that waits
-//     for a person looks the issues up after the wait. The plan's reads
-//     (IssueCards, IssueDetails) keep none: they are made before a wait;
+//     issue in, with how many writes other than comments the session had
+//     sent on the connection then: a comment the session adds to the
+//     issue is judged on that project (AddComment, tracker
+//     CommentInput.Project) only while that count holds (projectFor), so
+//     a caller looks the issues up after its other writes, just before
+//     its comments. The plan's reads (IssueCards, IssueDetails) keep
+//     none: they are made before a wait;
 //   - the refresh each write owes (Service.write): a write in a session
 //     sends and answers its parts at once, and EndWrites refreshes every
 //     resource the session's writes named, one refresh per connection,
@@ -43,10 +46,13 @@ type sessionKey struct{}
 // owed, by connection in the order the writes were made.
 type writeSession struct {
 	reads    map[ticketKey]tracker.IssueRead
-	projects map[ticketKey]tracker.ProjectID
-	sentTo   map[ticketKey]bool
-	owed     map[string]*owedRefresh
-	ordered  []string
+	projects map[ticketKey]keptProject
+	// others counts the writes other than comments the session sent, by
+	// connection.
+	others  map[string]int
+	sentTo  map[ticketKey]bool
+	owed    map[string]*owedRefresh
+	ordered []string
 }
 
 // owedRefresh is what a connection's writes in a session owe its
@@ -71,7 +77,8 @@ func WithWrites(ctx context.Context) context.Context {
 		return ctx
 	}
 	return context.WithValue(ctx, sessionKey{}, &writeSession{
-		reads: map[ticketKey]tracker.IssueRead{}, projects: map[ticketKey]tracker.ProjectID{}, sentTo: map[ticketKey]bool{}, owed: map[string]*owedRefresh{},
+		reads: map[ticketKey]tracker.IssueRead{}, projects: map[ticketKey]keptProject{}, others: map[string]int{},
+		sentTo: map[ticketKey]bool{}, owed: map[string]*owedRefresh{},
 	})
 }
 
@@ -102,6 +109,14 @@ func (sess *writeSession) read(id string, issue tracker.IssueID) tracker.IssueRe
 	return sess.reads[ticketKey{connection: id, issue: issue}]
 }
 
+// keptProject is the project a key lookup found an issue in, and the
+// writes other than comments the session had sent on its connection
+// then (writeSession.others).
+type keptProject struct {
+	project tracker.ProjectID
+	others  int
+}
+
 // keepProjects keeps the project of each card found, on connection id,
 // when ctx carries a session.
 func (sess *writeSession) keepProjects(id string, found []tracker.KeyMatch) {
@@ -109,17 +124,38 @@ func (sess *writeSession) keepProjects(id string, found []tracker.KeyMatch) {
 		return
 	}
 	for _, m := range found {
-		sess.projects[ticketKey{connection: id, issue: m.Card.ID}] = m.Card.Project
+		sess.projects[ticketKey{connection: id, issue: m.Card.ID}] = keptProject{project: m.Card.Project, others: sess.others[id]}
 	}
 }
 
-// project is the project the session's last key lookup found issue on
-// connection id in, empty when none found it.
-func (sess *writeSession) project(id string, issue tracker.IssueID) tracker.ProjectID {
+// projectFor is the project a comment on issue, on connection id, is
+// judged on: the one the session's last key lookup found it in, empty
+// when none did, or when the session sent a write other than a comment
+// on the connection since, which may have moved the issue; the provider
+// then reads the issue's project with the comment.
+//
+// What this keeps true: nothing the call sends, other than its own
+// comments, goes out on the connection between the read a comment's
+// audience is judged on and that comment.
+func (sess *writeSession) projectFor(id string, issue tracker.IssueID) tracker.ProjectID {
 	if sess == nil {
 		return ""
 	}
-	return sess.projects[ticketKey{connection: id, issue: issue}]
+	kept, ok := sess.projects[ticketKey{connection: id, issue: issue}]
+	if !ok || kept.others != sess.others[id] {
+		return ""
+	}
+	return kept.project
+}
+
+// sending records that op is about to be sent on connection id: a write
+// other than a comment ends what the session's lookups found of the
+// connection's projects (projectFor).
+func (sess *writeSession) sending(id string, op writeOp) {
+	if sess == nil || op.additive != nil && op.additive.step == tracker.StepComment {
+		return
+	}
+	sess.others[id]++
 }
 
 // sent records that res was sent on connection id: no later write takes

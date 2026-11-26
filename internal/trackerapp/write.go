@@ -99,6 +99,9 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 	// Released after the outcome replaced the claimed row, on every path.
 	defer s.endAgentWrite(rec)
 	sess := sessionOf(ctx)
+	if op.call != nil {
+		sess.sending(id, op)
+	}
 	if op.board != "" {
 		// A create's placement is read with its own refresh.
 		sess = nil
