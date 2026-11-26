@@ -524,6 +524,11 @@ sidebar and the thread header, on desktop and on a phone.
 
 ### Dashboards
 
+- Every board has a built-in dashboard, Overview: its usual pace, days
+  from start to done, the tickets stuck now, what was finished per sprint
+  or week, who is carrying what, what was created and finished, and on
+  Jira open work by epic, counted from the computer's copy of the board,
+  which keeps syncing while the dashboard shows.
 - A dashboard is a twelve-column grid of widgets with a toolbar: dashboard
   picker, Team or Mine, the range, Ask your agent, and an edit mode that
   removes widgets.
@@ -544,7 +549,7 @@ sidebar and the thread header, on desktop and on a phone.
   the dashboard and on the board's summary row.
 - Charts are drawn to the widget's width and have hover values. The three
   series colors were checked for contrast and color-blind separation on the
-  dark surface only.
+  dark and light surfaces.
 
 ### Credit
 

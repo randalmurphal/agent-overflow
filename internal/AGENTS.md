@@ -25,6 +25,7 @@ All non-main Go packages live under `internal/`. Root `main*.go` and
 | Polling pump core: handles, pause while hidden, request hand-off, retry schedule | `pump/` (package comment) |
 | Issue tracker clients: Jira, Tempo, Linear, their HTTP transport and the ADF converter | `tracker/` (package comments); contract in [tracker-clients.md](../docs/architecture/tracker-clients.md); what is built on them in [tracker-backend.md](../docs/architecture/tracker-backend.md) |
 | Tracker connections, their key files, clients and providers | `trackerapp/` (package comment), `app/app_tracker*.go`; design in [tracker-backend.md](../docs/architecture/tracker-backend.md) |
+| A board's dashboards: metrics, their sandboxed evaluation, ranges and drills | `trackerdash/` (package comment); contract in [tracker-backend.md](../docs/architecture/tracker-backend.md#dashboards) |
 | CI job logs on disk: download, line index, sections, reads | `cilog/` (package comment); the review pane's use in [review-pane-design.md](../docs/architecture/review-pane-design.md) |
 | Browser engines and thread browser tools | [browser/](browser/AGENTS.md) |
 | Agent thread tools and `/side-chat` | [threadtools/](threadtools/AGENTS.md), `app/app_thread_tools*.go`; contract in [agent-thread-tools.md](../docs/specs/agent-thread-tools.md) |

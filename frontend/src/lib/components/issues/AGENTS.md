@@ -63,11 +63,14 @@ board methods, events and the patch read in
   and the compact column for the session, a Backlog section's fold per
   board, and the project and type a ticket was made with last per board
   for the session. Only a pick is saved; another window's change never
-  moves an open pane. Its selection also holds the screen (Board, Backlog
-  or Time, saved for the next pane), the open ticket, its
+  moves an open pane. Its selection also holds the screen (Board, Backlog,
+  Dashboards or Time, saved for the next pane), the open ticket, its
   subscription and the trail Back steps through, and decides whether the
-  board and the week are shown (`boardShown`, `timeShown`: the pane is on
-  screen on that screen and no ticket covers it), which are their votes.
+  board, the dashboard and the week are shown (`boardShown`,
+  `dashboardsShown`, `timeShown`: the pane is on screen on that screen
+  and no ticket covers it), which are their votes; the board's
+  subscription is voted shown on Dashboards too, so the copy a dashboard
+  counts keeps syncing.
   The ticket's placement per screen, its folds, the comment order and
   the Time layout are remembered here too. `createTicketTrail` is the one
   owner of a pane's open ticket, its subscription, its project
@@ -156,6 +159,16 @@ board methods, events and the patch read in
   control of the write it sent: it shows that write only while it is its
   target's latest, and the Status and Assignee fields say what became of
   it.
+- `stores/trackerDashboard.svelte.ts` holds the Dashboards screen's
+  state, one per screen: the board's dashboards, the one answer the
+  screen draws and the one evaluation in flight, the range and Team or
+  Mine saved for the next screen, the person or epic narrowed to, and the
+  one drill open. It counts again on the board's changes
+  (`TrackerBoardState.changes`), at most once every 5 s, and every 10
+  minutes; its rules are at the top of the store.
+  `stores/trackerDashboardModel.ts` is the pure part: how a number reads
+  and its change mark. The charts (`charts/`) draw to their measured
+  width from `charts/chartScale.ts`.
 - `stores/ticketOpen.ts` is the one opener of a ticket from outside the
   pane (a thread's linked ticket, a pull request's ticket chip); it is in
   the startup graph and reaches the pane's stores through one dynamic
@@ -165,7 +178,8 @@ These stores load with the pane (`ToolPane.svelte` imports it on demand)
 or the first ticket pane (`panes/TicketPane.svelte` imports
 `TicketPaneBody.svelte` on demand), `TicketScreen.svelte` loads on the
 first open of a ticket (`TicketHost.svelte`),
-`BacklogScreen.svelte` on the first switch to Backlog and
+`BacklogScreen.svelte` on the first switch to Backlog,
+`DashboardScreen.svelte` on the first switch to Dashboards and
 `TimeScreen.svelte` on the first switch to Time.
 The always-loaded stores reach them only through
 `stores/trackerBoardEvents.ts`, where the board and ticket stores take

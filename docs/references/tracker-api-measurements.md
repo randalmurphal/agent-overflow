@@ -729,6 +729,53 @@ The aggregate receives a BLOB as Go `[]byte` whatever its bytes hold, so it
 encodes BLOBs by SQL type without the `iif`: it wrote `x'00ff'` as
 `["00FF"]` and `jsonb('[1,2]')` as `["4B13311332"]`.
 
+### The built-in dashboard
+
+Measured on this branch with modernc.org/sqlite v1.63.0 under WSL2 on a
+developer machine, each figure the median and spread of 5 runs. The
+board is the store's scale fixture: one board of n issues with 10
+changes each (20,000 at 2,000 issues), 100 sprints and 20 people
+(`TestDashboardAtScale` in `internal/store`, run with
+`AO_TRACKER_SCALE=2000,20000`).
+
+| Path | 2,000 issues | 20,000 issues |
+|---|---|---|
+| Evaluation, last 5 sprints | 104 ms (98 to 127) | 1.13 s (1.07 to 1.18) |
+| of which the store's fill | 97 ms (91 to 120) | 1.07 s (1.02 to 1.13) |
+| Evaluation, this sprint | 105 ms (97 to 108) | 1.21 s (1.18 to 1.25) |
+| Drill, first page of 100 rows | 97 ms (91 to 118) | 1.09 s (1.07 to 1.12) |
+| Answer as JSON | 11,607 bytes | 11,608 bytes |
+| Drill page as JSON | 18,302 bytes | 18,304 bytes |
+| Go allocations of one evaluation | 2.9 MB in 40,482 | 29.9 MB in 380,529 |
+
+The fill is nearly all of an evaluation and grows with the board; the
+metrics and the reduction take under 10 ms at 2,000 issues. An open
+dashboard counts again at most once every 5 s while its board changes,
+so at 20,000 issues a board that changes constantly costs about a fifth
+of one core while the screen shows.
+
+While the Dashboards screen shows, the board's subscription stays voted
+shown so the copy keeps syncing, and the client reads the board's patch
+on each change as the Board screen does. At 2,000 issues (the store's
+`TestMirrorAtScale/1x2000`) a patch read costs 62 µs for one changed row
+with the totals held, 0.73 ms for 100, and 3.6 to 4.4 ms when the totals
+moved; the pump's idle tick costs 129 µs.
+
+A hostile metric's temporary files, measured with
+`TestHostileQuerySpill` in `internal/trackerdash` (a cross join of
+3,000 changes, three ways, grouped): the 1 s deadline stopped it at
+1.003 to 1.006 s, by when its temporary files had reached 65.0 and
+66.3 MB, and all were closed after it. The same join made distinct
+stopped at the 20,000-row cap in 16 to 24 ms with no temporary file.
+Sorted with a `LIMIT`, SQLite keeps only the top rows and writes none.
+
+The Dashboards screen opened and closed four times in the desktop
+harness (`issues-dashboards.spec.ts`, heap snapshots after a forced
+collection, compiled code left out): the page held 14,163 KB with the
+Board shown, 14,895 to 14,967 KB with the dashboard open, and 14,181 KB
+after the fourth close; the pane strip's DOM went from 163 elements to
+275 and back to 163.
+
 ## Planning poker add-on
 
 Applies only to a site with Easy Agile TeamRhythm installed
