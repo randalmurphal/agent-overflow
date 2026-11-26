@@ -174,9 +174,9 @@ func BenchmarkSectionPage100(b *testing.B) {
 }
 
 // The Status groups page's read of a project of 20 read boards, each of
-// 12 columns of 5 statuses (half of each board's shared with the next),
-// over a catalog of 1,000 statuses, with 30 statuses regrouped, 10 of
-// them on no board.
+// 12 columns of 5 statuses (half of each board's shared with the next)
+// and the mirror's most sprints (250) with a goal each, over a catalog of
+// 1,000 statuses, with 30 statuses regrouped, 10 of them on no board.
 func BenchmarkProjectStatuses20Boards(b *testing.B) {
 	svc, p, scope := benchService(b)
 	statuses := make([]tracker.Status, 1000)
@@ -202,6 +202,15 @@ func BenchmarkProjectStatuses20Boards(b *testing.B) {
 			st.Columns[c] = col
 		}
 		st.Statuses = statuses
+		st.Sprints = make([]tracker.Sprint, 250)
+		at := time.UnixMilli(1_799_000_000_000).UTC()
+		for k := range st.Sprints {
+			st.Sprints[k] = tracker.Sprint{
+				ID: tracker.SprintID(fmt.Sprintf("%d%03d", n, k)), Board: bd, Name: fmt.Sprintf("Sprint %d", k),
+				Goal: strings.Repeat("Ship the checkout page faster. ", 6), State: tracker.SprintClosed,
+				Start: at.Add(time.Duration(k) * 14 * 24 * time.Hour), End: at.Add(time.Duration(k+1) * 14 * 24 * time.Hour), Completed: at.Add(time.Duration(k+1) * 14 * 24 * time.Hour),
+			}
+		}
 		return st, nil
 	}
 	listBoards(b, svc.store.(*store.Store), scope.Connection, boards...)

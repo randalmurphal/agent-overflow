@@ -61,6 +61,7 @@ type MirrorStore interface {
 
 	ListMirrorBodies(rootID int64, issueIDs []string) ([]store.MirrorBody, error)
 	GetMirrorBoard(rootID int64, boardID string) (store.MirrorStructure, bool, error)
+	GetMirrorBoardStatuses(rootID int64, boardID string) ([]string, bool, error)
 	GetMirrorCatalog(rootID int64, users, statuses []string) (store.MirrorCatalog, error)
 	ListMirrorCards(rootID int64, issueIDs []string) ([]store.MirrorCard, error)
 	ListMirrorIssueRows(rootID int64, issueID, afterBoard string) ([]store.MirrorIssueRow, bool, error)

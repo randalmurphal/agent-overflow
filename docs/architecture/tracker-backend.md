@@ -423,10 +423,14 @@ no step runs at root creation, restore or start.
   and setup, with no tracker request: by tracker site, whatever
   connection reaches it, each listed board's column statuses in board
   order, each once, the statuses the setup regroups that no listed board
-  shows, and the listed boards the mirror has not read, by name. Names
+  shows, and the listed boards the mirror has not read, by name. A board
+  is one statement of its column statuses (`GetMirrorBoardStatuses`, at
+  most 200 rows), not its structure: no sprints or board data. Names
   come from the root's catalog, looked up 500 at a time. With 20 boards of
-  12 columns of 5 statuses, a catalog of 1,000 statuses and 30 regrouped,
-  one read took 2.1 to 2.5 ms and 1 MB over five runs
+  12 columns of 5 statuses and 250 sprints each, a catalog of 1,000
+  statuses and 30 regrouped, one read took 1.2 to 1.5 ms, 0.8 MB and
+  11,700 allocations over three runs, against 10 ms, 4.9 MB and 82,300
+  through the boards' whole structure
   (`BenchmarkProjectStatuses20Boards`). A client reads it only while the
   page shows a project: on the page's show, after `tracker:setup_updated`,
   on reconnect and on Check again.

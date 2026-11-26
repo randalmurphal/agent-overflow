@@ -106,7 +106,7 @@ func (s *Service) ProjectStatuses(projectID string) ([]SiteStatuses, error) {
 			conn.site.out.Unread = append(conn.site.out.Unread, unread)
 			continue
 		}
-		board, ok, err := s.store.GetMirrorBoard(conn.root, choice.Board)
+		ids, ok, err := s.store.GetMirrorBoardStatuses(conn.root, choice.Board)
 		if err != nil {
 			return nil, fmt.Errorf("trackerapp: read board %s of connection %s from the mirror: %w", choice.Board, choice.Connection, err)
 		}
@@ -114,12 +114,10 @@ func (s *Service) ProjectStatuses(projectID string) ([]SiteStatuses, error) {
 			conn.site.out.Unread = append(conn.site.out.Unread, unread)
 			continue
 		}
-		for _, col := range board.Columns {
-			for _, id := range col.Statuses {
-				if !conn.site.seen[id] {
-					conn.site.seen[id] = true
-					conn.site.ids = append(conn.site.ids, id)
-				}
+		for _, id := range ids {
+			if !conn.site.seen[id] {
+				conn.site.seen[id] = true
+				conn.site.ids = append(conn.site.ids, id)
 			}
 		}
 	}
