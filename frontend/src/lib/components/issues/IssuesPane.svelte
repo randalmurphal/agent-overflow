@@ -66,7 +66,7 @@
   import { SplitWidth } from '../shared/splitWidth.svelte';
   import type { MoveView, RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import { attachTrackerTicket, trackerTicketKey } from '../../stores/trackerTicket.svelte';
-  import { openTicketMove } from '../../stores/trackerTicketWrites.svelte';
+  import { openTicketMove, refreshFormReads } from '../../stores/trackerTicketWrites.svelte';
   import { registerIssuesBackHandler } from '../../stores/issuesCommands';
   import { registerPaneDetailProbe } from '../../stores/toolPanes.svelte';
   import TicketHost from './TicketHost.svelte';
@@ -351,7 +351,10 @@
       timeView?.refresh();
       return;
     }
-    if (attachment) void refreshTrackerBoard(attachment.key);
+    if (attachment && board) {
+      void refreshTrackerBoard(attachment.key);
+      refreshFormReads(board.backend, board.connection);
+    }
     if (screen === 'dashboards') dashboardView?.refresh();
   }
 

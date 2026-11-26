@@ -154,7 +154,7 @@ func TestRequestCost(t *testing.T) {
 			After:  tracker.RowPlace{Issue: costIDs(1, 1)[0], Order: afterFirst},
 			Fields: []tracker.FieldEdit{{Field: tracker.FieldDescription, Value: tracker.MarkdownEdit("Body text", "")}}})
 		var ok bool
-		if created, ok = res.Created(); !ok {
+		if created, _, ok = res.Created(); !ok {
 			return fmt.Errorf("create named no issue: %+v", res)
 		}
 		return nil

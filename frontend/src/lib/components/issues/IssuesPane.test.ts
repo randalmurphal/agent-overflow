@@ -59,7 +59,7 @@ import { bindingMockNames, getBindingMock, setBindingMock } from '../../../test/
 import { getMinuteNow } from '../../stores/minuteClock.svelte';
 import { getToasts } from '../../stores/toast.svelte';
 import { trackerTicketKey } from '../../stores/trackerTicket.svelte';
-import { ticketDraft } from '../../stores/trackerTicketWrites.svelte';
+import { refreshFormReads, ticketDraft } from '../../stores/trackerTicketWrites.svelte';
 import { localDay, mondayOf } from '../../stores/trackerTimeModel';
 import { openNamedTicket } from '../../stores/ticketOpen';
 import { openLinkedTicket } from '../../stores/threadTicketLinks.svelte';
@@ -3272,7 +3272,7 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
     const form = await within(document.body).findByTestId('ticket-link-form');
     const relation = await within(form).findByTestId('ticket-link-form-relation');
     expect(Array.from((relation as HTMLSelectElement).options).map((o) => o.text)).toEqual(['blocks', 'is blocked by']);
-    await fireEvent.change(relation, { target: { value: '1' } });
+    await fireEvent.change(relation, { target: { value: '10000:false' } });
     expect(relation).toHaveDisplayValue('is blocked by');
     await fireEvent.click(within(form).getByTestId('ticket-link-form-find'));
     await fireEvent.input(await within(document.body).findByTestId('ticket-picker-find'), { target: { value: 'WEB-7' } });
@@ -3285,6 +3285,55 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
     expect(within(form).getByTestId('ticket-link-form-save')).toBeDisabled();
     answer!(applied());
     await waitFor(() => expect(within(document.body).queryByTestId('ticket-link-form')).toBeNull());
+  });
+
+  it('keeps the relation picked while the link types are read again, says one the tracker no longer offers, and keeps the list shown beside a failed read', async () => {
+    install();
+    installTicket();
+    const blocks = { id: '10000', name: 'Blocks', outward: 'blocks', inward: 'is blocked by' };
+    const clones = { id: '10001', name: 'Cloners', outward: 'clones', inward: 'is cloned by' };
+    let offered: unknown = [blocks];
+    setBindingMock('TrackerLinkTypes', async () => {
+      if (offered instanceof Error) throw offered;
+      return offered as typeof blocks[];
+    });
+    setBindingMock('TrackerLookup', async () => ({ found: [{ key: 'WEB-7', card: { id: '7', key: 'WEB-7', title: 'Issue 7' } }] }));
+    const link = setBindingMock('LinkTrackerIssues', async () => applied());
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await fireEvent.click(await within(screen).findByTestId('ticket-link-add'));
+    const form = await within(document.body).findByTestId('ticket-link-form');
+    const relation = (await within(form).findByTestId('ticket-link-form-relation')) as HTMLSelectElement;
+    await fireEvent.change(relation, { target: { selectedIndex: 1 } });
+    expect(relation).toHaveDisplayValue('is blocked by');
+    await fireEvent.click(within(form).getByTestId('ticket-link-form-find'));
+    await fireEvent.input(await within(document.body).findByTestId('ticket-picker-find'), { target: { value: 'WEB-7' } });
+    await fireEvent.click(await within(document.body).findByTestId('ticket-picker-item'));
+    await waitFor(() => expect(within(form).getByTestId('ticket-link-form-other')).toHaveTextContent('WEB-7'));
+
+    // A type is added before Blocks in Jira: the pick stays "is blocked by".
+    offered = [clones, blocks];
+    refreshFormReads(HOME_BACKEND, 'c1');
+    await waitFor(() => expect(Array.from(relation.options).map((o) => o.text)).toEqual(['clones', 'is cloned by', 'blocks', 'is blocked by']));
+    expect(relation).toHaveDisplayValue('is blocked by');
+
+    // A read that fails keeps the list and the pick shown beside its error.
+    offered = new Error('Jira did not answer');
+    refreshFormReads(HOME_BACKEND, 'c1');
+    await waitFor(() => expect(within(form).getByTestId('ticket-link-form-types-error')).toHaveTextContent('Jira did not answer'));
+    expect(within(form).getByTestId('ticket-link-form-relation')).toHaveDisplayValue('is blocked by');
+    expect(within(form).getByTestId('ticket-link-form-types-retry')).toBeInTheDocument();
+
+    // Blocks leaves Jira: the pick is said gone and Link waits for another.
+    offered = [clones];
+    await fireEvent.click(within(form).getByTestId('ticket-link-form-types-retry'));
+    await waitFor(() => expect(within(form).getByTestId('ticket-link-form-relation-gone')).toHaveTextContent('The tracker no longer offers "is blocked by". Pick how the tickets relate.'));
+    expect(within(form).getByTestId('ticket-link-form-save')).toBeDisabled();
+    await fireEvent.change(within(form).getByTestId('ticket-link-form-relation'), { target: { value: '10001:false' } });
+    await waitFor(() => expect(within(form).queryByTestId('ticket-link-form-relation-gone')).toBeNull());
+    await fireEvent.click(within(form).getByTestId('ticket-link-form-save'));
+    await waitFor(() => expect(link).toHaveBeenCalledWith('c1', { type: '10001', outward: '7', inward: '1' }));
+    expect(link).toHaveBeenCalledTimes(1);
   });
 
   it('reads the link types once per opening of the link form, keeping a refusal on screen until Retry', async () => {

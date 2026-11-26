@@ -67,6 +67,11 @@ func (p *Provider) Create(ctx context.Context, in tracker.CreateInput) tracker.R
 	if in.ImageDir != "" {
 		return unsupported(tracker.StepCreate, "local images in Markdown")
 	}
+	for _, e := range in.Fields {
+		if _, replaced := e.Value.Replaces(); replaced {
+			return refuse(tracker.StepCreate, tracker.Refusal{Reason: tracker.ReasonInvalid, Message: "a create's value replaces nothing"})
+		}
+	}
 	r := &resolver{p: p, team: string(in.Project)}
 	ch, err := r.resolve(ctx, in.Fields, true)
 	if err != nil {
@@ -88,7 +93,9 @@ func (p *Provider) Create(ctx context.Context, in tracker.CreateInput) tracker.R
 		return one("", tracker.StepCreate, err)
 	}
 	id := tracker.IssueID(is.ID)
-	return one(id, tracker.StepCreate, nil, tracker.CardOf(id), tracker.RowOf(tracker.BoardID(is.TeamID), id), tracker.DetailOf(id))
+	out := one(id, tracker.StepCreate, nil, tracker.CardOf(id), tracker.RowOf(tracker.BoardID(is.TeamID), id), tracker.DetailOf(id))
+	out.Parts[0].Key = is.Identifier
+	return out
 }
 
 // afterOrder is a sortOrder just past the row's, read from its order key
@@ -107,9 +114,11 @@ func afterOrder(after tracker.RowPlace) (float64, error) {
 }
 
 // Edit changes fields of an issue with one update. A Markdown edit of the
-// description is refused as stale when the description Linear holds is
-// not the Markdown it was written from; the check reads the issue just
-// before the update and is not atomic with it.
+// description, an emptied one included, is refused as stale when the
+// description Linear holds is not the Markdown it was written from; the
+// check reads the issue just before the update and is not atomic with it.
+// Linear has no long plain text, so a plain edit written from texts
+// (tracker.Edit.Replacing) is refused as unsupported.
 func (p *Provider) Edit(ctx context.Context, in tracker.EditInput) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepEdit, err, in.Issue)
@@ -119,6 +128,11 @@ func (p *Provider) Edit(ctx context.Context, in tracker.EditInput) tracker.Resul
 	}
 	r := &resolver{p: p}
 	var current *linear.DescribedIssue
+	for _, e := range in.Fields {
+		if _, replaced := e.Value.Replaces(); replaced {
+			return unsupported(tracker.StepEdit, "comparing "+string(e.Field)+" with what it replaces", in.Issue)
+		}
+	}
 	if needsTeam(in.Fields) || slices.ContainsFunc(in.Fields, func(e tracker.FieldEdit) bool { return e.Value.Form() == tracker.EditMarkdown }) {
 		is, err := p.summary(ctx, in.Issue)
 		if err != nil {
@@ -309,8 +323,12 @@ func (p *Provider) AddComment(ctx context.Context, in tracker.CommentInput) trac
 	if in.ImageDir != "" {
 		return unsupported(step, "local images in Markdown", in.Issue)
 	}
-	_, err := p.c.CreateComment(ctx, linear.CreateCommentInput{IssueID: string(in.Issue), Body: in.Markdown})
-	return one(in.Issue, step, err, tracker.DetailOf(in.Issue))
+	c, err := p.c.CreateComment(ctx, linear.CreateCommentInput{IssueID: string(in.Issue), Body: in.Markdown})
+	out := one(in.Issue, step, err, tracker.DetailOf(in.Issue))
+	if c != nil && out.Parts[0].Outcome.State() == tracker.StateApplied {
+		out.Parts[0].Comment = tracker.CommentID(c.ID)
+	}
+	return out
 }
 
 // EditComment replaces a comment's body. It reads the comment first and

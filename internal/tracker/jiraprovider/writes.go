@@ -148,7 +148,7 @@ func createParts(res jira.CreateResult, images bool, err error) tracker.Result {
 		return tracker.Result{Parts: []tracker.Part{{Step: tracker.StepCreate, Outcome: o}}}
 	}
 	id := tracker.IssueID(res.ID)
-	parts := []tracker.Part{{Issue: id, Step: tracker.StepCreate, Outcome: tracker.Applied(), Changed: issueResources(id)}}
+	parts := []tracker.Part{{Issue: id, Step: tracker.StepCreate, Outcome: tracker.Applied(), Changed: issueResources(id), Key: res.Key}}
 	if !images {
 		return tracker.Result{Parts: parts}
 	}
@@ -158,7 +158,8 @@ func createParts(res jira.CreateResult, images bool, err error) tracker.Result {
 }
 
 // Edit changes fields of an issue through a plan the client checks and
-// then applies.
+// then applies. A plan whose every value the issue already holds sends
+// nothing, and its part is applied and Unchanged.
 func (p *Provider) Edit(ctx context.Context, in tracker.EditInput) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepEdit, err, in.Issue)
@@ -177,6 +178,9 @@ func (p *Provider) Edit(ctx context.Context, in tracker.EditInput) tracker.Resul
 		return stepParts(in.Issue, tracker.StepEdit, nil, err)
 	}
 	res, err := p.jira.ApplyEdit(ctx, plan)
+	if err == nil && res.Unchanged {
+		return tracker.Result{Parts: []tracker.Part{{Issue: in.Issue, Step: tracker.StepEdit, Outcome: tracker.Applied(), Unchanged: true}}}
+	}
 	return stepParts(in.Issue, tracker.StepEdit, res.Uploaded, err)
 }
 

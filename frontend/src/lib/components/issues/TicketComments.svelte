@@ -33,6 +33,8 @@
   } from '../../stores/trackerTicketWrites.svelte';
   import { COMMENTS_FIRST, COMMENTS_STEP, commentWindow, heldComments, type CommentOrder } from '../../stores/trackerTicketModel';
   import { addToast } from '../../stores/toast.svelte';
+  import { getThreadById } from '../../stores/threads.svelte';
+  import { openTicketThread } from '../../stores/ticketWork.svelte';
   import { copyToClipboard } from '../../utils/clipboard';
   import { errString } from '../../utils/errors';
   import { relativeTime } from '../../utils/format';
@@ -217,6 +219,17 @@
           <span class="shrink-0" title={new Date(c.created).toLocaleString()}>{relativeTime(c.created, 'locale', ctx.ref.backend)}</span>
           {#if c.updated && c.updated !== c.created}<span class="shrink-0">edited</span>{/if}
           {#if c.internal}<span class="shrink-0 rounded-sm bg-warning/15 px-1 text-warning">Internal</span>{/if}
+          {#if c.thread}
+            <!-- An agent of a thread on this computer added it. The mark opens
+                 a thread this window lists; a worker with no row and a deleted
+                 thread (whose title is gone) are named only. -->
+            {@const thread = getThreadById(c.thread.id)}
+            {#if thread}
+              <button type="button" class="min-w-0 truncate rounded-sm bg-accent/10 px-1 text-accent hover:underline compact:select-none" data-testid="ticket-comment-agent" title="Open the thread" onclick={() => { void openTicketThread(thread); }}>From thread {c.thread.title || thread.title}</button>
+            {:else}
+              <span class="min-w-0 truncate rounded-sm bg-accent/10 px-1 text-accent" data-testid="ticket-comment-agent">{c.thread.title ? `From thread ${c.thread.title}` : 'From a deleted thread'}</span>
+            {/if}
+          {/if}
         </div>
         {#if editDraft}
           {@const pending = ticketWrite(ctx.key, commentTarget(c.id))?.pending ?? false}

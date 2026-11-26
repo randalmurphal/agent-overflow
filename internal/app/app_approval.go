@@ -78,6 +78,9 @@ func (a *App) ListPendingInteractiveRequests(threadID string) (provider.PendingI
 }
 
 // RespondToApproval forwards an interactive response to the active provider session.
+// A tracker write's approval is the app's own, answered to the call that
+// waits on it (respondToTrackerWrite): the open prompt's kind says so,
+// never the request ID's text.
 //
 // Several clients render the same prompt, so two of them can answer it. The
 // router arbitrates: the loser gets transport.ErrAlreadyHandled and no
@@ -105,6 +108,9 @@ func (a *App) RespondToApproval(ctx context.Context, threadID string, response p
 	claim, claimed := a.claimPrompt(threadID, response.RequestID, response.Occurrence)
 	if !claimed {
 		return fmt.Errorf("approval %s: %w", response.RequestID, transport.ErrAlreadyHandled)
+	}
+	if claim.Kind == triage.ApprovalKindTrackerWrite {
+		return a.respondToTrackerWrite(threadID, claim, response)
 	}
 	sess, ok := a.sessionManager().get(threadID)
 	if claim.SessionToken != "" && (!ok || sess.Token != claim.SessionToken) {

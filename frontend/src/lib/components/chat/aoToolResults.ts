@@ -1191,6 +1191,47 @@ export function trackerResultView(data: string): AoResultView | null {
 }
 
 /**
+ * Reads a tracker tools write's reply: a create's key, or what became of
+ * each ticket of an update, with the sentence of a step refused or whose
+ * outcome is unknown. A ticket counts as changed when this call applied a
+ * step to it; one the call found already as asked did not change.
+ */
+export function trackerWriteResultView(tool: string, data: string): AoResultView | null {
+  const reply = obj(parseFirstJson(data));
+  if (!reply) return null;
+  const view = emptyView();
+  if (tool === 'ticket_create') {
+    const key = str(reply, 'key');
+    view.outcome = join(key ? `created ${key}` : 'not created', str(reply, 'refused') || str(reply, 'unknown') ? 'incomplete' : '');
+    view.note = str(reply, 'refused') || str(reply, 'unknown') || str(reply, 'note');
+    return view;
+  }
+  let done = 0;
+  for (const ticket of list(reply.tickets)) {
+    const applied = strings(ticket.applied);
+    const already = strings(ticket.already);
+    const notSent = strings(ticket.not_sent);
+    const stopped = str(ticket, 'refused') ? 'refused' : str(ticket, 'unknown') ? 'outcome unknown' : '';
+    if (applied.length > 0) done += 1;
+    view.lines.push({
+      key: str(ticket, 'key'),
+      title: str(ticket, 'key'),
+      detail: join(
+        applied.length ? applied.join(', ') : '',
+        already.length ? `already: ${already.join(', ')}` : '',
+        stopped,
+        notSent.length ? `not sent: ${notSent.join(', ')}` : '',
+      ),
+      text: clipText(str(ticket, 'refused') || str(ticket, 'unknown') || str(ticket, 'note'), LINE_TEXT_MAX),
+      link: null,
+    });
+  }
+  const total = view.lines.length;
+  view.outcome = total === done ? `${plural(total, 'ticket')} changed` : `${done} of ${plural(total, 'ticket')} changed`;
+  return view;
+}
+
+/**
  * The reply of any AO tool as its row's body shows it. Null when the reply
  * is not JSON, which the body reports as undecoded rather than painting,
  * or is a remote run reply, which renders through `remoteResultView`.
@@ -1212,7 +1253,7 @@ export function aoResultView(
     case REMOTE_TOOLS_SERVER:
       return remoteResultView(data) ? null : remoteOtherView(tool, data, names);
     case TRACKER_TOOLS_SERVER:
-      return trackerResultView(data);
+      return tool === 'ticket_create' || tool === 'ticket_update' ? trackerWriteResultView(tool, data) : trackerResultView(data);
     default:
       return null;
   }

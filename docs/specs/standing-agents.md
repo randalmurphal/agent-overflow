@@ -134,7 +134,10 @@ user changes it.
     its spawner only in a run its spawner started: the spawn, or a later
     send of the spawner's, until the worker is next at rest
     ([At rest](#at-rest)); in a run the person or another thread
-    started, it asks the person, as a thread nobody spawned does. An
+    started, it asks the person, as a thread nobody spawned does. A
+    tracker tools write's approval is the exception: only the person
+    answers it, in every run, and the worker shows needs-you for it
+    ([Writes by agents](../architecture/tracker-backend.md#writes-by-agents)). An
     open prompt keeps the worker from rest, so a prompt put to the
     spawner stays with it until it is answered. Its awaiting-input and
     approval stops are delivered to the spawner as a badged wake, the

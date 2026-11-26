@@ -12,8 +12,9 @@ thread header. The other screens are not built; the [Board](#board),
 and [Thread link](#thread-link) sections say what of them is. A
 project's status groups and ticket pins are built in the backend, and no
 screen sets them yet; its Start work defaults are set from the Start work
-form. Agents can find and read tickets; their writes are not built
-([Agent tools](../architecture/tracker-backend.md#agent-tools)).
+form. Agents can find, read, create and change tickets, a change of
+several tickets waiting for the person's approval; their worklog tools
+are not built ([Agent tools](../architecture/tracker-backend.md#agent-tools)).
 
 ## Goal
 
@@ -364,7 +365,13 @@ picked last on the board this session, else the project's first at the
 standard level. The values given in the form are kept for each project
 and type: the form shows, and Add sends, only those given for the
 project and type it shows, and coming back to one, by a pick or by the
-board's projects, shows what was given for it. What was typed in the form, a
+board's projects, shows what was given for it. The form offers what the
+tracker offers now: opened, or back in view, more than a minute after it
+last read the projects, types and fields, it reads them again while it
+shows what it holds, and the screen's Refresh reads them again too; a
+value given that the tracker no longer offers is said before Add and not
+sent, and a project or type the person picked that it no longer offers
+is said and asked for again before Add. What was typed in the form, a
 field being typed in included, outlives the form scrolling out of view. A ticket the tracker
 made stays made: when its move into the sprint failed, or may have, the
 form says so with the ticket's key and offers that move until that move
@@ -414,16 +421,17 @@ comments in either order
 with the control and the comment box, edited, deleted and copied from a
 comment's menu; history; linked tickets grouped by relation, each
 opening in the ticket's place, added through a form that finds the other
-ticket by key or words and removed from their row; attachments, attached
+ticket by key or words, and keeps the relation picked when its list is
+read again or says it is no longer offered, and removed from their row; attachments, attached
 one at a time by picking, dropping or pasting, each saved or copied from
 its row and an image up to 16 MB opened in the app; on a Jira site that
 has it, planning poker, folded until opened, with the estimate set from
 its result in the section or the ticket's menu; on Jira, the
 estimate in the header and Log time; the control that opens it in the
 tracker; Back through the tickets opened from one another; and Work, with
-Ask and Start work. Not built: pinning a field or a section, the mark on a
-section holding the template text, and the thread an agent's comment came
-from.
+Ask and Start work; and the thread an agent's comment or change came
+from, on the comment and in the history. Not built: pinning a field or a
+section, and the mark on a section holding the template text.
 
 - At 720 or wider the content is on the left and a rail on the right holds
   Fields, then Work. Narrower, the ticket shows the content only, with one

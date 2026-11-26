@@ -67,6 +67,9 @@ func (c *Client) ApplyCreate(ctx context.Context, p *CreatePlan) (CreateResult, 
 	created, err := c.write(ctx, trackerapi.Request{Method: http.MethodPost, Path: apiPath + "issue", Body: body},
 		bodyAnswer(namesIssue, http.StatusCreated), nil)
 	if err != nil {
+		if se, ok := errors.AsType[*trackerapi.StatusError](err); ok && se.Status == http.StatusBadRequest && len(se.Fields) > 0 {
+			c.forgetCreateScreen(p.project, p.issueType.ID)
+		}
 		return res, &StepError{Step: StepCreate, Err: fmt.Errorf("jira: create in %s: %w", p.project, err)}
 	}
 	res.ID, res.Key = created.id(), created.key()

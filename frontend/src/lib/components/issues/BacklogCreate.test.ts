@@ -15,14 +15,16 @@
 // cannot set says to make the ticket in the tracker.
 
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
+import { flushSync } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FieldView, IssueTypeView, ProjectView, RowView, WriteView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import BacklogCreate, { type CreateDraft } from './BacklogCreate.svelte';
 import { ticketWriteSurfaceContext } from './ticketWriteSurface';
 import { PICK_LIMIT } from './ticketEditors';
 import type { BacklogSection } from '../../stores/trackerBacklogModel';
-import { boardWriteContext } from '../../stores/trackerTicketWrites.svelte';
+import { boardProjects, boardWriteContext, refreshFormReads } from '../../stores/trackerTicketWrites.svelte';
+import { FORM_READ_AGE_MS } from '../../pageTiming';
 import { setLastCreateChoice } from '../../stores/issuesPane.svelte';
 import { getToasts } from '../../stores/toast.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
@@ -63,7 +65,7 @@ async function pick(container: HTMLElement, id: string, name: string): Promise<v
 }
 
 function open(project: string, opts: { drafts?: SvelteMap<string, CreateDraft>; sec?: BacklogSection } = {}) {
-  const props = rawProps({ b: B, boardKey: 'board-key', boardRef: REF, sec: opts.sec ?? SPRINT, project, typed: true, drafts: opts.drafts ?? new SvelteMap<string, CreateDraft>() });
+  const props = rawProps({ b: B, boardKey: 'board-key', boardRef: REF, sec: opts.sec ?? SPRINT, project, typed: true, drafts: opts.drafts ?? new SvelteMap<string, CreateDraft>(), visible: true });
   return Object.assign(render(BacklogCreate, { context: ticketWriteSurfaceContext(() => true), props }), { props });
 }
 
@@ -661,6 +663,327 @@ describe('New ticket', () => {
     await fireEvent.click(view.getByTestId('issues-backlog-new'));
     await waitFor(() => expect(view.getByTestId('issues-backlog-create-unsettable').textContent).toBe('A Task in Web needs Team, which the app cannot set. Make it in the tracker.'));
     expect((view.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(true);
+    view.unmount();
+  });
+});
+
+describe('a form offers what the tracker offers now', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** The board's projects are held, read or failed. */
+  function boardProjectsHeld(): boolean {
+    const held = boardProjects(B);
+    return !!held && (!!held.value || !!held.error);
+  }
+
+  const TEAM = (names: string[]) => ({ id: 'customfield_3', name: 'Team', kind: 'option', required: true, editable: true, allowed: names.map((n, i) => ({ id: String(i + 1), name: n })) }) as FieldView;
+
+  /** The values the field's picker lists, read as a person opens it. */
+  async function listed(container: HTMLElement, id: string): Promise<string[]> {
+    await fireEvent.click(within(field(container, id)).getByTestId('ticket-field-value'));
+    await waitFor(() => expect(within(menu()).getAllByTestId('ticket-picker-item').length).toBeGreaterThan(0));
+    const names = within(menu()).getAllByTestId('ticket-picker-item').map((el) => el.textContent?.trim() ?? '');
+    await fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    await waitFor(() => expect(document.body.querySelector('[data-popover]')).toBeNull());
+    return names;
+  }
+
+  /** The form's reads so far: the board's projects, the types, the fields. */
+  function reads() {
+    const projects = setBindingMock('TrackerBoardProjects', async () => PROJECTS);
+    const types = setBindingMock('TrackerIssueTypes', async () => TYPES);
+    let screen = [TEAM(['Red'])];
+    let gate: Promise<void> | null = null;
+    const fields = setBindingMock('TrackerCreateFields', async () => {
+      const answer = screen;
+      if (gate) await gate;
+      return answer;
+    });
+    return {
+      count: () => projects.mock.calls.length + types.mock.calls.length + fields.mock.calls.length,
+      answer: (next: FieldView[]) => { screen = next; },
+      hold: () => { let release!: () => void; gate = new Promise<void>((r) => { release = r; }); return () => { gate = null; release(); }; },
+    };
+  }
+
+  it('reads again on an open past the age, showing what it holds while it does, and reads nothing on an open within it', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const r = reads();
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(field(view.container, 'customfield_3')).toBeTruthy());
+    expect(r.count()).toBe(3);
+    expect(await listed(view.container, 'customfield_3')).toEqual(['Red']);
+    await fireEvent.click(view.getByTestId('issues-backlog-create-cancel'));
+
+    // Within the age: nothing is read.
+    vi.advanceTimersByTime(FORM_READ_AGE_MS - 1);
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(field(view.container, 'customfield_3')).toBeTruthy());
+    expect(r.count()).toBe(3);
+    await fireEvent.click(view.getByTestId('issues-backlog-create-cancel'));
+
+    // Past it: one read of each, the held screen shown while it is out,
+    // then what the tracker offers now.
+    vi.advanceTimersByTime(1);
+    r.answer([TEAM(['Red', 'Blue'])]);
+    const release = r.hold();
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(r.count()).toBe(6));
+    expect(field(view.container, 'customfield_3')).toBeTruthy();
+    expect(view.queryByTestId('issues-backlog-create-reading')).toBeNull();
+    expect(await listed(view.container, 'customfield_3')).toEqual(['Red']);
+    release();
+    await waitFor(async () => expect(await listed(view.container, 'customfield_3')).toEqual(['Red', 'Blue']));
+    // Nothing read because a read settled.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(r.count()).toBe(6);
+    view.unmount();
+  });
+
+  it('reads again when an open form comes back into view past the age, and not within it', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const r = reads();
+    const drafts = new SvelteMap<string, CreateDraft>();
+    const first = open('10000', { drafts });
+    await fireEvent.click(first.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(field(first.container, 'customfield_3')).toBeTruthy());
+    first.unmount();
+    const within1 = open('10000', { drafts });
+    await waitFor(() => expect(field(within1.container, 'customfield_3')).toBeTruthy());
+    expect(r.count()).toBe(3);
+    within1.unmount();
+    vi.advanceTimersByTime(FORM_READ_AGE_MS);
+    r.answer([TEAM(['Red', 'Blue'])]);
+    const back = open('10000', { drafts });
+    await waitFor(() => expect(r.count()).toBe(6));
+    await waitFor(async () => expect(await listed(back.container, 'customfield_3')).toEqual(['Red', 'Blue']));
+    back.unmount();
+  });
+
+  it('reads again at a Refresh while the form is on screen, reads nothing at one while no form is open, and reads at the next open after it', async () => {
+    const r = reads();
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(field(view.container, 'customfield_3')).toBeTruthy());
+    expect(r.count()).toBe(3);
+    r.answer([TEAM(['Red', 'Blue'])]);
+    refreshFormReads(B.backend, B.connection);
+    await waitFor(() => expect(r.count()).toBe(6));
+    await waitFor(async () => expect(await listed(view.container, 'customfield_3')).toEqual(['Red', 'Blue']));
+    await fireEvent.click(view.getByTestId('issues-backlog-create-cancel'));
+    refreshFormReads(B.backend, B.connection);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(r.count()).toBe(6);
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(r.count()).toBe(9));
+    view.unmount();
+  });
+
+  it('says before Add each value the screen no longer offers, sends none of them, and keeps those it still offers', async () => {
+    const r = reads();
+    const parts = (names: string[]) => ({ id: 'components', name: 'Components', kind: 'option', list: true, required: true, editable: true, allowed: names.map((n) => ({ id: n, name: n })) }) as FieldView;
+    const priority = (names: string[]) => ({ ...PRIORITY, defaulted: true, allowed: names.map((n) => ({ id: n, name: n })) }) as FieldView;
+    const code = { id: 'customfield_2', name: 'Team code', kind: 'text', required: true, editable: true } as FieldView;
+    r.answer([parts(['Web', 'API']), priority(['High', 'Low']), code]);
+    const created = setBindingMock('CreateTrackerIssue', async () => ({ parts: [{ step: 'create', state: 'applied' }] }) as WriteView);
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(field(view.container, 'components')).toBeTruthy());
+    await fireEvent.click(within(field(view.container, 'components')).getByTestId('ticket-field-value'));
+    const item = (name: string) => within(menu()).getAllByTestId('ticket-picker-item').find((el) => el.textContent?.includes(name))!;
+    await waitFor(() => expect(item('API')).toBeTruthy());
+    await fireEvent.click(item('Web'));
+    await fireEvent.click(item('API'));
+    await fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    await pick(view.container, 'priority', 'High');
+    await fireEvent.click(within(field(view.container, 'customfield_2')).getByTestId('ticket-field-value'));
+    const input = within(field(view.container, 'customfield_2')).getByTestId('ticket-field-input');
+    await fireEvent.input(input, { target: { value: 'WEB-7' } });
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    expect(view.queryByTestId('issues-backlog-create-withdrawn')).toBeNull();
+
+    // The screen changed in Jira: API and High are gone, and so is the code field.
+    r.answer([parts(['Web']), priority(['Low'])]);
+    refreshFormReads(B.backend, B.connection);
+    await waitFor(() => expect(view.getAllByTestId('issues-backlog-create-withdrawn').map((el) => el.textContent)).toEqual([
+      'Components: the tracker no longer offers API, so it will not be sent.',
+      'Priority: the tracker no longer offers High, so it will not be sent.',
+      'Team code is no longer on the tracker\'s form for this type, so it will not be sent.',
+    ]));
+    expect(value(view.container, 'components')).toBe('Web');
+    expect(value(view.container, 'priority')).toBe('The tracker\'s default');
+    const title = view.getByTestId('issues-backlog-create-title') as HTMLInputElement;
+    await fireEvent.input(title, { target: { value: 'After the screen changed' } });
+    await waitFor(() => expect((view.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
+    expect((created.mock.calls[0][1] as { fields: unknown[] }).fields).toEqual([{ field: 'components', value: { kind: 'option', choices: [{ id: 'Web' }] } }]);
+    view.unmount();
+  });
+
+  it('reads again when the screen is shown again past the age, and not at a Refresh while it is not shown', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const r = reads();
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(field(view.container, 'customfield_3')).toBeTruthy());
+    expect(r.count()).toBe(3);
+    // A ticket covers the screen; the form stays mounted under it.
+    view.props.visible = false;
+    flushSync();
+    vi.advanceTimersByTime(FORM_READ_AGE_MS);
+    r.answer([TEAM(['Red', 'Blue'])]);
+    refreshFormReads(B.backend, B.connection);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(r.count()).toBe(3);
+    // The ticket closes: the form is shown again and reads.
+    view.props.visible = true;
+    flushSync();
+    await waitFor(() => expect(r.count()).toBe(6));
+    await waitFor(async () => expect(await listed(view.container, 'customfield_3')).toEqual(['Red', 'Blue']));
+    // Hidden and shown again within the age: the form sees itself shown
+    // again and reads nothing.
+    view.props.visible = false;
+    flushSync();
+    vi.advanceTimersByTime(FORM_READ_AGE_MS - 1);
+    view.props.visible = true;
+    flushSync();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(r.count()).toBe(6);
+    view.unmount();
+  });
+
+  it('reads nothing more once the form is cancelled while its first read is out', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const projects = setBindingMock('TrackerBoardProjects', async () => { await gate; return [PROJECTS[0]]; });
+    const types = setBindingMock('TrackerIssueTypes', async () => TYPES);
+    const fields = setBindingMock('TrackerCreateFields', async () => []);
+    const view = open('');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(projects).toHaveBeenCalledTimes(1));
+    await fireEvent.click(view.getByTestId('issues-backlog-create-cancel'));
+    release();
+    await waitFor(() => expect(boardProjectsHeld()).toBe(true));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(types).not.toHaveBeenCalled();
+    expect(fields).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it('says a project the person picked that the board no longer offers, and Add waits for another pick', async () => {
+    let onBoard = PROJECTS;
+    setBindingMock('TrackerBoardProjects', async () => onBoard);
+    setBindingMock('TrackerIssueTypes', async () => TYPES);
+    setBindingMock('TrackerCreateFields', async () => []);
+    const created = setBindingMock('CreateTrackerIssue', async () => ({ parts: [{ step: 'create', state: 'applied' }] }) as WriteView);
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(value(view.container, 'project')).toBe('Web'));
+    await pick(view.container, 'project', 'App');
+    await waitFor(() => expect(value(view.container, 'type')).toBe('Task'));
+    await pick(view.container, 'type', 'Bug');
+    const title = view.getByTestId('issues-backlog-create-title') as HTMLInputElement;
+    await fireEvent.input(title, { target: { value: 'Made where it was picked' } });
+    const submit = view.getByTestId('issues-backlog-create-submit') as HTMLButtonElement;
+    await waitFor(() => expect(submit.disabled).toBe(false));
+
+    // App leaves the board's filter in Jira.
+    onBoard = [PROJECTS[0]];
+    refreshFormReads(B.backend, B.connection);
+    await waitFor(() => expect(view.getAllByTestId('issues-backlog-create-withdrawn').map((el) => el.textContent)).toEqual([
+      'Project: the board no longer offers App, so pick another.',
+    ]));
+    expect(value(view.container, 'project')).toBe('None');
+    expect(submit.disabled).toBe(true);
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    expect(created).not.toHaveBeenCalled();
+
+    await pick(view.container, 'project', 'Web');
+    await waitFor(() => expect(view.queryByTestId('issues-backlog-create-withdrawn')).toBeNull());
+    await waitFor(() => expect(submit.disabled).toBe(false));
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
+    expect(created.mock.calls[0][1]).toMatchObject({ project: '10000', type: '6' });
+    view.unmount();
+  });
+
+  it('says a type the person picked that the project no longer offers, and Add waits for another pick', async () => {
+    let offered = TYPES;
+    setBindingMock('TrackerBoardProjects', async () => PROJECTS);
+    setBindingMock('TrackerIssueTypes', async () => offered);
+    setBindingMock('TrackerCreateFields', async () => []);
+    const created = setBindingMock('CreateTrackerIssue', async () => ({ parts: [{ step: 'create', state: 'applied' }] }) as WriteView);
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(value(view.container, 'type')).toBe('Task'));
+    await pick(view.container, 'type', 'Bug');
+    const title = view.getByTestId('issues-backlog-create-title') as HTMLInputElement;
+    await fireEvent.input(title, { target: { value: 'Made as the type picked' } });
+    const submit = view.getByTestId('issues-backlog-create-submit') as HTMLButtonElement;
+    await waitFor(() => expect(submit.disabled).toBe(false));
+
+    // Bug leaves Web's types in Jira.
+    offered = TYPES.filter((t) => t.id !== '7');
+    refreshFormReads(B.backend, B.connection);
+    await waitFor(() => expect(view.getAllByTestId('issues-backlog-create-withdrawn').map((el) => el.textContent)).toEqual([
+      'Type: Web no longer offers Bug, so pick another.',
+    ]));
+    expect(value(view.container, 'type')).toBe('None');
+    expect(submit.disabled).toBe(true);
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    expect(created).not.toHaveBeenCalled();
+
+    await pick(view.container, 'type', 'Task');
+    await waitFor(() => expect(submit.disabled).toBe(false));
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
+    expect(created.mock.calls[0][1]).toMatchObject({ project: '10000', type: '6' });
+    view.unmount();
+  });
+
+  it('takes the board\'s project, saying nothing, when the one it opened with from the last form is no longer offered', async () => {
+    setLastCreateChoice(REF, { project: { id: '10001', name: 'App' }, type: '7' });
+    setBindingMock('TrackerBoardProjects', async () => [PROJECTS[0]]);
+    setBindingMock('TrackerIssueTypes', async () => TYPES);
+    setBindingMock('TrackerCreateFields', async () => []);
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(value(view.container, 'project')).toBe('Web'));
+    await waitFor(() => expect(value(view.container, 'type')).toBe('Bug'));
+    expect(view.queryByTestId('issues-backlog-create-withdrawn')).toBeNull();
+    view.unmount();
+  });
+
+  it('keeps showing what it holds when a read past the age fails, says why with Retry, and lets Add send it', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    setBindingMock('TrackerBoardProjects', async () => PROJECTS);
+    setBindingMock('TrackerIssueTypes', async () => TYPES);
+    let fail = false;
+    setBindingMock('TrackerCreateFields', async () => {
+      if (fail) throw new Error('Jira did not answer');
+      return [TEAM(['Red'])];
+    });
+    const created = setBindingMock('CreateTrackerIssue', async () => ({ parts: [{ step: 'create', state: 'applied' }] }) as WriteView);
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(field(view.container, 'customfield_3')).toBeTruthy());
+    await pick(view.container, 'customfield_3', 'Red');
+    await fireEvent.click(view.getByTestId('issues-backlog-create-cancel'));
+    vi.advanceTimersByTime(FORM_READ_AGE_MS);
+    fail = true;
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(view.getByTestId('issues-backlog-create-read-error').textContent).toContain('Jira did not answer'));
+    expect(field(view.container, 'customfield_3')).toBeTruthy();
+    await pick(view.container, 'customfield_3', 'Red');
+    const title = view.getByTestId('issues-backlog-create-title') as HTMLInputElement;
+    await fireEvent.input(title, { target: { value: 'With what was held' } });
+    await waitFor(() => expect((view.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
     view.unmount();
   });
 });

@@ -265,6 +265,10 @@ type Edit struct {
 	values   []string
 	markdown string
 	from     string
+	// replaces, when set, are the plain texts a clear or a typed text
+	// edit replaces (Replacing).
+	replaces []string
+	checked  bool
 }
 
 // ClearField empties the field: no value, an empty list, no parent.
@@ -291,6 +295,19 @@ func TypedValues(text string, more ...string) Edit {
 func MarkdownEdit(markdown, from string) Edit {
 	return Edit{form: EditMarkdown, markdown: markdown, from: from}
 }
+
+// Replacing is e, a clear or typed text of a plain text field, written
+// from texts, what the field held when the edit was written: a provider
+// refuses it with ReasonStale when the field holds other texts by the time
+// it writes, and with ReasonUnsupported when it cannot compare them.
+func (e Edit) Replacing(texts ...string) Edit {
+	e.replaces, e.checked = slices.Clone(texts), true
+	return e
+}
+
+// Replaces are the texts Replacing gave, ok false for an edit written
+// from nothing.
+func (e Edit) Replaces() ([]string, bool) { return slices.Clone(e.replaces), e.checked }
 
 // Form is how e gives the value; zero for the zero Edit.
 func (e Edit) Form() EditForm { return e.form }
@@ -319,6 +336,9 @@ func checkEdits(edits []FieldEdit) error {
 		}
 		if e.Value.form == 0 {
 			return invalidf("the edit of %s gives no value", e.Field)
+		}
+		if e.Value.checked && e.Value.form != EditClear && e.Value.form != EditTyped {
+			return invalidf("the edit of %s gives what it replaces for a form that carries its own", e.Field)
 		}
 		if seen[e.Field] {
 			return invalidf("%s is edited twice", e.Field)

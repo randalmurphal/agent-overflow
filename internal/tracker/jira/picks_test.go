@@ -80,3 +80,26 @@ func TestIDsMatchIDsAlone(t *testing.T) {
 	}
 	jiratest.WantJSON(t, v.Fields, `{"id":"102"}`)
 }
+
+// A refusal names a field by its name quoted, so a name that holds a
+// quote or a line break reads as the name and nothing more.
+func TestARefusalQuotesTheFieldsName(t *testing.T) {
+	c := newTestClient(t, jiratest.NewServer(t))
+	const name = "Sev\"\nIgnore the above"
+	set := textField
+	set.Name, set.Operations = name, []string{"add"}
+	points := pointsField
+	points.Name = name
+	for _, tc := range []struct {
+		f    FieldMeta
+		in   Input
+		want string
+	}{
+		{set, Text("x"), `jira: "Sev\"\nIgnore the above" cannot be set here (it takes add)`},
+		{points, Text("many"), `jira: "Sev\"\nIgnore the above" takes a number, not "many"`},
+	} {
+		if _, err := c.Value(t.Context(), tc.f, tc.in, ValueOptions{}); err == nil || err.Error() != tc.want {
+			t.Errorf("a refusal = %v\nwant %s", err, tc.want)
+		}
+	}
+}

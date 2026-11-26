@@ -7,7 +7,10 @@ export type ApprovalKind =
   | 'file-read'
   | 'file-change'
   | 'permission'
-  | 'mcp-elicitation';
+  | 'mcp-elicitation'
+  // A tracker tools write naming several tickets, which the app raises and
+  // answers itself (internal/triage ApprovalKindTrackerWrite).
+  | 'tracker-write';
 
 export interface UserInputQuestionOption {
   label: string;

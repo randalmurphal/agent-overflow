@@ -8,7 +8,8 @@
 // files attached one at a time with what became of each; links added and
 // removed; the poker writes' one target; a connection's link types.
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { FORM_READ_AGE_MS } from '../pageTiming';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, tick } from 'svelte';
 import type {
   BoardPatch,
@@ -55,6 +56,7 @@ import {
   loadCreateFields,
   loadIssueTypes,
   loadTicketLinkTypes,
+  refreshFormReads,
   moveTicket,
   openTicketMove,
   rankTicket,
@@ -1105,6 +1107,33 @@ describe('links and poker writes', () => {
     expect(reveal).toHaveBeenCalledWith('c1', '10101');
     expect(clear).not.toHaveBeenCalled();
     ticket.release();
+  });
+
+  it('reads a connection\'s link types again on an ask past the age or after a Refresh, keeping them shown, and not within the age', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      let names = ['Blocks'];
+      const types = setBindingMock('TrackerLinkTypes', async () => names.map((name, i) => ({ id: String(i), name, outward: name, inward: name })));
+      await loadTicketLinkTypes(HOME_BACKEND, 'c1');
+      vi.advanceTimersByTime(FORM_READ_AGE_MS - 1);
+      await loadTicketLinkTypes(HOME_BACKEND, 'c1');
+      expect(types).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(1);
+      names = ['Blocks', 'Clones'];
+      const read = loadTicketLinkTypes(HOME_BACKEND, 'c1');
+      expect(ticketLinkTypes(HOME_BACKEND, 'c1')?.value?.map((t) => t.name)).toEqual(['Blocks']);
+      await read;
+      expect(ticketLinkTypes(HOME_BACKEND, 'c1')?.value?.map((t) => t.name)).toEqual(['Blocks', 'Clones']);
+      expect(types).toHaveBeenCalledTimes(2);
+      refreshFormReads(HOME_BACKEND, 'c2');
+      await loadTicketLinkTypes(HOME_BACKEND, 'c1');
+      expect(types).toHaveBeenCalledTimes(2);
+      refreshFormReads(HOME_BACKEND, 'c1');
+      await loadTicketLinkTypes(HOME_BACKEND, 'c1');
+      expect(types).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reads a connection\'s link types once, and again after its computer connects again', async () => {

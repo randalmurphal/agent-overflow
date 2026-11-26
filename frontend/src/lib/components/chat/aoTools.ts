@@ -700,6 +700,14 @@ const TRACKER_TOOLS: Record<string, AoToolSpec> = {
       return input.history === true ? `${key} with history` : key;
     },
   },
+  ticket_create: { label: 'create', what: (input) => `${str(input, 'project')} ${quoted(str(input, 'title'))}`.trim() },
+  ticket_update: {
+    label: 'update',
+    what: (input) => {
+      const keys = strings(input, 'keys');
+      return keys.length > 3 ? `${keys.slice(0, 3).join(', ')} and ${keys.length - 3} more` : keys.join(', ') || 'linked ticket';
+    },
+  },
 };
 
 export const AO_TOOL_SERVERS: Record<string, AoToolServer> = {
@@ -912,6 +920,8 @@ const ALREADY_SHOWN: Record<string, ReadonlySet<string>> = {
   browser_open_file: new Set(['path']),
   ticket_find: new Set(['text']),
   ticket_read: new Set(['key', 'history']),
+  ticket_create: new Set(['project', 'title']),
+  ticket_update: new Set(['keys']),
 };
 
 const FACT_LABELS: Record<string, string> = {

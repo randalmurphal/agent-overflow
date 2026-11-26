@@ -210,7 +210,7 @@ func buildRich(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value)
 	}
 	doc, ws, err := b.markdown(ctx, in.texts[0], base)
 	if err != nil {
-		return nil, fmt.Errorf("jira: %s: %w", f.Name, err)
+		return nil, fmt.Errorf("jira: %q: %w", f.Name, err)
 	}
 	v.rich, v.doc, v.base, v.edits = true, doc, base, ws
 	for _, w := range ws {
@@ -221,7 +221,7 @@ func buildRich(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value)
 	v.Unchanged = base != nil && adf.Equal(doc, base)
 	v.Display = adf.ToMarkdown(doc)
 	if v.Fields, err = json.Marshal(doc); err != nil {
-		return nil, fmt.Errorf("jira: %s: encode the document: %w", f.Name, err)
+		return nil, fmt.Errorf("jira: %q: encode the document: %w", f.Name, err)
 	}
 	return nil, nil
 }

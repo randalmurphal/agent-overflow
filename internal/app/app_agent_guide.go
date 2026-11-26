@@ -39,7 +39,7 @@ var agentGuideServers = []agentGuideServer{
 	{threadMCPName, "`" + threadMCPName + "` reads, starts, messages and asks other conversations, schedules reminders/loops (`thread_remind`/`thread_loop`), and flags the user (`thread_attention`)."},
 	{remoteMCPName, "`" + remoteMCPName + "` runs commands on the user's other computers."},
 	{workflowMCPName, "`" + workflowMCPName + "` starts, watches and steers this project's workflow runs and authors its workflows."},
-	{trackerMCPName, "`" + trackerMCPName + "` finds and reads tickets in the user's issue tracker."},
+	{trackerMCPName, "`" + trackerMCPName + "` finds, reads, and changes tickets in the user's issue tracker."},
 }
 
 const (

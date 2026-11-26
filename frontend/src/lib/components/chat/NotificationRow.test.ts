@@ -234,3 +234,29 @@ describe('<NotificationRow> background wake', () => {
     expect(queryByTestId('background-wake-detail')).toBeNull();
   });
 });
+
+describe('<NotificationRow> tracker write', () => {
+  it('lists each ticket the call wrote with its key to open it and the steps applied', () => {
+    const { getAllByTestId, getByTestId } = render(NotificationRow, {
+      props: {
+        item: makeNotification(
+          {
+            kind: 'tracker_write',
+            tickets: [
+              { connection: 'conn-1', issue: '10012', key: 'WEB-12', title: 'Login fails on Safari', applied: ['status', 'comment'] },
+              { connection: 'conn-1', issue: '10018', key: 'WEB-18', title: 'Session cookie lost', applied: ['comment'] },
+            ],
+          },
+          'Changed 2 tickets',
+        ),
+      },
+    });
+    expect(getByTestId('notification-row').textContent).toContain('Changed 2 tickets');
+    const rows = getAllByTestId('tracker-write-ticket');
+    expect(rows.map((r) => r.textContent?.replace(/\s+/g, ' ').trim())).toEqual([
+      'WEB-12 Login fails on Safari · status, comment',
+      'WEB-18 Session cookie lost · comment',
+    ]);
+    expect(rows[0]!.querySelector('button')?.getAttribute('title')).toBe('Open WEB-12');
+  });
+});

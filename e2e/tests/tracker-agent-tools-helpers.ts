@@ -84,13 +84,18 @@ export async function openTicketReader(harness: HarnessApp, page: Page): Promise
     await page.getByTestId('compact-back').click();
   }
   await page.getByTestId('thread-row-title').filter({ hasText: TICKETS_TITLE }).first().click();
+  await expandActivityRuns(page);
+  await expect(page.getByTestId('tool-call-card-label').filter({ hasText: /^find$/ }).first()).toBeAttached();
+}
+
+/** Expands every activity run the open thread shows, once the first shows. */
+export async function expandActivityRuns(page: Page): Promise<void> {
   const runs = page.getByTestId('activity-run');
   await expect(runs.first()).toBeAttached({ timeout: 30_000 });
   for (let index = 0; index < (await runs.count()); index++) {
     const run = runs.nth(index);
     if ((await run.getAttribute('data-collapsed')) === 'true') await run.getByTestId('activity-run-header').click();
   }
-  await expect(page.getByTestId('tool-call-card-label').filter({ hasText: /^find$/ }).first()).toBeAttached();
 }
 
 /** What each row's result says once open, by row. */

@@ -28,9 +28,11 @@ var createSkipped = []string{jiraSummary, "project", jiraIssueType}
 
 // CreateFields are the create screen's fields in project for issueType,
 // besides the title, the project, the type and the sprint and rank fields
-// (MoveToSprint and Rank place a new issue).
+// (MoveToSprint and Rank place a new issue), as Jira lists them now: the
+// fields are shown, so they are read, not taken from what a read kept.
+// The create and the choices search that follow take this read.
 func (p *Provider) CreateFields(ctx context.Context, project tracker.ProjectID, issueType tracker.IssueTypeID) ([]tracker.ScreenField, error) {
-	screen, err := p.screen(ctx, tracker.OnCreate(project, issueType))
+	screen, err := p.createScreen(ctx, project, issueType, false)
 	if err != nil {
 		return nil, err
 	}
@@ -78,13 +80,24 @@ func (p *Provider) screen(ctx context.Context, scope tracker.FieldScope) (jira.S
 	if !ok {
 		return jira.Screen{}, invalidf("a field scope names neither an issue nor a project")
 	}
+	return p.createScreen(ctx, project, issueType, true)
+}
+
+// createScreen is the create screen of project for issueType: as Jira
+// lists it now (jira.Client.CreateMeta), or, when kept, as a read within
+// the client's minute left it (KeptCreateMeta).
+func (p *Provider) createScreen(ctx context.Context, project tracker.ProjectID, issueType tracker.IssueTypeID, kept bool) (jira.Screen, error) {
 	if err := checkProject(project); err != nil {
 		return jira.Screen{}, err
 	}
 	if _, err := numericID("issue type", string(issueType)); err != nil {
 		return jira.Screen{}, err
 	}
-	screen, err := p.jira.CreateMeta(ctx, string(project), string(issueType))
+	read := p.jira.CreateMeta
+	if kept {
+		read = p.jira.KeptCreateMeta
+	}
+	screen, err := read(ctx, string(project), string(issueType))
 	if err != nil {
 		return jira.Screen{}, fmt.Errorf("jiraprovider: create screen of %s type %s: %w", project, issueType, err)
 	}

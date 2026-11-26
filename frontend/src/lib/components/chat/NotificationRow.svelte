@@ -7,9 +7,12 @@
   import ShieldBan from '@lucide/svelte/icons/shield-ban';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
   import AlarmClock from '@lucide/svelte/icons/alarm-clock';
+  import TicketCheck from '@lucide/svelte/icons/ticket-check';
   import Icon from '../primitives/Icon.svelte';
   import type { Item } from '../../types/models';
   import { parseJsonObject } from '../../utils/parseJsonObject';
+  import { getThreadById } from '../../stores/threads.svelte';
+  import { openWrittenTicket, type WrittenTicket } from '../../stores/threadTicketLinks.svelte';
 
   let { item }: { item: Item } = $props();
 
@@ -48,6 +51,8 @@
     // A background task's report started a turn on an idle session: the
     // row says what woke it, ahead of the reply it caused.
     if (kind === 'background_wake') return AlarmClock;
+    // The agent created or changed tickets through the tracker tools.
+    if (kind === 'tracker_write') return TicketCheck;
     return Bell;
   });
   let isWarning = $derived(
@@ -108,6 +113,26 @@
       typeof entry === 'string' && entry.trim() ? [entry.trim()] : [],
     );
   });
+
+  // A tracker write's tickets (trackertools.WriteRow), each with what
+  // opens it and the steps applied, by the names the call gave.
+  let writtenTickets = $derived.by<Array<WrittenTicket & { applied: string[] }>>(() => {
+    if (kind !== 'tracker_write') return [];
+    const raw = meta?.tickets;
+    if (!Array.isArray(raw)) return [];
+    return raw.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+      const record = entry as Record<string, unknown>;
+      const text = (key: string) => (typeof record[key] === 'string' ? (record[key] as string) : '');
+      const applied = Array.isArray(record.applied) ? record.applied.filter((s): s is string => typeof s === 'string') : [];
+      const ticket = { connection: text('connection'), issue: text('issue'), key: text('key'), title: text('title'), applied };
+      return ticket.key && ticket.issue && ticket.connection ? [ticket] : [];
+    });
+  });
+
+  function openTicket(ticket: WrittenTicket): void {
+    void openWrittenTicket(item.threadId, getThreadById(item.threadId)?.projectId ?? null, ticket);
+  }
 
   let plan = $derived.by<Array<{ step: string; status: string }>>(() => {
     if (kind !== 'plan_update') return [];
@@ -201,6 +226,24 @@
       {#each retriedCommands as command}
         <div class="truncate font-mono text-[0.6875rem] text-fg-subtle">
           {command}
+        </div>
+      {/each}
+    </div>
+  {/if}
+  {#if writtenTickets.length > 0}
+    <div class="ml-5 mt-1 space-y-0.5 not-italic" data-testid="tracker-write-tickets">
+      {#each writtenTickets as ticket (ticket.connection + '/' + ticket.issue + '/' + ticket.key)}
+        <div class="flex min-w-0 items-baseline gap-1.5 text-[0.6875rem] text-fg-subtle" data-testid="tracker-write-ticket">
+          <button
+            type="button"
+            class="shrink-0 cursor-pointer rounded font-mono text-accent underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 compact:select-none"
+            title={`Open ${ticket.key}`}
+            onclick={() => openTicket(ticket)}
+          >{ticket.key}</button>
+          {#if ticket.title}<span class="min-w-0 truncate">{ticket.title}</span>{/if}
+          {#if ticket.applied.length > 0}
+            <span class="shrink-0 text-fg-hint">· {ticket.applied.join(', ')}</span>
+          {/if}
         </div>
       {/each}
     </div>

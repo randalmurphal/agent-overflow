@@ -80,6 +80,7 @@ export {
     StartWorkDefaults,
     StatusView,
     SyncView,
+    ThreadMarkView,
     TicketRowView,
     TicketSprintView,
     TicketSubscription,

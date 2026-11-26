@@ -94,9 +94,9 @@ func TestFakeScenario(t *testing.T) {
 	// Writes, each read back.
 	created := allApplied(t, "create", s.p.Create(s.ctx, tracker.CreateInput{Project: "10000", Type: "10002", Title: "Created task",
 		Fields: []tracker.FieldEdit{{Field: tracker.FieldDescription, Value: tracker.MarkdownEdit("Body text", "")}}}))
-	newID, ok := created.Created()
-	if !ok {
-		t.Fatal("create named no issue")
+	newID, newKey, ok := created.Created()
+	if !ok || !strings.HasPrefix(newKey, "WEB-") {
+		t.Fatalf("create named issue %v, key %q", ok, newKey)
 	}
 	if d := s.detail(t, newID); d.Card.Title != "Created task" || strings.TrimSpace(d.Description) != "Body text" {
 		t.Fatalf("created %+v", d.Card)
@@ -139,7 +139,7 @@ func TestFakeScenario(t *testing.T) {
 	// A create in a sprint: the create, then its move into the sprint.
 	inSprint := allApplied(t, "create in a sprint", s.p.Create(s.ctx, tracker.CreateInput{Project: "10000", Type: "10002", Title: "Sprint task",
 		Board: "1", Sprint: "2"}))
-	sprintID, _ := inSprint.Created()
+	sprintID, _, _ := inSprint.Created()
 	if len(inSprint.Parts) != 2 || inSprint.Parts[1].Step != tracker.StepSprintMove || !slices.Equal(s.row(t, sprintID).Card.Sprints, []tracker.SprintID{"2"}) {
 		t.Fatalf("created in a sprint: %+v", inSprint.Parts)
 	}
@@ -150,10 +150,15 @@ func TestFakeScenario(t *testing.T) {
 		t.Fatalf("placed %s not before %s, sprints %v", r.Order, r1.Order, r.Card.Sprints)
 	}
 
-	allApplied(t, "comment", s.p.AddComment(s.ctx, tracker.CommentInput{Issue: "10102", Markdown: "New comment"}))
+	added := s.p.AddComment(s.ctx, tracker.CommentInput{Issue: "10102", Markdown: "New comment"})
+	allApplied(t, "comment", added)
 	cs := scenarioMust[tracker.CommentPage](t)(s.p.Comments(s.ctx, "10102", ""))
 	if len(cs.Comments) != 1 || strings.TrimSpace(cs.Comments[0].Body) != "New comment" {
 		t.Fatalf("comments %+v", cs)
+	}
+	// The applied part names the comment it made.
+	if got := added.Parts[len(added.Parts)-1].Comment; got == "" || got != cs.Comments[0].ID {
+		t.Fatalf("the comment part names %q, the comment is %q", got, cs.Comments[0].ID)
 	}
 	allApplied(t, "comment edit", s.p.EditComment(s.ctx, tracker.CommentEdit{Issue: "10102", Comment: cs.Comments[0].ID, Markdown: "Edited comment", From: cs.Comments[0].Body}))
 	if cs := scenarioMust[tracker.CommentPage](t)(s.p.Comments(s.ctx, "10102", "")); strings.TrimSpace(cs.Comments[0].Body) != "Edited comment" {

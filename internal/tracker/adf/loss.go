@@ -1,6 +1,9 @@
 package adf
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // LossKind is a way the Markdown writes content it cannot express. It
 // decides how an edit keeps that content.
@@ -60,7 +63,8 @@ type LossError struct {
 	// Lost are the edit's Flattens warnings, in the order Edit returned them.
 	Lost []Warning
 	// Kinds are the ways the lost content is written, LossMarkers before
-	// LossDetails; each one's Keep says how to keep it.
+	// LossDetails; each one's Keep says how an edit keeps it. A clear's
+	// loss has none: the clear removes that content on purpose.
 	Kinds []LossKind
 }
 
@@ -83,7 +87,9 @@ func CheckLoss(ws []Warning, accepted bool) error {
 	for _, w := range ws {
 		if w.Flattens() {
 			lost = append(lost, w)
-			kinds |= w.Loses
+			if !w.clear {
+				kinds |= w.Loses
+			}
 		}
 	}
 	if len(lost) == 0 || accepted {
@@ -125,6 +131,32 @@ func nodeLoss(n *Node) LossSet {
 		}
 	})
 	return s
+}
+
+// ClearLoss is what a clear of doc loses that Markdown shows only
+// simplified: one warning naming the rich nodes doc holds, which loses
+// their content (see nodeLoss), so CheckLoss refuses the clear until the
+// loss is accepted, and names no way to keep it (no Kinds): the clear
+// removes that content on purpose. A clear removes every node's Markdown,
+// which explains no loss here: the person or agent that empties a field
+// sees only what Markdown shows of it. It is nil when doc holds nothing
+// Markdown shows only simplified, or only dress.
+func ClearLoss(doc *Node) []Warning {
+	loses := nodeLoss(doc)
+	if loses == 0 {
+		return nil
+	}
+	var names []string
+	for _, r := range inventory(doc) {
+		if !r.cosmetic && !slices.Contains(names, r.label) {
+			names = append(names, r.label)
+		}
+	}
+	msg := "the clear removes content Markdown shows only simplified"
+	if len(names) > 0 {
+		msg += ": " + strings.Join(names, ", ")
+	}
+	return []Warning{{Msg: msg, Loses: loses, clear: true}}
 }
 
 // richLoss is the loss of r, a rich node an edit drops: none for dress,

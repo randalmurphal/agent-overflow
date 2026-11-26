@@ -265,9 +265,9 @@ func TestFakeScenario(t *testing.T) {
 	// Writes, each read back.
 	created := allApplied(t, "create", s.p.Create(s.ctx, tracker.CreateInput{Project: tracker.ProjectID(scTeam), Title: "New page",
 		Fields: []tracker.FieldEdit{{Field: tracker.FieldDescription, Value: tracker.MarkdownEdit("Body text", "")}}}))
-	newID, ok := created.Created()
-	if !ok {
-		t.Fatal("create named no issue")
+	newID, newKey, ok := created.Created()
+	if !ok || newKey != "WEB-4" {
+		t.Fatalf("create named issue %v, key %q", ok, newKey)
 	}
 	if d := s.detail(t, string(newID)); d.Card.Title != "New page" || d.Card.Key != "WEB-4" || strings.TrimSpace(d.Description) != "Body text" ||
 		len(d.Card.Sprints) != 0 {
@@ -275,7 +275,7 @@ func TestFakeScenario(t *testing.T) {
 	}
 	inCycle := allApplied(t, "create in a cycle", s.p.Create(s.ctx, tracker.CreateInput{Project: tracker.ProjectID(scTeam), Title: "Cycle page",
 		Board: board, Sprint: tracker.SprintID(scUpcoming)}))
-	cycleID, _ := inCycle.Created()
+	cycleID, _, _ := inCycle.Created()
 	if len(inCycle.Parts) != 1 || !slices.Equal(s.detail(t, string(cycleID)).Card.Sprints, []tracker.SprintID{tracker.SprintID(scUpcoming)}) {
 		t.Fatalf("created in a cycle: %+v", inCycle.Parts)
 	}
@@ -284,7 +284,7 @@ func TestFakeScenario(t *testing.T) {
 	foot := s.row(t, scIssue1)
 	atFoot := allApplied(t, "create at a cycle's foot", s.p.Create(s.ctx, tracker.CreateInput{Project: tracker.ProjectID(scTeam), Title: "Foot page",
 		Board: board, Sprint: tracker.SprintID(scActive), After: tracker.RowPlace{Issue: tracker.IssueID(scIssue1), Order: foot.Order}}))
-	footID, _ := atFoot.Created()
+	footID, _, _ := atFoot.Created()
 	if got, next := s.row(t, string(footID)).Order, s.row(t, scIssue2).Order; got <= foot.Order || got >= next ||
 		s.row(t, string(cycleID)).Order >= foot.Order {
 		t.Fatalf("created after %s: %s, before %s; the default create %s", foot.Order, got, next, s.row(t, string(cycleID)).Order)
@@ -349,10 +349,15 @@ func TestFakeScenario(t *testing.T) {
 		t.Fatalf("a refused placed move changed the cycle: %v", c.Sprints)
 	}
 
-	allApplied(t, "comment", s.p.AddComment(s.ctx, tracker.CommentInput{Issue: tracker.IssueID(scIssue2), Markdown: "New comment"}))
+	added := s.p.AddComment(s.ctx, tracker.CommentInput{Issue: tracker.IssueID(scIssue2), Markdown: "New comment"})
+	allApplied(t, "comment", added)
 	cs := scenarioMust[tracker.CommentPage](t)(s.p.Comments(s.ctx, tracker.IssueID(scIssue2), ""))
 	if len(cs.Comments) != 1 || strings.TrimSpace(cs.Comments[0].Body) != "New comment" {
 		t.Fatalf("comments %+v", cs)
+	}
+	// The applied part names the comment it made.
+	if got := added.Parts[0].Comment; got == "" || got != cs.Comments[0].ID {
+		t.Fatalf("the comment part names %q, the comment is %q", got, cs.Comments[0].ID)
 	}
 	allApplied(t, "comment edit", s.p.EditComment(s.ctx, tracker.CommentEdit{Issue: tracker.IssueID(scIssue2), Comment: cs.Comments[0].ID, Markdown: "Edited comment", From: cs.Comments[0].Body}))
 	if cs := scenarioMust[tracker.CommentPage](t)(s.p.Comments(s.ctx, tracker.IssueID(scIssue2), "")); strings.TrimSpace(cs.Comments[0].Body) != "Edited comment" {

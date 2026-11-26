@@ -15,6 +15,9 @@ import (
 //
 //   - the hold of the connection, taken as a tick takes one (start),
 //     interactive: a person or an agent waits on every write;
+//   - for an agent's write (ByAgent), its record: a comment or a create
+//     claimed before it is sent, and answered with what an earlier
+//     attempt made, with nothing sent, when it was made (agent_writes.go);
 //   - the provider's write, and tracker.Result.Check before anything acts
 //     on its result;
 //   - the refresh: every resource a part that is applied or unknown names
@@ -22,6 +25,9 @@ import (
 //     and the fences the hold captured (write_refresh.go);
 //   - the settlement of the connection's problem by the last tracker call
 //     made;
+//   - an agent's record of what was applied or may have been, with the
+//     cards' update times before and after, so the views below carry
+//     its marks;
 //   - the change funnel, so a subscriber hears of a write as of a sync,
 //     and the settlement of the open tickets the refresh read, whose
 //     views are built before the write returns;
@@ -50,6 +56,9 @@ type writeOp struct {
 	// unable, when set, refuses op on the provider the hold found, before
 	// anything is sent.
 	unable func(p tracker.Provider) error
+	// additive is a comment's or a create's step, which an agent's write
+	// records before it is sent (agent_writes.go); nil for any other.
+	additive *additive
 }
 
 // write makes op's write on connection id and refreshes what it may have
@@ -76,27 +85,43 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 			return WriteView{}, err
 		}
 	}
+	rec, repeat, err := s.beginAgentWrite(ctx, r, op)
+	switch {
+	case err != nil:
+		return WriteView{}, err
+	case repeat != nil:
+		return WriteView{Parts: []PartView{}, Repeat: repeat}, nil
+	}
+	// Released after the outcome replaced the claimed row, on every path.
+	defer s.endAgentWrite(rec)
 	var res tracker.Result
 	resources := op.also
 	if op.call != nil {
 		res = op.call(r)
 		if err := res.Check(); err != nil {
+			// The sent row stays: the write may have happened.
 			return WriteView{}, fmt.Errorf("%w: %w", ErrBadResult, err)
+		}
+		if rec != nil {
+			// The refresh has not run: the mirror holds the cards as they
+			// were before the write.
+			rec.before = s.cardTimes(r.root, partIssues(res))
 		}
 		res = timeAnsweredParts(r.timeBy, res)
 		if !sentNothing(res) {
 			r.calls++
 		}
 		resources = slices.Concat(resources, res.Refresh())
-		if created, ok := res.Created(); ok && op.board != "" {
+		if created, _, ok := res.Created(); ok && op.board != "" {
 			resources = append(resources, tracker.RowOf(op.board, created))
 		}
 	}
 	view := WriteView{Parts: partViews(r.row.Kind, res, millis(s.now())), CreateUnknown: res.CreateUnknown()}
-	if created, ok := res.Created(); ok {
-		view.Created = string(created)
+	if created, key, ok := res.Created(); ok {
+		view.Created, view.CreatedKey = string(created), key
 	}
 	if !r.inUse() {
+		s.finishAgentWrite(rec, res, nil)
 		if !happened(res) {
 			return WriteView{}, s.endedNow(id)
 		}
@@ -105,10 +130,13 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 	}
 	writeCalls := r.calls
 	var created newIssue
-	if id, ok := res.Created(); ok && op.board != "" {
+	if id, _, ok := res.Created(); ok && op.board != "" {
 		created = newIssue{issue: id, board: op.board}
 	}
 	f := r.refresh(resources, created)
+	if rec != nil {
+		s.finishAgentWrite(rec, res, s.cardTimes(r.root, partIssues(res)))
+	}
 	// The mirror ended with the connection: what the refresh stored before
 	// was told as it was stored (run.told), as a tick's is, and the
 	// outcome answers for every resource (Ended).
@@ -136,9 +164,6 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 	}
 	view.Stale = s.staleViews(r.row.Kind, f.stale)
 	view.NotOnBoard = string(f.notOnBoard)
-	if view.Created != "" && !allApplied(res) {
-		view.CreatedKey = s.createdKey(r.root, view.Created)
-	}
 	finish()
 	if view.CreateUnknown && op.board != "" {
 		if err := s.tickNow(ctx, Scope{Connection: id, Board: op.board}); err != nil {
@@ -214,27 +239,6 @@ func (r *run) inUse() bool {
 func happened(res tracker.Result) bool {
 	t := res.Tally()
 	return t.Applied+t.Unknown > 0
-}
-
-// allApplied reports a result every part of which was applied.
-func allApplied(res tracker.Result) bool {
-	t := res.Tally()
-	return t.Applied == len(res.Parts)
-}
-
-// createdKey is the key of issue as the mirror holds it after a write's
-// reads, empty when it holds no card of it. A failed read is logged and
-// answers empty: the person is told of the issue without its key.
-func (s *Service) createdKey(root int64, issue string) string {
-	cards, err := s.store.ListMirrorCards(root, []string{issue})
-	if err != nil {
-		s.logf("trackerapp: read the key of the created issue %s: %v", issue, err)
-		return ""
-	}
-	if len(cards) == 0 {
-		return ""
-	}
-	return cards[0].Key
 }
 
 // sentNothing reports a result every part of which was refused before

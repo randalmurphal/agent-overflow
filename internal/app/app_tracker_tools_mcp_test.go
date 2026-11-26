@@ -323,7 +323,7 @@ func TestStartSession_ClaudeAllowsTheTrackerToolsWithoutAPrompt(t *testing.T) {
 		}
 		// Claude reads the server's own guide from the handshake, so the
 		// system prompt carries the app guide's sentence alone.
-		guide := "`" + trackerMCPName + "` finds and reads tickets in the user's issue tracker."
+		guide := "`" + trackerMCPName + "` finds, reads, and changes tickets in the user's issue tracker."
 		if got := strings.Count(string(content), guide); got != map[bool]int{false: 0, true: 1}[source] || strings.Contains(string(content), trackertools.Instructions) {
 			t.Fatalf("with a source %v: the system prompt is %q", source, content)
 		}
@@ -360,7 +360,7 @@ func TestStartSession_CodexCarriesTheTrackerToolsEntryAndGuide(t *testing.T) {
 	if strings.Count(instructions, trackertools.Instructions) != 1 {
 		t.Fatalf("developer instructions carry the tracker tools guide %d times: %q", strings.Count(instructions, trackertools.Instructions), instructions)
 	}
-	if !strings.Contains(instructions, "`"+trackerMCPName+"` finds and reads tickets in the user's issue tracker.") {
+	if !strings.Contains(instructions, "`"+trackerMCPName+"` finds, reads, and changes tickets in the user's issue tracker.") {
 		t.Fatalf("developer instructions do not name the tracker tools: %q", instructions)
 	}
 }
@@ -371,7 +371,7 @@ func TestStartSession_CodexCarriesTheTrackerToolsEntryAndGuide(t *testing.T) {
 // saying the sizes it found.
 func TestTrackerMCPToolListAndGuideStayWithinTheirBound(t *testing.T) {
 	t.Parallel()
-	const bound = 900
+	const bound = 1_900
 	app := newTestAppWithStore(t)
 	t.Cleanup(func() { _ = app.trackerMCPServer().Close() })
 	withTicketSource(t, app)
