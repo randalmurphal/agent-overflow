@@ -362,10 +362,10 @@ Other:
   embedded changelog with fewer than 100 entries reports `maxResults`
   equal to the number embedded (20 of 20).
 - <a id="jira-open-sprints"></a>Measured on 2026-11-26, counts only,
-  through `search/jql`. `sprint in openSprints()` matched 247 issues,
-  `sprint in futureSprints()` 3,390, and both together 0. So
-  `openSprints()` holds started sprints only, not future ones, and
-  `sprint in openSprints()` alone is the active sprint.
+  through `search/approximate-count`. `sprint in openSprints()` and
+  `sprint in futureSprints()` each matched issues, and both together
+  matched none. So `openSprints()` holds started sprints only, not future
+  ones, and `sprint in openSprints()` alone is the active sprint.
 - Mentions of the user are found with `comment ~ currentUser()`
   ([JRACLOUD-27594](https://jira.atlassian.com/browse/JRACLOUD-27594)).
   Neither spec has a notification inbox endpoint.
