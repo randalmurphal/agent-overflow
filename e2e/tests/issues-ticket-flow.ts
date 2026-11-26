@@ -20,7 +20,9 @@
 //
 // A ticket opened shows the points its own read found, 1.25, in the points
 // row and in its board's estimate field alike, with the same digits, while
-// the board's card keeps the board's last read.
+// the board's card keeps the board's last read. A ticket opened from a
+// board that counts issues shows and sets the points of its board that
+// estimates, the board an agent's read prints.
 //
 // Fields in place: points typed, cleared and refused as a typo; a list of
 // texts shown with no editor; a due date typed; an option past the first
@@ -169,6 +171,18 @@ const EDITED: ExtraJira = {
       })),
     },
   ],
+};
+
+// WEB-8 is on WEB board, which counts issues, and on WEB points, which
+// estimates in Story Points: 3.
+const OTHER_POINTS: ExtraJira = {
+  projects: [],
+  boards: [{ id: 2, name: 'WEB points', type: 'scrum', project: 'WEB', estimation: 'customfield_10016', columns: [
+    { name: 'To Do', statuses: ['10000'] }, { name: 'In Progress', statuses: ['10001'] }, { name: 'Done', statuses: ['10002'] },
+  ] }],
+  fields: [{ id: 'customfield_10016', name: 'Story Points', schema: { type: 'number', custom: 'com.atlassian.jira.plugin.system.customfieldtypes:float', customId: 10016 } }],
+  sprints: [{ id: 2, board: 2, name: 'Points 1', state: 'active', start: day(60 * 24), end: new Date(Date.now() + 12 * 24 * 3600_000).toISOString() }],
+  issues: [{ id: '10108', key: 'WEB-8', project: 'WEB', type: '10002', status: '10001', summary: 'Pointed on the other board', sprints: [1, 2], values: { customfield_10016: 3 } }],
 };
 
 function card(pane: Locator, issueId: string): Locator {
@@ -391,6 +405,41 @@ export function registerIssuesTicketFlow({ compact }: TicketSurface): void {
     } finally {
       await harness.close();
     }
+  });
+
+  test('a ticket opened from a board that counts issues shows and sets the points of its board that estimates', async ({ harness, page }) => {
+    test.setTimeout(120_000);
+    const board = await connectFakeJiraBoard(harness, compact ? 'compact-issues-ticket-other-points' : 'issues-ticket-other-points', OTHER_POINTS);
+    const web = { connection: board.connectionId, board: '1', opens_first: true };
+    await harness.rpc('SetProjectTrackerBoards', board.projectId, [web], [
+      { ...web, name: 'WEB board', tracker_project: 'WEB' },
+      { connection: board.connectionId, board: '2', name: 'WEB points', tracker_project: 'WEB' },
+    ]);
+    await harness.open(page);
+    const pane = await openPane(page, compact);
+    const pick = async (name: string) => {
+      await press(pane.getByTestId('issues-board-picker'), compact);
+      await press(page.getByTestId('issues-board-choice').filter({ hasText: name }), compact);
+      await expect(pane.getByTestId('issues-board-picker')).toHaveAccessibleName(`Board: ${name}`);
+    };
+    // WEB points read once holds the ticket's row there, 3 points.
+    await pick('WEB points');
+    await expect(card(pane, '10108').getByTestId('issues-card-estimate')).toHaveText('3', { timeout: 30_000 });
+    await pick('WEB board');
+    await expect(card(pane, '10108')).toContainText('Pointed on the other board', { timeout: 30_000 });
+    await expect(card(pane, '10108').getByTestId('issues-card-estimate')).toHaveCount(0);
+
+    const ticket = await openTicket(pane, '10108', compact);
+    const points = cardField(ticket, 'points');
+    await expect(points.getByTestId('ticket-field-value')).toHaveText('3', { timeout: 30_000 });
+    await expect(ticket.getByTestId('ticket-estimate')).toContainText('3');
+    await press(points.getByTestId('ticket-field-value'), compact);
+    const input = points.getByTestId('ticket-field-input');
+    await retype(input, '5');
+    await input.press('Enter');
+    await expect(points.getByTestId('ticket-field-value')).toHaveText('5', { timeout: 15_000 });
+    const sent = await trackerRequests(harness, 'PUT rest/agile/1.0/issue/{issue}/estimation', ['WEB-8', '10108']);
+    expect(sent.map((r) => [r.status, r.query?.boardId, r.body]), 'set on WEB points').toEqual([[200, ['2'], { value: '5' }]]);
   });
 
   test('a ticket\'s own fields change in place: points typed and cleared, a due date, an option past the first 50 and the type from its mark', async ({ harness, page }) => {

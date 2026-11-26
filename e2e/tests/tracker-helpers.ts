@@ -49,7 +49,8 @@ export interface ConnectedBoard {
  */
 export interface ExtraJira {
   projects: Array<{ id: string; key: string; name: string }>;
-  boards: Array<{ id: number; name: string; type: 'scrum' | 'kanban'; project: string; columns: Array<{ name: string; statuses: string[] }> }>;
+  /** More boards, each estimating in `estimation`'s field when it names one, else counting issues. */
+  boards: Array<{ id: number; name: string; type: 'scrum' | 'kanban'; project: string; columns: Array<{ name: string; statuses: string[] }>; estimation?: string }>;
   issues?: Array<{
     id: string; key: string; project: string; type: string; status: string; summary: string; sprints?: number[]; assignee?: string;
     /** The parent issue's ID. */
