@@ -251,6 +251,35 @@ func TestKeySearchKeepsTheSearchesBesideAFieldError(t *testing.T) {
 
 // A lookup by branch whose parent's read fails answers the origin's pull
 // requests beside the error, on both forges.
+// A lookup whose second page fails answers the first page's pull requests
+// beside the failure, on both forges.
+func TestPRsByHeadKeepsThePagesBeforeAFailedPage(t *testing.T) {
+	t.Parallel()
+	pulls := make([]forgefake.Pull, 101)
+	for i := range pulls {
+		pulls[i] = forgefake.Pull{Number: i + 1, Title: fmt.Sprintf("Try %d", i+1), HeadRef: "WEB-1", State: "merged"}
+	}
+	f := newFactsForge(t, forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "alice/web", Pulls: pulls},
+		{Forge: "gitlab", Project: "alice/web", Pulls: pulls},
+	}})
+	github, gitlab := t.TempDir(), t.TempDir()
+	seedForgeCacheGitHubOrigin(t, f.core, github, "https://github.com/alice/web.git")
+	if forge := f.core.recordOrigin(gitlab, originIdentity{url: "https://gitlab.com/alice/web.git", known: true}, f.core.nowFn()); forge != "gitlab" {
+		t.Fatalf("seeded GitLab origin classified as %q", forge)
+	}
+	f.mu.Lock()
+	f.failAt["PRsByHead"] = 2
+	f.failAt["REST merge_requests"] = 2
+	f.mu.Unlock()
+	for forge, cwd := range map[string]string{"github": github, "gitlab": gitlab} {
+		got, err := f.core.ListPRsByHead(t.Context(), cwd, "WEB-1")
+		if err == nil || len(got) != 100 {
+			t.Errorf("%s: ListPRsByHead = %d pull requests, %v; want the first page's 100 beside the second's failure", forge, len(got), err)
+		}
+	}
+}
+
 func TestPRsByHeadKeepsTheOriginsBesideTheParentsFailure(t *testing.T) {
 	t.Parallel()
 	f := newFactsForge(t, forgefake.Fixture{Repos: []forgefake.Repo{
