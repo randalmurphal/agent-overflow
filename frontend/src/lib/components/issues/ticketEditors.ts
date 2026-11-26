@@ -52,6 +52,22 @@ export interface EditorTarget {
   readonly typing?: TypingHold;
 }
 
+/** The most values a list held here answers at once, as a tracker's
+ * choices read answers (the providers' pickLimit): more say there are
+ * more, so the picker asks again with the text typed. */
+export const PICK_LIMIT = 50;
+
+/** The values of a list held here that `matches`, at most PICK_LIMIT. */
+export function heldChoices<T extends { readonly id: string; readonly name?: string }>(values: readonly T[], matches: (v: T) => boolean): ChoiceListView {
+  const choices: { id: string; name: string }[] = [];
+  for (const v of values) {
+    if (!matches(v)) continue;
+    if (choices.length === PICK_LIMIT) return { choices, more: true };
+    choices.push({ id: v.id, name: v.name ?? '' });
+  }
+  return { choices, more: false };
+}
+
 /** A field's values as the items a picker shows. */
 export function pickedOf(value: FieldValueView): readonly PickItem[] {
   return (value.choices ?? []).map((c) => ({ id: c.id, name: c.name || c.id }));

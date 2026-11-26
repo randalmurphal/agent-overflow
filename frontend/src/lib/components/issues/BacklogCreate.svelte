@@ -67,7 +67,7 @@
   import Icon from '../primitives/Icon.svelte';
   import TicketField from './TicketField.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
-  import { fieldEditor, pickEditor, type EditorTarget } from './ticketEditors';
+  import { fieldEditor, heldChoices, pickEditor, type EditorTarget } from './ticketEditors';
   import type { FieldView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import type { BacklogSection } from '../../stores/trackerBacklogModel';
   import { lastCreateChoice, setLastCreateChoice } from '../../stores/issuesPane.svelte';
@@ -200,7 +200,7 @@
       await loadBoardProjects(b);
       const t = text.toLowerCase();
       const list = boardProjects(b)?.value ?? [];
-      return { choices: list.filter((p) => !t || p.name.toLowerCase().startsWith(t) || p.key.toLowerCase().startsWith(t)).map((p) => ({ id: p.id, name: `${p.name} (${p.key})` })), more: false };
+      return heldChoices(list.map((p) => ({ id: p.id, name: `${p.name} (${p.key})`, key: p.key, plain: p.name })), (p) => !t || p.plain.toLowerCase().startsWith(t) || p.key.toLowerCase().startsWith(t));
     },
     save: (_edit, picked) => {
       if (!draft) return;
@@ -219,7 +219,7 @@
     text: '',
     choices: async (text) => {
       const t = text.toLowerCase();
-      return { choices: (types?.value ?? []).filter((it) => it.level >= 0 && (!t || (it.name ?? '').toLowerCase().startsWith(t))).map((it) => ({ id: it.id, name: it.name || it.id })), more: false };
+      return heldChoices((types?.value ?? []).map((it) => ({ ...it, name: it.name || it.id })), (it) => it.level >= 0 && (!t || it.name.toLowerCase().startsWith(t)));
     },
     save: (_edit, picked) => {
       if (!draft) return;
@@ -238,7 +238,7 @@
       // The values the screen lists ride with the field; only a field it
       // lists none for (users, or priorities the site holds) is read.
       choices: f.allowed
-        ? async (text) => ({ choices: f.allowed!.filter((c) => (c.name ?? '').toLowerCase().startsWith(text.toLowerCase())), more: false })
+        ? async (text) => heldChoices(f.allowed!, (c) => (c.name ?? '').toLowerCase().startsWith(text.trim().toLowerCase()))
         : (text) => createChoices(b, projectID, typeID, f.id, text),
       save: (edit, picked) => { fill(f.id, picked.length || edit.typed?.length ? { edit, picked, text: edit.typed?.[0] ?? '' } : null); },
       typing: {

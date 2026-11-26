@@ -17,6 +17,7 @@ import { describe, expect, it } from 'vitest';
 import type { FieldView, IssueTypeView, ProjectView, WriteView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import BacklogCreate, { type CreateDraft } from './BacklogCreate.svelte';
 import { ticketWriteSurfaceContext } from './ticketWriteSurface';
+import { PICK_LIMIT } from './ticketEditors';
 import type { BacklogSection } from '../../stores/trackerBacklogModel';
 import { boardWriteContext } from '../../stores/trackerTicketWrites.svelte';
 import { setLastCreateChoice } from '../../stores/issuesPane.svelte';
@@ -229,6 +230,24 @@ describe('New ticket', () => {
     expect(created.mock.calls[0][1]).toMatchObject({ fields: [{ field: 'priority', value: { kind: 'option', choices: [{ id: '3' }] } }] });
     expect(choices).not.toHaveBeenCalled();
     expect(fields).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+
+  it('mounts at most the pick limit of a long listed field, says there are more, and finds one past it by its text', async () => {
+    setBindingMock('TrackerBoardProjects', async () => PROJECTS);
+    setBindingMock('TrackerIssueTypes', async () => TYPES);
+    const allowed = Array.from({ length: 300 }, (_, i) => ({ id: String(i), name: `Team ${String(i).padStart(3, '0')}` }));
+    setBindingMock('TrackerCreateFields', async () => [{ id: 'customfield_3', name: 'Team', kind: 'option', required: true, editable: true, allowed } as FieldView]);
+    const choices = setBindingMock('TrackerChoices', async () => ({ choices: [], more: false }));
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await fireEvent.click(await waitFor(() => within(field(view.container, 'customfield_3')).getByTestId('ticket-field-value')));
+    await waitFor(() => expect(within(menu()).getAllByTestId('ticket-picker-item')).toHaveLength(PICK_LIMIT));
+    expect(menu().textContent).toContain('The tracker holds more matches; type to narrow them.');
+    await fireEvent.input(within(menu()).getByTestId('ticket-picker-find'), { target: { value: 'Team 29' } });
+    await waitFor(() => expect(within(menu()).getAllByTestId('ticket-picker-item').map((el) => el.textContent?.trim())).toEqual(
+      Array.from({ length: 10 }, (_, i) => `Team 29${i}`)));
+    expect(choices).not.toHaveBeenCalled();
     view.unmount();
   });
 
