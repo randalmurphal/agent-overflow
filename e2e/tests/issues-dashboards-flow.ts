@@ -13,7 +13,9 @@
 // with a chip that clears; a ticket's history reaches the count; a
 // change made in Jira reaches the open dashboard with no Refresh; a
 // chart's value shows on hover (on compact, on focus); the grid lays out
-// again when the pane is resized; a listed ticket opens.
+// again when the pane is resized; a listed ticket opens. On desktop: four
+// opens and closes of the screen leave the page's heap and DOM as they
+// were.
 
 import type { Locator, Page } from '@playwright/test';
 
@@ -193,6 +195,65 @@ export function registerDashboardsFlow({ compact }: DashboardsSurface): void {
     await press(widget(screen, 'stuck_list').getByTestId('dashboard-list-row'), compact);
     await expect(pane.getByTestId('ticket-screen')).toHaveAttribute('data-issue', '10120', { timeout: 15_000 });
   });
+
+  // The heap is Chromium's, read the same on either layout: desktop only.
+  if (!compact) {
+    test('Dashboards gives back its heap and DOM when the screen closes', async ({ harness, page, context }) => {
+      test.setTimeout(180_000);
+      const { pane } = await openBoardDashboards(harness, page, name('memory'), compact);
+      const cdp = await context.newCDPSession(page);
+      // What the page holds: the heap snapshot's objects, less the code V8
+      // compiles as functions grow hot, and the pane strip's DOM.
+      const measure = async () => {
+        await cdp.send('HeapProfiler.collectGarbage');
+        const chunks: string[] = [];
+        const onChunk = (e: { chunk: string }) => { chunks.push(e.chunk); };
+        cdp.on('HeapProfiler.addHeapSnapshotChunk', onChunk);
+        await cdp.send('HeapProfiler.takeHeapSnapshot', { reportProgress: false });
+        cdp.off('HeapProfiler.addHeapSnapshotChunk', onChunk);
+        const snap = JSON.parse(chunks.join('')) as { snapshot: { meta: { node_fields: string[]; node_types: [string[]] } }; nodes: number[] };
+        const fields = snap.snapshot.meta.node_fields;
+        const typeAt = fields.indexOf('type');
+        const sizeAt = fields.indexOf('self_size');
+        const code = snap.snapshot.meta.node_types[0].indexOf('code');
+        let held = 0;
+        for (let i = 0; i < snap.nodes.length; i += fields.length) if (snap.nodes[i + typeAt] !== code) held += snap.nodes[i + sizeAt];
+        const nodes = await page.evaluate(() => document.querySelector('[data-testid="pane-strip"]')!.getElementsByTagName('*').length);
+        return { heldKB: Math.round(held / 1024), nodes };
+      };
+      const toBoard = async () => {
+        await pane.locator('[data-testid="issues-tab"][data-screen="board"]').click();
+        await expect(pane.getByTestId('dashboard-screen')).toHaveCount(0);
+        await expect(pane.locator('[data-testid="issues-card"][data-issue="10101"]')).toBeVisible();
+      };
+      const openAndClose = async () => {
+        const screen = await openDashboards(page, pane, false);
+        await expect(widget(screen, 'pace').getByTestId('dashboard-number-value')).toHaveText('24.2', { timeout: 15_000 });
+        await expect(screen.getByTestId('dashboard-counting')).toHaveCount(0);
+        const open = await measure();
+        await toBoard();
+        return open;
+      };
+      // The screen's code loads and each widget draws once; then four
+      // opens and closes.
+      await toBoard();
+      await openAndClose();
+      const before = await measure();
+      const opens = [];
+      for (let i = 0; i < 4; i += 1) opens.push(await openAndClose());
+      const after = await measure();
+      const cost = `before ${JSON.stringify(before)}; each open ${JSON.stringify(opens)}; after four closed ${JSON.stringify(after)}`;
+      test.info().annotations.push({ type: 'dashboards screen cost', description: cost });
+      console.log(`dashboards screen cost: ${cost}`);
+      expect(after.nodes).toBe(before.nodes);
+      for (const open of opens) expect(open.nodes).toBeGreaterThan(before.nodes);
+      // Four screens come and go and the page holds what it held before,
+      // give or take less than half of what one open screen holds.
+      const oneScreen = Math.min(...opens.map((open) => open.heldKB - before.heldKB));
+      expect(after.heldKB - before.heldKB).toBeLessThan(oneScreen / 2);
+      await cdp.detach();
+    });
+  }
 
   test('Dashboards opens a bar\'s tickets by the page, shows a chart\'s values, and lays out again with the pane', async ({ harness, page }) => {
     test.setTimeout(180_000);

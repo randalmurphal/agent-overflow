@@ -31,7 +31,9 @@
 //     whole result in SQLite's first step, which a canceled context
 //     interrupts, and bounded_rows charges each row's encoding against the
 //     byte budget; a row cap sits inside the wrapper.
-//   - Time is bound by the host (:now) and the app's functions (days,
+//   - Time is bound by the host (:now, and :since, where the range's
+//     periods begin, so a metric of the range reads only rows it can
+//     place) and the app's functions (days,
 //     working_days, day); SQLite's date functions and random are denied,
 //     so a metric evaluated twice on the same rows answers the same rows.
 //   - Nothing is retained: every evaluation and drill opens, fills, runs

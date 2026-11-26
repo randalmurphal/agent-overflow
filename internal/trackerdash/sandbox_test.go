@@ -44,7 +44,7 @@ func runSQL(s *session, m Metric) ([]contribution, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.run(context.Background(), p, ms(testNow))
+	return s.run(context.Background(), p, ms(testNow), 0)
 }
 
 // A metric's SQL reads the board's relations and calls the allowed

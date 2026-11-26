@@ -53,6 +53,17 @@ type period struct {
 
 func (p period) holds(at int64) bool { return at > p.from && at <= p.to }
 
+// since is where the span's periods, the previous range's included,
+// begin: no row at or before it falls in one. It is now for a span with
+// no periods.
+func (sp span) since(now int64) int64 {
+	from := now
+	for _, p := range slices.Concat(sp.periods, sp.previous) {
+		from = min(from, p.from)
+	}
+	return from
+}
+
 // span is a range resolved against a board: its periods oldest first and
 // the previous range's of equal length. The previous range is a gap when
 // the mirror holds fewer sprints before the range than the range has; a

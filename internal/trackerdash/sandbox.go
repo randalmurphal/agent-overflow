@@ -319,8 +319,11 @@ func (s *session) prepare(m Metric) (prepared, error) {
 
 // run runs a prepared metric under its deadline, wrapped so SQLite
 // produces the whole result in its first step and the rows go straight
-// to the sink, and answers its rows.
-func (s *session) run(ctx context.Context, p prepared, now int64) ([]contribution, error) {
+// to the sink, and answers its rows. The host binds :now, the
+// evaluation's instant, and :since, where the range's periods begin
+// (span.since), so a metric of the range reads only the rows it can
+// place.
+func (s *session) run(ctx context.Context, p prepared, now, since int64) ([]contribution, error) {
 	ctx, cancel := context.WithTimeout(ctx, metricDeadline)
 	defer cancel()
 	s.sink.reset(p.cols)
@@ -341,7 +344,7 @@ func (s *session) run(ctx context.Context, p prepared, now int64) ([]contributio
 	s.take()
 	s.setWrapping(true)
 	var n int64
-	err := s.conn.QueryRowContext(ctx, b.String(), sql.Named("now", now)).Scan(&n)
+	err := s.conn.QueryRowContext(ctx, b.String(), sql.Named("now", now), sql.Named("since", since)).Scan(&n)
 	s.setWrapping(false)
 	denied, _ := s.take()
 	switch {

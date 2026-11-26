@@ -276,3 +276,28 @@ func TestWeekBoardCountsByWeek(t *testing.T) {
 		t.Fatalf("carrying = %v %+v", carrying.Series, carrying.Buckets)
 	}
 }
+
+// A metric of the range reads only the rows that can fall in it: a board
+// whose 25,000 tickets were made and finished before its range counts
+// its range, where reading every ticket would pass the row cap.
+func TestRangeMetricsReadOnlyTheRange(t *testing.T) {
+	t.Parallel()
+	f := teamBoard().exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 25000)
+		INSERT INTO tickets(id, key, title, type_level, status, status_group, created_at, updated_at, resolved_at, status_since, points, done_at)
+		SELECT 'old' || i, 'OLD-' || i, 'Old', 0, '5', 'done', %d, 0, %d, 0, 1, %d FROM n`, ago(400), ago(390), ago(390))
+	a := mustEvaluate(t, evaluator(), f.board(), utcSprints3)
+	for _, id := range []string{"created_finished", "start_to_done"} {
+		if w := widgetOf(t, a, id); w.Error != "" {
+			t.Fatalf("%s failed over a board of old tickets: %s", id, w.Error)
+		}
+	}
+	w := mustEvaluate(t, evaluator(), newFixture(false, "none").status("5", "Done", "done").exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 25000)
+		INSERT INTO tickets(id, key, title, type_level, status, status_group, created_at, updated_at, resolved_at, status_since, done_at)
+		SELECT 'old' || i, 'OLD-' || i, 'Old', 0, '5', 'done', %d, 0, %d, 0, %d FROM n`, ago(400), ago(390), ago(390)).board(),
+		Request{Dashboard: builtinWeeksID, Range: RangeWeeks12, TimeZone: "UTC"})
+	for _, id := range []string{"pace", "created_finished", "start_to_done"} {
+		if v := widgetOf(t, w, id); v.Error != "" {
+			t.Fatalf("week board %s failed over old tickets: %s", id, v.Error)
+		}
+	}
+}

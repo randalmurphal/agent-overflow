@@ -517,8 +517,8 @@ type counted struct {
 
 // run runs metric m's prepared statement p, narrowed by n. A failure of
 // the metric is the widget's; one of the evaluation is returned.
-func (ev *evaluation) run(ctx context.Context, m Metric, p prepared, n narrowing, now int64) (counted, error) {
-	rows, err := ev.s.run(ctx, p, now)
+func (ev *evaluation) run(ctx context.Context, m Metric, p prepared, n narrowing, now, since int64) (counted, error) {
+	rows, err := ev.s.run(ctx, p, now, since)
 	if ctx.Err() != nil {
 		return counted{}, tooSlow(ctx, ctx.Err())
 	}
@@ -607,7 +607,8 @@ func (o *opened) count(m Metric) (counted, error) {
 	if pr.err != nil {
 		return counted{err: pr.err}, nil
 	}
-	return o.ev.run(o.ctx, m, pr.p, o.n, o.now.UnixMilli())
+	now := o.now.UnixMilli()
+	return o.ev.run(o.ctx, m, pr.p, o.n, now, o.sp.since(now))
 }
 
 // Evaluate counts dashboard r.Dashboard of board b.

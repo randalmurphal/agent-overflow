@@ -36,7 +36,7 @@ var cycleMetric = Metric{
        WHEN t.started_at IS NULL THEN 'not counted: it was never in progress'
        WHEN t.done_at IS NULL THEN 'not counted: its move to done is not in its history'
        WHEN t.started_at > t.done_at THEN 'not counted: it moved to done before it was started' END AS note
-FROM tickets t WHERE t.status_group = 'done'`,
+FROM tickets t WHERE t.status_group = 'done' AND ` + finishedAt + ` > :since`,
 	Reduce: ReduceMedian, Unit: UnitDays, Good: GoodDown, Bucket: BucketPeriod,
 }
 
@@ -63,9 +63,9 @@ var createdFinishedMetric = Metric{
 	Words: []string{
 		"The tickets on this board created in each period, and those finished in it: moved into a done status for the last time, or resolved.",
 	},
-	SQL: `SELECT t.id AS ticket, t.created_at AS at, 'Created' AS series FROM tickets t
+	SQL: `SELECT t.id AS ticket, t.created_at AS at, 'Created' AS series FROM tickets t WHERE t.created_at > :since
 UNION ALL
-SELECT t.id, ` + finishedAt + `, 'Finished' FROM tickets t WHERE t.status_group = 'done'`,
+SELECT t.id, ` + finishedAt + `, 'Finished' FROM tickets t WHERE t.status_group = 'done' AND ` + finishedAt + ` > :since`,
 	Reduce: ReduceCount, Unit: UnitTickets, Bucket: BucketPeriod, Series: []string{"Created", "Finished"},
 }
 
@@ -113,7 +113,7 @@ FROM tickets t WHERE t.id IN ` + activeMembers + ` AND t.status_group NOT IN ('d
 				"The estimate of the tickets finished each week (moved into a done status for the last time, or resolved), by the board's estimates now; a board without estimates counts the tickets.",
 			},
 			SQL: `SELECT t.id AS ticket, ` + weight + ` AS value, ` + finishedAt + ` AS at
-FROM tickets t WHERE t.status_group = 'done'`,
+FROM tickets t WHERE t.status_group = 'done' AND ` + finishedAt + ` > :since`,
 			Reduce: ReduceAverageOfPeriodSums, Unit: UnitEstimate, Good: GoodUp, Bucket: BucketPeriod,
 		}
 		carrying = Metric{
