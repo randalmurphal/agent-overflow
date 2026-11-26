@@ -5863,7 +5863,7 @@ export function SearchThreadMessages(query: string, limit: number): $Cancellable
  */
 export function SearchTicketWork(connectionID: string, issueID: string): $CancellablePromise<app$0.TicketWork> {
     return $Call.ByID(859975236, connectionID, issueID).then(($result: any) => {
-        return $$createType130($result);
+        return $$createType131($result);
     });
 }
 
