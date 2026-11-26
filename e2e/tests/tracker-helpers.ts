@@ -83,6 +83,8 @@ export interface ExtraJira {
   estimation?: string;
   /** The accounts WEB's issues can be assigned (trackerfake.JiraProject.Assignable). */
   assignable?: string[];
+  /** WEB's components (trackerfake.JiraProject.Components). */
+  components?: Array<{ id: string; name: string }>;
   /** More sprints beside the seed's active Sprint 1 (trackerfake.JiraSprint),
    * each of board 1 unless it names another; times are ISO strings. */
   sprints?: Array<{ id: number; board?: number; name: string; state: 'future' | 'active' | 'closed'; goal?: string; start?: string; end?: string; complete?: string }>;
@@ -142,6 +144,7 @@ export async function seedFakeJira(harness: HarnessApp, extra?: ExtraJira): Prom
         ...(extra?.issueTypes ? { issueTypes: extra.issueTypes } : {}),
         ...(extra?.transitions ? { transitions: extra.transitions } : {}),
         ...(extra?.assignable ? { assignable: extra.assignable } : {}),
+        ...(extra?.components ? { components: extra.components } : {}),
       }, ...(extra?.projects ?? [])],
       boards: [{ id: 1, name: 'WEB board', type: 'scrum', project: 'WEB', ...(extra?.estimation ? { estimation: extra.estimation } : {}), ...(extra?.boardAlso ? { also: extra.boardAlso } : {}), columns: [
         { name: 'To Do', statuses: ['10000'] }, { name: 'In Progress', statuses: ['10001'] }, { name: 'Done', statuses: ['10002'] },

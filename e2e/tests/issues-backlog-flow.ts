@@ -33,7 +33,8 @@ import type { Locator, Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import { expect, test } from './fixtures.js';
 import { longPress } from './touch-helpers.js';
-import { JIRA_SITE, connectFakeJiraBoard, openIssuesPane, press, trackerRequests, type ExtraJira, type LoggedRequest } from './tracker-helpers.js';
+import { FORM_READ_AGE_MS } from '../../frontend/src/lib/pageTiming.ts';
+import { JIRA_SITE, connectFakeJiraBoard, openIssuesPane, press, seedFakeJira, trackerRequests, type ExtraJira, type LoggedRequest } from './tracker-helpers.js';
 
 export interface BacklogSurface {
   compact: boolean;
@@ -417,6 +418,71 @@ export function registerBacklogFlow({ compact }: BacklogSurface): void {
       { issues: [madeId] }, { issues: [madeId] },
     ]);
     expect(await trackerRequests(harness, CREATE_ROUTE)).toHaveLength(1);
+  });
+
+  test('New ticket offers what Jira offers now: past a minute, or after Refresh, it reads again, and not while no form is open', async ({ harness, page }) => {
+    test.setTimeout(120_000);
+    // A Story needs a component, which the screen lists from WEB's.
+    const withParts = (names: string[]): ExtraJira => ({
+      ...BACKLOG,
+      components: names.map((n, i) => ({ id: String(30_001 + i), name: n })),
+      issueTypes: BACKLOG.issueTypes!.map((t) => (t.id === '10001' ? { ...t, screen: [...t.screen, { field: 'components', required: true }] } : t)),
+    });
+    // The page clock runs as the real one does; the age is crossed below by moving it on.
+    await page.clock.install();
+    const { pane, backlog } = await openBoardBacklog(harness, page, name('fresh'), compact, withParts(['Web']));
+    const formReads = async () => (await Promise.all([BOARD_PROJECTS_ROUTE, TYPES_ROUTE, FIELDS_ROUTE].map((route) => trackerRequests(harness, route)))).reduce((n, r) => n + r.length, 0);
+    const foot = backlog.locator('[data-testid="issues-backlog-foot"][data-list="sprint:2"]');
+    const form = foot.getByTestId('issues-backlog-create');
+    const parts = form.locator('[data-testid="ticket-field"][data-field="components"]');
+    const openForm = async () => {
+      await press(foot.getByTestId('issues-backlog-new'), compact);
+      await expect(form.locator('[data-testid="ticket-field"][data-field="type"]').getByTestId('ticket-field-value')).toHaveText('Story', { timeout: 15_000 });
+      await expect(parts).toBeVisible();
+    };
+    const offered = async (want: string[]) => {
+      await press(parts.getByTestId('ticket-field-value'), compact);
+      await expect(page.getByTestId('ticket-picker-item')).toHaveText(want, { timeout: 15_000 });
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('ticket-picker-item')).toHaveCount(0);
+    };
+    const closeForm = async () => {
+      await press(form.getByTestId('issues-backlog-create-cancel'), compact);
+      await expect(form).toHaveCount(0);
+    };
+
+    await openForm();
+    await offered(['Web']);
+    await expect.poll(formReads).toBe(3);
+    await closeForm();
+    // Within the minute: nothing read.
+    await openForm();
+    await closeForm();
+    expect(await formReads()).toBe(3);
+
+    // A teammate adds a component in Jira; past the minute the form reads
+    // the projects, the types and the fields once each, and offers it.
+    await seedFakeJira(harness, withParts(['Web', 'API']));
+    await page.clock.fastForward(FORM_READ_AGE_MS);
+    await openForm();
+    await offered(['Web', 'API']);
+    await expect.poll(formReads).toBe(6);
+
+    // Refresh with the form open reads them again; with no form open it reads none.
+    await seedFakeJira(harness, withParts(['Web', 'API', 'Docs']));
+    await press(pane.getByTestId('issues-refresh'), compact);
+    await offered(['Web', 'API', 'Docs']);
+    await expect.poll(formReads).toBe(9);
+    await closeForm();
+    await press(pane.getByTestId('issues-refresh'), compact);
+    // Past the minute again, so a read that Refresh made with no form open
+    // would show here as a second three.
+    await page.clock.fastForward(FORM_READ_AGE_MS);
+    await openForm();
+    await expect.poll(formReads).toBe(12);
+    // Each read was a person's act: none followed one settling.
+    await offered(['Web', 'API', 'Docs']);
+    expect(await formReads()).toBe(12);
   });
 
   test('a sprint is created, changed, refused a clearing of its dates, completed with its unfinished tickets moved, and started', async ({ harness, page }) => {
