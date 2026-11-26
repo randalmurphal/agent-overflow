@@ -884,3 +884,36 @@ func TestAWeeksDraftCostsBoundedRequests(t *testing.T) {
 		}
 	})
 }
+
+// The open entries of days are those not yet logged, questions included,
+// of the connection's verified account, by day and ID, with no request:
+// a posted entry, a left-out question and another day's entry are not
+// among them. A range past openTimeSpan is refused.
+func TestOpenTimeEntriesAreTheDaysNotYetLogged(t *testing.T) {
+	t.Parallel()
+	d := newDraftScenario(t, "jira")
+	v := d.draft(t, d.on("WEB-1", 1, "Built the form"), d.on("WEB-2", 0.5, "Reviewed the pull request"),
+		TimeDraftEntry{Day: d.day, Hours: 0.25, Reason: "Standup"}, TimeDraftEntry{Day: d.day, Hours: 0.25, Reason: "Lunch talk"})
+	before := d.days()[0]
+	d.calls++
+	must[TimeDraftView](t)(d.svc.DraftTime(d.conn.ID, TimeDraftRequest{Thread: "thread-2", Call: "call-other", Entries: []TimeDraftEntry{
+		{Day: before, Ticket: &TimeOfferView{Issue: "10103", Key: "WEB-3", Title: "Backlog task"}, Hours: 1, Reason: "Triaged"}}}))
+	d.post(t, true, entryRefs(v.Made[1])...)
+	left := v.Made[3]
+	must[TimeEntryView](t)(d.svc.EditTimeEntry(d.conn.ID, entryRefs(left)[0], TimeEntryEdit{LeaveOut: true}))
+	var got []TimeEntryView
+	reqs := d.requestsOf(t, func() { got = must[[]TimeEntryView](t)(d.svc.OpenTimeEntries(d.conn.ID, d.day, d.day)) })
+	var ids []int64
+	for _, e := range got {
+		ids = append(ids, e.ID)
+	}
+	if !slices.Equal(ids, []int64{v.Made[0].ID, v.Made[2].ID}) || len(reqs) != 0 {
+		t.Fatalf("the open entries of %s are %+v with requests %v; want WEB-1 and the open question", d.day, got, reqs)
+	}
+	if got := must[[]TimeEntryView](t)(d.svc.OpenTimeEntries(d.conn.ID, before, d.day)); len(got) != 3 || got[0].Key != "WEB-3" {
+		t.Fatalf("the open entries of two days are %+v; want WEB-3 first", got)
+	}
+	if _, err := d.svc.OpenTimeEntries(d.conn.ID, "2026-01-01", "2026-02-01"); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("32 days answered %v", err)
+	}
+}

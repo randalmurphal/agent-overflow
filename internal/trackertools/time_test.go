@@ -72,8 +72,8 @@ func TestTheTimeToolsAreGivenWithAJiraConnection(t *testing.T) {
 		sizes[tool["name"].(string)] = len(raw)
 	}
 	t.Logf("time_read %d bytes, time_draft %d bytes", sizes["time_read"], sizes["time_draft"])
-	if sizes["time_read"] != 268 || sizes["time_draft"] != 611 {
-		t.Errorf("the time tools are %v bytes; pinned time_read 268, time_draft 611", sizes)
+	if sizes["time_read"] != 268 || sizes["time_draft"] != 714 {
+		t.Errorf("the time tools are %v bytes; pinned time_read 268, time_draft 714", sizes)
 	}
 	_, err := s.Call(t.Context(), testCaller, "time_draft", json.RawMessage(`{}`))
 	refused(t, err, CodeInvalidRequest, `There is no tool named "time_draft". The tracker tools are: ticket_find, ticket_read, ticket_create, ticket_update.`)
@@ -228,9 +228,10 @@ func TestTimeDraftRefusals(t *testing.T) {
 		code     string
 		want     string
 	}{
-		{"no entries", []trackerapp.TicketSource{timeJira}, false, []map[string]any{}, CodeInvalidRequest, "time_draft takes 1 to 250 entries a call."},
+		{"no entries", []trackerapp.TicketSource{timeJira}, false, []map[string]any{}, CodeInvalidRequest,
+			"Give entries to draft time, or post to ask the user to log the draft of those days."},
 		{"read-only", []trackerapp.TicketSource{timeJira}, true, []map[string]any{entry("WEB-1")}, "tracker_read_only",
-			"This thread is read-only, so it cannot change tickets; ask the user to change its access."},
+			"This thread is read-only, so it cannot change tickets or log time; ask the user to change its access."},
 		{"no Jira", []trackerapp.TicketSource{timeLinear}, false, []map[string]any{entry("ENG-4")}, CodeNoConnection,
 			"This computer has no Jira connection turned on, and time is kept on Jira. The user adds or turns one on in the Issues settings."},
 		{"a Linear key", []trackerapp.TicketSource{timeJira, timeLinear}, false, []map[string]any{entry("WEB-1"), entry("ENG-4")}, CodeInvalidRequest,

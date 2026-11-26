@@ -186,7 +186,7 @@ func TestWritesAreAdmittedAfterTheApproval(t *testing.T) {
 	w := newWriteFixture(t)
 	w.h.approve = func(Approval) error { w.h.readOnly = true; return nil }
 	_, err := w.update(t, map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "comment": "Done."})
-	refused(t, err, "tracker_read_only", "This thread is read-only, so it cannot change tickets; ask the user to change its access.")
+	refused(t, err, "tracker_read_only", "This thread is read-only, so it cannot change tickets or log time; ask the user to change its access.")
 	if len(w.f.writes) != 0 {
 		t.Fatalf("an approval admitted writes on a read-only thread: %q", w.f.writes)
 	}
@@ -201,7 +201,7 @@ func TestACreateIsAdmittedWhenItIsSent(t *testing.T) {
 	w.h.createBoards["WEB"] = []CreateBoard{{Connection: "conn-jira", Board: "1", Thread: true}}
 	w.h.readingProject = func() { w.h.readOnly = true }
 	_, err := w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "New"})
-	refused(t, err, "tracker_read_only", "This thread is read-only, so it cannot change tickets; ask the user to change its access.")
+	refused(t, err, "tracker_read_only", "This thread is read-only, so it cannot change tickets or log time; ask the user to change its access.")
 	if len(w.f.writes) != 0 {
 		t.Fatalf("a create was sent on a read-only thread: %q", w.f.writes)
 	}

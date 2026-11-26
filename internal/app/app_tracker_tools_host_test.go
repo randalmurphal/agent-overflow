@@ -239,7 +239,7 @@ func TestTrackerWriteOfOneTicketAndFromAReadOnlyThread(t *testing.T) {
 		since = log[len(log)-1].Seq
 	}
 	text, isError = trackerMCPStreamedCall(t, f.a, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-2"}, "comment": "Looked."})
-	if !isError || text != "[tracker_read_only] This thread is read-only, so it cannot change tickets; ask the user to change its access." {
+	if !isError || text != "[tracker_read_only] This thread is read-only, so it cannot change tickets or log time; ask the user to change its access." {
 		t.Fatalf("a read-only update = %s (error %v)", text, isError)
 	}
 	text, isError = trackerMCPStreamedCall(t, f.a, endpoint, "ticket_create", map[string]any{"project": "WEB", "title": "New"})

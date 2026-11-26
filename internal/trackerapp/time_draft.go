@@ -381,6 +381,41 @@ func (s *Service) ThreadTimeEntries(thread string) ([]TimeEntryView, error) {
 	return timeEntryViews(es), nil
 }
 
+// openTimeSpan is the most days one OpenTimeEntries read covers.
+const openTimeSpan = 31
+
+// OpenTimeEntries are the entries not yet logged (drafted, sent or
+// unknown, questions included) of Jira connection id's verified account
+// whose day is from to to, both YYYY-MM-DD and included, at most
+// openTimeSpan days, by day and ID, as the store holds them, with no
+// tracker call. A connection that is off, has no time tracking or no
+// verified account is refused as a post refuses it (timeAuthor).
+func (s *Service) OpenTimeEntries(id, from, to string) ([]TimeEntryView, error) {
+	if err := s.enterTime(); err != nil {
+		return nil, err
+	}
+	defer s.leave()
+	_, author, err := s.timeAuthor(id)
+	if err != nil {
+		return nil, err
+	}
+	first, last, err := worklogRange(author, from, to)
+	if err != nil {
+		return nil, err
+	}
+	if daysBetween(first, last) >= openTimeSpan {
+		return nil, fmt.Errorf("%w: entries are read at most %d days at a time", ErrInvalidRequest, openTimeSpan)
+	}
+	es, err := s.store.TimeEntriesOf(id, author, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("trackerapp: %w", err)
+	}
+	es = slices.DeleteFunc(es, func(e store.TimeEntry) bool {
+		return e.State == store.TimeEntryPosted || e.State == store.TimeEntryLeftOut
+	})
+	return timeEntryViews(es), nil
+}
+
 // TimeEntryRefView names an entry as a screen read it.
 type TimeEntryRefView struct {
 	ID       int64 `json:"id"`

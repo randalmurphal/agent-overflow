@@ -128,7 +128,7 @@ func TestAnAgentsTimeDraftPostsOnlyOnTheApproval(t *testing.T) {
 
 	readOnly, endpoint := trackerWriteThread(t, f, provider.RuntimeReadOnly)
 	text, isError = trackerMCPStreamedCall(t, f.a, endpoint, "time_draft", map[string]any{"entries": []map[string]any{{"day": day, "key": "WEB-2", "hours": 1, "reason": "Work"}}})
-	if !isError || text != "[tracker_read_only] This thread is read-only, so it cannot change tickets; ask the user to change its access." {
+	if !isError || text != "[tracker_read_only] This thread is read-only, so it cannot change tickets or log time; ask the user to change its access." {
 		t.Fatalf("a read-only draft = %s (error %v)", text, isError)
 	}
 	if got, err := f.a.ThreadTimeEntries(ctx, readOnly.ID); err != nil || len(got) != 0 {
@@ -154,5 +154,129 @@ func TestTheTimeToolsNeedAJiraConnection(t *testing.T) {
 	text, isError := trackerMCPStreamedCall(t, app, endpoint, "time_read", map[string]any{})
 	if !isError || text != `[tracker_request_invalid] There is no tool named "time_read". The tracker tools are: ticket_find, ticket_read, ticket_create, ticket_update.` {
 		t.Fatalf("time_read on a Linear session = %s (error %v)", text, isError)
+	}
+}
+
+// timePostRows are the thread's time post timeline rows.
+func timePostRows(t *testing.T, a *App, threadID string) []store.Item {
+	t.Helper()
+	items, err := a.store.ListItems(threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return slices.DeleteFunc(items, func(it store.Item) bool { return !strings.Contains(it.Meta, `"kind":"time_post"`) })
+}
+
+// An agent's post of a day waits for the person through the tracker
+// write's own prompt, titled with the day and showing each entry; what it
+// sends is exactly what that prompt showed: an entry the person edited,
+// one they removed, and one another thread drafted while the prompt was
+// open are not logged, and the answer says the first two in words. The
+// call's one row counts what the prompt offered. A second post, with
+// nothing changed, logs both entries the prompt shows.
+func TestAnAgentsPostLogsOnlyWhatThePersonSaw(t *testing.T) {
+	t.Parallel()
+	f := newTrackerBoardFixture(t)
+	t.Cleanup(func() { _ = f.a.trackerMCPServer().Close() })
+	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
+	thread, endpoint := trackerWriteThread(t, f, provider.RuntimeAuto)
+	_, other := trackerWriteThread(t, f, provider.RuntimeAuto)
+	day := time.Now().AddDate(0, 0, -2).Format(time.DateOnly)
+	label, err := time.Parse(time.DateOnly, day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dayLabel := label.Format("Mon Jan 2")
+	posted := func() []string {
+		var out []string
+		for _, r := range f.e.Requests(0).Requests {
+			if r.Route == "POST rest/api/3/issue/{issue}/worklog" {
+				out = append(out, r.Path)
+			}
+		}
+		return out
+	}
+	if text, isError := trackerMCPStreamedCall(t, f.a, endpoint, "time_draft", map[string]any{"entries": []map[string]any{
+		{"day": day, "key": "WEB-1", "hours": 1, "reason": "Built the form"},
+		{"day": day, "key": "WEB-2", "hours": 0.5, "reason": "Reviewed the pull request"},
+	}}); isError {
+		t.Fatalf("time_draft = %s", text)
+	}
+
+	done := trackerWriteCall(t, f.a, endpoint, "time_draft", map[string]any{"post": []string{day}})
+	open, approval := trackerWritePrompt(t, f.a, thread.ID)
+	if open.ToolName != "time_draft" || open.Title != "Log time for "+dayLabel || !strings.HasPrefix(open.RequestID, trackerApprovalPrefix) {
+		t.Fatalf("the prompt is %q titled %q, id %q", open.ToolName, open.Title, open.RequestID)
+	}
+	var shown []string
+	for _, tk := range approval.Tickets {
+		for _, c := range tk.Changes {
+			shown = append(shown, tk.Key+" "+tk.Title+": "+c.Line)
+		}
+	}
+	if want := []string{"WEB-1 First story: " + dayLabel + ", 1h: Built the form", "WEB-2 Second task: " + dayLabel + ", 30m: Reviewed the pull request"}; !slices.Equal(shown, want) {
+		t.Fatalf("the prompt shows %q, want %q", shown, want)
+	}
+	if got := posted(); len(got) != 0 {
+		t.Fatalf("logged %v before the person answered", got)
+	}
+	// While the prompt is open: the person edits WEB-1 and removes WEB-2,
+	// and another thread drafts WEB-3.
+	entries, err := f.a.ThreadTimeEntries(ctx, thread.ID)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("ThreadTimeEntries = %+v, %v", entries, err)
+	}
+	two := 2.0
+	if _, err := f.a.EditTrackerTimeEntry(ctx, f.conn.ID, trackerapp.TimeEntryRefView{ID: entries[0].ID, Revision: entries[0].Revision}, trackerapp.TimeEntryEdit{Hours: &two}); err != nil {
+		t.Fatal(err)
+	}
+	if gone, err := f.a.RemoveTrackerTimeEntries(ctx, f.conn.ID, []trackerapp.TimeEntryRefView{{ID: entries[1].ID, Revision: entries[1].Revision}}); err != nil || len(gone) != 1 {
+		t.Fatalf("remove = %+v, %v", gone, err)
+	}
+	if text, isError := trackerMCPStreamedCall(t, f.a, other, "time_draft", map[string]any{"entries": []map[string]any{
+		{"day": day, "key": "WEB-3", "hours": 0.75, "reason": "Triaged the backlog"},
+	}}); isError {
+		t.Fatalf("the other thread's time_draft = %s", text)
+	}
+	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	result := <-done
+	want := fmt.Sprintf(`{"posts":[{"posted":0,"of":2,"sentence":"Posted 0 of 1 entries for %s. WEB-1, 2h, changed since it was read; read the day again. Entry %d was removed since it was read."}]}`, dayLabel, entries[1].ID)
+	if result[1].(bool) || result[0] != want {
+		t.Fatalf("the post answered %v\nwant %s", result, want)
+	}
+	if got := posted(); len(got) != 0 {
+		t.Fatalf("logged %v, none of which the person saw as it is", got)
+	}
+	rows := timePostRows(t, f.a, thread.ID)
+	if len(rows) != 1 || rows[0].Summary != "Logged 0 of 2 entries for "+dayLabel || rows[0].ID != open.RequestID {
+		t.Fatalf("time post rows %+v", rows)
+	}
+
+	// Asked again, the prompt shows the day as it is now, and the approval
+	// logs both entries.
+	done = trackerWriteCall(t, f.a, endpoint, "time_draft", map[string]any{"post": []string{day}})
+	open, approval = trackerWritePrompt(t, f.a, thread.ID)
+	if len(approval.Tickets) != 2 || approval.Tickets[0].Changes[0].Line != dayLabel+", 2h: Built the form" || approval.Tickets[1].Key != "WEB-3" {
+		t.Fatalf("the second prompt %+v", approval)
+	}
+	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	result = <-done
+	if want := fmt.Sprintf(`{"posts":[{"posted":2,"of":2,"sentence":"Posted 2 of 2 entries for %s."}]}`, dayLabel); result[1].(bool) || result[0] != want {
+		t.Fatalf("the second post answered %v\nwant %s", result, want)
+	}
+	if got := posted(); len(got) != 2 {
+		t.Fatalf("logged %v; want WEB-1 and WEB-3", got)
+	}
+	rows = timePostRows(t, f.a, thread.ID)
+	if len(rows) != 2 || rows[1].Summary != "Logged 2 of 2 entries for "+dayLabel {
+		t.Fatalf("time post rows %+v", rows)
+	}
+	// The first row is as the first post left it.
+	if rows[0].Summary != "Logged 0 of 2 entries for "+dayLabel {
+		t.Fatalf("the first row became %q", rows[0].Summary)
 	}
 }

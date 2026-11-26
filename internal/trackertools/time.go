@@ -16,10 +16,10 @@ import (
 // connections, each the time of its verified account. time_read answers
 // the days' logged time and the time draft (trackerapp.Service.ReadTime);
 // time_draft replaces the agents' entries of each day it names
-// (trackerapp.Service.DraftTime). Neither sends time: nothing reaches a
-// posting path, and a draft is logged only once the person approves it.
-// A session is given them only when a Jira connection was on as it
-// started (Server.Tools).
+// (trackerapp.Service.DraftTime), or with post asks the person to log the
+// draft of the days it names, and posts what they approved (time_post.go).
+// Nothing else sends time. A session is given them only when a Jira
+// connection was on as it started (Server.Tools).
 
 // readSpan is the most days one time_read answers.
 const readSpan = 7
@@ -272,6 +272,7 @@ func fitTime(out timeReadAnswer) (timeReadAnswer, error) {
 
 type timeDraftArgs struct {
 	Entries []timeDraftArg `json:"entries"`
+	Post    []string       `json:"post"`
 }
 
 type timeDraftArg struct {
@@ -333,6 +334,14 @@ func (s *Server) timeDraft(ctx context.Context, caller Caller, raw json.RawMessa
 	var args timeDraftArgs
 	if err := decode(raw, &args); err != nil {
 		return nil, err
+	}
+	switch {
+	case len(args.Entries) == 0 && len(args.Post) == 0:
+		return nil, invalidf("Give entries to draft time, or post to ask the user to log the draft of those days.")
+	case len(args.Entries) > 0 && len(args.Post) > 0:
+		return nil, invalidf("Give entries or post, not both: a call that posts drafts nothing.")
+	case len(args.Post) > 0:
+		return s.timePost(ctx, caller, args.Post)
 	}
 	offers := make([]int, len(args.Entries))
 	for i, e := range args.Entries {

@@ -586,9 +586,9 @@ func TestUpdateFromAReadOnlyThread(t *testing.T) {
 	w := newWriteFixture(t)
 	w.h.readOnly = true
 	_, err := w.update(t, map[string]any{"keys": []string{"WEB-12"}, "comment": "Hi."})
-	refused(t, err, "tracker_read_only", "This thread is read-only, so it cannot change tickets; ask the user to change its access.")
+	refused(t, err, "tracker_read_only", "This thread is read-only, so it cannot change tickets or log time; ask the user to change its access.")
 	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "New"})
-	refused(t, err, "tracker_read_only", "This thread is read-only, so it cannot change tickets; ask the user to change its access.")
+	refused(t, err, "tracker_read_only", "This thread is read-only, so it cannot change tickets or log time; ask the user to change its access.")
 	if len(w.f.asked)+len(w.f.writes) != 0 {
 		t.Fatalf("a read-only call asked %q, wrote %q", w.f.asked, w.f.writes)
 	}

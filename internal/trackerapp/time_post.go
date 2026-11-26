@@ -435,6 +435,24 @@ func entryName(e store.TimeEntry) string {
 	return fmt.Sprintf("%s, %s,", e.IssueKey, hoursText(e.Seconds/60))
 }
 
+// EntryLine is entry e as an approval shows it before a post: its day,
+// time and whole reason, and, for one the post will not send, why: one
+// that may already be logged, one being posted, or a question whose
+// ticket is not picked. A post sends exactly the entries it shows with no
+// such reason, at the revisions shown (PostTimeEntries).
+func EntryLine(e TimeEntryView) string {
+	line := fmt.Sprintf("%s, %s: %s", dayLabel(e.Day), hoursText(e.Minutes), e.Reason)
+	switch {
+	case e.State == store.TimeEntryUnknown:
+		return line + " (not sent: it may already be logged)"
+	case e.State == store.TimeEntrySent:
+		return line + " (not sent: it is being posted from another window)"
+	case e.Key == "":
+		return line + " (not posted: its ticket is not picked yet)"
+	}
+	return line
+}
+
 // dayLabel is a day as a sentence writes it: Mon Nov 23.
 func dayLabel(day string) string {
 	t, err := time.Parse(time.DateOnly, day)
