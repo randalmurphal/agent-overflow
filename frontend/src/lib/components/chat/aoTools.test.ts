@@ -279,6 +279,11 @@ describe('AO tool presentation', () => {
     it.each([
       ['ticket_find', { text: 'safari login' }, 'find', '"safari login"'],
       ['ticket_find', { text: 'safari login', next: 'eyJjIjoiYSJ9' }, 'find', '"safari login"'],
+      ['ticket_find', { mine: true }, 'find', 'assigned to you'],
+      ['ticket_find', { mine: true, group: 'in_progress', sprint: 'active' }, 'find', 'assigned to you · in progress · active sprint'],
+      ['ticket_find', { group: 'todo' }, 'find', 'to do'],
+      ['ticket_find', { mine: true, group: 'not_done' }, 'find', 'assigned to you · not done'],
+      ['ticket_find', { text: 'login', status: 'In Review' }, 'find', '"login" · In Review'],
       ['ticket_read', {}, 'read', 'linked ticket'],
       ['ticket_read', { key: 'WEB-12' }, 'read', 'WEB-12'],
       ['ticket_read', { key: 'WEB-12', history: true }, 'read', 'WEB-12 with history'],
@@ -293,6 +298,7 @@ describe('AO tool presentation', () => {
 
     it('keeps the continuations a person does not read out of the body', () => {
       expect(aoToolFacts(meta(TRACKER_TOOLS_SERVER, 'ticket_find', { text: 'login', next: 'eyJjIjoiYSJ9' }))).toEqual([]);
+      expect(aoToolFacts(meta(TRACKER_TOOLS_SERVER, 'ticket_find', { mine: true, status: 'Done', group: 'done', sprint: 'active' }))).toEqual([]);
       expect(aoToolFacts(meta(TRACKER_TOOLS_SERVER, 'ticket_read', { key: 'WEB-1', history: true }))).toEqual([]);
       expect(aoToolFacts(meta(TRACKER_TOOLS_SERVER, 'ticket_read', { more: 'eyJjIjoiYSJ9' }))).toEqual([]);
     });

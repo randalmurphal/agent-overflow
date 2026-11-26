@@ -85,9 +85,13 @@ func (c *jiraCall) filtered(issues []*JiraIssue, strictSprints bool) ([]*JiraIss
 	if src == "" {
 		return issues, nil
 	}
-	q, err := parseJQL(src)
+	q, err := parseJQL(src, c.viewer)
 	if err != nil {
 		a := jqlAnswer(err)
+		return nil, &a
+	}
+	if errs := c.s.undefinedStatuses(q); len(errs) > 0 {
+		a := jiraErrors(http.StatusBadRequest, errs...)
 		return nil, &a
 	}
 	// Measured: a sprint ID that names nothing answers 400 on the board

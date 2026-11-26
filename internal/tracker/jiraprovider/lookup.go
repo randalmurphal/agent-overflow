@@ -120,10 +120,13 @@ func (p *Provider) lookupKeys(ctx context.Context, s site, keys []string, found 
 	return nil
 }
 
-// Search is one page of the cards q's text matches, most recently
-// updated first. The text reaches Jira's text search only through
+// Search is one page of the cards q matches, most recently updated
+// first. The text reaches Jira's text search only through
 // jira.QuoteJQLText, so it is searched for as words, never as operators
-// or wildcards.
+// or wildcards, and a status name only through jira.QuoteJQL. A group
+// Jira has no category for (backlog, canceled) is refused before
+// anything is sent. Jira's 400 to the search wraps
+// tracker.ErrSearchRefused.
 func (p *Provider) Search(ctx context.Context, q tracker.SearchQuery) (tracker.SearchPage, error) {
 	if err := q.Check(); err != nil {
 		return tracker.SearchPage{}, err
@@ -138,6 +141,19 @@ func (p *Provider) Search(ctx context.Context, q tracker.SearchQuery) (tracker.S
 		}
 		clauses = append(clauses, "project = "+jira.QuoteJQL(string(q.Project)))
 	}
+	if q.Mine {
+		clauses = append(clauses, "assignee = currentUser()")
+	}
+	status, err := statusClause(q.Status)
+	if err != nil {
+		return tracker.SearchPage{}, err
+	}
+	if status != "" {
+		clauses = append(clauses, status)
+	}
+	if q.ActiveSprint {
+		clauses = append(clauses, "sprint in openSprints()")
+	}
 	s, err := p.site(ctx)
 	if err != nil {
 		return tracker.SearchPage{}, err
@@ -150,6 +166,9 @@ func (p *Provider) Search(ctx context.Context, q tracker.SearchQuery) (tracker.S
 		JQL:    strings.Join(clauses, " AND ") + " ORDER BY updated DESC",
 		Fields: s.cardFields(), MaxResults: limit, PageToken: string(q.Page),
 	})
+	if _, refused := errors.AsType[*jira.QueryRefusedError](err); refused {
+		return tracker.SearchPage{}, fmt.Errorf("jiraprovider: search: %w: %w", tracker.ErrSearchRefused, err)
+	}
 	if err != nil {
 		return tracker.SearchPage{}, fmt.Errorf("jiraprovider: search: %w", err)
 	}
@@ -164,6 +183,52 @@ func (p *Provider) Search(ctx context.Context, q tracker.SearchQuery) (tracker.S
 	}
 	out.Catalog = cat.out
 	return out, nil
+}
+
+// categoryName is the status category group g is searched by, by name
+// as Jira's JQL takes it; false for a group no category maps to
+// (statusOf).
+func categoryName(g tracker.StatusGroup) (string, bool) {
+	switch g {
+	case tracker.GroupToDo:
+		return "To Do", true
+	case tracker.GroupInProgress:
+		return "In Progress", true
+	case tracker.GroupDone:
+		return "Done", true
+	case tracker.GroupBacklog, tracker.GroupCanceled:
+		// No Jira category: statuses group as to do, in progress and done.
+	}
+	return "", false
+}
+
+// statusClause is the JQL clause of m, empty for the zero match. A group
+// with no category is refused: Jira's statuses group by category alone.
+func statusClause(m tracker.StatusMatch) (string, error) {
+	switch {
+	case m.Name != "":
+		return "status = " + jira.QuoteJQL(m.Name), nil
+	case m.Open:
+		// Jira has no canceled category: a canceled status is done.
+		done, _ := categoryName(tracker.GroupDone)
+		return "statusCategory != " + jira.QuoteJQL(done), nil
+	case m.Group != 0:
+		name, ok := categoryName(m.Group)
+		if !ok {
+			// The sentence is the refusal a person or an agent reads whole.
+			return "", fmt.Errorf("%w: Jira groups statuses only as to do, in progress and done, not %s", tracker.ErrInvalidInput, groupWord(m.Group))
+		}
+		return "statusCategory = " + jira.QuoteJQL(name), nil
+	}
+	return "", nil
+}
+
+// groupWord is how a refusal names a group Jira has no category for.
+func groupWord(g tracker.StatusGroup) string {
+	if g == tracker.GroupBacklog {
+		return "backlog"
+	}
+	return "canceled"
 }
 
 // Download streams one of an issue's attachments, after reading the

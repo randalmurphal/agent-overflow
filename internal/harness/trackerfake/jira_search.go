@@ -80,9 +80,12 @@ func searchJQL(c *jiraCall) answer {
 	if err := c.decode(&in, false); err != nil {
 		return unhandledf("%v", err)
 	}
-	q, err := parseJQL(in.JQL)
+	q, err := parseJQL(in.JQL, c.viewer)
 	if err != nil {
 		return jqlAnswer(err)
+	}
+	if errs := c.s.undefinedStatuses(q); len(errs) > 0 {
+		return jiraErrors(http.StatusBadRequest, errs...)
 	}
 	offset, err := readPageToken("search "+in.JQL, in.NextPageToken)
 	if err != nil {
@@ -104,9 +107,12 @@ func countJQL(c *jiraCall) answer {
 	if err := c.decode(&in, false); err != nil {
 		return unhandledf("%v", err)
 	}
-	q, err := parseJQL(in.JQL)
+	q, err := parseJQL(in.JQL, c.viewer)
 	if err != nil {
 		return jqlAnswer(err)
+	}
+	if errs := c.s.undefinedStatuses(q); len(errs) > 0 {
+		return jiraErrors(http.StatusBadRequest, errs...)
 	}
 	return jsonAnswer(http.StatusOK, map[string]any{"count": len(c.indexed(c.s.search(q)))})
 }
@@ -172,11 +178,11 @@ func matchJQL(c *jiraCall) answer {
 	}
 	matches := []any{}
 	for _, src := range in.JQLs {
-		q, err := parseJQL(src)
+		q, err := parseJQL(src, c.viewer)
 		if err != nil {
 			return jqlAnswer(err)
 		}
-		matched, errs := []int64{}, []string{}
+		matched, errs := []int64{}, c.s.undefinedStatuses(q)
 		for _, f := range q.filters {
 			if c.s.boardOfFilter(f) == nil {
 				errs = append(errs, fmt.Sprintf("The value '%s' does not exist for the field 'filter'.", f))

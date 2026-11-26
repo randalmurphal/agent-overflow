@@ -27,17 +27,23 @@ const issueSelection = `
 
 const issueFields = `fragment IssueFields on Issue {` + issueSelection + `}`
 
-// issueSearchFields is issueSelection on a search result, a type of its
-// own with the same fields, and the state and assignee whole: a search
-// row is shown with their names, whatever the app has read of the team.
-// A page of issues that selects objects costs the same however many it
-// selects (measured, docs/references/tracker-api-measurements.md), so
-// the names cost bytes and no points. Its documents spread StateFields
-// and UserFields too.
-const issueSearchFields = `fragment IssueSearchFields on IssueSearchResult {` + issueSelection + `  state { ...StateFields } assignee { ...UserFields }
-}`
+// namedSelection is issueSelection with the state and assignee whole: a
+// row of a search or a listing is shown with their names, whatever the
+// app has read of the team. A page of issues that selects objects costs
+// the same however many it selects (measured,
+// docs/references/tracker-api-measurements.md), so the names cost bytes
+// and no points. Its documents spread StateFields and UserFields too.
+const namedSelection = issueSelection + `  state { ...StateFields } assignee { ...UserFields }
+`
 
-// wireSearchIssue is an issue as issueSearchFields selects it; its state
+// issueSearchFields is namedSelection on a search result, a type of its
+// own with the same fields; issueNamedFields is it on an issue.
+const (
+	issueSearchFields = `fragment IssueSearchFields on IssueSearchResult {` + namedSelection + `}`
+	issueNamedFields  = `fragment IssueNamedFields on Issue {` + namedSelection + `}`
+)
+
+// wireSearchIssue is an issue as namedSelection selects it; its state
 // and assignee shadow issueSelection's { id } ones.
 type wireSearchIssue struct {
 	wireIssue

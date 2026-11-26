@@ -78,6 +78,15 @@ var opIssues = newQuery("Issues", "page", `query Issues($filter: IssueFilter, $s
 }
 `+issueFields).withMaxBody(issueBodyBytes)
 
+// opRecentIssues is opIssues with each issue's state and assignee whole,
+// for RecentIssues.
+var opRecentIssues = newQuery("RecentIssues", "page", `query RecentIssues($filter: IssueFilter, $sort: [IssueSortInput!], $includeArchived: Boolean, $first: Int!, $after: String) {
+  page: issues(filter: $filter, sort: $sort, includeArchived: $includeArchived, first: $first, after: $after) {
+    nodes { ...IssueNamedFields } pageInfo { hasNextPage endCursor }
+  }
+}
+`+issueNamedFields+stateFields+userFields).withMaxBody(issueBodyBytes)
+
 type sortDirection struct {
 	Order string `json:"order"`
 }
@@ -211,12 +220,16 @@ type SearchQuery struct {
 	// TeamID limits the search to one team; empty searches every team.
 	TeamID          string
 	IncludeArchived bool
+	// Filter narrows the issues the term matches (measured: Linear honors
+	// the assignee's isMe and null, the state's type and the cycle's
+	// isActive).
+	Filter IssueFilter
 	// Limit is the page size, 1 to 250; zero means 250.
 	Limit int
 }
 
-var opSearchIssues = newQuery("SearchIssues", "page", `query SearchIssues($term: String!, $teamId: String, $includeArchived: Boolean, $first: Int!, $after: String) {
-  page: searchIssues(term: $term, teamId: $teamId, includeArchived: $includeArchived, first: $first, after: $after) {
+var opSearchIssues = newQuery("SearchIssues", "page", `query SearchIssues($term: String!, $teamId: String, $filter: IssueFilter, $includeArchived: Boolean, $first: Int!, $after: String) {
+  page: searchIssues(term: $term, teamId: $teamId, filter: $filter, includeArchived: $includeArchived, first: $first, after: $after) {
     nodes { ...IssueSearchFields } pageInfo { hasNextPage endCursor }
   }
 }
@@ -224,9 +237,10 @@ var opSearchIssues = newQuery("SearchIssues", "page", `query SearchIssues($term:
 
 type searchVars struct {
 	pageVars
-	Term            string `json:"term"`
-	TeamID          string `json:"teamId,omitempty"`
-	IncludeArchived bool   `json:"includeArchived,omitempty"`
+	Term            string            `json:"term"`
+	TeamID          string            `json:"teamId,omitempty"`
+	Filter          *issueFilterInput `json:"filter,omitempty"`
+	IncludeArchived bool              `json:"includeArchived,omitempty"`
 }
 
 // SearchIssues returns the page of issues q's term matches that follows
@@ -240,6 +254,10 @@ func (c *Client) SearchIssues(ctx context.Context, q SearchQuery, after string) 
 	if err != nil {
 		return Page[SearchHit]{}, invalid(opSearchIssues.name, "%w", err)
 	}
-	vars := searchVars{pageVars{First: first, After: after}, q.Term, q.TeamID, q.IncludeArchived}
+	filter, err := q.Filter.input()
+	if err != nil {
+		return Page[SearchHit]{}, invalid(opSearchIssues.name, "%w", err)
+	}
+	vars := searchVars{pageVars{First: first, After: after}, q.Term, q.TeamID, filter, q.IncludeArchived}
 	return fetchPage(ctx, c, opSearchIssues, vars, wireSearchIssue.typed)
 }

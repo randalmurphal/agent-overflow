@@ -14,9 +14,10 @@ type RecentQuery struct {
 	From Position
 }
 
-// RecentPage is one page of a walk most recently updated first.
+// RecentPage is one page of a walk most recently updated first, each
+// issue with its state and assignee as a search hit carries them.
 type RecentPage struct {
-	Page[Issue]
+	Page[SearchHit]
 	// Next continues the walk while HasNextPage holds.
 	Next Position
 }
@@ -27,7 +28,7 @@ type RecentPage struct {
 // and is not delivered again; no issue the update did not touch is
 // skipped or repeated. A page that breaks the order fails the call.
 func (c *Client) RecentIssues(ctx context.Context, q RecentQuery) (RecentPage, error) {
-	p, next, err := readPosition(ctx, c, newestFirst, q.From, IssueQuery{Filter: q.Filter, IncludeArchived: q.IncludeArchived, Limit: q.Limit})
+	p, next, err := readPosition(ctx, c, walkRows[wireSearchIssue, SearchHit]{opRecentIssues, wireSearchIssue.typed}, newestFirst, q.From, IssueQuery{Filter: q.Filter, IncludeArchived: q.IncludeArchived, Limit: q.Limit})
 	if err != nil {
 		return RecentPage{}, err
 	}
