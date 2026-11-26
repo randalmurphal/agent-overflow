@@ -115,13 +115,10 @@ func (s *Server) update(ctx context.Context, caller Caller, raw json.RawMessage)
 	if args.Comment != nil {
 		comment = *args.Comment
 	}
-	policy, err := s.h.WritePolicy(caller.Thread)
-	if err != nil {
+	// Admission: a thread that may not change tickets is refused before
+	// anything is read.
+	if _, err := s.h.WritePolicy(caller.Thread); err != nil {
 		return nil, err
-	}
-	asks := len(args.Keys) > 1 && policy.AskSeveral
-	if asks && approvalBytes(set, comment) > maxApprovalBytes {
-		return nil, invalidf("set and comment together hold more than %d KiB, more than an approval shows the person; change fewer or shorter values in each call.", maxApprovalBytes>>10)
 	}
 	keys := args.Keys
 	if len(keys) == 0 {
@@ -161,8 +158,18 @@ func (s *Server) update(ctx context.Context, caller Caller, raw json.RawMessage)
 		}
 		return out, nil
 	}
+	// The decision: whether the change waits for the person is read now,
+	// after planning, so a setting changed while the call planned is the
+	// one it follows.
+	policy, err := s.h.WritePolicy(caller.Thread)
+	if err != nil {
+		return nil, err
+	}
+	approved := len(plans) > 1 && policy.AskSeveral
+	if approved && approvalBytes(set, comment) > maxApprovalBytes {
+		return nil, invalidf("set and comment together hold more than %d KiB, more than an approval shows the person; change fewer or shorter values in each call.", maxApprovalBytes>>10)
+	}
 	id := s.newID()
-	approved := asks
 	if approved {
 		if err := s.h.Approve(ctx, caller.Thread, approvalOf(id, plans, set, comment)); err != nil {
 			return nil, err
@@ -176,7 +183,7 @@ func (s *Server) update(ctx context.Context, caller Caller, raw json.RawMessage)
 			return nil, err
 		}
 	}
-	// The writes are admitted now, by the policy as it is now: a thread
+	// The send: the writes are admitted by the policy as it is now: a thread
 	// made read-only, or whose project turned off changes, while the call
 	// planned or waited sends nothing, and neither does a change to
 	// several tickets that went unasked while its project now asks.

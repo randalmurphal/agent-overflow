@@ -116,10 +116,15 @@ type WritePolicy struct {
 
 // Host is what the writing tools ask the app about the calling thread.
 type Host interface {
-	// WritePolicy is what a change of tickets by the thread may do now,
-	// read again at each moment a writing tool decides by it. A public
-	// error refuses any change: a read-only thread, or one whose
-	// project's Agents settings turn off changes or cannot be read.
+	// WritePolicy is what a change of tickets by the thread may do now.
+	// A public error refuses any change: a read-only thread, or one whose
+	// project's Agents settings turn off changes or cannot be read. A
+	// writing tool reads it at three moments, each for one job: at
+	// admission, to refuse before any tracker read; after planning, to
+	// decide whether the change waits for the person (Approve) and to
+	// bound what that approval carries; and just before the first write,
+	// to send nothing the policy no longer allows, including a change
+	// that went unasked while the policy now asks.
 	WritePolicy(threadID string) (WritePolicy, error)
 	// Approve asks the person to approve a change and returns when they
 	// answer: nil when they approve, a public error when they deny or do

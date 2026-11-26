@@ -136,6 +136,9 @@ type fakeHost struct {
 	// noAsk is a project whose Agents settings let a change to several
 	// tickets go without the person's approval.
 	noAsk bool
+	// onPolicy runs before each WritePolicy read with its count, from 1.
+	onPolicy func(n int)
+	policies int
 	// approve answers an approval; nil approves.
 	approve   func(Approval) error
 	approvals []Approval
@@ -149,6 +152,10 @@ type fakeHost struct {
 }
 
 func (h *fakeHost) WritePolicy(string) (WritePolicy, error) {
+	h.policies++
+	if h.onPolicy != nil {
+		h.onPolicy(h.policies)
+	}
 	if h.readOnly {
 		return WritePolicy{}, errorsx.Public("tracker_read_only", "This thread is read-only, so it cannot change tickets; ask the user to change its access.", nil)
 	}

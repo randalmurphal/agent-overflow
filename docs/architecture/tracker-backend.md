@@ -2469,10 +2469,13 @@ each per call.
 person, unless the project's setup turned off asking (`agents`
 `ask_several` false, Settings > Issues > Agents): then it is sent as one
 ticket's call is. The call reads the project's rules
-(`Host.WritePolicy`) when it starts and again before the first write; a
-call of several tickets that went unapproved and finds asking turned on
-by then is refused with nothing sent (`tracker_rules_changed`), telling
-the agent to make the call again. The app raises a prompt of kind `tracker-write` in the thread
+(`Host.WritePolicy`) three times, each for one job: when it starts, to
+refuse before any tracker read; after planning, to decide whether it
+asks (and to bound what the approval carries); and before the first
+write, to send nothing the rules no longer allow. A call of several
+tickets that went unasked and finds asking turned on by then is refused
+with nothing sent (`tracker_rules_changed`), telling the agent to make
+the call again. The app raises a prompt of kind `tracker-write` in the thread
 (`provider.EventApprovalRequest` through triage, decisions accept and
 decline only) showing each ticket's changes and the comment. The prompt
 carries each value of `set` whole, and a change line that shows a value

@@ -194,19 +194,55 @@ func TestUpdateOfSeveralTicketsGoesWhenTheProjectDoesNotAsk(t *testing.T) {
 	}
 }
 
-// A project that turns asking back on while a change to several tickets
-// is being planned sends nothing without the person's approval.
+// A change of several tickets that asking was turned on for while it
+// planned waits for the person; one it was turned on for after the
+// decision, before the send, is refused with nothing sent.
 func TestUpdateOfSeveralTicketsAsksWhenAskingTurnsOnWhilePlanned(t *testing.T) {
 	t.Parallel()
 	w := newWriteFixture(t)
 	w.h.noAsk = true
 	w.f.onDetail = func() { w.h.noAsk = false }
+	if _, err := w.update(t, map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "set": map[string]any{"status": "In Review"}, "comment": "Both in this sprint."}); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.h.approvals) != 1 {
+		t.Fatalf("asked %+v after asking was turned on while it planned", w.h.approvals)
+	}
+
+	w = newWriteFixture(t)
+	w.h.noAsk = true
+	w.h.onPolicy = func(n int) { w.h.noAsk = n < 3 }
 	_, err := w.update(t, map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "set": map[string]any{"status": "In Review"}, "comment": "Both in this sprint."})
 	if len(w.f.writes) != 0 || len(w.h.approvals) != 0 {
-		t.Fatalf("sent %q, asked %+v after asking was turned on", w.f.writes, w.h.approvals)
+		t.Fatalf("sent %q, asked %+v after asking was turned on before the send", w.f.writes, w.h.approvals)
 	}
 	if code, _, _ := errorsx.PublicDetails(err); code != CodeRulesChanged {
 		t.Fatalf("err = %v; want %s", err, CodeRulesChanged)
+	}
+}
+
+// Whether a change of several tickets asks is decided by the policy read
+// after planning: asking turned off while the call planned sends it with
+// no prompt, and changes turned off then refuse it before any prompt.
+func TestUpdateOfSeveralTicketsDecidesAskingAfterPlanning(t *testing.T) {
+	t.Parallel()
+	w := newWriteFixture(t)
+	w.f.onDetail = func() { w.h.noAsk = true }
+	if _, err := w.update(t, map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "set": map[string]any{"status": "In Review"}, "comment": "Both in this sprint."}); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.h.approvals) != 0 || len(w.f.writes) == 0 {
+		t.Fatalf("asked %+v, sent %q after asking was turned off", w.h.approvals, w.f.writes)
+	}
+
+	w = newWriteFixture(t)
+	w.f.onDetail = func() { w.h.readOnly = true }
+	_, err := w.update(t, map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "set": map[string]any{"status": "In Review"}})
+	if len(w.h.approvals) != 0 || len(w.f.writes) != 0 {
+		t.Fatalf("asked %+v, sent %q after changes were turned off", w.h.approvals, w.f.writes)
+	}
+	if code, _, _ := errorsx.PublicDetails(err); code != "tracker_read_only" {
+		t.Fatalf("err = %v; want the policy's refusal", err)
 	}
 }
 
