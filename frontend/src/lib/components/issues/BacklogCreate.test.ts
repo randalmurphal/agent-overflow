@@ -288,7 +288,7 @@ describe('New ticket', () => {
     await fireEvent.input(title, { target: { value: 'Default one' } });
     await fireEvent.keyDown(title, { key: 'Enter' });
     await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
-    expect(created.mock.calls[0][1].fields).toEqual([]);
+    expect(created.mock.calls[0][1]).toMatchObject({ fields: [] });
     await waitFor(() => expect(title.value).toBe(''));
     await pick(view.container, 'priority', 'High');
     await fireEvent.input(title, { target: { value: 'High one' } });
