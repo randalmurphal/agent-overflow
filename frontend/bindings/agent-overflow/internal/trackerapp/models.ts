@@ -2770,6 +2770,52 @@ export class SiteStatusGroups {
 }
 
 /**
+ * SiteStatuses is one tracker site's statuses for a project.
+ */
+export class SiteStatuses {
+    "tracker": string;
+    "site": string;
+    "statuses": StatusView[];
+    "elsewhere"?: StatusView[];
+    "unread"?: UnreadBoard[];
+
+    /** Creates a new SiteStatuses instance. */
+    constructor($$source: Partial<SiteStatuses> = {}) {
+        if (!("tracker" in $$source)) {
+            this["tracker"] = "";
+        }
+        if (!("site" in $$source)) {
+            this["site"] = "";
+        }
+        if (!("statuses" in $$source)) {
+            this["statuses"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SiteStatuses instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SiteStatuses {
+        const $$createField2_0 = $$createType36;
+        const $$createField3_0 = $$createType36;
+        const $$createField4_0 = $$createType91;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("statuses" in $$parsedSource) {
+            $$parsedSource["statuses"] = $$createField2_0($$parsedSource["statuses"]);
+        }
+        if ("elsewhere" in $$parsedSource) {
+            $$parsedSource["elsewhere"] = $$createField3_0($$parsedSource["elsewhere"]);
+        }
+        if ("unread" in $$parsedSource) {
+            $$parsedSource["unread"] = $$createField4_0($$parsedSource["unread"]);
+        }
+        return new SiteStatuses($$parsedSource as Partial<SiteStatuses>);
+    }
+}
+
+/**
  * SprintCompleteRequest closes an active sprint of Board once its
  * unfinished issues moved to MoveTo, an open sprint, or to the backlog
  * when MoveTo is empty.
@@ -3043,7 +3089,7 @@ export class StaleView {
      * Creates a new StaleView instance from a string or object.
      */
     static createFrom($$source: any = {}): StaleView {
-        const $$createField0_0 = $$createType91;
+        const $$createField0_0 = $$createType93;
         const $$createField1_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("resources" in $$parsedSource) {
@@ -3292,7 +3338,7 @@ export class TicketSubscription {
      * Creates a new TicketSubscription instance from a string or object.
      */
     static createFrom($$source: any = {}): TicketSubscription {
-        const $$createField6_0 = $$createType93;
+        const $$createField6_0 = $$createType95;
         const $$createField8_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("detail" in $$parsedSource) {
@@ -3332,7 +3378,7 @@ export class TicketView {
      * Creates a new TicketView instance from a string or object.
      */
     static createFrom($$source: any = {}): TicketView {
-        const $$createField1_0 = $$createType93;
+        const $$createField1_0 = $$createType95;
         const $$createField3_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("detail" in $$parsedSource) {
@@ -3412,6 +3458,35 @@ export class UnlinkRequest {
 }
 
 /**
+ * UnreadBoard is a listed board whose structure the mirror has not read:
+ * its ID and the name its listing holds (BoardChoice.Name).
+ */
+export class UnreadBoard {
+    "board": string;
+    "name": string;
+
+    /** Creates a new UnreadBoard instance. */
+    constructor($$source: Partial<UnreadBoard> = {}) {
+        if (!("board" in $$source)) {
+            this["board"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UnreadBoard instance from a string or object.
+     */
+    static createFrom($$source: any = {}): UnreadBoard {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new UnreadBoard($$parsedSource as Partial<UnreadBoard>);
+    }
+}
+
+/**
  * UserListView is the users a pick list offers; More reports that the
  * tracker may hold matches it leaves out, so a user missing from it may
  * still exist.
@@ -3433,7 +3508,7 @@ export class UserListView {
      * Creates a new UserListView instance from a string or object.
      */
     static createFrom($$source: any = {}): UserListView {
-        const $$createField0_0 = $$createType94;
+        const $$createField0_0 = $$createType96;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("users" in $$parsedSource) {
             $$parsedSource["users"] = $$createField0_0($$parsedSource["users"]);
@@ -3499,7 +3574,7 @@ export class WorklogDays {
      * Creates a new WorklogDays instance from a string or object.
      */
     static createFrom($$source: any = {}): WorklogDays {
-        const $$createField0_0 = $$createType96;
+        const $$createField0_0 = $$createType98;
         const $$createField2_0 = $$createType16;
         const $$createField3_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
@@ -3535,7 +3610,7 @@ export class WorklogDeleteRequest {
      * Creates a new WorklogDeleteRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): WorklogDeleteRequest {
-        const $$createField0_0 = $$createType95;
+        const $$createField0_0 = $$createType97;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("from" in $$parsedSource) {
             $$parsedSource["from"] = $$createField0_0($$parsedSource["from"]);
@@ -3568,7 +3643,7 @@ export class WorklogEditRequest {
      * Creates a new WorklogEditRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): WorklogEditRequest {
-        const $$createField0_0 = $$createType95;
+        const $$createField0_0 = $$createType97;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("from" in $$parsedSource) {
             $$parsedSource["from"] = $$createField0_0($$parsedSource["from"]);
@@ -3726,8 +3801,8 @@ export class WriteView {
      * Creates a new WriteView instance from a string or object.
      */
     static createFrom($$source: any = {}): WriteView {
-        const $$createField0_0 = $$createType98;
-        const $$createField5_0 = $$createType100;
+        const $$createField0_0 = $$createType100;
+        const $$createField5_0 = $$createType102;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("parts" in $$parsedSource) {
             $$parsedSource["parts"] = $$createField0_0($$parsedSource["parts"]);
@@ -3830,14 +3905,16 @@ const $$createType86 = $Create.Array($$createType85);
 const $$createType87 = SetupView.createFrom;
 const $$createType88 = Setup.createFrom;
 const $$createType89 = $Create.Map($Create.Any, $Create.Any);
-const $$createType90 = ResourceView.createFrom;
+const $$createType90 = UnreadBoard.createFrom;
 const $$createType91 = $Create.Array($$createType90);
-const $$createType92 = DetailView.createFrom;
-const $$createType93 = $Create.Nullable($$createType92);
-const $$createType94 = $Create.Array($$createType0);
-const $$createType95 = WorklogView.createFrom;
-const $$createType96 = $Create.Array($$createType95);
-const $$createType97 = PartView.createFrom;
+const $$createType92 = ResourceView.createFrom;
+const $$createType93 = $Create.Array($$createType92);
+const $$createType94 = DetailView.createFrom;
+const $$createType95 = $Create.Nullable($$createType94);
+const $$createType96 = $Create.Array($$createType0);
+const $$createType97 = WorklogView.createFrom;
 const $$createType98 = $Create.Array($$createType97);
-const $$createType99 = StaleView.createFrom;
+const $$createType99 = PartView.createFrom;
 const $$createType100 = $Create.Array($$createType99);
+const $$createType101 = StaleView.createFrom;
+const $$createType102 = $Create.Array($$createType101);

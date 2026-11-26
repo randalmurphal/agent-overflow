@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/project"
 	"agent-overflow/internal/store"
@@ -241,6 +242,9 @@ func TestAnUnreadableSetupRefusesItsProjectOnly(t *testing.T) {
 			path := m.writeSetupFile(t, m.project(), data)
 			if _, err := m.svc.ProjectSetup(m.project()); !errors.Is(err, ErrSetupUnreadable) || !strings.Contains(err.Error(), path) {
 				t.Fatalf("the read of an unreadable setup: %v", err)
+			}
+			if _, err := m.svc.ProjectStatuses(m.project()); !errors.Is(err, ErrSetupUnreadable) {
+				t.Fatalf("the statuses of a project whose setup is unreadable: %v", err)
 			}
 			if _, err := m.svc.SetProjectSetup(m.project(), "", Setup{}); !errors.Is(err, ErrSetupUnreadable) {
 				t.Fatalf("a save over an unreadable setup: %v", err)
@@ -893,5 +897,74 @@ func TestStartWorkDefaultsAreSavedPerTrackerProject(t *testing.T) {
 	}}
 	if _, err := m.svc.SetProjectSetup(m.project(), save.Stored.Revision, twice); !errors.Is(err, ErrInvalidSetup) || !strings.Contains(err.Error(), "twice") {
 		t.Errorf("a project twice: %v", err)
+	}
+}
+
+// A project's statuses are its listed boards' columns as this computer
+// read them, once each in picker and column order with the tracker's
+// group, one site for two connections to it; a board not read yet is
+// named, not guessed; and a status the setup regroups that no listed
+// board shows is listed apart, so it can be put back.
+func TestProjectStatusesListTheBoardsStatuses(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
+	unread := func(boards ...string) []UnreadBoard {
+		out := make([]UnreadBoard, len(boards))
+		for i, b := range boards {
+			out[i] = UnreadBoard{Board: b}
+		}
+		return out
+	}
+	site := func() SiteStatuses {
+		t.Helper()
+		got := must[[]SiteStatuses](t)(m.svc.ProjectStatuses(m.project()))
+		if len(got) != 1 || got[0].Tracker != store.TrackerKindJira || got[0].Site != m.conn.Site {
+			t.Fatalf("the sites: %+v", got)
+		}
+		return got[0]
+	}
+	if got := site(); len(got.Statuses) != 0 || !reflect.DeepEqual(got.Unread, unread("1", "2", "7", "9")) {
+		t.Fatalf("before any board was read: %+v", got)
+	}
+	m.subscribeShown(t, m.project())
+	columns := []StatusView{{ID: "s1", Name: "To Do", Group: "todo"}, {ID: "s2", Name: "In Progress", Group: "in_progress"}, {ID: "s3", Name: "Done", Group: "done"}}
+	if got := site(); !reflect.DeepEqual(got.Statuses, columns) || !reflect.DeepEqual(got.Unread, unread("2", "7", "9")) || got.Elsewhere != nil {
+		t.Fatalf("with board 1 read: %+v", got)
+	}
+
+	// A second connection to the site lists a board whose columns hold s2
+	// again and s4: one site, s2 once.
+	second := m.add(NewConnection{Kind: store.TrackerKindJira, Site: jiraSiteIn, Account: "user2@example.com"})
+	if _, err := saveFromStored(m, []ProjectBoard{{Connection: m.conn.ID, Board: "1", OpensFirst: true}, {Connection: second.ID, Board: "5"}}); err != nil {
+		t.Fatal(err)
+	}
+	statusReview := tracker.Status{ID: "s4", Name: "Review", Group: tracker.GroupInProgress}
+	m.p.set(func(s *scripted) {
+		s.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) {
+			st := webStructure(b)
+			if b == "5" {
+				st.Columns = []tracker.Column{{Name: "Doing", Statuses: []tracker.StatusID{"s2", "s4"}}}
+				st.Catalog.Statuses = append(st.Catalog.Statuses, statusReview)
+			}
+			return st, nil
+		}
+	})
+	scope := Scope{Connection: second.ID, Board: "5"}
+	if _, err := m.svc.SubscribeBoard(m.project(), scope, []Section{{Kind: SectionBacklog}}, true, untied); err != nil {
+		t.Fatal(err)
+	}
+	m.events.waitFor(t, "the second connection's board read", func(boards []BoardEvent, _ []IssueEvent, _ []error) bool {
+		return slices.ContainsFunc(boards, func(e BoardEvent) bool { return e.Scope == scope && e.ReadAgain })
+	})
+	both := append(slices.Clone(columns), StatusView{ID: "s4", Name: "Review", Group: "in_progress"})
+	if got := site(); !reflect.DeepEqual(got.Statuses, both) || got.Unread != nil {
+		t.Fatalf("with two connections to the site: %+v", got)
+	}
+
+	// The setup regroups s2, which a board shows, and s9, which none does.
+	m.saveSetup(t, m.project(), m.regrouped(map[string]string{"s2": "done", "s9": "left_out"}))
+	if got := site(); !reflect.DeepEqual(got.Statuses, both) || !reflect.DeepEqual(got.Elsewhere, []StatusView{{ID: "s9"}}) {
+		t.Fatalf("with s9 regrouped off the boards: %+v", got)
 	}
 }

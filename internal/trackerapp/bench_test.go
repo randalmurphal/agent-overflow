@@ -9,6 +9,7 @@ import (
 	"maps"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -172,6 +173,69 @@ func BenchmarkSectionPage100(b *testing.B) {
 	}
 }
 
+// The Status groups page's read of a project of 20 read boards, each of
+// 12 columns of 5 statuses (half of each board's shared with the next),
+// over a catalog of 1,000 statuses, with 30 statuses regrouped, 10 of
+// them on no board.
+func BenchmarkProjectStatuses20Boards(b *testing.B) {
+	svc, p, scope := benchService(b)
+	statuses := make([]tracker.Status, 1000)
+	for i := range statuses {
+		statuses[i] = tracker.Status{ID: tracker.StatusID(fmt.Sprintf("s%d", i)), Name: fmt.Sprintf("Status %d", i), Group: tracker.GroupInProgress}
+	}
+	boards := make([]tracker.BoardID, 20)
+	for i := range boards {
+		boards[i] = tracker.BoardID(fmt.Sprint(i + 1))
+	}
+	p.structure = func(bd tracker.BoardID, _ time.Time) (tracker.Structure, error) {
+		st := webStructure(bd)
+		n, err := strconv.Atoi(string(bd))
+		if err != nil {
+			return tracker.Structure{}, err
+		}
+		st.Columns = make([]tracker.Column, 12)
+		for c := range st.Columns {
+			col := tracker.Column{Name: fmt.Sprintf("Column %d", c)}
+			for k := range 5 {
+				col.Statuses = append(col.Statuses, statuses[(n*30+c*5+k)%len(statuses)].ID)
+			}
+			st.Columns[c] = col
+		}
+		st.Catalog.Statuses = statuses
+		return st, nil
+	}
+	listBoards(b, svc.store.(*store.Store), scope.Connection, boards...)
+	for _, bd := range boards {
+		benchTick(b, svc, Scope{Connection: scope.Connection, Board: bd}, BoardDue{Structure: true})
+	}
+	project := "boards-" + scope.Connection
+	row, err := svc.get(scope.Connection)
+	if err != nil {
+		b.Fatal(err)
+	}
+	groups := map[string]string{}
+	for i := range 20 {
+		groups[fmt.Sprintf("s%d", i*20)] = "done"
+	}
+	for i := range 10 {
+		groups[fmt.Sprintf("s%d", 900+i)] = "left_out"
+	}
+	view, err := svc.ProjectSetup(project)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if _, err := svc.SetProjectSetup(project, view.Revision, Setup{StatusGroups: []SiteStatusGroups{{Tracker: store.TrackerKindJira, Site: row.Site, Statuses: groups}}}); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		sites, err := svc.ProjectStatuses(project)
+		if err != nil || len(sites) != 1 || len(sites[0].Statuses) == 0 || len(sites[0].Unread) != 0 {
+			b.Fatalf("statuses: %+v, %v", sites, err)
+		}
+	}
+}
+
 func BenchmarkCardBlobDecode(b *testing.B) {
 	m, err := mirrorCard(realisticRow(1, time.UnixMilli(1_799_000_000_000).UTC()).Card)
 	if err != nil {
@@ -244,6 +308,7 @@ var benchmarks = map[string]func(*testing.B){
 	"BenchmarkDeltaTick100Unchanged":      BenchmarkDeltaTick100Unchanged,
 	"BenchmarkBoardView500":               BenchmarkBoardView500,
 	"BenchmarkSectionPage100":             BenchmarkSectionPage100,
+	"BenchmarkProjectStatuses20Boards":    BenchmarkProjectStatuses20Boards,
 	"BenchmarkCardBlobDecode":             BenchmarkCardBlobDecode,
 	"BenchmarkBodyBlobDecode":             BenchmarkBodyBlobDecode,
 	"BenchmarkLinkedCardsAllChanged10000": BenchmarkLinkedCardsAllChanged10000,
