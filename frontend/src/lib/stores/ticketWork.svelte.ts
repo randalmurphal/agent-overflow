@@ -12,7 +12,8 @@
 // (GetTicketWork), shown as soon as they answer, and the same answer with
 // the forge searched by the ticket's key (SearchTicketWork), which
 // replaces it when it lands, so a slow forge holds no stored row back.
-// The search's answer is the read's once it lands, whichever came first.
+// The search's answer is the read's once it lands, whichever came first,
+// and a stored read that fails after it shows no failure.
 //
 // A Start work run is its plan, the thread it made and each step's
 // outcome. The steps run in order: the thread (StartTicketThread, which
@@ -105,7 +106,7 @@ export async function loadTicketWork(key: string, ref: TrackerTicketRef): Promis
   const failure = (err: unknown) => (isPassiveConnectionFailure(err) ? null : err);
   const stored = withBackendTarget(ref.backend, () => GetTicketWork(ref.connection, ref.issue)).then(
     (work) => write((read) => (read.searched ? { loading: false } : { work, loading: false, error: null })),
-    (err) => write(() => ({ loading: false, error: failure(err) })),
+    (err) => write((read) => (read.searched ? { loading: false } : { loading: false, error: failure(err) })),
   );
   const searched = withBackendTarget(ref.backend, () => SearchTicketWork(ref.connection, ref.issue)).then(
     (work) => write(() => (work === null ? { searching: false } : { work, searched: true, searching: false, loading: false, error: null })),

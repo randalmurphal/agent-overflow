@@ -53,7 +53,7 @@
   import { userFacingError } from '../../utils/userFacingError';
   import { pullNumberLabel } from '../pulls/pullRowView';
   import PullsProjectError from '../pulls/PullsProjectError.svelte';
-  import { forgeFailureFrom, forgeReadFailureCause } from '../../utils/forgeFailure';
+  import { forgeFailureFrom, forgeReadFailureCause, rateLimitRetryMessage } from '../../utils/forgeFailure';
 
   interface Props {
     attachment: TrackerTicketAttachment;
@@ -350,13 +350,16 @@
       <p class="px-1 text-xs text-fg-muted" data-testid="ticket-work-searching">Searching the forge…</p>
     {/if}
     {#each work?.searchFull ?? [] as repo (`${repo.Host}\n${repo.Namespace}/${repo.Repo}`)}
-      <p class="px-1 text-xs text-fg-muted" data-testid="ticket-work-search-full">The search of {repo.Namespace}/{repo.Repo} found more than 100 pull requests, so these may not be all of them.</p>
+      <p class="px-1 text-xs text-fg-muted" data-testid="ticket-work-search-full">The search of {repo.Namespace}/{repo.Repo} stopped after 500 matches, so these may not be all of them.</p>
     {/each}
     {#each work?.forgeProblems ?? [] as problem (`${problem.projectId}\n${problem.repo.Namespace}/${problem.repo.Repo}`)}
+      {@const failure = forgeFailureFrom(problem)}
+      {@const what = problem.repo.Repo ? `${problem.repo.Namespace}/${problem.repo.Repo}` : getProjectLabelText(problem.projectId)}
       <div data-testid="ticket-work-forge-problem">
         <PullsProjectError
-          message="Could not search {problem.repo.Repo ? `${problem.repo.Namespace}/${problem.repo.Repo}` : getProjectLabelText(problem.projectId)}: {problem.error}"
-          failure={forgeFailureFrom(problem)}
+          message={failure?.kind === 'rate_limited' ? rateLimitRetryMessage(problem.repo.Forge, what, failure) : `Could not search ${what}: ${problem.error}`}
+          {failure}
+          polled={false}
           forge={problem.repo.Forge}
           cause={forgeReadFailureCause(problem, ref.backend)}
           onRetry={() => { void loadTicketWork(attachment.key, attachment.ref); }}

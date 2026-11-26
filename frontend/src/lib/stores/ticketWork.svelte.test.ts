@@ -170,6 +170,16 @@ describe('the Work read', () => {
     await second;
     expect(ticketWork(ticket.key)?.work?.pullRequests).toHaveLength(1);
     expect(ticketWork(ticket.key)?.loading).toBe(false);
+
+    // The search first, then the stored read fails: the search's answer
+    // stands and no failure shows under it.
+    const third = loadTicketWork(ticket.key, REF);
+    search.answers[2](searched);
+    await vi.waitFor(() => expect(ticketWork(ticket.key)?.searching).toBe(false));
+    get.fails[2](new TransportError('internal', 'the store is closed'));
+    await third;
+    expect(ticketWork(ticket.key)).toMatchObject({ loading: false, error: null });
+    expect(ticketWork(ticket.key)?.work?.pullRequests).toHaveLength(1);
     ticket.release();
   });
 

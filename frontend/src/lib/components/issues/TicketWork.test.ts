@@ -22,6 +22,7 @@ import { resetStagedBackends, stageBackend } from '../../../test/helpers/backend
 import { getToasts } from '../../stores/toast.svelte';
 import { ticketWriteSurfaceContext } from './ticketWriteSurface';
 import { drawTicketWrite, fieldTarget, moveTicket, ticketWrite } from '../../stores/trackerTicketWrites.svelte';
+import { formatTimeOfDay } from '../../utils/format';
 
 const SITE = 'https://example.atlassian.net';
 
@@ -106,7 +107,7 @@ describe('Work', () => {
     view.unmount();
   });
 
-  it('says each failed search in the Pull requests page\'s words beside the rows, and Retry reads again', async () => {
+  it('says each failed search in the Pull requests page\'s words beside the rows, a rate limit with when to retry, and Retry reads again', async () => {
     const resumeAt = '2026-11-26T18:30:00Z';
     const view = await mountWork({
       search: async () => ({ ...WORK, problems: [], searchFull: [{ Forge: 'gitlab', Host: 'gitlab.com', Namespace: 'grp', Repo: 'docs' }], forgeProblems: [
@@ -114,19 +115,26 @@ describe('Work', () => {
         { projectId: 'p1', repo: { Forge: 'gitlab', Host: 'gitlab.com', Namespace: 'grp', Repo: 'app' }, error: 'The GitLab login cannot see grp/app.', errorKind: 'forbidden' },
         { projectId: 'p1', repo: { Forge: 'gitlab', Host: 'gitlab.com', Namespace: 'grp', Repo: 'api' }, error: 'Run glab auth login --hostname gitlab.com.', errorKind: 'setup' },
         { projectId: 'p1', repo: { Forge: 'github', Host: 'github.com', Namespace: 'example', Repo: 'down' }, error: 'failed to refresh from the forge (id: r2)', errorKind: 'transient' },
+        { projectId: 'p1', repo: { Forge: 'gitlab', Host: 'gitlab.com', Namespace: 'grp', Repo: 'kept' }, error: 'failed to refresh from the forge (id: r3)', errorKind: 'rate_limited', reserve: true, resumeAt },
       ] }),
     });
     const problems = await waitFor(() => {
       const shown = view.getAllByTestId('pulls-project-error');
-      expect(shown).toHaveLength(4);
+      expect(shown).toHaveLength(5);
       return shown;
     });
-    expect(problems.map((p) => p.dataset.errorKind)).toEqual(['rate_limited', 'forbidden', 'setup', 'transient']);
-    expect(problems[0].textContent?.trim()).toMatch(/^GitHub rate limit reached\. Updates resume at /);
+    expect(problems.map((p) => p.dataset.errorKind)).toEqual(['rate_limited', 'forbidden', 'setup', 'transient', 'rate_limited']);
+    // Work reads again only when asked, so a rate limit says when Retry
+    // can read again and offers it.
+    const at = formatTimeOfDay(Date.parse(resumeAt));
+    const sentence = (problem: HTMLElement) => problem.textContent?.replace(/\s*Retry\s*$/, '').trim();
+    expect(sentence(problems[0])).toBe(`GitHub rate limit reached, so example/widgets was not searched. Retry after ${at}.`);
+    expect(sentence(problems[4])).toBe(`GitLab rate limit nearly used up, so grp/kept was not searched: the rest is kept for your own actions. Retry after ${at}.`);
+    expect(problems[0].querySelector('[data-testid="pulls-project-retry"]')).not.toBeNull();
     expect(problems[1].textContent).toContain('Could not search grp/app: The GitLab login cannot see grp/app.');
     expect(problems[2].textContent).toContain('Could not search grp/api: Run glab auth login --hostname gitlab.com.');
     expect(problems[3].textContent).toContain('Could not search example/down: failed to refresh from the forge (id: r2)');
-    expect(view.getByTestId('ticket-work-search-full').textContent).toBe('The search of grp/docs found more than 100 pull requests, so these may not be all of them.');
+    expect(view.getByTestId('ticket-work-search-full').textContent).toBe('The search of grp/docs stopped after 500 matches, so these may not be all of them.');
     // The rows from the stored sources still show.
     expect(view.getAllByTestId('ticket-work-pull')).toHaveLength(1);
     expect(view.getByTestId('ticket-work-branch').textContent).toContain('web-1-spike');
