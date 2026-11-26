@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"agent-overflow/internal/store"
@@ -148,17 +150,23 @@ func TestRunawayQueryStopsAtItsDeadline(t *testing.T) {
 	}
 }
 
-// A metric's deadline began at its prepare: a prepare that took most of
-// it leaves the run the rest.
+// A metric's deadline began at its prepare: the prepare records the time
+// it took, nearly all of the call's, and a prepare that took most of the
+// deadline leaves the run the rest.
 func TestTheDeadlineCountsThePrepare(t *testing.T) {
 	t.Parallel()
 	s := sealed(t)
+	start := time.Now()
 	p, err := s.prepare(metricOf(`SELECT a.ticket AS ticket FROM changes a, changes b, changes c ORDER BY a.at * b.at * c.at LIMIT 1`))
+	call := time.Since(start)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if p.took <= 0 || p.took > call || p.took < call/2 {
+		t.Fatalf("the prepare recorded %v of a call of %v; want nearly all of it", p.took, call)
+	}
 	p.took = metricDeadline - 100*time.Millisecond
-	start := time.Now()
+	start = time.Now()
 	_, err = s.run(context.Background(), p, ms(testNow), 0)
 	elapsed := time.Since(start)
 	var me *MetricError
@@ -413,4 +421,30 @@ func TestZoneDriversStopAtTheirBound(t *testing.T) {
 	if err := count("Europe//Paris"); err != nil {
 		t.Fatalf("a zone already held, after the bound: %v", err)
 	}
+}
+
+// A session whose connection cannot be had leaves nothing behind: its
+// sink's key is taken back and its database closed, so neither the
+// registry nor the database's connection opener outlives the failure.
+// Not parallel: it reads the registry, which parallel tests' sessions
+// fill. In a bubble, so the opener's exit is waited for, not polled.
+func TestASessionThatCannotConnectLeavesNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := openSession(ctx, time.UTC); err == nil || !strings.Contains(err.Error(), "open the dashboard's database") {
+			t.Fatalf("a session opened under a canceled context = %v; want its connection's failure", err)
+		}
+		sessionSinks.mu.Lock()
+		left := len(sessionSinks.m)
+		sessionSinks.mu.Unlock()
+		if left != 0 {
+			t.Errorf("%d session sinks left in the registry after the session failed to open", left)
+		}
+		synctest.Wait()
+		buf := make([]byte, 1<<20)
+		if n := strings.Count(string(buf[:runtime.Stack(buf, true)]), "database/sql.(*DB).connectionOpener"); n != 0 {
+			t.Errorf("%d database connection openers run after the session failed to open; its database was not closed", n)
+		}
+	})
 }

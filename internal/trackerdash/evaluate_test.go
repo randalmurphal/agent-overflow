@@ -571,13 +571,14 @@ func TestATableMakesTheCellsItShows(t *testing.T) {
 // More opens the rows of the buckets a widget left out, ranked once for
 // the widget and its drill: 50 people in the active sprint with one
 // point each, beside User 1's 5 and User 2's 3, tie across the table's
-// cut, and the drill lists exactly the two people the table does not
-// show. The whole table, which its "not counted" opens, lists every row.
+// cut, their names in the reverse of their rows' order, and the drill
+// lists exactly the two people the table does not show. The whole table,
+// which its "not counted" opens, lists every row.
 func TestMoreOpensTheBucketsTheWidgetLeftOut(t *testing.T) {
 	t.Parallel()
 	f := teamBoard()
 	for i := 1; i <= 50; i++ {
-		f.person(fmt.Sprintf("p%02d", i), fmt.Sprintf("User %d", 100+i))
+		f.person(fmt.Sprintf("p%02d", i), fmt.Sprintf("User %d", 200-i))
 		f.ticket(ticket{id: fmt.Sprintf("tp%02d", i), key: fmt.Sprintf("WEB-%d", 500+i), status: "1", group: "todo", assignee: fmt.Sprintf("p%02d", i), points: "1", created: ago(5)}).
 			member("s7", fmt.Sprintf("tp%02d", i), false)
 	}
@@ -594,7 +595,7 @@ func TestMoreOpensTheBucketsTheWidgetLeftOut(t *testing.T) {
 	var left []string
 	for i := 1; i <= 50; i++ {
 		if !shown[fmt.Sprintf("p%02d", i)] {
-			left = append(left, fmt.Sprintf("WEB-%d User %d", 500+i, 100+i))
+			left = append(left, fmt.Sprintf("WEB-%d User %d", 500+i, 200-i))
 		}
 	}
 	d, err := e.Drill(context.Background(), b, DrillRequest{Request: utcSprints3, Widget: "carrying", Rest: true})
