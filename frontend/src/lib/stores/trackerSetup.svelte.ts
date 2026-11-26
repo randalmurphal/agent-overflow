@@ -26,13 +26,20 @@
 // the held setup (`trackerRegroupsOf`): the ticket screen holds its
 // project's, the thread rows and header theirs (`threadLinkMarks`).
 //
-// The page's statuses (`ProjectTrackerStatuses`) are held the same way,
+// The pages' statuses (`ProjectTrackerStatuses`) are held the same way,
 // read on hold, on the event and on reconnect: the statuses the setup
-// regroups off the boards are part of their answer.
+// regroups off the boards, and the places its Start work defaults name,
+// are part of their answer.
+//
+// The Fields page's fields to pin are held by site
+// (`ProjectTrackerSiteFields`), each its own read, so a site that fails
+// or stalls holds up no other: read on hold, on reconnect and on the
+// site's Try again. A tracker read, which no change of the setup moves;
+// the page holds a site again when the connections that reach it change.
 
 import { SvelteMap } from 'svelte/reactivity';
-import type { Setup, SetupView, SiteStatuses } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-import { ProjectTrackerSetup, ProjectTrackerStatuses, SetProjectTrackerSetup } from './bindings';
+import type { AgentRules, PinField, ProjectStatuses, Setup, SetupView, SiteStatuses, StartPlace } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import { ProjectTrackerSetup, ProjectTrackerSiteFields, ProjectTrackerStatuses, SetProjectTrackerSetup } from './bindings';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { projectBackend } from '../transport/entityIndex';
 import { hasScope, pageGrantsResolved } from '../transport/scopes';
@@ -150,20 +157,31 @@ class HeldSetup extends HeldRead<SetupView> {
   }
 }
 
-class HeldStatuses extends HeldRead<SiteStatuses[]> {
-  protected call(): Promise<SiteStatuses[]> {
+class HeldStatuses extends HeldRead<ProjectStatuses> {
+  protected call(): Promise<ProjectStatuses> {
     return ProjectTrackerStatuses(this.project);
+  }
+}
+
+class HeldSiteFields extends HeldRead<PinField[]> {
+  constructor(project: string, readonly tracker: string, readonly site: string) {
+    super(project);
+  }
+
+  protected call(): Promise<PinField[]> {
+    return ProjectTrackerSiteFields(this.project, this.tracker, this.site);
   }
 }
 
 const setups = new SvelteMap<string, HeldSetup>();
 const statuses = new SvelteMap<string, HeldStatuses>();
+const fields = new SvelteMap<string, HeldSiteFields>();
 
-function acquire<E extends HeldRead<unknown>>(map: SvelteMap<string, E>, project: string, make: () => E): () => void {
-  let entry = map.get(project);
+function acquire<E extends HeldRead<unknown>>(map: SvelteMap<string, E>, key: string, make: () => E): () => void {
+  let entry = map.get(key);
   if (!entry) {
     entry = make();
-    map.set(project, entry);
+    map.set(key, entry);
   }
   entry.holders++;
   if (entry.holders === 1) void entry.read();
@@ -173,7 +191,7 @@ function acquire<E extends HeldRead<unknown>>(map: SvelteMap<string, E>, project
     if (released) return;
     released = true;
     mine.holders--;
-    if (mine.holders === 0 && map.get(project) === mine) map.delete(project);
+    if (mine.holders === 0 && map.get(key) === mine) map.delete(key);
   };
 }
 
@@ -266,13 +284,15 @@ export function withStatusGroup(setup: Setup, tracker: string, site: string, sta
   return { ...setup, status_groups: Object.keys(statuses).length > 0 ? [...others, { tracker, site, statuses }] : others };
 }
 
-/** A project's statuses as the Status groups page shows them. */
+/** A project's statuses as the Status groups and Starting work pages
+ * show them. */
 export interface TrackerStatusesState {
   readonly sites: readonly SiteStatuses[] | null;
+  readonly places: readonly StartPlace[] | null;
   readonly error: unknown;
 }
 
-const NO_STATUSES: TrackerStatusesState = { sites: null, error: null };
+const NO_STATUSES: TrackerStatusesState = { sites: null, places: null, error: null };
 
 /** Holds `project`'s statuses while the caller shows them, reading them
  * now; the returned function releases the hold. */
@@ -283,12 +303,61 @@ export function acquireTrackerStatuses(project: string): () => void {
 /** `project`'s statuses as held. Reactive. */
 export function trackerStatusesOf(project: string): TrackerStatusesState {
   const entry = statuses.get(project);
-  return entry ? { sites: entry.value, error: entry.error } : NO_STATUSES;
+  return entry ? { sites: entry.value?.sites ?? null, places: entry.value?.places ?? null, error: entry.error } : NO_STATUSES;
 }
 
 /** Reads `project`'s statuses again if a surface holds them. */
 export function refreshTrackerStatuses(project: string): Promise<void> {
   return statuses.get(project)?.read() ?? Promise.resolve();
+}
+
+/** A site's fields to pin as the Fields page shows them. */
+export interface TrackerSiteFieldsState {
+  readonly fields: readonly PinField[] | null;
+  readonly error: unknown;
+}
+
+const NO_FIELDS: TrackerSiteFieldsState = { fields: null, error: null };
+
+/** The held read of `site`'s fields for `project`'s page; `holds` names
+ * what it was read under (the connections that reach the site), so a
+ * change of them is a new read. */
+function siteFieldsKey(project: string, tracker: string, site: string, holds: string): string {
+  return `${project}\u0000${tracker}\u0000${site}\u0000${holds}`;
+}
+
+/** Holds `site`'s fields to pin for `project` while the caller shows them,
+ * reading them now; the returned function releases the hold. A new
+ * `holds` is a new read. */
+export function acquireTrackerSiteFields(project: string, tracker: string, site: string, holds: string): () => void {
+  return acquire(fields, siteFieldsKey(project, tracker, site, holds), () => new HeldSiteFields(project, tracker, site));
+}
+
+/** `site`'s fields to pin for `project` as held. Reactive. */
+export function trackerSiteFieldsOf(project: string, tracker: string, site: string, holds: string): TrackerSiteFieldsState {
+  const entry = fields.get(siteFieldsKey(project, tracker, site, holds));
+  return entry ? { fields: entry.value, error: entry.error } : NO_FIELDS;
+}
+
+/** Reads `site`'s fields for `project` again if a surface holds them. */
+export function refreshTrackerSiteFields(project: string, tracker: string, site: string, holds: string): Promise<void> {
+  return fields.get(siteFieldsKey(project, tracker, site, holds))?.read() ?? Promise.resolve();
+}
+
+/** An Agents setting of a project: Change tickets, or Ask before
+ * changing several at once. */
+export type AgentRule = keyof AgentRules;
+
+/** Whether the setup's Agents settings turn `rule` on: absent is on, the
+ * app's built-in rule. */
+export function agentRuleOn(setup: Setup | null | undefined, rule: AgentRule): boolean {
+  return setup?.agents?.[rule] !== false;
+}
+
+/** `setup` with Agents setting `rule` on or off. The computer stores a
+ * rule turned on as none (trackerapp's validateSetup). */
+export function withAgentRule(setup: Setup, rule: AgentRule, on: boolean): Setup {
+  return { ...setup, agents: { ...setup.agents, [rule]: on } };
 }
 
 /** Reads again every held entry of a project on `backend`, or of a project
@@ -312,10 +381,16 @@ function readAgainOn(backend: BackendKey): void {
 onTrackerSetupUpdated(readAgainOn);
 
 onBackendStatusChange((backend, status) => {
-  if (status.status === 'connected') readAgainOn(backend);
+  if (status.status !== 'connected') return;
+  readAgainOn(backend);
+  for (const entry of fields.values()) {
+    const owner = entry.backend();
+    if (owner === undefined || owner === backend) void entry.read();
+  }
 });
 
 export function resetTrackerSetupForTest(): void {
   setups.clear();
   statuses.clear();
+  fields.clear();
 }

@@ -6,6 +6,35 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 /**
+ * AgentRules is what a thread of the project may do to tickets through
+ * the tracker tools, each absent field meaning the built-in rule:
+ * ChangeTickets, whether a thread that is not read-only may create,
+ * change and comment on tickets (absent: it may); AskSeveral, whether a
+ * change to more than one ticket waits for the person's approval
+ * (absent: it does). Reading tickets is never refused. The rules are the
+ * calling thread's project's, whichever connection the ticket is on. A
+ * setup with no rules set has none (nil), which is no section.
+ */
+export class AgentRules {
+    "change_tickets"?: boolean | null;
+    "ask_several"?: boolean | null;
+
+    /** Creates a new AgentRules instance. */
+    constructor($$source: Partial<AgentRules> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AgentRules instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AgentRules {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AgentRules($$parsedSource as Partial<AgentRules>);
+    }
+}
+
+/**
  * AttachmentView is a file attached to the ticket.
  */
 export class AttachmentView {
@@ -2038,6 +2067,40 @@ export class PatchSection {
 }
 
 /**
+ * PinField is a field a project's setup can pin for a site's tickets, as
+ * tracker.Provider.Fields lists it: its ID, name and kind (KindRichText
+ * is a section of the ticket).
+ */
+export class PinField {
+    "id": string;
+    "name": string;
+    "kind": string;
+
+    /** Creates a new PinField instance. */
+    constructor($$source: Partial<PinField> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PinField instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PinField {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PinField($$parsedSource as Partial<PinField>);
+    }
+}
+
+/**
  * PokerSupport is whether a connection's site has planning poker:
  * Available, or the failure of the read that would say, with Available
  * false.
@@ -2204,6 +2267,43 @@ export class ProjectBoard {
 }
 
 /**
+ * ProjectStatuses is a project's statuses: by tracker site, and by the
+ * place Starting work sets defaults for.
+ */
+export class ProjectStatuses {
+    "sites": SiteStatuses[];
+    "places": StartPlace[];
+
+    /** Creates a new ProjectStatuses instance. */
+    constructor($$source: Partial<ProjectStatuses> = {}) {
+        if (!("sites" in $$source)) {
+            this["sites"] = [];
+        }
+        if (!("places" in $$source)) {
+            this["places"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProjectStatuses instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProjectStatuses {
+        const $$createField0_0 = $$createType78;
+        const $$createField1_0 = $$createType80;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("sites" in $$parsedSource) {
+            $$parsedSource["sites"] = $$createField0_0($$parsedSource["sites"]);
+        }
+        if ("places" in $$parsedSource) {
+            $$parsedSource["places"] = $$createField1_0($$parsedSource["places"]);
+        }
+        return new ProjectStatuses($$parsedSource as Partial<ProjectStatuses>);
+    }
+}
+
+/**
  * ProjectView is a tracker project: a Jira project or a Linear team.
  * ChoosesAudience is a project whose new comments say who they reach.
  */
@@ -2304,7 +2404,7 @@ export class RefusalView {
      * Creates a new RefusalView instance from a string or object.
      */
     static createFrom($$source: any = {}): RefusalView {
-        const $$createField2_0 = $$createType78;
+        const $$createField2_0 = $$createType82;
         const $$createField3_0 = $$createType33;
         const $$createField4_0 = $$createType36;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
@@ -2408,7 +2508,7 @@ export class SearchPageView {
      * Creates a new SearchPageView instance from a string or object.
      */
     static createFrom($$source: any = {}): SearchPageView {
-        const $$createField0_0 = $$createType79;
+        const $$createField0_0 = $$createType83;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("cards" in $$parsedSource) {
             $$parsedSource["cards"] = $$createField0_0($$parsedSource["cards"]);
@@ -2549,7 +2649,7 @@ export class SectionPage {
     static createFrom($$source: any = {}): SectionPage {
         const $$createField0_0 = $$createType23;
         const $$createField1_0 = $$createType74;
-        const $$createField2_0 = $$createType81;
+        const $$createField2_0 = $$createType85;
         const $$createField3_0 = $$createType36;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("section" in $$parsedSource) {
@@ -2609,6 +2709,7 @@ export class Setup {
     "status_groups": SiteStatusGroups[];
     "ticket_pins": SitePins[];
     "start_work": StartWorkDefaults[];
+    "agents"?: AgentRules | null;
 
     /** Creates a new Setup instance. */
     constructor($$source: Partial<Setup> = {}) {
@@ -2629,9 +2730,10 @@ export class Setup {
      * Creates a new Setup instance from a string or object.
      */
     static createFrom($$source: any = {}): Setup {
-        const $$createField0_0 = $$createType83;
-        const $$createField1_0 = $$createType85;
-        const $$createField2_0 = $$createType87;
+        const $$createField0_0 = $$createType87;
+        const $$createField1_0 = $$createType89;
+        const $$createField2_0 = $$createType91;
+        const $$createField3_0 = $$createType93;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("status_groups" in $$parsedSource) {
             $$parsedSource["status_groups"] = $$createField0_0($$parsedSource["status_groups"]);
@@ -2641,6 +2743,9 @@ export class Setup {
         }
         if ("start_work" in $$parsedSource) {
             $$parsedSource["start_work"] = $$createField2_0($$parsedSource["start_work"]);
+        }
+        if ("agents" in $$parsedSource) {
+            $$parsedSource["agents"] = $$createField3_0($$parsedSource["agents"]);
         }
         return new Setup($$parsedSource as Partial<Setup>);
     }
@@ -2672,7 +2777,7 @@ export class SetupSave {
      * Creates a new SetupSave instance from a string or object.
      */
     static createFrom($$source: any = {}): SetupSave {
-        const $$createField2_0 = $$createType88;
+        const $$createField2_0 = $$createType94;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("stored" in $$parsedSource) {
             $$parsedSource["stored"] = $$createField2_0($$parsedSource["stored"]);
@@ -2710,7 +2815,7 @@ export class SetupView {
      * Creates a new SetupView instance from a string or object.
      */
     static createFrom($$source: any = {}): SetupView {
-        const $$createField1_0 = $$createType89;
+        const $$createField1_0 = $$createType95;
         const $$createField2_0 = $$createType36;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("setup" in $$parsedSource) {
@@ -2837,7 +2942,7 @@ export class SiteStatuses {
     static createFrom($$source: any = {}): SiteStatuses {
         const $$createField2_0 = $$createType37;
         const $$createField3_0 = $$createType37;
-        const $$createField4_0 = $$createType91;
+        const $$createField4_0 = $$createType97;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("statuses" in $$parsedSource) {
             $$parsedSource["statuses"] = $$createField2_0($$parsedSource["statuses"]);
@@ -3126,7 +3231,7 @@ export class StaleView {
      * Creates a new StaleView instance from a string or object.
      */
     static createFrom($$source: any = {}): StaleView {
-        const $$createField0_0 = $$createType93;
+        const $$createField0_0 = $$createType99;
         const $$createField1_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("resources" in $$parsedSource) {
@@ -3140,6 +3245,54 @@ export class StaleView {
 }
 
 /**
+ * StartPlace is a tracker project of a site that Starting work sets
+ * defaults for: the IDs of the statuses Move the ticket offers it, in
+ * the site's order (SiteStatuses.Statuses), and the listed boards not
+ * read yet whose statuses it would also offer.
+ */
+export class StartPlace {
+    "tracker": string;
+    "site": string;
+    "project": string;
+    "statuses": string[];
+    "unread"?: UnreadBoard[];
+
+    /** Creates a new StartPlace instance. */
+    constructor($$source: Partial<StartPlace> = {}) {
+        if (!("tracker" in $$source)) {
+            this["tracker"] = "";
+        }
+        if (!("site" in $$source)) {
+            this["site"] = "";
+        }
+        if (!("project" in $$source)) {
+            this["project"] = "";
+        }
+        if (!("statuses" in $$source)) {
+            this["statuses"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new StartPlace instance from a string or object.
+     */
+    static createFrom($$source: any = {}): StartPlace {
+        const $$createField3_0 = $$createType36;
+        const $$createField4_0 = $$createType97;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("statuses" in $$parsedSource) {
+            $$parsedSource["statuses"] = $$createField3_0($$parsedSource["statuses"]);
+        }
+        if ("unread" in $$parsedSource) {
+            $$parsedSource["unread"] = $$createField4_0($$parsedSource["unread"]);
+        }
+        return new StartPlace($$parsedSource as Partial<StartPlace>);
+    }
+}
+
+/**
  * StartWorkDefaults is what Start work does for the project to a ticket of
  * one tracker project (Project, its key's prefix: WEB of WEB-1, a Linear
  * team's key) of one tracker site, each absent field meaning its built-in
@@ -3147,8 +3300,10 @@ export class StaleView {
  * move); Assign, whether the ticket is assigned to the connection's
  * account (absent: it is); Branch, the template of the branch's name,
  * whose {key} is the ticket's key and {title} its title made a branch
- * name (absent: {key}-{title}); Repository, the app project the thread
- * runs in (absent: this project). The tracker project is the one identity
+ * name (absent: {key}-{title}); NameBranch, whether the Start work form
+ * offers that name or an empty branch box for the person to fill (absent:
+ * it offers the name); Repository, the app project the thread runs in
+ * (absent: this project). The tracker project is the one identity
  * Jira and Linear share that a ticket carries, and a status belongs to a
  * project's workflow or a team, so the entry is per tracker project.
  */
@@ -3159,6 +3314,7 @@ export class StartWorkDefaults {
     "status"?: string;
     "assign"?: boolean | null;
     "branch"?: string;
+    "name_branch"?: boolean | null;
     "repository"?: string;
 
     /** Creates a new StartWorkDefaults instance. */
@@ -3375,7 +3531,7 @@ export class TicketSubscription {
      * Creates a new TicketSubscription instance from a string or object.
      */
     static createFrom($$source: any = {}): TicketSubscription {
-        const $$createField6_0 = $$createType95;
+        const $$createField6_0 = $$createType101;
         const $$createField8_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("detail" in $$parsedSource) {
@@ -3415,7 +3571,7 @@ export class TicketView {
      * Creates a new TicketView instance from a string or object.
      */
     static createFrom($$source: any = {}): TicketView {
-        const $$createField1_0 = $$createType95;
+        const $$createField1_0 = $$createType101;
         const $$createField3_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("detail" in $$parsedSource) {
@@ -3545,7 +3701,7 @@ export class UserListView {
      * Creates a new UserListView instance from a string or object.
      */
     static createFrom($$source: any = {}): UserListView {
-        const $$createField0_0 = $$createType96;
+        const $$createField0_0 = $$createType102;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("users" in $$parsedSource) {
             $$parsedSource["users"] = $$createField0_0($$parsedSource["users"]);
@@ -3611,7 +3767,7 @@ export class WorklogDays {
      * Creates a new WorklogDays instance from a string or object.
      */
     static createFrom($$source: any = {}): WorklogDays {
-        const $$createField0_0 = $$createType98;
+        const $$createField0_0 = $$createType104;
         const $$createField2_0 = $$createType36;
         const $$createField3_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
@@ -3647,7 +3803,7 @@ export class WorklogDeleteRequest {
      * Creates a new WorklogDeleteRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): WorklogDeleteRequest {
-        const $$createField0_0 = $$createType97;
+        const $$createField0_0 = $$createType103;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("from" in $$parsedSource) {
             $$parsedSource["from"] = $$createField0_0($$parsedSource["from"]);
@@ -3680,7 +3836,7 @@ export class WorklogEditRequest {
      * Creates a new WorklogEditRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): WorklogEditRequest {
-        const $$createField0_0 = $$createType97;
+        const $$createField0_0 = $$createType103;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("from" in $$parsedSource) {
             $$parsedSource["from"] = $$createField0_0($$parsedSource["from"]);
@@ -3838,8 +3994,8 @@ export class WriteView {
      * Creates a new WriteView instance from a string or object.
      */
     static createFrom($$source: any = {}): WriteView {
-        const $$createField0_0 = $$createType100;
-        const $$createField5_0 = $$createType102;
+        const $$createField0_0 = $$createType106;
+        const $$createField5_0 = $$createType108;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("parts" in $$parsedSource) {
             $$parsedSource["parts"] = $$createField0_0($$parsedSource["parts"]);
@@ -3929,29 +4085,35 @@ const $$createType73 = RowView.createFrom;
 const $$createType74 = $Create.Array($$createType73);
 const $$createType75 = PokerVoteView.createFrom;
 const $$createType76 = $Create.Array($$createType75);
-const $$createType77 = FieldMessageView.createFrom;
+const $$createType77 = SiteStatuses.createFrom;
 const $$createType78 = $Create.Array($$createType77);
-const $$createType79 = $Create.Array($$createType44);
-const $$createType80 = SectionCursor.createFrom;
-const $$createType81 = $Create.Nullable($$createType80);
-const $$createType82 = SiteStatusGroups.createFrom;
-const $$createType83 = $Create.Array($$createType82);
-const $$createType84 = SitePins.createFrom;
-const $$createType85 = $Create.Array($$createType84);
-const $$createType86 = StartWorkDefaults.createFrom;
+const $$createType79 = StartPlace.createFrom;
+const $$createType80 = $Create.Array($$createType79);
+const $$createType81 = FieldMessageView.createFrom;
+const $$createType82 = $Create.Array($$createType81);
+const $$createType83 = $Create.Array($$createType44);
+const $$createType84 = SectionCursor.createFrom;
+const $$createType85 = $Create.Nullable($$createType84);
+const $$createType86 = SiteStatusGroups.createFrom;
 const $$createType87 = $Create.Array($$createType86);
-const $$createType88 = SetupView.createFrom;
-const $$createType89 = Setup.createFrom;
-const $$createType90 = UnreadBoard.createFrom;
+const $$createType88 = SitePins.createFrom;
+const $$createType89 = $Create.Array($$createType88);
+const $$createType90 = StartWorkDefaults.createFrom;
 const $$createType91 = $Create.Array($$createType90);
-const $$createType92 = ResourceView.createFrom;
-const $$createType93 = $Create.Array($$createType92);
-const $$createType94 = DetailView.createFrom;
-const $$createType95 = $Create.Nullable($$createType94);
-const $$createType96 = $Create.Array($$createType0);
-const $$createType97 = WorklogView.createFrom;
-const $$createType98 = $Create.Array($$createType97);
-const $$createType99 = PartView.createFrom;
-const $$createType100 = $Create.Array($$createType99);
-const $$createType101 = StaleView.createFrom;
-const $$createType102 = $Create.Array($$createType101);
+const $$createType92 = AgentRules.createFrom;
+const $$createType93 = $Create.Nullable($$createType92);
+const $$createType94 = SetupView.createFrom;
+const $$createType95 = Setup.createFrom;
+const $$createType96 = UnreadBoard.createFrom;
+const $$createType97 = $Create.Array($$createType96);
+const $$createType98 = ResourceView.createFrom;
+const $$createType99 = $Create.Array($$createType98);
+const $$createType100 = DetailView.createFrom;
+const $$createType101 = $Create.Nullable($$createType100);
+const $$createType102 = $Create.Array($$createType0);
+const $$createType103 = WorklogView.createFrom;
+const $$createType104 = $Create.Array($$createType103);
+const $$createType105 = PartView.createFrom;
+const $$createType106 = $Create.Array($$createType105);
+const $$createType107 = StaleView.createFrom;
+const $$createType108 = $Create.Array($$createType107);

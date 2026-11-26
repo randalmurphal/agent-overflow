@@ -34,6 +34,8 @@ import (
 //     shows first;
 //   - start_work: by tracker site and tracker project, what Start work
 //     does to a ticket and where its thread runs (StartWorkDefaults);
+//   - agents: what a thread of the project may do to tickets through the
+//     tracker tools (AgentRules);
 //   - dashboards: by tracker site and board, the dashboards the project
 //     keeps (BoardDashboards). It is not part of Setup: a replace keeps
 //     it as held, and only its own edits write it (dashboard_setup.go), so
@@ -76,6 +78,7 @@ const (
 	sectionStatusGroups = "status_groups"
 	sectionTicketPins   = "ticket_pins"
 	sectionStartWork    = "start_work"
+	sectionAgents       = "agents"
 	sectionDashboards   = "dashboards"
 	setupSectionVersion = 1
 )
@@ -149,6 +152,7 @@ type Setup struct {
 	StatusGroups []SiteStatusGroups  `json:"status_groups"`
 	TicketPins   []SitePins          `json:"ticket_pins"`
 	StartWork    []StartWorkDefaults `json:"start_work"`
+	Agents       *AgentRules         `json:"agents,omitempty"`
 }
 
 // UnmarshalJSON reads a replace's setup whole or refuses it: a JSON object
@@ -201,8 +205,10 @@ type SitePins struct {
 // move); Assign, whether the ticket is assigned to the connection's
 // account (absent: it is); Branch, the template of the branch's name,
 // whose {key} is the ticket's key and {title} its title made a branch
-// name (absent: {key}-{title}); Repository, the app project the thread
-// runs in (absent: this project). The tracker project is the one identity
+// name (absent: {key}-{title}); NameBranch, whether the Start work form
+// offers that name or an empty branch box for the person to fill (absent:
+// it offers the name); Repository, the app project the thread runs in
+// (absent: this project). The tracker project is the one identity
 // Jira and Linear share that a ticket carries, and a status belongs to a
 // project's workflow or a team, so the entry is per tracker project.
 type StartWorkDefaults struct {
@@ -212,8 +218,31 @@ type StartWorkDefaults struct {
 	Status     string `json:"status,omitempty"`
 	Assign     *bool  `json:"assign,omitempty"`
 	Branch     string `json:"branch,omitempty"`
+	NameBranch *bool  `json:"name_branch,omitempty"`
 	Repository string `json:"repository,omitempty"`
 }
+
+// AgentRules is what a thread of the project may do to tickets through
+// the tracker tools, each absent field meaning the built-in rule:
+// ChangeTickets, whether a thread that is not read-only may create,
+// change and comment on tickets (absent: it may); AskSeveral, whether a
+// change to more than one ticket waits for the person's approval
+// (absent: it does). Reading tickets is never refused. The rules are the
+// calling thread's project's, whichever connection the ticket is on. A
+// setup with no rules set has none (nil), which is no section.
+type AgentRules struct {
+	ChangeTickets *bool `json:"change_tickets,omitempty"`
+	AskSeveral    *bool `json:"ask_several,omitempty"`
+}
+
+// Changes reports whether a thread may change tickets.
+func (r AgentRules) Changes() bool { return r.ChangeTickets == nil || *r.ChangeTickets }
+
+// Asks reports whether a change to several tickets waits for approval.
+func (r AgentRules) Asks() bool { return r.AskSeveral == nil || *r.AskSeveral }
+
+// set reports whether the rules set anything, which is a section.
+func (r AgentRules) set() bool { return r.ChangeTickets != nil || r.AskSeveral != nil }
 
 // SetupView is a project's tracker setup as it is stored: the revision a
 // replace names (empty while there is no file), the setup itself, which a
@@ -317,6 +346,25 @@ func (s *Service) ProjectSetup(projectID string) (SetupView, error) {
 		return SetupView{}, err
 	}
 	return held.view, nil
+}
+
+// ProjectAgentRules is what projectID's setup lets a thread of it do to
+// tickets. A setup file that cannot be read fails as ProjectSetup does,
+// and an agents section a newer version saved fails with ErrSetupNewer:
+// this build cannot tell what it allows, so its caller refuses rather
+// than apply the built-in rules.
+func (s *Service) ProjectAgentRules(projectID string) (AgentRules, error) {
+	view, err := s.ProjectSetup(projectID)
+	if err != nil {
+		return AgentRules{}, err
+	}
+	if slices.Contains(view.Newer, sectionAgents) {
+		return AgentRules{}, fmt.Errorf("%w: section %s", ErrSetupNewer, sectionAgents)
+	}
+	if view.Setup.Agents == nil {
+		return AgentRules{}, nil
+	}
+	return *view.Setup.Agents, nil
 }
 
 // SetProjectSetup replaces projectID's tracker setup with setup, built
@@ -550,6 +598,11 @@ type (
 		Version  int                 `json:"version"`
 		Projects []StartWorkDefaults `json:"projects"`
 	}
+	agentsV1 struct {
+		Version       int   `json:"version"`
+		ChangeTickets *bool `json:"change_tickets,omitempty"`
+		AskSeveral    *bool `json:"ask_several,omitempty"`
+	}
 )
 
 // decodeSetup is the setup data holds, every section this build does not
@@ -574,7 +627,7 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 	}
 	for _, name := range slices.Sorted(maps.Keys(sections)) {
 		section := sections[name]
-		if name != sectionStatusGroups && name != sectionTicketPins && name != sectionStartWork && name != sectionDashboards {
+		if name != sectionStatusGroups && name != sectionTicketPins && name != sectionStartWork && name != sectionAgents && name != sectionDashboards {
 			keep(name, section)
 			continue
 		}
@@ -603,6 +656,10 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 			var s startWorkV1
 			err = decodeStrict(section, &s)
 			setup.StartWork = s.Projects
+		case sectionAgents:
+			var s agentsV1
+			err = decodeStrict(section, &s)
+			setup.Agents = &AgentRules{ChangeTickets: s.ChangeTickets, AskSeveral: s.AskSeveral}
 		case sectionDashboards:
 			var s dashboardsV1
 			if err = decodeStrict(section, &s); err == nil {
@@ -668,6 +725,11 @@ func encodeSetup(setup Setup, dashboards []BoardDashboards, raw map[string]json.
 			return nil, err
 		}
 	}
+	if setup.Agents != nil {
+		if err := add(sectionAgents, agentsV1{Version: setupSectionVersion, ChangeTickets: setup.Agents.ChangeTickets, AskSeveral: setup.Agents.AskSeveral}); err != nil {
+			return nil, err
+		}
+	}
 	if len(dashboards) > 0 {
 		if err := add(sectionDashboards, dashboardsV1{Version: setupSectionVersion, Boards: dashboards}); err != nil {
 			return nil, err
@@ -713,7 +775,7 @@ func setupRevision(data []byte) string {
 // its file.
 func heldOf(setup Setup, dashboards []BoardDashboards, raw map[string]json.RawMessage, newer []string, revision string) (*heldSetup, error) {
 	held := &heldSetup{
-		view: SetupView{Revision: revision, Setup: Setup{StatusGroups: slicesx.OrEmpty(setup.StatusGroups), TicketPins: slicesx.OrEmpty(setup.TicketPins), StartWork: slicesx.OrEmpty(setup.StartWork)}, Newer: newer},
+		view: SetupView{Revision: revision, Setup: Setup{StatusGroups: slicesx.OrEmpty(setup.StatusGroups), TicketPins: slicesx.OrEmpty(setup.TicketPins), StartWork: slicesx.OrEmpty(setup.StartWork), Agents: setup.Agents}, Newer: newer},
 		raw:  raw, dashboards: dashboards, groups: map[siteKey]StatusGroups{},
 	}
 	for _, site := range setup.StatusGroups {
@@ -781,6 +843,11 @@ func validateSetup(setup Setup) (Setup, error) {
 		if err := checkSetupList(key, "section", site.Sections, setupMaxSections); err != nil {
 			return Setup{}, err
 		}
+		// No field pinned is a ticket's default, and is stored as none; no
+		// section open is a choice of its own.
+		if site.Fields != nil && len(*site.Fields) == 0 {
+			site.Fields = nil
+		}
 		if site.Fields != nil || site.Sections != nil {
 			out.TicketPins = append(out.TicketPins, site)
 		}
@@ -796,6 +863,20 @@ func validateSetup(setup Setup) (Setup, error) {
 		}
 		if set {
 			out.StartWork = append(out.StartWork, valid)
+		}
+	}
+	if setup.Agents != nil {
+		// Each rule is on by default: only its off is stored, and a
+		// section that turns nothing off is none.
+		rules := AgentRules{}
+		if setup.Agents.ChangeTickets != nil && !*setup.Agents.ChangeTickets {
+			rules.ChangeTickets = setup.Agents.ChangeTickets
+		}
+		if setup.Agents.AskSeveral != nil && !*setup.Agents.AskSeveral {
+			rules.AskSeveral = setup.Agents.AskSeveral
+		}
+		if rules.set() {
+			out.Agents = &rules
 		}
 	}
 	slices.SortFunc(out.StartWork, func(a, b StartWorkDefaults) int {
@@ -895,7 +976,11 @@ func checkStartWork(entry StartWorkDefaults, seen map[startWorkKey]bool) (StartW
 	if strings.ContainsAny(rest, "{}") {
 		return StartWorkDefaults{}, false, invalidSetup("the branch template of %s is %q; its only tokens are {key} and {title}", entry.Project, entry.Branch)
 	}
-	set := entry.Status != "" || entry.Assign != nil || entry.Branch != "" || entry.Repository != ""
+	// Naming the branch is the built-in rule: only its off is stored.
+	if entry.NameBranch != nil && *entry.NameBranch {
+		entry.NameBranch = nil
+	}
+	set := entry.Status != "" || entry.Assign != nil || entry.Branch != "" || entry.NameBranch != nil || entry.Repository != ""
 	return entry, set, nil
 }
 

@@ -357,11 +357,18 @@ no step runs at root creation, restore or start.
   `version`: `status_groups` (by tracker site, the group a status counts
   in: one of the five tracker groups, or `left_out`), `ticket_pins` (by
   tracker site, the fields and the sections a ticket shows first; a
-  Linear site pins no fields) and `start_work` (by tracker site and
+  Linear site pins no fields, and a site entry that pins nothing is
+  dropped), `start_work` (by tracker site and
   tracker project, named by its key prefix, `WEB`: the status Start work
   moves to, whether it assigns, the branch template with `{key}` and
-  `{title}`, and the repository, an app project of this computer; each
-  field optional, and an entry that sets nothing dropped). Beside them,
+  `{title}`, whether the branch is named after the ticket
+  (`name_branch`, false for an empty branch box, stored only when
+  false), and the repository, an app project of this computer; each field
+  optional, and an entry that sets nothing dropped) and `agents`
+  (`change_tickets` and `ask_several`, each true when absent and stored
+  only when false, and the section dropped when it turns neither off;
+  [Writes by agents](#writes-by-agents)). The writer (`validateSetup`)
+  owns these defaults: a client sends the value it shows. Beside them,
   `dashboards` (by tracker site and board, the dashboards the project
   keeps) is written only by its own edits ([Own dashboards and
   proposals](#own-dashboards-and-proposals)); a replace keeps it. A section this build does not know, or one
@@ -436,7 +443,16 @@ no step runs at root creation, restore or start.
   and setup, with no tracker request: by tracker site, whatever
   connection reaches it, each listed board's column statuses in board
   order, each once, the statuses the setup regroups that no listed board
-  shows, and the listed boards the mirror has not read, by name. A board
+  shows, and the listed boards the mirror has not read, each board once
+  by name. Beside the sites it lists the places Starting work sets
+  defaults for (`places`): each tracker project a listed board names, in
+  picker order, then each the setup holds defaults for, with the IDs of
+  the statuses Move the ticket offers it and the unread boards that
+  would add to them. A Linear team offers its own boards' statuses (two
+  teams share a site); a Jira status is the site's and a Jira board can
+  show several projects' tickets, so a Jira project offers every status
+  the project's boards on its site show, and Start work checks the
+  ticket's own moves. A board
   is one statement of its column statuses (`GetMirrorBoardStatuses`, at
   most 200 rows), not its structure: no sprints or board data. Names
   come from the root's catalog, looked up 500 at a time. With 20 boards of
@@ -447,6 +463,24 @@ no step runs at root creation, restore or start.
   (`BenchmarkProjectStatuses20Boards`). A client reads it only while the
   page shows a project: on the page's show, after `tracker:setup_updated`,
   on reconnect and on Check again.
+- **The fields the Fields page lists** (`SiteFields`,
+  `trackerapp/project_fields.go`) are one Jira site's, one read per
+  site: the page works out the sites itself, from the project's boards,
+  the computer's connections and the setup's `ticket_pins` it already
+  holds, so a pin saved elsewhere or a connection removed shows with no
+  read. A site's read goes through the first connection to it that is
+  on; a site whose connections are all off is `ErrDisabled`, and one no
+  connection reaches is `NoSiteConnectionError`, which the app words as
+  `tracker_site_unreached`. Each read has its own deadline, error line
+  and Try again, so a site that fails or stalls holds up no other. A
+  site's fields are the provider's `Fields` as `{id, name, kind}`, the
+  site's field catalog by the rule a ticket's detail lists fields by
+  (`jiraprovider` `site.listed`), which the client holds after its first
+  read. A Linear site lists none. A real site's catalog holds several
+  hundred fields; the page draws the pinned ones and, only while a name is
+  typed, at most 20 of its matches, ranked on the name. A client reads a
+  site only while the page shows it: on the page's show, on reconnect, on
+  Try again and when the connections that reach the site change.
 
 ## Tables
 
@@ -1423,6 +1457,7 @@ selected computer.
 | `ProjectTrackerSetup(projectID)` | `ProjectSetup` | read | project |
 | `SetProjectTrackerSetup(projectID, revision, setup)` | `SetProjectSetup` | operate | project |
 | `ProjectTrackerStatuses(projectID)` | `ProjectStatuses` | read | project |
+| `ProjectTrackerSiteFields(projectID, tracker, site)` | `SiteFields` | read | project |
 | `SubscribeTrackerBoard(projectID, connectionID, boardID, sections, visible)` | `SubscribeBoard` | read | project, caller-bound |
 | `TrackerBoard(subscriptionID, sections)` | `Board` | read | home |
 | `TrackerSectionRows(subscriptionID, section, after)` | `SectionRows` | read | home |
@@ -2563,7 +2598,16 @@ again makes only what was not. The boards a call judges are read once
 each per call.
 
 **Approval.** A call that names more than one ticket waits for the
-person. The app raises a prompt of kind `tracker-write` in the thread
+person, unless the project's setup turned off asking (`agents`
+`ask_several` false, Settings > Issues > Agents): then it is sent as one
+ticket's call is. The call reads the project's rules
+(`Host.WritePolicy`) three times, each for one job: when it starts, to
+refuse before any tracker read; after planning, to decide whether it
+asks (and to bound what the approval carries); and before the first
+write, to send nothing the rules no longer allow. A call of several
+tickets that went unasked and finds asking turned on by then is refused
+with nothing sent (`tracker_rules_changed`), telling the agent to make
+the call again. The app raises a prompt of kind `tracker-write` in the thread
 (`provider.EventApprovalRequest` through triage, decisions accept and
 decline only) showing each ticket's changes and the comment. The prompt
 carries each value of `set` whole, and a change line that shows a value
@@ -2695,10 +2739,17 @@ Linear; the same read again costs 1 on each. A find costs one search on
 each connection.
 
 **Read-only threads.** A writing call is refused when the calling
-thread's runtime mode is read-only, before anything is read or sent, and
-the mode is read again before the first write is sent, after the
-approval when there is one. The provider cannot enforce it, because app
-tools are admitted in every mode.
+thread's runtime mode is read-only, or its project's setup turned off
+Change tickets (`agents` `change_tickets` false, code
+`tracker_changes_off`, whose sentence tells the agent to ask the person
+to turn it on in Settings > Issues > Agents), before anything is read or
+sent, and both are read again before the first write is sent, after the
+approval when there is one (`Host.WritePolicy`). A project whose setup
+cannot be read, or whose `agents` section a newer version saved, has
+every writing call refused (`tracker_setup_unreadable`,
+`tracker_setup_newer`): this build cannot tell what the project allows.
+A thread with no project writes by the built-in rules. The provider
+cannot enforce either, because app tools are admitted in every mode.
 
 **Nothing made twice.** A comment or a create is claimed before it is
 sent, in one store transaction under one lock

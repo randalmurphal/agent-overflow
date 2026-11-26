@@ -182,7 +182,7 @@ export function isFilled(value: FieldValueView): boolean {
 }
 
 /** A long text field: its own section of the content, not a rail row. */
-export function isSection(field: FieldView): boolean {
+export function isSection(field: { readonly kind: string }): boolean {
   return field.kind === 'rich_text';
 }
 
@@ -239,7 +239,7 @@ export function railFields(fields: readonly FieldView[], pinned: readonly string
  * tickets, attachments where the ticket has them: `attachments`);
  * `missing` the pinned long text fields this ticket has none of. Unset
  * pins pin defaultPinnedSections. */
-export function ticketSections(fields: readonly FieldView[], pinned: readonly string[] | null, attachments: boolean): {
+export function ticketSections(fields: readonly { readonly id: string; readonly kind: string }[], pinned: readonly string[] | null, attachments: boolean): {
   readonly shown: readonly string[];
   readonly folded: readonly string[];
   readonly missing: readonly string[];
