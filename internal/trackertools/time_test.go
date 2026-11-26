@@ -71,8 +71,8 @@ func TestTheTimeToolsAreGivenWithAJiraConnection(t *testing.T) {
 		sizes[tool["name"].(string)] = len(raw)
 	}
 	t.Logf("time_read %d bytes, time_draft %d bytes", sizes["time_read"], sizes["time_draft"])
-	if sizes["time_read"] != 268 || sizes["time_draft"] != 596 {
-		t.Errorf("the time tools are %v bytes; pinned time_read 268, time_draft 596", sizes)
+	if sizes["time_read"] != 268 || sizes["time_draft"] != 611 {
+		t.Errorf("the time tools are %v bytes; pinned time_read 268, time_draft 611", sizes)
 	}
 	_, err := s.Call(t.Context(), testCaller, "time_draft", json.RawMessage(`{}`))
 	refused(t, err, CodeInvalidRequest, `There is no tool named "time_draft". The tracker tools are: ticket_find, ticket_read, ticket_create, ticket_update.`)
@@ -124,7 +124,7 @@ func TestTimeReadAnswersEachDay(t *testing.T) {
 			Drafted: []trackerapp.TimeEntryView{
 				{ID: 1, Day: "2026-11-24", Key: "WEB-1", Minutes: 90, Reason: "Built the form", By: "agent", State: "posted"},
 				{ID: 2, Day: "2026-11-24", Key: "WEB-2", Minutes: 30, Reason: "Reviewed", By: "person", State: "drafted"},
-				{ID: 3, Day: "2026-11-25", Minutes: 15, Reason: "Which ticket was the standup?", By: "agent", State: "drafted",
+				{ID: 3, Day: "2026-11-25", Minutes: 15, Reason: "Standup", By: "agent", State: "drafted",
 					Offers: []trackerapp.TimeOfferView{{Issue: "10103", Key: "WEB-3"}}},
 				{ID: 4, Day: "2026-11-25", Minutes: 15, Reason: "Left out", By: "person", State: "left_out"},
 			},
@@ -134,7 +134,7 @@ func TestTimeReadAnswersEachDay(t *testing.T) {
 	answer, err := timeCall(t, s, "time_read", map[string]any{"from": "2026-11-24", "to": "2026-11-25"})
 	want := `{"days":[{"day":"2026-11-24","logged":[{"key":"example.atlassian.net/WEB-1","title":"First story","hours":1.5,"description":"Built the form"}],` +
 		`"drafted":[{"id":2,"key":"example.atlassian.net/WEB-2","hours":0.5,"reason":"Reviewed","by":"you","state":"drafted"}]},` +
-		`{"day":"2026-11-25","logged":[],"questions":[{"id":3,"hours":0.25,"ask":"Which ticket was the standup?","offer":["example.atlassian.net/WEB-3"]}]}],` +
+		`{"day":"2026-11-25","logged":[],"questions":[{"id":3,"hours":0.25,"reason":"Standup","offer":["example.atlassian.net/WEB-3"]}]}],` +
 		`"unread":[{"site":"other.atlassian.net","error":"this connection has no verified account, so whose time it is is not known; check the connection in the Issues settings"}]}`
 	if err != nil || answer != want {
 		t.Fatalf("time_read = %s, %v\nwant %s", answer, err, want)
@@ -164,7 +164,7 @@ func TestTimeDraftResolvesItsKeys(t *testing.T) {
 		return trackerapp.TimeDraftView{Author: "acc-user1",
 			Made: []trackerapp.TimeEntryView{
 				{ID: 7, Day: "2026-11-24", Key: "WEB-1", Minutes: 90},
-				{ID: 8, Day: "2026-11-24", Minutes: 30, Reason: "Which ticket was the standup?", Offers: []trackerapp.TimeOfferView{{Key: "WEB-3"}}},
+				{ID: 8, Day: "2026-11-24", Minutes: 30, Reason: "Standup", Offers: []trackerapp.TimeOfferView{{Key: "WEB-3"}}},
 			},
 			Kept:    []trackerapp.TimeEntryView{{ID: 2, Day: "2026-11-24", Key: "WEB-2", Minutes: 30, By: "person", State: "drafted"}},
 			Skipped: []trackerapp.TimeEntryView{{Day: "2026-11-24", Key: "WEB-2", Minutes: 60}},
@@ -174,17 +174,17 @@ func TestTimeDraftResolvesItsKeys(t *testing.T) {
 	s := timeServer(f, h)
 	answer, err := timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{
 		{"day": "2026-11-24", "key": "web-1", "hours": 1.5, "reason": "Built the form"},
-		{"day": "2026-11-24", "hours": 0.5, "reason": "Which ticket was the standup?", "offer": []string{"WEB-3"}},
+		{"day": "2026-11-24", "hours": 0.5, "reason": "Standup", "offer": []string{"WEB-3"}},
 		{"day": "2026-11-24", "key": "WEB-2", "hours": 1, "reason": "Reviewed"},
 	}})
-	want := `{"days":[{"day":"2026-11-24","drafted":[{"id":7,"key":"WEB-1","hours":1.5}],"questions":[{"id":8,"hours":0.5,"ask":"Which ticket was the standup?","offer":["WEB-3"]}],` +
+	want := `{"days":[{"day":"2026-11-24","drafted":[{"id":7,"key":"WEB-1","hours":1.5}],"questions":[{"id":8,"hours":0.5,"reason":"Standup","offer":["WEB-3"]}],` +
 		`"kept":[{"id":2,"key":"WEB-2","hours":0.5,"by":"you","state":"drafted"}],"skipped":["WEB-2"],"logged_hours":1}],` +
 		`"note":"Nothing is logged until the user approves it. A skipped key already has an entry of that day not yet logged; time_read shows it."}`
 	if err != nil || answer != want {
 		t.Fatalf("time_draft = %s, %v\nwant %s", answer, err, want)
 	}
 	wantDraft := `conn-jira [{"Day":"2026-11-24","Ticket":{"issue":"10101","key":"WEB-1","title":"First story"},"Hours":1.5,"Reason":"Built the form","Offers":null},` +
-		`{"Day":"2026-11-24","Ticket":null,"Hours":0.5,"Reason":"Which ticket was the standup?","Offers":[{"issue":"10103","key":"WEB-3","title":"Backlog task"}]},` +
+		`{"Day":"2026-11-24","Ticket":null,"Hours":0.5,"Reason":"Standup","Offers":[{"issue":"10103","key":"WEB-3","title":"Backlog task"}]},` +
 		`{"Day":"2026-11-24","Ticket":{"issue":"10102","key":"WEB-2"},"Hours":1,"Reason":"Reviewed","Offers":null}]`
 	if len(f.drafts) != 1 || f.drafts[0] != wantDraft {
 		t.Fatalf("drafts = %v\nwant %s", f.drafts, wantDraft)

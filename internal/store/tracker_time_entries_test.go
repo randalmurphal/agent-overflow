@@ -202,9 +202,10 @@ func TestTimeEntryTransitions(t *testing.T) {
 		t.Errorf("an edit at a revision never read: %v %v", ok, err)
 	}
 	answer := TimeOffer{Issue: "10001", Key: "WEB-1", Title: "One"}
-	got, ok, err := s.EditTimeEntry(conn, ref(q), TimeEntryChange{Issue: &answer}, 105)
-	if !ok || err != nil || got.IssueKey != "WEB-1" || got.Source != TimeSourcePerson || len(got.Offers) != 0 {
-		t.Fatalf("answering the question with WEB-1, posted already: %+v %v %v", got, ok, err)
+	edited, ok, err := s.EditTimeEntry(conn, ref(q), TimeEntryChange{Issue: &answer}, 105)
+	got := edited.Entry
+	if !ok || err != nil || got.ID != q.ID || edited.Merged != nil || got.IssueKey != "WEB-1" || got.Source != TimeSourcePerson || len(got.Offers) != 0 {
+		t.Fatalf("answering the question with WEB-1, posted already: %+v %v %v", edited, ok, err)
 	}
 	other := TimeOffer{Issue: "10002", Key: "WEB-2", Title: "Two"}
 	if _, _, err := s.EditTimeEntry(conn, ref(got), TimeEntryChange{Issue: &other}, 106); !errors.Is(err, ErrTimeEntryOpen) {
@@ -213,6 +214,77 @@ func TestTimeEntryTransitions(t *testing.T) {
 	if removed, err := s.RemoveTimeEntries(conn, []TimeEntryRef{ref(got)}); err != nil || len(removed) != 1 {
 		t.Errorf("removed %+v %v", removed, err)
 	}
+}
+
+// A question answered with a ticket that has a drafted entry that day
+// adds its time and its reason to that entry, which becomes the person's,
+// and is deleted, in one transaction. An entry of that ticket being sent
+// or of unknown outcome refuses the answer, as a drafted one refuses a
+// plain edit onto its ticket, and so does a merge past a day or past
+// MaxTimeEntryReason; each refusal changes nothing.
+func TestAnAnsweredQuestionMergesIntoItsTicketsEntry(t *testing.T) {
+	t.Parallel()
+	s, conn := timeStore(t)
+	w, err := s.ReplaceAgentTimeDays(conn, "acc-user1", "2026-11-26", []TimeEntry{
+		agentEntry("2026-11-23", "10001", "WEB-1", 3600, "Built the form.", "t1"),
+		agentEntry("2026-11-23", "10002", "WEB-2", 1800, "Fix", "t1"),
+		agentEntry("2026-11-23", "10003", "WEB-3", 600, "Triage", "t1"),
+		agentEntry("2026-11-23", "", "", 1500, "25 minute call at 14:05", "t2"),
+		agentEntry("2026-11-23", "", "", 600, "Standup", "t2"),
+		agentEntry("2026-11-23", "", "", 82800, "Offsite", "t2"),
+	}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	web1, web2, web3, call, standup, offsite := w.Made[0], w.Made[1], w.Made[2], w.Made[3], w.Made[4], w.Made[5]
+	ref := func(e TimeEntry) TimeEntryRef { return TimeEntryRef{e.ID, e.Revision} }
+	if _, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(web2)}, "tempo-1", 20, 5); err != nil {
+		t.Fatal(err)
+	}
+	ticket := func(e TimeEntry) *TimeOffer { return &TimeOffer{Issue: e.IssueID, Key: e.IssueKey, Title: "T"} }
+	unchanged := func(what string, es ...TimeEntry) {
+		t.Helper()
+		for _, e := range es {
+			now, ok, err := s.TimeEntry(conn, e.ID)
+			if err != nil || !ok || now.Revision != e.Revision {
+				t.Fatalf("%s changed entry %d: %+v %v %v", what, e.ID, now, ok, err)
+			}
+		}
+	}
+
+	edited, ok, err := s.EditTimeEntry(conn, ref(call), TimeEntryChange{Issue: ticket(web1)}, 30)
+	m := edited.Entry
+	if err != nil || !ok || m.ID != web1.ID || m.Seconds != 5100 || m.Reason != "Built the form, plus 25 minute call at 14:05" ||
+		m.Source != TimeSourcePerson || m.Revision != web1.Revision+1 || m.ThreadID != "t1" || edited.Merged == nil || edited.Merged.ID != call.ID {
+		t.Fatalf("answering the call with WEB-1: %+v %v %v", edited, ok, err)
+	}
+	if _, found, err := s.TimeEntry(conn, call.ID); found || err != nil {
+		t.Fatalf("the merged question is still stored: %v %v", found, err)
+	}
+	if _, ok, err := s.EditTimeEntry(conn, ref(call), TimeEntryChange{Issue: ticket(web1)}, 31); ok || err != nil {
+		t.Fatalf("answering the merged question again: %v %v", ok, err)
+	}
+
+	var open *TimeEntryOpenError
+	if _, _, err := s.EditTimeEntry(conn, ref(standup), TimeEntryChange{Issue: ticket(web2)}, 32); !errors.As(err, &open) ||
+		!errors.Is(err, ErrTimeEntryOpen) || open.Open.ID != web2.ID || open.Open.State != TimeEntrySent {
+		t.Fatalf("answering with WEB-2, being sent: %v", err)
+	}
+	if _, _, err := s.EditTimeEntry(conn, ref(web3), TimeEntryChange{Issue: ticket(web1)}, 33); !errors.As(err, &open) || open.Open.ID != web1.ID {
+		t.Fatalf("moving WEB-3's entry onto WEB-1's: %v", err)
+	}
+	if _, _, err := s.EditTimeEntry(conn, ref(offsite), TimeEntryChange{Issue: ticket(m)}, 34); !errors.Is(err, ErrTimeEntryMergeOver) {
+		t.Fatalf("a merge past a day: %v", err)
+	}
+	long := strings.Repeat("x", MaxTimeEntryReason-len(", plus Standup")+1)
+	if _, _, err := s.EditTimeEntry(conn, ref(m), TimeEntryChange{Reason: &long}, 35); err != nil {
+		t.Fatal(err)
+	}
+	m, _, _ = s.TimeEntry(conn, m.ID)
+	if _, _, err := s.EditTimeEntry(conn, ref(standup), TimeEntryChange{Issue: ticket(m)}, 36); !errors.Is(err, ErrTimeEntryMergeOver) {
+		t.Fatalf("a merge past the longest reason: %v", err)
+	}
+	unchanged("the refused edits", m, standup, web3, offsite)
 }
 
 // A restore keeps the time draft, so a posted entry is not offered again,

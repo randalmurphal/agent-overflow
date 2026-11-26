@@ -45,7 +45,7 @@ for (const provider of PROVIDERS) {
       turns: [{
         steps: [{ call: { server: TRACKER_TOOLS_SERVER, tool: 'time_draft', args: { entries: [
           { day, key: 'WEB-1', hours: 1.5, reason: 'Built the login form' },
-          { day, hours: 0.5, reason: 'Which ticket was the standup?', offer: ['WEB-2'] },
+          { day, hours: 0.5, reason: 'Standup', offer: ['WEB-2'] },
         ] } } }],
         text: 'Drafted.',
       }],
@@ -58,14 +58,14 @@ for (const provider of PROVIDERS) {
     expect(answer.days).toEqual([expect.objectContaining({
       day,
       drafted: [expect.objectContaining({ key: 'WEB-1', hours: 1.5 })],
-      questions: [expect.objectContaining({ hours: 0.5, ask: 'Which ticket was the standup?', offer: ['WEB-2'] })],
+      questions: [expect.objectContaining({ hours: 0.5, reason: 'Standup', offer: ['WEB-2'] })],
     })]);
     expect(await trackerRequests(harness, WORKLOG_ROUTE), 'the draft logged time').toHaveLength(0);
 
     const entries = await harness.rpc<TimeEntry[]>('ThreadTimeEntries', threadId);
     expect(entries).toEqual([
       expect.objectContaining({ day, key: 'WEB-1', minutes: 90, reason: 'Built the login form', by: 'agent', state: 'drafted', connection: connectionId }),
-      expect.objectContaining({ day, minutes: 30, reason: 'Which ticket was the standup?', by: 'agent', state: 'drafted', offers: [expect.objectContaining({ key: 'WEB-2' })] }),
+      expect.objectContaining({ day, minutes: 30, reason: 'Standup', by: 'agent', state: 'drafted', offers: [expect.objectContaining({ key: 'WEB-2' })] }),
     ]);
     expect(entries[0].key).toBe('WEB-1');
     expect(entries[1].key).toBeUndefined();

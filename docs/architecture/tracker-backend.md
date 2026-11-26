@@ -2647,8 +2647,8 @@ with its sentence; the call fails only when every connection did.
 
 **`time_draft`** takes `entries`, each a `day`, `hours` (whole minutes),
 a `reason`, which becomes the worklog's description, and a `key`, or no
-key for a question whose reason is what to ask and whose `offer` names up
-to 5 keys. A call holds 1 to 250 entries over at most 31 days, on one
+key for a question, whose reason says what the time was and whose
+`offer` names up to 5 keys. A call holds 1 to 250 entries over at most 31 days, on one
 Jira connection: each key resolves as the ticket tools' do, a Linear key
 is refused, and so are keys of two sites. A day holds at most 24 hours, a
 ticket once a day, and no day is in the future. A read-only thread is
@@ -2665,7 +2665,13 @@ author by day (`tracker_time_entries`, [schema](schema.md)), each naming
 the thread and call that drafted it. Every change is conditional on the
 entry's revision as the caller read it (`trackerapp/time_draft.go`): the
 person's edit makes the entry theirs, and a remove deletes entries
-drafted, of unknown outcome or left out.
+drafted, of unknown outcome or left out. A question answered with a
+ticket that has a drafted entry that day is added to that entry in one
+transaction (`store.EditTimeEntry`): its time is added, the entry's
+reason ends with ", plus " and the question's, and the question is
+deleted. An answer onto an entry being posted or of unknown outcome is
+refused, since its time may be logged, as is moving an entry onto a
+ticket that has one that day.
 
 **Posting.** `PostTimeEntries` (`trackerapp/time_post.go`) is the one
 path that sends a draft's time, and only the person's approval reaches it
@@ -2690,7 +2696,8 @@ Tempo). A worklog found settles the entry as posted and sends nothing. An
 entry sent under the time source used before is not sent again on a day's
 approval, and logging it alone posts it to the current one. The answer
 names every entry and says in one sentence each one not posted, with the
-tracker's refusal. A week of 25 entries is 27 requests on Tempo (2
+tracker's refusal, and the days whose read-back after the post failed,
+which show the posted time after their next read. A week of 25 entries is 27 requests on Tempo (2
 reads that check the batch, then a POST each) and 25 on Jira's own
 worklogs, with the account read before (`jiraprovider` cost tests).
 

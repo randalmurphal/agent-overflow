@@ -50,7 +50,7 @@ type Store interface {
 	ReplaceAgentTimeDays(connection, author, today string, entries []store.TimeEntry, now int64) (store.TimeDraftWrite, error)
 	TimeEntry(connection string, id int64) (store.TimeEntry, bool, error)
 	ThreadTimeEntries(thread string) ([]store.TimeEntry, error)
-	EditTimeEntry(connection string, ref store.TimeEntryRef, ch store.TimeEntryChange, now int64) (store.TimeEntry, bool, error)
+	EditTimeEntry(connection string, ref store.TimeEntryRef, ch store.TimeEntryChange, now int64) (store.TimeEntryEdited, bool, error)
 	RemoveTimeEntries(connection string, refs []store.TimeEntryRef) ([]store.TimeEntry, error)
 	MarkTimeEntriesSent(connection string, refs []store.TimeEntryRef, sentTo string, now, running int64) ([]store.TimeEntry, error)
 	SettleTimeEntries(connection string, sentMs int64, outcomes []store.TimeEntrySettle, now int64) ([]store.TimeEntry, error)

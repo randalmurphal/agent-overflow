@@ -277,44 +277,140 @@ type TimeEntryChange struct {
 	LeaveOut bool
 }
 
+// MaxTimeEntryReason is the longest reason an entry holds, in bytes.
+const MaxTimeEntryReason = 1024
+
+// TimeEntryEdited is what EditTimeEntry did. Entry is the entry as
+// stored: the one edited or, for a question merged, its ticket's entry
+// with the question's time added. Merged is that question, deleted.
+type TimeEntryEdited struct {
+	Entry  TimeEntry
+	Merged *TimeEntry
+}
+
+// TimeEntryOpenError is an edit onto a ticket whose open entry that day,
+// Open, it cannot merge into: Open is being sent or of unknown outcome,
+// or the entry edited is not a question.
+type TimeEntryOpenError struct{ Open TimeEntry }
+
+func (e *TimeEntryOpenError) Error() string {
+	return fmt.Sprintf("store: %s already has a %s entry on %s", e.Open.IssueKey, e.Open.State, e.Open.Day)
+}
+
+func (e *TimeEntryOpenError) Is(target error) bool { return target == ErrTimeEntryOpen }
+
+// ErrTimeEntryMergeOver is a question whose merge would put its ticket's
+// entry over a day or its reason over MaxTimeEntryReason.
+var ErrTimeEntryMergeOver = errors.New("store: the merged entry would be over 24h or its reason over 1 KiB")
+
+// editTimeEntrySQL applies a change to drafted entry ?2 on connection ?1
+// at revision ?3.
+var editTimeEntrySQL = `UPDATE tracker_time_entries SET
+ issue_id = iif(` + intParam("?4") + ` = 1, ?5, issue_id), issue_key = iif(` + intParam("?4") + ` = 1, ?6, issue_key),
+ issue_title = iif(` + intParam("?4") + ` = 1, ?7, issue_title), offers = iif(` + intParam("?4") + ` = 1, '[]', offers),
+ seconds = iif(` + intParam("?8") + ` > 0, ` + intParam("?8") + `, seconds), reason = iif(?9 <> '', ?9, reason),
+ state = iif(` + intParam("?10") + ` = 1, 'left_out', state), source = 'person', refusal = '',
+ revision = revision + 1, updated_ms = ` + intParam("?11") + `
+ WHERE id = ` + intParam("?2") + ` AND connection_id = ?1 AND revision = ` + intParam("?3") + ` AND state = 'drafted'
+ RETURNING ` + timeEntryColumns
+
 // EditTimeEntry applies ch to entry ref on connection when it is drafted
-// at ref's revision, and returns it as stored. false is a lost race: the
-// entry moved on or is gone. A ticket that already has an open entry
-// that day fails with ErrTimeEntryOpen.
-func (s *Store) EditTimeEntry(connection string, ref TimeEntryRef, ch TimeEntryChange, now int64) (TimeEntry, bool, error) {
-	issue, key, title, setIssue := "", "", "", 0
-	if ch.Issue != nil {
-		issue, key, title, setIssue = ch.Issue.Issue, ch.Issue.Key, ch.Issue.Title, 1
+// at ref's revision, in one transaction, and returns it as stored. false
+// is a lost race: the entry moved on or is gone. A question answered with
+// a ticket that has a drafted entry that day merges into that entry: its
+// time is added, its reason ends the entry's as ", plus <reason>", the
+// entry becomes the person's, and the question is deleted. Any other edit
+// onto a ticket with an open entry that day fails with a
+// TimeEntryOpenError, and a merge past a day or MaxTimeEntryReason with
+// ErrTimeEntryMergeOver.
+func (s *Store) EditTimeEntry(connection string, ref TimeEntryRef, ch TimeEntryChange, now int64) (TimeEntryEdited, bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return TimeEntryEdited{}, false, fmt.Errorf("store: edit time entry %d: begin: %w", ref.ID, err)
 	}
-	var seconds int64
+	defer func() { _ = tx.Rollback() }()
+	cur, err := scanTimeEntry(tx.QueryRow(`SELECT `+timeEntryColumns+` FROM tracker_time_entries
+ WHERE id = `+intParam("?2")+` AND connection_id = ?1 AND revision = `+intParam("?3")+` AND state = 'drafted'`, connection, ref.ID, ref.Revision))
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return TimeEntryEdited{}, false, nil
+	case err != nil:
+		return TimeEntryEdited{}, false, fmt.Errorf("store: edit time entry %d: %w", ref.ID, err)
+	}
+	var out TimeEntryEdited
+	if ch.Issue != nil && ch.Issue.Issue != cur.IssueID {
+		open, err := scanTimeEntry(tx.QueryRow(`SELECT `+timeEntryColumns+` FROM tracker_time_entries
+ WHERE connection_id = ?1 AND author_id = ?2 AND day = ?3 AND issue_id = `+textParam("?4")+` AND issue_id <> ''
+ AND state IN ('drafted', 'sent', 'unknown')`, connection, cur.Author, cur.Day, ch.Issue.Issue))
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return TimeEntryEdited{}, false, fmt.Errorf("store: edit time entry %d: the ticket's open entry: %w", ref.ID, err)
+		case cur.IssueID != "" || open.State != TimeEntryDrafted:
+			return TimeEntryEdited{}, false, &TimeEntryOpenError{Open: open}
+		default:
+			out, err = mergeQuestionTx(tx, cur, open, ch, now)
+			if err != nil {
+				return TimeEntryEdited{}, false, err
+			}
+		}
+	}
+	if out.Merged == nil {
+		issue, key, title, setIssue := "", "", "", 0
+		if ch.Issue != nil {
+			issue, key, title, setIssue = ch.Issue.Issue, ch.Issue.Key, ch.Issue.Title, 1
+		}
+		var seconds int64
+		if ch.Seconds != nil {
+			seconds = *ch.Seconds
+		}
+		reason := ""
+		if ch.Reason != nil {
+			reason = *ch.Reason
+		}
+		leave := 0
+		if ch.LeaveOut {
+			leave = 1
+		}
+		out.Entry, err = scanTimeEntry(tx.QueryRow(editTimeEntrySQL, connection, ref.ID, ref.Revision, setIssue, issue, key, title, seconds, reason, leave, now))
+		if err != nil {
+			return TimeEntryEdited{}, false, fmt.Errorf("store: edit time entry %d: %w", ref.ID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return TimeEntryEdited{}, false, fmt.Errorf("store: edit time entry %d: commit: %w", ref.ID, err)
+	}
+	return out, true, nil
+}
+
+// mergeQuestionTx adds question q, as ch changes its time and reason, to
+// drafted entry into, and deletes q.
+func mergeQuestionTx(tx *sql.Tx, q, into TimeEntry, ch TimeEntryChange, now int64) (TimeEntryEdited, error) {
+	seconds, phrase := q.Seconds, q.Reason
 	if ch.Seconds != nil {
 		seconds = *ch.Seconds
 	}
-	reason := ""
 	if ch.Reason != nil {
-		reason = *ch.Reason
+		phrase = *ch.Reason
 	}
-	leave := 0
-	if ch.LeaveOut {
-		leave = 1
+	seconds += into.Seconds
+	reason := strings.TrimRight(strings.TrimSpace(into.Reason), ".") + ", plus " + strings.TrimSpace(phrase)
+	if seconds > 86400 || len(reason) > MaxTimeEntryReason {
+		return TimeEntryEdited{}, ErrTimeEntryMergeOver
 	}
-	e, err := scanTimeEntry(s.db.QueryRow(`UPDATE tracker_time_entries SET
- issue_id = iif(`+intParam("?4")+` = 1, ?5, issue_id), issue_key = iif(`+intParam("?4")+` = 1, ?6, issue_key),
- issue_title = iif(`+intParam("?4")+` = 1, ?7, issue_title), offers = iif(`+intParam("?4")+` = 1, '[]', offers),
- seconds = iif(`+intParam("?8")+` > 0, `+intParam("?8")+`, seconds), reason = iif(?9 <> '', ?9, reason),
- state = iif(`+intParam("?10")+` = 1, 'left_out', state), source = 'person', refusal = '',
- revision = revision + 1, updated_ms = `+intParam("?11")+`
- WHERE id = `+intParam("?2")+` AND connection_id = ?1 AND revision = `+intParam("?3")+` AND state = 'drafted'
- RETURNING `+timeEntryColumns, connection, ref.ID, ref.Revision, setIssue, issue, key, title, seconds, reason, leave, now))
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return TimeEntry{}, false, nil
-	case isOpenConflict(err):
-		return TimeEntry{}, false, ErrTimeEntryOpen
-	case err != nil:
-		return TimeEntry{}, false, fmt.Errorf("store: edit time entry %d: %w", ref.ID, err)
+	merged, err := scanTimeEntry(tx.QueryRow(`UPDATE tracker_time_entries SET seconds = `+intParam("?3")+`, reason = ?4,
+ source = 'person', refusal = '', revision = revision + 1, updated_ms = `+intParam("?5")+`
+ WHERE id = `+intParam("?2")+` AND connection_id = ?1 AND state = 'drafted'
+ RETURNING `+timeEntryColumns, into.Connection, into.ID, seconds, reason, now))
+	if err != nil {
+		return TimeEntryEdited{}, fmt.Errorf("store: merge time entry %d into %d: %w", q.ID, into.ID, err)
 	}
-	return e, true, nil
+	gone, err := scanTimeEntry(tx.QueryRow(`DELETE FROM tracker_time_entries WHERE id = `+intParam("?2")+` AND connection_id = ?1
+ RETURNING `+timeEntryColumns, q.Connection, q.ID))
+	if err != nil {
+		return TimeEntryEdited{}, fmt.Errorf("store: merge time entry %d into %d: delete it: %w", q.ID, into.ID, err)
+	}
+	return TimeEntryEdited{Entry: merged, Merged: &gone}, nil
 }
 
 // RemoveTimeEntries deletes the entries refs name on connection that are

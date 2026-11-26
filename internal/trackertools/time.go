@@ -52,12 +52,12 @@ type draftedTime struct {
 }
 
 // timeQuestion is an open question of the draft: hours whose ticket the
-// person picks, what it asks and the keys it offers.
+// person picks, what the time was and the keys it offers.
 type timeQuestion struct {
-	ID    int64    `json:"id"`
-	Hours float64  `json:"hours"`
-	Ask   string   `json:"ask"`
-	Offer []string `json:"offer,omitempty"`
+	ID     int64    `json:"id"`
+	Hours  float64  `json:"hours"`
+	Reason string   `json:"reason"`
+	Offer  []string `json:"offer,omitempty"`
 }
 
 type timeDay struct {
@@ -187,7 +187,7 @@ func (s *Server) timeRead(ctx context.Context, _ Caller, raw json.RawMessage) (a
 			case day == nil || e.State == "posted" || e.State == "left_out":
 				// A posted entry is among the logged worklogs.
 			case e.Key == "":
-				q := timeQuestion{ID: e.ID, Hours: float64(e.Minutes) / 60, Ask: e.Reason}
+				q := timeQuestion{ID: e.ID, Hours: float64(e.Minutes) / 60, Reason: e.Reason}
 				for _, o := range e.Offers {
 					q.Offer = append(q.Offer, key(o.Key))
 				}
@@ -233,7 +233,7 @@ func fitTime(out timeReadAnswer) (timeReadAnswer, error) {
 			add(e.Reason, refusalCut)
 		}
 		for _, q := range d.Questions {
-			add(q.Ask, refusalCut)
+			add(q.Reason, refusalCut)
 		}
 	}
 	weights := make([]int, len(demands))
@@ -259,7 +259,7 @@ func fitTime(out timeReadAnswer) (timeReadAnswer, error) {
 				c.Drafted = append(c.Drafted, e)
 			}
 			for _, q := range d.Questions {
-				q.Ask = clip()
+				q.Reason = clip()
 				c.Questions = append(c.Questions, q)
 			}
 			cut.Days[i] = c
@@ -472,7 +472,7 @@ func draftAnswerOf(v trackerapp.TimeDraftView, key func(string) string) draftAns
 	for _, e := range v.Made {
 		d := day(e.Day)
 		if e.Key == "" {
-			q := timeQuestion{ID: e.ID, Hours: float64(e.Minutes) / 60, Ask: e.Reason}
+			q := timeQuestion{ID: e.ID, Hours: float64(e.Minutes) / 60, Reason: e.Reason}
 			for _, o := range e.Offers {
 				q.Offer = append(q.Offer, key(o.Key))
 			}
@@ -484,7 +484,7 @@ func draftAnswerOf(v trackerapp.TimeDraftView, key func(string) string) draftAns
 	for _, e := range v.Kept {
 		d := day(e.Day)
 		if e.Key == "" {
-			d.Questions = append(d.Questions, timeQuestion{ID: e.ID, Hours: float64(e.Minutes) / 60, Ask: e.Reason})
+			d.Questions = append(d.Questions, timeQuestion{ID: e.ID, Hours: float64(e.Minutes) / 60, Reason: e.Reason})
 			continue
 		}
 		d.Kept = append(d.Kept, draftedTime{ID: e.ID, Key: key(e.Key), Hours: float64(e.Minutes) / 60, By: byName(e.By), State: e.State})

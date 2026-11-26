@@ -99,7 +99,7 @@ var toolTable = []toolSpec{
 				"day":    property("string", ""),
 				"key":    property("string", "Leave out to ask the user which ticket."),
 				"hours":  property("number", ""),
-				"reason": property("string", "The worklog's description, or the question."),
+				"reason": property("string", "The worklog's description; with no key, what the time was."),
 				"offer":  map[string]any{"type": "array", "items": property("string", ""), "maxItems": maxOfferKeys},
 			}}},
 		},

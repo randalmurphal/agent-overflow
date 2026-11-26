@@ -27,7 +27,7 @@ var ErrUnverified = errors.New("trackerapp: the connection has no verified accou
 
 // The bounds of a draft.
 const (
-	maxDraftReason = 1024
+	maxDraftReason = store.MaxTimeEntryReason
 	maxDraftOffers = 5
 	maxDayMinutes  = 24 * 60
 )
@@ -90,8 +90,10 @@ func timeEntryViews(es []store.TimeEntry) []TimeEntryView {
 }
 
 // TimeDraftEntry is one entry an agent drafts: a ticket (its issue ID,
-// key and title), or none for a question whose Reason is what to ask
-// the person and whose Offers are tickets to pick from.
+// key and title), or none for a question: the person picks its ticket,
+// among Offers or any. Reason is the worklog's description either way; a
+// question's says what the time was, and the person's answer may add it
+// to an entry of the picked ticket (store.EditTimeEntry).
 type TimeDraftEntry struct {
 	Day    string
 	Ticket *TimeOfferView
@@ -221,8 +223,6 @@ func (s *Service) checkDraft(in TimeDraftRequest) ([]store.TimeEntry, error) {
 			return nil, invalidDraft("%s.hours is not a whole number of minutes (0.25 is 15 minutes).", at)
 		}
 		switch {
-		case strings.TrimSpace(e.Reason) == "" && e.Ticket == nil:
-			return nil, invalidDraft("%s has no key, so it is a question: reason is what to ask.", at)
 		case strings.TrimSpace(e.Reason) == "":
 			return nil, invalidDraft("%s.reason is empty: it becomes the worklog's description.", at)
 		case len(e.Reason) > maxDraftReason:
@@ -373,8 +373,10 @@ var ErrTimeEntryStale = errors.New("trackerapp: the time entry changed since it 
 
 // EditTimeEntry applies the person's edit to entry ref on connection id,
 // which becomes the person's, so a later agent draft of its day keeps
-// it. An entry that is not drafted at ref's revision is refused with
-// ErrTimeEntryStale.
+// it, and returns it as stored. A question answered with a ticket that
+// has a drafted entry that day is added to that entry, which is returned
+// in its place (store.EditTimeEntry). An entry that is not drafted at
+// ref's revision is refused with ErrTimeEntryStale.
 func (s *Service) EditTimeEntry(id string, ref TimeEntryRefView, in TimeEntryEdit) (TimeEntryView, error) {
 	if err := s.enter(); err != nil {
 		return TimeEntryView{}, err
@@ -412,17 +414,28 @@ func (s *Service) EditTimeEntry(id string, ref TimeEntryRefView, in TimeEntryEdi
 		}
 		ch.Reason = r
 	}
-	e, ok, err := s.store.EditTimeEntry(id, store.TimeEntryRef{ID: ref.ID, Revision: ref.Revision}, ch, millis(s.now()))
+	got, ok, err := s.store.EditTimeEntry(id, store.TimeEntryRef{ID: ref.ID, Revision: ref.Revision}, ch, millis(s.now()))
+	var open *store.TimeEntryOpenError
 	switch {
-	case errors.Is(err, store.ErrTimeEntryOpen):
-		return TimeEntryView{}, invalidDraft("%s already has an entry not yet posted that day", in.Ticket.Key)
+	case errors.As(err, &open) && open.Open.State == store.TimeEntrySent:
+		return TimeEntryView{}, invalidDraft("%s's entry that day is being posted; try again once it is posted", open.Open.IssueKey)
+	case errors.As(err, &open) && open.Open.State == store.TimeEntryUnknown:
+		return TimeEntryView{}, invalidDraft("%s's entry that day may already be logged; post or remove it first", open.Open.IssueKey)
+	case errors.As(err, &open):
+		return TimeEntryView{}, invalidDraft("%s already has an entry not yet posted that day; change that entry's hours instead", open.Open.IssueKey)
+	case errors.Is(err, store.ErrTimeEntryMergeOver):
+		return TimeEntryView{}, invalidDraft("adding it to %s's entry that day would put that entry over 24h or its reason over 1 KiB; change that entry first", in.Ticket.Key)
 	case err != nil:
 		return TimeEntryView{}, fmt.Errorf("trackerapp: %w", err)
 	case !ok:
 		return TimeEntryView{}, fmt.Errorf("%w: entry %d", ErrTimeEntryStale, ref.ID)
 	}
-	s.timeEntriesChanged(id, author, []store.TimeEntry{e})
-	return timeEntryView(e), nil
+	changed := []store.TimeEntry{got.Entry}
+	if got.Merged != nil {
+		changed = append(changed, *got.Merged)
+	}
+	s.timeEntriesChanged(id, author, changed)
+	return timeEntryView(got.Entry), nil
 }
 
 // RemoveTimeEntries deletes the entries refs name on connection id that

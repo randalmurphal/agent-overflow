@@ -195,7 +195,7 @@ func TestADraftIsRefusedByName(t *testing.T) {
 	day, tomorrow := d.day, d.svc.now().AddDate(0, 0, 1).Format(time.DateOnly)
 	parsed, _ := time.Parse(time.DateOnly, day)
 	monthBefore := parsed.AddDate(0, 0, -31).Format(time.DateOnly)
-	question := TimeDraftEntry{Day: day, Hours: 1, Reason: "Which ticket was the standup?"}
+	question := TimeDraftEntry{Day: day, Hours: 1, Reason: "Standup"}
 	offers := question
 	for range 6 {
 		offers.Offers = append(offers.Offers, draftTickets["WEB-3"])
@@ -214,7 +214,7 @@ func TestADraftIsRefusedByName(t *testing.T) {
 		{"no hours", []TimeDraftEntry{at(question, func(e *TimeDraftEntry) { e.Hours = 0 })}, "entries[0].hours must be more than 0."},
 		{"over a day", []TimeDraftEntry{at(question, func(e *TimeDraftEntry) { e.Hours = 25 })}, "entries[0].hours is over 24."},
 		{"a part of a minute", []TimeDraftEntry{question, at(question, func(e *TimeDraftEntry) { e.Hours = 0.3333 })}, "entries[1].hours is not a whole number of minutes (0.25 is 15 minutes)."},
-		{"a question asking nothing", []TimeDraftEntry{at(question, func(e *TimeDraftEntry) { e.Reason = " " })}, "entries[0] has no key, so it is a question: reason is what to ask."},
+		{"a question asking nothing", []TimeDraftEntry{at(question, func(e *TimeDraftEntry) { e.Reason = " " })}, "entries[0].reason is empty: it becomes the worklog's description."},
 		{"no description", []TimeDraftEntry{d.on("WEB-1", 1, "")}, "entries[0].reason is empty: it becomes the worklog's description."},
 		{"a long reason", []TimeDraftEntry{d.on("WEB-1", 1, strings.Repeat("x", 1025))}, "entries[0].reason is over 1 KiB."},
 		{"an offer with a key", []TimeDraftEntry{withOffer}, "entries[0].offer is for an entry with no key."},
@@ -246,6 +246,66 @@ func TestADraftIsRefusedByName(t *testing.T) {
 	}
 }
 
+// A question answered with a ticket that has a drafted entry that day is
+// added to that entry, which comes back, with one event and no question
+// left. An answer onto an entry being posted or of unknown outcome, and a
+// move of an entry onto a ticket that has one that day, are refused with
+// what to do instead.
+func TestAnAnsweredQuestionIsAddedToItsTicketsEntry(t *testing.T) {
+	t.Parallel()
+	d := newDraftScenario(t, "jira")
+	v := d.draft(t, d.on("WEB-1", 1, "Built the form"), d.on("WEB-2", 0.5, "Reviewed the pull request"), d.on("WEB-3", 0.25, "Triaged the backlog"),
+		TimeDraftEntry{Day: d.day, Hours: 0.25, Reason: "25m call at 14:05", Offers: []TimeOfferView{draftTickets["WEB-1"]}},
+		TimeDraftEntry{Day: d.day, Hours: 0.5, Reason: "Standup"})
+	web1, web2, web3, call, standup := v.Made[0], v.Made[1], v.Made[2], v.Made[3], v.Made[4]
+	d.takeEvents()
+	web1Ticket := draftTickets["WEB-1"]
+	got, err := d.svc.EditTimeEntry(d.conn.ID, entryRefs(call)[0], TimeEntryEdit{Ticket: &web1Ticket})
+	if err != nil || got.ID != web1.ID || got.Minutes != 75 || got.Reason != "Built the form, plus 25m call at 14:05" || got.By != store.TimeSourcePerson {
+		t.Fatalf("answering the call with WEB-1 answered %+v, %v", got, err)
+	}
+	if ev := d.takeEvents(); len(ev) != 1 || !slices.Equal(ev[0].Days, []string{d.day}) {
+		t.Fatalf("the answer told %+v; want one event of the day", ev)
+	}
+	left := must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1"))
+	if slices.ContainsFunc(left, func(e TimeEntryView) bool { return e.ID == call.ID }) || len(left) != 4 {
+		t.Fatalf("the thread's entries after the answer are %+v", left)
+	}
+
+	refused := func(what string, ref TimeEntryView, key, want string) {
+		t.Helper()
+		tk := draftTickets[key]
+		_, err := d.svc.EditTimeEntry(d.conn.ID, entryRefs(ref)[0], TimeEntryEdit{Ticket: &tk})
+		if !errors.Is(err, ErrInvalidRequest) || !strings.HasSuffix(err.Error(), ": "+want) {
+			t.Fatalf("%s: %v; want %q", what, err, want)
+		}
+	}
+	refused("moving WEB-3's entry onto WEB-1", web3, "WEB-1", "WEB-1 already has an entry not yet posted that day; change that entry's hours instead")
+	sent := must[[]store.TimeEntry](t)(d.st.MarkTimeEntriesSent(d.conn.ID, []store.TimeEntryRef{{ID: web2.ID, Revision: web2.Revision}}, d.conn.ID, millis(d.svc.now()), d.svc.steadyFrom))
+	refused("answering with WEB-2, being posted", standup, "WEB-2", "WEB-2's entry that day is being posted; try again once it is posted")
+	must[[]store.TimeEntry](t)(d.st.SettleTimeEntries(d.conn.ID, sent[0].SentMs, []store.TimeEntrySettle{{ID: web2.ID, State: store.TimeEntryUnknown}}, millis(d.svc.now())))
+	refused("answering with WEB-2, maybe logged", standup, "WEB-2", "WEB-2's entry that day may already be logged; post or remove it first")
+	if ev := d.takeEvents(); len(ev) != 0 {
+		t.Fatalf("the refused edits told %+v", ev)
+	}
+
+	// The event names the question's thread as well as the entry's.
+	day := d.days()[0]
+	first := must[TimeDraftView](t)(d.svc.DraftTime(d.conn.ID, TimeDraftRequest{Thread: "thread-1", Call: "call-a",
+		Entries: []TimeDraftEntry{{Day: day, Ticket: &web1Ticket, Hours: 1, Reason: "Planned the sprint"}}}))
+	reason := "Planned the sprint with the team"
+	mine := must[TimeEntryView](t)(d.svc.EditTimeEntry(d.conn.ID, entryRefs(first.Made[0])[0], TimeEntryEdit{Reason: &reason}))
+	second := must[TimeDraftView](t)(d.svc.DraftTime(d.conn.ID, TimeDraftRequest{Thread: "thread-2", Call: "call-b",
+		Entries: []TimeDraftEntry{{Day: day, Hours: 0.5, Reason: "Retro"}}}))
+	d.takeEvents()
+	if got, err := d.svc.EditTimeEntry(d.conn.ID, entryRefs(second.Made[0])[0], TimeEntryEdit{Ticket: &web1Ticket}); err != nil || got.ID != mine.ID {
+		t.Fatalf("answering thread-2's question with WEB-1: %+v, %v", got, err)
+	}
+	if ev := d.takeEvents(); len(ev) != 1 || !slices.Equal(ev[0].Threads, []string{"thread-1", "thread-2"}) {
+		t.Fatalf("the answer told %+v; want one event naming both threads", ev)
+	}
+}
+
 // A later draft of a day replaces the agents' drafted entries of that day
 // (D6) and keeps the person's; a ticket with an open entry that day is
 // skipped. Each draft that changed anything is told once, with its days
@@ -253,7 +313,7 @@ func TestADraftIsRefusedByName(t *testing.T) {
 func TestADraftReplacesTheAgentsEntriesOfItsDays(t *testing.T) {
 	t.Parallel()
 	d := newDraftScenario(t, "jira")
-	first := d.draft(t, d.on("WEB-1", 1, "Built the form"), TimeDraftEntry{Day: d.day, Hours: 0.5, Reason: "Which ticket was the standup?", Offers: []TimeOfferView{draftTickets["WEB-3"]}})
+	first := d.draft(t, d.on("WEB-1", 1, "Built the form"), TimeDraftEntry{Day: d.day, Hours: 0.5, Reason: "Standup", Offers: []TimeOfferView{draftTickets["WEB-3"]}})
 	if len(first.Made) != 2 || first.Author != "acc-user1" || first.Made[1].Offers[0].Key != "WEB-3" || first.Made[0].Minutes != 60 || first.Made[0].By != "agent" {
 		t.Fatalf("the first draft answered %+v", first)
 	}
@@ -310,7 +370,7 @@ func TestApprovingADayPostsItsEntries(t *testing.T) {
 	t.Parallel()
 	bothSources(t, func(t *testing.T, d *draftScenario) {
 		v := d.draft(t, d.on("WEB-1", 1, "Built the form"), d.on("WEB-2", 0.5, "Reviewed the pull request"),
-			TimeDraftEntry{Day: d.day, Hours: 0.5, Reason: "Which ticket was the standup?"})
+			TimeDraftEntry{Day: d.day, Hours: 0.5, Reason: "Standup"})
 		d.takeEvents()
 		got, posts := d.post(t, false, entryRefs(v.Made...)...)
 		d.posted(t, "the day", got, posts, "Posted 2 of 2 entries for "+d.label+". 1 question for "+d.label+" is still open.", 2)
