@@ -165,3 +165,34 @@ func TestSearchTicketWorkSaysAFailedDevelopmentRead(t *testing.T) {
 		}
 	}
 }
+
+// A Linear ticket's Work asks Linear nothing for development data, which
+// Linear has none of, and says nothing of it.
+func TestSearchTicketWorkOfALinearTicketSaysNoDevelopmentData(t *testing.T) {
+	t.Parallel()
+	f, _, _ := costFixture(t, true, 3)
+	conns, err := f.a.TrackerConnections(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := slices.IndexFunc(conns, func(c TrackerConnection) bool { return c.Kind == store.TrackerKindLinear })
+	if at < 0 {
+		t.Fatal("no Linear connection")
+	}
+	linear := conns[at]
+	engine := forgefake.New(forgefake.Options{APIToken: mergeForgeToken})
+	useForgefake(t, f.a, engine)
+	issue := trackerCostLinear().Issues[0].ID
+	since := lastTrackerSeq(workSearchFixture{trackerBoardFixture: f})
+	work, err := f.a.SearchTicketWork(t.Context(), linear.ID, issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if work.DevelopmentProblem != "" || work.DevelopmentUnlisted != 0 {
+		t.Errorf("a Linear ticket: problem %q, unlisted %d", work.DevelopmentProblem, work.DevelopmentUnlisted)
+	}
+	if got := f.e.Requests(since).Requests; len(got) != 0 {
+		t.Errorf("a Linear ticket's Work asked the trackers %d times: %+v", len(got), got)
+	}
+
+}
