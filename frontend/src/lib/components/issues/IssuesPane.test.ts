@@ -2124,6 +2124,74 @@ describe('the ticket in the pane', () => {
     expect(move).toHaveBeenCalledTimes(1);
   });
 
+  it('offers Move on a screen whose required fields the tracker fills, with no None for them and nothing asked of the person', async () => {
+    install();
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      moves: [{
+        id: '31', name: 'Resolve', to: { id: 's3', name: 'Done', group: 'done' },
+        fields: [
+          { id: 'resolved_at', name: 'Resolved at', kind: 'date_time', required: true, defaulted: true, editable: true, value: {} },
+          { id: 'resolution', name: 'Resolution', kind: 'option', required: true, defaulted: true, editable: true, value: {} },
+        ],
+      }],
+    }) as unknown as DetailView);
+    setBindingMock('TrackerChoices', async () => ({ choices: [{ id: '1', name: 'Fixed' }] }));
+    const move = setBindingMock('MoveTrackerIssue', async (): Promise<WriteView> => ({ parts: [{ step: 'move', state: 'applied' }] }) as WriteView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const status = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'status')!;
+    await fireEvent.click(within(status).getByTestId('ticket-field-value'));
+    await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-item')));
+    const form = await within(screen).findByTestId('ticket-move-form');
+    expect(within(form).queryByTestId('ticket-move-unsettable')).toBeNull();
+    const resolution = within(form).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'resolution')!;
+    expect(resolution).not.toHaveTextContent('(required)');
+    await fireEvent.click(within(resolution).getByTestId('ticket-field-value'));
+    await waitFor(() => expect(within(menu()).getAllByTestId('ticket-picker-item')).toHaveLength(1));
+    expect(within(menu()).queryByTestId('ticket-picker-clear')).toBeNull();
+    await fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    await fireEvent.click(within(form).getByTestId('ticket-move-submit'));
+    await waitFor(() => expect(move).toHaveBeenCalledWith('c1', { issue: '1', move: '31', accept_loss: false, fields: [] }));
+  });
+
+  it('keeps the last value of a required field of several checked, so a pick never sends a clear the tracker refuses', async () => {
+    install();
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      moves: [{
+        id: '31', name: 'Resolve', to: { id: 's3', name: 'Done', group: 'done' },
+        fields: [{ id: 'versions', name: 'Fix versions', kind: 'option', list: true, required: true, editable: true, value: { kind: 'option', choices: [{ id: 'v1', name: '1.0' }] } }],
+      }],
+    }) as unknown as DetailView);
+    setBindingMock('TrackerChoices', async () => ({ choices: [{ id: 'v1', name: '1.0' }, { id: 'v2', name: '1.1' }] }));
+    const move = setBindingMock('MoveTrackerIssue', async (): Promise<WriteView> => ({ parts: [{ step: 'move', state: 'applied' }] }) as WriteView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const status = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'status')!;
+    await fireEvent.click(within(status).getByTestId('ticket-field-value'));
+    await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-item')));
+    const form = await within(screen).findByTestId('ticket-move-form');
+    const versions = within(form).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'versions')!;
+    await fireEvent.click(within(versions).getByTestId('ticket-field-value'));
+    const items = () => within(menu()).getAllByTestId('ticket-picker-item');
+    await waitFor(() => expect(items()).toHaveLength(2));
+    // The one value held cannot be unchecked; with a second checked, it can.
+    expect(items()[0]).toHaveAttribute('aria-disabled', 'true');
+    await fireEvent.click(items()[0]);
+    expect(within(versions).getByTestId('ticket-field-value')).toHaveTextContent('1.0');
+    await fireEvent.click(items()[1]);
+    expect(items()[0]).not.toHaveAttribute('aria-disabled');
+    await fireEvent.click(items()[0]);
+    expect(items()[1]).toHaveAttribute('aria-disabled', 'true');
+    await fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    expect(within(versions).getByTestId('ticket-field-value')).toHaveTextContent('1.1');
+    await fireEvent.click(within(form).getByTestId('ticket-move-submit'));
+    await waitFor(() => expect(move).toHaveBeenCalledWith('c1', {
+      issue: '1', move: '31', accept_loss: false, fields: [{ field: 'versions', value: { kind: 'option', choices: [{ id: 'v2' }] } }],
+    }));
+  });
+
   it('says a move needs a field the app cannot set, with the way to the tracker, and offers no Move', async () => {
     install();
     installTicket((issue) => ({

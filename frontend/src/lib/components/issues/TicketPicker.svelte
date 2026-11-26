@@ -20,7 +20,8 @@
 <script lang="ts">
   // A ticket value's pick list, at its control: the values a read answers
   // (a move list held by the view, or a form read of the tracker), and one
-  // row that clears the value where the field may be empty. The values a
+  // row that clears the value where the field may be empty; where it may
+  // not, a field of several values keeps its last one checked. The values a
   // field holds now are checked; a pick closes the list unless the field
   // holds several.
   //
@@ -169,7 +170,8 @@
           <MenuItem label={clearLabel} checked={checked.size === 0} onSelect={() => pick(null)} testId="ticket-picker-clear" />
         {/if}
         {#each shown as item (item.id)}
-          <MenuItem label={item.name} description={item.description} checked={checked.has(item.id)} checkbox={multi} onSelect={() => pick(item)} testId="ticket-picker-item" />
+          {@const last = multi && !clearLabel && checked.size === 1 && checked.has(item.id)}
+          <MenuItem label={item.name} description={item.description} checked={checked.has(item.id)} checkbox={multi} disabled={last} title={last ? 'The field must hold a value' : undefined} onSelect={() => pick(item)} testId="ticket-picker-item" />
         {/each}
       </Menu>
       {#each answer?.failed ?? [] as sentence, i (i)}

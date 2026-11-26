@@ -210,7 +210,8 @@ A card's marks and a Backlog row's are one component (`CardMarks.svelte`)
 and open the same editors (`cardEditor`, in `CardFieldEditor.svelte`,
 loaded by `CardEditor.svelte` on the first edit from either), and a
 typed value is `TicketTypedValue.svelte` on both. A mouse or pen carries
-a card or a row (`listCarry.ts`, loaded on the first press of either; its
+a card or a row (`listCarry.ts`, loaded on the first press of either by
+`listPress.ts`, the press that picks either up, one per screen; its
 physics in `boardCarryPhysics.ts`, a Backlog row held level): per frame
 it writes one transform on a copy on `document.body`, and tells the
 screen only when the list under it or the drop slot changes, so no card

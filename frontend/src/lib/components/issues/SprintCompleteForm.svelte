@@ -45,9 +45,12 @@
 
   // svelte-ignore state_referenced_locally
   let moveTo = $state(into.find((sp) => sp.state === 'future')?.id ?? '');
+  // A sprint picked that a refresh took from the list is not sent: the
+  // select keeps its value when its option goes.
+  const offered = $derived(moveTo === '' || into.some((sp) => sp.id === moveTo));
 
   async function submit(): Promise<void> {
-    if (pending) return;
+    if (pending || !offered) return;
     const outcome = await completeSprint(b, sprint.name, { sprint: sprint.id, move_to: moveTo || undefined });
     if (outcome?.kind === 'applied' && outcome.note === null) close();
   }
@@ -80,10 +83,13 @@
         <option value="">The backlog</option>
       </select>
     </label>
+    {#if !offered}
+      <p class="text-xs text-fg" role="status" data-testid="sprint-complete-gone">That sprint is no longer open. Pick where the unfinished tickets go.</p>
+    {/if}
     <TicketWriteNote ticketKey={b.key} {target} fieldName={cardFieldName} />
     <div class="flex items-center justify-end gap-1.5">
       <Button size="sm" variant="ghost" disabled={pending} testId="sprint-complete-cancel" onclick={() => close()}>Cancel</Button>
-      <Button size="sm" variant="primary" type="submit" disabled={pending} testId="sprint-complete-submit">{pending ? 'Completing…' : 'Complete sprint'}</Button>
+      <Button size="sm" variant="primary" type="submit" disabled={pending || !offered} testId="sprint-complete-submit">{pending ? 'Completing…' : 'Complete sprint'}</Button>
     </div>
   </form>
 </Popover>
