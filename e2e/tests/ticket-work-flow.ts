@@ -26,6 +26,13 @@
 // computer has, on GitHub and GitLab, a stored row with its CI, and on
 // Refresh the forge's change; a failed search says its kind, a rate
 // limit with when to retry and Retry, and a login to fix with none.
+// Jira's development data lists a merged merge request whose key was only
+// in a branch that is gone, once beside the forge's rows, with its title,
+// author and state, opening on the forge; counts a link the app cannot
+// open; says a refusal with its endpoint beside the forge's rows; costs a
+// ticket it links nothing to one request; and is read by the computer
+// that holds the connection, for a connected browser and a paired
+// computer alike.
 
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -46,7 +53,7 @@ import { confirmOnHost, methodIdByName, mintInvite, nonLoopbackIPv4, redeemOnScr
 import { recordOpens } from './preview-gateway-helpers.js';
 import { longPress } from './touch-helpers.js';
 import { harnessGit } from './worktree-removal-helpers.js';
-import { BOARD_ID, JIRA_SITE, connectFakeJira, connectFakeJiraBoard, openIssuesPane, press, seedFakeJira, trackerRequests } from './tracker-helpers.js';
+import { BOARD_ID, JIRA_SITE, connectFakeJira, connectFakeJiraBoard, openIssuesPane, press, seedFakeJira, trackerRequests, type ExtraJira } from './tracker-helpers.js';
 import { openBacklog } from './issues-backlog-flow.js';
 
 /** Settles with whether the first answer to a `SubscribeTrackerTicket`
@@ -192,12 +199,13 @@ const SEARCH_PULLS: ForgePull[] = [
  * seeded with `pulls`. */
 async function searchProject(
   harness: HarnessApp, name: string, pulls: ForgePull[] = SEARCH_PULLS, forge: 'github' | 'gitlab' = 'github',
+  jira?: (repo: string) => ExtraJira,
 ): Promise<{ projectId: string; repo: string }> {
-  await seedFakeJira(harness);
+  const repo = `ao-e2e/${name}-${Date.now().toString(36)}`;
+  await seedFakeJira(harness, jira?.(repo));
   const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name, repo: { commits: [{ message: 'init', files: { 'README.md': '# Web\n' } }] } }] });
   const { projectId, path } = seed.projects[0];
   await connectFakeJira(harness, projectId);
-  const repo = `ao-e2e/${name}-${Date.now().toString(36)}`;
   await seedForge(harness, [{ forge, project: repo, pulls }]);
   harnessGit(harness, path, 'branch', 'feature/WEB-1-host');
   harnessGit(harness, path, 'branch', 'web-1-new');
@@ -376,6 +384,69 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
     await expect(work.getByTestId('ticket-work-branch')).toHaveCount(2);
   });
 
+  test('Jira\'s development data lists a merged merge request whose key was only in a deleted branch, once beside the forge\'s, and a refusal is said', async ({ harness, page }) => {
+    test.setTimeout(150_000);
+    const instanceType = 'oAuth-gitlab-jira-connect-gitlab.com';
+    const { repo } = await searchProject(harness, compact ? 'compact-work-devdata' : 'work-devdata', GITLAB_SEARCH_PULLS, 'gitlab', (repo) => ({
+      devPullRequests: [
+        // The forge finds 702 too; 703's key was only in its branch, which is gone.
+        { instanceType, id: `${repo}!702`, name: 'Fix the cursor', url: `https://gitlab.com/${repo}/-/merge_requests/702`, status: 'MERGED', author: 'Bob Li', branch: 'feature/web-1-cursor' },
+        { instanceType, id: `${repo}!703`, name: 'Clean the cursor cache', url: `https://gitlab.com/${repo}/-/merge_requests/703`, status: 'MERGED', author: 'Dana Ruiz', branch: 'web-1-cache-gone' },
+        { instanceType, id: 'elsewhere', name: 'Elsewhere', url: 'https://code.example.com/web/changes/9', status: 'OPEN' },
+      ],
+    }));
+    const opens = hostOpens(page);
+    const summary = 'GET rest/dev-status/latest/issue/summary';
+    const detail = 'GET rest/dev-status/latest/issue/detail';
+    const before = (await harness.rpc<{ requests: Array<{ seq: number }> }>('HarnessTrackerRequests', 0)).requests.at(-1)?.seq ?? 0;
+    await harness.open(page);
+    const { ticket, work } = await openWork(page, WEB1, compact);
+    const gitlabRows = async () => (await pullRows(work)).filter((row) => row.startsWith('!'));
+    await expect.poll(gitlabRows, { timeout: 30_000 }).toEqual(['!701 open', '!702 merged', '!703 merged']);
+    await expect(work.getByTestId('ticket-work-searching')).toHaveCount(0);
+    const gone = work.getByTestId('ticket-work-pull').filter({ hasText: '!703' });
+    await expect(gone).toContainText('Clean the cursor cache');
+    await expect(gone).toContainText('Dana Ruiz');
+    await expect(gone.getByTestId('ticket-work-pull-state')).toHaveText('Merged');
+    await expect(work.getByTestId('ticket-work-development-unlisted')).toHaveText(
+      "Jira links one more pull request to this ticket at an address Agent Overflow cannot open; the ticket's development panel in Jira lists it.");
+    await expect(work.getByTestId('ticket-work-development-problem')).toHaveCount(0);
+
+    // What the open cost the tracker: the development data's summary and
+    // the one detail of the integration that links pull requests.
+    const asked = (await harness.rpc<{ requests: Array<{ route?: string }> }>('HarnessTrackerRequests', before)).requests.map((r) => r.route ?? 'unhandled');
+    expect(asked.filter((r) => r === summary)).toHaveLength(1);
+    expect(asked.filter((r) => r === detail)).toHaveLength(1);
+    test.info().annotations.push({ type: 'work-open-tracker-requests', description: `with development data: ${asked.join(', ')}` });
+
+    // The row opens on the forge.
+    await press(gone, compact);
+    await expect.poll(opens).toEqual([`https://gitlab.com/${repo}/-/merge_requests/703`]);
+
+    // The development data refused: said, with the forge's rows beside it.
+    await harness.rpc('HarnessTrackerFault', { origin: { tracker: 'jira', site: JIRA_SITE }, route: summary, kind: 'refuse', times: 1, status: 403, body: { errorMessages: ['no'] } });
+    await press(ticket.getByTestId('ticket-refresh'), compact);
+    await expect(work.getByTestId('ticket-work-development-problem')).toHaveText(
+      "Jira's development data could not be read (rest/dev-status/latest/issue/summary): Jira refused access (HTTP 403): the token may not make this request.", { timeout: 30_000 });
+    await expect.poll(gitlabRows).toEqual(['!701 open', '!702 merged']);
+    await expect(work.getByTestId('ticket-work-branch')).toHaveCount(2);
+  });
+
+  test('a Jira ticket no forge integration links a pull request to costs the development data one request, and says nothing', async ({ harness, page }) => {
+    test.setTimeout(150_000);
+    await searchProject(harness, compact ? 'compact-work-no-devdata' : 'work-no-devdata', GITLAB_SEARCH_PULLS, 'gitlab');
+    const before = (await harness.rpc<{ requests: Array<{ seq: number }> }>('HarnessTrackerRequests', 0)).requests.at(-1)?.seq ?? 0;
+    await harness.open(page);
+    const { work } = await openWork(page, WEB1, compact);
+    await expect.poll(async () => (await pullRows(work)).filter((row) => row.startsWith('!')), { timeout: 30_000 }).toEqual(['!701 open', '!702 merged']);
+    await expect(work.getByTestId('ticket-work-searching')).toHaveCount(0);
+    await expect(work.getByTestId('ticket-work-development-problem')).toHaveCount(0);
+    await expect(work.getByTestId('ticket-work-development-unlisted')).toHaveCount(0);
+    const asked = (await harness.rpc<{ requests: Array<{ route?: string }> }>('HarnessTrackerRequests', before)).requests.map((r) => r.route ?? 'unhandled');
+    expect(asked.filter((r) => r.startsWith('GET rest/dev-status/'))).toEqual(['GET rest/dev-status/latest/issue/summary']);
+    test.info().annotations.push({ type: 'work-open-tracker-requests', description: `without development data: ${asked.join(', ')}` });
+  });
+
   if (!compact) {
     test('a connected browser\'s Work lists what the forge finds, and a found row opens in that browser', async ({ browser }) => {
       test.skip(nonLoopbackIPv4() === null, 'requires a LAN interface for a connected browser');
@@ -391,6 +462,8 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
         await confirmOnHost(harness, code);
         const { work } = await openWork(device, WEB1, false);
         await expect.poll(() => pullRows(work), { timeout: 30_000 }).toEqual(['#504 draft', '#501 open', '#502 merged', '#503 closed']);
+        // Its computer read the ticket's development data once.
+        expect(await trackerRequests(harness, 'GET rest/dev-status/latest/issue/summary')).toHaveLength(1);
         await work.getByTestId('ticket-work-pull').nth(2).click();
         await expect.poll(() => opens.urls).toEqual([`https://github.com/${repo}/pull/502`]);
       } finally {
@@ -413,6 +486,8 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
         await expect.poll(() => pullRows(work), { timeout: 60_000 }).toEqual(['#504 draft', '#501 open', '#502 merged', '#503 closed']);
         expect(await forgeOps(remote, 'PullsByKey')).toHaveLength(1);
         expect(await forgeOps(home, 'PullsByKey')).toEqual([]);
+        // The computer that holds the connection read the development data.
+        expect(await trackerRequests(remote, 'GET rest/dev-status/latest/issue/summary')).toHaveLength(1);
       } finally {
         await remote?.close();
         await home?.close();
