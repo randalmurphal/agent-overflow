@@ -970,3 +970,22 @@ func TestProjectStatusesListTheBoardsStatuses(t *testing.T) {
 		t.Fatalf("with s9 regrouped off the boards: %+v", got)
 	}
 }
+
+// The statuses read takes a read board's column statuses alone, never its
+// whole structure (GetMirrorBoard: its data, columns and sprints).
+func TestProjectStatusesReadNoBoardStructure(t *testing.T) {
+	t.Parallel()
+	svc, _, scope := benchService(t)
+	if out, err := svc.syncTick(t.Context(), scope, BoardDue{Structure: true}, Background); err != nil || out.Failure != nil || out.Ended {
+		t.Fatalf("the board's read: %+v, %v", out, err)
+	}
+	cs := newCountingStore(svc.store.(*store.Store))
+	svc.store = cs
+	sites, err := svc.ProjectStatuses("boards-" + scope.Connection)
+	if err != nil || len(sites) != 1 || len(sites[0].Statuses) == 0 || len(sites[0].Unread) != 0 {
+		t.Fatalf("statuses: %+v, %v", sites, err)
+	}
+	if n := cs.take()["GetMirrorBoard"]; n != 0 {
+		t.Errorf("the read took the board's whole structure %d times", n)
+	}
+}

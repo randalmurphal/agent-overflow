@@ -119,9 +119,8 @@ export function measureOf(total: { readonly rows: number; readonly estimate: num
 
 /** The numbers of `sec` counted by `grouping`'s status groups, with
  * `moved` counted where they go. The header counts by the project's; the
- * Complete sprint form by the tracker's, as its completion will. The
- * board's total is the project's, so a whole section's total by the
- * tracker's is its rows'. */
+ * Complete sprint form by the tracker's. The board's total is the
+ * project's, so a whole section's total by the tracker's is its rows'. */
 export function sectionNumbers(held: HeldBoard, sec: BacklogSection, moved: readonly MovedRow[], grouping: Grouping): SectionNumbers {
   const whole = !sec.unread && !sec.more;
   const start = grouping === 'tracker' && whole ? sec.rows.reduce((t, r) => withRow(t, r, 1), NO_ROWS) : sec.total;

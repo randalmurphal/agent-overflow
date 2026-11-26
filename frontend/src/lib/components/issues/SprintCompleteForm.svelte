@@ -2,13 +2,13 @@
   // Completing an active sprint (docs/specs/issues.md, "Backlog and sprint
   // planning"): the form says how much of it is done and how many of the
   // tickets this board shows are not in a finished status, both by the
-  // tracker's status groups as its completion counts them (the header
-  // counts by the project's), and always asks where the unfinished ones
-  // go: an open sprint of the board (the first future one at first) or the
-  // backlog. Which tickets move is the tracker's rule over the whole sprint
-  // (Jira's: a status outside the board's last column), which the board's
-  // count can differ from, so the form claims nothing of what will move and
-  // sends no destination it did not show. The tracker answers a part per
+  // tracker's status groups, not the project's the header counts by, and
+  // always asks where the unfinished ones go: an open sprint of the board
+  // (the first future one at first) or the backlog. Which tickets move is
+  // the tracker's rule over the whole sprint (Jira's: a status outside the
+  // board's last column), which the board's count can differ from, so the
+  // form claims nothing of what will move and sends no destination it did
+  // not show. The tracker answers a part per
   // ticket moved and one for the close; a refusal, one of a close the
   // tracker asks to make again since tickets joined the sprint among them,
   // stays under it, and a made completion closes it.

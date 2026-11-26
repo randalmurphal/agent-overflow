@@ -79,7 +79,8 @@ describe('completing a sprint', () => {
   });
 
   it('counts by the tracker\'s status groups, not those the project regroups or leaves out', async () => {
-    open(section({}), undefined, held({ todo: 'done', in_progress: 'left_out' }));
+    // The board's total is the project's: In progress left out of it.
+    open(section({ total: { rows: 2, estimate: 2, unestimated: 0 } }), undefined, held({ todo: 'done', in_progress: 'left_out' }));
     await waitFor(() => document.querySelector('[data-testid="sprint-complete-form"]') !== null, 'the form');
     expect(el('sprint-complete-summary').textContent?.replace(/\s+/g, ' ').trim()).toBe('1 of 3 points done. 2 of the tickets this board shows are not in a finished status.');
   });

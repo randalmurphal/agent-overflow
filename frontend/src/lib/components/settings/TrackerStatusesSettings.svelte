@@ -86,11 +86,11 @@
   /** Saves the group `control` picked, then shows in it what is stored:
    * a refused or failed pick leaves the stored setup unchanged, so no
    * value of the page moves to set the control back. */
-  async function setGroup(control: HTMLSelectElement | null, site: SiteStatuses, status: string, group: StatusGroup | null): Promise<void> {
+  async function setGroup(control: HTMLSelectElement | null, site: SiteStatuses, status: StatusView, group: StatusGroup | null): Promise<void> {
     const project = selectedId;
     saveNote = null;
     try {
-      const outcome = await editTrackerSetup(project, (held) => withStatusGroup(held, site.tracker, site.site, status, group));
+      const outcome = await editTrackerSetup(project, (held) => withStatusGroup(held, site.tracker, site.site, status.id, group));
       if (project === selectedId && outcome.kind === 'refused') saveNote = { kind: 'refused', text: asSentence(outcome.sentence) };
     } catch (err) {
       if (project === selectedId) saveNote = { kind: 'failed', error: err };
@@ -102,10 +102,9 @@
 
   /** The value a status's select shows: the group the setup puts it in,
    * or '' (the tracker's) when it puts it in none or in the tracker's. */
-  function shownGroup(site: SiteStatuses, status: string): string {
-    const stored = storedGroup(site, status);
-    const own = site.statuses.find((st) => st.id === status)?.group || undefined;
-    return stored !== undefined && stored !== own ? stored : '';
+  function shownGroup(site: SiteStatuses, status: StatusView): string {
+    const stored = storedGroup(site, status.id);
+    return stored !== undefined && stored !== (status.group || undefined) ? stored : '';
   }
 
   /** The group the setup puts `status` of `site` in; undefined for none. */
@@ -224,7 +223,7 @@
                         class={GHOST_BUTTON_CLASS}
                         disabled={locked}
                         title={operateReason || undefined}
-                        onclick={() => void setGroup(null, site, status.id, null)}
+                        onclick={() => void setGroup(null, site, status, null)}
                         data-testid="tracker-status-put-back"
                       >Put back</button>
                     </li>
@@ -245,7 +244,7 @@
 </div>
 
 {#snippet statusRow(site: SiteStatuses, status: StatusView)}
-  {@const shown = shownGroup(site, status.id)}
+  {@const shown = shownGroup(site, status)}
   {@const own = status.group || undefined}
   {@const changed = shown !== ''}
   {@const tracker = trackerKindName(site.tracker)}
@@ -265,7 +264,7 @@
       title={operateReason || undefined}
       onchange={(e) => {
         const control = e.currentTarget as HTMLSelectElement;
-        void setGroup(control, site, status.id, control.value === '' ? null : (control.value as StatusGroup));
+        void setGroup(control, site, status, control.value === '' ? null : (control.value as StatusGroup));
       }}
       data-testid="tracker-status-group"
     >

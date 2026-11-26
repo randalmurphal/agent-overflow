@@ -420,8 +420,7 @@ no step runs at root creation, restore or start.
   (`screenColumns`) or an active sprint's done tickets
   (`sectionNumbers`), takes each row's group from `groupOf` in
   `frontend/src/lib/stores/trackerBoardModel.ts`: the project's, or the
-  tracker's for the Complete sprint form, which says what the tracker's
-  completion will count.
+  tracker's for the Complete sprint form.
 - **The statuses the Status groups page lists** (`ProjectStatuses`,
   `trackerapp/setup_statuses.go`) are read from this computer's mirror
   and setup, with no tracker request: by tracker site, whatever

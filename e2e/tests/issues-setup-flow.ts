@@ -258,7 +258,7 @@ export function registerIssuesSetupFlow({ compact }: SetupSurface): void {
     await openIssuesPane(page, compact);
     await expect(backlogRow(backlog, '10103')).toHaveCount(0, { timeout: 15_000 });
     await expect(sprintNumbers(backlog)).toHaveText('2 of 2 tickets done', { timeout: 15_000 });
-    // Completing the sprint says what Jira will count: its own groups.
+    // The Complete sprint form counts by Jira's groups, not the project's.
     await press(activeSprint(backlog).getByTestId('issues-backlog-sprint-complete'), compact);
     const complete = page.getByTestId('sprint-complete-form');
     await expect(complete.getByTestId('sprint-complete-summary')).toHaveText('1 of 5 tickets done. 4 of the tickets this board shows are not in a finished status.');
