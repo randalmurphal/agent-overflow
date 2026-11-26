@@ -43,6 +43,18 @@ func (a *App) ProjectTrackerStatuses(ctx context.Context, projectID string) ([]t
 	return out, trackerError(err)
 }
 
+// ProjectTrackerFields are the fields the project's tickets can pin, by
+// tracker site, as its Fields page lists them: each site of its boards
+// whose tickets take pinned fields, read from the tracker's field
+// catalog, which the computer caches.
+//
+//ao:scope tracker:read
+func (a *App) ProjectTrackerFields(ctx context.Context, projectID string) ([]trackerapp.SiteFields, error) {
+	return trackerFormRead(a, ctx, "ProjectTrackerFields", "Listing the project's fields", func(ctx context.Context, svc *trackerapp.Service) ([]trackerapp.SiteFields, error) {
+		return svc.ProjectFields(ctx, projectID)
+	})
+}
+
 // SetProjectTrackerSetup replaces the project's tracker setup with setup,
 // which was built from the stored setup at revision. When the stored
 // setup moved since, nothing is saved and the answer says so with the

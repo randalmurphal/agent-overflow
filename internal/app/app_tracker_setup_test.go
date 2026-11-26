@@ -25,6 +25,7 @@ func TestTrackerSetupMethodsCarryTheirScopeAndRoute(t *testing.T) {
 	for name, scope := range map[string]transport.Scope{
 		"ProjectTrackerSetup":    transport.ScopeTrackerRead,
 		"ProjectTrackerStatuses": transport.ScopeTrackerRead,
+		"ProjectTrackerFields":   transport.ScopeTrackerRead,
 		"SetProjectTrackerSetup": transport.ScopeTrackerOperate,
 	} {
 		i := slices.IndexFunc(transport.GeneratedMethods, func(m transport.MethodMeta) bool { return m.Name == name })
@@ -325,5 +326,34 @@ func TestTheSetupAReadAnswersIsSavedBack(t *testing.T) {
 	var save trackerapp.SetupSave
 	if frame != nil || json.Unmarshal(result, &save) != nil || !save.Saved || save.Stored.Revision != read.Revision {
 		t.Fatalf("the read's setup saved back = %s, %+v; want it saved as it was (read %s)", result, frame, read.Setup)
+	}
+}
+
+// A project's fields to pin, on the fake Jira site, are the site's fields
+// a ticket's detail lists: none of the card's, the description, the
+// sprint or the rank.
+func TestProjectTrackerFieldsListWhatATicketCanPin(t *testing.T) {
+	t.Parallel()
+	f := newTrackerBoardFixture(t)
+	got, err := f.a.ProjectTrackerFields(t.Context(), f.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Tracker != store.TrackerKindJira || got[0].Site != f.conn.Site {
+		t.Fatalf("the project's fields = %+v", got)
+	}
+	ids := map[string]bool{}
+	for _, field := range got[0].Fields {
+		ids[field.ID] = true
+	}
+	for _, id := range []string{"summary", "status", "assignee", "description", "customfield_10020", "customfield_10019"} {
+		if ids[id] {
+			t.Errorf("%s is offered to pin", id)
+		}
+	}
+	for _, id := range []string{"reporter", "duedate", "components"} {
+		if !ids[id] {
+			t.Errorf("%s is not offered to pin: %+v", id, got[0].Fields)
+		}
 	}
 }
