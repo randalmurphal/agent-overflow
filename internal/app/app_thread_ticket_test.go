@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -186,24 +187,23 @@ func TestSetThreadTicketNeedsTheTicketReadGrant(t *testing.T) {
 	}
 }
 
-// A thread's delete ends its link: the boards that show the ticket the
-// link was the last to keep, as the parent of their rows, are told, so
-// they stop showing its card. The thread here never held a message, as a
+// A thread's delete ends its link, and the board whose row has the ticket
+// as parent names it before the link, while it keeps the ticket and after
+// it: a row names its parent from the parent's name, whatever keeps the
+// parent. The open ticket that shows the ticket as a linked ticket shows
+// the card the link kept, and once the delete ended the link, the ticket
+// as its own read gave it. The thread here never held a message, as a
 // thread linked before anything was typed has not: the person's Delete
 // from the sidebar is what ends a never-sent thread's link, since the
 // empty-draft cleanup refuses a linked thread (TestALinkKeepsANeverSentThread).
-func TestDeletingALinkedThreadTellsTheBoardsOfItsTicket(t *testing.T) {
+func TestDeletingALinkedThreadLeavesItsTicketNamedAsParent(t *testing.T) {
 	t.Parallel()
-	site := trackerBoardSite()
-	site.Projects = append(site.Projects, trackerfake.JiraProject{ID: "10001", Key: "OPS", Name: "Ops"})
-	day := site.Issues[0].Created
-	site.Issues = append(site.Issues, trackerfake.JiraIssue{ID: "20001", Key: "OPS-1", Project: "OPS", Type: "10000", Summary: "The epic",
-		Status: "10000", Created: day, Updated: day})
-	site.Issues[1].Parent = "20001"
-	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: site})
+	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: withParentTicket(trackerBoardSite())})
 	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
 	f.subscribe(t, ctx)
 	f.boardEvent(t, "for the first read", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10102") })
+	f.parentNamed(t, "before the link")
+	linking := f.openLinkingTicket(t, ctx)
 	if err := f.a.store.CreateThread(store.Thread{ID: "t1", ProjectID: f.project, Title: "Thread", Provider: "claude", Model: "test-model",
 		WorkspacePath: "/tmp/web", CreatedAt: 1, UpdatedAt: 1}); err != nil {
 		t.Fatal(err)
@@ -211,12 +211,93 @@ func TestDeletingALinkedThreadTellsTheBoardsOfItsTicket(t *testing.T) {
 	if _, err := f.a.SetThreadTicket(ctx, "t1", parentTicket); err != nil {
 		t.Fatal(err)
 	}
-	f.boardEvent(t, "for the parent's card", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10102") })
+	f.parentNamed(t, "while the link keeps it")
+	f.linkShows(t, ctx, linking, "while the link keeps OPS-1", linkKept)
 
 	if _, err := f.a.DeleteThread("t1"); err != nil {
 		t.Fatal(err)
 	}
-	f.boardEvent(t, "for the parent no longer kept", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10102") })
+	if links, err := f.a.store.ListThreadTickets([]string{"t1"}); err != nil || len(links) != 0 {
+		t.Fatalf("the deleted thread's links = %+v, %v; want none", links, err)
+	}
+	f.parentNamed(t, "after the delete")
+	f.linkShows(t, ctx, linking, "after the delete", linkUnkept)
+}
+
+// withParentTicket is site with parentTicket, OPS-1, an epic of another
+// project, as the parent of row 10102, and WEB-1 (10101) relating to it.
+func withParentTicket(site trackerfake.JiraSite) trackerfake.JiraSite {
+	site.Projects = append(site.Projects, trackerfake.JiraProject{ID: "10001", Key: "OPS", Name: "Ops"})
+	day := site.Issues[0].Created
+	site.Issues = append(site.Issues, trackerfake.JiraIssue{ID: parentTicket.IssueID, Key: "OPS-1", Project: "OPS", Type: "10000", Summary: "The epic",
+		Status: "10000", Created: day, Updated: day})
+	site.Issues[1].Parent = parentTicket.IssueID
+	site.Links = append(site.Links, trackerfake.JiraLink{ID: "30001", Type: "10003", Outward: "10101", Inward: parentTicket.IssueID})
+	return site
+}
+
+// The statuses WEB-1's open ticket shows OPS-1, its linked ticket, with
+// (openLinkingTicket): the one the card a keep of OPS-1 read holds, and
+// the one WEB-1's own read gave, which shows once nothing keeps OPS-1.
+const (
+	linkKept   = "10001"
+	linkUnkept = "10000"
+)
+
+// openLinkingTicket opens WEB-1's ticket, which shows parentTicket as a
+// linked ticket, waits for its first read, and then moves parentTicket to
+// In Progress on the tracker. WEB-1's read holds OPS-1 in To Do, and a
+// keep of OPS-1 begun after this reads its card in In Progress, which the
+// view shows while the keep lasts (linkShows). It returns the ticket's
+// subscription.
+func (f *trackerBoardFixture) openLinkingTicket(t *testing.T, ctx context.Context) string {
+	t.Helper()
+	sub, err := f.a.SubscribeTrackerTicket(ctx, f.conn.ID, "10101", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.linkShows(t, ctx, sub.ID, "after its first read", linkUnkept)
+	world := f.e.Snapshot()
+	world.Jira[0].Token = trackerTestToken
+	for i := range world.Jira[0].Issues {
+		if is := &world.Jira[0].Issues[i]; is.ID == parentTicket.IssueID {
+			is.Status, is.Updated = linkKept, is.Updated.Add(time.Minute)
+		}
+	}
+	if err := f.e.Seed(world); err != nil {
+		t.Fatal(err)
+	}
+	return sub.ID
+}
+
+// linkShows waits until the open ticket sub shows its linked ticket
+// parentTicket in status.
+func (f *trackerBoardFixture) linkShows(t *testing.T, ctx context.Context, sub, what, status string) {
+	t.Helper()
+	f.ticketShows(t, ctx, sub, fmt.Sprintf("OPS-1 as its link in status %s %s", status, what), func(d *trackerapp.DetailView) bool {
+		i := slices.IndexFunc(d.Links, func(l trackerapp.LinkView) bool { return l.Issue.ID == parentTicket.IssueID })
+		return i >= 0 && d.Links[i].Issue.Status.ID == status
+	})
+}
+
+// parentNamed fails unless the subscribed board's row 10102 names its
+// parent as OPS-1, "The epic" (parentTicketSite).
+func (f *trackerBoardFixture) parentNamed(t *testing.T, when string) {
+	t.Helper()
+	v, err := f.a.TrackerBoard(context.Background(), f.sub, []trackerapp.Section{{Kind: trackerapp.SectionSprint, Sprint: "1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := trackerapp.ParentView{ID: parentTicket.IssueID, Key: "OPS-1", Title: "The epic"}
+	for _, s := range v.Sections {
+		if i := slices.IndexFunc(s.Rows, func(r trackerapp.RowView) bool { return r.Card.ID == "10102" }); i >= 0 {
+			if p := s.Rows[i].Card.Parent; p == nil || *p != want {
+				t.Fatalf("%s row 10102's parent = %+v; want %+v", when, p, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("%s the board shows no row 10102: %+v", when, v.Sections)
 }
 
 // withTrackers gives a, a transfer backend, the tracker service with a
@@ -249,19 +330,13 @@ func withTrackers(t *testing.T, a *App, jiraURL string) TrackerConnection {
 var parentTicket = ThreadTicketRef{Kind: store.TrackerKindJira, Site: "https://example.atlassian.net", IssueID: "20001"}
 
 // parentTicketSite serves the fake Jira site of the board tests with
-// parentTicket, an epic of another project, as the parent of row 10102,
-// and returns the engine and the site's URL.
+// parentTicket (withParentTicket), and returns the engine and the site's
+// URL.
 func parentTicketSite(t *testing.T) (*trackerfake.Engine, string) {
 	t.Helper()
 	e := trackerfake.New(trackerfake.Options{})
 	t.Cleanup(e.Close)
-	site := trackerBoardSite()
-	site.Projects = append(site.Projects, trackerfake.JiraProject{ID: "10001", Key: "OPS", Name: "Ops"})
-	day := site.Issues[0].Created
-	site.Issues = append(site.Issues, trackerfake.JiraIssue{ID: parentTicket.IssueID, Key: "OPS-1", Project: "OPS", Type: "10000", Summary: "The epic",
-		Status: "10000", Created: day, Updated: day})
-	site.Issues[1].Parent = parentTicket.IssueID
-	if err := e.Seed(trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}}); err != nil {
+	if err := e.Seed(trackerfake.Fixture{Jira: []trackerfake.JiraSite{withParentTicket(trackerBoardSite())}}); err != nil {
 		t.Fatal(err)
 	}
 	srv, err := trackerfake.Serve(e, "example.atlassian.net")
@@ -278,8 +353,8 @@ func parentTicketSite(t *testing.T) (*trackerfake.Engine, string) {
 }
 
 // showParentBoard subscribes a's board 1 of project, through conn, as a
-// screen showing it, and waits for its first read, whose row 10102 shows
-// parentTicket as its parent while a link keeps it.
+// screen showing it, and waits for its first read, whose row 10102 names
+// parentTicket as its parent.
 func showParentBoard(t *testing.T, a *App, e *trackerfake.Engine, conn TrackerConnection, project string) *trackerBoardFixture {
 	t.Helper()
 	bus := transport.NewEventBus(64)
@@ -301,7 +376,9 @@ func showParentBoard(t *testing.T, a *App, e *trackerfake.Engine, conn TrackerCo
 // A moved thread arrives with its link, which takes the card the
 // destination's mirror holds and shows current there, read through the
 // destination's own connection; the source no longer keeps the ticket for
-// it, and tells the boards that showed it as a parent.
+// it: its board still names the ticket as its row's parent, and its open
+// ticket that shows it as a linked ticket stops showing the card the link
+// kept.
 func TestAMovedThreadCarriesItsLink(t *testing.T) {
 	remotetest.Require(t)
 	e, jiraURL := parentTicketSite(t)
@@ -325,11 +402,15 @@ func TestAMovedThreadCarriesItsLink(t *testing.T) {
 	if err := source.store.CreateThread(thread); err != nil {
 		t.Fatal(err)
 	}
+	// The source shows the board whose row 10102 has the ticket as parent,
+	// and the open ticket that shows it as a linked ticket.
+	board := showParentBoard(t, source, e, sourceConn, sourceProject.ID)
+	ticketCtx, _ := newTestConnection(t, transport.ConnPrincipal{})
+	linking := board.openLinkingTicket(t, ticketCtx)
 	if _, err := source.SetThreadTicket(ctx, thread.ID, ticket); err != nil {
 		t.Fatal(err)
 	}
-	// The source shows the board whose row 10102 has the ticket as parent.
-	board := showParentBoard(t, source, e, sourceConn, sourceProject.ID)
+	board.linkShows(t, ticketCtx, linking, "while the link keeps OPS-1", linkKept)
 	// The destination's mirror holds the ticket's card through a thread of
 	// its own.
 	if err := destination.store.CreateThread(store.Thread{ID: uuid.NewString(), ProjectID: destProject.ID, Title: "Here", Provider: "claude",
@@ -372,7 +453,8 @@ func TestAMovedThreadCarriesItsLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	awaitTransferComplete(t, source, destination, operation, false)
-	board.boardEvent(t, "for the parent the move stopped keeping", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10102") })
+	board.parentNamed(t, "after the move")
+	board.linkShows(t, ticketCtx, linking, "after the move", linkUnkept)
 
 	moved, err := destination.store.GetThread(thread.ID)
 	if err != nil {

@@ -183,6 +183,7 @@ func (w *wireIssueDetail) detail(op operation, r reply) (*IssueDetail, error) {
 	// { id } ones.
 	if d.Parent != nil {
 		d.ParentID = d.Parent.ID
+		d.ParentName = (&wireParent{ID: d.Parent.ID, Identifier: d.Parent.Identifier, Title: d.Parent.Title}).named()
 	}
 	if w.Project != nil {
 		d.ProjectID, d.ProjectName = w.Project.ID, w.Project.Name

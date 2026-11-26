@@ -22,6 +22,7 @@ var mirrorPoolReads = map[string]int{
 	"GetMirrorRoot":           1, // one root, by connection
 	"GetMirrorCatalog":        1, // at most mirrorMaxLookup users and statuses, each by key
 	"ListMirrorCards":         1, // at most mirrorMaxLookup cards, each by key
+	"ListMirrorParents":       1, // at most mirrorMaxLookup parents' names, each by key
 	"ListMirrorIssueRows":     1, // a page of one issue's rows
 	"ListMirrorTicketRows":    1, // the rows of at most MirrorMaxBodies issues, each by key
 	"ListMirrorSprintNames":   1, // at most mirrorMaxLookup sprints on as many boards, each pair by key

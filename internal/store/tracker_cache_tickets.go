@@ -517,7 +517,7 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 		if err != nil {
 			return err
 		}
-		out.Changes.Cards, out.Changes.Threads = stored.changed, unionSorted(out.Changes.Threads, stored.threads)
+		out.Changes.Cards, out.Changes.Parents, out.Changes.Threads = stored.changed, stored.parents, unionSorted(out.Changes.Threads, stored.threads)
 		for _, i := range bodies {
 			if _, err := tx.Exec(mirrorBodyWriteSQL, rootID, tickets[i].Card.IssueID, mirrorData(tickets[i].Body)); err != nil {
 				return fmt.Errorf("write the body of issue %s: %w", tickets[i].Card.IssueID, err)

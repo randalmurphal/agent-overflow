@@ -56,6 +56,15 @@ func buildTemplate(path string) error {
 // on cleanup. The clone is bare-migrated: no project, no thread, no items.
 func Clone(tb testing.TB) *store.Store {
 	tb.Helper()
+	s, _ := CloneFile(tb)
+	return s
+}
+
+// CloneFile is Clone, also returning the clone's path, for tests that put
+// the file in a state no store method writes, such as the one a migration
+// leaves.
+func CloneFile(tb testing.TB) (*store.Store, string) {
+	tb.Helper()
 	path := ClonePath(tb)
 	s, err := store.New(path)
 	if err != nil {
@@ -78,7 +87,7 @@ func Clone(tb testing.TB) *store.Store {
 			tb.Errorf("storetest: stored meta holds served subagent keys: %v", rows)
 		}
 	})
-	return s
+	return s, path
 }
 
 // WithParentCard runs write with item carrying the card of its parent,

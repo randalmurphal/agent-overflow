@@ -162,6 +162,12 @@ func (s site) cardOf(is *jira.Issue, cat *catalog) (tracker.Card, error) {
 	}
 	if is.Parent != nil {
 		c.Parent = tracker.IssueID(is.Parent.ID)
+		// Jira names the parent with its key, summary and type (measured,
+		// docs/references/tracker-api-measurements.md); a parent named
+		// without them is named by ID alone.
+		if p := is.Parent; p.Key != "" && p.Type != nil {
+			c.ParentName = &tracker.ParentName{Key: p.Key, Title: p.Summary, Level: p.Type.HierarchyLevel}
+		}
 	}
 	resolved, err := is.Field("resolutiondate").DateTime()
 	switch {

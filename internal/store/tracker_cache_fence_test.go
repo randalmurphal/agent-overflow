@@ -64,7 +64,7 @@ func TestAnAbsenceFromBeforeAListingIsOwedARead(t *testing.T) {
 			}
 		default:
 			got := mustWriteRows(t, s, absence, root)
-			if !reflect.DeepEqual(got, MirrorChanges{Cards: []string{"10005"}, Rows: []string{"10005"}, Added: []string{"10005"}, Removed: []string{"10001"}}) {
+			if !reflect.DeepEqual(got, MirrorChanges{Cards: []string{"10005"}, Rows: []string{"10005"}, Removed: []string{"10001"}}) {
 				t.Fatalf("%s: the absence = %+v", order, got)
 			}
 			// 10005, which only the read by ID placed, is unsettled.
@@ -323,7 +323,7 @@ func TestMirrorFenceStatements(t *testing.T) {
 	}
 	mustWriteRows(t, s, rowsPage(s, root, 60, nil, webRow("30001", 5, "u")), root)
 	statements, writes = count(write(rowsPage(s, root, 70, nil, webRow("30001", 5, "u")), nil))
-	if statements != 7 || !reflect.DeepEqual(writes, map[string]int{"tracker_cache_board_issues": 1, "tracker_cache_issues": 1}) {
-		t.Errorf("an unsettled row read by ID again: %d statements, wrote %v; want 7, its row's and its card's read", statements, writes)
+	if statements != 8 || !reflect.DeepEqual(writes, map[string]int{"tracker_cache_board_issues": 1, "tracker_cache_issues": 1}) {
+		t.Errorf("an unsettled row read by ID again: %d statements, wrote %v; want 8, its row's and its card's read", statements, writes)
 	}
 }

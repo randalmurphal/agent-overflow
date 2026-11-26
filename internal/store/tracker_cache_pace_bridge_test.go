@@ -18,11 +18,12 @@ func PaceForTest(t *testing.T, s *Store, root int64, board string, regroup Mirro
 }
 
 // ScaleMirrorForTest hands the scale fixture of one board of issues
-// issues (benchChanges changes each), its root and its board, to the
+// issues (benchChanges changes each, parented as a scrum board's:
+// benchParented), its root and its board, to the
 // external test that measures a dashboard over it
 // (tracker_cache_dashboard_scale_test.go).
 func ScaleMirrorForTest(tb testing.TB, issues int) (*Store, int64, string) {
-	s, root, _ := openSizedMirror(tb, benchMirrorSize{boards: 1, issues: issues})
+	s, root, _ := openSizedMirror(tb, benchMirrorSize{boards: 1, issues: issues, parents: true})
 	return s, root, benchBoardID(0)
 }
 
