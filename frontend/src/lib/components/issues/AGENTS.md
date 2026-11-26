@@ -117,8 +117,17 @@ board methods, events and the patch read in
   connects again. New
   ticket's draft, one per section, is held by the Backlog screen
   (`BacklogScreen.svelte` `createDrafts`), so it outlives the form.
+- `stores/trackerSetup.svelte.ts` holds a project's tracker setup and
+  its statuses in this window, one read for every surface that holds
+  them (the ticket's pins, the Start work form and defaults, Settings >
+  Issues > Status groups), read again on `tracker:setup_updated` and on
+  reconnect only while held; `editTrackerSetup` is the one save, one at a
+  time per project, built from the held setup under its revision, and
+  what it settles to is what the computer stored. `TicketPin.svelte` is
+  the pin a ticket's field row and section header show.
 - `stores/trackerTicketModel.ts` is the pure part: the comment and
-  history windows, the rail's order, the side a new link sends, a poker
+  history windows, the rail's order and the sections' by the project's
+  pins (`railFields`, `ticketSections`, `withTicketPin`), the side a new link sends, a poker
   round's result, the attachment a file in the text names, the board
   row a ticket shows its points from and how its sprints are named.
 - `stores/trackerWriteOutcome.ts` is what a tracker write's answer means
@@ -171,8 +180,9 @@ first open of a ticket (`TicketHost.svelte`),
 `TimeScreen.svelte` on the first switch to Time.
 The always-loaded stores reach them only through
 `stores/trackerBoardEvents.ts`, where the board and ticket stores take
-`tracker:board_updated`, `tracker:issue_updated` and their gaps and the
-choices store hears that a computer's board lists may have changed;
+`tracker:board_updated`, `tracker:issue_updated` and their gaps, the
+setup store takes `tracker:setup_updated`, and the choices store hears
+that a computer's board lists may have changed;
 `lib/architecture.test.ts` fails when one of them enters the startup
 graph.
 

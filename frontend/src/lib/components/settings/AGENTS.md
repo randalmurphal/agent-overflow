@@ -26,6 +26,14 @@ Provider pages remain provider-specific. Account, model, MCP, and login controls
 route to their owning computer and respect caller scope. Do not infer capability
 from layout or from another provider's fields.
 
+## Issues pages
+
+A per-project Issues page picks its project with
+`TrackerProjectSelect.svelte` (the page's computer's projects). The
+project's tracker setup is `stores/trackerSetup.svelte.ts`'s:
+`TrackerStatusesSettings.svelte` (Status groups) holds the setup and the
+statuses while it shows a project and saves through `editTrackerSetup`.
+
 ## Pairing and remote computers
 
 Pairing displays secrets only in the intended setup surface. Do not place

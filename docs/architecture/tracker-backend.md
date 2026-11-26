@@ -418,6 +418,18 @@ no step runs at root creation, restore or start.
   total the client adds up from rows it holds, such as a sprint board's
   columns (`screenColumns` in
   `frontend/src/lib/stores/trackerBoardModel.ts`), skips the rows in them.
+- **The statuses the Status groups page lists** (`ProjectStatuses`,
+  `trackerapp/setup_statuses.go`) are read from this computer's mirror
+  and setup, with no tracker request: by tracker site, whatever
+  connection reaches it, each listed board's column statuses in board
+  order, each once, the statuses the setup regroups that no listed board
+  shows, and the listed boards the mirror has not read, by name. Names
+  come from the root's catalog, looked up 500 at a time. With 20 boards of
+  12 columns of 5 statuses, a catalog of 1,000 statuses and 30 regrouped,
+  one read takes about 2.4 ms and 1 MB
+  (`BenchmarkProjectStatuses20Boards`). A client reads it only while the
+  page shows a project: on the page's show, after `tracker:setup_updated`,
+  on reconnect and on Check again.
 
 ## Tables
 
@@ -1337,6 +1349,7 @@ selected computer.
 | `SetProjectTrackerBoards(projectID, held, boards)` | `SetProjectBoards` | operate | project |
 | `ProjectTrackerSetup(projectID)` | `ProjectSetup` | read | project |
 | `SetProjectTrackerSetup(projectID, revision, setup)` | `SetProjectSetup` | operate | project |
+| `ProjectTrackerStatuses(projectID)` | `ProjectStatuses` | read | project |
 | `SubscribeTrackerBoard(projectID, connectionID, boardID, sections, visible)` | `SubscribeBoard` | read | project, caller-bound |
 | `TrackerBoard(subscriptionID, sections)` | `Board` | read | home |
 | `TrackerSectionRows(subscriptionID, section, after)` | `SectionRows` | read | home |
@@ -2362,9 +2375,10 @@ its sync, pumps, reads and writes; the connection, board, ticket, write,
 form-read, worklog and planning poker bound methods, the ticket file routes,
 `tracker:board_updated` and `tracker:issue_updated`, the app's calls at
 start, the harness's fake trackers (`HarnessTrackerSeed`), the project
-setup file with its status groups and ticket pins, its two bound methods
+setup file with its status groups and ticket pins, its three bound methods
 and `tracker:setup_updated` ([Project setup](#project-setup)), and the
-Issues settings screen (Settings > Issues: Connections and Boards), with
+Issues settings screen (Settings > Issues: Connections, Boards and Status
+groups), with
 the `bindings.ts` wrappers of the connection methods, the two picker lists,
 `ProjectTrackerBoards` and `SetProjectTrackerBoards`, and their stores
 (`stores/trackerConnections.svelte.ts`,
@@ -2396,9 +2410,13 @@ ticket finder, with the `SetThreadTicket` and `ClearThreadTicket`
 wrappers (`stores/threadTicketLinks.svelte.ts`), and the ticket's Work
 with Ask and Start work and the pull request rows' ticket chips
 ([Ticket keys, Work, Ask and Start work](#ticket-keys-work-ask-and-start-work)),
-with the wrappers of `GetTicketWork`, `StartTicketThread`,
-`ProjectTrackerSetup` and `SetProjectTrackerSetup`
-(`stores/ticketWork.svelte.ts`).
+with the wrappers of `GetTicketWork` and `StartTicketThread`
+(`stores/ticketWork.svelte.ts`), and the project's setup: Settings >
+Issues > Status groups, the ticket's pins and the Start work defaults,
+with the wrappers of `ProjectTrackerSetup`, `SetProjectTrackerSetup`,
+`ProjectTrackerStatuses` and `tracker:setup_updated`
+(`stores/trackerSetup.svelte.ts`, the one holder of a project's setup
+and statuses in a window).
 A failure of the linked-issues
 loop after boot reaches only the log (`Deps.LoopFailed`): its failures
 are outside the tracker (a store error, the cleanup), and a tracker
@@ -2407,7 +2425,7 @@ Not built, owed by the app layer:
 
 - The rest of the project's tracker setup, each a section of its file:
   card marks, draft settings and what agents may do, and the Setup pages
-  that edit the sections, Start work defaults among them. A query that
+  that edit them. A query that
   needs part of the setup takes it as a bound argument, as the status
   groups are; nothing of the file is copied into the mirror.
 - The time-draft posting path (Agent tools).
