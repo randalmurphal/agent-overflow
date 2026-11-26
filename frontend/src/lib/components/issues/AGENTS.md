@@ -50,7 +50,8 @@ board methods, events and the patch read in
 - `stores/trackerTicket.svelte.ts` holds each open ticket's subscription,
   one per ticket for every surface showing it, with its connection's
   kind and the person's account there as the subscription tells them
-  (the ticket reads no connection list): subscribe with the vote,
+  (the ticket reads no connection list), held through a re-subscribe
+  until its answer (the rules are written beside them): subscribe with the vote,
   the `tracker:issue_updated` fold, the one view read in flight, the gap
   read, Refresh and the earlier comments held by page with the token that
   read each. The rules those pages keep ("Held comment pages") are written

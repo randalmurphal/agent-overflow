@@ -383,7 +383,10 @@ text, Work, and the thread an agent's comment came from.
   it in the tracker. Jira tickets offer Estimate and Log time.
 - A Linear ticket has no type mark, a fixed field list, and no time or
   poker controls. Until the ticket's computer answers its opening, it offers
-  neither tracker's own controls.
+  neither tracker's own controls. They stay while the computer reconnects.
+  An open Log time keeps what was typed and logs once the computer confirms
+  the person's account again; it closes if the computer answers that it
+  knows no account there.
 - The parent's chip opens the parent; its right-click or long-press menu
   opens it here or in a pane of its own and copies its key.
 
