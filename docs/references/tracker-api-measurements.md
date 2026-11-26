@@ -754,19 +754,46 @@ changes each (20,000 at 2,000 issues), 100 sprints and 20 people
 
 | Path | 2,000 issues | 20,000 issues |
 |---|---|---|
-| Evaluation, last 5 sprints | 104 ms (98 to 127) | 1.13 s (1.07 to 1.18) |
-| of which the store's fill | 97 ms (91 to 120) | 1.07 s (1.02 to 1.13) |
-| Evaluation, this sprint | 105 ms (97 to 108) | 1.21 s (1.18 to 1.25) |
-| Drill, first page of 100 rows | 97 ms (91 to 118) | 1.09 s (1.07 to 1.12) |
-| Answer as JSON | 11,607 bytes | 11,608 bytes |
-| Drill page as JSON | 18,302 bytes | 18,304 bytes |
-| Go allocations of one evaluation | 2.9 MB in 40,482 | 29.9 MB in 380,529 |
+| Evaluation, last 5 sprints | 40 ms (33 to 52) | 304 ms (298 to 331) |
+| of which the store's fill | 30 ms (27 to 44) | 249 ms (244 to 277) |
+| Evaluation, this sprint | 38 ms (36 to 56) | 335 ms (309 to 370) |
+| Drill of the stuck tickets, first page of 100 rows | 23 ms (22 to 25) | 146 ms (142 to 158) |
+| Answer as JSON | 12,516 bytes | 12,518 bytes |
+| Drill page as JSON | 17,924 bytes | 17,928 bytes |
+| Go allocations of one evaluation, last 5 sprints | 2.8 MB in 37,639 | 30.2 MB in 351,076 |
 
-The fill is nearly all of an evaluation and grows with the board; the
-metrics and the reduction take under 10 ms at 2,000 issues. An open
-dashboard counts again at most once every 5 s while its board changes,
-so at 20,000 issues a board that changes constantly costs about a fifth
-of one core while the screen shows.
+A count copies only the relations its metrics read. Each fill
+statement timed alone on the same fixture (the median of 5 runs, with a
+timing harness kept out of the repository), before that change (every
+relation, for every count) and after it:
+
+| Fill | Before, 2,000 | After, 2,000 | Before, 20,000 | After, 20,000 | Rows at 20,000 |
+|---|---|---|---|---|---|
+| tickets, with their start and finish | 8.5 ms (two fills) | 11.1 ms | 82.4 ms (two fills) | 118.3 ms | 20,000 |
+| sprint_tickets | 41.9 ms | 1.8 ms | 566.0 ms | 24.8 ms | 20,000 |
+| sprint_finished, closed sprints | 5.4 ms | 4.5 ms | 97.6 ms | 99.9 ms | 19,800 |
+| sprint_finished, active sprints | 0.8 ms | 0.8 ms | 9.4 ms | 9.5 ms | 200 |
+| people | 8.5 ms | 0.2 ms | 114.6 ms | 1.9 ms | 20 |
+| statuses | 0.1 ms | 0.6 ms | 0.1 ms | 4.6 ms | 5 |
+| epics, sprints, board, board state | 0.4 ms | 0.3 ms | 1.6 ms | 1.4 ms | |
+| reading tickets back into Go | 0.2 ms | 0.1 ms | 1.7 ms | 0.2 ms | |
+| **an Overview's copy** | **83.9 ms** | **19.3 ms** | **1,058 ms** | **260.5 ms** | |
+| changes, copied only for a metric that reads them | 18.2 ms | 17.6 ms | 184.3 ms | 195.7 ms | 200,000 |
+| the people and statuses the changes name | in people | 14.7 ms | in people | 179.3 ms | |
+
+The rest of an Overview's copy at 20,000 issues is the tickets fill,
+which reads each ticket's first move to in progress and last move to
+done from its stored changes by key (about 36 ms over the two fills it
+replaced), and what each closed sprint finished, the pace's
+done-at-completion rule the Board's sprint sections share. A Stuck drill
+copies the tickets and their statuses, so the tickets fill is most of
+its 146 ms.
+
+The fill is still most of an evaluation and grows with the board; the
+metrics and the reduction take about 10 ms at 2,000 issues and 55 ms at
+20,000. An open dashboard counts again at most once every 5 s while its
+board changes, so at 20,000 issues a board that changes constantly
+costs about a sixteenth of one core while the screen shows.
 
 While the Dashboards screen shows, the board's subscription stays voted
 shown so the copy keeps syncing, and the client reads the board's patch
@@ -786,10 +813,10 @@ Sorted with a `LIMIT`, SQLite keeps only the top rows and writes none.
 
 The Dashboards screen opened and closed four times in the desktop
 harness (`issues-dashboards.spec.ts`, heap snapshots after a forced
-collection, compiled code left out): the page held 14,163 KB with the
-Board shown, 14,895 to 14,967 KB with the dashboard open, and 14,181 KB
+collection, compiled code left out): the page held 14,086 KB with the
+Board shown, 14,761 to 14,927 KB with the dashboard open, and 14,234 KB
 after the fourth close; the pane strip's DOM went from 163 elements to
-275 and back to 163.
+277 and back to 163.
 
 The Go side holds nothing between calls: each evaluation and drill opens
 its session and closes it before it answers, and the screen's only
@@ -800,10 +827,10 @@ this sprint, and 20 drills, heap read after a forced collection):
 
 | Moment | 2,000 issues | 20,000 issues |
 |---|---|---|
-| Before the first evaluation | 4.2 MB, 7 goroutines, 15 files | 4.6 MB, 7 goroutines, 15 files |
-| After the first | 4.2 MB, 7 goroutines, 16 files | 4.6 MB, 7 goroutines, 16 files |
-| After 20 of each, not collected | 5.9 MB, 7 goroutines, 16 files | 13.2 MB, 7 goroutines, 16 files |
-| After 20 of each, collected | 4.4 MB, 7 goroutines, 16 files | 4.7 MB, 7 goroutines, 16 files |
+| Before the first evaluation | 4.7 MB, 7 goroutines, 15 files | 4.6 MB, 7 goroutines, 15 files |
+| After the first | 4.6 MB, 7 goroutines, 16 files | 4.6 MB, 7 goroutines, 16 files |
+| After 20 of each, not collected | 5.5 MB, 7 goroutines, 16 files | 9.7 MB, 7 goroutines, 16 files |
+| After 20 of each, collected | 4.7 MB, 7 goroutines, 16 files | 4.6 MB, 7 goroutines, 16 files |
 
 The one file the first evaluation leaves open is a descriptor of the app
 database: SQLite's unix VFS does not close a file whose inode another

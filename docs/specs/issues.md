@@ -556,6 +556,18 @@ sidebar and the thread header, on desktop and on a phone.
 - A number tile shows its change against the previous range and a trend
   line. The arrow gives the direction and its color says whether that
   direction is good.
+- A number says how many tickets it could not count beside it ("2 not
+  counted"), and reads "Not known" with no change mark when it counted
+  none. A drill's header gives its number and its rows and tickets ("6
+  rows, 5 tickets" when a ticket counts in two sprints); each row names
+  the period it counts in, and a row not counted says "Not counted" and
+  why.
+- Until the board's first read has finished, the dashboard and each
+  drill say "This board's first read has not finished: these numbers
+  count the tickets read so far.", and nothing is compared.
+- While a new range or narrowing is counted, the last answer stays
+  dimmed and takes no click. A count that fails says "Not counted again"
+  and why beside the last answer.
 - Clicking a person or an epic narrows every widget on the page to it. A
   chip in the toolbar clears it.
 - Rows in a ticket-list widget can be selected, then moved, assigned or

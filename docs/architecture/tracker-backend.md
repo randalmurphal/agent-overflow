@@ -2044,31 +2044,66 @@ closes a database of its own.
 
 ### The export
 
-`store.ExportMirrorBoard` fills a private in-memory database with one
-board's rows: the board, its tickets (with each one's start, finish and
-how far back its history is complete), statuses with their groups,
-people, epics, sprints and their members, the tickets' changes and what
-each sprint finished (`MirrorExportSchema`, `MirrorExportTables`). It
-attaches the app file read-only, reads by the board's keys
-(`TestMirrorExportSearchesByTheBoard` holds each statement's query
-plan to that), and detaches before it returns. Only the store knows the
-app file's path and its pragmas.
+`store.ExportMirrorBoard` fills a private in-memory database with the
+relations of one board a count reads (`MirrorExportSchema`,
+`MirrorExportTables`): the board, its tickets (each one's start and
+finish from its stored changes, whether its history shows its start,
+whether it is open and whether it counts, by the project's status
+groups), the statuses its columns, tickets and copied changes name,
+people (the assignees, and the people the changes name when those are
+copied), epics, sprints and their members, the tickets' changes and what
+each sprint finished. A count names the relations it reads, and each
+fill names the relations it reads from the copy, so a fill's needs are
+filled first; `board` and `sprints` are always filled, since the range
+reads them, and an unknown relation is an error. It attaches the app
+file read-only, reads by the board's keys
+(`TestMirrorExportSearchesByTheBoard` holds each statement's query plan
+to that, and `TestMirrorExportReadsEachRowOnce` the steps it takes per
+row it copies), and detaches before it returns. Only the store knows the
+app file's path and its pragmas. `MirrorExport.FirstReadDone` says
+whether the board's first sync has reconciled
+(`tracker_cache_sync.reconciled_at`): until it has, the answer and every
+drill carry `reading`, and the range before is not compared. A board
+unlisted and listed again starts over.
+
+The relations a count reads are its metrics': each metric's prepare
+records the relations it reads (`How.Reads`), once per dashboard kind
+on an empty sealed session, and a count asks for those of the widgets it
+counts and the tickets, statuses, people and epics its answer names. No
+built-in metric reads `changes`, so none copies them.
 
 ### Metrics
 
 A metric is one SELECT over the export whose rows are contributions:
 a `ticket` and any of `value`, `bucket`, `series`, `person`, `epic`, `at`
-and `note` (`trackerdash/metric.go`). The app does the rest: it places
-rows in the range's periods by `at` (or by the sprint a `bucket`
-names), reduces them (count, sum, median, average, or the average of the
-periods' sums), narrows them to a person or an epic, and lists them in a
-drill. A metric with `at` or a sprint bucket counts the range and is
-compared with the range before; any other counts now and has no change
-mark. The host binds `:now` and `:since` (where the range's periods,
-the previous range's included, begin), so a metric of the range reads
-only the rows it can place. A drill evaluates its metric again, so a
-number and its rows always come from one evaluation; a later page that
-finds a different count starts again at the first.
+and `note` (`trackerdash/metric.go`). Each row is checked as it comes
+in: its ticket is in the copy, its series is one the metric names, its
+value is finite and within ±1e12, and its `at` is an instant before the
+year 2286. The app does the rest: it places rows in the range's periods
+by `at` (or by the sprint a `bucket` names), reduces them (count, sum,
+median, average, or the average of the periods' sums), narrows them to
+a person or an epic, and lists them in a drill. A row whose value is
+NULL is not counted: a number says how many tickets it could not count
+(`Num.NC`, which leaves out a ticket another row counts), and a number
+that counted nothing is not known (`V` absent) rather than zero. A row
+of a range metric with no `at` is listed in the drill and counted in no
+period. A row not counted is listed as "Not counted: " and its note, so
+a note says only why. A metric with `at` or a sprint bucket counts the
+range and is compared with the range before; any other counts now and
+has no change mark. The host binds `:now` and `:since` (where the
+range's periods, the previous range's included, begin), so a metric of
+the range reads only the rows it can place; a done ticket whose finish
+is not known is listed, not counted, when it changed since `:since`.
+
+A drill names its widget and, for a bar, point or table cell, the
+cell: its bucket's key (empty for Unassigned and No epic) and its
+series (empty for the whole bucket). It evaluates its metric again, so
+a number and its rows always come from one evaluation, and lists one
+row per contribution, with the period it counts in, its value (none for
+a count) and the drill's count of rows and of tickets. A later page that
+finds a different count starts again at the first. A list and a drill
+page read their tickets' titles, statuses and points by ID, eight to a
+statement.
 
 ### Bounds
 
@@ -2079,11 +2114,19 @@ finds a different count starts again at the first.
 - The authorizer allows a SELECT, reads of the export's relations and
   the allowed functions; it denies the rest and the widget names what it
   tried.
-- A metric is one statement of at most 16 KiB. It runs inside a wrapper
-  that produces the whole result in SQLite's first step, under a 1 s
-  deadline, at most 20,000 rows and 4 MiB of encoded rows. An evaluation
-  has 4 s. Two run at once on a computer; a third waits up to 2 s and is
-  refused as busy.
+- A metric is one statement of at most 16 KiB, binding at most 8
+  parameters, with LIKE and GLOB patterns of at most 256 bytes. It runs
+  inside a wrapper that produces the whole result in SQLite's first
+  step, under a 1 s deadline counted from before its prepare, at most
+  20,000 rows and 4 MiB of encoded rows. An evaluation has 4 s. Two run
+  at once on a computer; a third waits up to 2 s and is refused as busy.
+- The app's functions (`days`, `working_days`, `day` and the wrapper's
+  `bounded_rows`) are registered once per time zone a count names, on a
+  driver of that zone the process keeps (`trackerdash/funcs.go`): at
+  most one per zone name the computer's time zone database loads. The
+  wrapper finds its session's rows by a random key it writes into its
+  own text; a key that is not an open session's fails the statement, and
+  a session removes its key when it closes or fails to open.
 - A widget's failure is a sentence in the widget's place; the others
   show their numbers.
 
