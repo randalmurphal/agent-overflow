@@ -81,9 +81,6 @@ type MirrorChanges struct {
 	Cards []string
 	// Rows are the issues whose row on the board was stored new or changed.
 	Rows []string
-	// Added are the issues of Rows whose row is new on the board: the
-	// writes that can make the mirror keep an issue again.
-	Added []string
 	// Removed are the issues whose row on the board was removed.
 	Removed []string
 	// Superseded are the issues of which the write stored less than it

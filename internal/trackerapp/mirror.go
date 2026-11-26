@@ -220,8 +220,6 @@ type Changes struct {
 	Cards []tracker.IssueID `json:"cards,omitempty"`
 	// Rows are the issues whose row on the board was stored new or changed.
 	Rows []tracker.IssueID `json:"rows,omitempty"`
-	// Added are the issues of Rows whose row is new on the board.
-	Added []tracker.IssueID `json:"added,omitempty"`
 	// Removed are the issues whose row on the board was removed.
 	Removed []tracker.IssueID `json:"removed,omitempty"`
 	// Parents are the parents whose stored name changed (store
@@ -274,7 +272,6 @@ func (c Changes) Empty() bool {
 func (c *Changes) add(o Changes) {
 	c.Cards = unite(c.Cards, o.Cards)
 	c.Rows = unite(c.Rows, o.Rows)
-	c.Added = unite(c.Added, o.Added)
 	c.Removed = unite(c.Removed, o.Removed)
 	c.Parents = unite(c.Parents, o.Parents)
 	c.History = unite(c.History, o.History)
@@ -295,7 +292,6 @@ type changeLog struct{ c Changes }
 func (l *changeLog) add(o Changes) {
 	l.c.Cards = append(l.c.Cards, o.Cards...)
 	l.c.Rows = append(l.c.Rows, o.Rows...)
-	l.c.Added = append(l.c.Added, o.Added...)
 	l.c.Removed = append(l.c.Removed, o.Removed...)
 	l.c.Parents = append(l.c.Parents, o.Parents...)
 	l.c.History = append(l.c.History, o.History...)
@@ -309,7 +305,7 @@ func (l *changeLog) add(o Changes) {
 // changes is everything added, each list sorted without repeats.
 func (l *changeLog) changes() Changes {
 	c := &l.c
-	c.Cards, c.Rows, c.Added, c.Removed, c.Parents = ordered(c.Cards), ordered(c.Rows), ordered(c.Added), ordered(c.Removed), ordered(c.Parents)
+	c.Cards, c.Rows, c.Removed, c.Parents = ordered(c.Cards), ordered(c.Rows), ordered(c.Removed), ordered(c.Parents)
 	c.History, c.Details, c.Dropped, c.Visibility = ordered(c.History), ordered(c.Details), ordered(c.Dropped), ordered(c.Visibility)
 	return *c
 }
@@ -331,7 +327,7 @@ func ordered[T ~string](ids []T) []T {
 // changesOf is a store change set in neutral IDs, with the links it moved.
 func changesOf(ch store.MirrorChanges) written {
 	return written{Changes: Changes{
-		Cards: issueIDs(ch.Cards), Rows: issueIDs(ch.Rows), Added: issueIDs(ch.Added), Removed: issueIDs(ch.Removed),
+		Cards: issueIDs(ch.Cards), Rows: issueIDs(ch.Rows), Removed: issueIDs(ch.Removed),
 		Parents: issueIDs(ch.Parents), Catalog: ch.Catalog,
 	}, links: ch.Threads}
 }

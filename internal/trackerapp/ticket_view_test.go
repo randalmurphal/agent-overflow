@@ -347,7 +347,7 @@ func TestAParentsNameTellsTheTicketsOfItsChildren(t *testing.T) {
 		want bool
 	}{
 		{"the parent's card", Changes{Cards: ids("10001")}, false},
-		{"the parent's row", Changes{Rows: ids("10001"), Added: ids("10001")}, false},
+		{"the parent's row", Changes{Rows: ids("10001")}, false},
 		{"the parent kept or let go", Changes{Visibility: ids("10001")}, false},
 		{"another parent's name", Changes{Parents: ids("10009")}, false},
 		{"the parent's name", Changes{Cards: ids("10001"), Parents: ids("10001")}, true},

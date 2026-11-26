@@ -64,7 +64,7 @@ func TestAnAbsenceFromBeforeAListingIsOwedARead(t *testing.T) {
 			}
 		default:
 			got := mustWriteRows(t, s, absence, root)
-			if !reflect.DeepEqual(got, MirrorChanges{Cards: []string{"10005"}, Rows: []string{"10005"}, Added: []string{"10005"}, Removed: []string{"10001"}}) {
+			if !reflect.DeepEqual(got, MirrorChanges{Cards: []string{"10005"}, Rows: []string{"10005"}, Removed: []string{"10001"}}) {
 				t.Fatalf("%s: the absence = %+v", order, got)
 			}
 			// 10005, which only the read by ID placed, is unsettled.
