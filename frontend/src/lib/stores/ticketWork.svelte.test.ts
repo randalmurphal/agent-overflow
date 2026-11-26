@@ -38,7 +38,7 @@ function detail(status: { id: string; name?: string }, assignee?: string): Detai
   return {
     card: { id: '10101', key: 'WEB-1', title: 'Retry cursor', status, assignee: assignee ? { id: assignee, name: 'User 1' } : null, created: 0, updated: 0 },
     url: 'https://example.atlassian.net/browse/WEB-1', description: '', fields: [], comments: [], links: [], attachments: [],
-    history: [], rows: [],
+    history: [], rows: [], sprints: [],
     moves: status.id === 's1' ? [{ id: '21', name: 'Start', to: { id: 's2', name: 'In Progress' } }] : [{ id: '31', name: 'Stop', to: { id: 's1', name: 'To Do' } }],
   } as unknown as DetailView;
 }

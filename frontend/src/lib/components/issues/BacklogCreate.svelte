@@ -38,6 +38,7 @@
     type BoardWriteContext,
   } from '../../stores/trackerTicketWrites.svelte';
   import { errString } from '../../utils/errors';
+  import { isLocalEnter } from '../../utils/localEnter';
   import { cardFieldName } from './ticketEditors';
 
   interface Props {
@@ -178,7 +179,7 @@
   }
 
   function onKey(event: KeyboardEvent): void {
-    if (event.key === 'Enter') {
+    if (isLocalEnter(event)) {
       event.preventDefault();
       void submit();
     } else if (event.key === 'Escape') {

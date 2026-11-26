@@ -85,7 +85,7 @@ function detail(title = 'First story', extra: Partial<DetailView> = {}): DetailV
   return {
     card: { id: '10101', key: 'WEB-1', title, status: { id: 's1', name: 'To Do' }, created: 0, updated: 0 },
     url: 'https://example.atlassian.net/browse/WEB-1', description: '', fields: [], comments: [], links: [], attachments: [],
-    history: [], moves: [], rows: [], ...extra,
+    history: [], moves: [], rows: [], sprints: [], ...extra,
   } as unknown as DetailView;
 }
 

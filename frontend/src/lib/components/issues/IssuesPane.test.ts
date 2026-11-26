@@ -1209,6 +1209,7 @@ function ticketDetail(id: string, opts: { parent?: string; comments?: number; mo
     },
     url: `https://example.atlassian.net/browse/WEB-${id}`, description: 'The description', fields: [], comments, more_comments: opts.more,
     links: [], attachments: [], history: [], rows: [{ board: '1', estimate: 2, unit: 'points' }],
+    sprints: [],
     moves: [{ id: '21', name: 'Start', to: { id: 's2', name: 'In Progress', group: 'in_progress' } }],
   } as unknown as DetailView;
 }

@@ -26,7 +26,7 @@ const SITE = 'https://example.atlassian.net';
 
 const DETAIL = {
   card: { id: '10101', key: 'WEB-1', title: 'Retry cursor', status: { id: 's1', name: 'To Do' }, created: 0, updated: 0 },
-  url: `${SITE}/browse/WEB-1`, description: '', fields: [], comments: [], links: [], attachments: [], history: [], rows: [],
+  url: `${SITE}/browse/WEB-1`, description: '', fields: [], comments: [], links: [], attachments: [], history: [], rows: [], sprints: [],
   moves: [{ id: '21', name: 'Start', to: { id: 's2', name: 'In Progress' } }, { id: '22', name: 'Finish', to: { id: 's3', name: 'Done' } }],
 } as unknown as DetailView;
 

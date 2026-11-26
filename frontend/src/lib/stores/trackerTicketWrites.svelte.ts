@@ -434,7 +434,10 @@ interface WriteHolder {
 interface Landing {
   readonly words: WriteSubject;
   sending(): void;
-  settle(outcome: WriteOutcome): Promise<void>;
+  /** The views the outcome waits for, each asked now, in the order the
+   * runner awaits them: the runner awaits each itself, so the outcome
+   * changes in the same update as the view that lands last. */
+  settle(outcome: WriteOutcome): readonly Promise<unknown>[];
   landed(outcome: WriteOutcome): (() => Promise<WriteOutcome | null>) | null;
   toast(outcome: WriteOutcome, subject: string | null): void;
 }
@@ -455,7 +458,7 @@ async function run(
   putWrite(h.key, target, { pending: true, outcome: null, saveAnyway: null, subject });
   if (options.after) await options.after;
   const outcome = await sendWrite(h.backend, computerName(h.backend), landing.words, send, options.failure);
-  await landing.settle(outcome);
+  for (const view of landing.settle(outcome)) await view;
   const again = landing.landed(outcome);
   if (!targetShown(h.key, target)) {
     putWrite(h.key, target, null);
@@ -481,17 +484,14 @@ function write(
     words: TICKET_SUBJECT,
     // The draft as it is sent: Save anyway is for it alone.
     sending: () => consent.sending(k),
-    async settle(outcome) {
-      if (outcome.kind !== 'applied') return;
-      // Both asked now; awaited one by one, so the outcome changes in the
-      // same update as the view that lands last.
+    settle(outcome) {
+      if (outcome.kind !== 'applied') return [];
       const boards = trackerBoardsSettled(t.ref.backend, t.ref.connection);
       const ticket = trackerTicketSettled(t.key, options.comment);
       // A comment's page read may fail while the boards are awaited: the
-      // await below throws it.
+      // runner's await of it throws it.
       ticket.catch(() => undefined);
-      await boards;
-      await ticket;
+      return [boards, ticket];
     },
     landed(outcome) {
       // The ticket changed since it was read: read it again, so the person
@@ -622,9 +622,7 @@ function boardWrite(b: BoardWriteContext, target: string, what: string, send: ()
   return run(b, target, send, {
     words: BOARD_SUBJECT,
     sending: () => {},
-    async settle(outcome) {
-      if (outcome.kind === 'applied') await trackerBoardsSettled(b.backend, b.connection);
-    },
+    settle: (outcome) => (outcome.kind === 'applied' ? [trackerBoardsSettled(b.backend, b.connection)] : []),
     landed: () => null,
     toast: (outcome) => toastUnshown(what.charAt(0).toLowerCase() + what.slice(1), what, outcome),
   }, {});
