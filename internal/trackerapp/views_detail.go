@@ -35,7 +35,10 @@ type FieldView struct {
 	Value    FieldValueView `json:"value"`
 	// Allowed are the values a create screen lists for the field, which
 	// its picker offers with no read; absent when the screen lists none.
-	Allowed []ChoiceView `json:"allowed,omitempty"`
+	// Defaulted marks a field a create screen requires that the tracker
+	// fills when the create gives it none (tracker.CreateField).
+	Allowed   []ChoiceView `json:"allowed,omitempty"`
+	Defaulted bool         `json:"defaulted,omitempty"`
 }
 
 // CommentView is a comment, its body as Markdown.
@@ -609,6 +612,7 @@ func createFieldViews(fields []tracker.CreateField) []FieldView {
 	out := make([]FieldView, 0, len(fields))
 	for _, f := range fields {
 		v := fieldView(f.Field)
+		v.Defaulted = f.Defaulted
 		for _, c := range f.Allowed {
 			v.Allowed = append(v.Allowed, ChoiceView{ID: c.ID, Name: c.Name})
 		}

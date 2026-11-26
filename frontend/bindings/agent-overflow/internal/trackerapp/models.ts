@@ -1440,8 +1440,11 @@ export class FieldView {
     /**
      * Allowed are the values a create screen lists for the field, which
      * its picker offers with no read; absent when the screen lists none.
+     * Defaulted marks a field a create screen requires that the tracker
+     * fills when the create gives it none (tracker.CreateField).
      */
     "allowed"?: ChoiceView[];
+    "defaulted"?: boolean;
 
     /** Creates a new FieldView instance. */
     constructor($$source: Partial<FieldView> = {}) {

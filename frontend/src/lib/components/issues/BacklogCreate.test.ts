@@ -7,8 +7,9 @@
 // from the project and type picked, while a form already open keeps its
 // own; what was typed outlives the form's foot going; a create refused for
 // fields reads them again; a ticket made whose move into the sprint failed
-// is not made again; a required field the app cannot set says to make the
-// ticket in the tracker.
+// is not made again; a field the tracker fills is offered, not asked, and
+// left to the tracker when the app cannot set it; a required field the app
+// cannot set says to make the ticket in the tracker.
 
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { SvelteMap } from 'svelte/reactivity';
@@ -266,6 +267,34 @@ describe('New ticket', () => {
     await waitFor(() => expect(title.value).toBe(''));
     expect(view.getByTestId('issues-backlog-create-move').textContent).toBe('Move it into Sprint 9');
     expect(created).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+
+  it('offers a field the tracker fills when none is given, sends it only when picked, and leaves one it cannot set to the tracker', async () => {
+    setBindingMock('TrackerBoardProjects', async () => PROJECTS);
+    setBindingMock('TrackerIssueTypes', async () => TYPES);
+    setBindingMock('TrackerCreateFields', async () => [
+      { ...PRIORITY, required: false, defaulted: true, allowed: [{ id: '2', name: 'High' }] },
+      { id: 'customfield_1', name: 'Team', kind: 'cascading', required: false, defaulted: true, editable: true } as FieldView,
+    ]);
+    const created = setBindingMock('CreateTrackerIssue', async () => ({ parts: [{ step: 'create', state: 'applied' }] }) as WriteView);
+    const view = open('10000');
+    await fireEvent.click(view.getByTestId('issues-backlog-new'));
+    await waitFor(() => expect(value(view.container, 'priority')).toBe('The tracker\'s default'));
+    expect(field(view.container, 'customfield_1')).toBeNull();
+    expect(view.queryByTestId('issues-backlog-create-unsettable')).toBeNull();
+    expect(view.queryByTestId('issues-backlog-create-missing')).toBeNull();
+    const title = view.getByTestId('issues-backlog-create-title') as HTMLInputElement;
+    await fireEvent.input(title, { target: { value: 'Default one' } });
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
+    expect(created.mock.calls[0][1].fields).toEqual([]);
+    await waitFor(() => expect(title.value).toBe(''));
+    await pick(view.container, 'priority', 'High');
+    await fireEvent.input(title, { target: { value: 'High one' } });
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(created).toHaveBeenCalledTimes(2));
+    expect(created.mock.calls[1][1]).toMatchObject({ fields: [{ field: 'priority', value: { kind: 'option', choices: [{ id: '2' }] } }] });
     view.unmount();
   });
 

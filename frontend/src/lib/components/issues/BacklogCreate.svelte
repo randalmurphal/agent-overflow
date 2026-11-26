@@ -40,7 +40,8 @@
   // the form, its title takes Enter to add and Escape to cancel. The form
   // asks what the tracker requires the person to supply for a ticket of
   // that project and type (`TrackerCreateFields`, its fields marked
-  // required), each field with the ticket's own editors
+  // required), and offers a field the tracker fills when none is given
+  // (`defaulted`), each field with the ticket's own editors
   // (`ticketEditors.ts#fieldEditor`), a field whose screen lists its
   // values picked from that list with no read, and lands the ticket in the
   // section: its sprint, or the backlog. On Jira it shows the project, from
@@ -132,7 +133,8 @@
   const typeName = $derived(types?.value?.find((t) => t.id === typeID)?.name ?? '');
   // The fields of the type picked: Linear's need no type.
   const fields = $derived(projectID && (!typed || typeID) ? createFields(b.backend, b.connection, projectID, typeID) : null);
-  const required = $derived((fields?.value ?? []).filter((f) => f.required));
+  // The required fields, then those the tracker would fill.
+  const offered = $derived((fields?.value ?? []).filter((f) => f.required || f.defaulted).sort((a, c) => Number(!a.required) - Number(!c.required)));
 
   // Each read on a person's act: the form's open, a project or type
   // picked. Started outside any reactive read of them.
@@ -213,9 +215,12 @@
       save: (edit, picked) => { setFilled(new Map(draft?.filled).set(f.id, { edit, picked, text: edit.typed?.[0] ?? '' })); },
     };
   }
-  const rows = $derived(required.map((f) => ({ f, long: f.kind === 'rich_text' && f.editable, editor: f.kind === 'rich_text' ? null : fieldEditor(f, targetOf(f)) })));
+  // A defaulted field the app cannot set is left to the tracker, unshown.
+  const rows = $derived(offered
+    .map((f) => ({ f, long: f.kind === 'rich_text' && f.editable, editor: f.kind === 'rich_text' ? null : fieldEditor(f, targetOf(f)) }))
+    .filter((r) => r.f.required || r.long || r.editor));
   const unsettable = $derived(rows.filter((r) => !r.long && !r.editor).map((r) => r.f.name));
-  const missing = $derived(rows.filter((r) => !draft?.filled.has(r.f.id)).map((r) => r.f.name));
+  const missing = $derived(rows.filter((r) => r.f.required && !draft?.filled.has(r.f.id)).map((r) => r.f.name));
   const readError = $derived(projects?.error ?? types?.error ?? fields?.error ?? null);
   const ready = $derived(!!projectID && (!typed || !!typeID) && !!fields?.value && unsettable.length === 0);
 
@@ -293,7 +298,7 @@
     {#each rows as { f, long, editor } (f.id)}
       {#if long}
         <label class="flex flex-col gap-1 py-1 text-xs text-fg-muted" data-testid="issues-backlog-create-text" data-field={f.id}>
-          {f.name} (required)
+          {f.required ? `${f.name} (required)` : f.name}
           <textarea
             rows="3"
             class="w-full resize-y rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1.5 font-mono text-[0.8125rem] text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
@@ -303,7 +308,7 @@
           ></textarea>
         </label>
       {:else}
-        <TicketField label="{f.name} (required)" field={f.id} value={shown(f)} {editor} ticketKey={b.key} target="create-form" fieldName={cardFieldName} disabled={pending} />
+        <TicketField label={f.required ? `${f.name} (required)` : f.name} field={f.id} value={shown(f) || (f.required ? '' : 'The tracker\'s default')} {editor} ticketKey={b.key} target="create-form" fieldName={cardFieldName} disabled={pending} />
       {/if}
     {/each}
     {#if readError}

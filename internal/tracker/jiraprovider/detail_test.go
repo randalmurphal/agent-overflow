@@ -302,12 +302,12 @@ func TestCreateFieldsRequireWhatHasNoDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	required := map[tracker.FieldID]bool{}
+	required, defaulted := map[tracker.FieldID]bool{}, map[tracker.FieldID]bool{}
 	for _, fd := range got {
-		required[fd.ID] = fd.Required
+		required[fd.ID], defaulted[fd.ID] = fd.Required, fd.Defaulted
 	}
-	if required["priority"] || !required["customfield_10050"] {
-		t.Errorf("required %v, want priority (defaulted) not required and the team required", required)
+	if required["priority"] || !required["customfield_10050"] || !defaulted["priority"] || defaulted["customfield_10050"] {
+		t.Errorf("required %v, defaulted %v; want priority defaulted and not required, and the team required", required, defaulted)
 	}
 	// The screen's listed values ride with the field, so its picker reads
 	// nothing; a field the screen lists none for has none.

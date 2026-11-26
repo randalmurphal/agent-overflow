@@ -13,9 +13,10 @@ import { flushSync, mount, unmount } from 'svelte';
 import '../../../app.css';
 import BacklogScreen from './BacklogScreen.svelte';
 import BoardScreen from './BoardScreen.svelte';
-import type { BoardView, RowView, WriteView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { BoardPatch, BoardView, RowView, WriteView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import type { CardField } from '../../stores/issuesPane.svelte';
 import { attachTrackerBoard, holdTrackerBoardPlan } from '../../stores/trackerBoard.svelte';
+import { trackerBoardUpdated } from '../../stores/trackerBoardEvents';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { waitFor } from '../../../test/helpers/browserFrames';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
@@ -107,8 +108,8 @@ const COMMON = {
   onOpenCard: () => {}, onMoveWithFields: () => {}, ticketProject: () => null, onStartWork: () => {},
 };
 
-async function mountBacklog(kind = 'jira'): Promise<{ host: HTMLElement; mountMs: number }> {
-  const held = await holdBoard(backlogBoard(), true);
+async function mountBacklog(kind = 'jira', view = backlogBoard()): Promise<{ host: HTMLElement; mountMs: number }> {
+  const held = await holdBoard(view, true);
   await waitFor(() => held.current!.held!.sections.length === 2, 'the backlog held');
   const host = hostEl();
   const t0 = performance.now();
@@ -318,6 +319,32 @@ describe('the Backlog screen over 2,000 rows', () => {
     expect(moved.mock.calls[1][1]).toEqual({ board: '1', sprint: '8', issues: ['0'], prev: '5002', next: '5003' });
   });
 
+  it('over the blank space below the last section, opens the gap at the backlog\'s end and drops the row there', async () => {
+    const moved = setBindingMock('MoveTrackerIssuesToSprint', async () => ({ parts: [{ step: 'sprint', state: 'applied' }] }));
+    const short = backlogBoard();
+    short.backlog = { rows: 2, estimate: 4 } as BoardView['backlog'];
+    short.sections = [short.sections[0], { ...short.sections[1], rows: MANY.slice(0, 2) }];
+    const { host } = await mountBacklog('jira', short);
+    await waitFor(() => rowEl(host, '5001') !== null && rowEl(host, '1') !== null, 'the rows');
+    const foot = () => host.querySelector<HTMLElement>('[data-testid="issues-backlog-foot"][data-list="backlog"]')!.parentElement!;
+    const blank = host.querySelector<HTMLElement>('[data-testid="issues-backlog-foot"][data-list="backlog"]')!.getBoundingClientRect().bottom + 80;
+    expect(blank).toBeLessThan(host.getBoundingClientRect().bottom - 20);
+    const r = rowEl(host, '5001')!.getBoundingClientRect();
+    const x = r.left + r.width / 2;
+    pointer('pointerdown', rowEl(host, '5001')!.querySelector('[data-testid="issues-card-title"]')!, x, r.top + 10);
+    for (let k = 1; k <= 8; k += 1) {
+      pointer('pointermove', window, x, r.top + 10 + (blank - r.top - 10) * k / 8);
+      await frames(1);
+    }
+    // The rows after the carried one close its place; the backlog's foot
+    // stays, so the gap is between the backlog's last row and its foot.
+    const gap = () => foot().getBoundingClientRect().top - rowEl(host, '1')!.getBoundingClientRect().bottom;
+    await waitFor(() => Math.abs(gap() - r.height) < 2, `a gap of the row's height before the backlog's foot (${r.height})`);
+    pointer('pointerup', window, x, blank);
+    await waitFor(() => moved.mock.calls.length === 1, 'the move');
+    expect(moved.mock.calls[0][1]).toEqual({ board: '1', issues: ['5001'], prev: '1' });
+  });
+
   it('takes no second carry of a row whose move is out: two quick drops send one move', async () => {
     let answer: ((v: WriteView) => void) | null = null;
     const moved = setBindingMock('MoveTrackerIssuesToSprint', () => new Promise<WriteView>((resolve) => { answer = resolve; }));
@@ -342,6 +369,38 @@ describe('the Backlog screen over 2,000 rows', () => {
     expect(document.querySelector('[data-testid="issues-card-carried"]')).toBeNull();
     expect(moved).toHaveBeenCalledTimes(1);
     answer!({ parts: [{ step: 'sprint', state: 'applied' }] } as WriteView);
+  });
+
+  it('applies a one-row patch over the 2,000 rows, and logs what it costs against a frame', async () => {
+    let answer: ((p: BoardPatch) => void) | null = null;
+    setBindingMock('TrackerBoardPatch', () => new Promise<BoardPatch>((resolve) => { answer = resolve; }));
+    const { host } = await mountBacklog();
+    await waitFor(() => rowEl(host, '0') !== null, 'the rows');
+    const title = () => rowEl(host, '0')?.querySelector('[data-testid="issues-card-title"]')?.textContent?.trim();
+    // A macrotask after the answer: the store's apply and the render it
+    // wakes have run by then.
+    const settled = () => new Promise<void>((resolve) => {
+      const ch = new MessageChannel();
+      ch.port1.onmessage = () => resolve();
+      ch.port2.postMessage(null);
+    });
+    const costs: number[] = [];
+    for (let i = 1; i <= 7; i += 1) {
+      answer = null;
+      trackerBoardUpdated({ scope: { connection: 'c1', board: '1' }, seq: 10 + i, changed: ['0'] }, HOME_BACKEND);
+      await waitFor(() => answer !== null, 'the patch read');
+      await frames(1);
+      const renamed = { ...row(0, 's1'), card: { ...row(0, 's1').card, title: `Issue 0, edit ${i}` } } as RowView;
+      const t0 = performance.now();
+      answer!({ lifetime: 1, revision: 1 + i, sections: [{ rows: [] }, { rows: [renamed] }] } as unknown as BoardPatch);
+      await settled();
+      flushSync();
+      void host.offsetHeight;
+      costs.push(performance.now() - t0);
+      expect(title()).toBe(`Issue 0, edit ${i}`);
+    }
+    const sorted = costs.slice(1).sort((a, b) => a - b);
+    console.log(`BACKLOG_PATCH_MS ${JSON.stringify({ median: sorted[Math.floor(sorted.length / 2)], max: sorted[sorted.length - 1], all: costs })}`);
   });
 
   it('costs about what the Board\'s 2,000-card column costs: mount, scroll, menu, carry', async () => {

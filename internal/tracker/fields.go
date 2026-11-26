@@ -71,9 +71,12 @@ type Field struct {
 
 // CreateField is a field a create screen offers, with the values the
 // screen lists for it, in its order, when it lists them (nil otherwise).
+// Defaulted reports a field the screen requires that the tracker fills
+// when the create gives it none: offered, not demanded (Required false).
 type CreateField struct {
 	Field
-	Allowed []Choice
+	Allowed   []Choice
+	Defaulted bool
 }
 
 // Value is a field's value as read: empty, or one or more values of one
