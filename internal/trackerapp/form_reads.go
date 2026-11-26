@@ -131,7 +131,7 @@ func (s *Service) Boards(ctx context.Context, id, project string) ([]BoardInfoVi
 func (s *Service) CreateFields(ctx context.Context, id, project, issueType string) ([]FieldView, error) {
 	return ask(s, ctx, id, func(r *run) ([]FieldView, error) {
 		fs, err := r.p.CreateFields(r.ctx, tracker.ProjectID(project), tracker.IssueTypeID(issueType))
-		return createFieldViews(fs), call(err)
+		return screenFieldViews(fs), call(err)
 	})
 }
 
@@ -153,7 +153,7 @@ func (s *Service) Moves(ctx context.Context, id, issue string) ([]MoveView, erro
 		}
 		out := make([]MoveView, len(ms))
 		for i, m := range ms {
-			out[i] = MoveView{ID: string(m.ID), Name: m.Name, To: names.status(string(m.To)), Fields: fieldViews(m.Fields)}
+			out[i] = MoveView{ID: string(m.ID), Name: m.Name, To: names.status(string(m.To)), Fields: screenFieldViews(m.Fields)}
 		}
 		return out, nil
 	})

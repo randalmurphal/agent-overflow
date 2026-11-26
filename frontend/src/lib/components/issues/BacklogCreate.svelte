@@ -9,6 +9,25 @@
     readonly text: string;
   }
 
+  /** The project and type a form's field values are given for: the
+   * project's ID and the type's, empty for a tracker without types. */
+  export function valuesOf(project: string, type: string): string {
+    return `${project}\n${type}`;
+  }
+
+  const NO_FILLED: ReadonlyMap<string, FilledField> = new Map();
+  const NO_TYPING: ReadonlyMap<string, string> = new Map();
+
+  /** A ticket the form made for the section's sprint whose move into it
+   * did not apply: its ID, its key (empty when the computer could not
+   * name it), and what is known of that move, as a sentence (refused, or
+   * not known whether it applied). */
+  export interface UnplacedTicket {
+    readonly issue: string;
+    readonly key: string;
+    readonly said: string;
+  }
+
   /**
    * An open New ticket form of one section, held by its Backlog screen so
    * that what was typed outlives the form's foot leaving the virtual
@@ -25,12 +44,61 @@
     /** The type picked in it, or the board's last one when it opened;
      * empty takes the project's default. */
     type = $state('');
-    filled = $state.raw<ReadonlyMap<string, FilledField>>(new Map());
+    // What must hold: the values given for the fields and the text being
+    // typed in one are kept for the project and type in effect when they
+    // were given (`valuesOf`), each pair its own. The form shows, and Add
+    // sends, only those of the project and type it shows; whatever changes
+    // them (a pick, the board's projects arriving without the one shown, a
+    // read answering again), coming back to a pair shows what was given
+    // for it, and nothing given for one replaces another's. A made ticket
+    // clears them all (`clearValues`).
+    #values = $state.raw<ReadonlyMap<string, { readonly filled: ReadonlyMap<string, FilledField>; readonly typing: ReadonlyMap<string, string> }>>(new Map());
+    // What must hold: a ticket made for the sprint and not in it is
+    // offered that move until its own move applies, the board shows the
+    // ticket in that sprint however it got there, or the person dismisses
+    // it; the offer says what is known of the first move. This holds the
+    // tickets owed a place, written by Add whether or not the form is on
+    // screen when the tracker answers, and dropped by an applied move from
+    // the offer or by Dismiss; while one is held, whether it is offered is
+    // the sprint's rows' to say (`owed`).
+    unplaced = $state.raw<readonly UnplacedTicket[]>([]);
 
     constructor(project: PickItem | null, type: string) {
       this.project = project;
       this.type = type;
     }
+
+    /** The fields filled for `of`, by field. */
+    filled(of: string): ReadonlyMap<string, FilledField> {
+      return this.#values.get(of)?.filled ?? NO_FILLED;
+    }
+
+    /** The text being typed for `of` in a field not saved yet, by field. */
+    typing(of: string): ReadonlyMap<string, string> {
+      return this.#values.get(of)?.typing ?? NO_TYPING;
+    }
+
+    /** Fills field `id` for `of`, or with null leaves it unfilled. */
+    fill(of: string, id: string, field: FilledField | null): void {
+      this.#values = withEntry(this.#values, of, { filled: withEntry(this.filled(of), id, field), typing: this.typing(of) });
+    }
+
+    /** Holds the text being typed for `of` in field `id`, or with null
+     * lets it go. */
+    hold(of: string, id: string, text: string | null): void {
+      this.#values = withEntry(this.#values, of, { filled: this.filled(of), typing: withEntry(this.typing(of), id, text) });
+    }
+
+    clearValues(): void {
+      this.#values = new Map();
+    }
+  }
+
+  function withEntry<T>(m: ReadonlyMap<string, T>, id: string, v: T | null): ReadonlyMap<string, T> {
+    const next = new Map(m);
+    if (v === null) next.delete(id);
+    else next.set(id, v);
+    return next;
   }
 </script>
 
@@ -47,7 +115,9 @@
   // section: its sprint, or the backlog. On Jira it shows the project, from
   // the board's projects (`TrackerBoardProjects`, which also names the
   // board's location), the one picked last on the board this session
-  // first, else the board's location; the type is the one picked last on
+  // first, else the board's location; once the board's projects are read,
+  // one of them (the only one when neither is listed, else none, which
+  // asks); the type is the one picked last on
   // the board this session, else the project's first at the standard level,
   // else its first that is not a sub-task. What it reads is read on the
   // form's first open, held as the form reads say
@@ -55,16 +125,16 @@
   // on the screen's open; a create refused for fields the screen now
   // requires reads them again. A made ticket clears the title and keeps
   // the form open for the next; one made whose move into the sprint failed
-  // says so and offers that move; a refusal stays under it with what was
-  // filled.
+  // says so and offers that move while the sprint's rows do not show it
+  // (CreateDraft.unplaced); a refusal stays under it with what was filled.
   import Plus from '@lucide/svelte/icons/plus';
   import type { SvelteMap } from 'svelte/reactivity';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
   import TicketField from './TicketField.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
-  import { fieldEditor, pickEditor, type EditorTarget } from './ticketEditors';
-  import type { FieldView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+  import { cardFieldName, fieldEditor, heldChoices, mustSupply, pickEditor, type EditorTarget, type HeldList } from './ticketEditors';
+  import type { ChoiceView, FieldView, IssueTypeView, ProjectView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import type { BacklogSection } from '../../stores/trackerBacklogModel';
   import { lastCreateChoice, setLastCreateChoice } from '../../stores/issuesPane.svelte';
   import type { TrackerBoardRef } from '../../stores/trackerBoard.svelte';
@@ -83,10 +153,9 @@
     ticketWrite,
     type BoardWriteContext,
   } from '../../stores/trackerTicketWrites.svelte';
-  import { issueWriteContext, moveCardToSprint } from '../../stores/trackerBoardCarry.svelte';
+  import { cardBusy, issueWriteContext, moveCardToSprint } from '../../stores/trackerBoardCarry.svelte';
   import { errString } from '../../utils/errors';
   import { isLocalEnter } from '../../utils/localEnter';
-  import { cardFieldName } from './ticketEditors';
 
   interface Props {
     b: BoardWriteContext;
@@ -105,13 +174,20 @@
 
   let { b, boardKey, boardRef, sec, project, typed, drafts }: Props = $props();
 
+  // What a field the tracker fills shows, and the row that leaves it to
+  // the tracker.
+  const TRACKER_DEFAULT = 'The tracker\'s default';
+
+  // The lists the form holds, as their pickers search and show them: a
+  // project by its name or key, a type that is not a sub-task by its name.
+  const PROJECT_LIST: HeldList<ProjectView> = { searched: [(p) => p.name, (p) => p.key], choice: (p) => ({ id: p.id, name: `${p.name} (${p.key})` }) };
+  const TYPE_LIST: HeldList<IssueTypeView> = { searched: [(t) => t.name ?? ''], choice: (t) => ({ id: t.id, name: t.name || t.id }), offered: (t) => t.level >= 0 };
+  const ALLOWED_LIST: HeldList<ChoiceView> = { searched: [(c) => c.name ?? ''], choice: (c) => ({ id: c.id, name: c.name ?? '' }) };
+
   const target = $derived(createTarget(sec.list));
   const held = $derived(ticketWrite(b.key, target));
   const pending = $derived(held?.pending ?? false);
   const where = $derived(sec.sprint?.name || 'the backlog');
-  // A ticket made here that was not moved into the sprint: offered the
-  // move, the menu's, for that ticket.
-  const unplaced = $derived(held?.outcome?.kind === 'applied' && held.outcome.unplaced?.step === 'sprint_move' ? held.outcome.unplaced : null);
 
   // A screen that shows another board keeps that board's forms apart.
   const draftKey = $derived(`${boardKey}\n${sec.list}`);
@@ -119,8 +195,20 @@
   let input: HTMLInputElement | undefined = $state();
 
   const projects = $derived(typed ? boardProjects(b) : null);
-  const projectID = $derived(typed ? (draft?.project?.id ?? '') : project);
-  const projectName = $derived(draft?.project?.name || projects?.value?.find((p) => p.id === projectID)?.name || '');
+  // The project it makes the ticket in: once the board's projects are
+  // read, one of them (the one picked, else the only one, else none, which
+  // asks); while that read is out or failed, the one picked or the board's
+  // location.
+  const projectID = $derived.by(() => {
+    if (!typed) return project;
+    const chosen = draft?.project?.id ?? '';
+    const listed = projects?.value;
+    if (!listed) return chosen;
+    if (listed.some((p) => p.id === chosen)) return chosen;
+    if (project && listed.some((p) => p.id === project)) return project;
+    return listed.length === 1 ? listed[0].id : '';
+  });
+  const projectName = $derived(projects?.value?.find((p) => p.id === projectID)?.name || (draft?.project?.id === projectID ? draft.project.name : '') || '');
   const types = $derived(typed && projectID ? issueTypes(b.backend, b.connection, projectID) : null);
   const typeID = $derived.by(() => {
     if (!typed) return '';
@@ -133,13 +221,19 @@
   const typeName = $derived(types?.value?.find((t) => t.id === typeID)?.name ?? '');
   // The fields of the type picked: Linear's need no type.
   const fields = $derived(projectID && (!typed || typeID) ? createFields(b.backend, b.connection, projectID, typeID) : null);
-  // The required fields, then those the tracker would fill.
-  const offered = $derived((fields?.value ?? []).filter((f) => f.required || f.defaulted).sort((a, c) => Number(!a.required) - Number(!c.required)));
+  // The required fields: those the person must supply, then those the
+  // tracker would fill.
+  const offered = $derived((fields?.value ?? []).filter((f) => f.required).sort((a, c) => Number(!mustSupply(a)) - Number(!mustSupply(c))));
 
   // Each read on a person's act: the form's open, a project or type
   // picked. Started outside any reactive read of them.
   function read(): void {
-    if (typed) void loadBoardProjects(b);
+    // The board's projects may name another project than the one read
+    // now: its types are read once they are in.
+    if (typed) void loadBoardProjects(b).then(readTypes);
+    readTypes();
+  }
+  function readTypes(): void {
     if (!projectID) return;
     if (typed) {
       void loadIssueTypes(b.backend, b.connection, projectID).then(readFields);
@@ -163,8 +257,14 @@
     drafts.delete(draftKey);
   }
 
-  function setFilled(next: ReadonlyMap<string, FilledField>): void {
-    if (draft) draft.filled = next;
+  // The project and type the form's values are for (CreateDraft).
+  const of = $derived(valuesOf(projectID, typeID));
+  const filled = $derived(draft?.filled(of));
+
+  // A create sends a field only with a value: one picked or typed back to
+  // none leaves the form, so the tracker fills it or the form asks again.
+  function fill(id: string, field: FilledField | null): void {
+    draft?.fill(of, id, field);
   }
 
   const projectEditor = $derived(pickEditor('project', 'option', {
@@ -172,9 +272,7 @@
     text: '',
     choices: async (text) => {
       await loadBoardProjects(b);
-      const t = text.toLowerCase();
-      const list = boardProjects(b)?.value ?? [];
-      return { choices: list.filter((p) => !t || p.name.toLowerCase().startsWith(t) || p.key.toLowerCase().startsWith(t)).map((p) => ({ id: p.id, name: `${p.name} (${p.key})` })), more: false };
+      return heldChoices(boardProjects(b)?.value ?? [], text, PROJECT_LIST);
     },
     save: (_edit, picked) => {
       if (!draft) return;
@@ -182,7 +280,6 @@
       const listed = p ? boardProjects(b)?.value?.find((it) => it.id === p.id) : undefined;
       draft.project = p ? { id: p.id, name: listed?.name ?? p.name } : null;
       draft.type = '';
-      draft.filled = new Map();
       read();
     },
   }));
@@ -190,42 +287,44 @@
   const typeEditor = $derived(pickEditor('type', 'option', {
     picked: typeID ? [{ id: typeID, name: typeName }] : [],
     text: '',
-    choices: async (text) => {
-      const t = text.toLowerCase();
-      return { choices: (types?.value ?? []).filter((it) => it.level >= 0 && (!t || (it.name ?? '').toLowerCase().startsWith(t))).map((it) => ({ id: it.id, name: it.name || it.id })), more: false };
-    },
+    choices: async (text) => heldChoices(types?.value ?? [], text, TYPE_LIST),
     save: (_edit, picked) => {
       if (!draft) return;
       draft.type = picked[0]?.id ?? '';
-      draft.filled = new Map();
       readFields();
     },
   }));
 
   function targetOf(f: FieldView): EditorTarget {
-    const got = draft?.filled.get(f.id);
+    const got = filled?.get(f.id);
     return {
       picked: got?.picked ?? [],
       text: got?.text ?? '',
       // The values the screen lists ride with the field; only a field it
       // lists none for (users, or priorities the site holds) is read.
       choices: f.allowed
-        ? async (text) => ({ choices: f.allowed!.filter((c) => (c.name ?? '').toLowerCase().startsWith(text.toLowerCase())), more: false })
+        ? async (text) => heldChoices(f.allowed!, text, ALLOWED_LIST)
         : (text) => createChoices(b, projectID, typeID, f.id, text),
-      save: (edit, picked) => { setFilled(new Map(draft?.filled).set(f.id, { edit, picked, text: edit.typed?.[0] ?? '' })); },
+      save: (edit, picked) => { fill(f.id, picked.length || edit.typed?.length ? { edit, picked, text: edit.typed?.[0] ?? '' } : null); },
+      // A create sends no value for a field left to the tracker.
+      unset: f.defaulted ? TRACKER_DEFAULT : undefined,
+      typing: {
+        text: draft?.typing(of).get(f.id) ?? null,
+        set: (text) => draft?.hold(of, f.id, text),
+      },
     };
   }
   // A defaulted field the app cannot set is left to the tracker, unshown.
   const rows = $derived(offered
     .map((f) => ({ f, long: f.kind === 'rich_text' && f.editable, editor: f.kind === 'rich_text' ? null : fieldEditor(f, targetOf(f)) }))
-    .filter((r) => r.f.required || r.long || r.editor));
+    .filter((r) => mustSupply(r.f) || r.long || r.editor));
   const unsettable = $derived(rows.filter((r) => !r.long && !r.editor).map((r) => r.f.name));
-  const missing = $derived(rows.filter((r) => r.f.required && !draft?.filled.has(r.f.id)).map((r) => r.f.name));
+  const missing = $derived(rows.filter((r) => mustSupply(r.f) && !filled?.has(r.f.id)).map((r) => r.f.name));
   const readError = $derived(projects?.error ?? types?.error ?? fields?.error ?? null);
   const ready = $derived(!!projectID && (!typed || !!typeID) && !!fields?.value && unsettable.length === 0);
 
   function shown(f: FieldView): string {
-    const got = draft?.filled.get(f.id);
+    const got = filled?.get(f.id);
     return got ? (got.picked.length ? got.picked.map((p) => p.name).join(', ') : got.text) : '';
   }
 
@@ -234,17 +333,24 @@
     const text = d?.title.trim() ?? '';
     if (!d || !text || !ready || pending || missing.length > 0) return;
     const sent = { project: projectID, type: typeID };
+    const given = d.filled(of);
     setLastCreateChoice(boardRef, typed ? { project: { id: projectID, name: projectName }, type: typeID } : {});
     const outcome = await createTicket(b, sec.list, where, {
       project: sent.project,
       type: sent.type || undefined,
       title: text,
-      fields: [...d.filled.values()].map((f) => f.edit),
+      fields: [...given.values()].map((f) => f.edit),
       sprint: sec.sprint?.id,
     });
     if (outcome?.kind === 'applied') {
+      const u = outcome.unplaced;
+      if (u?.step === 'sprint_move' && u.issue) {
+        // The offer says it from here on: the note would outlast it.
+        if (!d.unplaced.some((t) => t.issue === u.issue)) d.unplaced = [...d.unplaced, { issue: u.issue, key: u.key, said: outcome.note ?? '' }];
+        dismissTicketWrite(b.key, target);
+      }
       d.title = '';
-      d.filled = new Map();
+      d.clearValues();
       queueMicrotask(() => input?.focus());
     } else if (outcome?.kind === 'refused' && outcome.refusal.reason === 'missing') {
       // The screen requires what the form did not ask: read it again.
@@ -252,10 +358,23 @@
     }
   }
 
-  function moveUnplaced(): void {
-    if (!unplaced || !sec.sprint) return;
-    void moveCardToSprint(boardKey, issueWriteContext(boardRef, unplaced.issue, unplaced.key), b.board, sec.sprint.id);
-    dismissTicketWrite(b.key, target);
+  // The made tickets the sprint's rows do not show.
+  const owed = $derived((draft?.unplaced ?? []).filter((t) => !sec.rows.some((r) => r.card.id === t.issue)));
+
+  // The made ticket's move into the sprint, the menu's: applied, the
+  // ticket is owed nothing, whether or not the board's read after it
+  // shows it there yet; refused, not known to have applied, or not sent,
+  // it stays offered, its outcome said where a ticket's move says it. A
+  // press that sent nothing (the ticket's other move is out) changes
+  // nothing.
+  async function moveUnplaced(d: CreateDraft, t: UnplacedTicket): Promise<void> {
+    if (!sec.sprint) return;
+    const outcome = await moveCardToSprint(boardKey, issueWriteContext(boardRef, t.issue, t.key), b.board, sec.sprint.id);
+    if (outcome?.kind === 'applied') dismiss(d, t);
+  }
+
+  function dismiss(d: CreateDraft, t: UnplacedTicket): void {
+    d.unplaced = d.unplaced.filter((u) => u.issue !== t.issue);
   }
 
   function onKey(event: KeyboardEvent): void {
@@ -295,20 +414,20 @@
     {#if typed && projectID}
       <TicketField label="Type" field="type" value={typeName} editor={types?.value ? typeEditor : null} ticketKey={b.key} target="create-form" fieldName={cardFieldName} disabled={pending} />
     {/if}
-    {#each rows as { f, long, editor } (f.id)}
+    {#each rows as { f, long, editor } (`${of}\n${f.id}`)}
       {#if long}
         <label class="flex flex-col gap-1 py-1 text-xs text-fg-muted" data-testid="issues-backlog-create-text" data-field={f.id}>
-          {f.required ? `${f.name} (required)` : f.name}
+          {mustSupply(f) ? `${f.name} (required)` : f.name}
           <textarea
             rows="3"
             class="w-full resize-y rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1.5 font-mono text-[0.8125rem] text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             value={shown(f)}
             disabled={pending}
-            oninput={(event) => { setFilled(new Map(draft?.filled).set(f.id, { edit: { field: f.id, markdown: { markdown: event.currentTarget.value, from: '' } }, picked: [], text: event.currentTarget.value })); }}
+            oninput={(event) => { const text = event.currentTarget.value; fill(f.id, text ? { edit: { field: f.id, markdown: { markdown: text, from: '' } }, picked: [], text } : null); }}
           ></textarea>
         </label>
       {:else}
-        <TicketField label={f.required ? `${f.name} (required)` : f.name} field={f.id} value={shown(f) || (f.required ? '' : 'The tracker\'s default')} {editor} ticketKey={b.key} target="create-form" fieldName={cardFieldName} disabled={pending} />
+        <TicketField label={mustSupply(f) ? `${f.name} (required)` : f.name} field={f.id} value={shown(f) || (f.defaulted ? TRACKER_DEFAULT : '')} {editor} ticketKey={b.key} target="create-form" fieldName={cardFieldName} disabled={pending} />
       {/if}
     {/each}
     {#if readError}
@@ -321,8 +440,15 @@
       <p class="text-xs text-fg" role="status" data-testid="issues-backlog-create-unsettable">A {typeName || 'ticket'}{typed && projectName ? ` in ${projectName}` : ''} needs {unsettable.join(', ')}, which the app cannot set. Make it in the tracker.</p>
     {/if}
     <TicketWriteNote ticketKey={b.key} {target} fieldName={cardFieldName} />
-    {#if unplaced && sec.sprint}
-      <button type="button" class="self-start text-xs text-accent hover:underline" data-testid="issues-backlog-create-move" onclick={moveUnplaced}>Move {unplaced.key || 'it'} into {sec.sprint.name}</button>
+    {#if sec.sprint}
+      {#each owed as t (t.issue)}
+        {@const d = draft}
+        <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs" role="status" data-testid="issues-backlog-create-unplaced" data-issue={t.issue}>
+          <span class="text-fg" data-testid="issues-backlog-create-unplaced-said">{t.said}</span>
+          <button type="button" class="text-accent hover:underline disabled:opacity-60" data-testid="issues-backlog-create-move" disabled={cardBusy(boardKey, issueWriteContext(boardRef, t.issue, t.key))} onclick={() => { void moveUnplaced(d, t); }}>Move {t.key || 'it'} into {sec.sprint.name}</button>
+          <button type="button" class="text-fg-muted hover:underline" data-testid="issues-backlog-create-move-dismiss" aria-label="Leave {t.key || 'the ticket'} out of {sec.sprint.name}" onclick={() => dismiss(d, t)}>Dismiss</button>
+        </div>
+      {/each}
     {/if}
     <div class="flex items-center gap-1.5">
       <Button size="sm" variant="primary" disabled={pending || !ready || !draft?.title.trim() || missing.length > 0} testId="issues-backlog-create-submit" onclick={() => { void submit(); }}>{pending ? 'Adding…' : 'Add'}</Button>

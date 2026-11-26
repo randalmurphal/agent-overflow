@@ -35,8 +35,9 @@ type FieldView struct {
 	Value    FieldValueView `json:"value"`
 	// Allowed are the values a create screen lists for the field, which
 	// its picker offers with no read; absent when the screen lists none.
-	// Defaulted marks a field a create screen requires that the tracker
-	// fills when the create gives it none (tracker.CreateField).
+	// Defaulted marks a Required field of a create's or a move's screen
+	// that the tracker fills when it is given none: offered, never
+	// cleared, not demanded (tracker.ScreenField).
 	Allowed   []ChoiceView `json:"allowed,omitempty"`
 	Defaulted bool         `json:"defaulted,omitempty"`
 }
@@ -602,7 +603,7 @@ func (sd shownDetail) view(mirrored catalogNames, row store.TrackerConnection) D
 		v.History = append(v.History, ev)
 	}
 	for _, m := range d.Moves {
-		v.Moves = append(v.Moves, MoveView{ID: string(m.ID), Name: m.Name, To: names.status(string(m.To)), Fields: fieldViews(m.Fields)})
+		v.Moves = append(v.Moves, MoveView{ID: string(m.ID), Name: m.Name, To: names.status(string(m.To)), Fields: screenFieldViews(m.Fields)})
 	}
 	return v
 }
@@ -622,8 +623,9 @@ func fieldView(f tracker.Field) FieldView {
 	}
 }
 
-// createFieldViews are a create screen's fields with the values it lists.
-func createFieldViews(fields []tracker.CreateField) []FieldView {
+// screenFieldViews are a create's or a move's screen fields, with the
+// values a create screen lists.
+func screenFieldViews(fields []tracker.ScreenField) []FieldView {
 	out := make([]FieldView, 0, len(fields))
 	for _, f := range fields {
 		v := fieldView(f.Field)

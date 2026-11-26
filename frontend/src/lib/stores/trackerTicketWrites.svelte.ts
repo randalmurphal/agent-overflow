@@ -819,28 +819,44 @@ export interface HeldRead<T> {
 // - A refusal stays held with its error, shown by the form, until the
 //   person retries or opens the form again.
 // - What was read is held, and read again only after the computer
-//   connects again; one read per key is out at a time.
+//   connects again; one read per key is out at a time, and a second ask
+//   while it is out waits for its answer.
 // - Only the read that set an entry settles it, so a read from before a
 //   reconnect settles nothing.
-const heldReads = new SvelteMap<string, HeldRead<unknown>>();
+const heldReads = new SvelteMap<string, HeldEntry<unknown>>();
+
+/** A held read as the map holds it: one being read carries the read's
+ * settling, so a second ask waits for the same answer. */
+interface HeldEntry<T> extends HeldRead<T> {
+  readonly settled?: Promise<void>;
+}
 
 function heldRead<T>(key: string): HeldRead<T> | null {
   return (heldReads.get(key) as HeldRead<T> | undefined) ?? null;
 }
 
 /** Reads `key` on `backend` unless it is held or being read; after a
- * refusal it reads it again. The caller is a person's act (see above). */
-async function loadHeldRead<T>(backend: BackendKey, key: string, read: () => Promise<T>): Promise<void> {
-  const held = heldReads.get(key);
-  if (held && (held.loading || held.value !== null)) return;
-  const reading: HeldRead<T> = { value: null, loading: true, error: null };
+ * refusal it reads it again. The caller is a person's act (see above).
+ * Settles once the key holds the answer of the read out, whoever asked. */
+function loadHeldRead<T>(backend: BackendKey, key: string, read: () => Promise<T>): Promise<void> {
+  const held = untrack(() => heldReads.get(key));
+  if (held?.value != null) return Promise.resolve();
+  if (held?.settled) return held.settled;
+  let settle!: () => void;
+  const settled = new Promise<void>((resolve) => { settle = resolve; });
+  const reading: HeldEntry<T> = { value: null, loading: true, error: null, settled };
   heldReads.set(key, reading);
-  try {
-    const value = await withBackendTarget(backend, read);
-    if (heldReads.get(key) === reading) heldReads.set(key, { value, loading: false, error: null });
-  } catch (err) {
-    if (heldReads.get(key) === reading) heldReads.set(key, { value: null, loading: false, error: err });
-  }
+  void (async () => {
+    try {
+      const value = await withBackendTarget(backend, read);
+      if (heldReads.get(key) === reading) heldReads.set(key, { value, loading: false, error: null });
+    } catch (err) {
+      if (heldReads.get(key) === reading) heldReads.set(key, { value: null, loading: false, error: err });
+    } finally {
+      settle();
+    }
+  })();
+  return settled;
 }
 
 // A computer that connects again may answer otherwise.

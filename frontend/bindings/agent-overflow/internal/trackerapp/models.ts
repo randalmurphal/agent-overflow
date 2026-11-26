@@ -1459,8 +1459,9 @@ export class FieldView {
     /**
      * Allowed are the values a create screen lists for the field, which
      * its picker offers with no read; absent when the screen lists none.
-     * Defaulted marks a field a create screen requires that the tracker
-     * fills when the create gives it none (tracker.CreateField).
+     * Defaulted marks a Required field of a create's or a move's screen
+     * that the tracker fills when it is given none: offered, never
+     * cleared, not demanded (tracker.ScreenField).
      */
     "allowed"?: ChoiceView[];
     "defaulted"?: boolean;

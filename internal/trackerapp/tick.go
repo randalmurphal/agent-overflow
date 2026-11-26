@@ -183,8 +183,12 @@ func (s *Service) tick(ctx context.Context, scope Scope, u Urgency, plan func(*r
 		return out, err
 	}
 	defer r.finish()
+	if origin == nil {
+		origin = &tickOrigin{}
+	}
+	defer s.flushOthers(origin)
 	r.scope, r.origin = scope, origin
-	if origin != nil && origin.board != nil {
+	if origin.board != nil {
 		r.pass = &origin.board.pass
 	}
 	if err := r.readState(); errors.Is(err, errEnded) || endsMirror(err) {
@@ -245,7 +249,7 @@ func (s *Service) tick(ctx context.Context, scope Scope, u Urgency, plan func(*r
 	if endsMirror(rerr) {
 		return ended(out), nil
 	}
-	if rerr == nil && origin != nil {
+	if rerr == nil {
 		origin.sync, origin.recorded = syncViewOf(recorded), true
 	}
 	if err != nil || stop {
@@ -259,13 +263,30 @@ func (s *Service) tick(ctx context.Context, scope Scope, u Urgency, plan func(*r
 
 // tickOrigin is the pump a tick runs for, which emits what the tick
 // changed of its own scope together with its failure, and what the
-// tick's record left of the scope's sync state.
+// tick's record left of the scope's sync state; nil board for a tick no
+// board pump runs (the linked scope's). What the tick changes of every
+// other subscribed board is sent once, as the tick ends (others), so a
+// tick of several batches moves another board's totals once.
 type tickOrigin struct {
 	board *boardPump
+	// others are the boards the tick's writes left an event pending for,
+	// other than board; guarded by subMu.
+	others map[*boardPump]struct{}
 	// sync is the scope's sync view after the tick's record, set when
 	// recorded.
 	sync     SyncView
 	recorded bool
+}
+
+// flushOthers sends the events o's tick left pending for boards other
+// than its own.
+func (s *Service) flushOthers(o *tickOrigin) {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	for p := range o.others {
+		s.flushBoardLocked(p)
+	}
+	o.others = nil
 }
 
 // syncViewOf is the sync view of a scope's recorded outcome: the times of
