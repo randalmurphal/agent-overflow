@@ -52,6 +52,8 @@ export interface ExtraJira {
   boards: Array<{ id: number; name: string; type: 'scrum' | 'kanban'; project: string; columns: Array<{ name: string; statuses: string[] }> }>;
   issues?: Array<{
     id: string; key: string; project: string; type: string; status: string; summary: string; sprints?: number[]; assignee?: string;
+    /** The parent issue's ID. */
+    parent?: string;
     /** When it was made and resolved, as ISO strings; made two days ago
      * when left out. */
     created?: string;
@@ -122,9 +124,9 @@ export async function connectFakeJiraBoard(
 
 /**
  * Adds and verifies a Jira connection to the seeded fake site (seedFakeJira)
- * and lists its board on `projectId`.
+ * and lists `board` (the seed's scrum board when left out) on `projectId`.
  */
-export async function connectFakeJira(harness: HarnessApp, projectId: string): Promise<{ projectId: string; connectionId: string; site: string }> {
+export async function connectFakeJira(harness: HarnessApp, projectId: string, board = BOARD_ID): Promise<{ projectId: string; connectionId: string; site: string }> {
   const added = await harness.rpc<TrackerConnection>('AddTrackerConnection', { kind: 'jira', site: JIRA_SITE, account: JIRA_ACCOUNT });
   // The token a person would paste into the key file the app named.
   await writeFile(added.keyFilePath, JIRA_TOKEN, { mode: 0o600 });
@@ -132,7 +134,7 @@ export async function connectFakeJira(harness: HarnessApp, projectId: string): P
   if (verified.problem) throw new Error(`the fake Jira refused the connection: ${JSON.stringify(verified.problem)}`);
   // As the board picker sends it: built from the project's empty list,
   // with the name and project it showed.
-  await harness.rpc('SetProjectTrackerBoards', projectId, [], [{ connection: added.id, board: BOARD_ID, opens_first: true, name: 'WEB board', tracker_project: 'WEB' }]);
+  await harness.rpc('SetProjectTrackerBoards', projectId, [], [{ connection: added.id, board, opens_first: true, name: 'WEB board', tracker_project: 'WEB' }]);
   return { projectId, connectionId: added.id, site: verified.site };
 }
 

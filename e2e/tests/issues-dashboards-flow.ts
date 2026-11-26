@@ -20,7 +20,9 @@
 // Unassigned's cell and No epic's bar open their tickets; while a
 // range is counted the grid takes no click; the board's first read not
 // finished is said on the screen and in a drill until its reconcile
-// completes. On desktop: four opens and closes of the screen leave the
+// completes; on a kanban board with more epics and people than its bars
+// and table show, More opens the rows of the epics and people left out,
+// two epics tied across the cut. On desktop: four opens and closes of the screen leave the
 // page's heap and DOM as they were.
 
 import type { Locator, Page } from '@playwright/test';
@@ -102,6 +104,32 @@ const DASHBOARDS: ExtraJira = {
       id: '10122', key: 'WEB-22', project: 'WEB', type: '10002', status: '10000', summary: 'Waiting for User 1', sprints: [1],
       assignee: 'acc-user1', created: iso(-10 * DAY), values: { [POINTS]: 5 },
     },
+  ],
+};
+
+// A kanban board (the weeks dashboard, counting tickets) with 13 epics
+// of 9, 8, 7, 6, 5, 5, 4, 4, 3, 3, 2, 2 and 1 open children, and 52
+// people beside User 1, User 10 to User 61, the 59 children assigned in
+// turn: User 10 to User 16 carry 2, the rest 1. No epic holds the 13
+// epics and WEB-1 to WEB-3 (16), as Unassigned does. The bars show 12 of
+// 14 buckets: WEB-610 and WEB-611 both hold 2, and WEB-610 is shown by
+// its label; More opens WEB-611's and WEB-612's 3 children, WEB-756 to
+// WEB-758. The table shows 50 of 53 people: More opens User 59's, User
+// 60's and User 61's, WEB-749 to WEB-751.
+const KANBAN_BOARD = '2';
+const EPIC_CHILDREN = [9, 8, 7, 6, 5, 5, 4, 4, 3, 3, 2, 2, 1];
+const KANBAN: ExtraJira = {
+  projects: [],
+  boards: [{ id: 2, name: 'WEB kanban', type: 'kanban', project: 'WEB', columns: [
+    { name: 'To Do', statuses: ['10000'] }, { name: 'In Progress', statuses: ['10001'] }, { name: 'Done', statuses: ['10002'] },
+  ] }],
+  users: Array.from({ length: 52 }, (_, i) => ({ accountId: `acc-p${10 + i}`, displayName: `User ${10 + i}`, timeZone: 'UTC' })),
+  issues: [
+    ...EPIC_CHILDREN.map((_, j) => ({ id: String(10600 + j), key: `WEB-${600 + j}`, project: 'WEB', type: '10000', status: '10000', summary: `Epic ${j + 1}` })),
+    ...EPIC_CHILDREN.flatMap((n, j) => Array.from({ length: n }, () => j)).map((j, k) => ({
+      id: String(10700 + k), key: `WEB-${700 + k}`, project: 'WEB', type: '10002', status: '10000', summary: `Child ${k + 1}`,
+      parent: String(10600 + j), assignee: `acc-p${10 + (k % 52)}`,
+    })),
   ],
 };
 
@@ -412,6 +440,41 @@ export function registerDashboardsFlow({ compact }: DashboardsSurface): void {
     await expect(widget(screen, 'pace').getByTestId('dashboard-number-value')).toHaveText('2');
     await expect(drill).toHaveCount(0);
     await expect(screen.getByTestId('dashboard-grid')).not.toHaveAttribute('inert', '');
+  });
+
+  test('Dashboards opens the epics and people a chart and a table left out from their More', async ({ harness, page }) => {
+    test.setTimeout(180_000);
+    await seedFakeJira(harness, KANBAN);
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name: name('more'), repo: {}, threads: [] }] });
+    await connectFakeJira(harness, seed.projects[0].projectId, KANBAN_BOARD);
+    await harness.open(page);
+    const pane = await openIssuesPane(page, compact);
+    await expect(pane.locator('[data-testid="issues-card"][data-issue="10700"]')).toBeVisible({ timeout: 30_000 });
+    const screen = await openDashboards(page, pane, compact);
+    const drill = page.getByTestId('dashboard-drill');
+    const keys = async () => {
+      await expect(drill.getByTestId('dashboard-drill-row').first()).toBeVisible();
+      return (await drill.getByTestId('dashboard-drill-row').locator('span.font-mono').allTextContents()).sort();
+    };
+
+    const epics = widget(screen, 'open_by_epic');
+    await expect(epics.getByTestId('dashboard-bar')).toHaveCount(12, { timeout: 60_000 });
+    await expect(epics.locator('[data-testid="dashboard-bar"][data-bucket="10610"]')).toHaveCount(1);
+    await expect(epics.locator('[data-testid="dashboard-bar"][data-bucket="10611"]')).toHaveCount(0);
+    await press(epics.getByTestId('dashboard-more'), compact);
+    await expect(page.getByRole('dialog', { name: 'Open work by epic, 2 more epics' })).toBeVisible();
+    await expect(drill.getByTestId('dashboard-drill-count')).toHaveText('3 tickets');
+    expect(await keys()).toEqual(['WEB-756', 'WEB-757', 'WEB-758']);
+    await page.keyboard.press('Escape');
+    await expect(drill).toHaveCount(0);
+
+    const carrying = widget(screen, 'carrying');
+    await expect(carrying.getByTestId('dashboard-table-row')).toHaveCount(50);
+    await expect(carrying.getByTestId('dashboard-more')).toHaveText('3 more people');
+    await press(carrying.getByTestId('dashboard-more'), compact);
+    await expect(page.getByRole('dialog', { name: 'Who is carrying what, 3 more people' })).toBeVisible();
+    expect(await keys()).toEqual(['WEB-749', 'WEB-750', 'WEB-751']);
+    await expect(drill.getByTestId('dashboard-drill-row')).toHaveText([/User 59/, /User 60/, /User 61/]);
   });
 
   test('Dashboards says the board\'s first read has not finished, on the screen and in a drill, until it has', async ({ harness, page }) => {
