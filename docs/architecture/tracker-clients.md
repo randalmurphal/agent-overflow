@@ -392,6 +392,14 @@ problem on that record, which stays usable.
   a remaining estimate set alone is a change), delete, with the
   remaining-estimate adjustments each write allows, and the updated and
   deleted feeds for sync.
+- **Development data.** The development panel's summary of an issue
+  (`DevSummary`: pull request counts by instance type) and one instance
+  type's pull requests (`DevPullRequests`), each one request, by the
+  issue's number. The endpoints are undocumented: an answer outside the
+  measured shape is a `DevShapeError` and one whose `errors` or
+  `configErrors` name something a `DevStatusError` quoting each element
+  cut to 300 bytes
+  ([measured](../references/tracker-api-measurements.md#development-data)).
 - **People.** Who the token belongs to, a user by account ID, a user found
   by account ID, exact name or email (active and not an app; a name that
   cannot be proven unique within Jira's search window is an error), and
