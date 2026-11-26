@@ -1198,7 +1198,7 @@ func TestGitHubOriginScopedLists(t *testing.T) {
 	if len(sent) != 3 || sent[0].Host != "github.com" {
 		t.Fatalf("requests = %+v", calls.ops())
 	}
-	if v := sent[0].Vars; v["owner"] != "acme" || v["name"] != "repo" || v["head"] != "feature/x" || strings.Contains(sent[0].Query, "feature/x") {
+	if v := sent[0].Vars; v["owner"] != "acme" || v["name"] != "repo" || v["head"] != "feature/x" || fmt.Sprint(v["states"]) != "[OPEN]" || strings.Contains(sent[0].Query, "feature/x") {
 		t.Fatalf("PRsByHead variables = %v", v)
 	}
 	if v := sent[1].Vars; v["first"] != float64(100) || v["after"] != nil {
