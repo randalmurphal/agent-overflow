@@ -171,9 +171,11 @@ func TestAddCommentPublicReadsNoProject(t *testing.T) {
 
 // TestACreateReadsItsScreenOnce proves a create planned after its screen
 // was read reads the screen once, a screen older than its age is read
-// again, and the kept screen is no caller's to change.
+// again, a read to show the screen asks Jira every time and keeps what
+// it read, and the kept screen is no caller's to change.
 func TestACreateReadsItsScreenOnce(t *testing.T) {
 	f, c := createSite(t)
+	reads := func() int { return f.Count("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes/1") }
 	now := time.Unix(1_700_000_000, 0)
 	c.createScreens.clock = func() time.Time { return now }
 	first, err := c.CreateMeta(t.Context(), "WEB", "1")
@@ -183,21 +185,31 @@ func TestACreateReadsItsScreenOnce(t *testing.T) {
 	// The screen handed out is the caller's own.
 	i := slices.IndexFunc(first.Fields, func(f FieldMeta) bool { return f.ID == "priority" })
 	first.Fields[i].Allowed[0].Name = "Changed"
-	if again, err := c.CreateMeta(t.Context(), "WEB", "1"); err != nil || again.Fields[i].Allowed[0].Name != "High" {
+	if again, err := c.KeptCreateMeta(t.Context(), "WEB", "1"); err != nil || again.Fields[i].Allowed[0].Name != "High" {
 		t.Fatalf("the kept screen = %+v, %v", again.Fields[i], err)
 	}
 	in := CreateInput{Project: "WEB", IssueType: "Task", Fields: []FieldInput{{Field: "Summary", Value: Text("x")}}}
 	if _, err := c.PlanCreate(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
-	if n := f.Count("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes/1"); n != 1 {
+	if n := reads(); n != 1 {
 		t.Errorf("the create screen was read %d times, want once", n)
+	}
+	// Shown again within the age: read again, and the create takes it.
+	if _, err := c.CreateMeta(t.Context(), "WEB", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.PlanCreate(t.Context(), in); err != nil {
+		t.Fatal(err)
+	}
+	if n := reads(); n != 2 {
+		t.Errorf("a screen shown again and then planned from was read %d times in all, want twice", n)
 	}
 	now = now.Add(createScreenAge)
 	if _, err := c.PlanCreate(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
-	if n := f.Count("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes/1"); n != 2 {
+	if n := reads(); n != 3 {
 		t.Errorf("a screen %v old was read %d times in all, want again", createScreenAge, n)
 	}
 }
@@ -205,7 +217,8 @@ func TestACreateReadsItsScreenOnce(t *testing.T) {
 // A create the tracker refuses for a named field, or the plan refuses for
 // a required field left unset, drops its screen, so the next read of it
 // is Jira's: the form reads its fields again after such a refusal. A
-// refusal that names no field keeps the screen.
+// refusal that names no field keeps the screen. Each check reads as a
+// create's plan does (KeptCreateMeta).
 func TestARefusedCreateDropsItsScreen(t *testing.T) {
 	f, c := createSite(t)
 	screen := func() int { return f.Count("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes/1") }
@@ -222,17 +235,17 @@ func TestARefusedCreateDropsItsScreen(t *testing.T) {
 		}
 	}
 	refusedWith(`{"errorMessages":["The project is archived."],"errors":{}}`)
-	if _, err := c.CreateMeta(t.Context(), "WEB", "1"); err != nil || screen() != 1 {
+	if _, err := c.KeptCreateMeta(t.Context(), "WEB", "1"); err != nil || screen() != 1 {
 		t.Fatalf("after a refusal naming no field the screen was read %d times, %v; want once", screen(), err)
 	}
 	refusedWith(`{"errorMessages":[],"errors":{"customfield_10050":"Field 'customfield_10050' cannot be set. It is not on the appropriate screen, or unknown."}}`)
-	if _, err := c.CreateMeta(t.Context(), "WEB", "1"); err != nil || screen() != 2 {
+	if _, err := c.KeptCreateMeta(t.Context(), "WEB", "1"); err != nil || screen() != 2 {
 		t.Fatalf("after a refusal naming a field the screen was read %d times, %v; want twice", screen(), err)
 	}
 	if _, err := c.PlanCreate(t.Context(), CreateInput{Project: "WEB", IssueType: "1", Fields: []FieldInput{{Field: "Priority", Value: Text("High")}}}); !errors.As(err, new(*MissingFieldsError)) {
 		t.Fatalf("a create without its summary = %v", err)
 	}
-	if _, err := c.CreateMeta(t.Context(), "WEB", "1"); err != nil || screen() != 3 {
+	if _, err := c.KeptCreateMeta(t.Context(), "WEB", "1"); err != nil || screen() != 3 {
 		t.Fatalf("after a required field left unset the screen was read %d times, %v; want three", screen(), err)
 	}
 }

@@ -409,7 +409,7 @@
                   {filtered ? (sec.more ? 'No matching tickets among those loaded' : 'No matching tickets') : compact ? 'No tickets' : 'Drop tickets here'}
                 </p>
               {/if}
-              <BacklogCreate {b} {boardKey} {boardRef} {sec} project={held.shape.project} {typed} drafts={createDrafts} />
+              <BacklogCreate {b} {boardKey} {boardRef} {sec} project={held.shape.project} {typed} visible={shown} drafts={createDrafts} />
             </div>
           {/if}
           {#snippet sprintControls()}

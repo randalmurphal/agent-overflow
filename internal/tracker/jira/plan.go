@@ -125,7 +125,7 @@ func (c *Client) PlanCreate(ctx context.Context, in CreateInput) (*CreatePlan, e
 	if p.issueType, err = c.createIssueType(ctx, in.Project, in.IssueType); err != nil {
 		return nil, err
 	}
-	screen, err := c.CreateMeta(ctx, in.Project, p.issueType.ID)
+	screen, err := c.KeptCreateMeta(ctx, in.Project, p.issueType.ID)
 	if err != nil {
 		return nil, err
 	}

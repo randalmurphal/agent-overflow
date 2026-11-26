@@ -37,7 +37,7 @@ import { PNG_BASE64, PNG_BYTES } from './attachment-fixture.js';
 import { expect, test } from './fixtures.js';
 import { confirmOnHost, mintInvite, nonLoopbackIPv4, redeemOnScreen } from './offhost-helpers.js';
 import { recordOpens } from './preview-gateway-helpers.js';
-import { JIRA_SITE, connectFakeJiraBoard, type ExtraJira } from './tracker-helpers.js';
+import { JIRA_SITE, connectFakeJiraBoard, seedFakeJira, type ExtraJira } from './tracker-helpers.js';
 
 export interface SectionsSurface {
   compact: boolean;
@@ -295,6 +295,39 @@ export function registerIssuesTicketSectionsFlow({ compact }: SectionsSurface): 
     await harness.rpc('HarnessTrackerRelease', { origin: JIRA, route });
     await expect(toWeb6).toHaveCount(0, { timeout: 15_000 });
     expect((await trackerRequests(harness, route)).map((r) => r.status)).toEqual([204]);
+  });
+
+  test('the link form keeps the relation picked when a Refresh pressed from the keyboard reads a list Jira changed', async ({ harness, page }) => {
+    test.setTimeout(120_000);
+    const blocks = { id: '10000', name: 'Blocks', inward: 'is blocked by', outward: 'blocks' };
+    const clones = { id: '10001', name: 'Cloners', inward: 'is cloned by', outward: 'clones' };
+    await connectFakeJiraBoard(harness, compact ? 'compact-ticket-link-refresh' : 'ticket-link-refresh', { ...SEEDED, linkTypes: [blocks] });
+    await harness.open(page);
+    const pane = await openPane(page, compact);
+    const ticket = await openTicket(pane, '10101', compact);
+    await expect(ticket.getByTestId('ticket-link-row')).toHaveCount(1, { timeout: 30_000 });
+
+    await press(ticket.getByTestId('ticket-link-add'), compact);
+    const form = page.getByTestId('ticket-link-form');
+    const relation = form.getByTestId('ticket-link-form-relation');
+    await relation.selectOption({ label: 'is blocked by' });
+    await press(form.getByTestId('ticket-link-form-find'), compact);
+    await page.getByTestId('ticket-picker-find').pressSequentially('WEB-3');
+    await press(page.getByTestId('ticket-picker-item').filter({ hasText: 'WEB-3' }), compact);
+    await expect(form.getByTestId('ticket-link-form-other')).toContainText('WEB-3');
+
+    // A teammate adds a link type before Blocks in Jira; the ticket's
+    // Refresh, pressed from the keyboard, leaves the form open and reads it.
+    await seedFakeJira(harness, { ...SEEDED, linkTypes: [clones, blocks] });
+    await ticket.getByTestId('ticket-refresh').focus();
+    await page.keyboard.press('Enter');
+    await expect(relation.locator('option')).toHaveText(['clones', 'is cloned by', 'blocks', 'is blocked by'], { timeout: 15_000 });
+    await expect(form).toBeVisible();
+    await expect(relation).toHaveValue('10000:false');
+    await press(form.getByTestId('ticket-link-form-save'), compact);
+    await expect(form).toHaveCount(0, { timeout: 15_000 });
+    const [added] = await trackerRequests(harness, 'POST rest/api/3/issueLink');
+    expect(added.body).toMatchObject({ type: { id: '10000' }, outwardIssue: { id: '10103' }, inwardIssue: { id: '10101' } });
   });
 
   test('planning poker follows only once opened, takes a vote, a reveal, the estimate and a clear, and keeps a failure to itself', async ({ harness, page }) => {

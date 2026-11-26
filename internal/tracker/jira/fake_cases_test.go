@@ -143,6 +143,10 @@ var issueCases = map[string]func(t *testing.T, f *fakeEnv){
 		s := got(f.c.CreateMeta(f.ctx, "WEB", "10001")).must(t)
 		got(s.Field("Summary")).must(t)
 	},
+	"KeptCreateMeta": func(t *testing.T, f *fakeEnv) {
+		s := got(f.c.KeptCreateMeta(f.ctx, "WEB", "10001")).must(t)
+		got(s.Field("Summary")).must(t)
+	},
 	"EditMeta": func(t *testing.T, f *fakeEnv) {
 		s := got(f.c.EditMeta(f.ctx, "WEB-1")).must(t)
 		got(s.Field("Area")).must(t)

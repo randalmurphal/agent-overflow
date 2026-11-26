@@ -360,12 +360,25 @@ func (c *Client) CreateIssueTypes(ctx context.Context, project string) ([]IssueT
 	return out, nil
 }
 
-// CreateMeta returns the create screen of a project and issue type ID.
-// A screen read is kept for createScreenAge, so a create planned after
-// its form, or a tool, read the screen reads it once, until a create
-// refuses a field on it (forgetCreateScreen). The value is the caller's
-// own.
+// CreateMeta reads the create screen of a project and issue type ID from
+// Jira now and keeps it for createScreenAge: the read of a screen shown
+// to someone (a create form, a tool's read of the fields), whose Refresh
+// means Jira was asked. The value is the caller's own.
 func (c *Client) CreateMeta(ctx context.Context, project, issueTypeID string) (Screen, error) {
+	return c.createMeta(ctx, project, issueTypeID, false)
+}
+
+// KeptCreateMeta is CreateMeta answered from the screen kept within
+// createScreenAge when there is one: for what follows a shown screen and
+// shows none itself, a create planned from the form (PlanCreate) and a
+// search of the screen's choices, so a create reads its screen once in
+// all, until a create refuses a field on it (forgetCreateScreen).
+func (c *Client) KeptCreateMeta(ctx context.Context, project, issueTypeID string) (Screen, error) {
+	return c.createMeta(ctx, project, issueTypeID, true)
+}
+
+// createMeta is CreateMeta, or KeptCreateMeta when kept.
+func (c *Client) createMeta(ctx context.Context, project, issueTypeID string, kept bool) (Screen, error) {
 	if err := c.admit(ctx); err != nil {
 		return Screen{}, err
 	}
@@ -376,8 +389,10 @@ func (c *Client) CreateMeta(ctx context.Context, project, issueTypeID string) (S
 		return Screen{}, err
 	}
 	key := [2]string{project, issueTypeID}
-	if s, ok := c.createScreens.get(ctx, key); ok {
-		return s, nil
+	if kept {
+		if s, ok := c.createScreens.get(ctx, key); ok {
+			return s, nil
+		}
 	}
 	epoch := c.createScreens.epoch()
 	path := "issue/createmeta/" + url.PathEscape(project) + "/issuetypes/" + url.PathEscape(issueTypeID)
@@ -403,10 +418,10 @@ func (c *Client) forgetCreateScreen(project, issueTypeID string) {
 	c.createScreens.drop([2]string{project, issueTypeID})
 }
 
-// createScreenAge is how long a create screen is kept. Jira sends no
-// signal when an administrator changes a screen, so it is kept no longer
-// than a create's form or a tool call takes to plan the create after
-// reading it.
+// createScreenAge is how long a create screen is kept for what follows
+// its read (KeptCreateMeta). Jira sends no signal when an administrator
+// changes a screen, so it is kept no longer than a create's form or a
+// tool call takes to plan the create after reading it.
 const createScreenAge = time.Minute
 
 // createScreenCacheSize is the most create screens kept, by project and

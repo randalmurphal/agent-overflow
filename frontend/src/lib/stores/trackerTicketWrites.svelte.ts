@@ -150,6 +150,7 @@ import { TransferInterruptedError, TransferRefusedError, UploadNotSentError, upl
 import type { BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
 import { composeWorkspaceKey, workspaceKeyBackend } from '../utils/workspaceKey';
+import { FORM_READ_AGE_MS } from '../pageTiming';
 
 /** The ticket a write is made to, as the screen holds it. */
 export interface TicketWriteContext {
@@ -812,22 +813,31 @@ export interface HeldRead<T> {
 // A form read (a connection's link types for the link form; a board's
 // projects, a project's issue types and a type's create fields for a
 // ticket made on the Backlog) must keep true:
-// - Only a person's act reads it: its form opening, a pick that needs it,
-//   its Retry, or Add refused for fields the screen now requires
-//   (`reloadCreateFields`). Nothing reads it again because a read settled, so a
-//   caller starts the read outside any reactive scope that reads it.
-// - A refusal stays held with its error, shown by the form, until the
-//   person retries or opens the form again.
-// - What was read is held, and read again only after the computer
-//   connects again; one read per key is out at a time, and a second ask
-//   while it is out waits for its answer.
-// - Only the read that set an entry settles it, so a read from before a
-//   reconnect settles nothing.
+// - Only a person's act reads it: its form opening or coming back into
+//   view, a pick that needs it, its Retry, its screen's Refresh
+//   (`refreshFormReads`), or Add refused for fields the screen now
+//   requires (`reloadCreateFields`). Nothing reads it again because a
+//   read settled, so a caller starts the read outside any reactive scope
+//   that reads it.
+// - What was read is held, and an act reads it again once it is older
+//   than FORM_READ_AGE_MS, or after Refresh or a reconnect. While that
+//   read is out the held value shows; its answer replaces it, and a
+//   failure is held with its error beside the value, shown by the form,
+//   until the next act reads it again.
+// - One read per key is out at a time, and a second ask while it is out
+//   waits for its answer. Only the read that set an entry settles it, so
+//   a read from before a reconnect settles nothing.
 const heldReads = new SvelteMap<string, HeldEntry<unknown>>();
+// Each connection's Refreshes counted, which a form on screen follows.
+const formRefreshes = new SvelteMap<string, number>();
 
-/** A held read as the map holds it: one being read carries the read's
- * settling, so a second ask waits for the same answer. */
+/** A held read as the map holds it: the connection it was read on
+ * (`composeWorkspaceKey`), when its value was read (0 once Refresh made
+ * it old), and, while being read, the read's settling, so a second ask
+ * waits for the same answer. */
 interface HeldEntry<T> extends HeldRead<T> {
+  readonly connection: string;
+  readonly at: number;
   readonly settled?: Promise<void>;
 }
 
@@ -835,28 +845,61 @@ function heldRead<T>(key: string): HeldRead<T> | null {
   return (heldReads.get(key) as HeldRead<T> | undefined) ?? null;
 }
 
-/** Reads `key` on `backend` unless it is held or being read; after a
- * refusal it reads it again. The caller is a person's act (see above).
- * Settles once the key holds the answer of the read out, whoever asked. */
-function loadHeldRead<T>(backend: BackendKey, key: string, read: () => Promise<T>): Promise<void> {
-  const held = untrack(() => heldReads.get(key));
-  if (held?.value != null) return Promise.resolve();
+/** Reads `key` of `connection` on `backend` unless it is being read or
+ * was read within FORM_READ_AGE_MS. The caller is a person's act (see
+ * above). Settles once the key holds the answer of the read out, whoever
+ * asked. */
+function loadHeldRead<T>(backend: BackendKey, connection: string, key: string, read: () => Promise<T>): Promise<void> {
+  const held = untrack(() => heldReads.get(key)) as HeldEntry<T> | undefined;
   if (held?.settled) return held.settled;
+  if (held?.value != null && Date.now() - held.at < FORM_READ_AGE_MS) return Promise.resolve();
   let settle!: () => void;
   const settled = new Promise<void>((resolve) => { settle = resolve; });
-  const reading: HeldEntry<T> = { value: null, loading: true, error: null, settled };
+  const of = composeWorkspaceKey(backend, connection);
+  const shown = held?.value ?? null;
+  const at = held?.at ?? 0;
+  const reading: HeldEntry<T> = { value: shown, loading: true, error: null, connection: of, at, settled };
   heldReads.set(key, reading);
   void (async () => {
     try {
       const value = await withBackendTarget(backend, read);
-      if (heldReads.get(key) === reading) heldReads.set(key, { value, loading: false, error: null });
+      if (heldReads.get(key) === reading) heldReads.set(key, { value, loading: false, error: null, connection: of, at: Date.now() });
     } catch (err) {
-      if (heldReads.get(key) === reading) heldReads.set(key, { value: null, loading: false, error: err });
+      if (heldReads.get(key) === reading) heldReads.set(key, { value: shown, loading: false, error: err, connection: of, at });
     } finally {
       settle();
     }
   })();
   return settled;
+}
+
+/** Makes the entry at `key` old, unless it is being read: the next act
+ * reads it again. */
+function makeOld(key: string): void {
+  const held = heldReads.get(key);
+  if (held && !held.settled) heldReads.set(key, { ...held, at: 0 });
+}
+
+/** The screen's Refresh: what the connection's forms hold is read again
+ * by the next act, and at once by a form on screen (`readOnFormRefresh`). */
+export function refreshFormReads(backend: BackendKey, connection: string): void {
+  const of = composeWorkspaceKey(backend, connection);
+  for (const [key, held] of heldReads) if (held.connection === of) makeOld(key);
+  formRefreshes.set(of, (formRefreshes.get(of) ?? 0) + 1);
+}
+
+/** Runs a form's `read` after each Refresh of its connection's form
+ * reads while the form is on screen; its mount runs nothing here. Called
+ * from the form's setup. */
+export function readOnFormRefresh(of: () => { readonly backend: BackendKey; readonly connection: string }, read: () => void): void {
+  let seen: { readonly key: string; readonly n: number } | null = null;
+  $effect(() => {
+    const { backend, connection } = of();
+    const key = composeWorkspaceKey(backend, connection);
+    const n = formRefreshes.get(key) ?? 0;
+    if (seen?.key === key && seen.n !== n) untrack(read);
+    seen = { key, n };
+  });
 }
 
 // A computer that connects again may answer otherwise.
@@ -875,7 +918,7 @@ export function ticketLinkTypes(backend: BackendKey, connection: string): HeldRe
 }
 
 export function loadTicketLinkTypes(backend: BackendKey, connection: string): Promise<void> {
-  return loadHeldRead(backend, readKey(backend, 'links', connection), () => TrackerLinkTypes(connection));
+  return loadHeldRead(backend, connection, readKey(backend, 'links', connection), () => TrackerLinkTypes(connection));
 }
 
 /** The projects the board shows, which a ticket made on it is made in;
@@ -885,7 +928,7 @@ export function boardProjects(b: BoardWriteContext): HeldRead<ProjectView[]> | n
 }
 
 export function loadBoardProjects(b: BoardWriteContext): Promise<void> {
-  return loadHeldRead(b.backend, readKey(b.backend, 'projects', b.connection, b.board), () => TrackerBoardProjects(b.connection, b.board));
+  return loadHeldRead(b.backend, b.connection, readKey(b.backend, 'projects', b.connection, b.board), () => TrackerBoardProjects(b.connection, b.board));
 }
 
 /** The types a ticket can be made with in `project`; null before
@@ -895,7 +938,7 @@ export function issueTypes(backend: BackendKey, connection: string, project: str
 }
 
 export function loadIssueTypes(backend: BackendKey, connection: string, project: string): Promise<void> {
-  return loadHeldRead(backend, readKey(backend, 'types', connection, project), () => TrackerIssueTypes(connection, project));
+  return loadHeldRead(backend, connection, readKey(backend, 'types', connection, project), () => TrackerIssueTypes(connection, project));
 }
 
 /** The fields a ticket of `type` made in `project` takes besides its
@@ -905,14 +948,13 @@ export function createFields(backend: BackendKey, connection: string, project: s
 }
 
 export function loadCreateFields(backend: BackendKey, connection: string, project: string, type: string): Promise<void> {
-  return loadHeldRead(backend, readKey(backend, 'fields', connection, project, type), () => TrackerCreateFields(connection, project, type));
+  return loadHeldRead(backend, connection, readKey(backend, 'fields', connection, project, type), () => TrackerCreateFields(connection, project, type));
 }
 
 /** Reads the create fields again: the person's act after the tracker
  * refused a create for fields it requires, since its screen changed. */
 export function reloadCreateFields(backend: BackendKey, connection: string, project: string, type: string): Promise<void> {
-  const key = readKey(backend, 'fields', connection, project, type);
-  if (!heldReads.get(key)?.loading) heldReads.delete(key);
+  makeOld(readKey(backend, 'fields', connection, project, type));
   return loadCreateFields(backend, connection, project, type);
 }
 
@@ -950,5 +992,6 @@ export function resetTicketWritesForTest(): void {
   uploadQueues.clear();
   uploads.clear();
   heldReads.clear();
+  formRefreshes.clear();
   consent.clear();
 }
