@@ -22,7 +22,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { acquireTrackerConnections, trackerConnectionsOf } from '../../stores/trackerConnections.svelte';
   import type { TrackerTicketAttachment } from '../../stores/trackerTicket.svelte';
-  import { fieldTarget, ticketWrite, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
+  import { fieldTarget, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
   import {
     askAboutTicket,
@@ -38,6 +38,7 @@
     ticketWork,
     type StartWorkPlan,
     type StartWorkStep,
+    type StepActivity,
     type StepOutcome,
   } from '../../stores/ticketWork.svelte';
   import { projectBackend, threadBackend } from '../../transport/entityIndex';
@@ -169,17 +170,16 @@
     defaults: 'Save the defaults',
   };
 
-  // The write target of a step that is a tracker write. Its row is a
-  // control of that target while the step runs or holds the write's
-  // outcome: the write store's note under it says what became of the
-  // write, by the store's rule, and the row only names the kind.
+  // The write target of a step that is a tracker write. Its row is no
+  // control of that target: the Status and Assignee fields are, and say
+  // what became of the write by the store's rule. The row names the kind
+  // and shows the write its run sent while that write is the target's
+  // latest (TicketWriteNote's `only`).
   const WRITE_TARGETS: Partial<Record<StartWorkStep, string>> = { move: 'status', assign: fieldTarget('assignee') };
-  function drawsWrite(step: StartWorkStep, o: StepOutcome): string | null {
-    const target = WRITE_TARGETS[step];
-    return target && (o.kind === 'running' || ('written' in o && o.written)) ? target : null;
-  }
 
-  function stepText(step: StartWorkStep, o: StepOutcome): string {
+  const DOING: Readonly<Record<StepActivity, string>> = { reading: 'Reading the ticket…', saving: 'Saving…', making: 'Making the thread…' };
+
+  function stepText(o: StepOutcome): string {
     if ('written' in o && o.written) {
       switch (o.kind) {
         case 'applied': return 'Done.';
@@ -191,12 +191,7 @@
     }
     switch (o.kind) {
       case 'waiting': return 'Waiting.';
-      case 'running': {
-        if (step === 'thread') return 'Making the thread…';
-        const target = WRITE_TARGETS[step];
-        // The write's own note says "Saving…" once it is out.
-        return target && ticketWrite(attachment.key, target)?.pending ? '' : 'Reading the ticket…';
-      }
+      case 'running': return DOING[o.doing];
       case 'skipped': return '';
       case 'applied': return o.note ? `Done. ${o.note}` : 'Done.';
       case 'already': return o.text;
@@ -267,12 +262,13 @@
     <div class="flex flex-col gap-1 rounded-[var(--radius-field)] border border-border-subtle bg-surface-1 px-2 py-1.5 text-xs" data-testid="start-work-run" data-running={run.running ? '' : undefined}>
       {#each Object.entries(run.steps) as [step, outcome] (step)}
         {#if outcome.kind !== 'skipped'}
-          {@const target = drawsWrite(step as StartWorkStep, outcome)}
+          {@const target = WRITE_TARGETS[step as StartWorkStep]}
+          {@const held = 'written' in outcome ? outcome.written?.held : null}
           <div class="flex flex-col" data-testid="start-work-step" data-step={step} data-outcome={outcome.kind}>
-            <span class="font-medium text-fg">{STEP_NAMES[step as StartWorkStep]}{step === 'move' && run.plan.status ? ` to ${run.plan.status.name}` : ''}{step === 'thread' ? ` on ${run.plan.branch}` : ''}</span>
-            <span class={STEP_TONE[outcome.kind]}>{stepText(step as StartWorkStep, outcome)}</span>
-            {#if target}
-              <TicketWriteNote ticketKey={attachment.key} {target} fieldName={(id) => id} />
+            <span class="font-medium text-fg">{STEP_NAMES[step as StartWorkStep]}{step === 'move' && run.plan.status ? ` to ${run.plan.status.name}` : ''}{step === 'thread' ? ` in ${getProjectLabelText(run.plan.repository)} on ${run.plan.branch}` : ''}</span>
+            <span class={STEP_TONE[outcome.kind]}>{stepText(outcome)}</span>
+            {#if target && held}
+              <TicketWriteNote ticketKey={attachment.key} {target} fieldName={(id) => id} only={held} />
             {/if}
           </div>
         {/if}

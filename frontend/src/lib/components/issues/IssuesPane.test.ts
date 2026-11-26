@@ -1471,6 +1471,71 @@ describe('the ticket in the pane', () => {
     expect(within(status).queryByTestId('ticket-write-pending')).toBeNull();
   });
 
+  it('shows under a Start work row only the write its run sent, and a later move of the Status field under that field', async () => {
+    project('p1', 'alpha', 1);
+    setBindingMock('TrackerConnections', async () => [{ id: 'c1', kind: 'jira', site: 'https://example.atlassian.net', label: 'Work', enabled: true, account: 'User 1' }]);
+    install();
+    const done = { id: '22', name: 'Finish', to: { id: 's3', name: 'Done', group: 'done' } };
+    const toDo = (issue: string) => {
+      const detail = ticketDetail(issue);
+      return { ...detail, moves: [...detail.moves, done] } as DetailView;
+    };
+    installTicket(toDo);
+    // Every read finds the ticket still in To Do.
+    setBindingMock('TrackerTicket', async () => ({ loaded: true, detail: toDo('1'), account: JIRA_USER1.account }));
+    setBindingMock('ProjectTrackerSetup', async () => ({
+      revision: 'r1',
+      setup: { status_groups: [], ticket_pins: [], start_work: [{ tracker: 'jira', site: 'https://example.atlassian.net', project: 'WEB', status: 's2', assign: false, branch: 'WEB-1-retry' }] },
+    }));
+    setBindingMock('StartTicketThread', async () => makeThread({ id: 't-made', projectId: 'p1', title: 'WEB-1 Issue 1' }));
+    setBindingMock('RefreshTrackerSubscription', async () => {
+      trackerIssueUpdated({ connection: 'c1', issue: '1', seq: 11, changed: true }, HOME_BACKEND);
+    });
+    // The run's move is refused; the Status field's move waits, then is
+    // refused for what it would lose.
+    let answerManual: (view: WriteView) => void = () => {};
+    const move = setBindingMock('MoveTrackerIssue', async (_c: string, input: { move: string }): Promise<WriteView> => {
+      if (input.move === '21') return { parts: [{ step: 'move', state: 'refused', refusal: { reason: 'tracker', message: 'A resolution is required.' } }] } as WriteView;
+      return new Promise<WriteView>((resolve) => { answerManual = resolve; });
+    });
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const section = within(screen).getByTestId('ticket-work');
+    const start = within(section).getByTestId('ticket-work-start') as HTMLButtonElement;
+    await waitFor(() => expect(start.disabled).toBe(false));
+    await fireEvent.click(start);
+    const go = await waitFor(() => {
+      const found = document.querySelector<HTMLButtonElement>('[data-testid="start-work-go"]');
+      expect(found?.disabled).toBe(false);
+      return found!;
+    });
+    await fireEvent.click(go);
+    const moveRow = () => within(section).getAllByTestId('start-work-step').find((s) => s.dataset.step === 'move')!;
+    await waitFor(() => expect(moveRow().dataset.outcome).toBe('refused'));
+    // Its own refusal shows under it while it is the status's latest write.
+    expect(within(moveRow()).getByTestId('ticket-write-outcome')).toHaveTextContent('A resolution is required.');
+
+    const status = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'status')!;
+    await fireEvent.click(within(status).getByTestId('ticket-field-value'));
+    const item = await waitFor(() => within(menu()).getAllByTestId('ticket-picker-item').find((i) => i.textContent?.includes('Done'))!);
+    await fireEvent.click(item);
+    await waitFor(() => expect(move).toHaveBeenLastCalledWith('c1', expect.objectContaining({ move: '22' })));
+    await waitFor(() => expect(within(status).getByTestId('ticket-write-pending')).toBeInTheDocument());
+    expect(within(moveRow()).queryByTestId('ticket-write-pending')).toBeNull();
+    expect(within(moveRow()).queryByTestId('ticket-write-outcome')).toBeNull();
+    expect(moveRow()).toHaveTextContent('Move the ticket to In Progress');
+    expect(moveRow()).toHaveTextContent('Refused.');
+
+    answerManual({ parts: [{ step: 'move', state: 'refused', refusal: { reason: 'loss', message: 'The description would lose its table.' } }] } as WriteView);
+    await waitFor(() => expect(within(status).getByTestId('ticket-write-save-anyway')).toBeInTheDocument());
+    expect(within(status).getByTestId('ticket-write-outcome')).toHaveTextContent('The description would lose its table.');
+    expect(within(moveRow()).queryByTestId('ticket-write-outcome')).toBeNull();
+    expect(within(moveRow()).queryByTestId('ticket-write-save-anyway')).toBeNull();
+    expect(moveRow()).not.toHaveTextContent('The description would lose its table.');
+    expect(moveRow()).toHaveTextContent('Refused.');
+    view.unmount();
+  });
+
   it('shows the tracker\'s reason under a change it refused, and keeps the value as it was', async () => {
     install();
     installTicket();

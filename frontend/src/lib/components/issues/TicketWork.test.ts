@@ -21,6 +21,7 @@ import { makeThread } from '../../../test/helpers/chat';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { getToasts } from '../../stores/toast.svelte';
 import { ticketWriteSurfaceContext } from './ticketWriteSurface';
+import { drawTicketWrite, moveTicket, ticketWrite } from '../../stores/trackerTicketWrites.svelte';
 
 const SITE = 'https://example.atlassian.net';
 
@@ -38,7 +39,11 @@ function link(issueId: string, origin = 'start_work'): ThreadTicketLink {
 }
 
 let ticket: TrackerTicketAttachment | null = null;
+// A Status field's registration a test made, released after it.
+let statusField: (() => void) | null = null;
 afterEach(() => {
+  statusField?.();
+  statusField = null;
   ticket?.release();
   ticket = null;
 });
@@ -227,8 +232,74 @@ describe('Work', () => {
     again.unmount();
   });
 
+  it('names the project a failed thread step makes its thread in beside its Try again, whatever project Work shows now', async () => {
+    setBindingMock('ProjectTrackerSetup', async () => ({
+      revision: 'r1',
+      setup: { status_groups: [], ticket_pins: [], start_work: [{ tracker: 'jira', site: SITE, project: 'WEB', assign: false, branch: 'WEB-1-retry' }] },
+    } as SetupView));
+    setBindingMock('StartTicketThread', async () => { throw new TransportError('refused', 'The worktree could not be made.'); });
+    const view = await mountWork();
+    await waitFor(() => expect((view.getByTestId('ticket-work-start') as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(view.getByTestId('ticket-work-start'));
+    const go = (await waitFor(formOf)).querySelector('[data-testid="start-work-go"]') as HTMLButtonElement;
+    await waitFor(() => expect(go.disabled).toBe(false));
+    await fireEvent.click(go);
+    await waitFor(() => expect(view.getByTestId('start-work-retry')).toBeInTheDocument());
+    const thread = view.getAllByTestId('start-work-step').find((s) => s.dataset.step === 'thread')!;
+    expect(thread.children[0].textContent).toBe('Make the thread in widgets on WEB-1-retry');
+    // Another surface of the ticket with no project shows the same run.
+    await view.rerender({ project: null });
+    expect(view.getAllByTestId('start-work-step').find((s) => s.dataset.step === 'thread')!.children[0].textContent).toBe('Make the thread in widgets on WEB-1-retry');
+    view.unmount();
+  });
+
+  it('says each tracker step reads only while its read is out, saves while its write is, and the assignment waits while the move runs', async () => {
+    setBindingMock('ProjectTrackerSetup', async () => ({
+      revision: 'r1',
+      setup: { status_groups: [], ticket_pins: [], start_work: [{ tracker: 'jira', site: SITE, project: 'WEB', status: 's2', assign: true, branch: 'WEB-1-retry' }] },
+    } as SetupView));
+    setBindingMock('StartTicketThread', async () => makeThread({ id: 't-made', projectId: 'p1', title: 'WEB-1 Retry cursor', ticketLink: link('10101') }));
+    const held = <T,>() => {
+      let answer: (value: T) => void = () => {};
+      const promise = new Promise<T>((resolve) => { answer = resolve; });
+      return { promise, answer: (value: T) => answer(value) };
+    };
+    const refresh = held<void>();
+    setBindingMock('RefreshTrackerSubscription', () => refresh.promise.then(() => {
+      trackerIssueUpdated({ connection: 'c1', issue: '10101', seq: 5, changed: true }, HOME_BACKEND);
+    }));
+    const moved = held<unknown>();
+    setBindingMock('MoveTrackerIssue', () => moved.promise);
+    const assigned = held<unknown>();
+    setBindingMock('EditTrackerIssue', () => assigned.promise);
+    const view = await mountWork();
+    statusField = drawTicketWrite(ticket!.key, 'status', () => true);
+    await waitFor(() => expect((view.getByTestId('ticket-work-start') as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(view.getByTestId('ticket-work-start'));
+    const go = (await waitFor(formOf)).querySelector('[data-testid="start-work-go"]') as HTMLButtonElement;
+    await waitFor(() => expect(go.disabled).toBe(false));
+    await fireEvent.click(go);
+    const said = (step: string) => view.getAllByTestId('start-work-step').find((s) => s.dataset.step === step)!.children[1].textContent;
+
+    await waitFor(() => expect(said('move')).toBe('Reading the ticket…'));
+    expect(said('assign')).toBe('Waiting.');
+    refresh.answer();
+    await waitFor(() => expect(said('move')).toBe('Saving…'));
+    expect(said('assign')).toBe('Waiting.');
+    moved.answer({ parts: [{ step: 'move', state: 'applied' }] });
+    await waitFor(() => expect(said('assign')).toBe('Saving…'));
+    expect(said('move')).toBe('Done.');
+    // Every step applied: the run ends and opens its thread.
+    const opened = setBindingMock('SwitchThread', async () => makeThread({ id: 't-made', projectId: 'p1' }));
+    assigned.answer({ parts: [{ step: 'edit', state: 'applied' }] });
+    await waitFor(() => expect(opened).toHaveBeenCalledWith('t-made'));
+    view.unmount();
+  });
+
   describe('what became of Start work\'s move', () => {
-    /** Starts work with a move to In Progress that the tracker refuses. */
+    /** Starts work with a move to In Progress that the tracker refuses,
+     * under a Status field on a surface shown while `shown` answers true,
+     * as the ticket screen mounts one beside Work. */
     async function refusedMove(shown: () => boolean) {
       setBindingMock('ProjectTrackerSetup', async () => ({
         revision: 'r1',
@@ -240,6 +311,7 @@ describe('Work', () => {
       });
       const move = setBindingMock('MoveTrackerIssue', async () => ({ parts: [{ step: 'move', state: 'refused', refusal: { reason: 'tracker', message: 'A resolution is required.' } }] }));
       const view = await mountWork({ shown });
+      statusField = drawTicketWrite(ticket!.key, 'status', shown);
       await waitFor(() => expect((view.getByTestId('ticket-work-start') as HTMLButtonElement).disabled).toBe(false));
       await fireEvent.click(view.getByTestId('ticket-work-start'));
       const form = await waitFor(formOf);
@@ -257,8 +329,9 @@ describe('Work', () => {
 
     const refusalToasts = () => getToasts().filter((t) => t.message.includes('A resolution is required.'));
 
-    it('is kept under its row while the ticket is shown, and not said in a toast', async () => {
+    it('is kept under its Status field while the ticket is shown, shown under its row too, and not said in a toast', async () => {
       const { view, row } = await refusedMove(() => true);
+      expect(ticketWrite(ticket!.key, 'status')?.outcome?.kind).toBe('refused');
       expect(row.querySelector('[data-testid="ticket-write-outcome"]')?.textContent).toContain('A resolution is required.');
       expect(refusalToasts()).toEqual([]);
       view.unmount();
@@ -269,6 +342,18 @@ describe('Work', () => {
       await waitFor(() => expect(refusalToasts().map((t) => t.message)).toEqual(['The tracker refused the change to WEB-1: A resolution is required.']));
       expect(row.textContent).not.toContain('A resolution is required.');
       expect(row.textContent).toContain('Refused.');
+      view.unmount();
+    });
+
+    it('is no control of the status: a later move with no Status field shown is said in a toast and kept nowhere', async () => {
+      const { view, row } = await refusedMove(() => true);
+      statusField?.();
+      statusField = null;
+      setBindingMock('MoveTrackerIssue', async () => ({ parts: [{ step: 'move', state: 'refused', refusal: { reason: 'tracker', message: 'Done needs a resolution.' } }] }));
+      await moveTicket({ key: ticket!.key, ref: ticket!.ref, label: 'WEB-1' }, '22');
+      expect(getToasts().map((t) => t.message)).toContain('The tracker refused the change to WEB-1: Done needs a resolution.');
+      expect(ticketWrite(ticket!.key, 'status')).toBeNull();
+      expect(row.querySelector('[data-testid="ticket-write-outcome"]')).toBeNull();
       view.unmount();
     });
   });
