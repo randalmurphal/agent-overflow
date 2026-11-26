@@ -94,9 +94,9 @@ func TestDevStatusAnswersNotAsMeasuredFail(t *testing.T) {
 			} else {
 				_, err = c.DevPullRequests(t.Context(), "10101", gitlabType)
 			}
-			var answer *AnswerError
-			if !errors.As(err, &answer) || !strings.Contains(err.Error(), "rest/dev-status/latest/issue/") || !strings.Contains(err.Error(), "undocumented and may have changed") {
-				t.Fatalf("err = %v; want an AnswerError naming the endpoint and that it is undocumented", err)
+			var shape *DevShapeError
+			if !errors.As(err, &shape) || !strings.Contains(err.Error(), "rest/dev-status/latest/issue/") || !strings.Contains(err.Error(), "undocumented and may have changed") {
+				t.Fatalf("err = %v; want a DevShapeError naming the endpoint and that it is undocumented", err)
 			}
 		})
 	}

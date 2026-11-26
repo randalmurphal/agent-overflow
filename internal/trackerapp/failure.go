@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/keyfile"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/tracker/jira"
 	"agent-overflow/internal/tracker/linear"
 	"agent-overflow/internal/tracker/trackerapi"
 )
@@ -214,6 +215,8 @@ func ClassifyFailure(kind string, err error) Failure {
 	var notSent *trackerapi.NotSentError
 	var source *trackerapi.SourceError
 	var cut *trackerapi.CutError
+	var devShape *jira.DevShapeError
+	var devErrors *jira.DevStatusError
 	switch {
 	case pokerOwn(err):
 		return pokerFailure(err)
@@ -241,6 +244,11 @@ func ClassifyFailure(kind string, err error) Failure {
 			"Refresh to try again now. Agent Overflow tries again by itself later while the board is open", answered(status.Tracker), status.Status)}
 	case errors.As(err, &status):
 		return Failure{Kind: FailureTracker, Message: fmt.Sprintf("%s answered HTTP %d", answered(status.Tracker), status.Status)}
+	case errors.As(err, &devShape):
+		return Failure{Kind: FailureTracker, Message: "Jira's development data answered in a form Agent Overflow does not know (" + devShape.Why +
+			"); Jira does not document these endpoints, and they may have changed"}
+	case errors.As(err, &devErrors):
+		return Failure{Kind: FailureTracker, Message: "Jira's development data reported errors from its forge integration: " + strings.Join(devErrors.Errors, "; ")}
 	case errors.As(err, &tooLarge):
 		return Failure{Kind: FailureTracker, Message: answered(tooLarge.Tracker) + " sent an answer larger than Agent Overflow reads"}
 	case errors.Is(err, trackerapi.ErrCredentialChanged):

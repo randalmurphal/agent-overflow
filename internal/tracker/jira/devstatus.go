@@ -63,7 +63,7 @@ type devSummaryJSON struct {
 
 // DevSummary reads the development panel's summary of issue, whose ID is
 // the issue's number (the endpoint takes no key). One request. An answer
-// without the measured pull request part is an *AnswerError, and one
+// without the measured pull request part is a *DevShapeError, and one
 // whose errors name something a *DevStatusError.
 func (c *Client) DevSummary(ctx context.Context, issueID string) (DevSummary, error) {
 	if err := c.admit(ctx); err != nil {
@@ -135,8 +135,8 @@ type devDetailJSON struct {
 // DevPullRequests reads the pull requests instanceType links to issue
 // (a DevSummary key), in one request. The answer also carries the
 // integration's branches, which are not read. A pull request without a
-// URL or a status, or an answer without the measured detail list, is an
-// *AnswerError; one whose errors name something a *DevStatusError.
+// URL or a status, or an answer without the measured detail list, is a
+// *DevShapeError; one whose errors name something a *DevStatusError.
 func (c *Client) DevPullRequests(ctx context.Context, issueID, instanceType string) ([]DevPullRequest, error) {
 	if err := c.admit(ctx); err != nil {
 		return nil, err
@@ -209,7 +209,19 @@ func devErrors(path string, lists ...[]json.RawMessage) error {
 	return &DevStatusError{Path: path, Errors: quoted}
 }
 
+// DevShapeError is a development panel answer that is not in the
+// measured shape: Why says what it lacks. The endpoints are undocumented,
+// so this is the error a change of them shows as.
+type DevShapeError struct {
+	Path string
+	Why  string
+}
+
+func (e *DevShapeError) Error() string {
+	return fmt.Sprintf("jira: %s answered in a shape this app does not know (%s); the endpoint is undocumented and may have changed", e.Path, e.Why)
+}
+
 // devShapeError is an answer of path that is not the measured shape.
 func devShapeError(path, why string) error {
-	return &AnswerError{Message: fmt.Sprintf("%s answered in a shape this app does not know (%s); the endpoint is undocumented and may have changed", path, why)}
+	return &DevShapeError{Path: path, Why: why}
 }

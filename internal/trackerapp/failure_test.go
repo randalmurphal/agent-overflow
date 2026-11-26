@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/keyfile"
 	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/tracker/jira"
 	"agent-overflow/internal/tracker/linear"
 	"agent-overflow/internal/tracker/trackerapi"
 )
@@ -71,6 +72,10 @@ func TestClassifyFailureSortsEveryKind(t *testing.T) {
 			FailureTracker, "Jira answered HTTP 400"},
 		"a 500": {"tempo", &trackerapi.StatusError{Tracker: "tempo", Status: 500, Body: secret},
 			FailureTracker, "Tempo answered HTTP 500"},
+		"a development data answer not as measured": {"jira", fmt.Errorf("jiraprovider: development summary of 10001: %w", &jira.DevShapeError{Path: "rest/dev-status/latest/issue/summary", Why: "it has no pull request count"}),
+			FailureTracker, "Jira's development data answered in a form Agent Overflow does not know (it has no pull request count); Jira does not document these endpoints, and they may have changed"},
+		"development data errors": {"jira", &jira.DevStatusError{Path: "rest/dev-status/latest/issue/detail", Errors: []string{`{"message":"down"}`, `"later"`}},
+			FailureTracker, `Jira's development data reported errors from its forge integration: {"message":"down"}; "later"`},
 		"a body too large": {"jira", &trackerapi.BodyTooLargeError{Tracker: "jira", Limit: 1},
 			FailureTracker, "larger than Agent Overflow reads"},
 		// A Jira connection's time is answered by its linked Tempo
