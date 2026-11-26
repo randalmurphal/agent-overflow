@@ -469,8 +469,8 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
       const wire = recordPageWire(page);
 
       // What one open of the page asks in a window opened on the setup
-      // as written: its RPCs, and the fake's requests by route and site,
-      // from the tab's press until every site's fields show.
+      // as saved: its RPCs, and the fake's requests by route and site, from
+      // the tab's press until every site's fields show.
       const measure = async (sites: number): Promise<string> => {
         await harness.open(page);
         const since = (await harness.rpc<{ requests: Array<{ seq: number }> }>('HarnessTrackerRequests', 0)).requests.at(-1)?.seq ?? 0;
@@ -480,20 +480,30 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
         await expect(screen.getByTestId('tracker-fields-find')).toHaveCount(2 * sites, { timeout: 15_000 });
         const calls = wire.stop().rpcCalls;
         const requests = (await harness.rpc<{ requests: Array<{ route?: string; tenant?: string }> }>('HarnessTrackerRequests', since)).requests;
-        const fieldReads = requests.filter((r) => r.route === 'GET rest/api/3/field');
-        expect(calls.ProjectTrackerSiteFields, 'one field read per site').toBe(sites);
-        expect(fieldReads, 'one tracker request per site').toHaveLength(sites);
-        expect(new Set(fieldReads.map((r) => r.tenant)).size).toBe(sites);
         const routes = requests.map((r) => `${r.route ?? 'unhandled'} (${r.tenant ?? ''})`).join(', ') || 'none';
+        expect(calls.ProjectTrackerSiteFields, 'one field read per site').toBe(sites);
+        // A site's catalog is asked of the tracker once at most: the client
+        // holds it after its first read.
+        const fieldReads = requests.filter((r) => r.route === 'GET rest/api/3/field');
+        expect(fieldReads.length, `at most one catalog request per site: ${routes}`).toBeLessThanOrEqual(sites);
+        expect(new Set(fieldReads.map((r) => r.tenant)).size, routes).toBe(fieldReads.length);
         const rpcs = Object.entries(calls).sort().map(([name, n]) => `${name} ${n}`).join(', ');
         return `${sites} site${sites === 1 ? '' : 's'}: RPCs ${rpcs}; tracker requests ${routes}`;
       };
 
-      await writeSetup(file, JSON.stringify({ ticket_pins: { version: 1, sites: [{ tracker: 'jira', site: board.site, fields: [EFFORT] }] } }));
+      // The pins saved as a page saves them: the computer holds the file
+      // it read, so a hand edit would show only at the next save.
+      const pin = async (ticketPins: Array<Record<string, unknown>>) => {
+        const held = await harness.rpc<{ revision: string }>('ProjectTrackerSetup', board.projectId);
+        const saved = await harness.rpc<{ saved: boolean }>('SetProjectTrackerSetup', board.projectId, held.revision, { ticket_pins: ticketPins });
+        expect(saved.saved).toBe(true);
+      };
+      await pin([{ tracker: 'jira', site: board.site, fields: [EFFORT] }]);
       const one = await measure(1);
-      await writeSetup(file, JSON.stringify({ ticket_pins: { version: 1, sites: [
+      await pin([{ tracker: 'jira', site: board.site, fields: [EFFORT] }, { tracker: 'jira', site: verified.site, fields: ['customfield_10060'] }]);
+      expect(await storedSetup(file)).toEqual({ ticket_pins: { version: 1, sites: [
         { tracker: 'jira', site: board.site, fields: [EFFORT] }, { tracker: 'jira', site: verified.site, fields: ['customfield_10060'] },
-      ] } }));
+      ] } });
       const two = await measure(2);
       test.info().annotations.push({ type: 'fields-page-reads', description: `${one}. ${two}` });
       console.log(`[fields-page-reads] ${one}\n[fields-page-reads] ${two}`);
