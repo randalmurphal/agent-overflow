@@ -292,9 +292,13 @@ func historyTickOnTwoBoards(t *testing.T, batches int) ([]tracker.Row, []BoardEv
 	m.tracks(rows)
 	m.subscribe(t, testBoard)
 	m.subscribe(t, "2")
-	m.events.boardEvents(t, 2)
+	// Each pump's first tick reads every unit, the history included, so
+	// the tick below counts its reads once both ended.
+	m.firstTicksEnded(t, testBoard, "2")
+	if due := m.due(); len(due) != 0 {
+		t.Fatalf("the first ticks left %d issues' history due", len(due))
+	}
 	other := Scope{Connection: m.conn.ID, Board: "2"}
-	waitCalls(t, m.p, "History", 1)
 
 	// Each card changed after the history read covered, so the history of
 	// every issue is due: two batches.

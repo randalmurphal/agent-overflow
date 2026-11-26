@@ -70,6 +70,31 @@ func (s *Service) boardPumpOf(scope Scope) *boardPump {
 	return s.subs.boards[scope]
 }
 
+// firstTicksEnded waits until the pump of each of boards has settled its
+// first tick, which records the board read: a test that counts the
+// tracker calls of its own ticks starts counting after the pumps' first
+// ticks, which read every unit, ended.
+func (m *mirrorFixture) firstTicksEnded(t *testing.T, boards ...tracker.BoardID) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for _, b := range boards {
+		scope := Scope{Connection: m.conn.ID, Board: b}
+		for {
+			m.svc.subMu.Lock()
+			p := m.svc.subs.boards[scope]
+			read := p != nil && p.sync.ReadAt != 0
+			m.svc.subMu.Unlock()
+			if read {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the first tick of board %s did not end", b)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
 // A subscribe answers from the mirror alone and never waits for the
 // tracker: "not loaded" before the board was ever read, the view after.
 // The pump's first tick follows the answer, interactive, and runs every
