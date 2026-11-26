@@ -85,7 +85,8 @@ func TestDashboardCountsStatusesAsTheSectionsDo(t *testing.T) {
 // export: a Linear ticket whose history begins as To Do shows its start,
 // though its history begins minutes after its creation; one made in
 // progress before its history begins does not, and is listed as not
-// counted; a Jira history, which begins at creation, shows its start.
+// counted; a Jira history, which begins at creation, shows its start, and
+// one of a ticket made in done shows none, in words true of both.
 func TestStartToDoneCountsWhatTheHistoryShows(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
@@ -109,9 +110,9 @@ func TestStartToDoneCountsWhatTheHistoryShows(t *testing.T) {
 		}
 		rows = append(rows, fmt.Sprintf("%s %s %s", row.Key, v, row.Note))
 	}
-	want := []string{"WEB-21 2 ", "WEB-23 1 ", "WEB-22 - it was in progress before its history begins"}
-	if d.Value.V == nil || *d.Value.V != 1.5 || d.Value.NC != 1 || !reflect.DeepEqual(rows, want) {
-		t.Fatalf("start to done = %+v with rows %q; want the median 1.5 of WEB-21 and WEB-23, WEB-22 not counted: %q", d.Value, rows, want)
+	want := []string{"WEB-21 2 ", "WEB-23 1 ", "WEB-22 - its history shows no start", "WEB-24 - its history shows no start"}
+	if d.Value.V == nil || *d.Value.V != 1.5 || d.Value.NC != 2 || !reflect.DeepEqual(rows, want) {
+		t.Fatalf("start to done = %+v with rows %q; want the median 1.5 of WEB-21 and WEB-23, WEB-22 and WEB-24 not counted: %q", d.Value, rows, want)
 	}
 }
 

@@ -72,14 +72,15 @@ func atoi(t *testing.T, s string) int {
 	return n
 }
 
-// DashboardHistoryFixtureForTest is a board without sprints (11) of three
+// DashboardHistoryFixtureForTest is a board without sprints (11) of four
 // done tickets created at created, with histories as each tracker writes
 // them, a day being day: WEB-21 a Linear history, complete from 3 minutes
 // after creation, moved from To Do into progress a day after creation
 // and done two days later; WEB-22 a Linear one whose first change, two
 // days after creation, is from In Progress into done (it was made in
 // progress within the fold); WEB-23 a Jira one, complete from creation,
-// into progress after a day and done the next.
+// into progress after a day and done the next; WEB-24 a Jira one of no
+// changes, made in done and resolved two days after creation.
 func DashboardHistoryFixtureForTest(t *testing.T, created, day int64) (*Store, int64) {
 	t.Helper()
 	s, _, root := newMirror(t)
@@ -87,9 +88,12 @@ func DashboardHistoryFixtureForTest(t *testing.T, created, day int64) (*Store, i
 	weeks.Board.ID, weeks.Board.PlansSprints, weeks.Sprints = "11", false, nil
 	mustReplaceStructure(t, s, root, weeks, true)
 	var rows []MirrorRow
-	for _, id := range []string{"21", "22", "23"} {
+	for _, id := range []string{"21", "22", "23", "24"} {
 		r := sectionRow(id, id, "10001", 1)
 		r.Card.CreatedAt, r.Card.UpdatedAt = created, created+3*day
+		if id == "24" {
+			r.Card.ResolvedAt = created + 2*day
+		}
 		rows = append(rows, r)
 	}
 	mustWriteRowPage(t, s, root, webPage("11", rows...), nil)
@@ -104,6 +108,7 @@ func DashboardHistoryFixtureForTest(t *testing.T, created, day int64) (*Store, i
 			{Kind: MirrorChangeStatus, At: created + day, From: "1", To: "3"},
 			{Kind: MirrorChangeStatus, At: created + 2*day, From: "3", To: "10001"},
 		}},
+		{IssueID: "24"},
 	}
 	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, histories), MirrorCatalog{},
 		mirrorReadOf(root, 10)); err != nil {
