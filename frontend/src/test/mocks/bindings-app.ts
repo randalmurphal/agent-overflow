@@ -1166,6 +1166,10 @@ export const ReleaseTrackerSubscription = dispatch('ReleaseTrackerSubscription')
 export const TrackerDashboards = dispatch('TrackerDashboards');
 export const EvaluateTrackerDashboard = dispatch('EvaluateTrackerDashboard');
 export const TrackerDashboardDrill = dispatch('TrackerDashboardDrill');
+export const KeepTrackerWidget = dispatch('KeepTrackerWidget');
+export const DismissTrackerWidget = dispatch('DismissTrackerWidget');
+export const RemoveTrackerWidget = dispatch('RemoveTrackerWidget');
+export const DeleteTrackerDashboard = dispatch('DeleteTrackerDashboard');
 
 export const SubscribeTrackerTicket = dispatch('SubscribeTrackerTicket');
 export const TrackerTicket = dispatch('TrackerTicket');

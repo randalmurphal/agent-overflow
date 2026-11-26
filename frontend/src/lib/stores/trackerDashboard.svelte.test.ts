@@ -58,6 +58,7 @@ async function flush(): Promise<void> {
 let source = $state<DashboardSource | null>(null);
 let shown = $state(true);
 let store: TrackerDashboard | null = null;
+const testBoard = { backend: 'peer-1', projectId: 'p1', connection: 'conn-1', board: '1' };
 
 function open(): TrackerDashboard {
   store = createTrackerDashboard({ source: () => source, shown: () => shown });
@@ -68,7 +69,7 @@ function open(): TrackerDashboard {
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
   vi.setSystemTime(new Date(2026, 10, 25, 12, 0));
-  source = { backend: 'peer-1', subscription: 'sub-1', changes: 0 };
+  source = { backend: 'peer-1', board: testBoard, subscription: 'sub-1', changes: 0 };
   shown = true;
 });
 
@@ -192,7 +193,7 @@ describe('when what is counted changes', () => {
   it('counts a subscription made again after a reconnect at once', async () => {
     const { evaluate } = await opened();
     held<DashboardView[] | null>('TrackerDashboards');
-    source = { backend: 'peer-1', subscription: 'sub-2', changes: 0 };
+    source = { backend: 'peer-1', board: testBoard, subscription: 'sub-2', changes: 0 };
     flushSync();
     expect(evaluate.calls.at(-1)![0]).toBe('sub-2');
   });

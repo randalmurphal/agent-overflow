@@ -6,6 +6,9 @@
   // person or an epic's label narrows the page to it; a ticket opens. A
   // widget whose metric failed says why in its place. How this is counted
   // replaces the widget's body while it is on, so it reads without hover.
+  // The screen may put actions in its header (a proposal's Keep and
+  // Dismiss, edit mode's Remove).
+  import type { Snippet } from 'svelte';
   import ArrowDownRight from '@lucide/svelte/icons/arrow-down-right';
   import ArrowUpRight from '@lucide/svelte/icons/arrow-up-right';
   import Info from '@lucide/svelte/icons/info';
@@ -45,9 +48,10 @@
     onPerson: (person: Name) => void;
     onEpic: (epic: Name) => void;
     onTicket: (row: TicketRow) => void;
+    actions?: Snippet;
   }
 
-  let { view, value, range, estimates, onDrill, onPerson, onEpic, onTicket }: Props = $props();
+  let { view, value, range, estimates, onDrill, onPerson, onEpic, onTicket, actions }: Props = $props();
 
   let showHow = $state(false);
   const unit = $derived(view.unit as DashboardUnit);
@@ -90,6 +94,7 @@
     {#if view.now}
       <span class="shrink-0 rounded-[var(--radius-control)] bg-surface-1 px-1.5 text-[0.6875rem] text-fg-muted" data-testid="dashboard-now" title="Counts what is true now; the range does not change it">Now</span>
     {/if}
+    {@render actions?.()}
     <button
       type="button"
       class="inline-flex size-5 shrink-0 items-center justify-center rounded-[var(--radius-control)] text-fg-muted hover:bg-surface-1 hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:size-8 {showHow ? 'bg-surface-1 text-fg' : ''}"

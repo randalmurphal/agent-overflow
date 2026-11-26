@@ -27,10 +27,20 @@
 // takes no click. An evaluation that fails settles what it was asked: the
 // screen stops counting and says why beside the last answer.
 //
-// The range picked last for each dashboard and Team or Mine are saved for
-// the next screen (frontendStorage).
+// The range picked last for each dashboard, the dashboard picked last for
+// each board, and Team or Mine are saved for the next screen
+// (frontendStorage).
+//
+// A board's own dashboards and the widgets agents proposed on it are the
+// board's computer's too (trackerapp/dashboards.go): Keep, Dismiss, Remove
+// and Delete are its methods, and every change there, from any client, is
+// a `tracker:dashboards_updated` from that computer, on which the screen
+// lists the dashboards and counts again. A Keep onto a new dashboard shows
+// it once the list read after the Keep holds it.
 
-import { untrack } from 'svelte';
+import { tick, untrack } from 'svelte';
+import { SvelteSet } from 'svelte/reactivity';
+import type { KeepTarget } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import type {
   Answer,
   DashboardView,
@@ -41,21 +51,36 @@ import type {
 import type { BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
 import { createRefreshScheduler } from '../utils/refreshScheduler';
-import { EvaluateTrackerDashboard, TrackerDashboardDrill, TrackerDashboards } from './bindings';
+import {
+  DeleteTrackerDashboard,
+  DismissTrackerWidget,
+  EvaluateTrackerDashboard,
+  KeepTrackerWidget,
+  RemoveTrackerWidget,
+  TrackerDashboardDrill,
+  TrackerDashboards,
+} from './bindings';
 import { readFrontendValue, writeFrontendValue } from './frontendStorage';
+import type { TrackerBoardRef } from './trackerBoard.svelte';
+import { onTrackerDashboardsUpdated } from './trackerBoardEvents';
+import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
+import { revealPane } from './panes.svelte';
+import { openDraftThreadForProject } from './threadCreation.svelte';
 
 const RANGE_KEY = 'issues-dashboard-range';
 const MINE_KEY = 'issues-dashboard-mine';
+const PICK_KEY = 'issues-dashboard-pick';
 
 /** The least time between two evaluations a board's changes ask for. */
 export const DASHBOARD_CHANGE_INTERVAL_MS = 5_000;
 /** How often an open dashboard evaluates with no change. */
 export const DASHBOARD_REFRESH_MS = 10 * 60_000;
 
-/** The board a dashboard counts: its subscription on its computer, and
- * how many times it changed (TrackerBoardState.changes). */
+/** The board a dashboard counts: the board, its subscription on its
+ * computer, and how many times it changed (TrackerBoardState.changes). */
 export interface DashboardSource {
   readonly backend: BackendKey;
+  readonly board: TrackerBoardRef;
   readonly subscription: string;
   readonly changes: number;
 }
@@ -86,8 +111,15 @@ export interface TrackerDashboard {
    * computer whose release has none. Reactive. */
   readonly dashboards: readonly DashboardView[] | 'older' | null;
   readonly dashboardsError: unknown;
-  /** The dashboard shown. Reactive. */
+  /** The dashboard shown: the one picked last for the board, else the
+   * built-in, which is first. Reactive. */
   readonly dashboard: DashboardView | null;
+  /** Whether the dashboard shown is one the board's project keeps, which
+   * takes widgets and edits, rather than the built-in. */
+  readonly ownShown: boolean;
+  /** The proposals, the dashboard widgets and the dashboards being
+   * changed, by ID. Reactive. */
+  readonly busy: ReadonlySet<string>;
   readonly range: string;
   readonly mine: boolean;
   readonly person: Name | null;
@@ -103,6 +135,14 @@ export interface TrackerDashboard {
   /** The last evaluation failed; null after one succeeds. */
   readonly error: unknown;
   readonly drill: DrillState | null;
+  pick(dashboard: string): void;
+  /** Keeps a proposed widget on `to`, and shows that dashboard. */
+  keep(proposal: string, to: KeepTarget): Promise<void>;
+  dismiss(proposal: string): Promise<void>;
+  /** Removes a widget from the dashboard shown. */
+  removeWidget(widget: string): Promise<void>;
+  /** Deletes the dashboard shown. */
+  deleteDashboard(): Promise<void>;
   setRange(range: string): void;
   setMine(mine: boolean): void;
   narrowPerson(person: Name | null): void;
@@ -120,6 +160,15 @@ function savedRanges(): Record<string, string> {
   return v && typeof v === 'object' ? (v as Record<string, string>) : {};
 }
 
+function savedPicks(): Record<string, string> {
+  const v = readFrontendValue(PICK_KEY);
+  return v && typeof v === 'object' ? (v as Record<string, string>) : {};
+}
+
+function boardKey(b: TrackerBoardRef): string {
+  return `${b.backend}\n${b.projectId}\n${b.connection}\n${b.board}`;
+}
+
 function timeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 }
@@ -128,6 +177,11 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
   let dashboards = $state.raw<readonly DashboardView[] | 'older' | null>(null);
   let dashboardsError = $state.raw<unknown>(null);
   let listedFor = '';
+  // Moves with each change of the dashboards on the board's computer, so
+  // the list is read again.
+  let listGen = $state(0);
+  let dashboardPick = $state<string>('');
+  const busy = new SvelteSet<string>();
   let rangePick = $state<string>('');
   let mine = $state(readFrontendValue(MINE_KEY) === true);
   let person = $state.raw<Name | null>(null);
@@ -144,7 +198,13 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
   let drill = $state.raw<DrillState | null>(null);
   let drillGen = 0;
 
-  const dashboard: DashboardView | null = $derived(dashboards === null || dashboards === 'older' ? null : (dashboards[0] ?? null));
+  const dashboard: DashboardView | null = $derived.by(() => {
+    if (dashboards === null || dashboards === 'older') return null;
+    const s = opts.source();
+    const pick = dashboardPick || (s ? savedPicks()[boardKey(s.board)] : '');
+    return dashboards.find((d) => d.id === pick) ?? dashboards[0] ?? null;
+  });
+  const ownShown = $derived(dashboards !== null && dashboards !== 'older' && dashboard !== null && dashboards.indexOf(dashboard) > 0);
   const range = $derived.by(() => {
     const d = dashboard;
     if (!d) return '';
@@ -193,26 +253,22 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
   });
 
   const stop = $effect.root(() => {
-    // The dashboards the board offers, once per subscription.
+    // The dashboards the board offers, once per subscription and again
+    // after each change of them.
     $effect(() => {
       const s = opts.source();
+      const gen = listGen;
       if (!s?.subscription || !opts.shown()) return;
-      const key = `${s.backend}\n${s.subscription}`;
+      const key = `${s.backend}\n${s.subscription}\n${gen}`;
       if (key === untrack(() => listedFor)) return;
-      listedFor = key;
-      void (async () => {
-        try {
-          const list = await withBackendTarget(s.backend, () => TrackerDashboards(s.subscription));
-          if (listedFor !== key) return;
-          dashboards = list ?? 'older';
-          dashboardsError = null;
-        } catch (err) {
-          if (listedFor !== key) return;
-          listedFor = '';
-          dashboardsError = err;
-        }
-      })();
+      untrack(() => void list(s, key));
     });
+
+    $effect(() => onTrackerDashboardsUpdated((backend) => {
+      if (opts.source()?.backend !== backend) return;
+      listGen += 1;
+      scheduler.request({ immediate: true });
+    }));
 
     // What is counted changed, or the screen shows again: the evaluation
     // in flight is dropped and one starts now.
@@ -241,6 +297,42 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
       return () => clearInterval(timer);
     });
   });
+
+  function list(s: DashboardSource, key: string): Promise<void> {
+    listedFor = key;
+    return (async () => {
+      try {
+        const answer = await withBackendTarget(s.backend, () => TrackerDashboards(s.subscription));
+        if (listedFor !== key) return;
+        dashboards = answer ?? 'older';
+        dashboardsError = null;
+      } catch (err) {
+        if (listedFor !== key) return;
+        listedFor = '';
+        dashboardsError = err;
+      }
+    })();
+  }
+
+  // Runs one change of the board's dashboards under id, which reads busy
+  // meanwhile; its failure is the caller's to show.
+  async function change(id: string, call: (s: DashboardSource) => Promise<unknown>): Promise<void> {
+    const s = opts.source();
+    if (!s || busy.has(id)) return;
+    busy.add(id);
+    try {
+      await withBackendTarget(s.backend, () => call(s));
+    } finally {
+      busy.delete(id);
+    }
+  }
+
+  function pick(id: string): void {
+    const s = opts.source();
+    dashboardPick = id;
+    if (s) writeFrontendValue(PICK_KEY, { ...savedPicks(), [boardKey(s.board)]: id });
+    closeDrill();
+  }
 
   // The source and request the open drill counts: those of the answer it
   // was opened from, for every page.
@@ -273,6 +365,32 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
     get dashboards() { return dashboards; },
     get dashboardsError() { return dashboardsError; },
     get dashboard() { return dashboard; },
+    get ownShown() { return ownShown; },
+    get busy() { return busy; },
+    pick,
+    async keep(proposal, to) {
+      let kept = '';
+      await change(proposal, async (s) => { kept = await KeepTrackerWidget(s.subscription, proposal, { ...to }); });
+      const s = opts.source();
+      if (!kept || !s) return;
+      // The new dashboard shows once a list read after the Keep holds it.
+      listGen += 1;
+      await list(s, `${s.backend}\n${s.subscription}\n${listGen}`);
+      pick(kept);
+    },
+    dismiss(proposal) {
+      return change(proposal, (s) => DismissTrackerWidget(s.subscription, proposal));
+    },
+    removeWidget(widget) {
+      const d = dashboard;
+      if (!d || !ownShown) return Promise.resolve();
+      return change(widget, (s) => RemoveTrackerWidget(s.subscription, d.id, widget));
+    },
+    deleteDashboard() {
+      const d = dashboard;
+      if (!d || !ownShown) return Promise.resolve();
+      return change(d.id, (s) => DeleteTrackerDashboard(s.subscription, d.id));
+    },
     get range() { return range; },
     get mine() { return mine; },
     get person() { return person; },
@@ -325,4 +443,24 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
       stop();
     },
   };
+}
+
+/** The draft Ask your agent leaves in its new thread: the board it is
+ * about, for the person to finish and send. */
+export function dashboardAskSeed(boardName: string): string {
+  return `About the dashboards of the board ${boardName}: `;
+}
+
+/** Ask your agent: a new thread in the board's project, opened in a pane
+ * of its own, whose unsent draft names the board. The agent answers with
+ * the tracker tools' dashboard_widget, whose proposals show on the
+ * board's dashboards. */
+export async function askAgentAboutDashboards(projectId: string, boardName: string): Promise<void> {
+  const pane = await openDraftThreadForProject({ projectId, openInNewPane: true });
+  if (!pane) return;
+  revealPane(pane.paneId);
+  await tick();
+  const draft = getComposerDraftForPane(pane.paneId);
+  if (!draft) throw new Error('The new thread opened without its composer.');
+  if (!draft.content.trim()) draft.setContent(dashboardAskSeed(boardName));
 }
