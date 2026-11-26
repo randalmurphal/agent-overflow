@@ -123,6 +123,12 @@ func refusal(err error) tracker.Refusal {
 		r.Reason, r.Message = tracker.ReasonStale, e.Error()
 		return r
 	}
+	if e, ok := errors.AsType[*jira.UnofferedError](err); ok {
+		// Before the status: Jira's refusal of a move it no longer offers
+		// says what the check of the moves read says.
+		r.Reason, r.Message = tracker.ReasonStale, e.Error()
+		return r
+	}
 	if e, ok := errors.AsType[*adf.LossError](err); ok {
 		r.Reason, r.Message = tracker.ReasonLoss, e.Error()
 		for _, w := range e.Lost {

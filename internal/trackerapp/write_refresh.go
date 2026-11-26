@@ -24,9 +24,11 @@ import (
 //     mirror keeps that no rows read answered with a row (on no board, or
 //     answered missing by every board it was on, or on boards retired
 //     meanwhile); nothing for an issue it does not keep;
-//   - a detail: when a ticket is open on it or the mirror holds it, all of
-//     them in one full read (verifiedDetails), the open tickets settled
-//     with what it found;
+//   - a detail: when a ticket is open on it, all of them in one full read
+//     (verifiedDetails), the open tickets settled with what it found; a
+//     body the mirror holds that no ticket has open is dropped, with no
+//     read (store DropMirrorBodies), so the next read of its ticket reads
+//     it in full and no view shows it as it was before the write;
 //   - worklogs: one read per author and span of named days;
 //   - the issue a create made: placed on those of its board and the
 //     connection's other subscribed boards the mirror shows by one read
@@ -266,7 +268,7 @@ func (r *run) refreshRows(f *refreshed, p refreshPlan, t store.MirrorRefreshTarg
 	if len(unread) == 0 {
 		return nil
 	}
-	_, left, err := r.cards(unread)
+	_, _, left, err := r.cards(unread)
 	f.covered(cardResources(unread[:len(unread)-len(left)])...)
 	if err != nil {
 		return r.failedRead(f, err, cardResources(left)...)
@@ -275,18 +277,32 @@ func (r *run) refreshRows(f *refreshed, p refreshPlan, t store.MirrorRefreshTarg
 }
 
 // refreshDetails reads in full, together, the details of the open
-// tickets open and of cached, the issues named whose detail the mirror
-// holds; a detail named that is neither is not shown. It returns why the
-// refresh stops, nil to go on.
+// tickets open. The body of a detail named that no ticket has open and
+// the mirror holds (cached) is dropped: the write changed it, and no read
+// of it is owed until a ticket shows it. A detail named that is neither
+// is not shown. It returns why the refresh stops, nil to go on.
 func (r *run) refreshDetails(f *refreshed, open []*ticketPump, cached []string, named []tracker.IssueID) error {
+	var drop []string
+	var held []tracker.Resource
 	for _, id := range named {
-		if !slices.Contains(cached, string(id)) && !slices.ContainsFunc(open, func(tp *ticketPump) bool { return tp.key.issue == id }) {
-			f.covered(tracker.DetailOf(id))
+		if slices.ContainsFunc(open, func(tp *ticketPump) bool { return tp.key.issue == id }) {
+			continue
 		}
+		if slices.Contains(cached, string(id)) {
+			drop, held = append(drop, string(id)), append(held, tracker.DetailOf(id))
+			continue
+		}
+		f.covered(tracker.DetailOf(id))
 	}
-	for _, id := range cached {
-		if !slices.ContainsFunc(open, func(tp *ticketPump) bool { return string(tp.key.issue) == id }) {
-			f.reads = append(f.reads, &ticketRead{issue: tracker.IssueID(id), full: true})
+	if len(drop) > 0 {
+		dropped, err := r.s.store.DropMirrorBodies(r.root, drop)
+		if err != nil {
+			if stop := r.failedRead(f, fmt.Errorf("trackerapp: drop the bodies a write changed: %w", err), held...); stop != nil {
+				return stop
+			}
+		} else {
+			f.covered(held...)
+			r.told("", written{Changes: Changes{Dropped: issueIDs(dropped)}})
 		}
 	}
 	if len(f.reads) == 0 {

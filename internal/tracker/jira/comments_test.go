@@ -3,6 +3,7 @@ package jira
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -292,5 +293,79 @@ func TestDeleteComment(t *testing.T) {
 	f.On("DELETE", "/rest/api/3/issue/WEB-1/comment/900", func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(204) })
 	if err := c.DeleteComment(t.Context(), "WEB-1", "900"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A comment that names its issue's project (CommentInput.Project) is
+// judged on that project, not on a read of the issue: its type as a bulk
+// fetch named it, or read once and kept. A project read that fails, or
+// that comes without the project's type, sends nothing.
+func TestAddCommentOnANamedProject(t *testing.T) {
+	post := func(f *jiratest.Server) {
+		f.On("POST", "/rest/api/3/issue/WEB-1/comment", func(w http.ResponseWriter, r *http.Request, b []byte) {
+			var body struct {
+				Body json.RawMessage `json:"body"`
+			}
+			_ = json.Unmarshal(b, &body)
+			storedCommentReply(string(body.Body))(w, r, b)
+		})
+	}
+	in := CommentInput{Issue: "WEB-1", Markdown: "Looking into it", Project: "10010"}
+
+	// Read once, then kept: the issue is never read for its project.
+	f := jiratest.NewServer(t)
+	c := signedIn(t, f)
+	f.On("GET", "/rest/api/3/project/10010", jiratest.Reply(200, `{"id":"10010","key":"SD","name":"Service","projectTypeKey":"service_desk"}`))
+	post(f)
+	if _, err := c.AddComment(t.Context(), in); !trackerapi.WriteNotApplied(err) || !strings.Contains(fmt.Sprint(err), "SD is a service desk project") {
+		t.Errorf("no audience on a service desk project: %v", err)
+	}
+	in.Audience = AudienceInternal
+	if _, err := c.AddComment(t.Context(), in); err != nil {
+		t.Errorf("internal: %v", err)
+	}
+	if n, m := f.Count("GET", "/rest/api/3/project/10010"), f.Count("GET", "/rest/api/3/issue/WEB-1"); n != 1 || m != 0 {
+		t.Errorf("%d project reads and %d issue reads; want 1 and 0", n, m)
+	}
+
+	// A bulk fetch's issue names its project with the type: no read.
+	f = jiratest.NewServer(t)
+	c = signedIn(t, f)
+	f.On("POST", "/rest/api/3/issue/bulkfetch", jiratest.Reply(200, `{"issues":[{"id":"10001","key":"WEB-1","fields":{"project":{"id":"10010","key":"SD","projectTypeKey":"service_desk"}}}],"issueErrors":[]}`))
+	post(f)
+	if _, err := c.BulkFetch(t.Context(), []string{"WEB-1"}, "project"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.AddComment(t.Context(), in); err != nil || len(f.Requests()) != 3 {
+		t.Errorf("after a bulk fetch: %v, requests %v", err, f.Requests())
+	}
+
+	// A bulk fetch's project without its type keeps nothing: the comment
+	// reads the project.
+	f = jiratest.NewServer(t)
+	c = signedIn(t, f)
+	f.On("POST", "/rest/api/3/issue/bulkfetch", jiratest.Reply(200, `{"issues":[{"id":"10001","key":"WEB-1","fields":{"project":{"id":"10010","key":"SD"}}}],"issueErrors":[]}`))
+	f.On("GET", "/rest/api/3/project/10010", jiratest.Reply(200, `{"id":"10010","key":"SD","name":"Service","projectTypeKey":"service_desk"}`))
+	post(f)
+	if _, err := c.BulkFetch(t.Context(), []string{"WEB-1"}, "project"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.AddComment(t.Context(), in); err != nil || f.Count("GET", "/rest/api/3/project/10010") != 1 {
+		t.Errorf("after a bulk fetch without the type: %v, requests %v", err, f.Requests())
+	}
+
+	// Fails closed.
+	for name, h := range map[string]jiratest.Handler{
+		"a failed read":    jiratest.Reply(500, `{"errorMessages":["down"]}`),
+		"no type answered": jiratest.Reply(200, `{"id":"10010","key":"SD","name":"Service"}`),
+	} {
+		f := jiratest.NewServer(t)
+		c := signedIn(t, f)
+		f.On("GET", "/rest/api/3/project/10010", h)
+		post(f)
+		in.Audience = AudienceUnset
+		if _, err := c.AddComment(t.Context(), in); !trackerapi.WriteNotApplied(err) || f.Count("POST", "/rest/api/3/issue/WEB-1/comment") != 0 {
+			t.Errorf("%s: %v, %d comments sent", name, err, f.Count("POST", "/rest/api/3/issue/WEB-1/comment"))
+		}
 	}
 }

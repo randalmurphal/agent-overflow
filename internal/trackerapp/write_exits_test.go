@@ -47,7 +47,9 @@ type exitAt struct {
 // and 2, the details of 10001 (an open ticket) and 10002 (cached), and a
 // day of worklogs. Its reads, in order: Structure, BoardRows of board 1,
 // BoardRows of board 2, Details, Worklogs. The card is stale when either
-// board's read fails or is never made, after the other succeeded.
+// board's read fails or is never made, after the other succeeded. 10002's
+// body, which no ticket has open, is dropped just before the details read
+// and is stale only when the refresh stops before that.
 func TestEveryRefreshExitAccountsForEveryResource(t *testing.T) {
 	t.Parallel()
 	all := []string{"card/10001", "detail/10001", "detail/10002", "row/1/10002", "structure/1", "worklogs/acc-user1/2026-11-02"}
@@ -76,16 +78,16 @@ func TestEveryRefreshExitAccountsForEveryResource(t *testing.T) {
 		{"structure fails", exitAt{"Structure", 0}, fail, []string{"structure/1"}, reads, true, false},
 		{"board 1 rows fail", exitAt{"BoardRows", 0}, fail, []string{"card/10001", "row/1/10002"}, reads, false, false},
 		{"board 2 rows fail", exitAt{"BoardRows", 1}, fail, []string{"card/10001"}, reads, true, false},
-		{"details fail", exitAt{"Details", 0}, fail, []string{"detail/10001", "detail/10002"}, reads, true, false},
+		{"details fail", exitAt{"Details", 0}, fail, []string{"detail/10001"}, reads, true, false},
 		{"worklogs fail", exitAt{"Worklogs", 0}, fail, []string{"worklogs/acc-user1/2026-11-02"}, reads, true, false},
 		{"cancelled during structure", exitAt{"Structure", 0}, cancelDuring, all, reads[:1], false, false},
 		{"cancelled during board 1 rows", exitAt{"BoardRows", 0}, cancelDuring, allBut("structure/1"), reads[:2], false, false},
 		{"cancelled during board 2 rows", exitAt{"BoardRows", 1}, cancelDuring, []string{"card/10001", "detail/10001", "detail/10002", "worklogs/acc-user1/2026-11-02"}, reads[:3], true, false},
-		{"cancelled during details", exitAt{"Details", 0}, cancelDuring, []string{"detail/10001", "detail/10002", "worklogs/acc-user1/2026-11-02"}, reads[:4], true, false},
+		{"cancelled during details", exitAt{"Details", 0}, cancelDuring, []string{"detail/10001", "worklogs/acc-user1/2026-11-02"}, reads[:4], true, false},
 		{"cancelled during worklogs", exitAt{"Worklogs", 0}, cancelDuring, []string{"worklogs/acc-user1/2026-11-02"}, reads, true, false},
 		{"cancelled before board 1 rows", exitAt{"Structure", 0}, cancelBefore, allBut("structure/1"), reads[:2], false, false},
 		{"cancelled before board 2 rows", exitAt{"BoardRows", 0}, cancelBefore, []string{"card/10001", "detail/10001", "detail/10002", "worklogs/acc-user1/2026-11-02"}, reads[:3], true, false},
-		{"cancelled before details", exitAt{"BoardRows", 1}, cancelBefore, []string{"detail/10001", "detail/10002", "worklogs/acc-user1/2026-11-02"}, reads[:4], true, false},
+		{"cancelled before details", exitAt{"BoardRows", 1}, cancelBefore, []string{"detail/10001", "worklogs/acc-user1/2026-11-02"}, reads[:4], true, false},
 		{"cancelled before worklogs", exitAt{"Details", 0}, cancelBefore, []string{"worklogs/acc-user1/2026-11-02"}, reads, true, false},
 		{"board 1 retired during its structure", exitAt{"Structure", 0}, retire, nil, []string{"Structure", "BoardRows", "Details", "Worklogs"}, false, false},
 		{"board 1 retired during its rows", exitAt{"BoardRows", 0}, retire, nil, reads, false, false},

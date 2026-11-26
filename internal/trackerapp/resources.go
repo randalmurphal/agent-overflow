@@ -99,53 +99,55 @@ func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID, rule tr
 
 // cards reads the cards of issues with no board and stores those of the
 // issues the mirror keeps. An issue the tracker does not return keeps
-// what the mirror holds of it. unread are the issues it did not read,
-// none when it returns no error.
-func (r *run) cards(issues []tracker.IssueID) (out Changes, unread []tracker.IssueID, _ error) {
+// what the mirror holds of it, and is one of missing. unread are the
+// issues it did not read, none when it returns no error.
+func (r *run) cards(issues []tracker.IssueID) (out Changes, missing, unread []tracker.IssueID, _ error) {
 	for i := 0; i < len(issues); i += readBatch {
 		batch := issues[i:min(i+readBatch, len(issues))]
 		err := r.againIfSwept(func() error {
-			ch, err := r.cardsOf(batch)
+			ch, gone, err := r.cardsOf(batch)
 			out.add(ch)
+			missing = append(missing, gone...)
 			return err
 		})
 		if err != nil {
-			return out, issues[i:], err
+			return out, missing, issues[i:], err
 		}
 	}
-	return out, nil, nil
+	return out, missing, nil, nil
 }
 
-// cardsOf reads and stores the cards of one batch of issues.
-func (r *run) cardsOf(batch []tracker.IssueID) (Changes, error) {
+// cardsOf reads and stores the cards of one batch of issues, and answers
+// those the tracker did not return.
+func (r *run) cardsOf(batch []tracker.IssueID) (Changes, []tracker.IssueID, error) {
 	began, err := r.beginRead()
 	if err != nil {
-		return Changes{}, err
+		return Changes{}, nil, err
 	}
 	r.calls++
 	read, err := r.p.Cards(r.ctx, batch)
 	if err != nil {
-		return Changes{}, fmt.Errorf("trackerapp: read %d cards: %w", len(batch), call(err))
+		return Changes{}, nil, fmt.Errorf("trackerapp: read %d cards: %w", len(batch), call(err))
 	}
 	cards := make([]store.MirrorCard, 0, len(read.Cards))
 	for _, c := range read.Cards {
 		m, err := mirrorCard(c)
 		if err != nil {
-			return Changes{}, err
+			return Changes{}, nil, err
 		}
 		cards = append(cards, m)
 	}
 	catalog, err := mirrorCatalog(read.Catalog)
 	if err != nil {
-		return Changes{}, err
+		return Changes{}, nil, err
 	}
 	stored, err := r.s.store.UpsertMirrorCards(r.root, r.state.Sweep, cards, catalog, began)
 	if err != nil {
-		return Changes{}, fmt.Errorf("trackerapp: store %d cards: %w", len(cards), err)
+		return Changes{}, nil, fmt.Errorf("trackerapp: store %d cards: %w", len(cards), err)
 	}
 	w := changesOf(stored)
 	r.told("", w)
-	return w.Changes, r.markMissing(began, read.Missing)
+	return w.Changes, read.Missing, r.markMissing(began, read.Missing)
 }
 
 // markMissing records that the read begun at began did not return the

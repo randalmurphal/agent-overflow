@@ -68,14 +68,27 @@ func (in CreateInput) Check() error {
 	return nil
 }
 
+// IssueRead is an issue as a read of its provider found it (Detail.Read),
+// which a write of the same provider to the issue takes as current in
+// place of reading the issue again. A caller passes it only to the first
+// write it sends to the issue after the read. What it holds is the
+// provider's own; a provider given none, or another provider's, reads the
+// issue as it would.
+type IssueRead interface {
+	// ReadIssue is the issue read.
+	ReadIssue() IssueID
+}
+
 // EditInput changes fields of one issue. AcceptLoss is the user's
 // explicit acceptance that a rich text edit loses content Markdown cannot
-// show; without it such an edit is refused with ReasonLoss.
+// show; without it such an edit is refused with ReasonLoss. Read is the
+// issue as the caller read it (IssueRead), or nil.
 type EditInput struct {
 	Issue      IssueID
 	Fields     []FieldEdit
 	AcceptLoss bool
 	ImageDir   string
+	Read       IssueRead
 }
 
 // Check refuses an edit that names no issue or no field, or a field twice.
@@ -87,13 +100,15 @@ func (in EditInput) Check() error {
 }
 
 // MoveInput moves an issue by one of the moves Moves lists for it, with
-// the fields the move takes.
+// the fields the move takes. Read is the issue as the caller read it
+// (IssueRead), or nil.
 type MoveInput struct {
 	Issue      IssueID
 	Move       MoveID
 	Fields     []FieldEdit
 	AcceptLoss bool
 	ImageDir   string
+	Read       IssueRead
 }
 
 // Check refuses a move that names no issue or move, or a field twice.
@@ -308,12 +323,17 @@ const (
 	AudienceInternal
 )
 
-// CommentInput is a new comment, its body as Markdown.
+// CommentInput is a new comment, its body as Markdown. Project is the
+// issue's project as a read made after the last wait for a person, just
+// before the comment, found it: who the comment reaches is judged on it.
+// Empty, the provider reads the project with the comment. A tracker whose
+// comments have no audience takes no notice of it.
 type CommentInput struct {
 	Issue    IssueID
 	Markdown string
 	Audience Audience
 	ImageDir string
+	Project  ProjectID
 }
 
 // Check refuses a comment that names no issue or has no body.

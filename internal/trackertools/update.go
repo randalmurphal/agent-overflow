@@ -18,15 +18,20 @@ import (
 // several tickets then waits for the person's approval (Host.Approve). When
 // set changes them, their cards are then read again (planCall.recheck): a
 // ticket that changed during the wait, by its update time, status or
-// sprints, is refused and sent nothing, and the others go on. What a
-// person changes after that read, in the seconds the earlier tickets'
-// sends take, is caught only where a write compares when it is sent: a
-// text an edit replaces whole (planField), a move Jira no longer offers
-// the ticket, and a status its Linear team no longer has. The thread's
-// mode is read again before anything is sent. Each ticket's steps run in
-// order (apply.go), status, fields, estimate, sprint, comment, and the
-// first refused or unknown stops that ticket: what came after it is not
-// sent. A step the ticket already holds, an edit the tracker answers
+// sprints, is refused and sent nothing, and the others go on. A call that
+// comments on Jira tickets looks them up again at the start of the
+// comment phase, after its other writes, and each comment's audience is
+// judged on the project that lookup finds (apply.go). What a person changes after that read, in the seconds the earlier
+// tickets' sends take, is caught only where a write compares when it is
+// sent: a text an edit replaces whole (planField). A move the ticket's
+// workflow stopped offering, or a status its Linear team no longer has,
+// is sent as the plan's read found it and refused by the tracker, which
+// the provider says as stale. The thread's
+// mode is read again before anything is sent. The steps run in order
+// (apply.go), status, fields, estimate, sprint, comment, each for every
+// ticket before the next, and the first refused or unknown stops that
+// ticket alone: what came after it for that ticket is not sent. A step
+// the ticket already holds, an edit the tracker answers
 // as changing nothing, or a comment an earlier call of the thread added
 // (trackerapp's repeat record), is already: it changed nothing.
 
@@ -123,17 +128,27 @@ func (s *Server) update(ctx context.Context, caller Caller, raw json.RawMessage)
 	if err != nil {
 		return nil, err
 	}
-	pc := newPlanCall(s, caller, sources)
-	var plans []*planned
-	for _, t := range tickets {
-		if slices.ContainsFunc(plans, func(q *planned) bool { return q.t.connection == t.connection && q.t.issue == t.issue }) {
+	for i, t := range tickets {
+		if slices.ContainsFunc(tickets[:i], func(q ticket) bool { return q.connection == t.connection && q.issue == t.issue }) {
 			return nil, invalidf("%s is named twice in keys.", qualifier(sources, t.site)(t.key))
 		}
-		p, err := pc.plan(ctx, t, set, comment)
-		if err != nil {
+	}
+	// The plan's reads and the writes share one session: the writes are
+	// refreshed once, at its end, and the first write to a ticket takes
+	// what its read found.
+	ctx = trackerapp.WithWrites(ctx)
+	pc := newPlanCall(s, caller, sources)
+	plans, errs, err := pc.readTickets(ctx, tickets, set, comment)
+	if err != nil {
+		return nil, err
+	}
+	for i, p := range plans {
+		if errs[i] != nil {
+			return nil, errs[i]
+		}
+		if err := pc.planSteps(p, set); err != nil {
 			return nil, err
 		}
-		plans = append(plans, p)
 	}
 	if slices.ContainsFunc(plans, func(p *planned) bool { return p.refused != "" }) {
 		// Nothing is sent: the call is the person's request as a whole.
@@ -144,16 +159,18 @@ func (s *Server) update(ctx context.Context, caller Caller, raw json.RawMessage)
 		return out, nil
 	}
 	id := s.newID()
-	if len(plans) > 1 {
+	approved := len(plans) > 1
+	if approved {
 		if err := s.h.Approve(ctx, caller.Thread, approvalOf(id, plans, set, comment)); err != nil {
 			return nil, err
 		}
-		// What set changes was judged on the tickets as they were before
-		// the wait; a comment alone judges nothing but that they exist.
-		if len(set) > 0 {
-			if err := pc.recheck(ctx, plans); err != nil {
-				return nil, err
-			}
+	}
+	// What set changes was judged on the tickets as they were before the
+	// wait; a comment alone judges nothing, and is looked up just before
+	// it is sent (apply.go).
+	if approved && len(set) > 0 {
+		if err := pc.recheck(ctx, plans); err != nil {
+			return nil, err
 		}
 	}
 	// The writes are admitted now: a thread made read-only while the call
@@ -164,17 +181,12 @@ func (s *Server) update(ctx context.Context, caller Caller, raw json.RawMessage)
 	// What was admitted is sent whole: the call's end no longer stops it,
 	// and each write keeps its own bound.
 	wctx := trackerapp.ByAgent(context.WithoutCancel(ctx), caller.Thread, id)
-	out := updateAnswer{}
+	answers, written := s.apply(wctx, caller, plans)
+	out := updateAnswer{Tickets: answers}
 	row := WriteRow{ID: id}
-	for _, p := range plans {
-		if p.changed != "" {
-			out.Tickets = append(out.Tickets, ticketAnswer{Key: p.key, Refused: p.changed, NotSent: p.stepNames(false, 0)})
-			continue
-		}
-		answer, written := s.apply(wctx, caller, p)
-		out.Tickets = append(out.Tickets, answer)
-		if len(written.Applied) > 0 {
-			row.Tickets = append(row.Tickets, written)
+	for _, w := range written {
+		if len(w.Applied) > 0 {
+			row.Tickets = append(row.Tickets, w)
 		}
 	}
 	if len(row.Tickets) > 0 {

@@ -3,6 +3,7 @@ package app
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -398,7 +399,16 @@ func TestTrackerMCPToolListAndGuideStayWithinTheirBound(t *testing.T) {
 		t.Fatalf("the tool list (%d bytes) and guide (%d bytes) are %d bytes, over the bound of %d", len(listed["result"]), len(guide.Instructions), size, bound)
 	}
 	t.Logf("tool list %d bytes, guide %d bytes", len(listed["result"]), len(guide.Instructions))
+	// The bytes every session pays for, pinned: a change to them is a
+	// change to what each session costs, made on purpose.
+	if sum := fmt.Sprintf("%x", sha256.Sum256(append(slices.Clone(listed["result"]), guide.Instructions...))); sum != trackerToolListSum {
+		t.Errorf("the tool list and guide changed: sha256 %s, pinned %s", sum, trackerToolListSum)
+	}
 }
+
+// trackerToolListSum is the sha256 of the tracker tools' tools/list
+// result followed by their guide.
+const trackerToolListSum = "2ae4461f88e1bff642c891f642cc0362dba1051eee9d19b56fc8e9b462e3eeef"
 
 // brokenPhaseThread is a workflow phase thread whose session scope cannot
 // be resolved: its attempt row names a phase its run's snapshot does not

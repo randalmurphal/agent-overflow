@@ -20,11 +20,12 @@ func day(t *testing.T, s string) tracker.Date {
 // A write names every kind of resource, and each is read again through its
 // own read, batched: the board's structure; one rows read per board for
 // the rows named on it and the cards it holds; one cards read for the
-// card kept on no board; one details read for the open ticket and the
-// detail the mirror holds; one worklogs read per span of days. A card and
-// a detail the mirror neither keeps nor holds are not read. The store
-// writes are one per read, after one read of where everything lives, and
-// only the open ticket's changed detail is built into a view.
+// card kept on no board; one details read for the open ticket; one
+// worklogs read per span of days. The detail the mirror holds with no
+// ticket open is dropped, not read, and a card and a detail the mirror
+// neither keeps nor holds are not read. The store writes are one per
+// read, after one read of where everything lives, and only the open
+// ticket's changed detail is built into a view.
 func TestARefreshReadsEveryResourceKind(t *testing.T) {
 	t.Parallel()
 	f := newWriteFixture(t)
@@ -75,7 +76,7 @@ func TestARefreshReadsEveryResourceKind(t *testing.T) {
 	if fmt.Sprint(cardReads) != "[[10009]]" {
 		t.Errorf("cards read %v", cardReads)
 	}
-	if got := f.p.detailsRead()[details:]; !slices.Equal(got[0], ids("10003", "10002")) || len(got) != 1 {
+	if got := f.p.detailsRead()[details:]; len(got) != 1 || !slices.Equal(got[0], ids("10003")) {
 		t.Errorf("details read %v", got)
 	}
 	if got := fmt.Sprint(f.w.time.reads); got != "[{acc-user1 2026-11-02 2026-11-03} {acc-user1 2026-12-20 2026-12-20}]" {
@@ -83,7 +84,8 @@ func TestARefreshReadsEveryResourceKind(t *testing.T) {
 	}
 	stored := cs.take()
 	wantStore := map[string]int{"ReadMirrorRefreshTargets": 1, "ReplaceMirrorStructure": 1, "WriteMirrorRows": 2,
-		"UpsertMirrorCards": 1, "StoreMirrorTickets": 1, "ReplaceMirrorWorklogs": 2, "ListMirrorBodies": 1, "GetMirrorCatalog": 1, "ListMirrorTicketRows": 1}
+		"UpsertMirrorCards": 1, "StoreMirrorTickets": 1, "ReplaceMirrorWorklogs": 2, "ListMirrorBodies": 1, "GetMirrorCatalog": 1, "ListMirrorTicketRows": 1,
+		"DropMirrorBodies": 1}
 	if !maps.Equal(stored, wantStore) {
 		t.Errorf("store calls %s, want %s", describeCounts(stored), describeCounts(wantStore))
 	}
@@ -147,7 +149,8 @@ func (s *targetsStore) takeRead() []string {
 
 // The targets a refresh reads, pinned: a comment, which needs a detail
 // alone, reads no row or kept issue of the issue on its two boards; an
-// edit, which needs the card too, reads its row on each board.
+// edit, which needs the card too, reads its row on each board. The body
+// each finds held, with no ticket open, is dropped, not read.
 func TestRefreshTargetsReadWhatEachResourceNeeds(t *testing.T) {
 	t.Parallel()
 	f := newWriteFixture(t)
@@ -161,6 +164,13 @@ func TestRefreshTargetsReadWhatEachResourceNeeds(t *testing.T) {
 	if got := ts.takeRead(); !slices.Equal(got, []string{"rows 0 kept 0 details 1 boards 0"}) {
 		t.Errorf("a comment's targets: %v", got)
 	}
+	if got := describeCounts(ts.take()); got != "DropMirrorBodies:1 ReadMirrorRefreshTargets:1" {
+		t.Errorf("a comment's store calls %s", got)
+	}
+	// The comment's refresh dropped the body; a read brings it again.
+	f.svc.store = f.st
+	f.openDetail(t, "10001")
+	f.svc.store = ts
 	f.answer(tracker.Result{Parts: []tracker.Part{appliedPart("10001", tracker.StepEdit, tracker.CardOf("10001"), tracker.DetailOf("10001"))}})
 	if v, err := f.svc.Edit(t.Context(), f.conn.ID, EditRequest{Issue: "10001", Fields: []FieldEditInput{{Field: "title", Typed: []string{"x"}}}}); err != nil || len(v.Stale) > 0 {
 		t.Fatalf("%+v, %v", v, err)
@@ -168,8 +178,8 @@ func TestRefreshTargetsReadWhatEachResourceNeeds(t *testing.T) {
 	if got := ts.takeRead(); !slices.Equal(got, []string{"rows 2 kept 1 details 1 boards 0"}) {
 		t.Errorf("an edit's targets: %v", got)
 	}
-	if got := describeCounts(ts.take()); got != "ReadMirrorRefreshTargets:2 StoreMirrorTickets:2 WriteMirrorRows:2" {
-		t.Errorf("store calls %s", got)
+	if got := describeCounts(ts.take()); got != "DropMirrorBodies:1 ReadMirrorRefreshTargets:1 WriteMirrorRows:2" {
+		t.Errorf("an edit's store calls %s", got)
 	}
 }
 
@@ -227,7 +237,8 @@ func TestWriteCosts(t *testing.T) {
 			func() (WriteView, error) {
 				return f.svc.AddComment(ctx, id, CommentRequest{Issue: "10002", Markdown: "New comment"})
 			}),
-			costOf{map[string]int{"AddComment": 1, "Details": 1}, map[string]int{"ReadMirrorRefreshTargets": 1, "StoreMirrorTickets": 1}}},
+			// The body no ticket has open is dropped, not read again (D1).
+			costOf{map[string]int{"AddComment": 1}, map[string]int{"ReadMirrorRefreshTargets": 1, "DropMirrorBodies": 1}}},
 		{"comment on an open ticket", write(tracker.Result{Parts: []tracker.Part{appliedPart("10003", tracker.StepComment, tracker.DetailOf("10003"))}},
 			func() { f.state.comment("10003", "New comment") },
 			func() (WriteView, error) {

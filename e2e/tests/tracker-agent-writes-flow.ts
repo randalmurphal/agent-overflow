@@ -13,7 +13,12 @@
 // the person, not its spawner: its spawner's Agents row says it needs
 // approval, and the prompt is answered in the worker's composer, opened
 // from that row; a ticket renamed while the prompt is open is sent nothing
-// on Approve and said as changed, and the other ticket is sent. On the
+// on Approve and said as changed, and the other ticket is sent; a sprint
+// move of three tickets is approved and sent as one move after one read
+// of their cards; a call whose edit Jira refuses for one ticket stops that
+// ticket there while the others get every step; and a ticket commented on
+// while no screen had it open does not show the body read before the
+// comment when it is opened again. On the
 // desktop project, a connected browser shows the prompt beside the
 // backend's screen, and its answer sends the change and takes the prompt
 // off both.
@@ -26,7 +31,7 @@ import { expandRow, toolRow } from './ao-tool-rows-helpers.js';
 import { agentRow, openAgents } from './agents-tray-helpers.js';
 import { confirmOnHost, redeemOnScreen, type PairingInvite } from './offhost-helpers.js';
 import { awaitToolAnswer, setScenario, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
-import { connectFakeJira, press, seedFakeJira, trackerRequests, type ExtraJira } from './tracker-helpers.js';
+import { JIRA_SITE, connectFakeJira, openIssuesPane, press, seedFakeJira, trackerRequests, type ExtraJira } from './tracker-helpers.js';
 import { TRACKER_TOOLS_SERVER, expandActivityRuns } from './tracker-agent-tools-helpers.js';
 
 export interface TrackerWritesSurface {
@@ -34,7 +39,8 @@ export interface TrackerWritesSurface {
 }
 
 // The seed's WEB-1 is In Progress, WEB-2 and WEB-3 To Do. Every move
-// reaches To Do and In Progress; only In Progress reaches Done.
+// reaches To Do and In Progress; only In Progress reaches Done. Sprint 2
+// is the board's future sprint.
 const SITE: ExtraJira = {
   projects: [],
   boards: [],
@@ -43,11 +49,16 @@ const SITE: ExtraJira = {
     { id: '21', name: 'In Progress', to: '10001' },
     { id: '31', name: 'Done', to: '10002', from: ['10001'] },
   ],
+  sprints: [{ id: 2, name: 'Sprint 2', state: 'future' }],
 };
 
+const JIRA = { tracker: 'jira', site: JIRA_SITE };
 const COMMENT_ROUTE = 'POST rest/api/3/issue/{issue}/comment';
 const MOVE_ROUTE = 'POST rest/api/3/issue/{issue}/transitions';
 const EDIT_ROUTE = 'PUT rest/api/3/issue/{issue}';
+const TO_SPRINT_ROUTE = 'POST rest/agile/1.0/sprint/{sprint}/issue';
+const ISSUE_ROUTE = 'GET rest/api/3/issue/{issue}';
+const BULK_ROUTE = 'POST rest/api/3/issue/bulkfetch';
 /** A parked call's bound: above the time the person takes to answer. */
 const PARKED_MS = 180_000;
 
@@ -77,6 +88,18 @@ async function openThread(harness: HarnessApp, page: Page, title: string, compac
     await page.getByTestId('compact-back').click();
   }
   await press(page.getByTestId('thread-row-title').filter({ hasText: title }).first(), compact);
+}
+
+/**
+ * Reads the board into this computer's copy, as a person opening the
+ * Issues pane does: a sprint the agent sets is judged on it. Answers the
+ * pane.
+ */
+async function readBoard(harness: HarnessApp, page: Page, compact: boolean): Promise<Locator> {
+  await harness.open(page);
+  const pane = await openIssuesPane(page, compact);
+  await expect(pane.locator('[data-testid="issues-card"][data-issue="10101"]')).toBeVisible({ timeout: 30_000 });
+  return pane;
 }
 
 /** The thread's tracker write row. */
@@ -188,6 +211,115 @@ export function registerTrackerAgentWritesFlow({ compact }: TrackerWritesSurface
     await expect(page.getByTestId('composer-pending-approval')).toHaveCount(0);
     expect(await trackerRequests(harness, COMMENT_ROUTE)).toHaveLength(3);
     await expect(writeRow(page)).toHaveCount(1);
+  });
+
+  test('a sprint move of three tickets waits for the person, then moves them in one request after reading them once more', async ({ harness, page }) => {
+    test.setTimeout(300_000);
+    const title = 'Sprint mover';
+    const { path, threadIds } = await seedWriters(harness, 'sprint', [{ title, provider: 'claude' }]);
+    await readBoard(harness, page, compact);
+    await setScenario(harness, path, threadToolsScenario({
+      name: 'tracker-writes-sprint', provider: 'claude',
+      turns: [{ steps: [{ call: { server: TRACKER_TOOLS_SERVER, tool: 'ticket_update', timeoutMs: PARKED_MS, args: { keys: ['WEB-1', 'WEB-2', 'WEB-3'], set: { sprint: 'Sprint 2' } } } }], text: 'Moved.' }],
+      afterTurns: 'silent',
+    }));
+    await harness.send(threadIds[0], 'move the three tickets into Sprint 2');
+    await openThread(harness, page, title, compact);
+    const prompt = await writePrompt(page);
+    expect(await promptTickets(prompt)).toEqual([
+      ['WEB-1 First story', ['Sprint → Sprint 2']],
+      ['WEB-2 Second task', ['Sprint → Sprint 2']],
+      ['WEB-3 Backlog task', ['Sprint → Sprint 2']],
+    ]);
+    // The call's reads of the three cards by key: its plan's, then one after the approval.
+    const keyReads = async () => (await trackerRequests(harness, BULK_ROUTE)).filter((r) => JSON.stringify((r.body as { issueIdsOrKeys?: string[] })?.issueIdsOrKeys) === '["WEB-1","WEB-2","WEB-3"]').length;
+    const bulkBefore = await keyReads();
+    expect(await trackerRequests(harness, TO_SPRINT_ROUTE)).toHaveLength(0);
+    await press(prompt.getByTestId('approval-allow'), compact);
+    const answer = await trackerAnswer(harness, 'ticket_update', path);
+    expect(answer.isError, answer.text).toBe(false);
+    expect(JSON.parse(answer.text)).toEqual({ tickets: ['WEB-1', 'WEB-2', 'WEB-3'].map((key) => ({ key, applied: ['sprint'] })) });
+    // One move for the three, and one read of their cards after the approval.
+    expect((await trackerRequests(harness, TO_SPRINT_ROUTE)).map((r) => [r.path.split('/').at(-2), r.body])).toEqual([['2', { issues: ['10101', '10102', '10103'] }]]);
+    expect(await keyReads() - bulkBefore).toBe(1);
+    await expect(page.getByTestId('composer-pending-approval')).toHaveCount(0);
+    await expandActivityRuns(page);
+    await expect(writeRow(page)).toContainText('Changed 3 tickets', { timeout: 30_000 });
+    await expect(writeRow(page).getByTestId('tracker-write-ticket')).toHaveText([/WEB-1.*· sprint/, /WEB-2.*· sprint/, /WEB-3.*· sprint/]);
+  });
+
+  test('a call whose edit Jira refuses for one ticket stops that ticket there, and the others get every step', async ({ harness, page }) => {
+    test.setTimeout(300_000);
+    const title = 'Mixed planner';
+    const { path, threadIds } = await seedWriters(harness, 'mixed', [{ title, provider: 'claude' }]);
+    await readBoard(harness, page, compact);
+    await setScenario(harness, path, threadToolsScenario({
+      name: 'tracker-writes-mixed', provider: 'claude',
+      turns: [{ steps: [{ call: { server: TRACKER_TOOLS_SERVER, tool: 'ticket_update', timeoutMs: PARKED_MS, args: { keys: ['WEB-1', 'WEB-2', 'WEB-3'], set: { status: 'To Do', title: 'Planned title', sprint: 'Sprint 2' }, comment: 'Planned.' } } }], text: 'Planned.' }],
+      afterTurns: 'silent',
+    }));
+    await harness.send(threadIds[0], 'plan the three tickets');
+    await openThread(harness, page, title, compact);
+    const prompt = await writePrompt(page);
+    // The steps run status, fields, sprint, comment, each for every ticket
+    // in turn: the first edit sent is WEB-1's, which Jira refuses.
+    await harness.rpc('HarnessTrackerFault', {
+      origin: JIRA, route: EDIT_ROUTE, kind: 'refuse', times: 1,
+      status: 400, body: { errorMessages: ['The title cannot be changed now.'], errors: {} },
+    });
+    await press(prompt.getByTestId('approval-allow'), compact);
+    const answer = await trackerAnswer(harness, 'ticket_update', path);
+    expect(answer.isError, answer.text).toBe(false);
+    const tickets = JSON.parse(answer.text).tickets as Array<Record<string, unknown>>;
+    expect(tickets.map(({ refused: _refused, ...rest }) => rest)).toEqual([
+      { key: 'WEB-1', applied: ['status'], not_sent: ['sprint', 'comment'] },
+      { key: 'WEB-2', applied: ['title', 'sprint', 'comment'], already: ['status'] },
+      { key: 'WEB-3', applied: ['title', 'sprint', 'comment'], already: ['status'] },
+    ]);
+    expect(tickets[0].refused).toMatch(/^title: .*The title cannot be changed now\./);
+    // WEB-1's sprint move and comment were never sent; the others' were.
+    expect((await trackerRequests(harness, TO_SPRINT_ROUTE)).map((r) => r.body)).toEqual([{ issues: ['10102', '10103'] }]);
+    expect(await trackerRequests(harness, COMMENT_ROUTE, ['WEB-1', '10101'])).toHaveLength(0);
+    expect(await trackerRequests(harness, COMMENT_ROUTE)).toHaveLength(2);
+    await expandActivityRuns(page);
+    await expect(writeRow(page)).toContainText('Changed 3 tickets', { timeout: 30_000 });
+    await expect(writeRow(page).getByTestId('tracker-write-ticket')).toHaveText([/WEB-1.*· status$/, /WEB-2.*· title, sprint, comment/, /WEB-3.*· title, sprint, comment/]);
+  });
+
+  test('a ticket the agent commented on while no screen had it open does not show the body read before the comment', async ({ harness, page }) => {
+    test.setTimeout(300_000);
+    const title = 'Closed ticket commenter';
+    const { path, threadIds } = await seedWriters(harness, 'closed', [{ title, provider: 'claude' }]);
+    // The ticket is read once and closed: this computer keeps its body.
+    const pane = await readBoard(harness, page, compact);
+    await press(pane.locator('[data-testid="issues-card"][data-issue="10101"]').getByTestId('issues-card-open'), compact);
+    let ticket = pane.getByTestId('ticket-screen');
+    await expect(ticket.getByTestId('ticket-title')).toHaveText('First story', { timeout: 30_000 });
+    await press(pane.getByTestId(compact ? 'issues-back' : 'ticket-close'), compact);
+    await expect(ticket).toHaveCount(0);
+
+    await setScenario(harness, path, threadToolsScenario({
+      name: 'tracker-writes-closed', provider: 'claude',
+      turns: [{ steps: [{ call: { server: TRACKER_TOOLS_SERVER, tool: 'ticket_update', args: { keys: ['WEB-1'], comment: 'Checked while closed.' } } }], text: 'Commented.' }],
+    }));
+    await harness.send(threadIds[0], 'comment on WEB-1');
+    const answer = await trackerAnswer(harness, 'ticket_update', path);
+    expect(JSON.parse(answer.text)).toEqual({ tickets: [{ key: 'WEB-1', applied: ['comment'] }] });
+
+    // Opened again with its read held: the body read before the comment
+    // is not shown as the ticket; the read's answer shows it with it.
+    await harness.rpc('HarnessTrackerFault', { origin: JIRA, route: ISSUE_ROUTE, kind: 'hold', times: 1 });
+    await press(pane.locator('[data-testid="issues-card"][data-issue="10101"]').getByTestId('issues-card-open'), compact);
+    ticket = pane.getByTestId('ticket-screen');
+    await expect.poll(async () => (await trackerRequests(harness, ISSUE_ROUTE, ['WEB-1', '10101'])).some((r) => r.held), { timeout: 30_000 }).toBe(true);
+    await expect(ticket.getByTestId('ticket-opening')).toHaveText('Reading the ticket from the tracker…');
+    // The header names the card the board holds; no stored description or
+    // comment list is shown as the ticket.
+    await expect(ticket.locator('[data-testid="ticket-section"][data-field="description"]')).toHaveCount(0);
+    await expect(ticket.getByTestId('ticket-comments')).toHaveCount(0);
+    await harness.rpc('HarnessTrackerRelease', { origin: JIRA, route: ISSUE_ROUTE });
+    await expect(ticket.getByTestId('ticket-comment').filter({ hasText: 'Checked while closed.' })).toBeVisible({ timeout: 30_000 });
+    await expect(ticket.getByTestId('ticket-title')).toHaveText('First story');
   });
 
   test('a ticket renamed while the prompt is open is sent nothing, and the other ticket is', async ({ harness, page }) => {

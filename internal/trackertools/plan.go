@@ -12,12 +12,17 @@ import (
 	"agent-overflow/internal/trackerapp"
 )
 
-// Planning. A ticket is read as far as its steps need: a comment alone
-// needs its ID, key and title, which the key's lookup or the mirror
-// gives with no request; any entry of set needs the ticket as it is now
-// (detailOf). Each entry is checked against that read, and the boards a
-// status, sprint or estimate is judged on are read once per call
-// (planCall.board).
+// Planning. A call's tickets are read as far as its steps need, each
+// connection's together (planCall.readTickets): a comment alone needs each
+// ticket's ID, key and title, which the key's lookup or the mirror gives
+// with no request; an entry judged on the ticket's card and rows alone
+// (needsDetail) needs a fresh card, all of them in one cards read; any
+// other needs the ticket's detail as it is now, all of them in one read.
+// Each entry is checked against that read, and the boards a status,
+// sprint or estimate is judged on are read once per call
+// (planCall.board). The reads share the call's write session, so the
+// first write to a ticket takes what its detail read found
+// (trackerapp.WithWrites).
 
 // planCall is the planning of one call: who calls, the sources on, and
 // the boards read so far, by connection and board.
@@ -46,42 +51,84 @@ func newPlanCall(s *Server, caller Caller, sources []trackerapp.TicketSource) *p
 	return &planCall{s: s, caller: caller, sources: sources, read: map[[2]string]boardRead{}}
 }
 
-// plan reads t as far as set and comment need and plans them on it.
-func (pc *planCall) plan(ctx context.Context, t ticket, set []namedValue, comment string) (*planned, error) {
-	i := slices.IndexFunc(pc.sources, func(src trackerapp.TicketSource) bool { return src.ID == t.connection })
-	if i < 0 {
-		return nil, errorsx.Public(CodeNotFound, fmt.Sprintf("The connection that reads %s is no longer on.", t.key), nil)
+// needsDetail reports whether planStep judges the set entry name on the
+// ticket's detail: a status (its moves), the description (its text), or
+// a field of the ticket's own (its fields, and the board's estimate
+// field). The sprint, the estimate, the fields every ticket has and the
+// names refused whatever the ticket holds are judged on its card and
+// rows.
+func needsDetail(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	switch {
+	case lower == setStatus, lower == setDescription:
+		return true
+	case lower == setSprint, lower == setEstimate, lower == setType, lower == setComment, readOnlyName(lower):
+		return false
 	}
-	p := &planned{t: t, src: pc.sources[i], comment: comment}
-	if len(set) == 0 {
-		card, err := pc.s.cardOf(ctx, t)
-		if err != nil {
-			return nil, err
-		}
-		p.d.Card = card
-	} else {
-		d, err := pc.s.detailOf(ctx, t)
-		if err != nil {
-			return nil, err
-		}
-		p.d = d
-	}
-	p.key = qualifier(pc.sources, t.site)(p.d.Card.Key)
+	_, standard := standardField(lower)
+	return !standard
+}
+
+// readTickets reads tickets as far as set needs, comment their ticket alone,
+// each connection's together, and answers each ticket's plan with its
+// card, or its read's failure, in tickets' order. A read of several that
+// fails as a whole fails the call.
+func (pc *planCall) readTickets(ctx context.Context, tickets []ticket, set []namedValue, comment string) ([]*planned, []error, error) {
+	detail, card := false, len(set) > 0
 	for _, nv := range set {
-		if err := pc.planStep(p, nv); err != nil {
-			return nil, err
+		detail = detail || needsDetail(nv.name)
+	}
+	plans := make([]*planned, len(tickets))
+	errs := make([]error, len(tickets))
+	var details, cards []int
+	for i, t := range tickets {
+		j := slices.IndexFunc(pc.sources, func(src trackerapp.TicketSource) bool { return src.ID == t.connection })
+		if j < 0 {
+			errs[i] = errorsx.Public(CodeNotFound, fmt.Sprintf("The connection that reads %s is no longer on.", t.key), nil)
+			continue
+		}
+		plans[i] = &planned{t: t, src: pc.sources[j], comment: comment}
+		switch {
+		case detail:
+			details = append(details, i)
+		case card:
+			cards = append(cards, i)
+		default:
+			switch c, held, err := pc.s.heldCard(t); {
+			case err != nil:
+				errs[i] = err
+			case held:
+				plans[i].d.Card = c
+			default:
+				details = append(details, i)
+			}
 		}
 	}
-	return p, nil
+	unkept, err := pc.readCards(ctx, plans, cards, errs)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := pc.readDetails(ctx, plans, append(details, unkept...), errs); err != nil {
+		return nil, nil, err
+	}
+	for i, p := range plans {
+		if p != nil && errs[i] == nil {
+			p.key = qualifier(pc.sources, p.t.site)(p.d.Card.Key)
+		}
+	}
+	return plans, errs, nil
 }
 
 // recheck reads the cards of plans again, once per connection, after the
-// person approved them. A ticket whose card moved since its plan read it,
-// or that the read no longer finds, is sent nothing (planned.changed): a
-// write sent now would be judged on a ticket the person did not see. A
-// card moved when its update time did, or the status or sprints the plan
-// judged on, which a tracker might change without moving the update time.
-// A read that fails is the call's error, nothing sent.
+// person approved what set changes. A ticket the read no longer finds,
+// or whose card moved since its plan read it, is sent nothing
+// (planned.changed): a write sent now would be judged on a ticket the
+// person did not see. A card moved when its update time did, or the
+// status or sprints the plan judged on, which a tracker might change
+// without moving the update time. A read that fails is the call's error,
+// nothing sent. A comment's audience is not judged on this read: the
+// comment phase looks its tickets up after the call's other writes
+// (Server.readAudience).
 func (pc *planCall) recheck(ctx context.Context, plans []*planned) error {
 	var conns []string
 	for _, p := range plans {
@@ -103,20 +150,25 @@ func (pc *planCall) recheck(ctx context.Context, plans []*planned) error {
 			if code, msg, ok := errorsx.PublicDetails(err); ok {
 				return errorsx.Public(code, "Nothing was sent: the tickets could not be read again after the user approved. "+site+": "+msg, err)
 			}
-			return fmt.Errorf("nothing was sent: read the tickets again after the approval: %s: %w", site, err)
+			return fmt.Errorf("nothing was sent: read the tickets again after the user approved: %s: %w", site, err)
 		}
 		for _, p := range on {
-			name := trackerNameOf(p.src.Kind)
 			i := slices.IndexFunc(found.Found, func(m trackerapp.KeyMatchView) bool { return m.Card.ID == p.d.Card.ID })
 			switch {
 			case i < 0:
-				p.changed = fmt.Sprintf("%s is not on %s any more, or the user's account cannot see it, so nothing was sent to it.", p.key, name)
+				p.changed = goneSentence(p, "nothing was sent to it")
 			case cardMoved(p.d.Card, found.Found[i].Card):
-				p.changed = fmt.Sprintf("%s changed on %s while the user was deciding, so nothing was sent to it; read it again and call again for it.", p.key, name)
+				p.changed = fmt.Sprintf("%s changed on %s while the user was deciding, so nothing was sent to it; read it again and call again for it.", p.key, trackerNameOf(p.src.Kind))
 			}
 		}
 	}
 	return nil
+}
+
+// goneSentence is the sentence of p's ticket a read made after its plan
+// no longer finds: so it was sent what (so).
+func goneSentence(p *planned, so string) string {
+	return fmt.Sprintf("%s is not on %s any more, or the user's account cannot see it, so %s.", p.key, trackerNameOf(p.src.Kind), so)
 }
 
 // cardMoved reports whether now is not the card was: its update time,
@@ -130,31 +182,104 @@ func cardMoved(was, now trackerapp.CardView) bool {
 	return was.Updated != now.Updated || was.Status.ID != now.Status.ID || !slices.Equal(sorted(was.Sprints), sorted(now.Sprints))
 }
 
-// cardOf is t's ID, key and title: from the lookup that found it, else
-// the mirror, else read.
-func (s *Server) cardOf(ctx context.Context, t ticket) (trackerapp.CardView, error) {
+// heldCard is t's ID, key and title with no request: from the lookup that
+// found it, else the mirror; held is false when neither has it.
+func (s *Server) heldCard(t ticket) (card trackerapp.CardView, held bool, _ error) {
 	if t.title != "" {
-		return trackerapp.CardView{ID: t.issue, Key: t.key, Title: t.title}, nil
+		return trackerapp.CardView{ID: t.issue, Key: t.key, Title: t.title}, true, nil
 	}
-	card, ok, err := s.t.MirrorCard(t.connection, t.issue)
-	if err != nil || ok {
-		return card, err
-	}
-	d, err := s.detailOf(ctx, t)
-	return d.Card, err
+	return s.t.MirrorCard(t.connection, t.issue)
 }
 
-// detailOf is t's detail as it is now.
-func (s *Server) detailOf(ctx context.Context, t ticket) (trackerapp.DetailView, error) {
-	d, err := s.t.IssueDetail(ctx, t.connection, t.issue)
+// byConnection is at, indexes of plans, grouped by connection in the
+// order each first appears.
+func byConnection(plans []*planned, at []int) [][]int {
+	var out [][]int
+	for _, i := range at {
+		k := slices.IndexFunc(out, func(g []int) bool { return plans[g[0]].t.connection == plans[i].t.connection })
+		if k < 0 {
+			out = append(out, []int{i})
+		} else {
+			out[k] = append(out[k], i)
+		}
+	}
+	return out
+}
+
+// issuesOf are the issues of plans at.
+func issuesOf(plans []*planned, at []int) []string {
+	out := make([]string, len(at))
+	for k, i := range at {
+		out[k] = plans[i].t.issue
+	}
+	return out
+}
+
+// readCards reads the cards of plans at, a connection's in one read, into
+// each plan's detail (its card and rows), or its failure into errs. It
+// returns those the mirror does not keep, whose detail is read instead.
+func (pc *planCall) readCards(ctx context.Context, plans []*planned, at []int, errs []error) ([]int, error) {
+	var unkept []int
+	for _, group := range byConnection(plans, at) {
+		got, err := pc.s.t.IssueCards(ctx, plans[group[0]].t.connection, issuesOf(plans, group))
+		if err != nil {
+			return nil, err
+		}
+		for k, i := range group {
+			switch r := got[k]; {
+			case errors.Is(r.Err, trackerapp.ErrNotMirrored):
+				unkept = append(unkept, i)
+			case r.Err != nil:
+				errs[i] = readFailure(plans[i].t, r.Err)
+			default:
+				plans[i].d = trackerapp.DetailView{Card: r.View.Card, Rows: r.View.Rows}
+			}
+		}
+	}
+	slices.Sort(unkept)
+	return unkept, nil
+}
+
+// readDetails reads the details of plans at as they are now, a
+// connection's in one read, into each plan, or its failure into errs.
+func (pc *planCall) readDetails(ctx context.Context, plans []*planned, at []int, errs []error) error {
+	for _, group := range byConnection(plans, at) {
+		got, err := pc.s.t.IssueDetails(ctx, plans[group[0]].t.connection, issuesOf(plans, group))
+		if err != nil {
+			return err
+		}
+		for k, i := range group {
+			if got[k].Err != nil {
+				errs[i] = readFailure(plans[i].t, got[k].Err)
+				continue
+			}
+			plans[i].d = got[k].View
+		}
+	}
+	return nil
+}
+
+// readFailure is err, the failure of t's own read, as the call's: a
+// ticket the tracker did not return named as missing.
+func readFailure(t ticket, err error) error {
 	switch {
 	case notFound(err) && t.linked:
-		return d, errorsx.Public(CodeNotFound, fmt.Sprintf(
+		return errorsx.Public(CodeNotFound, fmt.Sprintf(
 			"%s, the ticket this thread is linked to, is not on %s any more, or the user's account cannot see it.", t.key, t.site), err)
 	case notFound(err):
-		return d, errorsx.Public(CodeNotFound, fmt.Sprintf("No ticket %s on %s.", t.key, t.site), err)
+		return errorsx.Public(CodeNotFound, fmt.Sprintf("No ticket %s on %s.", t.key, t.site), err)
 	}
-	return d, err
+	return err
+}
+
+// planSteps plans each entry of set on p.
+func (pc *planCall) planSteps(p *planned, set []namedValue) error {
+	for _, nv := range set {
+		if err := pc.planStep(p, nv); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // The steps of a ticket's change, in the order they are sent.
@@ -167,6 +292,19 @@ const (
 	stepSprint
 	stepComment
 )
+
+// stepOrder is the order the steps are sent in.
+var stepOrder = [...]stepKind{stepMove, stepEdit, stepEstimate, stepSprint, stepComment}
+
+// step is one step of a ticket's change as the call named it: its kind,
+// the names the call gave it, whether the ticket holds it already, and
+// what an unknown outcome's sentence calls it.
+type step struct {
+	kind  stepKind
+	names []string
+	same  bool
+	what  string
+}
 
 // planned is one ticket's change as the call sends it, checked against
 // the ticket as it is now (d; only its card for a comment alone).
@@ -207,33 +345,36 @@ type planned struct {
 	changes []ApprovalChange
 }
 
+// steps are p's steps the call named, in the order they are sent, a
+// step the plan refused included: the one account of them, which the
+// sends (Server.stepsOf) and every answer of what was not sent
+// (stepNames) read.
+func (p *planned) steps() []step {
+	var out []step
+	for _, k := range stepOrder {
+		switch {
+		case k == stepMove && p.moveName != "":
+			out = append(out, step{kind: k, names: []string{p.moveName}, same: p.moveSame, what: "move"})
+		case k == stepEdit && len(p.editNames) > 0:
+			out = append(out, step{kind: k, names: p.editNames, what: "change"})
+		case k == stepEstimate && p.estimateName != "":
+			out = append(out, step{kind: k, names: []string{p.estimateName}, same: p.estimateSame, what: "estimate"})
+		case k == stepSprint && p.sprintName != "":
+			out = append(out, step{kind: k, names: []string{p.sprintName}, same: p.sprintSame, what: "sprint move"})
+		case k == stepComment && p.comment != "":
+			out = append(out, step{kind: k, names: []string{setComment}, what: "comment"})
+		}
+	}
+	return out
+}
+
 // stepNames are the names of p's steps, in order, but the one of kind
 // when except is set: what a call that sends nothing did not send.
 func (p *planned) stepNames(except bool, kind stepKind) []string {
 	var out []string
-	for _, k := range []stepKind{stepMove, stepEdit, stepEstimate, stepSprint, stepComment} {
-		if except && k == kind {
-			continue
-		}
-		switch k {
-		case stepMove:
-			if p.moveName != "" {
-				out = append(out, p.moveName)
-			}
-		case stepEdit:
-			out = append(out, p.editNames...)
-		case stepEstimate:
-			if p.estimateName != "" {
-				out = append(out, p.estimateName)
-			}
-		case stepSprint:
-			if p.sprintName != "" {
-				out = append(out, p.sprintName)
-			}
-		case stepComment:
-			if p.comment != "" {
-				out = append(out, setComment)
-			}
+	for _, st := range p.steps() {
+		if !except || st.kind != kind {
+			out = append(out, st.names...)
 		}
 	}
 	return out

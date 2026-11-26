@@ -92,7 +92,7 @@ func (s *jiraSite) sprint(id int64) *JiraSprint {
 // issue finds an issue by numeric ID or key, the key's case ignored.
 func (s *jiraSite) issue(ref string) *JiraIssue {
 	for i := range s.Issues {
-		if is := &s.Issues[i]; is.ID == ref || strings.EqualFold(is.Key, ref) {
+		if is := &s.Issues[i]; is.ID == ref || strings.EqualFold(is.Key, ref) || slices.ContainsFunc(is.FormerKeys, func(k string) bool { return strings.EqualFold(k, ref) }) {
 			return is
 		}
 	}

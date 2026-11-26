@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -91,6 +92,10 @@ type TransitionInput struct {
 	// AcceptLoss accepts that a rich text field's edit loses content
 	// Markdown cannot show.
 	AcceptLoss bool
+	// Current is the issue as the caller read it just now (IssueDetail),
+	// with nothing sent to it since: its transitions are taken in place of
+	// reading them again. nil reads them.
+	Current *IssueDetail
 }
 
 // TransitionResult is how far a transition got.
@@ -178,6 +183,9 @@ func (c *Client) Transition(ctx context.Context, in TransitionInput) (Transition
 	}
 	// Documented: 204.
 	if err := c.sendWrite(ctx, http.MethodPost, tp.path+"/transitions", nil, body, emptyAnswer(http.StatusNoContent)); err != nil {
+		if unofferedAnswer(err, tp.t.ID) {
+			err = &UnofferedError{Issue: in.Issue, Transition: tp.t.ID, Err: err}
+		}
 		return res, &StepError{Step: StepTransition, Err: fmt.Errorf("jira: transition %s by %s: %w", in.Issue, tp.t.Name, err)}
 	}
 	res.Moved = true
@@ -202,7 +210,7 @@ func (c *Client) checkTransition(ctx context.Context, in TransitionInput) (*tran
 		return nil, err
 	}
 	tp := &transitionPlan{path: path}
-	if tp.t, err = c.pickTransition(ctx, in.Issue, in.Transition); err != nil {
+	if tp.t, err = c.pickTransition(ctx, in.Issue, in.Transition, in.Current); err != nil {
 		return nil, err
 	}
 	b := &builder{c: c, opts: ValueOptions{Issue: in.Issue, ImageDir: in.ImageDir}, stage: newImageStage(in.ImageDir, c.maxImages)}
@@ -213,7 +221,7 @@ func (c *Client) checkTransition(ctx context.Context, in TransitionInput) (*tran
 		return nil, err
 	}
 	if in.Comment != "" {
-		if tp.props, tp.serviceDesk, err = c.commentAudience(ctx, in.Issue, in.Audience); err != nil {
+		if tp.props, tp.serviceDesk, err = c.commentAudience(ctx, in.Issue, "", in.Audience); err != nil {
 			return nil, fmt.Errorf("jira: transition %s: %w", in.Issue, err)
 		}
 		b.opts.Base = nil
@@ -229,17 +237,28 @@ func (c *Client) checkTransition(ctx context.Context, in TransitionInput) (*tran
 }
 
 // pickTransition finds the transition named by name or ID among those the
-// issue can make now.
-func (c *Client) pickTransition(ctx context.Context, issue, want string) (Transition, error) {
-	ts, err := c.transitions(ctx, issue)
-	if err != nil {
-		return Transition{}, err
+// issue can make now: those current lists when it is set, else read. A
+// want of an ID's shape that none of them has, nor names, is a
+// transition picked from moves read before they changed
+// (*UnofferedError).
+func (c *Client) pickTransition(ctx context.Context, issue, want string, current *IssueDetail) (Transition, error) {
+	var ts []Transition
+	if current != nil {
+		ts = current.Transitions
+	} else {
+		var err error
+		if ts, err = c.transitions(ctx, issue); err != nil {
+			return Transition{}, err
+		}
 	}
 	cands := make([]Candidate, len(ts))
 	for i, t := range ts {
 		cands[i] = Candidate{ID: t.ID, Name: t.Name}
 	}
 	hit, err := match("transition of "+issue, want, cands)
+	if me, ok := errors.AsType[*MatchError](err); ok && !me.Ambiguous && isNumeric(want) {
+		err = &UnofferedError{Issue: issue, Transition: want, Offered: cands}
+	}
 	if err != nil {
 		return Transition{}, notSentErr(err)
 	}

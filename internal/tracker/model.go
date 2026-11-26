@@ -342,6 +342,11 @@ type Detail struct {
 	StatusChanged StatusChange
 	Moves         []Move
 	Catalog
+	// Read is the provider's own record of this read, which its first
+	// write to the issue after the read may take (IssueRead); nil when the
+	// provider keeps none. It is never encoded: a stored body
+	// (trackerapp's body blob) holds the rest of the detail.
+	Read IssueRead `json:"-"`
 }
 
 // Details are the details of several issues read together (Provider.Details):
