@@ -280,14 +280,14 @@ func (s *Service) detailView(root int64, row store.TrackerConnection, doc ticket
 // (store.MirrorStatusSince). Its names
 // are the mirror's shared catalog's and, for the IDs that leaves out (a
 // comment's author no card names), its own catalog's; its parent's key
-// and title, and each linked issue's key, title and status, from the
+// and title from the parent's name the mirror holds (store
+// ListMirrorParents; none: the parent by ID alone), the parent being the
+// shown card's; and each linked issue's key, title and status, from the
 // mirror's card of it when the mirror keeps one (else from the detail).
-// The parent is the shown card's, so a parent another read changed since
-// the body's is looked up too. The cards of every document are read in
-// one lookup (and the parents only the record names in a second), and
-// then the names of every document in one, a store lookup's bound at a
-// time; a document linking more than that bound shows the rest as it has
-// them. Each view's rows on the boards are read with every document's
+// The cards of every document are read in one lookup, then the parents'
+// names of every document in one, and then the users and statuses of
+// every document in one, a store lookup's bound at a time; a document
+// linking more than that bound shows the rest as it has them. Each view's rows on the boards are read with every document's
 // (issueRows), and, when marked is set, each view's agent marks
 // in one statement of its own (markAgentWrites). It returns each view with
 // the other issues it shows (showsOf of the card it rendered), the
@@ -327,31 +327,22 @@ func (s *Service) detailViews(root int64, row store.TrackerConnection, docs []ti
 		return nil, nil, err
 	}
 	shown := make([]shownDetail, len(docs))
-	var later idSet
-	for i, doc := range docs {
-		// The parent shown is the shown card's (recordCard).
-		p := string(doc.d.Card.Parent)
-		if m, ok := recordCard(doc, mirrored); ok && !doc.record {
-			p = m.ParentID
-		}
-		if p != "" && !slices.Contains(wants[i], p) {
-			wants[i] = append(wants[i], p)
-			if !all.seen[p] {
-				later.add(p)
-			}
-		}
-	}
-	if len(later.ids) > 0 {
-		if err := lookup(later.ids); err != nil {
-			return nil, nil, err
-		}
-	}
-	var users, statuses idSet
+	var users, statuses, parents idSet
 	shows := make([][]tracker.IssueID, len(docs))
 	for i, doc := range docs {
 		shown[i] = shownDetailOf(doc, wants[i], mirrored)
 		shown[i].names(&users, &statuses)
+		parents.add(string(shown[i].d.Card.Parent))
 		shows[i] = showsOf(shown[i].d)
+	}
+	named, err := s.parentNames(root, parents.ids)
+	if err != nil {
+		return nil, nil, err
+	}
+	for i := range shown {
+		if p, ok := named[string(shown[i].d.Card.Parent)]; ok {
+			shown[i].parent = &p
+		}
 	}
 	names, err := s.names(root, users.ids, statuses.ids)
 	if err != nil {
@@ -475,14 +466,14 @@ func (s *Service) issueRows(root int64, ids []string, own map[tracker.IssueID]*t
 
 // shownDetail is a document with what the mirror's cards show of it: its
 // card, the time its status began, its links named from the cards, its
-// parent's card, and whether its body is of an older version than its
+// parent's name, and whether its body is of an older version than its
 // card (behind).
 type shownDetail struct {
 	d      tracker.Detail
 	since  int64
 	behind bool
 	links  []tracker.Link
-	parent *tracker.Card
+	parent *store.MirrorParentName
 }
 
 // recordCard is the issue record's card of doc when the view shows it:
@@ -530,9 +521,6 @@ func shownDetailOf(doc ticketDoc, want []string, mirrored map[string]store.Mirro
 			ref := &out.links[i].Issue
 			ref.Key, ref.Title, ref.Status = c.Key, c.Title, c.Status
 		}
-	}
-	if p, ok := cards[out.d.Card.Parent]; ok && out.d.Card.Parent != "" {
-		out.parent = &p
 	}
 	// Judged from the card rendered, wherever it came from: a body's own
 	// card is the record's at its read (bodyOf), which may be newer than

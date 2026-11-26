@@ -499,12 +499,12 @@ func TestOpeningAndClosingATicketKeepCosts(t *testing.T) {
 			sub := s.openTicket(t, conn, issue)
 			// The opening paints from the record (no body yet), then its
 			// first read stores the ticket and builds its view from the
-			// record once, as it settles; 10101's view shows other issues,
-			// whose cards it reads, and a sprint, whose name it reads.
+			// record once, as it settles; 10101's view shows its parent,
+			// whose name it reads, and a sprint, whose name it reads.
 			quiet(t, s.svc)
 			want := "GetMirrorCatalog:1 GetMirrorRoot:1 GetMirrorSync:1 KeepMirrorTicket:1 ListMirrorBodies:2 ListMirrorTicketRows:1 StoreMirrorTickets:1"
 			if issue == "10101" {
-				want = "GetMirrorCatalog:1 GetMirrorRoot:1 GetMirrorSync:1 KeepMirrorTicket:1 ListMirrorBodies:2 ListMirrorCards:1 ListMirrorSprintNames:1 ListMirrorTicketRows:1 StoreMirrorTickets:1"
+				want = "GetMirrorCatalog:1 GetMirrorRoot:1 GetMirrorSync:1 KeepMirrorTicket:1 ListMirrorBodies:2 ListMirrorParents:1 ListMirrorSprintNames:1 ListMirrorTicketRows:1 StoreMirrorTickets:1"
 			}
 			if got := describeCounts(cs.take()); got != want {
 				t.Fatalf("the opening cost %s; want %s", got, want)
@@ -546,24 +546,27 @@ func TestARoundReadsHistoryOnlyForATicketWithoutItsStatusTime(t *testing.T) {
 	}
 }
 
-// childShowsParentKey waits until the open child's ticket shows its
-// parent 10104 with key, after the events told before.
-func (s *fakeScenario) childShowsParentKey(t *testing.T, child TicketSubscription, told int, key string) {
+// childStillNamesItsParent fails unless the open child's ticket was told
+// nothing after the events told before and shows its parent 10104 with
+// its key: the child names it from the parent's name, which the mirror's
+// keep of the parent does not hold.
+func (s *fakeScenario) childStillNamesItsParent(t *testing.T, child TicketSubscription, told int) {
 	t.Helper()
-	s.events.waitFor(t, "the child's change", func(_ []BoardEvent, i []IssueEvent, _ []error) bool {
-		return slices.ContainsFunc(i[told:], func(e IssueEvent) bool { return e.Issue == "10101" && e.Changed })
-	})
-	if v := must[TicketView](t)(s.svc.TicketDetail(child.ID)); v.Detail == nil || v.Detail.Card.Parent == nil || v.Detail.Card.Parent.Key != key {
-		t.Fatalf("the child shows its parent %+v; want the key %q", v.Detail, key)
+	_, issues, _ := s.events.snapshot()
+	if slices.ContainsFunc(issues[told:], func(e IssueEvent) bool { return e.Issue == "10101" && e.Changed }) {
+		t.Fatalf("the child was told a change: %+v", issues[told:])
+	}
+	if v := must[TicketView](t)(s.svc.TicketDetail(child.ID)); v.Detail == nil || v.Detail.Card.Parent == nil || v.Detail.Card.Parent.Key != "WEB-4" {
+		t.Fatalf("the child shows its parent %+v; want WEB-4", v.Detail)
 	}
 }
 
-// Closing the ticket of a parent no board keeps and opening it again
-// before the cleanup removed its record: the reopening's keep shows the
-// record again with no write of it (its read finds the card it holds), and
-// the open child's ticket, which showed the parent without its key after
-// the close, is told and shows the key again.
-func TestReopeningAParentsTicketRebuildsItsOpenChild(t *testing.T) {
+// Closing the ticket of a parent no board keeps ends the mirror's keep of
+// it, and opening it again before the cleanup removed its record keeps it
+// again with no write of it (its read finds the card it holds). Neither
+// tells the open child's ticket anything, which names the parent with its
+// key throughout.
+func TestAParentsTicketClosedAndReopenedTellsItsOpenChildNothing(t *testing.T) {
 	t.Parallel()
 	s, conn, scope := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
 	s.syncBoard(t, scope)
@@ -571,13 +574,19 @@ func TestReopeningAParentsTicketRebuildsItsOpenChild(t *testing.T) {
 	parent := s.openTicket(t, conn, "10104")
 	quiet(t, s.svc)
 	_, told, _ := s.events.snapshot()
+	s.childStillNamesItsParent(t, child, len(told))
 	s.closeTicket(t, conn, parent, "10104")
 	quiet(t, s.svc)
-	s.childShowsParentKey(t, child, len(told), "")
-	_, told, _ = s.events.snapshot()
+	if card, _ := s.kept(t, conn, "10104"); card {
+		t.Fatal("after its ticket closed the mirror keeps the parent")
+	}
+	s.childStillNamesItsParent(t, child, len(told))
 	s.openTicket(t, conn, "10104")
 	quiet(t, s.svc)
-	s.childShowsParentKey(t, child, len(told), "WEB-4")
+	if card, _ := s.kept(t, conn, "10104"); !card {
+		t.Fatal("after its ticket opened again the mirror does not keep the parent")
+	}
+	s.childStillNamesItsParent(t, child, len(told))
 }
 
 // dropsRefused is a store whose first refuse drops of an open ticket fail.
@@ -605,10 +614,10 @@ func (d *dropsRefused) count() int {
 	return d.calls
 }
 
-// A close whose drop fails stays owed: the store keeps the parent, so the
-// open child still shows its key and nothing is told; the next run tries
-// the drop again, and once it commits the child is told and shows the
-// parent without the key, and the parent's row is gone.
+// A close whose drop fails stays owed: the store keeps the parent; the
+// next run tries the drop again, and once it commits the mirror no longer
+// keeps the parent, and the parent's row is gone. The open child, which
+// names its parent from its name, is told nothing throughout.
 func TestAFailedDropOfAClosedTicketIsRetried(t *testing.T) {
 	t.Parallel()
 	s, conn, scope := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
@@ -623,13 +632,11 @@ func TestAFailedDropOfAClosedTicketIsRetried(t *testing.T) {
 	if card, _ := s.kept(t, conn, "10104"); !card {
 		t.Fatal("the mirror stopped keeping the parent while its drop failed")
 	}
-	if v := must[TicketView](t)(s.svc.TicketDetail(child.ID)); v.Detail == nil || v.Detail.Card.Parent == nil || v.Detail.Card.Parent.Key != "WEB-4" {
-		t.Fatalf("while the drop is owed the child shows its parent %+v; want WEB-4", v.Detail)
-	}
 	_, told, _ := s.events.snapshot()
+	s.childStillNamesItsParent(t, child, len(told))
 	s.syncBoard(t, scope)
 	quiet(t, s.svc)
-	s.childShowsParentKey(t, child, len(told), "")
+	s.childStillNamesItsParent(t, child, len(told))
 	if n := drops.count(); n != 2 {
 		t.Fatalf("the drop ran %d times; want the failure and the retry", n)
 	}

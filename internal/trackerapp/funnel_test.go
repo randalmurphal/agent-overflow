@@ -39,17 +39,20 @@ func TestAChangedCardReachesEveryBoardShowingIt(t *testing.T) {
 	}
 }
 
-// A parent whose row only moves in its board's order (a rank) tells the
-// boards showing its children nothing of them, which a row shows only the
-// parent's key and title of; a parent that gains a row, and may be kept
-// again, tells them.
-func TestAParentsRankTellsNoBoardOfItsChildren(t *testing.T) {
+// A row names its parent from the parent's name alone, so what moves the
+// parent's card or its keep and not its name (a rank, a status, its row
+// leaving a board and coming back) tells the boards showing its children
+// nothing of them, and a change of the name tells each board each child's
+// row once, whether the parent's own card or a child's read brought it.
+func TestOnlyAParentsNameTellsTheBoardsOfItsChildren(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour})
-	rows := []tracker.Row{row("10001", 1_799_000_000_000, "a")}
+	epic := row("10001", 1_799_000_000_000, "a")
+	epic.Card.Title, epic.Card.Type = "Checkout", tracker.IssueType{ID: "t1", Name: "Epic", Level: 1}
+	rows := []tracker.Row{epic}
 	for i := range 3 {
 		child := row(fmt.Sprint(10002+i), 1_799_000_000_000, fmt.Sprint("b", i))
-		child.Card.Parent = "10001"
+		child.Card.Parent, child.Card.ParentName = "10001", &tracker.ParentName{Key: "WEB-1", Title: "Checkout", Level: 1}
 		rows = append(rows, child)
 	}
 	m.tracks(rows)
@@ -57,6 +60,9 @@ func TestAParentsRankTellsNoBoardOfItsChildren(t *testing.T) {
 	m.subscribe(t, "2")
 	idleBoards(t, m.svc, m.p)
 	other := Scope{Connection: m.conn.ID, Board: "2"}
+	both := func(issues ...string) map[tracker.BoardID][]tracker.IssueID {
+		return map[tracker.BoardID][]tracker.IssueID{testBoard: ids(issues...), other.Board: ids(issues...)}
+	}
 	told := func(what string, scope Scope, rows []tracker.Row, want map[tracker.BoardID][]tracker.IssueID) {
 		t.Helper()
 		before, _, _ := m.events.snapshot()
@@ -67,7 +73,10 @@ func TestAParentsRankTellsNoBoardOfItsChildren(t *testing.T) {
 		after, _, _ := m.events.snapshot()
 		got := map[tracker.BoardID][]tracker.IssueID{}
 		for _, e := range after[len(before):] {
-			got[e.Scope.Board] = unite(got[e.Scope.Board], e.Changed)
+			got[e.Scope.Board] = append(got[e.Scope.Board], e.Changed...)
+		}
+		for board := range got {
+			slices.Sort(got[board])
 		}
 		if !maps.EqualFunc(got, want, slices.Equal) {
 			t.Errorf("%s told %v; want %v", what, got, want)
@@ -76,6 +85,8 @@ func TestAParentsRankTellsNoBoardOfItsChildren(t *testing.T) {
 	ranked := slices.Clone(rows)
 	ranked[0].Order = "z"
 	told("a rank of the parent", m.scope(), ranked, map[tracker.BoardID][]tracker.IssueID{testBoard: ids("10001")})
+	ranked[0].Card.Updated, ranked[0].Card.Status = ranked[0].Card.Updated.Add(time.Minute), "s2"
+	told("the parent's status", m.scope(), ranked, both("10001"))
 	// The parent leaves board 2 and comes back, its card unchanged. Its row
 	// was read under a minute ago, so the reconcile reads it by ID too.
 	m.p.set(func(p *scripted) {
@@ -95,8 +106,17 @@ func TestAParentsRankTellsNoBoardOfItsChildren(t *testing.T) {
 	if out := must[Outcome](t)(m.svc.syncTick(t.Context(), other, BoardDue{Reconcile: true}, Background)); !slices.Equal(out.Changes().Removed, ids("10001")) {
 		t.Fatalf("the reconcile removed %v", out.Changes().Removed)
 	}
-	told("the parent's row added again", other, ranked, map[tracker.BoardID][]tracker.IssueID{
-		testBoard: ids("10002", "10003", "10004"), other.Board: ids("10001", "10002", "10003", "10004")})
+	told("the parent's row added again", other, ranked, map[tracker.BoardID][]tracker.IssueID{other.Board: ids("10001")})
+	ranked[0].Card.Updated, ranked[0].Card.Title = ranked[0].Card.Updated.Add(time.Minute), "Payments"
+	told("the parent's own card renamed", m.scope(), ranked, both("10001", "10002", "10003", "10004"))
+	ranked[1].Card.Updated, ranked[1].Card.ParentName = ranked[1].Card.Updated.Add(time.Minute), &tracker.ParentName{Key: "WEB-1", Title: "Billing", Level: 1}
+	told("the parent renamed through a child's read", m.scope(), ranked, both("10002", "10003", "10004"))
+	v := must[BoardView](t)(m.svc.Board(other, StatusGroups{}, []Section{{Kind: SectionBacklog}}))
+	for _, r := range v.Sections[0].Rows {
+		if r.Card.ID != "10001" && (r.Card.Parent == nil || r.Card.Parent.Title != "Billing") {
+			t.Errorf("board 2's row %s names its parent %+v; want Billing", r.Card.ID, r.Card.Parent)
+		}
+	}
 }
 
 // A delta read that redelivers rows identical to the stored ones, as the

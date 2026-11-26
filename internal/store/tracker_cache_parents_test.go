@@ -162,16 +162,51 @@ func TestMirrorParentNamesAreReadByKey(t *testing.T) {
 		}
 	}
 	byKey("the names read", mirrorParentsSQL, "SEARCH n USING PRIMARY KEY (root_id=? AND issue_id=?)")
-	byKey("the card write", mirrorLinkedCards.parents, "ON CONFLICT", "SEARCH n USING PRIMARY KEY (root_id=? AND issue_id=?)")
+	byKey("the card write", mirrorLinkedCards.parents, "SEARCH n EXISTS USING PRIMARY KEY (root_id=? AND issue_id=?)")
 	byKey("the name sweep's probe", mirrorParentsSweepSQL, "SEARCH c USING COVERING INDEX idx_tracker_cache_issues_parent (root_id=? AND parent_id=?)")
+
+	conn := exportConn(t)
+	ctx := context.Background()
+	if _, err := conn.ExecContext(ctx, MirrorExportSchema); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, `ATTACH ? AS `+mirrorExportSchemaName, mirrorExportURI(s.path)); err != nil {
+		t.Fatal(err)
+	}
+	wants := map[string][]string{
+		"tickets": {"SEARCH n USING PRIMARY KEY (root_id=? AND issue_id=?)", "SEARCH gn USING PRIMARY KEY (root_id=? AND issue_id=?)"},
+		"epics":   {"SEARCH e USING PRIMARY KEY (root_id=? AND issue_id=?)"},
+	}
 	for _, fill := range mirrorExportFills {
-		switch fill.name {
-		case "tickets":
-			byKey("the export's tickets", fill.sql, "SEARCH n USING PRIMARY KEY (root_id=? AND issue_id=?)",
-				"SEARCH gn USING PRIMARY KEY (root_id=? AND issue_id=?)")
-		case "epics":
-			byKey("the export's epics", fill.sql, "SEARCH e USING PRIMARY KEY (root_id=? AND issue_id=?)")
+		if wants[fill.name] == nil {
+			continue
 		}
+		rows, err := conn.QueryContext(ctx, `EXPLAIN QUERY PLAN `+fill.sql, 1, "10", "{}", 0, 1)
+		if err != nil {
+			t.Fatalf("plan %s: %v", fill.name, err)
+		}
+		var steps []string
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			steps = append(steps, detail)
+		}
+		if err := errorsOf(rows); err != nil {
+			t.Fatal(err)
+		}
+		plan := strings.Join(steps, "\n")
+		for _, want := range wants[fill.name] {
+			if !strings.Contains(plan, want) {
+				t.Errorf("the export's %s:\n%s\nwant %q", fill.name, plan, want)
+			}
+		}
+		delete(wants, fill.name)
+	}
+	if len(wants) > 0 {
+		t.Errorf("no export fill named %v", wants)
 	}
 }
 
@@ -234,14 +269,14 @@ func TestTrackerParentsMigrationNamesTheKeptParents(t *testing.T) {
 	issue("4", "33", "Story 4", 0) // its parent is not stored
 	mustExec(t, db, `INSERT INTO tracker_cache_board_issues(root_id, board_id, issue_id, order_key, read_at) VALUES
 		(1, '10', '30', 'a', 3), (1, '10', '1', 'b', 3), (1, '10', '2', 'c', 3), (1, '10', '3', 'd', 3), (1, '10', '4', 'e', 3), (1, '11', '32', 'a', 3)`)
-	mustExec(t, db, `INSERT INTO threads(id, project_id, title, created_at, updated_at) VALUES ('t', 'p', 't', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads(id, project_id, provider, workspace_path, created_at, updated_at) VALUES ('t', 'p', 'claude', '/tmp/p', 1, 1)`)
 	mustExec(t, db, `INSERT INTO thread_tickets(thread_id, kind, site, issue_id, issue_key, origin, linked_at)
 		VALUES ('t', 'jira', 'https://example.atlassian.net', '31', 'WEB-31', 'manual', 1)`)
 
 	migrateFrom(t, db, trackerParentsMigrationVersion-1)
 
 	assertRows(t, db, mirrorParentNamesSQL, "30:WEB-30:Checkout:1@3,31:WEB-31:Linked epic:1@3")
-	assertRows(t, db, `SELECT board_id || ':' || coalesce(hex(cursor), '-') || ':' || cursor_read_at || ':' || read_at || ':' || reconciled_at
+	assertRows(t, db, `SELECT board_id || ':' || iif(cursor IS NULL, '-', hex(cursor)) || ':' || cursor_read_at || ':' || read_at || ':' || reconciled_at
 		FROM tracker_cache_sync ORDER BY board_id`, "10:-:4:5:6,11:-:0:5:0")
 	for _, bad := range []string{
 		`INSERT INTO tracker_cache_parents(root_id, issue_id, issue_key, title, type_level, read_at) VALUES (1, '40', '', 't', 0, 1)`,

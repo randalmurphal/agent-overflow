@@ -103,6 +103,7 @@ func (s *trackerState) detail(id tracker.IssueID) (tracker.Detail, error) {
 	if !ok || s.gone[id] {
 		return tracker.Detail{}, &trackerapi.StatusError{Tracker: "jira", Status: 404}
 	}
+	c = s.namedLocked(c)
 	d := enteredAtStatusBegan(detailOfCard(c))
 	if !s.answered.IsZero() {
 		s.answered = s.answered.Add(time.Minute)
@@ -125,10 +126,27 @@ func (s *trackerState) cardsRead(asked []tracker.IssueID) (tracker.Cards, error)
 	var out tracker.Cards
 	for _, id := range asked {
 		if c, ok := s.cards[id]; ok && !s.gone[id] {
-			out.Cards = append(out.Cards, c)
+			out.Cards = append(out.Cards, s.namedLocked(c))
 		}
 	}
 	return out, nil
+}
+
+// row is issue id's row at order as a board read finds it (namedLocked).
+func (s *trackerState) row(id tracker.IssueID, order tracker.OrderKey) tracker.Row {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return tracker.Row{Card: s.namedLocked(s.cards[id]), Order: order}
+}
+
+// namedLocked is c as a read of it gives it: naming its parent's key,
+// title and level, as Jira does, when the state holds the parent. The
+// caller holds mu.
+func (s *trackerState) namedLocked(c tracker.Card) tracker.Card {
+	if p, ok := s.cards[c.Parent]; ok && c.Parent != "" {
+		c.ParentName = &tracker.ParentName{Key: p.Key, Title: p.Title, Level: p.Type.Level}
+	}
+	return c
 }
 
 // edit changes issue's card, moving its update time a minute.

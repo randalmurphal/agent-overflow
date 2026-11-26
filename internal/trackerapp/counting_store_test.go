@@ -141,6 +141,11 @@ func (c *countingStore) ListMirrorCards(root int64, issues []string) ([]store.Mi
 	return c.Store.ListMirrorCards(root, issues)
 }
 
+func (c *countingStore) ListMirrorParents(root int64, parents []string) ([]store.MirrorParent, error) {
+	c.count("ListMirrorParents")
+	return c.Store.ListMirrorParents(root, parents)
+}
+
 func (c *countingStore) ListMirrorTicketRows(root int64, issues []string) ([]store.MirrorTicketRow, error) {
 	c.count("ListMirrorTicketRows")
 	return c.Store.ListMirrorTicketRows(root, issues)
