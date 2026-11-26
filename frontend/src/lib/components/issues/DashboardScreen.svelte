@@ -134,9 +134,11 @@
 
   let editing = $state(false);
   let confirmDelete = $state(false);
-  // Edit mode is a dashboard's: another dashboard shows out of it.
+  // Edit mode is a dashboard's: another dashboard shows out of it. The
+  // list is read again after every edit, so this follows the ID shown.
+  const shownId = $derived(store.dashboard?.id);
   $effect(() => {
-    void store.dashboard?.id;
+    void shownId;
     editing = false;
     confirmDelete = false;
   });

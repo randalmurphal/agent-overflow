@@ -79,7 +79,7 @@ async function issuesDashboards(page: Page, compact: boolean): Promise<Locator> 
  * desktop, through the list on compact. */
 async function backToDashboards(page: Page, compact: boolean): Promise<Locator> {
   if (compact) {
-    await page.getByTestId('compact-back').tap();
+    await page.getByTestId('chat-header-title-row').getByTestId('compact-back').tap();
     await openIssuesPane(page, compact);
   }
   return page.getByTestId('issues-pane').getByTestId('dashboard-screen');
