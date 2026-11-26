@@ -21,12 +21,14 @@ import (
 type ticketPump struct {
 	core pump.Core[readRequest]
 	key  ticketKey
-	// kind is the connection's tracker kind, fixed for its life; account
-	// is the person's account there as its row holds it now: who its token
-	// belonged to at the last verification (VerifiedAccountID), empty
-	// before one. A verification that records another account tells it
-	// (tellTicketAccount). account is under subMu.
+	// kind and site are the connection's tracker kind and site, fixed for
+	// its life; account is the person's account there as its row holds it
+	// now: who its token belonged to at the last verification
+	// (VerifiedAccountID), empty before one. A verification that records
+	// another account tells it (tellTicketAccount). account is under
+	// subMu.
 	kind    string
+	site    string
 	account string
 	// number names the pump within the service's session: its row in the
 	// mirror's open tickets, which keeps its issue. kept reports that the
@@ -115,12 +117,13 @@ type TicketView struct {
 // sequence number the answer is as of, and the ticket as of it. With no
 // detail loaded, the pump's first read follows, and its event says so.
 // PollEvery is the connection's round interval in milliseconds, and Kind
-// its tracker kind.
+// and Site its tracker kind and site, as its row holds them.
 type TicketSubscription struct {
 	ID        string `json:"id"`
 	Seq       uint64 `json:"seq"`
 	PollEvery int64  `json:"poll_every"`
 	Kind      string `json:"kind"`
+	Site      string `json:"site"`
 	TicketView
 }
 
@@ -150,7 +153,7 @@ func (s *Service) SubscribeTicket(id string, issue tracker.IssueID, visible bool
 	if err != nil {
 		return TicketSubscription{}, err
 	}
-	answer := TicketSubscription{ID: hid, Seq: seq, PollEvery: tp.every.Milliseconds(), Kind: tp.kind, TicketView: told}
+	answer := TicketSubscription{ID: hid, Seq: seq, PollEvery: tp.every.Milliseconds(), Kind: tp.kind, Site: tp.site, TicketView: told}
 	if !start {
 		return answer, nil
 	}
@@ -216,7 +219,7 @@ func (s *Service) takeTicketHandle(key ticketKey, visible bool, tie Tie) (id str
 		}
 		s.subs.pumps++
 		tp = &ticketPump{
-			core: s.newCore(), key: key, kind: row.Kind, account: row.VerifiedAccountID, number: s.subs.pumps, gen: s.genLocked(key.connection), every: s.cadence.ticket(row.Kind),
+			core: s.newCore(), key: key, kind: row.Kind, site: row.Site, account: row.VerifiedAccountID, number: s.subs.pumps, gen: s.genLocked(key.connection), every: s.cadence.ticket(row.Kind),
 			exited: make(chan struct{}), viewChanged: make(chan struct{}, 1), dirty: 1,
 		}
 		s.subs.tickets[key] = tp

@@ -47,6 +47,7 @@
   import { loadMoreOfSection, setTrackerBoardFiltered, type TrackerBoardRef } from '../../stores/trackerBoard.svelte';
   import { cardBusy, cardWriteContext, moveCardToSprint, placeCard, rankCard, waitingCards } from '../../stores/trackerBoardCarry.svelte';
   import { boardWriteContext, moveTicket, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
+  import type { TrackerTicketRef } from '../../stores/trackerTicket.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import type { MoveView, RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import { cardURL, filtering, sectionKey, type CardFilter, type HeldBoard } from '../../stores/trackerBoardModel';
@@ -93,10 +94,15 @@
     onOpenCard: (row: RowView, ownPane: boolean) => void;
     /** A move whose screen takes fields: the ticket opens with its form. */
     onMoveWithFields: (row: RowView, move: MoveView) => void;
+    /** The project a row's Ask and Start work use
+     * (`TicketTrail.projectFor`); reactive. */
+    ticketProject: (ref: TrackerTicketRef) => string | null;
+    /** A row's Start work: its ticket opens with its Start work form. */
+    onStartWork: (row: RowView) => void;
   }
 
   let {
-    boardKey, boardRef, held, paging, sectionErrors, filter, hidden, compact, shown, openIssue, kind, onOpenCard, onMoveWithFields,
+    boardKey, boardRef, held, paging, sectionErrors, filter, hidden, compact, shown, openIssue, kind, onOpenCard, onMoveWithFields, ticketProject, onStartWork,
   }: Props = $props();
   setTicketWriteSurface(() => shown);
 
@@ -523,6 +529,8 @@
       onEdit={(field) => onEditRow(open.row, field)}
       onMove={(_column, move) => moveBy(open.row, move)}
       onSprint={(sprint) => { void moveCardToSprint(boardKey, ctx, boardRef.board, sprint); }}
+      project={ticketProject(ctx.ref)}
+      onStartWork={() => onStartWork(open.row)}
       onDismiss={() => { menu = null; }}
     />
   {/key}

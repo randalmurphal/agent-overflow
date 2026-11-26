@@ -1,11 +1,22 @@
+<script lang="ts" module>
+  // Work's store loads on a card's first Ask, once per page.
+  let workModule: Promise<typeof import('../../stores/ticketWork.svelte')> | null = null;
+  function loadWork(): Promise<typeof import('../../stores/ticketWork.svelte')> {
+    workModule ??= import('../../stores/ticketWork.svelte');
+    return workModule;
+  }
+</script>
+
 <script lang="ts">
   // A Board card's and a Backlog row's menu (docs/specs/issues.md,
   // "Board" and "Backlog and sprint planning"), drawn by the
   // shared ActionMenu under the name `issues-card`: Open, Open in its own
   // pane (where ticket panes are offered) and Open in the tracker; Move to…, Move to sprint… (a board that plans sprints),
   // Assignee…, Priority…, Points… (a board with an estimate) and Type…
-  // (a tracker with issue types); Copy key and Copy link. Opening it sends
-  // nothing: Move to… reads the ticket's moves when its page opens, and a
+  // (a tracker with issue types); Ask and Start work…, as the ticket's
+  // Work runs them (`ticketWorkGate.ts` says why either cannot run);
+  // Copy key and Copy link. Opening it sends nothing and loads none of
+  // Work's code: Move to… reads the ticket's moves when its page opens, and a
   // field row opens the card's own editor at its mark, which reads what
   // the ticket screen's editor reads. Under compact the status mark opens
   // it at Move to….
@@ -17,6 +28,8 @@
   import { ticketPanesOffered } from '../../stores/ticketPanes.svelte';
   import { fieldTarget, ticketWrite, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
   import type { CardEditField } from './ticketEditors';
+  import { workGate, workProject, workProjects } from './ticketWorkGate';
+  import { addErrorToast } from '../../stores/toast.svelte';
 
   interface Props {
     x: number;
@@ -43,10 +56,15 @@
     onEdit: (field: CardEditField) => void;
     onMove: (column: number, move: MoveView) => void;
     onSprint: (sprint: string | null) => void;
+    /** The project the card's ticket's Ask and Start work use; null when
+     * none is known. */
+    project: string | null;
+    /** Start work: the ticket opens with its form. */
+    onStartWork: () => void;
     onDismiss: () => void;
   }
 
-  let { x, y, row, ctx, shape, from, typed, url, moving, atMove = false, onOpen, onOwnPane, onOpenURL, onCopy, onEdit, onMove, onSprint, onDismiss }: Props = $props();
+  let { x, y, row, ctx, shape, from, typed, url, moving, atMove = false, onOpen, onOwnPane, onOpenURL, onCopy, onEdit, onMove, onSprint, project, onStartWork, onDismiss }: Props = $props();
 
   /** Shown at once until the person chooses. */
   const DEFAULTS = ['open', 'move', 'assignee', 'copy-key'];
@@ -59,6 +77,16 @@
   const inSprint = $derived(open.some((sp) => row.card.sprints?.includes(sp.id)));
   // A row whose write is out waits for it; the store would send nothing.
   const pending = (target: string) => ticketWrite(ctx.key, target)?.pending ?? false;
+
+  // Ask: what the ticket's Ask does, once Work's store loads.
+  function ask(project: string): void {
+    void loadWork().then(
+      (work) => work.askAboutTicket(ctx, project),
+      (err: unknown) => addErrorToast(`Could not start a thread on ${ctx.label}: Work did not load. Reload the window to try again.`, err),
+    );
+  }
+  const threadProject = $derived(workProject(workProjects(ctx.ref.backend, project), project));
+  const gate = $derived(workGate(ctx.ref.backend, threadProject));
 
   const groups = $derived<MenuGroup[]>([
     {
@@ -78,6 +106,13 @@
         { id: 'priority', label: 'Priority…', testId: 'issues-card-menu-priority', disabled: pending(fieldTarget('priority')), run: () => onEdit('priority') },
         ...(shape.unit !== 'none' && shape.unit !== '' ? [{ id: 'points', label: shape.unit === 'time' ? 'Estimate…' : 'Points…', testId: 'issues-card-menu-points', disabled: pending('points'), run: () => onEdit('points') }] : []),
         ...(typed ? [{ id: 'type', label: 'Type…', testId: 'issues-card-menu-type', disabled: pending(fieldTarget('type')), run: () => onEdit('type') }] : []),
+      ],
+    },
+    {
+      label: 'Threads',
+      actions: [
+        { id: 'ask', label: 'Ask', description: gate.ask || undefined, disabled: !!gate.ask, testId: 'issues-card-menu-ask', run: () => ask(threadProject) },
+        { id: 'start-work', label: 'Start work…', description: gate.start || undefined, disabled: !!gate.start, testId: 'issues-card-menu-start-work', run: onStartWork },
       ],
     },
     {

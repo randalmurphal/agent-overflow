@@ -255,22 +255,22 @@ describe('the ticket subscription', () => {
     await flush();
     // Not answered yet is no tracker, not one with no account.
     expect(ticket.tracker).toBeNull();
-    subscribes.answer(answer({ kind: 'jira', account: 'acc-user1' }));
+    subscribes.answer(answer({ kind: 'jira', site: 'https://example.atlassian.net', account: 'acc-user1' }));
     await flush();
-    expect(ticket.tracker).toEqual({ kind: 'jira', account: 'acc-user1', confirmed: true });
+    expect(ticket.tracker).toEqual({ kind: 'jira', site: 'https://example.atlassian.net', account: 'acc-user1', confirmed: true });
     // A verification recorded another account: the event says changed,
     // and the view read carries it.
     trackerIssueUpdated(event(11, { changed: true }), HOME_BACKEND);
     await flush();
     reads.answer({ loaded: true, detail: detail(), read_at: 100, account: 'acc-user2' } as TicketView);
     await flush();
-    expect(ticket.tracker).toEqual({ kind: 'jira', account: 'acc-user2', confirmed: true });
+    expect(ticket.tracker).toEqual({ kind: 'jira', site: 'https://example.atlassian.net', account: 'acc-user2', confirmed: true });
     // No account recorded is none.
     trackerIssueUpdated(event(12, { changed: true }), HOME_BACKEND);
     await flush();
     reads.answer({ loaded: true, detail: detail(), read_at: 100 } as TicketView);
     await flush();
-    expect(ticket.tracker).toEqual({ kind: 'jira', account: null, confirmed: true });
+    expect(ticket.tracker).toEqual({ kind: 'jira', site: 'https://example.atlassian.net', account: null, confirmed: true });
     ticket.release();
   });
 
@@ -279,18 +279,18 @@ describe('the ticket subscription', () => {
     const subscribes = held<TicketSubscription>('SubscribeTrackerTicket');
     const ticket = attachTrackerTicket(REF, true);
     await flush();
-    subscribes.answer(answer({ kind: 'jira', account: 'acc-user1' }));
+    subscribes.answer(answer({ kind: 'jira', site: 'https://example.atlassian.net', account: 'acc-user1' }));
     await flush();
     __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
     __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
     await flush();
     expect(subscribes.calls).toHaveLength(2);
     expect(ticket.current).toBeNull();
-    expect(ticket.tracker).toEqual({ kind: 'jira', account: 'acc-user1', confirmed: false });
+    expect(ticket.tracker).toEqual({ kind: 'jira', site: 'https://example.atlassian.net', account: 'acc-user1', confirmed: false });
     // An answer with no account says so.
-    subscribes.answer(answer({ id: 'sub-2', kind: 'jira', account: '' }));
+    subscribes.answer(answer({ id: 'sub-2', kind: 'jira', site: 'https://example.atlassian.net', account: '' }));
     await flush();
-    expect(ticket.tracker).toEqual({ kind: 'jira', account: null, confirmed: true });
+    expect(ticket.tracker).toEqual({ kind: 'jira', site: 'https://example.atlassian.net', account: null, confirmed: true });
     ticket.release();
     const again = attachTrackerTicket(REF, true);
     await flush();

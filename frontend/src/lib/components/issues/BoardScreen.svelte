@@ -41,6 +41,7 @@
   import { loadMoreOfSection, setTrackerBoardFiltered, type TrackerBoardRef } from '../../stores/trackerBoard.svelte';
   import { cardBusy, cardWriteContext, dropOwner, moveCard, moveCardToSprint, rankCard, waitingCards, type CardDrop, type DropOwner } from '../../stores/trackerBoardCarry.svelte';
   import { ticketMoves, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
+  import type { TrackerTicketRef } from '../../stores/trackerTicket.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import type { MoveView, RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import {
@@ -86,9 +87,14 @@
     onOpenCard: (row: RowView, ownPane: boolean) => void;
     /** A move whose screen takes fields: the ticket opens with its form. */
     onMoveWithFields: (row: RowView, move: MoveView) => void;
+    /** The project a card's Ask and Start work use
+     * (`TicketTrail.projectFor`); reactive. */
+    ticketProject: (ref: TrackerTicketRef) => string | null;
+    /** A card's Start work: its ticket opens with its Start work form. */
+    onStartWork: (row: RowView) => void;
   }
 
-  let { boardKey, boardRef, held, paging, sectionErrors, filter, hidden, compact, shown, openIssue, typed, onOpenCard, onMoveWithFields }: Props = $props();
+  let { boardKey, boardRef, held, paging, sectionErrors, filter, hidden, compact, shown, openIssue, typed, onOpenCard, onMoveWithFields, ticketProject, onStartWork }: Props = $props();
   setTicketWriteSurface(() => shown);
 
   // The last columns, so a rebuild keeps the rows arrays nothing changed.
@@ -598,6 +604,8 @@
       onEdit={(field) => onEditCard(open.row, field)}
       onMove={(column, move) => moveTo(open.row, column, move)}
       onSprint={(sprint) => { void moveCardToSprint(boardKey, ctx, boardRef.board, sprint); }}
+      project={ticketProject(ctx.ref)}
+      onStartWork={() => onStartWork(open.row)}
       onDismiss={() => { menu = null; }}
     />
   {/key}

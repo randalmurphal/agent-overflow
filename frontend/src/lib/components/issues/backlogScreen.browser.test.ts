@@ -104,7 +104,7 @@ function hostEl(): HTMLElement {
 const COMMON = {
   paging: new Set<string>(), sectionErrors: new Map(), filter: { mine: null, words: [] },
   hidden: new Set<CardField>() as ReadonlySet<CardField>, compact: false, shown: true, openIssue: null,
-  onOpenCard: () => {}, onMoveWithFields: () => {},
+  onOpenCard: () => {}, onMoveWithFields: () => {}, ticketProject: () => null, onStartWork: () => {},
 };
 
 async function mountBacklog(kind = 'jira'): Promise<{ host: HTMLElement; mountMs: number }> {

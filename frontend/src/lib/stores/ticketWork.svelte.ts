@@ -1,7 +1,9 @@
 // A ticket's Work (docs/specs/issues.md, "Ticket"): its pull requests and
 // branches as its computer reads them, the thread of an Ask, and a Start
 // work run. Everything here is held by the ticket's key and goes when the
-// ticket's last surface lets it go (`onTrackerTicketClosed`).
+// ticket's last surface lets it go (`onTrackerTicketClosed`), but an Ask
+// in flight: its guard is its request's from send to settle, so a second
+// Ask of the ticket from any surface sends nothing meanwhile.
 //
 // The Work read is the ticket's computer's answer, newest read wins; it is
 // read when Work shows, on the ticket's Refresh and after a Start work
@@ -22,9 +24,11 @@
 // write out.
 // The move and the assignment are the write store's writes, and what
 // became of each is shown by its rule (trackerTicketWrites.svelte.ts):
-// under the controls of its target on a shown surface, Work's row of the
-// step among them, else in a toast. A step's outcome here (`written`) is
-// what the run decides by; it carries no sentence of the write's own.
+// under the controls of its target on a shown surface (the Status and
+// Assignee fields), else in a toast. A step's outcome here (`written`) is
+// what the run decides by, with the write the store kept for it; Work's
+// row of the step shows that write only while it is its target's latest,
+// so a later write of the target by anything else never shows there.
 
 import { SvelteMap } from 'svelte/reactivity';
 import type { FieldValueView, Setup, SetupView, StartWorkDefaults } from '../../../bindings/agent-overflow/internal/trackerapp/models';
@@ -188,14 +192,21 @@ export type StartWorkStep = 'thread' | 'move' | 'assign' | 'defaults';
 
 /** Set on the outcome of a step that was a tracker write: the write store
  * shows what became of it (under its target's controls on a shown
- * surface, else in a toast), so the step's own `text` is not shown. */
+ * surface, else in a toast), so the step's own `text` is not shown.
+ * `target` is the write's, and `outcome` the one its call answered: the
+ * store holds that object as long as it keeps this write's outcome. */
 interface Written {
-  readonly written?: true;
+  readonly written?: { readonly target: string; readonly outcome: WriteOutcome };
 }
+
+/** What a running step is doing: reading the ticket it decides from, or
+ * sending its change (a tracker write, or the defaults). */
+export type StepActivity = 'reading' | 'saving' | 'making';
 
 /** A step's outcome as the form shows it. */
 export type StepOutcome =
-  | { readonly kind: 'waiting' | 'running' | 'skipped' }
+  | { readonly kind: 'waiting' | 'skipped' }
+  | { readonly kind: 'running'; readonly doing: StepActivity }
   | ({ readonly kind: 'applied'; readonly note: string | null } & Written)
   | { readonly kind: 'already'; readonly text: string }
   /** The tracker, git or the setup refused it: `text` says why. */
@@ -242,21 +253,23 @@ function setStep(key: string, step: StartWorkStep, outcome: StepOutcome): void {
   if (run) setRun(key, { ...run, steps: { ...run.steps, [step]: outcome } });
 }
 
-/** A tracker write's outcome as a step's. */
-function writeStep(outcome: WriteOutcome | null, what: string, label: string): StepOutcome {
-  if (outcome === null) return { kind: 'not_sent', text: `A change of ${label}'s ${what} is already being saved; try again once it ends.` };
+/** The outcome as a step's of a tracker write to `target` whose call
+ * answered `outcome`. */
+function writeStep(t: TicketWriteContext, target: string, outcome: WriteOutcome | null, what: string): StepOutcome {
+  if (outcome === null) return { kind: 'not_sent', text: `A change of ${t.label}'s ${what} is already being saved; try again once it ends.` };
+  const written = { target, outcome };
   switch (outcome.kind) {
     case 'applied':
-      return { kind: 'applied', note: outcome.note, written: true };
+      return { kind: 'applied', note: outcome.note, written };
     case 'refused':
-      return { kind: 'refused', text: refusalSentence(outcome.refusal, (id) => id), written: true };
+      return { kind: 'refused', text: refusalSentence(outcome.refusal, (id) => id), written };
     case 'unknown':
     case 'lost':
-      return { kind: 'unknown', text: outcome.message, written: true };
+      return { kind: 'unknown', text: outcome.message, written };
     case 'not_sent':
-      return { kind: 'not_sent', text: outcome.message, written: true };
+      return { kind: 'not_sent', text: outcome.message, written };
     case 'failed':
-      return { kind: 'failed', text: userFacingError(outcome.error), error: outcome.error, written: true };
+      return { kind: 'failed', text: userFacingError(outcome.error), error: outcome.error, written };
   }
 }
 
@@ -268,7 +281,7 @@ async function moveStep(t: TicketWriteContext, plan: StartWorkPlan, state: Track
   if (detail.card.status.id === status.id) return { kind: 'already', text: `Already in ${status.name}.` };
   const move = detail.moves.find((m) => m.to.id === status.id);
   if (!move) return { kind: 'not_sent', text: `${t.label} has no move to ${status.name} from ${detail.card.status.name || 'its status'} now.` };
-  return writeStep(await moveTicket(t, move.id), 'status', t.label);
+  return writeStep(t, 'status', await moveTicket(t, move.id), 'status');
 }
 
 async function assignStep(t: TicketWriteContext, plan: StartWorkPlan, state: TrackerTicketState | null): Promise<StepOutcome> {
@@ -278,7 +291,8 @@ async function assignStep(t: TicketWriteContext, plan: StartWorkPlan, state: Tra
   if (!detail) return { kind: 'not_sent', text: `${t.label} has not been read, so it was not assigned.` };
   if (detail.card.assignee?.id === plan.me) return { kind: 'already', text: 'Already yours.' };
   const value = { kind: 'user', choices: [{ id: plan.me }] } as FieldValueView;
-  return writeStep(await editTicketFields(t, fieldTarget('assignee'), [{ field: 'assignee', value }]), 'assignee', t.label);
+  const target = fieldTarget('assignee');
+  return writeStep(t, target, await editTicketFields(t, target, [{ field: 'assignee', value }]), 'assignee');
 }
 
 async function defaultsStep(key: string, plan: StartWorkPlan): Promise<StepOutcome> {
@@ -369,7 +383,7 @@ async function runSteps(t: TicketWriteContext, read: () => TrackerTicketState | 
   const mine = () => runs.get(key)?.plan === plan;
   let thread = start.thread;
   if (!thread) {
-    setStep(key, 'thread', { kind: 'running' });
+    setStep(key, 'thread', { kind: 'running', doing: 'making' });
     const mark = threadRowFrameMark();
     try {
       const made = await StartTicketThread(plan.repository, { connectionId: t.ref.connection, issueId: t.ref.issue, origin: 'start_work', branch: plan.branch });
@@ -394,19 +408,23 @@ async function runSteps(t: TicketWriteContext, read: () => TrackerTicketState | 
     reason === null ? null : { kind: 'not_sent', text: `${t.label} could not be read again, so this was not sent: ${reason}` };
   // Why the ticket as `read()` holds it cannot decide the next step; null
   // when it can.
+  // Each tracker step reads while the read it decides from is out, and
+  // saves once that read answered; the assignment waits while the move
+  // runs.
   let undecided: StepOutcome | null = null;
   if (wantMove || wantAssign) {
-    if (wantMove) setStep(key, 'move', { kind: 'running' });
-    if (wantAssign) setStep(key, 'assign', { kind: 'running' });
+    setStep(key, wantMove ? 'move' : 'assign', { kind: 'running', doing: 'reading' });
     const notice = await refreshTrackerTicket(key);
     await trackerTicketSettled(key);
     undecided = unsent(unreadReason(notice, read()));
   }
   if (owed('move')) {
+    if (wantMove && !undecided) setStep(key, 'move', { kind: 'running', doing: 'saving' });
     const move = wantMove && undecided ? undecided : await moveStep(t, plan, read());
     if (!mine()) return;
     setStep(key, 'move', move);
     if (move.kind === 'applied') {
+      if (wantAssign) setStep(key, 'assign', { kind: 'running', doing: 'reading' });
       await trackerTicketSettled(key);
       undecided = unsent(unreadReason(null, read()));
     } else if (move.kind === 'unknown') {
@@ -414,12 +432,13 @@ async function runSteps(t: TicketWriteContext, read: () => TrackerTicketState | 
     }
   }
   if (owed('assign')) {
+    if (wantAssign && !undecided) setStep(key, 'assign', { kind: 'running', doing: 'saving' });
     const assign = wantAssign && undecided ? undecided : await assignStep(t, plan, read());
     if (!mine()) return;
     setStep(key, 'assign', assign);
   }
   if (owed('defaults')) {
-    setStep(key, 'defaults', { kind: 'running' });
+    setStep(key, 'defaults', { kind: 'running', doing: 'saving' });
     const saved = await defaultsStep(key, plan);
     if (!mine()) return;
     setStep(key, 'defaults', saved);
@@ -445,7 +464,6 @@ export async function openTicketThread(thread: Thread): Promise<void> {
 
 onTrackerTicketClosed((key) => {
   reads.delete(key);
-  asking.delete(key);
   defaultsReads.delete(key);
   runs.delete(key);
 });

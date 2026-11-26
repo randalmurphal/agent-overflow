@@ -200,6 +200,14 @@
     selection.tickets.close();
   }
 
+  // A card's Start work: its ticket opens here with its Start work form,
+  // which the ticket's Work opens, so the form and the run's steps have
+  // one home.
+  function startWorkFrom(row: RowView): void {
+    openCard(row);
+    selection.tickets.askStartWork();
+  }
+
   // A move from the board whose screen takes fields: the ticket opens with
   // that move's form.
   function moveWithFields(row: RowView, move: MoveView): void {
@@ -540,6 +548,8 @@
             kind={boardKind}
             onOpenCard={openCard}
             onMoveWithFields={moveWithFields}
+            ticketProject={(ref) => selection.tickets.projectFor(ref)}
+            onStartWork={startWorkFrom}
           />
         {:catch err}
           <p class="px-4 py-6 text-sm text-error" role="alert" data-testid="backlog-load-error">The Backlog screen could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</p>
@@ -559,6 +569,8 @@
           typed={boardKind !== 'linear'}
           onOpenCard={openCard}
           onMoveWithFields={moveWithFields}
+          ticketProject={(ref) => selection.tickets.projectFor(ref)}
+          onStartWork={startWorkFrom}
         />
       {:else if boardState && !boardState.ended}
         <p class="px-4 py-6 text-sm text-fg-muted" data-testid="issues-not-read">This computer has not read the board yet. It appears here once it has.</p>
