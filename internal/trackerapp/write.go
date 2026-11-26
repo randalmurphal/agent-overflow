@@ -39,9 +39,9 @@ var ErrBadResult = errors.New("trackerapp: the tracker's provider answered a wri
 
 // writeOp is one write as Service.write runs it.
 type writeOp struct {
-	// call is the provider's write; nil for a refresh alone
-	// (RefreshWorklogs).
-	call func(ctx context.Context, p tracker.Provider) tracker.Result
+	// call is the provider's write, made on the run's provider in its
+	// context; nil for a refresh alone (RefreshWorklogs).
+	call func(r *run) tracker.Result
 	// board is the board a create was made from: an issue the create made
 	// is read through it, and a create of unknown outcome runs its tick.
 	board tracker.BoardID
@@ -79,7 +79,7 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 	var res tracker.Result
 	resources := op.also
 	if op.call != nil {
-		res = op.call(r.ctx, r.p)
+		res = op.call(r)
 		if err := res.Check(); err != nil {
 			return WriteView{}, fmt.Errorf("%w: %w", ErrBadResult, err)
 		}
@@ -136,6 +136,9 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 	}
 	view.Stale = s.staleViews(r.row.Kind, f.stale)
 	view.NotOnBoard = string(f.notOnBoard)
+	if view.Created != "" && !allApplied(res) {
+		view.CreatedKey = s.createdKey(r.root, view.Created)
+	}
 	finish()
 	if view.CreateUnknown && op.board != "" {
 		if err := s.tickNow(ctx, Scope{Connection: id, Board: op.board}); err != nil {
@@ -211,6 +214,27 @@ func (r *run) inUse() bool {
 func happened(res tracker.Result) bool {
 	t := res.Tally()
 	return t.Applied+t.Unknown > 0
+}
+
+// allApplied reports a result every part of which was applied.
+func allApplied(res tracker.Result) bool {
+	t := res.Tally()
+	return t.Applied == len(res.Parts)
+}
+
+// createdKey is the key of issue as the mirror holds it after a write's
+// reads, empty when it holds no card of it. A failed read is logged and
+// answers empty: the person is told of the issue without its key.
+func (s *Service) createdKey(root int64, issue string) string {
+	cards, err := s.store.ListMirrorCards(root, []string{issue})
+	if err != nil {
+		s.logf("trackerapp: read the key of the created issue %s: %v", issue, err)
+		return ""
+	}
+	if len(cards) == 0 {
+		return ""
+	}
+	return cards[0].Key
 }
 
 // sentNothing reports a result every part of which was refused before

@@ -329,7 +329,7 @@ func (p *jqlParser) clause() (jqlFilter, error) {
 		p.filters = append(p.filters, ref)
 		return func(s *jiraSite, is *JiraIssue) bool {
 			b := s.boardOfFilter(ref)
-			return b != nil && s.project(b.Project).Key == is.Project
+			return b != nil && s.filters(b, is)
 		}, nil
 	case (form == "hierarchylevel =" || form == "hierarchylevel !=") && v.kind == 'n':
 		level, _ := strconv.Atoi(v.text)

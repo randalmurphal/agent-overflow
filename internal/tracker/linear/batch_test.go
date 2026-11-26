@@ -229,3 +229,39 @@ func TestSetCycle(t *testing.T) {
 		}
 	}
 }
+
+// A run with Into moves its first Moved issues into that cycle in the
+// same update as their value, the others only renumbered; a moved part
+// is applied only when its issue holds the cycle too. Moved without Into,
+// or past the run, sends nothing.
+func TestRenumberIssuesCarriesTheCycle(t *testing.T) {
+	t.Parallel()
+	ids := batchIDs(2)
+	values, err := Spread(f64(0), f64(10), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cycle := "00000000-0000-4000-8000-0000000000c1"
+	vars := mustJSON(map[string]any{
+		"id0": ids[0], "input0": map[string]any{"sortOrder": values[0], "cycleId": cycle},
+		"id1": ids[1], "input1": map[string]any{"sortOrder": values[1]},
+	})
+	moved := lineartest.NewIssue(ids[0], "WEB-1", "2026-11-02T10:00:00.000Z", values[0])
+	moved.Cycle = cycle
+	body := `{"data":{"i0":{"success":true,"value":` + moved.JSON() + `},"i1":{"success":true,"value":` + lineartest.IssueJSON(ids[1], "WEB-2", "2026-11-02T10:00:00.000Z", values[1]) + `}}}`
+	f := newFake(t, lineartest.Exchange{Op: "RenumberIssues", Vars: vars, Body: body})
+	c := f.client(t)
+	ws, err := c.RenumberIssues(context.Background(), RenumberInput{Field: OrderSort, IssueIDs: ids, Before: f64(0), After: f64(10), Into: &cycle, Moved: 1})
+	if err != nil || len(ws) != 2 || ws[0].Err != nil || ws[0].Issue.CycleID != cycle || ws[1].Err != nil {
+		t.Fatalf("renumber %+v, %v", ws, err)
+	}
+	for _, bad := range []RenumberInput{
+		{Field: OrderSort, IssueIDs: ids, Moved: 1},
+		{Field: OrderSort, IssueIDs: ids, Into: &cycle},
+		{Field: OrderSort, IssueIDs: ids, Into: &cycle, Moved: 3},
+	} {
+		if _, err := c.RenumberIssues(context.Background(), bad); err == nil {
+			t.Errorf("%+v was sent", bad)
+		}
+	}
+}

@@ -55,7 +55,7 @@ func TestAStructureThatSwitchesPointFieldsReadsTheRowsAgain(t *testing.T) {
 	})
 	out := must[Outcome](t)(m.svc.tickStructure(t.Context(), m.scope(), Background))
 	v := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, sprint))
-	if row := v.Sections[0].Rows[0]; !out.Changes().Structure || row.Estimate != nil || v.Sprints[0].Total != (SectionTotal{Rows: 1}) {
+	if row := v.Sections[0].Rows[0]; !out.Changes().Structure || row.Estimate != nil || v.Sprints[0].Total != (SectionTotal{Rows: 1, Unestimated: 1}) {
 		t.Fatalf("after the switch: changed %v, row estimate %v, sprint total %+v; want the old field's number unknown", out.Changes().Structure, row.Estimate, v.Sprints[0].Total)
 	}
 	if c := m.sync(testBoard).Cursor; len(c) != 0 {

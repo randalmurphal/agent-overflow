@@ -78,12 +78,14 @@ type EstimateChoiceView struct {
 	Label string  `json:"label,omitempty"`
 }
 
-// SectionTotal is how many rows a section holds and the sum of their
-// estimates in the board's unit, a row with none adding nothing; the
-// store counts both.
+// SectionTotal is how many rows a section holds, the sum of their
+// estimates in the board's unit, a row with none adding nothing, and how
+// many have none (always 0 on a board with no estimate); the store counts
+// all three.
 type SectionTotal struct {
-	Rows     int     `json:"rows"`
-	Estimate float64 `json:"estimate"`
+	Rows        int     `json:"rows"`
+	Estimate    float64 `json:"estimate"`
+	Unestimated int     `json:"unestimated,omitempty"`
 }
 
 // totalOf is t as a view.
@@ -131,7 +133,9 @@ type FailureView struct {
 
 // BoardView is a board as the pane opens it: its structure, the totals of
 // its sections (All its rows) at its TotalsRevision, its sync state, the
-// sections the Board screen shows (Screen) and the first page of each
+// sections the Board screen shows (Screen) and the Backlog screen shows
+// (Plan), the pace of its last finished sprints (Pace, nil for a board
+// that plans none or has finished none), and the first page of each
 // section read, at the board's Lifetime and Revision (which a patch moves
 // forward, BoardPatch). Groups is the version of the status groups the
 // project gives the board's site (StatusGroups), which the sections and
@@ -160,8 +164,56 @@ type BoardView struct {
 	Backlog        SectionTotal  `json:"backlog"`
 	Sync           SyncView      `json:"sync"`
 	Screen         []Section     `json:"screen"`
+	Plan           []Section     `json:"plan"`
+	Pace           *PaceView     `json:"pace,omitempty"`
 	Sections       []SectionPage `json:"sections"`
 	IssueURL       string        `json:"issue_url,omitempty"`
+}
+
+// PaceView is what a board's last finished sprints (at most
+// store.MirrorPaceSprints, one with no member on the board as zero)
+// finished on average: how many sprints it averages, the tickets whose
+// status counted as done when their sprint was completed, and the sum of
+// their estimates as the board holds them now. No credit rule is applied.
+// It is part of the section totals (BoardTotals), read with them.
+type PaceView struct {
+	Sprints  int     `json:"sprints"`
+	Rows     float64 `json:"rows"`
+	Estimate float64 `json:"estimate"`
+}
+
+// paceOf is the average of finished, nil for none.
+func paceOf(finished []store.MirrorSprintFinished) *PaceView {
+	if len(finished) == 0 {
+		return nil
+	}
+	var p PaceView
+	for _, f := range finished {
+		p.Rows += float64(f.Done)
+		p.Estimate += f.Estimate
+	}
+	p.Sprints = len(finished)
+	p.Rows /= float64(p.Sprints)
+	p.Estimate /= float64(p.Sprints)
+	return &p
+}
+
+// planSections is the sections the Backlog screen shows of a board of
+// structure m, in order: its active sprints, then its future ones, in the
+// structure's order, then the backlog; only the backlog when it plans no
+// sprints.
+func planSections(m store.MirrorStructure) []Section {
+	plan := []Section{}
+	if m.Board.PlansSprints {
+		for _, state := range []int{store.MirrorSprintActive, store.MirrorSprintFuture} {
+			for _, sp := range m.Sprints {
+				if sp.State == state {
+					plan = append(plan, Section{Kind: SectionSprint, Sprint: sp.ID})
+				}
+			}
+		}
+	}
+	return append(plan, Section{Kind: SectionBacklog})
 }
 
 // maxViewSections bounds the sections one board view reads pages of. The
@@ -236,10 +288,11 @@ func (s *Service) Board(scope Scope, groups StatusGroups, sections []Section) (B
 	defer s.leave()
 	// read is the sections the pages are of: those asked, or the screen's
 	// first. The pick may run again when the snapshot is retried.
-	var screen, read []Section
+	var screen, plan, read []Section
 	snap, ok, err := s.store.ReadMirrorBoardView(root, string(scope.Board), groups.regroup, func(m store.MirrorStructure) []store.MirrorSection {
 		var stored []store.MirrorSection
 		screen, stored = screenSections(m)
+		plan = planSections(m)
 		if len(sections) > 0 {
 			read = sections
 			return asked
@@ -275,7 +328,7 @@ func (s *Service) Board(scope Scope, groups StatusGroups, sections []Section) (B
 		return BoardView{}, fmt.Errorf("trackerapp: read the sync state of board %s: %w", scope.Board, err)
 	}
 	v.Sync = syncViewOf(sync.MirrorSyncOutcome)
-	v.Screen = screen
+	v.Screen, v.Plan, v.Pace = screen, plan, paceOf(snap.Counts.Pace)
 	v.Sections = pages
 	row, err := s.viewRow(scope.Connection)
 	if err != nil {

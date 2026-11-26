@@ -1,5 +1,5 @@
 // Whether the surface a write's control is on is shown to the person: the
-// Board screen and the ticket screen each set it for the controls under
+// Board, Backlog and ticket screens each set it for the controls under
 // them, and a control registers as drawing its target with it
 // (`stores/trackerTicketWrites.svelte.ts#drawTicketWrite`, the rule of
 // where an outcome shows).
@@ -18,7 +18,7 @@ export function setTicketWriteSurface(shown: () => boolean): void {
  * control's init. */
 export function ticketWriteSurface(): () => boolean {
   const shown = getContext<(() => boolean) | undefined>(SURFACE);
-  if (!shown) throw new Error('A ticket write control was mounted outside the Board or ticket screen, so nothing says whether it is shown.');
+  if (!shown) throw new Error('A ticket write control was mounted outside the Board, Backlog or ticket screen, so nothing says whether it is shown.');
   return shown;
 }
 

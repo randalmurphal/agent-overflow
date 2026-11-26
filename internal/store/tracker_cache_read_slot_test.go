@@ -24,6 +24,7 @@ var mirrorPoolReads = map[string]int{
 	"ListMirrorCards":         1, // at most mirrorMaxLookup cards, each by key
 	"ListMirrorIssueRows":     1, // a page of one issue's rows
 	"ListMirrorTicketRows":    1, // the rows of at most MirrorMaxBodies issues, each by key
+	"ListMirrorSprintNames":   1, // at most mirrorMaxLookup sprints on as many boards, each pair by key
 	"ListMirrorIssueWorklogs": 1, // a page of one issue's worklogs
 	"GetMirrorSync":           1, // one board's state
 	"ListMirrorBodies":        1, // at most MirrorMaxBodies bodies, each by key

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -31,6 +32,9 @@ type CreateIssueInput struct {
 	ParentID  Optional[string] // an issue ID or identifier
 	// DueDate is a calendar day, YYYY-MM-DD; Null leaves none.
 	DueDate Optional[Date]
+	// SortOrder places the issue in the team's manual order; unset takes
+	// Linear's default. It must be finite.
+	SortOrder Optional[float64]
 }
 
 // issueInput is the wire form of IssueCreateInput and IssueUpdateInput;
@@ -97,10 +101,16 @@ func (in CreateIssueInput) wire() (issueInput, error) {
 	if err := checkDate(in.DueDate); err != nil {
 		return issueInput{}, err
 	}
+	if in.SortOrder.IsNull() {
+		return issueInput{}, errors.New("the sort order cannot be null")
+	}
+	if v := in.SortOrder.Value(); in.SortOrder.IsSet() && (math.IsNaN(v) || math.IsInf(v, 0)) {
+		return issueInput{}, errors.New("the sort order is not a finite number")
+	}
 	w := issueInput{
 		TeamID: Set(in.TeamID), Title: Set(in.Title), StateID: in.StateID, AssigneeID: in.AssigneeID,
 		Priority: in.Priority, Estimate: in.Estimate, CycleID: in.CycleID, ProjectID: in.ProjectID, ParentID: in.ParentID,
-		DueDate: in.DueDate,
+		DueDate: in.DueDate, SortOrder: in.SortOrder,
 	}
 	if in.Description != "" {
 		w.Description = Set(in.Description)

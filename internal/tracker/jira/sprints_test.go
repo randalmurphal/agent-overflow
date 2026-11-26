@@ -151,11 +151,24 @@ func TestStartSprint(t *testing.T) {
 	if err != nil || s.State != SprintActive {
 		t.Fatalf("got %+v %v", s, err)
 	}
+	// A name and goal ride in the start's one request; an empty name is
+	// refused before it.
+	empty, name, goal := " ", "Sprint A", ""
+	if _, err := c.StartSprint(t.Context(), SprintStart{ID: 7, Start: start, End: start.Add(14 * 24 * time.Hour), Name: &empty}); !trackerapi.WriteNotApplied(err) {
+		t.Errorf("an empty name: %v", err)
+	}
+	f.On("POST", sprint7URL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantJSON(t, b, `{"state":"active","startDate":"2026-11-16T09:00:00.000Z","endDate":"2026-11-30T09:00:00.000Z","name":"Sprint A","goal":""}`)
+		jiratest.Reply(200, `{"id":7,"name":"Sprint A","state":"active"}`)(w, r, b)
+	})
+	if s, err = c.StartSprint(t.Context(), SprintStart{ID: 7, Start: start, End: start.Add(14 * 24 * time.Hour), Name: &name, Goal: &goal}); err != nil || s.Name != name {
+		t.Fatalf("named start: %+v %v", s, err)
+	}
 	f.On("GET", sprint7URL, jiratest.Reply(200, `{"id":7,"name":"Sprint 1","state":"active"}`))
 	if _, err := c.StartSprint(t.Context(), SprintStart{ID: 7, Start: start, End: start.Add(time.Hour)}); !trackerapi.WriteNotApplied(err) {
 		t.Errorf("an active sprint: %v", err)
 	}
-	if n := f.Count("POST", sprint7URL); n != 1 {
+	if n := f.Count("POST", sprint7URL); n != 2 {
 		t.Errorf("%d writes", n)
 	}
 }

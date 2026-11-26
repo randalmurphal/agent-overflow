@@ -193,6 +193,9 @@ func TestCreateThenAFailedStep(t *testing.T) {
 	if f.orderOf(t, testBoard, "10004") != "d" {
 		t.Fatal("the new issue's row was not stored")
 	}
+	if v.CreatedKey != "WEB-4" {
+		t.Fatalf("the created issue's key %q, want the key of the row stored", v.CreatedKey)
+	}
 }
 
 // A result that fails its check is an error, never a partial success, and

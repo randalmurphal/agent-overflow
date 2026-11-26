@@ -192,7 +192,19 @@ lists now) and refuses what does not hold; in a rank or a sprint move the
 other issues proceed. A rank names its neighbors by issue alone: the
 provider reads where they stand now, and refuses a rank whose neighbors no
 longer stand in the order named. Neither tracker takes a precondition, so this
-narrows the window and does not close it.
+narrows the window and does not close it. On Linear a sprint move with a
+place reads the moving issues' cycle and order and the neighbors' in one
+request, checks every part, and then writes the cycle and the order in
+one family of aliased updates (`linearprovider` `MoveToSprint`,
+`linear.RenumberIssues`): a refused part leaves nothing written.
+
+A create lands at its section's foot. The service passes the last row the
+mirror holds of the section (`CreateInput.After`, store
+`LastMirrorPlanRow`, which walks the board's order index back from its
+end); Linear's create carries an order just after it, where Linear's
+default puts a new issue above every other
+([measured](../references/tracker-api-measurements.md#linear)), and Jira
+needs none, since a new issue ranks last.
 
 The result also names what the operation may have changed, by resource: an
 issue's card, an issue's row on a named board, an issue's detail, a board's
@@ -1149,7 +1161,8 @@ Counts are exact; no test pins them, so a run of the three is how they
 are checked. Times and heap are one development machine's (Intel Core
 Ultra 9 285HX, WSL2, Go 1.27.4), measured while other work held its load
 average near 16 on 24 CPUs: the first sync's is the fastest of three
-runs, a path's the fastest of three runs of five each. The peak heap is
+runs. A path's time is the median of one run of five, with the load
+average between 3 and 8. The peak heap is
 the sampled heap objects, collected garbage not yet swept included, so
 it grows when the collector falls behind.
 
@@ -1175,20 +1188,20 @@ named rows.
 
 | Path (store) | Statements | 5,000 | 20,000 |
 |---|---|---|---|
-| Idle tick | 3 | 85 µs | 76 µs |
-| Delta, 100 changed | 11 | 7.3 ms | 8.9 ms |
-| History, 50 due | 6 | 12.0 ms | 12.9 ms |
-| Reconcile, complete listing | 3 | 5.1 ms | 23.2 ms |
-| Board view, 3 sections | 10 | 13.8 ms | 46.4 ms |
-| Section page, middle of a column | 3 | 0.78 ms | 0.76 ms |
-| Section counts | 4 | 9.5 ms | 40.9 ms |
-| Patch read, 1 or 100 changed, totals moved | 8 | 9.9 to 10.0 ms | 39.2 to 41.7 ms |
-| Patch read, 1 or 100 changed, totals held | 5 | 0.07 to 0.81 ms | 0.06 to 0.70 ms |
-| Ticket open, stored | 13 | 0.32 ms | 0.37 ms |
-| Ticket rows of a view build, 16 tickets | 1 | 50 µs | 66 µs |
-| Jira round, 100 tickets, 10 changed | 21 | 5.9 ms | 6.0 ms |
-| Linear round, 100 tickets, 10 changed | 22 | 3.2 ms | 3.1 ms |
-| `New` | 0 | 11.2 ms | 10.6 ms |
+| Idle tick | 3 | 100 µs | 76 µs |
+| Delta, 100 changed | 12 | 7.1 ms | 8.6 ms |
+| History, 50 due | 7 | 6.8 ms | 6.6 ms |
+| Reconcile, complete listing | 3 | 4.1 ms | 17.1 ms |
+| Board view, 3 sections | 11 | 10.5 ms | 41.1 ms |
+| Section page, middle of a column | 3 | 0.51 ms | 0.54 ms |
+| Section counts, the pace included | 5 | 8.0 ms | 35.8 ms |
+| Patch read, 1 or 100 changed, totals moved | 9 | 8.3 to 8.8 ms | 37.1 to 39.1 ms |
+| Patch read, 1 or 100 changed, totals held | 5 | 0.13 to 0.59 ms | 0.07 to 0.67 ms |
+| Ticket open, stored | 10 | 0.37 ms | 0.62 ms |
+| Ticket rows of a view build, 16 tickets | 1 | 38 µs | 60 µs |
+| Jira round, 100 tickets, 10 changed | 24 | 7.0 ms | 5.8 ms |
+| Linear round, 100 tickets, 10 changed | 18 | 6.3 ms | 5.9 ms |
+| `New` | 0 | 9.6 ms | 9.4 ms |
 
 A project's status groups ([Project setup](#project-setup)) add one
 list of the done statuses to the backlog, count and patch statements. No
@@ -1247,8 +1260,9 @@ mechanism. A caller sees this:
    the refresh stopped, and the open tickets it read are settled by it.
 5. The caller gets a `WriteView`: each part's issue, step, state, refusal
    (reason, message, field messages, candidates, lost content) and, for an
-   unknown or unsent part, its failure; the issue a create made, the board
-   it is not on (`NotOnBoard`), `CreateUnknown`, and the resources a
+   unknown or unsent part, its failure; the issue a create made, its key
+   when a later step of the create was not applied (`CreatedKey`), the
+   board it is not on (`NotOnBoard`), `CreateUnknown`, and the resources a
    refresh read could not refresh with its failure (`Stale`). A failed
    refresh is never a write failure.
 6. A create of unknown outcome is reported as that and never retried. The
@@ -1321,7 +1335,7 @@ selected computer.
 | `TrackerTicket(subscriptionID)` | `TicketDetail` | read | home |
 | `MintTrackerAttachmentUploadTicket(connectionID, issue, filename, size)` | `AttachmentCeiling`, then the upload route's `Attach` | operate | connection |
 | `MintTrackerAttachmentDownloadTicket(subscriptionID, attachmentID)` | `TicketAttachment`, then the download route's `Download` | read | home |
-| `TrackerIssueTypes`, `TrackerCreateFields`, `TrackerMoves`, `TrackerAssignableUsers`, `TrackerChoices`, `TrackerLinkTypes`, `TrackerLookup`, `TrackerSearch`, `TrackerComments` | the form reads of the same names | read | connection |
+| `TrackerIssueTypes`, `TrackerCreateFields`, `TrackerBoardProjects`, `TrackerMoves`, `TrackerAssignableUsers`, `TrackerChoices`, `TrackerLinkTypes`, `TrackerLookup`, `TrackerSearch`, `TrackerComments` | the form reads of the same names | read | connection |
 | `CreateTrackerIssue`, `EditTrackerIssue`, `MoveTrackerIssue`, `SetTrackerEstimate`, `RankTrackerIssues`, `MoveTrackerIssuesToSprint`, `CreateTrackerSprint`, `StartTrackerSprint`, `CompleteTrackerSprint`, `EditTrackerSprint`, `AddTrackerComment`, `EditTrackerComment`, `DeleteTrackerComment`, `LinkTrackerIssues`, `UnlinkTrackerIssues`, `AddTrackerWorklog`, `EditTrackerWorklog`, `DeleteTrackerWorklog` | `Create`, `Edit`, `Move`, `SetEstimate`, `Rank`, `MoveToSprint`, `CreateSprint`, `StartSprint`, `CompleteSprint`, `EditSprint`, `AddComment`, `EditComment`, `DeleteComment`, `Link`, `Unlink`, `AddWorklog`, `EditWorklog`, `DeleteWorklog` | operate | connection, budget 3m |
 | `TrackerWorklogs(connectionID, author, from, to)` | `Worklogs` | read | connection |
 | `RefreshTrackerWorklogs(connectionID, author, from, to)` | `RefreshWorklogs` | read | connection |
@@ -1684,7 +1698,10 @@ path with no write.
 
 The reads a write form needs go to the tracker, interactive, and settle
 the connection's problem with their outcome (`form_reads.go`): `Projects`,
-`IssueTypes`, `Boards`, `CreateFields`, `Moves`, `AssignableUsers`,
+`IssueTypes`, `Boards`, `BoardProjects` (the projects a board's filter
+shows; a Linear team's own), `CreateFields` (each field with the values
+its screen lists and whether the tracker fills it, `tracker.CreateField`),
+`Moves`, `AssignableUsers`,
 `Choices`, `LinkTypes`, `Lookup`, `Search`, `Comments` (a later page) and
 `Download`. The mirror holds none of them: configuration it never reads,
 moves that follow a workflow change no update time shows, matches against
@@ -1779,7 +1796,9 @@ rows that are members of it now, with their names. Membership comes from
 the same rule fragments that `ListMirrorSection` pages by. The totals are
 named by the board's lifetime and totals revision (the board view's
 `totals_revision`, a patch's `totals.revision`), which moves with every
-change that can change a total and not with a title or rank. The client
+change that can change a total and not with a title or rank. The totals
+carry the board's pace, so a history write of an issue in one of the
+board's closed sprints moves them too (store `mirrorPaceAdvanceSQL`). The client
 sends the status groups version its sections were read with
 (`TotalsAt.Groups`); another version is refused as stale, and the
 client reads the board again (`readPatch` in
@@ -1791,8 +1810,8 @@ full read of the board. A one-row change of a realistic board, with three
 sections held, costs a 166-byte event and a 1,174-byte patch as JSON, or
 1,487 bytes when the totals moved. The patch read is two store calls:
 `GetMirrorRoot`, one statement, and `ReadMirrorBoardPatch`, five
-statements for three sections with the totals held and eight with the
-totals; with the totals held it reads only the named rows. Tests pin
+statements for three sections with the totals held and nine with the
+totals and the pace; with the totals held it reads only the named rows. Tests pin
 the bytes, the calls and `ReadMirrorBoardPatch`'s statements. The full read is only for the first paint, a reconnect and
 `ReadAgain`.
 
@@ -2174,7 +2193,12 @@ mints, `SaveTrackerAttachment`, `TrackerLinkTypes`, `LinkTrackerIssues`,
 `UnlinkTrackerIssues` and the planning poker methods, the Board
 screen's changes to a card (its fields, the carry, Move to… and Move to
 sprint…), with the wrappers of `TrackerMoves`, `RankTrackerIssues` and
-`MoveTrackerIssuesToSprint`, its Time screen,
+`MoveTrackerIssuesToSprint`, its Backlog screen (the sections, a
+row's changes and carry, New ticket in a section, and the sprint
+writes), with the wrappers of `CreateTrackerIssue`, `TrackerIssueTypes`,
+`TrackerCreateFields`, `CreateTrackerSprint`,
+`EditTrackerSprint`, `StartTrackerSprint` and `CompleteTrackerSprint`,
+its Time screen,
 with the wrappers of `TrackerWorklogs`, `RefreshTrackerWorklogs`,
 `AddTrackerWorklog`, `EditTrackerWorklog`, `DeleteTrackerWorklog`,
 `TrackerLookup` and `TrackerSearch` (`components/issues/AGENTS.md`),
@@ -2193,8 +2217,6 @@ are outside the tracker (a store error, the cleanup), and a tracker
 failure of the loop's sync shows on its connection's row as its problem.
 Not built, owed by the app layer:
 
-- A sprint edit on the Backlog screen: the `bindings.ts` wrapper of
-  `EditTrackerSprint` ships with it.
 - The rest of the project's tracker setup, each a section of its file:
   card marks, draft settings and what agents may do, and the Setup pages
   that edit the sections, Start work defaults among them. A query that

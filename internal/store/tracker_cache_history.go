@@ -234,14 +234,15 @@ func mirrorHistoryTimesOf(extra string) string {
 	return `h.value ->> 'f', h.value ->> 'v', h.value ->> 'a', h.value ->> 'w', h.value ->> 'b', ` + since + `, ` + finalFor + `, ` + read + extra
 }
 
-// writeMirrorHistoryTimesTx runs mirrorHistoryTimesSQL over listed and
-// returns the issues whose shown status changed: its time or whether a
-// final read decided it, against states, the issues' state the same
-// transaction read before. A write that moved only the history's times or
+// writeMirrorHistoryTimesTx runs mirrorHistoryTimesSQL over listed,
+// tells the boards whose pace the issues it wrote may have moved
+// (advanceMirrorPaceTx), and returns the issues whose shown status
+// changed: its time or whether a final read decided it, against states,
+// the issues' state the same transaction read before. A write that moved only the history's times or
 // the order of its status evidence (a newer read of the same provisional
 // result) changed nothing a view shows of the issue's status.
 func writeMirrorHistoryTimesTx(tx *sql.Tx, rootID int64, listed string, states map[string]mirrorHistoryState) ([]string, error) {
-	var changed []string
+	var changed, written []string
 	err := scanMirrorRows(tx, mirrorHistoryTimesSQL, []any{rootID, listed}, func(r rowScanner) error {
 		var id string
 		var since int64
@@ -249,6 +250,7 @@ func writeMirrorHistoryTimesTx(tx *sql.Tx, rootID int64, listed string, states m
 		if err := r.Scan(&id, &since, &final); err != nil {
 			return err
 		}
+		written = append(written, id)
 		st, ok := states[id]
 		if !ok {
 			return fmt.Errorf("issue %s written with no state read", id)
@@ -258,7 +260,14 @@ func writeMirrorHistoryTimesTx(tx *sql.Tx, rootID int64, listed string, states m
 		}
 		return nil
 	})
-	return changed, err
+	if err != nil || len(written) == 0 {
+		return changed, err
+	}
+	issues, err := encodeMirrorIDs(written)
+	if err != nil {
+		return nil, err
+	}
+	return changed, advanceMirrorPaceTx(tx, rootID, issues)
 }
 
 // mirrorHistoryInput is one checked history, encoded at generation 0; a

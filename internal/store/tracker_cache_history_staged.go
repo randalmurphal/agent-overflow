@@ -338,7 +338,11 @@ func (s *Store) stageMirrorHistory(rootID int64, in mirrorHistoryInput, st mirro
 		if n, err := res.RowsAffected(); err != nil || n == 0 {
 			return errors.Join(errStaleReceipt, err)
 		}
-		return nil
+		issue, err := encodeMirrorIDs([]string{in.h.IssueID})
+		if err != nil {
+			return err
+		}
+		return advanceMirrorPaceTx(tx, rootID, issue)
 	})
 	if err != nil {
 		return err

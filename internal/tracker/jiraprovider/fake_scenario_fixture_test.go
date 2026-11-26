@@ -106,13 +106,22 @@ func newScenario(t *testing.T, withTempo bool) *scenario {
 // records to onRequest (trackerfake.Options.OnRequest).
 func newObservedScenario(t *testing.T, withTempo bool, onRequest func(trackerfake.Request)) *scenario {
 	t.Helper()
+	return newEditedScenario(t, onRequest, func(site *trackerfake.JiraSite) {
+		if !withTempo {
+			site.Tempo = nil
+		}
+	})
+}
+
+// newEditedScenario is newScenario over the scenario's site as edit
+// leaves it.
+func newEditedScenario(t *testing.T, onRequest func(trackerfake.Request), edit func(*trackerfake.JiraSite)) *scenario {
+	t.Helper()
 	clock := &scenarioClock{now: time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)}
 	e := trackerfake.New(trackerfake.Options{Now: clock.Now, OnRequest: onRequest})
 	t.Cleanup(e.Close)
 	site := scenarioFixture(clock.Now())
-	if !withTempo {
-		site.Tempo = nil
-	}
+	edit(&site)
 	if err := e.Seed(trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}}); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +139,7 @@ func newObservedScenario(t *testing.T, withTempo bool, onRequest func(trackerfak
 	}
 	t.Cleanup(jc.Close)
 	opts := Options{Jira: jc, Site: "https://" + scenarioSite, SprintsFrom: func() time.Time { return clock.Now().Add(-scenarioWindow) }}
-	if withTempo {
+	if site.Tempo != nil {
 		tc, err := tempo.New(tempo.Options{
 			BaseURL: srv.TempoURL(), Version: "test", Issues: TempoIssues(jc),
 			Credentials: trackerapi.StaticCredentials(trackerapi.Bearer(secret.New([]byte("scenario-tempo-1")))),

@@ -500,11 +500,11 @@ func TestOpeningAndClosingATicketKeepCosts(t *testing.T) {
 			// The opening paints from the record (no body yet), then its
 			// first read stores the ticket and builds its view from the
 			// record once, as it settles; 10101's view shows other issues,
-			// whose cards it reads.
+			// whose cards it reads, and a sprint, whose name it reads.
 			quiet(t, s.svc)
 			want := "GetMirrorCatalog:1 GetMirrorRoot:1 GetMirrorSync:1 KeepMirrorTicket:1 ListMirrorBodies:2 ListMirrorTicketRows:1 StoreMirrorTickets:1"
 			if issue == "10101" {
-				want = "GetMirrorCatalog:1 GetMirrorRoot:1 GetMirrorSync:1 KeepMirrorTicket:1 ListMirrorBodies:2 ListMirrorCards:1 ListMirrorTicketRows:1 StoreMirrorTickets:1"
+				want = "GetMirrorCatalog:1 GetMirrorRoot:1 GetMirrorSync:1 KeepMirrorTicket:1 ListMirrorBodies:2 ListMirrorCards:1 ListMirrorSprintNames:1 ListMirrorTicketRows:1 StoreMirrorTickets:1"
 			}
 			if got := describeCounts(cs.take()); got != want {
 				t.Fatalf("the opening cost %s; want %s", got, want)

@@ -42,7 +42,9 @@ func mirrorHistoryShown(t *testing.T, s *Store) string {
 // its status result checked in one transaction of its own
 // (writeIdenticalHistory); a longer one that keeps the stored changes
 // appends in place. A new one is compared with the stored generation
-// first (three reads: the removals and two chunks), as any is.
+// first (three reads: the removals and two chunks), as any is. Each that
+// changes the history tells the boards whose pace it may move in the
+// transaction that makes it the issue's (advanceMirrorPaceTx).
 func TestMirrorLongHistoryIsStagedWhole(t *testing.T) {
 	s, _, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 10_000, "a")})
@@ -55,11 +57,11 @@ func TestMirrorLongHistoryIsStagedWhole(t *testing.T) {
 		statements, chunks int
 		shown              string
 	}{
-		{"new", longHistory("10001", n, 1), true, 34, n / clearMirrorChunk, "5000 answered 5001 since 5000 other 0 dirty 0"},
+		{"new", longHistory("10001", n, 1), true, 35, n / clearMirrorChunk, "5000 answered 5001 since 5000 other 0 dirty 0"},
 		{"identical", longHistory("10001", n, 1), false, 17, 0, "5000 answered 5001 since 5000 other 0 dirty 0"},
-		{"appended", longHistory("10001", n+100, 1), true, 23, 1, "5100 answered 5101 since 5100 other 0 dirty 0"},
-		{"shortened", longHistory("10001", 10, 6000), true, 34, 0, "10 answered 6010 since 10 other 0 dirty 0"},
-		{"grown again", longHistory("10001", n, 7000), true, 34, 0, "5000 answered 12000 since 5000 other 0 dirty 0"},
+		{"appended", longHistory("10001", n+100, 1), true, 24, 1, "5100 answered 5101 since 5100 other 0 dirty 0"},
+		{"shortened", longHistory("10001", 10, 6000), true, 35, 0, "10 answered 6010 since 10 other 0 dirty 0"},
+		{"grown again", longHistory("10001", n, 7000), true, 35, 0, "5000 answered 12000 since 5000 other 0 dirty 0"},
 	} {
 		recorder.reset()
 		var results []MirrorHistoryResult

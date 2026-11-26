@@ -100,6 +100,9 @@ type Provider interface {
 
 	// Projects are the projects the user can see.
 	Projects(ctx context.Context) ([]Project, error)
+	// BoardProjects are the projects board shows: those a ticket made
+	// from it can be made in.
+	BoardProjects(ctx context.Context, board BoardID) ([]Project, error)
 	// IssueTypes are the types an issue can be created with in project;
 	// none without Capabilities.IssueTypes.
 	IssueTypes(ctx context.Context, project ProjectID) ([]IssueType, error)
@@ -147,7 +150,7 @@ type Provider interface {
 	// CreateFields are the fields a create in project with issueType takes
 	// besides the title, those it requires marked Required, each with an
 	// empty Value: a field left unset takes the tracker's default.
-	CreateFields(ctx context.Context, project ProjectID, issueType IssueTypeID) ([]Field, error)
+	CreateFields(ctx context.Context, project ProjectID, issueType IssueTypeID) ([]CreateField, error)
 	// AssignableUsers are the users who can be assigned in scope whose
 	// name or email starts with text. Empty text returns those the
 	// tracker offers unasked, which may be none.

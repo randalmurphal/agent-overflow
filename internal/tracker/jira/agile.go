@@ -157,6 +157,27 @@ func (c *Client) Board(ctx context.Context, id int64) (Board, error) {
 	return b.board(), nil
 }
 
+// BoardProjects returns the projects associated with a board: those its
+// filter names and those an issue on it belongs to (GET
+// board/{id}/project), in pages of 50, read whole.
+func (c *Client) BoardProjects(ctx context.Context, board int64) ([]Project, error) {
+	if err := c.admit(ctx); err != nil {
+		return nil, err
+	}
+	if err := checkAgileID("board", board); err != nil {
+		return nil, err
+	}
+	found, _, _, err := offsetPages[projectJSON](ctx, c, agilePath+"board/"+strconv.FormatInt(board, 10)+"/project", url.Values{}, 50, 0)
+	if err != nil {
+		return nil, fmt.Errorf("jira: projects of board %d: %w", board, err)
+	}
+	out := make([]Project, len(found))
+	for i, p := range found {
+		out[i] = p.project()
+	}
+	return out, nil
+}
+
 // checkAgileID refuses an ID that is not positive; what names it.
 func checkAgileID(what string, id int64) error {
 	if id <= 0 {

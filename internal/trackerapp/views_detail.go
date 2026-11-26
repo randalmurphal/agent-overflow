@@ -33,6 +33,12 @@ type FieldView struct {
 	Required bool           `json:"required,omitempty"`
 	Editable bool           `json:"editable,omitempty"`
 	Value    FieldValueView `json:"value"`
+	// Allowed are the values a create screen lists for the field, which
+	// its picker offers with no read; absent when the screen lists none.
+	// Defaulted marks a field a create screen requires that the tracker
+	// fills when the create gives it none (tracker.CreateField).
+	Allowed   []ChoiceView `json:"allowed,omitempty"`
+	Defaulted bool         `json:"defaulted,omitempty"`
 }
 
 // CommentView is a comment, its body as Markdown.
@@ -92,6 +98,15 @@ type TicketRowView struct {
 	Unit     string   `json:"unit"`
 }
 
+// TicketSprintView is a sprint the ticket's card names, with its name and
+// state from a board the ticket has a row on; both are empty for a
+// sprint none of those boards holds.
+type TicketSprintView struct {
+	ID    string `json:"id"`
+	Name  string `json:"name,omitempty"`
+	State string `json:"state,omitempty"`
+}
+
 // MoveView is a move the ticket's workflow allows now and the fields it
 // takes.
 type MoveView struct {
@@ -112,19 +127,20 @@ type MoveView struct {
 // change the body does not show yet, and the next read of the ticket
 // reads it.
 type DetailView struct {
-	Card         CardView         `json:"card"`
-	BodyBehind   bool             `json:"body_behind,omitempty"`
-	URL          string           `json:"url"`
-	Description  string           `json:"description"`
-	Fields       []FieldView      `json:"fields"`
-	Comments     []CommentView    `json:"comments"`
-	MoreComments string           `json:"more_comments,omitempty"`
-	Links        []LinkView       `json:"links"`
-	Attachments  []AttachmentView `json:"attachments"`
-	History      []EventView      `json:"history"`
-	HistoryFrom  int64            `json:"history_from,omitempty"`
-	Moves        []MoveView       `json:"moves"`
-	Rows         []TicketRowView  `json:"rows"`
+	Card         CardView           `json:"card"`
+	BodyBehind   bool               `json:"body_behind,omitempty"`
+	URL          string             `json:"url"`
+	Description  string             `json:"description"`
+	Fields       []FieldView        `json:"fields"`
+	Comments     []CommentView      `json:"comments"`
+	MoreComments string             `json:"more_comments,omitempty"`
+	Links        []LinkView         `json:"links"`
+	Attachments  []AttachmentView   `json:"attachments"`
+	History      []EventView        `json:"history"`
+	HistoryFrom  int64              `json:"history_from,omitempty"`
+	Moves        []MoveView         `json:"moves"`
+	Rows         []TicketRowView    `json:"rows"`
+	Sprints      []TicketSprintView `json:"sprints"`
 }
 
 // detailMaxAge is how long after its read began a stored detail is checked
@@ -340,7 +356,62 @@ func (s *Service) detailViews(root int64, row store.TrackerConnection, docs []ti
 			views[i].Rows = []TicketRowView{}
 		}
 	}
+	if err := s.nameSprints(root, shown, views); err != nil {
+		return nil, nil, err
+	}
 	return views, shows, nil
+}
+
+// nameSprints sets each view's sprints: those its shown card names, the
+// active first, then the future, the closed and those no board of its
+// rows holds, each kind in the card's order, named from the boards of its
+// rows in one lookup of every view's (store.ListMirrorSprintNames), a
+// lookup's bound of boards and of sprints at a time.
+func (s *Service) nameSprints(root int64, shown []shownDetail, views []DetailView) error {
+	var boards, sprints idSet
+	for i, sd := range shown {
+		for _, r := range views[i].Rows {
+			boards.add(r.Board)
+		}
+		for _, sp := range sd.d.Card.Sprints {
+			sprints.add(string(sp))
+		}
+	}
+	named := map[string]store.MirrorSprintName{}
+	if len(sprints.ids) == 0 {
+		boards.ids = nil
+	}
+	for bs := range slices.Chunk(boards.ids, readBatch) {
+		for ss := range slices.Chunk(sprints.ids, readBatch) {
+			held, err := s.store.ListMirrorSprintNames(root, bs, ss)
+			if err != nil {
+				return fmt.Errorf("trackerapp: read the names of %d sprints from the mirror: %w", len(sprints.ids), err)
+			}
+			for _, sp := range held {
+				named[sp.SprintID] = sp
+			}
+		}
+	}
+	order := map[int]int{store.MirrorSprintActive: 0, store.MirrorSprintFuture: 1, store.MirrorSprintClosed: 2}
+	rank := func(id tracker.SprintID) int {
+		if sp, ok := named[string(id)]; ok {
+			return order[sp.State]
+		}
+		return len(order)
+	}
+	for i, sd := range shown {
+		ids := slices.Clone(sd.d.Card.Sprints)
+		slices.SortStableFunc(ids, func(a, b tracker.SprintID) int { return rank(a) - rank(b) })
+		views[i].Sprints = make([]TicketSprintView, len(ids))
+		for j, id := range ids {
+			v := TicketSprintView{ID: string(id)}
+			if sp, ok := named[string(id)]; ok {
+				v.Name, v.State = sp.Name, nameOf(sprintNames[:], tracker.SprintState(sp.State))
+			}
+			views[i].Sprints[j] = v
+		}
+	}
+	return nil
 }
 
 // ticketRows are the rows of docs' issues on the boards the mirror shows,
@@ -524,10 +595,28 @@ func (sd shownDetail) view(mirrored catalogNames, row store.TrackerConnection) D
 func fieldViews(fields []tracker.Field) []FieldView {
 	out := make([]FieldView, 0, len(fields))
 	for _, f := range fields {
-		out = append(out, FieldView{
-			ID: string(f.ID), Name: f.Name, Kind: f.Kind.String(), List: f.List, Required: f.Required, Editable: f.Editable,
-			Value: fieldValueView(f.Value),
-		})
+		out = append(out, fieldView(f))
+	}
+	return out
+}
+
+func fieldView(f tracker.Field) FieldView {
+	return FieldView{
+		ID: string(f.ID), Name: f.Name, Kind: f.Kind.String(), List: f.List, Required: f.Required, Editable: f.Editable,
+		Value: fieldValueView(f.Value),
+	}
+}
+
+// createFieldViews are a create screen's fields with the values it lists.
+func createFieldViews(fields []tracker.CreateField) []FieldView {
+	out := make([]FieldView, 0, len(fields))
+	for _, f := range fields {
+		v := fieldView(f.Field)
+		v.Defaulted = f.Defaulted
+		for _, c := range f.Allowed {
+			v.Allowed = append(v.Allowed, ChoiceView{ID: c.ID, Name: c.Name})
+		}
+		out = append(out, v)
 	}
 	return out
 }

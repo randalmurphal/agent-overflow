@@ -1,7 +1,14 @@
-// Every write the ticket screen and a Board card make, and the reads
-// their pickers make (docs/architecture/tracker-backend.md, "Writes"). A
-// card writes under the same ticket key as the ticket screen, so one write
-// shows one state on both. Each write goes through
+// Every write the ticket screen, a Board card and a Backlog row make, a
+// board's own writes (its sprints, and the tickets made on it from the
+// Backlog), and the reads their pickers and forms make
+// (docs/architecture/tracker-backend.md, "Writes"). A card and a row write
+// under the same ticket key as the ticket screen, so one write shows one
+// state on all of them. A board's writes are held under the board's key
+// (`boardWriteContext`) by the same runner and the same rules of where an
+// outcome shows; they wait for the board's views to settle, and none of a
+// ticket's rules (its view's settling, its read after a stale refusal,
+// loss consent, drafts) is reachable from one, since those live in the
+// ticket's `write` alone and it takes a ticket. Each write goes through
 // its bound method once: one write may be pending per ticket and target
 // (a field, the status, the points, a comment, the new comment), and a
 // second press of a pending target sends nothing. Nothing retries on its
@@ -71,37 +78,54 @@
 // next file's; the queue says which file is being sent and its place, and
 // nothing else (no byte progress). A link added, a link removed and the
 // poker writes are writes like any other; a vote, a reveal and a clear
-// share one target. A connection's link types are read once, for the link
-// form, and held until its computer connects again.
+// share one target. What a form reads (a connection's link types for the
+// link form; its projects, a project's issue types and a type's create
+// fields for New ticket) is held by the rules above `heldReads`.
 
 import { untrack } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import type {
   ChoiceListView,
+  CreateRequest,
   DetailView,
   FieldEditInput,
+  FieldView,
+  IssueTypeView,
   LinkTypeView,
   LinkView,
   MoveView,
+  ProjectView,
+  SprintCompleteRequest,
+  SprintEditRequest,
+  SprintRequest,
+  SprintStartRequest,
   UserListView,
   WriteView,
 } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import {
   AddTrackerComment,
   ClearTrackerPokerVotes,
+  CompleteTrackerSprint,
+  CreateTrackerIssue,
+  CreateTrackerSprint,
   DeleteTrackerComment,
   EditTrackerComment,
   EditTrackerIssue,
+  EditTrackerSprint,
   LinkTrackerIssues,
   MoveTrackerIssue,
   MoveTrackerIssuesToSprint,
   RankTrackerIssues,
   RevealTrackerPoker,
   SetTrackerEstimate,
+  StartTrackerSprint,
   TrackerAssignableUsers,
   TrackerChoices,
+  TrackerCreateFields,
+  TrackerIssueTypes,
   TrackerLinkTypes,
   TrackerMoves,
+  TrackerBoardProjects,
   UnlinkTrackerIssues,
   VoteTrackerPoker,
 } from './bindings';
@@ -120,7 +144,7 @@ import {
   type TrackerTicketRef,
 } from './trackerTicket.svelte';
 import { linkRequest, shownText, type LinkRelation } from './trackerTicketModel';
-import { LossConsent, refusalSentence, sendWrite, TICKET_SUBJECT, type WriteOutcome } from './trackerWriteOutcome';
+import { LossConsent, refusalSentence, sendWrite, TICKET_SUBJECT, type WriteOutcome, type WriteSubject } from './trackerWriteOutcome';
 import { onBackendStatusChange } from './transportStatus.svelte';
 import { TransferInterruptedError, TransferRefusedError, UploadNotSentError, uploadTrackerAttachmentBytes } from '../transport/attachmentTransfer';
 import type { BackendKey } from '../transport/backendKey';
@@ -396,7 +420,59 @@ interface WriteOptions {
   readonly after?: Promise<void>;
 }
 
-async function write(
+/** What a write is made to, as its writes are held: a ticket, or a
+ * board's sprints and the tickets made on it (`BoardWriteContext`). */
+interface WriteHolder {
+  readonly key: string;
+  readonly backend: BackendKey;
+  readonly connection: string;
+}
+
+/** What its holder makes of a write's outcome: what it waits for before
+ * "Saving" ends, and, once that settled, the second press it offers (Save
+ * anyway) or null; the words of a toast. */
+interface Landing {
+  readonly words: WriteSubject;
+  sending(): void;
+  /** The views the outcome waits for, each asked now, in the order the
+   * runner awaits them: the runner awaits each itself, so the outcome
+   * changes in the same update as the view that lands last. */
+  settle(outcome: WriteOutcome): readonly Promise<unknown>[];
+  landed(outcome: WriteOutcome): (() => Promise<WriteOutcome | null>) | null;
+  toast(outcome: WriteOutcome, subject: string | null): void;
+}
+
+/** The one runner of a held write: one pending write per holder and
+ * target, an outcome kept under a shown control of the target or said in
+ * a toast (the rules at the top). */
+async function run(
+  h: WriteHolder,
+  target: string,
+  send: () => Promise<WriteView>,
+  landing: Landing,
+  options: WriteOptions,
+): Promise<WriteOutcome | null> {
+  if (heldWrite(h.key, target)?.pending) return null;
+  landing.sending();
+  const subject = options.subject ?? null;
+  putWrite(h.key, target, { pending: true, outcome: null, saveAnyway: null, subject });
+  if (options.after) await options.after;
+  const outcome = await sendWrite(h.backend, computerName(h.backend), landing.words, send, options.failure);
+  for (const view of landing.settle(outcome)) await view;
+  const again = landing.landed(outcome);
+  if (!targetShown(h.key, target)) {
+    putWrite(h.key, target, null);
+    landing.toast(outcome, subject);
+    return outcome;
+  }
+  const plain = outcome.kind === 'applied' && outcome.note === null;
+  putWrite(h.key, target, plain ? null : { pending: false, outcome, saveAnyway: again, subject });
+  return outcome;
+}
+
+/** A write to a ticket: its loss consent, its view's settling, a read of
+ * it after a stale refusal, and its draft going once the write is made. */
+function write(
   t: TicketWriteContext,
   target: string,
   send: (acceptLoss: boolean) => Promise<WriteView>,
@@ -404,47 +480,42 @@ async function write(
   options: WriteOptions = {},
 ): Promise<WriteOutcome | null> {
   const k = writeKey(t.key, target);
-  if (heldWrite(t.key, target)?.pending) return null;
-  // The draft as it is sent: Save anyway is for it alone.
-  consent.sending(k);
-  const subject = options.subject ?? null;
-  putWrite(t.key, target, { pending: true, outcome: null, saveAnyway: null, subject });
-  if (options.after) await options.after;
-  const outcome = await sendWrite(t.ref.backend, computerName(t.ref.backend), TICKET_SUBJECT, () => send(acceptLoss), options.failure);
-  if (outcome.kind === 'applied') {
-    // Both asked now; awaited one by one, so the outcome changes in the
-    // same update as the view that lands last.
-    const boards = trackerBoardsSettled(t.ref.backend, t.ref.connection);
-    const ticket = trackerTicketSettled(t.key, options.comment);
-    // A comment's page read may fail while the boards are awaited: the
-    // await below throws it.
-    ticket.catch(() => undefined);
-    await boards;
-    await ticket;
-  }
-  // The ticket changed since it was read: read it again, so the person
-  // sees what the tracker holds before trying again.
-  if (outcome.kind === 'refused' && outcome.refusal.reason === 'stale') void refreshTrackerTicket(t.key);
-  const loss = consent.landed(k, outcome, acceptLoss);
-  if (outcome.kind === 'applied') drafts.delete(k);
-  if (!targetShown(t.key, target)) {
-    putWrite(t.key, target, null);
-    toastUnshown(t, outcome, subject);
-    return outcome;
-  }
-  const plain = outcome.kind === 'applied' && outcome.note === null;
-  putWrite(t.key, target, plain ? null : { pending: false, outcome, saveAnyway: loss ? () => write(t, target, send, true, options) : null, subject });
-  return outcome;
+  return run({ key: t.key, backend: t.ref.backend, connection: t.ref.connection }, target, () => send(acceptLoss), {
+    words: TICKET_SUBJECT,
+    // The draft as it is sent: Save anyway is for it alone.
+    sending: () => consent.sending(k),
+    settle(outcome) {
+      if (outcome.kind !== 'applied') return [];
+      const boards = trackerBoardsSettled(t.ref.backend, t.ref.connection);
+      const ticket = trackerTicketSettled(t.key, options.comment);
+      // A comment's page read may fail while the boards are awaited: the
+      // runner's await of it throws it.
+      ticket.catch(() => undefined);
+      return [boards, ticket];
+    },
+    landed(outcome) {
+      // The ticket changed since it was read: read it again, so the person
+      // sees what the tracker holds before trying again.
+      if (outcome.kind === 'refused' && outcome.refusal.reason === 'stale') void refreshTrackerTicket(t.key);
+      const loss = consent.landed(k, outcome, acceptLoss);
+      if (outcome.kind === 'applied') drafts.delete(k);
+      return loss ? () => write(t, target, send, true, options) : null;
+    },
+    toast: (outcome, subject) => toastUnshown(
+      subject ? `${subject} for ${t.label}` : `the change to ${t.label}`,
+      subject ? `Attaching ${subject} to ${t.label}` : `The change to ${t.label}`,
+      outcome,
+    ),
+  }, options);
 }
 
 /** A write that settled with no control of its target on a shown
- * surface: said in a toast unless it was made, naming what it sent
- * (`subject`, a file) when it has one. */
-function toastUnshown(t: TicketWriteContext, outcome: WriteOutcome, subject: string | null): void {
-  const change = subject ? `${subject} for ${t.label}` : `the change to ${t.label}`;
-  const what = subject ? `Attaching ${subject} to ${t.label}` : `The change to ${t.label}`;
+ * surface: said in a toast unless it was made. `change` names it inside
+ * a sentence, `what` opens one. */
+function toastUnshown(change: string, what: string, outcome: WriteOutcome): void {
   switch (outcome.kind) {
     case 'applied':
+      if (outcome.unplaced) addToast('error', `${what}: ${outcome.note}`);
       return;
     case 'refused':
       addToast('error', `The tracker refused ${change}: ${refusalSentence(outcome.refusal, (id) => id)}`);
@@ -486,13 +557,103 @@ export function rankTicket(t: TicketWriteContext, board: string, place: () => { 
   return write(t, 'rank', () => {
     const { prev, next } = place();
     return RankTrackerIssues(t.ref.connection, { board, issues: [t.ref.issue], prev: prev || undefined, next: next || undefined });
-  }, false, { after, failure: (err) => (err instanceof RankPlaceError ? { kind: 'not_sent', message: err.message } : null) });
+  }, false, { after, failure: placeFailure });
+}
+
+/** Where a placed write goes, named when it is sent (after `after`): the
+ * issues it goes just after and just before, either empty for an end;
+ * `place` throws a RankPlaceError when there is none. */
+export interface TicketPlace {
+  readonly place: () => { prev: string; next: string };
+  readonly after?: Promise<void>;
+}
+
+function placeFailure(err: unknown): WriteOutcome | null {
+  return err instanceof RankPlaceError ? { kind: 'not_sent', message: err.message } : null;
 }
 
 /** Moves the ticket into `sprint` of `board`, or to its backlog with
- * none (MoveTrackerIssuesToSprint). */
-export function moveTicketToSprint(t: TicketWriteContext, board: string, sprint: string | null): Promise<WriteOutcome | null> {
-  return write(t, 'sprint', () => MoveTrackerIssuesToSprint(t.ref.connection, { board, sprint: sprint ?? undefined, issues: [t.ref.issue] }), false);
+ * none (MoveTrackerIssuesToSprint), at `at` when given. */
+export function moveTicketToSprint(t: TicketWriteContext, board: string, sprint: string | null, at?: TicketPlace): Promise<WriteOutcome | null> {
+  return write(t, 'sprint', () => {
+    const { prev, next } = at ? at.place() : { prev: '', next: '' };
+    return MoveTrackerIssuesToSprint(t.ref.connection, { board, sprint: sprint ?? undefined, issues: [t.ref.issue], prev: prev || undefined, next: next || undefined });
+  }, false, { after: at?.after, failure: placeFailure });
+}
+
+/** A board as what its sprint writes and the tickets made on it are made
+ * to: their writes are held under its key, apart from every ticket's, and
+ * none of a ticket's rules (its view's settling, its read after a stale
+ * refusal, loss consent) is reached from one. */
+export interface BoardWriteContext {
+  readonly key: string;
+  readonly backend: BackendKey;
+  readonly connection: string;
+  /** The tracker board. */
+  readonly board: string;
+}
+
+export function boardWriteContext(ref: { readonly backend: BackendKey; readonly connection: string; readonly board: string }): BoardWriteContext {
+  // Three parts, so no ticket key (connection and issue) is one.
+  return { key: composeWorkspaceKey(ref.backend, `${ref.connection}\n${ref.board}\nboard`), backend: ref.backend, connection: ref.connection, board: ref.board };
+}
+
+const BOARD_SUBJECT: WriteSubject = {
+  look: 'the board',
+  shows: 'The board',
+  ended: 'this board no longer follows it',
+  reads: () => true,
+};
+
+/** The target of a sprint's writes (edit, start, complete), one at a time
+ * per sprint; `new` is the sprint being created. */
+export function sprintTarget(sprint: string): string {
+  return `sprint:${sprint}`;
+}
+
+/** The target of a ticket made in a list (`trackerBoardModel.ts#sectionList`). */
+export function createTarget(list: string): string {
+  return `create:${list}`;
+}
+
+/** A write to a board: once made it waits for the board's views to hold
+ * what their computer was told, and it is said in a toast as `what` (a
+ * sentence's opening: "Starting Sprint 3") when no control of it shows. */
+function boardWrite(b: BoardWriteContext, target: string, what: string, send: () => Promise<WriteView>): Promise<WriteOutcome | null> {
+  return run(b, target, send, {
+    words: BOARD_SUBJECT,
+    sending: () => {},
+    settle: (outcome) => (outcome.kind === 'applied' ? [trackerBoardsSettled(b.backend, b.connection)] : []),
+    landed: () => null,
+    toast: (outcome) => toastUnshown(what.charAt(0).toLowerCase() + what.slice(1), what, outcome),
+  }, {});
+}
+
+/** Makes a ticket on the board in the section `list` (its sprint, or the
+ * backlog with none). `where` names the section in a toast. */
+export function createTicket(b: BoardWriteContext, list: string, where: string, req: Omit<CreateRequest, 'board'>): Promise<WriteOutcome | null> {
+  return boardWrite(b, createTarget(list), `Creating a ticket in ${where}`, () => CreateTrackerIssue(b.connection, { ...req, board: b.board }));
+}
+
+/** Makes a future sprint on the board. */
+export function createSprint(b: BoardWriteContext, req: Omit<SprintRequest, 'board'>): Promise<WriteOutcome | null> {
+  return boardWrite(b, sprintTarget('new'), `Creating ${req.name}`, () => CreateTrackerSprint(b.connection, { ...req, board: b.board }));
+}
+
+/** Changes the members of a sprint that `req` sets. */
+export function editSprint(b: BoardWriteContext, name: string, req: Omit<SprintEditRequest, 'board'>): Promise<WriteOutcome | null> {
+  return boardWrite(b, sprintTarget(req.sprint), `Changing ${name}`, () => EditTrackerSprint(b.connection, { ...req, board: b.board }));
+}
+
+/** Starts a future sprint, with its dates and, when set, its name and goal. */
+export function startSprint(b: BoardWriteContext, name: string, req: Omit<SprintStartRequest, 'board'>): Promise<WriteOutcome | null> {
+  return boardWrite(b, sprintTarget(req.sprint), `Starting ${name}`, () => StartTrackerSprint(b.connection, { ...req, board: b.board }));
+}
+
+/** Completes an active sprint, its unfinished tickets moved to `move_to`
+ * (an open sprint) or to the backlog with none. */
+export function completeSprint(b: BoardWriteContext, name: string, req: Omit<SprintCompleteRequest, 'board'>): Promise<WriteOutcome | null> {
+  return boardWrite(b, sprintTarget(req.sprint), `Completing ${name}`, () => CompleteTrackerSprint(b.connection, { ...req, board: b.board }));
 }
 
 export function addTicketComment(t: TicketWriteContext, markdown: string): Promise<WriteOutcome | null> {
@@ -641,53 +802,109 @@ const UNCLEAR_UPLOAD_CODES: ReadonlySet<string> = new Set(['tracker_write_unclea
 
 const UPLOAD_UNKNOWN = 'The file may or may not be attached; look at the ticket\'s attachments before attaching it again.';
 
-/** A connection's link types as last read; reactive. */
-export interface TicketLinkTypes {
-  readonly types: readonly LinkTypeView[] | null;
+/** What a form read of a connection answered last; reactive. */
+export interface HeldRead<T> {
+  readonly value: T | null;
   readonly loading: boolean;
   readonly error: unknown;
 }
 
-const linkTypes = new SvelteMap<string, TicketLinkTypes>();
-
-/** The connection's link types; null before `loadTicketLinkTypes`. */
-export function ticketLinkTypes(backend: BackendKey, connection: string): TicketLinkTypes | null {
-  return linkTypes.get(composeWorkspaceKey(backend, connection)) ?? null;
-}
-
-// Link types must keep true:
-// - Only a person's act reads them: the link form opening, or its Retry.
-//   Nothing reads them again because a read settled, so a caller starts
-//   the read outside any reactive scope that reads `ticketLinkTypes`.
+// A form read (a connection's link types for the link form; a board's
+// projects, a project's issue types and a type's create fields for a
+// ticket made on the Backlog) must keep true:
+// - Only a person's act reads it: its form opening, a pick that needs it,
+//   its Retry, or Add refused for fields the screen now requires
+//   (`reloadCreateFields`). Nothing reads it again because a read settled, so a
+//   caller starts the read outside any reactive scope that reads it.
 // - A refusal stays held with its error, shown by the form, until the
 //   person retries or opens the form again.
-// - Types once read are held, and read again only after the computer
-//   connects again; one read per connection is out at a time.
+// - What was read is held, and read again only after the computer
+//   connects again; one read per key is out at a time.
 // - Only the read that set an entry settles it, so a read from before a
 //   reconnect settles nothing.
+const heldReads = new SvelteMap<string, HeldRead<unknown>>();
 
-/** Reads the connection's link types unless they are held or being read;
- * after a refusal it reads them again. The caller is a person's act (see
- * above). */
-export async function loadTicketLinkTypes(backend: BackendKey, connection: string): Promise<void> {
-  const key = composeWorkspaceKey(backend, connection);
-  const held = linkTypes.get(key);
-  if (held && (held.loading || held.types)) return;
-  const reading: TicketLinkTypes = { types: null, loading: true, error: null };
-  linkTypes.set(key, reading);
+function heldRead<T>(key: string): HeldRead<T> | null {
+  return (heldReads.get(key) as HeldRead<T> | undefined) ?? null;
+}
+
+/** Reads `key` on `backend` unless it is held or being read; after a
+ * refusal it reads it again. The caller is a person's act (see above). */
+async function loadHeldRead<T>(backend: BackendKey, key: string, read: () => Promise<T>): Promise<void> {
+  const held = heldReads.get(key);
+  if (held && (held.loading || held.value !== null)) return;
+  const reading: HeldRead<T> = { value: null, loading: true, error: null };
+  heldReads.set(key, reading);
   try {
-    const types = await withBackendTarget(backend, () => TrackerLinkTypes(connection));
-    if (linkTypes.get(key) === reading) linkTypes.set(key, { types, loading: false, error: null });
+    const value = await withBackendTarget(backend, read);
+    if (heldReads.get(key) === reading) heldReads.set(key, { value, loading: false, error: null });
   } catch (err) {
-    if (linkTypes.get(key) === reading) linkTypes.set(key, { types: null, loading: false, error: err });
+    if (heldReads.get(key) === reading) heldReads.set(key, { value: null, loading: false, error: err });
   }
 }
 
-// A computer that connects again may hold other link types.
+// A computer that connects again may answer otherwise.
 onBackendStatusChange((backend, status) => {
   if (status.status !== 'connected') return;
-  for (const key of linkTypes.keys()) if (workspaceKeyBackend(key) === backend) linkTypes.delete(key);
+  for (const key of heldReads.keys()) if (workspaceKeyBackend(key) === backend) heldReads.delete(key);
 });
+
+function readKey(backend: BackendKey, ...parts: string[]): string {
+  return composeWorkspaceKey(backend, parts.join('\n'));
+}
+
+/** The connection's link types; null before `loadTicketLinkTypes`. */
+export function ticketLinkTypes(backend: BackendKey, connection: string): HeldRead<LinkTypeView[]> | null {
+  return heldRead(readKey(backend, 'links', connection));
+}
+
+export function loadTicketLinkTypes(backend: BackendKey, connection: string): Promise<void> {
+  return loadHeldRead(backend, readKey(backend, 'links', connection), () => TrackerLinkTypes(connection));
+}
+
+/** The projects the board shows, which a ticket made on it is made in;
+ * null before `loadBoardProjects`. */
+export function boardProjects(b: BoardWriteContext): HeldRead<ProjectView[]> | null {
+  return heldRead(readKey(b.backend, 'projects', b.connection, b.board));
+}
+
+export function loadBoardProjects(b: BoardWriteContext): Promise<void> {
+  return loadHeldRead(b.backend, readKey(b.backend, 'projects', b.connection, b.board), () => TrackerBoardProjects(b.connection, b.board));
+}
+
+/** The types a ticket can be made with in `project`; null before
+ * `loadIssueTypes`. */
+export function issueTypes(backend: BackendKey, connection: string, project: string): HeldRead<IssueTypeView[]> | null {
+  return heldRead(readKey(backend, 'types', connection, project));
+}
+
+export function loadIssueTypes(backend: BackendKey, connection: string, project: string): Promise<void> {
+  return loadHeldRead(backend, readKey(backend, 'types', connection, project), () => TrackerIssueTypes(connection, project));
+}
+
+/** The fields a ticket of `type` made in `project` takes besides its
+ * title, the required ones marked; null before `loadCreateFields`. */
+export function createFields(backend: BackendKey, connection: string, project: string, type: string): HeldRead<FieldView[]> | null {
+  return heldRead(readKey(backend, 'fields', connection, project, type));
+}
+
+export function loadCreateFields(backend: BackendKey, connection: string, project: string, type: string): Promise<void> {
+  return loadHeldRead(backend, readKey(backend, 'fields', connection, project, type), () => TrackerCreateFields(connection, project, type));
+}
+
+/** Reads the create fields again: the person's act after the tracker
+ * refused a create for fields it requires, since its screen changed. */
+export function reloadCreateFields(backend: BackendKey, connection: string, project: string, type: string): Promise<void> {
+  const key = readKey(backend, 'fields', connection, project, type);
+  if (!heldReads.get(key)?.loading) heldReads.delete(key);
+  return loadCreateFields(backend, connection, project, type);
+}
+
+/** The values `field` allows on a ticket of `type` made in `project` whose
+ * name starts with `text`. */
+export function createChoices(b: BoardWriteContext, project: string, type: string, field: string, text: string): Promise<ChoiceListView> {
+  return withBackendTarget(b.backend, () => TrackerChoices(b.connection, { project, type }, field, text));
+}
 
 /** The people who may be assigned the ticket whose name starts with
  * `text`. */
@@ -716,6 +933,6 @@ export function resetTicketWritesForTest(): void {
   draftHolders.clear();
   uploadQueues.clear();
   uploads.clear();
-  linkTypes.clear();
+  heldReads.clear();
   consent.clear();
 }

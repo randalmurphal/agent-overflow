@@ -1,5 +1,15 @@
+<script lang="ts" module>
+  // Work's store loads on a card's first Ask, once per page.
+  let workModule: Promise<typeof import('../../stores/ticketWork.svelte')> | null = null;
+  function loadWork(): Promise<typeof import('../../stores/ticketWork.svelte')> {
+    workModule ??= import('../../stores/ticketWork.svelte');
+    return workModule;
+  }
+</script>
+
 <script lang="ts">
-  // A Board card's menu (docs/specs/issues.md, "Board"), drawn by the
+  // A Board card's and a Backlog row's menu (docs/specs/issues.md,
+  // "Board" and "Backlog and sprint planning"), drawn by the
   // shared ActionMenu under the name `issues-card`: Open, Open in its own
   // pane (where ticket panes are offered) and Open in the tracker; Move to…, Move to sprint… (a board that plans sprints),
   // Assignee…, Priority…, Points… (a board with an estimate) and Type…
@@ -19,6 +29,7 @@
   import { fieldTarget, ticketWrite, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
   import type { CardEditField } from './ticketEditors';
   import { workGate, workProject, workProjects } from './ticketWorkGate';
+  import { addErrorToast } from '../../stores/toast.svelte';
 
   interface Props {
     x: number;
@@ -32,7 +43,8 @@
     typed: boolean;
     /** The card's address in the tracker (`cardURL`); empty when unknown. */
     url: string;
-    /** A move or rank of the card is out. */
+    /** The card is busy (`cardBusy`): a drop of it, or a move, rank or
+     * sprint move of it, is under way. */
     moving: boolean;
     /** Opens at Move to…. */
     atMove?: boolean;
@@ -47,25 +59,35 @@
     /** The project the card's ticket's Ask and Start work use; null when
      * none is known. */
     project: string | null;
-    /** Ask in `project`. */
-    onAsk: (project: string) => void;
     /** Start work: the ticket opens with its form. */
     onStartWork: () => void;
     onDismiss: () => void;
   }
 
-  let { x, y, row, ctx, shape, from, typed, url, moving, atMove = false, onOpen, onOwnPane, onOpenURL, onCopy, onEdit, onMove, onSprint, project, onAsk, onStartWork, onDismiss }: Props = $props();
+  let { x, y, row, ctx, shape, from, typed, url, moving, atMove = false, onOpen, onOwnPane, onOpenURL, onCopy, onEdit, onMove, onSprint, project, onStartWork, onDismiss }: Props = $props();
 
   /** Shown at once until the person chooses. */
   const DEFAULTS = ['open', 'move', 'assignee', 'copy-key'];
 
-  // The sprints it can move to: the board's active and future ones but
-  // its own, and the backlog when it is in a sprint.
-  const sprints = $derived(shape.plansSprints ? shape.sprints.filter((sp) => (sp.state === 'active' || sp.state === 'future') && !row.card.sprints?.includes(sp.id)) : []);
-  const inSprint = $derived((row.card.sprints?.length ?? 0) > 0);
+  // The sprints it can move to: the board's open (active and future) ones
+  // but its own, and the backlog when it is in one of them. A card also
+  // names the closed sprints it was in, which leave it in the backlog.
+  const open = $derived(shape.plansSprints ? shape.sprints.filter((sp) => sp.state === 'active' || sp.state === 'future') : []);
+  const sprints = $derived(open.filter((sp) => !row.card.sprints?.includes(sp.id)));
+  const inSprint = $derived(open.some((sp) => row.card.sprints?.includes(sp.id)));
   // A row whose write is out waits for it; the store would send nothing.
   const pending = (target: string) => ticketWrite(ctx.key, target)?.pending ?? false;
 
+  // Ask: what the ticket's Ask does, once Work's store loads. The ticket is
+  // taken at the press, since choosing an action closes the menu and its
+  // props go with it.
+  function ask(project: string): void {
+    const t = ctx;
+    void loadWork().then(
+      (work) => work.askAboutTicket(t, project),
+      (err: unknown) => addErrorToast(`Could not start a thread on ${t.label}: Work did not load. Reload the window to try again.`, err),
+    );
+  }
   const threadProject = $derived(workProject(workProjects(ctx.ref.backend, project), project));
   const gate = $derived(workGate(ctx.ref.backend, threadProject));
 
@@ -82,7 +104,7 @@
       label: 'Change',
       actions: [
         { id: 'move', label: 'Move to…', testId: 'issues-card-menu-move', disabled: moving, page: movePage },
-        ...(shape.plansSprints ? [{ id: 'sprint', label: 'Move to sprint…', testId: 'issues-card-menu-sprint', disabled: pending('sprint'), page: sprintPage }] : []),
+        ...(shape.plansSprints ? [{ id: 'sprint', label: 'Move to sprint…', testId: 'issues-card-menu-sprint', disabled: moving, page: sprintPage }] : []),
         { id: 'assignee', label: 'Assignee…', testId: 'issues-card-menu-assignee', disabled: pending(fieldTarget('assignee')), run: () => onEdit('assignee') },
         { id: 'priority', label: 'Priority…', testId: 'issues-card-menu-priority', disabled: pending(fieldTarget('priority')), run: () => onEdit('priority') },
         ...(shape.unit !== 'none' && shape.unit !== '' ? [{ id: 'points', label: shape.unit === 'time' ? 'Estimate…' : 'Points…', testId: 'issues-card-menu-points', disabled: pending('points'), run: () => onEdit('points') }] : []),
@@ -92,7 +114,7 @@
     {
       label: 'Threads',
       actions: [
-        { id: 'ask', label: 'Ask', description: gate.ask || undefined, disabled: !!gate.ask, testId: 'issues-card-menu-ask', run: () => onAsk(threadProject) },
+        { id: 'ask', label: 'Ask', description: gate.ask || undefined, disabled: !!gate.ask, testId: 'issues-card-menu-ask', run: () => ask(threadProject) },
         { id: 'start-work', label: 'Start work…', description: gate.start || undefined, disabled: !!gate.start, testId: 'issues-card-menu-start-work', run: onStartWork },
       ],
     },

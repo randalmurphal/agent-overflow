@@ -2,11 +2,12 @@
 
 Status: product rulings and screen designs recorded 2026-11-15. Built:
 the connections and a project's board list, in Settings > Issues
-(Connections, Boards), and the Issues pane with its Board screen, opened
-from the tool row's Issues entry, and the Ticket screen, opened from a
-card, from a thread's linked ticket or from a pull request's ticket chip;
-a thread's ticket link, in the sidebar and the thread header. The other
-screens are not built; the [Board](#board), [Ticket](#ticket),
+(Connections, Boards), and the Issues pane with its Board and Backlog
+screens, opened from the tool row's Issues entry, and the Ticket screen,
+opened from a card or a row, from a thread's linked ticket or from a pull
+request's ticket chip; a thread's ticket link, in the sidebar and the
+thread header. The other screens are not built; the [Board](#board),
+[Backlog](#backlog-and-sprint-planning), [Ticket](#ticket),
 [Tickets, pull requests and branches](#tickets-pull-requests-and-branches)
 and [Thread link](#thread-link) sections say what of them is. A
 project's status groups and ticket pins are built in the backend, and no
@@ -336,6 +337,43 @@ avatar.
   card is over it.
 
 ### Backlog and sprint planning
+
+Status: built: the board's open sprints, the active ones first, then the
+backlog, each a header and its rows, the folds remembered per board on
+the device with the active sprint folded at first; a row's type,
+priority, points and assignee from its marks (from its menu under
+compact), through the ticket's own editors and writes; the row's menu,
+the card's; carrying a row with a mouse or pen, level, the rows under it
+sliding to open a gap, which ranks it within its section or moves it into
+another sprint or the backlog at that place, a dropped row waiting there
+until its write settles and not moved again until then; under compact,
+Move to sprint… on the menu. A future sprint says its points against the
+average of the board's last finished sprints (at most five, worded as
+"the last sprint" or "the last N sprints' average"), each person's load,
+and how far it is over; a finished sprint with no ticket on the board
+counts as zero, and a ticket whose history the app has not read yet
+counts as done only in the last sprint it is in. The backlog says its
+tickets, its points and how many have no estimate. New ticket at a
+section's foot asks the fields the tracker requires the person to give
+and offers those it fills itself; on Jira it shows the project, picked
+from the projects the board shows, the one picked last on that board
+this session first, else the board's location, and the type, the one
+picked last on the board this session, else the project's first at the
+standard level. A ticket the tracker made stays made: when its move into
+the sprint failed, the form says so with the ticket's key and offers that
+move. On Linear a new ticket lands after the section's last row. New
+sprint, a sprint's Change (which cannot clear a sprint's dates, and says
+so), Start sprint (today for as long as it was planned, else two weeks)
+and Complete sprint, which always asks where the tickets the tracker
+counts unfinished go: an open sprint of the board, the first future one
+at first, or the backlog. A ticket opens beside the list, and in its own
+pane with Ctrl or Cmd or the menu; the row's menu has Ask and Start
+work…. Not built: the pace counted with credit (it counts the tickets
+whose status counted as done when their sprint was completed, by their
+estimates now); support tickets are counted among those without an
+estimate; a Linear team's cycles are started and completed in Linear,
+which the screen says; a completion the tracker refuses part of says the
+first refusal, not how many tickets moved.
 
 - Sections are the active sprint, the next sprint and the backlog. Fold
   state is remembered, and the active sprint starts folded.

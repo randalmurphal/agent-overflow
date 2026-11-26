@@ -90,6 +90,15 @@ func (p *Provider) Projects(ctx context.Context) ([]tracker.Project, error) {
 	return out, nil
 }
 
+// BoardProjects is the board's team: a Linear board is one team's issues.
+func (p *Provider) BoardProjects(ctx context.Context, board tracker.BoardID) ([]tracker.Project, error) {
+	t, err := p.c.Team(ctx, string(board))
+	if err != nil {
+		return nil, fmt.Errorf("linearprovider: the team of board %s: %w", board, err)
+	}
+	return []tracker.Project{{ID: tracker.ProjectID(t.ID), Key: t.Key, Name: t.Name}}, nil
+}
+
 // IssueTypes is none: Linear issues have no type.
 func (p *Provider) IssueTypes(context.Context, tracker.ProjectID) ([]tracker.IssueType, error) {
 	return nil, nil

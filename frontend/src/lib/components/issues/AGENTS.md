@@ -13,27 +13,34 @@ board methods, events and the patch read in
   read, patch, page), visibility votes and Refresh. Components call its
   actions and read `attachTrackerBoard(...).current`; none calls a board
   binding. Which sections the Board screen reads is the board's computer's
-  (`BoardView.screen`); the store asks for no sections and holds what it
-  answers. A write waits on `trackerBoardsSettled` (its end cases are
+  (`BoardView.screen`), and the Backlog screen's (`BoardView.plan`), held
+  while a pane is on Backlog (`holdTrackerBoardPlan`); the store asks for
+  no sections and holds what it answers. A write waits on `trackerBoardsSettled` (its end cases are
   written beside it) before its "Saving" ends.
 - `stores/trackerBoardModel.ts` is the pure part: the patch rule (replayed
   in Vitest from `internal/trackerapp/testdata/board_patch_cases.json`, which
   the Go model writes), the grouping of sprint rows into columns
   (`screenColumns`), the Only mine and Search match (`cardMatches`), a
   card's web address (`cardURL`, the one rule), the columns a ticket's
-  moves reach (`columnsReached`), and the waiting cards drawn and counted
-  where they wait (`withWaiting`, `columnWith`).
+  moves reach (`columnsReached`), the lists a carry and a write name
+  (`column:<i>`, `sprint:<id>`, `backlog`: `columnList`, `sectionList`),
+  and the waiting cards drawn and counted where they wait (`withWaiting`,
+  `columnWith`). `stores/trackerBacklogModel.ts` is the Backlog screen's
+  pure part: its sections in the plan's order, each header's numbers with
+  the moved rows counted where they go (`sectionNumbers`), the one list
+  its virtualizer shows and where a carried row lands in it.
 - `stores/trackerBoardCarry.svelte.ts` holds the cards waiting where they
   were dropped while their move or rank is out, a picture that never
   changes what the board holds, and makes those writes (`moveCard`,
-  `rankCard`) through the ticket's write store: one drop per card from
-  its release, held by the Board screen that accepted it until the
-  screen decides it or goes (`dropOwner`, `cardBusy`), and the ranks of
-  a column one at a time, each naming the neighbors the board holds when
-  it is sent. A card writes under its ticket's key (`cardWriteContext`),
+  `rankCard`, and `placeCard` into another Backlog section) through the
+  ticket's write store: one drop per card from its release, held by the
+  screen that accepted it until the screen decides it or goes
+  (`dropOwner`, `cardBusy`, which a pending move, rank or sprint move
+  counts), and the writes of a list one at a time, each naming the
+  neighbors the board holds when it is sent. A card writes under its ticket's key (`cardWriteContext`),
   so the card and the ticket screen show one write.
 - `components/shared/ActionMenu.svelte` draws the card's menu
-  (`BoardCardMenu.svelte`): the actions shown at once, the rest behind
+  (`BoardCardMenu.svelte`, a Backlog row's too): the actions shown at once, the rest behind
   Show more, and pages such as Move to… (`CardMovePage.svelte`), with the
   shown set kept per menu name in `stores/menuShownActions.svelte.ts`. A
   new card action is one entry in `BoardCardMenu`'s groups. Its Ask and
@@ -53,9 +60,11 @@ board methods, events and the patch read in
   subscription (`createBoardSelection`, one per pane, created by
   `IssuesPane.svelte`), the opening rule (`openingBoard`), the board
   picked last and Only mine as saved for the next pane, Display per board,
-  and the compact column for the session. Only a pick is saved; another
-  window's change never moves an open pane. Its selection also holds the
-  screen (Board or Time, saved for the next pane), the open ticket, its
+  and the compact column for the session, a Backlog section's fold per
+  board, and the project and type a ticket was made with last per board
+  for the session. Only a pick is saved; another window's change never
+  moves an open pane. Its selection also holds the screen (Board, Backlog
+  or Time, saved for the next pane), the open ticket, its
   subscription and the trail Back steps through, and decides whether the
   board and the week are shown (`boardShown`, `timeShown`: the pane is on
   screen on that screen and no ticket covers it), which are their votes.
@@ -89,19 +98,27 @@ board methods, events and the patch read in
   and each outcome kept under a control the person sees or said in a
   toast, never both (its rules at the top; a control registers through
   `ticketWriteSurface.ts`). Each ticket's writes are one box, so a write
-  wakes that ticket's readers only. It also
+  wakes that ticket's readers only. A board's writes (its sprints, and the
+  tickets made on it from the Backlog) are held the same way under the
+  board's key (`boardWriteContext`), and none of a ticket's rules (its
+  view's settling, its read after a stale refusal, loss consent) is
+  reached from one. It also
   holds what is being written to each target (the drafts): a text with its
   base, or a move's form with the base of each long field, which the
   editors and the form show, so a draft outlives its editor; a pane's
   selection holds the drafts of its open ticket and Back trail
   (`holdTicketDrafts`), and a ticket pane's record holds those of its
   ticket and trail. Files are attached through it one at a time per
-  ticket, each its own `attach:` write; it holds a connection's link
-  types for the link form.
+  ticket, each its own `attach:` write; it holds what a form reads (a
+  connection's link types for the link form; a board's projects, a
+  project's issue types and a type's create fields for New ticket), read
+  on a person's act and held until its computer connects again. New
+  ticket's draft, one per section, is held by the Backlog screen
+  (`BacklogScreen.svelte` `createDrafts`), so it outlives the form.
 - `stores/trackerTicketModel.ts` is the pure part: the comment and
   history windows, the rail's order, the side a new link sends, a poker
-  round's result, the attachment a file in the text names and the board
-  row a ticket shows its points from.
+  round's result, the attachment a file in the text names, the board
+  row a ticket shows its points from and how its sprints are named.
 - `stores/trackerWriteOutcome.ts` is what a tracker write's answer means
   for the person (`writeOutcome`, worded per subject), the one runner
   of a write (`sendWrite`) and the loss consent rule (`LossConsent`,
@@ -147,7 +164,8 @@ board methods, events and the patch read in
 These stores load with the pane (`ToolPane.svelte` imports it on demand)
 or the first ticket pane (`panes/TicketPane.svelte` imports
 `TicketPaneBody.svelte` on demand), `TicketScreen.svelte` loads on the
-first open of a ticket (`TicketHost.svelte`) and
+first open of a ticket (`TicketHost.svelte`),
+`BacklogScreen.svelte` on the first switch to Backlog and
 `TimeScreen.svelte` on the first switch to Time.
 The always-loaded stores reach them only through
 `stores/trackerBoardEvents.ts`, where the board and ticket stores take
@@ -174,15 +192,20 @@ by name or level in `boardFormat.ts`; a board fetches no tracker image.
 editor in place and what a pick or a typed value sends; the ticket saves
 each edit at once, and `TicketMoveForm.svelte` collects them for a move
 whose screen takes fields, its pickers asking that move's values.
-A card's marks open the same editors (`cardEditor`, in
-`CardFieldEditor.svelte`, loaded on the first edit from a card), and a
+A card's marks and a Backlog row's are one component (`CardMarks.svelte`)
+and open the same editors (`cardEditor`, in `CardFieldEditor.svelte`,
+loaded by `CardEditor.svelte` on the first edit from either), and a
 typed value is `TicketTypedValue.svelte` on both. A mouse or pen carries
-a card (`boardCarry.ts`, loaded on the first press of a card; its physics
-in `boardCarryPhysics.ts`): per frame it writes one transform on a copy
-of the card on `document.body`, and tells `BoardScreen` only when the
-column under it or the drop slot changes, so no card renders while it is
-carried (`boardCarry.browser.test.ts`). Under compact a card has no
-carry: its status mark opens Move to….
+a card or a row (`listCarry.ts`, loaded on the first press of either; its
+physics in `boardCarryPhysics.ts`, a Backlog row held level): per frame
+it writes one transform on a copy on `document.body`, and tells the
+screen only when the list under it or the drop slot changes, so no card
+or row renders while it is carried (`listCarry.browser.test.ts`,
+`backlogScreen.browser.test.ts`); a release counts only over a list as it
+is on screen then. On Backlog one virtualizer holds every section's
+items, and the rows under a carried one slide by a transform to open its
+gap. Under compact neither carries: a card's status mark opens Move to…,
+and a row's menu moves it between sprints.
 
 A ticket's Log time opens the Time screen's `WorklogForm.svelte` with the
 ticket and today, and the link form (`TicketLinkForm.svelte`) finds the

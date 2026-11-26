@@ -265,12 +265,13 @@ func TestFakeJiraRequestCosts(t *testing.T) {
 	// (an issue bulk fetch, the linked issues' cards in it), and a moved
 	// card adds the detail's two reads (the issue, then its comments). A
 	// mirror card already newer, the age bound and a refresh read the
-	// detail with no check.
+	// detail with no check. The issue is in a sprint, whose name each view
+	// reads.
 	s.detailCosts(t, conn, scope, "10102", "10000", "10002", "10000", map[string][2]int{
-		"detail, none stored": {2, 6}, "detail, verified unchanged": {1, 6},
-		"detail, the mirror's copy": {0, 4}, "detail, verified unchanged with 3 links": {1, 6},
-		"detail, after a comment": {3, 7}, "detail, the mirror already newer": {2, 6},
-		"detail, older than the age bound": {2, 6}, "detail, forced refresh": {2, 5},
+		"detail, none stored": {2, 7}, "detail, verified unchanged": {1, 7},
+		"detail, the mirror's copy": {0, 5}, "detail, verified unchanged with 3 links": {1, 7},
+		"detail, after a comment": {3, 8}, "detail, the mirror already newer": {2, 7},
+		"detail, older than the age bound": {2, 7}, "detail, forced refresh": {2, 6},
 	})
 }
 

@@ -74,13 +74,18 @@ export interface ExtraJira {
   /** Links between issues (trackerfake.JiraLink): outward relates to inward by the type's outward name. */
   links?: Array<{ id: string; type: string; outward: string; inward: string }>;
   /** WEB's issue types with their edit screens (trackerfake.JiraIssueType) in place of the fake's. */
-  issueTypes?: Array<{ id: string; name: string; subtask?: boolean; hierarchyLevel?: number; screen: Array<{ field: string; required?: boolean }> }>;
+  issueTypes?: Array<{ id: string; name: string; subtask?: boolean; hierarchyLevel?: number; screen: Array<{ field: string; required?: boolean; hasDefault?: boolean }> }>;
+  /** Other projects WEB's board's filter names (trackerfake.JiraBoard.Also). */
+  boardAlso?: string[];
   /** WEB's workflow moves in place of one per status (trackerfake.JiraTransition). */
   transitions?: Array<{ id: string; name: string; to: string; from?: string[]; screen?: Array<{ field: string; required?: boolean }> }>;
   /** The field WEB's board estimates in. */
   estimation?: string;
   /** The accounts WEB's issues can be assigned (trackerfake.JiraProject.Assignable). */
   assignable?: string[];
+  /** More sprints beside the seed's active Sprint 1 (trackerfake.JiraSprint),
+   * each of board 1 unless it names another; times are ISO strings. */
+  sprints?: Array<{ id: number; board?: number; name: string; state: 'future' | 'active' | 'closed'; goal?: string; start?: string; end?: string; complete?: string }>;
   /** The add-on, with the votes already cast (trackerfake.JiraPoker). */
   poker?: { rounds?: Array<{ issue: string; revealed?: boolean; votes?: Array<{ id: string; account: string; vote: number; created: string }> }> };
 }
@@ -138,13 +143,13 @@ export async function seedFakeJira(harness: HarnessApp, extra?: ExtraJira): Prom
         ...(extra?.transitions ? { transitions: extra.transitions } : {}),
         ...(extra?.assignable ? { assignable: extra.assignable } : {}),
       }, ...(extra?.projects ?? [])],
-      boards: [{ id: 1, name: 'WEB board', type: 'scrum', project: 'WEB', ...(extra?.estimation ? { estimation: extra.estimation } : {}), columns: [
+      boards: [{ id: 1, name: 'WEB board', type: 'scrum', project: 'WEB', ...(extra?.estimation ? { estimation: extra.estimation } : {}), ...(extra?.boardAlso ? { also: extra.boardAlso } : {}), columns: [
         { name: 'To Do', statuses: ['10000'] }, { name: 'In Progress', statuses: ['10001'] }, { name: 'Done', statuses: ['10002'] },
       ] }, ...(extra?.boards ?? [])],
       ...(extra?.fields ? { fields: extra.fields } : {}),
       ...(extra?.resolutions ? { resolutions: extra.resolutions } : {}),
       ...(extra?.links ? { links: extra.links } : {}),
-      sprints: [{ id: 1, board: 1, name: 'Sprint 1', state: 'active', start: day, end: sprintEnd }],
+      sprints: [{ id: 1, board: 1, name: 'Sprint 1', state: 'active', start: day, end: sprintEnd }, ...(extra?.sprints ?? []).map((sp) => ({ board: 1, ...sp }))],
       issues: [
         { id: '10101', key: 'WEB-1', project: 'WEB', type: '10001', summary: 'First story', sprints: [1], status: '10001', created: day, updated: day },
         { id: '10102', key: 'WEB-2', project: 'WEB', type: '10002', summary: 'Second task', sprints: [1], status: '10000', created: day, updated: day },

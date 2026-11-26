@@ -32,9 +32,9 @@ var mirrorBoardViewSQL = `SELECT b.board_id, b.project_id, b.name, b.plans_sprin
 
 // ReadMirrorBoardView reads, in one snapshot (mirrorReadSnapshot), a
 // board's structure (as GetMirrorBoard), its section totals (as
-// CountMirrorSections), the first page of each section pick names from
-// that structure (as ListMirrorSection) and what they name (MirrorNames),
-// each read with regroup: one statement per part, the board's columns and
+// CountMirrorSections, its pace with them), the first page of each section pick names from that structure (as
+// ListMirrorSection) and what they name (MirrorNames), each read with
+// regroup: one statement per part, the board's columns and
 // their statuses read once for the structure and the totals. pick runs
 // inside the snapshot, again on each of its retries, so the sections it
 // chooses are the structure's. ok is false for a board the mirror does not
@@ -55,7 +55,7 @@ func (s *Store) ReadMirrorBoardView(rootID int64, boardID string, regroup Mirror
 			return MirrorBoardView{}, err
 		}
 		ok = true
-		st.Lifetime, board.unit = board.lifetime, b.EstimateUnit
+		st.Lifetime, board.unit, board.plansSprints = board.lifetime, b.EstimateUnit, b.PlansSprints
 		if st.Columns, err = readMirrorColumnsTx(tx, rootID, boardID); err != nil {
 			return MirrorBoardView{}, err
 		}

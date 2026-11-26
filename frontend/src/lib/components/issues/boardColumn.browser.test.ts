@@ -68,6 +68,7 @@ function mountColumn(rows: RowView[], more: boolean) {
     compact: false,
     carriedIssue: null as string | null,
     editing: null,
+    list: 'column:0',
     dropNote: null as string | null,
     slot: null as number | null,
     onOpenCard: () => {},

@@ -31,7 +31,13 @@ func TestInputChecks(t *testing.T) {
 			"title as field": CreateInput{Project: "p", Title: "T", Fields: []FieldEdit{{Field: FieldTitle, Value: TypedValues("T")}}},
 			"rich text base": CreateInput{Project: "p", Title: "T", Fields: []FieldEdit{{Field: FieldDescription, Value: MarkdownEdit("x", "old")}}},
 			"field twice":    CreateInput{Project: "p", Title: "T", Fields: append(title, title...)},
+			"sprint alone":   CreateInput{Project: "p", Title: "T", Sprint: "s"},
+			"after alone":    CreateInput{Project: "p", Title: "T", After: RowPlace{Issue: "i", Order: "o"}},
+			"after no order": CreateInput{Project: "p", Title: "T", Board: "b", After: RowPlace{Issue: "i"}},
+			"after no issue": CreateInput{Project: "p", Title: "T", Board: "b", After: RowPlace{Order: "o"}},
 		}},
+		{CreateInput{Project: "p", Title: "T", Board: "b", Sprint: "s"}, nil},
+		{CreateInput{Project: "p", Title: "T", Board: "b", After: RowPlace{Issue: "i", Order: "o"}}, nil},
 		{EditInput{Issue: "i", Fields: title}, map[string]checker{
 			"no issue":  EditInput{Fields: title},
 			"no fields": EditInput{Issue: "i"},
@@ -64,6 +70,11 @@ func TestInputChecks(t *testing.T) {
 			"no issues":   SprintMoveInput{Board: "b", Sprint: "s"},
 			"issue twice": SprintMoveInput{Board: "b", Issues: []IssueID{"1", "1"}},
 		}},
+		{SprintMoveInput{Board: "b", Sprint: "s", Issues: []IssueID{"1"}, Next: "n"}, map[string]checker{
+			"placed, issue twice":    SprintMoveInput{Board: "b", Issues: []IssueID{"1", "1"}, Prev: prev},
+			"placed, same neighbor":  SprintMoveInput{Board: "b", Issues: []IssueID{"1"}, Prev: prev, Next: prev},
+			"placed, next to itself": SprintMoveInput{Board: "b", Issues: []IssueID{"1"}, Next: "1"},
+		}},
 		{SprintInput{Board: "b", Name: "S", Start: start, End: end}, map[string]checker{
 			"no board":     SprintInput{Name: "S"},
 			"no name":      SprintInput{Board: "b"},
@@ -77,7 +88,9 @@ func TestInputChecks(t *testing.T) {
 			"no sprint":  SprintStart{Board: "b", Start: start, End: end},
 			"no dates":   SprintStart{Board: "b", Sprint: "s"},
 			"end before": SprintStart{Board: "b", Sprint: "s", Start: end, End: start},
+			"empty name": SprintStart{Board: "b", Sprint: "s", Start: start, End: end, Name: ptr("")},
 		}},
+		{SprintStart{Board: "b", Sprint: "s", Start: start, End: end, Name: ptr("S"), Goal: ptr("")}, nil},
 		{SprintCompletion{Board: "b", Sprint: "s"}, map[string]checker{
 			"no board":  SprintCompletion{Sprint: "s"},
 			"no sprint": SprintCompletion{Board: "b"},

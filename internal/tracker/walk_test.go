@@ -124,6 +124,10 @@ func (f *probedProvider) Boards(ctx context.Context, _ ProjectID) ([]Board, erro
 	f.see(ctx)
 	return nil, nil
 }
+func (f *probedProvider) BoardProjects(ctx context.Context, _ BoardID) ([]Project, error) {
+	f.see(ctx)
+	return nil, nil
+}
 func (f *probedProvider) IssueTypes(ctx context.Context, _ ProjectID) ([]IssueType, error) {
 	f.see(ctx)
 	return nil, nil
@@ -172,7 +176,7 @@ func (f *probedProvider) Comments(ctx context.Context, _ IssueID, _ PageToken) (
 	f.see(ctx)
 	return CommentPage{}, nil
 }
-func (f *probedProvider) CreateFields(ctx context.Context, _ ProjectID, _ IssueTypeID) ([]Field, error) {
+func (f *probedProvider) CreateFields(ctx context.Context, _ ProjectID, _ IssueTypeID) ([]CreateField, error) {
 	f.see(ctx)
 	return nil, nil
 }

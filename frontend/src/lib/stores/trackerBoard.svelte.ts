@@ -50,6 +50,13 @@
 // no further page. A sprint is read whole as soon as it is held, so the columns
 // its rows fill count and sum every card of it. A full read starts a fresh interner, so the shared parts of
 // rows go with the board.
+//
+// The Backlog screen's sections (`BoardView.plan`: the open sprints and the
+// backlog) are held while a pane is on Backlog (`holdTrackerBoardPlan`),
+// each unread until the one read in flight reads its first page, and their
+// rows go when no pane is; the Board screen's stay. The change is made by
+// the drain between two reads (`takePlan`), so no read in flight answers
+// for sections it did not ask.
 
 import type {
   BoardSubscription,
@@ -79,6 +86,7 @@ import {
   heldSections,
   heldTotalsAt,
   sectionKey,
+  withPlan,
   type HeldBoard,
 } from './trackerBoardModel';
 import type { BackendKey } from '../transport/backendKey';
@@ -193,6 +201,12 @@ const lives = new Map<string, Live>();
 const shownByKey = new Map<string, boolean>();
 // Whether a filter is on over each held board; kept across a re-subscribe.
 const filteredByKey = new Map<string, boolean>();
+// How many panes are on Backlog over each board; kept across a re-subscribe.
+const planHolds = new Map<string, number>();
+
+function planning(key: string): boolean {
+  return (planHolds.get(key) ?? 0) > 0;
+}
 
 const votes = createPumpVotes('trackerBoard', (id, visible) => SetTrackerSubscriptionVisible(id, visible));
 
@@ -265,7 +279,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
   const view = answer.view ?? null;
   live.id = id;
   live.seq = answer.seq;
-  const held = view ? heldFromView(view, live.intern) : null;
+  const held = view ? heldFromView(view, live.intern, planning(key)) : null;
   live.state = {
     ...live.state,
     held,
@@ -381,9 +395,19 @@ function releaseRetries(live: Live, next: StateChange): void {
   next.sectionErrors = NO_SECTION_ERRORS;
 }
 
+/** Holds or lets go of the Backlog screen's sections as the panes on
+ * Backlog ask, between two reads. */
+function takePlan(live: Live): void {
+  const held = live.state.held;
+  if (!held) return;
+  const next = withPlan(held, planning(live.key));
+  if (next !== held) update(live, { held: next });
+}
+
 async function run(live: Live): Promise<void> {
   for (;;) {
     if (live.aborted || live.state.ended) return;
+    takePlan(live);
     const held = live.state.held;
     // A failed full or patch read waits for a recovery trigger, and every
     // page read waits behind it.
@@ -442,7 +466,7 @@ async function readWhole(live: Live): Promise<void> {
   }
   if (live.aborted) return;
   const intern = createRowInterner();
-  let held = heldFromView(view, intern);
+  let held = heldFromView(view, intern, planning(live.key));
   // Read each section again to the depth the client held, one the view
   // did not carry from its first page; one not held before is read after.
   for (let i = 0; i < held.sections.length; i += 1) {
@@ -612,6 +636,26 @@ export function setTrackerBoardFiltered(key: string, filtered: boolean): void {
   void drain(live);
 }
 
+/** A pane on the Backlog screen of the board `key`: its sections are held,
+ * and read, until the last such pane lets go. Answers the release. */
+export function holdTrackerBoardPlan(key: string): () => void {
+  planHolds.set(key, (planHolds.get(key) ?? 0) + 1);
+  let held = true;
+  const changed = () => {
+    const live = lives.get(key);
+    if (live?.state.held) void drain(live);
+  };
+  changed();
+  return () => {
+    if (!held) return;
+    held = false;
+    const n = (planHolds.get(key) ?? 1) - 1;
+    if (n > 0) planHolds.set(key, n);
+    else planHolds.delete(key);
+    changed();
+  };
+}
+
 /** Has the board's computer read it from the tracker now, as the
  * person's action; what the read finds arrives as events. A read of this
  * computer's copy that failed is run again with it, since a tracker read
@@ -725,5 +769,6 @@ export function resetTrackerBoardsForTest(): void {
   lives.clear();
   shownByKey.clear();
   filteredByKey.clear();
+  planHolds.clear();
   votes.resetForTest();
 }

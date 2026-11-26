@@ -23,7 +23,13 @@ import {
   columnsReached,
   withWaiting,
   createRowInterner,
+  columnList,
   heldFromView,
+  listRows,
+  listSprint,
+  sectionList,
+  withPlan,
+  withRow,
   heldSections,
   heldTotalsAt,
   screenColumns,
@@ -85,7 +91,7 @@ function digest(text: string): string {
 describe('the patch rule, replayed from the Go model', () => {
   it('holds after every recorded step what the Go reference holds', () => {
     const intern = createRowInterner();
-    let held = heldFromView(structuredClone(recorded.view), intern);
+    let held = heldFromView(structuredClone(recorded.view), intern, false);
     expect(heldSections(held)).toEqual(recorded.sections);
     expect(recorded.steps.some((s) => s.page !== undefined), 'the run loads a further page').toBe(true);
     expect(recorded.steps.some((s) => s.patch?.totals), 'the run has a patch with totals').toBe(true);
@@ -100,7 +106,7 @@ describe('the patch rule, replayed from the Go model', () => {
 
   it('keeps the arrays and rows a patch does not touch', () => {
     const intern = createRowInterner();
-    const held = heldFromView(structuredClone(recorded.view), intern);
+    const held = heldFromView(structuredClone(recorded.view), intern, false);
     const step = recorded.steps.find((s) => s.patch && s.patch.sections.some((p) => (p.rows ?? []).length === 0))!;
     const next = applyBoardPatch(held, step.ids!, structuredClone(step.patch!), intern);
     const named = new Set(step.ids);
@@ -115,9 +121,9 @@ describe('the patch rule, replayed from the Go model', () => {
   });
 
   it('names the totals it holds and refuses a patch of other sections', () => {
-    const held = heldFromView(structuredClone(recorded.view), createRowInterner());
+    const held = heldFromView(structuredClone(recorded.view), createRowInterner(), false);
     expect(heldTotalsAt(held)).toEqual({ lifetime: recorded.view.lifetime, revision: recorded.view.totals_revision, groups: '' });
-    const regrouped = heldFromView({ ...structuredClone(recorded.view), groups: 'g1' }, createRowInterner());
+    const regrouped = heldFromView({ ...structuredClone(recorded.view), groups: 'g1' }, createRowInterner(), false);
     expect(heldTotalsAt(regrouped).groups).toBe('g1');
     const patch = structuredClone(recorded.steps.find((s) => s.patch)!.patch!);
     patch.sections = patch.sections.slice(1);
@@ -144,7 +150,7 @@ function sprintBoard(rowsBySprint: Record<string, RowView[]>, more: string[] = [
       next: more.includes(id) ? { order: 'z', issue: 'z', lifetime: 1, revision: 1 } : null,
     })),
   } as unknown as BoardView;
-  return heldFromView(view, (r) => r);
+  return heldFromView(view, (r) => r, false);
 }
 
 describe('the Board screen', () => {
@@ -160,7 +166,7 @@ describe('the Board screen', () => {
     });
     const cols = screenColumns(held);
     expect(cols.map((c) => c.rows.map((r) => r.card.id))).toEqual([['1', '4'], ['2']]);
-    expect(cols.map((c) => c.total)).toEqual([{ rows: 2, estimate: 4 }, { rows: 1, estimate: 2 }]);
+    expect(cols.map((c) => c.total)).toEqual([{ rows: 2, estimate: 4, unestimated: 0 }, { rows: 1, estimate: 2, unestimated: 0 }]);
     expect(cols.map((c) => c.statusGroups)).toEqual([['todo'], ['in_progress']]);
     expect(cols.every((c) => c.moreFrom === null)).toBe(true);
     // Unchanged columns keep their arrays across a rebuild.
@@ -237,7 +243,7 @@ describe('a moved card on the Board screen', () => {
         { section: { kind: 'column', column: 2 }, rows: [], next: null },
       ],
     } as unknown as BoardView;
-    return heldFromView(view, (r) => r);
+    return heldFromView(view, (r) => r, false);
   }
   const shownOf = (held: HeldBoard) => screenColumns(held).map((col) => shownColumn(held, col, { mine: null, words: [] }));
   const ids = (col: { rows: readonly RowView[] }) => col.rows.map((r) => r.card.id);
@@ -256,22 +262,22 @@ describe('a moved card on the Board screen', () => {
     const cols = screenColumns(held);
     const shown = shownOf(held);
     const all = { mine: null, words: [] };
-    expect(withWaiting(cols, shown, [], all)).toBe(shown);
-    const moved = withWaiting(cols, shown, [{ issue: '1', column: 1 }], all);
+    expect(withWaiting(cols.map((_, i) => columnList(i)), cols, shown, [], all)).toBe(shown);
+    const moved = withWaiting(cols.map((_, i) => columnList(i)), cols, shown, [{ issue: '1', list: columnList(1) }], all);
     expect(moved.map(ids)).toEqual([['2'], ['1', '3'], []]);
     expect(moved[2]).toBe(shown[2]);
     // The row drawn is the board's, not a copy taken at the drop.
     expect(moved[1].rows[0]).toBe(held.sections[0].rows[0]);
     // Counts stay the board's: the headers count a moved card by columnWith.
     expect(moved.map((c) => c.counted)).toEqual([2, 1, 0]);
-    expect(withWaiting(cols, shown, [{ issue: '2', column: 0, before: '1' }], all).map(ids)).toEqual([['2', '1'], ['3'], []]);
-    expect(withWaiting(cols, shown, [{ issue: '1', column: 0, before: null }], all).map(ids)).toEqual([['2', '1'], ['3'], []]);
+    expect(withWaiting(cols.map((_, i) => columnList(i)), cols, shown, [{ issue: '2', list: columnList(0), before: '1' }], all).map(ids)).toEqual([['2', '1'], ['3'], []]);
+    expect(withWaiting(cols.map((_, i) => columnList(i)), cols, shown, [{ issue: '1', list: columnList(0), before: null }], all).map(ids)).toEqual([['2', '1'], ['3'], []]);
     // A card the filter hides is drawn nowhere; one the board no longer
     // holds, and a column the board no longer has, draw nothing.
     const words = { mine: null, words: ['issue 3'] };
-    expect(withWaiting(cols, cols.map((col) => shownColumn(held, col, words)), [{ issue: '1', column: 1 }], words).map(ids)).toEqual([[], ['3'], []]);
-    expect(withWaiting(cols, shown, [{ issue: '9', column: 1 }], all)).toBe(shown);
-    expect(withWaiting(cols, shown, [{ issue: '1', column: 5 }], all)).toBe(shown);
+    expect(withWaiting(cols.map((_, i) => columnList(i)), cols, cols.map((col) => shownColumn(held, col, words)), [{ issue: '1', list: columnList(1) }], words).map(ids)).toEqual([[], ['3'], []]);
+    expect(withWaiting(cols.map((_, i) => columnList(i)), cols, shown, [{ issue: '9', list: columnList(1) }], all)).toBe(shown);
+    expect(withWaiting(cols.map((_, i) => columnList(i)), cols, shown, [{ issue: '1', list: columnList(5) }], all)).toBe(shown);
   });
 
   it('counts a card into a column by the statuses it may have there and out of another by its own, unless one is left out of counts', () => {
@@ -280,10 +286,10 @@ describe('a moved card on the Board screen', () => {
     const shown = shownOf(held);
     const card = held.sections[0].rows[0];
     const into = columnWith(held, cols[1], shown[1], card, 1, ['s2'], true);
-    expect(into.col.total).toEqual({ rows: 2, estimate: 4 });
+    expect(into.col.total).toEqual({ rows: 2, estimate: 4, unestimated: 0 });
     expect([into.col.counted, into.shown.counted]).toEqual([2, 2]);
     const out = columnWith(held, cols[0], shown[0], card, -1, ['s1'], true);
-    expect(out.col.total).toEqual({ rows: 1, estimate: 2 });
+    expect(out.col.total).toEqual({ rows: 1, estimate: 2, unestimated: 0 });
     // A card the filter hides changes the column, not what it shows.
     expect(columnWith(held, cols[1], shown[1], card, 1, ['s2'], false).shown).toBe(shown[1]);
     // From a status left out of counts into one counted: it counts there.
@@ -307,5 +313,89 @@ describe('a moved card on the Board screen', () => {
     expect(cardURL({ ...held.shape, issueURL: 'https://example.atlassian.net/browse/' }, card)).toBe('https://example.atlassian.net/browse/WEB-1');
     expect(cardURL({ ...held.shape, issueURL: 'https://example.atlassian.net/browse/' }, { ...card, key: 'WEB 1/2' })).toBe('https://example.atlassian.net/browse/WEB%201%2F2');
     expect(cardURL(held.shape, { ...card, url: 'https://linear.app/example/issue/WEB-1/title' })).toBe('https://linear.app/example/issue/WEB-1/title');
+  });
+});
+
+/** A sprint board with active sprint 8 on the Board screen, future sprint
+ * 9 and the backlog planned, each section's rows as given. */
+function planBoard(rows: { '8': RowView[]; '9'?: RowView[]; backlog?: RowView[] }, planning: boolean): HeldBoard {
+  const columns = [
+    { name: 'To Do', statuses: [{ id: 's1', group: 'todo' }], total: { rows: 0, estimate: 0 } },
+    { name: 'In Progress', statuses: [{ id: 's2', group: 'in_progress' }], total: { rows: 0, estimate: 0 } },
+  ];
+  const sprint = (id: string, state: string) => ({ id, name: `Sprint ${id}`, state, total: { rows: 0, estimate: 0 } });
+  const page = (section: object, held: RowView[]) => ({ section, rows: held, next: null });
+  const view = {
+    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: true, estimate: { unit: 'points' },
+    columns, sprints: [sprint('8', 'active'), sprint('9', 'future')],
+    all: { rows: 0, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: {},
+    screen: [{ kind: 'sprint', sprint: '8' }],
+    plan: [{ kind: 'sprint', sprint: '8' }, { kind: 'sprint', sprint: '9' }, { kind: 'backlog' }],
+    pace: { sprints: 3, rows: 4, estimate: 10 },
+    sections: [
+      page({ kind: 'sprint', sprint: '8' }, rows['8']),
+      ...(rows['9'] ? [page({ kind: 'sprint', sprint: '9' }, rows['9'])] : []),
+      ...(rows.backlog ? [page({ kind: 'backlog' }, rows.backlog)] : []),
+    ],
+  } as unknown as BoardView;
+  return heldFromView(view, (r) => r, planning);
+}
+
+describe('the Backlog screen\'s sections', () => {
+  it('holds the planned sections unread after the Board screen\'s while planning, and only the Board screen\'s when not', () => {
+    const keys = (h: HeldBoard) => h.sections.map((s) => `${sectionList(s.section)}${s.unread ? ' unread' : ''}`);
+    const plain = planBoard({ '8': [row('1', 'a', 's1')] }, false);
+    expect(keys(plain)).toEqual(['sprint:8']);
+    expect(plain.totals.pace).toEqual({ sprints: 3, rows: 4, estimate: 10 });
+    const planned = withPlan(plain, true);
+    expect(keys(planned)).toEqual(['sprint:8', 'sprint:9 unread', 'backlog unread']);
+    // The active sprint's rows are the Board screen's, kept as they are.
+    expect(planned.sections[0]).toBe(plain.sections[0]);
+    expect(withPlan(planned, true)).toBe(planned);
+    expect(keys(planBoard({ '8': [] }, true))).toEqual(['sprint:8', 'sprint:9 unread', 'backlog unread']);
+    // Off again: the planned rows go, the Board screen's stay.
+    const read = planBoard({ '8': [row('1', 'a', 's1')], '9': [row('2', 'b', 's1')], backlog: [row('3', 'c', 's1')] }, true);
+    expect(keys(read)).toEqual(['sprint:8', 'sprint:9', 'backlog']);
+    const off = withPlan(read, false);
+    expect(keys(off)).toEqual(['sprint:8']);
+    expect(off.sections[0]).toBe(read.sections[0]);
+    expect(withPlan(off, false)).toBe(off);
+  });
+
+  it('takes the pace with the totals a patch carries, and keeps it when the patch carries none', () => {
+    const held = planBoard({ '8': [row('1', 'a', 's1')] }, false);
+    const pace = { sprints: 3, rows: 5, estimate: 12 };
+    const zero = { rows: 0, estimate: 0, unestimated: 0 };
+    const moved = applyBoardPatch(held, [], { lifetime: 1, revision: 2, totals: { revision: 2, all: zero, backlog: zero, pace }, sections: [{ rows: [] }] } as unknown as BoardPatch, (r) => r);
+    expect(moved.totals.pace).toEqual(pace);
+    const kept = applyBoardPatch(moved, [], { lifetime: 1, revision: 3, sections: [{ rows: [] }] } as unknown as BoardPatch, (r) => r);
+    expect(kept.totals.pace).toEqual(pace);
+  });
+
+  it('keeps a planned sprint\'s rows off the Board screen\'s columns', () => {
+    const held = planBoard({ '8': [row('1', 'a', 's1')], '9': [row('2', 'b', 's1')], backlog: [row('3', 'c', 's2')] }, true);
+    expect(screenColumns(held).map((c) => c.rows.map((r) => r.card.id))).toEqual([['1'], []]);
+    // An unread planned sprint does not hold the columns' totals back.
+    expect(screenColumns(planBoard({ '8': [row('1', 'a', 's1')] }, true)).every((c) => c.moreFrom === null && c.total !== null)).toBe(true);
+  });
+
+  it('names each list and the sprint it moves a ticket into', () => {
+    const held = planBoard({ '8': [row('1', 'a', 's1')], '9': [row('2', 'b', 's1')], backlog: [row('3', 'c', 's2')] }, true);
+    expect(listRows(held, 'sprint:9')).toEqual({ name: 'Sprint 9', rows: [held.sections[1].rows[0]] });
+    expect(listRows(held, 'backlog')?.name).toBe('the backlog');
+    expect(listRows(held, columnList(1))?.rows.map((r) => r.card.id)).toEqual([]);
+    expect(listRows(held, 'sprint:7')).toBeNull();
+    expect([listSprint('sprint:9'), listSprint('backlog'), listSprint(columnList(0))]).toEqual(['9', null, undefined]);
+  });
+
+  it('counts a row with no estimate apart from the points, carried in or out', () => {
+    const none = { ...row('1', 'a', 's1'), estimate: null };
+    const held = planBoard({ '8': [none, row('2', 'b', 's2')] }, false);
+    expect(screenColumns(held).map((c) => c.total)).toEqual([{ rows: 1, estimate: 0, unestimated: 1 }, { rows: 1, estimate: 2, unestimated: 0 }]);
+    const total = { rows: 4, estimate: 6, unestimated: 1 };
+    expect(withRow(total, none, 1)).toEqual({ rows: 5, estimate: 6, unestimated: 2 });
+    expect(withRow(total, row('2', 'b', 's2'), -1)).toEqual({ rows: 3, estimate: 4, unestimated: 1 });
+    // A total from a computer that does not count them starts from none.
+    expect(withRow({ rows: 1, estimate: 2 }, none, 1)).toEqual({ rows: 2, estimate: 2, unestimated: 1 });
   });
 });
