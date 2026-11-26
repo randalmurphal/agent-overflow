@@ -123,11 +123,12 @@ func (a *App) GetTicketWork(ctx context.Context, connectionID, issueID string) (
 // the ticket's key, for the pull requests the stored sources do not hold
 // (a merged one, one opened where this computer never read the list):
 // once per repository the Work's projects clone, and once per branch of
-// the ticket that search did not read whole (searchTicketForge). Each
-// repository's failure is its ForgeProblem, and the rest of the answer
-// stands beside it. A client shows GetTicketWork's answer first and this
-// one when it lands, so a slow forge holds no row of the stored sources
-// back. The whole run, the local read included, ends at the budget.
+// the ticket (searchTicketForge). Each repository's failure is its
+// ForgeProblem, and the rest of the answer stands beside it. A client
+// shows GetTicketWork's answer first and this one when it lands, so a slow
+// forge holds no row of the stored sources back. The budget runs from
+// entry: every forge request runs within it, and no project's local read
+// starts after it.
 //
 //ao:scope git:operate
 //ao:route home
@@ -149,12 +150,11 @@ func (a *App) SearchTicketWork(ctx context.Context, connectionID, issueID string
 }
 
 // ticketWorkRead is a ticket's Work as its reads gather it: the pull
-// requests listed so far, which of them only a linked thread's record
-// holds, the projects Work covers and every branch of theirs that names
-// the key. answer folds a branch a listed pull request names into it.
+// requests listed so far, the projects Work covers and every branch of
+// theirs that names the key. answer folds a branch a listed pull request
+// names into it.
 type ticketWorkRead struct {
 	work     TicketWork
-	recorded map[string]bool
 	projects []string
 	branches []TicketBranch
 }
@@ -180,7 +180,6 @@ func (a *App) readTicketWork(ctx context.Context, connectionID, issueID string) 
 	read := ticketWorkRead{
 		work: TicketWork{Key: key, PullRequests: []TicketPullRequest{}, Branches: []TicketBranch{}, Problems: []TicketWorkProblem{},
 			ForgeProblems: []TicketForgeProblem{}, SearchFull: []gitops.RepoReference{}},
-		recorded: map[string]bool{},
 	}
 
 	open, err := a.storedTicketPullRequests(key)
@@ -196,7 +195,6 @@ func (a *App) readTicketWork(ctx context.Context, connectionID, issueID string) 
 		row, ok := recordedTicketPullRequest(pr)
 		if ok && !slices.ContainsFunc(read.work.PullRequests, func(p TicketPullRequest) bool { return p.Ref.Identity() == row.Ref.Identity() }) {
 			read.work.PullRequests = append(read.work.PullRequests, row)
-			read.recorded[row.Ref.Identity()] = true
 		}
 	}
 
@@ -209,10 +207,19 @@ func (a *App) readTicketWork(ctx context.Context, connectionID, issueID string) 
 			read.projects = append(read.projects, choice.Project)
 		}
 	}
+	// A stored list names the project it was read under, which may have
+	// been removed since (the list stays until the Pull requests page's
+	// next read prunes it); its rows stay, and its branches are not read.
 	for _, pr := range read.work.PullRequests {
-		if pr.ProjectID != "" && !slices.Contains(read.projects, pr.ProjectID) {
-			read.projects = append(read.projects, pr.ProjectID)
+		if pr.ProjectID == "" || slices.Contains(read.projects, pr.ProjectID) {
+			continue
 		}
+		if _, err := a.store.GetProject(pr.ProjectID); errors.Is(err, sql.ErrNoRows) {
+			continue
+		} else if err != nil {
+			return ticketWorkRead{}, err
+		}
+		read.projects = append(read.projects, pr.ProjectID)
 	}
 	// A thread linked to the ticket may run in a repository that lists no
 	// board of the connection and has no pull request yet.
@@ -225,11 +232,13 @@ func (a *App) readTicketWork(ctx context.Context, connectionID, issueID string) 
 			read.projects = append(read.projects, t.ProjectID)
 		}
 	}
+	// The method's deadline is checked before each project's read; a read
+	// already running ends at git's own timeout.
 	for _, projectID := range read.projects {
-		branches, err := a.ticketBranches(ctx, projectID, key)
-		if ctx.Err() != nil {
-			return ticketWorkRead{}, ctx.Err()
+		if err := ctx.Err(); err != nil {
+			return ticketWorkRead{}, err
 		}
+		branches, err := a.ticketBranches(projectID, key)
 		if err != nil {
 			read.work.Problems = append(read.work.Problems, TicketWorkProblem{ProjectID: projectID, Error: err.Error()})
 			continue
@@ -296,9 +305,7 @@ type storedPRList struct {
 // storedTicketPullRequests lists the stored open pull requests whose title
 // or head branch names key. A repository's read is decoded only when its
 // bytes hold the key in any case, so a ticket's open costs one scan of the
-// stored lists and a decode of the repositories that name it. The read of
-// a project that was removed is left out: it stays stored only until the
-// Pull requests page's next read prunes it.
+// stored lists and a decode of the repositories that name it.
 func (a *App) storedTicketPullRequests(key string) ([]TicketPullRequest, error) {
 	records, err := a.store.ListPRListProjects()
 	if err != nil {
@@ -317,11 +324,6 @@ func (a *App) storedTicketPullRequests(key string) ([]TicketPullRequest, error) 
 		}
 		var list storedPRList
 		if err := json.Unmarshal(blob, &list); err != nil {
-			return nil, fmt.Errorf("read the stored pull requests of %s: %w", repoKey, err)
-		}
-		if _, err := a.store.GetProject(list.ProjectID); errors.Is(err, sql.ErrNoRows) {
-			continue
-		} else if err != nil {
 			return nil, fmt.Errorf("read the stored pull requests of %s: %w", repoKey, err)
 		}
 		for _, row := range list.Rows {
@@ -362,12 +364,12 @@ func recordedTicketPullRequest(pr store.ThreadPullRequest) (TicketPullRequest, b
 }
 
 // ticketBranches lists the branches of projectID whose name names key.
-func (a *App) ticketBranches(ctx context.Context, projectID, key string) ([]TicketBranch, error) {
+func (a *App) ticketBranches(projectID, key string) ([]TicketBranch, error) {
 	project, err := a.store.GetProject(projectID)
 	if err != nil {
 		return nil, err
 	}
-	branches, err := a.gitCore().ListBranchesContext(ctx, project.Path)
+	branches, err := a.gitCore().ListBranches(project.Path)
 	if err != nil {
 		return nil, err
 	}

@@ -40,13 +40,14 @@ type ticketHeadLookup struct {
 //     repository's branches whose name holds the key;
 //   - then, of a repository whose search answered, one lookup by name
 //     (gitops.Core.ListPRsByHead) per branch of the ticket, the
-//     repository's or a checkout's, whose pull requests the search did not
-//     read whole (PRKeySearch.Covers). What Work lists already proves
-//     nothing: a branch can have several pull requests.
+//     repository's or a checkout's: the lookup owns which repositories
+//     hold a branch's pull requests (a fork's parent too), and what Work
+//     lists proves nothing, since a branch can have several.
 //
 // A found row or branch counts only when it names the key
 // (namesTicketKey), since the forge's search is looser than the key rule.
-// A repository's failure is its one ForgeProblem. A project whose origin
+// A repository's failure is its one ForgeProblem, beside the rows its
+// search read before it failed; it gets no lookups. A project whose origin
 // names no forge repository is not searched. It fails only when ctx ends
 // before the repositories are known.
 func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead) error {
@@ -85,17 +86,17 @@ func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead) error
 	})
 	var lookups []*ticketHeadLookup
 	for _, repo := range repos {
+		for _, found := range repo.found.Rows {
+			read.addFound(found, repo.projects[0])
+		}
 		if repo.err != nil {
 			continue
 		}
 		if repo.found.Full {
 			read.work.SearchFull = append(read.work.SearchFull, repo.repo)
 		}
-		for _, found := range repo.found.Rows {
-			read.addFound(found, repo.projects[0])
-		}
 		look := func(branch, projectID string) {
-			if !namesTicketKey("", branch, ticketKey) || repo.found.Covers(branch) ||
+			if !namesTicketKey("", branch, ticketKey) ||
 				slices.ContainsFunc(lookups, func(l *ticketHeadLookup) bool { return l.repo == repo && l.branch == branch }) {
 				return
 			}
@@ -143,9 +144,9 @@ func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead) error
 }
 
 // addFound lists a pull request the forge found for the key, of
-// projectID, once. A stored row stays, with its CI, and takes the state
-// the forge answers, the newest read of it; a linked thread's record gives
-// way to the found row.
+// projectID, once. The forge's row is the newest read of it: it replaces a
+// row listed already, which keeps only what the forge's row lacks, the
+// stored list's CI and the project it was listed under.
 func (r *ticketWorkRead) addFound(found gitops.PRFound, projectID string) {
 	if !namesTicketKey(found.Title, found.HeadRefName, r.work.Key) {
 		return
@@ -156,18 +157,16 @@ func (r *ticketWorkRead) addFound(found gitops.PRFound, projectID string) {
 	}
 	id := row.Ref.Identity()
 	at := slices.IndexFunc(r.work.PullRequests, func(p TicketPullRequest) bool { return p.Ref.Identity() == id })
-	switch {
-	case at < 0:
+	if at < 0 {
 		r.work.PullRequests = append(r.work.PullRequests, row)
-	case r.recorded[id]:
-		if listed := r.work.PullRequests[at]; listed.ProjectID != "" {
-			row.ProjectID = listed.ProjectID
-		}
-		r.work.PullRequests[at] = row
-		delete(r.recorded, id)
-	default:
-		r.work.PullRequests[at].State = row.State
+		return
 	}
+	listed := r.work.PullRequests[at]
+	row.CI = listed.CI
+	if listed.ProjectID != "" {
+		row.ProjectID = listed.ProjectID
+	}
+	r.work.PullRequests[at] = row
 }
 
 // ticketPRState is a found pull request's state as Work names it.

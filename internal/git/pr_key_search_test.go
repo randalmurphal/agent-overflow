@@ -42,8 +42,7 @@ func foundNumbers(rows []PRFound) []int {
 // repository's branches by a substring of their name, the last leaving out
 // a fork's branch. Each row carries its state, draft, author and branch.
 // What the search finds is looser than the key rule (WEB-12), so the
-// caller filters. Having read the head search whole, it covers every
-// branch that begins with the key, in any case, and no other.
+// caller filters.
 func TestGitHubKeySearchReadsTitleHeadAndBranchesInOneRequest(t *testing.T) {
 	t.Parallel()
 	f := newFactsForge(t, keySearchFixture())
@@ -67,17 +66,13 @@ func TestGitHubKeySearchReadsTitleHeadAndBranchesInOneRequest(t *testing.T) {
 	if !slices.Equal(got.Branches, []string{"WEB-1-cache", "feature/WEB-1-host"}) {
 		t.Errorf("branches = %v; want the repository's two that hold WEB-1", got.Branches)
 	}
-	if !got.Covers("web-1-cache") || !got.Covers("WEB-1") || got.Covers("feature/WEB-1-host") || got.Covers("WEB") {
-		t.Errorf("covers with head prefix %q is wrong", got.HeadPrefix)
-	}
 	if f.seen["PullsByKey"] != 1 || len(f.seen) != 1 {
 		t.Errorf("requests = %v; want one PullsByKey", f.seen)
 	}
 }
 
 // GitLab's key search is two requests: a list of the merge requests in
-// every state by title, and the branches by name. GitLab searches no head
-// branch, so it covers none.
+// every state by title, and the branches by name.
 func TestGitLabKeySearchReadsTitlesInEveryState(t *testing.T) {
 	t.Parallel()
 	f := newFactsForge(t, keySearchFixture())
@@ -105,8 +100,8 @@ func TestGitLabKeySearchReadsTitlesInEveryState(t *testing.T) {
 		paths[1] != "projects/grp%2Fweb/repository/branches?per_page=100&search=WEB-1" {
 		t.Errorf("requests = %v; want one title search in every state and one branch search", paths)
 	}
-	if !slices.Equal(got.Branches, []string{"feature/WEB-1-host"}) || got.Covers("WEB-1-x") {
-		t.Errorf("branches = %v, head prefix %q; want feature/WEB-1-host and no prefix", got.Branches, got.HeadPrefix)
+	if !slices.Equal(got.Branches, []string{"feature/WEB-1-host"}) {
+		t.Errorf("branches = %v; want feature/WEB-1-host", got.Branches)
 	}
 }
 
@@ -202,5 +197,34 @@ func TestPRsByHeadReadsEveryStateOfTheOriginsBranch(t *testing.T) {
 	open, err := f.core.ListOpenPRs(t.Context(), github, "feature/WEB-1-host")
 	if err != nil || len(open) != 0 {
 		t.Errorf("ListOpenPRs = %+v, %v; want none (the open one is a fork's)", open, err)
+	}
+}
+
+// A search whose request fails answers what it read before the failure
+// beside the error: GitHub the pages before the one that failed, GitLab
+// the title search beside its failed branch search.
+func TestKeySearchKeepsWhatItReadBeforeAFailure(t *testing.T) {
+	t.Parallel()
+	var github []forgefake.Pull
+	for i := 1; i <= 150; i++ {
+		github = append(github, forgefake.Pull{Number: i, Title: fmt.Sprintf("WEB-1 part %d", i), HeadRef: fmt.Sprintf("part-%d", i)})
+	}
+	f := newFactsForge(t, forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "example/many", Pulls: github},
+		{Forge: "gitlab", Project: "grp/web", Pulls: []forgefake.Pull{{Number: 1, Title: "WEB-1 Fix the API", HeadRef: "fix-api"}}},
+	}})
+	f.mu.Lock()
+	f.failAt["PullsByKey"] = 2
+	f.mu.Unlock()
+	got, err := f.core.SearchPRsByKey(t.Context(), RepoReference{Forge: "github", Host: "github.com", Namespace: "example", Repo: "many"}, "WEB-1")
+	if err == nil || len(got.Rows) != 100 {
+		t.Errorf("github: %d rows, %v; want the first page's 100 beside the second page's failure", len(got.Rows), err)
+	}
+	if err := f.engine.SetRefusal(forgefake.Refusal{Route: "glab api branch list", Status: 403, Body: []byte(`{"message":"403 Forbidden"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = f.core.SearchPRsByKey(t.Context(), RepoReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "web"}, "WEB-1")
+	if err == nil || !slices.Equal(foundNumbers(got.Rows), []int{1}) {
+		t.Errorf("gitlab: rows %v, %v; want 1 beside the branch search's failure", foundNumbers(got.Rows), err)
 	}
 }

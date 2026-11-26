@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -17,7 +18,8 @@ import (
 // Branches API's search, a substring match ignoring case), the two at
 // once, each up to keySearchMaxPages pages. GitLab's merge request list
 // has no search of source branch names, so the caller looks up the
-// branches it keeps.
+// branches it keeps. A search that fails keeps what it read, beside the
+// other's answer.
 func (f *gitlabForge) SearchPRsByKey(ctx context.Context, repo RepoReference, key string) (PRKeySearch, error) {
 	client, err := f.core.gitlabAPI(repo.Host)
 	if err != nil {
@@ -67,14 +69,8 @@ func (f *gitlabForge) SearchPRsByKey(ctx context.Context, repo RepoReference, ke
 		})
 	})
 	wg.Wait()
-	if titleErr != nil {
-		return PRKeySearch{}, titleErr
-	}
-	if branchesErr != nil {
-		return PRKeySearch{}, branchesErr
-	}
 	out.Full = titleFull || branchesFull
-	return out, nil
+	return out, errors.Join(titleErr, branchesErr)
 }
 
 // gitlabSearchPages reads request's pages into visit, up to

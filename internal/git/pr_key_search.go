@@ -3,7 +3,6 @@ package git
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"agent-overflow/internal/forgeapi"
 )
@@ -41,14 +40,13 @@ func prFound(url, title, state string, draft bool, author PRListAuthor, head str
 // PRKeySearch is what SearchPRsByKey found: the pull requests its title
 // and head searches matched and the names of the repository's branches
 // that hold the key, each search read up to keySearchMaxPages pages of
-// 100. Full is set when a search had more, so these may not be all.
-// HeadPrefix is set when the search read every pull request whose head
-// branch begins with it (Covers).
+// 100. Full is set when a search had more, so these may not be all. A
+// search that failed answers what it read before the failure beside its
+// error.
 type PRKeySearch struct {
-	Rows       []PRFound
-	Branches   []string
-	HeadPrefix string
-	Full       bool
+	Rows     []PRFound
+	Branches []string
+	Full     bool
 }
 
 // keySearchMaxPages bounds each of a key search's searches: its matches
@@ -56,13 +54,6 @@ type PRKeySearch struct {
 // can sit behind a page of loose ones, and a repository with more than
 // this many is said to be searched in part.
 const keySearchMaxPages = 5
-
-// Covers reports whether the search read every pull request whose head is
-// branch, in any state: its head search matched every head that begins
-// with HeadPrefix, in any case (measured, forge-api-measurements.md).
-func (s PRKeySearch) Covers(branch string) bool {
-	return s.HeadPrefix != "" && len(branch) >= len(s.HeadPrefix) && strings.EqualFold(branch[:len(s.HeadPrefix)], s.HeadPrefix)
-}
 
 // SearchPRsByKey reads the pull requests of repo, in any state, and the
 // branches that the forge's search finds for key: on GitHub the pull
@@ -160,7 +151,8 @@ func (p *githubKeySearchPart) next(info githubPageInfo) {
 // SearchPRsByKey reads repo's pull requests by title and by head branch
 // and its branches by name, a page of each a request, while any has a
 // page left, up to keySearchMaxPages requests. A pull request both find
-// is a row of each; the caller lists a pull request once.
+// is a row of each; the caller lists a pull request once. A request that
+// fails ends the search with the pages read before it.
 func (f *githubForge) SearchPRsByKey(ctx context.Context, repo RepoReference, key string) (PRKeySearch, error) {
 	owner, name, err := splitGitHubProject(repo.Project())
 	if err != nil {
@@ -190,7 +182,7 @@ func (f *githubForge) SearchPRsByKey(ctx context.Context, repo RepoReference, ke
 			} `json:"repository"`
 		}
 		if _, err := client.GraphQL(ctx, githubPullsByKeyQuery, vars, &raw); err != nil {
-			return PRKeySearch{}, err
+			return out, err
 		}
 		for _, part := range []struct {
 			read   *githubKeySearchPart
@@ -200,7 +192,7 @@ func (f *githubForge) SearchPRsByKey(ctx context.Context, repo RepoReference, ke
 				continue
 			}
 			if part.answer == nil {
-				return PRKeySearch{}, fmt.Errorf("GitHub answered no search for %s on %s", repo.Project(), repo.Host)
+				return out, fmt.Errorf("GitHub answered no search for %s on %s", repo.Project(), repo.Host)
 			}
 			part.read.next(part.answer.PageInfo)
 			for _, node := range part.answer.Nodes {
@@ -210,14 +202,14 @@ func (f *githubForge) SearchPRsByKey(ctx context.Context, repo RepoReference, ke
 				}
 				row, err := prFound(node.URL, node.Title, node.State, node.IsDraft, PRListAuthor{Login: node.Author.Login, Name: node.Author.Name}, node.HeadRefName)
 				if err != nil {
-					return PRKeySearch{}, err
+					return out, err
 				}
 				out.Rows = append(out.Rows, row)
 			}
 		}
 		if branches.want {
 			if raw.Repository == nil {
-				return PRKeySearch{}, fmt.Errorf("GitHub answered no repository %s on %s", repo.Project(), repo.Host)
+				return out, fmt.Errorf("GitHub answered no repository %s on %s", repo.Project(), repo.Host)
 			}
 			branches.next(raw.Repository.Refs.PageInfo)
 			for _, node := range raw.Repository.Refs.Nodes {
@@ -229,8 +221,5 @@ func (f *githubForge) SearchPRsByKey(ctx context.Context, repo RepoReference, ke
 		}
 	}
 	out.Full = title.want || head.want || branches.want
-	if !head.want {
-		out.HeadPrefix = key
-	}
 	return out, nil
 }

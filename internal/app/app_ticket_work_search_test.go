@@ -94,9 +94,7 @@ func workSearchPR(number int) gitops.PRReference {
 // requests the forge finds for the key: by title, by a branch that begins
 // with it, and by a branch of the ticket's that names it later in its
 // name. A pull request listed already, or found by both searches, is
-// listed once: a stored row stays, with its CI, and takes the state the
-// forge answers; a linked thread's record gives way to the forge's
-// answer. A found pull request that does not name the key (WEB-12,
+// listed once, as the forge answers it now, with the stored list's CI. A found pull request that does not name the key (WEB-12,
 // "web 1", the key in its body) is not listed, and a branch a listed
 // pull request names is folded into it. GetTicketWork asks the forge
 // nothing.
@@ -151,8 +149,8 @@ func TestSearchTicketWorkListsWhatTheForgeFindsByTheKey(t *testing.T) {
 	}
 	url := func(n int) string { return "https://github.com/example/web/pull/" + strconv.Itoa(n) }
 	want := []TicketPullRequest{
-		{Ref: workSearchPR(7), Title: "WEB-1 Old cursor", State: TicketPRMerged, CI: "failed", Branch: "old-cursor", ProjectID: f.project},
-		{Ref: workSearchPR(1), Title: "WEB-1 Fix the login", Author: "User 1", State: TicketPROpen, CI: "success", Branch: "fix-login", ProjectID: f.project},
+		{Ref: workSearchPR(7), URL: url(7), Title: "WEB-1 Old cursor", Author: "User 1", State: TicketPRMerged, CI: "failed", Branch: "old-cursor", ProjectID: f.project},
+		{Ref: workSearchPR(1), URL: url(1), Title: "WEB-1 Fix the login", Author: "User 1", State: TicketPROpen, CI: "success", Branch: "fix-login", ProjectID: f.project},
 		{Ref: workSearchPR(8), URL: url(8), Title: "WEB-1 Docs", Author: "User 1", State: TicketPRMerged, Branch: "docs", ProjectID: f.project},
 		{Ref: workSearchPR(9), URL: url(9), Title: "WEB-1 Both", Author: "user1", State: TicketPRDraft, Branch: "WEB-1-both", ProjectID: f.project},
 		{Ref: workSearchPR(2), URL: url(2), Title: "Cache the session", Author: "user1", State: TicketPRMerged, Branch: "WEB-1-cache", ProjectID: f.project},
@@ -169,12 +167,13 @@ func TestSearchTicketWorkListsWhatTheForgeFindsByTheKey(t *testing.T) {
 	if !slices.Equal(branches, []string{"web-1-new"}) || len(work.ForgeProblems) != 0 || len(work.SearchFull) != 0 {
 		t.Errorf("branches = %v, problems %+v, full %v; want web-1-new alone, the rest folded into their pull requests", branches, work.ForgeProblems, work.SearchFull)
 	}
-	// One key search, then a lookup of each branch of the ticket, on the
-	// forge or here, whose pull requests the search did not read whole:
-	// the head search read every branch that begins with the key, in any
-	// case, so only feature/WEB-1-host is looked up.
-	if ops, _ := f.forgeOps(0); !slices.Equal(ops, []string{"gh graphql PullsByKey", "gh graphql PRsByHead"}) {
-		t.Errorf("forge requests = %v; want one key search and the lookup of feature/WEB-1-host", ops)
+	// One key search, then one lookup of each branch of the ticket, here
+	// (WEB-1-cache, feature/WEB-1-host, web-1-new) or on the forge
+	// (WEB-1-both; the forge's WEB-1-cache and feature/WEB-1-host are the
+	// same branches).
+	lookups := slices.Repeat([]string{"gh graphql PRsByHead"}, 4)
+	if ops, _ := f.forgeOps(0); !slices.Equal(ops, append([]string{"gh graphql PullsByKey"}, lookups...)) {
+		t.Errorf("forge requests = %v; want one key search and 4 lookups", ops)
 	}
 }
 
@@ -409,14 +408,116 @@ func TestSearchTicketWorkReadsAForksBranchInBothProjects(t *testing.T) {
 	}
 }
 
-// The local read is bounded by the method's context: GetTicketWork,
-// whose read SearchTicketWork shares, stops when it ends.
-func TestTicketWorkLocalReadStopsWithItsContext(t *testing.T) {
+// No project's local read starts once the method's context has ended:
+// GetTicketWork, whose read SearchTicketWork shares, stops.
+func TestTicketWorkStartsNoProjectReadAfterItsContextEnded(t *testing.T) {
 	t.Parallel()
 	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web"}}})
 	ctx, cancel := context.WithCancel(f.ctx)
 	cancel()
 	if _, err := f.a.GetTicketWork(ctx, f.conn.ID, "10101"); !errors.Is(err, context.Canceled) {
 		t.Errorf("GetTicketWork with its context ended = %v; want it stopped", err)
+	}
+}
+
+// A GitHub fork's ticket branch is looked up in the project it was forked
+// from too: the fork's head search, which found nothing, does not stand
+// for the parent's pull requests.
+func TestSearchTicketWorkLooksUpAGitHubForksBranchInItsParent(t *testing.T) {
+	t.Parallel()
+	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "example/web"},
+		{Forge: "github", Project: "team/up", Pulls: []forgefake.Pull{
+			{Number: 2, Title: "Fix login", HeadRef: "WEB-1-login", HeadRepo: "alice/up"},
+		}},
+		{Forge: "github", Project: "alice/up", Parent: "team/up"},
+	}})
+	fork := forgeProjectRepo(t, f.a, "https://github.com/alice/up.git")
+	p, err := f.a.store.GetProject(fork)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, p.Path, "branch", "WEB-1-login")
+	f.linkThread(t, "t-fork", fork, p.Path)
+
+	work, err := f.a.SearchTicketWork(f.ctx, f.conn.ID, "10101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := workPulls(work); !slices.Equal(got, []string{"github:team/up:2 open"}) || len(work.ForgeProblems) != 0 {
+		t.Errorf("pull requests = %v, problems %+v; want team/up's 2", got, work.ForgeProblems)
+	}
+}
+
+// What a search read before one of its requests failed is listed beside
+// the failure: GitLab's title search answered, its branch search did not.
+func TestSearchTicketWorkListsWhatASearchReadBeforeItFailed(t *testing.T) {
+	t.Parallel()
+	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "example/web"},
+		{Forge: "gitlab", Project: "grp/web", Pulls: []forgefake.Pull{{Number: 1, Title: "WEB-1 Fix the API", HeadRef: "fix-api", State: "merged"}}},
+	}})
+	gitlab := forgeProjectRepo(t, f.a, "https://gitlab.com/grp/web.git")
+	p, err := f.a.store.GetProject(gitlab)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.linkThread(t, "t-gl", gitlab, p.Path)
+	if err := f.engine.SetRefusal(forgefake.Refusal{Route: "glab api branch list", Status: 403, Body: json.RawMessage(`{"message":"403 Forbidden"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	work, err := f.a.SearchTicketWork(f.ctx, f.conn.ID, "10101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := workPulls(work); !slices.Equal(got, []string{"gitlab:grp/web:1 merged"}) || len(work.ForgeProblems) != 1 {
+		t.Errorf("pull requests = %v, problems %+v; want grp/web's 1 beside the branch search's failure", got, work.ForgeProblems)
+	}
+}
+
+// A stored list keeps its rows while a project still clones its
+// repository, though the project it was read under was removed.
+func TestTicketWorkKeepsAStoredListWhoseProjectWasRemovedWhileAnotherClonesIt(t *testing.T) {
+	t.Parallel()
+	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web"}}})
+	removed := forgeProjectRepo(t, f.a, "https://github.com/example/web.git")
+	storePRList(t, f.a, removed, workSearchRepo, []gitops.PRListRow{
+		prListRow(workSearchRepo, 1, func(r *gitops.PRListRow) {
+			r.Title, r.HeadRefName, r.PipelineStatus = "WEB-1 Fix the login", "fix-login", "success"
+		}),
+	}, time.Minute)
+	if err := f.a.store.DeleteProject(removed); err != nil {
+		t.Fatal(err)
+	}
+	work, err := f.a.GetTicketWork(f.ctx, f.conn.ID, "10101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(work.PullRequests) != 1 || work.PullRequests[0].CI != "success" || len(work.Problems) != 0 {
+		t.Errorf("pull requests = %+v, problems %+v; want the stored row with its CI and no problem", work.PullRequests, work.Problems)
+	}
+}
+
+// A stored row the forge finds shows what the forge names it now, its
+// title, author and state, and keeps the CI only the stored list has.
+func TestSearchTicketWorkShowsAStoredRowAsTheForgeNamesItNow(t *testing.T) {
+	t.Parallel()
+	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: []forgefake.Pull{
+		{Number: 7, Title: "WEB-1 New cursor", HeadRef: "old-cursor", State: "merged", Author: "user1", AuthorName: "User 1"},
+	}}}})
+	storePRList(t, f.a, f.project, workSearchRepo, []gitops.PRListRow{
+		prListRow(workSearchRepo, 7, func(r *gitops.PRListRow) {
+			r.Title, r.HeadRefName, r.PipelineStatus = "WEB-1 Old cursor", "old-cursor", "failed"
+		}),
+	}, time.Minute)
+	work, err := f.a.SearchTicketWork(f.ctx, f.conn.ID, "10101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(work.PullRequests) != 1 {
+		t.Fatalf("pull requests = %+v", work.PullRequests)
+	}
+	if pr := work.PullRequests[0]; pr.Title != "WEB-1 New cursor" || pr.Author != "User 1" || pr.State != TicketPRMerged || pr.CI != "failed" || pr.ProjectID != f.project {
+		t.Errorf("row = %+v; want the forge's title, author and state, the stored CI and project", pr)
 	}
 }
