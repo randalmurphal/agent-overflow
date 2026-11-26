@@ -12,8 +12,9 @@
 // lists after Overview and another browser shows; edit mode removes the
 // widget, live on the other browser too, and deletes the dashboard, which
 // takes both back to Overview. A board on a paired computer takes a
-// widget its agent proposed from this computer's screen, and the kept
-// dashboard is still there after that computer restarts.
+// widget its agent proposed from this computer's screen, the kept
+// dashboard is still there after that computer restarts, and Ask your
+// agent from this computer's screen opens its thread on that computer.
 
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
