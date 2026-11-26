@@ -1,7 +1,10 @@
 package app
 
 import (
+	"cmp"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -13,10 +16,12 @@ import (
 	"agent-overflow/internal/transport"
 )
 
-// The requests the tracker tools' writes make, pinned per tracker: a
-// comment alone, a status change, a sprint move of three tickets and a
-// create, on Jira also one that names a field. Each board the writes judge is read first and its pump ended,
-// so every request a pin lists is the call's.
+// The requests the tracker tools make, pinned on the fake's request log
+// per tracker, call shape, number of tickets (1 and 3) and whether the
+// agent read the tickets first (warm) or the mirror holds only their
+// cards and rows (cold), plus a create, a create that moves and plans
+// its ticket, a read and a find. Each fixture reads its board first and
+// ends that screen's pump, so every request a pin lists is the call's.
 
 // toolRoutes runs one tool call, answering the approval it raises, and
 // answers its text and the routes it asked of the fake since the last.
@@ -64,6 +69,7 @@ func readBoard(t *testing.T, f *trackerBoardFixture, connection, board string, s
 	state.RunCleanups()
 }
 
+// pinned fails what unless its routes are want.
 func pinned(t *testing.T, what string, routes, want []string) {
 	t.Helper()
 	if !slices.Equal(routes, want) {
@@ -71,69 +77,279 @@ func pinned(t *testing.T, what string, routes, want []string) {
 	}
 }
 
-func TestTrackerWriteRequestsOnJira(t *testing.T) {
-	t.Parallel()
-	f := newTrackerBoardFixture(t)
-	t.Cleanup(func() { _ = f.a.trackerMCPServer().Close() })
-	thread, endpoint := trackerWriteThread(t, f, provider.RuntimeAuto)
-	readBoard(t, f, f.conn.ID, "1", []trackerapp.Section{{Kind: trackerapp.SectionSprint, Sprint: "1"}, {Kind: trackerapp.SectionBacklog}})
+// costSite is the board site with story points the board estimates in, a
+// future sprint, and its three issues in Sprint 1 and To Do, each with a
+// description.
+func costSite() trackerfake.JiraSite {
+	s := trackerBoardSite()
+	s.Fields = append(s.Fields, trackerfake.JiraField{ID: "customfield_10016", Name: "Story Points",
+		Schema: trackerfake.JiraSchema{Type: "number", Custom: "com.atlassian.jira.plugin.system.customfieldtypes:float", CustomID: 10016}})
+	s.Boards[0].Estimation = "customfield_10016"
+	s.Sprints = append(s.Sprints, trackerfake.JiraSprint{ID: 2, Board: 1, Name: "Sprint 2", State: "future"})
+	for i := range s.Issues {
+		s.Issues[i].Sprints = []int64{1}
+		s.Issues[i].Status = "10000"
+		s.Issues[i].Description = json.RawMessage(`{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"body"}]}]}`)
+	}
+	return s
+}
 
-	const (
-		issue       = "GET rest/api/3/issue/{issue}"
-		comments    = "GET rest/api/3/issue/{issue}/comment"
-		boardRows   = "GET rest/software/1.0/board/{board}/issue"
-		types       = "GET rest/api/3/issue/createmeta/{project}/issuetypes"
-		screen      = "GET rest/api/3/issue/createmeta/{project}/issuetypes/{type}"
-		create      = "POST rest/api/3/issue"
-		match       = "POST rest/api/3/jql/match"
-		bulkfetch   = "POST rest/api/3/issue/bulkfetch"
-		transitions = "GET rest/api/3/issue/{issue}/transitions"
-		transition  = "POST rest/api/3/issue/{issue}/transitions"
-	)
-	_, routes := toolRoutes(t, f, thread.ID, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-1"}, "comment": "Checked."})
-	pinned(t, "a comment alone", routes, []string{
-		issue, // the project, whose comment audience the comment takes
-		"POST rest/api/3/issue/{issue}/comment",
-	})
-	// Several tickets' comment alone waits for the approval and reads
-	// nothing again after it: a comment judges nothing on the ticket.
-	_, routes = toolRoutes(t, f, thread.ID, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-1", "WEB-2"}, "comment": "Checked again."})
-	pinned(t, "a comment alone on two tickets", routes, []string{
-		issue, "POST rest/api/3/issue/{issue}/comment", // each ticket's project, then its comment
-		issue, "POST rest/api/3/issue/{issue}/comment",
-	})
-	_, routes = toolRoutes(t, f, thread.ID, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-2"}, "set": map[string]any{"status": "Done"}})
-	pinned(t, "a status change", routes, []string{
-		issue, comments, // the ticket's detail, which the plan judges the status on
-		transitions, transition, // the move: the moves it can make, then the one
-		boardRows, issue, comments, // the ticket's row and detail read again after the write
-	})
-	_, routes = toolRoutes(t, f, thread.ID, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-1", "WEB-2", "WEB-3"}, "set": map[string]any{"sprint": "backlog"}})
-	pinned(t, "a sprint move of three tickets", routes, []string{
-		issue, comments, // WEB-1's detail
-		bulkfetch,       // WEB-2's: the body the status change read, checked by its update time
-		issue, comments, // WEB-3's detail: in no sprint, it is already in the backlog
-		bulkfetch,                                              // the three cards read again after the approval
-		boardRows, "POST rest/agile/1.0/backlog/{board}/issue", // WEB-1's move, from its sprint
-		boardRows, issue, comments, // WEB-1 read again
-		boardRows, "POST rest/agile/1.0/backlog/{board}/issue", // WEB-2's
-		boardRows, issue, comments, // WEB-2 read again
-	})
-	// The create that names a field reads the create screen once, for both
-	// the tool's field names and the create's plan; the next create, within
-	// the minute the client keeps a screen, reads it none.
-	_, routes = toolRoutes(t, f, thread.ID, endpoint, "ticket_create", map[string]any{"project": "WEB", "title": "Dated page", "set": map[string]any{"Due date": "2026-12-01"}})
-	pinned(t, "a create that names a field", routes, []string{
-		types, screen, // the type, then its screen
-		create, match, bulkfetch, // the create, then its place on the board and its row
-	})
-	_, routes = toolRoutes(t, f, thread.ID, endpoint, "ticket_create", map[string]any{"project": "WEB", "title": "New page", "description": "Steps.", "set": map[string]any{"status": "In Progress"}})
-	pinned(t, "a create", routes, []string{
-		types, create, match, bulkfetch,
-		issue, comments, // the new ticket's detail, for the status after the create
-		transitions, transition,
-		boardRows, issue, comments, // read again after the move
-	})
+// costLinear is trackerCostLinear with estimates on and a second cycle,
+// every issue in the first.
+func costLinear() trackerfake.LinearWorkspace {
+	ws := trackerCostLinear()
+	ws.Teams[0].Estimation = "fibonacci"
+	c := ws.Cycles[0]
+	ws.Cycles = append(ws.Cycles, trackerfake.LinearCycle{ID: waitLID(31), Team: c.Team, Number: 2, Name: "Cycle 2", StartsAt: c.EndsAt, EndsAt: c.EndsAt.Add(14 * 24 * time.Hour)})
+	for i := range ws.Issues {
+		ws.Issues[i].Cycle = c.ID
+	}
+	return ws
+}
+
+// costFixture is a fixture whose project lists the board of kind's
+// tracker, read once, and a thread that writes.
+func costFixture(t *testing.T, linear bool) (*trackerBoardFixture, string, string) {
+	t.Helper()
+	ws := costLinear()
+	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: costSite(), linear: &ws})
+	t.Cleanup(func() { _ = f.a.trackerMCPServer().Close() })
+	if !linear {
+		thread, endpoint := trackerWriteThread(t, f, provider.RuntimeAuto)
+		readBoard(t, f, f.conn.ID, "1", []trackerapp.Section{{Kind: trackerapp.SectionSprint, Sprint: "1"}, {Kind: trackerapp.SectionBacklog}})
+		return f, thread.ID, endpoint
+	}
+	conn := f.addLinear(t, ws)
+	team := ws.Teams[0].ID
+	listed := []trackerapp.ProjectBoard{
+		{Connection: f.conn.ID, Board: "1", OpensFirst: true, Name: "WEB board", TrackerProject: "WEB"},
+		{Connection: conn.ID, Board: team, Name: "Engineering", TrackerProject: "ENG"},
+	}
+	if _, err := f.a.SetProjectTrackerBoards(t.Context(), f.project, f.held(t, t.Context()), listed); err != nil {
+		t.Fatal(err)
+	}
+	thread, endpoint := trackerWriteThread(t, f, provider.RuntimeAuto)
+	readBoard(t, f, conn.ID, team, []trackerapp.Section{{Kind: trackerapp.SectionSprint, Sprint: ws.Cycles[0].ID}, {Kind: trackerapp.SectionBacklog}})
+	return f, thread.ID, endpoint
+}
+
+// costRoute is a route of the fake as a pin names it: Jira's by what it
+// does, Linear's operation by its name.
+var costRoute = map[string]string{
+	"GET rest/api/3/field":                                        "fields",
+	"GET rest/api/3/issue/{issue}":                                "issue",
+	"GET rest/api/3/issue/{issue}/comment":                        "comments",
+	"POST rest/api/3/issue/{issue}/comment":                       "comment",
+	"POST rest/api/3/issue/bulkfetch":                             "bulkfetch",
+	"GET rest/api/3/issue/{issue}/transitions":                    "transitions",
+	"POST rest/api/3/issue/{issue}/transitions":                   "transition",
+	"PUT rest/api/3/issue/{issue}":                                "edit",
+	"GET rest/software/1.0/board/{board}/issue":                   "rows",
+	"GET rest/agile/1.0/board/{board}/sprint":                     "sprints",
+	"POST rest/agile/1.0/sprint/{sprint}/issue":                   "to-sprint",
+	"POST rest/agile/1.0/backlog/{board}/issue":                   "to-backlog",
+	"PUT rest/agile/1.0/issue/{issue}/estimation":                 "estimate",
+	"GET rest/api/3/issue/createmeta/{project}/issuetypes":        "types",
+	"GET rest/api/3/issue/createmeta/{project}/issuetypes/{type}": "screen",
+	"POST rest/api/3/issue":                                       "create",
+	"POST rest/api/3/jql/match":                                   "match",
+	"POST rest/api/3/search/jql":                                  "search",
+}
+
+// costNames are routes as costRoute names them, joined by spaces.
+func costNames(routes []string) string {
+	out := make([]string, len(routes))
+	for i, r := range routes {
+		out[i] = cmp.Or(costRoute[r], r)
+	}
+	return strings.Join(out, " ")
+}
+
+// TestTrackerToolRequestCounts pins the requests of each call shape. The
+// read after an approval (planCall.recheck) is the bulkfetch or Issues a
+// call of three tickets with set makes after its plan's reads; a call of
+// one ticket or a comment alone waits for no approval or judges nothing.
+func TestTrackerToolRequestCounts(t *testing.T) {
+	t.Parallel()
+	type shape struct {
+		name string
+		set  func(linear bool) map[string]any
+		// comment is the comment the call adds, if any.
+		comment string
+	}
+	status := func(linear bool) map[string]any {
+		if linear {
+			return map[string]any{"status": "Backlog"}
+		}
+		return map[string]any{"status": "Done"}
+	}
+	sprint := func(linear bool) map[string]any {
+		if linear {
+			return map[string]any{"sprint": "Cycle 2"}
+		}
+		return map[string]any{"sprint": "Sprint 2"}
+	}
+	shapes := []shape{
+		{name: "comment", comment: "Checked."},
+		{name: "status", set: status},
+		{name: "sprint", set: sprint},
+		{name: "backlog", set: func(bool) map[string]any { return map[string]any{"sprint": "backlog"} }},
+		{name: "title", set: func(bool) map[string]any { return map[string]any{"title": "Renamed"} }},
+		{name: "estimate", set: func(bool) map[string]any { return map[string]any{"estimate": 3} }},
+		{name: "mixed", comment: "Done.", set: func(linear bool) map[string]any {
+			m := map[string]any{"title": "Renamed", "estimate": 3}
+			maps.Copy(m, status(linear))
+			maps.Copy(m, sprint(linear))
+			return m
+		}},
+	}
+	// want is each pin, by tracker, shape, temperature and N.
+	want := costPins
+	for _, linear := range []bool{false, true} {
+		tracker, keys := "jira", []string{"WEB-1", "WEB-2", "WEB-3"}
+		if linear {
+			tracker, keys = "linear", []string{"example/ENG-1", "example/ENG-2", "example/ENG-3"}
+		}
+		for _, sh := range shapes {
+			for _, warm := range []bool{false, true} {
+				temp := "cold"
+				if warm {
+					temp = "warm"
+				}
+				for _, n := range []int{1, 3} {
+					name := fmt.Sprintf("%s/%s/%s/%d", tracker, sh.name, temp, n)
+					t.Run(name, func(t *testing.T) {
+						t.Parallel()
+						f, thread, endpoint := costFixture(t, linear)
+						if warm {
+							for _, k := range keys[:n] {
+								toolRoutes(t, f, thread, endpoint, "ticket_read", map[string]any{"key": k})
+							}
+						}
+						args := map[string]any{"keys": keys[:n]}
+						if sh.set != nil {
+							args["set"] = sh.set(linear)
+						}
+						if sh.comment != "" {
+							args["comment"] = sh.comment
+						}
+						_, routes := toolRoutes(t, f, thread, endpoint, "ticket_update", args)
+						if got := costNames(routes); got != want[name] {
+							t.Errorf("%d requests: %s\nwant %s", len(routes), got, want[name])
+						}
+					})
+				}
+			}
+		}
+		project := "WEB"
+		if linear {
+			project = "ENG"
+		}
+		for _, c := range []struct {
+			name string
+			tool string
+			args map[string]any
+		}{
+			{"create", "ticket_create", map[string]any{"project": project, "title": "New page"}},
+			{"create with status and sprint", "ticket_create", map[string]any{"project": project, "title": "New page", "set": func() map[string]any {
+				m := status(linear)
+				maps.Copy(m, sprint(linear))
+				return m
+			}()}},
+			{"read", "ticket_read", map[string]any{"key": keys[0]}},
+			{"find", "ticket_find", map[string]any{"text": "story"}},
+		} {
+			name := tracker + "/" + c.name
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				f, thread, endpoint := costFixture(t, linear)
+				_, routes := toolRoutes(t, f, thread, endpoint, c.tool, c.args)
+				got := costNames(routes)
+				if c.tool == "ticket_read" {
+					// The same read again: the body the first stored, checked.
+					_, again := toolRoutes(t, f, thread, endpoint, c.tool, c.args)
+					got += " | " + costNames(again)
+				}
+				if got != want[name] {
+					t.Errorf("%s\nwant %s", got, want[name])
+				}
+			})
+		}
+	}
+}
+
+// costPins are TestTrackerToolRequestCounts' pins, by tracker, shape,
+// temperature and number of tickets. A Jira status planned cold takes
+// its moves from the detail read (no transitions read); warm, the plan
+// reads the cards, which keep no read, so the move reads them. An
+// estimate reads the board's rows to check the issue is on it first.
+// Every write ends with one refresh (rows, Issues). A read is one read
+// and then the same read again, after "|".
+var costPins = map[string]string{
+	"jira/comment/cold/1":                  "bulkfetch comment",
+	"jira/comment/cold/3":                  "bulkfetch comment comment comment",
+	"jira/comment/warm/1":                  "bulkfetch comment",
+	"jira/comment/warm/3":                  "bulkfetch comment comment comment",
+	"jira/status/cold/1":                   "issue comments transition rows",
+	"jira/status/cold/3":                   "issue issue issue comments comments comments bulkfetch transition transition transition rows",
+	"jira/status/warm/1":                   "bulkfetch transitions transition rows",
+	"jira/status/warm/3":                   "bulkfetch bulkfetch transitions transition transitions transition transitions transition rows",
+	"jira/sprint/cold/1":                   "bulkfetch rows sprints to-sprint rows",
+	"jira/sprint/cold/3":                   "bulkfetch bulkfetch rows sprints to-sprint rows",
+	"jira/sprint/warm/1":                   "bulkfetch rows sprints to-sprint rows",
+	"jira/sprint/warm/3":                   "bulkfetch bulkfetch rows sprints to-sprint rows",
+	"jira/backlog/cold/1":                  "bulkfetch rows to-backlog rows",
+	"jira/backlog/cold/3":                  "bulkfetch bulkfetch rows to-backlog rows",
+	"jira/backlog/warm/1":                  "bulkfetch rows to-backlog rows",
+	"jira/backlog/warm/3":                  "bulkfetch bulkfetch rows to-backlog rows",
+	"jira/title/cold/1":                    "bulkfetch issue edit rows",
+	"jira/title/cold/3":                    "bulkfetch bulkfetch issue edit issue edit issue edit rows",
+	"jira/title/warm/1":                    "bulkfetch issue edit rows",
+	"jira/title/warm/3":                    "bulkfetch bulkfetch issue edit issue edit issue edit rows",
+	"jira/estimate/cold/1":                 "bulkfetch rows estimate rows",
+	"jira/estimate/cold/3":                 "bulkfetch bulkfetch rows estimate rows estimate rows estimate rows",
+	"jira/estimate/warm/1":                 "bulkfetch rows estimate rows",
+	"jira/estimate/warm/3":                 "bulkfetch bulkfetch rows estimate rows estimate rows estimate rows",
+	"jira/mixed/cold/1":                    "issue comments bulkfetch transition issue edit rows estimate rows sprints to-sprint comment rows",
+	"jira/mixed/cold/3":                    "issue issue issue comments comments comments bulkfetch transition transition transition issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint comment comment comment rows",
+	"jira/mixed/warm/1":                    "bulkfetch bulkfetch transitions transition issue edit rows estimate rows sprints to-sprint comment rows",
+	"jira/mixed/warm/3":                    "bulkfetch bulkfetch transitions transition transitions transition transitions transition issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint comment comment comment rows",
+	"jira/create":                          "types screen create match bulkfetch",
+	"jira/create with status and sprint":   "types screen create match bulkfetch issue comments transition rows sprints to-sprint rows",
+	"jira/read":                            "issue comments | bulkfetch",
+	"jira/find":                            "search",
+	"linear/comment/cold/1":                "CreateComment",
+	"linear/comment/cold/3":                "CreateComment CreateComment CreateComment",
+	"linear/comment/warm/1":                "CreateComment",
+	"linear/comment/warm/3":                "CreateComment CreateComment CreateComment",
+	"linear/status/cold/1":                 "IssueDetails UpdateIssue Issues",
+	"linear/status/cold/3":                 "IssueDetails Issues UpdateIssue UpdateIssue UpdateIssue Issues",
+	"linear/status/warm/1":                 "IssueDetails UpdateIssue Issues",
+	"linear/status/warm/3":                 "IssueDetails Issues UpdateIssue UpdateIssue UpdateIssue Issues",
+	"linear/sprint/cold/1":                 "Issues CyclePositions UpdateIssues Issues",
+	"linear/sprint/cold/3":                 "Issues Issues CyclePositions UpdateIssues Issues",
+	"linear/sprint/warm/1":                 "Issues CyclePositions UpdateIssues Issues",
+	"linear/sprint/warm/3":                 "Issues Issues CyclePositions UpdateIssues Issues",
+	"linear/backlog/cold/1":                "Issues IssuePositions UpdateIssues Issues",
+	"linear/backlog/cold/3":                "Issues Issues IssuePositions UpdateIssues Issues",
+	"linear/backlog/warm/1":                "Issues IssuePositions UpdateIssues Issues",
+	"linear/backlog/warm/3":                "Issues Issues IssuePositions UpdateIssues Issues",
+	"linear/title/cold/1":                  "Issues UpdateIssue Issues",
+	"linear/title/cold/3":                  "Issues Issues UpdateIssue UpdateIssue UpdateIssue Issues",
+	"linear/title/warm/1":                  "Issues UpdateIssue Issues",
+	"linear/title/warm/3":                  "Issues Issues UpdateIssue UpdateIssue UpdateIssue Issues",
+	"linear/estimate/cold/1":               "Issues IssueTeam UpdateIssue Issues",
+	"linear/estimate/cold/3":               "Issues Issues IssueTeam UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue Issues",
+	"linear/estimate/warm/1":               "Issues IssueTeam UpdateIssue Issues",
+	"linear/estimate/warm/3":               "Issues Issues IssueTeam UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue Issues",
+	"linear/mixed/cold/1":                  "IssueDetails UpdateIssue UpdateIssue IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment Issues",
+	"linear/mixed/cold/3":                  "IssueDetails Issues UpdateIssue UpdateIssue UpdateIssue UpdateIssue UpdateIssue UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment CreateComment CreateComment Issues",
+	"linear/mixed/warm/1":                  "IssueDetails UpdateIssue UpdateIssue IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment Issues",
+	"linear/mixed/warm/3":                  "IssueDetails Issues UpdateIssue UpdateIssue UpdateIssue UpdateIssue UpdateIssue UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment CreateComment CreateComment Issues",
+	"linear/create":                        "CreateIssue Issues",
+	"linear/create with status and sprint": "CreateIssue Issues IssueDetails CyclePositions UpdateIssues Issues",
+	"linear/read":                          "IssueDetails | IssueDetails",
+	"linear/find":                          "fields search SearchIssues",
 }
 
 // trackerCostLinear is trackerToolsLinear with cycles on and three issues
@@ -151,53 +367,4 @@ func trackerCostLinear() trackerfake.LinearWorkspace {
 		ws.Issues = append(ws.Issues, is)
 	}
 	return ws
-}
-
-func TestTrackerWriteRequestsOnLinear(t *testing.T) {
-	t.Parallel()
-	ws := trackerCostLinear()
-	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: trackerBoardSite(), linear: &ws})
-	linear := f.addLinear(t, ws)
-	t.Cleanup(func() { _ = f.a.trackerMCPServer().Close() })
-	team := ws.Teams[0].ID
-	listed := []trackerapp.ProjectBoard{
-		{Connection: f.conn.ID, Board: "1", OpensFirst: true, Name: "WEB board", TrackerProject: "WEB"},
-		{Connection: linear.ID, Board: team, Name: "Engineering", TrackerProject: "ENG"},
-	}
-	if _, err := f.a.SetProjectTrackerBoards(t.Context(), f.project, f.held(t, t.Context()), listed); err != nil {
-		t.Fatal(err)
-	}
-	thread, endpoint := trackerWriteThread(t, f, provider.RuntimeAuto)
-	readBoard(t, f, linear.ID, team, []trackerapp.Section{{Kind: trackerapp.SectionSprint, Sprint: ws.Cycles[0].ID}, {Kind: trackerapp.SectionBacklog}})
-
-	_, routes := toolRoutes(t, f, thread.ID, endpoint, "ticket_update", map[string]any{"keys": []string{"example/ENG-1"}, "comment": "Checked."})
-	pinned(t, "a comment alone", routes, []string{"CreateComment"})
-	// Several tickets' comment alone reads nothing again after the approval.
-	_, routes = toolRoutes(t, f, thread.ID, endpoint, "ticket_update", map[string]any{"keys": []string{"example/ENG-1", "example/ENG-2"}, "comment": "Checked again."})
-	pinned(t, "a comment alone on two tickets", routes, []string{"CreateComment", "CreateComment"})
-	_, routes = toolRoutes(t, f, thread.ID, endpoint, "ticket_update", map[string]any{"keys": []string{"example/ENG-1"}, "set": map[string]any{"status": "Backlog"}})
-	pinned(t, "a status change", routes, []string{
-		"IssueDetails",               // the ticket's detail, which the plan judges the status on
-		"IssueStates", "UpdateIssue", // the team's states, then the move
-		"Issues", "IssueDetails", // the ticket's row and detail read again after the write
-	})
-	_, routes = toolRoutes(t, f, thread.ID, endpoint, "ticket_update", map[string]any{"keys": []string{"example/ENG-1", "example/ENG-2", "example/ENG-3"}, "set": map[string]any{"sprint": "backlog"}})
-	out := []string{"IssueDetails", "IssueDetails", "IssueDetails", // each ticket's detail
-		"Issues"} // the three cards read again after the approval
-	for range 3 {
-		// Each ticket's move out of its cycle: the positions it is placed
-		// by, the move, and its row and detail read again.
-		out = append(out, "IssuePositions", "UpdateIssues", "Issues", "IssueDetails")
-	}
-	pinned(t, "a sprint move of three tickets", routes, out)
-	text, routes := toolRoutes(t, f, thread.ID, endpoint, "ticket_create", map[string]any{"project": "ENG", "title": "New page", "description": "Steps.", "set": map[string]any{"status": "Todo"}})
-	if !strings.Contains(text, "ENG-4") {
-		t.Errorf("the create = %s", text)
-	}
-	pinned(t, "a create", routes, []string{
-		"CreateIssue", "Issues", // the create, then its row
-		"IssueDetails",               // the new ticket's detail, for the status after the create
-		"IssueStates", "UpdateIssue", // the move
-		"Issues", "IssueDetails", // read again after the move
-	})
 }

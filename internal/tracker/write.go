@@ -323,12 +323,17 @@ const (
 	AudienceInternal
 )
 
-// CommentInput is a new comment, its body as Markdown.
+// CommentInput is a new comment, its body as Markdown. Project is the
+// issue's project as a read made after the last wait for a person, just
+// before the comment, found it: who the comment reaches is judged on it.
+// Empty, the provider reads the project with the comment. A tracker whose
+// comments have no audience takes no notice of it.
 type CommentInput struct {
 	Issue    IssueID
 	Markdown string
 	Audience Audience
 	ImageDir string
+	Project  ProjectID
 }
 
 // Check refuses a comment that names no issue or has no body.

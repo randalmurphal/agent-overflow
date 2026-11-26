@@ -9,13 +9,18 @@ import (
 )
 
 // A write session is the writes one agent call makes (WithWrites), and
-// what that call read to plan them. It keeps two things:
+// what that call read to plan them. It keeps three things:
 //
 //   - each issue as the call's full read of it found it (tracker
 //     Detail.Read), until the call sends anything to the issue: the
 //     first move or edit of the issue takes it (Move, Edit), so the
 //     provider does not read again what the call read; a later write
 //     reads as any write does;
+//   - the project a key lookup made in the session (Lookup) found each
+//     issue in: a comment the session adds to the issue is judged on it
+//     (AddComment, tracker CommentInput.Project), so a caller that waits
+//     for a person looks the issues up after the wait. The plan's reads
+//     (IssueCards, IssueDetails) keep none: they are made before a wait;
 //   - the refresh each write owes (Service.write): a write in a session
 //     sends and answers its parts at once, and EndWrites refreshes every
 //     resource the session's writes named, one refresh per connection,
@@ -32,14 +37,16 @@ import (
 // sessionKey is the context key of a write session.
 type sessionKey struct{}
 
-// writeSession is one call's session: the reads its writes may take, by
-// connection and issue, the issues it sent anything to, and the refreshes
+// writeSession is one call's session: the reads its writes may take and
+// the projects its lookups found, by connection and issue, the issues it
+// sent anything to, and the refreshes
 // owed, by connection in the order the writes were made.
 type writeSession struct {
-	reads   map[ticketKey]tracker.IssueRead
-	sentTo  map[ticketKey]bool
-	owed    map[string]*owedRefresh
-	ordered []string
+	reads    map[ticketKey]tracker.IssueRead
+	projects map[ticketKey]tracker.ProjectID
+	sentTo   map[ticketKey]bool
+	owed     map[string]*owedRefresh
+	ordered  []string
 }
 
 // owedRefresh is what a connection's writes in a session owe its
@@ -64,7 +71,7 @@ func WithWrites(ctx context.Context) context.Context {
 		return ctx
 	}
 	return context.WithValue(ctx, sessionKey{}, &writeSession{
-		reads: map[ticketKey]tracker.IssueRead{}, sentTo: map[ticketKey]bool{}, owed: map[string]*owedRefresh{},
+		reads: map[ticketKey]tracker.IssueRead{}, projects: map[ticketKey]tracker.ProjectID{}, sentTo: map[ticketKey]bool{}, owed: map[string]*owedRefresh{},
 	})
 }
 
@@ -93,6 +100,26 @@ func (sess *writeSession) read(id string, issue tracker.IssueID) tracker.IssueRe
 		return nil
 	}
 	return sess.reads[ticketKey{connection: id, issue: issue}]
+}
+
+// keepProjects keeps the project of each card found, on connection id,
+// when ctx carries a session.
+func (sess *writeSession) keepProjects(id string, found []tracker.KeyMatch) {
+	if sess == nil {
+		return
+	}
+	for _, m := range found {
+		sess.projects[ticketKey{connection: id, issue: m.Card.ID}] = m.Card.Project
+	}
+}
+
+// project is the project the session's last key lookup found issue on
+// connection id in, empty when none found it.
+func (sess *writeSession) project(id string, issue tracker.IssueID) tracker.ProjectID {
+	if sess == nil {
+		return ""
+	}
+	return sess.projects[ticketKey{connection: id, issue: issue}]
 }
 
 // sent records that res was sent on connection id: no later write takes

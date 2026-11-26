@@ -356,7 +356,8 @@ func TestUpdateStopsAtTheFirstStepNotMade(t *testing.T) {
 }
 
 // A comment alone reads the ticket's ID, key and title from its lookup,
-// with no detail read. A comment an earlier call of the thread added is
+// with no detail read, and looks it up again just before the send for the
+// project its audience is judged on. A comment an earlier call of the thread added is
 // already, with no row; one an earlier call is still sending, or whose
 // earlier attempt could not be looked for, is refused, and the call says
 // why (trackerapp's repeat record).
@@ -367,7 +368,7 @@ func TestUpdateDoesNotAddACommentTwice(t *testing.T) {
 	if answer, err := w.update(t, args); err != nil || answer != `{"tickets":[{"key":"WEB-12","applied":["comment"]}]}` {
 		t.Fatalf("a comment = %s, %v", answer, err)
 	}
-	if want := []string{"lookup conn-jira WEB-12"}; !slices.Equal(w.f.asked, want) {
+	if want := []string{"lookup conn-jira WEB-12", "lookup conn-jira WEB-12"}; !slices.Equal(w.f.asked, want) {
 		t.Fatalf("a comment alone asked %q\nwant %q", w.f.asked, want)
 	}
 	if len(w.h.rows) != 1 || w.h.rows[0].Tickets[0].Title != "Login fails on Safari" {
@@ -602,8 +603,10 @@ func TestCreateTargets(t *testing.T) {
 // connection: a ticket whose update time, status or sprints moved during
 // the wait, each alone, or that is gone, is sent nothing and said as
 // refused, and the other goes on. A read that fails sends nothing. A
-// comment alone, and a single ticket, read nothing again: their keys are
-// looked up once, to resolve them.
+// single ticket reads nothing again: its key is looked up once, to
+// resolve it. A Jira comment, alone or on one ticket, is read again, for
+// the project its audience is judged on (TestTrackerAgentCommentAudience
+// IsReadAfterTheWait), and a read that fails sends nothing.
 func TestUpdateSendsNothingToATicketThatMovedWhileWaiting(t *testing.T) {
 	t.Parallel()
 	args := map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "set": map[string]any{"sprint": "Sprint 15"}}
@@ -654,22 +657,37 @@ func TestUpdateSendsNothingToATicketThatMovedWhileWaiting(t *testing.T) {
 			t.Fatalf("writes %q", w.f.writes)
 		}
 	})
-	t.Run("no read again", func(t *testing.T) {
+	t.Run("read again", func(t *testing.T) {
 		t.Parallel()
 		w := newWriteFixture(t)
-		for _, args := range []map[string]any{
-			{"keys": []string{"WEB-12", "WEB-18"}, "comment": "Checked."},
-			{"keys": []string{"WEB-12"}, "set": map[string]any{"sprint": "Sprint 15"}},
+		for _, c := range []struct {
+			args    map[string]any
+			lookups int
+		}{
+			// The first lookup is the keys' resolution.
+			{map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"sprint": "Sprint 15"}}, 1},
+			{map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "comment": "Checked."}, 2},
+			{map[string]any{"keys": []string{"WEB-12"}, "comment": "Checked again."}, 2},
 		} {
 			w.f.asked = nil
-			if _, err := w.update(t, args); err != nil {
+			if _, err := w.update(t, c.args); err != nil {
 				t.Fatal(err)
 			}
-			// The one lookup is the keys' resolution.
 			lookups := slices.DeleteFunc(slices.Clone(w.f.asked), func(a string) bool { return !strings.HasPrefix(a, "lookup ") })
-			if len(lookups) != 1 {
-				t.Errorf("%v read %q, want the keys looked up once", args, w.f.asked)
+			if len(lookups) != c.lookups {
+				t.Errorf("%v read %q, want %d lookups", c.args, w.f.asked, c.lookups)
 			}
+		}
+	})
+	t.Run("read before a comment fails", func(t *testing.T) {
+		t.Parallel()
+		w := newWriteFixture(t)
+		w.f.lookupErrAfter = 1
+		w.f.lookupErr = map[string]error{jiraSource.ID: errorsx.Public(CodeFailed, "Jira did not answer.", nil)}
+		_, err := w.update(t, map[string]any{"keys": []string{"WEB-12"}, "comment": "Checked."})
+		refused(t, err, CodeFailed, "Nothing was sent: the tickets could not be read again before anything was sent. "+jiraSource.Site+": Jira did not answer.")
+		if len(w.f.writes) != 0 {
+			t.Fatalf("writes %q", w.f.writes)
 		}
 	})
 }

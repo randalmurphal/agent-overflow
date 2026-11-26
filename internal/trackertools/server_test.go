@@ -23,6 +23,8 @@ type fakeTracker struct {
 	search    func(connection string, in trackerapp.SearchRequest) (trackerapp.SearchPageView, error)
 	lookup    map[string]map[string]string // connection, key: issue
 	lookupErr map[string]error
+	// lookupErrAfter is how many lookups answer before lookupErr does.
+	lookupErrAfter int
 	// honorCtx, when set, makes a detail read fail on an ended context, as
 	// the service's does.
 	honorCtx bool
@@ -169,9 +171,10 @@ func (f *fakeTracker) LinkedTicket(string) (trackerapp.LinkedTicket, bool, error
 
 func (f *fakeTracker) Lookup(_ context.Context, connection string, keys []string) (trackerapp.LookupView, error) {
 	f.asked = append(f.asked, "lookup "+connection+" "+strings.Join(keys, ","))
-	if err := f.lookupErr[connection]; err != nil {
+	if err := f.lookupErr[connection]; err != nil && f.lookupErrAfter == 0 {
 		return trackerapp.LookupView{}, err
 	}
+	f.lookupErrAfter = max(f.lookupErrAfter-1, 0)
 	var out trackerapp.LookupView
 	for _, k := range keys {
 		if issue, ok := f.lookup[connection][k]; ok {

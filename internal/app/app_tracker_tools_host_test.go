@@ -356,13 +356,12 @@ func TestTrackerWriteRequestsOfAMoveAndAComment(t *testing.T) {
 		routes = append(routes, r.Route)
 	}
 	want := []string{
-		"GET rest/api/3/field",                     // the site's field catalog, read once per connection
-		"POST rest/api/3/issue/bulkfetch",          // the key, which no mirror holds
-		"GET rest/api/3/issue/{issue}",             // the ticket as it is now
-		"GET rest/api/3/issue/{issue}/comment",     // with its latest comments
-		"GET rest/api/3/issue/{issue}/transitions", // its moves
+		"GET rest/api/3/field",                 // the site's field catalog, read once per connection
+		"POST rest/api/3/issue/bulkfetch",      // the key, which no mirror holds
+		"GET rest/api/3/issue/{issue}",         // the ticket as it is now, with its moves, which the move takes
+		"GET rest/api/3/issue/{issue}/comment", // with its latest comments
+		"POST rest/api/3/issue/bulkfetch",      // the card just before the sends: the comment's project
 		"POST rest/api/3/issue/{issue}/transitions",
-		"GET rest/api/3/issue/{issue}", // the move's refresh
 		"POST rest/api/3/issue/{issue}/comment",
 	}
 	if !slices.Equal(routes, want) {

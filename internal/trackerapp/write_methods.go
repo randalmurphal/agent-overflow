@@ -115,12 +115,14 @@ func (s *Service) EditSprint(ctx context.Context, id string, in SprintEditReques
 	return s.write(ctx, id, call1(in.model(), tracker.Provider.EditSprint))
 }
 
-// AddComment adds a comment to an issue.
+// AddComment adds a comment to an issue; in ctx's session it is judged on
+// the project the session's last key lookup found the issue in.
 func (s *Service) AddComment(ctx context.Context, id string, in CommentRequest) (WriteView, error) {
 	m, err := in.model()
 	if err != nil {
 		return WriteView{}, err
 	}
+	m.Project = sessionOf(ctx).project(id, m.Issue)
 	op := call1(m, tracker.Provider.AddComment)
 	op.additive = commentOf(m.Issue, in.Markdown)
 	return s.write(ctx, id, op)

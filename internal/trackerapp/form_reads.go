@@ -265,13 +265,15 @@ type LookupView struct {
 	Unmatched []string       `json:"unmatched,omitempty"`
 }
 
-// Lookup finds the issues keys name, at most tracker.MaxLookupKeys.
+// Lookup finds the issues keys name, at most tracker.MaxLookupKeys; ctx's
+// write session keeps the project each was found in.
 func (s *Service) Lookup(ctx context.Context, id string, keys []string) (LookupView, error) {
 	return ask(s, ctx, id, func(r *run) (LookupView, error) {
 		l, err := r.p.Lookup(r.ctx, keys)
 		if err != nil {
 			return LookupView{}, call(err)
 		}
+		sessionOf(ctx).keepProjects(id, l.Found)
 		cards := make([]tracker.Card, len(l.Found))
 		for i, m := range l.Found {
 			cards[i] = m.Card

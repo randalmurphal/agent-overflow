@@ -215,8 +215,12 @@ type JiraSprint struct {
 // back. Sprints are every sprint the issue was or is in; Rank its value
 // of the site's rank field, which orders every board.
 type JiraIssue struct {
-	ID          string          `json:"id"`
-	Key         string          `json:"key"`
+	ID  string `json:"id"`
+	Key string `json:"key"`
+	// FormerKeys are the keys the issue had before it moved to its
+	// project. A read by one answers the issue under its key (measured
+	// for GET issue, documented for the bulk fetch).
+	FormerKeys  []string        `json:"formerKeys,omitempty"`
 	Project     string          `json:"project"`
 	Type        string          `json:"type"`
 	Status      string          `json:"status"`

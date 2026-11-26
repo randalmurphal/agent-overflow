@@ -256,6 +256,9 @@ func transitionIssue(c *jiraCall) answer {
 	}
 	i := slices.IndexFunc(c.s.available(is), func(t JiraTransition) bool { return t.ID == in.Transition.ID })
 	if i < 0 {
+		// Measured: 400, errorMessages holding this sentence alone, errors
+		// empty, for an ID the issue never offered; a move offered before
+		// and not now is unverified and answered the same.
 		return jiraErrors(http.StatusBadRequest, fmt.Sprintf("Transition id '%s' is not valid for this issue.", in.Transition.ID))
 	}
 	t := c.s.available(is)[i]
