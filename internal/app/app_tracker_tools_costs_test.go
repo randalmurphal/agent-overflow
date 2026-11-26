@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -69,10 +70,15 @@ func readBoard(t *testing.T, f *trackerBoardFixture, connection, board string, s
 }
 
 // costSite is the board site with story points the board estimates in, a
-// future sprint, and its three issues in Sprint 1 and To Do, each with a
-// description.
-func costSite() trackerfake.JiraSite {
+// future sprint, and n issues, at least its three, in Sprint 1 and To Do,
+// each with a description.
+func costSite(n int) trackerfake.JiraSite {
 	s := trackerBoardSite()
+	for i := len(s.Issues) + 1; i <= n; i++ {
+		is := s.Issues[1]
+		is.ID, is.Key, is.Summary = fmt.Sprintf("%d", 10100+i), fmt.Sprintf("WEB-%d", i), fmt.Sprintf("Task %d", i)
+		s.Issues = append(s.Issues, is)
+	}
 	s.Fields = append(s.Fields, trackerfake.JiraField{ID: "customfield_10016", Name: "Story Points",
 		Schema: trackerfake.JiraSchema{Type: "number", Custom: "com.atlassian.jira.plugin.system.customfieldtypes:float", CustomID: 10016}})
 	s.Boards[0].Estimation = "customfield_10016"
@@ -85,10 +91,15 @@ func costSite() trackerfake.JiraSite {
 	return s
 }
 
-// costLinear is trackerCostLinear with estimates on and a second cycle,
-// every issue in the first.
-func costLinear() trackerfake.LinearWorkspace {
+// costLinear is trackerCostLinear with estimates on, a second cycle and
+// n issues, at least its three, every issue in the first.
+func costLinear(n int) trackerfake.LinearWorkspace {
 	ws := trackerCostLinear()
+	for i := len(ws.Issues) + 1; i <= n; i++ {
+		is := ws.Issues[1]
+		is.ID, is.Number, is.Title = fmt.Sprintf("00000000-0000-4000-8000-%012x", 0x100+i), float64(i), fmt.Sprintf("Issue %d", i)
+		ws.Issues = append(ws.Issues, is)
+	}
 	ws.Teams[0].Estimation = "fibonacci"
 	c := ws.Cycles[0]
 	ws.Cycles = append(ws.Cycles, trackerfake.LinearCycle{ID: waitLID(31), Team: c.Team, Number: 2, Name: "Cycle 2", StartsAt: c.EndsAt, EndsAt: c.EndsAt.Add(14 * 24 * time.Hour)})
@@ -98,12 +109,12 @@ func costLinear() trackerfake.LinearWorkspace {
 	return ws
 }
 
-// costFixture is a fixture whose project lists the board of kind's
-// tracker, read once, and a thread that writes.
-func costFixture(t *testing.T, linear bool) (*trackerBoardFixture, string, string) {
+// costFixture is a fixture of n issues on each tracker whose project
+// lists the board of kind's tracker, read once, and a thread that writes.
+func costFixture(t *testing.T, linear bool, n int) (*trackerBoardFixture, string, string) {
 	t.Helper()
-	ws := costLinear()
-	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: costSite(), linear: &ws})
+	ws := costLinear(n)
+	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: costSite(n), linear: &ws})
 	t.Cleanup(func() { _ = f.a.trackerMCPServer().Close() })
 	if !linear {
 		thread, endpoint := trackerWriteThread(t, f, provider.RuntimeAuto)
@@ -211,7 +222,7 @@ func TestTrackerToolRequestCounts(t *testing.T) {
 					name := fmt.Sprintf("%s/%s/%s/%d", tracker, sh.name, temp, n)
 					t.Run(name, func(t *testing.T) {
 						t.Parallel()
-						f, thread, endpoint := costFixture(t, linear)
+						f, thread, endpoint := costFixture(t, linear, 3)
 						if warm {
 							for _, k := range keys[:n] {
 								toolRoutes(t, f, thread, endpoint, "ticket_read", map[string]any{"key": k})
@@ -253,7 +264,7 @@ func TestTrackerToolRequestCounts(t *testing.T) {
 			name := tracker + "/" + c.name
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				f, thread, endpoint := costFixture(t, linear)
+				f, thread, endpoint := costFixture(t, linear, 3)
 				_, routes := toolRoutes(t, f, thread, endpoint, c.tool, c.args)
 				got := costNames(routes)
 				if c.tool == "ticket_read" {
@@ -358,4 +369,62 @@ func trackerCostLinear() trackerfake.LinearWorkspace {
 		ws.Issues = append(ws.Issues, is)
 	}
 	return ws
+}
+
+// costCounts are routes as costRoute names them, counted by name, in
+// name order: "edit×20 rows".
+func costCounts(routes []string) string {
+	n := map[string]int{}
+	for _, r := range routes {
+		n[cmp.Or(costRoute[r], r)]++
+	}
+	var out []string
+	for _, name := range slices.Sorted(maps.Keys(n)) {
+		if n[name] == 1 {
+			out = append(out, name)
+		} else {
+			out = append(out, fmt.Sprintf("%s×%d", name, n[name]))
+		}
+	}
+	return strings.Join(out, " ")
+}
+
+// An update of as many tickets as the tool takes (maxUpdateKeys) on one
+// connection is planned and sent whole, through the card read (a title)
+// and through the detail read (a status), on Jira and on Linear: the
+// tracker reads stay batched, and the views of what they read are built
+// a bounded number of tickets at a time.
+func TestTrackerToolUpdatesAsManyTicketsAsItTakes(t *testing.T) {
+	t.Parallel()
+	const n = 20
+	for _, c := range []struct {
+		name   string
+		linear bool
+		set    map[string]any
+		want   string
+	}{
+		{"jira/title", false, map[string]any{"title": "Renamed"}, "bulkfetch×2 edit×20 issue×20 rows"},
+		{"jira/status", false, map[string]any{"status": "Done"}, "bulkfetch comments×20 issue×20 rows transition×20"},
+		{"linear/title", true, map[string]any{"title": "Renamed"}, "Issues×3 UpdateIssue×20"},
+		{"linear/status", true, map[string]any{"status": "Backlog"}, "IssueDetails×2 Issues×2 UpdateIssue×20"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			f, thread, endpoint := costFixture(t, c.linear, n)
+			keys := make([]string, n)
+			for i := range keys {
+				keys[i] = fmt.Sprintf("WEB-%d", i+1)
+				if c.linear {
+					keys[i] = fmt.Sprintf("example/ENG-%d", i+1)
+				}
+			}
+			text, routes := toolRoutes(t, f, thread, endpoint, "ticket_update", map[string]any{"keys": keys, "set": c.set})
+			if strings.Count(text, `"applied"`) != n {
+				t.Fatalf("ticket_update = %s", text)
+			}
+			if got := costCounts(routes); got != c.want {
+				t.Errorf("%d requests: %s\nwant %s", len(routes), got, c.want)
+			}
+		})
+	}
 }
