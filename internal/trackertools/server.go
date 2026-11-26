@@ -132,7 +132,9 @@ type Host interface {
 	// decide whether the change waits for the person (Approve) and to
 	// bound what that approval carries; and just before the first write,
 	// to send nothing the policy no longer allows, including a change
-	// that went unasked while the policy now asks.
+	// that went unasked while the policy now asks. time_draft, which sends
+	// nothing to a tracker, reads it at admission and just before its
+	// store write.
 	WritePolicy(threadID string) (WritePolicy, error)
 	// Approve asks the person to approve a change and returns when they
 	// answer: nil when they approve, a public error when they deny or do

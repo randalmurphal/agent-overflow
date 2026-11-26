@@ -29,8 +29,10 @@ type fakeTracker struct {
 	// the service's does.
 	honorCtx bool
 	details  map[string]trackerapp.DetailView // connection/issue
-	// onDetail, when set, runs as each detail read starts.
+	// onDetail, when set, runs as each detail read starts; onLookup as
+	// each key lookup does.
 	onDetail func()
+	onLookup func()
 	comments func(connection, issue, page string) (trackerapp.CommentPageView, error)
 	asked    []string
 
@@ -221,6 +223,9 @@ func (f *fakeTracker) LinkedTicket(string) (trackerapp.LinkedTicket, bool, error
 
 func (f *fakeTracker) Lookup(_ context.Context, connection string, keys []string) (trackerapp.LookupView, error) {
 	f.asked = append(f.asked, "lookup "+connection+" "+strings.Join(keys, ","))
+	if f.onLookup != nil {
+		f.onLookup()
+	}
 	if err := f.lookupErr[connection]; err != nil && f.lookupErrAfter == 0 {
 		return trackerapp.LookupView{}, err
 	}

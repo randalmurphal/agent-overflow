@@ -341,7 +341,10 @@ func (s *Server) timeDraft(ctx context.Context, caller Caller, raw json.RawMessa
 	if err := trackerapp.CheckDraftShape(offers); err != nil {
 		return nil, invalidf("%s", draftRefusal(err))
 	}
-	if err := s.h.Writable(caller.Thread); err != nil {
+	// The draft sends nothing to a tracker, so no approval applies: the
+	// policy is read at admission and again just before the store write,
+	// so a thread made read-only during the key lookup drafts nothing.
+	if _, err := s.h.WritePolicy(caller.Thread); err != nil {
 		return nil, err
 	}
 	sources, err := s.sources()
@@ -416,6 +419,9 @@ func (s *Server) timeDraft(ctx context.Context, caller Caller, raw json.RawMessa
 		} else {
 			req.Entries[k.entry].Offers = append(req.Entries[k.entry].Offers, *view)
 		}
+	}
+	if _, err := s.h.WritePolicy(caller.Thread); err != nil {
+		return nil, err
 	}
 	got, err := s.t.DraftTime(connection, req)
 	if err != nil {

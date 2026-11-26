@@ -263,6 +263,14 @@ func TestTimeDraftRefusals(t *testing.T) {
 	gone := &fakeTracker{sources: []trackerapp.TicketSource{timeJira}, link: &trackerapp.LinkedTicket{Connection: "conn-gone", Site: "old.atlassian.net", Issue: "30101", Key: "OLD-1"}}
 	_, err := timeCall(t, timeServer(gone, &fakeHost{}), "time_draft", map[string]any{"entries": []map[string]any{entry("OLD-1")}})
 	refused(t, err, CodeInvalidRequest, "entries[0].key OLD-1 is on a connection that is not turned on.")
+	// A thread made read-only during the key lookup drafts nothing.
+	h := &fakeHost{}
+	late := &fakeTracker{sources: []trackerapp.TicketSource{timeJira}, lookup: map[string]map[string]string{timeJira.ID: {"WEB-1": "10101"}},
+		onLookup: func() { h.readOnly = true }}
+	_, err = timeCall(t, timeServer(late, h), "time_draft", map[string]any{"entries": []map[string]any{entry("WEB-1")}})
+	if code, _, _ := errorsx.PublicDetails(err); code != "tracker_read_only" || len(late.drafts) != 0 || len(late.asked) != 1 {
+		t.Fatalf("a draft whose thread was made read-only during its lookup: %v; drafts %v, asked %v", err, late.drafts, late.asked)
+	}
 	// A refusal of the draft's own rules is trackerapp's sentence, as is.
 	f := &fakeTracker{sources: []trackerapp.TicketSource{timeJira}, draft: func(string, trackerapp.TimeDraftRequest) (trackerapp.TimeDraftView, error) {
 		return trackerapp.TimeDraftView{}, errorsx.Public(CodeInvalidRequest, "entries[0].hours must be more than 0.", nil)
