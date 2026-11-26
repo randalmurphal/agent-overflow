@@ -256,6 +256,13 @@ export function registerDashboardAgentFlow({ compact }: DashboardAgentSurface): 
       await expect(screen.getByTestId('dashboard-title')).toHaveText('Laptop widgets', { timeout: 60_000 });
       await expect(kept(screen, 'Open tickets').getByTestId('dashboard-number-value')).toHaveText('3', { timeout: 60_000 });
       await expect(screen.getByTestId('dashboard-proposals')).toHaveCount(0);
+
+      // Ask your agent from this computer's screen opens the thread on the
+      // board's computer, in the board's project.
+      await press(screen.getByTestId('dashboard-ask'), compact);
+      await expect(page.getByLabel('Message Input').filter({ visible: true })).toHaveValue(SEED, { timeout: 30_000 });
+      const board = remote;
+      await expect.poll(async () => (await threadRows(board)).filter((r) => r.projectId === project.projectId).length, { timeout: 30_000 }).toBe(2);
     } finally {
       await remote?.close();
       await home?.close();
