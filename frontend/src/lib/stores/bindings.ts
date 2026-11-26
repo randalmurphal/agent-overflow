@@ -636,8 +636,8 @@ export {
   SetTrackerSubscriptionVisible,
   RefreshTrackerSubscription,
   ReleaseTrackerSubscription,
-  // A subscribed board's dashboards (stores/trackerDashboard.svelte.ts).
-  TrackerDashboards,
+  // A subscribed board's dashboards (stores/trackerDashboard.svelte.ts);
+  // TrackerDashboards is below.
   EvaluateTrackerDashboard,
   TrackerDashboardDrill,
   // A ticket's subscription, its writes and the reads its pickers make
@@ -1387,7 +1387,9 @@ import { orOlder, ThreadsPartlyDeleted, withNote } from './olderComputer';
 import {
   TrackerConnections as TrackerConnectionsRaw,
   ProjectTrackerBoards as ProjectTrackerBoardsRaw,
+  TrackerDashboards as TrackerDashboardsRaw,
 } from '../../../bindings/agent-overflow/app.js';
+import type { DashboardView as TrackerDashboardRow } from '../../../bindings/agent-overflow/internal/trackerdash/models.js';
 import type { TrackerConnection as TrackerConnectionRow } from '../../../bindings/agent-overflow/internal/app/models.js';
 import type { BoardChoice as TrackerBoardChoiceRow } from '../../../bindings/agent-overflow/internal/trackerapp/models.js';
 
@@ -1598,6 +1600,12 @@ export type { BoardChoice as TrackerBoardChoice, BoardRef as TrackerBoardRef, Pr
 /** This computer's tracker connections; null on a computer whose release has no trackers. */
 export function TrackerConnections(): Promise<TrackerConnectionRow[] | null> {
   return orOlder(() => TrackerConnectionsRaw(), () => null);
+}
+
+/** The dashboards a subscribed board offers; null on a computer whose
+ * release has no dashboards. */
+export function TrackerDashboards(subscriptionId: string): Promise<TrackerDashboardRow[] | null> {
+  return orOlder(() => TrackerDashboardsRaw(subscriptionId), () => null);
 }
 
 /** The boards a project lists; none on a computer without trackers. */

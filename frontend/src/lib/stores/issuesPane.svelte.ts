@@ -173,17 +173,18 @@ export function setCompactColumn(ref: TrackerBoardRef, column: number): void {
 }
 
 /** The pane's screens: the tabs of its top bar. Board and Backlog show
- * the board; Time shows the person's week. */
-export type IssuesScreen = 'board' | 'backlog' | 'time';
+ * the board; Dashboards counts it; Time shows the person's week. */
+export type IssuesScreen = 'board' | 'backlog' | 'dashboards' | 'time';
 
 export const ISSUES_SCREENS: readonly { readonly screen: IssuesScreen; readonly label: string }[] = [
   { screen: 'board', label: 'Board' },
   { screen: 'backlog', label: 'Backlog' },
+  { screen: 'dashboards', label: 'Dashboards' },
   { screen: 'time', label: 'Time' },
 ];
 
 function isScreen(v: unknown): v is IssuesScreen {
-  return v === 'board' || v === 'backlog' || v === 'time';
+  return ISSUES_SCREENS.some((s) => s.screen === v);
 }
 
 /** Whether a screen shows the board. */
@@ -218,7 +219,7 @@ function readPlacements(): Partial<Record<IssuesScreen, TicketPlacement>> {
 let placements = $state.raw(readPlacements());
 
 // A ticket opens over the board and beside every list (docs/specs/issues.md, "Pane").
-const DEFAULT_PLACEMENT: Readonly<Record<IssuesScreen, TicketPlacement>> = { board: 'over', backlog: 'beside', time: 'beside' };
+const DEFAULT_PLACEMENT: Readonly<Record<IssuesScreen, TicketPlacement>> = { board: 'over', backlog: 'beside', dashboards: 'beside', time: 'beside' };
 
 /** Where the screen shows a ticket when the pane is wide enough for
  * beside; the screen's default until the person chose. Reactive. */
@@ -482,6 +483,11 @@ export interface BoardSelection {
   /** Whether the person sees the Time screen, by the same rule. Its week
    * is read only while it is. Reactive. */
   readonly timeShown: boolean;
+  /** Whether the person sees the Dashboards screen, by the same rule. Its
+   * dashboard is counted only while it is, and the board's subscription
+   * votes shown then too, so the board keeps syncing under it.
+   * Reactive. */
+  readonly dashboardsShown: boolean;
   /** The person picked `ref`: shown and saved for the next pane. A pick of
    * the board shown while it has ended subscribes it again. */
   pick(ref: TrackerBoardRef): void;
@@ -824,6 +830,10 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
   const listShown = $derived(opts.shown() && !(ticket && placement === 'over'));
   const boardShown = $derived(listShown && showsBoard(screen));
   const timeShown = $derived(listShown && screen === 'time');
+  const dashboardsShown = $derived(listShown && screen === 'dashboards');
+  // The board's subscription's vote: a dashboard counts the board's copy,
+  // which only a syncing board keeps current.
+  const boardVoted = $derived(boardShown || dashboardsShown);
   // The board on its computer: the ticket and its trail go when it changes,
   // and stay when only the project listing it does.
   const boardOnComputer = $derived(board ? trackerBoardOnComputer(board) : null);
@@ -843,7 +853,7 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
       }
       // The subscribe carries whether the person sees the board, so a board
       // opened hidden reads nothing from the tracker until it shows.
-      const held = untrack(() => attachTrackerBoard(ref, boardShown));
+      const held = untrack(() => attachTrackerBoard(ref, boardVoted));
       attachment = held;
       renewAfter = null;
       attachedAfter = untrack(() => trackerBoardChoicesReadStarted(ref.backend));
@@ -852,7 +862,7 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
 
     $effect(() => {
       const key = attachment?.key;
-      const shown = boardShown;
+      const shown = boardVoted;
       if (key) untrack(() => setTrackerBoardShown(key, shown));
     });
 
@@ -976,6 +986,7 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
     get placement() { return placement; },
     get boardShown() { return boardShown; },
     get timeShown() { return timeShown; },
+    get dashboardsShown() { return dashboardsShown; },
     setScreen(next) {
       writeFrontendValue(SCREEN_KEY, next);
       if (next === screen) return;

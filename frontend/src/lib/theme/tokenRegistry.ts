@@ -143,6 +143,9 @@ export const WINDOW_GROUND_KEY = 'surface-0';
  */
 const MODE_INVARIANT_KEYS: ReadonlySet<string> = new Set([
   'accent-fg',
+  'chart-series-1',
+  'chart-series-2',
+  'chart-series-3',
   'provider-claude',
   'scrim',
   'scrim-fg',
@@ -254,6 +257,9 @@ const COLOR_ENTRIES: readonly TokenEntry[] = [
   entry('colors', 'app.css', 'error', 'Failure status: errors, removed lines, refusals.'),
   entry('colors', 'app.css', 'warning', 'Attention status: a human is blocked (approvals, pending input).'),
   entry('colors', 'app.css', 'provider-codex', 'Codex provider identity. Brand-locked by default.'),
+  entry('colors', 'app.css', 'chart-series-1', "A chart's first series. One value for both modes by default."),
+  entry('colors', 'app.css', 'chart-series-2', "A chart's second series. One value for both modes by default."),
+  entry('colors', 'app.css', 'chart-series-3', "A chart's third series. One value for both modes by default."),
   entry(
     'colors',
     'app.css',

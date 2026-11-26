@@ -133,6 +133,13 @@ export interface TrackerBoardState {
   /** A full or patch read of this computer's copy that failed, until one
    * succeeds. */
   readonly readError: unknown;
+  /** The subscription's handle, which the board's other reads name (a
+   * dashboard's); empty until the subscribe answers. */
+  readonly subscription: string;
+  /** How many times the board changed since the subscribe answered: an
+   * event that named rows or said to read again, or a gap. A surface that
+   * reads the board its own way (a dashboard) reads again when it moves. */
+  readonly changes: number;
 }
 
 interface Live {
@@ -180,7 +187,7 @@ const NO_SECTION_ERRORS: ReadonlyMap<string, unknown> = new Map();
 
 const FIRST_STATE: TrackerBoardState = {
   held: null, failure: null, readAt: 0, ended: false, paging: NO_SECTIONS, sectionErrors: NO_SECTION_ERRORS,
-  refreshing: false, refreshNotice: null, readError: null,
+  refreshing: false, refreshNotice: null, readError: null, subscription: '', changes: 0,
 };
 
 // The subscribe refusals that hold until the board's lists change: the
@@ -285,6 +292,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
     held,
     failure: answer.failure ?? null,
     readAt: view?.sync.read_at ?? 0,
+    subscription: id,
   };
   const early = live.joining ?? [];
   live.joining = null;
@@ -322,6 +330,7 @@ function fold(live: Live, event: TrackerBoardEvent): void {
   }
   const ids = [...(event.changed ?? []), ...(event.removed ?? [])];
   if (event.read_again || event.truncated) live.readAgain = true;
+  if (ids.length > 0 || event.read_again || event.truncated) next.changes = live.state.changes + 1;
   releaseRetries(live, next);
   for (const id of ids) live.pending.add(id);
   if (live.pending.size > MAX_PATCH_IDS) {
@@ -355,7 +364,7 @@ function resyncTrackerBoardsAfterGap(backend: BackendKey): Promise<void> | undef
   for (const live of lives.values()) {
     if (live.ref.backend !== backend || !live.id || live.state.ended) continue;
     live.readAgain = true;
-    const next: StateChange = {};
+    const next: StateChange = { changes: live.state.changes + 1 };
     releaseRetries(live, next);
     update(live, next);
     runs.push(drain(live));

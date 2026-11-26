@@ -202,6 +202,24 @@
               "maxLength": 256,
               "description": "Codex provider identity. Brand-locked by default."
             },
+            "chart-series-1": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "A chart's first series. One value for both modes by default."
+            },
+            "chart-series-2": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "A chart's second series. One value for both modes by default."
+            },
+            "chart-series-3": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "A chart's third series. One value for both modes by default."
+            },
             "provider-claude": {
               "type": "string",
               "minLength": 1,
