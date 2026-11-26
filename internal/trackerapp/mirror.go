@@ -66,6 +66,10 @@ type MirrorStore interface {
 	GetMirrorBoardStatuses(rootID int64, boardID string) ([]string, bool, error)
 	GetMirrorCatalog(rootID int64, users, statuses []string) (store.MirrorCatalog, error)
 	ListMirrorCards(rootID int64, issueIDs []string) ([]store.MirrorCard, error)
+	ListMirrorParents(rootID int64, parents []string) ([]store.MirrorParent, error)
+	ListMirrorUnnamedParents(rootID int64) (store.MirrorUnnamedParents, error)
+	PassMirrorUnnamedParents(rootID int64, through string) error
+	EndMirrorUnnamedParents(rootID int64) error
 	ListMirrorIssueRows(rootID int64, issueID, afterBoard string) ([]store.MirrorIssueRow, bool, error)
 	ListMirrorTicketRows(rootID int64, issueIDs []string) ([]store.MirrorTicketRow, error)
 	ListMirrorSprintNames(rootID int64, boardIDs, sprintIDs []string) ([]store.MirrorSprintName, error)
@@ -139,6 +143,9 @@ const (
 	UnitHistory Unit = "history"
 	// UnitCards reads the cards of a connection's linked issues.
 	UnitCards Unit = "cards"
+	// UnitNames reads the cards of the parents an upgraded mirror owes the
+	// names of.
+	UnitNames Unit = "names"
 )
 
 // BoardDue names the units a board's tick runs. They run in the order of
@@ -154,6 +161,7 @@ type BoardDue struct {
 // the order of the fields.
 type LinkedDue struct {
 	Cards   bool `json:"cards,omitempty"`
+	Names   bool `json:"names,omitempty"`
 	History bool `json:"history,omitempty"`
 }
 
@@ -212,10 +220,12 @@ type Changes struct {
 	Cards []tracker.IssueID `json:"cards,omitempty"`
 	// Rows are the issues whose row on the board was stored new or changed.
 	Rows []tracker.IssueID `json:"rows,omitempty"`
-	// Added are the issues of Rows whose row is new on the board.
-	Added []tracker.IssueID `json:"added,omitempty"`
 	// Removed are the issues whose row on the board was removed.
 	Removed []tracker.IssueID `json:"removed,omitempty"`
+	// Parents are the parents whose stored name changed (store
+	// MirrorChanges.Parents): every row and ticket naming one shows it
+	// anew.
+	Parents []tracker.IssueID `json:"parents,omitempty"`
 	// Catalog reports a stored user or status that changed, whichever read
 	// stored it: every board of the connection shows them.
 	Catalog bool `json:"catalog,omitempty"`
@@ -236,8 +246,7 @@ type Changes struct {
 	// serving with no write of it: the last open ticket that kept one
 	// closed (store DropMirrorTicket), or a ticket opened again before the
 	// cleanup removed it kept it again (store KeepMirrorTicket). A view
-	// that shows one as another's parent or link shows it without or with
-	// its card.
+	// that shows one as another's link shows it without or with its card.
 	Visibility []tracker.IssueID `json:"visibility,omitempty"`
 }
 
@@ -254,7 +263,7 @@ type written struct {
 
 // Empty reports changes that name nothing a view of the mirror shows.
 func (c Changes) Empty() bool {
-	return len(c.Cards)+len(c.Rows)+len(c.Removed)+len(c.History)+len(c.Details)+len(c.Dropped)+len(c.Visibility) == 0 &&
+	return len(c.Cards)+len(c.Rows)+len(c.Removed)+len(c.Parents)+len(c.History)+len(c.Details)+len(c.Dropped)+len(c.Visibility) == 0 &&
 		!c.Catalog && !c.Structure
 }
 
@@ -263,8 +272,8 @@ func (c Changes) Empty() bool {
 func (c *Changes) add(o Changes) {
 	c.Cards = unite(c.Cards, o.Cards)
 	c.Rows = unite(c.Rows, o.Rows)
-	c.Added = unite(c.Added, o.Added)
 	c.Removed = unite(c.Removed, o.Removed)
+	c.Parents = unite(c.Parents, o.Parents)
 	c.History = unite(c.History, o.History)
 	c.Details = unite(c.Details, o.Details)
 	c.Dropped = unite(c.Dropped, o.Dropped)
@@ -283,8 +292,8 @@ type changeLog struct{ c Changes }
 func (l *changeLog) add(o Changes) {
 	l.c.Cards = append(l.c.Cards, o.Cards...)
 	l.c.Rows = append(l.c.Rows, o.Rows...)
-	l.c.Added = append(l.c.Added, o.Added...)
 	l.c.Removed = append(l.c.Removed, o.Removed...)
+	l.c.Parents = append(l.c.Parents, o.Parents...)
 	l.c.History = append(l.c.History, o.History...)
 	l.c.Details = append(l.c.Details, o.Details...)
 	l.c.Dropped = append(l.c.Dropped, o.Dropped...)
@@ -296,7 +305,7 @@ func (l *changeLog) add(o Changes) {
 // changes is everything added, each list sorted without repeats.
 func (l *changeLog) changes() Changes {
 	c := &l.c
-	c.Cards, c.Rows, c.Added, c.Removed = ordered(c.Cards), ordered(c.Rows), ordered(c.Added), ordered(c.Removed)
+	c.Cards, c.Rows, c.Removed, c.Parents = ordered(c.Cards), ordered(c.Rows), ordered(c.Removed), ordered(c.Parents)
 	c.History, c.Details, c.Dropped, c.Visibility = ordered(c.History), ordered(c.Details), ordered(c.Dropped), ordered(c.Visibility)
 	return *c
 }
@@ -318,7 +327,8 @@ func ordered[T ~string](ids []T) []T {
 // changesOf is a store change set in neutral IDs, with the links it moved.
 func changesOf(ch store.MirrorChanges) written {
 	return written{Changes: Changes{
-		Cards: issueIDs(ch.Cards), Rows: issueIDs(ch.Rows), Added: issueIDs(ch.Added), Removed: issueIDs(ch.Removed), Catalog: ch.Catalog,
+		Cards: issueIDs(ch.Cards), Rows: issueIDs(ch.Rows), Removed: issueIDs(ch.Removed),
+		Parents: issueIDs(ch.Parents), Catalog: ch.Catalog,
 	}, links: ch.Threads}
 }
 

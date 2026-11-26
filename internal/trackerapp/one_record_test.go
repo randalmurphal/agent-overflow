@@ -377,30 +377,6 @@ func TestAFailedKeepIsARetryableFailure(t *testing.T) {
 	}
 }
 
-// Closing the ticket of a parent no board keeps ends the mirror's keep of
-// it, and the open child's ticket, which showed the parent's key from the
-// mirror's card, is told its view changed and shows it without the key.
-func TestClosingAParentsTicketRebuildsItsOpenChild(t *testing.T) {
-	t.Parallel()
-	s, conn, scope := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
-	s.syncBoard(t, scope)
-	child := s.openTicket(t, conn, "10101")
-	parent := s.openTicket(t, conn, "10104")
-	quiet(t, s.svc)
-	if v := must[TicketView](t)(s.svc.TicketDetail(child.ID)); v.Detail == nil || v.Detail.Card.Parent == nil || v.Detail.Card.Parent.Key != "WEB-4" {
-		t.Fatalf("the child shows its parent %+v", v.Detail)
-	}
-	_, told, _ := s.events.snapshot()
-	s.closeTicket(t, conn, parent, "10104")
-	quiet(t, s.svc)
-	s.events.waitFor(t, "the child's change", func(_ []BoardEvent, i []IssueEvent, _ []error) bool {
-		return slices.ContainsFunc(i[len(told):], func(e IssueEvent) bool { return e.Issue == "10101" && e.Changed })
-	})
-	if v := must[TicketView](t)(s.svc.TicketDetail(child.ID)); v.Detail == nil || v.Detail.Card.Parent == nil || v.Detail.Card.Parent.Key != "" {
-		t.Fatalf("after the parent's ticket closed the child shows its parent %+v; want no key the mirror no longer keeps", v.Detail.Card.Parent)
-	}
-}
-
 // A shown ticket's issue is read first by the running round's history
 // read, however many of the connection's issues are due before it.
 func TestAShownTicketsHistoryIsReadFirst(t *testing.T) {
@@ -889,8 +865,9 @@ func TestARenameWithNoIssueUpdateShowsOnTheOpenTicket(t *testing.T) {
 // A board read that reparents the ticket's issue after the ticket's body
 // read (the body names the old parent, the record's newer card the new
 // one): the ticket's view shows the record's card with its new parent's
-// key and title, and the issues it shows, which its pump follows, are the
-// rendered card's: the new parent, not the body's old one.
+// key and title, or by ID alone when no name of it is stored, never the
+// body's old parent's name; the parent whose name its pump follows
+// (affectsLocked) is the new one, and it follows no parent's card.
 func TestAReparentAfterTheBodyReadShowsAndFollowsTheNewParent(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour, RetryBase: time.Hour})
@@ -898,6 +875,7 @@ func TestAReparentAfterTheBodyReadShowsAndFollowsTheNewParent(t *testing.T) {
 	read := seededCard()
 	moved := read
 	moved.Parent, moved.Updated = "10003", read.Updated.Add(time.Minute)
+	moved.ParentName = &tracker.ParentName{Key: "WEB-3", Title: "Issue 10003"}
 	m.p.set(func(p *scripted) {
 		p.changedRows = func(q tracker.DeltaQuery) (tracker.RowPage, error) {
 			return tracker.RowPage{Rows: []tracker.Row{{Card: moved, Order: "a"}}, Next: q.From, Catalog: tracker.Catalog{Users: []tracker.User{user1}}}, nil
@@ -915,7 +893,27 @@ func TestAReparentAfterTheBodyReadShowsAndFollowsTheNewParent(t *testing.T) {
 	if !views[0].BodyBehind {
 		t.Fatal("the ticket's body is of an older version than its card and is not marked behind")
 	}
-	if !slices.Contains(shows[0], "10003") || slices.Contains(shows[0], "10004") {
-		t.Fatalf("the ticket follows %v; want the new parent 10003 and not the old 10004", shows[0])
+	// With no name stored of the new parent, the view shows it by ID alone,
+	// not with the name the body's read gave its old parent.
+	m.sqlOnStore(t, `DELETE FROM tracker_cache_parents WHERE root_id = ? AND issue_id = '10003'`, m.root())
+	unnamed, _, err := m.svc.detailViews(m.root(), row, []ticketDoc{{d: detailOfCard(read), version: read.Updated.UnixMilli()}}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := unnamed[0].Card.Parent; p == nil || *p != (ParentView{ID: "10003"}) {
+		t.Fatalf("with no name of the new parent the ticket shows its parent %+v; want 10003 by ID alone", p)
+	}
+	if slices.Contains(shows[0], "10003") || slices.Contains(shows[0], "10004") {
+		t.Fatalf("the ticket follows the cards of %v; want neither parent's", shows[0])
+	}
+	// A later change of a parent's name tells the ticket of the new parent's
+	// alone.
+	tp := &ticketPump{key: ticketKey{connection: m.conn.ID, issue: read.ID}}
+	tp.view.detail, tp.view.shows = &views[0], shows[0]
+	if !affectsLocked(tp, Changes{Parents: ids("10003")}) {
+		t.Error("the new parent's name changed and the ticket is not told")
+	}
+	if affectsLocked(tp, Changes{Parents: ids("10004")}) {
+		t.Error("the old parent's name changed and the ticket is told")
 	}
 }

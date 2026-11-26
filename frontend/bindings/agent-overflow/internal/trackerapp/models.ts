@@ -2399,8 +2399,9 @@ export class SearchPageView {
  * sprint (tracker.SearchQuery); Page is the token the previous page
  * returned, empty for the first, and Limit the most cards a page holds
  * (0: the most there are). Status is a status's name; Group a status
- * group by the name a status view gives it (StatusView.Group), or "open"
- * for every group but done and canceled; at most one of the two.
+ * group by the name a status view gives it (StatusView.Group), or
+ * GroupNotDone for every group but done and canceled (SearchGroups); at
+ * most one of the two.
  */
 export class SearchRequest {
     "text"?: string;

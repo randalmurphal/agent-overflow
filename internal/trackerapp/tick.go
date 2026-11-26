@@ -135,6 +135,8 @@ func deltaStep(b tracker.BoardID) step {
 //   - cards reads the cards of the linked issues no shown board has a
 //     row of (store ListMirrorOffBoardLinkedIssues), every page of the
 //     listing, readBatch issues a read, and records a read.
+//   - names reads the cards of the parents the mirror's worklist owes the
+//     names of (run.unnamedParents), namesBatches reads a tick (More).
 //   - history is the board tick's history unit, under the same lock.
 //
 // The issues nothing keeps any more, which a thread's unlink, delete,
@@ -152,6 +154,9 @@ func (s *Service) syncLinked(ctx context.Context, id string, due LinkedDue, u Ur
 	var steps []step
 	if due.Cards {
 		steps = append(steps, step{unit: UnitCards, body: (*run).linkedCards, records: true})
+	}
+	if due.Names {
+		steps = append(steps, step{unit: UnitNames, body: (*run).unnamedParents})
 	}
 	if due.History {
 		steps = append(steps, step{unit: UnitHistory, body: func(r *run) (UnitResult, error) { return r.history(first...) }, history: true})

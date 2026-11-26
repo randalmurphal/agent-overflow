@@ -29,10 +29,12 @@ func (m *mirrorFixture) seedBoard(t *testing.T) {
 }
 
 // seededCard is issue 10001's card as seedBoard's board read finds it:
-// in sprint 1, a child of 10004, of medium priority, labeled frontend.
+// in sprint 1, a child of 10004 (named by the read), of medium priority,
+// labeled frontend.
 func seededCard() tracker.Card {
 	c := card("10001", 1_799_000_000_000)
 	c.Sprints, c.Parent = []tracker.SprintID{"1"}, "10004"
+	c.ParentName = &tracker.ParentName{Key: "WEB-4", Title: "The epic", Level: 1}
 	c.Priority = tracker.Choice{ID: "3", Name: "Medium"}
 	c.Labels = []tracker.Choice{{ID: "frontend", Name: "frontend"}}
 	return c

@@ -23,13 +23,44 @@ const (
 )
 
 // benchMirrorSize is a bench mirror's shape: how many boards, each with
-// how many issues of its own.
-type benchMirrorSize struct{ boards, issues int }
+// how many issues of its own, and whether its issues have parents
+// (benchParented).
+type benchMirrorSize struct {
+	boards, issues int
+	parents        bool
+}
 
 // benchDefaultSize is the mirror the benchmarks run against.
 var benchDefaultSize = benchMirrorSize{boards: benchBoards, issues: benchBoardIssues}
 
-func (z benchMirrorSize) String() string { return fmt.Sprintf("%dx%d", z.boards, z.issues) }
+func (z benchMirrorSize) String() string {
+	if z.parents {
+		return fmt.Sprintf("%dx%d-parents", z.boards, z.issues)
+	}
+	return fmt.Sprintf("%dx%d", z.boards, z.issues)
+}
+
+// benchEpics is how many epics the stories of a parented board name.
+const benchEpics = 50
+
+// benchParented is row as a Jira scrum board reads it, which lists no
+// epics: every fourth issue a sub-task of the story before it, and four
+// of five others a story under one of benchEpics epics no board lists,
+// each read naming its parent.
+func benchParented(row MirrorRow, board, i int) MirrorRow {
+	c := &row.Card
+	switch {
+	case i%4 == 3:
+		story := benchIssueID(board, i-1)
+		c.TypeLevel, c.ParentID = -1, story
+		c.ParentName = &MirrorParentName{Key: "WEB-" + story, Title: "Story " + story}
+	case i%5 != 0:
+		epic := strconv.Itoa(800000 + board*1000 + (i/5)%benchEpics)
+		c.ParentID = epic
+		c.ParentName = &MirrorParentName{Key: "WEB-" + epic, Title: "Epic " + epic, TypeLevel: 1}
+	}
+	return row
+}
 
 // benchMirrorFixtures holds the fixture of each size, by size.
 var benchMirrorFixtures sync.Map
@@ -128,7 +159,11 @@ func fillBenchMirror(s *Store, size benchMirrorSize) error {
 		}
 		rows := make([]MirrorRow, 0, size.issues)
 		for i := range size.issues {
-			rows = append(rows, benchRow(board, i, 1000))
+			row := benchRow(board, i, 1000)
+			if size.parents {
+				row = benchParented(row, board, i)
+			}
+			rows = append(rows, row)
 		}
 		for page := range slices.Chunk(rows, 100) {
 			if _, err := s.WriteMirrorRowPage(root, currentPage(s, root, MirrorRowPage{BoardID: benchBoardID(board), Rows: page, ReadAt: mirrorReadAt(1)}), []byte("cursor")); err != nil {
