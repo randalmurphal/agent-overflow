@@ -606,7 +606,8 @@ export function registerIssuesTicketFlow({ compact }: TicketSurface): void {
     const closeResolution = field(form, 'resolution');
     await expect(closeResolution).not.toContainText('(required)');
     await press(closeResolution.getByTestId('ticket-field-value'), compact);
-    await expect(moves).toHaveText(['Done', 'Fixed']);
+    // Fixed, as Resolve set it, is checked; nothing clears it.
+    await expect(moves).toHaveText([/^\s*Done\s*$/, /Fixed\s*✓/]);
     await expect(page.getByTestId('ticket-picker-clear')).toHaveCount(0);
     await page.keyboard.press('Escape');
     await press(form.getByTestId('ticket-move-submit'), compact);
