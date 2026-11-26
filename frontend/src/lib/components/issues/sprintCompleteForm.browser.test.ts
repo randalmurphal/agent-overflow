@@ -1,7 +1,8 @@
 // Real-Chromium suite for completing a sprint (SprintCompleteForm): the
-// form says how much is done and how many tickets are unfinished, sends
-// them to the first future sprint unless the backlog is picked, and before
-// the sprint is read whole says it cannot count them yet and still asks.
+// form says how much is done and how many of the tickets the board shows
+// are not in a finished status, always shows where the tracker's
+// unfinished ones go, the first future sprint unless another is picked,
+// and before the sprint is read whole says it cannot count them yet.
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
@@ -50,7 +51,7 @@ describe('completing a sprint', () => {
     const completed = setBindingMock('CompleteTrackerSprint', async () => ({ parts: [{ step: 'sprint', state: 'applied' }] }) as WriteView);
     open(section({}));
     await waitFor(() => document.querySelector('[data-testid="sprint-complete-form"]') !== null, 'the form');
-    expect(el('sprint-complete-summary').textContent?.replace(/\s+/g, ' ').trim()).toBe('1 of 3 points done. 2 tickets are not finished.');
+    expect(el('sprint-complete-summary').textContent?.replace(/\s+/g, ' ').trim()).toBe('1 of 3 points done. 2 of the tickets this board shows are not in a finished status.');
     const into = el<HTMLSelectElement>('sprint-complete-into');
     expect(into.value).toBe('9');
     expect([...into.options].map((o) => o.text)).toEqual(['Sprint 7', 'Sprint 9', 'The backlog']);
@@ -60,6 +61,17 @@ describe('completing a sprint', () => {
     el('sprint-complete-submit').click();
     await waitFor(() => completed.mock.calls.length === 1, 'the completion');
     expect(completed.mock.calls[0][1]).toEqual({ board: '1', sprint: '8', move_to: undefined });
+  });
+
+  it('shows where the tracker\'s unfinished tickets go though every ticket the board shows is finished', async () => {
+    const completed = setBindingMock('CompleteTrackerSprint', async () => ({ parts: [{ step: 'sprint', state: 'applied' }] }) as WriteView);
+    open(section({ rows: [row('1', 'done')] }));
+    await waitFor(() => document.querySelector('[data-testid="sprint-complete-form"]') !== null, 'the form');
+    expect(el('sprint-complete-summary').textContent?.replace(/\s+/g, ' ').trim()).toBe('1 of 3 points done. Every ticket this board shows is in a finished status.');
+    expect(el<HTMLSelectElement>('sprint-complete-into').value).toBe('9');
+    el('sprint-complete-submit').click();
+    await waitFor(() => completed.mock.calls.length === 1, 'the completion');
+    expect(completed.mock.calls[0][1]).toEqual({ board: '1', sprint: '8', move_to: '9' });
   });
 
   it('asks where the unfinished tickets go before the sprint is read whole, saying it cannot count them yet', async () => {

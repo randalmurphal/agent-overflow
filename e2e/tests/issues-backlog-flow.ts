@@ -391,7 +391,7 @@ export function registerBacklogFlow({ compact }: BacklogSurface): void {
     // Sprint 2, the first future sprint.
     await press(section(backlog, 'sprint:1').getByTestId('issues-backlog-sprint-complete'), compact);
     const complete = page.getByTestId('sprint-complete-form');
-    await expect(complete.getByTestId('sprint-complete-summary')).toHaveText('2 of 2 points done. 2 tickets are not finished.');
+    await expect(complete.getByTestId('sprint-complete-summary')).toHaveText('2 of 2 points done. 2 of the tickets this board shows are not in a finished status.');
     await expect(complete.getByTestId('sprint-complete-into')).toHaveValue('2');
     await press(complete.getByTestId('sprint-complete-submit'), compact);
     await expect(complete).toHaveCount(0, { timeout: 15_000 });
