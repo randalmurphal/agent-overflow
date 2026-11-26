@@ -365,7 +365,7 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 		}},
 		// A person's refresh reads no stored detail first.
 		{"detail, forced refresh", func(t *testing.T) {
-			if _, _, err := m.svc.issueDetail(t.Context(), m.conn.ID, issue, Interactive, true); err != nil {
+			if _, _, err := m.svc.issueDetail(t.Context(), m.conn.ID, issue, Interactive, true, true); err != nil {
 				t.Fatal(err)
 			}
 		}, costOf{

@@ -28,8 +28,8 @@ func TestTicketSourcesAreTheConnectionsThatHoldTickets(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []TicketSource{
-		{ID: jira.ID, Site: "example.atlassian.net"},
-		{ID: linear.ID, Site: "example"},
+		{ID: jira.ID, Site: "example.atlassian.net", Kind: "jira"},
+		{ID: linear.ID, Site: "example", Kind: "linear"},
 	}
 	if got := must[[]TicketSource](t)(f.svc.TicketSources()); !slices.Equal(got, want) {
 		t.Fatalf("sources = %+v\nwant %+v", got, want)

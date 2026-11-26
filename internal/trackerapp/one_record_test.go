@@ -147,7 +147,7 @@ func TestALateOlderReadNeverReplacesANewerTicket(t *testing.T) {
 	})
 	refreshed := make(chan error, 1)
 	go func() {
-		v, _, err := m.svc.issueDetail(context.Background(), m.conn.ID, issue, Interactive, true)
+		v, _, err := m.svc.issueDetail(context.Background(), m.conn.ID, issue, Interactive, true, true)
 		if err == nil && v.Card.Title != "Third" {
 			err = fmt.Errorf("the refresh shows %q", v.Card.Title)
 		}
@@ -905,7 +905,7 @@ func TestAReparentAfterTheBodyReadShowsAndFollowsTheNewParent(t *testing.T) {
 	})
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
 	row := must[store.TrackerConnection](t)(m.svc.viewRow(m.conn.ID))
-	views, shows, err := m.svc.detailViews(m.root(), row, []ticketDoc{{d: detailOfCard(read), version: read.Updated.UnixMilli()}})
+	views, shows, err := m.svc.detailViews(m.root(), row, []ticketDoc{{d: detailOfCard(read), version: read.Updated.UnixMilli()}}, true)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -57,7 +57,7 @@ func (s *Service) storedDetail(id string, issue tracker.IssueID) (DetailView, bo
 		if err != nil {
 			return DetailView{}, false, err
 		}
-		v, _, err := s.detailView(root, row, doc)
+		v, _, err := s.detailView(root, row, doc, false)
 		return v, err == nil, err
 	}
 	return DetailView{}, false, nil

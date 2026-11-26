@@ -387,13 +387,13 @@ export function registerBacklogFlow({ compact }: BacklogSurface): void {
     expect(made[1].fields).toMatchObject({ project: { id: '10000' }, issuetype: { id: '10002' }, summary: 'A task in Sprint 2', priority: { id: '2' } });
 
     // What the form read from Jira: the board's projects and the types once,
-    // and each type's fields once for the form, then once more for each Add
-    // (the backend checks the values against the screen). A second open
-    // reads nothing.
+    // and each type's fields once: each Add checks its values against the
+    // screen the form read, which the Jira client keeps for a minute. A
+    // second open reads nothing.
     expect(await trackerRequests(harness, BOARD_PROJECTS_ROUTE)).toHaveLength(1);
     expect(await trackerRequests(harness, TYPES_ROUTE)).toHaveLength(1);
     const fieldReads = (await trackerRequests(harness, FIELDS_ROUTE)).map((r) => r.path.split('/').pop());
-    expect(fieldReads).toEqual(['10001', '10001', '10002', '10002']);
+    expect(fieldReads).toEqual(['10001', '10002']);
     await press(form.getByTestId('issues-backlog-create-cancel'), compact);
     await press(foot.getByTestId('issues-backlog-new'), compact);
     await expect(form.getByTestId('issues-backlog-create-title')).toBeVisible();

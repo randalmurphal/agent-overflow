@@ -5351,6 +5351,9 @@ export function ResolveForgeFacts(ws: app$0.WorkspaceRef, pr: git$0.PRReference,
 
 /**
  * RespondToApproval forwards an interactive response to the active provider session.
+ * A tracker write's approval is the app's own, answered to the call that
+ * waits on it (respondToTrackerWrite): the open prompt's kind says so,
+ * never the request ID's text.
  * 
  * Several clients render the same prompt, so two of them can answer it. The
  * router arbitrates: the loser gets transport.ErrAlreadyHandled and no

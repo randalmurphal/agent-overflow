@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -23,11 +24,11 @@ func TestTicketsByKeyReadsTheLinkReadersMirror(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]KeyedTicket{
-		"WEB-10001": {Key: "WEB-10001", ConnectionID: c.ID, IssueID: "10001", Title: "Retry cursor"},
-		"WEB-99":    {Key: "WEB-99", ConnectionID: c.ID},
+	want := map[string][]KeyedTicket{
+		"WEB-10001": {{Key: "WEB-10001", ConnectionID: c.ID, IssueID: "10001", Title: "Retry cursor"}},
+		"WEB-99":    {{Key: "WEB-99", ConnectionID: c.ID}},
 	}
-	if !maps.Equal(got, want) {
+	if !maps.EqualFunc(got, want, slices.Equal) {
 		t.Fatalf("tickets = %+v, want %+v", got, want)
 	}
 
@@ -36,7 +37,7 @@ func TestTicketsByKeyReadsTheLinkReadersMirror(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (KeyedTicket{Key: "WEB-10002", ConnectionID: c.ID}); got["WEB-10002"] != want {
+	if want := []KeyedTicket{{Key: "WEB-10002", ConnectionID: c.ID}}; !slices.Equal(got["WEB-10002"], want) {
 		t.Fatalf("a missed issue = %+v, want %+v", got["WEB-10002"], want)
 	}
 
@@ -115,9 +116,10 @@ func TestTicketsByKeySeeksTheKeyIndex(t *testing.T) {
 	}
 }
 
-// When two sites' mirrors both hold a key, the one the asker prefers (the
-// connection the pull request's project lists boards of) answers; with no
-// preference, the lowest connection ID.
+// When two sites' mirrors both hold a key, both answer, the one the asker
+// prefers (the connection the pull request's project lists boards of)
+// first; with no preference, the lowest connection ID; and a site that
+// holds the issue comes before one that holds only its project.
 func TestTicketsByKeyPrefersTheAskersConnection(t *testing.T) {
 	t.Parallel()
 	s, jira, root := newMirror(t)
@@ -133,8 +135,15 @@ func TestTicketsByKeyPrefersTheAskersConnection(t *testing.T) {
 		want   string
 	}{{nil, first}, {[]string{jira.ID}, jira.ID}, {[]string{linear.ID}, linear.ID}} {
 		got, err := s.TicketsByKey([]string{"WEB-1"}, c.prefer)
-		if err != nil || got["WEB-1"].ConnectionID != c.want {
-			t.Errorf("preferring %v: %+v, %v; want connection %s", c.prefer, got, err, c.want)
+		if err != nil || len(got["WEB-1"]) != 2 || got["WEB-1"][0].ConnectionID != c.want {
+			t.Errorf("preferring %v: %+v, %v; want both sites, connection %s first", c.prefer, got, err, c.want)
 		}
+	}
+	mustExec(t, s.db, `DELETE FROM tracker_cache_issues WHERE issue_id = 'l1'`)
+	mustExec(t, s.db, `INSERT INTO tracker_cache_issues(root_id, issue_id, issue_key, updated_at, read_at) VALUES (?, 'l2', 'WEB-2', 1, 1)`, other)
+	got, err := s.TicketsByKey([]string{"WEB-1"}, []string{linear.ID})
+	want := []KeyedTicket{{Key: "WEB-1", ConnectionID: jira.ID, IssueID: "j1"}, {Key: "WEB-1", ConnectionID: linear.ID}}
+	if err != nil || !slices.Equal(got["WEB-1"], want) {
+		t.Errorf("one site holding the issue = %+v, %v; want %+v", got, err, want)
 	}
 }

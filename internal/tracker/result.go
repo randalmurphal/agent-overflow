@@ -131,7 +131,8 @@ type Refusal struct {
 	Fields     []FieldMessage
 	Candidates []Choice
 	// Lost names, one sentence each, the content a rich text edit would
-	// lose, with how to keep it.
+	// lose, then for an edit how to keep it; a clear names only what it
+	// erases.
 	Lost []string
 	// Err is the failure the refusal was read from; Outcome.Err returns
 	// it.
@@ -202,12 +203,19 @@ func (s Step) String() string {
 // create. Issue is the issue it is about, empty for a part about no issue
 // (a sprint) and for a create the tracker did not confirm. Changed are the
 // resources the part may have changed whatever its outcome; the caller
-// reads again those of a part that is applied or unknown.
+// reads again those of a part that is applied or unknown. Comment is the
+// comment an applied AddComment part made, as the tracker named it, and
+// Key the key the tracker gave the issue an applied create made.
+// Unchanged reports an applied part that sent nothing because the tracker
+// already held every value; it changed nothing, so it names no resources.
 type Part struct {
-	Issue   IssueID
-	Step    Step
-	Outcome Outcome
-	Changed []Resource
+	Issue     IssueID
+	Step      Step
+	Outcome   Outcome
+	Changed   []Resource
+	Comment   CommentID
+	Key       string
+	Unchanged bool
 }
 
 // Result is every part of one write, in the order they were sent or
@@ -285,14 +293,15 @@ func (r Result) Refresh() []Resource {
 	return out
 }
 
-// Created is the issue a create made, when the tracker confirmed it.
-func (r Result) Created() (IssueID, bool) {
+// Created is the issue a create made, when the tracker confirmed it, and
+// the key the tracker gave it ("" when its answer named none).
+func (r Result) Created() (IssueID, string, bool) {
 	for _, p := range r.Parts {
 		if p.Step == StepCreate && p.Outcome.State() == StateApplied {
-			return p.Issue, true
+			return p.Issue, p.Key, true
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 // CreateUnknown reports a create whose answer was lost: the tracker may
@@ -377,6 +386,18 @@ func (p Part) check() error {
 	}
 	if p.Step == StepCreate && (state == StateApplied) != (p.Issue != "") {
 		return fmt.Errorf("a create that is %s names issue %q", state, p.Issue)
+	}
+	if p.Comment != "" && (p.Step != StepComment || state != StateApplied) {
+		return fmt.Errorf("a %s part that is %s names comment %q", p.Step, state, p.Comment)
+	}
+	if p.Key != "" && (p.Step != StepCreate || state != StateApplied) {
+		return fmt.Errorf("a %s part that is %s names key %q", p.Step, state, p.Key)
+	}
+	if p.Unchanged {
+		if state != StateApplied || len(p.Changed) > 0 {
+			return fmt.Errorf("a %s part that is %s and unchanged names %d resources", p.Step, state, len(p.Changed))
+		}
+		return nil
 	}
 	lostCreate := p.Step == StepCreate && state == StateUnknown
 	if (state != StateApplied && state != StateUnknown) || lostCreate {

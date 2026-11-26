@@ -245,7 +245,7 @@ func (c *Client) pickTransition(ctx context.Context, issue, want string) (Transi
 	}
 	i := slices.IndexFunc(ts, func(t Transition) bool { return t.ID == hit.ID })
 	if !ts[i].Available {
-		return Transition{}, notSent("%s cannot make the %s transition now", issue, ts[i].Name)
+		return Transition{}, notSent("%s cannot make the %q transition now", issue, ts[i].Name)
 	}
 	return ts[i], nil
 }
@@ -313,19 +313,24 @@ func (c *Client) screenValues(ctx context.Context, b *builder, issue string, scr
 			return nil, notSentErr(err)
 		}
 		if slices.ContainsFunc(metas[:i], func(m FieldMeta) bool { return m.ID == f.ID }) {
-			return nil, notSent("%s is set twice", f.Name)
+			return nil, notSent("%q is set twice", f.Name)
 		}
 		metas[i] = f
 	}
 	var stored *Issue
-	if slices.ContainsFunc(metas, func(f FieldMeta) bool { return kindOf(f.Schema) == kindRich }) {
+	if slices.ContainsFunc(metas, func(f FieldMeta) bool { return kindOf(f.Schema) == kindRich }) || replacedNotAsked(nil, metas, inputs) {
 		var err error
-		if stored, err = c.GetIssue(ctx, issue, richFieldIDs(metas)...); err != nil {
+		if stored, err = c.GetIssue(ctx, issue, comparedFieldIDs(metas, inputs)...); err != nil {
 			return nil, err
 		}
 	}
 	out := make([]Value, 0, len(inputs))
 	for i, fi := range inputs {
+		if stored != nil {
+			if err := checkReplaced(stored, metas[i], fi.Value); err != nil {
+				return nil, notSentErr(err)
+			}
+		}
 		b.opts.Base = nil
 		if stored != nil && kindOf(metas[i].Schema) == kindRich {
 			base, err := storedDoc(stored, metas[i])

@@ -249,8 +249,12 @@ Markdown cannot show (a macro, a panel, a mention, a merged cell) survives
 when the user did not touch it. `adf.CheckLoss` turns the warnings of an
 edit that would lose such content into a `*LossError` that names what would
 be lost and how to keep it. A caller passes the user's explicit acceptance
-to apply the edit anyway. Jira's edit and comment calls run the check; no
-caller writes rich text without it.
+to apply the edit anyway. A clear of rich text, which removes every node's
+Markdown, is checked against what Markdown shows only simplified
+(`adf.ClearLoss`): a document holding such content is refused for it until
+the loss is accepted, and the refusal names what the clear erases with no
+way to keep it. Jira's edit, transition and comment calls run the
+check; no caller writes rich text without it.
 
 ## Jira
 
@@ -302,14 +306,21 @@ problem on that record, which stays usable.
   write. A caller that passes a record as just read (`Current`) has sent
   nothing since reading it.
 - **Caches.** Every cached answer (users, the signed-in user, the field
-  catalog, board configurations, sprint lists) is kept with the
+  catalog, create screens, board configurations, sprint lists) is kept with the
   `CredentialMark` it was drawn under and is handed out only while the
   transport's own mark equals it, so a credential that is read again,
   forgotten or replaced retires them all, whichever call caused it. A
   board's configuration and sprint list are dropped by `ForgetBoard`,
   which the provider calls before each structure read. Users and the
   field catalog, which no read drops and Jira changes with no signal, are
-  read again once 30 minutes old.
+  read again once 30 minutes old. A create screen read to be shown
+  (`CreateMeta`: the create form's fields, a tool's read of them) asks
+  Jira every time and is kept for one minute; what follows it and shows
+  nothing (`KeptCreateMeta`: the create's plan, the form's choices search)
+  takes the kept screen, so a create planned after its form or a tool call
+  read the screen reads it once. A create Jira refuses with a 400 that names a field, or a plan
+  that leaves a required field unset, drops it: the screen may have
+  changed under the refusal, and the next read is Jira's.
 - **Write answers.** A write is applied only on a success its spec
   documents that names what was written, by the rule in `jira/writes.go`;
   any other 2xx is an unknown outcome. An edit that asks for nothing is

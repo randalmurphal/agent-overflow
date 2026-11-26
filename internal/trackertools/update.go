@@ -1,0 +1,193 @@
+package trackertools
+
+import (
+	"context"
+	"encoding/json"
+	"slices"
+	"strings"
+
+	"agent-overflow/internal/trackerapp"
+)
+
+// ticket_update changes tickets in one call. Every ticket is resolved,
+// read as far as its steps need and checked first (plan.go), with nothing
+// sent: a name or a value the ticket cannot take, or a long text the
+// session was not given whole (marks.go), refuses the call; a status,
+// sprint or estimate the ticket as it is now cannot take is said as that
+// ticket's refusal, and nothing is sent for any ticket. A call naming
+// several tickets then waits for the person's approval (Host.Approve). When
+// set changes them, their cards are then read again (planCall.recheck): a
+// ticket that changed during the wait, by its update time, status or
+// sprints, is refused and sent nothing, and the others go on. What a
+// person changes after that read, in the seconds the earlier tickets'
+// sends take, is caught only where a write compares when it is sent: a
+// text an edit replaces whole (planField), a move Jira no longer offers
+// the ticket, and a status its Linear team no longer has. The thread's
+// mode is read again before anything is sent. Each ticket's steps run in
+// order (apply.go), status, fields, estimate, sprint, comment, and the
+// first refused or unknown stops that ticket: what came after it is not
+// sent. A step the ticket already holds, an edit the tracker answers
+// as changing nothing, or a comment an earlier call of the thread added
+// (trackerapp's repeat record), is already: it changed nothing.
+
+type updateArgs struct {
+	Keys    []string                   `json:"keys"`
+	Set     map[string]json.RawMessage `json:"set"`
+	Comment *string                    `json:"comment"`
+}
+
+// ticketAnswer is what became of one ticket: the steps this call applied,
+// by the names the call gave, those the ticket already held or an earlier
+// call made, the one refused or unknown with its sentence, the steps not
+// sent after it, and a note.
+type ticketAnswer struct {
+	Key     string   `json:"key"`
+	Applied []string `json:"applied,omitempty"`
+	Already []string `json:"already,omitempty"`
+	Refused string   `json:"refused,omitempty"`
+	Unknown string   `json:"unknown,omitempty"`
+	NotSent []string `json:"not_sent,omitempty"`
+	Note    string   `json:"note,omitempty"`
+}
+
+type updateAnswer struct {
+	Tickets []ticketAnswer `json:"tickets"`
+}
+
+// namedValue is one entry of set, in the order the call's names sort.
+type namedValue struct {
+	name  string
+	value setValue
+	raw   json.RawMessage
+}
+
+// parseSet is set's entries, sorted by name so a call's plan is the same
+// however its client ordered them.
+func parseSet(set map[string]json.RawMessage) ([]namedValue, error) {
+	names := make([]string, 0, len(set))
+	for n := range set {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	out := make([]namedValue, 0, len(names))
+	for _, n := range names {
+		if strings.TrimSpace(n) == "" {
+			return nil, invalidf("set has an empty name.")
+		}
+		v, err := parseSetValue(n, set[n])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, namedValue{name: n, value: v, raw: set[n]})
+	}
+	return out, nil
+}
+
+// maxApprovalBytes bounds what a call that waits for the person carries
+// whole to every screen (Approval): its set's values and its comment.
+const maxApprovalBytes = 256 << 10
+
+func (s *Server) update(ctx context.Context, caller Caller, raw json.RawMessage) (any, error) {
+	var args updateArgs
+	if err := decode(raw, &args); err != nil {
+		return nil, err
+	}
+	if len(args.Set) == 0 && args.Comment == nil {
+		return nil, invalidf("Give set or comment.")
+	}
+	if args.Comment != nil && strings.TrimSpace(*args.Comment) == "" {
+		return nil, invalidf("comment is empty; write one or leave it out.")
+	}
+	if len(args.Keys) > maxUpdateKeys {
+		return nil, invalidf("keys holds at most %d tickets; change the rest in another call.", maxUpdateKeys)
+	}
+	set, err := parseSet(args.Set)
+	if err != nil {
+		return nil, err
+	}
+	comment := ""
+	if args.Comment != nil {
+		comment = *args.Comment
+	}
+	if len(args.Keys) > 1 && approvalBytes(set, comment) > maxApprovalBytes {
+		return nil, invalidf("set and comment together hold more than %d KiB, more than an approval shows the person; change fewer or shorter values in each call.", maxApprovalBytes>>10)
+	}
+	if err := s.h.Writable(caller.Thread); err != nil {
+		return nil, err
+	}
+	keys := args.Keys
+	if len(keys) == 0 {
+		keys = []string{""}
+	}
+	tickets, sources, err := s.resolveKeys(ctx, caller.Thread, keys, keysArg)
+	if err != nil {
+		return nil, err
+	}
+	pc := newPlanCall(s, caller, sources)
+	var plans []*planned
+	for _, t := range tickets {
+		if slices.ContainsFunc(plans, func(q *planned) bool { return q.t.connection == t.connection && q.t.issue == t.issue }) {
+			return nil, invalidf("%s is named twice in keys.", qualifier(sources, t.site)(t.key))
+		}
+		p, err := pc.plan(ctx, t, set, comment)
+		if err != nil {
+			return nil, err
+		}
+		plans = append(plans, p)
+	}
+	if slices.ContainsFunc(plans, func(p *planned) bool { return p.refused != "" }) {
+		// Nothing is sent: the call is the person's request as a whole.
+		out := updateAnswer{}
+		for _, p := range plans {
+			out.Tickets = append(out.Tickets, ticketAnswer{Key: p.key, Refused: p.refused, NotSent: p.stepNames(p.refused != "", p.refusedStep)})
+		}
+		return out, nil
+	}
+	id := s.newID()
+	if len(plans) > 1 {
+		if err := s.h.Approve(ctx, caller.Thread, approvalOf(id, plans, set, comment)); err != nil {
+			return nil, err
+		}
+		// What set changes was judged on the tickets as they were before
+		// the wait; a comment alone judges nothing but that they exist.
+		if len(set) > 0 {
+			if err := pc.recheck(ctx, plans); err != nil {
+				return nil, err
+			}
+		}
+	}
+	// The writes are admitted now: a thread made read-only while the call
+	// planned or waited sends nothing.
+	if err := s.h.Writable(caller.Thread); err != nil {
+		return nil, err
+	}
+	// What was admitted is sent whole: the call's end no longer stops it,
+	// and each write keeps its own bound.
+	wctx := trackerapp.ByAgent(context.WithoutCancel(ctx), caller.Thread, id)
+	out := updateAnswer{}
+	row := WriteRow{ID: id}
+	for _, p := range plans {
+		if p.changed != "" {
+			out.Tickets = append(out.Tickets, ticketAnswer{Key: p.key, Refused: p.changed, NotSent: p.stepNames(false, 0)})
+			continue
+		}
+		answer, written := s.apply(wctx, caller, p)
+		out.Tickets = append(out.Tickets, answer)
+		if len(written.Applied) > 0 {
+			row.Tickets = append(row.Tickets, written)
+		}
+	}
+	if len(row.Tickets) > 0 {
+		s.h.Wrote(caller.Thread, row)
+	}
+	return out, nil
+}
+
+// approvalBytes is what an approval of set and comment carries whole.
+func approvalBytes(set []namedValue, comment string) int {
+	n := len(comment)
+	for _, nv := range set {
+		n += len(nv.name) + len(nv.raw)
+	}
+	return n
+}

@@ -34,7 +34,7 @@ func (s *Service) Create(ctx context.Context, id string, in CreateRequest) (Writ
 	if err != nil {
 		return WriteView{}, err
 	}
-	op := writeOp{board: m.Board, call: func(r *run) tracker.Result {
+	op := writeOp{board: m.Board, additive: createOf(in), call: func(r *run) tracker.Result {
 		after, err := s.sectionFoot(r.root, m.Board, m.Sprint)
 		if err != nil {
 			return tracker.Result{Parts: []tracker.Part{{Step: tracker.StepCreate, Outcome: tracker.NotSent(err)}}}
@@ -117,7 +117,9 @@ func (s *Service) AddComment(ctx context.Context, id string, in CommentRequest) 
 	if err != nil {
 		return WriteView{}, err
 	}
-	return s.write(ctx, id, call1(m, tracker.Provider.AddComment))
+	op := call1(m, tracker.Provider.AddComment)
+	op.additive = commentOf(m.Issue, in.Markdown)
+	return s.write(ctx, id, op)
 }
 
 // EditComment replaces a comment's body.

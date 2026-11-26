@@ -164,6 +164,7 @@ func (a *App) revokeSessionMCP(threadID, token string) {
 	a.revokeThreadMCP(threadID, token)
 	a.workflowMCPServer().RevokeThread(threadID, token)
 	a.trackerMCPServer().RevokeThread(threadID, token)
+	a.trackerMCP.tools.EndSession(token)
 	if a.browser.mcp != nil {
 		a.browser.mcp.RevokeThread(threadID, token)
 	}

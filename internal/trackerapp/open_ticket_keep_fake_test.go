@@ -391,7 +391,7 @@ func TestARunBeforeAnyViewReadDeletesTheEarlierRows(t *testing.T) {
 	t.Parallel()
 	s, conn, _ := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
 	s.earlierRows(t, conn, "10105", 2)
-	if _, _, err := s.svc.issueDetail(t.Context(), conn.ID, "10105", Interactive, true); err != nil {
+	if _, _, err := s.svc.issueDetail(t.Context(), conn.ID, "10105", Interactive, true, true); err != nil {
 		t.Fatal(err)
 	}
 	if n := must[int64](t)(s.st.DropMirrorTicketsOfOtherSessions(s.svc.session)); n != 0 {

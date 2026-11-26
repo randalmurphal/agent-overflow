@@ -35,13 +35,15 @@ import (
 // reads that entry to build the resolved tool row's summary, so consuming it
 // here would leave the row describing the wrong input.
 
-// PromptClaim is the right to forward one answer: the prompt it answers
-// and the only session the answer may be written to. Ref.Occurrence is
-// zero, and SessionToken empty, for a request this router holds no prompt
-// for.
+// PromptClaim is the right to forward one answer: the prompt it answers,
+// the only session the answer may be written to, and Kind, the open
+// approval's kind (provider.ApprovalRequest.Kind), which says who takes
+// the answer. Ref.Occurrence is zero, and SessionToken and Kind empty,
+// for a request this router holds no prompt for.
 type PromptClaim struct {
 	Ref          PromptRef
 	SessionToken string
+	Kind         string
 }
 
 // ClaimPrompt reports whether this caller may forward an answer to the
@@ -68,10 +70,13 @@ func (r *Router) ClaimPrompt(threadID, requestID string, occurrence provider.Pro
 	if occurrence != 0 && (!isOpen || open != occurrence || r.frameRetiredLocked(threadID, session)) {
 		return claim, false
 	}
+	st := r.state(threadID)
 	if isOpen {
 		claim.Ref.Occurrence, claim.SessionToken = open, session
+		if pending, ok := st.pendingApprovals[requestID]; ok {
+			claim.Kind = pending.Request.Kind
+		}
 	}
-	st := r.state(threadID)
 	// A request with no prompt open is refused on any record: its prompt
 	// was answered and then resolved, or its agent ended.
 	if held, answered := st.answeredRequests[requestID]; answered && (held == claim.Ref.Occurrence || !isOpen) {

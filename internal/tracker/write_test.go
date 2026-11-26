@@ -39,9 +39,11 @@ func TestInputChecks(t *testing.T) {
 		{CreateInput{Project: "p", Title: "T", Board: "b", Sprint: "s"}, nil},
 		{CreateInput{Project: "p", Title: "T", Board: "b", After: RowPlace{Issue: "i", Order: "o"}}, nil},
 		{EditInput{Issue: "i", Fields: title}, map[string]checker{
-			"no issue":  EditInput{Fields: title},
-			"no fields": EditInput{Issue: "i"},
-			"no value":  EditInput{Issue: "i", Fields: []FieldEdit{{Field: FieldTitle}}},
+			"no issue":             EditInput{Fields: title},
+			"no fields":            EditInput{Issue: "i"},
+			"no value":             EditInput{Issue: "i", Fields: []FieldEdit{{Field: FieldTitle}}},
+			"replaces on Markdown": EditInput{Issue: "i", Fields: []FieldEdit{{Field: FieldDescription, Value: MarkdownEdit("x", "old").Replacing("old")}}},
+			"replaces on picks":    EditInput{Issue: "i", Fields: []FieldEdit{{Field: FieldPriority, Value: PickValues("1").Replacing("2")}}},
 		}},
 		{MoveInput{Issue: "i", Move: "31"}, map[string]checker{
 			"no issue":    MoveInput{Move: "31"},

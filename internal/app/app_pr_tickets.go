@@ -14,7 +14,7 @@ import (
 // in the order they first appear: one store read for every key the rows
 // name (store.TicketsByKey), and one of the boards projectID (the project
 // the rows list under) lists, whose connections answer a key two sites
-// hold. A row that names none has nil. A read that fails leaves every row
+// hold: a row shows a key's first ticket. A row that names none has nil. A read that fails leaves every row
 // without tickets and is logged: the rows still list, and the next read
 // of the repository annotates them again.
 func (a *App) prRowTickets(repoKey, projectID string, rows []gitops.PRListRow) [][]store.KeyedTicket {
@@ -53,8 +53,8 @@ func (a *App) prRowTickets(repoKey, projectID string, rows []gitops.PRListRow) [
 	tickets := make([][]store.KeyedTicket, len(rows))
 	for i, keys := range named {
 		for _, key := range keys {
-			if ticket, ok := found[key]; ok {
-				tickets[i] = append(tickets[i], ticket)
+			if sites := found[key]; len(sites) > 0 {
+				tickets[i] = append(tickets[i], sites[0])
 			}
 		}
 	}

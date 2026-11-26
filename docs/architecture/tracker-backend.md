@@ -1287,9 +1287,22 @@ search matching `updated >=` lags, by up to about 2 seconds
 ([measured](../references/tracker-api-measurements.md#jira-cloud)), which
 the delta's overlap covers.
 
-A write an agent made is recorded in `tracker_agent_writes` (thread, issue,
-what changed, when), which the ticket's history view joins. That table is
-added with the agent tools.
+A write an agent's tool call makes carries the thread and call as a
+context value (`trackerapp.ByAgent`, read only by `Service.write`); a
+person's writes carry none and record nothing. `Service.write` records it
+in `tracker_agent_writes` (`trackerapp/agent_writes.go`): a comment or a
+create is written in state `sent` before the provider call, with a digest
+of its content, and every step's outcome (`applied` or `unknown`) with the
+card's update times before and after is written after the refresh and
+before the views are built, so the view the change funnel's event builds
+already carries the mark, a create's with the key the tracker gave it. A
+refused step, and an edit the tracker answers as changing nothing,
+leave no row. A ticket's detail
+marks a comment whose ID a row holds with its thread (`CommentView.Thread`)
+and a history event by the writing connection's account inside a row's
+window (`EventView.Agent`); the newest 200 rows of an issue are read. The
+table is an application record: kept through restore, never pruned with
+history, and a deleted thread's rows stay with an empty title.
 
 ## Methods and events
 
@@ -1717,7 +1730,8 @@ the connection's problem with their outcome (`form_reads.go`): `Projects`,
 `IssueTypes`, `Boards`, `BoardProjects` (the projects a board's filter
 shows; a Linear team's own), `CreateFields` (each field with the values
 its screen lists and whether the tracker fills it, `tracker.ScreenField`,
-as a move's fields are),
+as a move's fields are; a Jira screen read within the minute is the
+client's kept one, so the create it plans reads it once),
 `Moves`, `AssignableUsers`,
 `Choices`, `LinkTypes`, `Lookup`, `Search`, `Comments` (a later page) and
 `Download`. The mirror holds none of them: configuration it never reads,
@@ -2011,8 +2025,10 @@ delete is refused and the links the delete read are the ones it ends.
 
 ## Agent tools
 
-Status: built: `ticket_find` and `ticket_read` on the `ao-tracker-tools`
-server. The writes, and the three mechanisms below, are not built.
+Status: built: `ticket_find`, `ticket_read`, `ticket_create` and
+`ticket_update` on the `ao-tracker-tools` server, with the read-only
+refusal, the approval and the timeline row ([Writes by
+agents](#writes-by-agents)). The worklog tools are not built.
 
 **Who has them.** A session gets the server when its thread belongs to a
 project, its provider is Claude or Codex, and the computer has a Jira or
@@ -2141,8 +2157,7 @@ server is for.
 status and sprint need provider work and are not built. The rest of this
 section is the whole contract.
 
-The tools read, search, create, edit, move, comment, move between sprints
-and list and add worklogs, through `trackerapp`. A worklog an agent adds is
+The tools are also to list and add worklogs, through `trackerapp`. A worklog an agent adds is
 an entry in a time draft. Only a draft's posting path sends a draft's time
 to a tracker, and it sends exactly the entries it is given: the entries
 the user approved (one entry, a day or the whole draft), an entry the user
@@ -2151,20 +2166,176 @@ project's setting posts such days. An entry an agent made is never posted
 on the agent's call. No tool reaches the provider's worklog write or
 `trackerapp`'s worklog writes, which send time for any caller.
 
-Three mechanisms the tools need do not exist for any built-in tool server
-yet and are part of that work:
-
-- **Read-only threads.** The handler refuses a writing tool when the
-  calling thread's live runtime mode is read-only. The provider cannot
-  enforce it, because app tools are admitted in every mode.
-- **Approval.** A write naming more than one ticket parks the call, raises
-  an app-owned prompt in the thread and resolves on the user's answer or
-  the call's end.
-- **Timeline.** An applied write adds its own timeline row to the calling
-  thread, separate from the tool row.
-
 Ticket text in a tool result is data: results are JSON, and the server's
 guide says so once.
+
+### Writes by agents
+
+`ticket_update` changes the tickets `keys` names (at most 20, or the
+linked ticket), then comments on each; `ticket_create` creates one ticket
+and answers its key. Both go through `trackerapp`'s bound write methods
+as the agent's writes (`ByAgent`), so the screens learn of them as of a
+person's ([Writes](#writes)), with no saving state, note or toast, and a
+person's draft of the same field stays a draft. The code is
+`internal/trackertools/update.go` (the call), `keys.go`, `plan.go` (what
+each ticket's change is), `apply.go` (sending it), `create.go`, `set.go`
+and `marks.go`; the app's side is
+`internal/app/app_tracker_tools_host.go`.
+
+**What `set` takes.** A name matches without regard to case: the members
+a read writes at its top (status, sprint, estimate, title, assignee,
+priority, labels, parent, description), or a field by the name the read
+shows under `fields` (a name two fields share with its ID, as the read
+writes it). The estimate also answers to the field its board estimates by
+(Jira's Story points). A name that matches nothing is refused naming the
+ticket's names, at most 40; a member the read shows that no write sets
+(`created`, `key`, ...) and a field that is not editable are refused. A
+value is text, a number, a list, or null to clear; an empty list clears.
+A value in the form a read prints it is taken back: an estimate as `5`,
+`5 points` or `1h 30m`, a date-time stamp as RFC 3339, a parent as `WEB-4
+Title`, and `me` for a person is the connection's account. A status is a
+move's target by name, refused naming the moves; a sprint is an open
+sprint of the ticket's board by name, refused naming the open sprints, and
+null or `backlog` is the backlog. A sprint or an estimate needs a board of
+the ticket the mirror holds, else it is refused saying to add or open the
+board.
+
+**Long texts.** The server remembers, per session (the capability's
+token), for each ticket the session read (at most 256, oldest out), the
+ticket's update time at that read and, per long text, how much of it the
+session was given: the first read and each continuation add to it. An edit
+of the description or of a rich-text field, or of any text longer than a
+read gives at first, is refused when the session never read the ticket,
+when the ticket changed since, or when the session was not given the text
+whole ("You have read only part of WEB-12's description; read the rest of
+it through more before you change it."). A plain text field with several
+values is judged per value. An edit the tracker confirmed moves the mark
+to the refreshed time with the texts that edit wrote; the ticket's other
+texts are unread at that time, so an edit of one says the ticket changed
+since it was read. An edit that was refused or never answered moves
+nothing. A mark is recorded only while the app still holds the session,
+and the marks end with the session's capability.
+
+An edit that replaces a long plain text carries the text it replaces
+(`tracker.Edit.Replacing`), and an edit of rich text, a clear included,
+carries the Markdown it was written from. Jira compares either with what
+it stores before it writes and refuses a text that changed; Linear cannot
+compare a plain text and refuses one as unsupported.
+
+**Order and outcomes.** Every ticket is resolved and checked before
+anything is sent: names, values, the move and the sprint. A naming or
+value error is a tool error and nothing is sent; a status that is not a
+move, a sprint that is not open or a ticket on no board is that ticket's
+`refused` and nothing is sent for any ticket. Then each ticket's steps
+run in order (status, fields in one edit, estimate, sprint, comment); the
+first refused or unknown step stops the ticket, and the steps after it
+are in `not_sent`. A step the ticket already has (its status, its sprint)
+sends no request and is in `already`, not `applied`. Each ticket's answer
+is `applied`, `already`, `refused`, `unknown`, `not_sent` and a `note`,
+each only when it has something. An unknown outcome says the same call
+again makes only what was not. The boards a call judges are read once
+each per call.
+
+**Approval.** A call that names more than one ticket waits for the
+person. The app raises a prompt of kind `tracker-write` in the thread
+(`provider.EventApprovalRequest` through triage, decisions accept and
+decline only) showing each ticket's changes and the comment. The prompt
+carries each value of `set` whole, and a change line that shows a value
+in part names it, so the panel's Show all opens the whole value with
+nothing fetched. A call whose `set` and comment together pass 256 KiB is
+refused before any prompt, telling the model to make the change in
+smaller calls. The person's answer reaches the call by the kind of the
+prompt triage holds open (`triage.PromptClaim.Kind`), not by its request
+ID, and the waiter is keyed by thread and request ID. Triage never
+routes it to a spawner (`triage.promptRoutable`), so a worker's tracker
+write is the person's, which the worker's composer shows on every screen
+and its spawner's Agents row reaches like any prompt routed to nobody
+([ruling 19](../specs/standing-agents.md)). The call's waiter settles
+once, by the first of the answer (`RespondToApproval`), 15 minutes, and
+the call's end; an answer that loses is refused as already handled, and a
+wait that ends first withdraws the prompt from every screen. A prompt
+triage does not keep, because the session no longer holds the thread,
+ends the call at once. Nothing is persisted: an app that stops ends the
+call, and nothing was sent. The writes after an approval run on the
+server's context to their end.
+
+**Changed while waiting.** What `set` changes was judged on the tickets
+as they were before the prompt, so after the person approves, the call's
+cards are read again, one key lookup per connection (`planCall.recheck`).
+On Jira that is one `issue/bulkfetch`, and one more `GET issue` for each
+key the fetch did not answer under that key (a ticket moved to another
+key, or gone), four at a time; the field catalog is read again too when
+the client's copy is older than 30 minutes. On Linear it is one `issues`
+list, one `IssueSummary` for each key the list did not find, and one
+read of label names when an issue holds labels the list left unnamed. A
+ticket whose update time, status or sprints differ from what
+its plan read, or that the lookup no longer finds, is sent nothing: its
+`refused` says it changed on the tracker while the user was deciding,
+every step is in `not_sent`, and the call's other tickets go on. The
+update time covers every value the plan judged on Jira, where a field
+change, a comment, a link, an attachment and a worklog each move it, so a
+teammate's comment during the wait refuses the ticket too. On Linear a
+title, assignee, priority and status change move it, an estimate change
+does on a team with estimation off (one with it on is not measured), and
+a comment does not; a cycle change is not measured, which the sprint
+comparison covers ([measured](../references/tracker-api-measurements.md)). A lookup that
+fails sends nothing and is the call's error. A comment alone judges
+nothing but that the ticket exists and is not read again, and a call
+naming one ticket does not wait. After the read, in the seconds the
+earlier tickets' sends take, a change is caught only where a write
+compares at send: a text an edit replaces whole, a move Jira no longer
+offers the ticket, and a status its Linear team no longer has.
+
+**Read-only threads.** A writing call is refused when the calling
+thread's runtime mode is read-only, before anything is read or sent, and
+the mode is read again before the first write is sent, after the
+approval when there is one. The provider cannot enforce it, because app
+tools are admitted in every mode.
+
+**Nothing made twice.** A comment or a create is claimed before it is
+sent, in one store transaction under one lock
+(`store.ClaimAgentWrite`): within an hour, one caller of a thread
+holds the right to send a given digest at a time. The digest is the
+comment's Markdown on the issue, or what the create request sends (the
+tracker, site, project, type, title, sprint and every field, by field ID in any
+order), never the steps made after a create, so a call again after one of
+those was refused finds the ticket. A later call whose digest is applied
+sends nothing and puts the step in `already` with a note, the create
+naming the key its row kept; one whose digest an earlier call is still
+sending is refused saying to call again once that call has answered. One
+whose earlier send was interrupted (its answer never came, or the app
+stopped) reads the tracker first: the issue's comments by the writing
+account from a minute before the send to two minutes after, compared on
+letters and digits outside mentions, or a search for the title in the
+project in that window. What it finds settles the earlier row and is the
+answer; nothing found sends under the same claim; a read that fails sends
+nothing and is refused saying it could not be checked and to call again
+to check. A row sent before the connection's account was verified cannot
+tell the agent's write from a person's, so nothing is read or sent and
+the refusal says to check the connection. A claim's row ID is never
+reused (`AUTOINCREMENT`), so a caller holding a refused claim's ID never
+settles another write's row.
+
+**Creates.** A create goes through one board, chosen over every
+connection's listings of the project: a board read here that the
+thread's project lists, else any board read here. None is refused saying
+to add one, and only unread ones are refused saying to open one. Boards
+of the project on two sites are refused naming both. The create screen
+is read once for the call: the tool's read of the create fields asks
+Jira, and the create takes the screen the Jira client kept from it for a
+minute, which a create refused for a field on it drops. Jira takes the type by name (Task, else the first type that
+is not a subtask, when none is given); Linear has none and refuses one.
+Every field of `set` is resolved before the create request, so a value
+refused there creates nothing; status, sprint and estimate are set after
+the create, and one refused there says the ticket was created ("WEB-42
+was created, but status was not set: ..."). A create that a later call
+finds made is answered with its key, and the steps after the create are
+set on it where it does not hold them already.
+
+**Timeline.** A call that applied anything, and only then, adds one notification row of
+kind `tracker_write` to the thread at its current turn (`Created WEB-42`,
+`Changed WEB-12`, `Changed 3 tickets`), with each ticket's connection,
+issue, key, title and applied steps; each key opens the ticket.
 
 ## Tests
 
@@ -2240,6 +2411,5 @@ Not built, owed by the app layer:
   needs part of the setup takes it as a bound argument, as the status
   groups are; nothing of the file is copied into the mirror.
 - The time-draft posting path (Agent tools).
-- The agent tools' writes with their three mechanisms
-  ([Agent tools](#agent-tools)).
+- The agent tools' worklog list and add ([Agent tools](#agent-tools)).
 - Searching the forge by key for a pull request outside the stored list.

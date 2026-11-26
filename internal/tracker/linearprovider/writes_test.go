@@ -157,7 +157,7 @@ func TestCreate(t *testing.T) {
 	}})
 	expectResult(t, r, "5:create:applied")
 	id := tracker.IssueID(issueID(5))
-	if got, ok := r.Created(); !ok || got != id {
+	if got, _, ok := r.Created(); !ok || got != id {
 		t.Errorf("created %q", got)
 	}
 	if !reflect.DeepEqual(r.Parts[0].Changed, []tracker.Resource{tracker.CardOf(id), tracker.RowOf(web, id), tracker.DetailOf(id)}) {
@@ -275,6 +275,9 @@ func TestEdit(t *testing.T) {
 	expectResult(t, p.Edit(ctx, md("New steps", "Steps")), "1:edit:applied")
 	expectResult(t, p.Edit(ctx, md("", "Steps")), "1:edit:applied")
 	expectResult(t, p.Edit(ctx, md("x", "")), "1:edit:refused(tracker)")
+	// Linear holds no long plain text to compare: an edit written from
+	// texts is refused before anything is read.
+	expectResult(t, p.Edit(ctx, tracker.EditInput{Issue: id, Fields: []tracker.FieldEdit{{Field: tracker.FieldTitle, Value: tracker.TypedValues("x").Replacing("Renamed")}}}), "1:edit:refused(unsupported)")
 }
 
 // Move reads the issue with its team's states in one request and

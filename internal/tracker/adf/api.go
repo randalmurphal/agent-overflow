@@ -79,6 +79,9 @@ type Warning struct {
 	// It is empty for lost dress (a color, an alignment, a width), which
 	// only warns.
 	Loses LossSet
+	// clear marks a ClearLoss warning: its content is removed on purpose,
+	// so no LossKind says how to keep it.
+	clear bool
 }
 
 // Flattens reports whether w loses content, which CheckLoss refuses

@@ -172,8 +172,10 @@ func TestCreateThenAFailedStep(t *testing.T) {
 	t.Parallel()
 	f := newWriteFixture(t)
 	id := tracker.IssueID("10004")
+	create := appliedPart("10004", tracker.StepCreate, tracker.CardOf(id), tracker.DetailOf(id))
+	create.Key = "WEB-4"
 	f.answer(tracker.Result{Parts: []tracker.Part{
-		appliedPart("10004", tracker.StepCreate, tracker.CardOf(id), tracker.DetailOf(id)),
+		create,
 		{Issue: id, Step: tracker.StepUpload, Outcome: tracker.Refused(tracker.Refusal{Reason: tracker.ReasonTracker, Message: "too large"}),
 			Changed: []tracker.Resource{tracker.DetailOf(id)}},
 	}})
@@ -194,7 +196,7 @@ func TestCreateThenAFailedStep(t *testing.T) {
 		t.Fatal("the new issue's row was not stored")
 	}
 	if v.CreatedKey != "WEB-4" {
-		t.Fatalf("the created issue's key %q, want the key of the row stored", v.CreatedKey)
+		t.Fatalf("the created issue's key %q, want the key the create's answer gave", v.CreatedKey)
 	}
 }
 
