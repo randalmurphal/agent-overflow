@@ -154,10 +154,10 @@
       <p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-empty">Nothing to count.</p>
     {:else}
       <div class="overflow-x-auto">
-        <table class="w-full border-collapse text-[0.75rem]" data-testid="dashboard-table">
+        <table class="w-full table-fixed border-collapse text-[0.75rem]" data-testid="dashboard-table">
           <thead>
             <tr class="text-left text-fg-muted">
-              <th class="py-1 pr-2 font-normal"></th>
+              <th class="w-[40%] py-1 pr-2 font-normal"></th>
               {#each series as name (name)}
                 <th class="px-1 py-1 text-right font-normal">{named ? name : 'Count'}</th>
               {/each}
@@ -167,7 +167,7 @@
           <tbody>
             {#each value.buckets ?? [] as b (b.key)}
               <tr class="border-t border-border-subtle" data-testid="dashboard-table-row" data-bucket={b.key}>
-                <td class="max-w-0 py-1 pr-2">
+                <td class="py-1 pr-2">
                   {#if narrow && b.key !== ''}
                     <button type="button" class="block w-full truncate text-left text-fg hover:underline compact:select-none" title="Show only {b.label}" data-testid="dashboard-table-label" onclick={() => narrow?.(b)}>{b.label}</button>
                   {:else}
