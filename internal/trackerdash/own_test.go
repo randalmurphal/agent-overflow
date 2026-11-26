@@ -90,6 +90,30 @@ func TestTryCountsOneWidgetOrRefusesIt(t *testing.T) {
 	}
 }
 
+// A tried widget says the unit its numbers are in: a count's tickets, a
+// time board's estimates in seconds, as the copy holds them.
+func TestTrySaysTheUnitOfItsNumbers(t *testing.T) {
+	t.Parallel()
+	board := newFixture(false, "time").status("3", "In progress", "in_progress").
+		ticket(ticket{id: "t1", key: "WEB-1", status: "3", group: "in_progress", points: "7200", created: ago(3)}).board()
+	sum := Metric{Name: "w_1", Title: "Estimated", Words: []string{"Estimates of tickets open now."},
+		SQL: "SELECT id AS ticket, points AS value FROM tickets WHERE open = 1", Reduce: ReduceSum, Unit: UnitEstimate}
+	count := sum
+	count.Title, count.Reduce = "Open", ReduceCount
+	for _, c := range []struct {
+		m    Metric
+		unit string
+	}{{sum, "seconds"}, {count, "tickets"}} {
+		got, err := evaluator().Try(context.Background(), board, Widget{Form: FormNumber, Width: 3}, c.m, "UTC")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Unit != c.unit {
+			t.Errorf("%s: unit %q; want %q", c.m.Title, got.Unit, c.unit)
+		}
+	}
+}
+
 // The rules name every widget field, the contract's columns, and every
 // relation a query reads with what its columns hold.
 func TestRulesNameTheFieldsAndTheRelations(t *testing.T) {

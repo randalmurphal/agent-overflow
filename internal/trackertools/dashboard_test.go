@@ -2,6 +2,7 @@ package trackertools
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -153,6 +154,7 @@ func TestDashboardWidgetAnswersTheCount(t *testing.T) {
 		}
 		return trackerdash.Tried{
 			View:  trackerdash.WidgetView{How: trackerdash.How{Counts: "The number of tickets."}},
+			Unit:  "tickets",
 			Value: trackerdash.WidgetValue{Buckets: []trackerdash.BucketValue{{Label: "Sprint 14", Cells: []trackerdash.Num{num(2)}, Total: num(2)}, {Label: "Sprint 15", Total: trackerdash.Num{Gap: true}}}, NotCounted: 1},
 			Range: trackerdash.RangeView{Label: "Last 3 sprints"},
 			Rows:  []trackerdash.TicketRow{{Key: "WEB-1", Title: "Login fails", Value: &one, Counted: true, Period: "Sprint 14"}, {Key: "WEB-2", Note: "no estimate"}},
@@ -163,7 +165,7 @@ func TestDashboardWidgetAnswersTheCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"board":"Web Team","range":"Last 3 sprints","counts":"The number of tickets.","buckets":[{"label":"Sprint 14","total":2},{"label":"Sprint 15","total":null}],` +
+	want := `{"board":"Web Team","range":"Last 3 sprints","counts":"The number of tickets.","unit":"tickets","buckets":[{"label":"Sprint 14","total":2},{"label":"Sprint 15","total":null}],` +
 		`"not_counted":1,"rows":7,"first_rows":[{"key":"WEB-1","title":"Login fails","value":1,"period":"Sprint 14","counted":true},{"key":"WEB-2","counted":false,"note":"no estimate"}],` +
 		`"partial":"The board's first read has not finished: these count the tickets read so far.","shown":"It is on the board's dashboards for the user to keep or dismiss."}`
 	if answer != want {
@@ -192,5 +194,60 @@ func TestDashboardWidgetPassesTheRefusalAndNeedsNoWrite(t *testing.T) {
 	f.try = func(trackerapp.KeptWidget) (trackerdash.Tried, error) { return trackerdash.Tried{}, nil }
 	if _, err := widgetCall(t, f, h, map[string]any{"board": "1", "widget": openWidget, "show": true}); err != nil {
 		t.Fatalf("a read-only thread's proposal: %v", err)
+	}
+}
+
+// Two boards of the thread's project with one name, or one ID on two
+// sites, are not told apart by first match: the call is refused naming
+// each by its site and ID, with no connection's ID, and counts nothing;
+// the site and ID it names picks one. The same board reached through two
+// connections is one board.
+func TestDashboardWidgetRefusesABoardNamedTwice(t *testing.T) {
+	t.Parallel()
+	f := &fakeTracker{
+		try:     func(trackerapp.KeptWidget) (trackerdash.Tried, error) { return trackerdash.Tried{}, nil },
+		sources: []trackerapp.TicketSource{{ID: "conn-a", Site: "a.example.net"}, {ID: "conn-a2", Site: "a.example.net"}, {ID: "conn-b", Site: "b.example.net"}},
+	}
+	h := &fakeHost{project: "p1", boards: []ListedBoard{
+		{Connection: "conn-a", Board: "1", Name: "Engineering", Thread: true},
+		{Connection: "conn-a2", Board: "1", Name: "Engineering", Thread: true},
+		{Connection: "conn-b", Board: "1", Name: "Engineering", Thread: true},
+		{Connection: "conn-b", Board: "2", Name: "Mobile", Thread: true},
+	}}
+	for _, board := range []string{"Engineering", "1"} {
+		_, err := widgetCall(t, f, h, map[string]any{"board": board, "widget": openWidget})
+		refused(t, err, CodeNoBoard, fmt.Sprintf(`Board %q names more than one board of this thread's project: "Engineering" at a.example.net/1 and "Engineering" at b.example.net/1; give board as the site/ID of one.`, board))
+	}
+	if len(f.tries) != 0 {
+		t.Fatalf("an ambiguous board was counted: %v", f.tries)
+	}
+	if _, err := widgetCall(t, f, h, map[string]any{"board": "B.example.net/1", "widget": openWidget}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.tries) != 1 || !strings.Contains(f.tries[0], " conn-b/1 ") {
+		t.Fatalf("site/ID counted %+v; want the board on b.example.net", f.tries)
+	}
+}
+
+// The unit of a widget's numbers and the tickets each could not count
+// reach the agent: a time board's estimates in seconds, a number's
+// tickets not counted, a bucket's.
+func TestDashboardWidgetSaysItsUnitAndTicketsNotCounted(t *testing.T) {
+	t.Parallel()
+	five, three := 7200.0, 3600.0
+	f := &fakeTracker{try: func(trackerapp.KeptWidget) (trackerdash.Tried, error) {
+		return trackerdash.Tried{Unit: "seconds", Value: trackerdash.WidgetValue{
+			Value:   &trackerdash.Num{V: &five, NC: 2},
+			Buckets: []trackerdash.BucketValue{{Label: "User 1", Total: trackerdash.Num{V: &three, NC: 1}}},
+		}}, nil
+	}}
+	answer, err := widgetCall(t, f, webBoards(), map[string]any{"board": "1", "widget": openWidget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"unit":"seconds"`, `"value":7200`, `"not_counted":2`, `{"label":"User 1","total":3600,"not_counted":1}`} {
+		if !strings.Contains(answer, want) {
+			t.Errorf("answer %s lacks %s", answer, want)
+		}
 	}
 }

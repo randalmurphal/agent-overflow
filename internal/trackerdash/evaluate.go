@@ -399,6 +399,19 @@ func cmpOr(a, b string) string {
 	return b
 }
 
+// valueUnit is the unit m's numbers are in as the copy holds them, for a
+// reader without the screen's formatting: tickets, points, seconds (a
+// time board's estimates) or days.
+func valueUnit(m Metric, estimates string) string {
+	switch {
+	case m.Reduce == ReduceCount || m.Unit == UnitTickets:
+		return "tickets"
+	case m.Unit == UnitDays:
+		return "days"
+	}
+	return map[string]string{"points": "points", "time": "seconds", "none": "tickets"}[estimates]
+}
+
 // how renders How this is counted from m's definition.
 func how(m Metric, p prepared, plansSprints bool, estimates string) How {
 	unit := map[Unit]string{UnitTickets: "tickets", UnitDays: "days"}[m.Unit]

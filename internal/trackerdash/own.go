@@ -47,10 +47,12 @@ const triedRows = 5
 
 // Tried is one count of a widget on its own: its view and numbers over
 // the board's default range, the first of its rows as a drill orders
-// them, and how many rows its metric returned in the range.
+// them, how many rows its metric returned in the range, and the unit its
+// numbers are in (valueUnit).
 type Tried struct {
 	View    WidgetView  `json:"view"`
 	Value   WidgetValue `json:"value"`
+	Unit    string      `json:"unit"`
 	Range   RangeView   `json:"range"`
 	Reading bool        `json:"reading,omitempty"`
 	Rows    []TicketRow `json:"rows"`
@@ -82,7 +84,7 @@ func (e *Evaluator) Try(ctx context.Context, b Board, w Widget, m Metric, timeZo
 		return Tried{}, refuse("dashboard_widget_refused", c.err.Sentence, nil)
 	}
 	ev := o.ev
-	out := Tried{View: o.view.Widgets[0], Value: ev.widget(w, m, c, o.sp), Range: rangeView(o.sp), Reading: !ev.export.FirstReadDone, Rows: []TicketRow{}}
+	out := Tried{View: o.view.Widgets[0], Value: ev.widget(w, m, c, o.sp), Unit: valueUnit(m, ev.estimates), Range: rangeView(o.sp), Reading: !ev.export.FirstReadDone, Rows: []TicketRow{}}
 	g := ev.inRange(m, c, o.sp)
 	rows := append(slices.Clone(g.rows), g.unplaced...)
 	sortDrill(rows, ev.keyOf)

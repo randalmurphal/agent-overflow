@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"agent-overflow/internal/errorsx"
@@ -46,12 +47,15 @@ type widgetSpec struct {
 
 // widgetAnswer is a counted widget as the agent reads it: what it counts
 // as How this is counted says it, the numbers it draws over the range,
-// how many rows its query returned, the first of them, and, when shown,
-// where the person finds it.
+// in their unit (seconds for a time board's estimates, which the screen
+// shows as hours), the tickets each number could not count, how many rows
+// its query returned, the first of them, and, when shown, where the
+// person finds it.
 type widgetAnswer struct {
 	Board      string          `json:"board"`
 	Range      string          `json:"range"`
 	Counts     string          `json:"counts"`
+	Unit       string          `json:"unit"`
 	Value      *float64        `json:"value,omitempty"`
 	Previous   *float64        `json:"previous,omitempty"`
 	Series     []string        `json:"series,omitempty"`
@@ -66,9 +70,10 @@ type widgetAnswer struct {
 }
 
 type widgetBucket struct {
-	Label string     `json:"label"`
-	Cells []*float64 `json:"cells,omitempty"`
-	Total *float64   `json:"total"`
+	Label      string     `json:"label"`
+	Cells      []*float64 `json:"cells,omitempty"`
+	Total      *float64   `json:"total"`
+	NotCounted int        `json:"not_counted,omitempty"`
 }
 
 type widgetRow struct {
@@ -118,11 +123,16 @@ func (s *Server) dashboardWidget(ctx context.Context, caller Caller, raw json.Ra
 	if err != nil {
 		return nil, err
 	}
-	out := widgetAnswer{Board: board.Name, Range: tried.Range.Label, Counts: tried.View.How.Counts, Rows: tried.Count,
+	out := widgetAnswer{Board: board.Name, Range: tried.Range.Label, Counts: tried.View.How.Counts, Unit: tried.Unit, Rows: tried.Count,
 		Value: numOf(tried.Value.Value), Previous: numOf(tried.Value.Previous), Series: tried.Value.Series, More: tried.Value.More,
 		NotCounted: tried.Value.NotCounted, First: []widgetRow{}}
+	// A number's tickets not counted are its value's; a list's or a
+	// chart's are the widget's.
+	if v := tried.Value.Value; v != nil && v.NC > 0 {
+		out.NotCounted = v.NC
+	}
 	for _, b := range tried.Value.Buckets {
-		wb := widgetBucket{Label: b.Label, Total: numOf(&b.Total)}
+		wb := widgetBucket{Label: b.Label, Total: numOf(&b.Total), NotCounted: b.Total.NC}
 		if len(b.Cells) > 1 {
 			for i := range b.Cells {
 				wb.Cells = append(wb.Cells, numOf(&b.Cells[i]))
@@ -145,27 +155,37 @@ func (s *Server) dashboardWidget(ctx context.Context, caller Caller, raw json.Ra
 	return out, nil
 }
 
-// widgetBoard is the thread's project and the board of it named, by name
-// or ID: the project's one board when none is named.
+// widgetBoard is the thread's project and the board of it named, by
+// name, ID, or site/ID: the project's one board when none is named. A
+// board two connections reach is one board; a name or an ID that more
+// than one board answers to is refused, naming each by its site/ID, which
+// the agent passes back and the user tells apart.
 func (s *Server) widgetBoard(threadID, named string) (string, ListedBoard, error) {
 	project, boards, err := s.h.Boards(threadID)
 	if err != nil {
 		return "", ListedBoard{}, err
 	}
+	sources, err := s.t.TicketSources()
+	if err != nil {
+		return "", ListedBoard{}, err
+	}
+	// handle is a board's site/ID, its ID alone when no connection turned
+	// on reaches it (its count then refuses on its own).
+	handle := func(b ListedBoard) string {
+		if i := slices.IndexFunc(sources, func(src trackerapp.TicketSource) bool { return src.ID == b.Connection }); i >= 0 {
+			return sources[i].Site + "/" + b.Board
+		}
+		return b.Board
+	}
 	var listed []ListedBoard
+	var names []string
 	for _, b := range boards {
-		if b.Thread {
+		if b.Thread && !slices.ContainsFunc(listed, func(l ListedBoard) bool { return handle(l) == handle(b) }) {
 			listed = append(listed, b)
+			names = append(names, fmt.Sprintf("%q", b.Name))
 		}
 	}
 	named = strings.TrimSpace(named)
-	var names []string
-	for _, b := range listed {
-		if named != "" && (strings.EqualFold(b.Name, named) || b.Board == named) {
-			return project, b, nil
-		}
-		names = append(names, fmt.Sprintf("%q", b.Name))
-	}
 	switch {
 	case len(listed) == 0:
 		return "", ListedBoard{}, errorsx.Public(CodeNoBoard, "This thread's project lists no board on this computer; the user adds one in the project's Issues settings.", nil)
@@ -174,7 +194,23 @@ func (s *Server) widgetBoard(threadID, named string) (string, ListedBoard, error
 	case named == "":
 		return "", ListedBoard{}, errorsx.Public(CodeNoBoard, fmt.Sprintf("This thread's project lists %s; give board.", sayList(names, "and")), nil)
 	}
-	return "", ListedBoard{}, errorsx.Public(CodeNoBoard, fmt.Sprintf("This thread's project lists no board %q; it lists %s.", named, sayList(names, "and")), nil)
+	var match []ListedBoard
+	for _, b := range listed {
+		if strings.EqualFold(b.Name, named) || b.Board == named || strings.EqualFold(handle(b), named) {
+			match = append(match, b)
+		}
+	}
+	switch len(match) {
+	case 0:
+		return "", ListedBoard{}, errorsx.Public(CodeNoBoard, fmt.Sprintf("This thread's project lists no board %q; it lists %s.", named, sayList(names, "and")), nil)
+	case 1:
+		return project, match[0], nil
+	}
+	each := make([]string, len(match))
+	for i, b := range match {
+		each[i] = fmt.Sprintf("%q at %s", b.Name, handle(b))
+	}
+	return "", ListedBoard{}, errorsx.Public(CodeNoBoard, fmt.Sprintf("Board %q names more than one board of this thread's project: %s; give board as the site/ID of one.", named, sayList(each, "and")), nil)
 }
 
 // numOf is n's value, nil when it has none (not known, or a gap).
