@@ -385,8 +385,10 @@ finished when its status is in the board's last column that has
 statuses), and always asks where the tickets the tracker counts
 unfinished go: an open sprint of the board, the first future one at
 first, or the backlog; a sprint that left the list while the form was
-open is not sent. The form counts by this computer's copy of the board's
-columns, and Jira by its own when it completes the sprint. A ticket opens beside the list, and in its own
+open is not sent. The form counts by the board's columns as this computer
+last read them for the board, and the completion by the board's
+configuration as this computer last read it for its writes, which can be
+another read. A ticket opens beside the list, and in its own
 pane with Ctrl or Cmd or the menu; the row's menu has Ask and Start
 work…. Not built: the pace counted with credit (it counts the tickets
 whose status counted as done when their sprint was completed, by their

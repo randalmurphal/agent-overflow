@@ -8,7 +8,7 @@
   // where the unfinished ones go: an open sprint of the board (the first
   // future one at first) or the backlog. Jira applies that rule to the
   // whole sprint, which can hold tickets this board does not show, with
-  // its board's columns as they are now, so the form claims nothing of
+  // the board's configuration as the write holds it, so the form claims nothing of
   // what will move and sends no destination it did not show. The tracker
   // answers a part per ticket moved and one for the close; a refusal, one
   // of a close the tracker asks to make again since tickets joined the

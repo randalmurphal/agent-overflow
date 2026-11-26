@@ -162,7 +162,9 @@ export function completionNumbers(held: HeldBoard, sec: BacklogSection, moved: r
  * any, as the completion's write does (`BoardConfig.DoneStatusIDs` in
  * internal/tracker/jira). None when no column has a status, a board Jira
  * refuses to complete a sprint of. The board's columns are as this
- * computer last read them; the write reads Jira's own. */
+ * computer last read them for the board; the write takes the
+ * configuration its Jira client holds (`Client.boardConfig`, kept from
+ * its last read), which can be another read. */
 export function finishedStatuses(columns: readonly { readonly statuses: readonly { readonly id: string }[] }[]): ReadonlySet<string> {
   for (let i = columns.length - 1; i >= 0; i -= 1) {
     if (columns[i].statuses.length > 0) return new Set(columns[i].statuses.map((st) => st.id));
