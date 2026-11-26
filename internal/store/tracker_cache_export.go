@@ -67,7 +67,10 @@ var MirrorExportTables = []string{"board", "tickets", "statuses", "people", "epi
 // (the pace's rule), and each member of an active sprint, done when its
 // status counts as done now. A status group is named as the project setup
 // names it (mirrorRegroupedGroupNameSQL), NULL for a status the mirror does
-// not know.
+// not know. A ticket's epic is its parent when the parent's name
+// (tracker_cache_parents) is an epic's, type level 1, else its parent's
+// parent when the mirror keeps the parent and that name is an epic's; an
+// epic's key and title are its name's.
 const MirrorExportSchema = `
 CREATE TABLE main.board(name TEXT NOT NULL, plans_sprints INTEGER NOT NULL, estimates TEXT NOT NULL);
 CREATE TABLE main.statuses(id TEXT PRIMARY KEY, name TEXT NOT NULL, status_group TEXT) WITHOUT ROWID;

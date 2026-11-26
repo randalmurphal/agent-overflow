@@ -157,8 +157,8 @@ func TestStartWorkUsesTheWorktreeThatHasTheBranch(t *testing.T) {
 }
 
 // A step that fails after the thread is linked deletes the thread, which
-// ends its link and tells the boards that showed the ticket as kept by it,
-// and takes back the worktree and the branch the call cut.
+// ends its link, and takes back the worktree and the branch the call cut;
+// the board whose row has the ticket as parent still names it.
 func TestStartTicketThreadThatFailsLeavesNothing(t *testing.T) {
 	t.Parallel()
 	f := newTicketThreadFixture(t)
@@ -168,8 +168,7 @@ func TestStartTicketThreadThatFailsLeavesNothing(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "injected failure") || strings.Contains(err.Error(), "delete branch") || strings.Contains(err.Error(), "undo the worktree") {
 		t.Fatalf("StartTicketThread = %v; want the draft's failure, rolled back", err)
 	}
-	f.boardEvent(t, "for the parent's card", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10102") })
-	f.boardEvent(t, "for the parent no longer kept", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10102") })
+	f.parentNamed(t, "after the failed start")
 	if threads, err := f.a.store.ListThreadsByProject(f.project); err != nil || len(threads) != 0 {
 		t.Fatalf("threads left = %+v, %v", threads, err)
 	}

@@ -241,8 +241,7 @@ type Changes struct {
 	// serving with no write of it: the last open ticket that kept one
 	// closed (store DropMirrorTicket), or a ticket opened again before the
 	// cleanup removed it kept it again (store KeepMirrorTicket). A view
-	// that shows one as another's parent or link shows it without or with
-	// its card.
+	// that shows one as another's link shows it without or with its card.
 	Visibility []tracker.IssueID `json:"visibility,omitempty"`
 }
 

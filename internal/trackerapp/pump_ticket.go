@@ -542,7 +542,7 @@ func (s *Service) dropTicket(tp *ticketPump) {
 
 // dropKeep deletes d's keep (store DropMirrorTicket) under opMu, the lock
 // of every write of the row. When the issue is kept no longer, the change
-// reaches every subscription that shows it as another's parent or link
+// reaches every subscription that shows it as another's link
 // (Changes.Visibility). A drop that fails is logged with retry, what
 // follows it, and owed until a later try commits.
 func (s *Service) dropKeep(d owedDrop, retry string) {

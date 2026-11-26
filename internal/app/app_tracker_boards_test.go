@@ -193,6 +193,8 @@ type trackerBoardFixture struct {
 	conn    TrackerConnection
 	project string
 	events  *transport.Subscriber
+	// sub is the subscription subscribe made last.
+	sub string
 }
 
 func newTrackerBoardFixture(t *testing.T) *trackerBoardFixture {
@@ -355,6 +357,7 @@ func (f *trackerBoardFixture) subscribe(t *testing.T, ctx context.Context) track
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.sub = sub.ID
 	return sub
 }
 

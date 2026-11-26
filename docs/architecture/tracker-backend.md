@@ -586,16 +586,17 @@ person's refresh, and where the update time does
 not move with the detail. An open ticket due a read because another read
 stored its card is read in full when that card is newer than its body,
 with no cards read, and checked otherwise. No body is written outside
-such a full read. A view shows its parent's key and title and each linked
-issue's key, title and status from the mirror's cards, read in one
-`ListMirrorCards` with the issue's own card. A direct read shows the
+such a full read. A view shows its parent's key and title from the
+parent's name (below), and each linked issue's key, title and status from
+the mirror's cards, read in one `ListMirrorCards` with the issue's own
+card. A direct read shows the
 mirror's card of the issue as that lookup finds it when the card is at
 least as new as the body, and the document's own card otherwise; a Jira
 check's write commits before the lookup, so a checked read shows the card
 the check stored. An open ticket's view, built from the record, takes its
 own card from the statement that read its body. A linked issue the mirror
 keeps no card of shows as the body holds it, at most 30 minutes old; a
-parent it keeps no card of shows its ID alone. A failed check leaves the
+parent no read named shows its ID alone. A failed check leaves the
 stored body as it is. An open ticket's first paint is its view built
 from the record with no tracker call, before its first read answers; it
 records no opening, which the read's keep and write do.
@@ -611,6 +612,21 @@ issue, and one that does neither fails. An issue kept again midway has
 its history read again and its sprints replaced by its next card write.
 `trackerapp.Service.Stop` ends a cleanup in flight before its next
 transaction; the next cleanup finishes it. No caller prunes.
+
+A parent's name, its key, title and type level, has one owner:
+`tracker_cache_parents`, one row per parent a stored card names, whether
+or not the mirror keeps the parent. A board's cards, a ticket's parent,
+`ticket_read` and the dashboard export's epics all read it. The card
+write writes it in the transaction of the cards: a card whose read named its parent
+writes the parent's row, and a card of an issue that has a row writes its
+own name there. The newest read wins, and a read that names what the row
+holds writes nothing. Jira's board lists, searches and bulk reads and
+Linear's pages, searches and details name the parent
+([measurements](../references/tracker-api-measurements.md)); a card that
+names its parent by ID alone writes no row and leaves the one there. A
+renamed parent shows its old name until one of its children or the parent
+itself is read again. `FinishMirrorCleanup` deletes a row no stored issue
+names, a chunk a transaction, after the sweep of unkept issues.
 
 An open ticket keeps its issue through one row of
 `tracker_cache_open_tickets` per ticket pump, whatever brought the person
@@ -650,7 +666,7 @@ pump's goroutine deletes the row as it returns, and every pump's goroutine
 runs, one stopped before its launch included (a write's refresh may have
 kept its issue during the first paint). When the drop leaves the issue
 kept by nothing, or a keep keeps a record the mirror held unkept, every
-view that shows it as a parent or a link is told (`Changes.Visibility`). A
+view that shows it as a link is told (`Changes.Visibility`). A
 pump keeps one issue; a keep of another fails. A keep that fails is the
 ticket's failure, a failure outside the tracker that its next read
 retries; until a keep succeeds the ticket is not read. A pump's delete
@@ -1050,8 +1066,8 @@ says so.
 A ticket's view has one source, the issue's record in the mirror: its
 card and status time, its body, its rows on the boards the mirror shows
 (each board's estimate and unit, `DetailView.Rows`, one statement for a
-build's tickets, `store.ListMirrorTicketRows`), the cards of the issues the view shows
-(its parent, the issues it links) and whether the mirror keeps them, and
+build's tickets, `store.ListMirrorTicketRows`), the name of its parent, the cards of the issues it links and whether the
+mirror keeps them, and
 the connection's users and statuses (`trackerapp/ticket_view.go`). A
 read stores what it found and settles its outcome; every view a
 subscriber is told is built from the record, and `TicketDetail` returns
@@ -1690,14 +1706,11 @@ funnel (`trackerapp/funnel.go`):
 - The tick's own board gets its changed rows and cards and its removed
   rows.
 - Every subscribed board of the connection gets its rows of the changed
-  cards and histories, and its rows whose parent's card changed or whose
-  parent gained or lost a row on any board (a row shows its parent's key
-  and title while the mirror keeps the parent; a parent's rank or
-  estimate moves neither). These come
-  from one indexed read (`ListMirrorIssueBoards`), which also finds the
-  children of a parent that has no row left, made only when a board is
-  subscribed; when it fails, or no mirror root is known, every board reads
-  again.
+  cards and histories, and its rows whose parent's name changed
+  (`Changes.Parents`; a parent's keep, rank or estimate moves no row).
+  These come from one indexed read (`ListMirrorIssueBoards`), made only
+  when a board is subscribed; when it fails, or no mirror root is known,
+  every board reads again.
 - A change of the connection's users or statuses, by a row read or a
   structure read, has every board read again.
 - An open ticket whose card changed is due a read at once, with its

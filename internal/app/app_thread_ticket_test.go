@@ -186,13 +186,14 @@ func TestSetThreadTicketNeedsTheTicketReadGrant(t *testing.T) {
 	}
 }
 
-// A thread's delete ends its link: the boards that show the ticket the
-// link was the last to keep, as the parent of their rows, are told, so
-// they stop showing its card. The thread here never held a message, as a
+// A thread's delete ends its link, and the board whose row has the ticket
+// as parent names it before the link, while it keeps the ticket and after
+// it: a row names its parent from the parent's name, whatever keeps the
+// parent. The thread here never held a message, as a
 // thread linked before anything was typed has not: the person's Delete
 // from the sidebar is what ends a never-sent thread's link, since the
 // empty-draft cleanup refuses a linked thread (TestALinkKeepsANeverSentThread).
-func TestDeletingALinkedThreadTellsTheBoardsOfItsTicket(t *testing.T) {
+func TestDeletingALinkedThreadLeavesItsTicketNamedAsParent(t *testing.T) {
 	t.Parallel()
 	site := trackerBoardSite()
 	site.Projects = append(site.Projects, trackerfake.JiraProject{ID: "10001", Key: "OPS", Name: "Ops"})
@@ -204,6 +205,7 @@ func TestDeletingALinkedThreadTellsTheBoardsOfItsTicket(t *testing.T) {
 	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
 	f.subscribe(t, ctx)
 	f.boardEvent(t, "for the first read", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10102") })
+	f.parentNamed(t, "before the link")
 	if err := f.a.store.CreateThread(store.Thread{ID: "t1", ProjectID: f.project, Title: "Thread", Provider: "claude", Model: "test-model",
 		WorkspacePath: "/tmp/web", CreatedAt: 1, UpdatedAt: 1}); err != nil {
 		t.Fatal(err)
@@ -211,12 +213,35 @@ func TestDeletingALinkedThreadTellsTheBoardsOfItsTicket(t *testing.T) {
 	if _, err := f.a.SetThreadTicket(ctx, "t1", parentTicket); err != nil {
 		t.Fatal(err)
 	}
-	f.boardEvent(t, "for the parent's card", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10102") })
+	f.parentNamed(t, "while the link keeps it")
 
 	if _, err := f.a.DeleteThread("t1"); err != nil {
 		t.Fatal(err)
 	}
-	f.boardEvent(t, "for the parent no longer kept", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10102") })
+	if links, err := f.a.store.ListThreadTickets([]string{"t1"}); err != nil || len(links) != 0 {
+		t.Fatalf("the deleted thread's links = %+v, %v; want none", links, err)
+	}
+	f.parentNamed(t, "after the delete")
+}
+
+// parentNamed fails unless the subscribed board's row 10102 names its
+// parent as OPS-1, "The epic" (parentTicketSite).
+func (f *trackerBoardFixture) parentNamed(t *testing.T, when string) {
+	t.Helper()
+	v, err := f.a.TrackerBoard(context.Background(), f.sub, []trackerapp.Section{{Kind: trackerapp.SectionSprint, Sprint: "1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := trackerapp.ParentView{ID: parentTicket.IssueID, Key: "OPS-1", Title: "The epic"}
+	for _, s := range v.Sections {
+		if i := slices.IndexFunc(s.Rows, func(r trackerapp.RowView) bool { return r.Card.ID == "10102" }); i >= 0 {
+			if p := s.Rows[i].Card.Parent; p == nil || *p != want {
+				t.Fatalf("%s row 10102's parent = %+v; want %+v", when, p, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("%s the board shows no row 10102: %+v", when, v.Sections)
 }
 
 // withTrackers gives a, a transfer backend, the tracker service with a
@@ -278,8 +303,8 @@ func parentTicketSite(t *testing.T) (*trackerfake.Engine, string) {
 }
 
 // showParentBoard subscribes a's board 1 of project, through conn, as a
-// screen showing it, and waits for its first read, whose row 10102 shows
-// parentTicket as its parent while a link keeps it.
+// screen showing it, and waits for its first read, whose row 10102 names
+// parentTicket as its parent.
 func showParentBoard(t *testing.T, a *App, e *trackerfake.Engine, conn TrackerConnection, project string) *trackerBoardFixture {
 	t.Helper()
 	bus := transport.NewEventBus(64)
@@ -301,7 +326,7 @@ func showParentBoard(t *testing.T, a *App, e *trackerfake.Engine, conn TrackerCo
 // A moved thread arrives with its link, which takes the card the
 // destination's mirror holds and shows current there, read through the
 // destination's own connection; the source no longer keeps the ticket for
-// it, and tells the boards that showed it as a parent.
+// it, and its board still names the ticket as its row's parent.
 func TestAMovedThreadCarriesItsLink(t *testing.T) {
 	remotetest.Require(t)
 	e, jiraURL := parentTicketSite(t)
@@ -372,7 +397,7 @@ func TestAMovedThreadCarriesItsLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	awaitTransferComplete(t, source, destination, operation, false)
-	board.boardEvent(t, "for the parent the move stopped keeping", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10102") })
+	board.parentNamed(t, "after the move")
 
 	moved, err := destination.store.GetThread(thread.ID)
 	if err != nil {
