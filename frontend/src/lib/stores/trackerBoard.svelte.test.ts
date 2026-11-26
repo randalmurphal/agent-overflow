@@ -274,6 +274,26 @@ describe('the board subscription', () => {
     board.release();
   });
 
+  it('counts the frame that tells the board\'s first reconcile as a change, and no later one', async () => {
+    install();
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    applyTrackerBoardEvent(event(11, { sync: { read_at: 300, reconciled_at: 300 } }), HOME_BACKEND);
+    expect(board.current?.changes).toBe(1);
+    applyTrackerBoardEvent(event(12, { sync: { read_at: 400, reconciled_at: 400 } }), HOME_BACKEND);
+    expect(board.current?.changes).toBe(1);
+    board.release();
+    await flush();
+
+    // A board reconciled before the subscribe answered has had its first.
+    install({ view: { ...view([]), sync: { read_at: 100, reconciled_at: 100 } } as unknown as BoardView });
+    const again = attachTrackerBoard(REF, true);
+    await flush();
+    applyTrackerBoardEvent(event(21, { sync: { read_at: 500, reconciled_at: 500 } }), HOME_BACKEND);
+    expect(again.current?.changes).toBe(0);
+    again.release();
+  });
+
   it('gathers the IDs of events that arrive during a read into the next patch', async () => {
     install();
     const board = attachTrackerBoard(REF, true);
