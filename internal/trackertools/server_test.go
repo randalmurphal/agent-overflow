@@ -40,8 +40,10 @@ type fakeTracker struct {
 	// boardReads counts the board reads, by connection/board.
 	boardReads map[string]int
 	cards      map[string]trackerapp.CardView
-	types      []trackerapp.IssueTypeView
-	fields     []trackerapp.FieldView
+	// mirrorCards counts the mirror's card reads (MirrorCard).
+	mirrorCards int
+	types       []trackerapp.IssueTypeView
+	fields      []trackerapp.FieldView
 	// write answers each write; writes are those made, as name connection
 	// input, and agents the agent each carried.
 	write  func(name string, in any) (trackerapp.WriteView, error)
@@ -68,6 +70,7 @@ func (f *fakeTracker) BoardSummary(connection, board string) (trackerapp.BoardSu
 }
 
 func (f *fakeTracker) MirrorCard(connection, issue string) (trackerapp.CardView, bool, error) {
+	f.mirrorCards++
 	c, ok := f.cards[connection+"/"+issue]
 	return c, ok, nil
 }

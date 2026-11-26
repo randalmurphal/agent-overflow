@@ -723,3 +723,29 @@ func TestUpdateSendsNothingToATicketThatMovedWhileWaiting(t *testing.T) {
 		}
 	})
 }
+
+// A ticket whose key the mirror holds, and whose steps the plan reads its
+// card or detail for, is not looked up in the mirror first; a comment
+// alone takes the mirror's card, with no request.
+func TestThePlanReadsTheMirrorsCardOnlyForACommentAlone(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		args map[string]any
+		want int
+	}{
+		{map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"title": "Renamed"}}, 0},
+		{map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"status": "Done"}}, 0},
+		{map[string]any{"keys": []string{"WEB-12"}, "comment": "Checked."}, 1},
+	} {
+		w := newWriteFixture(t)
+		// The mirror holds the key, so its resolution names no title.
+		w.f.keyed = map[string][]trackerapp.KeyedTicket{"WEB-12": {{Connection: jiraSource.ID, Issue: "10012"}}}
+		w.f.cards = map[string]trackerapp.CardView{jiraSource.ID + "/10012": w.f.details[jiraSource.ID+"/10012"].Card}
+		if _, err := w.update(t, c.args); err != nil {
+			t.Fatal(err)
+		}
+		if w.f.mirrorCards != c.want {
+			t.Errorf("%v read the mirror's card %d times; want %d", c.args, w.f.mirrorCards, c.want)
+		}
+	}
+}

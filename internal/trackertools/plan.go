@@ -88,17 +88,20 @@ func (pc *planCall) readTickets(ctx context.Context, tickets []ticket, set []nam
 			continue
 		}
 		plans[i] = &planned{t: t, src: pc.sources[j], comment: comment}
-		switch c, held, err := pc.s.heldCard(t); {
+		switch {
 		case detail:
 			details = append(details, i)
 		case card:
 			cards = append(cards, i)
-		case err != nil:
-			errs[i] = err
-		case held:
-			plans[i].d.Card = c
 		default:
-			details = append(details, i)
+			switch c, held, err := pc.s.heldCard(t); {
+			case err != nil:
+				errs[i] = err
+			case held:
+				plans[i].d.Card = c
+			default:
+				details = append(details, i)
+			}
 		}
 	}
 	unkept, err := pc.readCards(ctx, plans, cards, errs)
