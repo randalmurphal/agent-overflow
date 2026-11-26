@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -202,18 +203,45 @@ func TestDrillAnswersTheCellsNumberWithItsRows(t *testing.T) {
 	}
 }
 
-// A page after the first that finds a different count starts again at
-// the first page with the new number.
+// A page after the first that finds a different count than the page
+// before it starts again at the first page with the new number, and so
+// does a page past the last; a page whose count held stays where it was
+// asked for.
 func TestDrillStartsAgainWhenTheCountMoved(t *testing.T) {
 	t.Parallel()
+	f := teamBoard()
+	for i := range 150 {
+		id := fmt.Sprintf("m%d", i)
+		f.ticket(ticket{id: id, key: fmt.Sprintf("WEB-%d", 1000+i), status: "1", group: "todo", assignee: "u1", points: "1", created: ago(20)}).member("s7", id, false)
+	}
 	e := evaluator()
-	b := teamBoard().board()
-	d, err := e.Drill(context.Background(), b, DrillRequest{Request: utcSprints3, Widget: "stuck_list", Page: 1, Count: 7})
+	b := f.board()
+	ask := DrillRequest{Request: utcSprints3, Widget: "carrying", Bucket: "u1"}
+	first, err := e.Drill(context.Background(), b, ask)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !d.Restarted || d.Page != 0 || d.Count != 2 || len(d.Rows) != 2 {
-		t.Fatalf("drill page 1 after the count moved = %+v; want page 0 again with the 2 rows", d)
+	if first.Pages != 2 {
+		t.Fatalf("drill of u1's active tickets = %d pages of %d rows; want 2", first.Pages, first.Count)
+	}
+	for _, c := range []struct {
+		name        string
+		page, count int
+		wantPage    int
+		restarted   bool
+	}{
+		{"the count held", 1, first.Count, 1, false},
+		{"the count moved", 1, first.Count + 1, 0, true},
+		{"past the last page", 2, first.Count, 0, true},
+	} {
+		ask.Page, ask.Count = c.page, c.count
+		d, err := e.Drill(context.Background(), b, ask)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.Restarted != c.restarted || d.Page != c.wantPage || d.Count != first.Count {
+			t.Errorf("%s: page %d restarted %v of %d rows; want page %d restarted %v of %d", c.name, d.Page, d.Restarted, d.Count, c.wantPage, c.restarted, first.Count)
+		}
 	}
 }
 
