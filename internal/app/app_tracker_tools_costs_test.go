@@ -113,8 +113,18 @@ func costLinear(n int) trackerfake.LinearWorkspace {
 // lists the board of kind's tracker, read once, and a thread that writes.
 func costFixture(t *testing.T, linear bool, n int) (*trackerBoardFixture, string, string) {
 	t.Helper()
-	ws := costLinear(n)
-	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: costSite(n), linear: &ws})
+	return costFixtureWith(t, linear, n, nil)
+}
+
+// costFixtureWith is costFixture with edit, when set, run on the trackers
+// before the fixture's board read.
+func costFixtureWith(t *testing.T, linear bool, n int, edit func(*trackerfake.JiraSite, *trackerfake.LinearWorkspace)) (*trackerBoardFixture, string, string) {
+	t.Helper()
+	ws, site := costLinear(n), costSite(n)
+	if edit != nil {
+		edit(&site, &ws)
+	}
+	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: site, linear: &ws})
 	t.Cleanup(func() { _ = f.a.trackerMCPServer().Close() })
 	if !linear {
 		thread, endpoint := trackerWriteThread(t, f, provider.RuntimeAuto)

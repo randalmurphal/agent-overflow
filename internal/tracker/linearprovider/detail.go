@@ -159,6 +159,16 @@ func (n names) detail(d *linear.IssueDetail, states []linear.WorkflowState, olde
 		HistoryFrom: d.CreatedAt.Add(creationFold),
 		Moves:       moves(states, d.StateID),
 	}
+	if estimates(d.TeamEstimateScale) {
+		// The one estimate an issue has, which its team's board estimates
+		// by (Estimate.Field is empty on every Linear board).
+		fe := tracker.FieldEstimate{}
+		if d.Estimate != nil {
+			v := *d.Estimate
+			fe.Value = &v
+		}
+		out.Estimates = []tracker.FieldEstimate{fe}
+	}
 	for _, r := range d.Relations {
 		out.Links = append(out.Links, link(d.ID, r))
 	}

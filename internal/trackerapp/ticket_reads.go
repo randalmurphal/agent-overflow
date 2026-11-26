@@ -141,7 +141,7 @@ func (s *Service) IssueCards(ctx context.Context, id string, issues []tracker.Is
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.issueRows(root, ids)
+	rows, err := s.issueRows(root, ids, nil)
 	if err != nil {
 		return nil, err
 	}

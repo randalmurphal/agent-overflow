@@ -214,6 +214,16 @@ func realisticDetail() tracker.Detail {
 	for i := range 4 {
 		d.Moves = append(d.Moves, tracker.Move{ID: tracker.MoveID(fmt.Sprint(i)), Name: "Start", To: "s2"})
 	}
+	// The number fields a real Jira issue's read returns, measured: about
+	// 20, a few with a value (tracker-api-measurements.md).
+	for i := range 20 {
+		fe := tracker.FieldEstimate{Field: fmt.Sprintf("customfield_1%04d", 100+i)}
+		if i%4 == 0 {
+			v := float64(i)
+			fe.Value = &v
+		}
+		d.Estimates = append(d.Estimates, fe)
+	}
 	return d
 }
 

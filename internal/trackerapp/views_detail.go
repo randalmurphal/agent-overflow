@@ -126,7 +126,8 @@ type MoveView struct {
 // first page, newest first; MoreComments is the token of the next page,
 // empty when there is none. History is complete from HistoryFrom (Unix
 // milliseconds, 0 for from creation). Rows are the issue's rows on the
-// boards the mirror shows, by board ID, as the mirror holds them now.
+// boards the mirror shows, by board ID, each with the estimate the
+// ticket's own read found when it carried the board's field (issueRows).
 // BodyBehind reports a body read for
 // an older version of the issue than its card: a read of the card found a
 // change the body does not show yet, and the next read of the ticket
@@ -356,7 +357,7 @@ func (s *Service) detailViews(root int64, row store.TrackerConnection, docs []ti
 	if err != nil {
 		return nil, nil, err
 	}
-	rows, err := s.ticketRows(root, docs)
+	rows, err := s.ticketRows(root, docs, shown)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -430,19 +431,27 @@ func (s *Service) nameSprints(root int64, shown []shownDetail, views []DetailVie
 }
 
 // ticketRows are the rows of docs' issues on the boards the mirror shows,
-// by issue, in board order.
-func (s *Service) ticketRows(root int64, docs []ticketDoc) (map[tracker.IssueID][]TicketRowView, error) {
+// by issue, in board order, each estimate as the shown document has it
+// (shownDetail.estimates).
+func (s *Service) ticketRows(root int64, docs []ticketDoc, shown []shownDetail) (map[tracker.IssueID][]TicketRowView, error) {
 	ids := make([]string, len(docs))
+	own := make(map[tracker.IssueID]*tracker.Detail, len(docs))
 	for i, doc := range docs {
 		ids[i] = string(doc.d.Card.ID)
+		if shown[i].estimates() {
+			own[doc.d.Card.ID] = &shown[i].d
+		}
 	}
-	return s.issueRows(root, ids)
+	return s.issueRows(root, ids, own)
 }
 
 // issueRows are the rows of issues ids on the boards the mirror shows, by
 // issue, in board order, read store.MirrorMaxBodies issues a statement:
-// a caller may name any number of issues.
-func (s *Service) issueRows(root int64, ids []string) (map[tracker.IssueID][]TicketRowView, error) {
+// a caller may name any number of issues. Which boards an issue is on, and
+// each board's unit, are the mirror's; the estimate is own's for the
+// issues it holds, when its read carried the board's field
+// (tracker.Detail.EstimateBy), and the mirror's row's otherwise.
+func (s *Service) issueRows(root int64, ids []string, own map[tracker.IssueID]*tracker.Detail) (map[tracker.IssueID][]TicketRowView, error) {
 	out := make(map[tracker.IssueID][]TicketRowView, len(ids))
 	for batch := range slices.Chunk(ids, store.MirrorMaxBodies) {
 		held, err := s.store.ListMirrorTicketRows(root, batch)
@@ -451,9 +460,14 @@ func (s *Service) issueRows(root int64, ids []string) (map[tracker.IssueID][]Tic
 		}
 		for _, r := range held {
 			id := tracker.IssueID(r.IssueID)
-			out[id] = append(out[id], TicketRowView{
-				Board: r.BoardID, Estimate: copyNumber(r.Estimate), Unit: nameOf(unitNames[:], tracker.EstimateUnit(r.EstimateUnit)),
-			})
+			unit := tracker.EstimateUnit(r.EstimateUnit)
+			v := copyNumber(r.Estimate)
+			if d := own[id]; d != nil {
+				if e, carried := d.EstimateBy(tracker.Estimate{Unit: unit, Field: r.EstimateField}); carried {
+					v = e
+				}
+			}
+			out[id] = append(out[id], TicketRowView{Board: r.BoardID, Estimate: v, Unit: nameOf(unitNames[:], unit)})
 		}
 	}
 	return out, nil
@@ -526,6 +540,13 @@ func shownDetailOf(doc ticketDoc, want []string, mirrored map[string]store.Mirro
 	out.behind = millis(out.d.Card.Updated) > doc.version
 	return out
 }
+
+// estimates reports whether the view shows the document's own estimates:
+// when the card it shows is of the body's version. A card a later read
+// brought is newer than the body, whose estimate may be what that change
+// replaced: the rows are then the mirror's, as the boards' reads left
+// them, until the ticket is read again.
+func (sd shownDetail) estimates() bool { return !sd.behind }
 
 // names adds the users and statuses the view names.
 func (sd shownDetail) names(users, statuses *idSet) {

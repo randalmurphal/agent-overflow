@@ -3,6 +3,7 @@ package trackerapp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"sync"
@@ -278,6 +279,73 @@ func TestAnOpenTicketShowsItsEstimatesPerBoard(t *testing.T) {
 	if got := m.p.count("Details"); got != reads {
 		t.Fatalf("the estimate's change read the ticket %d times", got-reads)
 	}
+}
+
+// An open ticket's estimate on a board is its own read's when that read
+// carried the board's field, else the board's row: the row says 3 and the
+// read says 5, or none (cleared); a read that returned only another field
+// shows the row's 3. Once a board's read brings a card newer than the
+// ticket's read, the row's estimate shows.
+func TestAnOpenTicketShowsTheEstimateItsReadFound(t *testing.T) {
+	t.Parallel()
+	five, other := 5.0, 2.0
+	for _, c := range []struct {
+		name      string
+		estimates []tracker.FieldEstimate
+		want      *float64
+	}{
+		{"the read's", []tracker.FieldEstimate{{Field: "", Value: &five}}, &five},
+		{"the read's, cleared", []tracker.FieldEstimate{{Field: ""}}, nil},
+		{"another field only", []tracker.FieldEstimate{{Field: "customfield_10020", Value: &other}}, ptr(3.0)},
+		{"none carried", nil, ptr(3.0)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
+			held := card("10001", 1_799_000_000_000)
+			m.tracks([]tracker.Row{{Card: held, Order: "a", Estimate: ptr(3.0)}})
+			m.p.updatedMovesWithDetail(cardsAnswering(&held))
+			m.p.set(func(p *scripted) {
+				p.detail = func(tracker.IssueID) (tracker.Detail, error) {
+					return tracker.Detail{Card: held, Estimates: c.estimates}, nil
+				}
+			})
+			board := m.subscribe(t, testBoard)
+			m.events.boardEvents(t, 1)
+			ticket := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001", true, untied))
+			m.events.issueEvents(t, 1)
+			rows := func() []TicketRowView {
+				v, err := m.svc.TicketDetail(ticket.ID)
+				if err != nil || v.Detail == nil {
+					t.Fatalf("the ticket's detail %+v, %v", v, err)
+				}
+				return v.Detail.Rows
+			}
+			if got := rows(); !reflect.DeepEqual(got, []TicketRowView{{Board: string(testBoard), Estimate: c.want, Unit: "points"}}) {
+				t.Fatalf("the ticket's rows %+v; want the estimate %v", got, describeNumber(c.want))
+			}
+			newer := card("10001", 1_799_000_060_000)
+			m.tracks([]tracker.Row{{Card: newer, Order: "a", Estimate: ptr(8.0)}})
+			if err := m.svc.RefreshSubscription(t.Context(), board.ID); err != nil {
+				t.Fatal(err)
+			}
+			m.events.issueEvents(t, 2)
+			if got := rows(); len(got) != 1 || got[0].Estimate == nil || *got[0].Estimate != 8 {
+				t.Fatalf("after a board read brought a newer card the ticket's rows %+v; want the row's 8", got)
+			}
+		})
+	}
+}
+
+// ptr is v's address.
+func ptr(v float64) *float64 { return &v }
+
+// describeNumber is v as a test failure names it.
+func describeNumber(v *float64) string {
+	if v == nil {
+		return "none"
+	}
+	return fmt.Sprint(*v)
 }
 
 // A ticket subscribed hidden reads nothing from the tracker until a handle
