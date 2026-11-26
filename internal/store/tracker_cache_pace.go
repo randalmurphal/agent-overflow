@@ -58,7 +58,29 @@ var mirrorPaceSQL = `WITH last AS MATERIALIZED (
 	   WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND state = ` + strconv.Itoa(MirrorSprintClosed) + ` AND completed_at > 0
 	   ORDER BY completed_at DESC, position DESC LIMIT ` + strconv.Itoa(MirrorPaceSprints) + `),
 	members AS (
-	  SELECT l.sprint_id, ` + mirrorRowEstimate("?3") + ` AS estimate, coalesce(
+	  SELECT l.sprint_id, ` + mirrorRowEstimate("?3") + ` AS estimate, ` + mirrorStatusAtCompletionSQL + ` AS status
+	  FROM last l
+	  CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = CAST(?1 AS INTEGER) AND m.sprint_id = l.sprint_id
+	  CROSS JOIN tracker_cache_board_issues b ON b.root_id = m.root_id AND b.board_id = ?2 AND b.issue_id = m.issue_id
+	  CROSS JOIN tracker_cache_issues i ON i.root_id = m.root_id AND i.issue_id = m.issue_id),
+	finished AS (
+	  SELECT sprint_id, count(*) AS members, total(done) AS done, total(iif(done, estimate, 0)) AS estimate FROM (
+	    SELECT sprint_id, estimate, coalesce(status IN (` + mirrorDoneStatusesSQL("?4") + `), 0) AS done
+	    FROM members)
+	  GROUP BY sprint_id)
+	SELECT l.sprint_id, coalesce(f.members, 0), coalesce(f.done, 0), coalesce(f.estimate, 0)
+	FROM last l LEFT JOIN finished f ON f.sprint_id = l.sprint_id`
+
+// mirrorStatusAtCompletionSQL is the status issue i had when sprint l
+// (its sprint_id and completed_at) of board ?2 was completed, by the
+// pace's rule: the last status change at or before the completion, else
+// what the first change after it is from, both of the issue's current
+// history generation; with no such change, the status now when the
+// issue's history was read for its current version or no later sprint of
+// the board, closed or open, holds the issue; else NULL (unknown). The
+// pace and the board export (mirrorExportFills) read it, so a dashboard's
+// pace is the Backlog's.
+var mirrorStatusAtCompletionSQL = `coalesce(
 	    (SELECT c.to_value FROM tracker_cache_changes c
 	      WHERE c.root_id = i.root_id AND c.issue_id = i.issue_id AND c.gen = i.history_gen AND c.kind = 1 AND c.at <= l.completed_at
 	      ORDER BY c.seq DESC LIMIT 1),
@@ -69,20 +91,17 @@ var mirrorPaceSQL = `WITH last AS MATERIALIZED (
 	        CROSS JOIN tracker_cache_sprints sp ON sp.root_id = later.root_id AND sp.board_id = ?2 AND sp.sprint_id = later.sprint_id
 	       WHERE later.root_id = i.root_id AND later.issue_id = i.issue_id AND later.sprint_id <> l.sprint_id
 	         AND (sp.state IN (` + strconv.Itoa(MirrorSprintActive) + `, ` + strconv.Itoa(MirrorSprintFuture) + `) OR sp.completed_at > l.completed_at)),
-	      i.status_id, NULL)) AS status
-	  FROM last l
-	  CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = CAST(?1 AS INTEGER) AND m.sprint_id = l.sprint_id
-	  CROSS JOIN tracker_cache_board_issues b ON b.root_id = m.root_id AND b.board_id = ?2 AND b.issue_id = m.issue_id
-	  CROSS JOIN tracker_cache_issues i ON i.root_id = m.root_id AND i.issue_id = m.issue_id),
-	finished AS (
-	  SELECT sprint_id, count(*) AS members, total(done) AS done, total(iif(done, estimate, 0)) AS estimate FROM (
-	    SELECT sprint_id, estimate, coalesce(status IN (SELECT st.status_id FROM tracker_cache_statuses st
-	       WHERE st.root_id = CAST(?1 AS INTEGER) AND st.status_group = ` + strconv.Itoa(MirrorGroupDone) + ` AND st.status_id NOT IN (SELECT o.key FROM json_each(?4) o)
-	       UNION ALL SELECT o.key FROM json_each(?4) o WHERE o.value = ` + strconv.Itoa(MirrorGroupDone) + `), 0) AS done
-	    FROM members)
-	  GROUP BY sprint_id)
-	SELECT l.sprint_id, coalesce(f.members, 0), coalesce(f.done, 0), coalesce(f.estimate, 0)
-	FROM last l LEFT JOIN finished f ON f.sprint_id = l.sprint_id`
+	      i.status_id, NULL))`
+
+// mirrorDoneStatusesSQL lists the statuses of root ?1 that count as done
+// under the regrouping g binds (a JSON object): the catalog's done
+// statuses g does not regroup, and those g puts in done. It is one
+// uncorrelated subquery, built once a statement.
+func mirrorDoneStatusesSQL(g string) string {
+	return `SELECT st.status_id FROM tracker_cache_statuses st
+	   WHERE st.root_id = CAST(?1 AS INTEGER) AND st.status_group = ` + strconv.Itoa(MirrorGroupDone) + ` AND st.status_id NOT IN (SELECT o.key FROM json_each(` + g + `) o)
+	   UNION ALL SELECT o.key FROM json_each(` + g + `) o WHERE o.value = ` + strconv.Itoa(MirrorGroupDone)
+}
 
 // mirrorPaceAdvanceSQL advances the totals revision of each board of root
 // ?1 that holds a row of an issue of the JSON list ?2 that is in one of the
