@@ -284,12 +284,23 @@ func (s *Service) DeleteDashboard(subscription, dashboard string) error {
 // it, over the board's default range in this computer's time zone, for
 // an agent of thread. With show it is then proposed on the board: it
 // shows on the board's dashboards for the person to keep or dismiss,
-// under a widget ID of its own, and the answer's view carries that ID. A
-// board that holds maxProposals is refused before anything is counted.
+// under a widget ID of its own, and the answer's view carries that ID.
+// The project must list the board (ErrNotListed), and a board that holds
+// maxProposals is refused before anything is counted.
 func (s *Service) TryWidget(ctx context.Context, projectID string, scope Scope, w KeptWidget, thread string, show bool) (trackerdash.Tried, error) {
-	slug, err := s.projectSlug(projectID)
-	if err != nil {
+	if err := scope.boardOnly(); err != nil {
 		return trackerdash.Tried{}, err
+	}
+	if err := s.enter(); err != nil {
+		return trackerdash.Tried{}, err
+	}
+	defer s.leave()
+	slug, listed, err := s.store.ProjectTrackerBoardListed(projectID, scope.Connection, string(scope.Board))
+	switch {
+	case err != nil:
+		return trackerdash.Tried{}, fmt.Errorf("trackerapp: read the boards of project %s: %w", projectID, err)
+	case !listed:
+		return trackerdash.Tried{}, fmt.Errorf("%w: project %s, board %s of %s", ErrNotListed, projectID, scope.Board, scope.Connection)
 	}
 	row, err := s.store.GetTrackerConnection(scope.Connection)
 	if err != nil {
