@@ -6,7 +6,7 @@
   // computer reads them (`stores/ticketWork.svelte.ts`); Ask and Start
   // work, and a Start work run's steps until it ends. Each row opens what
   // it names and has its menu on a right-click or long press.
-  import { onMount, untrack } from 'svelte';
+  import { untrack } from 'svelte';
   import Button from '../primitives/Button.svelte';
   import ContextMenu from '../primitives/ContextMenu.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
@@ -18,11 +18,10 @@
   import { attachedBackendEntry, backendDisplayName, hasMultipleBackends, unreachableThreadMachineName } from '../../stores/attachedBackends.svelte';
   import { getEffectiveThreadStatus, getThreadWaitingOn } from '../../stores/threadStatuses.svelte';
   import { removeThreadTicketLink } from '../../stores/threadTicketLinks.svelte';
-  import { getProjectLabelText, getProjects } from '../../stores/projects.svelte';
+  import { getProjectLabelText } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import { acquireTrackerConnections, trackerConnectionsOf } from '../../stores/trackerConnections.svelte';
   import type { TrackerTicketAttachment } from '../../stores/trackerTicket.svelte';
-  import { fieldTarget, ticketWrite, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
+  import type { TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
   import {
     askAboutTicket,
@@ -38,12 +37,11 @@
     ticketWork,
     type StartWorkPlan,
     type StartWorkStep,
+    type StepActivity,
     type StepOutcome,
   } from '../../stores/ticketWork.svelte';
-  import { projectBackend, threadBackend } from '../../transport/entityIndex';
-  import { HOME_BACKEND } from '../../transport/backendKey';
-  import { scopeGrant } from '../../transport/scopes';
-  import { grantBlockedTitle } from '../../transport/scopeRefusal';
+  import { threadBackend } from '../../transport/entityIndex';
+  import { workGate, workProject, workProjects } from './ticketWorkGate';
   import { SELECT_CLASS } from '../settings/styles';
   import type { Thread } from '../../types/models';
   import { copyToClipboard } from '../../utils/clipboard';
@@ -56,8 +54,8 @@
 
   interface Props {
     attachment: TrackerTicketAttachment;
-    /** The ticket's project, as the pane holds it (`BoardSelection.
-     * ticketProject`): the thread of an Ask or Start work is made in it,
+    /** The ticket's project, as the pane holds it (`TicketTrail.
+     * project`): the thread of an Ask or Start work is made in it,
      * and its setup holds the Start work defaults. Null when none is
      * known. */
     project: string | null;
@@ -66,9 +64,14 @@
     /** The person's account on the connection; null when it was never
      * verified. */
     me: string | null;
+    /** The open shown asked for its Start work form
+     * (`TicketTrail.startWorkAsked`). */
+    startWorkAsked: boolean;
+    /** Work took that ask. */
+    onStartWorkTaken: () => void;
   }
 
-  let { attachment, project: ticketProject, onProject, me }: Props = $props();
+  let { attachment, project: ticketProject, onProject, me, startWorkAsked, onStartWorkTaken }: Props = $props();
 
   const ref = $derived(attachment.ref);
   const ticketState = $derived(attachment.current);
@@ -76,21 +79,15 @@
   const card = $derived(detail?.card ?? null);
   const ctx: TicketWriteContext = $derived({ key: attachment.key, ref: attachment.ref, label: card?.key || 'the ticket' });
 
-  // The ticket's computer is fixed for the component's life: the pane
-  // mounts a new ticket screen per ticket.
-  onMount(() => acquireTrackerConnections(attachment.ref.backend));
-
-  // The projects of the ticket's computer a thread can be made in; the
-  // ticket's own shows even when archived.
-  const projects = $derived(getProjects().map((p) => p.project)
-    .filter((p) => (!p.archived || p.id === ticketProject) && (projectBackend(p.id) ?? HOME_BACKEND) === ref.backend));
-  const project = $derived(ticketProject && projects.some((p) => p.id === ticketProject) ? ticketProject : '');
-  const connection = $derived(trackerConnectionsOf(ref.backend).list.find((c) => c.id === ref.connection) ?? null);
-  const place = $derived(connection && card ? { tracker: connection.kind, site: connection.site, project: keyPrefix(card.key) } : null);
+  const projects = $derived(workProjects(ref.backend, ticketProject));
+  const project = $derived(workProject(projects, ticketProject));
+  // The ticket's tracker as its subscription answered it; null until then.
+  const tracker = $derived(attachment.tracker);
+  const place = $derived(tracker && card ? { tracker: tracker.kind, site: tracker.site, project: keyPrefix(card.key) } : null);
 
   // The threads linked to this ticket: its site and issue, on any computer.
-  const threads = $derived(connection
-    ? getThreads().filter((t) => t.ticketLink && t.ticketLink.kind === connection.kind && t.ticketLink.site === connection.site && t.ticketLink.issueId === ref.issue)
+  const threads = $derived(tracker
+    ? getThreads().filter((t) => t.ticketLink && t.ticketLink.kind === tracker.kind && t.ticketLink.site === tracker.site && t.ticketLink.issueId === ref.issue)
     : []);
   const started = $derived(threads.find((t) => t.ticketLink?.origin === 'start_work') ?? null);
   const several = $derived(hasMultipleBackends());
@@ -169,17 +166,15 @@
     defaults: 'Save the defaults',
   };
 
-  // The write target of a step that is a tracker write. Its row is a
-  // control of that target while the step runs or holds the write's
-  // outcome: the write store's note under it says what became of the
-  // write, by the store's rule, and the row only names the kind.
-  const WRITE_TARGETS: Partial<Record<StartWorkStep, string>> = { move: 'status', assign: fieldTarget('assignee') };
-  function drawsWrite(step: StartWorkStep, o: StepOutcome): string | null {
-    const target = WRITE_TARGETS[step];
-    return target && (o.kind === 'running' || ('written' in o && o.written)) ? target : null;
-  }
+  // A step that was a tracker write: its row is no control of the write's
+  // target. The Status and Assignee fields are, and say what became of the
+  // write by the store's rule; the row names the kind and shows the write
+  // its run sent while the store keeps its outcome (TicketWriteNote's
+  // `only`).
 
-  function stepText(step: StartWorkStep, o: StepOutcome): string {
+  const DOING: Readonly<Record<StepActivity, string>> = { reading: 'Reading the ticket…', saving: 'Saving…', making: 'Making the thread…' };
+
+  function stepText(o: StepOutcome): string {
     if ('written' in o && o.written) {
       switch (o.kind) {
         case 'applied': return 'Done.';
@@ -191,12 +186,7 @@
     }
     switch (o.kind) {
       case 'waiting': return 'Waiting.';
-      case 'running': {
-        if (step === 'thread') return 'Making the thread…';
-        const target = WRITE_TARGETS[step];
-        // The write's own note says "Saving…" once it is out.
-        return target && ticketWrite(attachment.key, target)?.pending ? '' : 'Reading the ticket…';
-      }
+      case 'running': return DOING[o.doing];
       case 'skipped': return '';
       case 'applied': return o.note ? `Done. ${o.note}` : 'Done.';
       case 'already': return o.text;
@@ -227,18 +217,26 @@
   }
 
   const asking = $derived(ticketAskPending(attachment.key));
-  const unplaced = $derived(project ? '' : 'Pick the project its thread goes in.');
-  // What this device's grants on the ticket's computer allow: a thread is
-  // made under threads:operate, and Start work's worktree under
-  // git:operate.
-  const threadsGrant = $derived(scopeGrant('threads:operate', ref.backend));
-  const gitGrant = $derived(scopeGrant('git:operate', ref.backend));
-  const startGrant = $derived(threadsGrant === 'granted' ? gitGrant : threadsGrant);
-  const askBlocked = $derived(grantBlockedTitle(threadsGrant) ?? unplaced);
-  const startBlocked = $derived(grantBlockedTitle(startGrant) ?? unplaced);
-  const grantNote = $derived(threadsGrant === 'refused'
-    ? 'This device may not start threads on this computer.'
-    : gitGrant === 'refused' ? 'This device may not use git on this computer. Ask still works.' : '');
+  const gate = $derived(workGate(ref.backend, project));
+  const askBlocked = $derived(gate.ask);
+  const grantNote = $derived(gate.note);
+  // Why Start work cannot run now, '' when it can: the one answer its
+  // button, a branch's row and menu, and a Start work asked for go by.
+  const startBlocked = $derived(gate.start || (run?.running ? `Start work is already running on ${card?.key || 'this ticket'}.` : ''));
+
+  // The open shown asked for its Start work form (a Board card's Start
+  // work): taken once the ticket is read, and the form opened when Start
+  // work can run now. When it cannot, Work shows why: the run going on,
+  // or the button whose title says it.
+  let runBox: HTMLElement | undefined = $state();
+  $effect(() => {
+    if (!startWorkAsked || !detail) return;
+    untrack(() => {
+      onStartWorkTaken();
+      (run?.running ? runBox : startButton)?.scrollIntoView({ block: 'nearest' });
+      if (!startBlocked) openForm(null);
+    });
+  });
 </script>
 
 <section class="mt-4 flex flex-col gap-2 border-t border-border-subtle pt-3" data-testid="ticket-work">
@@ -247,7 +245,7 @@
     <span class="flex-1"></span>
     <Button size="xs" variant="secondary" disabled={!detail || !!askBlocked || asking} loading={asking} title={askBlocked || 'A thread with this ticket attached; nothing on the ticket changes'} testId="ticket-work-ask" onclick={() => { void askAboutTicket(ctx, project); }}>Ask</Button>
     <span bind:this={startButton} class="inline-flex">
-      <Button size="xs" variant="primary" disabled={!detail || !!startBlocked || (run?.running ?? false)} title={startBlocked || undefined} testId="ticket-work-start" onclick={() => openForm(null)}>Start work</Button>
+      <Button size="xs" variant="primary" disabled={!detail || !!startBlocked} title={startBlocked || undefined} testId="ticket-work-start" onclick={() => openForm(null)}>Start work</Button>
     </span>
   </div>
   <label class="flex items-center gap-2 px-1 text-xs text-fg-muted">
@@ -264,15 +262,15 @@
   {/if}
 
   {#if run}
-    <div class="flex flex-col gap-1 rounded-[var(--radius-field)] border border-border-subtle bg-surface-1 px-2 py-1.5 text-xs" data-testid="start-work-run" data-running={run.running ? '' : undefined}>
+    <div class="flex flex-col gap-1 rounded-[var(--radius-field)] border border-border-subtle bg-surface-1 px-2 py-1.5 text-xs" bind:this={runBox} data-testid="start-work-run" data-running={run.running ? '' : undefined}>
       {#each Object.entries(run.steps) as [step, outcome] (step)}
         {#if outcome.kind !== 'skipped'}
-          {@const target = drawsWrite(step as StartWorkStep, outcome)}
+          {@const written = 'written' in outcome ? outcome.written : undefined}
           <div class="flex flex-col" data-testid="start-work-step" data-step={step} data-outcome={outcome.kind}>
-            <span class="font-medium text-fg">{STEP_NAMES[step as StartWorkStep]}{step === 'move' && run.plan.status ? ` to ${run.plan.status.name}` : ''}{step === 'thread' ? ` on ${run.plan.branch}` : ''}</span>
-            <span class={STEP_TONE[outcome.kind]}>{stepText(step as StartWorkStep, outcome)}</span>
-            {#if target}
-              <TicketWriteNote ticketKey={attachment.key} {target} fieldName={(id) => id} />
+            <span class="font-medium text-fg">{STEP_NAMES[step as StartWorkStep]}{step === 'move' && run.plan.status ? ` to ${run.plan.status.name}` : ''}{step === 'thread' ? ` in ${getProjectLabelText(run.plan.repository)} on ${run.plan.branch}` : ''}</span>
+            <span class={STEP_TONE[outcome.kind]}>{stepText(outcome)}</span>
+            {#if written}
+              <TicketWriteNote ticketKey={attachment.key} target={written.target} fieldName={(id) => id} only={written.outcome} />
             {/if}
           </div>
         {/if}
@@ -353,7 +351,7 @@
       {@const holder = threadOf(b)}
       {@const where = b.worktreePath ? (holder ? `in ${holder.title || 'a thread'}` : `checked out at ${pathBasename(b.worktreePath)}`) : ''}
       {@const drift = [b.aheadCount ? `${b.aheadCount} ahead` : '', b.behindCount ? `${b.behindCount} behind` : ''].filter(Boolean).join(', ')}
-      {@const startable = !!detail && !startBlocked && !(run?.running ?? false)}
+      {@const startable = !!detail && !startBlocked}
       <button
         type="button"
         class="flex min-w-0 flex-col rounded-[var(--radius-control)] px-1 py-0.5 text-left hover:bg-surface-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-default disabled:hover:bg-transparent compact:min-h-9 compact:select-none"
@@ -422,7 +420,7 @@
       {/if}
       <MenuItem label="Copy name" testId="ticket-work-menu-copy-branch" onSelect={() => act(() => copy(of.branch.name, 'branch name'))} />
       <MenuDivider />
-      <MenuItem label="Start work on this branch" disabled={!detail || !!startBlocked || (run?.running ?? false)} testId="ticket-work-menu-start-branch" onSelect={() => act(() => openForm({ name: of.branch.name, projectId: of.branch.projectId }))} />
+      <MenuItem label="Start work on this branch" disabled={!detail || !!startBlocked} description={startBlocked || undefined} testId="ticket-work-menu-start-branch" onSelect={() => act(() => openForm({ name: of.branch.name, projectId: of.branch.projectId }))} />
     {/if}
   </ContextMenu>
 {/if}

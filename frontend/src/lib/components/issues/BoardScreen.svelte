@@ -5,6 +5,13 @@
     carryModule ??= import('./boardCarry');
     return carryModule;
   }
+
+  // Work's store loads on a card's first Ask, once per page.
+  let workModule: Promise<typeof import('../../stores/ticketWork.svelte')> | null = null;
+  function loadWork(): Promise<typeof import('../../stores/ticketWork.svelte')> {
+    workModule ??= import('../../stores/ticketWork.svelte');
+    return workModule;
+  }
 </script>
 
 <script lang="ts">
@@ -41,6 +48,7 @@
   import { loadMoreOfSection, setTrackerBoardFiltered, type TrackerBoardRef } from '../../stores/trackerBoard.svelte';
   import { cardBusy, cardWriteContext, dropOwner, moveCard, rankCard, waitingCards, type CardDrop, type DropOwner } from '../../stores/trackerBoardCarry.svelte';
   import { moveTicketToSprint, ticketMoves, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
+  import type { TrackerTicketRef } from '../../stores/trackerTicket.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import type { MoveView, RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import {
@@ -85,9 +93,14 @@
     onOpenCard: (row: RowView, ownPane: boolean) => void;
     /** A move whose screen takes fields: the ticket opens with its form. */
     onMoveWithFields: (row: RowView, move: MoveView) => void;
+    /** The project a card's Ask and Start work use
+     * (`TicketTrail.projectFor`); reactive. */
+    ticketProject: (ref: TrackerTicketRef) => string | null;
+    /** A card's Start work: its ticket opens with its Start work form. */
+    onStartWork: (row: RowView) => void;
   }
 
-  let { boardKey, boardRef, held, paging, sectionErrors, filter, hidden, compact, shown, openIssue, typed, onOpenCard, onMoveWithFields }: Props = $props();
+  let { boardKey, boardRef, held, paging, sectionErrors, filter, hidden, compact, shown, openIssue, typed, onOpenCard, onMoveWithFields, ticketProject, onStartWork }: Props = $props();
   setTicketWriteSurface(() => shown);
 
   // The last columns, so a rebuild keeps the rows arrays nothing changed.
@@ -218,6 +231,14 @@
   function onMoveCard(row: RowView, anchor: HTMLElement): void {
     const r = anchor.getBoundingClientRect();
     menu = { x: r.left, y: r.bottom + 4, row, from: columnShowing(row.card.id), atMove: true };
+  }
+
+  // A card's Ask: what the ticket's Ask does, once Work's store loads.
+  function askFrom(ctx: TicketWriteContext, project: string): void {
+    void loadWork().then(
+      (work) => work.askAboutTicket(ctx, project),
+      (err: unknown) => addErrorToast(`Could not start a thread on ${ctx.label}: Work did not load. Reload the window to try again.`, err),
+    );
   }
 
   async function copy(text: string, what: string): Promise<void> {
@@ -589,6 +610,9 @@
       onEdit={(field) => onEditCard(open.row, field)}
       onMove={(column, move) => moveTo(open.row, column, move)}
       onSprint={(sprint) => { void moveTicketToSprint(ctx, boardRef.board, sprint); }}
+      project={ticketProject(ctx.ref)}
+      onAsk={(project) => askFrom(ctx, project)}
+      onStartWork={() => onStartWork(open.row)}
       onDismiss={() => { menu = null; }}
     />
   {/key}

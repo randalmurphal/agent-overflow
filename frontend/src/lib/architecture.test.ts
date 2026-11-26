@@ -1221,6 +1221,16 @@ describe('architecture', () => {
     ).toEqual([]);
   });
 
+  it('keeps Work\'s code out of the board\'s chunk: a card\'s Ask and Start work load it when chosen', () => {
+    const graph = staticGraph(join(SRC_ROOT, 'lib', 'components', 'issues', 'IssuesPane.svelte'));
+    expect(graph.reached('lib/components/issues/BoardCardMenu.svelte'), 'the walk reaches the card menu').toBe(true);
+    const work = ['lib/stores/ticketWork.svelte.ts', 'lib/components/issues/TicketWork.svelte', 'lib/components/issues/StartWorkForm.svelte'];
+    expect(
+      work.filter(graph.reached).map(graph.chain),
+      'Work\'s code is in the board\'s chunk. The card menu says why Ask and Start work cannot run through ticketWorkGate.ts and loads Work with a dynamic import when one is chosen.',
+    ).toEqual([]);
+  });
+
   it('keeps the week cache out of what the log form imports', () => {
     // A ticket's Log time loads the log form; the weeks the Time screen
     // holds, and their listeners, load with the Time screen alone.

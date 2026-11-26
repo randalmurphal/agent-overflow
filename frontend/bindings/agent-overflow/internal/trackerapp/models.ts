@@ -3125,13 +3125,14 @@ export class TicketRowView {
  * sequence number the answer is as of, and the ticket as of it. With no
  * detail loaded, the pump's first read follows, and its event says so.
  * PollEvery is the connection's round interval in milliseconds, and Kind
- * its tracker kind.
+ * and Site its tracker kind and site, as its row holds them.
  */
 export class TicketSubscription {
     "id": string;
     "seq": number;
     "poll_every": number;
     "kind": string;
+    "site": string;
     "loaded": boolean;
     "detail"?: DetailView | null;
     "read_at"?: number;
@@ -3152,6 +3153,9 @@ export class TicketSubscription {
         if (!("kind" in $$source)) {
             this["kind"] = "";
         }
+        if (!("site" in $$source)) {
+            this["site"] = "";
+        }
         if (!("loaded" in $$source)) {
             this["loaded"] = false;
         }
@@ -3163,14 +3167,14 @@ export class TicketSubscription {
      * Creates a new TicketSubscription instance from a string or object.
      */
     static createFrom($$source: any = {}): TicketSubscription {
-        const $$createField5_0 = $$createType89;
-        const $$createField7_0 = $$createType8;
+        const $$createField6_0 = $$createType89;
+        const $$createField8_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("detail" in $$parsedSource) {
-            $$parsedSource["detail"] = $$createField5_0($$parsedSource["detail"]);
+            $$parsedSource["detail"] = $$createField6_0($$parsedSource["detail"]);
         }
         if ("failure" in $$parsedSource) {
-            $$parsedSource["failure"] = $$createField7_0($$parsedSource["failure"]);
+            $$parsedSource["failure"] = $$createField8_0($$parsedSource["failure"]);
         }
         return new TicketSubscription($$parsedSource as Partial<TicketSubscription>);
     }

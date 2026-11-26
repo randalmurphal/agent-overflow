@@ -143,7 +143,7 @@ export function registerBoardWritesFlow({ compact }: BoardWritesSurface): void {
       'Open', 'Move to…', 'Assignee…', 'Copy key',
       // Ticket panes are offered off the compact layout only.
       ...(compact ? [] : ['Open in its own pane']),
-      'Open in the tracker', 'Move to sprint…', 'Priority…', 'Points…', 'Type…', 'Copy link',
+      'Open in the tracker', 'Move to sprint…', 'Priority…', 'Points…', 'Type…', 'Ask', 'Start work…', 'Copy link',
       'Choose what shows first…',
     ]);
     // Copy link joins the set shown at once; Assignee… leaves it.
