@@ -1,7 +1,8 @@
 // The tracker tools' timeline rows under the compact layout, on the Claude
 // mock (tracker-agent-tools.spec.ts drives both providers on the desktop):
-// each row fits the phone-width thread screen, opens by touch to its
-// decoded result, and the refusal shows its code.
+// each row, the filtered search's among them, fits the phone-width thread
+// screen, opens by touch to its decoded result, and the refusal shows its
+// code.
 
 import type { Locator } from '@playwright/test';
 

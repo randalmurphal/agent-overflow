@@ -2468,12 +2468,20 @@ export class SearchPageView {
 
 /**
  * SearchRequest is a search for issues by free text, optionally within
- * one project; Page is the token the previous page returned, empty for the
- * first, and Limit the most cards a page holds (0: the most there are).
+ * one project, narrowed by who has them, their status and the active
+ * sprint (tracker.SearchQuery); Page is the token the previous page
+ * returned, empty for the first, and Limit the most cards a page holds
+ * (0: the most there are). Status is a status's name; Group a status
+ * group by the name a status view gives it (StatusView.Group), or "open"
+ * for every group but done and canceled; at most one of the two.
  */
 export class SearchRequest {
     "text"?: string;
     "project"?: string;
+    "mine"?: boolean;
+    "status"?: string;
+    "group"?: string;
+    "active_sprint"?: boolean;
     "limit"?: number;
     "page"?: string;
 

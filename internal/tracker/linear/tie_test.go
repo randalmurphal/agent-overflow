@@ -62,7 +62,11 @@ func recentStep(t *testing.T, f *conformanceEnv) walkStep {
 	return func(from Position) (Page[Issue], Position) {
 		t.Helper()
 		p := answered(f.c.RecentIssues(f.ctx, RecentQuery{Filter: IssueFilter{Teams: []string{cfTeam}}, From: from})).must(t)
-		return p.Page, p.Next
+		issues := Page[Issue]{EndCursor: p.EndCursor, HasNextPage: p.HasNextPage, Usage: p.Usage, Served: p.Served}
+		for _, h := range p.Items {
+			issues.Items = append(issues.Items, h.Issue)
+		}
+		return issues, p.Next
 	}
 }
 

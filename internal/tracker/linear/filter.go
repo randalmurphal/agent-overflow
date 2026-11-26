@@ -24,9 +24,18 @@ type IssueFilter struct {
 	Teams       []string // team IDs
 	States      []string // workflow state IDs
 	StateTypes  []StateType
-	Cycle       Match
+	// StateName selects issues whose workflow state has this name, case
+	// ignored.
+	StateName string
+	Cycle     Match
+	// ActiveCycle selects issues in a cycle in progress (the cycle's
+	// isActive).
+	ActiveCycle bool
 	Assignee    Match
-	Project     Match
+	// AssignedToMe selects issues assigned to the API key's user (the
+	// assignee's isMe).
+	AssignedToMe bool
+	Project      Match
 	// Parent selects sub-issues of the listed issues, or top-level
 	// issues with None.
 	Parent Match
@@ -65,9 +74,14 @@ type (
 		UpdatedAt *dateComparator    `json:"updatedAt,omitempty"`
 	}
 	entityFilter struct {
-		ID   *idComparator `json:"id,omitempty"`
-		Key  *keyCompare   `json:"key,omitempty"`
-		Null *bool         `json:"null,omitempty"`
+		ID       *idComparator   `json:"id,omitempty"`
+		Key      *keyCompare     `json:"key,omitempty"`
+		Null     *bool           `json:"null,omitempty"`
+		IsMe     *boolComparator `json:"isMe,omitempty"`
+		IsActive *boolComparator `json:"isActive,omitempty"`
+	}
+	boolComparator struct {
+		Eq bool `json:"eq"`
 	}
 	keyCompare struct {
 		EqIgnoreCase string `json:"eqIgnoreCase"`
@@ -83,6 +97,7 @@ type (
 	stateFilterInput struct {
 		ID   *idComparator `json:"id,omitempty"`
 		Type *idComparator `json:"type,omitempty"` // a StringComparator's eq and in
+		Name *keyCompare   `json:"name,omitempty"`
 	}
 	labelsFilterInput struct {
 		Some *entityFilter `json:"some"`
@@ -141,6 +156,15 @@ func (f IssueFilter) input() (*issueFilterInput, error) {
 			types[i] = string(t)
 		}
 		add(issueFilterInput{State: &stateFilterInput{Type: idIn(types)}})
+	}
+	if f.StateName != "" {
+		add(issueFilterInput{State: &stateFilterInput{Name: &keyCompare{EqIgnoreCase: f.StateName}}})
+	}
+	if f.ActiveCycle {
+		add(issueFilterInput{Cycle: &entityFilter{IsActive: &boolComparator{Eq: true}}})
+	}
+	if f.AssignedToMe {
+		add(issueFilterInput{Assignee: &entityFilter{IsMe: &boolComparator{Eq: true}}})
 	}
 	for _, m := range []struct {
 		name  string

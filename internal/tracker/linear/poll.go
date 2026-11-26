@@ -71,7 +71,7 @@ func (c *Client) PollIssues(ctx context.Context, q PollQuery) (PollPage, error) 
 	if q.TeamID != "" {
 		filter.Teams = []string{q.TeamID}
 	}
-	p, at, err := readPosition(ctx, c, oldestFirst, q.From.Position, IssueQuery{Filter: filter, IncludeArchived: q.IncludeArchived})
+	p, at, err := readPosition(ctx, c, walkRows[wireIssue, Issue]{opIssues, wireIssue.typed}, oldestFirst, q.From.Position, IssueQuery{Filter: filter, IncludeArchived: q.IncludeArchived})
 	if err != nil {
 		return PollPage{}, err
 	}
