@@ -12,7 +12,8 @@
 // ticket takes once, and lands in that sprint; a sprint is created (a
 // refusal staying under its form), changed, completed with its
 // unfinished tickets moved to the next one, and started; the row's menu
-// is the card's and moves a row to a sprint. On desktop: a row's marks
+// is the card's and moves a row to a sprint, offering no Backlog to a row
+// in the backlog whose card names a closed sprint. On desktop: a row's marks
 // change its type, priority, points and assignee; a carried row ranks in
 // its section, moves into another at its place while both headers say
 // what their numbers become, and back to the backlog; a row whose move is
@@ -116,8 +117,8 @@ async function openBacklog(page: Page, pane: Locator, compact: boolean): Promise
 }
 
 /** Opens the board, waits for its cards, then switches to Backlog. */
-async function openBoardBacklog(harness: HarnessApp, page: Page, name: string, compact: boolean): Promise<{ pane: Locator; backlog: Locator }> {
-  await connectFakeJiraBoard(harness, name, BACKLOG);
+async function openBoardBacklog(harness: HarnessApp, page: Page, name: string, compact: boolean, fixture: ExtraJira = BACKLOG): Promise<{ pane: Locator; backlog: Locator }> {
+  await connectFakeJiraBoard(harness, name, fixture);
   await harness.open(page);
   const pane = await openIssuesPane(page, compact);
   await expect(pane.locator('[data-testid="issues-card"][data-issue="10101"]')).toBeVisible({ timeout: 30_000 });
@@ -382,8 +383,19 @@ export function registerBacklogFlow({ compact }: BacklogSurface): void {
 
   test('a row\'s menu is the card\'s and moves the row to another sprint', async ({ harness, page }) => {
     test.setTimeout(120_000);
-    const { pane, backlog } = await openBoardBacklog(harness, page, name('menu'), compact);
-    let menu = await rowMenu(page, backlog, '10111', 'WEB-11', compact);
+    // WEB-12 was left unfinished in Sprint 0: its card still names that
+    // closed sprint, and it is in the backlog.
+    const carried = { id: '10112', key: 'WEB-12', project: 'WEB', type: '10002', status: '10000', summary: 'Left over from Sprint 0', sprints: [3] };
+    const { pane, backlog } = await openBoardBacklog(harness, page, name('menu'), compact, { ...BACKLOG, issues: [...BACKLOG.issues!, carried] });
+    let menu = await rowMenu(page, backlog, '10112', 'WEB-12', compact);
+    await press(menu.getByTestId('action-menu-more'), compact);
+    await press(menu.getByTestId('issues-card-menu-sprint'), compact);
+    // A closed sprint is no sprint to leave for the backlog it is in.
+    expect(await menu.getByTestId('issues-card-sprint').evaluateAll((els) => els.map((el) => el.textContent?.trim() ?? ''))).toEqual(['Sprint 1 Active', 'Sprint 2 Planned']);
+    await page.keyboard.press('Escape');
+    await expect(menu).toHaveCount(0);
+
+    menu = await rowMenu(page, backlog, '10111', 'WEB-11', compact);
     expect(await menuRows(menu)).toEqual(['Open', 'Move to…', 'Assignee…', 'Copy key', 'Show more']);
     await press(menu.getByTestId('action-menu-more'), compact);
     await press(menu.getByTestId('issues-card-menu-sprint'), compact);
