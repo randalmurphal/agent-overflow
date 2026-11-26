@@ -5,11 +5,11 @@
 // whose screen lists its values picked from that list; Add makes the
 // ticket in the section's sprint, and the next form on the board starts
 // from the project and type picked, while a form already open keeps its
-// own; what was given for one project and type goes when either changes,
-// the board's projects replacing the one shown included, and the
-// location is shown before the only one; what was typed outlives the
-// form's foot going; a create refused for
-// fields reads them again; a ticket made whose move into the sprint failed
+// own; what was given is kept for each project and type and shown and
+// sent only for the one shown, the board's projects replacing it
+// included, and the location is shown before the only one; what was
+// typed outlives the form's foot going; a create refused for fields
+// reads them again; a ticket made whose move into the sprint failed
 // is not made again; a field the tracker fills is offered, not asked, and
 // left to the tracker when the app cannot set it; a required field the app
 // cannot set says to make the ticket in the tracker.
@@ -176,7 +176,7 @@ describe('New ticket', () => {
     view.unmount();
   });
 
-  it('drops what was given for the project it showed when the board\'s projects replace it, so Add sends none of it for the one that replaces it', async () => {
+  it('shows and sends none of what was given for the project it showed once the board\'s projects replace it', async () => {
     let answer: () => void = () => {};
     setBindingMock('TrackerBoardProjects', () => new Promise<ProjectView[]>((resolve) => { answer = () => resolve([PROJECTS[1]]); }));
     setBindingMock('TrackerIssueTypes', async () => TYPES);
@@ -215,24 +215,42 @@ describe('New ticket', () => {
     view.unmount();
   });
 
-  it('drops what was given for one type when another is picked, and picking the first again brings none of it back', async () => {
-    setBindingMock('TrackerBoardProjects', async () => PROJECTS);
-    setBindingMock('TrackerIssueTypes', async () => TYPES);
-    setBindingMock('TrackerCreateFields', async () => [{ ...PRIORITY, allowed: [{ id: '2', name: 'High' }] }]);
-    const view = open('10000');
-    await fireEvent.click(view.getByTestId('issues-backlog-new'));
-    await waitFor(() => expect(value(view.container, 'type')).toBe('Task'));
-    await pick(view.container, 'priority', 'High');
-    expect(value(view.container, 'priority')).toBe('High');
-    await pick(view.container, 'type', 'Bug');
-    await waitFor(() => expect(value(view.container, 'type')).toBe('Bug'));
-    await waitFor(() => expect(value(view.container, 'priority')).toBe('None'));
-    await pick(view.container, 'priority', 'High');
-    await pick(view.container, 'type', 'Task');
-    await waitFor(() => expect(value(view.container, 'type')).toBe('Task'));
-    await waitFor(() => expect(value(view.container, 'priority')).toBe('None'));
-    view.unmount();
-  });
+  for (const by of ['type', 'project'] as const) {
+    for (const edited of [false, true]) {
+      it(`keeps what was given for each ${by}: back from another, ${edited ? 'given a value there' : 'given nothing there'}, it shows and Add sends what was given for it`, async () => {
+        setBindingMock('TrackerBoardProjects', async () => PROJECTS);
+        setBindingMock('TrackerIssueTypes', async () => TYPES);
+        setBindingMock('TrackerCreateFields', async () => [{ ...PRIORITY, allowed: [{ id: '2', name: 'High' }, { id: '3', name: 'Low' }] }]);
+        const created = setBindingMock('CreateTrackerIssue', async () => ({ parts: [{ step: 'create', state: 'applied' }] }) as WriteView);
+        const [there, back] = by === 'type' ? ['Bug', 'Task'] : ['App', 'Web'];
+        const view = open('10000');
+        await fireEvent.click(view.getByTestId('issues-backlog-new'));
+        await waitFor(() => expect(value(view.container, 'type')).toBe('Task'));
+        await pick(view.container, 'priority', 'High');
+        await pick(view.container, by, there);
+        await waitFor(() => expect(value(view.container, by)).toContain(there));
+        await waitFor(() => expect(value(view.container, 'priority')).toBe('None'));
+        if (edited) await pick(view.container, 'priority', 'Low');
+        await pick(view.container, by, back);
+        await waitFor(() => expect(value(view.container, by)).toContain(back));
+        await waitFor(() => expect(value(view.container, 'type')).toBe('Task'));
+        await waitFor(() => expect(value(view.container, 'priority')).toBe('High'));
+        // And there again: what was given there, if anything.
+        await pick(view.container, by, there);
+        await waitFor(() => expect(value(view.container, 'priority')).toBe(edited ? 'Low' : 'None'));
+        await pick(view.container, by, back);
+        await waitFor(() => expect(value(view.container, 'priority')).toBe('High'));
+        const title = view.getByTestId('issues-backlog-create-title') as HTMLInputElement;
+        await fireEvent.input(title, { target: { value: 'Back where it began' } });
+        await waitFor(() => expect((view.getByTestId('issues-backlog-create-submit') as HTMLButtonElement).disabled).toBe(false));
+        await fireEvent.keyDown(title, { key: 'Enter' });
+        await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
+        expect(created.mock.calls[0][1]).toMatchObject({ project: '10000', type: '6', fields: [{ field: 'priority', value: { kind: 'option', choices: [{ id: '2' }] } }] });
+        expect((created.mock.calls[0][1] as { fields: unknown[] }).fields).toHaveLength(1);
+        view.unmount();
+      });
+    }
+  }
 
   it('makes the ticket in the location when the one picked last is not among several the board shows and the location is', async () => {
     setBindingMock('TrackerBoardProjects', async () => PROJECTS);

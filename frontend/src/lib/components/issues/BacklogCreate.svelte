@@ -45,16 +45,14 @@
      * empty takes the project's default. */
     type = $state('');
     // What must hold: the values given for the fields and the text being
-    // typed in one belong to one project and type (`valuesOf`), the ones
-    // in effect when they were given. When the form's project or type
-    // changes, by a pick, by the board's projects arriving without the
-    // one it showed, or by a read answering again, they are gone: read
-    // for another project or type there are none, and the first value
-    // given for another replaces them. This is the only rule that drops
-    // them; a made ticket clears them (`clearValues`).
-    #values = $state.raw<{ readonly of: string; readonly filled: ReadonlyMap<string, FilledField>; readonly typing: ReadonlyMap<string, string> }>({
-      of: '', filled: NO_FILLED, typing: NO_TYPING,
-    });
+    // typed in one are kept for the project and type in effect when they
+    // were given (`valuesOf`), each pair its own. The form shows, and Add
+    // sends, only those of the project and type it shows; whatever changes
+    // them (a pick, the board's projects arriving without the one shown, a
+    // read answering again), coming back to a pair shows what was given
+    // for it, and nothing given for one replaces another's. A made ticket
+    // clears them all (`clearValues`).
+    #values = $state.raw<ReadonlyMap<string, { readonly filled: ReadonlyMap<string, FilledField>; readonly typing: ReadonlyMap<string, string> }>>(new Map());
     // What must hold: a ticket made for the sprint and not in it is
     // offered that move until the board shows the ticket in that sprint,
     // however it got there, or the person dismisses it; the offer says
@@ -71,27 +69,27 @@
 
     /** The fields filled for `of`, by field. */
     filled(of: string): ReadonlyMap<string, FilledField> {
-      return this.#values.of === of ? this.#values.filled : NO_FILLED;
+      return this.#values.get(of)?.filled ?? NO_FILLED;
     }
 
     /** The text being typed for `of` in a field not saved yet, by field. */
     typing(of: string): ReadonlyMap<string, string> {
-      return this.#values.of === of ? this.#values.typing : NO_TYPING;
+      return this.#values.get(of)?.typing ?? NO_TYPING;
     }
 
     /** Fills field `id` for `of`, or with null leaves it unfilled. */
     fill(of: string, id: string, field: FilledField | null): void {
-      this.#values = { of, filled: withEntry(this.filled(of), id, field), typing: this.typing(of) };
+      this.#values = withEntry(this.#values, of, { filled: withEntry(this.filled(of), id, field), typing: this.typing(of) });
     }
 
     /** Holds the text being typed for `of` in field `id`, or with null
      * lets it go. */
     hold(of: string, id: string, text: string | null): void {
-      this.#values = { of, filled: this.filled(of), typing: withEntry(this.typing(of), id, text) };
+      this.#values = withEntry(this.#values, of, { filled: this.filled(of), typing: withEntry(this.typing(of), id, text) });
     }
 
     clearValues(): void {
-      this.#values = { of: '', filled: NO_FILLED, typing: NO_TYPING };
+      this.#values = new Map();
     }
   }
 
