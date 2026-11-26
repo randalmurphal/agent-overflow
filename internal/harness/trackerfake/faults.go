@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 )
 
@@ -42,8 +43,13 @@ type Fault struct {
 	// Route is a route name (the Route of a logged request, such as
 	// "GET rest/api/3/issue/{issue}") or a Linear operation name; empty
 	// matches every route of the origin.
-	Route string    `json:"route,omitempty"`
-	Kind  FaultKind `json:"kind"`
+	Route string `json:"route,omitempty"`
+	// Query, when set, narrows the fault to the requests whose query
+	// carries each of these parameters once, with exactly this value: a
+	// Jira or Tempo route read in more than one way, such as a board's
+	// issues listed by ID alone (fields=id) or with their fields.
+	Query map[string]string `json:"query,omitempty"`
+	Kind  FaultKind         `json:"kind"`
 	// Times is how many matching requests the fault takes; zero takes
 	// every one until ClearFaults or Reset.
 	Times int `json:"times,omitempty"`
@@ -172,6 +178,9 @@ func (f Fault) check() error {
 	if err := checkRoute(f.Origin, f.Route); err != nil {
 		return err
 	}
+	if len(f.Query) > 0 && f.Origin.Tracker == TrackerLinear {
+		return fmt.Errorf("trackerfake: fault: a Linear request names its operation in its body, so a fault on one takes no query")
+	}
 	if f.Times < 0 {
 		return fmt.Errorf("trackerfake: fault: times %d is negative", f.Times)
 	}
@@ -212,11 +221,11 @@ func (f Fault) check() error {
 	return nil
 }
 
-// match takes the first armed fault matching o and route, counting it
-// down. Callers hold mu.
-func (f *faultState) match(o Origin, route string) *armedFault {
+// match takes the first armed fault matching o, route and the request's
+// query q, counting it down. Callers hold mu.
+func (f *faultState) match(o Origin, route string, q url.Values) *armedFault {
 	for i, a := range f.armed {
-		if a.Origin != o || (a.Route != "" && a.Route != route) {
+		if a.Origin != o || (a.Route != "" && a.Route != route) || !queryHolds(q, a.Query) {
 			continue
 		}
 		if a.Times > 0 {
@@ -228,6 +237,17 @@ func (f *faultState) match(o Origin, route string) *armedFault {
 		return a
 	}
 	return nil
+}
+
+// queryHolds reports whether q carries each parameter of want once, with
+// its value.
+func queryHolds(q url.Values, want map[string]string) bool {
+	for name, v := range want {
+		if got := q[name]; len(got) != 1 || got[0] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // Release ends the holds armed on exactly o and route: their faults stop

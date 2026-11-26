@@ -221,7 +221,7 @@ func (e *Engine) dispatch(svc service, x *exchange, faults bool) (answer, *hold)
 	x.entry.Route = m.name
 	f := (*armedFault)(nil)
 	if faults {
-		f = e.faults.match(x.origin, m.name)
+		f = e.faults.match(x.origin, m.name, x.r.URL.Query())
 	}
 	if f == nil {
 		return e.run(svc, x, m), nil
