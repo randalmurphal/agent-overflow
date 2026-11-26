@@ -59,15 +59,17 @@ func kindOf(s jira.Schema) (tracker.Kind, bool) {
 	return tracker.KindReadOnly, false
 }
 
-// metaField is a field a screen offers, with no value: a create's or a
-// move's. It is required as its screen says, so a move's form offers no
-// clear of a field Jira requires; a create says instead what the person
-// must supply (CreateFields).
-func metaField(f jira.FieldMeta) tracker.Field {
+// offeredField is a field a screen offers, with no value: a create's or a
+// move's, required as its screen says and defaulted when Jira fills it
+// (jira.FieldMeta.Demanded is the person's part).
+func offeredField(f jira.FieldMeta) tracker.ScreenField {
 	kind, list := kindOf(f.Schema)
-	return tracker.Field{
-		ID: neutralField(f.ID), Name: f.Name, Kind: kind, List: list, Required: f.Required,
-		Editable: settable(f, kind),
+	return tracker.ScreenField{
+		Field: tracker.Field{
+			ID: neutralField(f.ID), Name: f.Name, Kind: kind, List: list, Required: f.Required,
+			Editable: settable(f, kind),
+		},
+		Defaulted: f.Required && f.HasDefault,
 	}
 }
 

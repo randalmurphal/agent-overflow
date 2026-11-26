@@ -1705,7 +1705,8 @@ The reads a write form needs go to the tracker, interactive, and settle
 the connection's problem with their outcome (`form_reads.go`): `Projects`,
 `IssueTypes`, `Boards`, `BoardProjects` (the projects a board's filter
 shows; a Linear team's own), `CreateFields` (each field with the values
-its screen lists and whether the tracker fills it, `tracker.CreateField`),
+its screen lists and whether the tracker fills it, `tracker.ScreenField`,
+as a move's fields are),
 `Moves`, `AssignableUsers`,
 `Choices`, `LinkTypes`, `Lookup`, `Search`, `Comments` (a later page) and
 `Download`. The mirror holds none of them: configuration it never reads,

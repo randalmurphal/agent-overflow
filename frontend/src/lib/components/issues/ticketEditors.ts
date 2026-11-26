@@ -50,6 +50,16 @@ export interface EditorTarget {
   /** Holds the text being typed in a typed field, for a form whose field
    * may go before it is saved. */
   readonly typing?: TypingHold;
+  /** The row that leaves a field the tracker requires to the tracker,
+   * where the target sends none for it (a create's defaulted field). */
+  readonly unset?: string;
+}
+
+/** A field the person must give a value: one the tracker requires and
+ * fills no default for. Whether a field may be cleared is `required`
+ * alone, which a defaulted field also is. */
+export function mustSupply(f: FieldView): boolean {
+  return f.required && !f.defaulted;
 }
 
 /** The most values a list held here answers at once, as a tracker's
@@ -109,7 +119,7 @@ export function fieldEditor(f: FieldView, target: EditorTarget): FieldEditor | n
   switch (f.kind) {
     case 'option':
     case 'user':
-      return pickEditor(f.id, f.kind, target, { multi: f.list, clear: f.required ? undefined : 'None' });
+      return pickEditor(f.id, f.kind, target, { multi: f.list, clear: f.required ? target.unset : 'None' });
     case 'text':
     case 'number':
     case 'date':

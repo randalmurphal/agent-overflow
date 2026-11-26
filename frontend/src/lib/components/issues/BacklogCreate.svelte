@@ -78,7 +78,7 @@
   import Icon from '../primitives/Icon.svelte';
   import TicketField from './TicketField.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
-  import { fieldEditor, heldChoices, pickEditor, type EditorTarget } from './ticketEditors';
+  import { cardFieldName, fieldEditor, heldChoices, mustSupply, pickEditor, type EditorTarget } from './ticketEditors';
   import type { FieldView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import type { BacklogSection } from '../../stores/trackerBacklogModel';
   import { lastCreateChoice, setLastCreateChoice } from '../../stores/issuesPane.svelte';
@@ -101,7 +101,6 @@
   import { cardBusy, issueWriteContext, moveCardToSprint } from '../../stores/trackerBoardCarry.svelte';
   import { errString } from '../../utils/errors';
   import { isLocalEnter } from '../../utils/localEnter';
-  import { cardFieldName } from './ticketEditors';
 
   interface Props {
     b: BoardWriteContext;
@@ -119,6 +118,10 @@
   }
 
   let { b, boardKey, boardRef, sec, project, typed, drafts }: Props = $props();
+
+  // What a field the tracker fills shows, and the row that leaves it to
+  // the tracker.
+  const TRACKER_DEFAULT = 'The tracker\'s default';
 
   const target = $derived(createTarget(sec.list));
   const held = $derived(ticketWrite(b.key, target));
@@ -156,8 +159,9 @@
   const typeName = $derived(types?.value?.find((t) => t.id === typeID)?.name ?? '');
   // The fields of the type picked: Linear's need no type.
   const fields = $derived(projectID && (!typed || typeID) ? createFields(b.backend, b.connection, projectID, typeID) : null);
-  // The required fields, then those the tracker would fill.
-  const offered = $derived((fields?.value ?? []).filter((f) => f.required || f.defaulted).sort((a, c) => Number(!a.required) - Number(!c.required)));
+  // The required fields: those the person must supply, then those the
+  // tracker would fill.
+  const offered = $derived((fields?.value ?? []).filter((f) => f.required).sort((a, c) => Number(!mustSupply(a)) - Number(!mustSupply(c))));
 
   // Each read on a person's act: the form's open, a project or type
   // picked. Started outside any reactive read of them.
@@ -249,6 +253,8 @@
         ? async (text) => heldChoices(f.allowed!, (c) => (c.name ?? '').toLowerCase().startsWith(text.trim().toLowerCase()))
         : (text) => createChoices(b, projectID, typeID, f.id, text),
       save: (edit, picked) => { fill(f.id, picked.length || edit.typed?.length ? { edit, picked, text: edit.typed?.[0] ?? '' } : null); },
+      // A create sends no value for a field left to the tracker.
+      unset: f.defaulted ? TRACKER_DEFAULT : undefined,
       typing: {
         text: draft?.typing.get(f.id) ?? null,
         set: (text) => {
@@ -264,9 +270,9 @@
   // A defaulted field the app cannot set is left to the tracker, unshown.
   const rows = $derived(offered
     .map((f) => ({ f, long: f.kind === 'rich_text' && f.editable, editor: f.kind === 'rich_text' ? null : fieldEditor(f, targetOf(f)) }))
-    .filter((r) => r.f.required || r.long || r.editor));
+    .filter((r) => mustSupply(r.f) || r.long || r.editor));
   const unsettable = $derived(rows.filter((r) => !r.long && !r.editor).map((r) => r.f.name));
-  const missing = $derived(rows.filter((r) => r.f.required && !draft?.filled.has(r.f.id)).map((r) => r.f.name));
+  const missing = $derived(rows.filter((r) => mustSupply(r.f) && !draft?.filled.has(r.f.id)).map((r) => r.f.name));
   const readError = $derived(projects?.error ?? types?.error ?? fields?.error ?? null);
   const ready = $derived(!!projectID && (!typed || !!typeID) && !!fields?.value && unsettable.length === 0);
 
@@ -358,7 +364,7 @@
     {#each rows as { f, long, editor } (f.id)}
       {#if long}
         <label class="flex flex-col gap-1 py-1 text-xs text-fg-muted" data-testid="issues-backlog-create-text" data-field={f.id}>
-          {f.required ? `${f.name} (required)` : f.name}
+          {mustSupply(f) ? `${f.name} (required)` : f.name}
           <textarea
             rows="3"
             class="w-full resize-y rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1.5 font-mono text-[0.8125rem] text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
@@ -368,7 +374,7 @@
           ></textarea>
         </label>
       {:else}
-        <TicketField label={f.required ? `${f.name} (required)` : f.name} field={f.id} value={shown(f) || (f.required ? '' : 'The tracker\'s default')} {editor} ticketKey={b.key} target="create-form" fieldName={cardFieldName} disabled={pending} />
+        <TicketField label={mustSupply(f) ? `${f.name} (required)` : f.name} field={f.id} value={shown(f) || (f.defaulted ? TRACKER_DEFAULT : '')} {editor} ticketKey={b.key} target="create-form" fieldName={cardFieldName} disabled={pending} />
       {/if}
     {/each}
     {#if readError}

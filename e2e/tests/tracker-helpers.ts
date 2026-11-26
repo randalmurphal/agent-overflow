@@ -78,7 +78,7 @@ export interface ExtraJira {
   /** Other projects WEB's board's filter names (trackerfake.JiraBoard.Also). */
   boardAlso?: string[];
   /** WEB's workflow moves in place of one per status (trackerfake.JiraTransition). */
-  transitions?: Array<{ id: string; name: string; to: string; from?: string[]; screen?: Array<{ field: string; required?: boolean }> }>;
+  transitions?: Array<{ id: string; name: string; to: string; from?: string[]; screen?: Array<{ field: string; required?: boolean; hasDefault?: boolean }> }>;
   /** The field WEB's board estimates in. */
   estimation?: string;
   /** The accounts WEB's issues can be assigned (trackerfake.JiraProject.Assignable). */

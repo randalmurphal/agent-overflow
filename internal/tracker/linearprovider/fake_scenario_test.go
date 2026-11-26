@@ -246,7 +246,7 @@ func TestFakeScenario(t *testing.T) {
 	if sp := scenarioMust[tracker.SearchPage](t)(s.p.Search(s.ctx, tracker.SearchQuery{Text: "login", Limit: 10})); len(sp.Cards) != 2 {
 		t.Fatalf("search %+v", sp)
 	}
-	if fs := scenarioMust[[]tracker.CreateField](t)(s.p.CreateFields(s.ctx, tracker.ProjectID(scTeam), "")); len(fs) == 0 {
+	if fs := scenarioMust[[]tracker.ScreenField](t)(s.p.CreateFields(s.ctx, tracker.ProjectID(scTeam), "")); len(fs) == 0 {
 		t.Fatalf("create fields %+v", fs)
 	}
 	if us := scenarioMust[tracker.UserList](t)(s.p.AssignableUsers(s.ctx, tracker.OnIssue(tracker.IssueID(scIssue1)), "User")); len(us.Users) != 2 {

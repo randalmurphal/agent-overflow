@@ -31,7 +31,9 @@
 // description from its own screen, one read of the moves per picker, the
 // description starting from the ticket's; a description that would lose
 // its layout is refused, a change withdraws Save anyway, and Save anyway
-// makes the move and closes the form. An edit of a comment on the page
+// makes the move and closes the form. The move named Close, whose
+// required fields Jira fills, is made with neither given and no None
+// offered for them. An edit of a comment on the page
 // before Jira's newest 50 re-reads that page, a delete there and a
 // comment posted with every comment shown read the held page again from
 // the moved boundary with no comment lost, and Refresh brings neither
@@ -115,6 +117,7 @@ const EDITED: ExtraJira = {
       options: [{ id: '21001', value: 'Web' }, { id: '21002', value: 'API' }, { id: '21003', value: 'Docs' }],
     },
     { id: 'customfield_10095', name: 'Root cause', schema: { type: 'string', custom: 'com.atlassian.jira.plugin.system.customfieldtypes:textarea', customId: 10095 } },
+    { id: 'customfield_10097', name: 'Closed at', schema: { type: 'datetime', custom: 'com.atlassian.jira.plugin.system.customfieldtypes:datetime', customId: 10097 } },
   ],
   // The fake's types, with the type itself on their edit screen as Jira's is.
   issueTypes: [
@@ -137,6 +140,11 @@ const EDITED: ExtraJira = {
       screen: [{ field: 'resolution', required: true }, { field: 'customfield_10090' }, { field: 'customfield_10095' }, { field: 'description' }],
     },
     { id: '51', name: 'Archive', to: '10002', screen: [{ field: 'attachment', required: true }] },
+    // Jira fills both: a date and time the app has no editor for, and one it has.
+    {
+      id: '61', name: 'Close', to: '10002',
+      screen: [{ field: 'customfield_10097', required: true, hasDefault: true }, { field: 'resolution', required: true, hasDefault: true }],
+    },
   ],
   links: [{ id: '40001', type: '10000', outward: '10106', inward: '10101' }, { id: '40002', type: '10000', outward: '10102', inward: '10106' }],
   issues: [
@@ -587,6 +595,27 @@ export function registerIssuesTicketFlow({ compact }: TicketSurface): void {
     expect(JSON.stringify(moved.customfield_10095)).toContain('A stale cache key, checked again');
     expect(JSON.stringify(moved.description)).toContain('Linked intro, resolved');
     await expect(ticket.locator('[data-testid="ticket-section"][data-field="description"]').getByTestId('ticket-section-text')).toContainText('Linked intro, resolved', { timeout: 15_000 });
+
+    // Close's screen requires two fields Jira fills: the form asks for
+    // neither, offers no None for the one it can set, and Move sends none.
+    await press(status.getByTestId('ticket-field-value'), compact);
+    await press(moves.filter({ hasText: 'Close' }), compact);
+    await expect(form).toHaveAttribute('data-move', '61');
+    await expect(form.getByTestId('ticket-move-unsettable')).toHaveCount(0);
+    await expect(field(form, 'customfield_10097')).not.toContainText('(required)');
+    const closeResolution = field(form, 'resolution');
+    await expect(closeResolution).not.toContainText('(required)');
+    await press(closeResolution.getByTestId('ticket-field-value'), compact);
+    await expect(moves).toHaveText(['Done', 'Fixed']);
+    await expect(page.getByTestId('ticket-picker-clear')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await press(form.getByTestId('ticket-move-submit'), compact);
+    await expect(form).toHaveCount(0, { timeout: 15_000 });
+    const closed = (await sent()).filter((r) => (r.body as { transition: { id: string } }).transition.id === '61');
+    expect(closed).toHaveLength(1);
+    expect(closed[0].status).toBe(204);
+    expect(closed[0].body).toMatchObject({ transition: { id: '61' } });
+    expect(Object.keys((closed[0].body as { fields?: object }).fields ?? {})).toEqual([]);
   });
 
   test('an older page of comments takes an edit and a delete, and what was typed outlasts a look at the history', async ({ harness, page }) => {

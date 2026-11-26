@@ -399,7 +399,7 @@ first refusal, not how many tickets moved.
 Status: built: a ticket opened from a card, from a thread's linked
 ticket or from a pull request's ticket chip, over or beside the board, the choice remembered, with the split between them, or in a pane of its own; the wide and narrow
 layouts with the rail and Details; status, assignee, priority, points and
-type changed in place, a move whose screen takes fields through their form, and the other fields with allowed values or one
+type changed in place, a move whose screen takes fields through their form (which asks for those the tracker requires the person to give, and offers no None for a field the tracker requires, a field of several keeping its last value), and the other fields with allowed values or one
 typed value behind the control with its find box (a field of several
 typed values is shown, not edited); each long text field as a
 section that folds and is edited as Markdown, an image or attachment in

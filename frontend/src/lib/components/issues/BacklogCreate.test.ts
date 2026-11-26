@@ -451,13 +451,14 @@ describe('New ticket', () => {
     setBindingMock('TrackerBoardProjects', async () => PROJECTS);
     setBindingMock('TrackerIssueTypes', async () => TYPES);
     setBindingMock('TrackerCreateFields', async () => [
-      { ...PRIORITY, required: false, defaulted: true, allowed: [{ id: '2', name: 'High' }] },
-      { id: 'customfield_1', name: 'Team', kind: 'cascading', required: false, defaulted: true, editable: true } as FieldView,
+      { ...PRIORITY, required: true, defaulted: true, allowed: [{ id: '2', name: 'High' }] },
+      { id: 'customfield_1', name: 'Team', kind: 'cascading', required: true, defaulted: true, editable: true } as FieldView,
     ]);
     const created = setBindingMock('CreateTrackerIssue', async () => ({ parts: [{ step: 'create', state: 'applied' }] }) as WriteView);
     const view = open('10000');
     await fireEvent.click(view.getByTestId('issues-backlog-new'));
     await waitFor(() => expect(value(view.container, 'priority')).toBe('The tracker\'s default'));
+    expect(field(view.container, 'priority')).not.toHaveTextContent('(required)');
     expect(field(view.container, 'customfield_1')).toBeNull();
     expect(view.queryByTestId('issues-backlog-create-unsettable')).toBeNull();
     expect(view.queryByTestId('issues-backlog-create-missing')).toBeNull();
@@ -477,7 +478,9 @@ describe('New ticket', () => {
     await waitFor(() => expect(title.value).toBe(''));
     await pick(view.container, 'priority', 'High');
     await fireEvent.click(within(field(view.container, 'priority')).getByTestId('ticket-field-value'));
-    await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-clear')));
+    const unset = await waitFor(() => within(menu()).getByTestId('ticket-picker-clear'));
+    expect(unset).toHaveTextContent('The tracker\'s default');
+    await fireEvent.click(unset);
     await waitFor(() => expect(value(view.container, 'priority')).toBe('The tracker\'s default'));
     await fireEvent.input(title, { target: { value: 'Default again' } });
     await fireEvent.keyDown(title, { key: 'Enter' });

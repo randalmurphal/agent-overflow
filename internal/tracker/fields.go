@@ -54,9 +54,10 @@ func (k Kind) String() string {
 }
 
 // Field is one field of an issue with its metadata and value. List
-// reports a field that holds several values of its kind. Required, of a
-// field a create or a move offers, reports one the person must give a
-// value: the tracker fills no default for it. Editable is false for a
+// reports a field that holds several values of its kind. Required reports
+// a field the tracker requires to hold a value, so a change never clears
+// it; of a field a create or a move offers, whether the person must give
+// it one is ScreenField's (MustSupply). Editable is false for a
 // field the screen offers for reading only; a KindReadOnly field is never
 // editable.
 type Field struct {
@@ -69,15 +70,20 @@ type Field struct {
 	Value    Value
 }
 
-// CreateField is a field a create screen offers, with the values the
-// screen lists for it, in its order, when it lists them (nil otherwise).
-// Defaulted reports a field the screen requires that the tracker fills
-// when the create gives it none: offered, not demanded (Required false).
-type CreateField struct {
+// ScreenField is a field a create's or a move's screen offers. Allowed
+// is the values a create screen lists for it, in its order, when it lists
+// them (nil otherwise, and on a move, whose picker asks). Defaulted
+// reports a Required field the tracker fills when it is given none: it is
+// offered, never cleared, and not demanded.
+type ScreenField struct {
 	Field
 	Allowed   []Choice
 	Defaulted bool
 }
+
+// MustSupply reports a field the person must give a value: one the
+// tracker requires and fills no default for.
+func (f ScreenField) MustSupply() bool { return f.Required && !f.Defaulted }
 
 // Value is a field's value as read: empty, or one or more values of one
 // kind. Its constructors are the only way to make one, so a Value never
