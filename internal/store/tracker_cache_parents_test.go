@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // mirrorParentNamesSQL lists the parents' names a store holds, each as
@@ -347,5 +350,45 @@ func mustUpsertCards(t *testing.T, s *Store, root int64, read MirrorRead, cards 
 	ch, err := s.UpsertMirrorCards(root, currentSweep(s, root), cards, MirrorCatalog{}, read)
 	if err != nil || len(ch.Unkept)+len(ch.Superseded) > 0 {
 		t.Fatal(fmt.Errorf("upsert cards = %+v, %w", ch, err))
+	}
+}
+
+// TestMirrorParentSweepAtScale measures, for each size AO_TRACKER_SCALE
+// names, the cleanup's part of the parents' names on a root of that many
+// names: the probe the pending check and the sweep make (a walk of every
+// name) while a stored issue names each, and the sweep of them all once
+// none does, with the transactions it takes. Skipped without
+// AO_TRACKER_SCALE.
+func TestMirrorParentSweepAtScale(t *testing.T) {
+	env := os.Getenv("AO_TRACKER_SCALE")
+	if env == "" {
+		t.Skip("AO_TRACKER_SCALE names no sizes")
+	}
+	for field := range strings.SplitSeq(env, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(field))
+		if err != nil || n < 100 {
+			t.Fatalf("AO_TRACKER_SCALE=%q: each size is a whole number of at least 100", env)
+		}
+		t.Run(fmt.Sprint(n), func(t *testing.T) {
+			s, _, root := newMirror(t)
+			mustExec(t, s.db, `WITH RECURSIVE k(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM k WHERE i < ?)
+				INSERT INTO tracker_cache_issues(root_id, issue_id, issue_key, parent_id, updated_at, read_at, title, data)
+				SELECT ?, 'c' || i, 'WEB-c' || i, 'p' || i, 1, 1, 'Child', x'' FROM k`, n, root)
+			mustExec(t, s.db, `WITH RECURSIVE k(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM k WHERE i < ?)
+				INSERT INTO tracker_cache_parents(root_id, issue_id, issue_key, title, type_level, read_at)
+				SELECT ?, 'p' || i, 'WEB-p' || i, 'Parent ' || i, 1, 1 FROM k`, n, root)
+			probe := `SELECT EXISTS (` + mirrorOrphanParentsSQL + `)`
+			start := time.Now()
+			steps := statementVMSteps(t, s, probe)
+			t.Logf("%d names, each named: the probe takes %d VM steps (%.1f a name), %v with its first run", n, steps, float64(steps)/float64(n), time.Since(start).Round(time.Microsecond))
+			mustExec(t, s.db, `UPDATE tracker_cache_issues SET parent_id = ''`)
+			transactions := 0
+			start = time.Now()
+			if err := s.sweepMirrorParents(func() error { transactions++; return nil }); err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("%d names, none named: the sweep deletes them in %d transactions, %v", n, transactions, time.Since(start).Round(time.Microsecond))
+			assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_parents`, "0")
+		})
 	}
 }

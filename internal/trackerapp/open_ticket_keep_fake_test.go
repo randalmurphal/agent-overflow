@@ -755,10 +755,10 @@ func TestStopMakesALastTryOfAFailedDrop(t *testing.T) {
 	}
 }
 
-// On a Jira scrum board, which lists no epics, a story's board card and
-// its ticket name its epic, which no board keeps, with the epic's key and
-// title. The epic renamed shows on both once a read of the story brings
-// the new name: the open ticket is told.
+// On a Jira scrum board, which lists no epics, a story's board card, its
+// ticket and the agent tools' reads of it name its epic, which no board
+// keeps, with the epic's key and title. The epic renamed shows on each
+// once a read of the story brings the new name: the open ticket is told.
 func TestAScrumBoardNamesTheEpicsItDoesNotList(t *testing.T) {
 	t.Parallel()
 	s, conn, scope := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
@@ -804,5 +804,14 @@ func TestAScrumBoardNamesTheEpicsItDoesNotList(t *testing.T) {
 	quiet(t, s.svc)
 	if v := must[TicketView](t)(s.svc.TicketDetail(sub.ID)); v.Detail == nil || v.Detail.Card.Parent == nil || *v.Detail.Card.Parent != want {
 		t.Fatalf("after the rename the ticket names its parent %+v; want %+v", v.Detail.Card.Parent, want)
+	}
+	// The agent tools' reads (ticket_read, one ticket and several) name it
+	// the same.
+	if d, _, err := s.svc.UnmarkedIssueDetail(t.Context(), conn.ID, "10101", Interactive); err != nil || d.Card.Parent == nil || *d.Card.Parent != want {
+		t.Fatalf("a tool's read names the parent %+v, %v; want %+v", d.Card.Parent, err, want)
+	}
+	reads := must[[]TicketRead](t)(s.svc.UnmarkedIssueDetails(t.Context(), conn.ID, []tracker.IssueID{"10101"}, Interactive))
+	if len(reads) != 1 || reads[0].Err != nil || reads[0].View.Card.Parent == nil || *reads[0].View.Card.Parent != want {
+		t.Fatalf("a tool's read of several names the parent %+v; want %+v", reads, want)
 	}
 }

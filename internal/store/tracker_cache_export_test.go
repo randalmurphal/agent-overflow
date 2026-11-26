@@ -6,11 +6,13 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -347,7 +349,7 @@ const mirrorExportStepsPerRow = 400
 // its statement's own counter (SQLITE_STMTSTATUS_VM_STEP).
 func TestMirrorExportReadsEachRowOnce(t *testing.T) {
 	t.Parallel()
-	s, root, _ := openSizedMirror(t, benchMirrorSize{boards: 1, issues: 400})
+	s, root, _ := openSizedMirror(t, benchMirrorSize{boards: 1, issues: 400, parents: true})
 	conn := exportConn(t)
 	ctx := context.Background()
 	for _, q := range []string{MirrorExportSchema, `ATTACH '` + mirrorExportURI(s.path) + `' AS ` + mirrorExportSchemaName} {
@@ -396,4 +398,75 @@ func TestMirrorExportReadsEachRowOnce(t *testing.T) {
 				fill.name, steps[fill.name], rows, steps[fill.name]/rows, bound)
 		}
 	}
+}
+
+// TestMirrorExportFillsAtScale measures each fill of an export of one
+// board of each size AO_TRACKER_SCALE names (comma-separated, each at
+// least 100), parented as a scrum board's (benchParented): its VM steps
+// and the best of five runs' time. It checks that each sub-task counts
+// under its story's epic. Skipped without AO_TRACKER_SCALE.
+func TestMirrorExportFillsAtScale(t *testing.T) {
+	env := os.Getenv("AO_TRACKER_SCALE")
+	if env == "" {
+		t.Skip("AO_TRACKER_SCALE names no sizes")
+	}
+	for field := range strings.SplitSeq(env, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(field))
+		if err != nil || n < 100 {
+			t.Fatalf("AO_TRACKER_SCALE=%q: each size is a whole number of at least 100", env)
+		}
+		t.Run(fmt.Sprint(n), func(t *testing.T) { exportFillsAtScale(t, n) })
+	}
+}
+
+func exportFillsAtScale(t *testing.T, n int) {
+	s, root, _ := openSizedMirror(t, benchMirrorSize{boards: 1, issues: n, parents: true})
+	ctx := context.Background()
+	args := []driver.NamedValue{{Ordinal: 1, Value: root}, {Ordinal: 2, Value: benchBoardID(0)}, {Ordinal: 3, Value: "{}"}, {Ordinal: 4, Value: int64(0)}, {Ordinal: 5, Value: int64(1)}}
+	steps, best := map[string]int{}, map[string]time.Duration{}
+	var conn *sql.Conn
+	for range 5 {
+		conn = exportConn(t)
+		for _, q := range []string{MirrorExportSchema, `ATTACH '` + mirrorExportURI(s.path) + `' AS ` + mirrorExportSchemaName} {
+			if _, err := conn.ExecContext(ctx, q); err != nil {
+				t.Fatal(err)
+			}
+		}
+		err := conn.Raw(func(dc any) error {
+			prep := dc.(driver.ConnPrepareContext)
+			for _, fill := range mirrorExportFills {
+				stmt, err := prep.PrepareContext(ctx, fill.sql)
+				if err != nil {
+					return fmt.Errorf("prepare %s: %w", fill.name, err)
+				}
+				start := time.Now()
+				if _, err := stmt.(driver.StmtExecContext).ExecContext(ctx, args); err != nil {
+					return errors.Join(fmt.Errorf("fill %s: %w", fill.name, err), stmt.Close())
+				}
+				if d := time.Since(start); best[fill.name] == 0 || d < best[fill.name] {
+					best[fill.name] = d
+				}
+				tls, pstmt, err := sqliteStmtHandles(stmt)
+				if err != nil {
+					return errors.Join(err, stmt.Close())
+				}
+				steps[fill.name] = int(sqlite3.Xsqlite3_stmt_status(tls, pstmt, sqlite3.SQLITE_STMTSTATUS_VM_STEP, 0))
+				if err := stmt.Close(); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, fill := range mirrorExportFills {
+		t.Logf("%d issues, %-26s %10d steps, %5d a row, best %v", n, fill.name, steps[fill.name], steps[fill.name]/n, best[fill.name].Round(time.Microsecond))
+	}
+	// Of every 20 issues, 5 are sub-tasks and 12 the stories of the 15
+	// others under epics: the sub-tasks under the 4 of 5 stories with an
+	// epic count under it too.
+	got := exportRows(t, conn, `SELECT (SELECT count(*) FROM tickets WHERE epic IS NOT NULL) || '|' || (SELECT count(*) FROM epics)`)
+	t.Logf("%d issues: tickets under an epic|epics = %s", n, got[0])
 }
