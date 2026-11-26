@@ -130,12 +130,15 @@ func (s *Service) PostTimeEntries(ctx context.Context, id string, in PostTimeReq
 			continue
 		}
 		entries = append(entries, e)
+		// Logging it alone is the one way an entry whose post may have
+		// happened is sent again: the person chose it at this revision.
+		again := in.Alone && s.uncertain(e)
 		switch {
 		case e.Revision != ref.Revision:
 			notes = append(notes, postNote{e: e, why: s.movedOn(e)})
 		case e.IssueID == "" && e.State == store.TimeEntryDrafted:
 			notes = append(notes, postNote{e: e, open: true})
-		case e.State != store.TimeEntryDrafted && !(in.Alone && s.uncertain(e)):
+		case e.State != store.TimeEntryDrafted && !again:
 			notes = append(notes, postNote{e: e, why: s.movedOn(e)})
 		case e.Author != author:
 			notes = append(notes, postNote{e: e, why: "was drafted for another account and was not posted"})
