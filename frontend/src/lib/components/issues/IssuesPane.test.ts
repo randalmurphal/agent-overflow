@@ -3642,6 +3642,33 @@ describe('the Dashboards screen in the pane', () => {
     view.unmount();
   });
 
+  it('takes no click on an answer to what is no longer asked, and says a failed count beside it', async () => {
+    install();
+    setBindingMock('TrackerDashboards', async () => [DASHBOARD]);
+    let fail: ((err: Error) => void) | null = null;
+    const evaluate = setBindingMock('EvaluateTrackerDashboard', async () => {
+      if (evaluate.mock.calls.length === 1) return answer();
+      return new Promise((_, reject) => { fail = reject; });
+    });
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await switchTo(view, 'Dashboards');
+    await view.findByTestId('dashboard-list-row');
+    expect(view.getByTestId('dashboard-grid').hasAttribute('inert')).toBe(false);
+    await fireEvent.click(view.getByTestId('dashboard-range'));
+    await fireEvent.click(await view.findByTestId('dashboard-range-this_sprint'));
+    await waitFor(() => expect(evaluate).toHaveBeenCalledTimes(2));
+    const grid = view.getByTestId('dashboard-grid');
+    expect(grid.hasAttribute('inert')).toBe(true);
+    expect(grid.dataset.stale).toBe('true');
+    expect(view.getByTestId('dashboard-counting')).toBeTruthy();
+    fail!(new Error('counting this dashboard took longer than 4s and stopped'));
+    await waitFor(() => expect(view.queryByTestId('dashboard-counting')).toBeNull());
+    expect(view.getByTestId('dashboard-error')).toHaveTextContent('Not counted again: Counting this dashboard took longer than 4s and stopped.');
+    expect(view.getByTestId('dashboard-grid').hasAttribute('inert')).toBe(true);
+    view.unmount();
+  });
+
   it("says that the board's computer's version has no dashboards, and counts nothing", async () => {
     install();
     // A release before dashboards has no such method.

@@ -62,7 +62,7 @@
   const answer = $derived(store.answer);
   const dashboard = $derived(answer?.dashboard ?? store.dashboard);
   const values = $derived(new Map((answer?.widgets ?? []).map((w) => [w.id, w])));
-  const stale = $derived(store.counting && answer !== null);
+  const stale = $derived(store.stale);
   const rangeLabel = $derived(store.dashboard?.ranges.find((r) => r.id === store.range)?.label ?? '');
 
   let rangeOpen = $state(false);
@@ -163,7 +163,7 @@
       {/if}
     </div>
     {#if evalFailure}
-      <ErrorNotice message="Could not count the dashboard: {evalFailure.report.reason}" captured={evalFailure} testId="dashboard-error" />
+      <ErrorNotice message="{answer ? 'Not counted again' : 'Could not count the dashboard'}: {evalFailure.report.reason}" captured={evalFailure} testId="dashboard-error" />
     {/if}
     {#if answer?.reading}
       <p class="border-b border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg-muted" role="status" data-testid="dashboard-reading">{FIRST_READ_TEXT}</p>
@@ -175,6 +175,7 @@
       <div
         class="grid grid-cols-12 gap-2 p-3 transition-opacity {stale ? 'opacity-60' : ''}"
         aria-busy={store.counting}
+        inert={stale}
         data-testid="dashboard-grid"
         data-stale={stale}
       >

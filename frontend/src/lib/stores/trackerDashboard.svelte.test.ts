@@ -90,6 +90,21 @@ async function opened(): Promise<{ s: TrackerDashboard; evaluate: ReturnType<typ
   return { s, evaluate };
 }
 
+describe('a count that fails', () => {
+  it('stops counting and keeps the last answer, stale, beside its error', async () => {
+    const { s, evaluate } = await opened();
+    s.setRange('this_sprint');
+    await flush();
+    expect(s.counting).toBe(true);
+    evaluate.fail(new Error('dashboard_too_slow'));
+    await flush();
+    expect(s.counting).toBe(false);
+    expect(s.error).toBeInstanceOf(Error);
+    expect(s.stale).toBe(true);
+    expect(s.answer?.range.id).toBe('sprints_5');
+  });
+});
+
 describe('when the screen opens', () => {
   it('lists the board\'s dashboards and counts the first at once, on the board\'s computer', async () => {
     const list = held<DashboardView[] | null>('TrackerDashboards');
@@ -261,6 +276,22 @@ describe('the drill', () => {
     await flush();
     expect(s.drill?.page).toBe(0);
     expect(s.drill?.answer?.restarted).toBe(true);
+  });
+
+  it('counts the request of the answer it was opened from, not the controls as they are now', async () => {
+    const { s } = await opened();
+    held<Answer>('EvaluateTrackerDashboard');
+    s.setRange('this_sprint');
+    await flush();
+    // The answer shown is still the last five sprints'.
+    expect(s.stale).toBe(true);
+    const drill = held<DrillAnswer>('TrackerDashboardDrill');
+    s.openDrill({ widget: 'finished', cell: { bucket: 'sprint:s7', series: '' } });
+    expect(drill.calls[0][1]).toMatchObject({ range: 'sprints_5' });
+    drill.answer(drillAnswer(0, 150));
+    await flush();
+    s.drillPage(1);
+    expect(drill.calls[1][1]).toMatchObject({ range: 'sprints_5', page: 1, count: 150 });
   });
 
   it('drops a page that lands after the drill closed', async () => {

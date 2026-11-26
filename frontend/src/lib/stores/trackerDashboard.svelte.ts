@@ -21,6 +21,12 @@
 // again, for the numbers that count now. A hidden screen evaluates
 // nothing and evaluates at once when it shows again.
 //
+// What the screen shows is the answer and the request it answered: a
+// drill opened from it counts that request, not the controls as they are
+// now, and while the answer shown is not of what is asked (stale) the grid
+// takes no click. An evaluation that fails settles what it was asked: the
+// screen stops counting and says why beside the last answer.
+//
 // The range picked last for each dashboard and Team or Mine are saved for
 // the next screen (frontendStorage).
 
@@ -86,9 +92,12 @@ export interface TrackerDashboard {
   readonly epic: Name | null;
   /** The answer the screen draws; null until the first lands. */
   readonly answer: Answer | null;
-  /** An evaluation of what is asked now is out, or the answer is of
-   * something else (a range or narrowing since changed). */
+  /** What is asked now has not been answered or refused yet: an
+   * evaluation of it is out or about to start. */
   readonly counting: boolean;
+  /** The answer shown is not of what is asked now (a range or narrowing
+   * since changed): the screen dims it and takes no click on it. */
+  readonly stale: boolean;
   /** The last evaluation failed; null after one succeeds. */
   readonly error: unknown;
   readonly drill: DrillState | null;
@@ -123,6 +132,11 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
   let epic = $state.raw<Name | null>(null);
   let answer = $state.raw<Answer | null>(null);
   let answerKey = $state('');
+  // The source and request the answer shown answered, which a drill from
+  // it counts.
+  let answered: { source: DashboardSource; request: Request } | null = null;
+  // The request last answered or refused.
+  let settledKey = $state('');
   let inFlightKey = $state('');
   let error = $state.raw<unknown>(null);
   let drill = $state.raw<DrillState | null>(null);
@@ -163,9 +177,13 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
         if (!token.isCurrent()) return;
         answer = a;
         answerKey = key;
+        answered = { source: s, request: r };
+        settledKey = key;
         error = null;
       } catch (err) {
-        if (token.isCurrent()) error = err;
+        if (!token.isCurrent()) return;
+        settledKey = key;
+        error = err;
       } finally {
         if (token.isCurrent()) inFlightKey = '';
       }
@@ -222,10 +240,13 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
     });
   });
 
+  // The source and request the open drill counts: those of the answer it
+  // was opened from, for every page.
+  let drillOf: { source: DashboardSource; request: Request } | null = null;
+
   async function readDrill(target: DrillTarget, page: number, count: number): Promise<void> {
-    const s = opts.source();
-    const r = request();
-    if (!s || !r) return;
+    if (!drillOf) return;
+    const { source: s, request: r } = drillOf;
     const gen = ++drillGen;
     drill = { target, page, answer: drill?.target === target ? drill.answer : null, loading: true, error: null };
     try {
@@ -243,6 +264,7 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
   function closeDrill(): void {
     drillGen += 1;
     drill = null;
+    drillOf = null;
   }
 
   return {
@@ -254,7 +276,8 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
     get person() { return person; },
     get epic() { return epic; },
     get answer() { return answer; },
-    get counting() { return inFlightKey !== '' || (answer !== null && answerKey !== requestKey); },
+    get counting() { return inFlightKey !== '' || (requestKey !== '' && settledKey !== requestKey); },
+    get stale() { return answer !== null && answerKey !== requestKey; },
     get error() { return error; },
     get drill() { return drill; },
     setRange(next) {
@@ -284,6 +307,8 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
       scheduler.request({ immediate: true });
     },
     openDrill(target) {
+      if (!answered) return;
+      drillOf = answered;
       void readDrill(target, 0, 0);
     },
     drillPage(page) {
