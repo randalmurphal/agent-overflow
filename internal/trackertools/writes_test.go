@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/trackerapp"
 )
 
@@ -35,6 +36,7 @@ func writableDetail(key, issue string) trackerapp.DetailView {
 		{ID: "customfield_10020", Name: "Notes", Kind: "rich_text", Editable: true, Value: trackerapp.FieldValueView{Kind: "rich_text", Texts: []string{"Some notes."}}},
 		{ID: "components", Name: "Component", Kind: "option", List: true, Editable: true},
 		{ID: "creator", Name: "Creator", Kind: "user"},
+		{ID: "customfield_10030", Name: "Due at", Kind: tracker.KindDateTime.String(), Editable: true},
 	}
 	points := 3.0
 	d.Rows = []trackerapp.TicketRowView{{Board: "1", Estimate: &points, Unit: "points"}}
@@ -195,7 +197,7 @@ func TestUpdateNamesAndValues(t *testing.T) {
 	t.Parallel()
 	w := newWriteFixture(t)
 	_, err := w.update(t, map[string]any{"set": map[string]any{"Severity": "High"}, "keys": []string{"WEB-12"}})
-	refused(t, err, CodeInvalidRequest, "WEB-12 has no field Severity; it has status, sprint, estimate, title, assignee, priority, labels, parent, description, Story points, Notes, and Component.")
+	refused(t, err, CodeInvalidRequest, "WEB-12 has no field Severity; it has status, sprint, estimate, title, assignee, priority, labels, parent, description, Story points, Notes, Component, and Due at.")
 	_, err = w.update(t, map[string]any{"set": map[string]any{"creator": "User 2"}, "keys": []string{"WEB-12"}})
 	refused(t, err, CodeInvalidRequest, "WEB-12's Creator cannot be changed here.")
 	_, err = w.update(t, map[string]any{"set": map[string]any{"created": "2026-01-01"}, "keys": []string{"WEB-12"}})
@@ -228,6 +230,24 @@ func TestUpdateNamesAndValues(t *testing.T) {
 	}
 	_, err = w.update(t, map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"estimate": "two"}})
 	refused(t, err, CodeInvalidRequest, `Board Web Team estimates in points; give a number, such as 5 or "5 points".`)
+	// A parent and a date-time as a read prints them, and a time estimate.
+	w.f.writes = nil
+	if _, err := w.update(t, map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"parent": "WEB-4 Login page", "due at": "2026-12-01T09:30Z"}}); err != nil ||
+		!slices.Equal(w.f.writes, []string{`edit conn-jira {"issue":"10012","fields":[{"field":"customfield_10030","typed":["2026-12-01T09:30:00Z"]},{"field":"parent","typed":["WEB-4"]}]}`}) {
+		t.Fatalf("a printed parent and date-time: %v, writes %q", err, w.f.writes)
+	}
+	b := w.f.boards["conn-jira/1"]
+	b.Unit = "time"
+	w.f.boards["conn-jira/1"] = b
+	d.Rows[0].Unit = "time"
+	w.f.details["conn-jira/10012"] = d
+	w.f.writes = nil
+	if _, err := w.update(t, map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"estimate": "1h 30m"}}); err != nil ||
+		!slices.Equal(w.f.writes, []string{`estimate conn-jira {"board":"1","issue":"10012","value":5400}`}) {
+		t.Fatalf("a time estimate as a read prints it: %v, writes %q", err, w.f.writes)
+	}
+	_, err = w.update(t, map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"estimate": "5 points"}})
+	refused(t, err, CodeInvalidRequest, "Board Web Team estimates in time; give it as 45m, 2h or 1h 30m.")
 	_, err = w.update(t, map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"title": nil}})
 	refused(t, err, CodeInvalidRequest, "The title cannot be cleared; give one.")
 	_, err = w.update(t, map[string]any{"keys": []string{"WEB-12"}})
