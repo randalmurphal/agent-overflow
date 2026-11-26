@@ -256,6 +256,24 @@ describe('the board subscription', () => {
     board.release();
   });
 
+  it('counts the changes a dashboard reads again on: rows named, read again, and a gap, and not a sync alone', async () => {
+    install();
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    expect(board.current?.subscription).toBe('sub-1');
+    expect(board.current?.changes).toBe(0);
+    applyTrackerBoardEvent(event(11, { sync: { read_at: 300 } }), HOME_BACKEND);
+    expect(board.current?.changes).toBe(0);
+    applyTrackerBoardEvent(event(12, { removed: ['1'] }), HOME_BACKEND);
+    expect(board.current?.changes).toBe(1);
+    applyTrackerBoardEvent(event(13, { read_again: true }), HOME_BACKEND);
+    expect(board.current?.changes).toBe(2);
+    await flush();
+    await resyncTrackerBoardsAfterGap(HOME_BACKEND);
+    expect(board.current?.changes).toBe(3);
+    board.release();
+  });
+
   it('gathers the IDs of events that arrive during a read into the next patch', async () => {
     install();
     const board = attachTrackerBoard(REF, true);
