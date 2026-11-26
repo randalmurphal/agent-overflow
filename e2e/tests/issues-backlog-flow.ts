@@ -34,6 +34,7 @@ import type { HarnessApp } from '../src/harness.js';
 import { expect, test } from './fixtures.js';
 import { longPress } from './touch-helpers.js';
 import { FORM_READ_AGE_MS } from '../../frontend/src/lib/pageTiming.ts';
+import { methodIdByName } from './offhost-helpers.js';
 import { JIRA_SITE, connectFakeJiraBoard, openIssuesPane, press, seedFakeJira, trackerRequests, type ExtraJira, type LoggedRequest } from './tracker-helpers.js';
 
 export interface BacklogSurface {
@@ -110,6 +111,31 @@ async function sectionRows(pane: Locator, list: string): Promise<string[]> {
 /** The sections' lists, in the order shown. */
 async function sectionLists(pane: Locator): Promise<string[]> {
   return pane.getByTestId('issues-backlog-section').evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.list ?? ''));
+}
+
+/** The calls this page sends, in the order its sockets send them, from
+ * its first socket on, and which of them were answered. */
+function sentCalls(page: Page): { readonly sent: () => readonly string[]; readonly answered: (method: string) => number } {
+  const byId = new Map<number, string>();
+  for (const m of ['RefreshTrackerSubscription', 'TrackerBoardProjects', 'TrackerIssueTypes', 'TrackerCreateFields']) byId.set(methodIdByName(m), m);
+  const sent: string[] = [];
+  const asked = new Map<string, string>();
+  const answered = new Map<string, number>();
+  page.on('websocket', (socket) => {
+    socket.on('framesent', ({ payload }) => {
+      if (typeof payload !== 'string' || !payload.startsWith('{"type":"rpc"')) return;
+      const frame = JSON.parse(payload) as { id?: string; methodId?: number };
+      const method = byId.get(frame.methodId ?? -1) ?? 'other';
+      sent.push(method);
+      if (frame.id) asked.set(frame.id, method);
+    });
+    socket.on('framereceived', ({ payload }) => {
+      if (typeof payload !== 'string' || !payload.startsWith('{"type":"rpc"')) return;
+      const method = asked.get((JSON.parse(payload) as { id?: string }).id ?? '');
+      if (method) answered.set(method, (answered.get(method) ?? 0) + 1);
+    });
+  });
+  return { sent: () => sent, answered: (method) => answered.get(method) ?? 0 };
 }
 
 /** Switches the pane to Backlog: its tab, or the folded picker. */
@@ -430,6 +456,7 @@ export function registerBacklogFlow({ compact }: BacklogSurface): void {
     });
     // The page clock runs as the real one does; the age is crossed below by moving it on.
     await page.clock.install();
+    const calls = sentCalls(page);
     const { pane, backlog } = await openBoardBacklog(harness, page, name('fresh'), compact, withParts(['Web']));
     const formReads = async () => (await Promise.all([BOARD_PROJECTS_ROUTE, TYPES_ROUTE, FIELDS_ROUTE].map((route) => trackerRequests(harness, route)))).reduce((n, r) => n + r.length, 0);
     const foot = backlog.locator('[data-testid="issues-backlog-foot"][data-list="sprint:2"]');
@@ -474,9 +501,21 @@ export function registerBacklogFlow({ compact }: BacklogSurface): void {
     await offered(['Web', 'API', 'Docs']);
     await expect.poll(formReads).toBe(9);
     await closeForm();
+    // Refresh with no form open sends no form read. The page sends its
+    // calls in order, so a read that Refresh started is sent before the
+    // next Refresh's call, which is pressed once the first was answered.
+    const mark = calls.sent().length;
+    const refreshed = calls.answered('RefreshTrackerSubscription');
     await press(pane.getByTestId('issues-refresh'), compact);
-    // Past the minute again, so a read that Refresh made with no form open
-    // would show here as a second three.
+    await expect.poll(() => calls.answered('RefreshTrackerSubscription'), { timeout: 15_000 }).toBe(refreshed + 1);
+    await press(pane.getByTestId('issues-refresh'), compact);
+    const between = () => {
+      const since = calls.sent().slice(mark);
+      return since.slice(0, since.indexOf('RefreshTrackerSubscription', since.indexOf('RefreshTrackerSubscription') + 1));
+    };
+    await expect.poll(() => calls.sent().slice(mark).filter((m) => m === 'RefreshTrackerSubscription').length, { timeout: 15_000 }).toBe(2);
+    expect(between().filter((m) => m !== 'RefreshTrackerSubscription' && m !== 'other')).toEqual([]);
+    // Past the minute again: the next open reads all three.
     await page.clock.fastForward(FORM_READ_AGE_MS);
     await openForm();
     await expect.poll(formReads).toBe(12);
