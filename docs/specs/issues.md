@@ -301,13 +301,16 @@ but over a column's cards goes home and changes nothing; several cards
 ranked one after another in a column are sent in turn); under compact, the
 status mark's Move to…; and the card's menu: Open, Open in its own pane
 (where ticket panes are offered), Open in the tracker,
-Move to…, Move to sprint…, the four fields, Copy key and Copy link, some
-at once and the rest behind Show more, the set shown at once chosen in
-the menu and kept on the device. A dropped card waits where it was
+Move to…, Move to sprint…, the four fields, Ask, Start work…, Copy key
+and Copy link, some at once and the rest behind Show more (Ask and Start
+work among the rest until the person chooses), the set shown at once
+chosen in the menu and kept on the device. Ask and Start work do what
+the ticket's Work does, in the project its Work would use there: Ask
+starts the thread at once, and Start work opens the ticket with its
+Start work form, so the run's steps show in the ticket's Work. A dropped card waits where it was
 dropped, dimmed, until its write settles, and is not moved again until
 then. A refusal shows under the card or the ticket when one is in view,
-else in a toast. Not built: the summary row,
-and the thread actions (Ask, Start work) on the card's menu. A sprint on the board is read whole, and while Only mine
+else in a toast. Not built: the summary row. A sprint on the board is read whole, and while Only mine
 or Search is on every column is read whole, so a board of thousands of
 cards holds them all. A card's state line shows days in the status but not a
 running thread or what blocks it; its parent shows as a chip but is not

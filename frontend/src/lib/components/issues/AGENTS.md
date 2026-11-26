@@ -36,7 +36,11 @@ board methods, events and the patch read in
   (`BoardCardMenu.svelte`): the actions shown at once, the rest behind
   Show more, and pages such as Move to… (`CardMovePage.svelte`), with the
   shown set kept per menu name in `stores/menuShownActions.svelte.ts`. A
-  new card action is one entry in `BoardCardMenu`'s groups.
+  new card action is one entry in `BoardCardMenu`'s groups. Its Ask and
+  Start work take the project and the grants' sentences from
+  `ticketWorkGate.ts`, the rule Work uses, and load none of Work's code
+  until chosen: Ask imports Work's store, and Start work opens the ticket
+  with its form through the trail (`TicketTrail.askStartWork`).
 - `stores/trackerBoardChoices.svelte.ts` lists the boards to pick from, one
   `TrackerBoardChoices` answer per computer with its state (reading,
   answered, offline, failed), held while a pane shows it. It starts its own
@@ -70,7 +74,7 @@ board methods, events and the patch read in
   owns the ticket while running, saving and restoring.
 - `stores/trackerTicket.svelte.ts` holds each open ticket's subscription,
   one per ticket for every surface showing it, with its connection's
-  kind and the person's account there as the subscription tells them
+  kind and site and the person's account there as the subscription tells them
   (the ticket reads no connection list), held through a re-subscribe
   until its answer (the rules are written beside them): subscribe with the vote,
   the `tracker:issue_updated` fold, the one view read in flight, the gap
@@ -130,7 +134,11 @@ board methods, events and the patch read in
   twice written at the top. `TicketWork.svelte` is the rail's Work
   section, mounted by one line at the end of the rail, and
   `StartWorkForm.svelte` the form it opens; the threads it lists are the
-  client's catalog filtered by link, with no call.
+  client's catalog filtered by the link's tracker kind, site and issue,
+  which the ticket's subscription names, with no call. A step's row is no
+  control of the write it sent: it shows that write only while it is its
+  target's latest, and the Status and Assignee fields say what became of
+  it.
 - `stores/ticketOpen.ts` is the one opener of a ticket from outside the
   pane (a thread's linked ticket, a pull request's ticket chip); it is in
   the startup graph and reaches the pane's stores through one dynamic
