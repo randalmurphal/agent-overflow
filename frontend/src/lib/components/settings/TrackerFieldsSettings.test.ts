@@ -44,7 +44,7 @@ beforeEach(async () => {
   stored = { revision: 'r0', setup: { status_groups: [], ticket_pins: [{ tracker: 'jira', site: SITE, fields: ['customfield_10007', 'customfield_10003'] }], start_work: [] } } as SetupView;
   saves = [];
   setBindingMock('ProjectTrackerSetup', async () => stored);
-  setBindingMock('SetProjectTrackerSetup', async (_project: string, revision: string, setup: Setup) => {
+  setBindingMock('SetProjectTrackerSetup', async (_project: string, _revision: string, setup: Setup) => {
     saves.push(setup);
     stored = { revision: `r${saves.length}`, setup } as SetupView;
     return { saved: true, stored };
