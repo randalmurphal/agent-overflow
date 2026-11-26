@@ -58,7 +58,9 @@ func exportRows(t *testing.T, conn *sql.Conn, query string) []string {
 // memberships of its sprints, and the statuses and sprints it names; the
 // other board's rows are not in it. Its sprint members count done by the
 // pace's rule, so the export's last five closed sprints add up to the
-// board's pace, regrouped or not. The file is detached when it returns,
+// board's pace, regrouped or not; an active sprint's members count done by
+// their status now. A ticket started at its first move into progress and
+// finished at its last move into done, if it is done now. The file is detached when it returns,
 // and a board the mirror does not show exports nothing.
 func TestMirrorExportHoldsTheBoardAlone(t *testing.T) {
 	t.Parallel()
@@ -67,7 +69,12 @@ func TestMirrorExportHoldsTheBoardAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, g := range []MirrorRegroup{{}, regroup} {
+	// Per regrouping: the active sprint's members with whether each is done
+	// now, and the start and finish of the tickets that have a history
+	// (ticket|started|done), NULL as "-".
+	active := [][]string{{"10008|1", "10010|1"}, {"10008|0", "10010|0"}}
+	times := [][]string{{"10001|-|-", "10002|-|650", "10009|100|-"}, {"10001|550|-", "10002|650|-", "10009|100|-"}}
+	for i, g := range []MirrorRegroup{{}, regroup} {
 		conn := exportConn(t)
 		export, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", g)
 		if err != nil || !ok {
@@ -90,10 +97,17 @@ func TestMirrorExportHoldsTheBoardAlone(t *testing.T) {
 		if got := exportRows(t, conn, `SELECT count(*) FROM sprint_tickets WHERE ticket NOT IN (SELECT id FROM tickets) OR sprint NOT IN (SELECT id FROM sprints)`); got[0] != "0" {
 			t.Fatalf("%s memberships outside the board's tickets and sprints", got[0])
 		}
+		if got := exportRows(t, conn, `SELECT ticket || '|' || done FROM sprint_finished WHERE sprint = '21' ORDER BY ticket`); !reflect.DeepEqual(got, active[i]) {
+			t.Fatalf("active sprint's members = %v; want %v", got, active[i])
+		}
+		if got := exportRows(t, conn, `SELECT id || '|' || coalesce(started_at, '-') || '|' || coalesce(done_at, '-') FROM tickets
+		  WHERE id IN ('10001', '10002', '10009') ORDER BY id`); !reflect.DeepEqual(got, times[i]) {
+			t.Fatalf("ticket times = %v; want %v (the first move into progress, the last into done while done now)", got, times[i])
+		}
 		pace := paceOf(t, s, root, "10", g)
 		got := map[string]MirrorSprintFinished{}
 		rows, err := conn.QueryContext(context.Background(), `SELECT f.sprint, count(*), total(f.done), total(iif(f.done, t.points, 0))
-		  FROM sprint_finished f JOIN tickets t ON t.id = f.ticket GROUP BY f.sprint`)
+		  FROM sprint_finished f JOIN tickets t ON t.id = f.ticket JOIN sprints s ON s.id = f.sprint AND s.state = 'closed' GROUP BY f.sprint`)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -158,7 +172,7 @@ func TestMirrorExportSearchesByTheBoard(t *testing.T) {
 	s, _, _ := newMirror(t)
 	conn := exportConn(t)
 	ctx := context.Background()
-	if _, err := conn.ExecContext(ctx, mirrorExportSchema); err != nil {
+	if _, err := conn.ExecContext(ctx, MirrorExportSchema); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := conn.ExecContext(ctx, `ATTACH ? AS `+mirrorExportSchemaName, mirrorExportURI(s.path)); err != nil {

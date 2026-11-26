@@ -38,16 +38,22 @@ import (
 // of the database it fills.
 var MirrorExportTables = []string{"board", "tickets", "statuses", "people", "epics", "sprints", "sprint_tickets", "changes", "sprint_finished"}
 
-// mirrorExportSchema is the export's relations. Times are milliseconds;
+// MirrorExportSchema is the export's relations. Times are milliseconds;
 // a time the mirror does not hold is NULL. tickets.history_from is when
 // the ticket's changes are complete from, NULL while its history is not
-// read. A status group is named as the project setup names it.
-const mirrorExportSchema = `
+// read; started_at is its first change into an in_progress status, and
+// done_at, for a ticket whose status counts as done, its last change into
+// a done status, each NULL when its changes hold none. sprint_finished
+// holds each member of a closed sprint, done when its status at the
+// sprint's completion counted as done (the pace's rule), and each member
+// of an active sprint, done when its status counts as done now. A status
+// group is named as the project setup names it.
+const MirrorExportSchema = `
 CREATE TABLE main.board(name TEXT NOT NULL, plans_sprints INTEGER NOT NULL, estimates TEXT NOT NULL);
 CREATE TABLE main.statuses(id TEXT PRIMARY KEY, name TEXT NOT NULL, status_group TEXT) WITHOUT ROWID;
 CREATE TABLE main.tickets(id TEXT PRIMARY KEY, key TEXT NOT NULL, title TEXT NOT NULL, type_level INTEGER NOT NULL,
   status TEXT, status_group TEXT, assignee TEXT, parent TEXT, epic TEXT, created_at INTEGER, updated_at INTEGER, resolved_at INTEGER,
-  status_since INTEGER, points REAL, history_from INTEGER) WITHOUT ROWID;
+  status_since INTEGER, points REAL, history_from INTEGER, started_at INTEGER, done_at INTEGER) WITHOUT ROWID;
 CREATE TABLE main.epics(id TEXT PRIMARY KEY, key TEXT NOT NULL, title TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE main.sprints(id TEXT PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, start_at INTEGER, end_at INTEGER,
   completed_at INTEGER, position INTEGER NOT NULL) WITHOUT ROWID;
@@ -130,6 +136,15 @@ var mirrorExportFills = []struct{ table, sql string }{
 	  CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = CAST(?1 AS INTEGER) AND m.sprint_id = l.sprint_id
 	  CROSS JOIN tracker_cache_board_issues b ON b.root_id = m.root_id AND b.board_id = ?2 AND b.issue_id = m.issue_id
 	  CROSS JOIN tracker_cache_issues i ON i.root_id = m.root_id AND i.issue_id = m.issue_id`},
+	{"ticket times", `UPDATE main.tickets SET
+	    started_at = (SELECT min(c.at) FROM main.changes c JOIN main.statuses st ON st.id = c.to_value AND st.status_group = 'in_progress'
+	      WHERE c.ticket = main.tickets.id AND c.kind = 'status'),
+	    done_at = iif(status_group = 'done', (SELECT max(c.at) FROM main.changes c JOIN main.statuses st ON st.id = c.to_value AND st.status_group = 'done'
+	      WHERE c.ticket = main.tickets.id AND c.kind = 'status'), NULL)`},
+	{"active sprints' members", `INSERT INTO main.sprint_finished(sprint, ticket, done)
+	  SELECT sprint_tickets.sprint, sprint_tickets.ticket, coalesce(tickets.status_group = 'done', 0)
+	  FROM main.sprints JOIN main.sprint_tickets ON sprint_tickets.sprint = sprints.id
+	  JOIN main.tickets ON tickets.id = sprint_tickets.ticket WHERE sprints.state = 'active'`},
 	{"people", `INSERT INTO main.people(id, name)
 	  SELECT u.user_id, u.name FROM (
 	    SELECT assignee AS id FROM main.tickets WHERE assignee IS NOT NULL
@@ -168,7 +183,7 @@ func (s *Store) ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID in
 		return MirrorExport{}, false, fmt.Errorf("store: wait for a history read slot to export board %s: %w", boardID, err)
 	}
 	defer release()
-	if _, err := conn.ExecContext(ctx, mirrorExportSchema); err != nil {
+	if _, err := conn.ExecContext(ctx, MirrorExportSchema); err != nil {
 		return MirrorExport{}, false, fmt.Errorf("store: create the export's relations: %w", err)
 	}
 	// busy_timeout is the read pool's: a read of the WAL waits out a
