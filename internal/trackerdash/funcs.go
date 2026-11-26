@@ -1,67 +1,135 @@
 package trackerdash
 
 import (
+	"crypto/rand"
 	"database/sql/driver"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 	"unicode/utf8"
 
 	sqlite "modernc.org/sqlite"
 )
 
-// registerFunctions registers the app's functions on d, so they reach only
-// the connections d opens: bounded_rows, the wrapper's aggregate into
-// sink, and the time functions in loc.
+// The app's functions, registered once per time zone on a driver of that
+// zone. The driver keeps a function it registers for the life of the
+// process (modernc's registrations are never freed), and a call cannot
+// tell which connection made it, so the registration is the process's
+// and what is a session's is found through the sessions registry:
 //
+//   - bounded_rows(key, ...): the wrapper's aggregate into the sink of
+//     the session the key names. The key is a random literal the wrapper
+//     writes into its own text; a metric cannot name it, and a key that
+//     is not an open session's fails the statement.
 //   - days(a, b): the days from instant a to instant b (milliseconds), with
 //     a fraction; NULL when either is NULL.
-//   - working_days(a, b): the same, Saturdays and Sundays in loc left out.
-//   - day(a): instant a's date in loc, as YYYY-MM-DD.
-func registerFunctions(d *sqlite.Driver, loc *time.Location, sink *rowSink) error {
-	err := d.RegisterFunction("bounded_rows", &sqlite.FunctionImpl{NArgs: -1, MakeAggregate: func(sqlite.FunctionContext) (sqlite.AggregateFunction, error) {
-		return sinkStep{sink}, nil
-	}})
-	if err != nil {
-		return fmt.Errorf("register bounded_rows: %w", err)
+//   - working_days(a, b): the same, Saturdays and Sundays in the zone left
+//     out.
+//   - day(a): instant a's date in the zone, as YYYY-MM-DD.
+//
+// A process holds at most one driver for each zone name a count names
+// that time.LoadLocation loads (location refuses any other before a
+// driver is made): the zone names of this computer's time zone database.
+
+// zoneDrivers is the driver of each zone a session opened in, by name,
+// and how many functions they registered, which a test reads.
+var zoneDrivers = struct {
+	mu            sync.Mutex
+	m             map[string]*sqlite.Driver
+	registrations int
+}{m: map[string]*sqlite.Driver{}}
+
+// driverFor is loc's driver, made with its functions the first time.
+func driverFor(loc *time.Location) (*sqlite.Driver, error) {
+	zoneDrivers.mu.Lock()
+	defer zoneDrivers.mu.Unlock()
+	if d, ok := zoneDrivers.m[loc.String()]; ok {
+		return d, nil
 	}
-	for name, fn := range map[string]func(args []driver.Value) (driver.Value, error){
-		"days": func(args []driver.Value) (driver.Value, error) {
+	d := &sqlite.Driver{}
+	register := func(name string, impl *sqlite.FunctionImpl) error {
+		if err := d.RegisterFunction(name, impl); err != nil {
+			return fmt.Errorf("register %s: %w", name, err)
+		}
+		zoneDrivers.registrations++
+		return nil
+	}
+	scalar := func(name string, n int32, fn func(args []driver.Value) (driver.Value, error)) error {
+		return register(name, &sqlite.FunctionImpl{NArgs: n, Deterministic: true, Scalar: func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+			return fn(args)
+		}})
+	}
+	err := errors.Join(
+		register("bounded_rows", &sqlite.FunctionImpl{NArgs: -1, MakeAggregate: func(sqlite.FunctionContext) (sqlite.AggregateFunction, error) {
+			return &sinkStep{}, nil
+		}}),
+		scalar("days", 2, func(args []driver.Value) (driver.Value, error) {
 			a, b, ok, err := instants("days", args)
 			if !ok || err != nil {
 				return nil, err
 			}
 			return float64(b-a) / float64(24*time.Hour/time.Millisecond), nil
-		},
-		"working_days": func(args []driver.Value) (driver.Value, error) {
+		}),
+		scalar("working_days", 2, func(args []driver.Value) (driver.Value, error) {
 			a, b, ok, err := instants("working_days", args)
 			if !ok || err != nil {
 				return nil, err
 			}
 			return workingDays(a, b, loc), nil
-		},
-	} {
-		if err := d.RegisterDeterministicScalarFunction(name, 2, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
-			return fn(args)
-		}); err != nil {
-			return fmt.Errorf("register %s: %w", name, err)
-		}
-	}
-	err = d.RegisterDeterministicScalarFunction("day", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
-		if args[0] == nil {
-			return nil, nil
-		}
-		a, err := instant("day", args[0])
-		if err != nil {
-			return nil, err
-		}
-		return time.UnixMilli(a).In(loc).Format(time.DateOnly), nil
-	})
+		}),
+		scalar("day", 1, func(args []driver.Value) (driver.Value, error) {
+			if args[0] == nil {
+				return nil, nil
+			}
+			a, err := instant("day", args[0])
+			if err != nil {
+				return nil, err
+			}
+			return time.UnixMilli(a).In(loc).Format(time.DateOnly), nil
+		}),
+	)
 	if err != nil {
-		return fmt.Errorf("register day: %w", err)
+		// The driver is not kept: a later session makes it again.
+		return nil, fmt.Errorf("the dashboard's functions in %s: %w", loc, err)
 	}
-	return nil
+	zoneDrivers.m[loc.String()] = d
+	return d, nil
+}
+
+// sessionSinks is the sink of each open session by its key: added when
+// the session opens, removed when it closes or fails to open.
+var sessionSinks = struct {
+	mu sync.Mutex
+	m  map[string]*rowSink
+}{m: map[string]*rowSink{}}
+
+// openSink registers sink under a new random key.
+func openSink(sink *rowSink) (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("make the dashboard session's key: %w", err)
+	}
+	key := hex.EncodeToString(b[:])
+	sessionSinks.mu.Lock()
+	sessionSinks.m[key] = sink
+	sessionSinks.mu.Unlock()
+	return key, nil
+}
+
+func closeSink(key string) {
+	sessionSinks.mu.Lock()
+	delete(sessionSinks.m, key)
+	sessionSinks.mu.Unlock()
+}
+
+func sinkOf(key string) (*rowSink, bool) {
+	sessionSinks.mu.Lock()
+	defer sessionSinks.mu.Unlock()
+	s, ok := sessionSinks.m[key]
+	return s, ok
 }
 
 // maxInstant bounds the instants the time functions take: milliseconds
@@ -285,21 +353,37 @@ func typeName(v driver.Value) string {
 	}
 }
 
-// sinkStep is bounded_rows: each step is a row into the sink, the result
-// the number of rows.
+// sinkStep is bounded_rows: its first argument names the session, each
+// step is a row into that session's sink, the result the number of rows.
 type sinkStep struct{ sink *rowSink }
 
-func (a sinkStep) Step(_ *sqlite.FunctionContext, args []driver.Value) error { return a.sink.add(args) }
+// errSessionClosed is a bounded_rows step whose key names no open session.
+var errSessionClosed = errors.New("bounded_rows names no open dashboard session")
 
-func (a sinkStep) WindowInverse(*sqlite.FunctionContext, []driver.Value) error {
+func (a *sinkStep) Step(_ *sqlite.FunctionContext, args []driver.Value) error {
+	if a.sink == nil {
+		key, _ := args[0].(string)
+		sink, ok := sinkOf(key)
+		if !ok {
+			return errSessionClosed
+		}
+		a.sink = sink
+	}
+	return a.sink.add(args[1:])
+}
+
+func (a *sinkStep) WindowInverse(*sqlite.FunctionContext, []driver.Value) error {
 	return errors.New("bounded_rows is not a window function")
 }
 
-func (a sinkStep) WindowValue(*sqlite.FunctionContext) (driver.Value, error) {
+func (a *sinkStep) WindowValue(*sqlite.FunctionContext) (driver.Value, error) {
+	if a.sink == nil {
+		return int64(0), nil
+	}
 	if a.sink.err != nil {
 		return nil, a.sink.err
 	}
 	return int64(len(a.sink.rows)), nil
 }
 
-func (a sinkStep) Final(*sqlite.FunctionContext) {}
+func (a *sinkStep) Final(*sqlite.FunctionContext) {}

@@ -87,6 +87,8 @@ type session struct {
 	db   *sql.DB
 	conn *sql.Conn
 	sink *rowSink
+	// key names the sink in the sessions registry (sessionSinks).
+	key string
 	// denied is what the authorizer refused last, for the sentence of the
 	// error SQLite reports as "not authorized"; reads is what it allowed
 	// the statement to read. The authorizer runs while the statement
@@ -101,24 +103,28 @@ type session struct {
 	wrapping bool
 }
 
-// connector opens the snapshot on the session's own driver.
+// connector opens the snapshot on its zone's driver (driverFor).
 type connector struct{ d *sqlite.Driver }
 
 func (c connector) Connect(context.Context) (driver.Conn, error) { return c.d.Open(snapshotDSN) }
 func (c connector) Driver() driver.Driver                        { return c.d }
 
-// openSession opens a private in-memory database on a driver of its own,
-// with the app's functions in loc registered on it alone.
+// openSession opens a private in-memory database on loc's driver, its
+// sink registered under the session's key until it closes.
 func openSession(ctx context.Context, loc *time.Location) (*session, error) {
+	d, err := driverFor(loc)
+	if err != nil {
+		return nil, err
+	}
 	s := &session{sink: &rowSink{}}
-	d := &sqlite.Driver{}
-	if err := registerFunctions(d, loc, s.sink); err != nil {
+	if s.key, err = openSink(s.sink); err != nil {
 		return nil, err
 	}
 	s.db = sql.OpenDB(connector{d})
 	s.db.SetMaxOpenConns(1)
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
+		closeSink(s.key)
 		closeErr := s.db.Close()
 		return nil, errors.Join(fmt.Errorf("open the dashboard's database: %w", err), closeErr)
 	}
@@ -129,6 +135,7 @@ func openSession(ctx context.Context, loc *time.Location) (*session, error) {
 // close closes the connection and its database: nothing of the
 // evaluation outlives it.
 func (s *session) close() error {
+	closeSink(s.key)
 	err := s.conn.Close()
 	if closeErr := s.db.Close(); closeErr != nil {
 		err = errors.Join(err, closeErr)
@@ -333,12 +340,9 @@ func (s *session) run(ctx context.Context, p prepared, now, since int64) ([]cont
 	b.WriteString(p.sql)
 	b.WriteString("\n), r AS (SELECT * FROM q LIMIT ")
 	fmt.Fprint(&b, maxRows+1)
-	b.WriteString(") SELECT bounded_rows(")
-	for i, name := range p.names {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString(`r."` + name + `"`)
+	b.WriteString(") SELECT bounded_rows('" + s.key + "'")
+	for _, name := range p.names {
+		b.WriteString(`, r."` + name + `"`)
 	}
 	b.WriteString(") FROM r")
 	s.take()

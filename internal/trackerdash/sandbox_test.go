@@ -204,3 +204,82 @@ func TestOneStatementReadsStringsAndComments(t *testing.T) {
 		}
 	}
 }
+
+// The functions a session uses are registered once per zone and outlive
+// no session's state: across opens, counts, failed fills, refused gates
+// and closes in two zones, each zone's driver registered its four
+// functions once and no session's sink is left in the registry. A key
+// that names no open session fails the statement that uses it. Not
+// parallel: it reads the registry, which parallel tests' sessions fill.
+func TestSessionsLeaveNoRegistrationBehind(t *testing.T) {
+	ctx := context.Background()
+	york, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := evaluator()
+	failing := func(context.Context, *sql.Conn) (store.MirrorExport, bool, error) {
+		return store.MirrorExport{}, false, errors.New("the fill failed")
+	}
+	unsealed := func(ctx context.Context, conn *sql.Conn) (store.MirrorExport, bool, error) {
+		export, ok, err := teamBoard().fill()(ctx, conn)
+		if err == nil {
+			_, err = conn.ExecContext(ctx, `ATTACH 'file::memory:' AS left_open`)
+		}
+		return export, ok, err
+	}
+	for i := range 50 {
+		zone := []string{"UTC", "America/New_York"}[i%2]
+		if _, err := e.Evaluate(ctx, teamBoard().board(), Request{Dashboard: builtinSprintsID, Range: RangeSprints3, TimeZone: zone}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.Evaluate(ctx, Board{Fill: failing}, utcSprints3); err == nil {
+			t.Fatal("an evaluation whose fill failed answered")
+		}
+		if _, err := e.Evaluate(ctx, Board{Fill: unsealed}, utcSprints3); err == nil {
+			t.Fatal("an evaluation whose gate refused answered")
+		}
+		if _, err := e.Drill(ctx, teamBoard().board(), DrillRequest{Request: utcSprints3, Widget: "stuck_list"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.Dashboards(ctx, Kind{PlansSprints: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := openSession(ctx, york)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.close(); err != nil {
+		t.Fatal(err)
+	}
+	zoneDrivers.mu.Lock()
+	zones, registrations := len(zoneDrivers.m), zoneDrivers.registrations
+	_, hasUTC := zoneDrivers.m["UTC"]
+	_, hasYork := zoneDrivers.m["America/New_York"]
+	zoneDrivers.mu.Unlock()
+	if !hasUTC || !hasYork || registrations != 4*zones {
+		t.Errorf("%d registrations over %d zone drivers (UTC %v, New York %v); want 4 a zone", registrations, zones, hasUTC, hasYork)
+	}
+	sessionSinks.mu.Lock()
+	left := len(sessionSinks.m)
+	sessionSinks.mu.Unlock()
+	if left != 0 {
+		t.Errorf("%d session sinks left in the registry after every session closed", left)
+	}
+	// A statement naming a key no open session holds fails.
+	s, err = openSession(ctx, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := s.close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	var n int64
+	err = s.conn.QueryRowContext(ctx, `SELECT bounded_rows('0123456789abcdef0123456789abcdef', 't1')`).Scan(&n)
+	if err == nil || !strings.Contains(err.Error(), "names no open dashboard session") {
+		t.Errorf("bounded_rows under a key no session holds = %d, %v", n, err)
+	}
+}
