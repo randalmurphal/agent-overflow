@@ -7,7 +7,8 @@
 // against the last sprint's pace with each person's load and how far it
 // is over, the backlog's tickets, points and those with no estimate),
 // opening the screen reads nothing from Jira, the active sprint starts
-// folded, and a fold outlasts a reload; Search filters the rows; a
+// folded, and a fold outlasts a reload; Search and Only mine filter the
+// rows, Display hides a mark and Refresh reads the board again; a
 // ticket made at a section's foot asks its required fields, reads what a
 // ticket takes once, and lands in that sprint; a sprint is created (a
 // refusal staying under its form), changed, completed with its
@@ -235,6 +236,39 @@ export function registerBacklogFlow({ compact }: BacklogSurface): void {
     await expect(section(backlog, 'backlog').locator('xpath=..').getByTestId('issues-backlog-empty')).toHaveCount(0);
     await bar.getByTestId('pane-find-input').fill('');
     await page.keyboard.press('Escape');
+    await expect(row(backlog, '10111')).toBeVisible();
+
+    // Only mine keeps User 1's rows; Display hides the points; Refresh
+    // reads the board again and keeps the rows.
+    if (compact) {
+      await press(pane.getByTestId('issues-display'), true);
+      await press(page.getByTestId('issues-only-mine-item'), true);
+      await page.keyboard.press('Escape');
+    } else {
+      await pane.getByTestId('issues-only-mine').click();
+    }
+    await expect(backlog.getByTestId('issues-backlog-row')).toHaveCount(1);
+    await expect(row(backlog, '10108')).toBeVisible();
+    if (compact) {
+      await press(pane.getByTestId('issues-display'), true);
+      await press(page.getByTestId('issues-only-mine-item'), true);
+      await page.keyboard.press('Escape');
+    } else {
+      await pane.getByTestId('issues-only-mine').click();
+    }
+    await expect(row(backlog, '10111')).toBeVisible();
+    await press(pane.getByTestId('issues-display'), compact);
+    await press(page.getByTestId('issues-display-estimate'), compact);
+    await page.keyboard.press('Escape');
+    await expect(row(backlog, '10111').getByTestId('issues-card-estimate')).toHaveCount(0);
+    await expect(row(backlog, '10111').getByTestId('issues-card-estimate-edit')).toHaveCount(0);
+    await press(pane.getByTestId('issues-display'), compact);
+    await press(page.getByTestId('issues-display-estimate'), compact);
+    await page.keyboard.press('Escape');
+    await expect(row(backlog, '10111').getByTestId('issues-card-estimate')).toHaveText('1');
+    const beforeRefresh = await requestCount(harness);
+    await press(pane.getByTestId('issues-refresh'), compact);
+    await expect.poll(() => requestCount(harness)).toBeGreaterThan(beforeRefresh);
     await expect(row(backlog, '10111')).toBeVisible();
 
     // Unfold the active sprint and fold the backlog: kept across a reload.
