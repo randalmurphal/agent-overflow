@@ -401,10 +401,7 @@ func (sh *sheet) first(history bool) (readAnswer, error) {
 		Key: sh.key(c.Key), Status: name(c.Status.Name), URL: d.URL,
 		Created: stampIf(c.Created), Updated: stampIf(c.Updated), Resolved: stampIf(c.Resolved),
 	}
-	var err error
-	if sh.out.Estimate, err = sh.estimate(); err != nil {
-		return readAnswer{}, err
-	}
+	sh.out.Estimate = sh.estimate()
 	sh.out.Title, _ = textClip(c.Title, 0, titleCut)
 	if c.Type != nil {
 		sh.out.Type = name(c.Type.Name)
@@ -834,19 +831,16 @@ func (sh *sheet) items(part string) ([]any, string) {
 }
 
 // estimate is the ticket's estimate on the board an estimate set by
-// `estimate` is judged on (estimateTarget), as estimateText prints it;
-// empty when no board of the ticket has estimates or the ticket has none
-// there.
-func (sh *sheet) estimate() (string, error) {
-	on, ok, err := newPlanCall(sh.s, Caller{}, nil).estimateTarget(sh.connection, rowBoards(sh.d.Rows), "")
-	if err != nil || !ok {
-		return "", err
+// `estimate` is judged on, as estimateText prints it: the first of its
+// rows whose board has estimates, which is estimateTarget's board, since
+// a row carries its board's unit and the rows are in board order. Empty
+// when no board of the ticket has estimates or the ticket has none there.
+func (sh *sheet) estimate() string {
+	i := slices.IndexFunc(sh.d.Rows, func(r trackerapp.TicketRowView) bool { return hasEstimates(r.Unit) })
+	if i < 0 || sh.d.Rows[i].Estimate == nil {
+		return ""
 	}
-	row := sh.d.Rows[slices.IndexFunc(sh.d.Rows, func(r trackerapp.TicketRowView) bool { return r.Board == on.board })]
-	if row.Estimate == nil {
-		return "", nil
-	}
-	return estimateText(*row.Estimate, row.Unit), nil
+	return estimateText(*sh.d.Rows[i].Estimate, sh.d.Rows[i].Unit)
 }
 
 // estimateText is n in unit as a read and an approval print it, in a form

@@ -750,9 +750,10 @@ func (pc *planCall) boardsOf(p *planned, ok func(boardOn) bool) ([]boardOn, erro
 // ok is false when none does. It is the one rule of an estimate's board:
 // the plan judges the estimate on that board's row, the approval words it
 // in that board's unit, the read after an approval and the send name that
-// board, and ticket_read prints its estimate (sheet.estimate). The ticket
-// screen shows and sets the same board's points when it was opened from
-// no board with estimates (ticketRow in
+// board. ticket_read prints that board's estimate from the ticket's rows,
+// each carrying its board's unit (sheet.estimate), and the ticket screen
+// shows and sets the same board's points when it was opened from no
+// board with estimates (ticketRow in
 // frontend/src/lib/stores/trackerTicketModel.ts).
 func (pc *planCall) estimateTarget(connection string, boards []string, field string) (_ estimateOn, ok bool, _ error) {
 	for _, id := range boards {
@@ -760,12 +761,18 @@ func (pc *planCall) estimateTarget(connection string, boards []string, field str
 		if err != nil {
 			return estimateOn{}, false, err
 		}
-		if !held || (field == "" && b.Unit != "points" && b.Unit != "time") || (field != "" && b.EstimateField != field) {
+		if !held || (field == "" && !hasEstimates(b.Unit)) || (field != "" && b.EstimateField != field) {
 			continue
 		}
 		return estimateOn{board: id, b: b}, true, nil
 	}
 	return estimateOn{}, false, nil
+}
+
+// hasEstimates reports whether a board of unit, or a ticket's row on it,
+// has estimates: in points or in time.
+func hasEstimates(unit string) bool {
+	return unit == "points" || unit == "time"
 }
 
 // estimateOn is the board an estimate is planned on (estimateTarget).
