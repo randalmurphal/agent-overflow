@@ -313,7 +313,10 @@ export function registerTrackerAgentWritesFlow({ compact }: TrackerWritesSurface
     ticket = pane.getByTestId('ticket-screen');
     await expect.poll(async () => (await trackerRequests(harness, ISSUE_ROUTE, ['WEB-1', '10101'])).some((r) => r.held), { timeout: 30_000 }).toBe(true);
     await expect(ticket.getByTestId('ticket-opening')).toHaveText('Reading the ticket from the tracker…');
-    await expect(ticket.getByTestId('ticket-title')).toHaveCount(0);
+    // The header names the card the board holds; no stored description or
+    // comment list is shown as the ticket.
+    await expect(ticket.locator('[data-testid="ticket-section"][data-field="description"]')).toHaveCount(0);
+    await expect(ticket.getByTestId('ticket-comments')).toHaveCount(0);
     await harness.rpc('HarnessTrackerRelease', { origin: JIRA, route: ISSUE_ROUTE });
     await expect(ticket.getByTestId('ticket-comment').filter({ hasText: 'Checked while closed.' })).toBeVisible({ timeout: 30_000 });
     await expect(ticket.getByTestId('ticket-title')).toHaveText('First story');
