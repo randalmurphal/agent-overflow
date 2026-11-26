@@ -18,9 +18,9 @@
 // in the pane that the computer is not connected, and the ticket reads
 // again when the computer is back with the comment typed before it went.
 //
-// A ticket opened shows the points its own read found, in the points row
-// and in its board's estimate field alike, while the board's card keeps
-// the board's last read.
+// A ticket opened shows the points its own read found, 1.25, in the points
+// row and in its board's estimate field alike, with the same digits, while
+// the board's card keeps the board's last read.
 //
 // Fields in place: points typed, cleared and refused as a typo; a list of
 // texts shown with no editor; a due date typed; an option past the first
@@ -378,13 +378,15 @@ export function registerIssuesTicketFlow({ compact }: TicketSurface): void {
       await harness.open(page);
       const pane = await openPane(page, compact);
       await expect(card(pane, '10105').getByTestId('issues-card-estimate')).toHaveText('3', { timeout: 30_000 });
-      await editJiraIssue(board, 'WEB-5', { customfield_10016: 5 });
+      // A value with two decimals, which the points row prints with every
+      // digit as the field does.
+      await editJiraIssue(board, 'WEB-5', { customfield_10016: 1.25 });
 
       const ticket = await openTicket(pane, '10105', compact);
-      await expect(cardField(ticket, 'points').getByTestId('ticket-field-value')).toHaveText('5', { timeout: 30_000 });
+      await expect(cardField(ticket, 'points').getByTestId('ticket-field-value')).toHaveText('1.25', { timeout: 30_000 });
       const shown = await rail(ticket, compact);
       await press(shown.getByTestId('ticket-more-fields'), compact);
-      await expect(field(shown, 'customfield_10016').getByTestId('ticket-field-value')).toHaveText('5');
+      await expect(field(shown, 'customfield_10016').getByTestId('ticket-field-value')).toHaveText('1.25');
       await expect(card(pane, '10105').getByTestId('issues-card-estimate')).toHaveText('3');
     } finally {
       await harness.close();

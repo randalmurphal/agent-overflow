@@ -222,6 +222,31 @@ func TestAnEstimateIsReadOnItsBoardAlone(t *testing.T) {
 	}
 }
 
+// A points estimate reads with every digit it holds, and the text a read
+// gives, passed back, is the estimate held: already, nothing sent.
+func TestAPointsEstimateReadsBackAsItIs(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		v    float64
+		want string
+	}{{1.25, "1.25 points"}, {0.125, "0.125 points"}, {2.5, "2.5 points"}, {13, "13 points"}} {
+		w := newWriteFixture(t)
+		d := w.f.details["conn-jira/10012"]
+		v := c.v
+		d.Rows = []trackerapp.TicketRowView{{Board: "1", Estimate: &v, Unit: "points"}}
+		w.f.details["conn-jira/10012"] = d
+		read, err := w.call(t, "session-1", "ticket_read", map[string]any{"key": "WEB-12"})
+		if err != nil || !strings.Contains(read, `"estimate":"`+c.want+`"`) {
+			t.Errorf("%v: ticket_read = %s, %v; want the estimate %q", c.v, read, err, c.want)
+			continue
+		}
+		answer, err := w.update(t, map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"estimate": c.want}})
+		if want := `{"tickets":[{"key":"WEB-12","already":["estimate"]}]}`; err != nil || answer != want || len(w.f.writes) != 0 {
+			t.Errorf("%v: the read's %q passed back = %s, %v, writes %q; want %s", c.v, c.want, answer, err, w.f.writes, want)
+		}
+	}
+}
+
 // Field names match without regard to case; a name no field has is
 // refused naming the ticket's fields, and so is a field no one can edit.
 // The estimate takes the form a read prints, and answers to the name of
