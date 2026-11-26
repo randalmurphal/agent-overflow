@@ -3,6 +3,7 @@ package trackerdash
 import (
 	"cmp"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 )
@@ -58,7 +59,7 @@ func reduceRows(r Reducer, rows []contribution) Num {
 			total += v
 		}
 		return value(total / float64(len(values)))
-	default: // ReduceMedian
+	case ReduceMedian:
 		if len(values) == 0 {
 			return Num{}
 		}
@@ -69,6 +70,7 @@ func reduceRows(r Reducer, rows []contribution) Num {
 		}
 		return value((values[mid-1] + values[mid]) / 2)
 	}
+	panic(fmt.Sprintf("trackerdash: reducer %q reached a reduction without validation", r))
 }
 
 // reduceRange is the metric's number over a range's periods. An average

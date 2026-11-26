@@ -39,7 +39,11 @@ func exportRows(t *testing.T, conn *sql.Conn, query string) []string {
 	if err != nil {
 		t.Fatalf("%s: %v", query, err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			t.Errorf("close the rows of %s: %v", query, err)
+		}
+	}()
 	var out []string
 	for rows.Next() {
 		var v string

@@ -190,16 +190,18 @@ func (s *session) databases(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var names []string
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
-			return nil, err
+			return nil, errors.Join(err, rows.Close())
 		}
 		names = append(names, name)
 	}
-	return names, rows.Err()
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	return names, nil
 }
 
 // authorize allows a SELECT, reads of the export's tables in main and the
@@ -207,20 +209,19 @@ func (s *session) databases(ctx context.Context) ([]string, error) {
 func (s *session) authorize(action sqlite.AuthorizerActionCode, arg1, arg2, database, _ string) sqlite.AuthorizerReturnCode {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	switch action {
-	case sqlite.AuthSelect:
+	if action == sqlite.AuthSelect {
 		return sqlite.AuthorizerOK
-	case sqlite.AuthRead:
-		// A table a statement names but reads no column of comes with no
-		// column and no database. The gate leaves main the only database
-		// that can hold an export table's name.
-		if exportTables[arg1] && (database == "main" || (database == "" && arg2 == "")) {
-			if !slices.Contains(s.reads, arg1) {
-				s.reads = append(s.reads, arg1)
-			}
-			return sqlite.AuthorizerOK
+	}
+	// A table a statement names but reads no column of comes with no
+	// column and no database. The gate leaves main the only database that
+	// can hold an export table's name.
+	if action == sqlite.AuthRead && exportTables[arg1] && (database == "main" || (database == "" && arg2 == "")) {
+		if !slices.Contains(s.reads, arg1) {
+			s.reads = append(s.reads, arg1)
 		}
-	case sqlite.AuthFunction:
+		return sqlite.AuthorizerOK
+	}
+	if action == sqlite.AuthFunction {
 		name := strings.ToLower(arg2)
 		if allowedFunctions[name] || (s.wrapping && name == "bounded_rows") {
 			return sqlite.AuthorizerOK
@@ -232,23 +233,22 @@ func (s *session) authorize(action sqlite.AuthorizerActionCode, arg1, arg2, data
 
 // denial says what a refused action would have done.
 func denial(action sqlite.AuthorizerActionCode, arg1, arg2, database string) string {
-	switch action {
-	case sqlite.AuthRead:
-		if database != "main" {
-			return fmt.Sprintf("reads %s.%s, outside the board's relations", truncate(database, 32), truncate(arg1, 64))
-		}
+	switch {
+	case action == sqlite.AuthRead && database != "main":
+		return fmt.Sprintf("reads %s.%s, outside the board's relations", truncate(database, 32), truncate(arg1, 64))
+	case action == sqlite.AuthRead:
 		return fmt.Sprintf("reads %s, which is not one of the board's relations (%s)", truncate(arg1, 64), strings.Join(store.MirrorExportTables, ", "))
-	case sqlite.AuthFunction:
+	case action == sqlite.AuthFunction:
 		return fmt.Sprintf("calls %s(), which a metric may not call", truncate(arg2, 64))
-	case sqlite.AuthPragma:
+	case action == sqlite.AuthPragma:
 		return fmt.Sprintf("runs PRAGMA %s", truncate(arg1, 64))
-	case sqlite.AuthAttach, sqlite.AuthDetach:
+	case action == sqlite.AuthAttach || action == sqlite.AuthDetach:
 		return "attaches or detaches a database"
-	case sqlite.AuthRecursive:
+	case action == sqlite.AuthRecursive:
 		return "is recursive (WITH RECURSIVE)"
-	case sqlite.AuthTransaction, sqlite.AuthSavepoint:
+	case action == sqlite.AuthTransaction || action == sqlite.AuthSavepoint:
 		return "opens or ends a transaction"
-	case sqlite.AuthInsert, sqlite.AuthUpdate, sqlite.AuthDelete:
+	case action == sqlite.AuthInsert || action == sqlite.AuthUpdate || action == sqlite.AuthDelete:
 		return fmt.Sprintf("writes %s", truncate(arg1, 64))
 	default:
 		return "creates, drops or changes a database object"

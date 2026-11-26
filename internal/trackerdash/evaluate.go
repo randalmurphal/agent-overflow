@@ -427,12 +427,12 @@ func (ev *evaluation) readBoard(ctx context.Context) error {
 	return nil
 }
 
-func (ev *evaluation) query(ctx context.Context, q string, scan func(*sql.Rows) error) error {
+func (ev *evaluation) query(ctx context.Context, q string, scan func(*sql.Rows) error) (err error) {
 	rows, err := ev.s.conn.QueryContext(ctx, q)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { err = errors.Join(err, rows.Close()) }()
 	for rows.Next() {
 		if err := scan(rows); err != nil {
 			return err
@@ -698,7 +698,7 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 			}
 			out.Tickets = append(out.Tickets, ev.ticket(r, c.p.cols))
 		}
-	default:
+	case FormBars, FormLine, FormTable:
 		out.Series = seriesOf(m, c.p.cols, c.rows)
 		named := c.p.cols.has(ColumnSeries)
 		cell := func(key, label string, partial bool, rows []contribution) BucketValue {
@@ -762,9 +762,10 @@ func (ev *evaluation) label(b Bucket, key string) string {
 			return e.Label
 		}
 		return key
-	default:
+	case BucketNone, BucketPeriod, BucketSprint, BucketText:
 		return cmpOr(key, "(none)")
 	}
+	panic(fmt.Sprintf("trackerdash: bucket %q reached a label without validation", b))
 }
 
 func (ev *evaluation) keyOf(ticket string) string {
