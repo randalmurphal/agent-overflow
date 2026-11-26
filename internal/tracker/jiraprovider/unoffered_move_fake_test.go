@@ -53,14 +53,3 @@ func TestFakeAMoveNoLongerOfferedIsStale(t *testing.T) {
 		t.Errorf("%d moves sent; want 1, the kept read's", n)
 	}
 }
-
-// countRoute is how many requests the fake answered on route.
-func countRoute(e *trackerfake.Engine, route string) int {
-	n := 0
-	for _, r := range e.Requests(0).Requests {
-		if r.Route == route {
-			n++
-		}
-	}
-	return n
-}
