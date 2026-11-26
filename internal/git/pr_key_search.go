@@ -74,7 +74,9 @@ func isSearchableKey(key string) bool {
 	}
 	for i := 0; i < len(key); i++ {
 		c := key[i]
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+		default:
 			return false
 		}
 	}

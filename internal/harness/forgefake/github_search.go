@@ -267,7 +267,7 @@ func ghPullsByKey(e *Engine, c *call, v graphQLVars) response {
 // searchWords is text's runs of ASCII letters and digits, lower case.
 func searchWords(text string) []string {
 	return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
 	})
 }
 
