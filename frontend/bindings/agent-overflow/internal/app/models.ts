@@ -10484,12 +10484,19 @@ export class TicketPullRequest {
     "state": string;
     "ci"?: string;
     "branch": string;
+
+    /**
+     * ProjectID is the project the row was listed under: the stored
+     * list's, the one whose branch the forge's lookup found it by, or the
+     * linked thread's. Empty when that project was removed, or the thread
+     * is not one Work lists.
+     */
     "projectId"?: string;
 
     /**
-     * ReviewProjectID is the project of Work's whose checkout can show
-     * the pull request in the app (ticketWorkRead.reviewProject); empty
-     * when none can, and the row opens on the forge.
+     * ReviewProjectID is the project of the computer's whose checkout can
+     * show the pull request in the app (reviewProject); empty when none
+     * can, and the row opens on the forge.
      */
     "reviewProjectId"?: string;
 

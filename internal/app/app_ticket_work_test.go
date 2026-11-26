@@ -77,7 +77,7 @@ func TestTicketWorkListsThePullRequestsAndBranchesThatNameItsKey(t *testing.T) {
 	wantPRs := []TicketPullRequest{
 		{Ref: prListRow(prListRepoA, 5, nil).Ref, Title: "Retry cursor", Author: "User 1", State: TicketPROpen, CI: "success",
 			Branch: "feature/WEB-1-ui", ProjectID: f.project},
-		{Ref: merged, URL: "https://github.com/acme/widgets/pull/9", State: TicketPRMerged, Branch: "web-1-first"},
+		{Ref: merged, URL: "https://github.com/acme/widgets/pull/9", State: TicketPRMerged, Branch: "web-1-first", ProjectID: f.project},
 	}
 	if !slices.Equal(work.PullRequests, wantPRs) {
 		t.Errorf("pull requests = %+v\nwant %+v", work.PullRequests, wantPRs)

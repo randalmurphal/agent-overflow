@@ -509,11 +509,11 @@ func TestSearchTicketWorkListsWhatALookupReadBeforeItFailed(t *testing.T) {
 	}
 }
 
-// Each row names the project whose checkout can show it, one whose origin
-// is the row's repository: a linked thread's record, which names no
-// project, takes the one cloning its repository; a fork's checkout cannot
-// show its parent's pull request, so the row names none until a project
-// clones the parent.
+// Each row names the project whose checkout can show it, one of the
+// computer's whose origin is the row's repository, the row's own project
+// first: a linked thread's record names the thread's project; a fork's
+// checkout cannot show its parent's pull request, so the row names none
+// until a project clones the parent.
 func TestTicketWorkNamesTheProjectThatCanShowEachPullRequest(t *testing.T) {
 	t.Parallel()
 	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{
@@ -547,29 +547,30 @@ func TestTicketWorkNamesTheProjectThatCanShowEachPullRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := shows(stored), map[string][2]string{"github:example/web:8": {"", f.project}}; !maps.Equal(got, want) {
+	if got, want := shows(stored), map[string][2]string{"github:example/web:8": {f.project, f.project}}; !maps.Equal(got, want) {
 		t.Errorf("stored: rows' projects and review projects = %v; want %v", got, want)
 	}
 	work, err := f.a.SearchTicketWork(f.ctx, f.conn.ID, "10101")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := shows(work), map[string][2]string{"github:example/web:8": {"", f.project}, "github:team/up:2": {fork, ""}}; !maps.Equal(got, want) {
+	if got, want := shows(work), map[string][2]string{"github:example/web:8": {f.project, f.project}, "github:team/up:2": {fork, ""}}; !maps.Equal(got, want) {
 		t.Errorf("searched: rows' projects and review projects = %v; want %v", got, want)
 	}
 
+	// A clone of the parent counts with no board of the connection and no
+	// thread of the ticket, which keeps it out of what Work searches.
+	searched, last := f.forgeOps(0)
 	parent := forgeProjectRepo(t, f.a, "https://github.com/team/up.git")
-	pp, err := f.a.store.GetProject(parent)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.linkThread(t, "t-parent", parent, pp.Path)
 	work, err = f.a.SearchTicketWork(f.ctx, f.conn.ID, "10101")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := shows(work)["github:team/up:2"]; got[1] != parent {
 		t.Errorf("with the parent cloned: team/up's 2 has project and review project %v; want review project %s", got, parent)
+	}
+	if again, _ := f.forgeOps(last); !slices.Equal(again, searched) {
+		t.Errorf("forge requests with the parent cloned = %v; want the same as before, %v: Work does not search the parent", again, searched)
 	}
 }
 
@@ -628,6 +629,63 @@ func TestTicketWorkFoldsTheBranchOfARemovedProjectsStoredRow(t *testing.T) {
 		if len(c.work.PullRequests) != 1 || c.work.PullRequests[0].ProjectID != c.project || len(c.work.Branches) != 0 {
 			t.Errorf("%s: pull requests %+v, branches %+v; want the row of project %q and its branch folded into it", name, c.work.PullRequests, c.work.Branches, c.project)
 		}
+	}
+}
+
+// A branch folds only into a pull request of its own repository, though
+// one ticket's branches share a name across repositories: a removed
+// project's stored row, which names no project, takes the branch of the
+// project that still clones its repository and leaves the one of another
+// repository; a row of a repository nobody clones any more takes none; a
+// linked thread's record takes its own project's branch.
+func TestTicketWorkFoldsABranchOnlyIntoAPullRequestOfItsRepository(t *testing.T) {
+	t.Parallel()
+	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web"}}})
+	gone := gitops.RepoReference{Forge: "github", Host: "github.com", Namespace: "example", Repo: "gone"}
+	for repo, row := range map[gitops.RepoReference]gitops.PRListRow{
+		workSearchRepo: prListRow(workSearchRepo, 1, func(r *gitops.PRListRow) { r.Title, r.HeadRefName = "Fix the login", "WEB-1-login" }),
+		gone:           prListRow(gone, 3, func(r *gitops.PRListRow) { r.Title, r.HeadRefName = "Old work", "WEB-1-old" }),
+	} {
+		removed := forgeProjectRepo(t, f.a, "https://github.com/"+repo.Namespace+"/"+repo.Repo+".git")
+		storePRList(t, f.a, removed, repo, []gitops.PRListRow{row}, time.Minute)
+		if err := f.a.store.DeleteProject(removed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	api := forgeProjectRepo(t, f.a, "https://github.com/example/api.git")
+	ap, err := f.a.store.GetProject(api)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.linkThread(t, "t-api", api, ap.Path)
+	if _, err := f.a.store.RecordOpenThreadPullRequest(store.ThreadPullRequest{ThreadID: "t-api", Forge: "github", Host: "github.com",
+		Project: "example/api", Number: 5, URL: "https://github.com/example/api/pull/5", Branch: "WEB-1-api", WorktreePath: ap.Path, SeenOpenAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, branch := range []string{"WEB-1-login", "WEB-1-old", "WEB-1-api"} {
+		runGit(t, f.dir, "branch", branch)
+		runGit(t, ap.Path, "branch", branch)
+	}
+
+	work, err := f.a.GetTicketWork(f.ctx, f.conn.ID, "10101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projects := map[string]string{}
+	for _, pr := range work.PullRequests {
+		projects[pr.Ref.Key()] = pr.ProjectID
+	}
+	if want := map[string]string{"github:example/web:1": "", "github:example/gone:3": "", "github:example/api:5": api}; !maps.Equal(projects, want) {
+		t.Errorf("rows' projects = %v; want %v", projects, want)
+	}
+	var branches []string
+	for _, b := range work.Branches {
+		owner := map[string]string{f.project: "web", api: "api"}[b.ProjectID]
+		branches = append(branches, owner+" "+b.Name)
+	}
+	slices.Sort(branches)
+	if want := []string{"api WEB-1-login", "api WEB-1-old", "web WEB-1-api", "web WEB-1-old"}; !slices.Equal(branches, want) {
+		t.Errorf("branches = %v; want %v", branches, want)
 	}
 }
 
