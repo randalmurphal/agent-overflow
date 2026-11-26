@@ -691,10 +691,11 @@ export {
   // A ticket's Work: its pull requests and branches, and the threads of
   // its Ask and Start work (stores/ticketWork.svelte.ts).
   GetTicketWork,
-  // A project's tracker setup file and its statuses by site
+  // A project's tracker setup file, its statuses and its fields to pin by site
   // (stores/trackerSetup.svelte.ts).
   ProjectTrackerSetup,
   ProjectTrackerStatuses,
+  ProjectTrackerFields,
   SetProjectTrackerSetup,
   // A person's logged time and its writes (stores/trackerTime.svelte.ts,
   // stores/trackerTimeWrites.svelte.ts).

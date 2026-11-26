@@ -145,7 +145,7 @@ type Setup struct {
 	StatusGroups []SiteStatusGroups  `json:"status_groups"`
 	TicketPins   []SitePins          `json:"ticket_pins"`
 	StartWork    []StartWorkDefaults `json:"start_work"`
-	Agents       AgentRules          `json:"agents"`
+	Agents       *AgentRules         `json:"agents,omitempty"`
 }
 
 // UnmarshalJSON reads a replace's setup whole or refuses it: a JSON object
@@ -221,7 +221,8 @@ type StartWorkDefaults struct {
 // change and comment on tickets (absent: it may); AskSeveral, whether a
 // change to more than one ticket waits for the person's approval
 // (absent: it does). Reading tickets is never refused. The rules are the
-// calling thread's project's, whichever connection the ticket is on.
+// calling thread's project's, whichever connection the ticket is on. A
+// setup with no rules set has none (nil), which is no section.
 type AgentRules struct {
 	ChangeTickets *bool `json:"change_tickets,omitempty"`
 	AskSeveral    *bool `json:"ask_several,omitempty"`
@@ -351,7 +352,10 @@ func (s *Service) ProjectAgentRules(projectID string) (AgentRules, error) {
 	if slices.Contains(view.Newer, sectionAgents) {
 		return AgentRules{}, fmt.Errorf("%w: section %s", ErrSetupNewer, sectionAgents)
 	}
-	return view.Setup.Agents, nil
+	if view.Setup.Agents == nil {
+		return AgentRules{}, nil
+	}
+	return *view.Setup.Agents, nil
 }
 
 // SetProjectSetup replaces projectID's tracker setup with setup, built
@@ -621,7 +625,7 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 		case sectionAgents:
 			var s agentsV1
 			err = decodeStrict(section, &s)
-			setup.Agents = AgentRules{ChangeTickets: s.ChangeTickets, AskSeveral: s.AskSeveral}
+			setup.Agents = &AgentRules{ChangeTickets: s.ChangeTickets, AskSeveral: s.AskSeveral}
 		}
 		if err != nil {
 			return nil, fmt.Errorf("section %s: %w", name, err)
@@ -682,7 +686,7 @@ func encodeSetup(setup Setup, raw map[string]json.RawMessage, newer []string) ([
 			return nil, err
 		}
 	}
-	if setup.Agents.set() {
+	if setup.Agents != nil {
 		if err := add(sectionAgents, agentsV1{Version: setupSectionVersion, ChangeTickets: setup.Agents.ChangeTickets, AskSeveral: setup.Agents.AskSeveral}); err != nil {
 			return nil, err
 		}
@@ -811,7 +815,9 @@ func validateSetup(setup Setup) (Setup, error) {
 			out.StartWork = append(out.StartWork, valid)
 		}
 	}
-	out.Agents = setup.Agents
+	if setup.Agents != nil && setup.Agents.set() {
+		out.Agents = setup.Agents
+	}
 	slices.SortFunc(out.StartWork, func(a, b StartWorkDefaults) int {
 		if c := compareSites(a.Tracker, a.Site, b.Tracker, b.Site); c != 0 {
 			return c

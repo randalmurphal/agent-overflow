@@ -917,10 +917,10 @@ func TestAgentRulesAreSavedWithTheirDefaults(t *testing.T) {
 	}
 	off := false
 	save := m.saveSetup(t, m.project(), Setup{
-		Agents:    AgentRules{ChangeTickets: &off},
+		Agents:    &AgentRules{ChangeTickets: &off},
 		StartWork: []StartWorkDefaults{{Tracker: "jira", Site: m.conn.Site, Project: "WEB", NameBranch: &off}},
 	})
-	if a := save.Stored.Setup.Agents; a.ChangeTickets == nil || *a.ChangeTickets || a.AskSeveral != nil {
+	if a := save.Stored.Setup.Agents; a == nil || a.ChangeTickets == nil || *a.ChangeTickets || a.AskSeveral != nil {
 		t.Fatalf("the rules as stored: %+v", a)
 	}
 	if sw := save.Stored.Setup.StartWork; len(sw) != 1 || sw[0].NameBranch == nil || *sw[0].NameBranch {
@@ -940,8 +940,8 @@ func TestAgentRulesAreSavedWithTheirDefaults(t *testing.T) {
 		t.Fatalf("the rules after a restart = %+v, %v; want no changes, asks", rules, err)
 	}
 	stored := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
-	cleared := m.saveSetup(t, m.project(), Setup{StartWork: stored.Setup.StartWork})
-	if cleared.Stored.Setup.Agents.set() {
+	cleared := m.saveSetup(t, m.project(), Setup{StartWork: stored.Setup.StartWork, Agents: &AgentRules{}})
+	if cleared.Stored.Setup.Agents != nil {
 		t.Fatalf("rules cleared are stored as %+v", cleared.Stored.Setup.Agents)
 	}
 	if after, _ := os.ReadFile(m.setupPathOf(t, m.project())); strings.Contains(string(after), `"agents"`) {
@@ -954,7 +954,7 @@ func TestAgentRulesAreSavedWithTheirDefaults(t *testing.T) {
 		t.Fatalf("the rules a newer version saved: %v; want ErrSetupNewer", err)
 	}
 	newer := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
-	if _, err := m.svc.SetProjectSetup(m.project(), newer.Revision, Setup{Agents: AgentRules{AskSeveral: &off}}); !errors.Is(err, ErrSetupNewer) {
+	if _, err := m.svc.SetProjectSetup(m.project(), newer.Revision, Setup{Agents: &AgentRules{AskSeveral: &off}}); !errors.Is(err, ErrSetupNewer) {
 		t.Fatalf("rules saved over a newer agents section: %v", err)
 	}
 	m.writeSetupFile(t, m.project(), `{"agents": {"version": 1, "change_tickets": "no"}}`)

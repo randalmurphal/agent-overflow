@@ -29,10 +29,14 @@
 // The page's statuses (`ProjectTrackerStatuses`) are held the same way,
 // read on hold, on the event and on reconnect: the statuses the setup
 // regroups off the boards are part of their answer.
+//
+// The Fields page's fields to pin (`ProjectTrackerFields`) are held the
+// same way, read on hold, on reconnect and on Try again: a tracker read,
+// which no change of the setup moves.
 
 import { SvelteMap } from 'svelte/reactivity';
-import type { Setup, SetupView, SiteStatuses } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-import { ProjectTrackerSetup, ProjectTrackerStatuses, SetProjectTrackerSetup } from './bindings';
+import type { AgentRules, Setup, SetupView, SiteFields, SiteStatuses } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import { ProjectTrackerFields, ProjectTrackerSetup, ProjectTrackerStatuses, SetProjectTrackerSetup } from './bindings';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { projectBackend } from '../transport/entityIndex';
 import { hasScope, pageGrantsResolved } from '../transport/scopes';
@@ -156,8 +160,15 @@ class HeldStatuses extends HeldRead<SiteStatuses[]> {
   }
 }
 
+class HeldFields extends HeldRead<SiteFields[]> {
+  protected call(): Promise<SiteFields[]> {
+    return ProjectTrackerFields(this.project);
+  }
+}
+
 const setups = new SvelteMap<string, HeldSetup>();
 const statuses = new SvelteMap<string, HeldStatuses>();
+const fields = new SvelteMap<string, HeldFields>();
 
 function acquire<E extends HeldRead<unknown>>(map: SvelteMap<string, E>, project: string, make: () => E): () => void {
   let entry = map.get(project);
@@ -291,6 +302,51 @@ export function refreshTrackerStatuses(project: string): Promise<void> {
   return statuses.get(project)?.read() ?? Promise.resolve();
 }
 
+/** A project's fields to pin as the Fields page shows them. */
+export interface TrackerFieldsState {
+  readonly sites: readonly SiteFields[] | null;
+  readonly error: unknown;
+}
+
+const NO_FIELDS: TrackerFieldsState = { sites: null, error: null };
+
+/** Holds `project`'s fields to pin while the caller shows them, reading
+ * them now; the returned function releases the hold. */
+export function acquireTrackerFields(project: string): () => void {
+  return acquire(fields, project, () => new HeldFields(project));
+}
+
+/** `project`'s fields to pin as held. Reactive. */
+export function trackerFieldsOf(project: string): TrackerFieldsState {
+  const entry = fields.get(project);
+  return entry ? { sites: entry.value, error: entry.error } : NO_FIELDS;
+}
+
+/** Reads `project`'s fields to pin again if a surface holds them. */
+export function refreshTrackerFields(project: string): Promise<void> {
+  return fields.get(project)?.read() ?? Promise.resolve();
+}
+
+/** An Agents setting of a project: Change tickets, or Ask before
+ * changing several at once. */
+export type AgentRule = keyof AgentRules;
+
+/** Whether the setup's Agents settings turn `rule` on: absent is on, the
+ * app's built-in rule. */
+export function agentRuleOn(setup: Setup | null | undefined, rule: AgentRule): boolean {
+  return setup?.agents?.[rule] !== false;
+}
+
+/** `setup` with Agents setting `rule` on or off; on is stored as absent,
+ * so a project back on every built-in rule has no agents section. */
+export function withAgentRule(setup: Setup, rule: AgentRule, on: boolean): Setup {
+  const agents: AgentRules = { ...setup.agents };
+  if (on) delete agents[rule];
+  else agents[rule] = false;
+  const { agents: _held, ...rest } = setup;
+  return Object.keys(agents).length > 0 ? { ...rest, agents } : rest;
+}
+
 /** Reads again every held entry of a project on `backend`, or of a project
  * whose computer this window does not know. A setup being saved is read
  * once its save settles: a read sent beside the save may answer the file
@@ -312,10 +368,16 @@ function readAgainOn(backend: BackendKey): void {
 onTrackerSetupUpdated(readAgainOn);
 
 onBackendStatusChange((backend, status) => {
-  if (status.status === 'connected') readAgainOn(backend);
+  if (status.status !== 'connected') return;
+  readAgainOn(backend);
+  for (const entry of fields.values()) {
+    const owner = entry.backend();
+    if (owner === undefined || owner === backend) void entry.read();
+  }
 });
 
 export function resetTrackerSetupForTest(): void {
   setups.clear();
   statuses.clear();
+  fields.clear();
 }

@@ -30,7 +30,7 @@ func (f *trackerBoardFixture) saveAgentRules(t *testing.T, project string, rules
 		t.Fatal(err)
 	}
 	setup := stored.Setup
-	setup.Agents = rules
+	setup.Agents = &rules
 	if save, err := svc.SetProjectSetup(project, stored.Revision, setup); err != nil || !save.Saved {
 		t.Fatalf("saving the Agents settings = %+v, %v", save, err)
 	}
