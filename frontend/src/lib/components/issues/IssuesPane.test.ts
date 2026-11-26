@@ -4228,6 +4228,29 @@ describe('a ticket in a pane of its own', () => {
     clearCommandRegistry();
   });
 
+  it('shows the ticket, not its pull request, when the person opens the ticket in its own pane again', async () => {
+    placeIssuesPane();
+    install();
+    installTicket();
+    installReview();
+    await import('./TicketReview.svelte');
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await fireEvent.click(within(card(view, '1')).getByTestId('issues-card-open'), { ctrlKey: true });
+    const paneId = ticketPaneIds()[0];
+    const pane = mountTicketPane(paneId);
+    await paneScreen(pane, '1');
+    await fireEvent.click(await workRow(pane));
+    await within(pane.container).findByTestId('ticket-review');
+
+    focusPane(PANE);
+    await fireEvent.click(within(card(view, '1')).getByTestId('issues-card-open'), { ctrlKey: true });
+    await waitFor(() => expect(within(pane.container).queryByTestId('ticket-review')).toBeNull());
+    expect(ticketPaneIds()).toEqual([paneId]);
+    expect(getFocusedPaneId()).toBe(paneId);
+    await waitFor(() => expect(document.activeElement).toBe(within(pane.container).getByTestId('ticket-screen')));
+  });
+
   it('comes back after a reload on its ticket without taking the focus', async () => {
     placeIssuesPane();
     install();
