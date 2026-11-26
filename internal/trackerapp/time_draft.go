@@ -265,9 +265,7 @@ func (s *Service) DraftTime(id string, in TimeDraftRequest) (TimeDraftView, erro
 	if err != nil {
 		return TimeDraftView{}, fmt.Errorf("trackerapp: draft time on %s: %w", id, err)
 	}
-	if w.Changed() {
-		s.timeEntriesChanged(id, author, slices.Concat(w.Made, w.Replaced))
-	}
+	s.timeEntriesChanged(id, author, slices.Concat(w.Made, w.Replaced))
 	return TimeDraftView{Author: author, Made: timeEntryViews(w.Made), Replaced: timeEntryViews(w.Replaced),
 		Kept: timeEntryViews(w.Kept), Skipped: timeEntryViews(w.Skipped)}, nil
 }

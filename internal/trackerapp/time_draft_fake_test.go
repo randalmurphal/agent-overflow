@@ -612,3 +612,29 @@ func TestReadTimeSkipsADayReadMomentsAgo(t *testing.T) {
 		t.Fatal("a read past timeReadFresh made no request")
 	}
 }
+
+// A post whose connection is turned off after its entries were marked
+// sent, before the worklogs were sent, sends nothing, fails as turned
+// off, and puts the entries back in the draft, which it tells.
+func TestAPostEndedBeforeItsSendPutsItsEntriesBack(t *testing.T) {
+	t.Parallel()
+	d := newDraftScenario(t, "jira")
+	v := d.draft(t, d.on("WEB-2", 1, "Reviewed the pull request"))
+	d.takeEvents()
+	d.marks.mu.Lock()
+	d.marks.gate = func() { must[Connection](t)(d.svc.SetEnabled(d.conn.ID, false)) }
+	d.marks.mu.Unlock()
+	var err error
+	reqs := d.requestsOf(t, func() {
+		_, err = d.svc.PostTimeEntries(t.Context(), d.conn.ID, PostTimeRequest{Entries: entryRefs(v.Made...)})
+	})
+	if !errors.Is(err, ErrDisabled) || reqs[jiraWorklogPost] != 0 {
+		t.Fatalf("the post answered %v with requests %v; want it turned off with no worklog posted", err, reqs)
+	}
+	if e := d.entry(t, v.Made[0].ID); e.State != store.TimeEntryDrafted || e.SentMs != 0 {
+		t.Fatalf("the entry is %+v; want it back in the draft", e)
+	}
+	if ev := d.takeEvents(); len(ev) != 1 || !slices.Equal(ev[0].Days, []string{d.day}) {
+		t.Fatalf("the post told %+v", ev)
+	}
+}
