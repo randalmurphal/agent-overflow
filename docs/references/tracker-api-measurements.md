@@ -104,6 +104,15 @@ Fields and search:
   one of the documented project type values. A Jira comment's audience
   is judged on it
   ([tracker backend](../architecture/tracker-backend.md#agent-tools)).
+- Measured 2026-11-26, read-only, on four recently updated issues of one
+  site whose catalog holds 356 fields, 53 of them number fields (46
+  custom): `GET /issue/{id}?fields=*all,-comment,-worklog` returns a number
+  field in the issue's context with no value as null, and leaves out one
+  outside it. Each issue's read returned 182 to 205 fields: 13 to 19
+  number fields as null, 1 to 7 with a value, and 31 to 33 left out; the
+  bodies were 27 to 60 KB. A ticket's estimate is read from it, and a
+  board whose field the read left out keeps its own row's
+  ([tracker backend](../architecture/tracker-backend.md#sync)).
 - JQL date literals have minute precision and are read in the user's time
   zone
   ([JQL fields](https://support.atlassian.com/jira-software-cloud/docs/jql-fields/)).
