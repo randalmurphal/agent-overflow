@@ -297,7 +297,9 @@ func (s *Server) planStep(caller Caller, p *planned, nv namedValue) error {
 	if !ok {
 		return invalidf("%s has no field %s; it has %s.", p.key, quoteName(given), fieldNames(p.d.Fields, topNames))
 	}
-	if s.estimatesBy(p, f.ID) {
+	if by, err := s.estimatesBy(p, f.ID); err != nil {
+		return err
+	} else if by {
 		return s.planEstimate(p, given, nv.value)
 	}
 	if !f.Editable {
@@ -315,6 +317,7 @@ func standardKind(id tracker.FieldID) string {
 		return tracker.KindOption.String()
 	case tracker.FieldDescription:
 		return tracker.KindRichText.String()
+	case tracker.FieldTitle, tracker.FieldType, tracker.FieldParent:
 	}
 	return tracker.KindText.String()
 }
@@ -423,9 +426,9 @@ func (s *Server) boardOf(p *planned, ok func(trackerapp.TicketRowView, trackerap
 
 // estimatesBy reports whether field is the one a board of the ticket
 // estimates by, which set's estimate answers to.
-func (s *Server) estimatesBy(p *planned, field string) bool {
+func (s *Server) estimatesBy(p *planned, field string) (bool, error) {
 	_, _, ok, err := s.boardOf(p, func(_ trackerapp.TicketRowView, b trackerapp.BoardSummary) bool { return b.EstimateField == field })
-	return err == nil && ok
+	return ok, err
 }
 
 // planSprint plans a move into the open sprint v names, of the first of
@@ -596,14 +599,20 @@ func (s *Server) apply(ctx context.Context, caller Caller, p *planned) (ticketAn
 			written.Applied = append(written.Applied, st.names...)
 		case tracker.StateUnknown:
 			out.Unknown, stopped = sentence, true
-		default:
+		case tracker.StateRefused, tracker.StateNotSent:
 			out.Refused, stopped = sentence, true
 		}
 	}
 	if len(written.Applied) > 0 {
 		// The call's own writes moved the ticket's update time: a mark of
 		// the version it was made from follows it.
-		if card, ok, err := s.t.MirrorCard(conn, p.d.Card.ID); err == nil && ok {
+		// A mark left behind refuses the session's next long-text edit as
+		// changed since, which a read again clears.
+		card, ok, err := s.t.MirrorCard(conn, p.d.Card.ID)
+		switch {
+		case err != nil:
+			s.logf("tracker tools: read %s after its write: %v", p.key, err)
+		case ok:
 			s.marks.wrote(caller.Session, markKey{conn, p.d.Card.ID}, p.d.Card.Updated, card.Updated, p.texts)
 		}
 	}
@@ -692,6 +701,8 @@ func judge(kind, names, what string, v trackerapp.WriteView, err error) (tracker
 		if refusal != nil {
 			return state, names + ": " + refusalText(refusal)
 		}
+	case tracker.StateNotSent:
+		// Its failure says why, below.
 	}
 	if failure != nil {
 		return tracker.StateRefused, names + ": " + failure.Message

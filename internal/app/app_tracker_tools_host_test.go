@@ -329,3 +329,38 @@ func TestTrackerApprovalWaiterSettlesOnce(t *testing.T) {
 		t.Fatal("a settlement of a waiter never opened won")
 	}
 }
+
+// The requests one call makes, end to end on the fake Jira site: a move
+// and a comment on a ticket the mirror does not hold, on a computer no
+// screen is reading boards on, so every request is the call's.
+func TestTrackerWriteRequestsOfAMoveAndAComment(t *testing.T) {
+	t.Parallel()
+	f := newTrackerBoardFixture(t)
+	t.Cleanup(func() { _ = f.a.trackerMCPServer().Close() })
+	_, endpoint := trackerWriteThread(t, f, provider.RuntimeAuto)
+	since := 0
+	if log := f.e.Requests(0).Requests; len(log) > 0 {
+		since = log[len(log)-1].Seq
+	}
+	text, isError := trackerMCPStreamedCall(t, f.a, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-2"}, "set": map[string]any{"status": "Done"}, "comment": "Done."})
+	if isError || text != `{"tickets":[{"key":"WEB-2","applied":["status","comment"]}]}` {
+		t.Fatalf("ticket_update = %s (error %v)", text, isError)
+	}
+	var routes []string
+	for _, r := range f.e.Requests(since).Requests {
+		routes = append(routes, r.Route)
+	}
+	want := []string{
+		"GET rest/api/3/field",                     // the site's field catalog, read once per connection
+		"POST rest/api/3/issue/bulkfetch",          // the key, which no mirror holds
+		"GET rest/api/3/issue/{issue}",             // the ticket as it is now
+		"GET rest/api/3/issue/{issue}/comment",     // with its latest comments
+		"GET rest/api/3/issue/{issue}/transitions", // its moves
+		"POST rest/api/3/issue/{issue}/transitions",
+		"GET rest/api/3/issue/{issue}", // the move's refresh
+		"POST rest/api/3/issue/{issue}/comment",
+	}
+	if !slices.Equal(routes, want) {
+		t.Fatalf("requests %q\nwant %q", routes, want)
+	}
+}

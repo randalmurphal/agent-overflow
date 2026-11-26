@@ -298,7 +298,7 @@ func (s *Server) createFields(ctx context.Context, tg createTarget, typeID strin
 		case readOnlyName(lower) || lower == setComment:
 			return nil, nil, invalidf("%s is not something a create sets.", quoteName(given))
 		}
-		f := trackerapp.FieldView{}
+		var f trackerapp.FieldView
 		if id, ok := standardField(lower); ok {
 			f = trackerapp.FieldView{ID: string(id), Name: given, Kind: standardKind(id), Editable: true}
 		} else {

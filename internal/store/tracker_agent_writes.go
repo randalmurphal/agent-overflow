@@ -91,7 +91,7 @@ func (s *Store) RecordAgentWriteSent(w AgentWrite) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("store: record agent write sent: begin: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	id, err := insertAgentWriteTx(tx, w)
 	if err != nil {
 		return 0, fmt.Errorf("store: record agent write sent: %w", err)
@@ -110,7 +110,7 @@ func (s *Store) RecordAgentWrites(sent int64, ws []AgentWrite) error {
 	if err != nil {
 		return fmt.Errorf("store: record agent writes: begin: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if sent != 0 {
 		if _, err := tx.Exec(`DELETE FROM tracker_agent_writes WHERE id = `+intParam("?1"), sent); err != nil {
 			return fmt.Errorf("store: record agent writes: %w", err)
