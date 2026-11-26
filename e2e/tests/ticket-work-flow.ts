@@ -21,7 +21,11 @@
 // work…, which opens the ticket with its form, whose run shows in the
 // ticket's Work, also when the ticket was read before it opens (on compact
 // in the Details it opens); a Backlog row's menu has the same Ask and
-// Start work….
+// Start work…. Work's forge search lists, once each, what names the key
+// by title, by the start of its branch and by a branch the forge or this
+// computer has, on GitHub and GitLab, a stored row with its CI, and on
+// Refresh the forge's change; a failed search says its kind, a rate
+// limit with when to retry and Retry, and a login to fix with none.
 
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -184,20 +188,31 @@ const SEARCH_PULLS: ForgePull[] = [
 ];
 
 /** A project that lists the WEB board, a checkout of `repo` on the fake
- * GitHub with branches feature/WEB-1-host and web-1-new, and the forge
+ * `forge` with branches feature/WEB-1-host and web-1-new, and the forge
  * seeded with `pulls`. */
-async function searchProject(harness: HarnessApp, name: string, pulls: ForgePull[] = SEARCH_PULLS): Promise<{ projectId: string; repo: string }> {
+async function searchProject(
+  harness: HarnessApp, name: string, pulls: ForgePull[] = SEARCH_PULLS, forge: 'github' | 'gitlab' = 'github',
+): Promise<{ projectId: string; repo: string }> {
   await seedFakeJira(harness);
   const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name, repo: { commits: [{ message: 'init', files: { 'README.md': '# Web\n' } }] } }] });
   const { projectId, path } = seed.projects[0];
   await connectFakeJira(harness, projectId);
   const repo = `ao-e2e/${name}-${Date.now().toString(36)}`;
-  await seedForge(harness, [{ forge: 'github', project: repo, pulls }]);
+  await seedForge(harness, [{ forge, project: repo, pulls }]);
   harnessGit(harness, path, 'branch', 'feature/WEB-1-host');
   harnessGit(harness, path, 'branch', 'web-1-new');
-  harnessGit(harness, path, 'remote', 'add', 'origin', `git://github.com/${repo}.git`);
+  harnessGit(harness, path, 'remote', 'add', 'origin', `git://${forge}.com/${repo}.git`);
   return { projectId, repo };
 }
+
+// The fake GitLab's merge requests for WEB-1's search: 701 names it in
+// the title, 702 only in a branch this computer does not have, which the
+// forge keeps; 704 (WEB-12) only seems to.
+const GITLAB_SEARCH_PULLS: ForgePull[] = [
+  { number: 701, title: 'WEB-1 Retry the cursor read', author: 'alice', authorName: 'Alice Ng', headRef: 'retry-cursor' },
+  { number: 702, title: 'Fix the cursor', author: 'bob', authorName: 'Bob Li', headRef: 'feature/web-1-cursor', state: 'merged' },
+  { number: 704, title: 'WEB-12 Other story', author: 'alice', headRef: 'web-12-other' },
+];
 
 /** The fake forge's answered requests of GraphQL operation `op`. */
 async function forgeOps(harness: HarnessApp, op: string): Promise<ForgeHTTPInvocation[]> {
@@ -252,11 +267,13 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
     await expect(work.getByTestId('ticket-work-branch')).toContainText('web-1-new');
     await expect(work.getByTestId('ticket-work-forge-problem')).toHaveCount(0);
 
-    // One key search per read, when Work shows and on Refresh.
+    // One key search per read, when Work shows and on Refresh, and
+    // Refresh shows what the forge holds now: 501 merged since.
     expect(await forgeOps(harness, 'PullsByKey')).toHaveLength(1);
+    await seedForge(harness, [{ forge: 'github', project: repo, pulls: SEARCH_PULLS.map((p) => (p.number === 501 ? { ...p, state: 'merged' } : p)) }]);
     await press(ticket.getByTestId('ticket-refresh'), compact);
     await expect.poll(async () => (await forgeOps(harness, 'PullsByKey')).length, { timeout: 30_000 }).toBe(2);
-    await expect.poll(() => pullRows(work), { timeout: 30_000 }).toEqual(['#504 draft', '#501 open', '#502 merged', '#503 closed']);
+    await expect.poll(() => pullRows(work), { timeout: 30_000 }).toEqual(['#504 draft', '#501 merged', '#502 merged', '#503 closed']);
 
     // A found row opens on the forge, as every pull request row does.
     await press(rows.nth(2), compact);
@@ -276,7 +293,10 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
       const repo: ForgeRepo = {
         forge: 'github',
         project: `ao-e2e/work-once-${compact ? 'compact' : 'desktop'}-${Date.now().toString(36)}`,
-        pulls: [{ number: 601, title: 'WEB-1 Retry the cursor read', author: 'alice', authorName: 'Alice Ng', ci: { jobs: [{ name: 'unit', status: 'success' }] } }],
+        pulls: [
+          { number: 601, title: 'WEB-1 Retry the cursor read', author: 'alice', authorName: 'Alice Ng', ci: { jobs: [{ name: 'unit', status: 'success' }] } },
+          { number: 602, title: 'WEB-1 First try', author: 'alice', headRef: 'first-try', state: 'merged' },
+        ],
       };
       await publishPullRequest(harness, path, repo, { 'src/cursor.ts': 'export const cursor = 1;\n' });
       await harness.open(page);
@@ -291,8 +311,9 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
       const { work } = await openWork(page, WEB1, compact);
       await expect.poll(async () => (await forgeOps(harness, 'PullsByKey')).length, { timeout: 30_000 }).toBe(1);
       await expect(work.getByTestId('ticket-work-searching')).toHaveCount(0, { timeout: 30_000 });
-      await expect.poll(() => pullRows(work)).toEqual(['#601 open']);
-      await expect(work.getByTestId('ticket-work-pull')).toContainText('CI passed');
+      // 601 once, the stored row with its CI; 602 only the search finds.
+      await expect.poll(() => pullRows(work)).toEqual(['#601 open', '#602 merged']);
+      await expect(work.getByTestId('ticket-work-pull').nth(0)).toContainText('CI passed');
     } finally {
       await harness.close();
     }
@@ -321,12 +342,37 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
     await expect(problem).toContainText('failed to refresh from the forge (id: ');
     await expect(work.getByTestId('ticket-work-branch')).toHaveCount(2);
 
-    // A rate limit reads as the page's pause, with its time.
+    // A rate limit says when Retry can read again, and offers it.
     await setForgeOffline(harness, false);
     await setForgeRateLimit(harness, { forge: 'github', pool: 'graphql', remaining: 0, reset: Math.floor(Date.now() / 1000) + 3600 });
     await press(problem.getByTestId('pulls-project-retry'), compact);
     await expect(problem).toHaveAttribute('data-error-kind', 'rate_limited', { timeout: 30_000 });
-    await expect(problem).toContainText(/GitHub rate limit reached\. Updates resume at /);
+    await expect(problem).toContainText(/GitHub rate limit reached, so ao-e2e\/\S+ was not searched\. Retry after /);
+    await expect(problem.getByTestId('pulls-project-retry')).toBeVisible();
+    await expect(work.getByTestId('ticket-work-branch')).toHaveCount(2);
+  });
+
+  test('on GitLab, Work lists a merge request whose key is only in a branch this computer lacks, and a login to fix reads as setup', async ({ harness, page }) => {
+    test.setTimeout(150_000);
+    await searchProject(harness, compact ? 'compact-work-search-gitlab' : 'work-search-gitlab', GITLAB_SEARCH_PULLS, 'gitlab');
+    await harness.open(page);
+    const { ticket, work } = await openWork(page, WEB1, compact);
+    // GitLab's rows only: HarnessReset leaves the stored Pull requests
+    // lists of an earlier test's GitHub project, which name WEB-1 too.
+    const gitlabRows = async () => (await pullRows(work)).filter((row) => row.startsWith('!'));
+    await expect.poll(gitlabRows, { timeout: 30_000 }).toEqual(['!701 open', '!702 merged']);
+    await expect(work.getByTestId('ticket-work-searching')).toHaveCount(0);
+    await expect(work.getByTestId('ticket-work-pull').filter({ hasText: '!702' })).toContainText('Fix the cursor');
+    await expect(work.getByTestId('ticket-work-forge-problem')).toHaveCount(0);
+
+    // The forge refuses the login every time: a setup failure, with no
+    // Retry, and the branches still show.
+    await refuseForgeRoute(harness, { route: 'glab api merge request list', status: 401, body: { message: '401 Unauthorized' } });
+    await press(ticket.getByTestId('ticket-refresh'), compact);
+    const problem = work.getByTestId('pulls-project-error');
+    await expect(problem).toHaveAttribute('data-error-kind', 'setup', { timeout: 30_000 });
+    await expect(problem).toContainText('Could not search ao-e2e/');
+    await expect(work.getByTestId('pulls-project-retry')).toHaveCount(0);
     await expect(work.getByTestId('ticket-work-branch')).toHaveCount(2);
   });
 

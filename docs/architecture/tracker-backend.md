@@ -2031,23 +2031,25 @@ delete is refused and the links the delete read are the ones it ends.
   4 MB an open, 23 ms and 5 MB when every list names the key
   (`TestTicketWorkCostAtRealSize`); a 200-row landing's tickets cost
   0.5 ms. It sends no forge or tracker request.
-- **`SearchTicketWork`** (home route, the same scopes, budget 2m15s) is
+- **`SearchTicketWork`** (home route, the same scopes, budget 2m15s,
+  which bounds the whole run, the local read included) is
   `GetTicketWork`'s answer with the forge searched by the key
   ([Ticket Work search](forge-transport.md#ticket-work-search)): once per
-  distinct repository the projects above clone, then a lookup by name of
-  each of the ticket's branches no listed pull request names. A found
-  pull request counts only when its title or branch names the key by the
-  same rule (`namesTicketKey`). It is listed once
-  (`ticketWorkRead.addFound`): a stored row stays while the forge
-  answers its state, since it carries CI, and a linked thread's record,
-  or a stored row whose state the forge answers otherwise (a stored list
-  is as old as its last read, which runs only while the Pull requests
-  page is open or at boot), gives way to the forge's answer. A
+  distinct repository the projects above clone, then a lookup by name, in
+  every state, of each branch of the ticket, the forge's or this
+  computer's, whose pull requests that search did not read whole. A found
+  pull request or branch counts only when its title or name names the key
+  by the same rule (`namesTicketKey`). A pull request is listed once
+  (`ticketWorkRead.addFound`): a stored row stays, since it carries CI,
+  and takes the state the forge answers (a stored list is as old as its
+  last read, which runs only while the Pull requests page is open or at
+  boot); a linked thread's record gives way to the forge's row. A
   repository's failure is a `TicketForgeProblem` carrying the fields a
   Pull requests page project carries for a failed read
-  (`newRepoForgeFailure`), and a full page is named in `SearchFull`. The
-  client calls both methods at once and shows the stored answer until
-  the search's lands (`stores/ticketWork.svelte.ts`); nothing is stored.
+  (`newRepoForgeFailure`), and a search that stopped at its page bound is
+  named in `SearchFull`. The client calls both methods at once and shows
+  the stored answer until the search's lands (`stores/ticketWork.svelte.ts`);
+  a stored answer or failure after it is not shown; nothing is stored.
   It repeats `GetTicketWork`'s local read, the 18 ms above.
 - **`StartTicketThread`** (project route, `threads:operate`, plus
   `tracker:read`, and `git:operate` for Start work) makes the thread of

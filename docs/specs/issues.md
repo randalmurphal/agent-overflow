@@ -521,13 +521,15 @@ is said in Work in the Pull requests page's words, beside the rest. A pull
 request found by the search shows its state and author and no CI. Not
 built: Jira's development data.
 
-The search finds a pull request by its title in any state, and on GitHub
-also by a branch name that begins with the key. A pull request whose key
-is only in its branch name and not at its start (`feature/WEB-1-…`), or
-on GitLab only in its branch name, is found only when this computer has
-that branch, local or fetched: a branch deleted after its merge and never
-fetched here leaves its pull request out of Work. Each repository's
-search reads at most 100 pull requests and says so when there were more.
+The search finds a pull request in any state by its title, and by a
+branch name that holds the key: a branch the forge still has, a branch
+this computer has (local or fetched), and on GitHub any branch whose name
+begins with the key. Work misses a merge request whose key is only in its
+branch name once that branch is deleted on the forge, unless this
+computer still has the branch; on GitHub that holds only when the key is
+not at the branch name's start. A fork's parent is searched only for the
+branches of the ticket, not by title. Each repository's search reads at
+most 500 matches of each kind and says so when there were more.
 
 - Ticket keys are found in branch names and pull request titles. Only the
   keys of connected tracker projects match.

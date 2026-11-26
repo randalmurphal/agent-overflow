@@ -172,7 +172,9 @@ queries: enough to design on, not a proof of every tokenizer case.
   branch `issues-find-filters`, `head:issues-find-filters`,
   `head:issues-find` and `head:issues-fin` each matched it, and
   `head:find`, `head:filters` and `head:find-filters` matched nothing.
-  Whether the prefix ignores case was not measured.
+  A second probe the same day: `head:ISSUES-FIND` matched the pull request
+  from `issues-find-filters`, so the prefix ignores case. It also matches
+  a closed pull request whose branch was deleted on the forge.
 - A quoted title term matches whole tokens in order, case ignored: for
   titles holding an ID of the shape `XX-YYYY-NNNN`, the quoted full ID
   matched its one pull request, the quoted `XX-YYYY` matched both pull
@@ -182,14 +184,24 @@ queries: enough to design on, not a proof of every tokenizer case.
   each half alone matched one.
 - Two aliased `search` fields in one request both answered, and
   `rateLimit { cost }` for that request was 1.
+- `repository.refs(refPrefix: "refs/heads/", query: ...)` matches a
+  substring of a branch name, ignoring case: `query: "integration"` and
+  `query: "INTEGRATION"` each returned `issues-integration`. It lists
+  only branches that exist.
 
 GitLab's merge request list documentation (read the same day) says
 `search` matches "against their `title` and `description`", narrowed by
 `in` (`title`, `description`, or both joined with a comma), that
 `source_branch` "Returns merge requests with the given source branch."
-(it does not say exact), and that `state` defaults to `all`. Nothing was
-probed on GitLab, and which rate-limit pool its search uses was not
-measured.
+(it does not say exact), and that `state` defaults to `all`. Its Branches
+API documentation says `search` returns the branches "containing the
+search string", with `^term` and `term$` anchors. Probed on 2026-11-26,
+read-only and unauthenticated, on a public project on gitlab.com: the
+Branches API `search=MAIN` and `search=main` returned the same three
+branches (`main` and two whose names hold `main` in the middle), and
+likewise `STABLE` and `stable`, so it matches a substring and ignores
+case. A self-managed GitLab of another version was not measured, nor
+which rate-limit pool these searches use.
 
 ## List page sizes
 

@@ -812,35 +812,50 @@ method's budget:
 
 - `Core.SearchPRsByKey(ctx, repo, key)` once per distinct repository the
   Work's projects clone (the origin, as the project list reads it; a
-  fork's parent is not searched). GitHub: one GraphQL `PullsByKey` with
-  two aliased `search(type: ISSUE, first: 100)` fields,
-  `repo:O/R is:pr in:title "KEY"` and `repo:O/R is:pr head:KEY`, which
-  cost 1 point together. A quoted title term matches whole tokens in
-  order, case ignored, and `head:` matches a branch name by its prefix;
-  the two cannot be joined with `OR` in one query (all measured in
+  fork's parent is not searched by key). GitHub: one GraphQL `PullsByKey`
+  a page, with two aliased `search(type: ISSUE, first: 100)` fields,
+  `repo:O/R is:pr in:title "KEY"` and `repo:O/R is:pr head:KEY`, and
+  `repository.refs(refPrefix: "refs/heads/", query: KEY, first: 100)`.
+  A quoted title term matches whole tokens in order, `head:` matches a
+  branch name by its prefix, and the refs `query` matches a substring of
+  the names of the branches that exist, each ignoring case; the two
+  searches cannot be joined with `OR` in one query (all measured in
   [forge API measurements](../references/forge-api-measurements.md#ticket-key-search)).
-  GitLab: one `GET projects/P/merge_requests?state=all&search=KEY&in=title&per_page=100`;
-  GitLab's list has no search of source branch names. Each search reads
-  one page; one with more (`issueCount` past the page, or a next page)
-  is `PRKeySearch.Full`.
-- `Core.ListPRsByHead(ctx, cwd, branch)` for each of the ticket's
-  branches in a searched repository that no pull request listed by then
-  names: GitHub `PRsByHead` in every state, GitLab
-  `merge_requests?state=all&source_branch=B`, each with the fork rules
-  of `ListOpenPRs` above.
+  Each part pages on its own cursor and is left out of the next request
+  (`@include`) once it has no page left. GitLab: two requests at once,
+  `GET projects/P/merge_requests?state=all&search=KEY&in=title&per_page=100`
+  and `GET projects/P/repository/branches?search=KEY&per_page=100` (a
+  substring of the name, case ignored, measured); GitLab's merge request
+  list has no search of source branch names. Each search reads up to
+  `keySearchMaxPages` (5) pages, since a loose match (`WEB-10` for `WEB-1`)
+  can fill a page ahead of the exact one; one with more is
+  `PRKeySearch.Full`.
+- `Core.ListPRsByHead(ctx, cwd, branch)` in every state, once for each
+  branch of the ticket in a repository whose search answered: the
+  repository's branches the search found and this computer's branches in
+  the projects that clone it, each kept only when its name holds the key
+  under the key rule, less those whose pull requests the search already
+  read whole (`PRKeySearch.Covers`: GitHub's head search, read to its
+  end, covers every branch that begins with the key). What Work already
+  lists proves nothing, since a branch can have several pull requests.
+  GitHub `PRsByHead`, GitLab `merge_requests?state=all&source_branch=B`,
+  each with the fork rules of `ListOpenPRs` above, except that GitLab
+  reads a fork's parent in every state even when the fork has merge
+  requests of its own.
 
 The forge's matches are looser than the key rule (a quoted GitHub term
 also matches a longer dashed ID it begins, as `WEB-1` would `WEB-1-2`;
 GitLab's search is a substring, so `WEB-1`
-matches `WEB-12`), so Work keeps a row only when its title or branch
-names the key. A pull request whose key is in
-its branch only, after the branch's start, is found only through a branch
-this computer has.
+matches `WEB-12`), so Work keeps a row or a branch only when its title or
+name names the key. A pull request whose key is in its branch name only,
+whose branch the forge has deleted, is found only through a branch this
+computer still has, or on GitHub when the branch name begins with the
+key.
 
 | Work read | GitHub | GitLab |
 |---|---|---|
-| Per distinct repository | 1 `PullsByKey` | 1 merge request list |
-| Per branch of the ticket no listed pull request names | 1 `PRsByHead`, + 1 for a fork's parent | 1 merge request list, + 1 `projects/P` (cached) and 1 list of the parent for a fork with none of its own |
+| Per distinct repository | 1 `PullsByKey` a page, up to 5 | 1 merge request list and 1 branch list, each a page, up to 5 each |
+| Per branch of the ticket the search did not cover | 1 `PRsByHead`, + 1 for a fork's parent | 1 merge request list, + 1 `projects/P` (cached) and 1 list of the parent for a fork |
 
 A failed repository is one `TicketForgeProblem`, classified and worded
 by `newRepoForgeFailure` as the Pull requests page's project failures
