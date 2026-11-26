@@ -638,3 +638,23 @@ func TestAPostEndedBeforeItsSendPutsItsEntriesBack(t *testing.T) {
 		t.Fatalf("the post told %+v", ev)
 	}
 }
+
+// An entry the person edits while its approval runs, after the approval
+// read it and before it was marked sent, is not posted as it was before
+// the edit: the mark is at the revision the person approved.
+func TestAnEntryEditedDuringItsApprovalIsNotPosted(t *testing.T) {
+	t.Parallel()
+	d := newDraftScenario(t, "jira")
+	v := d.draft(t, d.on("WEB-2", 1, "Reviewed the pull request"))
+	reason := "Reviewed and merged the pull request"
+	d.marks.mu.Lock()
+	d.marks.gate = func() {
+		must[TimeEntryView](t)(d.svc.EditTimeEntry(d.conn.ID, entryRefs(v.Made...)[0], TimeEntryEdit{Reason: &reason}))
+	}
+	d.marks.mu.Unlock()
+	got, posts := d.post(t, false, entryRefs(v.Made...)...)
+	d.posted(t, "the approval across the edit", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-2, 1h, changed since it was read; read the day again.", 0)
+	if e := d.entry(t, v.Made[0].ID); e.State != store.TimeEntryDrafted || e.Reason != reason {
+		t.Fatalf("the entry is %+v; want the person's edit, drafted", e)
+	}
+}
