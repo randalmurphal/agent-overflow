@@ -103,9 +103,10 @@ export function pickedOf(value: FieldValueView): readonly PickItem[] {
   return (value.choices ?? []).map((c) => ({ id: c.id, name: c.name || c.id }));
 }
 
-/** The value a pick sends: the items, or empty to clear. */
-function pickedValue(kind: string, items: readonly { id: string }[]): FieldValueView {
-  return items.length === 0 ? {} as FieldValueView : { kind, choices: items.map((i) => ({ id: i.id })) } as FieldValueView;
+/** The edit a pick of `items` in `field` of `kind` sends: the items, or
+ * empty to clear. */
+export function pickedEdit(field: string, kind: string, items: readonly { id: string }[]): FieldEditInput {
+  return { field, value: (items.length === 0 ? {} : { kind, choices: items.map((i) => ({ id: i.id })) }) as FieldValueView };
 }
 
 /** A pick list for `field` of `kind` (option or user). A field of
@@ -124,7 +125,7 @@ export function pickEditor(field: string, kind: string, target: EditorTarget, op
     onPick: (item) => {
       let next: readonly PickItem[] = item ? [item] : [];
       if (opts.multi && item) next = target.picked.some((p) => p.id === item.id) ? target.picked.filter((p) => p.id !== item.id) : [...target.picked, item];
-      target.save({ field, value: pickedValue(kind, next) }, next);
+      target.save(pickedEdit(field, kind, next), next);
     },
   };
 }

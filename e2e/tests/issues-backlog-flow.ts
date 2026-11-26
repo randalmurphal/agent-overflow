@@ -33,7 +33,9 @@ import type { Locator, Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import { expect, test } from './fixtures.js';
 import { longPress } from './touch-helpers.js';
-import { JIRA_SITE, connectFakeJiraBoard, openIssuesPane, press, trackerRequests, type ExtraJira, type LoggedRequest } from './tracker-helpers.js';
+import { FORM_READ_AGE_MS } from '../../frontend/src/lib/pageTiming.ts';
+import { methodIdByName } from './offhost-helpers.js';
+import { JIRA_SITE, connectFakeJiraBoard, openIssuesPane, press, seedFakeJira, trackerRequests, type ExtraJira, type LoggedRequest } from './tracker-helpers.js';
 
 export interface BacklogSurface {
   compact: boolean;
@@ -109,6 +111,31 @@ async function sectionRows(pane: Locator, list: string): Promise<string[]> {
 /** The sections' lists, in the order shown. */
 async function sectionLists(pane: Locator): Promise<string[]> {
   return pane.getByTestId('issues-backlog-section').evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.list ?? ''));
+}
+
+/** The calls this page sends, in the order its sockets send them, from
+ * its first socket on, and which of them were answered. */
+function sentCalls(page: Page): { readonly sent: () => readonly string[]; readonly answered: (method: string) => number } {
+  const byId = new Map<number, string>();
+  for (const m of ['RefreshTrackerSubscription', 'TrackerBoardProjects', 'TrackerIssueTypes', 'TrackerCreateFields']) byId.set(methodIdByName(m), m);
+  const sent: string[] = [];
+  const asked = new Map<string, string>();
+  const answered = new Map<string, number>();
+  page.on('websocket', (socket) => {
+    socket.on('framesent', ({ payload }) => {
+      if (typeof payload !== 'string' || !payload.startsWith('{"type":"rpc"')) return;
+      const frame = JSON.parse(payload) as { id?: string; methodId?: number };
+      const method = byId.get(frame.methodId ?? -1) ?? 'other';
+      sent.push(method);
+      if (frame.id) asked.set(frame.id, method);
+    });
+    socket.on('framereceived', ({ payload }) => {
+      if (typeof payload !== 'string' || !payload.startsWith('{"type":"rpc"')) return;
+      const method = asked.get((JSON.parse(payload) as { id?: string }).id ?? '');
+      if (method) answered.set(method, (answered.get(method) ?? 0) + 1);
+    });
+  });
+  return { sent: () => sent, answered: (method) => answered.get(method) ?? 0 };
 }
 
 /** Switches the pane to Backlog: its tab, or the folded picker. */
@@ -417,6 +444,84 @@ export function registerBacklogFlow({ compact }: BacklogSurface): void {
       { issues: [madeId] }, { issues: [madeId] },
     ]);
     expect(await trackerRequests(harness, CREATE_ROUTE)).toHaveLength(1);
+  });
+
+  test('New ticket offers what Jira offers now: past a minute, or after Refresh, it reads again, and not while no form is open', async ({ harness, page }) => {
+    test.setTimeout(120_000);
+    // A Story needs a component, which the screen lists from WEB's.
+    const withParts = (names: string[]): ExtraJira => ({
+      ...BACKLOG,
+      components: names.map((n, i) => ({ id: String(30_001 + i), name: n })),
+      issueTypes: BACKLOG.issueTypes!.map((t) => (t.id === '10001' ? { ...t, screen: [...t.screen, { field: 'components', required: true }] } : t)),
+    });
+    // The page clock runs as the real one does; the age is crossed below by moving it on.
+    await page.clock.install();
+    const calls = sentCalls(page);
+    const { pane, backlog } = await openBoardBacklog(harness, page, name('fresh'), compact, withParts(['Web']));
+    const formReads = async () => (await Promise.all([BOARD_PROJECTS_ROUTE, TYPES_ROUTE, FIELDS_ROUTE].map((route) => trackerRequests(harness, route)))).reduce((n, r) => n + r.length, 0);
+    const foot = backlog.locator('[data-testid="issues-backlog-foot"][data-list="sprint:2"]');
+    const form = foot.getByTestId('issues-backlog-create');
+    const parts = form.locator('[data-testid="ticket-field"][data-field="components"]');
+    const openForm = async () => {
+      await press(foot.getByTestId('issues-backlog-new'), compact);
+      await expect(form.locator('[data-testid="ticket-field"][data-field="type"]').getByTestId('ticket-field-value')).toHaveText('Story', { timeout: 15_000 });
+      await expect(parts).toBeVisible();
+    };
+    const offered = async (want: string[]) => {
+      await press(parts.getByTestId('ticket-field-value'), compact);
+      await expect(page.getByTestId('ticket-picker-item')).toHaveText(want, { timeout: 15_000 });
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('ticket-picker-item')).toHaveCount(0);
+    };
+    const closeForm = async () => {
+      await press(form.getByTestId('issues-backlog-create-cancel'), compact);
+      await expect(form).toHaveCount(0);
+    };
+
+    await openForm();
+    await offered(['Web']);
+    await expect.poll(formReads).toBe(3);
+    await closeForm();
+    // Within the minute: nothing read.
+    await openForm();
+    await closeForm();
+    expect(await formReads()).toBe(3);
+
+    // A teammate adds a component in Jira; past the minute the form reads
+    // the projects, the types and the fields once each, and offers it.
+    await seedFakeJira(harness, withParts(['Web', 'API']));
+    await page.clock.fastForward(FORM_READ_AGE_MS);
+    await openForm();
+    await offered(['Web', 'API']);
+    await expect.poll(formReads).toBe(6);
+
+    // Refresh with the form open reads them again; with no form open it reads none.
+    await seedFakeJira(harness, withParts(['Web', 'API', 'Docs']));
+    await press(pane.getByTestId('issues-refresh'), compact);
+    await offered(['Web', 'API', 'Docs']);
+    await expect.poll(formReads).toBe(9);
+    await closeForm();
+    // Refresh with no form open sends no form read. The page sends its
+    // calls in order, so a read that Refresh started is sent before the
+    // next Refresh's call, which is pressed once the first was answered.
+    const mark = calls.sent().length;
+    const refreshed = calls.answered('RefreshTrackerSubscription');
+    await press(pane.getByTestId('issues-refresh'), compact);
+    await expect.poll(() => calls.answered('RefreshTrackerSubscription'), { timeout: 15_000 }).toBe(refreshed + 1);
+    await press(pane.getByTestId('issues-refresh'), compact);
+    const between = () => {
+      const since = calls.sent().slice(mark);
+      return since.slice(0, since.indexOf('RefreshTrackerSubscription', since.indexOf('RefreshTrackerSubscription') + 1));
+    };
+    await expect.poll(() => calls.sent().slice(mark).filter((m) => m === 'RefreshTrackerSubscription').length, { timeout: 15_000 }).toBe(2);
+    expect(between().filter((m) => m !== 'RefreshTrackerSubscription' && m !== 'other')).toEqual([]);
+    // Past the minute again: the next open reads all three.
+    await page.clock.fastForward(FORM_READ_AGE_MS);
+    await openForm();
+    await expect.poll(formReads).toBe(12);
+    // Each read was a person's act: none followed one settling.
+    await offered(['Web', 'API', 'Docs']);
+    expect(await formReads()).toBe(12);
   });
 
   test('a sprint is created, changed, refused a clearing of its dates, completed with its unfinished tickets moved, and started', async ({ harness, page }) => {

@@ -115,6 +115,7 @@
     fieldTarget,
     moveTicket,
     openTicketMove,
+    refreshFormReads,
     revealTicketPoker,
     ticketMoveDraft,
     ticketWrite,
@@ -462,6 +463,7 @@
 
   function refresh(): void {
     void refreshTrackerTicket(attachment.key);
+    refreshFormReads(attachment.ref.backend, attachment.ref.connection);
   }
 
   let menu = $state<{ x: number; y: number } | null>(null);

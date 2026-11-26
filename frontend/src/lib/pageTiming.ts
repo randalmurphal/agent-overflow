@@ -19,6 +19,14 @@ export const COMPUTER_READ_DEADLINE_MS = 2_500;
 /** How long the composer waits after the last edit before it saves the draft (stores/composerDraft.svelte.ts). */
 export const DRAFT_SAVE_DEBOUNCE_MS = 500;
 
+/**
+ * The age past which a person's act reads a form's held read again
+ * (stores/trackerTicketWrites.svelte.ts, "A form read"): a form opened
+ * a minute or more after its last read offers what the tracker offers
+ * now, and one opened again within it reads nothing.
+ */
+export const FORM_READ_AGE_MS = 60_000;
+
 // The socket's timers (transport/wsClient.ts).
 //
 // RPC_TIMEOUT_MS is the wait for a method that declares no budget: the

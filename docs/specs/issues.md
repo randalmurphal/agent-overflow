@@ -364,7 +364,13 @@ picked last on the board this session, else the project's first at the
 standard level. The values given in the form are kept for each project
 and type: the form shows, and Add sends, only those given for the
 project and type it shows, and coming back to one, by a pick or by the
-board's projects, shows what was given for it. What was typed in the form, a
+board's projects, shows what was given for it. The form offers what the
+tracker offers now: opened, or back in view, more than a minute after it
+last read the projects, types and fields, it reads them again while it
+shows what it holds, and the screen's Refresh reads them again too; a
+value given that the tracker no longer offers is said before Add and not
+sent, and a project or type the person picked that it no longer offers
+is said and asked for again before Add. What was typed in the form, a
 field being typed in included, outlives the form scrolling out of view. A ticket the tracker
 made stays made: when its move into the sprint failed, or may have, the
 form says so with the ticket's key and offers that move until that move
@@ -414,7 +420,8 @@ comments in either order
 with the control and the comment box, edited, deleted and copied from a
 comment's menu; history; linked tickets grouped by relation, each
 opening in the ticket's place, added through a form that finds the other
-ticket by key or words and removed from their row; attachments, attached
+ticket by key or words, and keeps the relation picked when its list is
+read again or says it is no longer offered, and removed from their row; attachments, attached
 one at a time by picking, dropping or pasting, each saved or copied from
 its row and an image up to 16 MB opened in the app; on a Jira site that
 has it, planning poker, folded until opened, with the estimate set from
