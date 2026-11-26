@@ -196,6 +196,8 @@ func categoryName(g tracker.StatusGroup) (string, bool) {
 		return "In Progress", true
 	case tracker.GroupDone:
 		return "Done", true
+	case tracker.GroupBacklog, tracker.GroupCanceled:
+		// No Jira category: statuses group as to do, in progress and done.
 	}
 	return "", false
 }
