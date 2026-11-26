@@ -33,6 +33,9 @@ type eventLog struct {
 	// setups counts the service's setup change nudges, and dashboards its
 	// dashboards' change nudges.
 	setups, dashboards atomic.Int64
+	// onDashboards, when set, runs at each dashboards change nudge, on the
+	// goroutine that sent it.
+	onDashboards atomic.Pointer[func()]
 }
 
 func newEventLog() *eventLog {

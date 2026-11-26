@@ -159,8 +159,9 @@ type Service struct {
 	setups  map[string]*heldSetup
 
 	// propMu guards proposals, the widgets agents proposed on each
-	// project's boards (dashboards.go); it is never held with another of
-	// the service's locks.
+	// project's boards (dashboards.go). A Keep holds it across its write
+	// of the setup file, so propMu is taken before setupMu and never
+	// while holding setupMu or any other of the service's locks.
 	propMu            sync.Mutex
 	proposals         map[proposalKey][]heldProposal
 	dashboardsChanged func()

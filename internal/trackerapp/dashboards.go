@@ -174,24 +174,16 @@ type KeepTarget struct {
 
 // KeepProposal moves the widget proposal proposed on the board
 // subscription onto a dashboard its project keeps, and answers that
-// dashboard's ID. The proposal goes once the dashboards hold it; a Keep
-// of a proposal no longer held (kept or dismissed from another window, or
-// gone with a restart) is refused.
+// dashboard's ID. The move is one transition under propMu: the proposal
+// is found, written to the setup file and dropped while no Dismiss, Keep
+// or show can change the board's proposals, so a reader sees it either
+// proposed or kept, and the clients are told once, after. A Keep of a
+// proposal no longer held (kept or dismissed from another window, or
+// gone with a restart) is refused; a write that fails leaves it proposed.
 func (s *Service) KeepProposal(subscription, proposal string, to KeepTarget) (string, error) {
 	scope, key, err := s.boardHandle(subscription)
 	if err != nil {
 		return "", err
-	}
-	pk := proposalKey{key.slug, key.site, scope.Board}
-	s.propMu.Lock()
-	i := slices.IndexFunc(s.proposals[pk], func(p heldProposal) bool { return p.widget.ID == proposal })
-	var p heldProposal
-	if i >= 0 {
-		p = s.proposals[pk][i]
-	}
-	s.propMu.Unlock()
-	if i < 0 {
-		return "", dashRefusal("dashboard_proposal_gone", "this proposed widget is no longer on the board: it was kept or dismissed in another window, or the app restarted; ask the agent to propose it again")
 	}
 	if (to.Dashboard == "") == (to.Title == "") {
 		return "", fmt.Errorf("%w: keep a widget on one dashboard, named or new", ErrInvalidRequest)
@@ -203,38 +195,54 @@ func (s *Service) KeepProposal(subscription, proposal string, to KeepTarget) (st
 		}
 		id = newOwnID(dashboardPrefix)
 	}
-	err = s.editDashboards(key.slug, key.site, string(scope.Board), func(kept []KeptDashboard) ([]KeptDashboard, error) {
-		if to.Dashboard == "" {
-			return append(kept, KeptDashboard{ID: id, Title: strings.TrimSpace(to.Title), Widgets: []KeptWidget{p.widget}}), nil
-		}
-		j := slices.IndexFunc(kept, func(d KeptDashboard) bool { return d.ID == to.Dashboard })
-		if j < 0 {
-			return nil, dashRefusal("dashboard_gone", "that dashboard was deleted; keep the widget on another dashboard or a new one")
-		}
-		kept[j].Widgets = append(kept[j].Widgets, p.widget)
-		return kept, nil
-	})
+	pk := proposalKey{key.slug, key.site, scope.Board}
+	s.propMu.Lock()
+	err = s.keepLocked(pk, key, string(scope.Board), proposal, to, id)
+	s.propMu.Unlock()
 	if err != nil {
 		return "", err
 	}
-	s.dropProposal(pk, proposal)
+	s.dashboardsChanged()
 	return id, nil
 }
 
+// keepLocked is KeepProposal's transition; the caller holds propMu.
+func (s *Service) keepLocked(pk proposalKey, key setupKey, board, proposal string, to KeepTarget, id string) error {
+	i := slices.IndexFunc(s.proposals[pk], func(p heldProposal) bool { return p.widget.ID == proposal })
+	if i < 0 {
+		return dashRefusal("dashboard_proposal_gone", "this proposed widget is no longer on the board: it was kept or dismissed in another window, or the app restarted; ask the agent to propose it again")
+	}
+	widget := s.proposals[pk][i].widget
+	_, err := s.editDashboards(key.slug, key.site, board, func(kept []KeptDashboard) ([]KeptDashboard, error) {
+		if to.Dashboard == "" {
+			return append(kept, KeptDashboard{ID: id, Title: strings.TrimSpace(to.Title), Widgets: []KeptWidget{widget}}), nil
+		}
+		j := slices.IndexFunc(kept, func(d KeptDashboard) bool { return d.ID == to.Dashboard })
+		if j < 0 {
+			return nil, dashRefusal("dashboard_gone", "that dashboard is gone; keep the widget on another dashboard or a new one")
+		}
+		kept[j].Widgets = append(kept[j].Widgets, widget)
+		return kept, nil
+	})
+	if err != nil {
+		return err
+	}
+	s.proposals[pk] = slices.Delete(s.proposals[pk], i, i+1)
+	if len(s.proposals[pk]) == 0 {
+		delete(s.proposals, pk)
+	}
+	return nil
+}
+
 // DismissProposal drops the widget proposal proposed on the board
-// subscription; one no longer held is already gone.
+// subscription, and tells the clients when it was held; one no longer
+// held is already gone.
 func (s *Service) DismissProposal(subscription, proposal string) error {
 	scope, key, err := s.boardHandle(subscription)
 	if err != nil {
 		return err
 	}
-	s.dropProposal(proposalKey{key.slug, key.site, scope.Board}, proposal)
-	return nil
-}
-
-// dropProposal drops proposal from pk's and tells the clients when it was
-// held.
-func (s *Service) dropProposal(pk proposalKey, proposal string) {
+	pk := proposalKey{key.slug, key.site, scope.Board}
 	s.propMu.Lock()
 	before := len(s.proposals[pk])
 	s.proposals[pk] = slices.DeleteFunc(s.proposals[pk], func(p heldProposal) bool { return p.widget.ID == proposal })
@@ -246,38 +254,32 @@ func (s *Service) dropProposal(pk proposalKey, proposal string) {
 	if dropped {
 		s.dashboardsChanged()
 	}
+	return nil
 }
 
 // RemoveWidget removes widget from dashboard, one the board
-// subscription's project keeps; one already gone is removed.
+// subscription's project keeps; the dashboard goes with its last widget,
+// and one already gone is removed.
 func (s *Service) RemoveWidget(subscription, dashboard, widget string) error {
 	scope, key, err := s.boardHandle(subscription)
 	if err != nil {
 		return err
 	}
-	return s.editDashboards(key.slug, key.site, string(scope.Board), func(kept []KeptDashboard) ([]KeptDashboard, error) {
+	changed, err := s.editDashboards(key.slug, key.site, string(scope.Board), func(kept []KeptDashboard) ([]KeptDashboard, error) {
 		j := slices.IndexFunc(kept, func(d KeptDashboard) bool { return d.ID == dashboard })
 		if j < 0 || !slices.ContainsFunc(kept[j].Widgets, func(w KeptWidget) bool { return w.ID == widget }) {
 			return nil, errNoEdit
 		}
 		kept[j].Widgets = slices.DeleteFunc(kept[j].Widgets, func(w KeptWidget) bool { return w.ID == widget })
+		if len(kept[j].Widgets) == 0 {
+			kept = slices.Delete(kept, j, j+1)
+		}
 		return kept, nil
 	})
-}
-
-// DeleteDashboard deletes dashboard, one the board subscription's project
-// keeps, with its widgets; one already gone is deleted.
-func (s *Service) DeleteDashboard(subscription, dashboard string) error {
-	scope, key, err := s.boardHandle(subscription)
-	if err != nil {
-		return err
+	if changed {
+		s.dashboardsChanged()
 	}
-	return s.editDashboards(key.slug, key.site, string(scope.Board), func(kept []KeptDashboard) ([]KeptDashboard, error) {
-		if !slices.ContainsFunc(kept, func(d KeptDashboard) bool { return d.ID == dashboard }) {
-			return nil, errNoEdit
-		}
-		return slices.DeleteFunc(kept, func(d KeptDashboard) bool { return d.ID == dashboard }), nil
-	})
+	return err
 }
 
 // TryWidget counts widget w on board scope as projectID's dashboards count

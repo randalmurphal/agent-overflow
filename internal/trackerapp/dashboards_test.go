@@ -140,8 +140,8 @@ func TestKeepMovesAProposalOntoAKeptDashboard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := m.events.dashboards.Load() - told; n != 2 {
-		t.Fatalf("a Keep was told %d times; want the dashboards and the proposal's drop", n)
+	if n := m.events.dashboards.Load() - told; n != 1 {
+		t.Fatalf("a Keep was told %d times; want 1", n)
 	}
 	list := must[[]trackerdash.DashboardView](t)(m.svc.Dashboards(t.Context(), sub))
 	if len(list) != 2 || list[1].ID != id || list[1].Title != "Bugs" || len(list[1].Widgets) != 1 || list[1].Widgets[0].ID != first {
@@ -217,23 +217,14 @@ func TestKeptDashboardsLiveInTheSetupFile(t *testing.T) {
 	if err := m.svc.RemoveWidget(sub, id, w); err != nil {
 		t.Fatal(err)
 	}
-	if list := must[[]trackerdash.DashboardView](t)(m.svc.Dashboards(t.Context(), sub)); len(list) != 2 || len(list[1].Widgets) != 0 {
-		t.Fatalf("after Remove: %+v", list)
-	}
-	if err := m.svc.DeleteDashboard(sub, id); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.svc.DeleteDashboard(sub, id); err != nil {
-		t.Fatal(err)
-	}
-	if n := m.events.dashboards.Load() - told; n != 2 {
-		t.Fatalf("a Remove and a Delete, each twice, were told %d times; want 2", n)
+	if n := m.events.dashboards.Load() - told; n != 1 {
+		t.Fatalf("a Remove, twice, was told %d times; want 1", n)
 	}
 	if list := must[[]trackerdash.DashboardView](t)(m.svc.Dashboards(t.Context(), sub)); len(list) != 1 {
-		t.Fatalf("after Delete: %+v", list)
+		t.Fatalf("the dashboard outlived its last widget: %+v", list)
 	}
 	if _, err := os.Stat(m.setupPathOf(t, m.project())); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the last dashboard's delete of an empty setup left its file: %v", err)
+		t.Fatalf("the last dashboard's removal from an empty setup left its file: %v", err)
 	}
 }
 
@@ -279,5 +270,30 @@ func TestKeepRefusesANewerSectionAndAFullFile(t *testing.T) {
 	}
 	if info, err := os.Stat(m.setupPathOf(t, m.project())); err != nil || info.Size() > setupMaxBytes {
 		t.Fatalf("the full file: %v, %v", info, err)
+	}
+}
+
+// A Keep is one change the clients are told of once: whoever reads the
+// board when told finds the widget kept and no longer proposed, and a
+// Dismiss of it then finds nothing to drop.
+func TestAKeepIsToldOnceAndReadsSettled(t *testing.T) {
+	t.Parallel()
+	m, sub := dashboardFixture(t)
+	p := m.propose(t, openTickets())
+	type seen struct{ proposed, kept bool }
+	var reads []seen
+	hook := func() {
+		a := m.evaluate(t, sub, "")
+		list := must[[]trackerdash.DashboardView](t)(m.svc.Dashboards(t.Context(), sub))
+		kept := len(list) == 2 && slices.ContainsFunc(list[1].Widgets, func(w trackerdash.WidgetView) bool { return w.ID == p })
+		reads = append(reads, seen{slices.ContainsFunc(a.Proposals, func(v trackerdash.ProposalView) bool { return v.View.ID == p }), kept})
+	}
+	m.events.onDashboards.Store(&hook)
+	if _, err := m.svc.KeepProposal(sub, p, KeepTarget{Title: "Bugs"}); err != nil {
+		t.Fatal(err)
+	}
+	m.events.onDashboards.Store(nil)
+	if len(reads) != 1 || reads[0] != (seen{proposed: false, kept: true}) {
+		t.Fatalf("what a reader found at each nudge of one Keep: %+v; want one, kept and not proposed", reads)
 	}
 }

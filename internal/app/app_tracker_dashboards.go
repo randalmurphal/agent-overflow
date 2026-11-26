@@ -92,7 +92,7 @@ func (a *App) DismissTrackerWidget(ctx context.Context, subscriptionID, proposal
 }
 
 // RemoveTrackerWidget removes a widget from a dashboard a subscribed
-// board's project keeps.
+// board's project keeps; the dashboard goes with its last widget.
 //
 //ao:scope tracker:operate
 //ao:route home
@@ -102,19 +102,6 @@ func (a *App) RemoveTrackerWidget(ctx context.Context, subscriptionID, dashboard
 		return err
 	}
 	return dashboardError(svc.RemoveWidget(subscriptionID, dashboard, widget))
-}
-
-// DeleteTrackerDashboard deletes a dashboard a subscribed board's project
-// keeps, with its widgets.
-//
-//ao:scope tracker:operate
-//ao:route home
-func (a *App) DeleteTrackerDashboard(ctx context.Context, subscriptionID, dashboard string) error {
-	svc, err := a.trackerService()
-	if err != nil {
-		return err
-	}
-	return dashboardError(svc.DeleteDashboard(subscriptionID, dashboard))
 }
 
 // dashboardError is err with the evaluator's refusal as its public code

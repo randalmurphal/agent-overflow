@@ -173,12 +173,14 @@ var errNoEdit = errors.New("trackerapp: the dashboards hold nothing to change")
 // editDashboards replaces the dashboards slug's project keeps for board
 // of site with what edit makes of them, reading the file again and
 // writing it under setupMu as a replace does (rewriteSetup). edit gets a
-// copy it may change; errNoEdit writes nothing and is no failure. Whoever
-// holds the setup is told it moved (setupMoved), and the dashboards'
-// clients that they changed.
-func (s *Service) editDashboards(slug string, site siteKey, board string, edit func([]KeptDashboard) ([]KeptDashboard, error)) error {
+// copy it may change; errNoEdit writes nothing and is no failure, and
+// answers changed false. Whoever holds the setup is told it moved
+// (setupMoved); the caller tells the dashboards' clients, once its whole
+// change is made.
+func (s *Service) editDashboards(slug string, site siteKey, board string, edit func([]KeptDashboard) ([]KeptDashboard, error)) (changed bool, err error) {
 	var editErr error
-	before, after, err := s.rewriteSetup(slug, func(stored *heldSetup) (Setup, []BoardDashboards, bool) {
+	var before, after *heldSetup
+	before, after, err = s.rewriteSetup(slug, func(stored *heldSetup) (Setup, []BoardDashboards, bool) {
 		next := slices.Clone(stored.dashboards)
 		i := slices.IndexFunc(next, func(b BoardDashboards) bool {
 			return b.Tracker == site.tracker && b.Site == site.site && b.Board == board
@@ -203,17 +205,16 @@ func (s *Service) editDashboards(slug string, site siteKey, board string, edit f
 	s.setupMoved(slug, before, after)
 	switch {
 	case errors.Is(editErr, errNoEdit):
-		return nil
+		return false, nil
 	case editErr != nil:
-		return editErr
+		return false, editErr
 	case err != nil:
 		if full, ok := errors.AsType[*SetupError](err); ok && full.Full {
-			return dashRefusal("dashboard_full", fmt.Sprintf("this project's dashboards fill its setup file (%d KiB); remove a widget or a dashboard to keep this one", setupMaxBytes>>10))
+			return false, dashRefusal("dashboard_full", fmt.Sprintf("this project's dashboards fill its setup file (%d KiB); remove a widget to keep this one", setupMaxBytes>>10))
 		}
-		return err
+		return false, err
 	}
-	s.dashboardsChanged()
-	return nil
+	return true, nil
 }
 
 // cloneDashboards is a copy of ds that an edit may change without
