@@ -2550,7 +2550,9 @@ tickets that went unasked and finds asking turned on by then is refused
 with nothing sent (`tracker_rules_changed`), telling the agent to make
 the call again. The app raises a prompt of kind `tracker-write` in the thread
 (`provider.EventApprovalRequest` through triage, decisions accept and
-decline only) showing each ticket's changes and the comment. The prompt
+decline only), headed by the action (`Change 3 tickets`; the
+`Approval`'s `Title`, with `Tool` the prompt's tool name), showing each
+ticket's changes and the comment. The prompt
 carries each value of `set` whole, and a change line that shows a value
 in part names it, so the panel's Show all opens the whole value with
 nothing fetched. A call whose `set` and comment together pass 256 KiB is
@@ -2562,8 +2564,9 @@ routes it to a spawner (`triage.promptRoutable`), so a worker's tracker
 write is the person's, which the worker's composer shows on every screen
 and its spawner's Agents row reaches like any prompt routed to nobody
 ([ruling 19](../specs/standing-agents.md)). The call's waiter settles
-once, by the first of the answer (`RespondToApproval`), 15 minutes, and
-the call's end; an answer that loses is refused as already handled, and a
+once, by the first of the answer (`RespondToApproval`), 15 minutes
+(`IsolationConfig.TrackerApprovalWait` in a harness boot), and the
+call's end; an answer that loses is refused as already handled, and a
 wait that ends first withdraws the prompt from every screen. A prompt
 triage does not keep, because the session no longer holds the thread,
 ends the call at once. Nothing is persisted: an app that stops ends the
@@ -2743,8 +2746,9 @@ issue, key, title and applied steps; each key opens the ticket.
 Jira connection is on as it starts (`trackerMCPAccess.Time`); a session
 with only Linear gets the four ticket tools, and a call of a time tool
 from it is refused as no such tool. Their two definitions are 268 and
-611 bytes, 881 of the tool list with the commas that join them
-(`TestTheTimeToolsAreGivenWithAJiraConnection`). The time
+714 bytes, 984 of the tool list with the commas that join them
+(`TestTheTimeToolsAreGivenWithAJiraConnection`); the whole list is 2,858
+bytes and the guide 172 (`TestTrackerMCPToolListAndGuideStayWithinTheirBound`). The time
 is the connection's verified account's: a connection with no verified
 account, or whose key file holds another token than the one verified, is
 refused saying to check it, since a post logs time as the token's owner.
@@ -2760,7 +2764,8 @@ worklogs and the Jira issues they name
 its open questions. A connection whose read failed is named in `unread`
 with its sentence; the call fails only when every connection did.
 
-**`time_draft`** takes `entries`, each a `day`, `hours` (whole minutes),
+**`time_draft`** takes `entries` to draft or `post` to log the draft of
+days (below), and refuses a call with neither or both. `entries` are each a `day`, `hours` (whole minutes),
 a `reason`, which becomes the worklog's description, and a `key`, or no
 key for a question, whose reason says what the time was and whose
 `offer` names up to 5 keys. A call holds 1 to 250 entries over at most
@@ -2782,7 +2787,28 @@ logged, the keys skipped, the hours already logged as this computer last
 read them, and that nothing is logged until the user approves it; with
 more than one connection on, the site is named once and the keys are
 bare;
-`time_read` shows the entries whole. No tool reaches a posting path.
+`time_read` shows the entries whole.
+
+**`time_draft` with `post`** names up to 7 days (YYYY-MM-DD) and drafts
+nothing (`trackertools/time_post.go`). It reads `Host.WritePolicy` at
+admission, then each Jira connection's entries not yet logged on those
+days, with no tracker request (`trackerapp.Service.OpenTimeEntries`):
+every entry, whichever thread or person drafted it, as a day's approval
+names them. A call with no drafted entry on a ticket is refused, as is
+one past 250 entries on a connection or 256 KiB of approval. It always
+asks the person, through the tracker write's prompt (above), titled `Log
+time for Tue Nov 24`: each entry under its ticket's key (with its site
+when more than one connection is on) as its day, time and whole reason,
+an entry that will not be sent saying why (it may already be logged, or
+it is being posted), and each open question as a note
+(`trackerapp.EntryLine`). Once approved it reads the policy again, then
+posts on each connection exactly the entries shown, at the revisions
+shown, through `PostTrackerTimeEntries` on the server's context, so a
+post is a day's approval with its rules: an entry the person edited or
+removed while the prompt was open is named as not posted, and one drafted
+meanwhile is not sent. The answer is per connection: the entries posted,
+those with a ticket it offered, and the post's sentence (or the
+connection's error); the call fails only when no connection's post ran.
 
 **The draft.** There is no draft object: the entries of a connection's
 author by day (`tracker_time_entries`, [schema](schema.md)), each naming
@@ -2850,7 +2876,11 @@ tests).
 notification row of kind `time_draft` (`Drafted time for Tue Nov 24`),
 naming the call, the connection and the days, and never rewrites it; a
 thread reads the call's entries as they are now through
-`ThreadTimeEntries`.
+`ThreadTimeEntries`. A post that ran adds one row of kind `time_post`,
+written once with the count it ended with (`Logged 2 of 3 entries for
+Tue Nov 24`, of the entries on tickets the prompt offered to log),
+naming the call, the connections and the days; a denied or unanswered
+post adds none.
 
 ## Tests
 
