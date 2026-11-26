@@ -20,9 +20,11 @@
 // when the ticket already holds what it would set, and is not sent when
 // that read failed; and the write store sends nothing for a target with a
 // write out.
-// The move and the assignment are the write store's writes, so their
-// outcomes also show under the Status and Assignee fields, and one that
-// settles after the ticket closed is its toast.
+// The move and the assignment are the write store's writes, and what
+// became of each is shown by its rule (trackerTicketWrites.svelte.ts):
+// under the controls of its target on a shown surface, Work's row of the
+// step among them, else in a toast. A step's outcome here (`written`) is
+// what the run decides by; it carries no sentence of the write's own.
 
 import { SvelteMap } from 'svelte/reactivity';
 import type { FieldValueView, Setup, SetupView, StartWorkDefaults } from '../../../bindings/agent-overflow/internal/trackerapp/models';
@@ -184,18 +186,25 @@ export interface StartWorkPlan {
 
 export type StartWorkStep = 'thread' | 'move' | 'assign' | 'defaults';
 
+/** Set on the outcome of a step that was a tracker write: the write store
+ * shows what became of it (under its target's controls on a shown
+ * surface, else in a toast), so the step's own `text` is not shown. */
+interface Written {
+  readonly written?: true;
+}
+
 /** A step's outcome as the form shows it. */
 export type StepOutcome =
   | { readonly kind: 'waiting' | 'running' | 'skipped' }
-  | { readonly kind: 'applied'; readonly note: string | null }
+  | ({ readonly kind: 'applied'; readonly note: string | null } & Written)
   | { readonly kind: 'already'; readonly text: string }
   /** The tracker, git or the setup refused it: `text` says why. */
-  | { readonly kind: 'refused'; readonly text: string }
+  | ({ readonly kind: 'refused'; readonly text: string } & Written)
   /** It was sent and its outcome is not known. */
-  | { readonly kind: 'unknown'; readonly text: string }
+  | ({ readonly kind: 'unknown'; readonly text: string } & Written)
   /** It was not sent, or not run: `text` says why. */
-  | { readonly kind: 'not_sent'; readonly text: string }
-  | { readonly kind: 'failed'; readonly text: string; readonly error: unknown };
+  | ({ readonly kind: 'not_sent'; readonly text: string } & Written)
+  | ({ readonly kind: 'failed'; readonly text: string; readonly error: unknown } & Written);
 
 export interface StartWorkRun {
   readonly plan: StartWorkPlan;
@@ -238,16 +247,16 @@ function writeStep(outcome: WriteOutcome | null, what: string, label: string): S
   if (outcome === null) return { kind: 'not_sent', text: `A change of ${label}'s ${what} is already being saved; try again once it ends.` };
   switch (outcome.kind) {
     case 'applied':
-      return { kind: 'applied', note: outcome.note };
+      return { kind: 'applied', note: outcome.note, written: true };
     case 'refused':
-      return { kind: 'refused', text: refusalSentence(outcome.refusal, (id) => id) };
+      return { kind: 'refused', text: refusalSentence(outcome.refusal, (id) => id), written: true };
     case 'unknown':
     case 'lost':
-      return { kind: 'unknown', text: outcome.message };
+      return { kind: 'unknown', text: outcome.message, written: true };
     case 'not_sent':
-      return { kind: 'not_sent', text: outcome.message };
+      return { kind: 'not_sent', text: outcome.message, written: true };
     case 'failed':
-      return { kind: 'failed', text: userFacingError(outcome.error), error: outcome.error };
+      return { kind: 'failed', text: userFacingError(outcome.error), error: outcome.error, written: true };
   }
 }
 

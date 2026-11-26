@@ -19,6 +19,8 @@ import { TransportError } from '../../transport/wsClient';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeThread } from '../../../test/helpers/chat';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { getToasts } from '../../stores/toast.svelte';
+import { ticketWriteSurfaceContext } from './ticketWriteSurface';
 
 const SITE = 'https://example.atlassian.net';
 
@@ -53,7 +55,7 @@ const WORK = {
   problems: [{ projectId: 'p2', error: 'git for-each-ref failed: not a git repository' }],
 };
 
-async function mountWork(opts: { backend?: string; first?: DetailView | null; work?: () => Promise<unknown>; archived?: boolean } = {}) {
+async function mountWork(opts: { backend?: string; first?: DetailView | null; work?: () => Promise<unknown>; archived?: boolean; shown?: () => boolean } = {}) {
   const backend = opts.backend ?? HOME_BACKEND;
   const first = opts.first === undefined ? DETAIL : opts.first;
   setBindingMock('SubscribeTrackerTicket', async () => ({ id: 'sub-1', seq: 1, poll_every: 10_000, loaded: first !== null, detail: first ?? undefined, read_at: first ? 1 : 0 } as TicketSubscription));
@@ -69,7 +71,11 @@ async function mountWork(opts: { backend?: string; first?: DetailView | null; wo
   listThread(makeThread({ id: 't-plain', projectId: 'p1', title: 'No ticket' }));
   ticket = attachTrackerTicket({ backend, connection: 'c1', issue: '10101' }, true);
   await settle();
-  const view = render(TicketWork, { attachment: ticket, project: 'p1', onProject: () => {}, me: 'acc-1' });
+  // The ticket screen Work is under, shown unless the test says.
+  const view = render(TicketWork, {
+    props: { attachment: ticket, project: 'p1', onProject: () => {}, me: 'acc-1' },
+    context: ticketWriteSurfaceContext(opts.shown ?? (() => true)),
+  });
   await settle();
   return Object.assign(view, { reads });
 }
@@ -219,6 +225,52 @@ describe('Work', () => {
     await fireEvent.click(branchGo);
     expect(start).not.toHaveBeenCalled();
     again.unmount();
+  });
+
+  describe('what became of Start work\'s move', () => {
+    /** Starts work with a move to In Progress that the tracker refuses. */
+    async function refusedMove(shown: () => boolean) {
+      setBindingMock('ProjectTrackerSetup', async () => ({
+        revision: 'r1',
+        setup: { status_groups: [], ticket_pins: [], start_work: [{ tracker: 'jira', site: SITE, project: 'WEB', status: 's2', assign: false, branch: 'WEB-1-retry' }] },
+      } as SetupView));
+      setBindingMock('StartTicketThread', async () => makeThread({ id: 't-made', projectId: 'p1', title: 'WEB-1 Retry cursor', ticketLink: link('10101') }));
+      setBindingMock('RefreshTrackerSubscription', async () => {
+        trackerIssueUpdated({ connection: 'c1', issue: '10101', seq: 5, changed: true }, HOME_BACKEND);
+      });
+      const move = setBindingMock('MoveTrackerIssue', async () => ({ parts: [{ step: 'move', state: 'refused', refusal: { reason: 'tracker', message: 'A resolution is required.' } }] }));
+      const view = await mountWork({ shown });
+      await waitFor(() => expect((view.getByTestId('ticket-work-start') as HTMLButtonElement).disabled).toBe(false));
+      await fireEvent.click(view.getByTestId('ticket-work-start'));
+      const form = await waitFor(formOf);
+      const go = form.querySelector('[data-testid="start-work-go"]') as HTMLButtonElement;
+      await waitFor(() => expect(go.disabled).toBe(false));
+      await fireEvent.click(go);
+      await waitFor(() => expect(move).toHaveBeenCalledTimes(1));
+      const row = await waitFor(() => {
+        const found = view.getAllByTestId('start-work-step').find((s) => s.dataset.step === 'move');
+        expect(found?.dataset.outcome).toBe('refused');
+        return found!;
+      });
+      return { view, row };
+    }
+
+    const refusalToasts = () => getToasts().filter((t) => t.message.includes('A resolution is required.'));
+
+    it('is kept under its row while the ticket is shown, and not said in a toast', async () => {
+      const { view, row } = await refusedMove(() => true);
+      expect(row.querySelector('[data-testid="ticket-write-outcome"]')?.textContent).toContain('A resolution is required.');
+      expect(refusalToasts()).toEqual([]);
+      view.unmount();
+    });
+
+    it('is said once, in a toast, when it settles while the ticket is not shown', async () => {
+      const { view, row } = await refusedMove(() => false);
+      await waitFor(() => expect(refusalToasts().map((t) => t.message)).toEqual(['The tracker refused the change to WEB-1: A resolution is required.']));
+      expect(row.textContent).not.toContain('A resolution is required.');
+      expect(row.textContent).toContain('Refused.');
+      view.unmount();
+    });
   });
 
   it('says why Ask and Start work cannot run when this device may not start threads or use git there', async () => {

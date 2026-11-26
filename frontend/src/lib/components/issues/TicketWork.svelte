@@ -22,7 +22,8 @@
   import { addToast } from '../../stores/toast.svelte';
   import { acquireTrackerConnections, trackerConnectionsOf } from '../../stores/trackerConnections.svelte';
   import type { TrackerTicketAttachment } from '../../stores/trackerTicket.svelte';
-  import type { TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
+  import { fieldTarget, ticketWrite, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
+  import TicketWriteNote from './TicketWriteNote.svelte';
   import {
     askAboutTicket,
     dismissStartWorkRun,
@@ -168,10 +169,34 @@
     defaults: 'Save the defaults',
   };
 
+  // The write target of a step that is a tracker write. Its row is a
+  // control of that target while the step runs or holds the write's
+  // outcome: the write store's note under it says what became of the
+  // write, by the store's rule, and the row only names the kind.
+  const WRITE_TARGETS: Partial<Record<StartWorkStep, string>> = { move: 'status', assign: fieldTarget('assignee') };
+  function drawsWrite(step: StartWorkStep, o: StepOutcome): string | null {
+    const target = WRITE_TARGETS[step];
+    return target && (o.kind === 'running' || ('written' in o && o.written)) ? target : null;
+  }
+
   function stepText(step: StartWorkStep, o: StepOutcome): string {
+    if ('written' in o && o.written) {
+      switch (o.kind) {
+        case 'applied': return 'Done.';
+        case 'refused': return 'Refused.';
+        case 'unknown': return 'Not known.';
+        case 'not_sent': return 'Not sent.';
+        case 'failed': return 'Failed.';
+      }
+    }
     switch (o.kind) {
       case 'waiting': return 'Waiting.';
-      case 'running': return step === 'thread' ? 'Making the thread…' : 'Sending…';
+      case 'running': {
+        if (step === 'thread') return 'Making the thread…';
+        const target = WRITE_TARGETS[step];
+        // The write's own note says "Saving…" once it is out.
+        return target && ticketWrite(attachment.key, target)?.pending ? '' : 'Reading the ticket…';
+      }
       case 'skipped': return '';
       case 'applied': return o.note ? `Done. ${o.note}` : 'Done.';
       case 'already': return o.text;
@@ -242,9 +267,13 @@
     <div class="flex flex-col gap-1 rounded-[var(--radius-field)] border border-border-subtle bg-surface-1 px-2 py-1.5 text-xs" data-testid="start-work-run" data-running={run.running ? '' : undefined}>
       {#each Object.entries(run.steps) as [step, outcome] (step)}
         {#if outcome.kind !== 'skipped'}
+          {@const target = drawsWrite(step as StartWorkStep, outcome)}
           <div class="flex flex-col" data-testid="start-work-step" data-step={step} data-outcome={outcome.kind}>
             <span class="font-medium text-fg">{STEP_NAMES[step as StartWorkStep]}{step === 'move' && run.plan.status ? ` to ${run.plan.status.name}` : ''}{step === 'thread' ? ` on ${run.plan.branch}` : ''}</span>
             <span class={STEP_TONE[outcome.kind]}>{stepText(step as StartWorkStep, outcome)}</span>
+            {#if target}
+              <TicketWriteNote ticketKey={attachment.key} {target} fieldName={(id) => id} />
+            {/if}
           </div>
         {/if}
       {/each}

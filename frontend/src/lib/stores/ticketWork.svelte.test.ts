@@ -298,8 +298,10 @@ describe('Start work', () => {
     expect(run.thread?.id).toBe('t-refused');
     expect(getThreadById('t-refused')).toBeTruthy();
     expect(mounted('t-refused')).toBe(false);
-    // The write store holds the refusal under the Status field too.
-    expect(ticketWrite(ticket.key, 'status')?.outcome?.kind).toBe('refused');
+    // No control of the status is on a shown surface here, so the write
+    // store says the refusal in a toast and keeps nothing.
+    expect(ticketWrite(ticket.key, 'status')).toBeNull();
+    expect(getToasts().map((t) => t.message)).toContain('The tracker refused the change to WEB-1: A resolution is required.');
 
     move.mockImplementation(async () => { held = detail({ id: 's2', name: 'In Progress' }, 'acc-1'); return applied(); });
     await retryStartWork(ctx, read);
