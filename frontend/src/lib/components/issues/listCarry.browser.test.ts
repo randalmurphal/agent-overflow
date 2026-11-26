@@ -1,5 +1,5 @@
 // Real-Chromium suite for carrying a Board card (BoardScreen and
-// boardCarry.ts): while a card is carried over a board whose first column
+// listCarry.ts): while a card is carried over a board whose first column
 // holds 2,000 cards, nothing under the columns changes but the drop slot's
 // line, the header counts and the column under the card saying whether it
 // takes it, so no card renders per pointer move; a drop in the card's own

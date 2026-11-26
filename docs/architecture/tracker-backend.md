@@ -2173,7 +2173,12 @@ mints, `SaveTrackerAttachment`, `TrackerLinkTypes`, `LinkTrackerIssues`,
 `UnlinkTrackerIssues` and the planning poker methods, the Board
 screen's changes to a card (its fields, the carry, Move to… and Move to
 sprint…), with the wrappers of `TrackerMoves`, `RankTrackerIssues` and
-`MoveTrackerIssuesToSprint`, its Time screen,
+`MoveTrackerIssuesToSprint`, its Backlog screen (the sections, a
+row's changes and carry, New ticket in a section, and the sprint
+writes), with the wrappers of `CreateTrackerIssue`, `TrackerIssueTypes`,
+`TrackerCreateFields`, `CreateTrackerSprint`,
+`EditTrackerSprint`, `StartTrackerSprint` and `CompleteTrackerSprint`,
+its Time screen,
 with the wrappers of `TrackerWorklogs`, `RefreshTrackerWorklogs`,
 `AddTrackerWorklog`, `EditTrackerWorklog`, `DeleteTrackerWorklog`,
 `TrackerLookup` and `TrackerSearch` (`components/issues/AGENTS.md`),
@@ -2192,8 +2197,6 @@ are outside the tracker (a store error, the cleanup), and a tracker
 failure of the loop's sync shows on its connection's row as its problem.
 Not built, owed by the app layer:
 
-- A sprint edit on the Backlog screen: the `bindings.ts` wrapper of
-  `EditTrackerSprint` ships with it.
 - The rest of the project's tracker setup, each a section of its file:
   card marks, draft settings and what agents may do, and the Setup pages
   that edit the sections, Start work defaults among them. A query that

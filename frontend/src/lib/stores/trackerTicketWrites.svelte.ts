@@ -1,7 +1,14 @@
-// Every write the ticket screen and a Board card make, and the reads
-// their pickers make (docs/architecture/tracker-backend.md, "Writes"). A
-// card writes under the same ticket key as the ticket screen, so one write
-// shows one state on both. Each write goes through
+// Every write the ticket screen, a Board card and a Backlog row make, a
+// board's own writes (its sprints, and the tickets made on it from the
+// Backlog), and the reads their pickers and forms make
+// (docs/architecture/tracker-backend.md, "Writes"). A card and a row write
+// under the same ticket key as the ticket screen, so one write shows one
+// state on all of them. A board's writes are held under the board's key
+// (`boardWriteContext`) by the same runner and the same rules of where an
+// outcome shows; they wait for the board's views to settle, and none of a
+// ticket's rules (its view's settling, its read after a stale refusal,
+// loss consent, drafts) is reachable from one, since those live in the
+// ticket's `write` alone and it takes a ticket. Each write goes through
 // its bound method once: one write may be pending per ticket and target
 // (a field, the status, the points, a comment, the new comment), and a
 // second press of a pending target sends nothing. Nothing retries on its
@@ -71,8 +78,9 @@
 // next file's; the queue says which file is being sent and its place, and
 // nothing else (no byte progress). A link added, a link removed and the
 // poker writes are writes like any other; a vote, a reveal and a clear
-// share one target. A connection's link types are read once, for the link
-// form, and held until its computer connects again.
+// share one target. What a form reads (a connection's link types for the
+// link form; its projects, a project's issue types and a type's create
+// fields for New ticket) is held by the rules above `heldReads`.
 
 import { untrack } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
