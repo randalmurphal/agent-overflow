@@ -2084,20 +2084,28 @@ by `at` (or by the sprint a `bucket` names), reduces them (count, sum,
 median, average, or the average of the periods' sums), narrows them to
 a person or an epic, and lists them in a drill. A row whose value is
 NULL is not counted: a number says how many tickets it could not count
-(`Num.NC`, which leaves out a ticket another row counts), and a number
-that counted nothing is not known (`V` absent) rather than zero. A row
-of a range metric with no `at` is listed in the drill and counted in no
-period. A row not counted is listed as "Not counted: " and its note, so
+(`Num.NC`, which leaves out a ticket another row of its series counts),
+and a number that counted nothing is not known (`V` absent) rather than
+zero. A row of a range metric with no `at` could have happened from its
+ticket's creation to its last update: it belongs to each range that
+span meets, the range before included, is counted in none and in no
+period, and the range lists it in its numbers, their drills and a
+chart's not counted. A row not counted is listed as "Not counted: " and its note, so
 a note says only why. A metric with `at` or a sprint bucket counts the
 range and is compared with the range before; any other counts now and
 has no change mark. The host binds `:now` and `:since` (where the
 range's periods, the previous range's included, begin), so a metric of
 the range reads only the rows it can place; a done ticket whose finish
-is not known is listed, not counted, when it changed since `:since`.
+is not known is read when it changed since `:since`.
 
-A drill names its widget and, for a bar, point or table cell, the
-cell: its bucket's key (empty for Unassigned and No epic) and its
-series (empty for the whole bucket). It evaluates its metric again, so
+A drill names its widget and one of three targets
+(`trackerdash.DrillRequest`), and any other is refused: the whole widget
+(what a number, a list's More and a chart's not counted open); a bar,
+point or table cell, by its bucket's key (empty for Unassigned and No
+epic) and its series (empty for the whole bucket); or the rest, the
+buckets a bars or table widget of people, epics or text left out past
+its 12 bars or 50 rows (what its More opens), ranked by the same
+function as the widget. It evaluates its metric again, so
 a number and its rows always come from one evaluation, and lists one
 row per contribution, with the period it counts in, its value (none for
 a count) and the drill's count of rows and of tickets. A later page that

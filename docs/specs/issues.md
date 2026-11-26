@@ -562,6 +562,11 @@ sidebar and the thread header, on desktop and on a phone.
   rows, 5 tickets" when a ticket counts in two sprints); each row names
   the period it counts in, and a row not counted says "Not counted" and
   why.
+- A chart lists the tickets it draws in no bar or point (a finish whose
+  time is not known) in a "not counted" that opens the whole chart. A
+  chart or table that shows only its first 12 bars or 50 rows says how
+  many more ("2 more epics"), which opens the tickets of the ones left
+  out.
 - Until the board's first read has finished, the dashboard and each
   drill say "This board's first read has not finished: these numbers
   count the tickets read so far.", and nothing is compared.
