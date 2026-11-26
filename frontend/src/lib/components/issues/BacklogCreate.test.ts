@@ -295,6 +295,17 @@ describe('New ticket', () => {
     await fireEvent.keyDown(title, { key: 'Enter' });
     await waitFor(() => expect(created).toHaveBeenCalledTimes(2));
     expect(created.mock.calls[1][1]).toMatchObject({ fields: [{ field: 'priority', value: { kind: 'option', choices: [{ id: '2' }] } }] });
+    // Picked and then put back to none: the tracker's default again, and
+    // nothing sent for it, since Jira refuses a clear of a field it requires.
+    await waitFor(() => expect(title.value).toBe(''));
+    await pick(view.container, 'priority', 'High');
+    await fireEvent.click(within(field(view.container, 'priority')).getByTestId('ticket-field-value'));
+    await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-clear')));
+    await waitFor(() => expect(value(view.container, 'priority')).toBe('The tracker\'s default'));
+    await fireEvent.input(title, { target: { value: 'Default again' } });
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(created).toHaveBeenCalledTimes(3));
+    expect(created.mock.calls[2][1]).toMatchObject({ fields: [] });
     view.unmount();
   });
 

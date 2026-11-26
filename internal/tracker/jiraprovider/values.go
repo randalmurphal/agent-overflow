@@ -43,7 +43,9 @@ func (p *Provider) CreateFields(ctx context.Context, project tracker.ProjectID, 
 		if slices.Contains(createSkipped, f.ID) || f.ID == s.sprint || f.Schema.Custom == rankType {
 			continue
 		}
+		// A field Jira fills when none is given is offered, not asked.
 		fd := tracker.CreateField{Field: metaField(f), Defaulted: f.Required && f.HasDefault}
+		fd.Required = f.Demanded()
 		if fd.Kind == tracker.KindOption {
 			for _, a := range f.Allowed {
 				if !a.Disabled {

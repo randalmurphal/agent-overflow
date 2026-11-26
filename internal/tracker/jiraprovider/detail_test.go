@@ -287,6 +287,19 @@ func TestMovesAndScreens(t *testing.T) {
 	}
 }
 
+// A move's field is required as its screen says, a default or not, so the
+// move's form offers no clear of a field Jira requires.
+func TestMoveFieldsRequiredAsTheScreenSays(t *testing.T) {
+	f, p := detailSite(t, 0)
+	f.On("GET", "/rest/api/3/issue/10001/transitions", jiratest.Reply(200, `{"transitions":[
+		{"id":"31","name":"Resolve","to":{"id":"10002","name":"Done","statusCategory":{"key":"done"}},"hasScreen":true,"isAvailable":true,"fields":{
+		 "priority":{"key":"priority","name":"Priority","required":true,"hasDefaultValue":true,"schema":{"type":"priority","system":"priority"},"operations":["set"]}}}]}`))
+	moves, err := p.Moves(t.Context(), "10001")
+	if err != nil || len(moves) != 1 || len(moves[0].Fields) != 1 || !moves[0].Fields[0].Required {
+		t.Fatalf("moves %+v %v; want the defaulted priority required", moves, err)
+	}
+}
+
 // A create field is required of the person only when Jira would not fill
 // it: required with a default (Priority, commonly) is not, as the
 // create's planner reads it.

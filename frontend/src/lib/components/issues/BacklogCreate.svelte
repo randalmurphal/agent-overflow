@@ -163,8 +163,14 @@
     drafts.delete(draftKey);
   }
 
-  function setFilled(next: ReadonlyMap<string, FilledField>): void {
-    if (draft) draft.filled = next;
+  // A create sends a field only with a value: one picked or typed back to
+  // none leaves the form, so the tracker fills it or the form asks again.
+  function fill(id: string, field: FilledField | null): void {
+    if (!draft) return;
+    const next = new Map(draft.filled);
+    if (field) next.set(id, field);
+    else next.delete(id);
+    draft.filled = next;
   }
 
   const projectEditor = $derived(pickEditor('project', 'option', {
@@ -212,7 +218,7 @@
       choices: f.allowed
         ? async (text) => ({ choices: f.allowed!.filter((c) => (c.name ?? '').toLowerCase().startsWith(text.toLowerCase())), more: false })
         : (text) => createChoices(b, projectID, typeID, f.id, text),
-      save: (edit, picked) => { setFilled(new Map(draft?.filled).set(f.id, { edit, picked, text: edit.typed?.[0] ?? '' })); },
+      save: (edit, picked) => { fill(f.id, picked.length || edit.typed?.length ? { edit, picked, text: edit.typed?.[0] ?? '' } : null); },
     };
   }
   // A defaulted field the app cannot set is left to the tracker, unshown.
@@ -304,7 +310,7 @@
             class="w-full resize-y rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1.5 font-mono text-[0.8125rem] text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             value={shown(f)}
             disabled={pending}
-            oninput={(event) => { setFilled(new Map(draft?.filled).set(f.id, { edit: { field: f.id, markdown: { markdown: event.currentTarget.value, from: '' } }, picked: [], text: event.currentTarget.value })); }}
+            oninput={(event) => { const text = event.currentTarget.value; fill(f.id, text ? { edit: { field: f.id, markdown: { markdown: text, from: '' } }, picked: [], text } : null); }}
           ></textarea>
         </label>
       {:else}
