@@ -1155,6 +1155,7 @@ export const TrackerBoardChoices = dispatch('TrackerBoardChoices');
 export const SetProjectTrackerBoards = dispatch('SetProjectTrackerBoards');
 export const ProjectTrackerSetup = dispatch('ProjectTrackerSetup');
 export const ProjectTrackerStatuses = dispatch('ProjectTrackerStatuses');
+export const ProjectTrackerFields = dispatch('ProjectTrackerFields');
 export const SetProjectTrackerSetup = dispatch('SetProjectTrackerSetup');
 export const SubscribeTrackerBoard = dispatch('SubscribeTrackerBoard');
 export const TrackerBoard = dispatch('TrackerBoard');
