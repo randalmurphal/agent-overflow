@@ -147,7 +147,8 @@ func (s *targetsStore) takeRead() []string {
 
 // The targets a refresh reads, pinned: a comment, which needs a detail
 // alone, reads no row or kept issue of the issue on its two boards; an
-// edit, which needs the card too, reads its row on each board.
+// edit, which needs the card too, reads its row on each board. The body
+// each finds held, with no ticket open, is dropped, not read.
 func TestRefreshTargetsReadWhatEachResourceNeeds(t *testing.T) {
 	t.Parallel()
 	f := newWriteFixture(t)
@@ -161,6 +162,13 @@ func TestRefreshTargetsReadWhatEachResourceNeeds(t *testing.T) {
 	if got := ts.takeRead(); !slices.Equal(got, []string{"rows 0 kept 0 details 1 boards 0"}) {
 		t.Errorf("a comment's targets: %v", got)
 	}
+	if got := describeCounts(ts.take()); got != "DropMirrorBodies:1 ReadMirrorRefreshTargets:1" {
+		t.Errorf("a comment's store calls %s", got)
+	}
+	// The comment's refresh dropped the body; a read brings it again.
+	f.svc.store = f.st
+	f.openDetail(t, "10001")
+	f.svc.store = ts
 	f.answer(tracker.Result{Parts: []tracker.Part{appliedPart("10001", tracker.StepEdit, tracker.CardOf("10001"), tracker.DetailOf("10001"))}})
 	if v, err := f.svc.Edit(t.Context(), f.conn.ID, EditRequest{Issue: "10001", Fields: []FieldEditInput{{Field: "title", Typed: []string{"x"}}}}); err != nil || len(v.Stale) > 0 {
 		t.Fatalf("%+v, %v", v, err)
@@ -168,8 +176,8 @@ func TestRefreshTargetsReadWhatEachResourceNeeds(t *testing.T) {
 	if got := ts.takeRead(); !slices.Equal(got, []string{"rows 2 kept 1 details 1 boards 0"}) {
 		t.Errorf("an edit's targets: %v", got)
 	}
-	if got := describeCounts(ts.take()); got != "ReadMirrorRefreshTargets:2 StoreMirrorTickets:2 WriteMirrorRows:2" {
-		t.Errorf("store calls %s", got)
+	if got := describeCounts(ts.take()); got != "DropMirrorBodies:1 ReadMirrorRefreshTargets:1 WriteMirrorRows:2" {
+		t.Errorf("an edit's store calls %s", got)
 	}
 }
 
