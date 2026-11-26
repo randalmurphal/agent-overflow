@@ -282,11 +282,11 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 			t.Fatalf("the check read the cards of %v, want %v", asked, want)
 		}
 	}
-	// Every detail answer reads the names it shows and the mirror's cards
-	// of the issue, its parent and the issues it links, in one lookup, the
-	// issue's rows on the boards in one more, and the names of the sprints
-	// its card names in a third.
-	view := map[string]int{"GetMirrorCatalog": 1, "ListMirrorCards": 1, "ListMirrorTicketRows": 1, "ListMirrorSprintNames": 1}
+	// Every detail answer reads the names it shows, the mirror's cards of
+	// the issue and the issues it links in one lookup, its parent's name in
+	// one more, the issue's rows on the boards in one more, and the names
+	// of the sprints its card names in another.
+	view := map[string]int{"GetMirrorCatalog": 1, "ListMirrorCards": 1, "ListMirrorParents": 1, "ListMirrorTicketRows": 1, "ListMirrorSprintNames": 1}
 	costTable(t, m, cs, []struct {
 		name string
 		run  func(t *testing.T)

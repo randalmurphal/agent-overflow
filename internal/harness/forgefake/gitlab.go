@@ -507,17 +507,18 @@ func gitlabNote(comment Comment, extra map[string]any) map[string]any {
 	return note
 }
 
-// glabMRList answers the three merge request lists the app makes, of the
-// project the path names: the open MRs from a source branch name (a
-// fork's included, as source_branch matches them), recently merged MRs,
-// and named MRs in any state (iids[] with state=all). Items are the full
-// view; a state list answers its X-Total.
+// glabMRList answers the merge request lists the app makes, of the
+// project the path names: the MRs from a source branch name, open or in
+// any state (a fork's included, as source_branch matches them), recently
+// merged MRs, the MRs in any state a title search finds, and named MRs in
+// any state (iids[] with state=all). Items are the full view; a state
+// list answers its X-Total.
 func glabMRList(e *Engine, c *call, m []string) response {
 	r, fail, ok := e.glabProject(c, m[1])
 	if !ok {
 		return fail
 	}
-	query, perPage, page, err := glabPage(m[2], "state", "source_branch", "order_by", "sort", "iids[]")
+	query, perPage, page, err := glabPage(m[2], "state", "source_branch", "search", "in", "order_by", "sort", "iids[]")
 	if err != nil {
 		return unhandled("%v", err)
 	}
@@ -531,16 +532,26 @@ func glabMRList(e *Engine, c *call, m []string) response {
 		return unhandled("sort=%q is not implemented", sortOrder)
 	}
 	state := query.Get("state")
-	if state != "opened" && state != "merged" {
+	if state != "opened" && state != "merged" && state != "all" {
 		return unhandled("state=%q is not implemented", state)
 	}
 	branch := query.Get("source_branch")
+	// search matches the title and description, case ignored, anywhere in
+	// the text (GitLab's ILIKE), narrowed by in.
+	search := strings.ToLower(query.Get("search"))
+	in := query.Get("in")
+	if in != "" && in != "title" {
+		return unhandled("in=%q is not implemented", in)
+	}
 	var matches []map[string]any
 	// Fixture order is creation order; the API's default and the
 	// updated_at order the app asks for are both newest first.
 	for i := len(r.Pulls) - 1; i >= 0; i-- {
 		p := &r.Pulls[i]
-		if gitlabStates[p.State] != state || (branch != "" && p.HeadRef != branch) {
+		if (state != "all" && gitlabStates[p.State] != state) || (branch != "" && p.HeadRef != branch) {
+			continue
+		}
+		if search != "" && !strings.Contains(strings.ToLower(p.Title), search) && (in == "title" || !strings.Contains(strings.ToLower(p.Body), search)) {
 			continue
 		}
 		matches = append(matches, e.gitlabMRListItem(r, p))
@@ -550,6 +561,36 @@ func glabMRList(e *Engine, c *call, m []string) response {
 		items = []map[string]any{}
 	}
 	return glabOK(jsonResponse(items), "X-Next-Page: "+next, "X-Total: "+strconv.Itoa(len(matches)))
+}
+
+// glabBranchList answers the project's branches (Repo.branchNames) whose
+// name holds search, case ignored, as GitLab's Branches API matches it
+// (measured), in pages with X-Next-Page. Each carries the name, the one
+// field the app reads. GitLab's ^ and $ anchors are not implemented.
+func glabBranchList(e *Engine, c *call, m []string) response {
+	r, fail, ok := e.glabProject(c, m[1])
+	if !ok {
+		return fail
+	}
+	query, perPage, page, err := glabPage(m[2], "search")
+	if err != nil {
+		return unhandled("%v", err)
+	}
+	search := query.Get("search")
+	if strings.HasPrefix(search, "^") || strings.HasSuffix(search, "$") {
+		return unhandled("branch search %q: anchors are not implemented", search)
+	}
+	var matches []map[string]any
+	for _, branch := range r.branchNames() {
+		if strings.Contains(strings.ToLower(branch), strings.ToLower(search)) {
+			matches = append(matches, map[string]any{"name": branch})
+		}
+	}
+	items, next := paginate(matches, perPage, page)
+	if items == nil {
+		items = []map[string]any{}
+	}
+	return glabOK(jsonResponse(items), "X-Next-Page: "+next, "X-Page: "+strconv.Itoa(page))
 }
 
 // glabMRsByIID answers the merge requests iids names, in any state, newest

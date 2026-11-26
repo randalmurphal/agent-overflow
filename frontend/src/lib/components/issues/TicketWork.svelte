@@ -3,7 +3,8 @@
   // rail: the threads linked to it on every attached computer, from the
   // client's catalog, each with its state and who started it; the pull
   // requests and branches whose title or name holds its key, as its
-  // computer reads them (`stores/ticketWork.svelte.ts`); Ask and Start
+  // computer reads them and its forge's search finds them, each failed
+  // search in the Pull requests page's words (`stores/ticketWork.svelte.ts`); Ask and Start
   // work, and a Start work run's steps until it ends. Each row opens what
   // it names and has its menu on a right-click or long press.
   import { untrack } from 'svelte';
@@ -51,6 +52,8 @@
   import { lastKnownThreadStatusPill, resolveThreadStatusPill } from '../../utils/threadStatusPill';
   import { userFacingError } from '../../utils/userFacingError';
   import { pullNumberLabel } from '../pulls/pullRowView';
+  import PullsProjectError from '../pulls/PullsProjectError.svelte';
+  import { forgeFailureFrom, forgeReadFailureCause, rateLimitRetryMessage } from '../../utils/forgeFailure';
 
   interface Props {
     attachment: TrackerTicketAttachment;
@@ -343,6 +346,30 @@
     {:else}
       <p class="px-1 text-xs text-fg-muted">{read?.loading && !work ? 'Reading…' : 'No pull request names this ticket.'}</p>
     {/each}
+    {#if read?.searching && !read.loading}
+      <p class="px-1 text-xs text-fg-muted" data-testid="ticket-work-searching">Searching the forge…</p>
+    {/if}
+    {#each work?.searchFull ?? [] as repo (`${repo.Host}\n${repo.Namespace}/${repo.Repo}`)}
+      <p class="px-1 text-xs text-fg-muted" data-testid="ticket-work-search-full">The search of {repo.Namespace}/{repo.Repo} stopped after 500 matches, so these may not be all of them.</p>
+    {/each}
+    {#each work?.forgeProblems ?? [] as problem (`${problem.projectId}\n${problem.repo.Namespace}/${problem.repo.Repo}`)}
+      {@const failure = forgeFailureFrom(problem)}
+      {@const what = problem.repo.Repo ? `${problem.repo.Namespace}/${problem.repo.Repo}` : getProjectLabelText(problem.projectId)}
+      <div data-testid="ticket-work-forge-problem">
+        <PullsProjectError
+          message={failure?.kind === 'rate_limited' ? rateLimitRetryMessage(problem.repo.Forge, what, failure) : `Could not search ${what}: ${problem.error}`}
+          {failure}
+          polled={false}
+          forge={problem.repo.Forge}
+          cause={forgeReadFailureCause(problem, ref.backend)}
+          onRetry={() => { void loadTicketWork(attachment.key, attachment.ref); }}
+          retrying={read?.searching ?? false}
+        />
+      </div>
+    {/each}
+    {#if read?.searchError && !read.error}
+      <p class="px-1 text-xs text-error" role="alert" data-testid="ticket-work-search-error">Could not search the forge: {userFacingError(read.searchError)}</p>
+    {/if}
   </div>
 
   <div class="flex flex-col" data-testid="ticket-work-branches">

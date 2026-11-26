@@ -38,18 +38,21 @@ func (s *Service) tellTicketLocked(tp *ticketPump, ch Changes) {
 // (its card with its status time and history, its rows and whether the
 // mirror keeps it, its body), the cards of the issues the view shows and
 // whether the mirror keeps them (a row stored or removed, a keep begun or
-// ended), and the connection's users and statuses. While a build of the
-// view is in flight the issues it will show are not known yet (it may
-// show an issue the installed view does not), so any card, row or keep of
-// the connection counts. The caller holds subMu.
+// ended), its parent's name, and the connection's users and statuses.
+// While a build of the view is in flight the issues it will show are not
+// known yet (it may show an issue or a parent the installed view does
+// not), so any card, row, keep or parent's name of the connection counts.
+// The caller holds subMu.
 func affectsLocked(tp *ticketPump, ch Changes) bool {
 	own := func(ids []tracker.IssueID) bool { return slices.Contains(ids, tp.key.issue) }
 	shown := func(ids []tracker.IssueID) bool {
 		return tp.building > 0 && len(ids) > 0 ||
 			slices.ContainsFunc(tp.view.shows, func(id tracker.IssueID) bool { return slices.Contains(ids, id) })
 	}
+	parent := tp.building > 0 && len(ch.Parents) > 0 ||
+		tp.view.detail != nil && tp.view.detail.Card.Parent != nil && slices.Contains(ch.Parents, tracker.IssueID(tp.view.detail.Card.Parent.ID))
 	return ch.Catalog || own(ch.Cards) || own(ch.History) || own(ch.Rows) || own(ch.Removed) || own(ch.Details) ||
-		own(ch.Dropped) || own(ch.Visibility) || shown(ch.Cards) || shown(ch.Rows) || shown(ch.Removed) || shown(ch.Visibility)
+		own(ch.Dropped) || own(ch.Visibility) || shown(ch.Cards) || shown(ch.Rows) || shown(ch.Removed) || shown(ch.Visibility) || parent
 }
 
 // buildShown builds the views of connection conn's shown tickets that owe

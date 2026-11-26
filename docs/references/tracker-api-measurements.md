@@ -344,6 +344,14 @@ Other:
   (of the issue type, priority, status, status category, assignee, parent
   and project) and the project's `avatarUrls`. The rank and every other
   value were equal.
+- Measured 2026-11-26, read-only, on three issues with a parent.
+  `POST /rest/api/3/search/jql` and `POST /issue/bulkfetch`, asked for
+  `parent`, both name the parent with `id`, `key`, `fields.summary`,
+  `fields.status` (`id`, `name`, `description`, `statusCategory`),
+  `fields.priority` (`id`, `name`) and `fields.issuetype` (`id`, `name`,
+  `description`, `avatarId`, `hierarchyLevel`). The three parents had
+  `hierarchyLevel` 1. A board's issue list answers as `bulkfetch` does
+  (above); a single issue read was not probed.
 - Measured the same day, on who an answer was made for. Every answer to
   a request with a valid token carried `X-AAccountId`, equal to
   `myself.accountId`: a search, a board configuration, a board issue list
@@ -541,6 +549,10 @@ Source for schema facts: the
   10 and 50. Without the catalog, `issues(first: 10)` with the team's ID
   and name, the assignee's and the state's IDs cost 4, and with only
   issue IDs 2.
+- Not measured: the cost of a parent's `identifier` and `title` beside its
+  `id` in an issue page or search. By the fitted cost model
+  (`internal/harness/trackerfake/linear_cost.go`) scalars on an object already
+  selected cost no points.
 - Measured the same day with throwaway issues. A walk ordered by creation
   pages by cursor safely: with six open issues read two at a time, the
   continuation was right after the cursor's issue was completed (leaving

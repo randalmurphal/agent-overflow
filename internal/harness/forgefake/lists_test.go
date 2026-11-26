@@ -2,6 +2,7 @@ package forgefake
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -457,5 +458,172 @@ func TestPullsSearchPagesReviewThreads(t *testing.T) {
 		return !n.IsResolved
 	}) {
 		t.Fatalf("review threads = %d nodes, more %v", len(threadsPage.Nodes), threadsPage.PageInfo.HasNextPage)
+	}
+}
+
+// keyFixture holds pull requests that name WEB-1, and that a loose search
+// matches without naming it, in every state.
+const keyFixture = `{"repos": [
+  {"forge": "github", "project": "example/web", "pulls": [
+    {"number": 1, "title": "WEB-1 Fix the login", "headRef": "fix-login", "author": "user1", "authorName": "User 1"},
+    {"number": 2, "title": "Cache the session", "headRef": "WEB-1-cache", "state": "merged", "draft": false},
+    {"number": 3, "title": "Move web 1 to the new host", "headRef": "feature/WEB-1-host", "state": "closed"},
+    {"number": 4, "title": "WEB-12 Other", "headRef": "web-12-other", "draft": true}
+  ]},
+  {"forge": "gitlab", "project": "grp/web", "pulls": [
+    {"number": 5, "title": "WEB-1 Fix the login", "headRef": "fix-login", "state": "merged"},
+    {"number": 6, "title": "WEB-12 Other", "headRef": "web-12-other"},
+    {"number": 7, "title": "Unrelated", "body": "Follows WEB-1.", "headRef": "WEB-1-later", "state": "closed"}
+  ]}
+]}`
+
+// PullsByKey answers its title search by whole words in order, its head
+// search by a prefix of the branch name and its refs by a substring of
+// the branch name, each ignoring case and from its own cursor; a pull of
+// any state is found, a part not wanted is left out, a repository not on
+// the host is refused as GitHub refuses it, and any other query is
+// unhandled.
+func TestPullsByKeySearchesTitlesHeadsAndBranches(t *testing.T) {
+	t.Parallel()
+	e := New(Options{APIToken: testAPIToken})
+	if _, err := seedJSON(e, keyFixture); err != nil {
+		t.Fatal(err)
+	}
+	srv := testServer(t, e)
+	vars := func(repo string, extra map[string]any) map[string]any {
+		owner, name, _ := strings.Cut(repo, "/")
+		v := map[string]any{
+			"owner": owner, "name": name, "key": "web-1",
+			"title": "repo:" + repo + ` is:pr in:title "WEB-1"`, "head": "repo:" + repo + " is:pr head:web-1",
+			"wantTitle": true, "wantHead": true, "wantBranches": true,
+		}
+		maps.Copy(v, extra)
+		return v
+	}
+	type page struct {
+		PageInfo struct {
+			HasNextPage bool `json:"hasNextPage"`
+		} `json:"pageInfo"`
+		Nodes []map[string]any `json:"nodes"`
+	}
+	var got struct {
+		Data struct {
+			ByTitle    *page `json:"byTitle"`
+			ByHead     *page `json:"byHead"`
+			Repository *struct {
+				Refs page `json:"refs"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	decodeBody(t, graphQL(t, srv, "github.com", "PullsByKey", vars("example/web", nil)), &got)
+	values := func(p *page, field string) []any {
+		var out []any
+		for _, node := range p.Nodes {
+			out = append(out, node[field])
+		}
+		return out
+	}
+	if title := values(got.Data.ByTitle, "number"); !slices.Equal(title, []any{3.0, 1.0}) {
+		t.Errorf("byTitle = %v; want 3 and 1 (\"web 1\" matches the words, WEB-12 does not)", title)
+	}
+	if head := values(got.Data.ByHead, "number"); !slices.Equal(head, []any{4.0, 2.0}) {
+		t.Errorf("byHead = %v; want 4 and 2, the branches that begin with web-1 in any case", head)
+	}
+	if refs := values(&got.Data.Repository.Refs, "name"); !slices.Equal(refs, []any{"WEB-1-cache", "feature/WEB-1-host", "web-12-other"}) {
+		t.Errorf("refs = %v; want every branch holding web-1 in any case", refs)
+	}
+	if first := got.Data.ByTitle.Nodes[1]; mustJSON(t, first) != `{"author":{"login":"user1","name":"User 1"},"headRefName":"fix-login","isDraft":false,"number":1,"state":"OPEN","title":"WEB-1 Fix the login","url":"https://github.com/example/web/pull/1"}` {
+		t.Errorf("node = %s", mustJSON(t, first))
+	}
+	if merged := got.Data.ByHead.Nodes[1]; merged["state"] != "MERGED" {
+		t.Errorf("merged node = %v", merged)
+	}
+
+	next := graphQL(t, srv, "github.com", "PullsByKey", vars("example/web", map[string]any{"wantTitle": false, "wantBranches": false, "headAfter": "cursor:1"}))
+	got.Data.ByTitle, got.Data.ByHead, got.Data.Repository = nil, nil, nil
+	decodeBody(t, next, &got)
+	if got.Data.ByTitle != nil || got.Data.Repository != nil || strings.Contains(next.body, "byTitle") {
+		t.Errorf("parts not wanted were answered: %s", next.body)
+	}
+	if head := values(got.Data.ByHead, "number"); !slices.Equal(head, []any{2.0}) || got.Data.ByHead.PageInfo.HasNextPage {
+		t.Errorf("byHead after its cursor = %v; want 2 and no page left", head)
+	}
+
+	if none := graphQL(t, srv, "github.com", "PullsByKey", vars("example/none", nil)); !strings.Contains(none.body, `"byTitle":null`) || !strings.Contains(none.body, `"repository":null`) || !strings.Contains(none.body, "cannot be searched") {
+		t.Errorf("a repository not on the host = %s", none.body)
+	}
+	if other := graphQL(t, srv, "github.com", "PullsByKey", vars("example/web", map[string]any{"title": "is:pr WEB-1"})); other.status != 404 {
+		t.Errorf("another query answered %d: %s", other.status, other.body)
+	}
+}
+
+// GitLab's branch list answers the branches holding the search in any
+// case, a page at a time, and leaves out a fork's head and a deleted
+// branch.
+func TestGitLabBranchListSearchesNames(t *testing.T) {
+	t.Parallel()
+	e := New(Options{APIToken: testAPIToken})
+	if _, err := seedJSON(e, `{"repos": [{"forge": "gitlab", "project": "grp/web", "deletedBranches": ["WEB-1-gone"], "pulls": [
+    {"number": 1, "title": "Fix", "headRef": "web-1-fix"},
+    {"number": 2, "title": "Gone", "headRef": "WEB-1-gone", "state": "merged"},
+    {"number": 3, "title": "Fork", "headRef": "WEB-1-fork", "headRepo": "alice/web"},
+    {"number": 4, "title": "Other", "headRef": "feature/WEB-12", "baseRef": "release/web-1"}
+  ]}]}`); err != nil {
+		t.Fatal(err)
+	}
+	srv := testServer(t, e)
+	names := func(path string) ([]string, string) {
+		answer := glabGET(t, srv, "gitlab.com", path)
+		var got []map[string]any
+		decodeBody(t, answer, &got)
+		var out []string
+		for _, b := range got {
+			out = append(out, b["name"].(string))
+		}
+		return out, answer.header.Get("X-Next-Page")
+	}
+	if got, next := names("projects/grp%2Fweb/repository/branches?per_page=100&search=WEB-1"); !slices.Equal(got, []string{"web-1-fix", "feature/WEB-12", "release/web-1"}) || next != "" {
+		t.Errorf("branches = %v, next page %q; want every branch holding WEB-1 in any case", got, next)
+	}
+	if got, next := names("projects/grp%2Fweb/repository/branches?per_page=2&search=web-1"); !slices.Equal(got, []string{"web-1-fix", "feature/WEB-12"}) || next != "2" {
+		t.Errorf("first page = %v, next page %q", got, next)
+	}
+	if got, next := names("projects/grp%2Fweb/repository/branches?page=2&per_page=2&search=web-1"); !slices.Equal(got, []string{"release/web-1"}) || next != "" {
+		t.Errorf("second page = %v, next page %q", got, next)
+	}
+	if anchored := glabGET(t, srv, "gitlab.com", "projects/grp%2Fweb/repository/branches?search=%5EWEB-1"); anchored.status != 404 {
+		t.Errorf("an anchored search answered %d", anchored.status)
+	}
+}
+
+// GitLab's list searches the title, any case, anywhere in it, in every
+// state; in=title leaves the description out.
+func TestGitLabListSearchesTitlesInEveryState(t *testing.T) {
+	t.Parallel()
+	e := New(Options{APIToken: testAPIToken})
+	if _, err := seedJSON(e, keyFixture); err != nil {
+		t.Fatal(err)
+	}
+	srv := testServer(t, e)
+	iids := func(path string) []float64 {
+		var got []map[string]any
+		decodeBody(t, glabGET(t, srv, "gitlab.com", path), &got)
+		var out []float64
+		for _, mr := range got {
+			out = append(out, mr["iid"].(float64))
+		}
+		return out
+	}
+	if got := iids("projects/grp%2Fweb/merge_requests?in=title&per_page=100&search=web-1&state=all"); !slices.Equal(got, []float64{6, 5}) {
+		t.Errorf("title search = %v; want 6 (WEB-12 holds the text) and 5", got)
+	}
+	if got := iids("projects/grp%2Fweb/merge_requests?per_page=100&search=WEB-1&state=all"); !slices.Equal(got, []float64{7, 6, 5}) {
+		t.Errorf("title and description search = %v; want 7, 6 and 5", got)
+	}
+	if got := iids("projects/grp%2Fweb/merge_requests?per_page=100&source_branch=WEB-1-later&state=all"); !slices.Equal(got, []float64{7}) {
+		t.Errorf("branch lookup in every state = %v; want 7", got)
+	}
+	if other := glabGET(t, srv, "gitlab.com", "projects/grp%2Fweb/merge_requests?in=description&search=WEB-1&state=all"); other.status != 404 {
+		t.Errorf("in=description answered %d", other.status)
 	}
 }

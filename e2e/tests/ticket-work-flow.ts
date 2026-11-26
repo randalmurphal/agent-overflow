@@ -21,15 +21,29 @@
 // work…, which opens the ticket with its form, whose run shows in the
 // ticket's Work, also when the ticket was read before it opens (on compact
 // in the Details it opens); a Backlog row's menu has the same Ask and
-// Start work….
+// Start work…. Work's forge search lists, once each, what names the key
+// by title, by the start of its branch and by a branch the forge or this
+// computer has, on GitHub and GitLab, a stored row with its CI, and on
+// Refresh the forge's change; a failed search says its kind, a rate
+// limit with when to retry and Retry, and a login to fix with none.
+
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import type { Locator, Page } from '@playwright/test';
 
-import type { HarnessApp } from '../src/harness.js';
+import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
-import { publishPullRequest, type ForgeRepo } from './forge-helpers.js';
+import {
+  clearForgeRefusal, forgeInvocations, publishPullRequest, refuseForgeRoute, seedForge, setForgeOffline, setForgeRateLimit,
+  type ForgeHTTPInvocation, type ForgePull, type ForgeRepo,
+} from './forge-helpers.js';
+import { pairOwnDevice } from './headless-pairing-helpers.js';
+import { startTogether } from './launch-helpers.js';
 import { launchPullsHarness, openPage, pickFilter, row as pullRow } from './pulls-page-flow.js';
-import { methodIdByName } from './offhost-helpers.js';
+import { confirmOnHost, methodIdByName, mintInvite, nonLoopbackIPv4, redeemOnScreen } from './offhost-helpers.js';
+import { recordOpens } from './preview-gateway-helpers.js';
 import { longPress } from './touch-helpers.js';
 import { harnessGit } from './worktree-removal-helpers.js';
 import { BOARD_ID, JIRA_SITE, connectFakeJira, connectFakeJiraBoard, openIssuesPane, press, seedFakeJira, trackerRequests } from './tracker-helpers.js';
@@ -159,7 +173,254 @@ async function expectThreadShown(page: Page, title: string, compact: boolean): P
   await expect(page.getByTestId('chat-header-title')).toHaveText(title, { timeout: 30_000 });
 }
 
+// The forge's pull requests for WEB-1's search: 501 and 504 name it in the
+// title, 502 in a branch that begins with it, 503 in a branch of this
+// computer's that names it later; 505 (WEB-12), 506 ("web 1") and 507
+// (the key in its body) only seem to.
+const SEARCH_PULLS: ForgePull[] = [
+  { number: 501, title: 'WEB-1 Retry the cursor read', author: 'alice', authorName: 'Alice Ng', headRef: 'retry-cursor' },
+  { number: 502, title: 'Cache the session', author: 'bob', authorName: 'Bob Li', headRef: 'WEB-1-cache', state: 'merged' },
+  { number: 503, title: 'Move the host', author: 'carol', headRef: 'feature/WEB-1-host', state: 'closed' },
+  { number: 504, title: 'WEB-1 Draft of the docs', author: 'alice', authorName: 'Alice Ng', headRef: 'docs', draft: true },
+  { number: 505, title: 'WEB-12 Other story', author: 'alice', headRef: 'other' },
+  { number: 506, title: 'Move web 1 to the new host', author: 'alice', headRef: 'move' },
+  { number: 507, title: 'Unrelated', body: 'Follows WEB-1.', author: 'alice', headRef: 'unrelated' },
+];
+
+/** A project that lists the WEB board, a checkout of `repo` on the fake
+ * `forge` with branches feature/WEB-1-host and web-1-new, and the forge
+ * seeded with `pulls`. */
+async function searchProject(
+  harness: HarnessApp, name: string, pulls: ForgePull[] = SEARCH_PULLS, forge: 'github' | 'gitlab' = 'github',
+): Promise<{ projectId: string; repo: string }> {
+  await seedFakeJira(harness);
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name, repo: { commits: [{ message: 'init', files: { 'README.md': '# Web\n' } }] } }] });
+  const { projectId, path } = seed.projects[0];
+  await connectFakeJira(harness, projectId);
+  const repo = `ao-e2e/${name}-${Date.now().toString(36)}`;
+  await seedForge(harness, [{ forge, project: repo, pulls }]);
+  harnessGit(harness, path, 'branch', 'feature/WEB-1-host');
+  harnessGit(harness, path, 'branch', 'web-1-new');
+  harnessGit(harness, path, 'remote', 'add', 'origin', `git://${forge}.com/${repo}.git`);
+  return { projectId, repo };
+}
+
+// The fake GitLab's merge requests for WEB-1's search: 701 names it in
+// the title, 702 only in a branch this computer does not have, which the
+// forge keeps; 704 (WEB-12) only seems to.
+const GITLAB_SEARCH_PULLS: ForgePull[] = [
+  { number: 701, title: 'WEB-1 Retry the cursor read', author: 'alice', authorName: 'Alice Ng', headRef: 'retry-cursor' },
+  { number: 702, title: 'Fix the cursor', author: 'bob', authorName: 'Bob Li', headRef: 'feature/web-1-cursor', state: 'merged' },
+  { number: 704, title: 'WEB-12 Other story', author: 'alice', headRef: 'web-12-other' },
+];
+
+/** The fake forge's answered requests of GraphQL operation `op`. */
+async function forgeOps(harness: HarnessApp, op: string): Promise<ForgeHTTPInvocation[]> {
+  return (await forgeInvocations(harness)).filter((c): c is ForgeHTTPInvocation => c.via === 'http' && c.operation === op);
+}
+
+/** Work's pull request rows as `#number state`, in order. */
+async function pullRows(work: Locator): Promise<string[]> {
+  const rows = work.getByTestId('ticket-work-pull');
+  const out: string[] = [];
+  for (let i = 0; i < await rows.count(); i += 1) {
+    const row = rows.nth(i);
+    out.push(`${(await row.locator('.tabular-nums').textContent())?.trim()} ${await row.getAttribute('data-state')}`);
+  }
+  return out;
+}
+
+/** The URLs this page asks its computer to open (OpenExternalURL). */
+function hostOpens(page: Page): () => readonly string[] {
+  const method = methodIdByName('OpenExternalURL');
+  const urls: string[] = [];
+  page.on('websocket', (socket) => {
+    socket.on('framesent', ({ payload }) => {
+      if (typeof payload !== 'string' || !payload.startsWith('{"type":"rpc"')) return;
+      const frame = JSON.parse(payload) as { methodId?: number; params?: unknown[] };
+      if (frame.methodId === method && typeof frame.params?.[0] === 'string') urls.push(frame.params[0]);
+    });
+  });
+  return () => urls;
+}
+
 export function registerTicketWorkFlow({ compact }: WorkSurface): void {
+  test('Work lists the pull requests the forge finds by the ticket\'s key, once each, and none that only seems to name it', async ({ harness, page }) => {
+    test.setTimeout(150_000);
+    const { repo } = await searchProject(harness, compact ? 'compact-work-search' : 'work-search');
+    const opens = hostOpens(page);
+    await harness.open(page);
+    const { ticket, work } = await openWork(page, WEB1, compact);
+    // 501 and 504 by their titles, 502 by its branch's start, 503 by this
+    // computer's branch; the rest only seem to name WEB-1.
+    await expect.poll(() => pullRows(work), { timeout: 30_000 }).toEqual(['#504 draft', '#501 open', '#502 merged', '#503 closed']);
+    await expect(work.getByTestId('ticket-work-searching')).toHaveCount(0);
+    const rows = work.getByTestId('ticket-work-pull');
+    await expect(rows.nth(0).getByTestId('ticket-work-pull-state')).toHaveText('Draft');
+    await expect(rows.nth(1)).toContainText('WEB-1 Retry the cursor read');
+    await expect(rows.nth(1)).toContainText('Alice Ng');
+    await expect(rows.nth(2).getByTestId('ticket-work-pull-state')).toHaveText('Merged');
+    await expect(rows.nth(2)).toContainText('Bob Li');
+    await expect(rows.nth(3).getByTestId('ticket-work-pull-state')).toHaveText('Closed');
+    // The branches the found pull requests name fold into them.
+    await expect(work.getByTestId('ticket-work-branch')).toHaveCount(1);
+    await expect(work.getByTestId('ticket-work-branch')).toContainText('web-1-new');
+    await expect(work.getByTestId('ticket-work-forge-problem')).toHaveCount(0);
+
+    // One key search per read, when Work shows and on Refresh, and
+    // Refresh shows what the forge holds now: 501 merged since.
+    expect(await forgeOps(harness, 'PullsByKey')).toHaveLength(1);
+    await seedForge(harness, [{ forge: 'github', project: repo, pulls: SEARCH_PULLS.map((p) => (p.number === 501 ? { ...p, state: 'merged' } : p)) }]);
+    await press(ticket.getByTestId('ticket-refresh'), compact);
+    await expect.poll(async () => (await forgeOps(harness, 'PullsByKey')).length, { timeout: 30_000 }).toBe(2);
+    await expect.poll(() => pullRows(work), { timeout: 30_000 }).toEqual(['#504 draft', '#501 merged', '#502 merged', '#503 closed']);
+
+    // A found row opens on the forge, as every pull request row does.
+    await press(rows.nth(2), compact);
+    await expect.poll(opens).toEqual([`https://github.com/${repo}/pull/502`]);
+  });
+
+  test('a pull request the Pull requests page stored and the forge search finds is listed once, with its CI', async ({ page }) => {
+    test.setTimeout(150_000);
+    const harness = await launchPullsHarness();
+    try {
+      await seedFakeJira(harness);
+      const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+        projects: [{ name: compact ? 'compact-work-once' : 'work-once', repo: { commits: [{ message: 'init', files: { 'README.md': '# Web\n' } }] } }],
+      });
+      const { projectId, path } = seed.projects[0];
+      await connectFakeJira(harness, projectId);
+      const repo: ForgeRepo = {
+        forge: 'github',
+        project: `ao-e2e/work-once-${compact ? 'compact' : 'desktop'}-${Date.now().toString(36)}`,
+        pulls: [
+          { number: 601, title: 'WEB-1 Retry the cursor read', author: 'alice', authorName: 'Alice Ng', ci: { jobs: [{ name: 'unit', status: 'success' }] } },
+          { number: 602, title: 'WEB-1 First try', author: 'alice', headRef: 'first-try', state: 'merged' },
+        ],
+      };
+      await publishPullRequest(harness, path, repo, { 'src/cursor.ts': 'export const cursor = 1;\n' });
+      await harness.open(page);
+      // The Pull requests page stores the open pull request.
+      const pulls = await openPage(page);
+      await pickFilter(page, pulls, 'all');
+      await expect(pullRow(page, 601)).toBeVisible({ timeout: 30_000 });
+      if (compact) {
+        await page.getByTestId('compact-back').tap();
+        await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
+      }
+      const { work } = await openWork(page, WEB1, compact);
+      await expect.poll(async () => (await forgeOps(harness, 'PullsByKey')).length, { timeout: 30_000 }).toBe(1);
+      await expect(work.getByTestId('ticket-work-searching')).toHaveCount(0, { timeout: 30_000 });
+      // 601 once, the stored row with its CI; 602 only the search finds.
+      await expect.poll(() => pullRows(work)).toEqual(['#601 open', '#602 merged']);
+      await expect(work.getByTestId('ticket-work-pull').nth(0)).toContainText('CI passed');
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test('a failed search says its kind in the Pull requests page\'s words, and the branches still show', async ({ harness, page }) => {
+    test.setTimeout(150_000);
+    await searchProject(harness, compact ? 'compact-work-search-fails' : 'work-search-fails');
+    await refuseForgeRoute(harness, {
+      route: 'gh graphql PullsByKey', status: 403,
+      body: { message: 'Resource not accessible by personal access token', documentation_url: 'https://docs.github.com/rest' },
+    });
+    await harness.open(page);
+    const { ticket, work } = await openWork(page, WEB1, compact);
+    const problem = work.getByTestId('pulls-project-error');
+    await expect(problem).toHaveAttribute('data-error-kind', 'forbidden', { timeout: 30_000 });
+    await expect(problem).toContainText('Could not search ao-e2e/');
+    await expect(work.getByTestId('ticket-work-branch')).toHaveCount(2);
+    await expect(work.getByTestId('pulls-project-retry')).toHaveCount(0);
+
+    // The forge off the network: a failure the next read may not have, with Retry.
+    await clearForgeRefusal(harness, 'gh graphql PullsByKey');
+    await setForgeOffline(harness, true);
+    await press(ticket.getByTestId('ticket-refresh'), compact);
+    await expect(problem).toHaveAttribute('data-error-kind', 'transient', { timeout: 60_000 });
+    await expect(problem).toContainText('failed to refresh from the forge (id: ');
+    await expect(work.getByTestId('ticket-work-branch')).toHaveCount(2);
+
+    // A rate limit says when Retry can read again, and offers it.
+    await setForgeOffline(harness, false);
+    await setForgeRateLimit(harness, { forge: 'github', pool: 'graphql', remaining: 0, reset: Math.floor(Date.now() / 1000) + 3600 });
+    await press(problem.getByTestId('pulls-project-retry'), compact);
+    await expect(problem).toHaveAttribute('data-error-kind', 'rate_limited', { timeout: 30_000 });
+    await expect(problem).toContainText(/GitHub rate limit reached, so ao-e2e\/\S+ was not searched\. Retry after /);
+    await expect(problem.getByTestId('pulls-project-retry')).toBeVisible();
+    await expect(work.getByTestId('ticket-work-branch')).toHaveCount(2);
+  });
+
+  test('on GitLab, Work lists a merge request whose key is only in a branch this computer lacks, and a login to fix reads as setup', async ({ harness, page }) => {
+    test.setTimeout(150_000);
+    await searchProject(harness, compact ? 'compact-work-search-gitlab' : 'work-search-gitlab', GITLAB_SEARCH_PULLS, 'gitlab');
+    await harness.open(page);
+    const { ticket, work } = await openWork(page, WEB1, compact);
+    // GitLab's rows only: a stored list an earlier test's project left
+    // stays until the Pull requests page's next read prunes it.
+    const gitlabRows = async () => (await pullRows(work)).filter((row) => row.startsWith('!'));
+    await expect.poll(gitlabRows, { timeout: 30_000 }).toEqual(['!701 open', '!702 merged']);
+    await expect(work.getByTestId('ticket-work-searching')).toHaveCount(0);
+    await expect(work.getByTestId('ticket-work-pull').filter({ hasText: '!702' })).toContainText('Fix the cursor');
+    await expect(work.getByTestId('ticket-work-forge-problem')).toHaveCount(0);
+
+    // The forge refuses the login every time: a setup failure, with no
+    // Retry, and the branches still show.
+    await refuseForgeRoute(harness, { route: 'glab api merge request list', status: 401, body: { message: '401 Unauthorized' } });
+    await press(ticket.getByTestId('ticket-refresh'), compact);
+    const problem = work.getByTestId('pulls-project-error');
+    await expect(problem).toHaveAttribute('data-error-kind', 'setup', { timeout: 30_000 });
+    await expect(problem).toContainText('Could not search ao-e2e/');
+    await expect(work.getByTestId('pulls-project-retry')).toHaveCount(0);
+    await expect(work.getByTestId('ticket-work-branch')).toHaveCount(2);
+  });
+
+  if (!compact) {
+    test('a connected browser\'s Work lists what the forge finds, and a found row opens in that browser', async ({ browser }) => {
+      test.skip(nonLoopbackIPv4() === null, 'requires a LAN interface for a connected browser');
+      test.setTimeout(180_000);
+      const harness = await launchHarness();
+      const context = await browser.newContext();
+      try {
+        await harness.rpc('SetNetworkSettings', { bindAll: true });
+        const { repo } = await searchProject(harness, 'work-search-connected');
+        const device = await context.newPage();
+        const opens = await recordOpens(device);
+        const code = await redeemOnScreen(device, await mintInvite(harness, 'full'), 'Work browser');
+        await confirmOnHost(harness, code);
+        const { work } = await openWork(device, WEB1, false);
+        await expect.poll(() => pullRows(work), { timeout: 30_000 }).toEqual(['#504 draft', '#501 open', '#502 merged', '#503 closed']);
+        await work.getByTestId('ticket-work-pull').nth(2).click();
+        await expect.poll(() => opens.urls).toEqual([`https://github.com/${repo}/pull/502`]);
+      } finally {
+        await context.close();
+        await harness.close();
+      }
+    });
+
+    test('a ticket of a paired computer is searched for by that computer, on its forge', async ({ page }) => {
+      test.setTimeout(240_000);
+      const root = await mkdtemp(join(tmpdir(), 'ao-work-search-'));
+      let home: HarnessApp | undefined;
+      let remote: HarnessApp | undefined;
+      try {
+        [home, remote] = await startTogether(launchHarness(), launchHarness({ dataDir: join(root, 'state') }));
+        await pairOwnDevice(home, remote, 'Laptop');
+        await searchProject(remote, 'work-search-remote');
+        await home.open(page);
+        const { work } = await openWork(page, WEB1, false);
+        await expect.poll(() => pullRows(work), { timeout: 60_000 }).toEqual(['#504 draft', '#501 open', '#502 merged', '#503 closed']);
+        expect(await forgeOps(remote, 'PullsByKey')).toHaveLength(1);
+        expect(await forgeOps(home, 'PullsByKey')).toEqual([]);
+      } finally {
+        await remote?.close();
+        await home?.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+
   test('a pull request that names a ticket carries its chip, which opens the ticket, whose Work lists it and the linked thread', async ({ page }) => {
     test.setTimeout(150_000);
     const harness = await launchPullsHarness();

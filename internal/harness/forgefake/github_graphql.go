@@ -51,7 +51,8 @@ var githubGraphQL = []graphQLOp{
 	{kind: "query", name: "ThreadOwner", required: []string{"id"}, run: ghThreadOwner},
 	{kind: "mutation", name: "SetThreadResolved", required: []string{"threadID", "resolved"}, run: ghSetThreadResolved},
 	{kind: "query", name: "PullsSearch", required: []string{"query", "wantChecks"}, optional: []string{"after"}, run: ghPullsSearch},
-	{kind: "query", name: "OpenPRsByHead", required: []string{"owner", "name", "head"}, optional: []string{"after"}, run: ghOpenPRsByHead},
+	{kind: "query", name: "PullsByKey", required: []string{"owner", "name", "title", "head", "key", "wantTitle", "wantHead", "wantBranches"}, optional: []string{"titleAfter", "headAfter", "branchesAfter"}, run: ghPullsByKey},
+	{kind: "query", name: "PRsByHead", required: []string{"owner", "name", "head", "states"}, optional: []string{"after"}, run: ghPRsByHead},
 	{kind: "query", name: "MergedPRs", required: []string{"owner", "name", "first"}, optional: []string{"after"}, run: ghMergedPRs},
 	{kind: "query", name: "PRStates", required: []string{"ids"}, run: ghPRStates},
 	{kind: "query", name: "PRMergeTarget", required: []string{"owner", "name", "number"}, run: ghPRMergeTarget},
@@ -951,15 +952,22 @@ func ghThreadOwner(e *Engine, c *call, v graphQLVars) response {
 	}})
 }
 
-// ghOpenPRsByHead answers the open pull requests of a head branch name, a
-// fork's included, as headRefName does, a page of 100 from after.
-func ghOpenPRsByHead(e *Engine, c *call, v graphQLVars) response {
+// ghPRsByHead answers the pull requests of a head branch name in the
+// states asked (OPEN, CLOSED, MERGED), a page of 100 from after, beside
+// the repository's node id and parent.
+func ghPRsByHead(e *Engine, c *call, v graphQLVars) response {
 	owner, err1 := v.str("owner")
 	name, err2 := v.str("name")
 	head, err3 := v.str("head")
-	offset, err4 := v.cursor("after")
-	if err := firstErr(err1, err2, err3, err4); err != nil {
-		return unhandled("OpenPRsByHead: %v", err)
+	states, err4 := v.strs("states")
+	offset, err5 := v.cursor("after")
+	if err := firstErr(err1, err2, err3, err4, err5); err != nil {
+		return unhandled("PRsByHead: %v", err)
+	}
+	for _, state := range states {
+		if state != "OPEN" && state != "CLOSED" && state != "MERGED" {
+			return unhandled("PRsByHead state %q is not a PullRequestState", state)
+		}
 	}
 	r := e.repoOn("github", c.http.host, owner+"/"+name)
 	if r == nil {
@@ -968,12 +976,14 @@ func ghOpenPRsByHead(e *Engine, c *call, v graphQLVars) response {
 	nodes := []map[string]any{}
 	for i := range r.Pulls {
 		p := &r.Pulls[i]
-		if p.State != "open" || p.HeadRef != head {
+		state := strings.ToUpper(defaultString(p.State, "open"))
+		if !slices.Contains(states, state) || p.HeadRef != head {
 			continue
 		}
 		nodes = append(nodes, map[string]any{
-			"id": p.NodeID, "url": githubPullURL(r, p), "number": p.Number, "title": p.Title, "state": "OPEN",
-			"baseRefName": p.BaseRef, "isCrossRepository": p.HeadRepo != "", "headRepository": e.githubHeadRepository(r, p),
+			"id": p.NodeID, "url": githubPullURL(r, p), "number": p.Number, "title": p.Title, "state": state, "isDraft": p.Draft,
+			"baseRefName": p.BaseRef, "headRefName": p.HeadRef, "isCrossRepository": p.HeadRepo != "", "headRepository": e.githubHeadRepository(r, p),
+			"author": githubActor(p.Author, p.AuthorName),
 		})
 	}
 	repository := e.githubRepoParent(r)
@@ -1531,13 +1541,28 @@ func ghMarkPRReady(e *Engine, c *call, v graphQLVars) response {
 	return graphQLData(map[string]any{field: map[string]any{"pullRequest": map[string]any{"isDraft": p.Draft}}})
 }
 
-// branchExists is whether a pull names branch as its head or base and it
-// has not been deleted.
+// branchExists is whether branch is one of the repository's branches.
 func (r *Repo) branchExists(branch string) bool {
-	if slices.Contains(r.DeletedBranches, branch) {
-		return false
+	return slices.Contains(r.branchNames(), branch)
+}
+
+// branchNames are the repository's branches: the heads of its own pulls
+// (a fork's pull's head lives in the fork) and every pull's base, less
+// the deleted ones, each once, in the order the pulls name them.
+func (r *Repo) branchNames() []string {
+	var names []string
+	add := func(branch string) {
+		if branch != "" && !slices.Contains(names, branch) && !slices.Contains(r.DeletedBranches, branch) {
+			names = append(names, branch)
+		}
 	}
-	return slices.ContainsFunc(r.Pulls, func(p Pull) bool { return p.HeadRef == branch || p.BaseRef == branch })
+	for _, p := range r.Pulls {
+		if p.HeadRepo == "" {
+			add(p.HeadRef)
+		}
+		add(p.BaseRef)
+	}
+	return names
 }
 
 func (r *Repo) deleteBranch(branch string) {

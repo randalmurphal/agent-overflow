@@ -36,6 +36,7 @@ const scaleReps = 5
 // scaleCost is one path's measured cost; the counts are its last run's.
 type scaleCost struct {
 	provider, store          map[string]int
+	children                 int
 	writes, commits          uint64
 	allocBytes, allocObjects uint64
 	peakHeap                 uint64
@@ -44,10 +45,10 @@ type scaleCost struct {
 
 func (c scaleCost) String() string {
 	sorted := slices.Sorted(slices.Values(c.times))
-	return fmt.Sprintf("%9s (%s to %s) %7.0f KB in %6d allocations, peak heap %5.1f MB, %3d write statements in %3d transactions\n\tprovider %s\n\tstore %s",
+	return fmt.Sprintf("%9s (%s to %s) %7.0f KB in %6d allocations, peak heap %5.1f MB, %3d write statements in %3d transactions\n\tprovider %s\n\tstore %s\n\tchildren looked up %d",
 		sorted[len(sorted)/2].Round(time.Microsecond), sorted[0].Round(time.Microsecond), sorted[len(sorted)-1].Round(time.Microsecond),
 		float64(c.allocBytes)/1024, c.allocObjects, float64(c.peakHeap)/(1<<20), c.writes, c.commits,
-		describeCounts(c.provider), describeCounts(c.store))
+		describeCounts(c.provider), describeCounts(c.store), c.children)
 }
 
 // heapPeak samples the live heap every millisecond until stop, returning
@@ -108,6 +109,7 @@ func (m *scaleMeter) measure(prepare, op func(rep int), once bool) scaleCost {
 		c.peakHeap = peak()
 		runtime.ReadMemStats(&after)
 		c.allocBytes, c.allocObjects = after.TotalAlloc-before.TotalAlloc, after.Mallocs-before.Mallocs
+		c.children = m.cs.takeChildren()
 		c.provider, c.store = countsOf(m.p.callsInOrder()[calls:]), m.cs.take()
 		c.writes, c.commits = st.WriteCount()-writes, st.CommitCount()-commits
 	}
@@ -178,6 +180,17 @@ func serviceAtScale(t *testing.T, n int) {
 			}
 		}, false))
 	}
+	// An epic renamed: its card, and the rows of the 49 children that name
+	// it, which every board showing them is sent again.
+	logCost("delta tick, an epic renamed", m.measure(func(rep int) {
+		settle(rep)
+		rev++
+		board.edit([]int{0}, rev)
+	}, func(int) {
+		if out := must[Outcome](t)(svc.syncTick(t.Context(), scope, BoardDue{Delta: true}, Background)); len(out.Changes().Cards) != 1 {
+			t.Fatalf("the delta stored %d cards, want the epic's", len(out.Changes().Cards))
+		}
+	}, false))
 	settle(0)
 	logCost("reconcile", m.measure(nil, func(int) {
 		must[Outcome](t)(svc.syncTick(t.Context(), scope, BoardDue{Reconcile: true}, Background))

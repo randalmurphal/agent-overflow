@@ -626,16 +626,18 @@ person's refresh, and where the update time does
 not move with the detail. An open ticket due a read because another read
 stored its card is read in full when that card is newer than its body,
 with no cards read, and checked otherwise. No body is written outside
-such a full read. A view shows its parent's key and title and each linked
-issue's key, title and status from the mirror's cards, read in one
-`ListMirrorCards` with the issue's own card. A direct read shows the
+such a full read. A view shows its parent's key and title from the
+parent's name (below), and each linked issue's key, title and status from
+the mirror's cards, read in one `ListMirrorCards` with the issue's own
+card. A direct read shows the
 mirror's card of the issue as that lookup finds it when the card is at
 least as new as the body, and the document's own card otherwise; a Jira
 check's write commits before the lookup, so a checked read shows the card
 the check stored. An open ticket's view, built from the record, takes its
 own card from the statement that read its body. A linked issue the mirror
 keeps no card of shows as the body holds it, at most 30 minutes old; a
-parent it keeps no card of shows its ID alone. A failed check leaves the
+parent with no stored name shows the name the document's read gave, and
+its ID alone when that read named it by ID alone. A failed check leaves the
 stored body as it is. An open ticket's first paint is its view built
 from the record with no tracker call, before its first read answers; it
 records no opening, which the read's keep and write do.
@@ -651,6 +653,42 @@ issue, and one that does neither fails. An issue kept again midway has
 its history read again and its sprints replaced by its next card write.
 `trackerapp.Service.Stop` ends a cleanup in flight before its next
 transaction; the next cleanup finishes it. No caller prunes.
+
+A parent's name, its key, title and type level, has one owner:
+`tracker_cache_parents`, one row per parent a stored card names, whether
+or not the mirror keeps the parent. A board's cards, a ticket's parent,
+`ticket_read` and the dashboard export's epics all read it; a ticket's
+view whose parent has no row shows the name its own read gave. The card
+write writes it in the transaction of the cards, from every card it is
+given, whether or not the mirror keeps the issue: each card names its
+own issue, and a card whose read named its parent names the parent. One
+write names an issue once, by its own card when it holds one, else by
+the first child's naming, and writes a row only for an issue a stored
+issue names as parent. The newest read wins, a later write of the same
+read with other content corrects it, and a read that names what the row
+holds writes nothing. A kept parent's own card and its name are written
+together by a read that carries both; a child's later read can name the
+parent otherwise, and the two differ until the parent's own next read.
+Jira's board lists, searches and bulk reads and Linear's pages, searches
+and details name the parent
+([measurements](../references/tracker-api-measurements.md)); a card that
+names its parent by ID alone writes no row and leaves the one there. A
+renamed parent shows its old name until one of its children or the parent
+itself is read again. `FinishMirrorCleanup` deletes a row no stored issue
+names, a chunk a transaction, after the sweep of unkept issues.
+
+A mirror that v172 upgraded holds issues whose parents no read named:
+before it, no row kept a parent the mirror did not keep. Such a root owes
+those names (`tracker_cache_roots.names_after`, a cursor from the first
+parent ID); a root made since names its parents with the cards it stores
+and owes nothing. The linked tick's names unit reads the owed parents by
+their own cards, by ID, 100 a read (`ListMirrorUnnamedParents`, one walk
+of `idx_tracker_cache_issues_parent` per batch in a read slot), and
+passes the cursor after each read is stored, so a parent the tracker does
+not return is asked for once; the worklist ends at the last parent. A
+tracker failure leaves the cursor, and the next tick asks again. The
+names owed after an upgrade are read while a client is connected, as
+every tick is.
 
 An open ticket keeps its issue through one row of
 `tracker_cache_open_tickets` per ticket pump, whatever brought the person
@@ -690,7 +728,7 @@ pump's goroutine deletes the row as it returns, and every pump's goroutine
 runs, one stopped before its launch included (a write's refresh may have
 kept its issue during the first paint). When the drop leaves the issue
 kept by nothing, or a keep keeps a record the mirror held unkept, every
-view that shows it as a parent or a link is told (`Changes.Visibility`). A
+view that shows it as a link is told (`Changes.Visibility`). A
 pump keeps one issue; a keep of another fails. A keep that fails is the
 ticket's failure, a failure outside the tracker that its next read
 retries; until a keep succeeds the ticket is not read. A pump's delete
@@ -1022,7 +1060,11 @@ and writes share:
   pump is not over, not paused while hidden and tells no failure. It takes
   the polled boards again for each page, so an issue of a board whose pump
   stops, pauses or starts failing is read by the round it happens in, from
-  the next page on, or the next round, `Cadence.Linked` later.
+  the next page on, or the next round, `Cadence.Linked` later. A linked
+  tick runs the cards unit, then the names unit of an upgraded mirror
+  (above), then the history unit; the names unit makes at most 10 reads a
+  tick, so the linked issues' cards and history keep their tick, and the
+  loop ticks again until the worklist ends.
 - **A tick's record.** A tick's successes and the failure that followed
   them are recorded by one `RecordMirrorSyncAttempt` upsert, after the
   root and board lifetime check every board write makes, and the upsert
@@ -1090,8 +1132,8 @@ says so.
 A ticket's view has one source, the issue's record in the mirror: its
 card and status time, its body, its rows on the boards the mirror shows
 (each board's estimate and unit, `DetailView.Rows`, one statement for a
-build's tickets, `store.ListMirrorTicketRows`), the cards of the issues the view shows
-(its parent, the issues it links) and whether the mirror keeps them, and
+build's tickets, `store.ListMirrorTicketRows`), the name of its parent, the cards of the issues it links and whether the
+mirror keeps them, and
 the connection's users and statuses (`trackerapp/ticket_view.go`). A
 read stores what it found and settles its outcome; every view a
 subscriber is told is built from the record, and `TicketDetail` returns
@@ -1731,14 +1773,11 @@ funnel (`trackerapp/funnel.go`):
 - The tick's own board gets its changed rows and cards and its removed
   rows.
 - Every subscribed board of the connection gets its rows of the changed
-  cards and histories, and its rows whose parent's card changed or whose
-  parent gained or lost a row on any board (a row shows its parent's key
-  and title while the mirror keeps the parent; a parent's rank or
-  estimate moves neither). These come
-  from one indexed read (`ListMirrorIssueBoards`), which also finds the
-  children of a parent that has no row left, made only when a board is
-  subscribed; when it fails, or no mirror root is known, every board reads
-  again.
+  cards and histories, and its rows whose parent's name changed
+  (`Changes.Parents`; a parent's keep, rank or estimate moves no row).
+  These come from one indexed read (`ListMirrorIssueBoards`), made only
+  when a board is subscribed; when it fails, or no mirror root is known,
+  every board reads again.
 - A change of the connection's users or statuses, by a row read or a
   structure read, has every board read again.
 - An open ticket whose card changed is due a read at once, with its
@@ -2060,12 +2099,35 @@ delete is refused and the links the delete read are the ones it ends.
   last seen with; and the branches that name the key in the projects
   listing the connection's boards, the pull requests' projects and the
   linked threads' projects, a branch a listed pull request names folded
-  into it. A repository whose
+  into it. A stored list's project that was removed since (the list
+  stays until the Pull requests page's next read prunes it) keeps its
+  rows and has no branches read. A repository whose
   branches cannot be read is a problem beside the rest. At 2,000 stored
   rows over 10 repositories and a 500-branch project it costs 18 ms and
   4 MB an open, 23 ms and 5 MB when every list names the key
   (`TestTicketWorkCostAtRealSize`); a 200-row landing's tickets cost
-  0.5 ms.
+  0.5 ms. It sends no forge or tracker request.
+- **`SearchTicketWork`** (home route, the same scopes, budget 2m15s from
+  entry: every forge request runs within it, and no project's local read
+  starts after it) is
+  `GetTicketWork`'s answer with the forge searched by the key
+  ([Ticket Work search](forge-transport.md#ticket-work-search)): once per
+  distinct repository the projects above clone, then a lookup by name, in
+  every state, of each branch of the ticket, the forge's or this
+  computer's. A found
+  pull request or branch counts only when its title or name names the key
+  by the same rule (`namesTicketKey`). A pull request is listed once
+  (`ticketWorkRead.addFound`): the forge's row, the newest read of it,
+  replaces a stored row or a linked thread's record and keeps only the
+  stored list's CI and project (a stored list is as old as its last
+  read, which runs only while the Pull requests page is open or at
+  boot). A repository's failure is a `TicketForgeProblem` carrying the
+  fields a Pull requests page project carries for a failed read
+  (`newRepoForgeFailure`), beside the rows its search read, and a search that stopped at its page bound is
+  named in `SearchFull`. The client calls both methods at once and shows
+  the stored answer until the search's lands (`stores/ticketWork.svelte.ts`);
+  a stored answer or failure after it is not shown; nothing is stored.
+  It repeats `GetTicketWork`'s local read, the 18 ms above.
 - **`StartTicketThread`** (project route, `threads:operate`, plus
   `tracker:read`, and `git:operate` for Start work) makes the thread of
   an Ask or a Start work in one rollback: the thread titled with the key
@@ -2736,7 +2798,7 @@ ticket finder, with the `SetThreadTicket` and `ClearThreadTicket`
 wrappers (`stores/threadTicketLinks.svelte.ts`), and the ticket's Work
 with Ask and Start work and the pull request rows' ticket chips
 ([Ticket keys, Work, Ask and Start work](#ticket-keys-work-ask-and-start-work)),
-with the wrappers of `GetTicketWork` and `StartTicketThread`
+with the wrappers of `GetTicketWork`, `SearchTicketWork` and `StartTicketThread`
 (`stores/ticketWork.svelte.ts`), the project's setup: Settings >
 Issues > Status groups, the ticket's pins and the Start work defaults,
 with the wrappers of `ProjectTrackerSetup`, `SetProjectTrackerSetup`,

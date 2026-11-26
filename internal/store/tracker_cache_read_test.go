@@ -279,6 +279,7 @@ var mirrorNotReadTimes = map[string]string{
 	"tracker_cache_sprints.end_at":                 "the tracker's clock",
 	"tracker_cache_sprints.completed_at":           "the tracker's clock",
 	"tracker_cache_issues.type_level":              "a level",
+	"tracker_cache_parents.type_level":             "a level",
 	"tracker_cache_issues.created_at":              "the tracker's clock",
 	"tracker_cache_issues.updated_at":              "the tracker's clock",
 	"tracker_cache_issues.resolved_at":             "the tracker's clock",

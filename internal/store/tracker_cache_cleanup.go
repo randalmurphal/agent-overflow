@@ -35,6 +35,7 @@ var mirrorTableKeys = []struct{ table, keys string }{
 	{"tracker_cache_changes", "issue_id, gen, kind, seq"},
 	{"tracker_cache_issue_bodies", "rowid"},
 	{"tracker_cache_issue_missing", "issue_id"},
+	{"tracker_cache_parents", "issue_id"},
 	{"tracker_cache_open_tickets", "session, pump"},
 	{"tracker_cache_board_column_statuses", "board_id, status_id"},
 	{"tracker_cache_board_columns", "board_id, position"},
@@ -93,16 +94,18 @@ var mirrorBoardRestartSQL = func() string {
 
 // mirrorCleanupPendingSQL reports, in one statement, whether any cleanup
 // is pending: a detached root, a retired board, an issue with generations
-// of changes to delete, an unkept issue, or an absence of an unkept issue.
-// Each probe walks an index sized by what it finds; the unkept issue's
-// walks the issues no board row keeps, which are the linked ones when
-// nothing is pending, and the absence's every absence, which are of
-// linked issues a read missed.
+// of changes to delete, an unkept issue, an absence of an unkept issue, or
+// a parent's name no stored issue names. Each probe walks an index sized
+// by what it finds; the unkept issue's walks the issues no board row
+// keeps, which are the linked ones when nothing is pending, the absence's
+// every absence, which are of linked issues a read missed, and the name's
+// every name, with a probe of the issues' parent index each.
 var mirrorCleanupPendingSQL = `SELECT EXISTS (SELECT 1 FROM tracker_cache_roots WHERE connection_id IS NULL)
 	OR EXISTS (SELECT 1 FROM tracker_cache_boards WHERE retired = 1)
 	OR EXISTS (SELECT 1 FROM tracker_cache_issues WHERE history_dirty = 1)
 	OR EXISTS (SELECT 1 FROM tracker_cache_issues i WHERE i.board_rows = 0 AND NOT ` + mirrorIssueKept("i.root_id", "i.issue_id") + `)
-	OR EXISTS (` + mirrorUnkeptAbsencesSQL + `)`
+	OR EXISTS (` + mirrorUnkeptAbsencesSQL + `)
+	OR EXISTS (` + mirrorOrphanParentsSQL + `)`
 
 // mirrorUnkeptAbsencesSQL reads the absences of the issues their live
 // root no longer keeps, mirrorAbsencesSweepSQL deletes them, at most
@@ -131,7 +134,8 @@ var mirrorUnkeptRootsSQL = `SELECT DISTINCT i.root_id FROM tracker_cache_issues 
 // detached root and then the root, the rows of every retired board and
 // then the board (starting a new lifetime of a board listed again), the
 // generations of changes a history staging left, every unkept issue with
-// its changes, sprints and body, and the absences of unkept issues. Each transaction deletes at most
+// its changes, sprints and body, the absences of unkept issues, and the
+// parents' names no stored issue names. Each transaction deletes at most
 // clearMirrorChunk rows, and pause runs before each. When ctx ends it
 // stops before the next transaction and returns ctx's cause. It is
 // idempotent, finishes what a crash, a failure or a stop left, and costs
@@ -201,6 +205,7 @@ func (s *Store) FinishMirrorCleanup(ctx context.Context, pause ChunkPause) error
 			item(func() error { return s.sweepMirrorRoot(root, between) })
 		}
 		item(func() error { return s.sweepMirrorAbsences(between) })
+		item(func() error { return s.sweepMirrorParents(between) })
 	}
 	if err := errors.Join(append(errs, stop)...); err != nil {
 		return fmt.Errorf("store: finish tracker mirror cleanup: %w", err)

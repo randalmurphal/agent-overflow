@@ -14,7 +14,8 @@ import (
 // for the first client's reads to settle (Deps.Settled), then runs a round
 // at once and every Cadence.Linked: while a client is connected
 // (Deps.ClientConnected), each connection that is on syncs its linked
-// issues' cards and the history due (SyncLinked) until no unit reports
+// issues' cards, the names its mirror owes and the history due
+// (SyncLinked) until no unit reports
 // More, and then the mirror's cleanup runs (FinishMirrorCleanup). A round
 // with no client connected is skipped whole, its cleanup included. Every read of the connections, a
 // round's included, decides whether the loop runs (followLoopLocked). A
@@ -195,7 +196,7 @@ func (s *Service) linkedRound(ctx context.Context) {
 // round's) or any other (reported to the loop), when ctx ends, and when no
 // client is connected any more.
 func (s *Service) linkedConnection(ctx context.Context, id string) {
-	due := LinkedDue{Cards: true, History: true}
+	due := LinkedDue{Cards: true, Names: true, History: true}
 	for {
 		out, err := s.SyncLinked(ctx, id, due, Background)
 		switch {
@@ -215,11 +216,13 @@ func (s *Service) linkedConnection(ctx context.Context, id string) {
 			case !u.More:
 			case u.Unit == UnitCards:
 				due.Cards = true
+			case u.Unit == UnitNames:
+				due.Names = true
 			case u.Unit == UnitHistory:
 				due.History = true
 			}
 		}
-		if !due.Cards && !due.History || !s.clientConnected() {
+		if !due.Cards && !due.Names && !due.History || !s.clientConnected() {
 			return
 		}
 	}

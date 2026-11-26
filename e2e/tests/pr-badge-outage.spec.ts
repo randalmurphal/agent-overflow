@@ -65,11 +65,11 @@ async function openThread(page: Page, title: string): Promise<void> {
 }
 
 /** Whether call is the app asking the forge for a branch's open PR/MR: a
- * GitHub OpenPRsByHead query, or a GitLab merge request list by source
+ * GitHub PRsByHead query, or a GitLab merge request list by source
  * branch (its path carries the query). */
 function isOpenPRLookup(call: ForgeInvocation): boolean {
   if (call.via !== 'http') return false;
-  return call.forge === 'github' ? call.operation === 'OpenPRsByHead' : /\/merge_requests\?.*source_branch=/.test(call.path);
+  return call.forge === 'github' ? call.operation === 'PRsByHead' : /\/merge_requests\?.*source_branch=/.test(call.path);
 }
 
 async function lastSeq(harness: HarnessApp): Promise<number> {

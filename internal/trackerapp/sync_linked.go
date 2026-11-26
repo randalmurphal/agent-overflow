@@ -51,3 +51,51 @@ func (s *Service) polledBoards(conn string, gen uint64) []string {
 	slices.Sort(out)
 	return out
 }
+
+// namesBatches is the most reads of unnamed parents one names unit makes.
+const namesBatches = 10
+
+// unnamedParents is the names unit: the parents an upgraded mirror's
+// stored issues name and no read named (v172; store
+// ListMirrorUnnamedParents), read by their own cards, a batch at a time,
+// up to namesBatches a tick (More). The card write names each parent from
+// its own card whether or not the mirror keeps it, and stores the card
+// only if it does. Each batch passes the worklist's cursor after its read
+// is stored, so a parent the tracker did not return, or returned with no
+// name, is asked for once; the worklist ends once no parent is left after
+// it. A tracker failure leaves the cursor, and the next tick asks again.
+// The issues it did not return are not recorded missing: the mark is the
+// links'.
+func (r *run) unnamedParents() (UnitResult, error) {
+	var log changeLog
+	for range namesBatches {
+		batch, err := r.s.store.ListMirrorUnnamedParents(r.root)
+		if err != nil {
+			return UnitResult{Changes: log.changes()}, fmt.Errorf("trackerapp: read the unnamed parents of %s: %w", r.row.ID, err)
+		}
+		if !batch.Owed {
+			return UnitResult{Changes: log.changes()}, nil
+		}
+		parents := batch.Parents
+		if len(parents) > 0 {
+			err = r.againIfSwept(func() error {
+				ch, _, _, err := r.cardsOf(issueIDsInOrder(parents))
+				log.add(ch)
+				return err
+			})
+			if err == nil {
+				err = r.s.store.PassMirrorUnnamedParents(r.root, parents[len(parents)-1])
+			}
+			if err != nil {
+				return UnitResult{Changes: log.changes()}, err
+			}
+		}
+		if !batch.More {
+			if err := r.s.store.EndMirrorUnnamedParents(r.root); err != nil {
+				return UnitResult{Changes: log.changes()}, err
+			}
+			return UnitResult{Changes: log.changes()}, nil
+		}
+	}
+	return UnitResult{Changes: log.changes(), More: true}, nil
+}
