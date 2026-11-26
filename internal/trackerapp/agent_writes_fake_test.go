@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/store"
 	"agent-overflow/internal/harness/trackerfake"
+	"agent-overflow/internal/store"
 )
 
 // agentWriteScenario is the fake Jira site with its board synced and its
