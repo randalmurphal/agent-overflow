@@ -261,10 +261,11 @@ describe('the project\'s pins', () => {
     expect(saves.at(-1)!.ticket_pins).toEqual([{ tracker: 'jira', site: SITE, fields: ['customfield_2'], sections: ['links', 'attachments', 'customfield_3'] }]);
   });
 
-  it('says a pin that lost to another save was not made, naming it and the project, and shows what is stored', async () => {
+  it('says a pin that lost to another save was not made, naming it and the project, and shows what is stored on every ticket of the project', async () => {
     project();
     const { host } = mountWith(900, { detail: ticket('1', 'WEB-1'), project: 'p1' });
-    await waitFor(() => q(host, '[data-testid="ticket-section-pin"]') !== null, 'the setup read');
+    const other = mountWith(900, { detail: ticket('2', 'WEB-2'), project: 'p1', key: 't2', left: 900 });
+    await waitFor(() => q(host, '[data-testid="ticket-section-pin"]') !== null && q(other.host, '[data-testid="ticket-section-pin"]') !== null, 'the setup read');
     // Another window pinned Tier since, and this window has not heard it.
     stored = { revision: 'other', setup: { status_groups: [], ticket_pins: [{ tracker: 'jira', site: SITE, fields: ['customfield_1'] }], start_work: [] } } as SetupView;
     q(host, '[data-testid="ticket-more-fields"]')!.click();
@@ -272,20 +273,25 @@ describe('the project\'s pins', () => {
     q(fieldRow(host, 'customfield_2')!, '[data-testid="ticket-field-pin"]')!.click();
     await waitFor(() => getToasts().length > 0, 'the toast');
     expect(getToasts()[0].message).toBe("Story points for alpha was not pinned. This change was not saved: the project's tracker setup changed after it was read; it is shown as it is now.");
-    await waitFor(() => railIds(host).includes('customfield_1'), 'the stored pin');
+    await waitFor(() => railIds(host).includes('customfield_1') && railIds(other.host).includes('customfield_1'), 'the stored pin on both tickets');
     expect(railIds(host)).not.toContain('customfield_2');
+    expect(railIds(other.host)).not.toContain('customfield_2');
   });
 
-  it('says a pin whose save failed in the computer\'s words, and never shows it pinned', async () => {
+  it('says a pin whose save failed in the computer\'s words, and shows every ticket of the project what is stored after it', async () => {
     project();
     const { host } = mountWith(900, { detail: ticket('1', 'WEB-1'), project: 'p1' });
-    await waitFor(() => q(host, '[data-testid="ticket-section-pin"]') !== null, 'the pins');
+    const other = mountWith(900, { detail: ticket('2', 'WEB-2'), project: 'p1', key: 't2', left: 900 });
+    await waitFor(() => q(host, '[data-testid="ticket-section-pin"]') !== null && q(other.host, '[data-testid="ticket-section-pin"]') !== null, 'the pins');
+    // The write may have happened: what the file holds after it is read again.
+    stored = { revision: 'r9', setup: { status_groups: [], ticket_pins: [{ tracker: 'jira', site: SITE, sections: ['description', 'attachments'] }], start_work: [] } } as SetupView;
     const sentence = "this change may or may not be stored: the computer that holds the project could not finish updating /x/tracker.json (sync failed); read the project's tracker setup again before you change it again";
     setBindingMock('SetProjectTrackerSetup', async () => { throw new TransportError('tracker_setup_unsure', sentence, { detail: { ref: 'r', method: 'SetProjectTrackerSetup', at: 1, chain: [sentence] } }); });
     q(host, '[data-testid="ticket-links-pin"]')!.click();
     await waitFor(() => getToasts().length > 0, 'the toast');
     expect(getToasts()[0].message).toBe(`Could not unpin Linked tickets for alpha: T${sentence.slice(1)}.`);
-    expect(shownSections(host)).toContain('ticket-links');
+    await waitFor(() => !shownSections(host).includes('ticket-links') && !shownSections(other.host).includes('ticket-links'), 'what is stored on both tickets');
+    expect(shownSections(other.host)).toEqual(['description', 'ticket-attachments']);
   });
 
   it('lists a pinned field this ticket lacks behind the control, so it can be unpinned', async () => {
