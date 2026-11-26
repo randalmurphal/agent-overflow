@@ -1131,7 +1131,7 @@ describe('links and poker writes', () => {
     const after = loadTicketLinkTypes(HOME_BACKEND, 'c1');
     answers[0]!(['Old']);
     await before;
-    expect(ticketLinkTypes(HOME_BACKEND, 'c1')).toEqual({ value: null, loading: true, error: null });
+    expect(ticketLinkTypes(HOME_BACKEND, 'c1')).toMatchObject({ value: null, loading: true, error: null });
     answers[1]!(['New']);
     await after;
     expect(ticketLinkTypes(HOME_BACKEND, 'c1')?.value?.map((t) => t.name)).toEqual(['New']);

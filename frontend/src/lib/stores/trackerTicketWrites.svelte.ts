@@ -823,9 +823,13 @@ export interface HeldRead<T> {
 //   while it is out waits for its answer.
 // - Only the read that set an entry settles it, so a read from before a
 //   reconnect settles nothing.
-const heldReads = new SvelteMap<string, HeldRead<unknown>>();
-// The read out for each key, so a second ask waits for the same answer.
-const heldReadsOut = new Map<string, { readonly reading: HeldRead<unknown>; readonly settled: Promise<void> }>();
+const heldReads = new SvelteMap<string, HeldEntry<unknown>>();
+
+/** A held read as the map holds it: one being read carries the read's
+ * settling, so a second ask waits for the same answer. */
+interface HeldEntry<T> extends HeldRead<T> {
+  readonly settled?: Promise<void>;
+}
 
 function heldRead<T>(key: string): HeldRead<T> | null {
   return (heldReads.get(key) as HeldRead<T> | undefined) ?? null;
@@ -837,21 +841,21 @@ function heldRead<T>(key: string): HeldRead<T> | null {
 function loadHeldRead<T>(backend: BackendKey, key: string, read: () => Promise<T>): Promise<void> {
   const held = untrack(() => heldReads.get(key));
   if (held?.value != null) return Promise.resolve();
-  const out = heldReadsOut.get(key);
-  if (held?.loading && out?.reading === held) return out.settled;
-  const reading: HeldRead<T> = { value: null, loading: true, error: null };
+  if (held?.settled) return held.settled;
+  let settle!: () => void;
+  const settled = new Promise<void>((resolve) => { settle = resolve; });
+  const reading: HeldEntry<T> = { value: null, loading: true, error: null, settled };
   heldReads.set(key, reading);
-  const settled = (async () => {
+  void (async () => {
     try {
       const value = await withBackendTarget(backend, read);
       if (heldReads.get(key) === reading) heldReads.set(key, { value, loading: false, error: null });
     } catch (err) {
       if (heldReads.get(key) === reading) heldReads.set(key, { value: null, loading: false, error: err });
     } finally {
-      if (heldReadsOut.get(key)?.reading === reading) heldReadsOut.delete(key);
+      settle();
     }
   })();
-  heldReadsOut.set(key, { reading, settled });
   return settled;
 }
 
@@ -946,6 +950,5 @@ export function resetTicketWritesForTest(): void {
   uploadQueues.clear();
   uploads.clear();
   heldReads.clear();
-  heldReadsOut.clear();
   consent.clear();
 }
