@@ -57,8 +57,11 @@ func token(n string) string { return "token-" + n + "-0000000001" }
 // fixture is a Service over a cloned store, with loopback Jira, Tempo and
 // Linear fakes as the origins of every connection.
 type fixture struct {
-	t       *testing.T
-	st      *store.Store
+	t  *testing.T
+	st *store.Store
+	// file is st's path, for a test that writes a state no store method
+	// writes (sqlOnStore).
+	file    string
 	svc     *Service
 	creds   string
 	jira    *jiratest.Server
@@ -103,7 +106,8 @@ func (f *fixture) pass(d time.Duration) { f.skew.Add(int64(d)) }
 // newFixtureWith is newFixture with the service's sync intervals cad.
 func newFixtureWith(t *testing.T, cad Cadence) *fixture {
 	t.Helper()
-	f := &fixture{t: t, st: storetest.Clone(t), creds: filepath.Join(t.TempDir(), keyfile.DirName), events: newEventLog()}
+	st, file := storetest.CloneFile(t)
+	f := &fixture{t: t, st: st, file: file, creds: filepath.Join(t.TempDir(), keyfile.DirName), events: newEventLog()}
 	f.jira = jiratest.NewServer(t)
 	f.tempo = tempotest.NewServer(t, tempoToken)
 	f.linear = lineartest.NewServer(t)
