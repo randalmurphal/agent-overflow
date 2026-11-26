@@ -25,7 +25,9 @@
 // by title, by the start of its branch and by a branch the forge or this
 // computer has, on GitHub and GitLab, a stored row with its CI, and on
 // Refresh the forge's change; a failed search says its kind, a rate
-// limit with when to retry and Retry, and a login to fix with none.
+// limit with when to retry and Retry, and a login to fix with none; a
+// row's menu opens it on the forge, in a connected browser in that
+// browser.
 
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -76,7 +78,7 @@ export interface WorkSurface {
 
 // WEB-1 "First story" (in progress) and WEB-2 "Second task" (to do) in
 // the seed's sprint.
-const WEB1 = '10101';
+export const WEB1 = '10101';
 const WEB2 = '10102';
 const MOVE_ROUTE = 'POST rest/api/3/issue/{issue}/transitions';
 const EDIT_ROUTE = 'PUT rest/api/3/issue/{issue}';
@@ -100,7 +102,7 @@ function card(pane: Locator, issueId: string): Locator {
 
 /** Opens the card's ticket and answers its Work, opening Details on a narrow
  * ticket. On compact the board shows one column, picked from its strip. */
-async function openWork(page: Page, issueId: string, compact: boolean, column?: string): Promise<{ ticket: Locator; work: Locator }> {
+export async function openWork(page: Page, issueId: string, compact: boolean, column?: string): Promise<{ ticket: Locator; work: Locator }> {
   const pane = await openIssuesPane(page, compact);
   if (column) await showColumn(pane, column, compact);
   await expect(card(pane, issueId)).toBeVisible({ timeout: 30_000 });
@@ -113,7 +115,7 @@ async function openWork(page: Page, issueId: string, compact: boolean, column?: 
 /** The Work section on the ticket's rail; a narrow ticket (always on
  * compact, and on desktop beside a second pane) opens it from Details once
  * the ticket is read. */
-async function workOf(ticket: Locator, compact: boolean): Promise<Locator> {
+export async function workOf(ticket: Locator, compact: boolean): Promise<Locator> {
   const details = ticket.getByTestId('ticket-details');
   const work = ticket.getByTestId('ticket-rail').getByTestId('ticket-work');
   await expect(work.or(details).first()).toBeVisible({ timeout: 30_000 });
@@ -121,6 +123,15 @@ async function workOf(ticket: Locator, compact: boolean): Promise<Locator> {
   if ((await details.isVisible()) && (await details.getAttribute('aria-expanded')) !== 'true') await press(details, compact);
   await expect(work).toBeVisible();
   return work;
+}
+
+/** Opens a Work row's menu: a right click, a long press on the phone. */
+export async function workMenu(page: Page, row: Locator, compact: boolean): Promise<Locator> {
+  const menu = page.getByRole('menu', { name: 'Work actions' });
+  if (compact) await longPress(page, row, menu);
+  else await row.click({ button: 'right' });
+  await expect(menu).toBeVisible();
+  return menu;
 }
 
 /** A Start work run's row of `name`. */
@@ -215,12 +226,12 @@ const GITLAB_SEARCH_PULLS: ForgePull[] = [
 ];
 
 /** The fake forge's answered requests of GraphQL operation `op`. */
-async function forgeOps(harness: HarnessApp, op: string): Promise<ForgeHTTPInvocation[]> {
+export async function forgeOps(harness: HarnessApp, op: string): Promise<ForgeHTTPInvocation[]> {
   return (await forgeInvocations(harness)).filter((c): c is ForgeHTTPInvocation => c.via === 'http' && c.operation === op);
 }
 
 /** Work's pull request rows as `#number state`, in order. */
-async function pullRows(work: Locator): Promise<string[]> {
+export async function pullRows(work: Locator): Promise<string[]> {
   const rows = work.getByTestId('ticket-work-pull');
   const out: string[] = [];
   for (let i = 0; i < await rows.count(); i += 1) {
@@ -231,7 +242,7 @@ async function pullRows(work: Locator): Promise<string[]> {
 }
 
 /** The URLs this page asks its computer to open (OpenExternalURL). */
-function hostOpens(page: Page): () => readonly string[] {
+export function hostOpens(page: Page): () => readonly string[] {
   const method = methodIdByName('OpenExternalURL');
   const urls: string[] = [];
   page.on('websocket', (socket) => {
@@ -275,8 +286,10 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
     await expect.poll(async () => (await forgeOps(harness, 'PullsByKey')).length, { timeout: 30_000 }).toBe(2);
     await expect.poll(() => pullRows(work), { timeout: 30_000 }).toEqual(['#504 draft', '#501 merged', '#502 merged', '#503 closed']);
 
-    // A found row opens on the forge, as every pull request row does.
-    await press(rows.nth(2), compact);
+    // A project here has the repository as its origin, so a row opens in
+    // the app (ticket-work-review-flow.ts); its menu opens it on the forge.
+    await expect(rows.nth(2)).toHaveAttribute('data-opens', 'review');
+    await press((await workMenu(page, rows.nth(2), compact)).getByTestId('ticket-work-menu-forge'), compact);
     await expect.poll(opens).toEqual([`https://github.com/${repo}/pull/502`]);
   });
 
@@ -377,7 +390,7 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
   });
 
   if (!compact) {
-    test('a connected browser\'s Work lists what the forge finds, and a found row opens in that browser', async ({ browser }) => {
+    test('a connected browser\'s Work lists what the forge finds, and a found row\'s menu opens it on the forge in that browser', async ({ browser }) => {
       test.skip(nonLoopbackIPv4() === null, 'requires a LAN interface for a connected browser');
       test.setTimeout(180_000);
       const harness = await launchHarness();
@@ -391,7 +404,7 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
         await confirmOnHost(harness, code);
         const { work } = await openWork(device, WEB1, false);
         await expect.poll(() => pullRows(work), { timeout: 30_000 }).toEqual(['#504 draft', '#501 open', '#502 merged', '#503 closed']);
-        await work.getByTestId('ticket-work-pull').nth(2).click();
+        await (await workMenu(device, work.getByTestId('ticket-work-pull').nth(2), false)).getByTestId('ticket-work-menu-forge').click();
         await expect.poll(() => opens.urls).toEqual([`https://github.com/${repo}/pull/502`]);
       } finally {
         await context.close();

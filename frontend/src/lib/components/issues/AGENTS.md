@@ -84,7 +84,12 @@ board methods, events and the patch read in
   named one, an opener of the ticket already shown included, else the
   Issues pane's board's; Ask and Start work use it) and Back trail, for
   the Issues pane and a ticket pane alike; `TicketHost.svelte` mounts
-  what a trail shows.
+  what a trail shows. The trail also holds the pull request a Work row
+  shows in the ticket's place (`TicketTrail.pullRequest`, ended by any
+  other open, Back or Close); `TicketHost` lays `TicketReview.svelte`,
+  loaded on the first such open, over the ticket, which stays mounted
+  and votes hidden. The review is the Pull requests page's pinned one,
+  held under the host's layout pane, which disposes it when it goes.
 - `stores/ticketPanes.svelte.ts` (in the startup graph) owns ticket panes:
   which ticket each shows, the Ctrl or Cmd rule for opening one
   (`opensTicketPane`), the move's hold on the subscription until the
