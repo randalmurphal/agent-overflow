@@ -122,7 +122,7 @@ func (p *Provider) rows(ctx context.Context, b tracker.BoardID, issues []linear.
 			return nil, fmt.Errorf("linearprovider: issue %s: %w", is.ID, err)
 		}
 		r := tracker.Row{Card: cards[i], Order: key}
-		if estimates(is.TeamEstimateScale) && is.Estimate != nil {
+		if estimates(is.TeamEstimateScale.Scale) && is.Estimate != nil {
 			v := *is.Estimate
 			r.Estimate = &v
 		}
@@ -238,7 +238,7 @@ func (p *Provider) BoardRows(ctx context.Context, b tracker.BoardID, ids []track
 	for _, r := range rows {
 		found[r.Card.ID] = true
 	}
-	return tracker.Rows{Rows: rows, Missing: missing(ids, found)}, nil
+	return tracker.Rows{Rows: rows, Missing: missing(ids, found), Read: teamRows{board: b, issues: issues}}, nil
 }
 
 // NewRows reads the issue's row from the lists, as BoardRows does: Linear's

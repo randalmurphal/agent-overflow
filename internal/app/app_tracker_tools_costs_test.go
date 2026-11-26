@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/harness/trackerfake"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/transport"
 )
@@ -214,7 +215,8 @@ func costNames(routes []string) string {
 
 // TestTrackerToolRequestCounts pins the requests of each call shape. The
 // read after an approval (planCall.recheck) is the bulkfetch or Issues a
-// call of three tickets with set makes after its plan's reads; a call of
+// call of three tickets with set makes after its plan's reads, and the
+// rows read of those that set an estimate; a call of
 // one ticket or a comment alone waits for no approval or judges nothing.
 // A Jira comment's lookup (Server.readAudience) is the bulkfetch just
 // before the comments, after every other write.
@@ -373,9 +375,10 @@ func createdTitles(f *trackerBoardFixture, linear bool) []string {
 // costPins are TestTrackerToolRequestCounts' pins, by tracker, shape,
 // temperature and number of tickets. A Jira status planned cold takes
 // its moves from the detail read (no transitions read); warm, the plan
-// reads the cards, which keep no read, so the move reads them. An
-// estimate reads the board's rows to check the issue is on it first.
-// Every write ends with one refresh (rows, Issues). A read is one read
+// reads the cards, which keep no read, so the move reads them. A call
+// that sets an estimate reads its tickets through their board's rows
+// (rows, Issues), which the estimate takes as its check that the board
+// lists the issue; after a status move it checks again. Every write ends with one refresh (rows, Issues). A read is one read
 // and then the same read again, after "|"; a create followed by a create
 // of another ticket on the same client is the two creates.
 var costPins = map[string]string{
@@ -399,14 +402,14 @@ var costPins = map[string]string{
 	"jira/title/cold/3":                    "bulkfetch×2 issue edit issue edit issue edit rows",
 	"jira/title/warm/1":                    "bulkfetch issue edit rows",
 	"jira/title/warm/3":                    "bulkfetch×2 issue edit issue edit issue edit rows",
-	"jira/estimate/cold/1":                 "bulkfetch rows estimate rows",
-	"jira/estimate/cold/3":                 "bulkfetch×2 rows estimate rows estimate rows estimate rows",
-	"jira/estimate/warm/1":                 "bulkfetch rows estimate rows",
-	"jira/estimate/warm/3":                 "bulkfetch×2 rows estimate rows estimate rows estimate rows",
+	"jira/estimate/cold/1":                 "rows estimate rows",
+	"jira/estimate/cold/3":                 "bulkfetch rows×2 estimate×3 rows",
+	"jira/estimate/warm/1":                 "rows estimate rows",
+	"jira/estimate/warm/3":                 "bulkfetch rows×2 estimate×3 rows",
 	"jira/mixed/cold/1":                    "comments issue transition issue edit rows estimate rows sprints to-sprint bulkfetch comment rows",
-	"jira/mixed/cold/3":                    "bulkfetch comments×3 issue×3 transition×3 issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint bulkfetch comment×3 rows",
+	"jira/mixed/cold/3":                    "bulkfetch comments×3 issue×3 rows transition×3 issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint bulkfetch comment×3 rows",
 	"jira/mixed/warm/1":                    "bulkfetch transitions transition issue edit rows estimate rows sprints to-sprint bulkfetch comment rows",
-	"jira/mixed/warm/3":                    "bulkfetch×2 transitions transition transitions transition transitions transition issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint bulkfetch comment×3 rows",
+	"jira/mixed/warm/3":                    "bulkfetch×2 rows transitions transition transitions transition transitions transition issue edit issue edit issue edit rows estimate rows estimate rows estimate rows sprints to-sprint bulkfetch comment×3 rows",
 	"jira/create":                          "screen types create bulkfetch match",
 	"jira/create, then another":            "screen types create bulkfetch match | types create bulkfetch match",
 	"jira/create with status and sprint":   "screen types create bulkfetch comments issue match transition rows sprints to-sprint rows",
@@ -432,14 +435,14 @@ var costPins = map[string]string{
 	"linear/title/cold/3":                  "Issues×2 UpdateIssue×3 Issues",
 	"linear/title/warm/1":                  "Issues UpdateIssue Issues",
 	"linear/title/warm/3":                  "Issues×2 UpdateIssue×3 Issues",
-	"linear/estimate/cold/1":               "IssueTeam Issues UpdateIssue Issues",
-	"linear/estimate/cold/3":               "IssueTeam Issues×2 UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue Issues",
-	"linear/estimate/warm/1":               "IssueTeam Issues UpdateIssue Issues",
-	"linear/estimate/warm/3":               "IssueTeam Issues×2 UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue Issues",
+	"linear/estimate/cold/1":               "Issues UpdateIssue Issues",
+	"linear/estimate/cold/3":               "Issues×3 UpdateIssue×3 Issues",
+	"linear/estimate/warm/1":               "Issues UpdateIssue Issues",
+	"linear/estimate/warm/3":               "Issues×3 UpdateIssue×3 Issues",
 	"linear/mixed/cold/1":                  "IssueDetails UpdateIssue×2 IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment Issues",
-	"linear/mixed/cold/3":                  "IssueDetails Issues UpdateIssue×6 IssueTeam UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment×3 Issues",
+	"linear/mixed/cold/3":                  "IssueDetails Issues×2 UpdateIssue×6 IssueTeam UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment×3 Issues",
 	"linear/mixed/warm/1":                  "IssueDetails UpdateIssue×2 IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment Issues",
-	"linear/mixed/warm/3":                  "IssueDetails Issues UpdateIssue×6 IssueTeam UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment×3 Issues",
+	"linear/mixed/warm/3":                  "IssueDetails Issues×2 UpdateIssue×6 IssueTeam UpdateIssue IssueTeam UpdateIssue IssueTeam UpdateIssue CyclePositions UpdateIssues CreateComment×3 Issues",
 	"linear/create":                        "CreateIssue Issues",
 	"linear/create, then another":          "CreateIssue Issues | CreateIssue Issues",
 	"linear/create with status and sprint": "CreateIssue CyclePositions IssueDetails Issues UpdateIssues Issues",
@@ -516,6 +519,48 @@ func TestTrackerToolUpdatesAsManyTicketsAsItTakes(t *testing.T) {
 				t.Fatalf("ticket_update = %s", text)
 			}
 			if got := costCounts(routes); got != c.want {
+				t.Errorf("%d requests: %s\nwant %s", len(routes), got, c.want)
+			}
+		})
+	}
+}
+
+// A person's estimate makes the requests it made before the agent's took
+// the plan's rows read: it has no write session, so its provider checks
+// that the board lists the issue (Jira's rows read, Linear's IssueTeam)
+// before it sends, then the write's refresh reads the row again.
+func TestTrackerPersonsEstimateRequests(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name   string
+		linear bool
+		want   string
+	}{
+		{"jira", false, "rows estimate rows"},
+		{"linear", true, "IssueTeam UpdateIssue Issues"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			f, _, _ := costFixture(t, c.linear, 3)
+			conn, board, issue := f.conn.ID, "1", "10101"
+			if c.linear {
+				ws := costLinear(3)
+				conns, err := f.a.TrackerConnections(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				i := slices.IndexFunc(conns, func(c TrackerConnection) bool { return c.Kind == store.TrackerKindLinear })
+				conn, board, issue = conns[i].ID, ws.Teams[0].ID, ws.Issues[0].ID
+			}
+			since := f.e.Requests(0).Requests
+			if _, err := f.a.SetTrackerEstimate(t.Context(), conn, trackerapp.EstimateRequest{Board: board, Issue: issue, Value: number(3)}); err != nil {
+				t.Fatal(err)
+			}
+			var routes []string
+			for _, r := range f.e.Requests(since[len(since)-1].Seq).Requests {
+				routes = append(routes, r.Route)
+			}
+			if got := costNames(routes); got != c.want {
 				t.Errorf("%d requests: %s\nwant %s", len(routes), got, c.want)
 			}
 		})

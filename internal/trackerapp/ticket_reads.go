@@ -97,19 +97,50 @@ type TicketCardRead struct {
 // IssueCards reads the cards of issues on connection id as the tracker
 // says they are now, a readBatch a read, stores those of the issues the
 // mirror keeps as any cards read does, and answers each as the mirror
-// then holds it, with its rows. A ticket the tracker did not return fails
-// wrapping ErrIssueNotFound, and one the mirror does not keep wrapping
-// ErrNotMirrored: no view of it names its users and statuses. A tracker
-// failure of the read is settled as the connection's problem and
-// returned.
+// then holds it, with its rows (cardReads). A tracker failure of the read
+// is settled as the connection's problem and returned.
 func (s *Service) IssueCards(ctx context.Context, id string, issues []tracker.IssueID, u Urgency) ([]TicketCardRead, error) {
 	if _, err := ticketReadsOf(issues); err != nil {
 		return nil, err
 	}
-	root, missing, err := s.readCards(ctx, id, issues, u)
+	root, missing, err := s.readCards(ctx, id, u, func(r *run) ([]tracker.IssueID, error) {
+		_, missing, _, err := r.cards(issues)
+		return missing, err
+	})
 	if err != nil {
 		return nil, err
 	}
+	return s.cardReads(id, root, issues, missing)
+}
+
+// IssueRows reads the cards of issues on connection id through their rows
+// on the boards the mirror shows them on, one rows read per board for all
+// of them, and through the cards read for those no board returned, as a
+// write's refresh reads a card again (run.refresh), and answers each as
+// IssueCards does: its card, and its rows with their estimates as the
+// boards hold them now. An issue a board no longer lists has no row on
+// it. A tracker failure of any of the reads is settled as the
+// connection's problem and returned.
+func (s *Service) IssueRows(ctx context.Context, id string, issues []tracker.IssueID, u Urgency) ([]TicketCardRead, error) {
+	if _, err := ticketReadsOf(issues); err != nil {
+		return nil, err
+	}
+	root, missing, err := s.readCards(ctx, id, u, func(r *run) ([]tracker.IssueID, error) {
+		f := r.refresh(cardResources(issues), newIssue{})
+		return f.missing, f.readErr()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.cardReads(id, root, issues, missing)
+}
+
+// cardReads are issues as the mirror of root holds them after a read of
+// them that did not return missing, each with its rows. A ticket the
+// tracker did not return fails wrapping ErrIssueNotFound, and one the
+// mirror does not keep wrapping ErrNotMirrored: no view of it names its
+// users and statuses.
+func (s *Service) cardReads(id string, root int64, issues, missing []tracker.IssueID) ([]TicketCardRead, error) {
 	if err := s.enter(); err != nil {
 		return nil, err
 	}
@@ -155,11 +186,11 @@ func (s *Service) IssueCards(ctx context.Context, id string, issues []tracker.Is
 	return out, nil
 }
 
-// readCards reads the cards of issues on connection id (run.cards) and
-// settles the run's tracker calls as the connection's problem, as
-// readDetails does. It returns the mirror root they were stored under and
-// the issues the tracker did not return.
-func (s *Service) readCards(ctx context.Context, id string, issues []tracker.IssueID, u Urgency) (int64, []tracker.IssueID, error) {
+// readCards runs read, a read of cards on connection id that answers the
+// issues the tracker did not return, and settles the run's tracker calls
+// as the connection's problem, as readDetails does. It returns the mirror
+// root they were stored under and the issues the tracker did not return.
+func (s *Service) readCards(ctx context.Context, id string, u Urgency, read func(*run) ([]tracker.IssueID, error)) (int64, []tracker.IssueID, error) {
 	r, err := s.start(ctx, id, u)
 	if err != nil {
 		return 0, nil, err
@@ -172,7 +203,7 @@ func (s *Service) readCards(ctx context.Context, id string, issues []tracker.Iss
 	}
 	var missing []tracker.IssueID
 	if readErr == nil {
-		_, missing, _, readErr = r.cards(issues)
+		missing, readErr = read(r)
 	}
 	var o Outcome
 	callErr, stop, err := r.failed(&o, readErr)

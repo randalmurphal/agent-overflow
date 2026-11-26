@@ -69,14 +69,16 @@ func needsDetail(name string) bool {
 	return !standard
 }
 
-// readTickets reads tickets as far as set needs, comment their ticket alone,
-// each connection's together, and answers each ticket's plan with its
+// readTickets reads tickets as far as set needs (a detail, else the card,
+// through the tickets' boards when set names the estimate), comment their
+// ticket alone, each connection's together, and answers each ticket's plan with its
 // card, or its read's failure, in tickets' order. A read of several that
 // fails as a whole fails the call.
 func (pc *planCall) readTickets(ctx context.Context, tickets []ticket, set []namedValue, comment string) ([]*planned, []error, error) {
-	detail, card := false, len(set) > 0
+	detail, card, rows := false, len(set) > 0, false
 	for _, nv := range set {
 		detail = detail || needsDetail(nv.name)
+		rows = rows || strings.EqualFold(strings.TrimSpace(nv.name), setEstimate)
 	}
 	plans := make([]*planned, len(tickets))
 	errs := make([]error, len(tickets))
@@ -104,7 +106,11 @@ func (pc *planCall) readTickets(ctx context.Context, tickets []ticket, set []nam
 			}
 		}
 	}
-	unkept, err := pc.readCards(ctx, plans, cards, errs)
+	read := pc.s.t.IssueCards
+	if rows {
+		read = pc.s.t.IssueRows
+	}
+	unkept, err := pc.readCards(ctx, read, plans, cards, errs)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -120,15 +126,17 @@ func (pc *planCall) readTickets(ctx context.Context, tickets []ticket, set []nam
 }
 
 // recheck reads the cards of plans again, once per connection, after the
-// person approved what set changes. A ticket the read no longer finds,
-// or whose card moved since its plan read it, is sent nothing
-// (planned.changed): a write sent now would be judged on a ticket the
-// person did not see. A card moved when its update time did, or the
-// status or sprints the plan judged on, which a tracker might change
-// without moving the update time. A read that fails is the call's error,
-// nothing sent. A comment's audience is not judged on this read: the
-// comment phase looks its tickets up after the call's other writes
-// (Server.readAudience).
+// person approved what set changes, and the rows of those that set an
+// estimate on their boards (IssueRows), whose reads the estimates then
+// take. A ticket the read no longer finds, whose card moved since its
+// plan read it, or whose estimate on the board its plan judged moved, or
+// that board no longer lists, is sent nothing (planned.changed): a write
+// sent now would be judged on a ticket the person did not see. A card
+// moved when its update time did, or the status or sprints the plan
+// judged on, which a tracker might change without moving the update
+// time. A read that fails is the call's error, nothing sent. A comment's
+// audience is not judged on this read: the comment phase looks its
+// tickets up after the call's other writes (Server.readAudience).
 func (pc *planCall) recheck(ctx context.Context, plans []*planned) error {
 	var conns []string
 	for _, p := range plans {
@@ -158,11 +166,66 @@ func (pc *planCall) recheck(ctx context.Context, plans []*planned) error {
 			case i < 0:
 				p.changed = goneSentence(p, "nothing was sent to it")
 			case cardMoved(p.d.Card, found.Found[i].Card):
-				p.changed = fmt.Sprintf("%s changed on %s while the user was deciding, so nothing was sent to it; read it again and call again for it.", p.key, trackerNameOf(p.src.Kind))
+				p.changed = changedSentence(p)
+			}
+		}
+		if err := pc.recheckEstimates(ctx, conn, on); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// changedSentence is why p, changed during the wait, was sent nothing.
+func changedSentence(p *planned) string {
+	return fmt.Sprintf("%s changed on %s while the user was deciding, so nothing was sent to it; read it again and call again for it.", p.key, trackerNameOf(p.src.Kind))
+}
+
+// recheckEstimates reads the rows of on's plans that set an estimate and
+// are not changed yet, on connection conn, in one read (IssueRows): a
+// plan whose board no longer lists the ticket, or whose estimate there
+// moved, is changed.
+func (pc *planCall) recheckEstimates(ctx context.Context, conn string, on []*planned) error {
+	var est []*planned
+	var issues []string
+	for _, p := range on {
+		if p.estimate != nil && p.changed == "" {
+			est, issues = append(est, p), append(issues, p.d.Card.ID)
+		}
+	}
+	if len(est) == 0 {
+		return nil
+	}
+	got, err := pc.s.t.IssueRows(ctx, conn, issues)
+	if err != nil {
+		site := est[0].t.site
+		if code, msg, ok := errorsx.PublicDetails(err); ok {
+			return errorsx.Public(code, "Nothing was sent: the tickets' estimates could not be read again after the user approved. "+site+": "+msg, err)
+		}
+		return fmt.Errorf("nothing was sent: read the tickets' estimates again after the user approved: %s: %w", site, err)
+	}
+	for k, p := range est {
+		board := p.estimate.Board
+		was := slices.IndexFunc(p.d.Rows, func(r trackerapp.TicketRowView) bool { return r.Board == board })
+		switch r := got[k]; {
+		case notFound(r.Err):
+			p.changed = goneSentence(p, "nothing was sent to it")
+		case r.Err != nil:
+			// Not kept by the mirror any more: read through no board.
+			p.changed = fmt.Sprintf("%s could not be read again on its boards after the user approved, so nothing was sent to it; read it again and call again for it.", p.key)
+		default:
+			now := slices.IndexFunc(r.View.Rows, func(r trackerapp.TicketRowView) bool { return r.Board == board })
+			if was < 0 || now < 0 || !sameNumber(p.d.Rows[was].Estimate, r.View.Rows[now].Estimate) {
+				p.changed = changedSentence(p)
 			}
 		}
 	}
 	return nil
+}
+
+// sameNumber reports whether a and b are both none or equal.
+func sameNumber(a, b *float64) bool {
+	return a == nil && b == nil || a != nil && b != nil && *a == *b
 }
 
 // goneSentence is the sentence of p's ticket a read made after its plan
@@ -215,13 +278,15 @@ func issuesOf(plans []*planned, at []int) []string {
 	return out
 }
 
-// readCards reads the cards of plans at, a connection's in one read, into
-// each plan's detail (its card and rows), or its failure into errs. It
-// returns those the mirror does not keep, whose detail is read instead.
-func (pc *planCall) readCards(ctx context.Context, plans []*planned, at []int, errs []error) ([]int, error) {
+// readCards reads the cards of plans at with read (IssueCards, or
+// IssueRows for a call that sets an estimate, which judges it on the
+// boards' rows as they are now), a connection's in one read, into each
+// plan's detail (its card and rows), or its failure into errs. It returns
+// those the mirror does not keep, whose detail is read instead.
+func (pc *planCall) readCards(ctx context.Context, read func(context.Context, string, []string) ([]trackerapp.TicketCardRead, error), plans []*planned, at []int, errs []error) ([]int, error) {
 	var unkept []int
 	for _, group := range byConnection(plans, at) {
-		got, err := pc.s.t.IssueCards(ctx, plans[group[0]].t.connection, issuesOf(plans, group))
+		got, err := read(ctx, plans[group[0]].t.connection, issuesOf(plans, group))
 		if err != nil {
 			return nil, err
 		}

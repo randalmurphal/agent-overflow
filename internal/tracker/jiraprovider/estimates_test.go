@@ -2,6 +2,7 @@ package jiraprovider
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"agent-overflow/internal/harness/trackerfake"
@@ -66,4 +67,40 @@ func describe(v *float64) any {
 		return "none"
 	}
 	return *v
+}
+
+// An estimate given the read of its issue's row on its board sends with no
+// check that the board lists the issue; given none, or a read of the
+// issue on another board or of another issue, it reads which issues the
+// board lists first, as before.
+func TestAnEstimateTakesItsRowsRead(t *testing.T) {
+	s := newScenario(t, false)
+	rows := scenarioMust[tracker.Rows](t)(s.p.BoardRows(s.ctx, "1", []tracker.IssueID{"10101", "10102"}, tracker.Eligibility{}))
+	three := 3.0
+	for _, c := range []struct {
+		name  string
+		read  tracker.IssueRead
+		check bool
+	}{
+		{"its row's read", rows.Read.RowRead("10101"), false},
+		{"none", nil, true},
+		{"another issue's", rows.Read.RowRead("10102"), true},
+		{"on another board", &listedRead{issue: "10101", board: "2"}, true},
+	} {
+		since := s.e.Requests(0).Requests
+		r := s.p.SetEstimate(s.ctx, tracker.EstimateInput{Board: "1", Issue: "10101", Value: &three, Read: c.read})
+		if !r.AllApplied() {
+			t.Fatalf("%s: estimate %+v", c.name, r)
+		}
+		var routes []string
+		for _, req := range s.e.Requests(since[len(since)-1].Seq).Requests {
+			routes = append(routes, req.Route)
+		}
+		if checked := slices.Contains(routes, "GET rest/software/1.0/board/{board}/issue"); checked != c.check {
+			t.Errorf("%s: requests %q; want the board's listing read %v", c.name, routes, c.check)
+		}
+	}
+	if rows.Read.RowRead("10103") != nil {
+		t.Error("the rows read answers for an issue it did not return")
+	}
 }

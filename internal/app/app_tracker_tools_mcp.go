@@ -207,6 +207,12 @@ func (t trackerToolsAdapter) IssueCards(ctx context.Context, connection string, 
 	})
 }
 
+func (t trackerToolsAdapter) IssueRows(ctx context.Context, connection string, issues []string) ([]trackerapp.TicketCardRead, error) {
+	return trackerFormRead(t.a, ctx, "ticket_read", "Reading the tickets", func(ctx context.Context, svc *trackerapp.Service) ([]trackerapp.TicketCardRead, error) {
+		return svc.IssueRows(ctx, connection, issueIDsOf(issues), trackerapp.Interactive)
+	})
+}
+
 // issueIDsOf are ids as issue IDs.
 func issueIDsOf(ids []string) []tracker.IssueID {
 	out := make([]tracker.IssueID, len(ids))

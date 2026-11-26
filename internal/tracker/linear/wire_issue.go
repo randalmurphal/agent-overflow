@@ -20,7 +20,7 @@ import "time"
 const issueSelection = `
   id identifier number title url branchName
   priority estimate sortOrder prioritySortOrder subIssueSortOrder
-  team { id issueEstimationType } state { id } assignee { id } creator { id } cycle { id } project { id } parent { id }
+  team { id issueEstimationType issueEstimationExtended issueEstimationAllowZero } state { id } assignee { id } creator { id } cycle { id } project { id } parent { id }
   labelIds labels(first: 250) { nodes { id name } }
   dueDate createdAt updatedAt startedAt completedAt canceledAt archivedAt trashed
 `
@@ -109,8 +109,10 @@ type labelRefs struct {
 
 // issueTeam is an issue's team as issueSelection selects it.
 type issueTeam struct {
-	ID                  string `json:"id"`
-	IssueEstimationType string `json:"issueEstimationType"`
+	ID                       string `json:"id"`
+	IssueEstimationType      string `json:"issueEstimationType"`
+	IssueEstimationExtended  bool   `json:"issueEstimationExtended"`
+	IssueEstimationAllowZero bool   `json:"issueEstimationAllowZero"`
 }
 
 func (t *issueTeam) id() string {
@@ -120,11 +122,11 @@ func (t *issueTeam) id() string {
 	return t.ID
 }
 
-func (t *issueTeam) scale() EstimateScale {
+func (t *issueTeam) estimation() Estimation {
 	if t == nil {
-		return ""
+		return Estimation{}
 	}
-	return EstimateScale(t.IssueEstimationType)
+	return Estimation{Scale: EstimateScale(t.IssueEstimationType), Extended: t.IssueEstimationExtended, AllowZero: t.IssueEstimationAllowZero}
 }
 
 func (w wireIssue) typed() Issue {
@@ -132,7 +134,7 @@ func (w wireIssue) typed() Issue {
 		ID: w.ID, Identifier: w.Identifier, Number: int(w.Number), Title: w.Title,
 		URL: w.URL, BranchName: w.BranchName, Priority: Priority(w.Priority), Estimate: w.Estimate,
 		SortOrder: w.SortOrder, PrioritySortOrder: w.PrioritySortOrder, SubIssueSortOrder: w.SubIssueSortOrder,
-		TeamID: w.Team.id(), TeamEstimateScale: w.Team.scale(), StateID: w.State.id(), AssigneeID: w.Assignee.id(), CreatorID: w.Creator.id(),
+		TeamID: w.Team.id(), TeamEstimateScale: w.Team.estimation(), StateID: w.State.id(), AssigneeID: w.Assignee.id(), CreatorID: w.Creator.id(),
 		CycleID: w.Cycle.id(), ProjectID: w.Project.id(), ParentID: w.Parent.id(), LabelIDs: w.LabelIDs, Labels: w.Labels.Nodes,
 		DueDate: w.DueDate, CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt, StartedAt: w.StartedAt,
 		CompletedAt: w.CompletedAt, CanceledAt: w.CanceledAt, ArchivedAt: w.ArchivedAt,

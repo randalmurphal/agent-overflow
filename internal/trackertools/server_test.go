@@ -237,6 +237,16 @@ func (f *fakeTracker) IssueCards(_ context.Context, connection string, issues []
 	return out, nil
 }
 
+// IssueRows answers as IssueCards does, asked as "rows connection issue".
+func (f *fakeTracker) IssueRows(ctx context.Context, connection string, issues []string) ([]trackerapp.TicketCardRead, error) {
+	n := len(f.asked)
+	out, err := f.IssueCards(ctx, connection, issues)
+	for i := n; i < len(f.asked); i++ {
+		f.asked[i] = "rows" + strings.TrimPrefix(f.asked[i], "card")
+	}
+	return out, err
+}
+
 // EndWrites counts the sessions ended.
 func (f *fakeTracker) EndWrites(context.Context) error {
 	f.ends++

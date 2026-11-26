@@ -96,11 +96,23 @@ var ErrRuleRefused = errors.New("tracker: the tracker refused the listing's rule
 
 // Rows are a board's rows for a set of issues. Missing are the issues
 // asked for that the board does not list now: moved off it, deleted, or
-// not visible.
+// not visible. Read is the provider's own record of the read, nil when it
+// keeps none.
 type Rows struct {
 	Rows    []Row
 	Missing []IssueID
 	Catalog
+	Read RowsRead
+}
+
+// RowsRead is a rows read as its provider found it: the IssueRead of each
+// issue whose row it returned, which the first estimate of the issue on
+// the board after the read may take (EstimateInput.Read). One record
+// serves the whole read, so a read no write takes costs nothing per row.
+type RowsRead interface {
+	// RowRead is the read of issue's row, nil for an issue the read did
+	// not return.
+	RowRead(issue IssueID) IssueRead
 }
 
 // Placement is where a just-created issue stands on a set of boards, by

@@ -77,11 +77,14 @@ type Tracker interface {
 	Lookup(ctx context.Context, connection string, keys []string) (trackerapp.LookupView, error)
 	Search(ctx context.Context, connection string, in trackerapp.SearchRequest) (trackerapp.SearchPageView, error)
 	IssueDetail(ctx context.Context, connection, issue string) (trackerapp.DetailView, error)
-	// IssueDetails and IssueCards read several tickets of connection at
-	// once, each answered in order with its own failure; ctx's write
-	// session (trackerapp.WithWrites) keeps what they read for the writes.
+	// IssueDetails, IssueCards and IssueRows read several tickets of
+	// connection at once, each answered in order with its own failure;
+	// ctx's write session (trackerapp.WithWrites) keeps what they read for
+	// the writes. IssueRows reads the cards through the tickets' boards,
+	// with the estimates those boards hold now.
 	IssueDetails(ctx context.Context, connection string, issues []string) ([]trackerapp.TicketRead, error)
 	IssueCards(ctx context.Context, connection string, issues []string) ([]trackerapp.TicketCardRead, error)
+	IssueRows(ctx context.Context, connection string, issues []string) ([]trackerapp.TicketCardRead, error)
 	Comments(ctx context.Context, connection, issue, page string) (trackerapp.CommentPageView, error)
 	IssueTypes(ctx context.Context, connection, project string) ([]trackerapp.IssueTypeView, error)
 	CreateFields(ctx context.Context, connection, project, issueType string) ([]trackerapp.FieldView, error)

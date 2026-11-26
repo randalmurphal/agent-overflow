@@ -268,7 +268,8 @@ func (r *run) refreshRows(f *refreshed, p refreshPlan, t store.MirrorRefreshTarg
 	if len(unread) == 0 {
 		return nil
 	}
-	_, _, left, err := r.cards(unread)
+	_, missing, left, err := r.cards(unread)
+	f.missing = append(f.missing, missing...)
 	f.covered(cardResources(unread[:len(unread)-len(left)])...)
 	if err != nil {
 		return r.failedRead(f, err, cardResources(left)...)

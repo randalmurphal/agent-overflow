@@ -68,7 +68,8 @@ func (in CreateInput) Check() error {
 	return nil
 }
 
-// IssueRead is an issue as a read of its provider found it (Detail.Read),
+// IssueRead is an issue as a read of its provider found it (Detail.Read,
+// RowsRead),
 // which a write of the same provider to the issue takes as current in
 // place of reading the issue again. A caller passes it only to the first
 // write it sends to the issue after the read. What it holds is the
@@ -120,11 +121,14 @@ func (in MoveInput) Check() error {
 }
 
 // EstimateInput sets an issue's estimate on a board, in the board's unit;
-// a nil Value clears it.
+// a nil Value clears it. Read is the issue's row on the board as the
+// caller read it (RowsRead), or nil: a provider given its own read of the
+// issue on the board takes the issue as on the board then.
 type EstimateInput struct {
 	Board BoardID
 	Issue IssueID
 	Value *float64
+	Read  IssueRead
 }
 
 // Check refuses an estimate that names no board or issue, or whose value
