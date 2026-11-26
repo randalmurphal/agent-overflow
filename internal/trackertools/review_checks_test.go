@@ -85,6 +85,28 @@ func TestAnAmbiguousLinearValueNamesWhatLinearTakes(t *testing.T) {
 	}
 }
 
+// A Linear create refused for an ambiguous value says what works before
+// the ticket exists: a name or an email only one has, or the create
+// without it, the value set on the new ticket.
+func TestAnAmbiguousLinearValueOfACreateNamesWhatWorks(t *testing.T) {
+	t.Parallel()
+	w := newWriteFixture(t)
+	linear := linearSource
+	linear.Kind = "linear"
+	w.f.sources = []trackerapp.TicketSource{linear}
+	w.f.boards["conn-linear/team"] = trackerapp.BoardSummary{Name: "Web", Project: "team-id"}
+	w.h.createBoards["WEB"] = []CreateBoard{{Connection: "conn-linear", Board: "team"}}
+	w.f.write = func(name string, _ any) (trackerapp.WriteView, error) {
+		return trackerapp.WriteView{Parts: []trackerapp.PartView{{Step: name, State: "refused", Refusal: &trackerapp.RefusalView{
+			Reason:     "ambiguous",
+			Message:    `"Alex" names 2 values of Assignee; pick one by ID`,
+			Candidates: []trackerapp.ChoiceView{{ID: "lin-u1", Name: "Alex"}, {ID: "lin-u2", Name: "Alex"}},
+		}}}}, nil
+	}
+	_, err := w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "New", "set": map[string]any{"assignee": "Alex"}})
+	refused(t, err, CodeInvalidRequest, `The ticket was not created: it matches more than one value: "Alex" or "Alex"; Linear matches it by name, and a person also by email: give a name or an email only one of them has, or leave it out of the create, if the ticket can be made without it, and ask the user to set it on the new ticket.`)
+}
+
 // A parent key takes the forms a ticket key takes on its tracker: a
 // one-letter Linear team, site-qualified with its title.
 func TestAParentKeyOfALinearTeamOfOneLetter(t *testing.T) {

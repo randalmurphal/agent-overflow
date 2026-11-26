@@ -215,7 +215,7 @@ func createRefused(tg createTarget, v trackerapp.WriteView) error {
 			}
 			return invalidf("%s needs %s to create a ticket; give them in set.", tg.key, sayList(names, "and"))
 		default:
-			return invalidf("The ticket was not created: %s", refusalText(tg.src.Kind, r))
+			return invalidf("The ticket was not created: %s", refusalText(tg.src.Kind, r, true))
 		}
 	}
 	return invalidf("The ticket was not created; the tracker gave no reason.")
