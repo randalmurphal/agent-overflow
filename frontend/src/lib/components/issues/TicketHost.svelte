@@ -12,10 +12,8 @@
   // Issues pane and for a ticket in its own pane: the ticket its trail
   // shows, mounted once its subscription is held, and remounted for each
   // ticket. It knows the ticket's computer (its name, whether it is
-  // connected, whether it can ever answer) and, from the ticket's own
-  // subscription, its connection's tracker and the person's account there;
-  // until the subscription answers, the tracker is none, and the ticket
-  // offers neither tracker's own controls.
+  // connected, whether it can ever answer); the ticket's tracker and the
+  // person's account there are its subscription's (`attachment.tracker`).
   // What each pane adds is passed in. In a pane of its own, every state
   // wears the pane's header (ToolPaneHeader), the ticket's own included.
   // A link opened with Ctrl or Cmd, or "Open in its own pane" on a linked
@@ -54,8 +52,6 @@
     return entry ? backendDisplayName(entry) : 'A computer';
   });
   const offline = $derived(backend !== null && isTransportOutage(getTransportStatusFor(backend).status));
-  const kind = $derived(view?.attachment.current?.kind ?? '');
-  const account = $derived(view?.attachment.current?.account ?? null);
 
   function openIssue(issue: string, seed: TicketSeed, ownPane: boolean): void {
     const shown = trail.ticket;
@@ -103,9 +99,7 @@
           attachment={shown.attachment}
           seed={shown.open.seed}
           {board}
-          {kind}
           {computerName}
-          {account}
           {offline}
           {compact}
           trail={trail.depth}

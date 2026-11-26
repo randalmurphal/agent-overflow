@@ -2617,6 +2617,68 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
     expect(within(form).queryByTestId('worklog-form-find')).toBeNull();
   });
 
+  it('keeps an open Log time with what was typed through a reconnect that answers the same account, and sends nothing until that answer', async () => {
+    install();
+    installTicket();
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await within(screen).findByTestId('ticket-comment-input');
+    await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+    await fireEvent.click(await within(document.body).findByTestId('ticket-menu-log-time'));
+    const form = await within(document.body).findByTestId('worklog-form');
+    await fireEvent.input(within(form).getByTestId('worklog-form-day'), { target: { value: '2026-11-20' } });
+    await fireEvent.input(within(form).getByTestId('worklog-form-time'), { target: { value: '1h 30m' } });
+    await fireEvent.input(within(form).getByTestId('worklog-form-description'), { target: { value: 'Wrote the report' } });
+    const log = setBindingMock('AddTrackerWorklog', async (): Promise<WriteView> => ({ parts: [{ step: 'add', state: 'applied' }] }) as WriteView);
+    let answer: ((sub: TicketSubscription) => void) | undefined;
+    setBindingMock('SubscribeTrackerTicket', () => new Promise<TicketSubscription>((resolve) => { answer = resolve; }));
+
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null });
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+    await waitFor(() => expect(answer).toBeDefined());
+    // Not answered yet: the form, what was typed and the Jira mark stay,
+    // and nothing is sent as an account not confirmed.
+    const kept = within(document.body).getByTestId('worklog-form');
+    expect(kept).toBe(form);
+    expect(within(kept).getByTestId('worklog-form-day')).toHaveValue('2026-11-20');
+    expect(within(kept).getByTestId('worklog-form-time')).toHaveValue('1h 30m');
+    expect(within(kept).getByTestId('worklog-form-description')).toHaveValue('Wrote the report');
+    expect(within(screen).getByTestId('ticket-type-mark')).toBeInTheDocument();
+    expect(within(kept).getByTestId('worklog-form-save')).toBeDisabled();
+    await fireEvent.submit(kept);
+    await tick();
+    expect(log).not.toHaveBeenCalled();
+
+    answer!({ id: 'ticket-1-2', seq: 20, poll_every: 10_000, ...JIRA_USER1, loaded: true, detail: ticketDetail('1'), read_at: Date.now() } as TicketSubscription);
+    await waitFor(() => expect(within(kept).getByTestId('worklog-form-save')).not.toBeDisabled());
+    expect(within(kept).getByTestId('worklog-form-description')).toHaveValue('Wrote the report');
+    await fireEvent.click(within(kept).getByTestId('worklog-form-save'));
+    await waitFor(() => expect(log).toHaveBeenCalledWith('c1', { issue: '1', day: '2026-11-20', spent_seconds: 5400, description: 'Wrote the report' }));
+  });
+
+  it('closes an open Log time for good when an answer after a reconnect says there is no account', async () => {
+    install();
+    installTicket();
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await within(screen).findByTestId('ticket-comment-input');
+    await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+    await fireEvent.click(await within(document.body).findByTestId('ticket-menu-log-time'));
+    await within(document.body).findByTestId('worklog-form');
+    const reconnectAnswering = async (account: string, id: string) => {
+      setBindingMock('SubscribeTrackerTicket', async (): Promise<TicketSubscription> =>
+        ({ id, seq: 20, poll_every: 10_000, kind: 'jira', account, loaded: true, detail: ticketDetail('1'), read_at: Date.now() }) as TicketSubscription);
+      __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null });
+      __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+      await waitFor(() => expect(within(screen).getByTestId('ticket-comment-input')).toBeInTheDocument());
+      await tick();
+    };
+    await reconnectAnswering('', 'ticket-1-2');
+    expect(within(document.body).queryByTestId('worklog-form')).toBeNull();
+    await reconnectAnswering('acc-user1', 'ticket-1-3');
+    expect(within(document.body).queryByTestId('worklog-form')).toBeNull();
+  });
+
   it('offers no Log time while the app does not know whose time it logs', async () => {
     install();
     installTicket(undefined, { kind: 'jira', account: '' });

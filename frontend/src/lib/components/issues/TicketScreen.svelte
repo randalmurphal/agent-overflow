@@ -132,13 +132,7 @@
     /** The board the ticket was opened from: its points are that row's;
      * null shows the first board's the ticket is on. */
     board: string | null;
-    /** The connection's tracker: jira or linear; empty while the
-     * connection is not known, when neither tracker's own controls show. */
-    kind: string;
     computerName: string;
-    /** The person's account on the connection; null when it was never
-     * verified, and Log time cannot say whose time it logs. */
-    account: string | null;
     /** The ticket's computer is not connected now. */
     offline: boolean;
     compact: boolean;
@@ -163,7 +157,7 @@
     onOpenIssue: (issue: string, seed: TicketSeed, ownPane: boolean) => void;
   }
 
-  let { attachment, seed, board, kind, computerName, account, offline, compact, trail, placement, pane, focusAsked, onFocusTaken, onBack, onClose, onOwnPane, onOpenIssue }: Props = $props();
+  let { attachment, seed, board, computerName, offline, compact, trail, placement, pane, focusAsked, onFocusTaken, onBack, onClose, onOwnPane, onOpenIssue }: Props = $props();
 
   // The ticket a person opened takes the focus, so a key or a paste of
   // files goes to it; an open of the ticket shown asks again.
@@ -180,9 +174,12 @@
   const ticketState = $derived(attachment.current);
   const detail = $derived(ticketState?.detail ?? null);
   const card: CardView | null = $derived(detail?.card ?? seed.card);
-  // Jira's own controls (the type, the estimate, poker, attachments, Log
-  // time) show on a Jira ticket only, never while the tracker is not known.
-  const jira = $derived(kind === 'jira');
+  // The ticket's tracker, held through a reconnect until an answer says
+  // otherwise (stores/trackerTicket.svelte.ts, `trackers`). Jira's own
+  // controls (the type, the estimate, poker, attachments, Log time) show
+  // on a Jira ticket only, never before its computer first answers.
+  const tracker = $derived(attachment.tracker);
+  const jira = $derived(tracker?.kind === 'jira');
   // The ticket's key, empty until a pane restored with none reads it:
   // Copy key waits for it. (The commands that write the ticket, Log time
   // among them, show only with its detail, which names its key.)
@@ -381,9 +378,17 @@
     void revealTicketPoker(ctx);
   }
 
-  // Log time: the Time screen's form, filled with this ticket and today.
+  // Log time: the Time screen's form, filled with this ticket and today,
+  // as the person's account on the connection. While a re-subscribe has
+  // not confirmed that account, the form stays with what was typed and
+  // sends nothing; an answer with no account closes it for good.
   let logging = $state(false);
+  const account = $derived(tracker?.account ?? null);
   const timeCtx = $derived(account ? { backend: attachment.ref.backend, connection: attachment.ref.connection, author: account, computer: computerName } : null);
+  const timeWaiting = $derived(tracker && !tracker.confirmed ? `Waiting for ${computerName} to confirm your account.` : undefined);
+  $effect(() => {
+    if (logging && !timeCtx) logging = false;
+  });
 
   // A field of the ticket's own, changed in place.
   const editorOf = (f: FieldView): FieldEditor | null => fieldEditor(f, targetOf(f.id, f.value));
@@ -983,6 +988,7 @@
         ctx={timeCtx}
         ticket={{ issue: attachment.ref.issue, key: ticketKey, title: card?.title || seed.title }}
         day={localDay(new Date())}
+        waiting={timeWaiting}
         onDone={() => { logging = false; }}
       />
     {:catch err}

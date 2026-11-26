@@ -227,24 +227,52 @@ describe('the ticket subscription', () => {
   it('holds its tracker from the answer and the account as its computer last told it, a changed account included', async () => {
     install();
     const reads = held<TicketView>('TrackerTicket');
-    setBindingMock('SubscribeTrackerTicket', async () => answer({ kind: 'jira', account: 'acc-user1' }));
+    const subscribes = held<TicketSubscription>('SubscribeTrackerTicket');
     const ticket = attachTrackerTicket(REF, true);
     await flush();
-    expect(ticket.current).toMatchObject({ kind: 'jira', account: 'acc-user1' });
+    // Not answered yet is no tracker, not one with no account.
+    expect(ticket.tracker).toBeNull();
+    subscribes.answer(answer({ kind: 'jira', account: 'acc-user1' }));
+    await flush();
+    expect(ticket.tracker).toEqual({ kind: 'jira', account: 'acc-user1', confirmed: true });
     // A verification recorded another account: the event says changed,
     // and the view read carries it.
     trackerIssueUpdated(event(11, { changed: true }), HOME_BACKEND);
     await flush();
     reads.answer({ loaded: true, detail: detail(), read_at: 100, account: 'acc-user2' } as TicketView);
     await flush();
-    expect(ticket.current).toMatchObject({ kind: 'jira', account: 'acc-user2' });
+    expect(ticket.tracker).toEqual({ kind: 'jira', account: 'acc-user2', confirmed: true });
     // No account recorded is none.
     trackerIssueUpdated(event(12, { changed: true }), HOME_BACKEND);
     await flush();
     reads.answer({ loaded: true, detail: detail(), read_at: 100 } as TicketView);
     await flush();
-    expect(ticket.current).toMatchObject({ kind: 'jira', account: null });
+    expect(ticket.tracker).toEqual({ kind: 'jira', account: null, confirmed: true });
     ticket.release();
+  });
+
+  it('keeps an answered tracker through a reconnect, unconfirmed until the new answer, and drops it with the last surface', async () => {
+    install();
+    const subscribes = held<TicketSubscription>('SubscribeTrackerTicket');
+    const ticket = attachTrackerTicket(REF, true);
+    await flush();
+    subscribes.answer(answer({ kind: 'jira', account: 'acc-user1' }));
+    await flush();
+    __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
+    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+    await flush();
+    expect(subscribes.calls).toHaveLength(2);
+    expect(ticket.current).toBeNull();
+    expect(ticket.tracker).toEqual({ kind: 'jira', account: 'acc-user1', confirmed: false });
+    // An answer with no account says so.
+    subscribes.answer(answer({ id: 'sub-2', kind: 'jira', account: '' }));
+    await flush();
+    expect(ticket.tracker).toEqual({ kind: 'jira', account: null, confirmed: true });
+    ticket.release();
+    const again = attachTrackerTicket(REF, true);
+    await flush();
+    expect(again.tracker).toBeNull();
+    again.release();
   });
 
   it('reads every held ticket of the computer again on a gap, under its recovery', async () => {
