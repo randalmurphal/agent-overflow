@@ -1,12 +1,42 @@
 <script module lang="ts">
-  import type { FieldEditInput } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+  import type { FieldEditInput, FieldView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import type { PickItem } from './TicketPicker.svelte';
+  import { pickedEdit } from './ticketEditors';
 
-  /** A required field as filled in a form. */
+  /** A field as filled in a form, with its name as the screen gave it. */
   export interface FilledField {
+    readonly name: string;
     readonly edit: FieldEditInput;
     readonly picked: readonly PickItem[];
     readonly text: string;
+  }
+
+  /** The values `filled` holds that `screen`, as read now, still offers,
+   * and a sentence for each it no longer does, which is not sent: a field
+   * that left the screen, or a picked value its listed values no longer
+   * hold. A field that lists no values (people, typed text) is read live,
+   * so all of it is kept. */
+  function stillOffered(filled: ReadonlyMap<string, FilledField>, screen: readonly FieldView[]): { readonly given: ReadonlyMap<string, FilledField>; readonly withdrawn: readonly string[] } {
+    const byId = new Map(screen.map((f) => [f.id, f]));
+    const given = new Map<string, FilledField>();
+    const withdrawn: string[] = [];
+    for (const [id, v] of filled) {
+      const f = byId.get(id);
+      if (!f) {
+        withdrawn.push(`${v.name} is no longer on the tracker's form for this type, so it will not be sent.`);
+        continue;
+      }
+      const allowed = f.allowed;
+      const kept = allowed ? v.picked.filter((p) => allowed.some((a) => a.id === p.id)) : v.picked;
+      if (kept.length === v.picked.length) {
+        given.set(id, v);
+        continue;
+      }
+      const gone = v.picked.filter((p) => !kept.includes(p)).map((p) => p.name);
+      withdrawn.push(`${f.name}: the tracker no longer offers ${gone.join(', ')}, so ${gone.length === 1 ? 'it' : 'they'} will not be sent.`);
+      if (kept.length > 0) given.set(id, { ...v, picked: kept, edit: pickedEdit(id, f.kind, kept) });
+    }
+    return { given, withdrawn };
   }
 
   /** The project and type a form's field values are given for: the
@@ -120,22 +150,25 @@
   // one of them (the only one when neither is listed, else none, which
   // asks); the type is the one picked last on
   // the board this session, else the project's first at the standard level,
-  // else its first that is not a sub-task. What it reads is read on the
-  // form's first open, held as the form reads say
-  // (`trackerTicketWrites.svelte.ts`, "A form read"), and nothing is read
-  // on the screen's open; a create refused for fields the screen now
-  // requires reads them again. A made ticket clears the title and keeps
+  // else its first that is not a sub-task. What it reads is held as the
+  // form reads say (`trackerTicketWrites.svelte.ts`, "A form read"): read
+  // on the form's open or its coming back into view when what is held is
+  // old, and on the screen's Refresh, and nothing is read on the screen's
+  // open; a create refused for fields the screen now requires reads them
+  // again. A value given that the screen as read now no longer offers is
+  // said and not sent (`stillOffered`). A made ticket clears the title and keeps
   // the form open for the next; one made whose move into the sprint failed
   // says so and offers that move while the sprint's rows do not show it
   // (CreateDraft.unplaced); a refusal stays under it with what was filled.
   import Plus from '@lucide/svelte/icons/plus';
+  import { onMount } from 'svelte';
   import type { SvelteMap } from 'svelte/reactivity';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
   import TicketField from './TicketField.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
   import { cardFieldName, fieldEditor, heldChoices, mustSupply, pickEditor, type EditorTarget, type HeldList } from './ticketEditors';
-  import type { ChoiceView, FieldView, IssueTypeView, ProjectView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+  import type { ChoiceView, IssueTypeView, ProjectView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import type { BacklogSection } from '../../stores/trackerBacklogModel';
   import { lastCreateChoice, setLastCreateChoice } from '../../stores/issuesPane.svelte';
   import type { TrackerBoardRef } from '../../stores/trackerBoard.svelte';
@@ -150,6 +183,7 @@
     loadBoardProjects,
     loadCreateFields,
     loadIssueTypes,
+    readOnFormRefresh,
     reloadCreateFields,
     ticketWrite,
     type BoardWriteContext,
@@ -226,8 +260,10 @@
   // tracker would fill.
   const offered = $derived((fields?.value ?? []).filter((f) => f.required).sort((a, c) => Number(!mustSupply(a)) - Number(!mustSupply(c))));
 
-  // Each read on a person's act: the form's open, a project or type
-  // picked. Started outside any reactive read of them.
+  // Each read on a person's act: the form's open or its coming back into
+  // view, a project or type picked, Retry, the screen's Refresh. Each asks
+  // the store, which reads only what is old (its "A form read" rules).
+  // Started outside any reactive read of them.
   function read(): void {
     // The board's projects may name another project than the one read
     // now: its types are read once they are in.
@@ -258,9 +294,23 @@
     drafts.delete(draftKey);
   }
 
+  // An open form back in view asks as its open did.
+  onMount(() => {
+    if (draft) read();
+  });
+  readOnFormRefresh(() => b, () => {
+    if (draft) read();
+  });
+
   // The project and type the form's values are for (CreateDraft).
   const of = $derived(valuesOf(projectID, typeID));
-  const filled = $derived(draft?.filled(of));
+  // What was given that the screen as read now still offers, which the
+  // form shows and Add sends, and what it no longer offers, said before Add.
+  const screenValues = $derived.by(() => {
+    const given = draft?.filled(of) ?? NO_FILLED;
+    return fields?.value ? stillOffered(given, fields.value) : { given, withdrawn: [] };
+  });
+  const filled = $derived(screenValues.given);
 
   // A create sends a field only with a value: one picked or typed back to
   // none leaves the form, so the tracker fills it or the form asks again.
@@ -297,7 +347,7 @@
   }));
 
   function targetOf(f: FieldView): EditorTarget {
-    const got = filled?.get(f.id);
+    const got = filled.get(f.id);
     return {
       picked: got?.picked ?? [],
       text: got?.text ?? '',
@@ -306,7 +356,7 @@
       choices: f.allowed
         ? async (text) => heldChoices(f.allowed!, text, ALLOWED_LIST)
         : (text) => createChoices(b, projectID, typeID, f.id, text),
-      save: (edit, picked) => { fill(f.id, picked.length || edit.typed?.length ? { edit, picked, text: edit.typed?.[0] ?? '' } : null); },
+      save: (edit, picked) => { fill(f.id, picked.length || edit.typed?.length ? { name: f.name, edit, picked, text: edit.typed?.[0] ?? '' } : null); },
       // A create sends no value for a field left to the tracker.
       unset: f.defaulted ? TRACKER_DEFAULT : undefined,
       typing: {
@@ -320,12 +370,12 @@
     .map((f) => ({ f, long: f.kind === 'rich_text' && f.editable, editor: f.kind === 'rich_text' ? null : fieldEditor(f, targetOf(f)) }))
     .filter((r) => mustSupply(r.f) || r.long || r.editor));
   const unsettable = $derived(rows.filter((r) => !r.long && !r.editor).map((r) => r.f.name));
-  const missing = $derived(rows.filter((r) => mustSupply(r.f) && !filled?.has(r.f.id)).map((r) => r.f.name));
+  const missing = $derived(rows.filter((r) => mustSupply(r.f) && !filled.has(r.f.id)).map((r) => r.f.name));
   const readError = $derived(projects?.error ?? types?.error ?? fields?.error ?? null);
   const ready = $derived(!!projectID && (!typed || !!typeID) && !!fields?.value && unsettable.length === 0);
 
   function shown(f: FieldView): string {
-    const got = filled?.get(f.id);
+    const got = filled.get(f.id);
     return got ? (got.picked.length ? got.picked.map((p) => p.name).join(', ') : got.text) : '';
   }
 
@@ -334,7 +384,7 @@
     const text = d?.title.trim() ?? '';
     if (!d || !text || !ready || pending || missing.length > 0) return;
     const sent = { project: projectID, type: typeID };
-    const given = d.filled(of);
+    const given = filled;
     setLastCreateChoice(boardRef, typed ? { project: { id: projectID, name: projectName }, type: typeID } : {});
     const outcome = await createTicket(b, sec.list, where, {
       project: sent.project,
@@ -419,7 +469,7 @@
             class="w-full resize-y rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1.5 font-mono text-[0.8125rem] text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             value={shown(f)}
             disabled={pending}
-            oninput={(event) => { const text = event.currentTarget.value; fill(f.id, text ? { edit: { field: f.id, markdown: { markdown: text, from: '' } }, picked: [], text } : null); }}
+            oninput={(event) => { const text = event.currentTarget.value; fill(f.id, text ? { name: f.name, edit: { field: f.id, markdown: { markdown: text, from: '' } }, picked: [], text } : null); }}
           ></textarea>
         </label>
       {:else}
@@ -446,6 +496,9 @@
         </div>
       {/each}
     {/if}
+    {#each screenValues.withdrawn as sentence (sentence)}
+      <p class="text-xs text-fg" role="status" data-testid="issues-backlog-create-withdrawn">{sentence}</p>
+    {/each}
     <div class="flex items-center gap-1.5">
       <Button size="sm" variant="primary" disabled={pending || !ready || !draft?.title.trim() || missing.length > 0} testId="issues-backlog-create-submit" onclick={() => { void submit(); }}>{pending ? 'Adding…' : 'Add'}</Button>
       <Button size="sm" variant="ghost" disabled={pending} testId="issues-backlog-create-cancel" onclick={cancel}>Cancel</Button>

@@ -363,7 +363,12 @@ read, or could not be, the board's location), and the type, the one
 picked last on the board this session, else the project's first at the
 standard level. The values given in the form belong to the project
 and type it shows: when either changes, by a pick or by the board's
-projects replacing the one shown, they go. What was typed in the form, a
+projects replacing the one shown, they go. The form offers what the
+tracker offers now: opened, or back in view, more than a minute after it
+last read the projects, types and fields, it reads them again while it
+shows what it holds, and the screen's Refresh reads them again too; a
+value given that the tracker no longer offers is said before Add and not
+sent. What was typed in the form, a
 field being typed in included, outlives the form scrolling out of view. A ticket the tracker
 made stays made: when its move into the sprint failed, or may have, the
 form says so with the ticket's key and offers that move until the board

@@ -16,6 +16,7 @@
   import {
     linkTicket,
     loadTicketLinkTypes,
+    readOnFormRefresh,
     ticketLinkTypes,
     ticketWrite,
     type TicketWriteContext,
@@ -30,14 +31,15 @@
 
   let { ctx, onDone }: Props = $props();
 
-  // Opening the form reads the types once; only Retry reads them again
-  // (the store's link types rules).
+  // Opening the form, Retry and the ticket's Refresh read the types when
+  // what is held is old (the store's form read rules).
   function readTypes(): void {
     void loadTicketLinkTypes(ctx.ref.backend, ctx.ref.connection);
   }
   $effect(() => {
     untrack(readTypes);
   });
+  readOnFormRefresh(() => ctx.ref, readTypes);
   const types = $derived(ticketLinkTypes(ctx.ref.backend, ctx.ref.connection));
   const relations = $derived(types?.value ? linkRelations(types.value) : []);
   const typesError = $derived(types?.error ? errString(types.error) : '');

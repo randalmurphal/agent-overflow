@@ -112,7 +112,9 @@ board methods, events and the patch read in
   ticket, each its own `attach:` write; it holds what a form reads (a
   connection's link types for the link form; a board's projects, a
   project's issue types and a type's create fields for New ticket), read
-  on a person's act and held until its computer connects again. New
+  on a person's act and read again by one once it is older than
+  `FORM_READ_AGE_MS`, after the screen's Refresh, or after its computer
+  connects again. New
   ticket's draft, one per section, is held by the Backlog screen
   (`BacklogScreen.svelte` `createDrafts`), so it outlives the form.
 - `stores/trackerTicketModel.ts` is the pure part: the comment and
