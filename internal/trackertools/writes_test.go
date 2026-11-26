@@ -222,6 +222,40 @@ func TestAnEstimateIsReadOnItsBoardAlone(t *testing.T) {
 	}
 }
 
+// A time estimate prints as whole hours and the minutes left, which the
+// estimate's parser reads back to the same seconds, and the approval
+// prints it the same way.
+func TestATimeEstimateReadsBackAsItIs(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		seconds float64
+		want    string
+	}{{4500, "1h 15m"}, {7200, "2h"}, {2700, "45m"}, {90, "1.5m"}, {3601, "1h 0.016666666666666666m"}, {0, "0m"}} {
+		text := estimateText(c.seconds, "time")
+		if text != c.want {
+			t.Errorf("%v seconds print %q; want %q", c.seconds, text, c.want)
+		}
+		if back, err := estimateValue(text, "time", "Web Team"); err != nil || back != c.seconds {
+			t.Errorf("%q reads back as %v, %v; want %v seconds", text, back, err, c.seconds)
+		}
+	}
+	w := newWriteFixture(t)
+	b := w.f.boards["conn-jira/1"]
+	b.Unit = "time"
+	w.f.boards["conn-jira/1"] = b
+	for _, id := range []string{"10012", "10018"} {
+		d := w.f.details["conn-jira/"+id]
+		d.Rows = []trackerapp.TicketRowView{{Board: "1", Unit: "time"}}
+		w.f.details["conn-jira/"+id] = d
+	}
+	if _, err := w.update(t, map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "set": map[string]any{"estimate": "1h 15m"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.h.approvals[0].Tickets[0].Changes; len(got) != 1 || got[0].Line != "Estimate → 1h 15m" {
+		t.Errorf("the approval's lines %+v; want Estimate → 1h 15m", got)
+	}
+}
+
 // A points estimate reads with every digit it holds, and the text a read
 // gives, passed back, is the estimate held: already, nothing sent.
 func TestAPointsEstimateReadsBackAsItIs(t *testing.T) {

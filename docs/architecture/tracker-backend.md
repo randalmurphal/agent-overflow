@@ -2269,9 +2269,11 @@ texts share what the keys, the sites and `next` leave of the budget, as a
 read's parts do, so every row and `next` stay whole.
 
 A read carries the card whole: key, title, status, type, assignee,
-priority, the estimate as the ticket screen shows it with no board in
-view (the first board row's, `3 points`, `45m`, `2.5h`, from the ticket's
-own read when it carried the board's field), and when it was
+priority, the estimate an update of `estimate` is judged on (the first
+of the ticket's boards with estimates, `estimateTarget`; `3 points`,
+`1.25 points`, `45m`, `1h 15m`, in a form `set` takes back as the same
+value; from the ticket's own read when it carried the board's field),
+and when it was
 created, last updated and resolved. An issue on no board the app reads
 has no estimate in a read, because the app knows no board's field to read
 it by. The
@@ -2382,7 +2384,8 @@ estimates by (Jira's Story points). An estimate has one board
 mirror holds, by board ID, that estimates by it, and for `estimate` the
 first that has estimates; the plan judges it on that board's row, the
 approval words it in that board's unit, and the read after the approval
-and the send name that board. A name that matches nothing is refused naming the
+and the send name that board; two entries of one call that both name a
+ticket's estimate are refused. A name that matches nothing is refused naming the
 ticket's names, at most 40; a member the read shows that no write sets
 (`created`, `key`, ...) and a field that is not editable are refused. A
 value is text, a number, a list, or null to clear; an empty list clears.
