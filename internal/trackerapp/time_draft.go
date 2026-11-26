@@ -110,13 +110,23 @@ type TimeDraftRequest struct {
 // TimeDraftView is what a draft did: the entries it made, the agent
 // entries of its days it replaced, the entries of those days it kept,
 // and the new entries it skipped because the ticket already had an
-// entry not yet posted that day.
+// entry not yet posted that day; and each of its days' time already
+// logged, as this computer last read it.
 type TimeDraftView struct {
 	Author   string          `json:"author"`
 	Made     []TimeEntryView `json:"made"`
 	Replaced []TimeEntryView `json:"replaced,omitempty"`
 	Kept     []TimeEntryView `json:"kept,omitempty"`
 	Skipped  []TimeEntryView `json:"skipped,omitempty"`
+	Logged   []LoggedDay     `json:"logged"`
+}
+
+// LoggedDay is a day's logged minutes as the mirror holds them; Unread
+// is a day no read has replaced, whose minutes are not known.
+type LoggedDay struct {
+	Day     string `json:"day"`
+	Minutes int64  `json:"minutes"`
+	Unread  bool   `json:"unread,omitempty"`
 }
 
 // timeAuthor is Jira connection id's row and its verified account, whose
@@ -135,7 +145,7 @@ func (s *Service) timeAuthor(id string) (store.TrackerConnection, string, error)
 		return row, "", fmt.Errorf("trackerapp: connection %s has no time tracking: %w", id, tracker.ErrUnsupported)
 	}
 	if _, found := s.readKeyFile(row); row.VerifiedAccountID == "" || !sameToken(row.VerifiedToken, found) {
-		return row, "", fmt.Errorf("%w: %s", ErrUnverified, siteName(row.Site))
+		return row, "", fmt.Errorf("%w: %s", ErrUnverified, id)
 	}
 	return row, row.VerifiedAccountID, nil
 }
@@ -240,6 +250,11 @@ func (s *Service) checkDraft(in TimeDraftRequest) ([]store.TimeEntry, error) {
 			return nil, invalidDraft("%s holds %s; a day holds at most 24h.", d, hoursText(dayMinutes[d]))
 		}
 	}
+	first, _ := tracker.ParseDate(days[0])
+	last, _ := tracker.ParseDate(days[len(days)-1])
+	if daysBetween(first, last) >= worklogSpan {
+		return nil, invalidDraft("time_draft covers at most %d days a call; draft the rest in another call.", worklogSpan)
+	}
 	return out, nil
 }
 
@@ -266,8 +281,31 @@ func (s *Service) DraftTime(id string, in TimeDraftRequest) (TimeDraftView, erro
 		return TimeDraftView{}, fmt.Errorf("trackerapp: draft time on %s: %w", id, err)
 	}
 	s.timeEntriesChanged(id, author, slices.Concat(w.Made, w.Replaced))
-	return TimeDraftView{Author: author, Made: timeEntryViews(w.Made), Replaced: timeEntryViews(w.Replaced),
-		Kept: timeEntryViews(w.Kept), Skipped: timeEntryViews(w.Skipped)}, nil
+	out := TimeDraftView{Author: author, Made: timeEntryViews(w.Made), Replaced: timeEntryViews(w.Replaced),
+		Kept: timeEntryViews(w.Kept), Skipped: timeEntryViews(w.Skipped), Logged: []LoggedDay{}}
+	var days []string
+	for _, e := range entries {
+		if !slices.Contains(days, e.Day) {
+			days = append(days, e.Day)
+		}
+	}
+	slices.Sort(days)
+	// The draft is stored: a mirror that cannot be read (the connection
+	// turned off since) answers its days unread, and is logged.
+	logs, err := s.Worklogs(id, author, days[0], days[len(days)-1])
+	if err != nil {
+		s.logf("trackerapp: the logged time of a draft on %s: %v", id, err)
+	}
+	for _, d := range days {
+		day := LoggedDay{Day: d, Unread: err != nil || slices.Contains(logs.Unread, d)}
+		for _, w := range logs.Worklogs {
+			if w.Day == d {
+				day.Minutes += w.SpentSeconds / 60
+			}
+		}
+		out.Logged = append(out.Logged, day)
+	}
+	return out, nil
 }
 
 // timeEntriesChanged tells the change of entries, on connection's

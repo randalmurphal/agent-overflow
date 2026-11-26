@@ -193,6 +193,8 @@ func TestADraftIsRefusedByName(t *testing.T) {
 	t.Parallel()
 	d := newDraftScenario(t, "jira")
 	day, tomorrow := d.day, d.svc.now().AddDate(0, 0, 1).Format(time.DateOnly)
+	parsed, _ := time.Parse(time.DateOnly, day)
+	monthBefore := parsed.AddDate(0, 0, -31).Format(time.DateOnly)
 	question := TimeDraftEntry{Day: day, Hours: 1, Reason: "Which ticket was the standup?"}
 	offers := question
 	for range 6 {
@@ -219,6 +221,7 @@ func TestADraftIsRefusedByName(t *testing.T) {
 		{"six offers", []TimeDraftEntry{offers}, "entries[0].offer holds at most 5 keys."},
 		{"a ticket twice", []TimeDraftEntry{d.on("WEB-1", 1, "a"), d.on("WEB-1", 2, "b")}, "WEB-1 is drafted twice on " + day + "; give it once with the hours summed."},
 		{"a day over 24h", []TimeDraftEntry{d.on("WEB-1", 13, "a"), d.on("WEB-2", 13, "b")}, day + " holds 26h; a day holds at most 24h."},
+		{"over 31 days", []TimeDraftEntry{question, at(question, func(e *TimeDraftEntry) { e.Day = monthBefore })}, "time_draft covers at most 31 days a call; draft the rest in another call."},
 	} {
 		_, err := d.svc.DraftTime(d.conn.ID, TimeDraftRequest{Thread: "thread-1", Call: "call-1", Entries: tc.entries})
 		if !errors.Is(err, ErrInvalidRequest) || !strings.HasSuffix(err.Error(), ": "+tc.want) {
@@ -234,7 +237,7 @@ func TestADraftIsRefusedByName(t *testing.T) {
 
 	unverified := newTimeScenario(t)
 	if _, err := unverified.svc.DraftTime(unverified.conn.ID, TimeDraftRequest{Thread: "thread-1", Call: "call-1", Entries: []TimeDraftEntry{question}}); !errors.Is(err, ErrUnverified) ||
-		err.Error() != "trackerapp: the connection has no verified account: example.atlassian.net" {
+		err.Error() != "trackerapp: the connection has no verified account: "+unverified.conn.ID {
 		t.Fatalf("a draft before the connection was verified: %v", err)
 	}
 	d.writeToken(d.conn, "fake-jira-token-2")
@@ -257,9 +260,16 @@ func TestADraftReplacesTheAgentsEntriesOfItsDays(t *testing.T) {
 	if ev := d.takeEvents(); len(ev) != 1 || !slices.Equal(ev[0].Days, []string{d.day}) || !slices.Equal(ev[0].Threads, []string{"thread-1"}) || ev[0].Author != "acc-user1" {
 		t.Fatalf("the first draft told %+v", ev)
 	}
+	if !slices.Equal(first.Logged, []LoggedDay{{Day: d.day, Unread: true}}) {
+		t.Fatalf("before any read the draft answered the logged time %+v; want the day unread", first.Logged)
+	}
+	d.logsOn(t, "WEB-1")
 	second := d.draft(t, d.on("WEB-2", 0.5, "Reviewed the pull request"))
 	if len(second.Made) != 1 || len(second.Replaced) != 2 || len(second.Kept) != 0 {
 		t.Fatalf("the second draft answered %+v; want WEB-2 made, both of the first replaced", second)
+	}
+	if !slices.Equal(second.Logged, []LoggedDay{{Day: d.day, Minutes: 60}}) {
+		t.Fatalf("after a read the draft answered the logged time %+v; want WEB-1's hour", second.Logged)
 	}
 	hours := 0.75
 	edited := must[TimeEntryView](t)(d.svc.EditTimeEntry(d.conn.ID, entryRefs(second.Made[0])[0], TimeEntryEdit{Hours: &hours}))
