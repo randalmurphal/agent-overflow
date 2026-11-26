@@ -392,7 +392,7 @@ func TestCreateOpensAPullForTheCheckoutsBranch(t *testing.T) {
 		t.Fatalf("gh pr create = %d %q %q", created.ExitCode, created.Stdout, created.Stderr)
 	}
 	srv := testServer(t, e)
-	open := graphQL(t, srv, "github.com", "OpenPRsByHead", map[string]any{"owner": "acme", "name": "widgets", "head": branch})
+	open := graphQL(t, srv, "github.com", "PRsByHead", map[string]any{"owner": "acme", "name": "widgets", "head": branch})
 	if !strings.Contains(open.body, `"number":8,"state":"OPEN","title":"Topic","url":"https://github.com/acme/widgets/pull/8"}]`) ||
 		!strings.Contains(open.body, `"isCrossRepository":false,"number":8`) || !strings.Contains(open.body, `"id":"PR_ao`) {
 		t.Fatalf("open pulls after create = %s", open.body)
@@ -1778,7 +1778,7 @@ func TestGitLabOpenMergeRequestsIncludeForks(t *testing.T) {
 	}
 }
 
-// OpenPRsByHead lists a head's open pulls; MergedPRs pages merged ones
+// PRsByHead lists a head's open pulls; MergedPRs pages merged ones
 // by first and after.
 func TestGitHubPullLists(t *testing.T) {
 	t.Parallel()
@@ -1793,7 +1793,7 @@ func TestGitHubPullLists(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := testServer(t, e)
-	open := graphQL(t, srv, "github.com", "OpenPRsByHead", map[string]any{"owner": "a", "name": "b", "head": "topic"})
+	open := graphQL(t, srv, "github.com", "PRsByHead", map[string]any{"owner": "a", "name": "b", "head": "topic"})
 	// Each node names its head repository: the repository's own, a fork's
 	// generated id.
 	var ids struct {
@@ -1823,7 +1823,7 @@ func TestGitHubPullLists(t *testing.T) {
 	if _, err := seedJSON(e, `{"repos":[{"forge":"github","project":"a/c","pulls":[{"number":1,"title":"self","headRepo":"a/c"}]}]}`); err == nil {
 		t.Fatal("a pull whose headRepo is its own repository was seeded")
 	}
-	if none := graphQL(t, srv, "github.com", "OpenPRsByHead", map[string]any{"owner": "a", "name": "b", "head": "other"}); !strings.Contains(none.body, `"nodes":[]`) {
+	if none := graphQL(t, srv, "github.com", "PRsByHead", map[string]any{"owner": "a", "name": "b", "head": "other"}); !strings.Contains(none.body, `"nodes":[]`) {
 		t.Fatalf("no open pull = %s", none.body)
 	}
 	type merged struct {

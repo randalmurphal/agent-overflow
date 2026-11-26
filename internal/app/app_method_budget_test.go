@@ -89,6 +89,10 @@ var methodServerBounds = map[string]time.Duration{
 	"TriggerWorkspaceMcpAuth": mcpapp.AuthRoundTripTimeout + transport.DefaultMethodBudget/2,
 	"FetchForgeAttachment":    gitops.ForgeAttachmentTimeout + transport.DefaultMethodBudget,
 	"SaveForgeAttachment":     gitops.ForgeAttachmentTimeout + transport.DefaultMethodBudget,
+	// GetTicketWork's read, within the default budget, then the search,
+	// cut by withinMethodBudgetFinishing the default budget before the
+	// declared one.
+	"SearchTicketWork": transport.MethodBudget("SearchTicketWork"),
 	// withinMethodBudget.
 	"SaveCIArtifacts":          transport.MethodBudget("SaveCIArtifacts"),
 	"SavePRCIJobLog":           transport.MethodBudget("SavePRCIJobLog"),

@@ -10,6 +10,7 @@ import (
 	"slices"
 
 	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/trackerapp"
@@ -26,12 +27,22 @@ type TicketWork struct {
 	// Problems are the repositories whose branches could not be read,
 	// each with why; the rest of the answer stands beside them.
 	Problems []TicketWorkProblem `json:"problems"`
+	// ForgeProblems are the repositories whose forge search failed
+	// (SearchTicketWork), each with why in the Pull requests page's
+	// terms; the rest of the answer stands beside them. Empty in
+	// GetTicketWork's answer, which searches nothing.
+	ForgeProblems []TicketForgeProblem `json:"forgeProblems"`
+	// SearchFull are the repositories whose search found more pull
+	// requests than its one page holds, so the list may lack some.
+	SearchFull []gitops.RepoReference `json:"searchFull"`
 }
 
-// TicketPullRequest is a pull request of a ticket's Work. An open one is
-// a row of the stored Pull requests list, with its title, author and CI.
-// A merged or closed one is the pull request a thread linked to the
-// ticket was last seen with, which records no title, author or CI.
+// TicketPullRequest is a pull request of a ticket's Work. An open one of
+// the stored Pull requests list carries its title, author and CI. One
+// the forge's search found (SearchTicketWork) carries its title, author
+// and state as the forge answered them, and no CI. One a thread linked to
+// the ticket was last seen with, that neither holds, records no title,
+// author or CI.
 type TicketPullRequest struct {
 	Ref   gitops.PRReference `json:"ref"`
 	URL   string             `json:"url"`
@@ -68,6 +79,23 @@ type TicketWorkProblem struct {
 	Error     string `json:"error"`
 }
 
+// TicketForgeProblem is a repository whose forge search failed, with the
+// fields a Pull requests page project carries for a failed read
+// (ProjectPRList): the caller-safe sentence, its kind, the rate limit's
+// reserve and resume time, and the detail behind it. ProjectID is the
+// first project of Work's that clones the repository. Repo is zero for a
+// project whose origin git could not read, whose Error is that failure's
+// own text.
+type TicketForgeProblem struct {
+	ProjectID    string               `json:"projectId"`
+	Repo         gitops.RepoReference `json:"repo"`
+	Error        string               `json:"error"`
+	ErrorKind    string               `json:"errorKind"`
+	ErrorDetails *ForgeErrorDetail    `json:"errorDetails,omitempty"`
+	Reserve      bool                 `json:"reserve,omitempty"`
+	ResumeAt     string               `json:"resumeAt,omitempty"`
+}
+
 // GetTicketWork lists the pull requests and branches of the ticket issueID
 // that connectionID reads, from what this computer stores and from git's
 // refs, with no forge or tracker request: the stored Pull requests list
@@ -84,74 +112,152 @@ func (a *App) GetTicketWork(ctx context.Context, connectionID, issueID string) (
 	if err := a.requireScope(ctx, transport.ScopeTrackerRead, "GetTicketWork reads the ticket's key"); err != nil {
 		return TicketWork{}, err
 	}
-	svc, err := a.trackerService()
+	read, err := a.readTicketWork(connectionID, issueID)
 	if err != nil {
 		return TicketWork{}, err
+	}
+	return read.answer(), nil
+}
+
+// SearchTicketWork is GetTicketWork's answer with the forge searched by
+// the ticket's key, for the pull requests the stored sources do not hold
+// (a merged one, one opened where this computer never read the list):
+// once per repository the Work's projects clone, and once per branch of
+// the ticket that no pull request listed by then names
+// (searchTicketForge). Each repository's failure is its ForgeProblem, and
+// the rest of the answer stands beside it. A client shows GetTicketWork's
+// answer first and this one when it lands, so a slow forge holds no row
+// of the stored sources back. The budget is GetTicketWork's read, which
+// the default budget bounds, and two rounds of forge requests, each
+// request within the forge read timeout (the default budget too); the
+// search is cut at the default budget before the declared one.
+//
+//ao:scope git:operate
+//ao:route home
+//ao:budget 2m15s
+func (a *App) SearchTicketWork(ctx context.Context, connectionID, issueID string) (TicketWork, error) {
+	if err := a.requireScope(ctx, transport.ScopeTrackerRead, "SearchTicketWork reads the ticket's key"); err != nil {
+		return TicketWork{}, err
+	}
+	read, err := a.readTicketWork(connectionID, issueID)
+	if err != nil {
+		return TicketWork{}, err
+	}
+	ctx, cancel := withinMethodBudgetFinishing(forgeapi.WithInteractive(ctx), "SearchTicketWork", "Searching the forge for the ticket's pull requests", transport.DefaultMethodBudget)
+	defer cancel()
+	if err := a.searchTicketForge(ctx, &read); err != nil {
+		return TicketWork{}, budgetError(ctx, err)
+	}
+	return read.answer(), nil
+}
+
+// ticketWorkRead is a ticket's Work as its reads gather it: the pull
+// requests listed so far, which of them only a linked thread's record
+// holds, the projects Work covers and every branch of theirs that names
+// the key. answer folds a branch a listed pull request names into it.
+type ticketWorkRead struct {
+	work     TicketWork
+	recorded map[string]bool
+	projects []string
+	branches []TicketBranch
+}
+
+// readTicketWork is the read from what this computer stores and git's
+// refs that both Work methods start from (GetTicketWork's sources).
+func (a *App) readTicketWork(connectionID, issueID string) (ticketWorkRead, error) {
+	svc, err := a.trackerService()
+	if err != nil {
+		return ticketWorkRead{}, err
 	}
 	conn, err := a.store.GetTrackerConnection(connectionID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return TicketWork{}, errorsx.Public("tracker_connection_missing", "this computer has no such tracker connection; it may have been removed", err)
+		return ticketWorkRead{}, errorsx.Public("tracker_connection_missing", "this computer has no such tracker connection; it may have been removed", err)
 	}
 	if err != nil {
-		return TicketWork{}, err
+		return ticketWorkRead{}, err
 	}
 	key, err := a.mirroredTicketKey(connectionID, issueID)
 	if err != nil {
-		return TicketWork{}, err
+		return ticketWorkRead{}, err
 	}
-	work := TicketWork{Key: key, PullRequests: []TicketPullRequest{}, Branches: []TicketBranch{}, Problems: []TicketWorkProblem{}}
+	read := ticketWorkRead{
+		work: TicketWork{Key: key, PullRequests: []TicketPullRequest{}, Branches: []TicketBranch{}, Problems: []TicketWorkProblem{},
+			ForgeProblems: []TicketForgeProblem{}, SearchFull: []gitops.RepoReference{}},
+		recorded: map[string]bool{},
+	}
 
 	open, err := a.storedTicketPullRequests(key)
 	if err != nil {
-		return TicketWork{}, err
+		return ticketWorkRead{}, err
 	}
 	recorded, err := a.store.ListTicketThreadPullRequests(store.TicketRef{Kind: conn.Kind, Site: conn.Site, IssueID: issueID})
 	if err != nil {
-		return TicketWork{}, err
+		return ticketWorkRead{}, err
 	}
-	work.PullRequests = open
+	read.work.PullRequests = open
 	for _, pr := range recorded {
 		row, ok := recordedTicketPullRequest(pr)
-		if ok && !slices.ContainsFunc(work.PullRequests, func(p TicketPullRequest) bool { return p.Ref.Identity() == row.Ref.Identity() }) {
-			work.PullRequests = append(work.PullRequests, row)
+		if ok && !slices.ContainsFunc(read.work.PullRequests, func(p TicketPullRequest) bool { return p.Ref.Identity() == row.Ref.Identity() }) {
+			read.work.PullRequests = append(read.work.PullRequests, row)
+			read.recorded[row.Ref.Identity()] = true
 		}
 	}
 
 	choices, err := svc.BoardChoices()
 	if err != nil {
-		return TicketWork{}, trackerError(err)
+		return ticketWorkRead{}, trackerError(err)
 	}
-	var projects []string
 	for _, choice := range choices {
-		if choice.Connection == connectionID && !choice.ProjectArchived && !slices.Contains(projects, choice.Project) {
-			projects = append(projects, choice.Project)
+		if choice.Connection == connectionID && !choice.ProjectArchived && !slices.Contains(read.projects, choice.Project) {
+			read.projects = append(read.projects, choice.Project)
 		}
 	}
-	for _, pr := range work.PullRequests {
-		if pr.ProjectID != "" && !slices.Contains(projects, pr.ProjectID) {
-			projects = append(projects, pr.ProjectID)
+	for _, pr := range read.work.PullRequests {
+		if pr.ProjectID != "" && !slices.Contains(read.projects, pr.ProjectID) {
+			read.projects = append(read.projects, pr.ProjectID)
 		}
 	}
 	// A thread linked to the ticket may run in a repository that lists no
 	// board of the connection and has no pull request yet.
 	linked, err := a.store.ListThreadsForTicket(store.TicketRef{Kind: conn.Kind, Site: conn.Site, IssueID: issueID})
 	if err != nil {
-		return TicketWork{}, err
+		return ticketWorkRead{}, err
 	}
 	for _, t := range linked {
-		if t.ProjectID != "" && !slices.Contains(projects, t.ProjectID) {
-			projects = append(projects, t.ProjectID)
+		if t.ProjectID != "" && !slices.Contains(read.projects, t.ProjectID) {
+			read.projects = append(read.projects, t.ProjectID)
 		}
 	}
-	for _, projectID := range projects {
-		branches, err := a.ticketBranches(projectID, key, work.PullRequests)
+	for _, projectID := range read.projects {
+		branches, err := a.ticketBranches(projectID, key)
 		if err != nil {
-			work.Problems = append(work.Problems, TicketWorkProblem{ProjectID: projectID, Error: err.Error()})
+			read.work.Problems = append(read.work.Problems, TicketWorkProblem{ProjectID: projectID, Error: err.Error()})
 			continue
 		}
-		work.Branches = append(work.Branches, branches...)
+		read.branches = append(read.branches, branches...)
 	}
-	return work, nil
+	return read, nil
+}
+
+// answer is the Work answer: the pull requests listed, and the branches
+// no listed pull request of the branch's project names.
+func (r ticketWorkRead) answer() TicketWork {
+	work := r.work
+	work.Branches = []TicketBranch{}
+	for _, b := range r.branches {
+		if !branchNamedByPullRequest(b, work.PullRequests) {
+			work.Branches = append(work.Branches, b)
+		}
+	}
+	return work
+}
+
+// branchNamedByPullRequest reports whether one of prs has b as its head:
+// a pull request of b's project, or one whose project is not known.
+func branchNamedByPullRequest(b TicketBranch, prs []TicketPullRequest) bool {
+	return slices.ContainsFunc(prs, func(pr TicketPullRequest) bool {
+		return pr.Branch == b.Name && (pr.ProjectID == b.ProjectID || pr.ProjectID == "")
+	})
 }
 
 // mirroredTicketKey is the key of issueID in connectionID's mirror.
@@ -212,7 +318,7 @@ func (a *App) storedTicketPullRequests(key string) ([]TicketPullRequest, error) 
 			return nil, fmt.Errorf("read the stored pull requests of %s: %w", repoKey, err)
 		}
 		for _, row := range list.Rows {
-			if !slices.Contains(trackerapp.TicketKeys(row.Title+" "+row.HeadRefName), key) {
+			if !namesTicketKey(row.Title, row.HeadRefName, key) {
 				continue
 			}
 			state := TicketPROpen
@@ -248,9 +354,8 @@ func recordedTicketPullRequest(pr store.ThreadPullRequest) (TicketPullRequest, b
 	return TicketPullRequest{Ref: ref, URL: pr.URL, State: state, Branch: pr.Branch}, true
 }
 
-// ticketBranches lists the branches of projectID whose name names key,
-// leaving out a branch a listed pull request of the project already names.
-func (a *App) ticketBranches(projectID, key string, prs []TicketPullRequest) ([]TicketBranch, error) {
+// ticketBranches lists the branches of projectID whose name names key.
+func (a *App) ticketBranches(projectID, key string) ([]TicketBranch, error) {
 	project, err := a.store.GetProject(projectID)
 	if err != nil {
 		return nil, err
@@ -261,17 +366,17 @@ func (a *App) ticketBranches(projectID, key string, prs []TicketPullRequest) ([]
 	}
 	var out []TicketBranch
 	for _, b := range branches {
-		if !slices.Contains(trackerapp.TicketKeys(b.Name), key) {
-			continue
+		if slices.Contains(trackerapp.TicketKeys(b.Name), key) {
+			out = append(out, TicketBranch{ProjectID: projectID, GitBranch: b})
 		}
-		if slices.ContainsFunc(prs, func(pr TicketPullRequest) bool {
-			return pr.Branch == b.Name && (pr.ProjectID == projectID || pr.ProjectID == "")
-		}) {
-			continue
-		}
-		out = append(out, TicketBranch{ProjectID: projectID, GitBranch: b})
 	}
 	return out, nil
+}
+
+// namesTicketKey is the rule for whether a pull request is one of key's:
+// its title or head branch names key (trackerapp.TicketKeys).
+func namesTicketKey(title, branch, key string) bool {
+	return slices.Contains(trackerapp.TicketKeys(title+" "+branch), key)
 }
 
 // containsASCIIFold reports whether b holds s, an ASCII string, in any

@@ -220,6 +220,7 @@ export {
     ThreadWorkerSummary,
     ThreadWorkerSummaryPage,
     TicketBranch,
+    TicketForgeProblem,
     TicketPullRequest,
     TicketWork,
     TicketWorkProblem,

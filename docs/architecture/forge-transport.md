@@ -457,13 +457,13 @@ Git status looks up a branch's open PR (`lookupOpenPR`,
 `internal/git/status_pr_cache.go`). The forges' head-branch filters also
 match a fork's PR from a branch of the same name, so `ListOpenPRs` keeps
 only PRs whose head is the origin repository: GitHub
-`OpenPRsByHead` nodes with `isCrossRepository` false (paged, at most
+`PRsByHead` nodes with `isCrossRepository` false (paged, at most
 `githubReadMaxPages` pages of 100), GitLab merge requests whose
 `source_project_id` is their `project_id` (the full view, since the simple
 one lacks it; paged by 100 until one is found, at most
 `gitlabOpenMRsMaxPages` pages). An origin that is a fork opens its PRs in
 its parent, so the lookup also reads the parent's: GitHub's
-`OpenPRsByHead` answer names the origin's `id` and `parent`, and the
+`PRsByHead` answer names the origin's `id` and `parent`, and the
 parent's nodes count when their `headRepository.id` is the origin's;
 GitLab reads the parent only when the origin has no merge request of its
 own, from `projects/P`'s `id` and `forked_from_project` (the merge

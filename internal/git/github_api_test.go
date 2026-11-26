@@ -1160,7 +1160,7 @@ func TestGitHubOriginScopedLists(t *testing.T) {
 	t.Parallel()
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		switch call.Op {
-		case "OpenPRsByHead":
+		case "PRsByHead":
 			// A fork's pull request from a branch of the same name is not
 			// the repository's own.
 			return githubData(`{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[` +
@@ -1188,7 +1188,7 @@ func TestGitHubOriginScopedLists(t *testing.T) {
 		t.Fatalf("ListOpenPRs = %+v, %v", pulls, err)
 	}
 	if !strings.Contains(calls.all()[0].Query, "baseRefName") {
-		t.Fatal("OpenPRsByHead does not ask for each PR's base")
+		t.Fatal("PRsByHead does not ask for each PR's base")
 	}
 	heads, err := core.ListMergedPRHeads(t.Context(), cwd, 150)
 	if err != nil || len(heads) != 150 || heads[149].HeadRefName != "b149" {
@@ -1199,7 +1199,7 @@ func TestGitHubOriginScopedLists(t *testing.T) {
 		t.Fatalf("requests = %+v", calls.ops())
 	}
 	if v := sent[0].Vars; v["owner"] != "acme" || v["name"] != "repo" || v["head"] != "feature/x" || strings.Contains(sent[0].Query, "feature/x") {
-		t.Fatalf("OpenPRsByHead variables = %v", v)
+		t.Fatalf("PRsByHead variables = %v", v)
 	}
 	if v := sent[1].Vars; v["first"] != float64(100) || v["after"] != nil {
 		t.Fatalf("first MergedPRs page = %v", v)
@@ -1215,7 +1215,7 @@ func TestGitHubOriginScopedLists(t *testing.T) {
 func TestGitHubListOpenPRsReadsPastForks(t *testing.T) {
 	t.Parallel()
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		if call.Op != "OpenPRsByHead" {
+		if call.Op != "PRsByHead" {
 			return forgeUnexpected(t, call)
 		}
 		after, _ := call.Vars["after"].(string)
@@ -1256,9 +1256,9 @@ func TestGitHubForkCheckoutFindsItsUpstreamPRs(t *testing.T) {
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		upstream := call.Vars["owner"] == "acme"
 		switch {
-		case call.Op == "OpenPRsByHead" && !upstream:
+		case call.Op == "PRsByHead" && !upstream:
 			return githubData(`{"repository":{"id":"R_fork","parent":{"owner":{"login":"acme"},"name":"repo"},"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}`)
-		case call.Op == "OpenPRsByHead":
+		case call.Op == "PRsByHead":
 			return githubData(`{"repository":{"id":"R_acme","parent":null,"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[` +
 				`{"id":"PR_other","url":"https://github.com/acme/repo/pull/1","number":1,"title":"Other fork","state":"OPEN","isCrossRepository":true,"headRepository":{"id":"R_other"}},` +
 				`{"id":"PR_mine","url":"https://github.com/acme/repo/pull/2","number":2,"title":"Mine","state":"OPEN","baseRefName":"main","isCrossRepository":true,"headRepository":{"id":"R_fork"}},` +

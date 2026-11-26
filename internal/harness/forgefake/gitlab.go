@@ -517,7 +517,7 @@ func glabMRList(e *Engine, c *call, m []string) response {
 	if !ok {
 		return fail
 	}
-	query, perPage, page, err := glabPage(m[2], "state", "source_branch", "order_by", "sort", "iids[]")
+	query, perPage, page, err := glabPage(m[2], "state", "source_branch", "search", "in", "order_by", "sort", "iids[]")
 	if err != nil {
 		return unhandled("%v", err)
 	}
@@ -531,16 +531,26 @@ func glabMRList(e *Engine, c *call, m []string) response {
 		return unhandled("sort=%q is not implemented", sortOrder)
 	}
 	state := query.Get("state")
-	if state != "opened" && state != "merged" {
+	if state != "opened" && state != "merged" && state != "all" {
 		return unhandled("state=%q is not implemented", state)
 	}
 	branch := query.Get("source_branch")
+	// search matches the title and description, case ignored, anywhere in
+	// the text (GitLab's ILIKE), narrowed by in.
+	search := strings.ToLower(query.Get("search"))
+	in := query.Get("in")
+	if in != "" && in != "title" {
+		return unhandled("in=%q is not implemented", in)
+	}
 	var matches []map[string]any
 	// Fixture order is creation order; the API's default and the
 	// updated_at order the app asks for are both newest first.
 	for i := len(r.Pulls) - 1; i >= 0; i-- {
 		p := &r.Pulls[i]
-		if gitlabStates[p.State] != state || (branch != "" && p.HeadRef != branch) {
+		if (state != "all" && gitlabStates[p.State] != state) || (branch != "" && p.HeadRef != branch) {
+			continue
+		}
+		if search != "" && !strings.Contains(strings.ToLower(p.Title), search) && (in == "title" || !strings.Contains(strings.ToLower(p.Body), search)) {
 			continue
 		}
 		matches = append(matches, e.gitlabMRListItem(r, p))

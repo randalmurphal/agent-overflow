@@ -47,7 +47,7 @@ test('a tracked PR survives a restart and its merge still removes the worktree',
     // check, before removing, that the branch has no new open PR. The boot
     // prefetch of the Pull requests list (PullsSearch) is not the cleanup's.
     const calls = (await forgeInvocations(harness)).filter(cleanupGraphQL);
-    expect(calls.map((call) => (call.via === 'http' ? call.operation : ''))).toEqual(['PRStates', 'OpenPRsByHead']);
+    expect(calls.map((call) => (call.via === 'http' ? call.operation : ''))).toEqual(['PRStates', 'PRsByHead']);
     expect(await stateReads(harness)).toBe(1);
 
     await openThread(page, 'Restarted work');
@@ -115,7 +115,7 @@ test('with background fetch off, a merge a previous run left waiting is acted on
     // No state read: the only cleanup request is the check, before
     // removing, that the branch has no new open PR.
     const calls = (await forgeInvocations(harness)).filter(cleanupGraphQL);
-    expect(calls.map((call) => (call.via === 'http' ? call.operation : ''))).toEqual(['OpenPRsByHead']);
+    expect(calls.map((call) => (call.via === 'http' ? call.operation : ''))).toEqual(['PRsByHead']);
     expect(await stateReads(harness)).toBe(0);
 
     await openThread(page, 'Waiting work');

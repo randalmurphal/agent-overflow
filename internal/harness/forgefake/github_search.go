@@ -210,3 +210,77 @@ func (p *Pull) normalizeList() error {
 	}
 	return nil
 }
+
+// githubKeySearch is a ticket Work's search (PullsByKey): a repository's
+// pull requests in any state whose title holds a phrase, or whose head
+// branch begins with a prefix.
+var githubKeySearch = regexp.MustCompile(`^repo:([^\s/]+/[^\s/]+) is:pr (?:in:title "([^"]+)"|head:(\S+))$`)
+
+// ghPullsByKey answers the two aliased searches of PullsByKey, byTitle
+// and byHead, each the repository's matching pulls newest first, the
+// first 100 with their issueCount. A title matches when its words (runs
+// of letters and digits, case ignored) hold the phrase's words in order,
+// as GitHub's search matched in the measurement; a head matches when its
+// name begins with the prefix, case kept (GitHub's case rule was not
+// measured). A repository not on the host answers GitHub's search
+// refusal for both.
+func ghPullsByKey(e *Engine, c *call, v graphQLVars) response {
+	title, err1 := v.str("title")
+	head, err2 := v.str("head")
+	if err := firstErr(err1, err2); err != nil {
+		return unhandled("PullsByKey: %v", err)
+	}
+	byTitle, byHead := githubKeySearch.FindStringSubmatch(title), githubKeySearch.FindStringSubmatch(head)
+	if byTitle == nil || byTitle[2] == "" || byHead == nil || byHead[3] == "" || byTitle[1] != byHead[1] {
+		return unhandled("PullsByKey queries %q and %q are not a title phrase and a head prefix of one repository", title, head)
+	}
+	r := e.repoOn("github", c.http.host, byTitle[1])
+	if r == nil {
+		return jsonResponse(map[string]any{
+			"data": map[string]any{"byTitle": nil, "byHead": nil},
+			"errors": []map[string]any{
+				{"path": []string{"byTitle"}, "message": githubSearchNotVisible},
+				{"path": []string{"byHead"}, "message": githubSearchNotVisible},
+			},
+		})
+	}
+	phrase := searchWords(byTitle[2])
+	search := func(match func(p *Pull) bool) map[string]any {
+		nodes := []map[string]any{}
+		for i := len(r.Pulls) - 1; i >= 0; i-- {
+			if p := &r.Pulls[i]; match(p) {
+				nodes = append(nodes, map[string]any{
+					"url": githubPullURL(r, p), "number": p.Number, "title": p.Title, "state": strings.ToUpper(p.State),
+					"isDraft": p.Draft, "headRefName": p.HeadRef, "author": githubActor(p.Author, p.AuthorName),
+				})
+			}
+		}
+		count := len(nodes)
+		return map[string]any{"issueCount": count, "nodes": nodes[:min(count, githubGraphQLPageSize)]}
+	}
+	return graphQLData(map[string]any{
+		"byTitle": search(func(p *Pull) bool { return containsWords(searchWords(p.Title), phrase) }),
+		"byHead":  search(func(p *Pull) bool { return strings.HasPrefix(p.HeadRef, byHead[3]) }),
+	})
+}
+
+// searchWords is text's runs of ASCII letters and digits, lower case.
+func searchWords(text string) []string {
+	return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	})
+}
+
+// containsWords reports whether words holds phrase's words in order, next
+// to one another.
+func containsWords(words, phrase []string) bool {
+	if len(phrase) == 0 {
+		return false
+	}
+	for i := 0; i+len(phrase) <= len(words); i++ {
+		if slices.Equal(words[i:i+len(phrase)], phrase) {
+			return true
+		}
+	}
+	return false
+}
