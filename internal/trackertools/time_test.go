@@ -200,6 +200,13 @@ func TestTimeDraftResolvesItsKeys(t *testing.T) {
 	if err != nil || len(h.timeRows) != 1 || !strings.Contains(answer, `"skipped":["WEB-1"]`) || strings.Contains(answer, "logged_hours") {
 		t.Fatalf("a draft that changed nothing = %s, %v; rows %+v", answer, err, h.timeRows)
 	}
+	// With another connection on, the answer names the site once and its
+	// keys bare.
+	f.sources = []trackerapp.TicketSource{timeJira, timeLinear}
+	answer, err = timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{{"day": "2026-11-24", "key": "WEB-1", "hours": 1, "reason": "Again"}}})
+	if err != nil || !strings.HasPrefix(answer, `{"site":"example.atlassian.net","days":[{"day":"2026-11-24","skipped":["WEB-1"]`) {
+		t.Fatalf("a draft with two connections on = %s, %v", answer, err)
+	}
 }
 
 // Each time_draft refusal, asserted as the text the model reads; none
@@ -285,7 +292,7 @@ func TestTimeDraftAnswersWithAReceipt(t *testing.T) {
 		{ID: 8, Day: "2026-11-24", Key: "WEB-1", Minutes: 90, Reason: long, State: "drafted", By: "person"},
 		{ID: 9, Day: "2026-11-24", Key: "WEB-2", Minutes: 60, Reason: long, State: "posted"},
 	}
-	got := draftAnswerOf(v, func(k string) string { return k })
+	got := draftAnswerOf(v, "")
 	raw, err := json.Marshal(got)
 	if err != nil {
 		t.Fatal(err)
@@ -297,4 +304,25 @@ func TestTimeDraftAnswersWithAReceipt(t *testing.T) {
 		t.Fatalf("the answer lists entries the call did not make: %s", raw)
 	}
 	t.Logf("the answer of 250 questions is %d bytes", len(raw))
+	if len(got.Days) != 1 || got.Days[0].OtherHours != 1.5 {
+		t.Fatalf("the day's other hours are %+v; want the person's 1.5, not the posted or left-out entries", got.Days)
+	}
+
+	// 250 entries on tickets over 25 days of a site with a long name, which
+	// a session with two connections names once.
+	site := strings.Repeat("s", 55) + ".atlassian.net"
+	v = trackerapp.TimeDraftView{}
+	for i := range 250 {
+		day := fmt.Sprintf("2026-10-%02d", 1+i/10)
+		v.Made = append(v.Made, trackerapp.TimeEntryView{ID: int64(1_000_000 + i), Day: day, Key: fmt.Sprintf("LONGPROJECT-%d", 100000+i), Minutes: 1, Reason: long, State: "drafted"})
+	}
+	answer := draftAnswerOf(v, site)
+	raw, err = json.Marshal(answer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("the answer of 250 entries on %d-byte site is %d bytes", len(site), len(raw))
+	if len(raw) > answerBudget || strings.Count(string(raw), site) != 1 {
+		t.Fatalf("the answer of 250 entries on tickets is %d bytes, over %d, or names the site more than once", len(raw), answerBudget)
+	}
 }

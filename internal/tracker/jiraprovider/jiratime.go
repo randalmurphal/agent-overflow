@@ -293,7 +293,7 @@ func nativeWorklog(w jira.Worklog, issue string, loc *time.Location) (tracker.Wo
 	}
 	out := tracker.Worklog{
 		ID: tracker.WorklogID(w.ID), Issue: tracker.IssueID(issue), Day: day,
-		Spent: w.TimeSpent, Description: adf.ToMarkdown(w.Comment), Updated: w.Updated,
+		Spent: w.TimeSpent, Description: adf.ToMarkdown(w.Comment), Created: w.Created, Updated: w.Updated,
 	}
 	if w.Author != nil {
 		out.Author = tracker.UserID(w.Author.AccountID)

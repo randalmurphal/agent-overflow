@@ -244,7 +244,7 @@ func tempoWorklog(w tempo.Worklog) (tracker.Worklog, error) {
 	}
 	return tracker.Worklog{
 		ID: tracker.WorklogID(decimal(w.ID)), Issue: tracker.IssueID(decimal(w.Issue.ID)), Author: tracker.UserID(w.Author),
-		Day: day, Spent: w.Spent, Description: w.Description, Updated: w.Updated,
+		Day: day, Spent: w.Spent, Description: w.Description, Created: w.Created, Updated: w.Updated,
 	}, nil
 }
 

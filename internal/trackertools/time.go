@@ -316,7 +316,10 @@ type madeEntry struct {
 	Key string `json:"key"`
 }
 
+// draftAnswer is a draft's receipt. Site names the site of every key in
+// it when the session has more than one connection; the keys are bare.
 type draftAnswer struct {
+	Site string     `json:"site,omitempty"`
 	Days []draftDay `json:"days"`
 	Note string     `json:"note"`
 }
@@ -400,7 +403,7 @@ func (s *Server) timeDraft(ctx context.Context, caller Caller, raw json.RawMessa
 		if len(jira) > 1 {
 			return nil, invalidf("No entry has a key, and this computer has %d Jira connections; give one entry a key on the site whose time this is.", len(jira))
 		}
-		connection = jira[0].ID
+		connection, site = jira[0].ID, jira[0].Site
 	}
 	req := trackerapp.TimeDraftRequest{Thread: caller.Thread, Call: s.newID(), Entries: make([]trackerapp.TimeDraftEntry, len(args.Entries))}
 	for i, e := range args.Entries {
@@ -431,7 +434,11 @@ func (s *Server) timeDraft(ctx context.Context, caller Caller, raw json.RawMessa
 		slices.Sort(row.Days)
 		s.h.Drafted(caller.Thread, row)
 	}
-	return draftAnswerOf(got, qualifier(sources, site)), nil
+	named := ""
+	if len(sources) > 1 {
+		named = site
+	}
+	return draftAnswerOf(got, named), nil
 }
 
 // draftRefusal is a draft refusal's sentence alone, after the sentinel
@@ -465,9 +472,10 @@ func kindName(kind string) string {
 	return kind
 }
 
-// draftAnswerOf is a draft's answer by day, keys written by key.
-func draftAnswerOf(v trackerapp.TimeDraftView, key func(string) string) draftAnswer {
-	out := draftAnswer{Days: []draftDay{}, Note: draftNote}
+// draftAnswerOf is a draft's answer by day, naming site once when it is
+// not empty.
+func draftAnswerOf(v trackerapp.TimeDraftView, site string) draftAnswer {
+	out := draftAnswer{Site: site, Days: []draftDay{}, Note: draftNote}
 	day := func(d string) *draftDay {
 		i := slices.IndexFunc(out.Days, func(x draftDay) bool { return x.Day == d })
 		if i < 0 {
@@ -489,7 +497,7 @@ func draftAnswerOf(v trackerapp.TimeDraftView, key func(string) string) draftAns
 			d.Questions = append(d.Questions, e.ID)
 			continue
 		}
-		d.Made = append(d.Made, madeEntry{ID: e.ID, Key: key(e.Key)})
+		d.Made = append(d.Made, madeEntry{ID: e.ID, Key: e.Key})
 	}
 	for _, e := range v.Kept {
 		if e.State == "posted" || e.State == "left_out" {
@@ -500,7 +508,7 @@ func draftAnswerOf(v trackerapp.TimeDraftView, key func(string) string) draftAns
 		day(e.Day).OtherHours += float64(e.Minutes) / 60
 	}
 	for _, e := range v.Skipped {
-		day(e.Day).Skipped = append(day(e.Day).Skipped, key(e.Key))
+		day(e.Day).Skipped = append(day(e.Day).Skipped, e.Key)
 	}
 	if len(v.Skipped) > 0 {
 		out.Note += draftSkippedNote

@@ -528,7 +528,7 @@ type owedDrop struct {
 // dropTicket ends tp's keep as its goroutine returns, and no bind follows
 // it (dropKeep). A drop that fails stays owed: the next run retries it
 // (payOwedDrops), and Stop makes a last try, after which the next process
-// drops the row (dropEarlierTickets).
+// drops the row (recoverEarlier).
 func (s *Service) dropTicket(tp *ticketPump) {
 	s.opMu.Lock()
 	tp.dropped = true

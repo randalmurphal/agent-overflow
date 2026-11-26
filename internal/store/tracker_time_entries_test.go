@@ -140,15 +140,25 @@ func TestADraftDeletesNoSettledEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	q := old.Made[0]
+	q, p := old.Made[0], old.Made[1]
 	if _, ok, err := s.EditTimeEntry(conn, "acc-user1", TimeEntryRef{q.ID, q.Revision}, TimeEntryChange{LeaveOut: true}, 2); !ok || err != nil {
 		t.Fatalf("leave out: %v %v", ok, err)
 	}
-	if _, err := s.ReplaceAgentTimeDays(conn, "acc-user1", []TimeEntry{agentEntry("2027-03-01", "10002", "WEB-2", 600, "x", "t2")}, 4); err != nil {
+	marked, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{{p.ID, p.Revision}}, 3)
+	if err != nil || len(marked.Entries) != 1 {
+		t.Fatalf("mark: %+v %v", marked, err)
+	}
+	if _, err := s.SettleTimeEntries(conn, []TimeEntrySettle{{ID: p.ID, Revision: marked.Entries[0].Revision, State: TimeEntryPosted, WorklogID: "300"}}, 3); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := s.TimeEntriesOf(conn, "acc-user1", "2026-09-01", "2026-09-01"); len(got) != 2 || got[0].State != TimeEntryLeftOut {
-		t.Errorf("after a later draft %+v, want the left-out question and the drafted entry kept", got)
+	for _, day := range []string{"2027-03-01", "2026-09-01"} {
+		if _, err := s.ReplaceAgentTimeDays(conn, "acc-user1", []TimeEntry{agentEntry(day, "10002", "WEB-2", 600, "x", "t1")}, 4); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, _ := s.TimeEntriesOf(conn, "acc-user1", "2026-09-01", "2026-09-01")
+	if len(got) != 3 || got[0].State != TimeEntryLeftOut || got[1].State != TimeEntryPosted || got[1].WorklogID != "300" {
+		t.Errorf("after later drafts %+v, want the left-out question and the posted entry kept beside the new one", got)
 	}
 }
 
@@ -161,8 +171,10 @@ func TestMarkAndRemoveReadTheNamedEntriesOnly(t *testing.T) {
 		sql  string
 		args []any
 	}{
-		"mark":   {markTimeEntriesSentSQL, []any{conn, "[[1,1]]", 5, 1}},
-		"remove": {removeTimeEntriesSQL, []any{conn, "[[1,1]]", "acc-user1"}},
+		"mark":           {markTimeEntriesSentSQL, []any{conn, "[[1,1]]", 5}},
+		"mark's unknown": {unknownAtRefSQL, []any{conn, "[[1,1]]"}},
+		"remove":         {removeTimeEntriesSQL, []any{conn, "[[1,1]]", "acc-user1"}},
+		"read":           {timeEntriesByIDSQL, []any{conn, "[1]"}},
 	} {
 		plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+q.sql, q.args...)
 		if !strings.Contains(plan, "tracker_time_entries USING INTEGER PRIMARY KEY") || strings.Contains(plan, "idx_tracker_time_entries_day") {
@@ -173,7 +185,8 @@ func TestMarkAndRemoveReadTheNamedEntriesOnly(t *testing.T) {
 
 // The person's edit and remove are conditional on the revision read, and
 // a mark is too: a second window's approval of an entry another marked
-// marks nothing; settling needs the mark's time.
+// marks nothing; a settle is of the revision the mark left. An entry being
+// sent is not edited or removed.
 func TestTimeEntryTransitions(t *testing.T) {
 	t.Parallel()
 	s, conn := timeStore(t)
@@ -187,34 +200,53 @@ func TestTimeEntryTransitions(t *testing.T) {
 	}
 	one, two, q := w.Made[0], w.Made[1], w.Made[2]
 	ref := func(e TimeEntry) TimeEntryRef { return TimeEntryRef{e.ID, e.Revision} }
-	marked, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(one), ref(two), ref(q)}, 100, 50)
-	if err != nil || len(marked) != 2 {
-		t.Fatalf("marked %+v %v, want the two tickets and not the question", marked, err)
+	marked, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(one), ref(two), ref(q)}, 100)
+	if err != nil || len(marked.Entries) != 2 || len(marked.Unknown) != 0 {
+		t.Fatalf("marked %+v %v, want the two tickets, neither unknown, and not the question", marked, err)
 	}
-	if again, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(one)}, 101, 50); err != nil || len(again) != 0 {
+	if again, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(one)}, 101); err != nil || len(again.Entries) != 0 {
 		t.Errorf("a second window's mark %+v %v, want nothing", again, err)
 	}
-	if again, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(marked[0])}, 101, 50); err != nil || len(again) != 0 {
+	if again, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(marked.Entries[0])}, 101); err != nil || len(again.Entries) != 0 {
 		t.Errorf("a mark of an entry this run is sending %+v %v, want nothing", again, err)
-	}
-	if again, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(marked[0])}, 300, 200); err != nil || len(again) != 1 {
-		t.Errorf("a mark of an entry an earlier run left sent %+v %v, want it marked", again, err)
 	}
 	if _, ok, _ := s.EditTimeEntry(conn, "acc-user1", ref(one), TimeEntryChange{LeaveOut: true}, 102); ok {
 		t.Error("an edit of an entry being sent was applied")
 	}
-	if removed, _ := s.RemoveTimeEntries(conn, "acc-user1", []TimeEntryRef{ref(marked[1])}); len(removed) != 0 {
+	if removed, _ := s.RemoveTimeEntries(conn, "acc-user1", []TimeEntryRef{ref(marked.Entries[1])}); len(removed) != 0 {
 		t.Error("a remove of an entry being sent was applied")
 	}
-	settled, err := s.SettleTimeEntries(conn, 100, []TimeEntrySettle{
-		{ID: one.ID, State: TimeEntryPosted, WorklogID: "300"}, {ID: two.ID, State: TimeEntryDrafted, Refusal: "Tempo: the period is approved"},
-	}, 103)
-	if err != nil || len(settled) != 1 || settled[0].ID != two.ID || settled[0].State != TimeEntryDrafted || settled[0].Refusal == "" {
-		t.Fatalf("settled %+v %v, want only WEB-2, back to drafted with its refusal (WEB-1 was marked again at 300)", settled, err)
+	if settled, err := s.SettleTimeEntries(conn, []TimeEntrySettle{{ID: one.ID, Revision: one.Revision, State: TimeEntryPosted, WorklogID: "300"}}, 103); err != nil || len(settled) != 0 {
+		t.Fatalf("a settle at the revision before the mark settled %+v %v", settled, err)
 	}
-	if settled, err := s.SettleTimeEntries(conn, 300, []TimeEntrySettle{{ID: one.ID, State: TimeEntryPosted, WorklogID: "300"}}, 301); err != nil ||
-		len(settled) != 1 || settled[0].State != TimeEntryPosted || settled[0].WorklogID != "300" || settled[0].PostedMs != 301 {
-		t.Fatalf("posted %+v %v", settled, err)
+	settled, err := s.SettleTimeEntries(conn, []TimeEntrySettle{
+		{ID: one.ID, Revision: marked.Entries[0].Revision, State: TimeEntryUnknown},
+		{ID: two.ID, Revision: marked.Entries[1].Revision, State: TimeEntryDrafted, Refusal: "Tempo: the period is approved"},
+	}, 103)
+	if err != nil || len(settled) != 2 || settled[0].State != TimeEntryUnknown || settled[0].SentMs != 100 ||
+		settled[1].State != TimeEntryDrafted || settled[1].SentMs != 0 || settled[1].Refusal == "" {
+		t.Fatalf("settled %+v %v, want WEB-1 unknown, sent at 100, and WEB-2 drafted with its refusal", settled, err)
+	}
+
+	// A retry of the unknown entry is marked as it was first sent, and
+	// told unknown; one that did nothing keeps that.
+	unknown := settled[0]
+	retry, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(unknown)}, 200)
+	if err != nil || len(retry.Entries) != 1 || !retry.Unknown[one.ID] || retry.Entries[0].SentMs != 100 {
+		t.Fatalf("the retry's mark %+v %v, want WEB-1 marked, unknown before, sent at 100", retry, err)
+	}
+	if again, err := s.SettleTimeEntries(conn, []TimeEntrySettle{{ID: one.ID, Revision: retry.Entries[0].Revision, State: TimeEntryUnknown, Refusal: "closed"}}, 201); err != nil ||
+		len(again) != 1 || again[0].State != TimeEntryUnknown || again[0].SentMs != 100 {
+		t.Fatalf("the refused retry settled %+v %v, want WEB-1 unknown, sent at 100", again, err)
+	}
+	unknown, _, _ = timeEntryOf(s, conn, one.ID)
+	retry, err = s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(unknown)}, 300)
+	if err != nil || len(retry.Entries) != 1 {
+		t.Fatalf("the second retry's mark %+v %v", retry, err)
+	}
+	if posted, err := s.SettleTimeEntries(conn, []TimeEntrySettle{{ID: one.ID, Revision: retry.Entries[0].Revision, State: TimeEntryPosted, WorklogID: "300"}}, 301); err != nil ||
+		len(posted) != 1 || posted[0].State != TimeEntryPosted || posted[0].WorklogID != "300" || posted[0].PostedMs != 301 {
+		t.Fatalf("posted %+v %v", posted, err)
 	}
 	stale := TimeEntryRef{q.ID, q.Revision + 1}
 	if _, ok, err := s.EditTimeEntry(conn, "acc-user1", stale, TimeEntryChange{LeaveOut: true}, 104); ok || err != nil {
@@ -232,6 +264,85 @@ func TestTimeEntryTransitions(t *testing.T) {
 	}
 	if removed, err := s.RemoveTimeEntries(conn, "acc-user1", []TimeEntryRef{ref(got)}); err != nil || len(removed) != 1 {
 		t.Errorf("removed %+v %v", removed, err)
+	}
+}
+
+// The recovery of a run's sends makes each sent entry unknown, keeping
+// the time it was sent, and moves its revision; it changes no other entry,
+// and the person then removes it. Its plan reads the open-entry index,
+// not the table's settled history.
+func TestRecoverEarlierTimeSends(t *testing.T) {
+	t.Parallel()
+	s, conn := timeStore(t)
+	w, err := s.ReplaceAgentTimeDays(conn, "acc-user1", []TimeEntry{
+		agentEntry("2026-11-23", "10001", "WEB-1", 3600, "Review", "t1"),
+		agentEntry("2026-11-23", "10002", "WEB-2", 1800, "Fix", "t1"),
+	}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	one, two := w.Made[0], w.Made[1]
+	marked, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{{one.ID, one.Revision}}, 20)
+	if err != nil || len(marked.Entries) != 1 {
+		t.Fatalf("mark: %+v %v", marked, err)
+	}
+	got, err := s.RecoverEarlierTimeSends(30)
+	if err != nil || len(got) != 1 || got[0].ID != one.ID || got[0].State != TimeEntryUnknown || got[0].SentMs != 20 ||
+		got[0].Revision != marked.Entries[0].Revision+1 || got[0].UpdatedMs != 30 {
+		t.Fatalf("recovered %+v %v, want WEB-1 unknown, sent at 20, at the next revision", got, err)
+	}
+	if again, err := s.RecoverEarlierTimeSends(40); err != nil || len(again) != 0 {
+		t.Fatalf("a second recovery %+v %v, want nothing", again, err)
+	}
+	if e, _, _ := timeEntryOf(s, conn, two.ID); e.Revision != two.Revision || e.State != TimeEntryDrafted {
+		t.Fatalf("the recovery changed WEB-2: %+v", e)
+	}
+	if removed, err := s.RemoveTimeEntries(conn, "acc-user1", []TimeEntryRef{{got[0].ID, got[0].Revision}}); err != nil || len(removed) != 1 {
+		t.Fatalf("removed %+v %v, want the recovered entry", removed, err)
+	}
+	if plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+recoverTimeSendsSQL, 1); !strings.Contains(plan, "idx_tracker_time_entries_open") {
+		t.Errorf("the recovery plans %s; want it to read the open-entry index", plan)
+	}
+}
+
+// A day's entries not yet logged hold at most 24 hours: a draft or an
+// edit that would pass it fails with the day and its total and writes
+// nothing; posted and left-out entries do not count.
+func TestADayHoldsAtMost24HoursOfOpenEntries(t *testing.T) {
+	t.Parallel()
+	s, conn := timeStore(t)
+	w, err := s.ReplaceAgentTimeDays(conn, "acc-user1", []TimeEntry{agentEntry("2026-11-23", "10001", "WEB-1", 14*3600, "Review", "t1")}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var over *TimeDayOverError
+	_, err = s.ReplaceAgentTimeDays(conn, "acc-user1", []TimeEntry{agentEntry("2026-11-23", "10002", "WEB-2", 12*3600, "Fix", "t2")}, 20)
+	if !errors.As(err, &over) || !errors.Is(err, ErrTimeDayOver) || over.Day != "2026-11-23" || over.Seconds != 26*3600 {
+		t.Fatalf("t2's 12h beside t1's 14h: %v", err)
+	}
+	theirs, err := s.ReplaceAgentTimeDays(conn, "acc-user1", []TimeEntry{agentEntry("2026-11-23", "10002", "WEB-2", 8*3600, "Fix", "t2")}, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	twelve := int64(12 * 3600)
+	e := theirs.Made[0]
+	if _, _, err := s.EditTimeEntry(conn, "acc-user1", TimeEntryRef{e.ID, e.Revision}, TimeEntryChange{Seconds: &twelve}, 40); !errors.As(err, &over) || over.Seconds != 26*3600 {
+		t.Fatalf("an edit of WEB-2 to 12h: %v", err)
+	}
+	if got, _, _ := timeEntryOf(s, conn, e.ID); got.Seconds != 8*3600 || got.Revision != e.Revision {
+		t.Fatalf("the refused edit changed WEB-2: %+v", got)
+	}
+	// A posted WEB-1 no longer counts.
+	one := w.Made[0]
+	m, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{{one.ID, one.Revision}}, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SettleTimeEntries(conn, []TimeEntrySettle{{ID: one.ID, Revision: m.Entries[0].Revision, State: TimeEntryPosted, WorklogID: "1"}}, 51); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.EditTimeEntry(conn, "acc-user1", TimeEntryRef{e.ID, e.Revision}, TimeEntryChange{Seconds: &twelve}, 60); !ok || err != nil {
+		t.Fatalf("an edit of WEB-2 to 12h beside a posted WEB-1: %v %v", ok, err)
 	}
 }
 
@@ -255,14 +366,13 @@ func TestAnAnsweredQuestionMergesIntoItsTicketsEntry(t *testing.T) {
 	q, err := s.ReplaceAgentTimeDays(conn, "acc-user1", []TimeEntry{
 		agentEntry("2026-11-23", "", "", 1500, "25 minute call at 14:05", "t2"),
 		agentEntry("2026-11-23", "", "", 600, "Standup", "t2"),
-		agentEntry("2026-11-23", "", "", 82800, "Offsite", "t2"),
 	}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	web1, web2, web3, call, standup, offsite := w.Made[0], w.Made[1], w.Made[2], q.Made[0], q.Made[1], q.Made[2]
+	web1, web2, web3, call, standup := w.Made[0], w.Made[1], w.Made[2], q.Made[0], q.Made[1]
 	ref := func(e TimeEntry) TimeEntryRef { return TimeEntryRef{e.ID, e.Revision} }
-	if _, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(web2)}, 20, 5); err != nil {
+	if _, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{ref(web2)}, 20); err != nil {
 		t.Fatal(err)
 	}
 	ticket := func(e TimeEntry) *TimeOffer { return &TimeOffer{Issue: e.IssueID, Key: e.IssueKey, Title: "T"} }
@@ -297,7 +407,10 @@ func TestAnAnsweredQuestionMergesIntoItsTicketsEntry(t *testing.T) {
 	if _, _, err := s.EditTimeEntry(conn, "acc-user1", ref(web3), TimeEntryChange{Issue: ticket(web1)}, 33); !errors.As(err, &open) || open.Open.ID != web1.ID {
 		t.Fatalf("moving WEB-3's entry onto WEB-1's: %v", err)
 	}
-	if _, _, err := s.EditTimeEntry(conn, "acc-user1", ref(offsite), TimeEntryChange{Issue: ticket(m)}, 34); !errors.Is(err, ErrTimeEntryMergeOver) {
+	day := int64(23 * 3600)
+	var over *TimeDayOverError
+	if _, _, err := s.EditTimeEntry(conn, "acc-user1", ref(standup), TimeEntryChange{Issue: ticket(m), Seconds: &day}, 34); !errors.As(err, &over) ||
+		over.Seconds != 5100+1800+600+day {
 		t.Fatalf("a merge past a day: %v", err)
 	}
 	long := strings.Repeat("x", MaxTimeEntryReason-len(", plus Standup")+1)
@@ -308,7 +421,7 @@ func TestAnAnsweredQuestionMergesIntoItsTicketsEntry(t *testing.T) {
 	if _, _, err := s.EditTimeEntry(conn, "acc-user1", ref(standup), TimeEntryChange{Issue: ticket(m)}, 36); !errors.Is(err, ErrTimeEntryMergeOver) {
 		t.Fatalf("a merge past the longest reason: %v", err)
 	}
-	unchanged("the refused edits", m, standup, web3, offsite)
+	unchanged("the refused edits", m, standup, web3)
 }
 
 // A restore keeps the time draft, so a posted entry is not offered again,
@@ -329,10 +442,11 @@ func TestRestoreKeepsTheTimeDraft(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := w.Made[0]
-	if _, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{{e.ID, e.Revision}}, 20, 5); err != nil {
+	m, err := s.MarkTimeEntriesSent(conn, []TimeEntryRef{{e.ID, e.Revision}}, 20)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SettleTimeEntries(conn, 20, []TimeEntrySettle{{ID: e.ID, State: TimeEntryPosted, WorklogID: "300"}}, 21); err != nil {
+	if _, err := s.SettleTimeEntries(conn, []TimeEntrySettle{{ID: e.ID, Revision: m.Entries[0].Revision, State: TimeEntryPosted, WorklogID: "300"}}, 21); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.ReplaceAgentTimeDays(later.ID, "acc-user1", []TimeEntry{agentEntry("2026-11-23", "10001", "WEB-1", 600, "x", "t1")}, 30); err != nil {

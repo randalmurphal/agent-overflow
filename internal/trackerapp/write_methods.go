@@ -242,7 +242,7 @@ func (s *Service) Worklogs(id, author, from, to string) (WorklogDays, error) {
 	if n > worklogReadSpan {
 		return WorklogDays{}, fmt.Errorf("%w: worklogs are read at most %d days at a time", ErrInvalidRequest, worklogReadSpan)
 	}
-	if err := s.enter(); err != nil {
+	if err := s.enterTime(); err != nil {
 		return WorklogDays{}, err
 	}
 	defer s.leave()

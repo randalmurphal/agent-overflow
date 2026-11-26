@@ -52,8 +52,9 @@ type Store interface {
 	ThreadTimeEntries(thread string) ([]store.TimeEntry, error)
 	EditTimeEntry(connection, author string, ref store.TimeEntryRef, ch store.TimeEntryChange, now int64) (store.TimeEntryEdited, bool, error)
 	RemoveTimeEntries(connection, author string, refs []store.TimeEntryRef) ([]store.TimeEntry, error)
-	MarkTimeEntriesSent(connection string, refs []store.TimeEntryRef, now, running int64) ([]store.TimeEntry, error)
-	SettleTimeEntries(connection string, sentMs int64, outcomes []store.TimeEntrySettle, now int64) ([]store.TimeEntry, error)
+	MarkTimeEntriesSent(connection string, refs []store.TimeEntryRef, now int64) (store.TimeEntriesMarked, error)
+	SettleTimeEntries(connection string, outcomes []store.TimeEntrySettle, now int64) ([]store.TimeEntry, error)
+	RecoverEarlierTimeSends(now int64) ([]store.TimeEntry, error)
 	SettleAgentWrite(id int64, issue, key, comment string) error
 	AgentWritesOf(ticket store.TicketRef) ([]store.AgentWriteMark, error)
 }
@@ -222,7 +223,8 @@ type Service struct {
 	// session names this service's open tickets in the mirror, each a
 	// pump of it (bindTickets): the rows of another session were left by
 	// a process that ended, and the first run drops them; earlier.done
-	// reports that delete made (dropEarlierTickets).
+	// reports that delete made, and the time sends that process left
+	// recovered (recoverEarlier).
 	session int64
 	earlier struct {
 		sync.Mutex

@@ -134,8 +134,10 @@ func (w TimeDraftWrite) Changed() bool { return len(w.Made)+len(w.Replaced) > 0 
 // thread's entries still drafted and still the agent's are deleted, and
 // every other entry stays, another thread's, the person's and those sent
 // or settled. A new entry whose ticket already has an open entry that
-// day is skipped. Entries carry their day, ticket, seconds, reason,
-// offers, thread and call; the rest is set here.
+// day is skipped. A write that would leave a day's entries not yet logged
+// over MaxDaySeconds fails with a TimeDayOverError and writes nothing.
+// Entries carry their day, ticket, seconds, reason, offers, thread and
+// call; the rest is set here.
 func (s *Store) ReplaceAgentTimeDays(connection, author string, entries []TimeEntry, now int64) (TimeDraftWrite, error) {
 	var out TimeDraftWrite
 	days := map[string]bool{}
@@ -182,6 +184,11 @@ func (s *Store) ReplaceAgentTimeDays(connection, author string, entries []TimeEn
 		}
 		out.Made = append(out.Made, made)
 	}
+	for _, day := range order {
+		if err := checkDayTx(tx, connection, author, day); err != nil {
+			return out, err
+		}
+	}
 	madeIDs := make([]int64, len(out.Made))
 	for i, m := range out.Made {
 		madeIDs[i] = m.ID
@@ -203,6 +210,50 @@ func (s *Store) ReplaceAgentTimeDays(connection, author string, entries []TimeEn
 		return out, fmt.Errorf("store: draft time: commit: %w", err)
 	}
 	return out, nil
+}
+
+// MaxDaySeconds is the most time a day's entries not yet logged hold.
+const MaxDaySeconds = 86400
+
+// ErrTimeDayOver is a write that would put the time of a day's entries
+// not yet logged (drafted, sent or unknown) over MaxDaySeconds.
+var ErrTimeDayOver = errors.New("store: the day's entries would hold over 24h")
+
+// TimeDayOverError is ErrTimeDayOver for Day, which would hold Seconds.
+type TimeDayOverError struct {
+	Day     string
+	Seconds int64
+}
+
+func (e *TimeDayOverError) Error() string {
+	return fmt.Sprintf("store: %s would hold %ds of entries not yet logged, over %ds", e.Day, e.Seconds, MaxDaySeconds)
+}
+
+func (e *TimeDayOverError) Is(target error) bool { return target == ErrTimeDayOver }
+
+// dayTotalTx is the time of author's entries not yet logged on day of
+// connection, as the caller's transaction holds them.
+func dayTotalTx(tx *sql.Tx, connection, author, day string) (int64, error) {
+	var total int64
+	if err := tx.QueryRow(`SELECT coalesce(sum(seconds), 0) FROM tracker_time_entries
+ WHERE connection_id = ?1 AND author_id = ?2 AND day = ?3 AND state IN ('drafted', 'sent', 'unknown')`, connection, author, day).Scan(&total); err != nil {
+		return 0, fmt.Errorf("store: the time of %s: %w", day, err)
+	}
+	return total, nil
+}
+
+// checkDayTx fails with a TimeDayOverError when author's entries not yet
+// logged on day of connection hold more than MaxDaySeconds, as the
+// caller's transaction left them.
+func checkDayTx(tx *sql.Tx, connection, author, day string) error {
+	total, err := dayTotalTx(tx, connection, author, day)
+	if err != nil {
+		return err
+	}
+	if total > MaxDaySeconds {
+		return &TimeDayOverError{Day: day, Seconds: total}
+	}
+	return nil
 }
 
 func insertTimeEntryTx(tx *sql.Tx, e TimeEntry) (TimeEntry, error) {
@@ -266,7 +317,7 @@ func (s *Store) TimeEntriesByID(connection string, ids []int64) ([]TimeEntry, er
 }
 
 var timeEntriesByIDSQL = `SELECT ` + timeEntryColumns + ` FROM tracker_time_entries
- WHERE id IN (SELECT value FROM json_each(?2)) AND connection_id = ?1 ORDER BY id`
+ WHERE id IN (SELECT value FROM json_each(?2)) AND +connection_id = ?1 ORDER BY id`
 
 // TimeEntryChange is the person's change of a drafted entry: the members
 // set change, and LeaveOut closes a question with nothing posted. The
@@ -301,8 +352,8 @@ func (e *TimeEntryOpenError) Error() string {
 func (e *TimeEntryOpenError) Is(target error) bool { return target == ErrTimeEntryOpen }
 
 // ErrTimeEntryMergeOver is a question whose merge would put its ticket's
-// entry over a day or its reason over MaxTimeEntryReason.
-var ErrTimeEntryMergeOver = errors.New("store: the merged entry would be over 24h or its reason over 1 KiB")
+// entry's reason over MaxTimeEntryReason.
+var ErrTimeEntryMergeOver = errors.New("store: the merged entry's reason would be over 1 KiB")
 
 // editTimeEntrySQL applies a change to drafted entry ?2 on connection ?1
 // at revision ?3.
@@ -322,8 +373,9 @@ var editTimeEntrySQL = `UPDATE tracker_time_entries SET
 // time is added, its reason ends the entry's as ", plus <reason>", the
 // entry becomes the person's, and the question is deleted. Any other edit
 // onto a ticket with an open entry that day fails with a
-// TimeEntryOpenError, and a merge past a day or MaxTimeEntryReason with
-// ErrTimeEntryMergeOver.
+// TimeEntryOpenError, a merge past MaxTimeEntryReason with
+// ErrTimeEntryMergeOver, and an edit or merge that would put the day's
+// entries not yet logged over MaxDaySeconds with a TimeDayOverError.
 func (s *Store) EditTimeEntry(connection, author string, ref TimeEntryRef, ch TimeEntryChange, now int64) (TimeEntryEdited, bool, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -378,6 +430,9 @@ func (s *Store) EditTimeEntry(connection, author string, ref TimeEntryRef, ch Ti
 			return TimeEntryEdited{}, false, fmt.Errorf("store: edit time entry %d: %w", ref.ID, err)
 		}
 	}
+	if err := checkDayTx(tx, connection, cur.Author, cur.Day); err != nil {
+		return TimeEntryEdited{}, false, err
+	}
 	if err := tx.Commit(); err != nil {
 		return TimeEntryEdited{}, false, fmt.Errorf("store: edit time entry %d: commit: %w", ref.ID, err)
 	}
@@ -394,9 +449,17 @@ func mergeQuestionTx(tx *sql.Tx, q, into TimeEntry, ch TimeEntryChange, now int6
 	if ch.Reason != nil {
 		phrase = *ch.Reason
 	}
+	if seconds+into.Seconds > MaxDaySeconds {
+		// Past the column's bound, which the day's bound covers.
+		total, err := dayTotalTx(tx, q.Connection, q.Author, q.Day)
+		if err != nil {
+			return TimeEntryEdited{}, err
+		}
+		return TimeEntryEdited{}, &TimeDayOverError{Day: q.Day, Seconds: total - q.Seconds + seconds}
+	}
 	seconds += into.Seconds
 	reason := strings.TrimRight(strings.TrimSpace(into.Reason), ".") + ", plus " + strings.TrimSpace(phrase)
-	if seconds > 86400 || len(reason) > MaxTimeEntryReason {
+	if len(reason) > MaxTimeEntryReason {
 		return TimeEntryEdited{}, ErrTimeEntryMergeOver
 	}
 	merged, err := scanTimeEntry(tx.QueryRow(`UPDATE tracker_time_entries SET seconds = `+intParam("?3")+`, reason = ?4,
@@ -458,46 +521,88 @@ func refList(refs []TimeEntryRef) (string, error) {
 }
 
 var markTimeEntriesSentSQL = refRows + `
- UPDATE tracker_time_entries SET state = 'sent', sent_ms = ` + intParam("?3") + `, refusal = '', revision = revision + 1,
- updated_ms = ` + intParam("?3") + `
- WHERE id IN (SELECT id FROM r) AND +connection_id = ?1 AND issue_id <> ''
- AND (state IN ('drafted', 'unknown') OR (state = 'sent' AND sent_ms < ` + intParam("?4") + `)) AND ` + atRefRevision + `
+ UPDATE tracker_time_entries SET state = 'sent', sent_ms = iif(state = 'unknown', sent_ms, ` + intParam("?3") + `), refusal = '',
+ revision = revision + 1, updated_ms = ` + intParam("?3") + `
+ WHERE id IN (SELECT id FROM r) AND +connection_id = ?1 AND issue_id <> '' AND state IN ('drafted', 'unknown') AND ` + atRefRevision + `
  RETURNING ` + timeEntryColumns
 
+var unknownAtRefSQL = refRows + `
+ SELECT id FROM tracker_time_entries WHERE id IN (SELECT id FROM r) AND +connection_id = ?1 AND state = 'unknown' AND ` + atRefRevision
+
+// TimeEntriesMarked is what MarkTimeEntriesSent marked: the entries as
+// stored, and those of them that were unknown, whose post may have
+// happened before.
+type TimeEntriesMarked struct {
+	Entries []TimeEntry
+	Unknown map[int64]bool
+}
+
 // MarkTimeEntriesSent marks the entries refs name on connection, each
-// with a ticket and at its revision, drafted or unknown, or sent before
-// running (sent_ms before running: a post this process did not make), as
-// sent at now, in one statement before anything is sent, and returns
-// those it marked. An entry another post marked since is left out. Which
-// of them a post may send is the caller's rule (trackerapp's
+// with a ticket and drafted or unknown at its revision, as sent at now, in
+// one transaction before anything is sent, and returns those it marked.
+// sent means that this run is sending the entry: nothing else changes or
+// removes it until its settle (SettleTimeEntries), and an earlier run's
+// are unknown before this run reads any (RecoverEarlierTimeSends). An
+// unknown entry keeps the time it was first sent (sent_ms), which a settle
+// that did nothing keeps too. An entry another post marked since is left
+// out. Which of them a post may send is the caller's rule (trackerapp's
 // PostTimeEntries).
-func (s *Store) MarkTimeEntriesSent(connection string, refs []TimeEntryRef, now, running int64) ([]TimeEntry, error) {
+func (s *Store) MarkTimeEntriesSent(connection string, refs []TimeEntryRef, now int64) (TimeEntriesMarked, error) {
 	if now <= 0 {
-		return nil, fmt.Errorf("%w: a mark needs when it is sent", ErrInvalidTimeEntry)
+		return TimeEntriesMarked{}, fmt.Errorf("%w: a mark needs when it is sent", ErrInvalidTimeEntry)
 	}
 	list, err := refList(refs)
 	if err != nil {
-		return nil, err
+		return TimeEntriesMarked{}, err
 	}
-	out, err := scanTimeEntries(s.db.Query(markTimeEntriesSentSQL, connection, list, now, running))
+	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, fmt.Errorf("store: mark time entries sent: %w", err)
+		return TimeEntriesMarked{}, fmt.Errorf("store: mark time entries sent: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	out := TimeEntriesMarked{Unknown: map[int64]bool{}}
+	rows, err := tx.Query(unknownAtRefSQL, connection, list)
+	if err != nil {
+		return TimeEntriesMarked{}, fmt.Errorf("store: mark time entries sent: %w", err)
+	}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return TimeEntriesMarked{}, fmt.Errorf("store: mark time entries sent: %w", err)
+		}
+		out.Unknown[id] = true
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return TimeEntriesMarked{}, fmt.Errorf("store: mark time entries sent: %w", err)
+	}
+	if out.Entries, err = scanTimeEntries(tx.Query(markTimeEntriesSentSQL, connection, list, now)); err != nil {
+		return TimeEntriesMarked{}, fmt.Errorf("store: mark time entries sent: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return TimeEntriesMarked{}, fmt.Errorf("store: mark time entries sent: commit: %w", err)
 	}
 	return out, nil
 }
 
-// TimeEntrySettle is what became of one sent entry.
+// TimeEntrySettle is what became of one entry a run marked sent, at the
+// revision the mark left it.
 type TimeEntrySettle struct {
-	ID int64
-	// State is posted, drafted (refused, or not sent) or unknown.
+	ID       int64
+	Revision int64
+	// State is posted, unknown (the answer was lost), drafted (refused or
+	// not sent, and drafted before the mark), or unknown again for one
+	// refused or not sent that was unknown before it.
 	State     string
 	WorklogID string
 	Refusal   string
 }
 
 // SettleTimeEntries settles each entry of outcomes on connection that is
-// still sent at sentMs, in one transaction, and returns them as stored.
-func (s *Store) SettleTimeEntries(connection string, sentMs int64, outcomes []TimeEntrySettle, now int64) ([]TimeEntry, error) {
+// still sent at the revision its mark left, in one transaction, and
+// returns them as stored. A posted or unknown entry keeps the time it was
+// first sent; a drafted one has none.
+func (s *Store) SettleTimeEntries(connection string, outcomes []TimeEntrySettle, now int64) ([]TimeEntry, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("store: settle time entries: begin: %w", err)
@@ -514,8 +619,8 @@ func (s *Store) SettleTimeEntries(connection string, sentMs int64, outcomes []Ti
  sent_ms = iif(?3 = 'drafted', 0, sent_ms),
  worklog_id = iif(?3 = 'posted', ?4, ''), posted_ms = iif(?3 = 'posted', `+intParam("?6")+`, 0), refusal = ?5,
  revision = revision + 1, updated_ms = `+intParam("?6")+`
- WHERE id = `+intParam("?2")+` AND connection_id = ?1 AND state = 'sent' AND sent_ms = `+intParam("?7")+`
- RETURNING `+timeEntryColumns, connection, o.ID, o.State, o.WorklogID, o.Refusal, now, sentMs))
+ WHERE id = `+intParam("?2")+` AND connection_id = ?1 AND state = 'sent' AND revision = `+intParam("?7")+`
+ RETURNING `+timeEntryColumns, connection, o.ID, o.State, o.WorklogID, o.Refusal, now, o.Revision))
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
@@ -526,6 +631,27 @@ func (s *Store) SettleTimeEntries(connection string, sentMs int64, outcomes []Ti
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("store: settle time entries: commit: %w", err)
+	}
+	return out, nil
+}
+
+// recoverTimeSendsSQL reads the sent entries through the open-entry index
+// (a sent entry has a ticket), so its cost is the entries not yet logged,
+// not the table's settled history.
+var recoverTimeSendsSQL = `UPDATE tracker_time_entries SET state = 'unknown', revision = revision + 1, updated_ms = ` + intParam("?1") + `
+ WHERE state IN ('drafted', 'sent', 'unknown') AND issue_id <> '' AND state = 'sent'
+ RETURNING ` + timeEntryColumns
+
+// RecoverEarlierTimeSends makes every sent entry unknown, at now, and
+// returns them. An entry is sent only while a run sends it, so the caller
+// calls this once per process before it marks any (trackerapp's
+// recoverEarlier): each sent entry it finds is one an earlier process
+// stopped sending before it stored the tracker's answer, whose post may
+// have happened. The time it was sent stays.
+func (s *Store) RecoverEarlierTimeSends(now int64) ([]TimeEntry, error) {
+	out, err := scanTimeEntries(s.db.Query(recoverTimeSendsSQL, now))
+	if err != nil {
+		return nil, fmt.Errorf("store: recover the time entries an earlier process was sending: %w", err)
 	}
 	return out, nil
 }

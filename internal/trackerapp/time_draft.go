@@ -152,6 +152,30 @@ func (s *Service) timeAuthor(id string) (store.TrackerConnection, string, error)
 	return row, row.VerifiedAccountID, nil
 }
 
+// enterTime enters the service for a read or change of time entries
+// that starts no run, once the entries an earlier process was sending are
+// unknown (recoverEarlier). The caller calls leave.
+func (s *Service) enterTime() error {
+	if err := s.enter(); err != nil {
+		return err
+	}
+	if err := s.recoverEarlier(); err != nil {
+		s.leave()
+		return err
+	}
+	return nil
+}
+
+// dayOver is err, a store write refused for the day's 24 hours, as the
+// sentence that says it; ok false for any other error.
+func dayOver(err error) (error, bool) {
+	var over *store.TimeDayOverError
+	if !errors.As(err, &over) {
+		return nil, false
+	}
+	return invalidDraft("%s would hold %s of entries not yet logged; a day holds at most 24h.", over.Day, hoursText(over.Seconds/60)), true
+}
+
 // today is the day it is on this computer.
 func (s *Service) today() string { return s.now().Format(time.DateOnly) }
 
@@ -212,7 +236,7 @@ func (s *Service) checkDraft(in TimeDraftRequest) ([]store.TimeEntry, error) {
 	}
 	today := s.today()
 	out := make([]store.TimeEntry, len(in.Entries))
-	dayMinutes := map[string]int64{}
+	var days []string
 	tickets := map[[2]string]bool{}
 	for i, e := range in.Entries {
 		at := fmt.Sprintf("entries[%d]", i)
@@ -254,19 +278,12 @@ func (s *Service) checkDraft(in TimeDraftRequest) ([]store.TimeEntry, error) {
 		for _, o := range e.Offers {
 			entry.Offers = append(entry.Offers, store.TimeOffer{Issue: o.Issue, Key: o.Key, Title: o.Title})
 		}
-		dayMinutes[e.Day] += minutes
+		if !slices.Contains(days, e.Day) {
+			days = append(days, e.Day)
+		}
 		out[i] = entry
 	}
-	days := make([]string, 0, len(dayMinutes))
-	for d := range dayMinutes {
-		days = append(days, d)
-	}
 	slices.Sort(days)
-	for _, d := range days {
-		if dayMinutes[d] > maxDayMinutes {
-			return nil, invalidDraft("%s holds %s; a day holds at most 24h.", d, hoursText(dayMinutes[d]))
-		}
-	}
 	first, _ := tracker.ParseDate(days[0])
 	last, _ := tracker.ParseDate(days[len(days)-1])
 	if daysBetween(first, last) >= worklogSpan {
@@ -278,10 +295,12 @@ func (s *Service) checkDraft(in TimeDraftRequest) ([]store.TimeEntry, error) {
 // DraftTime replaces the drafted entries in's thread drafted on each day
 // in's entries name, on Jira connection id, with them: the time of the
 // connection's verified account. Other threads' entries and those the
-// person made or changed stay, and so do those sent or posted; a new entry for a ticket that already has one
-// not yet posted that day is skipped. Nothing is sent to the tracker.
+// person made or changed stay, and so do those sent or posted; a new
+// entry for a ticket that already has one not yet posted that day is
+// skipped. A draft that would leave a day's entries not yet logged over
+// 24 hours is refused. Nothing is sent to the tracker.
 func (s *Service) DraftTime(id string, in TimeDraftRequest) (TimeDraftView, error) {
-	if err := s.enter(); err != nil {
+	if err := s.enterTime(); err != nil {
 		return TimeDraftView{}, err
 	}
 	defer s.leave()
@@ -294,6 +313,9 @@ func (s *Service) DraftTime(id string, in TimeDraftRequest) (TimeDraftView, erro
 		return TimeDraftView{}, err
 	}
 	w, err := s.store.ReplaceAgentTimeDays(id, author, entries, millis(s.now()))
+	if over, ok := dayOver(err); ok {
+		return TimeDraftView{}, over
+	}
 	if err != nil {
 		return TimeDraftView{}, fmt.Errorf("trackerapp: draft time on %s: %w", id, err)
 	}
@@ -348,7 +370,7 @@ func (s *Service) timeEntriesChanged(connection, author string, entries []store.
 // ThreadTimeEntries are the entries thread's agent drafted that still
 // exist, on every connection.
 func (s *Service) ThreadTimeEntries(thread string) ([]TimeEntryView, error) {
-	if err := s.enter(); err != nil {
+	if err := s.enterTime(); err != nil {
 		return nil, err
 	}
 	defer s.leave()
@@ -384,9 +406,10 @@ var ErrTimeEntryStale = errors.New("trackerapp: the time entry changed since it 
 // it, and returns it as stored. A question answered with a ticket that
 // has a drafted entry that day is added to that entry, which is returned
 // in its place (store.EditTimeEntry). An entry that is not drafted at
-// ref's revision is refused with ErrTimeEntryStale.
+// ref's revision is refused with ErrTimeEntryStale, and an edit that would
+// leave the day's entries not yet logged over 24 hours as invalid.
 func (s *Service) EditTimeEntry(id string, ref TimeEntryRefView, in TimeEntryEdit) (TimeEntryView, error) {
-	if err := s.enter(); err != nil {
+	if err := s.enterTime(); err != nil {
 		return TimeEntryView{}, err
 	}
 	defer s.leave()
@@ -424,7 +447,10 @@ func (s *Service) EditTimeEntry(id string, ref TimeEntryRefView, in TimeEntryEdi
 	}
 	got, ok, err := s.store.EditTimeEntry(id, author, store.TimeEntryRef{ID: ref.ID, Revision: ref.Revision}, ch, millis(s.now()))
 	var open *store.TimeEntryOpenError
+	over, isOver := dayOver(err)
 	switch {
+	case isOver:
+		return TimeEntryView{}, over
 	case errors.As(err, &open) && open.Open.State == store.TimeEntrySent:
 		return TimeEntryView{}, invalidDraft("%s's entry that day is being posted; try again once it is posted", open.Open.IssueKey)
 	case errors.As(err, &open) && open.Open.State == store.TimeEntryUnknown:
@@ -432,7 +458,7 @@ func (s *Service) EditTimeEntry(id string, ref TimeEntryRefView, in TimeEntryEdi
 	case errors.As(err, &open):
 		return TimeEntryView{}, invalidDraft("%s already has an entry not yet posted that day; change that entry's hours instead", open.Open.IssueKey)
 	case errors.Is(err, store.ErrTimeEntryMergeOver):
-		return TimeEntryView{}, invalidDraft("adding it to %s's entry that day would put that entry over 24h or its reason over 1 KiB; change that entry first", in.Ticket.Key)
+		return TimeEntryView{}, invalidDraft("adding it to %s's entry that day would put that entry's reason over 1 KiB; shorten that entry's reason first", in.Ticket.Key)
 	case err != nil:
 		return TimeEntryView{}, fmt.Errorf("trackerapp: %w", err)
 	case !ok:
@@ -448,9 +474,9 @@ func (s *Service) EditTimeEntry(id string, ref TimeEntryRefView, in TimeEntryEdi
 
 // RemoveTimeEntries deletes the entries refs name on connection id that
 // are drafted, unknown or left out at their revision, and returns those
-// it deleted; an entry being sent or posted stays.
+// it deleted, sending nothing; an entry being sent or posted stays.
 func (s *Service) RemoveTimeEntries(id string, refs []TimeEntryRefView) ([]TimeEntryView, error) {
-	if err := s.enter(); err != nil {
+	if err := s.enterTime(); err != nil {
 		return nil, err
 	}
 	defer s.leave()

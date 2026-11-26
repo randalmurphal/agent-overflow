@@ -12,10 +12,10 @@ import (
 )
 
 // PostTimeRequest is the person's approval of time entries, each as they
-// read it, each named once. Alone is one entry logged by itself; otherwise
-// the request approves a day or the whole draft, and an entry whose
-// ticket and day got time logged since it was drafted is skipped
-// (skipLoggedByHand).
+// read it, each named once. Alone is one entry logged by itself;
+// otherwise the request approves a day or the whole draft, and an entry
+// whose ticket and day got time logged since it was drafted is skipped
+// (loggedSince).
 type PostTimeRequest struct {
 	Entries []TimeEntryRefView `json:"entries"`
 	Alone   bool               `json:"alone,omitempty"`
@@ -41,24 +41,28 @@ type postNote struct {
 	open bool // a question left open
 }
 
-// mayHaveBeenLogged is what a post says of an entry whose post may have
-// happened (uncertain). Only the person settles one: they remove it, or
-// log it alone, which sends it again.
+// mayHaveBeenLogged is what a post says of an unknown entry, whose post
+// may have happened. Only the person settles one: they remove it, or log
+// it alone, which sends it once its day shows no worklog of its ticket
+// made since it was first sent.
 const mayHaveBeenLogged = "may have been logged; check the day, then remove it or log it alone"
 
-// loggedSince is what a day's approval says of an entry skipLoggedByHand
-// skips. A worklog carries its last update, not its creation, so a
-// worklog logged before the draft and changed after it skips the entry
-// too.
-const loggedSince = "was not posted: time on it that day was logged or changed since it was drafted; log it alone to post it"
+// skippedSince is what a day's approval says of a drafted entry whose
+// ticket got time logged that day since it was drafted.
+const skippedSince = "was not posted: time was logged on it that day since it was drafted; log it alone to post it"
 
-// skipLoggedByHand (D4) skips, when a day or the whole draft is approved,
-// an entry whose ticket and day have a worklog logged or changed since the
-// entry was drafted (created_ms, which no edit or settle moves): posting
-// both would log the time twice. Logging the entry alone posts it.
-func skipLoggedByHand(e store.TimeEntry, logs []WorklogView) bool {
+// notSentAgain is what logging alone says of an unknown entry whose
+// ticket got time logged that day since it was first sent, which may be
+// the worklog that send made.
+const notSentAgain = "was not sent again: time was logged on it that day since it was first sent; remove the entry if that worklog is it, or log the time by hand"
+
+// loggedSince reports whether logs, the worklogs of entry e's day, hold
+// one of its ticket created at or after since, less clockSlack. A worklog
+// whose creation time the tracker did not give counts: the check errs
+// toward a skip the person sees over time logged twice.
+func loggedSince(e store.TimeEntry, since int64, logs []tracker.Worklog) bool {
 	for _, w := range logs {
-		if w.Issue == e.IssueID && w.Day == e.Day && w.Updated >= e.CreatedMs-clockSlack {
+		if string(w.Issue) == e.IssueID && w.Day.String() == e.Day && (w.Created.IsZero() || w.Created.UnixMilli() >= since-clockSlack) {
 			return true
 		}
 	}
@@ -66,29 +70,33 @@ func skipLoggedByHand(e store.TimeEntry, logs []WorklogView) bool {
 }
 
 // clockSlack is how far the tracker's clock, which stamps a worklog's
-// update, may be behind this computer's, which stamps an entry, in Unix
-// milliseconds. Tempo stamps whole seconds. The comparison errs toward
-// finding the worklog: a skip the person can see, over time logged twice.
+// creation, may be behind this computer's, which stamps an entry, in Unix
+// milliseconds. Tempo stamps whole seconds.
 const clockSlack = 60_000
 
-// uncertain reports whether entry e's post may have happened: its answer
-// was lost (unknown), or a run before this one marked it sent and never
-// stored the answer.
-func (s *Service) uncertain(e store.TimeEntry) bool {
-	return e.State == store.TimeEntryUnknown || (e.State == store.TimeEntrySent && e.SentMs < s.steadyFrom)
-}
-
 // PostTimeEntries is the one path that sends a draft's time: the
-// person's approval of in.Entries on Jira connection id. It keeps three
-// things true. An entry is reported posted only when the time source
-// answered applied for its worklog. An entry whose post may have happened
-// (uncertain) is sent again only when the person logs it alone; a day's
-// or the whole draft's approval names it and leaves it. Nothing else
-// sends: an entry is sent when it is drafted at the revision the person
-// read, for the connection's verified account, marked sent in one
-// statement after the connection is held and before any request
-// (Service.write). Questions stay open (D8). The answer names every entry
-// as it is after the post and says in words what was not posted.
+// person's approval of in.Entries on Jira connection id. It keeps these
+// true:
+//
+//   - An entry is posted only when the time source answered applied, with
+//     the worklog's ID.
+//   - An entry whose post may have happened (unknown) stays unknown until
+//     the person removes it or it is posted; a day's or the whole draft's
+//     approval names it and sends nothing, and an attempt known to have
+//     done nothing leaves it unknown (store SettleTimeEntries).
+//   - Logging an unknown entry alone sends it only when its day holds no
+//     worklog of its ticket created since it was first sent; a day's
+//     approval sends a drafted entry only when its day holds none created
+//     since it was drafted. A drafted entry logged alone is sent as the
+//     person chose. The check reads the days in the send's own hold, on
+//     the provider and time source that then send (sendTimeEntries).
+//   - Nothing else sends: an entry is sent when it is drafted or unknown
+//     at the revision the person read, for the connection's verified
+//     account, marked sent in one transaction after the connection is held
+//     and before any request (Service.write).
+//
+// Questions stay open (D8). The answer names every entry as it is after
+// the post and says in words what was not posted.
 func (s *Service) PostTimeEntries(ctx context.Context, id string, in PostTimeRequest) (PostTimeView, error) {
 	switch {
 	case len(in.Entries) == 0 || len(in.Entries) > tracker.MaxWorklogInputs:
@@ -103,7 +111,7 @@ func (s *Service) PostTimeEntries(ctx context.Context, id string, in PostTimeReq
 		}
 		ids[i] = ref.ID
 	}
-	if err := s.enter(); err != nil {
+	if err := s.enterTime(); err != nil {
 		return PostTimeView{}, err
 	}
 	_, author, err := s.timeAuthor(id)
@@ -121,7 +129,8 @@ func (s *Service) PostTimeEntries(ctx context.Context, id string, in PostTimeReq
 	for _, e := range read {
 		byID[e.ID] = e
 	}
-	var entries, send []store.TimeEntry
+	var entries []store.TimeEntry
+	var send []timeSend
 	var notes []postNote
 	for _, ref := range in.Entries {
 		e, ok := byID[ref.ID]
@@ -130,45 +139,29 @@ func (s *Service) PostTimeEntries(ctx context.Context, id string, in PostTimeReq
 			continue
 		}
 		entries = append(entries, e)
-		// Logging it alone is the one way an entry whose post may have
-		// happened is sent again: the person chose it at this revision.
-		again := in.Alone && s.uncertain(e)
+		again := in.Alone && e.State == store.TimeEntryUnknown
 		switch {
 		case e.Revision != ref.Revision:
-			notes = append(notes, postNote{e: e, why: s.movedOn(e)})
+			notes = append(notes, postNote{e: e, why: movedOn(e)})
 		case e.IssueID == "" && e.State == store.TimeEntryDrafted:
 			notes = append(notes, postNote{e: e, open: true})
 		case e.State != store.TimeEntryDrafted && !again:
-			notes = append(notes, postNote{e: e, why: s.movedOn(e)})
+			notes = append(notes, postNote{e: e, why: movedOn(e)})
 		case e.Author != author:
 			notes = append(notes, postNote{e: e, why: "was drafted for another account and was not posted"})
+		case again:
+			send = append(send, timeSend{e: e, since: e.SentMs, found: notSentAgain})
+		case in.Alone:
+			send = append(send, timeSend{e: e})
 		default:
-			send = append(send, e)
+			send = append(send, timeSend{e: e, since: e.CreatedMs, found: skippedSince})
 		}
-	}
-	if !in.Alone && len(send) > 0 {
-		logs, failure, err := s.readDays(ctx, id, author, send)
-		if err != nil {
-			return PostTimeView{}, err
-		}
-		var kept []store.TimeEntry
-		for _, e := range send {
-			switch {
-			case failure != "":
-				notes = append(notes, postNote{e: e, why: "was not posted: the day's logged time could not be read to check it (" + failure + "); try again"})
-			case skipLoggedByHand(e, logs):
-				notes = append(notes, postNote{e: e, why: loggedSince})
-			default:
-				kept = append(kept, e)
-			}
-		}
-		send = kept
 	}
 	var applied map[int64]bool
 	var unread []StaleView
 	if len(send) > 0 {
 		var settled []store.TimeEntry
-		settled, applied, notes, unread, err = s.sendTimeEntries(ctx, id, send, notes)
+		settled, applied, notes, unread, err = s.sendTimeEntries(ctx, id, author, send, notes)
 		// Entries a failed post settled changed all the same.
 		s.timeEntriesChanged(id, author, settled)
 		if err != nil {
@@ -186,100 +179,129 @@ func (s *Service) PostTimeEntries(ctx context.Context, id string, in PostTimeReq
 	return postView(entries, now, applied, notes, unread), nil
 }
 
+// timeSend is an entry a post sends unless its day holds a worklog of its
+// ticket created since since (loggedSince), which found then says; since
+// is 0 for an entry sent with no check.
+type timeSend struct {
+	e     store.TimeEntry
+	since int64
+	found string
+}
+
 // movedOn says why entry e, as read now, is not one the approval sends:
-// posted, left out, possibly posted already, being posted in this run, or
-// changed.
-func (s *Service) movedOn(e store.TimeEntry) string {
-	switch {
-	case e.State == store.TimeEntryPosted:
+// posted, left out, possibly posted already, being posted, or changed.
+func movedOn(e store.TimeEntry) string {
+	switch e.State {
+	case store.TimeEntryPosted:
 		return "is logged already"
-	case e.State == store.TimeEntryLeftOut:
+	case store.TimeEntryLeftOut:
 		return "was left out"
-	case s.uncertain(e):
+	case store.TimeEntryUnknown:
 		return mayHaveBeenLogged
-	case e.State == store.TimeEntrySent:
+	case store.TimeEntrySent:
 		return "is being posted from another window"
 	}
 	return "changed since it was read; read the day again"
 }
 
-// readDays refreshes author's worklogs of the days entries cover, at most
-// worklogSpan days a read, and answers them; failure is why a read could
-// not be made.
-func (s *Service) readDays(ctx context.Context, id, author string, entries []store.TimeEntry) ([]WorklogView, string, error) {
-	var days []string
-	for _, e := range entries {
-		if !slices.Contains(days, e.Day) {
-			days = append(days, e.Day)
+// checkedDays reads author's worklogs of the days of sends that are
+// checked (timeSend.since), at most worklogSpan days a read, through the
+// run's provider, and stores them as a refresh does (run.worklogs).
+func (r *run) checkedDays(author string, sends []timeSend) ([]tracker.Worklog, error) {
+	var days []tracker.Date
+	for _, ts := range sends {
+		if ts.since == 0 {
+			continue
 		}
-	}
-	slices.Sort(days)
-	var logs []WorklogView
-	for start := 0; start < len(days); {
-		first, _ := tracker.ParseDate(days[start])
-		end := start
-		for end+1 < len(days) {
-			d, _ := tracker.ParseDate(days[end+1])
-			if daysBetween(first, d) >= worklogSpan {
-				break
-			}
-			end++
-		}
-		got, err := s.RefreshWorklogs(ctx, id, author, days[start], days[end])
+		d, err := tracker.ParseDate(ts.e.Day)
 		if err != nil {
-			return nil, "", err
+			return nil, fmt.Errorf("trackerapp: entry %d: %w", ts.e.ID, err)
 		}
-		if got.Failure != nil {
-			return nil, got.Failure.Message, nil
-		}
-		if got.More {
-			return nil, "the days hold more worklogs than one read answers", nil
-		}
-		logs = append(logs, got.Worklogs...)
-		start = end + 1
+		days = append(days, d)
 	}
-	return logs, "", nil
+	slices.SortFunc(days, tracker.Date.Compare)
+	days = slices.Compact(days)
+	var logs []tracker.Worklog
+	for span := range daySpans(days) {
+		got, err := r.worklogs(tracker.UserID(author), span[0], span[len(span)-1])
+		if err != nil {
+			return nil, err
+		}
+		logs = append(logs, got...)
+	}
+	return logs, nil
 }
 
-// sendTimeEntries marks entries sent once the connection is held, sends
-// those it marked as one batch, settles each with its outcome, and returns
-// the entries it settled, which of them the time source applied, notes for
-// those not posted, and the read-back that failed (WriteView.Stale). A
-// store write that fails after the send fails the post: its entries stay
-// sent, and this run shows them as being posted until the app starts
-// again, when they are uncertain.
-func (s *Service) sendTimeEntries(ctx context.Context, id string, entries []store.TimeEntry, notes []postNote) ([]store.TimeEntry, map[int64]bool, []postNote, []StaleView, error) {
-	refs := make([]store.TimeEntryRef, len(entries))
-	issues := make([]tracker.IssueID, len(entries))
-	for i, e := range entries {
-		refs[i] = store.TimeEntryRef{ID: e.ID, Revision: e.Revision}
-		issues[i] = tracker.IssueID(e.IssueID)
-	}
+// sendTimeEntries sends sends as one batch in one hold of the connection:
+// it reads the days of the checked ones and leaves out each whose day
+// holds a worklog of its ticket made since (loggedSince), marks the rest
+// sent, sends those it marked, and settles each with its outcome. It
+// returns the entries it settled, which of them the time source applied,
+// notes for those not posted, and the read-back that failed
+// (WriteView.Stale). A day that could not be read sends nothing. A store
+// write that fails after the send fails the post: its entries stay sent
+// while this process runs, and the next is told they may have been
+// logged (recoverEarlier).
+func (s *Service) sendTimeEntries(ctx context.Context, id, author string, sends []timeSend, notes []postNote) ([]store.TimeEntry, map[int64]bool, []postNote, []StaleView, error) {
 	applied := map[int64]bool{}
 	var settled []store.TimeEntry
 	var storeErr error
+	notSent := func(err error) tracker.Result {
+		out := tracker.Result{Parts: make([]tracker.Part, len(sends))}
+		for i, ts := range sends {
+			out.Parts[i] = tracker.Part{Issue: tracker.IssueID(ts.e.IssueID), Step: tracker.StepWorklog, Outcome: tracker.NotSent(err)}
+		}
+		return out
+	}
 	view, err := s.write(ctx, id, writeOp{unable: func(p tracker.Provider) error {
 		if p.Time() == nil {
 			return fmt.Errorf("trackerapp: connection %s has no time tracking: %w", id, tracker.ErrUnsupported)
 		}
 		return nil
 	}, call: func(r *run) tracker.Result {
-		at := millis(s.now())
-		marked, err := s.store.MarkTimeEntriesSent(id, refs, at, s.steadyFrom)
+		logs, err := r.checkedDays(author, sends)
+		if err != nil {
+			why := s.staleView(r.row.Kind, nil, err).Failure.Message
+			for _, ts := range sends {
+				notes = append(notes, postNote{e: ts.e, why: "was not posted: the day's logged time could not be read to check it (" + strings.TrimSuffix(why, ".") + "); try again"})
+			}
+			return notSent(err)
+		}
+		var entries []store.TimeEntry
+		var refs []store.TimeEntryRef
+		for _, ts := range sends {
+			if ts.since > 0 && loggedSince(ts.e, ts.since, logs) {
+				notes = append(notes, postNote{e: ts.e, why: ts.found})
+				continue
+			}
+			entries = append(entries, ts.e)
+			refs = append(refs, store.TimeEntryRef{ID: ts.e.ID, Revision: ts.e.Revision})
+		}
+		res := tracker.Result{Parts: []tracker.Part{{Step: tracker.StepWorklog, Outcome: tracker.Applied(), Unchanged: true}}}
+		if len(refs) == 0 {
+			return res
+		}
+		marked, err := s.store.MarkTimeEntriesSent(id, refs, millis(s.now()))
 		if err != nil {
 			storeErr = fmt.Errorf("trackerapp: %w", err)
-			out := tracker.Result{Parts: make([]tracker.Part, len(issues))}
-			for i, is := range issues {
-				out.Parts[i] = tracker.Part{Issue: is, Step: tracker.StepWorklog, Outcome: tracker.NotSent(err)}
-			}
-			return out
+			return notSent(err)
 		}
-		byID := make(map[int64]store.TimeEntry, len(marked))
-		for _, m := range marked {
+		byID := make(map[int64]store.TimeEntry, len(marked.Entries))
+		for _, m := range marked.Entries {
 			byID[m.ID] = m
 		}
-		// The worklogs are sent in the order entries gives them.
 		var settles []store.TimeEntrySettle
+		// An attempt that did nothing leaves the entry as the mark found it:
+		// drafted, or unknown when an earlier send may have logged it.
+		nothing := func(m store.TimeEntry, refusal, why string) {
+			state := store.TimeEntryDrafted
+			if marked.Unknown[m.ID] {
+				state, why = store.TimeEntryUnknown, why+"; its first send may have logged it"
+			}
+			settles = append(settles, store.TimeEntrySettle{ID: m.ID, Revision: m.Revision, State: state, Refusal: refusal})
+			notes = append(notes, postNote{e: m, why: why})
+		}
+		// The worklogs are sent in the order entries gives them.
 		var sending []store.TimeEntry
 		var inputs []tracker.WorklogInput
 		var unmarked []int64
@@ -291,7 +313,7 @@ func (s *Service) sendTimeEntries(ctx context.Context, id string, entries []stor
 			}
 			day, err := tracker.ParseDate(m.Day)
 			if err != nil {
-				settles = append(settles, store.TimeEntrySettle{ID: m.ID, State: store.TimeEntryDrafted, Refusal: err.Error()})
+				nothing(m, err.Error(), "was not sent: "+err.Error())
 				continue
 			}
 			sending = append(sending, m)
@@ -299,7 +321,6 @@ func (s *Service) sendTimeEntries(ctx context.Context, id string, entries []stor
 				Spent: time.Duration(m.Seconds) * time.Second, Description: m.Reason})
 		}
 		notes = append(notes, s.notMarked(id, entries, unmarked)...)
-		res := tracker.Result{Parts: []tracker.Part{{Step: tracker.StepWorklog, Outcome: tracker.Applied(), Unchanged: true}}}
 		if len(inputs) > 0 {
 			res = r.p.Time().AddWorklogs(r.ctx, inputs)
 		}
@@ -314,24 +335,22 @@ func (s *Service) sendTimeEntries(ctx context.Context, id string, entries []stor
 			switch o.State() {
 			case tracker.StateApplied:
 				applied[m.ID] = true
-				settles = append(settles, store.TimeEntrySettle{ID: m.ID, State: store.TimeEntryPosted, WorklogID: string(p.Worklog)})
+				settles = append(settles, store.TimeEntrySettle{ID: m.ID, Revision: m.Revision, State: store.TimeEntryPosted, WorklogID: string(p.Worklog)})
 			case tracker.StateUnknown:
-				settles = append(settles, store.TimeEntrySettle{ID: m.ID, State: store.TimeEntryUnknown})
+				settles = append(settles, store.TimeEntrySettle{ID: m.ID, Revision: m.Revision, State: store.TimeEntryUnknown})
 				notes = append(notes, postNote{e: m, why: mayHaveBeenLogged})
 			case tracker.StateRefused:
 				refusal, _ := o.Refusal()
-				settles = append(settles, store.TimeEntrySettle{ID: m.ID, State: store.TimeEntryDrafted, Refusal: refusal.Message})
-				notes = append(notes, postNote{e: m, why: "was refused: " + refusal.Message})
+				nothing(m, refusal.Message, "was refused: "+refusal.Message)
 			case tracker.StateNotSent:
 				why := "it was not sent"
 				if err := o.Err(); err != nil {
 					why = err.Error()
 				}
-				settles = append(settles, store.TimeEntrySettle{ID: m.ID, State: store.TimeEntryDrafted, Refusal: why})
-				notes = append(notes, postNote{e: m, why: "was not sent: " + why})
+				nothing(m, why, "was not sent: "+why)
 			}
 		}
-		if settled, err = s.store.SettleTimeEntries(id, at, settles, millis(s.now())); err != nil {
+		if settled, err = s.store.SettleTimeEntries(id, settles, millis(s.now())); err != nil {
 			storeErr = fmt.Errorf("trackerapp: settle the posted entries: %w", err)
 		}
 		return res
@@ -358,7 +377,7 @@ func (s *Service) notMarked(id string, entries []store.TimeEntry, ids []int64) [
 		if err != nil {
 			why = "could not be read again: " + err.Error()
 		} else if i := slices.IndexFunc(now, func(x store.TimeEntry) bool { return x.ID == e.ID }); i >= 0 {
-			why = s.movedOn(now[i])
+			why = movedOn(now[i])
 		}
 		notes = append(notes, postNote{e: e, why: why})
 	}

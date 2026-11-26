@@ -63,7 +63,10 @@ type Worklog struct {
 	Day         Date
 	Spent       time.Duration
 	Description string
-	Updated     time.Time
+	// Created is when the worklog was made, zero when the tracker did not
+	// say; Updated is its last change.
+	Created time.Time
+	Updated time.Time
 }
 
 // ErrWorklogNames is matched by the error of a worklog read whose request

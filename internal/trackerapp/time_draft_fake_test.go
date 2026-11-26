@@ -25,14 +25,40 @@ const (
 )
 
 // markGateStore runs gate, once, before the first MarkTimeEntriesSent
-// after it is set.
+// after it is set, and readGate before the first ReadMirrorWorklogDays;
+// settleErr fails the next SettleTimeEntries, as a run that stopped before
+// it stored the tracker's answer leaves its entries.
 type markGateStore struct {
 	*worklogGateStore
-	mu   sync.Mutex
-	gate func()
+	mu        sync.Mutex
+	gate      func()
+	readGate  func()
+	settleErr error
 }
 
-func (g *markGateStore) MarkTimeEntriesSent(connection string, refs []store.TimeEntryRef, now, running int64) ([]store.TimeEntry, error) {
+func (g *markGateStore) ReadMirrorWorklogDays(connection, author, from, to string) (store.MirrorWorklogDays, error) {
+	g.mu.Lock()
+	gate := g.readGate
+	g.readGate = nil
+	g.mu.Unlock()
+	if gate != nil {
+		gate()
+	}
+	return g.worklogGateStore.ReadMirrorWorklogDays(connection, author, from, to)
+}
+
+func (g *markGateStore) SettleTimeEntries(connection string, outcomes []store.TimeEntrySettle, now int64) ([]store.TimeEntry, error) {
+	g.mu.Lock()
+	err := g.settleErr
+	g.settleErr = nil
+	g.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return g.worklogGateStore.SettleTimeEntries(connection, outcomes, now)
+}
+
+func (g *markGateStore) MarkTimeEntriesSent(connection string, refs []store.TimeEntryRef, now int64) (store.TimeEntriesMarked, error) {
 	g.mu.Lock()
 	gate := g.gate
 	g.gate = nil
@@ -40,7 +66,7 @@ func (g *markGateStore) MarkTimeEntriesSent(connection string, refs []store.Time
 	if gate != nil {
 		gate()
 	}
-	return g.worklogGateStore.MarkTimeEntriesSent(connection, refs, now, running)
+	return g.worklogGateStore.MarkTimeEntriesSent(connection, refs, now)
 }
 
 // aheadOfTracker is how far this computer's clock is ahead of the
@@ -70,7 +96,6 @@ func newDraftScenario(t *testing.T, source string) *draftScenario {
 	// the clock slack.
 	s.clock.advance(2 * clockSlack * time.Millisecond)
 	s.svc.now = func() time.Time { return s.clock.Now().Add(aheadOfTracker) }
-	s.svc.steadyFrom = millis(s.svc.now())
 	marks := &markGateStore{worklogGateStore: s.gate}
 	s.svc.store = marks
 	s.verify(s.conn.ID)
@@ -221,7 +246,7 @@ func TestADraftIsRefusedByName(t *testing.T) {
 		{"an offer with a key", []TimeDraftEntry{withOffer}, "entries[0].offer is for an entry with no key."},
 		{"six offers", []TimeDraftEntry{offers}, "entries[0].offer holds at most 5 keys."},
 		{"a ticket twice", []TimeDraftEntry{d.on("WEB-1", 1, "a"), d.on("WEB-1", 2, "b")}, "WEB-1 is drafted twice on " + day + "; give it once with the hours summed."},
-		{"a day over 24h", []TimeDraftEntry{d.on("WEB-1", 13, "a"), d.on("WEB-2", 13, "b")}, day + " holds 26h; a day holds at most 24h."},
+		{"a day over 24h", []TimeDraftEntry{d.on("WEB-1", 13, "a"), d.on("WEB-2", 13, "b")}, day + " would hold 26h of entries not yet logged; a day holds at most 24h."},
 		{"over 31 days", []TimeDraftEntry{question, at(question, func(e *TimeDraftEntry) { e.Day = monthBefore })}, "time_draft covers at most 31 days a call; draft the rest in another call."},
 	} {
 		_, err := d.svc.DraftTime(d.conn.ID, TimeDraftRequest{Thread: "thread-1", Call: "call-1", Entries: tc.entries})
@@ -282,9 +307,9 @@ func TestAnAnsweredQuestionIsAddedToItsTicketsEntry(t *testing.T) {
 		}
 	}
 	refused("moving WEB-3's entry onto WEB-1", web3, "WEB-1", "WEB-1 already has an entry not yet posted that day; change that entry's hours instead")
-	sent := must[[]store.TimeEntry](t)(d.st.MarkTimeEntriesSent(d.conn.ID, []store.TimeEntryRef{{ID: web2.ID, Revision: web2.Revision}}, millis(d.svc.now()), d.svc.steadyFrom))
+	sent := must[store.TimeEntriesMarked](t)(d.st.MarkTimeEntriesSent(d.conn.ID, []store.TimeEntryRef{{ID: web2.ID, Revision: web2.Revision}}, millis(d.svc.now())))
 	refused("answering with WEB-2, being posted", standup, "WEB-2", "WEB-2's entry that day is being posted; try again once it is posted")
-	must[[]store.TimeEntry](t)(d.st.SettleTimeEntries(d.conn.ID, sent[0].SentMs, []store.TimeEntrySettle{{ID: web2.ID, State: store.TimeEntryUnknown}}, millis(d.svc.now())))
+	must[[]store.TimeEntry](t)(d.st.SettleTimeEntries(d.conn.ID, []store.TimeEntrySettle{{ID: web2.ID, Revision: sent.Entries[0].Revision, State: store.TimeEntryUnknown}}, millis(d.svc.now())))
 	refused("answering with WEB-2, maybe logged", standup, "WEB-2", "WEB-2's entry that day may already be logged; post or remove it first")
 	if ev := d.takeEvents(); len(ev) != 0 {
 		t.Fatalf("the refused edits told %+v", ev)
@@ -474,7 +499,6 @@ const mayHave = "may have been logged; check the day, then remove it or log it a
 // day's approval: not after a lost answer whose worklog landed, and not
 // after a dropped request beside a matching worklog logged by hand. The
 // approval names it, its mark stays, and the day's other entries post.
-// Logging it alone sends it once more, as the person chose.
 func TestAnEntryWhosePostMayHaveHappenedIsLeftToThePerson(t *testing.T) {
 	t.Parallel()
 	bothSources(t, func(t *testing.T, d *draftScenario) {
@@ -488,11 +512,6 @@ func TestAnEntryWhosePostMayHaveHappenedIsLeftToThePerson(t *testing.T) {
 		d.posted(t, "the lost answer's day approved", got, posts, "Posted 1 of 2 entries for "+d.label+". WEB-2, 1h, "+mayHave, 1)
 		if e := d.entry(t, lost.ID); e.State != store.TimeEntryUnknown || e.SentMs != lost.SentMs || e.Revision != lost.Revision {
 			t.Fatalf("WEB-2 is %+v after its day's approval; want it as the lost answer left it, %+v", e, lost)
-		}
-		got, posts = d.post(t, true, entryRefs(got.Entries[0])...)
-		d.posted(t, "WEB-2 logged alone", got, posts, "Posted 1 of 1 entries for "+d.label+".", 1)
-		if logs := d.logsOn(t, "WEB-2"); len(logs) != 2 {
-			t.Fatalf("WEB-2's worklogs are %+v; want the one that landed and the one logged alone", logs)
 		}
 
 		// A dropped request, and a worklog the person logged by hand that
@@ -525,28 +544,32 @@ func TestAnEntryWhosePostMayHaveHappenedIsLeftToThePerson(t *testing.T) {
 		if e := d.entry(t, v.Made[0].ID); e.State != store.TimeEntryUnknown || e.WorklogID != "" {
 			t.Fatalf("WEB-1 is %+v; want it unknown, claiming no worklog", e)
 		}
+		// Logging it alone finds the hand log, made since the first send,
+		// and sends nothing: it may be the first send's.
+		got, posts = d.post(t, true, entryRefs(got.Entries...)...)
+		d.posted(t, "the dropped post logged alone beside the hand log", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-1, 15m, "+sentAgain, 0)
 	})
 }
 
-// An entry marked sent by this run is being posted, and nothing sends it
-// again; one marked by a run that ended before its answer was stored is
-// left to the person on the next run's approval, and logging it alone
-// sends it.
-func TestAnEntrySentByAnEarlierRunIsLeftToThePerson(t *testing.T) {
+// An entry this run marked sent is being posted, and nothing sends,
+// changes or removes it.
+func TestAnEntryThisRunIsSendingIsLeftAlone(t *testing.T) {
 	t.Parallel()
 	d := newDraftScenario(t, "jira")
 	v := d.draft(t, d.on("WEB-2", 1, "Reviewed the pull request"))
-	marked := must[[]store.TimeEntry](t)(d.st.MarkTimeEntriesSent(d.conn.ID, []store.TimeEntryRef{{ID: v.Made[0].ID, Revision: v.Made[0].Revision}},
-		millis(d.svc.now()), d.svc.steadyFrom))
-	refs := entryRefs(timeEntryViews(marked)...)
-	got, posts := d.post(t, false, refs...)
-	d.posted(t, "in the same run", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-2, 1h, is being posted from another window.", 0)
-	d.clock.advance(time.Second)
-	d.svc.steadyFrom = millis(d.svc.now())
-	got, posts = d.post(t, false, refs...)
-	d.posted(t, "on the next run", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-2, 1h, "+mayHave, 0)
-	got, posts = d.post(t, true, refs...)
-	d.posted(t, "logged alone on the next run", got, posts, "Posted 1 of 1 entries for "+d.label+".", 1)
+	marked := must[store.TimeEntriesMarked](t)(d.st.MarkTimeEntriesSent(d.conn.ID, []store.TimeEntryRef{{ID: v.Made[0].ID, Revision: v.Made[0].Revision}},
+		millis(d.svc.now())))
+	refs := entryRefs(timeEntryViews(marked.Entries)...)
+	for _, alone := range []bool{false, true} {
+		got, posts := d.post(t, alone, refs...)
+		d.posted(t, "in the same run", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-2, 1h, is being posted from another window.", 0)
+	}
+	if gone := must[[]TimeEntryView](t)(d.svc.RemoveTimeEntries(d.conn.ID, refs)); len(gone) != 0 {
+		t.Fatalf("a remove of the entry being sent removed %+v", gone)
+	}
+	if e := d.entry(t, v.Made[0].ID); e.State != store.TimeEntrySent {
+		t.Fatalf("WEB-2 is %+v; want it sent", e)
+	}
 }
 
 // A post names each entry once and logs alone exactly one: a repeated
@@ -608,8 +631,8 @@ func TestAPostNamesOnlyWorklogDaysAsNotReadBack(t *testing.T) {
 	}
 }
 
-// skippedSince is what a day's approval says of an entry it skips (D4).
-const skippedSince = "was not posted: time on it that day was logged or changed since it was drafted; log it alone to post it."
+// skippedNote is what a day's approval says of an entry it skips (D4).
+const skippedNote = "was not posted: time was logged on it that day since it was drafted; log it alone to post it."
 
 // D4: approving a day skips an entry whose ticket and day got time logged
 // by hand since it was drafted, and says so; logging the entry alone
@@ -623,7 +646,7 @@ func TestApprovingADaySkipsTimeLoggedByHand(t *testing.T) {
 		must[WriteView](t)(d.svc.AddWorklog(t.Context(), d.conn.ID, WorklogRequest{Issue: "10102", Day: d.day, SpentSeconds: 900, Description: "Standup about it"}))
 		got, posts := d.post(t, false, entryRefs(v.Made...)...)
 		d.posted(t, "the day", got, posts, "Posted 1 of 2 entries for "+d.label+
-			". WEB-2, 1h, "+skippedSince, 1)
+			". WEB-2, 1h, "+skippedNote, 1)
 		got, posts = d.post(t, true, entryRefs(got.Entries[0])...)
 		d.posted(t, "WEB-2 alone", got, posts, "Posted 1 of 1 entries for "+d.label+".", 1)
 
@@ -635,7 +658,7 @@ func TestApprovingADaySkipsTimeLoggedByHand(t *testing.T) {
 		reason := "Planned the sprint with the team"
 		edited := must[TimeEntryView](t)(d.svc.EditTimeEntry(d.conn.ID, entryRefs(w.Made[0])[0], TimeEntryEdit{Reason: &reason}))
 		got, posts = d.post(t, false, entryRefs(edited)...)
-		d.posted(t, "the edited entry's day", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-1, 30m, "+skippedSince, 0)
+		d.posted(t, "the edited entry's day", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-1, 30m, "+skippedNote, 0)
 	})
 }
 
