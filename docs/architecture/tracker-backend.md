@@ -2321,7 +2321,9 @@ reads the issue's project with the comment, as before.
 holds the tickets' cards and rows) and warm (the agent read the tickets
 first), pinned by `TestTrackerToolRequestCounts`
 (`internal/app/app_tracker_tools_costs_test.go`), every request of the
-call included, its refresh too. A call of three tickets waits for the
+call included, its refresh too. A pin holds the writes in the order they
+are sent and counts the reads between two writes, which a call makes
+for several tickets at once. A call of three tickets waits for the
 person and reads its cards again after the approval when it sets
 anything; a call of one does not. A Jira comment's lookup is one more
 read, just before the comments.
@@ -2343,7 +2345,8 @@ planned on the cards, which keep no read, so the move reads its moves.
 An estimate reads the board's rows first to check the ticket is on the
 board, so it costs two requests per ticket. A create costs 5 on Jira
 (the types, the create screen, the create, the match and the refresh) and
-2 on Linear; a create that also sets the status and the sprint costs 12
+2 on Linear; a second create within the minute the client keeps a create
+screen costs 4 on Jira; a create that also sets the status and the sprint costs 12
 and 6. A read costs 2 on Jira (the issue and its comments) and 1 on
 Linear; the same read again costs 1 on each. A find costs one search on
 each connection.
