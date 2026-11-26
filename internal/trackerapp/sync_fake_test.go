@@ -386,4 +386,24 @@ func TestFakeLinearScenario(t *testing.T) {
 	if err != nil || strings.TrimSpace(d.Description) != "Login fails" || d.Card.Status.Name != "Done" {
 		t.Fatalf("detail %+v, %v", d, err)
 	}
+
+	// A ticket made in a cycle lands at the cycle's foot, after the last
+	// row the mirror holds of it, where Linear's default would put it
+	// above every issue of the team; one request makes it.
+	before := len(s.e.Requests(0).Requests)
+	made, err := s.svc.Create(t.Context(), conn.ID, CreateRequest{Board: lid(10), Project: lid(10), Title: "Foot page", Sprint: lid(31)})
+	if err != nil || made.Created == "" {
+		t.Fatalf("create %+v, %v", made, err)
+	}
+	var sent []string
+	for _, r := range s.e.Requests(before).Requests {
+		sent = append(sent, r.Route)
+	}
+	if !slices.Equal(sent, []string{"CreateIssue", "Issues"}) {
+		t.Fatalf("requests %v; want the create and its row's read", sent)
+	}
+	v = must[BoardView](t)(s.svc.Board(scope, StatusGroups{}, []Section{{Kind: SectionSprint, Sprint: lid(31)}}))
+	if rows := v.Sections[0].Rows; len(rows) != 2 || rows[0].Card.ID != lid(60) || rows[1].Card.ID != made.Created {
+		t.Fatalf("the cycle's rows %+v", rows)
+	}
 }

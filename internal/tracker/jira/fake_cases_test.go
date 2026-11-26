@@ -382,6 +382,11 @@ var issueCases = map[string]func(t *testing.T, f *fakeEnv){
 // and of worklogs.
 var boardCases = map[string]func(t *testing.T, f *fakeEnv){
 	"Board": func(t *testing.T, f *fakeEnv) { got(f.c.Board(f.ctx, 1)).must(t) },
+	"BoardProjects": func(t *testing.T, f *fakeEnv) {
+		if ps := got(f.c.BoardProjects(f.ctx, 1)).must(t); len(ps) != 1 || ps[0].Key != "WEB" || ps[0].Name != "Web" {
+			t.Fatalf("board projects %+v", ps)
+		}
+	},
 	"BoardConfig": func(t *testing.T, f *fakeEnv) {
 		cfg := got(f.c.BoardConfig(f.ctx, 1)).must(t)
 		if cfg.Estimation.FieldID != "customfield_10016" || len(cfg.Columns) != 3 {

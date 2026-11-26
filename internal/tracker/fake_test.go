@@ -49,7 +49,7 @@ func (fakeProvider) Moves(context.Context, IssueID) ([]Move, error)         { re
 func (fakeProvider) Comments(context.Context, IssueID, PageToken) (CommentPage, error) {
 	return CommentPage{}, nil
 }
-func (fakeProvider) CreateFields(context.Context, ProjectID, IssueTypeID) ([]Field, error) {
+func (fakeProvider) CreateFields(context.Context, ProjectID, IssueTypeID) ([]CreateField, error) {
 	return nil, nil
 }
 func (fakeProvider) AssignableUsers(context.Context, FieldScope, string) (UserList, error) {

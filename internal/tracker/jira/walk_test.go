@@ -144,6 +144,17 @@ var walkCases = map[string]walkCase{
 			return ids(l.Projects, func(p Project) string { return p.ID }), err
 		}, "201,202",
 	},
+	"BoardProjects": {
+		func(s *walkSite) {
+			s.route("GET", "/rest/agile/1.0/board/3/project", offsetPaged(func(u string, n int) string {
+				return fmt.Sprintf(`{"id":"%d","key":"P%d","name":"P"}`, uid(u, n), uid(u, n))
+			}))
+		},
+		func(ctx context.Context, c *Client) (string, error) {
+			l, err := c.BoardProjects(ctx, 3)
+			return ids(l, func(p Project) string { return p.ID }), err
+		}, "201,202",
+	},
 	"Priorities": {
 		func(s *walkSite) {
 			s.route("GET", "/rest/api/3/priority/search", offsetPaged(func(u string, n int) string {

@@ -304,6 +304,40 @@ func readMirrorSectionTx(tx sqlQueryer, rootID int64, boardID string, board mirr
 	return page, nil
 }
 
+// mirrorLastPlanRowSQL reads the last row, in the board's order, of
+// board ?2 of root ?1 in sprint ?5 (mirrorLastSprintRowSQL) or in no open
+// sprint of the board (mirrorLastBacklogRowSQL), a superset of the
+// backlog under any regrouping. Each walks idx_tracker_cache_board_issues_order
+// backwards from the board's end to the first row that holds the rule,
+// with the rule in the form its section's page uses.
+var (
+	mirrorLastPlanRowSQL = `SELECT b.issue_id, b.order_key FROM tracker_cache_board_issues b
+	 WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND ` + mirrorBoardShown(intParam("?1"), "?2") + ` AND `
+	mirrorLastSprintRowSQL  = mirrorLastPlanRowSQL + mirrorInSprintMembersSQL + ` ORDER BY b.order_key DESC, b.issue_id DESC LIMIT 1`
+	mirrorLastBacklogRowSQL = mirrorLastPlanRowSQL + `NOT ` + mirrorInOpenSprintProbeSQL + ` ORDER BY b.order_key DESC, b.issue_id DESC LIMIT 1`
+)
+
+// LastMirrorPlanRow is the last row, in the board's order, of a board the
+// mirror shows in sprint sprintID, or in no open sprint of the board when
+// sprintID is empty: what a ticket made at that section's foot lands
+// after. ok is false when there is none.
+func (s *Store) LastMirrorPlanRow(rootID int64, boardID, sprintID string) (issueID, orderKey string, ok bool, err error) {
+	query, args := mirrorLastBacklogRowSQL, []any{rootID, boardID}
+	if sprintID != "" {
+		query, args = mirrorLastSprintRowSQL, []any{rootID, boardID, nil, nil, sprintID}
+	}
+	label := fmt.Sprintf("read the last row of tracker mirror %d board %s section %q", rootID, boardID, sprintID)
+	row, err := mirrorReadSnapshot(s, label, func(tx sqlQueryer) (MirrorRowKey, error) {
+		var row MirrorRowKey
+		err := tx.QueryRow(query, args...).Scan(&row.IssueID, &row.OrderKey)
+		if errors.Is(err, sql.ErrNoRows) {
+			return MirrorRowKey{}, nil
+		}
+		return row, err
+	})
+	return row.IssueID, row.OrderKey, row.IssueID != "", err
+}
+
 // MirrorSectionTotal is how many rows a section holds, the sum of the
 // board's estimates of them and how many of them have none; a row with no
 // estimate, or one read no later than the board's estimate definition last

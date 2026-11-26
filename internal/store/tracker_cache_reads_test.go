@@ -98,6 +98,40 @@ func TestListMirrorSectionSelectsItsRows(t *testing.T) {
 	}
 }
 
+// A section's last row is its last in the board's order: of a sprint's
+// members, or of the rows in no open sprint (the backlog, rows of a
+// closed sprint and done rows among them), and none for an empty section
+// or a board the mirror does not show.
+func TestLastMirrorPlanRow(t *testing.T) {
+	t.Parallel()
+	s, jira, root := newMirror(t)
+	writeMirrorBoard(t, s, root, "10", []MirrorRow{
+		webRow("10001", 5, "a", "21"),
+		webRow("10002", 5, "b"),
+		webRow("10003", 5, "c", "21"),
+		webRow("10004", 5, "d", "20"),
+		webRow("10005", 5, "e", "22"),
+	})
+	for _, tc := range []struct {
+		sprint, issue, order string
+		ok                   bool
+	}{
+		{"21", "10003", "c", true},
+		{"22", "10005", "e", true},
+		{"", "10004", "d", true},
+		{"99", "", "", false},
+	} {
+		issue, order, ok, err := s.LastMirrorPlanRow(root, "10", tc.sprint)
+		if err != nil || issue != tc.issue || order != tc.order || ok != tc.ok {
+			t.Errorf("sprint %q: %s %s %v, %v; want %s %s %v", tc.sprint, issue, order, ok, err, tc.issue, tc.order, tc.ok)
+		}
+	}
+	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "11")
+	if issue, _, ok, err := s.LastMirrorPlanRow(root, "10", ""); err != nil || ok {
+		t.Fatalf("an unshown board's backlog: %s %v, %v", issue, ok, err)
+	}
+}
+
 // The backlog follows the group its own mirror holds for a status: a
 // status moved to done by a structure read leaves it, page and count
 // alike. A board that plans no sprints has every row not done in its

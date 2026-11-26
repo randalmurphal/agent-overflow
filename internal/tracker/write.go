@@ -28,6 +28,17 @@ type CreateInput struct {
 	ImageDir string
 	Board    BoardID
 	Sprint   SprintID
+	// After is the row of Board the issue lands just after: its section's
+	// last, as the caller holds it; zero for the tracker's default. A
+	// tracker whose new issues land last already (Jira) needs none.
+	After RowPlace
+}
+
+// RowPlace is a row of a board: its issue, and its place in the board's
+// order as last read.
+type RowPlace struct {
+	Issue IssueID
+	Order OrderKey
 }
 
 // Check refuses a create with no project or title, a sprint with no
@@ -39,6 +50,9 @@ func (in CreateInput) Check() error {
 	}
 	if in.Sprint != "" && in.Board == "" {
 		return invalidf("a create in a sprint names the sprint's board")
+	}
+	if (in.After.Issue == "") != (in.After.Order == "") || in.After.Issue != "" && in.Board == "" {
+		return invalidf("a create after a row names the row's issue, its order and its board")
 	}
 	if err := checkEdits(in.Fields); err != nil {
 		return err

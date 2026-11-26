@@ -240,6 +240,12 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 			return err
 		})
 	}
+	for _, sprint := range []string{"21", ""} {
+		reads = append(reads, func() error {
+			_, _, _, err := s.LastMirrorPlanRow(root, "10", sprint)
+			return err
+		})
+	}
 	for i, read := range reads {
 		if err := read(); err != nil {
 			t.Fatalf("read %d: %v", i, err)
@@ -424,6 +430,15 @@ func TestMirrorReadsUseTheirIndexes(t *testing.T) {
 		if !strings.Contains(plan, "idx_tracker_cache_board_issues_order (root_id=? AND board_id=? AND (order_key,issue_id)>(?,?))") ||
 			strings.Contains(plan, "TEMP B-TREE") {
 			t.Errorf("section %d plan:\n%s\nwant a range of idx_tracker_cache_board_issues_order and no sort", kind, plan)
+		}
+	}
+	// A section's foot walks the board's order back from its end, so it
+	// costs the rows after the section's last, not the section.
+	for name, query := range map[string]string{"sprint foot": mirrorLastSprintRowSQL, "backlog foot": mirrorLastBacklogRowSQL} {
+		plan := explainMirror(t, s, query)
+		if !strings.Contains(plan, "SEARCH b USING COVERING INDEX idx_tracker_cache_board_issues_order (root_id=? AND board_id=?)") ||
+			strings.Contains(plan, "TEMP B-TREE") {
+			t.Errorf("%s plan:\n%s\nwant a walk of idx_tracker_cache_board_issues_order and no sort", name, plan)
 		}
 	}
 	for name, read := range map[string]struct{ query, index string }{

@@ -29,7 +29,7 @@ var createSkipped = []string{jiraSummary, "project", jiraIssueType}
 // CreateFields are the create screen's fields in project for issueType,
 // besides the title, the project, the type and the sprint and rank fields
 // (MoveToSprint and Rank place a new issue).
-func (p *Provider) CreateFields(ctx context.Context, project tracker.ProjectID, issueType tracker.IssueTypeID) ([]tracker.Field, error) {
+func (p *Provider) CreateFields(ctx context.Context, project tracker.ProjectID, issueType tracker.IssueTypeID) ([]tracker.CreateField, error) {
 	screen, err := p.screen(ctx, tracker.OnCreate(project, issueType))
 	if err != nil {
 		return nil, err
@@ -38,12 +38,12 @@ func (p *Provider) CreateFields(ctx context.Context, project tracker.ProjectID, 
 	if err != nil {
 		return nil, err
 	}
-	var out []tracker.Field
+	var out []tracker.CreateField
 	for _, f := range screen.Fields {
 		if slices.Contains(createSkipped, f.ID) || f.ID == s.sprint || f.Schema.Custom == rankType {
 			continue
 		}
-		fd := metaField(f)
+		fd := tracker.CreateField{Field: metaField(f)}
 		if fd.Kind == tracker.KindOption {
 			for _, a := range f.Allowed {
 				if !a.Disabled {

@@ -67,8 +67,12 @@ type Field struct {
 	Required bool
 	Editable bool
 	Value    Value
-	// Allowed are the values a create screen lists for the field, in its
-	// order, when it lists them; nil otherwise, and on every other read.
+}
+
+// CreateField is a field a create screen offers, with the values the
+// screen lists for it, in its order, when it lists them (nil otherwise).
+type CreateField struct {
+	Field
 	Allowed []Choice
 }
 

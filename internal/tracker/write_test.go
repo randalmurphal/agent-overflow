@@ -32,8 +32,12 @@ func TestInputChecks(t *testing.T) {
 			"rich text base": CreateInput{Project: "p", Title: "T", Fields: []FieldEdit{{Field: FieldDescription, Value: MarkdownEdit("x", "old")}}},
 			"field twice":    CreateInput{Project: "p", Title: "T", Fields: append(title, title...)},
 			"sprint alone":   CreateInput{Project: "p", Title: "T", Sprint: "s"},
+			"after alone":    CreateInput{Project: "p", Title: "T", After: RowPlace{Issue: "i", Order: "o"}},
+			"after no order": CreateInput{Project: "p", Title: "T", Board: "b", After: RowPlace{Issue: "i"}},
+			"after no issue": CreateInput{Project: "p", Title: "T", Board: "b", After: RowPlace{Order: "o"}},
 		}},
 		{CreateInput{Project: "p", Title: "T", Board: "b", Sprint: "s"}, nil},
+		{CreateInput{Project: "p", Title: "T", Board: "b", After: RowPlace{Issue: "i", Order: "o"}}, nil},
 		{EditInput{Issue: "i", Fields: title}, map[string]checker{
 			"no issue":  EditInput{Fields: title},
 			"no fields": EditInput{Issue: "i"},

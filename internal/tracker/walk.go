@@ -102,8 +102,8 @@ func (o oneCredential) Moves(ctx context.Context, issue IssueID) ([]Move, error)
 	return trackerapi.Walk(ctx, func(ctx context.Context) ([]Move, error) { return o.p.Moves(ctx, issue) })
 }
 
-func (o oneCredential) CreateFields(ctx context.Context, project ProjectID, issueType IssueTypeID) ([]Field, error) {
-	return trackerapi.Walk(ctx, func(ctx context.Context) ([]Field, error) { return o.p.CreateFields(ctx, project, issueType) })
+func (o oneCredential) CreateFields(ctx context.Context, project ProjectID, issueType IssueTypeID) ([]CreateField, error) {
+	return trackerapi.Walk(ctx, func(ctx context.Context) ([]CreateField, error) { return o.p.CreateFields(ctx, project, issueType) })
 }
 
 func (o oneCredential) AssignableUsers(ctx context.Context, scope FieldScope, text string) (UserList, error) {

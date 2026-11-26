@@ -82,7 +82,7 @@ func stepParts(issue tracker.IssueID, step tracker.Step, stored []jira.Attachmen
 // sprint is checked as an open sprint of the board before the create, so
 // a create refused for its sprint makes nothing; the move is a separate
 // write after it, its part the client's outcome, and a new issue ranks
-// last, so it lands at the sprint's foot.
+// last, so it lands at its section's foot without in.After.
 func (p *Provider) Create(ctx context.Context, in tracker.CreateInput) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepCreate, err)

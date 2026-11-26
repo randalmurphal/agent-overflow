@@ -592,10 +592,23 @@ func (sd shownDetail) view(mirrored catalogNames, row store.TrackerConnection) D
 func fieldViews(fields []tracker.Field) []FieldView {
 	out := make([]FieldView, 0, len(fields))
 	for _, f := range fields {
-		v := FieldView{
-			ID: string(f.ID), Name: f.Name, Kind: f.Kind.String(), List: f.List, Required: f.Required, Editable: f.Editable,
-			Value: fieldValueView(f.Value),
-		}
+		out = append(out, fieldView(f))
+	}
+	return out
+}
+
+func fieldView(f tracker.Field) FieldView {
+	return FieldView{
+		ID: string(f.ID), Name: f.Name, Kind: f.Kind.String(), List: f.List, Required: f.Required, Editable: f.Editable,
+		Value: fieldValueView(f.Value),
+	}
+}
+
+// createFieldViews are a create screen's fields with the values it lists.
+func createFieldViews(fields []tracker.CreateField) []FieldView {
+	out := make([]FieldView, 0, len(fields))
+	for _, f := range fields {
+		v := fieldView(f.Field)
 		for _, c := range f.Allowed {
 			v.Allowed = append(v.Allowed, ChoiceView{ID: c.ID, Name: c.Name})
 		}
