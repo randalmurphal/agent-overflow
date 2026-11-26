@@ -388,6 +388,7 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
     test.setTimeout(150_000);
     const instanceType = 'oAuth-gitlab-jira-connect-gitlab.com';
     const { repo } = await searchProject(harness, compact ? 'compact-work-devdata' : 'work-devdata', GITLAB_SEARCH_PULLS, 'gitlab', (repo) => ({
+      projects: [], boards: [],
       devPullRequests: [
         // The forge finds 702 too; 703's key was only in its branch, which is gone.
         { instanceType, id: `${repo}!702`, name: 'Fix the cursor', url: `https://gitlab.com/${repo}/-/merge_requests/702`, status: 'MERGED', author: 'Bob Li', branch: 'feature/web-1-cursor' },
@@ -430,6 +431,7 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
       "Jira's development data could not be read (rest/dev-status/latest/issue/summary): Jira refused access (HTTP 403): the token may not make this request.", { timeout: 30_000 });
     await expect.poll(gitlabRows).toEqual(['!701 open', '!702 merged']);
     await expect(work.getByTestId('ticket-work-branch')).toHaveCount(2);
+    await expect(work.getByTestId('ticket-work-searching')).toHaveCount(0);
   });
 
   test('a Jira ticket no forge integration links a pull request to costs the development data one request, and says nothing', async ({ harness, page }) => {
@@ -438,11 +440,15 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
     const before = (await harness.rpc<{ requests: Array<{ seq: number }> }>('HarnessTrackerRequests', 0)).requests.at(-1)?.seq ?? 0;
     await harness.open(page);
     const { work } = await openWork(page, WEB1, compact);
-    await expect.poll(async () => (await pullRows(work)).filter((row) => row.startsWith('!')), { timeout: 30_000 }).toEqual(['!701 open', '!702 merged']);
+    const routes = async () => (await harness.rpc<{ requests: Array<{ route?: string }> }>('HarnessTrackerRequests', before)).requests.map((r) => r.route ?? 'unhandled');
+    await expect.poll(async () => (await routes()).filter((r) => r.startsWith('GET rest/dev-status/')).length, { timeout: 30_000 }).toBeGreaterThan(0);
+    await expect(work.getByTestId('ticket-work-pull').filter({ hasText: 'Fix the cursor' })).toBeVisible({ timeout: 30_000 });
+    await expect(work.getByTestId('ticket-work-searching')).toHaveCount(0);
+    expect((await routes()).filter((r) => r.startsWith('GET rest/dev-status/')), (await routes()).join(', ')).toEqual(['GET rest/dev-status/latest/issue/summary']);
     await expect(work.getByTestId('ticket-work-searching')).toHaveCount(0);
     await expect(work.getByTestId('ticket-work-development-problem')).toHaveCount(0);
     await expect(work.getByTestId('ticket-work-development-unlisted')).toHaveCount(0);
-    const asked = (await harness.rpc<{ requests: Array<{ route?: string }> }>('HarnessTrackerRequests', before)).requests.map((r) => r.route ?? 'unhandled');
+    const asked = await routes();
     expect(asked.filter((r) => r.startsWith('GET rest/dev-status/'))).toEqual(['GET rest/dev-status/latest/issue/summary']);
     test.info().annotations.push({ type: 'work-open-tracker-requests', description: `without development data: ${asked.join(', ')}` });
   });
