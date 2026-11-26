@@ -183,6 +183,9 @@ interface Live {
 export interface TicketTracker {
   /** Its connection's tracker: jira or linear. */
   readonly kind: string;
+  /** Its connection's site, as the connection's row holds it (a Jira
+   * site's origin, a Linear workspace). */
+  readonly site: string;
   /** The person's account on the connection; null when the answer named
    * none, as when no verification recorded one. */
   readonly account: string | null;
@@ -219,6 +222,8 @@ const earlierByKey = new Map<string, HeldPages>();
 // Each held ticket's tracker. What must keep true:
 // - Not answered yet (no record) and answered with no account (`account`
 //   null) are different states: only an answer says there is no account.
+// - `kind` and `site` are the connection's, fixed for its life: set by the
+//   subscribe's answer and held through a re-subscribe like the account.
 // - What an answer for this open ticket gave (the subscribe's, or a read's
 //   account) holds until a later answer says otherwise. A re-subscribe
 //   (a reconnect, a subscription the computer lost) keeps it and marks it
@@ -302,7 +307,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
   live.id = id;
   live.seq = answer.seq;
   live.state = { ...live.state, ...viewState(answer) };
-  trackers.set(key, { kind: answer.kind, account: answer.account || null, confirmed: true });
+  trackers.set(key, { kind: answer.kind, site: answer.site, account: answer.account || null, confirmed: true });
   const early = live.joining ?? [];
   live.joining = null;
   for (const event of early) fold(live, event);

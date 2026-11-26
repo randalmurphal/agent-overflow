@@ -84,7 +84,7 @@ async function mountBoard(view: BoardView = board()): Promise<HTMLElement> {
     props: {
       boardKey: held.key, boardRef: REF, get held() { return held.current!.held!; }, paging: new Set<string>(), sectionErrors: new Map(),
       filter: { mine: null, words: [] }, hidden: new Set<CardField>() as ReadonlySet<CardField>, compact: false, shown: true,
-      openIssue: null, typed: true, onOpenCard: () => {}, onMoveWithFields: () => {},
+      openIssue: null, typed: true, onOpenCard: () => {}, onMoveWithFields: () => {}, ticketProject: () => null, onStartWork: () => {},
     },
   });
   mounted.push({ app, host });
@@ -363,7 +363,7 @@ describe('a drop whose move is being looked up', () => {
         props: {
           get boardKey() { return at().key; }, get boardRef() { return showing.get('board') === 0 ? REF : REF2; }, get held() { return at().current!.held!; },
           paging: new Set<string>(), sectionErrors: new Map(), filter: { mine: null, words: [] }, hidden: new Set<CardField>() as ReadonlySet<CardField>,
-          compact: false, shown: true, openIssue: null, typed: true, onOpenCard: () => {}, onMoveWithFields: () => {},
+          compact: false, shown: true, openIssue: null, typed: true, onOpenCard: () => {}, onMoveWithFields: () => {}, ticketProject: () => null, onStartWork: () => {},
         },
       });
       mounted.push({ app, host });

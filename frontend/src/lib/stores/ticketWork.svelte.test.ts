@@ -60,7 +60,7 @@ let seq = 10;
 async function openTicket() {
   held = detail({ id: 's1', name: 'To Do' });
   seq = 10;
-  setBindingMock('SubscribeTrackerTicket', async () => ({ id: 'sub-1', seq, poll_every: 10_000, loaded: true, detail: held, read_at: 100 } as TicketSubscription));
+  setBindingMock('SubscribeTrackerTicket', async () => ({ id: 'sub-1', seq, poll_every: 10_000, kind: 'jira', site: 'https://example.atlassian.net', loaded: true, detail: held, read_at: 100 } as TicketSubscription));
   setBindingMock('TrackerTicket', async () => ({ loaded: true, detail: held, read_at: 200 } as TicketView));
   setBindingMock('SetTrackerSubscriptionVisible', async () => {});
   setBindingMock('ReleaseTrackerSubscription', async () => {});

@@ -63,11 +63,10 @@ const WORK = {
 async function mountWork(opts: { backend?: string; first?: DetailView | null; work?: () => Promise<unknown>; archived?: boolean; shown?: () => boolean } = {}) {
   const backend = opts.backend ?? HOME_BACKEND;
   const first = opts.first === undefined ? DETAIL : opts.first;
-  setBindingMock('SubscribeTrackerTicket', async () => ({ id: 'sub-1', seq: 1, poll_every: 10_000, loaded: first !== null, detail: first ?? undefined, read_at: first ? 1 : 0 } as TicketSubscription));
+  setBindingMock('SubscribeTrackerTicket', async () => ({ id: 'sub-1', seq: 1, poll_every: 10_000, kind: 'jira', site: SITE, loaded: first !== null, detail: first ?? undefined, read_at: first ? 1 : 0 } as TicketSubscription));
   setBindingMock('TrackerTicket', async () => ({ loaded: true, detail: DETAIL, read_at: 2 } as TicketView));
   setBindingMock('SetTrackerSubscriptionVisible', async () => {});
   setBindingMock('ReleaseTrackerSubscription', async () => {});
-  setBindingMock('TrackerConnections', async () => [{ id: 'c1', kind: 'jira', site: SITE, label: 'Work', enabled: true, account: 'User 1' }]);
   const reads = setBindingMock('GetTicketWork', opts.work ?? (async () => WORK));
   noteProject('p1', backend);
   addProjectLocal({ id: 'p1', path: '/tmp/widgets', name: 'widgets', archived: opts.archived ?? false } as never);
@@ -78,7 +77,7 @@ async function mountWork(opts: { backend?: string; first?: DetailView | null; wo
   await settle();
   // The ticket screen Work is under, shown unless the test says.
   const view = render(TicketWork, {
-    props: { attachment: ticket, project: 'p1', onProject: () => {}, me: 'acc-1' },
+    props: { attachment: ticket, project: 'p1', onProject: () => {}, me: 'acc-1', startWorkAsked: false, onStartWorkTaken: () => {} },
     context: ticketWriteSurfaceContext(opts.shown ?? (() => true)),
   });
   await settle();
@@ -92,9 +91,11 @@ function formOf(): HTMLElement {
 }
 
 describe('Work', () => {
-  it('lists the threads linked to the ticket and what its computer found', async () => {
+  it('lists the threads linked to the ticket by the tracker its subscription named, and what its computer found, reading no connections', async () => {
+    const connections = setBindingMock('TrackerConnections', async () => []);
     const view = await mountWork();
     await waitFor(() => expect(view.getAllByTestId('ticket-work-thread').map((r) => r.dataset.thread)).toEqual(['t-linked']));
+    expect(connections).not.toHaveBeenCalled();
     const pull = view.getByTestId('ticket-work-pull');
     expect(pull.textContent).toContain('#5');
     expect(pull.textContent).toContain('WEB-1 Retry cursor');

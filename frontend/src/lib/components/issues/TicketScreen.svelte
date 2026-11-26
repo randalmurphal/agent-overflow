@@ -155,6 +155,10 @@
      * then takes (utils/openFocusRequest.svelte.ts). Reactive. */
     focusAsked: boolean;
     onFocusTaken: () => void;
+    /** Whether the open this ticket shows asked for its Start work form
+     * (`TicketTrail.startWorkAsked`), which Work opens. Reactive. */
+    startWorkAsked: boolean;
+    onStartWorkTaken: () => void;
     onBack: () => void;
     onClose: () => void;
     /** Moves the ticket into a pane of its own; omitted where it is one. */
@@ -164,7 +168,7 @@
     onOpenIssue: (issue: string, seed: TicketSeed, ownPane: boolean) => void;
   }
 
-  let { attachment, seed, board, computerName, project, onProject, offline, compact, shown, trail, placement, pane, focusAsked, onFocusTaken, onBack, onClose, onOwnPane, onOpenIssue }: Props = $props();
+  let { attachment, seed, board, computerName, project, onProject, offline, compact, shown, trail, placement, pane, focusAsked, onFocusTaken, startWorkAsked, onStartWorkTaken, onBack, onClose, onOwnPane, onOpenIssue }: Props = $props();
   setTicketWriteSurface(() => shown);
 
   // The ticket a person opened takes the focus, so a key or a paste of
@@ -203,6 +207,10 @@
   let railOpen = $state(false);
   $effect(() => {
     if (!narrow) railOpen = false;
+  });
+  // Work is in the Details rail: a Start work asked for shows it.
+  $effect(() => {
+    if (narrow && startWorkAsked) railOpen = true;
   });
 
   // The parent's own menu, on a right-click or long press of its chip:
@@ -540,7 +548,7 @@
       {/if}
     {/if}
   </div>
-  <TicketWork {attachment} {project} {onProject} me={account} />
+  <TicketWork {attachment} {project} {onProject} me={account} {startWorkAsked} {onStartWorkTaken} />
 {/snippet}
 
 {#snippet content()}

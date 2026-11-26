@@ -110,6 +110,8 @@
           {pane}
           focusAsked={trail.focusAsked}
           onFocusTaken={() => trail.focusTaken()}
+          startWorkAsked={trail.startWorkAsked}
+          onStartWorkTaken={() => trail.startWorkTaken()}
           onBack={() => { trail.stepBack(); }}
           onClose={() => trail.close()}
           {onOwnPane}

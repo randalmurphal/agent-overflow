@@ -503,6 +503,18 @@ export interface TicketTrail {
   /** The person picked `project` for the ticket shown; it holds while that
    * open is shown, over any later opener's. */
   setProject(project: string): void;
+  /** The project `ref`'s Ask and Start work use from here: `project` when
+   * `ref` is the ticket shown, else the default's. Reactive. */
+  projectFor(ref: TrackerTicketRef): string | null;
+  /** Whether the open shown asked for its Start work form and its Work has
+   * not taken the ask. The ask belongs to that open: it is gone once
+   * another shows. Reactive. */
+  readonly startWorkAsked: boolean;
+  /** The person asks for the Start work form of the ticket shown (a Board
+   * card's Start work, after its open). */
+  askStartWork(): void;
+  /** Work took the ask. */
+  startWorkTaken(): void;
   /** Whether the open shown asked for the focus and nothing ended the
    * ask (utils/openFocusRequest.svelte.ts). Reactive. */
   readonly focusAsked: boolean;
@@ -596,6 +608,8 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
   // fall back to their own.
   let projectWord = $state.raw<{ readonly open: OpenTicket; readonly project: string; readonly picked: boolean } | null>(null);
   const project = $derived(!ticket ? null : projectWord?.open === ticket ? projectWord.project : ticket.project ?? defaultProject());
+  // The open whose Start work form was asked for, until Work takes it.
+  let startAsk = $state.raw<OpenTicket | null>(null);
 
   const stop = $effect.root(() => {
     $effect(() => {
@@ -629,6 +643,16 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
     get project() { return project; },
     setProject(next) {
       if (ticket) projectWord = { open: ticket, project: next, picked: true };
+    },
+    projectFor(ref) {
+      return ticket && sameTicketRef(ticket.ref, ref) ? project : defaultProject();
+    },
+    get startWorkAsked() { return startAsk !== null && startAsk === view?.open; },
+    askStartWork() {
+      startAsk = state.ticket;
+    },
+    startWorkTaken() {
+      startAsk = null;
     },
     get held() { return state.ticket ? [...state.trail, state.ticket] : state.trail; },
     get focusAsked() { return state.focus.askedFor(view?.open ?? null); },

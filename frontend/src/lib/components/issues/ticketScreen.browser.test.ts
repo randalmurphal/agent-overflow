@@ -38,13 +38,13 @@ function mountTicket(width: number) {
     earlier: { pages: [], next: null, loading: false, error: null }, poker: null,
   };
   const ref = { backend: HOME_BACKEND, connection: 'c1', issue: '1' };
-  const attachment: TrackerTicketAttachment = { key: 'ticket', ref, current: state, error: null, tracker: { kind: 'jira', account: null, confirmed: true }, setShown: () => {}, setPokerShown: () => {}, release: () => {} };
+  const attachment: TrackerTicketAttachment = { key: 'ticket', ref, current: state, error: null, tracker: { kind: 'jira', site: 'https://example.atlassian.net', account: null, confirmed: true }, setShown: () => {}, setPokerShown: () => {}, release: () => {} };
   const app = mount(TicketScreen, {
     target: host,
     props: {
       attachment, seed: { key: 'WEB-1', title: 'Issue 1', card: null }, board: '1', computerName: 'This computer',
       project: null, onProject: () => {}, offline: false, compact: false, shown: true, trail: 0,
-      focusAsked: false, onFocusTaken: () => {}, onBack: () => {}, onClose: () => {}, onOpenIssue: () => {},
+      focusAsked: false, onFocusTaken: () => {}, startWorkAsked: false, onStartWorkTaken: () => {}, onBack: () => {}, onClose: () => {}, onOpenIssue: () => {},
     },
   });
   mounted.push({ app, host });

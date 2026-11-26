@@ -6,7 +6,7 @@
   // computer reads them (`stores/ticketWork.svelte.ts`); Ask and Start
   // work, and a Start work run's steps until it ends. Each row opens what
   // it names and has its menu on a right-click or long press.
-  import { onMount, untrack } from 'svelte';
+  import { untrack } from 'svelte';
   import Button from '../primitives/Button.svelte';
   import ContextMenu from '../primitives/ContextMenu.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
@@ -18,9 +18,8 @@
   import { attachedBackendEntry, backendDisplayName, hasMultipleBackends, unreachableThreadMachineName } from '../../stores/attachedBackends.svelte';
   import { getEffectiveThreadStatus, getThreadWaitingOn } from '../../stores/threadStatuses.svelte';
   import { removeThreadTicketLink } from '../../stores/threadTicketLinks.svelte';
-  import { getProjectLabelText, getProjects } from '../../stores/projects.svelte';
+  import { getProjectLabelText } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import { acquireTrackerConnections, trackerConnectionsOf } from '../../stores/trackerConnections.svelte';
   import type { TrackerTicketAttachment } from '../../stores/trackerTicket.svelte';
   import { fieldTarget, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
@@ -41,10 +40,8 @@
     type StepActivity,
     type StepOutcome,
   } from '../../stores/ticketWork.svelte';
-  import { projectBackend, threadBackend } from '../../transport/entityIndex';
-  import { HOME_BACKEND } from '../../transport/backendKey';
-  import { scopeGrant } from '../../transport/scopes';
-  import { grantBlockedTitle } from '../../transport/scopeRefusal';
+  import { threadBackend } from '../../transport/entityIndex';
+  import { workGate, workProject, workProjects } from './ticketWorkGate';
   import { SELECT_CLASS } from '../settings/styles';
   import type { Thread } from '../../types/models';
   import { copyToClipboard } from '../../utils/clipboard';
@@ -57,8 +54,8 @@
 
   interface Props {
     attachment: TrackerTicketAttachment;
-    /** The ticket's project, as the pane holds it (`BoardSelection.
-     * ticketProject`): the thread of an Ask or Start work is made in it,
+    /** The ticket's project, as the pane holds it (`TicketTrail.
+     * project`): the thread of an Ask or Start work is made in it,
      * and its setup holds the Start work defaults. Null when none is
      * known. */
     project: string | null;
@@ -67,9 +64,14 @@
     /** The person's account on the connection; null when it was never
      * verified. */
     me: string | null;
+    /** The open shown asked for its Start work form
+     * (`TicketTrail.startWorkAsked`). */
+    startWorkAsked: boolean;
+    /** Work took that ask. */
+    onStartWorkTaken: () => void;
   }
 
-  let { attachment, project: ticketProject, onProject, me }: Props = $props();
+  let { attachment, project: ticketProject, onProject, me, startWorkAsked, onStartWorkTaken }: Props = $props();
 
   const ref = $derived(attachment.ref);
   const ticketState = $derived(attachment.current);
@@ -77,21 +79,15 @@
   const card = $derived(detail?.card ?? null);
   const ctx: TicketWriteContext = $derived({ key: attachment.key, ref: attachment.ref, label: card?.key || 'the ticket' });
 
-  // The ticket's computer is fixed for the component's life: the pane
-  // mounts a new ticket screen per ticket.
-  onMount(() => acquireTrackerConnections(attachment.ref.backend));
-
-  // The projects of the ticket's computer a thread can be made in; the
-  // ticket's own shows even when archived.
-  const projects = $derived(getProjects().map((p) => p.project)
-    .filter((p) => (!p.archived || p.id === ticketProject) && (projectBackend(p.id) ?? HOME_BACKEND) === ref.backend));
-  const project = $derived(ticketProject && projects.some((p) => p.id === ticketProject) ? ticketProject : '');
-  const connection = $derived(trackerConnectionsOf(ref.backend).list.find((c) => c.id === ref.connection) ?? null);
-  const place = $derived(connection && card ? { tracker: connection.kind, site: connection.site, project: keyPrefix(card.key) } : null);
+  const projects = $derived(workProjects(ref.backend, ticketProject));
+  const project = $derived(workProject(projects, ticketProject));
+  // The ticket's tracker as its subscription answered it; null until then.
+  const tracker = $derived(attachment.tracker);
+  const place = $derived(tracker && card ? { tracker: tracker.kind, site: tracker.site, project: keyPrefix(card.key) } : null);
 
   // The threads linked to this ticket: its site and issue, on any computer.
-  const threads = $derived(connection
-    ? getThreads().filter((t) => t.ticketLink && t.ticketLink.kind === connection.kind && t.ticketLink.site === connection.site && t.ticketLink.issueId === ref.issue)
+  const threads = $derived(tracker
+    ? getThreads().filter((t) => t.ticketLink && t.ticketLink.kind === tracker.kind && t.ticketLink.site === tracker.site && t.ticketLink.issueId === ref.issue)
     : []);
   const started = $derived(threads.find((t) => t.ticketLink?.origin === 'start_work') ?? null);
   const several = $derived(hasMultipleBackends());
@@ -222,18 +218,23 @@
   }
 
   const asking = $derived(ticketAskPending(attachment.key));
-  const unplaced = $derived(project ? '' : 'Pick the project its thread goes in.');
-  // What this device's grants on the ticket's computer allow: a thread is
-  // made under threads:operate, and Start work's worktree under
-  // git:operate.
-  const threadsGrant = $derived(scopeGrant('threads:operate', ref.backend));
-  const gitGrant = $derived(scopeGrant('git:operate', ref.backend));
-  const startGrant = $derived(threadsGrant === 'granted' ? gitGrant : threadsGrant);
-  const askBlocked = $derived(grantBlockedTitle(threadsGrant) ?? unplaced);
-  const startBlocked = $derived(grantBlockedTitle(startGrant) ?? unplaced);
-  const grantNote = $derived(threadsGrant === 'refused'
-    ? 'This device may not start threads on this computer.'
-    : gitGrant === 'refused' ? 'This device may not use git on this computer. Ask still works.' : '');
+  const gate = $derived(workGate(ref.backend, project));
+  const askBlocked = $derived(gate.ask);
+  const startBlocked = $derived(gate.start);
+  const grantNote = $derived(gate.note);
+
+  // The open shown asked for its Start work form (a Board card's Start
+  // work): taken once the ticket is read, and opened when Start work can
+  // run now; Work's button says why when it cannot.
+  $effect(() => {
+    if (!startWorkAsked || !detail) return;
+    untrack(() => {
+      onStartWorkTaken();
+      if (startBlocked || run?.running) return;
+      startButton?.scrollIntoView({ block: 'nearest' });
+      openForm(null);
+    });
+  });
 </script>
 
 <section class="mt-4 flex flex-col gap-2 border-t border-border-subtle pt-3" data-testid="ticket-work">

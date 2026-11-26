@@ -55,7 +55,7 @@ import { noteProject } from '../../transport/entityIndex';
 import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { TransportError } from '../../transport/wsClient';
-import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { bindingMockNames, getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { getMinuteNow } from '../../stores/minuteClock.svelte';
 import { getToasts } from '../../stores/toast.svelte';
 import { trackerTicketKey } from '../../stores/trackerTicket.svelte';
@@ -64,6 +64,7 @@ import { localDay, mondayOf } from '../../stores/trackerTimeModel';
 import { openNamedTicket } from '../../stores/ticketOpen';
 import { openLinkedTicket } from '../../stores/threadTicketLinks.svelte';
 import { makeThread } from '../../../test/helpers/chat';
+import { listThread } from '../../stores/threads.svelte';
 
 // The project of the thread the pane was opened from (toolPanes owns it).
 const openedFrom = vi.hoisted(() => ({ project: null as string | null }));
@@ -1214,13 +1215,14 @@ function ticketDetail(id: string, opts: { parent?: string; comments?: number; mo
 }
 
 /** The tracker a ticket's subscription names: its connection's kind and
- * the person's account there. */
+ * site, and the person's account there. */
 interface TicketTracker {
   kind: 'jira' | 'linear';
+  site: string;
   account: string;
 }
 
-const JIRA_USER1: TicketTracker = { kind: 'jira', account: 'acc-user1' };
+const JIRA_USER1: TicketTracker = { kind: 'jira', site: 'https://example.atlassian.net', account: 'acc-user1' };
 
 function installTicket(detailOf: (issue: string) => DetailView = (issue) => ticketDetail(issue), tracker: TicketTracker = JIRA_USER1) {
   let n = 0;
@@ -1284,7 +1286,6 @@ describe('the ticket in the pane', () => {
     it('is the project the board was opened under when two projects list the board, and the person can pick another', async () => {
       project('p1', 'alpha', 1);
       project('p2', 'beta', 2);
-      setBindingMock('TrackerConnections', async () => [{ id: 'c1', kind: 'jira', site: 'https://example.atlassian.net', label: 'Work', enabled: true, account: 'User 1' }]);
       install({ choices: [choice('1', { project: 'p1' }), choice('1', { project: 'p2', opens_first: true })] });
       installTicket();
       const start = setBindingMock('StartTicketThread', async () => { throw new Error('stop here'); });
@@ -1310,7 +1311,6 @@ describe('the ticket in the pane', () => {
     it('is the project the opener named for a ticket asked for from outside, shown before anything is made', async () => {
       project('p1', 'alpha', 1);
       project('p2', 'beta', 2);
-      setBindingMock('TrackerConnections', async () => [{ id: 'c1', kind: 'jira', site: 'https://example.atlassian.net', label: 'Work', enabled: true, account: 'User 1' }]);
       install({ choices: [choice('1', { project: 'p1', opens_first: true })] });
       installTicket();
       const start = setBindingMock('StartTicketThread', async () => { throw new Error('stop here'); });
@@ -1328,7 +1328,6 @@ describe('the ticket in the pane', () => {
     function twoProjects() {
       project('p1', 'alpha', 1);
       project('p2', 'beta', 2);
-      setBindingMock('TrackerConnections', async () => [{ id: 'c1', kind: 'jira', site: 'https://example.atlassian.net', label: 'Work', enabled: true, account: 'User 1' }]);
       install({ choices: [choice('1', { project: 'p1', opens_first: true }), choice('1', { project: 'p2' })] });
       const ticket = installTicket();
       const start = setBindingMock('StartTicketThread', async () => { throw new Error('stop here'); });
@@ -1391,6 +1390,119 @@ describe('the ticket in the pane', () => {
       await waitFor(() => expect(start).toHaveBeenCalledWith('p1', expect.objectContaining({ origin: 'ask' })));
       expect(ticket.subscribe).toHaveBeenCalledTimes(1);
       view.unmount();
+    });
+  });
+
+  describe('a card\'s Ask and Start work', () => {
+    /** Opens card `issue`'s menu and its Show more. */
+    async function cardMenuMore(view: ReturnType<typeof mount>, issue: string): Promise<HTMLElement> {
+      await view.findAllByTestId('issues-card');
+      await fireEvent.contextMenu(view.getAllByTestId('issues-card').find((c) => c.dataset.issue === issue)!);
+      const menuEl = await within(document.body).findByTestId('action-menu');
+      await fireEvent.click(within(menuEl).getByTestId('action-menu-more'));
+      return menuEl;
+    }
+
+    /** The calls made so far of every tracker binding. */
+    function trackerCalls(): number {
+      return bindingMockNames().filter((n) => /Tracker/.test(n)).reduce((sum, n) => sum + (getBindingMock(n)?.mock.calls.length ?? 0), 0);
+    }
+
+    it('are behind Show more, and opening the menu with them asks the tracker nothing', async () => {
+      install();
+      const view = mount();
+      await view.findAllByTestId('issues-card');
+      const before = trackerCalls();
+      await fireEvent.contextMenu(view.getAllByTestId('issues-card').find((c) => c.dataset.issue === '2')!);
+      const menuEl = await within(document.body).findByTestId('action-menu');
+      expect(within(menuEl).queryByTestId('issues-card-menu-ask')).toBeNull();
+      expect(within(menuEl).queryByTestId('issues-card-menu-start-work')).toBeNull();
+      await fireEvent.click(within(menuEl).getByTestId('action-menu-more'));
+      expect(within(menuEl).getByTestId('issues-card-menu-ask')).toHaveTextContent('Ask');
+      expect(within(menuEl).getByTestId('issues-card-menu-start-work')).toHaveTextContent('Start work…');
+      expect(trackerCalls()).toBe(before);
+      view.unmount();
+    });
+
+    it('Ask makes a thread in the board\'s project, and in the project picked for the ticket open here', async () => {
+      project('p1', 'alpha', 1);
+      project('p2', 'beta', 2);
+      install({ choices: [choice('1', { project: 'p1', opens_first: true }), choice('1', { project: 'p2' })] });
+      installTicket();
+      const start = setBindingMock('StartTicketThread', async () => { throw new Error('stop here'); });
+      const view = mount();
+      await fireEvent.click(within(await cardMenuMore(view, '2')).getByTestId('issues-card-menu-ask'));
+      await waitFor(() => expect(start).toHaveBeenCalledWith('p1', { connectionId: 'c1', issueId: '2', origin: 'ask' }));
+      expect(view.queryByTestId('ticket-screen')).toBeNull();
+
+      const screen = await openCard(view, '1');
+      const work = await waitFor(() => within(screen).getByTestId('ticket-work'));
+      await fireEvent.change(within(work).getByTestId('ticket-work-project'), { target: { value: 'p2' } });
+      await fireEvent.click(within(await cardMenuMore(view, '1')).getByTestId('issues-card-menu-ask'));
+      await waitFor(() => expect(start).toHaveBeenLastCalledWith('p2', { connectionId: 'c1', issueId: '1', origin: 'ask' }));
+      // Another card's ticket is not the one open: the board's project.
+      await fireEvent.click(within(await cardMenuMore(view, '2')).getByTestId('issues-card-menu-ask'));
+      await waitFor(() => expect(start).toHaveBeenLastCalledWith('p1', { connectionId: 'c1', issueId: '2', origin: 'ask' }));
+      view.unmount();
+    });
+
+    it('Start work opens the ticket with its Start work form, and the run\'s steps show in its Work', async () => {
+      project('p1', 'alpha', 1);
+      install();
+      installTicket();
+      setBindingMock('ProjectTrackerSetup', async () => ({
+        revision: 'r1',
+        setup: { status_groups: [], ticket_pins: [], start_work: [{ tracker: 'jira', site: JIRA_USER1.site, project: 'WEB', assign: false, branch: 'feature/{key}' }] },
+      }));
+      const start = setBindingMock('StartTicketThread', async () => { throw new TransportError('refused', 'The worktree could not be made.'); });
+      const view = mount();
+      await fireEvent.click(within(await cardMenuMore(view, '2')).getByTestId('issues-card-menu-start-work'));
+      const screen = await waitFor(() => {
+        const found = view.getByTestId('ticket-screen');
+        expect(found.dataset.issue).toBe('2');
+        return found;
+      });
+      const go = await waitFor(() => {
+        const found = document.querySelector<HTMLButtonElement>('[data-testid="start-work-form"] [data-testid="start-work-go"]');
+        expect(found?.disabled).toBe(false);
+        return found!;
+      });
+      await fireEvent.click(go);
+      await waitFor(() => expect(start).toHaveBeenCalledWith('p1', expect.objectContaining({ issueId: '2', origin: 'start_work', branch: 'feature/WEB-2' })));
+      const thread = await waitFor(() => within(within(screen).getByTestId('start-work-run')).getAllByTestId('start-work-step').find((s) => s.dataset.step === 'thread')!);
+      expect(thread).toHaveTextContent('Make the thread in alpha on feature/WEB-2');
+      await waitFor(() => expect(document.querySelector('[data-testid="start-work-form"]')).toBeNull());
+      // The ask was taken: a later read of the ticket opens no form.
+      const read = getBindingMock('TrackerTicket')!;
+      const reads = read.mock.calls.length;
+      trackerIssueUpdated({ connection: 'c1', issue: '2', seq: 30, changed: true }, HOME_BACKEND);
+      await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(reads));
+      await tick();
+      expect(document.querySelector('[data-testid="start-work-form"]')).toBeNull();
+      view.unmount();
+    });
+
+    it('say why they cannot run as the ticket\'s Work does, on a device that may not start threads there', async () => {
+      await pairWithScopes(['threads:read', 'tracker:read']);
+      try {
+        project('p1', 'alpha', 1);
+        install();
+        installTicket();
+        const view = mount();
+        const screen = await openCard(view, '1');
+        const ask = await waitFor(() => within(screen).getByTestId('ticket-work-ask'));
+        const reason = ask.getAttribute('title')!;
+        expect(reason).not.toBe('');
+        const menuEl = await cardMenuMore(view, '2');
+        for (const id of ['issues-card-menu-ask', 'issues-card-menu-start-work']) {
+          const rowEl = within(menuEl).getByTestId(id);
+          expect(rowEl).toHaveAttribute('aria-disabled', 'true');
+          expect(rowEl).toHaveTextContent(reason);
+        }
+        view.unmount();
+      } finally {
+        resetToLocalPage();
+      }
     });
   });
 
@@ -1473,7 +1585,6 @@ describe('the ticket in the pane', () => {
 
   it('shows under a Start work row only the write its run sent, and a later move of the Status field under that field', async () => {
     project('p1', 'alpha', 1);
-    setBindingMock('TrackerConnections', async () => [{ id: 'c1', kind: 'jira', site: 'https://example.atlassian.net', label: 'Work', enabled: true, account: 'User 1' }]);
     install();
     const done = { id: '22', name: 'Finish', to: { id: 's3', name: 'Done', group: 'done' } };
     const toDo = (issue: string) => {
@@ -2735,7 +2846,7 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
 
   it('takes no drop or paste of files on a Linear ticket, and offers it no Attach', async () => {
     install();
-    installTicket(undefined, { kind: 'linear', account: 'user-1' });
+    installTicket(undefined, { kind: 'linear', site: 'example', account: 'user-1' });
     const names = installUploads();
     try {
       const view = mount();
@@ -3099,7 +3210,7 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
     await within(document.body).findByTestId('worklog-form');
     const reconnectAnswering = async (account: string, id: string) => {
       setBindingMock('SubscribeTrackerTicket', async (): Promise<TicketSubscription> =>
-        ({ id, seq: 20, poll_every: 10_000, kind: 'jira', account, loaded: true, detail: ticketDetail('1'), read_at: Date.now() }) as TicketSubscription);
+        ({ id, seq: 20, poll_every: 10_000, ...JIRA_USER1, account, loaded: true, detail: ticketDetail('1'), read_at: Date.now() }) as TicketSubscription);
       __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null });
       __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
       await waitFor(() => expect(within(screen).getByTestId('ticket-comment-input')).toBeInTheDocument());
@@ -3113,7 +3224,7 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
 
   it('offers no Log time while the app does not know whose time it logs', async () => {
     install();
-    installTicket(undefined, { kind: 'jira', account: '' });
+    installTicket(undefined, { ...JIRA_USER1, account: '' });
     const view = mount();
     const screen = await openCard(view, '1');
     await within(screen).findByTestId('ticket-comment-input');
@@ -3447,7 +3558,6 @@ describe('a ticket in a pane of its own', () => {
     placeIssuesPane();
     project('p1', 'alpha', 1);
     project('p2', 'beta', 2);
-    setBindingMock('TrackerConnections', async () => [{ id: 'c1', kind: 'jira', site: 'https://example.atlassian.net', label: 'Work', enabled: true, account: 'User 1' }]);
     install({ choices: [choice('1', { project: 'p1', opens_first: true }), choice('1', { project: 'p2' })] });
     installTicket();
     const workOf = (root: HTMLElement) => waitFor(() => within(root).getByTestId('ticket-work'));
@@ -3733,6 +3843,14 @@ describe('a ticket in a pane of its own', () => {
     installTicket();
     setBindingMock('TrackerBoardChoices', () => new Promise<BoardChoice[]>(() => {}));
     setBindingMock('TrackerConnections', async () => { throw new TransportError('internal', 'The connections could not be read.'); });
+    // A thread linked to the ticket by its site and issue, which Work lists.
+    listThread(makeThread({
+      id: 'thread-linked', projectId: 'p1', title: 'WEB-1 work',
+      ticketLink: {
+        kind: 'jira', site: JIRA_USER1.site, issueId: '1', key: 'WEB-1', title: 'Issue 1', statusId: 's1', statusName: 'To Do',
+        statusGroup: 'todo', origin: 'manual', linkedAt: 1, state: 'current', connectionId: 'c1',
+      },
+    }));
     let answer: ((sub: TicketSubscription) => void) | undefined;
     setBindingMock('SubscribeTrackerTicket', () => new Promise<TicketSubscription>((resolve) => { answer = resolve; }));
     const view = mount();
@@ -3752,6 +3870,8 @@ describe('a ticket in a pane of its own', () => {
     await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
     expect(await within(document.body).findByTestId('ticket-menu-log-time')).not.toHaveAttribute('aria-disabled', 'true');
     expect(within(document.body).getByTestId('ticket-menu-attach')).toBeInTheDocument();
+    // Work matches its threads by the ticket's site.
+    expect(within(screen).getAllByTestId('ticket-work-thread').map((r) => r.dataset.thread)).toEqual(['thread-linked']);
     // Nothing of the tracker is kept with the pane.
     expect(ticketPaneCarrier(paneId)).toEqual({ backend: HOME_BACKEND, connection: 'c1', issue: '1' });
   });
