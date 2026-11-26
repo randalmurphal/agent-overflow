@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -167,6 +168,15 @@ func TestTrackerAgentEstimateOffItsBoardIsRefused(t *testing.T) {
 	}
 }
 
+// describeEstimate is a Linear estimate as fakeValues writes a Jira one:
+// its JSON, empty for none.
+func describeEstimate(v *float64) string {
+	if v == nil {
+		return ""
+	}
+	return strconv.FormatFloat(*v, 'f', -1, 64)
+}
+
 // setCostEstimate sets the first issue's estimate on both trackers of a
 // costFixture to v, updated now.
 func setCostEstimate(site *trackerfake.JiraSite, ws *trackerfake.LinearWorkspace, v float64) {
@@ -191,7 +201,8 @@ func setCostEstimateOnly(site *trackerfake.JiraSite, ws *trackerfake.LinearWorks
 // nothing: three tickets get an estimate of 3, and WEB-1's goes from 2 to
 // 5 on the tracker during the wait, with no board read again and its
 // update time as it was, so its card did not move. The rows read after
-// the approval finds the estimate moved; the other two are sent theirs.
+// the approval finds the estimate moved; the other two are sent theirs,
+// which the tracker's own record of the writes and its estimates show.
 func TestTrackerAgentEstimateChangedDuringTheWaitIsSentNothing(t *testing.T) {
 	t.Parallel()
 	for _, linear := range []bool{false, true} {
@@ -212,6 +223,8 @@ func TestTrackerAgentEstimateChangedDuringTheWaitIsSentNothing(t *testing.T) {
 			if err := f.e.Seed(world); err != nil {
 				t.Fatal(err)
 			}
+			log := f.e.Requests(0).Requests
+			before := log[len(log)-1].Seq
 			if err := f.a.RespondToApproval(t.Context(), thread, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); err != nil {
 				t.Fatal(err)
 			}
@@ -219,6 +232,43 @@ func TestTrackerAgentEstimateChangedDuringTheWaitIsSentNothing(t *testing.T) {
 			text, _ := result[0].(string)
 			if !strings.Contains(text, `"key":"`+keys[0]+`","refused":"`+keys[0]+` changed on`) || strings.Count(text, `"applied":["estimate"]`) != 2 {
 				t.Errorf("ticket_update = %s; want %s sent nothing for its estimate changed during the wait, the others sent theirs", text, keys[0])
+			}
+			// What the tracker received and holds: the two others' estimates
+			// alone were written, and the first keeps the 5 set during the
+			// wait.
+			after := f.e.Snapshot()
+			wantSent := []string{"10102", "10103"}
+			var sent, held []string
+			if linear {
+				ws := after.Linear[0]
+				wantSent = []string{ws.Issues[1].ID, ws.Issues[2].ID}
+				for _, is := range ws.Issues {
+					held = append(held, describeEstimate(is.Estimate))
+				}
+			} else {
+				held = fakeValues(f, "10101", "customfield_10016")
+				held = append(held, fakeValues(f, "10102", "customfield_10016")...)
+				held = append(held, fakeValues(f, "10103", "customfield_10016")...)
+			}
+			for _, r := range f.e.Requests(before).Requests {
+				switch {
+				case r.Route == "PUT rest/agile/1.0/issue/{issue}/estimation":
+					sent = append(sent, path.Base(path.Dir(r.Path)))
+				case r.Operation == "UpdateIssue":
+					var v struct {
+						ID string `json:"id"`
+					}
+					if err := json.Unmarshal(r.Variables, &v); err != nil {
+						t.Fatal(err)
+					}
+					sent = append(sent, v.ID)
+				}
+			}
+			if !slices.Equal(sent, wantSent) {
+				t.Errorf("estimates sent to %q; want %q", sent, wantSent)
+			}
+			if want := []string{"5", "3", "3"}; !slices.Equal(held, want) {
+				t.Errorf("the tracker holds the estimates %q; want %q", held, want)
 			}
 		})
 	}
