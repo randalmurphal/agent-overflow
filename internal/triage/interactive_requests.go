@@ -200,7 +200,9 @@ func (r *Router) RouteThreadPrompts(threadID string, fromPerson bool, skip func(
 	r.mu.Lock()
 	if st := r.threadStateIfPresent(threadID); st != nil {
 		for requestID, pending := range st.pendingApprovals {
-			open = append(open, PromptRef{ThreadID: threadID, RequestID: requestID, Occurrence: pending.Request.Occurrence})
+			if promptRoutable(pending.Request) {
+				open = append(open, PromptRef{ThreadID: threadID, RequestID: requestID, Occurrence: pending.Request.Occurrence})
+			}
 		}
 		for requestID, request := range st.pendingUserInputs {
 			open = append(open, PromptRef{ThreadID: threadID, RequestID: requestID, Occurrence: request.Occurrence})

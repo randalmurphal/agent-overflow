@@ -349,6 +349,8 @@ func sanitizedTimelineNotificationMeta(notificationKind, summary string, raw jso
 		addBackgroundWakeNotificationMeta(meta, raw)
 	case abandonedBlocksNotificationKind:
 		addAbandonedBlocksNotificationMeta(meta, raw)
+	case trackerWriteNotificationKind:
+		addTrackerWriteNotificationMeta(meta, raw)
 	}
 
 	encoded, err := json.Marshal(meta)
@@ -356,6 +358,54 @@ func sanitizedTimelineNotificationMeta(notificationKind, summary string, raw jso
 		return `{}`
 	}
 	return string(encoded)
+}
+
+// trackerWriteNotificationKind is the row of a tracker tools call that
+// created or changed tickets, which the app writes once per call: each
+// ticket by the connection and issue that open it, its key and title, and
+// the steps applied.
+const trackerWriteNotificationKind = "tracker_write"
+
+// The bounds of a tracker write row, persisted from the app's input: a
+// call changes at most 20 tickets, each with a few steps.
+const (
+	maxTrackerWriteTickets = 20
+	maxTrackerWriteSteps   = 40
+	maxTrackerWriteRunes   = 300
+)
+
+func addTrackerWriteNotificationMeta(meta map[string]any, raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var row struct {
+		Created bool `json:"created"`
+		Tickets []struct {
+			Connection string   `json:"connection"`
+			Issue      string   `json:"issue"`
+			Key        string   `json:"key"`
+			Title      string   `json:"title"`
+			Applied    []string `json:"applied"`
+		} `json:"tickets"`
+	}
+	if json.Unmarshal(raw, &row) != nil {
+		return
+	}
+	cut := func(s string) string { return truncateRunes(strings.TrimSpace(s), maxTrackerWriteRunes) }
+	tickets := make([]map[string]any, 0, min(len(row.Tickets), maxTrackerWriteTickets))
+	for _, t := range row.Tickets[:min(len(row.Tickets), maxTrackerWriteTickets)] {
+		applied := make([]string, 0, min(len(t.Applied), maxTrackerWriteSteps))
+		for _, step := range t.Applied[:min(len(t.Applied), maxTrackerWriteSteps)] {
+			applied = append(applied, cut(step))
+		}
+		tickets = append(tickets, map[string]any{
+			"connection": cut(t.Connection), "issue": cut(t.Issue), "key": cut(t.Key), "title": cut(t.Title), "applied": applied,
+		})
+	}
+	meta["tickets"] = tickets
+	if row.Created {
+		meta["created"] = true
+	}
 }
 
 // backgroundWakeNotificationKind is the row for a Monitor event that

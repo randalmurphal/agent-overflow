@@ -263,6 +263,20 @@ func approvalItemID(evt provider.ProviderEvent, request provider.ApprovalRequest
 	return ""
 }
 
+// ApprovalKindTrackerWrite is the approval of a tracker tools write that
+// names several tickets, which the app raises (app_tracker_tools_mcp.go)
+// and answers itself: no provider is asked it.
+const ApprovalKindTrackerWrite = "tracker-write"
+
+// promptRoutable reports whether a prompt may go to the thread that spawned
+// its thread: every prompt but a tracker write's approval, which only the
+// person answers (docs/specs/standing-agents.md, ruling 19). The one rule
+// every routing path reads: a prompt it refuses is the person's from the
+// start and is never moved.
+func promptRoutable(request provider.ApprovalRequest) bool {
+	return request.Kind != ApprovalKindTrackerWrite
+}
+
 func isToolApproval(request provider.ApprovalRequest, itemID string) bool {
 	switch request.Kind {
 	case "command", "file-read", "file-change", "permission":
@@ -304,7 +318,10 @@ func (r *Router) handleApprovalRequest(evt provider.ProviderEvent) error {
 
 	itemID := approvalItemID(evt, request)
 	request.ParentToolUseID = r.resolveInteractiveScope(evt, request.ParentToolUseID, itemID)
-	request.RoutedTo = r.routePrompt(evt.ThreadID)
+	request.RoutedTo = nil
+	if promptRoutable(request) {
+		request.RoutedTo = r.routePrompt(evt.ThreadID)
+	}
 	request.SessionToken, request.Occurrence = evt.SessionToken, provider.PromptOccurrence(r.promptOccurrences.Add(1))
 	if !r.setPendingApproval(evt.ThreadID, pendingApprovalState{
 		Request: request,
