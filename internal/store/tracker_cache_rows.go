@@ -245,7 +245,7 @@ func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, readAt int6
 	if err != nil {
 		return err
 	}
-	changes.Cards, changes.Threads = stored.changed, unionSorted(changes.Threads, stored.threads)
+	changes.Cards, changes.Parents, changes.Threads = stored.changed, stored.parents, unionSorted(changes.Threads, stored.threads)
 	if write {
 		if changes.Rows, err = queryIDs(tx, mirrorRowsUpsertSQL, rootID, encoded, page.BoardID, readAt, addsRows); err != nil {
 			return fmt.Errorf("upsert rows: %w", err)

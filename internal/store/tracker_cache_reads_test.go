@@ -532,6 +532,7 @@ func TestMirrorListReadsTakeEachIDOnce(t *testing.T) {
 		}},
 		{"ListMirrorIssueBoards", func(ids []string) (any, error) { return s.ListMirrorIssueBoards(root, ids, ids) }},
 		{"ListMirrorCards", func(ids []string) (any, error) { return s.ListMirrorCards(root, ids) }},
+		{"ListMirrorParents", func(ids []string) (any, error) { return s.ListMirrorParents(root, ids) }},
 		{"GetMirrorCatalog users", func([]string) (any, error) {
 			return s.GetMirrorCatalog(root, []string{"acc-user1", "acc-user1"}, []string{"1"})
 		}},

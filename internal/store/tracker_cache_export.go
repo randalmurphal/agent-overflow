@@ -152,7 +152,7 @@ var mirrorExportFills = []mirrorExportFill{
 	    ` + mirrorRegroupedGroupNameSQL(`coalesce((SELECT o.value FROM json_each(?3) o WHERE o.key = i.status_id),
 	      (SELECT st.status_group FROM tracker_cache_statuses st WHERE st.root_id = i.root_id AND st.status_id = i.status_id))`) + `,
 	    nullif(i.assignee_id, ''), nullif(i.parent_id, ''),
-	    CASE WHEN p.type_level = 1 THEN p.issue_id WHEN gp.type_level = 1 THEN gp.issue_id END,
+	    CASE WHEN n.type_level = 1 THEN i.parent_id WHEN gn.type_level = 1 THEN p.parent_id END,
 	    nullif(i.created_at, 0), i.updated_at, nullif(i.resolved_at, 0), nullif(i.status_since, 0),
 	    iif(CAST(?5 AS INTEGER) = 1, ` + mirrorRowEstimate("CAST(?4 AS INTEGER)") + `, NULL),
 	    iif(i.history_for > 0, iif(i.history_from > 0, i.history_from, i.created_at), NULL),
@@ -162,17 +162,17 @@ var mirrorExportFills = []mirrorExportFill{
 	    iif(` + mirrorRegroupedNotDone("?3") + `, 1, 0), iif(` + mirrorLeftOut("?3") + `, 0, 1)
 	  FROM tracker_cache_board_issues b
 	  CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
-	  LEFT JOIN tracker_cache_issues p ON p.root_id = i.root_id AND p.issue_id = i.parent_id AND i.parent_id <> ''
+	  LEFT JOIN tracker_cache_parents n ON n.root_id = i.root_id AND n.issue_id = i.parent_id AND i.parent_id <> ''
+	  LEFT JOIN tracker_cache_issues p ON p.root_id = i.root_id AND p.issue_id = i.parent_id AND i.parent_id <> '' AND n.type_level IS NOT 1
 	    AND ` + mirrorIssueKept("p.root_id", "p.issue_id") + `
-	  LEFT JOIN tracker_cache_issues gp ON gp.root_id = p.root_id AND gp.issue_id = p.parent_id AND p.parent_id <> ''
-	    AND ` + mirrorIssueKept("gp.root_id", "gp.issue_id") + `
+	  LEFT JOIN tracker_cache_parents gn ON gn.root_id = p.root_id AND gn.issue_id = p.parent_id AND p.parent_id <> ''
 	  WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2`},
 	{relation: "statuses", name: "statuses", needs: []string{"tickets"}, sql: mirrorExportStatusesSQL("INSERT",
 		`SELECT c.status_id AS id FROM tracker_cache_board_column_statuses c WHERE c.root_id = CAST(?1 AS INTEGER) AND c.board_id = ?2
 		 UNION SELECT status FROM main.tickets WHERE status IS NOT NULL`)},
 	{relation: "epics", name: "epics", needs: []string{"tickets"}, sql: `INSERT INTO main.epics(id, key, title)
 	  SELECT e.issue_id, e.issue_key, e.title FROM (SELECT DISTINCT epic FROM main.tickets WHERE epic IS NOT NULL) x
-	  CROSS JOIN tracker_cache_issues e ON e.root_id = CAST(?1 AS INTEGER) AND e.issue_id = x.epic`},
+	  CROSS JOIN tracker_cache_parents e ON e.root_id = CAST(?1 AS INTEGER) AND e.issue_id = x.epic`},
 	{relation: "sprints", name: "sprints", sql: `INSERT INTO main.sprints(id, name, state, start_at, end_at, completed_at, position)
 	  SELECT sp.sprint_id, sp.name, CASE sp.state WHEN ` + strconv.Itoa(MirrorSprintFuture) + ` THEN 'future' WHEN ` +
 		strconv.Itoa(MirrorSprintActive) + ` THEN 'active' ELSE 'closed' END,

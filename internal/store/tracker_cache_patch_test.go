@@ -87,7 +87,7 @@ func requirePatchParityWith(t *testing.T, s *Store, root int64, regroup MirrorRe
 		!reflect.DeepEqual(again.Sections, patch.Sections) || again.Revision != patch.Revision {
 		t.Errorf("%s: a patch for the totals held at %+v = %+v, %v, %v", step, held, again, ok, err)
 	}
-	users, statuses, parents := map[string]MirrorUser{}, map[string]MirrorStatus{}, map[string]MirrorCard{}
+	users, statuses, parents := map[string]MirrorUser{}, map[string]MirrorStatus{}, map[string]MirrorParent{}
 	var shown []MirrorRow
 	for i, section := range patchSections {
 		var want []MirrorRow
@@ -137,7 +137,7 @@ func requirePatchParityWith(t *testing.T, s *Store, root int64, regroup MirrorRe
 		}
 	}
 	sortMirrorCatalog(&want.Catalog)
-	slices.SortFunc(want.Parents, func(a, b MirrorCard) int { return strings.Compare(a.IssueID, b.IssueID) })
+	slices.SortFunc(want.Parents, func(a, b MirrorParent) int { return strings.Compare(a.IssueID, b.IssueID) })
 	if !reflect.DeepEqual(patch.Names, want) {
 		t.Errorf("%s: patch names %+v\npages name %+v", step, patch.Names, want)
 	}
@@ -163,7 +163,7 @@ func patchEstimates(patch MirrorBoardPatch) int {
 // through every change that alters what a row shows: an estimate set, the
 // board's estimate definition changed (rows read before it show none)
 // and the rows read again, a row moving sprint, a row leaving the board,
-// a status renamed and a parent appearing. A board the mirror does not
+// a status renamed and a parent named. A board the mirror does not
 // show has none.
 func TestMirrorBoardPatchMatchesTheSections(t *testing.T) {
 	t.Parallel()
@@ -222,9 +222,10 @@ func TestMirrorBoardPatchMatchesTheSections(t *testing.T) {
 
 	rows[7].Card.UpdatedAt, rows[7].Card.ParentID = 7, "30000"
 	write(MirrorRowPage{Rows: []MirrorRow{rows[7]}})
-	requirePatchParity(t, s, root, "a parent the mirror lacks", named)
-	write(MirrorRowPage{Rows: []MirrorRow{webRow("30000", 5, "z")}})
-	if patch := requirePatchParity(t, s, root, "a parent appearing", named); len(patch.Names.Parents) != 1 {
+	requirePatchParity(t, s, root, "a parent named by ID alone", named)
+	rows[7].Card.UpdatedAt, rows[7].Card.ParentName = 8, &MirrorParentName{Key: "WEB-30000", Title: "Epic", TypeLevel: 1}
+	write(MirrorRowPage{Rows: []MirrorRow{rows[7]}})
+	if patch := requirePatchParity(t, s, root, "a parent named", named); len(patch.Names.Parents) != 1 {
 		t.Fatalf("the patch names parents %+v; want 30000", patch.Names.Parents)
 	}
 

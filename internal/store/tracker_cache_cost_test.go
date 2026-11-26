@@ -364,6 +364,8 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 		"and the column's is TestThreadLinkColumnReadsByKey"},
 	{"FROM tracker_cache_issue_missing m\n\t  JOIN tracker_cache_roots r ON r.id = m.root_id AND r.connection_id IS NOT NULL", "SCAN m",
 		"the cleanup's walk of every absence, which are of linked issues a read missed, to find those no longer kept"},
+	{"FROM tracker_cache_parents n\n\t  JOIN tracker_cache_roots r ON r.id = n.root_id AND r.connection_id IS NOT NULL", "SCAN n",
+		"the cleanup's walk of every parent's name, one probe of the issues' parent index each, to find those no stored issue names"},
 	{"WHERE EXISTS (SELECT 1 FROM tracker_cache_issue_missing g WHERE g.root_id = CAST(?1 AS INTEGER)))", "SEARCH g EXISTS USING PRIMARY KEY (root_id=?)",
 		"a card write's guard that the root has an absence, which stops at the first"},
 	{"WHERE EXISTS (SELECT 1 FROM tracker_cache_issue_missing g WHERE g.root_id = CAST(?1 AS INTEGER)))", "SCAN c",

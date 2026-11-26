@@ -229,12 +229,12 @@ func sortMirrorCatalog(catalog *MirrorCatalog) {
 }
 
 // MirrorNames are what a set of cards name, read in their snapshot: the
-// users and statuses (Catalog, sorted by ID) and the cards of the parents
-// the mirror keeps (sorted by issue ID). An ID the mirror does not hold is
-// left out.
+// users and statuses (Catalog, sorted by ID) and the parents' names
+// (tracker_cache_parents, sorted by issue ID). An ID the mirror does not
+// hold is left out.
 type MirrorNames struct {
 	Catalog MirrorCatalog
-	Parents []MirrorCard
+	Parents []MirrorParent
 }
 
 // readMirrorNamesTx reads what the cards of rows name, and the statuses
@@ -269,13 +269,13 @@ func readMirrorNamesTx(tx sqlQueryer, rootID int64, rows [][]MirrorRow, also []s
 	}
 	sortMirrorCatalog(&names.Catalog)
 	for batch := range slices.Chunk(parentIDs, mirrorMaxLookup) {
-		cards, err := readMirrorCardsTx(tx, rootID, batch)
+		parents, err := readMirrorParentsTx(tx, rootID, batch)
 		if err != nil {
 			return MirrorNames{}, fmt.Errorf("parents: %w", err)
 		}
-		names.Parents = append(names.Parents, cards...)
+		names.Parents = append(names.Parents, parents...)
 	}
-	slices.SortFunc(names.Parents, func(a, b MirrorCard) int { return strings.Compare(a.IssueID, b.IssueID) })
+	slices.SortFunc(names.Parents, func(a, b MirrorParent) int { return strings.Compare(a.IssueID, b.IssueID) })
 	return names, nil
 }
 

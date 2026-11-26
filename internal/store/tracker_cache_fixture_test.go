@@ -317,7 +317,10 @@ func mirrorRowTotal(counts map[string]int) int {
 func seedFullMirror(t *testing.T, s *Store, root int64) {
 	t.Helper()
 	mustReplaceStructure(t, s, root, webStructure(), true)
-	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a", "21")), []byte("c1"))
+	// The row's card names its parent, an epic no board lists.
+	row := webRow("10001", 5, "a", "21")
+	row.Card.ParentID, row.Card.ParentName = "10050", &MirrorParentName{Key: "WEB-50", Title: "Epic 50", TypeLevel: 1}
+	mustWriteRowPage(t, s, root, webPage("10", row), []byte("c1"))
 	// The board's sync row holds a reconcile failure, so each of its
 	// columns holds a value.
 	if _, _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReconcileFailure: MirrorReconcileAttempt{
