@@ -486,6 +486,9 @@ export interface TicketTrail {
   readonly depth: number;
   /** The ticket shown and those on the trail. Reactive. */
   readonly held: readonly OpenTicket[];
+  /** The pane is on screen now, so the person sees the ticket it shows
+   * (`TicketTrailOptions.shown`). Reactive. */
+  readonly shown: boolean;
   /** Whether the open shown asked for the focus and nothing ended the
    * ask (utils/openFocusRequest.svelte.ts). Reactive. */
   readonly focusAsked: boolean;
@@ -590,6 +593,7 @@ export function createTicketTrail({ state, shown }: TicketTrailOptions): TicketT
     get view() { return view; },
     get computer() { return computer; },
     get depth() { return state.trail.length; },
+    get shown() { return shown(); },
     get held() { return state.ticket ? [...state.trail, state.ticket] : state.trail; },
     get focusAsked() { return state.focus.askedFor(view?.open ?? null); },
     focusTaken() {

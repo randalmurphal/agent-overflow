@@ -649,6 +649,12 @@ export {
   AddTrackerComment,
   EditTrackerComment,
   DeleteTrackerComment,
+  // What a card on the Board changes besides those: the moves its carry
+  // and Move to… read, its rank and its sprint
+  // (stores/trackerBoardCarry.svelte.ts).
+  TrackerMoves,
+  RankTrackerIssues,
+  MoveTrackerIssuesToSprint,
   // A ticket's attachments, links and planning poker
   // (transport/attachmentTransfer.ts, stores/trackerTicketWrites.svelte.ts,
   // stores/trackerTicket.svelte.ts).

@@ -7,11 +7,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mount, unmount } from 'svelte';
 import '../../../app.css';
 import BoardColumn from './BoardColumn.svelte';
+import { ticketWriteSurfaceContext } from './ticketWriteSurface';
 import type { RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import type { ScreenColumn } from '../../stores/trackerBoardModel';
 import type { CardField } from '../../stores/issuesPane.svelte';
 import { waitFor } from '../../../test/helpers/browserFrames';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';
+import { HOME_BACKEND } from '../../transport/backendKey';
 
 const VIEWPORT_PX = 600;
 // The viewport plus the virtualizer's overscan on each side, in cards of
@@ -61,10 +63,19 @@ function mountColumn(rows: RowView[], more: boolean) {
     onNearEnd: () => { asks.push(Date.now()); },
     shown: true,
     openIssue: null,
+    boardRef: { backend: HOME_BACKEND, projectId: 'p1', connection: 'c1', board: 'b1' },
+    typed: true,
+    compact: false,
+    carriedIssue: null as string | null,
+    editing: null,
+    dropNote: null as string | null,
+    slot: null as number | null,
     onOpenCard: () => {},
     onCardMenu: () => {},
+    onEditCard: () => {},
+    onMoveCard: () => {},
   });
-  const app = mount(BoardColumn, { target: host, props });
+  const app = mount(BoardColumn, { target: host, props, context: ticketWriteSurfaceContext(() => true) });
   mounted.push({ app, host });
   const scrollEl = host.querySelector<HTMLElement>('[data-testid="issues-column-cards"]')!;
   return { props, asks, scrollEl };

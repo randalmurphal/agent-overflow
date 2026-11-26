@@ -223,6 +223,16 @@ func urlOf(row store.TrackerConnection, c tracker.Card) string {
 	return jiraprovider.IssueURL(row.Site, c.Key)
 }
 
+// boardIssueURL is BoardView.IssueURL for a board of connection row: the
+// address urlOf gives a Jira card less its key, and none on Linear, whose
+// cards carry their own.
+func boardIssueURL(row store.TrackerConnection) string {
+	if row.Kind != store.TrackerKindJira {
+		return ""
+	}
+	return jiraprovider.IssueURLPrefix(row.Site)
+}
+
 // detailView is doc as a view of connection row, with the other issues
 // it shows (detailViews).
 func (s *Service) detailView(root int64, row store.TrackerConnection, doc ticketDoc) (DetailView, []tracker.IssueID, error) {

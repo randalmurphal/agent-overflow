@@ -139,7 +139,10 @@ type FailureView struct {
 // totals it holds (TotalsAt). LeftOut is the statuses those groups leave
 // out of counts: a total the client adds up from rows it holds leaves out
 // the rows in them, as the view's totals do. Project is empty for a board
-// of no one project.
+// of no one project. IssueURL is the address of a card of the board less
+// its key, which completes it escaped as a path segment
+// (jiraprovider.IssueURLPrefix); empty on a tracker whose cards carry
+// their own (CardView.URL).
 type BoardView struct {
 	ID             string        `json:"id"`
 	Lifetime       int64         `json:"lifetime"`
@@ -158,6 +161,7 @@ type BoardView struct {
 	Sync           SyncView      `json:"sync"`
 	Screen         []Section     `json:"screen"`
 	Sections       []SectionPage `json:"sections"`
+	IssueURL       string        `json:"issue_url,omitempty"`
 }
 
 // maxViewSections bounds the sections one board view reads pages of. The
@@ -273,6 +277,11 @@ func (s *Service) Board(scope Scope, groups StatusGroups, sections []Section) (B
 	v.Sync = syncViewOf(sync.MirrorSyncOutcome)
 	v.Screen = screen
 	v.Sections = pages
+	row, err := s.viewRow(scope.Connection)
+	if err != nil {
+		return BoardView{}, err
+	}
+	v.IssueURL = boardIssueURL(row)
 	return v, nil
 }
 

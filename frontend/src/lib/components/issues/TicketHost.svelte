@@ -102,6 +102,7 @@
           {computerName}
           {offline}
           {compact}
+          shown={trail.shown}
           trail={trail.depth}
           {placement}
           {pane}

@@ -48,7 +48,7 @@ import { addProjectLocal } from '../../stores/projects.svelte';
 import { demotePane, getPaneLayoutItems, getPromotedPaneId, promotePane, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { focusPane, getFocusedPaneId } from '../../stores/panes.svelte';
 import TicketPane from '../panes/TicketPane.svelte';
-import { closeTicketPane, restoreTicketPane, ticketPaneCarrier, ticketPaneRecord } from '../../stores/ticketPanes.svelte';
+import { closeTicketPane, openTicketPane, restoreTicketPane, ticketPaneCarrier, ticketPaneRecord } from '../../stores/ticketPanes.svelte';
 import { makeCommandContext } from '../../stores/builtinCommands.svelte';
 import { SCOPES_AT_V0_0_19 } from '../../../test/helpers/olderComputer';
 import { noteProject } from '../../transport/entityIndex';
@@ -56,6 +56,8 @@ import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { TransportError } from '../../transport/wsClient';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getMinuteNow } from '../../stores/minuteClock.svelte';
+import { getToasts } from '../../stores/toast.svelte';
 import { trackerTicketKey } from '../../stores/trackerTicket.svelte';
 import { ticketDraft } from '../../stores/trackerTicketWrites.svelte';
 import { localDay, mondayOf } from '../../stores/trackerTimeModel';
@@ -234,7 +236,8 @@ describe('the Issues pane', () => {
         rows: [row('1', 'a', 's1', {
           type: { id: 't', name: 'Bug', level: 0 }, priority: { id: 'p', name: 'High' },
           parent: { id: '9', key: 'WEB-9', title: 'Import reliability' }, labels: [{ id: 'l', name: 'backend' }],
-          assignee: { id: 'acc-user1', name: 'User 1' }, status_since: Date.now() - 3 * DAY - 1000,
+          // Against the clock the card reads, which ticks once a minute.
+          assignee: { id: 'acc-user1', name: 'User 1' }, status_since: getMinuteNow() - 3 * DAY - 1000,
         })],
       }, { rows: [] }),
     });
@@ -537,6 +540,245 @@ describe('the Issues pane', () => {
     await waitFor(() => expect(mocks.visible).toHaveBeenCalledWith('sub-1-1', false));
     demotePane();
     await waitFor(() => expect(mocks.visible).toHaveBeenLastCalledWith('sub-1-1', true));
+  });
+});
+
+describe('changing a card on the board', () => {
+  it('sets the points typed at the card\'s estimate, through the ticket\'s write', async () => {
+    install();
+    const estimate = setBindingMock('SetTrackerEstimate', async (): Promise<WriteView> => ({ parts: [{ step: 'estimate', state: 'applied' }] }) as WriteView);
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    const card = view.getAllByTestId('issues-card').find((c) => c.dataset.issue === '1')!;
+    await fireEvent.click(within(card).getByTestId('issues-card-estimate-edit'));
+    const input = await within(document.body).findByTestId('ticket-field-input');
+    await fireEvent.input(input, { target: { value: '5' } });
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(estimate).toHaveBeenCalledWith('c1', { board: '1', issue: '1', value: 5 }));
+    expect(within(document.body).queryByTestId('issues-card-typed')).toBeNull();
+    await waitFor(() => expect(within(card).queryByTestId('ticket-write-pending')).toBeNull());
+  });
+
+  it('moves a card from its menu\'s Move to…, which reads the moves when it opens', async () => {
+    install();
+    const moves = setBindingMock('TrackerMoves', async () => [{ id: '21', name: 'Start', to: { id: 's2', name: 'In Progress' } }]);
+    const move = setBindingMock('MoveTrackerIssue', async (): Promise<WriteView> => ({ parts: [{ step: 'move', state: 'applied' }] }) as WriteView);
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    const card = view.getAllByTestId('issues-card').find((c) => c.dataset.issue === '1')!;
+    await fireEvent.contextMenu(card);
+    expect(moves).not.toHaveBeenCalled();
+    await fireEvent.click(await within(document.body).findByTestId('issues-card-menu-move'));
+    const target = await within(document.body).findByTestId('issues-card-move-column');
+    expect(target).toHaveTextContent('In Progress');
+    expect(moves).toHaveBeenCalledTimes(1);
+    await fireEvent.click(target);
+    await waitFor(() => expect(move).toHaveBeenCalledWith('c1', { issue: '1', move: '21', fields: undefined, accept_loss: false }));
+    // It waits in In Progress while the move is out, and the headers count it there.
+    await waitFor(() => expect(within(document.body).queryByTestId('action-menu')).toBeNull());
+  });
+
+  /** Moves card `issue` by its menu's Move to… into the one column its
+   * move reaches. */
+  async function moveByMenu(view: ReturnType<typeof mount>, issue: string): Promise<void> {
+    const card = view.getAllByTestId('issues-card').find((c) => c.dataset.issue === issue)!;
+    await fireEvent.contextMenu(card);
+    await fireEvent.click(await within(document.body).findByTestId('issues-card-menu-move'));
+    await fireEvent.click(await within(document.body).findByTestId('issues-card-move-column'));
+    await waitFor(() => expect(within(document.body).queryByTestId('action-menu')).toBeNull());
+  }
+
+  /** A move binding whose answers the test gives one at a time. */
+  function heldMoves(): { calls: unknown[][]; answer: (view: WriteView) => void } {
+    const waiting: ((view: WriteView) => void)[] = [];
+    const calls: unknown[][] = [];
+    setBindingMock('MoveTrackerIssue', (...args: unknown[]) => {
+      calls.push(args);
+      return new Promise<WriteView>((resolve) => waiting.push(resolve));
+    });
+    return { calls, answer: (view) => waiting.shift()!(view) };
+  }
+
+  it('counts a waiting card into its column by the status it moves to, and out of its own by the status it has', async () => {
+    // In Progress's status is left out of counts.
+    install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [row('2', 'b', 's2')] }, { groups: 'g1', left_out: ['s2'] } as Partial<BoardView>) });
+    setBindingMock('TrackerMoves', async (_c: string, issue: string) => (issue === '1'
+      ? [{ id: '21', name: 'Start', to: { id: 's2', name: 'In Progress' } }]
+      : [{ id: '11', name: 'Back', to: { id: 's1', name: 'To Do' } }]));
+    const moves = heldMoves();
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    const before = columns(view).map((c) => c.count);
+    // 1 leaves a counted status for a left-out one, 2 the other way.
+    await moveByMenu(view, '1');
+    await moveByMenu(view, '2');
+    await waitFor(() => expect(columns(view).map((c) => c.cards)).toEqual([['2'], ['1']]));
+    expect(columns(view).map((c) => c.count)).toEqual(before);
+    moves.answer({ parts: [{ step: 'move', state: 'applied' }] } as WriteView);
+    moves.answer({ parts: [{ step: 'move', state: 'applied' }] } as WriteView);
+  });
+
+  it('draws a waiting card from the board as it is now: hidden by the filter, and with a change a patch brought', async () => {
+    install();
+    setBindingMock('TrackerMoves', async () => [{ id: '21', name: 'Start', to: { id: 's2', name: 'In Progress' } }]);
+    setBindingMock('TrackerBoardPatch', async (): Promise<BoardPatch> => ({
+      lifetime: 1, revision: 2,
+      sections: [{ section: { kind: 'column', column: 0 }, rows: [{ ...row('1', 'a', 's1'), estimate: 5 }] }, { section: { kind: 'column', column: 1 }, rows: [] }],
+    } as unknown as BoardPatch));
+    const moves = heldMoves();
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await moveByMenu(view, '1');
+    await waitFor(() => expect(columns(view).map((c) => c.cards)).toEqual([[], ['1', '2']]));
+    openPaneFind(PANE);
+    setPaneFindQuery(PANE, 'Issue 2');
+    await waitFor(() => expect(columns(view).map((c) => c.cards)).toEqual([[], ['2']]));
+    setPaneFindQuery(PANE, '');
+    await waitFor(() => expect(columns(view).map((c) => c.cards)).toEqual([[], ['1', '2']]));
+    // Its estimate changes on the tracker while the move is out.
+    applyTrackerBoardEvent({ scope: { connection: 'c1', board: '1' }, seq: 11, changed: ['1'] }, HOME_BACKEND);
+    const card = () => view.getAllByTestId('issues-card').find((c) => c.dataset.issue === '1')!;
+    await waitFor(() => expect(within(card()).getByTestId('issues-card-estimate')).toHaveTextContent('5'));
+    expect(columns(view).map((c) => c.cards)).toEqual([[], ['1', '2']]);
+    moves.answer({ parts: [{ step: 'move', state: 'applied' }] } as WriteView);
+  });
+});
+
+describe("where a write's outcome shows", () => {
+  beforeAll(async () => {
+    await import('./TimeScreen.svelte');
+    await import('./TicketScreen.svelte');
+  });
+
+  const refusal = (step: string, message: string) => ({ parts: [{ step, state: 'refused', refusal: { reason: 'tracker', message } }] }) as WriteView;
+  const toasts = () => getToasts().map((t) => t.message);
+  const card = (view: ReturnType<typeof mount>, issue: string) => view.getAllByTestId('issues-card').find((c) => c.dataset.issue === issue)!;
+
+  it('says in a toast a card write that settles while the board is under Time, and keeps it nowhere', async () => {
+    install();
+    setBindingMock('TrackerWorklogs', async () => ({ worklogs: [] }));
+    setBindingMock('RefreshTrackerWorklogs', async () => ({ worklogs: [] }));
+    let answer: (view: WriteView) => void = () => {};
+    setBindingMock('SetTrackerEstimate', () => new Promise<WriteView>((resolve) => { answer = resolve; }));
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await fireEvent.click(within(card(view, '1')).getByTestId('issues-card-estimate-edit'));
+    const input = await within(document.body).findByTestId('ticket-field-input');
+    await fireEvent.input(input, { target: { value: '5' } });
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(within(card(view, '1')).getByTestId('ticket-write-pending')).toBeInTheDocument());
+    await switchTo(view, 'Time');
+    await view.findByTestId('time-screen');
+    const before = toasts().length;
+    answer(refusal('estimate', 'Story points are not on the edit screen'));
+    await waitFor(() => expect(toasts().slice(before)).toEqual(['The tracker refused the change to WEB-1: Story points are not on the edit screen']));
+    await switchTo(view, 'Board');
+    await view.findAllByTestId('issues-card');
+    expect(within(card(view, '1')).queryByTestId('ticket-write-outcome')).toBeNull();
+  });
+
+  it('says in a toast a card write that settles while a ticket covers the board and does not draw it', async () => {
+    install({ view: sprintBoard([row('1', 'a', 's1', { sprints: ['8'] })]) });
+    installTicket();
+    let answer: (view: WriteView) => void = () => {};
+    const sprint = setBindingMock('MoveTrackerIssuesToSprint', () => new Promise<WriteView>((resolve) => { answer = resolve; }));
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await fireEvent.contextMenu(card(view, '1'));
+    await fireEvent.click(await within(document.body).findByTestId('action-menu-more'));
+    await fireEvent.click(await within(document.body).findByTestId('issues-card-menu-sprint'));
+    await fireEvent.click(await within(document.body).findByTestId('issues-card-sprint'));
+    await waitFor(() => expect(sprint).toHaveBeenCalled());
+    await openCard(view, '1');
+    const before = toasts().length;
+    answer(refusal('sprint', 'The sprint is closed'));
+    await waitFor(() => expect(toasts().slice(before)).toEqual(['The tracker refused the change to WEB-1: The sprint is closed']));
+    await fireEvent.click(view.getByTestId('ticket-close'));
+    await waitFor(() => expect(view.queryByTestId('ticket-screen')).toBeNull());
+    expect(within(card(view, '1')).queryByTestId('ticket-write-outcome')).toBeNull();
+  });
+
+  it('keeps a refusal on the card where it waited and went back, with no toast, until the card is no longer drawn', async () => {
+    install();
+    setBindingMock('TrackerMoves', async () => [{ id: '21', name: 'Start', to: { id: 's2', name: 'In Progress' } }]);
+    setBindingMock('TrackerWorklogs', async () => ({ worklogs: [] }));
+    setBindingMock('RefreshTrackerWorklogs', async () => ({ worklogs: [] }));
+    let answer: (view: WriteView) => void = () => {};
+    setBindingMock('MoveTrackerIssue', () => new Promise<WriteView>((resolve) => { answer = resolve; }));
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    const before = toasts().length;
+    await fireEvent.contextMenu(card(view, '1'));
+    await fireEvent.click(await within(document.body).findByTestId('issues-card-menu-move'));
+    await fireEvent.click(await within(document.body).findByTestId('issues-card-move-column'));
+    await waitFor(() => expect(columns(view).map((c) => c.cards)).toEqual([[], ['1', '2']]));
+    answer(refusal('move', 'A resolution is required'));
+    // Back in To Do, drawn by a card mounted anew, with its reason.
+    await waitFor(() => expect(columns(view).map((c) => c.cards)).toEqual([['1'], ['2']]));
+    await waitFor(() => expect(within(card(view, '1')).getByTestId('ticket-write-outcome')).toHaveTextContent('A resolution is required'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(within(card(view, '1')).getByTestId('ticket-write-outcome')).toBeInTheDocument();
+    // Its last card unmounts: the outcome goes, said nowhere.
+    await switchTo(view, 'Time');
+    await view.findByTestId('time-screen');
+    await switchTo(view, 'Board');
+    await view.findAllByTestId('issues-card');
+    expect(within(card(view, '1')).queryByTestId('ticket-write-outcome')).toBeNull();
+    expect(toasts().length).toBe(before);
+  });
+
+  it('keeps a refusal made on the ticket once, drawn on the ticket and the card under it, with no toast', async () => {
+    install();
+    installTicket();
+    setBindingMock('TrackerChoices', async () => ({ choices: [{ id: '3', name: 'Low' }] }));
+    setBindingMock('EditTrackerIssue', async () => refusal('edit', 'Priority is not on the edit screen'));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const before = toasts().length;
+    const priority = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'priority')!;
+    await fireEvent.click(within(priority).getByTestId('ticket-field-value'));
+    await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-item')));
+    await waitFor(() => expect(within(priority).getByTestId('ticket-write-outcome')).toHaveTextContent('Priority is not on the edit screen'));
+    expect(within(card(view, '1')).getByTestId('ticket-write-outcome')).toHaveTextContent('Priority is not on the edit screen');
+    expect(toasts().length).toBe(before);
+  });
+
+  it('keeps the draft and its Save anyway for a comment edit refused into a toast while the pane was off screen', async () => {
+    setCompactLayoutForTest(false);
+    setPaneLayoutItemsForTest([
+      { id: PANE, paneId: PANE, kind: 'issues', widthPx: 600 },
+      { id: 'thread-1', paneId: 'thread-1', kind: 'thread', widthPx: 600 },
+    ]);
+    install();
+    installTicket((issue) => ticketDetail(issue, { comments: 1 }));
+    const loss = { parts: [{ step: 'comment', state: 'refused', refusal: { reason: 'loss', message: 'This edit would lose formatting.', lost: ['a table'] } }] } as WriteView;
+    const answers: ((view: WriteView) => void)[] = [];
+    const edit = setBindingMock('EditTrackerComment', () => new Promise<WriteView>((resolve) => answers.push(resolve)));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const comment = await waitFor(() => within(screen).getByTestId('ticket-comment'));
+    await fireEvent.contextMenu(comment);
+    await fireEvent.click(await within(document.body).findByTestId('ticket-comment-menu-edit'));
+    await fireEvent.input(within(comment).getByTestId('ticket-comment-editor'), { target: { value: 'Plain now' } });
+    await fireEvent.click(within(comment).getByTestId('ticket-comment-save'));
+    await waitFor(() => expect(answers).toHaveLength(1));
+    expect(promotePane('thread-1')).toBe(true);
+    const before = toasts().length;
+    answers[0](loss);
+    await waitFor(() => expect(toasts().slice(before)).toEqual(['The tracker refused the change to WEB-1: This edit would lose formatting. It would lose: a table.']));
+    demotePane();
+    // Back on screen: the edit is still in its editor, and no outcome under it.
+    expect(within(comment).getByTestId('ticket-comment-editor')).toHaveValue('Plain now');
+    expect(within(comment).queryByTestId('ticket-write-outcome')).toBeNull();
+    await fireEvent.click(within(comment).getByTestId('ticket-comment-save'));
+    await waitFor(() => expect(answers).toHaveLength(2));
+    answers[1](loss);
+    const anyway = await waitFor(() => within(comment).getByTestId('ticket-write-save-anyway'));
+    await fireEvent.click(anyway);
+    await waitFor(() => expect(edit).toHaveBeenLastCalledWith('c1', { issue: '1', comment: 'c1', markdown: 'Plain now', from: 'Comment 1', accept_loss: true }));
+    answers[2]({ parts: [{ step: 'comment', state: 'applied' }] } as WriteView);
+    await waitFor(() => expect(within(comment).queryByTestId('ticket-comment-editor')).toBeNull());
+    expect(toasts().length).toBe(before + 1);
   });
 });
 
@@ -2914,7 +3156,9 @@ describe('a ticket in a pane of its own', () => {
     await fireEvent.click(within(card(view, '2')).getByTestId('issues-card-open'), { metaKey: true });
     expect(ticketPaneIds()).toHaveLength(2);
 
+    // The card's one menu has it behind Show more.
     await fireEvent.contextMenu(card(view, '2'));
+    await fireEvent.click(await within(document.body).findByTestId('action-menu-more'));
     expect((await within(document.body).findByTestId('issues-card-menu-own-pane'))).toHaveTextContent('Open in its own pane');
     await fireEvent.click((await within(document.body).findByTestId('issues-card-menu-own-pane')));
     expect(ticketPaneIds()).toHaveLength(2);
@@ -2932,7 +3176,8 @@ describe('a ticket in a pane of its own', () => {
     const view = mount();
     const first = (await within(view.container).findAllByTestId('issues-card'))[0];
     await fireEvent.contextMenu(first);
-    await within(document.body).findByTestId('issues-card-menu-open');
+    await fireEvent.click(await within(document.body).findByTestId('action-menu-more'));
+    await within(document.body).findByTestId('issues-card-menu-priority');
     expect(within(document.body).queryByTestId('issues-card-menu-own-pane')).toBeNull();
     await fireEvent.click(within(document.body).getByTestId('issues-card-menu-open'));
     await waitFor(() => expect(issuesTicket(view)).not.toBeNull());
@@ -3052,6 +3297,44 @@ describe('a ticket in a pane of its own', () => {
     pane.unmount();
     closeTicketPane(ticketPaneIds()[0]);
     await waitFor(() => expect(ticketReleases(mocks)).toEqual(['ticket-1-1']));
+  });
+
+  it('keeps a refusal under its control while the ticket pane is on screen, and says it in a toast while the pane is off screen', async () => {
+    setCompactLayoutForTest(false);
+    install();
+    installTicket();
+    setBindingMock('TrackerChoices', async () => ({ choices: [{ id: '3', name: 'Low' }] }));
+    const answers: ((view: WriteView) => void)[] = [];
+    setBindingMock('EditTrackerIssue', () => new Promise<WriteView>((resolve) => answers.push(resolve)));
+    const refused = { parts: [{ step: 'edit', state: 'refused', refusal: { reason: 'tracker', message: 'Priority is not on the edit screen' } }] } as WriteView;
+    const toasts = () => getToasts().map((t) => t.message);
+    // No board draws the ticket: only the ticket pane's controls do.
+    setPaneLayoutItemsForTest([{ id: 'thread-1', paneId: 'thread-1', kind: 'thread', widthPx: 600 }]);
+    focusPane('thread-1');
+    openTicketPane({ ref: { backend: HOME_BACKEND, connection: 'c1', issue: '1' }, seed: { key: 'WEB-1', title: 'Issue 1', card: null } }, { board: '1' });
+    const paneId = ticketPaneIds()[0];
+    const pane = mountTicketPane(paneId);
+    const screen = await paneScreen(pane, '1');
+    const priority = () => within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'priority')!;
+    const pickLow = async () => {
+      await fireEvent.click(within(priority()).getByTestId('ticket-field-value'));
+      await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-item')));
+    };
+    const before = toasts().length;
+    await pickLow();
+    await waitFor(() => expect(answers).toHaveLength(1));
+    answers[0](refused);
+    await waitFor(() => expect(within(priority()).getByTestId('ticket-write-outcome')).toHaveTextContent('Priority is not on the edit screen'));
+    expect(toasts().length).toBe(before);
+
+    await pickLow();
+    await waitFor(() => expect(answers).toHaveLength(2));
+    // The thread pane fills the window: the ticket pane is off screen.
+    expect(promotePane('thread-1')).toBe(true);
+    answers[1](refused);
+    await waitFor(() => expect(toasts().slice(before)).toEqual(['The tracker refused the change to WEB-1: Priority is not on the edit screen']));
+    demotePane();
+    expect(within(priority()).queryByTestId('ticket-write-outcome')).toBeNull();
   });
 
   it('steps back on Escape through the tickets the pane opened, and never closes the pane', async () => {

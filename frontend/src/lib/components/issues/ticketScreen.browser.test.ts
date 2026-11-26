@@ -43,7 +43,7 @@ function mountTicket(width: number) {
     target: host,
     props: {
       attachment, seed: { key: 'WEB-1', title: 'Issue 1', card: null }, board: '1', computerName: 'This computer',
-      offline: false, compact: false, trail: 0,
+      offline: false, compact: false, shown: true, trail: 0,
       focusAsked: false, onFocusTaken: () => {}, onBack: () => {}, onClose: () => {}, onOpenIssue: () => {},
     },
   });
