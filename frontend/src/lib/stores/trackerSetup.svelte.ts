@@ -337,14 +337,10 @@ export function agentRuleOn(setup: Setup | null | undefined, rule: AgentRule): b
   return setup?.agents?.[rule] !== false;
 }
 
-/** `setup` with Agents setting `rule` on or off; on is stored as absent,
- * so a project back on every built-in rule has no agents section. */
+/** `setup` with Agents setting `rule` on or off. The computer stores a
+ * rule turned on as none (trackerapp's validateSetup). */
 export function withAgentRule(setup: Setup, rule: AgentRule, on: boolean): Setup {
-  const agents: AgentRules = { ...setup.agents };
-  if (on) delete agents[rule];
-  else agents[rule] = false;
-  const { agents: _held, ...rest } = setup;
-  return Object.keys(agents).length > 0 ? { ...rest, agents } : rest;
+  return { ...setup, agents: { ...setup.agents, [rule]: on } };
 }
 
 /** Reads again every held entry of a project on `backend`, or of a project

@@ -1,7 +1,7 @@
 // Settings > Issues > Agents: Read tickets always on, Change tickets and
 // Ask before changing several at once on until turned off, each saved at
-// once in the setup's agents section, and a rule turned back on stored as
-// none, so a project on the built-in rules has no section.
+// once in the setup's agents section. Which of them the computer stores
+// (a rule on is none) is trackerapp's validateSetup's.
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
@@ -35,7 +35,7 @@ beforeEach(async () => {
 const checked = (name: string) => screen.getByRole('switch', { name }).getAttribute('aria-checked');
 
 describe('<TrackerAgentsSettings>', () => {
-  it('shows the built-in rules, saves each off at once, and stores a rule back on as none', async () => {
+  it('shows the built-in rules, and saves each off and back on at once', async () => {
     render(TrackerAgentsSettings);
     const read = await screen.findByRole('switch', { name: 'Read tickets' });
     expect(read).toBeDisabled();
@@ -51,9 +51,10 @@ describe('<TrackerAgentsSettings>', () => {
 
     await fireEvent.click(screen.getByRole('switch', { name: 'Change tickets' }));
     await waitFor(() => expect(saves).toHaveLength(3));
-    expect(saves[2].agents).toEqual({ ask_several: false });
+    expect(saves[2].agents).toEqual({ change_tickets: true, ask_several: false });
     await fireEvent.click(screen.getByRole('switch', { name: 'Ask before changing several at once' }));
     await waitFor(() => expect(saves).toHaveLength(4));
-    expect('agents' in saves[3], 'a project on the built-in rules has no section').toBe(false);
+    expect(saves[3].agents).toEqual({ change_tickets: true, ask_several: true });
+    expect([checked('Change tickets'), checked('Ask before changing several at once')]).toEqual(['true', 'true']);
   });
 });

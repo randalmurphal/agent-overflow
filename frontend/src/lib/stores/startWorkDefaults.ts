@@ -33,16 +33,17 @@ export interface DefaultsChange {
 }
 
 /** `setup` with the entry at `place` changed by `change`, in the setup of
- * app project `project`: a repository that is `project` itself, and
- * naming the branch after the ticket, are stored as absent (the built-in
- * defaults), and the other entries are kept. */
+ * app project `project`: a repository that is `project` itself is stored
+ * as absent, and the other entries are kept. The computer stores naming
+ * the branch after the ticket, the built-in rule, as none
+ * (trackerapp's validateSetup). */
 export function withStartWorkDefaults(setup: Setup, place: DefaultsPlace, project: string, change: DefaultsChange): Setup {
   const kept = defaultsAt(setup, place);
   const entry: StartWorkDefaults = { ...(kept ?? place) };
   if (change.status !== undefined) entry.status = change.status ?? undefined;
   if (change.assign !== undefined) entry.assign = change.assign;
   if (change.branch != null) entry.branch = change.branch;
-  if (change.nameBranch !== undefined) entry.name_branch = change.nameBranch ? undefined : false;
+  if (change.nameBranch !== undefined) entry.name_branch = change.nameBranch;
   if (change.repository !== undefined) entry.repository = change.repository === project ? undefined : change.repository;
   const others = (setup.start_work ?? []).filter((d) => d !== kept);
   return { ...setup, start_work: [...others, entry] };

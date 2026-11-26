@@ -12,8 +12,8 @@
 
   const ROWS: readonly { rule: AgentRule | null; title: string; text: string }[] = [
     { rule: null, title: 'Read tickets', text: 'Every thread can read tickets, comments and history.' },
-    { rule: 'change_tickets', title: 'Change tickets', text: 'Threads that are not read-only can edit, move, comment and log time.' },
-    { rule: 'ask_several', title: 'Ask before changing several at once', text: 'A change to more than one ticket waits for your click, the way the time draft does.' },
+    { rule: 'change_tickets', title: 'Change tickets', text: 'Threads that are not read-only can create, edit, move and comment on tickets.' },
+    { rule: 'ask_several', title: 'Ask before changing several at once', text: 'A change to more than one ticket waits for your approval in its thread.' },
   ];
 
   const compact = $derived(isCompactLayout());

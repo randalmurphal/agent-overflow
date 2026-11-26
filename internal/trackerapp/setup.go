@@ -815,8 +815,19 @@ func validateSetup(setup Setup) (Setup, error) {
 			out.StartWork = append(out.StartWork, valid)
 		}
 	}
-	if setup.Agents != nil && setup.Agents.set() {
-		out.Agents = setup.Agents
+	if setup.Agents != nil {
+		// Each rule is on by default: only its off is stored, and a
+		// section that turns nothing off is none.
+		rules := AgentRules{}
+		if setup.Agents.ChangeTickets != nil && !*setup.Agents.ChangeTickets {
+			rules.ChangeTickets = setup.Agents.ChangeTickets
+		}
+		if setup.Agents.AskSeveral != nil && !*setup.Agents.AskSeveral {
+			rules.AskSeveral = setup.Agents.AskSeveral
+		}
+		if rules.set() {
+			out.Agents = &rules
+		}
 	}
 	slices.SortFunc(out.StartWork, func(a, b StartWorkDefaults) int {
 		if c := compareSites(a.Tracker, a.Site, b.Tracker, b.Site); c != 0 {
@@ -914,6 +925,10 @@ func checkStartWork(entry StartWorkDefaults, seen map[startWorkKey]bool) (StartW
 	rest := strings.NewReplacer("{key}", "", "{title}", "").Replace(entry.Branch)
 	if strings.ContainsAny(rest, "{}") {
 		return StartWorkDefaults{}, false, invalidSetup("the branch template of %s is %q; its only tokens are {key} and {title}", entry.Project, entry.Branch)
+	}
+	// Naming the branch is the built-in rule: only its off is stored.
+	if entry.NameBranch != nil && *entry.NameBranch {
+		entry.NameBranch = nil
 	}
 	set := entry.Status != "" || entry.Assign != nil || entry.Branch != "" || entry.NameBranch != nil || entry.Repository != ""
 	return entry, set, nil

@@ -948,6 +948,24 @@ func TestAgentRulesAreSavedWithTheirDefaults(t *testing.T) {
 		t.Fatalf("rules cleared left their section:\n%s", after)
 	}
 
+	// A rule or naming the branch turned on, written by hand or sent, is
+	// the built-in rule and is stored as none.
+	on := true
+	m.writeSetupFile(t, m.project(), `{"agents": {"version": 1, "change_tickets": true, "ask_several": false}, "start_work": {"version": 1, "projects": [{"tracker": "jira", "site": "`+m.conn.Site+`", "project": "WEB", "name_branch": true}]}}`)
+	m.restart(t)
+	hand := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
+	resaved := m.saveSetup(t, m.project(), hand.Setup)
+	if a := resaved.Stored.Setup.Agents; a == nil || a.ChangeTickets != nil || a.AskSeveral == nil || *a.AskSeveral {
+		t.Fatalf("a hand edit saved again keeps %+v", a)
+	}
+	if sw := resaved.Stored.Setup.StartWork; len(sw) != 0 {
+		t.Fatalf("an entry that only names the branch, as by default, is kept: %+v", sw)
+	}
+	allOn := m.saveSetup(t, m.project(), Setup{Agents: &AgentRules{ChangeTickets: &on, AskSeveral: &on}})
+	if allOn.Stored.Setup.Agents != nil {
+		t.Fatalf("rules all on are stored as %+v", allOn.Stored.Setup.Agents)
+	}
+
 	m.writeSetupFile(t, m.project(), `{"agents": {"version": 2, "rules": ["any"]}}`)
 	m.restart(t)
 	if _, err := m.svc.ProjectAgentRules(m.project()); !errors.Is(err, ErrSetupNewer) {
