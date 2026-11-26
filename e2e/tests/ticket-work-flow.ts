@@ -357,9 +357,12 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
     await searchProject(harness, compact ? 'compact-work-search-gitlab' : 'work-search-gitlab', GITLAB_SEARCH_PULLS, 'gitlab');
     await harness.open(page);
     const { ticket, work } = await openWork(page, WEB1, compact);
-    await expect.poll(() => pullRows(work), { timeout: 30_000 }).toEqual(['!701 open', '!702 merged']);
+    // GitLab's rows only: a stored list an earlier test's project left
+    // stays until the Pull requests page's next read prunes it.
+    const gitlabRows = async () => (await pullRows(work)).filter((row) => row.startsWith('!'));
+    await expect.poll(gitlabRows, { timeout: 30_000 }).toEqual(['!701 open', '!702 merged']);
     await expect(work.getByTestId('ticket-work-searching')).toHaveCount(0);
-    await expect(work.getByTestId('ticket-work-pull').nth(1)).toContainText('Fix the cursor');
+    await expect(work.getByTestId('ticket-work-pull').filter({ hasText: '!702' })).toContainText('Fix the cursor');
     await expect(work.getByTestId('ticket-work-forge-problem')).toHaveCount(0);
 
     // The forge refuses the login every time: a setup failure, with no

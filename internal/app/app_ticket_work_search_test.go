@@ -521,3 +521,23 @@ func TestSearchTicketWorkShowsAStoredRowAsTheForgeNamesItNow(t *testing.T) {
 		t.Errorf("row = %+v; want the forge's title, author and state, the stored CI and project", pr)
 	}
 }
+
+// A GitHub Work read is one key search and one lookup per branch of the
+// ticket, however the branches are named: 2, 3 and 4 requests for 1, 2
+// and 3 branches.
+func TestSearchTicketWorkRequestsPerTicketBranchOnGitHub(t *testing.T) {
+	t.Parallel()
+	for n := 1; n <= 3; n++ {
+		f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web"}}})
+		for _, branch := range []string{"WEB-1-a", "feature/web-1-b", "WEB-1"}[:n] {
+			runGit(t, f.dir, "branch", branch)
+		}
+		if _, err := f.a.SearchTicketWork(f.ctx, f.conn.ID, "10101"); err != nil {
+			t.Fatal(err)
+		}
+		want := append([]string{"gh graphql PullsByKey"}, slices.Repeat([]string{"gh graphql PRsByHead"}, n)...)
+		if ops, _ := f.forgeOps(0); !slices.Equal(ops, want) {
+			t.Errorf("%d branches: forge requests = %v; want %v", n, ops, want)
+		}
+	}
+}

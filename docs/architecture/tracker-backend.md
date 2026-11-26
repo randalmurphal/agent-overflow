@@ -2021,33 +2021,35 @@ delete is refused and the links the delete read are the ones it ends.
 - **`GetTicketWork`** (home route, `git:operate` and `tracker:read`)
   answers a ticket's open pull requests from the stored lists, scanning
   each stored list's bytes for the key and decoding only the lists that
-  hold it, less the list of a removed project (kept until the Pull
-  requests page's next read prunes it); the merged and closed pull requests its linked threads were
+  hold it; the merged and closed pull requests its linked threads were
   last seen with; and the branches that name the key in the projects
   listing the connection's boards, the pull requests' projects and the
   linked threads' projects, a branch a listed pull request names folded
-  into it. A repository whose
+  into it. A stored list's project that was removed since (the list
+  stays until the Pull requests page's next read prunes it) keeps its
+  rows and has no branches read. A repository whose
   branches cannot be read is a problem beside the rest. At 2,000 stored
   rows over 10 repositories and a 500-branch project it costs 18 ms and
   4 MB an open, 23 ms and 5 MB when every list names the key
   (`TestTicketWorkCostAtRealSize`); a 200-row landing's tickets cost
   0.5 ms. It sends no forge or tracker request.
-- **`SearchTicketWork`** (home route, the same scopes, budget 2m15s,
-  which bounds the whole run, the local read included) is
+- **`SearchTicketWork`** (home route, the same scopes, budget 2m15s from
+  entry: every forge request runs within it, and no project's local read
+  starts after it) is
   `GetTicketWork`'s answer with the forge searched by the key
   ([Ticket Work search](forge-transport.md#ticket-work-search)): once per
   distinct repository the projects above clone, then a lookup by name, in
   every state, of each branch of the ticket, the forge's or this
-  computer's, whose pull requests that search did not read whole. A found
+  computer's. A found
   pull request or branch counts only when its title or name names the key
   by the same rule (`namesTicketKey`). A pull request is listed once
-  (`ticketWorkRead.addFound`): a stored row stays, since it carries CI,
-  and takes the state the forge answers (a stored list is as old as its
-  last read, which runs only while the Pull requests page is open or at
-  boot); a linked thread's record gives way to the forge's row. A
-  repository's failure is a `TicketForgeProblem` carrying the fields a
-  Pull requests page project carries for a failed read
-  (`newRepoForgeFailure`), and a search that stopped at its page bound is
+  (`ticketWorkRead.addFound`): the forge's row, the newest read of it,
+  replaces a stored row or a linked thread's record and keeps only the
+  stored list's CI and project (a stored list is as old as its last
+  read, which runs only while the Pull requests page is open or at
+  boot). A repository's failure is a `TicketForgeProblem` carrying the
+  fields a Pull requests page project carries for a failed read
+  (`newRepoForgeFailure`), beside the rows its search read, and a search that stopped at its page bound is
   named in `SearchFull`. The client calls both methods at once and shows
   the stored answer until the search's lands (`stores/ticketWork.svelte.ts`);
   a stored answer or failure after it is not shown; nothing is stored.

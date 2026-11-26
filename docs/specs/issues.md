@@ -522,7 +522,7 @@ request found by the search shows its state and author and no CI. Not
 built: Jira's development data.
 
 The search finds a pull request in any state by its title, and by a
-branch name that holds the key: a branch the forge still has, a branch
+branch name that holds the key: a branch the searched repository still has, a branch
 this computer has (local or fetched), and on GitHub any branch whose name
 begins with the key. Work misses a merge request whose key is only in its
 branch name once that branch is deleted on the forge, unless this
