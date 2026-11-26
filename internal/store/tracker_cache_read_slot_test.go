@@ -40,11 +40,20 @@ var mirrorPoolReads = map[string]int{
 	"probeMirrorHistory":          2, // one issue's removals, and a chunk of its changes by key
 }
 
+// mirrorAttachedReads are the functions that begin a transaction on a
+// connection of the caller's, which reads this store's file attached
+// read-only, not on the read pool; each runs under a history read slot
+// its caller takes (TestMirrorReadsTakeAHistoryReadSlot lists them).
+var mirrorAttachedReads = map[string]string{
+	"exportMirrorBoardTx": "a dashboard's own database with the file attached; ExportMirrorBoard takes the slot",
+}
+
 // No mirror read opens a read transaction, or a read whose cost grows with
 // a board or a root, on the read pool without a history read slot: a
 // read transaction opens through mirrorReadSnapshot, a transaction on
-// the pool otherwise is the writer's, and a direct read of the pool is
-// one of mirrorPoolReads. Go cannot make the pool private to one helper
+// the pool otherwise is the writer's, one on a caller's connection is one
+// of mirrorAttachedReads, and a direct read of the pool is one of
+// mirrorPoolReads. Go cannot make the pool private to one helper
 // inside the package, so the source is checked.
 func TestMirrorReadsGoThroughTheSlot(t *testing.T) {
 	entries, err := os.ReadDir(".")
@@ -93,6 +102,9 @@ func TestMirrorReadsGoThroughTheSlot(t *testing.T) {
 						case "reader":
 							found[where]++
 						case "Begin", "BeginTx":
+							if _, attached := mirrorAttachedReads[where]; attached {
+								break
+							}
 							if db, ok := fun.X.(*ast.SelectorExpr); !ok || db.Sel.Name != "db" {
 								t.Errorf("%s: %s begins a transaction off the writer; open a read snapshot with mirrorReadSnapshot", fset.Position(n.Pos()), where)
 							}
@@ -121,6 +133,7 @@ func TestMirrorReadsTakeAHistoryReadSlot(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
 	ids := patchBoard(t, s, root, 30)
+	export := exportConn(t)
 	releases := holdHistoryReadSlots(t, s, true)
 	type read struct {
 		name string
@@ -149,6 +162,10 @@ func TestMirrorReadsTakeAHistoryReadSlot(t *testing.T) {
 		read{"GetMirrorBoard", func() error { _, _, err := s.GetMirrorBoard(root, "10"); return err }},
 		read{"ListMirrorOffBoardLinkedIssues", func() error { _, _, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10"}); return err }},
 		read{"FinishMirrorCleanup", func() error { return s.FinishMirrorCleanup(context.Background(), nil) }},
+		read{"ExportMirrorBoard", func() error {
+			_, _, err := s.ExportMirrorBoard(context.Background(), export, root, "10", MirrorRegroup{})
+			return err
+		}},
 	)
 	done := make([]chan error, len(reads))
 	for i, r := range reads {
