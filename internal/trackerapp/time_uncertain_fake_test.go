@@ -275,8 +275,7 @@ func TestAnEntryThatMayBeLoggedIsNeverSentAgain(t *testing.T) {
 			d.posted(t, "the lost answer", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-3, 1h, "+mayHave, 1)
 			tc.after(t, d)
 			for _, alone := range []bool{true, false} {
-				var reqs map[string]int
-				reqs = d.requestsOf(t, func() {
+				reqs := d.requestsOf(t, func() {
 					got = must[PostTimeView](t)(d.svc.PostTimeEntries(t.Context(), d.conn.ID, PostTimeRequest{Entries: entryRefs(got.Entries...), Alone: alone}))
 				})
 				if posts := reqs[jiraWorklogPost] + reqs[tempoWorklogPost]; posts != 0 || got.Sentence != "Posted 0 of 1 entries for "+d.label+". WEB-3, 1h, "+mayHave {
