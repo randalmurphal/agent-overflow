@@ -71,6 +71,8 @@ export interface ExtraJira {
   /** The site's custom fields (trackerfake.JiraField). */
   fields?: Array<{ id: string; name: string; schema: { type: string; items?: string; custom?: string; customId?: number }; options?: Array<{ id: string; value: string }> }>;
   resolutions?: Array<{ id: string; name: string }>;
+  /** The site's link types (trackerfake.JiraLinkType) in place of the fake's. */
+  linkTypes?: Array<{ id: string; name: string; inward: string; outward: string }>;
   /** Links between issues (trackerfake.JiraLink): outward relates to inward by the type's outward name. */
   links?: Array<{ id: string; type: string; outward: string; inward: string }>;
   /** WEB's issue types with their edit screens (trackerfake.JiraIssueType) in place of the fake's. */
@@ -152,6 +154,7 @@ export async function seedFakeJira(harness: HarnessApp, extra?: ExtraJira): Prom
       ...(extra?.fields ? { fields: extra.fields } : {}),
       ...(extra?.resolutions ? { resolutions: extra.resolutions } : {}),
       ...(extra?.links ? { links: extra.links } : {}),
+      ...(extra?.linkTypes ? { linkTypes: extra.linkTypes } : {}),
       sprints: [{ id: 1, board: 1, name: 'Sprint 1', state: 'active', start: day, end: sprintEnd }, ...(extra?.sprints ?? []).map((sp) => ({ board: 1, ...sp }))],
       issues: [
         { id: '10101', key: 'WEB-1', project: 'WEB', type: '10001', summary: 'First story', sprints: [1], status: '10001', created: day, updated: day },

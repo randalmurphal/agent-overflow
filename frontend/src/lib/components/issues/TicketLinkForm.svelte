@@ -12,7 +12,7 @@
   import Button from '../primitives/Button.svelte';
   import TicketFinder, { type FoundTicket } from './TicketFinder.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
-  import { linkRelations } from '../../stores/trackerTicketModel';
+  import { linkRelations, type LinkRelation } from '../../stores/trackerTicketModel';
   import {
     linkTicket,
     loadTicketLinkTypes,
@@ -32,7 +32,9 @@
   let { ctx, onDone }: Props = $props();
 
   // Opening the form, Retry and the ticket's Refresh read the types when
-  // what is held is old (the store's form read rules).
+  // what is held is old (the store's form read rules). The Refresh is one
+  // pressed from the keyboard: a press with the pointer closes the form
+  // first.
   function readTypes(): void {
     void loadTicketLinkTypes(ctx.ref.backend, ctx.ref.connection);
   }
@@ -44,8 +46,12 @@
   const relations = $derived(types?.value ? linkRelations(types.value) : []);
   const typesError = $derived(types?.error ? errString(types.error) : '');
 
-  let relationIndex = $state(0);
-  const relation = $derived(relations[relationIndex] ?? null);
+  // The relation picked, held by its type and side, so a read that
+  // replaces the list keeps it or says it is gone; none picked takes the
+  // list's first, as the select shows.
+  let picked = $state.raw<LinkRelation | null>(null);
+  const relation = $derived(picked ? relations.find((r) => r.type === picked!.type && r.outward === picked!.outward) ?? null : relations[0] ?? null);
+  const relationKey = (r: LinkRelation): string => `${r.type}:${r.outward}`;
   let other = $state<FoundTicket | null>(null);
   let finding = $state(false);
   let findAnchor = $state<HTMLElement | undefined>();
@@ -74,22 +80,29 @@
 
 <form class="flex w-[min(20rem,calc(100vw-2rem))] flex-col gap-2 p-3" data-testid="ticket-link-form" onsubmit={submit}>
   <h3 class="text-sm font-semibold text-fg">Link {ctx.label} to a ticket</h3>
+  {#if types?.value}
+    <label class="flex flex-col gap-1 text-xs text-fg-muted">
+      {ctx.label}
+      <select class={inputClass} value={relation ? relationKey(relation) : ''} onchange={(event) => { const key = event.currentTarget.value; picked = relations.find((r) => relationKey(r) === key) ?? null; }} disabled={pending} data-testid="ticket-link-form-relation">
+        {#if !relation}
+          <option value="" disabled>Pick how the tickets relate</option>
+        {/if}
+        {#each relations as r (relationKey(r))}
+          <option value={relationKey(r)}>{r.phrase}</option>
+        {/each}
+      </select>
+    </label>
+    {#if picked && !relation}
+      <p class="text-xs text-fg" role="status" data-testid="ticket-link-form-relation-gone">The tracker no longer offers "{picked.phrase}". Pick how the tickets relate.</p>
+    {/if}
+  {:else if !typesError}
+    <span class="text-xs text-fg-muted" data-testid="ticket-link-form-types-loading">Reading how tickets can relate…</span>
+  {/if}
   {#if typesError}
     <div class="flex flex-col items-start gap-1 text-xs">
       <span class="text-error" role="alert" data-testid="ticket-link-form-types-error">Could not read how tickets can relate: {typesError}</span>
       <button type="button" class="text-accent hover:underline" data-testid="ticket-link-form-types-retry" onclick={readTypes}>Retry</button>
     </div>
-  {:else if !types?.value}
-    <span class="text-xs text-fg-muted" data-testid="ticket-link-form-types-loading">Reading how tickets can relate…</span>
-  {:else}
-    <label class="flex flex-col gap-1 text-xs text-fg-muted">
-      {ctx.label}
-      <select class={inputClass} value={relationIndex} onchange={(event) => { relationIndex = event.currentTarget.selectedIndex; }} disabled={pending} data-testid="ticket-link-form-relation">
-        {#each relations as r, i (`${r.type}:${r.outward}`)}
-          <option value={i}>{r.phrase}</option>
-        {/each}
-      </select>
-    </label>
   {/if}
   <div class="flex min-w-0 items-baseline gap-1.5 text-sm" data-testid="ticket-link-form-other">
     {#if other}
@@ -117,7 +130,7 @@
   {/if}
   <TicketWriteNote ticketKey={ctx.key} target="new-link" fieldName={(id) => id} />
   <div class="flex items-center gap-1.5">
-    <Button type="submit" size="sm" variant="primary" disabled={pending || !types?.value} testId="ticket-link-form-save">{pending ? 'Linking…' : 'Link'}</Button>
+    <Button type="submit" size="sm" variant="primary" disabled={pending || !relation} testId="ticket-link-form-save">{pending ? 'Linking…' : 'Link'}</Button>
     <Button size="sm" variant="ghost" testId="ticket-link-form-cancel" onclick={onDone}>Cancel</Button>
   </div>
 </form>
