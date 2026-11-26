@@ -179,8 +179,8 @@ func (o oneCredentialTime) Worklogs(ctx context.Context, q WorklogQuery) ([]Work
 	return trackerapi.Walk(ctx, func(ctx context.Context) ([]Worklog, error) { return o.t.Worklogs(ctx, q) })
 }
 
-func (o oneCredentialTime) AddWorklog(ctx context.Context, in WorklogInput) Result {
-	return o.t.AddWorklog(ctx, in)
+func (o oneCredentialTime) AddWorklogs(ctx context.Context, ins []WorklogInput) Result {
+	return o.t.AddWorklogs(ctx, ins)
 }
 
 func (o oneCredentialTime) EditWorklog(ctx context.Context, in WorklogEdit) Result {

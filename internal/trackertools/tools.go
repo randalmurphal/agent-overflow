@@ -24,7 +24,10 @@ type toolSpec struct {
 	description string
 	properties  map[string]any
 	required    []string
-	call        func(s *Server, ctx context.Context, caller Caller, args json.RawMessage) (any, error)
+	// time is a tool a session is given only when a Jira connection was
+	// on as it started (Caller.Time).
+	time bool
+	call func(s *Server, ctx context.Context, caller Caller, args json.RawMessage) (any, error)
 }
 
 // toolTable is every tool, in the order tools/list returns them.
@@ -78,29 +81,65 @@ var toolTable = []toolSpec{
 		},
 		call: (*Server).update,
 	},
+	{
+		name:        "time_read",
+		description: "The user's logged and drafted time by day, this week unless given.",
+		properties: map[string]any{
+			"from": property("string", "YYYY-MM-DD"),
+			"to":   property("string", ""),
+		},
+		time: true,
+		call: (*Server).timeRead,
+	},
+	{
+		name:        "time_draft",
+		description: "Draft the user's time; it is logged only once the user approves. Replaces the agents' draft of each day given.",
+		properties: map[string]any{
+			"entries": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{
+				"day":    property("string", ""),
+				"key":    property("string", "Leave out to ask the user which ticket."),
+				"hours":  property("number", ""),
+				"reason": property("string", "The worklog's description; with no key, what the time was."),
+				"offer":  map[string]any{"type": "array", "items": property("string", ""), "maxItems": maxOfferKeys},
+			}}},
+		},
+		required: []string{"entries"},
+		time:     true,
+		call:     (*Server).timeDraft,
+	},
 }
+
+// maxOfferKeys is the most tickets a question offers (trackerapp's bound).
+const maxOfferKeys = 5
 
 // maxUpdateKeys is the most tickets one ticket_update changes.
 const maxUpdateKeys = 20
 
-// ToolNames is every tool, in table order.
-func ToolNames() []string {
-	names := make([]string, len(toolTable))
-	for i, spec := range toolTable {
-		names[i] = spec.name
+// ToolNames is every tool a session is given, in table order: with the
+// time tools when withTime.
+func ToolNames(withTime bool) []string {
+	var names []string
+	for _, spec := range toolTable {
+		if withTime || !spec.time {
+			names = append(names, spec.name)
+		}
 	}
 	return names
 }
 
-// Tools returns every tool's definition, in table order.
-func (s *Server) Tools() []map[string]any {
-	tools := make([]map[string]any, len(toolTable))
-	for i, spec := range toolTable {
+// Tools returns the definition of every tool a session is given, in
+// table order: with the time tools when withTime.
+func (s *Server) Tools(withTime bool) []map[string]any {
+	var tools []map[string]any
+	for _, spec := range toolTable {
+		if spec.time && !withTime {
+			continue
+		}
 		required := spec.required
 		if required == nil {
 			required = []string{}
 		}
-		tools[i] = map[string]any{
+		tools = append(tools, map[string]any{
 			"name":        spec.name,
 			"description": spec.description,
 			"inputSchema": map[string]any{
@@ -109,7 +148,7 @@ func (s *Server) Tools() []map[string]any {
 				"required":             required,
 				"additionalProperties": false,
 			},
-		}
+		})
 	}
 	return tools
 }

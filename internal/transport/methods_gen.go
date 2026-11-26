@@ -180,6 +180,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "EditTrackerIssue", ID: 2133356294, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                             // main.App.EditTrackerIssue
 	{Name: "EditTrackerKeyFile", ID: 1347598600, Scope: "host", Route: "home"},                                                               // main.App.EditTrackerKeyFile
 	{Name: "EditTrackerSprint", ID: 3891799979, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                            // main.App.EditTrackerSprint
+	{Name: "EditTrackerTimeEntry", ID: 3741061790, Scope: "tracker:operate", Route: "home"},                                                  // main.App.EditTrackerTimeEntry
 	{Name: "EditTrackerWorklog", ID: 670991272, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                            // main.App.EditTrackerWorklog
 	{Name: "EvaluateTrackerDashboard", ID: 2206254666, Scope: "tracker:read", Route: "home", CallerBound: true},                              // main.App.EvaluateTrackerDashboard
 	{Name: "FetchForgeAttachment", ID: 1594348919, Scope: "git:operate", Route: "selected", Budget: 11 * time.Minute},                        // main.App.FetchForgeAttachment
@@ -407,6 +408,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "PinThread", ID: 1748405812, Scope: "threads:operate", Route: "thread"},                                                           // main.App.PinThread
 	{Name: "PostPRComment", ID: 3141095494, Scope: "git:operate", Route: "selected"},                                                         // main.App.PostPRComment
 	{Name: "PostPRLineComment", ID: 1583250136, Scope: "git:operate", Route: "selected"},                                                     // main.App.PostPRLineComment
+	{Name: "PostTrackerTimeEntries", ID: 4218259664, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                       // main.App.PostTrackerTimeEntries
 	{Name: "PrepareThreadWorktree", ID: 2870364785, Scope: "git:operate", Route: "thread", Budget: 12 * time.Minute},                         // main.App.PrepareThreadWorktree
 	{Name: "PreviewNotificationSound", ID: 2105157519, Scope: "host", Route: "home"},                                                         // main.App.PreviewNotificationSound
 	{Name: "ProjectDeletionPreview", ID: 2575010484, Scope: "git:operate", Route: "project"},                                                 // main.App.ProjectDeletionPreview
@@ -462,6 +464,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RemoveOtherWorktree", ID: 2899196344, Scope: "git:operate", Route: "workspace"},                                                  // main.App.RemoveOtherWorktree
 	{Name: "RemoveProviderAccount", ID: 684418419, Scope: "access:admin", Route: "home"},                                                     // main.App.RemoveProviderAccount
 	{Name: "RemoveTrackerConnection", ID: 21628411, Scope: "tracker:operate", Route: "home"},                                                 // main.App.RemoveTrackerConnection
+	{Name: "RemoveTrackerTimeEntries", ID: 2493130714, Scope: "tracker:operate", Route: "home"},                                              // main.App.RemoveTrackerTimeEntries
 	{Name: "RenameBackend", ID: 1528076361, Scope: "host", Route: "home"},                                                                    // main.App.RenameBackend
 	{Name: "RenameProject", ID: 3728890856, Scope: "threads:operate", Route: "project"},                                                      // main.App.RenameProject
 	{Name: "RenameThread", ID: 727416435, Scope: "threads:operate", Route: "thread"},                                                         // main.App.RenameThread
@@ -587,6 +590,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "TerminateCodexBackgroundTerminal", ID: 870653875, Scope: "threads:operate", Route: "thread"},                                     // main.App.TerminateCodexBackgroundTerminal
 	{Name: "ThreadOwnerChanges", ID: 3558393553, Scope: "threads:read", Route: "selected", CallerBound: true, Budget: 1 * time.Minute},       // main.App.ThreadOwnerChanges
 	{Name: "ThreadOwnerRecovery", ID: 3143780103, Scope: "threads:read", Route: "selected", CallerBound: true},                               // main.App.ThreadOwnerRecovery
+	{Name: "ThreadTimeEntries", ID: 2477644032, Scope: "tracker:read", Route: "thread"},                                                      // main.App.ThreadTimeEntries
 	{Name: "ThreadToolCall", ID: 894716875, Scope: "terminal:operate", Route: "selected", Budget: 13 * time.Minute},                          // main.App.ThreadToolCall
 	{Name: "ThreadToolExportChunk", ID: 1295284198, Scope: "threads:read", Route: "selected", CallerBound: true},                             // main.App.ThreadToolExportChunk
 	{Name: "ThreadToolQuery", ID: 2624544009, Scope: "threads:read", Route: "selected", Budget: 1 * time.Minute},                             // main.App.ThreadToolQuery

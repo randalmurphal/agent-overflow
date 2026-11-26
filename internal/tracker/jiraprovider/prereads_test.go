@@ -127,8 +127,8 @@ func preReads() []preRead {
 		{"Attach", "none", nil, func(ctx context.Context, p *Provider) tracker.Result {
 			return p.Attach(ctx, tracker.AttachInput{Issue: "10001", Files: []tracker.File{{Name: "a.txt", Content: strings.NewReader("a"), Size: 1}}})
 		}, false},
-		{"Time.AddWorklog", "who", nil, func(ctx context.Context, p *Provider) tracker.Result {
-			return p.Time().AddWorklog(ctx, tracker.WorklogInput{Issue: "10001", Day: day1(), Spent: time.Hour})
+		{"Time.AddWorklogs", "who", nil, func(ctx context.Context, p *Provider) tracker.Result {
+			return p.Time().AddWorklogs(ctx, []tracker.WorklogInput{{Issue: "10001", Day: day1(), Spent: time.Hour}})
 		}, true},
 		{"Time.EditWorklog", "worklog", nil, func(ctx context.Context, p *Provider) tracker.Result {
 			return p.Time().EditWorklog(ctx, tracker.WorklogEdit{From: jiraWL, Spent: ptr(time.Hour)})
@@ -142,8 +142,8 @@ func preReads() []preRead {
 		{"Time.DeleteWorklog", "author", worklog, func(ctx context.Context, p *Provider) tracker.Result {
 			return p.Time().DeleteWorklog(ctx, tracker.WorklogDelete{From: jiraWL})
 		}, true},
-		{"Tempo.AddWorklog", "who", nil, func(ctx context.Context, p *Provider) tracker.Result {
-			return p.Time().AddWorklog(ctx, tracker.WorklogInput{Issue: "10001", Day: day1(), Spent: time.Hour})
+		{"Tempo.AddWorklogs", "who", nil, func(ctx context.Context, p *Provider) tracker.Result {
+			return p.Time().AddWorklogs(ctx, []tracker.WorklogInput{{Issue: "10001", Day: day1(), Spent: time.Hour}})
 		}, true},
 		{"Tempo.EditWorklog", "worklog", tempoRead, func(ctx context.Context, p *Provider) tracker.Result {
 			return p.Time().EditWorklog(ctx, tracker.WorklogEdit{From: tempoWL, Spent: ptr(time.Hour)})

@@ -223,7 +223,7 @@ func TestFakeScenario(t *testing.T) {
 	// Logged time through Tempo.
 	tt := s.p.Time()
 	today := scenarioMust[tracker.Date](t)(tracker.DateOf(t0))
-	allApplied(t, "worklog add", tt.AddWorklog(s.ctx, tracker.WorklogInput{Issue: "10102", Day: today, Spent: 30 * time.Minute, Description: "Review"}))
+	allApplied(t, "worklog add", tt.AddWorklogs(s.ctx, []tracker.WorklogInput{{Issue: "10102", Day: today, Spent: 30 * time.Minute, Description: "Review"}}))
 	wls := scenarioMust[[]tracker.Worklog](t)(tt.Worklogs(s.ctx, tracker.WorklogQuery{Author: "acc-user1", From: today, To: today}))
 	if len(wls) != 1 || wls[0].Issue != "10102" || wls[0].Spent != 30*time.Minute {
 		t.Fatalf("worklogs %+v", wls)
@@ -282,7 +282,7 @@ func TestFakeScenarioJiraWorklogs(t *testing.T) {
 	s := newScenario(t, false)
 	tt := s.p.Time()
 	today := scenarioMust[tracker.Date](t)(tracker.DateOf(s.clock.Now()))
-	allApplied(t, "worklog add", tt.AddWorklog(s.ctx, tracker.WorklogInput{Issue: "10102", Day: today, Spent: 30 * time.Minute, Description: "Review"}))
+	allApplied(t, "worklog add", tt.AddWorklogs(s.ctx, []tracker.WorklogInput{{Issue: "10102", Day: today, Spent: 30 * time.Minute, Description: "Review"}}))
 	q := tracker.WorklogQuery{Author: "acc-user1", From: today, To: today}
 	wls := scenarioMust[[]tracker.Worklog](t)(tt.Worklogs(s.ctx, q))
 	if len(wls) != 1 || wls[0].Issue != "10102" || wls[0].Spent != 30*time.Minute {

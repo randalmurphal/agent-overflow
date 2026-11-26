@@ -266,6 +266,9 @@ type MirrorWorklogDays struct {
 	Logs     []MirrorWorklog
 	More     bool
 	ReadDays []string
+	// Entries are the author's time entries of the range on the
+	// connection (migration v173), by day and ID.
+	Entries []TimeEntry
 }
 
 // ReadMirrorWorklogDays reads connectionID's row, and its mirror's
@@ -284,6 +287,9 @@ func (s *Store) ReadMirrorWorklogDays(connectionID, authorID, fromDay, toDay str
 			return out, fmt.Errorf("read the connection: %w", err)
 		}
 		out.Connection, out.Found = row, true
+		if out.Entries, err = scanTimeEntries(q.Query(timeEntriesOfSQL, connectionID, authorID, fromDay, toDay)); err != nil {
+			return out, fmt.Errorf("read the time entries: %w", err)
+		}
 		var root int64
 		err = q.QueryRow(`SELECT id FROM tracker_cache_roots WHERE connection_id = ?`, connectionID).Scan(&root)
 		switch {

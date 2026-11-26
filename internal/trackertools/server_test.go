@@ -29,8 +29,10 @@ type fakeTracker struct {
 	// the service's does.
 	honorCtx bool
 	details  map[string]trackerapp.DetailView // connection/issue
-	// onDetail, when set, runs as each detail read starts.
+	// onDetail, when set, runs as each detail read starts; onLookup as
+	// each key lookup does.
 	onDetail func()
+	onLookup func()
 	comments func(connection, issue, page string) (trackerapp.CommentPageView, error)
 	asked    []string
 
@@ -56,6 +58,29 @@ type fakeTracker struct {
 	agents []context.Context
 	// ends counts the write sessions ended.
 	ends int
+	// time answers ReadTime by connection; draft answers DraftTime, and
+	// drafts are the drafts asked, by connection.
+	time   map[string]trackerapp.WorklogDays
+	draft  func(connection string, in trackerapp.TimeDraftRequest) (trackerapp.TimeDraftView, error)
+	drafts []string
+}
+
+func (f *fakeTracker) ReadTime(_ context.Context, connection, from, to string) (trackerapp.WorklogDays, error) {
+	f.asked = append(f.asked, "time "+connection+" "+from+" "+to)
+	got, ok := f.time[connection]
+	if !ok {
+		return got, errorsx.Public("tracker_connection_unverified", "this connection has no verified account, so whose time it is is not known; check the connection in the Issues settings", nil)
+	}
+	return got, nil
+}
+
+func (f *fakeTracker) DraftTime(connection string, in trackerapp.TimeDraftRequest) (trackerapp.TimeDraftView, error) {
+	raw, _ := json.Marshal(in.Entries)
+	f.drafts = append(f.drafts, connection+" "+string(raw))
+	if f.draft == nil {
+		return trackerapp.TimeDraftView{Author: "acc-user1", Made: []trackerapp.TimeEntryView{}, Logged: []trackerapp.LoggedDay{}}, nil
+	}
+	return f.draft(connection, in)
 }
 
 func (f *fakeTracker) TicketsOfKey(key string) ([]trackerapp.KeyedTicket, error) {
@@ -143,6 +168,7 @@ type fakeHost struct {
 	approve   func(Approval) error
 	approvals []Approval
 	rows      []WriteRow
+	timeRows  []TimeRow
 	// createBoards are the boards a create can go through, by project;
 	// readingProject, when set, runs as a create reads them.
 	createBoards   map[string][]CreateBoard
@@ -172,6 +198,8 @@ func (h *fakeHost) Approve(_ context.Context, _ string, a Approval) error {
 
 func (h *fakeHost) Wrote(_ string, row WriteRow) { h.rows = append(h.rows, row) }
 
+func (h *fakeHost) Drafted(_ string, row TimeRow) { h.timeRows = append(h.timeRows, row) }
+
 func (h *fakeHost) CreateBoards(_, project string) ([]CreateBoard, error) {
 	if h.readingProject != nil {
 		h.readingProject()
@@ -195,6 +223,9 @@ func (f *fakeTracker) LinkedTicket(string) (trackerapp.LinkedTicket, bool, error
 
 func (f *fakeTracker) Lookup(_ context.Context, connection string, keys []string) (trackerapp.LookupView, error) {
 	f.asked = append(f.asked, "lookup "+connection+" "+strings.Join(keys, ","))
+	if f.onLookup != nil {
+		f.onLookup()
+	}
 	if err := f.lookupErr[connection]; err != nil && f.lookupErrAfter == 0 {
 		return trackerapp.LookupView{}, err
 	}
@@ -350,7 +381,7 @@ func cards(prefix string, n int) []trackerapp.CardView {
 // is a refusal the model reads, and the names are the table's.
 func TestToolSchemasAreClosed(t *testing.T) {
 	t.Parallel()
-	tools := New(nil, nil).Tools()
+	tools := New(nil, nil).Tools(false)
 	var names []string
 	for _, tool := range tools {
 		names = append(names, tool["name"].(string))
@@ -362,7 +393,7 @@ func TestToolSchemasAreClosed(t *testing.T) {
 			t.Errorf("%s's required is %#v", tool["name"], schema["required"])
 		}
 	}
-	if !slices.Equal(names, []string{"ticket_find", "ticket_read", "ticket_create", "ticket_update"}) || !slices.Equal(names, ToolNames()) {
+	if !slices.Equal(names, []string{"ticket_find", "ticket_read", "ticket_create", "ticket_update"}) || !slices.Equal(names, ToolNames(false)) {
 		t.Fatalf("tools = %v", names)
 	}
 	f := &fakeTracker{sources: []trackerapp.TicketSource{jiraSource}}

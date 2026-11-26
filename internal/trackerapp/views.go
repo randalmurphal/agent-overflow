@@ -99,13 +99,13 @@ type RowView struct {
 }
 
 // readRoot is connection id's mirror root for a read, once the rows an
-// earlier process left are deleted (dropEarlierTickets); ErrNotMirrored
+// earlier process left are deleted (recoverEarlier); ErrNotMirrored
 // when it has none. The caller calls leave.
 func (s *Service) readRoot(id string) (int64, error) {
 	if err := s.enter(); err != nil {
 		return 0, err
 	}
-	if err := s.dropEarlierTickets(); err != nil {
+	if err := s.recoverEarlier(); err != nil {
 		s.leave()
 		return 0, err
 	}
