@@ -18,11 +18,13 @@
 // newer build saved said with no control; and a site with 400 fields, of
 // which the page draws none until a name is typed and at most 20 of those
 // that match, with the time to show the page and to filter it recorded as
-// annotations. On desktop: a connected browser's changes on each page
+// annotations. On desktop: opening the Fields page reading each Jira site's
+// fields once, with one site and with two, its RPCs and tracker requests
+// recorded as an annotation; a connected browser's changes on each page
 // saved, followed by this window's page, and a paired computer's project
 // set on that computer.
 
-import { chmod, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -56,7 +58,8 @@ import { confirmOnHost, mintInvite, nonLoopbackIPv4, redeemOnScreen } from './of
 import { setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 import { showColumn, workOf } from './ticket-work-flow.js';
 import { TRACKER_TOOLS_SERVER, expandActivityRuns } from './tracker-agent-tools-helpers.js';
-import { connectFakeJira, connectFakeJiraBoard, connectFakeLinearBoard, openIssuesPane, press, seedFakeJira, trackerRequests } from './tracker-helpers.js';
+import { JIRA_ACCOUNT, connectFakeJira, connectFakeJiraBoard, connectFakeLinearBoard, openIssuesPane, press, seedFakeJira, trackerRequests } from './tracker-helpers.js';
+import { recordPageWire } from './wire-cost-helpers.js';
 
 export interface SettingsPagesSurface {
   compact: boolean;
@@ -427,6 +430,52 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
   });
 
   if (!compact) {
+    test('opening the Fields page reads each Jira site\'s fields once, with one site and with two', async ({ harness, page }) => {
+      test.setTimeout(120_000);
+      const other = 'other.atlassian.net';
+      const board = await connectFakeJiraBoard(harness, 'settings-fields-reads', { ...SETUP, sites: [{
+        site: other, account: 'acc-user1', token: 'fake-jira-token-2',
+        users: [{ accountId: 'acc-user1', displayName: 'User 1', email: JIRA_ACCOUNT, timeZone: 'UTC' }],
+        fields: [{ id: 'customfield_10060', name: 'Ops area', schema: { type: 'string', custom: 'com.atlassian.jira.plugin.system.customfieldtypes:textfield', customId: 10060 } }],
+      }] });
+      const file = await setupFile(harness, board.projectId);
+      const added = await harness.rpc<{ id: string; keyFilePath: string }>('AddTrackerConnection', { kind: 'jira', site: other, account: JIRA_ACCOUNT });
+      await writeFile(added.keyFilePath, 'fake-jira-token-2', { mode: 0o600 });
+      const verified = await harness.rpc<{ site: string; problem?: unknown }>('VerifyTrackerConnection', added.id);
+      expect(verified.problem ?? null).toBeNull();
+      const wire = recordPageWire(page);
+
+      // What one open of the page asks in a window opened on the setup
+      // as written: its RPCs, and the fake's requests by route and site,
+      // from the tab's press until every site's fields show.
+      const measure = async (sites: number): Promise<string> => {
+        await harness.open(page);
+        const since = (await harness.rpc<{ requests: Array<{ seq: number }> }>('HarnessTrackerRequests', 0)).requests.at(-1)?.seq ?? 0;
+        wire.arm('');
+        const screen = await fieldsPage(page, false);
+        await expect(screen.getByTestId('tracker-fields-site')).toHaveCount(sites, { timeout: 15_000 });
+        await expect(screen.getByTestId('tracker-fields-find')).toHaveCount(2 * sites, { timeout: 15_000 });
+        const calls = wire.stop().rpcCalls;
+        const requests = (await harness.rpc<{ requests: Array<{ route?: string; tenant?: string }> }>('HarnessTrackerRequests', since)).requests;
+        const fieldReads = requests.filter((r) => r.route === 'GET rest/api/3/field');
+        expect(calls.ProjectTrackerSiteFields, 'one field read per site').toBe(sites);
+        expect(fieldReads, 'one tracker request per site').toHaveLength(sites);
+        expect(new Set(fieldReads.map((r) => r.tenant)).size).toBe(sites);
+        const routes = requests.map((r) => `${r.route ?? 'unhandled'} (${r.tenant ?? ''})`).join(', ') || 'none';
+        const rpcs = Object.entries(calls).sort().map(([name, n]) => `${name} ${n}`).join(', ');
+        return `${sites} site${sites === 1 ? '' : 's'}: RPCs ${rpcs}; tracker requests ${routes}`;
+      };
+
+      await writeSetup(file, JSON.stringify({ ticket_pins: { version: 1, sites: [{ tracker: 'jira', site: board.site, fields: [EFFORT] }] } }));
+      const one = await measure(1);
+      await writeSetup(file, JSON.stringify({ ticket_pins: { version: 1, sites: [
+        { tracker: 'jira', site: board.site, fields: [EFFORT] }, { tracker: 'jira', site: verified.site, fields: ['customfield_10060'] },
+      ] } }));
+      const two = await measure(2);
+      test.info().annotations.push({ type: 'fields-page-reads', description: `${one}. ${two}` });
+      console.log(`[fields-page-reads] ${one}\n[fields-page-reads] ${two}`);
+    });
+
     test('a connected browser\'s changes on each page are saved, and this window\'s page follows them', async ({ browser, page }) => {
       test.skip(nonLoopbackIPv4() === null, 'requires a LAN interface for a connected browser');
       test.setTimeout(180_000);

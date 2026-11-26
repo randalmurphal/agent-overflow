@@ -357,7 +357,8 @@ no step runs at root creation, restore or start.
   `version`: `status_groups` (by tracker site, the group a status counts
   in: one of the five tracker groups, or `left_out`), `ticket_pins` (by
   tracker site, the fields and the sections a ticket shows first; a
-  Linear site pins no fields), `start_work` (by tracker site and
+  Linear site pins no fields, and a site entry that pins nothing is
+  dropped), `start_work` (by tracker site and
   tracker project, named by its key prefix, `WEB`: the status Start work
   moves to, whether it assigns, the branch template with `{key}` and
   `{title}`, whether the branch is named after the ticket
@@ -439,10 +440,16 @@ no step runs at root creation, restore or start.
   and setup, with no tracker request: by tracker site, whatever
   connection reaches it, each listed board's column statuses in board
   order, each once, the statuses the setup regroups that no listed board
-  shows, the listed boards the mirror has not read, by name and tracker
-  project, and each listed board read with its tracker project and its
-  column statuses' IDs, so Starting work offers a tracker project only
-  its boards' statuses (two Linear teams share a site). A board
+  shows, and the listed boards the mirror has not read, each board once
+  by name. Beside the sites it lists the places Starting work sets
+  defaults for (`places`): each tracker project a listed board names, in
+  picker order, then each the setup holds defaults for, with the IDs of
+  the statuses Move the ticket offers it and the unread boards that
+  would add to them. A Linear team offers its own boards' statuses (two
+  teams share a site); a Jira status is the site's and a Jira board can
+  show several projects' tickets, so a Jira project offers every status
+  the project's boards on its site show, and Start work checks the
+  ticket's own moves. A board
   is one statement of its column statuses (`GetMirrorBoardStatuses`, at
   most 200 rows), not its structure: no sprints or board data. Names
   come from the root's catalog, looked up 500 at a time. With 20 boards of
@@ -453,20 +460,24 @@ no step runs at root creation, restore or start.
   (`BenchmarkProjectStatuses20Boards`). A client reads it only while the
   page shows a project: on the page's show, after `tracker:setup_updated`,
   on reconnect and on Check again.
-- **The fields the Fields page lists** (`ProjectFields`,
-  `trackerapp/project_fields.go`) are each Jira site's of the project's
-  boards and of its setup's `ticket_pins`, read through the first
-  connection to the site that is on, among those the boards name and
-  then the computer's others. A site whose read fails, or that no
-  connection reaches (`ErrNoSiteConnection`), carries its own `error`
-  beside the others and lists no fields; only the context's end or a
-  setup that cannot be read fails the call. A site's fields are the
-  provider's `Fields` as `{id, name, kind}`, the site's field catalog by the rule a ticket's
-  detail lists fields by (`jiraprovider` `site.listed`), which the client
-  holds after its first read. A Linear site lists none. A real site's
-  catalog holds several hundred fields; the page draws the pinned ones
-  and at most 20 matches of a typed name. A client reads it only while the
-  page shows a project: on the page's show, on reconnect and on Try again.
+- **The fields the Fields page lists** (`SiteFields`,
+  `trackerapp/project_fields.go`) are one Jira site's, one read per
+  site: the page works out the sites itself, from the project's boards,
+  the computer's connections and the setup's `ticket_pins` it already
+  holds, so a pin saved elsewhere or a connection removed shows with no
+  read. A site's read goes through the first connection to it that is
+  on; a site whose connections are all off is `ErrDisabled`, and one no
+  connection reaches is `NoSiteConnectionError`, which the app words as
+  `tracker_site_unreached`. Each read has its own deadline, error line
+  and Try again, so a site that fails or stalls holds up no other. A
+  site's fields are the provider's `Fields` as `{id, name, kind}`, the
+  site's field catalog by the rule a ticket's detail lists fields by
+  (`jiraprovider` `site.listed`), which the client holds after its first
+  read. A Linear site lists none. A real site's catalog holds several
+  hundred fields; the page draws the pinned ones and, only while a name is
+  typed, at most 20 of its matches, ranked on the name. A client reads a
+  site only while the page shows it: on the page's show, on reconnect, on
+  Try again and when the connections that reach the site change.
 
 ## Tables
 
@@ -1401,6 +1412,7 @@ selected computer.
 | `ProjectTrackerSetup(projectID)` | `ProjectSetup` | read | project |
 | `SetProjectTrackerSetup(projectID, revision, setup)` | `SetProjectSetup` | operate | project |
 | `ProjectTrackerStatuses(projectID)` | `ProjectStatuses` | read | project |
+| `ProjectTrackerSiteFields(projectID, tracker, site)` | `SiteFields` | read | project |
 | `SubscribeTrackerBoard(projectID, connectionID, boardID, sections, visible)` | `SubscribeBoard` | read | project, caller-bound |
 | `TrackerBoard(subscriptionID, sections)` | `Board` | read | home |
 | `TrackerSectionRows(subscriptionID, section, after)` | `SectionRows` | read | home |

@@ -129,8 +129,10 @@ All dated 2026-11-15.
   a thread with the ticket attached and changes nothing on the ticket.
 - **Any thread may read tickets. A thread that is not read-only may write
   them. A write to more than one ticket waits for the user's approval in
-  the app.** Each agent write is marked as the agent's in the ticket's
-  history view.
+  the app.** A project's Agents setting can turn off its threads' ticket
+  changes, or turn off asking before a change to several tickets
+  ([Setup](#setup)). Each agent write is marked as the agent's in the
+  ticket's history view.
 - **Time is drafted by an agent and posted on approval.** The app supplies
   the measured inputs: what is already logged, when the user was active in
   the app, which tickets each day's threads, commits and reviews touched,
@@ -681,17 +683,22 @@ sidebar and the thread header, on desktop and on a phone.
   at once; a field or section that is not pinned is found by typing its
   name, the exact name first, and at most 20 matches show; two fields of
   one name show their IDs. A site's fields are its whole field catalog,
-  several hundred on a real site. A site whose fields cannot be read says
-  why beside its pins, which show by ID and can be taken off. A project with only Linear boards says it has nothing to pin:
-  a Linear ticket's fields are fixed, and its sections are pinned on the
-  ticket.
+  several hundred on a real site. Each site's fields are read on their
+  own: a site whose fields cannot be read says why beside its pins, with
+  Try again, and its pins show by ID and can be taken off, while the
+  other sites show as usual. A project with only Linear boards says it
+  has nothing to pin: a Linear ticket's fields are fixed, and its
+  sections are pinned on the ticket.
 - Starting work lists each tracker project of the project's boards, and
   any that already has defaults, with what Start work does: move the
-  ticket (off, or on to a status of a board that lists that tracker
-  project, the first one counted in progress when turned on; a tracker
-  project no board lists, or whose boards this computer has not read,
-  says so instead), assign it to the person, name the branch after the ticket,
-  and the project the thread runs in. With naming off, the Start work form
+  ticket (off, or on to a status the project's boards offer it, the
+  first one counted in progress when turned on: a Linear team's own
+  boards' statuses, and for a Jira tracker project every status the
+  project's boards on its site show, since a Jira board can list several
+  tracker projects' tickets; a tracker project offered no status says
+  so, and one whose boards this computer has not read names them),
+  assign it to the person, name the branch after the ticket, and the
+  project the thread runs in. With naming off, the Start work form
   opens with an empty branch box for the person to name. The form's Save
   as defaults writes the same defaults, so each shows what the other
   saved.
@@ -707,9 +714,11 @@ sidebar and the thread header, on desktop and on a phone.
   threads until it is fixed.
 - The rest is per project: which boards the picker lists and which opens
   first; which group each status belongs to, including left out of counts;
-  pinned fields, pinned sections and card marks; Start work defaults; the
+  pinned fields and pinned sections; Start work defaults; the
   estimate field, poker and credit rules; the meetings and time-off
   tickets, draft approval and draft sources; and what agents may do.
+  What cards and Backlog rows show is chosen with Display, per board, on
+  each device.
 - A Linear project has no fields, credit or time settings.
 
 ### Compact layout
