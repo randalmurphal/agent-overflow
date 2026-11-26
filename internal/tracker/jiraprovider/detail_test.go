@@ -302,26 +302,21 @@ func TestCreateFieldsRequireWhatHasNoDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	required, defaulted := map[tracker.FieldID]bool{}, map[tracker.FieldID]bool{}
+	byID := map[tracker.FieldID]tracker.CreateField{}
 	for _, fd := range got {
-		required[fd.ID], defaulted[fd.ID] = fd.Required, fd.Defaulted
+		byID[fd.ID] = fd
 	}
-	if required["priority"] || !required["customfield_10050"] || !defaulted["priority"] || defaulted["customfield_10050"] {
-		t.Errorf("required %v, defaulted %v; want priority defaulted and not required, and the team required", required, defaulted)
+	priority, team := byID["priority"], byID["customfield_10050"]
+	if priority.Required || !team.Required || !priority.Defaulted || team.Defaulted {
+		t.Errorf("priority %+v, team %+v; want priority defaulted and not required, and the team required", priority, team)
 	}
 	// The screen's listed values ride with the field, so its picker reads
 	// nothing; a field the screen lists none for has none.
-	for _, fd := range got {
-		switch fd.ID {
-		case "customfield_10050":
-			if !slices.Equal(fd.Allowed, []tracker.Choice{{ID: "1", Name: "Red"}}) {
-				t.Errorf("team allowed %v", fd.Allowed)
-			}
-		case "priority":
-			if fd.Allowed != nil {
-				t.Errorf("priority allowed %v, want none listed", fd.Allowed)
-			}
-		}
+	if !slices.Equal(team.Allowed, []tracker.Choice{{ID: "1", Name: "Red"}}) {
+		t.Errorf("team allowed %v", team.Allowed)
+	}
+	if priority.Allowed != nil {
+		t.Errorf("priority allowed %v, want none listed", priority.Allowed)
 	}
 }
 
