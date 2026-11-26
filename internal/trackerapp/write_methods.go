@@ -56,21 +56,25 @@ func (s *Service) sectionFoot(root int64, board tracker.BoardID, sprint tracker.
 	return tracker.RowPlace{Issue: tracker.IssueID(issue), Order: tracker.OrderKey(order)}, nil
 }
 
-// Edit changes fields of an issue.
+// Edit changes fields of an issue; the first write to it in ctx's
+// session takes the session's read of it (write_session.go).
 func (s *Service) Edit(ctx context.Context, id string, in EditRequest) (WriteView, error) {
 	m, err := in.model()
 	if err != nil {
 		return WriteView{}, err
 	}
+	m.Read = sessionOf(ctx).read(id, m.Issue)
 	return s.write(ctx, id, call1(m, tracker.Provider.Edit))
 }
 
-// Move moves an issue to the status of one of its moves.
+// Move moves an issue to the status of one of its moves; the first write
+// to it in ctx's session takes the session's read of it.
 func (s *Service) Move(ctx context.Context, id string, in MoveRequest) (WriteView, error) {
 	m, err := in.model()
 	if err != nil {
 		return WriteView{}, err
 	}
+	m.Read = sessionOf(ctx).read(id, m.Issue)
 	return s.write(ctx, id, call1(m, tracker.Provider.Move))
 }
 
@@ -111,12 +115,16 @@ func (s *Service) EditSprint(ctx context.Context, id string, in SprintEditReques
 	return s.write(ctx, id, call1(in.model(), tracker.Provider.EditSprint))
 }
 
-// AddComment adds a comment to an issue.
+// AddComment adds a comment to an issue; in ctx's session it is judged on
+// the project the session's last key lookup found the issue in while no
+// write but a comment was sent on the connection since (projectFor), and
+// otherwise on the issue's project the provider reads with it.
 func (s *Service) AddComment(ctx context.Context, id string, in CommentRequest) (WriteView, error) {
 	m, err := in.model()
 	if err != nil {
 		return WriteView{}, err
 	}
+	m.Project = sessionOf(ctx).projectFor(id, m.Issue)
 	op := call1(m, tracker.Provider.AddComment)
 	op.additive = commentOf(m.Issue, in.Markdown)
 	return s.write(ctx, id, op)

@@ -286,9 +286,8 @@ func (s *Service) detailView(root int64, row store.TrackerConnection, doc ticket
 // one lookup (and the parents only the record names in a second), and
 // then the names of every document in one, a store lookup's bound at a
 // time; a document linking more than that bound shows the rest as it has
-// them. Each view's rows on the boards are read with every document's in
-// one more statement (store.ListMirrorTicketRows), so docs holds at most
-// store.MirrorMaxBodies, and, when marked is set, each view's agent marks
+// them. Each view's rows on the boards are read with every document's
+// (issueRows), and, when marked is set, each view's agent marks
 // in one statement of its own (markAgentWrites). It returns each view with
 // the other issues it shows (showsOf of the card it rendered), the
 // dependencies its pump watches.
@@ -437,16 +436,25 @@ func (s *Service) ticketRows(root int64, docs []ticketDoc) (map[tracker.IssueID]
 	for i, doc := range docs {
 		ids[i] = string(doc.d.Card.ID)
 	}
-	held, err := s.store.ListMirrorTicketRows(root, ids)
-	if err != nil {
-		return nil, fmt.Errorf("trackerapp: read the rows of %d tickets from the mirror: %w", len(docs), err)
-	}
-	out := make(map[tracker.IssueID][]TicketRowView, len(docs))
-	for _, r := range held {
-		id := tracker.IssueID(r.IssueID)
-		out[id] = append(out[id], TicketRowView{
-			Board: r.BoardID, Estimate: copyNumber(r.Estimate), Unit: nameOf(unitNames[:], tracker.EstimateUnit(r.EstimateUnit)),
-		})
+	return s.issueRows(root, ids)
+}
+
+// issueRows are the rows of issues ids on the boards the mirror shows, by
+// issue, in board order, read store.MirrorMaxBodies issues a statement:
+// a caller may name any number of issues.
+func (s *Service) issueRows(root int64, ids []string) (map[tracker.IssueID][]TicketRowView, error) {
+	out := make(map[tracker.IssueID][]TicketRowView, len(ids))
+	for batch := range slices.Chunk(ids, store.MirrorMaxBodies) {
+		held, err := s.store.ListMirrorTicketRows(root, batch)
+		if err != nil {
+			return nil, fmt.Errorf("trackerapp: read the rows of %d tickets from the mirror: %w", len(ids), err)
+		}
+		for _, r := range held {
+			id := tracker.IssueID(r.IssueID)
+			out[id] = append(out[id], TicketRowView{
+				Board: r.BoardID, Estimate: copyNumber(r.Estimate), Unit: nameOf(unitNames[:], tracker.EstimateUnit(r.EstimateUnit)),
+			})
+		}
 	}
 	return out, nil
 }

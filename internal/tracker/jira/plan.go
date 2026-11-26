@@ -237,6 +237,13 @@ type EditInput struct {
 	// loses content Markdown cannot show. Without it such an edit is a
 	// *adf.LossError naming what would be lost.
 	AcceptLoss bool
+	// Current is the issue as the caller read it just now (IssueDetail),
+	// with nothing sent to it since: its fields and edit screen are taken
+	// in place of reading them again. An edit that compares a field with
+	// what it replaces (a rich text field, or Replacing) reads them anyway,
+	// so that comparison is with the issue as it is when the edit is
+	// planned. nil reads them.
+	Current *IssueDetail
 }
 
 // EditPlan is a checked edit of one issue. It records the issue's ID and
@@ -291,7 +298,7 @@ func (c *Client) PlanEdit(ctx context.Context, in EditInput) (*EditPlan, error) 
 	if len(in.Fields) == 0 {
 		return nil, notSent("edit %s: no fields", in.Issue)
 	}
-	is, screen, asked, err := c.editRead(ctx, in.Issue, in.Fields)
+	is, screen, asked, err := c.editBase(ctx, in)
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +311,7 @@ func (c *Client) PlanEdit(ctx context.Context, in EditInput) (*EditPlan, error) 
 			return nil, notSent("%q is set twice", metas[i].Name)
 		}
 	}
-	if richNotAsked(asked, metas) || replacedNotAsked(asked, metas, in.Fields) {
+	if asked != nil && (richNotAsked(asked, metas) || replacedNotAsked(asked, metas, in.Fields)) {
 		// A rich text field, or a plain text one an edit was written from,
 		// named other than by its ID: its value was not asked for, so the
 		// values are read again.
@@ -348,6 +355,30 @@ func (c *Client) PlanEdit(ctx context.Context, in EditInput) (*EditPlan, error) 
 // fields an edit names by ID, which hold the documents its rich text
 // edits start from, with the summary so the read names something
 // whatever the edit names; asked are the field IDs it asked for.
+// editBase is the issue an edit is planned on, its edit screen and the
+// fields read: in.Current's, every field of it read (asked nil), when
+// none of in's fields is compared with what it replaces on that screen,
+// and otherwise read (editRead).
+func (c *Client) editBase(ctx context.Context, in EditInput) (*Issue, Screen, []string, error) {
+	if cur := in.Current; cur != nil && cur.Issue != nil && !comparesStored(cur.Edit, in.Fields) {
+		return cur.Issue, cur.Edit, nil, nil
+	}
+	return c.editRead(ctx, in.Issue, in.Fields)
+}
+
+// comparesStored reports a field of fields that screen does not name, is
+// rich text there, or is written from what it replaces: its edit reads the
+// issue as it is now.
+func comparesStored(screen Screen, fields []FieldInput) bool {
+	for _, fi := range fields {
+		f, err := screen.Field(fi.Field)
+		if err != nil || kindOf(f.Schema) == kindRich || fi.Value.replaces != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Client) editRead(ctx context.Context, issue string, fields []FieldInput) (is *Issue, screen Screen, asked []string, err error) {
 	path, err := issuePath(issue)
 	if err != nil {

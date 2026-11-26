@@ -50,7 +50,8 @@ func fill(v reflect.Value, path string) {
 	k := v.Kind()
 	if k == reflect.Struct {
 		for i := range v.NumField() {
-			if f := v.Type().Field(i); f.IsExported() {
+			// A member tagged json:"-" is never encoded, so it has no blob value.
+			if f := v.Type().Field(i); f.IsExported() && f.Tag.Get("json") != "-" {
 				fill(v.Field(i), path+"."+f.Name)
 			}
 		}
@@ -206,8 +207,20 @@ func TestBodyRoundTrip(t *testing.T) {
 		if again := must[[]byte](t)(mirrorBody(other)); string(again) != string(data) {
 			t.Fatalf("%s: the same body with another card is other bytes", name)
 		}
+		// The provider's record of the read is never stored: a detail that
+		// carries one is the same bytes, and reads back.
+		other = d
+		other.Read = keptRead(d.Card.ID)
+		if again := must[[]byte](t)(mirrorBody(other)); string(again) != string(data) {
+			t.Fatalf("%s: a detail with its read is other bytes: %s", name, again)
+		}
 	}
 }
+
+// keptRead is a provider's record of a read of an issue.
+type keptRead tracker.IssueID
+
+func (r keptRead) ReadIssue() tracker.IssueID { return tracker.IssueID(r) }
 
 // The evidence of a detail's status time is what its read found: final
 // when its history is final through the card's update, complete when it
@@ -305,8 +318,8 @@ func TestMirrorEnumerationsMatchTheModel(t *testing.T) {
 	}
 }
 
-// shapeOf describes t's members recursively, the types with their own
-// encoding by name.
+// shapeOf describes t's encoded members recursively, the types with their
+// own encoding by name; a member tagged json:"-" is not encoded.
 func shapeOf(t reflect.Type) string {
 	switch t {
 	case timeType, valueType, dateType:
@@ -317,7 +330,7 @@ func shapeOf(t reflect.Type) string {
 	if k == reflect.Struct {
 		var parts []string
 		for i := range t.NumField() {
-			if f := t.Field(i); f.IsExported() {
+			if f := t.Field(i); f.IsExported() && f.Tag.Get("json") != "-" {
 				parts = append(parts, f.Name+":"+shapeOf(f.Type))
 			}
 		}

@@ -84,6 +84,26 @@ type issueRead struct {
 	comments tracker.CommentPage
 }
 
+// currentRead is a detail's tracker.IssueRead: what the first write
+// after the read takes as current (Move, Edit), the issue, its edit
+// screen and its moves. A write session keeps it through an approval
+// wait, so it holds nothing else of the read: no changelog.
+type currentRead struct {
+	issue tracker.IssueID
+	full  jira.IssueDetail
+}
+
+func (r *currentRead) ReadIssue() tracker.IssueID { return r.issue }
+
+// currentOf is in's read when it is one of this provider's of issue, else
+// nil.
+func currentOf(read tracker.IssueRead, issue tracker.IssueID) *jira.IssueDetail {
+	if r, ok := read.(*currentRead); ok && r.issue == issue {
+		return &r.full
+	}
+	return nil
+}
+
 // readIssue makes the requests on issue's own paths: the issue, then its
 // comments. Each names the issue, so a not found from it is the issue's:
 // gone, or not visible to the user.
@@ -130,6 +150,7 @@ func (p *Provider) detailOf(s site, issue tracker.IssueID, read issueRead) (trac
 	}
 	d.Moves = movesOf(full.Transitions, cat)
 	d.Catalog = cat.out
+	d.Read = &currentRead{issue: issue, full: jira.IssueDetail{Issue: full.Issue, Edit: full.Edit, Transitions: full.Transitions}}
 	return d, nil
 }
 

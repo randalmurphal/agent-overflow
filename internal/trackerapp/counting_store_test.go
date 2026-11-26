@@ -116,6 +116,11 @@ func (c *countingStore) StoreMirrorTickets(root, sweep int64, tickets []store.Mi
 	return c.Store.StoreMirrorTickets(root, sweep, tickets, catalog, opened, read)
 }
 
+func (c *countingStore) DropMirrorBodies(root int64, issues []string) ([]string, error) {
+	c.count("DropMirrorBodies")
+	return c.Store.DropMirrorBodies(root, issues)
+}
+
 func (c *countingStore) ListMirrorBodies(root int64, issues []string) ([]store.MirrorBody, error) {
 	c.count("ListMirrorBodies")
 	return c.Store.ListMirrorBodies(root, issues)

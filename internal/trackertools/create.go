@@ -132,7 +132,7 @@ func (s *Server) create(ctx context.Context, caller Caller, raw json.RawMessage)
 	// created ticket's.
 	var stopped bool
 	if state, sentence := judge(tg.src.Kind, setDescription, "change", trackerapp.WriteView{Parts: slices.DeleteFunc(slices.Clone(v.Parts),
-		func(p trackerapp.PartView) bool { return p.Step == "create" })}, nil); state != tracker.StateApplied {
+		func(p trackerapp.PartView) bool { return p.Step == "create" })}, nil, nil); state != tracker.StateApplied {
 		out.Refused, stopped = sentence, true
 	}
 	if len(after) > 0 {
@@ -160,16 +160,22 @@ func (s *Server) createSteps(wctx context.Context, caller Caller, tg createTarge
 		return
 	}
 	// On wctx, as the steps are: a caller gone after the create was sent
-	// still has the steps after it sent.
-	d, err := s.detailOf(wctx, t)
+	// still has the steps after it sent. The read and the steps share one
+	// write session, as an update's do.
+	wctx = trackerapp.WithWrites(wctx)
+	pc := newPlanCall(s, caller, tg.sources)
+	plans, errs, err := pc.readTickets(wctx, []ticket{t}, after, "")
+	if err == nil {
+		err = errs[0]
+	}
 	if err != nil {
 		s.logf("tracker tools: read %s after its create: %v", t.key, err)
 		out.NotSent = names(0)
 		out.Note = strings.TrimSpace(out.Note + " " + out.Key + " could not be read to set " + sayList(out.NotSent, "and") + "; ticket_update sets them.")
 		return
 	}
-	pc := newPlanCall(s, caller, tg.sources)
-	p := &planned{t: t, key: out.Key, src: tg.src, d: d}
+	p := plans[0]
+	p.key = out.Key
 	for i, nv := range after {
 		if err := pc.planStep(p, nv); err != nil {
 			_, msg, _ := errorsx.PublicDetails(err)
@@ -182,10 +188,11 @@ func (s *Server) createSteps(wctx context.Context, caller Caller, tg createTarge
 		out.Refused, out.NotSent = p.refused, p.stepNames(true, p.refusedStep)
 		return
 	}
-	answer, w := s.apply(wctx, caller, p)
+	answers, w := s.apply(wctx, caller, []*planned{p})
+	answer := answers[0]
 	out.Applied, out.Already, out.NotSent = answer.Applied, answer.Already, answer.NotSent
 	out.Refused, out.Unknown = answer.Refused, answer.Unknown
-	written.Applied = append(written.Applied, w.Applied...)
+	written.Applied = append(written.Applied, w[0].Applied...)
 }
 
 func createUnknown(kind string) error {
@@ -208,7 +215,7 @@ func createRefused(tg createTarget, v trackerapp.WriteView) error {
 			}
 			return invalidf("%s needs %s to create a ticket; give them in set.", tg.key, sayList(names, "and"))
 		default:
-			return invalidf("The ticket was not created: %s", refusalText(tg.src.Kind, r, true))
+			return invalidf("The ticket was not created: %s", refusalText(tg.src.Kind, r, true, nil))
 		}
 	}
 	return invalidf("The ticket was not created; the tracker gave no reason.")

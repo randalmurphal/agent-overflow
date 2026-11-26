@@ -175,7 +175,7 @@ func (p *Provider) AddComment(ctx context.Context, in tracker.CommentInput) trac
 	aud := map[tracker.Audience]jira.Audience{
 		tracker.AudienceUnset: jira.AudienceUnset, tracker.AudiencePublic: jira.AudiencePublic, tracker.AudienceInternal: jira.AudienceInternal,
 	}[in.Audience]
-	res, err := p.jira.AddComment(ctx, jira.CommentInput{Issue: string(in.Issue), Markdown: in.Markdown, Audience: aud, ImageDir: in.ImageDir})
+	res, err := p.jira.AddComment(ctx, jira.CommentInput{Issue: string(in.Issue), Markdown: in.Markdown, Audience: aud, ImageDir: in.ImageDir, Project: string(in.Project)})
 	out := commentParts(in.Issue, res.Uploaded, err)
 	if last := &out.Parts[len(out.Parts)-1]; res.Comment != nil && last.Outcome.State() == tracker.StateApplied {
 		last.Comment = tracker.CommentID(res.Comment.ID)

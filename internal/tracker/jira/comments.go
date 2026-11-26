@@ -183,24 +183,33 @@ type commentVisibility struct {
 
 // commentAudience checks aud against the issue's project and returns the
 // properties a new comment carries, and whether the project is a
-// service desk.
-func (c *Client) commentAudience(ctx context.Context, issue string, aud Audience) ([]commentProperty, bool, error) {
+// service desk. The project is the one project names, by ID, when it is
+// set (keptProject), else the issue's as read now.
+func (c *Client) commentAudience(ctx context.Context, issue, project string, aud Audience) ([]commentProperty, bool, error) {
 	switch aud {
 	case AudienceUnset, AudiencePublic, AudienceInternal:
 	default:
 		return nil, false, notSent("comment on %s: %d is not an Audience", issue, aud)
 	}
-	is, err := c.GetIssue(ctx, issue, "project")
-	if err != nil {
-		return nil, false, err
-	}
-	if is.Project == nil {
-		return nil, false, &AnswerError{Message: fmt.Sprintf("%s came without its project, so who a comment reaches is not known", issue)}
-	}
-	p := *is.Project
-	if p.TypeKey == "" {
-		if p, err = c.Project(ctx, p.Key); err != nil {
+	var p Project
+	if project != "" {
+		var err error
+		if p, err = c.keptProject(ctx, project); err != nil {
 			return nil, false, err
+		}
+	} else {
+		is, err := c.GetIssue(ctx, issue, "project")
+		if err != nil {
+			return nil, false, err
+		}
+		if is.Project == nil {
+			return nil, false, &AnswerError{Message: fmt.Sprintf("%s came without its project, so who a comment reaches is not known", issue)}
+		}
+		p = *is.Project
+		if p.TypeKey == "" {
+			if p, err = c.Project(ctx, p.Key); err != nil {
+				return nil, false, err
+			}
 		}
 	}
 	switch {
@@ -214,6 +223,46 @@ func (c *Client) commentAudience(ctx context.Context, issue string, aud Audience
 	return nil, p.ServiceDesk(), nil
 }
 
+// keptProject is project id with its type: as a bulk fetch's issues or a
+// read of it named it within siteAge, else read now and kept. A project's
+// type is what a comment's audience is judged on, and nothing else reads
+// it from here; Jira offers no change of a project's type, so an older
+// one is read again only as the field catalog is.
+func (c *Client) keptProject(ctx context.Context, id string) (Project, error) {
+	if err := checkID("project", id); err != nil {
+		return Project{}, err
+	}
+	if p, ok := c.projects.get(ctx, id); ok {
+		return p, nil
+	}
+	epoch := c.projects.epoch()
+	var pj projectJSON
+	resp, err := c.call(ctx, trackerapi.Request{Path: apiPath + "project/" + url.PathEscape(id)}, &pj)
+	if err != nil {
+		return Project{}, fmt.Errorf("jira: project %s: %w", id, err)
+	}
+	p := pj.project()
+	if p.ID != id || p.TypeKey == "" {
+		return Project{}, &AnswerError{Message: fmt.Sprintf("project %s came without its ID or type, so who a comment reaches is not known", id)}
+	}
+	c.keepProjects(epoch, resp.CredentialMark(), p)
+	return p, nil
+}
+
+// keepProjects keeps ps, those with an ID and a type, without their
+// issue types, under epoch, drawn under the credential read mark.
+func (c *Client) keepProjects(epoch uint64, mark trackerapi.CredentialMark, ps ...Project) {
+	for _, p := range ps {
+		if p.ID != "" && p.TypeKey != "" {
+			p.IssueTypes = nil
+			c.projects.put(epoch, mark, p.ID, p)
+		}
+	}
+}
+
+// projectCacheSize is the most projects kept by ID.
+const projectCacheSize = 64
+
 // CommentInput is a new comment.
 type CommentInput struct {
 	Issue    string
@@ -222,6 +271,10 @@ type CommentInput struct {
 	// ImageDir is the folder the Markdown's local images are read from;
 	// see EditInput.
 	ImageDir string
+	// Project is the ID of the issue's project as a read the caller made
+	// just before this comment found it, which its audience is judged on;
+	// empty reads the issue's project with the comment.
+	Project string
 }
 
 // CommentResult is how far a comment write got: the images attached, and
@@ -252,7 +305,7 @@ func (c *Client) AddComment(ctx context.Context, in CommentInput) (CommentResult
 	// so only the other audiences read the project.
 	var props []commentProperty
 	if in.Audience != AudiencePublic {
-		if props, _, err = c.commentAudience(ctx, in.Issue, in.Audience); err != nil {
+		if props, _, err = c.commentAudience(ctx, in.Issue, in.Project, in.Audience); err != nil {
 			return res, notSentErr(fmt.Errorf("jira: comment on %s: %w", in.Issue, err))
 		}
 	}

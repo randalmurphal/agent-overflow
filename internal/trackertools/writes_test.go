@@ -135,7 +135,8 @@ func TestUpdateAppliesStatusThenComment(t *testing.T) {
 }
 
 // A call naming several tickets waits for the person: a denial sends
-// nothing, an approval shows each ticket's changes and sends them all.
+// nothing, an approval shows each ticket's changes and sends them all,
+// the moves into one sprint as one write.
 func TestUpdateOfSeveralTicketsWaitsForApproval(t *testing.T) {
 	t.Parallel()
 	w := newWriteFixture(t)
@@ -160,7 +161,7 @@ func TestUpdateOfSeveralTicketsWaitsForApproval(t *testing.T) {
 	if want := `{"tickets":[{"key":"WEB-12","applied":["sprint"]},{"key":"WEB-18","applied":["sprint"]},{"key":"WEB-27","applied":["sprint"]}]}`; answer != want {
 		t.Fatalf("answer = %s\nwant %s", answer, want)
 	}
-	if len(w.f.writes) != 3 || !strings.Contains(w.f.writes[0], `{"board":"1","sprint":"15","issues":["10012"]}`) {
+	if want := []string{`sprint_move conn-jira {"board":"1","sprint":"15","issues":["10012","10018","10027"]}`}; !slices.Equal(w.f.writes, want) {
 		t.Fatalf("writes %q", w.f.writes)
 	}
 }
@@ -355,7 +356,8 @@ func TestUpdateStopsAtTheFirstStepNotMade(t *testing.T) {
 }
 
 // A comment alone reads the ticket's ID, key and title from its lookup,
-// with no detail read. A comment an earlier call of the thread added is
+// with no detail read, and looks it up again just before the send for the
+// project its audience is judged on. A comment an earlier call of the thread added is
 // already, with no row; one an earlier call is still sending, or whose
 // earlier attempt could not be looked for, is refused, and the call says
 // why (trackerapp's repeat record).
@@ -366,7 +368,7 @@ func TestUpdateDoesNotAddACommentTwice(t *testing.T) {
 	if answer, err := w.update(t, args); err != nil || answer != `{"tickets":[{"key":"WEB-12","applied":["comment"]}]}` {
 		t.Fatalf("a comment = %s, %v", answer, err)
 	}
-	if want := []string{"lookup conn-jira WEB-12"}; !slices.Equal(w.f.asked, want) {
+	if want := []string{"lookup conn-jira WEB-12", "lookup conn-jira WEB-12"}; !slices.Equal(w.f.asked, want) {
 		t.Fatalf("a comment alone asked %q\nwant %q", w.f.asked, want)
 	}
 	if len(w.h.rows) != 1 || w.h.rows[0].Tickets[0].Title != "Login fails on Safari" {
@@ -601,8 +603,10 @@ func TestCreateTargets(t *testing.T) {
 // connection: a ticket whose update time, status or sprints moved during
 // the wait, each alone, or that is gone, is sent nothing and said as
 // refused, and the other goes on. A read that fails sends nothing. A
-// comment alone, and a single ticket, read nothing again: their keys are
-// looked up once, to resolve them.
+// single ticket reads nothing again: its key is looked up once, to
+// resolve it. A Jira comment, alone or on one ticket, is looked up again
+// at the start of the comment phase, for the project its audience is
+// judged on (TestTrackerAgentCommentAudienceIsReadAfterTheCallsOtherWrites).
 func TestUpdateSendsNothingToATicketThatMovedWhileWaiting(t *testing.T) {
 	t.Parallel()
 	args := map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "set": map[string]any{"sprint": "Sprint 15"}}
@@ -653,22 +657,114 @@ func TestUpdateSendsNothingToATicketThatMovedWhileWaiting(t *testing.T) {
 			t.Fatalf("writes %q", w.f.writes)
 		}
 	})
-	t.Run("no read again", func(t *testing.T) {
+	t.Run("read again", func(t *testing.T) {
 		t.Parallel()
 		w := newWriteFixture(t)
-		for _, args := range []map[string]any{
-			{"keys": []string{"WEB-12", "WEB-18"}, "comment": "Checked."},
-			{"keys": []string{"WEB-12"}, "set": map[string]any{"sprint": "Sprint 15"}},
+		for _, c := range []struct {
+			args    map[string]any
+			lookups int
+		}{
+			// The first lookup is the keys' resolution.
+			{map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"sprint": "Sprint 15"}}, 1},
+			{map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "comment": "Checked."}, 2},
+			{map[string]any{"keys": []string{"WEB-12"}, "comment": "Checked again."}, 2},
 		} {
 			w.f.asked = nil
-			if _, err := w.update(t, args); err != nil {
+			if _, err := w.update(t, c.args); err != nil {
 				t.Fatal(err)
 			}
-			// The one lookup is the keys' resolution.
 			lookups := slices.DeleteFunc(slices.Clone(w.f.asked), func(a string) bool { return !strings.HasPrefix(a, "lookup ") })
-			if len(lookups) != 1 {
-				t.Errorf("%v read %q, want the keys looked up once", args, w.f.asked)
+			if len(lookups) != c.lookups {
+				t.Errorf("%v read %q, want %d lookups", c.args, w.f.asked, c.lookups)
 			}
 		}
 	})
+	// The lookup a Jira comment's audience is judged on is made after the
+	// call's other writes: when it fails, the comment is not sent and says
+	// why, and the steps sent before it keep their answers.
+	for _, c := range []struct {
+		name   string
+		args   map[string]any
+		want   string
+		writes int
+	}{
+		{"read before a comment alone fails", map[string]any{"keys": []string{"WEB-12"}, "comment": "Checked."},
+			`{"tickets":[{"key":"WEB-12","refused":"comment: WEB-12 could not be read again just before its comment, so the comment was not added. ` + jiraSource.Site + `: Jira did not answer."}]}`, 0},
+		{"read after a title, before its comment, fails", map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"title": "Renamed"}, "comment": "Checked."},
+			`{"tickets":[{"key":"WEB-12","applied":["title"],"refused":"comment: WEB-12 could not be read again just before its comment, so the comment was not added. ` + jiraSource.Site + `: Jira did not answer."}]}`, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			w := newWriteFixture(t)
+			w.f.lookupErrAfter = 1
+			w.f.lookupErr = map[string]error{jiraSource.ID: errorsx.Public(CodeFailed, "Jira did not answer.", nil)}
+			answer, err := w.update(t, c.args)
+			if err != nil || answer != c.want {
+				t.Fatalf("answer = %s, %v\nwant %s", answer, err, c.want)
+			}
+			if len(w.f.writes) != c.writes || slices.ContainsFunc(w.f.writes, func(wr string) bool { return strings.Contains(wr, "comment") }) {
+				t.Fatalf("writes %q; want %d and no comment", w.f.writes, c.writes)
+			}
+		})
+	}
+	// A ticket gone from Jira by the comment phase's lookup is sent no
+	// comment, after an approval with no set to judge as with one.
+	t.Run("gone before its comment", func(t *testing.T) {
+		t.Parallel()
+		w := newWriteFixture(t)
+		w.h.approve = func(Approval) error {
+			delete(w.f.lookup[jiraSource.ID], "WEB-12")
+			return nil
+		}
+		answer, err := w.update(t, map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "comment": "Checked."})
+		want := `{"tickets":[{"key":"WEB-12","refused":"comment: WEB-12 is not on Jira any more, or the user's account cannot see it, so the comment was not added."},{"key":"WEB-18","applied":["comment"]}]}`
+		if err != nil || answer != want {
+			t.Fatalf("answer = %s, %v\nwant %s", answer, err, want)
+		}
+	})
+}
+
+// A ticket whose key the mirror holds, and whose steps the plan reads its
+// card or detail for, is not looked up in the mirror first; a comment
+// alone takes the mirror's card, with no request.
+func TestThePlanReadsTheMirrorsCardOnlyForACommentAlone(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		args map[string]any
+		want int
+	}{
+		{map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"title": "Renamed"}}, 0},
+		{map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"status": "Done"}}, 0},
+		{map[string]any{"keys": []string{"WEB-12"}, "comment": "Checked."}, 1},
+	} {
+		w := newWriteFixture(t)
+		// The mirror holds the key, so its resolution names no title.
+		w.f.keyed = map[string][]trackerapp.KeyedTicket{"WEB-12": {{Connection: jiraSource.ID, Issue: "10012"}}}
+		w.f.cards = map[string]trackerapp.CardView{jiraSource.ID + "/10012": w.f.details[jiraSource.ID+"/10012"].Card}
+		if _, err := w.update(t, c.args); err != nil {
+			t.Fatal(err)
+		}
+		if w.f.mirrorCards != c.want {
+			t.Errorf("%v read the mirror's card %d times; want %d", c.args, w.f.mirrorCards, c.want)
+		}
+	}
+}
+
+// A tracker's refusal that it says only of fields reaches the agent with
+// each field's sentence, by the name a read of the ticket shows the field
+// by, after the refusal's own.
+func TestARefusalOfAFieldSaysItsSentenceByItsName(t *testing.T) {
+	t.Parallel()
+	w := newWriteFixture(t)
+	w.f.write = func(name string, _ any) (trackerapp.WriteView, error) {
+		return trackerapp.WriteView{Parts: []trackerapp.PartView{{Issue: "10012", Step: "edit", State: "refused", Refusal: &trackerapp.RefusalView{
+			Reason: "tracker", Message: "the tracker refused the write (HTTP 400)",
+			Fields: []trackerapp.FieldMessageView{{Field: "customfield_10030", Message: "The date is in the past."}},
+		}}}}, nil
+	}
+	answer, err := w.update(t, map[string]any{"keys": []string{"WEB-12"}, "set": map[string]any{"Due at": "2026-12-01T10:00:00Z"}})
+	want := `{"tickets":[{"key":"WEB-12","refused":"Due at: the tracker refused the write (HTTP 400); Due at: The date is in the past."}]}`
+	if err != nil || answer != want {
+		t.Fatalf("answer = %s, %v\nwant %s", answer, err, want)
+	}
 }

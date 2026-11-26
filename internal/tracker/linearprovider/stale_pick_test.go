@@ -1,9 +1,11 @@
 package linearprovider
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/harness/trackerfake"
 	"agent-overflow/internal/tracker"
 )
 
@@ -48,5 +50,27 @@ func TestFakeAPickThatNamesNothingIsStale(t *testing.T) {
 	}
 	if after := s.detail(t, scIssue2).Card; after.Title != before.Title || after.Assignee != before.Assignee || after.Status != before.Status {
 		t.Fatalf("a refused write changed the issue: %+v, was %+v", after, before)
+	}
+}
+
+// A status removed from its team after the issue's read was kept
+// (Detail.Read) passes the provider's check of the kept states, and
+// Linear's refusal naming stateId reads as the same stale write.
+func TestFakeAStatusRemovedAfterTheKeptReadIsStale(t *testing.T) {
+	s := newScenario(t)
+	d := s.detail(t, scIssue2)
+	if d.Read == nil {
+		t.Fatal("the detail keeps no read")
+	}
+	f := s.e.Snapshot()
+	f.Linear[0].APIKey = "lin_api_scenario1"
+	f.Linear[0].States = slices.DeleteFunc(f.Linear[0].States, func(st trackerfake.LinearState) bool { return st.ID == scDone })
+	if err := s.e.Seed(f); err != nil {
+		t.Fatal(err)
+	}
+	r := s.p.Move(s.ctx, tracker.MoveInput{Issue: tracker.IssueID(scIssue2), Move: tracker.MoveID(scDone), Read: d.Read})
+	refusal, ok := r.Parts[0].Outcome.Refusal()
+	if !ok || refusal.Reason != tracker.ReasonStale || !strings.Contains(refusal.Message, "stateId") {
+		t.Fatalf("outcome %s, refusal %+v; want stale naming stateId", r.Parts[0].Outcome.State(), refusal)
 	}
 }

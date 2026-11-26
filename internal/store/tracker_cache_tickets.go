@@ -245,24 +245,44 @@ const mirrorBodyWriteSQL = `INSERT INTO tracker_cache_issue_bodies(root_id, issu
 // and sorting them; and
 // mirrorBodyDropSQL deletes the bodies of the issues of the JSON list ?2
 // it returned.
+//
+// mirrorBodyDropNamedSQL clears the bookkeeping of the bodies of root ?1
+// of the issues of the JSON list ?2 that no open ticket keeps, and
+// returns those issues.
+const mirrorBodyClearSQL = `UPDATE tracker_cache_issues SET body_updated_at = 0, body_read_at = 0, body_wall = 0, body_opened_at = 0,
+	    body_digest = x''`
+
 var (
-	mirrorBodyEvictSQL = `UPDATE tracker_cache_issues SET body_updated_at = 0, body_read_at = 0, body_wall = 0, body_opened_at = 0,
-	    body_digest = x''
+	mirrorBodyEvictSQL = mirrorBodyClearSQL + `
 	WHERE root_id = CAST(?1 AS INTEGER) AND issue_id IN (
 	  SELECT b.issue_id FROM tracker_cache_issues b INDEXED BY idx_tracker_cache_issues_body_opened
 	   WHERE b.root_id = CAST(?1 AS INTEGER) AND b.body_updated_at > 0
 	   ORDER BY EXISTS (SELECT 1 FROM tracker_cache_open_tickets o WHERE o.root_id = CAST(?1 AS INTEGER) AND o.issue_id = b.issue_id) DESC,
 	            b.body_opened_at DESC, b.issue_id DESC LIMIT -1 OFFSET ` + strconv.Itoa(mirrorBodyCap) + `)
 	RETURNING issue_id`
+	mirrorBodyDropNamedSQL = mirrorBodyClearSQL + `
+	WHERE root_id = CAST(?1 AS INTEGER) AND body_updated_at > 0 AND issue_id IN (SELECT value FROM json_each(?2))
+	  AND NOT EXISTS (SELECT 1 FROM tracker_cache_open_tickets o WHERE o.root_id = CAST(?1 AS INTEGER) AND o.issue_id = tracker_cache_issues.issue_id)
+	RETURNING issue_id`
 	mirrorBodyDropSQL = `DELETE FROM tracker_cache_issue_bodies WHERE root_id = CAST(?1 AS INTEGER) AND issue_id IN (SELECT value FROM json_each(?2))`
 )
 
-// evictMirrorBodiesTx drops the bodies of rootID beyond the mirrorBodyCap
-// (mirrorBodyEvictSQL): the one writer that removes a body from a live
-// root, its bookkeeping and its bytes in one transaction. It returns the
-// issues dropped.
-func evictMirrorBodiesTx(tx *sql.Tx, rootID int64) ([]string, error) {
-	dropped, err := queryIDs(tx, mirrorBodyEvictSQL, rootID)
+// dropMirrorBodiesTx removes bodies from a live root, their bookkeeping
+// and their bytes in one transaction: those beyond the mirrorBodyCap
+// (mirrorBodyEvictSQL) when issueIDs is nil, else those of issueIDs that
+// no open ticket keeps (mirrorBodyDropNamedSQL). It is the one writer
+// that removes a body, and returns the issues dropped.
+func dropMirrorBodiesTx(tx *sql.Tx, rootID int64, issueIDs []string) ([]string, error) {
+	var dropped []string
+	var err error
+	if issueIDs == nil {
+		dropped, err = queryIDs(tx, mirrorBodyEvictSQL, rootID)
+	} else {
+		var named string
+		if named, err = encodeMirrorIDs(issueIDs); err == nil {
+			dropped, err = queryIDs(tx, mirrorBodyDropNamedSQL, rootID, named)
+		}
+	}
 	if err != nil || len(dropped) == 0 {
 		return nil, err
 	}
@@ -273,7 +293,27 @@ func evictMirrorBodiesTx(tx *sql.Tx, rootID int64) ([]string, error) {
 	if _, err := tx.Exec(mirrorBodyDropSQL, rootID, list); err != nil {
 		return nil, err
 	}
+	slices.Sort(dropped)
 	return dropped, nil
+}
+
+// DropMirrorBodies drops the bodies of root rootID's issues issueIDs that
+// no open ticket keeps: a write changed what they show and the write's
+// refresh did not read them, so none is shown until a read of its ticket
+// brings the body again. It returns the issues whose bodies it dropped,
+// sorted.
+func (s *Store) DropMirrorBodies(rootID int64, issueIDs []string) ([]string, error) {
+	if len(issueIDs) == 0 {
+		return nil, nil
+	}
+	var dropped []string
+	action := fmt.Sprintf("store: drop %d bodies of tracker mirror %d a write changed", len(issueIDs), rootID)
+	err := s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
+		var err error
+		dropped, err = dropMirrorBodiesTx(tx, rootID, issueIDs)
+		return err
+	})
+	return dropped, err
 }
 
 // bodyOutcome is the rule for a body brought by a ticket of version
@@ -485,7 +525,7 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 		}
 		var dropped []string
 		if started {
-			if dropped, err = evictMirrorBodiesTx(tx, rootID); err != nil {
+			if dropped, err = dropMirrorBodiesTx(tx, rootID, nil); err != nil {
 				return fmt.Errorf("drop bodies: %w", err)
 			}
 		}

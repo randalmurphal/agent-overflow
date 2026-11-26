@@ -162,7 +162,7 @@ func TestCardsResourceStoresKeptIssues(t *testing.T) {
 			Missing: ids("10007"), Catalog: tracker.Catalog{Users: []tracker.User{user1}}}, nil
 	}
 	r := m.begun(t, Scope{Connection: m.conn.ID})
-	ch, _, err := r.cards(ids("10005", "10006", "10007"))
+	ch, _, _, err := r.cards(ids("10005", "10006", "10007"))
 	r.finish()
 	if err != nil || !slices.Equal(ch.Cards, ids("10005")) || !ch.Catalog {
 		t.Fatalf("cards %+v, %v", ch, err)
@@ -176,7 +176,7 @@ func TestCardsResourceStoresKeptIssues(t *testing.T) {
 		}
 	})
 	r = m.begun(t, Scope{Connection: m.conn.ID})
-	_, _, err = r.cards(ids("10005"))
+	_, _, _, err = r.cards(ids("10005"))
 	r.finish()
 	if _, ok := errors.AsType[*trackerapi.TransientError](err); !ok {
 		t.Fatalf("a failed card read: %v", err)

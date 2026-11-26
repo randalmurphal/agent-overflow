@@ -285,7 +285,10 @@ func TestAWriteRefusedForItsCredentialSaysWhatToDo(t *testing.T) {
 func TestARefreshThatFailsAfterAnAppliedWrite(t *testing.T) {
 	t.Parallel()
 	f := newWriteFixture(t)
-	f.openDetail(t, "10001")
+	// The ticket is open, so its detail is read again after the write.
+	must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001", true, untied))
+	f.events.issueEvents(t, 1)
+	f.settledTickets(t)
 	f.p.set(func(p *scripted) {
 		p.boardRows = func(tracker.BoardID, []tracker.IssueID) (tracker.Rows, error) {
 			return tracker.Rows{}, &trackerapi.TransientError{Err: errors.New("reset")}

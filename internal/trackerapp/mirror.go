@@ -61,6 +61,7 @@ type MirrorStore interface {
 	MarkMirrorIssuesMissing(rootID int64, read store.MirrorRead, issueIDs []string) ([]string, error)
 
 	ListMirrorBodies(rootID int64, issueIDs []string) ([]store.MirrorBody, error)
+	DropMirrorBodies(rootID int64, issueIDs []string) ([]string, error)
 	GetMirrorBoard(rootID int64, boardID string) (store.MirrorStructure, bool, error)
 	GetMirrorCatalog(rootID int64, users, statuses []string) (store.MirrorCatalog, error)
 	ListMirrorCards(rootID int64, issueIDs []string) ([]store.MirrorCard, error)
@@ -225,8 +226,9 @@ type Changes struct {
 	// record's status time a ticket read moved.
 	History []tracker.IssueID `json:"history,omitempty"`
 	// Details are the issues whose stored ticket body changed or moved to
-	// another version, and Dropped those whose body left the mirror to keep
-	// the open tickets' and the most recently opened.
+	// another version, and Dropped those whose body left the mirror: to
+	// keep the open tickets' and the most recently opened, or because a
+	// write changed it while no ticket had it open.
 	Details []tracker.IssueID `json:"details,omitempty"`
 	Dropped []tracker.IssueID `json:"dropped,omitempty"`
 	// Visibility are the issues whose record reads began or stopped
