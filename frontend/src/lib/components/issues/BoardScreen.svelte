@@ -1,8 +1,8 @@
 <script lang="ts" module>
   // The carry loads on the first press of a card, once per page.
-  let carryModule: Promise<typeof import('./boardCarry')> | null = null;
-  function loadCarry(): Promise<typeof import('./boardCarry')> {
-    carryModule ??= import('./boardCarry');
+  let carryModule: Promise<typeof import('./listCarry')> | null = null;
+  function loadCarry(): Promise<typeof import('./listCarry')> {
+    carryModule ??= import('./listCarry');
     return carryModule;
   }
 </script>
@@ -18,7 +18,7 @@
   //
   // Changing a card (docs/specs/issues.md, "Board"). A card's marks open
   // its field editors (BoardCard); its menu is BoardCardMenu. A mouse or
-  // pen carries a card (boardCarry.ts): to another column it moves the
+  // pen carries a card (listCarry.ts): to another column it moves the
   // ticket by the move that reaches that column, read when the card first
   // leaves its own; within its own column it ranks it between the cards
   // shown either side of the drop. A dropped card waits where it was
@@ -34,7 +34,7 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import { columnCount } from './boardFormat';
   import { setTicketWriteSurface } from './ticketWriteSurface';
-  import type { Carry, CarryColumn, CarryHost } from './boardCarry';
+  import type { Carry, CarryColumn, CarryHost, CarrySpot } from './listCarry';
   import type { CardEditField } from './ticketEditors';
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
   import { compactColumn, setCompactColumn, type CardField } from '../../stores/issuesPane.svelte';
@@ -46,6 +46,7 @@
   import {
     cardMatches,
     cardURL,
+    columnList,
     columnsReached,
     columnWith,
     filtering,
@@ -104,7 +105,8 @@
 
   // The cards waiting where they were dropped, drawn there.
   const waiting = $derived(waitingCards(boardKey));
-  const drawn = $derived(withWaiting(columns, visible, waiting, filter));
+  const lists = $derived(columns.map((_, i) => columnList(i)));
+  const drawn = $derived(withWaiting(lists, columns, visible, waiting, filter));
 
   // A carry under way: the card, the column it came from, the column under
   // it and the drop slot in its own column, and what the moves read said.
@@ -137,7 +139,8 @@
     const out: { row: RowView; from: number; to: number; statuses: readonly string[] }[] = [];
     for (const w of waiting) {
       const at = rowOf(columns, w.issue);
-      if (at && at.column !== w.column) out.push({ row: at.row, from: at.column, to: w.column, statuses: w.status ? [w.status] : statusesOf(w.column) });
+      const to = lists.indexOf(w.list);
+      if (at && to >= 0 && at.column !== to) out.push({ row: at.row, from: at.column, to, statuses: w.status ? [w.status] : statusesOf(to) });
     }
     const c = carrying;
     if (c && c.over !== null && c.over !== c.from && reaches(c, c.over) !== false) {
@@ -185,10 +188,10 @@
   }
 
   // The sections a column still reads from: its own on a kanban board,
-  // every sprint's on a sprint board.
+  // every active sprint's on a sprint board.
   function readingFrom(col: ScreenColumn): string[] {
     if (col.moreFrom === null) return [];
-    if (held.shape.plansSprints) return held.sections.filter((s) => s.section.kind === 'sprint').map((s) => sectionKey(s.section));
+    if (held.shape.plansSprints) return held.screen.map(sectionKey);
     return [sectionKey(held.sections[col.moreFrom].section)];
   }
 
@@ -322,7 +325,7 @@
     loadCarry().then(
       (mod) => {
         if (press !== p) return;
-        pickUp(mod.startCarry, p);
+        pickUp(mod, p);
       },
       (err: unknown) => {
         if (press === p) endPress();
@@ -334,7 +337,7 @@
   // How far a press moves before it picks the card up.
   const PICK_UP_PX = 5;
 
-  function pickUp(start: typeof import('./boardCarry').startCarry, p: Press): void {
+  function pickUp(mod: typeof import('./listCarry'), p: Press): void {
     const scroller = columnsEl;
     const geometry = columnRefs.map((ref) => ref?.carryColumn());
     if (!scroller || geometry.some((g) => !g)) {
@@ -347,26 +350,30 @@
     const ctx = cardWriteContext(boardRef, p.row);
     const id = ++carries;
     carrying = { id, row: p.row, ctx, from: p.from, over: p.from, slot: null, moves: null };
+    const from = columnList(p.from);
+    const columnOf = (spot: CarrySpot | null) => (spot ? lists.indexOf(spot.list) : -1);
     const host: CarryHost = {
-      columns: geometry as CarryColumn[],
-      scroller,
-      from: p.from,
-      over(column) {
+      layout: mod.columnsLayout(scroller, geometry as CarryColumn[], from),
+      from,
+      over(spot) {
         const c = carrying;
         if (c?.id !== id) return;
-        carrying = { ...c, over: column };
-        if (column !== null && column !== c.from) readMoves();
+        const column = columnOf(spot);
+        const over = column < 0 ? null : column;
+        const slot = over === c.from ? (spot?.slot ?? null) : null;
+        if (over === c.over && slot === c.slot) return;
+        carrying = { ...c, over, slot };
+        if (over !== null && over !== c.from) readMoves();
       },
-      slot(index) {
-        const c = carrying;
-        if (c?.id === id && c.slot !== index) carrying = { ...c, slot: index };
+      drop: (spot, at) => {
+        const column = columnOf(spot);
+        return drop(p.row, p.from, column < 0 ? null : column, spot?.slot ?? null, at);
       },
-      drop: (column, slot, at) => drop(p.row, p.from, column, slot, at),
       end() {
         if (carrying?.id === id) carrying = null;
       },
     };
-    p.carry = start(p.el, p.sx, p.sy, p.x, p.y, p.level, host);
+    p.carry = mod.startCarry(p.el, p.sx, p.sy, p.x, p.y, { grab: p.level, flat: false }, host);
   }
 
   // The moves of the carried ticket, read once per carry when the card
@@ -409,7 +416,7 @@
       const k = own >= 0 && own < slot ? slot - 1 : slot;
       if (k === own) return shownAt(row.card.id);
       const rest = rows.filter((r) => r.card.id !== row.card.id);
-      void rankCard(boardKey, ctx, boardRef.board, from, rest[k]?.card.id ?? null);
+      void rankCard(boardKey, ctx, boardRef.board, columnList(from), rest[k]?.card.id ?? null);
       return shownAt(row.card.id);
     }
     const hold = drops.start(ctx);
@@ -506,6 +513,7 @@
       <div class="flex min-h-0 flex-1 px-2 pt-2">
         <BoardColumn
           column={columns[picked]}
+          list={lists[picked]}
           rows={drawn[picked].rows}
           count={counts[picked]}
           {filtered}
@@ -539,6 +547,7 @@
         <BoardColumn
           bind:this={columnRefs[i]}
           column={col}
+          list={lists[i]}
           rows={drawn[i].rows}
           count={counts[i]}
           {filtered}

@@ -655,6 +655,16 @@ export {
   TrackerMoves,
   RankTrackerIssues,
   MoveTrackerIssuesToSprint,
+  // What the Backlog screen writes besides those: a ticket made in a
+  // section, with the types and fields its form asks, and a board's
+  // sprints (stores/trackerTicketWrites.svelte.ts).
+  CreateTrackerIssue,
+  TrackerIssueTypes,
+  TrackerCreateFields,
+  CreateTrackerSprint,
+  EditTrackerSprint,
+  StartTrackerSprint,
+  CompleteTrackerSprint,
   // A ticket's attachments, links and planning poker
   // (transport/attachmentTransfer.ts, stores/trackerTicketWrites.svelte.ts,
   // stores/trackerTicket.svelte.ts).

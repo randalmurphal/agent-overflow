@@ -486,13 +486,28 @@ export function rankTicket(t: TicketWriteContext, board: string, place: () => { 
   return write(t, 'rank', () => {
     const { prev, next } = place();
     return RankTrackerIssues(t.ref.connection, { board, issues: [t.ref.issue], prev: prev || undefined, next: next || undefined });
-  }, false, { after, failure: (err) => (err instanceof RankPlaceError ? { kind: 'not_sent', message: err.message } : null) });
+  }, false, { after, failure: placeFailure });
+}
+
+/** Where a placed write goes, named when it is sent (after `after`): the
+ * issues it goes just after and just before, either empty for an end;
+ * `place` throws a RankPlaceError when there is none. */
+export interface TicketPlace {
+  readonly place: () => { prev: string; next: string };
+  readonly after?: Promise<void>;
+}
+
+function placeFailure(err: unknown): WriteOutcome | null {
+  return err instanceof RankPlaceError ? { kind: 'not_sent', message: err.message } : null;
 }
 
 /** Moves the ticket into `sprint` of `board`, or to its backlog with
- * none (MoveTrackerIssuesToSprint). */
-export function moveTicketToSprint(t: TicketWriteContext, board: string, sprint: string | null): Promise<WriteOutcome | null> {
-  return write(t, 'sprint', () => MoveTrackerIssuesToSprint(t.ref.connection, { board, sprint: sprint ?? undefined, issues: [t.ref.issue] }), false);
+ * none (MoveTrackerIssuesToSprint), at `at` when given. */
+export function moveTicketToSprint(t: TicketWriteContext, board: string, sprint: string | null, at?: TicketPlace): Promise<WriteOutcome | null> {
+  return write(t, 'sprint', () => {
+    const { prev, next } = at ? at.place() : { prev: '', next: '' };
+    return MoveTrackerIssuesToSprint(t.ref.connection, { board, sprint: sprint ?? undefined, issues: [t.ref.issue], prev: prev || undefined, next: next || undefined });
+  }, false, { after: at?.after, failure: placeFailure });
 }
 
 export function addTicketComment(t: TicketWriteContext, markdown: string): Promise<WriteOutcome | null> {

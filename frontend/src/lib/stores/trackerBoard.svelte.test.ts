@@ -20,6 +20,7 @@ import {
 import {
   attachTrackerBoard,
   dismissTrackerRefreshNotice,
+  holdTrackerBoardPlan,
   loadMoreOfSection,
   refreshTrackerBoard,
   renewEndedTrackerBoard,
@@ -54,7 +55,7 @@ function rows(from: number, count: number): RowView[] {
  * pages' sections unless `screen` names it. */
 function view(
   pages: Array<{ section: Section; rows: RowView[]; next?: boolean }>,
-  opts: { revision?: number; sprint?: string; kanban?: boolean; columns?: number; screen?: Section[] } = {},
+  opts: { revision?: number; sprint?: string; kanban?: boolean; columns?: number; screen?: Section[]; plan?: Section[] } = {},
 ): BoardView {
   const revision = opts.revision ?? 1;
   return {
@@ -63,6 +64,7 @@ function view(
     sprints: [{ id: opts.sprint ?? '8', name: 'Sprint', state: 'active', total: { rows: 1, estimate: 1 } }],
     all: { rows: 1, estimate: 1 }, backlog: { rows: 0, estimate: 0 }, sync: { read_at: 100 },
     screen: opts.screen ?? pages.map((p) => p.section),
+    plan: opts.plan ?? [],
     sections: pages.map((p) => ({
       section: p.section, rows: p.rows,
       next: p.next ? { order: p.rows.at(-1)!.order, issue: p.rows.at(-1)!.card.id, lifetime: 1, revision } : null,
@@ -1026,6 +1028,74 @@ describe('refresh', () => {
     await fourth;
     expect(board.current?.refreshNotice).toEqual({ kind: 'failed', error: broken });
     expect(mocks.subscribe).toHaveBeenCalledTimes(1);
+    board.release();
+  });
+});
+
+describe('the Backlog screen\'s sections', () => {
+  const FUTURE: Section = { kind: 'sprint', sprint: '9' };
+  const BACKLOG: Section = { kind: 'backlog' };
+  const PLAN = [SPRINT, FUTURE, BACKLOG];
+
+  it('holds them while a pane is on Backlog, reading each first page in turn, and lets their rows go when the last pane leaves', async () => {
+    const mocks = install({ view: view([{ section: SPRINT, rows: [row('1', 'a')] }], { plan: PLAN }) });
+    mocks.page.mockImplementation(async (_id: string, section: Section) => ({
+      section, rows: section.kind === 'backlog' ? [row('3', 'c')] : [row('2', 'b')],
+    }));
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    expect(heldIds(board)).toEqual([['1']]);
+    expect(mocks.page).not.toHaveBeenCalled();
+    const first = holdTrackerBoardPlan(board.key);
+    const second = holdTrackerBoardPlan(board.key);
+    await flush();
+    // The active sprint is the Board screen's and is not read again.
+    expect(mocks.page.mock.calls.map((c) => c[1])).toEqual([FUTURE, BACKLOG]);
+    expect(heldIds(board)).toEqual([['1'], ['2'], ['3']]);
+    first();
+    first();
+    await flush();
+    expect(heldIds(board)).toEqual([['1'], ['2'], ['3']]);
+    second();
+    await flush();
+    expect(heldIds(board)).toEqual([['1']]);
+    expect(mocks.page).toHaveBeenCalledTimes(2);
+    board.release();
+  });
+
+  it('changes what it holds only between two reads, so a patch out when the last pane leaves keeps the IDs it carried', async () => {
+    const mocks = install({ view: view([{ section: SPRINT, rows: [row('1', 'a')] }], { plan: PLAN }) });
+    mocks.page.mockImplementation(async (_id: string, section: Section) => ({ section, rows: [] }));
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    const release = holdTrackerBoardPlan(board.key);
+    await flush();
+    expect(board.current?.held?.sections).toHaveLength(3);
+    const patches = held<BoardPatch>('TrackerBoardPatch');
+    applyTrackerBoardEvent(event(11, { changed: ['5'] }), HOME_BACKEND);
+    await flush();
+    expect(patches.calls).toHaveLength(1);
+    expect(patches.calls[0][1]).toEqual(PLAN);
+    release();
+    await flush();
+    // The patch asked for three sections and answers for them.
+    patches.answer({ lifetime: 1, revision: 2, sections: [{ section: SPRINT, rows: [row('5', 'b')] }, { section: FUTURE, rows: [] }, { section: BACKLOG, rows: [] }] } as BoardPatch);
+    await flush();
+    expect(heldIds(board)).toEqual([['1', '5']]);
+    expect(mocks.board).not.toHaveBeenCalled();
+    board.release();
+  });
+
+  it('holds them unread from the subscribe answer of a pane already on Backlog, reading one page at a time', async () => {
+    const mocks = install({ view: view([{ section: SPRINT, rows: [row('1', 'a')] }], { plan: PLAN }) });
+    const pages = held<SectionPage>('TrackerSectionRows');
+    const board = attachTrackerBoard(REF, true);
+    const plan = holdTrackerBoardPlan(board.key);
+    await flush();
+    expect(board.current?.held?.sections.map((sec) => sec.unread ?? false)).toEqual([false, true, true]);
+    expect(pages.calls.map((c) => c[1])).toEqual([FUTURE]);
+    expect(mocks.subscribe).toHaveBeenCalledTimes(1);
+    plan();
     board.release();
   });
 });
