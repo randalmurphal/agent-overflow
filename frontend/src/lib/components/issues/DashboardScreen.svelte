@@ -26,6 +26,8 @@
   import ErrorNotice from '../shared/ErrorNotice.svelte';
   import { captureError, type CapturedError } from '../../stores/errorReports.svelte';
   import { mountThreadForToolPane } from '../../stores/panes.svelte';
+  import { getSettings } from '../../stores/settings.svelte';
+  import { trackerToolsBlocked } from '../../providers/trackerTools';
   import { getThreadById } from '../../stores/threads.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { askAgentAboutDashboards, createTrackerDashboard, type DashboardSource } from '../../stores/trackerDashboard.svelte';
@@ -122,7 +124,9 @@
   // The toolbar shows once the board is listed, so a source is there.
   const operate = $derived(source ? scopeGrant('tracker:operate', source.backend) : 'pending');
   const editBlocked = $derived(grantBlockedTitle(operate));
-  const askBlocked = $derived(source ? workGate(source.backend, source.board.projectId).ask || undefined : undefined);
+  const askBlocked = $derived(source
+    ? workGate(source.backend, source.board.projectId).ask || trackerToolsBlocked(getSettings(source.backend), computerName) || undefined
+    : undefined);
 
   let pickerOpen = $state(false);
   let pickerAnchor: HTMLElement | undefined = $state();
@@ -145,7 +149,7 @@
     if (!source || asking) return;
     asking = true;
     try {
-      await askAgentAboutDashboards(source.board.projectId, boardName);
+      await askAgentAboutDashboards(source.backend, source.board.projectId, boardName);
     } catch (err) {
       addErrorToast(`Could not start a thread about ${boardName}: ${userFacingError(err)}`, err);
     } finally {

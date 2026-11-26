@@ -13,7 +13,8 @@
 // widget, and with it the dashboard, which takes both browsers back to
 // Overview. Number proposals two to a row keep their buttons inside their
 // cards, and Keep's new-dashboard name takes every key typed beside the
-// dashboards it lists. A board on a paired computer takes a
+// dashboards it lists. With neither Claude nor Codex turned on, Ask your
+// agent is disabled and says why. A board on a paired computer takes a
 // widget its agent proposed from this computer's screen, the kept
 // dashboard is still there after that computer restarts, and Ask your
 // agent from this computer's screen opens its thread on that computer.
@@ -218,7 +219,7 @@ export function registerDashboardAgentFlow({ compact }: DashboardAgentSurface): 
     }
   });
 
-  test('number proposals side by side keep their buttons in their cards, and a new dashboard\'s name takes every key', async ({ harness, page }) => {
+  test('number proposals side by side keep their buttons in their cards, a new dashboard\'s name takes every key, and Ask needs a provider with the tracker tools', async ({ harness, page }) => {
     test.setTimeout(180_000);
     const provider: ProviderName = 'claude';
     const project = await boardProject(harness, name('numbers'), [{ title: 'Board questions', provider }]);
@@ -268,6 +269,13 @@ export function registerDashboardAgentFlow({ compact }: DashboardAgentSurface): 
     await expect(title).toHaveValue('Backlog jk');
     await title.press('Enter');
     await expect(screen.getByTestId('dashboard-title')).toHaveText('Backlog jk', { timeout: 30_000 });
+
+    // With no provider whose agents get the tracker tools turned on, Ask
+    // says which to turn on.
+    await expect(screen.getByTestId('dashboard-ask')).toBeEnabled();
+    await harness.rpc('UpdateSettings', { claudeEnabled: false, codexEnabled: false });
+    await expect(screen.getByTestId('dashboard-ask')).toBeDisabled();
+    await expect(screen.getByTestId('dashboard-ask')).toHaveAttribute('title', /^Ask needs Claude or Codex, whose agents get the tracker tools; turn one on in Settings on .+\.$/);
   });
 
   test('a paired computer\'s board takes the widget its agent proposed, and keeps it through that computer\'s restart', async ({ page }) => {

@@ -65,6 +65,8 @@ import { onTrackerDashboardsUpdated } from './trackerBoardEvents';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { revealPane } from './panes.svelte';
 import { openDraftThreadForProject } from './threadCreation.svelte';
+import { getSettings } from './settings.svelte';
+import { trackerToolsProvider } from '../providers/trackerTools';
 
 const RANGE_KEY = 'issues-dashboard-range';
 const MINE_KEY = 'issues-dashboard-mine';
@@ -446,13 +448,18 @@ export function dashboardAskSeed(boardName: string): string {
   return `About the dashboards of the board ${boardName}: `;
 }
 
-/** Ask your agent: a new thread in the board's project, opened in a pane
- * of its own, whose unsent draft names the board and is saved as typed
- * text is. The agent answers with
+/** Ask your agent: a new thread in the board's project itself, on its
+ * computer `backend`, opened in a pane of its own, on a provider whose
+ * agents get the tracker tools (trackerToolsProvider), whose unsent draft
+ * names the board and is saved as typed text is. The agent answers with
  * the tracker tools' dashboard_widget, whose proposals show on the
  * board's dashboards. */
-export async function askAgentAboutDashboards(projectId: string, boardName: string): Promise<void> {
-  const pane = await openDraftThreadForProject({ projectId, openInNewPane: true });
+export async function askAgentAboutDashboards(backend: BackendKey, projectId: string, boardName: string): Promise<void> {
+  const settings = getSettings(backend);
+  const pane = await openDraftThreadForProject({
+    projectId, openInNewPane: true, exact: true,
+    provider: (p) => trackerToolsProvider(p, settings) ?? p,
+  });
   if (!pane) return;
   revealPane(pane.paneId);
   await tick();

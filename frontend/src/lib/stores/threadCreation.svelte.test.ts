@@ -188,6 +188,47 @@ describe('openDraftThreadForProject', () => {
     }
   });
 
+  it('opens the project as given when asked for exactly it, not a preferred checkout', async () => {
+    const project = makeProject();
+    const preferred = makeProject({ id: 'preferred-project' });
+    addProjectLocal(project);
+    addProjectLocal(preferred);
+    const preference = vi.spyOn(projectTargets, 'preferredProjectTarget').mockReturnValue(preferred);
+    setBindingMock('GetThreadDefaults', async () => makeDefaults());
+    const pane = createThreadPane();
+    try {
+      await openDraftThreadForProject({ projectId: project.id, targetPane: pane, exact: true });
+      expect(preference).not.toHaveBeenCalled();
+      expect(pane.thread?.projectId).toBe(project.id);
+    } finally {
+      preference.mockRestore();
+      pane.clear();
+    }
+  });
+
+  it('starts on the provider the caller picks from the defaults, with that provider\'s defaults', async () => {
+    const project = makeProject();
+    addProjectLocal(project);
+    const asked: string[] = [];
+    setBindingMock('GetThreadDefaults', async (opts: { provider?: string }) => {
+      asked.push(opts.provider || '');
+      return opts.provider === 'claude' ? makeDefaults({ provider: 'claude', model: 'opus' }) : makeDefaults({ provider: 'agy', model: 'gemini' });
+    });
+    const pane = createThreadPane();
+    try {
+      await openDraftThreadForProject({ projectId: project.id, targetPane: pane, provider: (p) => (p === 'agy' ? 'claude' : p) });
+      expect(asked).toEqual(['', 'claude']);
+      expect(pane.thread?.provider).toBe('claude');
+      expect(pane.thread?.model).toBe('opus');
+      asked.length = 0;
+      await openDraftThreadForProject({ projectId: project.id, targetPane: pane, provider: (p) => p });
+      expect(asked).toHaveLength(1);
+      expect(pane.thread?.provider).toBe('agy');
+    } finally {
+      pane.clear();
+    }
+  });
+
   it('handles group deletion while draft defaults are loading', async () => {
     const project = makeProject();
     addProjectLocal(project);
