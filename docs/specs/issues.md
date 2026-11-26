@@ -527,27 +527,37 @@ request found by the search shows its state and author and no CI.
 
 On a Jira ticket the same read takes the pull requests Jira's development
 data links to the ticket from the site's forge integrations, the case
-above among them (a merged merge request whose key was only in a branch
-since deleted). Such a row shows its state, title and author as Jira
-reports them, opens on the forge like the others and is listed once: a
-pull request the stored list or the search lists stays as they list it.
-Jira's link is the evidence, so its rows need not name the key. A status
-Jira reports that is not open, merged or declined shows as Jira's own
-word. A link to an address the app cannot open as a pull request is not
-listed; Work says how many there are. A failed read is said under the
-pull requests, beside the rest; a ticket the data links nothing to says
-nothing. It costs one request to Jira for a ticket with no pull request
-and one more per forge integration that links one; a Linear ticket costs
+below among them (a merged merge request whose key was only in a branch
+since deleted). It is read beside the forge's search, and Work waits for
+it at most 10 seconds. Such a row shows its state, title and author as
+Jira reports them, opens on the forge like the others and is listed once:
+a pull request the stored list or the search lists stays as they list
+it. Jira's link is the evidence, so its rows need not name the key. A
+status Jira reports that is not open, merged or declined shows as Jira's
+own word. A link to an address the app cannot open as a pull request, or
+with no address, is not listed; Work says how many there are. Each
+integration is read on its own: one whose read fails leaves the others'
+rows, and each failed read is said under the pull requests with its
+endpoint, beside the rest. A read that does not answer within its wait
+is said, and Refresh reads it again. A ticket the data links nothing to
+says nothing, and so does a site whose summary answers 404 or has no
+pull request part (unmeasured: what a site with no forge integration
+answers). On a success it costs one request to Jira for a ticket with no
+pull request and one more per forge integration that links one; a
+refused or limited answer can add the transport's retries within the
+wait, a credential replaced during the read runs it again once, and a
+404 that names no account adds a sign-in check. A Linear ticket costs
 none. These endpoints are undocumented and can change without notice
 ([measured](../references/tracker-api-measurements.md#development-data)).
 
 The search finds a pull request in any state by its title, and by a
 branch name that holds the key: a branch the searched repository still has, a branch
 this computer has (local or fetched), and on GitHub any branch whose name
-begins with the key. Work misses a merge request whose key is only in its
-branch name once that branch is deleted on the forge, unless this
+begins with the key. The search misses a merge request whose key is only
+in its branch name once that branch is deleted on the forge, unless this
 computer still has the branch; on GitHub that holds only when the key is
-not at the branch name's start. A fork's parent is searched only for the
+not at the branch name's start. On Jira the development data lists such
+a merge request when the site's integration links it. A fork's parent is searched only for the
 branches of the ticket, not by title. Each repository's search reads at
 most 500 matches of each kind and says so when there were more.
 
@@ -561,8 +571,8 @@ most 500 matches of each kind and says so when there were more.
   same rule. Jira's own
   [development data](../references/tracker-api-measurements.md#development-data)
   is a fallback only, because its endpoints are undocumented: it is read
-  after the forge, and never replaces a row the forge's search or the
-  stored list gives.
+  beside the forge's search, and never replaces a row the forge's search
+  or the stored list gives.
 
 ### Thread link
 

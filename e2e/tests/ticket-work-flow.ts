@@ -252,6 +252,13 @@ function hostOpens(page: Page): () => readonly string[] {
   return () => urls;
 }
 
+/** WEB-1's development data with one merged pull request of `repo` on
+ * GitHub that the forge does not list (#505). */
+const devOnlyMerged = (repo: string): ExtraJira => ({
+  projects: [], boards: [],
+  devPullRequests: [{ instanceType: 'github-integration', id: `${repo}#505`, name: 'Clean the cache', url: `https://github.com/${repo}/pull/505`, status: 'MERGED', author: 'Dana Ruiz' }],
+});
+
 export function registerTicketWorkFlow({ compact }: WorkSurface): void {
   test('Work lists the pull requests the forge finds by the ticket\'s key, once each, and none that only seems to name it', async ({ harness, page }) => {
     test.setTimeout(150_000);
@@ -461,15 +468,17 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
       const context = await browser.newContext();
       try {
         await harness.rpc('SetNetworkSettings', { bindAll: true });
-        const { repo } = await searchProject(harness, 'work-search-connected');
+        const { repo } = await searchProject(harness, 'work-search-connected', SEARCH_PULLS, 'github', devOnlyMerged);
         const device = await context.newPage();
         const opens = await recordOpens(device);
         const code = await redeemOnScreen(device, await mintInvite(harness, 'full'), 'Work browser');
         await confirmOnHost(harness, code);
         const { work } = await openWork(device, WEB1, false);
-        await expect.poll(() => pullRows(work), { timeout: 30_000 }).toEqual(['#504 draft', '#501 open', '#502 merged', '#503 closed']);
-        // Its computer read the ticket's development data once.
+        await expect.poll(() => pullRows(work), { timeout: 30_000 }).toEqual(['#504 draft', '#501 open', '#502 merged', '#503 closed', '#505 merged']);
+        // Its computer read the ticket's development data once, and the
+        // row only that data holds reached this browser.
         expect(await trackerRequests(harness, 'GET rest/dev-status/latest/issue/summary')).toHaveLength(1);
+        await expect(work.getByTestId('ticket-work-pull').filter({ hasText: '#505' })).toContainText('Clean the cache');
         await work.getByTestId('ticket-work-pull').nth(2).click();
         await expect.poll(() => opens.urls).toEqual([`https://github.com/${repo}/pull/502`]);
       } finally {
@@ -486,10 +495,11 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
       try {
         [home, remote] = await startTogether(launchHarness(), launchHarness({ dataDir: join(root, 'state') }));
         await pairOwnDevice(home, remote, 'Laptop');
-        await searchProject(remote, 'work-search-remote');
+        await searchProject(remote, 'work-search-remote', SEARCH_PULLS, 'github', devOnlyMerged);
         await home.open(page);
         const { work } = await openWork(page, WEB1, false);
-        await expect.poll(() => pullRows(work), { timeout: 60_000 }).toEqual(['#504 draft', '#501 open', '#502 merged', '#503 closed']);
+        await expect.poll(() => pullRows(work), { timeout: 60_000 }).toEqual(['#504 draft', '#501 open', '#502 merged', '#503 closed', '#505 merged']);
+        await expect(work.getByTestId('ticket-work-pull').filter({ hasText: '#505' })).toContainText('Clean the cache');
         expect(await forgeOps(remote, 'PullsByKey')).toHaveLength(1);
         expect(await forgeOps(home, 'PullsByKey')).toEqual([]);
         // The computer that holds the connection read the development data.

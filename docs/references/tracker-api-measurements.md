@@ -182,13 +182,17 @@ only this shape.
   `devsummarycf`. On an issue its value is a string, not JSON: a prefix of
   its own format, then `json={...}` holding the summary endpoint's shape
   under `cachedValue` and an `isStale` flag. The app does not read it.
-- Unmeasured: a site with no forge integration; a GitHub or other
-  integration's instance type and shape; a draft's status, and any status
-  but the three above; a token that lacks the "View development tools"
-  project permission; paging of a long list; rate limits. The app shows a
-  status it does not know as Jira's word, says any answer outside this
-  shape as a failure of Work's development data, and says a refusal with
-  its HTTP status and the endpoint.
+- Unmeasured: what a site with no forge integration answers on the
+  summary (the app takes a 404 there, and a 200 with no
+  `summary.pullrequest`, as a site that keeps no development data: Work
+  says nothing and the cause is logged); a GitHub or other integration's
+  instance type and shape; a pull request with no `url` or `status`
+  (counted with the links Work cannot open); a draft's status, and any
+  status but the three above; a token that lacks the "View development
+  tools" project permission; paging of a long list; rate limits; how long
+  the endpoints take to answer. The app shows a status it does not know
+  as Jira's word, says any other answer outside this shape as a failure
+  of Work's development data, and says a refusal with the endpoint.
 - A forge can be searched for a ticket key. GitLab's merge request list
   takes `search` with `in=title,description`, and `source_branch`
   ([merge requests API](https://docs.gitlab.com/17.9/api/merge_requests)).

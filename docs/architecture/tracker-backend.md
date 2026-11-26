@@ -129,7 +129,10 @@ this is its shape.
   content newer than that time costs one more read later and never
   passes for current.
 - Development: the pull requests a tracker's forge integrations link to an
-  issue (`PullRequests`), from Jira's undocumented development data;
+  issue (`PullRequests`), from Jira's undocumented development data, each
+  integration read on its own: the rows read come back beside
+  `errors.Join` of each failed read. A Jira site whose summary says it
+  keeps no such data fails wrapping `tracker.ErrNoDevelopmentData`;
   Linear fails as unsupported before any request.
 - Finding: issues by key, and a page of cards matching text.
 - Writes: create, edit fields, move to a status (with the fields the move
@@ -2135,16 +2138,22 @@ delete is refused and the links the delete read are the ones it ends.
   integrations link to the ticket (`trackerapp.Service.IssuePullRequests`,
   the provider's `PullRequests`: on Jira the development data's summary,
   then one detail per integration whose count is above zero, at once; on
-  Linear nothing, with no request), and lists them after the forge's rows
+  Linear nothing, with no request), waits for it at most
+  `ticketDevelopmentWait` (10 s, an interactive call's gate wait; the
+  transport may still retry within it), and lists them after the forge's rows
   (`ticketWorkRead.addDevelopment`): a pull request listed already stays
   as listed, except one only a linked thread's record gave, which takes
   the tracker's title, author and state; the tracker's link is the
   evidence, so the key rule does not apply; a link whose URL is no pull
   request `gitops.ParsePRURL` can address is counted in
   `DevelopmentUnlisted`; a status not measured is shown as the tracker's
-  word. Its failure is `DevelopmentProblem`, the tracker's sentence with
-  the endpoint that answered, and never settles the connection's problem,
-  since the endpoints are undocumented
+  word. The service returns each failed read as a
+  `trackerapp.DevelopmentFailure` beside the rows the others answered;
+  `DevelopmentProblem` says each with its endpoint and integration and,
+  for a refused credential or a rate limit, the HTTP status, or that the
+  read did not answer within its wait. A site that keeps no data says
+  nothing and its cause is logged. No failure settles the connection's
+  problem, since the endpoints are undocumented
   ([measured](../references/tracker-api-measurements.md#development-data)).
 - **`StartTicketThread`** (project route, `threads:operate`, plus
   `tracker:read`, and `git:operate` for Start work) makes the thread of
