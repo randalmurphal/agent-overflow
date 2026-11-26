@@ -131,21 +131,14 @@ func place(m Metric, rows []contribution, periods ...[]period) map[string][]cont
 	return out
 }
 
-// seriesOf is the series rows name, in the metric's declared order and
-// then in text order; one unnamed series when the metric names none.
-func seriesOf(m Metric, cols columns, rows []contribution) []string {
+// seriesOf is the series a widget's cells follow: the metric's declared
+// series, which the sink holds every row to, or one unnamed series for a
+// metric that names none.
+func seriesOf(m Metric, cols columns) []string {
 	if !cols.has(ColumnSeries) {
 		return []string{""}
 	}
-	out := slices.Clone(m.Series)
-	var rest []string
-	for _, c := range rows {
-		if !slices.Contains(out, c.series) && !slices.Contains(rest, c.series) {
-			rest = append(rest, c.series)
-		}
-	}
-	slices.Sort(rest)
-	return append(out, rest...)
+	return slices.Clone(m.Series)
 }
 
 // group is rows by bucket key, the keys in first-seen order.

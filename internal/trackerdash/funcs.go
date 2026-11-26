@@ -6,7 +6,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -132,9 +135,14 @@ func sinkOf(key string) (*rowSink, bool) {
 	return s, ok
 }
 
-// maxInstant bounds the instants the time functions take: milliseconds
-// before the year 2286.
+// maxInstant bounds an instant a function takes or a row's at holds:
+// milliseconds before the year 2286, past any date a tracker records.
 const maxInstant = 10_000_000_000_000
+
+// maxValue bounds a row's value either way: no estimate, day count or
+// ticket count comes near a trillion, and 20,000 rows of at most this
+// add to a number every reduction and the answer's JSON hold exactly.
+const maxValue = 1e12
 
 func instants(name string, args []driver.Value) (a, b int64, ok bool, err error) {
 	if args[0] == nil || args[1] == nil {
@@ -238,14 +246,16 @@ type contribution struct {
 // rowSink gathers the rows of the metric that runs, charged against the
 // byte budget. One metric runs at a time on a session.
 type rowSink struct {
-	cols  columns
-	rows  []contribution
-	bytes int
-	err   error
+	cols columns
+	// series is the metric's declared series, which a row's series is one of.
+	series []string
+	rows   []contribution
+	bytes  int
+	err    error
 }
 
-func (s *rowSink) reset(cols columns) {
-	s.cols, s.rows, s.bytes, s.err = cols, nil, 0, nil
+func (s *rowSink) reset(cols columns, series []string) {
+	s.cols, s.series, s.rows, s.bytes, s.err = cols, series, nil, 0, nil
 }
 
 func (s *rowSink) take() []contribution {
@@ -259,8 +269,9 @@ var errBytes = &MetricError{Sentence: fmt.Sprintf("This widget's rows passed %d 
 
 const maxNote = 80
 
-// add reads one row into a contribution.
-func (s *rowSink) add(args []driver.Value) error {
+// add reads one row into a contribution: onBoard is whether its ticket
+// is one of the copy's tickets, which the wrapper asks of the copy.
+func (s *rowSink) add(onBoard driver.Value, args []driver.Value) error {
 	if s.err != nil {
 		return s.err
 	}
@@ -268,33 +279,20 @@ func (s *rowSink) add(args []driver.Value) error {
 		s.err = fmt.Errorf("bounded_rows takes the metric's %d columns, not %d", s.cols.n, len(args))
 		return s.err
 	}
-	var c contribution
-	var err error
-	at := func(name string) driver.Value { return args[s.cols.index[name]] }
-	if c.ticket, err = text(ColumnTicket, at(ColumnTicket)); err == nil && c.ticket == "" {
-		err = errors.New("a row's ticket is empty or NULL; each row names the ticket it counts")
-	}
-	c.value, c.counted = 1, true
-	if err == nil && s.cols.has(ColumnValue) {
-		c.value, c.counted, err = number(ColumnValue, at(ColumnValue))
-	}
-	for _, f := range []struct {
-		name string
-		to   *string
-	}{{ColumnBucket, &c.bucket}, {ColumnSeries, &c.series}, {ColumnPerson, &c.person}, {ColumnEpic, &c.epic}, {ColumnNote, &c.note}} {
-		if err == nil && s.cols.has(f.name) {
-			*f.to, err = text(f.name, at(f.name))
-		}
-	}
-	if err == nil && s.cols.has(ColumnAt) {
-		var v float64
-		v, c.hasAt, err = number(ColumnAt, at(ColumnAt))
-		c.at = int64(v)
-	}
+	c, err := s.read(args)
 	if err != nil {
 		s.err = &MetricError{Sentence: "This widget's query returned a row it cannot count: " + err.Error() + ". Change its query."}
 		return s.err
 	}
+	if known, _ := onBoard.(int64); known != 1 {
+		s.err = &MetricError{Sentence: fmt.Sprintf("This widget's query returned ticket %q, which is not one of this board's tickets. A row names a ticket from the tickets relation; change its query.", truncate(c.ticket, 64))}
+		return s.err
+	}
+	if s.cols.has(ColumnSeries) && !slices.Contains(s.series, c.series) {
+		s.err = &MetricError{Sentence: fmt.Sprintf("This widget's query returned series %q, which its metric does not name (it names %s). Add the series to the metric, or change its query.", truncate(c.series, 64), strings.Join(s.series, ", "))}
+		return s.err
+	}
+
 	if len(c.note) > maxNote {
 		cut := maxNote
 		for cut > 0 && !utf8.RuneStart(c.note[cut]) {
@@ -309,6 +307,40 @@ func (s *rowSink) add(args []driver.Value) error {
 	}
 	s.rows = append(s.rows, c)
 	return nil
+}
+
+// read reads a row's columns, each value and instant within its bound.
+func (s *rowSink) read(args []driver.Value) (contribution, error) {
+	var c contribution
+	var err error
+	at := func(name string) driver.Value { return args[s.cols.index[name]] }
+	if c.ticket, err = text(ColumnTicket, at(ColumnTicket)); err == nil && c.ticket == "" {
+		err = errors.New("a row's ticket is empty or NULL; each row names the ticket it counts")
+	}
+	c.value, c.counted = 1, true
+	if err == nil && s.cols.has(ColumnValue) {
+		c.value, c.counted, err = number(ColumnValue, at(ColumnValue))
+		if err == nil && c.counted && (math.IsNaN(c.value) || math.Abs(c.value) > maxValue) {
+			err = fmt.Errorf("ticket %q's value is %g, past %g either way, the most a metric counts", truncate(c.ticket, 64), c.value, maxValue)
+		}
+	}
+	for _, f := range []struct {
+		name string
+		to   *string
+	}{{ColumnBucket, &c.bucket}, {ColumnSeries, &c.series}, {ColumnPerson, &c.person}, {ColumnEpic, &c.epic}, {ColumnNote, &c.note}} {
+		if err == nil && s.cols.has(f.name) {
+			*f.to, err = text(f.name, at(f.name))
+		}
+	}
+	if err == nil && s.cols.has(ColumnAt) {
+		var v float64
+		v, c.hasAt, err = number(ColumnAt, at(ColumnAt))
+		if err == nil && c.hasAt && !(v >= 0 && v <= maxInstant) {
+			err = fmt.Errorf("ticket %q's at is %g, not an instant in milliseconds from 1970 to 2286", truncate(c.ticket, 64), v)
+		}
+		c.at = int64(v)
+	}
+	return c, err
 }
 
 func text(name string, v driver.Value) (string, error) {
@@ -353,8 +385,9 @@ func typeName(v driver.Value) string {
 	}
 }
 
-// sinkStep is bounded_rows: its first argument names the session, each
-// step is a row into that session's sink, the result the number of rows.
+// sinkStep is bounded_rows: its first argument names the session, its
+// second whether the row's ticket is on the board, and each step is a
+// row into that session's sink, the result the number of rows.
 type sinkStep struct{ sink *rowSink }
 
 // errSessionClosed is a bounded_rows step whose key names no open session.
@@ -369,7 +402,7 @@ func (a *sinkStep) Step(_ *sqlite.FunctionContext, args []driver.Value) error {
 		}
 		a.sink = sink
 	}
-	return a.sink.add(args[1:])
+	return a.sink.add(args[1], args[2:])
 }
 
 func (a *sinkStep) WindowInverse(*sqlite.FunctionContext, []driver.Value) error {

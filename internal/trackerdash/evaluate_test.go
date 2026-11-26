@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -327,5 +328,44 @@ func TestRangeMetricsReadOnlyTheRange(t *testing.T) {
 		if v := widgetOf(t, w, id); v.Error != "" {
 			t.Fatalf("week board %s failed over old tickets: %s", id, v.Error)
 		}
+	}
+}
+
+// A table of more people than it shows makes the cells of the people it
+// shows only: 19,900 people in the active sprint give 50 rows of three
+// cells, the rest counted in More, with no cell made for the others.
+func TestATableMakesTheCellsItShows(t *testing.T) {
+	t.Parallel()
+	f := teamBoard().exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 19900)
+		INSERT INTO tickets(id, key, title, type_level, status, status_group, assignee, created_at, updated_at, status_since, points)
+		SELECT 'p' || i, 'WEB-' || (5000 + i), 'T', 0, '1', 'todo', 'person' || i, %d, 0, 0, 1 FROM n`, ago(5)).
+		exec(`INSERT INTO sprint_tickets SELECT 's7', id FROM tickets WHERE id LIKE 'p%%'`)
+	e := evaluator()
+	o, err := e.begin(context.Background(), f.board(), utcSprints3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := o.end(); err != nil {
+			t.Error(err)
+		}
+	}()
+	m := o.metrics["carrying"]
+	c, err := o.count(m)
+	if err != nil || c.err != nil {
+		t.Fatalf("carrying: %v %v", err, c.err)
+	}
+	w := Widget{ID: "carrying", Metric: m.Name, Form: FormTable, Width: 4}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	v := o.ev.widget(w, m, c, o.sp)
+	runtime.ReadMemStats(&after)
+	if len(v.Buckets) != maxTableRows || v.More != 19902-maxTableRows || len(v.Buckets[0].Cells) != 3 {
+		t.Fatalf("table = %d rows of %d cells, %d more", len(v.Buckets), len(v.Buckets[0].Cells), v.More)
+	}
+	// Totalling 19,902 people costs a few allocations each; their 59,706
+	// cells would cost more than twice that.
+	if mallocs := after.Mallocs - before.Mallocs; mallocs > 120_000 {
+		t.Errorf("the table allocated %d times; its shown cells are %d", mallocs, maxTableRows*3)
 	}
 }

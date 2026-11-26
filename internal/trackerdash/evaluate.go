@@ -699,10 +699,10 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 			out.Tickets = append(out.Tickets, ev.ticket(r, c.p.cols))
 		}
 	case FormBars, FormLine, FormTable:
-		out.Series = seriesOf(m, c.p.cols, c.rows)
+		out.Series = seriesOf(m, c.p.cols)
 		named := c.p.cols.has(ColumnSeries)
-		cell := func(key, label string, partial bool, rows []contribution) BucketValue {
-			b := BucketValue{Key: key, Label: label, Partial: partial, Total: reduceRows(m.Reduce, rows)}
+		cell := func(key, label string, partial bool, total Num, rows []contribution) BucketValue {
+			b := BucketValue{Key: key, Label: label, Partial: partial, Total: total}
 			for _, s := range out.Series {
 				b.Cells = append(b.Cells, reduceRows(m.Reduce, bySeries(rows, s, named)))
 			}
@@ -710,21 +710,29 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 		}
 		if m.Bucket == BucketPeriod || m.Bucket == BucketSprint {
 			for _, p := range sp.periods {
-				out.Buckets = append(out.Buckets, cell(p.id, p.label, p.partial, placed[p.id]))
+				out.Buckets = append(out.Buckets, cell(p.id, p.label, p.partial, reduceRows(m.Reduce, placed[p.id]), placed[p.id]))
 			}
 			return out
 		}
-		keys, grouped := group(rows, func(c contribution) string { return c.bucket })
-		for _, k := range keys {
-			out.Buckets = append(out.Buckets, cell(k, ev.label(m.Bucket, k), false, grouped[k]))
+		// The shown buckets are chosen by their totals before any of their
+		// cells is made, so an answer holds at most limit buckets of the
+		// declared series' cells however many buckets the rows name.
+		type ranked struct {
+			key, label string
+			total      Num
 		}
-		slices.SortStableFunc(out.Buckets, func(a, b BucketValue) int {
+		keys, grouped := group(rows, func(c contribution) string { return c.bucket })
+		all := make([]ranked, 0, len(keys))
+		for _, k := range keys {
+			all = append(all, ranked{key: k, label: ev.label(m.Bucket, k), total: reduceRows(m.Reduce, grouped[k])})
+		}
+		slices.SortStableFunc(all, func(a, b ranked) int {
 			av, bv := -1.0, -1.0
-			if a.Total.V != nil {
-				av = *a.Total.V
+			if a.total.V != nil {
+				av = *a.total.V
 			}
-			if b.Total.V != nil {
-				bv = *b.Total.V
+			if b.total.V != nil {
+				bv = *b.total.V
 			}
 			if av != bv {
 				if av > bv {
@@ -732,15 +740,18 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 				}
 				return 1
 			}
-			return strings.Compare(a.Label, b.Label)
+			return strings.Compare(a.label, b.label)
 		})
 		limit := maxBars
 		if w.Form == FormTable {
 			limit = maxTableRows
 		}
-		if len(out.Buckets) > limit {
-			out.More = len(out.Buckets) - limit
-			out.Buckets = out.Buckets[:limit]
+		if len(all) > limit {
+			out.More = len(all) - limit
+			all = all[:limit]
+		}
+		for _, b := range all {
+			out.Buckets = append(out.Buckets, cell(b.key, b.label, false, b.total, grouped[b.key]))
 		}
 	}
 	return out

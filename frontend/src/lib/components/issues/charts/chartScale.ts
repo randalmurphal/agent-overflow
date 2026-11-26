@@ -10,16 +10,18 @@ export interface ValueScale {
 }
 
 /** The axis for values up to `top`, about `count` ticks; a top of 0 or
- * less (nothing to draw) is an axis to 1. */
+ * less (nothing to draw) is an axis to 1. The ticks are counted, not
+ * stepped to the top, so a top near the largest number, whose rounded
+ * axis would not be finite, is an axis of two ticks to `top`. */
 export function valueScale(top: number, count = 4): ValueScale {
   if (!(top > 0) || !Number.isFinite(top)) return { max: 1, ticks: [0, 1] };
   const rough = top / count;
   const magnitude = 10 ** Math.floor(Math.log10(rough));
   const step = [1, 2, 5, 10].map((m) => m * magnitude).find((s) => s >= rough) ?? 10 * magnitude;
-  const max = Math.ceil(top / step) * step;
-  const ticks: number[] = [];
-  for (let t = 0; t <= max + step / 2; t += step) ticks.push(Math.round(t * 1e6) / 1e6);
-  return { max, ticks };
+  const steps = Math.ceil(top / step);
+  const max = steps * step;
+  if (!Number.isFinite(max) || !(step > 0) || steps > 2 * count) return { max: top, ticks: [0, top] };
+  return { max, ticks: Array.from({ length: steps + 1 }, (_, i) => Math.round(i * step * 1e6) / 1e6) };
 }
 
 /** Where band `i` of `n` sits along `length`: its start and its size, with

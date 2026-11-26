@@ -112,9 +112,9 @@ type Metric struct {
 	Unit   Unit
 	Good   Good
 	Bucket Bucket
-	// Series is the order of the series it names, which a chart's legend
-	// and a table's columns follow; a series it does not list follows in
-	// text order.
+	// Series is the series it names, in the order a chart's legend and a
+	// table's columns follow; a row names one of them, and a metric that
+	// names none returns no series column.
 	Series []string
 }
 
@@ -141,6 +141,11 @@ func (m Metric) Validate() error {
 		return fmt.Errorf("metric %s's query is %d bytes, over %d", m.Name, len(m.SQL), maxMetricSQL)
 	case len(m.Series) > maxSeries:
 		return fmt.Errorf("metric %s names %d series, over %d", m.Name, len(m.Series), maxSeries)
+	}
+	for _, name := range m.Series {
+		if strings.TrimSpace(name) == "" || len(name) > maxTitle || slices.Contains(m.Series[:slices.Index(m.Series, name)], name) {
+			return fmt.Errorf("a series of metric %s is empty, over %d bytes or named twice", m.Name, maxTitle)
+		}
 	}
 	for _, w := range m.Words {
 		if strings.TrimSpace(w) == "" || len(w) > maxWordsLength {
@@ -204,6 +209,8 @@ func metricColumnsOf(m Metric, names []string) (columns, error) {
 		return columns{}, fmt.Errorf("metric %s groups by %s, so its query returns a bucket column", m.Name, m.Bucket)
 	case m.Bucket == BucketNone && c.has(ColumnBucket):
 		return columns{}, fmt.Errorf("metric %s groups by nothing, so its query returns no bucket column", m.Name)
+	case len(m.Series) == 0 && c.has(ColumnSeries):
+		return columns{}, fmt.Errorf("metric %s names no series, so its query returns no series column", m.Name)
 	}
 	return c, nil
 }

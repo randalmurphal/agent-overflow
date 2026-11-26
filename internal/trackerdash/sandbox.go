@@ -287,6 +287,8 @@ type prepared struct {
 	names []string
 	cols  columns
 	reads []string
+	// series is the metric's declared series (Metric.Series).
+	series []string
 	// took is how long the prepare took, which the metric's deadline
 	// counts: the driver's prepare watches no context, so it is timed,
 	// not interrupted. The limits bound it (0.65 ms for the slowest
@@ -331,7 +333,7 @@ func (s *session) prepare(m Metric) (prepared, error) {
 		return prepared{}, &MetricError{Sentence: "This widget's query " + strings.TrimPrefix(err.Error(), "the query ") + "; change its query."}
 	}
 	slices.Sort(reads)
-	return prepared{sql: text, names: names, cols: cols, reads: reads, took: time.Since(start)}, nil
+	return prepared{sql: text, names: names, cols: cols, reads: reads, series: m.Series, took: time.Since(start)}, nil
 }
 
 // run runs a prepared metric under its deadline, which began when its
@@ -344,14 +346,14 @@ func (s *session) prepare(m Metric) (prepared, error) {
 func (s *session) run(ctx context.Context, p prepared, now, since int64) ([]contribution, error) {
 	ctx, cancel := context.WithTimeout(ctx, metricDeadline-p.took)
 	defer cancel()
-	s.sink.reset(p.cols)
-	defer s.sink.reset(columns{})
+	s.sink.reset(p.cols, p.series)
+	defer s.sink.reset(columns{}, nil)
 	var b strings.Builder
 	b.WriteString("WITH q AS (\n")
 	b.WriteString(p.sql)
 	b.WriteString("\n), r AS (SELECT * FROM q LIMIT ")
 	fmt.Fprint(&b, maxRows+1)
-	b.WriteString(") SELECT bounded_rows('" + s.key + "'")
+	b.WriteString(") SELECT bounded_rows('" + s.key + "', EXISTS (SELECT 1 FROM main.tickets WHERE id = r.\"ticket\")")
 	for _, name := range p.names {
 		b.WriteString(`, r."` + name + `"`)
 	}

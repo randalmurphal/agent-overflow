@@ -53,6 +53,13 @@ describe('the charts\' geometry', () => {
     expect(valueScale(0.7).max).toBeCloseTo(0.8);
   });
 
+  it('counts its ticks whatever the top, the largest number included', () => {
+    expect(valueScale(1.79e308)).toEqual({ max: 1.79e308, ticks: [0, 1.79e308] });
+    expect(valueScale(Number.MAX_VALUE).ticks).toHaveLength(2);
+    expect(valueScale(Number.MIN_VALUE).ticks.length).toBeLessThanOrEqual(9);
+    expect(valueScale(Infinity)).toEqual({ max: 1, ticks: [0, 1] });
+  });
+
   it('lays bands along a length with the gap between them', () => {
     expect(band(0, 3, 100, 2)).toEqual({ start: 0, size: 32 });
     expect(band(2, 3, 100, 2)).toEqual({ start: 68, size: 32 });

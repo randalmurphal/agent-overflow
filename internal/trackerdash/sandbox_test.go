@@ -90,8 +90,13 @@ func TestHostileQueriesAreRefused(t *testing.T) {
 		{`SELECT printf('%.*c', 100000, 'x') AS ticket`, "passed one of the limits on a metric"},
 		{`SELECT id AS ticket, key AS value FROM tickets`, "column value holds text"},
 		{`SELECT a.ticket AS ticket FROM changes a, changes b LIMIT 30000`, "more than 20000 rows, its limit"},
-		{`SELECT a.ticket AS ticket, printf('%.*c', 60000, 'x') AS series FROM changes a`, "passed 4 MiB"},
+		{`SELECT a.ticket AS ticket, printf('%.*c', 60000, 'x') AS person FROM changes a`, "passed 4 MiB"},
 		{`SELECT ?3 AS ticket`, "failed"},
+		{`SELECT 'WEB-999' AS ticket`, `returned ticket "WEB-999", which is not one of this board's tickets`},
+		{`SELECT id AS ticket, 'Doing' AS series FROM tickets`, "names no series, so its query returns no series column"},
+		{`SELECT id AS ticket, 1e308 * 10 AS value FROM tickets`, `ticket "t1"'s value is +Inf, past 1e+12 either way`},
+		{`SELECT id AS ticket, -2e12 AS value FROM tickets`, `ticket "t1"'s value is -2e+12, past 1e+12 either way`},
+		{`SELECT id AS ticket, -1 AS at FROM tickets`, `ticket "t1"'s at is -1, not an instant in milliseconds from 1970 to 2286`},
 	} {
 		_, err := runSQL(s, metricOf(c.sql))
 		var me *MetricError
@@ -102,6 +107,24 @@ func TestHostileQueriesAreRefused(t *testing.T) {
 	rows, err := runSQL(s, metricOf(`SELECT id AS ticket FROM tickets`))
 	if err != nil || len(rows) != 10 {
 		t.Fatalf("after the refusals: %d rows, %v", len(rows), err)
+	}
+}
+
+// A row's series is one the metric declares, and the sentence says which
+// it returned and which the metric names.
+func TestRowsNameDeclaredSeries(t *testing.T) {
+	t.Parallel()
+	s := sealed(t)
+	m := Metric{Name: "probe", Title: "Probe", Words: []string{"A probe."}, Reduce: ReduceCount, Unit: UnitTickets,
+		Series: []string{"To do", "Doing"}, SQL: `SELECT id AS ticket, iif(id = 't1', 'Doing', 'Blocked') AS series FROM tickets`}
+	_, err := runSQL(s, m)
+	var me *MetricError
+	if !errors.As(err, &me) || !strings.Contains(me.Sentence, `returned series "Blocked", which its metric does not name (it names To do, Doing)`) {
+		t.Fatalf("an undeclared series: %v", err)
+	}
+	m.SQL = `SELECT id AS ticket, iif(id = 't1', 'Doing', 'To do') AS series FROM tickets`
+	if rows, err := runSQL(s, m); err != nil || len(rows) != 10 {
+		t.Fatalf("declared series: %d rows, %v", len(rows), err)
 	}
 }
 
