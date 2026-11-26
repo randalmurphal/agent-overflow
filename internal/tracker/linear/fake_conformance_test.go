@@ -175,10 +175,10 @@ func (r callAnswer[T]) must(t *testing.T) T {
 	return r.v
 }
 
-func identifiers(is []Issue) []string {
+func identifiers[T walkRow](is []T) []string {
 	out := make([]string, 0, len(is))
 	for _, i := range is {
-		out = append(out, i.Identifier)
+		out = append(out, i.walked().Identifier)
 	}
 	return out
 }

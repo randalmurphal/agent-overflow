@@ -29,12 +29,14 @@ type toolSpec struct {
 var toolTable = []toolSpec{
 	{
 		name:        "ticket_find",
-		description: "Search tickets by text, 20 at a time.",
+		description: "Search tickets, 20 at a time.",
 		properties: map[string]any{
-			"text": property("string", ""),
-			"next": property("string", "From the previous answer, for the next 20."),
+			"text":   property("string", ""),
+			"mine":   property("boolean", "Assigned to the user."),
+			"status": property("string", "A status, or the tracker's group: to do, in progress, done or not done."),
+			"sprint": map[string]any{"type": "string", "enum": []string{activeSprint}},
+			"next":   property("string", "From the previous answer, for the next 20."),
 		},
-		required: []string{"text"},
 		call: func(s *Server, ctx context.Context, _ Caller, args json.RawMessage) (any, error) {
 			return s.find(ctx, args)
 		},

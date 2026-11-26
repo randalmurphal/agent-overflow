@@ -1,8 +1,9 @@
 // A project thread whose mock provider calls the tracker tools
 // (`ao-tracker-tools`) for real against the fake Jira site, shared by
 // tracker-agent-tools.spec.ts (desktop, both providers) and
-// compact-tracker-agent-tools.spec.ts (compact): a search, a read by key,
-// and a read with no key from a thread linked to no ticket.
+// compact-tracker-agent-tools.spec.ts (compact): a search by text, a search
+// by filters (mine, a status group and the active sprint), a read by key, and
+// a read with no key from a thread linked to no ticket.
 
 import { expect, type Locator, type Page } from '@playwright/test';
 
@@ -22,14 +23,16 @@ function adf(text: string): unknown {
 export interface TrackerToolsRun {
   threadId: string;
   find: { isError: boolean; text: string };
+  filtered: { isError: boolean; text: string };
   read: { isError: boolean; text: string };
   unlinked: { isError: boolean; text: string };
 }
 
 /**
  * Connects the fake Jira site, with WEB-12 beside the seed's issues, seeds
- * a project thread on provider, and drives one turn that finds, reads and
- * reads with no key.
+ * a project thread on provider, and drives one turn that finds by text,
+ * finds by filters, reads and reads with no key. WEB-1 is in progress in
+ * the active sprint too but assigned to nobody, so only mine leaves it out.
  */
 export async function driveTrackerTools(harness: HarnessApp, provider: ProviderName, tag: string): Promise<TrackerToolsRun> {
   const created = new Date(Date.now() - 3600_000).toISOString();
@@ -57,6 +60,7 @@ export async function driveTrackerTools(harness: HarnessApp, provider: ProviderN
       turns: [{
         steps: [
           { call: { server: TRACKER_TOOLS_SERVER, tool: 'ticket_find', args: { text: 'safari' } } },
+          { call: { server: TRACKER_TOOLS_SERVER, tool: 'ticket_find', args: { mine: true, status: 'in progress', sprint: 'active' } } },
           { call: { server: TRACKER_TOOLS_SERVER, tool: 'ticket_read', args: { key: 'WEB-12' } } },
           { call: { server: TRACKER_TOOLS_SERVER, tool: 'ticket_read', args: {} } },
         ],
@@ -65,16 +69,17 @@ export async function driveTrackerTools(harness: HarnessApp, provider: ProviderN
     }),
   );
   await harness.send(threadId, 'find the Safari login ticket and read it');
-  // Each wait consumes the answer it matched, so two waits for ticket_read
-  // are its two calls, in order.
+  // Each wait consumes the answer it matched, so two waits for a tool are
+  // its two calls, in order.
   const answer = async (tool: string) => {
     const event = await harness.awaitMcpResult({ server: TRACKER_TOOLS_SERVER, tool, cwd: project.path, timeoutMs: 60_000 });
     return { isError: Boolean(event.report.isError), text: event.report.result ?? '' };
   };
   const find = await answer('ticket_find');
+  const filtered = await answer('ticket_find');
   const read = await answer('ticket_read');
   const unlinked = await answer('ticket_read');
-  return { threadId, find, read, unlinked };
+  return { threadId, find, filtered, read, unlinked };
 }
 
 /** Opens the thread with its activity runs expanded, once its find row shows. */
@@ -102,6 +107,13 @@ export async function expandActivityRuns(page: Page): Promise<void> {
 export const TICKET_ROWS: Array<{ name: string; label: string; preview: string; opened: (row: Locator) => Promise<void> }> = [
   {
     name: 'find', label: 'find', preview: '"safari"',
+    opened: async (row) => {
+      await expect(row.getByTestId('tool-call-card-ao-outcome')).toHaveText('1 ticket');
+      await expect(row.getByTestId('tool-call-card-ao-line-title')).toHaveText('WEB-12 · Login fails on Safari · In Progress · User 1');
+    },
+  },
+  {
+    name: 'filtered', label: 'find', preview: 'assigned to you · in progress · active sprint',
     opened: async (row) => {
       await expect(row.getByTestId('tool-call-card-ao-outcome')).toHaveText('1 ticket');
       await expect(row.getByTestId('tool-call-card-ao-line-title')).toHaveText('WEB-12 · Login fails on Safari · In Progress · User 1');

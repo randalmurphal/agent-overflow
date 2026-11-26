@@ -196,7 +196,7 @@ func TestUnhandledRequestsAnswer501AndAreRecorded(t *testing.T) {
 		{"method", "PATCH", "/rest/api/3/myself", "", "myself"},
 		{"query parameter", "GET", "/rest/api/3/myself?expand=groups", "", "expand"},
 		{"body member", "POST", "/rest/api/3/issue/WEB-1/comment", `{"body":` + testDoc + `,"bogus":1}`, "bogus"},
-		{"jql", "POST", "/rest/api/3/search/jql", `{"jql":"assignee = currentUser()"}`, "assignee"},
+		{"jql", "POST", "/rest/api/3/search/jql", `{"jql":"assignee = \"acc-user1\""}`, "assignee"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := w.jira(t, c.method, c.path, c.body)

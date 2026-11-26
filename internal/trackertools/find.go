@@ -16,20 +16,44 @@ import (
 // were made, one source after another: a page takes what the source at
 // its start has, up to pageSize, and goes on to the next source only when
 // that one has no more. So one answer asks at most one search of each
-// source, and the model reads one list with one next.
+// source, and the model reads one list with one next. Text, mine, status
+// and sprint narrow it together; a status word that names a group
+// (statusGroup) is the tracker's group, and any other a status's name.
 
 type findArgs struct {
-	Text string `json:"text"`
-	Next string `json:"next"`
+	Text   string `json:"text"`
+	Mine   bool   `json:"mine"`
+	Status string `json:"status"`
+	Sprint string `json:"sprint"`
+	Next   string `json:"next"`
 }
 
+// statusGroup is the group a word of status names, case ignored, as
+// trackerapp.SearchRequest.Group names it; false for a status's name.
+func statusGroup(word string) (string, bool) {
+	switch strings.ToLower(word) {
+	case "backlog", "done", "canceled":
+		return strings.ToLower(word), true
+	case "to do":
+		return "todo", true
+	case "in progress":
+		return "in_progress", true
+	case "not done":
+		return trackerapp.GroupOpen, true
+	}
+	return "", false
+}
+
+// activeSprint is the one value sprint takes.
+const activeSprint = "active"
+
 // findCursor is where a search goes on: the source, its tracker page
-// token (empty for its first page), and the search's text as a digest, so
-// a next is refused for a search of other words.
+// token (empty for its first page), and the search's arguments as a
+// digest, so a next is refused for another search.
 type findCursor struct {
 	Connection string `json:"c"`
 	Page       string `json:"p,omitempty"`
-	Text       string `json:"t"`
+	Query      string `json:"q"`
 }
 
 // foundTicket is one row of an answer.
@@ -52,9 +76,29 @@ type findAnswer struct {
 	Unsearched []unsearched  `json:"unsearched,omitempty"`
 }
 
-func textDigest(text string) string {
-	sum := sha256.Sum256([]byte(text))
+// queryDigest digests the search in asks, every argument but its page.
+func queryDigest(in trackerapp.SearchRequest) string {
+	b, _ := json.Marshal(in) // a struct of strings and booleans always marshals
+	sum := sha256.Sum256(b)
 	return base64.RawURLEncoding.EncodeToString(sum[:6])
+}
+
+// request is args as the search each source is asked.
+func (args findArgs) request() (trackerapp.SearchRequest, error) {
+	in := trackerapp.SearchRequest{Text: strings.TrimSpace(args.Text), Mine: args.Mine, ActiveSprint: args.Sprint == activeSprint}
+	if args.Sprint != "" && !in.ActiveSprint {
+		return in, invalidf("sprint takes %q only.", activeSprint)
+	}
+	status := strings.TrimSpace(args.Status)
+	if group, ok := statusGroup(status); ok {
+		in.Group = group
+	} else {
+		in.Status = status
+	}
+	if in.Text == "" && !in.Mine && status == "" && !in.ActiveSprint {
+		return in, invalidf("Give text, mine, status or sprint.")
+	}
+	return in, nil
 }
 
 func (s *Server) find(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -62,23 +106,23 @@ func (s *Server) find(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err := decode(raw, &args); err != nil {
 		return nil, err
 	}
-	text := strings.TrimSpace(args.Text)
-	if text == "" {
-		return nil, invalidf("text is required.")
+	req, err := args.request()
+	if err != nil {
+		return nil, err
 	}
 	sources, err := s.sources()
 	if err != nil {
 		return nil, err
 	}
-	digest := textDigest(text)
+	digest := queryDigest(req)
 	start, page := 0, ""
 	if args.Next != "" {
 		var at findCursor
 		if err := decodeCursor("next", args.Next, &at); err != nil {
 			return nil, err
 		}
-		if at.Text != digest {
-			return nil, invalidf("next is from a search for other text; leave it out to search for this text.")
+		if at.Query != digest {
+			return nil, invalidf("next is from another search; leave it out to search with these arguments.")
 		}
 		start = slices.IndexFunc(sources, func(src trackerapp.TicketSource) bool { return src.ID == at.Connection })
 		if start < 0 {
@@ -92,7 +136,9 @@ func (s *Server) find(ctx context.Context, raw json.RawMessage) (any, error) {
 	for i := start; i < len(sources); i++ {
 		src := sources[i]
 		asked++
-		got, err := s.t.Search(ctx, src.ID, trackerapp.SearchRequest{Text: text, Limit: pageSize - len(out.Tickets), Page: page})
+		in := req
+		in.Limit, in.Page = pageSize-len(out.Tickets), page
+		got, err := s.t.Search(ctx, src.ID, in)
 		page = ""
 		if err != nil {
 			// A refusal the model can read (a connection turned off, a
@@ -119,9 +165,9 @@ func (s *Server) find(ctx context.Context, raw json.RawMessage) (any, error) {
 		}
 		switch {
 		case got.Next != "":
-			out.Next = encodeCursor(findCursor{Connection: src.ID, Page: got.Next, Text: digest})
+			out.Next = encodeCursor(findCursor{Connection: src.ID, Page: got.Next, Query: digest})
 		case len(out.Tickets) >= pageSize && i+1 < len(sources):
-			out.Next = encodeCursor(findCursor{Connection: sources[i+1].ID, Text: digest})
+			out.Next = encodeCursor(findCursor{Connection: sources[i+1].ID, Query: digest})
 		}
 		if out.Next != "" {
 			break

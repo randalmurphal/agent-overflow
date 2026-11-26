@@ -3,6 +3,7 @@ package jira
 import (
 	"bytes"
 	"errors"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -224,6 +225,14 @@ var issueCases = map[string]func(t *testing.T, f *fakeEnv){
 		p := got(f.c.Search(f.ctx, SearchQuery{JQL: `text ~ "story" AND project = "WEB" ORDER BY updated DESC`, Fields: []string{"summary"}})).must(t)
 		if len(p.Issues) != 1 || p.Issues[0].Key != "WEB-1" || p.NextPageToken != "" {
 			t.Fatalf("found %d issues", len(p.Issues))
+		}
+		mine := got(f.c.Search(f.ctx, SearchQuery{JQL: `assignee = currentUser() AND sprint in openSprints() AND status = "in progress" ORDER BY updated DESC`})).must(t)
+		if len(mine.Issues) != 1 || mine.Issues[0].Key != "WEB-1" {
+			t.Fatalf("the user's issues in progress in the active sprint are %d issues", len(mine.Issues))
+		}
+		_, err := f.c.Search(f.ctx, SearchQuery{JQL: `status = "Nope"`})
+		if refused, ok := errors.AsType[*QueryRefusedError](err); !ok || refused.Err.Status != http.StatusBadRequest {
+			t.Fatalf("a search for a status Jira has not = %v, want a *QueryRefusedError of a 400", err)
 		}
 	},
 	"SearchAll": func(t *testing.T, f *fakeEnv) {

@@ -688,10 +688,22 @@ const WORKFLOW_TOOLS: Record<string, AoToolSpec> = {
   memory_list: { label: 'notes', what: (input, names) => str(input, 'kind') || runRef(input, names) || 'campaign notes' },
 };
 
-// A read with no key reads the thread's linked ticket; one that continues
+// A find says each thing it narrows by, in the order the tool lists them;
+// a read with no key reads the thread's linked ticket; one that continues
 // an earlier answer names no ticket of its own.
 const TRACKER_TOOLS: Record<string, AoToolSpec> = {
-  ticket_find: { label: 'find', what: (input) => quoted(str(input, 'text')) },
+  ticket_find: {
+    label: 'find',
+    what: (input) =>
+      [
+        str(input, 'text') ? quoted(str(input, 'text')) : '',
+        input.mine === true ? 'assigned to you' : '',
+        str(input, 'status'),
+        str(input, 'sprint') === 'active' ? 'active sprint' : '',
+      ]
+        .filter(Boolean)
+        .join(' · '),
+  },
   ticket_read: {
     label: 'read',
     what: (input) => {
@@ -918,7 +930,7 @@ const ALREADY_SHOWN: Record<string, ReadonlySet<string>> = {
   run_start: new Set(['workflow_id', 'goal']),
   browser_open: new Set(['url', 'path']),
   browser_open_file: new Set(['path']),
-  ticket_find: new Set(['text']),
+  ticket_find: new Set(['text', 'mine', 'status', 'sprint']),
   ticket_read: new Set(['key', 'history']),
   ticket_create: new Set(['project', 'title']),
   ticket_update: new Set(['keys']),

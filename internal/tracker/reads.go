@@ -66,30 +66,85 @@ const MaxSearchPage = 50
 const maxSearchText = 500
 
 // SearchQuery is a search for issues by free text, optionally within one
-// project. Text is what a person or an agent typed and is never read as
-// a tracker query language. Limit bounds the page, 1 to MaxSearchPage;
-// zero means MaxSearchPage. Page is the token the previous page of the
-// same query returned; empty asks for the first.
+// project, narrowed by who has them, their status and the active sprint;
+// every criterion set must hold. Text is what a person or an agent typed
+// and is never read as a tracker query language. Limit bounds the page,
+// 1 to MaxSearchPage; zero means MaxSearchPage. Page is the token the
+// previous page of the same query returned; empty asks for the first.
 type SearchQuery struct {
 	Text    string
 	Project ProjectID
-	Limit   int
-	Page    PageToken
+	// Mine keeps the issues assigned to the credential's own user.
+	Mine bool
+	// Status keeps the issues in the statuses it names.
+	Status StatusMatch
+	// ActiveSprint keeps the issues in a sprint that has started and is
+	// not complete: a Jira sprint openSprints() holds (measured: no
+	// future sprint), a Linear cycle in progress.
+	ActiveSprint bool
+	Limit        int
+	Page         PageToken
 }
 
-// Check refuses a search with neither text nor a project, text longer
-// than 500 bytes or holding a control character, or a limit outside 0 to
-// MaxSearchPage.
+// StatusMatch selects issues by status: by a status's Name, as the
+// tracker compares names; by the tracker's Group, never a project's
+// regrouping; or, with Open, every group but done and canceled. At most
+// one is set; the zero value selects every status.
+type StatusMatch struct {
+	Name  string
+	Group StatusGroup
+	Open  bool
+}
+
+// IsZero reports whether m selects every status.
+func (m StatusMatch) IsZero() bool { return m == StatusMatch{} }
+
+// ErrSearchRefused is matched by the error of a search the tracker
+// refused as sent: Jira's 400 to its JQL. Why is not judged; a status
+// name the tracker does not have is one cause. The error wraps the
+// tracker's answer.
+var ErrSearchRefused = errors.New("tracker: the tracker refused the search")
+
+// maxStatusName bounds a status name a search names; a tracker's are far
+// shorter.
+const maxStatusName = 255
+
+// Check refuses a search with no text, project, Mine, Status or
+// ActiveSprint, text longer than 500 bytes or holding a control
+// character, a status match that sets more than one member, names a
+// status longer than 255 bytes or holding a control character, or names
+// no group there is, or a limit outside 0 to MaxSearchPage.
 func (q SearchQuery) Check() error {
 	text := strings.TrimSpace(q.Text)
-	if text == "" && q.Project == "" {
-		return invalidf("a search needs text or a project")
+	if text == "" && q.Project == "" && !q.Mine && q.Status.IsZero() && !q.ActiveSprint {
+		return invalidf("a search needs text, a project, mine, a status or the active sprint")
 	}
 	if len(q.Text) > maxSearchText || strings.IndexFunc(q.Text, unicode.IsControl) >= 0 {
 		return invalidf("search text must be at most %d bytes with no control characters", maxSearchText)
 	}
+	if err := q.Status.check(); err != nil {
+		return err
+	}
 	if q.Limit < 0 || q.Limit > MaxSearchPage {
 		return invalidf("a search page holds 1 to %d cards, not %d", MaxSearchPage, q.Limit)
+	}
+	return nil
+}
+
+func (m StatusMatch) check() error {
+	set := 0
+	for _, on := range []bool{m.Name != "", m.Group != 0, m.Open} {
+		if on {
+			set++
+		}
+	}
+	switch {
+	case set > 1:
+		return invalidf("a status match names a status, a group or open, not more than one")
+	case m.Name != "" && (strings.TrimSpace(m.Name) == "" || len(m.Name) > maxStatusName || strings.IndexFunc(m.Name, unicode.IsControl) >= 0):
+		return invalidf("a status name must be 1 to %d bytes with no control characters", maxStatusName)
+	case m.Group != 0 && (m.Group < GroupBacklog || m.Group > GroupCanceled):
+		return invalidf("status group %d is not one", m.Group)
 	}
 	return nil
 }

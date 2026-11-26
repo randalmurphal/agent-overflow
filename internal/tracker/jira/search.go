@@ -81,7 +81,8 @@ type SearchPage struct {
 }
 
 // Search runs one page of q on the enhanced search endpoint. Recent
-// writes may not show yet.
+// writes may not show yet. Jira's 400 to the search is a
+// *QueryRefusedError.
 func (c *Client) Search(ctx context.Context, q SearchQuery) (SearchPage, error) {
 	if err := c.admit(ctx); err != nil {
 		return SearchPage{}, err
@@ -112,7 +113,7 @@ func (c *Client) Search(ctx context.Context, q SearchQuery) (SearchPage, error) 
 		Method: http.MethodPost, Path: apiPath + "search/jql", Body: body, ReadOnly: true,
 	}, &v)
 	if err != nil {
-		return SearchPage{}, fmt.Errorf("jira: search: %w", err)
+		return SearchPage{}, fmt.Errorf("jira: search: %w", refusedQuery(err))
 	}
 	if len(v.Issues) == 0 {
 		var u unnamed
