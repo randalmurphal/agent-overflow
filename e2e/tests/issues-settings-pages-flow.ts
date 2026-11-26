@@ -269,6 +269,29 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
     expect(stored.start_work.projects).toEqual([expect.objectContaining({ project: 'WEB', status: '10001', assign: true, name_branch: false })]);
   });
 
+  test('a tracker project of a board listed through another is offered the board\'s statuses to move to', async ({ harness, page }) => {
+    test.setTimeout(120_000);
+    // The board shows WEB and OPS tickets and is listed through WEB; OPS
+    // has the defaults Save as defaults on an OPS ticket leaves.
+    const board = await connectFakeJiraBoard(harness, 'settings-start-shared', {
+      ...SETUP, projects: [...(SETUP.projects ?? []), { id: '10009', key: 'OPS', name: 'Ops' }], boardAlso: ['OPS'],
+    });
+    const file = await setupFile(harness, board.projectId);
+    await writeSetup(file, JSON.stringify({ start_work: { version: 1, projects: [{ tracker: 'jira', site: board.site, project: 'OPS', branch: 'ops/{key}' }] } }));
+    await harness.open(page);
+    const pane = await openIssuesPane(page, compact);
+    await expect(card(pane, '10101')).toBeVisible({ timeout: 30_000 });
+
+    const screen = await startWorkPage(page, compact);
+    const ops = place(screen, 'OPS');
+    await expect(rule(ops, 'Move the ticket')).toBeEnabled({ timeout: 15_000 });
+    await expect(ops.getByTestId('tracker-start-work-unlisted')).toHaveCount(0);
+    await press(rule(ops, 'Move the ticket'), compact);
+    await expect(ops.getByTestId('tracker-start-work-status')).toHaveValue('10001');
+    await expect(ops.getByTestId('tracker-start-work-status').locator('option')).toHaveText(['To Do', 'In Progress', 'Done']);
+    expect(await storedSetup(file)).toEqual({ start_work: { version: 1, projects: [{ tracker: 'jira', site: board.site, project: 'OPS', status: '10001', branch: 'ops/{key}' }] } });
+  });
+
   test('with Change tickets off a thread\'s change is refused with what to do, and with Ask before changing several off two tickets go with no prompt', async ({ harness, page }) => {
     test.setTimeout(240_000);
     const title = 'Ticket changer';
