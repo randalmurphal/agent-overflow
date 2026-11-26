@@ -26,6 +26,23 @@ func (a *App) ProjectTrackerSetup(ctx context.Context, projectID string) (tracke
 	return out, trackerError(err)
 }
 
+// ProjectTrackerStatuses is the project's statuses by tracker site, as its
+// Status groups page lists them: the statuses of its listed boards'
+// columns with the tracker's own group, the statuses its setup regroups
+// that no listed board shows, and the listed boards this computer has
+// not read yet. It reads this computer's copy and makes no tracker
+// request.
+//
+//ao:scope tracker:read
+func (a *App) ProjectTrackerStatuses(ctx context.Context, projectID string) ([]trackerapp.SiteStatuses, error) {
+	svc, err := a.trackerService()
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.ProjectStatuses(projectID)
+	return out, trackerError(err)
+}
+
 // SetProjectTrackerSetup replaces the project's tracker setup with setup,
 // which was built from the stored setup at revision. When the stored
 // setup moved since, nothing is saved and the answer says so with the

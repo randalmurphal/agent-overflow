@@ -206,6 +206,7 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		},
 		func() error { _, _, err := s.ListMirrorIssueWorklogs(root, "10001"); return err },
 		func() error { _, _, err := s.GetMirrorBoard(root, "10"); return err },
+		func() error { _, _, err := s.GetMirrorBoardStatuses(root, "10"); return err },
 		func() error { _, err := s.GetMirrorCatalog(root, []string{"acc-user1"}, []string{"1"}); return err },
 		func() error { _, err := s.ListMirrorCards(root, []string{"10001"}); return err },
 		func() error { _, _, err := s.ListMirrorIssueRows(root, "10001", ""); return err },
@@ -475,6 +476,8 @@ func TestMirrorReadsUseTheirIndexes(t *testing.T) {
 			"SEARCH m USING COVERING INDEX idx_tracker_cache_issue_sprints_sprint (root_id=? AND sprint_id=?)\n" +
 			"SEARCH b USING PRIMARY KEY (root_id=? AND issue_id=? AND board_id=?)"},
 		"worklogs of a day": {mirrorWorklogSupersededDaysSQL, "PRIMARY KEY (root_id=? AND author_id=? AND day>? AND day<?)"},
+		// The board by key, then its column statuses in the index's order.
+		"board statuses": {mirrorBoardStatusesSQL, "SEARCH s USING COVERING INDEX idx_tracker_cache_board_column_statuses_column (root_id=? AND board_id=?) LEFT-JOIN"},
 	} {
 		plan := explainMirror(t, s, read.query)
 		if !strings.Contains(plan, read.index) || strings.Contains(plan, "TEMP B-TREE") {

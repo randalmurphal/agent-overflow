@@ -8,19 +8,22 @@
   import SprintCompleteForm from './SprintCompleteForm.svelte';
   import SprintForm from './SprintForm.svelte';
   import type { SprintView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
-  import { nextSprintName, type BacklogSection, type SectionNumbers } from '../../stores/trackerBacklogModel';
+  import { nextSprintName, type BacklogSection, type MovedRow } from '../../stores/trackerBacklogModel';
+  import type { HeldBoard } from '../../stores/trackerBoardModel';
   import { sprintTarget, ticketWrite, type BoardWriteContext } from '../../stores/trackerTicketWrites.svelte';
 
   interface Props {
     b: BoardWriteContext;
+    held: HeldBoard;
     sec: BacklogSection;
-    numbers: SectionNumbers;
+    /** The rows counted in another section than the one holding them. */
+    moved: readonly MovedRow[];
     unit: string;
     /** Every sprint of the board, in its order. */
     sprints: readonly SprintView[];
   }
 
-  let { b, sec, numbers, unit, sprints }: Props = $props();
+  let { b, held, sec, moved, unit, sprints }: Props = $props();
 
   type Open = 'create' | 'edit' | 'start' | 'complete';
   let open = $state<Open | null>(null);
@@ -48,7 +51,7 @@
 </span>
 
 {#if open === 'complete'}
-  <SprintCompleteForm {b} {sec} {numbers} {unit} {into} {anchor} onClose={() => { open = null; }} />
+  <SprintCompleteForm {b} {held} {sec} {moved} {unit} {into} {anchor} onClose={() => { open = null; }} />
 {:else if open !== null}
   {@const mode = open}
   <SprintForm {b} {mode} sprint={mode === 'create' ? null : sec.sprint} suggested={nextSprintName(sprints)} {anchor} onClose={() => { open = null; }} />

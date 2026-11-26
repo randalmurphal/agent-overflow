@@ -133,9 +133,9 @@ function kanban(todo: ColumnSeed, doing: ColumnSeed, extra: Partial<BoardView> =
 }
 
 /** A sprint board whose one column, To Do, holds statuses s1 and s2,
- * with its active sprint 8 holding `rows`, whole unless `more`; `left_out`
+ * with its active sprint 8 holding `rows`, whole unless `more`; `leftOut`
  * names the statuses the project leaves out of counts. */
-function sprintBoard(rows: RowView[], left_out?: string[], more = false): BoardView {
+function sprintBoard(rows: RowView[], leftOut?: string[], more = false): BoardView {
   const section = { kind: 'sprint', sprint: '8' };
   const next = more ? { order: rows.at(-1)!.order, issue: rows.at(-1)!.card.id, lifetime: 1, revision: 1 } : null;
   return {
@@ -144,7 +144,7 @@ function sprintBoard(rows: RowView[], left_out?: string[], more = false): BoardV
     sprints: [{ id: '8', name: 'Sprint 8', state: 'active', total: { rows: 0, estimate: 0 } }],
     all: { rows: 0, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: { read_at: Date.now() },
     screen: [section], sections: [{ section, rows, next }],
-    ...(left_out ? { groups: 'g1', left_out } : {}),
+    ...(leftOut ? { groups: 'g1', regrouped: Object.fromEntries(leftOut.map((s) => [s, 'left_out'])) } : {}),
   } as unknown as BoardView;
 }
 
@@ -624,7 +624,7 @@ describe('changing a card on the board', () => {
 
   it('counts a waiting card into its column by the status it moves to, and out of its own by the status it has', async () => {
     // In Progress's status is left out of counts.
-    install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [row('2', 'b', 's2')] }, { groups: 'g1', left_out: ['s2'] } as Partial<BoardView>) });
+    install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [row('2', 'b', 's2')] }, { groups: 'g1', regrouped: { s2: 'left_out' } } as Partial<BoardView>) });
     setBindingMock('TrackerMoves', async (_c: string, issue: string) => (issue === '1'
       ? [{ id: '21', name: 'Start', to: { id: 's2', name: 'In Progress' } }]
       : [{ id: '11', name: 'Back', to: { id: 's1', name: 'To Do' } }]));
@@ -829,7 +829,7 @@ describe("the project's status groups on the Board screen", () => {
     // Ten of the 100 rows held are in s9, which the project leaves out:
     // the computer's total of 140 does not count them.
     const todo = Array.from({ length: 100 }, (_, i) => row(String(i + 10), `k${String(i).padStart(3, '0')}`, i < 10 ? 's9' : 's1'));
-    install({ view: kanban({ rows: todo, total: 140, next: true }, { rows: [] }, { groups: 'g1', left_out: ['s9'] } as Partial<BoardView>) });
+    install({ view: kanban({ rows: todo, total: 140, next: true }, { rows: [] }, { groups: 'g1', regrouped: { s9: 'left_out' } } as Partial<BoardView>) });
     setBindingMock('TrackerSectionRows', () => new Promise<SectionPage>(() => {}));
     const view = mount();
     await waitFor(() => expect(columns(view)[0]?.count).toBe('140 · 280 pts'));
@@ -843,7 +843,7 @@ describe("the project's status groups on the Board screen", () => {
     // 100 rows held, 10 of them in s9, which the project leaves out; the
     // page brings the column's last 50.
     const todo = Array.from({ length: 100 }, (_, i) => row(String(i + 10), `k${String(i).padStart(3, '0')}`, i < 10 ? 's9' : 's1'));
-    install({ view: kanban({ rows: todo, total: 140, next: true }, { rows: [] }, { groups: 'g1', left_out: ['s9'] } as Partial<BoardView>) });
+    install({ view: kanban({ rows: todo, total: 140, next: true }, { rows: [] }, { groups: 'g1', regrouped: { s9: 'left_out' } } as Partial<BoardView>) });
     let answer: (page: SectionPage) => void = () => {};
     setBindingMock('TrackerSectionRows', () => new Promise<SectionPage>((resolve) => { answer = resolve; }));
     const view = mount();

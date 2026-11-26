@@ -50,6 +50,7 @@
   import { untrack, type Snippet } from 'svelte';
   import TicketPicker from './TicketPicker.svelte';
   import TicketTypedValue from './TicketTypedValue.svelte';
+  import TicketPin, { type PinControl } from './TicketPin.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
   import { ticketWrite } from '../../stores/trackerTicketWrites.svelte';
 
@@ -67,9 +68,11 @@
     fieldName: (id: string) => string;
     inline?: boolean;
     disabled?: boolean;
+    /** The field's pin for the ticket's project; absent where it takes none. */
+    pin?: PinControl;
   }
 
-  let { label, field, value, mark, editor, ticketKey, target, fieldName, inline = false, disabled = false }: Props = $props();
+  let { label, field, value, mark, editor, ticketKey, target, fieldName, inline = false, disabled = false, pin }: Props = $props();
   const empty = $derived(inline ? label : 'None');
 
   const pending = $derived(disabled || (ticketWrite(ticketKey, target)?.pending ?? false));
@@ -105,7 +108,7 @@
   }
 </script>
 
-<div class="flex min-w-0 flex-col gap-0.5 {inline ? 'flex-1' : 'py-1'}" data-testid="ticket-field" data-field={field} title={inline ? label : undefined}>
+<div class="group/pin flex min-w-0 flex-col gap-0.5 {inline ? 'flex-1' : 'py-1'}" data-testid="ticket-field" data-field={field} title={inline ? label : undefined}>
   <div class="flex min-w-0 items-center gap-2 text-sm">
     {#if !inline}
       <span class="w-24 shrink-0 truncate text-xs text-fg-muted" title={label}>{label}</span>
@@ -132,6 +135,7 @@
         <span class="min-w-0 truncate {value ? '' : 'text-fg-muted'}">{value || empty}</span>
       </span>
     {/if}
+    {#if pin}<TicketPin {pin} testId="ticket-field-pin" />{/if}
   </div>
   {#if typing && invalid}
     <p class="text-xs text-error {inline ? '' : 'pl-26'}" role="alert" data-testid="ticket-field-invalid">{invalid}</p>

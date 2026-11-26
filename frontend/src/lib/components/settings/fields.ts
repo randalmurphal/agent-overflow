@@ -694,6 +694,19 @@ const STATIC_FIELDS = [
     keywords: ['jira', 'linear', 'board', 'issues', 'tickets', 'sprint', 'order', 'opens first'],
     conditional: true,
   },
+  {
+    id: 'tracker-statuses.project',
+    section: 'tracker-statuses',
+    label: 'Project',
+    hint: 'Choose the project whose statuses to group.',
+  },
+  {
+    id: 'tracker-statuses.groups',
+    section: 'tracker-statuses',
+    label: 'Status groups',
+    keywords: ['jira', 'linear', 'status', 'statuses', 'group', 'done', 'in progress', 'backlog', 'left out', 'counts', 'totals'],
+    conditional: true,
+  },
 
   // --- Voice --------------------------------------------------------------
   {

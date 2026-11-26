@@ -1,10 +1,10 @@
 // The ticket screen's rules as tables: the comment and history windows,
-// the rail's order, the side a new link sends, a poker round's result, the
+// the rail's and the sections' order by the project's pins, the side a new link sends, a poker round's result, the
 // attachment a file in the text names, and the row a ticket shows its
 // points from.
 
 import { describe, expect, it } from 'vitest';
-import type { AttachmentView, CommentView, DetailView, EventView, FieldView, PokerVoteView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { AttachmentView, CommentView, DetailView, EventView, FieldView, PokerVoteView, Setup } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import {
   commentWindow,
   heldComments,
@@ -13,10 +13,12 @@ import {
   linkRelations,
   linkRequest,
   mediaAttachment,
-  moreFields,
+  railFields,
   newestHistory,
   pokerResult,
-  sectionFields,
+  ticketPinsOf,
+  ticketSections,
+  withTicketPin,
   previewsInApp,
   sprintNames,
   ticketRow,
@@ -60,10 +62,53 @@ describe('the rail', () => {
   const field = (id: string, kind: string, filled: boolean): FieldView => ({ id, name: `Field ${id}`, kind, value: filled ? { kind, texts: ['x'] } : {} } as FieldView);
   const fields = [field('a', 'text', false), field('b', 'rich_text', true), field('c', 'option', true), field('d', 'number', false), field('e', 'text', true)];
 
+  const ids = (list: readonly FieldView[]) => list.map((f) => f.id);
+
   it('lists the fields that are not sections, filled first, each group in the tracker\'s order, narrowed by find', () => {
-    expect(moreFields(fields, '').map((f) => f.id)).toEqual(['c', 'e', 'a', 'd']);
-    expect(moreFields(fields, 'field D').map((f) => f.id)).toEqual(['d']);
-    expect(sectionFields(fields).map((f) => f.id)).toEqual(['b']);
+    expect(ids(railFields(fields, null, '').more)).toEqual(['c', 'e', 'a', 'd']);
+    expect(ids(railFields(fields, null, 'field D').more)).toEqual(['d']);
+    expect(railFields(fields, null, '')).toMatchObject({ pinned: [], missing: [] });
+  });
+
+  it('shows pinned fields first in pin order, the rest behind the control, and names a pin this ticket lacks', () => {
+    const rail = railFields(fields, ['d', 'gone', 'c', 'b'], '');
+    expect(ids(rail.pinned), 'a section is never a rail field').toEqual(['d', 'c']);
+    expect(ids(rail.more)).toEqual(['e', 'a']);
+    expect(rail.missing).toEqual(['gone', 'b']);
+    expect(ids(railFields(fields, ['d'], 'field').more), 'find narrows the rest only').toEqual(['c', 'e', 'a']);
+  });
+
+  it('opens the description, links and attachments and folds the other sections while nothing is pinned', () => {
+    expect(ticketSections(fields, null, true)).toEqual({ shown: ['description', 'links', 'attachments'], folded: ['b'], missing: [] });
+    expect(ticketSections(fields, null, false), 'a ticket with no place for files shows none').toEqual({ shown: ['description', 'links'], folded: ['b'], missing: [] });
+  });
+
+  it('opens pinned sections in pin order and folds the rest in the ticket\'s order', () => {
+    expect(ticketSections(fields, ['b', 'links', 'gone'], true)).toEqual({ shown: ['b', 'links'], folded: ['description', 'attachments'], missing: ['gone'] });
+    expect(ticketSections(fields, [], true)).toEqual({ shown: [], folded: ['description', 'b', 'links', 'attachments'], missing: [] });
+    expect(ticketSections(fields, ['attachments'], false), 'a pinned section the ticket has no place for is not missing').toEqual({ shown: [], folded: ['description', 'b', 'links'], missing: [] });
+  });
+
+  it('starts an unset list from the sections this ticket has a place for, so a Linear ticket stores no attachments pin', () => {
+    const empty: Setup = { status_groups: [], ticket_pins: [], start_work: [] };
+    const once = withTicketPin(empty, 'linear', 'example', 'sections', 'description', false, false);
+    const twice = withTicketPin(once, 'linear', 'example', 'sections', 'links', false, false);
+    expect(twice.ticket_pins).toEqual([{ tracker: 'linear', site: 'example', sections: [] }]);
+    expect(ticketSections(fields, ticketPinsOf(twice, 'linear', 'example').sections, false).shown).toEqual([]);
+  });
+
+  it('pins last, unpins, starts an unset list from what the ticket shows, and keeps the rest of the setup', () => {
+    const site = 'https://example.atlassian.net';
+    const base: Setup = { status_groups: [{ tracker: 'jira', site, statuses: { s1: 'done' } }], ticket_pins: [{ tracker: 'linear', site: 'example', sections: [] }], start_work: [] };
+    const field = withTicketPin(base, 'jira', site, 'fields', 'c', true, true);
+    expect(field.ticket_pins).toEqual([{ tracker: 'linear', site: 'example', sections: [] }, { tracker: 'jira', site, fields: ['c'] }]);
+    expect(field.status_groups).toBe(base.status_groups);
+    const section = withTicketPin(field, 'jira', site, 'sections', 'b', true, true);
+    expect(ticketPinsOf(section, 'jira', site)).toEqual({ fields: ['c'], sections: ['description', 'links', 'attachments', 'b'] });
+    const unpinned = withTicketPin(withTicketPin(section, 'jira', site, 'sections', 'description', false, true), 'jira', site, 'fields', 'c', false, true);
+    expect(ticketPinsOf(unpinned, 'jira', site)).toEqual({ fields: [], sections: ['links', 'attachments', 'b'] });
+    expect(ticketPinsOf(withTicketPin(base, 'jira', site, 'fields', 'c', true, true), 'jira', site).sections, 'a list not touched stays unset').toBeNull();
+    expect(withTicketPin(field, 'jira', site, 'fields', 'c', true, true).ticket_pins?.[1].fields, 'pinned once').toEqual(['c']);
   });
 
   it('shows the points of the board the ticket was opened from, else of the first board', () => {
