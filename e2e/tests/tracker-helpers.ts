@@ -291,3 +291,13 @@ export async function openIssuesPage(page: Page, name: 'Connections' | 'Boards')
   }
   await page.getByRole('tablist', { name: 'Settings Sections' }).getByRole('tab', { name, exact: true }).click();
 }
+
+/** The day two days back on this computer, YYYY-MM-DD, and how a row's title writes it ("Tue Nov 24"). */
+export function twoDaysAgo(): { day: string; label: string } {
+  const at = new Date(Date.now() - 2 * 24 * 3600_000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const day = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+  const noon = new Date(`${day}T12:00:00Z`);
+  const label = `${noon.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' })} ${noon.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' })} ${noon.getUTCDate()}`;
+  return { day, label };
+}
