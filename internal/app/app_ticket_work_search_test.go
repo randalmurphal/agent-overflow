@@ -475,6 +475,36 @@ func TestSearchTicketWorkListsWhatASearchReadBeforeItFailed(t *testing.T) {
 	}
 }
 
+// A branch lookup that read the origin's merge request before the
+// parent's read failed lists it beside the failure.
+func TestSearchTicketWorkListsWhatALookupReadBeforeItFailed(t *testing.T) {
+	t.Parallel()
+	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "example/web"},
+		{Forge: "gitlab", Project: "grp/up"},
+		{Forge: "gitlab", Project: "alice/up", Parent: "grp/up", Pulls: []forgefake.Pull{
+			{Number: 1, Title: "Fix the login", HeadRef: "WEB-1-login", State: "merged"},
+		}},
+	}})
+	fork := forgeProjectRepo(t, f.a, "https://gitlab.com/alice/up.git")
+	p, err := f.a.store.GetProject(fork)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, p.Path, "branch", "WEB-1-login")
+	f.linkThread(t, "t-fork", fork, p.Path)
+	if err := f.engine.SetRefusal(forgefake.Refusal{Route: "glab repository identity", Status: 403, Body: json.RawMessage(`{"message":"403 Forbidden"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	work, err := f.a.SearchTicketWork(f.ctx, f.conn.ID, "10101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := workPulls(work); !slices.Equal(got, []string{"gitlab:alice/up:1 merged"}) || len(work.ForgeProblems) != 1 {
+		t.Errorf("pull requests = %v, problems %+v; want alice/up's 1 beside the parent's failure", got, work.ForgeProblems)
+	}
+}
+
 // A stored list keeps its rows while a project still clones its
 // repository, though the project it was read under was removed.
 func TestTicketWorkKeepsAStoredListWhoseProjectWasRemovedWhileAnotherClonesIt(t *testing.T) {
@@ -495,6 +525,41 @@ func TestTicketWorkKeepsAStoredListWhoseProjectWasRemovedWhileAnotherClonesIt(t 
 	}
 	if len(work.PullRequests) != 1 || work.PullRequests[0].CI != "success" || len(work.Problems) != 0 {
 		t.Errorf("pull requests = %+v, problems %+v; want the stored row with its CI and no problem", work.PullRequests, work.Problems)
+	}
+}
+
+// A stored row whose project was removed names no project, so the branch
+// it names in the project that still clones its repository is its, not a
+// row of its own: in the stored answer, and in the search's, which names
+// the project the forge found it through.
+func TestTicketWorkFoldsTheBranchOfARemovedProjectsStoredRow(t *testing.T) {
+	t.Parallel()
+	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: []forgefake.Pull{
+		{Number: 1, Title: "Fix the login", HeadRef: "WEB-1-login"},
+	}}}})
+	removed := forgeProjectRepo(t, f.a, "https://github.com/example/web.git")
+	storePRList(t, f.a, removed, workSearchRepo, []gitops.PRListRow{
+		prListRow(workSearchRepo, 1, func(r *gitops.PRListRow) { r.Title, r.HeadRefName = "Fix the login", "WEB-1-login" }),
+	}, time.Minute)
+	if err := f.a.store.DeleteProject(removed); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, f.dir, "branch", "WEB-1-login")
+	stored, err := f.a.GetTicketWork(f.ctx, f.conn.ID, "10101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	searched, err := f.a.SearchTicketWork(f.ctx, f.conn.ID, "10101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		work    TicketWork
+		project string
+	}{"stored": {stored, ""}, "searched": {searched, f.project}} {
+		if len(c.work.PullRequests) != 1 || c.work.PullRequests[0].ProjectID != c.project || len(c.work.Branches) != 0 {
+			t.Errorf("%s: pull requests %+v, branches %+v; want the row of project %q and its branch folded into it", name, c.work.PullRequests, c.work.Branches, c.project)
+		}
 	}
 }
 

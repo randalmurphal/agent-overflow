@@ -355,9 +355,11 @@
     {#each work?.forgeProblems ?? [] as problem (`${problem.projectId}\n${problem.repo.Namespace}/${problem.repo.Repo}`)}
       {@const failure = forgeFailureFrom(problem)}
       {@const what = problem.repo.Repo ? `${problem.repo.Namespace}/${problem.repo.Repo}` : getProjectLabelText(problem.projectId)}
+      <!-- A repository's search may have read rows before it failed; a
+        project whose origin git could not read was not searched. -->
       <div data-testid="ticket-work-forge-problem">
         <PullsProjectError
-          message={failure?.kind === 'rate_limited' ? rateLimitRetryMessage(problem.repo.Forge, what, failure) : `Could not search ${what}: ${problem.error}`}
+          message={failure?.kind === 'rate_limited' ? rateLimitRetryMessage(problem.repo.Forge, what, failure) : problem.repo.Repo ? `Could not finish searching ${what}: ${problem.error}` : `Could not search ${what}: ${problem.error}`}
           {failure}
           polled={false}
           forge={problem.repo.Forge}

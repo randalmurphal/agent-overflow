@@ -116,24 +116,27 @@ describe('Work', () => {
         { projectId: 'p1', repo: { Forge: 'gitlab', Host: 'gitlab.com', Namespace: 'grp', Repo: 'api' }, error: 'Run glab auth login --hostname gitlab.com.', errorKind: 'setup' },
         { projectId: 'p1', repo: { Forge: 'github', Host: 'github.com', Namespace: 'example', Repo: 'down' }, error: 'failed to refresh from the forge (id: r2)', errorKind: 'transient' },
         { projectId: 'p1', repo: { Forge: 'gitlab', Host: 'gitlab.com', Namespace: 'grp', Repo: 'kept' }, error: 'failed to refresh from the forge (id: r3)', errorKind: 'rate_limited', reserve: true, resumeAt },
+        { projectId: 'p1', repo: { Forge: '', Host: '', Namespace: '', Repo: '' }, error: 'fatal: not a git repository', errorKind: 'forge' },
       ] }),
     });
     const problems = await waitFor(() => {
       const shown = view.getAllByTestId('pulls-project-error');
-      expect(shown).toHaveLength(5);
+      expect(shown).toHaveLength(6);
       return shown;
     });
-    expect(problems.map((p) => p.dataset.errorKind)).toEqual(['rate_limited', 'forbidden', 'setup', 'transient', 'rate_limited']);
+    expect(problems.map((p) => p.dataset.errorKind)).toEqual(['rate_limited', 'forbidden', 'setup', 'transient', 'rate_limited', 'forge']);
     // Work reads again only when asked, so a rate limit says when Retry
     // can read again and offers it.
     const at = formatTimeOfDay(Date.parse(resumeAt));
     const sentence = (problem: HTMLElement) => problem.textContent?.replace(/\s*Retry\s*$/, '').trim();
-    expect(sentence(problems[0])).toBe(`GitHub rate limit reached, so example/widgets was not searched. Retry after ${at}.`);
-    expect(sentence(problems[4])).toBe(`GitLab rate limit nearly used up, so grp/kept was not searched: the rest is kept for your own actions. Retry after ${at}.`);
+    expect(sentence(problems[0])).toBe(`GitHub rate limit reached, so the search of example/widgets did not finish. Retry after ${at}.`);
+    expect(sentence(problems[4])).toBe(`GitLab rate limit nearly used up, so the search of grp/kept did not finish: the rest is kept for your own actions. Retry after ${at}.`);
     expect(problems[0].querySelector('[data-testid="pulls-project-retry"]')).not.toBeNull();
-    expect(problems[1].textContent).toContain('Could not search grp/app: The GitLab login cannot see grp/app.');
-    expect(problems[2].textContent).toContain('Could not search grp/api: Run glab auth login --hostname gitlab.com.');
-    expect(problems[3].textContent).toContain('Could not search example/down: failed to refresh from the forge (id: r2)');
+    expect(problems[1].textContent).toContain('Could not finish searching grp/app: The GitLab login cannot see grp/app.');
+    expect(problems[2].textContent).toContain('Could not finish searching grp/api: Run glab auth login --hostname gitlab.com.');
+    expect(problems[3].textContent).toContain('Could not finish searching example/down: failed to refresh from the forge (id: r2)');
+    // A project whose origin git could not read was not searched at all.
+    expect(problems[5].textContent).toContain('Could not search widgets: fatal: not a git repository');
     expect(view.getByTestId('ticket-work-search-full').textContent).toBe('The search of grp/docs stopped after 500 matches, so these may not be all of them.');
     // The rows from the stored sources still show.
     expect(view.getAllByTestId('ticket-work-pull')).toHaveLength(1);

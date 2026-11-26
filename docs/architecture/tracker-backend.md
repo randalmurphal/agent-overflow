@@ -2066,7 +2066,8 @@ delete is refused and the links the delete read are the ones it ends.
   linked threads' projects, a branch a listed pull request names folded
   into it. A stored list's project that was removed since (the list
   stays until the Pull requests page's next read prunes it) keeps its
-  rows and has no branches read. A repository whose
+  rows, which name no project, as a linked thread's do, and has no
+  branches read. A repository whose
   branches cannot be read is a problem beside the rest. At 2,000 stored
   rows over 10 repositories and a 500-branch project it costs 18 ms and
   4 MB an open, 23 ms and 5 MB when every list names the key
@@ -2088,7 +2089,9 @@ delete is refused and the links the delete read are the ones it ends.
   read, which runs only while the Pull requests page is open or at
   boot). A repository's failure is a `TicketForgeProblem` carrying the
   fields a Pull requests page project carries for a failed read
-  (`newRepoForgeFailure`), beside the rows its search read, and a search that stopped at its page bound is
+  (`newRepoForgeFailure`), beside the rows its search and lookups read
+  before they failed (a GitHub answer keeps the searches no error of it
+  names), and a search that stopped at its page bound is
   named in `SearchFull`. The client calls both methods at once and shows
   the stored answer until the search's lands (`stores/ticketWork.svelte.ts`);
   a stored answer or failure after it is not shown; nothing is stored.

@@ -209,17 +209,25 @@ func (a *App) readTicketWork(ctx context.Context, connectionID, issueID string) 
 	}
 	// A stored list names the project it was read under, which may have
 	// been removed since (the list stays until the Pull requests page's
-	// next read prunes it); its rows stay, and its branches are not read.
-	for _, pr := range read.work.PullRequests {
+	// next read prunes it); its rows stay and name no project, as a
+	// thread's row does, and no branches are read for it.
+	removed := map[string]bool{}
+	for i, pr := range read.work.PullRequests {
 		if pr.ProjectID == "" || slices.Contains(read.projects, pr.ProjectID) {
 			continue
 		}
-		if _, err := a.store.GetProject(pr.ProjectID); errors.Is(err, sql.ErrNoRows) {
-			continue
-		} else if err != nil {
-			return ticketWorkRead{}, err
+		if !removed[pr.ProjectID] {
+			_, err := a.store.GetProject(pr.ProjectID)
+			switch {
+			case err == nil:
+				read.projects = append(read.projects, pr.ProjectID)
+				continue
+			case !errors.Is(err, sql.ErrNoRows):
+				return ticketWorkRead{}, err
+			}
+			removed[pr.ProjectID] = true
 		}
-		read.projects = append(read.projects, pr.ProjectID)
+		read.work.PullRequests[i].ProjectID = ""
 	}
 	// A thread linked to the ticket may run in a repository that lists no
 	// board of the connection and has no pull request yet.

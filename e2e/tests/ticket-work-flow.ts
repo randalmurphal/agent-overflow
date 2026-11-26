@@ -330,7 +330,7 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
     const { ticket, work } = await openWork(page, WEB1, compact);
     const problem = work.getByTestId('pulls-project-error');
     await expect(problem).toHaveAttribute('data-error-kind', 'forbidden', { timeout: 30_000 });
-    await expect(problem).toContainText('Could not search ao-e2e/');
+    await expect(problem).toContainText('Could not finish searching ao-e2e/');
     await expect(work.getByTestId('ticket-work-branch')).toHaveCount(2);
     await expect(work.getByTestId('pulls-project-retry')).toHaveCount(0);
 
@@ -347,7 +347,7 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
     await setForgeRateLimit(harness, { forge: 'github', pool: 'graphql', remaining: 0, reset: Math.floor(Date.now() / 1000) + 3600 });
     await press(problem.getByTestId('pulls-project-retry'), compact);
     await expect(problem).toHaveAttribute('data-error-kind', 'rate_limited', { timeout: 30_000 });
-    await expect(problem).toContainText(/GitHub rate limit reached, so ao-e2e\/\S+ was not searched\. Retry after /);
+    await expect(problem).toContainText(/GitHub rate limit reached, so the search of ao-e2e\/\S+ did not finish\. Retry after /);
     await expect(problem.getByTestId('pulls-project-retry')).toBeVisible();
     await expect(work.getByTestId('ticket-work-branch')).toHaveCount(2);
   });
@@ -371,7 +371,7 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
     await press(ticket.getByTestId('ticket-refresh'), compact);
     const problem = work.getByTestId('pulls-project-error');
     await expect(problem).toHaveAttribute('data-error-kind', 'setup', { timeout: 30_000 });
-    await expect(problem).toContainText('Could not search ao-e2e/');
+    await expect(problem).toContainText('Could not finish searching ao-e2e/');
     await expect(work.getByTestId('pulls-project-retry')).toHaveCount(0);
     await expect(work.getByTestId('ticket-work-branch')).toHaveCount(2);
   });

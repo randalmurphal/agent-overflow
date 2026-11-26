@@ -47,7 +47,8 @@ type ticketHeadLookup struct {
 // A found row or branch counts only when it names the key
 // (namesTicketKey), since the forge's search is looser than the key rule.
 // A repository's failure is its one ForgeProblem, beside the rows its
-// search read before it failed; it gets no lookups. A project whose origin
+// search and lookups read before they failed; a failed search gets no
+// lookups. A project whose origin
 // names no forge repository is not searched. It fails only when ctx ends
 // before the repositories are known.
 func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead) error {
@@ -118,14 +119,11 @@ func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead) error
 		l.found, l.err = a.gitCore().ListPRsByHead(ctx, l.repo.paths[l.projectID], l.branch)
 	})
 	for _, l := range lookups {
-		if l.err != nil {
-			if l.repo.err == nil {
-				l.repo.err = l.err
-			}
-			continue
-		}
 		for _, found := range l.found {
 			read.addFound(found, l.projectID)
+		}
+		if l.err != nil && l.repo.err == nil {
+			l.repo.err = l.err
 		}
 	}
 
