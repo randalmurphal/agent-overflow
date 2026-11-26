@@ -9,12 +9,12 @@ import (
 	"agent-overflow/internal/tracker/jira/jiratest"
 )
 
-// An open ticket carries its connection's kind and the person's account
-// there as the connection's row holds it: the account a verification
+// An open ticket carries its connection's kind and site and the person's
+// account there as the connection's row holds them: the account a verification
 // records reaches a ticket opened after it, and one open when it records
 // is told, once, as changed; a verification that records the same account
 // tells nothing.
-func TestAnOpenTicketCarriesItsKindAndTheAccountItsConnectionRecords(t *testing.T) {
+func TestAnOpenTicketCarriesItsKindSiteAndTheAccountItsConnectionRecords(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	p := &scripted{t: t}
@@ -42,8 +42,8 @@ func TestAnOpenTicketCarriesItsKindAndTheAccountItsConnectionRecords(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Kind != store.TrackerKindJira || first.Account != "" {
-		t.Fatalf("before any verification the answer is kind %q account %q", first.Kind, first.Account)
+	if first.Kind != store.TrackerKindJira || first.Site != jira.Site || first.Account != "" {
+		t.Fatalf("before any verification the answer is kind %q site %q account %q (the row's site is %q)", first.Kind, first.Site, first.Account, jira.Site)
 	}
 
 	// The pump exists when the verification records: it is told.
@@ -101,7 +101,7 @@ func TestAnOpenTicketCarriesItsKindAndTheAccountItsConnectionRecords(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sub.Kind != store.TrackerKindLinear {
-		t.Fatalf("a Linear ticket's answer names kind %q", sub.Kind)
+	if sub.Kind != store.TrackerKindLinear || sub.Site != lin.Site {
+		t.Fatalf("a Linear ticket's answer names kind %q site %q (the row's site is %q)", sub.Kind, sub.Site, lin.Site)
 	}
 }

@@ -8,11 +8,14 @@
   // loss; once it is made, the write store drops the editor's draft, which
   // closes it. Nothing shows once a plain success settled. While mounted
   // it is a control that draws its target's outcome
-  // (`trackerTicketWrites.svelte.ts`, where an outcome shows).
+  // (`trackerTicketWrites.svelte.ts`, where an outcome shows), unless it
+  // shows `only` one write's outcome, the one its call answered: then it
+  // is no control, and shows that write while the store keeps its outcome
+  // and nothing once another write replaced it.
   import WriteNote from './WriteNote.svelte';
   import { ticketWriteSurface } from './ticketWriteSurface';
   import { dismissTicketWrite, drawTicketWrite, ticketWrite } from '../../stores/trackerTicketWrites.svelte';
-  import { refusalSentence } from '../../stores/trackerWriteOutcome';
+  import { refusalSentence, type WriteOutcome } from '../../stores/trackerWriteOutcome';
   import { errString } from '../../utils/errors';
 
   interface Props {
@@ -20,14 +23,20 @@
     target: string;
     /** A field's name as the ticket shows it, for a refusal naming fields. */
     fieldName: (id: string) => string;
+    /** The outcome of the one write to show, as its call answered it: a
+     * write a run sent, under the run's row. */
+    only?: WriteOutcome;
   }
 
-  let { ticketKey, target, fieldName }: Props = $props();
+  let { ticketKey, target, fieldName, only }: Props = $props();
 
   const shown = ticketWriteSurface();
-  $effect(() => drawTicketWrite(ticketKey, target, shown));
+  $effect(() => {
+    if (!only) return drawTicketWrite(ticketKey, target, shown);
+  });
 
-  const write = $derived(ticketWrite(ticketKey, target));
+  const latest = $derived(ticketWrite(ticketKey, target));
+  const write = $derived(!only || latest?.outcome === only ? latest : null);
   const text = $derived.by(() => {
     const outcome = write?.outcome;
     if (!outcome) return '';
