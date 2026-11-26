@@ -69,7 +69,6 @@ func (a *App) TrackerDashboardDrill(ctx context.Context, subscriptionID string, 
 //
 //ao:scope tracker:operate
 //ao:route home
-//ao:callerbound
 func (a *App) KeepTrackerWidget(ctx context.Context, subscriptionID, proposal string, to trackerapp.KeepTarget) (string, error) {
 	svc, err := a.trackerService()
 	if err != nil {
@@ -84,7 +83,6 @@ func (a *App) KeepTrackerWidget(ctx context.Context, subscriptionID, proposal st
 //
 //ao:scope tracker:operate
 //ao:route home
-//ao:callerbound
 func (a *App) DismissTrackerWidget(ctx context.Context, subscriptionID, proposal string) error {
 	svc, err := a.trackerService()
 	if err != nil {
@@ -98,7 +96,6 @@ func (a *App) DismissTrackerWidget(ctx context.Context, subscriptionID, proposal
 //
 //ao:scope tracker:operate
 //ao:route home
-//ao:callerbound
 func (a *App) RemoveTrackerWidget(ctx context.Context, subscriptionID, dashboard, widget string) error {
 	svc, err := a.trackerService()
 	if err != nil {
@@ -112,7 +109,6 @@ func (a *App) RemoveTrackerWidget(ctx context.Context, subscriptionID, dashboard
 //
 //ao:scope tracker:operate
 //ao:route home
-//ao:callerbound
 func (a *App) DeleteTrackerDashboard(ctx context.Context, subscriptionID, dashboard string) error {
 	svc, err := a.trackerService()
 	if err != nil {
