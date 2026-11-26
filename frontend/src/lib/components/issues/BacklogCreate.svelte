@@ -134,8 +134,8 @@
   import Icon from '../primitives/Icon.svelte';
   import TicketField from './TicketField.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
-  import { cardFieldName, fieldEditor, heldChoices, mustSupply, pickEditor, type EditorTarget } from './ticketEditors';
-  import type { FieldView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+  import { cardFieldName, fieldEditor, heldChoices, mustSupply, pickEditor, type EditorTarget, type HeldList } from './ticketEditors';
+  import type { ChoiceView, FieldView, IssueTypeView, ProjectView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import type { BacklogSection } from '../../stores/trackerBacklogModel';
   import { lastCreateChoice, setLastCreateChoice } from '../../stores/issuesPane.svelte';
   import type { TrackerBoardRef } from '../../stores/trackerBoard.svelte';
@@ -178,6 +178,12 @@
   // What a field the tracker fills shows, and the row that leaves it to
   // the tracker.
   const TRACKER_DEFAULT = 'The tracker\'s default';
+
+  // The lists the form holds, as their pickers search and show them: a
+  // project by its name or key, a type that is not a sub-task by its name.
+  const PROJECT_LIST: HeldList<ProjectView> = { searched: [(p) => p.name, (p) => p.key], choice: (p) => ({ id: p.id, name: `${p.name} (${p.key})` }) };
+  const TYPE_LIST: HeldList<IssueTypeView> = { searched: [(t) => t.name], choice: (t) => ({ id: t.id, name: t.name || t.id }), offered: (t) => t.level >= 0 };
+  const ALLOWED_LIST: HeldList<ChoiceView> = { searched: [(c) => c.name ?? ''], choice: (c) => ({ id: c.id, name: c.name ?? '' }) };
 
   const target = $derived(createTarget(sec.list));
   const held = $derived(ticketWrite(b.key, target));
@@ -267,9 +273,7 @@
     text: '',
     choices: async (text) => {
       await loadBoardProjects(b);
-      const t = text.toLowerCase();
-      const list = boardProjects(b)?.value ?? [];
-      return heldChoices(list.map((p) => ({ id: p.id, name: `${p.name} (${p.key})`, key: p.key, plain: p.name })), (p) => !t || p.plain.toLowerCase().startsWith(t) || p.key.toLowerCase().startsWith(t));
+      return heldChoices(boardProjects(b)?.value ?? [], text, PROJECT_LIST);
     },
     save: (_edit, picked) => {
       if (!draft) return;
@@ -284,10 +288,7 @@
   const typeEditor = $derived(pickEditor('type', 'option', {
     picked: typeID ? [{ id: typeID, name: typeName }] : [],
     text: '',
-    choices: async (text) => {
-      const t = text.toLowerCase();
-      return heldChoices((types?.value ?? []).map((it) => ({ ...it, name: it.name || it.id })), (it) => it.level >= 0 && (!t || it.name.toLowerCase().startsWith(t)));
-    },
+    choices: async (text) => heldChoices(types?.value ?? [], text, TYPE_LIST),
     save: (_edit, picked) => {
       if (!draft) return;
       draft.type = picked[0]?.id ?? '';
@@ -303,7 +304,7 @@
       // The values the screen lists ride with the field; only a field it
       // lists none for (users, or priorities the site holds) is read.
       choices: f.allowed
-        ? async (text) => heldChoices(f.allowed!, (c) => (c.name ?? '').toLowerCase().startsWith(text.trim().toLowerCase()))
+        ? async (text) => heldChoices(f.allowed!, text, ALLOWED_LIST)
         : (text) => createChoices(b, projectID, typeID, f.id, text),
       save: (edit, picked) => { fill(f.id, picked.length || edit.typed?.length ? { edit, picked, text: edit.typed?.[0] ?? '' } : null); },
       // A create sends no value for a field left to the tracker.

@@ -330,6 +330,44 @@ describe('New ticket', () => {
     view.unmount();
   });
 
+  // A held list is searched one way at every size: the picker narrows a
+  // whole list itself, and asks the form again for one past the bound.
+  async function found(container: HTMLElement, id: string, text: string): Promise<string[]> {
+    await fireEvent.click(within(field(container, id)).getByTestId('ticket-field-value'));
+    await waitFor(() => expect(within(menu()).getAllByTestId('ticket-picker-item').length).toBeGreaterThan(0));
+    await fireEvent.input(within(menu()).getByTestId('ticket-picker-find'), { target: { value: text } });
+    await waitFor(() => expect(within(menu()).queryByTestId('ticket-picker-searching')).toBeNull());
+    const names = within(menu()).queryAllByTestId('ticket-picker-item').map((el) => el.textContent?.trim() ?? '');
+    await fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    await waitFor(() => expect(document.body.querySelector('[data-popover]')).toBeNull());
+    return names;
+  }
+
+  for (const size of [PICK_LIMIT, PICK_LIMIT + 1]) {
+    it(`finds a listed field's values, the board's projects and the types by any part of their names, with ${size} of each`, async () => {
+      const two = (i: number) => String(i).padStart(2, '0');
+      const projects = Array.from({ length: size }, (_, i) => ({ id: String(20_000 + i), key: `P${i}`, name: `Project ${two(i)}` })) as ProjectView[];
+      setBindingMock('TrackerBoardProjects', async () => projects);
+      // A sub-task first, which is never offered and not counted.
+      const types = [{ id: '5', name: 'Sub-task', level: -1 }, ...Array.from({ length: size }, (_, i) => ({ id: String(100 + i), name: `Kind ${two(i)}`, level: 0 }))] as IssueTypeView[];
+      setBindingMock('TrackerIssueTypes', async () => types);
+      const allowed = Array.from({ length: size }, (_, i) => ({ id: String(i), name: `Team ${two(i)}` }));
+      setBindingMock('TrackerCreateFields', async () => [{ id: 'customfield_3', name: 'Team', kind: 'option', required: true, editable: true, allowed } as FieldView]);
+      const view = open(projects[0].id);
+      await fireEvent.click(view.getByTestId('issues-backlog-new'));
+      await waitFor(() => expect(field(view.container, 'customfield_3')).toBeTruthy());
+      // Each text matches inside the names, and past the bound (the 51st) when there is one.
+      const fives = Array.from({ length: size }, (_, i) => i).filter((i) => two(i).includes('5'));
+      expect(await found(view.container, 'customfield_3', '5')).toEqual(fives.map((i) => `Team ${two(i)}`));
+      expect(await found(view.container, 'type', 'ind 5')).toEqual(fives.filter((i) => two(i).startsWith('5')).map((i) => `Kind ${two(i)}`));
+      expect(await found(view.container, 'type', 'task')).toEqual([]);
+      expect(await found(view.container, 'project', 'ject 5')).toEqual(fives.filter((i) => two(i).startsWith('5')).map((i) => `Project ${two(i)} (P${i})`));
+      // A project by its key.
+      expect(await found(view.container, 'project', 'p5')).toEqual(fives.filter((i) => String(i).startsWith('5')).map((i) => `Project ${two(i)} (P${i})`));
+      view.unmount();
+    });
+  }
+
   it('reads the fields again when the tracker refuses the create for fields it requires', async () => {
     setBindingMock('TrackerBoardProjects', async () => PROJECTS);
     setBindingMock('TrackerIssueTypes', async () => TYPES);

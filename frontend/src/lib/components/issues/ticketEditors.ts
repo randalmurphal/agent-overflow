@@ -67,15 +67,35 @@ export function mustSupply(f: FieldView): boolean {
  * more, so the picker asks again with the text typed. */
 export const PICK_LIMIT = 50;
 
-/** The values of a list held here that `matches`, at most PICK_LIMIT. */
-export function heldChoices<T extends { readonly id: string; readonly name?: string }>(values: readonly T[], matches: (v: T) => boolean): ChoiceListView {
-  const choices: { id: string; name: string }[] = [];
+/** How a list held here is searched and shown. */
+export interface HeldList<T> {
+  /** The texts of a value that typed text is found in. */
+  readonly searched: readonly ((v: T) => string)[];
+  /** The value as the picker shows it. */
+  readonly choice: (v: T) => { id: string; name: string };
+  /** Whether the value is offered at all. */
+  readonly offered?: (v: T) => boolean;
+}
+
+/** The values of a list held here one of whose texts holds `text`, in
+ * any case, as the picker's narrowing finds them (every value for no
+ * text): the first PICK_LIMIT, with `more` when there are others. The
+ * scan stops at the first match past the bound, and only the values
+ * answered are made into choices, so a long list costs a scan. */
+export function heldChoices<T>(values: readonly T[], text: string, list: HeldList<T>): ChoiceListView {
+  const want = text.trim().toLowerCase();
+  const found: T[] = [];
+  let more = false;
   for (const v of values) {
-    if (!matches(v)) continue;
-    if (choices.length === PICK_LIMIT) return { choices, more: true };
-    choices.push({ id: v.id, name: v.name ?? '' });
+    if (list.offered && !list.offered(v)) continue;
+    if (want && !list.searched.some((s) => s(v).toLowerCase().includes(want))) continue;
+    if (found.length === PICK_LIMIT) {
+      more = true;
+      break;
+    }
+    found.push(v);
   }
-  return { choices, more: false };
+  return { choices: found.map(list.choice), more };
 }
 
 /** A field's values as the items a picker shows. */
