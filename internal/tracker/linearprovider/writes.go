@@ -264,8 +264,12 @@ func (p *Provider) AddComment(ctx context.Context, in tracker.CommentInput) trac
 	if in.ImageDir != "" {
 		return unsupported(step, "local images in Markdown", in.Issue)
 	}
-	_, err := p.c.CreateComment(ctx, linear.CreateCommentInput{IssueID: string(in.Issue), Body: in.Markdown})
-	return one(in.Issue, step, err, tracker.DetailOf(in.Issue))
+	c, err := p.c.CreateComment(ctx, linear.CreateCommentInput{IssueID: string(in.Issue), Body: in.Markdown})
+	out := one(in.Issue, step, err, tracker.DetailOf(in.Issue))
+	if c != nil && out.Parts[0].Outcome.State() == tracker.StateApplied {
+		out.Parts[0].Comment = tracker.CommentID(c.ID)
+	}
+	return out
 }
 
 // EditComment replaces a comment's body. It reads the comment first and

@@ -202,12 +202,14 @@ func (s Step) String() string {
 // create. Issue is the issue it is about, empty for a part about no issue
 // (a sprint) and for a create the tracker did not confirm. Changed are the
 // resources the part may have changed whatever its outcome; the caller
-// reads again those of a part that is applied or unknown.
+// reads again those of a part that is applied or unknown. Comment is the
+// comment an applied AddComment part made, as the tracker named it.
 type Part struct {
 	Issue   IssueID
 	Step    Step
 	Outcome Outcome
 	Changed []Resource
+	Comment CommentID
 }
 
 // Result is every part of one write, in the order they were sent or
@@ -377,6 +379,9 @@ func (p Part) check() error {
 	}
 	if p.Step == StepCreate && (state == StateApplied) != (p.Issue != "") {
 		return fmt.Errorf("a create that is %s names issue %q", state, p.Issue)
+	}
+	if p.Comment != "" && (p.Step != StepComment || state != StateApplied) {
+		return fmt.Errorf("a %s part that is %s names comment %q", p.Step, state, p.Comment)
 	}
 	lostCreate := p.Step == StepCreate && state == StateUnknown
 	if (state != StateApplied && state != StateUnknown) || lostCreate {

@@ -303,10 +303,15 @@ func TestFakeScenario(t *testing.T) {
 		t.Fatalf("sprint move %+v", c)
 	}
 
-	allApplied(t, "comment", s.p.AddComment(s.ctx, tracker.CommentInput{Issue: tracker.IssueID(scIssue2), Markdown: "New comment"}))
+	added := s.p.AddComment(s.ctx, tracker.CommentInput{Issue: tracker.IssueID(scIssue2), Markdown: "New comment"})
+	allApplied(t, "comment", added)
 	cs := scenarioMust[tracker.CommentPage](t)(s.p.Comments(s.ctx, tracker.IssueID(scIssue2), ""))
 	if len(cs.Comments) != 1 || strings.TrimSpace(cs.Comments[0].Body) != "New comment" {
 		t.Fatalf("comments %+v", cs)
+	}
+	// The applied part names the comment it made.
+	if got := added.Parts[0].Comment; got == "" || got != cs.Comments[0].ID {
+		t.Fatalf("the comment part names %q, the comment is %q", got, cs.Comments[0].ID)
 	}
 	allApplied(t, "comment edit", s.p.EditComment(s.ctx, tracker.CommentEdit{Issue: tracker.IssueID(scIssue2), Comment: cs.Comments[0].ID, Markdown: "Edited comment", From: cs.Comments[0].Body}))
 	if cs := scenarioMust[tracker.CommentPage](t)(s.p.Comments(s.ctx, tracker.IssueID(scIssue2), "")); strings.TrimSpace(cs.Comments[0].Body) != "Edited comment" {

@@ -42,12 +42,14 @@ type WriteView struct {
 // applied, refused, unknown (sent and not answered in full: it may have
 // happened) or not_sent. Refusal is why a refused part was refused, and
 // Failure why an unknown or unsent part is so, as a person reads it.
+// Comment is the comment an applied comment part made.
 type PartView struct {
 	Issue   string       `json:"issue,omitempty"`
 	Step    string       `json:"step"`
 	State   string       `json:"state"`
 	Refusal *RefusalView `json:"refusal,omitempty"`
 	Failure *FailureView `json:"failure,omitempty"`
+	Comment string       `json:"comment,omitempty"`
 }
 
 // RefusalView is why a part was refused. Reason is tracker (the tracker
@@ -123,7 +125,7 @@ func partViews(kind string, res tracker.Result, at int64) []PartView {
 	out := make([]PartView, len(res.Parts))
 	for i, p := range res.Parts {
 		state := p.Outcome.State()
-		v := PartView{Issue: string(p.Issue), Step: nameOf(stepNames[:], p.Step), State: nameOf(stateNames[:], state)}
+		v := PartView{Issue: string(p.Issue), Step: nameOf(stepNames[:], p.Step), State: nameOf(stateNames[:], state), Comment: string(p.Comment)}
 		r, refused := p.Outcome.Refusal()
 		err := p.Outcome.Err()
 		switch {
