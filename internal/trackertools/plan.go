@@ -465,7 +465,16 @@ func (pc *planCall) planStep(p *planned, nv namedValue) error {
 	case lower == setSprint:
 		return pc.planSprint(p, given, nv.value)
 	case lower == setEstimate:
-		return pc.planEstimate(p, given, nv.value)
+		on, ok, err := pc.estimateTarget(p.t.connection, rowBoards(p.d.Rows), "")
+		switch {
+		case err != nil:
+			return err
+		case !ok:
+			p.estimateName = given
+			p.refuse(stepEstimate, fmt.Sprintf("%s: %s is on no board read on this computer that has estimates; ask the user to add its board in Settings, Issues, or open it there.", given, p.key))
+			return nil
+		}
+		return pc.planEstimate(p, given, nv.value, on)
 	case lower == setType:
 		return invalidf("%s's type cannot be changed here; leave out type.", p.key)
 	case lower == setComment:
@@ -480,10 +489,10 @@ func (pc *planCall) planStep(p *planned, nv namedValue) error {
 	if !ok {
 		return invalidf("%s has no field %s; it has %s.", p.key, quoteName(given), fieldNames(p.d.Fields, topNames))
 	}
-	if by, err := pc.estimatesBy(p, f.ID); err != nil {
+	if on, by, err := pc.estimateTarget(p.t.connection, rowBoards(p.d.Rows), f.ID); err != nil {
 		return err
 	} else if by {
-		return pc.planEstimate(p, given, nv.value)
+		return pc.planEstimate(p, given, nv.value, on)
 	}
 	if !f.Editable {
 		return invalidf("%s's %s cannot be changed here.", p.key, quoteName(f.Name))
@@ -678,11 +687,41 @@ func (pc *planCall) boardsOf(p *planned, ok func(boardOn) bool) ([]boardOn, erro
 	return out, nil
 }
 
-// estimatesBy reports whether field is the one a board of the ticket
-// estimates by, which set's estimate answers to.
-func (pc *planCall) estimatesBy(p *planned, field string) (bool, error) {
-	on, err := pc.boardsOf(p, func(o boardOn) bool { return o.b.EstimateField == field })
-	return len(on) > 0, err
+// estimateTarget is the board of connection an estimate set by field is
+// planned, checked and sent on: of boards, a ticket's boards in board
+// order, the first the mirror holds that estimates by field, or for field
+// "" (set's estimate) the first that has estimates, in points or time.
+// ok is false when none does. It is the one rule of an estimate's board:
+// the plan judges the estimate on that board's row, the approval words it
+// in that board's unit, and the read after an approval and the send name
+// that board.
+func (pc *planCall) estimateTarget(connection string, boards []string, field string) (_ estimateOn, ok bool, _ error) {
+	for _, id := range boards {
+		b, held, err := pc.board(connection, id)
+		if err != nil {
+			return estimateOn{}, false, err
+		}
+		if !held || (field == "" && b.Unit != "points" && b.Unit != "time") || (field != "" && b.EstimateField != field) {
+			continue
+		}
+		return estimateOn{board: id, b: b}, true, nil
+	}
+	return estimateOn{}, false, nil
+}
+
+// estimateOn is the board an estimate is planned on (estimateTarget).
+type estimateOn struct {
+	board string
+	b     trackerapp.BoardSummary
+}
+
+// rowBoards are the boards of rows, in their order.
+func rowBoards(rows []trackerapp.TicketRowView) []string {
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = r.Board
+	}
+	return out
 }
 
 // openSprints are b's active and future sprints.
@@ -760,19 +799,12 @@ func (pc *planCall) planSprint(p *planned, given string, v setValue) error {
 	return nil
 }
 
-// planEstimate plans the estimate v gives, on the first of the ticket's
-// boards here that has estimates, in its unit.
-func (pc *planCall) planEstimate(p *planned, given string, v setValue) error {
+// planEstimate plans the estimate v gives on board on, one of the
+// ticket's rows (estimateTarget), in its unit.
+func (pc *planCall) planEstimate(p *planned, given string, v setValue, on estimateOn) error {
 	p.estimateName = given
-	on, err := pc.boardsOf(p, func(o boardOn) bool { return o.row.Unit == "points" || o.row.Unit == "time" })
-	if err != nil {
-		return err
-	}
-	if len(on) == 0 {
-		p.refuse(stepEstimate, fmt.Sprintf("%s: %s is on no board read on this computer that has estimates; ask the user to add its board in Settings, Issues, or open it there.", given, p.key))
-		return nil
-	}
-	row, b := on[0].row, on[0].b
+	row := p.d.Rows[slices.IndexFunc(p.d.Rows, func(r trackerapp.TicketRowView) bool { return r.Board == on.board })]
+	b := on.b
 	in := trackerapp.EstimateRequest{Board: row.Board, Issue: p.d.Card.ID}
 	if v.null {
 		p.estimateSame = row.Estimate == nil

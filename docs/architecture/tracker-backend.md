@@ -2222,8 +2222,13 @@ and `marks.go`; the app's side is
 a read writes at its top (status, sprint, estimate, title, assignee,
 priority, labels, parent, description), or a field by the name the read
 shows under `fields` (a name two fields share with its ID, as the read
-writes it). The estimate also answers to the field its board estimates by
-(Jira's Story points). A name that matches nothing is refused naming the
+writes it). The estimate also answers to the field a board of the ticket
+estimates by (Jira's Story points). An estimate has one board
+(`estimateTarget`): for a field, the first of the ticket's boards the
+mirror holds, by board ID, that estimates by it, and for `estimate` the
+first that has estimates; the plan judges it on that board's row, the
+approval words it in that board's unit, and the read after the approval
+and the send name that board. A name that matches nothing is refused naming the
 ticket's names, at most 40; a member the read shows that no write sets
 (`created`, `key`, ...) and a field that is not editable are refused. A
 value is text, a number, a list, or null to clear; an empty list clears.

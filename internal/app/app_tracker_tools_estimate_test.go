@@ -2,12 +2,15 @@ package app
 
 import (
 	"encoding/json"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/harness/trackerfake"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/trackerapp"
 )
 
 // A ticket's estimate is the ticket's own read, not the board's last
@@ -48,6 +51,66 @@ func TestTrackerAgentEstimateIsTheTicketsOwnRead(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// twoEstimateBoards is a Jira costFixture of n issues whose WEB-1 is also
+// on a second board, WEB team, which estimates by Team Points
+// (customfield_10026), with both boards read: WEB-1 holds 3 Story Points,
+// which board 1 estimates by, and 5 Team Points.
+func twoEstimateBoards(t *testing.T, n int) (*trackerBoardFixture, string, string) {
+	t.Helper()
+	f, thread, endpoint := costFixtureWith(t, false, n, func(site *trackerfake.JiraSite, ws *trackerfake.LinearWorkspace) {
+		site.Fields = append(site.Fields, trackerfake.JiraField{ID: "customfield_10026", Name: "Team Points",
+			Schema: trackerfake.JiraSchema{Type: "number", Custom: "com.atlassian.jira.plugin.system.customfieldtypes:float", CustomID: 10026}})
+		site.Boards = append(site.Boards, trackerfake.JiraBoard{ID: 2, Name: "WEB team", Type: "scrum", Project: "WEB", Columns: site.Boards[0].Columns, Estimation: "customfield_10026"})
+		site.Sprints = append(site.Sprints, trackerfake.JiraSprint{ID: 3, Board: 2, Name: "Team 1", State: "active", Start: site.Sprints[0].Start, End: site.Sprints[0].End})
+		is := &site.Issues[0]
+		is.Sprints = []int64{1, 3}
+		is.Values = map[string]json.RawMessage{"customfield_10016": json.RawMessage(`3`), "customfield_10026": json.RawMessage(`5`)}
+	})
+	readBoard(t, f, f.conn.ID, "2", []trackerapp.Section{{Kind: trackerapp.SectionSprint, Sprint: "3"}, {Kind: trackerapp.SectionBacklog}})
+	return f, thread, endpoint
+}
+
+// fakeValues are the values the fake holds of issue's fields, as JSON.
+func fakeValues(f *trackerBoardFixture, issue string, fields ...string) []string {
+	world := f.e.Snapshot()
+	i := slices.IndexFunc(world.Jira[0].Issues, func(is trackerfake.JiraIssue) bool { return is.ID == issue })
+	out := make([]string, len(fields))
+	for k, id := range fields {
+		out[k] = string(world.Jira[0].Issues[i].Values[id])
+	}
+	return out
+}
+
+// An estimate named by a board's own field is written on that board: WEB-1
+// is on two boards, the first estimating by Story Points (3) and the
+// second by Team Points (5). Team Points set to 8, by name or by ID, writes
+// Team Points and leaves Story Points; the generic estimate set to 4 writes
+// the first board's.
+func TestTrackerAgentEstimateByAFieldIsWrittenOnItsBoard(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name, set string
+		v         float64
+		want      []string
+	}{
+		{"by name", "Team Points", 8, []string{"3", "8"}},
+		{"by id", "customfield_10026", 8, []string{"3", "8"}},
+		{"the generic name", "estimate", 4, []string{"4", "5"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			f, thread, endpoint := twoEstimateBoards(t, 3)
+			text, _ := toolRoutes(t, f, thread, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-1"}, "set": map[string]any{c.set: c.v}})
+			if !strings.Contains(text, `"applied":[`+strconv.Quote(c.set)+`]`) {
+				t.Errorf("ticket_update = %s; want %s applied", text, c.set)
+			}
+			if got := fakeValues(f, "10101", "customfield_10016", "customfield_10026"); !slices.Equal(got, c.want) {
+				t.Errorf("Story Points and Team Points = %v; want %v", got, c.want)
+			}
+		})
 	}
 }
 
