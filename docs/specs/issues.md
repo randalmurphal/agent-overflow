@@ -284,7 +284,8 @@ Widths are CSS pixels of the pane, not the window.
   shows (its computer, connection and issue) and nothing the tracker
   wrote: after a reload the pane shows that ticket without its Back trail,
   titled Ticket with an empty title line until the ticket is read, and its
-  points are those of the first board the ticket is on. One whose ticket
+  points are those of the first board the ticket is on that has estimates,
+  the board an agent's `ticket_read` prints. One whose ticket
   cannot be read back says so until it is closed.
 
 ### Board
@@ -438,6 +439,10 @@ holding the template text.
   Fields, then Work. Narrower, the ticket shows the content only, with one
   row of status, assignee, priority and points, each changed in place, and
   a Details control that slides the rail over the content.
+- The ticket's points, its Estimate and planning poker's estimate are
+  those of the board it was opened from when that board has estimates,
+  else of the first board it is on that has them, the board an agent's
+  `ticket_read` prints and its `estimate` sets.
 - A ticket opened from another ticket takes its place. Back returns
   through the last 20 tickets opened that way, then closes the ticket;
   Close leaves at once. Picking another board drops them, and a reload

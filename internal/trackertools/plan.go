@@ -749,8 +749,11 @@ func (pc *planCall) boardsOf(p *planned, ok func(boardOn) bool) ([]boardOn, erro
 // "" (set's estimate) the first that has estimates, in points or time.
 // ok is false when none does. It is the one rule of an estimate's board:
 // the plan judges the estimate on that board's row, the approval words it
-// in that board's unit, and the read after an approval and the send name
-// that board.
+// in that board's unit, the read after an approval and the send name that
+// board, and ticket_read prints its estimate (sheet.estimate). The ticket
+// screen shows and sets the same board's points when it was opened from
+// no board with estimates (ticketRow in
+// frontend/src/lib/stores/trackerTicketModel.ts).
 func (pc *planCall) estimateTarget(connection string, boards []string, field string) (_ estimateOn, ok bool, _ error) {
 	for _, id := range boards {
 		b, held, err := pc.board(connection, id)

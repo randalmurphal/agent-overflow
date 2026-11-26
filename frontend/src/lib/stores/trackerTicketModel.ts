@@ -299,11 +299,17 @@ export function fieldText(value: FieldValueView): string {
   }
 }
 
-/** The row the ticket shows its points from: the board it was opened from,
- * else the first the mirror holds; null when no board shows the issue. */
+/** The row the ticket shows and sets its points on: the board it was
+ * opened from when that board has estimates, else the first of its boards
+ * that has them, the board an agent's `ticket_read` prints and its
+ * `estimate` sets (`estimateTarget` in `internal/trackertools/plan.go`),
+ * else its first board; null when no board shows the issue. */
 export function ticketRow(rows: readonly TicketRowView[] | null | undefined, board: string | null): TicketRowView | null {
   if (!rows || rows.length === 0) return null;
-  return rows.find((r) => r.board === board) ?? rows[0];
+  const estimates = (r: TicketRowView) => r.unit === 'points' || r.unit === 'time';
+  const opened = rows.find((r) => r.board === board);
+  if (opened && estimates(opened)) return opened;
+  return rows.find(estimates) ?? rows[0];
 }
 
 /** The ticket's sprints as its Sprint field says them: each by name, in

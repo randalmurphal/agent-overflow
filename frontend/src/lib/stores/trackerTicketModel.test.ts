@@ -117,6 +117,15 @@ describe('the rail', () => {
     expect(ticketRow(rows, '9')).toBe(rows[0]);
     expect(ticketRow([], '1')).toBeNull();
   });
+
+  it('shows the points of the first board with estimates when the board it was opened from has none, as an agent reads them', () => {
+    const rows = [{ board: '1', unit: 'none' }, { board: '2', estimate: 5, unit: 'points' }, { board: '3', estimate: 1800, unit: 'time' }];
+    expect(ticketRow(rows, null), 'opened from no board').toBe(rows[1]);
+    expect(ticketRow(rows, '1'), 'opened from the board without estimates').toBe(rows[1]);
+    expect(ticketRow(rows, '3'), 'opened from a board with estimates').toBe(rows[2]);
+    const none = [{ board: '1', unit: 'none' }, { board: '2', unit: 'none' }];
+    expect(ticketRow(none, '2'), 'no board has estimates').toBe(none[0]);
+  });
 });
 
 describe('links', () => {
