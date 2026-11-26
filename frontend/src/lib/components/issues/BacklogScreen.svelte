@@ -418,6 +418,7 @@
   tabindex="-1"
   data-pane-scroller
   data-testid="issues-backlog"
+  data-carry-list=""
   data-carrying={carrying ? '' : undefined}
   onpointerdown={onPointerDown}
 >
@@ -442,7 +443,7 @@
         <div
           class="{carrying ? 'transition-transform duration-150 ease-out motion-reduce:transition-none' : ''}"
           style:transform={carrying && shiftOf(item.at) !== 0 ? `translateY(${shiftOf(item.at)}px)` : undefined}
-          data-carry-list={sec.list}
+          data-list={sec.list}
         >
           {#if item.kind === 'head'}
             {@const target = !!carrying?.spot && carrying.spot.list === sec.list && carrying.from !== sec.list}

@@ -26,7 +26,9 @@ const EDGE_SPEED = 900;
 const LAND_MS = 400;
 
 /** The attribute naming the list an element holds the rows of: each
- * screen marks its lists' rows with it. */
+ * screen marks its lists' rows with it. Empty, it marks an area whose
+ * list is the one the layout answers there: the Backlog's one scroller,
+ * whose rows slide aside to open a gap the pointer can be over. */
 const CARRY_LIST_ATTR = 'data-carry-list';
 
 /** Where a carried ticket would go: a list, and the place in it (an index
@@ -147,7 +149,8 @@ export function startCarry(card: HTMLElement, sx: number, sy: number, x: number,
   let frame = 0;
   let done = false;
 
-  /** The list whose rows are under (x, y) on screen now. */
+  /** The list whose rows are under (x, y) on screen now: empty for an
+   * area whose list is the layout's; null over none. */
   function listUnder(x: number, y: number): string | null {
     return document.elementFromPoint(x, y)?.closest(`[${CARRY_LIST_ATTR}]`)?.getAttribute(CARRY_LIST_ATTR) ?? null;
   }
@@ -229,7 +232,7 @@ export function startCarry(card: HTMLElement, sx: number, sy: number, x: number,
       py = y;
       const list = listUnder(x, y);
       const at = host.layout.at(x, y);
-      const released = list === null ? null : at?.list === list ? at : { list, slot: null };
+      const released = list === null ? null : list === '' || at?.list === list ? at : { list, slot: null };
       finish();
       void host.drop(released, { x: px, y: py }).then(land, () => land(null));
     },
