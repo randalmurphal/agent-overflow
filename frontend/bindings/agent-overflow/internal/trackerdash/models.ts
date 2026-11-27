@@ -15,13 +15,6 @@ import { Create as $Create } from "@wailsio/runtime";
 export class Answer {
     "range": RangeView;
     "reading"?: boolean;
-
-    /**
-     * Evidence says, beside a widget that reads the credit relation while
-     * the last read of who worked on the tickets failed as a whole, that
-     * it failed and why (EvidenceSentence); "" otherwise.
-     */
-    "evidence"?: string;
     "estimates": string;
     "person"?: Name | null;
     "epic"?: Name | null;
@@ -57,25 +50,25 @@ export class Answer {
      */
     static createFrom($$source: any = {}): Answer {
         const $$createField0_0 = $$createType0;
+        const $$createField3_0 = $$createType2;
         const $$createField4_0 = $$createType2;
-        const $$createField5_0 = $$createType2;
-        const $$createField7_0 = $$createType4;
-        const $$createField8_0 = $$createType6;
+        const $$createField6_0 = $$createType4;
+        const $$createField7_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("range" in $$parsedSource) {
             $$parsedSource["range"] = $$createField0_0($$parsedSource["range"]);
         }
         if ("person" in $$parsedSource) {
-            $$parsedSource["person"] = $$createField4_0($$parsedSource["person"]);
+            $$parsedSource["person"] = $$createField3_0($$parsedSource["person"]);
         }
         if ("epic" in $$parsedSource) {
-            $$parsedSource["epic"] = $$createField5_0($$parsedSource["epic"]);
+            $$parsedSource["epic"] = $$createField4_0($$parsedSource["epic"]);
         }
         if ("widgets" in $$parsedSource) {
-            $$parsedSource["widgets"] = $$createField7_0($$parsedSource["widgets"]);
+            $$parsedSource["widgets"] = $$createField6_0($$parsedSource["widgets"]);
         }
         if ("logged" in $$parsedSource) {
-            $$parsedSource["logged"] = $$createField8_0($$parsedSource["logged"]);
+            $$parsedSource["logged"] = $$createField7_0($$parsedSource["logged"]);
         }
         return new Answer($$parsedSource as Partial<Answer>);
     }
@@ -830,6 +823,13 @@ export class WidgetValue {
      * whole, even with no rows (worklogs.go); a number says so in its Num.
      */
     "old"?: boolean;
+
+    /**
+     * Evidence says, beside a widget whose metric reads the credit
+     * relation while the last read of who worked on the tickets failed as
+     * a whole, that it failed and why (EvidenceSentence); "" otherwise.
+     */
+    "evidence"?: string;
 
     /** Creates a new WidgetValue instance. */
     constructor($$source: Partial<WidgetValue> = {}) {

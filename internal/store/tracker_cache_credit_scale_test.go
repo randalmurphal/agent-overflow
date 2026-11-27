@@ -39,8 +39,10 @@ func creditAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize, rec
 		root).Scan(&histories); err != nil {
 		t.Fatal(err)
 	}
-	defer mustExec(t, s.db, `UPDATE tracker_cache_issues SET history_for = h.value ->> 1, history_wait = h.value ->> 2
-		FROM json_each(?2) h WHERE root_id = ?1 AND issue_id = h.value ->> 0`, root, histories)
+	// The list, materialized, drives the restore by key (mirrorTicketMoveSQL).
+	defer mustExec(t, s.db, `WITH h AS MATERIALIZED (SELECT value FROM json_each(?2))
+		UPDATE tracker_cache_issues SET history_for = h.value ->> 1, history_wait = h.value ->> 2
+		FROM h WHERE root_id = ?1 AND issue_id = h.value ->> 0`, root, histories)
 	members, evidence := creditScaleSetup(t, s, root, size)
 	t.Logf("credit: %d members in the window's 26 sprints, %d with evidence", len(members), len(evidence))
 	rules := []MirrorCreditRule{{ReviewShare: 10, ReviewNeed: 2, Commented: true, LoggedTime: true, HoursPerPoint: 4}}
