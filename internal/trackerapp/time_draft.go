@@ -33,7 +33,8 @@ const (
 )
 
 // TimeEntriesEvent says that the time entries of a connection's author
-// changed on days, drafted by threads' agents among others.
+// changed on days, drafted by threads' agents among others, or that a
+// post's check stored those days' worklogs.
 type TimeEntriesEvent struct {
 	Connection string   `json:"connection"`
 	Author     string   `json:"author"`
@@ -51,7 +52,9 @@ type TimeOfferView struct {
 
 // TimeEntryView is one entry of the draft. By is agent or person, who
 // last wrote it; State is drafted, sent, posted, unknown or left_out;
-// Refusal is why its last post did not log it.
+// Refusal is why its last post did not log it, and for an unknown entry
+// what the app says of it (mayHaveBeenLogged), which a screen shows as it
+// is.
 type TimeEntryView struct {
 	ID         int64           `json:"id"`
 	Revision   int64           `json:"revision"`
@@ -75,6 +78,9 @@ func timeEntryView(e store.TimeEntry) TimeEntryView {
 	v := TimeEntryView{ID: e.ID, Revision: e.Revision, Connection: e.Connection, Day: e.Day, Issue: e.IssueID, Key: e.IssueKey,
 		Title: e.IssueTitle, Minutes: e.Seconds / 60, Reason: e.Reason, By: e.Source, Thread: e.ThreadID, Call: e.CallID,
 		State: e.State, Refusal: e.Refusal, Worklog: e.WorklogID}
+	if e.State == store.TimeEntryUnknown {
+		v.Refusal = mayHaveBeenLogged
+	}
 	for _, o := range e.Offers {
 		v.Offers = append(v.Offers, TimeOfferView{Issue: o.Issue, Key: o.Key, Title: o.Title})
 	}
@@ -348,12 +354,18 @@ func (s *Service) DraftTime(id string, in TimeDraftRequest) (TimeDraftView, erro
 }
 
 // timeEntriesChanged tells the change of entries, on connection's
-// author, by their days and threads.
-func (s *Service) timeEntriesChanged(connection, author string, entries []store.TimeEntry) {
-	if s.emitTimeEntries == nil || len(entries) == 0 {
+// author, by their days and threads, and the days whose worklogs a
+// post's check stored beside them.
+func (s *Service) timeEntriesChanged(connection, author string, entries []store.TimeEntry, days ...string) {
+	if s.emitTimeEntries == nil || len(entries)+len(days) == 0 {
 		return
 	}
 	e := TimeEntriesEvent{Connection: connection, Author: author}
+	for _, d := range days {
+		if !slices.Contains(e.Days, d) {
+			e.Days = append(e.Days, d)
+		}
+	}
 	for _, x := range entries {
 		if !slices.Contains(e.Days, x.Day) {
 			e.Days = append(e.Days, x.Day)
@@ -367,14 +379,17 @@ func (s *Service) timeEntriesChanged(connection, author string, entries []store.
 	s.emitTimeEntries(e)
 }
 
-// ThreadTimeEntries are the entries thread's agent drafted that still
-// exist, on every connection.
-func (s *Service) ThreadTimeEntries(thread string) ([]TimeEntryView, error) {
+// ThreadTimeEntries are the entries that call of thread's agent drafted
+// that still exist, on every connection.
+func (s *Service) ThreadTimeEntries(thread, call string) ([]TimeEntryView, error) {
+	if thread == "" || call == "" {
+		return nil, invalidDraft("a thread's time entries are read by its thread and call")
+	}
 	if err := s.enterTime(); err != nil {
 		return nil, err
 	}
 	defer s.leave()
-	es, err := s.store.ThreadTimeEntries(thread)
+	es, err := s.store.ThreadTimeEntries(thread, call)
 	if err != nil {
 		return nil, fmt.Errorf("trackerapp: %w", err)
 	}

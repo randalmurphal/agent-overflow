@@ -6,15 +6,18 @@ import { tick } from 'svelte';
 import type { WorklogDays, WorklogView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import {
   attachTrackerWeek,
+  DRAFT_REREAD_DELAY_MS,
   refreshTrackerWeek,
   refreshTrackerWorklogDays,
   rereadTrackerWorklogDays,
   setTrackerWeekShown,
   WEEK_REFRESH_AFTER_MS,
   WEEKS_HELD,
+  type TrackerWeekAttachment,
   type TrackerWeekRef,
 } from './trackerTime.svelte';
 import { __setBackendStatusForTest } from './transportStatus.svelte';
+import { trackerTimeEntriesGap, trackerTimeEntriesUpdated } from './trackerBoardEvents';
 import { addWorklog } from './trackerTimeWrites.svelte';
 import { getPinnedBackend } from '../transport/backends';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
@@ -374,6 +377,184 @@ describe('what a write asks of the weeks', () => {
     expect(refresh.calls).toHaveLength(2);
     setTrackerWeekShown(week.key, true);
     expect(refresh.calls).toHaveLength(3);
+    week.release();
+  });
+});
+
+describe('an agent\'s draft changing', () => {
+  it('reads the stored copy of a shown week holding a day it names, once a burst, and no other', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    const stored = held('TrackerWorklogs');
+    const refresh = held('RefreshTrackerWorklogs');
+    const week = attachTrackerWeek(REF, true);
+    stored.answer({ worklogs: [] });
+    refresh.answer({ worklogs: [] });
+    await flush();
+    const frame = { connection: 'c1', author: 'acct-1', days: ['2026-11-10'], threads: ['t1'] };
+    trackerTimeEntriesUpdated({ ...frame, days: ['2026-11-20'] }, 'peer-1');
+    trackerTimeEntriesUpdated({ ...frame, author: 'acct-2' }, 'peer-1');
+    trackerTimeEntriesUpdated(frame, 'peer-2');
+    await vi.advanceTimersByTimeAsync(DRAFT_REREAD_DELAY_MS * 6);
+    expect(stored.calls).toHaveLength(1);
+    for (let i = 0; i < 3; i += 1) trackerTimeEntriesUpdated(frame, 'peer-1');
+    await vi.advanceTimersByTimeAsync(DRAFT_REREAD_DELAY_MS);
+    expect(stored.calls).toHaveLength(2);
+    expect(refresh.calls).toHaveLength(1);
+    // A week not shown reads when it shows, as it always does.
+    stored.answer({ worklogs: [] });
+    await flush();
+    setTrackerWeekShown(week.key, false);
+    trackerTimeEntriesUpdated(frame, 'peer-1');
+    await vi.advanceTimersByTimeAsync(DRAFT_REREAD_DELAY_MS * 6);
+    expect(stored.calls).toHaveLength(2);
+    week.release();
+  });
+
+  it('reads every shown week of the computer on a gap, settled by their answers', async () => {
+    const stored = held('TrackerWorklogs');
+    const refresh = held('RefreshTrackerWorklogs');
+    const week = attachTrackerWeek(REF, true);
+    stored.answer({ worklogs: [] });
+    refresh.answer({ worklogs: [] });
+    await flush();
+    expect(trackerTimeEntriesGap('peer-2')).toBeUndefined();
+    let settled = false;
+    void trackerTimeEntriesGap('peer-1')!.then(() => { settled = true; });
+    expect(stored.calls).toHaveLength(2);
+    await flush();
+    expect(settled).toBe(false);
+    stored.answer({ worklogs: [] });
+    await flush();
+    expect(settled).toBe(true);
+    week.release();
+  });
+
+  it('reads a week again on a gap only after the refresh out, so the refresh never lands over the newer read', async () => {
+    const stored = held('TrackerWorklogs');
+    const refresh = held('RefreshTrackerWorklogs');
+    const week = attachTrackerWeek(REF, true);
+    stored.answer({ worklogs: [log('1')] });
+    await flush();
+    let settled = false;
+    void trackerTimeEntriesGap('peer-1')!.then(() => { settled = true; });
+    // The refresh was out before the gap: it answers what it read then.
+    refresh.answer({ worklogs: [log('1')] });
+    await flush();
+    expect(settled).toBe(false);
+    stored.answer({ worklogs: [log('1'), log('2')] });
+    await flush();
+    expect(settled).toBe(true);
+    expect(week.current.days?.worklogs.map((w) => w.id)).toEqual(['1', '2']);
+    week.release();
+  });
+});
+
+// A stored read owed to a frame, a write or a gap runs once, after every
+// refresh out or queued, and only for a week that still shows; the gap's
+// recovery settles when that read answered, or at once when none is sent.
+describe('a stored read owed behind the refreshes', () => {
+  async function owing(): Promise<{ stored: ReturnType<typeof held>; refresh: ReturnType<typeof held>; week: TrackerWeekAttachment; recovered: () => boolean }> {
+    const stored = held('TrackerWorklogs');
+    const refresh = held('RefreshTrackerWorklogs');
+    const week = attachTrackerWeek(REF, true);
+    stored.answer({ worklogs: [] });
+    await flush();
+    let settled = false;
+    rereadTrackerWorklogDays('peer-1', 'c1', 'acct-1', ['2026-11-10']);
+    void trackerTimeEntriesGap('peer-1')!.then(() => { settled = true; });
+    rereadTrackerWorklogDays('peer-1', 'c1', 'acct-1', ['2026-11-11']);
+    return { stored, refresh, week, recovered: () => settled };
+  }
+
+  it('reads once after the refresh out, however many owe it', async () => {
+    const { stored, refresh, week, recovered } = await owing();
+    expect(stored.calls).toHaveLength(1);
+    refresh.answer({ worklogs: [] });
+    await flush();
+    expect(stored.calls).toHaveLength(2);
+    expect(recovered()).toBe(false);
+    stored.answer({ worklogs: [log('3', '2026-11-10')] });
+    await flush();
+    expect(recovered()).toBe(true);
+    expect(week.current.days?.worklogs.map((w) => w.id)).toEqual(['3']);
+    week.release();
+  });
+
+  it('reads after the refresh queued behind the one out, never between them', async () => {
+    const { stored, refresh, week, recovered } = await owing();
+    const queued = refreshTrackerWorklogDays('peer-1', 'c1', 'acct-1', ['2026-11-10']);
+    refresh.answer({ worklogs: [] });
+    await flush();
+    expect(refresh.calls).toHaveLength(2);
+    expect(stored.calls).toHaveLength(1);
+    refresh.answer({ worklogs: [log('2', '2026-11-10')] });
+    expect(await queued).toEqual({ kind: 'read' });
+    await flush();
+    expect(stored.calls).toHaveLength(2);
+    expect(recovered()).toBe(false);
+    stored.answer({ worklogs: [log('2', '2026-11-10'), log('3', '2026-11-11')] });
+    await flush();
+    expect(recovered()).toBe(true);
+    expect(week.current.days?.worklogs.map((w) => w.id)).toEqual(['2', '3']);
+    week.release();
+  });
+
+  it('reads nothing for a week released before the refresh ended, and the gap settles', async () => {
+    const { stored, refresh, week, recovered } = await owing();
+    week.release();
+    refresh.answer({ worklogs: [] });
+    await flush();
+    expect(stored.calls).toHaveLength(1);
+    expect(recovered()).toBe(true);
+  });
+
+  it('reads nothing for a week hidden before the refresh ended, and reads once when it shows', async () => {
+    const { stored, refresh, week, recovered } = await owing();
+    setTrackerWeekShown(week.key, false);
+    refresh.answer({ worklogs: [] });
+    await flush();
+    expect(stored.calls).toHaveLength(1);
+    expect(recovered()).toBe(true);
+    setTrackerWeekShown(week.key, true);
+    expect(stored.calls).toHaveLength(2);
+    week.release();
+  });
+});
+
+// The showing's stored read is owed like any other, and an owed read
+// belongs to a week that shows: hiding the week settles what waits on it.
+describe('a week shown or hidden with a refresh out', () => {
+  it('reads the stored copy on showing again only after the refresh out, so the refresh never lands over it', async () => {
+    const stored = held('TrackerWorklogs');
+    const refresh = held('RefreshTrackerWorklogs');
+    const week = attachTrackerWeek(REF, true);
+    stored.answer({ worklogs: [] });
+    await flush();
+    setTrackerWeekShown(week.key, false);
+    // An agent drafts while the week is hidden; then it shows again.
+    setTrackerWeekShown(week.key, true);
+    expect(stored.calls).toHaveLength(1);
+    refresh.answer({ worklogs: [] });
+    await flush();
+    expect(stored.calls).toHaveLength(2);
+    stored.answer({ worklogs: [log('4')] });
+    await flush();
+    expect(week.current.days?.worklogs.map((w) => w.id)).toEqual(['4']);
+    week.release();
+  });
+
+  it('settles a gap\'s recovery when the week stops showing, before the refresh answers', async () => {
+    const stored = held('TrackerWorklogs');
+    held('RefreshTrackerWorklogs');
+    const week = attachTrackerWeek(REF, true);
+    stored.answer({ worklogs: [] });
+    await flush();
+    let settled = false;
+    void trackerTimeEntriesGap('peer-1')!.then(() => { settled = true; });
+    setTrackerWeekShown(week.key, false);
+    await flush();
+    expect(settled).toBe(true);
+    expect(stored.calls).toHaveLength(1);
     week.release();
   });
 });

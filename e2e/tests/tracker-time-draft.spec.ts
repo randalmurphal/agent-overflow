@@ -47,7 +47,10 @@ for (const provider of PROVIDERS) {
     expect(answer.note).toBe('Nothing is logged until the user approves it.');
     expect(await trackerRequests(harness, WORKLOG_ROUTE), 'the draft logged time').toHaveLength(0);
 
-    const entries = await harness.rpc<TimeEntry[]>('ThreadTimeEntries', threadId);
+    // The call's row names it; the week's read holds its entries too.
+    const week = await harness.rpc<{ drafted?: TimeEntry[] }>('TrackerWorklogs', connectionId, 'acc-user1', day, day);
+    const call = week.drafted?.[0]?.call ?? '';
+    const entries = await harness.rpc<TimeEntry[]>('ThreadTimeEntries', threadId, call);
     expect(answer.days).toEqual([{ day, made: [{ id: entries[0].id, key: 'WEB-1' }], questions: [entries[1].id] }]);
     expect(entries).toEqual([
       expect.objectContaining({ day, key: 'WEB-1', minutes: 90, reason: 'Built the login form', by: 'agent', state: 'drafted', connection: connectionId }),

@@ -1445,8 +1445,9 @@ changed, `tracker:board_updated` (`trackerapp.BoardEvent`),
 project's stored setup changed, after which a client reads again the
 setups it holds, and `tracker:time_entries_updated`
 (`trackerapp.TimeEntriesEvent`: the connection, author, days and drafting
-threads of a change to the time draft, after which a client reads those
-days or that thread's entries again), all at `tracker:read`.
+threads of a change to the time draft, or every day a post's check
+stored, from the first to the last of each read, after which a client
+reads those days or that thread's entries again), all at `tracker:read`.
 
 A connection ID is minted on one computer. Every method whose first
 argument is one is generated with the route home and routed by its client
@@ -1482,7 +1483,7 @@ selected computer.
 | `CreateTrackerIssue`, `EditTrackerIssue`, `MoveTrackerIssue`, `SetTrackerEstimate`, `RankTrackerIssues`, `MoveTrackerIssuesToSprint`, `CreateTrackerSprint`, `StartTrackerSprint`, `CompleteTrackerSprint`, `EditTrackerSprint`, `AddTrackerComment`, `EditTrackerComment`, `DeleteTrackerComment`, `LinkTrackerIssues`, `UnlinkTrackerIssues`, `AddTrackerWorklog`, `EditTrackerWorklog`, `DeleteTrackerWorklog` | `Create`, `Edit`, `Move`, `SetEstimate`, `Rank`, `MoveToSprint`, `CreateSprint`, `StartSprint`, `CompleteSprint`, `EditSprint`, `AddComment`, `EditComment`, `DeleteComment`, `Link`, `Unlink`, `AddWorklog`, `EditWorklog`, `DeleteWorklog` | operate | connection, budget 3m |
 | `TrackerWorklogs(connectionID, author, from, to)` | `Worklogs` | read | connection |
 | `RefreshTrackerWorklogs(connectionID, author, from, to)` | `RefreshWorklogs` | read | connection |
-| `ThreadTimeEntries(threadID)` | `ThreadTimeEntries` | read | thread |
+| `ThreadTimeEntries(threadID, callID)` | `ThreadTimeEntries` | read | thread |
 | `EditTrackerTimeEntry(connectionID, ref, edit)`, `RemoveTrackerTimeEntries(connectionID, refs)` | `EditTimeEntry`, `RemoveTimeEntries` | operate | connection |
 | `PostTrackerTimeEntries(connectionID, in)` | `PostTimeEntries` | operate | connection, budget 3m |
 | `TrackerPokerSupport(connectionID)` | `PokerSupport` | read | connection |
@@ -3055,7 +3056,9 @@ sent again, since no read the app can make proves the first send did not
 land: logging it alone or approving its day names it, sends nothing of
 it, and says that the time may already be logged, to look at the day's
 logged time, and to remove the entry if the time is there or to log the
-time by hand and then remove it; the day's other entries post. The answer is built after the post from the entries
+time by hand and then remove it; the day's other entries post. Every
+view of such an entry carries that sentence (`TimeEntryView.refusal`),
+so a surface shows it before anyone approves. The answer is built after the post from the entries
 as they are then, names every entry, says in one sentence each one not
 posted, with the tracker's refusal, gives each named entry's outcome
 (`Outcomes`), and names the days whose worklogs
@@ -3076,7 +3079,9 @@ tests).
 notification row of kind `time_draft` (`Drafted time for Tue Nov 24`),
 naming the call, the connection and the days, and never rewrites it; a
 thread reads the call's entries as they are now through
-`ThreadTimeEntries`. A post that ran adds one row of kind `time_post`,
+`ThreadTimeEntries`, one call's at a time, so the read is bounded by the
+call (at most 250 entries) however long the thread has drafted. A post
+that ran adds one row of kind `time_post`,
 written once with the count it ended with (`Logged 2 of 3 entries for
 Tue Nov 24`, of the entries the prompt offered to log, and `; 1 may have
 been logged` for those whose answer was lost), naming the call, the
@@ -3256,5 +3261,4 @@ Not built, owed by the app layer:
   that edit them. A query that
   needs part of the setup takes it as a bound argument, as the status
   groups are; nothing of the file is copied into the mirror.
-- The Time screen's drafted entries and the `time_draft` row's card.
 - Searching the forge by key for a pull request outside the stored list.

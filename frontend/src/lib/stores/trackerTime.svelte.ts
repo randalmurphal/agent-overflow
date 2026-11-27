@@ -21,14 +21,20 @@
 //   whose outcome leaves the week unknown (refused as stale, an answer
 //   not in full, not sent, lost) and a reconnect need a read that starts
 //   after it, so they queue one more refresh after the one out (one at
-//   most, which they all share); a write that was made asks for a stored
-//   read after it;
+//   most, which they all share);
+// - every stored read is owed (`oweStoredRead`), to a showing, a write
+//   that was made, a draft frame or a gap: it runs now with no refresh
+//   out, else once after the last refresh out or queued ends, shared by
+//   everything that owed it meanwhile, so no refresh answers over it.
+//   Only `oweStoredRead` and the end of a refresh send one;
 // - a write that asked for a refresh learns how it ended (`WeekReread`);
 // - a write that was made while its days could not be read after it is a
 //   receipt on each held week showing them, until a refresh that started
 //   after it answers with no failure;
 // - a queued read starts only if its week still shows; a week that stopped
-//   showing is due when it shows again.
+//   showing is due when it shows again. An owed stored read is a shown
+//   week's: hiding or releasing the week settles what waited on it with
+//   none sent and clears it, and the next showing owes its own.
 //
 // Nothing is read while the week is not shown (the pane hidden or covered,
 // the window hidden). When it shows (attached shown, or shown again), the
@@ -39,6 +45,14 @@
 // The five weeks used last are held, each with its last answer, so a week
 // the person returns to shows at once; a sixth drops the one used least
 // recently that no surface holds.
+//
+// The agent's draft rides the stored read (`WorklogDays.drafted`). A
+// `tracker:time_entries_updated` frame (an agent drafted, a person
+// changed, removed or approved entries) reads the computer's copy of each
+// shown week holding one of its days again, coalesced
+// (`DRAFT_REREAD_DELAY_MS`); a week not shown reads it when it shows. A
+// gap on the channel reads every shown week of its computer again, and
+// its recovery settles when those reads answered.
 
 import { SvelteMap } from 'svelte/reactivity';
 import type { FailureView, WorklogDays } from '../../../bindings/agent-overflow/internal/trackerapp/models';
@@ -51,6 +65,8 @@ import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { errString } from '../utils/errors';
 import { documentHidden } from '../utils/pageVisibility';
 import { addDays } from './trackerTimeModel';
+import { takeTrackerTimeEntriesChannel } from './trackerBoardEvents';
+import { createRefreshScheduler } from '../utils/refreshScheduler';
 
 /** One person's week on one connection. */
 export interface TrackerWeekRef {
@@ -96,6 +112,12 @@ interface HeldReceipt extends WeekReceipt {
   readonly after: number;
 }
 
+/** A stored read owed after the refreshes out, and its callers' wait. */
+interface OwedRead {
+  readonly read: Promise<void>;
+  readonly settle: () => void;
+}
+
 /** A refresh to run after the one out, and the callers waiting on it. */
 interface QueuedRefresh {
   readonly ended: Promise<WeekReread>;
@@ -121,8 +143,7 @@ interface Week {
   /** The number of the refresh last started. */
   refreshNumber: number;
   again: QueuedRefresh | null;
-  /** A stored read to run after the refresh out. */
-  rereadAfter: boolean;
+  owed: OwedRead | null;
 }
 
 const EMPTY: TrackerWeekState = { days: null, failure: null, readError: null, refreshing: false, receipts: [] };
@@ -151,10 +172,10 @@ function visibleOf(week: Week): boolean {
   return week.holders > 0 && week.shown && !documentHidden();
 }
 
-function readStored(week: Week): void {
+function readStored(week: Week): Promise<void> {
   const { backend, connection, author, monday } = week.ref;
   const n = ++week.started;
-  withBackendTarget(backend, () => TrackerWorklogs(connection, author, monday, addDays(monday, 6))).then(
+  return withBackendTarget(backend, () => TrackerWorklogs(connection, author, monday, addDays(monday, 6))).then(
     (days) => {
       if (n <= week.applied) return;
       week.applied = n;
@@ -195,21 +216,40 @@ function startRefresh(week: Week): Promise<WeekReread> {
     week.refresh = null;
     update(week, { refreshing: false });
     const again = week.again;
-    const reread = week.rereadAfter;
     week.again = null;
-    week.rereadAfter = false;
-    if (week.visible) {
-      if (again) void startRefresh(week).then(again.settle);
-      if (reread) readStored(week);
-    } else if (again) {
+    if (again && week.visible) {
+      // The owed read waits for this one too.
+      void startRefresh(week).then(again.settle);
+      return ended;
+    }
+    if (again) {
       // Hidden now: its showing reads the stored copy and, due, refreshes.
       week.refreshedAt = 0;
       again.settle({ kind: 'later' });
     }
+    // A week that stopped showing has none owed (hide).
+    const owed = week.owed;
+    week.owed = null;
+    if (owed) void readStored(week).then(owed.settle);
     return ended;
   });
   week.refresh = run;
   return run;
+}
+
+/** The stored read a showing, a write, a frame or a gap owes the week:
+ * now with no refresh out, else after the refreshes out and queued
+ * (startRefresh), one for all that owe it then. Settles when it answered,
+ * or at once for a week that does not show, whose showing reads it. */
+function oweStoredRead(week: Week): Promise<void> {
+  if (!week.visible) return Promise.resolve();
+  if (!week.refresh) return readStored(week);
+  if (!week.owed) {
+    let settle!: () => void;
+    const read = new Promise<void>((resolve) => { settle = resolve; });
+    week.owed = { read, settle };
+  }
+  return week.owed.read;
 }
 
 /** Refresh and a showing: joins the refresh out. */
@@ -228,21 +268,34 @@ function refreshAfter(week: Week): Promise<WeekReread> {
   return week.again.ended;
 }
 
-// The week shows now or stopped showing: on showing, its stored read, and
-// a refresh unless one ran in the last five minutes.
+// The week shows now or stopped showing.
 function settle(week: Week): void {
   const visible = visibleOf(week);
   if (visible === week.visible) return;
-  week.visible = visible;
-  if (!visible) return;
-  readStored(week);
+  if (visible) show(week);
+  else hide(week);
+}
+
+// A showing: its stored read, and a refresh unless one ran in the last
+// five minutes.
+function show(week: Week): void {
+  week.visible = true;
+  void oweStoredRead(week);
   if (Date.now() - week.refreshedAt >= WEEK_REFRESH_AFTER_MS) void joinRefresh(week);
+}
+
+// What waited on the stored read settles with none sent; the next
+// showing owes its own.
+function hide(week: Week): void {
+  week.visible = false;
+  week.owed?.settle();
+  week.owed = null;
 }
 
 function newWeek(ref: TrackerWeekRef): Week {
   return {
     ref, state: EMPTY, receipts: [], holders: 0, shown: false, visible: false, refreshedAt: 0,
-    started: 0, applied: 0, refresh: null, refreshNumber: 0, again: null, rereadAfter: false,
+    started: 0, applied: 0, refresh: null, refreshNumber: 0, again: null, owed: null,
   };
 }
 
@@ -282,8 +335,8 @@ export function attachTrackerWeek(ref: TrackerWeekRef, shown: boolean): TrackerW
   week.holders += 1;
   week.shown = shown;
   // An attach is a showing of its own: the week returned to reads again.
-  week.visible = false;
-  settle(week);
+  if (visibleOf(week)) show(week);
+  else hide(week);
   let released = false;
   return {
     key,
@@ -322,14 +375,10 @@ function weeksOfDays(backend: string, connection: string, author: string, days: 
 }
 
 /** A write stored these days: every week holding one that shows reads
- * the computer's copy again, after the refresh out if one is; one that
- * does not reads it when it shows. */
+ * the computer's copy again, after the refreshes out if any
+ * (oweStoredRead); one that does not reads it when it shows. */
 export function rereadTrackerWorklogDays(backend: string, connection: string, author: string, days: readonly string[]): void {
-  for (const week of weeksOfDays(backend, connection, author, days)) {
-    if (!week.visible) continue;
-    if (week.refresh) week.rereadAfter = true;
-    else readStored(week);
-  }
+  for (const week of weeksOfDays(backend, connection, author, days)) void oweStoredRead(week);
 }
 
 /** A write may have changed these days without the computer's copy
@@ -354,6 +403,35 @@ function receiptOnDays(backend: string, connection: string, author: string, days
   for (const week of held) setReceipts(week, [...week.receipts, { id, sentence, after: week.started }]);
   return held.length > 0;
 }
+
+/** The coalescing of a burst of draft frames into one read per week. */
+export const DRAFT_REREAD_DELAY_MS = 100;
+
+// The shown weeks a draft frame named since the last coalesced read.
+const draftChanged = new Set<Week>();
+const draftRereads = createRefreshScheduler({
+  name: 'trackerTimeDraftRereads',
+  delayMs: DRAFT_REREAD_DELAY_MS,
+  maxWaitMs: 5 * DRAFT_REREAD_DELAY_MS,
+  run: () => {
+    const changed = [...draftChanged];
+    draftChanged.clear();
+    for (const week of changed) void oweStoredRead(week);
+  },
+});
+
+takeTrackerTimeEntriesChannel({
+  event(event, backend) {
+    for (const week of weeksOfDays(backend, event.connection, event.author, event.days ?? [])) {
+      if (week.visible) draftChanged.add(week);
+    }
+    if (draftChanged.size > 0) draftRereads.request();
+  },
+  gap(backend) {
+    const reads = [...weeks.values()].filter((w) => w.ref.backend === backend && w.visible).map(oweStoredRead);
+    return reads.length > 0 ? Promise.all(reads).then(() => undefined) : undefined;
+  },
+});
 
 takeWorklogWrites({
   refresh: (ctx, days) => refreshTrackerWorklogDays(ctx.backend, ctx.connection, ctx.author, days),
@@ -382,4 +460,6 @@ onBackendStatusChange((backend, status) => {
 export function resetTrackerTimeForTest(): void {
   weeks.clear();
   states.clear();
+  draftChanged.clear();
+  draftRereads.reset();
 }

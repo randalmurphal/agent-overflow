@@ -433,6 +433,17 @@ func daySpans(days []tracker.Date) func(yield func([]tracker.Date) bool) {
 	}
 }
 
+// spanDays is every day from span's first to its last, the days a read
+// of the span stores.
+func spanDays(span []tracker.Date) []string {
+	var out []string
+	last := dayTime(span[len(span)-1])
+	for t := dayTime(span[0]); !t.After(last); t = t.AddDate(0, 0, 1) {
+		out = append(out, t.Format(time.DateOnly))
+	}
+	return out
+}
+
 // daysBetween is the number of days from a to b.
 func daysBetween(a, b tracker.Date) int {
 	return int(dayTime(b).Sub(dayTime(a)) / (24 * time.Hour))

@@ -155,6 +155,17 @@ func (d *draftScenario) draft(t *testing.T, entries ...TimeDraftEntry) TimeDraft
 	return must[TimeDraftView](t)(d.svc.DraftTime(d.conn.ID, TimeDraftRequest{Thread: "thread-1", Call: fmt.Sprintf("call-%d", d.calls), Entries: entries}))
 }
 
+// entriesOf are thread's entries of the scenario's calls call-1 to
+// call-n, each call's as its timeline row reads them, in call order.
+func (d *draftScenario) entriesOf(t *testing.T, thread string, n int) []TimeEntryView {
+	t.Helper()
+	var out []TimeEntryView
+	for i := 1; i <= n; i++ {
+		out = append(out, must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries(thread, fmt.Sprintf("call-%d", i)))...)
+	}
+	return out
+}
+
 func entryRefs(views ...TimeEntryView) []TimeEntryRefView {
 	out := make([]TimeEntryRefView, len(views))
 	for i, v := range views {
@@ -271,7 +282,7 @@ func TestADraftIsRefusedByName(t *testing.T) {
 			t.Errorf("%s: %v; want %q", tc.name, err, tc.want)
 		}
 	}
-	if got, err := d.st.ThreadTimeEntries("thread-1"); err != nil || len(got) != 0 {
+	if got, err := d.st.ThreadTimeEntries("thread-1", "call-1"); err != nil || len(got) != 0 {
 		t.Fatalf("the refused drafts stored %+v, %v", got, err)
 	}
 	if ev := d.takeEvents(); len(ev) != 0 {
@@ -310,7 +321,7 @@ func TestAnAnsweredQuestionIsAddedToItsTicketsEntry(t *testing.T) {
 	if ev := d.takeEvents(); len(ev) != 1 || !slices.Equal(ev[0].Days, []string{d.day}) {
 		t.Fatalf("the answer told %+v; want one event of the day", ev)
 	}
-	left := must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1"))
+	left := must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1", "call-1"))
 	if slices.ContainsFunc(left, func(e TimeEntryView) bool { return e.ID == call.ID }) || len(left) != 4 {
 		t.Fatalf("the thread's entries after the answer are %+v", left)
 	}
@@ -400,7 +411,7 @@ func TestADraftReplacesTheAgentsEntriesOfItsDays(t *testing.T) {
 	if ev := d.takeEvents(); len(ev) != 0 {
 		t.Fatalf("a draft that changed nothing told %+v", ev)
 	}
-	got := must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1"))
+	got := d.entriesOf(t, "thread-1", 5)
 	if len(got) != 1 || got[0].ID != edited.ID {
 		t.Fatalf("the thread's entries are %+v; want the person's WEB-2", got)
 	}
@@ -410,7 +421,7 @@ func TestADraftReplacesTheAgentsEntriesOfItsDays(t *testing.T) {
 	if len(theirs.Replaced) != 0 || len(theirs.Made) != 1 {
 		t.Fatalf("thread-2's draft answered %+v; want WEB-1 made and nothing of thread-1's replaced", theirs)
 	}
-	if got := must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1")); len(got) != 2 || got[1].ID != mine.Made[0].ID {
+	if got := d.entriesOf(t, "thread-1", 6); len(got) != 2 || got[1].ID != mine.Made[0].ID {
 		t.Fatalf("thread-1's entries after thread-2's draft are %+v", got)
 	}
 }
@@ -756,6 +767,78 @@ func TestApprovingADaySkipsTimeLoggedByHand(t *testing.T) {
 	})
 }
 
+// A day's approval that skips every entry still tells the day: its check
+// stored the time logged since, which the week shows on its next read.
+func TestAnApprovalThatSkipsEveryEntryTellsItsDay(t *testing.T) {
+	t.Parallel()
+	d := newDraftScenario(t, "jira")
+	v := d.draft(t, d.on("WEB-2", 1, "Reviewed the pull request"))
+	must[WriteView](t)(d.svc.AddWorklog(t.Context(), d.conn.ID, WorklogRequest{Issue: "10102", Day: d.day, SpentSeconds: 900, Description: "Standup about it"}))
+	d.takeEvents()
+	got, posts := d.post(t, false, entryRefs(v.Made...)...)
+	d.posted(t, "the day", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-2, 1h, "+skippedNote, 0)
+	if ev := d.takeEvents(); len(ev) != 1 || !slices.Equal(ev[0].Days, []string{d.day}) || ev[0].Author != "acc-user1" || ev[0].Connection != d.conn.ID {
+		t.Fatalf("the approval told %+v; want its day", ev)
+	}
+}
+
+// A post's frame names every day its check read and stored: a read of
+// two days two weeks apart stores the days between them too.
+func TestAPostTellsEveryDayItsCheckStored(t *testing.T) {
+	t.Parallel()
+	d := newDraftScenario(t, "jira")
+	last, err := time.Parse(time.DateOnly, d.day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := last.AddDate(0, 0, -14)
+	web1, web2 := draftTickets["WEB-1"], draftTickets["WEB-2"]
+	v := d.draft(t, TimeDraftEntry{Day: first.Format(time.DateOnly), Ticket: &web1, Hours: 1, Reason: "Built the form"},
+		TimeDraftEntry{Day: d.day, Ticket: &web2, Hours: 1, Reason: "Reviewed the pull request"})
+	d.takeEvents()
+	d.post(t, false, entryRefs(v.Made...)...)
+	var want []string
+	for day := first; !day.After(last); day = day.AddDate(0, 0, 1) {
+		want = append(want, day.Format(time.DateOnly))
+	}
+	if ev := d.takeEvents(); len(ev) != 1 || !slices.Equal(ev[0].Days, want) {
+		t.Fatalf("the post told %+v; want the days %v", ev, want)
+	}
+}
+
+// A check whose later read fails still tells the days its earlier read
+// stored, though it posts nothing.
+func TestAPostTellsTheDaysAnEarlierReadStoredWhenALaterOneFails(t *testing.T) {
+	t.Parallel()
+	d := newDraftScenario(t, "jira")
+	last, err := time.Parse(time.DateOnly, d.day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := last.AddDate(0, 0, -50)
+	web1, web2 := draftTickets["WEB-1"], draftTickets["WEB-2"]
+	// A draft covers at most 31 days a call: the two spans are two calls.
+	early := d.draft(t, TimeDraftEntry{Day: first.Format(time.DateOnly), Ticket: &web1, Hours: 1, Reason: "Built the form"},
+		TimeDraftEntry{Day: first.AddDate(0, 0, 2).Format(time.DateOnly), Ticket: &web1, Hours: 1, Reason: "Finished the form"})
+	late := d.draft(t, TimeDraftEntry{Day: d.day, Ticket: &web2, Hours: 1, Reason: "Reviewed the pull request"})
+	d.takeEvents()
+	// The first span's read is stored; every read after it is refused.
+	d.gate.mu.Lock()
+	d.gate.gate = func() {
+		if err := d.e.AddFault(trackerfake.Fault{Origin: trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: "example.atlassian.net"},
+			Kind: trackerfake.FaultRefuse, Status: 500, Body: json.RawMessage(`{"errorMessages":["down"]}`)}); err != nil {
+			t.Error(err)
+		}
+	}
+	d.gate.mu.Unlock()
+	_, err = d.svc.PostTimeEntries(t.Context(), d.conn.ID, PostTimeRequest{Entries: entryRefs(append(early.Made, late.Made...)...)})
+	t.Logf("the post whose second read failed: %v", err)
+	want := []string{first.Format(time.DateOnly), first.AddDate(0, 0, 1).Format(time.DateOnly), first.AddDate(0, 0, 2).Format(time.DateOnly)}
+	if ev := d.takeEvents(); len(ev) != 1 || !slices.Equal(ev[0].Days, want) || len(ev[0].Threads) != 0 {
+		t.Fatalf("the post told %+v; want the days %v and no thread", ev, want)
+	}
+}
+
 // An entry drafted for the account the connection was verified as before
 // is not posted as another account's time.
 func TestAnEntryOfAnotherAccountIsNotPosted(t *testing.T) {
@@ -984,6 +1067,26 @@ func TestAWeeksDraftCostsBoundedRequests(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A thread's entries are read one call at a time, so a card reads its
+// call's entries whatever else the thread drafted, and a read that names
+// no call is refused.
+func TestAThreadsEntriesAreReadOneCallAtATime(t *testing.T) {
+	t.Parallel()
+	d := newDraftScenario(t, "jira")
+	web2 := draftTickets["WEB-2"]
+	first := d.draft(t, d.on("WEB-1", 1, "Built the form"))
+	second := d.draft(t, TimeDraftEntry{Day: d.days()[0], Ticket: &web2, Hours: 2, Reason: "Reviewed"})
+	for call, want := range map[string]int64{"call-1": first.Made[0].ID, "call-2": second.Made[0].ID} {
+		got := must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1", call))
+		if len(got) != 1 || got[0].ID != want {
+			t.Errorf("%s's entries are %+v; want entry %d alone", call, got, want)
+		}
+	}
+	if _, err := d.svc.ThreadTimeEntries("thread-1", ""); !errors.Is(err, ErrInvalidRequest) {
+		t.Errorf("a read with no call: %v; want it refused", err)
+	}
 }
 
 // The open entries of days are those not yet logged, questions included,

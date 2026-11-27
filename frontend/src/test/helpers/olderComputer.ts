@@ -33,6 +33,7 @@ export const METHODS_AFTER_V0_0_19 = [
   'DeleteTrackerComment', 'TrackerMoves', 'RankTrackerIssues', 'MoveTrackerIssuesToSprint',
   'CreateTrackerIssue', 'TrackerBoardProjects', 'TrackerIssueTypes', 'TrackerCreateFields', 'CreateTrackerSprint', 'StartTrackerSprint', 'CompleteTrackerSprint',
   'EditTrackerSprint', 'EditTrackerWorklog', 'DeleteTrackerWorklog', 'TrackerWorklogs', 'RefreshTrackerWorklogs',
+  'ThreadTimeEntries', 'EditTrackerTimeEntry', 'RemoveTrackerTimeEntries', 'PostTrackerTimeEntries',
   'MintTrackerAttachmentUploadTicket', 'MintTrackerAttachmentDownloadTicket',
   'SaveTrackerAttachment', 'TrackerLinkTypes', 'LinkTrackerIssues', 'UnlinkTrackerIssues', 'TrackerPokerSupport',
   'FollowTrackerPoker', 'TrackerPoker', 'VoteTrackerPoker', 'RevealTrackerPoker', 'ClearTrackerPokerVotes',
