@@ -1023,9 +1023,11 @@ file; VM steps do not vary between runs, times are the best of 5):
 When the same copy holds `changes`, each fill reads them from it instead
 of the file (at 20,000 with 10% changed: 2,520,386 steps and 60.6 ms,
 and 1,137,215 steps and 24.2 ms). The status fill takes about 55 steps a
-ticket more than before at 10% changed: each row's `open`, by the
-store's done rule for its status, and the probe of each ticket whose
-status time is not known for a status change up to its card.
+ticket more than before at 10% changed. Of those, each row's `open` (the
+store's done rule for its status) is about 15 and the probe of each
+ticket whose status time is not known, for a status change up to its
+card, about 17, each measured by leaving it out at 2,000; the rest, not
+measured apart, is `began` and the cut at the card's version.
 
 An evaluation of the last 5 sprints (`TestDashboardAtScale`, median and
 spread of 5 runs, before and after run back to back):
