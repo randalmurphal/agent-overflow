@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -421,5 +422,30 @@ func TestUnreadStopsAtNow(t *testing.T) {
 	}
 	if got := ev.unread(ms(mustDay("2026-11-26"))-1, ms(mustDay("2026-11-27"))-1, ms(testNow)); got != nil {
 		t.Fatalf("a day to come: %v", got)
+	}
+}
+
+// How this is counted says a widget of logged time counts each row for
+// you, whose time it is, not for the ticket's assignee.
+func TestHowSaysLoggedTimeCountsForYou(t *testing.T) {
+	t.Parallel()
+	b := loggedTime(worklogBoard())
+	list, err := evaluator().Dashboards(context.Background(), Kind{Epics: true}, 0, b.Own)
+	if err != nil {
+		t.Fatal(err)
+	}
+	said := 0
+	for _, d := range list.Dashboards {
+		for _, w := range d.Widgets {
+			if w.ID != "n" && w.ID != "bars" {
+				continue
+			}
+			if said++; !strings.HasSuffix(w.How.Counts, "; each row of logged time counts for you, whose time it is.") {
+				t.Errorf("%s says %q", w.ID, w.How.Counts)
+			}
+		}
+	}
+	if said != 2 {
+		t.Fatalf("the list has %d of the two widgets of logged time", said)
 	}
 }
