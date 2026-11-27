@@ -715,3 +715,120 @@ describe('what the week shows of a posted draft', () => {
     expect(await view.findByTestId('time-draft-banner')).toHaveTextContent('1h is logged. Answer it in that day\'s column.');
   });
 });
+
+// An action names the entries its opening or its press showed, on the
+// board that showed them: a form opened on another entry is that entry's,
+// and a switch of board ends what was open on the first.
+describe('what a form or a confirmation acts on', () => {
+  const OTHER_BOARD = { ...BASE, backend: 'peer-2', connection: 'c2', computerName: 'Desktop' };
+
+  // Each board's week: the entry IDs are each computer's own, so both
+  // hold an entry 11.
+  function answerBoards(first: TimeEntryView[], second: TimeEntryView[]): void {
+    const of = (connection: string) => ({ worklogs: [], drafted: connection === 'c2' ? second : first });
+    setBindingMock('TrackerWorklogs', async (connection: string) => of(connection));
+    setBindingMock('RefreshTrackerWorklogs', async (connection: string) => of(connection));
+  }
+
+  it('opens the draft form on the entry pressed from the keyboard while another\'s is open', async () => {
+    answerDraft([], [drafted(11, '2026-11-11', 60), drafted(22, '2026-11-11', 180, { issue: '10002', key: 'WEB-2', title: 'Second story' })]);
+    const remove = setBindingMock('RemoveTrackerTimeEntries', async () => []);
+    const view = render(TimeScreen, BASE);
+    await view.findAllByTestId('time-draft-entry');
+    const hours = () => view.getAllByTestId('time-draft-entry-hours');
+    await fireEvent.click(hours()[0]);
+    expect(within(await body().findByTestId('time-draft-form')).getByTestId('time-draft-form-time')).toHaveValue('1h');
+    // Tab leaves the popover; Enter on the next entry's hours is a click
+    // with no pointer press outside.
+    await fireEvent.click(hours()[1]);
+    const form = body().getByTestId('time-draft-form');
+    expect(within(form).getByTestId('time-draft-form-ticket')).toHaveTextContent('WEB-2');
+    expect(within(form).getByTestId('time-draft-form-time')).toHaveValue('3h');
+    await fireEvent.click(within(form).getByTestId('time-draft-form-remove'));
+    await waitFor(() => expect(remove).toHaveBeenCalled());
+    expect(remove).toHaveBeenCalledWith('c1', [{ id: 22, revision: 2 }]);
+  });
+
+  it('opens the worklog form on the worklog pressed from the keyboard while another\'s is open', async () => {
+    answerWeek(WEEK);
+    const edit = setBindingMock('EditTrackerWorklog', async () => APPLIED);
+    const view = render(TimeScreen, BASE);
+    const entries = await view.findAllByTestId('time-entry');
+    await fireEvent.click(within(entries[0]).getByTestId('time-entry-hours'));
+    expect(within(await body().findByTestId('worklog-form')).getByTestId('worklog-form-time')).toHaveValue('1h 30m');
+    await fireEvent.click(within(entries[1]).getByTestId('time-entry-hours'));
+    const form = body().getByTestId('worklog-form');
+    expect(within(form).getByTestId('worklog-form-ticket')).toHaveTextContent('WEB-2');
+    expect(within(form).getByTestId('worklog-form-time')).toHaveValue('30m');
+    await fireEvent.input(within(form).getByTestId('worklog-form-time'), { target: { value: '45m' } });
+    await fireEvent.click(within(form).getByTestId('worklog-form-save'));
+    await waitFor(() => expect(edit).toHaveBeenCalled());
+    expect(edit).toHaveBeenCalledWith('c1', expect.objectContaining({ from: WEEK[1], spent_seconds: 2700 }));
+  });
+
+  it('posts Log now\'s entry on the board whose form changed it, after a switch of board', async () => {
+    answerBoards([drafted(11, '2026-11-11', 60)], [drafted(11, '2026-11-11', 60, { connection: 'c2' })]);
+    let changed!: (e: TimeEntryView) => void;
+    const edit = setBindingMock('EditTrackerTimeEntry', () => new Promise<TimeEntryView>((r) => { changed = r; }));
+    const post = setBindingMock('PostTrackerTimeEntries', async () => POSTED('Posted 1 of 1 entries for Wed Nov 11.'));
+    const view = render(TimeScreen, BASE);
+    await fireEvent.click(await view.findByTestId('time-draft-entry-hours'));
+    const form = await body().findByTestId('time-draft-form');
+    await fireEvent.input(within(form).getByTestId('time-draft-form-time'), { target: { value: '2h' } });
+    await fireEvent.click(within(form).getByTestId('time-draft-form-log'));
+    expect(edit).toHaveBeenCalledWith('c1', { id: 11, revision: 2 }, { hours: 2 });
+    await view.rerender(OTHER_BOARD);
+    await waitFor(() => expect(body().queryByTestId('time-draft-form')).toBeNull());
+    changed(drafted(11, '2026-11-11', 120, { revision: 3 }));
+    await waitFor(() => expect(post).toHaveBeenCalled());
+    expect(post.mock.calls).toEqual([['c1', { entries: [{ id: 11, revision: 3 }], alone: true }]]);
+  });
+
+  it('ends a Discard confirmation when the board switches', async () => {
+    answerBoards([drafted(11, '2026-11-11', 60)], [drafted(11, '2026-11-11', 60, { connection: 'c2' })]);
+    const remove = setBindingMock('RemoveTrackerTimeEntries', async () => []);
+    // The second board was shown first, so its week shows at once.
+    const view = render(TimeScreen, OTHER_BOARD);
+    await view.findByTestId('time-draft-entry');
+    await view.rerender(BASE);
+    await waitFor(() => expect(getBindingMock('TrackerWorklogs')!.mock.calls.some((c) => c[0] === 'c1')).toBe(true));
+    await fireEvent.click(await view.findByTestId('time-draft-discard-week'));
+    expect(view.getByTestId('time-draft-discard-week-confirm')).toBeInTheDocument();
+    await view.rerender(OTHER_BOARD);
+    expect(view.getByTestId('time-draft-entry')).toBeInTheDocument();
+    expect(view.queryByTestId('time-draft-discard-week-confirm')).toBeNull();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('removes a hand-logged entry on the board it was logged from, after a switch of board', async () => {
+    const unknown = drafted(15, '2026-11-11', 90, { state: 'unknown', refusal: 'may already be logged' });
+    answerBoards([unknown], [{ ...unknown, connection: 'c2' }]);
+    let added!: (v: WriteView) => void;
+    const add = setBindingMock('AddTrackerWorklog', () => new Promise<WriteView>((r) => { added = r; }));
+    const remove = setBindingMock('RemoveTrackerTimeEntries', async () => [unknown]);
+    const view = render(TimeScreen, BASE);
+    await fireEvent.click(within(await view.findByTestId('time-draft-entry')).getByTestId('time-draft-entry-log-by-hand'));
+    await fireEvent.click(within(await body().findByTestId('worklog-form')).getByTestId('worklog-form-save'));
+    expect(add).toHaveBeenCalledWith('c1', expect.objectContaining({ issue: '10001', day: '2026-11-11' }));
+    await view.rerender(OTHER_BOARD);
+    await waitFor(() => expect(body().queryByTestId('worklog-form')).toBeNull());
+    added(APPLIED);
+    await waitFor(() => expect(remove).toHaveBeenCalled());
+    expect(remove.mock.calls).toEqual([['c1', [{ id: 15, revision: 2 }]]]);
+  });
+
+  it('does not call its own saved change another window\'s while Log now\'s post is out', async () => {
+    answerDraft([], [drafted(11, '2026-11-11', 60)]);
+    setBindingMock('EditTrackerTimeEntry', async () => drafted(11, '2026-11-11', 120, { revision: 3 }));
+    const post = setBindingMock('PostTrackerTimeEntries', () => new Promise<PostTimeView>(() => {}));
+    const view = render(TimeScreen, BASE);
+    await fireEvent.click(await view.findByTestId('time-draft-entry-hours'));
+    const form = await body().findByTestId('time-draft-form');
+    await fireEvent.input(within(form).getByTestId('time-draft-form-time'), { target: { value: '2h' } });
+    await fireEvent.click(within(form).getByTestId('time-draft-form-log'));
+    await waitFor(() => expect(post).toHaveBeenCalled());
+    // The week still shows revision 2: no read after the change landed.
+    expect(view.getByTestId('time-draft-entry-hours')).toHaveTextContent('1h');
+    expect(within(form).queryByTestId('time-draft-form-moved')).toBeNull();
+  });
+});

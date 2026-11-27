@@ -88,6 +88,24 @@ describe('a time draft card', () => {
     expect(openTime).toHaveBeenCalledWith({ backend: 'peer-1', connection: 'c1', day: '2026-11-11' });
   });
 
+  it('opens the form on the entry pressed from the keyboard while another\'s is open', async () => {
+    setBindingMock('ThreadTimeEntries', async () => [drafted(11, '2026-11-11', 60), drafted(22, '2026-11-11', 180, { issue: '10002', key: 'WEB-2', title: 'Second story' })]);
+    const remove = setBindingMock('RemoveTrackerTimeEntries', async () => []);
+    const view = render(TimeDraftCard, BASE);
+    await view.findAllByTestId('time-draft-entry');
+    const hours = () => view.getAllByTestId('time-draft-entry-hours');
+    await fireEvent.click(hours()[0]);
+    const body = within(document.body);
+    expect(within(await body.findByTestId('time-draft-form')).getByTestId('time-draft-form-time')).toHaveValue('1h');
+    // Enter on the next entry's hours: a click with no pointer press outside.
+    await fireEvent.click(hours()[1]);
+    const form = body.getByTestId('time-draft-form');
+    expect(within(form).getByTestId('time-draft-form-time')).toHaveValue('3h');
+    await fireEvent.click(within(form).getByTestId('time-draft-form-remove'));
+    await waitFor(() => expect(remove).toHaveBeenCalled());
+    expect(remove).toHaveBeenCalledWith('c1', [{ id: 22, revision: 2 }]);
+  });
+
   it('says why it cannot show when the thread\'s computer is not known, and reads nothing', () => {
     const view = render(TimeDraftCard, { ...BASE, backend: null });
     expect(view.getByTestId('time-draft-card-unowned')).toBeInTheDocument();

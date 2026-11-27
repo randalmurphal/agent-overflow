@@ -806,6 +806,39 @@ func TestAPostTellsEveryDayItsCheckStored(t *testing.T) {
 	}
 }
 
+// A check whose later read fails still tells the days its earlier read
+// stored, though it posts nothing.
+func TestAPostTellsTheDaysAnEarlierReadStoredWhenALaterOneFails(t *testing.T) {
+	t.Parallel()
+	d := newDraftScenario(t, "jira")
+	last, err := time.Parse(time.DateOnly, d.day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := last.AddDate(0, 0, -50)
+	web1, web2 := draftTickets["WEB-1"], draftTickets["WEB-2"]
+	// A draft covers at most 31 days a call: the two spans are two calls.
+	early := d.draft(t, TimeDraftEntry{Day: first.Format(time.DateOnly), Ticket: &web1, Hours: 1, Reason: "Built the form"},
+		TimeDraftEntry{Day: first.AddDate(0, 0, 2).Format(time.DateOnly), Ticket: &web1, Hours: 1, Reason: "Finished the form"})
+	late := d.draft(t, TimeDraftEntry{Day: d.day, Ticket: &web2, Hours: 1, Reason: "Reviewed the pull request"})
+	d.takeEvents()
+	// The first span's read is stored; every read after it is refused.
+	d.gate.mu.Lock()
+	d.gate.gate = func() {
+		if err := d.e.AddFault(trackerfake.Fault{Origin: trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: "example.atlassian.net"},
+			Kind: trackerfake.FaultRefuse, Status: 500, Body: json.RawMessage(`{"errorMessages":["down"]}`)}); err != nil {
+			t.Error(err)
+		}
+	}
+	d.gate.mu.Unlock()
+	_, err = d.svc.PostTimeEntries(t.Context(), d.conn.ID, PostTimeRequest{Entries: entryRefs(append(early.Made, late.Made...)...)})
+	t.Logf("the post whose second read failed: %v", err)
+	want := []string{first.Format(time.DateOnly), first.AddDate(0, 0, 1).Format(time.DateOnly), first.AddDate(0, 0, 2).Format(time.DateOnly)}
+	if ev := d.takeEvents(); len(ev) != 1 || !slices.Equal(ev[0].Days, want) || len(ev[0].Threads) != 0 {
+		t.Fatalf("the post told %+v; want the days %v and no thread", ev, want)
+	}
+}
+
 // An entry drafted for the account the connection was verified as before
 // is not posted as another account's time.
 func TestAnEntryOfAnotherAccountIsNotPosted(t *testing.T) {

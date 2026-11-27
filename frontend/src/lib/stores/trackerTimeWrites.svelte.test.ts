@@ -203,3 +203,31 @@ describe('a change of an agent\'s draft', () => {
     expect(getToasts().map((t) => t.message).at(-1)).toBe('The approval of the draft: Posted 0 of 1 entries for Tue Nov 10. WEB-1, 1h, was refused: Worklog is closed.');
   });
 });
+
+// Connection IDs are each computer's own, so an entry of another
+// connection is one another board's screen showed: it is never sent.
+describe('an entry of another board\'s connection', () => {
+  const OTHER: TimeWriteContext = { backend: 'peer-2', connection: 'c2', author: 'acct-1', computer: 'Desktop' };
+
+  it('is refused before anything is sent, by every write that names entries, and says so', async () => {
+    const edit = setBindingMock('EditTrackerTimeEntry', async () => entry(1));
+    const remove = setBindingMock('RemoveTrackerTimeEntries', async () => [entry(1)]);
+    const post = setBindingMock('PostTrackerTimeEntries', async () => ({ entries: [], posted: 1, of: 1, sentence: 'Posted 1 of 1 entries for Tue Nov 10.' }));
+    const add = setBindingMock('AddTrackerWorklog', async () => APPLIED);
+    const one = "The entry belongs to another board's connection, so nothing was sent.";
+    const release = holdTimeWriteTarget(OTHER, entryTarget(1));
+    expect((await changeDraftEntry(OTHER, entry(1), { hours: 2 }))?.outcome).toEqual({ kind: 'not_sent', message: one });
+    expect(timeWriteText(timeWrite(OTHER, entryTarget(1))!)).toBe(one);
+    release();
+    await removeDraftEntries(OTHER, entryTarget(1), [entry(1)]);
+    await postDraftEntries(OTHER, draftTarget('day:2026-11-10'), [entry(1, { connection: 'c2' }), entry(2)]);
+    expect(getToasts().map((t) => t.message).slice(-2)).toEqual([
+      `The removal of the entry on WEB-1 for Nov 10: ${one}`,
+      "The approval of the draft: One of these entries belongs to another board's connection, so nothing was sent.",
+    ]);
+    const w = { issue: '10001', key: 'WEB-1', day: '2026-11-10', spentSeconds: 3600, description: 'Commits' };
+    await addWorklog(OTHER, w, entry(1));
+    expect(getToasts().map((t) => t.message).at(-1)).toBe(`The time logged on WEB-1: ${one}`);
+    expect([edit, remove, post, add].map((m) => m.mock.calls.length)).toEqual([0, 0, 0, 0]);
+  });
+});
