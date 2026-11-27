@@ -242,3 +242,17 @@ func runOne(t *testing.T, q, zone string) string {
 	}
 	return a + "|" + b + "|" + c
 }
+
+// A period that ends after now, a sprint's day still to come among them,
+// has no day not read past today.
+func TestUnreadStopsAtNow(t *testing.T) {
+	t.Parallel()
+	ev := &evaluation{loc: time.UTC, readDays: map[string]bool{"2026-11-24": true}}
+	got := ev.unread(ms(mustDay("2026-11-23"))-1, ms(mustDay("2026-11-30"))-1, ms(testNow))
+	if want := []string{"2026-11-23", "2026-11-25"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unread = %v; want %v", got, want)
+	}
+	if got := ev.unreadOf([]period{{from: ms(mustDay("2026-11-26")) - 1, to: ms(mustDay("2026-11-27")) - 1, future: true}}, ms(testNow)); got != nil {
+		t.Fatalf("a day to come: %v", got)
+	}
+}
