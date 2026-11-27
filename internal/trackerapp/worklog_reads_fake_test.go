@@ -566,12 +566,26 @@ func TestAnOlderEvaluationChangesNothing(t *testing.T) {
 	if _, _, failure := s.record(); failure == "" {
 		t.Fatal("Tempo's first read did not fail")
 	}
-	late := s.svc.wantWorklogs(s.conn.ID, "acc-user1", jira, trackerdash.WorklogNeed{Unread: s.window(t, today), Today: today})
-	if late.Reading || late.Failure == "" || jira >= tempo {
-		t.Fatalf("an evaluation of generation %d, after %d, answered %+v; want Tempo's failure and no read", jira, tempo, late)
+	// One that copied the board under Jira, of this account or of the
+	// one it was verified as before.
+	for _, author := range []string{"acc-user1", "acc-user2"} {
+		late := s.svc.wantWorklogs(s.conn.ID, author, jira, trackerdash.WorklogNeed{Unread: s.window(t, today), Today: today})
+		if late.Reading || late.Failure == "" || jira >= tempo {
+			t.Fatalf("an evaluation of %s under generation %d, after %d, answered %+v; want Tempo's failure and no read", author, jira, tempo, late)
+		}
 	}
 	if st := s.shown(t, today); st.Reading || st.Failure == "" || s.spanCount() != 0 {
 		t.Fatalf("a show under Tempo after it answered %+v with reads %v; want the failure and nothing more read", st, s.spansSince(0))
+	}
+	// Turning the connection off forgets the reads but not the
+	// generation they were of.
+	must[Connection](t)(s.svc.SetEnabled(s.conn.ID, false))
+	must[Connection](t)(s.svc.SetEnabled(s.conn.ID, true))
+	if late := s.svc.wantWorklogs(s.conn.ID, "acc-user1", jira, trackerdash.WorklogNeed{Unread: s.window(t, today), Today: today}); late.Reading || late.Failure != "" {
+		t.Fatalf("after off and on, an evaluation under generation %d answered %+v; want nothing read", jira, late)
+	}
+	if queued, handed, failure := s.record(); queued != 0 || handed != 0 || failure != "" || s.spanCount() != 0 {
+		t.Fatalf("after off and on, the late evaluation left %d days queued, %d handed, failure %q, reads %v; want none", queued, handed, failure, s.spansSince(0))
 	}
 }
 

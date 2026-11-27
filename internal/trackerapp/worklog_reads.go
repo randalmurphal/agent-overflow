@@ -73,8 +73,7 @@ type worklogConn struct {
 	author string
 	gen    int64
 	// queued is the days to read, at most the window's; handed is the
-	// days a read under this identity took since it began or a person
-	// last asked, read or in flight.
+	// days a read under this identity took, read or in flight.
 	queued map[string]bool
 	handed map[string]bool
 	// run is the run going, nil when none is.
@@ -207,8 +206,7 @@ func (s *Service) wantWorklogs(id, author string, gen int64, need trackerdash.Wo
 // ReadWorklogDays is a person's Refresh or Read again of the logged time
 // the dashboards count of connection id's verified account: every day of
 // the window, from loggedFrom to today in timeZone, is read again now,
-// and a failure that stopped the reads, and what the reads took, are
-// forgotten. It starts the reads
+// and a failure that stopped the reads is forgotten. It starts the reads
 // and returns; the boards are told when they end.
 func (s *Service) ReadWorklogDays(id, timeZone string) error {
 	loc, err := time.LoadLocation(timeZone)
@@ -239,7 +237,6 @@ func (s *Service) ReadWorklogDays(id, timeZone string) error {
 		return fmt.Errorf("trackerapp: the time source of %s is generation %d, older than the %d its reads of logged time are of", id, row.TimeSourceGen, c.gen)
 	}
 	c.failure, c.newest = "", s.steady()
-	clear(c.handed)
 	for d := dayTime(first); !d.After(dayTime(last)); d = d.AddDate(0, 0, 1) {
 		c.queued[d.Format(time.DateOnly)] = true
 	}
