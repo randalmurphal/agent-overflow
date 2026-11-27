@@ -666,6 +666,21 @@ func TestApprovingADaySkipsTimeLoggedByHand(t *testing.T) {
 	})
 }
 
+// A day's approval that skips every entry still tells the day: its check
+// stored the time logged since, which the week shows on its next read.
+func TestAnApprovalThatSkipsEveryEntryTellsItsDay(t *testing.T) {
+	t.Parallel()
+	d := newDraftScenario(t, "jira")
+	v := d.draft(t, d.on("WEB-2", 1, "Reviewed the pull request"))
+	must[WriteView](t)(d.svc.AddWorklog(t.Context(), d.conn.ID, WorklogRequest{Issue: "10102", Day: d.day, SpentSeconds: 900, Description: "Standup about it"}))
+	d.takeEvents()
+	got, posts := d.post(t, false, entryRefs(v.Made...)...)
+	d.posted(t, "the day", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-2, 1h, "+skippedNote, 0)
+	if ev := d.takeEvents(); len(ev) != 1 || !slices.Equal(ev[0].Days, []string{d.day}) || ev[0].Author != "acc-user1" || ev[0].Connection != d.conn.ID {
+		t.Fatalf("the approval told %+v; want its day", ev)
+	}
+}
+
 // An entry drafted for the account the connection was verified as before
 // is not posted as another account's time.
 func TestAnEntryOfAnotherAccountIsNotPosted(t *testing.T) {

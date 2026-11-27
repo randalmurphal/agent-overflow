@@ -3724,6 +3724,22 @@ describe('the Time screen in the pane', () => {
     again.unmount();
   });
 
+  it('opens the week asked for once: Time shown again later opens on this week', async () => {
+    install();
+    const stored = setBindingMock('TrackerWorklogs', async () => ({ worklogs: [] }));
+    setBindingMock('RefreshTrackerWorklogs', async () => ({ worklogs: [] }));
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    requestTimeOpen({ time: { backend: HOME_BACKEND, connection: 'c1', day: '2025-03-12' }, project: null, unplaced: vi.fn() });
+    await waitFor(() => expect(stored).toHaveBeenLastCalledWith('c1', 'acc-user1', '2025-03-10', '2025-03-16'));
+    await switchTo(view, 'Board');
+    await view.findAllByTestId('issues-card');
+    const before = stored.mock.calls.length;
+    await switchTo(view, 'Time');
+    await waitFor(() => expect(stored.mock.calls.length).toBeGreaterThan(before));
+    expect(stored.mock.calls.at(-1)?.[2]).not.toBe('2025-03-10');
+  });
+
   it('refreshes the week from the header', async () => {
     install();
     setBindingMock('TrackerWorklogs', async () => ({ worklogs: [] }));

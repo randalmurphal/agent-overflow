@@ -20,7 +20,7 @@ function entry(id: number, extra: Partial<TimeEntryView> = {}): TimeEntryView {
 }
 
 /** ThreadTimeEntries, answered by the test one call at a time. */
-function held(): { calls: unknown[][]; pins: (string | null)[]; answer: (v: TimeEntryView[]) => void; answerLast: (v: TimeEntryView[]) => void; fail: (e: unknown) => void } {
+function held(): { calls: unknown[][]; pins: (string | null)[]; answer: (v: TimeEntryView[]) => void; answerLast: (v: TimeEntryView[]) => void; fail: (e: unknown) => void; failLast: (e: unknown) => void } {
   const waiting: Array<{ resolve: (v: TimeEntryView[]) => void; reject: (e: unknown) => void }> = [];
   const calls: unknown[][] = [];
   const pins: (string | null)[] = [];
@@ -29,7 +29,7 @@ function held(): { calls: unknown[][]; pins: (string | null)[]; answer: (v: Time
     pins.push(getPinnedBackend());
     return new Promise<TimeEntryView[]>((resolve, reject) => waiting.push({ resolve, reject }));
   });
-  return { calls, pins, answer: (v) => waiting.shift()!.resolve(v), answerLast: (v) => waiting.pop()!.resolve(v), fail: (e) => waiting.shift()!.reject(e) };
+  return { calls, pins, answer: (v) => waiting.shift()!.resolve(v), answerLast: (v) => waiting.pop()!.resolve(v), fail: (e) => waiting.shift()!.reject(e), failLast: (e) => waiting.pop()!.reject(e) };
 }
 
 async function flush(): Promise<void> {
@@ -91,6 +91,22 @@ describe('a call\'s card', () => {
     reads.answer([entry(1, { revision: 1 })]);
     await flush();
     expect(card.current.entries?.[0].revision).toBe(2);
+    card.release();
+  });
+
+  it('keeps a newer read\'s refusal when an older read answers after it', async () => {
+    const reads = held();
+    const card = attachDraftCall(REF);
+    trackerTimeEntriesUpdated({ connection: 'c1', author: 'acct-1', threads: ['t1'] }, 'peer-1');
+    await vi.advanceTimersByTimeAsync(DRAFT_CARD_REREAD_DELAY_MS);
+    expect(reads.calls).toHaveLength(2);
+    const refused = new Error('the computer refused the read');
+    // The second read is refused first; the first answers after it.
+    reads.failLast(refused);
+    await flush();
+    reads.answer([entry(1)]);
+    await flush();
+    expect(card.current.readError).toBe(refused);
     card.release();
   });
 

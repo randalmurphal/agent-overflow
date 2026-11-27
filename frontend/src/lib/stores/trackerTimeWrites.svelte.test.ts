@@ -162,12 +162,13 @@ describe('a change of an agent\'s draft', () => {
 
   it('puts a receipt on the weeks showing a day the post could not read back, and says so', async () => {
     setBindingMock('PostTrackerTimeEntries', async () => ({
-      entries: [], posted: 1, of: 1, sentence: 'Posted 1 of 1 entries for Tue Nov 10.',
+      entries: [], posted: 1, of: 1, sentence: 'Posted 1 of 1 entries for Tue Nov 10. The posted time shows on Tue Nov 10 after the next read: Jira did not answer.',
       stale: [{ resources: [{ kind: 'worklogs', author: 'acct-1', day: '2026-11-10' }], failure: { message: 'Jira did not answer', kind: 'unreachable' } }],
     } as unknown as PostTimeView));
     const release = holdTimeWriteTarget(CTX, DAY);
     await postDraftEntries(CTX, DAY, [entry(1)]);
-    const said = 'Posted 1 of 1 entries for Tue Nov 10. The week shows it after its next read: Jira did not answer';
+    // The computer's sentence already says which days and why.
+    const said = 'Posted 1 of 1 entries for Tue Nov 10. The posted time shows on Tue Nov 10 after the next read: Jira did not answer.';
     expect(timeWriteText(timeWrite(CTX, DAY)!)).toBe(said);
     expect(week.current.receipts.map((r) => r.sentence)).toEqual([said]);
     release();

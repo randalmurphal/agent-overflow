@@ -10,6 +10,8 @@ import TimeScreen from './TimeScreen.svelte';
 import { methodNotFound } from '../../../test/helpers/olderComputer';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
+import { trackerTimeEntriesUpdated } from '../../stores/trackerBoardEvents';
+import { DRAFT_REREAD_DELAY_MS } from '../../stores/trackerTime.svelte';
 
 const BASE: ComponentProps<typeof TimeScreen> = {
   backend: 'peer-1',
@@ -583,5 +585,91 @@ describe('the agent\'s draft', () => {
     await view.findByTestId('time-week');
     await view.rerender({ ...BASE, askedWeek: { monday: '2026-11-02' } });
     await waitFor(() => expect(getBindingMock('TrackerWorklogs')!.mock.calls.at(-1)).toEqual(['c1', 'acct-1', '2026-11-02', '2026-11-08']));
+  });
+});
+
+// What another window changes while a form or a question is open: the
+// person's press acts on what the screen showed them.
+describe('a draft changed while the person looks at it', () => {
+  // The week's next stored read answers `entries`, and a frame names the
+  // day, as the computer sends one after another window's change.
+  async function changedElsewhere(worklogs: WorklogView[], entries: TimeEntryView[], day = '2026-11-11'): Promise<void> {
+    answerDraft(worklogs, entries);
+    trackerTimeEntriesUpdated({ connection: 'c1', author: 'acct-1', days: [day], threads: ['t1'] }, 'peer-1');
+    // The frame's read is coalesced on the clock, which these tests hold.
+    vi.setSystemTime(Date.now() + 6 * DRAFT_REREAD_DELAY_MS);
+    await waitFor(() => expect(getBindingMock('TrackerWorklogs')!.mock.calls.length).toBeGreaterThan(0));
+  }
+
+  it('logs and removes from its form the entry as the form shows it, not a later change', async () => {
+    answerDraft([], [drafted(11, '2026-11-11', 60)]);
+    const post = setBindingMock('PostTrackerTimeEntries', async () => POSTED('Entry 11 changed since it was read and was not posted.'));
+    const remove = setBindingMock('RemoveTrackerTimeEntries', async () => []);
+    const view = render(TimeScreen, BASE);
+    await fireEvent.click(await view.findByTestId('time-draft-entry-hours'));
+    const form = await body().findByTestId('time-draft-form');
+    await changedElsewhere([], [drafted(11, '2026-11-11', 180, { revision: 3, issue: '10002', key: 'WEB-2', title: 'Second story' })]);
+    await waitFor(() => expect(view.getByTestId('time-draft-entry-hours')).toHaveTextContent('3h'));
+    expect(within(form).getByTestId('time-draft-form-ticket')).toHaveTextContent('WEB-1');
+    await fireEvent.click(within(form).getByTestId('time-draft-form-log'));
+    await waitFor(() => expect(post).toHaveBeenCalled());
+    expect(post).toHaveBeenCalledWith('c1', { entries: [{ id: 11, revision: 2 }], alone: true });
+    await fireEvent.click(within(form).getByTestId('time-draft-form-remove'));
+    await waitFor(() => expect(remove).toHaveBeenCalled());
+    expect(remove).toHaveBeenCalledWith('c1', [{ id: 11, revision: 2 }]);
+  });
+
+  it('discards the entries its question named, not ones drafted after it asked', async () => {
+    answerDraft([], [drafted(11, '2026-11-11', 60)]);
+    const remove = setBindingMock('RemoveTrackerTimeEntries', async () => []);
+    const view = render(TimeScreen, BASE);
+    await fireEvent.click(await view.findByTestId('time-draft-discard-week'));
+    expect(view.getByTestId('time-draft-discard-week-confirm')).toHaveTextContent('Remove the 1 entry of this draft? Nothing is logged.');
+    await changedElsewhere([], [drafted(21, '2026-11-11', 120)]);
+    await waitFor(() => expect(view.getByTestId('time-draft-entry').dataset.entry).toBe('21'));
+    await fireEvent.click(view.getByTestId('time-draft-discard-week-confirm-yes'));
+    await waitFor(() => expect(remove).toHaveBeenCalled());
+    expect(remove).toHaveBeenCalledWith('c1', [{ id: 11, revision: 2 }]);
+  });
+
+  it('logs nothing by hand for an entry of unknown outcome that was settled elsewhere', async () => {
+    const unknown = drafted(15, '2026-11-11', 90, { state: 'unknown', refusal: 'may already be logged' });
+    answerDraft([], [unknown]);
+    const add = setBindingMock('AddTrackerWorklog', async () => APPLIED);
+    setBindingMock('RemoveTrackerTimeEntries', async () => [unknown]);
+    const view = render(TimeScreen, BASE);
+    await fireEvent.click(within(await view.findByTestId('time-draft-entry')).getByTestId('time-draft-entry-log-by-hand'));
+    const form = await body().findByTestId('worklog-form');
+    await changedElsewhere([log('601', '2026-11-11', 5400)], []);
+    await waitFor(() => expect(view.queryByTestId('time-draft-entry')).toBeNull());
+    await fireEvent.click(within(form).getByTestId('worklog-form-save'));
+    await tick();
+    expect(add).not.toHaveBeenCalled();
+    expect(within(form).getByTestId('worklog-form-waiting')).toHaveTextContent('This entry was removed or logged elsewhere, so its time is not logged from here.');
+  });
+});
+
+describe('what the week shows of a posted draft', () => {
+  it('draws a posted entry whose worklog the read does not hold as nothing, and the logged time as the worklogs say', async () => {
+    answerDraft([], [drafted(11, '2026-11-11', 60, { state: 'posted', worklog: '701' })]);
+    const view = render(TimeScreen, BASE);
+    const wed = (await view.findAllByTestId('time-day')).find((d) => d.dataset.day === '2026-11-11')!;
+    expect(within(wed).queryByTestId('time-draft-entry')).toBeNull();
+    expect(within(wed).getByTestId('time-day-empty')).toBeInTheDocument();
+  });
+
+  it('says in the banner what the draft logged once nothing of it is left to approve', async () => {
+    answerDraft([log('701', '2026-11-11', 3600), log('702', '2026-11-12', 1800)], [
+      drafted(11, '2026-11-11', 60, { state: 'posted', worklog: '701' }),
+      drafted(12, '2026-11-12', 30, { state: 'posted', worklog: '702' }),
+    ]);
+    const view = render(TimeScreen, BASE);
+    expect(await view.findByTestId('time-draft-banner-done')).toHaveTextContent('Logged 1h 30m in 2 worklogs');
+  });
+
+  it('says beside a question left what the draft logged', async () => {
+    answerDraft([log('701', '2026-11-11', 3600)], [drafted(11, '2026-11-11', 60, { state: 'posted', worklog: '701' }), asked(13, '2026-11-12', 25)]);
+    const view = render(TimeScreen, BASE);
+    expect(await view.findByTestId('time-draft-banner')).toHaveTextContent('1h is logged. Answer it in that day\'s column.');
   });
 });

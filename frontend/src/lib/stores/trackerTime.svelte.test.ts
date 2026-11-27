@@ -426,4 +426,23 @@ describe('an agent\'s draft changing', () => {
     expect(settled).toBe(true);
     week.release();
   });
+
+  it('reads a week again on a gap only after the refresh out, so the refresh never lands over the newer read', async () => {
+    const stored = held('TrackerWorklogs');
+    const refresh = held('RefreshTrackerWorklogs');
+    const week = attachTrackerWeek(REF, true);
+    stored.answer({ worklogs: [log('1')] });
+    await flush();
+    let settled = false;
+    void trackerTimeEntriesGap('peer-1')!.then(() => { settled = true; });
+    // The refresh was out before the gap: it answers what it read then.
+    refresh.answer({ worklogs: [log('1')] });
+    await flush();
+    expect(settled).toBe(false);
+    stored.answer({ worklogs: [log('1'), log('2')] });
+    await flush();
+    expect(settled).toBe(true);
+    expect(week.current.days?.worklogs.map((w) => w.id)).toEqual(['1', '2']);
+    week.release();
+  });
 });

@@ -61,11 +61,14 @@ describe('a time draft card', () => {
     expect(view.getByTestId('time-draft-card-approve-write-outcome')).toHaveTextContent('Posted 2 of 2 entries for Wed Nov 11 and Thu Nov 12.');
   });
 
-  it('says something true when none of its call\'s entries is left', async () => {
+  // A call can have no entries from its start (it only replaced the
+  // thread's earlier ones), or lose them later: the card says only what
+  // its read shows.
+  it('says only that the call has no entries when it has none', async () => {
     setBindingMock('ThreadTimeEntries', async () => []);
     const view = render(TimeDraftCard, BASE);
-    expect(await view.findByTestId('time-draft-card-empty')).toHaveTextContent("None of this draft's entries is left: they were removed, answered into another entry, or replaced by a later draft.");
-    expect(view.getAllByTestId('time-draft-card-day-gone')).toHaveLength(2);
+    expect(await view.findByTestId('time-draft-card-empty')).toHaveTextContent('This draft has no entries now.');
+    expect(view.getAllByTestId('time-draft-card-day-gone').map((d) => d.textContent)).toEqual(['This draft has nothing on this day now.', 'This draft has nothing on this day now.']);
     expect(view.queryByTestId('time-draft-card-approve')).toBeNull();
     expect(view.queryByTestId('time-draft-card-discard')).toBeNull();
   });
