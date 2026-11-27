@@ -512,16 +512,32 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 	// Credit's listing of the acts due on every board of the root: with
 	// the board's own groups, under which no sprint member is done, and
 	// with the status every member holds at its completion regrouped as
-	// done, so each is a candidate; with no receipt stored (first use) and
-	// with a receipt of each source for every issue (the steady state).
+	// done, so each is a candidate; with a support rule naming every
+	// board, walked over every row (a window from 0), first while every
+	// row is estimated, so none is support, then with no row estimated,
+	// so every row is; with no receipt stored (first use) and with a
+	// receipt of each source for every issue (the steady state).
 	everyDone, err := NewMirrorRegroup(map[string]int{"5": MirrorGroupDone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var everyBoard []string
+	for b := range size.boards {
+		everyBoard = append(everyBoard, benchBoardID(b))
+	}
+	supportAll, err := MirrorRegroup{}.WithSupport(MirrorSupportRule{Boards: everyBoard})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, credit := range []struct {
 		name    string
 		regroup MirrorRegroup
-	}{{"", MirrorRegroup{}}, {", every member done", everyDone}} {
+		reset   bool
+	}{{"", MirrorRegroup{}, false}, {", every member done", everyDone, false}, {", support by board, every row estimated", supportAll, false},
+		{", support by board, no row estimated", supportAll, true}} {
+		if credit.reset {
+			mustExec(t, s.db, `UPDATE tracker_cache_boards SET estimate_reset_at = estimate_reset_at + 1000000000000 WHERE root_id = ?`, root)
+		}
 		boards := make([]MirrorActsBoard, size.boards)
 		for b := range boards {
 			boards[b] = MirrorActsBoard{BoardID: benchBoardID(b), Regroup: credit.regroup}
@@ -541,6 +557,9 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 				SELECT root_id, issue_id, src.value, updated_at, 1, ? FROM tracker_cache_issues, json_each('[1,2]') src WHERE root_id = ?`, testNow, root)
 		}, list)
 		t.Logf("acts due, every one read%s: %d listed", credit.name, listed)
+		if credit.reset {
+			mustExec(t, s.db, `UPDATE tracker_cache_boards SET estimate_reset_at = estimate_reset_at - 1000000000000 WHERE root_id = ?`, root)
+		}
 	}
 	out["cleanup pass, nothing pending"] = measureScale(t, rec, nil, func(int) error { return s.FinishMirrorCleanup(context.Background(), nil) })
 	// A complete listing that leaves out a quarter of the board, whose rows
