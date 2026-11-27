@@ -118,3 +118,24 @@ export function changeMark(
   const word = unitWord(Math.abs(delta), unit, estimates);
   return { kind: 'change', direction, tone, text: `${direction === 'up' ? 'Up' : 'Down'} ${amount}${word ? ` ${word}` : ''} from ${formatAmount(p, unit, estimates)}${then}` };
 }
+
+/** Which way a number widget's limit warns: below it when up is good
+ * news (`good`), else above it. The one rule; the board's computer stores
+ * no direction (trackerapp/board_tiles.go). */
+export function limitSide(good: string): 'above' | 'below' {
+  return good === 'up' ? 'below' : 'above';
+}
+
+/** Whether a number is past its widget's limit on the side `limitSide`
+ * names; false with no limit or no value. */
+export function overLimit(value: Num | null | undefined, limit: number | null | undefined, good: string): boolean {
+  const v = numValue(value);
+  if (v === null || limit === null || limit === undefined) return false;
+  return limitSide(good) === 'below' ? v < limit : v > limit;
+}
+
+/** How far one press of a limit's − or + moves it: an hour for a board
+ * whose estimates are time (seconds), else 1. */
+export function limitStep(unit: DashboardUnit, estimates: string): number {
+  return unit === 'estimate' && estimates === 'time' ? 3600 : 1;
+}

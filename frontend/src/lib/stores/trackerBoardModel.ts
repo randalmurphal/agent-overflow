@@ -70,6 +70,10 @@ export interface BoardShape {
   /** A card's address less its key; empty when cards carry their own
    * (`cardURL`). */
   readonly issueURL: string;
+  /** The widgets the board's project pins to its summary row, in the
+   * row's order (`BoardView.pins`); empty for none, and from a computer
+   * whose release has no row. */
+  readonly pins: readonly string[];
 }
 
 /** What the client holds of a board: its shape, lifetime and revision,
@@ -129,6 +133,7 @@ export function heldFromView(view: BoardView, intern: (row: RowView) => RowView,
       columns: view.columns,
       sprints: view.sprints,
       issueURL: view.issue_url ?? '',
+      pins: view.pins ?? [],
     },
     lifetime: view.lifetime,
     revision: view.revision,
@@ -439,6 +444,9 @@ export interface CardFilter {
   readonly mine: string | null;
   /** The search's words, lower case; empty when no search is on. */
   readonly words: readonly string[];
+  /** The tickets a summary row tile stands for, by ID, which alone pass;
+   * null or absent when no tile filters the board. */
+  readonly only?: ReadonlySet<string> | null;
 }
 
 /** The words of a search query, lower case. */
@@ -448,7 +456,7 @@ export function searchWords(query: string): string[] {
 
 /** Whether a filter is on. */
 export function filtering(filter: CardFilter): boolean {
-  return filter.mine !== null || filter.words.length > 0;
+  return filter.mine !== null || filter.words.length > 0 || !!filter.only;
 }
 
 /** The text a search matches a card by: key, title, labels, parent and
@@ -462,6 +470,7 @@ function searchText(card: CardView): string {
 /** Whether a card passes the filter: assigned to `mine` when set, and
  * every word found in its text. */
 export function cardMatches(card: CardView, filter: CardFilter): boolean {
+  if (filter.only && !filter.only.has(card.id)) return false;
   if (filter.mine !== null && card.assignee?.id !== filter.mine) return false;
   if (filter.words.length === 0) return true;
   const text = searchText(card);

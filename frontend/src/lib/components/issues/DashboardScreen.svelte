@@ -4,7 +4,10 @@
   // board's computer from its copy of the board. A toolbar holds the
   // dashboard picker, its range, Team or Mine, the person or epic the page
   // is narrowed to, Ask your agent and, on a dashboard the project keeps,
-  // Edit, which removes widgets; the dashboard goes with its last one. The widgets an
+  // Edit, which removes widgets; the dashboard goes with its last one. A
+  // widget's bell sets a number's limit and its pin puts it on the board's
+  // summary row; under compact those show while editing, which every
+  // dashboard offers for them, or once switched on. The widgets an
   // agent proposed on the board sit above the grid, each with Keep, Dismiss
   // and its thread; nothing joins a dashboard without Keep. Under the
   // widgets sit on a 12-column grid by the screen's width: their own
@@ -39,7 +42,7 @@
   import { userFacingError } from '../../utils/userFacingError';
   import { workGate } from './ticketWorkGate';
   import DashboardDrill from './DashboardDrill.svelte';
-  import DashboardWidget from './DashboardWidget.svelte';
+  import DashboardWidget, { type TileControls } from './DashboardWidget.svelte';
   import type { TicketListSource } from './TicketListActions.svelte';
   import { setTicketWriteSurface } from './ticketWriteSurface';
 
@@ -155,6 +158,32 @@
     editing = false;
   });
 
+  // The board's summary row as the list has it; null from a computer
+  // whose release keeps none.
+  const tiles = $derived(store.tiles);
+  const ROW_MAX = 5;
+  function tileOf(w: WidgetView): TileControls | undefined {
+    const t = tiles;
+    if (!t) return undefined;
+    return {
+      pinned: t.pins.includes(w.id),
+      rowFull: t.pins.length >= ROW_MAX,
+      busy: store.busy.has(w.id),
+      blocked: editBlocked,
+      onlyOn: compact && !editing,
+      setLimit: (limit) => void act(limit === null ? 'turn the limit off' : 'set the limit', () => store.setLimit(w.id, limit)),
+      setPinned: (on) => void act(on ? 'show the widget on the board row' : 'take the widget off the board row', () => store.pin(w.id, on)),
+    };
+  }
+  // What Keep does with a proposal an agent asked to show on the board's
+  // row; empty for one it did not.
+  function keepPinText(p: ProposalView): string {
+    if (!tiles?.proposed.includes(p.view.id)) return '';
+    return tiles.pins.length >= ROW_MAX
+      ? `Asked for the board row, which already shows ${ROW_MAX} tiles: Keep adds it to a dashboard only.`
+      : 'Keep also shows it on the board row.';
+  }
+
   let asking = $state(false);
   async function ask(): Promise<void> {
     if (!source || asking) return;
@@ -206,7 +235,7 @@
   }
 </script>
 
-{#snippet widgetCell(w: WidgetView, actions?: import('svelte').Snippet)}
+{#snippet widgetCell(w: WidgetView, actions?: import('svelte').Snippet, proposed = false)}
   <div class="min-w-0" style:grid-column="span {span(w)} / span {span(w)}" data-testid="dashboard-cell-span" data-span={span(w)}>
     <DashboardWidget
       view={w}
@@ -221,6 +250,8 @@
       onTicket={openTicket}
       {tickets}
       {actions}
+      limit={tiles?.limits[w.id] ?? null}
+      tile={proposed ? undefined : tileOf(w)}
     />
   </div>
 {/snippet}
@@ -299,7 +330,7 @@
         {/if}
       {/each}
       <span class="flex-1"></span>
-      {#if store.ownShown}
+      {#if store.ownShown || (compact && tiles)}
         <Button size="xs" variant="ghost" testId="dashboard-edit" pressed={editing} disabled={!!editBlocked} title={editBlocked} onclick={() => { editing = !editing; }}>
           {editing ? 'Done' : 'Edit'}
         </Button>
@@ -343,9 +374,12 @@
                 {/if}
                 <Button size="xs" variant="ghost" testId="dashboard-dismiss" disabled={!!editBlocked || store.busy.has(p.view.id)} title={editBlocked} onclick={() => void act('dismiss the widget', () => store.dismiss(p.view.id))}>Dismiss</Button>
                 <Button size="xs" variant="tinted" testId="dashboard-keep" loading={store.busy.has(p.view.id)} disabled={!!editBlocked} title={editBlocked ?? (store.ownShown ? `Keep it on ${store.dashboard?.title}` : undefined)} onclick={(e) => pressKeep(p, e.currentTarget as HTMLElement)}>{store.ownShown ? 'Keep' : 'Keep…'}</Button>
+                {#if keepPinText(p)}
+                  <span class="text-[0.6875rem] text-fg-muted" data-testid="dashboard-keep-pin">{keepPinText(p)}</span>
+                {/if}
               </span>
             {/snippet}
-            {@render widgetCell(p.view, proposalActions)}
+            {@render widgetCell(p.view, proposalActions, true)}
           {/each}
           <div class="col-span-12 border-t border-border-subtle"></div>
         {/if}
@@ -353,7 +387,7 @@
           {#snippet editActions()}
             <Button size="xs" variant="danger-ghost" testId="dashboard-remove" disabled={!!editBlocked || store.busy.has(w.id)} title={editBlocked} onclick={() => void act('remove the widget', () => store.removeWidget(w.id))}>Remove</Button>
           {/snippet}
-          {@render widgetCell(w, editing ? editActions : undefined)}
+          {@render widgetCell(w, editing && store.ownShown ? editActions : undefined)}
         {/each}
       </div>
     </div>

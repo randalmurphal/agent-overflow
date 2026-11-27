@@ -45,10 +45,19 @@
 // settings lists them again too, for Ask's sentence, and so does Refresh,
 // for whatever else the list was built from. A Keep onto a new
 // dashboard shows it once the list read after the Keep holds it.
+//
+// The board's summary row (BoardSummaryRow.svelte) is one of these too,
+// made with `row`: what it counts is one dashboard made of the widgets
+// pinned to the board, in the row's order (trackerdash.Request.Widgets),
+// over the built-in's default range for the team, under the same
+// freshness rule; the proposals are not counted. A number widget's limit
+// and the pins are the list's (`tiles`, trackerapp/board_tiles.go): the
+// screen sets them through the board's computer, which tells every client
+// with `tracker:dashboards_updated`.
 
 import { untrack } from 'svelte';
 import { SvelteSet } from 'svelte/reactivity';
-import type { KeepTarget } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { BoardTilesView, KeepTarget } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import type {
   Answer,
   DashboardView,
@@ -64,7 +73,9 @@ import {
   DismissTrackerWidget,
   EvaluateTrackerDashboard,
   KeepTrackerWidget,
+  PinTrackerWidget,
   RemoveTrackerWidget,
+  SetTrackerWidgetLimit,
   StartTrackerDashboardThread,
   TrackerDashboardDrill,
   TrackerDashboards,
@@ -121,6 +132,10 @@ export interface TrackerDashboard {
    * computer whose release has none. Reactive. */
   readonly dashboards: readonly DashboardView[] | 'older' | null;
   readonly dashboardsError: unknown;
+  /** The board's summary row and each number widget's limit, as the list
+   * has them; null until read, and from a computer whose release keeps
+   * neither, which shows no limit or pin control. Reactive. */
+  readonly tiles: BoardTilesView | null;
   /** The widgets agents proposed on the board, as the list has them.
    * Reactive. */
   readonly proposals: readonly ProposalView[];
@@ -158,6 +173,10 @@ export interface TrackerDashboard {
   dismiss(proposal: string): Promise<void>;
   /** Removes a widget from the dashboard shown. */
   removeWidget(widget: string): Promise<void>;
+  /** Sets a number widget's limit, or clears it with null. */
+  setLimit(widget: string, limit: number | null): Promise<void>;
+  /** Pins a widget to the board's summary row, or takes it off. */
+  pin(widget: string, pinned: boolean): Promise<void>;
   setRange(range: string): void;
   setMine(mine: boolean): void;
   narrowPerson(person: Name | null): void;
@@ -188,8 +207,40 @@ function timeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 }
 
-export function createTrackerDashboard(opts: { source: () => DashboardSource | null; shown: () => boolean }): TrackerDashboard {
+/** The board's changes ask `scheduler` for a count, at most as often as
+ * it allows, and every DASHBOARD_REFRESH_MS it asks for one with no
+ * change, while `shown`. The rule every reader of a board's numbers
+ * recounts by; call it inside an effect root. */
+export function recountOnChanges(scheduler: { request(): void }, changes: () => number, shown: () => boolean): void {
+  let seen = -1;
+  $effect(() => {
+    const n = changes();
+    const on = shown();
+    if (seen >= 0 && n !== seen && on) untrack(() => scheduler.request());
+    seen = n;
+  });
+  $effect(() => {
+    if (!shown()) return;
+    const timer = setInterval(() => scheduler.request(), DASHBOARD_REFRESH_MS);
+    return () => clearInterval(timer);
+  });
+}
+
+/** The request a board's summary row counts: the widgets pinned to it on
+ * `builtin`, the board's built-in dashboard, over its default range. */
+export function rowRequest(builtin: DashboardView, pins: readonly string[]): Request {
+  return { dashboard: builtin.id, range: builtin.default_range, mine: false, person: '', epic: '', time_zone: timeZone(), widgets: [...pins] };
+}
+
+export function createTrackerDashboard(opts: {
+  source: () => DashboardSource | null;
+  shown: () => boolean;
+  /** The widgets pinned to the board's summary row, for the row's store:
+   * it counts those alone. */
+  row?: () => readonly string[];
+}): TrackerDashboard {
   let dashboards = $state.raw<readonly DashboardView[] | 'older' | null>(null);
+  let tiles = $state.raw<BoardTilesView | null>(null);
   let proposals = $state.raw<readonly ProposalView[]>([]);
   let ask = $state('');
   let dashboardsError = $state.raw<unknown>(null);
@@ -221,6 +272,7 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
 
   const dashboard: DashboardView | null = $derived.by(() => {
     if (dashboards === null || dashboards === 'older') return null;
+    if (opts.row) return dashboards[0] ?? null;
     const s = opts.source();
     const pick = dashboardPick || (s ? savedPicks()[boardKey(s.board)] : '');
     return dashboards.find((d) => d.id === pick) ?? dashboards[0] ?? null;
@@ -237,6 +289,10 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
   function request(): Request | null {
     const d = dashboard;
     if (!d) return null;
+    if (opts.row) {
+      const pins = opts.row();
+      return pins.length > 0 ? rowRequest(d, pins) : null;
+    }
     return { dashboard: d.id, range, mine, person: person?.id ?? '', epic: epic?.id ?? '', time_zone: timeZone() };
   }
   const requestKey = $derived.by(() => {
@@ -325,19 +381,7 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
     });
 
     // The board changed: evaluate, at most once every 5 s.
-    let seen = -1;
-    $effect(() => {
-      const changes = opts.source()?.changes ?? -1;
-      const shown = opts.shown();
-      if (seen >= 0 && changes !== seen && shown) untrack(() => scheduler.request());
-      seen = changes;
-    });
-
-    $effect(() => {
-      if (!opts.shown()) return;
-      const timer = setInterval(() => scheduler.request(), DASHBOARD_REFRESH_MS);
-      return () => clearInterval(timer);
-    });
+    recountOnChanges(scheduler, () => opts.source()?.changes ?? -1, opts.shown);
   });
 
   function list(s: DashboardSource, key: string): Promise<void> {
@@ -348,6 +392,7 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
         if (listedFor !== key) return;
         dashboards = answer?.dashboards ?? 'older';
         proposals = answer?.proposals ?? [];
+        tiles = answer?.tiles ?? null;
         ask = answer?.ask ?? '';
         dashboardsError = null;
       } catch (err) {
@@ -408,6 +453,7 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
   return {
     get dashboards() { return dashboards; },
     get dashboardsError() { return dashboardsError; },
+    get tiles() { return tiles; },
     get proposals() { return proposals; },
     get ask() { return ask; },
     get dashboard() { return dashboard; },
@@ -431,6 +477,12 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
       const d = dashboard;
       if (!d || !ownShown) return Promise.resolve();
       return change(widget, (s) => RemoveTrackerWidget(s.subscription, d.id, widget));
+    },
+    setLimit(widget, limit) {
+      return change(widget, (s) => SetTrackerWidgetLimit(s.subscription, widget, limit));
+    },
+    pin(widget, pinned) {
+      return change(widget, (s) => PinTrackerWidget(s.subscription, widget, pinned));
     },
     get range() { return range; },
     get mine() { return mine; },
