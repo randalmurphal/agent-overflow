@@ -170,36 +170,29 @@ type MirrorRegroup struct {
 }
 
 // MirrorSupportRule names a project's support tickets of one tracker
-// site: those of an issue type (by ID), with a label (by name) or on a
-// board (by ID) it lists.
+// site: those of an issue type (by ID), with a label (by name,
+// MirrorCard.Labels) or on a board (by ID) it lists.
 type MirrorSupportRule struct {
 	Types, Labels, Boards []string
 }
 
 // mirrorSupport is the JSON object mirrorSupportSQL reads: the rule's
-// lists, and where a card blob holds its labels (MirrorCardShape): the
-// version a blob of that shape has, the members of the version and of the
-// labels, and each label's name member, each as a JSON path.
+// lists.
 type mirrorSupport struct {
-	Boards        []string `json:"boards"`
-	Types         []string `json:"types"`
-	Labels        []string `json:"labels"`
-	Version       int      `json:"v"`
-	VersionPath   string   `json:"vp"`
-	LabelsPath    string   `json:"lp"`
-	LabelNamePath string   `json:"np"`
+	Boards []string `json:"boards"`
+	Types  []string `json:"types"`
+	Labels []string `json:"labels"`
 }
 
-// WithSupport is r with rule as its support rule, a card's labels read
-// where card says; a rule that names nothing names no row.
-func (r MirrorRegroup) WithSupport(rule MirrorSupportRule, card MirrorCardShape) (MirrorRegroup, error) {
+// WithSupport is r with rule as its support rule; a rule that names
+// nothing names no row.
+func (r MirrorRegroup) WithSupport(rule MirrorSupportRule) (MirrorRegroup, error) {
 	r.support = ""
 	if len(rule.Types)+len(rule.Labels)+len(rule.Boards) == 0 {
 		return r, nil
 	}
-	path := func(member string) string { return "$." + member }
-	encoded, err := encodeMirrorJSON(mirrorSupport{Boards: slicesx.OrEmpty(rule.Boards), Types: slicesx.OrEmpty(rule.Types), Labels: slicesx.OrEmpty(rule.Labels),
-		Version: card.Version, VersionPath: path(card.VersionMember), LabelsPath: path(card.Labels), LabelNamePath: path(card.LabelName)})
+	encoded, err := encodeMirrorJSON(mirrorSupport{Boards: slicesx.OrEmpty(rule.Boards), Types: slicesx.OrEmpty(rule.Types),
+		Labels: slicesx.OrEmpty(rule.Labels)})
 	if err != nil {
 		return MirrorRegroup{}, err
 	}
@@ -219,21 +212,19 @@ func (r MirrorRegroup) supportArg() any {
 // support ticket by the support rule the JSON object rule binds (NULL for
 // none): its estimate (estimate, the SQL expression every read of a row's
 // estimate states, mirrorRowEstimate) is none, and the rule lists its
-// board, its type, or one of its card's labels, by a card blob of the
-// rule's version. A row that has an estimate is never support. The arms
-// run cheapest first and SQLite stops at the first that decides: a row
-// with an estimate reads nothing more, the board's arm is one test a
-// statement, the type's reads the issue's row, and only a rule that lists
-// labels decodes the card. Every read that tells support (a row's flag,
-// the totals) states it with this.
+// board, its type, or one of its labels (tracker_cache_issues.labels). A
+// row that has an estimate is never support. The arms run cheapest first
+// and SQLite stops at the first that decides: a row with an estimate
+// reads nothing more, the board's arm is one test a statement, and the
+// type's and the labels' read the issue's row, not its card's data. Each
+// list of the rule is built once a statement. Every read that tells
+// support (a row's flag, the totals) states it with this.
 func mirrorSupportSQL(rule, board, estimate string) string {
 	return `(` + estimate + ` IS NULL AND ` + rule + ` IS NOT NULL AND (` +
 		board + ` IN (SELECT value FROM json_each(` + rule + `, '$.boards'))
 		 OR i.type_id IN (SELECT value FROM json_each(` + rule + `, '$.types'))
-		 OR (json_array_length(` + rule + `, '$.labels') > 0
-		   AND json_extract(CAST(i.data AS TEXT), json_extract(` + rule + `, '$.vp')) = json_extract(` + rule + `, '$.v')
-		   AND EXISTS (SELECT 1 FROM json_each(CAST(i.data AS TEXT), json_extract(` + rule + `, '$.lp')) l
-		     WHERE json_extract(l.value, json_extract(` + rule + `, '$.np')) IN (SELECT value FROM json_each(` + rule + `, '$.labels'))))))`
+		 OR i.labels <> '[]' AND EXISTS (SELECT 1 FROM json_each(i.labels) l
+		     WHERE l.value IN (SELECT value FROM json_each(` + rule + `, '$.labels')))))`
 }
 
 // NewMirrorRegroup is the regrouping groups gives, by status ID. A

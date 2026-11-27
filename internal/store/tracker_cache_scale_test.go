@@ -573,7 +573,7 @@ func supportAtScale(t *testing.T, s *Store, root int64, rec *mirrorWriteRecorder
 	t.Helper()
 	board := benchBoardID(0)
 	rule := func(r MirrorSupportRule) MirrorRegroup {
-		regroup, err := MirrorRegroup{}.WithSupport(r, MirrorCardShape{Version: 2, VersionMember: "v", Labels: "labels", LabelID: "id", LabelName: "name"})
+		regroup, err := MirrorRegroup{}.WithSupport(r)
 		if err != nil {
 			t.Fatal(err)
 		}

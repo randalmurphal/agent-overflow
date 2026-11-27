@@ -83,6 +83,7 @@ func benchCard(id string, updated int64, board, i int) MirrorCard {
 	return MirrorCard{IssueID: id, Key: "WEB-" + id, ProjectID: "100", TypeID: "10001", TypeLevel: 0,
 		StatusID: strconv.Itoa(1 + i%5), AssigneeID: fmt.Sprint("acc-user", i%20), PriorityID: "3", ParentID: "",
 		CreatedAt: 1_700_000_000_000, UpdatedAt: updated, Sprints: []string{fmt.Sprint(board*benchBoardSprints + i%benchBoardSprints)},
+		Labels: []string{"frontend", "auth"},
 		Data: []byte(`{"v":2,"type_name":"Story","priority_name":"Medium","labels":[{"id":"frontend","name":"frontend"},{"id":"auth","name":"auth"}],` +
 			`"url":"https://example.atlassian.net/browse/WEB-` + id + `"}`)}
 }
